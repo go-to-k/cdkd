@@ -27,6 +27,7 @@ import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceNameWithFallback } from '../resource-name.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
+import { clearOnUpdateRemoval } from '../update-removal.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -293,17 +294,34 @@ export class IAMRoleProvider implements ResourceProvider {
         RoleName: physicalId,
       };
 
-      // `!== undefined` (not truthy) so an empty Description ('') reaches
-      // `UpdateRoleCommand`, which the AWS API documents as the way to
-      // clear an existing description. A truthy gate would silently drop
-      // the empty string and leave the AWS-side description untouched —
-      // surfaced as a `cdkd drift --revert` that reports `✓ reverted`
-      // but the very next `cdkd drift` re-detects the same drift.
-      if (properties['Description'] !== undefined) {
-        updateParams.Description = properties['Description'] as string;
+      // Both fields are routed through `clearOnUpdateRemoval` (issue
+      // #1160): IAM `UpdateRole` has merge semantics — an ABSENT input
+      // field means "no change" (live-verified 2026-07-27: an update
+      // omitting either field keeps the old live value) — while CFn
+      // resets a template-removed property to its default. So a removal
+      // (present before, absent now) must send an explicit reset:
+      //  - Description -> '' (the AWS-documented clear sentinel; an
+      //    explicit user-supplied '' passes through the same way — the
+      //    `!== undefined` behavior that fixed the `cdkd drift --revert`
+      //    "reverted but re-detected" symptom is preserved, a truthy
+      //    gate would silently drop the empty string).
+      //  - MaxSessionDuration -> 3600 (the IAM / CFn default).
+      // A field that was never set stays absent (no spurious reset).
+      const descriptionInput = clearOnUpdateRemoval(
+        properties['Description'] as string | undefined,
+        previousProperties['Description'] as string | undefined,
+        ''
+      );
+      if (descriptionInput !== undefined) {
+        updateParams.Description = descriptionInput;
       }
-      if (properties['MaxSessionDuration'] !== undefined) {
-        updateParams.MaxSessionDuration = properties['MaxSessionDuration'] as number;
+      const maxSessionDurationInput = clearOnUpdateRemoval(
+        properties['MaxSessionDuration'] as number | undefined,
+        previousProperties['MaxSessionDuration'] as number | undefined,
+        3600
+      );
+      if (maxSessionDurationInput !== undefined) {
+        updateParams.MaxSessionDuration = maxSessionDurationInput;
       }
 
       await this.iamClient.send(new UpdateRoleCommand(updateParams));
