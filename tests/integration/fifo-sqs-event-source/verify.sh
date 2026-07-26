@@ -228,15 +228,13 @@ CBD_AFTER=""
 SCOPE_AFTER=""
 LIMIT_AFTER=""
 for i in $(seq 1 6); do
-  CBD_AFTER="$(aws sqs get-queue-attributes --queue-url "${URL}" \
-    --attribute-names ContentBasedDeduplication --region "${REGION}" \
-    --query 'Attributes.ContentBasedDeduplication' --output text)"
-  SCOPE_AFTER="$(aws sqs get-queue-attributes --queue-url "${URL}" \
-    --attribute-names DeduplicationScope --region "${REGION}" \
-    --query 'Attributes.DeduplicationScope' --output text)"
-  LIMIT_AFTER="$(aws sqs get-queue-attributes --queue-url "${URL}" \
-    --attribute-names FifoThroughputLimit --region "${REGION}" \
-    --query 'Attributes.FifoThroughputLimit' --output text)"
+  # One API call per poll, one consistent snapshot for all three reads.
+  ATTRS_JSON="$(aws sqs get-queue-attributes --queue-url "${URL}" \
+    --attribute-names ContentBasedDeduplication DeduplicationScope FifoThroughputLimit \
+    --region "${REGION}" --query 'Attributes' --output json)"
+  CBD_AFTER="$(printf '%s' "${ATTRS_JSON}" | jq -r '.ContentBasedDeduplication // "None"')"
+  SCOPE_AFTER="$(printf '%s' "${ATTRS_JSON}" | jq -r '.DeduplicationScope // "None"')"
+  LIMIT_AFTER="$(printf '%s' "${ATTRS_JSON}" | jq -r '.FifoThroughputLimit // "None"')"
   echo "    poll ${i}: ContentBasedDeduplication=${CBD_AFTER} DeduplicationScope=${SCOPE_AFTER} FifoThroughputLimit=${LIMIT_AFTER}"
   if [ "${CBD_AFTER}" = "false" ] && [ "${SCOPE_AFTER}" = "queue" ] && [ "${LIMIT_AFTER}" = "perQueue" ]; then
     break
