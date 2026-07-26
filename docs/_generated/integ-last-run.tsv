@@ -5,11 +5,11 @@
 # GENERATED SHAPE - do not hand-edit. After recording a run, run:
 #   vp run integ-ledger-normalize
 # CI enforces this; a non-normalized file fails check-build-test.
-acm-certificate	2026-06-21T11:00:28Z	PASS	20	verify.sh	sweep-4..8 staleness re-run (ledger-restore; rc=0)
+acm-certificate	2026-07-26T18:49:34Z	PASS	25	verify.sh	0727b sweep-b6 staleness re-run (rc=0); account clean
 agentcore-tools	2026-07-17T12:05:03Z	PASS	180	verify.sh	3 phases clean; adopt-only singletons + evaluator CRUD; name regex fix (no hyphens)
 alb	2026-07-02T18:23:15Z	PASS	62	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
-alb-advanced	2026-06-21T11:00:28Z	PASS	54	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
-api-cognito	2026-06-21T11:00:28Z	PASS	66	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
+alb-advanced	2026-07-26T18:49:34Z	PASS	63	standard	0727b sweep-b6 staleness re-run (rc=0); account clean
+api-cognito	2026-07-26T18:49:34Z	PASS	75	standard	0727b sweep-b6 staleness re-run (rc=0); account clean
 apigateway	2026-07-21T14:32:25Z	PASS	56	verify.sh	rc ok, orph clean
 apigatewayv2-update-removal	2026-07-22T14:04:44Z	PASS		verify.sh	issue-1160 apigwv2 batch: 5-API removal reset live-verified, Cors via DeleteCorsConfiguration, destroy 0 err/0 orph
 apigw-gateway-response	2026-07-16T16:48:47Z	PASS	117	verify.sh	issue-1017 fix live-verify, warn 1->0 + rendering sample, orph clean
@@ -224,7 +224,7 @@ s3-lifecycle	2026-07-21T14:28:43Z	PASS	58	verify.sh	rc ok, orph clean
 s3-object-lock	2026-07-21T14:42:20Z	PASS	53	verify.sh	rc ok, orph clean
 s3-replication-and-filter	2026-07-21T14:43:45Z	PASS	63	verify.sh	rc ok, orph clean
 s3-tables	2026-07-03T07:18:47Z	PASS	45	verify.sh	CC-routed Table Ref resolves to table name (#974); clean destroy
-s3-vectors	2026-06-21T18:03:30Z	PASS	34	verify.sh	stale-real re-run; 1 deleted 0 err; clean
+s3-vectors	2026-07-26T18:49:34Z	PASS	43	verify.sh	0727b sweep-b6 staleness re-run (rc=0); account clean
 scheduled-task	2026-07-26T18:04:53Z	PASS	44	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
 scheduler-custom-group	2026-07-02T12:35:05Z	PASS	98	verify.sh	new fixture (issue 961): custom-group UPDATE + schedule-only removal + destroy clean
 schema-v5-to-v6-migration	2026-07-24T10:27:22Z	PASS	61	verify.sh	0724 P0 sweep: v5->v8 transparent upgrade verified; 1 del 0 err
@@ -237,7 +237,7 @@ serverless-api	2026-07-02T18:23:15Z	PASS	50	verify.sh	0703 staleness sweep (pre-
 servicediscovery	2026-07-19T19:00:29Z	PASS	111	verify.sh	rc ok, 3 deleted, orph clean
 servicediscovery-namespaces	2026-07-17T12:12:19Z	PASS	114	verify.sh	re-run post review fixes (import kind filter, PrivateDns tag sync, resolver HostedZoneId); clean, 0 orphans
 ses-identity	2026-07-21T14:41:07Z	PASS	199	verify.sh	PASS on re-run; 1st attempt hit transient 403 token-expiry (not a cdkd bug), cleaned orphan config-set
-sg-circular-dependency	2026-06-21T18:54:29Z	PASS	180	verify.sh	first run (never-run); circular SG cross-ref via standalone ingress; revoke-before-delete destroy order; 11 deleted 0 err
+sg-circular-dependency	2026-07-26T18:49:34Z	PASS	51	verify.sh	0727b sweep-b6 staleness re-run (rc=0); account clean
 sns-event-source	2026-07-20T08:12:14Z	PASS	68	verify.sh	rc ok, orph clean
 sns-inline-subscription	2026-07-20T17:38:28Z	PASS	53	verify.sh	SNS inline subscription create+update, clean destroy
 sns-sqs-event	2026-07-26T17:01:09Z	PASS	78	verify.sh	#1160 sqs SSE removal phase 2 verified; destroy 20/0 errors, 0 orphans
@@ -250,7 +250,7 @@ stepfunctions	2026-07-21T13:08:15Z	PASS	97	verify.sh	converted; SM ACTIVE w/ aut
 stepfunctions-logging	2026-07-20T17:36:15Z	PASS	117	verify.sh	SFN Express logging/tracing removal-clear, clean destroy
 stepfunctions-s3-definition	2026-07-02T18:23:15Z	PASS	33	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
 synthetics-canary	2026-07-02T06:31:54Z	PASS	134	verify.sh	new fixture; remnant-cleanup regression guard; deploy+update+destroy clean
-tags-propagation	2026-06-21T18:17:20Z	PASS		verify.sh	first run (never-run); tag propagation across 9 resource types; no tag-order false-positive; 9 deleted 0 err
+tags-propagation	2026-07-26T18:49:34Z	PASS	63	verify.sh	0727b sweep-b6 staleness re-run (rc=0); account clean
 throttle-wide-dag	2026-07-02T18:23:15Z	PASS	163	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
 update-policy-mutations	2026-07-21T14:01:35Z	PASS	74	verify.sh	post #1138 UpdateReplacePolicy Retain guard fix on merged main; retain honored, 0 leftover
 update-replace	2026-07-21T07:23:47Z	PASS	80	verify.sh	in-place+replace, 7 deleted 0 orphans
