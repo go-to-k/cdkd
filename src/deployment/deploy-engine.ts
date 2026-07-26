@@ -2975,7 +2975,9 @@ export class DeployEngine {
                     `generated name lets the safe create-first order proceed), or re-run with ` +
                     `\`cdkd deploy --replace\` to delete the old resource FIRST and recreate ` +
                     `it under the same name (the resource is briefly unavailable while it is ` +
-                    `recreated).`,
+                    `recreated). Note: this branch is also reached when the old resource was ` +
+                    `deleted out-of-band and the physical id is name-derived — there the ` +
+                    `create was a genuine fresh create; \`--replace\` converges that case too.`,
                   'NAMED_REPLACEMENT_IDEMPOTENT_CREATE'
                 );
               }
