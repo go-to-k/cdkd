@@ -4791,6 +4791,7 @@
           "l1"
         ],
         "sns-sqs-event": [
+          "l1",
           "l2"
         ],
         "sns-subscription-filter": [

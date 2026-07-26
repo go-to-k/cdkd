@@ -96,6 +96,27 @@ function serializeRedriveAllowPolicy(value: unknown): string {
  *     CMK; SQS falls back to its own default encryption behavior).
  *   - Numeric attributes reset to their documented `SetQueueAttributes`
  *     defaults (see the SQS API reference).
+ *   - `ContentBasedDeduplication` resets to `'false'` (the CFn default —
+ *     omitting the property means disabled). FIFO-only, but the reset only
+ *     fires when the PREVIOUS properties carried the key, and only a FIFO
+ *     queue can ever have it set (AWS rejects it on standard queues), so the
+ *     reset is always sent to a FIFO queue — no extra guard needed.
+ *     NOTE: currently UNREACHABLE via a plain deploy — replacement-rules.ts
+ *     misclassifies `ContentBasedDeduplication` as replacement-requiring
+ *     (CFn documents it as "No interruption"; issue #1237), so a removal is
+ *     routed to replacement before `update()` runs. The entry is pinned by
+ *     unit tests + a raw-SDK live probe until #1237 lands.
+ *   - `SqsManagedSseEnabled` resets to `'true'` (SSE-SQS is enabled by
+ *     default when the property is undefined, per the CFn docs). CAVEAT:
+ *     SSE-SQS and SSE-KMS are mutually exclusive — AWS rejects a
+ *     `SetQueueAttributes` call carrying both a non-empty `KmsMasterKeyId`
+ *     and `SqsManagedSseEnabled: 'true'` (`InvalidAttributeName: You can use
+ *     one type of server-side encryption (SSE) at one time.`, live-verified
+ *     for issue #1160). When the desired template carries a non-empty
+ *     `KmsMasterKeyId` (it switched to SSE-KMS), `update()` skips this reset.
+ *     The reverse combination — `KmsMasterKeyId: ''` (the KMS removal reset)
+ *     together with `SqsManagedSseEnabled: 'true'` — IS accepted by AWS
+ *     (live-verified), so removing both fields at once needs no guard.
  *
  * Attributes NOT in this map (immutable / FIFO-discriminated ones such as
  * `FifoQueue` / `DeduplicationScope` / `FifoThroughputLimit`) are never
@@ -112,6 +133,8 @@ const SQS_ATTRIBUTE_REMOVAL_RESET: Record<string, string> = {
   DelaySeconds: '0',
   ReceiveMessageWaitTimeSeconds: '0',
   KmsDataKeyReusePeriodSeconds: '300',
+  ContentBasedDeduplication: 'false',
+  SqsManagedSseEnabled: 'true',
 };
 
 /**
@@ -289,6 +312,18 @@ export class SQSQueueProvider implements ResourceProvider {
           // diff fires a change, but the provider must explicitly reset the
           // attribute to its default — otherwise the stale value lingers on
           // AWS. (See `SQS_ATTRIBUTE_REMOVAL_RESET`.)
+          if (cdkKey === 'SqsManagedSseEnabled') {
+            const desiredKmsKey = properties['KmsMasterKeyId'];
+            if (desiredKmsKey !== undefined && desiredKmsKey !== '') {
+              // The desired template carries a CMK — it switched to SSE-KMS.
+              // AWS rejects a call carrying both a non-empty KmsMasterKeyId
+              // and SqsManagedSseEnabled 'true' (mutually exclusive SSE
+              // options), and resetting SSE-SQS to 'true' would contradict
+              // the template's intent anyway. Skip the reset; setting the
+              // CMK implicitly turns SSE-SQS off.
+              continue;
+            }
+          }
           attributes[sqsKey] = SQS_ATTRIBUTE_REMOVAL_RESET[cdkKey]!;
         }
       }
