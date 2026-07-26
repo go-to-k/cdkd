@@ -209,6 +209,11 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
       // Truthy gate matches create() — Type is the partner identifier for
       // Secrets Manager managed external secrets and is rarely user-set;
       // passing an empty string would be a no-op on AWS side.
+      // DELIBERATELY NOT routed through clearOnUpdateRemoval (issue #1160
+      // secretsmanager batch): a template-removed Type still keeps its live
+      // value — the umbrella's UNCERTAIN bucket tracks it (partner-managed
+      // secrets; no documented clear sentinel, and probing one requires a
+      // partner-linked secret we cannot fabricate).
       if (properties['Type']) updateParams.Type = properties['Type'] as string;
 
       await this.smClient.send(new UpdateSecretCommand(updateParams));

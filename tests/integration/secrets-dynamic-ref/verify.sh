@@ -262,6 +262,11 @@ DESC_P2=$(aws secretsmanager describe-secret --secret-id "${SECRET_NAME}" \
   --region "${REGION}" --query 'Description' --output text)
 KMS_P2=$(aws secretsmanager describe-secret --secret-id "${SECRET_NAME}" \
   --region "${REGION}" --query 'KmsKeyId' --output text)
+# Asymmetry is deliberate: a cleared Description may surface as omitted
+# ('None') or as a literal empty string depending on how AWS normalizes the
+# '' write — both mean "no description". A cleared KmsKeyId is always OMITTED
+# from DescribeSecret (the pristine managed-key shape), so it must be exactly
+# 'None' — an empty string there would be an unexpected wire shape.
 if { [ "${DESC_P2}" != "None" ] && [ -n "${DESC_P2}" ]; } || [ "${KMS_P2}" != "None" ]; then
   echo "FAIL: expected Description/KmsKeyId cleared after removal redeploy, got '${DESC_P2}' / '${KMS_P2}'" >&2
   exit 1
