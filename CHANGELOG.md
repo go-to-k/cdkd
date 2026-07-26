@@ -1,3 +1,10 @@
+## [0.267.3](https://github.com/go-to-k/cdkd/compare/v0.267.2...v0.267.3) (2026-07-26)
+
+
+### Bug Fixes
+
+* **secretsmanager:** reset Description and KmsKeyId on template removal ([#1243](https://github.com/go-to-k/cdkd/issues/1243)) ([b6722c3](https://github.com/go-to-k/cdkd/commit/b6722c3a604ceb9652519c19021993f4c5a0bfc9))
+
 ## [0.267.2](https://github.com/go-to-k/cdkd/compare/v0.267.1...v0.267.2) (2026-07-26)
 
 
