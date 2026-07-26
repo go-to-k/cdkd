@@ -293,6 +293,8 @@ describe('SQSQueueProvider.update', () => {
     const input = setAttrsCall![0].input as { Attributes: Record<string, string> };
     expect(input.Attributes['ContentBasedDeduplication']).toBeUndefined();
     expect(input.Attributes['SqsManagedSseEnabled']).toBeUndefined();
+    expect(input.Attributes['DeduplicationScope']).toBeUndefined();
+    expect(input.Attributes['FifoThroughputLimit']).toBeUndefined();
     expect(input.Attributes['VisibilityTimeout']).toBe('45');
   });
 
@@ -316,6 +318,122 @@ describe('SQSQueueProvider.update', () => {
     expect(input.Attributes['ContentBasedDeduplication']).toBe('false');
     // Kept field passes through unchanged, not reset to its default.
     expect(input.Attributes['DelaySeconds']).toBe('5');
+  });
+
+  it('resets DeduplicationScope to "queue" when removed on update (issue #1160)', async () => {
+    // FIFO queue had DeduplicationScope: messageGroup; the property is now
+    // absent from the desired template. A bare FIFO queue reads
+    // DeduplicationScope 'queue' (the default; live-verified 2026-07-27), so
+    // removal resets to 'queue'. FIFO-only: only a FIFO queue can carry the
+    // attribute in previousProperties (AWS rejects it on standard queues).
+    mockSend.mockResolvedValueOnce({}); // SetQueueAttributes
+    mockSend.mockResolvedValueOnce({ Attributes: { QueueArn: 'arn:aws:sqs:us-east-1:0:q' } });
+
+    await provider.update(
+      'L',
+      QUEUE_URL,
+      'AWS::SQS::Queue',
+      { FifoQueue: true },
+      { FifoQueue: true, DeduplicationScope: 'messageGroup' }
+    );
+
+    const setAttrsCall = mockSend.mock.calls.find(
+      (c) => c[0] instanceof SetQueueAttributesCommand
+    );
+    expect(setAttrsCall).toBeDefined();
+    const input = setAttrsCall![0].input as { Attributes: Record<string, string> };
+    expect(input.Attributes['DeduplicationScope']).toBe('queue');
+  });
+
+  it('resets FifoThroughputLimit to "perQueue" while a kept DeduplicationScope passes through (issue #1160)', async () => {
+    // Only FifoThroughputLimit removed; DeduplicationScope: messageGroup kept.
+    // 'perQueue' + 'messageGroup' is a valid combination — AWS accepts it in
+    // one SetQueueAttributes call (live-verified 2026-07-27).
+    mockSend.mockResolvedValueOnce({}); // SetQueueAttributes
+    mockSend.mockResolvedValueOnce({ Attributes: { QueueArn: 'arn:aws:sqs:us-east-1:0:q' } });
+
+    await provider.update(
+      'L',
+      QUEUE_URL,
+      'AWS::SQS::Queue',
+      { FifoQueue: true, DeduplicationScope: 'messageGroup' },
+      {
+        FifoQueue: true,
+        DeduplicationScope: 'messageGroup',
+        FifoThroughputLimit: 'perMessageGroupId',
+      }
+    );
+
+    const setAttrsCall = mockSend.mock.calls.find(
+      (c) => c[0] instanceof SetQueueAttributesCommand
+    );
+    expect(setAttrsCall).toBeDefined();
+    const input = setAttrsCall![0].input as { Attributes: Record<string, string> };
+    expect(input.Attributes['FifoThroughputLimit']).toBe('perQueue');
+    // Kept field passes through unchanged, not reset to its default.
+    expect(input.Attributes['DeduplicationScope']).toBe('messageGroup');
+  });
+
+  it('resets both DeduplicationScope and FifoThroughputLimit in ONE call when both are removed (issue #1160)', async () => {
+    // Template dropped the high-throughput FIFO config entirely. Both resets
+    // ride the same SetQueueAttributes call — 'queue' + 'perQueue' together is
+    // accepted by AWS (both defaults; live-verified 2026-07-27).
+    mockSend.mockResolvedValueOnce({}); // SetQueueAttributes
+    mockSend.mockResolvedValueOnce({ Attributes: { QueueArn: 'arn:aws:sqs:us-east-1:0:q' } });
+
+    await provider.update(
+      'L',
+      QUEUE_URL,
+      'AWS::SQS::Queue',
+      { FifoQueue: true },
+      {
+        FifoQueue: true,
+        DeduplicationScope: 'messageGroup',
+        FifoThroughputLimit: 'perMessageGroupId',
+      }
+    );
+
+    const calls = mockSend.mock.calls.filter((c) => c[0] instanceof SetQueueAttributesCommand);
+    // ONE combined call, not one per attribute.
+    expect(calls).toHaveLength(1);
+    const input = calls[0]![0].input as { Attributes: Record<string, string> };
+    expect(input.Attributes['DeduplicationScope']).toBe('queue');
+    expect(input.Attributes['FifoThroughputLimit']).toBe('perQueue');
+  });
+
+  it('does NOT suppress the DeduplicationScope reset when the template keeps FifoThroughputLimit: perMessageGroupId (CFn parity)', async () => {
+    // Removing ONLY DeduplicationScope while keeping FifoThroughputLimit:
+    // perMessageGroupId is an invalid combination — AWS rejects the call
+    // loudly (InvalidAttributeValue: "To set FifoThroughputLimit to
+    // perMessageGroupId, the DeduplicationScope must be messageGroup";
+    // live-verified 2026-07-27, queue state unchanged). CloudFormation's
+    // reset-to-default hits the same service constraint, so cdkd passes the
+    // reset through with NO guard — no sub-field synthesis, no suppression.
+    // The user must drop / change FifoThroughputLimit too.
+    mockSend.mockResolvedValueOnce({}); // SetQueueAttributes
+    mockSend.mockResolvedValueOnce({ Attributes: { QueueArn: 'arn:aws:sqs:us-east-1:0:q' } });
+
+    await provider.update(
+      'L',
+      QUEUE_URL,
+      'AWS::SQS::Queue',
+      { FifoQueue: true, FifoThroughputLimit: 'perMessageGroupId' },
+      {
+        FifoQueue: true,
+        DeduplicationScope: 'messageGroup',
+        FifoThroughputLimit: 'perMessageGroupId',
+      }
+    );
+
+    const setAttrsCall = mockSend.mock.calls.find(
+      (c) => c[0] instanceof SetQueueAttributesCommand
+    );
+    expect(setAttrsCall).toBeDefined();
+    const input = setAttrsCall![0].input as { Attributes: Record<string, string> };
+    // The reset IS sent alongside the kept perMessageGroupId — AWS (and CFn)
+    // own the rejection; cdkd must not silently keep the stale value.
+    expect(input.Attributes['DeduplicationScope']).toBe('queue');
+    expect(input.Attributes['FifoThroughputLimit']).toBe('perMessageGroupId');
   });
 
   it('resets SqsManagedSseEnabled to "true" when removed on update (issue #1160)', async () => {
