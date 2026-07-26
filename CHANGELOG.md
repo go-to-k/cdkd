@@ -1,3 +1,10 @@
+## [0.267.7](https://github.com/go-to-k/cdkd/compare/v0.267.6...v0.267.7) (2026-07-26)
+
+
+### Bug Fixes
+
+* **analyzer:** classify SQS ContentBasedDeduplication as updateable (no replacement) ([#1249](https://github.com/go-to-k/cdkd/issues/1249)) ([0d84a4c](https://github.com/go-to-k/cdkd/commit/0d84a4c8a396e0d1f0bba45bf99ebb540aeca28d))
+
 ## [0.267.6](https://github.com/go-to-k/cdkd/compare/v0.267.5...v0.267.6) (2026-07-26)
 
 
