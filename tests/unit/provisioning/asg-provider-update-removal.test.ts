@@ -262,4 +262,69 @@ describe('ASGProvider update — removal reset to CFn defaults (issue #1160)', (
     // Never-present stays absent.
     expect(input['DesiredCapacityType']).toBeUndefined();
   });
+
+  // Issue #1225 — sub-field removal inside a KEPT config object (the #1160
+  // bug class one level down). These pins record the DELIBERATE pass-through
+  // classification (see the comment block in asg-provider.ts update()):
+  // a kept-but-partial object goes to AWS verbatim, never normalized.
+  it('passes a kept-but-partial InstanceMaintenancePolicy through verbatim (AWS loud-rejects — CFn parity, issue #1225)', async () => {
+    const provider = new ASGProvider();
+    await provider.update(
+      'MyAsg',
+      ASG_NAME,
+      RESOURCE_TYPE,
+      {
+        AutoScalingGroupName: ASG_NAME,
+        MinSize: 0,
+        MaxSize: 0,
+        // Kept block with MaxHealthyPercentage DROPPED — the SDK doc requires
+        // both sub-fields, so AWS rejects this request; CloudFormation submits
+        // the same partial object, so the loud failure is parity. No sub-field
+        // synthesis (-1 or otherwise) may be injected here.
+        InstanceMaintenancePolicy: { MinHealthyPercentage: 80 },
+      },
+      {
+        AutoScalingGroupName: ASG_NAME,
+        MinSize: 0,
+        MaxSize: 0,
+        InstanceMaintenancePolicy: { MinHealthyPercentage: 90, MaxHealthyPercentage: 110 },
+      }
+    );
+
+    const input = updateCallInput();
+    expect(input['InstanceMaintenancePolicy']).toEqual({ MinHealthyPercentage: 80 });
+  });
+
+  it('passes a kept-but-partial CapacityReservationSpecification through verbatim (unprobed — issue #1225)', async () => {
+    const provider = new ASGProvider();
+    await provider.update(
+      'MyAsg',
+      ASG_NAME,
+      RESOURCE_TYPE,
+      {
+        AutoScalingGroupName: ASG_NAME,
+        MinSize: 0,
+        MaxSize: 0,
+        // Kept block with CapacityReservationTarget DROPPED — whether AWS
+        // keeps or clears the previously-set target is unprobed (a live probe
+        // needs a billed Capacity Reservation); the partial object must pass
+        // through unchanged, with no synthesized target or preference.
+        CapacityReservationSpecification: { CapacityReservationPreference: 'none' },
+      },
+      {
+        AutoScalingGroupName: ASG_NAME,
+        MinSize: 0,
+        MaxSize: 0,
+        CapacityReservationSpecification: {
+          CapacityReservationPreference: 'capacity-reservations-only',
+          CapacityReservationTarget: { CapacityReservationIds: ['cr-0123456789abcdef0'] },
+        },
+      }
+    );
+
+    const input = updateCallInput();
+    expect(input['CapacityReservationSpecification']).toEqual({
+      CapacityReservationPreference: 'none',
+    });
+  });
 });
