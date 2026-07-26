@@ -156,11 +156,11 @@ local-invoke-buildkit	2026-06-21T11:00:28Z	PASS	32	verify.sh	sweep-4..8 stalenes
 local-invoke-container	2026-06-21T11:00:28Z	PASS	29	verify.sh	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 local-invoke-dotnet	2026-06-21T11:00:28Z	PASS	78	verify.sh	sweep-4..8 staleness re-run (ledger-restore; rc=0)
 local-invoke-from-cfn-stack	2026-06-21T11:00:28Z	PASS	100	verify.sh	sweep-4..8 staleness re-run (ledger-restore; rc=0)
-local-invoke-from-cfn-stack-multi-stack	2026-06-21T11:00:28Z	PASS	117	verify.sh	sweep-4..8 staleness re-run (ledger-restore; rc=0)
-local-invoke-from-state	2026-06-21T11:00:28Z	PASS	61	verify.sh	sweep-4..8 staleness re-run (ledger-restore; rc=0)
-local-invoke-java	2026-06-21T11:00:28Z	PASS	51	verify.sh	sweep-4..8 staleness re-run (ledger-restore; rc=0)
-local-invoke-layers	2026-06-21T11:00:28Z	PASS	23	verify.sh	sweep-4..8 staleness re-run (ledger-restore; rc=0)
-local-invoke-provided	2026-06-21T11:00:28Z	PASS	36	verify.sh	sweep-4..8 staleness re-run (ledger-restore; rc=0)
+local-invoke-from-cfn-stack-multi-stack	2026-07-26T20:29:11Z	FAIL	10	verify.sh	fixture staleness: global cdk 2.1120 vs assembly schema 54; fixture now vendors aws-cdk, re-run queued
+local-invoke-from-state	2026-07-26T20:29:11Z	PASS	61	verify.sh	0727b sweep-L4 staleness re-run (rc=0); docker + account clean
+local-invoke-java	2026-07-26T20:29:11Z	PASS	36	verify.sh	0727b sweep-L4 staleness re-run (rc=0); docker + account clean
+local-invoke-layers	2026-07-26T20:29:11Z	PASS	17	verify.sh	0727b sweep-L4 staleness re-run (rc=0); docker + account clean
+local-invoke-provided	2026-07-26T20:29:11Z	PASS	32	verify.sh	0727b sweep-L4 staleness re-run (rc=0); docker + account clean
 local-invoke-python	2026-07-26T20:22:00Z	PASS	23	verify.sh	0727b sweep-L3 staleness re-run (rc=0); docker + account clean
 local-invoke-ruby	2026-07-26T20:22:00Z	PASS	33	verify.sh	0727b sweep-L3 staleness re-run (rc=0); docker + account clean
 local-run-task	2026-07-26T20:22:00Z	PASS	14	verify.sh	0727b sweep-L3 staleness re-run (rc=0); docker + account clean
