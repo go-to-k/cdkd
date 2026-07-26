@@ -1,3 +1,10 @@
+## [0.267.6](https://github.com/go-to-k/cdkd/compare/v0.267.5...v0.267.6) (2026-07-26)
+
+
+### Bug Fixes
+
+* **deployment:** fail same-name replacement instead of silently deleting the resource ([#1248](https://github.com/go-to-k/cdkd/issues/1248)) ([6b6c1c2](https://github.com/go-to-k/cdkd/commit/6b6c1c22cada16390ff18f7b04e960d1ff960b98))
+
 ## [0.267.5](https://github.com/go-to-k/cdkd/compare/v0.267.4...v0.267.5) (2026-07-26)
 
 
