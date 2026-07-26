@@ -12,12 +12,14 @@
 # the function at the new layer version ARN.
 #
 # Phases:
-#   1. Deploy the layer (content `v1`) + a function consuming it. Assert the
-#      function points at the layer's version :1.
+#   1. Deploy the layer (content `v1`) + a function consuming it. Capture the
+#      layer version N the function points at. (Layer version numbers are
+#      per-name monotonic and NEVER reset — even after every version is
+#      deleted — so N is :1 only on the very first run in an account.)
 #   2. Re-deploy with CDKD_TEST_UPDATE=true (content `v2`). Assert: deploy
-#      succeeds WITHOUT any manual --replace flag, a new layer version :2 is
-#      published, and the function now points at :2 (the replacement was
-#      propagated to the dependent).
+#      succeeds WITHOUT any manual --replace flag, a new layer version :N+1
+#      is published, and the function now points at :N+1 (the replacement
+#      was propagated to the dependent).
 #   3. Destroy + assert the function is gone and the cdkd state file is removed.
 #
 # Required env vars:
@@ -126,34 +128,39 @@ env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
 ARN_P1="$(fn_layer_arn)"
 echo "    function layer arn (Phase 1): ${ARN_P1}"
 case "${ARN_P1}" in
-  *":layer:${LAYER_NAME}:1") ;;
-  *) echo "FAIL: expected function to point at layer ${LAYER_NAME}:1, got '${ARN_P1}'" >&2; exit 1 ;;
+  *":layer:${LAYER_NAME}:"*) ;;
+  *) echo "FAIL: expected function to point at layer ${LAYER_NAME}, got '${ARN_P1}'" >&2; exit 1 ;;
 esac
-echo "    function points at layer version :1"
+V1="${ARN_P1##*:}"
+case "${V1}" in
+  ''|*[!0-9]*) echo "FAIL: could not parse a numeric layer version from '${ARN_P1}'" >&2; exit 1 ;;
+esac
+echo "    function points at layer version :${V1}"
 
 # --- Phase 2: change layer content (REPLACEMENT, must NOT need --replace) ---
 echo "==> Phase 2: re-deploy with v2 layer content (replacement + dependent re-point)"
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
-# A new version :2 must have been published.
+# A new version :V1+1 must have been published.
+V2=$((V1 + 1))
 VERSIONS="$(aws lambda list-layer-versions --layer-name "${LAYER_NAME}" --region "${REGION}" \
   --query 'LayerVersions[].Version' --output text)"
 echo "    published layer versions: ${VERSIONS}"
 case " ${VERSIONS} " in
-  *" 2 "*) ;;
-  *) echo "FAIL: expected a published layer version :2 after the content change, got '${VERSIONS}'" >&2; exit 1 ;;
+  *" ${V2} "*) ;;
+  *) echo "FAIL: expected a published layer version :${V2} after the content change, got '${VERSIONS}'" >&2; exit 1 ;;
 esac
-echo "    new layer version :2 published"
+echo "    new layer version :${V2} published"
 
-# The function must now follow to :2 (replacement propagated to dependent).
+# The function must now follow to :V2 (replacement propagated to dependent).
 ARN_P2="$(fn_layer_arn)"
 echo "    function layer arn (Phase 2): ${ARN_P2}"
 case "${ARN_P2}" in
-  *":layer:${LAYER_NAME}:2") ;;
-  *) echo "FAIL: expected function to be re-pointed at layer ${LAYER_NAME}:2, got '${ARN_P2}'" >&2; exit 1 ;;
+  *":layer:${LAYER_NAME}:${V2}") ;;
+  *) echo "FAIL: expected function to be re-pointed at layer ${LAYER_NAME}:${V2}, got '${ARN_P2}'" >&2; exit 1 ;;
 esac
-echo "    function re-pointed at layer version :2 (replacement propagated)"
+echo "    function re-pointed at layer version :${V2} (replacement propagated)"
 
 # --- Phase 3: destroy --------------------------------------------------
 echo "==> Phase 3: destroy"
