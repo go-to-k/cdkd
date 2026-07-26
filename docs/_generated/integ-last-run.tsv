@@ -7,7 +7,7 @@
 # CI enforces this; a non-normalized file fails check-build-test.
 acm-certificate	2026-07-26T18:49:34Z	PASS	25	verify.sh	0727b sweep-b6 staleness re-run (rc=0); account clean
 agentcore-tools	2026-07-17T12:05:03Z	PASS	180	verify.sh	3 phases clean; adopt-only singletons + evaluator CRUD; name regex fix (no hyphens)
-alb	2026-07-02T18:23:15Z	PASS	62	verify.sh	0703 staleness sweep (pre-TTL refresh); clean
+alb	2026-07-26T20:07:41Z	PASS	299	verify.sh	0727b sweep-b14 staleness re-run (rc=0); account clean
 alb-advanced	2026-07-26T18:49:34Z	PASS	63	standard	0727b sweep-b6 staleness re-run (rc=0); account clean
 api-cognito	2026-07-26T18:49:34Z	PASS	75	standard	0727b sweep-b6 staleness re-run (rc=0); account clean
 apigateway	2026-07-21T14:32:25Z	PASS	56	verify.sh	rc ok, orph clean
@@ -21,7 +21,7 @@ asset-auto-create	2026-07-17T06:52:34Z	PASS	150	verify.sh	ca-central-1; own-mark
 asset-bootstrap	2026-07-17T07:11:51Z	PASS	120	verify.sh	us-west-2; own-marker guard + no-auto-asset-storage phase-1 + state-info cross-region fix (1054); 0 orphans
 asset-migration	2026-07-17T06:59:52Z	PASS	780	verify.sh	us-west-2; own-marker guard + no-auto-asset-storage phase-1 fix (issue-1052); nested+ECR legs; 0 orphans
 aws-custom-resource	2026-07-21T05:26:32Z	PASS	82	verify.sh	rc ok, orph clean
-backup	2026-07-03T11:11:09Z	PASS	58	verify.sh	Ref on BackupSelection returns bare SelectionId (#995); destroy clean
+backup	2026-07-26T20:07:41Z	PASS	67	verify.sh	0727b sweep-b14 staleness re-run (rc=0); account clean
 basic	2026-07-20T04:38:04Z	PASS	83	standard	rc 0/0, 0 orphans; validates buildProgram entry-point refactor (#1097)
 batch	2026-07-26T18:43:33Z	PASS	89	standard	0727b sweep-b5 staleness re-run (rc=0); account clean
 bedrock-agentcore	2026-07-24T04:22:29Z	PASS	42	standard	import() attr enrich (#1188); GetAgentRuntime live-probe confirms field shape; 6 del 0 err
