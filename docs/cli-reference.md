@@ -947,6 +947,27 @@ physical ID that genuinely is the attribute value for a type cdkd has not
 enriched yet) is acceptable. Nested-stack child deploys inherit the flag
 from the parent deploy.
 
+## CDK annotation messages (synth + deploy)
+
+`cdkd synth` and `cdkd deploy` surface CDK `Annotations` messages with the
+same semantics as the CDK CLI (issue #1228):
+
+- `Annotations.of(scope).addError(...)` — the command prints every error as
+  `[Error at /Construct/Path] message`, appends `Found errors`, and exits
+  non-zero **without deploying anything**. `deploy` checks the final
+  selection (including auto-included dependency stacks) before any AWS
+  mutation, and an error annotation on a stack **outside** the selection
+  does not block the deploy — matching `cdk deploy` semantics.
+- `addWarning(...)` / `addInfo(...)` — printed as
+  `[Warning at /path] ...` / `[Info at /path] ...`; the run proceeds.
+
+`cdkd synth` checks every synthesized stack (it has no stack selection).
+Other synth-driven commands (`diff`, `list`, `import`, ...) do not fail on
+error annotations, matching the upstream CLI. Both cloud-assembly metadata
+layouts are supported: the inline `manifest.json` `metadata` field written
+by older aws-cdk-lib versions and the `<artifactId>.metadata.json` side
+file (`additionalMetadataFile`) written by current versions.
+
 ## `--role-arn`
 
 Assume a different IAM role for cdkd's AWS API calls. Equivalent env

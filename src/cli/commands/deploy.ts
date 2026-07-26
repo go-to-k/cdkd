@@ -28,6 +28,7 @@ import {
   synthesisStatusMessage,
   type SynthesisOptions,
 } from '../../synthesis/synthesizer.js';
+import { processStackMessages } from '../../synthesis/stack-messages.js';
 import { AssetPublisher } from '../../assets/asset-publisher.js';
 import { AssetModeResolver } from '../../assets/asset-storage.js';
 import {
@@ -387,6 +388,14 @@ async function deployCommand(
         addDependencies(stack.stackName);
       }
     }
+
+    // CDK CLI parity (issue #1228): surface Annotations messages for the
+    // final deploy set — print warnings/infos, refuse to deploy when any
+    // selected stack carries an error annotation (`cdk deploy` fails with
+    // "Found errors" too). Selection-aware like the #1150 macro expansion
+    // below: an error in a non-selected sibling stack does not block this
+    // deploy. Runs before any AWS mutation (assets, locks, provisioning).
+    processStackMessages(targetStacks, logger);
 
     // Issue #1150: macro expansion was deferred at synthesize() time —
     // expand now for exactly the final deploy set (incl. auto-included
