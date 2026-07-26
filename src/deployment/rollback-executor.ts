@@ -711,6 +711,54 @@ async function replaySingle(
           }
         }
 
+        // Issue #1247 — rollback sibling of the deploy engine's #1238
+        // NAMED_REPLACEMENT_IDEMPOTENT_CREATE guard: a name-idempotent Create
+        // API does NOT collide when the NEW resource still holds the same
+        // user-supplied name — it silently returns the LIVE new resource's
+        // physicalId as the "re-created old" one. Since deletedNewFirst is
+        // false on this path, the delete-new step below would then delete the
+        // very resource this op just recorded in state. Skip the delete and
+        // ADOPT the live resource (warn + exit-2 warning) instead of
+        // hard-failing:
+        // - Rollback is a RECOVERY flow: failing the segment would block the
+        //   segment pop and strand the user in a replay loop that can never
+        //   succeed (every re-run re-classifies the op as reverse-replacement
+        //   and hits the same idempotent create), while adopting keeps the
+        //   resource alive and lets the rollback settle.
+        // - Re-applying the old properties via provider.update() is
+        //   deliberately NOT attempted: the op was classified
+        //   reverse-replacement precisely because the reverted property is
+        //   immutable in place, so that update would throw the very
+        //   immutable-property error this branch exists to avoid.
+        // - Auto-falling-back to delete-new-first + re-create (the collision
+        //   path above) is also NOT done: on a collision the Create THREW, so
+        //   deleting the name holder is the only way to finish the revert —
+        //   here the Create RETURNED the only live copy, and deleting it on
+        //   speculation risks total resource loss if the re-create then fails
+        //   (and, unlike deploy, rollback has no --replace-style opt-in to
+        //   accept that risk).
+        // State is rebuilt from previousState below (the intended
+        // post-rollback record), so the not-re-applied properties surface via
+        // `cdkd drift` / the next `cdkd deploy` for reconciliation. When
+        // deletedNewFirst is true the same-id outcome is the EXPECTED result
+        // (re-acquiring the name after the new resource is gone) — exempt,
+        // mirroring the deploy-side guard's delete-first exemption.
+        const adoptedLiveNewResource =
+          !deletedNewFirst && createResult.physicalId === current.physicalId;
+        if (adoptedLiveNewResource) {
+          logger.warn(
+            `  ⚠ ${op.logicalId} (${op.resourceType}): the re-create returned the LIVE new ` +
+              `resource (${current.physicalId}) instead of re-creating the old one — its ` +
+              `Create API is name-idempotent and the new resource still holds the same ` +
+              `user-supplied name. Skipping the delete-new step (it would delete that very ` +
+              `resource). The old resource's ORIGINAL properties may NOT have been re-applied; ` +
+              `state now records the pre-replacement properties, so run ` +
+              `'cdkd drift ${stackName}' to inspect and 'cdkd deploy' to reconcile, or rename ` +
+              `the resource to make the replacement reversible.`
+          );
+          result.warnings++;
+        }
+
         // Rebuild the record from the previous state, but NEVER carry the
         // OLD physical resource's attributes / observedProperties over — the
         // re-created resource has fresh identifiers (ARNs etc.), and stale
@@ -725,7 +773,7 @@ async function replaySingle(
         };
         await afterOp?.(op.logicalId);
 
-        if (!deletedNewFirst) {
+        if (!deletedNewFirst && !adoptedLiveNewResource) {
           try {
             await newDeleteProvider.delete(
               op.logicalId,
@@ -745,8 +793,11 @@ async function replaySingle(
           }
         }
         logger.info(
-          `  Rollback: ${op.logicalId} replacement reversed (old resource re-created as ` +
-            `${createResult.physicalId})`
+          adoptedLiveNewResource
+            ? `  Rollback: ${op.logicalId} adopted the live resource (${createResult.physicalId}) ` +
+                `— replacement NOT fully reversed (name-idempotent Create API)`
+            : `  Rollback: ${op.logicalId} replacement reversed (old resource re-created as ` +
+                `${createResult.physicalId})`
         );
         ctx.recordEvent?.({
           eventType: 'ROLLBACK_RESOURCE_SUCCEEDED',

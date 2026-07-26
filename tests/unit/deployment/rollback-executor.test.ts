@@ -725,6 +725,76 @@ describe('replayRollback', () => {
     expect(state.B!.physicalId).toBe('phys-old-2');
   });
 
+  it('reverse-replacement same-id (issue #1247): name-idempotent create returns the LIVE new resource — no delete, warn-and-adopt', async () => {
+    // The re-create silently returns the NEW resource's physicalId (the
+    // Create API is name-idempotent and the new resource still holds the
+    // same user-supplied name). Pre-fix, the delete-new step then deleted
+    // the very resource just recorded in state.
+    const create = vi.fn().mockResolvedValue({ physicalId: 'phys-new', attributes: {} });
+    const del = vi.fn();
+    const { ctx, events } = makeCtx({ create, delete: del });
+    const afterOp = vi.fn();
+    const prev = res({ physicalId: 'phys-old', properties: { a: 1 } });
+    const ops: CompletedOperation[] = [
+      { logicalId: 'B', changeType: 'UPDATE', resourceType: 'AWS::Some::NamedType', physicalId: 'phys-new', previousState: prev },
+    ];
+    const state: Record<string, ResourceState> = {
+      B: res({ physicalId: 'phys-new', properties: { a: 2 } }),
+    };
+    const result = await replayRollback(ops, state, 'S', ctx, { afterOp });
+    // The delete-new step must NOT run — it would delete the live resource.
+    expect(del).not.toHaveBeenCalled();
+    // Warn-and-adopt: op is replayed with an exit-2 warning, not failed —
+    // rollback is a recovery flow and a hard fail would strand the user in a
+    // replay loop that can never succeed.
+    expect(result.failures).toBe(0);
+    expect(result.warnings).toBe(1);
+    expect(silentLogger.warn).toHaveBeenCalledWith(expect.stringContaining('name-idempotent'));
+    expect(silentLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('may NOT have been re-applied')
+    );
+    // State records the intended post-rollback record (prev properties) with
+    // the live physical id, so drift / the next deploy can reconcile.
+    expect(state.B).toMatchObject({ physicalId: 'phys-new', properties: { a: 1 } });
+    expect(afterOp).toHaveBeenCalledWith('B');
+    expect(events.map((e) => e.eventType)).toContain('ROLLBACK_RESOURCE_SUCCEEDED');
+  });
+
+  it('reverse-replacement same-id after delete-new-first is the EXPECTED outcome — no warning (issue #1247 exemption)', async () => {
+    // Collision → delete-new-first fallback → the re-create legitimately
+    // re-acquires the same physical id under the same name (the new resource
+    // is already gone). The #1247 guard must NOT fire on this path.
+    const create = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('Resource already exists'))
+      .mockResolvedValue({ physicalId: 'phys-new' });
+    const del = vi.fn().mockResolvedValue(undefined);
+    const { ctx } = makeCtx({ create, delete: del });
+    const prev = res({ physicalId: 'phys-old', properties: { a: 1 } });
+    const ops: CompletedOperation[] = [
+      { logicalId: 'B', changeType: 'UPDATE', resourceType: 'AWS::Some::NamedType', physicalId: 'phys-new', previousState: prev },
+    ];
+    const state: Record<string, ResourceState> = {
+      B: res({ physicalId: 'phys-new', properties: { a: 2 } }),
+    };
+    // silentLogger.warn accumulates across tests in this file (no global
+    // mock clearing) — snapshot the call count so the negative assertion
+    // below only inspects THIS test's calls.
+    const warnCallsBefore = vi.mocked(silentLogger.warn).mock.calls.length;
+    const result = await replayRollback(ops, state, 'S', ctx);
+    // The new resource WAS deleted (delete-first), then re-created.
+    expect(del).toHaveBeenCalledTimes(1);
+    expect(create).toHaveBeenCalledTimes(2);
+    expect(result.failures).toBe(0);
+    expect(result.warnings).toBe(0);
+    const newWarns = vi
+      .mocked(silentLogger.warn)
+      .mock.calls.slice(warnCallsBefore)
+      .map((c) => String(c[0]));
+    expect(newWarns.some((m) => m.includes('name-idempotent'))).toBe(false);
+    expect(state.B!.physicalId).toBe('phys-new');
+  });
+
   it('reverse-replacement-readopt: deletes new, restores state to the retained old', async () => {
     const create = vi.fn();
     const del = vi.fn().mockResolvedValue(undefined);
