@@ -278,10 +278,20 @@ echo "    OK: queue is gone"
 
 assert_gone "table ${TABLE_NAME} still exists after destroy" aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}"
 echo "    OK: table is gone"
-LEFT_ESM="$(aws lambda list-event-source-mappings --region "${REGION}" \
-  --query "length(EventSourceMappings[?contains(FunctionArn, '${FN_NAME}')])" --output text)"
+# A just-deleted ESM lingers in `Deleting` state and still appears in
+# list-event-source-mappings for up to ~1 min after DeleteEventSourceMapping
+# returns, so poll bounded (~60s) instead of reading once — a single
+# immediate read flakes as a false leak (observed 2026-07-27).
+LEFT_ESM="1"
+for i in $(seq 1 6); do
+  LEFT_ESM="$(aws lambda list-event-source-mappings --region "${REGION}" \
+    --query "length(EventSourceMappings[?contains(FunctionArn, '${FN_NAME}')])" --output text)"
+  if [ "${LEFT_ESM}" = "0" ]; then break; fi
+  echo "    poll ${i}: ${LEFT_ESM} event source mapping(s) still listed (Deleting-state lag)"
+  if [ "${i}" -lt 6 ]; then sleep 10; fi
+done
 if [ "${LEFT_ESM}" != "0" ]; then
-  echo "FAIL: ${LEFT_ESM} event source mapping(s) left after destroy" >&2
+  echo "FAIL: ${LEFT_ESM} event source mapping(s) left after destroy (waited 60s)" >&2
   exit 1
 fi
 echo "    function + event source mapping deleted"

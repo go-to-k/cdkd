@@ -100,7 +100,7 @@ eventbridge-scheduler	2026-07-20T03:07:51Z	PASS	150	verify.sh	pattern-2 sweep sa
 eventsourcemapping-race	2026-07-24T05:12:28Z	PASS	180	verify.sh	#1190 fix: EsmArn GetAtt now resolves (EsmArn output = real ARN); 5 del 0 err; no orphan ESM
 export	2026-07-26T17:37:08Z	PASS	249	verify.sh	live-test for export.ts DescribeType throttle-retry follow-up; CFn round-trip + clean delete
 export-nested-stack	2026-07-21T08:39:22Z	PASS	327	verify.sh	export->CFn nested adopt, CFn delete clean, 0 orphans
-fifo-sqs-event-source	2026-07-26T18:09:29Z	PASS	93	verify.sh	#1237 CBD in-place removal phase 1b verified; destroy 6/0 errors, 0 orphans
+fifo-sqs-event-source	2026-07-26T18:40:09Z	FAIL	93	verify.sh	pre-existing ESM leak-check flake: Deleting-state ESM counted right after destroy; no real leak (all resources confirmed gone); fixing assertion
 fsx-lustre	2026-07-20T05:01:58Z	PASS	1140	verify.sh	PR #1114 §3b always-emit + Class 1 discriminator carve-out; deploy+update(LZ4,tags)+destroy 10 del 0 err 0 orphans
 fsx-ontap	2026-07-20T01:29:32Z	PASS	1590	verify.sh	issue #1088 ONTAP: DiskIopsConfiguration read back from AWS (Mode+Iops), aws_query_ids hardening; 8 deleted 0 errors 0 orphans
 fsx-openzfs	2026-07-19T16:00:39Z	PASS	1380	verify.sh	re-run after review fixes; drift+observedProperties asserted; 8 deleted 0 errors 0 orphans
