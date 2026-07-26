@@ -1,3 +1,10 @@
+## [0.267.9](https://github.com/go-to-k/cdkd/compare/v0.267.8...v0.267.9) (2026-07-26)
+
+
+### Bug Fixes
+
+* **sqs:** reset DeduplicationScope and FifoThroughputLimit on template removal ([#1251](https://github.com/go-to-k/cdkd/issues/1251)) ([016f31e](https://github.com/go-to-k/cdkd/commit/016f31e5c3ee45b4f66ea41cd4fc7da2c0d679ce))
+
 ## [0.267.8](https://github.com/go-to-k/cdkd/compare/v0.267.7...v0.267.8) (2026-07-26)
 
 
