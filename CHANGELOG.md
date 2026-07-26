@@ -1,3 +1,10 @@
+## [0.267.8](https://github.com/go-to-k/cdkd/compare/v0.267.7...v0.267.8) (2026-07-26)
+
+
+### Bug Fixes
+
+* **rollback:** skip delete-new when reverse-replacement re-create returns the live resource ([#1250](https://github.com/go-to-k/cdkd/issues/1250)) ([1ab202a](https://github.com/go-to-k/cdkd/commit/1ab202a7fdfa4bd3e6ba4bcd269168216d454fdf))
+
 ## [0.267.7](https://github.com/go-to-k/cdkd/compare/v0.267.6...v0.267.7) (2026-07-26)
 
 
