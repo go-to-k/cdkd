@@ -80,17 +80,17 @@ dynamodb-tableclass-switch	2026-07-02T06:15:28Z	PASS	95	verify.sh	new fixture: T
 dynamodb-ttl-attr-change	2026-06-27T18:40:49Z	PASS		verify.sh	TTL attr-change rejected w/ actionable error; clean destroy (re-run post nit-fix)
 ec2-instance	2026-07-26T16:41:51Z	PASS	123	verify.sh	0727 P0 sweep (ec2-provider changed #1175/#1177); clean destroy 0 orphans
 ec2-vpc	2026-07-26T17:21:15Z	PASS	35	standard	issue 1241 fix verified: explicit DESTROY FlowLog LogGroup; 20 deleted 0 retained 0 orphans
-ecr	2026-06-21T11:00:28Z	PASS	39	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
+ecr	2026-07-26T18:36:31Z	PASS	85	standard	0727b sweep-b4 staleness re-run (rc=0); account clean
 ecr-scanning	2026-07-20T17:37:23Z	PASS	56	verify.sh	ECR scanOnPush + tag add/change/untag update, clean destroy
 ecs-fargate	2026-07-26T17:17:11Z	PASS	388	verify.sh	issue 1236 fix verified: DescribeType throttle retry; update phase green, destroy clean 0 orphans
 ecs-service-update-props	2026-07-23T08:20:10Z	PASS		verify.sh	#1173 re-run after VersionConsistency norm; Phase1f + drift clean; destroy 15 del 0 err 0 orph
 efs-immutable-replacement	2026-07-19T19:05:41Z	PASS	76	verify.sh	rc ok, 1 deleted, orph clean
-efs-lambda	2026-06-21T14:48:46Z	PASS	560	standard	sweep-G standard re-run (rc=0)
-efs-standalone	2026-06-21T16:16:44Z	PASS	135	verify.sh	stale-real re-run; 11 deleted 0 err; clean
+efs-lambda	2026-07-26T18:36:31Z	PASS	499	standard	0727b sweep-b4 staleness re-run (rc=0); account clean
+efs-standalone	2026-07-26T18:36:31Z	PASS	148	verify.sh	0727b sweep-b4 staleness re-run (rc=0); account clean
 elasticache-replicationgroup-getatt	2026-07-20T14:51:32Z	PASS	596	verify.sh	CC GetAtt PrimaryEndPoint real hostname, 0 orphans
 emr-cluster	2026-07-19T18:32:52Z	PASS	1560	verify.sh	issue #1090 import round-trip w/ discriminating assertions (attributes from #1099, observed-vs-template divergence); 12 deleted 0 errors 0 orphans
 emr-instance-configs	2026-07-19T12:15:47Z	PASS	1680	verify.sh	post-review re-run (fleet scale-down fix); deploy+resize+destroy clean, 0 orphans
-event-driven	2026-06-21T11:00:28Z	PASS	35	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
+event-driven	2026-07-26T18:36:31Z	PASS	42	standard	0727b sweep-b4 staleness re-run (rc=0); account clean
 eventbridge	2026-07-20T17:32:58Z	PASS	82	verify.sh	EventBus+Pipes+Scheduler, 10 res clean destroy
 eventbridge-api-destination	2026-07-21T14:48:06Z	PASS	70	verify.sh	rc ok, orph clean
 eventbridge-archive	2026-07-16T15:54:15Z	PASS	53	verify.sh	new fixture, 3 phases clean, orph clean
@@ -105,7 +105,7 @@ fsx-lustre	2026-07-20T05:01:58Z	PASS	1140	verify.sh	PR #1114 §3b always-emit + 
 fsx-ontap	2026-07-20T01:29:32Z	PASS	1590	verify.sh	issue #1088 ONTAP: DiskIopsConfiguration read back from AWS (Mode+Iops), aws_query_ids hardening; 8 deleted 0 errors 0 orphans
 fsx-openzfs	2026-07-19T16:00:39Z	PASS	1380	verify.sh	re-run after review fixes; drift+observedProperties asserted; 8 deleted 0 errors 0 orphans
 fsx-windows	2026-07-20T02:35:13Z	PASS	5460	verify.sh	issue #1088 Windows AD-joined: 7 phases, DiskIopsConfiguration read back, ENIs released 192s; 11 deleted 0 errors 0 orphans
-full-stack-demo	2026-06-21T11:00:28Z	PASS	31	standard	sweep-4..8 staleness re-run (ledger-restore; rc=0)
+full-stack-demo	2026-07-26T18:36:31Z	PASS	41	standard	0727b sweep-b4 staleness re-run (rc=0); account clean
 gc-custom-asset-names	2026-07-16T18:11:36Z	PASS	169	verify.sh	us-west-2; re-run after review hardening (own-marker guard); clean
 getatt-fallback-guard	2026-07-20T05:59:44Z	PASS	300	verify.sh	4-phase incl. strict-output state-persistence guarantee (#1111 blocker fix); 0 orphans
 getstackoutput-crossregion	2026-06-21T18:33:45Z	PASS	60	verify.sh	first run (never-run); cross-region Fn::GetStackOutput (us-west-2 producer -> us-east-1 consumer); both regions clean
@@ -136,7 +136,7 @@ lambda-config-field-removal	2026-07-22T08:19:38Z	PASS	140	verify.sh	issue #1158 
 lambda-destinations	2026-07-21T18:15:21Z	PASS	81	verify.sh	fixture fix: EventInvokeConfig now sdk-routed (#919); rc ok, orph clean
 lambda-env-removal	2026-06-29T03:14:52Z	PASS	61	verify.sh	nested map key (Lambda env var) removal reaches AWS
 lambda-event-invoke-config-update	2026-07-26T18:20:27Z	PASS	80	verify.sh	0727b sweep-b3 staleness re-run (rc=0); account clean
-lambda-layer-version-update	2026-07-26T18:20:27Z	FAIL	55	verify.sh	fixture staleness: hardcoded layer :1 vs monotonic version counter; fixed in-branch, re-run queued
+lambda-layer-version-update	2026-07-26T18:36:31Z	PASS	79	verify.sh	re-run after version-agnostic fixture fix; live-verified, account clean
 lambda-log-retention	2026-07-21T14:46:30Z	PASS	95	verify.sh	rc ok, orph clean
 lambda-microvm-image	2026-07-22T07:52:25Z	PASS	700	verify.sh	create+tags+drift+destroy + --no-wait + destroy, 2 builds, 0 orphans
 lambda-reserved-concurrency	2026-06-27T19:25:47Z	PASS	47	verify.sh	bughunt-clean regression fixture; deploy+assert+clean destroy
