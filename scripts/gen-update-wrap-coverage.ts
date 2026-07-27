@@ -213,13 +213,28 @@ export interface ClassMethod {
   readonly body: ts.Node;
   /** Returns (or throws) a ProvisioningError — i.e. usable as a wrap factory. */
   readonly isProvisioningErrorFactory: boolean;
+  /** Declared `: never` — so a bare statement call to it does not fall through. */
+  readonly returnsNever: boolean;
 }
 
-/** Does this subtree `return new ProvisioningError(...)` / `throw new ProvisioningError(...)`? */
+/** Is this node a nested function boundary we must NOT descend through? */
+function isFunctionBoundary(n: ts.Node): boolean {
+  return ts.isFunctionDeclaration(n) || ts.isFunctionExpression(n) || ts.isArrowFunction(n);
+}
+
+/**
+ * Does this body itself `return` / `throw` a `new ProvisioningError(...)`?
+ *
+ * Does NOT descend into nested closures: a `new ProvisioningError` sitting in
+ * an inner callback the method never returns says nothing about what the
+ * METHOD produces, and treating it as a factory would wave through a genuinely
+ * unwrapped path.
+ */
 function producesProvisioningError(node: ts.Node): boolean {
   let found = false;
-  const visit = (n: ts.Node): void => {
+  const visit = (n: ts.Node, isRoot: boolean): void => {
     if (found) return;
+    if (!isRoot && isFunctionBoundary(n)) return;
     const expr = ts.isReturnStatement(n) || ts.isThrowStatement(n) ? n.expression : undefined;
     if (
       expr &&
@@ -230,25 +245,29 @@ function producesProvisioningError(node: ts.Node): boolean {
       found = true;
       return;
     }
-    ts.forEachChild(n, visit);
+    ts.forEachChild(n, (c) => visit(c, false));
   };
-  visit(node);
+  visit(node, true);
   return found;
 }
 
 export function collectMethods(cls: ts.ClassDeclaration): Map<string, ClassMethod> {
   const methods = new Map<string, ClassMethod>();
   const add = (name: string, body: ts.Node, returnType: ts.TypeNode | undefined): void => {
-    const annotated =
+    const annotatedProvisioningError =
       returnType !== undefined &&
-      ((ts.isTypeReferenceNode(returnType) &&
-        ts.isIdentifier(returnType.typeName) &&
-        returnType.typeName.text === 'ProvisioningError') ||
-        returnType.kind === ts.SyntaxKind.NeverKeyword);
+      ts.isTypeReferenceNode(returnType) &&
+      ts.isIdentifier(returnType.typeName) &&
+      returnType.typeName.text === 'ProvisioningError';
+    const returnsNever = returnType?.kind === ts.SyntaxKind.NeverKeyword;
+    const produces = producesProvisioningError(body);
     methods.set(name, {
       name,
       body,
-      isProvisioningErrorFactory: annotated || producesProvisioningError(body),
+      // A `never` return alone is NOT enough: `fail(m): never { throw new
+      // Error(m); }` returns never and wraps nothing.
+      isProvisioningErrorFactory: annotatedProvisioningError || produces,
+      returnsNever: returnsNever === true,
     });
   };
 
@@ -265,18 +284,29 @@ export function collectMethods(cls: ts.ClassDeclaration): Map<string, ClassMetho
   return methods;
 }
 
+/** `Promise.reject(...)` call? (an alternative spelling of `throw`) */
+function isPromiseReject(n: ts.Node): boolean {
+  return (
+    ts.isCallExpression(n) &&
+    ts.isPropertyAccessExpression(n.expression) &&
+    n.expression.name.text === 'reject' &&
+    ts.isIdentifier(n.expression.expression) &&
+    n.expression.expression.text === 'Promise'
+  );
+}
+
 /**
- * Does this catch clause throw a ProvisioningError?
+ * Does this catch clause raise a ProvisioningError?
  *
- * Accepts BOTH spellings found in the tree:
- *   - the literal `throw new ProvisioningError(...)`, and
- *   - the FACTORY idiom `throw this.wrapError(...)` / `throw this.handleError(...)`,
- *     where the named class method returns (or is annotated to return) a
- *     `ProvisioningError` — or is `never`-returning and throws one itself.
- *
- * Missing the factory form is not a cosmetic gap: `appsync` / `rds-dbproxy*` /
- * `lambda-microvm-image` all wrap exclusively that way, so a literal-only match
- * reports five fully-wrapped providers as gaps.
+ * Accepts all three spellings found in the tree:
+ *   - the literal `throw new ProvisioningError(...)`;
+ *   - the throw-form FACTORY `throw this.wrapError(...)`;
+ *   - the STATEMENT-form helper `this.handleError(error, ...)` — no `throw`
+ *     keyword at all, relying on the helper being `never`-returning. This is
+ *     `CloudControlProvider`'s shape, and missing it was worse than a
+ *     miscount: the clause looked like a SWALLOW, so the whole
+ *     typed-pass-through check was skipped for the widest-coverage provider
+ *     in the repo.
  */
 function catchThrowsProvisioningError(
   clause: ts.CatchClause,
@@ -297,6 +327,18 @@ function catchThrowsProvisioningError(
       }
       const callee = thisMethodCallName(expr);
       if (callee !== null && methods.get(callee)?.isProvisioningErrorFactory) {
+        found = true;
+        return;
+      }
+    }
+    // Statement-form: `this.handleError(...);` on a never-returning factory.
+    if (ts.isExpressionStatement(node)) {
+      const inner = ts.isAwaitExpression(node.expression)
+        ? node.expression.expression
+        : node.expression;
+      const callee = thisMethodCallName(inner);
+      const target = callee !== null ? methods.get(callee) : undefined;
+      if (target?.isProvisioningErrorFactory && target.returnsNever) {
         found = true;
         return;
       }
@@ -380,7 +422,7 @@ function catchHasTypedPassthrough(clause: ts.CatchClause): boolean {
 }
 
 /**
- * Does this catch clause SWALLOW the error (log-and-continue, never re-throw)?
+ * Does this catch clause SWALLOW the error (log-and-continue, never re-raise)?
  *
  * A swallowing catch means no raw SDK error can propagate out of the enclosing
  * try, so the sends inside it are not an unwrapped-escape gap — "wrap the AWS
@@ -389,21 +431,36 @@ function catchHasTypedPassthrough(clause: ts.CatchClause): boolean {
  * ProvisioningError built from the resolution failure) and
  * `EC2Provider.applyTagDiff` (best-effort tagging).
  *
- * A CONDITIONAL re-throw (`if (!(err instanceof NotFound)) throw err;`) is NOT
- * a swallow — that is the `s3-tables` `lookupTableArn` shape, a genuine gap.
+ * NOT a swallow: a CONDITIONAL re-throw (`if (!(err instanceof NotFound)) throw
+ * err;` — the `s3-tables` `lookupTableArn` shape), a `return
+ * Promise.reject(...)`, or a statement-form call to a `never`-returning helper
+ * that raises internally.
+ *
+ * KNOWN LIMITATION: capture-then-rethrow (`catch { captured = err; }` … later
+ * `throw captured;`) reads as a swallow here. Real at `glue-provider.ts`, where
+ * an outer wrap covers it. Widening to a dataflow analysis is not worth it;
+ * the outer-wrap check is what protects those sites.
  */
-function catchSwallows(clause: ts.CatchClause): boolean {
-  let hasThrow = false;
+function catchSwallows(clause: ts.CatchClause, methods: ReadonlyMap<string, ClassMethod>): boolean {
+  let raises = false;
   const visit = (n: ts.Node): void => {
-    if (hasThrow) return;
-    if (ts.isThrowStatement(n)) {
-      hasThrow = true;
+    if (raises) return;
+    if (ts.isThrowStatement(n) || isPromiseReject(n)) {
+      raises = true;
       return;
+    }
+    if (ts.isExpressionStatement(n)) {
+      const inner = ts.isAwaitExpression(n.expression) ? n.expression.expression : n.expression;
+      const callee = thisMethodCallName(inner);
+      if (callee !== null && methods.get(callee)?.returnsNever) {
+        raises = true;
+        return;
+      }
     }
     ts.forEachChild(n, visit);
   };
   visit(clause.block);
-  return !hasThrow;
+  return !raises;
 }
 
 /** Is this call an AWS SDK `*.send(...)` invocation? */
@@ -445,12 +502,14 @@ function throwsTypedError(
   let found = false;
   const visit = (n: ts.Node): void => {
     if (found) return;
+    // Match the CONSTRUCTION, not just `throw` — the repo also raises these as
+    // `return Promise.reject(new ResourceUpdateNotSupportedError(...))` (9 sites
+    // across ec2 / ecs / apigateway / lambda-layer). Keying on `throw` alone
+    // made the pass-through invariant silently inert for all of them.
     if (
-      ts.isThrowStatement(n) &&
-      n.expression &&
-      ts.isNewExpression(n.expression) &&
-      ts.isIdentifier(n.expression.expression) &&
-      CONTROL_FLOW_THROW_CLASSES.has(n.expression.expression.text)
+      ts.isNewExpression(n) &&
+      ts.isIdentifier(n.expression) &&
+      CONTROL_FLOW_THROW_CLASSES.has(n.expression.text)
     ) {
       found = true;
       return;
@@ -513,7 +572,7 @@ export function analyzeClass(cls: ts.ClassDeclaration): WalkResult | null {
         const wraps = clause ? catchThrowsProvisioningError(clause, methods) : false;
         // A swallowing catch cannot propagate a raw SDK error, so sends inside
         // it are handled even though nothing is wrapped.
-        const swallows = clause ? catchSwallows(clause) : false;
+        const swallows = clause ? catchSwallows(clause, methods) : false;
         if (wraps && clause) {
           // A wrap that can capture a typed control-flow throw MUST pass it through.
           if (!catchHasTypedPassthrough(clause) && throwsTypedError(node.tryBlock, methods)) {
@@ -591,8 +650,11 @@ export function classifySource(
         // An allow-listed offender stays VISIBLE as `allow-listed` rather than
         // being relabelled `wrapped` — the matrix must keep documenting the
         // known gap, it just must not fail CI.
-        else if (allowedHits.length > 0) bucket = 'allow-listed';
+        // Ahead of `allow-listed`: a lost edge means the verdict is not
+        // trustworthy, and burying it under an allow-list entry would also hide
+        // it from the `unresolved-callee === 0` assertion.
         else if (unresolved.length > 0) bucket = 'unresolved-callee';
+        else if (allowedHits.length > 0) bucket = 'allow-listed';
         else if (!result.sawAnySend) bucket = 'no-aws';
         else bucket = 'wrapped';
 

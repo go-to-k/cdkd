@@ -151,6 +151,85 @@ describe('gen-update-wrap-coverage classifier', () => {
       expect(c?.bucket).toBe('wrapped');
     });
 
+    // Regression for the re-review BLOCKER: `CloudControlProvider` handles its
+    // catch with a bare `this.handleError(error, ...)` statement — no `throw`
+    // keyword. The clause therefore looked like a SWALLOW, which silently
+    // disabled the typed-pass-through check for the widest-coverage provider
+    // in the repo.
+    it('accepts the STATEMENT-form `this.handleError(...)` on a never-returning factory', () => {
+      const src = providerSource(`
+        async update(logicalId, physicalId, resourceType) {
+          try {
+            await this.client.send(new UpdateThingCommand({}));
+            return { physicalId, wasReplaced: false };
+          } catch (error) {
+            this.handleError(error, 'UPDATE', resourceType, logicalId, physicalId);
+          }
+        }
+        handleError(error, op, resourceType, logicalId, physicalId): never {
+          throw new ProvisioningError('x', resourceType, logicalId);
+        }
+      `);
+      const [c] = classifySource(src, 'fake-provider.ts', new Map());
+      expect(c?.bucket).toBe('wrapped');
+    });
+
+    it('applies the typed-pass-through check to a STATEMENT-form wrap too', () => {
+      const src = providerSource(`
+        async update(logicalId, physicalId, resourceType, props, prev) {
+          try {
+            if (props.Class !== prev.Class) {
+              throw new ResourceUpdateNotSupportedError('T', logicalId, 'immutable');
+            }
+            await this.client.send(new UpdateThingCommand({}));
+            return { physicalId, wasReplaced: false };
+          } catch (error) {
+            this.handleError(error, 'UPDATE', resourceType, logicalId, physicalId);
+          }
+        }
+        handleError(error, op, resourceType, logicalId, physicalId): never {
+          throw new ProvisioningError('x', resourceType, logicalId);
+        }
+      `);
+      const [c] = classifySource(src, 'fake-provider.ts', new Map());
+      expect(c?.bucket).toBe('unguarded-wrap');
+    });
+
+    it('does NOT treat a bare `never` return as a ProvisioningError factory', () => {
+      const src = providerSource(`
+        async update(logicalId, physicalId) {
+          try {
+            await this.client.send(new UpdateThingCommand({}));
+            return { physicalId, wasReplaced: false };
+          } catch (error) {
+            throw this.fail('nope');
+          }
+        }
+        fail(m): never { throw new Error(m); }
+      `);
+      const [c] = classifySource(src, 'fake-provider.ts', new Map());
+      expect(c?.bucket).toBe('gap');
+    });
+
+    it('does NOT count a ProvisioningError buried in an unused nested closure', () => {
+      const src = providerSource(`
+        async update(logicalId, physicalId) {
+          try {
+            await this.client.send(new UpdateThingCommand({}));
+            return { physicalId, wasReplaced: false };
+          } catch (error) {
+            throw this.wrapError(error);
+          }
+        }
+        wrapError(error) {
+          const unused = function () { return new ProvisioningError('x', 'T', 'L'); };
+          return new Error('nope');
+        }
+      `);
+      const [c] = classifySource(src, 'fake-provider.ts', new Map());
+      expect(c?.bucket).toBe('gap');
+    });
+
     it('does NOT accept a factory that returns a plain Error', () => {
       const src = providerSource(`
         async update(logicalId, physicalId, resourceType) {
@@ -186,6 +265,23 @@ describe('gen-update-wrap-coverage classifier', () => {
       `);
       const [c] = classifySource(src, 'fake-provider.ts', new Map());
       expect(c?.bucket).toBe('wrapped');
+    });
+
+    // Regression for the re-review MAJOR: `return Promise.reject(err)` raises
+    // just like `throw`, but the swallow check only looked for ThrowStatement.
+    it('does NOT treat `return Promise.reject(error)` as a swallow', () => {
+      const src = providerSource(`
+        async update(logicalId, physicalId) {
+          try {
+            await this.client.send(new UpdateThingCommand({}));
+          } catch (error) {
+            return Promise.reject(error);
+          }
+          return { physicalId, wasReplaced: false };
+        }
+      `);
+      const [c] = classifySource(src, 'fake-provider.ts', new Map());
+      expect(c?.bucket).toBe('gap');
     });
 
     it('still flags a CONDITIONAL re-throw (the s3-tables shape)', () => {
@@ -354,6 +450,31 @@ describe('gen-update-wrap-coverage classifier', () => {
       expect(c?.bucket).toBe('unguarded-wrap');
     });
 
+    // Regression for the re-review MAJOR: the repo raises the typed
+    // control-flow error as `return Promise.reject(new
+    // ResourceUpdateNotSupportedError(...))` at 9 sites (ec2 / ecs /
+    // apigateway / lambda-layer). Keying detection on `throw` alone made the
+    // invariant silently inert for every one of them.
+    it('sees a typed control-flow error raised via Promise.reject', () => {
+      const src = providerSource(`
+        async update(logicalId, physicalId, resourceType, props, prev) {
+          try {
+            if (props.Class !== prev.Class) {
+              return Promise.reject(
+                new ResourceUpdateNotSupportedError('T', logicalId, 'immutable')
+              );
+            }
+            await this.client.send(new UpdateThingCommand({}));
+            return { physicalId, wasReplaced: false };
+          } catch (error) {
+            throw new ProvisioningError('Failed to update', resourceType, logicalId);
+          }
+        }
+      `);
+      const [c] = classifySource(src, 'fake-provider.ts', new Map());
+      expect(c?.bucket).toBe('unguarded-wrap');
+    });
+
     it('does not flag a wrap that cannot capture a typed throw', () => {
       const src = providerSource(`
         async update(logicalId, physicalId, resourceType) {
@@ -499,13 +620,17 @@ describe('real-repo coverage floors', () => {
   it('sees every bucket shape it claims to handle', () => {
     const count = (b: string): number => classes.filter((c) => c.bucket === b).length;
     // wrapped: the overwhelming majority.
-    expect(count('wrapped')).toBeGreaterThanOrEqual(50);
+    expect(count('wrapped')).toBeGreaterThanOrEqual(65);
     // no-aws: providers whose update() is a genuine no-op.
     expect(count('no-aws')).toBeGreaterThanOrEqual(1);
     // unresolved-callee: expected to be ZERO today. It is asserted (not
     // floored) because a NON-zero value means the walk lost visibility
     // somewhere and the whole matrix's verdicts are less trustworthy.
     expect(count('unresolved-callee')).toBe(0);
+    // Belt-and-braces: check the RAW field across every class, not just the
+    // bucket. A class that is `gap` / `allow-listed` AND has a lost edge would
+    // not show up in the bucket count above.
+    expect(classes.filter((c) => c.unresolvedCallees.length > 0)).toEqual([]);
     // allow-listed: the seeded KNOWN GAPS. If this hits 0, either every gap
     // was fixed (remove the entries + this floor) or the analysis broke.
     expect(count('allow-listed')).toBeGreaterThanOrEqual(1);
