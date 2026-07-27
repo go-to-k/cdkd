@@ -24,7 +24,11 @@ import {
 import { STSClient, GetCallerIdentityCommand } from '@aws-sdk/client-sts';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
-import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
+import {
+  CdkdError,
+  ProvisioningError,
+  ResourceUpdateNotSupportedError,
+} from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
@@ -252,11 +256,46 @@ export class LogsLogGroupProvider implements ResourceProvider {
    * class after creation), so a class change throws
    * {@link ResourceUpdateNotSupportedError} instead of being silently
    * dropped; `--replace` recreates the log group under the new class.
+   *
+   * Thin wrapper that maps any AWS SDK failure onto {@link ProvisioningError}
+   * the same way {@link create} and {@link delete} do, so an update failure
+   * carries cdkd's typed error formatting and exit-code handling instead of
+   * surfacing raw (issue #1267). The body lives in {@link applyUpdate} so the
+   * wrap is a boundary concern rather than a large indentation change.
+   *
+   * The {@link ResourceUpdateNotSupportedError} thrown by the LogGroupClass
+   * guard is re-thrown untouched: the deploy engine matches it by class to
+   * fall back to replacement, so swallowing it into a ProvisioningError would
+   * turn a recoverable class change into a hard failure.
    */
   async update(
     logicalId: string,
     physicalId: string,
-    _resourceType: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
+  ): Promise<ResourceUpdateResult> {
+    try {
+      return await this.applyUpdate(logicalId, physicalId, properties, previousProperties);
+    } catch (error) {
+      // Pass through every cdkd-typed error untouched: ResourceUpdateNotSupportedError
+      // is control flow the deploy engine matches BY CLASS, and a ProvisioningError
+      // raised deeper in the body already carries better context than a re-wrap.
+      if (error instanceof CdkdError) throw error;
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to update log group ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        cause
+      );
+    }
+  }
+
+  private async applyUpdate(
+    logicalId: string,
+    physicalId: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {

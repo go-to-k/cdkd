@@ -12,7 +12,7 @@ import {
 } from '@aws-sdk/client-lambda';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
-import { ProvisioningError } from '../../utils/error-handler.js';
+import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import type {
   ResourceProvider,
@@ -352,11 +352,45 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
 
   /**
    * Update a Lambda Event Source Mapping
+   *
+   * Thin wrapper that maps any AWS SDK failure onto {@link ProvisioningError}
+   * the same way {@link create} and {@link delete} do, so an update failure
+   * carries cdkd's typed error formatting and exit-code handling instead of
+   * surfacing raw (issue #1267). The body lives in {@link applyUpdate} so the
+   * wrap is a boundary concern rather than a large indentation change.
+   *
+   * A typed control-flow error is re-thrown untouched: the deploy engine
+   * matches those by class to decide its fallback, so swallowing one into a
+   * ProvisioningError would silently disable that path.
    */
   async update(
     logicalId: string,
     physicalId: string,
-    _resourceType: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
+  ): Promise<ResourceUpdateResult> {
+    try {
+      return await this.applyUpdate(logicalId, physicalId, properties, previousProperties);
+    } catch (error) {
+      // Pass through every cdkd-typed error untouched: ResourceUpdateNotSupportedError
+      // is control flow the deploy engine matches BY CLASS, and a ProvisioningError
+      // raised deeper in the body already carries better context than a re-wrap.
+      if (error instanceof CdkdError) throw error;
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to update event source mapping ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        cause
+      );
+    }
+  }
+
+  private async applyUpdate(
+    logicalId: string,
+    physicalId: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {

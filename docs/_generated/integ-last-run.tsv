@@ -91,13 +91,13 @@ elasticache-replicationgroup-getatt	2026-07-20T14:51:32Z	PASS	596	verify.sh	CC G
 emr-cluster	2026-07-19T18:32:52Z	PASS	1560	verify.sh	issue #1090 import round-trip w/ discriminating assertions (attributes from #1099, observed-vs-template divergence); 12 deleted 0 errors 0 orphans
 emr-instance-configs	2026-07-19T12:15:47Z	PASS	1680	verify.sh	post-review re-run (fleet scale-down fix); deploy+resize+destroy clean, 0 orphans
 event-driven	2026-07-26T18:36:31Z	PASS	42	standard	0727b sweep-b4 staleness re-run (rc=0); account clean
-eventbridge	2026-07-20T17:32:58Z	PASS	82	verify.sh	EventBus+Pipes+Scheduler, 10 res clean destroy
+eventbridge	2026-07-27T11:04:52Z	PASS	87	verify.sh	issue #1267 post-review re-run; 10 del 0 err, 0 orphans
 eventbridge-api-destination	2026-07-21T14:48:06Z	PASS	70	verify.sh	rc ok, orph clean
 eventbridge-archive	2026-07-16T15:54:15Z	PASS	53	verify.sh	new fixture, 3 phases clean, orph clean
 eventbridge-input-transformer	2026-07-20T08:18:46Z	PASS	63	verify.sh	hardened P2 propagation race; passes
 eventbridge-pipes	2026-07-26T19:36:49Z	PASS	177	verify.sh	0727b sweep-b11 staleness re-run (rc=0); account clean
 eventbridge-scheduler	2026-07-20T03:07:51Z	PASS	150	verify.sh	pattern-2 sweep sample: assert_gone/gone_probe/head-object idioms live-verified; 0 orphans
-eventsourcemapping-race	2026-07-24T05:12:28Z	PASS	180	verify.sh	#1190 fix: EsmArn GetAtt now resolves (EsmArn output = real ARN); 5 del 0 err; no orphan ESM
+eventsourcemapping-race	2026-07-27T11:04:52Z	PASS	80	verify.sh	issue #1267 Lambda ESM update wrap; 5 del 0 err; swept 1 auto-created log group
 export	2026-07-26T17:37:08Z	PASS	249	verify.sh	live-test for export.ts DescribeType throttle-retry follow-up; CFn round-trip + clean delete
 export-nested-stack	2026-07-21T08:39:22Z	PASS	327	verify.sh	export->CFn nested adopt, CFn delete clean, 0 orphans
 fifo-sqs-event-source	2026-07-27T06:44:00Z	PASS	111	verify.sh	final-tree gate refresh for #1256; destroy 6/0 errors, 0 orphans
@@ -176,7 +176,7 @@ local-start-cloudfront	2026-07-26T20:40:20Z	PASS	7	verify.sh	0727b sweep-L6 stal
 local-start-service	2026-07-26T20:18:09Z	PASS	20	verify.sh	re-run after removing stale cdkl-svc network (pool overlap); docker + account clean
 local-start-service-watch-fast	2026-07-26T20:18:09Z	PASS	186	verify.sh	re-run after removing stale cdkl-svc network (pool overlap); docker + account clean
 log-pipeline	2026-07-26T18:10:48Z	PASS	72	standard	0727b sweep-b2 staleness re-run (rc=0); account clean
-loggroup-class-guard	2026-07-26T19:25:15Z	PASS	53	verify.sh	0727b sweep-b10 staleness re-run (rc=0); account clean
+loggroup-class-guard	2026-07-27T11:04:52Z	PASS	49	verify.sh	issue #1267 post-review re-run; typed-error pass-through verified vs real AWS; 1 del 0 err
 loggroup-kms-associate	2026-07-26T19:25:15Z	PASS	57	verify.sh	0727b sweep-b10 staleness re-run (rc=0); account clean
 macro-expansion	2026-07-21T19:45:50Z	PASS	107	verify.sh	re-run w/ new diff-expands + destroy-no-expand asserts (1150)
 microservices	2026-07-19T19:50:37Z	PASS	54	standard	rc ok, 19 res, all destroyed, orph clean
@@ -236,7 +236,7 @@ servicediscovery-namespaces	2026-07-17T12:12:19Z	PASS	114	verify.sh	re-run post 
 ses-identity	2026-07-21T14:41:07Z	PASS	199	verify.sh	PASS on re-run; 1st attempt hit transient 403 token-expiry (not a cdkd bug), cleaned orphan config-set
 sg-circular-dependency	2026-07-26T18:49:34Z	PASS	51	verify.sh	0727b sweep-b6 staleness re-run (rc=0); account clean
 sns-event-source	2026-07-20T08:12:14Z	PASS	68	verify.sh	rc ok, orph clean
-sns-inline-subscription	2026-07-20T17:38:28Z	PASS	53	verify.sh	SNS inline subscription create+update, clean destroy
+sns-inline-subscription	2026-07-27T11:04:52Z	PASS	53	verify.sh	issue #1267 SNS topic update wrap; 3 del 0 err
 sns-sqs-event	2026-07-26T17:01:09Z	PASS	78	verify.sh	#1160 sqs SSE removal phase 2 verified; destroy 20/0 errors, 0 orphans
 sns-subscription-filter	2026-07-21T18:09:46Z	PASS	46	verify.sh	rc ok, orph clean
 sqs-cloudwatch	2026-07-26T18:04:53Z	PASS	56	standard	0727b sweep-b1 staleness re-run (rc=0); account clean

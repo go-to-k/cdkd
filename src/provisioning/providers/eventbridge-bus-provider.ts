@@ -16,7 +16,7 @@ import {
 } from '@aws-sdk/client-eventbridge';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
-import { ProvisioningError } from '../../utils/error-handler.js';
+import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import type {
@@ -154,14 +154,51 @@ export class EventBridgeBusProvider implements ResourceProvider {
     }
   }
 
+  /**
+   * Update an EventBus.
+   *
+   * Thin wrapper that maps any AWS SDK failure onto {@link ProvisioningError}
+   * the same way {@link create} and {@link delete} do, so an update failure
+   * carries cdkd's typed error formatting and exit-code handling instead of
+   * surfacing raw (issue #1267). The body lives in {@link applyUpdate} so the
+   * wrap is a boundary concern rather than a 70-line indentation change.
+   *
+   * A typed control-flow error is re-thrown untouched: the deploy engine
+   * matches those by class to decide its fallback, so swallowing one into a
+   * ProvisioningError would silently disable that path.
+   */
   async update(
-    _logicalId: string,
+    logicalId: string,
     physicalId: string,
-    _resourceType: string,
+    resourceType: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
-    this.logger.debug(`Updating EventBus ${_logicalId}: ${physicalId}`);
+    try {
+      return await this.applyUpdate(logicalId, physicalId, properties, previousProperties);
+    } catch (error) {
+      // Pass through every cdkd-typed error untouched: ResourceUpdateNotSupportedError
+      // is control flow the deploy engine matches BY CLASS, and a ProvisioningError
+      // raised deeper in the body already carries better context than a re-wrap.
+      if (error instanceof CdkdError) throw error;
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to update EventBus ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        cause
+      );
+    }
+  }
+
+  private async applyUpdate(
+    logicalId: string,
+    physicalId: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
+  ): Promise<ResourceUpdateResult> {
+    this.logger.debug(`Updating EventBus ${logicalId}: ${physicalId}`);
 
     // Update mutable properties (Description, KmsKeyIdentifier, DeadLetterConfig, LogConfig)
     const descChanged = properties['Description'] !== previousProperties['Description'];
