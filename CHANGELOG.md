@@ -1,3 +1,10 @@
+## [0.267.14](https://github.com/go-to-k/cdkd/compare/v0.267.13...v0.267.14) (2026-07-27)
+
+
+### Bug Fixes
+
+* **lambda-url:** reset removal-dropped InvokeMode and Cors to CFn defaults ([#1261](https://github.com/go-to-k/cdkd/issues/1261)) ([9a063ce](https://github.com/go-to-k/cdkd/commit/9a063ce0fdaa5fbfd0c1a0f0c496d7bb9d7ebcfd))
+
 ## [0.267.13](https://github.com/go-to-k/cdkd/compare/v0.267.12...v0.267.13) (2026-07-27)
 
 
