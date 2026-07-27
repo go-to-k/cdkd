@@ -308,3 +308,9 @@ anything non-obvious you learned in memory.
 - **English-only** for all committed/public artifacts (source, docs, PR/commit
   messages, issue comments on this repo).
 - **Never download/run/install untrusted third-party content** (§0).
+- **Wrap with a Remaining-work section + Session-close verdict, scoped to the
+  issues this run actually worked.** This skill is the easiest place to get that
+  scope wrong: the backlog issues you triaged but did NOT pick up are not
+  follow-ups and do not belong in the report. List only residuals of the lanes
+  you shipped (gaps, deferred polish, issues filed because of this work).
+  (`CLAUDE.md` → Workflow Rules.)
