@@ -143,8 +143,10 @@ describe('LambdaUrlProvider', () => {
     });
 
     it('does not wrap when the diff-based no-op gate skips the AWS call', async () => {
-      // No handled property changed, so update() returns without sending —
-      // the wrap must not turn a legitimate no-op into an error.
+      // No handled property changed, so update() returns without sending.
+      // The early return sits OUTSIDE the try, so this pins the pre-existing
+      // no-op behavior rather than guarding the wrap itself — it is the
+      // regression fence for anyone later widening the try to enclose it.
       const props = { AuthType: 'NONE' };
       const result = await provider.update(
         'MyUrl',
@@ -156,6 +158,31 @@ describe('LambdaUrlProvider', () => {
 
       expect(result).toEqual({ physicalId: 'my-fn', wasReplaced: false, attributes: {} });
       expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('wraps a non-Error rejection with a stringified message and no cause', async () => {
+      // The `error instanceof Error` narrowing has two arms; the non-Error arm
+      // is reachable in principle (a middleware rejecting with a plain value)
+      // and must still produce a well-formed ProvisioningError.
+      mockSend.mockRejectedValueOnce('boom');
+
+      const promise = provider.update(
+        'MyUrl',
+        'my-fn',
+        'AWS::Lambda::Url',
+        { AuthType: 'AWS_IAM' },
+        { AuthType: 'NONE' }
+      );
+
+      await expect(promise).rejects.toThrow(ProvisioningError);
+      await expect(promise).rejects.toThrow('Failed to update Lambda URL MyUrl: boom');
+      await expect(promise).rejects.toMatchObject({
+        resourceType: 'AWS::Lambda::Url',
+        logicalId: 'MyUrl',
+        physicalId: 'my-fn',
+      });
+      const caught = await promise.catch((e: unknown) => e);
+      expect((caught as Error).cause).toBeUndefined();
     });
   });
 });
