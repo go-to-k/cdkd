@@ -201,10 +201,10 @@ Run each check and report pass/fail:
 
 11. **Residual review-nit sweep** (mandatory — added 2026-05-22 after a multi-PR session left ~9 reviewer-flagged nits unfiled when the parent declared "session complete")
     - For every `/review-pr` reviewer agent output during this session (including re-reviews after fix-back), walk the reviewer's "Minor / Nit / Informational" section.
-    - For EACH item there, confirm ONE of the following is true BEFORE setting the `verify-pr` marker:
-      - (a) **Addressed in this PR** — point at the fix commit / file:line that resolves the nit.
-      - (b) **Filed as a follow-up issue** — a GitHub issue exists AND this PR's body references it (e.g. "minor follow-ups in (#515)").
-      - (c) **Explicitly accepted as known cost** — the PR body or a comment names the nit and explains why it's acceptable to ship as-is.
+    - For EACH item there, confirm ONE of the following is true BEFORE setting the `verify-pr` marker (these are the same three buckets as CLAUDE.md's "Remaining work" taxonomy — Fixed here / TODO / Won't-do):
+      - (a) **Fixed in this PR** — point at the fix commit / file:line that resolves the nit.
+      - (b) **TODO (issue #N)** — a GitHub issue exists AND this PR's body references it (e.g. "minor follow-ups in (#515)"). This is the only bucket that leaves future work.
+      - (c) **Won't-do (decided + recorded)** — the PR body or a comment names the nit and explains why shipping as-is is the right call. Requires no future action.
     - If NONE of (a) / (b) / (c) is true for any nit, file a bundled follow-up issue NOW (one issue per session, listing every uncovered nit) and update the PR body to reference it. Do not set the `verify-pr` marker until every reviewer-flagged item is on one of those three paths.
     - Also walk the session transcript for **surfaced memory-rule candidates** (surprising traps, repeated friction, "I should remember this for next time" moments). Each MUST be either written as a memory file in `~/.claude/projects/-Users-goto-pc-github-cdkd/memory/` (with a MEMORY.md index entry) OR explicitly de-prioritized in the chat / PR body.
     - **Auto-close audit** (added 2026-05-22 — counter-trap to the closing-paren disambig convention in memory `feedback_pr_body_no_hash_for_item_numbers.md`):
@@ -261,7 +261,7 @@ Present results as a table:
 | code review (incl. shared-utility callers) | pass/issues found |
 | live-test changed behavior | pass/skipped/issues found |
 | retrospective + rule proposals | done/skipped |
-| residual review-nit sweep (filed / addressed / accepted) | N items / 0 unhandled |
+| residual review-nit sweep (fixed / TODO-issue / won't-do) | N items / 0 unhandled |
 | auto-close audit (no `Closes (#N)` in body) | clean / N traps fixed |
 | PR title + body freshness | up-to-date/stale (updated)/n-a (no PR yet) |
 
