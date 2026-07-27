@@ -474,7 +474,8 @@ export class DocDBProvider implements ResourceProvider {
       //   * VpcSecurityGroupIds — deliberate empty-guard above
       //     (readCurrentState placeholder defense); classified UNCERTAIN in
       //     the #1160 audit, out of this batch's scope.
-      //   * Port — default is engine-dependent; no single safe reset value.
+      //   * Port — DocDB documents a fixed default (27017), but resetting
+      //     the port is connection-breaking for every client; leave unchanged.
       await this.getClient().send(
         new ModifyDBClusterCommand({
           DBClusterIdentifier: physicalId,

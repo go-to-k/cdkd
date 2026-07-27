@@ -475,8 +475,9 @@ export class NeptuneProvider implements ResourceProvider {
       //   * VpcSecurityGroupIds — deliberate empty-guard above
       //     (readCurrentState placeholder defense); classified UNCERTAIN in
       //     the #1160 audit, out of this batch's scope.
-      //   * Port / DBPort — default is engine-dependent; no single safe
-      //     reset value.
+      //   * Port / DBPort — Neptune documents a fixed default (8182), but
+      //     resetting the port is connection-breaking for every client;
+      //     leave unchanged.
       await this.getClient().send(
         new ModifyDBClusterCommand({
           DBClusterIdentifier: physicalId,
