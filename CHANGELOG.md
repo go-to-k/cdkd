@@ -1,3 +1,10 @@
+## [0.267.10](https://github.com/go-to-k/cdkd/compare/v0.267.9...v0.267.10) (2026-07-27)
+
+
+### Bug Fixes
+
+* **provisioning:** treat handler-reported NotFound as already-gone on Cloud Control delete and remnant cleanup ([#1254](https://github.com/go-to-k/cdkd/issues/1254)) ([13ed129](https://github.com/go-to-k/cdkd/commit/13ed129b4989561edfc73861b1f977c2d4822f97))
+
 ## [0.267.9](https://github.com/go-to-k/cdkd/compare/v0.267.8...v0.267.9) (2026-07-26)
 
 
