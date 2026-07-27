@@ -13,6 +13,7 @@ For every SDK provider class declaring `update()`, walks from `update()` through
 - **Unwrapped-send gaps (blocks CI): 0**
 - **Unguarded wraps (blocks CI): 0**
 - Allow-listed known gaps (does NOT block CI): **5**
+- Unresolved-callee (verdict not trustworthy): **0**
 
 ## Allow-listed known gaps
 

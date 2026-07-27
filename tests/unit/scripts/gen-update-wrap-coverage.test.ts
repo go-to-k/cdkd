@@ -455,12 +455,18 @@ describe('gen-update-wrap-coverage classifier', () => {
     // ResourceUpdateNotSupportedError(...))` at 9 sites (ec2 / ecs /
     // apigateway / lambda-layer). Keying detection on `throw` alone made the
     // invariant silently inert for every one of them.
+    // The fixture AWAITS the rejection on purpose. A bare
+    // `return Promise.reject(...)` lexically inside a try is NOT caught by that
+    // try — the return resolves after the try has exited. The detector
+    // over-approximates and would flag the bare form too, which is harmless (it
+    // only asks for an extra pass-through), but a fixture must not enshrine
+    // semantics JavaScript does not have.
     it('sees a typed control-flow error raised via Promise.reject', () => {
       const src = providerSource(`
         async update(logicalId, physicalId, resourceType, props, prev) {
           try {
             if (props.Class !== prev.Class) {
-              return Promise.reject(
+              await Promise.reject(
                 new ResourceUpdateNotSupportedError('T', logicalId, 'immutable')
               );
             }
@@ -612,7 +618,7 @@ describe('real-repo coverage floors', () => {
   ];
 
   it('parses a realistic number of provider classes with update()', () => {
-    // 82 at the time of writing; the floor guards against a parser regression
+    // 83 at the time of writing; the floor guards against a parser regression
     // that silently stops seeing the tree.
     expect(classes.length).toBeGreaterThanOrEqual(70);
   });
@@ -673,7 +679,7 @@ describe('real-repo coverage floors', () => {
 
   // Pinned by EXACT NAME, not a floor. A floor of `>= 1` would let a class
   // silently DROP into no-aws (the shape a lost delegation edge produces) while
-  // the aggregate `wrapped >= 50` floor absorbed the loss — precisely the
+  // the aggregate `wrapped` floor absorbed the loss — precisely the
   // false-negative PR #1271's review called out.
   it('pins the exact set of no-aws providers', () => {
     const noAws = classes

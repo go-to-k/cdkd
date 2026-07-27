@@ -52,6 +52,12 @@
  *   - a `this.x()` callee that is NOT a member of this class is recorded as an
  *     UNRESOLVED edge, because sends behind it are unobservable and the class
  *     would otherwise report a confident (green, un-reviewable) `no-aws`.
+ *     KNOWN LIMITATION: only the `this.x()` form is tracked. Delegation to a
+ *     module-level free function or to `this.someField.method()` is invisible
+ *     rather than `unresolved-callee`, so the `unresolvedCallees === 0`
+ *     assertion is narrower than it looks. Neither shape reaches a send from
+ *     `update()` in the tree today; widening it needs real call-graph
+ *     resolution, which is out of proportion to the risk.
  * Recursion is cycle-guarded and bounded to the class's own members.
  *
  * WHY NOT A GREP
@@ -463,13 +469,20 @@ function catchSwallows(clause: ts.CatchClause, methods: ReadonlyMap<string, Clas
   return !raises;
 }
 
-/** Is this call an AWS SDK `*.send(...)` invocation? */
+/**
+ * Is this call an AWS SDK invocation that can throw?
+ *
+ * Covers `*.send(...)` plus the free-function `waitUntil*(...)` waiters — those
+ * are AWS calls too and reject on failure, so an unwrapped waiter is the same
+ * defect as an unwrapped send. (All 8 waiter sites happen to sit inside a try
+ * today; matching them keeps that true.)
+ */
 function isSendCall(node: ts.Node): boolean {
-  return (
-    ts.isCallExpression(node) &&
-    ts.isPropertyAccessExpression(node.expression) &&
-    node.expression.name.text === 'send'
-  );
+  if (!ts.isCallExpression(node)) return false;
+  if (ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === 'send') {
+    return true;
+  }
+  return ts.isIdentifier(node.expression) && /^waitUntil[A-Z]/.test(node.expression.text);
 }
 
 /** `this.foo(...)` -> `foo`, else null. */
@@ -735,6 +748,9 @@ function renderMarkdown(report: UpdateWrapCoverageReport): string {
   lines.push(`- **Unwrapped-send gaps (blocks CI): ${report.summary.gap}**`);
   lines.push(`- **Unguarded wraps (blocks CI): ${report.summary.unguardedWrap}**`);
   lines.push(`- Allow-listed known gaps (does NOT block CI): **${report.summary.allowListed}**`);
+  lines.push(
+    `- Unresolved-callee (verdict not trustworthy): **${report.summary.unresolvedCallee}**`
+  );
   lines.push('');
 
   const allowListed = report.classes.filter((c) => c.bucket === 'allow-listed');
@@ -875,6 +891,9 @@ function main(): void {
         `${report.summary.noAws} no-aws` +
         (report.summary.allowListed > 0
           ? `, ${report.summary.allowListed} allow-listed KNOWN gaps still open`
+          : '') +
+        (report.summary.unresolvedCallee > 0
+          ? `, ${report.summary.unresolvedCallee} unresolved-callee`
           : '') +
         ').\n'
     );
