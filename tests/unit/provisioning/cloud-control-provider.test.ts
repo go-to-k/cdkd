@@ -101,6 +101,7 @@ vi.mock('../../../src/utils/logger.js', () => ({
 import {
   CloudControlProvider,
   CloudControlOperationFailedError,
+  isNotFoundMessage,
 } from '../../../src/provisioning/cloud-control-provider.js';
 import { clearWriteOnlyPropertiesCache } from '../../../src/provisioning/write-only-properties.js';
 import { isRetryableTransientError } from '../../../src/deployment/retryable-errors.js';
@@ -170,6 +171,94 @@ describe('CloudControlProvider delete region verification', () => {
         { expectedRegion: 'eu-west-1' }
       )
     ).rejects.toThrow(/eu-west-1/);
+  });
+});
+
+describe('CloudControlProvider delete: structured NotFound ErrorCode (issue #1252)', () => {
+  let provider: CloudControlProvider;
+
+  function wireAsyncDeleteFailed(errorCode: string, statusMessage: string): void {
+    mockCloudControlSend.mockImplementation((cmd: { constructor: { name: string } }) => {
+      const name = cmd.constructor.name;
+      if (name === 'DeleteResourceCommand') {
+        return Promise.resolve({ ProgressEvent: { RequestToken: 'tok-del' } });
+      }
+      if (name === 'GetResourceRequestStatusCommand') {
+        return Promise.resolve({
+          ProgressEvent: {
+            OperationStatus: 'FAILED',
+            TypeName: 'AWS::CodeDeploy::DeploymentGroup',
+            ErrorCode: errorCode,
+            StatusMessage: statusMessage,
+          },
+        });
+      }
+      return Promise.resolve({});
+    });
+  }
+
+  beforeEach(() => {
+    mockCloudControlSend.mockReset();
+    mockCloudControlConfigRegion.mockReset();
+    mockCloudControlConfigRegion.mockResolvedValue('us-east-1');
+    provider = new CloudControlProvider();
+  });
+
+  it('treats an async FAILED DELETE with handler ErrorCode NotFound as idempotent success even when the message lacks canonical substrings', async () => {
+    wireAsyncDeleteFailed(
+      'NotFound',
+      'No Deployment Group found for name: cdkd-dg (Service: CodeDeploy, Status Code: 400)'
+    );
+
+    await expect(
+      provider.delete('Group', 'app|cdkd-dg', 'AWS::CodeDeploy::DeploymentGroup', {}, {
+        expectedRegion: 'us-east-1',
+      })
+    ).resolves.toBeUndefined();
+  });
+
+  it('still enforces the region guard for the structured NotFound shape', async () => {
+    wireAsyncDeleteFailed('NotFound', 'No Deployment Group found for name: cdkd-dg');
+
+    await expect(
+      provider.delete('Group', 'app|cdkd-dg', 'AWS::CodeDeploy::DeploymentGroup', {}, {
+        expectedRegion: 'us-west-2',
+      })
+    ).rejects.toThrow(/us-east-1.*us-west-2|us-west-2.*us-east-1/);
+  });
+
+  it('a FAILED DELETE with a non-NotFound code and a non-canonical message still throws', async () => {
+    wireAsyncDeleteFailed('GeneralServiceException', 'internal failure');
+
+    await expect(
+      provider.delete('Group', 'app|cdkd-dg', 'AWS::CodeDeploy::DeploymentGroup', {}, {
+        expectedRegion: 'us-east-1',
+      })
+    ).rejects.toThrow(CloudControlOperationFailedError);
+  });
+});
+
+describe('isNotFoundMessage (issue #1252)', () => {
+  it.each([
+    'No Deployment Group found for name: cdkd-dg (Service: CodeDeploy, Status Code: 400)',
+    "Resource of type 'AWS::Foo::Bar' with identifier 'x' was not found.",
+    'The specified queue does not exist.',
+    'NoSuchEntity: role missing',
+    'no such bucket',
+    'NonExistentQueue',
+  ])('matches %s', (message) => {
+    expect(isNotFoundMessage(message)).toBe(true);
+  });
+
+  it.each([
+    'internal failure',
+    'The role defined for the function cannot be assumed by Lambda.',
+    'Access Denied',
+    'Rate exceeded',
+    // sentence-boundary guard: "no" and "found" in different clauses
+    'no permission to delete; resource found in another account',
+  ])('does not match %s', (message) => {
+    expect(isNotFoundMessage(message)).toBe(false);
   });
 });
 
@@ -1393,6 +1482,7 @@ describe('CloudControlProvider create: failed-create remnant cleanup', () => {
     errorCode?: string;
     identifier?: string;
     deleteStatus?: 'SUCCESS' | 'FAILED';
+    deleteErrorCode?: string;
     deleteFailedMessage?: string;
     deleteRejects?: Error;
     statusRejects?: Error;
@@ -1428,7 +1518,7 @@ describe('CloudControlProvider create: failed-create remnant cleanup', () => {
               opts.deleteStatus === 'FAILED'
                 ? {
                     OperationStatus: 'FAILED',
-                    ErrorCode: 'GeneralServiceException',
+                    ErrorCode: opts.deleteErrorCode ?? 'GeneralServiceException',
                     StatusMessage: opts.deleteFailedMessage ?? 'internal failure',
                   }
                 : { OperationStatus: 'SUCCESS' },
@@ -1554,6 +1644,40 @@ describe('CloudControlProvider create: failed-create remnant cleanup', () => {
     // cleaned, the deploy engine's outer withRetry must still classify the
     // original error as transient so the re-create actually happens.
     expect(isRetryableTransientError(error, error!.message)).toBe(true);
+  });
+
+  it('treats a FAILED remnant delete with handler ErrorCode NotFound as idempotent success even when the message lacks canonical substrings (issue #1252)', async () => {
+    wireFailedCreate({
+      identifier: 'cdkd-codedeploy-integ-dg',
+      deleteStatus: 'FAILED',
+      deleteErrorCode: 'NotFound',
+      deleteFailedMessage:
+        'No Deployment Group found for name: cdkd-codedeploy-integ-dg (Service: CodeDeploy, Status Code: 400)',
+    });
+
+    await expect(
+      provider.create('Group', 'AWS::CodeDeploy::DeploymentGroup', { ApplicationName: 'app' })
+    ).rejects.toThrow(/CREATE failed for Group/);
+
+    expect(deleteCallIdentifiers()).toEqual(['cdkd-codedeploy-integ-dg']);
+    expect(mockLoggerWarn).not.toHaveBeenCalled();
+  });
+
+  it('downgrades a service-worded not-found remnant delete failure (non-NotFound code) to already-gone, no warning (issue #1252)', async () => {
+    wireFailedCreate({
+      identifier: 'cdkd-codedeploy-integ-dg',
+      deleteStatus: 'FAILED',
+      deleteErrorCode: 'GeneralServiceException',
+      deleteFailedMessage:
+        'No Deployment Group found for name: cdkd-codedeploy-integ-dg (Service: CodeDeploy, Status Code: 400)',
+    });
+
+    await expect(
+      provider.create('Group', 'AWS::CodeDeploy::DeploymentGroup', { ApplicationName: 'app' })
+    ).rejects.toThrow(/CREATE failed for Group/);
+
+    expect(deleteCallIdentifiers()).toEqual(['cdkd-codedeploy-integ-dg']);
+    expect(mockLoggerWarn).not.toHaveBeenCalled();
   });
 
   it('treats an async FAILED-NotFound remnant delete as a no-op (no warning)', async () => {

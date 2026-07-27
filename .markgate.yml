@@ -130,6 +130,9 @@ gates:
     # release tag).
     include:
       - "src/provisioning/providers/**"
+      # The CC provider's delete()/remnant-cleanup is deletion logic too —
+      # it was missing from this scope until issue #1252 touched it.
+      - "src/provisioning/cloud-control-provider.ts"
       - "src/cli/commands/destroy.ts"
       - "src/deployment/deploy-engine.ts"
       - "src/analyzer/dag-builder.ts"

@@ -138,6 +138,22 @@ export class CloudControlOperationFailedError extends ProvisioningError {
   }
 }
 
+/**
+ * Matches service-worded "the resource is gone" failure messages, including
+ * shapes whose wording lacks the canonical `not found` substring (CodeDeploy:
+ * "No Deployment Group found for name: ..."). Deliberately scoped to the
+ * failed-CREATE remnant-cleanup path, where a false positive only downgrades
+ * a warning to an info — it is NOT used for the main DELETE idempotency
+ * decision, which relies on the structured `ErrorCode: NotFound` /
+ * `ResourceNotFoundException` signals plus the long-standing narrow
+ * substrings (issue #1252).
+ */
+export function isNotFoundMessage(message: string): boolean {
+  return /not\s*found|does\s*not\s*exist|no\s*such|non\s*existent|\bno\b[^.;:]{0,80}\bfound\b/i.test(
+    message
+  );
+}
+
 export class CloudControlProvider implements ResourceProvider {
   private cloudControlClient: CloudControlClient;
   private logger = getLogger().child('CloudControlProvider');
@@ -265,8 +281,13 @@ export class CloudControlProvider implements ResourceProvider {
    * deleting it would destroy a user's pre-existing resource. Handlers may
    * also stuff a speculative identifier into a FAILED event without having
    * materialized anything (observed on `AWS::CodeDeploy::DeploymentGroup`);
-   * the delete then no-ops via the NotFound-idempotent path. Cleanup failures
-   * are warned, not thrown — the original create error must surface.
+   * the delete then no-ops via the NotFound-idempotent path (structured
+   * `ErrorCode: NotFound` or the canonical message substrings), and a
+   * service-worded not-found the delete path cannot recognize (CodeDeploy's
+   * "No Deployment Group found for name: ...") is downgraded here to an
+   * already-gone info instead of the misleading "remove it manually" warning
+   * (issue #1252). Real cleanup failures are warned, not thrown — the
+   * original create error must surface.
    */
   private async cleanupFailedCreateRemnant(
     error: unknown,
@@ -291,6 +312,17 @@ export class CloudControlProvider implements ResourceProvider {
       this.logger.debug(`Removed failed-create remnant ${error.physicalId} for ${logicalId}`);
     } catch (cleanupError) {
       const message = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+      // A not-found on the remnant delete means the remnant is ALREADY gone —
+      // the failed CREATE never actually materialized it, or it vanished
+      // before the delete landed. delete() absorbs the structured
+      // `ErrorCode: NotFound` shape itself; this fallback catches handlers
+      // that report a non-NotFound code with a service-worded message.
+      if (isNotFoundMessage(message)) {
+        this.logger.info(
+          `The remnant ${error.physicalId} left by the failed CREATE of ${logicalId} was already gone (not found); nothing to clean up`
+        );
+        return;
+      }
       this.logger.warn(
         `Failed to delete the remnant ${error.physicalId} left by the failed CREATE of ${logicalId}: ${message} — ` +
           `a retry may fail with AlreadyExists until it is removed manually`
@@ -536,8 +568,19 @@ export class CloudControlProvider implements ResourceProvider {
         // resource was deployed to. A region mismatch must surface — otherwise a
         // destroy run with the wrong region would silently strip every resource
         // from state while leaving the actual AWS resources orphaned.
+        //
+        // The handler-reported `ErrorCode: NotFound` on an async FAILED DELETE
+        // is the STRUCTURED form of the same signal — some service handlers
+        // word their StatusMessage without any of the canonical substrings
+        // (CodeDeploy: "No Deployment Group found for name: ..."), so the
+        // message match alone misses them (issue #1252).
         const err = error as { name?: string; message?: string };
+        const notFoundErrorCode =
+          error instanceof CloudControlOperationFailedError &&
+          error.ccOperation === 'DELETE' &&
+          error.ccErrorCode === 'NotFound';
         if (
+          notFoundErrorCode ||
           err.name === 'ResourceNotFoundException' ||
           err.message?.includes('does not exist') ||
           err.message?.includes('not found') ||
