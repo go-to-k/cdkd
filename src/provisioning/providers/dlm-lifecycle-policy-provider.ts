@@ -114,40 +114,43 @@ export class DLMLifecyclePolicyProvider implements ResourceProvider {
    * Map the CFn property shape to the SDK input shape (shared by create and
    * update — every field name is PascalCase-identical). `Tags` and
    * `DefaultPolicy` are intentionally NOT included: create wires them
-   * separately (update has neither parameter).
+   * separately (update has neither parameter). `!= null` (not
+   * `!== undefined`) so an explicit-null template value is treated as
+   * absent instead of being passed to the SDK as `null` — matches
+   * `buildRemovalResets`' null normalization.
    */
   private toSdkFields(
     properties: Record<string, unknown>
   ): Omit<UpdateLifecyclePolicyCommandInput, 'PolicyId'> {
     return {
-      ...(properties['ExecutionRoleArn'] !== undefined && {
+      ...(properties['ExecutionRoleArn'] != null && {
         ExecutionRoleArn: properties['ExecutionRoleArn'] as string,
       }),
-      ...(properties['Description'] !== undefined && {
+      ...(properties['Description'] != null && {
         Description: properties['Description'] as string,
       }),
-      ...(properties['State'] !== undefined && {
+      ...(properties['State'] != null && {
         State: properties['State'] as UpdateLifecyclePolicyCommandInput['State'],
       }),
-      ...(properties['PolicyDetails'] !== undefined && {
+      ...(properties['PolicyDetails'] != null && {
         PolicyDetails: properties['PolicyDetails'] as PolicyDetails,
       }),
-      ...(properties['CreateInterval'] !== undefined && {
+      ...(properties['CreateInterval'] != null && {
         CreateInterval: properties['CreateInterval'] as number,
       }),
-      ...(properties['RetainInterval'] !== undefined && {
+      ...(properties['RetainInterval'] != null && {
         RetainInterval: properties['RetainInterval'] as number,
       }),
-      ...(properties['CopyTags'] !== undefined && {
+      ...(properties['CopyTags'] != null && {
         CopyTags: properties['CopyTags'] as boolean,
       }),
-      ...(properties['ExtendDeletion'] !== undefined && {
+      ...(properties['ExtendDeletion'] != null && {
         ExtendDeletion: properties['ExtendDeletion'] as boolean,
       }),
-      ...(properties['CrossRegionCopyTargets'] !== undefined && {
+      ...(properties['CrossRegionCopyTargets'] != null && {
         CrossRegionCopyTargets: properties['CrossRegionCopyTargets'] as CrossRegionCopyTarget[],
       }),
-      ...(properties['Exclusions'] !== undefined && {
+      ...(properties['Exclusions'] != null && {
         Exclusions: properties['Exclusions'] as Exclusions,
       }),
     };

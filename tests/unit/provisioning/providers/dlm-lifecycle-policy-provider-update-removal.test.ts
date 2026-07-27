@@ -198,6 +198,61 @@ describe('DLMLifecyclePolicyProvider removal reset to CFn defaults (issue #1160)
     expect(input['Exclusions']).toEqual(exclusions);
   });
 
+  it('treats an explicit-null side as absent (no spurious reset — the != null guards)', async () => {
+    await provider.update(
+      'Policy',
+      POLICY_ID,
+      RESOURCE_TYPE,
+      {
+        ExecutionRoleArn: ROLE_ARN,
+        State: 'DISABLED',
+        DefaultPolicy: 'VOLUME',
+        CreateInterval: null,
+      },
+      {
+        ExecutionRoleArn: ROLE_ARN,
+        State: 'DISABLED',
+        DefaultPolicy: 'VOLUME',
+        CopyTags: null,
+        Exclusions: null,
+      }
+    );
+
+    const input = sentUpdateInput();
+    // null new side with absent previous -> nothing to reset; null previous
+    // side must not fire a reset either.
+    expect('CreateInterval' in input).toBe(false);
+    expect('CopyTags' in input).toBe(false);
+    expect('Exclusions' in input).toBe(false);
+  });
+
+  it('Number()-coerces string-form numerics on both the kept and the removed path', async () => {
+    await provider.update(
+      'Policy',
+      POLICY_ID,
+      RESOURCE_TYPE,
+      {
+        ExecutionRoleArn: ROLE_ARN,
+        State: 'DISABLED',
+        DefaultPolicy: 'VOLUME',
+        CreateInterval: '3',
+      },
+      {
+        ExecutionRoleArn: ROLE_ARN,
+        State: 'DISABLED',
+        DefaultPolicy: 'VOLUME',
+        CreateInterval: '2',
+        RetainInterval: '5',
+      }
+    );
+
+    const input = sentUpdateInput();
+    // kept string value -> coerced number wins over toSdkFields' raw spread
+    expect(input['CreateInterval']).toBe(3);
+    // removed string value -> reset to the numeric default
+    expect(input['RetainInterval']).toBe(7);
+  });
+
   it('does NOT reset a removed Description (no API clear sentinel — documented deferral)', async () => {
     await provider.update(
       'Policy',
