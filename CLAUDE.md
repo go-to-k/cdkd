@@ -215,6 +215,8 @@ high.
 - **After fixing documentation or code**: Commit to a feature branch (not `main`) and push immediately. Do not leave uncommitted changes. Before reporting completion to the user, always run `git status` to verify nothing is uncommitted and that you are not on `main`.
 - **Every session-wrap / task-complete report MUST end with a "Remaining work" section AND a "Session close" verdict — unprompted**: the user should never have to ask "any follow-up tasks?" or "can I close this session?".
 
+  **Scope: only work this session created or touched.** The section reports residuals of THIS session's task: gaps in what was just shipped, polish deferred while doing it, and issues filed BECAUSE of this work. It is NOT a backlog dump. Do not list pre-existing open issues that merely happen to be unresolved, and once the session has moved on to an unrelated task, stop carrying forward items from earlier unrelated work in it. If the current work leaves nothing behind, the answer is "Nothing remaining" even when the repo has open issues elsewhere.
+
   **Remaining work** — exactly one of:
   - **TODO (issue #N)** — work that still needs doing later. This is the ONLY bucket that means "there are follow-up tasks"; every entry MUST have a GitHub issue number (file the issue BEFORE reporting, in the same turn the deferral is decided). A reader who wants to know "is anything left to do?" reads this bucket and nothing else.
   - **Won't-do (decided + recorded)** — things consciously decided AGAINST doing (cost/benefit call), with a one-line reason and where the decision is recorded (PR body, in-code comment, issue comment). These are NOT follow-up tasks and require no action; they are listed only so the decision is visible and challengeable.
