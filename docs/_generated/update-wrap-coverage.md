@@ -7,12 +7,12 @@ For every SDK provider class declaring `update()`, walks from `update()` through
 
 ## Summary
 
-- Provider classes with `update()`: **82**
-- Wrapped: **64**
+- Provider classes with `update()`: **83**
+- Wrapped: **71**
 - No AWS call in update(): **7**
 - **Unwrapped-send gaps (blocks CI): 0**
 - **Unguarded wraps (blocks CI): 0**
-- Allow-listed known gaps (does NOT block CI): **11**
+- Allow-listed known gaps (does NOT block CI): **5**
 
 ## Allow-listed known gaps
 
@@ -20,16 +20,10 @@ Real gaps, deliberately not failing CI while they are worked off. Fixing one mea
 
 | Provider class | File | Offending methods | Rationale |
 | --- | --- | --- | --- |
-| `AppSyncProvider` | `appsync-provider.ts` | `applyTagDiff`, `updateApiKey`, `updateDataSource`, `updateGraphQLApi`, `updateGraphQLSchema`, `updateResolver` | KNOWN GAP tracked in #1270 |
-| `EC2Provider` | `ec2-provider.ts` | `applyTagDiff`, `updateEip` | KNOWN GAP tracked in #1270 |
+| `EC2Provider` | `ec2-provider.ts` | `updateEip` | KNOWN GAP tracked in #1270 |
 | `ELBv2Provider` | `elbv2-provider.ts` | `applyTagDiff`, `updateLoadBalancer` | KNOWN GAP tracked in #1270 |
 | `FirehoseProvider` | `firehose-provider.ts` | `applyAmazonOpenSearchServerlessDestinationUpdate`, `applyAmazonopensearchserviceDestinationUpdate`, `applyElasticsearchDestinationUpdate`, `applyExtendedS3DestinationUpdate`, `applyHttpEndpointDestinationUpdate`, `applyIcebergDestinationUpdate`, `applyRedshiftDestinationUpdate`, `applySnowflakeDestinationUpdate`, `applySplunkDestinationUpdate`, `applyTagsDiff`, `update` | KNOWN GAP tracked in #1270 |
-| `KinesisStreamConsumerProvider` | `kinesis-streamconsumer-provider.ts` | `applyTagDiff`, `update` | KNOWN GAP tracked in #1270 |
-| `LambdaMicrovmImageProvider` | `lambda-microvm-image-provider.ts` | `reconcileTags`, `update`, `waitForTerminalState` | KNOWN GAP tracked in #1270 |
-| `RDSDBProxyEndpointProvider` | `rds-dbproxy-endpoint-provider.ts` | `applyTagDiff`, `update` | KNOWN GAP tracked in #1270 |
-| `RDSDBProxyProvider` | `rds-dbproxy-provider.ts` | `applyTagDiff`, `update` | KNOWN GAP tracked in #1270 |
-| `RDSDBProxyTargetGroupProvider` | `rds-dbproxy-targetgroup-provider.ts` | `update` | KNOWN GAP tracked in #1270 |
-| `Route53Provider` | `route53-provider.ts` | `resolveHostedZoneId` | KNOWN GAP tracked in #1270 |
+| `KinesisStreamConsumerProvider` | `kinesis-streamconsumer-provider.ts` | `applyTagDiff` | KNOWN GAP tracked in #1270 |
 | `S3TablesProvider` | `s3-tables-provider.ts` | `lookupTableArn` | KNOWN GAP tracked in #1270 |
 
 ## Gaps
@@ -47,7 +41,7 @@ None. Every provider `update()` either makes no AWS call or wraps every reachabl
 | `AgentCoreRuntimeProvider` | `agentcore-runtime-provider.ts` | wrapped |
 | `ApiGatewayProvider` | `apigateway-provider.ts` | wrapped |
 | `ApiGatewayV2Provider` | `apigatewayv2-provider.ts` | wrapped |
-| `AppSyncProvider` | `appsync-provider.ts` | allow-listed |
+| `AppSyncProvider` | `appsync-provider.ts` | wrapped |
 | `ASGProvider` | `asg-provider.ts` | wrapped |
 | `BudgetsBudgetProvider` | `budgets-budget-provider.ts` | wrapped |
 | `CloudFrontDistributionProvider` | `cloudfront-distribution-provider.ts` | wrapped |
@@ -94,17 +88,17 @@ None. Every provider `update()` either makes no AWS call or wraps every reachabl
 | `LambdaEventSourceMappingProvider` | `lambda-eventsource-provider.ts` | wrapped |
 | `LambdaFunctionProvider` | `lambda-function-provider.ts` | wrapped |
 | `LambdaLayerVersionProvider` | `lambda-layer-provider.ts` | no-aws |
-| `LambdaMicrovmImageProvider` | `lambda-microvm-image-provider.ts` | allow-listed |
+| `LambdaMicrovmImageProvider` | `lambda-microvm-image-provider.ts` | wrapped |
 | `LambdaPermissionProvider` | `lambda-permission-provider.ts` | wrapped |
 | `LambdaUrlProvider` | `lambda-url-provider.ts` | wrapped |
 | `LogsLogGroupProvider` | `logs-loggroup-provider.ts` | wrapped |
 | `NeptuneProvider` | `neptune-provider.ts` | wrapped |
 | `NestedStackProvider` | `nested-stack-provider.ts` | no-aws |
-| `RDSDBProxyEndpointProvider` | `rds-dbproxy-endpoint-provider.ts` | allow-listed |
-| `RDSDBProxyProvider` | `rds-dbproxy-provider.ts` | allow-listed |
-| `RDSDBProxyTargetGroupProvider` | `rds-dbproxy-targetgroup-provider.ts` | allow-listed |
+| `RDSDBProxyEndpointProvider` | `rds-dbproxy-endpoint-provider.ts` | wrapped |
+| `RDSDBProxyProvider` | `rds-dbproxy-provider.ts` | wrapped |
+| `RDSDBProxyTargetGroupProvider` | `rds-dbproxy-targetgroup-provider.ts` | wrapped |
 | `RDSProvider` | `rds-provider.ts` | wrapped |
-| `Route53Provider` | `route53-provider.ts` | allow-listed |
+| `Route53Provider` | `route53-provider.ts` | wrapped |
 | `S3BucketPolicyProvider` | `s3-bucket-policy-provider.ts` | wrapped |
 | `S3BucketProvider` | `s3-bucket-provider.ts` | wrapped |
 | `S3DirectoryBucketProvider` | `s3-directory-bucket-provider.ts` | no-aws |
@@ -118,6 +112,7 @@ None. Every provider `update()` either makes no AWS call or wraps every reachabl
 | `SNSTopicProvider` | `sns-topic-provider.ts` | wrapped |
 | `SQSQueuePolicyProvider` | `sqs-queue-policy-provider.ts` | wrapped |
 | `SQSQueueProvider` | `sqs-queue-provider.ts` | wrapped |
+| `CloudControlProvider` | `src/provisioning/cloud-control-provider.ts` | wrapped |
 | `SSMParameterProvider` | `ssm-parameter-provider.ts` | wrapped |
 | `StepFunctionsProvider` | `stepfunctions-provider.ts` | wrapped |
 | `WAFv2WebACLProvider` | `wafv2-provider.ts` | wrapped |

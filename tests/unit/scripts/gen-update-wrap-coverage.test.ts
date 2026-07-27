@@ -3,6 +3,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import {
   UPDATE_WRAP_ALLOW_LIST,
+  allowKey,
   buildReport,
   classifySource,
   findGaps,
@@ -107,6 +108,100 @@ describe('gen-update-wrap-coverage classifier', () => {
     const [c] = classifySource(src, 'fake-provider.ts', new Map());
     expect(c?.bucket).toBe('gap');
     expect(c?.unwrappedSendMethods).toEqual(['lookupArn']);
+  });
+
+  // Regression for PR #1271 review blocker 1: only the literal
+  // `throw new ProvisioningError` was matched, so the factory idiom used by
+  // appsync / rds-dbproxy* / lambda-microvm-image reported five FULLY WRAPPED
+  // providers as gaps — and put five non-bugs on a tracking issue.
+  describe('factory-idiom wraps', () => {
+    it('accepts `throw this.wrapError(...)` when the method returns ProvisioningError', () => {
+      const src = providerSource(`
+        async update(logicalId, physicalId, resourceType) {
+          try {
+            await this.client.send(new UpdateThingCommand({}));
+            return { physicalId, wasReplaced: false };
+          } catch (error) {
+            throw this.wrapError(error, 'UPDATE', resourceType, logicalId, physicalId);
+          }
+        }
+        wrapError(error, op, resourceType, logicalId, physicalId): ProvisioningError {
+          return new ProvisioningError('x', resourceType, logicalId, physicalId);
+        }
+      `);
+      const [c] = classifySource(src, 'fake-provider.ts', new Map());
+      expect(c?.bucket).toBe('wrapped');
+    });
+
+    it('accepts a never-returning `throw this.handleError(...)` that throws one', () => {
+      const src = providerSource(`
+        async update(logicalId, physicalId, resourceType) {
+          try {
+            await this.client.send(new UpdateThingCommand({}));
+            return { physicalId, wasReplaced: false };
+          } catch (error) {
+            throw this.handleError(error, resourceType, logicalId);
+          }
+        }
+        handleError(error, resourceType, logicalId): never {
+          throw new ProvisioningError('x', resourceType, logicalId);
+        }
+      `);
+      const [c] = classifySource(src, 'fake-provider.ts', new Map());
+      expect(c?.bucket).toBe('wrapped');
+    });
+
+    it('does NOT accept a factory that returns a plain Error', () => {
+      const src = providerSource(`
+        async update(logicalId, physicalId, resourceType) {
+          try {
+            await this.client.send(new UpdateThingCommand({}));
+            return { physicalId, wasReplaced: false };
+          } catch (error) {
+            throw this.wrapError(error);
+          }
+        }
+        wrapError(error) {
+          return new Error('nope');
+        }
+      `);
+      const [c] = classifySource(src, 'fake-provider.ts', new Map());
+      expect(c?.bucket).toBe('gap');
+    });
+  });
+
+  // Regression for PR #1271 review item 5: a catch that logs and continues
+  // cannot propagate a raw SDK error, so "wrap the call" is the wrong remedy.
+  describe('swallowing catches', () => {
+    it('treats a log-and-continue catch as handled, not a gap', () => {
+      const src = providerSource(`
+        async update(logicalId, physicalId) {
+          try {
+            await this.client.send(new TagResourceCommand({}));
+          } catch (error) {
+            this.logger.warn('best-effort tagging failed');
+          }
+          return { physicalId, wasReplaced: false };
+        }
+      `);
+      const [c] = classifySource(src, 'fake-provider.ts', new Map());
+      expect(c?.bucket).toBe('wrapped');
+    });
+
+    it('still flags a CONDITIONAL re-throw (the s3-tables shape)', () => {
+      const src = providerSource(`
+        async update(logicalId, physicalId) {
+          try {
+            await this.client.send(new GetThingCommand({}));
+          } catch (error) {
+            if (!(error instanceof NotFoundException)) throw error;
+          }
+          return { physicalId, wasReplaced: false };
+        }
+      `);
+      const [c] = classifySource(src, 'fake-provider.ts', new Map());
+      expect(c?.bucket).toBe('gap');
+    });
   });
 
   it('classifies an update() with no AWS call as no-aws', () => {
@@ -216,6 +311,49 @@ describe('gen-update-wrap-coverage classifier', () => {
       expect(c?.bucket).toBe('wrapped');
     });
 
+    // Regression for PR #1271 review blocker 3: the matcher accepted ANY throw
+    // inside an `instanceof` test, so re-labelling the typed error as a
+    // ProvisioningError — the exact #1268 defect — passed as a "pass-through".
+    it('rejects an instanceof test that throws something OTHER than the caught binding', () => {
+      const src = providerSource(`
+        async update(logicalId, physicalId, resourceType, props, prev) {
+          try {
+            if (props.Class !== prev.Class) {
+              throw new ResourceUpdateNotSupportedError('T', logicalId, 'immutable');
+            }
+            await this.client.send(new UpdateThingCommand({}));
+            return { physicalId, wasReplaced: false };
+          } catch (error) {
+            if (error instanceof ResourceUpdateNotSupportedError) {
+              throw new ProvisioningError('re-labelled!', resourceType, logicalId);
+            }
+            throw new ProvisioningError('Failed to update', resourceType, logicalId);
+          }
+        }
+      `);
+      const [c] = classifySource(src, 'fake-provider.ts', new Map());
+      expect(c?.bucket).toBe('unguarded-wrap');
+    });
+
+    it('rejects the NEGATED guard, which wraps the typed error instead', () => {
+      const src = providerSource(`
+        async update(logicalId, physicalId, resourceType, props, prev) {
+          try {
+            if (props.Class !== prev.Class) {
+              throw new ResourceUpdateNotSupportedError('T', logicalId, 'immutable');
+            }
+            await this.client.send(new UpdateThingCommand({}));
+            return { physicalId, wasReplaced: false };
+          } catch (error) {
+            if (!(error instanceof CdkdError)) throw error;
+            throw new ProvisioningError('Failed to update', resourceType, logicalId);
+          }
+        }
+      `);
+      const [c] = classifySource(src, 'fake-provider.ts', new Map());
+      expect(c?.bucket).toBe('unguarded-wrap');
+    });
+
     it('does not flag a wrap that cannot capture a typed throw', () => {
       const src = providerSource(`
         async update(logicalId, physicalId, resourceType) {
@@ -233,7 +371,40 @@ describe('gen-update-wrap-coverage classifier', () => {
     });
   });
 
-  describe('allow-list', () => {
+  // Regression for PR #1271 review blocker 2: an unresolvable callee hides
+  // every send behind it, and the class then reported a confident `no-aws` —
+  // green, un-allow-listed, and invisible to review.
+  describe('unresolved callees', () => {
+    it('surfaces an unresolvable this.x() instead of reporting no-aws', () => {
+      const src = providerSource(`
+        async update(logicalId, physicalId) {
+          await this.inheritedHelper(physicalId);
+          return { physicalId, wasReplaced: false };
+        }
+      `);
+      const [c] = classifySource(src, 'fake-provider.ts', new Map());
+      expect(c?.bucket).toBe('unresolved-callee');
+      expect(c?.unresolvedCallees).toEqual(['inheritedHelper']);
+    });
+
+    it('resolves an arrow-function class PROPERTY as a member', () => {
+      const src = providerSource(`
+        async update(logicalId, physicalId) {
+          await this.applyDiff(physicalId);
+          return { physicalId, wasReplaced: false };
+        }
+        applyDiff = async (physicalId) => {
+          await this.client.send(new UpdateThingCommand({}));
+        };
+      `);
+      const [c] = classifySource(src, 'fake-provider.ts', new Map());
+      // Resolved (not `unresolved-callee`) AND the send behind it is seen.
+      expect(c?.bucket).toBe('gap');
+      expect(c?.unwrappedSendMethods).toEqual(['applyDiff']);
+    });
+  });
+
+  describe('allow-list (keyed by Class#method)', () => {
     const gapSrc = providerSource(
       `
       async update(logicalId, physicalId) {
@@ -243,13 +414,12 @@ describe('gen-update-wrap-coverage classifier', () => {
     `,
       'AllowedProvider'
     );
+    const allow = new Map([
+      [allowKey('AllowedProvider', 'update'), { rationale: 'KNOWN GAP tracked in #1270' }],
+    ]);
 
     it('keeps an allow-listed gap VISIBLE rather than relabelling it wrapped', () => {
-      const [c] = classifySource(
-        gapSrc,
-        'allowed-provider.ts',
-        new Map([['AllowedProvider', { rationale: 'KNOWN GAP tracked in #1270' }]])
-      );
+      const [c] = classifySource(gapSrc, 'allowed-provider.ts', allow);
       expect(c?.bucket).toBe('allow-listed');
       // The offending method is still recorded, so the matrix documents it.
       expect(c?.unwrappedSendMethods).toEqual(['update']);
@@ -257,12 +427,31 @@ describe('gen-update-wrap-coverage classifier', () => {
     });
 
     it('excludes allow-listed entries from the CI-blocking gap set', () => {
-      const classes = classifySource(
-        gapSrc,
-        'allowed-provider.ts',
-        new Map([['AllowedProvider', { rationale: 'KNOWN GAP tracked in #1270' }]])
+      expect(findGaps(buildReport(classifySource(gapSrc, 'allowed-provider.ts', allow)))).toEqual(
+        []
       );
-      expect(findGaps(buildReport(classes))).toEqual([]);
+    });
+
+    // Regression for PR #1271 review item 7: a class-keyed allow-list meant a
+    // NEW gap anywhere in an allow-listed class was silently absorbed.
+    it('still BLOCKS on a new gap in a different method of an allow-listed class', () => {
+      const twoGaps = providerSource(
+        `
+        async update(logicalId, physicalId) {
+          await this.client.send(new UpdateThingCommand({}));
+          await this.newHelper(physicalId);
+          return { physicalId, wasReplaced: false };
+        }
+        async newHelper(physicalId) {
+          await this.client.send(new BrandNewCommand({}));
+        }
+      `,
+        'AllowedProvider'
+      );
+      const [c] = classifySource(twoGaps, 'allowed-provider.ts', allow);
+      expect(c?.bucket).toBe('gap');
+      expect(c?.unwrappedSendMethods).toEqual(['newHelper', 'update']);
+      expect(findGaps(buildReport([c!]))).toHaveLength(1);
     });
 
     it('classifies a clean allow-listed class normally, so a stale entry is visible', () => {
@@ -279,11 +468,7 @@ describe('gen-update-wrap-coverage classifier', () => {
       `,
         'AllowedProvider'
       );
-      const [c] = classifySource(
-        cleanSrc,
-        'allowed-provider.ts',
-        new Map([['AllowedProvider', { rationale: 'stale' }]])
-      );
+      const [c] = classifySource(cleanSrc, 'allowed-provider.ts', allow);
       expect(c?.bucket).toBe('wrapped');
     });
   });
@@ -295,9 +480,15 @@ describe('gen-update-wrap-coverage classifier', () => {
 // provider tree, with a floor per SHAPE it claims to handle — an aggregate
 // floor alone would let one dead shape hide underneath it.
 describe('real-repo coverage floors', () => {
-  const classes = readdirSync(PROVIDERS_DIR)
-    .filter((f) => f.endsWith('.ts') && !f.endsWith('.d.ts'))
-    .flatMap((f) => classifySource(readFileSync(resolve(PROVIDERS_DIR, f), 'utf8'), f));
+  const classes = [
+    ...readdirSync(PROVIDERS_DIR)
+      .filter((f) => f.endsWith('.ts') && !f.endsWith('.d.ts'))
+      .flatMap((f) => classifySource(readFileSync(resolve(PROVIDERS_DIR, f), 'utf8'), f)),
+    ...classifySource(
+      readFileSync(resolve(process.cwd(), 'src/provisioning/cloud-control-provider.ts'), 'utf8'),
+      'src/provisioning/cloud-control-provider.ts'
+    ),
+  ];
 
   it('parses a realistic number of provider classes with update()', () => {
     // 82 at the time of writing; the floor guards against a parser regression
@@ -311,6 +502,10 @@ describe('real-repo coverage floors', () => {
     expect(count('wrapped')).toBeGreaterThanOrEqual(50);
     // no-aws: providers whose update() is a genuine no-op.
     expect(count('no-aws')).toBeGreaterThanOrEqual(1);
+    // unresolved-callee: expected to be ZERO today. It is asserted (not
+    // floored) because a NON-zero value means the walk lost visibility
+    // somewhere and the whole matrix's verdicts are less trustworthy.
+    expect(count('unresolved-callee')).toBe(0);
     // allow-listed: the seeded KNOWN GAPS. If this hits 0, either every gap
     // was fixed (remove the entries + this floor) or the analysis broke.
     expect(count('allow-listed')).toBeGreaterThanOrEqual(1);
@@ -334,15 +529,47 @@ describe('real-repo coverage floors', () => {
   });
 
   it('keeps the shipped allow-list free of stale entries', () => {
-    // Every allow-listed name must still resolve to a real, still-offending
-    // class — otherwise the entry is dead weight hiding nothing.
-    for (const name of UPDATE_WRAP_ALLOW_LIST.keys()) {
-      const found = classes.find((c) => c.className === name);
-      expect(found, `allow-listed ${name} no longer exists`).toBeDefined();
-      expect(found?.bucket, `allow-list entry for ${name} is stale — remove it`).toBe(
-        'allow-listed'
-      );
+    // Every `Class#method` entry must still resolve to a real class whose
+    // offending-method list still contains that method — otherwise the entry
+    // is dead weight hiding nothing, and the gap it documented is either fixed
+    // (remove it) or moved (re-key it).
+    for (const key of UPDATE_WRAP_ALLOW_LIST.keys()) {
+      const [className, method] = key.split('#');
+      const found = classes.find((c) => c.className === className);
+      expect(found, `allow-listed class ${className} no longer exists`).toBeDefined();
+      expect(found?.bucket, `${className} should still be allow-listed`).toBe('allow-listed');
+      const offenders = [
+        ...(found?.unwrappedSendMethods ?? []),
+        ...(found?.unguardedWrapMethods ?? []),
+      ];
+      expect(offenders, `allow-list entry ${key} is stale — remove it`).toContain(method);
     }
+  });
+
+  // Pinned by EXACT NAME, not a floor. A floor of `>= 1` would let a class
+  // silently DROP into no-aws (the shape a lost delegation edge produces) while
+  // the aggregate `wrapped >= 50` floor absorbed the loss — precisely the
+  // false-negative PR #1271's review called out.
+  it('pins the exact set of no-aws providers', () => {
+    const noAws = classes
+      .filter((c) => c.bucket === 'no-aws')
+      .map((c) => c.className)
+      .sort();
+    expect(noAws).toEqual([
+      'AgentCoreBrowserProvider',
+      'AgentCoreCodeInterpreterProvider',
+      'GlueSecurityConfigurationProvider',
+      'LambdaLayerVersionProvider',
+      'NestedStackProvider',
+      'S3DirectoryBucketProvider',
+      'WaitConditionHandleProvider',
+    ]);
+  });
+
+  it('audits CloudControlProvider, the widest-coverage provider in the repo', () => {
+    const cc = classes.find((c) => c.className === 'CloudControlProvider');
+    expect(cc, 'CloudControlProvider must be scanned').toBeDefined();
+    expect(cc?.bucket).toBe('wrapped');
   });
 
   it('reports no unallow-listed gap in the real tree', () => {

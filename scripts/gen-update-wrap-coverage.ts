@@ -33,15 +33,26 @@
  * Per provider class, walk from the public `update()` method carrying a
  * `protected` flag:
  *   - entering a `try` whose `catch` throws `ProvisioningError` sets the flag
- *     for everything inside the try block;
+ *     for everything inside the try block. BOTH spellings count: the literal
+ *     `throw new ProvisioningError(...)` and the FACTORY idiom
+ *     `throw this.wrapError(...)` (a class method returning / annotated
+ *     `ProvisioningError`, or `never`-returning and throwing one). Missing the
+ *     factory form reported five fully-wrapped providers as gaps;
+ *   - entering a `try` whose `catch` SWALLOWS (never re-throws) also sets the
+ *     flag — no raw SDK error can propagate, so "wrap the call" is the wrong
+ *     remedy. A CONDITIONAL re-throw is not a swallow;
  *   - a `.send(...)` reached with the flag CLEAR is an unwrapped AWS call (a
  *     gap);
- *   - a `this.someMethod(...)` call is followed into that method, inheriting
+ *   - a `this.someMethod(...)` call is followed into that member, inheriting
  *     the current flag — so a provider that wraps at the boundary and
  *     delegates the body to a private helper (the PR #1268 shape) classifies
  *     as covered, and a provider whose `update()` delegates to a helper that
- *     wraps internally (the `s3-tables` shape) does too.
- * Recursion is cycle-guarded and bounded to the class's own methods.
+ *     wraps internally (the `s3-tables` shape) does too. Arrow-function class
+ *     PROPERTIES are collected as members, not just `MethodDeclaration`s;
+ *   - a `this.x()` callee that is NOT a member of this class is recorded as an
+ *     UNRESOLVED edge, because sends behind it are unobservable and the class
+ *     would otherwise report a confident (green, un-reviewable) `no-aws`.
+ * Recursion is cycle-guarded and bounded to the class's own members.
  *
  * WHY NOT A GREP
  * --------------
@@ -52,18 +63,22 @@
  *
  * OFFLINE-ONLY (NO AWS)
  * ---------------------
- * Reads `src/provisioning/providers/*.ts` via the TypeScript Compiler API.
+ * Reads `src/provisioning/providers/*.ts` plus
+ * `src/provisioning/cloud-control-provider.ts` (the widest-coverage provider in
+ * the repo, which lives one directory up) via the TypeScript Compiler API.
  * Writes `docs/_generated/update-wrap-coverage.{json,md}`.
  *
  * CLASSIFICATION (per provider class that declares `update`)
  * -----------------------------------------------------------
- *   - no-aws          — `update()` reaches no AWS `send` (a pure no-op / diff-only
- *                       update). Nothing to wrap.
- *   - wrapped         — every reachable `send` is inside a ProvisioningError wrap.
- *   - gap             — at least one reachable `send` escapes unwrapped.
- *   - unguarded-wrap  — wrapped, but a `catch` that can capture a cdkd-typed
- *                       throw has no pass-through re-throw.
- * `--check` hard-fails on `gap` and `unguarded-wrap`.
+ *   - no-aws            — `update()` reaches no AWS `send`. Nothing to wrap.
+ *   - wrapped           — every reachable `send` is wrapped (or swallowed).
+ *   - gap               — a reachable `send` escapes unwrapped. BLOCKS CI.
+ *   - unguarded-wrap    — a `catch` that can capture a cdkd control-flow throw
+ *                         has no pass-through re-throw. BLOCKS CI.
+ *   - allow-listed      — a real offender with an `UPDATE_WRAP_ALLOW_LIST`
+ *                         entry: still VISIBLE in the matrix, does not block.
+ *   - unresolved-callee — the walk hit a `this.x()` it could not resolve, so
+ *                         the verdict is not trustworthy. Visible, not blocking.
  *
  * Usage:
  *   node --experimental-strip-types scripts/gen-update-wrap-coverage.ts          # write the matrix
@@ -80,6 +95,10 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const repoRoot = resolve(__dirname, '..');
 const PROVIDERS_DIR = resolve(repoRoot, 'src/provisioning/providers');
+// CloudControlProvider lives one level up but declares update() with sends and
+// is the WIDEST-coverage provider in the repo — scanning only providers/ left
+// it unaudited.
+const EXTRA_PROVIDER_FILES = [resolve(repoRoot, 'src/provisioning/cloud-control-provider.ts')];
 const OUT_JSON = resolve(repoRoot, 'docs/_generated/update-wrap-coverage.json');
 const OUT_MD = resolve(repoRoot, 'docs/_generated/update-wrap-coverage.md');
 
@@ -95,43 +114,76 @@ const TYPED_PASSTHROUGH_CLASSES: ReadonlySet<string> = new Set([
   'ResourceUpdateNotSupportedError',
 ]);
 
+/**
+ * Typed throws whose CAPTURE by a wrap is CI-blocking.
+ *
+ * Deliberately narrower than {@link TYPED_PASSTHROUGH_CLASSES} (which is the
+ * set of guards ACCEPTED as a valid pass-through — being generous there is
+ * always safe). Only `ResourceUpdateNotSupportedError` is control flow the
+ * deploy engine matches BY CLASS, so swallowing it changes BEHAVIOR: a
+ * recoverable LogGroupClass change becomes a hard failure.
+ *
+ * Re-labelling an inner `ProvisioningError` is a lesser, cosmetic defect (a
+ * worse message, same failure) — real in ~5 providers today, tracked in #1272
+ * rather than blocking here, so this critic's blocking verdicts stay strictly
+ * behavior-affecting. The two sets are separate ON PURPOSE; keep them so.
+ */
+const CONTROL_FLOW_THROW_CLASSES: ReadonlySet<string> = new Set([
+  'ResourceUpdateNotSupportedError',
+]);
+
 export interface AllowListEntry {
   readonly rationale: string;
 }
 
 /**
- * Provider classes the critic must not fail on.
+ * Per-(class, method) entries the critic must not fail on. Key: `Class#method`
+ * via {@link allowKey}.
  *
- * Two kinds of entry live here:
+ * Two kinds of entry can live here:
  *   - NOT-A-BUG: the analysis is over-strict for a legitimate shape.
  *   - KNOWN GAP: a real gap being worked off under a tracking issue.
  *
- * Every entry below is currently a KNOWN GAP tracked in #1270. They are
- * allow-listed rather than fixed in the critic's own PR so the tool lands
- * reviewable and immediately blocks NEW regressions, mirroring how
- * `gen-sdk-attr-coverage.ts` shipped with `AWS::Lambda::EventSourceMapping`
- * allow-listed against #1190 and then had the entry removed by the fix.
- * REMOVING AN ENTRY IS PART OF FIXING IT — the critic then verifies the fix
- * and prevents a re-regression.
+ * Every entry below is a KNOWN GAP tracked in #1270 — each hand-verified as a
+ * genuine unwrapped escape. They are allow-listed rather than fixed in the
+ * critic's own PR so the tool lands reviewable and immediately blocks NEW
+ * regressions, mirroring how `gen-sdk-attr-coverage.ts` shipped with
+ * `AWS::Lambda::EventSourceMapping` allow-listed against #1190 and then had the
+ * entry removed by the fix. REMOVING AN ENTRY IS PART OF FIXING IT — the critic
+ * then verifies the fix and prevents a re-regression.
+ *
+ * Keying by METHOD (not class) is deliberate: a class allow-listed for method A
+ * must still block CI when a NEW gap appears in method B.
  */
 export const UPDATE_WRAP_ALLOW_LIST: ReadonlyMap<string, AllowListEntry> = new Map<
   string,
   AllowListEntry
 >([
-  ['AppSyncProvider', { rationale: 'KNOWN GAP tracked in #1270' }],
-  ['EC2Provider', { rationale: 'KNOWN GAP tracked in #1270' }],
-  ['ELBv2Provider', { rationale: 'KNOWN GAP tracked in #1270' }],
-  ['FirehoseProvider', { rationale: 'KNOWN GAP tracked in #1270' }],
-  ['KinesisStreamConsumerProvider', { rationale: 'KNOWN GAP tracked in #1270' }],
-  ['LambdaMicrovmImageProvider', { rationale: 'KNOWN GAP tracked in #1270' }],
-  ['RDSDBProxyEndpointProvider', { rationale: 'KNOWN GAP tracked in #1270' }],
-  ['RDSDBProxyProvider', { rationale: 'KNOWN GAP tracked in #1270' }],
-  ['RDSDBProxyTargetGroupProvider', { rationale: 'KNOWN GAP tracked in #1270' }],
-  ['Route53Provider', { rationale: 'KNOWN GAP tracked in #1270' }],
-  ['S3TablesProvider', { rationale: 'KNOWN GAP tracked in #1270' }],
+  ['EC2Provider#updateEip', { rationale: 'KNOWN GAP tracked in #1270' }],
+  ['ELBv2Provider#applyTagDiff', { rationale: 'KNOWN GAP tracked in #1270' }],
+  ['ELBv2Provider#updateLoadBalancer', { rationale: 'KNOWN GAP tracked in #1270' }],
+  ['FirehoseProvider#applyAmazonOpenSearchServerlessDestinationUpdate', { rationale: 'KNOWN GAP tracked in #1270' }],
+  ['FirehoseProvider#applyAmazonopensearchserviceDestinationUpdate', { rationale: 'KNOWN GAP tracked in #1270' }],
+  ['FirehoseProvider#applyElasticsearchDestinationUpdate', { rationale: 'KNOWN GAP tracked in #1270' }],
+  ['FirehoseProvider#applyExtendedS3DestinationUpdate', { rationale: 'KNOWN GAP tracked in #1270' }],
+  ['FirehoseProvider#applyHttpEndpointDestinationUpdate', { rationale: 'KNOWN GAP tracked in #1270' }],
+  ['FirehoseProvider#applyIcebergDestinationUpdate', { rationale: 'KNOWN GAP tracked in #1270' }],
+  ['FirehoseProvider#applyRedshiftDestinationUpdate', { rationale: 'KNOWN GAP tracked in #1270' }],
+  ['FirehoseProvider#applySnowflakeDestinationUpdate', { rationale: 'KNOWN GAP tracked in #1270' }],
+  ['FirehoseProvider#applySplunkDestinationUpdate', { rationale: 'KNOWN GAP tracked in #1270' }],
+  ['FirehoseProvider#applyTagsDiff', { rationale: 'KNOWN GAP tracked in #1270' }],
+  ['FirehoseProvider#update', { rationale: 'KNOWN GAP tracked in #1270' }],
+  ['KinesisStreamConsumerProvider#applyTagDiff', { rationale: 'KNOWN GAP tracked in #1270' }],
+  ['S3TablesProvider#lookupTableArn', { rationale: 'KNOWN GAP tracked in #1270' }],
 ]);
 
-export type Bucket = 'no-aws' | 'wrapped' | 'gap' | 'unguarded-wrap' | 'allow-listed';
+export type Bucket =
+  | 'no-aws'
+  | 'wrapped'
+  | 'gap'
+  | 'unguarded-wrap'
+  | 'allow-listed'
+  | 'unresolved-callee';
 
 export interface ClassClassification {
   readonly file: string;
@@ -141,64 +193,110 @@ export interface ClassClassification {
   readonly unwrappedSendMethods: readonly string[];
   /** Methods whose wrapping catch can capture a typed throw with no pass-through. */
   readonly unguardedWrapMethods: readonly string[];
+  /** `this.x()` callees the walk could not resolve (see {@link WalkResult}). */
+  readonly unresolvedCallees: readonly string[];
   readonly rationale?: string;
 }
 
-/** Does this catch clause construct-and-throw a ProvisioningError? */
-function catchThrowsProvisioningError(clause: ts.CatchClause): boolean {
+/** Allow-list key: `ClassName#methodName`, so an entry cannot hide a NEW gap. */
+export const allowKey = (className: string, method: string): string => `${className}#${method}`;
+
+/**
+ * One callable member of a provider class.
+ *
+ * Includes arrow-function class PROPERTIES, not just `MethodDeclaration`s: an
+ * unresolvable callee is silently invisible to the walk (it looks like "no AWS
+ * call"), so every shape the walk can follow must be collected here.
+ */
+export interface ClassMethod {
+  readonly name: string;
+  readonly body: ts.Node;
+  /** Returns (or throws) a ProvisioningError — i.e. usable as a wrap factory. */
+  readonly isProvisioningErrorFactory: boolean;
+}
+
+/** Does this subtree `return new ProvisioningError(...)` / `throw new ProvisioningError(...)`? */
+function producesProvisioningError(node: ts.Node): boolean {
   let found = false;
-  const visit = (node: ts.Node): void => {
+  const visit = (n: ts.Node): void => {
     if (found) return;
+    const expr = ts.isReturnStatement(n) || ts.isThrowStatement(n) ? n.expression : undefined;
     if (
-      ts.isThrowStatement(node) &&
-      node.expression &&
-      ts.isNewExpression(node.expression) &&
-      ts.isIdentifier(node.expression.expression) &&
-      node.expression.expression.text === 'ProvisioningError'
+      expr &&
+      ts.isNewExpression(expr) &&
+      ts.isIdentifier(expr.expression) &&
+      expr.expression.text === 'ProvisioningError'
     ) {
       found = true;
       return;
     }
-    ts.forEachChild(node, visit);
+    ts.forEachChild(n, visit);
   };
-  visit(clause.block);
+  visit(node);
   return found;
 }
 
+export function collectMethods(cls: ts.ClassDeclaration): Map<string, ClassMethod> {
+  const methods = new Map<string, ClassMethod>();
+  const add = (name: string, body: ts.Node, returnType: ts.TypeNode | undefined): void => {
+    const annotated =
+      returnType !== undefined &&
+      ((ts.isTypeReferenceNode(returnType) &&
+        ts.isIdentifier(returnType.typeName) &&
+        returnType.typeName.text === 'ProvisioningError') ||
+        returnType.kind === ts.SyntaxKind.NeverKeyword);
+    methods.set(name, {
+      name,
+      body,
+      isProvisioningErrorFactory: annotated || producesProvisioningError(body),
+    });
+  };
+
+  for (const member of cls.members) {
+    if (ts.isMethodDeclaration(member) && ts.isIdentifier(member.name) && member.body) {
+      add(member.name.text, member.body, member.type);
+    } else if (ts.isPropertyDeclaration(member) && ts.isIdentifier(member.name)) {
+      const init = member.initializer;
+      if (init && (ts.isArrowFunction(init) || ts.isFunctionExpression(init))) {
+        add(member.name.text, init.body, init.type);
+      }
+    }
+  }
+  return methods;
+}
+
 /**
- * Does this catch clause re-throw cdkd-typed errors untouched? Matches the
- * `if (error instanceof <TypedClass>) throw error;` shape in any of its
- * spellings (block body, `else if` chain, `||`-joined instanceof tests).
+ * Does this catch clause throw a ProvisioningError?
+ *
+ * Accepts BOTH spellings found in the tree:
+ *   - the literal `throw new ProvisioningError(...)`, and
+ *   - the FACTORY idiom `throw this.wrapError(...)` / `throw this.handleError(...)`,
+ *     where the named class method returns (or is annotated to return) a
+ *     `ProvisioningError` — or is `never`-returning and throws one itself.
+ *
+ * Missing the factory form is not a cosmetic gap: `appsync` / `rds-dbproxy*` /
+ * `lambda-microvm-image` all wrap exclusively that way, so a literal-only match
+ * reports five fully-wrapped providers as gaps.
  */
-function catchHasTypedPassthrough(clause: ts.CatchClause): boolean {
+function catchThrowsProvisioningError(
+  clause: ts.CatchClause,
+  methods: ReadonlyMap<string, ClassMethod>
+): boolean {
   let found = false;
   const visit = (node: ts.Node): void => {
     if (found) return;
-    if (ts.isIfStatement(node)) {
-      const mentionsTyped = (n: ts.Node): boolean => {
-        if (
-          ts.isBinaryExpression(n) &&
-          n.operatorToken.kind === ts.SyntaxKind.InstanceOfKeyword &&
-          ts.isIdentifier(n.right) &&
-          TYPED_PASSTHROUGH_CLASSES.has(n.right.text)
-        ) {
-          return true;
-        }
-        let hit = false;
-        ts.forEachChild(n, (c) => {
-          if (mentionsTyped(c)) hit = true;
-        });
-        return hit;
-      };
-      const rethrows = (n: ts.Node): boolean => {
-        if (ts.isThrowStatement(n)) return true;
-        let hit = false;
-        ts.forEachChild(n, (c) => {
-          if (rethrows(c)) hit = true;
-        });
-        return hit;
-      };
-      if (mentionsTyped(node.expression) && rethrows(node.thenStatement)) {
+    if (ts.isThrowStatement(node) && node.expression) {
+      const expr = node.expression;
+      if (
+        ts.isNewExpression(expr) &&
+        ts.isIdentifier(expr.expression) &&
+        expr.expression.text === 'ProvisioningError'
+      ) {
+        found = true;
+        return;
+      }
+      const callee = thisMethodCallName(expr);
+      if (callee !== null && methods.get(callee)?.isProvisioningErrorFactory) {
         found = true;
         return;
       }
@@ -207,6 +305,105 @@ function catchHasTypedPassthrough(clause: ts.CatchClause): boolean {
   };
   visit(clause.block);
   return found;
+}
+
+/**
+ * Does this catch clause re-throw cdkd-typed errors UNTOUCHED?
+ *
+ * Requires all three of:
+ *   1. a POSITIVE `instanceof <TypedClass>` test (the negated
+ *      `if (!(error instanceof CdkdError)) throw ...` is the inverse shape —
+ *      it wraps the typed error and passes the untyped one through);
+ *   2. whose consequent throws the CAUGHT BINDING by name (`throw error;`) —
+ *      `throw new ProvisioningError(...)` inside an `instanceof` test is
+ *      precisely the #1268 defect, so accepting any throw would green-light
+ *      the exact bug this invariant exists to catch;
+ *   3. an actual catch-clause variable to compare against (a bare
+ *      `catch { }` cannot re-throw the binding).
+ */
+function catchHasTypedPassthrough(clause: ts.CatchClause): boolean {
+  const decl = clause.variableDeclaration;
+  if (!decl || !ts.isIdentifier(decl.name)) return false;
+  const caughtName = decl.name.text;
+
+  let found = false;
+  const visit = (node: ts.Node): void => {
+    if (found) return;
+    if (ts.isIfStatement(node)) {
+      // Positive instanceof only: descend through `||` / parens, but NOT
+      // through a prefix `!`.
+      const positiveTypedTest = (n: ts.Node): boolean => {
+        if (ts.isPrefixUnaryExpression(n) && n.operator === ts.SyntaxKind.ExclamationToken) {
+          return false;
+        }
+        if (ts.isParenthesizedExpression(n)) return positiveTypedTest(n.expression);
+        if (
+          ts.isBinaryExpression(n) &&
+          n.operatorToken.kind === ts.SyntaxKind.InstanceOfKeyword &&
+          ts.isIdentifier(n.right) &&
+          TYPED_PASSTHROUGH_CLASSES.has(n.right.text)
+        ) {
+          return true;
+        }
+        if (
+          ts.isBinaryExpression(n) &&
+          n.operatorToken.kind === ts.SyntaxKind.BarBarToken
+        ) {
+          return positiveTypedTest(n.left) || positiveTypedTest(n.right);
+        }
+        return false;
+      };
+      const rethrowsCaughtBinding = (n: ts.Node): boolean => {
+        if (
+          ts.isThrowStatement(n) &&
+          n.expression &&
+          ts.isIdentifier(n.expression) &&
+          n.expression.text === caughtName
+        ) {
+          return true;
+        }
+        let hit = false;
+        ts.forEachChild(n, (c) => {
+          if (rethrowsCaughtBinding(c)) hit = true;
+        });
+        return hit;
+      };
+      if (positiveTypedTest(node.expression) && rethrowsCaughtBinding(node.thenStatement)) {
+        found = true;
+        return;
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(clause.block);
+  return found;
+}
+
+/**
+ * Does this catch clause SWALLOW the error (log-and-continue, never re-throw)?
+ *
+ * A swallowing catch means no raw SDK error can propagate out of the enclosing
+ * try, so the sends inside it are not an unwrapped-escape gap — "wrap the AWS
+ * call in a ProvisioningError" is simply the wrong remedy there. Real examples:
+ * `Route53Provider.resolveHostedZoneId` (warn, then fall through to a
+ * ProvisioningError built from the resolution failure) and
+ * `EC2Provider.applyTagDiff` (best-effort tagging).
+ *
+ * A CONDITIONAL re-throw (`if (!(err instanceof NotFound)) throw err;`) is NOT
+ * a swallow — that is the `s3-tables` `lookupTableArn` shape, a genuine gap.
+ */
+function catchSwallows(clause: ts.CatchClause): boolean {
+  let hasThrow = false;
+  const visit = (n: ts.Node): void => {
+    if (hasThrow) return;
+    if (ts.isThrowStatement(n)) {
+      hasThrow = true;
+      return;
+    }
+    ts.forEachChild(n, visit);
+  };
+  visit(clause.block);
+  return !hasThrow;
 }
 
 /** Is this call an AWS SDK `*.send(...)` invocation? */
@@ -242,7 +439,7 @@ function thisMethodCallName(node: ts.Node): string | null {
  */
 function throwsTypedError(
   node: ts.Node,
-  methods: ReadonlyMap<string, ts.MethodDeclaration>,
+  methods: ReadonlyMap<string, ClassMethod>,
   seen: Set<string> = new Set()
 ): boolean {
   let found = false;
@@ -253,7 +450,7 @@ function throwsTypedError(
       n.expression &&
       ts.isNewExpression(n.expression) &&
       ts.isIdentifier(n.expression.expression) &&
-      n.expression.expression.text === 'ResourceUpdateNotSupportedError'
+      CONTROL_FLOW_THROW_CLASSES.has(n.expression.expression.text)
     ) {
       found = true;
       return;
@@ -262,7 +459,7 @@ function throwsTypedError(
     if (callee !== null && !seen.has(callee)) {
       seen.add(callee);
       const target = methods.get(callee);
-      if (target?.body && throwsTypedError(target.body, methods, seen)) {
+      if (target && throwsTypedError(target.body, methods, seen)) {
         found = true;
         return;
       }
@@ -277,6 +474,13 @@ export interface WalkResult {
   readonly unwrappedSendMethods: Set<string>;
   readonly unguardedWrapMethods: Set<string>;
   readonly sawAnySend: boolean;
+  /**
+   * `this.x()` callees reached from update() that could not be resolved to a
+   * member of this class. Tracked because an unresolvable callee is otherwise
+   * INVISIBLE: the walk cannot see sends behind it, so the class would report
+   * a confident `no-aws` (green, un-allow-listed, un-reviewable).
+   */
+  readonly unresolvedCallees: Set<string>;
 }
 
 /**
@@ -286,39 +490,37 @@ export interface WalkResult {
  * Exported so unit tests can drive it with synthetic classes.
  */
 export function analyzeClass(cls: ts.ClassDeclaration): WalkResult | null {
-  const methods = new Map<string, ts.MethodDeclaration>();
-  for (const member of cls.members) {
-    if (ts.isMethodDeclaration(member) && ts.isIdentifier(member.name)) {
-      methods.set(member.name.text, member);
-    }
-  }
+  const methods = collectMethods(cls);
   const update = methods.get('update');
-  if (!update?.body) return null;
+  if (!update) return null;
 
   const unwrappedSendMethods = new Set<string>();
   const unguardedWrapMethods = new Set<string>();
+  const unresolvedCallees = new Set<string>();
   let sawAnySend = false;
   // A method can be reached both protected and unprotected; key the visited
   // set on both so we do not miss the unprotected reachability.
   const visited = new Set<string>();
 
-  const walkMethod = (name: string, method: ts.MethodDeclaration, protectedHere: boolean): void => {
-    const key = `${name}:${protectedHere}`;
+  const walkMethod = (method: ClassMethod, protectedHere: boolean): void => {
+    const key = `${method.name}:${protectedHere}`;
     if (visited.has(key)) return;
     visited.add(key);
-    if (!method.body) return;
 
     const walk = (node: ts.Node, isProtected: boolean): void => {
       if (ts.isTryStatement(node)) {
         const clause = node.catchClause;
-        const wraps = clause ? catchThrowsProvisioningError(clause) : false;
+        const wraps = clause ? catchThrowsProvisioningError(clause, methods) : false;
+        // A swallowing catch cannot propagate a raw SDK error, so sends inside
+        // it are handled even though nothing is wrapped.
+        const swallows = clause ? catchSwallows(clause) : false;
         if (wraps && clause) {
-          // A wrap that can capture a typed throw MUST pass it through.
+          // A wrap that can capture a typed control-flow throw MUST pass it through.
           if (!catchHasTypedPassthrough(clause) && throwsTypedError(node.tryBlock, methods)) {
-            unguardedWrapMethods.add(name);
+            unguardedWrapMethods.add(method.name);
           }
         }
-        walk(node.tryBlock, isProtected || wraps);
+        walk(node.tryBlock, isProtected || wraps || swallows);
         if (clause) walk(clause.block, isProtected);
         if (node.finallyBlock) walk(node.finallyBlock, isProtected);
         return;
@@ -326,14 +528,19 @@ export function analyzeClass(cls: ts.ClassDeclaration): WalkResult | null {
 
       if (isSendCall(node)) {
         sawAnySend = true;
-        if (!isProtected) unwrappedSendMethods.add(name);
+        if (!isProtected) unwrappedSendMethods.add(method.name);
         // Still descend: arguments can contain further calls.
       }
 
       const callee = thisMethodCallName(node);
       if (callee !== null) {
         const target = methods.get(callee);
-        if (target) walkMethod(callee, target, isProtected);
+        if (target) walkMethod(target, isProtected);
+        // `this.x()` where x is not a member of THIS class (inherited, or a
+        // field holding a helper object). Record it: sends behind it are
+        // unobservable, so silently treating the class as send-free would be
+        // a false "clean".
+        else unresolvedCallees.add(callee);
       }
 
       ts.forEachChild(node, (child) => walk(child, isProtected));
@@ -342,8 +549,8 @@ export function analyzeClass(cls: ts.ClassDeclaration): WalkResult | null {
     walk(method.body, protectedHere);
   };
 
-  walkMethod('update', update, false);
-  return { unwrappedSendMethods, unguardedWrapMethods, sawAnySend };
+  walkMethod(update, false);
+  return { unwrappedSendMethods, unguardedWrapMethods, sawAnySend, unresolvedCallees };
 }
 
 /** Classify every provider class in one source file. Pure + exported for tests. */
@@ -360,19 +567,32 @@ export function classifySource(
       const result = analyzeClass(node);
       if (result) {
         const className = node.name.text;
-        const allow = allowList.get(className);
-        const unwrapped = [...result.unwrappedSendMethods].sort((a, b) => a.localeCompare(b));
-        const unguarded = [...result.unguardedWrapMethods].sort((a, b) => a.localeCompare(b));
+        const sortNames = (s: Set<string>): string[] =>
+          [...s].sort((a, b) => a.localeCompare(b));
+        const allUnwrapped = sortNames(result.unwrappedSendMethods);
+        const allUnguarded = sortNames(result.unguardedWrapMethods);
+        const unresolved = sortNames(result.unresolvedCallees);
 
-        const offending = unwrapped.length > 0 || unguarded.length > 0;
+        // Per-(class, method) allow-listing: an entry for method A must NOT
+        // silence a NEW gap that later appears in method B of the same class.
+        const isAllowed = (m: string): boolean => allowList.has(allowKey(className, m));
+        const unwrapped = allUnwrapped.filter((m) => !isAllowed(m));
+        const unguarded = allUnguarded.filter((m) => !isAllowed(m));
+        const allowedHits = [...allUnwrapped, ...allUnguarded].filter(isAllowed);
+        const rationale = allowedHits
+          .map((m) => allowList.get(allowKey(className, m))?.rationale)
+          .find((r) => r !== undefined);
+
         let bucket: Bucket;
-        // An allow-listed class stays VISIBLE as `allow-listed` rather than
-        // being relabelled `wrapped` — the matrix must keep documenting the
-        // known gap, it just must not fail CI. A clean allow-listed class
-        // classifies normally so a stale entry is easy to spot.
-        if (offending && allow) bucket = 'allow-listed';
-        else if (unwrapped.length > 0) bucket = 'gap';
+        // Un-allow-listed offenders always win, so an allow-listed class with a
+        // NEW gap elsewhere still blocks CI.
+        if (unwrapped.length > 0) bucket = 'gap';
         else if (unguarded.length > 0) bucket = 'unguarded-wrap';
+        // An allow-listed offender stays VISIBLE as `allow-listed` rather than
+        // being relabelled `wrapped` — the matrix must keep documenting the
+        // known gap, it just must not fail CI.
+        else if (allowedHits.length > 0) bucket = 'allow-listed';
+        else if (unresolved.length > 0) bucket = 'unresolved-callee';
         else if (!result.sawAnySend) bucket = 'no-aws';
         else bucket = 'wrapped';
 
@@ -380,9 +600,10 @@ export function classifySource(
           file: fileName,
           className,
           bucket,
-          unwrappedSendMethods: unwrapped,
-          unguardedWrapMethods: unguarded,
-          ...(allow ? { rationale: allow.rationale } : {}),
+          unwrappedSendMethods: allUnwrapped,
+          unguardedWrapMethods: allUnguarded,
+          unresolvedCallees: unresolved,
+          ...(rationale ? { rationale } : {}),
         });
       }
     }
@@ -400,6 +621,7 @@ export interface UpdateWrapCoverageReport {
     readonly gap: number;
     readonly unguardedWrap: number;
     readonly allowListed: number;
+    readonly unresolvedCallee: number;
   };
   readonly classes: readonly ClassClassification[];
 }
@@ -416,6 +638,7 @@ export function buildReport(classes: readonly ClassClassification[]): UpdateWrap
       gap: sorted.filter((c) => c.bucket === 'gap').length,
       unguardedWrap: sorted.filter((c) => c.bucket === 'unguarded-wrap').length,
       allowListed: sorted.filter((c) => c.bucket === 'allow-listed').length,
+      unresolvedCallee: sorted.filter((c) => c.bucket === 'unresolved-callee').length,
     },
     classes: sorted,
   };
@@ -552,6 +775,9 @@ function loadReport(): UpdateWrapCoverageReport {
     if (!file.endsWith('.ts') || file.endsWith('.d.ts')) continue;
     const src = readFileSync(join(PROVIDERS_DIR, file), 'utf8');
     classes.push(...classifySource(src, file));
+  }
+  for (const abs of EXTRA_PROVIDER_FILES) {
+    classes.push(...classifySource(readFileSync(abs, 'utf8'), abs.slice(repoRoot.length + 1)));
   }
   return buildReport(classes);
 }

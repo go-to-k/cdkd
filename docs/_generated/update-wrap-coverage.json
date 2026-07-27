@@ -1,11 +1,12 @@
 {
   "summary": {
-    "classifiedCount": 82,
-    "wrapped": 64,
+    "classifiedCount": 83,
+    "wrapped": 71,
     "noAws": 7,
     "gap": 0,
     "unguardedWrap": 0,
-    "allowListed": 11
+    "allowListed": 5,
+    "unresolvedCallee": 0
   },
   "classes": [
     {
@@ -13,172 +14,186 @@
       "className": "ACMCertificateProvider",
       "bucket": "wrapped",
       "unwrappedSendMethods": [],
-      "unguardedWrapMethods": []
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
     },
     {
       "file": "agentcore-browser-provider.ts",
       "className": "AgentCoreBrowserProvider",
       "bucket": "no-aws",
       "unwrappedSendMethods": [],
-      "unguardedWrapMethods": []
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
     },
     {
       "file": "agentcore-code-interpreter-provider.ts",
       "className": "AgentCoreCodeInterpreterProvider",
       "bucket": "no-aws",
       "unwrappedSendMethods": [],
-      "unguardedWrapMethods": []
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
     },
     {
       "file": "agentcore-evaluator-provider.ts",
       "className": "AgentCoreEvaluatorProvider",
       "bucket": "wrapped",
       "unwrappedSendMethods": [],
-      "unguardedWrapMethods": []
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
     },
     {
       "file": "agentcore-runtime-provider.ts",
       "className": "AgentCoreRuntimeProvider",
       "bucket": "wrapped",
       "unwrappedSendMethods": [],
-      "unguardedWrapMethods": []
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
     },
     {
       "file": "apigateway-provider.ts",
       "className": "ApiGatewayProvider",
       "bucket": "wrapped",
       "unwrappedSendMethods": [],
-      "unguardedWrapMethods": []
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
     },
     {
       "file": "apigatewayv2-provider.ts",
       "className": "ApiGatewayV2Provider",
       "bucket": "wrapped",
       "unwrappedSendMethods": [],
-      "unguardedWrapMethods": []
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
     },
     {
       "file": "appsync-provider.ts",
       "className": "AppSyncProvider",
-      "bucket": "allow-listed",
-      "unwrappedSendMethods": [
-        "applyTagDiff",
-        "updateApiKey",
-        "updateDataSource",
-        "updateGraphQLApi",
-        "updateGraphQLSchema",
-        "updateResolver"
-      ],
+      "bucket": "wrapped",
+      "unwrappedSendMethods": [],
       "unguardedWrapMethods": [],
-      "rationale": "KNOWN GAP tracked in #1270"
+      "unresolvedCallees": []
     },
     {
       "file": "asg-provider.ts",
       "className": "ASGProvider",
       "bucket": "wrapped",
       "unwrappedSendMethods": [],
-      "unguardedWrapMethods": []
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
     },
     {
       "file": "budgets-budget-provider.ts",
       "className": "BudgetsBudgetProvider",
       "bucket": "wrapped",
       "unwrappedSendMethods": [],
-      "unguardedWrapMethods": []
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
     },
     {
       "file": "cloudfront-distribution-provider.ts",
       "className": "CloudFrontDistributionProvider",
       "bucket": "wrapped",
       "unwrappedSendMethods": [],
-      "unguardedWrapMethods": []
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
     },
     {
       "file": "cloudfront-oai-provider.ts",
       "className": "CloudFrontOAIProvider",
       "bucket": "wrapped",
       "unwrappedSendMethods": [],
-      "unguardedWrapMethods": []
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
     },
     {
       "file": "cloudtrail-provider.ts",
       "className": "CloudTrailProvider",
       "bucket": "wrapped",
       "unwrappedSendMethods": [],
-      "unguardedWrapMethods": []
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
     },
     {
       "file": "cloudwatch-alarm-provider.ts",
       "className": "CloudWatchAlarmProvider",
       "bucket": "wrapped",
       "unwrappedSendMethods": [],
-      "unguardedWrapMethods": []
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
     },
     {
       "file": "codebuild-provider.ts",
       "className": "CodeBuildProvider",
       "bucket": "wrapped",
       "unwrappedSendMethods": [],
-      "unguardedWrapMethods": []
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
     },
     {
       "file": "codecommit-repository-provider.ts",
       "className": "CodeCommitRepositoryProvider",
       "bucket": "wrapped",
       "unwrappedSendMethods": [],
-      "unguardedWrapMethods": []
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
     },
     {
       "file": "cognito-provider.ts",
       "className": "CognitoUserPoolProvider",
       "bucket": "wrapped",
       "unwrappedSendMethods": [],
-      "unguardedWrapMethods": []
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
     },
     {
       "file": "custom-resource-provider.ts",
       "className": "CustomResourceProvider",
       "bucket": "wrapped",
       "unwrappedSendMethods": [],
-      "unguardedWrapMethods": []
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
     },
     {
       "file": "dlm-lifecycle-policy-provider.ts",
       "className": "DLMLifecyclePolicyProvider",
       "bucket": "wrapped",
       "unwrappedSendMethods": [],
-      "unguardedWrapMethods": []
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
     },
     {
       "file": "docdb-provider.ts",
       "className": "DocDBProvider",
       "bucket": "wrapped",
       "unwrappedSendMethods": [],
-      "unguardedWrapMethods": []
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
     },
     {
       "file": "dynamodb-globaltable-provider.ts",
       "className": "DynamoDBGlobalTableProvider",
       "bucket": "wrapped",
       "unwrappedSendMethods": [],
-      "unguardedWrapMethods": []
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
     },
     {
       "file": "dynamodb-table-provider.ts",
       "className": "DynamoDBTableProvider",
       "bucket": "wrapped",
       "unwrappedSendMethods": [],
-      "unguardedWrapMethods": []
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
     },
     {
       "file": "ec2-provider.ts",
       "className": "EC2Provider",
       "bucket": "allow-listed",
       "unwrappedSendMethods": [
-        "applyTagDiff",
         "updateEip"
       ],
       "unguardedWrapMethods": [],
+      "unresolvedCallees": [],
       "rationale": "KNOWN GAP tracked in #1270"
     },
     {
@@ -186,28 +201,32 @@
       "className": "ECRProvider",
       "bucket": "wrapped",
       "unwrappedSendMethods": [],
-      "unguardedWrapMethods": []
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
     },
     {
       "file": "ecs-provider.ts",
       "className": "ECSProvider",
       "bucket": "wrapped",
       "unwrappedSendMethods": [],
-      "unguardedWrapMethods": []
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
     },
     {
       "file": "efs-provider.ts",
       "className": "EFSProvider",
       "bucket": "wrapped",
       "unwrappedSendMethods": [],
-      "unguardedWrapMethods": []
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
     },
     {
       "file": "elasticache-provider.ts",
       "className": "ElastiCacheProvider",
       "bucket": "wrapped",
       "unwrappedSendMethods": [],
-      "unguardedWrapMethods": []
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
     },
     {
       "file": "elbv2-provider.ts",
@@ -218,6 +237,7 @@
         "updateLoadBalancer"
       ],
       "unguardedWrapMethods": [],
+      "unresolvedCallees": [],
       "rationale": "KNOWN GAP tracked in #1270"
     },
     {
@@ -225,35 +245,40 @@
       "className": "EMRClusterProvider",
       "bucket": "wrapped",
       "unwrappedSendMethods": [],
-      "unguardedWrapMethods": []
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
     },
     {
       "file": "emr-instance-fleet-config-provider.ts",
       "className": "EMRInstanceFleetConfigProvider",
       "bucket": "wrapped",
       "unwrappedSendMethods": [],
-      "unguardedWrapMethods": []
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
     },
     {
       "file": "emr-instance-group-config-provider.ts",
       "className": "EMRInstanceGroupConfigProvider",
       "bucket": "wrapped",
       "unwrappedSendMethods": [],
-      "unguardedWrapMethods": []
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
     },
     {
       "file": "eventbridge-bus-provider.ts",
       "className": "EventBridgeBusProvider",
       "bucket": "wrapped",
       "unwrappedSendMethods": [],
-      "unguardedWrapMethods": []
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
     },
     {
       "file": "eventbridge-rule-provider.ts",
       "className": "EventBridgeRuleProvider",
       "bucket": "wrapped",
       "unwrappedSendMethods": [],
-      "unguardedWrapMethods": []
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
     },
     {
       "file": "firehose-provider.ts",
@@ -273,6 +298,7 @@
         "update"
       ],
       "unguardedWrapMethods": [],
+      "unresolvedCallees": [],
       "rationale": "KNOWN GAP tracked in #1270"
     },
     {
@@ -280,108 +306,122 @@
       "className": "FSxFileSystemProvider",
       "bucket": "wrapped",
       "unwrappedSendMethods": [],
-      "unguardedWrapMethods": []
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
     },
     {
       "file": "glue-provider.ts",
       "className": "GlueConnectionProvider",
       "bucket": "wrapped",
       "unwrappedSendMethods": [],
-      "unguardedWrapMethods": []
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
     },
     {
       "file": "glue-provider.ts",
       "className": "GlueCrawlerProvider",
       "bucket": "wrapped",
       "unwrappedSendMethods": [],
-      "unguardedWrapMethods": []
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
     },
     {
       "file": "glue-provider.ts",
       "className": "GlueJobProvider",
       "bucket": "wrapped",
       "unwrappedSendMethods": [],
-      "unguardedWrapMethods": []
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
     },
     {
       "file": "glue-provider.ts",
       "className": "GlueProvider",
       "bucket": "wrapped",
       "unwrappedSendMethods": [],
-      "unguardedWrapMethods": []
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
     },
     {
       "file": "glue-provider.ts",
       "className": "GlueSecurityConfigurationProvider",
       "bucket": "no-aws",
       "unwrappedSendMethods": [],
-      "unguardedWrapMethods": []
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
     },
     {
       "file": "glue-provider.ts",
       "className": "GlueTriggerProvider",
       "bucket": "wrapped",
       "unwrappedSendMethods": [],
-      "unguardedWrapMethods": []
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
     },
     {
       "file": "glue-provider.ts",
       "className": "GlueWorkflowProvider",
       "bucket": "wrapped",
       "unwrappedSendMethods": [],
-      "unguardedWrapMethods": []
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
     },
     {
       "file": "iam-instance-profile-provider.ts",
       "className": "IAMInstanceProfileProvider",
       "bucket": "wrapped",
       "unwrappedSendMethods": [],
-      "unguardedWrapMethods": []
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
     },
     {
       "file": "iam-managed-policy-provider.ts",
       "className": "IAMManagedPolicyProvider",
       "bucket": "wrapped",
       "unwrappedSendMethods": [],
-      "unguardedWrapMethods": []
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
     },
     {
       "file": "iam-policy-provider.ts",
       "className": "IAMPolicyProvider",
       "bucket": "wrapped",
       "unwrappedSendMethods": [],
-      "unguardedWrapMethods": []
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
     },
     {
       "file": "iam-role-provider.ts",
       "className": "IAMRoleProvider",
       "bucket": "wrapped",
       "unwrappedSendMethods": [],
-      "unguardedWrapMethods": []
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
     },
     {
       "file": "iam-user-group-provider.ts",
       "className": "IAMUserGroupProvider",
       "bucket": "wrapped",
       "unwrappedSendMethods": [],
-      "unguardedWrapMethods": []
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
     },
     {
       "file": "kinesis-provider.ts",
       "className": "KinesisStreamProvider",
       "bucket": "wrapped",
       "unwrappedSendMethods": [],
-      "unguardedWrapMethods": []
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
     },
     {
       "file": "kinesis-streamconsumer-provider.ts",
       "className": "KinesisStreamConsumerProvider",
       "bucket": "allow-listed",
       "unwrappedSendMethods": [
-        "applyTagDiff",
-        "update"
+        "applyTagDiff"
       ],
       "unguardedWrapMethods": [],
+      "unresolvedCallees": [],
       "rationale": "KNOWN GAP tracked in #1270"
     },
     {
@@ -389,152 +429,152 @@
       "className": "KMSProvider",
       "bucket": "wrapped",
       "unwrappedSendMethods": [],
-      "unguardedWrapMethods": []
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
     },
     {
       "file": "lambda-event-invoke-config-provider.ts",
       "className": "LambdaEventInvokeConfigProvider",
       "bucket": "wrapped",
       "unwrappedSendMethods": [],
-      "unguardedWrapMethods": []
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
     },
     {
       "file": "lambda-eventsource-provider.ts",
       "className": "LambdaEventSourceMappingProvider",
       "bucket": "wrapped",
       "unwrappedSendMethods": [],
-      "unguardedWrapMethods": []
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
     },
     {
       "file": "lambda-function-provider.ts",
       "className": "LambdaFunctionProvider",
       "bucket": "wrapped",
       "unwrappedSendMethods": [],
-      "unguardedWrapMethods": []
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
     },
     {
       "file": "lambda-layer-provider.ts",
       "className": "LambdaLayerVersionProvider",
       "bucket": "no-aws",
       "unwrappedSendMethods": [],
-      "unguardedWrapMethods": []
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
     },
     {
       "file": "lambda-microvm-image-provider.ts",
       "className": "LambdaMicrovmImageProvider",
-      "bucket": "allow-listed",
-      "unwrappedSendMethods": [
-        "reconcileTags",
-        "update",
-        "waitForTerminalState"
-      ],
+      "bucket": "wrapped",
+      "unwrappedSendMethods": [],
       "unguardedWrapMethods": [],
-      "rationale": "KNOWN GAP tracked in #1270"
+      "unresolvedCallees": []
     },
     {
       "file": "lambda-permission-provider.ts",
       "className": "LambdaPermissionProvider",
       "bucket": "wrapped",
       "unwrappedSendMethods": [],
-      "unguardedWrapMethods": []
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
     },
     {
       "file": "lambda-url-provider.ts",
       "className": "LambdaUrlProvider",
       "bucket": "wrapped",
       "unwrappedSendMethods": [],
-      "unguardedWrapMethods": []
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
     },
     {
       "file": "logs-loggroup-provider.ts",
       "className": "LogsLogGroupProvider",
       "bucket": "wrapped",
       "unwrappedSendMethods": [],
-      "unguardedWrapMethods": []
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
     },
     {
       "file": "neptune-provider.ts",
       "className": "NeptuneProvider",
       "bucket": "wrapped",
       "unwrappedSendMethods": [],
-      "unguardedWrapMethods": []
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
     },
     {
       "file": "nested-stack-provider.ts",
       "className": "NestedStackProvider",
       "bucket": "no-aws",
       "unwrappedSendMethods": [],
-      "unguardedWrapMethods": []
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
     },
     {
       "file": "rds-dbproxy-endpoint-provider.ts",
       "className": "RDSDBProxyEndpointProvider",
-      "bucket": "allow-listed",
-      "unwrappedSendMethods": [
-        "applyTagDiff",
-        "update"
-      ],
+      "bucket": "wrapped",
+      "unwrappedSendMethods": [],
       "unguardedWrapMethods": [],
-      "rationale": "KNOWN GAP tracked in #1270"
+      "unresolvedCallees": []
     },
     {
       "file": "rds-dbproxy-provider.ts",
       "className": "RDSDBProxyProvider",
-      "bucket": "allow-listed",
-      "unwrappedSendMethods": [
-        "applyTagDiff",
-        "update"
-      ],
+      "bucket": "wrapped",
+      "unwrappedSendMethods": [],
       "unguardedWrapMethods": [],
-      "rationale": "KNOWN GAP tracked in #1270"
+      "unresolvedCallees": []
     },
     {
       "file": "rds-dbproxy-targetgroup-provider.ts",
       "className": "RDSDBProxyTargetGroupProvider",
-      "bucket": "allow-listed",
-      "unwrappedSendMethods": [
-        "update"
-      ],
+      "bucket": "wrapped",
+      "unwrappedSendMethods": [],
       "unguardedWrapMethods": [],
-      "rationale": "KNOWN GAP tracked in #1270"
+      "unresolvedCallees": []
     },
     {
       "file": "rds-provider.ts",
       "className": "RDSProvider",
       "bucket": "wrapped",
       "unwrappedSendMethods": [],
-      "unguardedWrapMethods": []
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
     },
     {
       "file": "route53-provider.ts",
       "className": "Route53Provider",
-      "bucket": "allow-listed",
-      "unwrappedSendMethods": [
-        "resolveHostedZoneId"
-      ],
+      "bucket": "wrapped",
+      "unwrappedSendMethods": [],
       "unguardedWrapMethods": [],
-      "rationale": "KNOWN GAP tracked in #1270"
+      "unresolvedCallees": []
     },
     {
       "file": "s3-bucket-policy-provider.ts",
       "className": "S3BucketPolicyProvider",
       "bucket": "wrapped",
       "unwrappedSendMethods": [],
-      "unguardedWrapMethods": []
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
     },
     {
       "file": "s3-bucket-provider.ts",
       "className": "S3BucketProvider",
       "bucket": "wrapped",
       "unwrappedSendMethods": [],
-      "unguardedWrapMethods": []
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
     },
     {
       "file": "s3-directory-bucket-provider.ts",
       "className": "S3DirectoryBucketProvider",
       "bucket": "no-aws",
       "unwrappedSendMethods": [],
-      "unguardedWrapMethods": []
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
     },
     {
       "file": "s3-tables-provider.ts",
@@ -544,6 +584,7 @@
         "lookupTableArn"
       ],
       "unguardedWrapMethods": [],
+      "unresolvedCallees": [],
       "rationale": "KNOWN GAP tracked in #1270"
     },
     {
@@ -551,91 +592,112 @@
       "className": "S3VectorsProvider",
       "bucket": "wrapped",
       "unwrappedSendMethods": [],
-      "unguardedWrapMethods": []
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
     },
     {
       "file": "scheduler-schedule-provider.ts",
       "className": "SchedulerScheduleProvider",
       "bucket": "wrapped",
       "unwrappedSendMethods": [],
-      "unguardedWrapMethods": []
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
     },
     {
       "file": "secretsmanager-secret-provider.ts",
       "className": "SecretsManagerSecretProvider",
       "bucket": "wrapped",
       "unwrappedSendMethods": [],
-      "unguardedWrapMethods": []
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
     },
     {
       "file": "servicediscovery-provider.ts",
       "className": "ServiceDiscoveryProvider",
       "bucket": "wrapped",
       "unwrappedSendMethods": [],
-      "unguardedWrapMethods": []
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
     },
     {
       "file": "sns-subscription-provider.ts",
       "className": "SNSSubscriptionProvider",
       "bucket": "wrapped",
       "unwrappedSendMethods": [],
-      "unguardedWrapMethods": []
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
     },
     {
       "file": "sns-topic-policy-provider.ts",
       "className": "SNSTopicPolicyProvider",
       "bucket": "wrapped",
       "unwrappedSendMethods": [],
-      "unguardedWrapMethods": []
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
     },
     {
       "file": "sns-topic-provider.ts",
       "className": "SNSTopicProvider",
       "bucket": "wrapped",
       "unwrappedSendMethods": [],
-      "unguardedWrapMethods": []
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
     },
     {
       "file": "sqs-queue-policy-provider.ts",
       "className": "SQSQueuePolicyProvider",
       "bucket": "wrapped",
       "unwrappedSendMethods": [],
-      "unguardedWrapMethods": []
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
     },
     {
       "file": "sqs-queue-provider.ts",
       "className": "SQSQueueProvider",
       "bucket": "wrapped",
       "unwrappedSendMethods": [],
-      "unguardedWrapMethods": []
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
+    },
+    {
+      "file": "src/provisioning/cloud-control-provider.ts",
+      "className": "CloudControlProvider",
+      "bucket": "wrapped",
+      "unwrappedSendMethods": [],
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
     },
     {
       "file": "ssm-parameter-provider.ts",
       "className": "SSMParameterProvider",
       "bucket": "wrapped",
       "unwrappedSendMethods": [],
-      "unguardedWrapMethods": []
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
     },
     {
       "file": "stepfunctions-provider.ts",
       "className": "StepFunctionsProvider",
       "bucket": "wrapped",
       "unwrappedSendMethods": [],
-      "unguardedWrapMethods": []
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
     },
     {
       "file": "wafv2-provider.ts",
       "className": "WAFv2WebACLProvider",
       "bucket": "wrapped",
       "unwrappedSendMethods": [],
-      "unguardedWrapMethods": []
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
     },
     {
       "file": "wait-condition-handle-provider.ts",
       "className": "WaitConditionHandleProvider",
       "bucket": "no-aws",
       "unwrappedSendMethods": [],
-      "unguardedWrapMethods": []
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
     }
   ]
 }
