@@ -281,10 +281,14 @@ describe('SDK provider update() error wrapping (issue #1267)', () => {
       );
 
       await expect(promise).rejects.toThrow(ProvisioningError);
+      await expect(promise).rejects.toThrow('Failed to update EC2 resource MyEip: AWS said no');
       await expect(promise).rejects.toMatchObject({
         resourceType: 'AWS::EC2::EIP',
         logicalId: 'MyEip',
         physicalId: 'eipalloc-123',
+        // The preserved cause is what keeps isThrottlingError working through
+        // the wrap — the same assertion every sibling case in this file makes.
+        cause: sdkError,
       });
       expect(mockEc2Send).toHaveBeenCalled();
     });

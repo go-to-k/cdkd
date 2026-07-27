@@ -109,9 +109,11 @@ export class S3TablesProvider implements ResourceProvider {
         previousProperties
       );
     } catch (error) {
-      // Pass through every cdkd-typed error untouched: ResourceUpdateNotSupportedError
-      // is control flow the deploy engine matches BY CLASS, and an inner
-      // ProvisioningError already carries better context than a re-wrap.
+      // Pass through every cdkd-typed error untouched. For THIS provider the
+      // live case is an inner ProvisioningError (the tag-diff helpers and
+      // lookupTableArn raise their own, with precise messages this outer wrap
+      // would replace); the guard is written against the CdkdError base so it
+      // also covers a control-flow error if one is ever added here.
       if (error instanceof CdkdError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(

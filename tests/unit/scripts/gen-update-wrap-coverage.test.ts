@@ -557,6 +557,101 @@ describe('gen-update-wrap-coverage classifier', () => {
       expect(c?.bucket).toBe('unguarded-wrap');
     });
 
+    // Regression for PR #1273 review nit 3: ProvisioningError and
+    // ResourceUpdateNotSupportedError are SIBLINGS (both extend CdkdError,
+    // neither extends the other), so an `instanceof ProvisioningError` guard
+    // does NOT re-throw a control-flow error. A flat "any typed guard counts"
+    // set accepted exactly that mismatch.
+    it('rejects a sibling-class guard that cannot cover the raised control-flow error', () => {
+      const src = providerSource(`
+        async update(logicalId, physicalId, resourceType, props, prev) {
+          try {
+            if (props.Class !== prev.Class) {
+              throw new ResourceUpdateNotSupportedError('T', logicalId, 'immutable');
+            }
+            await this.client.send(new UpdateThingCommand({}));
+            return { physicalId, wasReplaced: false };
+          } catch (error) {
+            if (error instanceof ProvisioningError) throw error;
+            throw new ProvisioningError('Failed to update', resourceType, logicalId);
+          }
+        }
+      `);
+      const [c] = classifySource(src, 'fake-provider.ts', new Map());
+      expect(c?.bucket).toBe('unguarded-wrap');
+    });
+
+    it('accepts the exact-class guard for the raised control-flow error', () => {
+      const src = providerSource(`
+        async update(logicalId, physicalId, resourceType, props, prev) {
+          try {
+            if (props.Class !== prev.Class) {
+              throw new ResourceUpdateNotSupportedError('T', logicalId, 'immutable');
+            }
+            await this.client.send(new UpdateThingCommand({}));
+            return { physicalId, wasReplaced: false };
+          } catch (error) {
+            if (error instanceof ResourceUpdateNotSupportedError) throw error;
+            throw new ProvisioningError('Failed to update', resourceType, logicalId);
+          }
+        }
+      `);
+      const [c] = classifySource(src, 'fake-provider.ts', new Map());
+      expect(c?.bucket).toBe('wrapped');
+    });
+
+    // Regression for PR #1273 review item 1: the delegation check credited ANY
+    // this.x() in the catch whose body held a typed guard. A cleanup helper is
+    // the realistic shape now that `instanceof CdkdError` guards are spreading
+    // into helpers.
+    it('does not credit an unrelated cleanup helper with a pass-through', () => {
+      const src = providerSource(`
+        async update(logicalId, physicalId, resourceType, props, prev) {
+          try {
+            if (props.Class !== prev.Class) {
+              throw new ResourceUpdateNotSupportedError('T', logicalId, 'immutable');
+            }
+            await this.client.send(new UpdateThingCommand({}));
+            return { physicalId, wasReplaced: false };
+          } catch (error) {
+            this.cleanup(physicalId);
+            throw new ProvisioningError('Failed to update', resourceType, logicalId);
+          }
+        }
+        cleanup(physicalId) {
+          try {
+            this.other();
+          } catch (inner) {
+            if (inner instanceof CdkdError) throw inner;
+          }
+        }
+      `);
+      const [c] = classifySource(src, 'fake-provider.ts', new Map());
+      expect(c?.bucket).toBe('unguarded-wrap');
+    });
+
+    it('does not credit a factory called with a DIFFERENT error value', () => {
+      const src = providerSource(`
+        async update(logicalId, physicalId, resourceType, props, prev) {
+          try {
+            if (props.Class !== prev.Class) {
+              throw new ResourceUpdateNotSupportedError('T', logicalId, 'immutable');
+            }
+            await this.client.send(new UpdateThingCommand({}));
+            return { physicalId, wasReplaced: false };
+          } catch (error) {
+            throw this.wrapError(this.lastError, resourceType, logicalId);
+          }
+        }
+        wrapError(error, resourceType, logicalId): ProvisioningError {
+          if (error instanceof CdkdError) throw error;
+          return new ProvisioningError('x', resourceType, logicalId);
+        }
+      `);
+      const [c] = classifySource(src, 'fake-provider.ts', new Map());
+      expect(c?.bucket).toBe('unguarded-wrap');
+    });
+
     it('does not flag a wrap that cannot capture a typed throw', () => {
       const src = providerSource(`
         async update(logicalId, physicalId, resourceType) {

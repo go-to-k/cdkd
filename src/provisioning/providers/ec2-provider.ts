@@ -1865,6 +1865,11 @@ export class EC2Provider implements ResourceProvider {
     } catch (error) {
       // Pass through cdkd-typed errors untouched (#1272): re-labelling an inner
       // ProvisioningError replaces its precise message with this outer one.
+      // Accepted trade-off on the delete-then-create replacement path: a failed
+      // re-create now surfaces as its own `Failed to create ...` (physicalId
+      // undefined) rather than being relabelled `Failed to update ...`. The
+      // inner message is the more precise one; nothing reads
+      // ProvisioningError.physicalId.
       if (error instanceof CdkdError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
@@ -2432,6 +2437,11 @@ export class EC2Provider implements ResourceProvider {
     } catch (error) {
       // Pass through cdkd-typed errors untouched (#1272): re-labelling an inner
       // ProvisioningError replaces its precise message with this outer one.
+      // Accepted trade-off on the delete-then-create replacement path: a failed
+      // re-create now surfaces as its own `Failed to create ...` (physicalId
+      // undefined) rather than being relabelled `Failed to update ...`. The
+      // inner message is the more precise one; nothing reads
+      // ProvisioningError.physicalId.
       if (error instanceof CdkdError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(

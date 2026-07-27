@@ -109,15 +109,22 @@ const OUT_JSON = resolve(repoRoot, 'docs/_generated/update-wrap-coverage.json');
 const OUT_MD = resolve(repoRoot, 'docs/_generated/update-wrap-coverage.md');
 
 /**
- * cdkd error classes that a wrapping `catch` must re-throw untouched. Anything
- * deriving from `CdkdError` carries its own exit code / formatting, and
- * `ResourceUpdateNotSupportedError` is additionally matched BY CLASS by the
- * deploy engine, so re-labelling it breaks the replacement fallback.
+ * cdkd error classes an `instanceof` guard may name, mapped to the classes that
+ * guard actually COVERS.
+ *
+ * `ProvisioningError` and `ResourceUpdateNotSupportedError` are SIBLINGS — both
+ * extend `CdkdError`, neither extends the other (`src/utils/error-handler.ts`
+ * :85 / :248). So `if (error instanceof ProvisioningError) throw error;` does
+ * NOT re-throw a `ResourceUpdateNotSupportedError`. Treating the guard set as a
+ * flat "any of these counts" list silently accepted exactly that mismatch: a
+ * provider guarding only `ProvisioningError` while its try can raise the
+ * control-flow error would pass, and the by-class replacement fallback would
+ * break anyway. Coverage is therefore per-class, not boolean.
  */
-const TYPED_PASSTHROUGH_CLASSES: ReadonlySet<string> = new Set([
-  'CdkdError',
-  'ProvisioningError',
-  'ResourceUpdateNotSupportedError',
+const GUARD_COVERAGE: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+  ['CdkdError', new Set(['CdkdError', 'ProvisioningError', 'ResourceUpdateNotSupportedError'])],
+  ['ProvisioningError', new Set(['ProvisioningError'])],
+  ['ResourceUpdateNotSupportedError', new Set(['ResourceUpdateNotSupportedError'])],
 ]);
 
 /**
@@ -351,38 +358,46 @@ function catchThrowsProvisioningError(
  * inside `handleError`, not in the clause. Checking only the clause would
  * report that provider as swallowing its own typed errors when it does not.
  */
-function hasTypedPassthroughIn(node: ts.Node, allowReturn = false): boolean {
-  let found = false;
+function collectGuardedClassesIn(node: ts.Node, allowReturn: boolean): Set<string> {
+  const covered = new Set<string>();
   const visit = (n: ts.Node): void => {
-    if (found) return;
     if (ts.isIfStatement(n)) {
-      const tested = positiveTypedTestSubject(n.expression);
-      if (tested !== null && rethrowsIdentifier(n.thenStatement, tested, allowReturn)) {
-        found = true;
-        return;
+      const test = positiveTypedTest(n.expression);
+      if (test && rethrowsIdentifier(n.thenStatement, test.subject, allowReturn)) {
+        for (const c of test.guardClasses) covered.add(c);
       }
     }
     ts.forEachChild(n, visit);
   };
   visit(node);
-  return found;
+  return covered;
 }
 
-/** The identifier a positive `x instanceof <TypedClass>` test examines, else null. */
-function positiveTypedTestSubject(n: ts.Node): string | null {
+/** A positive `x instanceof <TypedClass>` test: the identifier + guard classes. */
+interface TypedTest {
+  readonly subject: string;
+  readonly guardClasses: ReadonlySet<string>;
+}
+
+function positiveTypedTest(n: ts.Node): TypedTest | null {
   if (ts.isPrefixUnaryExpression(n) && n.operator === ts.SyntaxKind.ExclamationToken) return null;
-  if (ts.isParenthesizedExpression(n)) return positiveTypedTestSubject(n.expression);
+  if (ts.isParenthesizedExpression(n)) return positiveTypedTest(n.expression);
   if (
     ts.isBinaryExpression(n) &&
     n.operatorToken.kind === ts.SyntaxKind.InstanceOfKeyword &&
     ts.isIdentifier(n.right) &&
-    TYPED_PASSTHROUGH_CLASSES.has(n.right.text) &&
+    GUARD_COVERAGE.has(n.right.text) &&
     ts.isIdentifier(n.left)
   ) {
-    return n.left.text;
+    return { subject: n.left.text, guardClasses: GUARD_COVERAGE.get(n.right.text)! };
   }
   if (ts.isBinaryExpression(n) && n.operatorToken.kind === ts.SyntaxKind.BarBarToken) {
-    return positiveTypedTestSubject(n.left) ?? positiveTypedTestSubject(n.right);
+    const l = positiveTypedTest(n.left);
+    const r = positiveTypedTest(n.right);
+    if (l && r && l.subject === r.subject) {
+      return { subject: l.subject, guardClasses: new Set([...l.guardClasses, ...r.guardClasses]) };
+    }
+    return l ?? r;
   }
   return null;
 }
@@ -410,14 +425,31 @@ function rethrowsIdentifier(n: ts.Node, name: string, allowReturn = false): bool
   return hit;
 }
 
-/** Does the throw-helper this clause delegates to carry the pass-through? */
-function delegatedFactoryHasPassthrough(
+/**
+ * Which classes does the throw-helper this clause DELEGATES to guard?
+ *
+ * Only a REAL wrap factory counts: the callee must produce a
+ * `ProvisioningError`, and for the statement form it must additionally be
+ * `never`-returning (a plain statement call that can fall through does not
+ * raise). The CAUGHT BINDING must also appear among the arguments.
+ *
+ * Without those checks any `this.x(...)` statement in the catch whose body
+ * happened to contain a typed guard would be credited with a pass-through it
+ * does not perform — e.g. an unrelated helper called before the wrap, a call
+ * passing a DIFFERENT error value, or a cleanup routine in a nested try. That
+ * last shape is realistic now that `if (error instanceof CdkdError) throw
+ * error;` is spreading into helpers.
+ */
+function delegatedFactoryGuardedClasses(
   clause: ts.CatchClause,
   methods: ReadonlyMap<string, ClassMethod>
-): boolean {
-  let found = false;
+): Set<string> {
+  const covered = new Set<string>();
+  const decl = clause.variableDeclaration;
+  const caughtName = decl && ts.isIdentifier(decl.name) ? decl.name.text : null;
+  if (caughtName === null) return covered;
+
   const visit = (node: ts.Node): void => {
-    if (found) return;
     const isThrowForm = ts.isThrowStatement(node);
     const expr = isThrowForm
       ? node.expression
@@ -428,92 +460,56 @@ function delegatedFactoryHasPassthrough(
         : undefined;
     const callee = expr ? thisMethodCallName(expr) : null;
     const target = callee !== null ? methods.get(callee) : undefined;
-    if (target && hasTypedPassthroughIn(target.body, isThrowForm)) {
-      found = true;
-      return;
+    if (
+      target &&
+      expr &&
+      ts.isCallExpression(expr) &&
+      target.isProvisioningErrorFactory &&
+      (isThrowForm || target.returnsNever) &&
+      expr.arguments.some((a) => ts.isIdentifier(a) && a.text === caughtName)
+    ) {
+      for (const c of collectGuardedClassesIn(target.body, isThrowForm)) covered.add(c);
     }
     ts.forEachChild(node, visit);
   };
   visit(clause.block);
-  return found;
+  return covered;
 }
 
 /**
- * Does this catch clause re-throw cdkd-typed errors UNTOUCHED?
+ * Which control-flow classes does this catch clause re-throw UNTOUCHED?
  *
- * Requires all three of:
- *   1. a POSITIVE `instanceof <TypedClass>` test (the negated
- *      `if (!(error instanceof CdkdError)) throw ...` is the inverse shape —
- *      it wraps the typed error and passes the untyped one through);
- *   2. whose consequent throws the CAUGHT BINDING by name (`throw error;`) —
- *      `throw new ProvisioningError(...)` inside an `instanceof` test is
- *      precisely the #1268 defect, so accepting any throw would green-light
- *      the exact bug this invariant exists to catch;
- *   3. an actual catch-clause variable to compare against (a bare
- *      `catch { }` cannot re-throw the binding).
+ * A clause-level guard counts only when it (1) is a POSITIVE `instanceof` test
+ * — the negated `if (!(error instanceof CdkdError)) throw error;` is the
+ * inverse shape — and (2) re-throws the CAUGHT BINDING by name.
+ * `throw new ProvisioningError(...)` inside an `instanceof` test is precisely
+ * the #1268 defect, so accepting any throw would green-light the exact bug this
+ * invariant exists to catch.
+ *
+ * Returns a SET rather than a boolean because the guard classes are SIBLINGS —
+ * see {@link GUARD_COVERAGE}. The caller compares it against what the try can
+ * actually raise.
  */
-function catchHasTypedPassthrough(
+function catchGuardedClasses(
   clause: ts.CatchClause,
   methods: ReadonlyMap<string, ClassMethod>
-): boolean {
-  // A wrap that DELEGATES to a throw-helper carries its pass-through inside
-  // that helper (CloudControlProvider's shape).
-  if (delegatedFactoryHasPassthrough(clause, methods)) return true;
+): Set<string> {
+  const covered = delegatedFactoryGuardedClasses(clause, methods);
   const decl = clause.variableDeclaration;
-  if (!decl || !ts.isIdentifier(decl.name)) return false;
+  if (!decl || !ts.isIdentifier(decl.name)) return covered;
   const caughtName = decl.name.text;
 
-  let found = false;
-  const visit = (node: ts.Node): void => {
-    if (found) return;
-    if (ts.isIfStatement(node)) {
-      // Positive instanceof only: descend through `||` / parens, but NOT
-      // through a prefix `!`.
-      const positiveTypedTest = (n: ts.Node): boolean => {
-        if (ts.isPrefixUnaryExpression(n) && n.operator === ts.SyntaxKind.ExclamationToken) {
-          return false;
-        }
-        if (ts.isParenthesizedExpression(n)) return positiveTypedTest(n.expression);
-        if (
-          ts.isBinaryExpression(n) &&
-          n.operatorToken.kind === ts.SyntaxKind.InstanceOfKeyword &&
-          ts.isIdentifier(n.right) &&
-          TYPED_PASSTHROUGH_CLASSES.has(n.right.text)
-        ) {
-          return true;
-        }
-        if (
-          ts.isBinaryExpression(n) &&
-          n.operatorToken.kind === ts.SyntaxKind.BarBarToken
-        ) {
-          return positiveTypedTest(n.left) || positiveTypedTest(n.right);
-        }
-        return false;
-      };
-      const rethrowsCaughtBinding = (n: ts.Node): boolean => {
-        if (
-          ts.isThrowStatement(n) &&
-          n.expression &&
-          ts.isIdentifier(n.expression) &&
-          n.expression.text === caughtName
-        ) {
-          return true;
-        }
-        let hit = false;
-        ts.forEachChild(n, (c) => {
-          if (rethrowsCaughtBinding(c)) hit = true;
-        });
-        return hit;
-      };
-      if (positiveTypedTest(node.expression) && rethrowsCaughtBinding(node.thenStatement)) {
-        found = true;
-        return;
+  const visit = (n: ts.Node): void => {
+    if (ts.isIfStatement(n)) {
+      const test = positiveTypedTest(n.expression);
+      if (test && test.subject === caughtName && rethrowsIdentifier(n.thenStatement, caughtName)) {
+        for (const c of test.guardClasses) covered.add(c);
       }
     }
-    ts.forEachChild(node, visit);
+    ts.forEachChild(n, visit);
   };
   visit(clause.block);
-  return found;
+  return covered;
 }
 
 /**
@@ -596,14 +592,13 @@ function thisMethodCallName(node: ts.Node): string | null {
  * (Caught by live-testing the critic against the real `LogsLogGroupProvider`
  * with its pass-through removed: the lexical-only version returned green.)
  */
-function throwsTypedError(
+function collectRaisedControlFlowClasses(
   node: ts.Node,
   methods: ReadonlyMap<string, ClassMethod>,
   seen: Set<string> = new Set()
-): boolean {
-  let found = false;
+): Set<string> {
+  const raised = new Set<string>();
   const visit = (n: ts.Node): void => {
-    if (found) return;
     // Match the CONSTRUCTION, not just `throw` — the repo also raises these as
     // `return Promise.reject(new ResourceUpdateNotSupportedError(...))` (9 sites
     // across ec2 / ecs / apigateway / lambda-layer). Keying on `throw` alone
@@ -613,22 +608,21 @@ function throwsTypedError(
       ts.isIdentifier(n.expression) &&
       CONTROL_FLOW_THROW_CLASSES.has(n.expression.text)
     ) {
-      found = true;
+      raised.add(n.expression.text);
       return;
     }
     const callee = thisMethodCallName(n);
     if (callee !== null && !seen.has(callee)) {
       seen.add(callee);
       const target = methods.get(callee);
-      if (target && throwsTypedError(target.body, methods, seen)) {
-        found = true;
-        return;
+      if (target) {
+        for (const c of collectRaisedControlFlowClasses(target.body, methods, seen)) raised.add(c);
       }
     }
     ts.forEachChild(n, visit);
   };
   visit(node);
-  return found;
+  return raised;
 }
 
 export interface WalkResult {
@@ -677,8 +671,14 @@ export function analyzeClass(cls: ts.ClassDeclaration): WalkResult | null {
         const swallows = clause ? catchSwallows(clause, methods) : false;
         if (wraps && clause) {
           // A wrap that can capture a typed control-flow throw MUST pass it through.
-          if (!catchHasTypedPassthrough(clause, methods) && throwsTypedError(node.tryBlock, methods)) {
-            unguardedWrapMethods.add(method.name);
+          const raised = collectRaisedControlFlowClasses(node.tryBlock, methods);
+          if (raised.size > 0) {
+            const covered = catchGuardedClasses(clause, methods);
+            // Per-class: an `instanceof ProvisioningError` guard does NOT cover
+            // a sibling ResourceUpdateNotSupportedError.
+            if ([...raised].some((c) => !covered.has(c))) {
+              unguardedWrapMethods.add(method.name);
+            }
           }
         }
         walk(node.tryBlock, isProtected || wraps || swallows);
