@@ -18,7 +18,7 @@ import {
 } from '@aws-sdk/client-sns';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
-import { ProvisioningError } from '../../utils/error-handler.js';
+import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { stringifyValue } from '../../utils/stringify.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
@@ -287,11 +287,43 @@ export class SNSTopicProvider implements ResourceProvider {
    *
    * SNS topics have limited mutable properties (DisplayName, KmsMasterKeyId, etc.).
    * TopicName is immutable and requires replacement (handled by deployment layer).
+   *
+   * Thin wrapper that maps any AWS SDK failure onto {@link ProvisioningError}
+   * the same way {@link create} and {@link delete} do, so an update failure
+   * carries cdkd's typed error formatting and exit-code handling instead of
+   * surfacing raw (issue #1267). This provider issues many separate `send`
+   * calls across attributes / policies / subscriptions, so the wrap lives at
+   * the boundary and the body stays in {@link applyUpdate}.
+   *
+   * A typed control-flow error is re-thrown untouched: the deploy engine
+   * matches those by class to decide its fallback, so swallowing one into a
+   * ProvisioningError would silently disable that path.
    */
   async update(
     logicalId: string,
     physicalId: string,
-    _resourceType: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
+  ): Promise<ResourceUpdateResult> {
+    try {
+      return await this.applyUpdate(logicalId, physicalId, properties, previousProperties);
+    } catch (error) {
+      if (error instanceof ResourceUpdateNotSupportedError) throw error;
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to update SNS topic ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        cause
+      );
+    }
+  }
+
+  private async applyUpdate(
+    logicalId: string,
+    physicalId: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
