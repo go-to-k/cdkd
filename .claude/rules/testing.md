@@ -162,6 +162,37 @@ Practical rules:
 See `tests/unit/scripts/integ-cli-flags.test.ts` for the shape the assertions
 take.
 
+### A checker must also prove it FAILS — against real code
+
+Coverage floors prove the checker SEES its input. They do not prove it still
+REJECTS a violation. Those are different failures, and the second one is what
+makes a green CI lie.
+
+Synthetic unit fixtures cannot close it on their own, because a fixture encodes
+the author's mental model of the defect — so a checker and its tests can share
+the same blind spot and agree with each other. The only thing that proves
+rejection is introducing a REAL regression into the REAL tree and watching the
+checker exit non-zero.
+
+This is not hypothetical. The `update-wrap-coverage` critic (#1269) shipped its
+first version with a passing suite that included a dedicated
+"flags an unguarded wrap" test. The test threw the typed error LEXICALLY inside
+the `try`. Real providers do not: the wrap is at the boundary and the throw
+lives in the delegated `applyUpdate()`. So against real code the check silently
+reported green and enforced nothing on exactly the providers it existed to
+protect. It was found by deleting the pass-through from the real
+`LogsLogGroupProvider` and observing `rc=0` where `rc=1` was required.
+
+Practical rules:
+
+- for each CI-blocking verdict the checker can emit, introduce that violation
+  into REAL repo code, confirm a non-zero exit naming the right target, then
+  restore. Do this before trusting the checker, and record it in the PR;
+- treat a synthetic fixture that passes as necessary but never sufficient —
+  when the real-code probe disagrees with it, the FIXTURE is usually wrong;
+- once a real-code probe finds a miss, add the shape it exercised as a
+  synthetic regression test too, so the specific gap stays closed cheaply.
+
 ## UPDATE Testing
 
 - Environment variable `CDKD_TEST_UPDATE=true` enables UPDATE test mode

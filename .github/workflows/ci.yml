@@ -180,6 +180,25 @@ jobs:
           fi
       - run: vp run audit:sdk-attr-coverage:check
 
+      # Fail CI when docs/_generated/update-wrap-coverage.{json,md} is stale
+      # relative to the provider sources. The matrix records, per provider
+      # class declaring update(), whether every AWS `send` reachable from
+      # update() (following this.x() delegation edges) is wrapped in a
+      # ProvisioningError — and whether that wrap re-throws cdkd-typed errors
+      # untouched. An unwrapped send is the #1263 / #1267 class (a raw SDK
+      # error bypassing cdkd's exit-code handling); an unguarded wrap silently
+      # disables the deploy engine's by-class replacement fallback. The second
+      # step is the CRITIC: it hard-fails on either, unless allow-listed.
+      - name: update-wrap-coverage matrix is up-to-date
+        run: |
+          vp run gen:update-wrap-coverage
+          if ! git diff --quiet -- docs/_generated/update-wrap-coverage.json docs/_generated/update-wrap-coverage.md; then
+            echo "::error::update-wrap-coverage matrix is stale — run \`vp run gen:update-wrap-coverage\` and commit the regenerated docs/_generated/update-wrap-coverage.{json,md}"
+            git --no-pager diff -- docs/_generated/update-wrap-coverage.json docs/_generated/update-wrap-coverage.md
+            exit 1
+          fi
+      - run: vp run audit:update-wrap-coverage:check
+
   runtime-compat:
     runs-on: ubuntu-latest
     needs: check-build-test
