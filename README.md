@@ -73,6 +73,22 @@ Stack: SSM Document × 3 + Athena WorkGroup × 2 (no SDK provider — CC API fal
 
 Reproduce the first two with `./tests/benchmark/run-benchmark.sh all`. See [tests/benchmark/README.md](tests/benchmark/README.md) for details.
 
+### Reference point: Terraform
+
+"Faster than CloudFormation" is a low bar, so we also raced cdkd against Terraform: the same logical stacks expressed both as CDK apps and as Terraform HCL, deployed by all engines against real AWS. Full methodology, parity notes, and reproduction scripts live in [cdkd-bench-terraform](https://github.com/go-to-k/cdkd-bench-terraform).
+
+| Scenario | Stack | cdkd | cdkd `--no-wait` | Terraform | CloudFormation |
+| --- | --- | ---: | ---: | ---: | ---: |
+| wide | 48 independent resources (S3 / DynamoDB / SQS / SNS / SSM / Logs, 8 each) | **25.4** | 25.3 | 50.4 | 85.9 |
+| serverless | Lambda ×3 + HTTP API + DynamoDB + SNS / SQS + EventBridge | **31.4** | 31.8 | 57.9 | 124.2 |
+| webapp | VPC + NAT + subnets + DynamoDB + SQS + S3 + Lambda ×2 + HTTP API | 127.0 | **32.4** | 127.8 | 161.9 |
+| cloudfront | S3 origin + CloudFront + OAC | **171.2** | 17.8 | 191.1 | 208.1 |
+
+Cold end-to-end wall clock, median of 3 runs, seconds, `us-east-1`, cdkd v0.260.10. Unlike the tables above, these numbers include synth (cdkd / CDK) and plan (Terraform); one-time setup (`npm install` / `cdk bootstrap` / `terraform init`) is excluded for all tools. For parity, CDK-only extras (the `restrictDefaultSecurityGroup` custom resource and CDK-managed log groups) were disabled so cdkd / CloudFormation don't carry resources the Terraform config doesn't have.
+
+- **The winner depends on the stack's shape.** On wide, parallel stacks (wide, serverless) cdkd is ~2x faster than Terraform. Where a single slow resource dominates (webapp's NAT Gateway, cloudfront's propagation), physical provisioning time sets a common floor: webapp is a true tie (0.8s apart), and only `--no-wait` gets below the floor.
+- **This benchmark also made cdkd faster.** Chasing the initial webapp / cloudfront losses surfaced four real deploy-speed bugs (longest-pole scheduling, a missing EIP SDK provider, NAT Gateway and CloudFront polling intervals), fixed in [#1175](https://github.com/go-to-k/cdkd/pull/1175) and [#1177](https://github.com/go-to-k/cdkd/pull/1177). The numbers above are from the fixed version.
+
 ## Features
 
 - **Synthesis orchestration**: CDK app subprocess execution, Cloud Assembly parsing, context provider loop
