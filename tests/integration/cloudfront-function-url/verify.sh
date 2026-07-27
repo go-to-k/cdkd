@@ -161,6 +161,49 @@ if [ "${INVOKED_VIA_URL}" != "true" ]; then
 fi
 echo "    OK: Condition.Bool.\"lambda:InvokedViaFunctionUrl\" == 'true' (InvokedViaFunctionUrl silent-drop CLOSED by #609)"
 
+# --- Assertion: baseline Function URL config carries InvokeMode + Cors -
+URL_CONFIG=$(aws lambda get-function-url-config \
+  --function-name "${FUNCTION_NAME}" --region "${REGION}" --output json)
+BASE_INVOKE_MODE=$(echo "${URL_CONFIG}" | jq -r '.InvokeMode // empty')
+BASE_CORS_ORIGIN=$(echo "${URL_CONFIG}" | jq -r '.Cors.AllowOrigins[0] // empty')
+if [ "${BASE_INVOKE_MODE}" != "RESPONSE_STREAM" ]; then
+  echo "FAIL: baseline InvokeMode is '${BASE_INVOKE_MODE}' (expected RESPONSE_STREAM)" >&2
+  echo "${URL_CONFIG}" | jq .
+  exit 1
+fi
+if [ "${BASE_CORS_ORIGIN}" != "https://example.com" ]; then
+  echo "FAIL: baseline Cors.AllowOrigins[0] is '${BASE_CORS_ORIGIN}' (expected https://example.com)" >&2
+  echo "${URL_CONFIG}" | jq .
+  exit 1
+fi
+echo "    OK: baseline URL config has InvokeMode=RESPONSE_STREAM + Cors"
+
+# --- Phase 1b: removal redeploy (issue #1160 lambda-url batch) --------
+# Drop InvokeMode + Cors from the template; UpdateFunctionUrlConfig uses
+# merge semantics, so without the provider's explicit clear shapes the
+# live values would silently persist. Assert AWS reset both.
+echo "==> Phase 1b: removal redeploy (InvokeMode + Cors dropped)"
+CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes
+
+URL_CONFIG=$(aws lambda get-function-url-config \
+  --function-name "${FUNCTION_NAME}" --region "${REGION}" --output json)
+REMOVAL_INVOKE_MODE=$(echo "${URL_CONFIG}" | jq -r '.InvokeMode // empty')
+REMOVAL_HAS_CORS=$(echo "${URL_CONFIG}" | jq 'has("Cors")')
+if [ "${REMOVAL_INVOKE_MODE}" != "BUFFERED" ]; then
+  echo "FAIL: post-removal InvokeMode is '${REMOVAL_INVOKE_MODE}' (expected BUFFERED — removal silently dropped)" >&2
+  echo "${URL_CONFIG}" | jq .
+  exit 1
+fi
+if [ "${REMOVAL_HAS_CORS}" != "false" ]; then
+  echo "FAIL: post-removal URL config still has Cors (removal silently dropped)" >&2
+  echo "${URL_CONFIG}" | jq .
+  exit 1
+fi
+echo "    OK: removal reset InvokeMode to BUFFERED and cleared Cors (issue #1160 closed for AWS::Lambda::Url)"
+
 # --- Phase 2: destroy -------------------------------------------------
 echo "==> Phase 2: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \

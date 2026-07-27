@@ -13,10 +13,19 @@ import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
  * - CloudFront Distribution with Function URL as HTTP origin
  * - Lambda Permission for CloudFront
  * - Cross-resource references (Function URL → CloudFront origin)
+ *
+ * REMOVAL phase (CDKD_TEST_REMOVAL=true, issue #1160 lambda-url batch):
+ * the baseline sets InvokeMode=RESPONSE_STREAM + a Cors block on the
+ * Function URL; the removal redeploy drops both, and verify.sh asserts
+ * AWS reset them (InvokeMode back to BUFFERED, Cors gone) instead of
+ * silently keeping the live values (UpdateFunctionUrlConfig merge
+ * semantics).
  */
 export class CloudFrontFunctionUrlStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
+
+    const isRemoval = process.env.CDKD_TEST_REMOVAL === 'true';
 
     // Create Lambda function with inline Python code
     const fn = new lambda.Function(this, 'Handler', {
@@ -35,9 +44,21 @@ def handler(event, context):
       timeout: cdk.Duration.seconds(10),
     });
 
-    // Add Function URL with public access (no IAM auth)
+    // Add Function URL with public access (no IAM auth). InvokeMode + Cors
+    // are present at baseline and dropped in the removal phase (the CDN
+    // origin still works with RESPONSE_STREAM — a buffered handler response
+    // is delivered unchanged; verify.sh asserts config shape, not runtime).
     const fnUrl = fn.addFunctionUrl({
       authType: lambda.FunctionUrlAuthType.NONE,
+      ...(isRemoval
+        ? {}
+        : {
+            invokeMode: lambda.InvokeMode.RESPONSE_STREAM,
+            cors: {
+              allowedOrigins: ['https://example.com'],
+              maxAge: cdk.Duration.seconds(5),
+            },
+          }),
     });
 
     // Exercise the issue #609 backfill of

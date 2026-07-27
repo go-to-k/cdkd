@@ -12,6 +12,7 @@ import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import { clearOnUpdateRemoval } from '../update-removal.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -142,14 +143,25 @@ export class LambdaUrlProvider implements ResourceProvider {
     }
 
     const authType = (properties['AuthType'] as FunctionUrlAuthType) || 'NONE';
-    const cors = properties['Cors'] as Record<string, unknown> | undefined;
 
     const updateParams: import('@aws-sdk/client-lambda').UpdateFunctionUrlConfigCommandInput = {
       FunctionName: physicalId,
       AuthType: authType,
     };
-    if (properties['InvokeMode'] !== undefined)
-      updateParams.InvokeMode = properties['InvokeMode'] as InvokeMode;
+    // issue #1160: UpdateFunctionUrlConfig uses merge semantics (live-probed
+    // 2026-07-27: an update omitting InvokeMode / Cors retains the live
+    // values), while CFn resets a property removed from the template to its
+    // default. Route both mutable optional fields through
+    // clearOnUpdateRemoval with the live-probed clear shapes:
+    //   InvokeMode -> 'BUFFERED' (the documented CFn/API default)
+    //   Cors       -> {} (an empty Cors object clears CORS entirely —
+    //                 GetFunctionUrlConfig omits the field afterwards)
+    const invokeMode = clearOnUpdateRemoval(
+      properties['InvokeMode'] as InvokeMode | undefined,
+      previousProperties['InvokeMode'] as InvokeMode | undefined,
+      'BUFFERED' as InvokeMode
+    );
+    if (invokeMode !== undefined) updateParams.InvokeMode = invokeMode;
     // Class 2 sanitize: `readCurrentState` always-emits a `Cors` placeholder
     // with empty arrays for `AllowOrigins` / `AllowMethods` / `AllowHeaders`
     // / `ExposeHeaders` so a console-side CORS toggle on a URL configured
@@ -157,15 +169,21 @@ export class LambdaUrlProvider implements ResourceProvider {
     // placeholder round-trips back through `update()` — sending an
     // all-empty `Cors` to AWS would needlessly mutate the URL to
     // "CORS-configured-but-empty" instead of "no CORS". Mirror
-    // `serializeRedrivePolicy` in `sqs-queue-provider.ts` and treat the
-    // empty-shape placeholder as "no CORS" (omit `Cors` from the
-    // UpdateFunctionUrlConfig input entirely).
-    if (cors) {
-      const builtCors = this.buildCorsConfig(cors);
-      if (Object.keys(builtCors).length > 0) {
-        updateParams.Cors = builtCors;
-      }
-    }
+    // `serializeRedrivePolicy` in `sqs-queue-provider.ts` and normalize the
+    // empty-shape placeholder to "no CORS" on BOTH sides before the removal
+    // check — so a placeholder on the new side with real previous CORS still
+    // clears, and a placeholder-only previous never triggers a spurious
+    // clear call.
+    const newCorsRaw = properties['Cors'] as Record<string, unknown> | undefined;
+    const prevCorsRaw = previousProperties['Cors'] as Record<string, unknown> | undefined;
+    const newCorsBuilt = newCorsRaw ? this.buildCorsConfig(newCorsRaw) : undefined;
+    const prevCorsBuilt = prevCorsRaw ? this.buildCorsConfig(prevCorsRaw) : undefined;
+    const corsParam = clearOnUpdateRemoval(
+      newCorsBuilt && Object.keys(newCorsBuilt).length > 0 ? newCorsBuilt : undefined,
+      prevCorsBuilt && Object.keys(prevCorsBuilt).length > 0 ? prevCorsBuilt : undefined,
+      {}
+    );
+    if (corsParam !== undefined) updateParams.Cors = corsParam;
 
     const response = await this.lambdaClient.send(new UpdateFunctionUrlConfigCommand(updateParams));
 
