@@ -18,6 +18,7 @@ import {
 } from '@aws-sdk/client-elasticache';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { clearOnUpdateRemoval } from '../update-removal.js';
 import { generateResourceName } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
@@ -136,7 +137,13 @@ export class ElastiCacheProvider implements ResourceProvider {
   ): Promise<ResourceUpdateResult> {
     switch (resourceType) {
       case 'AWS::ElastiCache::SubnetGroup':
-        return this.updateSubnetGroup(logicalId, physicalId, resourceType, properties);
+        return this.updateSubnetGroup(
+          logicalId,
+          physicalId,
+          resourceType,
+          properties,
+          previousProperties
+        );
       case 'AWS::ElastiCache::CacheCluster':
         return this.updateCacheCluster(
           logicalId,
@@ -231,17 +238,31 @@ export class ElastiCacheProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating CacheSubnetGroup ${logicalId}: ${physicalId}`);
 
     try {
+      // #1160 reset-on-removal — ModifyCacheSubnetGroup has merge semantics
+      // (an absent CacheSubnetGroupDescription means "no change"), so a
+      // description REMOVED from the template must be sent explicitly.
+      // Reset value: the same `Subnet group for ${logicalId}` default that
+      // `createSubnetGroup` synthesizes when the template omits the
+      // description, keeping create/update parity. (CFn marks `Description`
+      // required on AWS::ElastiCache::SubnetGroup, so a removal is
+      // CFn-invalid anyway — but cdkd's create path tolerates the absence
+      // with this default, and update must not silently keep the old value.)
       await this.getClient().send(
         new ModifyCacheSubnetGroupCommand({
           CacheSubnetGroupName: physicalId,
-          CacheSubnetGroupDescription:
+          CacheSubnetGroupDescription: clearOnUpdateRemoval(
             (properties['Description'] as string | undefined) ??
-            (properties['CacheSubnetGroupDescription'] as string | undefined),
+              (properties['CacheSubnetGroupDescription'] as string | undefined),
+            (previousProperties['Description'] as string | undefined) ??
+              (previousProperties['CacheSubnetGroupDescription'] as string | undefined),
+            `Subnet group for ${logicalId}`
+          ),
           SubnetIds: properties['SubnetIds'] as string[],
         })
       );
@@ -424,6 +445,41 @@ export class ElastiCacheProvider implements ResourceProvider {
       // surfaces as drift on the read side.
       const rawSgIds = properties['VpcSecurityGroupIds'] as string[] | undefined;
       const sgIds = rawSgIds && rawSgIds.length > 0 ? rawSgIds : undefined;
+
+      // #1160 reset-on-removal — ModifyCacheCluster has merge semantics (an
+      // absent input field means "no change"), so a property REMOVED from
+      // the template must be sent as its explicit CFn-default reset value
+      // via `clearOnUpdateRemoval` (see the helper's JSDoc). Deliberately
+      // NOT reset here:
+      //   * EngineVersion — removal would imply moving to the engine's
+      //     default version, a risky version change cdkd must not
+      //     synthesize (ModifyCacheClusterMessage doc: downgrade is
+      //     impossible without recreate); leave unchanged.
+      //   * CacheParameterGroupName — the `default.<family>` name is
+      //     engine + version dependent; synthesizing it risks targeting the
+      //     wrong family (RDS-batch analog, #1222).
+      //   * PreferredMaintenanceWindow / SnapshotWindow — AWS assigns a
+      //     random per-cluster window when omitted; no documented reset
+      //     sentinel exists, so removal keeps the current window.
+      //   * IpDiscovery — a removal is only meaningful on `dual_stack`
+      //     clusters (ipv4 / ipv6 NetworkType forces the matching value),
+      //     and AWS does not document the dual-stack default; a wrong reset
+      //     flips client DNS resolution, so leave unchanged.
+      //   * VpcSecurityGroupIds — deliberate empty-guard above
+      //     (readCurrentState placeholder defense); classified UNCERTAIN in
+      //     the #1160 audit, out of this batch's scope.
+
+      // NotificationTopicArn has no "clear to empty" input; the documented
+      // disable sentinel is NotificationTopicStatus=inactive
+      // (ModifyCacheClusterMessage doc: "Notifications are sent only if the
+      // status is active"). On removal keep the ARN absent and send the
+      // inactive status; when an ARN is present, send active explicitly so
+      // re-adding a topic after a removal reactivates delivery.
+      const notificationTopicArn = properties['NotificationTopicArn'] as string | undefined;
+      const notificationRemoved =
+        notificationTopicArn === undefined &&
+        previousProperties['NotificationTopicArn'] !== undefined;
+
       await this.getClient().send(
         new ModifyCacheClusterCommand({
           CacheClusterId: physicalId,
@@ -435,16 +491,44 @@ export class ElastiCacheProvider implements ResourceProvider {
           PreferredMaintenanceWindow: properties['PreferredMaintenanceWindow'] as
             | string
             | undefined,
-          SnapshotRetentionLimit:
+          // CFn default: 0 — automatic backups off (SnapshotRetentionLimit
+          // doc: "If the value ... is set to zero (0), backups are turned
+          // off").
+          SnapshotRetentionLimit: clearOnUpdateRemoval(
             properties['SnapshotRetentionLimit'] != null
               ? Number(properties['SnapshotRetentionLimit'])
               : undefined,
+            previousProperties['SnapshotRetentionLimit'] != null
+              ? Number(previousProperties['SnapshotRetentionLimit'])
+              : undefined,
+            0
+          ),
           SnapshotWindow: properties['SnapshotWindow'] as string | undefined,
-          AutoMinorVersionUpgrade: properties['AutoMinorVersionUpgrade'] as boolean | undefined,
-          NotificationTopicArn: properties['NotificationTopicArn'] as string | undefined,
-          LogDeliveryConfigurations: properties['LogDeliveryConfigurations'] as
-            | LogDeliveryConfigurationRequest[]
-            | undefined,
+          // Service default when omitted at create: enabled (live-verified
+          // 2026-07-27 — a bare CreateCacheCluster reports
+          // AutoMinorVersionUpgrade=true on DescribeCacheClusters).
+          AutoMinorVersionUpgrade: clearOnUpdateRemoval(
+            properties['AutoMinorVersionUpgrade'] as boolean | undefined,
+            previousProperties['AutoMinorVersionUpgrade'] as boolean | undefined,
+            true
+          ),
+          NotificationTopicArn: notificationTopicArn,
+          ...(notificationRemoved && { NotificationTopicStatus: 'inactive' }),
+          ...(notificationTopicArn !== undefined && { NotificationTopicStatus: 'active' }),
+          // Per-LogType merge semantics: each request entry modifies ONLY
+          // its own LogType, so a log type dropped from the template (or the
+          // whole property removed) must be sent as an explicit
+          // `{ LogType, Enabled: false }` disable entry
+          // (LogDeliveryConfigurationRequest doc: "Specify if log delivery
+          // is enabled. Default true.").
+          LogDeliveryConfigurations: this.buildLogDeliveryConfigurationsForUpdate(
+            properties['LogDeliveryConfigurations'] as
+              | LogDeliveryConfigurationRequest[]
+              | undefined,
+            previousProperties['LogDeliveryConfigurations'] as
+              | LogDeliveryConfigurationRequest[]
+              | undefined
+          ),
           IpDiscovery: properties['IpDiscovery'] as IpDiscovery | undefined,
           ApplyImmediately: true,
         })
@@ -545,6 +629,35 @@ export class ElastiCacheProvider implements ResourceProvider {
   }
 
   // ─── Helpers ──────────────────────────────────────────────────────
+
+  /**
+   * Build the `LogDeliveryConfigurations` input for ModifyCacheCluster so a
+   * log type REMOVED from the template is explicitly disabled (issue #1160).
+   *
+   * ModifyCacheCluster applies each request entry to ONLY its own LogType
+   * (per-entry merge semantics), so both a whole-property removal and a
+   * per-entry removal would silently keep the live delivery config. The
+   * documented disable sentinel is `{ LogType, Enabled: false }`
+   * (LogDeliveryConfigurationRequest doc: "Specify if log delivery is
+   * enabled. Default true."). Kept / added entries pass through unchanged;
+   * previously-configured log types missing from the new template get a
+   * disable entry appended. Returns `undefined` when there is nothing to
+   * send (no change).
+   */
+  private buildLogDeliveryConfigurationsForUpdate(
+    newConfigs: LogDeliveryConfigurationRequest[] | undefined,
+    previousConfigs: LogDeliveryConfigurationRequest[] | undefined
+  ): LogDeliveryConfigurationRequest[] | undefined {
+    const kept = newConfigs ?? [];
+    const keptLogTypes = new Set(
+      kept.map((c) => c.LogType).filter((t): t is NonNullable<typeof t> => t !== undefined)
+    );
+    const disables: LogDeliveryConfigurationRequest[] = (previousConfigs ?? [])
+      .filter((c) => c.LogType !== undefined && !keptLogTypes.has(c.LogType))
+      .map((c) => ({ LogType: c.LogType, Enabled: false }));
+    const merged = [...kept, ...disables];
+    return merged.length > 0 ? merged : undefined;
+  }
 
   /**
    * Apply a diff between old and new CFn-shape Tags arrays via ElastiCache's
@@ -752,7 +865,14 @@ export class ElastiCacheProvider implements ResourceProvider {
     if (cluster.AutoMinorVersionUpgrade !== undefined) {
       result['AutoMinorVersionUpgrade'] = cluster.AutoMinorVersionUpgrade;
     }
-    if (cluster.NotificationConfiguration?.TopicArn !== undefined) {
+    // AWS keeps the topic ARN visible on DescribeCacheClusters after the
+    // #1160 removal reset (NotificationTopicStatus=inactive) — semantically
+    // "no notification topic configured" — so gate the emit on the status
+    // to keep the post-removal read round-trip clean.
+    if (
+      cluster.NotificationConfiguration?.TopicArn !== undefined &&
+      cluster.NotificationConfiguration.TopicStatus !== 'inactive'
+    ) {
       result['NotificationTopicArn'] = cluster.NotificationConfiguration.TopicArn;
     }
     if (cluster.IpDiscovery !== undefined) result['IpDiscovery'] = cluster.IpDiscovery;
