@@ -128,6 +128,7 @@ Unit tests under `tests/unit/**` (Vitest, AWS SDK mocked via `vi.mock()`). Integ
 **Always refer to these documents**:
 
 - **[docs/architecture.md](docs/architecture.md)** - Detailed architecture, deploy flows, design principles, end-to-end pipeline walkthrough
+- **[docs/benchmarks.md](docs/benchmarks.md)** - Full benchmark suite (vs CloudFormation / Express mode / Terraform); the README keeps only the Express + Terraform summary tables
 - **[docs/state-management.md](docs/state-management.md)** - S3 state structure, locking mechanism, troubleshooting
 - **[docs/cli-reference.md](docs/cli-reference.md)** - CLI flag details (concurrency, --no-wait, per-resource timeout)
 - **[docs/supported-resources.md](docs/supported-resources.md)** - Full per-type SDK Provider / Cloud Control coverage table

@@ -8,6 +8,7 @@ Drop-in CDK CLI for existing CDK apps — up to 15x faster deploys via direct AW
 
 - **Drop-in CDK compatible**: your existing CDK app code runs as-is.
 - **Up to 15x faster deploys**: direct SDK calls, aggressive parallelization, and `--no-wait` to skip slow stabilization waits.
+- **Faster than Terraform and CloudFormation Express mode**: wins or ties every benchmarked scenario against Terraform, and beats CloudFormation's own fast-deploy option on nearly every stack — see [Benchmark](#benchmark).
 
 ![cdk deploy vs cdkd deploy — side-by-side, 35s recording, real AWS deploy. cdkd finishes while cdk is still creating its CloudFormation changeset.](assets/cdk-vs-cdkd.gif)
 
@@ -45,37 +46,9 @@ Best of 3 runs, deploy-phase only, seconds, `us-west-2`. The `VPC + Lambda + SQS
 - **Async-heavy stacks are where the gap explodes.** On the VPC + CloudFront stack, `cdkd --no-wait` finishes in 40s vs Express's 366s (~9x) — cdkd returns as soon as each create call returns, leaving CloudFront propagation and NAT Gateway stabilization to complete in the background.
 - **S3 is the one case where Express edges cdkd's default** (22s vs 23s). On a near-instant single-resource stack there is little left to parallelize, and `--no-wait` makes no difference there.
 
-### SDK Provider path — **5.5x faster** (17.0s vs 94.4s)
+### vs Terraform — cdkd wins or ties every scenario
 
-Stack: S3 Bucket, DynamoDB Table, SQS Queue, SNS Topic, SSM Parameter (5 independent resources, fully parallelized by cdkd's DAG scheduler).
-
-| | AWS CDK (CFn) | cdkd | Speedup |
-| --- | ---: | ---: | ---: |
-| Deploy | **94.4s** | **17.0s** | **5.5x** |
-
-### VPC + CloudFront + Lambda stack — **15x faster with `--no-wait`** (40s vs 599s)
-
-Real-world stack: 1 VPC (2 AZs, NAT Gateway, public + private subnets) + Lambda Function (with `VpcConfig`) + Lambda Function URL (AWS_IAM) + CloudFront Distribution (OAC, caching disabled) + SQS Queue + EventSourceMapping + Consumer Lambda.
-
-| | AWS CDK (CFn) | cdkd | cdkd `--no-wait` |
-| --- | ---: | ---: | ---: |
-| Deploy | **599s** | 197s (3.0x) | **40s (15.0x)** |
-
-The 15x figure requires `cdkd deploy --no-wait`, which returns as soon as each Create call returns and lets AWS finish CloudFront's ~5min propagation + NAT Gateway stabilization in the background. cdkd's default scheduler already parallelizes `CloudFront::Distribution` / `Lambda::Url` / VPC Lambda with NAT Gateway propagation (pass `--no-aggressive-vpc-parallel` to opt out); on this stack the default gives ~3x. `--no-wait` adds the rest of the gap by skipping the propagation waits entirely.
-
-### Cloud Control API fallback path — **1.6x faster** (40.9s vs 64.9s)
-
-Stack: SSM Document × 3 + Athena WorkGroup × 2 (no SDK provider — CC API fallback).
-
-| | AWS CDK (CFn) | cdkd | Speedup |
-| --- | ---: | ---: | ---: |
-| Deploy | **64.9s** | **40.9s** | **1.6x** |
-
-Reproduce the first two with `./tests/benchmark/run-benchmark.sh all`. See [tests/benchmark/README.md](tests/benchmark/README.md) for details.
-
-### Reference point: Terraform
-
-"Faster than CloudFormation" is a low bar, so we also raced cdkd against Terraform: the same logical stacks expressed both as CDK apps and as Terraform HCL, deployed by all engines against real AWS. Full methodology, parity notes, and reproduction scripts live in [cdkd-bench-terraform](https://github.com/go-to-k/cdkd-bench-terraform).
+"Faster than CloudFormation" is a low bar, so we also raced cdkd against Terraform: the same logical stacks expressed both as CDK apps and as Terraform HCL, deployed by all engines against real AWS.
 
 | Scenario | Stack | cdkd | cdkd `--no-wait` | Terraform | CloudFormation |
 | --- | --- | ---: | ---: | ---: | ---: |
@@ -84,72 +57,11 @@ Reproduce the first two with `./tests/benchmark/run-benchmark.sh all`. See [test
 | webapp | VPC + NAT + subnets + DynamoDB + SQS + S3 + Lambda ×2 + HTTP API | 127.0 | **32.4** | 127.8 | 161.9 |
 | cloudfront | S3 origin + CloudFront + OAC | **171.2** | 17.8 | 191.1 | 208.1 |
 
-Cold end-to-end wall clock, median of 3 runs, seconds, `us-east-1`, cdkd v0.260.10. Unlike the tables above, these numbers include synth (cdkd / CDK) and plan (Terraform); one-time setup (`npm install` / `cdk bootstrap` / `terraform init`) is excluded for all tools. For parity, CDK-only extras (the `restrictDefaultSecurityGroup` custom resource and CDK-managed log groups) were disabled so cdkd / CloudFormation don't carry resources the Terraform config doesn't have.
+Cold end-to-end wall clock (unlike the deploy-phase-only tables above, these numbers include synth / plan), median of 3 runs, seconds, `us-east-1`. On wide, parallel stacks cdkd is ~2x faster than Terraform; where a single slow resource dominates (NAT Gateway, CloudFront propagation), physical provisioning time sets a common floor and only `--no-wait` gets below it. Full methodology, parity notes, and reproduction scripts live in [cdkd-bench-terraform](https://github.com/go-to-k/cdkd-bench-terraform).
 
-- **The winner depends on the stack's shape.** On wide, parallel stacks (wide, serverless) cdkd is ~2x faster than Terraform. Where a single slow resource dominates (webapp's NAT Gateway, cloudfront's propagation), physical provisioning time sets a common floor: webapp is a true tie (0.8s apart), and only `--no-wait` gets below the floor.
-- **This benchmark also made cdkd faster.** Chasing the initial webapp / cloudfront losses surfaced four real deploy-speed bugs (longest-pole scheduling, a missing EIP SDK provider, NAT Gateway and CloudFront polling intervals), fixed in [#1175](https://github.com/go-to-k/cdkd/pull/1175) and [#1177](https://github.com/go-to-k/cdkd/pull/1177). The numbers above are from the fixed version.
+### More benchmarks
 
-## Features
-
-- **Synthesis orchestration**: CDK app subprocess execution, Cloud Assembly parsing, context provider loop
-- **Asset handling**: Self-implemented asset publisher for S3 file assets (ZIP packaging) and Docker images (ECR)
-- **Context resolution**: Self-implemented context provider loop for Vpc.fromLookup(), AZ, SSM, HostedZone, etc.
-- **Hybrid provisioning**: SDK Providers for fast direct API calls, Cloud Control API fallback for broad resource coverage
-- **Diff calculation**: Self-implemented resource/property-level diff between desired template and current state
-- **S3-based state management**: No DynamoDB required, uses S3 conditional writes for locking
-- **DAG-based parallelization**: Analyze `Ref`/`Fn::GetAtt` dependencies and execute in parallel
-- **Rollback on failure**: When a deploy errors mid-stack, cdkd rolls back the resources it just created so the stack state stays consistent (CloudFormation parity — but cdkd does this without round-tripping through CFn). Pass `cdkd deploy --no-rollback` to skip rollback and keep the partial state for Terraform-style inspection / repair — then either fix forward with another `cdkd deploy`, revert with the standalone `cdkd rollback`, or `cdkd destroy` to clean up. See [Rollback behavior](#rollback-behavior).
-- **`--no-wait` for async resources**: Skip the multi-minute wait on CloudFront / RDS / ElastiCache / NAT Gateway / Lambda MicroVM Image and return as soon as the create call returns (CloudFormation always blocks)
-- **VPC route DependsOn relaxation (on by default)**: Drop CDK-injected defensive `DependsOn` edges from VPC Lambdas onto private-subnet routes so `CloudFront::Distribution` and `Lambda::Url` start their ~3-min propagation in parallel with NAT Gateway stabilization (~50% faster on VPC + Lambda + CloudFront stacks). Pass `--no-aggressive-vpc-parallel` to opt out.
-- **Local execution** (`cdkd local invoke` / `start-api` / `run-task` / `start-service` / `start-alb` / `start-cloudfront` / `invoke-agentcore` / `start-agentcore`): run Lambdas, API Gateway routes, ECS tasks, long-running ECS services, CloudFront distributions, and Bedrock AgentCore Runtimes from your CDK code. All AWS Lambda runtimes, container Lambdas, REST v1 / HTTP v2 / Function URL routes, Service Connect / Cloud Map, AgentCore HTTP / MCP / A2A / AGUI / WebSocket protocols (one-shot `invoke-agentcore` and long-running warm serve via `start-agentcore`, which serves the native contract — `POST /invocations` + `GET /ping`, MCP `/mcp`, A2A `/` — plus the `/ws` bridge for HTTP / AGUI). The Docker-backed commands work for both `cdkd deploy`-managed (`--from-state`) AND `cdk deploy`-managed (`--from-cfn-stack`) stacks; `start-cloudfront` serves the viewer-request -> S3 / Lambda Function URL origin -> viewer-response pipeline (CloudFront-Functions + S3-only distributions run in-process with no Docker). See [Local execution](#local-execution).
-- **Bidirectional CloudFormation migration**: `cdkd import --migrate-from-cloudformation` adopts existing CFn stacks (including `cdk deploy`-managed) into cdkd state without re-creating resources; `cdkd export` hands a cdkd stack back to CloudFormation when production-ready. See [Importing](#importing-existing-resources) / [Exporting](#exporting-a-stack-back-to-cloudformation).
-
-> **Note**: Resource types not covered by either SDK Providers or Cloud Control API cannot be deployed with cdkd. Deployment fails with a clear error message naming the type + a 1-click issue link.
-
-## How it works
-
-```
-┌─────────────────┐
-│  Your CDK App   │  (aws-cdk-lib)
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│ cdkd Synthesis  │  Subprocess + Cloud Assembly parser
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│ CloudFormation  │
-│   Template      │
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│ Asset Build &   │  S3 ZIP upload / ECR image build & push
-│   Publish       │
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│ cdkd Engine     │
-│ - DAG Analysis  │  Dependency graph construction
-│ - Diff Calc     │  Compare with existing resources
-│ - Parallel Exec │  Dispatch on deps complete (no level barrier)
-└────────┬────────┘
-         │
-    ┌────┴────┐
-    ▼         ▼
-┌────────┐ ┌────────┐
-│  SDK   │ │ Cloud  │
-│Provider│ │Control │  Fallback for many
-│        │ │  API   │  additional types
-└────────┘ └────────┘
-```
-
-For a step-by-step walkthrough of the full `cdkd deploy` pipeline (CLI
-parsing → synthesis → asset publishing → per-stack deploy), see
-[docs/architecture.md](docs/architecture.md#5-end-to-end-pipeline-walkthrough-cdkd-deploy).
+The full benchmark suite lives in [docs/benchmarks.md](docs/benchmarks.md): the SDK Provider path (**5.5x**, 17.0s vs 94.4s), the VPC + CloudFront + Lambda stack behind the headline **15x** (40s vs 599s with `--no-wait`), the Cloud Control API fallback path (**1.6x**), and the Terraform comparison in full detail. Reproduction scripts: [tests/benchmark](tests/benchmark/README.md).
 
 ## Prerequisites
 
@@ -212,6 +124,68 @@ in-place UPDATE repointing asset references — content identical, no replacemen
 Downgrading is safe too (older binaries ignore the marker). Explicit pre-provisioning
 (`cdkd bootstrap --region <r>`), legacy-mode opt-outs, and how this relates to
 `cdk bootstrap`: see [`cdkd bootstrap`](docs/cli-reference.md#cdkd-bootstrap).
+
+## Features
+
+- **Synthesis orchestration**: CDK app subprocess execution, Cloud Assembly parsing, context provider loop
+- **Asset handling**: Self-implemented asset publisher for S3 file assets (ZIP packaging) and Docker images (ECR)
+- **Context resolution**: Self-implemented context provider loop for Vpc.fromLookup(), AZ, SSM, HostedZone, etc.
+- **Hybrid provisioning**: SDK Providers for fast direct API calls, Cloud Control API fallback for broad resource coverage
+- **Diff calculation**: Self-implemented resource/property-level diff between desired template and current state
+- **S3-based state management**: No DynamoDB required, uses S3 conditional writes for locking
+- **DAG-based parallelization**: Analyze `Ref`/`Fn::GetAtt` dependencies and execute in parallel
+- **Rollback on failure**: When a deploy errors mid-stack, cdkd rolls back the resources it just created so the stack state stays consistent (CloudFormation parity — but cdkd does this without round-tripping through CFn). Pass `cdkd deploy --no-rollback` to skip rollback and keep the partial state for Terraform-style inspection / repair — then either fix forward with another `cdkd deploy`, revert with the standalone `cdkd rollback`, or `cdkd destroy` to clean up. See [Rollback behavior](#rollback-behavior).
+- **`--no-wait` for async resources**: Skip the multi-minute wait on CloudFront / RDS / ElastiCache / NAT Gateway / Lambda MicroVM Image and return as soon as the create call returns (CloudFormation always blocks)
+- **VPC route DependsOn relaxation (on by default)**: Drop CDK-injected defensive `DependsOn` edges from VPC Lambdas onto private-subnet routes so `CloudFront::Distribution` and `Lambda::Url` start their ~3-min propagation in parallel with NAT Gateway stabilization (~50% faster on VPC + Lambda + CloudFront stacks). Pass `--no-aggressive-vpc-parallel` to opt out.
+- **Local execution** (`cdkd local invoke` / `start-api` / `run-task` / `start-service` / `start-alb` / `start-cloudfront` / `invoke-agentcore` / `start-agentcore`): run Lambdas, API Gateway routes, ECS tasks, long-running ECS services, CloudFront distributions, and Bedrock AgentCore Runtimes from your CDK code. All AWS Lambda runtimes, container Lambdas, REST v1 / HTTP v2 / Function URL routes, Service Connect / Cloud Map, AgentCore HTTP / MCP / A2A / AGUI / WebSocket protocols (one-shot `invoke-agentcore` and long-running warm serve via `start-agentcore`, which serves the native contract — `POST /invocations` + `GET /ping`, MCP `/mcp`, A2A `/` — plus the `/ws` bridge for HTTP / AGUI). The Docker-backed commands work for both `cdkd deploy`-managed (`--from-state`) AND `cdk deploy`-managed (`--from-cfn-stack`) stacks; `start-cloudfront` serves the viewer-request -> S3 / Lambda Function URL origin -> viewer-response pipeline (CloudFront-Functions + S3-only distributions run in-process with no Docker). See [Local execution](#local-execution).
+- **Bidirectional CloudFormation migration**: `cdkd import --migrate-from-cloudformation` adopts existing CFn stacks (including `cdk deploy`-managed) into cdkd state without re-creating resources; `cdkd export` hands a cdkd stack back to CloudFormation when production-ready. See [Importing](#importing-existing-resources) / [Exporting](#exporting-a-stack-back-to-cloudformation).
+
+> **Note**: Resource types not covered by either SDK Providers or Cloud Control API cannot be deployed with cdkd. Deployment fails with a clear error message naming the type + a 1-click issue link.
+
+## How it works
+
+```
+┌─────────────────┐
+│  Your CDK App   │  (aws-cdk-lib)
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ cdkd Synthesis  │  Subprocess + Cloud Assembly parser
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ CloudFormation  │
+│   Template      │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ Asset Build &   │  S3 ZIP upload / ECR image build & push
+│   Publish       │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ cdkd Engine     │
+│ - DAG Analysis  │  Dependency graph construction
+│ - Diff Calc     │  Compare with existing resources
+│ - Parallel Exec │  Dispatch on deps complete (no level barrier)
+└────────┬────────┘
+         │
+    ┌────┴────┐
+    ▼         ▼
+┌────────┐ ┌────────┐
+│  SDK   │ │ Cloud  │
+│Provider│ │Control │  Fallback for many
+│        │ │  API   │  additional types
+└────────┘ └────────┘
+```
+
+For a step-by-step walkthrough of the full `cdkd deploy` pipeline (CLI
+parsing → synthesis → asset publishing → per-stack deploy), see
+[docs/architecture.md](docs/architecture.md#5-end-to-end-pipeline-walkthrough-cdkd-deploy).
 
 ## Usage
 
