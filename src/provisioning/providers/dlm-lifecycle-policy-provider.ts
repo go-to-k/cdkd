@@ -17,6 +17,7 @@ import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
+import { clearOnUpdateRemoval } from '../update-removal.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -152,6 +153,107 @@ export class DLMLifecyclePolicyProvider implements ResourceProvider {
     };
   }
 
+  /**
+   * Removal resets for the default-policy shorthand fields (issue #1160).
+   *
+   * UpdateLifecyclePolicy uses merge semantics (live-probed 2026-07-27: an
+   * update carrying only PolicyId retains every live value), while CFn
+   * resets a property removed from the template to its default. Each
+   * shorthand field is routed through `clearOnUpdateRemoval` with its
+   * documented default — all live-probed as accepted AND applied (the
+   * service create-defaults match: a create omitting them reads back
+   * 1 / 7 / false / false):
+   *   CreateInterval -> 1, RetainInterval -> 7, CopyTags -> false,
+   *   ExtendDeletion -> false, CrossRegionCopyTargets -> [].
+   *   Exclusions -> the per-DefaultPolicy explicit-empty shape:
+   *     VOLUME   -> { ExcludeBootVolumes: false, ExcludeVolumeTypes: [],
+   *                   ExcludeTags: [] }
+   *     INSTANCE -> { ExcludeTags: [] } (the volume-only sub-fields are
+   *                  rejected on IMAGE_MANAGEMENT policies — live-probed
+   *                  "ExcludeBootVolumes cannot be enabled for the
+   *                  following policy type {IMAGE_MANAGEMENT}")
+   *   (A KEPT-but-partial Exclusions object needs no handling: the API
+   *   replaces the whole object — live-probed, a kept object with
+   *   ExcludeTags dropped reads back ExcludeTags: [] — so pass-through is
+   *   already CFn parity at the sub-field level.)
+   * These fields only exist on default policies, so the resets can only
+   * fire there (a standard policy never had them in previousProperties).
+   * Deferred with rationale:
+   *   Description — UpdateLifecyclePolicy rejects '' (live-probed
+   *     InvalidRequestException: "The following parameter(s) are invalid:
+   *     Description") and documents no clear sentinel, so there is no
+   *     wire shape that resets it; pass-through (keep live value) is the
+   *     only expressible behavior.
+   *   State / ExecutionRoleArn / PolicyDetails — required-on-create
+   *     fields with no CFn default; removal is not a meaningful template
+   *     operation for them.
+   */
+  private buildRemovalResets(
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
+  ): Omit<UpdateLifecyclePolicyCommandInput, 'PolicyId'> {
+    const resets: Omit<UpdateLifecyclePolicyCommandInput, 'PolicyId'> = {};
+
+    const createInterval = clearOnUpdateRemoval(
+      properties['CreateInterval'] as number | undefined,
+      previousProperties['CreateInterval'] as number | undefined,
+      1
+    );
+    if (createInterval !== undefined) resets.CreateInterval = createInterval;
+
+    const retainInterval = clearOnUpdateRemoval(
+      properties['RetainInterval'] as number | undefined,
+      previousProperties['RetainInterval'] as number | undefined,
+      7
+    );
+    if (retainInterval !== undefined) resets.RetainInterval = retainInterval;
+
+    const copyTags = clearOnUpdateRemoval(
+      properties['CopyTags'] as boolean | undefined,
+      previousProperties['CopyTags'] as boolean | undefined,
+      false
+    );
+    if (copyTags !== undefined) resets.CopyTags = copyTags;
+
+    const extendDeletion = clearOnUpdateRemoval(
+      properties['ExtendDeletion'] as boolean | undefined,
+      previousProperties['ExtendDeletion'] as boolean | undefined,
+      false
+    );
+    if (extendDeletion !== undefined) resets.ExtendDeletion = extendDeletion;
+
+    const crossRegionCopyTargets = clearOnUpdateRemoval(
+      properties['CrossRegionCopyTargets'] as CrossRegionCopyTarget[] | undefined,
+      previousProperties['CrossRegionCopyTargets'] as CrossRegionCopyTarget[] | undefined,
+      []
+    );
+    if (crossRegionCopyTargets !== undefined) {
+      resets.CrossRegionCopyTargets = crossRegionCopyTargets;
+    }
+
+    // DefaultPolicy is create-only (update() rejects changes above), so
+    // either side carries the same value for an existing default policy.
+    const defaultPolicy = (properties['DefaultPolicy'] ?? previousProperties['DefaultPolicy']) as
+      | string
+      | undefined;
+    const exclusionsClear: Exclusions | undefined =
+      defaultPolicy === 'VOLUME'
+        ? { ExcludeBootVolumes: false, ExcludeVolumeTypes: [], ExcludeTags: [] }
+        : defaultPolicy === 'INSTANCE'
+          ? { ExcludeTags: [] }
+          : undefined;
+    if (exclusionsClear !== undefined) {
+      const exclusions = clearOnUpdateRemoval(
+        properties['Exclusions'] as Exclusions | undefined,
+        previousProperties['Exclusions'] as Exclusions | undefined,
+        exclusionsClear
+      );
+      if (exclusions !== undefined) resets.Exclusions = exclusions;
+    }
+
+    return resets;
+  }
+
   /** Fetch the policy ARN (`Fn::GetAtt Arn`) for a policy id. */
   private async fetchPolicyArn(policyId: string): Promise<string> {
     const response = await this.getClient().send(
@@ -247,6 +349,7 @@ export class DLMLifecyclePolicyProvider implements ResourceProvider {
         new UpdateLifecyclePolicyCommand({
           PolicyId: physicalId,
           ...this.toSdkFields(properties),
+          ...this.buildRemovalResets(properties, previousProperties),
         })
       );
 
