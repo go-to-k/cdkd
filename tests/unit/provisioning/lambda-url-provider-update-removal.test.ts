@@ -110,6 +110,27 @@ describe('LambdaUrlProvider removal reset to CFn defaults (issue #1160)', () => 
     expect(input['Cors']).toEqual({});
   });
 
+  it('sends the built NEW value when Cors changes from one real value to another', async () => {
+    await provider.update(
+      'MyUrl',
+      FN_ARN,
+      'AWS::Lambda::Url',
+      {
+        TargetFunctionArn: FN_ARN,
+        AuthType: 'NONE',
+        Cors: { AllowOrigins: ['https://new.example.com'], MaxAge: 10 },
+      },
+      {
+        TargetFunctionArn: FN_ARN,
+        AuthType: 'NONE',
+        Cors: { AllowOrigins: ['https://old.example.com'] },
+      }
+    );
+
+    const input = sentUpdateInput();
+    expect(input['Cors']).toEqual({ AllowOrigins: ['https://new.example.com'], MaxAge: 10 });
+  });
+
   it('clears CORS when the new side is the all-empty readCurrentState placeholder', async () => {
     // drift --revert round-trips the placeholder shape; with real previous
     // CORS it must still clear rather than silently keep the live config.

@@ -159,7 +159,7 @@ export class LambdaUrlProvider implements ResourceProvider {
     const invokeMode = clearOnUpdateRemoval(
       properties['InvokeMode'] as InvokeMode | undefined,
       previousProperties['InvokeMode'] as InvokeMode | undefined,
-      'BUFFERED' as InvokeMode
+      'BUFFERED'
     );
     if (invokeMode !== undefined) updateParams.InvokeMode = invokeMode;
     // Class 2 sanitize: `readCurrentState` always-emits a `Cors` placeholder
@@ -363,10 +363,13 @@ export class LambdaUrlProvider implements ResourceProvider {
    * (`AllowOrigins: []`, `AllowMethods: []`, `AllowHeaders: []`,
    * `ExposeHeaders: []`) are intentionally dropped here — emitting them
    * to AWS would configure CORS with empty allowlists instead of
-   * leaving CORS unset. The caller (`update()` / `create()`) treats an
-   * empty `Cors` object as "no CORS configured" and omits it from the
-   * SDK input. `MaxAge` uses `!== undefined` so the valid AWS input
-   * `MaxAge: 0` (= "do not cache preflight responses") is preserved.
+   * leaving CORS unset. `update()` normalizes an empty build to "no CORS"
+   * on both comparison sides (issue #1160 — an empty `Cors` object is the
+   * live-probed CLEAR shape there, sent only on a real removal); `create()`
+   * passes the build through as-is (template values, never placeholders,
+   * and `Cors: {}` on create means "no CORS" per the same probe). `MaxAge`
+   * uses `!== undefined` so the valid AWS input `MaxAge: 0` (= "do not
+   * cache preflight responses") is preserved.
    */
   private buildCorsConfig(cors: Record<string, unknown>): import('@aws-sdk/client-lambda').Cors {
     const config: import('@aws-sdk/client-lambda').Cors = {};
