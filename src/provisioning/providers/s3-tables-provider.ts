@@ -17,7 +17,7 @@ import {
   NotFoundException,
 } from '@aws-sdk/client-s3tables';
 import { getLogger } from '../../utils/logger.js';
-import { ProvisioningError } from '../../utils/error-handler.js';
+import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import type {
   ResourceProvider,
@@ -94,6 +94,37 @@ export class S3TablesProvider implements ResourceProvider {
   }
 
   async update(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
+  ): Promise<ResourceUpdateResult> {
+    try {
+      return await this.applyUpdate(
+        logicalId,
+        physicalId,
+        resourceType,
+        properties,
+        previousProperties
+      );
+    } catch (error) {
+      // Pass through every cdkd-typed error untouched: ResourceUpdateNotSupportedError
+      // is control flow the deploy engine matches BY CLASS, and an inner
+      // ProvisioningError already carries better context than a re-wrap.
+      if (error instanceof CdkdError) throw error;
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to update S3 Tables resource ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        cause
+      );
+    }
+  }
+
+  private async applyUpdate(
     logicalId: string,
     physicalId: string,
     resourceType: string,
