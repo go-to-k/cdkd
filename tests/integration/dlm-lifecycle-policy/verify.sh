@@ -21,8 +21,16 @@
 #      Assert the PolicyId is UNCHANGED (in-place update, no replacement),
 #      the new description/state reached AWS, `env` is now `changed`, and
 #      `dropme` is GONE.
-#   3. Destroy + assert the policy is gone from AWS and the cdkd state file
-#      is removed.
+#   2b. Re-deploy with CDKD_TEST_REMOVAL=true (issue #1160 dlm batch): the
+#      DISABLED VOLUME default policy drops every UpdateLifecyclePolicy
+#      shorthand field (CreateInterval / RetainInterval / CopyTags /
+#      ExtendDeletion / CrossRegionCopyTargets / Exclusions). The API merges
+#      absent fields, so without the provider's explicit resets the live
+#      values would silently persist. Assert AWS reset each to its default
+#      (1 / 7 / false / false / [] / empty exclusions) and the policy id is
+#      unchanged.
+#   3. Destroy + assert the policies are gone from AWS and the cdkd state
+#      file is removed.
 #
 # The policy targets a tag no volume carries, so it never creates snapshots.
 #
@@ -123,10 +131,14 @@ fi
 echo "==> Pre-run cleanup"
 cleanup
 
-policy_id_from_state() {
+# Two AWS::DLM::LifecyclePolicy resources exist (standard + default), so
+# resolve ids deterministically from the stack outputs instead of the first
+# matching resourceType.
+policy_id_from_state() { # usage: policy_id_from_state <OutputName>
+  local output_name="$1"
   node "${LOCAL_DIST}" state show "${STACK}" --state-bucket "${STATE_BUCKET}" \
     --region "${REGION}" --json 2>/dev/null \
-    | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);const r=j.state.resources;const k=Object.keys(r).find(x=>r[x].resourceType==="AWS::DLM::LifecyclePolicy");process.stdout.write((r[k]&&r[k].physicalId)||"")})'
+    | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);process.stdout.write((j.state.outputs&&j.state.outputs[process.argv[1]])||"")})' "${output_name}"
 }
 
 # --- Phase 1: deploy baseline ------------------------------------------
@@ -134,12 +146,31 @@ echo "==> Phase 1: deploy baseline lifecycle policy (ENABLED, 3 tags)"
 env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
-POLICY_ID_P1="$(policy_id_from_state)"
+POLICY_ID_P1="$(policy_id_from_state PolicyId)"
 if [ -z "${POLICY_ID_P1}" ]; then
-  echo "FAIL: no AWS::DLM::LifecyclePolicy physicalId in cdkd state after Phase 1" >&2
+  echo "FAIL: no PolicyId output in cdkd state after Phase 1" >&2
   exit 1
 fi
 echo "    policy id: ${POLICY_ID_P1}"
+
+DEFAULT_POLICY_ID_P1="$(policy_id_from_state DefaultPolicyId)"
+if [ -z "${DEFAULT_POLICY_ID_P1}" ]; then
+  echo "FAIL: no DefaultPolicyId output in cdkd state after Phase 1" >&2
+  exit 1
+fi
+echo "    default policy id: ${DEFAULT_POLICY_ID_P1}"
+
+# Baseline: the shorthand fields must have reached AWS at their non-default
+# values (proves the removal assertion below actually flips something).
+DP_DETAILS_P1="$(aws dlm get-lifecycle-policy --policy-id "${DEFAULT_POLICY_ID_P1}" \
+  --region "${REGION}" --query 'Policy.PolicyDetails' --output json)"
+DP_BASE_SUMMARY="$(echo "${DP_DETAILS_P1}" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const d=JSON.parse(s);process.stdout.write([d.CreateInterval,d.RetainInterval,d.CopyTags,d.ExtendDeletion,(d.CrossRegionCopyTargets||[]).length,(d.Exclusions&&d.Exclusions.ExcludeBootVolumes)||false,((d.Exclusions&&d.Exclusions.ExcludeTags)||[]).length].join("/"))})')"
+if [ "${DP_BASE_SUMMARY}" != "2/3/true/true/1/true/1" ]; then
+  echo "FAIL: default policy baseline shorthand fields did not reach AWS (CreateInterval/RetainInterval/CopyTags/ExtendDeletion/#CrossRegionCopyTargets/ExcludeBootVolumes/#ExcludeTags = ${DP_BASE_SUMMARY}, expected 2/3/true/true/1/true/1)" >&2
+  echo "${DP_DETAILS_P1}"
+  exit 1
+fi
+echo "    default policy baseline carries all shorthand fields at non-default values"
 
 STATE_P1="$(aws dlm get-lifecycle-policy --policy-id "${POLICY_ID_P1}" --region "${REGION}" \
   --query 'Policy.State' --output text)"
@@ -192,7 +223,7 @@ echo "==> Phase 2: re-deploy with CDKD_TEST_UPDATE=true (DISABLED, tag change + 
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
-POLICY_ID_P2="$(policy_id_from_state)"
+POLICY_ID_P2="$(policy_id_from_state PolicyId)"
 if [ "${POLICY_ID_P1}" != "${POLICY_ID_P2}" ]; then
   echo "FAIL: policy was REPLACED (${POLICY_ID_P1} -> ${POLICY_ID_P2})" >&2
   exit 1
@@ -221,6 +252,32 @@ if [ "${DROPME_P2}" != "None" ] && [ -n "${DROPME_P2}" ]; then
 fi
 echo "    update reached AWS (DISABLED, env=changed, dropme removed)"
 
+# --- Phase 2b: shorthand-field removal (issue #1160 dlm batch) -----------
+echo "==> Phase 2b: re-deploy with CDKD_TEST_REMOVAL=true (all shorthand fields dropped)"
+CDKD_TEST_UPDATE=true CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+
+DEFAULT_POLICY_ID_P2B="$(policy_id_from_state DefaultPolicyId)"
+if [ "${DEFAULT_POLICY_ID_P1}" != "${DEFAULT_POLICY_ID_P2B}" ]; then
+  echo "FAIL: default policy was REPLACED (${DEFAULT_POLICY_ID_P1} -> ${DEFAULT_POLICY_ID_P2B})" >&2
+  exit 1
+fi
+echo "    default policy identity preserved (${DEFAULT_POLICY_ID_P2B}) — in-place update"
+
+# UpdateLifecyclePolicy merges absent fields, so the removal must have sent
+# the explicit defaults: CreateInterval->1, RetainInterval->7,
+# CopyTags->false, ExtendDeletion->false, CrossRegionCopyTargets->[],
+# Exclusions -> all-empty (live-probed clear shapes, 2026-07-27).
+DP_DETAILS_P2B="$(aws dlm get-lifecycle-policy --policy-id "${DEFAULT_POLICY_ID_P2B}" \
+  --region "${REGION}" --query 'Policy.PolicyDetails' --output json)"
+DP_REMOVAL_SUMMARY="$(echo "${DP_DETAILS_P2B}" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const d=JSON.parse(s);process.stdout.write([d.CreateInterval,d.RetainInterval,d.CopyTags,d.ExtendDeletion,(d.CrossRegionCopyTargets||[]).length,(d.Exclusions&&d.Exclusions.ExcludeBootVolumes)||false,((d.Exclusions&&d.Exclusions.ExcludeTags)||[]).length].join("/"))})')"
+if [ "${DP_REMOVAL_SUMMARY}" != "1/7/false/false/0/false/0" ]; then
+  echo "FAIL: shorthand-field removal did NOT reset to defaults (CreateInterval/RetainInterval/CopyTags/ExtendDeletion/#CrossRegionCopyTargets/ExcludeBootVolumes/#ExcludeTags = ${DP_REMOVAL_SUMMARY}, expected 1/7/false/false/0/false/0 — issue #1160 silent drop NOT closed)" >&2
+  echo "${DP_DETAILS_P2B}"
+  exit 1
+fi
+echo "    removal reset all shorthand fields to their CFn defaults (issue #1160 closed for AWS::DLM::LifecyclePolicy)"
+
 # --- Phase 3: destroy ----------------------------------------------------
 echo "==> Phase 3: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
@@ -228,10 +285,13 @@ node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --regio
 assert_gone "lifecycle policy ${POLICY_ID_P2} still exists after destroy" aws dlm get-lifecycle-policy --policy-id "${POLICY_ID_P2}" --region "${REGION}"
 echo "    lifecycle policy deleted"
 
+assert_gone "default lifecycle policy ${DEFAULT_POLICY_ID_P1} still exists after destroy" aws dlm get-lifecycle-policy --policy-id "${DEFAULT_POLICY_ID_P1}" --region "${REGION}"
+echo "    default lifecycle policy deleted"
+
 assert_gone "IAM role ${ROLE_NAME} still exists after destroy" aws iam get-role --role-name "${ROLE_NAME}"
 echo "    execution role deleted"
 
 assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    cdkd state removed"
 
-echo "[verify] PASS — AWS::DLM::LifecyclePolicy SDK provider: deploy + in-place update (incl. tag removal) + destroy all passed"
+echo "[verify] PASS — AWS::DLM::LifecyclePolicy SDK provider: deploy + in-place update (incl. tag removal) + shorthand-field removal reset (#1160) + destroy all passed"

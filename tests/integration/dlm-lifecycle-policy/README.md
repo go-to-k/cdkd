@@ -10,6 +10,10 @@ the SDK provider.
 - `AWS::DLM::LifecyclePolicy` — minimal EBS-snapshot lifecycle policy
   (daily schedule, retain 1). Targets tag `cdkd-integ-dlm=true`, which no
   volume in the account carries, so it never actually creates snapshots.
+- `AWS::DLM::LifecyclePolicy` (default policy) — an always-DISABLED VOLUME
+  default policy carrying every UpdateLifecyclePolicy shorthand field at a
+  non-default value (issue #1160 removal-reset coverage). DISABLED means it
+  never snapshots anything.
 - `AWS::IAM::Role` — the DLM execution role (`cdkd-integ-dlm-role`,
   deterministic name so cleanup can delete it directly).
 
@@ -29,8 +33,14 @@ the SDK provider.
    `ENABLED -> DISABLED` (UpdateLifecyclePolicy), tag value change AND
    tag removal (TagResource / UntagResource — the #981 regression
    class). Asserts the PolicyId is unchanged (in-place, no replacement).
-3. **Destroy** and assert the policy + role are gone from AWS and the
-   cdkd state file is removed.
+2b. **Removal reset** (`CDKD_TEST_REMOVAL=true`, issue #1160): the default
+   policy drops CreateInterval / RetainInterval / CopyTags / ExtendDeletion
+   / CrossRegionCopyTargets / Exclusions. UpdateLifecyclePolicy merges
+   absent fields, so the provider must send the explicit defaults; asserts
+   AWS reads back `1 / 7 / false / false / [] / empty exclusions` with the
+   policy id unchanged.
+3. **Destroy** and assert both policies + the role are gone from AWS and
+   the cdkd state file is removed.
 
 ## Run
 
