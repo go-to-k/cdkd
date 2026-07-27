@@ -1,6 +1,6 @@
 # Benchmarks
 
-**cdkd deploys up to 15x faster than AWS CDK (CloudFormation)** on SDK-Provider-handled stacks; the per-stack speedup widens with size and parallelism, and drops to ~1.5-3x on stacks dominated by Cloud Control API fallback resources.
+**cdkd deploys up to 15x faster than AWS CDK (CloudFormation)** on SDK-Provider-handled stacks; the per-stack speedup widens with size and parallelism.
 
 Numbers below are deploy-phase only unless noted otherwise (CDK app synthesis is identical between cdkd and AWS CDK — both run the same user code through `aws-cdk-lib`'s synthesizer — so synth time is excluded from the speedup calculation).
 
