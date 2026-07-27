@@ -1,3 +1,10 @@
+## [0.267.15](https://github.com/go-to-k/cdkd/compare/v0.267.14...v0.267.15) (2026-07-27)
+
+
+### Bug Fixes
+
+* **lambda-url:** wrap update() SDK errors in ProvisioningError ([#1265](https://github.com/go-to-k/cdkd/issues/1265)) ([1791ac5](https://github.com/go-to-k/cdkd/commit/1791ac5e8697857d3fbff4b9ab68ac0ecaf25ce5))
+
 ## [0.267.14](https://github.com/go-to-k/cdkd/compare/v0.267.13...v0.267.14) (2026-07-27)
 
 
