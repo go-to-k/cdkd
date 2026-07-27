@@ -25,6 +25,14 @@ git init -q -b main "$main_repo"
 git -C "$main_repo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
 git init -q -b feature/x "$feature_repo"
 git -C "$feature_repo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+# Opt the fixtures into the gate (issue #1259): the gate only protects
+# repos with a .markgate.yml at the repo root.
+touch "$main_repo/.markgate.yml" "$feature_repo/.markgate.yml"
+# A repo WITHOUT .markgate.yml (e.g. a personal blog repo worked on
+# from a cdkd session) must never be gated, even on main.
+optout_repo="$TMPDIR/optout-repo"
+git init -q -b main "$optout_repo"
+git -C "$optout_repo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
 
 pass=0
 fail=0
@@ -171,6 +179,21 @@ run_case "git -c commit.gpgSign=false commit on main blocked" 2 \
 # 11c. `git push --force` on main — `--force` after the subcommand.
 run_case "git push --force on main blocked" 2 \
   "$(printf '{"cwd":"%s","tool_input":{"command":"git push origin --force"}}' "$main_repo")"
+
+# --- REPO OPT-IN SCOPE cases (issue #1259) ---
+#
+# The gate must fire ONLY in repos that carry a .markgate.yml at the
+# repo root. A cdkd session regularly touches unrelated personal repos
+# (blog drafts, scratch clones) whose normal workflow is committing
+# straight to main; those must pass through untouched.
+
+# 11d. git commit on main in a NON-opted-in repo → allow.
+run_case "git commit on main in non-opted-in repo allowed" 0 \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git commit -m ok"}}' "$optout_repo")"
+
+# 11e. git push on main in a NON-opted-in repo → allow.
+run_case "git push on main in non-opted-in repo allowed" 0 \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git push origin main"}}' "$optout_repo")"
 
 # --- Edge cases ---
 

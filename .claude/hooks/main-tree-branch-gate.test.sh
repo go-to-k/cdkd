@@ -18,6 +18,8 @@ trap 'rm -rf "$TMPDIR"' EXIT
 main_repo="$TMPDIR/main-repo"
 git init -q -b main "$main_repo"
 git -C "$main_repo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+# Opt the fixture into the gate (issue #1259).
+touch "$main_repo/.markgate.yml"
 # Pre-create the feature branch (refs needed for show-ref).
 git -C "$main_repo" branch feat-x
 git -C "$main_repo" branch some-feature
@@ -118,6 +120,17 @@ run_case "git -C <main> switch <feat> blocked" 2 \
 # 17. git switch - (previous branch, conservative) in main tree → block.
 run_case "git switch - in main tree blocked conservatively" 2 \
   "$(printf '{"cwd":"%s","tool_input":{"command":"git switch -"}}' "$main_repo")"
+
+# --- REPO OPT-IN SCOPE case (issue #1259) ---
+
+# 17b. git switch -c <feat> in the MAIN tree of a repo WITHOUT
+#      .markgate.yml → allow (non-opted-in repo, e.g. a personal
+#      blog worked on from a cdkd session).
+optout_repo="$TMPDIR/optout-repo"
+git init -q -b main "$optout_repo"
+git -C "$optout_repo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+run_case "git switch -c <feat> in non-opted-in repo main tree allowed" 0 \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git switch -c feat-new"}}' "$optout_repo")"
 
 # --- Edge cases ---
 

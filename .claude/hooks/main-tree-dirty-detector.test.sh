@@ -17,6 +17,8 @@ MAIN="$TMPDIR/main"
 git init -q -b main "$MAIN"
 mkdir -p "$MAIN/docs/_generated"
 echo "row" > "$MAIN/docs/_generated/ledger.tsv"
+# Opt the fixture into the gate (issue #1259).
+touch "$MAIN/.markgate.yml"
 git -C "$MAIN" add -A
 git -C "$MAIN" -c user.email=t@t -c user.name=t commit -q -m init
 
@@ -63,6 +65,17 @@ echo "drift2" >> "$MAIN/docs/_generated/ledger.tsv"
 run_case quiet "main repo on feature branch + dirty + mv (branch guard)" "$(writecmd 'mv a b')"
 git -C "$MAIN" checkout -q -- docs/_generated/ledger.tsv
 git -C "$MAIN" checkout -q main
+
+# 8. NON-opted-in repo (no .markgate.yml) + dirty tracked + write -> quiet
+#    (issue #1259: unrelated personal repos are not warned about).
+OPTOUT="$TMPDIR/optout"
+git init -q -b main "$OPTOUT"
+echo "draft" > "$OPTOUT/article.md"
+git -C "$OPTOUT" add -A
+git -C "$OPTOUT" -c user.email=t@t -c user.name=t commit -q -m init
+echo "more" >> "$OPTOUT/article.md"
+run_case quiet "non-opted-in repo + dirty tracked + mv command" \
+  "$(jq -nc --arg c 'mv "$tmp" "$LEDGER"' --arg cwd "$OPTOUT" '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$c}}')"
 
 echo "----"
 echo "passed=$pass failed=$fail"

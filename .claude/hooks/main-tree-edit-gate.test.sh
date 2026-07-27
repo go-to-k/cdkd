@@ -18,8 +18,18 @@ git init -q -b main "$MAIN"
 mkdir -p "$MAIN/docs/_generated" "$MAIN/src"
 echo "row" > "$MAIN/docs/_generated/ledger.tsv"
 echo "x" > "$MAIN/src/existing.ts"
+# Opt the fixture into the gate (issue #1259).
+touch "$MAIN/.markgate.yml"
 git -C "$MAIN" add -A
 git -C "$MAIN" -c user.email=t@t -c user.name=t commit -q -m init
+
+# A second repo WITHOUT .markgate.yml (non-opted-in, e.g. a personal
+# blog repo) whose tracked files must remain editable on main.
+OPTOUT="$TMPDIR/optout"
+git init -q -b main "$OPTOUT"
+echo "draft" > "$OPTOUT/article.md"
+git -C "$OPTOUT" add -A
+git -C "$OPTOUT" -c user.email=t@t -c user.name=t commit -q -m init
 
 # Feature worktree on a non-main branch.
 WT="$MAIN/.claude/worktrees/feat"
@@ -79,6 +89,18 @@ run_case 2 "Bash 'tee ledger.tsv' in main tree on main" \
 #    (documented: worktree-first process is the guard for this).
 run_case 0 "Bash 'mv \$tmp \$LEDGER' (variable target, known gap)" \
   "$(jq -nc --arg cmd 'mv "$tmp" "$LEDGER"' --arg cwd "$MAIN" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+
+# 9. Edit a tracked file on main in a NON-opted-in repo (no
+#    .markgate.yml) -> PASS (0). Issue #1259: unrelated personal repos
+#    must not be gated.
+run_case 0 "Edit tracked file on main in non-opted-in repo" \
+  "$(jq -nc --arg fp "$OPTOUT/article.md" --arg cwd "$OPTOUT" \
+    '{tool_name:"Edit", cwd:$cwd, tool_input:{file_path:$fp}}')"
+
+# 10. Bash redirect to the same non-opted-in repo file -> PASS (0).
+run_case 0 "Bash '>> article.md' on main in non-opted-in repo" \
+  "$(jq -nc --arg cmd "echo more >> $OPTOUT/article.md" --arg cwd "$OPTOUT" \
     '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
 
 echo "----"

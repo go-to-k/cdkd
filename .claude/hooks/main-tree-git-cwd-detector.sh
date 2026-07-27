@@ -86,6 +86,11 @@ canon() { (cd "$1" 2>/dev/null && pwd -P) || printf '%s' "${1%/}"; }
 eff_top=$(canon "$eff_top")
 main_tree=$(canon "$main_tree")
 
+# Repo opt-in scope (issue #1259): warn only for repos following the
+# worktree + markgate convention. Opt-in signal: a `.markgate.yml` at
+# the main worktree root.
+[[ -f "$main_tree/.markgate.yml" ]] || exit 0
+
 # Only interesting when the git op targets the MAIN worktree itself.
 [[ "$eff_top" == "$main_tree" ]] || exit 0
 

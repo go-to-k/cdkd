@@ -121,6 +121,12 @@ is_protected_path() {
   [[ "$branch" == "main" || "$branch" == "master" ]] || return 1
   local top; top=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null) || return 1
   top=$(canonicalize_dir "$top")
+  # Repo opt-in scope (issue #1259): only repos following the worktree +
+  # markgate convention get main-tree edit protection. Unrelated repos
+  # (a personal blog on main, a scratch clone) are the user's own
+  # single-writer trees; the shared-main-tree hazard does not apply.
+  # Opt-in signal: a `.markgate.yml` at the file's worktree top.
+  [[ -f "$top/.markgate.yml" ]] || return 1
   # Never gate inside a nested worktree dir (defensive; their branch
   # would not be main/master anyway).
   case "$abs" in

@@ -120,6 +120,18 @@ if [[ "$cmd" =~ git[[:space:]]+-C[[:space:]]+([^[:space:]]+) ]]; then
   target_dir="$c_target"
 fi
 
+# Repo opt-in scope (issue #1259): this gate protects repos that follow
+# the feature-branch + PR + markgate convention. A session rooted in
+# such a repo can still run git against OTHER repos (a personal blog, a
+# scratch clone) where committing straight to main is the normal
+# workflow; the gate must not fire there. Opt-in signal: a
+# `.markgate.yml` at the resolved target repo's top level. Repos
+# without it pass through untouched.
+target_top=$(git -C "$target_dir" rev-parse --show-toplevel 2>/dev/null || echo "")
+if [[ -z "$target_top" || ! -f "$target_top/.markgate.yml" ]]; then
+  exit 0
+fi
+
 # Read the branch from the resolved target dir. `-C` lets git operate
 # on a directory that isn't our cwd; if the dir doesn't exist or isn't
 # inside a git repo, symbolic-ref returns empty and we fall through to
