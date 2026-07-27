@@ -8,7 +8,7 @@ Drop-in CDK CLI for existing CDK apps — up to 15x faster deploys via direct AW
 
 - **Drop-in CDK compatible**: your existing CDK app code runs as-is; just replace `cdk deploy` with `cdkd deploy`.
 - **Up to 15x faster deploys**: direct SDK calls, aggressive parallelization, and `--no-wait` to skip slow stabilization waits.
-- **Faster than Terraform and CloudFormation Express mode**: wins or ties every benchmarked scenario against Terraform, and beats CloudFormation's own fast-deploy option on nearly every stack (see [Benchmark](#benchmark)).
+- **Faster than Terraform and CloudFormation Express mode**: wins or ties every benchmarked scenario against Terraform, and beats CloudFormation's own fast-deploy option on nearly every stack, by up to 9x (see [Benchmark](#benchmark)).
 
 ![cdk deploy vs cdkd deploy — side-by-side, 35s recording, real AWS deploy. cdkd finishes while cdk is still creating its CloudFormation changeset.](assets/cdk-vs-cdkd.gif)
 
@@ -25,7 +25,7 @@ Drop-in CDK CLI for existing CDK apps — up to 15x faster deploys via direct AW
 
 Numbers below are deploy-phase only (CDK app synthesis is identical between cdkd and AWS CDK — both run the same user code through `aws-cdk-lib`'s synthesizer — so synth time is excluded from the speedup calculation).
 
-### vs CloudFormation Express mode — faster than CloudFormation's own fast-deploy option
+### vs CloudFormation Express mode: up to 9x faster
 
 CloudFormation's [Express mode](https://aws.amazon.com/about-aws/whats-new/2026/06/aws-cloudformation-cdk/) is a fast-deploy option that skips resource stabilization waits, similar in spirit to cdkd's `--no-wait`. Even so, cdkd is faster than Express on nearly every stack, and with `--no-wait` it pulls dramatically ahead on stacks dominated by async resources.
 
@@ -48,14 +48,14 @@ Best of 3 runs, deploy-phase only, seconds, `us-west-2`. The `VPC + Lambda + SQS
 
 ### vs Terraform: cdkd wins or ties every scenario
 
-"Faster than CloudFormation" is a low bar, so we also raced cdkd against Terraform: the same logical stacks expressed both as CDK apps and as Terraform HCL, deployed by all engines against real AWS.
+We also raced cdkd against Terraform: the same logical stacks expressed both as CDK apps and as Terraform HCL, deployed by all engines against real AWS.
 
 | Scenario | Stack | cdkd | cdkd `--no-wait` | Terraform | CloudFormation |
 | --- | --- | ---: | ---: | ---: | ---: |
 | wide | 48 independent resources (S3 / DynamoDB / SQS / SNS / SSM / Logs, 8 each) | **25.4** | 25.3 | 50.4 | 85.9 |
 | serverless | Lambda ×3 + HTTP API + DynamoDB + SNS / SQS + EventBridge | **31.4** | 31.8 | 57.9 | 124.2 |
 | webapp | VPC + NAT + subnets + DynamoDB + SQS + S3 + Lambda ×2 + HTTP API | 127.0 | **32.4** | 127.8 | 161.9 |
-| cloudfront | S3 origin + CloudFront + OAC | **171.2** | 17.8 | 191.1 | 208.1 |
+| cloudfront | S3 origin + CloudFront + OAC | **171.2** | **17.8** | 191.1 | 208.1 |
 
 Cold end-to-end wall clock (unlike the deploy-phase-only tables above, these numbers include synth / plan), median of 3 runs, seconds, `us-east-1`. On wide, parallel stacks cdkd is ~2x faster than Terraform; where a single slow resource dominates (NAT Gateway, CloudFront propagation), physical provisioning time sets a common floor and only `--no-wait` gets below it. Full methodology, parity notes, and reproduction scripts live in [cdkd-bench-terraform](https://github.com/go-to-k/cdkd-bench-terraform).
 
