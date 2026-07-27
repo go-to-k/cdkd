@@ -276,7 +276,23 @@ assert_gone "function ${FN_NAME} still exists after destroy" aws lambda get-func
 assert_gone "queue ${QUEUE_NAME} still exists after destroy" aws sqs get-queue-url --queue-name "${QUEUE_NAME}" --region "${REGION}"
 echo "    OK: queue is gone"
 
-assert_gone "table ${TABLE_NAME} still exists after destroy" aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}"
+# DynamoDB DeleteTable is async — the table lingers in DELETING state (and
+# describe-table still succeeds) for a short window after the destroy
+# reports success, so poll bounded (~60s) instead of reading once (observed
+# flake 2026-07-27; same class as the ESM Deleting-state lag above).
+TABLE_GONE=""
+for i in $(seq 1 6); do
+  if gone_probe aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}"; then
+    TABLE_GONE="yes"
+    break
+  fi
+  echo "    poll ${i}: table ${TABLE_NAME} still listed (DELETING-state lag)"
+  if [ "${i}" -lt 6 ]; then sleep 10; fi
+done
+if [ "${TABLE_GONE}" != "yes" ]; then
+  echo "FAIL: table ${TABLE_NAME} still exists after destroy (waited 60s)" >&2
+  exit 1
+fi
 echo "    OK: table is gone"
 # A just-deleted ESM lingers in `Deleting` state and still appears in
 # list-event-source-mappings for up to ~1 min after DeleteEventSourceMapping

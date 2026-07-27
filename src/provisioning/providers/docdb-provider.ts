@@ -20,6 +20,7 @@ import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
+import { clearOnUpdateRemoval } from '../update-removal.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import type {
   ResourceProvider,
@@ -264,7 +265,16 @@ export class DocDBProvider implements ResourceProvider {
       const sendSubnetIds = subnetIds !== undefined && subnetIds.length > 0;
       const modifyInput = {
         DBSubnetGroupName: physicalId,
-        DBSubnetGroupDescription: properties['DBSubnetGroupDescription'] as string | undefined,
+        // #1160 reset-on-removal: CFn declares DBSubnetGroupDescription
+        // required, so a CFn-valid template can never remove it — but
+        // cdkd's create() tolerates absence with the `Subnet group for
+        // <logicalId>` fallback, so removal resets to the same fallback for
+        // create/update parity instead of silently keeping the old value.
+        DBSubnetGroupDescription: clearOnUpdateRemoval(
+          properties['DBSubnetGroupDescription'] as string | undefined,
+          previousProperties['DBSubnetGroupDescription'] as string | undefined,
+          `Subnet group for ${logicalId}`
+        ),
         ...(sendSubnetIds && { SubnetIds: subnetIds }),
       } as ConstructorParameters<typeof ModifyDBSubnetGroupCommand>[0];
       await this.getClient().send(new ModifyDBSubnetGroupCommand(modifyInput));
@@ -445,15 +455,49 @@ export class DocDBProvider implements ResourceProvider {
       const vpcSgIds = properties['VpcSecurityGroupIds'] as string[] | undefined;
       const sendVpcSgIds = vpcSgIds !== undefined && vpcSgIds.length > 0;
 
+      // #1160 reset-on-removal — ModifyDBCluster has merge semantics (an
+      // absent input field means "no change"), so a property REMOVED from
+      // the template must be sent as its explicit CFn-default reset value
+      // via `clearOnUpdateRemoval` (see the helper's JSDoc). Deliberately
+      // NOT reset here:
+      //   * EngineVersion — removal would imply moving to the engine's
+      //     default version, a risky (possibly major) version change cdkd
+      //     must not synthesize; leave unchanged.
+      //   * DBClusterParameterGroupName — the default is the
+      //     engine-version-dependent `default.docdb5.0`-style family name;
+      //     synthesizing it from a removal risks a wrong-family apply.
+      //   * PreferredBackupWindow / PreferredMaintenanceWindow — AWS assigns
+      //     a RANDOM window at create; there is no documented "reset to
+      //     random" sentinel.
+      //   * MasterUserPassword — a secret; removal cannot synthesize a
+      //     reset value.
+      //   * VpcSecurityGroupIds — deliberate empty-guard above
+      //     (readCurrentState placeholder defense); classified UNCERTAIN in
+      //     the #1160 audit, out of this batch's scope.
+      //   * Port — DocDB documents a fixed default (27017), but resetting
+      //     the port is connection-breaking for every client; leave unchanged.
       await this.getClient().send(
         new ModifyDBClusterCommand({
           DBClusterIdentifier: physicalId,
           EngineVersion: properties['EngineVersion'] as string | undefined,
-          DeletionProtection: properties['DeletionProtection'] as boolean | undefined,
-          BackupRetentionPeriod:
+          // CFn default: deletion protection isn't enabled by default
+          // (live-verified 2026-07-27: a cluster created without the field
+          // reads DeletionProtection=false).
+          DeletionProtection: clearOnUpdateRemoval(
+            properties['DeletionProtection'] as boolean | undefined,
+            previousProperties['DeletionProtection'] as boolean | undefined,
+            false
+          ),
+          // CFn/API default: 1 day (ModifyDBClusterMessage doc).
+          BackupRetentionPeriod: clearOnUpdateRemoval(
             properties['BackupRetentionPeriod'] != null
               ? Number(properties['BackupRetentionPeriod'])
               : undefined,
+            previousProperties['BackupRetentionPeriod'] != null
+              ? Number(previousProperties['BackupRetentionPeriod'])
+              : undefined,
+            1
+          ),
           PreferredBackupWindow: properties['PreferredBackupWindow'] as string | undefined,
           PreferredMaintenanceWindow: properties['PreferredMaintenanceWindow'] as
             | string
@@ -651,6 +695,15 @@ export class DocDBProvider implements ResourceProvider {
     this.logger.debug(`Updating DocDB DBInstance ${logicalId}: ${physicalId}`);
 
     try {
+      // #1160 reset-on-removal — ModifyDBInstance has merge semantics, but
+      // every optional DocDB instance field is deliberately NOT reset:
+      //   * AutoMinorVersionUpgrade — inert on DocDB (ModifyDBInstanceMessage
+      //     doc: "This parameter does not apply to Amazon DocumentDB.
+      //     Amazon DocumentDB does not perform minor version upgrades
+      //     regardless of the value set"); synthesizing a reset would close
+      //     no behavioral divergence.
+      //   * PreferredMaintenanceWindow — AWS assigns a RANDOM window at
+      //     create; no documented "reset to random" sentinel.
       await this.getClient().send(
         new ModifyDBInstanceCommand({
           DBInstanceIdentifier: physicalId,

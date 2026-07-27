@@ -26,10 +26,24 @@ import * as neptune from 'aws-cdk-lib/aws-neptune';
  *  - 1 Neptune DBCluster (Neptune uses IAM auth so no Master credentials)
  *  - 1 Neptune DBInstance (db.t3.medium)
  *
- * Every cluster has `DeletionProtection: false` and every L1 resource
- * has `RemovalPolicy: DESTROY` so a bare `cdkd destroy --force`
- * succeeds without `--remove-protection`. SkipFinalSnapshot on cluster
- * delete is unconditional (set inside the providers).
+ * #1160 (reset-on-removal) phases: the BASELINE deploy sets non-default
+ * values for the reset-covered ModifyDBCluster fields on both clusters
+ * (`deletionProtection: true` + `backupRetentionPeriod: 7`, plus
+ * `iamAuthEnabled: true` on Neptune); the `CDKD_TEST_REMOVAL=true`
+ * redeploy DROPS them entirely so cdkd's ModifyDBCluster sees ABSENT
+ * fields (removal), not a value change. ModifyDBCluster has merge
+ * semantics (an absent input field means "no change"), so without the
+ * #1160 fix AWS would keep the baseline values — and
+ * DeletionProtection=true would then make the destroy fail. verify.sh
+ * asserts the live values return to the CFn defaults (false / 1 /
+ * false), and the destroy succeeding WITHOUT --remove-protection is
+ * itself proof the DeletionProtection reset landed.
+ *
+ * Every L1 resource has `RemovalPolicy: DESTROY`, and the removal-phase
+ * template carries NO DeletionProtection, so the post-removal
+ * `cdkd destroy --force` succeeds without `--remove-protection`.
+ * SkipFinalSnapshot on cluster delete is unconditional (set inside the
+ * providers).
  *
  * AZ + subnet layout uses `maxAzs: 2` (deterministic — DocDB / Neptune
  * subnet groups need at least 2 AZs and CDK's lookup picks the lowest
@@ -38,6 +52,12 @@ import * as neptune from 'aws-cdk-lib/aws-neptune';
 export class DocdbNeptuneStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
+
+    // #1160 (reset-on-removal) phase switch: CDKD_TEST_REMOVAL=true DROPS
+    // the reset-covered cluster fields set by the baseline deploy (see the
+    // file header). `undefined` removes the property from the synthesized
+    // template entirely — the removal shape, not a value change.
+    const isRemoval = process.env.CDKD_TEST_REMOVAL === 'true';
 
     // VPC: 2 AZs, private-isolated only (no NAT, no IGW). DocDB and
     // Neptune are reached only via cluster endpoints inside the VPC,
@@ -89,7 +109,11 @@ export class DocdbNeptuneStack extends cdk.Stack {
       masterUserPassword: 'TempPass1234!',
       dbSubnetGroupName: docdbSubnetGroup.ref,
       vpcSecurityGroupIds: [sg.securityGroupId],
-      deletionProtection: false,
+      // #1160 removable fields: non-default in the baseline deploy, DROPPED
+      // in the CDKD_TEST_REMOVAL redeploy. verify.sh asserts they reset to
+      // the CFn defaults (false / 1).
+      deletionProtection: isRemoval ? undefined : true,
+      backupRetentionPeriod: isRemoval ? undefined : 7,
       storageEncrypted: true,
     });
     docdbCluster.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
@@ -117,7 +141,13 @@ export class DocdbNeptuneStack extends cdk.Stack {
     const neptuneCluster = new neptune.CfnDBCluster(this, 'NeptuneCluster', {
       dbSubnetGroupName: neptuneSubnetGroup.ref,
       vpcSecurityGroupIds: [sg.securityGroupId],
-      deletionProtection: false,
+      // #1160 removable fields: non-default in the baseline deploy, DROPPED
+      // in the CDKD_TEST_REMOVAL redeploy. verify.sh asserts they reset to
+      // the CFn defaults (false / 1 / false). `iamAuthEnabled` is the CFn
+      // spelling of ModifyDBCluster's EnableIAMDatabaseAuthentication.
+      deletionProtection: isRemoval ? undefined : true,
+      backupRetentionPeriod: isRemoval ? undefined : 7,
+      iamAuthEnabled: isRemoval ? undefined : true,
       storageEncrypted: true,
     });
     neptuneCluster.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
