@@ -1,3 +1,10 @@
+## [0.267.13](https://github.com/go-to-k/cdkd/compare/v0.267.12...v0.267.13) (2026-07-27)
+
+
+### Bug Fixes
+
+* **dlm:** reset removal-dropped default-policy shorthand fields to CFn defaults ([#1258](https://github.com/go-to-k/cdkd/issues/1258)) ([71d63d3](https://github.com/go-to-k/cdkd/commit/71d63d305eb210628bdfbeb4afa0a15db3b39223))
+
 ## [0.267.12](https://github.com/go-to-k/cdkd/compare/v0.267.11...v0.267.12) (2026-07-27)
 
 
