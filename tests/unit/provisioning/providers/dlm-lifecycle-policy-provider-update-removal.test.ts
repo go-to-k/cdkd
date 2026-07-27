@@ -170,6 +170,34 @@ describe('DLMLifecyclePolicyProvider removal reset to CFn defaults (issue #1160)
     expect('RetainInterval' in input).toBe(false);
   });
 
+  it('passes kept CrossRegionCopyTargets and Exclusions through unchanged', async () => {
+    const targets = [{ TargetRegion: 'eu-west-1' }];
+    const exclusions = { ExcludeBootVolumes: true, ExcludeTags: [{ Key: 'skip', Value: 'yes' }] };
+    await provider.update(
+      'Policy',
+      POLICY_ID,
+      RESOURCE_TYPE,
+      {
+        ExecutionRoleArn: ROLE_ARN,
+        State: 'DISABLED',
+        DefaultPolicy: 'VOLUME',
+        CrossRegionCopyTargets: targets,
+        Exclusions: exclusions,
+      },
+      {
+        ExecutionRoleArn: ROLE_ARN,
+        State: 'DISABLED',
+        DefaultPolicy: 'VOLUME',
+        CrossRegionCopyTargets: [{ TargetRegion: 'us-west-2' }],
+        Exclusions: { ExcludeTags: [] },
+      }
+    );
+
+    const input = sentUpdateInput();
+    expect(input['CrossRegionCopyTargets']).toEqual(targets);
+    expect(input['Exclusions']).toEqual(exclusions);
+  });
+
   it('does NOT reset a removed Description (no API clear sentinel — documented deferral)', async () => {
     await provider.update(
       'Policy',

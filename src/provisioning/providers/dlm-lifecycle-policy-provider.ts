@@ -194,37 +194,47 @@ export class DLMLifecyclePolicyProvider implements ResourceProvider {
   ): Omit<UpdateLifecyclePolicyCommandInput, 'PolicyId'> {
     const resets: Omit<UpdateLifecyclePolicyCommandInput, 'PolicyId'> = {};
 
+    // `!= null` / `?? undefined` (not bare casts) so an explicit-null side
+    // never fires a spurious reset — matches the elasticache sibling's
+    // previous-side checks (PR #1256 review nit), incl. Number() coercion
+    // for the numeric fields.
     const createInterval = clearOnUpdateRemoval(
-      properties['CreateInterval'] as number | undefined,
-      previousProperties['CreateInterval'] as number | undefined,
+      properties['CreateInterval'] != null ? Number(properties['CreateInterval']) : undefined,
+      previousProperties['CreateInterval'] != null
+        ? Number(previousProperties['CreateInterval'])
+        : undefined,
       1
     );
     if (createInterval !== undefined) resets.CreateInterval = createInterval;
 
     const retainInterval = clearOnUpdateRemoval(
-      properties['RetainInterval'] as number | undefined,
-      previousProperties['RetainInterval'] as number | undefined,
+      properties['RetainInterval'] != null ? Number(properties['RetainInterval']) : undefined,
+      previousProperties['RetainInterval'] != null
+        ? Number(previousProperties['RetainInterval'])
+        : undefined,
       7
     );
     if (retainInterval !== undefined) resets.RetainInterval = retainInterval;
 
     const copyTags = clearOnUpdateRemoval(
-      properties['CopyTags'] as boolean | undefined,
-      previousProperties['CopyTags'] as boolean | undefined,
+      (properties['CopyTags'] ?? undefined) as boolean | undefined,
+      (previousProperties['CopyTags'] ?? undefined) as boolean | undefined,
       false
     );
     if (copyTags !== undefined) resets.CopyTags = copyTags;
 
     const extendDeletion = clearOnUpdateRemoval(
-      properties['ExtendDeletion'] as boolean | undefined,
-      previousProperties['ExtendDeletion'] as boolean | undefined,
+      (properties['ExtendDeletion'] ?? undefined) as boolean | undefined,
+      (previousProperties['ExtendDeletion'] ?? undefined) as boolean | undefined,
       false
     );
     if (extendDeletion !== undefined) resets.ExtendDeletion = extendDeletion;
 
     const crossRegionCopyTargets = clearOnUpdateRemoval(
-      properties['CrossRegionCopyTargets'] as CrossRegionCopyTarget[] | undefined,
-      previousProperties['CrossRegionCopyTargets'] as CrossRegionCopyTarget[] | undefined,
+      (properties['CrossRegionCopyTargets'] ?? undefined) as CrossRegionCopyTarget[] | undefined,
+      (previousProperties['CrossRegionCopyTargets'] ?? undefined) as
+        | CrossRegionCopyTarget[]
+        | undefined,
       []
     );
     if (crossRegionCopyTargets !== undefined) {
@@ -244,8 +254,8 @@ export class DLMLifecyclePolicyProvider implements ResourceProvider {
           : undefined;
     if (exclusionsClear !== undefined) {
       const exclusions = clearOnUpdateRemoval(
-        properties['Exclusions'] as Exclusions | undefined,
-        previousProperties['Exclusions'] as Exclusions | undefined,
+        (properties['Exclusions'] ?? undefined) as Exclusions | undefined,
+        (previousProperties['Exclusions'] ?? undefined) as Exclusions | undefined,
         exclusionsClear
       );
       if (exclusions !== undefined) resets.Exclusions = exclusions;
