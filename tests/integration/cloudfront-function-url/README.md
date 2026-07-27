@@ -20,6 +20,11 @@ This stack includes the following resources:
 4. **Cross-resource References**: Function URL referenced as CloudFront origin
 5. **Lambda Permission**: Automatic permission for CloudFront to invoke Lambda
 6. **Fn::GetAtt**: Retrieve distribution domain name and function URL in outputs
+7. **Removal reset (issue #1160)**: baseline sets `InvokeMode=RESPONSE_STREAM` +
+   `Cors` on the Function URL; the `CDKD_TEST_REMOVAL=true` redeploy drops both
+   and verify.sh asserts AWS reset them (InvokeMode back to `BUFFERED`, Cors
+   cleared) instead of silently keeping the live values
+   (UpdateFunctionUrlConfig merge semantics)
 
 ## Deploy
 
