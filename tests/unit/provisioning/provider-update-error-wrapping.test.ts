@@ -11,6 +11,7 @@ const mockEventBridgeSend = vi.fn();
 const mockSnsSend = vi.fn();
 const mockLambdaSend = vi.fn();
 const mockLogsSend = vi.fn();
+const mockEc2Send = vi.fn();
 
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
@@ -21,6 +22,7 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
     sns: { send: mockSnsSend, config: { region: () => Promise.resolve('us-east-1') } },
     lambda: { send: mockLambdaSend, config: { region: () => Promise.resolve('us-east-1') } },
     cloudWatchLogs: { send: mockLogsSend, config: { region: () => Promise.resolve('us-east-1') } },
+    ec2: { send: mockEc2Send, config: { region: () => Promise.resolve('us-east-1') } },
     sts: {
       send: vi.fn(() => Promise.resolve({ Account: '123456789012' })),
       config: { region: () => Promise.resolve('us-east-1') },
@@ -51,6 +53,7 @@ import { EventBridgeBusProvider } from '../../../src/provisioning/providers/even
 import { SNSTopicProvider } from '../../../src/provisioning/providers/sns-topic-provider.js';
 import { LambdaEventSourceMappingProvider } from '../../../src/provisioning/providers/lambda-eventsource-provider.js';
 import { LogsLogGroupProvider } from '../../../src/provisioning/providers/logs-loggroup-provider.js';
+import { EC2Provider } from '../../../src/provisioning/providers/ec2-provider.js';
 import {
   ProvisioningError,
   ResourceUpdateNotSupportedError,
@@ -251,5 +254,39 @@ describe('SDK provider update() error wrapping (issue #1267)', () => {
     await expect(promise).rejects.not.toThrow(ProvisioningError);
     // The guard runs before any mutation.
     expect(mockLogsSend).not.toHaveBeenCalled();
+  });
+
+  // Issue #1270: EC2Provider.update() gained a boundary wrapper so an SDK
+  // failure from a delegated per-type helper (here updateEip) surfaces as
+  // ProvisioningError instead of raw. EC2 is the one newly-wrapped provider
+  // that resolves its client via getAwsClients(), so it is cheap to drive at
+  // runtime; the other four are covered by the update-wrap-coverage critic's
+  // real-repo assertion (removing any wrapper turns that suite red).
+  describe('EC2Provider boundary wrapper (issue #1270)', () => {
+    it('wraps an SDK failure from a delegated per-type helper', async () => {
+      const sdkError = new Error('AWS said no');
+      mockEc2Send.mockRejectedValue(sdkError);
+
+      const provider = new EC2Provider();
+      // An InstanceId change drives AssociateAddress. (A Tags-only diff would
+      // NOT do: updateEip's applyTagDiff swallows by design — best-effort
+      // tagging — so nothing would propagate and the test would pass
+      // vacuously.)
+      const promise = provider.update(
+        'MyEip',
+        'eipalloc-123',
+        'AWS::EC2::EIP',
+        { InstanceId: 'i-newinstance' },
+        {}
+      );
+
+      await expect(promise).rejects.toThrow(ProvisioningError);
+      await expect(promise).rejects.toMatchObject({
+        resourceType: 'AWS::EC2::EIP',
+        logicalId: 'MyEip',
+        physicalId: 'eipalloc-123',
+      });
+      expect(mockEc2Send).toHaveBeenCalled();
+    });
   });
 });

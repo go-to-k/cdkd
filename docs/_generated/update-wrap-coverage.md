@@ -8,24 +8,12 @@ For every SDK provider class declaring `update()`, walks from `update()` through
 ## Summary
 
 - Provider classes with `update()`: **83**
-- Wrapped: **71**
+- Wrapped: **76**
 - No AWS call in update(): **7**
 - **Unwrapped-send gaps (blocks CI): 0**
 - **Unguarded wraps (blocks CI): 0**
-- Allow-listed known gaps (does NOT block CI): **5**
+- Allow-listed known gaps (does NOT block CI): **0**
 - Unresolved-callee (verdict not trustworthy): **0**
-
-## Allow-listed known gaps
-
-Real gaps, deliberately not failing CI while they are worked off. Fixing one means removing its `UPDATE_WRAP_ALLOW_LIST` entry in the same PR, after which the critic verifies the fix and blocks a re-regression.
-
-| Provider class | File | Offending methods | Rationale |
-| --- | --- | --- | --- |
-| `EC2Provider` | `ec2-provider.ts` | `updateEip` | KNOWN GAP tracked in #1270 |
-| `ELBv2Provider` | `elbv2-provider.ts` | `applyTagDiff`, `updateLoadBalancer` | KNOWN GAP tracked in #1270 |
-| `FirehoseProvider` | `firehose-provider.ts` | `applyAmazonOpenSearchServerlessDestinationUpdate`, `applyAmazonopensearchserviceDestinationUpdate`, `applyElasticsearchDestinationUpdate`, `applyExtendedS3DestinationUpdate`, `applyHttpEndpointDestinationUpdate`, `applyIcebergDestinationUpdate`, `applyRedshiftDestinationUpdate`, `applySnowflakeDestinationUpdate`, `applySplunkDestinationUpdate`, `applyTagsDiff`, `update` | KNOWN GAP tracked in #1270 |
-| `KinesisStreamConsumerProvider` | `kinesis-streamconsumer-provider.ts` | `applyTagDiff` | KNOWN GAP tracked in #1270 |
-| `S3TablesProvider` | `s3-tables-provider.ts` | `lookupTableArn` | KNOWN GAP tracked in #1270 |
 
 ## Gaps
 
@@ -57,18 +45,18 @@ None. Every provider `update()` either makes no AWS call or wraps every reachabl
 | `DocDBProvider` | `docdb-provider.ts` | wrapped |
 | `DynamoDBGlobalTableProvider` | `dynamodb-globaltable-provider.ts` | wrapped |
 | `DynamoDBTableProvider` | `dynamodb-table-provider.ts` | wrapped |
-| `EC2Provider` | `ec2-provider.ts` | allow-listed |
+| `EC2Provider` | `ec2-provider.ts` | wrapped |
 | `ECRProvider` | `ecr-provider.ts` | wrapped |
 | `ECSProvider` | `ecs-provider.ts` | wrapped |
 | `EFSProvider` | `efs-provider.ts` | wrapped |
 | `ElastiCacheProvider` | `elasticache-provider.ts` | wrapped |
-| `ELBv2Provider` | `elbv2-provider.ts` | allow-listed |
+| `ELBv2Provider` | `elbv2-provider.ts` | wrapped |
 | `EMRClusterProvider` | `emr-cluster-provider.ts` | wrapped |
 | `EMRInstanceFleetConfigProvider` | `emr-instance-fleet-config-provider.ts` | wrapped |
 | `EMRInstanceGroupConfigProvider` | `emr-instance-group-config-provider.ts` | wrapped |
 | `EventBridgeBusProvider` | `eventbridge-bus-provider.ts` | wrapped |
 | `EventBridgeRuleProvider` | `eventbridge-rule-provider.ts` | wrapped |
-| `FirehoseProvider` | `firehose-provider.ts` | allow-listed |
+| `FirehoseProvider` | `firehose-provider.ts` | wrapped |
 | `FSxFileSystemProvider` | `fsx-filesystem-provider.ts` | wrapped |
 | `GlueConnectionProvider` | `glue-provider.ts` | wrapped |
 | `GlueCrawlerProvider` | `glue-provider.ts` | wrapped |
@@ -83,7 +71,7 @@ None. Every provider `update()` either makes no AWS call or wraps every reachabl
 | `IAMRoleProvider` | `iam-role-provider.ts` | wrapped |
 | `IAMUserGroupProvider` | `iam-user-group-provider.ts` | wrapped |
 | `KinesisStreamProvider` | `kinesis-provider.ts` | wrapped |
-| `KinesisStreamConsumerProvider` | `kinesis-streamconsumer-provider.ts` | allow-listed |
+| `KinesisStreamConsumerProvider` | `kinesis-streamconsumer-provider.ts` | wrapped |
 | `KMSProvider` | `kms-provider.ts` | wrapped |
 | `LambdaEventInvokeConfigProvider` | `lambda-event-invoke-config-provider.ts` | wrapped |
 | `LambdaEventSourceMappingProvider` | `lambda-eventsource-provider.ts` | wrapped |
@@ -103,7 +91,7 @@ None. Every provider `update()` either makes no AWS call or wraps every reachabl
 | `S3BucketPolicyProvider` | `s3-bucket-policy-provider.ts` | wrapped |
 | `S3BucketProvider` | `s3-bucket-provider.ts` | wrapped |
 | `S3DirectoryBucketProvider` | `s3-directory-bucket-provider.ts` | no-aws |
-| `S3TablesProvider` | `s3-tables-provider.ts` | allow-listed |
+| `S3TablesProvider` | `s3-tables-provider.ts` | wrapped |
 | `S3VectorsProvider` | `s3-vectors-provider.ts` | wrapped |
 | `SchedulerScheduleProvider` | `scheduler-schedule-provider.ts` | wrapped |
 | `SecretsManagerSecretProvider` | `secretsmanager-secret-provider.ts` | wrapped |

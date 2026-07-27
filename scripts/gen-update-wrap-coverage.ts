@@ -123,19 +123,23 @@ const TYPED_PASSTHROUGH_CLASSES: ReadonlySet<string> = new Set([
 /**
  * Typed throws whose CAPTURE by a wrap is CI-blocking.
  *
- * Deliberately narrower than {@link TYPED_PASSTHROUGH_CLASSES} (which is the
- * set of guards ACCEPTED as a valid pass-through — being generous there is
- * always safe). Only `ResourceUpdateNotSupportedError` is control flow the
- * deploy engine matches BY CLASS, so swallowing it changes BEHAVIOR: a
- * recoverable LogGroupClass change becomes a hard failure.
+ * `ResourceUpdateNotSupportedError` is control flow the deploy engine matches
+ * BY CLASS, so swallowing it changes BEHAVIOR: a recoverable LogGroupClass
+ * change becomes a hard failure.
  *
- * Re-labelling an inner `ProvisioningError` is a lesser, cosmetic defect (a
- * worse message, same failure) — real in ~5 providers today, tracked in #1272
- * rather than blocking here, so this critic's blocking verdicts stay strictly
- * behavior-affecting. The two sets are separate ON PURPOSE; keep them so.
+ * `ProvisioningError` was added by #1272 once the last re-labelling site was
+ * fixed. Swallowing one is not behavior-affecting (same failure, worse
+ * message), but every site is now clean, so blocking keeps it that way. Adding
+ * a class here is only safe when the tree is already free of it — otherwise CI
+ * goes red on merge.
+ *
+ * Still a SEPARATE set from {@link TYPED_PASSTHROUGH_CLASSES}, which is the set
+ * of guards ACCEPTED as a valid pass-through: being generous there is always
+ * safe, being generous here is not.
  */
 const CONTROL_FLOW_THROW_CLASSES: ReadonlySet<string> = new Set([
   'ResourceUpdateNotSupportedError',
+  'ProvisioningError',
 ]);
 
 export interface AllowListEntry {
@@ -150,13 +154,11 @@ export interface AllowListEntry {
  *   - NOT-A-BUG: the analysis is over-strict for a legitimate shape.
  *   - KNOWN GAP: a real gap being worked off under a tracking issue.
  *
- * Every entry below is a KNOWN GAP tracked in #1270 — each hand-verified as a
- * genuine unwrapped escape. They are allow-listed rather than fixed in the
- * critic's own PR so the tool lands reviewable and immediately blocks NEW
- * regressions, mirroring how `gen-sdk-attr-coverage.ts` shipped with
- * `AWS::Lambda::EventSourceMapping` allow-listed against #1190 and then had the
- * entry removed by the fix. REMOVING AN ENTRY IS PART OF FIXING IT — the critic
- * then verifies the fix and prevents a re-regression.
+ * EMPTY as of #1270: the 5 gaps the critic found on introduction are all fixed,
+ * and removing their entries is what makes the critic VERIFY those fixes and
+ * block a re-regression. Keep it empty unless a genuinely unwrappable shape
+ * appears — an entry here is a deliberate, reviewable exception, not a
+ * convenience.
  *
  * Keying by METHOD (not class) is deliberate: a class allow-listed for method A
  * must still block CI when a NEW gap appears in method B.
@@ -164,24 +166,7 @@ export interface AllowListEntry {
 export const UPDATE_WRAP_ALLOW_LIST: ReadonlyMap<string, AllowListEntry> = new Map<
   string,
   AllowListEntry
->([
-  ['EC2Provider#updateEip', { rationale: 'KNOWN GAP tracked in #1270' }],
-  ['ELBv2Provider#applyTagDiff', { rationale: 'KNOWN GAP tracked in #1270' }],
-  ['ELBv2Provider#updateLoadBalancer', { rationale: 'KNOWN GAP tracked in #1270' }],
-  ['FirehoseProvider#applyAmazonOpenSearchServerlessDestinationUpdate', { rationale: 'KNOWN GAP tracked in #1270' }],
-  ['FirehoseProvider#applyAmazonopensearchserviceDestinationUpdate', { rationale: 'KNOWN GAP tracked in #1270' }],
-  ['FirehoseProvider#applyElasticsearchDestinationUpdate', { rationale: 'KNOWN GAP tracked in #1270' }],
-  ['FirehoseProvider#applyExtendedS3DestinationUpdate', { rationale: 'KNOWN GAP tracked in #1270' }],
-  ['FirehoseProvider#applyHttpEndpointDestinationUpdate', { rationale: 'KNOWN GAP tracked in #1270' }],
-  ['FirehoseProvider#applyIcebergDestinationUpdate', { rationale: 'KNOWN GAP tracked in #1270' }],
-  ['FirehoseProvider#applyRedshiftDestinationUpdate', { rationale: 'KNOWN GAP tracked in #1270' }],
-  ['FirehoseProvider#applySnowflakeDestinationUpdate', { rationale: 'KNOWN GAP tracked in #1270' }],
-  ['FirehoseProvider#applySplunkDestinationUpdate', { rationale: 'KNOWN GAP tracked in #1270' }],
-  ['FirehoseProvider#applyTagsDiff', { rationale: 'KNOWN GAP tracked in #1270' }],
-  ['FirehoseProvider#update', { rationale: 'KNOWN GAP tracked in #1270' }],
-  ['KinesisStreamConsumerProvider#applyTagDiff', { rationale: 'KNOWN GAP tracked in #1270' }],
-  ['S3TablesProvider#lookupTableArn', { rationale: 'KNOWN GAP tracked in #1270' }],
-]);
+>();
 
 export type Bucket =
   | 'no-aws'
@@ -356,6 +341,104 @@ function catchThrowsProvisioningError(
 }
 
 /**
+ * Does this body contain a typed pass-through — a POSITIVE `instanceof
+ * <TypedClass>` test whose consequent re-throws THE SAME identifier it tested?
+ *
+ * Generalised over the identifier (rather than pinned to a catch binding) so it
+ * works both for a `catch` clause and for a DELEGATED throw-helper's body: in
+ * `CloudControlProvider` the wrap is `this.handleError(error, ...)` and the
+ * pass-through (`if (error instanceof ProvisioningError) throw error;`) lives
+ * inside `handleError`, not in the clause. Checking only the clause would
+ * report that provider as swallowing its own typed errors when it does not.
+ */
+function hasTypedPassthroughIn(node: ts.Node, allowReturn = false): boolean {
+  let found = false;
+  const visit = (n: ts.Node): void => {
+    if (found) return;
+    if (ts.isIfStatement(n)) {
+      const tested = positiveTypedTestSubject(n.expression);
+      if (tested !== null && rethrowsIdentifier(n.thenStatement, tested, allowReturn)) {
+        found = true;
+        return;
+      }
+    }
+    ts.forEachChild(n, visit);
+  };
+  visit(node);
+  return found;
+}
+
+/** The identifier a positive `x instanceof <TypedClass>` test examines, else null. */
+function positiveTypedTestSubject(n: ts.Node): string | null {
+  if (ts.isPrefixUnaryExpression(n) && n.operator === ts.SyntaxKind.ExclamationToken) return null;
+  if (ts.isParenthesizedExpression(n)) return positiveTypedTestSubject(n.expression);
+  if (
+    ts.isBinaryExpression(n) &&
+    n.operatorToken.kind === ts.SyntaxKind.InstanceOfKeyword &&
+    ts.isIdentifier(n.right) &&
+    TYPED_PASSTHROUGH_CLASSES.has(n.right.text) &&
+    ts.isIdentifier(n.left)
+  ) {
+    return n.left.text;
+  }
+  if (ts.isBinaryExpression(n) && n.operatorToken.kind === ts.SyntaxKind.BarBarToken) {
+    return positiveTypedTestSubject(n.left) ?? positiveTypedTestSubject(n.right);
+  }
+  return null;
+}
+
+/**
+ * Does this subtree re-raise `<name>` unchanged?
+ *
+ * `allowReturn` accepts `return <name>;` as equivalent to `throw <name>;`. That
+ * is correct ONLY inside a THROW-FORM factory (`throw this.wrapError(err)`),
+ * where whatever the helper returns is immediately thrown by the caller — the
+ * `lambda-microvm-image` shape, whose `wrapError` opens with
+ * `if (error instanceof ProvisioningError) return error;`. For a STATEMENT-form
+ * helper (`this.handleError(err)`) a bare `return` would swallow, so the throw
+ * form stays required there.
+ */
+function rethrowsIdentifier(n: ts.Node, name: string, allowReturn = false): boolean {
+  const isRaise = ts.isThrowStatement(n) || (allowReturn && ts.isReturnStatement(n));
+  if (isRaise && n.expression && ts.isIdentifier(n.expression)) {
+    return n.expression.text === name;
+  }
+  let hit = false;
+  ts.forEachChild(n, (c) => {
+    if (rethrowsIdentifier(c, name, allowReturn)) hit = true;
+  });
+  return hit;
+}
+
+/** Does the throw-helper this clause delegates to carry the pass-through? */
+function delegatedFactoryHasPassthrough(
+  clause: ts.CatchClause,
+  methods: ReadonlyMap<string, ClassMethod>
+): boolean {
+  let found = false;
+  const visit = (node: ts.Node): void => {
+    if (found) return;
+    const isThrowForm = ts.isThrowStatement(node);
+    const expr = isThrowForm
+      ? node.expression
+      : ts.isExpressionStatement(node)
+        ? ts.isAwaitExpression(node.expression)
+          ? node.expression.expression
+          : node.expression
+        : undefined;
+    const callee = expr ? thisMethodCallName(expr) : null;
+    const target = callee !== null ? methods.get(callee) : undefined;
+    if (target && hasTypedPassthroughIn(target.body, isThrowForm)) {
+      found = true;
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(clause.block);
+  return found;
+}
+
+/**
  * Does this catch clause re-throw cdkd-typed errors UNTOUCHED?
  *
  * Requires all three of:
@@ -369,7 +452,13 @@ function catchThrowsProvisioningError(
  *   3. an actual catch-clause variable to compare against (a bare
  *      `catch { }` cannot re-throw the binding).
  */
-function catchHasTypedPassthrough(clause: ts.CatchClause): boolean {
+function catchHasTypedPassthrough(
+  clause: ts.CatchClause,
+  methods: ReadonlyMap<string, ClassMethod>
+): boolean {
+  // A wrap that DELEGATES to a throw-helper carries its pass-through inside
+  // that helper (CloudControlProvider's shape).
+  if (delegatedFactoryHasPassthrough(clause, methods)) return true;
   const decl = clause.variableDeclaration;
   if (!decl || !ts.isIdentifier(decl.name)) return false;
   const caughtName = decl.name.text;
@@ -588,7 +677,7 @@ export function analyzeClass(cls: ts.ClassDeclaration): WalkResult | null {
         const swallows = clause ? catchSwallows(clause, methods) : false;
         if (wraps && clause) {
           // A wrap that can capture a typed control-flow throw MUST pass it through.
-          if (!catchHasTypedPassthrough(clause) && throwsTypedError(node.tryBlock, methods)) {
+          if (!catchHasTypedPassthrough(clause, methods) && throwsTypedError(node.tryBlock, methods)) {
             unguardedWrapMethods.add(method.name);
           }
         }
