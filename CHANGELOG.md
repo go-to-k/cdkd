@@ -1,3 +1,10 @@
+## [0.267.11](https://github.com/go-to-k/cdkd/compare/v0.267.10...v0.267.11) (2026-07-27)
+
+
+### Bug Fixes
+
+* **providers:** reset Neptune and DocDB removal-dropped update fields to CFn defaults ([#1255](https://github.com/go-to-k/cdkd/issues/1255)) ([8adbea0](https://github.com/go-to-k/cdkd/commit/8adbea0fb646d8e9413abfdcab08a15badd800b2))
+
 ## [0.267.10](https://github.com/go-to-k/cdkd/compare/v0.267.9...v0.267.10) (2026-07-27)
 
 
