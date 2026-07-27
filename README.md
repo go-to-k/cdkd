@@ -87,7 +87,6 @@ Reproduce the first two with `./tests/benchmark/run-benchmark.sh all`. See [test
 Cold end-to-end wall clock, median of 3 runs, seconds, `us-east-1`, cdkd v0.260.10. Unlike the tables above, these numbers include synth (cdkd / CDK) and plan (Terraform); one-time setup (`npm install` / `cdk bootstrap` / `terraform init`) is excluded for all tools. For parity, CDK-only extras (the `restrictDefaultSecurityGroup` custom resource and CDK-managed log groups) were disabled so cdkd / CloudFormation don't carry resources the Terraform config doesn't have.
 
 - **The winner depends on the stack's shape.** On wide, parallel stacks (wide, serverless) cdkd is ~2x faster than Terraform. Where a single slow resource dominates (webapp's NAT Gateway, cloudfront's propagation), physical provisioning time sets a common floor: webapp is a true tie (0.8s apart), and only `--no-wait` gets below the floor.
-- **CloudFormation is the slowest engine in every scenario.**
 - **This benchmark also made cdkd faster.** Chasing the initial webapp / cloudfront losses surfaced four real deploy-speed bugs (longest-pole scheduling, a missing EIP SDK provider, NAT Gateway and CloudFront polling intervals), fixed in [#1175](https://github.com/go-to-k/cdkd/pull/1175) and [#1177](https://github.com/go-to-k/cdkd/pull/1177). The numbers above are from the fixed version.
 
 ## Features
