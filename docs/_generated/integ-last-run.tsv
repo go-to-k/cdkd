@@ -5,9 +5,9 @@
 # GENERATED SHAPE - do not hand-edit. After recording a run, run:
 #   vp run integ-ledger-normalize
 # CI enforces this; a non-normalized file fails check-build-test.
-acm-certificate	2026-07-26T18:49:34Z	PASS	25	verify.sh	0727b sweep-b6 staleness re-run (rc=0); account clean
+acm-certificate	2026-07-27T16:40:50Z	PASS	23	verify.sh	issue #1272 ACM pass-through guard; 1 del 0 err
 agentcore-tools	2026-07-17T12:05:03Z	PASS	180	verify.sh	3 phases clean; adopt-only singletons + evaluator CRUD; name regex fix (no hyphens)
-alb	2026-07-26T20:07:41Z	PASS	299	verify.sh	0727b sweep-b14 staleness re-run (rc=0); account clean
+alb	2026-07-27T16:40:50Z	PASS	64	verify.sh	issue #1270 ELBv2 + EC2 update wrap; 16 del 0 err
 alb-advanced	2026-07-26T18:49:34Z	PASS	63	standard	0727b sweep-b6 staleness re-run (rc=0); account clean
 api-cognito	2026-07-26T18:49:34Z	PASS	75	standard	0727b sweep-b6 staleness re-run (rc=0); account clean
 apigateway	2026-07-21T14:32:25Z	PASS	56	verify.sh	rc ok, orph clean
@@ -111,7 +111,7 @@ getatt-fallback-guard	2026-07-20T05:59:44Z	PASS	300	verify.sh	4-phase incl. stri
 getstackoutput-crossregion	2026-07-26T19:05:27Z	PASS	79	verify.sh	0727b sweep-b8 staleness re-run (rc=0); account clean
 glue-securityconfig-replace	2026-07-26T18:20:27Z	PASS	59	verify.sh	0727b sweep-b3 staleness re-run (rc=0); account clean
 glue-update-hardening	2026-07-26T20:00:52Z	PASS	75	verify.sh	0727b sweep-b13 staleness re-run (rc=0); account clean
-iam-managed-policy	2026-07-21T13:08:15Z	PASS	29	verify.sh	converted; policy attached, detach-before-delete clean, 0 orphans
+iam-managed-policy	2026-07-27T16:40:50Z	PASS	32	verify.sh	issue #1272 IAM pass-through guard; clean destroy 0 orphans
 iam-oidc-provider	2026-07-16T16:48:34Z	PASS	91	verify.sh	issue-1016 fix live-verify, warn 1->0, orph clean
 iam-propagation-stress	2026-07-26T18:57:55Z	PASS	71	verify.sh	0727b sweep-b7 staleness re-run (rc=0); account clean
 iam-role-policies-drift-clean	2026-07-26T18:57:55Z	PASS	84	verify.sh	0727b sweep-b7 staleness re-run (rc=0); account clean
@@ -220,7 +220,7 @@ s3-event-notification	2026-07-21T05:28:05Z	PASS	79	verify.sh	rc ok, orph clean
 s3-lifecycle	2026-07-21T14:28:43Z	PASS	58	verify.sh	rc ok, orph clean
 s3-object-lock	2026-07-21T14:42:20Z	PASS	53	verify.sh	rc ok, orph clean
 s3-replication-and-filter	2026-07-21T14:43:45Z	PASS	63	verify.sh	rc ok, orph clean
-s3-tables	2026-07-26T19:45:58Z	PASS	50	verify.sh	0727b sweep-b12 staleness re-run (rc=0); account clean
+s3-tables	2026-07-27T16:40:50Z	PASS	45	verify.sh	issue #1270 S3Tables update wrap; 5 del 0 err
 s3-vectors	2026-07-26T18:49:34Z	PASS	43	verify.sh	0727b sweep-b6 staleness re-run (rc=0); account clean
 scheduled-task	2026-07-26T18:04:53Z	PASS	44	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
 scheduler-custom-group	2026-07-26T19:25:15Z	PASS	103	verify.sh	0727b sweep-b10 staleness re-run (rc=0); account clean
