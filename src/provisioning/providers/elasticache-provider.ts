@@ -476,9 +476,11 @@ export class ElastiCacheProvider implements ResourceProvider {
       // inactive status; when an ARN is present, send active explicitly so
       // re-adding a topic after a removal reactivates delivery.
       const notificationTopicArn = properties['NotificationTopicArn'] as string | undefined;
+      // `!= null` (not `!== undefined`) so an explicit-null / never-really-set
+      // previous side does not fire a spurious inactive sentinel — matches the
+      // numeric fields' previous-side checks below (PR #1256 review nit).
       const notificationRemoved =
-        notificationTopicArn === undefined &&
-        previousProperties['NotificationTopicArn'] !== undefined;
+        notificationTopicArn === undefined && previousProperties['NotificationTopicArn'] != null;
 
       await this.getClient().send(
         new ModifyCacheClusterCommand({
