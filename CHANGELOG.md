@@ -1,3 +1,10 @@
+## [0.267.17](https://github.com/go-to-k/cdkd/compare/v0.267.16...v0.267.17) (2026-07-27)
+
+
+### Bug Fixes
+
+* **providers:** close the update() error-wrapping gaps and double-wraps ([#1273](https://github.com/go-to-k/cdkd/issues/1273)) ([315fedb](https://github.com/go-to-k/cdkd/commit/315fedbff98a289f2253ee5db1d8c44952003a71))
+
 ## [0.267.16](https://github.com/go-to-k/cdkd/compare/v0.267.15...v0.267.16) (2026-07-27)
 
 
