@@ -55,6 +55,10 @@ import {
   ProvisioningError,
   ResourceUpdateNotSupportedError,
 } from '../../../src/utils/error-handler.js';
+import {
+  isRetryableTransientError,
+  isThrottlingError,
+} from '../../../src/deployment/retryable-errors.js';
 
 /**
  * Each case drives its provider's update() into at least one AWS `send` by
@@ -159,6 +163,71 @@ describe('SDK provider update() error wrapping (issue #1267)', () => {
       });
     });
   }
+
+  // Wrapping is exactly the change that historically breaks throttle
+  // classification: the deploy engine's withRetry decides whether to back off
+  // by inspecting the error, and a wrapper that hid the SDK error would turn a
+  // retryable throttle into a hard failure. `isThrottlingError` walks the
+  // `.cause` chain, and the wrapper message embeds the original message, so
+  // both detection routes must still fire through the wrap.
+  it('keeps a wrapped throttle classifiable as a retryable transient error', async () => {
+    const throttle = Object.assign(new Error('Rate exceeded'), {
+      name: 'ThrottlingException',
+      $metadata: { httpStatusCode: 400 },
+    });
+    mockEventBridgeSend.mockRejectedValue(throttle);
+
+    const provider = new EventBridgeBusProvider();
+    const caught = await provider
+      .update(
+        'MyBus',
+        'my-bus',
+        'AWS::Events::EventBus',
+        { Name: 'my-bus', Description: 'after' },
+        { Name: 'my-bus', Description: 'before' }
+      )
+      .catch((e: unknown) => e);
+
+    expect(caught).toBeInstanceOf(ProvisioningError);
+    expect(isThrottlingError(caught)).toBe(true);
+    expect(isRetryableTransientError(caught, (caught as Error).message)).toBe(true);
+  });
+
+  // Every case above fails on the FIRST send. This one fails on a LATER send
+  // (the tags diff, after UpdateEventBus and DescribeEventBus both succeed) so
+  // the wrap is proven to cover non-first calls and the otherwise-untouched
+  // tags-diff sub-path.
+  it('wraps a mid-sequence failure after earlier sends succeeded', async () => {
+    const tagFailure = new Error('Tagging blew up');
+    mockEventBridgeSend.mockImplementation((command: unknown) => {
+      const name = (command as object).constructor.name;
+      if (name === 'UpdateEventBusCommand') return Promise.resolve({});
+      if (name === 'DescribeEventBusCommand') {
+        return Promise.resolve({ Arn: 'arn:aws:events:us-east-1:123456789012:event-bus/my-bus' });
+      }
+      if (name === 'TagResourceCommand' || name === 'UntagResourceCommand') {
+        return Promise.reject(tagFailure);
+      }
+      return Promise.resolve({});
+    });
+
+    const provider = new EventBridgeBusProvider();
+    const promise = provider.update(
+      'MyBus',
+      'my-bus',
+      'AWS::Events::EventBus',
+      { Name: 'my-bus', Description: 'after', Tags: [{ Key: 'a', Value: '2' }] },
+      { Name: 'my-bus', Description: 'before', Tags: [{ Key: 'a', Value: '1' }] }
+    );
+
+    await expect(promise).rejects.toThrow(ProvisioningError);
+    await expect(promise).rejects.toThrow('Failed to update EventBus MyBus: Tagging blew up');
+    await expect(promise).rejects.toMatchObject({ cause: tagFailure });
+    // Prove the earlier sends really did run before the failing one.
+    const sent = mockEventBridgeSend.mock.calls.map((c) => (c[0] as object).constructor.name);
+    expect(sent).toContain('UpdateEventBusCommand');
+    expect(sent.length).toBeGreaterThan(1);
+  });
 
   // The load-bearing case: LogsLogGroupProvider.update() throws the typed
   // ResourceUpdateNotSupportedError on a LogGroupClass change, and the deploy
