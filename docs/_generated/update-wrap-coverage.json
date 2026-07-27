@@ -1,11 +1,11 @@
 {
   "summary": {
     "classifiedCount": 83,
-    "wrapped": 71,
+    "wrapped": 76,
     "noAws": 7,
     "gap": 0,
     "unguardedWrap": 0,
-    "allowListed": 5,
+    "allowListed": 0,
     "unresolvedCallee": 0
   },
   "classes": [
@@ -188,13 +188,10 @@
     {
       "file": "ec2-provider.ts",
       "className": "EC2Provider",
-      "bucket": "allow-listed",
-      "unwrappedSendMethods": [
-        "updateEip"
-      ],
+      "bucket": "wrapped",
+      "unwrappedSendMethods": [],
       "unguardedWrapMethods": [],
-      "unresolvedCallees": [],
-      "rationale": "KNOWN GAP tracked in #1270"
+      "unresolvedCallees": []
     },
     {
       "file": "ecr-provider.ts",
@@ -231,14 +228,10 @@
     {
       "file": "elbv2-provider.ts",
       "className": "ELBv2Provider",
-      "bucket": "allow-listed",
-      "unwrappedSendMethods": [
-        "applyTagDiff",
-        "updateLoadBalancer"
-      ],
+      "bucket": "wrapped",
+      "unwrappedSendMethods": [],
       "unguardedWrapMethods": [],
-      "unresolvedCallees": [],
-      "rationale": "KNOWN GAP tracked in #1270"
+      "unresolvedCallees": []
     },
     {
       "file": "emr-cluster-provider.ts",
@@ -283,23 +276,10 @@
     {
       "file": "firehose-provider.ts",
       "className": "FirehoseProvider",
-      "bucket": "allow-listed",
-      "unwrappedSendMethods": [
-        "applyAmazonOpenSearchServerlessDestinationUpdate",
-        "applyAmazonopensearchserviceDestinationUpdate",
-        "applyElasticsearchDestinationUpdate",
-        "applyExtendedS3DestinationUpdate",
-        "applyHttpEndpointDestinationUpdate",
-        "applyIcebergDestinationUpdate",
-        "applyRedshiftDestinationUpdate",
-        "applySnowflakeDestinationUpdate",
-        "applySplunkDestinationUpdate",
-        "applyTagsDiff",
-        "update"
-      ],
+      "bucket": "wrapped",
+      "unwrappedSendMethods": [],
       "unguardedWrapMethods": [],
-      "unresolvedCallees": [],
-      "rationale": "KNOWN GAP tracked in #1270"
+      "unresolvedCallees": []
     },
     {
       "file": "fsx-filesystem-provider.ts",
@@ -416,13 +396,10 @@
     {
       "file": "kinesis-streamconsumer-provider.ts",
       "className": "KinesisStreamConsumerProvider",
-      "bucket": "allow-listed",
-      "unwrappedSendMethods": [
-        "applyTagDiff"
-      ],
+      "bucket": "wrapped",
+      "unwrappedSendMethods": [],
       "unguardedWrapMethods": [],
-      "unresolvedCallees": [],
-      "rationale": "KNOWN GAP tracked in #1270"
+      "unresolvedCallees": []
     },
     {
       "file": "kms-provider.ts",
@@ -579,13 +556,10 @@
     {
       "file": "s3-tables-provider.ts",
       "className": "S3TablesProvider",
-      "bucket": "allow-listed",
-      "unwrappedSendMethods": [
-        "lookupTableArn"
-      ],
+      "bucket": "wrapped",
+      "unwrappedSendMethods": [],
       "unguardedWrapMethods": [],
-      "unresolvedCallees": [],
-      "rationale": "KNOWN GAP tracked in #1270"
+      "unresolvedCallees": []
     },
     {
       "file": "s3-vectors-provider.ts",

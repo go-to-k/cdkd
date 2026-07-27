@@ -15,7 +15,7 @@ import {
 } from '@aws-sdk/client-cloudfront';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
-import { ProvisioningError } from '../../utils/error-handler.js';
+import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import type {
   ResourceProvider,
@@ -233,6 +233,9 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
         },
       };
     } catch (error) {
+      // Pass through cdkd-typed errors untouched (#1272): re-labelling an inner
+      // ProvisioningError replaces its precise message with this outer one.
+      if (error instanceof CdkdError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
         `Failed to update CloudFront Distribution ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,

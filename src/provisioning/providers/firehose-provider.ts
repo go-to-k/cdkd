@@ -31,7 +31,11 @@ import {
   type DeliveryStreamEncryptionConfigurationInput,
 } from '@aws-sdk/client-firehose';
 import { getLogger } from '../../utils/logger.js';
-import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
+import {
+  CdkdError,
+  ProvisioningError,
+  ResourceUpdateNotSupportedError,
+} from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import type {
@@ -517,6 +521,38 @@ export class FirehoseProvider implements ResourceProvider {
    * can `cdkd deploy --replace`.
    */
   async update(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
+  ): Promise<ResourceUpdateResult> {
+    try {
+      return await this.applyUpdate(
+        logicalId,
+        physicalId,
+        resourceType,
+        properties,
+        previousProperties
+      );
+    } catch (error) {
+      // Pass through every cdkd-typed error untouched: the destination-switch
+      // guard below raises ResourceUpdateNotSupportedError, which the deploy
+      // engine matches BY CLASS to fall back to replacement, and an inner
+      // ProvisioningError already carries better context than a re-wrap.
+      if (error instanceof CdkdError) throw error;
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to update Firehose delivery stream ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        cause
+      );
+    }
+  }
+
+  private async applyUpdate(
     logicalId: string,
     physicalId: string,
     resourceType: string,
