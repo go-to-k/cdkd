@@ -112,7 +112,7 @@ export class LambdaUrlProvider implements ResourceProvider {
   async update(
     logicalId: string,
     physicalId: string,
-    _resourceType: string,
+    resourceType: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
@@ -185,16 +185,29 @@ export class LambdaUrlProvider implements ResourceProvider {
     );
     if (corsParam !== undefined) updateParams.Cors = corsParam;
 
-    const response = await this.lambdaClient.send(new UpdateFunctionUrlConfigCommand(updateParams));
+    try {
+      const response = await this.lambdaClient.send(
+        new UpdateFunctionUrlConfigCommand(updateParams)
+      );
 
-    return {
-      physicalId,
-      wasReplaced: false,
-      attributes: {
-        FunctionUrl: response.FunctionUrl,
-        FunctionArn: response.FunctionArn,
-      },
-    };
+      return {
+        physicalId,
+        wasReplaced: false,
+        attributes: {
+          FunctionUrl: response.FunctionUrl,
+          FunctionArn: response.FunctionArn,
+        },
+      };
+    } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to update Lambda URL ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        cause
+      );
+    }
   }
 
   /**
