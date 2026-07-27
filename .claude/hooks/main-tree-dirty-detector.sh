@@ -47,6 +47,11 @@ probe_dir="${hook_cwd:-$PWD}"
 main_tree=$(git -C "$probe_dir" worktree list --porcelain 2>/dev/null | awk '/^worktree /{print $2; exit}')
 [[ -n "$main_tree" ]] || exit 0
 
+# Repo opt-in scope (issue #1259): warn only for repos following the
+# worktree + markgate convention. Opt-in signal: a `.markgate.yml` at
+# the main worktree root.
+[[ -f "$main_tree/.markgate.yml" ]] || exit 0
+
 # Only care when the main tree is on main/master.
 branch=$(git -C "$main_tree" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
 [[ "$branch" == "main" || "$branch" == "master" ]] || exit 0

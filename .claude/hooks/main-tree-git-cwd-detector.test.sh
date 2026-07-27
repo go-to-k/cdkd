@@ -17,6 +17,8 @@ trap 'rm -rf "$TMPDIR"' EXIT
 MAIN="$TMPDIR/main"
 git init -q -b main "$MAIN"
 echo "seed" > "$MAIN/file.txt"
+# Opt the fixture into the gate (issue #1259).
+touch "$MAIN/.markgate.yml"
 git -C "$MAIN" add -A
 git -C "$MAIN" -c user.email=t@t -c user.name=t commit -q -m init
 
@@ -86,6 +88,19 @@ run_case quiet "echo containing 'git commit' string" \
 git -C "$MAIN" worktree remove --force "$WT" >/dev/null 2>&1
 run_case quiet "bare git commit in main tree, NO feature worktree" \
   "$MAIN" 'git commit -m x'
+
+# 10. NON-opted-in repo (no .markgate.yml): bare git commit in its main
+#     tree with a feature worktree active -> QUIET (issue #1259).
+OPTOUT="$TMPDIR/optout"
+git init -q -b main "$OPTOUT"
+echo "seed" > "$OPTOUT/file.txt"
+git -C "$OPTOUT" add -A
+git -C "$OPTOUT" -c user.email=t@t -c user.name=t commit -q -m init
+OPTOUT="$(cd "$OPTOUT" && pwd -P)"
+OWT="$OPTOUT/.claude/worktrees/feat-y"
+git -C "$OPTOUT" worktree add -q "$OWT" -b feat/y >/dev/null 2>&1
+run_case quiet "bare git commit in non-opted-in repo main tree, worktree active" \
+  "$OPTOUT" 'git commit -m x'
 
 echo "----"
 echo "passed=$pass failed=$fail"

@@ -109,6 +109,15 @@ if [[ -z "$main_tree" ]]; then
   exit 0
 fi
 
+# Repo opt-in scope (issue #1259): only repos following the worktree +
+# markgate convention get main-tree branch protection. Unrelated repos
+# (a personal blog, a scratch clone) have no parallel-agent contention
+# on their main tree. Opt-in signal: a `.markgate.yml` at the main
+# worktree root.
+if [[ ! -f "$main_tree/.markgate.yml" ]]; then
+  exit 0
+fi
+
 # Canonicalize both sides before compare. macOS resolves
 # `/tmp` → `/private/tmp` and `/var` → `/private/var` via symlinks;
 # `git worktree list --porcelain` always emits the real path, while
