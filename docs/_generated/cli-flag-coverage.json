@@ -534,6 +534,7 @@
         "destroy-interrupt",
         "diff-intrinsic-target-change",
         "dlm-lifecycle-policy",
+        "docdb-neptune",
         "docker-image-asset",
         "dynamodb-autoscaling",
         "dynamodb-globaltable",
@@ -670,6 +671,7 @@
     {
       "flag": "--remove-protection",
       "integs": [
+        "docdb-neptune",
         "dynamodb-globaltable",
         "ec2-instance",
         "rds-aurora",
