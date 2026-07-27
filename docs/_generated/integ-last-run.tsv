@@ -36,7 +36,7 @@ cc-api-fallback	2026-07-27T05:30:42Z	PASS	65	verify.sh	1252 fix live-verify (CC 
 cc-api-fallback-transitions	2026-07-20T02:19:31Z	PASS	140	verify.sh	CC transition/override #634 verified, 2 stacks destroy clean
 cc-getatt-readback	2026-07-20T03:06:02Z	PASS	260	verify.sh	generic sparse read-back live-verified (#1105); destroy 8/8, 0 orphans
 ci-cd	2026-07-21T18:23:00Z	PASS	55	verify.sh	rc ok, orph clean
-cloudfront-function-url	2026-07-21T18:29:34Z	PASS	378	verify.sh	rc ok, orph clean
+cloudfront-function-url	2026-07-27T09:39:47Z	PASS	420	verify.sh	1160 removal phase 1b: InvokeMode+Cors reset live-verified (x2), destroy 7/0, 0 orphans
 cloudwatch	2026-07-26T20:00:52Z	PASS	55	standard	0727b sweep-b13 staleness re-run (rc=0); account clean
 codecommit	2026-07-18T19:54:34Z	PASS		verify.sh	Code seed+SNS trigger+rename+drift, destroy 0 err 0 orph (re-run post review-nits)
 codedeploy-lambda-deployment-group	2026-07-26T19:45:58Z	PASS	109	verify.sh	re-run after version-agnostic fixture fix; live-verified, account clean (remnant-warning follow-up: issue #1252)
