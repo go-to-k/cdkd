@@ -1,3 +1,10 @@
+## [0.267.12](https://github.com/go-to-k/cdkd/compare/v0.267.11...v0.267.12) (2026-07-27)
+
+
+### Bug Fixes
+
+* **elasticache:** reset removal-dropped cache cluster and subnet group fields to CFn defaults ([#1256](https://github.com/go-to-k/cdkd/issues/1256)) ([2499cef](https://github.com/go-to-k/cdkd/commit/2499cef79b077f8a453d62446615f1666b4bb0d7))
+
 ## [0.267.11](https://github.com/go-to-k/cdkd/compare/v0.267.10...v0.267.11) (2026-07-27)
 
 
