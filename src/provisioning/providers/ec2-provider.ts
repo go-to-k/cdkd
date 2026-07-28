@@ -3309,12 +3309,6 @@ export class EC2Provider implements ResourceProvider {
   }
 
   /**
-   * Build the RunInstances `CreditSpecification` shape from the CFn
-   * `CreditSpecification` object. CFn uses `CPUCredits` (capital CPU, the
-   * canonical CDK `CfnInstance` emission); accept the SDK-style `CpuCredits`
-   * too for hand-authored templates. Returns `undefined` when absent / empty.
-   */
-  /**
    * Map the CFn `AWS::EC2::Instance.AvailabilityZone` property onto the
    * RunInstances `Placement.AvailabilityZone` input (issue #1276).
    *
@@ -3336,6 +3330,12 @@ export class EC2Provider implements ResourceProvider {
     return { AvailabilityZone: az };
   }
 
+  /**
+   * Build the RunInstances `CreditSpecification` shape from the CFn
+   * `CreditSpecification` object. CFn uses `CPUCredits` (capital CPU, the
+   * canonical CDK `CfnInstance` emission); accept the SDK-style `CpuCredits`
+   * too for hand-authored templates. Returns `undefined` when absent / empty.
+   */
   private buildCreditSpecification(
     properties: Record<string, unknown>
   ): CreditSpecificationRequest | undefined {

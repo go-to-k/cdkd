@@ -132,9 +132,17 @@ describe('EC2 Instance running-state wait gating (issue #1277)', () => {
 });
 
 describe('EC2 Instance AvailabilityZone -> Placement mapping (issue #1276)', () => {
+  let originalNoWait: string | undefined;
+
   beforeEach(() => {
     vi.clearAllMocks();
+    originalNoWait = process.env['CDKD_NO_WAIT'];
     delete process.env['CDKD_NO_WAIT'];
+  });
+
+  afterEach(() => {
+    if (originalNoWait === undefined) delete process.env['CDKD_NO_WAIT'];
+    else process.env['CDKD_NO_WAIT'] = originalNoWait;
   });
 
   it('sends AvailabilityZone as Placement.AvailabilityZone on RunInstances', async () => {
@@ -170,6 +178,31 @@ describe('EC2 Instance AvailabilityZone -> Placement mapping (issue #1276)', () 
     expect(handled?.has('AvailabilityZone')).toBe(true);
   });
 
+  it('leaves no actionable silent drop for an L2-shaped property set (the real routing input)', async () => {
+    // `handledProperties` above is the provider's DECLARATION; the routing
+    // decision in `ProviderRegistry.getProviderFor` reads the GENERATED
+    // coverage map instead (they are tied together only by the codegen
+    // drift check). Pin the layer routing actually consults, using the
+    // property set CDK's L2 `ec2.Instance` emits for a typical app
+    // (instance profile + security group + block device + userData + tags).
+    const { findActionableSilentDrops } = await import(
+      '../../../src/provisioning/property-coverage.js'
+    );
+    const l2Emitted = {
+      AvailabilityZone: 'us-east-1a',
+      BlockDeviceMappings: [{ DeviceName: '/dev/xvda', Ebs: { VolumeSize: 8 } }],
+      IamInstanceProfile: 'profile-1',
+      ImageId: 'ami-12345678',
+      InstanceType: 't3.micro',
+      SecurityGroupIds: ['sg-1'],
+      SubnetId: 'subnet-1',
+      Tags: [{ Key: 'Name', Value: 'Web' }],
+      UserData: 'IyEvYmluL2Jhc2g=',
+    };
+
+    expect(findActionableSilentDrops('AWS::EC2::Instance', l2Emitted, new Set())).toEqual([]);
+  });
+
   it('reverse-maps Placement.AvailabilityZone in readCurrentState (no phantom drift)', async () => {
     mockSend.mockResolvedValue({
       Reservations: [
@@ -188,12 +221,34 @@ describe('EC2 Instance AvailabilityZone -> Placement mapping (issue #1276)', () 
       ],
     });
 
+    // Signature is (physicalId, logicalId, resourceType) — passing them the
+    // other way round still passes against an input-blind mock, so assert the
+    // DescribeInstances call actually targeted the physical id too.
     const current = await new EC2Provider().readCurrentState!(
-      'MyInstance',
       'i-1234567890abcdef0',
+      'MyInstance',
       'AWS::EC2::Instance'
     );
 
     expect(current?.['AvailabilityZone']).toBe('us-east-1a');
+    const describeCall = mockSend.mock.calls.at(-1)?.[0] as { input?: { InstanceIds?: string[] } };
+    expect(describeCall?.input?.InstanceIds).toEqual(['i-1234567890abcdef0']);
+  });
+});
+
+describe('AWS::EC2::Instance immutable-property replacement rules (issue #1276)', () => {
+  it('classifies every create-only property as a replacement without DescribeType', async () => {
+    // The schema fallback (`create-only-properties.ts`) already classifies
+    // these, but it degrades to an EMPTY list when `cloudformation:DescribeType`
+    // is unavailable — and `updateInstance` silently ignores an AZ / ImageId /
+    // SubnetId / KeyName change, so an in-place classification would leave
+    // state recording the new value while AWS keeps the old one.
+    const { ReplacementRulesRegistry } = await import('../../../src/analyzer/replacement-rules.js');
+    const registry = new ReplacementRulesRegistry();
+
+    for (const prop of ['AvailabilityZone', 'ImageId', 'SubnetId', 'KeyName']) {
+      expect(registry.requiresReplacement('AWS::EC2::Instance', prop, 'old', 'new')).toBe(true);
+      expect(registry.isClassified('AWS::EC2::Instance', prop)).toBe(true);
+    }
   });
 });

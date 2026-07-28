@@ -15,10 +15,15 @@
 # DisableApiTermination=true, so destroy MUST pass --remove-protection (the
 # SDK delete path flips the attribute off before TerminateInstances).
 #
-# Authored against a RAW L1 `ec2.CfnInstance` so the resource stays on the SDK
-# provider path (an L2 `ec2.Instance` emits AvailabilityZone, a silent-drop
-# that flips the resource onto the Cloud Control path and bypasses the SDK
-# backfill — see the fixture stack doc).
+# Also asserts the issue #1276 AvailabilityZone -> RunInstances
+# `Placement.AvailabilityZone` mapping: the template emits AvailabilityZone (as
+# CDK's L2 `ec2.Instance` always does), the instance must STILL take the SDK
+# provider path (before #1276 that property was a silent-drop and the #614 rule
+# flipped the whole resource onto Cloud Control), and the AZ must reach AWS.
+#
+# Authored against a RAW L1 `ec2.CfnInstance` because the L2 construct does not
+# expose the five #609 security-backfill props this fixture verifies -- see the
+# fixture stack doc.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -223,6 +228,23 @@ if [ "${ACTUAL_CPU_CREDITS}" != "unlimited" ]; then
   exit 1
 fi
 echo "    OK: CreditSpecification.CpuCredits == unlimited on AWS (CreditSpecification silent-drop CLOSED by #609)"
+
+# AvailabilityZone (#1276): the CFn property maps to RunInstances'
+# `Placement.AvailabilityZone`. Compare AWS against the value cdkd recorded in
+# state for THIS instance (the resolved template value) rather than a hardcoded
+# AZ, which would break the moment the fixture's VPC lands elsewhere.
+EXPECTED_AZ=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::EC2::Instance") | .value.properties.AvailabilityZone] | first // ""')
+if [ -z "${EXPECTED_AZ}" ] || [ "${EXPECTED_AZ}" = "null" ]; then
+  echo "FAIL: state records no AvailabilityZone for the instance — the template must emit it (issue #1276)" >&2
+  echo "${STATE}" | jq '.resources'
+  exit 1
+fi
+ACTUAL_AZ=$(echo "${INSTANCE}" | jq -r '.Placement.AvailabilityZone // "null"')
+if [ "${ACTUAL_AZ}" != "${EXPECTED_AZ}" ]; then
+  echo "FAIL: Placement.AvailabilityZone is '${ACTUAL_AZ}', expected '${EXPECTED_AZ}' (AvailabilityZone silent-drop NOT closed)" >&2
+  exit 1
+fi
+echo "    OK: Placement.AvailabilityZone == ${ACTUAL_AZ} on AWS (AvailabilityZone silent-drop CLOSED by #1276, instance stayed on the SDK path)"
 
 # --- Phase 2: destroy (--remove-protection required) ------------------
 echo "==> Phase 2: destroy with --remove-protection (instance is termination-protected)"

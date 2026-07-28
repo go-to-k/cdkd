@@ -14,15 +14,22 @@ import * as ec2 from 'aws-cdk-lib/aws-ec2';
  * - Security-focused property backfill (#609): DisableApiTermination /
  *   MetadataOptions (IMDSv2) / Monitoring / EbsOptimized / CreditSpecification
  *
- * The instance is authored as a RAW `ec2.CfnInstance` (L1) on purpose. The L2
- * `ec2.Instance` construct always emits an `AvailabilityZone` property (a cdkd
- * silent-drop), which under the #614 routing rule flips the ENTIRE resource
- * onto the Cloud Control path — which forwards every property to AWS verbatim
- * and therefore NEVER exercises the SDK provider's create/update/readback
- * backfill this fixture is meant to verify. Using L1 lets us emit ONLY
- * cdkd-handled top-level properties so the instance stays on the SDK provider
- * path (per the #609 backfill-fixture rule: L1 over L2, every emitted prop must
- * be handled). All five backfilled props ride on RunInstances directly.
+ * The instance is authored as a RAW `ec2.CfnInstance` (L1) on purpose: the L2
+ * `ec2.Instance` construct does not expose the five #609 security-backfill
+ * props, and this fixture exists to verify each of them reaches AWS. L1 lets us
+ * emit ONLY cdkd-handled top-level properties so the instance stays on the SDK
+ * provider path (per the #609 backfill-fixture rule: L1 over L2, every emitted
+ * prop must be handled). All five backfilled props ride on RunInstances
+ * directly.
+ *
+ * `availabilityZone` is emitted deliberately (issue #1276). The L2 construct
+ * ALWAYS emits it, and until #1276 it was in neither `handledProperties` nor
+ * `unhandledByDesign`, so the #614 routing rule flipped every L2-authored
+ * instance onto the Cloud Control path. Now that the SDK provider maps it onto
+ * RunInstances' `Placement.AvailabilityZone`, emitting it here (a) keeps the
+ * resource on the SDK path — verified by the `provisionedBy` assertion in
+ * verify.sh — and (b) is the only place the new `Placement` create path runs
+ * against real AWS.
  */
 export class Ec2InstanceStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -63,6 +70,10 @@ export class Ec2InstanceStack extends cdk.Stack {
       imageId: ami,
       instanceType: 't3.micro',
       subnetId: vpc.publicSubnets[0].subnetId,
+      // The property #1276 added to the SDK provider. Emitting it alongside
+      // SubnetId mirrors what the L2 construct synthesizes, and RunInstances
+      // accepts both as long as they agree.
+      availabilityZone: vpc.publicSubnets[0].availabilityZone,
       securityGroupIds: [securityGroup.securityGroupId],
       // Security-focused property backfill (#609):
       // Termination protection — a silent-drop here would let a user believe

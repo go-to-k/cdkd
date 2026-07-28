@@ -598,8 +598,24 @@ export class ReplacementRulesRegistry {
     // security-backfill props (DisableApiTermination / Monitoring /
     // MetadataOptions / CreditSpecification) ARE mutable in-place on a running
     // instance and are handled by EC2Provider.updateInstanceSecurityProps.
+    //
+    // AvailabilityZone / ImageId / SubnetId / KeyName are immutable: the CFn
+    // registry schema lists all four under `createOnlyProperties`, so the
+    // `create-only-properties.ts` DescribeType fallback already classifies
+    // them as replacements. They are ALSO named here so the classification
+    // survives a DescribeType failure (missing `cloudformation:DescribeType`
+    // permission, or a throttle that outlasts the retry) — the fallback
+    // degrades to an empty create-only list, and without a hand rule the
+    // change would be classified in-place, where `updateInstance` silently
+    // ignores it: state records the new value while AWS keeps the old one.
     this.rules.set('AWS::EC2::Instance', {
-      replacementProperties: new Set(['EbsOptimized']),
+      replacementProperties: new Set([
+        'EbsOptimized',
+        'AvailabilityZone',
+        'ImageId',
+        'SubnetId',
+        'KeyName',
+      ]),
     });
 
     // ECS Task Definition
