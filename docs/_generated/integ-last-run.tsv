@@ -82,7 +82,7 @@ ec2-instance	2026-07-26T16:41:51Z	PASS	123	verify.sh	0727 P0 sweep (ec2-provider
 ec2-vpc	2026-07-26T17:21:15Z	PASS	35	standard	issue 1241 fix verified: explicit DESTROY FlowLog LogGroup; 20 deleted 0 retained 0 orphans
 ecr	2026-07-26T18:36:31Z	PASS	85	standard	0727b sweep-b4 staleness re-run (rc=0); account clean
 ecr-scanning	2026-07-20T17:37:23Z	PASS	56	verify.sh	ECR scanOnPush + tag add/change/untag update, clean destroy
-ecs-fargate	2026-07-26T17:17:11Z	PASS	388	verify.sh	issue 1236 fix verified: DescribeType throttle retry; update phase green, destroy clean 0 orphans
+ecs-fargate	2026-07-28T02:01:44Z	PASS	387	verify.sh	rc ok, orph clean, +--full-wait phases (#1275)
 ecs-service-update-props	2026-07-23T08:20:10Z	PASS		verify.sh	#1173 re-run after VersionConsistency norm; Phase1f + drift clean; destroy 15 del 0 err 0 orph
 efs-immutable-replacement	2026-07-19T19:05:41Z	PASS	76	verify.sh	rc ok, 1 deleted, orph clean
 efs-lambda	2026-07-26T18:36:31Z	PASS	499	standard	0727b sweep-b4 staleness re-run (rc=0); account clean

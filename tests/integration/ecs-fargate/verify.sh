@@ -115,14 +115,23 @@ cleanup
 # The two flags are opposite ends of one axis, so the pair is rejected before
 # any AWS call. Checked first because it must NOT provision anything.
 echo "==> Phase 0: reject --no-wait --full-wait"
-if node "${LOCAL_DIST}" deploy "${STACK}" \
+# Capture the output rather than silencing it: a bare `if cmd >/dev/null
+# 2>&1` would read ANY failure (missing bucket, bad creds, synth error) as
+# "correctly rejected" and pass for the wrong reason.
+REJECT_OUT="$(node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
-  --no-wait --full-wait --yes >/dev/null 2>&1; then
+  --no-wait --full-wait --yes 2>&1)" && REJECT_RC=0 || REJECT_RC=$?
+if [ "${REJECT_RC}" -eq 0 ]; then
   echo "FAIL: deploy accepted --no-wait --full-wait; the pair must be rejected" >&2
   exit 1
 fi
-echo "    OK: --no-wait --full-wait rejected"
+if ! printf '%s' "${REJECT_OUT}" | grep -q -- '--no-wait and --full-wait cannot be combined'; then
+  echo "FAIL: deploy failed for the wrong reason (expected the mutual-exclusion error):" >&2
+  printf '%s\n' "${REJECT_OUT}" >&2
+  exit 1
+fi
+echo "    OK: --no-wait --full-wait rejected with the mutual-exclusion error"
 
 # --- Phase 1: deploy --------------------------------------------------
 # `--full-wait` (issue #1275) is what makes cdkd wait for the ECS Service to
