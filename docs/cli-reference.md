@@ -78,7 +78,7 @@ functional once AWS finishes the async deployment.
 | `AWS::ElastiCache::CacheCluster` etc. | Return after Create call | Wait for `available` | same as default | Waits | Waits |
 | `AWS::CertificateManager::Certificate` | Return after `RequestCertificate` (cert is `PENDING_VALIDATION`; downstream CloudFront/ALB fail until it issues) | Wait for `ISSUED` (DNS/EMAIL validation) | same as default | Waits | Does not wait (`aws_acm_certificate` returns while `PENDING_VALIDATION`; waiting is a separate `aws_acm_certificate_validation` resource) |
 | `AWS::EC2::NatGateway` | Return after `CreateNatGateway` (gateway is `pending`; AWS finishes async) | Wait for `available` (1–2 min) | same as default | Waits | Waits |
-| `AWS::EC2::Instance` | Return after `RunInstances` (instance is `pending`; `PublicIp` / `PrivateIp` attributes may be empty) | Wait for `running` (30–60 s) | same as default | Waits for `running` | Waits for `running` |
+| `AWS::EC2::Instance` | Return after `RunInstances` (instance is `pending`; `PublicIp` / `PrivateIp` attributes may be empty, and the IAM instance profile association is not verified — see below) | Wait for `running` (30–60 s) | same as default | Waits for `running` | Waits for `running` |
 | `AWS::ElasticLoadBalancingV2::LoadBalancer` | Return after `CreateLoadBalancer` (LB is `provisioning`; `DNSName` 503s until active) | Wait for `active` (90–180 s) | same as default | Waits for `active` | Waits for `active` |
 | `AWS::ECS::Service` | same as default | Return after `CreateService` / `UpdateService` | Wait for steady state | Waits for steady state | Does not wait (`wait_for_steady_state`, default `false`) |
 | `AWS::Lambda::MicrovmImage` | Return after `CreateMicrovmImage` (image is `CREATING`; the build finishes async). The image ARN is resolved before the wait, so outputs still work. Only the SDK provider honors this — the Cloud Control fallback always polls to a terminal state | Wait for `CREATED` (the Firecracker snapshot build; several minutes) | same as default | Waits | n/a |
@@ -88,6 +88,21 @@ For NAT Gateway specifically: `CreateNatGateway` returns the
 proceed against a still-`pending` gateway. `--no-wait` is safe when
 nothing in the deploy flow needs actual NAT-routed egress (no Lambda
 invoked during deploy that hits the internet, etc.).
+
+For EC2 Instance specifically: cdkd normally verifies after launch that the
+requested `IamInstanceProfile` really did attach, because `RunInstances`
+associates it asynchronously and can complete with NO profile attached when the
+profile was created moments earlier (cdkd's fast path creates it ~1 s before
+launch; CloudFormation never hits this because its own latency lets IAM settle).
+That check needs a `running` or `stopped` instance — AWS rejects
+`AssociateIamInstanceProfile` on a `pending` one — so under `--no-wait` it is
+skipped and a warning naming the instance is printed instead. If the deploy
+needs the profile to be attached, either drop `--no-wait` or verify afterwards:
+
+```bash
+aws ec2 describe-iam-instance-profile-associations \
+  --filters Name=instance-id,Values=<instance-id>
+```
 
 `--no-wait` is **deploy-only**. `cdkd destroy` does not accept it,
 because no destroy code path benefits — NAT Gateway destroy

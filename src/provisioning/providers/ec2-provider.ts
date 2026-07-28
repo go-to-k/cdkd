@@ -2651,13 +2651,38 @@ export class EC2Provider implements ResourceProvider {
         // the profile settle before launch; cdkd does NOT, so verify the
         // association post-launch and explicitly AssociateIamInstanceProfile
         // (retrying through the propagation window) when it is missing.
+        //
+        // Under --no-wait the instance is still `pending`, and
+        // `AssociateIamInstanceProfile` is rejected outright for any instance
+        // not in `running` or `stopped` ("The instance 'i-...' is not in the
+        // 'running' or 'stopped' states"). That is not a propagation error the
+        // retry loop can absorb — it stays true until the instance reaches
+        // `running`, which is exactly the wait --no-wait asked to skip. So the
+        // check is skipped and the risk is reported instead: the whole point of
+        // --no-wait is that the caller accepts an un-settled resource, but a
+        // SILENTLY profile-less instance is a much worse surprise than an
+        // unassigned IP, so this warns rather than staying quiet (issue #1279).
         if (iamInstanceProfile) {
-          await this.ensureIamInstanceProfileAssociated(
-            instanceId,
-            iamInstanceProfile.arn,
-            iamInstanceProfile.name,
-            logicalId
-          );
+          if (process.env['CDKD_NO_WAIT'] === 'true') {
+            const profileRef = iamInstanceProfile.arn ?? iamInstanceProfile.name;
+            this.logger.warn(
+              `Skipped the IAM instance profile association check for ${logicalId} (${instanceId}) ` +
+                `because --no-wait leaves the instance in 'pending', where AssociateIamInstanceProfile ` +
+                `is rejected. RunInstances associates the profile asynchronously and can complete with ` +
+                `NO profile attached when the profile was created moments earlier. Verify with: ` +
+                `aws ec2 describe-iam-instance-profile-associations --filters ` +
+                `Name=instance-id,Values=${instanceId} — and if it is missing, re-associate with: ` +
+                `aws ec2 associate-iam-instance-profile --instance-id ${instanceId} ` +
+                `--iam-instance-profile ${iamInstanceProfile.arn ? `Arn=${profileRef}` : `Name=${profileRef}`}`
+            );
+          } else {
+            await this.ensureIamInstanceProfileAssociated(
+              instanceId,
+              iamInstanceProfile.arn,
+              iamInstanceProfile.name,
+              logicalId
+            );
+          }
         }
 
         // Describe instance to get attributes after running. Under

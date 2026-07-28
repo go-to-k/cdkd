@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 
 const mockSend = vi.fn();
 
@@ -114,10 +114,19 @@ describe('EC2Provider createInstance fresh-instance-profile bind', () => {
     IamInstanceProfile: PROFILE_NAME,
   });
 
+  let originalNoWait: string | undefined;
+
   beforeEach(() => {
     vi.clearAllMocks();
+    originalNoWait = process.env['CDKD_NO_WAIT'];
+    delete process.env['CDKD_NO_WAIT'];
     provider = new EC2Provider();
     installFastSleep(provider);
+  });
+
+  afterEach(() => {
+    if (originalNoWait === undefined) delete process.env['CDKD_NO_WAIT'];
+    else process.env['CDKD_NO_WAIT'] = originalNoWait;
   });
 
   it('does NOT re-associate when RunInstances already bound the profile (associated)', async () => {
@@ -209,5 +218,35 @@ describe('EC2Provider createInstance fresh-instance-profile bind', () => {
 
     expect(callCount('DescribeIamInstanceProfileAssociationsCommand')).toBe(0);
     expect(callCount('AssociateIamInstanceProfileCommand')).toBe(0);
+  });
+
+  // Issue #1279. Gating the `running` wait on --no-wait (issue #1277) left this
+  // helper running against a `pending` instance, where AWS rejects
+  // AssociateIamInstanceProfile outright ("The instance 'i-...' is not in the
+  // 'running' or 'stopped' states"). That is not a propagation error the retry
+  // loop absorbs — it stays true until the instance is running — so the create
+  // FAILED and the whole stack rolled back. Every CDK L2 `ec2.Instance` gets an
+  // instance profile, so `--no-wait` was broken for all of them.
+  it('does not touch the profile association under --no-wait (issue #1279)', async () => {
+    process.env['CDKD_NO_WAIT'] = 'true';
+    // A pending instance reports no association, which pre-fix drove the
+    // provider straight into the rejected AssociateIamInstanceProfile call.
+    wire([[]]);
+
+    const result = await provider.create('Instance', RESOURCE_TYPE, props());
+
+    expect(result.physicalId).toBe(INSTANCE_ID);
+    expect(callCount('AssociateIamInstanceProfileCommand')).toBe(0);
+    expect(callCount('DescribeIamInstanceProfileAssociationsCommand')).toBe(0);
+  });
+
+  it('still enforces the association in the DEFAULT mode (no --no-wait regression)', async () => {
+    wire([[], ['associated']]);
+
+    await provider.create('Instance', RESOURCE_TYPE, props());
+
+    // The guard must be gated on --no-wait ONLY — a blanket skip would silently
+    // reopen the fresh-profile propagation race the helper exists to close.
+    expect(callCount('AssociateIamInstanceProfileCommand')).toBe(1);
   });
 });
