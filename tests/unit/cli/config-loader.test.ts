@@ -34,6 +34,7 @@ import {
   resolveStateBucketWithSource,
   getDefaultStateBucketName,
   getLegacyStateBucketName,
+  stateBucketExistenceConfirmed,
 } from '../../../src/cli/config-loader.js';
 // `resolveStateBucketWithDefault` is intentionally imported dynamically inside
 // each test below — it pulls in the AWS SDK which is mocked via `vi.doMock`,
@@ -356,7 +357,7 @@ describe('config-loader', () => {
     let s3SendMock: ReturnType<typeof vi.fn>;
     let s3DestroyMock: ReturnType<typeof vi.fn>;
 
-    beforeEach(() => {
+    beforeEach(async () => {
       stsSendMock = vi.fn().mockResolvedValue({ Account: '123456789012' });
       s3SendMock = vi.fn();
       s3DestroyMock = vi.fn();
@@ -391,6 +392,12 @@ describe('config-loader', () => {
           sts: { send: stsSendMock },
         }),
       }));
+      // The ExpectedBucketOwner cache is module-level (issue #1283) and would
+      // otherwise carry a seeded account across tests in this file.
+      const { clearExpectedBucketOwnerCache } = await import(
+        '../../../src/utils/expected-bucket-owner.js'
+      );
+      clearExpectedBucketOwnerCache();
     });
 
     afterEach(() => {
@@ -543,7 +550,11 @@ describe('config-loader', () => {
       );
       const result = await fn(undefined, 'us-east-1');
 
-      expect(result).toEqual({ bucket: 'cdkd-state-123456789012', source: 'default' });
+      expect(result).toEqual({
+        bucket: 'cdkd-state-123456789012',
+        source: 'default',
+        probe: 'ok',
+      });
     });
 
     it('both buckets exist + new EMPTY + legacy has state -> fall back to legacy with warning', async () => {
@@ -565,6 +576,7 @@ describe('config-loader', () => {
       expect(result).toEqual({
         bucket: 'cdkd-state-123456789012-us-east-1',
         source: 'default-legacy',
+        probe: 'ok',
       });
     });
 
@@ -580,7 +592,11 @@ describe('config-loader', () => {
       );
       const result = await fn(undefined, 'us-east-1');
 
-      expect(result).toEqual({ bucket: 'cdkd-state-123456789012', source: 'default' });
+      expect(result).toEqual({
+        bucket: 'cdkd-state-123456789012',
+        source: 'default',
+        probe: 'ok',
+      });
     });
 
     it('both buckets exist + new ListObjectsV2 errors -> conservatively use new', async () => {
@@ -596,7 +612,183 @@ describe('config-loader', () => {
       );
       const result = await fn(undefined, 'us-east-1');
 
-      expect(result).toEqual({ bucket: 'cdkd-state-123456789012', source: 'default' });
+      expect(result).toEqual({
+        bucket: 'cdkd-state-123456789012',
+        source: 'default',
+        probe: 'ok',
+      });
+    });
+
+    // Issue #1283: the probe OUTCOME (not just "exists") is reported, so the
+    // deploy preflight can tell "already verified" from "merely known to be
+    // there". A 403 is the case that must NOT skip the state backend's own
+    // HeadBucket.
+    it('reports probe: access-denied when the chosen bucket 403s (still resolves the name)', async () => {
+      planS3({ newHead: '403', legacyHead: '404' });
+      const { resolveStateBucketWithDefaultAndSource: fn } = await import(
+        '../../../src/cli/config-loader.js'
+      );
+
+      await expect(fn(undefined, 'us-east-1')).resolves.toEqual({
+        bucket: 'cdkd-state-123456789012',
+        source: 'default',
+        probe: 'access-denied',
+      });
+    });
+
+    it('reports probe: ok for a 301 (bucket exists, just in another region)', async () => {
+      planS3({ newHead: '301', legacyHead: '404' });
+      const { resolveStateBucketWithDefaultAndSource: fn } = await import(
+        '../../../src/cli/config-loader.js'
+      );
+
+      // The state client is region-corrected before use, so a cross-region
+      // redirect is a clean probe — no reason to re-HEAD it.
+      await expect(fn(undefined, 'us-east-1')).resolves.toEqual({
+        bucket: 'cdkd-state-123456789012',
+        source: 'default',
+        probe: 'ok',
+      });
+    });
+
+    // Issue #1283: the two candidate-name probes are independent, so they run
+    // concurrently instead of as two back-to-back S3 round trips on the
+    // deploy's critical path.
+    it('probes the new and legacy names CONCURRENTLY, not one after the other', async () => {
+      let started = 0;
+      let releaseBoth!: () => void;
+      const bothStarted = new Promise<void>((resolve) => {
+        releaseBoth = resolve;
+      });
+      s3SendMock.mockImplementation(async (cmd: { input: { Bucket: string } }) => {
+        started += 1;
+        if (started === 2) releaseBoth();
+        // Only completes once BOTH probes are in flight — a sequential
+        // implementation never gets here and trips the guard below.
+        await bothStarted;
+        return cmd.input.Bucket === 'cdkd-state-123456789012'
+          ? {}
+          : Promise.reject(
+              Object.assign(new Error('NotFound'), {
+                name: 'NotFound',
+                $metadata: { httpStatusCode: 404 },
+              })
+            );
+      });
+
+      const { resolveStateBucketWithDefault: fn } = await import(
+        '../../../src/cli/config-loader.js'
+      );
+
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const guard = new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () =>
+            reject(
+              new Error('the two bucket-existence probes did not overlap (still sequential)')
+            ),
+          2000
+        );
+      });
+      try {
+        await expect(Promise.race([fn(undefined, 'us-east-1'), guard])).resolves.toBe(
+          'cdkd-state-123456789012'
+        );
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+      expect(started).toBe(2);
+    });
+
+    // Issue #1283: the account id resolved for the bucket NAME is reused as
+    // the ExpectedBucketOwner on the probes, instead of each probe client
+    // issuing its own GetCallerIdentity.
+    it('seeds ExpectedBucketOwner from its own GetCallerIdentity (no second STS call)', async () => {
+      const clientIdentity = {
+        region: async () => 'us-east-1',
+        credentials: async () => ({ accessKeyId: 'AKIASEEDED', secretAccessKey: 'secret' }),
+      };
+      // Both the STS client and the probe S3 client resolve the same
+      // credentials — the real flow threads the STS client's own provider
+      // into the probe.
+      vi.doMock('../../../src/utils/aws-clients.js', () => ({
+        getAwsClients: () => ({ sts: { send: stsSendMock, config: clientIdentity } }),
+      }));
+      vi.doMock('@aws-sdk/client-s3', () => ({
+        S3Client: class {
+          config = clientIdentity;
+          send = s3SendMock;
+          destroy = s3DestroyMock;
+        },
+        HeadBucketCommand: class HeadBucketCommand {
+          static __cmd = 'HeadBucket' as const;
+          input: { Bucket: string };
+          constructor(input: { Bucket: string }) {
+            this.input = input;
+          }
+        },
+        ListObjectsV2Command: class ListObjectsV2Command {
+          static __cmd = 'ListObjectsV2' as const;
+          input: { Bucket: string };
+          constructor(input: { Bucket: string }) {
+            this.input = input;
+          }
+        },
+      }));
+      planS3({ newHead: 'ok', legacyHead: '404' });
+
+      const { resolveStateBucketWithDefault: fn } = await import(
+        '../../../src/cli/config-loader.js'
+      );
+      await expect(fn(undefined, 'us-east-1')).resolves.toBe('cdkd-state-123456789012');
+
+      // Exactly one GetCallerIdentity for the whole resolution…
+      expect(stsSendMock).toHaveBeenCalledTimes(1);
+      // …and its account still reached the probes as ExpectedBucketOwner.
+      // (The mocked @aws-sdk/client-sts exports no STSClient, so a second
+      // resolution attempt could not have produced this header.)
+      for (const [cmd] of s3SendMock.mock.calls) {
+        expect((cmd as { input: Record<string, unknown> }).input['ExpectedBucketOwner']).toBe(
+          '123456789012'
+        );
+      }
+      expect(s3SendMock).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('stateBucketExistenceConfirmed', () => {
+    it('confirms a CLEANLY-probed default-name bucket', () => {
+      expect(stateBucketExistenceConfirmed({ bucket: 'b', source: 'default', probe: 'ok' })).toBe(
+        true
+      );
+      expect(
+        stateBucketExistenceConfirmed({ bucket: 'b', source: 'default-legacy', probe: 'ok' })
+      ).toBe(true);
+    });
+
+    it('does NOT confirm explicitly-specified buckets (fail-fast preserved)', () => {
+      // These are taken verbatim and never probed, so the state backend's own
+      // HeadBucket must still run — issue #1283.
+      for (const source of ['cli-flag', 'env', 'cdk.json'] as const) {
+        expect(stateBucketExistenceConfirmed({ bucket: 'b', source })).toBe(false);
+        // Even a stray probe value cannot promote an explicit source.
+        expect(stateBucketExistenceConfirmed({ bucket: 'b', source, probe: 'ok' })).toBe(false);
+      }
+    });
+
+    it('does NOT confirm a default-name bucket whose probe was 403 (exists != usable)', () => {
+      expect(
+        stateBucketExistenceConfirmed({ bucket: 'b', source: 'default', probe: 'access-denied' })
+      ).toBe(false);
+      expect(
+        stateBucketExistenceConfirmed({
+          bucket: 'b',
+          source: 'default-legacy',
+          probe: 'access-denied',
+        })
+      ).toBe(false);
+      // …nor one with no probe recorded at all.
+      expect(stateBucketExistenceConfirmed({ bucket: 'b', source: 'default' })).toBe(false);
     });
   });
 
