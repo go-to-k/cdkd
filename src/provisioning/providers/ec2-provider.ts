@@ -1550,8 +1550,12 @@ export class EC2Provider implements ResourceProvider {
           // ready state up to ~2 min late (and with wild variance depending on
           // where the ready moment falls relative to the sparse poll schedule).
           // That made cdkd systematically slower than tools that poll on a
-          // tight interval. A 5-15s poll caps the detection lag at ~15s.
-          { client: this.ec2Client, maxWaitTime: 15 * 60, minDelay: 5, maxDelay: 15 },
+          // tight interval. The delay is
+          // `uniform_random(minDelay, min(minDelay * 2^(attempt-1), maxDelay))`,
+          // so the mean detection lag settles at about maxDelay/2 -- 5s here,
+          // matching the 10s cap the #1177 sweep applied to the ELBv2 and ECS
+          // waiters. This pair was missed by that sweep and kept a 15s cap.
+          { client: this.ec2Client, maxWaitTime: 15 * 60, minDelay: 5, maxDelay: 10 },
           { NatGatewayIds: [natGatewayId] }
         );
         this.logger.debug(`NatGateway ${natGatewayId} is available`);
@@ -1662,8 +1666,9 @@ export class EC2Provider implements ResourceProvider {
       await waitUntilNatGatewayDeleted(
         // Tighten the poll interval off the AWS SDK defaults (15s / 120s) for
         // the same reason as the available-state wait above: a sparse late poll
-        // adds up to ~2 min of dead time detecting the terminal state.
-        { client: this.ec2Client, maxWaitTime: 15 * 60, minDelay: 5, maxDelay: 15 },
+        // adds up to ~2 min of dead time detecting the terminal state. Same 10s
+        // cap as that wait, and as the #1177-swept siblings.
+        { client: this.ec2Client, maxWaitTime: 15 * 60, minDelay: 5, maxDelay: 10 },
         { NatGatewayIds: [physicalId] }
       );
     } catch (error) {
@@ -2626,10 +2631,26 @@ export class EC2Provider implements ResourceProvider {
         if (process.env['CDKD_NO_WAIT'] !== 'true') {
           this.logger.debug(`Waiting for instance ${instanceId} to be running...`);
           await waitUntilInstanceRunning(
-            // Tighten off the AWS SDK defaults (15s / 120s) — see the NAT gateway
-            // wait for the full rationale. An instance reaches `running` in
-            // ~30-60s, so a 120s late poll can add up to ~2 min of dead time.
-            { client: this.ec2Client, maxWaitTime: 300, minDelay: 5, maxDelay: 15 },
+            // Poll cadence matters more here than on any other type, because an
+            // instance reaches `running` in ~30-60s — the same order as the poll
+            // interval itself, so the interval is a large fraction of the total.
+            //
+            // The SDK waiter picks each delay as
+            //   uniform_random(minDelay, min(minDelay * 2^(attempt-1), maxDelay))
+            // so a 5/15 config polls at ~5, ~12.5, ~22.5, ~32.5, ~42.5s and an
+            // instance that went `running` at 35s is not SEEN until ~42.5s. The
+            // mean detection lag is maxDelay/2 once the backoff saturates, i.e.
+            // 7.5s of pure dead time on a ~35s operation, and because each delay
+            // is randomized the total swings run to run (measured: 34.9 / 43.5 /
+            // 56.6s on one 3-instance stack). 2/5 puts the mean lag at ~1.75s
+            // and the cadence in line with what the AWS provider for Terraform
+            // does (10s initial delay, then ~3s polls).
+            //
+            // The extra DescribeInstances calls are cheap and the deploy engine
+            // caps concurrency, so the call-volume trade is worth the seconds.
+            // Sibling waiters were already tightened to a 10s cap by the #1177
+            // sweep; this one and the NAT gateway pair kept the looser 15s.
+            { client: this.ec2Client, maxWaitTime: 300, minDelay: 2, maxDelay: 5 },
             { InstanceIds: [instanceId] }
           );
         } else {
@@ -3106,10 +3127,11 @@ export class EC2Provider implements ResourceProvider {
 
         // Wait for instance to reach terminated state so ENIs are released
         await waitUntilInstanceTerminated(
-          // Tighten off the AWS SDK defaults (15s / 120s) — same rationale as
-          // the running-state wait; ENI release gating a re-deploy should not
-          // wait out a sparse late poll.
-          { client: this.ec2Client, maxWaitTime: 300, minDelay: 5, maxDelay: 15 },
+          // Same cadence as the running-state wait above (see that comment for
+          // the delay math): termination is also a ~30-60s operation gating ENI
+          // release, so a 15s cap spent a mean 7.5s of the destroy just not
+          // looking.
+          { client: this.ec2Client, maxWaitTime: 300, minDelay: 2, maxDelay: 5 },
           { InstanceIds: [physicalId] }
         );
 
