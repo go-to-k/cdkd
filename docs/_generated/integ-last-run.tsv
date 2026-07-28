@@ -26,7 +26,7 @@ basic	2026-07-20T04:38:04Z	PASS	83	standard	rc 0/0, 0 orphans; validates buildPr
 batch	2026-07-26T18:43:33Z	PASS	89	standard	0727b sweep-b5 staleness re-run (rc=0); account clean
 bedrock-agentcore	2026-07-24T04:22:29Z	PASS	42	standard	import() attr enrich (#1188); GetAgentRuntime live-probe confirms field shape; 6 del 0 err
 bench-ccapi	2026-07-26T18:43:33Z	PASS	89	standard	0727b sweep-b5 staleness re-run (rc=0); account clean
-bench-cdk-sample	2026-07-26T18:02:31Z	PASS	900	standard	#1238 guard broad verify; 39 created, destroy 37 del 2 retained-swept 0 err, log groups swept
+bench-cdk-sample	2026-07-28T03:05:44Z	PASS	508	standard	39 created, destroy 37 del 2 retained-swept 0 err, log groups swept
 bench-sdk	2026-07-26T18:43:33Z	PASS	33	standard	0727b sweep-b5 staleness re-run (rc=0); account clean
 bootstrap-free-region	2026-07-16T15:34:01Z	PASS	81	verify.sh	re-run after PR 1015 review fix-back (region-resolver owner header), 0 orphans
 bucket-deployment	2026-07-21T18:02:21Z	PASS	125	verify.sh	rc ok, orph clean
