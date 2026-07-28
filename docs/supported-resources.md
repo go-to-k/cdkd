@@ -140,6 +140,7 @@ catalog with Tier 2 and Tier 3 entries included.
 | **API Gateway** | AWS::ApiGatewayV2::Route | SDK Provider | ✅ |
 | **API Gateway** | AWS::ApiGatewayV2::Authorizer | SDK Provider | ✅ |
 | **CDN** | AWS::CloudFront::CloudFrontOriginAccessIdentity | SDK Provider | ✅ |
+| **CDN** | AWS::CloudFront::OriginAccessControl | SDK Provider | ✅ |
 | **CDN** | AWS::CloudFront::Distribution | SDK Provider | ✅ |
 | **Orchestration** | AWS::StepFunctions::StateMachine | SDK Provider | ✅ |
 | **Container** | AWS::ECS::Cluster | SDK Provider | ✅ |

@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "generatedAt": "2026-07-23T12:37:24.767Z",
   "summary": {
-    "tier1Count": 131,
-    "tier2Count": 1361,
+    "tier1Count": 132,
+    "tier2Count": 1360,
     "tier3Count": 195,
     "totalCount": 1687
   },
@@ -35,6 +35,7 @@
     "AWS::CloudFormation::WaitConditionHandle",
     "AWS::CloudFront::CloudFrontOriginAccessIdentity",
     "AWS::CloudFront::Distribution",
+    "AWS::CloudFront::OriginAccessControl",
     "AWS::CloudTrail::Trail",
     "AWS::CloudWatch::Alarm",
     "AWS::CodeBuild::Project",
@@ -373,7 +374,6 @@
     "AWS::CloudFront::KeyGroup",
     "AWS::CloudFront::KeyValueStore",
     "AWS::CloudFront::MonitoringSubscription",
-    "AWS::CloudFront::OriginAccessControl",
     "AWS::CloudFront::OriginRequestPolicy",
     "AWS::CloudFront::PublicKey",
     "AWS::CloudFront::RealtimeLogConfig",

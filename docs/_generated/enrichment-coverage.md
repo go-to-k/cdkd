@@ -11,8 +11,8 @@ Gap severity depends on the tier. A gap on an **SDK-backed** type (`sdk-fallback
 
 ## Summary
 
-- Classified types (cached schema): **131**
-- Fully enriched: **8**
+- Classified types (cached schema): **132**
+- Fully enriched: **9**
 - No computed attribute (Ref == physicalId is correct): **14**
 - **Pure-CC latent gaps (unenriched-computed, blocks CI): 0**
 - SDK-fallback gaps (informational, #614 path only): **109**
@@ -169,6 +169,7 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::CloudFormation::WaitConditionHandle` | yes | enriched | `Id` (allow) |
 | `AWS::CloudFront::CloudFrontOriginAccessIdentity` | yes | sdk-fallback-gap | `Id` (GAP), `S3CanonicalUserId` (OK) |
 | `AWS::CloudFront::Distribution` | yes | sdk-fallback-gap | `DomainName` (GAP), `Id` (GAP) |
+| `AWS::CloudFront::OriginAccessControl` | yes | enriched | `Id` (OK) |
 | `AWS::CloudTrail::Trail` | yes | sdk-fallback-gap | `Arn` (GAP), `SnsTopicArn` (GAP) |
 | `AWS::CloudWatch::Alarm` | yes | sdk-fallback-gap | `Arn` (GAP) |
 | `AWS::CodeBuild::Project` | yes | sdk-fallback-gap | `Arn` (GAP), `Id` (GAP) |
@@ -282,7 +283,6 @@ These types have an `enrichResourceAttributes` case but no cached CFn schema, so
 - `AWS::Backup::BackupPlan`
 - `AWS::Backup::BackupSelection`
 - `AWS::Backup::BackupVault`
-- `AWS::CloudFront::OriginAccessControl`
 - `AWS::ElastiCache::ReplicationGroup`
 - `AWS::Events::ApiDestination`
 - `AWS::Events::Connection`

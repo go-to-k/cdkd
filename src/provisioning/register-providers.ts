@@ -30,6 +30,7 @@ import { EC2Provider } from './providers/ec2-provider.js';
 import { ApiGatewayProvider } from './providers/apigateway-provider.js';
 import { ApiGatewayV2Provider } from './providers/apigatewayv2-provider.js';
 import { CloudFrontOAIProvider } from './providers/cloudfront-oai-provider.js';
+import { CloudFrontOACProvider } from './providers/cloudfront-oac-provider.js';
 import { CloudFrontDistributionProvider } from './providers/cloudfront-distribution-provider.js';
 import { AgentCoreRuntimeProvider } from './providers/agentcore-runtime-provider.js';
 import { AgentCoreBrowserProvider } from './providers/agentcore-browser-provider.js';
@@ -174,6 +175,7 @@ export function registerAllProviders(registry: ProviderRegistry): void {
 
   // CloudFront
   registry.register('AWS::CloudFront::CloudFrontOriginAccessIdentity', new CloudFrontOAIProvider());
+  registry.register('AWS::CloudFront::OriginAccessControl', new CloudFrontOACProvider());
   registry.register('AWS::CloudFront::Distribution', new CloudFrontDistributionProvider());
 
   // StepFunctions
