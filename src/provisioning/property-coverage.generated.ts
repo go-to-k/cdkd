@@ -879,6 +879,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     'AWS::EC2::Instance',
     {
       handled: new Set<string>([
+        'AvailabilityZone',
         'BlockDeviceMappings',
         'CreditSpecification',
         'DisableApiTermination',
@@ -898,7 +899,6 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
       silentDrop: new Map<string, string>([
         ['AdditionalInfo', 'not yet implemented by cdkd'],
         ['Affinity', 'not yet implemented by cdkd'],
-        ['AvailabilityZone', 'not yet implemented by cdkd'],
         ['CpuOptions', 'not yet implemented by cdkd'],
         [
           'ElasticGpuSpecifications',

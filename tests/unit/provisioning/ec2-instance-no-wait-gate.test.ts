@@ -130,3 +130,70 @@ describe('EC2 Instance running-state wait gating (issue #1277)', () => {
     expect(result.attributes?.['InstanceId']).toBe('i-1234567890abcdef0');
   });
 });
+
+describe('EC2 Instance AvailabilityZone -> Placement mapping (issue #1276)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    delete process.env['CDKD_NO_WAIT'];
+  });
+
+  it('sends AvailabilityZone as Placement.AvailabilityZone on RunInstances', async () => {
+    mockRunInstancesOk('running');
+
+    await new EC2Provider().create('MyInstance', 'AWS::EC2::Instance', {
+      ...PROPS,
+      AvailabilityZone: 'us-east-1a',
+    });
+
+    const call = mockSend.mock.calls.find((c) => c[0] instanceof RunInstancesCommand);
+    const input = (call![0] as RunInstancesCommand).input as unknown as Record<string, unknown>;
+    expect(input['Placement']).toEqual({ AvailabilityZone: 'us-east-1a' });
+  });
+
+  it('omits Placement entirely when the property is absent', async () => {
+    mockRunInstancesOk('running');
+
+    await new EC2Provider().create('MyInstance', 'AWS::EC2::Instance', PROPS);
+
+    const call = mockSend.mock.calls.find((c) => c[0] instanceof RunInstancesCommand);
+    const input = (call![0] as RunInstancesCommand).input as unknown as Record<string, unknown>;
+    // An empty `Placement: {}` would be a pointless shape change on every
+    // instance that does not set the property.
+    expect(input['Placement']).toBeUndefined();
+  });
+
+  it('declares AvailabilityZone as handled so the L2 construct stays on the SDK path', () => {
+    // The whole point of #1276: an unhandled emitted property routes the
+    // resource to Cloud Control via the #614 rule, and CDK's L2
+    // `ec2.Instance` ALWAYS emits AvailabilityZone.
+    const handled = new EC2Provider().handledProperties?.get('AWS::EC2::Instance');
+    expect(handled?.has('AvailabilityZone')).toBe(true);
+  });
+
+  it('reverse-maps Placement.AvailabilityZone in readCurrentState (no phantom drift)', async () => {
+    mockSend.mockResolvedValue({
+      Reservations: [
+        {
+          Instances: [
+            {
+              InstanceId: 'i-1234567890abcdef0',
+              State: { Name: 'running' },
+              ImageId: 'ami-12345678',
+              InstanceType: 't3.micro',
+              SubnetId: 'subnet-1',
+              Placement: { AvailabilityZone: 'us-east-1a' },
+            },
+          ],
+        },
+      ],
+    });
+
+    const current = await new EC2Provider().readCurrentState!(
+      'MyInstance',
+      'i-1234567890abcdef0',
+      'AWS::EC2::Instance'
+    );
+
+    expect(current?.['AvailabilityZone']).toBe('us-east-1a');
+  });
+});
