@@ -15,6 +15,11 @@ vi.mock('@aws-sdk/client-elastic-load-balancing-v2', async () => {
       send: mockSend,
       config: { region: () => Promise.resolve('us-east-1') },
     })),
+    // The `active` wait (issue #1274) lives inside the same try/catch this
+    // suite exercises. Stub it so these cases keep testing the
+    // ModifyLoadBalancerAttributes failure path; the wait-failure branch of
+    // the same cleanup is covered by elbv2-loadbalancer-active-wait.test.ts.
+    waitUntilLoadBalancerAvailable: vi.fn().mockResolvedValue({ state: 'SUCCESS' }),
   };
 });
 

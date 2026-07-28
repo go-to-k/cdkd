@@ -66,6 +66,9 @@ vi.mock('@aws-sdk/client-elastic-load-balancing-v2', async () => {
       send: elbv2Send,
       config: { region: () => Promise.resolve('us-east-1') },
     })),
+    // createLoadBalancer waits for `active` (issue #1274); this suite only
+    // cares about the name passed to CreateLoadBalancer.
+    waitUntilLoadBalancerAvailable: vi.fn().mockResolvedValue({ state: 'SUCCESS' }),
   };
 });
 

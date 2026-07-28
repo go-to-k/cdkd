@@ -85,4 +85,19 @@ hand-fed inline `Tags` and so agreed with the bug.
 6. Add the resource type to [docs/supported-resources.md](../../docs/supported-resources.md) (deploy/manage capability table) AND to [docs/import.md](../../docs/import.md) (import-side coverage: auto-lookup vs override-only vs sub-resource)
 7. **If the provider gates a stabilization wait on `process.env['CDKD_NO_WAIT']`** (i.e. `--no-wait` skips a multi-minute poll for this type), add the resource type to the `--no-wait` docs in ALL of: the `--no-wait` table + intro in [docs/cli-reference.md](../../docs/cli-reference.md), the `--no-wait` feature bullet in [README.md](../../README.md), and the `noWaitOption` help string + JSDoc in [src/cli/options.ts](../../src/cli/options.ts). Enforced by `tests/unit/provisioning/no-wait-doc-coverage.test.ts` (fails CI if a `CDKD_NO_WAIT`-honoring provider has no handled type in the cli-reference table). The `AWS::Lambda::MicrovmImage` provider shipped honoring `--no-wait` but missed this list — the test is the backstop.
 
+   The same 4-site rule applies to the opposite end of the axis,
+   `process.env['CDKD_FULL_WAIT']` (`--full-wait`, issue
+   [#1275](https://github.com/go-to-k/cdkd/issues/1275)): a provider that
+   waits ONLY under `--full-wait` belongs in the same wait-semantics table.
+   There is no mechanical backstop for that direction yet — `AWS::ECS::Service`
+   is currently the only such type, so a test would have exactly one subject.
+   Add one when a second type joins.
+
+   Before adding EITHER kind of wait, settle the completion definition per
+   [docs/cli-reference.md](../../docs/cli-reference.md)'s wait-semantics rule:
+   where CloudFormation and Terraform agree, match them; where they disagree,
+   the default takes the dev/test-friendly side and `--full-wait` opts into the
+   CloudFormation one. Record the divergence in the table rather than leaving
+   it implicit in provider code.
+
 See [docs/provider-development.md](../../docs/provider-development.md) for details.

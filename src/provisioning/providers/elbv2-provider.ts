@@ -3,6 +3,7 @@ import {
   CreateLoadBalancerCommand,
   DeleteLoadBalancerCommand,
   DescribeLoadBalancersCommand,
+  waitUntilLoadBalancerAvailable,
   DescribeLoadBalancerAttributesCommand,
   ModifyLoadBalancerAttributesCommand,
   SetSubnetsCommand,
@@ -60,7 +61,14 @@ import type {
  *
  * WHY: ELBv2 Create* APIs are synchronous - the CC API adds unnecessary polling
  * overhead for operations that complete immediately. This SDK provider eliminates
- * that polling and returns instantly.
+ * that polling.
+ *
+ * "The API is synchronous" is NOT the same claim as "the resource is ready",
+ * and an earlier version of this comment conflated the two. TargetGroup and
+ * Listener genuinely are ready on return; a LoadBalancer comes back with
+ * `State.Code: provisioning` and is not servable for another 90-180s. So
+ * createLoadBalancer waits for `active` (skippable with --no-wait) while the
+ * other two do not.
  */
 export class ELBv2Provider implements ResourceProvider {
   private elbv2Client?: ElasticLoadBalancingV2Client;
@@ -305,6 +313,41 @@ export class ELBv2Provider implements ResourceProvider {
       // attachments yet, so a single DeleteLoadBalancer suffices (no
       // need to delete listeners first).
       try {
+        // Wait for the LB to leave `provisioning` and reach `active`
+        // unless --no-wait is set. CreateLoadBalancer returns a fully
+        // formed LoadBalancer object synchronously, but with
+        // `State.Code: provisioning` — the LB is NOT servable yet, and
+        // `DNSName` (returned below as a GetAtt attribute) 503s until it
+        // is. Both other engines wait here: CloudFormation before
+        // CREATE_COMPLETE, Terraform's `aws_lb` before apply returns.
+        //
+        // Deliberately INSIDE the partial-create cleanup try/catch: a
+        // waiter timeout with the LB already created on AWS but absent
+        // from cdkd state would make the next deploy fail with
+        // DuplicateLoadBalancerName (LB names are unique per scheme per
+        // region), so it has to route through the same best-effort
+        // DeleteLoadBalancer as an attributes-wiring failure.
+        //
+        // Create only. SetSubnets / SetSecurityGroups / SetIpAddressType
+        // on update act on an already-active LB and need no waiter.
+        if (process.env['CDKD_NO_WAIT'] !== 'true') {
+          this.logger.debug(`Waiting for LoadBalancer ${logicalId} to reach active state...`);
+          await waitUntilLoadBalancerAvailable(
+            // 600s matches Terraform's default `aws_lb` create timeout.
+            // minDelay/maxDelay override the AWS SDK defaults (15s / 120s)
+            // per the #1177 poll-cap sweep: an ALB reaches `active` in
+            // 90-180s, so a 120s-apart late poll can add minutes of dead
+            // time to every deploy that creates one.
+            { client: this.getClient(), maxWaitTime: 600, minDelay: 5, maxDelay: 10 },
+            { LoadBalancerArns: [lbArn] }
+          );
+          this.logger.debug(`LoadBalancer ${logicalId} is active`);
+        } else {
+          this.logger.debug(
+            `LoadBalancer ${logicalId} created (skipping active-state wait per --no-wait)`
+          );
+        }
+
         // Apply LoadBalancerAttributes if specified
         const lbAttributes = properties['LoadBalancerAttributes'] as
           | Array<{ Key: string; Value: string }>

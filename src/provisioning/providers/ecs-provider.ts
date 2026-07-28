@@ -12,6 +12,7 @@ import {
   UpdateServiceCommand,
   DeleteServiceCommand,
   DescribeServicesCommand,
+  waitUntilServicesStable,
   TagResourceCommand,
   UntagResourceCommand,
   type Tag,
@@ -802,6 +803,44 @@ export class ECSProvider implements ResourceProvider {
 
       this.logger.debug(`Successfully created ECS service ${logicalId}: ${service.serviceArn}`);
 
+      // Under --full-wait a steady-state timeout has to fail the resource,
+      // which means throwing AFTER AWS has already created the service. The
+      // throw aborts before the success-return, so cdkd state would not carry
+      // the service while AWS does, and the next deploy's CreateService would
+      // collide on the name. Clean up best-effort first, mirroring the
+      // partial-create handling in the ELBv2 / EC2 Instance providers.
+      // `force: true` deletes without a separate scale-to-0 round trip.
+      try {
+        await this.settleService(
+          logicalId,
+          service.serviceName ?? service.serviceArn,
+          properties['Cluster'] as string | undefined
+        );
+      } catch (waitError) {
+        try {
+          await client.send(
+            new DeleteServiceCommand({
+              cluster: properties['Cluster'] as string | undefined,
+              service: service.serviceArn,
+              force: true,
+            })
+          );
+          this.logger.debug(
+            `Cleaned up partially-created ECS service ${logicalId} (${service.serviceArn}) after the steady-state wait failed`
+          );
+        } catch (cleanupError) {
+          // Include --cluster: a service in a non-default cluster cannot be
+          // deleted without it, and the ARN alone is not documented to imply
+          // the cluster. Matches the INFO hint's shape.
+          const cleanupCluster = properties['Cluster'] as string | undefined;
+          const clusterArg = cleanupCluster ? ` --cluster ${cleanupCluster}` : '';
+          this.logger.warn(
+            `Failed to clean up partially-created ECS service ${logicalId} (${service.serviceArn}): ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}. Manual deletion may be required before the next deploy: aws ecs delete-service${clusterArg} --service ${service.serviceArn} --force`
+          );
+        }
+        throw waitError;
+      }
+
       return {
         physicalId: service.serviceArn,
         attributes: {
@@ -819,6 +858,50 @@ export class ECSProvider implements ResourceProvider {
         cause
       );
     }
+  }
+
+  /**
+   * Settle an ECS Service according to the run's wait mode.
+   *
+   * cdkd does NOT wait for steady state by default (issue #1275). The three
+   * engines genuinely disagree on what "done" means for a Service:
+   * CloudFormation waits for steady state, Terraform's `aws_ecs_service`
+   * defaults `wait_for_steady_state` to false, and nothing downstream needs
+   * the service to be running (`Fn::GetAtt` yields Name / ServiceArn, both
+   * valid the instant CreateService returns). cdkd takes the fast side and
+   * documents the divergence.
+   *
+   * There is deliberately no health probe on the default path. Right after
+   * CreateService a healthy service and a doomed one are indistinguishable
+   * (`ACTIVE`, `runningCount: 0`, `rolloutState: IN_PROGRESS`); a circuit
+   * breaker failure surfaces tens of seconds to minutes later. A one-shot
+   * check would warn on every deploy AND imply a guarantee ("no warning, so
+   * the rollout was fine") it cannot support. The INFO line instead hands
+   * over the exact command that CAN answer the question.
+   */
+  private async settleService(
+    logicalId: string,
+    serviceRef: string,
+    cluster: string | undefined
+  ): Promise<void> {
+    if (process.env['CDKD_FULL_WAIT'] === 'true') {
+      this.logger.debug(`Waiting for ECS service ${logicalId} to reach steady state...`);
+      await waitUntilServicesStable(
+        // 600s matches Terraform's `aws_ecs_service` default create timeout.
+        // minDelay/maxDelay override the AWS SDK defaults (15s / 120s) per the
+        // #1177 poll-cap sweep.
+        { client: this.getClient(), maxWaitTime: 600, minDelay: 5, maxDelay: 10 },
+        { cluster, services: [serviceRef] }
+      );
+      this.logger.debug(`ECS service ${logicalId} reached steady state`);
+      return;
+    }
+
+    const clusterArg = cluster ? ` --cluster ${cluster}` : '';
+    this.logger.info(
+      `ECS service ${logicalId} accepted (not waiting for steady state; pass --full-wait to wait). ` +
+        `To wait manually: aws ecs wait services-stable${clusterArg} --services ${serviceRef}`
+    );
   }
 
   private async updateService(
@@ -1036,6 +1119,14 @@ export class ECSProvider implements ResourceProvider {
           properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined
         );
       }
+
+      // UpdateService is fire-and-forget for the same reason CreateService is
+      // (issue #1275): the rolling deployment it starts settles minutes later.
+      await this.settleService(
+        logicalId,
+        service?.serviceName ?? physicalId,
+        properties['Cluster'] as string | undefined
+      );
 
       return {
         physicalId,

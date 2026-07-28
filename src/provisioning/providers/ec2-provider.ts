@@ -2619,15 +2619,24 @@ export class EC2Provider implements ResourceProvider {
         // Apply tags
         await this.applyTags(instanceId, properties, logicalId);
 
-        // Wait for instance to reach running state
-        this.logger.debug(`Waiting for instance ${instanceId} to be running...`);
-        await waitUntilInstanceRunning(
-          // Tighten off the AWS SDK defaults (15s / 120s) — see the NAT gateway
-          // wait for the full rationale. An instance reaches `running` in
-          // ~30-60s, so a 120s late poll can add up to ~2 min of dead time.
-          { client: this.ec2Client, maxWaitTime: 300, minDelay: 5, maxDelay: 15 },
-          { InstanceIds: [instanceId] }
-        );
+        // Wait for instance to reach running state unless --no-wait is set.
+        // Same gating pattern as the NAT Gateway wait above. Before issue
+        // #1277 this wait was unconditional, so `--no-wait` silently did
+        // nothing on any stack containing an EC2 instance.
+        if (process.env['CDKD_NO_WAIT'] !== 'true') {
+          this.logger.debug(`Waiting for instance ${instanceId} to be running...`);
+          await waitUntilInstanceRunning(
+            // Tighten off the AWS SDK defaults (15s / 120s) — see the NAT gateway
+            // wait for the full rationale. An instance reaches `running` in
+            // ~30-60s, so a 120s late poll can add up to ~2 min of dead time.
+            { client: this.ec2Client, maxWaitTime: 300, minDelay: 5, maxDelay: 15 },
+            { InstanceIds: [instanceId] }
+          );
+        } else {
+          this.logger.debug(
+            `Instance ${instanceId} launched (skipping running-state wait per --no-wait)`
+          );
+        }
 
         // Ensure the freshly-created IAM instance profile actually bound.
         // cdkd's fast SDK path creates the InstanceProfile only ~1s before
@@ -2651,7 +2660,11 @@ export class EC2Provider implements ResourceProvider {
           );
         }
 
-        // Describe instance to get attributes after running
+        // Describe instance to get attributes after running. Under
+        // --no-wait the instance can still be `pending` here, so the
+        // IP / DNS fields may not be assigned yet — every field below
+        // already falls back to '' rather than failing, which is the
+        // accepted --no-wait trade-off (same as other gated types).
         const describeResponse = await this.ec2Client.send(
           new DescribeInstancesCommand({ InstanceIds: [instanceId] })
         );
