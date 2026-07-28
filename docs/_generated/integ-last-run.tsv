@@ -8,7 +8,7 @@
 acm-certificate	2026-07-27T16:40:50Z	PASS	23	verify.sh	issue #1272 ACM pass-through guard; 1 del 0 err
 agentcore-tools	2026-07-17T12:05:03Z	PASS	180	verify.sh	3 phases clean; adopt-only singletons + evaluator CRUD; name regex fix (no hyphens)
 alb	2026-07-27T16:40:50Z	PASS	64	verify.sh	issue #1270 ELBv2 + EC2 update wrap; 16 del 0 err
-alb-advanced	2026-07-26T18:49:34Z	PASS	63	standard	0727b sweep-b6 staleness re-run (rc=0); account clean
+alb-advanced	2026-07-28T02:54:42Z	PASS	206	standard	ALB active wait 156s (#1274), destroy 17/0 errors
 api-cognito	2026-07-26T18:49:34Z	PASS	75	standard	0727b sweep-b6 staleness re-run (rc=0); account clean
 apigateway	2026-07-21T14:32:25Z	PASS	56	verify.sh	rc ok, orph clean
 apigatewayv2-update-removal	2026-07-22T14:04:44Z	PASS		verify.sh	issue-1160 apigwv2 batch: 5-API removal reset live-verified, Cors via DeleteCorsConfiguration, destroy 0 err/0 orph
