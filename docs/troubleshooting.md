@@ -802,7 +802,12 @@ Cloud Control API has the following rate limits:
 
 **1. Retry logic with exponential backoff (built-in)**
 
-cdkd includes built-in retry logic with exponential backoff for CREATE operations (handling IAM propagation delays — 1s->2s->4s->8s->8s->8s->8s->8s, capped at 8s, up to 8 retries) and CC API polling (1s->2s->4s->8s->10s cap). If rate limit errors persist, consider reducing parallelism or staggering deployments.
+cdkd includes built-in retry logic for CREATE operations, with the backoff shape chosen per error class:
+
+- **Throttling and other transient errors** (rate limits, a resource still leaving `Pending`, an async delete releasing a dependency): exponential backoff `1s->2s->4s->8s->8s->8s->8s->8s`, capped at 8s, up to 8 retries (47s of sleep). Hammering a throttled API is counter-productive, so this class deliberately backs off hard.
+- **IAM propagation** (`Invalid IAM Instance Profile`, `cannot be assumed`, `not authorized to perform`, `Policy Error: PrincipalNotFound`, ...): a denser `0.25s->0.5s->1s->2s->2s...` schedule over 26 retries (47.75s of sleep). This class resolves in single-digit seconds — cdkd creates an IAM entity and consumes it ~1-3s later, faster than IAM propagates — so cdkd re-probes roughly every 2s instead of idling through a 4s or 8s step. The total window is at least as long as the generic one, so nothing that used to recover still recovers.
+
+CC API polling uses its own `1s->2s->4s->8s->10s cap` schedule. If rate limit errors persist, consider reducing parallelism or staggering deployments.
 
 **2. Use SDK Provider**
 

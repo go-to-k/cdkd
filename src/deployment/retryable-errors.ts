@@ -1,10 +1,24 @@
 /**
- * Patterns that mark an AWS error as a transient/retryable failure.
- * Each entry is a substring match against the error message; all of these
- * are situations where the same call typically succeeds after a short delay
- * because of eventual consistency or just-created-dependency propagation.
+ * The **IAM-propagation** subset of {@link RETRYABLE_ERROR_MESSAGE_PATTERNS}:
+ * an AWS service rejecting a call because a just-created IAM entity (role,
+ * trust policy, inline policy, instance profile, principal) has not propagated
+ * to that service's authorization layer yet.
+ *
+ * Kept as its own array — and composed back into the full transient table
+ * below — so there is exactly ONE list per pattern (no parallel classifier to
+ * drift). It exists because this class has a materially different RECOVERY
+ * SHAPE from the other transient errors: it resolves in single-digit seconds,
+ * so `withRetry` polls it on a dense sub-second schedule instead of the
+ * generic 1s/2s/4s/8s exponential backoff (which is right for throttling and
+ * for long resource-state transitions, and wrong here — see
+ * {@link file://../deployment/retry.ts}).
+ *
+ * When adding a new pattern: put it here if the fix is "wait a moment and ask
+ * IAM again", and in `OTHER_TRANSIENT_ERROR_MESSAGE_PATTERNS` otherwise. A
+ * misfiled entry only changes the retry CADENCE, never whether the error is
+ * retryable at all.
  */
-export const RETRYABLE_ERROR_MESSAGE_PATTERNS: readonly string[] = [
+export const IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS: readonly string[] = [
   // IAM propagation
   'cannot be assumed',
   // Firehose-specific phrasing for the same eventual-consistency case:
@@ -36,16 +50,6 @@ export const RETRYABLE_ERROR_MESSAGE_PATTERNS: readonly string[] = [
   'Role validation failed',
   'does not have required permissions',
   'Trusted Entity',
-  'currently in the following state: Pending',
-  // DELETE dependency ordering (parallel deletion race conditions)
-  'has dependencies and cannot be deleted',
-  "can't be deleted since it has",
-  'DependencyViolation',
-  // AWS eventual consistency (dependency just created but not yet visible)
-  // e.g., RDS DBCluster referencing a just-created DBSubnetGroup
-  'does not exist',
-  // AppSync schema is being created asynchronously
-  'Schema is currently being altered',
   // IAM principal not yet propagated to S3 bucket policy
   'Invalid principal in policy',
   // SNS TopicPolicy: SetTopicAttributes validates every principal ARN in the
@@ -124,10 +128,6 @@ export const RETRYABLE_ERROR_MESSAGE_PATTERNS: readonly string[] = [
   // state machine with LoggingConfiguration (StateMachine + fresh Role +
   // DefaultPolicy); pinned by tests/integration/stepfunctions-logging.
   'authorized to assume the provided role',
-  // S3 bucket creation/deletion still in progress
-  'conflicting conditional operation',
-  // Secrets Manager: ForceDeleteWithoutRecovery may take a moment to propagate
-  'scheduled for deletion',
   // DynamoDB Streams / Kinesis: IAM role not yet propagated
   'Cannot access stream',
   'Please ensure the role can perform',
@@ -180,6 +180,31 @@ export const RETRYABLE_ERROR_MESSAGE_PATTERNS: readonly string[] = [
   // full "Failed to authorize instance profile" phrasing so a genuinely
   // mis-scoped profile only burns the bounded retries before surfacing.
   'Failed to authorize instance profile',
+];
+
+/**
+ * The NON-IAM-propagation half of {@link RETRYABLE_ERROR_MESSAGE_PATTERNS}:
+ * transient failures whose recovery window is either long (SQS's 60s same-name
+ * cooldown, a resource still leaving a Pending/Creating state) or genuinely
+ * load-related (throttling), where hammering AWS with dense retries is harmful
+ * and exponential backoff is the correct shape.
+ */
+const OTHER_TRANSIENT_ERROR_MESSAGE_PATTERNS: readonly string[] = [
+  // Freshly-created resource still leaving its Pending/Creating state
+  'currently in the following state: Pending',
+  // DELETE dependency ordering (parallel deletion race conditions)
+  'has dependencies and cannot be deleted',
+  "can't be deleted since it has",
+  'DependencyViolation',
+  // AWS eventual consistency (dependency just created but not yet visible)
+  // e.g., RDS DBCluster referencing a just-created DBSubnetGroup
+  'does not exist',
+  // AppSync schema is being created asynchronously
+  'Schema is currently being altered',
+  // S3 bucket creation/deletion still in progress
+  'conflicting conditional operation',
+  // Secrets Manager: ForceDeleteWithoutRecovery may take a moment to propagate
+  'scheduled for deletion',
   // CloudWatch Logs SubscriptionFilter: Kinesis stream eventual consistency
   // or SubscriptionFilter role propagation. CW Logs probes the destination
   // by delivering a test message; if the stream is freshly ACTIVE or the
@@ -228,6 +253,20 @@ export const RETRYABLE_ERROR_MESSAGE_PATTERNS: readonly string[] = [
   // Surfaced by tests/integration/throttle-wide-dag (80 SSM parameters at
   // --concurrency 40).
   'Rate exceeded',
+];
+
+/**
+ * Patterns that mark an AWS error as a transient/retryable failure.
+ * Each entry is a substring match against the error message; all of these
+ * are situations where the same call typically succeeds after a short delay
+ * because of eventual consistency or just-created-dependency propagation.
+ *
+ * Composed from the two halves above so retryability has ONE source of truth
+ * while `withRetry` can still pick a per-class backoff cadence.
+ */
+export const RETRYABLE_ERROR_MESSAGE_PATTERNS: readonly string[] = [
+  ...IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS,
+  ...OTHER_TRANSIENT_ERROR_MESSAGE_PATTERNS,
 ];
 
 /**
@@ -305,6 +344,25 @@ export function isRetryableTransientError(error: unknown, message: string): bool
   if (isThrottlingError(error)) return true;
 
   return RETRYABLE_ERROR_MESSAGE_PATTERNS.some((p) => message.includes(p));
+}
+
+/**
+ * True when the message is a just-created-IAM-entity propagation rejection
+ * ({@link IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS}).
+ *
+ * This does NOT decide retryability — every pattern it matches is already in
+ * {@link RETRYABLE_ERROR_MESSAGE_PATTERNS}. It only selects the retry CADENCE:
+ * `withRetry` polls this class densely (sub-second initial delay, low cap)
+ * because IAM propagation resolves in single-digit seconds, whereas the
+ * generic exponential schedule is tuned for throttling and long resource-state
+ * transitions.
+ *
+ * Deliberately message-only (no error-object inspection): the propagation
+ * signal is always carried in the vendor's message text, and cdkd wraps the
+ * original error in a `ProvisioningError` that preserves it.
+ */
+export function isIamPropagationError(message: string): boolean {
+  return IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS.some((p) => message.includes(p));
 }
 
 /**
