@@ -415,6 +415,13 @@ CLI parity flag) to skip the prompt in CI / non-interactive runs. If
 the user declines, the deploy exits cleanly with `no resources
 modified` — nothing has been touched yet.
 
+The check runs on the state cdkd reads immediately after acquiring the
+stack lock (it does not issue a second, pre-lock read of the same
+object), so the stack lock is briefly held while the prompt is open and
+is released as soon as it is answered either way. Reading under the lock
+also means the check sees exactly the state the diff will consume — no
+concurrent deploy can change it in between.
+
 Example output:
 
 ```text

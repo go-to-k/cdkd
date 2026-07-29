@@ -5,6 +5,7 @@ import {
   AuthorizeSecurityGroupEgressCommand,
   RevokeSecurityGroupEgressCommand,
   RevokeSecurityGroupIngressCommand,
+  DeleteSecurityGroupCommand,
   CreateTagsCommand,
   DescribeVpcsCommand,
   DescribeNetworkAclsCommand,
@@ -70,14 +71,14 @@ describe('EC2Provider - SecurityGroup egress handling', () => {
   });
 
   describe('createSecurityGroup with SecurityGroupEgress', () => {
-    it('should revoke the AWS-default egress rule and authorize each explicit egress rule', async () => {
-      // CreateSecurityGroup -> CreateTags -> Revoke default egress -> AuthorizeEgress (rule 1) -> AuthorizeEgress (rule 2)
+    it('should revoke the AWS-default egress rule and authorize the explicit egress rules in ONE batched call', async () => {
+      // CreateSecurityGroup -> CreateTags -> Revoke default egress -> a SINGLE
+      // AuthorizeEgress carrying BOTH rules in its IpPermissions array.
       mockSend
         .mockResolvedValueOnce({ GroupId: 'sg-12345678' }) // CreateSecurityGroupCommand
         .mockResolvedValueOnce({}) // CreateTagsCommand (no tags but applyTags may be a no-op; see assertions)
         .mockResolvedValueOnce({}) // RevokeSecurityGroupEgressCommand (default rule)
-        .mockResolvedValueOnce({}) // AuthorizeSecurityGroupEgressCommand (rule 1)
-        .mockResolvedValueOnce({}); // AuthorizeSecurityGroupEgressCommand (rule 2)
+        .mockResolvedValueOnce({}); // AuthorizeSecurityGroupEgressCommand (both rules)
 
       const result = await provider.create('LambdaSg', 'AWS::EC2::SecurityGroup', {
         GroupDescription: 'Lambda SG',
@@ -117,7 +118,8 @@ describe('EC2Provider - SecurityGroup egress handling', () => {
 
       expect(createCmds).toHaveLength(1);
       expect(revokeEgressCmds).toHaveLength(1);
-      expect(authorizeEgressCmds).toHaveLength(2);
+      // Batched: two template rules, ONE API call.
+      expect(authorizeEgressCmds).toHaveLength(1);
       expect(authorizeIngressCmds).toHaveLength(0);
 
       // Default egress revoke targets 0.0.0.0/0 with -1 protocol
@@ -131,7 +133,9 @@ describe('EC2Provider - SecurityGroup egress handling', () => {
         ],
       });
 
-      // First authorize: HTTPS out via CIDR
+      // Both rules ride in ONE IpPermissions array, in template order:
+      // rule 1 = HTTPS out via CIDR, rule 2 = DestinationSecurityGroupId
+      // mapped to UserIdGroupPairs.
       expect(authorizeEgressCmds[0].input).toEqual({
         GroupId: 'sg-12345678',
         IpPermissions: [
@@ -141,13 +145,6 @@ describe('EC2Provider - SecurityGroup egress handling', () => {
             ToPort: 443,
             IpRanges: [{ CidrIp: '0.0.0.0/0', Description: 'HTTPS out' }],
           },
-        ],
-      });
-
-      // Second authorize: targets DestinationSecurityGroupId via UserIdGroupPairs
-      expect(authorizeEgressCmds[1].input).toEqual({
-        GroupId: 'sg-12345678',
-        IpPermissions: [
           {
             IpProtocol: 'tcp',
             FromPort: 5432,
@@ -156,6 +153,198 @@ describe('EC2Provider - SecurityGroup egress handling', () => {
           },
         ],
       });
+    });
+
+    it('should batch multiple inline ingress rules into ONE AuthorizeSecurityGroupIngress call', async () => {
+      mockSend
+        .mockResolvedValueOnce({ GroupId: 'sg-batch-ingress' }) // CreateSecurityGroupCommand
+        .mockResolvedValueOnce({}); // AuthorizeSecurityGroupIngressCommand (all rules)
+
+      await provider.create('BatchIngressSg', 'AWS::EC2::SecurityGroup', {
+        GroupDescription: 'Batched ingress',
+        VpcId: 'vpc-abc',
+        SecurityGroupIngress: [
+          { IpProtocol: 'tcp', FromPort: 80, ToPort: 80, CidrIp: '10.0.0.0/8' },
+          { IpProtocol: 'tcp', FromPort: 443, ToPort: 443, CidrIp: '10.0.0.0/8' },
+          { IpProtocol: 'tcp', FromPort: 22, ToPort: 22, SourceSecurityGroupId: 'sg-bastion' },
+        ],
+      });
+
+      const commands = mockSend.mock.calls.map((c) => c[0]);
+      const authorizeIngressCmds = commands.filter(
+        (c) => c instanceof AuthorizeSecurityGroupIngressCommand
+      );
+      expect(authorizeIngressCmds).toHaveLength(1);
+      expect(authorizeIngressCmds[0].input).toEqual({
+        GroupId: 'sg-batch-ingress',
+        IpPermissions: [
+          {
+            IpProtocol: 'tcp',
+            FromPort: 80,
+            ToPort: 80,
+            IpRanges: [{ CidrIp: '10.0.0.0/8' }],
+          },
+          {
+            IpProtocol: 'tcp',
+            FromPort: 443,
+            ToPort: 443,
+            IpRanges: [{ CidrIp: '10.0.0.0/8' }],
+          },
+          {
+            IpProtocol: 'tcp',
+            FromPort: 22,
+            ToPort: 22,
+            UserIdGroupPairs: [{ GroupId: 'sg-bastion' }],
+          },
+        ],
+      });
+    });
+
+    it('should issue no ingress call at all for an empty SecurityGroupIngress array', async () => {
+      mockSend.mockResolvedValueOnce({ GroupId: 'sg-empty-ingress' });
+
+      await provider.create('EmptyIngressSg', 'AWS::EC2::SecurityGroup', {
+        GroupDescription: 'Empty ingress list',
+        SecurityGroupIngress: [],
+      });
+
+      const commands = mockSend.mock.calls.map((c) => c[0]);
+      expect(
+        commands.filter((c) => c instanceof AuthorizeSecurityGroupIngressCommand)
+      ).toHaveLength(0);
+    });
+
+    it('should SKIP the revoke+authorize pair when the templated egress is exactly the AWS default', async () => {
+      // AWS already creates this rule (-1 / 0.0.0.0/0, no description) on every
+      // new security group, so revoking it and re-authorizing an identical rule
+      // is two round trips producing the same end state.
+      mockSend.mockResolvedValueOnce({ GroupId: 'sg-default-egress' });
+
+      const result = await provider.create('DefaultEgressSg', 'AWS::EC2::SecurityGroup', {
+        GroupDescription: 'Allow-all egress, matching the AWS default',
+        VpcId: 'vpc-abc',
+        SecurityGroupEgress: [{ IpProtocol: '-1', CidrIp: '0.0.0.0/0' }],
+      });
+
+      expect(result.physicalId).toBe('sg-default-egress');
+      const commands = mockSend.mock.calls.map((c) => c[0]);
+      expect(commands.filter((c) => c instanceof RevokeSecurityGroupEgressCommand)).toHaveLength(
+        0
+      );
+      expect(commands.filter((c) => c instanceof AuthorizeSecurityGroupEgressCommand)).toHaveLength(
+        0
+      );
+    });
+
+    it('should still revoke+authorize when the allow-all egress rule carries a Description (CDK L2 allowAllOutbound shape)', async () => {
+      // CDK's `allowAllOutbound: true` stamps a Description that the AWS
+      // default rule does NOT carry, so the end states differ. Skipping here
+      // would leave the group in a shape CloudFormation would not produce and
+      // would surface as permanent phantom drift.
+      mockSend
+        .mockResolvedValueOnce({ GroupId: 'sg-cdk-allow-all' }) // Create
+        .mockResolvedValueOnce({}) // Revoke default egress
+        .mockResolvedValueOnce({}); // Authorize described allow-all
+
+      await provider.create('CdkAllowAllSg', 'AWS::EC2::SecurityGroup', {
+        GroupDescription: 'CDK L2 shape',
+        VpcId: 'vpc-abc',
+        SecurityGroupEgress: [
+          {
+            CidrIp: '0.0.0.0/0',
+            Description: 'Allow all outbound traffic by default',
+            IpProtocol: '-1',
+          },
+        ],
+      });
+
+      const commands = mockSend.mock.calls.map((c) => c[0]);
+      expect(commands.filter((c) => c instanceof RevokeSecurityGroupEgressCommand)).toHaveLength(
+        1
+      );
+      const authorizeEgressCmds = commands.filter(
+        (c) => c instanceof AuthorizeSecurityGroupEgressCommand
+      );
+      expect(authorizeEgressCmds).toHaveLength(1);
+      expect(authorizeEgressCmds[0].input).toEqual({
+        GroupId: 'sg-cdk-allow-all',
+        IpPermissions: [
+          {
+            IpProtocol: '-1',
+            IpRanges: [{ CidrIp: '0.0.0.0/0', Description: 'Allow all outbound traffic by default' }],
+          },
+        ],
+      });
+    });
+
+    it('should still revoke+authorize when an allow-all-shaped egress rule targets IPv6', async () => {
+      // AWS creates only an IPv4 (0.0.0.0/0) default egress rule; there is no
+      // ::/0 counterpart, so a templated IPv6 allow-all is a real change.
+      mockSend
+        .mockResolvedValueOnce({ GroupId: 'sg-v6-egress' })
+        .mockResolvedValueOnce({}) // Revoke default egress
+        .mockResolvedValueOnce({}); // Authorize IPv6 allow-all
+
+      await provider.create('V6EgressSg', 'AWS::EC2::SecurityGroup', {
+        GroupDescription: 'IPv6 allow-all egress',
+        SecurityGroupEgress: [{ IpProtocol: '-1', CidrIpv6: '::/0' }],
+      });
+
+      const commands = mockSend.mock.calls.map((c) => c[0]);
+      expect(commands.filter((c) => c instanceof RevokeSecurityGroupEgressCommand)).toHaveLength(
+        1
+      );
+      expect(commands.filter((c) => c instanceof AuthorizeSecurityGroupEgressCommand)).toHaveLength(
+        1
+      );
+    });
+
+    it('should still revoke (and not authorize) for an EMPTY SecurityGroupEgress array — deny all outbound', async () => {
+      // `SecurityGroupEgress: []` is a deliberate "no egress at all"; the
+      // AWS-default allow-all must still be revoked.
+      mockSend
+        .mockResolvedValueOnce({ GroupId: 'sg-no-outbound' }) // Create
+        .mockResolvedValueOnce({}); // Revoke default egress
+
+      await provider.create('NoOutboundSg', 'AWS::EC2::SecurityGroup', {
+        GroupDescription: 'Deny all outbound',
+        SecurityGroupEgress: [],
+      });
+
+      const commands = mockSend.mock.calls.map((c) => c[0]);
+      expect(commands.filter((c) => c instanceof RevokeSecurityGroupEgressCommand)).toHaveLength(
+        1
+      );
+      expect(commands.filter((c) => c instanceof AuthorizeSecurityGroupEgressCommand)).toHaveLength(
+        0
+      );
+    });
+
+    it('should delete the half-wired group when the ingress batch fails, even with concurrent egress wiring', async () => {
+      // Tags / ingress / egress are wired concurrently now; a rejection in any
+      // branch must still reach the SG-cleanup path exactly once.
+      mockSend.mockImplementation((cmd: unknown) => {
+        if (cmd instanceof CreateSecurityGroupCommand) {
+          return Promise.resolve({ GroupId: 'sg-doomed' });
+        }
+        if (cmd instanceof AuthorizeSecurityGroupIngressCommand) {
+          return Promise.reject(new Error('InvalidPermission.Malformed'));
+        }
+        return Promise.resolve({});
+      });
+
+      await expect(
+        provider.create('DoomedSg', 'AWS::EC2::SecurityGroup', {
+          GroupDescription: 'Wiring fails',
+          SecurityGroupIngress: [{ IpProtocol: 'tcp', FromPort: 80, ToPort: 80, CidrIp: 'bogus' }],
+          SecurityGroupEgress: [
+            { IpProtocol: 'tcp', FromPort: 443, ToPort: 443, CidrIp: '0.0.0.0/0' },
+          ],
+        })
+      ).rejects.toThrow('Failed to create SecurityGroup DoomedSg');
+
+      const commands = mockSend.mock.calls.map((c) => c[0]);
+      expect(commands.filter((c) => c instanceof DeleteSecurityGroupCommand)).toHaveLength(1);
     });
 
     it('should not call RevokeSecurityGroupEgress when SecurityGroupEgress is not provided', async () => {

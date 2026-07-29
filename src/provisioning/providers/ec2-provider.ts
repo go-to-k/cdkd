@@ -2094,60 +2094,36 @@ export class EC2Provider implements ResourceProvider {
       // attached, so a single DeleteSecurityGroup suffices (its inline
       // rules CASCADE-delete with the SG).
       try {
-        // Apply tags
-        await this.applyTags(groupId, properties, logicalId);
-
-        // Add ingress rules if specified inline
+        // Wiring a freshly-created SG used to be a fully serialized chain:
+        // CreateTags -> one AuthorizeSecurityGroupIngress PER RULE ->
+        // RevokeSecurityGroupEgress -> one AuthorizeSecurityGroupEgress PER
+        // RULE. On a typical CDK L2 SG (1 tag set, 1 ingress rule, 1 egress
+        // rule) that is 4 sequential round trips on the deploy critical path.
+        //
+        // Two independent fixes, neither of which changes the end state:
+        //   1. Tagging and the two rule DIRECTIONS are mutually independent
+        //      (distinct AWS APIs, distinct rule sets on the group), so they
+        //      run concurrently. Within the egress branch the revoke still
+        //      strictly precedes the authorize (see below).
+        //   2. Authorize{Ingress,Egress} accept an `IpPermissions` ARRAY, so
+        //      N rules become ONE call instead of N.
+        //
+        // Failure semantics are unchanged: any rejection still lands in the
+        // outer catch that best-effort-deletes the half-wired SG. Promise.all
+        // attaches a handler to every branch, so a second failure can never
+        // surface as an unhandled rejection.
         const ingressRules = properties['SecurityGroupIngress'] as
           | Array<Record<string, unknown>>
           | undefined;
-        if (ingressRules && Array.isArray(ingressRules)) {
-          for (const rule of ingressRules) {
-            await this.ec2Client.send(
-              new AuthorizeSecurityGroupIngressCommand({
-                GroupId: groupId,
-                IpPermissions: [this.buildIpPermission(rule)],
-              })
-            );
-          }
-        }
-
-        // Egress rules: when explicit SecurityGroupEgress is provided, CFn replaces
-        // the AWS-default "allow all egress" rule (0.0.0.0/0, -1) with the supplied rules.
-        // We replicate this by revoking the default rule first, then authorizing each.
         const egressRules = properties['SecurityGroupEgress'] as
           | Array<Record<string, unknown>>
           | undefined;
-        if (egressRules && Array.isArray(egressRules)) {
-          // Revoke the AWS-default "allow all egress" rule so it does not coexist
-          // with user-specified rules. Tolerate "not found" if the default is absent.
-          try {
-            await this.ec2Client.send(
-              new RevokeSecurityGroupEgressCommand({
-                GroupId: groupId,
-                IpPermissions: [
-                  {
-                    IpProtocol: '-1',
-                    IpRanges: [{ CidrIp: '0.0.0.0/0' }],
-                  },
-                ],
-              })
-            );
-          } catch (error) {
-            if (!this.isNotFoundError(error)) {
-              throw error;
-            }
-          }
 
-          for (const rule of egressRules) {
-            await this.ec2Client.send(
-              new AuthorizeSecurityGroupEgressCommand({
-                GroupId: groupId,
-                IpPermissions: [this.buildIpPermission(rule, 'egress')],
-              })
-            );
-          }
-        }
+        await Promise.all([
+          this.applyTags(groupId, properties, logicalId),
+          this.authorizeInlineIngress(groupId, ingressRules),
+          this.applyInlineEgress(groupId, egressRules),
+        ]);
       } catch (innerError) {
         try {
           await this.ec2Client.send(new DeleteSecurityGroupCommand({ GroupId: groupId }));
@@ -2181,6 +2157,105 @@ export class EC2Provider implements ResourceProvider {
         cause
       );
     }
+  }
+
+  /**
+   * Authorize a freshly-created security group's inline
+   * `SecurityGroupIngress` rules in a SINGLE `AuthorizeSecurityGroupIngress`
+   * call.
+   *
+   * The API takes an `IpPermissions` ARRAY; the previous per-rule loop paid
+   * one round trip per rule for no benefit. AWS applies the whole list
+   * atomically, so the resulting rule set is byte-identical — the only
+   * behavior difference is that a bad rule now rejects the batch instead of
+   * being preceded by its already-applied siblings, and the caller deletes
+   * the half-wired group in either case.
+   */
+  private async authorizeInlineIngress(
+    groupId: string,
+    ingressRules: Array<Record<string, unknown>> | undefined
+  ): Promise<void> {
+    if (!Array.isArray(ingressRules) || ingressRules.length === 0) return;
+    await this.ec2Client.send(
+      new AuthorizeSecurityGroupIngressCommand({
+        GroupId: groupId,
+        IpPermissions: ingressRules.map((rule) => this.buildIpPermission(rule)),
+      })
+    );
+  }
+
+  /**
+   * Apply a freshly-created security group's inline `SecurityGroupEgress`
+   * rules.
+   *
+   * When a template specifies egress explicitly, CloudFormation replaces the
+   * AWS-default "allow all egress" rule (`-1` / `0.0.0.0/0`) with the
+   * supplied set, so cdkd revokes the default first and then authorizes the
+   * template's rules. Both steps are preserved, including for an EMPTY
+   * `SecurityGroupEgress: []` — that is a deliberate "no egress at all",
+   * which requires the revoke and no authorize.
+   *
+   * Two round trips are saved where they are provably redundant:
+   *
+   *   - The whole revoke+authorize pair is SKIPPED when the templated egress
+   *     is exactly the rule AWS already created by default. `isDefaultEgressRule`
+   *     is the exact comparator (protocol `-1`, `CidrIp 0.0.0.0/0`, no IPv6
+   *     range / peer group / prefix list / description, ports absent or `-1`)
+   *     and is the SAME predicate the drift reverse-mapper uses to recognize
+   *     the AWS default, so the two cannot disagree about what "default" means.
+   *     AWS creates exactly ONE default egress rule and it is IPv4-only (there
+   *     is no `::/0` default), which is why a single-element match is the right
+   *     shape. NOTE this deliberately does NOT fire for the CDK L2
+   *     `allowAllOutbound: true` shape, which stamps
+   *     `Description: 'Allow all outbound traffic by default'` — the AWS
+   *     default rule carries no description, so skipping there would leave the
+   *     group in a state CloudFormation would not produce AND would surface as
+   *     permanent phantom drift (`readCurrentState` would report no
+   *     Description while state records one).
+   *   - The remaining authorize is a SINGLE batched call rather than one per
+   *     rule (see {@link authorizeInlineIngress}).
+   */
+  private async applyInlineEgress(
+    groupId: string,
+    egressRules: Array<Record<string, unknown>> | undefined
+  ): Promise<void> {
+    if (!Array.isArray(egressRules)) return;
+
+    if (egressRules.length === 1 && isDefaultEgressRule(egressRules[0]!)) {
+      this.logger.debug(
+        `SecurityGroup ${groupId} egress equals the AWS default allow-all rule; ` +
+          `skipping the redundant revoke + re-authorize`
+      );
+      return;
+    }
+
+    // Revoke the AWS-default "allow all egress" rule so it does not coexist
+    // with user-specified rules. Tolerate "not found" if the default is absent.
+    try {
+      await this.ec2Client.send(
+        new RevokeSecurityGroupEgressCommand({
+          GroupId: groupId,
+          IpPermissions: [
+            {
+              IpProtocol: '-1',
+              IpRanges: [{ CidrIp: '0.0.0.0/0' }],
+            },
+          ],
+        })
+      );
+    } catch (error) {
+      if (!this.isNotFoundError(error)) {
+        throw error;
+      }
+    }
+
+    if (egressRules.length === 0) return;
+    await this.ec2Client.send(
+      new AuthorizeSecurityGroupEgressCommand({
+        GroupId: groupId,
+        IpPermissions: egressRules.map((rule) => this.buildIpPermission(rule, 'egress')),
+      })
+    );
   }
 
   private async updateSecurityGroup(

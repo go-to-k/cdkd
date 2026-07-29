@@ -70,3 +70,32 @@ export function describeTypeWithThrottleRetry(
     }
   );
 }
+
+/**
+ * Resource types that have NO CloudFormation registry schema, so
+ * `DescribeType` can only ever fail for them:
+ *
+ * - `Custom::<Name>` — the two-segment form the `TypeName` parameter
+ *   rejects outright at validation time.
+ * - `AWS::CloudFormation::CustomResource` — the generic custom-resource
+ *   alias; replacement semantics are handler-driven, not schema-driven.
+ * - `AWS::CDK::Metadata` — the CDK-injected construct-tree marker. It is a
+ *   synth-only sentinel that cdkd never provisions (the deploy pre-flight,
+ *   the diff, `synth`, `import` and `export` all filter it), yet the
+ *   create-only schema PREFETCH iterated the raw template type set and so
+ *   issued a guaranteed-to-fail `DescribeType` for it on EVERY deploy —
+ *   burning one API call and emitting a "Grant cloudformation:DescribeType"
+ *   warning that named a pseudo-resource the user cannot act on.
+ *
+ * Callers must short-circuit on this predicate rather than paying the round
+ * trip plus the misleading warning. Kept next to
+ * {@link describeTypeWithThrottleRetry} so every DescribeType-backed
+ * resolver shares ONE list instead of re-deriving its own inline literal.
+ */
+export function hasNoRegistrySchema(resourceType: string): boolean {
+  return (
+    resourceType === 'AWS::CDK::Metadata' ||
+    resourceType === 'AWS::CloudFormation::CustomResource' ||
+    resourceType.startsWith('Custom::')
+  );
+}

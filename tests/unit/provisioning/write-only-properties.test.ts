@@ -72,4 +72,17 @@ describe('getTopLevelWriteOnlyProperties + throttle retry (issue #1236)', () => 
     // 1 initial attempt + 4 throttle retries, then the resolver's fallback.
     expect(mockCloudFormationSend).toHaveBeenCalledTimes(5);
   });
+  it.each([
+    'AWS::CDK::Metadata',
+    'AWS::CloudFormation::CustomResource',
+    'Custom::MyThing',
+  ])('skips DescribeType entirely for the schema-less type %s', async (type) => {
+    // Shares `hasNoRegistrySchema` with the sibling create-only resolver, so
+    // the two cannot disagree about which types have no registry entry.
+    const result = await getTopLevelWriteOnlyProperties(type);
+
+    expect(result.size).toBe(0);
+    expect(mockCloudFormationSend).not.toHaveBeenCalled();
+    expect(mockLoggerWarn).not.toHaveBeenCalled();
+  });
 });

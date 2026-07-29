@@ -178,6 +178,46 @@ describe('DeployEngine - create-only DescribeType prefetch (#1180)', () => {
     expect(prefetched.filter((t) => t === 'AWS::SSM::Parameter')).toHaveLength(1);
   });
 
+  it('never prefetches schema-less types (AWS::CDK::Metadata / custom resources)', async () => {
+    // `AWS::CDK::Metadata` is the CDK construct-tree sentinel present in EVERY
+    // synthesized template, and custom resources have no registry schema
+    // either, so DescribeType can only fail for them. Before the exclusion,
+    // every deploy burned a guaranteed-to-fail API call on the sentinel AND
+    // printed a "Grant cloudformation:DescribeType ..." warning naming a
+    // pseudo-resource the user cannot act on.
+    const withMetadata: CloudFormationTemplate = {
+      Resources: {
+        A: { Type: 'AWS::SSM::Parameter', Properties: { Value: 'a' } },
+        CDKMetadata: { Type: 'AWS::CDK::Metadata', Properties: { Analytics: 'v2:xxx' } },
+        Custom: { Type: 'Custom::MyThing', Properties: { ServiceToken: 'arn:aws:lambda:::fn' } },
+        Generic: {
+          Type: 'AWS::CloudFormation::CustomResource',
+          Properties: { ServiceToken: 'arn:aws:lambda:::fn' },
+        },
+      },
+    };
+    mockDiffCalculator.calculateDiff.mockResolvedValue(
+      new Map<string, ResourceChange>([
+        [
+          'A',
+          {
+            logicalId: 'A',
+            changeType: 'CREATE',
+            resourceType: 'AWS::SSM::Parameter',
+            desiredProperties: { Value: 'a' },
+          },
+        ],
+      ])
+    );
+    mockDagBuilder.getExecutionLevels.mockReturnValue([['A']]);
+
+    const engine = makeEngine();
+    await engine.deploy(stackName, withMetadata);
+
+    const prefetched = getCreateOnlyPropertyPaths.mock.calls.map((c) => c[0]);
+    expect(prefetched).toEqual(['AWS::SSM::Parameter']);
+  });
+
   it('does not surface an unhandled rejection when a prefetch lookup rejects', async () => {
     // getCreateOnlyPropertyPaths is documented never-throw, but if it ever
     // rejects the fire-and-forget prefetch must swallow it — otherwise the

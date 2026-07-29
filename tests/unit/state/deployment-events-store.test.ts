@@ -342,6 +342,136 @@ describe('DeploymentEventsStore', () => {
     expect(objects.has(`cdkd/S/us-east-1/deployments/${id(1)}.jsonl`)).toBe(true);
   });
 
+  it('does not LIST the deployments prefix at all while below the index window', async () => {
+    // The prune LIST is now issued speculatively alongside the index PUT, so
+    // it must stay gated on "the window is full" — otherwise every deploy of
+    // every small stack would pay a brand-new S3 LIST it never used before.
+    const { backend, objects } = makeFakeBackend();
+    seedRuns(objects, 'us-east-1', [id(0)]);
+    const store = new DeploymentEventsStore(backend, {
+      stackName: 'S',
+      region: 'us-east-1',
+      command: 'deploy',
+      runId: id(1),
+    });
+    store.record({ eventType: 'RESOURCE_STARTED', stackName: 'S', logicalId: 'A' });
+    await store.finalize('SUCCEEDED');
+    expect(backend.listRawKeys).not.toHaveBeenCalled();
+  });
+
+  it('overlaps the index READ with the event flush but still WRITES the index after it', async () => {
+    // The durability contract: the index may never advertise a run whose
+    // event stream has not been persisted. The read is free to overlap (it
+    // touches a different object); the write is not.
+    const { backend, objects } = makeFakeBackend();
+    const order: string[] = [];
+    const jsonlKey = `cdkd/S/us-east-1/deployments/${id(1)}.jsonl`;
+    const indexKey = 'cdkd/S/us-east-1/deployments/index.json';
+    let releaseFlush: () => void = () => {};
+    const flushGate = new Promise<void>((resolve) => {
+      releaseFlush = resolve;
+    });
+
+    vi.mocked(backend.getRawObject).mockImplementation(async (key: string) => {
+      order.push(`get:${key}`);
+      return objects.get(key) ?? null;
+    });
+    vi.mocked(backend.putRawObject).mockImplementation(async (key: string, body: string) => {
+      order.push(`put:${key}`);
+      if (key === jsonlKey) await flushGate;
+      objects.set(key, body);
+    });
+
+    const store = new DeploymentEventsStore(backend, {
+      stackName: 'S',
+      region: 'us-east-1',
+      command: 'deploy',
+      runId: id(1),
+    });
+    store.record({ eventType: 'RESOURCE_STARTED', stackName: 'S', logicalId: 'A' });
+    const finalized = store.finalize('SUCCEEDED');
+
+    // Let the microtask queue settle while the flush PUT is still pending.
+    await new Promise((resolve) => setImmediate(resolve));
+    // The index READ was issued without waiting for the flush to resolve...
+    expect(order).toContain(`get:${indexKey}`);
+    // ...but the index WRITE has not happened yet.
+    expect(order).not.toContain(`put:${indexKey}`);
+
+    releaseFlush();
+    await finalized;
+
+    expect(order.indexOf(`put:${jsonlKey}`)).toBeLessThan(order.indexOf(`put:${indexKey}`));
+    expect(JSON.parse(objects.get(indexKey)!).runs[0].runId).toBe(id(1));
+  });
+
+  it('deletes superseded streams only AFTER the index PUT that dropped them', async () => {
+    const { backend, objects } = makeFakeBackend();
+    const N = DEPLOYMENT_EVENTS_MAX_INDEX_RUNS;
+    seedRuns(
+      objects,
+      'us-east-1',
+      Array.from({ length: N }, (_, i) => id(i))
+    );
+    const order: string[] = [];
+    const indexKey = 'cdkd/S/us-east-1/deployments/index.json';
+    vi.mocked(backend.putRawObject).mockImplementation(async (key: string, body: string) => {
+      order.push(`put:${key}`);
+      objects.set(key, body);
+    });
+    vi.mocked(backend.listRawKeys).mockImplementation(async (keyPrefix: string) => {
+      order.push('list');
+      return [...objects.keys()].filter((k) => k.startsWith(keyPrefix));
+    });
+    vi.mocked(backend.deleteRawObjects).mockImplementation(async (keys: string[]) => {
+      order.push('delete');
+      for (const k of keys) objects.delete(k);
+    });
+
+    const store = new DeploymentEventsStore(backend, {
+      stackName: 'S',
+      region: 'us-east-1',
+      command: 'deploy',
+      runId: id(N),
+    });
+    store.record({ eventType: 'RESOURCE_STARTED', stackName: 'S', logicalId: 'A' });
+    await store.finalize('SUCCEEDED');
+
+    // The LIST may be issued before the index PUT (it is read-only), but the
+    // DELETE must not be: a stream is only removed once the index that no
+    // longer references it is durable.
+    expect(order.indexOf('delete')).toBeGreaterThan(order.indexOf(`put:${indexKey}`));
+    expect(objects.has(`cdkd/S/us-east-1/deployments/${id(0)}.jsonl`)).toBe(false);
+  });
+
+  it('never deletes a superseded stream when the index PUT fails', async () => {
+    const { backend, objects } = makeFakeBackend();
+    const N = DEPLOYMENT_EVENTS_MAX_INDEX_RUNS;
+    seedRuns(
+      objects,
+      'us-east-1',
+      Array.from({ length: N }, (_, i) => id(i))
+    );
+    const indexKey = 'cdkd/S/us-east-1/deployments/index.json';
+    vi.mocked(backend.putRawObject).mockImplementation(async (key: string, body: string) => {
+      if (key === indexKey) throw new Error('AccessDenied: index put failed');
+      objects.set(key, body);
+    });
+
+    const store = new DeploymentEventsStore(backend, {
+      stackName: 'S',
+      region: 'us-east-1',
+      command: 'deploy',
+      runId: id(N),
+    });
+    store.record({ eventType: 'RESOURCE_STARTED', stackName: 'S', logicalId: 'A' });
+    // finalize is best-effort — it warns rather than throwing.
+    await expect(store.finalize('SUCCEEDED')).resolves.toBeUndefined();
+
+    expect(backend.deleteRawObjects).not.toHaveBeenCalled();
+    expect(objects.has(`cdkd/S/us-east-1/deployments/${id(0)}.jsonl`)).toBe(true);
+  });
+
   it('rebuilds the index from this run alone when the existing index is corrupt', async () => {
     const { backend, objects } = makeFakeBackend();
     objects.set('cdkd/S/us-east-1/deployments/index.json', '{not valid json');
