@@ -46,18 +46,26 @@ Best of 3 runs, deploy-phase only, seconds, `us-west-2`. The `VPC + Lambda + SQS
 - **Async-heavy stacks are where the gap explodes.** On the VPC + CloudFront stack, `cdkd --no-wait` finishes in 40s vs Express's 366s (~9x) — cdkd returns as soon as each create call returns, leaving CloudFront propagation and NAT Gateway stabilization to complete in the background.
 - **S3 is the one case where Express edges cdkd's default** (22s vs 23s). On a near-instant single-resource stack there is little left to parallelize, and `--no-wait` makes no difference there.
 
-### vs Terraform: cdkd wins or ties every scenario
+### vs Terraform: cdkd deploys faster
 
-We also raced cdkd against Terraform: the same logical stacks expressed both as CDK apps and as Terraform HCL, deployed by all engines against real AWS.
+We also raced cdkd against Terraform: the same logical stacks expressed both as CDK apps and as Terraform HCL, deployed by all engines against real AWS. **cdkd is faster in five of six scenarios — 1.16x to 2.31x — and ties on the sixth.**
 
 | Scenario | Stack | cdkd | cdkd `--no-wait` | Terraform | CloudFormation |
 | --- | --- | ---: | ---: | ---: | ---: |
-| wide | 48 independent resources (S3 / DynamoDB / SQS / SNS / SSM / Logs, 8 each) | **25.4** | 25.3 | 50.4 | 85.9 |
-| serverless | Lambda ×3 + HTTP API + DynamoDB + SNS / SQS + EventBridge | **31.4** | 31.8 | 57.9 | 124.2 |
-| webapp | VPC + NAT + subnets + DynamoDB + SQS + S3 + Lambda ×2 + HTTP API | 127.0 | **32.4** | 127.8 | 161.9 |
-| cloudfront | S3 origin + CloudFront + OAC | **171.2** | **17.8** | 191.1 | 208.1 |
+| wide | 48 independent resources (S3 / DynamoDB / SQS / SNS / SSM / Logs, 8 each) | **20.0** | 21.1 | 46.1 | 89.1 |
+| serverless | Lambda ×3 + HTTP API + DynamoDB + SNS / SQS + EventBridge | **25.9** | 24.6 | 57.5 | 127.1 |
+| ec2 | VPC + subnet + SG + IAM role + EC2 instance ×3 | **29.1** | 22.0 | 35.9 | 193.9 |
+| webapp | VPC + NAT + subnets + DynamoDB + SQS + S3 + Lambda ×2 + HTTP API | **109.7** | 23.4 | 127.3 | 166.1 |
+| ecs | VPC ×2 AZ + Fargate cluster / task / service + ALB | **162.8** | 34.5 | 209.5 | 276.7 |
+| cloudfront | S3 origin + CloudFront + OAC | 174.7 | 13.1 | 177.5 | 209.8 |
 
-Cold end-to-end wall clock (unlike the deploy-phase-only tables above, these numbers include synth / plan), median of 3 runs, seconds, `us-east-1`. On wide, parallel stacks cdkd is ~2x faster than Terraform; where a single slow resource dominates (NAT Gateway, CloudFront propagation), physical provisioning time sets a common floor and only `--no-wait` gets below it. Full methodology, parity notes, and reproduction scripts live in [cdkd-bench-terraform](https://github.com/go-to-k/cdkd-bench-terraform).
+Cold end-to-end wall clock (unlike the deploy-phase-only tables above, these numbers include synth / plan), median of **7 runs** per scenario, seconds, `us-east-1`, one cdkd binary. Every run gets resource names AWS has never seen, so every run measures a first deploy.
+
+**cdkd's lead tracks how much of the wall clock is orchestration rather than AWS-side provisioning.** wide and serverless are almost pure orchestration and cdkd runs ~2.2-2.3x faster. cloudfront is almost pure propagation delay — both tools wait on the same physical minutes — and they finish 2.8s apart, a tie. Nothing here makes AWS itself faster.
+
+**This is not cdkd waiting for less.** Held to the same completion definition — cdkd `--full-wait` against Terraform's `wait_for_steady_state=true`, both blocking until the ECS service is steady — cdkd is still 1.24x faster (227.7 vs 282.7).
+
+Full methodology, every individual run, parity notes, and reproduction scripts live in [cdkd-bench-terraform](https://github.com/go-to-k/cdkd-bench-terraform).
 
 ### More benchmarks
 
