@@ -1,3 +1,10 @@
+## [0.269.1](https://github.com/go-to-k/cdkd/compare/v0.269.0...v0.269.1) (2026-07-30)
+
+
+### Bug Fixes
+
+* **providers:** skip SNS subscriptions pending confirmation on delete (CFn parity) ([#1305](https://github.com/go-to-k/cdkd/issues/1305)) ([c96ce6c](https://github.com/go-to-k/cdkd/commit/c96ce6c0f783d76c90a352cc5c0987346edf7609))
+
 # [0.269.0](https://github.com/go-to-k/cdkd/compare/v0.268.5...v0.269.0) (2026-07-30)
 
 
