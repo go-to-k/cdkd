@@ -33,6 +33,7 @@ import { ExportIndexStore } from '../../state/export-index-store.js';
 import { LockManager } from '../../state/lock-manager.js';
 import { ProviderRegistry } from '../../provisioning/provider-registry.js';
 import { registerAllProviders } from '../../provisioning/register-providers.js';
+import { setResolvedResourceTimeouts } from '../../provisioning/resource-timeout-registry.js';
 import { withNestedStackContext } from '../../provisioning/nested-stack-context.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { resolveApp, resolveStateBucketWithDefault } from '../config-loader.js';
@@ -186,6 +187,9 @@ async function destroyCommand(
   // warn against a shortened --resource-timeout (so the destroy-runner
   // call site below reads the lowered value).
   validateResourceTimeouts(options);
+  // Seed the provisioning-layer registry so providers with an INNER waiter
+  // cap can lift it to the user-resolved budget (issue #1280).
+  setResolvedResourceTimeouts(options.resourceTimeout);
 
   // Resolve --role-arn / CDKD_ROLE_ARN before any AWS call.
   await applyRoleArnIfSet({ roleArn: options.roleArn, region: options.region });

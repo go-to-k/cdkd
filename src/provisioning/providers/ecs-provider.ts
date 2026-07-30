@@ -86,6 +86,7 @@ import type {
   ResourceImportResult,
 } from '../../types/resource.js';
 import { clearOnUpdateRemoval } from '../update-removal.js';
+import { resolvedResourceTimeoutMs } from '../resource-timeout-registry.js';
 
 /**
  * Convert CFn Tags (Array<{Key, Value}>) to ECS Tags (Array<{key, value}>)
@@ -923,11 +924,19 @@ export class ECSProvider implements ResourceProvider {
   ): Promise<void> {
     if (process.env['CDKD_FULL_WAIT'] === 'true') {
       this.logger.debug(`Waiting for ECS service ${logicalId} to reach steady state...`);
+      // 600s matches Terraform's `aws_ecs_service` default create timeout. An
+      // explicit `--resource-timeout` (per-type or global) lifts the cap so
+      // the inner waiter can never undercut the outer per-resource deadline
+      // the same flag raises (issue #1280) — but never lowers it below the
+      // 600s floor.
+      const maxWaitTime = Math.max(
+        600,
+        (resolvedResourceTimeoutMs('AWS::ECS::Service') ?? 0) / 1000
+      );
       await waitUntilServicesStable(
-        // 600s matches Terraform's `aws_ecs_service` default create timeout.
         // minDelay/maxDelay override the AWS SDK defaults (15s / 120s) per the
         // #1177 poll-cap sweep.
-        { client: this.getClient(), maxWaitTime: 600, minDelay: 5, maxDelay: 10 },
+        { client: this.getClient(), maxWaitTime, minDelay: 5, maxDelay: 10 },
         { cluster, services: [serviceRef] }
       );
       this.logger.debug(`ECS service ${logicalId} reached steady state`);

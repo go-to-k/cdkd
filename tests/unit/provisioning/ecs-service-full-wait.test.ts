@@ -49,6 +49,10 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { ECSProvider } from '../../../src/provisioning/providers/ecs-provider.js';
+import {
+  setResolvedResourceTimeouts,
+  clearResolvedResourceTimeouts,
+} from '../../../src/provisioning/resource-timeout-registry.js';
 
 const SERVICE_ARN = 'arn:aws:ecs:us-east-1:123456789012:service/my-cluster/my-service';
 
@@ -84,6 +88,7 @@ describe('ECS Service wait semantics (issue #1275)', () => {
   afterEach(() => {
     if (originalFullWait === undefined) delete process.env['CDKD_FULL_WAIT'];
     else process.env['CDKD_FULL_WAIT'] = originalFullWait;
+    clearResolvedResourceTimeouts();
   });
 
   describe('default (no --full-wait)', () => {
@@ -191,6 +196,68 @@ describe('ECS Service wait semantics (issue #1275)', () => {
       expect(config.minDelay).toBeLessThanOrEqual(5);
       expect(config.maxDelay).toBeLessThanOrEqual(10);
       expect(config.maxWaitTime).toBe(600);
+    });
+
+    // Issue #1280: `--resource-timeout` must lift the steady-state waiter's
+    // 600s cap the same way it lifts the engine's outer per-resource deadline
+    // — the inner waiter firing first made the flag a no-op for slow services.
+    describe('maxWaitTime vs --resource-timeout (issue #1280)', () => {
+      function waiterMaxWaitTime(): number {
+        const [config] = waitUntilServicesStableMock.mock.calls[0] as unknown as [
+          { maxWaitTime: number },
+        ];
+        return config.maxWaitTime;
+      }
+
+      it('keeps the 600s floor when the flag is not supplied', async () => {
+        mockCreateOk();
+        await new ECSProvider().create('MySvc', 'AWS::ECS::Service', CREATE_PROPS);
+        expect(waiterMaxWaitTime()).toBe(600);
+      });
+
+      it('lifts the cap to a per-type --resource-timeout AWS::ECS::Service=20m', async () => {
+        setResolvedResourceTimeouts({ perTypeMs: { 'AWS::ECS::Service': 1_200_000 } });
+        mockCreateOk();
+        await new ECSProvider().create('MySvc', 'AWS::ECS::Service', CREATE_PROPS);
+        expect(waiterMaxWaitTime()).toBe(1200);
+      });
+
+      it('lifts the cap to a global --resource-timeout 15m', async () => {
+        setResolvedResourceTimeouts({ globalMs: 900_000, perTypeMs: {} });
+        mockCreateOk();
+        await new ECSProvider().create('MySvc', 'AWS::ECS::Service', CREATE_PROPS);
+        expect(waiterMaxWaitTime()).toBe(900);
+      });
+
+      it('per-type override wins over the global value', async () => {
+        setResolvedResourceTimeouts({
+          globalMs: 900_000,
+          perTypeMs: { 'AWS::ECS::Service': 1_800_000 },
+        });
+        mockCreateOk();
+        await new ECSProvider().create('MySvc', 'AWS::ECS::Service', CREATE_PROPS);
+        expect(waiterMaxWaitTime()).toBe(1800);
+      });
+
+      it('never lowers the cap below the 600s floor', async () => {
+        setResolvedResourceTimeouts({ perTypeMs: { 'AWS::ECS::Service': 120_000 } });
+        mockCreateOk();
+        await new ECSProvider().create('MySvc', 'AWS::ECS::Service', CREATE_PROPS);
+        expect(waiterMaxWaitTime()).toBe(600);
+      });
+
+      it('applies on the UPDATE-side wait too', async () => {
+        setResolvedResourceTimeouts({ perTypeMs: { 'AWS::ECS::Service': 1_200_000 } });
+        mockUpdateOk();
+        await new ECSProvider().update(
+          'MySvc',
+          SERVICE_ARN,
+          'AWS::ECS::Service',
+          CREATE_PROPS,
+          CREATE_PROPS
+        );
+        expect(waiterMaxWaitTime()).toBe(1200);
+      });
     });
 
     it('waits after UpdateService too', async () => {

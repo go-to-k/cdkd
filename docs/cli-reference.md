@@ -162,6 +162,16 @@ after `CreateService` a healthy service and a doomed one look identical
 there would fire on every deploy and would imply a guarantee ("nothing
 was printed, so the rollout is fine") that a single check cannot back.
 
+The steady-state wait is capped at 600 seconds by default (matching
+Terraform's `aws_ecs_service` create timeout). A service that
+legitimately takes longer — a large task count, a slow-pulling image, a
+long health-check grace period — can lift the cap with
+`--resource-timeout` (per-type or global), e.g.
+`--resource-timeout AWS::ECS::Service=20m`. The flag only raises the
+cap, never lowers it below the 600s floor, and the same value already
+governs the outer per-resource deadline, so the two cannot undercut
+each other.
+
 Under `--full-wait`, a service that never stabilizes fails the deploy. On
 create, cdkd best-effort deletes the service it just created before
 failing, so the next deploy does not collide on the service name. The
@@ -533,6 +543,12 @@ The same floor lifts the Cloud Control provider's internal poll cap (a
 flat 15 minutes otherwise), so a Cloud-Control-routed slow delete is not
 cut off before the outer deadline. An explicit
 `--resource-timeout <TYPE>=<DURATION>` override still wins.
+
+The flag reaches SDK-provider inner waiters the same way: under
+`--full-wait`, the ECS Service steady-state waiter's 600s cap is lifted
+to `max(600s, resolved --resource-timeout)` (see the `--full-wait`
+section above), so the inner waiter can never abort before the outer
+per-resource deadline the same flag raised.
 
 The error message on timeout names the resource, type, region, elapsed
 time, and operation, and reminds you that long-running resources
