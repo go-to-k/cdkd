@@ -118,6 +118,32 @@ describe('countProtectedResources', () => {
     expect(countProtectedResources(state)).toBe(1);
   });
 
+  it('counts a DSQL Cluster with DeletionProtectionEnabled=true (CC-routed generic flip, issue #1312)', () => {
+    const state = makeState({
+      Cluster: {
+        physicalId: 'abc123',
+        resourceType: 'AWS::DSQL::Cluster',
+        properties: { DeletionProtectionEnabled: true },
+        attributes: {},
+        dependencies: [],
+      },
+    });
+    expect(countProtectedResources(state)).toBe(1);
+  });
+
+  it('does NOT count a DSQL Cluster with DeletionProtectionEnabled=false', () => {
+    const state = makeState({
+      Cluster: {
+        physicalId: 'abc123',
+        resourceType: 'AWS::DSQL::Cluster',
+        properties: { DeletionProtectionEnabled: false },
+        attributes: {},
+        dependencies: [],
+      },
+    });
+    expect(countProtectedResources(state)).toBe(0);
+  });
+
   it('counts a Cognito UserPool with DeletionProtection=ACTIVE (string-valued enum)', () => {
     const state = makeState({
       P: {

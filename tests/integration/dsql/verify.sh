@@ -23,10 +23,10 @@
 #      non-zero, the cluster is still ACTIVE, and the cdkd state file is
 #      still present (the failed delete must not drop the resource from
 #      state).
-#   4. Re-deploy with no env (protection back OFF, tag back to `one`).
-#      Assert: deletionProtectionEnabled=false and identity still
-#      unchanged.
-#   5. Destroy + assert the cluster is gone and the cdkd state file is
+#   4. Destroy with --remove-protection while protection is STILL ON
+#      (issue #1312: the generic CC protection flip patches
+#      DeletionProtectionEnabled=false in-place, then deletes). Assert:
+#      destroy succeeds, the cluster is gone, and the cdkd state file is
 #      removed.
 #
 # Required env vars:
@@ -97,6 +97,13 @@ cleanup() {
       tagval="$(aws dsql list-tags-for-resource --resource-arn "${arn}" --region "${REGION}" --query "tags.\"${INTEG_TAG_KEY}\"" --output text 2>/dev/null)"
       if [ "${tagval}" = "${INTEG_TAG_VALUE}" ]; then
         aws dsql update-cluster --identifier "${id}" --no-deletion-protection-enabled --region "${REGION}" >/dev/null 2>&1
+        # The update leaves the cluster UPDATING for a moment; a back-to-back
+        # delete can be rejected with a conflict. Wait (bounded) for ACTIVE.
+        for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
+          st="$(aws dsql get-cluster --identifier "${id}" --region "${REGION}" --query 'status' --output text 2>/dev/null)"
+          [ "${st}" = "ACTIVE" ] && break
+          sleep 5
+        done
         aws dsql delete-cluster --identifier "${id}" --region "${REGION}" >/dev/null 2>&1
         echo "    deleted leftover DSQL cluster ${id}"
       fi
@@ -184,7 +191,7 @@ echo "    baseline creationTime=${CREATION_P1}"
 # AWS::DSQL::Cluster — catch a silent routing flip in either direction).
 PROVISIONED_BY="$(node "${LOCAL_DIST}" state show "${STACK}" --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" --json 2>/dev/null \
-  | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);const r=j.state.resources;const k=Object.keys(r).find(x=>r[x].resourceType==="AWS::DSQL::Cluster");process.stdout.write((r[k]&&r[k].provisionedBy)||"sdk")})')"
+  | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);const r=j.state.resources;const k=Object.keys(r).find(x=>r[x].resourceType==="AWS::DSQL::Cluster");process.stdout.write(k?(r[k].provisionedBy||"sdk"):"missing-from-state")})')"
 if [ "${PROVISIONED_BY}" != "cc-api" ]; then
   echo "FAIL: expected DSQL cluster provisionedBy=cc-api, got '${PROVISIONED_BY}'" >&2
   exit 1
@@ -250,28 +257,13 @@ echo "    cluster survived the blocked destroy (still ACTIVE)"
 aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" >/dev/null
 echo "    cdkd state retained after blocked destroy"
 
-# --- Phase 4: re-deploy with protection OFF ----------------------------
-echo "==> Phase 4: re-deploy turning deletion protection back OFF"
-env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
-  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
-
-PROTECTION_P4="$(aws dsql get-cluster --identifier "${CLUSTER_ID}" --region "${REGION}" \
-  --query 'deletionProtectionEnabled' --output text)"
-if [ "${PROTECTION_P4}" != "False" ]; then
-  echo "FAIL: expected deletionProtectionEnabled=False after Phase 4, got '${PROTECTION_P4}'" >&2
-  exit 1
-fi
-CREATION_P4="$(aws dsql get-cluster --identifier "${CLUSTER_ID}" --region "${REGION}" \
-  --query 'creationTime' --output text)"
-if [ "${CREATION_P1}" != "${CREATION_P4}" ]; then
-  echo "FAIL: cluster was REPLACED during Phase 4 (creationTime ${CREATION_P1} -> ${CREATION_P4})" >&2
-  exit 1
-fi
-echo "    deletion protection back off, identity still unchanged"
-
-# --- Phase 5: destroy --------------------------------------------------
-echo "==> Phase 5: destroy"
-node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
+# --- Phase 4: destroy --remove-protection (protection still ON) --------
+# Issue #1312: the generic CC protection flip patches
+# DeletionProtectionEnabled=false in-place via UpdateResource, waits, then
+# deletes — so the destroy must succeed WITHOUT re-deploying protection off.
+echo "==> Phase 4: destroy --remove-protection while protection is still ON"
+node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
+  --force --remove-protection
 
 # The CC delete polls the handler to completion, so the cluster should be gone
 # (not-found) by now — but tolerate a terminal DELETING/DELETED read in case
@@ -285,7 +277,7 @@ elif ! status="$(aws dsql get-cluster --identifier "${CLUSTER_ID}" --region "${R
     && status="GONE" \
     || { echo "FAIL: get-cluster requery undetermined: ${status}" >&2; exit 1; }
 fi
-if [ "${status}" != "GONE" ] && [ "${status}" != "DELETING" ] && [ "${status}" != "DELETED" ]; then
+if [ "${status}" != "GONE" ] && [ "${status}" != "PENDING_DELETE" ] && [ "${status}" != "DELETING" ] && [ "${status}" != "DELETED" ]; then
   echo "FAIL: cluster ${CLUSTER_ID} still exists (status ${status}) after destroy" >&2
   exit 1
 fi
@@ -294,4 +286,4 @@ echo "    cluster deleted (status: ${status})"
 assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    cdkd state removed"
 
-echo "[verify] PASS — Aurora DSQL cluster create/update/protected-destroy-block/destroy via CC API fallback, all 5 phases passed"
+echo "[verify] PASS — Aurora DSQL cluster create/update/protected-destroy-block/remove-protection-destroy via CC API fallback, all 4 phases passed"

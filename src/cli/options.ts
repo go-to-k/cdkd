@@ -1128,8 +1128,8 @@ export const destroyOptions = [
       '(CDK property) and resource-level protection on AWS::Logs::LogGroup, AWS::RDS::DBInstance, ' +
       'AWS::RDS::DBCluster, AWS::DocDB::DBCluster, AWS::Neptune::DBCluster, ' +
       'AWS::Neptune::DBInstance, AWS::DynamoDB::Table, AWS::EC2::Instance, ' +
-      'AWS::Cognito::UserPool, AWS::AutoScaling::AutoScalingGroup, and ' +
-      'AWS::ElasticLoadBalancingV2::LoadBalancer.'
+      'AWS::Cognito::UserPool, AWS::AutoScaling::AutoScalingGroup, ' +
+      'AWS::ElasticLoadBalancingV2::LoadBalancer, and AWS::DSQL::Cluster.'
   ).default(false),
   allowUnsupportedTypesOption,
 ];

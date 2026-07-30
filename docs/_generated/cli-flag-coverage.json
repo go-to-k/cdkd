@@ -692,6 +692,7 @@
       "flag": "--remove-protection",
       "integs": [
         "docdb-neptune",
+        "dsql",
         "dynamodb-globaltable",
         "ec2-instance",
         "rds-aurora",
