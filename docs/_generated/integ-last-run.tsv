@@ -70,7 +70,7 @@ docker-image-asset	2026-07-24T04:58:55Z	PASS	45	verify.sh	lazy ECR login: warm-c
 drift-revert	2026-07-19T19:15:52Z	PASS	93	verify.sh	rc ok, 13 deleted, orph clean
 drift-revert-arrays	2026-07-19T17:35:30Z	PASS	114	verify.sh	PR #1100 post-rebase re-verify; benign-reorder no-false-positive + real drift revert; 16 del 0 err 0 orphans
 drift-revert-vpc	2026-07-30T16:18:56Z	PASS	480	verify.sh	post-rebase final for PR #1307 (#1299/#1300): 6/6 reverted, 21 del 0 err 0 orphans
-dsql	2026-07-30T17:44:51Z	PASS	215	verify.sh	rc ok, orph clean (deployments/ events remain by design)
+dsql	2026-07-30T17:56:04Z	PASS	610	verify.sh	5-phase incl. protected-destroy-block; orph clean
 dynamodb-autoscaling	2026-07-21T14:33:57Z	PASS	77	verify.sh	rc ok, orph clean
 dynamodb-globaltable	2026-07-21T05:21:32Z	PASS	237	verify.sh	rc ok, orph clean
 dynamodb-gsi-update	2026-07-20T08:09:23Z	PASS	579	verify.sh	rc ok, orph clean
