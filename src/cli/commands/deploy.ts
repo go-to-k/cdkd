@@ -49,6 +49,7 @@ import { DiffCalculator } from '../../analyzer/diff-calculator.js';
 import { inferCrossStackStackDeps } from '../../analyzer/cross-stack-deps.js';
 import { ProviderRegistry } from '../../provisioning/provider-registry.js';
 import { registerAllProviders } from '../../provisioning/register-providers.js';
+import { setResolvedResourceTimeouts } from '../../provisioning/resource-timeout-registry.js';
 import { withNestedStackContext } from '../../provisioning/nested-stack-context.js';
 import { DeployEngine, type DeployEngineOptions } from '../../deployment/deploy-engine.js';
 import { WorkGraph } from '../../deployment/work-graph.js';
@@ -135,6 +136,10 @@ async function deployCommand(
   // inherited warn against a shortened --resource-timeout (so the
   // DeployEngine constructor below reads the lowered value).
   validateResourceTimeouts(options);
+  // Seed the provisioning-layer registry so providers with an INNER waiter
+  // cap (ECS settleService under --full-wait) can lift it to the same
+  // user-resolved budget the OUTER per-resource deadline uses (issue #1280).
+  setResolvedResourceTimeouts(options.resourceTimeout);
 
   // Wait-mode flags. `--no-wait` / default / `--full-wait` are three
   // points on one axis; the two flags are opposite ends of it, so

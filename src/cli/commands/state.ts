@@ -30,6 +30,7 @@ import {
 } from '../config-loader.js';
 import { ProviderRegistry } from '../../provisioning/provider-registry.js';
 import { registerAllProviders } from '../../provisioning/register-providers.js';
+import { setResolvedResourceTimeouts } from '../../provisioning/resource-timeout-registry.js';
 import { withNestedStackContext } from '../../provisioning/nested-stack-context.js';
 import { withStackName } from '../../provisioning/resource-name.js';
 import { buildReadCurrentStateContext } from './drift.js';
@@ -1120,6 +1121,9 @@ async function stateDestroyCommand(
   // Mutates `options.resourceWarnAfter` in place when auto-lowering the
   // inherited warn against a shortened --resource-timeout.
   validateResourceTimeouts(options);
+  // Seed the provisioning-layer registry so providers with an INNER waiter
+  // cap can lift it to the user-resolved budget (issue #1280).
+  setResolvedResourceTimeouts(options.resourceTimeout);
 
   if (!options.all && stackArgs.length === 0) {
     throw new Error(
