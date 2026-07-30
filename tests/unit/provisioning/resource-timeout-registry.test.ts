@@ -6,7 +6,27 @@ import {
   setResolvedResourceTimeouts,
   resolvedResourceTimeoutMs,
   clearResolvedResourceTimeouts,
+  type ResolvedResourceTimeouts,
 } from '../../../src/provisioning/resource-timeout-registry.js';
+import type { ResourceTimeoutOption } from '../../../src/cli/options.js';
+
+// Type-level pin: the registry re-declares `ResourceTimeoutOption`'s shape
+// locally (so the provisioning layer does not import CLI types). Because every
+// registry field is optional, plain assignability would be vacuously true —
+// instead pin that each registry key EXISTS on the CLI type (a CLI-side rename
+// of `globalMs` / `perTypeMs` turns the mapped property to `never` and this
+// fails `vp run typecheck:test`), and that the CLI value types stay assignable.
+const _registryKeysExistOnCliType: {
+  [K in keyof Required<ResolvedResourceTimeouts>]: K extends keyof ResourceTimeoutOption
+    ? true
+    : never;
+} = { globalMs: true, perTypeMs: true };
+void _registryKeysExistOnCliType;
+const _cliValueTypesAssignable: ResolvedResourceTimeouts = {} as Pick<
+  ResourceTimeoutOption,
+  keyof ResolvedResourceTimeouts & keyof ResourceTimeoutOption
+>;
+void _cliValueTypesAssignable;
 
 // Issue #1280: the process-wide registry that lets a provider's INNER waiter
 // cap (ECS settleService under --full-wait) respect the user's
@@ -34,6 +54,11 @@ describe('resource-timeout registry (issue #1280)', () => {
     setResolvedResourceTimeouts({ globalMs: 1_200_000, perTypeMs: {} });
     expect(resolvedResourceTimeoutMs('AWS::ECS::Service')).toBe(1_200_000);
     expect(resolvedResourceTimeoutMs('AWS::S3::Bucket')).toBe(1_200_000);
+  });
+
+  it('resolves the global value when perTypeMs is absent entirely', () => {
+    setResolvedResourceTimeouts({ globalMs: 1_200_000 });
+    expect(resolvedResourceTimeoutMs('AWS::ECS::Service')).toBe(1_200_000);
   });
 
   it('per-type override wins over the global value', () => {
@@ -77,11 +102,20 @@ describe('resource-timeout registry seeding (source-level pin)', () => {
     (file) => {
       const src = readFileSync(join(repoRoot, 'src', 'cli', 'commands', file), 'utf8');
       // Seeding must come AFTER validation so only validated values land in
-      // the registry.
-      const validateIdx = src.indexOf('validateResourceTimeouts(options)');
-      const seedIdx = src.indexOf('setResolvedResourceTimeouts(options.resourceTimeout)');
+      // the registry. Match on LIVE lines only — a commented-out call
+      // (`// setResolvedResourceTimeouts(...)`) must fail this pin, not
+      // satisfy it.
+      const liveLines = src
+        .split('\n')
+        .filter((line) => !line.trimStart().startsWith('//'))
+        .join('\n');
+      const validateIdx = liveLines.indexOf('validateResourceTimeouts(options)');
+      const seedIdx = liveLines.indexOf('setResolvedResourceTimeouts(options.resourceTimeout)');
       expect(validateIdx, `${file}: validateResourceTimeouts call not found`).toBeGreaterThan(-1);
-      expect(seedIdx, `${file}: setResolvedResourceTimeouts call not found`).toBeGreaterThan(-1);
+      expect(
+        seedIdx,
+        `${file}: live (non-commented) setResolvedResourceTimeouts call not found`
+      ).toBeGreaterThan(-1);
       expect(seedIdx, `${file}: seeding must follow validation`).toBeGreaterThan(validateIdx);
     }
   );
