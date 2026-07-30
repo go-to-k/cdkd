@@ -31,6 +31,9 @@ against live AWS.
      tag onto the ASG (templated `Tags` carry only `Owner=cdkd-integ`).
    - `DetachLoadBalancerTargetGroups` + `AttachLoadBalancerTargetGroups`
      swap the ASG's attached target group from `tg1` to `tg2`.
+   - `ModifySubnetAttribute` flips the first public subnet's
+     `MapPublicIpOnLaunch` from `true` to `false` (deterministic
+     coverage of the issue #1300 `updateSubnet` revert path).
 3. `cdkd drift CdkdDriftRevertVpcExample` — assert exit code **1**
    (drift detected on every mutated resource).
 4. `cdkd drift CdkdDriftRevertVpcExample --revert -y` — assert exit

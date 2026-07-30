@@ -591,6 +591,18 @@ export class ReplacementRulesRegistry {
       replacementProperties: new Set(['DBProxyName', 'TargetGroupName']),
     });
 
+    // EC2 Subnet — VpcId / CidrBlock / AvailabilityZone are createOnly per
+    // the CFn registry schema (the DescribeType fallback already classifies
+    // them); named here so the classification survives a DescribeType
+    // failure. MapPublicIpOnLaunch is mutable in place via
+    // ModifySubnetAttribute and Tags via CreateTags/DeleteTags — both wired
+    // through EC2Provider.updateSubnet (issue #1300); declaring them
+    // updateable pins that routing against future createOnly-fallback drift.
+    this.rules.set('AWS::EC2::Subnet', {
+      replacementProperties: new Set(['VpcId', 'CidrBlock', 'AvailabilityZone']),
+      updateableProperties: new Set(['MapPublicIpOnLaunch', 'Tags']),
+    });
+
     // EC2 Instance — EbsOptimized can only be changed on a STOPPED instance
     // (a running instance returns IncorrectInstanceState), and cdkd does not
     // stop/start instances, so an EbsOptimized change is routed to replacement

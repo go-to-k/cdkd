@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import {
   ModifyVpcAttributeCommand,
+  ModifySubnetAttributeCommand,
+  DescribeSubnetsCommand,
   CreateTagsCommand,
   DeleteTagsCommand,
   CreateRouteCommand,
@@ -64,6 +66,7 @@ describe('EC2Provider read-update round-trip', () => {
   // Helpers — count mutating SDK calls (anything that writes to AWS).
   const mutatingCommandTypes: Array<new (...args: never[]) => unknown> = [
     ModifyVpcAttributeCommand,
+    ModifySubnetAttributeCommand,
     CreateTagsCommand,
     DeleteTagsCommand,
     CreateRouteCommand,
@@ -295,7 +298,6 @@ describe('EC2Provider read-update round-trip', () => {
     // does not report `✓ reverted` on a console-side change AWS will
     // keep.
     const immutableCases: Array<[string, string]> = [
-      ['AWS::EC2::Subnet', 'subnet-1'],
       ['AWS::EC2::InternetGateway', 'igw-1'],
       ['AWS::EC2::VPCGatewayAttachment', 'igw-1|vpc-1'],
       ['AWS::EC2::NatGateway', 'nat-1'],
@@ -316,6 +318,101 @@ describe('EC2Provider read-update round-trip', () => {
 
         // No mutating SDK calls fired — the throw happened before any
         // network IO.
+        expect(countMutatingCalls()).toBe(0);
+      }
+    );
+  });
+
+  describe('AWS::EC2::Subnet (issue #1300: property-aware update)', () => {
+    const subnetState = {
+      VpcId: 'vpc-1',
+      CidrBlock: '10.0.0.0/24',
+      AvailabilityZone: 'us-east-1a',
+      MapPublicIpOnLaunch: true,
+    };
+
+    it('round-trip on no-drift state sends zero mutating SDK calls', async () => {
+      const result = await provider.update(
+        'Sub',
+        'subnet-1',
+        'AWS::EC2::Subnet',
+        subnetState,
+        subnetState
+      );
+      expect(result.wasReplaced).toBe(false);
+      expect(countMutatingCalls()).toBe(0);
+      expect(mockSend).not.toHaveBeenCalled();
+      // No attributes on an in-place update — the deploy engine carries the
+      // create-time attributes (SubnetId / AvailabilityZone) forward, and a
+      // partial set returned here would REPLACE them (FSx attribute-wipe
+      // incident shape).
+      expect(result.attributes).toBeUndefined();
+    });
+
+    it('MapPublicIpOnLaunch drift reverts via ModifySubnetAttribute + read-back', async () => {
+      mockSend.mockImplementation((cmd: unknown) => {
+        if (cmd instanceof DescribeSubnetsCommand) {
+          return Promise.resolve({ Subnets: [{ MapPublicIpOnLaunch: false }] });
+        }
+        return Promise.resolve({});
+      });
+
+      // Revert direction: AWS drifted to true, state says false.
+      await provider.update(
+        'Sub',
+        'subnet-1',
+        'AWS::EC2::Subnet',
+        { ...subnetState, MapPublicIpOnLaunch: false },
+        { ...subnetState, MapPublicIpOnLaunch: true }
+      );
+
+      const modify = mockSend.mock.calls.find((c) => c[0] instanceof ModifySubnetAttributeCommand);
+      expect(modify?.[0].input).toEqual({
+        SubnetId: 'subnet-1',
+        MapPublicIpOnLaunch: { Value: false },
+      });
+      // Read-back verified the write became visible before returning.
+      const reads = mockSend.mock.calls.filter((c) => c[0] instanceof DescribeSubnetsCommand);
+      expect(reads.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it("string spelling 'true' is coerced (no spurious modify on 'true' vs true)", async () => {
+      await provider.update(
+        'Sub',
+        'subnet-1',
+        'AWS::EC2::Subnet',
+        { ...subnetState, MapPublicIpOnLaunch: 'true' },
+        { ...subnetState, MapPublicIpOnLaunch: true }
+      );
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('Tags drift applies the tag diff', async () => {
+      await provider.update(
+        'Sub',
+        'subnet-1',
+        'AWS::EC2::Subnet',
+        { ...subnetState, Tags: [{ Key: 'Owner', Value: 'a' }] },
+        { ...subnetState, Tags: [{ Key: 'Owner', Value: 'b' }, { Key: 'Stale', Value: 'x' }] }
+      );
+      const created = mockSend.mock.calls.some((c) => c[0] instanceof CreateTagsCommand);
+      const deleted = mockSend.mock.calls.some((c) => c[0] instanceof DeleteTagsCommand);
+      expect(created).toBe(true);
+      expect(deleted).toBe(true);
+    });
+
+    it.each(['VpcId', 'CidrBlock', 'AvailabilityZone'])(
+      'create-only property %s change rejects with ResourceUpdateNotSupportedError',
+      async (prop) => {
+        await expect(
+          provider.update(
+            'Sub',
+            'subnet-1',
+            'AWS::EC2::Subnet',
+            { ...subnetState, [prop]: 'changed-value' },
+            subnetState
+          )
+        ).rejects.toBeInstanceOf(ResourceUpdateNotSupportedError);
         expect(countMutatingCalls()).toBe(0);
       }
     );

@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@aws-sdk/client-auto-scaling": "^3.0.0",
+    "@aws-sdk/client-ec2": "^3.0.0",
     "@aws-sdk/client-efs": "^3.0.0",
     "@aws-sdk/client-elastic-load-balancing-v2": "^3.0.0",
     "@aws-sdk/client-servicediscovery": "^3.0.0",
