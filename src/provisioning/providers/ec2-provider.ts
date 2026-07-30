@@ -4668,16 +4668,25 @@ export class EC2Provider implements ResourceProvider {
       // #1291 item 3). One targeted association read closes it; the extra
       // call happens ONLY in this narrow window (--no-wait capture of a
       // still-pending instance), never on `cdkd drift` reads.
-      const assoc = await this.ec2Client.send(
-        new DescribeIamInstanceProfileAssociationsCommand({
-          Filters: [{ Name: 'instance-id', Values: [physicalId] }],
-        })
-      );
-      const live = assoc.IamInstanceProfileAssociations?.find(
-        (a) => a.State === 'associated' || a.State === 'associating'
-      );
-      if (live?.IamInstanceProfile?.Arn !== undefined) {
-        result['IamInstanceProfile'] = live.IamInstanceProfile.Arn;
+      // Best-effort: a transient throttle here must cost only THIS field,
+      // not the whole snapshot -- an uncaught throw would make the deploy
+      // engine discard the entire observed-properties capture.
+      try {
+        const assoc = await this.ec2Client.send(
+          new DescribeIamInstanceProfileAssociationsCommand({
+            Filters: [{ Name: 'instance-id', Values: [physicalId] }],
+          })
+        );
+        const live = assoc.IamInstanceProfileAssociations?.find(
+          (a) => a.State === 'associated' || a.State === 'associating'
+        );
+        if (live?.IamInstanceProfile?.Arn !== undefined) {
+          result['IamInstanceProfile'] = live.IamInstanceProfile.Arn;
+        }
+      } catch (error) {
+        this.logger.warn(
+          `Could not backfill IamInstanceProfile for ${physicalId} during the --no-wait capture (${error instanceof Error ? error.message : String(error)}); the field is omitted from the observed snapshot`
+        );
       }
     }
 

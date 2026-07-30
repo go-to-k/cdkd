@@ -139,16 +139,24 @@ describe('provider poll-loop cap tightness (#1175 / #1176)', () => {
     // A call site is `waitUntilXxx(` (imports / re-exports don't parenthesize).
     // Its first argument is the waiter config object literal; line comments may
     // sit between the paren and the brace. Capture up to the closing brace
-    // non-greedily. minDelay / maxDelay may appear in EITHER order (the old
-    // `minDelay:\s*\d+,\s*maxDelay:` regex was key-order-evadable) and a
-    // spread/constant config that hides the keys is deliberately flagged as
-    // unconfigured — fail loud, then inline the keys.
+    // non-greedily — a future config with a NESTED object literal before
+    // minDelay truncates early and reads as "no inline config", which fails
+    // LOUD (a spurious violation), never silently green. minDelay / maxDelay
+    // may appear in EITHER order (the old `minDelay:\s*\d+,\s*maxDelay:` regex
+    // was key-order-evadable). A spread literal (`{ ...cfg }`) is flagged as
+    // unconfigured; a bare IDENTIFIER config (`waitUntilX(cfg, input)`) does
+    // not match this regex at all — that evasion is closed by the raw-count
+    // reconciliation below, which counts every `waitUntil*(` occurrence and
+    // fails when the two counters diverge.
     const callSite = /waitUntil\w+\(\s*(?:\/\/[^\n]*\n\s*)*\{([\s\S]*?)\}\s*,/g;
+    const rawCallSite = /waitUntil\w+\(/g;
+    let rawCallSites = 0;
 
     for (const file of srcFiles(srcRoot)) {
       const src = readFileSync(file, 'utf8');
       const name = file.slice(srcRoot.length + 1);
 
+      rawCallSites += [...src.matchAll(rawCallSite)].length;
       for (const m of src.matchAll(callSite)) {
         callSites++;
         filesWithCalls.add(name);
@@ -178,21 +186,28 @@ describe('provider poll-loop cap tightness (#1175 / #1176)', () => {
     }
 
     // Coverage floors — "saw nothing = fail", per .claude/rules/testing.md.
-    // 14 call sites live in the tree today: 6 in providers (4 ec2, 1 elbv2,
-    // 1 ecs) + 5 export.ts + 2 retire-cfn-stack.ts + 1 macro-expander.ts.
-    // Per-file floors pin the shape the old scan missed (non-provider files),
-    // so a regression that stops seeing THOSE cannot hide under the total.
-    expect(callSites, 'expected the waitUntil* call sites to be found').toBeGreaterThanOrEqual(14);
+    // 18 call sites live in the tree today: 10 in providers (4 ec2, 1 elbv2,
+    // 1 ecs, 3 custom-resource, 1 lambda-function) + 5 export.ts +
+    // 2 retire-cfn-stack.ts + 1 macro-expander.ts. The non-provider category
+    // floor pins the shape the old scan missed, so a regression that stops
+    // seeing THOSE cannot hide under the total.
+    expect(callSites, 'expected the waitUntil* call sites to be found').toBeGreaterThanOrEqual(18);
     expect(
       [...filesWithCalls].filter((f) => !f.startsWith('provisioning/providers/')).length,
       'expected waitUntil* call sites OUTSIDE provisioning/providers to be seen (export / retire-cfn-stack / macro-expander)'
     ).toBeGreaterThanOrEqual(3);
-    // Every call site must have parsed into a config — the two counters
-    // diverging means an unconfigured call slipped in (also reported as a
-    // violation above, but this keeps the invariant explicit).
-    expect(configuredSites + violations.filter((v) => v.includes('no inline')).length).toBe(
-      callSites
-    );
+    // Raw-count reconciliation: every `waitUntil*(` occurrence must have been
+    // parsed by the config-literal regex. A bare identifier config
+    // (`waitUntilX(cfg, input)`), a block comment before the brace, or any
+    // other shape the literal regex cannot see makes the counters diverge and
+    // fails HERE instead of silently dropping out of the scan. (The literal
+    // regex's own matches split exactly into configured + no-inline-violation
+    // by construction, so comparing against the RAW count is what makes this
+    // a real invariant rather than a tautology.)
+    expect(
+      rawCallSites,
+      'every waitUntil*( occurrence must be parseable by the config-literal regex — a bare identifier config or block-comment shape evades the cap rule; inline the { minDelay, maxDelay } literal'
+    ).toBe(callSites);
 
     expect(
       violations,

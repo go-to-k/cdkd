@@ -818,6 +818,6 @@ describe('applyWaitFlagEnv (issue #1291 items 1 + 6)', () => {
       'utf8'
     );
     expect(deploySrc).toMatch(/applyWaitFlagEnv\(options\)/);
-    expect(deploySrc).not.toMatch(/process\.env\['CDKD_(NO|FULL)_WAIT'\]\s*=/);
+    expect(deploySrc).not.toMatch(/process\.env\['CDKD_(NO_WAIT|FULL_WAIT|WAIT_FLAGS_AVAILABLE)'\]\s*=/);
   });
 });

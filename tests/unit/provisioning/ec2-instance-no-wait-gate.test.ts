@@ -410,6 +410,70 @@ describe('readInstanceCurrentState IamInstanceProfile backfill under --no-wait (
     expect(current && 'IamInstanceProfile' in current).toBe(false);
   });
 
+  it('makes NO extra call when the instance is already running (the wait was not skipped short)', async () => {
+    // The `pending` half of the gate: a running instance with no profile is a
+    // settled answer (genuinely no profile), not an in-flight association --
+    // probing there would add a call to every --no-wait capture of
+    // profile-less instances.
+    process.env['CDKD_NO_WAIT'] = 'true';
+    mockDescribe({ state: 'running' });
+
+    const current = await new EC2Provider().readCurrentState!(
+      INSTANCE_ID,
+      'MyInstance',
+      'AWS::EC2::Instance'
+    );
+
+    expect(current && 'IamInstanceProfile' in current).toBe(false);
+    expect(associationCalls()).toHaveLength(0);
+  });
+
+  it('omits the field when only a disassociated association remains', async () => {
+    process.env['CDKD_NO_WAIT'] = 'true';
+    mockDescribe({
+      state: 'pending',
+      associations: [{ state: 'disassociated', arn: PROFILE_ARN }],
+    });
+
+    const current = await new EC2Provider().readCurrentState!(
+      INSTANCE_ID,
+      'MyInstance',
+      'AWS::EC2::Instance'
+    );
+
+    expect(current && 'IamInstanceProfile' in current).toBe(false);
+  });
+
+  it('degrades to omitting the field when the association read itself fails', async () => {
+    // A throttle on the backfill must cost only this field, never the whole
+    // observed snapshot.
+    process.env['CDKD_NO_WAIT'] = 'true';
+    mockSend.mockImplementation((command: unknown) => {
+      if (command instanceof DescribeIamInstanceProfileAssociationsCommand) {
+        return Promise.reject(new Error('Rate exceeded'));
+      }
+      return Promise.resolve({
+        Reservations: [
+          {
+            Instances: [
+              { InstanceId: INSTANCE_ID, State: { Name: 'pending' }, ImageId: 'ami-12345678' },
+            ],
+          },
+        ],
+      });
+    });
+
+    const current = await new EC2Provider().readCurrentState!(
+      INSTANCE_ID,
+      'MyInstance',
+      'AWS::EC2::Instance'
+    );
+
+    expect(current).toBeDefined();
+    expect(current?.['ImageId']).toBe('ami-12345678');
+    expect(current && 'IamInstanceProfile' in current).toBe(false);
+  });
+
   it('makes NO extra call on ordinary drift reads (env unset)', async () => {
     mockDescribe({ state: 'pending' });
 
