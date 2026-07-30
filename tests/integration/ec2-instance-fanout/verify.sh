@@ -80,6 +80,19 @@ cleanup() {
     aws ec2 terminate-instances --instance-ids ${INSTANCE_IDS} \
       --region "${REGION}" >/dev/null 2>&1 || true
   fi
+  # A mid-deploy interrupt can leave instances that RunInstances created but
+  # the incremental state write had not persisted yet (so state destroy
+  # cannot see them and INSTANCE_IDS is still empty). Every launched
+  # instance carries the suffix-unique profile from birth, so sweep by the
+  # profile association before deleting the IAM pair.
+  ORPHAN_IDS="$(aws ec2 describe-iam-instance-profile-associations \
+    --filters "Name=state,Values=associated,associating" --region "${REGION}" \
+    --query "IamInstanceProfileAssociations[?contains(IamInstanceProfile.Arn, \`fanout-prof-${SUFFIX}\`)].InstanceId" \
+    --output text 2>/dev/null || true)"
+  if [ -n "${ORPHAN_IDS}" ]; then
+    aws ec2 terminate-instances --instance-ids ${ORPHAN_IDS} \
+      --region "${REGION}" >/dev/null 2>&1 || true
+  fi
   aws iam remove-role-from-instance-profile \
     --instance-profile-name "fanout-prof-${SUFFIX}" \
     --role-name "fanout-role-${SUFFIX}" >/dev/null 2>&1 || true
@@ -117,13 +130,13 @@ echo "==> Phase 1: cold fan-out deploy (suffix=${SUFFIX}, 10 x t3.nano, one fres
 DEPLOY_START="$(date +%s)"
 # --verbose so the propagation-retry and throttle log lines are observable;
 # default wait mode (the propagation retry rides the create path either way).
+DEPLOY_RC=0
 node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   -c "suffix=${SUFFIX}" \
   --verbose \
-  --yes 2>&1 | tee "${DEPLOY_LOG}"
-DEPLOY_RC=${PIPESTATUS[0]}
+  --yes 2>&1 | tee "${DEPLOY_LOG}" || DEPLOY_RC=$?
 DEPLOY_END="$(date +%s)"
 if [ "${DEPLOY_RC}" -ne 0 ]; then
   echo "FAIL: fan-out deploy did not converge (rc=${DEPLOY_RC}) — the #1292 interaction IS a real failure mode" >&2
@@ -192,6 +205,7 @@ if [ "${TERMINATED}" != "10" ]; then
 fi
 INSTANCE_IDS=""
 
+rm -f "${DEPLOY_LOG}"
 trap - EXIT INT TERM
 echo ""
 echo "==> ec2-instance-fanout test passed (10-instance cold fan-out converged; propagation retries=${PROPAGATION_HITS}, throttles=${THROTTLE_HITS}, deploy $((DEPLOY_END - DEPLOY_START))s + clean destroy)"
