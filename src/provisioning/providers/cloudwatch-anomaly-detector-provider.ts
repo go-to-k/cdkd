@@ -131,6 +131,12 @@ export class CloudWatchAnomalyDetectorProvider implements ResourceProvider {
    * method never sees it. The only in-place change is `Configuration`
    * (excluded time ranges / time zone), which `PutAnomalyDetector` upserts
    * for the unchanged descriptor.
+   *
+   * Removal semantics: `PutAnomalyDetector` REPLACES the stored
+   * Configuration rather than merging (live-verified 2026-07-31 — a Put
+   * with no `Configuration` resets MetricTimezone + ExcludedTimeRanges to
+   * defaults), so re-putting the full desired properties matches CFn's
+   * "removed property resets to default" behavior with no extra clearing.
    */
   async update(
     logicalId: string,
@@ -347,7 +353,15 @@ function buildDeleteParams(properties: Record<string, unknown>): DeleteAnomalyDe
 function toDate(value: unknown): Date | undefined {
   if (value === undefined) return undefined;
   if (value instanceof Date) return value;
-  return new Date(String(value));
+  const parsed = new Date(String(value));
+  if (Number.isNaN(parsed.getTime())) {
+    // Fail here with the offending value — letting the serializer throw a
+    // bare `RangeError: Invalid time value` later names no property.
+    throw new Error(
+      `Configuration.ExcludedTimeRanges contains an unparsable time value: ${String(value)}`
+    );
+  }
+  return parsed;
 }
 
 /**
@@ -373,7 +387,12 @@ function derivePhysicalId(properties: Record<string, unknown>): string {
       .map((d) => `${d.Name}=${d.Value}`)
       .sort()
       .join(',');
-    const base = `${namespace ?? ''}:${metricName ?? ''}:${stat ?? ''}`;
+    // AccountId (cross-account single-metric detectors) is part of the AWS
+    // identity — without it two detectors differing only in source account
+    // would collide on physical id, and an AccountId-only replacement would
+    // trip the deploy engine's same-id create-first guard.
+    const account = single?.AccountId !== undefined ? `${single.AccountId}:` : '';
+    const base = `${account}${namespace ?? ''}:${metricName ?? ''}:${stat ?? ''}`;
     return dims.length > 0 ? `${base}:${dims}` : base;
   }
 

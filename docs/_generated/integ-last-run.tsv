@@ -38,7 +38,7 @@ cc-getatt-readback	2026-07-20T03:06:02Z	PASS	260	verify.sh	generic sparse read-b
 ci-cd	2026-07-21T18:23:00Z	PASS	55	verify.sh	rc ok, orph clean
 cloudfront-function-url	2026-07-27T10:27:57Z	PASS	384	verify.sh	issue #1263 lambda-url update error-wrap verify; destroy 7/0, 0 orphans
 cloudwatch	2026-07-26T20:00:52Z	PASS	55	standard	0727b sweep-b13 staleness re-run (rc=0); account clean
-cloudwatch-anomaly-detector	2026-07-30T16:32:08Z	PASS	35	verify.sh	re-run post MetricTimezone casing fix; config readback asserted; clean
+cloudwatch-anomaly-detector	2026-07-30T16:41:15Z	PASS	35	verify.sh	final run post review fixes: GetAtt Id + phys-id stability asserted; clean
 codecommit	2026-07-18T19:54:34Z	PASS		verify.sh	Code seed+SNS trigger+rename+drift, destroy 0 err 0 orph (re-run post review-nits)
 codedeploy-lambda-deployment-group	2026-07-26T19:45:58Z	PASS	109	verify.sh	re-run after version-agnostic fixture fix; live-verified, account clean (remnant-warning follow-up: issue #1252)
 cognito	2026-07-21T14:27:28Z	PASS	60	verify.sh	rc ok, orph clean

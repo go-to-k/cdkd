@@ -142,6 +142,16 @@ if [ "${COUNT}" -lt 1 ]; then
 fi
 echo "    OK: anomaly detector exists on AWS after create"
 
+# The provider mints a deterministic descriptor-derived physical id and the
+# GetAtt Id output must resolve to it.
+PHYS_ID_1=$(printf '%s' "${STATE}" | python3 -c "import json,sys; s=json.load(sys.stdin); print(s['resources']['Detector']['physicalId'])")
+OUTPUT_ID=$(printf '%s' "${STATE}" | python3 -c "import json,sys; s=json.load(sys.stdin); print(s['outputs'].get('DetectorId',''))")
+if [ -z "${PHYS_ID_1}" ] || [ "${OUTPUT_ID}" != "${PHYS_ID_1}" ]; then
+  echo "FAIL: GetAtt Id output (${OUTPUT_ID}) does not match the detector physical id (${PHYS_ID_1})" >&2
+  exit 1
+fi
+echo "    OK: GetAtt Id output resolves to the physical id (${PHYS_ID_1})"
+
 # --- Phase 2: update (add Configuration — the only mutable property) -------
 # NOTE: the Describe output field is `MetricTimezone` (lowercase z, the SDK /
 # wire casing) even though the CFn property is `MetricTimeZone` — the
@@ -162,6 +172,15 @@ if [ "${CONFIG_SET}" -lt 1 ]; then
   exit 1
 fi
 echo "    OK: Configuration update landed in-place (MetricTimezone + ExcludedTimeRanges read back)"
+
+# In-place means IN PLACE: the descriptor-derived physical id must survive
+# the Configuration update unchanged (a replacement would mint a new record).
+PHYS_ID_2=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null | python3 -c "import json,sys; s=json.load(sys.stdin); print(s['resources']['Detector']['physicalId'])")
+if [ "${PHYS_ID_2}" != "${PHYS_ID_1}" ]; then
+  echo "FAIL: physical id changed across the in-place update (${PHYS_ID_1} -> ${PHYS_ID_2})" >&2
+  exit 1
+fi
+echo "    OK: physical id stable across the in-place update"
 
 # --- Phase 3: destroy ------------------------------------------------------
 echo "==> Phase 3: destroy"

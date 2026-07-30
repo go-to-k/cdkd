@@ -138,6 +138,61 @@ describe('CloudWatchAnomalyDetectorProvider', () => {
       expect(config.ExcludedTimeRanges[0].StartTime.toISOString()).toBe('2026-01-01T00:00:00.000Z');
     });
 
+    it('derives the physical id from the SingleMetricAnomalyDetector descriptor (not only the top-level tuple)', async () => {
+      mockSend.mockResolvedValue({});
+
+      const result = await provider.create('Detector', TYPE, {
+        SingleMetricAnomalyDetector: {
+          Namespace: 'AWS/Lambda',
+          MetricName: 'Errors',
+          Stat: 'Sum',
+        },
+      });
+      // If the single-metric precedence regressed to top-level-only reads,
+      // every single-metric detector would collide on `math:<hash of {}>`.
+      expect(result.physicalId).toBe('AWS/Lambda:Errors:Sum');
+
+      const crossAccount = await provider.create('Detector2', TYPE, {
+        SingleMetricAnomalyDetector: {
+          AccountId: '111122223333',
+          Namespace: 'AWS/Lambda',
+          MetricName: 'Errors',
+          Stat: 'Sum',
+        },
+      });
+      // Cross-account detectors must not collide with same-account ones.
+      expect(crossAccount.physicalId).toBe('111122223333:AWS/Lambda:Errors:Sum');
+    });
+
+    it('accepts Date instances in ExcludedTimeRanges and rejects unparsable time values', async () => {
+      mockSend.mockResolvedValueOnce({});
+      await provider.create('Detector', TYPE, {
+        Namespace: 'NS',
+        MetricName: 'M',
+        Stat: 'Sum',
+        Configuration: {
+          ExcludedTimeRanges: [
+            { StartTime: new Date('2026-02-01T00:00:00Z'), EndTime: new Date('2026-02-02T00:00:00Z') },
+          ],
+        },
+      });
+      const config = putInput()['Configuration'] as {
+        ExcludedTimeRanges: Array<{ StartTime: Date }>;
+      };
+      expect(config.ExcludedTimeRanges[0].StartTime.toISOString()).toBe('2026-02-01T00:00:00.000Z');
+
+      mockSend.mockClear();
+      await expect(
+        provider.create('Detector', TYPE, {
+          Namespace: 'NS',
+          MetricName: 'M',
+          Stat: 'Sum',
+          Configuration: { ExcludedTimeRanges: [{ StartTime: 'garbage', EndTime: 'garbage' }] },
+        })
+      ).rejects.toThrow('unparsable time value');
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
     it('derives a stable hash id for metric-math detectors', async () => {
       mockSend.mockResolvedValue({});
 
@@ -153,6 +208,13 @@ describe('CloudWatchAnomalyDetectorProvider', () => {
 
       expect(a.physicalId).toMatch(/^math:[0-9a-f]{16}$/);
       expect(a.physicalId).toBe(b.physicalId);
+
+      const other = await provider.create('D3', TYPE, {
+        MetricMathAnomalyDetector: {
+          MetricDataQueries: [{ Id: 'm1', Expression: 'ANOMALY_DETECTION_BAND(m2, 5)', ReturnData: true }],
+        },
+      });
+      expect(other.physicalId).not.toBe(a.physicalId);
     });
 
     it('rejects a template with no metric descriptor before calling AWS', async () => {
@@ -190,6 +252,7 @@ describe('CloudWatchAnomalyDetectorProvider', () => {
       expect(putInput()['Configuration']).toEqual({ MetricTimezone: 'UTC' });
       expect(result.wasReplaced).toBe(false);
       expect(result.physicalId).toBe('AWS/SQS:NumberOfMessagesSent:Sum');
+      expect(result.attributes).toEqual({ Id: 'AWS/SQS:NumberOfMessagesSent:Sum' });
     });
 
     it('wraps AWS errors in ProvisioningError', async () => {
@@ -230,6 +293,44 @@ describe('CloudWatchAnomalyDetectorProvider', () => {
       await expect(
         provider.delete('Detector', 'pid', TYPE, PROPS, { expectedRegion: 'us-east-1' })
       ).resolves.toBeUndefined();
+    });
+
+    it('refuses NotFound-as-success when the client region does not match the state region', async () => {
+      mockSend.mockRejectedValueOnce(
+        new ResourceNotFoundException({ message: 'not found', $metadata: {} })
+      );
+
+      await expect(
+        provider.delete('Detector', 'pid', TYPE, PROPS, { expectedRegion: 'eu-west-1' })
+      ).rejects.toThrow(/region/i);
+    });
+
+    it('passes the SingleMetricAnomalyDetector descriptor arm through to DeleteAnomalyDetector', async () => {
+      mockSend.mockResolvedValueOnce({});
+
+      await provider.delete('Detector', 'pid', TYPE, {
+        SingleMetricAnomalyDetector: { Namespace: 'AWS/Lambda', MetricName: 'Errors', Stat: 'Sum' },
+        Configuration: { MetricTimeZone: 'UTC' },
+      });
+
+      const call = mockSend.mock.calls.find((c) => c[0] instanceof DeleteAnomalyDetectorCommand);
+      const input = call![0].input as Record<string, unknown>;
+      expect(input['SingleMetricAnomalyDetector']).toEqual({
+        Namespace: 'AWS/Lambda',
+        MetricName: 'Errors',
+        Stat: 'Sum',
+      });
+      expect(input['Configuration']).toBeUndefined();
+    });
+
+    it('passes the MetricMathAnomalyDetector descriptor arm through to DeleteAnomalyDetector', async () => {
+      mockSend.mockResolvedValueOnce({});
+
+      const math = { MetricDataQueries: [{ Id: 'm1', Expression: 'ANOMALY_DETECTION_BAND(m2, 2)' }] };
+      await provider.delete('Detector', 'math:abc', TYPE, { MetricMathAnomalyDetector: math });
+
+      const call = mockSend.mock.calls.find((c) => c[0] instanceof DeleteAnomalyDetectorCommand);
+      expect((call![0].input as Record<string, unknown>)['MetricMathAnomalyDetector']).toEqual(math);
     });
 
     it('fails with state-orphan guidance when the state record has no properties', async () => {

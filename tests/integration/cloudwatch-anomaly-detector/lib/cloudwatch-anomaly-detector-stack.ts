@@ -24,7 +24,7 @@ export class CloudWatchAnomalyDetectorStack extends cdk.Stack {
       queueName: 'cdkd-anomaly-detector-queue',
     });
 
-    new cloudwatch.CfnAnomalyDetector(this, 'Detector', {
+    const detector = new cloudwatch.CfnAnomalyDetector(this, 'Detector', {
       namespace: 'AWS/SQS',
       metricName: 'NumberOfMessagesSent',
       stat: 'Sum',
@@ -45,6 +45,12 @@ export class CloudWatchAnomalyDetectorStack extends cdk.Stack {
             },
           }
         : {}),
+    });
+
+    // Exercises the provider's read-only `Id` attribute (Fn::GetAtt) —
+    // resolved from the cached attributes written at create/update time.
+    new cdk.CfnOutput(this, 'DetectorId', {
+      value: detector.getAtt('Id').toString(),
     });
   }
 }
