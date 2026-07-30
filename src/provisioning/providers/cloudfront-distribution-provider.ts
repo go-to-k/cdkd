@@ -326,6 +326,26 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
           new GetDistributionConfigCommand({ Id: physicalId })
         );
         etag = refreshResponse.ETag!;
+      } else {
+        // Already disabled — but the disable may still be PROPAGATING
+        // (issue #1316): a prior interrupted destroy (or an out-of-band
+        // console disable) flips the config to Enabled=false immediately
+        // while Status stays InProgress for minutes, and DeleteDistribution
+        // rejects until Status is Deployed ("has not been disabled"). Wait
+        // for the same settled state the just-disabled arm waits for.
+        const settled = await this.waitForDistributionStable(physicalId, false);
+        if (!settled) {
+          this.logger.warn(
+            `Distribution ${physicalId} is disabled but its propagation did not settle (Deployed) within the wait budget; attempting delete anyway. ` +
+              `If it fails with DistributionNotDisabled, retry the destroy or raise the budget with --resource-timeout AWS::CloudFront::Distribution=<duration>.`
+          );
+        }
+
+        // Re-fetch ETag after waiting (a completed propagation changes it)
+        const refreshResponse = await this.cloudFrontClient.send(
+          new GetDistributionConfigCommand({ Id: physicalId })
+        );
+        etag = refreshResponse.ETag!;
       }
 
       // Step 3: Delete the distribution
