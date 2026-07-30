@@ -1,3 +1,10 @@
+# [0.270.0](https://github.com/go-to-k/cdkd/compare/v0.269.3...v0.270.0) (2026-07-30)
+
+
+### Features
+
+* **providers:** add AWS::CloudWatch::AnomalyDetector SDK provider ([#1308](https://github.com/go-to-k/cdkd/issues/1308)) ([5bc9b06](https://github.com/go-to-k/cdkd/commit/5bc9b06c9e847f68a3c070b936a5b543d8c54ec4))
+
 ## [0.269.3](https://github.com/go-to-k/cdkd/compare/v0.269.2...v0.269.3) (2026-07-30)
 
 
