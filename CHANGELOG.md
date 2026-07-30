@@ -1,3 +1,10 @@
+# [0.268.0](https://github.com/go-to-k/cdkd/compare/v0.267.20...v0.268.0) (2026-07-30)
+
+
+### Features
+
+* **providers:** add SDK Provider for AWS::CloudFront::OriginAccessControl ([#1287](https://github.com/go-to-k/cdkd/issues/1287)) ([95125fb](https://github.com/go-to-k/cdkd/commit/95125fbc5d6909a18d7fa2a1b99b5747aebf4c76))
+
 ## [0.267.20](https://github.com/go-to-k/cdkd/compare/v0.267.19...v0.267.20) (2026-07-30)
 
 
