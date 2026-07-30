@@ -1693,6 +1693,11 @@
       "scenarios": []
     },
     {
+      "name": "sns-pending-subscription",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "sns-sqs-event",
       "annotated": true,
       "scenarios": []
@@ -2494,6 +2499,7 @@
     "servicediscovery",
     "sns-event-source",
     "sns-inline-subscription",
+    "sns-pending-subscription",
     "sns-subscription-filter",
     "sqs-esm-max-concurrency",
     "stepfunctions-s3-definition",

@@ -4587,6 +4587,7 @@
         "serverless-api",
         "sns-event-source",
         "sns-inline-subscription",
+        "sns-pending-subscription",
         "sns-sqs-event",
         "sns-subscription-filter",
         "tags-propagation",
@@ -4675,6 +4676,9 @@
         "sns-inline-subscription": [
           "l1",
           "literal"
+        ],
+        "sns-pending-subscription": [
+          "l2"
         ],
         "sns-sqs-event": [
           "l2"
