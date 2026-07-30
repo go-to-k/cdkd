@@ -1,3 +1,10 @@
+# [0.273.0](https://github.com/go-to-k/cdkd/compare/v0.272.0...v0.273.0) (2026-07-30)
+
+
+### Features
+
+* **providers:** extend the CC protection registry to NeptuneGraph, SMSVOICE ProtectConfiguration, and VerifiedPermissions PolicyStore ([#1317](https://github.com/go-to-k/cdkd/issues/1317)) ([e20955e](https://github.com/go-to-k/cdkd/commit/e20955ef0b9e52f54b036870bf459979b2e13a7a))
+
 # [0.272.0](https://github.com/go-to-k/cdkd/compare/v0.271.0...v0.272.0) (2026-07-30)
 
 
