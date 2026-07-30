@@ -332,4 +332,4 @@ else
 fi
 
 echo ""
-echo "=== PASS: EC2::Instance #609 security-prop backfill integ ==="
+echo "=== PASS: EC2::Instance integ (#609 security backfill + #1276 AvailabilityZone + #1281 NetworkInterfaces) ==="

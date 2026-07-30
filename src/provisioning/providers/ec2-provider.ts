@@ -3531,7 +3531,7 @@ export class EC2Provider implements ResourceProvider {
    */
   private coerceNumber(value: unknown): number | undefined {
     if (typeof value === 'number' && Number.isFinite(value)) return value;
-    if (typeof value === 'string' && value !== '' && Number.isFinite(Number(value))) {
+    if (typeof value === 'string' && value.trim() !== '' && Number.isFinite(Number(value))) {
       return Number(value);
     }
     return undefined;

@@ -50,7 +50,7 @@ vi.mock('@aws-sdk/client-ec2', async (importOriginal) => {
 import { EC2Provider } from '../../../src/provisioning/providers/ec2-provider.js';
 
 // The exact shape CDK's L2 `ec2.Instance` synthesizes with
-// `associatePublicIpAddress: true` (aws-cdk-lib 2.244.0): no top-level
+// `associatePublicIpAddress: true` (aws-cdk-lib 2.26x): no top-level
 // SubnetId / SecurityGroupIds, one NetworkInterfaces entry, stringly-typed
 // DeviceIndex.
 const NI_PROPS = {
@@ -215,5 +215,61 @@ describe('AWS::EC2::Instance NetworkInterfaces mapping (issue #1281)', () => {
     expect(new EC2Provider().getDriftUnknownPaths('AWS::EC2::Instance')).toContain(
       'NetworkInterfaces'
     );
+  });
+
+  it('treats an empty NetworkInterfaces array as absent', async () => {
+    await new EC2Provider().create('MyInstance', 'AWS::EC2::Instance', {
+      ImageId: 'ami-12345678',
+      InstanceType: 't3.micro',
+      SubnetId: 'subnet-1',
+      NetworkInterfaces: [],
+    });
+
+    const input = runInstancesInput();
+    expect(input['NetworkInterfaces']).toBeUndefined();
+    expect(input['SubnetId']).toBe('subnet-1');
+  });
+
+  it('passes BOTH shapes through verbatim when a hand-authored template carries both', async () => {
+    // The create() comment promises pass-through (AWS's own rejection is the
+    // correct error); a silent strip of either side would mask the conflict.
+    mockSend.mockImplementation((command: unknown) => {
+      if (command instanceof RunInstancesCommand) {
+        return Promise.reject(
+          new Error(
+            'Network interfaces and an instance-level subnet ID may not be specified on the same request'
+          )
+        );
+      }
+      return Promise.resolve({});
+    });
+
+    await expect(
+      new EC2Provider().create('MyInstance', 'AWS::EC2::Instance', {
+        ImageId: 'ami-12345678',
+        InstanceType: 't3.micro',
+        SubnetId: 'subnet-1',
+        NetworkInterfaces: [{ DeviceIndex: '0', SubnetId: 'subnet-2' }],
+      })
+    ).rejects.toThrow(/may not be specified on the same request/);
+
+    const input = runInstancesInput();
+    expect(input['SubnetId']).toBe('subnet-1');
+    expect((input['NetworkInterfaces'] as unknown[]).length).toBe(1);
+  });
+
+  it('maps the attach-existing-ENI shape (NetworkInterfaceId + DeviceIndex only)', async () => {
+    await new EC2Provider().create('MyInstance', 'AWS::EC2::Instance', {
+      ImageId: 'ami-12345678',
+      InstanceType: 't3.micro',
+      NetworkInterfaces: [{ DeviceIndex: '0', NetworkInterfaceId: 'eni-abc123' }],
+    });
+
+    const [ni] = runInstancesInput()['NetworkInterfaces'] as Array<Record<string, unknown>>;
+    expect(ni['NetworkInterfaceId']).toBe('eni-abc123');
+    expect(ni['DeviceIndex']).toBe(0);
+    // No synthesized SubnetId / Groups on an attach-only entry.
+    expect(ni['SubnetId']).toBeUndefined();
+    expect(ni['Groups']).toBeUndefined();
   });
 });
