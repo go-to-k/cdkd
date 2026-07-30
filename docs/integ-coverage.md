@@ -4,7 +4,7 @@
 
 Run `vp run integ-coverage` to regenerate.
 
-**126 / 131 registered SDK Providers** have at least one integ fixture exercising them. 5 are explicitly allow-listed (registered without an integ, with a rationale comment on the register line). 0 are orphans — registered with neither an integ nor an allow-list rationale.
+**127 / 132 registered SDK Providers** have at least one integ fixture exercising them. 5 are explicitly allow-listed (registered without an integ, with a rationale comment on the register line). 0 are orphans — registered with neither an integ nor an allow-list rationale.
 
 ## How this is computed
 
@@ -32,7 +32,7 @@ Registered without an integ fixture, with an explicit `// allow-no-integ: <ratio
 | `AWS::RDS::DBProxy` | rds-aurora integ does not currently provision DBProxy + TargetGroup + Endpoint (cost + 5-15 min create/delete). Unit roundtrip covers the diff matrix; extend rds-aurora when a real-AWS Proxy lifecycle bug warrants the integ time. |
 | `AWS::RDS::DBProxyTargetGroup` | see DBProxy above — same rds-aurora-extend reasoning. |
 
-## Covered providers (126)
+## Covered providers (127)
 
 | Resource Type | Integ Fixture(s) |
 |---|---|
@@ -63,6 +63,7 @@ Registered without an integ fixture, with an explicit `// allow-no-integ: <ratio
 | `AWS::CloudFormation::WaitConditionHandle` | [`wait-condition-handle`](../tests/integration/wait-condition-handle/) (literal) |
 | `AWS::CloudFront::CloudFrontOriginAccessIdentity` | [`s3-cloudfront`](../tests/integration/s3-cloudfront/) (l2) |
 | `AWS::CloudFront::Distribution` | [`bench-cdk-sample`](../tests/integration/bench-cdk-sample/) (l2)<br>[`cloudfront-function-url`](../tests/integration/cloudfront-function-url/) (l2)<br>[`local-start-cloudfront`](../tests/integration/local-start-cloudfront/) (l2)<br>[`s3-cloudfront`](../tests/integration/s3-cloudfront/) (l2,literal) |
+| `AWS::CloudFront::OriginAccessControl` | [`s3-cloudfront`](../tests/integration/s3-cloudfront/) (l1,literal) |
 | `AWS::CloudTrail::Trail` | [`infra-security`](../tests/integration/infra-security/) (l2,literal) |
 | `AWS::CloudWatch::Alarm` | [`cloudwatch`](../tests/integration/cloudwatch/) (l2,literal)<br>[`composite-stack`](../tests/integration/composite-stack/) (l2,literal)<br>[`deep-getatt-chains`](../tests/integration/deep-getatt-chains/) (l1)<br>[`full-stack-demo`](../tests/integration/full-stack-demo/) (l2)<br>[`log-pipeline`](../tests/integration/log-pipeline/) (l2)<br>[`replacement-immutable-name`](../tests/integration/replacement-immutable-name/) (l2,literal)<br>[`scheduled-task`](../tests/integration/scheduled-task/) (l2) |
 | `AWS::CodeBuild::Project` | [`ci-cd`](../tests/integration/ci-cd/) (l2,literal) |
@@ -163,7 +164,7 @@ Registered without an integ fixture, with an explicit `// allow-no-integ: <ratio
 | `AWS::StepFunctions::StateMachine` | [`iam-propagation-stress`](../tests/integration/iam-propagation-stress/) (l2)<br>[`replacement-immutable-name`](../tests/integration/replacement-immutable-name/) (l2,literal)<br>[`stepfunctions`](../tests/integration/stepfunctions/) (l2)<br>[`stepfunctions-logging`](../tests/integration/stepfunctions-logging/) (l2)<br>[`stepfunctions-s3-definition`](../tests/integration/stepfunctions-s3-definition/) (l1) |
 | `AWS::WAFv2::WebACL` | [`wafv2`](../tests/integration/wafv2/) (l1,literal) |
 
-## Resource types referenced in integs without an SDK Provider (57)
+## Resource types referenced in integs without an SDK Provider (56)
 
 These resource types appear in integ fixtures but no SDK Provider is registered for them — they fall through to the Cloud Control API fallback. Listed here for visibility; not actionable on its own.
 
@@ -187,7 +188,6 @@ These resource types appear in integ fixtures but no SDK Provider is registered 
 - `AWS::Backup::BackupSelection`
 - `AWS::Backup::BackupVault`
 - `AWS::CloudFormation::CustomResource`
-- `AWS::CloudFront::OriginAccessControl`
 - `AWS::CloudWatch::CompositeAlarm`
 - `AWS::CodeDeploy::DeploymentGroup`
 - `AWS::CodePipeline::Pipeline`

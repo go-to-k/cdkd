@@ -27,6 +27,7 @@
     "AWS::CloudFormation::WaitConditionHandle",
     "AWS::CloudFront::CloudFrontOriginAccessIdentity",
     "AWS::CloudFront::Distribution",
+    "AWS::CloudFront::OriginAccessControl",
     "AWS::CloudTrail::Trail",
     "AWS::CloudWatch::Alarm",
     "AWS::CodeBuild::Project",
@@ -639,6 +640,18 @@
         ],
         "s3-cloudfront": [
           "l2",
+          "literal"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::CloudFront::OriginAccessControl",
+      "integs": [
+        "s3-cloudfront"
+      ],
+      "signals": {
+        "s3-cloudfront": [
+          "l1",
           "literal"
         ]
       }
@@ -5269,7 +5282,6 @@
     "AWS::Backup::BackupSelection",
     "AWS::Backup::BackupVault",
     "AWS::CloudFormation::CustomResource",
-    "AWS::CloudFront::OriginAccessControl",
     "AWS::CloudWatch::CompositeAlarm",
     "AWS::CodeDeploy::DeploymentGroup",
     "AWS::CodePipeline::Pipeline",

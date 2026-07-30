@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
   "summary": {
-    "classifiedCount": 131,
-    "enriched": 8,
+    "classifiedCount": 132,
+    "enriched": 9,
     "noComputedAttr": 14,
     "unenrichedGap": 0,
     "sdkFallbackGap": 109,
@@ -679,6 +679,24 @@
         "DomainName",
         "Id"
       ]
+    },
+    {
+      "resourceType": "AWS::CloudFront::OriginAccessControl",
+      "bucket": "enriched",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Id"
+      ],
+      "enrichedKeys": [
+        "Id"
+      ],
+      "attributes": [
+        {
+          "name": "Id",
+          "status": "enriched"
+        }
+      ],
+      "gaps": []
     },
     {
       "resourceType": "AWS::CloudTrail::Trail",
@@ -3202,7 +3220,6 @@
     "AWS::Backup::BackupPlan",
     "AWS::Backup::BackupSelection",
     "AWS::Backup::BackupVault",
-    "AWS::CloudFront::OriginAccessControl",
     "AWS::ElastiCache::ReplicationGroup",
     "AWS::Events::ApiDestination",
     "AWS::Events::Connection",

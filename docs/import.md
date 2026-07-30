@@ -409,6 +409,7 @@ provide the physical id explicitly.
 - AWS::IAM::UserToGroupAddition
 - AWS::Scheduler::Schedule (schedules are not taggable; the template `Name` + `GroupName` also resolve without a flag)
 - AWS::CloudFormation::WaitConditionHandle (no AWS-queryable resource exists behind a handle; an explicit `--resource` id — or CloudFormation's pre-signed-URL physical id during `--migrate-from-cloudformation` — is recorded verbatim, and a synthesized placeholder is used otherwise)
+- AWS::CloudFront::OriginAccessControl (OACs are not taggable and the config's `Name` is a display field AWS does not accept as a lookup key; pass the `E...` id via `--resource`, which cdkd verifies with `GetOriginAccessControl`)
 
 ### Override-only — sub-resources without a standalone identity
 

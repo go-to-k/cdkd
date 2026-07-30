@@ -547,6 +547,13 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     },
   ],
   [
+    'AWS::CloudFront::OriginAccessControl',
+    {
+      handled: new Set<string>(['OriginAccessControlConfig']),
+      silentDrop: new Map<string, string>(),
+    },
+  ],
+  [
     'AWS::CloudTrail::Trail',
     {
       handled: new Set<string>([

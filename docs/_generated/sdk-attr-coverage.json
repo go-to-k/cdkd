@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "summary": {
-    "classifiedCount": 131,
+    "classifiedCount": 132,
     "covered": 55,
-    "noArnAttr": 76,
+    "noArnAttr": 77,
     "gap": 0
   },
   "types": [
@@ -202,6 +202,12 @@
     },
     {
       "resourceType": "AWS::CloudFront::Distribution",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::CloudFront::OriginAccessControl",
       "bucket": "no-arn-attr",
       "arnAttributes": [],
       "gaps": []

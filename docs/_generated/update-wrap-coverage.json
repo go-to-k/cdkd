@@ -1,7 +1,7 @@
 {
   "summary": {
-    "classifiedCount": 83,
-    "wrapped": 76,
+    "classifiedCount": 84,
+    "wrapped": 77,
     "noAws": 7,
     "gap": 0,
     "unguardedWrap": 0,
@@ -92,6 +92,14 @@
     {
       "file": "cloudfront-distribution-provider.ts",
       "className": "CloudFrontDistributionProvider",
+      "bucket": "wrapped",
+      "unwrappedSendMethods": [],
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
+    },
+    {
+      "file": "cloudfront-oac-provider.ts",
+      "className": "CloudFrontOACProvider",
       "bucket": "wrapped",
       "unwrappedSendMethods": [],
       "unguardedWrapMethods": [],

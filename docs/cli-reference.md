@@ -1593,6 +1593,10 @@ The following SDK Providers ship with first-class `readCurrentState`
   issue the matching `Get*` call)
 - `AWS::ServiceDiscovery::HttpNamespace`,
   `AWS::ServiceDiscovery::PublicDnsNamespace` (issue #1044)
+- `AWS::CloudFront::OriginAccessControl` (SDK provider added to take the
+  type off the Cloud Control polling path; the CFn and SDK
+  `OriginAccessControlConfig` field names are identical, so the reverse
+  mapping is a straight per-field copy)
 
 Tag drift is supported across the SDK Providers listed above (and the CC
 API fallback). cdkd filters out CDK / AWS-internal `aws:`-prefixed entries
