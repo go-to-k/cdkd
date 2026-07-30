@@ -704,6 +704,11 @@
       ]
     },
     {
+      "name": "dsql",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
       "name": "dynamodb-autoscaling",
       "annotated": false,
       "scenarios": []

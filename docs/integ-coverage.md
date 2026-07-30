@@ -165,7 +165,7 @@ Registered without an integ fixture, with an explicit `// allow-no-integ: <ratio
 | `AWS::StepFunctions::StateMachine` | [`iam-propagation-stress`](../tests/integration/iam-propagation-stress/) (l2)<br>[`replacement-immutable-name`](../tests/integration/replacement-immutable-name/) (l2,literal)<br>[`stepfunctions`](../tests/integration/stepfunctions/) (l2)<br>[`stepfunctions-logging`](../tests/integration/stepfunctions-logging/) (l2)<br>[`stepfunctions-s3-definition`](../tests/integration/stepfunctions-s3-definition/) (l1) |
 | `AWS::WAFv2::WebACL` | [`wafv2`](../tests/integration/wafv2/) (l1,literal) |
 
-## Resource types referenced in integs without an SDK Provider (56)
+## Resource types referenced in integs without an SDK Provider (57)
 
 These resource types appear in integ fixtures but no SDK Provider is registered for them — they fall through to the Cloud Control API fallback. Listed here for visibility; not actionable on its own.
 
@@ -198,6 +198,7 @@ These resource types appear in integ fixtures but no SDK Provider is registered 
 - `AWS::Cognito::UserPoolGroup`
 - `AWS::Cognito::UserPoolUser`
 - `AWS::Cognito::UserPoolUserToGroupAttachment`
+- `AWS::DSQL::Cluster`
 - `AWS::EC2::SecurityGroupEgress`
 - `AWS::ELBv2::LoadBalancer`
 - `AWS::ElastiCache::ReplicationGroup`
