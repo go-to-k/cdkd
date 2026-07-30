@@ -243,5 +243,11 @@ export class DriftRevertVpcStack extends cdk.Stack {
       value: tg2.targetGroupArn,
       description: 'Secondary target group ARN (drift swap target)',
     });
+
+    new cdk.CfnOutput(this, 'PublicSubnet1Id', {
+      value: vpc.publicSubnets[0]!.subnetId,
+      description:
+        'First public subnet id (MapPublicIpOnLaunch drift target — issues #1299/#1300)',
+    });
   }
 }

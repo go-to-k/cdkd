@@ -14,6 +14,9 @@
  *     30.
  *   - ELBv2 ALB: SetSecurityGroups swaps SecurityGroups from [Sg1Id] to
  *     [Sg2Id].
+ *   - EC2 Subnet: ModifySubnetAttribute flips MapPublicIpOnLaunch from
+ *     true (templated public subnet) to false — deterministically
+ *     exercises the issue #1300 updateSubnet revert path.
  *   - ASG: CreateOrUpdateTags adds a Component=drift-revert-vpc-ADDED tag
  *     (the templated Tags only carry Owner=cdkd-integ; revert calls
  *     DeleteTags on Component); DetachLoadBalancerTargetGroups +
@@ -24,7 +27,7 @@
  *
  * Reads physical ids either from environment vars (FILESYSTEM_ID /
  * MOUNT_TARGET_ID / NAMESPACE_ID / LOAD_BALANCER_ARN / SG1_ID / SG2_ID /
- * ASG_NAME / ASG_TG1_ARN / ASG_TG2_ARN) or, when those are unset, from
+ * ASG_NAME / ASG_TG1_ARN / ASG_TG2_ARN / PUBLIC_SUBNET1_ID) or, when those are unset, from
  * `cdkd state show CdkdDriftRevertVpcExample --json`. The env-var path
  * is what verify.sh uses.
  */
@@ -50,6 +53,7 @@ import {
   CreateOrUpdateTagsCommand,
   DetachLoadBalancerTargetGroupsCommand,
 } from '@aws-sdk/client-auto-scaling';
+import { EC2Client, ModifySubnetAttributeCommand } from '@aws-sdk/client-ec2';
 
 const STACK = 'CdkdDriftRevertVpcExample';
 const REGION = process.env.AWS_REGION ?? 'us-east-1';
@@ -78,6 +82,7 @@ interface ResolvedIds {
   asgName: string;
   asgTg1Arn: string;
   asgTg2Arn: string;
+  publicSubnet1Id: string;
 }
 
 function resolveResourceIds(): ResolvedIds {
@@ -90,7 +95,8 @@ function resolveResourceIds(): ResolvedIds {
   const envAsg = process.env.ASG_NAME;
   const envTg1 = process.env.ASG_TG1_ARN;
   const envTg2 = process.env.ASG_TG2_ARN;
-  if (envFs && envMt && envNs && envLb && envSg1 && envSg2 && envAsg && envTg1 && envTg2) {
+  const envSubnet = process.env.PUBLIC_SUBNET1_ID;
+  if (envFs && envMt && envNs && envLb && envSg1 && envSg2 && envAsg && envTg1 && envTg2 && envSubnet) {
     return {
       fileSystemId: envFs,
       mountTargetId: envMt,
@@ -101,6 +107,7 @@ function resolveResourceIds(): ResolvedIds {
       asgName: envAsg,
       asgTg1Arn: envTg1,
       asgTg2Arn: envTg2,
+      publicSubnet1Id: envSubnet,
     };
   }
 
@@ -125,6 +132,7 @@ function resolveResourceIds(): ResolvedIds {
   const asgName = outputs['AsgName'];
   const asgTg1Arn = outputs['AsgTg1Arn'];
   const asgTg2Arn = outputs['AsgTg2Arn'];
+  const publicSubnet1Id = outputs['PublicSubnet1Id'];
   if (
     !fileSystemId ||
     !mountTargetId ||
@@ -134,7 +142,8 @@ function resolveResourceIds(): ResolvedIds {
     !sg2Id ||
     !asgName ||
     !asgTg1Arn ||
-    !asgTg2Arn
+    !asgTg2Arn ||
+    !publicSubnet1Id
   ) {
     throw new Error(
       `Could not resolve all resource ids from state show JSON: ${JSON.stringify(outputs)}`
@@ -150,6 +159,7 @@ function resolveResourceIds(): ResolvedIds {
     asgName,
     asgTg1Arn,
     asgTg2Arn,
+    publicSubnet1Id,
   };
 }
 
@@ -269,6 +279,21 @@ async function injectAsgDrift(asgName: string, tg1Arn: string, tg2Arn: string): 
   );
 }
 
+async function injectSubnetDrift(subnetId: string): Promise<void> {
+  // The templated public subnet has MapPublicIpOnLaunch=true; flip it to
+  // false so `cdkd drift` reports it and `--revert` must flip it back via
+  // EC2Provider.updateSubnet (issue #1300 — the revert path this fixture
+  // previously only exercised when the #1299 capture race happened to fire).
+  const ec2 = new EC2Client({ region: REGION });
+  await ec2.send(
+    new ModifySubnetAttributeCommand({
+      SubnetId: subnetId,
+      MapPublicIpOnLaunch: { Value: false },
+    })
+  );
+  console.log(`[inject] ec2: set MapPublicIpOnLaunch=false on Subnet ${subnetId}`);
+}
+
 async function main(): Promise<void> {
   const ids = resolveResourceIds();
   await injectEfsFileSystemDrift(ids.fileSystemId);
@@ -276,6 +301,7 @@ async function main(): Promise<void> {
   await injectNamespaceDrift(ids.namespaceId);
   await injectAlbDrift(ids.loadBalancerArn, ids.sg2Id);
   await injectAsgDrift(ids.asgName, ids.asgTg1Arn, ids.asgTg2Arn);
+  await injectSubnetDrift(ids.publicSubnet1Id);
   console.log('[inject] drift injected — `cdkd drift` should now report exit 1');
 }
 
