@@ -257,6 +257,28 @@ describe('runDestroyForStack incremental state persistence (issue #804)', () => 
     expect(mockDeleteState).toHaveBeenCalledTimes(1);
   });
 
+  // ---- issue #1303: the partial-failure banner must name the last-resort
+  // escape hatch. For a resource AWS itself refuses to delete (the #1301
+  // pending SNS subscription pre-fix), re-running destroy / state destroy
+  // fails identically forever — 'cdkd state orphan <stack>' is the only way
+  // out, and the guidance must say so.
+  it('partial-failure banner names cdkd state orphan as the last resort', async () => {
+    const state = makeState({ Failing: res(), Ok: res() });
+    mockProviderDelete.mockImplementation((logicalId: string) =>
+      logicalId === 'Failing' ? Promise.reject(new Error('boom')) : Promise.resolve()
+    );
+
+    const result = await runDestroyForStack('TestStack', state, makeCtx());
+
+    expect(result.errorCount).toBe(1);
+    const banner = warnSpy.mock.calls
+      .map((c) => String(c[0]))
+      .find((m) => m.includes('partially destroyed'));
+    expect(banner).toBeDefined();
+    expect(banner).toContain("'cdkd state orphan TestStack'");
+    expect(banner).toContain('without deleting AWS resources');
+  });
+
   // ---- MAJOR fix (issue #804 review): the preserved partial state must NOT
   // advertise outputs / imports / outputReads for resources that are gone.
   it('clears outputs and drops imports/outputReads in every persisted partial-destroy snapshot', async () => {
