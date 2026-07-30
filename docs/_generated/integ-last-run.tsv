@@ -26,7 +26,7 @@ basic	2026-07-20T04:38:04Z	PASS	83	standard	rc 0/0, 0 orphans; validates buildPr
 batch	2026-07-26T18:43:33Z	PASS	89	standard	0727b sweep-b5 staleness re-run (rc=0); account clean
 bedrock-agentcore	2026-07-24T04:22:29Z	PASS	42	standard	import() attr enrich (#1188); GetAgentRuntime live-probe confirms field shape; 6 del 0 err
 bench-ccapi	2026-07-26T18:43:33Z	PASS	89	standard	0727b sweep-b5 staleness re-run (rc=0); account clean
-bench-cdk-sample	2026-07-28T03:05:44Z	PASS	508	standard	39 created, destroy 37 del 2 retained-swept 0 err, log groups swept
+bench-cdk-sample	2026-07-30T02:19:28Z	PASS	478	standard	39 res, destroy 37 del/2 retain/0 err, orph clean
 bench-sdk	2026-07-26T18:43:33Z	PASS	33	standard	0727b sweep-b5 staleness re-run (rc=0); account clean
 bootstrap-free-region	2026-07-16T15:34:01Z	PASS	81	verify.sh	re-run after PR 1015 review fix-back (region-resolver owner header), 0 orphans
 bucket-deployment	2026-07-21T18:02:21Z	PASS	125	verify.sh	rc ok, orph clean
@@ -78,11 +78,11 @@ dynamodb-stream-filter	2026-07-21T18:08:16Z	PASS	62	verify.sh	rc ok, orph clean
 dynamodb-streams	2026-07-20T17:40:13Z	PASS	86	verify.sh	DDB streams WarmThroughput+ESM+StreamSpec UPDATE, 10 res clean
 dynamodb-tableclass-switch	2026-07-26T19:36:49Z	PASS	62	verify.sh	0727b sweep-b11 staleness re-run (rc=0); account clean
 dynamodb-ttl-attr-change	2026-07-26T19:16:39Z	PASS	70	verify.sh	0727b sweep-b9 staleness re-run (rc=0); account clean
-ec2-instance	2026-07-28T02:49:00Z	PASS	213	verify.sh	AZ->Placement asserted, provisionedBy=sdk, destroy 9/0 errors
+ec2-instance	2026-07-30T02:35:22Z	PASS	134	verify.sh	9 del/0 err, instance terminated, orph clean
 ec2-vpc	2026-07-26T17:21:15Z	PASS	35	standard	issue 1241 fix verified: explicit DESTROY FlowLog LogGroup; 20 deleted 0 retained 0 orphans
 ecr	2026-07-26T18:36:31Z	PASS	85	standard	0727b sweep-b4 staleness re-run (rc=0); account clean
 ecr-scanning	2026-07-20T17:37:23Z	PASS	56	verify.sh	ECR scanOnPush + tag add/change/untag update, clean destroy
-ecs-fargate	2026-07-28T02:01:44Z	PASS	387	verify.sh	rc ok, orph clean, +--full-wait phases (#1275)
+ecs-fargate	2026-07-30T02:35:22Z	PASS	382	verify.sh	23 del/0 err, full-wait + ELBv2 active path, orph clean
 ecs-service-update-props	2026-07-23T08:20:10Z	PASS		verify.sh	#1173 re-run after VersionConsistency norm; Phase1f + drift clean; destroy 15 del 0 err 0 orph
 efs-immutable-replacement	2026-07-19T19:05:41Z	PASS	76	verify.sh	rc ok, 1 deleted, orph clean
 efs-lambda	2026-07-26T18:36:31Z	PASS	499	standard	0727b sweep-b4 staleness re-run (rc=0); account clean
@@ -214,7 +214,7 @@ rollback-failure-injection	2026-07-24T10:50:16Z	PASS	368	verify.sh	0724b sweep P
 rollback-sqs-cooldown	2026-07-25T05:24:26Z	PASS	180	verify.sh	#1220 echo-before-assert on steps 4/9/10, destroy clean
 route53	2026-07-22T07:59:10Z	PASS		verify.sh	TTL-refresh sweep; HostedZone/GeoProximity/CidrRouting backfills, 6 del 0 err, hosted zone + state gone
 s3-asset-deploy	2026-07-26T19:45:58Z	PASS	58	verify.sh	0727b sweep-b12 staleness re-run (rc=0); account clean
-s3-cloudfront	2026-07-26T16:38:01Z	PASS	364	verify.sh	0727 P0 sweep (cloudfront-distribution-provider changed #1175); clean destroy 0 orphans
+s3-cloudfront	2026-07-30T02:35:22Z	PASS	369	verify.sh	5 del/0 err, new OAC provider create+delete+drift, orph clean
 s3-directory-bucket	2026-07-20T09:10:31Z	PASS	60	standard	clean deploy+destroy from #1124 tree (integ-destroy gate refresh): 1 deleted 0 err, directory bucket + state gone
 s3-event-notification	2026-07-21T05:28:05Z	PASS	79	verify.sh	rc ok, orph clean
 s3-lifecycle	2026-07-21T14:28:43Z	PASS	58	verify.sh	rc ok, orph clean
