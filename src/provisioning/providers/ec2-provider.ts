@@ -392,7 +392,13 @@ export class EC2Provider implements ResourceProvider {
       case 'AWS::EC2::VPC':
         return this.updateVpc(logicalId, physicalId, resourceType, properties, previousProperties);
       case 'AWS::EC2::Subnet':
-        return this.updateSubnet(logicalId, physicalId);
+        return this.updateSubnet(
+          logicalId,
+          physicalId,
+          resourceType,
+          properties,
+          previousProperties
+        );
       case 'AWS::EC2::InternetGateway':
         return this.updateInternetGateway(logicalId, physicalId);
       case 'AWS::EC2::EIP':
@@ -903,6 +909,11 @@ export class EC2Provider implements ResourceProvider {
               MapPublicIpOnLaunch: { Value: true },
             })
           );
+          // Issue #1299: don't return until the write is READABLE — the
+          // deploy engine's async observed-state capture races this modify
+          // and would otherwise persist the stale `false` as the drift
+          // baseline (phantom drift on every later `cdkd drift`).
+          await this.waitForSubnetMapPublicIp(subnetId, true);
         }
       } catch (innerError) {
         try {
@@ -939,21 +950,116 @@ export class EC2Provider implements ResourceProvider {
     }
   }
 
-  private updateSubnet(logicalId: string, physicalId: string): Promise<ResourceUpdateResult> {
-    // Subnet is immutable on every property cdkd's `readCurrentState`
-    // surfaces (VpcId / CidrBlock / AvailabilityZone are CREATE-only;
-    // MapPublicIpOnLaunch is mutable via ModifySubnetAttribute but cdkd
-    // does not yet wire that path through `update()`). Reject loudly
-    // instead of silently no-op'ing — `cdkd drift --revert` would
-    // otherwise report `✓ reverted` and the next drift run would
-    // re-detect the same drift. See PR I in CLAUDE.md.
-    void physicalId;
-    return Promise.reject(
-      new ResourceUpdateNotSupportedError(
-        'AWS::EC2::Subnet',
+  private async updateSubnet(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
+  ): Promise<ResourceUpdateResult> {
+    this.logger.debug(`Updating Subnet ${logicalId}: ${physicalId}`);
+
+    try {
+      // VpcId / CidrBlock / AvailabilityZone are CREATE-only. The diff layer
+      // normally routes a change on them to replacement (hand rule in
+      // `replacement-rules.ts` + the registry-schema createOnly fallback),
+      // but `cdkd drift --revert` calls `update()` without that
+      // classification, so guard here too rather than silently no-op'ing.
+      for (const createOnly of ['VpcId', 'CidrBlock', 'AvailabilityZone']) {
+        const next = properties[createOnly];
+        const prev = previousProperties[createOnly];
+        if (next !== undefined && prev !== undefined && next !== prev) {
+          throw new ResourceUpdateNotSupportedError(
+            resourceType,
+            logicalId,
+            `destroy + redeploy the Subnet (and the resources that depend on it). ${createOnly} is immutable in AWS`
+          );
+        }
+      }
+
+      // MapPublicIpOnLaunch IS mutable via ModifySubnetAttribute (issue
+      // #1300). Coerce the CFn string-or-bool spelling and treat an absent
+      // value as the AWS default `false` (CFn resets a removed property to
+      // its default), diff-based so a no-op round-trip (`update(state,
+      // state)` from `cdkd drift --revert`) sends zero mutating calls.
+      const asBool = (v: unknown): boolean => v === true || v === 'true';
+      const newMapPublicIp = asBool(properties['MapPublicIpOnLaunch']);
+      const oldMapPublicIp = asBool(previousProperties['MapPublicIpOnLaunch']);
+      if (newMapPublicIp !== oldMapPublicIp) {
+        await this.ec2Client.send(
+          new ModifySubnetAttributeCommand({
+            SubnetId: physicalId,
+            MapPublicIpOnLaunch: { Value: newMapPublicIp },
+          })
+        );
+        await this.waitForSubnetMapPublicIp(physicalId, newMapPublicIp);
+      }
+
+      // Update tags (diff add/remove against previousProperties)
+      await this.applyTagDiff(
+        physicalId,
+        previousProperties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined,
+        properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined
+      );
+
+      this.logger.debug(`Successfully updated Subnet ${logicalId}`);
+
+      // No `attributes` on purpose: an in-place update never invalidates the
+      // create-time attributes (SubnetId / AvailabilityZone), and returning a
+      // partial set here would REPLACE the stored ones (see the deploy
+      // engine's carriedAttributes note — the FSx attribute-wipe incident).
+      return {
+        physicalId,
+        wasReplaced: false,
+      };
+    } catch (error) {
+      if (error instanceof CdkdError) throw error;
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to update Subnet ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
         logicalId,
-        'destroy + redeploy the Subnet (and the resources that depend on it). Subnet properties are immutable in AWS.'
-      )
+        physicalId,
+        cause
+      );
+    }
+  }
+
+  /**
+   * Read back `MapPublicIpOnLaunch` until AWS reflects the value a
+   * `ModifySubnetAttribute` just wrote (issue #1299). EC2 `Describe*` is
+   * eventually consistent, so the deploy engine's async observed-state
+   * capture (`kickOffObservedCapture` → `readCurrentState` →
+   * `DescribeSubnets`), which fires milliseconds after `create()` /
+   * `update()` returns, could read the STALE pre-modify value and persist
+   * it as the drift baseline — every later `cdkd drift` then reported
+   * phantom `MapPublicIpOnLaunch` drift on a resource nothing touched.
+   *
+   * Bounded and best-effort: the first read usually already reflects the
+   * write (zero added latency beyond one DescribeSubnets round trip); on
+   * exhaustion we log and return — behavior then degrades to the pre-fix
+   * race instead of failing a deploy over a read-side consistency lag.
+   */
+  private async waitForSubnetMapPublicIp(subnetId: string, expected: boolean): Promise<void> {
+    const maxAttempts = 6;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        const resp = await this.ec2Client.send(
+          new DescribeSubnetsCommand({ SubnetIds: [subnetId] })
+        );
+        if (resp.Subnets?.[0]?.MapPublicIpOnLaunch === expected) return;
+      } catch (error) {
+        this.logger.debug(
+          `MapPublicIpOnLaunch read-back for ${subnetId} failed (attempt ${attempt}/${maxAttempts}): ${error instanceof Error ? error.message : String(error)}`
+        );
+        return;
+      }
+      if (attempt < maxAttempts) {
+        await this.sleep(100 * 2 ** (attempt - 1));
+      }
+    }
+    this.logger.debug(
+      `MapPublicIpOnLaunch=${expected} not yet visible on ${subnetId} after ${maxAttempts} reads — the observed-state capture may record the stale value (issue #1299)`
     );
   }
 

@@ -608,6 +608,18 @@ export class ReplacementRulesRegistry {
     // degrades to an empty create-only list, and without a hand rule the
     // change would be classified in-place, where `updateInstance` silently
     // ignores it: state records the new value while AWS keeps the old one.
+    // EC2 Subnet — VpcId / CidrBlock / AvailabilityZone are createOnly per
+    // the CFn registry schema (the DescribeType fallback already classifies
+    // them); named here so the classification survives a DescribeType
+    // failure. MapPublicIpOnLaunch is mutable in place via
+    // ModifySubnetAttribute and Tags via CreateTags/DeleteTags — both wired
+    // through EC2Provider.updateSubnet (issue #1300); declaring them
+    // updateable pins that routing against future createOnly-fallback drift.
+    this.rules.set('AWS::EC2::Subnet', {
+      replacementProperties: new Set(['VpcId', 'CidrBlock', 'AvailabilityZone']),
+      updateableProperties: new Set(['MapPublicIpOnLaunch', 'Tags']),
+    });
+
     this.rules.set('AWS::EC2::Instance', {
       replacementProperties: new Set([
         'EbsOptimized',
