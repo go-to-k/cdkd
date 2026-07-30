@@ -1,3 +1,10 @@
+## [0.267.20](https://github.com/go-to-k/cdkd/compare/v0.267.19...v0.267.20) (2026-07-30)
+
+
+### Performance Improvements
+
+* **cli:** cut the deploy state-bucket preflight from 7 sequential AWS round trips to 3 ([#1286](https://github.com/go-to-k/cdkd/issues/1286)) ([0fc46d2](https://github.com/go-to-k/cdkd/commit/0fc46d227b5bca7a8d52a9b558e31b47b2e1e4d0))
+
 ## [0.267.19](https://github.com/go-to-k/cdkd/compare/v0.267.18...v0.267.19) (2026-07-30)
 
 
