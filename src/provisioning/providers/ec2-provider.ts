@@ -1216,15 +1216,35 @@ export class EC2Provider implements ResourceProvider {
 
       await this.applyTags(allocationId, properties, logicalId);
 
-      // Associate to an instance on the fast SDK path (the EIP depends on the
-      // instance in the DAG, so it is already running by now). Keeps EIP+
-      // InstanceId off the ~20s Cloud Control async-poll route.
+      // Associate to an instance on the fast SDK path, keeping EIP+InstanceId
+      // off the ~20s Cloud Control async-poll route.
+      //
+      // This used to lean on "the EIP depends on the instance in the DAG, so
+      // it is already running by now". Gating the instance `running` wait on
+      // --no-wait falsified that: the dependency only guarantees the instance
+      // has been CREATED, and AssociateAddress rejects a `pending` instance
+      // with IncorrectInstanceState. That code is not in the retryable table,
+      // so the outer withRetry does not absorb it -- the create would throw
+      // and roll the stack back. Same failure mode as the instance-profile
+      // association (issue #1279), which is the sibling site the wait-gating
+      // work already had to fix; this one was missed because no integ
+      // exercises --no-wait against an Instance+EIP stack.
+      //
+      // Handled the same way as #1279: skip under --no-wait and hand the user
+      // the exact repair command, rather than silently reintroducing a wait
+      // that --no-wait explicitly asked to skip.
       const instanceId = properties['InstanceId'] as string | undefined;
       if (instanceId) {
-        await this.ec2Client.send(
-          new AssociateAddressCommand({ AllocationId: allocationId, InstanceId: instanceId })
-        );
-        this.logger.debug(`Associated EIP ${logicalId} (${allocationId}) to ${instanceId}`);
+        if (process.env['CDKD_NO_WAIT'] === 'true') {
+          this.logger.warn(
+            `EIP ${logicalId} (${allocationId}) was NOT associated with ${instanceId}: --no-wait skips the instance running-state wait, and AssociateAddress rejects an instance that is not yet running. Verify and associate once the instance is running: aws ec2 describe-instances --instance-ids ${instanceId} --query 'Reservations[].Instances[].State.Name' && aws ec2 associate-address --allocation-id ${allocationId} --instance-id ${instanceId}`
+          );
+        } else {
+          await this.ec2Client.send(
+            new AssociateAddressCommand({ AllocationId: allocationId, InstanceId: instanceId })
+          );
+          this.logger.debug(`Associated EIP ${logicalId} (${allocationId}) to ${instanceId}`);
+        }
       }
 
       this.logger.debug(`Successfully created EIP ${logicalId}: ${allocationId} (${publicIp})`);
@@ -1269,14 +1289,36 @@ export class EC2Provider implements ResourceProvider {
       const newInstanceId = properties['InstanceId'] as string | undefined;
       if (oldInstanceId !== newInstanceId) {
         if (newInstanceId) {
-          // Associate (or re-associate to a different instance).
-          await this.ec2Client.send(
-            new AssociateAddressCommand({
-              AllocationId: allocationId,
-              InstanceId: newInstanceId,
-              AllowReassociation: true,
-            })
-          );
+          // Associate (or re-associate to a different instance). Same
+          // pending-instance hazard as createEip's association: under
+          // --no-wait a target instance created in this deploy may still be
+          // `pending`, and AssociateAddress rejects that with
+          // IncorrectInstanceState (not in the retryable table). Unlike the
+          // create path, the target here is often an EXISTING running
+          // instance (repointing an EIP), so an unconditional skip would
+          // break associations that succeed today -- attempt first, and only
+          // degrade to the skip-and-warn remedy when AWS actually rejects the
+          // not-yet-running instance under --no-wait.
+          try {
+            await this.ec2Client.send(
+              new AssociateAddressCommand({
+                AllocationId: allocationId,
+                InstanceId: newInstanceId,
+                AllowReassociation: true,
+              })
+            );
+          } catch (error) {
+            if (
+              process.env['CDKD_NO_WAIT'] === 'true' &&
+              this.isIncorrectInstanceStateError(error)
+            ) {
+              this.logger.warn(
+                `EIP ${logicalId} (${allocationId}) was NOT associated with ${newInstanceId}: --no-wait skips the instance running-state wait, and AssociateAddress rejects an instance that is not yet running. Verify and associate once the instance is running: aws ec2 describe-instances --instance-ids ${newInstanceId} --query 'Reservations[].Instances[].State.Name' && aws ec2 associate-address --allocation-id ${allocationId} --instance-id ${newInstanceId} --allow-reassociation`
+              );
+            } else {
+              throw error;
+            }
+          }
         } else {
           // InstanceId removed → disassociate via the current AssociationId.
           const desc = await this.ec2Client.send(
@@ -4031,6 +4073,22 @@ export class EC2Provider implements ResourceProvider {
       message.includes('has dependencies and cannot be deleted') ||
       message.includes('Network has some mapped public address')
     );
+  }
+
+  /**
+   * AWS rejects AssociateAddress (and several other instance operations)
+   * against an instance that is not `running` / `stopped` with the
+   * `IncorrectInstanceState` code. Under --no-wait that is the expected
+   * outcome for an instance created in the same deploy, not a transient
+   * fault -- it stays true exactly until the wait --no-wait skipped would
+   * have completed.
+   */
+  private isIncorrectInstanceStateError(error: unknown): boolean {
+    if (!(error instanceof Error)) return false;
+    const code = (error as { Code?: string }).Code ?? '';
+    const name = (error as { name?: string }).name ?? '';
+    if (code === 'IncorrectInstanceState' || name === 'IncorrectInstanceState') return true;
+    return error.message.includes('IncorrectInstanceState');
   }
 
   /**
