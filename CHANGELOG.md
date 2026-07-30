@@ -1,3 +1,10 @@
+## [0.269.3](https://github.com/go-to-k/cdkd/compare/v0.269.2...v0.269.3) (2026-07-30)
+
+
+### Bug Fixes
+
+* **providers:** wire Subnet MapPublicIpOnLaunch through updateSubnet and close the observed-capture race ([#1307](https://github.com/go-to-k/cdkd/issues/1307)) ([b00139c](https://github.com/go-to-k/cdkd/commit/b00139cda808acb2947181041bb253d49863d519))
+
 ## [0.269.2](https://github.com/go-to-k/cdkd/compare/v0.269.1...v0.269.2) (2026-07-30)
 
 
