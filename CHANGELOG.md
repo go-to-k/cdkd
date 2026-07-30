@@ -1,3 +1,10 @@
+## [0.273.1](https://github.com/go-to-k/cdkd/compare/v0.273.0...v0.273.1) (2026-07-30)
+
+
+### Bug Fixes
+
+* **cloudfront:** wait out a still-propagating disable before DeleteDistribution ([#1318](https://github.com/go-to-k/cdkd/issues/1318)) ([660a210](https://github.com/go-to-k/cdkd/commit/660a2108f27b1969defd940b1975277a0fe18926))
+
 # [0.273.0](https://github.com/go-to-k/cdkd/compare/v0.272.0...v0.273.0) (2026-07-30)
 
 
