@@ -286,7 +286,8 @@ modes, least to most waiting:
 Pick by whether anything downstream needs the resource to actually be
 serving, not by where the deploy runs — cutting billed CI minutes is a
 perfectly good reason to use `--no-wait` in CI, and a local smoke test
-is a good reason to use `--full-wait` on a laptop. The two flags are
+(or a pipeline that wants CloudFormation-parity completion as a standing
+setting) is a good reason to use `--full-wait`. The two flags are
 opposite ends of one axis and cannot be combined.
 
 **Deploy-only**: `cdkd destroy` always waits (NAT in `deleting` state

@@ -242,6 +242,13 @@ requires disabling it and waiting for `Deployed` first (an API
 requirement), which also means a distribution created fire-and-forget
 and destroyed immediately still tears down cleanly.
 
+A deliberate consequence of this axis: the dev/test-leaning defaults are
+a per-run choice, not a capability limit. A pipeline that wants
+CloudFormation-parity completion semantics — a smoke-test gate, a
+production-leaning promotion step — can bake `--full-wait` into its
+deploy invocation as a standing setting and get the strict "done"
+everywhere CloudFormation waits.
+
 `--full-wait` is **deploy-only**, like `--no-wait`, and cannot be
 combined with it.
 
