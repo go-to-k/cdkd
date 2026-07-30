@@ -104,6 +104,11 @@ cleanup() {
       --instance-ids "${INSTANCE_ID}" \
       --region "${REGION}" >/dev/null 2>&1 || true
   fi
+  if [ -n "${PUBLIC_INSTANCE_ID:-}" ]; then
+    aws ec2 terminate-instances \
+      --instance-ids "${PUBLIC_INSTANCE_ID}" \
+      --region "${REGION}" >/dev/null 2>&1 || true
+  fi
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
@@ -149,20 +154,49 @@ fi
 # Confirm the instance took the SDK provider path (NOT Cloud Control). If a
 # silent-drop prop ever sneaks into the template, provisionedBy flips to
 # 'cc-api' and this fixture would no longer verify the SDK backfill.
-PROVISIONED_BY=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::EC2::Instance") | .value.provisionedBy] | first // "sdk"')
-if [ "${PROVISIONED_BY}" = "cc-api" ]; then
-  echo "FAIL: instance was provisioned via Cloud Control (cc-api), not the SDK provider — a silent-drop prop must have crept into the template, bypassing the #609 SDK backfill" >&2
+# Both instances (the #609 backfill one AND the #1281 NetworkInterfaces one)
+# must be on the SDK path; a cc-api entry means a silent-drop prop crept in.
+CC_API_COUNT=$(echo "${STATE}" | jq '[.resources | to_entries[] | select(.value.resourceType == "AWS::EC2::Instance") | select((.value.provisionedBy // "sdk") == "cc-api")] | length')
+if [ "${CC_API_COUNT}" != "0" ]; then
+  echo "FAIL: ${CC_API_COUNT} instance(s) provisioned via Cloud Control (cc-api), not the SDK provider — a silent-drop prop must have crept into the template (#609 / #1281)" >&2
   exit 1
 fi
-echo "    OK: instance provisioned via the SDK provider path (provisionedBy=${PROVISIONED_BY})"
+echo "    OK: all instances provisioned via the SDK provider path"
 
-INSTANCE_ID=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::EC2::Instance") | .value.physicalId] | first // ""')
+INSTANCE_ID=$(echo "${STATE}" | jq -r '.outputs.InstanceId // ""')
 if [ -z "${INSTANCE_ID}" ] || [ "${INSTANCE_ID}" = "null" ]; then
   echo "FAIL: could not resolve EC2 Instance id from state" >&2
   echo "${STATE}" | jq .
   exit 1
 fi
 echo "    resolved instance id: ${INSTANCE_ID}"
+
+# --- Assertions: the #1281 NetworkInterfaces-shaped instance ----------------
+PUBLIC_INSTANCE_ID=$(echo "${STATE}" | jq -r '.outputs.PublicInstanceId // ""')
+if [ -z "${PUBLIC_INSTANCE_ID}" ] || [ "${PUBLIC_INSTANCE_ID}" = "null" ]; then
+  echo "FAIL: could not resolve the NetworkInterfaces-shaped instance id from state outputs" >&2
+  echo "${STATE}" | jq '.outputs'
+  exit 1
+fi
+PUBLIC_INSTANCE=$(aws ec2 describe-instances \
+  --instance-ids "${PUBLIC_INSTANCE_ID}" \
+  --region "${REGION}" \
+  --query 'Reservations[0].Instances[0]' --output json)
+# The whole point of associatePublicIpAddress: the launched ENI must carry a
+# public IP association. A NetworkInterfaces mapping that silently dropped the
+# flag would still launch a working instance -- without the address.
+PUBLIC_IP=$(echo "${PUBLIC_INSTANCE}" | jq -r '.NetworkInterfaces[0].Association.PublicIp // ""')
+if [ -z "${PUBLIC_IP}" ]; then
+  echo "FAIL: NetworkInterfaces-shaped instance ${PUBLIC_INSTANCE_ID} has no public IP association — AssociatePublicIpAddress did not reach RunInstances (#1281)" >&2
+  echo "${PUBLIC_INSTANCE}" | jq '{NetworkInterfaces}'
+  exit 1
+fi
+NI_GROUP=$(echo "${PUBLIC_INSTANCE}" | jq -r '.NetworkInterfaces[0].Groups[0].GroupId // ""')
+if [ -z "${NI_GROUP}" ]; then
+  echo "FAIL: NetworkInterfaces-shaped instance has no security group on its ENI — GroupSet did not reach RunInstances (#1281)" >&2
+  exit 1
+fi
+echo "    OK: #1281 instance ${PUBLIC_INSTANCE_ID} has public IP ${PUBLIC_IP} and ENI group ${NI_GROUP}"
 
 # --- Assertions: each backfilled prop reached AWS ---------------------
 INSTANCE=$(aws ec2 describe-instances \
@@ -278,5 +312,24 @@ else
   exit 1
 fi
 
+# The #1281 NetworkInterfaces-shaped instance must be gone too.
+if gone_probe aws ec2 describe-instances --instance-ids "${PUBLIC_INSTANCE_ID}" --region "${REGION}"; then
+  PUB_STATE="gone"
+elif ! PUB_STATE=$(aws ec2 describe-instances \
+    --instance-ids "${PUBLIC_INSTANCE_ID}" \
+    --region "${REGION}" \
+    --query 'Reservations[0].Instances[0].State.Name' --output text 2>&1); then
+  printf '%s' "${PUB_STATE}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' \
+    && PUB_STATE="gone" \
+    || { echo "FAIL: describe-instances requery undetermined: ${PUB_STATE}" >&2; exit 1; }
+fi
+if [ "${PUB_STATE}" = "terminated" ] || [ "${PUB_STATE}" = "shutting-down" ] || [ "${PUB_STATE}" = "gone" ]; then
+  echo "    OK: #1281 instance is terminated/shutting-down/gone (state: ${PUB_STATE})"
+  PUBLIC_INSTANCE_ID=""
+else
+  echo "FAIL: #1281 instance still in unexpected state after destroy: ${PUB_STATE}" >&2
+  exit 1
+fi
+
 echo ""
-echo "=== PASS: EC2::Instance #609 security-prop backfill integ ==="
+echo "=== PASS: EC2::Instance integ (#609 security backfill + #1276 AvailabilityZone + #1281 NetworkInterfaces) ==="

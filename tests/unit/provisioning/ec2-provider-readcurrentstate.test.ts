@@ -1336,7 +1336,7 @@ describe('EC2Provider.readCurrentState', () => {
       });
     }
 
-    it('returns [] for tag-bearing parent resource types (VPC / Subnet / SG / Instance / etc.)', () => {
+    it('returns [] for tag-bearing parent resource types (VPC / Subnet / SG / etc.)', () => {
       const TAG_BEARING_TYPES = [
         'AWS::EC2::VPC',
         'AWS::EC2::Subnet',
@@ -1344,12 +1344,20 @@ describe('EC2Provider.readCurrentState', () => {
         'AWS::EC2::NatGateway',
         'AWS::EC2::RouteTable',
         'AWS::EC2::SecurityGroup',
-        'AWS::EC2::Instance',
         'AWS::EC2::NetworkAcl',
       ];
       for (const t of TAG_BEARING_TYPES) {
         expect(provider.getDriftUnknownPaths(t)).toEqual([]);
       }
+    });
+
+    it('Instance declares only NetworkInterfaces unreadable (issue #1281)', () => {
+      // AssociatePublicIpAddress is launch-time-only input DescribeInstances
+      // never returns, and the drift comparator compares arrays wholesale --
+      // any reconstruction would phantom-drift every associatePublicIpAddress
+      // template. Everything else the Instance reverse-mapper emits IS
+      // faithful, so the list stays exactly this one entry.
+      expect(provider.getDriftUnknownPaths('AWS::EC2::Instance')).toEqual(['NetworkInterfaces']);
     });
   });
 });

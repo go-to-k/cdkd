@@ -71,6 +71,7 @@ import {
   type Volume,
   type InstanceMetadataOptionsRequest,
   type CreditSpecificationRequest,
+  type InstanceNetworkInterfaceSpecification,
   type HttpTokensState,
   type InstanceMetadataEndpointState,
   type InstanceMetadataProtocolState,
@@ -210,6 +211,14 @@ export class EC2Provider implements ResourceProvider {
         // the #609 backfill) dead code for L2 users. Maps to
         // RunInstances' `Placement.AvailabilityZone`.
         'AvailabilityZone',
+        // Issue #1281: setting `associatePublicIpAddress` (either value) makes
+        // the CDK L2 construct DROP SubnetId / SecurityGroupIds and emit
+        // NetworkInterfaces instead, so leaving it unhandled routed every
+        // public-subnet instance authored the CDK-docs way onto the Cloud
+        // Control path. Maps onto RunInstances' `NetworkInterfaces` input;
+        // mutually exclusive with top-level SubnetId / SecurityGroupIds at
+        // the API (cdkd passes through whichever shape the template carries).
+        'NetworkInterfaces',
         // Security-focused backfill (#609): wired into create() + update() +
         // readCurrentState(). All five are mutable in-place (no replacement).
         'DisableApiTermination',
@@ -2699,11 +2708,21 @@ export class EC2Provider implements ResourceProvider {
       // into one `{arn?,name?}` here, robust to name-vs-ARN.
       const iamInstanceProfile = this.normalizeIamInstanceProfile(properties['IamInstanceProfile']);
 
+      // Issue #1281: RunInstances rejects NetworkInterfaces[].SubnetId/Groups
+      // combined with top-level SubnetId / SecurityGroupIds. CDK emits exactly
+      // one shape (setting associatePublicIpAddress swaps the L2 construct
+      // from top-level fields to a single NetworkInterfaces entry), so cdkd
+      // passes through whichever the template carries rather than merging;
+      // a hand-authored template carrying BOTH gets AWS's own rejection,
+      // which is the correct error to surface.
+      const networkInterfaces = this.buildNetworkInterfaces(properties);
+
       const response = await this.ec2Client.send(
         new RunInstancesCommand({
           ImageId: imageId,
           InstanceType: instanceType as _InstanceType,
           KeyName: (properties['KeyName'] as string) ?? undefined,
+          NetworkInterfaces: networkInterfaces,
           SecurityGroupIds: securityGroupIds ?? undefined,
           SecurityGroups: securityGroups ?? undefined,
           SubnetId: (properties['SubnetId'] as string) ?? undefined,
@@ -3460,6 +3479,62 @@ export class EC2Provider implements ResourceProvider {
     const az = properties['AvailabilityZone'];
     if (typeof az !== 'string' || az === '') return undefined;
     return { AvailabilityZone: az };
+  }
+
+  /**
+   * Map the CFn `AWS::EC2::Instance.NetworkInterfaces` list onto
+   * RunInstances' `NetworkInterfaces` input (issue #1281). Every CFn
+   * sub-field is mapped (dropping a sub-field silently would be the #1225
+   * bug class one level down): the two casing/shape divergences are
+   * `GroupSet` -> `Groups` and CFn's stringly-typed numerics
+   * (`DeviceIndex`, `Ipv6AddressCount`, `SecondaryPrivateIpAddressCount`
+   * arrive as strings from CDK) -> numbers.
+   */
+  private buildNetworkInterfaces(
+    properties: Record<string, unknown>
+  ): InstanceNetworkInterfaceSpecification[] | undefined {
+    const raw = properties['NetworkInterfaces'];
+    if (!Array.isArray(raw) || raw.length === 0) return undefined;
+    return raw.map((entry) => {
+      const ni = (entry ?? {}) as Record<string, unknown>;
+      const spec: InstanceNetworkInterfaceSpecification = {
+        DeviceIndex: this.coerceNumber(ni['DeviceIndex']),
+        SubnetId: (ni['SubnetId'] as string) ?? undefined,
+        Groups: (ni['GroupSet'] as string[]) ?? undefined,
+        AssociatePublicIpAddress: this.coerceBool(ni['AssociatePublicIpAddress']),
+        AssociateCarrierIpAddress: this.coerceBool(ni['AssociateCarrierIpAddress']),
+        DeleteOnTermination: this.coerceBool(ni['DeleteOnTermination']),
+        Description: (ni['Description'] as string) ?? undefined,
+        NetworkInterfaceId: (ni['NetworkInterfaceId'] as string) ?? undefined,
+        PrivateIpAddress: (ni['PrivateIpAddress'] as string) ?? undefined,
+        Ipv6AddressCount: this.coerceNumber(ni['Ipv6AddressCount']),
+        Ipv6Addresses: Array.isArray(ni['Ipv6Addresses'])
+          ? (ni['Ipv6Addresses'] as Array<Record<string, unknown>>).map((a) => ({
+              Ipv6Address: (a?.['Ipv6Address'] as string) ?? undefined,
+            }))
+          : undefined,
+        PrivateIpAddresses: Array.isArray(ni['PrivateIpAddresses'])
+          ? (ni['PrivateIpAddresses'] as Array<Record<string, unknown>>).map((a) => ({
+              Primary: this.coerceBool(a?.['Primary']),
+              PrivateIpAddress: (a?.['PrivateIpAddress'] as string) ?? undefined,
+            }))
+          : undefined,
+        SecondaryPrivateIpAddressCount: this.coerceNumber(ni['SecondaryPrivateIpAddressCount']),
+      };
+      return spec;
+    });
+  }
+
+  /**
+   * CFn numerics are stringly typed on the wire ("0", not 0); RunInstances
+   * wants numbers. Tolerate both, return undefined for anything else.
+   */
+  private coerceNumber(value: unknown): number | undefined {
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (typeof value === 'string' && value.trim() !== '' && Number.isFinite(Number(value))) {
+      return Number(value);
+    }
+    return undefined;
   }
 
   /**
@@ -4395,6 +4470,16 @@ export class EC2Provider implements ResourceProvider {
    */
   getDriftUnknownPaths(resourceType: string): string[] {
     switch (resourceType) {
+      // NetworkInterfaces cannot be read back faithfully: the drift
+      // comparator compares arrays WHOLESALE (deepEqual), and
+      // `AssociatePublicIpAddress` is launch-time-only input that
+      // DescribeInstances never returns -- any reconstruction would fire
+      // phantom whole-array drift on every associatePublicIpAddress
+      // template (i.e. every template that has the property at all, since
+      // it is what routes CDK onto this shape). Declared unreadable, like
+      // Lambda's Code (issue #1281).
+      case 'AWS::EC2::Instance':
+        return ['NetworkInterfaces'];
       case 'AWS::EC2::Route':
       case 'AWS::EC2::VPCGatewayAttachment':
       case 'AWS::EC2::SubnetRouteTableAssociation':
