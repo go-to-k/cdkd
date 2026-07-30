@@ -153,6 +153,10 @@ describe('CloudFrontDistributionProvider', () => {
       // here to keep them from leaking into later tests.
       mockSend.mockReset();
       clearResolvedResourceTimeouts();
+      // The file-level beforeEach also deletes these; the afterEach copy keeps
+      // this describe self-contained if per-file isolation is ever disabled.
+      delete process.env['CDKD_FULL_WAIT'];
+      delete process.env['CDKD_WAIT_FLAGS_AVAILABLE'];
     });
 
     const createInput = {
@@ -301,6 +305,182 @@ describe('CloudFrontDistributionProvider', () => {
       expect(warn).toContain('did not reach Deployed');
       expect(warn).toContain('aws cloudfront wait distribution-deployed --id EDFDVBD6EXAMPLE');
       expect(warn).toContain('--resource-timeout AWS::CloudFront::Distribution');
+    });
+
+    it('a transient GetDistribution failure mid-wait does NOT fail the operation (polling continues)', async () => {
+      process.env['CDKD_FULL_WAIT'] = 'true';
+      mockSend.mockResolvedValueOnce({
+        Distribution: { Id: 'EDFDVBD6EXAMPLE', DomainName: 'd1.cloudfront.net' },
+      });
+      // 1st poll: throttled. An escaped throw here would fail create() even
+      // though CreateDistribution succeeded — and the engine's outer retry
+      // would then create a DUPLICATE distribution with a fresh
+      // CallerReference. The waiter must swallow it and keep polling.
+      mockSend.mockRejectedValueOnce(new Error('Rate exceeded'));
+      // 2nd poll: Deployed.
+      mockSend.mockResolvedValueOnce({
+        Distribution: {
+          Id: 'EDFDVBD6EXAMPLE',
+          Status: 'Deployed',
+          DistributionConfig: { Enabled: true },
+        },
+      });
+
+      vi.useFakeTimers();
+      try {
+        const createPromise = provider.create(
+          'MyDistribution',
+          'AWS::CloudFront::Distribution',
+          createInput
+        );
+        await vi.advanceTimersByTimeAsync(10_000);
+        const result = await createPromise;
+        expect(result.physicalId).toBe('EDFDVBD6EXAMPLE');
+      } finally {
+        vi.useRealTimers();
+      }
+
+      expect(mockSend).toHaveBeenCalledTimes(3);
+      expect(childLogger.warn).not.toHaveBeenCalled();
+    });
+
+    it('a NoSuchDistribution mid-wait still escapes (terminal answer, not a transient)', async () => {
+      process.env['CDKD_FULL_WAIT'] = 'true';
+      mockSend.mockResolvedValueOnce({
+        Distribution: { Id: 'EDFDVBD6EXAMPLE', DomainName: 'd1.cloudfront.net' },
+      });
+      mockSend.mockRejectedValueOnce(
+        new NoSuchDistribution({ $metadata: {}, message: 'gone' })
+      );
+
+      await expect(
+        provider.create('MyDistribution', 'AWS::CloudFront::Distribution', createInput)
+      ).rejects.toThrow(/Failed to create CloudFront Distribution/);
+    });
+
+    it('SIGINT during the full-wait suppresses the timeout warn and resolves', async () => {
+      process.env['CDKD_FULL_WAIT'] = 'true';
+      mockSend.mockResolvedValueOnce({
+        Distribution: { Id: 'EDFDVBD6EXAMPLE', DomainName: 'd1.cloudfront.net' },
+      });
+      mockSend.mockResolvedValue({
+        Distribution: {
+          Id: 'EDFDVBD6EXAMPLE',
+          Status: 'InProgress',
+          DistributionConfig: { Enabled: true },
+        },
+      });
+
+      vi.useFakeTimers();
+      try {
+        const createPromise = provider.create(
+          'MyDistribution',
+          'AWS::CloudFront::Distribution',
+          createInput
+        );
+        // Let the first poll land, then interrupt during the backoff sleep.
+        await vi.advanceTimersByTimeAsync(1_000);
+        process.emit('SIGINT');
+        await vi.advanceTimersByTimeAsync(2_000);
+        const result = await createPromise;
+        expect(result.physicalId).toBe('EDFDVBD6EXAMPLE');
+      } finally {
+        vi.useRealTimers();
+      }
+
+      // Interruption is a shutdown, not a timeout: no misleading budget warn.
+      expect(childLogger.warn).not.toHaveBeenCalled();
+    });
+
+    it('a per-type --resource-timeout BELOW 20min cannot lower the budget (Math.max floor)', async () => {
+      process.env['CDKD_FULL_WAIT'] = 'true';
+      setResolvedResourceTimeouts({
+        perTypeMs: { 'AWS::CloudFront::Distribution': 10 * 60 * 1000 },
+      });
+      mockSend.mockResolvedValueOnce({
+        Distribution: { Id: 'EDFDVBD6EXAMPLE', DomainName: 'd1.cloudfront.net' },
+      });
+      mockSend.mockResolvedValue({
+        Distribution: {
+          Id: 'EDFDVBD6EXAMPLE',
+          Status: 'InProgress',
+          DistributionConfig: { Enabled: true },
+        },
+      });
+
+      vi.useFakeTimers();
+      try {
+        const createPromise = provider.create(
+          'MyDistribution',
+          'AWS::CloudFront::Distribution',
+          createInput
+        );
+        // Past the 10min flag value: the 20min floor must still be polling.
+        await vi.advanceTimersByTimeAsync(11 * 60 * 1000);
+        expect(childLogger.warn).not.toHaveBeenCalled();
+        // Past the floor: warn fires and create resolves.
+        await vi.advanceTimersByTimeAsync(10 * 60 * 1000);
+        await createPromise;
+      } finally {
+        vi.useRealTimers();
+      }
+
+      const warn = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(warn).toContain('did not reach Deployed');
+    });
+
+    it('delete warns (and still attempts the delete) when the disable wait exhausts its budget', async () => {
+      // GetDistributionConfig (initial, Enabled=true)
+      mockSend.mockResolvedValueOnce({
+        ETag: 'E1',
+        DistributionConfig: { CallerReference: 'orig', Enabled: true },
+      });
+      // UpdateDistribution (disable)
+      mockSend.mockResolvedValueOnce({ ETag: 'E2' });
+      // Every poll: stuck InProgress. The final GetDistributionConfig re-fetch
+      // and DeleteDistribution use the same persistent mock shape — the
+      // provider only reads ETag off it, which is absent, but delete() treats
+      // that as a missing-ETag error path... so queue explicit shapes instead
+      // via mockImplementation keyed on command name.
+      mockSend.mockImplementation((cmd: { constructor: { name: string } }) => {
+        if (cmd.constructor.name === 'GetDistributionCommand') {
+          return Promise.resolve({
+            Distribution: {
+              Id: 'EDFDVBD6EXAMPLE',
+              Status: 'InProgress',
+              DistributionConfig: { Enabled: false },
+            },
+          });
+        }
+        if (cmd.constructor.name === 'GetDistributionConfigCommand') {
+          return Promise.resolve({
+            ETag: 'E3',
+            DistributionConfig: { CallerReference: 'orig', Enabled: false },
+          });
+        }
+        return Promise.resolve({});
+      });
+
+      vi.useFakeTimers();
+      try {
+        const deletePromise = provider.delete(
+          'MyDistribution',
+          'EDFDVBD6EXAMPLE',
+          'AWS::CloudFront::Distribution'
+        );
+        await vi.advanceTimersByTimeAsync(21 * 60 * 1000);
+        await deletePromise;
+      } finally {
+        vi.useRealTimers();
+      }
+
+      const warn = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(warn).toContain('disable did not settle');
+      // The delete was still attempted after the warn.
+      const deleteCalls = mockSend.mock.calls.filter(
+        (c) => c[0].constructor.name === 'DeleteDistributionCommand'
+      );
+      expect(deleteCalls.length).toBe(1);
     });
 
     it('an explicit --resource-timeout lifts the full-wait budget beyond the 20min default (#1280)', async () => {

@@ -313,7 +313,13 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
         // (Enabled=true, Status=Deployed) snapshot, which would otherwise cause us
         // to exit the wait loop on the very first poll and fire DeleteDistribution
         // against an enabled distribution (yielding DistributionNotDisabled).
-        await this.waitForDistributionStable(physicalId, false);
+        const disabled = await this.waitForDistributionStable(physicalId, false);
+        if (!disabled) {
+          this.logger.warn(
+            `Distribution ${physicalId} disable did not settle (Deployed + disabled) within the wait budget; attempting delete anyway. ` +
+              `If it fails with DistributionNotDisabled, retry the destroy or raise the budget with --resource-timeout AWS::CloudFront::Distribution=<duration>.`
+          );
+        }
 
         // Re-fetch ETag after waiting (state may have changed)
         const refreshResponse = await this.cloudFrontClient.send(
@@ -481,16 +487,6 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
   }
 
   /**
-   * Wait for a distribution to reach a stable state.
-   *
-   * "Stable" means Status === 'Deployed'. When `expectedEnabled` is provided,
-   * we additionally require DistributionConfig.Enabled === expectedEnabled —
-   * this guards against CloudFront's eventually-consistent reads that can
-   * briefly return the pre-update snapshot after UpdateDistribution returns.
-   *
-   * Uses exponential backoff polling.
-   */
-  /**
    * Settle a CloudFront Distribution according to the run's wait mode.
    *
    * cdkd does NOT wait for `Deployed` by default (issue #1282). Both
@@ -578,25 +574,44 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
           return true;
         }
 
-        const response = await this.cloudFrontClient.send(
-          new GetDistributionCommand({ Id: distributionId })
-        );
-        const status = response.Distribution?.Status;
-        const enabled = response.Distribution?.DistributionConfig?.Enabled;
-
-        const enabledMatches = expectedEnabled === undefined || enabled === expectedEnabled;
-
-        if (status === 'Deployed' && enabledMatches) {
-          this.logger.debug(
-            `Distribution ${distributionId} is stable (Status=Deployed, Enabled=${enabled})`
+        let response;
+        try {
+          response = await this.cloudFrontClient.send(
+            new GetDistributionCommand({ Id: distributionId })
           );
-          return true;
+        } catch (error) {
+          // A gone distribution is a terminal answer the caller must see (the
+          // delete path's NotFound handling). Anything else (throttle, network
+          // blip) must NOT escape: the wait has no failure signal by design,
+          // and an escaped throw would fail an operation whose mutation
+          // already succeeded — on create, the engine's outer retry would
+          // then re-invoke create() with a fresh CallerReference and produce
+          // a DUPLICATE distribution. Log and keep polling; the deadline
+          // bounds the loop either way.
+          if (error instanceof NoSuchDistribution) throw error;
+          this.logger.debug(
+            `Distribution ${distributionId} status read failed (${error instanceof Error ? error.message : String(error)}); retrying`
+          );
         }
 
-        this.logger.debug(
-          `Distribution ${distributionId} status: ${status}, enabled: ${enabled}` +
-            (expectedEnabled === undefined ? '' : ` (waiting for Enabled=${expectedEnabled})`)
-        );
+        if (response) {
+          const status = response.Distribution?.Status;
+          const enabled = response.Distribution?.DistributionConfig?.Enabled;
+
+          const enabledMatches = expectedEnabled === undefined || enabled === expectedEnabled;
+
+          if (status === 'Deployed' && enabledMatches) {
+            this.logger.debug(
+              `Distribution ${distributionId} is stable (Status=Deployed, Enabled=${enabled})`
+            );
+            return true;
+          }
+
+          this.logger.debug(
+            `Distribution ${distributionId} status: ${status}, enabled: ${enabled}` +
+              (expectedEnabled === undefined ? '' : ` (waiting for Enabled=${expectedEnabled})`)
+          );
+        }
 
         // Interruptible sleep: check SIGINT every second
         const sleepEnd = Date.now() + delay;
@@ -604,6 +619,14 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
           await new Promise((resolve) => setTimeout(resolve, 1000));
         }
         delay = Math.min(delay * 1.5, maxDelay);
+      }
+
+      // A SIGINT that lands during the final sleep exits the loop via the
+      // deadline check; it is still an interruption, not a timeout — return
+      // true so the caller's timeout warning stays suppressed on shutdown.
+      if (interrupted) {
+        this.logger.debug(`Distribution ${distributionId} wait interrupted by SIGINT, proceeding`);
+        return true;
       }
 
       this.logger.debug(
