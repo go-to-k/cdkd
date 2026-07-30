@@ -1889,7 +1889,10 @@ types:
 | `AWS::ElasticLoadBalancingV2::LoadBalancer` | attribute `deletion_protection.enabled` | `ModifyLoadBalancerAttributes([{Key: 'deletion_protection.enabled', Value: 'false'}])` |
 | `AWS::Cognito::UserPool` | `DeletionProtection` (`ACTIVE` / `INACTIVE`) | `UpdateUserPool(DeletionProtection='INACTIVE')` |
 | `AWS::AutoScaling::AutoScalingGroup` | `DeletionProtection` (`none` / `prevent-force-deletion` / `prevent-all-deletion`) | `UpdateAutoScalingGroup(DeletionProtection='none')` followed by `DeleteAutoScalingGroup(ForceDelete=true)` so AWS terminates running instances as part of the delete |
-| `AWS::DSQL::Cluster` | `DeletionProtectionEnabled` | Cloud Control `UpdateResource` patch (`[{op: add, path: /DeletionProtectionEnabled, value: false}]`), waited to completion, then `DeleteResource` — the generic CC-routed protection flip (issue #1312); more CC-routed types with a top-level protection boolean can join the registry in `src/provisioning/cc-protection-properties.ts` once live-verified |
+| `AWS::DSQL::Cluster` | `DeletionProtectionEnabled` | Cloud Control `UpdateResource` patch (`[{op: add, path: /DeletionProtectionEnabled, value: false}]`), waited to completion, then `DeleteResource` — the generic CC-routed protection flip (issue #1312); more CC-routed types with a top-level protection property can join the registry in `src/provisioning/cc-protection-properties.ts` once live-verified (remaining candidates tracked in issue #1315) |
+| `AWS::NeptuneGraph::Graph` | `DeletionProtection` | Same generic CC patch flip (`value: false`) then `DeleteResource` (issue #1314) |
+| `AWS::SMSVOICE::ProtectConfiguration` | `DeletionProtectionEnabled` | Same generic CC patch flip (`value: false`) then `DeleteResource` (issue #1314) |
+| `AWS::VerifiedPermissions::PolicyStore` | `DeletionProtection` (`{Mode: ENABLED\|DISABLED}`) | Same generic CC patch flip with `value: {Mode: DISABLED}` then `DeleteResource` (issue #1314) |
 
 Behavior:
 

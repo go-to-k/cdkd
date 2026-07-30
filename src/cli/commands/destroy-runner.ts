@@ -223,9 +223,12 @@ export const PROTECTION_PROPERTY_BY_TYPE: Record<string, string> = {
   'AWS::EC2::Instance': 'DisableApiTermination',
   'AWS::Cognito::UserPool': 'DeletionProtection',
   'AWS::AutoScaling::AutoScalingGroup': 'DeletionProtection',
-  // CC-routed generic protection flip (issue #1312) — see
+  // CC-routed generic protection flip (issues #1312 / #1314) — see
   // src/provisioning/cc-protection-properties.ts.
   'AWS::DSQL::Cluster': 'DeletionProtectionEnabled',
+  'AWS::NeptuneGraph::Graph': 'DeletionProtection',
+  'AWS::SMSVOICE::ProtectConfiguration': 'DeletionProtectionEnabled',
+  'AWS::VerifiedPermissions::PolicyStore': 'DeletionProtection',
 };
 
 /**
@@ -236,6 +239,17 @@ export const PROTECTION_PROPERTY_BY_TYPE: Record<string, string> = {
 export const PROTECTION_ACTIVE_VALUES_BY_TYPE: Record<string, ReadonlySet<unknown>> = {
   'AWS::Cognito::UserPool': new Set(['ACTIVE']),
   'AWS::AutoScaling::AutoScalingGroup': new Set(['prevent-force-deletion', 'prevent-all-deletion']),
+};
+
+/**
+ * For object-shaped protection properties, a predicate deciding whether the
+ * recorded value counts as "currently protected". Checked before the
+ * enum-set / boolean defaults. VerifiedPermissions PolicyStore's
+ * `DeletionProtection` is `{Mode: 'ENABLED' | 'DISABLED'}` (issue #1314).
+ */
+export const PROTECTION_ACTIVE_PREDICATE_BY_TYPE: Record<string, (value: unknown) => boolean> = {
+  'AWS::VerifiedPermissions::PolicyStore': (value) =>
+    typeof value === 'object' && value !== null && (value as { Mode?: unknown }).Mode === 'ENABLED',
 };
 
 /**
@@ -252,8 +266,11 @@ export function countProtectedResources(state: StackState): number {
     const propName = PROTECTION_PROPERTY_BY_TYPE[resource.resourceType];
     if (propName) {
       const recorded = resource.properties?.[propName] ?? resource.observedProperties?.[propName];
+      const activePredicate = PROTECTION_ACTIVE_PREDICATE_BY_TYPE[resource.resourceType];
       const activeValues = PROTECTION_ACTIVE_VALUES_BY_TYPE[resource.resourceType];
-      if (activeValues) {
+      if (activePredicate) {
+        if (activePredicate(recorded)) count++;
+      } else if (activeValues) {
         if (activeValues.has(recorded)) count++;
       } else if (recorded === true) {
         count++;

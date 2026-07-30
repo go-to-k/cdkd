@@ -5374,6 +5374,7 @@
     "AWS::Logs::LogStream",
     "AWS::Logs::MetricFilter",
     "AWS::Logs::SubscriptionFilter",
+    "AWS::NeptuneGraph::Graph",
     "AWS::OpenSearchService::Domain",
     "AWS::Pipes::Pipe",
     "AWS::Redshift::Cluster",
@@ -5383,9 +5384,11 @@
     "AWS::S3::AccessPoint",
     "AWS::SES::ConfigurationSet",
     "AWS::SES::EmailIdentity",
+    "AWS::SMSVOICE::ProtectConfiguration",
     "AWS::SSM::Document",
     "AWS::SecretsManager::RotationSchedule",
     "AWS::Serverless::Function",
+    "AWS::VerifiedPermissions::PolicyStore",
     "AWS::WAFv2::IPSet",
     "AWS::WAFv2::WebACLAssociation"
   ]

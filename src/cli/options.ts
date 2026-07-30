@@ -1129,7 +1129,9 @@ export const destroyOptions = [
       'AWS::RDS::DBCluster, AWS::DocDB::DBCluster, AWS::Neptune::DBCluster, ' +
       'AWS::Neptune::DBInstance, AWS::DynamoDB::Table, AWS::EC2::Instance, ' +
       'AWS::Cognito::UserPool, AWS::AutoScaling::AutoScalingGroup, ' +
-      'AWS::ElasticLoadBalancingV2::LoadBalancer, and AWS::DSQL::Cluster.'
+      'AWS::ElasticLoadBalancingV2::LoadBalancer, AWS::DSQL::Cluster, ' +
+      'AWS::NeptuneGraph::Graph, AWS::SMSVOICE::ProtectConfiguration, and ' +
+      'AWS::VerifiedPermissions::PolicyStore.'
   ).default(false),
   allowUnsupportedTypesOption,
 ];
