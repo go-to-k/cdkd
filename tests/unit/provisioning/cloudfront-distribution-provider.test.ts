@@ -771,6 +771,94 @@ describe('CloudFrontDistributionProvider', () => {
       }
     });
 
+    it('waits for propagation when the distribution is ALREADY disabled but still InProgress (#1316)', async () => {
+      // A prior interrupted destroy (or an out-of-band console disable) flips
+      // the config to Enabled=false immediately while Status stays InProgress
+      // for minutes. Pre-#1316 the delete path skipped the wait entirely in
+      // that state and DeleteDistribution failed with "has not been disabled"
+      // on every retry until propagation completed.
+      vi.useFakeTimers();
+      try {
+        // GetDistributionConfigCommand (initial): already disabled
+        mockSend.mockResolvedValueOnce({
+          ETag: 'E1',
+          DistributionConfig: { CallerReference: 'orig', Enabled: false },
+        });
+        // Poll 1: disable still propagating
+        mockSend.mockResolvedValueOnce({
+          Distribution: {
+            Id: 'EDFDVBD6EXAMPLE',
+            Status: 'InProgress',
+            DistributionConfig: { Enabled: false },
+          },
+        });
+        // Poll 2: settled
+        mockSend.mockResolvedValueOnce({
+          Distribution: {
+            Id: 'EDFDVBD6EXAMPLE',
+            Status: 'Deployed',
+            DistributionConfig: { Enabled: false },
+          },
+        });
+        // GetDistributionConfigCommand (ETag re-fetch after the wait)
+        mockSend.mockResolvedValueOnce({
+          ETag: 'E2',
+          DistributionConfig: { CallerReference: 'orig', Enabled: false },
+        });
+        // DeleteDistributionCommand
+        mockSend.mockResolvedValueOnce({});
+
+        const deletePromise = provider.delete(
+          'MyDistribution',
+          'EDFDVBD6EXAMPLE',
+          'AWS::CloudFront::Distribution'
+        );
+        await vi.advanceTimersByTimeAsync(10_000);
+        await deletePromise;
+      } finally {
+        vi.useRealTimers();
+      }
+
+      expect(mockSend).toHaveBeenCalledTimes(5);
+      // No disable UpdateDistribution was issued (it is already disabled).
+      const commandNames = mockSend.mock.calls.map((c) => c[0].constructor.name);
+      expect(commandNames).not.toContain('UpdateDistributionCommand');
+      const deleteCall = mockSend.mock.calls[4][0];
+      expect(deleteCall.constructor.name).toBe('DeleteDistributionCommand');
+      // The ETag re-fetched AFTER the propagation settled is the one used.
+      expect(deleteCall.input.IfMatch).toBe('E2');
+    });
+
+    it('already-disabled and already-Deployed deletes after a single confirming poll', async () => {
+      mockSend.mockResolvedValueOnce({
+        ETag: 'E1',
+        DistributionConfig: { CallerReference: 'orig', Enabled: false },
+      });
+      mockSend.mockResolvedValueOnce({
+        Distribution: {
+          Id: 'EDFDVBD6EXAMPLE',
+          Status: 'Deployed',
+          DistributionConfig: { Enabled: false },
+        },
+      });
+      mockSend.mockResolvedValueOnce({
+        ETag: 'E1',
+        DistributionConfig: { CallerReference: 'orig', Enabled: false },
+      });
+      mockSend.mockResolvedValueOnce({});
+
+      await provider.delete(
+        'MyDistribution',
+        'EDFDVBD6EXAMPLE',
+        'AWS::CloudFront::Distribution'
+      );
+
+      // GetConfig + 1 poll + GetConfig refetch + Delete = 4 sends: the settled
+      // common case pays exactly one confirming read, no sleep.
+      expect(mockSend).toHaveBeenCalledTimes(4);
+      expect(mockSend.mock.calls[3][0].constructor.name).toBe('DeleteDistributionCommand');
+    });
+
     it('should handle NoSuchDistribution gracefully', async () => {
       // GetDistributionConfigCommand throws NoSuchDistribution
       mockSend.mockRejectedValueOnce(
