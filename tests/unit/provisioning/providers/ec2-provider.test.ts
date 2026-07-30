@@ -320,6 +320,44 @@ describe('EC2Provider - SecurityGroup egress handling', () => {
       );
     });
 
+    it('should revoke the default egress rule STRICTLY BEFORE authorizing the template rules', async () => {
+      // Order is load-bearing, not incidental. The revoke matches on
+      // protocol + CIDR only (`-1` / `0.0.0.0/0`) and carries no Description,
+      // so it matches ANY allow-all-IPv4 egress rule on the group — including
+      // one the authorize just created for a template that legitimately asks
+      // for allow-all-with-a-description (the CDK L2 `allowAllOutbound: true`
+      // shape). Run the other way round, the pair would authorize the
+      // template's rule and then immediately revoke it, leaving a group with
+      // NO egress and no error to explain it. The concurrency in
+      // createSecurityGroup is BETWEEN branches (tags / ingress / egress);
+      // WITHIN the egress branch these two stay sequenced, and this pins it.
+      mockSend
+        .mockResolvedValueOnce({ GroupId: 'sg-order' }) // CreateSecurityGroupCommand
+        .mockResolvedValue({});
+
+      await provider.create('OrderedSg', 'AWS::EC2::SecurityGroup', {
+        GroupDescription: 'Revoke-then-authorize',
+        SecurityGroupEgress: [
+          {
+            IpProtocol: '-1',
+            CidrIp: '0.0.0.0/0',
+            Description: 'Allow all outbound traffic by default',
+          },
+        ],
+      });
+
+      const commands = mockSend.mock.calls.map((c) => c[0]);
+      const revokeIdx = commands.findIndex((c) => c instanceof RevokeSecurityGroupEgressCommand);
+      const authorizeIdx = commands.findIndex(
+        (c) => c instanceof AuthorizeSecurityGroupEgressCommand
+      );
+
+      expect(revokeIdx).toBeGreaterThanOrEqual(0);
+      expect(authorizeIdx).toBeGreaterThanOrEqual(0);
+      // Not "both happened" — the revoke's call index must be lower.
+      expect(revokeIdx).toBeLessThan(authorizeIdx);
+    });
+
     it('should delete the half-wired group when the ingress batch fails, even with concurrent egress wiring', async () => {
       // Tags / ingress / egress are wired concurrently now; a rejection in any
       // branch must still reach the SG-cleanup path exactly once.
@@ -345,6 +383,74 @@ describe('EC2Provider - SecurityGroup egress handling', () => {
 
       const commands = mockSend.mock.calls.map((c) => c[0]);
       expect(commands.filter((c) => c instanceof DeleteSecurityGroupCommand)).toHaveLength(1);
+    });
+
+    it('should not issue the cleanup delete until every concurrent wiring call has settled', async () => {
+      // The failure mode this pins is invisible to a "was DeleteSecurityGroup
+      // called?" assertion. With `Promise.all`, the ingress rejection reaches
+      // the catch while the tags and egress calls are STILL IN FLIGHT against
+      // the same group, so DeleteSecurityGroup races them: AWS answers
+      // DependencyViolation (or InvalidGroup.NotFound if the delete wins),
+      // the cleanup only WARNS, and the half-wired group is orphaned — the
+      // exact outcome the cleanup exists to prevent. `Promise.allSettled`
+      // makes the group quiescent first.
+      //
+      // So the assertion is on the in-flight COUNT at the moment the delete
+      // is issued, not on the delete's existence.
+      let inFlight = 0;
+      let inFlightAtDelete = -1;
+      let deleteCount = 0;
+      let releaseSlowWiring!: () => void;
+      const slowWiring = new Promise<void>((resolve) => {
+        releaseSlowWiring = resolve;
+      });
+
+      mockSend.mockImplementation(async (cmd: unknown) => {
+        if (cmd instanceof CreateSecurityGroupCommand) {
+          return { GroupId: 'sg-inflight' };
+        }
+        if (cmd instanceof DeleteSecurityGroupCommand) {
+          deleteCount++;
+          inFlightAtDelete = inFlight;
+          return {};
+        }
+        // Everything else is a wiring call: CreateTags, the egress
+        // revoke/authorize pair, and the ingress batch.
+        inFlight++;
+        try {
+          if (cmd instanceof AuthorizeSecurityGroupIngressCommand) {
+            // Rejects immediately, while the siblings below are parked.
+            throw new Error('InvalidPermission.Malformed');
+          }
+          await slowWiring;
+          return {};
+        } finally {
+          inFlight--;
+        }
+      });
+
+      const created = provider.create('InFlightSg', 'AWS::EC2::SecurityGroup', {
+        GroupDescription: 'Wiring fails while siblings are in flight',
+        Tags: [{ Key: 'Name', Value: 'in-flight' }],
+        SecurityGroupIngress: [{ IpProtocol: 'tcp', FromPort: 80, ToPort: 80, CidrIp: 'bogus' }],
+        SecurityGroupEgress: [{ IpProtocol: 'tcp', FromPort: 443, ToPort: 443, CidrIp: '0.0.0.0/0' }],
+      });
+      // Let the ingress branch reject and the siblings park, then unblock
+      // them. Under Promise.all the create has already rejected (and issued
+      // its racing delete) by the time this fires; under allSettled this is
+      // what lets the create finish at all.
+      const releaseTimer = setTimeout(() => releaseSlowWiring(), 10);
+
+      // The ORIGINAL rejection is what propagates — not a delete-path error
+      // and not one of the siblings.
+      await expect(created).rejects.toThrow('InvalidPermission.Malformed');
+      clearTimeout(releaseTimer);
+      releaseSlowWiring();
+
+      // Nothing was still touching the group when the delete went out.
+      expect(inFlightAtDelete).toBe(0);
+      // Exactly one cleanup attempt — not one per rejected branch.
+      expect(deleteCount).toBe(1);
     });
 
     it('should not call RevokeSecurityGroupEgress when SecurityGroupEgress is not provided', async () => {

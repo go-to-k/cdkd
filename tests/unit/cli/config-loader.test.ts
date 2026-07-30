@@ -700,25 +700,55 @@ describe('config-loader', () => {
       expect(started).toBe(2);
     });
 
-    // Issue #1283: the account id resolved for the bucket NAME is reused as
-    // the ExpectedBucketOwner on the probes, instead of each probe client
-    // issuing its own GetCallerIdentity.
-    it('seeds ExpectedBucketOwner from its own GetCallerIdentity (no second STS call)', async () => {
-      const clientIdentity = {
-        region: async () => 'us-east-1',
-        credentials: async () => ({ accessKeyId: 'AKIASEEDED', secretAccessKey: 'secret' }),
-      };
-      // Both the STS client and the probe S3 client resolve the same
-      // credentials — the real flow threads the STS client's own provider
-      // into the probe.
+    // Issue #1283, two halves of one behavior: the probe S3 client is built
+    // with the STS client's OWN credential provider, and the account id that
+    // client's GetCallerIdentity already returned is reused as the probes'
+    // ExpectedBucketOwner instead of each probe re-resolving it.
+    //
+    // The credential threading is what makes the whole thing correct: the
+    // bucket name being probed was derived from the STS identity's account,
+    // so probing as anyone else answers a different question (under
+    // `--profile`, the ambient default chain can be a different account
+    // entirely, in which case every probe 403s = "exists" by accident).
+    //
+    // The S3Client double therefore MIRRORS the real client rather than
+    // hard-coding one identity: `config.credentials` is whatever the
+    // constructor received, falling back to a DIFFERENT ambient provider when
+    // nothing was passed. A double that ignored its constructor argument
+    // would keep this test green with the credential spread deleted from
+    // config-loader.ts — which is exactly the state it was in before.
+    it("builds the probe client with the STS client's own credentials and seeds ExpectedBucketOwner from its GetCallerIdentity (no second STS call)", async () => {
+      const stsCredentials = async () => ({
+        accessKeyId: 'AKIASEEDED',
+        secretAccessKey: 'secret',
+      });
+      // Stands in for the SDK's default credential chain — a different
+      // identity, whose access key id is NOT the one seeded into the
+      // ExpectedBucketOwner cache. Falling back to it means the header
+      // resolution misses the cache and tries to construct a real STSClient,
+      // which the mocked @aws-sdk/client-sts does not export.
+      const ambientCredentials = async () => ({
+        accessKeyId: 'AKIAAMBIENT',
+        secretAccessKey: 'other-secret',
+      });
+      const stsClientConfig = { region: async () => 'us-east-1', credentials: stsCredentials };
+      const probeClientInputs: Array<Record<string, unknown>> = [];
+
       vi.doMock('../../../src/utils/aws-clients.js', () => ({
-        getAwsClients: () => ({ sts: { send: stsSendMock, config: clientIdentity } }),
+        getAwsClients: () => ({ sts: { send: stsSendMock, config: stsClientConfig } }),
       }));
       vi.doMock('@aws-sdk/client-s3', () => ({
         S3Client: class {
-          config = clientIdentity;
+          config: { region: () => Promise<unknown>; credentials: unknown };
           send = s3SendMock;
           destroy = s3DestroyMock;
+          constructor(input: Record<string, unknown> = {}) {
+            probeClientInputs.push(input);
+            this.config = {
+              region: async () => input['region'] ?? 'us-east-1',
+              credentials: input['credentials'] ?? ambientCredentials,
+            };
+          }
         },
         HeadBucketCommand: class HeadBucketCommand {
           static __cmd = 'HeadBucket' as const;
@@ -742,11 +772,16 @@ describe('config-loader', () => {
       );
       await expect(fn(undefined, 'us-east-1')).resolves.toBe('cdkd-state-123456789012');
 
+      // One probe client, constructed with the STS client's provider itself
+      // (identity, not an equivalent-looking copy).
+      expect(probeClientInputs).toHaveLength(1);
+      expect(probeClientInputs[0]?.['credentials']).toBe(stsCredentials);
+
       // Exactly one GetCallerIdentity for the whole resolution…
       expect(stsSendMock).toHaveBeenCalledTimes(1);
-      // …and its account still reached the probes as ExpectedBucketOwner.
-      // (The mocked @aws-sdk/client-sts exports no STSClient, so a second
-      // resolution attempt could not have produced this header.)
+      // …and its account reached the probes as ExpectedBucketOwner. This only
+      // resolves because the probe signs as the seeded identity: on the
+      // ambient fallback the cache misses and the header is omitted.
       for (const [cmd] of s3SendMock.mock.calls) {
         expect((cmd as { input: Record<string, unknown> }).input['ExpectedBucketOwner']).toBe(
           '123456789012'

@@ -48,20 +48,22 @@ Best of 3 runs, deploy-phase only, seconds, `us-west-2`. The `VPC + Lambda + SQS
 
 ### vs Terraform: cdkd deploys faster
 
-We also raced cdkd against Terraform: the same logical stacks expressed both as CDK apps and as Terraform HCL, deployed by all engines against real AWS. **cdkd is faster in five of six scenarios — 1.16x to 2.31x — and ties on the sixth.**
+We also raced cdkd against Terraform: the same logical stacks expressed both as CDK apps and as Terraform HCL, deployed by all engines against real AWS. **cdkd is clearly faster in four of six scenarios — 1.23x to 2.31x — and never slower in any.**
 
 | Scenario | Stack | cdkd | Terraform | CloudFormation | cdkd `--no-wait` | Terraform, waits skipped |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
 | wide | 48 independent resources (S3 / DynamoDB / SQS / SNS / SSM / Logs, 8 each) | **20.0** | 46.1 | 89.1 | 21.1 | no opt-out exists |
 | serverless | Lambda ×3 + HTTP API + DynamoDB + SNS / SQS + EventBridge | **25.9** | 57.5 | 127.1 | 24.6 | no opt-out exists |
 | ec2 | VPC + subnet + SG + IAM role + EC2 instance ×3 | **29.1** | 35.9 | 193.9 | 22.0 | no opt-out exists |
-| webapp | VPC + NAT + subnets + DynamoDB + SQS + S3 + Lambda ×2 + HTTP API | **109.7** | 127.3 | 166.1 | 23.4 | no opt-out exists |
+| webapp | VPC + NAT + subnets + DynamoDB + SQS + S3 + Lambda ×2 + HTTP API | 109.7 | 127.3 | 166.1 | 23.4 | no opt-out exists |
 | ecs | VPC ×2 AZ + Fargate cluster / task / service + ALB | **162.8** | 209.5 | 276.7 | 34.5 | 209.5 (already the default) |
 | cloudfront | S3 origin + CloudFront + OAC | 174.7 | 177.5 | 209.8 | 13.1 | 11.5 |
 
 Cold end-to-end wall clock (unlike the deploy-phase-only tables above, these numbers include synth / plan), median of **7 runs** per scenario, seconds, `us-east-1`, one cdkd binary. Every run gets resource names AWS has never seen, so every run measures a first deploy.
 
-**cdkd's lead tracks how much of the wall clock is orchestration rather than AWS-side provisioning.** wide and serverless are almost pure orchestration and cdkd runs ~2.2-2.3x faster. cloudfront is almost pure propagation delay — both tools wait on the same physical minutes — and they finish 2.8s apart, a tie. Nothing here makes AWS itself faster.
+**cdkd's lead tracks how much of the wall clock is orchestration rather than AWS-side provisioning.** wide and serverless are almost pure orchestration and cdkd runs ~2.2-2.3x faster. ec2 and ecs still separate cleanly at 1.23x / 1.29x. cloudfront is almost pure propagation delay — both tools wait on the same physical minutes — and they finish 2.8s apart, a tie. Nothing here makes AWS itself faster.
+
+**Two rows are reported without a bold winner, for different reasons.** cloudfront is a tie. webapp's median favours cdkd by 17.6s, but its runs span 98-138s against Terraform's 106-138s, so at n=7 the two are not distinguishable — NAT-gateway creation varies more than the gap between the tools. A win is claimed only where no cdkd run overlaps any Terraform run, which is true of the four bolded rows and not of these two. Judging by the size of the median gap instead would get it backwards here: ec2 separates completely on 6.8s while webapp's larger 17.6s does not.
 
 **This is not cdkd waiting for less.** Held to the same completion definition — cdkd `--full-wait` against Terraform's `wait_for_steady_state=true`, both blocking until the ECS service is steady — cdkd is still 1.24x faster (227.7 vs 282.7).
 

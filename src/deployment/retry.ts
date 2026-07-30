@@ -162,6 +162,15 @@ export async function withRetry<T>(
     : maxRetries;
 
   let lastError: unknown;
+  // Latches on the first propagation error and never clears. The DELAY is
+  // re-derived per attempt (a throttle mid-propagation still backs off
+  // exponentially), but the BUDGET must not be, or an interleaved throttle
+  // collapses the window the dense schedule exists to cover: the generic
+  // limit is 8, so a throttle on attempt 9 of a propagation sequence would
+  // abort at ~9.5s of the intended 47.75s -- shorter than the generic
+  // schedule it is supposed to be a superset of. A sequence that never sees
+  // a propagation error keeps the generic 8.
+  let sawPropagation = false;
 
   for (let attempt = 0; attempt <= attemptCeiling; attempt++) {
     try {
@@ -174,7 +183,10 @@ export async function withRetry<T>(
         ? opts.isRetryable(message, error)
         : isRetryableTransientError(error, message);
       const propagation = defaultSchedule && isIamPropagationError(message);
-      const attemptLimit = propagation ? IAM_PROPAGATION_MAX_RETRIES : maxRetries;
+      if (propagation) {
+        sawPropagation = true;
+      }
+      const attemptLimit = sawPropagation ? IAM_PROPAGATION_MAX_RETRIES : maxRetries;
       if (!retryable || attempt >= attemptLimit) {
         throw error;
       }

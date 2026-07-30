@@ -810,6 +810,27 @@ export class ECSProvider implements ResourceProvider {
       // collide on the name. Clean up best-effort first, mirroring the
       // partial-create handling in the ELBv2 / EC2 Instance providers.
       // `force: true` deletes without a separate scale-to-0 round trip.
+      //
+      // The UPDATE path deliberately does NOT delete on the same timeout,
+      // and the asymmetry is about STATE OWNERSHIP, not about whether AWS
+      // holds the service. Both cases end with AWS holding a service that is
+      // not steady, so "AWS has it" alone cannot explain the difference:
+      //
+      //   - CREATE: cdkd has no state record and, because the throw skips the
+      //     success-return, never will. The service is unreachable from cdkd
+      //     forever after — an orphan that also blocks the retry, since the
+      //     next CreateService hits the name. Deleting it is the only way back
+      //     to a consistent pair.
+      //   - UPDATE: the state record already exists and keeps pointing at this
+      //     same serviceArn. The failure leaves a live, previously-working
+      //     service mid-rollout; cdkd can still see it, `cdkd destroy` still
+      //     removes it, and the next deploy retries UpdateService against it.
+      //     Deleting there would DESTROY a running service (dropping every
+      //     task serving traffic) to react to a wait that timed out — turning
+      //     a recoverable stall into an outage.
+      //
+      // So the rule is "delete only what cdkd is about to lose track of",
+      // which is exactly the create case.
       try {
         await this.settleService(
           logicalId,

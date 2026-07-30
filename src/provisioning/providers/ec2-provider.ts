@@ -2108,10 +2108,21 @@ export class EC2Provider implements ResourceProvider {
         //   2. Authorize{Ingress,Egress} accept an `IpPermissions` ARRAY, so
         //      N rules become ONE call instead of N.
         //
-        // Failure semantics are unchanged: any rejection still lands in the
-        // outer catch that best-effort-deletes the half-wired SG. Promise.all
-        // attaches a handler to every branch, so a second failure can never
-        // surface as an unhandled rejection.
+        // Failure semantics are unchanged, but ONLY because this is
+        // allSettled and not all. `Promise.all` rejects the moment the first
+        // branch does, while the other two are still in flight -- so the
+        // outer catch would issue DeleteSecurityGroup concurrently with a
+        // pending Authorize / Revoke / CreateTags on the same group. That
+        // delete comes back DependencyViolation or InvalidGroup.NotFound,
+        // the cleanup only warns, and the half-wired SG leaks: exactly the
+        // orphan the cleanup exists to prevent. Serially this could not
+        // happen, because nothing was in flight at cleanup time.
+        //
+        // allSettled waits for all three to settle before anything is thrown,
+        // so the group is quiescent when the delete goes out. The first
+        // rejection is rethrown so the caller sees the original cause; the
+        // remaining rejections are already handled by allSettled and cannot
+        // surface as unhandled.
         const ingressRules = properties['SecurityGroupIngress'] as
           | Array<Record<string, unknown>>
           | undefined;
@@ -2119,11 +2130,15 @@ export class EC2Provider implements ResourceProvider {
           | Array<Record<string, unknown>>
           | undefined;
 
-        await Promise.all([
+        const wiring = await Promise.allSettled([
           this.applyTags(groupId, properties, logicalId),
           this.authorizeInlineIngress(groupId, ingressRules),
           this.applyInlineEgress(groupId, egressRules),
         ]);
+        const firstRejection = wiring.find((r) => r.status === 'rejected');
+        if (firstRejection) {
+          throw (firstRejection as PromiseRejectedResult).reason;
+        }
       } catch (innerError) {
         try {
           await this.ec2Client.send(new DeleteSecurityGroupCommand({ GroupId: groupId }));
