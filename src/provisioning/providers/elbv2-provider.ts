@@ -326,7 +326,11 @@ export class ELBv2Provider implements ResourceProvider {
         // from cdkd state would make the next deploy fail with
         // DuplicateLoadBalancerName (LB names are unique per scheme per
         // region), so it has to route through the same best-effort
-        // DeleteLoadBalancer as an attributes-wiring failure.
+        // DeleteLoadBalancer as an attributes-wiring failure. The cleanup
+        // NARROWS that window rather than closing it — LB deletion is
+        // asynchronous and outlives the DeleteLoadBalancer call, so an
+        // immediate retry can still hit the duplicate-name error (issue
+        // #1291 item 4).
         //
         // Create only. SetSubnets / SetSecurityGroups / SetIpAddressType
         // on update act on an already-active LB and need no waiter.

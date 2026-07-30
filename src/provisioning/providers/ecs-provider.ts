@@ -810,6 +810,10 @@ export class ECSProvider implements ResourceProvider {
       // collide on the name. Clean up best-effort first, mirroring the
       // partial-create handling in the ELBv2 / EC2 Instance providers.
       // `force: true` deletes without a separate scale-to-0 round trip.
+      // The cleanup NARROWS the collision window rather than closing it:
+      // DeleteService returns with the service in DRAINING, which outlives
+      // the call, so an immediate retry can still hit a name conflict until
+      // draining completes (issue #1291 item 4).
       //
       // The UPDATE path deliberately does NOT delete on the same timeout,
       // and the asymmetry is about STATE OWNERSHIP, not about whether AWS
@@ -931,8 +935,15 @@ export class ECSProvider implements ResourceProvider {
     }
 
     const clusterArg = cluster ? ` --cluster ${cluster}` : '';
+    // Mention --full-wait only when the invoking COMMAND actually declares
+    // it (cdkd deploy sets CDKD_WAIT_FLAGS_AVAILABLE; `cdkd drift --revert`
+    // reaches this same code through provider.update and does NOT — the
+    // flag does not exist there, so advertising it would tell the user to
+    // pass an option the command rejects (issue #1291 item 1).
+    const fullWaitHint =
+      process.env['CDKD_WAIT_FLAGS_AVAILABLE'] === 'true' ? '; pass --full-wait to wait' : '';
     this.logger.info(
-      `ECS service ${logicalId} accepted (not waiting for steady state; pass --full-wait to wait). ` +
+      `ECS service ${logicalId} accepted (not waiting for steady state${fullWaitHint}). ` +
         `To wait manually: aws ecs wait services-stable${clusterArg} --services ${serviceRef}`
     );
   }

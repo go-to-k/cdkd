@@ -946,7 +946,16 @@ export class LambdaFunctionProvider implements ResourceProvider {
   ): Promise<void> {
     try {
       await waitUntilFunctionUpdatedV2(
-        { client: this.lambdaClient, maxWaitTime: this.functionUpdateMaxWaitSeconds },
+        // Explicit cadence per the repo-wide waiter rule (#1291 item 5). The
+        // Lambda V2 waiters' own default is already dense (1s first poll);
+        // pinning it here keeps that a recorded decision instead of an SDK
+        // default we happen to inherit.
+        {
+          client: this.lambdaClient,
+          maxWaitTime: this.functionUpdateMaxWaitSeconds,
+          minDelay: 1,
+          maxDelay: 5,
+        },
         { FunctionName: functionName }
       );
     } catch (error) {

@@ -11,7 +11,7 @@ import {
   parseContextOptions,
   warnIfDeprecatedRegion,
   validateResourceTimeouts,
-  validateWaitFlags,
+  applyWaitFlagEnv,
   type ResourceTimeoutOption,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
@@ -138,26 +138,18 @@ async function deployCommand(
 
   // Wait-mode flags. `--no-wait` / default / `--full-wait` are three
   // points on one axis; the two flags are opposite ends of it, so
-  // combining them is rejected here. This sits BEFORE applyRoleArnIfSet
-  // because that call issues a real `sts:AssumeRole` when --role-arn is
-  // set, and the docs promise the pair is rejected before any AWS call.
-  validateWaitFlags(options);
+  // combining them is rejected inside the helper. This sits BEFORE
+  // applyRoleArnIfSet because that call issues a real `sts:AssumeRole`
+  // when --role-arn is set, and the docs promise the pair is rejected
+  // before any AWS call. The helper also projects the flags onto the
+  // CDKD_NO_WAIT / CDKD_FULL_WAIT / CDKD_WAIT_FLAGS_AVAILABLE envs the
+  // providers read (issue #1291 items 1 + 6).
+  applyWaitFlagEnv(options);
 
   // Resolve --role-arn / CDKD_ROLE_ARN before any AWS call. Writes the
   // assumed-role temp credentials into AWS_* env vars so every later
   // `new AwsClients(...)` picks them up via the SDK default chain.
   await applyRoleArnIfSet({ roleArn: options.roleArn, region: options.region });
-
-  // Skip waiting for async resources (CloudFront, RDS, ElastiCache, etc.)
-  if (!options.wait) {
-    process.env['CDKD_NO_WAIT'] = 'true';
-  }
-
-  // Additionally wait for stabilizations cdkd skips by default (ECS
-  // Service steady state) so "deploy returned" means "it is serving".
-  if (options.fullWait) {
-    process.env['CDKD_FULL_WAIT'] = 'true';
-  }
 
   // Resolve the prefix-user-supplied-names flag pair once at command
   // start. The resolved boolean is plumbed into a `withSkipPrefix(...)`

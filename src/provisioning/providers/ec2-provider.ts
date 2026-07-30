@@ -4657,6 +4657,28 @@ export class EC2Provider implements ResourceProvider {
     // same wire shape.
     if (instance.IamInstanceProfile?.Arn !== undefined) {
       result['IamInstanceProfile'] = instance.IamInstanceProfile.Arn;
+    } else if (process.env['CDKD_NO_WAIT'] === 'true' && instance.State?.Name === 'pending') {
+      // --no-wait deploy-time observed-capture runs against a `pending`
+      // instance whose launch-time profile association may still be
+      // `associating`, in which case DescribeInstances does not surface it
+      // yet. Recording the field as absent would leave a PERMANENT drift
+      // blind spot: the comparator walks the baseline's keys only, so a key
+      // missing from observedProperties is never compared again -- a later
+      // console-side profile detach would go unreported forever (issue
+      // #1291 item 3). One targeted association read closes it; the extra
+      // call happens ONLY in this narrow window (--no-wait capture of a
+      // still-pending instance), never on `cdkd drift` reads.
+      const assoc = await this.ec2Client.send(
+        new DescribeIamInstanceProfileAssociationsCommand({
+          Filters: [{ Name: 'instance-id', Values: [physicalId] }],
+        })
+      );
+      const live = assoc.IamInstanceProfileAssociations?.find(
+        (a) => a.State === 'associated' || a.State === 'associating'
+      );
+      if (live?.IamInstanceProfile?.Arn !== undefined) {
+        result['IamInstanceProfile'] = live.IamInstanceProfile.Arn;
+      }
     }
 
     // BlockDeviceMappings: AWS DescribeInstances returns (DeviceName, Ebs.{VolumeId,

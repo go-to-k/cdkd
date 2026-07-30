@@ -411,7 +411,9 @@ export async function retireCloudFormationStack(
       }
       if (updateRan) {
         await waitUntilStackUpdateComplete(
-          { client: cfnClient, maxWaitTime: 1800 },
+          // Minutes-scale CFn operation: 10s polling is dense enough and stays
+          // within the repo-wide waiter cap (issue #1291 item 5).
+          { client: cfnClient, maxWaitTime: 1800, minDelay: 5, maxDelay: 10 },
           { StackName: cfnStackName }
         );
       }
@@ -445,7 +447,9 @@ export async function retireCloudFormationStack(
   logger.info(`[4/4] Deleting CloudFormation stack '${cfnStackName}' (resources retained)...`);
   await cfnClient.send(new DeleteStackCommand({ StackName: cfnStackName }));
   await waitUntilStackDeleteComplete(
-    { client: cfnClient, maxWaitTime: 1800 },
+    // Minutes-scale CFn operation: 10s polling is dense enough and stays
+    // within the repo-wide waiter cap (issue #1291 item 5).
+    { client: cfnClient, maxWaitTime: 1800, minDelay: 5, maxDelay: 10 },
     { StackName: cfnStackName }
   );
   logger.info(
