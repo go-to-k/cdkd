@@ -1357,7 +1357,9 @@ function createStateDestroyCommand(): Command {
         'AWS::RDS::DBInstance, AWS::RDS::DBCluster, AWS::DocDB::DBCluster, ' +
         'AWS::Neptune::DBCluster, AWS::Neptune::DBInstance, AWS::DynamoDB::Table, ' +
         'AWS::EC2::Instance, AWS::Cognito::UserPool, AWS::AutoScaling::AutoScalingGroup, ' +
-        'and AWS::ElasticLoadBalancingV2::LoadBalancer.',
+        'AWS::ElasticLoadBalancingV2::LoadBalancer, AWS::DSQL::Cluster, ' +
+        'AWS::NeptuneGraph::Graph, AWS::SMSVOICE::ProtectConfiguration, and ' +
+        'AWS::VerifiedPermissions::PolicyStore.',
       false
     )
     .addOption(stackRegionOption())
