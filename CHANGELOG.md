@@ -1,3 +1,10 @@
+# [0.272.0](https://github.com/go-to-k/cdkd/compare/v0.271.0...v0.272.0) (2026-07-30)
+
+
+### Features
+
+* **providers:** flip deletion protection off via Cloud Control for --remove-protection ([#1313](https://github.com/go-to-k/cdkd/issues/1313)) ([3c15587](https://github.com/go-to-k/cdkd/commit/3c155879c523f1bc35c9524779598394a96c1d5f))
+
 # [0.271.0](https://github.com/go-to-k/cdkd/compare/v0.270.0...v0.271.0) (2026-07-30)
 
 
