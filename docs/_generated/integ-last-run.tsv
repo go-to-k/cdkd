@@ -82,7 +82,7 @@ ec2-instance	2026-07-30T03:09:54Z	PASS	77	verify.sh	re-run after the SG allSettl
 ec2-vpc	2026-07-26T17:21:15Z	PASS	35	standard	issue 1241 fix verified: explicit DESTROY FlowLog LogGroup; 20 deleted 0 retained 0 orphans
 ecr	2026-07-26T18:36:31Z	PASS	85	standard	0727b sweep-b4 staleness re-run (rc=0); account clean
 ecr-scanning	2026-07-20T17:37:23Z	PASS	56	verify.sh	ECR scanOnPush + tag add/change/untag update, clean destroy
-ecs-fargate	2026-07-30T02:35:22Z	PASS	382	verify.sh	23 del/0 err, full-wait + ELBv2 active path, orph clean
+ecs-fargate	2026-07-30T05:12:12Z	PASS	381	verify.sh	full-wait create+update settle path after #1291 item 2 evidence-trail fix; 23 del/0 err, orph clean
 ecs-service-update-props	2026-07-23T08:20:10Z	PASS		verify.sh	#1173 re-run after VersionConsistency norm; Phase1f + drift clean; destroy 15 del 0 err 0 orph
 efs-immutable-replacement	2026-07-19T19:05:41Z	PASS	76	verify.sh	rc ok, 1 deleted, orph clean
 efs-lambda	2026-07-26T18:36:31Z	PASS	499	standard	0727b sweep-b4 staleness re-run (rc=0); account clean

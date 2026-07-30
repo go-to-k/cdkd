@@ -213,6 +213,43 @@ describe('ECS Service wait semantics (issue #1275)', () => {
       expect(mockSend.mock.calls.some((c) => c[0] instanceof UpdateServiceCommand)).toBe(false);
     });
 
+    it('preserves the evidence trail when the timeout cleanup deletes the service (issue #1291 item 2)', async () => {
+      mockCreateOk();
+      waitUntilServicesStableMock.mockRejectedValueOnce(new Error('services stable timed out'));
+      mockSend.mockResolvedValueOnce({}); // the cleanup DeleteService
+
+      // The thrown message must carry the diagnosis path itself: the dominant
+      // --full-wait failure is a crashing container, and the cleanup just
+      // deleted the service the user would have inspected first.
+      await expect(
+        new ECSProvider().create('MySvc', 'AWS::ECS::Service', CREATE_PROPS)
+      ).rejects.toThrow(
+        /aws ecs list-tasks --cluster my-cluster --desired-status STOPPED, then aws ecs describe-tasks --cluster my-cluster --tasks/
+      );
+
+      // And the successful deletion is a warn, not a debug line: silently
+      // removing a service the user asked to wait for hides WHY it is gone.
+      const warning = warnSpy.mock.calls
+        .map((c) => String(c[0]))
+        .find((m) => m.includes('Deleted partially-created ECS service'));
+      expect(warning).toBeDefined();
+      expect(warning).toContain(SERVICE_ARN);
+      expect(warning).toContain('aws ecs list-tasks --cluster my-cluster --desired-status STOPPED');
+    });
+
+    it('renders cluster-free diagnosis commands when the template has no Cluster', async () => {
+      const { Cluster: _cluster, ...noClusterProps } = CREATE_PROPS;
+      mockCreateOk();
+      waitUntilServicesStableMock.mockRejectedValueOnce(new Error('services stable timed out'));
+      mockSend.mockResolvedValueOnce({}); // the cleanup DeleteService
+
+      // Without a Cluster the commands must degrade to the default cluster --
+      // no dangling `--cluster ` fragment that would break a copy-paste.
+      await expect(
+        new ECSProvider().create('MySvc', 'AWS::ECS::Service', noClusterProps)
+      ).rejects.toThrow(/aws ecs list-tasks --desired-status STOPPED/);
+    });
+
     it('warns with a manual-deletion pointer when the cleanup itself fails', async () => {
       mockCreateOk();
       waitUntilServicesStableMock.mockRejectedValueOnce(new Error('services stable timed out'));
