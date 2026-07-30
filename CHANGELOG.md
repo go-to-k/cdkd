@@ -1,3 +1,10 @@
+## [0.268.5](https://github.com/go-to-k/cdkd/compare/v0.268.4...v0.268.5) (2026-07-30)
+
+
+### Bug Fixes
+
+* **providers:** map AWS::EC2::Instance NetworkInterfaces so associatePublicIpAddress stays on the SDK path ([#1296](https://github.com/go-to-k/cdkd/issues/1296)) ([7dab4db](https://github.com/go-to-k/cdkd/commit/7dab4dbeee1d7e1b2c4f1e8aa1a6498ac4c9589a))
+
 ## [0.268.4](https://github.com/go-to-k/cdkd/compare/v0.268.3...v0.268.4) (2026-07-30)
 
 
