@@ -1,3 +1,10 @@
+## [0.269.2](https://github.com/go-to-k/cdkd/compare/v0.269.1...v0.269.2) (2026-07-30)
+
+
+### Bug Fixes
+
+* **cli:** name 'cdkd state orphan' as the last resort in destroy partial-failure guidance ([#1306](https://github.com/go-to-k/cdkd/issues/1306)) ([f25f22b](https://github.com/go-to-k/cdkd/commit/f25f22b9edb9e55b84ea40c2975d1dd4d6640cee))
+
 ## [0.269.1](https://github.com/go-to-k/cdkd/compare/v0.269.0...v0.269.1) (2026-07-30)
 
 
