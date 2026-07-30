@@ -725,3 +725,28 @@ describe('parseAllowUnsupportedPropertiesToken', () => {
     ]);
   });
 });
+
+describe('validateWaitFlags (issue #1275)', () => {
+  it('rejects --no-wait --full-wait', async () => {
+    const { validateWaitFlags } = await import('../../../src/cli/options.js');
+    // Commander surfaces `--no-wait` as `wait === false`, not as a `noWait` key.
+    expect(() => validateWaitFlags({ wait: false, fullWait: true })).toThrow(
+      /--no-wait and --full-wait cannot be combined/
+    );
+  });
+
+  it('accepts each flag on its own and the default', async () => {
+    const { validateWaitFlags } = await import('../../../src/cli/options.js');
+    expect(() => validateWaitFlags({ wait: false })).not.toThrow();
+    expect(() => validateWaitFlags({ wait: true, fullWait: true })).not.toThrow();
+    expect(() => validateWaitFlags({ wait: true })).not.toThrow();
+    expect(() => validateWaitFlags({})).not.toThrow();
+  });
+
+  it('is wired into the deploy command surface', async () => {
+    const cmd = createDeployCommand();
+    const flags = cmd.options.map((o) => o.flags);
+    expect(flags).toContain('--full-wait');
+    expect(flags).toContain('--no-wait');
+  });
+});

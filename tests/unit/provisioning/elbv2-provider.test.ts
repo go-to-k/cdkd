@@ -8,6 +8,11 @@ vi.mock('@aws-sdk/client-elastic-load-balancing-v2', async () => {
   return {
     ...actual,
     ElasticLoadBalancingV2Client: vi.fn().mockImplementation(() => ({ send: mockSend, config: { region: () => Promise.resolve('us-east-1') } })),
+    // createLoadBalancer waits for `active` (issue #1274). The real waiter
+    // would poll DescribeLoadBalancers against `mockSend` and time the test
+    // out, so stub it; the wait's own behavior is covered by
+    // elbv2-loadbalancer-active-wait.test.ts.
+    waitUntilLoadBalancerAvailable: vi.fn().mockResolvedValue({ state: 'SUCCESS' }),
   };
 });
 

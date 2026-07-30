@@ -91,4 +91,61 @@ describe('provider poll-loop cap tightness (#1175 / #1176)', () => {
 
     expect(violations, `sparse poll-loop caps found (tighten to <= ${MAX_ALLOWED_CAP_MS}ms):\n${violations.join('\n')}`).toEqual([]);
   });
+
+  // The rule above scans HAND-ROLLED loops only. The AWS SDK's own waiters
+  // (`waitUntilInstanceRunning`, `waitUntilNatGatewayAvailable`,
+  // `waitUntilLoadBalancerAvailable`, `waitUntilServicesStable`, ...) take their
+  // cadence from a `{ minDelay, maxDelay }` config instead, which that regex
+  // cannot see. That blind spot is not hypothetical: the #1177 sweep tightened
+  // every hand-rolled loop to a 10s cap and left FOUR SDK-waiter sites at 15s
+  // (both EC2 Instance waits + both NAT Gateway waits), where they stayed until
+  // the Terraform ec2 benchmark measured cdkd losing to Terraform by ~7.5s --
+  // almost exactly the mean detection lag a 15s cap produces.
+  //
+  // The waiter picks each delay as
+  //   uniform_random(minDelay, min(minDelay * 2^(attempt-1), maxDelay))
+  // so once the backoff saturates the mean lag between "AWS reached the state"
+  // and "cdkd noticed" is maxDelay/2, and the RANDOM component makes the total
+  // swing run to run. Capping at 10s bounds that at a mean 5s; types whose
+  // operation is itself only ~30-60s (an EC2 instance) want tighter still, but
+  // a blanket rule cannot know per-type speed, so 10s is the enforced ceiling
+  // and individual sites may go lower.
+  const waiterCap = /minDelay:\s*(\d+)\s*,\s*maxDelay:\s*(\d+)/g;
+  const MAX_ALLOWED_WAITER_MAXDELAY_S = 10;
+
+  it('every AWS SDK waiter config caps maxDelay at <= 10s', () => {
+    const violations: string[] = [];
+    let waiterSites = 0;
+
+    for (const file of providerFiles()) {
+      const src = readFileSync(file, 'utf8');
+      const name = file.slice(providersDir.length + 1);
+
+      for (const m of src.matchAll(waiterCap)) {
+        waiterSites++;
+        const minDelay = Number.parseInt(m[1]!, 10);
+        const maxDelay = Number.parseInt(m[2]!, 10);
+        if (maxDelay > MAX_ALLOWED_WAITER_MAXDELAY_S) {
+          violations.push(
+            `${name}: { minDelay: ${minDelay}, maxDelay: ${maxDelay} } — maxDelay ${maxDelay}s > ${MAX_ALLOWED_WAITER_MAXDELAY_S}s ` +
+              `(mean detection lag ${maxDelay / 2}s)`
+          );
+        }
+        if (minDelay > maxDelay) {
+          violations.push(`${name}: { minDelay: ${minDelay}, maxDelay: ${maxDelay} } — minDelay exceeds maxDelay`);
+        }
+      }
+    }
+
+    // Coverage floor: 6 waiter configs live in the tree today (4 in
+    // ec2-provider, 1 elbv2, 1 ecs). A green result must mean "all caps tight",
+    // never "the regex stopped matching" — the failure mode this very rule was
+    // added to catch.
+    expect(waiterSites, 'expected the SDK waiter { minDelay, maxDelay } configs to be found').toBeGreaterThanOrEqual(6);
+
+    expect(
+      violations,
+      `sparse SDK waiter caps found (tighten maxDelay to <= ${MAX_ALLOWED_WAITER_MAXDELAY_S}s):\n${violations.join('\n')}`
+    ).toEqual([]);
+  });
 });

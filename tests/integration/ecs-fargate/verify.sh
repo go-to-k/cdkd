@@ -9,6 +9,13 @@
 # definition and that the paired Service carries the managed EBS volume
 # configuration (issue #806), and that the destroy path cleans up.
 #
+# Phase 0 + Phase 1 (issue #1275) cover the ECS Service wait semantics:
+# `--no-wait --full-wait` is rejected as a contradictory pair, and the
+# Phase 1 deploy passes `--full-wait` so the real `waitUntilServicesStable`
+# call runs against AWS (cdkd's default deliberately does NOT wait, matching
+# Terraform's `wait_for_steady_state = false`). The post-deploy assertion
+# proves the wait was effective rather than a no-op.
+#
 # Phase 1b (issue #807) additionally redeploys with CDKD_TEST_UPDATE=true
 # (container command change -> TaskDefinition replacement) and asserts the
 # Service's `taskDefinition` tracks the NEW revision ARN — i.e. the
@@ -104,11 +111,39 @@ fi
 echo "==> Pre-run cleanup"
 cleanup
 
+# --- Phase 0: --no-wait / --full-wait are mutually exclusive (issue #1275) ---
+# The two flags are opposite ends of one axis, so the pair is rejected before
+# any AWS call. Checked first because it must NOT provision anything.
+echo "==> Phase 0: reject --no-wait --full-wait"
+# Capture the output rather than silencing it: a bare `if cmd >/dev/null
+# 2>&1` would read ANY failure (missing bucket, bad creds, synth error) as
+# "correctly rejected" and pass for the wrong reason.
+REJECT_OUT="$(node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --no-wait --full-wait --yes 2>&1)" && REJECT_RC=0 || REJECT_RC=$?
+if [ "${REJECT_RC}" -eq 0 ]; then
+  echo "FAIL: deploy accepted --no-wait --full-wait; the pair must be rejected" >&2
+  exit 1
+fi
+if ! printf '%s' "${REJECT_OUT}" | grep -q -- '--no-wait and --full-wait cannot be combined'; then
+  echo "FAIL: deploy failed for the wrong reason (expected the mutual-exclusion error):" >&2
+  printf '%s\n' "${REJECT_OUT}" >&2
+  exit 1
+fi
+echo "    OK: --no-wait --full-wait rejected with the mutual-exclusion error"
+
 # --- Phase 1: deploy --------------------------------------------------
-echo "==> Phase 1: deploy with the local binary"
+# `--full-wait` (issue #1275) is what makes cdkd wait for the ECS Service to
+# reach steady state. Passing it here is the only place the real
+# waitUntilServicesStable call is exercised against AWS: a wrong cluster /
+# service identifier would leave the waiter polling a MISSING service until
+# it fails, so a green deploy here proves the identifiers are right too.
+echo "==> Phase 1: deploy with the local binary (--full-wait)"
 node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
+  --full-wait \
   --yes
 
 STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
@@ -116,6 +151,38 @@ if [ -z "${STATE}" ]; then
   echo "FAIL: no state file at s3://${STATE_BUCKET}/${STATE_KEY} after deploy" >&2
   exit 1
 fi
+
+# --- Assertion: --full-wait actually settled the Service (issue #1275) ---
+# cdkd's DEFAULT returns once CreateService is accepted (matching Terraform's
+# `wait_for_steady_state = false`), so this assertion is only meaningful
+# because Phase 1 passed --full-wait. A COMPLETED rollout with a single
+# deployment right after deploy returns is what "cdkd waited" looks like.
+WAIT_CLUSTER=$(echo "${STATE}" | jq -r '.outputs.ClusterName // empty')
+WAIT_SERVICE=$(echo "${STATE}" | jq -r '.outputs.ServiceName // empty')
+if [ -z "${WAIT_CLUSTER}" ] || [ -z "${WAIT_SERVICE}" ]; then
+  echo "FAIL: state.outputs.ClusterName / ServiceName missing after deploy" >&2
+  echo "${STATE}" | jq '.outputs'
+  exit 1
+fi
+
+SVC_JSON=$(aws ecs describe-services \
+  --cluster "${WAIT_CLUSTER}" --services "${WAIT_SERVICE}" --region "${REGION}" \
+  --output json)
+ROLLOUT=$(echo "${SVC_JSON}" | jq -r '.services[0].deployments | length as $n
+  | if $n == 1 then (.[0].rolloutState // "NONE") else "deployments=\($n)" end')
+RUNNING=$(echo "${SVC_JSON}" | jq -r '.services[0].runningCount')
+DESIRED=$(echo "${SVC_JSON}" | jq -r '.services[0].desiredCount')
+
+if [ "${ROLLOUT}" != "COMPLETED" ]; then
+  echo "FAIL: service rollout is '${ROLLOUT}' immediately after a --full-wait deploy, expected COMPLETED (#1275 wait NOT effective)" >&2
+  echo "${SVC_JSON}" | jq '.services[0] | {status, runningCount, desiredCount, deployments}'
+  exit 1
+fi
+if [ "${RUNNING}" != "${DESIRED}" ]; then
+  echo "FAIL: runningCount ${RUNNING} != desiredCount ${DESIRED} immediately after a --full-wait deploy (#1275 wait NOT effective)" >&2
+  exit 1
+fi
+echo "    OK: --full-wait left the service at a COMPLETED rollout (running=${RUNNING}/desired=${DESIRED})"
 
 # --- Assertion: EnableFaultInjection reached AWS ----------------------
 # DescribeTaskDefinition returns taskDefinition.enableFaultInjection only
@@ -310,9 +377,12 @@ SERVICE_TD_BEFORE=$(aws ecs describe-services \
   --query 'services[0].taskDefinition' --output text)
 echo "    service taskDefinition before update: ${SERVICE_TD_BEFORE}"
 
+# `--full-wait` again so the UPDATE-side settleService call (issue #1275)
+# is exercised too, not just the create-side one.
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
+  --full-wait \
   --yes
 
 SERVICE_TD_AFTER=$(aws ecs describe-services \

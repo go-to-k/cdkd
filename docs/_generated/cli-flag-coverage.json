@@ -10,6 +10,7 @@
     "--exclusively",
     "--force",
     "--force-stateful-recreation",
+    "--full-wait",
     "--ignore-errors",
     "--image-build-concurrency",
     "--no-aggressive-vpc-parallel",
@@ -262,6 +263,12 @@
       ]
     },
     {
+      "flag": "--full-wait",
+      "integs": [
+        "ecs-fargate"
+      ]
+    },
+    {
       "flag": "--no-auto-asset-storage",
       "integs": [
         "asset-auto-create",
@@ -280,6 +287,7 @@
       "flag": "--no-wait",
       "integs": [
         "acm-certificate",
+        "ecs-fargate",
         "lambda-microvm-image"
       ]
     },

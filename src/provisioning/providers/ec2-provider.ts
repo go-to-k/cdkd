@@ -1207,15 +1207,35 @@ export class EC2Provider implements ResourceProvider {
 
       await this.applyTags(allocationId, properties, logicalId);
 
-      // Associate to an instance on the fast SDK path (the EIP depends on the
-      // instance in the DAG, so it is already running by now). Keeps EIP+
-      // InstanceId off the ~20s Cloud Control async-poll route.
+      // Associate to an instance on the fast SDK path, keeping EIP+InstanceId
+      // off the ~20s Cloud Control async-poll route.
+      //
+      // This used to lean on "the EIP depends on the instance in the DAG, so
+      // it is already running by now". Gating the instance `running` wait on
+      // --no-wait falsified that: the dependency only guarantees the instance
+      // has been CREATED, and AssociateAddress rejects a `pending` instance
+      // with IncorrectInstanceState. That code is not in the retryable table,
+      // so the outer withRetry does not absorb it -- the create would throw
+      // and roll the stack back. Same failure mode as the instance-profile
+      // association (issue #1279), which is the sibling site the wait-gating
+      // work already had to fix; this one was missed because no integ
+      // exercises --no-wait against an Instance+EIP stack.
+      //
+      // Handled the same way as #1279: skip under --no-wait and hand the user
+      // the exact repair command, rather than silently reintroducing a wait
+      // that --no-wait explicitly asked to skip.
       const instanceId = properties['InstanceId'] as string | undefined;
       if (instanceId) {
-        await this.ec2Client.send(
-          new AssociateAddressCommand({ AllocationId: allocationId, InstanceId: instanceId })
-        );
-        this.logger.debug(`Associated EIP ${logicalId} (${allocationId}) to ${instanceId}`);
+        if (process.env['CDKD_NO_WAIT'] === 'true') {
+          this.logger.warn(
+            `EIP ${logicalId} (${allocationId}) was NOT associated with ${instanceId}: --no-wait skips the instance running-state wait, and AssociateAddress rejects an instance that is not yet running. Verify and associate once the instance is running: aws ec2 describe-instances --instance-ids ${instanceId} --query 'Reservations[].Instances[].State.Name' && aws ec2 associate-address --allocation-id ${allocationId} --instance-id ${instanceId}`
+          );
+        } else {
+          await this.ec2Client.send(
+            new AssociateAddressCommand({ AllocationId: allocationId, InstanceId: instanceId })
+          );
+          this.logger.debug(`Associated EIP ${logicalId} (${allocationId}) to ${instanceId}`);
+        }
       }
 
       this.logger.debug(`Successfully created EIP ${logicalId}: ${allocationId} (${publicIp})`);
@@ -1260,14 +1280,36 @@ export class EC2Provider implements ResourceProvider {
       const newInstanceId = properties['InstanceId'] as string | undefined;
       if (oldInstanceId !== newInstanceId) {
         if (newInstanceId) {
-          // Associate (or re-associate to a different instance).
-          await this.ec2Client.send(
-            new AssociateAddressCommand({
-              AllocationId: allocationId,
-              InstanceId: newInstanceId,
-              AllowReassociation: true,
-            })
-          );
+          // Associate (or re-associate to a different instance). Same
+          // pending-instance hazard as createEip's association: under
+          // --no-wait a target instance created in this deploy may still be
+          // `pending`, and AssociateAddress rejects that with
+          // IncorrectInstanceState (not in the retryable table). Unlike the
+          // create path, the target here is often an EXISTING running
+          // instance (repointing an EIP), so an unconditional skip would
+          // break associations that succeed today -- attempt first, and only
+          // degrade to the skip-and-warn remedy when AWS actually rejects the
+          // not-yet-running instance under --no-wait.
+          try {
+            await this.ec2Client.send(
+              new AssociateAddressCommand({
+                AllocationId: allocationId,
+                InstanceId: newInstanceId,
+                AllowReassociation: true,
+              })
+            );
+          } catch (error) {
+            if (
+              process.env['CDKD_NO_WAIT'] === 'true' &&
+              this.isIncorrectInstanceStateError(error)
+            ) {
+              this.logger.warn(
+                `EIP ${logicalId} (${allocationId}) was NOT associated with ${newInstanceId}: --no-wait skips the instance running-state wait, and AssociateAddress rejects an instance that is not yet running. Verify and associate once the instance is running: aws ec2 describe-instances --instance-ids ${newInstanceId} --query 'Reservations[].Instances[].State.Name' && aws ec2 associate-address --allocation-id ${allocationId} --instance-id ${newInstanceId} --allow-reassociation`
+              );
+            } else {
+              throw error;
+            }
+          }
         } else {
           // InstanceId removed → disassociate via the current AssociationId.
           const desc = await this.ec2Client.send(
@@ -1550,8 +1592,12 @@ export class EC2Provider implements ResourceProvider {
           // ready state up to ~2 min late (and with wild variance depending on
           // where the ready moment falls relative to the sparse poll schedule).
           // That made cdkd systematically slower than tools that poll on a
-          // tight interval. A 5-15s poll caps the detection lag at ~15s.
-          { client: this.ec2Client, maxWaitTime: 15 * 60, minDelay: 5, maxDelay: 15 },
+          // tight interval. The delay is
+          // `uniform_random(minDelay, min(minDelay * 2^(attempt-1), maxDelay))`,
+          // so the mean detection lag settles at about maxDelay/2 -- 5s here,
+          // matching the 10s cap the #1177 sweep applied to the ELBv2 and ECS
+          // waiters. This pair was missed by that sweep and kept a 15s cap.
+          { client: this.ec2Client, maxWaitTime: 15 * 60, minDelay: 5, maxDelay: 10 },
           { NatGatewayIds: [natGatewayId] }
         );
         this.logger.debug(`NatGateway ${natGatewayId} is available`);
@@ -1662,8 +1708,9 @@ export class EC2Provider implements ResourceProvider {
       await waitUntilNatGatewayDeleted(
         // Tighten the poll interval off the AWS SDK defaults (15s / 120s) for
         // the same reason as the available-state wait above: a sparse late poll
-        // adds up to ~2 min of dead time detecting the terminal state.
-        { client: this.ec2Client, maxWaitTime: 15 * 60, minDelay: 5, maxDelay: 15 },
+        // adds up to ~2 min of dead time detecting the terminal state. Same 10s
+        // cap as that wait, and as the #1177-swept siblings.
+        { client: this.ec2Client, maxWaitTime: 15 * 60, minDelay: 5, maxDelay: 10 },
         { NatGatewayIds: [physicalId] }
       );
     } catch (error) {
@@ -2619,15 +2666,40 @@ export class EC2Provider implements ResourceProvider {
         // Apply tags
         await this.applyTags(instanceId, properties, logicalId);
 
-        // Wait for instance to reach running state
-        this.logger.debug(`Waiting for instance ${instanceId} to be running...`);
-        await waitUntilInstanceRunning(
-          // Tighten off the AWS SDK defaults (15s / 120s) — see the NAT gateway
-          // wait for the full rationale. An instance reaches `running` in
-          // ~30-60s, so a 120s late poll can add up to ~2 min of dead time.
-          { client: this.ec2Client, maxWaitTime: 300, minDelay: 5, maxDelay: 15 },
-          { InstanceIds: [instanceId] }
-        );
+        // Wait for instance to reach running state unless --no-wait is set.
+        // Same gating pattern as the NAT Gateway wait above. Before issue
+        // #1277 this wait was unconditional, so `--no-wait` silently did
+        // nothing on any stack containing an EC2 instance.
+        if (process.env['CDKD_NO_WAIT'] !== 'true') {
+          this.logger.debug(`Waiting for instance ${instanceId} to be running...`);
+          await waitUntilInstanceRunning(
+            // Poll cadence matters more here than on any other type, because an
+            // instance reaches `running` in ~30-60s — the same order as the poll
+            // interval itself, so the interval is a large fraction of the total.
+            //
+            // The SDK waiter picks each delay as
+            //   uniform_random(minDelay, min(minDelay * 2^(attempt-1), maxDelay))
+            // so a 5/15 config polls at ~5, ~12.5, ~22.5, ~32.5, ~42.5s and an
+            // instance that went `running` at 35s is not SEEN until ~42.5s. The
+            // mean detection lag is maxDelay/2 once the backoff saturates, i.e.
+            // 7.5s of pure dead time on a ~35s operation, and because each delay
+            // is randomized the total swings run to run (measured: 34.9 / 43.5 /
+            // 56.6s on one 3-instance stack). 2/5 puts the mean lag at ~1.75s
+            // and the cadence in line with what the AWS provider for Terraform
+            // does (10s initial delay, then ~3s polls).
+            //
+            // The extra DescribeInstances calls are cheap and the deploy engine
+            // caps concurrency, so the call-volume trade is worth the seconds.
+            // Sibling waiters were already tightened to a 10s cap by the #1177
+            // sweep; this one and the NAT gateway pair kept the looser 15s.
+            { client: this.ec2Client, maxWaitTime: 300, minDelay: 2, maxDelay: 5 },
+            { InstanceIds: [instanceId] }
+          );
+        } else {
+          this.logger.debug(
+            `Instance ${instanceId} launched (skipping running-state wait per --no-wait)`
+          );
+        }
 
         // Ensure the freshly-created IAM instance profile actually bound.
         // cdkd's fast SDK path creates the InstanceProfile only ~1s before
@@ -2642,16 +2714,45 @@ export class EC2Provider implements ResourceProvider {
         // the profile settle before launch; cdkd does NOT, so verify the
         // association post-launch and explicitly AssociateIamInstanceProfile
         // (retrying through the propagation window) when it is missing.
+        //
+        // Under --no-wait the instance is still `pending`, and
+        // `AssociateIamInstanceProfile` is rejected outright for any instance
+        // not in `running` or `stopped` ("The instance 'i-...' is not in the
+        // 'running' or 'stopped' states"). That is not a propagation error the
+        // retry loop can absorb — it stays true until the instance reaches
+        // `running`, which is exactly the wait --no-wait asked to skip. So the
+        // check is skipped and the risk is reported instead: the whole point of
+        // --no-wait is that the caller accepts an un-settled resource, but a
+        // SILENTLY profile-less instance is a much worse surprise than an
+        // unassigned IP, so this warns rather than staying quiet (issue #1279).
         if (iamInstanceProfile) {
-          await this.ensureIamInstanceProfileAssociated(
-            instanceId,
-            iamInstanceProfile.arn,
-            iamInstanceProfile.name,
-            logicalId
-          );
+          if (process.env['CDKD_NO_WAIT'] === 'true') {
+            const profileRef = iamInstanceProfile.arn ?? iamInstanceProfile.name;
+            this.logger.warn(
+              `Skipped the IAM instance profile association check for ${logicalId} (${instanceId}) ` +
+                `because --no-wait leaves the instance in 'pending', where AssociateIamInstanceProfile ` +
+                `is rejected. RunInstances associates the profile asynchronously and can complete with ` +
+                `NO profile attached when the profile was created moments earlier. Verify with: ` +
+                `aws ec2 describe-iam-instance-profile-associations --filters ` +
+                `Name=instance-id,Values=${instanceId} — and if it is missing, re-associate with: ` +
+                `aws ec2 associate-iam-instance-profile --instance-id ${instanceId} ` +
+                `--iam-instance-profile ${iamInstanceProfile.arn ? `Arn=${profileRef}` : `Name=${profileRef}`}`
+            );
+          } else {
+            await this.ensureIamInstanceProfileAssociated(
+              instanceId,
+              iamInstanceProfile.arn,
+              iamInstanceProfile.name,
+              logicalId
+            );
+          }
         }
 
-        // Describe instance to get attributes after running
+        // Describe instance to get attributes after running. Under
+        // --no-wait the instance can still be `pending` here, so the
+        // IP / DNS fields may not be assigned yet — every field below
+        // already falls back to '' rather than failing, which is the
+        // accepted --no-wait trade-off (same as other gated types).
         const describeResponse = await this.ec2Client.send(
           new DescribeInstancesCommand({ InstanceIds: [instanceId] })
         );
@@ -3068,10 +3169,11 @@ export class EC2Provider implements ResourceProvider {
 
         // Wait for instance to reach terminated state so ENIs are released
         await waitUntilInstanceTerminated(
-          // Tighten off the AWS SDK defaults (15s / 120s) — same rationale as
-          // the running-state wait; ENI release gating a re-deploy should not
-          // wait out a sparse late poll.
-          { client: this.ec2Client, maxWaitTime: 300, minDelay: 5, maxDelay: 15 },
+          // Same cadence as the running-state wait above (see that comment for
+          // the delay math): termination is also a ~30-60s operation gating ENI
+          // release, so a 15s cap spent a mean 7.5s of the destroy just not
+          // looking.
+          { client: this.ec2Client, maxWaitTime: 300, minDelay: 2, maxDelay: 5 },
           { InstanceIds: [physicalId] }
         );
 
@@ -3933,6 +4035,22 @@ export class EC2Provider implements ResourceProvider {
       message.includes('has dependencies and cannot be deleted') ||
       message.includes('Network has some mapped public address')
     );
+  }
+
+  /**
+   * AWS rejects AssociateAddress (and several other instance operations)
+   * against an instance that is not `running` / `stopped` with the
+   * `IncorrectInstanceState` code. Under --no-wait that is the expected
+   * outcome for an instance created in the same deploy, not a transient
+   * fault -- it stays true exactly until the wait --no-wait skipped would
+   * have completed.
+   */
+  private isIncorrectInstanceStateError(error: unknown): boolean {
+    if (!(error instanceof Error)) return false;
+    const code = (error as { Code?: string }).Code ?? '';
+    const name = (error as { name?: string }).name ?? '';
+    if (code === 'IncorrectInstanceState' || name === 'IncorrectInstanceState') return true;
+    return error.message.includes('IncorrectInstanceState');
   }
 
   /**

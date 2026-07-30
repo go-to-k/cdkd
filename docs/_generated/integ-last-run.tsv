@@ -8,7 +8,7 @@
 acm-certificate	2026-07-27T16:40:50Z	PASS	23	verify.sh	issue #1272 ACM pass-through guard; 1 del 0 err
 agentcore-tools	2026-07-17T12:05:03Z	PASS	180	verify.sh	3 phases clean; adopt-only singletons + evaluator CRUD; name regex fix (no hyphens)
 alb	2026-07-27T16:40:50Z	PASS	64	verify.sh	issue #1270 ELBv2 + EC2 update wrap; 16 del 0 err
-alb-advanced	2026-07-26T18:49:34Z	PASS	63	standard	0727b sweep-b6 staleness re-run (rc=0); account clean
+alb-advanced	2026-07-28T02:54:42Z	PASS	206	standard	ALB active wait 156s (#1274), destroy 17/0 errors
 api-cognito	2026-07-26T18:49:34Z	PASS	75	standard	0727b sweep-b6 staleness re-run (rc=0); account clean
 apigateway	2026-07-21T14:32:25Z	PASS	56	verify.sh	rc ok, orph clean
 apigatewayv2-update-removal	2026-07-22T14:04:44Z	PASS		verify.sh	issue-1160 apigwv2 batch: 5-API removal reset live-verified, Cors via DeleteCorsConfiguration, destroy 0 err/0 orph
@@ -26,7 +26,7 @@ basic	2026-07-20T04:38:04Z	PASS	83	standard	rc 0/0, 0 orphans; validates buildPr
 batch	2026-07-26T18:43:33Z	PASS	89	standard	0727b sweep-b5 staleness re-run (rc=0); account clean
 bedrock-agentcore	2026-07-24T04:22:29Z	PASS	42	standard	import() attr enrich (#1188); GetAgentRuntime live-probe confirms field shape; 6 del 0 err
 bench-ccapi	2026-07-26T18:43:33Z	PASS	89	standard	0727b sweep-b5 staleness re-run (rc=0); account clean
-bench-cdk-sample	2026-07-26T18:02:31Z	PASS	900	standard	#1238 guard broad verify; 39 created, destroy 37 del 2 retained-swept 0 err, log groups swept
+bench-cdk-sample	2026-07-28T03:05:44Z	PASS	508	standard	39 created, destroy 37 del 2 retained-swept 0 err, log groups swept
 bench-sdk	2026-07-26T18:43:33Z	PASS	33	standard	0727b sweep-b5 staleness re-run (rc=0); account clean
 bootstrap-free-region	2026-07-16T15:34:01Z	PASS	81	verify.sh	re-run after PR 1015 review fix-back (region-resolver owner header), 0 orphans
 bucket-deployment	2026-07-21T18:02:21Z	PASS	125	verify.sh	rc ok, orph clean
@@ -82,7 +82,7 @@ ec2-instance	2026-07-26T16:41:51Z	PASS	123	verify.sh	0727 P0 sweep (ec2-provider
 ec2-vpc	2026-07-26T17:21:15Z	PASS	35	standard	issue 1241 fix verified: explicit DESTROY FlowLog LogGroup; 20 deleted 0 retained 0 orphans
 ecr	2026-07-26T18:36:31Z	PASS	85	standard	0727b sweep-b4 staleness re-run (rc=0); account clean
 ecr-scanning	2026-07-20T17:37:23Z	PASS	56	verify.sh	ECR scanOnPush + tag add/change/untag update, clean destroy
-ecs-fargate	2026-07-26T17:17:11Z	PASS	388	verify.sh	issue 1236 fix verified: DescribeType throttle retry; update phase green, destroy clean 0 orphans
+ecs-fargate	2026-07-28T02:01:44Z	PASS	387	verify.sh	rc ok, orph clean, +--full-wait phases (#1275)
 ecs-service-update-props	2026-07-23T08:20:10Z	PASS		verify.sh	#1173 re-run after VersionConsistency norm; Phase1f + drift clean; destroy 15 del 0 err 0 orph
 efs-immutable-replacement	2026-07-19T19:05:41Z	PASS	76	verify.sh	rc ok, 1 deleted, orph clean
 efs-lambda	2026-07-26T18:36:31Z	PASS	499	standard	0727b sweep-b4 staleness re-run (rc=0); account clean

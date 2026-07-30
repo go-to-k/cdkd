@@ -135,7 +135,7 @@ Downgrading is safe too (older binaries ignore the marker). Explicit pre-provisi
 - **S3-based state management**: No DynamoDB required, uses S3 conditional writes for locking
 - **DAG-based parallelization**: Analyze `Ref`/`Fn::GetAtt` dependencies and execute in parallel
 - **Rollback on failure**: When a deploy errors mid-stack, cdkd rolls back the resources it just created so the stack state stays consistent (CloudFormation parity — but cdkd does this without round-tripping through CFn). Pass `cdkd deploy --no-rollback` to skip rollback and keep the partial state for Terraform-style inspection / repair — then either fix forward with another `cdkd deploy`, revert with the standalone `cdkd rollback`, or `cdkd destroy` to clean up. See [Rollback behavior](#rollback-behavior).
-- **`--no-wait` for async resources**: Skip the multi-minute wait on CloudFront / RDS / ElastiCache / NAT Gateway / Lambda MicroVM Image and return as soon as the create call returns (CloudFormation always blocks)
+- **`--no-wait` / `--full-wait` for async resources**: `--no-wait` skips the multi-minute wait on CloudFront / RDS / ElastiCache / NAT Gateway / EC2 Instance / ELBv2 LoadBalancer / Lambda MicroVM Image and returns as soon as the create call returns (CloudFormation always blocks); `--full-wait` goes the other way and also waits where only CloudFormation does (ECS Service steady state)
 - **VPC route DependsOn relaxation (on by default)**: Drop CDK-injected defensive `DependsOn` edges from VPC Lambdas onto private-subnet routes so `CloudFront::Distribution` and `Lambda::Url` start their ~3-min propagation in parallel with NAT Gateway stabilization (~50% faster on VPC + Lambda + CloudFront stacks). Pass `--no-aggressive-vpc-parallel` to opt out.
 - **Local execution** (`cdkd local invoke` / `start-api` / `run-task` / `start-service` / `start-alb` / `start-cloudfront` / `invoke-agentcore` / `start-agentcore`): run Lambdas, API Gateway routes, ECS tasks, long-running ECS services, CloudFront distributions, and Bedrock AgentCore Runtimes from your CDK code. All AWS Lambda runtimes, container Lambdas, REST v1 / HTTP v2 / Function URL routes, Service Connect / Cloud Map, AgentCore HTTP / MCP / A2A / AGUI / WebSocket protocols (one-shot `invoke-agentcore` and long-running warm serve via `start-agentcore`, which serves the native contract — `POST /invocations` + `GET /ping`, MCP `/mcp`, A2A `/` — plus the `/ws` bridge for HTTP / AGUI). The Docker-backed commands work for both `cdkd deploy`-managed (`--from-state`) AND `cdk deploy`-managed (`--from-cfn-stack`) stacks; `start-cloudfront` serves the viewer-request -> S3 / Lambda Function URL origin -> viewer-response pipeline (CloudFront-Functions + S3-only distributions run in-process with no Docker). See [Local execution](#local-execution).
 - **Bidirectional CloudFormation migration**: `cdkd import --migrate-from-cloudformation` adopts existing CFn stacks (including `cdk deploy`-managed) into cdkd state without re-creating resources; `cdkd export` hands a cdkd stack back to CloudFormation when production-ready. See [Importing](#importing-existing-resources) / [Exporting](#exporting-a-stack-back-to-cloudformation).
@@ -219,6 +219,7 @@ cdkd deploy --dry-run               # plan only, no changes
 cdkd deploy --no-rollback           # Terraform-style: keep partial state on failure
 cdkd rollback MyStack               # revert a failed --no-rollback / interrupted deploy
 cdkd deploy --no-wait               # skip multi-minute waits (CloudFront / RDS / NAT)
+cdkd deploy --full-wait             # also wait where only CFn does (ECS Service steady state)
 
 # Inspect what would change
 cdkd diff MyStack
@@ -256,19 +257,32 @@ matrix (`--concurrency`, `--no-aggressive-vpc-parallel`,
 including the synth-driven per-resource `cdkd orphan <constructPath>`
 variant, and stage / wildcard pattern matching.
 
-## `--no-wait`: skip async-resource waits
+## `--no-wait` / `--full-wait`: choose what "done" means
 
-CloudFront / RDS / ElastiCache / NAT Gateway typically take 1–15
-minutes to fully provision. By default cdkd waits (matching CFn).
-`cdkd deploy --no-wait` returns as soon as the create call returns
-and lets AWS finish in the background — handy for CI where nothing
-in the deploy flow needs the resource fully active. **Deploy-only**:
-`cdkd destroy` always waits (NAT in `deleting` state holds ENIs and
-would `DependencyViolation` sibling deletes).
+CloudFront / RDS / ElastiCache / NAT Gateway / EC2 Instance / ELBv2
+LoadBalancer typically take 1–15 minutes to fully provision. Three
+modes, least to most waiting:
 
-See [docs/cli-reference.md](docs/cli-reference.md#--no-wait-skip-async-resource-waits)
-for per-resource caveats (NAT egress, RDS final-snapshot timing,
-etc.).
+- **`--no-wait`** returns as soon as the create call returns and lets
+  AWS finish in the background.
+- **default** waits where CloudFormation and Terraform agree on what
+  "done" means.
+- **`--full-wait`** additionally waits where only CloudFormation waits
+  (today: ECS Service steady state).
+
+Pick by whether anything downstream needs the resource to actually be
+serving, not by where the deploy runs — cutting billed CI minutes is a
+perfectly good reason to use `--no-wait` in CI, and a local smoke test
+is a good reason to use `--full-wait` on a laptop. The two flags are
+opposite ends of one axis and cannot be combined.
+
+**Deploy-only**: `cdkd destroy` always waits (NAT in `deleting` state
+holds ENIs and would `DependencyViolation` sibling deletes).
+
+See [docs/cli-reference.md](docs/cli-reference.md#wait-semantics) for
+the per-resource table (what each mode does, next to what
+CloudFormation and Terraform do) and caveats (NAT egress, RDS
+final-snapshot timing, etc.).
 
 ## Local execution
 

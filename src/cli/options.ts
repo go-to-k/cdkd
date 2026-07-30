@@ -489,7 +489,8 @@ export function effectiveResourceTimeoutMs(
 
 /**
  * Skip waiting for async-stabilization resources (CloudFront, RDS,
- * ElastiCache, NAT Gateway, Lambda MicroVM Image) on deploy. Setting the flag mutates
+ * ElastiCache, NAT Gateway, EC2 Instance, ELBv2 LoadBalancer, Lambda
+ * MicroVM Image) on deploy. Setting the flag mutates
  * `process.env.CDKD_NO_WAIT='true'`; provider code checks that env
  * var, not the parsed CLI option (this lets nested call paths — e.g.
  * asset publish, lifecycle hooks — see the same setting without
@@ -503,8 +504,58 @@ export function effectiveResourceTimeoutMs(
  */
 export const noWaitOption = new Option(
   '--no-wait',
-  'Skip waiting for async resources to stabilize (CloudFront, RDS, ElastiCache, NAT Gateway, Lambda MicroVM Image)'
+  'Skip waiting for async resources to stabilize (CloudFront, RDS, ElastiCache, NAT Gateway, EC2 Instance, ELBv2 LoadBalancer, Lambda MicroVM Image)'
 );
+
+/**
+ * Opt in to the stabilization waits cdkd deliberately SKIPS by default:
+ * the ones where CloudFormation waits and Terraform does not. Today that
+ * is ECS Service steady state (create and update).
+ *
+ * `--no-wait`, the default, and `--full-wait` are three points on one
+ * axis, from least to most waiting:
+ *
+ * - `--no-wait`      skip the stabilization waits cdkd performs by default
+ * - (default)        wait where CloudFormation and Terraform agree
+ * - `--full-wait`    also wait where only CloudFormation waits
+ *
+ * Which one is right depends on whether anything downstream needs the
+ * resource to actually be serving, NOT on where the deploy runs: cutting
+ * billed CI minutes is a legitimate reason to pass `--no-wait` in CI, and
+ * a local smoke test is a legitimate reason to pass `--full-wait` on a
+ * laptop.
+ *
+ * Setting the flag mutates `process.env.CDKD_FULL_WAIT='true'`, the same
+ * mechanism `--no-wait` uses, so nested call paths see it without
+ * threading it through every signature.
+ *
+ * Mutually exclusive with `--no-wait` (see {@link validateWaitFlags}).
+ * Per-resource-type wait control is deliberately NOT expressible with
+ * these two whole-run flags; that would be a separate feature.
+ *
+ * Deploy-only, like `--no-wait`.
+ */
+export const fullWaitOption = new Option(
+  '--full-wait',
+  'Also wait for stabilizations cdkd skips by default, matching CloudFormation (ECS Service steady state)'
+);
+
+/**
+ * Reject `--no-wait --full-wait`. They sit at opposite ends of one axis,
+ * so a combination has no coherent meaning: the user is asking to both
+ * skip waits and add waits in the same run.
+ *
+ * Note the Commander shape: `--no-wait` is the negation form of a boolean
+ * `wait` option, so it surfaces as `wait === false` rather than as a
+ * `noWait` key.
+ */
+export function validateWaitFlags(opts: { wait?: boolean; fullWait?: boolean }): void {
+  if (opts.wait === false && opts.fullWait === true) {
+    throw new Error(
+      '--no-wait and --full-wait cannot be combined: --no-wait skips stabilization waits, --full-wait adds them. Pick one.'
+    );
+  }
+}
 
 /**
  * Drop the CDK-injected defensive `DependsOn` edges from VPC Lambdas (and
@@ -870,6 +921,7 @@ export const deployOptions = [
   // single Commander key, making `noPrefixUserSuppliedNames` permanently
   // `undefined` and silencing the warning.
   noWaitOption,
+  fullWaitOption,
   aggressiveVpcParallelOption,
   new Option(
     '-e, --exclusively',

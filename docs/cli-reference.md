@@ -17,15 +17,50 @@ resource provisioning. Each level has its own concurrency knob.
 | `--asset-publish-concurrency` | 8 | Maximum concurrent asset publish operations (S3 + ECR push) |
 | `--image-build-concurrency` | 4 | Maximum concurrent Docker image builds |
 
+## Wait semantics
+
+cdkd is **template-compatible** with CloudFormation. It is not
+**wait-semantics-identical**, and does not claim to be. What counts as
+"done" is decided per resource type and documented in the table below.
+
+The decision procedure: where CloudFormation and Terraform agree on the
+completion definition, cdkd matches them. Where they disagree, cdkd's
+default takes the definition that suits dev/test iteration, and
+`--full-wait` opts into the CloudFormation one. This is a rule for
+choosing completion definitions, not a promise to mirror any one engine.
+
+One documented exception: `AWS::CertificateManager::Certificate` is a
+"CloudFormation waits, Terraform does not" case where cdkd's default
+nonetheless waits. An un-issued certificate makes a downstream CloudFront
+/ ALB create fail outright rather than merely arrive early, so the fast
+side would trade a wait for a broken deploy. Terraform users express the
+same wait as a separate `aws_acm_certificate_validation` resource, which
+cdkd has no equivalent of.
+
+Three wait modes, least to most waiting:
+
+| Mode | Meaning |
+| --- | --- |
+| `--no-wait` | Skip the stabilization waits cdkd performs by default |
+| (default) | Wait where CloudFormation and Terraform agree |
+| `--full-wait` | Also wait where only CloudFormation waits |
+
+The two flags are opposite ends of one axis, so **`--no-wait` and
+`--full-wait` cannot be combined** (cdkd rejects the pair before any AWS
+call). Per-resource-type wait control is not expressible with these
+whole-run flags.
+
+Which mode is right depends on whether anything downstream needs the
+resource to actually be serving, **not** on where the deploy runs:
+
+- `--no-wait` when nothing runs next and nothing is waiting on completion
+  (preview environments, and cutting billed CI minutes is a perfectly
+  good reason to use it in CI)
+- default for ordinary use
+- `--full-wait` when a smoke test, a DNS cutover, or a follow-on job runs
+  immediately after the deploy returns
+
 ## `--no-wait`
-
-By default, cdkd waits for async resources (CloudFront Distribution,
-RDS Cluster/Instance, ElastiCache, NAT Gateway, Lambda MicroVM Image)
-to reach a ready state before completing — the same behavior as
-CloudFormation.
-
-Use `--no-wait` to skip this and return immediately after resource
-creation:
 
 ```bash
 cdkd deploy --no-wait
@@ -34,22 +69,49 @@ cdkd deploy --no-wait
 This can significantly speed up deployments. The resource is fully
 functional once AWS finishes the async deployment.
 
-| Resource type | Default behavior | `--no-wait` behavior |
-| --- | --- | --- |
-| `AWS::CloudFront::Distribution` | Wait for `Deployed` status (3–15 min) | Return after `CreateDistribution` |
-| `AWS::RDS::DBCluster` / `AWS::RDS::DBInstance` | Wait for `available` status (5–10 min) | Return after Create call |
-| `AWS::DocDB::DBCluster` / `AWS::DocDB::DBInstance` | Wait for `available` status (5–10 min) | Return after Create call |
-| `AWS::Neptune::DBCluster` / `AWS::Neptune::DBInstance` | Wait for `available` status (5–10 min) | Return after Create call |
-| `AWS::ElastiCache::CacheCluster` etc. | Wait for `available` status | Return after Create call |
-| `AWS::CertificateManager::Certificate` | Wait for `ISSUED` (DNS/EMAIL validation) | Return after `RequestCertificate` (cert is `PENDING_VALIDATION`; downstream CloudFront/ALB fail until it issues) |
-| `AWS::EC2::NatGateway` | Wait for `available` state (1–2 min) | Return after `CreateNatGateway` (gateway is `pending`; AWS finishes async) |
-| `AWS::Lambda::MicrovmImage` | Wait for `CREATED` (the Firecracker snapshot build; several minutes) | Return after `CreateMicrovmImage` (image is `CREATING`; the build finishes async). The image ARN is resolved before the wait, so outputs still work. Only the SDK provider honors this — the Cloud Control fallback always polls to a terminal state |
+| Resource type | `--no-wait` | Default | `--full-wait` | CloudFormation | Terraform |
+| --- | --- | --- | --- | --- | --- |
+| `AWS::CloudFront::Distribution` | Return after `CreateDistribution` | Wait for `Deployed` (3–15 min) | same as default | Waits | Waits (`wait_for_deployment`, default `true`) |
+| `AWS::RDS::DBCluster` / `AWS::RDS::DBInstance` | Return after Create call | Wait for `available` (5–10 min) | same as default | Waits | Waits |
+| `AWS::DocDB::DBCluster` / `AWS::DocDB::DBInstance` | Return after Create call | Wait for `available` (5–10 min) | same as default | Waits | Waits |
+| `AWS::Neptune::DBCluster` / `AWS::Neptune::DBInstance` | Return after Create call | Wait for `available` (5–10 min) | same as default | Waits | Waits |
+| `AWS::ElastiCache::CacheCluster` etc. | Return after Create call | Wait for `available` | same as default | Waits | Waits |
+| `AWS::CertificateManager::Certificate` | Return after `RequestCertificate` (cert is `PENDING_VALIDATION`; downstream CloudFront/ALB fail until it issues) | Wait for `ISSUED` (DNS/EMAIL validation) | same as default | Waits | Does not wait (`aws_acm_certificate` returns while `PENDING_VALIDATION`; waiting is a separate `aws_acm_certificate_validation` resource) |
+| `AWS::EC2::NatGateway` | Return after `CreateNatGateway` (gateway is `pending`; AWS finishes async) | Wait for `available` (1–2 min) | same as default | Waits | Waits |
+| `AWS::EC2::Instance` | Return after `RunInstances` (instance is `pending`; `PublicIp` / `PrivateIp` attributes may be empty, and the IAM instance profile association is not verified — see below) | Wait for `running` (30–60 s) | same as default | Waits for `running` | Waits for `running` |
+| `AWS::ElasticLoadBalancingV2::LoadBalancer` | Return after `CreateLoadBalancer` (LB is `provisioning`; `DNSName` 503s until active) | Wait for `active` (90–180 s) | same as default | Waits for `active` | Waits for `active` |
+| `AWS::ECS::Service` | same as default | Return after `CreateService` / `UpdateService` | Wait for steady state | Waits for steady state | Does not wait (`wait_for_steady_state`, default `false`) |
+| `AWS::Lambda::MicrovmImage` | Return after `CreateMicrovmImage` (image is `CREATING`; the build finishes async). The image ARN is resolved before the wait, so outputs still work. Only the SDK provider honors this — the Cloud Control fallback always polls to a terminal state | Wait for `CREATED` (the Firecracker snapshot build; several minutes) | same as default | Waits | n/a |
 
 For NAT Gateway specifically: `CreateNatGateway` returns the
 `NatGatewayId` immediately, so dependent Routes that only need the ID
 proceed against a still-`pending` gateway. `--no-wait` is safe when
 nothing in the deploy flow needs actual NAT-routed egress (no Lambda
 invoked during deploy that hits the internet, etc.).
+
+For EC2 Instance specifically: cdkd normally verifies after launch that the
+requested `IamInstanceProfile` really did attach, because `RunInstances`
+associates it asynchronously and can complete with NO profile attached when the
+profile was created moments earlier (cdkd's fast path creates it ~1 s before
+launch; CloudFormation never hits this because its own latency lets IAM settle).
+That check needs a `running` or `stopped` instance — AWS rejects
+`AssociateIamInstanceProfile` on a `pending` one — so under `--no-wait` it is
+skipped and a warning naming the instance is printed instead. If the deploy
+needs the profile to be attached, either drop `--no-wait` or verify afterwards:
+
+```bash
+aws ec2 describe-iam-instance-profile-associations \
+  --filters Name=instance-id,Values=<instance-id>
+```
+
+The same hazard applies to an `AWS::EC2::EIP` whose `InstanceId` points at an
+instance created in the same deploy: `AssociateAddress` rejects an instance
+that is not yet `running`. Under `--no-wait`, creating such an EIP allocates
+the address but skips the association; updating one attempts the association
+and degrades to a warning only if AWS actually rejects it (so repointing an
+EIP at an already-running instance still works). In both cases the warning
+prints the exact `aws ec2 associate-address` command to run once the instance
+is running.
 
 `--no-wait` is **deploy-only**. `cdkd destroy` does not accept it,
 because no destroy code path benefits — NAT Gateway destroy
@@ -73,6 +135,39 @@ Pending` (CFn parity). The wait is scoped to the Custom Resource Invoke
 itself; ordinary Lambda CREATE / UPDATE returns as soon as the SDK call
 returns, so VPC Lambdas with no synchronous downstream consumer don't
 block the deploy DAG on the 5–10 min ENI attach window.
+
+## `--full-wait`
+
+```bash
+cdkd deploy --full-wait
+```
+
+`AWS::ECS::Service` is the only type this currently affects. cdkd's
+default returns once `CreateService` / `UpdateService` is accepted, which
+matches Terraform's default and diverges from CloudFormation on purpose:
+nothing downstream needs the service to be steady (`Fn::GetAtt` yields
+`Name` / `ServiceArn`, both valid immediately), and CloudFormation's
+steady-state wait is what makes a crash-looping image hang a stack for
+many minutes.
+
+Without `--full-wait`, cdkd prints the exact command to wait manually:
+
+```text
+aws ecs wait services-stable --cluster <cluster> --services <service>
+```
+
+cdkd deliberately does not probe the rollout on the default path. Right
+after `CreateService` a healthy service and a doomed one look identical
+(`ACTIVE`, `runningCount: 0`, `rolloutState: IN_PROGRESS`); a warning
+there would fire on every deploy and would imply a guarantee ("nothing
+was printed, so the rollout is fine") that a single check cannot back.
+
+Under `--full-wait`, a service that never stabilizes fails the deploy. On
+create, cdkd best-effort deletes the service it just created before
+failing, so the next deploy does not collide on the service name.
+
+`--full-wait` is **deploy-only**, like `--no-wait`, and cannot be
+combined with it.
 
 ## VPC route DependsOn relaxation (default-on)
 
