@@ -164,7 +164,11 @@ was printed, so the rollout is fine") that a single check cannot back.
 
 Under `--full-wait`, a service that never stabilizes fails the deploy. On
 create, cdkd best-effort deletes the service it just created before
-failing, so the next deploy does not collide on the service name.
+failing, so the next deploy does not collide on the service name. The
+deletion is announced with a warning, and the failure message carries the
+`aws ecs list-tasks --desired-status STOPPED` / `describe-tasks` commands
+to inspect why the tasks stopped — stopped tasks outlive the service
+deletion by about an hour, so the evidence is still there.
 
 `--full-wait` is **deploy-only**, like `--no-wait`, and cannot be
 combined with it.

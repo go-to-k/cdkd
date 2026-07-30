@@ -838,6 +838,11 @@ export class ECSProvider implements ResourceProvider {
           properties['Cluster'] as string | undefined
         );
       } catch (waitError) {
+        // Include --cluster: a service in a non-default cluster cannot be
+        // addressed without it, and the ARN alone is not documented to imply
+        // the cluster. Matches the INFO hint's shape.
+        const cleanupCluster = properties['Cluster'] as string | undefined;
+        const clusterArg = cleanupCluster ? ` --cluster ${cleanupCluster}` : '';
         try {
           await client.send(
             new DeleteServiceCommand({
@@ -846,20 +851,24 @@ export class ECSProvider implements ResourceProvider {
               force: true,
             })
           );
-          this.logger.debug(
-            `Cleaned up partially-created ECS service ${logicalId} (${service.serviceArn}) after the steady-state wait failed`
+          // warn, not debug: the dominant --full-wait failure is a crashing
+          // container, and this delete removes the service the user would
+          // reach for first when asking "why". Say where the evidence
+          // still lives (issue #1291 item 2).
+          this.logger.warn(
+            `Deleted partially-created ECS service ${logicalId} (${service.serviceArn}) after the steady-state wait failed, so the next deploy's CreateService does not collide on the name. Its stopped tasks remain inspectable for about an hour: aws ecs list-tasks${clusterArg} --desired-status STOPPED`
           );
         } catch (cleanupError) {
-          // Include --cluster: a service in a non-default cluster cannot be
-          // deleted without it, and the ARN alone is not documented to imply
-          // the cluster. Matches the INFO hint's shape.
-          const cleanupCluster = properties['Cluster'] as string | undefined;
-          const clusterArg = cleanupCluster ? ` --cluster ${cleanupCluster}` : '';
           this.logger.warn(
             `Failed to clean up partially-created ECS service ${logicalId} (${service.serviceArn}): ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}. Manual deletion may be required before the next deploy: aws ecs delete-service${clusterArg} --service ${service.serviceArn} --force`
           );
         }
-        throw waitError;
+        // The SDK waiter's bare "Waiter has timed out" explains nothing.
+        // Carry the diagnosis path in the thrown message; the wrapping
+        // ProvisioningError in the outer catch preserves it verbatim.
+        throw new Error(
+          `ECS service ${logicalId} did not reach steady state under --full-wait: ${waitError instanceof Error ? waitError.message : String(waitError)}. Inspect why its tasks stopped (stopped tasks stay visible for about an hour): aws ecs list-tasks${clusterArg} --desired-status STOPPED, then aws ecs describe-tasks${clusterArg} --tasks <task-arn> --query 'tasks[].[stoppedReason,containers[].reason]'`
+        );
       }
 
       return {
