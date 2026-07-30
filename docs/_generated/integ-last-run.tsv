@@ -68,7 +68,7 @@ docdb-neptune	2026-07-27T06:16:35Z	PASS	1560	verify.sh	#1160 neptune+docdb remov
 docker-image-asset	2026-07-24T04:58:55Z	PASS	45	verify.sh	lazy ECR login: warm-cred no-login + logged-out self-heal both PASS; destroy 0 err 0 orph
 drift-revert	2026-07-19T19:15:52Z	PASS	93	verify.sh	rc ok, 13 deleted, orph clean
 drift-revert-arrays	2026-07-19T17:35:30Z	PASS	114	verify.sh	PR #1100 post-rebase re-verify; benign-reorder no-false-positive + real drift revert; 16 del 0 err 0 orphans
-drift-revert-vpc	2026-07-19T19:20:48Z	PASS	242	verify.sh	rc ok, 21 deleted, orph clean
+drift-revert-vpc	2026-07-30T12:11:07Z	FAIL	420	verify.sh	phantom Subnet MapPublicIpOnLaunch drift (observed-capture race) + updateSubnet cannot revert mutable attr; destroy clean 0 orphans
 dynamodb-autoscaling	2026-07-21T14:33:57Z	PASS	77	verify.sh	rc ok, orph clean
 dynamodb-globaltable	2026-07-21T05:21:32Z	PASS	237	verify.sh	rc ok, orph clean
 dynamodb-gsi-update	2026-07-20T08:09:23Z	PASS	579	verify.sh	rc ok, orph clean
@@ -99,7 +99,7 @@ eventbridge-input-transformer	2026-07-20T08:18:46Z	PASS	63	verify.sh	hardened P2
 eventbridge-pipes	2026-07-26T19:36:49Z	PASS	177	verify.sh	0727b sweep-b11 staleness re-run (rc=0); account clean
 eventbridge-scheduler	2026-07-20T03:07:51Z	PASS	150	verify.sh	pattern-2 sweep sample: assert_gone/gone_probe/head-object idioms live-verified; 0 orphans
 eventsourcemapping-race	2026-07-27T11:04:52Z	PASS	80	verify.sh	issue #1267 Lambda ESM update wrap; 5 del 0 err; swept 1 auto-created log group
-export	2026-07-26T17:37:08Z	PASS	249	verify.sh	live-test for export.ts DescribeType throttle-retry follow-up; CFn round-trip + clean delete
+export	2026-07-30T12:24:41Z	PASS	480	verify.sh	regression sweep post-#1289/#1294; full CFn IMPORT round-trip clean
 export-nested-stack	2026-07-21T08:39:22Z	PASS	327	verify.sh	export->CFn nested adopt, CFn delete clean, 0 orphans
 fifo-sqs-event-source	2026-07-27T06:44:00Z	PASS	111	verify.sh	final-tree gate refresh for #1256; destroy 6/0 errors, 0 orphans
 fsx-lustre	2026-07-20T05:01:58Z	PASS	1140	verify.sh	PR #1114 §3b always-emit + Class 1 discriminator carve-out; deploy+update(LZ4,tags)+destroy 10 del 0 err 0 orphans
@@ -180,15 +180,15 @@ log-pipeline	2026-07-26T18:10:48Z	PASS	72	standard	0727b sweep-b2 staleness re-r
 loggroup-class-guard	2026-07-27T11:04:52Z	PASS	49	verify.sh	issue #1267 post-review re-run; typed-error pass-through verified vs real AWS; 1 del 0 err
 loggroup-kms-associate	2026-07-26T19:25:15Z	PASS	57	verify.sh	0727b sweep-b10 staleness re-run (rc=0); account clean
 macro-expansion	2026-07-21T19:45:50Z	PASS	107	verify.sh	re-run w/ new diff-expands + destroy-no-expand asserts (1150)
-microservices	2026-07-19T19:50:37Z	PASS	54	standard	rc ok, 19 res, all destroyed, orph clean
+microservices	2026-07-30T12:14:52Z	PASS	330	standard	regression sweep post-#1289/#1293/#1294/#1296; 19 res deploy+destroy clean
 migrate-from-bare-cfn	2026-07-21T13:56:13Z	PASS	152	verify.sh	post import-tag-walk refactor #1139; bare-CFn migrate 3 types+destroy clean
 migrate-from-bare-cfn-codegen-only	2026-07-26T18:57:55Z	PASS	17	verify.sh	0727b sweep-b7 staleness re-run (rc=0); account clean
 migrate-from-cfn	2026-07-21T13:50:11Z	PASS	414	verify.sh	post import-tag-walk refactor #1139; import+migrate+destroy clean
 monitoring	2026-07-24T10:52:15Z	PASS	40	standard	0724b sweep staleness; 7 del 0 err 0 orphans
 multi-asset	2026-07-21T18:05:41Z	PASS	106	verify.sh	rc ok, ECR swept, orph clean
 multi-region-same-stack	2026-07-26T18:04:53Z	PASS	22	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
-multi-resource	2026-07-17T12:05:00Z	PASS	85	standard	broad refresh for #1041 register-providers edit (post-rebase): 17 created/deleted, 0 errors, log groups swept
-multi-stack-deps	2026-07-19T19:48:39Z	PASS	63	standard	rc ok, 3 stacks 13 res, all destroyed, orph clean
+multi-resource	2026-07-30T12:20:02Z	PASS	300	standard	regression sweep post-#1289; 17 res deploy+destroy clean; PITR transient retried ok
+multi-stack-deps	2026-07-30T12:17:37Z	PASS	300	standard	regression sweep post-#1289; 3-stack cross-stack deps deploy+destroy clean
 nested-stack	2026-07-26T18:10:48Z	PASS	30	standard	0727b sweep-b2 staleness re-run (rc=0); account clean
 nested-stack-3level	2026-07-21T05:11:36Z	PASS	78	verify.sh	rc ok, orph clean
 nested-stack-deep	2026-07-26T18:10:48Z	PASS	65	verify.sh	0727b sweep-b2 staleness re-run (rc=0); account clean
