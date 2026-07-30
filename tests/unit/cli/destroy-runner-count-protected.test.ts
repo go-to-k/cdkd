@@ -144,6 +144,65 @@ describe('countProtectedResources', () => {
     expect(countProtectedResources(state)).toBe(0);
   });
 
+  it('counts a NeptuneGraph Graph with DeletionProtection=true (issue #1314)', () => {
+    const state = makeState({
+      Graph: {
+        physicalId: 'g-abc',
+        resourceType: 'AWS::NeptuneGraph::Graph',
+        properties: { DeletionProtection: true },
+        attributes: {},
+        dependencies: [],
+      },
+    });
+    expect(countProtectedResources(state)).toBe(1);
+  });
+
+  it('counts an SMSVOICE ProtectConfiguration with DeletionProtectionEnabled=true (issue #1314)', () => {
+    const state = makeState({
+      Prot: {
+        physicalId: 'protect-abc',
+        resourceType: 'AWS::SMSVOICE::ProtectConfiguration',
+        properties: { DeletionProtectionEnabled: true },
+        attributes: {},
+        dependencies: [],
+      },
+    });
+    expect(countProtectedResources(state)).toBe(1);
+  });
+
+  it('counts a VerifiedPermissions PolicyStore with DeletionProtection.Mode=ENABLED (object shape, issue #1314)', () => {
+    const state = makeState({
+      Store: {
+        physicalId: 'ps-abc',
+        resourceType: 'AWS::VerifiedPermissions::PolicyStore',
+        properties: { DeletionProtection: { Mode: 'ENABLED' } },
+        attributes: {},
+        dependencies: [],
+      },
+    });
+    expect(countProtectedResources(state)).toBe(1);
+  });
+
+  it('does NOT count a PolicyStore with DeletionProtection.Mode=DISABLED or a non-object value', () => {
+    const state = makeState({
+      Store: {
+        physicalId: 'ps-abc',
+        resourceType: 'AWS::VerifiedPermissions::PolicyStore',
+        properties: { DeletionProtection: { Mode: 'DISABLED' } },
+        attributes: {},
+        dependencies: [],
+      },
+      StoreOdd: {
+        physicalId: 'ps-def',
+        resourceType: 'AWS::VerifiedPermissions::PolicyStore',
+        properties: { DeletionProtection: true },
+        attributes: {},
+        dependencies: [],
+      },
+    });
+    expect(countProtectedResources(state)).toBe(0);
+  });
+
   it('counts a Cognito UserPool with DeletionProtection=ACTIVE (string-valued enum)', () => {
     const state = makeState({
       P: {

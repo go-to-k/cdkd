@@ -634,6 +634,9 @@ resource-level protection on these types:
 | `AWS::Cognito::UserPool` | `DeletionProtection` (`ACTIVE` / `INACTIVE`) |
 | `AWS::AutoScaling::AutoScalingGroup` | `DeletionProtection` (`none` / `prevent-force-deletion` / `prevent-all-deletion`) — flag also sets `ForceDelete: true` so AWS terminates running instances as part of the delete |
 | `AWS::DSQL::Cluster` | `DeletionProtectionEnabled` (flipped via a Cloud Control `UpdateResource` patch before delete) |
+| `AWS::NeptuneGraph::Graph` | `DeletionProtection` (same Cloud Control patch flip) |
+| `AWS::SMSVOICE::ProtectConfiguration` | `DeletionProtectionEnabled` (same Cloud Control patch flip) |
+| `AWS::VerifiedPermissions::PolicyStore` | `DeletionProtection` `{Mode}` (patched to `{Mode: DISABLED}`) |
 
 A single `--remove-protection` covers every type listed above (no
 per-type variant). The interactive confirm prompt switches to

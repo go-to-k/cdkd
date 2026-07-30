@@ -491,6 +491,11 @@
       "scenarios": []
     },
     {
+      "name": "cc-protection-flip",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
       "name": "ci-cd",
       "annotated": true,
       "scenarios": []

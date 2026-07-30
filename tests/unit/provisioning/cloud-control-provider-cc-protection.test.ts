@@ -65,8 +65,26 @@ const callsOf = (cmdName: string) =>
   mockCloudControlSend.mock.calls.filter((c) => c[0]?.constructor?.name === cmdName);
 
 describe('ccProtectionProperty registry', () => {
-  it('returns DeletionProtectionEnabled for AWS::DSQL::Cluster', () => {
-    expect(ccProtectionProperty(DSQL)).toBe('DeletionProtectionEnabled');
+  it('returns the boolean entries for DSQL / NeptuneGraph / SMSVOICE ProtectConfiguration', () => {
+    expect(ccProtectionProperty(DSQL)).toEqual({
+      property: 'DeletionProtectionEnabled',
+      offValue: false,
+    });
+    expect(ccProtectionProperty('AWS::NeptuneGraph::Graph')).toEqual({
+      property: 'DeletionProtection',
+      offValue: false,
+    });
+    expect(ccProtectionProperty('AWS::SMSVOICE::ProtectConfiguration')).toEqual({
+      property: 'DeletionProtectionEnabled',
+      offValue: false,
+    });
+  });
+
+  it('returns the object-shaped off value for VerifiedPermissions PolicyStore', () => {
+    expect(ccProtectionProperty('AWS::VerifiedPermissions::PolicyStore')).toEqual({
+      property: 'DeletionProtection',
+      offValue: { Mode: 'DISABLED' },
+    });
   });
 
   it('returns undefined for types without a registered protection property', () => {
@@ -112,6 +130,25 @@ describe('CloudControlProvider delete: --remove-protection generic CC protection
       .slice(0, names.indexOf('DeleteResourceCommand'))
       .filter((n) => n === 'GetResourceRequestStatusCommand');
     expect(statusBeforeDelete.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('patches the object-shaped off value for VerifiedPermissions PolicyStore', async () => {
+    wireCloudControl();
+
+    await provider.delete('Store', 'ps-123', 'AWS::VerifiedPermissions::PolicyStore', undefined, {
+      removeProtection: true,
+    });
+
+    const updates = callsOf('UpdateResourceCommand');
+    expect(updates).toHaveLength(1);
+    expect(updates[0]![0].input).toEqual({
+      TypeName: 'AWS::VerifiedPermissions::PolicyStore',
+      Identifier: 'ps-123',
+      PatchDocument: JSON.stringify([
+        { op: 'add', path: '/DeletionProtection', value: { Mode: 'DISABLED' } },
+      ]),
+    });
+    expect(callsOf('DeleteResourceCommand')).toHaveLength(1);
   });
 
   it('does NOT patch when removeProtection is not set (protected delete fails fast)', async () => {

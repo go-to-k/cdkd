@@ -35,7 +35,7 @@ import { ProvisioningError } from '../utils/error-handler.js';
 import { JsonPatchGenerator } from './json-patch-generator.js';
 import { getTopLevelWriteOnlyProperties } from './write-only-properties.js';
 import { assertRegionMatch, type DeleteContext } from './region-check.js';
-import { ccProtectionProperty } from './cc-protection-properties.js';
+import { ccProtectionProperty, type CcProtectionEntry } from './cc-protection-properties.js';
 import { isNonProvisionable } from './unsupported-types.js';
 import { slowCcOperationTimeoutMs } from './slow-cc-operation-timeouts.js';
 import type {
@@ -530,21 +530,21 @@ export class CloudControlProvider implements ResourceProvider {
     }
 
     // `--remove-protection` for CC-routed types whose deletion protection is
-    // an ordinary top-level boolean property (issue #1312, e.g.
-    // `AWS::DSQL::Cluster.DeletionProtectionEnabled`): flip it off in-place
-    // via a CC UpdateResource patch, then proceed with the normal delete.
-    // Best-effort — the flip is idempotent, and if it fails (throttle, IAM,
-    // unexpected schema) the delete below surfaces the real error, matching
-    // the EC2 `DisableApiTermination` precedent above. Gated on
-    // removeProtection so a protected resource destroyed WITHOUT the flag
+    // an ordinary top-level property (issues #1312 / #1314, e.g.
+    // `AWS::DSQL::Cluster.DeletionProtectionEnabled`): set it to its "off"
+    // value in-place via a CC UpdateResource patch, then proceed with the
+    // normal delete. Best-effort — the flip is idempotent, and if it fails
+    // (throttle, IAM, unexpected schema) the delete below surfaces the real
+    // error, matching the EC2 `DisableApiTermination` precedent above. Gated
+    // on removeProtection so a protected resource destroyed WITHOUT the flag
     // still fails fast.
     if (context?.removeProtection === true) {
-      const protectionProperty = ccProtectionProperty(resourceType);
-      if (protectionProperty) {
+      const protectionEntry = ccProtectionProperty(resourceType);
+      if (protectionEntry) {
         // Deliberately unconditional (no state-property pre-check): recorded
         // properties can be stale vs. an out-of-band console/CLI flip, and
         // the patch is idempotent.
-        await this.disableCcProtection(logicalId, physicalId, resourceType, protectionProperty);
+        await this.disableCcProtection(logicalId, physicalId, resourceType, protectionEntry);
       }
     }
 
@@ -637,24 +637,26 @@ export class CloudControlProvider implements ResourceProvider {
   }
 
   /**
-   * Flip a registry-declared deletion-protection property off in-place via a
-   * CC UpdateResource patch (issue #1312). Best-effort: failures are logged
-   * at warn and swallowed — the subsequent DeleteResource surfaces the real
-   * error if the protection is still on. The `add` patch op is used (RFC
-   * 6902: replaces when the path exists, adds when absent), so the flip is
-   * idempotent regardless of whether the live model carries the property.
+   * Set a registry-declared deletion-protection property to its "off" value
+   * in-place via a CC UpdateResource patch (issues #1312 / #1314).
+   * Best-effort: failures are logged at warn and swallowed — the subsequent
+   * DeleteResource surfaces the real error if the protection is still on.
+   * The `add` patch op is used (RFC 6902: replaces when the path exists,
+   * adds when absent), so the flip is idempotent regardless of whether the
+   * live model carries the property.
    */
   private async disableCcProtection(
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    protectionProperty: string
+    entry: CcProtectionEntry
   ): Promise<void> {
+    const protectionProperty = entry.property;
     this.logger.debug(
       `Disabling ${protectionProperty} on ${logicalId} (${resourceType}) before delete (--remove-protection)`
     );
     try {
-      const patch = [{ op: 'add', path: `/${protectionProperty}`, value: false }];
+      const patch = [{ op: 'add', path: `/${protectionProperty}`, value: entry.offValue }];
       const response = await this.cloudControlClient.send(
         new UpdateResourceCommand({
           TypeName: resourceType,

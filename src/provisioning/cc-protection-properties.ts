@@ -7,24 +7,49 @@
  * (RDS / DynamoDB / Cognito / etc.), and two special cases are hardcoded in
  * `CloudControlProvider.delete` (ASG delegation, EC2 `DisableApiTermination`).
  * This registry covers the remaining case: a CC-routed type whose protection
- * is an ordinary top-level boolean template property that can be flipped off
- * in-place via a CC UpdateResource patch right before DeleteResource.
+ * is an ordinary top-level template property that can be set to its "off"
+ * value in-place via a CC UpdateResource patch right before DeleteResource.
  *
  * Only add entries verified against real AWS (the property name must match
- * the type's CFn schema exactly, and the type's UPDATE handler must support
- * flipping it in-place). Candidates such as `AWS::QLDB::Ledger`
- * (`DeletionProtection`) or `AWS::RDS::GlobalCluster` (`DeletionProtection`)
- * can join once live-verified — see issue #1312.
+ * the type's CFn schema exactly, must NOT be createOnly, and the type's
+ * UPDATE handler must support flipping it in-place). Remaining candidates
+ * (EKS::Cluster, RDS::GlobalCluster, DocDB::GlobalCluster — each needs its
+ * own slow bespoke fixture — plus the SMSVOICE PhoneNumber/Pool/SenderId and
+ * AppConfig DeletionProtectionCheck investigations) are tracked in issue
+ * #1315. `AWS::QLDB::Ledger` is permanently excluded (Tier 3
+ * non-provisionable in cdkd; the QLDB service is sunset).
  */
-const CC_PROTECTION_PROPERTIES: Record<string, string> = {
+export interface CcProtectionEntry {
+  /** Top-level CFn property carrying the protection setting. */
+  property: string;
+  /**
+   * The value that disables protection, sent as a JSON-patch `add` op
+   * (RFC 6902: replaces when the path exists, adds when absent — so the
+   * flip is idempotent regardless of whether the live model carries the
+   * property).
+   */
+  offValue: unknown;
+}
+
+const CC_PROTECTION_PROPERTIES: Record<string, CcProtectionEntry> = {
   // Verified via tests/integration/dsql (issue #1312).
-  'AWS::DSQL::Cluster': 'DeletionProtectionEnabled',
+  'AWS::DSQL::Cluster': { property: 'DeletionProtectionEnabled', offValue: false },
+  // Verified via tests/integration/cc-protection-flip (issue #1314).
+  'AWS::NeptuneGraph::Graph': { property: 'DeletionProtection', offValue: false },
+  'AWS::SMSVOICE::ProtectConfiguration': {
+    property: 'DeletionProtectionEnabled',
+    offValue: false,
+  },
+  'AWS::VerifiedPermissions::PolicyStore': {
+    property: 'DeletionProtection',
+    offValue: { Mode: 'DISABLED' },
+  },
 };
 
 /**
- * Returns the top-level protection property name for a CC-routed resource
- * type, or undefined when the type has no registered protection property.
+ * Returns the protection entry for a CC-routed resource type, or undefined
+ * when the type has no registered protection property.
  */
-export function ccProtectionProperty(resourceType: string): string | undefined {
+export function ccProtectionProperty(resourceType: string): CcProtectionEntry | undefined {
   return CC_PROTECTION_PROPERTIES[resourceType];
 }
