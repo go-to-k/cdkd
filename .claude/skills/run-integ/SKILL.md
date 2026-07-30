@@ -306,7 +306,9 @@ Run integration tests against a real AWS account. These tests deploy actual AWS 
     `LEDGER=/abs/path/to/.claude/worktrees/<branch>/docs/_generated/integ-last-run.tsv`.
 
     ```bash
-    LEDGER="docs/_generated/integ-last-run.tsv"
+    # ABSOLUTE path into the feature worktree (see the cwd-race note above);
+    # substitute your worktree path, do not rely on the session cwd.
+    LEDGER="/path/to/repo/.claude/worktrees/<branch>/docs/_generated/integ-last-run.tsv"
     # Bootstrap the header if the file is somehow absent — `>>` alone would create it
     # headerless, and the normalizer preserves whatever header it finds (none), silently
     # dropping the invariant + do-not-hand-edit notice.

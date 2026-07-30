@@ -392,6 +392,46 @@ describe('CloudFrontDistributionProvider', () => {
       expect(childLogger.warn).not.toHaveBeenCalled();
     });
 
+    it('SIGINT landing inside the FINAL sleep (past the deadline) still suppresses the timeout warn (after-loop race)', async () => {
+      // Exercises the after-loop `interrupted` check specifically: the poll
+      // cadence is 0, 5, 12.5, 22.5s, then every 10s, so the last sleep of a
+      // 20-min budget spans t=1192.5s to t=1202.5s and STRADDLES the 1200s
+      // deadline. A SIGINT emitted at t=1201s lands after the deadline has
+      // already passed, so the loop exits via the deadline check rather than
+      // the loop-top interrupted check — without the after-loop guard this
+      // logged the misleading "did not reach Deployed within the wait budget"
+      // warn on shutdown.
+      process.env['CDKD_FULL_WAIT'] = 'true';
+      mockSend.mockResolvedValueOnce({
+        Distribution: { Id: 'EDFDVBD6EXAMPLE', DomainName: 'd1.cloudfront.net' },
+      });
+      mockSend.mockResolvedValue({
+        Distribution: {
+          Id: 'EDFDVBD6EXAMPLE',
+          Status: 'InProgress',
+          DistributionConfig: { Enabled: true },
+        },
+      });
+
+      vi.useFakeTimers();
+      try {
+        const createPromise = provider.create(
+          'MyDistribution',
+          'AWS::CloudFront::Distribution',
+          createInput
+        );
+        await vi.advanceTimersByTimeAsync(1201 * 1000);
+        process.emit('SIGINT');
+        await vi.advanceTimersByTimeAsync(5 * 1000);
+        const result = await createPromise;
+        expect(result.physicalId).toBe('EDFDVBD6EXAMPLE');
+      } finally {
+        vi.useRealTimers();
+      }
+
+      expect(childLogger.warn).not.toHaveBeenCalled();
+    });
+
     it('a per-type --resource-timeout BELOW 20min cannot lower the budget (Math.max floor)', async () => {
       process.env['CDKD_FULL_WAIT'] = 'true';
       setResolvedResourceTimeouts({
