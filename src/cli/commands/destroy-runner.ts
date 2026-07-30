@@ -223,6 +223,9 @@ export const PROTECTION_PROPERTY_BY_TYPE: Record<string, string> = {
   'AWS::EC2::Instance': 'DisableApiTermination',
   'AWS::Cognito::UserPool': 'DeletionProtection',
   'AWS::AutoScaling::AutoScalingGroup': 'DeletionProtection',
+  // CC-routed generic protection flip (issue #1312) — see
+  // src/provisioning/cc-protection-properties.ts.
+  'AWS::DSQL::Cluster': 'DeletionProtectionEnabled',
 };
 
 /**

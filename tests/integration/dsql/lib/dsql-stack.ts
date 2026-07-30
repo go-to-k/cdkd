@@ -22,7 +22,8 @@ import * as dsql from 'aws-cdk-lib/aws-dsql';
  * and a top-level boolean flip. verify.sh asserts the cluster identity
  * (identifier + creationTime) is unchanged, proving no replacement
  * happened, then asserts a destroy attempt FAILS while protection is on,
- * re-deploys with protection off, and destroys cleanly.
+ * and finally destroys with --remove-protection (issue #1312: the generic
+ * CC protection flip) while protection is still on.
  */
 export class DsqlStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {

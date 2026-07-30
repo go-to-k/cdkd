@@ -627,6 +627,7 @@ resource-level protection on these types:
 | `AWS::ElasticLoadBalancingV2::LoadBalancer` | attribute `deletion_protection.enabled` |
 | `AWS::Cognito::UserPool` | `DeletionProtection` (`ACTIVE` / `INACTIVE`) |
 | `AWS::AutoScaling::AutoScalingGroup` | `DeletionProtection` (`none` / `prevent-force-deletion` / `prevent-all-deletion`) — flag also sets `ForceDelete: true` so AWS terminates running instances as part of the delete |
+| `AWS::DSQL::Cluster` | `DeletionProtectionEnabled` (flipped via a Cloud Control `UpdateResource` patch before delete) |
 
 A single `--remove-protection` covers every type listed above (no
 per-type variant). The interactive confirm prompt switches to

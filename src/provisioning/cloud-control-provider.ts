@@ -35,6 +35,7 @@ import { ProvisioningError } from '../utils/error-handler.js';
 import { JsonPatchGenerator } from './json-patch-generator.js';
 import { getTopLevelWriteOnlyProperties } from './write-only-properties.js';
 import { assertRegionMatch, type DeleteContext } from './region-check.js';
+import { ccProtectionProperty } from './cc-protection-properties.js';
 import { isNonProvisionable } from './unsupported-types.js';
 import { slowCcOperationTimeoutMs } from './slow-cc-operation-timeouts.js';
 import type {
@@ -528,6 +529,22 @@ export class CloudControlProvider implements ResourceProvider {
       await disableInstanceApiTermination(getAwsClients().ec2, physicalId, this.logger);
     }
 
+    // `--remove-protection` for CC-routed types whose deletion protection is
+    // an ordinary top-level boolean property (issue #1312, e.g.
+    // `AWS::DSQL::Cluster.DeletionProtectionEnabled`): flip it off in-place
+    // via a CC UpdateResource patch, then proceed with the normal delete.
+    // Best-effort — the flip is idempotent, and if it fails (throttle, IAM,
+    // unexpected schema) the delete below surfaces the real error, matching
+    // the EC2 `DisableApiTermination` precedent above. Gated on
+    // removeProtection so a protected resource destroyed WITHOUT the flag
+    // still fails fast.
+    if (context?.removeProtection === true) {
+      const protectionProperty = ccProtectionProperty(resourceType);
+      if (protectionProperty) {
+        await this.disableCcProtection(logicalId, physicalId, resourceType, protectionProperty);
+      }
+    }
+
     const maxAttempts = isProtectedEc2Instance ? TERMINATION_PROTECTION_MAX_ATTEMPTS : 1;
     for (let attempt = 1; ; attempt++) {
       try {
@@ -613,6 +630,53 @@ export class CloudControlProvider implements ResourceProvider {
         }
         this.handleError(error, 'DELETE', resourceType, logicalId, physicalId);
       }
+    }
+  }
+
+  /**
+   * Flip a registry-declared deletion-protection property off in-place via a
+   * CC UpdateResource patch (issue #1312). Best-effort: failures are logged
+   * at warn and swallowed — the subsequent DeleteResource surfaces the real
+   * error if the protection is still on. The `add` patch op is used (RFC
+   * 6902: replaces when the path exists, adds when absent), so the flip is
+   * idempotent regardless of whether the live model carries the property.
+   */
+  private async disableCcProtection(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    protectionProperty: string
+  ): Promise<void> {
+    this.logger.debug(
+      `Disabling ${protectionProperty} on ${logicalId} (${resourceType}) before delete (--remove-protection)`
+    );
+    try {
+      const patch = [{ op: 'add', path: `/${protectionProperty}`, value: false }];
+      const response = await this.cloudControlClient.send(
+        new UpdateResourceCommand({
+          TypeName: resourceType,
+          Identifier: physicalId,
+          PatchDocument: JSON.stringify(patch),
+        })
+      );
+      if (!response.ProgressEvent?.RequestToken) {
+        this.logger.warn(
+          `Could not disable ${protectionProperty} on ${logicalId}: no request token received; proceeding with delete`
+        );
+        return;
+      }
+      await this.waitForOperation(
+        response.ProgressEvent.RequestToken,
+        logicalId,
+        'UPDATE',
+        resourceType
+      );
+      this.logger.debug(`Disabled ${protectionProperty} on ${logicalId}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn(
+        `Could not disable ${protectionProperty} on ${logicalId} (${resourceType}): ${message}; proceeding with delete`
+      );
     }
   }
 
