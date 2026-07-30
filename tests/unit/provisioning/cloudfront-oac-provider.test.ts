@@ -110,6 +110,28 @@ describe('CloudFrontOACProvider', () => {
       expect(mockSend).not.toHaveBeenCalled();
     });
 
+    it('rejects an EMPTY-STRING required field the same as a missing one', async () => {
+      // `''` is what an unresolved intrinsic most often collapses into, and
+      // CloudFront rejects it just as surely as an absent field — so the
+      // validator has to catch it here, where the message can name the field,
+      // rather than letting AWS answer with an opaque InvalidArgument. All
+      // four required fields are covered; only the optional Description is
+      // allowed to be `''` (see the truthy-gate guard tests).
+      await expect(
+        provider.create('MyOac', TYPE, {
+          OriginAccessControlConfig: {
+            Name: '',
+            OriginAccessControlOriginType: '',
+            SigningBehavior: '',
+            SigningProtocol: '',
+          },
+        })
+      ).rejects.toThrow(
+        /missing required field\(s\): Name, OriginAccessControlOriginType, SigningBehavior, SigningProtocol/
+      );
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
     it('throws a ProvisioningError when the AWS call fails', async () => {
       mockSend.mockRejectedValueOnce(new Error('Access Denied'));
 
@@ -245,6 +267,21 @@ describe('CloudFrontOACProvider', () => {
       expect(deleteCall.constructor.name).toBe('DeleteOriginAccessControlCommand');
       expect(deleteCall.input.Id).toBe(OAC_ID);
       expect(deleteCall.input.IfMatch).toBe('etag-abc');
+    });
+
+    it('fails with a message naming the Get when it returns no ETag (never IfMatch: undefined)', async () => {
+      // Mirrors the same guard on the update path. Without it, `IfMatch:
+      // undefined` goes out on the wire and AWS answers with a generic
+      // missing-parameter rejection that never mentions the Get — during
+      // `cdkd destroy`, where the operator's next question is whether the OAC
+      // is still there.
+      mockSend.mockResolvedValueOnce({ OriginAccessControl: { Id: OAC_ID } });
+
+      await expect(provider.delete('MyOac', OAC_ID, TYPE)).rejects.toThrow(
+        'GetOriginAccessControl did not return ETag'
+      );
+      // The Delete was never attempted.
+      expect(mockSend).toHaveBeenCalledTimes(1);
     });
 
     it('treats NoSuchOriginAccessControl on Get as idempotent success', async () => {

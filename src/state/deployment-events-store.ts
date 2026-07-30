@@ -224,6 +224,18 @@ export class DeploymentEventsStore implements DeploymentEventRecorder {
       // The durability ORDER that matters is preserved: the index is only
       // WRITTEN after the flush resolved, so the index never advertises a
       // run whose event stream is missing / stale.
+      //
+      // What DID change: reading the index before the flush instead of after
+      // widens the read-modify-write window by the flush's duration, so a
+      // concurrent finalize whose index PUT lands mid-flush is now clobbered
+      // by ours rather than merged into it. `index.json` is last-writer-wins
+      // by design (no conditional PUT, no lock) and the loser forfeits only
+      // its index ROW: the `{runId}.jsonl` stream is already durable, so
+      // `cdkd events <stack> --run <id>` still reads it in full and the
+      // stream survives the prune (which only deletes ids strictly older than
+      // the oldest RETAINED one). The cost is that the run stops appearing in
+      // the `cdkd events <stack>` listing. That is a wider window on an
+      // already-accepted race, not a new failure mode.
       const indexRead = this.readIndexRuns();
       // Attach a no-op rejection handler so awaiting the flush first cannot
       // leave the read as an unhandled rejection; the original promise is

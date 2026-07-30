@@ -171,6 +171,14 @@ export class CloudFrontOACProvider implements ResourceProvider {
    * `assertRegionMatch()` confirms the client is pointed at the region the
    * resource was created in (a region mismatch would otherwise silently
    * "succeed" while leaving the real resource behind).
+   *
+   * A `Get` that succeeds but carries no `ETag` is a hard error here for the
+   * same reason it is in {@link update}: `IfMatch: undefined` reaches AWS as
+   * a missing required parameter, and the resulting SDK/AWS rejection says
+   * nothing about the `Get` being what came back short. On the DELETE path
+   * that opacity is worse than on update — the failure surfaces during
+   * `cdkd destroy`, where the user's next question is "is the OAC still
+   * there?", so the message has to name the actual cause.
    */
   async delete(
     logicalId: string,
@@ -197,6 +205,10 @@ export class CloudFrontOACProvider implements ResourceProvider {
           return;
         }
         throw error;
+      }
+
+      if (!etag) {
+        throw new Error('GetOriginAccessControl did not return ETag');
       }
 
       await this.cloudFrontClient.send(
@@ -326,6 +338,18 @@ export class CloudFrontOACProvider implements ResourceProvider {
    * copy that exists to (a) fail loudly when a required field is missing
    * rather than letting the SDK reject with an opaque serialization error,
    * and (b) keep unknown extra keys out of the request.
+   *
+   * All four required fields are checked for a NON-EMPTY string, not merely
+   * for `typeof === 'string'`. `''` is the shape an unresolved intrinsic or a
+   * `Fn::Sub` over a missing value most often collapses into, and CloudFront
+   * rejects it just as surely as it rejects an absent field — so letting it
+   * through would defeat the whole point of (a): the user would get AWS's
+   * `InvalidArgument` instead of a message naming the field cdkd could see
+   * was blank. The three type/behavior fields are additionally CFn enums
+   * (`s3` / `mediastore` / `lambda` / `mediapackagev2`; `always` / `never` /
+   * `no-override`; `sigv4`), for which the empty string is never a member.
+   * `Description` is deliberately not in this set — it is genuinely optional
+   * and `''` is a legitimate value that clears it.
    */
   private toSdkConfig(
     value: unknown,
@@ -340,11 +364,13 @@ export class CloudFrontOACProvider implements ResourceProvider {
     const signingBehavior = config['SigningBehavior'];
     const signingProtocol = config['SigningProtocol'];
 
+    const nonEmpty = (value: unknown): boolean => typeof value === 'string' && value.length > 0;
+
     const missing = [
-      typeof name === 'string' && name.length > 0 ? undefined : 'Name',
-      typeof originType === 'string' ? undefined : 'OriginAccessControlOriginType',
-      typeof signingBehavior === 'string' ? undefined : 'SigningBehavior',
-      typeof signingProtocol === 'string' ? undefined : 'SigningProtocol',
+      nonEmpty(name) ? undefined : 'Name',
+      nonEmpty(originType) ? undefined : 'OriginAccessControlOriginType',
+      nonEmpty(signingBehavior) ? undefined : 'SigningBehavior',
+      nonEmpty(signingProtocol) ? undefined : 'SigningProtocol',
     ].filter((field): field is string => field !== undefined);
 
     if (missing.length > 0) {

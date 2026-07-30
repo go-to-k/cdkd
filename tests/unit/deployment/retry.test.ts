@@ -257,6 +257,64 @@ describe('withRetry IAM-propagation cadence', () => {
     expect(op).toHaveBeenCalledTimes(27);
   });
 
+  it('an interleaved non-propagation transient does NOT collapse the propagation budget', async () => {
+    // The regression this pins: the attempt LIMIT used to be re-derived from
+    // the CURRENT attempt's error class, exactly like the delay is. A single
+    // throttle landing on attempt 8 of a propagation sequence therefore
+    // dropped the ceiling back to the generic 8 mid-flight, and the very next
+    // check (`attempt >= attemptLimit`) aborted the retry at ~9.5s of the
+    // 47.75s the dense schedule exists to provide — i.e. SHORTER than the
+    // generic schedule the dense one is meant to be a superset of, and on the
+    // one code path (IAM propagation under a throttling account) most likely
+    // to need the full window. The class latches for the BUDGET while the
+    // DELAY keeps being re-derived per attempt.
+    const sleeps: number[] = [];
+    let calls = 0;
+    const op = vi.fn().mockImplementation(async () => {
+      calls++;
+      // Attempt index 8 (the 9th call) is the interleaved throttle: one past
+      // the generic ceiling of 8 retries, so it lands exactly where the old
+      // code aborted.
+      if (calls === 9) throw new Error('Rate exceeded');
+      throw new Error('Invalid IAM Instance Profile name');
+    });
+
+    await expect(
+      withRetry(op, 'Instance1', {
+        sleep: (ms) => {
+          sleeps.push(ms);
+          return Promise.resolve();
+        },
+      })
+    ).rejects.toThrow(/Invalid IAM Instance Profile/);
+
+    // 26 retries + the initial attempt — the full dense budget, unchanged by
+    // the throttle. Pre-fix this was 9.
+    expect(op).toHaveBeenCalledTimes(27);
+
+    // The delay for that one attempt IS still the generic exponential one
+    // (8s, capped) rather than the dense 2s — the latch governs the budget,
+    // not the cadence. 0.25 + 0.5 + 1 + 2s x 21 + 8s (the throttle) + 2s x 1
+    // = 47.75s of dense schedule with one 2s step swapped for 8s.
+    const totalMs = sleeps.reduce((a, b) => a + b, 0);
+    expect(totalMs).toBe(47_750 - 2_000 + 8_000);
+  });
+
+  it('a sequence that NEVER sees a propagation error keeps the generic 8-retry budget', async () => {
+    // The inverse guard for the latch above: widening the budget for a
+    // sequence that only ever threw non-propagation transients would hand
+    // every throttled call a 26-retry ceiling — 27 attempts against an API
+    // that is rate-limiting us is the opposite of what backoff is for.
+    const op = vi.fn().mockRejectedValue(new Error('Rate exceeded'));
+
+    await expect(
+      withRetry(op, 'Param1', { sleep: () => Promise.resolve() })
+    ).rejects.toThrow('Rate exceeded');
+
+    // 8 retries + the initial attempt.
+    expect(op).toHaveBeenCalledTimes(9);
+  });
+
   it('honours an explicit caller schedule even for a propagation error', async () => {
     const debug = vi.fn();
     const op = vi.fn().mockRejectedValue(new Error('Invalid IAM Instance Profile name'));
