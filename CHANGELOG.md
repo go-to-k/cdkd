@@ -1,3 +1,10 @@
+## [0.268.2](https://github.com/go-to-k/cdkd/compare/v0.268.1...v0.268.2) (2026-07-30)
+
+
+### Performance Improvements
+
+* **deployment:** de-serialize the deploy tail, drop the redundant pre-lock state GET, batch SecurityGroup wiring ([#1289](https://github.com/go-to-k/cdkd/issues/1289)) ([93cb330](https://github.com/go-to-k/cdkd/commit/93cb330e6a9e4c2f6af0a6bfc27a8f3b1f2a3e6d))
+
 ## [0.268.1](https://github.com/go-to-k/cdkd/compare/v0.268.0...v0.268.1) (2026-07-30)
 
 
