@@ -3,6 +3,7 @@ import {
   SubscribeCommand,
   UnsubscribeCommand,
   GetSubscriptionAttributesCommand,
+  InvalidParameterException,
   NotFoundException,
 } from '@aws-sdk/client-sns';
 import { getLogger } from '../../utils/logger.js';
@@ -244,6 +245,16 @@ export class SNSSubscriptionProvider implements ResourceProvider {
   ): Promise<void> {
     this.logger.debug(`Deleting SNS subscription ${logicalId}: ${physicalId}`);
 
+    // A never-confirmed subscription may be recorded under the literal
+    // "PendingConfirmation" placeholder instead of a real ARN (e.g. adopted
+    // via `cdkd import --resource <id>=PendingConfirmation`). Unsubscribe
+    // cannot possibly succeed on it, so skip with the same CFn-parity
+    // semantics as the pending-confirmation rejection below.
+    if (physicalId === 'PendingConfirmation' || physicalId === 'pending confirmation') {
+      this.logPendingConfirmationSkip(logicalId, physicalId);
+      return;
+    }
+
     try {
       await this.snsClient.send(
         new UnsubscribeCommand({
@@ -266,6 +277,20 @@ export class SNSSubscriptionProvider implements ResourceProvider {
         return;
       }
 
+      // CFn parity (issue #1301): a subscription still in PendingConfirmation
+      // cannot be unsubscribed by ANY API — SNS rejects Unsubscribe with
+      // "Cannot unsubscribe a subscription that is pending confirmation", and
+      // the record only disappears when it auto-expires (~3 days) or its topic
+      // is deleted. CloudFormation treats this as delete-success (the resource
+      // is removed from the stack without unsubscribing); do the same,
+      // otherwise destroy is permanently stuck (every retry hits the same
+      // error). No assertRegionMatch here: unlike NotFound, this error proves
+      // the subscription was positively found in the client's region.
+      if (isPendingConfirmationError(error)) {
+        this.logPendingConfirmationSkip(logicalId, physicalId);
+        return;
+      }
+
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
         `Failed to delete SNS subscription ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
@@ -275,6 +300,16 @@ export class SNSSubscriptionProvider implements ResourceProvider {
         cause
       );
     }
+  }
+
+  /**
+   * Log the CFn-parity skip for a pending-confirmation subscription delete.
+   */
+  private logPendingConfirmationSkip(logicalId: string, physicalId: string): void {
+    this.logger.warn(
+      `SNS subscription ${logicalId} (${physicalId}) is pending confirmation and cannot be unsubscribed; ` +
+        `skipping deletion to match CloudFormation behavior (the pending record expires automatically within 3 days)`
+    );
   }
 
   /**
@@ -295,6 +330,15 @@ export class SNSSubscriptionProvider implements ResourceProvider {
     _logicalId: string,
     _resourceType: string
   ): Promise<Record<string, unknown> | undefined> {
+    // The literal "PendingConfirmation" placeholder (issue #1301 — e.g. state
+    // adopted via `cdkd import --resource <id>=PendingConfirmation`) is not a
+    // real ARN; GetSubscriptionAttributes would throw InvalidParameterException
+    // (NOT the NotFoundException handled below) and abort the whole
+    // `cdkd drift` run. Treat it as unreadable-yet (no drift baseline).
+    if (physicalId === 'PendingConfirmation' || physicalId === 'pending confirmation') {
+      return undefined;
+    }
+
     let attributes: Record<string, string> | undefined;
     try {
       const resp = await this.snsClient.send(
@@ -379,4 +423,16 @@ export class SNSSubscriptionProvider implements ResourceProvider {
     }
     return null;
   }
+}
+
+/**
+ * SNS rejects `Unsubscribe` for any subscription still in PendingConfirmation
+ * with `InvalidParameterException: Invalid parameter: SubscriptionArn Reason:
+ * Cannot unsubscribe a subscription that is pending confirmation`.
+ */
+function isPendingConfirmationError(error: unknown): boolean {
+  return (
+    error instanceof InvalidParameterException &&
+    error.message.toLowerCase().includes('pending confirmation')
+  );
 }

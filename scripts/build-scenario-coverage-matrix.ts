@@ -290,6 +290,8 @@ const KNOWN_SCENARIOS: Record<string, string> = {
     'cdkd-owned asset storage lifecycle against real AWS: `cdkd bootstrap` creates the asset bucket + container repo + per-region marker (default or custom `--asset-bucket` / `--container-repo` names), deploy-time asset-mode detection + publish redirection into the marker-named storage, and `cdkd bootstrap --destroy` marker-driven teardown with zero residue (issues #1002 / #1007 / #1010 / #1011).',
   'cdkd-gc':
     '`cdkd gc` garbage-collection precision against real AWS: whole-bucket state-file reference scan keeps every referenced asset, an unreferenced seeded object is the only deletion candidate, `--dry-run` deletes nothing, `--older-than` age guard honored (issue #1012).',
+  'undeletable-pending-resource-skip':
+    'Destroy of a resource AWS itself refuses to delete until it expires server-side — the canonical case is an SNS subscription in PendingConfirmation, which rejects Unsubscribe from EVERY caller and only disappears via ~3-day auto-expiry or topic deletion. The provider must treat the rejection as delete-success (CloudFormation parity: the resource is removed from the stack without unsubscribing) instead of failing the resource and wedging destroy/state-destroy permanently (issue #1301).',
 };
 
 interface ScenarioCoverageReport {

@@ -297,6 +297,10 @@
       "description": "Legacy v1 / v2 state schema auto-migrates on next write; old binary fails clearly on a newer schema."
     },
     {
+      "tag": "undeletable-pending-resource-skip",
+      "description": "Destroy of a resource AWS itself refuses to delete until it expires server-side — the canonical case is an SNS subscription in PendingConfirmation, which rejects Unsubscribe from EVERY caller and only disappears via ~3-day auto-expiry or topic deletion. The provider must treat the rejection as delete-success (CloudFormation parity: the resource is removed from the stack without unsubscribing) instead of failing the resource and wedging destroy/state-destroy permanently (issue #1301)."
+    },
+    {
       "tag": "update-policy-mutations",
       "description": "Second-deploy mutation of CloudFormation template-level ATTRIBUTES (not properties) across a CDK context flip (`-c phase=a|b`): (1) `UpdateReplacePolicy: Retain` orphan-on-replace — an S3 `BucketName` change forces replacement, the OLD physical bucket must be RETAINED on AWS (not deleted) while the new one is created; (2) `DeletionPolicy` flip DESTROY->RETAIN on an SSM Parameter — the final destroy must honor the CURRENT (Retain) policy and leave it on AWS; (3) `DependsOn` add/remove between SNS topics — a metadata-only change that must update successfully without replacing either topic; (4) metadata-only / no-op identical redeploy reporting `No changes detected`. Intentional orphans (Retain bucket + Retain param) are cleaned by captured physical id in the verify.sh trap. Regression net for `diff-calculator.ts` attribute diff + `deploy-engine.ts` Retain-on-replace / DeletionPolicy destroy-skip paths."
     },
@@ -1693,6 +1697,13 @@
       "scenarios": []
     },
     {
+      "name": "sns-pending-subscription",
+      "annotated": true,
+      "scenarios": [
+        "undeletable-pending-resource-skip"
+      ]
+    },
+    {
       "name": "sns-sqs-event",
       "annotated": true,
       "scenarios": []
@@ -2372,6 +2383,13 @@
       "fixtures": [
         "legacy-state-migration",
         "schema-v5-to-v6-migration"
+      ]
+    },
+    {
+      "scenario": "undeletable-pending-resource-skip",
+      "description": "Destroy of a resource AWS itself refuses to delete until it expires server-side — the canonical case is an SNS subscription in PendingConfirmation, which rejects Unsubscribe from EVERY caller and only disappears via ~3-day auto-expiry or topic deletion. The provider must treat the rejection as delete-success (CloudFormation parity: the resource is removed from the stack without unsubscribing) instead of failing the resource and wedging destroy/state-destroy permanently (issue #1301).",
+      "fixtures": [
+        "sns-pending-subscription"
       ]
     },
     {

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
-import { SubscribeCommand } from '@aws-sdk/client-sns';
+import { InvalidParameterException, SubscribeCommand } from '@aws-sdk/client-sns';
 
 // Mock AWS clients before importing the provider
 const mockSend = vi.fn();
@@ -143,6 +143,59 @@ describe('SNSSubscriptionProvider', () => {
       // existing FilterPolicy-only gating).
       const input = subscribeCall![0].input as { Attributes?: Record<string, string> };
       expect(input.Attributes).toBeUndefined();
+    });
+  });
+
+  describe('delete — pending-confirmation subscriptions are skipped (issue #1301)', () => {
+    const SUB_ARN = 'arn:aws:sns:us-east-1:123456789012:my-topic:4fd6eaeb-8427-411d-bb4a-cde03cb147cc';
+
+    it('treats the pending-confirmation Unsubscribe rejection as delete success (CFn parity)', async () => {
+      mockSend.mockRejectedValueOnce(
+        new InvalidParameterException({
+          message:
+            'Invalid parameter: SubscriptionArn Reason: Cannot unsubscribe a subscription that is pending confirmation',
+          $metadata: {},
+        })
+      );
+
+      await expect(
+        provider.delete('Sub', SUB_ARN, 'AWS::SNS::Subscription')
+      ).resolves.toBeUndefined();
+      expect(mockSend).toHaveBeenCalledTimes(1);
+    });
+
+    it('skips the Unsubscribe call entirely for the literal PendingConfirmation placeholder id', async () => {
+      await expect(
+        provider.delete('Sub', 'PendingConfirmation', 'AWS::SNS::Subscription')
+      ).resolves.toBeUndefined();
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('skips the Unsubscribe call for the lowercase "pending confirmation" placeholder id', async () => {
+      await expect(
+        provider.delete('Sub', 'pending confirmation', 'AWS::SNS::Subscription')
+      ).resolves.toBeUndefined();
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('readCurrentState returns undefined for the placeholder id without calling AWS (drift must not abort)', async () => {
+      await expect(
+        provider.readCurrentState('PendingConfirmation', 'Sub', 'AWS::SNS::Subscription')
+      ).resolves.toBeUndefined();
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('still fails on unrelated InvalidParameterException errors', async () => {
+      mockSend.mockRejectedValueOnce(
+        new InvalidParameterException({
+          message: 'Invalid parameter: SubscriptionArn Reason: An ARN must have at least 6 elements',
+          $metadata: {},
+        })
+      );
+
+      await expect(provider.delete('Sub', 'garbage', 'AWS::SNS::Subscription')).rejects.toThrow(
+        'Failed to delete SNS subscription'
+      );
     });
   });
 
