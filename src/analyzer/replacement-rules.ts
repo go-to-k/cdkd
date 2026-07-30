@@ -615,6 +615,10 @@ export class ReplacementRulesRegistry {
         'ImageId',
         'SubnetId',
         'KeyName',
+        // Issue #1281: createOnly per the CFn schema, and updateInstance has
+        // no ENI-modification path -- an in-place classification would leave
+        // state recording the new value while AWS keeps the old one.
+        'NetworkInterfaces',
       ]),
     });
 

@@ -115,5 +115,32 @@ export class Ec2InstanceStack extends cdk.Stack {
       value: vpc.vpcId,
       description: 'VPC ID',
     });
+
+    // Issue #1281: a SECOND instance authored the associatePublicIpAddress
+    // way -- the CDK L2 construct drops SubnetId / SecurityGroupIds and
+    // emits a single NetworkInterfaces entry instead. This is the only
+    // place the RunInstances `NetworkInterfaces` mapping runs against real
+    // AWS; verify.sh asserts the instance stays on the SDK path (before
+    // #1281 the unhandled property routed it to Cloud Control) and that
+    // the public IP the association asked for actually exists.
+    const publicInstance = new ec2.CfnInstance(this, 'PublicInstance', {
+      imageId: ami,
+      instanceType: 't3.nano',
+      availabilityZone: vpc.publicSubnets[0].availabilityZone,
+      networkInterfaces: [
+        {
+          deviceIndex: '0',
+          associatePublicIpAddress: true,
+          subnetId: vpc.publicSubnets[0].subnetId,
+          groupSet: [securityGroup.securityGroupId],
+          deleteOnTermination: true,
+        },
+      ],
+    });
+
+    new cdk.CfnOutput(this, 'PublicInstanceId', {
+      value: publicInstance.ref,
+      description: 'NetworkInterfaces-shaped EC2 Instance ID (issue #1281)',
+    });
   }
 }
