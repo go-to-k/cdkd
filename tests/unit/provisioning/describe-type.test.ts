@@ -22,6 +22,7 @@ vi.mock('../../../src/utils/logger.js', () => ({
 import {
   describeTypeWithThrottleRetry,
   describeTypeRetryDelays,
+  hasNoRegistrySchema,
 } from '../../../src/provisioning/describe-type.js';
 
 function throttlingError(): Error {
@@ -99,5 +100,28 @@ describe('describeTypeWithThrottleRetry (issue #1236)', () => {
     expect(injectedSend).toHaveBeenCalledTimes(2);
     // The shared client must NOT be touched when a client is injected.
     expect(mockCloudFormationSend).not.toHaveBeenCalled();
+  });
+});
+
+describe('hasNoRegistrySchema', () => {
+  it.each([
+    'AWS::CDK::Metadata',
+    'AWS::CloudFormation::CustomResource',
+    'Custom::MyThing',
+    'Custom::',
+  ])('is true for the schema-less type %s', (type) => {
+    expect(hasNoRegistrySchema(type)).toBe(true);
+  });
+
+  it.each([
+    'AWS::S3::Bucket',
+    'AWS::ECS::Service',
+    'AWS::CloudFormation::Stack',
+    'AWS::CloudFormation::WaitConditionHandle',
+    // Near-misses that DO have a registry schema and must keep looking up.
+    'AWS::CDK::MetadataThing',
+    'MyCustom::Thing',
+  ])('is false for the registry-backed type %s', (type) => {
+    expect(hasNoRegistrySchema(type)).toBe(false);
   });
 });

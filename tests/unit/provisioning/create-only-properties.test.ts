@@ -130,6 +130,18 @@ describe('getCreateOnlyPropertyPaths', () => {
     expect(mockCloudFormationSend).not.toHaveBeenCalled();
     expect(mockLoggerWarn).not.toHaveBeenCalled();
   });
+
+  it('AWS::CDK::Metadata skips DescribeType entirely — no API call, no misleading warning', async () => {
+    // The CDK construct-tree sentinel every synthesized template carries. It
+    // has no registry schema, so the lookup could only ever fail and emit a
+    // "Grant cloudformation:DescribeType ..." warning naming a pseudo-resource
+    // the user cannot act on.
+    const result = await getCreateOnlyPropertyPaths('AWS::CDK::Metadata');
+
+    expect(result.length).toBe(0);
+    expect(mockCloudFormationSend).not.toHaveBeenCalled();
+    expect(mockLoggerWarn).not.toHaveBeenCalled();
+  });
 });
 
 describe('createOnlyChangeRequiresReplacement (pure path-granular comparison, issue #960)', () => {

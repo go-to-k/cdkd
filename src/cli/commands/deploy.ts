@@ -16,7 +16,7 @@ import {
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
 import { bold, cyan, gray, green, red, yellow } from '../../utils/colors.js';
-import { withErrorHandling, CdkdError } from '../../utils/error-handler.js';
+import { withErrorHandling, CdkdError, DeployCancelledError } from '../../utils/error-handler.js';
 import {
   validateRecreateTargets,
   renderRecreateTargetsErrors,
@@ -67,7 +67,7 @@ import {
   warnDeprecatedNoPrefixCliFlag,
 } from '../config-loader.js';
 import { matchStacks, describeStack } from '../stack-matcher.js';
-import { findPendingPrefixRenames, promptMigrationConfirm } from './prefix-migration-check.js';
+import { createPrefixMigrationGate } from './prefix-migration-check.js';
 import { STATE_SCHEMA_VERSION_CURRENT } from '../../types/state.js';
 
 /**
@@ -670,29 +670,27 @@ async function deployCommand(
       let runResult: DeploymentRunResult = 'SUCCEEDED';
 
       try {
-        // Pre-flight migration check for --no-prefix-user-supplied-names.
-        // When the flag is on AND the stack has existing state with
-        // Pattern B resources whose physical id is still prefixed with
+        // Pre-flight migration check for --prefix-user-supplied-names.
+        // When prefix-skipping is active AND the stack has existing state
+        // with Pattern B resources whose physical id is still prefixed with
         // the stack name, cdkd's diff path will silently propose
-        // REPLACEMENT on each of them. Surface this up front so the
-        // user sees the side effect before any provider call runs.
-        // Honors --yes / --force (the CLI is single-flagged via
-        // `options.yes`). No-op when:
-        //   - skipPrefix is false (the flag is not active)
+        // REPLACEMENT on each of them. Surface this up front so the user
+        // sees the side effect before any provider call runs. Honors
+        // --yes / --force (the CLI is single-flagged via `options.yes`).
+        // No-op when:
+        //   - skipPrefix is false (legacy prefixing is opted back in)
         //   - state is empty (first-time deploy — nothing to migrate)
         //   - no Pattern B resource is still prefixed
-        if (skipPrefix) {
-          const existing = await stackStateBackend.getState(stackInfo.stackName, stackRegion);
-          const pending = findPendingPrefixRenames(stackInfo.stackName, existing?.state);
-          if (pending.length > 0) {
-            const proceed = await promptMigrationConfirm(pending, { yes: options.yes });
-            if (!proceed) {
-              // Clean exit — nothing was modified. The outer finally
-              // below tears down per-stack AWS clients.
-              return;
-            }
-          }
-        }
+        //
+        // Runs as the engine's `onCurrentStateLoaded` gate (fired right
+        // after the post-lock state read, before any provider call) rather
+        // than as its own pre-lock `getState` of the same object — see
+        // `createPrefixMigrationGate` for the full rationale.
+        const migrationGate = createPrefixMigrationGate({
+          stackName: stackInfo.stackName,
+          skipPrefix,
+          yes: options.yes,
+        });
 
         // Issue [#615] — validate `--recreate-via-cc-api <LogicalId>` (+
         // companion `--force-stateful-recreation`) against the synth
@@ -796,6 +794,7 @@ async function deployCommand(
           ...(options.roleArn && { roleArn: options.roleArn }),
           ...(assetRedirect && { assetRedirect }),
           ...(eventRecorder && { eventRecorder }),
+          ...(migrationGate && { onCurrentStateLoaded: migrationGate }),
           ...(recreateViaCcApiTargets &&
             recreateViaCcApiTargets.size > 0 && { recreateViaCcApiTargets }),
           ...(recreateViaSdkProviderTargets &&
@@ -904,6 +903,14 @@ async function deployCommand(
           deployResult.durationMs
         );
       } catch (deployError) {
+        // The user declined the prefix-migration confirmation inside the
+        // engine's pre-provisioning gate. Nothing was provisioned and the
+        // engine already released the lock, so unwind quietly — this is
+        // NOT a deploy failure and must not be recorded as one (matches
+        // the plain `return` the pre-lock version of the check used).
+        if (deployError instanceof DeployCancelledError) {
+          return;
+        }
         // Issue [#808] — record the run-level failure event before
         // re-throwing. Error metadata only (no resource properties).
         runResult = 'FAILED';

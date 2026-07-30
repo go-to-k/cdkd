@@ -50,6 +50,25 @@ export class SynthesisError extends CdkdError {
 }
 
 /**
+ * Control-flow signal: the user declined a pre-provisioning confirmation
+ * prompt, so the deploy must unwind WITHOUT being reported as a failure.
+ *
+ * Raised from `DeployEngineOptions.onCurrentStateLoaded` (the post-lock
+ * gate the `--prefix-user-supplied-names` migration check runs in). The
+ * engine does not catch it — it propagates out of `deploy()` through the
+ * usual `finally`, which releases the lock and stops the renderer — and the
+ * deploy CLI catches it and returns quietly instead of logging an error or
+ * recording a FAILED run event. Nothing has been provisioned at that point.
+ */
+export class DeployCancelledError extends CdkdError {
+  constructor(message = 'Deployment cancelled by user') {
+    super(message, 'DEPLOY_CANCELLED');
+    this.name = 'DeployCancelledError';
+    Object.setPrototypeOf(this, DeployCancelledError.prototype);
+  }
+}
+
+/**
  * Asset errors
  */
 export class AssetError extends CdkdError {

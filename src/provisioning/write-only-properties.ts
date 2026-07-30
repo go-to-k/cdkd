@@ -32,7 +32,7 @@
  * each update simply re-warns and re-falls-back.
  */
 
-import { describeTypeWithThrottleRetry } from './describe-type.js';
+import { describeTypeWithThrottleRetry, hasNoRegistrySchema } from './describe-type.js';
 import { getLogger } from '../utils/logger.js';
 
 /**
@@ -61,6 +61,16 @@ export function clearWriteOnlyPropertiesCache(): void {
  * DescribeType (a transient throttle must not poison the deploy).
  */
 export function getTopLevelWriteOnlyProperties(resourceType: string): Promise<ReadonlySet<string>> {
+  // Same schema-less short-circuit the sibling create-only resolver applies
+  // ({@link hasNoRegistrySchema}): a type with no registry entry can only
+  // produce a failed DescribeType plus a misleading "grant
+  // cloudformation:DescribeType" warning. Defense-in-depth — today the CC
+  // read-modify-write update path is the only caller and never routes a
+  // custom resource / metadata sentinel there — so this shares the ONE list
+  // rather than letting a future caller re-introduce the same waste.
+  if (hasNoRegistrySchema(resourceType)) {
+    return Promise.resolve(new Set<string>());
+  }
   const cached = writeOnlyPropertiesCache.get(resourceType);
   if (cached) {
     return cached;

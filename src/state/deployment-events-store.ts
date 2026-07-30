@@ -219,10 +219,47 @@ export class DeploymentEventsStore implements DeploymentEventRecorder {
     // cancelled before any event was emitted).
     if (this.events.length === 0) return;
     await this.enqueueWrite(async () => {
+      // The JSONL body PUT and the index READ target different objects and
+      // neither depends on the other's result, so they are issued together.
+      // The durability ORDER that matters is preserved: the index is only
+      // WRITTEN after the flush resolved, so the index never advertises a
+      // run whose event stream is missing / stale.
+      const indexRead = this.readIndexRuns();
+      // Attach a no-op rejection handler so awaiting the flush first cannot
+      // leave the read as an unhandled rejection; the original promise is
+      // still awaited (and can still reject) below.
+      indexRead.catch(() => {});
       await this.doFlush();
-      const keptRunIds = await this.updateIndex(result);
-      await this.pruneSupersededRunFiles(keptRunIds);
+      await this.writeIndexAndPrune(result, await indexRead);
     });
+  }
+
+  /**
+   * Second half of {@link finalize}'s write: build + PUT the index, then
+   * delete the run streams that fell out of the retained window.
+   *
+   * The prune's LIST is issued concurrently with the index PUT — the cutoff
+   * is derived from `runs` (already known before the PUT), the LIST is
+   * read-only, and the DELETE still happens strictly AFTER the PUT resolves.
+   * So the on-S3 ordering is unchanged (a stream is only deleted once the
+   * index that dropped it is durable); only the round trip is overlapped.
+   */
+  private async writeIndexAndPrune(
+    result: DeploymentRunResult,
+    existingRuns: DeploymentRunSummary[]
+  ): Promise<void> {
+    const { key, file, runs } = this.buildIndexUpdate(result, existingRuns);
+    const keptRunIds = runs.map((r) => r.runId);
+    // Below the cap nothing has been superseded yet — don't pay a LIST.
+    const willPrune = keptRunIds.length >= DEPLOYMENT_EVENTS_MAX_INDEX_RUNS;
+    const dirPrefix = deploymentsDirPrefix(this.backend.prefix, this.stackName, this.region);
+    const staleKeysRead = willPrune ? this.backend.listRawKeys(dirPrefix) : undefined;
+    staleKeysRead?.catch(() => {});
+
+    await this.backend.putRawObject(key, JSON.stringify(file, null, 2));
+
+    if (!staleKeysRead) return;
+    await this.pruneSupersededRunFiles(keptRunIds, dirPrefix, await staleKeysRead);
   }
 
   /** Await any in-flight async flushes (used by tests). */
@@ -271,32 +308,46 @@ export class DeploymentEventsStore implements DeploymentEventRecorder {
   }
 
   /**
-   * Prepend this run's summary to `deployments/index.json`, truncated to
-   * the last {@link DEPLOYMENT_EVENTS_MAX_INDEX_RUNS} runs. Read-modify-
-   * write WITHOUT optimistic locking — last-writer-wins (documented
-   * trade-off; the per-run `.jsonl` files are the source of truth).
+   * READ half of the index read-modify-write. Returns the currently indexed
+   * run summaries, or an empty list when the index is absent / corrupt /
+   * unreadable (in which case the write half rebuilds from this run alone —
+   * the .jsonl files remain readable directly via `cdkd events --run`).
    *
-   * Returns the run ids retained in the index (newest-first), which the
-   * caller feeds to {@link pruneSupersededRunFiles} so the `.jsonl` files
-   * stay bounded to the same window as the index.
+   * Split out of the former single `updateIndex` so {@link finalize} can
+   * issue it CONCURRENTLY with the event-stream flush: the two touch
+   * different objects and the read does not depend on the flush.
    */
-  private async updateIndex(result: DeploymentRunResult): Promise<string[]> {
+  private async readIndexRuns(): Promise<DeploymentRunSummary[]> {
     const key = deploymentEventsIndexKey(this.backend.prefix, this.stackName, this.region);
-    let existingRuns: DeploymentRunSummary[] = [];
     try {
       const raw = await this.backend.getRawObject(key);
       if (raw !== null) {
         const parsed = JSON.parse(raw) as Partial<DeploymentRunIndexFile>;
-        if (Array.isArray(parsed.runs)) existingRuns = parsed.runs;
+        if (Array.isArray(parsed.runs)) return parsed.runs;
       }
     } catch (err) {
-      // Corrupt / unreadable index — rebuild from this run alone. The
-      // .jsonl files remain readable directly via `cdkd events --run`.
       this.logger.debug(
         `Deployment-events index unreadable, rewriting: ${err instanceof Error ? err.message : String(err)}`
       );
     }
+    return [];
+  }
 
+  /**
+   * MODIFY half of the index read-modify-write (pure): prepend this run's
+   * summary to `existingRuns`, truncated to the last
+   * {@link DEPLOYMENT_EVENTS_MAX_INDEX_RUNS} runs. No optimistic locking —
+   * last-writer-wins (documented trade-off; the per-run `.jsonl` files are
+   * the source of truth).
+   *
+   * `runs` (newest-first) doubles as the retained-run window that
+   * {@link pruneSupersededRunFiles} bounds the `.jsonl` files to.
+   */
+  private buildIndexUpdate(
+    result: DeploymentRunResult,
+    existingRuns: DeploymentRunSummary[]
+  ): { key: string; file: DeploymentRunIndexFile; runs: DeploymentRunSummary[] } {
+    const key = deploymentEventsIndexKey(this.backend.prefix, this.stackName, this.region);
     const summary: DeploymentRunSummary = {
       runId: this.runId,
       command: this.command,
@@ -317,8 +368,7 @@ export class DeploymentEventsStore implements DeploymentEventRecorder {
       runs,
       lastModified: Date.now(),
     };
-    await this.backend.putRawObject(key, JSON.stringify(file, null, 2));
-    return runs.map((r) => r.runId);
+    return { key, file, runs };
   }
 
   /**
@@ -336,13 +386,19 @@ export class DeploymentEventsStore implements DeploymentEventRecorder {
    * runs finalized while it ran — an extreme edge that self-heals anyway,
    * since the whole JSONL body is re-PUT on that run's next flush / finalize
    * (S3 has no append; each flush rewrites the full stream).
+   *
+   * `dirPrefix` + `keys` are supplied by the caller so the LIST can be
+   * overlapped with the index PUT (see {@link writeIndexAndPrune}); the
+   * DELETE this method issues still runs strictly after that PUT.
    */
-  private async pruneSupersededRunFiles(keptRunIds: string[]): Promise<void> {
+  private async pruneSupersededRunFiles(
+    keptRunIds: string[],
+    dirPrefix: string,
+    keys: string[]
+  ): Promise<void> {
     // Below the cap nothing has been superseded yet.
     if (keptRunIds.length < DEPLOYMENT_EVENTS_MAX_INDEX_RUNS) return;
     const cutoff = keptRunIds.reduce((min, id) => (id < min ? id : min), keptRunIds[0]!);
-    const dirPrefix = deploymentsDirPrefix(this.backend.prefix, this.stackName, this.region);
-    const keys = await this.backend.listRawKeys(dirPrefix);
     const stale = keys.filter((k) => {
       const runId = runIdFromJsonlKey(k, dirPrefix);
       return runId !== null && runId < cutoff;

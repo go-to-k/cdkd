@@ -1,9 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import {
+  createPrefixMigrationGate,
   findPendingPrefixRenames,
   promptMigrationConfirm,
   type PendingRename,
 } from '../../../src/cli/commands/prefix-migration-check.js';
+import { DeployCancelledError } from '../../../src/utils/error-handler.js';
 import type { StackState, ResourceState } from '../../../src/types/state.js';
 
 // Mock readline so promptMigrationConfirm doesn't actually open stdin.
@@ -431,5 +433,61 @@ describe('promptMigrationConfirm', () => {
     const proceed = await promptMigrationConfirm(fakeRenames, { yes: true });
     expect(proceed).toBe(true);
     expect(vi.mocked(readline.createInterface)).not.toHaveBeenCalled();
+  });
+});
+
+describe('createPrefixMigrationGate', () => {
+  const prefixedState = () =>
+    makeState({
+      Role: makeResource('MyStack-my-role', 'AWS::IAM::Role', { userSuppliedName: 'my-role' }),
+    });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('returns undefined when prefix-skipping is not active (legacy prefixing opted back in)', () => {
+    expect(createPrefixMigrationGate({ stackName: 'MyStack', skipPrefix: false })).toBeUndefined();
+  });
+
+  it('is a no-op when the stack has no state at all (first deploy)', async () => {
+    const gate = createPrefixMigrationGate({ stackName: 'MyStack', skipPrefix: true, yes: true })!;
+    await expect(gate('MyStack', undefined)).resolves.toBeUndefined();
+  });
+
+  it('is a no-op when no Pattern B resource is still prefixed', async () => {
+    const gate = createPrefixMigrationGate({ stackName: 'MyStack', skipPrefix: true, yes: true })!;
+    const clean = makeState({ Role: makeResource('my-role', 'AWS::IAM::Role') });
+    await expect(gate('MyStack', clean)).resolves.toBeUndefined();
+  });
+
+  it('ignores state belonging to a different stack (nested-stack children inherit the option object)', async () => {
+    const gate = createPrefixMigrationGate({ stackName: 'MyStack', skipPrefix: true })!;
+    // A pending-rename-shaped state for a DIFFERENT stack must not prompt.
+    await expect(gate('MyStack~Child', prefixedState())).resolves.toBeUndefined();
+  });
+
+  it('passes through when the user confirms (--yes short-circuits the prompt)', async () => {
+    const gate = createPrefixMigrationGate({ stackName: 'MyStack', skipPrefix: true, yes: true })!;
+    await expect(gate('MyStack', prefixedState())).resolves.toBeUndefined();
+    expect(vi.mocked(readline.createInterface)).not.toHaveBeenCalled();
+  });
+
+  it('raises DeployCancelledError when the user declines', async () => {
+    vi.mocked(readline.createInterface).mockReturnValue({
+      question: vi.fn().mockResolvedValue('n'),
+      close: vi.fn(),
+    } as unknown as ReturnType<typeof readline.createInterface>);
+    const originalIsTTY = process.stdin.isTTY;
+    Object.defineProperty(process.stdin, 'isTTY', { value: true, configurable: true });
+    try {
+      const gate = createPrefixMigrationGate({ stackName: 'MyStack', skipPrefix: true })!;
+      await expect(gate('MyStack', prefixedState())).rejects.toBeInstanceOf(DeployCancelledError);
+    } finally {
+      Object.defineProperty(process.stdin, 'isTTY', {
+        value: originalIsTTY,
+        configurable: true,
+      });
+    }
   });
 });

@@ -38,6 +38,7 @@ import type { DiffCalculator } from '../analyzer/diff-calculator.js';
 import { ProviderRegistry } from '../provisioning/provider-registry.js';
 import { slowCcOperationTimeoutMs } from '../provisioning/slow-cc-operation-timeouts.js';
 import { getCreateOnlyPropertyPaths } from '../provisioning/create-only-properties.js';
+import { hasNoRegistrySchema } from '../provisioning/describe-type.js';
 import { TemplateParser } from '../analyzer/template-parser.js';
 import {
   IMPLICIT_DELETE_DEPENDENCIES,
@@ -170,6 +171,33 @@ export interface DeployEngineOptions {
     parentLogicalId: string;
     parentRegion: string;
   };
+
+  /**
+   * Pre-provisioning gate invoked with the stack's CURRENT state, exactly
+   * once per `deploy()`, immediately after the post-lock state read and
+   * BEFORE anything else touches the template or a provider. `state` is
+   * `undefined` when the stack has no state at all (first deploy).
+   *
+   * Exists so a CLI pre-flight that needs to inspect existing state can
+   * reuse the state read the engine already performs, instead of issuing
+   * its own S3 GET before the lock and then having the engine read the
+   * same object again. The deploy CLI's `--prefix-user-supplied-names`
+   * migration check is the caller; reading POST-lock is also strictly more
+   * authoritative than the pre-lock read it replaces, since no concurrent
+   * deploy can mutate the state between the check and the diff.
+   *
+   * Throwing aborts the deploy. `DeployCancelledError` is the "user
+   * declined a confirmation prompt" signal the CLI unwinds quietly; any
+   * other error surfaces as a normal deploy failure. The engine does not
+   * catch either — the `finally` still releases the lock and stops the
+   * live renderer.
+   *
+   * `stackName` is passed so an implementation shared across a run can
+   * scope itself; the engine forwards its own option object to
+   * nested-stack children, which invoke the hook with the CHILD's name and
+   * state.
+   */
+  onCurrentStateLoaded?: (stackName: string, state: StackState | undefined) => Promise<void>;
 
   /**
    * Issue [#615] — user-named resources to destroy + recreate via Cloud
@@ -886,7 +914,22 @@ export class DeployEngine {
     // no create-only lookups at all, so the prefetched entries simply go unused
     // that run — bounded, deduped, non-blocking waste, never a correctness issue.
     // Part of #1180.
-    for (const type of new Set(Object.values(template.Resources).map((r) => r.Type))) {
+    //
+    // Schema-less types are filtered out: `AWS::CDK::Metadata` (the CDK
+    // construct-tree sentinel every synthesized template carries) and custom
+    // resources have no CloudFormation registry entry, so DescribeType can
+    // only fail for them. Before the filter, every single deploy burned one
+    // guaranteed-to-fail API call on the metadata sentinel AND printed a
+    // "Grant cloudformation:DescribeType ..." warning naming a pseudo-resource
+    // the user cannot act on. The diff / type-validation / property-validation
+    // passes below already exclude `AWS::CDK::Metadata`; this makes the
+    // prefetch consistent with them. `hasNoRegistrySchema` short-circuits
+    // inside the resolver too, so this filter is the cheap outer guard.
+    for (const type of new Set(
+      Object.values(template.Resources)
+        .map((r) => r.Type)
+        .filter((type) => !hasNoRegistrySchema(type))
+    )) {
       // getCreateOnlyPropertyPaths already swallows DescribeType errors, but a
       // .catch here defends against any unexpected rejection so a fire-and-forget
       // prefetch never surfaces as an unhandled promise rejection.
@@ -938,6 +981,15 @@ export class DeployEngine {
       this.logger.debug(
         `Loaded current state: ${Object.keys(currentState.resources).length} resources`
       );
+
+      // 1a-pre. Pre-provisioning gate. Runs before the journal note, the
+      // observed-properties refresh, parsing, the diff and every provider
+      // call — so a caller that declines here has changed nothing. Reuses
+      // the state read just performed instead of making the CLI issue its
+      // own pre-lock GET of the same object.
+      if (this.options.onCurrentStateLoaded) {
+        await this.options.onCurrentStateLoaded(stackName, currentStateData?.state);
+      }
 
       // 1b. If a rollback journal exists, a previous deploy failed / was
       // interrupted and has not yet been reverted (issue #1183). Note that
@@ -1306,23 +1358,45 @@ export class DeployEngine {
       );
       this.logger.debug(`State saved (ETag: ${newEtag})`);
 
-      // Deploy succeeded — the stable baseline has moved, so any rollback
-      // journal from a prior failed attempt (fix-forward that now succeeded)
-      // must NOT be replayable past this point (issue #1183). Best-effort.
-      await this.deleteRollbackJournalBestEffort(stackName);
-
-      // 7c. Update the persistent exports index with this stack's
-      // outputs so subsequent `Fn::ImportValue` resolves hit O(1).
-      // Best-effort: failures are swallowed inside updateForStack and
-      // surfaced as warnings (state.json is canonical; a stale index
-      // self-heals on the next deploy/resolve fallback).
-      if (this.exportIndexStore) {
-        await this.exportIndexStore.updateForStack(
-          stackName,
-          this.stackRegion,
-          (newState.outputs as Record<string, unknown>) ?? {}
-        );
-      }
+      // 7c. Two independent post-save S3 writes, run CONCURRENTLY:
+      //
+      //   1. Delete the rollback journal. Deploy succeeded, so the stable
+      //      baseline has moved and a journal from a prior failed attempt
+      //      (fix-forward that now succeeded) must NOT be replayable past
+      //      this point (issue #1183). Best-effort.
+      //   2. Update the persistent exports index with this stack's outputs
+      //      so subsequent `Fn::ImportValue` resolves hit O(1). Best-effort:
+      //      failures are swallowed inside updateForStack and surfaced as
+      //      warnings (state.json is canonical; a stale index self-heals on
+      //      the next deploy/resolve fallback).
+      //
+      // They target DISJOINT S3 objects — `{prefix}/{stack}/{region}/
+      // rollback-journal.json` vs the bucket-level exports index — and
+      // neither reads what the other writes: `updateForStack` only ever
+      // touches the exports index (plus, on a first-ever call, a rebuild
+      // scan of `state.json` files, which the journal delete does not
+      // affect), and the journal delete reads nothing at all. So the
+      // previous sequential ordering carried no dependency; it was costing
+      // a full extra S3 round trip on every successful deploy (measured
+      // ~0.5s of the ~1.0s "State saved" -> "Lock released" window).
+      //
+      // BOTH stay strictly AFTER the state save above and strictly BEFORE
+      // the lock release in the `finally` below, which is load-bearing:
+      // deleting the journal before the new baseline is durable would lose
+      // the ability to revert, and releasing the lock before these settle
+      // would let a concurrent deploy of the same stack observe a journal
+      // we are about to delete (spurious "a previous deploy failed" note)
+      // or race the exports-index read-modify-write.
+      await Promise.all([
+        this.deleteRollbackJournalBestEffort(stackName),
+        this.exportIndexStore
+          ? this.exportIndexStore.updateForStack(
+              stackName,
+              this.stackRegion,
+              (newState.outputs as Record<string, unknown>) ?? {}
+            )
+          : Promise.resolve(),
+      ]);
 
       const durationMs = Date.now() - startTime;
       const unchangedCount =

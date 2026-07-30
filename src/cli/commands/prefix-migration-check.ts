@@ -1,5 +1,6 @@
 import * as readline from 'node:readline/promises';
 import { getLogger } from '../../utils/logger.js';
+import { DeployCancelledError } from '../../utils/error-handler.js';
 import {
   PATTERN_B_NAME_OPTIONS,
   PATTERN_B_NAME_PROPERTIES,
@@ -215,4 +216,47 @@ export async function promptMigrationConfirm(
   } finally {
     rl.close();
   }
+}
+
+/**
+ * Build the `DeployEngineOptions.onCurrentStateLoaded` gate that runs the
+ * prefix-migration check, or `undefined` when the check is inactive
+ * (`skipPrefix === false`, i.e. the user opted back in to legacy prefixing).
+ *
+ * Why a gate rather than a pre-lock `getState`: prefix-skipping has been the
+ * default since v0.94.0, so the previous shape issued an S3 GET on EVERY
+ * deploy of EVERY stack — including brand-new stacks with no state at all —
+ * and the deploy engine then read the very same object again immediately
+ * after taking the lock. Running as the engine's post-lock gate reuses that
+ * read. The contract the check actually depends on ("surface this before any
+ * provider call runs") is preserved: the engine invokes the gate immediately
+ * after loading state and before parsing, diffing, or provisioning anything.
+ * Reading under the lock is also strictly more authoritative — no concurrent
+ * deploy can mutate the state between the check and the diff it predicts.
+ *
+ * Declining the prompt raises {@link DeployCancelledError}, which the deploy
+ * CLI unwinds quietly (no error output, no FAILED run event) — matching the
+ * plain early `return` the pre-lock version used.
+ *
+ * The gate is scoped to `stackName`: nested-stack children inherit the parent
+ * engine's option object, and the check is deliberately top-level-only (it was
+ * never applied to children).
+ */
+export function createPrefixMigrationGate(opts: {
+  stackName: string;
+  skipPrefix: boolean;
+  yes?: boolean;
+}): ((stackName: string, state: StackState | undefined) => Promise<void>) | undefined {
+  if (!opts.skipPrefix) return undefined;
+  return async (gateStackName: string, state: StackState | undefined): Promise<void> => {
+    if (gateStackName !== opts.stackName) return;
+    const pending = findPendingPrefixRenames(opts.stackName, state);
+    if (pending.length === 0) return;
+    const proceed = await promptMigrationConfirm(pending, {
+      ...(opts.yes !== undefined && { yes: opts.yes }),
+    });
+    if (!proceed) {
+      throw new DeployCancelledError();
+    }
+  };
 }
