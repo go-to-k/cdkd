@@ -85,11 +85,74 @@ export function resolveApp(cliApp?: string): string | undefined {
 export type StateBucketSource = 'cli-flag' | 'env' | 'cdk.json' | 'default' | 'default-legacy';
 
 /**
+ * Outcome of the `HeadBucket` probe {@link resolveStateBucketWithDefaultAndSource}
+ * runs against a default-name candidate.
+ *
+ *  - `'ok'` — 2xx, or a 301 that only means "the bucket lives in another
+ *    region" (the state client is region-corrected before it is used).
+ *  - `'access-denied'` — 403. The bucket EXISTS (so name resolution still
+ *    picks it), but this identity could not head it: either an IAM gap or a
+ *    foreign-owned bucket rejected by the `ExpectedBucketOwner` header.
+ *  - `'missing'` — 404 / `NoSuchBucket`.
+ */
+type BucketProbeOutcome = 'ok' | 'access-denied' | 'missing';
+
+/**
  * Result of resolving the state bucket, including the source that won.
  */
 export interface ResolvedStateBucket {
   bucket: string;
   source: StateBucketSource;
+  /**
+   * The probe outcome for the CHOSEN bucket — set only on the default-name
+   * paths, which are the only ones that probe. `undefined` for an
+   * explicitly-specified bucket (taken verbatim, never probed).
+   */
+  probe?: BucketProbeOutcome;
+}
+
+/**
+ * Did this resolution already prove the bucket is there AND usable by these
+ * credentials — making the state backend's own `HeadBucket` pure duplication?
+ *
+ * Both conditions matter:
+ *
+ *  - The source must be a default-name path.
+ *    {@link resolveStateBucketWithDefaultAndSource} picks between
+ *    `cdkd-state-{accountId}` and the legacy `cdkd-state-{accountId}-{region}`
+ *    by `HeadBucket`-ing both, with the same credentials the state client
+ *    will use. An explicitly-specified bucket (`--state-bucket` /
+ *    `CDKD_STATE_BUCKET` / `cdk.json`) is taken verbatim and never probed.
+ *  - The probe must have come back `'ok'`. A 403 counts as "exists" for
+ *    NAME resolution but says nothing good about usability, and it is
+ *    precisely the case where a second `HeadBucket` still earns its round
+ *    trip — it turns a confusing mid-deploy state-read failure into an
+ *    up-front "Access denied" before any asset is published.
+ *
+ * Consumed by `cdkd deploy` to skip the duplicate `HeadBucket` in
+ * `S3StateBackend.verifyBucketExists` (issue
+ * [#1283](https://github.com/go-to-k/cdkd/issues/1283)) — one fewer sequential
+ * round trip on the deploy preflight's critical path.
+ */
+export function stateBucketExistenceConfirmed(resolved: ResolvedStateBucket): boolean {
+  if (resolved.source !== 'default' && resolved.source !== 'default-legacy') return false;
+  return resolved.probe === 'ok';
+}
+
+/**
+ * SDK bits the default-name bucket probes need, resolved ONCE by
+ * {@link resolveStateBucketWithDefaultAndSource} and handed down.
+ *
+ * The probes used to `await import()` these themselves on every call, which
+ * both repeated work and meant the (now concurrent — issue #1283) probes each
+ * paid their own module resolution.
+ */
+interface BucketProbeDeps {
+  HeadBucketCommand: typeof import('@aws-sdk/client-s3').HeadBucketCommand;
+  ListObjectsV2Command: typeof import('@aws-sdk/client-s3').ListObjectsV2Command;
+  expectedOwnerParam: (
+    client: import('@aws-sdk/client-s3').S3Client
+  ) => Promise<{ ExpectedBucketOwner?: string }>;
 }
 
 /**
@@ -406,11 +469,30 @@ export async function resolveStateBucketWithDefaultAndSource(
   logger.debug('No state bucket specified, resolving default from account...');
 
   const { GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');
-  const { S3Client } = await import('@aws-sdk/client-s3');
+  const { S3Client, HeadBucketCommand, ListObjectsV2Command } = await import('@aws-sdk/client-s3');
   const { getAwsClients } = await import('../utils/aws-clients.js');
+  const { expectedOwnerParam, recordResolvedAccountId } =
+    await import('../utils/expected-bucket-owner.js');
+  // Resolved ONCE here and handed to the probes below. They used to re-issue
+  // these dynamic imports per call; hoisting drops four redundant awaits and
+  // keeps the concurrent probes (issue #1283) importing nothing in parallel.
+  const probeDeps: BucketProbeDeps = {
+    HeadBucketCommand,
+    ListObjectsV2Command,
+    expectedOwnerParam,
+  };
   const awsClients = getAwsClients();
-  const identity = await awsClients.sts.send(new GetCallerIdentityCommand({}));
+  const stsClient = awsClients.sts;
+  const identity = await stsClient.send(new GetCallerIdentityCommand({}));
   const accountId = identity.Account!;
+
+  // Memoize the account id we just resolved against the credentials that
+  // resolved it, so the `ExpectedBucketOwner` header on the probes below —
+  // and on every later state-bucket call made with the same credentials —
+  // reuses this round trip instead of issuing its own `GetCallerIdentity`
+  // (issue #1283; the per-client cache could not collapse them because the
+  // probe and the region-corrected state client are different objects).
+  await recordResolvedAccountId(stsClient, accountId);
 
   const newName = getDefaultStateBucketName(accountId);
   // TODO(remove-bc-after-1.x): legacy name kept for the backwards-compat read
@@ -422,10 +504,35 @@ export async function resolveStateBucketWithDefaultAndSource(
   // region to ask whether the bucket exists. The state-bucket S3 client used
   // for actual reads/writes is rebuilt against the bucket's real region via
   // `resolveBucketRegion` later in the flow.
-  const probe = new S3Client({ region: 'us-east-1' });
+  //
+  // The probe reuses the STS client's OWN credential provider on purpose: the
+  // bucket name it is about to probe was derived from THAT identity's account,
+  // so probing as anyone else answers the wrong question. (Before issue #1283
+  // the probe fell through to the default chain even under `--profile`, so a
+  // profile pointing at a different account than the ambient credentials made
+  // every probe come back 403 = "exists" by accident.) Sharing the identity is
+  // also what makes the deploy preflight's `verifyBucketExists` HeadBucket
+  // genuinely redundant — see `stateBucketExistenceConfirmed`.
+  const stsCredentials = (stsClient as { config?: { credentials?: unknown } }).config?.credentials;
+  const probe = new S3Client({
+    region: 'us-east-1',
+    ...(typeof stsCredentials === 'function' && { credentials: stsCredentials as never }),
+  });
   try {
-    const newExists = await bucketExists(probe, newName);
-    const legacyExists = await bucketExists(probe, legacyName);
+    // Independent probes — run them concurrently. Sequentially they were two
+    // back-to-back S3 round trips on the deploy's critical path (issue #1283).
+    // `Promise.all` handles both rejections, so a double failure cannot leak
+    // an unhandled rejection; the first error still propagates unchanged.
+    const [newProbe, legacyProbe] = await Promise.all([
+      probeBucket(probe, newName, probeDeps),
+      probeBucket(probe, legacyName, probeDeps),
+    ]);
+    // A 403 still counts as "the bucket is there" for NAME resolution — we
+    // just could not head it. The distinction is carried through on the
+    // returned `probe` field so the deploy preflight knows whether its own
+    // HeadBucket would be pure duplication (see stateBucketExistenceConfirmed).
+    const newExists = newProbe !== 'missing';
+    const legacyExists = legacyProbe !== 'missing';
 
     // Step 2 / 3: pick the bucket that actually has state.
     //
@@ -444,9 +551,9 @@ export async function resolveStateBucketWithDefaultAndSource(
     //      empty AND legacy has state, fall back to legacy with a
     //      strong warning telling the user to run migrate.
     if (newExists && legacyExists) {
-      const newHasState = await bucketHasAnyState(probe, newName);
+      const newHasState = await bucketHasAnyState(probe, newName, probeDeps);
       if (!newHasState) {
-        const legacyHasState = await bucketHasAnyState(probe, legacyName);
+        const legacyHasState = await bucketHasAnyState(probe, legacyName, probeDeps);
         if (legacyHasState) {
           logger.warn(
             `Both '${newName}' (new default) and '${legacyName}' (legacy default) exist, ` +
@@ -454,17 +561,17 @@ export async function resolveStateBucketWithDefaultAndSource(
               `Run \`cdkd state migrate --region ${region}\` to copy the state into the new ` +
               `bucket and stop seeing this warning.`
           );
-          return { bucket: legacyName, source: 'default-legacy' };
+          return { bucket: legacyName, source: 'default-legacy', probe: legacyProbe };
         }
       }
       logger.debug(`State bucket: ${newName}`);
-      return { bucket: newName, source: 'default' };
+      return { bucket: newName, source: 'default', probe: newProbe };
     }
 
     if (newExists) {
       // Logged at debug only — see resolveStateBucketWithDefault doc-comment.
       logger.debug(`State bucket: ${newName}`);
-      return { bucket: newName, source: 'default' };
+      return { bucket: newName, source: 'default', probe: newProbe };
     }
 
     // TODO(remove-bc-after-1.x): drop the legacy fallback branch in PR 99.
@@ -476,7 +583,7 @@ export async function resolveStateBucketWithDefaultAndSource(
           `(add --remove-legacy to delete the legacy bucket after a successful copy; ` +
           `legacy support will be dropped in a future release.)`
       );
-      return { bucket: legacyName, source: 'default-legacy' };
+      return { bucket: legacyName, source: 'default-legacy', probe: legacyProbe };
     }
 
     // Step 4: neither bucket exists.
@@ -505,10 +612,10 @@ export async function resolveStateBucketWithDefaultAndSource(
  */
 async function bucketHasAnyState(
   client: import('@aws-sdk/client-s3').S3Client,
-  bucketName: string
+  bucketName: string,
+  deps: BucketProbeDeps
 ): Promise<boolean> {
-  const { ListObjectsV2Command } = await import('@aws-sdk/client-s3');
-  const { expectedOwnerParam } = await import('../utils/expected-bucket-owner.js');
+  const { ListObjectsV2Command, expectedOwnerParam } = deps;
   try {
     const resp = await client.send(
       new ListObjectsV2Command({
@@ -529,22 +636,27 @@ async function bucketHasAnyState(
 /**
  * Probe whether an S3 bucket exists from this account's perspective.
  *
- * Returns:
- *  - `true` for any 2xx (`HeadBucket` succeeded) **or** 301 (the bucket
+ * Returns a {@link BucketProbeOutcome}:
+ *  - `'ok'` for any 2xx (`HeadBucket` succeeded) **or** 301 (the bucket
  *    exists, just in a different region — we can still use it because the
  *    real region is resolved later by `resolveBucketRegion`).
- *  - `true` for 403 (we lack permission to head it, but it exists; let the
- *    state-backend produce a more specific error later).
- *  - `false` for 404 / `NotFound` / `NoSuchBucket`.
+ *  - `'access-denied'` for 403 (we lack permission to head it, but it
+ *    exists; name resolution still picks it and the state backend produces
+ *    a more specific error later).
+ *  - `'missing'` for 404 / `NotFound` / `NoSuchBucket`.
  *  - Re-throws anything else so credential / network failures aren't silently
  *    swallowed by the lookup chain.
+ *
+ * Name resolution only cares about `'missing'` vs. not; the `'ok'` /
+ * `'access-denied'` split exists so `stateBucketExistenceConfirmed` can tell
+ * "already verified" from "merely known to exist" (issue #1283).
  */
-async function bucketExists(
+async function probeBucket(
   client: import('@aws-sdk/client-s3').S3Client,
-  bucketName: string
-): Promise<boolean> {
-  const { HeadBucketCommand } = await import('@aws-sdk/client-s3');
-  const { expectedOwnerParam } = await import('../utils/expected-bucket-owner.js');
+  bucketName: string,
+  deps: BucketProbeDeps
+): Promise<BucketProbeOutcome> {
+  const { HeadBucketCommand, expectedOwnerParam } = deps;
   try {
     // With ExpectedBucketOwner a foreign-owned bucket comes back 403, which
     // this probe already treats as "exists" — the decision is unchanged, but
@@ -552,7 +664,7 @@ async function bucketExists(
     await client.send(
       new HeadBucketCommand({ Bucket: bucketName, ...(await expectedOwnerParam(client)) })
     );
-    return true;
+    return 'ok';
   } catch (error) {
     const err = error as {
       name?: string;
@@ -561,13 +673,21 @@ async function bucketExists(
     };
     const status = err.$metadata?.httpStatusCode;
     if (err.name === 'NotFound' || err.name === 'NoSuchBucket' || status === 404) {
-      return false;
+      return 'missing';
     }
     // 301 = bucket exists in a different region (cross-region HEAD redirect).
-    // 403 = bucket exists but we lack `s3:ListBucket` — treat as existing so
-    // the downstream operation surfaces the real "access denied" error.
-    if (status === 301 || status === 403) {
-      return true;
+    // Nothing is wrong: the state client is rebuilt for the bucket's real
+    // region before it is used, so this counts as a clean probe.
+    if (status === 301) {
+      return 'ok';
+    }
+    // 403 = bucket exists but we lack `s3:ListBucket`, or it is owned by
+    // another account and ExpectedBucketOwner rejected it. Treat as existing
+    // so the downstream operation surfaces the real "access denied" error —
+    // and mark it so the deploy preflight keeps its own HeadBucket rather
+    // than deferring that error to the first state read.
+    if (status === 403) {
+      return 'access-denied';
     }
     // AWS SDK v3 synthetic Unknown error — covers the empty-body 301 redirect
     // case where the SDK fails to parse the status. We can't distinguish from

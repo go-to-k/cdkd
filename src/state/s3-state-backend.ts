@@ -65,6 +65,28 @@ export interface S3ClientOptions {
 }
 
 /**
+ * Options for {@link S3StateBackend.verifyBucketExists}.
+ */
+export interface VerifyBucketExistsOptions {
+  /**
+   * Set when the caller ALREADY proved the bucket exists moments earlier with
+   * the same credentials — today only the default-state-bucket resolution in
+   * `config-loader.ts`, which `HeadBucket`s both candidate names to choose
+   * between them (see `stateBucketExistenceConfirmed`). Skips the duplicate
+   * `HeadBucket` round trip on the deploy preflight's critical path (issue
+   * [#1283](https://github.com/go-to-k/cdkd/issues/1283)).
+   *
+   * The region resolution / client rebuild is NOT skipped — only the HEAD.
+   *
+   * Never set it for an explicitly-specified bucket (`--state-bucket` /
+   * `CDKD_STATE_BUCKET` / `cdk.json`): those are taken verbatim, were never
+   * probed, and must keep failing fast here before asset uploads / Docker
+   * builds run against a missing bucket.
+   */
+  existenceAlreadyProbed?: boolean;
+}
+
+/**
  * S3-based state backend using conditional writes for optimistic locking.
  *
  * State keys are region-scoped (`{prefix}/{stackName}/{region}/state.json`)
@@ -201,8 +223,18 @@ export class S3StateBackend {
     return expectedOwnerParam(this.s3Client);
   }
 
-  async verifyBucketExists(): Promise<void> {
+  async verifyBucketExists(options: VerifyBucketExistsOptions = {}): Promise<void> {
+    // ALWAYS run — this is the `GetBucketLocation` + region-correct client
+    // rebuild that every later state operation depends on. Only the
+    // `HeadBucket` below is skippable.
     await this.ensureClientForBucket();
+    if (options.existenceAlreadyProbed) {
+      this.logger.debug(
+        `Skipping the redundant HeadBucket on '${this.config.bucket}' — the default-name ` +
+          `resolution already confirmed it exists with these credentials (issue #1283).`
+      );
+      return;
+    }
     try {
       await this.s3Client.send(
         new HeadBucketCommand({

@@ -175,6 +175,136 @@ describe('S3StateBackend.verifyBucketExists', () => {
     expect((caught as Error).message).toMatch(/Bucket 'my-state-bucket' does not exist/);
     expect((caught as Error).message).not.toMatch(/UnknownError/);
   });
+
+  // Issue #1283: the deploy preflight's HeadBucket duplicates the one the
+  // default-state-bucket name resolution just issued. `existenceAlreadyProbed`
+  // drops the duplicate — but ONLY the HEAD, never the region resolution, and
+  // never for a bucket the resolution did not probe.
+  describe('existenceAlreadyProbed (issue #1283)', () => {
+    it('skips the HeadBucket when the caller already probed the bucket', async () => {
+      await expect(
+        backend.verifyBucketExists({ existenceAlreadyProbed: true })
+      ).resolves.toBeUndefined();
+
+      expect(s3Client.send).not.toHaveBeenCalled();
+    });
+
+    it('still resolves the bucket region + rebuilds the client when skipping the HeadBucket', async () => {
+      const { resolveBucketRegion } = await import('../../../src/utils/aws-region-resolver.js');
+      // Bucket lives in us-west-2; the client was built for us-east-1. Every
+      // later state operation depends on this rebuild, so it must happen even
+      // though the HEAD is skipped.
+      vi.mocked(resolveBucketRegion).mockResolvedValue('us-west-2');
+      const initialClient = makeFakeClient('us-east-1');
+      const crossRegionBackend = new S3StateBackend(
+        initialClient as unknown as S3Client,
+        { bucket: 'cross-region-bucket', prefix: 'stacks' },
+        { region: 'us-east-1' }
+      );
+
+      await crossRegionBackend.verifyBucketExists({ existenceAlreadyProbed: true });
+
+      expect(vi.mocked(resolveBucketRegion)).toHaveBeenCalled();
+      expect(initialClient.destroy).toHaveBeenCalled();
+      expect(vi.mocked(S3Client)).toHaveBeenCalledWith(
+        expect.objectContaining({ region: 'us-west-2' })
+      );
+      // …and no HeadBucket was issued on either client.
+      expect(initialClient.send).not.toHaveBeenCalled();
+    });
+
+    it('keeps the HeadBucket when the flag is false or absent', async () => {
+      s3Client.send.mockResolvedValue({});
+
+      await backend.verifyBucketExists({ existenceAlreadyProbed: false });
+      await backend.verifyBucketExists();
+
+      expect(s3Client.send).toHaveBeenCalledTimes(2);
+      expect(s3Client.send.mock.calls[0][0]).toBeInstanceOf(HeadBucketCommand);
+    });
+  });
+});
+
+/**
+ * The exact composition `cdkd deploy`'s state preflight performs (issue
+ * #1283): the resolved bucket's {@link StateBucketSource} decides whether the
+ * duplicate HeadBucket is dropped. Exercised with BOTH real units — the real
+ * `stateBucketExistenceConfirmed` mapping and a real `S3StateBackend` — so a
+ * regression in either half fails here.
+ */
+describe('deploy preflight composition: source -> verifyBucketExists (issue #1283)', () => {
+  const config: StateBackendConfig = { bucket: 'my-state-bucket', prefix: 'stacks' };
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    clearBucketRegionCache();
+    const { resolveBucketRegion } = await import('../../../src/utils/aws-region-resolver.js');
+    vi.mocked(resolveBucketRegion).mockResolvedValue('us-east-1');
+  });
+
+  it.each([
+    { source: 'cli-flag' as const, probe: undefined },
+    { source: 'env' as const, probe: undefined },
+    { source: 'cdk.json' as const, probe: undefined },
+    // A default-name bucket the resolution could NOT head (403: IAM gap, or a
+    // foreign-owned squatted name) keeps the fail-fast too — "exists" is not
+    // "usable".
+    { source: 'default' as const, probe: 'access-denied' as const },
+    { source: 'default-legacy' as const, probe: 'access-denied' as const },
+  ])(
+    'a bucket this resolution never cleanly verified ($source/$probe) still fails fast',
+    async ({ source, probe }) => {
+      const { stateBucketExistenceConfirmed } = await import(
+        '../../../src/cli/config-loader.js'
+      );
+      const client = makeFakeClient('us-east-1');
+      client.send.mockRejectedValue(Object.assign(new Error('Not Found'), { name: 'NotFound' }));
+      const backend = new S3StateBackend(client as unknown as S3Client, config, {
+        region: 'us-east-1',
+      });
+
+      const caught = await backend
+        .verifyBucketExists({
+          existenceAlreadyProbed: stateBucketExistenceConfirmed({
+            bucket: config.bucket,
+            source,
+            ...(probe && { probe }),
+          }),
+        })
+        .catch((e: unknown) => e);
+
+      expect(caught).toBeInstanceOf(StateError);
+      expect((caught as Error).message).toMatch(/does not exist/);
+      // The HEAD really was issued — the fail-fast is not incidental.
+      expect(client.send).toHaveBeenCalledTimes(1);
+    }
+  );
+
+  it.each(['default', 'default-legacy'] as const)(
+    'a cleanly-probed default-resolved (%s) bucket skips the duplicate HeadBucket',
+    async (source) => {
+      const { stateBucketExistenceConfirmed } = await import(
+        '../../../src/cli/config-loader.js'
+      );
+      const client = makeFakeClient('us-east-1');
+      // Would reject if called — proving the HEAD is never issued.
+      client.send.mockRejectedValue(new Error('HeadBucket should not have been issued'));
+      const backend = new S3StateBackend(client as unknown as S3Client, config, {
+        region: 'us-east-1',
+      });
+
+      await expect(
+        backend.verifyBucketExists({
+          existenceAlreadyProbed: stateBucketExistenceConfirmed({
+            bucket: config.bucket,
+            source,
+            probe: 'ok',
+          }),
+        })
+      ).resolves.toBeUndefined();
+      expect(client.send).not.toHaveBeenCalled();
+    }
+  );
 });
 
 describe('S3StateBackend.ensureClientForBucket — region rebuild', () => {

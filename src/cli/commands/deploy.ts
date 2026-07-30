@@ -61,7 +61,8 @@ import {
   resolveCaptureObservedState,
   resolveAutoAssetStorage,
   resolveSkipPrefix,
-  resolveStateBucketWithDefault,
+  resolveStateBucketWithDefaultAndSource,
+  stateBucketExistenceConfirmed,
   resolveUseCdkBootstrapAssets,
   warnDeprecatedNoPrefixCliFlag,
 } from '../config-loader.js';
@@ -229,11 +230,22 @@ async function deployCommand(
   const statePrepPromise = (async () => {
     // Resolve --state-bucket from CLI, env, cdk.json, or default (cdkd-state-{accountId};
     // legacy cdkd-state-{accountId}-{region} is consulted only as a fallback).
-    const stateBucket = await resolveStateBucketWithDefault(options.stateBucket, region);
+    const resolvedStateBucket = await resolveStateBucketWithDefaultAndSource(
+      options.stateBucket,
+      region
+    );
+    const stateBucket = resolvedStateBucket.bucket;
 
     // Fail fast if the state bucket is missing, before docker builds / asset uploads.
     // Passing region/profile lets the backend rebuild its S3 client when the
     // state bucket lives in a region different from the CLI's profile region.
+    //
+    // When the bucket name came from the DEFAULT-name resolution above AND
+    // that resolution's own HeadBucket came back clean (with the same
+    // credentials), verifyBucketExists only needs its GetBucketLocation +
+    // client rebuild — not a second HEAD (issue #1283). An
+    // explicitly-specified bucket was never probed, and a 403 probe means
+    // "exists but unusable"; both keep the full fail-fast check.
     const preflightStateBackend = new S3StateBackend(
       awsClients.s3,
       {
@@ -245,7 +257,9 @@ async function deployCommand(
         ...(options.profile && { profile: options.profile }),
       }
     );
-    await preflightStateBackend.verifyBucketExists();
+    await preflightStateBackend.verifyBucketExists({
+      existenceAlreadyProbed: stateBucketExistenceConfirmed(resolvedStateBucket),
+    });
 
     // Shared exports index store for this deploy session. Lifecycle: created
     // here once and threaded through every per-stack DeployEngine so its
