@@ -488,36 +488,45 @@ export function effectiveResourceTimeoutMs(
 }
 
 /**
- * Skip waiting for async-stabilization resources (CloudFront, RDS,
- * ElastiCache, NAT Gateway, EC2 Instance, ELBv2 LoadBalancer, Lambda
- * MicroVM Image) on deploy. Setting the flag mutates
+ * Skip waiting for async-stabilization resources (RDS, ElastiCache,
+ * NAT Gateway, EC2 Instance, ELBv2 LoadBalancer, Lambda MicroVM Image)
+ * on deploy. Setting the flag mutates
  * `process.env.CDKD_NO_WAIT='true'`; provider code checks that env
  * var, not the parsed CLI option (this lets nested call paths — e.g.
  * asset publish, lifecycle hooks — see the same setting without
  * threading the flag through every function signature).
  *
+ * CloudFront Distribution left this list with issue #1282: its
+ * `Deployed` wait is skipped by DEFAULT now, so under `--no-wait` it
+ * simply behaves the same as the default (`--full-wait` opts back in).
+ *
  * Deploy-only. NAT Gateway destroy always waits regardless (a
  * still-`deleting` gateway blocks downstream Subnet / IGW / VPC
- * delete with DependencyViolation), and CloudFront / RDS / ElastiCache
- * destroy paths don't wait to begin with — so `destroy --no-wait`
- * would be a no-op flag.
+ * delete with DependencyViolation), RDS / ElastiCache destroy paths
+ * don't wait to begin with, and CloudFront's destroy-side
+ * disable-then-wait is an API requirement no flag may skip — so
+ * `destroy --no-wait` would be a no-op flag.
  */
 export const noWaitOption = new Option(
   '--no-wait',
-  'Skip waiting for async resources to stabilize (CloudFront, RDS, ElastiCache, NAT Gateway, EC2 Instance, ELBv2 LoadBalancer, Lambda MicroVM Image)'
+  'Skip waiting for async resources to stabilize (RDS, ElastiCache, NAT Gateway, EC2 Instance, ELBv2 LoadBalancer, Lambda MicroVM Image)'
 );
 
 /**
- * Opt in to the stabilization waits cdkd deliberately SKIPS by default:
- * the ones where CloudFormation waits and Terraform does not. Today that
- * is ECS Service steady state (create and update).
+ * Opt in to the stabilization waits cdkd deliberately SKIPS by default.
+ * Today that is ECS Service steady state (create and update; a
+ * "CloudFormation waits, Terraform does not" disagree-case) and
+ * CloudFront Distribution `Deployed` (create and update; both engines
+ * wait, but the wait has no in-deploy consumer and no failure signal —
+ * the fast-side clause, issue #1282).
  *
  * `--no-wait`, the default, and `--full-wait` are three points on one
  * axis, from least to most waiting:
  *
  * - `--no-wait`      skip the stabilization waits cdkd performs by default
- * - (default)        wait where CloudFormation and Terraform agree
- * - `--full-wait`    also wait where only CloudFormation waits
+ * - (default)        wait where the wait is load-bearing (in-deploy
+ *                    consumers / failure detection)
+ * - `--full-wait`    also wait everywhere CloudFormation waits
  *
  * Which one is right depends on whether anything downstream needs the
  * resource to actually be serving, NOT on where the deploy runs: cutting
@@ -537,7 +546,7 @@ export const noWaitOption = new Option(
  */
 export const fullWaitOption = new Option(
   '--full-wait',
-  'Also wait for stabilizations cdkd skips by default, matching CloudFormation (ECS Service steady state)'
+  'Also wait for stabilizations cdkd skips by default, matching CloudFormation (ECS Service steady state, CloudFront Distribution Deployed)'
 );
 
 /**

@@ -17,6 +17,7 @@ import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import { resolvedResourceTimeoutMs } from '../resource-timeout-registry.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -124,12 +125,7 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
 
       this.logger.debug(`Created CloudFront Distribution: ${distributionId} (${domainName})`);
 
-      // Wait for distribution to be fully deployed (like CloudFormation does)
-      // Skip with --no-wait or CDKD_NO_WAIT=true
-      if (process.env['CDKD_NO_WAIT'] !== 'true') {
-        this.logger.debug(`Waiting for Distribution ${distributionId} to reach Deployed status...`);
-        await this.waitForDistributionStable(distributionId);
-      }
+      await this.settleDistribution(logicalId, distributionId);
 
       return {
         physicalId: distributionId,
@@ -220,6 +216,11 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
         logicalId,
         resourceType
       );
+
+      // UpdateDistribution is fire-and-forget by default for the same reason
+      // CreateDistribution is (issue #1282); under --full-wait it waits like
+      // create does, matching CloudFormation/Terraform which wait on both.
+      await this.settleDistribution(logicalId, physicalId);
 
       this.logger.debug(`Updated CloudFront Distribution ${physicalId}`);
 
@@ -489,17 +490,76 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
    *
    * Uses exponential backoff polling.
    */
+  /**
+   * Settle a CloudFront Distribution according to the run's wait mode.
+   *
+   * cdkd does NOT wait for `Deployed` by default (issue #1282). Both
+   * CloudFormation and Terraform (`wait_for_deployment`, default `true`) wait
+   * here, so this is a deliberate divergence under the wait-semantics policy's
+   * fast-side clause: every `Fn::GetAtt` (Id / DomainName) is final in the
+   * Create/Update response so nothing in-deploy consumes `Deployed`, the wait
+   * carries no failure signal (a distribution deploy cannot fail — a long
+   * wait means slow edge propagation, not brokenness), and Terraform's
+   * `wait_for_deployment` toggle keeps the benchmark comparison measurable in
+   * both modes. `--full-wait` opts back into the CloudFormation behavior.
+   */
+  private async settleDistribution(logicalId: string, distributionId: string): Promise<void> {
+    if (process.env['CDKD_FULL_WAIT'] === 'true') {
+      this.logger.debug(`Waiting for Distribution ${distributionId} to reach Deployed status...`);
+      const stable = await this.waitForDistributionStable(distributionId);
+      if (!stable) {
+        // Unlike the ECS Service --full-wait timeout (which FAILS the deploy —
+        // a never-stabilizing service signals a crash-looping rollout), a
+        // CloudFront wait timeout only means propagation is slow, so failing
+        // would hand auto-rollback a healthy distribution to disable-and-delete.
+        // Warn and proceed instead.
+        this.logger.warn(
+          `CloudFront Distribution ${logicalId} (${distributionId}) did not reach Deployed within the wait budget; continuing (propagation finishes in the background). ` +
+            `To wait manually: aws cloudfront wait distribution-deployed --id ${distributionId}. ` +
+            `Raise the budget with --resource-timeout AWS::CloudFront::Distribution=<duration>.`
+        );
+      }
+      return;
+    }
+
+    // Mention --full-wait only when the invoking COMMAND actually declares it
+    // (cdkd deploy sets CDKD_WAIT_FLAGS_AVAILABLE; `cdkd drift --revert`
+    // reaches this same code through provider.update and does NOT — issue
+    // #1291 pattern).
+    const fullWaitHint =
+      process.env['CDKD_WAIT_FLAGS_AVAILABLE'] === 'true' ? '; pass --full-wait to wait' : '';
+    this.logger.info(
+      `CloudFront Distribution ${logicalId} accepted (not waiting for Deployed${fullWaitHint}). ` +
+        `To wait manually: aws cloudfront wait distribution-deployed --id ${distributionId}`
+    );
+  }
+
+  /**
+   * Poll until the distribution reports `Status: Deployed` (and, when
+   * `expectedEnabled` is given, the matching `Enabled` value — the delete
+   * path's disable-then-delete requirement).
+   *
+   * Returns `true` when the stable state was observed (or the wait was
+   * interrupted by SIGINT — the caller is shutting down, so no timeout
+   * warning applies), `false` on budget exhaustion.
+   */
   private async waitForDistributionStable(
     distributionId: string,
     expectedEnabled?: boolean
-  ): Promise<void> {
+  ): Promise<boolean> {
     // A CloudFront distribution reaches Deployed in ~3-6 min. The poll ramps
     // 5s * 1.5x but is capped tight (10s, not the old 30s) so detection lag
     // stays small — a sparse late poll is exactly what made cdkd trail
     // tight-polling tools on CloudFront-bound stacks (same class as the EC2
-    // waiter fix). maxAttempts is raised to keep the ~20 min total budget with
-    // the tighter cap.
-    const maxAttempts = 120;
+    // waiter fix). The ~20 min default budget is lifted by an explicit
+    // `--resource-timeout` (per-type or global) so this inner waiter can never
+    // undercut the outer per-resource deadline the same flag raises (issue
+    // #1280) — but the flag never lowers it below the default.
+    const budgetMs = Math.max(
+      20 * 60 * 1000,
+      resolvedResourceTimeoutMs('AWS::CloudFront::Distribution') ?? 0
+    );
+    const deadline = Date.now() + budgetMs;
     let delay = 5000; // start at 5s
     const maxDelay = 10000;
     let interrupted = false;
@@ -510,12 +570,12 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
     process.on('SIGINT', sigintHandler);
 
     try {
-      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      while (Date.now() < deadline) {
         if (interrupted) {
           this.logger.debug(
             `Distribution ${distributionId} wait interrupted by SIGINT, proceeding`
           );
-          return;
+          return true;
         }
 
         const response = await this.cloudFrontClient.send(
@@ -530,13 +590,12 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
           this.logger.debug(
             `Distribution ${distributionId} is stable (Status=Deployed, Enabled=${enabled})`
           );
-          return;
+          return true;
         }
 
         this.logger.debug(
           `Distribution ${distributionId} status: ${status}, enabled: ${enabled}` +
-            (expectedEnabled === undefined ? '' : ` (waiting for Enabled=${expectedEnabled})`) +
-            ` (attempt ${attempt}/${maxAttempts})`
+            (expectedEnabled === undefined ? '' : ` (waiting for Enabled=${expectedEnabled})`)
         );
 
         // Interruptible sleep: check SIGINT every second
@@ -550,6 +609,7 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
       this.logger.debug(
         `Distribution ${distributionId} did not reach stable state within timeout, proceeding with next step`
       );
+      return false;
     } finally {
       process.removeListener('SIGINT', sigintHandler);
     }

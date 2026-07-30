@@ -1,5 +1,9 @@
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import { NoSuchDistribution } from '@aws-sdk/client-cloudfront';
+import {
+  setResolvedResourceTimeouts,
+  clearResolvedResourceTimeouts,
+} from '../../../src/provisioning/resource-timeout-registry.js';
 
 // Mock AWS clients before importing the provider
 const mockSend = vi.fn();
@@ -43,24 +47,19 @@ describe('CloudFrontDistributionProvider', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // Default wait mode: no --full-wait, no wait-flag-declaring command.
+    delete process.env['CDKD_FULL_WAIT'];
+    delete process.env['CDKD_WAIT_FLAGS_AVAILABLE'];
     provider = new CloudFrontDistributionProvider();
   });
 
   describe('create', () => {
-    it('should create distribution and return Id as physicalId with DomainName attribute', async () => {
+    it('should create distribution and return Id as physicalId with DomainName attribute (no Deployed wait by default, #1282)', async () => {
       // CreateDistributionCommand
       mockSend.mockResolvedValueOnce({
         Distribution: {
           Id: 'EDFDVBD6EXAMPLE',
           DomainName: 'd111111abcdef8.cloudfront.net',
-        },
-      });
-      // GetDistributionCommand (waitForDistributionStable)
-      mockSend.mockResolvedValueOnce({
-        Distribution: {
-          Id: 'EDFDVBD6EXAMPLE',
-          Status: 'Deployed',
-          DistributionConfig: { Enabled: true },
         },
       });
 
@@ -84,7 +83,8 @@ describe('CloudFrontDistributionProvider', () => {
         DistributionId: 'EDFDVBD6EXAMPLE',
         DomainName: 'd111111abcdef8.cloudfront.net',
       });
-      expect(mockSend).toHaveBeenCalledTimes(2);
+      // Fire-and-forget default: CreateDistribution only, no GetDistribution poll.
+      expect(mockSend).toHaveBeenCalledTimes(1);
 
       const createCall = mockSend.mock.calls[0][0];
       expect(createCall.constructor.name).toBe('CreateDistributionCommand');
@@ -98,14 +98,6 @@ describe('CloudFrontDistributionProvider', () => {
         Distribution: {
           Id: 'EDFDVBD6EXAMPLE',
           DomainName: 'd111111abcdef8.cloudfront.net',
-        },
-      });
-      // GetDistributionCommand (waitForDistributionStable)
-      mockSend.mockResolvedValueOnce({
-        Distribution: {
-          Id: 'EDFDVBD6EXAMPLE',
-          Status: 'Deployed',
-          DistributionConfig: { Enabled: true },
         },
       });
 
@@ -148,6 +140,205 @@ describe('CloudFrontDistributionProvider', () => {
           },
         })
       ).rejects.toThrow('Failed to create CloudFront Distribution MyDistribution');
+    });
+  });
+
+  // Issue #1282: the default completion definition is fire-and-forget (return
+  // once CreateDistribution / UpdateDistribution is accepted); --full-wait
+  // (CDKD_FULL_WAIT=true) opts into the CloudFormation-parity Deployed wait.
+  describe('wait semantics (#1282)', () => {
+    afterEach(() => {
+      // Some tests install a PERSISTENT mockResolvedValue (every poll returns
+      // InProgress); clearAllMocks does not remove implementations, so reset
+      // here to keep them from leaking into later tests.
+      mockSend.mockReset();
+      clearResolvedResourceTimeouts();
+    });
+
+    const createInput = {
+      DistributionConfig: {
+        DefaultCacheBehavior: {
+          TargetOriginId: 'myS3Origin',
+          ViewerProtocolPolicy: 'redirect-to-https',
+        },
+        Enabled: true,
+      },
+    };
+
+    it('default create logs the accepted INFO line with the manual wait command (no --full-wait hint when the command does not declare the flag)', async () => {
+      mockSend.mockResolvedValueOnce({
+        Distribution: { Id: 'EDFDVBD6EXAMPLE', DomainName: 'd1.cloudfront.net' },
+      });
+
+      await provider.create('MyDistribution', 'AWS::CloudFront::Distribution', createInput);
+
+      expect(mockSend).toHaveBeenCalledTimes(1);
+      const info = childLogger.info.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(info).toContain('not waiting for Deployed');
+      expect(info).toContain(
+        'aws cloudfront wait distribution-deployed --id EDFDVBD6EXAMPLE'
+      );
+      // `cdkd drift --revert` reaches provider.update without declaring
+      // --full-wait (issue #1291 pattern): no hint for a flag that does not
+      // exist on the invoking command.
+      expect(info).not.toContain('--full-wait');
+    });
+
+    it('default create mentions --full-wait when the invoking command declares the wait flags', async () => {
+      process.env['CDKD_WAIT_FLAGS_AVAILABLE'] = 'true';
+      mockSend.mockResolvedValueOnce({
+        Distribution: { Id: 'EDFDVBD6EXAMPLE', DomainName: 'd1.cloudfront.net' },
+      });
+
+      await provider.create('MyDistribution', 'AWS::CloudFront::Distribution', createInput);
+
+      const info = childLogger.info.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(info).toContain('pass --full-wait to wait');
+    });
+
+    it('CDKD_FULL_WAIT=true waits for Deployed on create', async () => {
+      process.env['CDKD_FULL_WAIT'] = 'true';
+      mockSend.mockResolvedValueOnce({
+        Distribution: { Id: 'EDFDVBD6EXAMPLE', DomainName: 'd1.cloudfront.net' },
+      });
+      // 1st poll: still propagating; 2nd poll: Deployed.
+      mockSend.mockResolvedValueOnce({
+        Distribution: {
+          Id: 'EDFDVBD6EXAMPLE',
+          Status: 'InProgress',
+          DistributionConfig: { Enabled: true },
+        },
+      });
+      mockSend.mockResolvedValueOnce({
+        Distribution: {
+          Id: 'EDFDVBD6EXAMPLE',
+          Status: 'Deployed',
+          DistributionConfig: { Enabled: true },
+        },
+      });
+
+      vi.useFakeTimers();
+      try {
+        const createPromise = provider.create(
+          'MyDistribution',
+          'AWS::CloudFront::Distribution',
+          createInput
+        );
+        await vi.advanceTimersByTimeAsync(10_000);
+        const result = await createPromise;
+        expect(result.physicalId).toBe('EDFDVBD6EXAMPLE');
+      } finally {
+        vi.useRealTimers();
+      }
+
+      expect(mockSend).toHaveBeenCalledTimes(3);
+      expect(mockSend.mock.calls[1][0].constructor.name).toBe('GetDistributionCommand');
+      expect(mockSend.mock.calls[2][0].constructor.name).toBe('GetDistributionCommand');
+    });
+
+    it('CDKD_FULL_WAIT=true waits for Deployed after UpdateDistribution too (update never waited before #1282)', async () => {
+      process.env['CDKD_FULL_WAIT'] = 'true';
+      // GetDistributionConfig + UpdateDistribution + GetDistribution (attrs)
+      mockSend.mockResolvedValueOnce({
+        ETag: 'E1',
+        DistributionConfig: { CallerReference: 'orig', Enabled: true },
+      });
+      mockSend.mockResolvedValueOnce({});
+      mockSend.mockResolvedValueOnce({
+        Distribution: { Id: 'EDFDVBD6EXAMPLE', DomainName: 'd1.cloudfront.net' },
+      });
+      // Poll: Deployed on the first read (no sleep needed).
+      mockSend.mockResolvedValueOnce({
+        Distribution: {
+          Id: 'EDFDVBD6EXAMPLE',
+          Status: 'Deployed',
+          DistributionConfig: { Enabled: true },
+        },
+      });
+
+      await provider.update(
+        'MyDistribution',
+        'EDFDVBD6EXAMPLE',
+        'AWS::CloudFront::Distribution',
+        { DistributionConfig: { Enabled: true } },
+        { DistributionConfig: { Enabled: true } }
+      );
+
+      expect(mockSend).toHaveBeenCalledTimes(4);
+      expect(mockSend.mock.calls[3][0].constructor.name).toBe('GetDistributionCommand');
+    });
+
+    it('warns and SUCCEEDS when the --full-wait budget expires (unlike the ECS fail-and-cleanup: CloudFront has no failure state)', async () => {
+      process.env['CDKD_FULL_WAIT'] = 'true';
+      mockSend.mockResolvedValueOnce({
+        Distribution: { Id: 'EDFDVBD6EXAMPLE', DomainName: 'd1.cloudfront.net' },
+      });
+      // Every poll: still propagating, forever.
+      mockSend.mockResolvedValue({
+        Distribution: {
+          Id: 'EDFDVBD6EXAMPLE',
+          Status: 'InProgress',
+          DistributionConfig: { Enabled: true },
+        },
+      });
+
+      vi.useFakeTimers();
+      try {
+        const createPromise = provider.create(
+          'MyDistribution',
+          'AWS::CloudFront::Distribution',
+          createInput
+        );
+        // Exhaust the 20-minute default budget.
+        await vi.advanceTimersByTimeAsync(21 * 60 * 1000);
+        const result = await createPromise;
+        expect(result.physicalId).toBe('EDFDVBD6EXAMPLE');
+      } finally {
+        vi.useRealTimers();
+      }
+
+      const warn = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(warn).toContain('did not reach Deployed');
+      expect(warn).toContain('aws cloudfront wait distribution-deployed --id EDFDVBD6EXAMPLE');
+      expect(warn).toContain('--resource-timeout AWS::CloudFront::Distribution');
+    });
+
+    it('an explicit --resource-timeout lifts the full-wait budget beyond the 20min default (#1280)', async () => {
+      process.env['CDKD_FULL_WAIT'] = 'true';
+      setResolvedResourceTimeouts({
+        perTypeMs: { 'AWS::CloudFront::Distribution': 30 * 60 * 1000 },
+      });
+      mockSend.mockResolvedValueOnce({
+        Distribution: { Id: 'EDFDVBD6EXAMPLE', DomainName: 'd1.cloudfront.net' },
+      });
+      mockSend.mockResolvedValue({
+        Distribution: {
+          Id: 'EDFDVBD6EXAMPLE',
+          Status: 'InProgress',
+          DistributionConfig: { Enabled: true },
+        },
+      });
+
+      vi.useFakeTimers();
+      try {
+        const createPromise = provider.create(
+          'MyDistribution',
+          'AWS::CloudFront::Distribution',
+          createInput
+        );
+        // Past the 20min compile-time default: the lifted 30min budget must
+        // still be polling, so no timeout warn yet.
+        await vi.advanceTimersByTimeAsync(21 * 60 * 1000);
+        expect(childLogger.warn).not.toHaveBeenCalled();
+        // Past the lifted budget: warn fires and create resolves.
+        await vi.advanceTimersByTimeAsync(10 * 60 * 1000);
+        await createPromise;
+      } finally {
+        vi.useRealTimers();
+      }
+
+      const warn = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(warn).toContain('did not reach Deployed');
     });
   });
 
@@ -388,14 +579,6 @@ describe('CloudFrontDistributionProvider', () => {
           DomainName: 'd111111abcdef8.cloudfront.net',
         },
       });
-      // GetDistributionCommand (waitForDistributionStable)
-      mockSend.mockResolvedValueOnce({
-        Distribution: {
-          Id: 'EDFDVBD6EXAMPLE',
-          Status: 'Deployed',
-          DistributionConfig: { Enabled: true },
-        },
-      });
 
       await provider.create('MyDistribution', 'AWS::CloudFront::Distribution', {
         DistributionConfig: {
@@ -426,13 +609,6 @@ describe('CloudFrontDistributionProvider', () => {
       mockSend.mockResolvedValueOnce({
         Distribution: { Id: 'EDFDVBD6EXAMPLE', DomainName: 'd1.cloudfront.net' },
       });
-      mockSend.mockResolvedValueOnce({
-        Distribution: {
-          Id: 'EDFDVBD6EXAMPLE',
-          Status: 'Deployed',
-          DistributionConfig: { Enabled: true },
-        },
-      });
 
       await provider.create('MyDistribution', 'AWS::CloudFront::Distribution', {
         DistributionConfig: {
@@ -454,13 +630,6 @@ describe('CloudFrontDistributionProvider', () => {
       // same control plane for no benefit, so we collapse to the simpler call.
       mockSend.mockResolvedValueOnce({
         Distribution: { Id: 'EDFDVBD6EXAMPLE', DomainName: 'd1.cloudfront.net' },
-      });
-      mockSend.mockResolvedValueOnce({
-        Distribution: {
-          Id: 'EDFDVBD6EXAMPLE',
-          Status: 'Deployed',
-          DistributionConfig: { Enabled: true },
-        },
       });
 
       await provider.create('MyDistribution', 'AWS::CloudFront::Distribution', {

@@ -40,7 +40,7 @@ CloudFormation's [Express mode](https://aws.amazon.com/about-aws/whats-new/2026/
 | SQS | 83 | 22 | **9** | 9 |
 | SQS + CloudWatch | 87 | 44 | 30 | 31 |
 
-Best of 3 runs, deploy-phase only, seconds, `us-west-2`. The `VPC + Lambda + SQS + CloudFront` stack is 1 VPC (2 AZs, NAT Gateway, public + private subnets) + VPC Lambda + Lambda Function URL + CloudFront Distribution + SQS + EventSourceMapping + Consumer Lambda.
+Best of 3 runs, deploy-phase only, seconds, `us-west-2`. The `VPC + Lambda + SQS + CloudFront` stack is 1 VPC (2 AZs, NAT Gateway, public + private subnets) + VPC Lambda + Lambda Function URL + CloudFront Distribution + SQS + EventSourceMapping + Consumer Lambda. Its cdkd default cell (168) predates the #1282 default flip (CloudFront `Deployed` is now `--full-wait`-only) and will be re-measured; the current default lands between the old default and the `--no-wait` cell.
 
 - **~1.5–2x faster than Express on most stacks** — e.g. SQS finishes in 9s vs Express's 22s (~2.4x).
 - **Async-heavy stacks are where the gap explodes.** On the VPC + CloudFront stack, `cdkd --no-wait` finishes in 40s vs Express's 366s (~9x) — cdkd returns as soon as each create call returns, leaving CloudFront propagation and NAT Gateway stabilization to complete in the background.
@@ -59,7 +59,7 @@ We also raced cdkd against Terraform: the same logical stacks expressed both as 
 | ecs | VPC ×2 AZ + Fargate cluster / task / service + ALB | **162.8** | 209.5 | 276.7 | 34.5 |
 | cloudfront | S3 origin + CloudFront + OAC | 174.7 | 177.5 | 209.8 | 13.1 |
 
-Cold end-to-end wall clock including synth / plan, median of 7 runs, seconds, `us-east-1`; every run gets fresh resource names, so every run measures a first deploy.
+Cold end-to-end wall clock including synth / plan, median of 7 runs, seconds, `us-east-1`; every run gets fresh resource names, so every run measures a first deploy. The cloudfront row predates the #1282 default flip (CloudFront `Deployed` is now `--full-wait`; the old `--no-wait` cell, 13.1 vs Terraform's `wait_for_deployment = false` at 11.5, matches the current default) and will be re-measured in the two-row form the ecs scenario uses.
 
 - **The lead tracks how much of the wall clock is orchestration.** wide and serverless are almost pure orchestration and run ~2.2x faster; cloudfront is almost pure CDN propagation — both tools wait the same physical minutes — and is a tie.
 - **A win is claimed only where no cdkd run overlaps any Terraform run** — true of the four bolded rows. webapp's median favours cdkd by 17.6s, but NAT-gateway variance keeps the distributions overlapped at n=7, so no win is claimed there.
@@ -143,7 +143,7 @@ Downgrading is safe too (older binaries ignore the marker). Explicit pre-provisi
 - **S3-based state management**: No DynamoDB required, uses S3 conditional writes for locking
 - **DAG-based parallelization**: Analyze `Ref`/`Fn::GetAtt` dependencies and execute in parallel
 - **Rollback on failure**: When a deploy errors mid-stack, cdkd rolls back the resources it just created so the stack state stays consistent (CloudFormation parity — but cdkd does this without round-tripping through CFn). Pass `cdkd deploy --no-rollback` to skip rollback and keep the partial state for Terraform-style inspection / repair — then either fix forward with another `cdkd deploy`, revert with the standalone `cdkd rollback`, or `cdkd destroy` to clean up. See [Rollback behavior](#rollback-behavior).
-- **`--no-wait` / `--full-wait` for async resources**: `--no-wait` skips the multi-minute wait on CloudFront / RDS / ElastiCache / NAT Gateway / EC2 Instance / ELBv2 LoadBalancer / Lambda MicroVM Image and returns as soon as the create call returns (CloudFormation always blocks); `--full-wait` goes the other way and also waits where only CloudFormation does (ECS Service steady state)
+- **`--no-wait` / `--full-wait` for async resources**: `--no-wait` skips the multi-minute wait on RDS / ElastiCache / NAT Gateway / EC2 Instance / ELBv2 LoadBalancer / Lambda MicroVM Image and returns as soon as the create call returns (CloudFormation always blocks); `--full-wait` goes the other way and waits where cdkd's default does not (ECS Service steady state; CloudFront Distribution `Deployed` — the default returns as soon as `CreateDistribution` is accepted, since nothing in-deploy needs the 3–15 min edge propagation)
 - **VPC route DependsOn relaxation (on by default)**: Drop CDK-injected defensive `DependsOn` edges from VPC Lambdas onto private-subnet routes so `CloudFront::Distribution` and `Lambda::Url` start their ~3-min propagation in parallel with NAT Gateway stabilization (~50% faster on VPC + Lambda + CloudFront stacks). Pass `--no-aggressive-vpc-parallel` to opt out.
 - **Local execution** (`cdkd local invoke` / `start-api` / `run-task` / `start-service` / `start-alb` / `start-cloudfront` / `invoke-agentcore` / `start-agentcore`): run Lambdas, API Gateway routes, ECS tasks, long-running ECS services, CloudFront distributions, and Bedrock AgentCore Runtimes from your CDK code. All AWS Lambda runtimes, container Lambdas, REST v1 / HTTP v2 / Function URL routes, Service Connect / Cloud Map, AgentCore HTTP / MCP / A2A / AGUI / WebSocket protocols (one-shot `invoke-agentcore` and long-running warm serve via `start-agentcore`, which serves the native contract — `POST /invocations` + `GET /ping`, MCP `/mcp`, A2A `/` — plus the `/ws` bridge for HTTP / AGUI). The Docker-backed commands work for both `cdkd deploy`-managed (`--from-state`) AND `cdk deploy`-managed (`--from-cfn-stack`) stacks; `start-cloudfront` serves the viewer-request -> S3 / Lambda Function URL origin -> viewer-response pipeline (CloudFront-Functions + S3-only distributions run in-process with no Docker). See [Local execution](#local-execution).
 - **Bidirectional CloudFormation migration**: `cdkd import --migrate-from-cloudformation` adopts existing CFn stacks (including `cdk deploy`-managed) into cdkd state without re-creating resources; `cdkd export` hands a cdkd stack back to CloudFormation when production-ready. See [Importing](#importing-existing-resources) / [Exporting](#exporting-a-stack-back-to-cloudformation).
@@ -226,8 +226,8 @@ cdkd deploy --all
 cdkd deploy --dry-run               # plan only, no changes
 cdkd deploy --no-rollback           # Terraform-style: keep partial state on failure
 cdkd rollback MyStack               # revert a failed --no-rollback / interrupted deploy
-cdkd deploy --no-wait               # skip multi-minute waits (CloudFront / RDS / NAT)
-cdkd deploy --full-wait             # also wait where only CFn does (ECS Service steady state)
+cdkd deploy --no-wait               # skip multi-minute waits (RDS / ElastiCache / NAT)
+cdkd deploy --full-wait             # also wait where cdkd's default does not (ECS steady state, CloudFront Deployed)
 
 # Inspect what would change
 cdkd diff MyStack
@@ -273,10 +273,15 @@ modes, least to most waiting:
 
 - **`--no-wait`** returns as soon as the create call returns and lets
   AWS finish in the background.
-- **default** waits where CloudFormation and Terraform agree on what
-  "done" means.
-- **`--full-wait`** additionally waits where only CloudFormation waits
-  (today: ECS Service steady state).
+- **default** waits where the wait is load-bearing (something the same
+  deploy resolves or verifies needs the settled state, or the wait can
+  surface a failure) — in practice, where CloudFormation and Terraform
+  agree, with one measured exception: CloudFront Distribution returns
+  as soon as `CreateDistribution` is accepted (nothing in-deploy needs
+  the 3–15 min edge propagation, and the wait cannot detect a failure).
+- **`--full-wait`** additionally waits everywhere CloudFormation does
+  (today: ECS Service steady state, CloudFront Distribution
+  `Deployed`).
 
 Pick by whether anything downstream needs the resource to actually be
 serving, not by where the deploy runs — cutting billed CI minutes is a

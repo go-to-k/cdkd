@@ -19,7 +19,7 @@ CloudFormation's [Express mode](https://aws.amazon.com/about-aws/whats-new/2026/
 | SQS | 83 | 22 | **9** | 9 |
 | SQS + CloudWatch | 87 | 44 | 30 | 31 |
 
-Best of 3 runs, deploy-phase only, seconds, `us-west-2`. The `VPC + Lambda + SQS + CloudFront` stack is 1 VPC (2 AZs, NAT Gateway, public + private subnets) + VPC Lambda + Lambda Function URL + CloudFront Distribution + SQS + EventSourceMapping + Consumer Lambda.
+Best of 3 runs, deploy-phase only, seconds, `us-west-2`. The `VPC + Lambda + SQS + CloudFront` stack is 1 VPC (2 AZs, NAT Gateway, public + private subnets) + VPC Lambda + Lambda Function URL + CloudFront Distribution + SQS + EventSourceMapping + Consumer Lambda. Its cdkd default cell (168) predates the #1282 default flip (CloudFront `Deployed` is now a `--full-wait`-only wait) and will be re-measured; on the current default that stack's critical path is NAT stabilization, so the number lands between the old default and the `--no-wait` cell.
 
 - **~1.5–2x faster than Express on most stacks** — e.g. SQS finishes in 9s vs Express's 22s (~2.4x).
 - **Async-heavy stacks are where the gap explodes.** On the VPC + CloudFront stack, `cdkd --no-wait` finishes in 40s vs Express's 366s (~9x) — cdkd returns as soon as each create call returns, leaving CloudFront propagation and NAT Gateway stabilization to complete in the background.
@@ -41,7 +41,7 @@ Real-world stack: 1 VPC (2 AZs, NAT Gateway, public + private subnets) + Lambda 
 | --- | ---: | ---: | ---: |
 | Deploy | **599s** | 197s (3.0x) | **40s (15.0x)** |
 
-The 15x figure requires `cdkd deploy --no-wait`, which returns as soon as each Create call returns and lets AWS finish CloudFront's ~5min propagation + NAT Gateway stabilization in the background. cdkd's default scheduler already parallelizes `CloudFront::Distribution` / `Lambda::Url` / VPC Lambda with NAT Gateway propagation (pass `--no-aggressive-vpc-parallel` to opt out); on this stack the default gives ~3x. `--no-wait` adds the rest of the gap by skipping the propagation waits entirely.
+The 15x figure requires `cdkd deploy --no-wait`, which returns as soon as each Create call returns and lets AWS finish CloudFront's ~5min propagation + NAT Gateway stabilization in the background. cdkd's default scheduler already parallelizes `CloudFront::Distribution` / `Lambda::Url` / VPC Lambda with NAT Gateway propagation (pass `--no-aggressive-vpc-parallel` to opt out); on this stack the default gives ~3x. `--no-wait` adds the rest of the gap by skipping the propagation waits entirely. These numbers predate the #1282 default flip: the CloudFront `Deployed` wait is now `--full-wait`-only, so the current default no longer pays the CloudFront leg (NAT stabilization remains) and the default cell will be re-measured.
 
 ## Cloud Control API fallback path — **1.6x faster** (40.9s vs 64.9s)
 
@@ -65,6 +65,14 @@ We also raced cdkd against Terraform: the same logical stacks expressed both as 
 | webapp | VPC + NAT + subnets + DynamoDB + SQS + S3 + Lambda x2 + HTTP API | 109.7 | 127.3 | 166.1 | 23.4 | no opt-out exists |
 | ecs | VPC x2 AZ + Fargate cluster / task / service + ALB + target group | **162.8** | 209.5 | 276.7 | 34.5 | 209.5 (already the default) |
 | cloudfront | S3 origin + CloudFront + OAC | 174.7 | 177.5 | 209.8 | 13.1 | 11.5 |
+
+Note on the cloudfront row: these numbers predate issue #1282, which flipped
+cdkd's `AWS::CloudFront::Distribution` default from "wait for `Deployed`" to
+fire-and-forget. Under the current default the cdkd cell corresponds to the
+old `--no-wait` measurement (13.1) and the old default measurement (174.7) now
+corresponds to `--full-wait`. The row will be re-measured and restructured
+into the two-row completion-definition form the ecs scenario uses (new default
+vs `wait_for_deployment = false`; `--full-wait` vs Terraform's default).
 
 Cold end-to-end wall clock, median of **7 runs** per scenario, seconds, `us-east-1`, one cdkd binary for every number. Unlike the tables above, these numbers include synth (cdkd / CDK) and plan (Terraform); one-time setup (`npm install` / `cdk bootstrap` / `terraform init`) is excluded for all tools. For parity, CDK-only extras (the `restrictDefaultSecurityGroup` custom resource and CDK-managed log groups) were disabled so cdkd / CloudFormation don't carry resources the Terraform config doesn't have.
 
