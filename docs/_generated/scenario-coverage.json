@@ -508,6 +508,11 @@
       "scenarios": []
     },
     {
+      "name": "cloudwatch-anomaly-detector",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
       "name": "codecommit",
       "annotated": true,
       "scenarios": []

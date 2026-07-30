@@ -619,6 +619,22 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     },
   ],
   [
+    'AWS::CloudWatch::AnomalyDetector',
+    {
+      handled: new Set<string>([
+        'Configuration',
+        'Dimensions',
+        'MetricCharacteristics',
+        'MetricMathAnomalyDetector',
+        'MetricName',
+        'Namespace',
+        'SingleMetricAnomalyDetector',
+        'Stat',
+      ]),
+      silentDrop: new Map<string, string>(),
+    },
+  ],
+  [
     'AWS::CodeBuild::Project',
     {
       handled: new Set<string>([

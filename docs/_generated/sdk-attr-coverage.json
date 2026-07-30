@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "summary": {
-    "classifiedCount": 132,
+    "classifiedCount": 133,
     "covered": 55,
-    "noArnAttr": 77,
+    "noArnAttr": 78,
     "gap": 0
   },
   "types": [
@@ -236,6 +236,12 @@
           "status": "cached"
         }
       ],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::CloudWatch::AnomalyDetector",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
       "gaps": []
     },
     {

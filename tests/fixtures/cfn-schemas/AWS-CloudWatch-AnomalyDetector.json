@@ -1,0 +1,30 @@
+{
+  "resourceType": "AWS::CloudWatch::AnomalyDetector",
+  "generatedAt": "2026-07-30",
+  "properties": [
+    "Configuration",
+    "Dimensions",
+    "Id",
+    "MetricCharacteristics",
+    "MetricMathAnomalyDetector",
+    "MetricName",
+    "Namespace",
+    "SingleMetricAnomalyDetector",
+    "Stat"
+  ],
+  "readOnlyProperties": [
+    "Id"
+  ],
+  "createOnlyProperties": [
+    "Dimensions",
+    "MetricCharacteristics",
+    "MetricMathAnomalyDetector",
+    "MetricName",
+    "Namespace",
+    "SingleMetricAnomalyDetector",
+    "Stat"
+  ],
+  "primaryIdentifier": [
+    "Id"
+  ]
+}

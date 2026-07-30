@@ -7,8 +7,8 @@ For every SDK provider class declaring `update()`, walks from `update()` through
 
 ## Summary
 
-- Provider classes with `update()`: **84**
-- Wrapped: **77**
+- Provider classes with `update()`: **85**
+- Wrapped: **78**
 - No AWS call in update(): **7**
 - **Unwrapped-send gaps (blocks CI): 0**
 - **Unguarded wraps (blocks CI): 0**
@@ -38,6 +38,7 @@ None. Every provider `update()` either makes no AWS call or wraps every reachabl
 | `CloudFrontOAIProvider` | `cloudfront-oai-provider.ts` | wrapped |
 | `CloudTrailProvider` | `cloudtrail-provider.ts` | wrapped |
 | `CloudWatchAlarmProvider` | `cloudwatch-alarm-provider.ts` | wrapped |
+| `CloudWatchAnomalyDetectorProvider` | `cloudwatch-anomaly-detector-provider.ts` | wrapped |
 | `CodeBuildProvider` | `codebuild-provider.ts` | wrapped |
 | `CodeCommitRepositoryProvider` | `codecommit-repository-provider.ts` | wrapped |
 | `CognitoUserPoolProvider` | `cognito-provider.ts` | wrapped |

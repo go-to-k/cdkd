@@ -1,12 +1,12 @@
 {
   "schemaVersion": 1,
   "summary": {
-    "classifiedCount": 132,
-    "enriched": 9,
+    "classifiedCount": 133,
+    "enriched": 10,
     "noComputedAttr": 14,
     "unenrichedGap": 0,
     "sdkFallbackGap": 109,
-    "allowListedTypes": 14
+    "allowListedTypes": 15
   },
   "types": [
     {
@@ -739,6 +739,23 @@
       "gaps": [
         "Arn"
       ]
+    },
+    {
+      "resourceType": "AWS::CloudWatch::AnomalyDetector",
+      "bucket": "enriched",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Id"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "Id",
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
+        }
+      ],
+      "gaps": []
     },
     {
       "resourceType": "AWS::CodeBuild::Project",
