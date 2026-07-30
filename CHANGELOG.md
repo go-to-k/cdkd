@@ -1,3 +1,10 @@
+## [0.268.3](https://github.com/go-to-k/cdkd/compare/v0.268.2...v0.268.3) (2026-07-30)
+
+
+### Bug Fixes
+
+* **providers:** preserve the evidence trail when the --full-wait timeout cleanup deletes the ECS service ([#1293](https://github.com/go-to-k/cdkd/issues/1293)) ([62af918](https://github.com/go-to-k/cdkd/commit/62af9182cbab794ef18363d178689086a6f9dd4a))
+
 ## [0.268.2](https://github.com/go-to-k/cdkd/compare/v0.268.1...v0.268.2) (2026-07-30)
 
 
