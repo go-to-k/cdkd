@@ -104,6 +104,15 @@ aws ec2 describe-iam-instance-profile-associations \
   --filters Name=instance-id,Values=<instance-id>
 ```
 
+The same hazard applies to an `AWS::EC2::EIP` whose `InstanceId` points at an
+instance created in the same deploy: `AssociateAddress` rejects an instance
+that is not yet `running`. Under `--no-wait`, creating such an EIP allocates
+the address but skips the association; updating one attempts the association
+and degrades to a warning only if AWS actually rejects it (so repointing an
+EIP at an already-running instance still works). In both cases the warning
+prints the exact `aws ec2 associate-address` command to run once the instance
+is running.
+
 `--no-wait` is **deploy-only**. `cdkd destroy` does not accept it,
 because no destroy code path benefits — NAT Gateway destroy
 unconditionally waits for `deleted` state to keep teardown ordered

@@ -1,3 +1,17 @@
+## [0.267.19](https://github.com/go-to-k/cdkd/compare/v0.267.18...v0.267.19) (2026-07-30)
+
+
+### Bug Fixes
+
+* **providers:** handle AWS::EC2::Instance AvailabilityZone so L2 instances stay on the SDK path ([#1285](https://github.com/go-to-k/cdkd/issues/1285)) ([afac12a](https://github.com/go-to-k/cdkd/commit/afac12a729c0464ae23c4a1f110d43baf8a51e8c))
+
+## [0.267.18](https://github.com/go-to-k/cdkd/compare/v0.267.17...v0.267.18) (2026-07-30)
+
+
+### Bug Fixes
+
+* **providers:** make the per-resource-type completion definition explicit, and honor --no-wait on EC2 instances ([#1284](https://github.com/go-to-k/cdkd/issues/1284)) ([5d2f075](https://github.com/go-to-k/cdkd/commit/5d2f075bc5d6311f0bf34591fcc2b4760d9c553f))
+
 ## [0.267.17](https://github.com/go-to-k/cdkd/compare/v0.267.16...v0.267.17) (2026-07-27)
 
 
