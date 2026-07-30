@@ -747,6 +747,11 @@
       "scenarios": []
     },
     {
+      "name": "ec2-instance-fanout",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "ec2-vpc",
       "annotated": true,
       "scenarios": []
@@ -2433,6 +2438,7 @@
     "dynamodb-stream-filter",
     "dynamodb-tableclass-switch",
     "dynamodb-ttl-attr-change",
+    "ec2-instance-fanout",
     "ecr-scanning",
     "efs-immutable-replacement",
     "eventbridge-api-destination",

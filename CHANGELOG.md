@@ -1,3 +1,10 @@
+## [0.268.4](https://github.com/go-to-k/cdkd/compare/v0.268.3...v0.268.4) (2026-07-30)
+
+
+### Bug Fixes
+
+* **providers:** close the [#1291](https://github.com/go-to-k/cdkd/issues/1291) wait-semantics follow-ups (items 1, 3-8) ([#1294](https://github.com/go-to-k/cdkd/issues/1294)) ([faaf0a7](https://github.com/go-to-k/cdkd/commit/faaf0a76620e7d193c5f5be2e05a12bce0bfdcee))
+
 ## [0.268.3](https://github.com/go-to-k/cdkd/compare/v0.268.2...v0.268.3) (2026-07-30)
 
 
