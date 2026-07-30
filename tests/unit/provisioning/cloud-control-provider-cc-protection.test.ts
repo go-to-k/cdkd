@@ -134,6 +134,27 @@ describe('CloudControlProvider delete: --remove-protection generic CC protection
     expect(callsOf('DeleteResourceCommand')).toHaveLength(1);
   });
 
+  it('a flip response without a request token warns and still proceeds to DeleteResource', async () => {
+    mockCloudControlSend.mockImplementation((cmd: { constructor: { name: string } }) => {
+      const name = cmd.constructor.name;
+      if (name === 'UpdateResourceCommand') {
+        return Promise.resolve({ ProgressEvent: {} });
+      }
+      if (name === 'DeleteResourceCommand') {
+        return Promise.resolve({ ProgressEvent: { RequestToken: 'tok-delete' } });
+      }
+      if (name === 'GetResourceRequestStatusCommand') {
+        return Promise.resolve({ ProgressEvent: { OperationStatus: 'SUCCESS' } });
+      }
+      return Promise.resolve({});
+    });
+
+    await provider.delete('Cluster', CLUSTER_ID, DSQL, undefined, { removeProtection: true });
+
+    expect(callsOf('DeleteResourceCommand')).toHaveLength(1);
+    expect(mockWarn).toHaveBeenCalledWith(expect.stringContaining('no request token received'));
+  });
+
   it('a failed protection flip warns and still proceeds to DeleteResource', async () => {
     wireCloudControl({ updateRejects: true });
 

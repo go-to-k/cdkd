@@ -541,6 +541,9 @@ export class CloudControlProvider implements ResourceProvider {
     if (context?.removeProtection === true) {
       const protectionProperty = ccProtectionProperty(resourceType);
       if (protectionProperty) {
+        // Deliberately unconditional (no state-property pre-check): recorded
+        // properties can be stale vs. an out-of-band console/CLI flip, and
+        // the patch is idempotent.
         await this.disableCcProtection(logicalId, physicalId, resourceType, protectionProperty);
       }
     }
