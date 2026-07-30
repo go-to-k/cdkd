@@ -2974,7 +2974,9 @@ export async function submitImportChangeSet(
 
     try {
       await waitUntilChangeSetCreateComplete(
-        { client: cfnClient, maxWaitTime: 600 },
+        // Changeset creation settles in seconds; the SDK default cadence (30s
+        // first poll) would dominate the wait (issue #1291 item 5).
+        { client: cfnClient, maxWaitTime: 600, minDelay: 2, maxDelay: 5 },
         { StackName: stackName, ChangeSetName: changeSetName }
       );
     } catch (err) {
@@ -3012,7 +3014,9 @@ export async function submitImportChangeSet(
         new ExecuteChangeSetCommand({ StackName: stackName, ChangeSetName: changeSetName })
       );
       await waitUntilStackImportComplete(
-        { client: cfnClient, maxWaitTime: 3600 },
+        // Minutes-scale CFn operation: 10s polling is dense enough and stays
+        // within the repo-wide waiter cap (issue #1291 item 5).
+        { client: cfnClient, maxWaitTime: 3600, minDelay: 5, maxDelay: 10 },
         { StackName: stackName }
       );
     } catch (err) {
@@ -3143,7 +3147,9 @@ export async function flipStackToUpdateComplete(
     })
   );
   await waitUntilStackUpdateComplete(
-    { client: cfnClient, maxWaitTime: 1800 },
+    // Minutes-scale CFn operation: 10s polling is dense enough and stays
+    // within the repo-wide waiter cap (issue #1291 item 5).
+    { client: cfnClient, maxWaitTime: 1800, minDelay: 5, maxDelay: 10 },
     { StackName: cfnStackName }
   );
 }
@@ -4390,7 +4396,9 @@ export async function executeUpdateChangeSet(
 
     try {
       await waitUntilChangeSetCreateComplete(
-        { client: cfnClient, maxWaitTime: 600 },
+        // Changeset creation settles in seconds; the SDK default cadence (30s
+        // first poll) would dominate the wait (issue #1291 item 5).
+        { client: cfnClient, maxWaitTime: 600, minDelay: 2, maxDelay: 5 },
         { StackName: stackName, ChangeSetName: changeSetName }
       );
     } catch (err) {
@@ -4417,7 +4425,9 @@ export async function executeUpdateChangeSet(
         new ExecuteChangeSetCommand({ StackName: stackName, ChangeSetName: changeSetName })
       );
       await waitUntilStackUpdateComplete(
-        { client: cfnClient, maxWaitTime: 3600 },
+        // Minutes-scale CFn operation: 10s polling is dense enough and stays
+        // within the repo-wide waiter cap (issue #1291 item 5).
+        { client: cfnClient, maxWaitTime: 3600, minDelay: 5, maxDelay: 10 },
         { StackName: stackName }
       );
     } catch (err) {

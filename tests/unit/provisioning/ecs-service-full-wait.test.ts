@@ -100,6 +100,32 @@ describe('ECS Service wait semantics (issue #1275)', () => {
       expect(waitUntilServicesStableMock).not.toHaveBeenCalled();
     });
 
+    it('mentions --full-wait only when the invoking command declares the flag (issue #1291 item 1)', async () => {
+      // `cdkd deploy` sets CDKD_WAIT_FLAGS_AVAILABLE; `cdkd drift --revert`
+      // reaches the same provider code through update() and does NOT -- the
+      // flag does not exist there, so the hint must not advertise it.
+      process.env['CDKD_WAIT_FLAGS_AVAILABLE'] = 'true';
+      try {
+        mockCreateOk();
+        await new ECSProvider().create('MySvc', 'AWS::ECS::Service', CREATE_PROPS);
+        const hint = infoSpy.mock.calls.map((c) => String(c[0])).find((m) => m.includes('aws ecs wait'));
+        expect(hint).toContain('pass --full-wait to wait');
+      } finally {
+        delete process.env['CDKD_WAIT_FLAGS_AVAILABLE'];
+      }
+    });
+
+    it('does NOT advertise --full-wait when the invoking command lacks the flag (drift --revert path)', async () => {
+      delete process.env['CDKD_WAIT_FLAGS_AVAILABLE'];
+      mockCreateOk();
+
+      await new ECSProvider().create('MySvc', 'AWS::ECS::Service', CREATE_PROPS);
+
+      const hint = infoSpy.mock.calls.map((c) => String(c[0])).find((m) => m.includes('aws ecs wait'));
+      expect(hint).toBeDefined();
+      expect(hint).not.toContain('--full-wait');
+    });
+
     it('prints the exact command to wait manually', async () => {
       mockCreateOk();
 

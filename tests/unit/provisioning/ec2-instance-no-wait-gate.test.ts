@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
-import { RunInstancesCommand } from '@aws-sdk/client-ec2';
+import {
+  DescribeIamInstanceProfileAssociationsCommand,
+  RunInstancesCommand,
+} from '@aws-sdk/client-ec2';
 
 // Issue #1277: the EC2 Instance `running` wait was unconditional, so
 // `cdkd deploy --no-wait` still blocked on it. The NAT Gateway wait in the
@@ -7,9 +10,15 @@ import { RunInstancesCommand } from '@aws-sdk/client-ec2';
 // wait now matches, and that the DEFAULT path is unchanged (which is what
 // keeps previously published default-mode measurements valid).
 
-const { mockSend, waitUntilInstanceRunningMock } = vi.hoisted(() => ({
+// warnMock is hoisted (not sealed inside the vi.mock factory) because the
+// #1279 skip warning's CONTENT is asserted below — under --no-wait it is the
+// user's entire remedy for a possibly profile-less instance, so a silently
+// emptied message would be as bad as no message (issue #1291 item 8; same
+// shape as the sibling ec2-eip-no-wait-gate suite).
+const { mockSend, waitUntilInstanceRunningMock, warnMock } = vi.hoisted(() => ({
   mockSend: vi.fn(),
   waitUntilInstanceRunningMock: vi.fn(() => Promise.resolve({})),
+  warnMock: vi.fn(),
 }));
 
 vi.mock('../../../src/utils/aws-clients.js', () => ({
@@ -22,7 +31,7 @@ vi.mock('../../../src/utils/logger.js', () => {
   const childLogger = {
     debug: vi.fn(),
     info: vi.fn(),
-    warn: vi.fn(),
+    warn: warnMock,
     error: vi.fn(),
     child: vi.fn().mockReturnThis(),
   };
@@ -31,7 +40,7 @@ vi.mock('../../../src/utils/logger.js', () => {
       child: () => childLogger,
       debug: vi.fn(),
       info: vi.fn(),
-      warn: vi.fn(),
+      warn: warnMock,
       error: vi.fn(),
     }),
   };
@@ -250,5 +259,240 @@ describe('AWS::EC2::Instance immutable-property replacement rules (issue #1276)'
       expect(registry.requiresReplacement('AWS::EC2::Instance', prop, 'old', 'new')).toBe(true);
       expect(registry.isClassified('AWS::EC2::Instance', prop)).toBe(true);
     }
+  });
+});
+
+// Issue #1291 item 8: the #1279 skip warning's CONTENT was unasserted -- a
+// reworded or emptied message would have kept every test green while removing
+// the user's only remedy. Both --iam-instance-profile forms (Arn= for an
+// ARN-shaped template value, Name= for a bare profile name) are pinned.
+describe('IAM instance profile skip warning content under --no-wait (issue #1279 / #1291 item 8)', () => {
+  const INSTANCE_ID = 'i-1234567890abcdef0';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env['CDKD_NO_WAIT'] = 'true';
+    mockRunInstancesOk('pending');
+  });
+
+  afterEach(() => {
+    delete process.env['CDKD_NO_WAIT'];
+  });
+
+  function skipWarning(): string | undefined {
+    return warnMock.mock.calls
+      .map((c) => String(c[0]))
+      .find((m) => m.includes('Skipped the IAM instance profile association check'));
+  }
+
+  it('names the instance and both repair commands, using Arn= for an ARN-shaped profile', async () => {
+    const arn = 'arn:aws:iam::123456789012:instance-profile/MyProfile';
+
+    await new EC2Provider().create('MyInstance', 'AWS::EC2::Instance', {
+      ...PROPS,
+      IamInstanceProfile: arn,
+    });
+
+    const warning = skipWarning();
+    expect(warning).toBeDefined();
+    expect(warning).toContain(INSTANCE_ID);
+    // The verification probe, copy-pasteable.
+    expect(warning).toContain(
+      `aws ec2 describe-iam-instance-profile-associations --filters Name=instance-id,Values=${INSTANCE_ID}`
+    );
+    // The repair itself, in the Arn= form AWS requires for ARN references.
+    expect(warning).toContain(
+      `aws ec2 associate-iam-instance-profile --instance-id ${INSTANCE_ID} --iam-instance-profile Arn=${arn}`
+    );
+  });
+
+  it('uses Name= for a bare profile name', async () => {
+    await new EC2Provider().create('MyInstance', 'AWS::EC2::Instance', {
+      ...PROPS,
+      IamInstanceProfile: 'MyProfile',
+    });
+
+    const warning = skipWarning();
+    expect(warning).toBeDefined();
+    expect(warning).toContain(
+      `aws ec2 associate-iam-instance-profile --instance-id ${INSTANCE_ID} --iam-instance-profile Name=MyProfile`
+    );
+  });
+
+  it('emits no skip warning when the template has no profile', async () => {
+    await new EC2Provider().create('MyInstance', 'AWS::EC2::Instance', PROPS);
+
+    expect(skipWarning()).toBeUndefined();
+  });
+});
+
+// Issue #1291 item 3: --no-wait deploy-time observed-capture ran against a
+// `pending` instance whose profile association was still `associating`, so
+// DescribeInstances did not surface IamInstanceProfile and the field was
+// recorded absent -- a PERMANENT drift blind spot, because the comparator
+// walks baseline keys only. The narrow backfill reads
+// DescribeIamInstanceProfileAssociations ONLY in that window.
+describe('readInstanceCurrentState IamInstanceProfile backfill under --no-wait (issue #1291 item 3)', () => {
+  const INSTANCE_ID = 'i-1234567890abcdef0';
+  const PROFILE_ARN = 'arn:aws:iam::123456789012:instance-profile/MyProfile';
+
+  function mockDescribe(opts: {
+    state: 'pending' | 'running';
+    instanceProfileArn?: string;
+    associations?: Array<{ state: string; arn: string }>;
+  }) {
+    mockSend.mockImplementation((command: unknown) => {
+      if (command instanceof DescribeIamInstanceProfileAssociationsCommand) {
+        return Promise.resolve({
+          IamInstanceProfileAssociations: (opts.associations ?? []).map((a) => ({
+            State: a.state,
+            IamInstanceProfile: { Arn: a.arn },
+          })),
+        });
+      }
+      // DescribeInstances
+      return Promise.resolve({
+        Reservations: [
+          {
+            Instances: [
+              {
+                InstanceId: INSTANCE_ID,
+                State: { Name: opts.state },
+                ImageId: 'ami-12345678',
+                InstanceType: 't3.micro',
+                ...(opts.instanceProfileArn
+                  ? { IamInstanceProfile: { Arn: opts.instanceProfileArn } }
+                  : {}),
+              },
+            ],
+          },
+        ],
+      });
+    });
+  }
+
+  const associationCalls = () =>
+    mockSend.mock.calls.filter((c) => c[0] instanceof DescribeIamInstanceProfileAssociationsCommand);
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    delete process.env['CDKD_NO_WAIT'];
+  });
+
+  afterEach(() => {
+    delete process.env['CDKD_NO_WAIT'];
+  });
+
+  it('backfills the profile from an in-flight association during a --no-wait capture', async () => {
+    process.env['CDKD_NO_WAIT'] = 'true';
+    mockDescribe({ state: 'pending', associations: [{ state: 'associating', arn: PROFILE_ARN }] });
+
+    const current = await new EC2Provider().readCurrentState!(
+      INSTANCE_ID,
+      'MyInstance',
+      'AWS::EC2::Instance'
+    );
+
+    expect(current?.['IamInstanceProfile']).toBe(PROFILE_ARN);
+    expect(associationCalls()).toHaveLength(1);
+  });
+
+  it('omits the field when the pending instance genuinely has no association', async () => {
+    process.env['CDKD_NO_WAIT'] = 'true';
+    mockDescribe({ state: 'pending', associations: [] });
+
+    const current = await new EC2Provider().readCurrentState!(
+      INSTANCE_ID,
+      'MyInstance',
+      'AWS::EC2::Instance'
+    );
+
+    expect(current && 'IamInstanceProfile' in current).toBe(false);
+  });
+
+  it('makes NO extra call when the instance is already running (the wait was not skipped short)', async () => {
+    // The `pending` half of the gate: a running instance with no profile is a
+    // settled answer (genuinely no profile), not an in-flight association --
+    // probing there would add a call to every --no-wait capture of
+    // profile-less instances.
+    process.env['CDKD_NO_WAIT'] = 'true';
+    mockDescribe({ state: 'running' });
+
+    const current = await new EC2Provider().readCurrentState!(
+      INSTANCE_ID,
+      'MyInstance',
+      'AWS::EC2::Instance'
+    );
+
+    expect(current && 'IamInstanceProfile' in current).toBe(false);
+    expect(associationCalls()).toHaveLength(0);
+  });
+
+  it('omits the field when only a disassociated association remains', async () => {
+    process.env['CDKD_NO_WAIT'] = 'true';
+    mockDescribe({
+      state: 'pending',
+      associations: [{ state: 'disassociated', arn: PROFILE_ARN }],
+    });
+
+    const current = await new EC2Provider().readCurrentState!(
+      INSTANCE_ID,
+      'MyInstance',
+      'AWS::EC2::Instance'
+    );
+
+    expect(current && 'IamInstanceProfile' in current).toBe(false);
+  });
+
+  it('degrades to omitting the field when the association read itself fails', async () => {
+    // A throttle on the backfill must cost only this field, never the whole
+    // observed snapshot.
+    process.env['CDKD_NO_WAIT'] = 'true';
+    mockSend.mockImplementation((command: unknown) => {
+      if (command instanceof DescribeIamInstanceProfileAssociationsCommand) {
+        return Promise.reject(new Error('Rate exceeded'));
+      }
+      return Promise.resolve({
+        Reservations: [
+          {
+            Instances: [
+              { InstanceId: INSTANCE_ID, State: { Name: 'pending' }, ImageId: 'ami-12345678' },
+            ],
+          },
+        ],
+      });
+    });
+
+    const current = await new EC2Provider().readCurrentState!(
+      INSTANCE_ID,
+      'MyInstance',
+      'AWS::EC2::Instance'
+    );
+
+    expect(current).toBeDefined();
+    expect(current?.['ImageId']).toBe('ami-12345678');
+    expect(current && 'IamInstanceProfile' in current).toBe(false);
+  });
+
+  it('makes NO extra call on ordinary drift reads (env unset)', async () => {
+    mockDescribe({ state: 'pending' });
+
+    await new EC2Provider().readCurrentState!(INSTANCE_ID, 'MyInstance', 'AWS::EC2::Instance');
+
+    expect(associationCalls()).toHaveLength(0);
+  });
+
+  it('makes NO extra call when DescribeInstances already surfaces the profile', async () => {
+    process.env['CDKD_NO_WAIT'] = 'true';
+    mockDescribe({ state: 'pending', instanceProfileArn: PROFILE_ARN });
+
+    const current = await new EC2Provider().readCurrentState!(
+      INSTANCE_ID,
+      'MyInstance',
+      'AWS::EC2::Instance'
+    );
+
+    expect(current?.['IamInstanceProfile']).toBe(PROFILE_ARN);
+    expect(associationCalls()).toHaveLength(0);
   });
 });

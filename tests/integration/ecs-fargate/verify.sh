@@ -399,6 +399,31 @@ if [ "${SERVICE_TD_AFTER}" = "${SERVICE_TD_BEFORE}" ]; then
   exit 1
 fi
 
+# --- Assertion: the UPDATE-side --full-wait actually settled the rollout ---
+# SERVICE_TD_AFTER flips the instant UpdateService returns, so the check
+# above passes even when the update-side settleService is a silent no-op
+# (issue #1291 item 7). Repeating the COMPLETED / runningCount block here is
+# what pins the update-side waitUntilServicesStable call: right after a
+# --full-wait update deploy returns, the NEW rollout must already be
+# COMPLETED with a single deployment.
+UPD_SVC_JSON=$(aws ecs describe-services \
+  --cluster "${CLUSTER_NAME}" --services "${SERVICE_NAME}" --region "${REGION}" \
+  --output json)
+UPD_ROLLOUT=$(echo "${UPD_SVC_JSON}" | jq -r '.services[0].deployments | length as $n
+  | if $n == 1 then (.[0].rolloutState // "NONE") else "deployments=\($n)" end')
+UPD_RUNNING=$(echo "${UPD_SVC_JSON}" | jq -r '.services[0].runningCount')
+UPD_DESIRED=$(echo "${UPD_SVC_JSON}" | jq -r '.services[0].desiredCount')
+if [ "${UPD_ROLLOUT}" != "COMPLETED" ]; then
+  echo "FAIL: service rollout is '${UPD_ROLLOUT}' immediately after a --full-wait UPDATE deploy, expected COMPLETED (update-side settleService NOT effective — issue #1291 item 7)" >&2
+  echo "${UPD_SVC_JSON}" | jq '.services[0] | {status, runningCount, desiredCount, deployments}'
+  exit 1
+fi
+if [ "${UPD_RUNNING}" != "${UPD_DESIRED}" ]; then
+  echo "FAIL: runningCount ${UPD_RUNNING} != desiredCount ${UPD_DESIRED} immediately after a --full-wait UPDATE deploy (update-side settleService NOT effective — issue #1291 item 7)" >&2
+  exit 1
+fi
+echo "    OK: update-side --full-wait left the service at a COMPLETED rollout (running=${UPD_RUNNING}/desired=${UPD_DESIRED})"
+
 # The revision the service now points at must be the NEW one: ACTIVE and
 # carrying the updated container command.
 NEW_TD_STATUS=$(aws ecs describe-task-definition \

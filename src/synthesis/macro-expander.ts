@@ -382,7 +382,16 @@ async function expandMacrosAttempt(
     let waiterError: unknown;
     try {
       await waitUntilChangeSetCreateComplete(
-        { client: cfn, maxWaitTime: waiterMaxWaitSeconds },
+        {
+          client: cfn,
+          maxWaitTime: waiterMaxWaitSeconds,
+          // Changeset creation for a macro expansion settles in seconds and
+          // this runs on the DEPLOY path -- the SDK default cadence (30s
+          // first poll) would add a flat half-minute to every macro deploy
+          // (issue #1291 item 5: unconfigured waiters run at SDK defaults).
+          minDelay: 2,
+          maxDelay: 5,
+        },
         { StackName: transientStackName, ChangeSetName: changeSetName }
       );
     } catch (waiterErr) {

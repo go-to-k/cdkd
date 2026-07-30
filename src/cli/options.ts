@@ -558,6 +558,33 @@ export function validateWaitFlags(opts: { wait?: boolean; fullWait?: boolean }):
 }
 
 /**
+ * Validate the wait-flag pair and project it onto the process env the
+ * providers read. One helper instead of three separate lines in deploy.ts
+ * so the validation, the two mode envs, and the availability marker cannot
+ * drift apart individually (issue #1291 item 6 — the wiring had no unit
+ * coverage because it lived inline in the deploy command's action).
+ *
+ * - `CDKD_NO_WAIT` — set when `--no-wait` was passed; providers skip
+ *   convenience stabilization waits.
+ * - `CDKD_FULL_WAIT` — set when `--full-wait` was passed; providers add
+ *   the CloudFormation-side waits cdkd skips by default.
+ * - `CDKD_WAIT_FLAGS_AVAILABLE` — set unconditionally by commands that
+ *   DECLARE the wait flags (today: deploy). Providers gate flag-mentioning
+ *   hints on it, so `cdkd drift --revert` reaching the same provider code
+ *   never advertises a flag drift does not accept (issue #1291 item 1).
+ */
+export function applyWaitFlagEnv(opts: { wait?: boolean; fullWait?: boolean }): void {
+  validateWaitFlags(opts);
+  process.env['CDKD_WAIT_FLAGS_AVAILABLE'] = 'true';
+  if (opts.wait === false) {
+    process.env['CDKD_NO_WAIT'] = 'true';
+  }
+  if (opts.fullWait === true) {
+    process.env['CDKD_FULL_WAIT'] = 'true';
+  }
+}
+
+/**
  * Drop the CDK-injected defensive `DependsOn` edges from VPC Lambdas (and
  * adjacent IAM Role / Policy / Lambda::Url / EventSourceMapping resources)
  * onto the private subnet's `DefaultRoute` / `RouteTableAssociation`. CDK

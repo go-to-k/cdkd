@@ -110,42 +110,108 @@ describe('provider poll-loop cap tightness (#1175 / #1176)', () => {
   // operation is itself only ~30-60s (an EC2 instance) want tighter still, but
   // a blanket rule cannot know per-type speed, so 10s is the enforced ceiling
   // and individual sites may go lower.
-  const waiterCap = /minDelay:\s*(\d+)\s*,\s*maxDelay:\s*(\d+)/g;
   const MAX_ALLOWED_WAITER_MAXDELAY_S = 10;
 
-  it('every AWS SDK waiter config caps maxDelay at <= 10s', () => {
+  // Recursively list every .ts source file under src/ — the rule covers the
+  // WHOLE tree, not just providers. The #1291 item-5 finding: the previous
+  // version scanned provider files for `{ minDelay, maxDelay }` CONFIGS, so a
+  // `waitUntil*` call that passed no config at all (running at the SDK's
+  // 15s-120s defaults, or 30s for the CloudFormation waiters) was invisible —
+  // eight such calls existed in export.ts / retire-cfn-stack.ts /
+  // macro-expander.ts.
+  function srcFiles(dir: string): string[] {
+    const out: string[] = [];
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) out.push(...srcFiles(full));
+      else if (entry.name.endsWith('.ts') && !entry.name.endsWith('.d.ts')) out.push(full);
+    }
+    return out;
+  }
+
+  it('every AWS SDK waiter CALL SITE carries an explicit tight { minDelay, maxDelay } config', () => {
+    const srcRoot = join(repoRoot, 'src');
     const violations: string[] = [];
-    let waiterSites = 0;
+    let callSites = 0;
+    let configuredSites = 0;
+    const filesWithCalls = new Set<string>();
 
-    for (const file of providerFiles()) {
+    // A call site is `waitUntilXxx(` (imports / re-exports don't parenthesize).
+    // Its first argument is the waiter config object literal; line comments may
+    // sit between the paren and the brace. Capture up to the closing brace
+    // non-greedily — a future config with a NESTED object literal before
+    // minDelay truncates early and reads as "no inline config", which fails
+    // LOUD (a spurious violation), never silently green. minDelay / maxDelay
+    // may appear in EITHER order (the old `minDelay:\s*\d+,\s*maxDelay:` regex
+    // was key-order-evadable). A spread literal (`{ ...cfg }`) is flagged as
+    // unconfigured; a bare IDENTIFIER config (`waitUntilX(cfg, input)`) does
+    // not match this regex at all — that evasion is closed by the raw-count
+    // reconciliation below, which counts every `waitUntil*(` occurrence and
+    // fails when the two counters diverge.
+    const callSite = /waitUntil\w+\(\s*(?:\/\/[^\n]*\n\s*)*\{([\s\S]*?)\}\s*,/g;
+    const rawCallSite = /waitUntil\w+\(/g;
+    let rawCallSites = 0;
+
+    for (const file of srcFiles(srcRoot)) {
       const src = readFileSync(file, 'utf8');
-      const name = file.slice(providersDir.length + 1);
+      const name = file.slice(srcRoot.length + 1);
 
-      for (const m of src.matchAll(waiterCap)) {
-        waiterSites++;
-        const minDelay = Number.parseInt(m[1]!, 10);
-        const maxDelay = Number.parseInt(m[2]!, 10);
+      rawCallSites += [...src.matchAll(rawCallSite)].length;
+      for (const m of src.matchAll(callSite)) {
+        callSites++;
+        filesWithCalls.add(name);
+        const config = m[1]!;
+        const minM = config.match(/\bminDelay:\s*(\d[\d_]*)/);
+        const maxM = config.match(/\bmaxDelay:\s*(\d[\d_]*)/);
+        if (!minM || !maxM) {
+          violations.push(
+            `${name}: a waitUntil* call site has no inline { minDelay, maxDelay } — it runs at the SDK default cadence (15s-120s exp backoff; 30s flat for CloudFormation waiters)`
+          );
+          continue;
+        }
+        configuredSites++;
+        const minDelay = parseCap(minM[1]!);
+        const maxDelay = parseCap(maxM[1]!);
         if (maxDelay > MAX_ALLOWED_WAITER_MAXDELAY_S) {
           violations.push(
-            `${name}: { minDelay: ${minDelay}, maxDelay: ${maxDelay} } — maxDelay ${maxDelay}s > ${MAX_ALLOWED_WAITER_MAXDELAY_S}s ` +
-              `(mean detection lag ${maxDelay / 2}s)`
+            `${name}: { minDelay: ${minDelay}, maxDelay: ${maxDelay} } — maxDelay ${maxDelay}s > ${MAX_ALLOWED_WAITER_MAXDELAY_S}s (mean detection lag ${maxDelay / 2}s)`
           );
         }
         if (minDelay > maxDelay) {
-          violations.push(`${name}: { minDelay: ${minDelay}, maxDelay: ${maxDelay} } — minDelay exceeds maxDelay`);
+          violations.push(
+            `${name}: { minDelay: ${minDelay}, maxDelay: ${maxDelay} } — minDelay exceeds maxDelay`
+          );
         }
       }
     }
 
-    // Coverage floor: 6 waiter configs live in the tree today (4 in
-    // ec2-provider, 1 elbv2, 1 ecs). A green result must mean "all caps tight",
-    // never "the regex stopped matching" — the failure mode this very rule was
-    // added to catch.
-    expect(waiterSites, 'expected the SDK waiter { minDelay, maxDelay } configs to be found').toBeGreaterThanOrEqual(6);
+    // Coverage floors — "saw nothing = fail", per .claude/rules/testing.md.
+    // 18 call sites live in the tree today: 10 in providers (4 ec2, 1 elbv2,
+    // 1 ecs, 3 custom-resource, 1 lambda-function) + 5 export.ts +
+    // 2 retire-cfn-stack.ts + 1 macro-expander.ts. The non-provider category
+    // floor pins the shape the old scan missed, so a regression that stops
+    // seeing THOSE cannot hide under the total.
+    expect(callSites, 'expected the waitUntil* call sites to be found').toBeGreaterThanOrEqual(18);
+    expect(
+      [...filesWithCalls].filter((f) => !f.startsWith('provisioning/providers/')).length,
+      'expected waitUntil* call sites OUTSIDE provisioning/providers to be seen (export / retire-cfn-stack / macro-expander)'
+    ).toBeGreaterThanOrEqual(3);
+    // Raw-count reconciliation: every `waitUntil*(` occurrence must have been
+    // parsed by the config-literal regex. A bare identifier config
+    // (`waitUntilX(cfg, input)`), a block comment before the brace, or any
+    // other shape the literal regex cannot see makes the counters diverge and
+    // fails HERE instead of silently dropping out of the scan. (The literal
+    // regex's own matches split exactly into configured + no-inline-violation
+    // by construction, so comparing against the RAW count is what makes this
+    // a real invariant rather than a tautology.)
+    expect(
+      rawCallSites,
+      'every waitUntil*( occurrence must be parseable by the config-literal regex — a bare identifier config or block-comment shape evades the cap rule; inline the { minDelay, maxDelay } literal'
+    ).toBe(callSites);
 
     expect(
       violations,
-      `sparse SDK waiter caps found (tighten maxDelay to <= ${MAX_ALLOWED_WAITER_MAXDELAY_S}s):\n${violations.join('\n')}`
+      `sparse or missing SDK waiter configs found (inline { minDelay, maxDelay } with maxDelay <= ${MAX_ALLOWED_WAITER_MAXDELAY_S}s):\n${violations.join('\n')}`
     ).toEqual([]);
   });
 });

@@ -765,7 +765,9 @@ export class CustomResourceProvider implements ResourceProvider {
         })
       );
       await waitUntilFunctionUpdatedV2(
-        { client: this.lambdaClient, maxWaitTime: 120 },
+        // Explicit cadence per the repo-wide waiter rule (#1291 item 5);
+        // matches the Lambda V2 waiters' own dense 1s default.
+        { client: this.lambdaClient, maxWaitTime: 120, minDelay: 1, maxDelay: 5 },
         { FunctionName: serviceToken }
       );
     } catch (error) {
@@ -840,11 +842,15 @@ export class CustomResourceProvider implements ResourceProvider {
   private async waitForBackingLambdaReady(serviceToken: string, logicalId: string): Promise<void> {
     try {
       await waitUntilFunctionActiveV2(
-        { client: this.lambdaClient, maxWaitTime: 600 },
+        // Explicit cadence per the repo-wide waiter rule (#1291 item 5);
+        // matches the Lambda V2 waiters' own dense 1s default.
+        { client: this.lambdaClient, maxWaitTime: 600, minDelay: 1, maxDelay: 5 },
         { FunctionName: serviceToken }
       );
       await waitUntilFunctionUpdatedV2(
-        { client: this.lambdaClient, maxWaitTime: 600 },
+        // Explicit cadence per the repo-wide waiter rule (#1291 item 5);
+        // matches the Lambda V2 waiters' own dense 1s default.
+        { client: this.lambdaClient, maxWaitTime: 600, minDelay: 1, maxDelay: 5 },
         { FunctionName: serviceToken }
       );
     } catch (error) {

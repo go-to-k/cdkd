@@ -1,5 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vite-plus/test';
 import { Command } from 'commander';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 
 import {
   commonOptions,
@@ -748,5 +751,73 @@ describe('validateWaitFlags (issue #1275)', () => {
     const flags = cmd.options.map((o) => o.flags);
     expect(flags).toContain('--full-wait');
     expect(flags).toContain('--no-wait');
+  });
+});
+
+// Issue #1291 item 6: the env projection lived inline in deploy.ts's action
+// with no unit coverage -- deleting either `process.env` line kept every test
+// green. The projection now lives in applyWaitFlagEnv so validation, the two
+// mode envs, and the availability marker are covered together.
+describe('applyWaitFlagEnv (issue #1291 items 1 + 6)', () => {
+  const ENVS = ['CDKD_NO_WAIT', 'CDKD_FULL_WAIT', 'CDKD_WAIT_FLAGS_AVAILABLE'] as const;
+  const saved: Record<string, string | undefined> = {};
+
+  beforeEach(() => {
+    for (const k of ENVS) {
+      saved[k] = process.env[k];
+      delete process.env[k];
+    }
+  });
+
+  afterEach(() => {
+    for (const k of ENVS) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+  });
+
+  it('rejects --no-wait --full-wait before touching any env', async () => {
+    const { applyWaitFlagEnv } = await import('../../../src/cli/options.js');
+    expect(() => applyWaitFlagEnv({ wait: false, fullWait: true })).toThrow(
+      /--no-wait and --full-wait cannot be combined/
+    );
+    expect(process.env['CDKD_NO_WAIT']).toBeUndefined();
+    expect(process.env['CDKD_FULL_WAIT']).toBeUndefined();
+    expect(process.env['CDKD_WAIT_FLAGS_AVAILABLE']).toBeUndefined();
+  });
+
+  it('sets CDKD_NO_WAIT for --no-wait, plus the availability marker', async () => {
+    const { applyWaitFlagEnv } = await import('../../../src/cli/options.js');
+    applyWaitFlagEnv({ wait: false });
+    expect(process.env['CDKD_NO_WAIT']).toBe('true');
+    expect(process.env['CDKD_FULL_WAIT']).toBeUndefined();
+    expect(process.env['CDKD_WAIT_FLAGS_AVAILABLE']).toBe('true');
+  });
+
+  it('sets CDKD_FULL_WAIT for --full-wait, plus the availability marker', async () => {
+    const { applyWaitFlagEnv } = await import('../../../src/cli/options.js');
+    applyWaitFlagEnv({ wait: true, fullWait: true });
+    expect(process.env['CDKD_FULL_WAIT']).toBe('true');
+    expect(process.env['CDKD_NO_WAIT']).toBeUndefined();
+    expect(process.env['CDKD_WAIT_FLAGS_AVAILABLE']).toBe('true');
+  });
+
+  it('default mode sets ONLY the availability marker', async () => {
+    const { applyWaitFlagEnv } = await import('../../../src/cli/options.js');
+    applyWaitFlagEnv({ wait: true });
+    expect(process.env['CDKD_NO_WAIT']).toBeUndefined();
+    expect(process.env['CDKD_FULL_WAIT']).toBeUndefined();
+    expect(process.env['CDKD_WAIT_FLAGS_AVAILABLE']).toBe('true');
+  });
+
+  it('is the helper the deploy command actually calls (wiring pin)', () => {
+    // A source-level pin: deploy.ts must route through applyWaitFlagEnv (not
+    // hand-rolled env writes), so the projection cannot silently fork again.
+    const deploySrc = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), '../../../src/cli/commands/deploy.ts'),
+      'utf8'
+    );
+    expect(deploySrc).toMatch(/applyWaitFlagEnv\(options\)/);
+    expect(deploySrc).not.toMatch(/process\.env\['CDKD_(NO_WAIT|FULL_WAIT|WAIT_FLAGS_AVAILABLE)'\]\s*=/);
   });
 });
