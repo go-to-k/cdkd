@@ -171,6 +171,20 @@ describe('SNSSubscriptionProvider', () => {
       expect(mockSend).not.toHaveBeenCalled();
     });
 
+    it('skips the Unsubscribe call for the lowercase "pending confirmation" placeholder id', async () => {
+      await expect(
+        provider.delete('Sub', 'pending confirmation', 'AWS::SNS::Subscription')
+      ).resolves.toBeUndefined();
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('readCurrentState returns undefined for the placeholder id without calling AWS (drift must not abort)', async () => {
+      await expect(
+        provider.readCurrentState('PendingConfirmation', 'Sub', 'AWS::SNS::Subscription')
+      ).resolves.toBeUndefined();
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
     it('still fails on unrelated InvalidParameterException errors', async () => {
       mockSend.mockRejectedValueOnce(
         new InvalidParameterException({

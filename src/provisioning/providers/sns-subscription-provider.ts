@@ -330,6 +330,15 @@ export class SNSSubscriptionProvider implements ResourceProvider {
     _logicalId: string,
     _resourceType: string
   ): Promise<Record<string, unknown> | undefined> {
+    // The literal "PendingConfirmation" placeholder (issue #1301 — e.g. state
+    // adopted via `cdkd import --resource <id>=PendingConfirmation`) is not a
+    // real ARN; GetSubscriptionAttributes would throw InvalidParameterException
+    // (NOT the NotFoundException handled below) and abort the whole
+    // `cdkd drift` run. Treat it as unreadable-yet (no drift baseline).
+    if (physicalId === 'PendingConfirmation' || physicalId === 'pending confirmation') {
+      return undefined;
+    }
+
     let attributes: Record<string, string> | undefined;
     try {
       const resp = await this.snsClient.send(
