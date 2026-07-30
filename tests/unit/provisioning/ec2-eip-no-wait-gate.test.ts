@@ -133,3 +133,102 @@ describe('EC2 EIP association under --no-wait', () => {
     expect(warnMock).not.toHaveBeenCalled();
   });
 });
+
+// The UPDATE path has the same pending-instance hazard when the template adds
+// or repoints InstanceId to an instance created in the same --no-wait deploy.
+// But unlike create -- whose target is usually the same-deploy (necessarily
+// not-yet-running) instance -- an update's target is often an EXISTING running
+// instance, so the fix attempts the association first and only degrades to the
+// skip-and-warn remedy when AWS actually rejects with IncorrectInstanceState
+// under --no-wait.
+describe('EC2 EIP association on UPDATE under --no-wait', () => {
+  const PHYSICAL_ID = `54.0.0.9|${ALLOCATION_ID}`;
+
+  function incorrectInstanceStateError() {
+    const error = new Error(
+      `The instance '${INSTANCE_ID}' is not in a valid state for this operation.`
+    );
+    error.name = 'IncorrectInstanceState';
+    return error;
+  }
+
+  function mockAssociateRejecting(error: Error) {
+    mockSend.mockImplementation((command: unknown) => {
+      if (command instanceof AssociateAddressCommand) {
+        return Promise.reject(error);
+      }
+      return Promise.resolve({});
+    });
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    delete process.env['CDKD_NO_WAIT'];
+    mockSend.mockResolvedValue({});
+  });
+
+  afterEach(() => {
+    delete process.env['CDKD_NO_WAIT'];
+  });
+
+  it('still attempts the association under --no-wait, because the target may already be running', async () => {
+    process.env['CDKD_NO_WAIT'] = 'true';
+    const provider = new EC2Provider();
+
+    const result = await provider.update('Eip', PHYSICAL_ID, 'AWS::EC2::EIP', {
+      InstanceId: INSTANCE_ID,
+    }, {});
+
+    const calls = associateCalls();
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.[0].input).toMatchObject({
+      AllocationId: ALLOCATION_ID,
+      InstanceId: INSTANCE_ID,
+      AllowReassociation: true,
+    });
+    expect(result.wasReplaced).toBe(false);
+    expect(warnMock).not.toHaveBeenCalled();
+  });
+
+  it('degrades IncorrectInstanceState to a repair-command warning under --no-wait instead of failing the update', async () => {
+    process.env['CDKD_NO_WAIT'] = 'true';
+    mockAssociateRejecting(incorrectInstanceStateError());
+    const provider = new EC2Provider();
+
+    const result = await provider.update('Eip', PHYSICAL_ID, 'AWS::EC2::EIP', {
+      InstanceId: INSTANCE_ID,
+    }, {});
+
+    expect(result.wasReplaced).toBe(false);
+    const warning = warnMock.mock.calls.map((c) => String(c[0])).find((m) => m.includes('EIP'));
+    expect(warning).toBeDefined();
+    expect(warning).toContain(ALLOCATION_ID);
+    expect(warning).toContain(INSTANCE_ID);
+    expect(warning).toContain(
+      `aws ec2 associate-address --allocation-id ${ALLOCATION_ID} --instance-id ${INSTANCE_ID} --allow-reassociation`
+    );
+  });
+
+  it('rethrows IncorrectInstanceState on the default path, where the wait should have prevented it', async () => {
+    mockAssociateRejecting(incorrectInstanceStateError());
+    const provider = new EC2Provider();
+
+    await expect(
+      provider.update('Eip', PHYSICAL_ID, 'AWS::EC2::EIP', { InstanceId: INSTANCE_ID }, {})
+    ).rejects.toThrow(/IncorrectInstanceState|not in a valid state/);
+    expect(warnMock).not.toHaveBeenCalled();
+  });
+
+  it('rethrows non-IncorrectInstanceState association failures under --no-wait, so real errors stay loud', async () => {
+    process.env['CDKD_NO_WAIT'] = 'true';
+    const error = new Error('The address is already associated elsewhere');
+    error.name = 'Resource.AlreadyAssociated';
+    mockAssociateRejecting(error);
+    const provider = new EC2Provider();
+
+    await expect(
+      provider.update('Eip', PHYSICAL_ID, 'AWS::EC2::EIP', { InstanceId: INSTANCE_ID }, {})
+    ).rejects.toThrow(/already associated/);
+    expect(warnMock).not.toHaveBeenCalled();
+  });
+});

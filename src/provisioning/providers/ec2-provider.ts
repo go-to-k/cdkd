@@ -1280,14 +1280,36 @@ export class EC2Provider implements ResourceProvider {
       const newInstanceId = properties['InstanceId'] as string | undefined;
       if (oldInstanceId !== newInstanceId) {
         if (newInstanceId) {
-          // Associate (or re-associate to a different instance).
-          await this.ec2Client.send(
-            new AssociateAddressCommand({
-              AllocationId: allocationId,
-              InstanceId: newInstanceId,
-              AllowReassociation: true,
-            })
-          );
+          // Associate (or re-associate to a different instance). Same
+          // pending-instance hazard as createEip's association: under
+          // --no-wait a target instance created in this deploy may still be
+          // `pending`, and AssociateAddress rejects that with
+          // IncorrectInstanceState (not in the retryable table). Unlike the
+          // create path, the target here is often an EXISTING running
+          // instance (repointing an EIP), so an unconditional skip would
+          // break associations that succeed today -- attempt first, and only
+          // degrade to the skip-and-warn remedy when AWS actually rejects the
+          // not-yet-running instance under --no-wait.
+          try {
+            await this.ec2Client.send(
+              new AssociateAddressCommand({
+                AllocationId: allocationId,
+                InstanceId: newInstanceId,
+                AllowReassociation: true,
+              })
+            );
+          } catch (error) {
+            if (
+              process.env['CDKD_NO_WAIT'] === 'true' &&
+              this.isIncorrectInstanceStateError(error)
+            ) {
+              this.logger.warn(
+                `EIP ${logicalId} (${allocationId}) was NOT associated with ${newInstanceId}: --no-wait skips the instance running-state wait, and AssociateAddress rejects an instance that is not yet running. Verify and associate once the instance is running: aws ec2 describe-instances --instance-ids ${newInstanceId} --query 'Reservations[].Instances[].State.Name' && aws ec2 associate-address --allocation-id ${allocationId} --instance-id ${newInstanceId} --allow-reassociation`
+              );
+            } else {
+              throw error;
+            }
+          }
         } else {
           // InstanceId removed → disassociate via the current AssociationId.
           const desc = await this.ec2Client.send(
@@ -4013,6 +4035,22 @@ export class EC2Provider implements ResourceProvider {
       message.includes('has dependencies and cannot be deleted') ||
       message.includes('Network has some mapped public address')
     );
+  }
+
+  /**
+   * AWS rejects AssociateAddress (and several other instance operations)
+   * against an instance that is not `running` / `stopped` with the
+   * `IncorrectInstanceState` code. Under --no-wait that is the expected
+   * outcome for an instance created in the same deploy, not a transient
+   * fault -- it stays true exactly until the wait --no-wait skipped would
+   * have completed.
+   */
+  private isIncorrectInstanceStateError(error: unknown): boolean {
+    if (!(error instanceof Error)) return false;
+    const code = (error as { Code?: string }).Code ?? '';
+    const name = (error as { name?: string }).name ?? '';
+    if (code === 'IncorrectInstanceState' || name === 'IncorrectInstanceState') return true;
+    return error.message.includes('IncorrectInstanceState');
   }
 
   /**
