@@ -31,7 +31,7 @@ CloudFormation's [Express mode](https://aws.amazon.com/about-aws/whats-new/2026/
 
 | Stack | Normal (CFn) | Express | cdkd | cdkd `--no-wait` |
 | --- | ---: | ---: | ---: | ---: |
-| VPC + Lambda + SQS + CloudFront | 562 | 366 | 168 | **40** |
+| VPC + Lambda + SQS + CloudFront | 562 | 366 | 96 | **40** |
 | DynamoDB | 34 | 34 | 19 | 15 |
 | DynamoDB + KMS | 71 | 55 | 27 | 27 |
 | EC2 | 44 | 31 | 27 | 26 |
@@ -40,10 +40,10 @@ CloudFormation's [Express mode](https://aws.amazon.com/about-aws/whats-new/2026/
 | SQS | 83 | 22 | **9** | 9 |
 | SQS + CloudWatch | 87 | 44 | 30 | 31 |
 
-Best of 3 runs, deploy-phase only, seconds, `us-west-2`. The `VPC + Lambda + SQS + CloudFront` stack is 1 VPC (2 AZs, NAT Gateway, public + private subnets) + VPC Lambda + Lambda Function URL + CloudFront Distribution + SQS + EventSourceMapping + Consumer Lambda. Its cdkd default cell (168) predates the #1282 default flip (CloudFront `Deployed` is now `--full-wait`-only) and will be re-measured; the current default lands between the old default and the `--no-wait` cell.
+Best of 3 runs, deploy-phase only, seconds, `us-west-2`. The `VPC + Lambda + SQS + CloudFront` stack is 1 VPC (2 AZs, NAT Gateway, public + private subnets) + VPC Lambda + Lambda Function URL + CloudFront Distribution + SQS + EventSourceMapping + Consumer Lambda. Its cdkd default cell was re-measured 2026-07-31 on cdkd 0.272.0 (96 / 107 / 115s, best of 3): since #1282 the default no longer waits for CloudFront `Deployed`, so NAT stabilization is the critical path. The other cells are from the original campaign.
 
 - **~1.5–2x faster than Express on most stacks** — e.g. SQS finishes in 9s vs Express's 22s (~2.4x).
-- **Async-heavy stacks are where the gap explodes.** On the VPC + CloudFront stack, `cdkd --no-wait` finishes in 40s vs Express's 366s (~9x) — cdkd returns as soon as each create call returns, leaving CloudFront propagation and NAT Gateway stabilization to complete in the background.
+- **Async-heavy stacks are where the gap explodes.** On the VPC + CloudFront stack the cdkd default finishes in 96s vs Express's 366s (~3.8x) — since #1282 the default already leaves CloudFront propagation to complete in the background — and `--no-wait` (40s, ~9x) additionally skips the NAT stabilization wait.
 - **S3 is the one case where Express edges cdkd's default** (22s vs 23s). On a near-instant single-resource stack there is little left to parallelize, and `--no-wait` makes no difference there.
 
 ### vs Terraform: cdkd deploys faster
@@ -57,13 +57,14 @@ We also raced cdkd against Terraform: the same logical stacks expressed both as 
 | ec2 | VPC + subnet + SG + IAM role + EC2 instance ×3 | **29.1** | 35.9 | 193.9 | 22.0 |
 | webapp | VPC + NAT + subnets + DynamoDB + SQS + S3 + Lambda ×2 + HTTP API | 109.7 | 127.3 | 166.1 | 23.4 |
 | ecs | VPC ×2 AZ + Fargate cluster / task / service + ALB | **162.8** | 209.5 | 276.7 | 34.5 |
-| cloudfront | S3 origin + CloudFront + OAC | 174.7 | 177.5 | 209.8 | 13.1 |
+| cloudfront — created (fire and forget) | S3 origin + CloudFront + OAC | 11.1 | 10.3 (`wait_for_deployment = false`) | no such mode | 10.4 |
+| cloudfront — `Deployed` | S3 origin + CloudFront + OAC | 174.0 (`--full-wait`) | 166.4 | 232.3 | n/a |
 
-Cold end-to-end wall clock including synth / plan, median of 7 runs, seconds, `us-east-1`; every run gets fresh resource names, so every run measures a first deploy. The cloudfront row predates the #1282 default flip (CloudFront `Deployed` is now `--full-wait`; the old `--no-wait` cell, 13.1 vs Terraform's `wait_for_deployment = false` at 11.5, matches the current default) and will be re-measured in the two-row form the ecs scenario uses.
+Cold end-to-end wall clock including synth / plan, median of 7 runs, seconds, `us-east-1`; every run gets fresh resource names, so every run measures a first deploy. The cloudfront scenario is two rows because since #1282 the tools' DEFAULTS differ in what "done" means there — each row compares tools held to the same completion definition (cdkd's default is the fire-and-forget row; Terraform's default is the `Deployed` row), re-measured 2026-07-31 on cdkd 0.272.0.
 
-- **The lead tracks how much of the wall clock is orchestration.** wide and serverless are almost pure orchestration and run ~2.2x faster; cloudfront is almost pure CDN propagation — both tools wait the same physical minutes — and is a tie.
-- **A win is claimed only where no cdkd run overlaps any Terraform run** — true of the four bolded rows. webapp's median favours cdkd by 17.6s, but NAT-gateway variance keeps the distributions overlapped at n=7, so no win is claimed there.
-- **This is not cdkd waiting for less.** Held to the same completion definition — `--full-wait` vs Terraform's `wait_for_steady_state=true`, both blocking until the ECS service is steady — cdkd is still 1.24x faster (227.7 vs 282.7).
+- **The lead tracks how much of the wall clock is orchestration.** wide and serverless are almost pure orchestration and run ~2.2x faster; cloudfront is almost pure CDN propagation under the `Deployed` definition and pure API accept under fire-and-forget — a tie in both rows.
+- **A win is claimed only where no cdkd run overlaps any Terraform run** — true of the four bolded rows. webapp's median favours cdkd by 17.6s, but NAT-gateway variance keeps the distributions overlapped at n=7, so no win is claimed there. Both cloudfront rows overlap heavily (fire-and-forget 0.8s apart; `Deployed` 7.6s apart with fully overlapping runs) and are reported as ties.
+- **This is not cdkd waiting for less.** Held to the same completion definition — ECS `--full-wait` vs Terraform's `wait_for_steady_state=true` is 227.7 vs 282.7 (1.24x), and both cloudfront rows above are same-definition pairs by construction.
 
 Distribution analysis, wait-skipping comparability (Terraform has no global `--no-wait` equivalent), and per-run data: [docs/benchmarks.md](docs/benchmarks.md) and [cdkd-bench-terraform](https://github.com/go-to-k/cdkd-bench-terraform).
 
