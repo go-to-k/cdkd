@@ -1,3 +1,10 @@
+## [0.268.1](https://github.com/go-to-k/cdkd/compare/v0.268.0...v0.268.1) (2026-07-30)
+
+
+### Bug Fixes
+
+* **deployment:** give IAM-propagation retries their own dense backoff schedule ([#1288](https://github.com/go-to-k/cdkd/issues/1288)) ([29efe7f](https://github.com/go-to-k/cdkd/commit/29efe7f33a5a71cc7a755a45b7c9275a0185af2d))
+
 # [0.268.0](https://github.com/go-to-k/cdkd/compare/v0.267.20...v0.268.0) (2026-07-30)
 
 
