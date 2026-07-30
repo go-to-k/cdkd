@@ -1,7 +1,7 @@
 {
   "summary": {
-    "classifiedCount": 84,
-    "wrapped": 77,
+    "classifiedCount": 85,
+    "wrapped": 78,
     "noAws": 7,
     "gap": 0,
     "unguardedWrap": 0,
@@ -124,6 +124,14 @@
     {
       "file": "cloudwatch-alarm-provider.ts",
       "className": "CloudWatchAlarmProvider",
+      "bucket": "wrapped",
+      "unwrappedSendMethods": [],
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
+    },
+    {
+      "file": "cloudwatch-anomaly-detector-provider.ts",
+      "className": "CloudWatchAnomalyDetectorProvider",
       "bucket": "wrapped",
       "unwrappedSendMethods": [],
       "unguardedWrapMethods": [],

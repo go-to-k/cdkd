@@ -30,6 +30,7 @@
     "AWS::CloudFront::OriginAccessControl",
     "AWS::CloudTrail::Trail",
     "AWS::CloudWatch::Alarm",
+    "AWS::CloudWatch::AnomalyDetector",
     "AWS::CodeBuild::Project",
     "AWS::CodeCommit::Repository",
     "AWS::Cognito::UserPool",
@@ -703,6 +704,18 @@
         ],
         "scheduled-task": [
           "l2"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::CloudWatch::AnomalyDetector",
+      "integs": [
+        "cloudwatch-anomaly-detector"
+      ],
+      "signals": {
+        "cloudwatch-anomaly-detector": [
+          "l1",
+          "literal"
         ]
       }
     },
@@ -4735,6 +4748,7 @@
         "bench-cdk-sample",
         "bench-sdk",
         "cc-getatt-readback",
+        "cloudwatch-anomaly-detector",
         "composite-stack",
         "conditions-update-2",
         "data-pipeline",
@@ -4776,6 +4790,9 @@
           "l2"
         ],
         "cc-getatt-readback": [
+          "l2"
+        ],
+        "cloudwatch-anomaly-detector": [
           "l2"
         ],
         "composite-stack": [

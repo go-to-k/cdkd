@@ -109,6 +109,7 @@ catalog with Tier 2 and Tier 3 entries included.
 | **Database** | AWS::DynamoDB::GlobalTable | SDK Provider | ✅ |
 | **Monitoring** | AWS::Logs::LogGroup | SDK Provider | ✅ |
 | **Monitoring** | AWS::CloudWatch::Alarm | SDK Provider | ✅ |
+| **Monitoring** | AWS::CloudWatch::AnomalyDetector | SDK Provider | ✅ |
 | **Secrets** | AWS::SecretsManager::Secret | SDK Provider | ✅ |
 | **Config** | AWS::SSM::Parameter | SDK Provider | ✅ |
 | **Events** | AWS::Events::Rule | SDK Provider | ✅ |

@@ -22,6 +22,7 @@ import { DynamoDBTableProvider } from './providers/dynamodb-table-provider.js';
 import { DynamoDBGlobalTableProvider } from './providers/dynamodb-globaltable-provider.js';
 import { LogsLogGroupProvider } from './providers/logs-loggroup-provider.js';
 import { CloudWatchAlarmProvider } from './providers/cloudwatch-alarm-provider.js';
+import { CloudWatchAnomalyDetectorProvider } from './providers/cloudwatch-anomaly-detector-provider.js';
 import { SecretsManagerSecretProvider } from './providers/secretsmanager-secret-provider.js';
 import { SSMParameterProvider } from './providers/ssm-parameter-provider.js';
 import { EventBridgeRuleProvider } from './providers/eventbridge-rule-provider.js';
@@ -129,6 +130,7 @@ export function registerAllProviders(registry: ProviderRegistry): void {
   // Monitoring
   registry.register('AWS::Logs::LogGroup', new LogsLogGroupProvider());
   registry.register('AWS::CloudWatch::Alarm', new CloudWatchAlarmProvider());
+  registry.register('AWS::CloudWatch::AnomalyDetector', new CloudWatchAnomalyDetectorProvider());
 
   // Secrets / Config
   registry.register('AWS::SecretsManager::Secret', new SecretsManagerSecretProvider());
