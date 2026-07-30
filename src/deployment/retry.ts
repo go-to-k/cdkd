@@ -8,24 +8,76 @@
  * `./retryable-errors.ts`.
  */
 
-import { isRetryableTransientError } from './retryable-errors.js';
+import { isIamPropagationError, isRetryableTransientError } from './retryable-errors.js';
 
 export interface RetryLogger {
   debug(message: string): void;
 }
 
+/**
+ * Initial backoff for the IAM-propagation error class (issue: EC2 instance
+ * launches burning ~10s of backoff waiting on a fresh instance profile).
+ *
+ * cdkd creates an `AWS::IAM::InstanceProfile` and issues `RunInstances` ~2.8s
+ * later; CloudFormation and Terraform are slow enough between resources that
+ * IAM has propagated by the time they call, cdkd outruns it. The measured
+ * failure recovers in single-digit seconds, so the first re-probe should be
+ * sub-second rather than the generic 1s.
+ */
+export const IAM_PROPAGATION_INITIAL_DELAY_MS = 250;
+
+/**
+ * Cap for the IAM-propagation backoff. Once the ramp reaches this value the
+ * schedule stays FLAT — the whole point is a tight, predictable probe grid
+ * across the window in which propagation completes, so the worst-case
+ * overshoot is ~2s instead of the generic schedule's up-to-8s.
+ *
+ * Not lower than 2s on purpose: the retried call is usually a mutating,
+ * tightly-rate-limited API (`RunInstances` refills ~2 req/s per account), and
+ * the retry runs per-resource in parallel — three instances polling at 1s
+ * would sit at 3 req/s and trade an IAM stall for a throttle stall. (If a
+ * throttle DOES happen, its error classifies as non-propagation and the
+ * generic exponential schedule takes over for that attempt, which is exactly
+ * the desired self-correction.)
+ */
+export const IAM_PROPAGATION_MAX_DELAY_MS = 2_000;
+
+/**
+ * Retry budget for the IAM-propagation class.
+ *
+ * A denser schedule must NOT shrink the window in which propagation can still
+ * be caught — that would trade latency for flakiness. The generic default
+ * (1s/2s/4s/8s then capped, 8 retries) sleeps 47s in total, so the dense
+ * schedule is given enough retries to cover at least as long:
+ *
+ *   0.25 + 0.5 + 1 + 2 x 23 = 47.75s over 26 retries
+ *
+ * Probe grid (seconds after the first failure): 0.25, 0.75, 1.75, 3.75, then
+ * every 2s out to 47.75 — versus the generic 1, 3, 7, 15, 23, 31, 39, 47.
+ * From 3.75s onwards the dense grid is strictly ahead, and it never lags the
+ * generic one by more than 0.75s in the early band.
+ */
+export const IAM_PROPAGATION_MAX_RETRIES = 26;
+
 export interface WithRetryOptions {
-  /** Max number of retries after the first attempt. Defaults to 8. */
+  /**
+   * Max number of retries after the first attempt. Defaults to 8.
+   *
+   * Setting this (or any other schedule knob) opts the call OUT of the dense
+   * IAM-propagation schedule — see {@link withRetry}.
+   */
   maxRetries?: number;
   /**
    * Initial backoff in milliseconds. Subsequent retries double it
    * (1s -> 2s -> 4s -> ... at the default of 1_000ms).
    *
    * The default of 1_000ms is tuned for the typical AWS eventual-consistency
-   * window of 2-5s (IAM trust-policy propagation, freshly-created Lambda
-   * leaving Pending state). A longer initial delay (e.g. 10s) adds idle time
-   * on the deploy critical path even when the underlying window is much
-   * shorter.
+   * window of 2-5s (a freshly-created Lambda leaving Pending state, an async
+   * delete releasing a dependency). A longer initial delay (e.g. 10s) adds
+   * idle time on the deploy critical path even when the underlying window is
+   * much shorter. IAM-propagation errors are denser still and have their own
+   * schedule ({@link IAM_PROPAGATION_INITIAL_DELAY_MS}), which this option
+   * disables when set.
    */
   initialDelayMs?: number;
   /**
@@ -33,11 +85,11 @@ export interface WithRetryOptions {
    * reaches this value it stays flat instead of growing further. Defaults to
    * 8_000ms.
    *
-   * Why cap: IAM propagation has a long-ish tail (occasional 20-30s waits
-   * past the typical 2-5s window). Pure exponential backoff turns a single
-   * stalled propagation into 16s, 32s, 64s waits — far more than the
-   * underlying window. Capping at 8s lets us still poll roughly every 8s
-   * once we're past the early ramp-up, recovering as soon as AWS stabilises.
+   * Why cap: an eventual-consistency window has a long-ish tail (occasional
+   * 20-30s waits past the typical 2-5s window). Pure exponential backoff turns
+   * a single stall into 16s, 32s, 64s waits — far more than the underlying
+   * window. Capping at 8s lets us still poll roughly every 8s once we're past
+   * the early ramp-up, recovering as soon as AWS stabilises.
    */
   maxDelayMs?: number;
   /** Optional debug logger; receives one line per retry attempt. */
@@ -71,6 +123,20 @@ const defaultSleep = (ms: number): Promise<void> =>
  * Backoff at the defaults (initialDelayMs=1_000, maxDelayMs=8_000, maxRetries=8):
  *   1s -> 2s -> 4s -> 8s -> 8s -> 8s -> 8s -> 8s   (cumulative 47s)
  *
+ * IAM-propagation failures (see `isIamPropagationError`) instead use the dense
+ * schedule 0.25s -> 0.5s -> 1s -> 2s -> 2s ... over
+ * {@link IAM_PROPAGATION_MAX_RETRIES} retries (cumulative 47.75s), because that
+ * class resolves in single-digit seconds and the generic schedule's coarse
+ * 4s/8s steps overshoot it. The dense schedule applies ONLY when the caller
+ * left the schedule at its defaults — a caller that passed its own
+ * `maxRetries` / `initialDelayMs` / `maxDelayMs` / `isRetryable` picked that
+ * schedule deliberately (e.g. the DELETE path's 3 x 5s, or the delete-then-
+ * re-create sites' ~64s budget covering SQS's 60s name cooldown) and gets it
+ * verbatim.
+ *
+ * The class is re-evaluated per attempt, so a propagation retry that runs into
+ * a throttle backs OFF exponentially for that attempt instead of hammering.
+ *
  * Non-retryable errors are rethrown immediately. The transient-error
  * classifier is `isRetryableTransientError` from ./retryable-errors.ts.
  */
@@ -84,9 +150,20 @@ export async function withRetry<T>(
   const maxDelayMs = opts.maxDelayMs ?? 8_000;
   const sleep = opts.sleep ?? defaultSleep;
 
+  // Only the default schedule gets the propagation fast path; any explicit
+  // knob means the caller owns the cadence.
+  const defaultSchedule =
+    opts.maxRetries === undefined &&
+    opts.initialDelayMs === undefined &&
+    opts.maxDelayMs === undefined &&
+    opts.isRetryable === undefined;
+  const attemptCeiling = defaultSchedule
+    ? Math.max(maxRetries, IAM_PROPAGATION_MAX_RETRIES)
+    : maxRetries;
+
   let lastError: unknown;
 
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+  for (let attempt = 0; attempt <= attemptCeiling; attempt++) {
     try {
       return await operation();
     } catch (error) {
@@ -96,13 +173,20 @@ export async function withRetry<T>(
       const retryable = opts.isRetryable
         ? opts.isRetryable(message, error)
         : isRetryableTransientError(error, message);
-      if (!retryable || attempt >= maxRetries) {
+      const propagation = defaultSchedule && isIamPropagationError(message);
+      const attemptLimit = propagation ? IAM_PROPAGATION_MAX_RETRIES : maxRetries;
+      if (!retryable || attempt >= attemptLimit) {
         throw error;
       }
 
-      const delay = Math.min(initialDelayMs * Math.pow(2, attempt), maxDelayMs);
+      const delay = propagation
+        ? Math.min(
+            IAM_PROPAGATION_INITIAL_DELAY_MS * Math.pow(2, attempt),
+            IAM_PROPAGATION_MAX_DELAY_MS
+          )
+        : Math.min(initialDelayMs * Math.pow(2, attempt), maxDelayMs);
       opts.logger?.debug(
-        `  ⏳ Retrying ${logicalId} in ${delay / 1000}s (attempt ${attempt + 1}/${maxRetries}) - ${message}`
+        `  ⏳ Retrying ${logicalId} in ${delay / 1000}s (attempt ${attempt + 1}/${attemptLimit}) - ${message}`
       );
 
       // Interruptible sleep: check for SIGINT every second during delay.

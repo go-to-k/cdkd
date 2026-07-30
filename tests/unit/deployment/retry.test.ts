@@ -131,7 +131,7 @@ describe('withRetry', () => {
     const debug = vi.fn();
     const op = vi
       .fn()
-      .mockRejectedValueOnce(new Error('cannot be assumed'))
+      .mockRejectedValueOnce(new Error('DependencyViolation'))
       .mockResolvedValueOnce('ok');
     await withRetry(op, 'MyResource', {
       sleep: () => Promise.resolve(),
@@ -150,6 +150,147 @@ describe('withRetry', () => {
       })
     ).rejects.toThrow('cannot be assumed');
     expect(op).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe('withRetry IAM-propagation cadence', () => {
+  /** Collect the per-retry delay (seconds) from the debug log lines. */
+  const delaysFrom = (debug: ReturnType<typeof vi.fn>): number[] =>
+    debug.mock.calls.map((call) => {
+      const m = /Retrying \S+ in ([\d.]+)s/.exec(String(call[0]));
+      return Number(m?.[1]);
+    });
+
+  it('uses the dense sub-second schedule for an IAM-propagation error', async () => {
+    const debug = vi.fn();
+    let calls = 0;
+    const op = vi.fn().mockImplementation(async () => {
+      calls++;
+      // The exact wire message from the measured EC2 deploy.
+      if (calls < 6) {
+        throw new Error(
+          "Value (BenchEc2-Instance1InstanceProfileC04770B7) for parameter iamInstanceProfile.name is invalid. Invalid IAM Instance Profile name"
+        );
+      }
+      return 'ok';
+    });
+
+    const result = await withRetry(op, 'Instance1', {
+      sleep: () => Promise.resolve(),
+      logger: { debug },
+    });
+
+    expect(result).toBe('ok');
+    // 0.25s -> 0.5s -> 1s -> 2s -> 2s (flat at the cap), NOT 1/2/4/8/8.
+    expect(delaysFrom(debug)).toEqual([0.25, 0.5, 1, 2, 2]);
+  });
+
+  it('keeps the generic exponential schedule for a non-propagation transient error', async () => {
+    const debug = vi.fn();
+    let calls = 0;
+    const op = vi.fn().mockImplementation(async () => {
+      calls++;
+      if (calls < 6) {
+        throw new Error('Rate exceeded. Ensure you have the high-throughput setting enabled');
+      }
+      return 'ok';
+    });
+
+    const result = await withRetry(op, 'Param1', {
+      sleep: () => Promise.resolve(),
+      logger: { debug },
+    });
+
+    expect(result).toBe('ok');
+    // Throttling genuinely wants exponential backoff — hammering is harmful.
+    expect(delaysFrom(debug)).toEqual([1, 2, 4, 8, 8]);
+  });
+
+  it('keeps the generic schedule for a throttle raised by error NAME (no message match)', async () => {
+    const debug = vi.fn();
+    const throttle = Object.assign(new Error('Too many requests for this account'), {
+      name: 'ThrottlingException',
+    });
+    const op = vi.fn().mockRejectedValueOnce(throttle).mockResolvedValueOnce('ok');
+
+    await withRetry(op, 'Param1', { sleep: () => Promise.resolve(), logger: { debug } });
+
+    expect(delaysFrom(debug)).toEqual([1]);
+  });
+
+  it('re-classifies per attempt: a throttle hit mid-propagation backs off exponentially', async () => {
+    const debug = vi.fn();
+    let calls = 0;
+    const op = vi.fn().mockImplementation(async () => {
+      calls++;
+      if (calls === 1) throw new Error('Invalid IAM Instance Profile name');
+      if (calls === 2) throw new Error('Rate exceeded');
+      if (calls === 3) throw new Error('Invalid IAM Instance Profile name');
+      return 'ok';
+    });
+
+    await withRetry(op, 'Instance1', { sleep: () => Promise.resolve(), logger: { debug } });
+
+    // attempt 0 propagation -> 0.25s; attempt 1 throttle -> generic 1*2^1 = 2s;
+    // attempt 2 propagation again -> min(0.25*2^2, 2) = 1s.
+    expect(delaysFrom(debug)).toEqual([0.25, 2, 1]);
+  });
+
+  it('does not shrink the propagation retry window (total sleep >= the generic 47s budget)', async () => {
+    const sleeps: number[] = [];
+    const op = vi.fn().mockRejectedValue(new Error('Invalid IAM Instance Profile name'));
+
+    await expect(
+      withRetry(op, 'Instance1', {
+        sleep: (ms) => {
+          sleeps.push(ms);
+          return Promise.resolve();
+        },
+      })
+    ).rejects.toThrow(/Invalid IAM Instance Profile/);
+
+    const totalMs = sleeps.reduce((a, b) => a + b, 0);
+    // 0.25 + 0.5 + 1 + 2 x 23 = 47.75s, vs the generic schedule's 47s.
+    expect(totalMs).toBe(47_750);
+    expect(totalMs).toBeGreaterThanOrEqual(47_000);
+    // 26 retries + the initial attempt.
+    expect(op).toHaveBeenCalledTimes(27);
+  });
+
+  it('honours an explicit caller schedule even for a propagation error', async () => {
+    const debug = vi.fn();
+    const op = vi.fn().mockRejectedValue(new Error('Invalid IAM Instance Profile name'));
+
+    // The DELETE path's schedule: 3 retries starting at 5s.
+    await expect(
+      withRetry(op, 'Instance1', {
+        maxRetries: 3,
+        initialDelayMs: 5_000,
+        sleep: () => Promise.resolve(),
+        logger: { debug },
+      })
+    ).rejects.toThrow();
+
+    expect(delaysFrom(debug)).toEqual([5, 8, 8]);
+    expect(op).toHaveBeenCalledTimes(4);
+  });
+
+  it('honours an explicit maxRetries alone (no dense-schedule budget extension)', async () => {
+    const op = vi.fn().mockRejectedValue(new Error('cannot be assumed'));
+
+    await expect(
+      withRetry(op, 'Fn1', { maxRetries: 2, sleep: () => Promise.resolve() })
+    ).rejects.toThrow('cannot be assumed');
+
+    expect(op).toHaveBeenCalledTimes(3);
+  });
+
+  it('still rethrows a non-retryable error on the propagation path', async () => {
+    const op = vi.fn().mockRejectedValue(new Error('ValidationError: image id is malformed'));
+    await expect(
+      withRetry(op, 'Instance1', { sleep: () => Promise.resolve() })
+    ).rejects.toThrow('ValidationError');
+    expect(op).toHaveBeenCalledTimes(1);
   });
 });
 

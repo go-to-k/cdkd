@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vite-plus/test';
 import {
+  IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS,
+  RETRYABLE_ERROR_MESSAGE_PATTERNS,
+  isIamPropagationError,
   isNameCollisionError,
   isNameCooldownError,
   isRecreateRetryableError,
@@ -498,5 +501,67 @@ describe('isRecreateRetryableError', () => {
   it('rejects unrelated failures', () => {
     expect(isRecreateRetryableError('AccessDenied: not authorized')).toBe(false);
     expect(isRecreateRetryableError('Rate exceeded')).toBe(false);
+  });
+});
+
+describe('isIamPropagationError', () => {
+  it.each([
+    // EC2 RunInstances against a just-created instance profile (the measured
+    // ~10s-of-backoff case).
+    [
+      'Value (BenchEc2-Instance1InstanceProfileC04770B7) for parameter iamInstanceProfile.name is invalid. Invalid IAM Instance Profile name',
+      'EC2 fresh instance profile',
+    ],
+    ['The role defined for the function cannot be assumed by Lambda.', 'Lambda exec role'],
+    ['Service is unable to assume provided role. Please verify role TrustPolicy', 'Glue'],
+    ['User: arn:aws:iam::1:user/x is not authorized to perform: sts:AssumeRole', 'authz'],
+    ['Invalid principal in policy', 'S3 bucket policy'],
+    ['Invalid parameter: Policy Error: PrincipalNotFound', 'SNS topic policy'],
+    ['Caught ServiceAccessDeniedException for ECSInfrastructureRole[arn:...]', 'ECS CC API'],
+    ['Invalid InstanceProfile: EmrRole.', 'EMR'],
+    ['Failed to authorize instance profile arn:aws:iam::1:instance-profile/p.', 'EMR authorize'],
+  ])('classifies %j as IAM propagation (%s)', (message) => {
+    expect(isIamPropagationError(message)).toBe(true);
+    // Cadence selection must never widen retryability.
+    expect(isRetryableTransientError(new Error(message), message)).toBe(true);
+  });
+
+  it.each([
+    // Retryable, but NOT propagation — these want exponential backoff.
+    ['Rate exceeded. Ensure you have the high-throughput setting enabled', 'throttle'],
+    ['The function is currently in the following state: Pending', 'Lambda Pending'],
+    ['The vpc has dependencies and cannot be deleted.', 'DependencyViolation'],
+    [
+      'You must wait 60 seconds after deleting a queue before you can create another with the same name.',
+      'SQS cooldown',
+    ],
+    ['The function could not be updated due to a concurrent update operation', 'Lambda lock'],
+  ])('does not classify %j as IAM propagation (%s)', (message) => {
+    expect(isIamPropagationError(message)).toBe(false);
+    expect(isRetryableTransientError(new Error(message), message)).toBe(true);
+  });
+
+  it('does not classify a permanent failure as IAM propagation', () => {
+    expect(isIamPropagationError('ValidationError: image id is malformed')).toBe(false);
+  });
+});
+
+describe('RETRYABLE_ERROR_MESSAGE_PATTERNS composition', () => {
+  it('is the union of the IAM-propagation subset and the rest, with no duplicates', () => {
+    const all = RETRYABLE_ERROR_MESSAGE_PATTERNS;
+    expect(new Set(all).size).toBe(all.length);
+    for (const p of IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS) {
+      expect(all).toContain(p);
+    }
+    // The subset is a strict subset — the non-propagation half is non-empty.
+    expect(IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS.length).toBeLessThan(all.length);
+  });
+
+  it('every IAM-propagation pattern is retryable through the shared classifier', () => {
+    for (const p of IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS) {
+      const message = `AWS says: ${p} (details)`;
+      expect(isRetryableTransientError(new Error(message), message)).toBe(true);
+      expect(isIamPropagationError(message)).toBe(true);
+    }
   });
 });
