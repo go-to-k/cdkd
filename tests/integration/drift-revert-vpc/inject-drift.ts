@@ -28,8 +28,9 @@
  * Reads physical ids either from environment vars (FILESYSTEM_ID /
  * MOUNT_TARGET_ID / NAMESPACE_ID / LOAD_BALANCER_ARN / SG1_ID / SG2_ID /
  * ASG_NAME / ASG_TG1_ARN / ASG_TG2_ARN / PUBLIC_SUBNET1_ID) or, when those are unset, from
- * `cdkd state show CdkdDriftRevertVpcExample --json`. The env-var path
- * is what verify.sh uses.
+ * `cdkd state show CdkdDriftRevertVpcExample --json`. verify.sh sets no
+ * env vars, so the state-show fallback is the live path; the env-var path
+ * requires EVERY variable (any missing one silently falls back).
  */
 import { execSync } from 'node:child_process';
 import { resolve } from 'node:path';

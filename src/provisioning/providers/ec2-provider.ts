@@ -4570,9 +4570,12 @@ export class EC2Provider implements ResourceProvider {
    *
    * Other EC2 types (`VPC` / `Subnet` / `InternetGateway` /
    * `NatGateway` / `RouteTable` / `SecurityGroup` / `Instance` /
-   * `NetworkAcl`) have first-class Tags support via
-   * `DescribeTags` — they surface `Tags` directly in
-   * `readCurrentState` and don't need this declaration.
+   * `NetworkAcl`) have first-class Tags support on the WRITE side
+   * (create/update tag wiring) and don't need this declaration.
+   * NOTE: `readVpcCurrentState` / `readSubnetCurrentState` do NOT
+   * currently surface `Tags`, so Tags drift on those types is out of
+   * v1 drift scope — `AWS::EC2::Subnet`'s `updateableProperties:
+   * Tags` entry serves only the template-update path today.
    */
   getDriftUnknownPaths(resourceType: string): string[] {
     switch (resourceType) {
