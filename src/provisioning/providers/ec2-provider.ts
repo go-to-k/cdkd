@@ -201,6 +201,15 @@ export class EC2Provider implements ResourceProvider {
         'UserData',
         'BlockDeviceMappings',
         'Tags',
+        // Issue #1276: the CDK L2 `ec2.Instance` construct ALWAYS emits
+        // AvailabilityZone (from the selected subnet), so leaving it
+        // unhandled routed every ordinary CDK-authored instance onto the
+        // Cloud Control path via the #614 silent-drop rule -- paying CC's
+        // async polling for a resource this provider handles directly, and
+        // leaving the whole SDK create/update/readback surface (including
+        // the #609 backfill) dead code for L2 users. Maps to
+        // RunInstances' `Placement.AvailabilityZone`.
+        'AvailabilityZone',
         // Security-focused backfill (#609): wired into create() + update() +
         // readCurrentState(). All five are mutable in-place (no replacement).
         'DisableApiTermination',
@@ -2630,6 +2639,13 @@ export class EC2Provider implements ResourceProvider {
           Monitoring: this.buildRunInstancesMonitoring(properties),
           MetadataOptions: this.buildMetadataOptions(properties),
           CreditSpecification: this.buildCreditSpecification(properties),
+          // Issue #1276. `SubnetId` already pins the AZ, so this is usually
+          // redundant -- but the CFn property exists, the CDK L2 construct
+          // always emits it, and leaving it unhandled is what routed L2
+          // instances onto the Cloud Control path. When both are present and
+          // DISAGREE, AWS rejects the RunInstances call; that is the correct
+          // outcome to surface rather than to paper over by dropping one.
+          Placement: this.buildPlacement(properties),
         })
       );
 
@@ -3332,6 +3348,28 @@ export class EC2Provider implements ResourceProvider {
     // Omit the whole block if the template set MetadataOptions: {} with no
     // recognized keys — there is nothing to send to AWS.
     return Object.keys(result).length > 0 ? result : undefined;
+  }
+
+  /**
+   * Map the CFn `AWS::EC2::Instance.AvailabilityZone` property onto the
+   * RunInstances `Placement.AvailabilityZone` input (issue #1276).
+   *
+   * Returns undefined when the property is absent so the input key is
+   * omitted entirely -- an empty `Placement: {}` would be a pointless
+   * shape change on every instance that does not set the property.
+   *
+   * Only AvailabilityZone is mapped. The other `Placement` members
+   * (Tenancy, GroupName, HostId, Affinity, PartitionNumber) are separate
+   * top-level CFn properties on this type and are deliberately not handled
+   * here; adding one means adding it to `handledProperties` too, or the
+   * #614 routing rule will keep sending the resource to Cloud Control.
+   */
+  private buildPlacement(
+    properties: Record<string, unknown>
+  ): { AvailabilityZone: string } | undefined {
+    const az = properties['AvailabilityZone'];
+    if (typeof az !== 'string' || az === '') return undefined;
+    return { AvailabilityZone: az };
   }
 
   /**
@@ -4472,6 +4510,15 @@ export class EC2Provider implements ResourceProvider {
     // SourceDestCheck: boolean toggle, returned directly by DescribeInstances.
     if (instance.SourceDestCheck !== undefined) {
       result['SourceDestCheck'] = instance.SourceDestCheck;
+    }
+
+    // AvailabilityZone (#1276): the CFn property maps to RunInstances'
+    // `Placement.AvailabilityZone`, so the reverse map has to come back out
+    // of `Placement` too. Without it, every drift run on an L2-authored
+    // instance would report a phantom diff (state has the property, the
+    // AWS-current snapshot would not).
+    if (instance.Placement?.AvailabilityZone !== undefined) {
+      result['AvailabilityZone'] = instance.Placement.AvailabilityZone;
     }
 
     // Monitoring: AWS returns {State: 'enabled' | 'disabled' | 'pending' | 'disabling'}.
