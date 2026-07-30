@@ -1,5 +1,8 @@
 # Dependencies
-node_modules/
+# No trailing slash: worktrees symlink node_modules to the main tree, and
+# `node_modules/` matches only directories -- a `git add -A` in such a
+# worktree committed the SYMLINK and broke CI's pnpm install (2026-07-30).
+node_modules
 
 # Build output
 dist/

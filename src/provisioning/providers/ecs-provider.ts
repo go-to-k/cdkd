@@ -865,9 +865,12 @@ export class ECSProvider implements ResourceProvider {
         }
         // The SDK waiter's bare "Waiter has timed out" explains nothing.
         // Carry the diagnosis path in the thrown message; the wrapping
-        // ProvisioningError in the outer catch preserves it verbatim.
+        // ProvisioningError in the outer catch preserves it verbatim, and
+        // the cause chain keeps the original waiter error reachable for
+        // `cdkd events` metadata extraction.
         throw new Error(
-          `ECS service ${logicalId} did not reach steady state under --full-wait: ${waitError instanceof Error ? waitError.message : String(waitError)}. Inspect why its tasks stopped (stopped tasks stay visible for about an hour): aws ecs list-tasks${clusterArg} --desired-status STOPPED, then aws ecs describe-tasks${clusterArg} --tasks <task-arn> --query 'tasks[].[stoppedReason,containers[].reason]'`
+          `ECS service ${logicalId} did not reach steady state under --full-wait: ${waitError instanceof Error ? waitError.message : String(waitError)}. Inspect why its tasks stopped (stopped tasks stay visible for about an hour): aws ecs list-tasks${clusterArg} --desired-status STOPPED, then aws ecs describe-tasks${clusterArg} --tasks <task-arn> --query 'tasks[].[stoppedReason,containers[].reason]'`,
+          { cause: waitError }
         );
       }
 

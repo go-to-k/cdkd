@@ -237,6 +237,19 @@ describe('ECS Service wait semantics (issue #1275)', () => {
       expect(warning).toContain('aws ecs list-tasks --cluster my-cluster --desired-status STOPPED');
     });
 
+    it('renders cluster-free diagnosis commands when the template has no Cluster', async () => {
+      const { Cluster: _cluster, ...noClusterProps } = CREATE_PROPS;
+      mockCreateOk();
+      waitUntilServicesStableMock.mockRejectedValueOnce(new Error('services stable timed out'));
+      mockSend.mockResolvedValueOnce({}); // the cleanup DeleteService
+
+      // Without a Cluster the commands must degrade to the default cluster --
+      // no dangling `--cluster ` fragment that would break a copy-paste.
+      await expect(
+        new ECSProvider().create('MySvc', 'AWS::ECS::Service', noClusterProps)
+      ).rejects.toThrow(/aws ecs list-tasks --desired-status STOPPED/);
+    });
+
     it('warns with a manual-deletion pointer when the cleanup itself fails', async () => {
       mockCreateOk();
       waitUntilServicesStableMock.mockRejectedValueOnce(new Error('services stable timed out'));
