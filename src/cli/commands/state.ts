@@ -1322,7 +1322,8 @@ async function stateDestroyCommand(
       // from "command crashed" via PartialFailureError → exit code 2.
       throw new PartialFailureError(
         `Destroy completed with ${totalErrors} resource error(s). State preserved — ` +
-          `inspect 'cdkd state show <stack>' and re-run 'cdkd state destroy' to retry.`
+          `inspect 'cdkd state show <stack>' and re-run 'cdkd state destroy' to retry. ` +
+          `If the same resource keeps failing, 'cdkd state orphan <stack>' removes the state record without deleting AWS resources.`
       );
     }
     if (interrupted) {

@@ -1006,7 +1006,8 @@ export async function runDestroyForStack(
     } else {
       logger.warn(
         `\n${yellow('⚠')} ${bold(`Stack ${stackName} partially destroyed`)} (${green(result.deletedCount)} deleted${retainedSuffix}, ${red(result.errorCount)} errors). ` +
-          `State preserved — re-run 'cdkd destroy' / 'cdkd state destroy' to clean up.`
+          `State preserved — re-run 'cdkd destroy' / 'cdkd state destroy' to clean up. ` +
+          `If the same resource keeps failing, 'cdkd state orphan ${stackName}' is the last resort: it removes the state record without deleting AWS resources.`
       );
     }
   } finally {
