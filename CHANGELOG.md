@@ -1,3 +1,10 @@
+# [0.271.0](https://github.com/go-to-k/cdkd/compare/v0.270.0...v0.271.0) (2026-07-30)
+
+
+### Features
+
+* **cloudfront:** make the Distribution default completion fire-and-forget, --full-wait opts into Deployed ([#1311](https://github.com/go-to-k/cdkd/issues/1311)) ([2f15180](https://github.com/go-to-k/cdkd/commit/2f15180b262fddf54fbad8c59ba5bb9ac3433901))
+
 # [0.270.0](https://github.com/go-to-k/cdkd/compare/v0.269.3...v0.270.0) (2026-07-30)
 
 
