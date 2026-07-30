@@ -1,3 +1,10 @@
+# [0.269.0](https://github.com/go-to-k/cdkd/compare/v0.268.5...v0.269.0) (2026-07-30)
+
+
+### Features
+
+* **ecs:** lift the --full-wait steady-state cap with --resource-timeout ([#1298](https://github.com/go-to-k/cdkd/issues/1298)) ([4fd4c88](https://github.com/go-to-k/cdkd/commit/4fd4c881a33f8487ec22567660b3c0e9274aec4b))
+
 ## [0.268.5](https://github.com/go-to-k/cdkd/compare/v0.268.4...v0.268.5) (2026-07-30)
 
 
