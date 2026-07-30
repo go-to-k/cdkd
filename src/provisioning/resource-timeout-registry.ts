@@ -1,10 +1,12 @@
 /**
  * Process-wide registry of the user's resolved `--resource-timeout` input.
  *
- * Providers with an INNER waiter cap (today only `ECSProvider.settleService`'s
- * `--full-wait` steady-state waiter, issue #1280) consult this so the inner cap
- * can never undercut the OUTER per-resource deadline the same flag already
- * lifts in the deploy engine / destroy runner. This is the SDK-provider
+ * Providers with an INNER waiter cap (`ECSProvider.settleService`'s
+ * `--full-wait` steady-state waiter, issue #1280, and
+ * `CloudFrontDistributionProvider.waitForDistributionStable`'s Deployed-wait
+ * budget, issue #1282) consult this so the inner cap can never undercut the
+ * OUTER per-resource deadline the same flag already lifts in the deploy
+ * engine / destroy runner. This is the SDK-provider
  * analogue of `slow-cc-operation-timeouts.ts`, which closes the identical
  * inner-undercuts-outer gap for Cloud Control types — but sourced from the
  * user's CLI input rather than a hardcoded per-type floor, because the ECS

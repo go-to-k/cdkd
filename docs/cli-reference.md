@@ -29,21 +29,43 @@ default takes the definition that suits dev/test iteration, and
 `--full-wait` opts into the CloudFormation one. This is a rule for
 choosing completion definitions, not a promise to mirror any one engine.
 
-One documented exception: `AWS::CertificateManager::Certificate` is a
-"CloudFormation waits, Terraform does not" case where cdkd's default
-nonetheless waits. An un-issued certificate makes a downstream CloudFront
-/ ALB create fail outright rather than merely arrive early, so the fast
-side would trade a wait for a broken deploy. Terraform users express the
-same wait as a separate `aws_acm_certificate_validation` resource, which
-cdkd has no equivalent of.
+Even where both engines wait, cdkd's default may take the fast side —
+but only when ALL of these hold (issue
+[#1282](https://github.com/go-to-k/cdkd/issues/1282)):
+
+1. **No in-deploy consumer**: nothing the same deploy creates or resolves
+   (`Fn::GetAtt`, downstream Create calls, post-create verification)
+   needs the waited-for state.
+2. **No failure signal**: the wait cannot surface an error — a timeout
+   means slow, not broken — so waiting buys certainty of *when*, never
+   *whether*.
+3. **Measurable in both modes**: the comparison tool offers both
+   completion definitions, so the benchmark can report two like-for-like
+   rows instead of redefining "done" to win one.
+
+`AWS::CloudFront::Distribution` is currently the only type admitted
+under this clause. The same test is why a blanket "`--no-wait` by
+default" stays rejected: ACM fails (1) outright (an un-issued cert makes
+a same-deploy CloudFront / ALB create fail), RDS fails (1) (`Endpoint`
+attributes are not final until `available`), and EC2 fails (1) (the
+instance-profile attach verification needs a `running` instance).
+
+One documented exception in the other direction:
+`AWS::CertificateManager::Certificate` is a "CloudFormation waits,
+Terraform does not" case where cdkd's default nonetheless waits. An
+un-issued certificate makes a downstream CloudFront / ALB create fail
+outright rather than merely arrive early, so the fast side would trade a
+wait for a broken deploy. Terraform users express the same wait as a
+separate `aws_acm_certificate_validation` resource, which cdkd has no
+equivalent of.
 
 Three wait modes, least to most waiting:
 
 | Mode | Meaning |
 | --- | --- |
 | `--no-wait` | Skip the stabilization waits cdkd performs by default |
-| (default) | Wait where CloudFormation and Terraform agree |
-| `--full-wait` | Also wait where only CloudFormation waits |
+| (default) | Wait where the wait is load-bearing (in-deploy consumers / failure detection) |
+| `--full-wait` | Also wait everywhere CloudFormation waits |
 
 The two flags are opposite ends of one axis, so **`--no-wait` and
 `--full-wait` cannot be combined** (cdkd rejects the pair before any AWS
@@ -71,7 +93,7 @@ functional once AWS finishes the async deployment.
 
 | Resource type | `--no-wait` | Default | `--full-wait` | CloudFormation | Terraform |
 | --- | --- | --- | --- | --- | --- |
-| `AWS::CloudFront::Distribution` | Return after `CreateDistribution` | Wait for `Deployed` (3–15 min) | same as default | Waits | Waits (`wait_for_deployment`, default `true`) |
+| `AWS::CloudFront::Distribution` | same as default | Return after `CreateDistribution` / `UpdateDistribution` (issue #1282; propagation finishes in the background). Only the SDK provider takes the fast side — a Cloud-Control-routed distribution still polls to the CFn handler's terminal state | Wait for `Deployed` (3–15 min) | Waits | Waits (`wait_for_deployment`, default `true`) |
 | `AWS::RDS::DBCluster` / `AWS::RDS::DBInstance` | Return after Create call | Wait for `available` (5–10 min) | same as default | Waits | Waits |
 | `AWS::DocDB::DBCluster` / `AWS::DocDB::DBInstance` | Return after Create call | Wait for `available` (5–10 min) | same as default | Waits | Waits |
 | `AWS::Neptune::DBCluster` / `AWS::Neptune::DBInstance` | Return after Create call | Wait for `available` (5–10 min) | same as default | Waits | Waits |
@@ -119,9 +141,11 @@ unconditionally waits for `deleted` state to keep teardown ordered
 (a still-`deleting` gateway blocks `DeleteSubnet` /
 `DeleteInternetGateway` / `DeleteVpc` with `DependencyViolation`
 until its ENI / EIP / route associations release), and the other
-`--no-wait`-eligible resources (CloudFront / RDS / ElastiCache) are
-leaves on the destroy DAG so their providers don't wait there to
-begin with.
+`--no-wait`-eligible resources (RDS / ElastiCache) are leaves on the
+destroy DAG so their providers don't wait there to begin with.
+(CloudFront's destroy-side disable-then-wait is an API requirement —
+a distribution must be `Deployed` and disabled before
+`DeleteDistribution` succeeds — and is unaffected by any wait flag.)
 
 `--no-wait` only skips *convenience* waits for resources that don't
 block siblings within the same deploy. There is one exception that
@@ -142,13 +166,17 @@ block the deploy DAG on the 5–10 min ENI attach window.
 cdkd deploy --full-wait
 ```
 
-`AWS::ECS::Service` is the only type this currently affects. cdkd's
-default returns once `CreateService` / `UpdateService` is accepted, which
-matches Terraform's default and diverges from CloudFormation on purpose:
-nothing downstream needs the service to be steady (`Fn::GetAtt` yields
-`Name` / `ServiceArn`, both valid immediately), and CloudFormation's
-steady-state wait is what makes a crash-looping image hang a stack for
-many minutes.
+Two types are affected: `AWS::ECS::Service` (steady state) and
+`AWS::CloudFront::Distribution` (`Deployed`, issue #1282).
+
+### `AWS::ECS::Service` — steady state
+
+cdkd's default returns once `CreateService` / `UpdateService` is
+accepted, which matches Terraform's default and diverges from
+CloudFormation on purpose: nothing downstream needs the service to be
+steady (`Fn::GetAtt` yields `Name` / `ServiceArn`, both valid
+immediately), and CloudFormation's steady-state wait is what makes a
+crash-looping image hang a stack for many minutes.
 
 Without `--full-wait`, cdkd prints the exact command to wait manually:
 
@@ -179,6 +207,47 @@ deletion is announced with a warning, and the failure message carries the
 `aws ecs list-tasks --desired-status STOPPED` / `describe-tasks` commands
 to inspect why the tasks stopped — stopped tasks outlive the service
 deletion by about an hour, so the evidence is still there.
+
+### `AWS::CloudFront::Distribution` — `Deployed`
+
+cdkd's default returns once `CreateDistribution` / `UpdateDistribution`
+is accepted (issue #1282). Both CloudFormation and Terraform
+(`wait_for_deployment`, default `true`) wait for `Deployed` here, so
+this is the fast-side clause of the wait-semantics rule in action:
+`Fn::GetAtt` (Id / DomainName) is final in the Create/Update response so
+nothing in-deploy consumes `Deployed`, and the wait has no failure
+signal — a distribution deploy cannot fail, so waiting 3–15 minutes
+only buys certainty of *when* the edge propagation finished.
+
+Without `--full-wait`, cdkd prints the exact command to wait manually:
+
+```text
+aws cloudfront wait distribution-deployed --id <distribution-id>
+```
+
+Under `--full-wait`, the wait budget is ~20 minutes, lifted by an
+explicit `--resource-timeout` (per-type or global), e.g.
+`--resource-timeout AWS::CloudFront::Distribution=40m` — the flag only
+raises the budget, never lowers it, and the same value already governs
+the outer per-resource deadline, so the two cannot undercut each other.
+Unlike the ECS steady-state timeout, a CloudFront wait timeout does
+**not** fail the deploy: a distribution that is still `InProgress` at
+the budget is slow, not broken (there is no failure state to detect),
+and failing would hand the automatic rollback a healthy distribution to
+disable-and-delete. cdkd warns with the manual wait command and
+proceeds.
+
+The destroy path is unaffected by all of this: deleting a distribution
+requires disabling it and waiting for `Deployed` first (an API
+requirement), which also means a distribution created fire-and-forget
+and destroyed immediately still tears down cleanly.
+
+A deliberate consequence of this axis: the dev/test-leaning defaults are
+a per-run choice, not a capability limit. A pipeline that wants
+CloudFormation-parity completion semantics — a smoke-test gate, a
+production-leaning promotion step — can bake `--full-wait` into its
+deploy invocation as a standing setting and get the strict "done"
+everywhere CloudFormation waits.
 
 `--full-wait` is **deploy-only**, like `--no-wait`, and cannot be
 combined with it.
@@ -223,6 +292,13 @@ Lambda-ServiceToken case.
 
 Measured −54.6% on `tests/integration/bench-cdk-sample`
 (398.59s with `--no-aggressive-vpc-parallel` → 181.03s default).
+
+Note: the "CF 3 min" leg above is the `Deployed` wait, which since
+issue #1282 applies only under `--full-wait` — on the current default the
+CloudFront leg returns in seconds and the critical path is NAT alone.
+The measured numbers predate #1282 (taken with the then-default
+`Deployed` wait); the relaxation still matters under `--full-wait` and
+for the in-background propagation start time.
 
 **Type-pair allowlist** (only DependsOn edges matching one of these
 pairs are dropped — Ref / GetAtt edges and DependsOn outside the list
@@ -546,9 +622,11 @@ cut off before the outer deadline. An explicit
 
 The flag reaches SDK-provider inner waiters the same way: under
 `--full-wait`, the ECS Service steady-state waiter's 600s cap is lifted
-to `max(600s, resolved --resource-timeout)` (see the `--full-wait`
-section above), so the inner waiter can never abort before the outer
-per-resource deadline the same flag raised.
+to `max(600s, resolved --resource-timeout)` and the CloudFront
+Distribution `Deployed` wait budget to `max(20min, resolved
+--resource-timeout)` (see the `--full-wait` section above), so the inner
+waiters can never abort before the outer per-resource deadline the same
+flag raised.
 
 The error message on timeout names the resource, type, region, elapsed
 time, and operation, and reminds you that long-running resources

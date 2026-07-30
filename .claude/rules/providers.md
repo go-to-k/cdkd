@@ -88,16 +88,23 @@ hand-fed inline `Tags` and so agreed with the bug.
    The same 4-site rule applies to the opposite end of the axis,
    `process.env['CDKD_FULL_WAIT']` (`--full-wait`, issue
    [#1275](https://github.com/go-to-k/cdkd/issues/1275)): a provider that
-   waits ONLY under `--full-wait` belongs in the same wait-semantics table.
-   There is no mechanical backstop for that direction yet — `AWS::ECS::Service`
-   is currently the only such type, so a test would have exactly one subject.
-   Add one when a second type joins.
+   waits ONLY under `--full-wait` belongs in the same wait-semantics table AND
+   in the `--full-wait` section of
+   [docs/cli-reference.md](../../docs/cli-reference.md). Enforced by
+   `tests/unit/provisioning/full-wait-doc-coverage.test.ts` (added when
+   `AWS::CloudFront::Distribution` joined `AWS::ECS::Service` as the second
+   such type, issue [#1282](https://github.com/go-to-k/cdkd/issues/1282)).
 
    Before adding EITHER kind of wait, settle the completion definition per
    [docs/cli-reference.md](../../docs/cli-reference.md)'s wait-semantics rule:
    where CloudFormation and Terraform agree, match them; where they disagree,
    the default takes the dev/test-friendly side and `--full-wait` opts into the
-   CloudFormation one. Record the divergence in the table rather than leaving
-   it implicit in provider code.
+   CloudFormation one. A default may take the fast side even where BOTH
+   engines wait, but only under the 3-condition fast-side clause (issue
+   #1282, recorded in the cli-reference wait-semantics intro): (a) no
+   in-deploy consumer of the waited-for state, (b) no failure signal in the
+   wait, and (c) the comparison tool has both modes so the benchmark can
+   report two like-for-like rows. Record the divergence in the table rather
+   than leaving it implicit in provider code.
 
 See [docs/provider-development.md](../../docs/provider-development.md) for details.

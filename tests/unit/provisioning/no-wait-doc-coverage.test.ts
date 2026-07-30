@@ -43,7 +43,12 @@ describe('--no-wait doc coverage', () => {
   it('finds every CDKD_NO_WAIT-honoring provider (coverage floor)', () => {
     // A parse regression that stops seeing providers must fail loudly, not
     // pass vacuously. As of this test there are 8 such providers (RDS, DocDB,
-    // Neptune, ElastiCache, CloudFront, ACM, EC2/NAT, Lambda MicrovmImage).
+    // Neptune, ElastiCache, ACM, EC2/NAT, ELBv2, Lambda MicrovmImage).
+    // CloudFront left the set with issue #1282: its Deployed wait is now
+    // gated on CDKD_FULL_WAIT (see full-wait-doc-coverage.test.ts). (The
+    // pre-#1282 floor said 8 while enumerating CloudFront and omitting
+    // ELBv2 — the count was accidentally right and the list wrong; both are
+    // now audited.)
     expect(noWaitProviders.length).toBeGreaterThanOrEqual(8);
   });
 

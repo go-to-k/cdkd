@@ -296,8 +296,19 @@ Run integration tests against a real AWS account. These tests deploy actual AWS 
 
     Append the new row, then normalize the whole file (do NOT hand-drop the old row —
     the normalizer collapses to the newest row per test and re-sorts):
+    **Use an ABSOLUTE path into the feature worktree for `LEDGER`.** The
+    session's persistent Bash cwd can silently reset to the MAIN worktree
+    (observed right after a background integ task completes — the cwd-race
+    signature in `main-tree-git-cwd-detector.sh`), and a relative
+    `docs/_generated/...` write then dirties the main tree on `main`, which
+    the `main-tree-dirty-detector` hook flags and you must then repair.
+    Verify with `pwd` immediately before the write, or hardcode
+    `LEDGER=/abs/path/to/.claude/worktrees/<branch>/docs/_generated/integ-last-run.tsv`.
+
     ```bash
-    LEDGER="docs/_generated/integ-last-run.tsv"
+    # ABSOLUTE path into the feature worktree (see the cwd-race note above);
+    # substitute your worktree path, do not rely on the session cwd.
+    LEDGER="/path/to/repo/.claude/worktrees/<branch>/docs/_generated/integ-last-run.tsv"
     # Bootstrap the header if the file is somehow absent — `>>` alone would create it
     # headerless, and the normalizer preserves whatever header it finds (none), silently
     # dropping the invariant + do-not-hand-edit notice.
@@ -326,6 +337,14 @@ Run integration tests against a real AWS account. These tests deploy actual AWS 
 
 ## Important
 
+- **Run `/review-pr` (and apply its fixes) BEFORE this skill when both are
+  planned for the same PR.** The `integ-destroy` / `integ-broad` /
+  `integ-local` markers are digest-bound to their src scopes, so any
+  post-integ review fix that touches a provider or deploy/destroy file
+  stales the marker and forces a full re-run against real AWS. Review
+  polish first, integ last (memory rule
+  `feedback_apply_review_polish_before_integ` — recurred 2026-07-31 on the
+  #1282 PR, costing a second CloudFront deploy + destroy cycle).
 - Always use `--region us-east-1` for integration tests
 - Always destroy after deploy to avoid leftover resources
 - If deploy fails, still attempt destroy to clean up partial state
