@@ -5360,6 +5360,7 @@
     "AWS::Cognito::UserPoolGroup",
     "AWS::Cognito::UserPoolUser",
     "AWS::Cognito::UserPoolUserToGroupAttachment",
+    "AWS::DSQL::Cluster",
     "AWS::EC2::SecurityGroupEgress",
     "AWS::ELBv2::LoadBalancer",
     "AWS::ElastiCache::ReplicationGroup",
