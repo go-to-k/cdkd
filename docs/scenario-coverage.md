@@ -4,7 +4,7 @@
 
 Run `vp run scenario-coverage` to regenerate.
 
-**79 / 79 canonical scenarios** have at least one integ fixture exercising them. **170 / 252 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
+**79 / 79 canonical scenarios** have at least one integ fixture exercising them. **170 / 253 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
 
 ## How this is computed
 
@@ -110,7 +110,7 @@ _None._ Every canonical scenario has at least one integ fixture tagged with it.
 | `vpc-lambda-eni-release` | Lambda hyperplane ENI cleanup after DeleteFunction (5-30 min eventually consistent). | [`bench-cdk-sample`](../tests/integration/bench-cdk-sample/)<br>[`destroy-interrupt`](../tests/integration/destroy-interrupt/)<br>[`lambda`](../tests/integration/lambda/)<br>[`vpc-lambda`](../tests/integration/vpc-lambda/) |
 | `wide-dag-throttle-retry` | Wide (~100-resource: 80 SSM Parameters + 10 IAM Roles + 10 SNS Topics, 10-deep SSM Fn::Sub chain) single-stack burst deployed under a HIGH `--concurrency` to stress the concurrency limiter + event-driven DAG executor + throttle/retry classifier: a `TooManyRequests` / `Rate exceeded` / HTTP 429 during the burst must be RETRIED (deploy still succeeds) not fatal, the chained subset proves strict DAG ordering, and the destroy burst absorbs ~100 deletes with 0 orphans. | [`throttle-wide-dag`](../tests/integration/throttle-wide-dag/) |
 
-## Un-annotated fixtures (82)
+## Un-annotated fixtures (83)
 
 These integ fixtures have no `.scenarios.json` sidecar. They may or may not exercise a canonical scenario — contributor review needed. To opt out (per-service smoke tests with no canonical pattern), add a sidecar with `{ "scenarios": [] }`.
 
@@ -137,6 +137,7 @@ These integ fixtures have no `.scenarios.json` sidecar. They may or may not exer
 - [`dynamodb-stream-filter`](../tests/integration/dynamodb-stream-filter/)
 - [`dynamodb-tableclass-switch`](../tests/integration/dynamodb-tableclass-switch/)
 - [`dynamodb-ttl-attr-change`](../tests/integration/dynamodb-ttl-attr-change/)
+- [`ec2-instance-fanout`](../tests/integration/ec2-instance-fanout/)
 - [`ecr-scanning`](../tests/integration/ecr-scanning/)
 - [`efs-immutable-replacement`](../tests/integration/efs-immutable-replacement/)
 - [`eventbridge-api-destination`](../tests/integration/eventbridge-api-destination/)

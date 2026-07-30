@@ -967,6 +967,7 @@
       "integs": [
         "deletion-ordering-complex",
         "ec2-instance",
+        "ec2-instance-fanout",
         "propagation-races-2",
         "remove-protection"
       ],
@@ -975,6 +976,9 @@
           "l2"
         ],
         "ec2-instance": [
+          "l1"
+        ],
+        "ec2-instance-fanout": [
           "l1"
         ],
         "propagation-races-2": [
@@ -1000,6 +1004,7 @@
         "drift-revert-arrays",
         "drift-revert-vpc",
         "ec2-instance",
+        "ec2-instance-fanout",
         "ec2-vpc",
         "ecs-fargate",
         "ecs-service-update-props",
@@ -1060,6 +1065,9 @@
           "l2"
         ],
         "ec2-instance": [
+          "l2"
+        ],
+        "ec2-instance-fanout": [
           "l2"
         ],
         "ec2-vpc": [
@@ -1160,6 +1168,7 @@
         "drift-revert-arrays",
         "drift-revert-vpc",
         "ec2-instance",
+        "ec2-instance-fanout",
         "ec2-vpc",
         "ecs-fargate",
         "ecs-service-update-props",
@@ -1220,6 +1229,9 @@
           "l2"
         ],
         "ec2-instance": [
+          "l2"
+        ],
+        "ec2-instance-fanout": [
           "l2"
         ],
         "ec2-vpc": [
@@ -1342,6 +1354,7 @@
         "drift-revert-arrays",
         "drift-revert-vpc",
         "ec2-instance",
+        "ec2-instance-fanout",
         "ec2-vpc",
         "ecs-fargate",
         "ecs-service-update-props",
@@ -1402,6 +1415,9 @@
           "l2"
         ],
         "ec2-instance": [
+          "l2"
+        ],
+        "ec2-instance-fanout": [
           "l2"
         ],
         "ec2-vpc": [
@@ -1502,6 +1518,7 @@
         "drift-revert-arrays",
         "drift-revert-vpc",
         "ec2-instance",
+        "ec2-instance-fanout",
         "ec2-vpc",
         "ecs-fargate",
         "ecs-service-update-props",
@@ -1562,6 +1579,9 @@
           "l2"
         ],
         "ec2-instance": [
+          "l2"
+        ],
+        "ec2-instance-fanout": [
           "l2"
         ],
         "ec2-vpc": [
@@ -1662,6 +1682,7 @@
         "drift-revert-arrays",
         "drift-revert-vpc",
         "ec2-instance",
+        "ec2-instance-fanout",
         "ec2-vpc",
         "efs-standalone",
         "elasticache-replicationgroup-getatt",
@@ -1714,6 +1735,9 @@
           "l2"
         ],
         "ec2-instance": [
+          "l2"
+        ],
+        "ec2-instance-fanout": [
           "l2"
         ],
         "ec2-vpc": [
@@ -1809,6 +1833,7 @@
         "drift-revert-arrays",
         "drift-revert-vpc",
         "ec2-instance",
+        "ec2-instance-fanout",
         "ec2-vpc",
         "ecs-fargate",
         "ecs-service-update-props",
@@ -1869,6 +1894,9 @@
           "l2"
         ],
         "ec2-instance": [
+          "l2"
+        ],
+        "ec2-instance-fanout": [
           "l2"
         ],
         "ec2-vpc": [
@@ -1980,6 +2008,7 @@
         "drift-revert-arrays",
         "drift-revert-vpc",
         "ec2-instance",
+        "ec2-instance-fanout",
         "ec2-vpc",
         "ecs-fargate",
         "ecs-service-update-props",
@@ -2040,6 +2069,9 @@
           "l2"
         ],
         "ec2-instance": [
+          "l2"
+        ],
+        "ec2-instance-fanout": [
           "l2"
         ],
         "ec2-vpc": [
@@ -2140,6 +2172,7 @@
         "drift-revert-arrays",
         "drift-revert-vpc",
         "ec2-instance",
+        "ec2-instance-fanout",
         "ec2-vpc",
         "ecs-fargate",
         "ecs-service-update-props",
@@ -2201,6 +2234,9 @@
           "l2"
         ],
         "ec2-instance": [
+          "l2"
+        ],
+        "ec2-instance-fanout": [
           "l2"
         ],
         "ec2-vpc": [
@@ -2311,6 +2347,7 @@
         "drift-revert-arrays",
         "drift-revert-vpc",
         "ec2-instance",
+        "ec2-instance-fanout",
         "ec2-vpc",
         "ecs-fargate",
         "ecs-service-update-props",
@@ -2371,6 +2408,9 @@
           "l2"
         ],
         "ec2-instance": [
+          "l2"
+        ],
+        "ec2-instance-fanout": [
           "l2"
         ],
         "ec2-vpc": [
@@ -3020,12 +3060,16 @@
     {
       "resourceType": "AWS::IAM::InstanceProfile",
       "integs": [
+        "ec2-instance-fanout",
         "emr-cluster",
         "emr-instance-configs",
         "propagation-races-2",
         "remove-protection"
       ],
       "signals": {
+        "ec2-instance-fanout": [
+          "l1"
+        ],
         "emr-cluster": [
           "l1",
           "literal"
@@ -3100,6 +3144,7 @@
         "diff-intrinsic-target-change",
         "dlm-lifecycle-policy",
         "drift-revert",
+        "ec2-instance-fanout",
         "emr-cluster",
         "emr-instance-configs",
         "eventbridge",
@@ -3185,6 +3230,9 @@
           "literal"
         ],
         "drift-revert": [
+          "l2"
+        ],
+        "ec2-instance-fanout": [
           "l2"
         ],
         "emr-cluster": [
