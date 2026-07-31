@@ -583,6 +583,43 @@ env-prefixed `CDKD_TEST_UPDATE=true ...` deploy, then every
 `node "${LOCAL_DIST}" ...` call site — 135 of 195 fixtures). Current coverage:
 195 fixtures, ~830 invocations, ~2,160 flags, 25 command paths.
 
+### Fixture convention: no Lambda published-version literals
+
+Lambda version counters are monotonic per function name (and per layer name)
+and never reset — not even across a delete + re-create. A fixture with a fixed
+function name that probes `"${FN}:1"` or asserts an alias's `FunctionVersion`
+equals `"2"` therefore passes exactly once (the first run ever in the account)
+and fails every re-run with `ResourceNotFoundException` while the deploy itself
+is clean. Three fixtures shipped this trap before it was made mechanical
+(issue #1324).
+
+The correct shape reads the published version from the live alias and asserts
+the rotation relatively:
+
+```bash
+V1="$(aws lambda get-alias --function-name "${FN}" --name live \
+  --query 'FunctionVersion' --output text)"
+case "${V1}" in ''|*[!0-9]*) echo "FAIL: non-numeric version" >&2; exit 1 ;; esac
+# ... update deploy ...
+EXPECTED=$((V1 + 1))
+V2="$(aws lambda get-alias --function-name "${FN}" --name live \
+  --query 'FunctionVersion' --output text)"
+[ "${V2}" = "${EXPECTED}" ] || { echo "FAIL: expected ${EXPECTED}" >&2; exit 1; }
+```
+
+`tests/unit/scripts/integ-verify-version-literals.test.ts` enforces this across
+the fixture tree (classifier: `scripts/check-integ-version-literals.ts`). It
+flags digits-literal qualifiers on `aws lambda` commands (`--function-name
+"${FN}:1"`, ARN `...:function:fn:3`, `--qualifier 5`), digits-literal
+`--version-number` args, and integer-literal comparisons of variables captured
+from a version-ish `--query` (`FunctionVersion`, `.Version`). Alias qualifiers
+(`:live`, `:$LATEST`), variable qualifiers, relative compares, count queries
+(`length(...)`), and non-Lambda commands stay legal. For a genuinely fixed
+version (e.g. a public cross-account layer ARN pinned by its owner), append
+`# allow-version-literal: <reason>` to the line. The check carries per-shape
+coverage floors and was verified to fail against real injected regressions
+before landing, per the checker rules above.
+
 ## 3. Deploy Using cdkd
 
 ```bash
