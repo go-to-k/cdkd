@@ -245,7 +245,7 @@ sns-inline-subscription	2026-07-27T11:04:52Z	PASS	53	verify.sh	issue #1267 SNS t
 sns-pending-subscription	2026-07-30T12:40:16Z	PASS	22	verify.sh	issue #1301 re-run after review fixes, clean
 sns-sqs-event	2026-07-26T17:01:09Z	PASS	78	verify.sh	#1160 sqs SSE removal phase 2 verified; destroy 20/0 errors, 0 orphans
 sns-subscription-filter	2026-07-21T18:09:46Z	PASS	46	verify.sh	rc ok, orph clean
-sqs-cloudwatch	2026-07-26T18:04:53Z	PASS	56	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
+sqs-cloudwatch	2026-07-31T07:00:20Z	PASS	75	standard	removalPolicy DESTROY fix verified: stream deleted on destroy, 0 orphans
 sqs-esm-max-concurrency	2026-07-21T14:49:55Z	PASS	85	verify.sh	rc ok, orph clean
 state-destroy	2026-07-26T18:04:53Z	PASS	25	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
 state-info-command	2026-07-19T20:01:06Z	PASS	21	standard	rc ok, state info #1055 GetBucketLocation exercised, orph clean
