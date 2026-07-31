@@ -41,9 +41,14 @@ export const STATEFUL_CONSTRUCTS: Record<string, readonly string[]> = {
   'aws-rds': ['DatabaseInstance', 'DatabaseCluster'],
   'aws-efs': ['FileSystem'],
   'aws-opensearchservice': ['Domain'],
+  'aws-ecr': ['Repository'],
+  'aws-cognito': ['UserPool'],
+  'aws-backup': ['BackupVault'],
 };
 
 export const ALLOW_COMMENT = 'allow-default-removal-policy:';
+/** The comment must carry a non-empty rationale after the marker. */
+const ALLOW_COMMENT_RE = /allow-default-removal-policy:\s*\S/;
 
 export interface ConstructHit {
   /** e.g. `aws-kinesis.Stream` */
@@ -211,24 +216,48 @@ export function scanFixtureSource(fileName: string, source: string): ScanStats {
     return null;
   };
 
-  const callsApplyRemovalPolicy = (target: string): boolean => {
-    // Escape regex metacharacters that can appear in a member LHS (`this.x`).
-    const escaped = target.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    return new RegExp(`(?:^|[^\\w.])${escaped}\\.applyRemovalPolicy\\s*\\(`).test(source);
+  // AST-collected `<lhs>.applyRemovalPolicy(...)` call targets. Resolving via
+  // the AST (rather than a raw-source regex) means a commented-out or
+  // string-embedded call can never credit compliance.
+  const applyTargets = new Set<string>();
+  const collectApplyCalls = (node: ts.Node): void => {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      node.expression.name.text === 'applyRemovalPolicy'
+    ) {
+      applyTargets.add(node.expression.expression.getText(sf));
+    }
+    ts.forEachChild(node, collectApplyCalls);
   };
+  collectApplyCalls(sf);
+
+  const callsApplyRemovalPolicy = (target: string): boolean => applyTargets.has(target);
 
   const hasAllowComment = (node: ts.NewExpression): boolean => {
-    // Leading comments attach to the enclosing STATEMENT, not the new-expr.
+    // Leading comments attach to the enclosing STATEMENT (or class-property
+    // declaration), not the new-expr. Stop at a class body too so a comment
+    // above the whole class can never credit every initializer inside it.
     let stmt: ts.Node = node;
-    while (stmt.parent && !ts.isSourceFile(stmt.parent) && !ts.isBlock(stmt.parent)) {
+    while (
+      stmt.parent &&
+      !ts.isSourceFile(stmt.parent) &&
+      !ts.isBlock(stmt.parent) &&
+      !ts.isClassLike(stmt.parent)
+    ) {
       stmt = stmt.parent;
     }
     const ranges = ts.getLeadingCommentRanges(source, stmt.getFullStart()) ?? [];
-    if (ranges.some((r) => source.slice(r.pos, r.end).includes(ALLOW_COMMENT))) return true;
-    // Same-line trailing comment.
-    const lineEnd = source.indexOf('\n', node.getStart(sf));
-    const lineText = source.slice(node.getStart(sf), lineEnd === -1 ? undefined : lineEnd);
-    return lineText.includes(ALLOW_COMMENT);
+    if (ranges.some((r) => ALLOW_COMMENT_RE.test(source.slice(r.pos, r.end)))) return true;
+    // Trailing comment on the first or last line of the (possibly multi-line)
+    // instantiation, e.g. `}); // allow-default-removal-policy: ...`.
+    for (const pos of [node.getStart(sf), node.getEnd()]) {
+      const lineStart = source.lastIndexOf('\n', pos) + 1;
+      const lineEnd = source.indexOf('\n', pos);
+      const lineText = source.slice(lineStart, lineEnd === -1 ? undefined : lineEnd);
+      if (ALLOW_COMMENT_RE.test(lineText)) return true;
+    }
+    return false;
   };
 
   // Walk ------------------------------------------------------------------

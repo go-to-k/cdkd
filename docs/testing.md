@@ -624,7 +624,8 @@ before landing, per the checker rules above.
 
 Stateful CDK L2 constructs — `kinesis.Stream`, `dynamodb.Table` / `TableV2`,
 `s3.Bucket`, `logs.LogGroup`, `kms.Key`, `rds.DatabaseInstance` /
-`DatabaseCluster`, `efs.FileSystem`, `opensearchservice.Domain` — default to
+`DatabaseCluster`, `efs.FileSystem`, `opensearchservice.Domain`,
+`ecr.Repository`, `cognito.UserPool`, `backup.BackupVault` — default to
 `RemovalPolicy.RETAIN`, which synthesizes `DeletionPolicy: Retain`. Both
 CloudFormation and cdkd honor it, so a fixture that omits the policy leaks the
 resource on **every** deploy/destroy cycle while the destroy still reports
@@ -653,7 +654,7 @@ a spread (`{ ...base }`) does **not** count — restate the policy visibly. L1
 the fixture tree (classifier: `scripts/check-fixture-removal-policy.ts`), with
 coverage floors per constructor-reference shape and per construct kind so a
 parser regression fails loudly rather than passing vacuously. Baseline
-2026-07-31: 523 fixture files scanned, 107 stateful-L2 instantiations.
+2026-07-31: 523 fixture files scanned, 120 stateful-L2 instantiations.
 
 ## 3. Deploy Using cdkd
 

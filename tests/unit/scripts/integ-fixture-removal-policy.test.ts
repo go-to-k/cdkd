@@ -120,6 +120,15 @@ describe('scanFixtureSource', () => {
     expect(scanFixtureSource('t.ts', src).hits[0].compliant).toBe(true);
   });
 
+  it('does not credit a commented-out or string-embedded applyRemovalPolicy', () => {
+    // The first cut resolved this with a raw-source regex, so commenting the
+    // call out during a refactor kept the lint green while the leak returned.
+    const commented = `${HEADER}const s = new kinesis.Stream(this, 'S');\n// s.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);\n`;
+    expect(scanFixtureSource('t.ts', commented).hits[0].compliant).toBe(false);
+    const inString = `${HEADER}const s = new kinesis.Stream(this, 'S');\nconst note = 's.applyRemovalPolicy(x)';\n`;
+    expect(scanFixtureSource('t.ts', inString).hits[0].compliant).toBe(false);
+  });
+
   it('does not let one variable name substring-match another', () => {
     // `s.applyRemovalPolicy` must not satisfy `logs` (suffix) or `sx` (prefix).
     const src = `${HEADER}const logs = new kinesis.Stream(this, 'A');\nconst s = new kinesis.Stream(this, 'B');\ns.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);\n`;
@@ -134,6 +143,37 @@ describe('scanFixtureSource', () => {
       compliant: true,
       via: 'allow-comment',
     });
+  });
+
+  it('accepts a trailing allow-comment on the closing line of a multi-line call', () => {
+    const src = `${HEADER}new kinesis.Stream(this, 'S', {\n  shardCount: 1,\n}); // allow-default-removal-policy: exercises the default\n`;
+    expect(scanFixtureSource('t.ts', src).hits[0]).toMatchObject({ via: 'allow-comment' });
+  });
+
+  it('rejects an allow-comment with no rationale', () => {
+    const src = `${HEADER}// allow-default-removal-policy:\nnew kinesis.Stream(this, 'S');\n`;
+    expect(scanFixtureSource('t.ts', src).hits[0].compliant).toBe(false);
+  });
+
+  it('scopes allow-comments to a class-property initializer, not the class', () => {
+    // A comment above the CLASS must not credit every initializer inside it.
+    const aboveClass = `${HEADER}// allow-default-removal-policy: nope\nclass X { s = new kinesis.Stream(this, 'S'); }\n`;
+    expect(scanFixtureSource('t.ts', aboveClass).hits[0].compliant).toBe(false);
+    const aboveProp = `${HEADER}class X {\n  // allow-default-removal-policy: exercises the default\n  s = new kinesis.Stream(this, 'S');\n}\n`;
+    expect(scanFixtureSource('t.ts', aboveProp).hits[0]).toMatchObject({ via: 'allow-comment' });
+  });
+
+  it('recognizes the ECR / Cognito / Backup registry additions', () => {
+    const src =
+      `import * as ecr from 'aws-cdk-lib/aws-ecr';\nimport * as cognito from 'aws-cdk-lib/aws-cognito';\nimport * as backup from 'aws-cdk-lib/aws-backup';\n` +
+      `new ecr.Repository(this, 'R');\nnew cognito.UserPool(this, 'P');\nnew backup.BackupVault(this, 'V');\n`;
+    const { hits } = scanFixtureSource('t.ts', src);
+    expect(hits.map((h) => h.construct)).toEqual([
+      'aws-ecr.Repository',
+      'aws-cognito.UserPool',
+      'aws-backup.BackupVault',
+    ]);
+    expect(hits.every((h) => !h.compliant)).toBe(true);
   });
 
   it('ignores non-stateful constructs and L1 Cfn classes', () => {
@@ -160,7 +200,7 @@ describe('integ fixture stateful-L2 removalPolicy sweep (issue #1326)', () => {
   // Coverage floors: "0 violations" and "parsed nothing" are the same green.
   // Floors are per input SHAPE the parser claims to handle (see
   // .claude/rules/testing.md "A checker must prove it sees its input").
-  // Baseline 2026-07-31: 107 hits -- namespace 104 / named 3 / props-variable 1.
+  // Baseline 2026-07-31: 120 hits -- namespace 117 / named 3 / props-variable 1.
   it('sees each constructor-reference shape the tree actually uses', () => {
     const total = (k: 'viaNamespace' | 'viaNamed' | 'propsViaVariable') =>
       perFile.reduce((n, f) => n + f.stats[k], 0);
@@ -181,11 +221,15 @@ describe('integ fixture stateful-L2 removalPolicy sweep (issue #1326)', () => {
       'aws-logs.LogGroup': 12,
       'aws-kinesis.Stream': 5,
       'aws-kms.Key': 5,
+      'aws-cognito.UserPool': 4,
+      'aws-ecr.Repository': 2,
       'aws-efs.FileSystem': 2,
       'aws-dynamodb.TableV2': 1,
       'aws-opensearchservice.Domain': 1,
       'aws-rds.DatabaseInstance': 1,
       'aws-rds.DatabaseCluster': 1,
+      // aws-backup.BackupVault: registered but unused in the tree today --
+      // covered by the synthetic test above; add a floor when a fixture lands.
     };
     for (const [construct, floor] of Object.entries(floors)) {
       expect(byConstruct.get(construct) ?? 0, construct).toBeGreaterThanOrEqual(floor);

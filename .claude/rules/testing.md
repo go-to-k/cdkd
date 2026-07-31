@@ -147,7 +147,8 @@ by `tests/unit/scripts/integ-verify-version-literals.test.ts` (classifier:
 
 Stateful CDK L2 constructs (`kinesis.Stream`, `dynamodb.Table`/`TableV2`,
 `s3.Bucket`, `logs.LogGroup`, `kms.Key`, `rds.DatabaseInstance`/`Cluster`,
-`efs.FileSystem`, `opensearchservice.Domain`) default to
+`efs.FileSystem`, `opensearchservice.Domain`, `ecr.Repository`,
+`cognito.UserPool`, `backup.BackupVault`) default to
 `RemovalPolicy.RETAIN` -> `DeletionPolicy: Retain` in the template. Both
 CloudFormation and cdkd honor it, so a fixture that omits the policy leaks the
 resource on EVERY deploy/destroy cycle while destroy still reports success.
