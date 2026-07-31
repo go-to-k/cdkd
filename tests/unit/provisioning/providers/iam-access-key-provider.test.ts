@@ -36,6 +36,7 @@ vi.mock('../../../../src/utils/logger.js', () => {
 });
 
 import { IAMAccessKeyProvider } from '../../../../src/provisioning/providers/iam-access-key-provider.js';
+import { findSilentDropProperties } from '../../../../src/provisioning/property-coverage.js';
 import { ProvisioningError } from '../../../../src/utils/error-handler.js';
 
 const TYPE = 'AWS::IAM::AccessKey';
@@ -62,6 +63,20 @@ describe('IAMAccessKeyProvider', () => {
 
   it('opts out of CC API fallback (NON_PROVISIONABLE type)', () => {
     expect(provider.disableCcApiFallback).toBe(true);
+  });
+
+  it('keeps Serial out of the silent-drop set (a drop would pre-flight HARD-REJECT serial users)', () => {
+    // On a NON_PROVISIONABLE type with disableCcApiFallback, every silent-drop
+    // property trips the #614 auto-route viability guard and rejects the
+    // template pre-flight. Serial's whole CFn semantic (change -> new key) is
+    // the registry-schema createOnly replacement classification, so it MUST
+    // stay declared handled. A future "more honest" move of Serial to
+    // unhandledByDesign would regenerate cleanly and stay green everywhere
+    // except here.
+    expect(provider.handledProperties.get(TYPE)?.has('Serial')).toBe(true);
+    expect(
+      findSilentDropProperties(TYPE, { UserName: 'u', Serial: 1, Status: 'Active' })
+    ).toEqual([]);
   });
 
   describe('create', () => {
@@ -126,6 +141,39 @@ describe('IAMAccessKeyProvider', () => {
       await expect(provider.create('CiKey', TYPE, { UserName: 'ci-user' })).rejects.toThrow(
         ProvisioningError
       );
+    });
+
+    it('wraps a create response missing AccessKeyId/SecretAccessKey and cleans up a minted key', async () => {
+      mockSend
+        .mockResolvedValueOnce({ AccessKey: { AccessKeyId: KEY_ID } })
+        .mockResolvedValueOnce({});
+      await expect(provider.create('CiKey', TYPE, { UserName: 'ci-user' })).rejects.toThrow(
+        /no AccessKeyId\/SecretAccessKey/
+      );
+      // A key WAS minted (AccessKeyId present) — it must be deleted so the
+      // retry / next deploy does not hit the 2-keys-per-user quota.
+      const deletes = callsOf(DeleteAccessKeyCommand);
+      expect(deletes).toHaveLength(1);
+      expect(deletes[0]).toMatchObject({ UserName: 'ci-user', AccessKeyId: KEY_ID });
+    });
+
+    it('skips cleanup when the create response carries no AccessKeyId at all', async () => {
+      mockSend.mockResolvedValueOnce({});
+      await expect(provider.create('CiKey', TYPE, { UserName: 'ci-user' })).rejects.toThrow(
+        /no AccessKeyId\/SecretAccessKey/
+      );
+      expect(callsOf(DeleteAccessKeyCommand)).toHaveLength(0);
+    });
+
+    it('propagates the ORIGINAL status-wiring error even when the compensating delete also fails', async () => {
+      mockSend
+        .mockResolvedValueOnce({ AccessKey: { AccessKeyId: KEY_ID, SecretAccessKey: SECRET } })
+        .mockRejectedValueOnce(new Error('status wiring failed'))
+        .mockRejectedValueOnce(new Error('cleanup also failed'));
+
+      await expect(
+        provider.create('CiKey', TYPE, { UserName: 'ci-user', Status: 'Inactive' })
+      ).rejects.toThrow(/status wiring failed/);
     });
   });
 
@@ -198,12 +246,35 @@ describe('IAMAccessKeyProvider', () => {
       });
     });
 
+    it('never sends DeleteAccessKey without an owning UserName (would target the caller identity)', async () => {
+      mockSend.mockResolvedValueOnce({});
+
+      await expect(provider.delete('CiKey', KEY_ID, TYPE)).rejects.toThrow(
+        /cannot resolve the owning user/
+      );
+      expect(callsOf(DeleteAccessKeyCommand)).toHaveLength(0);
+    });
+
     it('treats NoSuchEntity as idempotent success', async () => {
       mockSend.mockRejectedValueOnce(notFound());
 
       await expect(
         provider.delete('CiKey', KEY_ID, TYPE, { UserName: 'ci-user' }, { expectedRegion: 'us-east-1' })
       ).resolves.toBeUndefined();
+    });
+
+    it('rejects NoSuchEntity when the client region does not match the state-recorded region', async () => {
+      mockSend.mockRejectedValueOnce(notFound());
+
+      await expect(
+        provider.delete(
+          'CiKey',
+          KEY_ID,
+          TYPE,
+          { UserName: 'ci-user' },
+          { expectedRegion: 'eu-west-1' }
+        )
+      ).rejects.toThrow(/region/i);
     });
 
     it('wraps other SDK errors in ProvisioningError', async () => {
@@ -277,6 +348,17 @@ describe('IAMAccessKeyProvider', () => {
       mockSend
         .mockResolvedValueOnce({ UserName: 'ci-user' })
         .mockResolvedValueOnce({ AccessKeyMetadata: [], IsTruncated: false });
+      await expect(provider.readCurrentState(KEY_ID, 'CiKey', TYPE)).resolves.toBeUndefined();
+    });
+
+    it('returns undefined when GetAccessKeyLastUsed carries no UserName', async () => {
+      mockSend.mockResolvedValueOnce({});
+      await expect(provider.readCurrentState(KEY_ID, 'CiKey', TYPE)).resolves.toBeUndefined();
+      expect(callsOf(ListAccessKeysCommand)).toHaveLength(0);
+    });
+
+    it('treats NoSuchEntity from ListAccessKeys as gone (user deleted mid-read)', async () => {
+      mockSend.mockResolvedValueOnce({ UserName: 'ci-user' }).mockRejectedValueOnce(notFound());
       await expect(provider.readCurrentState(KEY_ID, 'CiKey', TYPE)).resolves.toBeUndefined();
     });
   });

@@ -110,6 +110,20 @@ export class IAMAccessKeyProvider implements ResourceProvider {
       const accessKeyId = response.AccessKey?.AccessKeyId;
       const secretAccessKey = response.AccessKey?.SecretAccessKey;
       if (!accessKeyId || !secretAccessKey) {
+        // A partial response with an AccessKeyId means a real key WAS minted —
+        // clean it up best-effort before failing, or the retry / next deploy
+        // hits the 2-keys-per-user quota with a key cdkd never recorded.
+        if (accessKeyId) {
+          try {
+            await this.iamClient.send(
+              new DeleteAccessKeyCommand({ UserName: userName, AccessKeyId: accessKeyId })
+            );
+          } catch (cleanupError) {
+            this.logger.warn(
+              `Failed to clean up IAM access key ${logicalId} (${accessKeyId}) minted by a partial CreateAccessKey response: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}. Manual deletion may be required: aws iam delete-access-key --user-name ${userName} --access-key-id ${accessKeyId}`
+            );
+          }
+        }
         throw new Error('CreateAccessKey returned no AccessKeyId/SecretAccessKey');
       }
 
@@ -238,6 +252,11 @@ export class IAMAccessKeyProvider implements ResourceProvider {
           new GetAccessKeyLastUsedCommand({ AccessKeyId: physicalId })
         );
         userName = lastUsed.UserName;
+      }
+      if (!userName) {
+        // Never send DeleteAccessKey without UserName — IAM would resolve it
+        // against the CALLING identity's own keys, not this resource.
+        throw new Error(`cannot resolve the owning user for access key ${physicalId}`);
       }
 
       await this.iamClient.send(

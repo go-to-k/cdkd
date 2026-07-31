@@ -9,7 +9,7 @@ import { GetParameterCommand } from '@aws-sdk/client-ssm';
 import { S3Client } from '@aws-sdk/client-s3';
 import { getLogger } from '../utils/logger.js';
 import { getAwsClients } from '../utils/aws-clients.js';
-import { stringifyValue } from '../utils/stringify.js';
+import { stringifyValue, stringifyAttributeForLog } from '../utils/stringify.js';
 import { assumeRoleForCrossAccountStateRead, parseIamRoleArn } from '../utils/role-arn.js';
 import { resolveCrossAccountStateBucket } from '../utils/aws-region-resolver.js';
 import type { CloudFormationTemplate } from '../types/resource.js';
@@ -1221,7 +1221,7 @@ export class IntrinsicFunctionResolver {
       const flatValue = resource.attributes[attributeName];
       if (flatValue !== undefined) {
         this.logger.debug(
-          `Resolved Fn::GetAtt from attributes: ${logicalId}.${attributeName} -> ${stringifyValue(flatValue)}`
+          `Resolved Fn::GetAtt from attributes: ${logicalId}.${attributeName} -> ${stringifyAttributeForLog(attributeName, flatValue)}`
         );
         return flatValue;
       }
@@ -1251,7 +1251,7 @@ export class IntrinsicFunctionResolver {
         }
         if (cursor !== undefined) {
           this.logger.debug(
-            `Resolved Fn::GetAtt from nested attributes: ${logicalId}.${attributeName} -> ${stringifyValue(cursor)}`
+            `Resolved Fn::GetAtt from nested attributes: ${logicalId}.${attributeName} -> ${stringifyAttributeForLog(attributeName, cursor)}`
           );
           return cursor;
         }
@@ -1261,7 +1261,7 @@ export class IntrinsicFunctionResolver {
     // Construct attribute value based on resource type
     const value = await this.constructAttribute(resource, attributeName, context, logicalId);
     this.logger.debug(
-      `Resolved Fn::GetAtt: ${logicalId}.${attributeName} -> ${stringifyValue(value)}`
+      `Resolved Fn::GetAtt: ${logicalId}.${attributeName} -> ${stringifyAttributeForLog(attributeName, value)}`
     );
     return value;
   }
