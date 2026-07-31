@@ -48,7 +48,7 @@ Best of 3 runs, deploy-phase only, seconds, `us-west-2`. The `VPC + Lambda + SQS
 
 ### vs Terraform: cdkd deploys faster
 
-We also raced cdkd against Terraform: the same logical stacks expressed both as CDK apps and as Terraform HCL, deployed against real AWS. **cdkd is clearly faster in four of six scenarios — 1.23x to 2.31x — and never slower in any.**
+We also raced cdkd against Terraform: the same logical stacks expressed both as CDK apps and as Terraform HCL, deployed against real AWS. **cdkd is clearly faster in four of six scenarios — 1.23x to 2.31x, with fully separated run distributions — and statistically tied in the rest.**
 
 | Scenario | Stack | cdkd | Terraform | CloudFormation | cdkd `--no-wait` |
 | --- | --- | ---: | ---: | ---: | ---: |
@@ -63,7 +63,7 @@ We also raced cdkd against Terraform: the same logical stacks expressed both as 
 Cold end-to-end wall clock including synth / plan, median of 7 runs, seconds, `us-east-1`; every run gets fresh resource names, so every run measures a first deploy. The cloudfront scenario is two rows because since #1282 the tools' DEFAULTS differ in what "done" means there — each row compares tools held to the same completion definition (cdkd's default is the fire-and-forget row; Terraform's default is the `Deployed` row), re-measured 2026-07-31 on cdkd 0.272.0.
 
 - **The lead tracks how much of the wall clock is orchestration.** wide and serverless are almost pure orchestration and run ~2.2x faster; cloudfront is almost pure CDN propagation under the `Deployed` definition and pure API accept under fire-and-forget — a tie in both rows.
-- **A win is claimed only where no cdkd run overlaps any Terraform run** — true of the four bolded rows. webapp's median favours cdkd by 17.6s, but NAT-gateway variance keeps the distributions overlapped at n=7, so no win is claimed there. Both cloudfront rows overlap heavily (fire-and-forget 0.8s apart; `Deployed` 7.6s apart with fully overlapping runs) and are reported as ties.
+- **A win is claimed only where no cdkd run overlaps any Terraform run** — true of the four bolded rows. The ties disclose which way their medians lean, and the rule cuts both ways: webapp leans cdkd (by 17.6s), both cloudfront rows lean Terraform (by 0.8s and 7.6s) — in all three the run distributions overlap fully, so n=7 cannot separate them and neither side gets the row.
 - **This is not cdkd waiting for less.** Held to the same completion definition — ECS `--full-wait` vs Terraform's `wait_for_steady_state=true` is 227.7 vs 282.7 (1.24x), and both cloudfront rows above are same-definition pairs by construction.
 
 Distribution analysis, wait-skipping comparability (Terraform has no global `--no-wait` equivalent), and per-run data: [docs/benchmarks.md](docs/benchmarks.md) and [cdkd-bench-terraform](https://github.com/go-to-k/cdkd-bench-terraform).
