@@ -52,8 +52,6 @@ cdkd diff
 cdkd destroy
 ```
 
-That's it. cdkd reads `--app` from `cdk.json` and auto-resolves the state bucket from your AWS account ID: no per-project configuration needed.
-
 ## Benchmark
 
 **cdkd deploys up to 15x faster than AWS CDK (CloudFormation)** on SDK-Provider-handled stacks; the per-stack speedup widens with size and parallelism.
