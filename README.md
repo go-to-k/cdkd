@@ -638,6 +638,9 @@ resource-level protection on these types:
 | `AWS::NeptuneGraph::Graph` | `DeletionProtection` (same Cloud Control patch flip) |
 | `AWS::SMSVOICE::ProtectConfiguration` | `DeletionProtectionEnabled` (same Cloud Control patch flip) |
 | `AWS::VerifiedPermissions::PolicyStore` | `DeletionProtection` `{Mode}` (patched to `{Mode: DISABLED}`) |
+| `AWS::EKS::Cluster` | `DeletionProtection` (same Cloud Control patch flip) |
+| `AWS::RDS::GlobalCluster` | `DeletionProtection` (same Cloud Control patch flip) |
+| `AWS::DocDB::GlobalCluster` | `DeletionProtection` (same Cloud Control patch flip) |
 
 A single `--remove-protection` covers every type listed above (no
 per-type variant). The interactive confirm prompt switches to

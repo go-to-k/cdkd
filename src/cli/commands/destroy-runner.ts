@@ -229,6 +229,9 @@ export const PROTECTION_PROPERTY_BY_TYPE: Record<string, string> = {
   'AWS::NeptuneGraph::Graph': 'DeletionProtection',
   'AWS::SMSVOICE::ProtectConfiguration': 'DeletionProtectionEnabled',
   'AWS::VerifiedPermissions::PolicyStore': 'DeletionProtection',
+  'AWS::EKS::Cluster': 'DeletionProtection',
+  'AWS::RDS::GlobalCluster': 'DeletionProtection',
+  'AWS::DocDB::GlobalCluster': 'DeletionProtection',
 };
 
 /**

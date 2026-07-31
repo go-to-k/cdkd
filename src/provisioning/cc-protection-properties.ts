@@ -13,9 +13,9 @@
  * Only add entries verified against real AWS (the property name must match
  * the type's CFn schema exactly, must NOT be createOnly, and the type's
  * UPDATE handler must support flipping it in-place). Remaining candidates
- * (EKS::Cluster, RDS::GlobalCluster, DocDB::GlobalCluster — each needs its
- * own slow bespoke fixture — plus the SMSVOICE PhoneNumber/Pool/SenderId and
- * AppConfig DeletionProtectionCheck investigations) are tracked in issue
+ * (SMSVOICE PhoneNumber/Pool/SenderId — need an origination identity /
+ * regulatory registration — and AppConfig `DeletionProtectionCheck`, whose
+ * `BYPASS` semantics touch account-global state) are recorded on issue
  * #1315. `AWS::QLDB::Ledger` is permanently excluded (Tier 3
  * non-provisionable in cdkd; the QLDB service is sunset).
  */
@@ -44,6 +44,11 @@ const CC_PROTECTION_PROPERTIES: Record<string, CcProtectionEntry> = {
     property: 'DeletionProtection',
     offValue: { Mode: 'DISABLED' },
   },
+  // Verified via tests/integration/cc-protection-flip (RDS / DocDB global
+  // cluster shells) and tests/integration/cc-protection-flip-eks (issue #1315).
+  'AWS::EKS::Cluster': { property: 'DeletionProtection', offValue: false },
+  'AWS::RDS::GlobalCluster': { property: 'DeletionProtection', offValue: false },
+  'AWS::DocDB::GlobalCluster': { property: 'DeletionProtection', offValue: false },
 };
 
 /**

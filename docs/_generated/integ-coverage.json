@@ -1011,6 +1011,7 @@
         "batch",
         "bench-cdk-sample",
         "cache-streaming",
+        "cc-protection-flip-eks",
         "deletion-ordering-complex",
         "destroy-interrupt",
         "docdb-neptune",
@@ -1060,6 +1061,9 @@
           "l2"
         ],
         "cache-streaming": [
+          "l2"
+        ],
+        "cc-protection-flip-eks": [
           "l2"
         ],
         "deletion-ordering-complex": [
@@ -1175,6 +1179,7 @@
         "batch",
         "bench-cdk-sample",
         "cache-streaming",
+        "cc-protection-flip-eks",
         "deletion-ordering-complex",
         "destroy-interrupt",
         "docdb-neptune",
@@ -1224,6 +1229,9 @@
           "l2"
         ],
         "cache-streaming": [
+          "l2"
+        ],
+        "cc-protection-flip-eks": [
           "l2"
         ],
         "deletion-ordering-complex": [
@@ -1361,6 +1369,7 @@
         "batch",
         "bench-cdk-sample",
         "cache-streaming",
+        "cc-protection-flip-eks",
         "deletion-ordering-complex",
         "destroy-interrupt",
         "docdb-neptune",
@@ -1410,6 +1419,9 @@
           "l2"
         ],
         "cache-streaming": [
+          "l2"
+        ],
+        "cc-protection-flip-eks": [
           "l2"
         ],
         "deletion-ordering-complex": [
@@ -1525,6 +1537,7 @@
         "batch",
         "bench-cdk-sample",
         "cache-streaming",
+        "cc-protection-flip-eks",
         "deletion-ordering-complex",
         "destroy-interrupt",
         "docdb-neptune",
@@ -1574,6 +1587,9 @@
           "l2"
         ],
         "cache-streaming": [
+          "l2"
+        ],
+        "cc-protection-flip-eks": [
           "l2"
         ],
         "deletion-ordering-complex": [
@@ -1840,6 +1856,7 @@
         "batch",
         "bench-cdk-sample",
         "cache-streaming",
+        "cc-protection-flip-eks",
         "deletion-ordering-complex",
         "destroy-interrupt",
         "docdb-neptune",
@@ -1889,6 +1906,9 @@
           "l2"
         ],
         "cache-streaming": [
+          "l2"
+        ],
+        "cc-protection-flip-eks": [
           "l2"
         ],
         "deletion-ordering-complex": [
@@ -2015,6 +2035,7 @@
         "batch",
         "bench-cdk-sample",
         "cache-streaming",
+        "cc-protection-flip-eks",
         "deletion-ordering-complex",
         "destroy-interrupt",
         "docdb-neptune",
@@ -2064,6 +2085,9 @@
           "l2"
         ],
         "cache-streaming": [
+          "l2"
+        ],
+        "cc-protection-flip-eks": [
           "l2"
         ],
         "deletion-ordering-complex": [
@@ -2179,6 +2203,7 @@
         "batch",
         "bench-cdk-sample",
         "cache-streaming",
+        "cc-protection-flip-eks",
         "deletion-ordering-complex",
         "destroy-interrupt",
         "docdb-neptune",
@@ -2229,6 +2254,9 @@
           "l2"
         ],
         "cache-streaming": [
+          "l2"
+        ],
+        "cc-protection-flip-eks": [
           "l2"
         ],
         "deletion-ordering-complex": [
@@ -2354,6 +2382,7 @@
         "batch",
         "bench-cdk-sample",
         "cache-streaming",
+        "cc-protection-flip-eks",
         "deletion-ordering-complex",
         "destroy-interrupt",
         "docdb-neptune",
@@ -2403,6 +2432,9 @@
           "l2"
         ],
         "cache-streaming": [
+          "l2"
+        ],
+        "cc-protection-flip-eks": [
           "l2"
         ],
         "deletion-ordering-complex": [
@@ -3151,6 +3183,7 @@
         "cc-api-fallback",
         "cc-api-fallback-transitions",
         "cc-getatt-readback",
+        "cc-protection-flip-eks",
         "composite-stack",
         "deep-getatt-chains",
         "destroy-interrupt",
@@ -3223,6 +3256,9 @@
           "l2"
         ],
         "cc-getatt-readback": [
+          "l2"
+        ],
+        "cc-protection-flip-eks": [
           "l2"
         ],
         "composite-stack": [
@@ -5361,7 +5397,9 @@
     "AWS::Cognito::UserPoolUser",
     "AWS::Cognito::UserPoolUserToGroupAttachment",
     "AWS::DSQL::Cluster",
+    "AWS::DocDB::GlobalCluster",
     "AWS::EC2::SecurityGroupEgress",
+    "AWS::EKS::Cluster",
     "AWS::ELBv2::LoadBalancer",
     "AWS::ElastiCache::ReplicationGroup",
     "AWS::ElasticLoadBalancingV2::ListenerRule",
@@ -5377,6 +5415,7 @@
     "AWS::NeptuneGraph::Graph",
     "AWS::OpenSearchService::Domain",
     "AWS::Pipes::Pipe",
+    "AWS::RDS::GlobalCluster",
     "AWS::Redshift::Cluster",
     "AWS::ResourceGroups::Group",
     "AWS::Route53::CidrCollection",

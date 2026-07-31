@@ -77,6 +77,12 @@ const SLOW_CC_OPERATION_TIMEOUTS: Record<string, SlowOperationTimeouts> = {
     create: 60 * MINUTE_MS,
     delete: 60 * MINUTE_MS,
   },
+  // EKS control-plane create/delete typically runs 8-15 min and can exceed
+  // the flat 15-min inner CC poll cap (issue #1315).
+  'AWS::EKS::Cluster': {
+    create: 30 * MINUTE_MS,
+    delete: 30 * MINUTE_MS,
+  },
 };
 
 /**
