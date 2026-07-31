@@ -1,3 +1,10 @@
+# [0.274.0](https://github.com/go-to-k/cdkd/compare/v0.273.1...v0.274.0) (2026-07-31)
+
+
+### Features
+
+* **providers:** register EKS Cluster and RDS/DocDB GlobalCluster in the CC protection registry ([#1321](https://github.com/go-to-k/cdkd/issues/1321)) ([f9f78ae](https://github.com/go-to-k/cdkd/commit/f9f78ae47a3d0752030c781778fab895dcef7e31))
+
 ## [0.273.1](https://github.com/go-to-k/cdkd/compare/v0.273.0...v0.273.1) (2026-07-30)
 
 
