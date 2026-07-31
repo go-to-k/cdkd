@@ -1,3 +1,10 @@
+## [0.275.1](https://github.com/go-to-k/cdkd/compare/v0.275.0...v0.275.1) (2026-07-31)
+
+
+### Bug Fixes
+
+* **deployment:** redact NoEcho parameter values from --verbose debug logs ([#1331](https://github.com/go-to-k/cdkd/issues/1331)) ([d60dac3](https://github.com/go-to-k/cdkd/commit/d60dac30b4c28a769d2a353168b2f3aec89fb52a))
+
 # [0.275.0](https://github.com/go-to-k/cdkd/compare/v0.274.0...v0.275.0) (2026-07-31)
 
 
