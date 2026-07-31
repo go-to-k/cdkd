@@ -68,6 +68,10 @@ def handler(event, context):
       streamName: `cdkd-log-pipeline-${this.stackName}`,
       shardCount: 1,
       retentionPeriod: cdk.Duration.hours(24),
+      // Stream is a stateful L2 whose default removalPolicy is RETAIN; without
+      // DESTROY every deploy/destroy cycle leaks a billed PROVISIONED stream
+      // (issue #1326, same class as the sqs-cloudwatch leak fixed in #1327).
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
     // MetricFilter on the LogGroup

@@ -143,6 +143,34 @@ by `tests/unit/scripts/integ-verify-version-literals.test.ts` (classifier:
 `scripts/check-integ-version-literals.ts`); user-facing writeup in
 [docs/testing.md](../../docs/testing.md).
 
+### Fixture stateful L2s need an explicit removalPolicy (mandatory)
+
+Stateful CDK L2 constructs (`kinesis.Stream`, `dynamodb.Table`/`TableV2`,
+`s3.Bucket`, `logs.LogGroup`, `kms.Key`, `rds.DatabaseInstance`/`Cluster`,
+`efs.FileSystem`, `opensearchservice.Domain`, `ecr.Repository`,
+`cognito.UserPool`, `backup.BackupVault`) default to
+`RemovalPolicy.RETAIN` -> `DeletionPolicy: Retain` in the template. Both
+CloudFormation and cdkd honor it, so a fixture that omits the policy leaks the
+resource on EVERY deploy/destroy cycle while destroy still reports success.
+Originating incident (issue #1326): the `sqs-cloudwatch` fixture's Kinesis
+Stream leaked 14 billed PROVISIONED streams across a month of us-west-2
+benchmark runs; the lint then immediately found a second live case
+(`log-pipeline`).
+
+Every instantiation of those constructs in `tests/integration/*/{lib,bin}`
+must do ONE of: pass an explicit `removalPolicy` (RETAIN included -- it has to
+be a decision, not a default), call `applyRemovalPolicy(...)` on the assigned
+variable/property in the same file, or carry an
+`// allow-default-removal-policy: <reason>` comment (for fixtures that
+intentionally exercise the default; the count is capped by the test). A props
+object passed as a same-file variable is resolved; a spread does NOT count --
+restate the policy visibly.
+
+Enforced by `tests/unit/scripts/integ-fixture-removal-policy.test.ts`
+(classifier: `scripts/check-fixture-removal-policy.ts`); user-facing writeup
+in [docs/testing.md](../../docs/testing.md). L1 `Cfn*` constructs are out of
+scope (their template default is `Delete`).
+
 ### A checker must prove it sees its input
 
 When writing a lint or codegen that SCANS files (verify.sh scripts, templates,

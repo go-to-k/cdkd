@@ -620,6 +620,42 @@ version (e.g. a public cross-account layer ARN pinned by its owner), append
 coverage floors and was verified to fail against real injected regressions
 before landing, per the checker rules above.
 
+### Fixture convention: stateful L2 constructs need an explicit removalPolicy
+
+Stateful CDK L2 constructs — `kinesis.Stream`, `dynamodb.Table` / `TableV2`,
+`s3.Bucket`, `logs.LogGroup`, `kms.Key`, `rds.DatabaseInstance` /
+`DatabaseCluster`, `efs.FileSystem`, `opensearchservice.Domain`,
+`ecr.Repository`, `cognito.UserPool`, `backup.BackupVault` — default to
+`RemovalPolicy.RETAIN`, which synthesizes `DeletionPolicy: Retain`. Both
+CloudFormation and cdkd honor it, so a fixture that omits the policy leaks the
+resource on **every** deploy/destroy cycle while the destroy still reports
+success. The originating incident (issue #1326): the `sqs-cloudwatch` fixture's
+Kinesis Stream carried no `removalPolicy`, and a month of benchmark runs in
+`us-west-2` accumulated 14 billed PROVISIONED streams before a cleanup sweep
+caught them. The lint then immediately found a second live case — the
+`log-pipeline` fixture's Stream, present since the initial commit.
+
+Every instantiation of those constructs under `tests/integration/*/{lib,bin}`
+must do one of:
+
+- pass an explicit `removalPolicy` in its props (an intentional `RETAIN` is
+  fine — it has to be a visible decision, not a silent default);
+- call `applyRemovalPolicy(...)` on the assigned variable / property elsewhere
+  in the same file;
+- carry an `// allow-default-removal-policy: <reason>` comment on the
+  statement, for fixtures that intentionally exercise the default (the test
+  caps how many of these may exist, so the escape hatch stays rare).
+
+A props object passed as a same-file variable is resolved through the variable;
+a spread (`{ ...base }`) does **not** count — restate the policy visibly. L1
+`Cfn*` constructs are out of scope because their template default is `Delete`.
+
+`tests/unit/scripts/integ-fixture-removal-policy.test.ts` enforces this across
+the fixture tree (classifier: `scripts/check-fixture-removal-policy.ts`), with
+coverage floors per constructor-reference shape and per construct kind so a
+parser regression fails loudly rather than passing vacuously. Baseline
+2026-07-31: 523 fixture files scanned, 120 stateful-L2 instantiations.
+
 ## 3. Deploy Using cdkd
 
 ```bash
