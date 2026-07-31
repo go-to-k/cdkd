@@ -7,8 +7,8 @@
 Drop-in CDK CLI for existing CDK apps — up to 15x faster deploys via direct AWS SDK calls instead of CloudFormation.
 
 - **Drop-in CDK compatible**: your existing CDK app code runs as-is; just replace `cdk deploy` with `cdkd deploy`.
-- **Up to 15x faster deploys**: direct SDK calls, aggressive parallelization, and `--no-wait` to skip slow stabilization waits.
-- **Faster than Terraform and CloudFormation Express mode**: wins or ties every benchmarked scenario against Terraform, and beats CloudFormation's own fast-deploy option on nearly every stack, by up to 9x (see [Benchmark](#benchmark)).
+- **Up to 15x faster deploys**: direct SDK calls, aggressive parallelization, and `--no-wait` to skip slow stabilization waits; faster than Terraform and CloudFormation Express mode too (see [Benchmark](#benchmark)).
+- **Local execution from your deployed stack**: run your Lambdas, APIs, and ECS tasks on your machine, with env vars, secrets, and resource references resolved from real deployed state instead of hand-written `.env` files (see [Local execution](#local-execution)).
 
 ![cdk deploy vs cdkd deploy — side-by-side, 35s recording, real AWS deploy. cdkd finishes while cdk is still creating its CloudFormation changeset.](assets/cdk-vs-cdkd.gif)
 
