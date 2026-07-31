@@ -213,8 +213,25 @@ assert_gone "user ${USER_NAME} still exists after destroy (key deletion must pre
   aws iam get-user --user-name "${USER_NAME}"
 echo "    OK: user (and its access key) are gone"
 
-assert_gone "secret ${SECRET_NAME} still exists after destroy" \
-  aws secretsmanager describe-secret --secret-id "${SECRET_NAME}" --region "${REGION}"
+# DeleteSecret with ForceDeleteWithoutRecovery is ASYNC: DescribeSecret can
+# still return the record (with DeletionDate) for a short window after the
+# delete succeeded, so a single immediate probe false-FAILs the leak check
+# (observed live 2026-07-31: the probe raced a destroy that had completed
+# with 0 errors, and the secret 404'd seconds later). Poll bounded; every
+# probe still goes through gone_probe so a throttle / auth error hard-fails
+# instead of reading as "gone".
+SECRET_GONE=0
+for _ in $(seq 1 12); do
+  if gone_probe aws secretsmanager describe-secret --secret-id "${SECRET_NAME}" --region "${REGION}"; then
+    SECRET_GONE=1
+    break
+  fi
+  sleep 5
+done
+if [ "${SECRET_GONE}" != "1" ]; then
+  echo "FAIL: secret ${SECRET_NAME} still exists 60s after destroy" >&2
+  exit 1
+fi
 echo "    OK: secret is gone"
 
 assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" \
