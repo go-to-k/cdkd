@@ -126,6 +126,23 @@ of this lint were green while skipping most of the tree. The
 specific `state destroy --force` case; this lint generalizes it to every
 subcommand and also catches pre-existing occurrences the hook cannot see.
 
+### `verify.sh` version literals (mandatory)
+
+Never hardcode a Lambda published-version literal in a fixture: version
+counters are monotonic per function/layer NAME and never reset, so a
+`"${FN}:1"` probe or a `[ "${V}" != "2" ]` assert passes only on the very
+first run in the account and fails every re-run with
+`ResourceNotFoundException` (issue #1324; third recurrence of the trap). Read
+version N from the live alias (`--query 'FunctionVersion'`), guard it numeric
+with a `case` pattern, and assert rotation as `EXPECTED=$((N + 1))` — see
+`codedeploy-lambda-deployment-group/verify.sh` for the reference shape. Alias
+qualifiers (`:live`, `:$LATEST`), variable qualifiers, relative compares, and
+`length(...)` count queries stay legal; genuinely fixed versions (public
+cross-account layer ARNs) take `# allow-version-literal: <reason>`. Enforced
+by `tests/unit/scripts/integ-verify-version-literals.test.ts` (classifier:
+`scripts/check-integ-version-literals.ts`); user-facing writeup in
+[docs/testing.md](../../docs/testing.md).
+
 ### A checker must prove it sees its input
 
 When writing a lint or codegen that SCANS files (verify.sh scripts, templates,
