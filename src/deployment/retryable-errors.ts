@@ -52,6 +52,20 @@ export const IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS: readonly string[] = [
   'Trusted Entity',
   // IAM principal not yet propagated to S3 bucket policy
   'Invalid principal in policy',
+  // IAM-to-IAM eventual consistency: CreateAccessKey (and sibling per-user
+  // writes) issued ~1s after the same deploy's CreateUser can race IAM's own
+  // propagation and reject with "NoSuchEntity: The user with name X cannot be
+  // found." — a phrasing no existing pattern matches ('does not exist' does
+  // not cover "cannot be found"). CloudFormation absorbs this via its
+  // deployment latency; cdkd retries. Anchored on the full IAM user phrasing
+  // so a genuinely typo'd user name only burns the bounded retries before
+  // surfacing, and unrelated "cannot be found" errors from other services do
+  // not false-positive. Delete paths are unaffected (their
+  // NoSuchEntityException short-circuits to idempotent success before any
+  // retry classification). Surfaced by review of the AWS::IAM::AccessKey
+  // provider (issue #1323), whose canonical fixture creates User + AccessKey
+  // in one stack.
+  'The user with name',
   // SNS TopicPolicy: SetTopicAttributes validates every principal ARN in the
   // policy document. When the document names a same-stack, just-created IAM
   // role as `Principal.AWS`, cdkd's fast SDK path issues the policy PUT before

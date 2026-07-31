@@ -7,8 +7,8 @@ For every SDK provider class declaring `update()`, walks from `update()` through
 
 ## Summary
 
-- Provider classes with `update()`: **85**
-- Wrapped: **78**
+- Provider classes with `update()`: **86**
+- Wrapped: **79**
 - No AWS call in update(): **7**
 - **Unwrapped-send gaps (blocks CI): 0**
 - **Unguarded wraps (blocks CI): 0**
@@ -67,6 +67,7 @@ None. Every provider `update()` either makes no AWS call or wraps every reachabl
 | `GlueSecurityConfigurationProvider` | `glue-provider.ts` | no-aws |
 | `GlueTriggerProvider` | `glue-provider.ts` | wrapped |
 | `GlueWorkflowProvider` | `glue-provider.ts` | wrapped |
+| `IAMAccessKeyProvider` | `iam-access-key-provider.ts` | wrapped |
 | `IAMInstanceProfileProvider` | `iam-instance-profile-provider.ts` | wrapped |
 | `IAMManagedPolicyProvider` | `iam-managed-policy-provider.ts` | wrapped |
 | `IAMPolicyProvider` | `iam-policy-provider.ts` | wrapped |

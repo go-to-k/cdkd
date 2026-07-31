@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "summary": {
-    "classifiedCount": 133,
+    "classifiedCount": 134,
     "covered": 55,
-    "noArnAttr": 78,
+    "noArnAttr": 79,
     "gap": 0
   },
   "types": [
@@ -633,6 +633,12 @@
     },
     {
       "resourceType": "AWS::Glue::Workflow",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::IAM::AccessKey",
       "bucket": "no-arn-attr",
       "arnAttributes": [],
       "gaps": []

@@ -1657,6 +1657,13 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     },
   ],
   [
+    'AWS::IAM::AccessKey',
+    {
+      handled: new Set<string>(['Serial', 'Status', 'UserName']),
+      silentDrop: new Map<string, string>(),
+    },
+  ],
+  [
     'AWS::IAM::Group',
     {
       handled: new Set<string>(['GroupName', 'ManagedPolicyArns', 'Path', 'Policies']),

@@ -116,6 +116,7 @@ getatt-fallback-guard	2026-07-20T05:59:44Z	PASS	300	verify.sh	4-phase incl. stri
 getstackoutput-crossregion	2026-07-26T19:05:27Z	PASS	79	verify.sh	0727b sweep-b8 staleness re-run (rc=0); account clean
 glue-securityconfig-replace	2026-07-26T18:20:27Z	PASS	59	verify.sh	0727b sweep-b3 staleness re-run (rc=0); account clean
 glue-update-hardening	2026-07-26T20:00:52Z	PASS	75	verify.sh	0727b sweep-b13 staleness re-run (rc=0); account clean
+iam-access-key	2026-07-31T07:18:11Z	PASS	210	verify.sh	new fixture #1323: create+status-flip+secret-preservation+destroy clean (1st run false-FAIL on async DeleteSecret probe, poll added)
 iam-managed-policy	2026-07-27T16:40:50Z	PASS	32	verify.sh	issue #1272 IAM pass-through guard; clean destroy 0 orphans
 iam-oidc-provider	2026-07-31T06:25:46Z	PASS	82	verify.sh	TTL-refresh sweep re-run; 3 phases clean, orph clean
 iam-propagation-stress	2026-07-26T18:57:55Z	PASS	71	verify.sh	0727b sweep-b7 staleness re-run (rc=0); account clean
@@ -191,7 +192,7 @@ migrate-from-cfn	2026-07-21T13:50:11Z	PASS	414	verify.sh	post import-tag-walk re
 monitoring	2026-07-24T10:52:15Z	PASS	40	standard	0724b sweep staleness; 7 del 0 err 0 orphans
 multi-asset	2026-07-21T18:05:41Z	PASS	106	verify.sh	rc ok, ECR swept, orph clean
 multi-region-same-stack	2026-07-26T18:04:53Z	PASS	22	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
-multi-resource	2026-07-30T16:28:19Z	PASS	230	standard	broad run for #1304 register-providers touch; 17 del/0 err, orph clean
+multi-resource	2026-07-31T07:18:11Z	PASS	460	standard	broad run for #1323 register-providers+resolver touch; 17 del/0 err, orph clean
 multi-stack-deps	2026-07-30T12:17:37Z	PASS	300	standard	regression sweep post-#1289; 3-stack cross-stack deps deploy+destroy clean
 nested-stack	2026-07-26T18:10:48Z	PASS	30	standard	0727b sweep-b2 staleness re-run (rc=0); account clean
 nested-stack-3level	2026-07-21T05:11:36Z	PASS	78	verify.sh	rc ok, orph clean

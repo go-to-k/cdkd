@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-07-30T16:20:11.451Z",
+  "generatedAt": "2026-07-31T06:56:37.717Z",
   "summary": {
-    "tier1Count": 133,
-    "tier2Count": 1370,
-    "tier3Count": 201,
-    "totalCount": 1704
+    "tier1Count": 134,
+    "tier2Count": 1372,
+    "tier3Count": 199,
+    "totalCount": 1705
   },
   "tier1": [
     "AWS::ApiGateway::Account",
@@ -89,6 +89,7 @@
     "AWS::Glue::Table",
     "AWS::Glue::Trigger",
     "AWS::Glue::Workflow",
+    "AWS::IAM::AccessKey",
     "AWS::IAM::Group",
     "AWS::IAM::InstanceProfile",
     "AWS::IAM::ManagedPolicy",
@@ -301,6 +302,7 @@
     "AWS::BedrockAgentCore::Gateway",
     "AWS::BedrockAgentCore::GatewayTarget",
     "AWS::BedrockAgentCore::Harness",
+    "AWS::BedrockAgentCore::HarnessEndpoint",
     "AWS::BedrockAgentCore::Memory",
     "AWS::BedrockAgentCore::OAuth2CredentialProvider",
     "AWS::BedrockAgentCore::OnlineEvaluationConfig",
@@ -493,6 +495,7 @@
     "AWS::DMS::Certificate",
     "AWS::DMS::DataMigration",
     "AWS::DMS::DataProvider",
+    "AWS::DMS::Endpoint",
     "AWS::DMS::InstanceProfile",
     "AWS::DMS::MigrationProject",
     "AWS::DMS::ReplicationConfig",
@@ -1553,7 +1556,6 @@
     "AWS::DAX::Cluster",
     "AWS::DAX::ParameterGroup",
     "AWS::DAX::SubnetGroup",
-    "AWS::DMS::Endpoint",
     "AWS::DMS::EventSubscription",
     "AWS::DMS::ReplicationInstance",
     "AWS::DMS::ReplicationSubnetGroup",
@@ -1603,7 +1605,6 @@
     "AWS::Greengrass::SubscriptionDefinitionVersion",
     "AWS::GreengrassV2::Component",
     "AWS::GreengrassV2::CoreDevice",
-    "AWS::IAM::AccessKey",
     "AWS::IdentityStore::AllGroupMemberships",
     "AWS::ImageBuilder::AllImageBuildVersions",
     "AWS::ImageBuilder::AllWorkflowBuildVersions",

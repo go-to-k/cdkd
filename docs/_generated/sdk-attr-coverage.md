@@ -7,9 +7,9 @@ For every SDK-backed resource type (whose CFn schema is cached under `tests/fixt
 
 ## Summary
 
-- SDK-backed types classified: **133**
+- SDK-backed types classified: **134**
 - Covered (every Arn/Url readOnly resolvable): **55**
-- No Arn/Url readOnly attribute: **78**
+- No Arn/Url readOnly attribute: **79**
 - **Latent gaps (blocks CI): 0**
 
 ## Latent gaps

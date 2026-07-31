@@ -1,7 +1,7 @@
 {
   "summary": {
-    "classifiedCount": 85,
-    "wrapped": 78,
+    "classifiedCount": 86,
+    "wrapped": 79,
     "noAws": 7,
     "gap": 0,
     "unguardedWrap": 0,
@@ -356,6 +356,14 @@
     {
       "file": "glue-provider.ts",
       "className": "GlueWorkflowProvider",
+      "bucket": "wrapped",
+      "unwrappedSendMethods": [],
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
+    },
+    {
+      "file": "iam-access-key-provider.ts",
+      "className": "IAMAccessKeyProvider",
       "bucket": "wrapped",
       "unwrappedSendMethods": [],
       "unguardedWrapMethods": [],

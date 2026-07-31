@@ -952,6 +952,11 @@
       "scenarios": []
     },
     {
+      "name": "iam-access-key",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
       "name": "iam-managed-policy",
       "annotated": false,
       "scenarios": []

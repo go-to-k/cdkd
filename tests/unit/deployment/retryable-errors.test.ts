@@ -520,6 +520,12 @@ describe('isIamPropagationError', () => {
     ['Caught ServiceAccessDeniedException for ECSInfrastructureRole[arn:...]', 'ECS CC API'],
     ['Invalid InstanceProfile: EmrRole.', 'EMR'],
     ['Failed to authorize instance profile arn:aws:iam::1:instance-profile/p.', 'EMR authorize'],
+    // IAM-to-IAM eventual consistency: CreateAccessKey right after the same
+    // deploy's CreateUser (issue #1323 — User + AccessKey in one stack).
+    [
+      'NoSuchEntity: The user with name cdkd-iam-access-key-user cannot be found.',
+      'IAM per-user write racing CreateUser',
+    ],
   ])('classifies %j as IAM propagation (%s)', (message) => {
     expect(isIamPropagationError(message)).toBe(true);
     // Cadence selection must never widen retryability.
@@ -543,6 +549,15 @@ describe('isIamPropagationError', () => {
 
   it('does not classify a permanent failure as IAM propagation', () => {
     expect(isIamPropagationError('ValidationError: image id is malformed')).toBe(false);
+  });
+
+  it('does not let the "The user with name" pattern catch the already-exists collision phrasing', () => {
+    // IAM's EntityAlreadyExists reads "User with name X already exists." (no
+    // leading "The") — it must stay non-retryable, not burn propagation
+    // retries.
+    const message = 'EntityAlreadyExists: User with name cdkd-user already exists.';
+    expect(isIamPropagationError(message)).toBe(false);
+    expect(isRetryableTransientError(new Error(message), message)).toBe(false);
   });
 });
 
