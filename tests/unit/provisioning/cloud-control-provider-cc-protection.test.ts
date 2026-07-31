@@ -80,6 +80,19 @@ describe('ccProtectionProperty registry', () => {
     });
   });
 
+  it('returns the boolean entries for EKS Cluster / RDS GlobalCluster / DocDB GlobalCluster (issue #1315)', () => {
+    for (const type of [
+      'AWS::EKS::Cluster',
+      'AWS::RDS::GlobalCluster',
+      'AWS::DocDB::GlobalCluster',
+    ]) {
+      expect(ccProtectionProperty(type)).toEqual({
+        property: 'DeletionProtection',
+        offValue: false,
+      });
+    }
+  });
+
   it('returns the object-shaped off value for VerifiedPermissions PolicyStore', () => {
     expect(ccProtectionProperty('AWS::VerifiedPermissions::PolicyStore')).toEqual({
       property: 'DeletionProtection',

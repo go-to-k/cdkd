@@ -35,7 +35,8 @@ cache-streaming	2026-07-21T10:54:20Z	PASS	497	verify.sh	converted to verify.sh; 
 cc-api-fallback	2026-07-27T05:30:42Z	PASS	65	verify.sh	1252 fix live-verify (CC delete path incl. new integ-destroy scope); 0 errors 0 orphans
 cc-api-fallback-transitions	2026-07-20T02:19:31Z	PASS	140	verify.sh	CC transition/override #634 verified, 2 stacks destroy clean
 cc-getatt-readback	2026-07-20T03:06:02Z	PASS	260	verify.sh	generic sparse read-back live-verified (#1105); destroy 8/8, 0 orphans
-cc-protection-flip	2026-07-30T19:26:02Z	PASS	1100	verify.sh	3 CC types blocked-destroy + --remove-protection flip (#1314); orph clean
+cc-protection-flip	2026-07-31T03:56:21Z	PASS	1250	verify.sh	5 CC types incl. RDS/DocDB GlobalCluster shells (#1315); orph clean
+cc-protection-flip-eks	2026-07-31T04:30:02Z	PASS	2300	verify.sh	EKS blocked-destroy + --remove-protection flip (#1315); orph clean
 ci-cd	2026-07-21T18:23:00Z	PASS	55	verify.sh	rc ok, orph clean
 cloudfront-function-url	2026-07-27T10:27:57Z	PASS	384	verify.sh	issue #1263 lambda-url update error-wrap verify; destroy 7/0, 0 orphans
 cloudwatch	2026-07-26T20:00:52Z	PASS	55	standard	0727b sweep-b13 staleness re-run (rc=0); account clean

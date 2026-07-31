@@ -203,6 +203,33 @@ describe('countProtectedResources', () => {
     expect(countProtectedResources(state)).toBe(0);
   });
 
+  it('counts EKS Cluster / RDS GlobalCluster / DocDB GlobalCluster with DeletionProtection=true (issue #1315)', () => {
+    const state = makeState({
+      Eks: {
+        physicalId: 'cdkd-eks',
+        resourceType: 'AWS::EKS::Cluster',
+        properties: { DeletionProtection: true },
+        attributes: {},
+        dependencies: [],
+      },
+      RdsGlobal: {
+        physicalId: 'cdkd-rds-global',
+        resourceType: 'AWS::RDS::GlobalCluster',
+        properties: { DeletionProtection: true },
+        attributes: {},
+        dependencies: [],
+      },
+      DocdbGlobal: {
+        physicalId: 'cdkd-docdb-global',
+        resourceType: 'AWS::DocDB::GlobalCluster',
+        properties: { DeletionProtection: true },
+        attributes: {},
+        dependencies: [],
+      },
+    });
+    expect(countProtectedResources(state)).toBe(3);
+  });
+
   it('counts a Cognito UserPool with DeletionProtection=ACTIVE (string-valued enum)', () => {
     const state = makeState({
       P: {

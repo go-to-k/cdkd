@@ -496,6 +496,11 @@
       "scenarios": []
     },
     {
+      "name": "cc-protection-flip-eks",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
       "name": "ci-cd",
       "annotated": true,
       "scenarios": []

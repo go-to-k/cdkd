@@ -1893,6 +1893,9 @@ types:
 | `AWS::NeptuneGraph::Graph` | `DeletionProtection` | Same generic CC patch flip (`value: false`) then `DeleteResource` (issue #1314) |
 | `AWS::SMSVOICE::ProtectConfiguration` | `DeletionProtectionEnabled` | Same generic CC patch flip (`value: false`) then `DeleteResource` (issue #1314) |
 | `AWS::VerifiedPermissions::PolicyStore` | `DeletionProtection` (`{Mode: ENABLED\|DISABLED}`) | Same generic CC patch flip with `value: {Mode: DISABLED}` then `DeleteResource` (issue #1314) |
+| `AWS::EKS::Cluster` | `DeletionProtection` | Same generic CC patch flip (`value: false`) then `DeleteResource` (issue #1315) |
+| `AWS::RDS::GlobalCluster` | `DeletionProtection` | Same generic CC patch flip (`value: false`) then `DeleteResource` (issue #1315) |
+| `AWS::DocDB::GlobalCluster` | `DeletionProtection` | Same generic CC patch flip (`value: false`) then `DeleteResource` (issue #1315) |
 
 Behavior:
 
