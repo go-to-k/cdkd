@@ -7,17 +7,50 @@
 Drop-in CDK CLI for existing CDK apps — up to 15x faster deploys via direct AWS SDK calls instead of CloudFormation.
 
 - **Drop-in CDK compatible**: your existing CDK app code runs as-is; just replace `cdk deploy` with `cdkd deploy`.
-- **Up to 15x faster deploys**: direct SDK calls, aggressive parallelization, and `--no-wait` to skip slow stabilization waits.
-- **Faster than Terraform and CloudFormation Express mode**: wins or ties every benchmarked scenario against Terraform, and beats CloudFormation's own fast-deploy option on nearly every stack, by up to 9x (see [Benchmark](#benchmark)).
+- **Up to 15x faster deploys**: direct SDK calls, aggressive parallelization, and `--no-wait` to skip slow stabilization waits; **faster than Terraform and CloudFormation Express mode** too (see [Benchmark](#benchmark)).
 
 ![cdk deploy vs cdkd deploy — side-by-side, 35s recording, real AWS deploy. cdkd finishes while cdk is still creating its CloudFormation changeset.](assets/cdk-vs-cdkd.gif)
 
-**cdkd complements the AWS CDK CLI rather than replacing it.** Use cdkd in dev/test for rapid iteration and local execution; use the AWS CDK CLI in production for full CloudFormation tooling. Install cdkd alongside an existing `cdk deploy` workflow: no migration needed. Bidirectional migration is also supported: [import](#importing-existing-resources) into cdkd or [export](#exporting-a-stack-back-to-cloudformation) back to CloudFormation when ready.
+**cdkd complements the AWS CDK CLI rather than replacing it.** Use cdkd in dev/test for rapid iteration; use the AWS CDK CLI in production for full CloudFormation tooling. Install cdkd alongside an existing `cdk deploy` workflow: no migration needed. You can also [import](#importing-existing-resources) existing stacks into cdkd or [export](#exporting-a-stack-back-to-cloudformation) back to CloudFormation anytime.
 
 **A natural fit for AI-driven development.** AI coding agents iterate in tight spin-up / tear-down loops — and cdkd keeps each turn short, with fast deploys and an equally fast `cdkd destroy` that deletes via direct SDK calls instead of polling a CloudFormation stack-delete.
 
+**Local execution from your deployed stack.** `cdkd local` runs your functions, APIs, and ECS tasks on your machine. It can resolve env vars, secrets, and resource references from your real deployed stack: no hand-written `.env` files, no hand-seeded test data (see [Local execution](#local-execution)).
+
 > [!IMPORTANT]
 > cdkd is for dev/test workflows only — early in development, not yet production-ready.
+
+## Installation
+
+```bash
+npm i -g @go-to-k/cdkd          # latest release
+npm i -g @go-to-k/cdkd@0.0.2    # pin to a specific version
+```
+
+The installed binary is `cdkd`.
+
+## Quick Start
+
+> **First-time setup**: run `cdkd bootstrap` once per AWS account before any
+> other command; it replaces `cdk bootstrap`, which cdkd does not require
+> (details in [Prerequisites](#prerequisites)).
+
+```bash
+# Bootstrap (creates S3 state bucket + asset storage — one-time setup per AWS account)
+cdkd bootstrap
+
+# List stacks in the CDK app
+cdkd list
+
+# Deploy your CDK app
+cdkd deploy
+
+# Check what would change
+cdkd diff
+
+# Tear down
+cdkd destroy
+```
 
 ## Benchmark
 
@@ -71,68 +104,6 @@ Distribution analysis, wait-skipping comparability (Terraform has no global `--n
 ### More benchmarks
 
 The full benchmark suite lives in [docs/benchmarks.md](docs/benchmarks.md): the SDK Provider path (**5.5x**, 17.0s vs 94.4s), the VPC + CloudFront + Lambda stack behind the headline **15x** (40s vs 599s with `--no-wait`), the Cloud Control API fallback path (**1.6x**), and the Terraform comparison in full detail. Reproduction scripts: [tests/benchmark](tests/benchmark/README.md).
-
-## Prerequisites
-
-- **Node.js** >= 20.0.0
-- **AWS credentials with admin-equivalent permissions** for the resources being deployed. cdkd does NOT route through CloudFormation, so CDK CLI's `cdk-hnb659fds-deploy-role-*` is NOT sufficient — see [`--role-arn`](docs/cli-reference.md).
-
-AWS CDK's `cdk bootstrap` is not required. Instead, run `cdkd bootstrap` once per
-account: it creates everything cdkd needs, and per-region asset storage is added
-automatically on the first `cdkd deploy` into each region. Existing setups,
-legacy-mode opt-outs, and how this relates to `cdk bootstrap`: see
-[Upgrading from an earlier cdkd version](#upgrading-from-an-earlier-cdkd-version).
-
-## Installation
-
-```bash
-npm i -g @go-to-k/cdkd          # latest release
-npm i -g @go-to-k/cdkd@0.0.2    # pin to a specific version
-```
-
-The installed binary is `cdkd`.
-
-## Quick Start
-
-> **First-time setup**: cdkd requires a one-time `cdkd bootstrap` per AWS
-> account before any other command will work — it creates the S3 state
-> bucket (`cdkd-state-{accountId}`) that cdkd uses to track deployed
-> resources, plus cdkd-owned asset storage for the region
-> (by default a `cdkd-assets-{accountId}-{region}` bucket +
-> `cdkd-container-assets-{accountId}-{region}` ECR repo — custom names via
-> `--asset-bucket` / `--container-repo`, skip with `--no-assets`; see
-> [`cdkd bootstrap`](docs/cli-reference.md#cdkd-bootstrap)).
-> This replaces `cdk bootstrap`, which cdkd does not require — see
-> [Prerequisites](#prerequisites).
-
-```bash
-# Bootstrap (creates S3 state bucket + asset storage — one-time setup per AWS account)
-cdkd bootstrap
-
-# List stacks in the CDK app
-cdkd list
-
-# Deploy your CDK app
-cdkd deploy
-
-# Check what would change
-cdkd diff
-
-# Tear down
-cdkd destroy
-```
-
-That's it. cdkd reads `--app` from `cdk.json` and auto-resolves the state bucket from your AWS account ID (`cdkd-state-{accountId}`). If you bootstrapped under a previous cdkd version, the legacy region-suffixed name (`cdkd-state-{accountId}-{region}`) is still picked up automatically with a deprecation warning.
-
-### Upgrading from an earlier cdkd version
-
-**No breaking change, no manual step: just deploy.** The first `cdkd deploy` into
-each region auto-creates the cdkd-owned asset storage (interactive runs are asked
-once per region, `--yes` / CI runs create it automatically) and shows a one-time
-in-place UPDATE repointing asset references — content identical, no replacement.
-Downgrading is safe too (older binaries ignore the marker). Explicit pre-provisioning
-(`cdkd bootstrap --region <r>`), legacy-mode opt-outs, and how this relates to
-`cdk bootstrap`: see [`cdkd bootstrap`](docs/cli-reference.md#cdkd-bootstrap).
 
 ## Features
 
@@ -195,6 +166,35 @@ Downgrading is safe too (older binaries ignore the marker). Explicit pre-provisi
 For a step-by-step walkthrough of the full `cdkd deploy` pipeline (CLI
 parsing → synthesis → asset publishing → per-stack deploy), see
 [docs/architecture.md](docs/architecture.md#5-end-to-end-pipeline-walkthrough-cdkd-deploy).
+
+## Prerequisites
+
+- **Node.js** >= 20.0.0
+- **AWS credentials with admin-equivalent permissions** for the resources being deployed. cdkd does NOT route through CloudFormation, so CDK CLI's `cdk-hnb659fds-deploy-role-*` is NOT sufficient — see [`--role-arn`](docs/cli-reference.md).
+
+AWS CDK's `cdk bootstrap` is not required. Instead, run `cdkd bootstrap` once per
+account: it creates the S3 state bucket (`cdkd-state-{accountId}`) that cdkd uses
+to track deployed resources, plus cdkd-owned asset storage (by default a
+`cdkd-assets-{accountId}-{region}` bucket + a
+`cdkd-container-assets-{accountId}-{region}` ECR repo; custom names via
+`--asset-bucket` / `--container-repo`, skip with `--no-assets`; see
+[`cdkd bootstrap`](docs/cli-reference.md#cdkd-bootstrap)). Per-region asset
+storage is added automatically on the first `cdkd deploy` into each region.
+Existing setups, legacy-mode opt-outs, and how this relates to `cdk bootstrap`: see
+[Upgrading from an earlier cdkd version](#upgrading-from-an-earlier-cdkd-version).
+
+### Upgrading from an earlier cdkd version
+
+**No breaking change, no manual step: just deploy.** The first `cdkd deploy` into
+each region auto-creates the cdkd-owned asset storage (interactive runs are asked
+once per region, `--yes` / CI runs create it automatically) and shows a one-time
+in-place UPDATE repointing asset references — content identical, no replacement.
+Downgrading is safe too (older binaries ignore the marker). If you bootstrapped
+under a previous cdkd version, the legacy region-suffixed state bucket name
+(`cdkd-state-{accountId}-{region}`) is still picked up automatically with a
+deprecation warning. Explicit pre-provisioning
+(`cdkd bootstrap --region <r>`), legacy-mode opt-outs, and how this relates to
+`cdk bootstrap`: see [`cdkd bootstrap`](docs/cli-reference.md#cdkd-bootstrap).
 
 ## Usage
 
