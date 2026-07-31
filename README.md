@@ -52,7 +52,7 @@ cdkd diff
 cdkd destroy
 ```
 
-That's it. cdkd reads `--app` from `cdk.json` and auto-resolves the state bucket from your AWS account ID (`cdkd-state-{accountId}`). If you bootstrapped under a previous cdkd version, the legacy region-suffixed name (`cdkd-state-{accountId}-{region}`) is still picked up automatically with a deprecation warning.
+That's it. cdkd reads `--app` from `cdk.json` and auto-resolves the state bucket from your AWS account ID: no per-project configuration needed.
 
 ## Benchmark
 
@@ -129,7 +129,10 @@ Existing setups, legacy-mode opt-outs, and how this relates to `cdk bootstrap`: 
 each region auto-creates the cdkd-owned asset storage (interactive runs are asked
 once per region, `--yes` / CI runs create it automatically) and shows a one-time
 in-place UPDATE repointing asset references — content identical, no replacement.
-Downgrading is safe too (older binaries ignore the marker). Explicit pre-provisioning
+Downgrading is safe too (older binaries ignore the marker). If you bootstrapped
+under a previous cdkd version, the legacy region-suffixed state bucket name
+(`cdkd-state-{accountId}-{region}`) is still picked up automatically with a
+deprecation warning. Explicit pre-provisioning
 (`cdkd bootstrap --region <r>`), legacy-mode opt-outs, and how this relates to
 `cdk bootstrap`: see [`cdkd bootstrap`](docs/cli-reference.md#cdkd-bootstrap).
 
