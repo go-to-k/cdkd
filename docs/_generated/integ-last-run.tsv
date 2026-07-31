@@ -12,7 +12,7 @@ alb-advanced	2026-07-28T02:54:42Z	PASS	206	standard	ALB active wait 156s (#1274)
 api-cognito	2026-07-26T18:49:34Z	PASS	75	standard	0727b sweep-b6 staleness re-run (rc=0); account clean
 apigateway	2026-07-21T14:32:25Z	PASS	56	verify.sh	rc ok, orph clean
 apigatewayv2-update-removal	2026-07-22T14:04:44Z	PASS		verify.sh	issue-1160 apigwv2 batch: 5-API removal reset live-verified, Cors via DeleteCorsConfiguration, destroy 0 err/0 orph
-apigw-gateway-response	2026-07-16T16:48:47Z	PASS	117	verify.sh	issue-1017 fix live-verify, warn 1->0 + rendering sample, orph clean
+apigw-gateway-response	2026-07-31T06:27:45Z	PASS	66	verify.sh	TTL-refresh sweep re-run; 3 phases clean, orph clean
 apigw-stage-throttling	2026-07-26T19:36:49Z	PASS	79	verify.sh	0727b sweep-b11 staleness re-run (rc=0); account clean
 apigw-usage-plan-key	2026-07-26T19:16:39Z	PASS	84	verify.sh	0727b sweep-b9 staleness re-run (rc=0); account clean
 appconfig	2026-07-21T18:18:22Z	PASS	75	verify.sh	rc ok, orph clean
@@ -28,7 +28,7 @@ bedrock-agentcore	2026-07-24T04:22:29Z	PASS	42	standard	import() attr enrich (#1
 bench-ccapi	2026-07-26T18:43:33Z	PASS	89	standard	0727b sweep-b5 staleness re-run (rc=0); account clean
 bench-cdk-sample	2026-07-31T06:06:20Z	PASS	373	standard	regression run post-#1311/#1318 CloudFront semantics; 37 del/2 retain/0 err, retained LGs swept, orph clean
 bench-sdk	2026-07-26T18:43:33Z	PASS	33	standard	0727b sweep-b5 staleness re-run (rc=0); account clean
-bootstrap-free-region	2026-07-16T15:34:01Z	PASS	81	verify.sh	re-run after PR 1015 review fix-back (region-resolver owner header), 0 orphans
+bootstrap-free-region	2026-07-31T06:23:42Z	PASS	78	verify.sh	TTL-refresh sweep re-run in ca-central-1; marker+bucket swept, orph clean
 bucket-deployment	2026-07-21T18:02:21Z	PASS	125	verify.sh	rc ok, orph clean
 budgets	2026-07-17T11:58:00Z	PASS	60	verify.sh	new fixture #1041 re-run post-rebase (idempotent reconciler, verbatim name); 3 phases clean, 0 orphans
 cache-streaming	2026-07-21T10:54:20Z	PASS	497	verify.sh	converted to verify.sh; GetAtt redis endpoint ok, 0 orphans
@@ -98,7 +98,7 @@ emr-instance-configs	2026-07-19T12:15:47Z	PASS	1680	verify.sh	post-review re-run
 event-driven	2026-07-26T18:36:31Z	PASS	42	standard	0727b sweep-b4 staleness re-run (rc=0); account clean
 eventbridge	2026-07-27T11:04:52Z	PASS	87	verify.sh	issue #1267 post-review re-run; 10 del 0 err, 0 orphans
 eventbridge-api-destination	2026-07-21T14:48:06Z	PASS	70	verify.sh	rc ok, orph clean
-eventbridge-archive	2026-07-16T15:54:15Z	PASS	53	verify.sh	new fixture, 3 phases clean, orph clean
+eventbridge-archive	2026-07-31T06:21:38Z	PASS	54	verify.sh	TTL-refresh sweep re-run; 3 phases clean, orph clean
 eventbridge-input-transformer	2026-07-20T08:18:46Z	PASS	63	verify.sh	hardened P2 propagation race; passes
 eventbridge-pipes	2026-07-26T19:36:49Z	PASS	177	verify.sh	0727b sweep-b11 staleness re-run (rc=0); account clean
 eventbridge-scheduler	2026-07-20T03:07:51Z	PASS	150	verify.sh	pattern-2 sweep sample: assert_gone/gone_probe/head-object idioms live-verified; 0 orphans
@@ -117,7 +117,7 @@ getstackoutput-crossregion	2026-07-26T19:05:27Z	PASS	79	verify.sh	0727b sweep-b8
 glue-securityconfig-replace	2026-07-26T18:20:27Z	PASS	59	verify.sh	0727b sweep-b3 staleness re-run (rc=0); account clean
 glue-update-hardening	2026-07-26T20:00:52Z	PASS	75	verify.sh	0727b sweep-b13 staleness re-run (rc=0); account clean
 iam-managed-policy	2026-07-27T16:40:50Z	PASS	32	verify.sh	issue #1272 IAM pass-through guard; clean destroy 0 orphans
-iam-oidc-provider	2026-07-16T16:48:34Z	PASS	91	verify.sh	issue-1016 fix live-verify, warn 1->0, orph clean
+iam-oidc-provider	2026-07-31T06:25:46Z	PASS	82	verify.sh	TTL-refresh sweep re-run; 3 phases clean, orph clean
 iam-propagation-stress	2026-07-26T18:57:55Z	PASS	71	verify.sh	0727b sweep-b7 staleness re-run (rc=0); account clean
 iam-role-policies-drift-clean	2026-07-26T18:57:55Z	PASS	84	verify.sh	0727b sweep-b7 staleness re-run (rc=0); account clean
 iam-role-prefixed-name-update	2026-07-26T16:45:28Z	PASS	71	verify.sh	#1160 iam-role removal phase 3 verified; destroy 1/0 errors, 0 orphans
@@ -262,4 +262,4 @@ vpc-lambda-cr-race	2026-07-24T11:03:24Z	PASS	432	standard	0724b sweep staleness;
 vpc-lookup	2026-07-24T10:55:09Z	PASS	20	standard	0724b sweep staleness; context-provider loop ok; 1 del 0 err 0 orphans
 vpc-nat-gateway	2026-07-22T08:08:02Z	PASS		standard	TTL-refresh sweep; standard flow (classifier-approved direct deploy/destroy); 21 created / 21 deleted 0 err; NAT GW + VPC + EIP + ENI all gone, state gone
 wafv2	2026-07-26T19:36:49Z	PASS	58	standard	0727b sweep-b11 staleness re-run (rc=0); account clean
-wait-condition-handle	2026-07-16T17:58:44Z	PASS	49	verify.sh	re-run after review-nit JSDoc edit, orph clean
+wait-condition-handle	2026-07-31T06:19:56Z	PASS	44	verify.sh	TTL-refresh sweep re-run; rc ok, orph clean
