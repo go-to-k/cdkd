@@ -1,3 +1,10 @@
+# [0.275.0](https://github.com/go-to-k/cdkd/compare/v0.274.0...v0.275.0) (2026-07-31)
+
+
+### Features
+
+* **providers:** add AWS::IAM::AccessKey SDK provider ([#1328](https://github.com/go-to-k/cdkd/issues/1328)) ([f26d0a0](https://github.com/go-to-k/cdkd/commit/f26d0a0ef9c2f2699b1590c78a15654c1bce86a3))
+
 # [0.274.0](https://github.com/go-to-k/cdkd/compare/v0.273.1...v0.274.0) (2026-07-31)
 
 
