@@ -31,16 +31,9 @@ The installed binary is `cdkd`.
 
 ## Quick Start
 
-> **First-time setup**: cdkd requires a one-time `cdkd bootstrap` per AWS
-> account before any other command will work — it creates the S3 state
-> bucket (`cdkd-state-{accountId}`) that cdkd uses to track deployed
-> resources, plus cdkd-owned asset storage for the region
-> (by default a `cdkd-assets-{accountId}-{region}` bucket +
-> `cdkd-container-assets-{accountId}-{region}` ECR repo — custom names via
-> `--asset-bucket` / `--container-repo`, skip with `--no-assets`; see
-> [`cdkd bootstrap`](docs/cli-reference.md#cdkd-bootstrap)).
-> This replaces `cdk bootstrap`, which cdkd does not require — see
-> [Prerequisites](#prerequisites).
+> **First-time setup**: run `cdkd bootstrap` once per AWS account before any
+> other command; it replaces `cdk bootstrap`, which cdkd does not require
+> (details in [Prerequisites](#prerequisites)).
 
 ```bash
 # Bootstrap (creates S3 state bucket + asset storage — one-time setup per AWS account)
@@ -120,9 +113,14 @@ The full benchmark suite lives in [docs/benchmarks.md](docs/benchmarks.md): the 
 - **AWS credentials with admin-equivalent permissions** for the resources being deployed. cdkd does NOT route through CloudFormation, so CDK CLI's `cdk-hnb659fds-deploy-role-*` is NOT sufficient — see [`--role-arn`](docs/cli-reference.md).
 
 AWS CDK's `cdk bootstrap` is not required. Instead, run `cdkd bootstrap` once per
-account: it creates everything cdkd needs, and per-region asset storage is added
-automatically on the first `cdkd deploy` into each region. Existing setups,
-legacy-mode opt-outs, and how this relates to `cdk bootstrap`: see
+account: it creates the S3 state bucket (`cdkd-state-{accountId}`) that cdkd uses
+to track deployed resources, plus cdkd-owned asset storage (by default a
+`cdkd-assets-{accountId}-{region}` bucket + a
+`cdkd-container-assets-{accountId}-{region}` ECR repo; custom names via
+`--asset-bucket` / `--container-repo`, skip with `--no-assets`; see
+[`cdkd bootstrap`](docs/cli-reference.md#cdkd-bootstrap)). Per-region asset
+storage is added automatically on the first `cdkd deploy` into each region.
+Existing setups, legacy-mode opt-outs, and how this relates to `cdk bootstrap`: see
 [Upgrading from an earlier cdkd version](#upgrading-from-an-earlier-cdkd-version).
 
 ### Upgrading from an earlier cdkd version
