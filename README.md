@@ -20,6 +20,47 @@ Drop-in CDK CLI for existing CDK apps — up to 15x faster deploys via direct AW
 > [!IMPORTANT]
 > cdkd is for dev/test workflows only — early in development, not yet production-ready.
 
+## Installation
+
+```bash
+npm i -g @go-to-k/cdkd          # latest release
+npm i -g @go-to-k/cdkd@0.0.2    # pin to a specific version
+```
+
+The installed binary is `cdkd`.
+
+## Quick Start
+
+> **First-time setup**: cdkd requires a one-time `cdkd bootstrap` per AWS
+> account before any other command will work — it creates the S3 state
+> bucket (`cdkd-state-{accountId}`) that cdkd uses to track deployed
+> resources, plus cdkd-owned asset storage for the region
+> (by default a `cdkd-assets-{accountId}-{region}` bucket +
+> `cdkd-container-assets-{accountId}-{region}` ECR repo — custom names via
+> `--asset-bucket` / `--container-repo`, skip with `--no-assets`; see
+> [`cdkd bootstrap`](docs/cli-reference.md#cdkd-bootstrap)).
+> This replaces `cdk bootstrap`, which cdkd does not require — see
+> [Prerequisites](#prerequisites).
+
+```bash
+# Bootstrap (creates S3 state bucket + asset storage — one-time setup per AWS account)
+cdkd bootstrap
+
+# List stacks in the CDK app
+cdkd list
+
+# Deploy your CDK app
+cdkd deploy
+
+# Check what would change
+cdkd diff
+
+# Tear down
+cdkd destroy
+```
+
+That's it. cdkd reads `--app` from `cdk.json` and auto-resolves the state bucket from your AWS account ID (`cdkd-state-{accountId}`). If you bootstrapped under a previous cdkd version, the legacy region-suffixed name (`cdkd-state-{accountId}-{region}`) is still picked up automatically with a deprecation warning.
+
 ## Benchmark
 
 **cdkd deploys up to 15x faster than AWS CDK (CloudFormation)** on SDK-Provider-handled stacks; the per-stack speedup widens with size and parallelism.
@@ -83,47 +124,6 @@ account: it creates everything cdkd needs, and per-region asset storage is added
 automatically on the first `cdkd deploy` into each region. Existing setups,
 legacy-mode opt-outs, and how this relates to `cdk bootstrap`: see
 [Upgrading from an earlier cdkd version](#upgrading-from-an-earlier-cdkd-version).
-
-## Installation
-
-```bash
-npm i -g @go-to-k/cdkd          # latest release
-npm i -g @go-to-k/cdkd@0.0.2    # pin to a specific version
-```
-
-The installed binary is `cdkd`.
-
-## Quick Start
-
-> **First-time setup**: cdkd requires a one-time `cdkd bootstrap` per AWS
-> account before any other command will work — it creates the S3 state
-> bucket (`cdkd-state-{accountId}`) that cdkd uses to track deployed
-> resources, plus cdkd-owned asset storage for the region
-> (by default a `cdkd-assets-{accountId}-{region}` bucket +
-> `cdkd-container-assets-{accountId}-{region}` ECR repo — custom names via
-> `--asset-bucket` / `--container-repo`, skip with `--no-assets`; see
-> [`cdkd bootstrap`](docs/cli-reference.md#cdkd-bootstrap)).
-> This replaces `cdk bootstrap`, which cdkd does not require — see
-> [Prerequisites](#prerequisites).
-
-```bash
-# Bootstrap (creates S3 state bucket + asset storage — one-time setup per AWS account)
-cdkd bootstrap
-
-# List stacks in the CDK app
-cdkd list
-
-# Deploy your CDK app
-cdkd deploy
-
-# Check what would change
-cdkd diff
-
-# Tear down
-cdkd destroy
-```
-
-That's it. cdkd reads `--app` from `cdk.json` and auto-resolves the state bucket from your AWS account ID (`cdkd-state-{accountId}`). If you bootstrapped under a previous cdkd version, the legacy region-suffixed name (`cdkd-state-{accountId}-{region}`) is still picked up automatically with a deprecation warning.
 
 ### Upgrading from an earlier cdkd version
 
