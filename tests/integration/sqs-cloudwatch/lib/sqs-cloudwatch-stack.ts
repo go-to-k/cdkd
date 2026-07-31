@@ -67,6 +67,10 @@ export class SqsCloudwatchStack extends cdk.Stack {
 
     const logStream = new Stream(this, 'LogStream', {
       shardCount: 1,
+      // Stream is a stateful L2 whose default removalPolicy is RETAIN; without
+      // DESTROY every deploy/destroy cycle (and every benchmark variant synthing
+      // this stack) leaks a billed PROVISIONED stream.
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
     const subscriptionFilterRole = new Role(this, 'SubscriptionFilterRole', {
