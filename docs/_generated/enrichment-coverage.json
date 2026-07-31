@@ -1,12 +1,12 @@
 {
   "schemaVersion": 1,
   "summary": {
-    "classifiedCount": 133,
+    "classifiedCount": 134,
     "enriched": 10,
     "noComputedAttr": 14,
     "unenrichedGap": 0,
-    "sdkFallbackGap": 109,
-    "allowListedTypes": 15
+    "sdkFallbackGap": 110,
+    "allowListedTypes": 16
   },
   "types": [
     {
@@ -1927,6 +1927,30 @@
       ],
       "gaps": [
         "Id"
+      ]
+    },
+    {
+      "resourceType": "AWS::IAM::AccessKey",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Id",
+        "SecretAccessKey"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "Id",
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
+        },
+        {
+          "name": "SecretAccessKey",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "SecretAccessKey"
       ]
     },
     {

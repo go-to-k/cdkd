@@ -91,6 +91,7 @@ catalog with Tier 2 and Tier 3 entries included.
 | **IAM** | AWS::IAM::User | SDK Provider | ✅ |
 | **IAM** | AWS::IAM::Group | SDK Provider | ✅ |
 | **IAM** | AWS::IAM::UserToGroupAddition | SDK Provider | ✅ |
+| **IAM** | AWS::IAM::AccessKey | SDK Provider | ✅ |
 | **Storage** | AWS::S3::Bucket | SDK Provider | ✅ |
 | **Storage** | AWS::S3::BucketPolicy | SDK Provider | ✅ |
 | **Messaging** | AWS::SQS::Queue | SDK Provider | ✅ |

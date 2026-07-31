@@ -11,12 +11,12 @@ Gap severity depends on the tier. A gap on an **SDK-backed** type (`sdk-fallback
 
 ## Summary
 
-- Classified types (cached schema): **133**
+- Classified types (cached schema): **134**
 - Fully enriched: **10**
 - No computed attribute (Ref == physicalId is correct): **14**
 - **Pure-CC latent gaps (unenriched-computed, blocks CI): 0**
-- SDK-fallback gaps (informational, #614 path only): **109**
-- Types with allow-listed (not-a-gap) attributes: **15**
+- SDK-fallback gaps (informational, #614 path only): **110**
+- Types with allow-listed (not-a-gap) attributes: **16**
 
 ## Pure-CC latent gaps
 
@@ -94,6 +94,7 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::Glue::SecurityConfiguration` | `Id` |
 | `AWS::Glue::Table` | `Id` |
 | `AWS::Glue::Workflow` | `Id` |
+| `AWS::IAM::AccessKey` | `SecretAccessKey` |
 | `AWS::IAM::Group` | `Arn` |
 | `AWS::IAM::InstanceProfile` | `Arn` |
 | `AWS::IAM::ManagedPolicy` | `AttachmentCount`, `CreateDate`, `DefaultVersionId`, `IsAttachable`, `PermissionsBoundaryUsageCount`, `PolicyArn`, `PolicyId`, `UpdateDate` |
@@ -223,6 +224,7 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::Glue::Table` | yes | sdk-fallback-gap | `Id` (GAP) |
 | `AWS::Glue::Trigger` | yes | no-computed-attr | _(none)_ |
 | `AWS::Glue::Workflow` | yes | sdk-fallback-gap | `Id` (GAP) |
+| `AWS::IAM::AccessKey` | yes | sdk-fallback-gap | `Id` (allow), `SecretAccessKey` (GAP) |
 | `AWS::IAM::Group` | yes | sdk-fallback-gap | `Arn` (GAP) |
 | `AWS::IAM::InstanceProfile` | yes | sdk-fallback-gap | `Arn` (GAP) |
 | `AWS::IAM::ManagedPolicy` | yes | sdk-fallback-gap | `AttachmentCount` (GAP), `CreateDate` (GAP), `DefaultVersionId` (GAP), `IsAttachable` (GAP), `PermissionsBoundaryUsageCount` (GAP), `PolicyArn` (GAP), `PolicyId` (GAP), `UpdateDate` (GAP) |

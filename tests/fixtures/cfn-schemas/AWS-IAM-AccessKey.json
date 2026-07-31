@@ -1,0 +1,22 @@
+{
+  "resourceType": "AWS::IAM::AccessKey",
+  "generatedAt": "2026-07-31",
+  "properties": [
+    "Id",
+    "SecretAccessKey",
+    "Serial",
+    "Status",
+    "UserName"
+  ],
+  "readOnlyProperties": [
+    "Id",
+    "SecretAccessKey"
+  ],
+  "createOnlyProperties": [
+    "Serial",
+    "UserName"
+  ],
+  "primaryIdentifier": [
+    "Id"
+  ]
+}

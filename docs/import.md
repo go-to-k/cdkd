@@ -408,6 +408,7 @@ provide the physical id explicitly.
 - AWS::IAM::Policy (inline)
 - AWS::IAM::UserToGroupAddition
 - AWS::CloudWatch::AnomalyDetector (detectors are addressed by their metric descriptor, carry no tags, and have no name; pass any stable id via `--resource` — cdkd re-derives the canonical descriptor-based id on the next replacement)
+- AWS::IAM::AccessKey (keys are not taggable and the template carries no property equal to the key id; pass the `AKIA...` id via `--resource`, which cdkd verifies with `GetAccessKeyLastUsed`. Note: the imported record has no cached `SecretAccessKey` — IAM returns it only from `CreateAccessKey` — so `Fn::GetAtt [<key>, SecretAccessKey]` cannot resolve for an imported key; mint a new key via replacement if the secret is needed)
 - AWS::Scheduler::Schedule (schedules are not taggable; the template `Name` + `GroupName` also resolve without a flag)
 - AWS::CloudFormation::WaitConditionHandle (no AWS-queryable resource exists behind a handle; an explicit `--resource` id — or CloudFormation's pre-signed-URL physical id during `--migrate-from-cloudformation` — is recorded verbatim, and a synthesized placeholder is used otherwise)
 - AWS::CloudFront::OriginAccessControl (OACs are not taggable and the config's `Name` is a display field AWS does not accept as a lookup key; pass the `E...` id via `--resource`, which cdkd verifies with `GetOriginAccessControl`)
