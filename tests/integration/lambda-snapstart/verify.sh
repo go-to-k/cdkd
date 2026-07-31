@@ -10,13 +10,17 @@
 #
 # Phases:
 #   1. Deploy; assert SnapStart ApplyOn=PublishedVersions on the function,
-#      OptimizationStatus=On for version 1, and invoking the `live` alias
-#      returns the v1 greeting.
-#   2. Re-deploy with CDKD_TEST_UPDATE=true; assert version 2 exists with
-#      SnapStart On, the alias points at 2, version 1 is DELETED, and the
-#      alias invoke returns the v2 greeting. (Version numbers are monotonic
-#      per function, so "the new version is 2, not 1" also proves the
-#      function itself was updated in place, not replaced.)
+#      OptimizationStatus=On for the published version the `live` alias
+#      targets (version N), and invoking the alias returns the v1 greeting.
+#      N is read from the alias, NEVER hardcoded: the function name is fixed,
+#      and Lambda version counters are monotonic per function NAME and never
+#      reset — after any prior run of this fixture the first publish is not
+#      ":1" anymore.
+#   2. Re-deploy with CDKD_TEST_UPDATE=true; assert the alias now points at
+#      version N+1 with SnapStart On, version N is DELETED, and the alias
+#      invoke returns the v2 greeting. (The exact +1 increment proves the
+#      function was updated in place — a replace would still increment, but
+#      the create would have failed on the existing fixed name.)
 #   3. Destroy + assert the function is gone, the auto-created log group is
 #      swept, and the cdkd state is removed.
 #
@@ -123,8 +127,11 @@ invoke_alias() {
   rm -f "${out}"
 }
 
-# --- Phase 1: deploy baseline (version 1) --------------------------------
-echo "==> Phase 1: deploy SnapStart function + version 1 + live alias"
+# --- Phase 1: deploy baseline (publishes version N) ------------------------
+# Lambda version counters are monotonic per function NAME and never reset, so
+# the baseline version is whatever the alias says it is — never hardcode ":1"
+# (a prior run of this fixture leaves the counter above 1 forever).
+echo "==> Phase 1: deploy SnapStart function + published version + live alias"
 env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
@@ -134,16 +141,18 @@ if [ "${APPLY_ON}" != "PublishedVersions" ]; then
   echo "FAIL: expected SnapStart.ApplyOn=PublishedVersions, got '${APPLY_ON}'" >&2
   exit 1
 fi
-OPT_V1="$(aws lambda get-function-configuration --function-name "${FN}:1" --region "${REGION}" \
-  --query 'SnapStart.OptimizationStatus' --output text)"
-if [ "${OPT_V1}" != "On" ]; then
-  echo "FAIL: expected version 1 SnapStart OptimizationStatus=On, got '${OPT_V1}'" >&2
-  exit 1
-fi
 ALIAS_V_P1="$(aws lambda get-alias --function-name "${FN}" --name live --region "${REGION}" \
   --query 'FunctionVersion' --output text)"
-if [ "${ALIAS_V_P1}" != "1" ]; then
-  echo "FAIL: expected alias live -> version 1, got '${ALIAS_V_P1}'" >&2
+case "${ALIAS_V_P1}" in
+  ''|*[!0-9]*)
+    echo "FAIL: expected alias live -> a numeric published version, got '${ALIAS_V_P1}'" >&2
+    exit 1
+    ;;
+esac
+OPT_V1="$(aws lambda get-function-configuration --function-name "${FN}:${ALIAS_V_P1}" --region "${REGION}" \
+  --query 'SnapStart.OptimizationStatus' --output text)"
+if [ "${OPT_V1}" != "On" ]; then
+  echo "FAIL: expected version ${ALIAS_V_P1} SnapStart OptimizationStatus=On, got '${OPT_V1}'" >&2
   exit 1
 fi
 BODY_P1="$(invoke_alias)"
@@ -151,32 +160,33 @@ if ! printf '%s' "${BODY_P1}" | grep -q 'hello-v1'; then
   echo "FAIL: alias invoke expected hello-v1, got: ${BODY_P1}" >&2
   exit 1
 fi
-echo "    SnapStart on, version 1 optimized, alias serves hello-v1"
+echo "    SnapStart on, version ${ALIAS_V_P1} optimized, alias serves hello-v1"
 
 # --- Phase 2: env change -> version rotation ------------------------------
 echo "==> Phase 2: re-deploy with changed env (new version + alias retarget + old version delete)"
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
-OPT_V2="$(aws lambda get-function-configuration --function-name "${FN}:2" --region "${REGION}" \
-  --query 'SnapStart.OptimizationStatus' --output text)"
-if [ "${OPT_V2}" != "On" ]; then
-  echo "FAIL: expected version 2 SnapStart OptimizationStatus=On, got '${OPT_V2}'" >&2
-  exit 1
-fi
 ALIAS_V_P2="$(aws lambda get-alias --function-name "${FN}" --name live --region "${REGION}" \
   --query 'FunctionVersion' --output text)"
-if [ "${ALIAS_V_P2}" != "2" ]; then
-  echo "FAIL: expected alias live -> version 2 after update, got '${ALIAS_V_P2}'" >&2
+EXPECTED_V2="$((ALIAS_V_P1 + 1))"
+if [ "${ALIAS_V_P2}" != "${EXPECTED_V2}" ]; then
+  echo "FAIL: expected alias live -> version ${EXPECTED_V2} after update, got '${ALIAS_V_P2}'" >&2
   exit 1
 fi
-assert_gone "old version 1 still exists after update (should be deleted)" aws lambda get-function-configuration --function-name "${FN}:1" --region "${REGION}"
+OPT_V2="$(aws lambda get-function-configuration --function-name "${FN}:${ALIAS_V_P2}" --region "${REGION}" \
+  --query 'SnapStart.OptimizationStatus' --output text)"
+if [ "${OPT_V2}" != "On" ]; then
+  echo "FAIL: expected version ${ALIAS_V_P2} SnapStart OptimizationStatus=On, got '${OPT_V2}'" >&2
+  exit 1
+fi
+assert_gone "old version ${ALIAS_V_P1} still exists after update (should be deleted)" aws lambda get-function-configuration --function-name "${FN}:${ALIAS_V_P1}" --region "${REGION}"
 BODY_P2="$(invoke_alias)"
 if ! printf '%s' "${BODY_P2}" | grep -q 'hello-v2'; then
   echo "FAIL: alias invoke expected hello-v2 after update, got: ${BODY_P2}" >&2
   exit 1
 fi
-echo "    version 2 optimized, alias retargeted, old version deleted, alias serves hello-v2"
+echo "    version ${ALIAS_V_P2} optimized, alias retargeted, old version ${ALIAS_V_P1} deleted, alias serves hello-v2"
 
 # --- Phase 3: destroy ------------------------------------------------------
 echo "==> Phase 3: destroy"
