@@ -33,6 +33,12 @@ export interface TemplateParameter {
   AllowedValues?: unknown[];
   AllowedPattern?: string;
   ConstraintDescription?: string;
+  /**
+   * CFn's "this value is sensitive" declaration — masked in every place
+   * CloudFormation echoes the value. cdkd honors it by redacting the value
+   * in `--verbose` debug logs (issue #1329).
+   */
+  NoEcho?: boolean;
 }
 
 /**
