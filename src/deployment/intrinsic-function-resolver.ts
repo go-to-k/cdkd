@@ -678,6 +678,22 @@ export interface ParameterDefinition {
 }
 
 /**
+ * Render a parameter VALUE for a debug log line, honoring the definition's
+ * `NoEcho` flag (issue #1329). `NoEcho: true` is the template author's
+ * explicit "this value is sensitive" declaration — CloudFormation masks such
+ * values everywhere it echoes them, so cdkd's `--verbose` output must not
+ * print them either. Sibling of `stringifyAttributeForLog` (which redacts
+ * `Fn::GetAtt` ATTRIBUTE values by name heuristic; here the author told us).
+ */
+function stringifyParameterForLog(
+  paramDef: ParameterDefinition | undefined,
+  value: unknown
+): string {
+  if (paramDef?.NoEcho === true) return '<redacted>';
+  return stringifyValue(value);
+}
+
+/**
  * Behavior knobs for {@link IntrinsicFunctionResolver}.
  */
 export interface IntrinsicFunctionResolverOptions {
@@ -763,7 +779,9 @@ export class IntrinsicFunctionResolver {
         const userValue = userParameters[name];
         if (userValue !== undefined) {
           parameters[name] = this.coerceParameterValue(userValue, paramDef.Type);
-          this.logger.debug(`Parameter ${name}: using user-provided value ${userValue}`);
+          this.logger.debug(
+            `Parameter ${name}: using user-provided value ${stringifyParameterForLog(paramDef, userValue)}`
+          );
           continue;
         }
       }
@@ -791,13 +809,15 @@ export class IntrinsicFunctionResolver {
           this.logger.debug(`Parameter ${name}: resolving SSM parameter path ${ssmPath}`);
           const resolved = await this.resolveSSMParameter(ssmPath);
           parameters[name] = resolved;
-          this.logger.debug(`Parameter ${name}: resolved SSM value ${resolved}`);
+          this.logger.debug(
+            `Parameter ${name}: resolved SSM value ${stringifyParameterForLog(paramDef, resolved)}`
+          );
           continue;
         }
 
         parameters[name] = paramDef.Default;
         this.logger.debug(
-          `Parameter ${name}: using default value ${stringifyValue(paramDef.Default)}`
+          `Parameter ${name}: using default value ${stringifyParameterForLog(paramDef, paramDef.Default)}`
         );
         continue;
       }
@@ -1086,7 +1106,10 @@ export class IntrinsicFunctionResolver {
     // Check if it's a parameter
     if (context.parameters && logicalId in context.parameters) {
       const value = context.parameters[logicalId];
-      this.logger.debug(`Resolved Ref to parameter: ${logicalId} -> ${stringifyValue(value)}`);
+      const paramDef = context.template.Parameters?.[logicalId] as ParameterDefinition | undefined;
+      this.logger.debug(
+        `Resolved Ref to parameter: ${logicalId} -> ${stringifyParameterForLog(paramDef, value)}`
+      );
       return value;
     }
 
