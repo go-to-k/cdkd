@@ -15,7 +15,7 @@ Drop-in CDK CLI for existing CDK apps — up to 15x faster deploys via direct AW
 
 **A natural fit for AI-driven development.** AI coding agents iterate in tight spin-up / tear-down loops — and cdkd keeps each turn short, with fast deploys and an equally fast `cdkd destroy` that deletes via direct SDK calls instead of polling a CloudFormation stack-delete.
 
-**Local execution from your deployed stack.** `cdkd local` runs your functions, APIs, and ECS tasks on your machine, and can resolve env vars, secrets, and resource references from your real deployed stack: no hand-written `.env` files, no hand-seeded test data (see [Local execution](#local-execution)).
+**Local execution from your deployed stack.** `cdkd local` runs your functions, APIs, and ECS tasks on your machine. It can resolve env vars, secrets, and resource references from your real deployed stack: no hand-written `.env` files, no hand-seeded test data (see [Local execution](#local-execution)).
 
 > [!IMPORTANT]
 > cdkd is for dev/test workflows only — early in development, not yet production-ready.
