@@ -105,35 +105,6 @@ Distribution analysis, wait-skipping comparability (Terraform has no global `--n
 
 The full benchmark suite lives in [docs/benchmarks.md](docs/benchmarks.md): the SDK Provider path (**5.5x**, 17.0s vs 94.4s), the VPC + CloudFront + Lambda stack behind the headline **15x** (40s vs 599s with `--no-wait`), the Cloud Control API fallback path (**1.6x**), and the Terraform comparison in full detail. Reproduction scripts: [tests/benchmark](tests/benchmark/README.md).
 
-## Prerequisites
-
-- **Node.js** >= 20.0.0
-- **AWS credentials with admin-equivalent permissions** for the resources being deployed. cdkd does NOT route through CloudFormation, so CDK CLI's `cdk-hnb659fds-deploy-role-*` is NOT sufficient — see [`--role-arn`](docs/cli-reference.md).
-
-AWS CDK's `cdk bootstrap` is not required. Instead, run `cdkd bootstrap` once per
-account: it creates the S3 state bucket (`cdkd-state-{accountId}`) that cdkd uses
-to track deployed resources, plus cdkd-owned asset storage (by default a
-`cdkd-assets-{accountId}-{region}` bucket + a
-`cdkd-container-assets-{accountId}-{region}` ECR repo; custom names via
-`--asset-bucket` / `--container-repo`, skip with `--no-assets`; see
-[`cdkd bootstrap`](docs/cli-reference.md#cdkd-bootstrap)). Per-region asset
-storage is added automatically on the first `cdkd deploy` into each region.
-Existing setups, legacy-mode opt-outs, and how this relates to `cdk bootstrap`: see
-[Upgrading from an earlier cdkd version](#upgrading-from-an-earlier-cdkd-version).
-
-### Upgrading from an earlier cdkd version
-
-**No breaking change, no manual step: just deploy.** The first `cdkd deploy` into
-each region auto-creates the cdkd-owned asset storage (interactive runs are asked
-once per region, `--yes` / CI runs create it automatically) and shows a one-time
-in-place UPDATE repointing asset references — content identical, no replacement.
-Downgrading is safe too (older binaries ignore the marker). If you bootstrapped
-under a previous cdkd version, the legacy region-suffixed state bucket name
-(`cdkd-state-{accountId}-{region}`) is still picked up automatically with a
-deprecation warning. Explicit pre-provisioning
-(`cdkd bootstrap --region <r>`), legacy-mode opt-outs, and how this relates to
-`cdk bootstrap`: see [`cdkd bootstrap`](docs/cli-reference.md#cdkd-bootstrap).
-
 ## Features
 
 - **Synthesis orchestration**: CDK app subprocess execution, Cloud Assembly parsing, context provider loop
@@ -195,6 +166,35 @@ deprecation warning. Explicit pre-provisioning
 For a step-by-step walkthrough of the full `cdkd deploy` pipeline (CLI
 parsing → synthesis → asset publishing → per-stack deploy), see
 [docs/architecture.md](docs/architecture.md#5-end-to-end-pipeline-walkthrough-cdkd-deploy).
+
+## Prerequisites
+
+- **Node.js** >= 20.0.0
+- **AWS credentials with admin-equivalent permissions** for the resources being deployed. cdkd does NOT route through CloudFormation, so CDK CLI's `cdk-hnb659fds-deploy-role-*` is NOT sufficient — see [`--role-arn`](docs/cli-reference.md).
+
+AWS CDK's `cdk bootstrap` is not required. Instead, run `cdkd bootstrap` once per
+account: it creates the S3 state bucket (`cdkd-state-{accountId}`) that cdkd uses
+to track deployed resources, plus cdkd-owned asset storage (by default a
+`cdkd-assets-{accountId}-{region}` bucket + a
+`cdkd-container-assets-{accountId}-{region}` ECR repo; custom names via
+`--asset-bucket` / `--container-repo`, skip with `--no-assets`; see
+[`cdkd bootstrap`](docs/cli-reference.md#cdkd-bootstrap)). Per-region asset
+storage is added automatically on the first `cdkd deploy` into each region.
+Existing setups, legacy-mode opt-outs, and how this relates to `cdk bootstrap`: see
+[Upgrading from an earlier cdkd version](#upgrading-from-an-earlier-cdkd-version).
+
+### Upgrading from an earlier cdkd version
+
+**No breaking change, no manual step: just deploy.** The first `cdkd deploy` into
+each region auto-creates the cdkd-owned asset storage (interactive runs are asked
+once per region, `--yes` / CI runs create it automatically) and shows a one-time
+in-place UPDATE repointing asset references — content identical, no replacement.
+Downgrading is safe too (older binaries ignore the marker). If you bootstrapped
+under a previous cdkd version, the legacy region-suffixed state bucket name
+(`cdkd-state-{accountId}-{region}`) is still picked up automatically with a
+deprecation warning. Explicit pre-provisioning
+(`cdkd bootstrap --region <r>`), legacy-mode opt-outs, and how this relates to
+`cdk bootstrap`: see [`cdkd bootstrap`](docs/cli-reference.md#cdkd-bootstrap).
 
 ## Usage
 
