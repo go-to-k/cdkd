@@ -45,6 +45,12 @@ cdkd list
 # Deploy your CDK app
 cdkd deploy
 
+# Deploy at maximum speed: skip slow stabilization waits
+cdkd deploy --no-wait
+
+# Deploy with CloudFormation-parity completion waits
+cdkd deploy --full-wait
+
 # Check what would change
 cdkd diff
 
