@@ -22,7 +22,7 @@ asset-bootstrap	2026-08-01T09:21:06Z	PASS	99	verify.sh	0801 regression sweep; us
 asset-migration	2026-08-01T09:26:36Z	PASS	292	verify.sh	0801 regression sweep; eu-west-1 (marker-free pick); nested+ECR legs ok, 0 orphans
 aws-custom-resource	2026-07-21T05:26:32Z	PASS	82	verify.sh	rc ok, orph clean
 backup	2026-07-26T20:07:41Z	PASS	67	verify.sh	0727b sweep-b14 staleness re-run (rc=0); account clean
-basic	2026-07-20T04:38:04Z	PASS	83	standard	rc 0/0, 0 orphans; validates buildProgram entry-point refactor (#1097)
+basic	2026-08-01T10:00:06Z	PASS	81	standard	0801 regression sweep; 2 del/0 err, 0 orphans
 batch	2026-07-26T18:43:33Z	PASS	89	standard	0727b sweep-b5 staleness re-run (rc=0); account clean
 bedrock-agentcore	2026-07-24T04:22:29Z	PASS	42	standard	import() attr enrich (#1188); GetAgentRuntime live-probe confirms field shape; 6 del 0 err
 bench-ccapi	2026-07-26T18:43:33Z	PASS	89	standard	0727b sweep-b5 staleness re-run (rc=0); account clean
@@ -33,8 +33,8 @@ bucket-deployment	2026-07-21T18:02:21Z	PASS	125	verify.sh	rc ok, orph clean
 budgets	2026-08-01T09:36:05Z	PASS	42	verify.sh	0801 regression sweep; create/update/destroy ok, 0 orphans
 cache-streaming	2026-07-21T10:54:20Z	PASS	497	verify.sh	converted to verify.sh; GetAtt redis endpoint ok, 0 orphans
 cc-api-fallback	2026-07-27T05:30:42Z	PASS	65	verify.sh	1252 fix live-verify (CC delete path incl. new integ-destroy scope); 0 errors 0 orphans
-cc-api-fallback-transitions	2026-07-20T02:19:31Z	PASS	140	verify.sh	CC transition/override #634 verified, 2 stacks destroy clean
-cc-getatt-readback	2026-07-20T03:06:02Z	PASS	260	verify.sh	generic sparse read-back live-verified (#1105); destroy 8/8, 0 orphans
+cc-api-fallback-transitions	2026-08-01T10:00:06Z	PASS	123	verify.sh	0801 regression sweep; #634 items 3+4 ok, 0 orphans
+cc-getatt-readback	2026-08-01T10:00:06Z	PASS	90	verify.sh	0801 regression sweep; CC GetAtt read-back ok, 0 orphans
 cc-protection-flip	2026-07-31T03:56:21Z	PASS	1250	verify.sh	5 CC types incl. RDS/DocDB GlobalCluster shells (#1315); orph clean
 cc-protection-flip-eks	2026-07-31T04:30:02Z	PASS	2300	verify.sh	EKS blocked-destroy + --remove-protection flip (#1315); orph clean
 ci-cd	2026-07-21T18:23:00Z	PASS	55	verify.sh	rc ok, orph clean
@@ -101,7 +101,7 @@ eventbridge-api-destination	2026-07-21T14:48:06Z	PASS	70	verify.sh	rc ok, orph c
 eventbridge-archive	2026-07-31T06:21:38Z	PASS	54	verify.sh	TTL-refresh sweep re-run; 3 phases clean, orph clean
 eventbridge-input-transformer	2026-07-20T08:18:46Z	PASS	63	verify.sh	hardened P2 propagation race; passes
 eventbridge-pipes	2026-07-26T19:36:49Z	PASS	177	verify.sh	0727b sweep-b11 staleness re-run (rc=0); account clean
-eventbridge-scheduler	2026-07-20T03:07:51Z	PASS	150	verify.sh	pattern-2 sweep sample: assert_gone/gone_probe/head-object idioms live-verified; 0 orphans
+eventbridge-scheduler	2026-08-01T10:00:06Z	PASS	46	verify.sh	0801 regression sweep; ok, 0 orphans
 eventsourcemapping-race	2026-07-27T11:04:52Z	PASS	80	verify.sh	issue #1267 Lambda ESM update wrap; 5 del 0 err; swept 1 auto-created log group
 export	2026-07-30T12:24:41Z	PASS	480	verify.sh	regression sweep post-#1289/#1294; full CFn IMPORT round-trip clean
 export-nested-stack	2026-07-21T08:39:22Z	PASS	327	verify.sh	export->CFn nested adopt, CFn delete clean, 0 orphans
@@ -208,7 +208,7 @@ rds-aurora	2026-07-25T06:38:38Z	PASS	2085	verify.sh	1160 removal reset: cluster 
 rds-dbinstance-backfill	2026-07-25T07:01:56Z	PASS	725	verify.sh	re-run after 1222 review fixes; destroy 11/0
 rds-full-stack	2026-07-21T08:03:48Z	PASS	2346	verify.sh	15 deleted 0 orphans, RDS slow-delete floor ok
 recreate-mixed-direction	2026-07-21T05:15:35Z	PASS	100	verify.sh	rc ok, orph clean
-recreate-via-cc-api	2026-07-20T02:21:54Z	PASS	106	verify.sh	SDK->CC mid-life migration + S3 probe, destroy clean
+recreate-via-cc-api	2026-08-01T10:00:06Z	PASS	93	verify.sh	0801 regression sweep; SDK->CC mid-life migration ok, 0 orphans
 recreate-via-sdk-provider	2026-07-21T05:13:38Z	PASS	86	verify.sh	rc ok, orph clean
 redshift-cluster-getatt	2026-07-20T14:58:06Z	PASS	330	verify.sh	CC GetAtt Endpoint real hostname, 0 orphans
 remove-protection	2026-07-30T18:35:25Z	PASS	1300	verify.sh	broad run for #1312 destroy-runner touch; 12 del/0 err, orph clean
