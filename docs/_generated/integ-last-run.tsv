@@ -60,7 +60,7 @@ custom-resource-getatt-data	2026-07-20T14:59:39Z	PASS	63	verify.sh	CR Data GetAt
 custom-resource-provider	2026-07-24T08:31:58Z	PASS	480	standard	cross-region us-west-2 vs us-east-1 bucket (issue #1195 fix + hardening live-verified); 17 res, destroy 0 err 0 orphan
 data-analytics	2026-07-21T18:30:46Z	PASS	50	verify.sh	rc ok, orph clean
 data-pipeline	2026-07-24T10:53:59Z	PASS	47	standard	0724b sweep staleness; 7 del 0 err 0 orphans
-deep-getatt-chains	2026-07-20T08:10:49Z	PASS	66	verify.sh	rc ok, orph clean
+deep-getatt-chains	2026-08-01T10:07:21Z	PASS	53	verify.sh	0801 regression sweep; SDK+CC chain ok, 0 orphans
 deletion-ordering-complex	2026-07-26T20:00:52Z	PASS	187	verify.sh	0727b sweep-b13 staleness re-run (rc=0); account clean
 deletion-policy-retain	2026-07-21T07:21:45Z	PASS	29	verify.sh	retain honored, manual cleanup ok, 0 orphans
 deployment-events	2026-07-26T20:00:52Z	PASS	45	verify.sh	0727b sweep-b13 staleness re-run (rc=0); account clean
@@ -76,8 +76,8 @@ dsql	2026-07-30T18:11:24Z	PASS	540	verify.sh	4-phase incl. destroy --remove-prot
 dynamodb-autoscaling	2026-07-21T14:33:57Z	PASS	77	verify.sh	rc ok, orph clean
 dynamodb-globaltable	2026-07-21T05:21:32Z	PASS	237	verify.sh	rc ok, orph clean
 dynamodb-gsi-update	2026-07-20T08:09:23Z	PASS	579	verify.sh	rc ok, orph clean
-dynamodb-ondemand	2026-07-20T07:59:21Z	PASS	93	verify.sh	rc ok, orph clean
-dynamodb-sse	2026-07-20T07:04:47Z	PASS	150	verify.sh	capture-form sweep sample (#1120): strict captures + gone_probe branch live-verified; 0 orphans
+dynamodb-ondemand	2026-08-01T10:07:21Z	PASS	81	verify.sh	0801 regression sweep; ondemand+policy+kinesis backfills ok, 0 orphans
+dynamodb-sse	2026-08-01T10:07:21Z	PASS	40	verify.sh	0801 regression sweep; SSE mapping ok, 0 orphans
 dynamodb-stream-filter	2026-07-21T18:08:16Z	PASS	62	verify.sh	rc ok, orph clean
 dynamodb-streams	2026-07-20T17:40:13Z	PASS	86	verify.sh	DDB streams WarmThroughput+ESM+StreamSpec UPDATE, 10 res clean
 dynamodb-tableclass-switch	2026-07-26T19:36:49Z	PASS	62	verify.sh	0727b sweep-b11 staleness re-run (rc=0); account clean
@@ -112,7 +112,7 @@ fsx-openzfs	2026-07-19T16:00:39Z	PASS	1380	verify.sh	re-run after review fixes; 
 fsx-windows	2026-07-20T02:35:13Z	PASS	5460	verify.sh	issue #1088 Windows AD-joined: 7 phases, DiskIopsConfiguration read back, ENIs released 192s; 11 deleted 0 errors 0 orphans
 full-stack-demo	2026-07-26T18:36:31Z	PASS	41	standard	0727b sweep-b4 staleness re-run (rc=0); account clean
 gc-custom-asset-names	2026-07-31T06:41:35Z	PASS	120	verify.sh	TTL-refresh sweep re-run in ca-central-1 (us-west-2 now marker-owned); zero residue
-getatt-fallback-guard	2026-07-20T05:59:44Z	PASS	300	verify.sh	4-phase incl. strict-output state-persistence guarantee (#1111 blocker fix); 0 orphans
+getatt-fallback-guard	2026-08-01T10:07:21Z	PASS	84	verify.sh	0801 regression sweep; strict-getatt paths ok, 0 orphans
 getstackoutput-crossregion	2026-07-26T19:05:27Z	PASS	79	verify.sh	0727b sweep-b8 staleness re-run (rc=0); account clean
 glue-securityconfig-replace	2026-07-26T18:20:27Z	PASS	59	verify.sh	0727b sweep-b3 staleness re-run (rc=0); account clean
 glue-update-hardening	2026-07-26T20:00:52Z	PASS	75	verify.sh	0727b sweep-b13 staleness re-run (rc=0); account clean
@@ -241,7 +241,7 @@ servicediscovery	2026-08-01T09:42:37Z	PASS	106	verify.sh	0801 regression sweep; 
 servicediscovery-namespaces	2026-08-01T09:36:05Z	PASS	108	verify.sh	0801 regression sweep; Http+PublicDns namespaces ok, 0 orphans
 ses-identity	2026-07-21T14:41:07Z	PASS	199	verify.sh	PASS on re-run; 1st attempt hit transient 403 token-expiry (not a cdkd bug), cleaned orphan config-set
 sg-circular-dependency	2026-07-26T18:49:34Z	PASS	51	verify.sh	0727b sweep-b6 staleness re-run (rc=0); account clean
-sns-event-source	2026-07-20T08:12:14Z	PASS	68	verify.sh	rc ok, orph clean
+sns-event-source	2026-08-01T10:07:21Z	PASS	59	verify.sh	0801 regression sweep; e2e delivery ok, log groups swept, 0 orphans
 sns-inline-subscription	2026-07-27T11:04:52Z	PASS	53	verify.sh	issue #1267 SNS topic update wrap; 3 del 0 err
 sns-pending-subscription	2026-07-30T12:40:16Z	PASS	22	verify.sh	issue #1301 re-run after review fixes, clean
 sns-sqs-event	2026-07-26T17:01:09Z	PASS	78	verify.sh	#1160 sqs SSE removal phase 2 verified; destroy 20/0 errors, 0 orphans
