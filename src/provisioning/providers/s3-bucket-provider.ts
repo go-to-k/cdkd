@@ -58,6 +58,7 @@ import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import { S3_AUTO_DELETE_OBJECTS_TAG, hasCdkAutoDeleteTag } from '../data-delete-intent.js';
 import { generateResourceName } from '../resource-name.js';
 import type {
   ResourceProvider,
@@ -1741,13 +1742,22 @@ export class S3BucketProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    _properties?: Record<string, unknown>,
+    properties?: Record<string, unknown>,
     context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting S3 bucket ${logicalId}: ${physicalId}`);
 
+    // CloudFormation-parity data guard (issue #1340): a non-empty bucket is
+    // only auto-emptied when the user opted in — CDK's `autoDeleteObjects`
+    // tag on the bucket, or the deploy engine's `--force-stateful-recreation`
+    // consent on a replacement delete. Otherwise the not-empty error
+    // surfaces exactly like CloudFormation's DELETE_FAILED.
+    const allowAutoEmpty =
+      context?.forceDataDelete === true ||
+      hasCdkAutoDeleteTag(properties, S3_AUTO_DELETE_OBJECTS_TAG);
+
     try {
-      await this.deleteBucketWithEmptyRetry(logicalId, physicalId);
+      await this.deleteBucketWithEmptyRetry(logicalId, physicalId, allowAutoEmpty);
     } catch (error) {
       if (error instanceof NoSuchBucket) {
         const clientRegion = await this.s3Client.config.region();
@@ -2524,11 +2534,25 @@ export class S3BucketProvider implements ResourceProvider {
   }
 
   /**
-   * Delete a bucket, emptying it first if not empty.
-   * Handles the race condition where objects (e.g., ALB logs) are written
-   * after CustomResource cleanup but before bucket deletion.
+   * Delete a bucket, emptying it first if not empty — but ONLY when
+   * `allowAutoEmpty` is set (issue #1340).
+   *
+   * With `allowAutoEmpty` (CDK `autoDeleteObjects` tag present, or
+   * `--force-stateful-recreation` consent via
+   * {@link DeleteContext.forceDataDelete}), the retry loop handles the race
+   * condition where objects (e.g., ALB logs) are written after
+   * CustomResource cleanup but before bucket deletion.
+   *
+   * Without it, a not-empty bucket refuses deletion with an actionable
+   * error — matching CloudFormation's DELETE_FAILED, which is the safety
+   * net users rely on to keep `cdkd destroy` from silently destroying data
+   * they never opted into losing.
    */
-  private async deleteBucketWithEmptyRetry(logicalId: string, bucketName: string): Promise<void> {
+  private async deleteBucketWithEmptyRetry(
+    logicalId: string,
+    bucketName: string,
+    allowAutoEmpty: boolean
+  ): Promise<void> {
     const maxAttempts = 3;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
@@ -2538,8 +2562,18 @@ export class S3BucketProvider implements ResourceProvider {
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error);
         if (msg.includes('not empty') || msg.includes('BucketNotEmpty')) {
-          this.logger.debug(
-            `Bucket ${bucketName} not empty (attempt ${attempt}/${maxAttempts}), emptying...`
+          if (!allowAutoEmpty) {
+            throw new Error(
+              `bucket ${bucketName} is not empty. Matching CloudFormation, cdkd does not ` +
+                `delete a non-empty bucket unless it opted into automatic emptying ` +
+                `(CDK's autoDeleteObjects: true, i.e. the '${S3_AUTO_DELETE_OBJECTS_TAG}' tag). ` +
+                `Either empty the bucket first (delete all objects — and for versioned ` +
+                `buckets all object versions and delete markers), or redeploy with ` +
+                `autoDeleteObjects: true and destroy again.`
+            );
+          }
+          this.logger.info(
+            `Bucket ${bucketName} not empty (attempt ${attempt}/${maxAttempts}), emptying (auto-delete opt-in present)...`
           );
           await this.emptyBucket(bucketName);
           continue;

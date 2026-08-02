@@ -2458,7 +2458,13 @@ export class DeployEngine {
         currentResource.physicalId,
         resourceType,
         currentResource.properties,
-        { expectedRegion: this.stackRegion }
+        {
+          expectedRegion: this.stackRegion,
+          // Replacement delete: `--force-stateful-recreation` is the user's
+          // explicit data-loss consent, so thread it to the provider's data
+          // guard (issue #1340).
+          forceDataDelete: this.options.forceStatefulRecreation === true,
+        }
       );
     } catch (deleteError) {
       // Mirror the recreate-flagged path's wrapping: the delete is
@@ -2859,7 +2865,10 @@ export class DeployEngine {
                   currentResource.physicalId,
                   resourceType,
                   currentResource.properties,
-                  { expectedRegion: this.stackRegion }
+                  {
+                    expectedRegion: this.stackRegion,
+                    forceDataDelete: this.options.forceStatefulRecreation === true,
+                  }
                 );
                 this.logger.info(`  ${green('✓')} Old resource deleted`);
               } catch (deleteError) {
@@ -3089,7 +3098,10 @@ export class DeployEngine {
                   currentResource.physicalId,
                   resourceType,
                   currentResource.properties,
-                  { expectedRegion: this.stackRegion }
+                  {
+                    expectedRegion: this.stackRegion,
+                    forceDataDelete: this.options.forceStatefulRecreation === true,
+                  }
                 );
                 this.logger.info(`  ${green('✓')} Old resource deleted`);
               } catch (deleteError) {
@@ -3213,7 +3225,10 @@ export class DeployEngine {
                   currentResource.physicalId,
                   resourceType,
                   currentProps,
-                  { expectedRegion: this.stackRegion }
+                  {
+                    expectedRegion: this.stackRegion,
+                    forceDataDelete: this.options.forceStatefulRecreation === true,
+                  }
                 );
               } catch (deleteError) {
                 // If old resource doesn't exist (already deleted), proceed with CREATE

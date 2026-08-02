@@ -414,6 +414,48 @@ aws s3 rb s3://old-bucket-name --force
 node dist/cli.js deploy --app "..." --state-bucket ${STATE_BUCKET}
 ```
 
+### Issue: "bucket is not empty" / "still contains images" on destroy
+
+**Symptoms:**
+
+```text
+Failed to delete S3 bucket MyBucket: bucket my-bucket is not empty. Matching
+CloudFormation, cdkd does not delete a non-empty bucket unless it opted into
+automatic emptying ...
+```
+
+```text
+Failed to delete ECR Repository MyRepo: repository my-repo still contains
+images. Matching CloudFormation, cdkd does not force-delete an image-carrying
+repository ...
+```
+
+**Cause:**
+
+`cdkd destroy` matches CloudFormation's fail-and-protect behavior (issue
+[#1340](https://github.com/go-to-k/cdkd/issues/1340)): an S3 bucket that
+still contains objects, or an ECR repository that still contains images, is
+NOT force-cleaned unless the resource opted in.
+
+**Solutions:**
+
+1. Opt in from the CDK app and redeploy, then destroy:
+   - S3: `autoDeleteObjects: true` (with `removalPolicy: DESTROY`)
+   - ECR: `emptyOnDelete: true` (or the legacy `autoDeleteImages: true`)
+2. Or empty the data manually and re-run the destroy:
+
+   ```bash
+   # Unversioned bucket
+   aws s3 rm s3://my-bucket --recursive
+   # Versioned bucket: also delete all object versions + delete markers
+   # ECR
+   aws ecr batch-delete-image --repository-name my-repo \
+     --image-ids "$(aws ecr list-images --repository-name my-repo --query 'imageIds' --output json)"
+   ```
+
+See the "Destroy data guards" section in
+[cli-reference.md](cli-reference.md) for the full semantics.
+
 ---
 
 ## Asset Publishing Issues

@@ -73,6 +73,10 @@
       "description": "Structured deployment events to S3 + `cdkd events` command (issue #808): per-run `deployments/{runId}.jsonl` + `index.json` (separate key family from state.json, no schema bump), events survive `cdkd destroy`, and carry error + metadata ONLY (no resource properties / secrets)."
     },
     {
+      "tag": "destroy-data-guard",
+      "description": "CloudFormation-parity refusal to force-clean contained data on destroy (issue #1340): a non-empty S3 bucket WITHOUT the auto-delete opt-in and an image-carrying ECR repository WITHOUT EmptyOnDelete both FAIL the destroy with the data intact, while the opted-in siblings (aws-cdk:auto-delete-objects tag / EmptyOnDelete: true) are force-cleaned in the same run; after AWS-native data cleanup a second destroy completes with zero orphans."
+    },
+    {
       "tag": "destroy-interrupt",
       "description": "Graceful SIGINT on destroy (#816 — first Ctrl-C drains in-flight deletes, flushes trimmed state, releases the lock, exits non-zero; no 30m stranded lock) + Custom Resource replay fail-fast on re-run (#804 — the CR delete does NOT stall ~10 minutes invoking GetFunction against the already-deleted backing Lambda; the re-run resumes cleanly and quickly)."
     },
@@ -658,6 +662,13 @@
       "annotated": true,
       "scenarios": [
         "deployment-events"
+      ]
+    },
+    {
+      "name": "destroy-data-guard",
+      "annotated": true,
+      "scenarios": [
+        "destroy-data-guard"
       ]
     },
     {
@@ -1984,6 +1995,13 @@
       "description": "Structured deployment events to S3 + `cdkd events` command (issue #808): per-run `deployments/{runId}.jsonl` + `index.json` (separate key family from state.json, no schema bump), events survive `cdkd destroy`, and carry error + metadata ONLY (no resource properties / secrets).",
       "fixtures": [
         "deployment-events"
+      ]
+    },
+    {
+      "scenario": "destroy-data-guard",
+      "description": "CloudFormation-parity refusal to force-clean contained data on destroy (issue #1340): a non-empty S3 bucket WITHOUT the auto-delete opt-in and an image-carrying ECR repository WITHOUT EmptyOnDelete both FAIL the destroy with the data intact, while the opted-in siblings (aws-cdk:auto-delete-objects tag / EmptyOnDelete: true) are force-cleaned in the same run; after AWS-native data cleanup a second destroy completes with zero orphans.",
+      "fixtures": [
+        "destroy-data-guard"
       ]
     },
     {

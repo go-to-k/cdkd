@@ -22,6 +22,21 @@ the AWS client's region against `context.expectedRegion` (via the shared
 before treating a `*NotFound` error as idempotent delete success — see
 "DELETE idempotency" below and [docs/provider-development.md](../../docs/provider-development.md).
 
+`context.forceDataDelete` (issue #1340) is explicit user consent to destroy
+the DATA a resource still contains — set ONLY by the deploy engine's
+replacement / recreate delete sites when `--force-stateful-recreation` was
+passed, never by plain `cdkd destroy`. Providers whose delete API fails by
+default on contained data (S3 bucket auto-empty, ECR `force: true`) MUST
+gate that force-cleanup on this flag OR a template-borne opt-in (CDK's
+`aws-cdk:auto-delete-objects` / `aws-cdk:auto-delete-images` tags,
+`EmptyOnDelete: true` — shared helpers in
+`src/provisioning/data-delete-intent.ts`), and otherwise surface AWS's
+not-empty error like CloudFormation's DELETE_FAILED. Do NOT add
+unconditional force-cleanup to a new provider's delete — verify CFn's
+actual delete behavior by live A/B first (CFn hard-deletes more than
+folklore says: SecretsManager no-recovery-window and IAM role
+force-detach are PARITY, verified 2026-08-02).
+
 Register Provider for each resource type in Provider Registry:
 
 ```typescript

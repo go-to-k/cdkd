@@ -14,6 +14,7 @@ import {
   UntagResourceCommand,
   ListTagsForResourceCommand,
   LifecyclePolicyNotFoundException,
+  RepositoryNotEmptyException,
   RepositoryNotFoundException,
   type ImageScanningConfiguration,
   type EncryptionConfiguration,
@@ -24,6 +25,11 @@ import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { generateResourceName } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import {
+  ECR_AUTO_DELETE_IMAGES_TAG,
+  hasCdkAutoDeleteTag,
+  isTruthyCfnBoolean,
+} from '../data-delete-intent.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import type {
   ResourceProvider,
@@ -38,8 +44,11 @@ import type {
  *
  * Implements resource provisioning for AWS::ECR::Repository using the ECR SDK.
  * WHY: The CC API cannot force-delete repositories that contain images.
- * This SDK provider uses DeleteRepositoryCommand with `force: true` to delete
- * repositories along with all their images, supporting CDK's `emptyOnDelete: true`.
+ * This SDK provider implements CDK's `emptyOnDelete: true` by passing
+ * `force: true` to DeleteRepositoryCommand — gated on the user's opt-in
+ * (`EmptyOnDelete: true`, the `aws-cdk:auto-delete-images` tag, or
+ * `--force-stateful-recreation` on a replacement), never unconditionally
+ * (issue #1340; CloudFormation parity for repositories without the opt-in).
  */
 export class ECRProvider implements ResourceProvider {
   private client?: ECRClient;
@@ -397,27 +406,57 @@ export class ECRProvider implements ResourceProvider {
   /**
    * Delete an ECR Repository
    *
-   * Uses `force: true` to delete the repository even if it contains images.
-   * This supports CDK's `emptyOnDelete: true` / `removalPolicy: DESTROY` pattern.
+   * `force: true` (delete the repository along with any images it still
+   * contains) is applied ONLY when the user opted in (issue #1340):
+   * `EmptyOnDelete: true` (CDK `emptyOnDelete`), CDK's legacy
+   * `autoDeleteImages` tag, or the deploy engine's
+   * `--force-stateful-recreation` consent on a replacement delete.
+   * Without an opt-in, a repository that still contains images refuses
+   * deletion with an actionable error — matching CloudFormation's
+   * DELETE_FAILED (`RepositoryNotEmptyException`).
    */
   async delete(
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    _properties?: Record<string, unknown>,
+    properties?: Record<string, unknown>,
     context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting ECR Repository ${logicalId}: ${physicalId}`);
 
+    const force =
+      context?.forceDataDelete === true ||
+      isTruthyCfnBoolean(properties?.['EmptyOnDelete']) ||
+      hasCdkAutoDeleteTag(properties, ECR_AUTO_DELETE_IMAGES_TAG);
+
     try {
+      if (force) {
+        this.logger.debug(
+          `Force-deleting ECR Repository ${logicalId} (empty-on-delete opt-in present)`
+        );
+      }
       await this.getClient().send(
         new DeleteRepositoryCommand({
           repositoryName: physicalId,
-          force: true,
+          force,
         })
       );
       this.logger.debug(`Successfully deleted ECR Repository ${logicalId}`);
     } catch (error) {
+      if (error instanceof RepositoryNotEmptyException) {
+        throw new ProvisioningError(
+          `Failed to delete ECR Repository ${logicalId}: repository ${physicalId} still ` +
+            `contains images. Matching CloudFormation, cdkd does not force-delete an ` +
+            `image-carrying repository unless it opted in via EmptyOnDelete: true (CDK's ` +
+            `emptyOnDelete) or the '${ECR_AUTO_DELETE_IMAGES_TAG}' tag (CDK's autoDeleteImages). ` +
+            `Either delete the images first (aws ecr batch-delete-image), or redeploy with ` +
+            `emptyOnDelete: true and destroy again.`,
+          resourceType,
+          logicalId,
+          physicalId,
+          error
+        );
+      }
       if (error instanceof RepositoryNotFoundException) {
         const clientRegion = await this.getClient().config.region();
         assertRegionMatch(

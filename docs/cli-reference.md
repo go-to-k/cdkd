@@ -1863,6 +1863,33 @@ push). Resources surfaced as `unsupported` (provider has no
 `readCurrentState` yet) are skipped by both flags — the comparator
 never produced a `PropertyDrift` for them.
 
+## Destroy data guards: non-empty S3 buckets and image-carrying ECR repositories
+
+`cdkd destroy` (and `cdkd state destroy`) matches CloudFormation's
+fail-and-protect behavior for the two resource types whose delete API
+refuses by default while they still hold data (issue
+[#1340](https://github.com/go-to-k/cdkd/issues/1340)):
+
+| Resource type | Without an opt-in | With the opt-in |
+| --- | --- | --- |
+| `AWS::S3::Bucket` | A non-empty bucket fails the destroy with an actionable "bucket is not empty" error (CloudFormation: `DELETE_FAILED`; Terraform: requires `force_destroy`). The bucket and every object survive. | CDK `autoDeleteObjects: true` (the `aws-cdk:auto-delete-objects` tag) — cdkd auto-empties all object versions + delete markers before `DeleteBucket`, which also absorbs the race where objects (e.g. ALB access logs) land between the auto-delete custom resource's cleanup and the bucket deletion. |
+| `AWS::ECR::Repository` | A repository that still contains images fails the destroy with an actionable "still contains images" error (CloudFormation: `DELETE_FAILED` unless `EmptyOnDelete: true`; Terraform: requires `force_delete`). The repository and images survive. | CDK `emptyOnDelete: true` (`EmptyOnDelete: true` in the template) or the legacy `autoDeleteImages` (`aws-cdk:auto-delete-images` tag) — cdkd deletes with `force: true`. |
+
+To destroy anyway without redeploying, empty the data first (`aws s3 rm
+s3://<bucket> --recursive` — for versioned buckets delete all object
+versions and delete markers; `aws ecr batch-delete-image`) and re-run the
+destroy.
+
+Replacement deletes during `cdkd deploy` are governed by the existing
+stateful-recreation consent instead: passing `--force-stateful-recreation`
+(the flag whose documented meaning is "I accept a data-losing recreation")
+also authorizes the force-cleanup on the replaced resource's delete.
+
+Related parity notes, verified against real CloudFormation (2026-08-02): CFn
+itself hard-deletes `AWS::SecretsManager::Secret` (no recovery window) and
+force-detaches out-of-band IAM role policy attachments on delete — cdkd's
+identical behavior for those types is parity, not a divergence.
+
 ## `--remove-protection`: bypass deletion protection on destroy
 
 `cdkd destroy --remove-protection` and `cdkd state destroy
