@@ -26,7 +26,8 @@ before treating a `*NotFound` error as idempotent delete success — see
 the DATA a resource still contains — set ONLY by the deploy engine's
 replacement / recreate delete sites when `--force-stateful-recreation` was
 passed, never by plain `cdkd destroy`. Providers whose delete API fails by
-default on contained data (S3 bucket auto-empty, ECR `force: true`) MUST
+default on contained data (S3 bucket / S3 Express directory bucket
+auto-empty, ECR `force: true`) MUST
 gate that force-cleanup on this flag OR a template-borne opt-in (CDK's
 `aws-cdk:auto-delete-objects` / `aws-cdk:auto-delete-images` tags,
 `EmptyOnDelete: true` — shared helpers in

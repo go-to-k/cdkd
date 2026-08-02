@@ -120,11 +120,10 @@ describe('S3DirectoryBucketProvider', () => {
   });
 
   describe('delete', () => {
-    it('should delete an empty directory bucket', async () => {
-      // ListObjectsV2 returns no objects, then DeleteBucketCommand succeeds
-      mockSend
-        .mockResolvedValueOnce({ Contents: undefined, IsTruncated: false }) // ListObjectsV2
-        .mockResolvedValueOnce({}); // DeleteBucketCommand
+    it('should delete an empty directory bucket without listing objects (no opt-in)', async () => {
+      // Data guard (issue #1344): without an opt-in the proactive empty is
+      // skipped entirely — DeleteBucket is the only call.
+      mockSend.mockResolvedValueOnce({}); // DeleteBucketCommand
 
       await provider.delete(
         'DirectoryBucket',
@@ -132,15 +131,33 @@ describe('S3DirectoryBucketProvider', () => {
         'AWS::S3Express::DirectoryBucket'
       );
 
-      expect(mockSend).toHaveBeenCalledTimes(2);
-      expect(mockSend.mock.calls[0][0]).toBeInstanceOf(ListObjectsV2Command);
-      expect(mockSend.mock.calls[1][0]).toBeInstanceOf(DeleteBucketCommand);
-      expect(mockSend.mock.calls[1][0].input).toEqual({
+      expect(mockSend).toHaveBeenCalledTimes(1);
+      expect(mockSend.mock.calls[0][0]).toBeInstanceOf(DeleteBucketCommand);
+      expect(mockSend.mock.calls[0][0].input).toEqual({
         Bucket: 'my-bucket--use1-az4--x-s3',
       });
     });
 
-    it('should empty bucket with objects before deleting', async () => {
+    it('refuses to delete a non-empty bucket without an opt-in (CFn parity, issue #1344)', async () => {
+      const notEmpty = new Error('The bucket you tried to delete is not empty');
+      notEmpty.name = 'BucketNotEmpty';
+      mockSend.mockRejectedValue(notEmpty); // DeleteBucketCommand fails both attempts
+
+      await expect(
+        provider.delete(
+          'DirectoryBucket',
+          'my-bucket--use1-az4--x-s3',
+          'AWS::S3Express::DirectoryBucket'
+        )
+      ).rejects.toThrow(/not empty.*aws s3 rm/s);
+
+      // The guard must fire WITHOUT touching the data.
+      const names = mockSend.mock.calls.map((c) => c[0].constructor.name);
+      expect(names).not.toContain('ListObjectsV2Command');
+      expect(names).not.toContain('DeleteObjectsCommand');
+    });
+
+    it('empties bucket with objects before deleting when forceDataDelete is set', async () => {
       // ListObjectsV2 returns objects, DeleteObjects, then DeleteBucket
       mockSend
         .mockResolvedValueOnce({
@@ -153,7 +170,9 @@ describe('S3DirectoryBucketProvider', () => {
       await provider.delete(
         'DirectoryBucket',
         'my-bucket--use1-az4--x-s3',
-        'AWS::S3Express::DirectoryBucket'
+        'AWS::S3Express::DirectoryBucket',
+        undefined,
+        { forceDataDelete: true }
       );
 
       expect(mockSend).toHaveBeenCalledTimes(3);
@@ -167,6 +186,24 @@ describe('S3DirectoryBucketProvider', () => {
         },
       });
       expect(mockSend.mock.calls[2][0]).toBeInstanceOf(DeleteBucketCommand);
+    });
+
+    it('empties bucket before deleting when the aws-cdk:auto-delete-objects tag is present', async () => {
+      mockSend
+        .mockResolvedValueOnce({ Contents: [{ Key: 'f.txt' }], IsTruncated: false }) // ListObjectsV2
+        .mockResolvedValueOnce({}) // DeleteObjectsCommand
+        .mockResolvedValueOnce({}); // DeleteBucketCommand
+
+      await provider.delete(
+        'DirectoryBucket',
+        'my-bucket--use1-az4--x-s3',
+        'AWS::S3Express::DirectoryBucket',
+        { Tags: [{ Key: 'aws-cdk:auto-delete-objects', Value: 'true' }] },
+        undefined
+      );
+
+      expect(mockSend.mock.calls[0][0]).toBeInstanceOf(ListObjectsV2Command);
+      expect(mockSend.mock.calls[1][0]).toBeInstanceOf(DeleteObjectsCommand);
     });
 
     it('should handle bucket not found (idempotent)', async () => {
