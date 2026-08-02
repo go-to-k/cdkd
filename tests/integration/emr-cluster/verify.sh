@@ -50,6 +50,38 @@
 
 set -euo pipefail
 
+# --- issue #1097 pattern 2: strict gone-probe helpers -----------------------
+# A destroy/leak assertion must distinguish "not found" from any other probe
+# failure (throttle, auth, network); a blind `if aws ...; then` reads ANY
+# failure as "gone" and silently passes the leak check.
+# gone_probe returns 0 when the probe fails with a not-found error (resource
+# confirmed gone), 1 when the probe succeeds (resource still exists), and
+# hard-FAILs the run on any other probe failure (undetermined result).
+# The first-arg guard catches a forgotten assert_gone description: without it,
+# `assert_gone aws ...` would exec `lambda get-function ...` and the shell's
+# "command not found" error would match the signature -- a silent pass.
+gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
+  [ "${1:-}" = "aws" ] || { echo "FAIL: gone_probe: probe must start with aws (got: ${1:-<empty>})" >&2; exit 1; }
+  local out
+  if out="$("$@" 2>&1)"; then
+    return 1
+  fi
+  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+    echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
+    exit 1
+  fi
+  return 0
+}
+assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-verb> [args...]
+  local desc="$1"
+  shift
+  if ! gone_probe "$@"; then
+    echo "FAIL: ${desc}" >&2
+    exit 1
+  fi
+}
+# ---------------------------------------------------------------------------
+
 cd "$(dirname "$0")"
 
 STACK="CdkdEmrClusterExample"
@@ -240,7 +272,13 @@ cleanup() {
   if [ -n "${STATE_BUCKET:-}" ]; then
     if [ "${state_destroy_ok}" = "true" ] && [ "${cluster_wait_failed}" != "true" ]; then
       aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
-    else
+    elif ! gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"; then
+      # Only warn when state.json actually EXISTS. This cleanup also runs at
+      # pre-run (nothing deployed yet) and after a clean PASS (the main flow
+      # already destroyed the stack and confirmed the 404), and warning on
+      # those paths reads like a leak report on a clean run (issue #1339).
+      # An undetermined probe (throttle / auth) hard-fails via gone_probe
+      # rather than silently skipping or fabricating the warning.
       echo "    WARNING: leaving ${STATE_KEY} in place — teardown was not confirmed clean." >&2
       echo "             It is the only record of what may have leaked. Inspect with:" >&2
       echo "             aws s3 cp s3://${STATE_BUCKET}/${STATE_KEY} -" >&2
