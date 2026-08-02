@@ -1,3 +1,10 @@
+## [0.275.5](https://github.com/go-to-k/cdkd/compare/v0.275.4...v0.275.5) (2026-08-02)
+
+
+### Bug Fixes
+
+* **cli:** register interrupt handlers before stack-lock acquisition in deploy / destroy / rollback ([#1351](https://github.com/go-to-k/cdkd/issues/1351)) ([86d35c1](https://github.com/go-to-k/cdkd/commit/86d35c17c75704fe8b5d033d1f84cd29c255a2d6))
+
 ## [0.275.4](https://github.com/go-to-k/cdkd/compare/v0.275.3...v0.275.4) (2026-08-02)
 
 
