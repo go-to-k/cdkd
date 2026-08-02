@@ -1,3 +1,10 @@
+## [0.275.2](https://github.com/go-to-k/cdkd/compare/v0.275.1...v0.275.2) (2026-08-02)
+
+
+### Bug Fixes
+
+* **destroy:** gate S3 auto-empty / ECR force-delete on an explicit opt-in (CloudFormation-parity data guard) ([#1345](https://github.com/go-to-k/cdkd/issues/1345)) ([a43b013](https://github.com/go-to-k/cdkd/commit/a43b0132e408ffd6a0bc1d9cc720fac2d057f934))
+
 ## [0.275.1](https://github.com/go-to-k/cdkd/compare/v0.275.0...v0.275.1) (2026-07-31)
 
 
