@@ -936,17 +936,22 @@ export class DeployEngine {
       void getCreateOnlyPropertyPaths(type).catch(() => {});
     }
 
-    // Acquire lock with retry (retries up to 3 times with 2s delay for transient lock conflicts)
-    await this.lockManager.acquireLockWithRetry(stackName, this.stackRegion, undefined, 'deploy');
-
     // Live progress renderer: shows in-flight resources as a multi-line area
     // at the bottom of the terminal. Self-disables on non-TTY and when
     // `CDKD_NO_LIVE=1` is set (the CLI sets this in verbose mode so debug
-    // logs do not interleave with the live area).
+    // logs do not interleave with the live area). Created (not started)
+    // before the lock acquisition below because the SIGINT handler routes
+    // its notice through it; `printAbove` falls through to a direct write
+    // while the renderer is not yet started.
     const renderer = getLiveRenderer();
-    renderer.start();
 
-    // Register SIGINT handler to save partial state on Ctrl+C
+    // Register SIGINT handler to save partial state on Ctrl+C. Registered
+    // BEFORE `acquireLockWithRetry` (issue #1348) so a signal landing during
+    // the acquisition's S3 round-trip flips the interrupt flag instead of
+    // hitting the unhandled default (or the #1342 forwarder's exit-143
+    // fallback) and stranding the just-written lock: with the flag set, the
+    // DAG executor dispatches no work and the `finally` below releases the
+    // lock through the normal path.
     this.interrupted = false;
     this.interruptCause = null;
     const sigintHandler = () => {
@@ -961,6 +966,18 @@ export class DeployEngine {
       this.interruptCause ??= 'user';
     };
     process.on('SIGINT', sigintHandler);
+
+    // Acquire lock with retry (retries up to 3 times with 2s delay for transient lock conflicts)
+    try {
+      await this.lockManager.acquireLockWithRetry(stackName, this.stackRegion, undefined, 'deploy');
+    } catch (error) {
+      // The try/finally that owns the listener removal starts below — clean
+      // up here so an acquire failure does not leak the handler.
+      process.removeListener('SIGINT', sigintHandler);
+      throw error;
+    }
+
+    renderer.start();
 
     try {
       // 1. Load current state

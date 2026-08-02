@@ -37,12 +37,10 @@ export function forwardSigtermToSigint(): () => void {
       // engine / destroy-runner registered their SIGINT handlers). Emitting
       // SIGINT here would be a silent no-op and the process would IGNORE the
       // termination request — preserve the default SIGTERM behavior instead
-      // (128 + 15). Matches what a raw Ctrl-C does in the same window.
-      // NOTE: destroy acquires the stack lock BEFORE its runner registers
-      // the SIGINT handler (with an S3 round-trip in between, the window can
-      // reach sub-second-to-seconds), so a signal landing there exits with
-      // the lock held (reclaimed by the TTL / `cdkd force-unlock`) —
-      // pre-existing for SIGINT too; tracked in issue #1348.
+      // (128 + 15). Matches what a raw Ctrl-C does in the same window. Since
+      // issue #1348 every lock-taking command registers its SIGINT handler
+      // BEFORE acquiring the stack lock, so this fallback only fires in
+      // lock-free phases and never exits with a lock held.
       process.exit(143);
     }
     process.emit('SIGINT', 'SIGINT');
