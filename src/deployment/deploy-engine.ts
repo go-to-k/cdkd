@@ -41,10 +41,12 @@ import {
   ATOMIC_FINAL_SNAPSHOT_TYPES,
   PRE_DELETE_SNAPSHOT_TYPES,
   buildFinalSnapshotIdentifier,
+  ccRoutedFinalSnapshotError,
   createEbsFinalSnapshot,
   unsupportedFinalSnapshotError,
 } from '../provisioning/final-snapshot.js';
 import { getAwsClients } from '../utils/aws-clients.js';
+import type { EC2Client } from '@aws-sdk/client-ec2';
 import { getCreateOnlyPropertyPaths } from '../provisioning/create-only-properties.js';
 import { hasNoRegistrySchema } from '../provisioning/describe-type.js';
 import { TemplateParser } from '../analyzer/template-parser.js';
@@ -316,6 +318,17 @@ export interface DeployEngineOptions {
    * Snapshot-tagged types cdkd cannot snapshot yet (issue #1353).
    */
   skipFinalSnapshot?: boolean;
+
+  /**
+   * Region-pinned EC2 client for the pre-delete EBS final snapshot (issue
+   * #1352). The process-global `getAwsClients()` singleton is repointed
+   * per-stack under `--stack-concurrency > 1`, so a concurrent multi-region
+   * deploy could hand the DELETE branch a wrong-region client — whose
+   * `CreateSnapshot` 404s as `InvalidVolume.NotFound` and silently skips the
+   * snapshot. `deploy.ts` threads the stack-scoped `AwsClients.ec2` here;
+   * absent (tests / legacy callers), the global is used.
+   */
+  finalSnapshotEc2?: EC2Client;
 }
 
 /**
@@ -3404,11 +3417,30 @@ export class DeployEngine {
         // explicit data-loss opt-out for all three shapes.
         let finalSnapshotIdentifier: string | undefined;
         if (deletionPolicy === 'Snapshot' && this.options.skipFinalSnapshot !== true) {
-          if (ATOMIC_FINAL_SNAPSHOT_TYPES.has(resourceType)) {
-            finalSnapshotIdentifier = buildFinalSnapshotIdentifier(currentResource.physicalId);
+          if (
+            ATOMIC_FINAL_SNAPSHOT_TYPES.has(resourceType) &&
+            currentResource.provisionedBy !== 'cc-api'
+          ) {
+            finalSnapshotIdentifier = buildFinalSnapshotIdentifier(
+              currentResource.physicalId,
+              resourceType
+            );
+          } else if (ATOMIC_FINAL_SNAPSHOT_TYPES.has(resourceType)) {
+            // cc-api-routed atomic type: Cloud Control DeleteResource has no
+            // final-snapshot parameter, so honoring the policy is impossible
+            // on this route — refuse instead of silently dropping the
+            // snapshot (reviewer catch; CloudControlProvider.delete also
+            // fail-closes on the field as defense-in-depth).
+            throw ccRoutedFinalSnapshotError(logicalId, resourceType, '--skip-final-snapshot');
           } else if (PRE_DELETE_SNAPSHOT_TYPES.has(resourceType)) {
+            // Region-pinned client: `getAwsClients()` is a process-global
+            // that a concurrent stack's deploy can repoint at ANOTHER region
+            // (`--stack-concurrency > 1` + multi-region apps); a wrong-region
+            // CreateSnapshot 404s as InvalidVolume.NotFound, which would be
+            // read as "volume gone" and skip the snapshot. Prefer the
+            // engine-scoped client threaded via options.
             await createEbsFinalSnapshot(
-              getAwsClients().ec2,
+              this.options.finalSnapshotEc2 ?? getAwsClients().ec2,
               currentResource.physicalId,
               logicalId,
               this.logger

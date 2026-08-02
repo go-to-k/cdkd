@@ -1926,6 +1926,12 @@ Notes:
   consult; pre-v5 state keeps the legacy plain-delete behavior until a
   redeploy records the attribute (`cdkd destroy` also falls back to the
   synth template's `DeletionPolicy` for pre-v5 state).
+- A Cloud-Control-routed resource of an atomic-parameter type (state
+  records `provisionedBy: cc-api` — the #614 silent-drop routing) is
+  **refused** the same way as the not-yet-implemented types: Cloud Control's
+  `DeleteResource` has no final-snapshot parameter, so cdkd cannot honor the
+  policy on that route. Snapshot manually, then re-run with
+  `--skip-final-snapshot`.
 - `UpdateReplacePolicy: Snapshot` on the **replacement** path is not covered
   yet (issue [#1354](https://github.com/go-to-k/cdkd/issues/1354)); the
   `--force-stateful-recreation` guard still forces an explicit opt-in before

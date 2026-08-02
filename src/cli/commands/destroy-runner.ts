@@ -3,12 +3,14 @@ import { getLogger } from '../../utils/logger.js';
 import { bold, green, red, yellow } from '../../utils/colors.js';
 import { formatResourceLine } from '../../utils/resource-line.js';
 import { getLiveRenderer } from '../../utils/live-renderer.js';
-import { setAwsClients, getAwsClients, AwsClients } from '../../utils/aws-clients.js';
+import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import {
   ATOMIC_FINAL_SNAPSHOT_TYPES,
   PRE_DELETE_SNAPSHOT_TYPES,
   buildFinalSnapshotIdentifier,
+  ccRoutedFinalSnapshotError,
   createEbsFinalSnapshot,
+  isFinalSnapshotError,
   unsupportedFinalSnapshotError,
 } from '../../provisioning/final-snapshot.js';
 import type { S3StateBackend } from '../../state/s3-state-backend.js';
@@ -838,11 +840,28 @@ export async function runDestroyForStack(
           // until a redeploy records the attribute.
           let finalSnapshotIdentifier: string | undefined;
           if (resource.deletionPolicy === 'Snapshot' && ctx.skipFinalSnapshot !== true) {
-            if (ATOMIC_FINAL_SNAPSHOT_TYPES.has(resource.resourceType)) {
-              finalSnapshotIdentifier = buildFinalSnapshotIdentifier(resource.physicalId);
+            if (
+              ATOMIC_FINAL_SNAPSHOT_TYPES.has(resource.resourceType) &&
+              resource.provisionedBy !== 'cc-api'
+            ) {
+              finalSnapshotIdentifier = buildFinalSnapshotIdentifier(
+                resource.physicalId,
+                resource.resourceType
+              );
+            } else if (ATOMIC_FINAL_SNAPSHOT_TYPES.has(resource.resourceType)) {
+              // cc-api-routed atomic type: Cloud Control DeleteResource has
+              // no final-snapshot parameter — refuse instead of silently
+              // dropping the promised snapshot.
+              throw ccRoutedFinalSnapshotError(
+                logicalId,
+                resource.resourceType,
+                '--skip-final-snapshot'
+              );
             } else if (PRE_DELETE_SNAPSHOT_TYPES.has(resource.resourceType)) {
+              // destroyAwsClients is the region-scoped set when the stack
+              // lives in a different region than the caller's base clients.
               await createEbsFinalSnapshot(
-                getAwsClients().ec2,
+                (destroyAwsClients ?? ctx.baseAwsClients).ec2,
                 resource.physicalId,
                 logicalId,
                 logger
@@ -987,13 +1006,18 @@ export async function runDestroyForStack(
         } catch (error) {
           renderer.removeTask(logicalId);
           const msg = error instanceof Error ? error.message : String(error);
-          // Treat "not found" as already deleted.
+          // Treat "not found" as already deleted — but NEVER for a typed
+          // final-snapshot failure (issue #1352): the snapshot step runs
+          // BEFORE the delete, so its error means the resource is still
+          // live; reading a snapshot-poll NotFound as "already deleted"
+          // would drop a live, un-snapshotted volume from state.
           if (
-            msg.includes('does not exist') ||
-            msg.includes('not found') ||
-            msg.includes('No policy found') ||
-            msg.includes('NoSuchEntity') ||
-            msg.includes('NotFoundException')
+            !isFinalSnapshotError(error) &&
+            (msg.includes('does not exist') ||
+              msg.includes('not found') ||
+              msg.includes('No policy found') ||
+              msg.includes('NoSuchEntity') ||
+              msg.includes('NotFoundException'))
           ) {
             logger.debug(`  ${logicalId} already deleted, removing from state`);
             result.deletedCount++;

@@ -99,7 +99,9 @@ describe('runDestroyForStack — DeletionPolicy: Snapshot (#1352)', () => {
       providerRegistry: {
         getProviderFor: () => ({ provider: { delete: mockProviderDelete } }),
       } as unknown as ProviderRegistry,
-      baseAwsClients: {} as AwsClients,
+      // The runner sources the EBS-snapshot client from the active
+      // region-scoped clients ((destroyAwsClients ?? baseAwsClients).ec2).
+      baseAwsClients: { ec2: mockEc2Client } as unknown as AwsClients,
       baseRegion: REGION,
       stateBucket: 'test-bucket',
       skipConfirmation: true,
@@ -168,6 +170,52 @@ describe('runDestroyForStack — DeletionPolicy: Snapshot (#1352)', () => {
     expect(mockDeleteState).not.toHaveBeenCalled();
   });
 
+  it('cc-api-routed atomic type: per-resource refusal, no delete, state preserved', async () => {
+    const state = makeState({
+      Db: res({ deletionPolicy: 'Snapshot', provisionedBy: 'cc-api' }),
+    });
+    const result = await runDestroyForStack('TestStack', state, makeCtx());
+    expect(result.errorCount).toBe(1);
+    expect(mockProviderDelete).not.toHaveBeenCalled();
+    expect(mockDeleteState).not.toHaveBeenCalled();
+  });
+
+  it('cc-api-routed atomic type + skipFinalSnapshot: true — deletes plainly (opt-out)', async () => {
+    const state = makeState({
+      Db: res({ deletionPolicy: 'Snapshot', provisionedBy: 'cc-api' }),
+    });
+    const result = await runDestroyForStack(
+      'TestStack',
+      state,
+      makeCtx({ skipFinalSnapshot: true })
+    );
+    expect(result.errorCount).toBe(0);
+    expect(deleteContextArg()['finalSnapshotIdentifier']).toBeUndefined();
+  });
+
+  it('EBS snapshot failure whose message contains "does not exist" is NOT read as already-deleted', async () => {
+    // The snapshot-wait wrapper (issue #1352 reviewer catch): a raw
+    // InvalidSnapshot.NotFound from the wait poll must surface as a
+    // per-resource FAILURE — the runner's "not found = already deleted"
+    // heuristic would otherwise drop the live, un-snapshotted volume from
+    // state without deleting it.
+    const { CdkdError } = await import('../../../src/utils/error-handler.js');
+    mockCreateEbsFinalSnapshot.mockRejectedValueOnce(
+      new CdkdError(
+        'Failed while waiting for final snapshot snap-x of Vol (vol-1): The snapshot does not exist.',
+        'FINAL_SNAPSHOT_FAILED'
+      )
+    );
+    const state = makeState({
+      Vol: res({ resourceType: 'AWS::EC2::Volume', deletionPolicy: 'Snapshot' }),
+    });
+    const result = await runDestroyForStack('TestStack', state, makeCtx());
+    expect(result.errorCount).toBe(1);
+    expect(result.deletedCount).toBe(0);
+    expect(mockProviderDelete).not.toHaveBeenCalled();
+    expect(mockDeleteState).not.toHaveBeenCalled();
+  });
+
   it('unsupported type + skipFinalSnapshot: true — deletes plainly (explicit opt-out)', async () => {
     const state = makeState({
       Cluster: res({ resourceType: 'AWS::Redshift::Cluster', deletionPolicy: 'Snapshot' }),
@@ -179,5 +227,29 @@ describe('runDestroyForStack — DeletionPolicy: Snapshot (#1352)', () => {
     );
     expect(result.errorCount).toBe(0);
     expect(deleteContextArg()['finalSnapshotIdentifier']).toBeUndefined();
+  });
+});
+
+describe('nested-stack --skip-final-snapshot threading (source pin)', () => {
+  // `cdkd deploy --skip-final-snapshot` reaches a whole-nested-stack removal
+  // only through ctx.options (the parent DeployEngineOptions); destroy paths
+  // thread ctx.destroyOptions. Pin BOTH reads on live (uncommented) lines so
+  // neither direction silently regresses (reviewer catch, issue #1352).
+  it('NestedStackProvider.delete reads the flag from destroyOptions AND options', async () => {
+    const { readFileSync } = await import('node:fs');
+    const src = readFileSync(
+      new URL(
+        '../../../src/provisioning/providers/nested-stack-provider.ts',
+        import.meta.url
+      ),
+      'utf8'
+    );
+    const liveLines = src.split('\n').filter((l) => !l.trim().startsWith('//'));
+    expect(
+      liveLines.some((l) => l.includes('ctx.destroyOptions?.skipFinalSnapshot === true'))
+    ).toBe(true);
+    expect(liveLines.some((l) => l.includes('ctx.options?.skipFinalSnapshot === true'))).toBe(
+      true
+    );
   });
 });

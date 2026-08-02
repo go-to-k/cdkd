@@ -93,9 +93,13 @@ export interface DeleteContext {
    * from `SkipFinalSnapshot: true` to the API's atomic final-snapshot form
    * (e.g. RDS `DeleteDBInstance(FinalDBSnapshotIdentifier, SkipFinalSnapshot:
    * false)`). The destroy call sites generate the identifier via
-   * `buildFinalSnapshotIdentifier()` and only pass it for types in that set,
-   * so a provider that does not read the field is never silently skipped —
-   * unsupported Snapshot-tagged types are refused before the delete instead.
+   * `buildFinalSnapshotIdentifier()` and only pass it for types in that set
+   * AND only when the resource is SDK-routed, so a provider that does not
+   * read the field is never silently skipped — unsupported Snapshot-tagged
+   * types are refused before the delete, a `provisionedBy: 'cc-api'` atomic
+   * type is refused too (Cloud Control `DeleteResource` has no final-snapshot
+   * parameter), and `CloudControlProvider.delete` additionally fail-closes
+   * if the field ever reaches it.
    *
    * One CFn-documented nuance the RDS provider must apply: a DBInstance that
    * is a member of a DBCluster (`DBClusterIdentifier` present in its

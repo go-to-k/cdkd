@@ -77,7 +77,11 @@ export function supportsFinalSnapshot(resourceType: string): boolean {
  * re-created same-name resource from colliding; within ONE destroy run the
  * identifier is generated once per resource, so delete retries reuse it.
  */
-export function buildFinalSnapshotIdentifier(physicalId: string, now: Date = new Date()): string {
+export function buildFinalSnapshotIdentifier(
+  physicalId: string,
+  resourceType?: string,
+  now: Date = new Date()
+): string {
   const ts = now
     .toISOString()
     .replace(/[-:]/g, '')
@@ -90,9 +94,12 @@ export function buildFinalSnapshotIdentifier(physicalId: string, now: Date = new
     .replace(/-{2,}/g, '-')
     .replace(/^-+|-+$/g, '');
   if (!/^[a-z]/.test(base)) base = `r${base}`;
-  // Total <= 255 (RDS limit); leave room for the suffix.
+  // RDS-family snapshot identifiers allow up to 255 chars; ElastiCache
+  // snapshot names follow the ~50-char cluster-naming rules — a longer name
+  // makes DeleteCacheCluster reject and the destroy fail mid-run.
+  const maxLength = resourceType === 'AWS::ElastiCache::CacheCluster' ? 50 : 255;
   const suffix = `-final-${ts}`;
-  base = base.slice(0, 255 - suffix.length).replace(/-+$/, '');
+  base = base.slice(0, maxLength - suffix.length).replace(/-+$/, '');
   return `${base}${suffix}`;
 }
 
@@ -197,11 +204,41 @@ export async function createEbsFinalSnapshot(
   );
 
   const deadline = Date.now() + EBS_SNAPSHOT_TIMEOUT_MS;
+  // EC2 is eventually consistent: a just-created snapshot id can 404
+  // (`InvalidSnapshot.NotFound`) on the first polls. Tolerate it briefly.
+  let notFoundPolls = 0;
   for (;;) {
-    const described = await client.send(
-      new DescribeSnapshotsCommand({ SnapshotIds: [snapshotId] })
-    );
-    const state = described.Snapshots?.[0]?.State;
+    let state: string | undefined;
+    try {
+      const described = await client.send(
+        new DescribeSnapshotsCommand({ SnapshotIds: [snapshotId] })
+      );
+      state = described.Snapshots?.[0]?.State;
+      notFoundPolls = 0;
+    } catch (pollError) {
+      const name = pollError instanceof Error ? pollError.name : '';
+      const isSnapshotNotFound =
+        name === 'InvalidSnapshot.NotFound' ||
+        errMsg(pollError).includes('InvalidSnapshot.NotFound');
+      if (isSnapshotNotFound && ++notFoundPolls <= 24) {
+        state = undefined; // still propagating — keep polling
+      } else {
+        // Wrap EVERY poll failure in the typed FINAL_SNAPSHOT error. This is
+        // load-bearing beyond nice messaging: the destroy call sites'
+        // idempotent-delete heuristics match "not found" / "does not exist"
+        // SUBSTRINGS and would otherwise read a raw poll error as "resource
+        // already deleted", dropping a live volume from state WITHOUT
+        // deleting it. The call sites rethrow FINAL_SNAPSHOT_* errors before
+        // applying those heuristics.
+        throw new CdkdError(
+          `Failed while waiting for final snapshot ${snapshotId} of ${logicalId} (${volumeId}): ` +
+            `${errMsg(pollError)}. The volume was NOT deleted; re-run the destroy (the ` +
+            `snapshot is reused, not duplicated).`,
+          'FINAL_SNAPSHOT_FAILED',
+          pollError instanceof Error ? pollError : undefined
+        );
+      }
+    }
     if (state === 'completed') {
       logger.info(`Final snapshot ${snapshotId} completed for ${logicalId} (${volumeId})`);
       return snapshotId;
@@ -223,6 +260,46 @@ export async function createEbsFinalSnapshot(
     }
     await finalSnapshotDelays.sleep(EBS_SNAPSHOT_POLL_INTERVAL_MS);
   }
+}
+
+/**
+ * Is this one of the typed final-snapshot failures the destroy call sites
+ * must RETHROW before applying their "not found = already deleted"
+ * idempotency heuristics? (Those heuristics match message substrings; a raw
+ * snapshot-poll NotFound would otherwise be read as "resource already
+ * deleted" and strand a live, un-snapshotted volume outside state.)
+ */
+export function isFinalSnapshotError(error: unknown): boolean {
+  return (
+    error instanceof CdkdError &&
+    (error.code === 'FINAL_SNAPSHOT_FAILED' ||
+      error.code === 'FINAL_SNAPSHOT_TIMEOUT' ||
+      error.code === 'FINAL_SNAPSHOT_UNSUPPORTED')
+  );
+}
+
+/**
+ * Refusal for an atomic-final-snapshot type whose state records
+ * `provisionedBy: 'cc-api'` (#614 silent-drop routing / `--recreate-via-cc-api`).
+ * Cloud Control `DeleteResource` has no final-snapshot parameter and
+ * `CloudControlProvider` cannot honor `finalSnapshotIdentifier`, so deleting
+ * via that route would silently drop the promised snapshot — refuse instead.
+ */
+export function ccRoutedFinalSnapshotError(
+  logicalId: string,
+  resourceType: string,
+  skipFlagHint: string
+): CdkdError {
+  return new CdkdError(
+    `${logicalId} (${resourceType}) has DeletionPolicy: Snapshot, but the resource is ` +
+      `managed via the Cloud Control API route (provisionedBy: cc-api), which has no ` +
+      `final-snapshot delete parameter — deleting it now would destroy its data WITHOUT ` +
+      `the final snapshot the policy promises. Create a snapshot manually ` +
+      `(e.g. aws rds create-db-snapshot / aws elasticache create-snapshot), then re-run ` +
+      `with ${skipFlagHint} to delete WITHOUT cdkd's final snapshot (DATA LOSS otherwise), ` +
+      `or retain the resource (DeletionPolicy: Retain) and delete it manually.`,
+    'FINAL_SNAPSHOT_UNSUPPORTED'
+  );
 }
 
 /**

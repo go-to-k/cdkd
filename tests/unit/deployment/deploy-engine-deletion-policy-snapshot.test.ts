@@ -205,6 +205,43 @@ describe('DeployEngine DELETE branch — DeletionPolicy: Snapshot (#1352)', () =
     expect(deleteContextArg()['finalSnapshotIdentifier']).toBeUndefined();
   });
 
+  it('cc-api-routed atomic type: refuses BEFORE any delete (Cloud Control cannot snapshot)', async () => {
+    await expect(
+      invokeDelete(makeEngine(), 'AWS::RDS::DBInstance', {
+        deletionPolicy: 'Snapshot',
+        provisionedBy: 'cc-api',
+      })
+    ).rejects.toMatchObject({
+      code: 'PROVISIONING_ERROR',
+      cause: expect.objectContaining({
+        code: 'FINAL_SNAPSHOT_UNSUPPORTED',
+        message: expect.stringContaining('cc-api'),
+      }),
+    });
+    expect(deleteProvider.delete).not.toHaveBeenCalled();
+  });
+
+  it('cc-api-routed atomic type with skipFinalSnapshot: true — deletes plainly (explicit opt-out)', async () => {
+    await invokeDelete(makeEngine({ skipFinalSnapshot: true }), 'AWS::RDS::DBInstance', {
+      deletionPolicy: 'Snapshot',
+      provisionedBy: 'cc-api',
+    });
+    expect(deleteContextArg()['finalSnapshotIdentifier']).toBeUndefined();
+  });
+
+  it('prefers the region-pinned finalSnapshotEc2 client over the global for the EBS snapshot', async () => {
+    const pinned = { send: vi.fn() };
+    await invokeDelete(makeEngine({ finalSnapshotEc2: pinned }), 'AWS::EC2::Volume', {
+      deletionPolicy: 'Snapshot',
+    });
+    expect(mockCreateEbsFinalSnapshot).toHaveBeenCalledWith(
+      pinned,
+      'phys-target',
+      'Target',
+      expect.anything()
+    );
+  });
+
   it('falls back to the template DeletionPolicy for pre-v5 state with no recorded policy', async () => {
     await invokeDelete(
       makeEngine(),
