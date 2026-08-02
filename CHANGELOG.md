@@ -1,3 +1,10 @@
+## [0.275.6](https://github.com/go-to-k/cdkd/compare/v0.275.5...v0.275.6) (2026-08-02)
+
+
+### Bug Fixes
+
+* **destroy:** honor DeletionPolicy: Snapshot — final snapshots on every delete path ([#1355](https://github.com/go-to-k/cdkd/issues/1355)) ([0692c56](https://github.com/go-to-k/cdkd/commit/0692c56ff5e13283cf622e9c88e008bf2eecff01))
+
 ## [0.275.5](https://github.com/go-to-k/cdkd/compare/v0.275.4...v0.275.5) (2026-08-02)
 
 
