@@ -1,3 +1,10 @@
+## [0.275.4](https://github.com/go-to-k/cdkd/compare/v0.275.3...v0.275.4) (2026-08-02)
+
+
+### Bug Fixes
+
+* **cli:** forward SIGTERM to the graceful-SIGINT path in deploy / destroy / state destroy / rollback ([#1349](https://github.com/go-to-k/cdkd/issues/1349)) ([f11de44](https://github.com/go-to-k/cdkd/commit/f11de44584ab7cab60d5f3b488740670adcdf08f))
+
 ## [0.275.3](https://github.com/go-to-k/cdkd/compare/v0.275.2...v0.275.3) (2026-08-02)
 
 
