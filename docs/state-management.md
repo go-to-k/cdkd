@@ -656,7 +656,7 @@ async acquireLockWithRetry(
 
     // Force release if lock is old
     const age = Date.now() - lockInfo.timestamp;
-    if (age >= this.lockTTL) {  // Default 15 minutes
+    if (age >= this.lockTTL) {  // Default 30 minutes
       await this.forceReleaseLock(stackName);
       continue;
     }
@@ -674,9 +674,23 @@ async acquireLockWithRetry(
 
 ### Lock TTL (Time To Live)
 
-Default: **15 minutes**
+Default: **30 minutes**
 
-Even if a process crashes, after 15 minutes the old lock is considered stale and can be force released.
+Even if a process crashes, after 30 minutes the old lock is considered stale and can be force released.
+
+### Deploy interruption (Ctrl-C)
+
+`cdkd deploy` handles the first `Ctrl-C` (SIGINT) gracefully:
+
+- **First Ctrl-C** stops dispatching new resource operations. Any provider
+  call already in flight is allowed to finish, partial state is saved (state
+  is also saved incrementally after each completed resource), a rollback
+  journal is recorded for `cdkd rollback`, and the stack lock is **released**
+  before the command exits non-zero. A re-run resumes without waiting out the
+  lock TTL.
+- **Second Ctrl-C** force-quits immediately (`process.exit(130)`) without
+  waiting for in-flight operations. The lock may be left behind and is
+  reclaimed after the TTL above (or cleared with `cdkd force-unlock`).
 
 ### Destroy interruption (Ctrl-C)
 
@@ -699,6 +713,17 @@ mirroring Terraform:
 This is why an interrupted destroy no longer strands the lock for its full
 TTL: only an ungraceful kill (`SIGKILL`, a second Ctrl-C, or a crash) leaves a
 stale lock.
+
+### CI job cancellation
+
+A cancelled CI job (e.g. GitHub Actions `cancel-in-progress: true`) can kill
+the process ungracefully and strand the lock: cdkd currently handles `SIGINT`
+but not `SIGTERM` in the deploy/destroy path, and CI runners escalate to
+`SIGTERM`/`SIGKILL` on cancellation. The lock is then reclaimed after the TTL
+above, or cleared immediately with `cdkd force-unlock <stack>`. See
+["Stale lock after a cancelled CI job" in the troubleshooting
+guide](./troubleshooting.md#issue-stale-lock-after-a-cancelled-ci-job) for the
+full CI story and recommended workflow patterns.
 
 ## State Saving and Updating
 
