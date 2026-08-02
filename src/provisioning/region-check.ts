@@ -60,6 +60,30 @@ export interface DeleteContext {
    * error rather than silently succeed.
    */
   removeProtection?: boolean;
+
+  /**
+   * If true, the caller carries explicit user consent to destroy the DATA a
+   * resource still contains (issue #1340). Set ONLY by the deploy engine's
+   * replacement / recreate delete paths when `--force-stateful-recreation`
+   * was passed — the flag whose documented meaning is "I accept a
+   * data-losing recreation of a stateful resource".
+   *
+   * Providers that gate data-destroying force-cleanup consult it as one of
+   * their accepted intent signals:
+   *   - `AWS::S3::Bucket`: allows emptying a non-empty bucket (all object
+   *     versions + delete markers) before `DeleteBucket`.
+   *   - `AWS::ECR::Repository`: allows `DeleteRepository(force: true)` on a
+   *     repository that still contains images.
+   *
+   * Plain `cdkd destroy` / `cdkd state destroy` never set it — there the
+   * template-borne intent signals (CDK's `aws-cdk:auto-delete-objects` /
+   * `aws-cdk:auto-delete-images` tags, `EmptyOnDelete: true`) are the only
+   * accepted opt-ins, and without one the provider surfaces AWS's
+   * not-empty error exactly like CloudFormation's DELETE_FAILED. This is
+   * the same implicit-force -> explicit-opt-in migration `removeProtection`
+   * went through (see its note above).
+   */
+  forceDataDelete?: boolean;
 }
 
 /**

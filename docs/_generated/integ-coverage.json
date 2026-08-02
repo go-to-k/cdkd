@@ -2546,12 +2546,16 @@
     {
       "resourceType": "AWS::ECR::Repository",
       "integs": [
+        "destroy-data-guard",
         "ecr",
         "ecr-scanning",
         "local-run-task-from-state",
         "migrate-from-cfn"
       ],
       "signals": {
+        "destroy-data-guard": [
+          "l2"
+        ],
         "ecr": [
           "l2",
           "literal"
@@ -4346,6 +4350,7 @@
         "context-test",
         "cross-stack-references",
         "data-analytics",
+        "destroy-data-guard",
         "diff-intrinsic-target-change",
         "drift-revert",
         "drift-revert-arrays",
@@ -4414,6 +4419,9 @@
         "data-analytics": [
           "l2",
           "literal"
+        ],
+        "destroy-data-guard": [
+          "l2"
         ],
         "diff-intrinsic-target-change": [
           "l2"

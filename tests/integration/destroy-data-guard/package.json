@@ -1,0 +1,16 @@
+{
+  "name": "cdkd-example-destroy-data-guard",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Destroy data guards: CFn-parity refusal on non-empty S3 / image-carrying ECR without opt-in (issue #1340)",
+  "type": "module",
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "aws-cdk": "^2.1112.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.169.0",
+    "constructs": "^10.0.0"
+  }
+}

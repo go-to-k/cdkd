@@ -292,6 +292,8 @@ const KNOWN_SCENARIOS: Record<string, string> = {
     '`cdkd gc` garbage-collection precision against real AWS: whole-bucket state-file reference scan keeps every referenced asset, an unreferenced seeded object is the only deletion candidate, `--dry-run` deletes nothing, `--older-than` age guard honored (issue #1012).',
   'undeletable-pending-resource-skip':
     'Destroy of a resource AWS itself refuses to delete until it expires server-side — the canonical case is an SNS subscription in PendingConfirmation, which rejects Unsubscribe from EVERY caller and only disappears via ~3-day auto-expiry or topic deletion. The provider must treat the rejection as delete-success (CloudFormation parity: the resource is removed from the stack without unsubscribing) instead of failing the resource and wedging destroy/state-destroy permanently (issue #1301).',
+  'destroy-data-guard':
+    'CloudFormation-parity refusal to force-clean contained data on destroy (issue #1340): a non-empty S3 bucket WITHOUT the auto-delete opt-in and an image-carrying ECR repository WITHOUT EmptyOnDelete both FAIL the destroy with the data intact, while the opted-in siblings (aws-cdk:auto-delete-objects tag / EmptyOnDelete: true) are force-cleaned in the same run; after AWS-native data cleanup a second destroy completes with zero orphans.',
 };
 
 interface ScenarioCoverageReport {
