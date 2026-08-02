@@ -194,7 +194,7 @@ migrate-from-cfn	2026-07-21T13:50:11Z	PASS	414	verify.sh	post import-tag-walk re
 monitoring	2026-07-24T10:52:15Z	PASS	40	standard	0724b sweep staleness; 7 del 0 err 0 orphans
 multi-asset	2026-07-21T18:05:41Z	PASS	106	verify.sh	rc ok, ECR swept, orph clean
 multi-region-same-stack	2026-07-26T18:04:53Z	PASS	22	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
-multi-resource	2026-08-02T16:23:15Z	PASS	66	standard	re-run after #1348 review fixes; 17 create/delete, 0 orphans
+multi-resource	2026-08-02T19:37:46Z	PASS	300	standard	broad run for #1352 cross-cutting changes; 17/17 deleted, orphan-zero
 multi-stack-deps	2026-07-30T12:17:37Z	PASS	300	standard	regression sweep post-#1289; 3-stack cross-stack deps deploy+destroy clean
 nested-stack	2026-07-26T18:10:48Z	PASS	30	standard	0727b sweep-b2 staleness re-run (rc=0); account clean
 nested-stack-3level	2026-07-21T05:11:36Z	PASS	78	verify.sh	rc ok, orph clean
@@ -266,3 +266,4 @@ vpc-lookup	2026-07-24T10:55:09Z	PASS	20	standard	0724b sweep staleness; context-
 vpc-nat-gateway	2026-07-22T08:08:02Z	PASS		standard	TTL-refresh sweep; standard flow (classifier-approved direct deploy/destroy); 21 created / 21 deleted 0 err; NAT GW + VPC + EIP + ENI all gone, state gone
 wafv2	2026-07-26T19:36:49Z	PASS	58	standard	0727b sweep-b11 staleness re-run (rc=0); account clean
 wait-condition-handle	2026-07-31T06:19:56Z	PASS	44	verify.sh	TTL-refresh sweep re-run; rc ok, orph clean
+deletion-policy-snapshot	2026-08-02T19:38:25Z	PASS	170	verify.sh	re-run with review-fixed binary; engine+runner snapshots verified, orphan-zero (#1352)
