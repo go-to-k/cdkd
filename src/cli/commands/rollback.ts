@@ -7,6 +7,7 @@ import {
   warnIfDeprecatedRegion,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
+import { forwardSigtermToSigint } from '../../utils/interrupt-signals.js';
 import { PartialFailureError, withErrorHandling } from '../../utils/error-handler.js';
 import { ProviderRegistry } from '../../provisioning/provider-registry.js';
 import { registerAllProviders } from '../../provisioning/register-providers.js';
@@ -199,6 +200,9 @@ export async function rollbackCommand(
       interrupted = true;
     };
     process.on('SIGINT', sigintHandler);
+    // CI cancellation delivers SIGTERM, not Ctrl-C (issue #1342) — route it
+    // through the same graceful stop-after-current-operation path.
+    const unforwardSigterm = forwardSigtermToSigint();
 
     try {
       // 4. Load state + journal (write order guarantees state exists first).
@@ -484,6 +488,7 @@ export async function rollbackCommand(
       }
       logger.info(`\nRollback of '${stackName}' (${region}) complete.`);
     } finally {
+      unforwardSigterm();
       process.removeListener('SIGINT', sigintHandler);
       await setup.lockManager.releaseLock(stackName, region).catch((err) => {
         logger.warn(

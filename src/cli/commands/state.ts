@@ -47,6 +47,7 @@ import { buildCdkdStateStackTree, type CdkdStateStackTree } from './export.js';
 import { BOOTSTRAP_MARKER_PREFIX, parseBootstrapMarker } from '../../assets/asset-storage.js';
 import type { LockInfo, StackState } from '../../types/state.js';
 import { expectedOwnerParam } from '../../utils/expected-bucket-owner.js';
+import { forwardSigtermToSigint } from '../../utils/interrupt-signals.js';
 import { rebuildClientForBucketRegion } from '../../utils/bucket-region-client.js';
 
 /**
@@ -1139,6 +1140,10 @@ async function stateDestroyCommand(
     providerRegistry.allowUnsupportedTypes(options.allowUnsupportedTypes);
   }
 
+  // CI cancellation delivers SIGTERM, not Ctrl-C (issue #1342) — route it
+  // through the destroy-runner's graceful-SIGINT drain (issue #816).
+  const unforwardSigterm = forwardSigtermToSigint();
+
   try {
     // Resolve target stack names from S3 (no synth). After PR 1, listStacks
     // returns one ref per (stackName, region) pair — same stackName across
@@ -1335,6 +1340,7 @@ async function stateDestroyCommand(
       );
     }
   } finally {
+    unforwardSigterm();
     setup.dispose();
   }
 }

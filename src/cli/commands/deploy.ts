@@ -15,6 +15,7 @@ import {
   type ResourceTimeoutOption,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
+import { forwardSigtermToSigint } from '../../utils/interrupt-signals.js';
 import { bold, cyan, gray, green, red, yellow } from '../../utils/colors.js';
 import { withErrorHandling, CdkdError, DeployCancelledError } from '../../utils/error-handler.js';
 import {
@@ -277,13 +278,23 @@ async function deployCommand(
   let deployInterrupted = false;
   const topLevelSigintHandler = () => {
     if (deployInterrupted) {
-      process.stderr.write('\nForce exit\n');
+      // Force-exit bypasses every `finally`, so per-stack locks may be left
+      // behind. Print the recovery command (parity with destroy's force-quit
+      // path) — the lock TTL reclaims them automatically otherwise.
+      process.stderr.write(
+        '\nForce-quit: stack locks may not be released. ' +
+          'If the next run reports a lock, run: cdkd force-unlock <stackName>\n'
+      );
       process.exit(130);
     }
     process.stderr.write('\nInterrupted — waiting for in-progress operations to complete...\n');
     deployInterrupted = true;
   };
   process.on('SIGINT', topLevelSigintHandler);
+  // CI cancellation delivers SIGTERM, not Ctrl-C (issue #1342) — route it
+  // through the same graceful path (incl. the engine's partial-state save
+  // and the providers' poll-abort listeners).
+  const unforwardSigterm = forwardSigtermToSigint();
 
   try {
     // 1. Synthesize CDK app (or read a pre-synthesized assembly when --app
@@ -615,6 +626,17 @@ async function deployCommand(
     };
 
     const runStackInner = async (stackInfo: (typeof targetStacks)[0]): Promise<void> => {
+      // An interrupt (Ctrl-C, or SIGTERM forwarded per issue #1342) that
+      // landed BEFORE this stack's engine registered its own SIGINT handler
+      // only set the flag — without this gate the deploy would proceed to
+      // acquire the lock and start provisioning after the user asked it to
+      // stop (in SIGTERM-only CI the follow-up signal is SIGKILL, which
+      // would then land mid-provisioning while the lock is held).
+      if (deployInterrupted) {
+        throw new DeployCancelledError(
+          `Deploy interrupted before stack '${stackInfo.stackName}' started — not starting it.`
+        );
+      }
       const stackRegion = stackInfo.region || baseRegion;
 
       logger.info(
@@ -954,6 +976,7 @@ async function deployCommand(
       }
     );
   } finally {
+    unforwardSigterm();
     process.removeListener('SIGINT', topLevelSigintHandler);
     awsClients.destroy();
   }
