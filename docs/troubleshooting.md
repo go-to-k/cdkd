@@ -36,7 +36,9 @@ Locked by: user@hostname:12345, operation: deploy
 > [#816](https://github.com/go-to-k/cdkd/issues/816)) finishes any in-flight
 > delete, flushes the incremental state, and **releases the lock** before
 > exiting non-zero. A re-run resumes immediately without waiting out the lock
-> TTL.
+> TTL. `cdkd deploy` behaves the same way on a first `Ctrl-C`: in-flight
+> operations finish, partial state is saved, a rollback journal is recorded,
+> and the lock is released before the non-zero exit.
 >
 > A **second** `Ctrl-C` force-quits immediately (`exit 130`) without waiting
 > for the in-flight delete. Because the force-quit path cannot run the normal
@@ -94,6 +96,74 @@ await lockManager.acquireLockWithRetry(
   10000   // retryDelay (default: 5000ms)
 );
 ```
+
+### Issue: Stale lock after a cancelled CI job
+
+#### Symptoms
+
+A CI job running `cdkd deploy` was cancelled (manually, or automatically by a
+newer run), and the next run fails with `Failed to acquire lock` even though
+no deploy is in progress.
+
+A very common GitHub Actions setup for per-PR environments hits this:
+
+```yaml
+concurrency:
+  group: pr-env-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+```
+
+Consecutive pushes to the same PR target the **same stack**, so the cancelled
+run's stale lock blocks the run that replaced it.
+
+#### Causes
+
+Cancellation is not a clean `Ctrl-C`. GitHub Actions escalates
+`SIGINT` → `SIGTERM` (~7.5 s later) → `SIGKILL` (~2.5 s after that); other CI
+systems (GitLab CI, `docker stop`, Kubernetes) typically send `SIGTERM`
+directly. cdkd's deploy/destroy path currently handles `SIGINT` gracefully
+(finish in-flight operations, save state, release the lock) but has **no
+`SIGTERM` handler**, and `SIGKILL` cannot be handled by any process. So a
+cancelled job usually dies before the lock-release cleanup runs, stranding
+the lock.
+
+#### Solutions
+
+**1. Wait out the TTL** — a stale lock is reclaimed automatically after the
+lock TTL (**30 minutes** by default). The next run after that succeeds
+without intervention.
+
+**2. Clear it immediately** with:
+
+```bash
+cdkd force-unlock MyStack
+```
+
+**3. Recommended CI pattern** — when your workflow serializes runs per stack
+(as the `concurrency` group above does), it is safe to clear any stale lock
+at the start of the job, because no other run of the same group can be
+holding it legitimately:
+
+```yaml
+- run: npm i -g @go-to-k/cdkd
+- run: cdkd force-unlock MyStack || true  # only safe when runs are serialized per stack
+- run: cdkd deploy MyStack --yes
+```
+
+Do **not** add an unconditional `force-unlock` to workflows where two jobs
+can legitimately operate on the same stack concurrently — it would break the
+lock that protects the running deploy.
+
+#### Note on partially-applied deploys
+
+A killed deploy is usually not a correctness problem beyond the lock: cdkd
+saves state incrementally after each completed resource, so a re-run resumes
+from the last saved state, and a rollback journal (when present) lets
+`cdkd rollback` revert the interrupted deploy instead. The remaining exposure
+is a resource whose create was in flight at the moment of the kill: it may
+have been created on AWS without reaching state, in which case the next run
+can surface an "already exists" conflict that needs manual reconciliation
+(delete the resource, or adopt it with `cdkd import`).
 
 ---
 
