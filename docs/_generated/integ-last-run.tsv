@@ -193,7 +193,7 @@ migrate-from-cfn	2026-07-21T13:50:11Z	PASS	414	verify.sh	post import-tag-walk re
 monitoring	2026-07-24T10:52:15Z	PASS	40	standard	0724b sweep staleness; 7 del 0 err 0 orphans
 multi-asset	2026-07-21T18:05:41Z	PASS	106	verify.sh	rc ok, ECR swept, orph clean
 multi-region-same-stack	2026-07-26T18:04:53Z	PASS	22	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
-multi-resource	2026-08-02T15:43:45Z	PASS	58	standard	re-run after #1342 review fixes; 17 create/delete, 0 orphans
+multi-resource	2026-08-02T16:16:36Z	PASS	67	standard	broad integ for #1348 signal-before-lock PR; 17 create/delete, 0 orphans
 multi-stack-deps	2026-07-30T12:17:37Z	PASS	300	standard	regression sweep post-#1289; 3-stack cross-stack deps deploy+destroy clean
 nested-stack	2026-07-26T18:10:48Z	PASS	30	standard	0727b sweep-b2 staleness re-run (rc=0); account clean
 nested-stack-3level	2026-07-21T05:11:36Z	PASS	78	verify.sh	rc ok, orph clean
