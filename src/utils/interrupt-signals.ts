@@ -38,11 +38,11 @@ export function forwardSigtermToSigint(): () => void {
       // SIGINT here would be a silent no-op and the process would IGNORE the
       // termination request — preserve the default SIGTERM behavior instead
       // (128 + 15). Matches what a raw Ctrl-C does in the same window.
-      // NOTE: destroy acquires the stack lock shortly BEFORE its runner
-      // registers the SIGINT handler, so a signal landing in that
-      // milliseconds-wide window exits here with the lock held (reclaimed by
-      // the TTL / `cdkd force-unlock`) — pre-existing for SIGINT too;
-      // tracked in issue #1348.
+      // NOTE: destroy acquires the stack lock BEFORE its runner registers
+      // the SIGINT handler (with an S3 round-trip in between, the window can
+      // reach sub-second-to-seconds), so a signal landing there exits with
+      // the lock held (reclaimed by the TTL / `cdkd force-unlock`) —
+      // pre-existing for SIGINT too; tracked in issue #1348.
       process.exit(143);
     }
     process.emit('SIGINT', 'SIGINT');
