@@ -108,7 +108,7 @@ export-nested-stack	2026-07-21T08:39:22Z	PASS	327	verify.sh	export->CFn nested a
 fifo-sqs-event-source	2026-07-27T06:44:00Z	PASS	111	verify.sh	final-tree gate refresh for #1256; destroy 6/0 errors, 0 orphans
 fsx-lustre	2026-08-02T05:30:54Z	PASS	899	verify.sh	0802 heavy TTL sweep; deploy+update+destroy ok, 0 orphans, no final backup
 fsx-ontap	2026-07-20T01:29:32Z	PASS	1590	verify.sh	issue #1088 ONTAP: DiskIopsConfiguration read back from AWS (Mode+Iops), aws_query_ids hardening; 8 deleted 0 errors 0 orphans
-fsx-openzfs	2026-07-19T16:00:39Z	PASS	1380	verify.sh	re-run after review fixes; drift+observedProperties asserted; 8 deleted 0 errors 0 orphans
+fsx-openzfs	2026-08-02T05:53:30Z	PASS	1287	verify.sh	0802 heavy TTL sweep; deploy+update+drift+destroy ok; untagged OpenZFS final backup swept (#1113)
 fsx-windows	2026-07-20T02:35:13Z	PASS	5460	verify.sh	issue #1088 Windows AD-joined: 7 phases, DiskIopsConfiguration read back, ENIs released 192s; 11 deleted 0 errors 0 orphans
 full-stack-demo	2026-07-26T18:36:31Z	PASS	41	standard	0727b sweep-b4 staleness re-run (rc=0); account clean
 gc-custom-asset-names	2026-07-31T06:41:35Z	PASS	120	verify.sh	TTL-refresh sweep re-run in ca-central-1 (us-west-2 now marker-owned); zero residue
