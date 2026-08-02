@@ -557,19 +557,33 @@ export async function runDestroyForStack(
   // cross-stack reads; this matches CloudFormation's own inherent
   // limitation. Documented in docs/cross-stack-references.md.
   if (needsStrongRefCheck) {
-    const consumers = await scanActiveConsumers(stackName, regionForState, ctx);
-    if (consumers.length > 0) {
-      // Release the lock AND remove the SIGINT listener manually before
-      // throwing — the surrounding try/finally that owns both starts a few
-      // lines below, so a throw here would skip them.
-      process.removeListener('SIGINT', sigintHandler);
+    // Any exit out of this block happens BEFORE the main try/finally that
+    // owns the lock release + listener removal, so both are done manually
+    // here — for the refusal throw AND for an unexpected scan failure
+    // (`listStacks` is not caught inside `scanActiveConsumers`). Release
+    // FIRST, remove the listener LAST: while the release round-trip is in
+    // flight the handler stays armed, so a SIGTERM landing there is still
+    // forwarded gracefully instead of hitting the exit-143 fallback with
+    // the lock held.
+    const releaseThenUnregister = async (): Promise<void> => {
       try {
         await ctx.lockManager.releaseLock(stackName, regionForState);
       } catch (releaseErr) {
         logger.warn(
-          `Failed to release lock after strong-ref refusal: ${releaseErr instanceof Error ? releaseErr.message : String(releaseErr)}`
+          `Failed to release lock after strong-ref refusal/failure: ${releaseErr instanceof Error ? releaseErr.message : String(releaseErr)}`
         );
       }
+      process.removeListener('SIGINT', sigintHandler);
+    };
+    let consumers: Awaited<ReturnType<typeof scanActiveConsumers>>;
+    try {
+      consumers = await scanActiveConsumers(stackName, regionForState, ctx);
+    } catch (error) {
+      await releaseThenUnregister();
+      throw error;
+    }
+    if (consumers.length > 0) {
+      await releaseThenUnregister();
       throw new StackHasActiveImportsError(stackName, regionForState, consumers);
     }
   }

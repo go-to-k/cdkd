@@ -74,6 +74,14 @@ describe('SIGINT handler registration precedes lock acquisition (issue #1348)', 
         `${file}: no listener cleanup in the acquire-failure catch`
       ).toBe(true);
     }
+    // rollback registers the #1342 SIGTERM forwarder alongside its SIGINT
+    // handler, so its acquire-failure catch must unregister BOTH.
+    const rollbackLive = liveSource('src/cli/commands/rollback.ts');
+    const rollbackAcquireIdx = rollbackLive.indexOf('.acquireLock');
+    expect(
+      rollbackLive.slice(rollbackAcquireIdx, rollbackAcquireIdx + 600).includes('unforwardSigterm()'),
+      'rollback.ts: acquire-failure catch must also unregister the SIGTERM forwarder'
+    ).toBe(true);
   });
 
   it("destroy-runner gates the force-quit best-effort release on lock ownership", () => {
