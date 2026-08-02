@@ -958,9 +958,20 @@ export async function replayFailedOperations(
             resourceType: op.resourceType,
             provisionedBy: op.provisionedBy,
           });
-          await provider.delete(op.logicalId, op.physicalId!, op.resourceType, undefined, {
-            expectedRegion: ctx.region,
-          });
+          // Pass the ATTEMPTED properties so template-borne data-guard
+          // opt-ins (issue #1340: CDK auto-delete tags, EmptyOnDelete) stay
+          // visible to the provider's delete — with `undefined` a
+          // partially-created bucket/repo that already received data would
+          // guard-fail this rollback delete even though the template opted in.
+          await provider.delete(
+            op.logicalId,
+            op.physicalId!,
+            op.resourceType,
+            op.attemptedProperties,
+            {
+              expectedRegion: ctx.region,
+            }
+          );
           delete stateResources[op.logicalId];
           await options.afterOp?.(op.logicalId);
           ctx.recordEvent?.({

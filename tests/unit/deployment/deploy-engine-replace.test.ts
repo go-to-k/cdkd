@@ -217,6 +217,16 @@ describe('DeployEngine — --replace wire-through', () => {
     const engine = makeEngine({ replace: true, forceStatefulRecreation: true });
     await invokeProvision(engine, 'AWS::DynamoDB::Table');
     expect(callOrder).toEqual(['update', 'delete', 'create']);
+    // The consent must reach the provider's data guard (issue #1340): the
+    // replacement delete carries forceDataDelete: true so S3/ECR force-cleanup
+    // is authorized by the flag the user explicitly passed.
+    expect(provider.delete).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({ forceDataDelete: true })
+    );
   });
 
   it('replace=true on an S3 bucket is blocked without --force-stateful-recreation (no mid-deploy probe)', async () => {
