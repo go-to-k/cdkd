@@ -451,8 +451,98 @@ export async function runDestroyForStack(
     }
   }
 
+  // Live progress renderer (multi-line in-flight display at bottom of TTY).
+  // Self-disables on non-TTY and when CDKD_NO_LIVE=1 is set. Created (not
+  // started) BEFORE the lock acquisition below because the SIGINT handler
+  // routes its notice through it; `printAbove` falls through to a direct
+  // write while the renderer is not yet started.
+  const renderer = getLiveRenderer();
+
+  // Graceful SIGINT handling (issue #816, Terraform parity). The first
+  // Ctrl-C flips `draining` true: the reverse-DAG delete loop below stops
+  // SCHEDULING new deletes (it checks the flag before each level and before
+  // dispatching each resource), but the already-dispatched in-flight
+  // `provider.delete` calls in the current level are awaited to completion.
+  // Control then falls through to the `finally` block, which flushes the
+  // incremental save-chain (issue #804) — leaving a clean, minimal preserved
+  // state — and releases the stack lock. Without this the process would die
+  // mid-destroy, skip the `finally`, and strand the lock for its 30m TTL.
+  //
+  // A SECOND Ctrl-C bypasses graceful shutdown entirely (`process.exit(130)`)
+  // — the user has decided not to wait for the in-flight call.
+  //
+  // Registered BEFORE `acquireLock` (issue #1348): the acquire itself plus
+  // the under-lock strong-reference scan below take an S3 round-trip each,
+  // and a signal landing in that window used to hit the unhandled default
+  // (or the #1342 forwarder's exit-143 fallback) and strand the just-written
+  // lock for its full TTL. With the handler armed first, an interrupt during
+  // acquisition simply flips `draining` — the delete loop then starts no
+  // work and the `finally` releases the lock. `lockHeld` gates the
+  // force-quit path's best-effort release: before our acquire succeeds the
+  // lock key may belong to ANOTHER process (that is what a conflicting
+  // acquire is waiting on), and `releaseLock` deletes unconditionally.
+  //
+  // The handler reads/writes ONLY this call's closure state, and is removed in
+  // the `finally` below, so no listener leaks across stacks. Nested-stack
+  // destroys recurse into `runDestroyForStack`, registering one handler per
+  // level — Node delivers SIGINT to every listener, so the first Ctrl-C drains
+  // the parent AND every in-flight child, which is the intended behavior.
+  let draining = false;
+  let lockHeld = false;
+  const sigintHandler = (): void => {
+    if (draining) {
+      // Second Ctrl-C: force-quit without waiting for the in-flight delete.
+      // The synchronous `process.exit(130)` bypasses the `finally` below,
+      // so the stack lock is NOT released through the normal path (issue
+      // #816). Fire a best-effort, un-awaited release first — it MAY land
+      // before the process dies on a fast network — but always print the
+      // exact recovery command so the user can recover deterministically if
+      // it does not (a force-quit leaving a stranded lock would otherwise
+      // re-introduce the 30m-TTL wait this issue fixes, just on this path).
+      // Skipped entirely while the lock is not ours yet (issue #1348).
+      if (lockHeld) {
+        void ctx.lockManager.releaseLock(stackName, regionForState).catch(() => {
+          /* best-effort: the recovery line below is the real guarantee */
+        });
+        process.stderr.write(
+          `\nForce-quit: stack lock may not be released. If the next run reports a lock, run: ` +
+            `cdkd force-unlock ${stackName}\n`
+        );
+      }
+      process.exit(130);
+    }
+    draining = true;
+    // Route the notice through the live renderer so it doesn't collide with
+    // the in-flight task display.
+    renderer.printAbove(() => {
+      process.stderr.write(
+        '\nInterrupted — finishing in-flight deletes, then flushing state and releasing the lock ' +
+          '(press Ctrl-C again to force-quit)...\n'
+      );
+    });
+  };
+  // Each nested-stack level recurses into `runDestroyForStack` and registers
+  // its own SIGINT listener, and each in-flight provider that installs its own
+  // SIGINT handler (CustomResource / CloudFront / ACM / Route53) adds one more.
+  // Deep nesting + high `--concurrency` can legitimately exceed Node's default
+  // 10-listener cap and emit a scary MaxListenersExceededWarning that is NOT a
+  // leak (every listener is removed in its own `finally`). Raise the ceiling
+  // with generous headroom for real fan-out while still leaving the warning
+  // active above it so an ACTUAL listener leak is not masked. `Math.max` keeps
+  // this safe under recursion (never lowers an already-raised limit).
+  process.setMaxListeners(Math.max(process.getMaxListeners(), 100));
+  process.on('SIGINT', sigintHandler);
+
   logger.info(`\nAcquiring lock for stack ${stackName}...`);
-  await ctx.lockManager.acquireLock(stackName, regionForState, undefined, 'destroy');
+  try {
+    await ctx.lockManager.acquireLock(stackName, regionForState, undefined, 'destroy');
+  } catch (error) {
+    // The main try/finally (which owns the listener removal) starts further
+    // below — clean up here so an acquire failure does not leak the handler.
+    process.removeListener('SIGINT', sigintHandler);
+    throw error;
+  }
+  lockHeld = true;
 
   // Second strong-reference scan, now under the producer's lock. The
   // pre-flight scan above is a UX optimization (fast-fail before the
@@ -467,18 +557,33 @@ export async function runDestroyForStack(
   // cross-stack reads; this matches CloudFormation's own inherent
   // limitation. Documented in docs/cross-stack-references.md.
   if (needsStrongRefCheck) {
-    const consumers = await scanActiveConsumers(stackName, regionForState, ctx);
-    if (consumers.length > 0) {
-      // Release the lock manually before throwing — the surrounding
-      // try/finally that releases the lock starts a few lines below,
-      // so a throw here would skip the lock release.
+    // Any exit out of this block happens BEFORE the main try/finally that
+    // owns the lock release + listener removal, so both are done manually
+    // here — for the refusal throw AND for an unexpected scan failure
+    // (`listStacks` is not caught inside `scanActiveConsumers`). Release
+    // FIRST, remove the listener LAST: while the release round-trip is in
+    // flight the handler stays armed, so a SIGTERM landing there is still
+    // forwarded gracefully instead of hitting the exit-143 fallback with
+    // the lock held.
+    const releaseThenUnregister = async (): Promise<void> => {
       try {
         await ctx.lockManager.releaseLock(stackName, regionForState);
       } catch (releaseErr) {
         logger.warn(
-          `Failed to release lock after strong-ref refusal: ${releaseErr instanceof Error ? releaseErr.message : String(releaseErr)}`
+          `Failed to release lock after strong-ref refusal/failure: ${releaseErr instanceof Error ? releaseErr.message : String(releaseErr)}`
         );
       }
+      process.removeListener('SIGINT', sigintHandler);
+    };
+    let consumers: Awaited<ReturnType<typeof scanActiveConsumers>>;
+    try {
+      consumers = await scanActiveConsumers(stackName, regionForState, ctx);
+    } catch (error) {
+      await releaseThenUnregister();
+      throw error;
+    }
+    if (consumers.length > 0) {
+      await releaseThenUnregister();
       throw new StackHasActiveImportsError(stackName, regionForState, consumers);
     }
   }
@@ -554,70 +659,10 @@ export async function runDestroyForStack(
     });
   };
 
-  // Live progress renderer (multi-line in-flight display at bottom of TTY).
-  // Self-disables on non-TTY and when CDKD_NO_LIVE=1 is set.
-  const renderer = getLiveRenderer();
+  // Start the live area only now — the earlier phases (lock, strong-ref
+  // scan) log plain lines; the renderer itself was created before the lock
+  // acquisition above so the SIGINT handler could reference it.
   renderer.start();
-
-  // Graceful SIGINT handling (issue #816, Terraform parity). The first
-  // Ctrl-C flips `draining` true: the reverse-DAG delete loop below stops
-  // SCHEDULING new deletes (it checks the flag before each level and before
-  // dispatching each resource), but the already-dispatched in-flight
-  // `provider.delete` calls in the current level are awaited to completion.
-  // Control then falls through to the `finally` block, which flushes the
-  // incremental save-chain (issue #804) — leaving a clean, minimal preserved
-  // state — and releases the stack lock. Without this the process would die
-  // mid-destroy, skip the `finally`, and strand the lock for its 30m TTL.
-  //
-  // A SECOND Ctrl-C bypasses graceful shutdown entirely (`process.exit(130)`)
-  // — the user has decided not to wait for the in-flight call.
-  //
-  // The handler reads/writes ONLY this call's closure state, and is removed in
-  // the `finally` below, so no listener leaks across stacks. Nested-stack
-  // destroys recurse into `runDestroyForStack`, registering one handler per
-  // level — Node delivers SIGINT to every listener, so the first Ctrl-C drains
-  // the parent AND every in-flight child, which is the intended behavior.
-  let draining = false;
-  const sigintHandler = (): void => {
-    if (draining) {
-      // Second Ctrl-C: force-quit without waiting for the in-flight delete.
-      // The synchronous `process.exit(130)` bypasses the `finally` below,
-      // so the stack lock is NOT released through the normal path (issue
-      // #816). Fire a best-effort, un-awaited release first — it MAY land
-      // before the process dies on a fast network — but always print the
-      // exact recovery command so the user can recover deterministically if
-      // it does not (a force-quit leaving a stranded lock would otherwise
-      // re-introduce the 30m-TTL wait this issue fixes, just on this path).
-      void ctx.lockManager.releaseLock(stackName, regionForState).catch(() => {
-        /* best-effort: the recovery line below is the real guarantee */
-      });
-      process.stderr.write(
-        `\nForce-quit: stack lock may not be released. If the next run reports a lock, run: ` +
-          `cdkd force-unlock ${stackName}\n`
-      );
-      process.exit(130);
-    }
-    draining = true;
-    // Route the notice through the live renderer so it doesn't collide with
-    // the in-flight task display.
-    renderer.printAbove(() => {
-      process.stderr.write(
-        '\nInterrupted — finishing in-flight deletes, then flushing state and releasing the lock ' +
-          '(press Ctrl-C again to force-quit)...\n'
-      );
-    });
-  };
-  // Each nested-stack level recurses into `runDestroyForStack` and registers
-  // its own SIGINT listener, and each in-flight provider that installs its own
-  // SIGINT handler (CustomResource / CloudFront / ACM / Route53) adds one more.
-  // Deep nesting + high `--concurrency` can legitimately exceed Node's default
-  // 10-listener cap and emit a scary MaxListenersExceededWarning that is NOT a
-  // leak (every listener is removed in its own `finally`). Raise the ceiling
-  // with generous headroom for real fan-out while still leaving the warning
-  // active above it so an ACTUAL listener leak is not masked. `Math.max` keeps
-  // this safe under recursion (never lowers an already-raised limit).
-  process.setMaxListeners(Math.max(process.getMaxListeners(), 100));
-  process.on('SIGINT', sigintHandler);
 
   try {
     logger.info('Building dependency graph...');

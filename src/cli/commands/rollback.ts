@@ -191,9 +191,11 @@ export async function rollbackCommand(
     registerAllProviders(providerRegistry);
     providerRegistry.setCustomResourceResponseBucket(setup.bucket);
 
-    // 3. Acquire the stack lock for the whole replay.
-    await setup.lockManager.acquireLockWithRetry(stackName, region, undefined, 'rollback');
-
+    // Interrupt handling, registered BEFORE the lock acquisition below
+    // (issue #1348) so a signal landing during the acquisition's S3
+    // round-trip flips the flag — the replay loop then stops before its
+    // first operation and the `finally` releases the lock — instead of
+    // killing the process with the just-written lock stranded.
     let interrupted = false;
     const sigintHandler = () => {
       process.stderr.write('\nInterrupted — stopping rollback after the current operation...\n');
@@ -203,6 +205,17 @@ export async function rollbackCommand(
     // CI cancellation delivers SIGTERM, not Ctrl-C (issue #1342) — route it
     // through the same graceful stop-after-current-operation path.
     const unforwardSigterm = forwardSigtermToSigint();
+
+    // 3. Acquire the stack lock for the whole replay.
+    try {
+      await setup.lockManager.acquireLockWithRetry(stackName, region, undefined, 'rollback');
+    } catch (error) {
+      // The try/finally that owns the listener cleanup starts below — clean
+      // up here so an acquire failure does not leak the handlers.
+      unforwardSigterm();
+      process.removeListener('SIGINT', sigintHandler);
+      throw error;
+    }
 
     try {
       // 4. Load state + journal (write order guarantees state exists first).
