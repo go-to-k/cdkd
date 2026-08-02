@@ -1617,7 +1617,9 @@
     {
       "name": "s3-directory-bucket",
       "annotated": true,
-      "scenarios": []
+      "scenarios": [
+        "destroy-data-guard"
+      ]
     },
     {
       "name": "s3-event-notification",
@@ -2001,7 +2003,8 @@
       "scenario": "destroy-data-guard",
       "description": "CloudFormation-parity refusal to force-clean contained data on destroy (issue #1340): a non-empty S3 bucket WITHOUT the auto-delete opt-in and an image-carrying ECR repository WITHOUT EmptyOnDelete both FAIL the destroy with the data intact, while the opted-in siblings (aws-cdk:auto-delete-objects tag / EmptyOnDelete: true) are force-cleaned in the same run; after AWS-native data cleanup a second destroy completes with zero orphans.",
       "fixtures": [
-        "destroy-data-guard"
+        "destroy-data-guard",
+        "s3-directory-bucket"
       ]
     },
     {

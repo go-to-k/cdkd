@@ -502,10 +502,13 @@ repository ...
 
 **Cause:**
 
-`cdkd destroy` matches CloudFormation's fail-and-protect behavior (issue
-[#1340](https://github.com/go-to-k/cdkd/issues/1340)): an S3 bucket that
-still contains objects, or an ECR repository that still contains images, is
-NOT force-cleaned unless the resource opted in.
+`cdkd destroy` matches CloudFormation's fail-and-protect behavior (issues
+[#1340](https://github.com/go-to-k/cdkd/issues/1340) /
+[#1344](https://github.com/go-to-k/cdkd/issues/1344)): an S3 bucket (standard
+or S3 Express directory bucket) that still contains objects, or an ECR
+repository that still contains images, is NOT force-cleaned unless the
+resource opted in. Directory buckets have no template opt-in today (CDK has
+no `autoDeleteObjects` for them) — empty manually and destroy again.
 
 **Solutions:**
 

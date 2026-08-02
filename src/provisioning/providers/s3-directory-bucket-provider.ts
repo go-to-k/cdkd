@@ -12,6 +12,7 @@ import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import { S3_AUTO_DELETE_OBJECTS_TAG, hasCdkAutoDeleteTag } from '../data-delete-intent.js';
 import { generateResourceName } from '../resource-name.js';
 import { resolveExplicitPhysicalId } from '../import-helpers.js';
 import type {
@@ -194,21 +195,40 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
   /**
    * Delete an S3 Express Directory Bucket
    *
-   * Must empty the bucket before deletion. Directory buckets do not support
-   * versioning, so only current objects need to be deleted.
+   * CloudFormation-parity data guard (issue #1344, sibling of #1340): a
+   * non-empty directory bucket is only auto-emptied when the user opted in —
+   * the `aws-cdk:auto-delete-objects` tag on the bucket (settable only via
+   * `--allow-unsupported-properties` today, since `Tags` is not yet a
+   * handled property for this type) or the deploy engine's
+   * `--force-stateful-recreation` consent on a replacement delete
+   * (`DeleteContext.forceDataDelete`). Otherwise the not-empty error
+   * surfaces exactly like CloudFormation's DELETE_FAILED (live-A/B-verified
+   * 2026-08-03: CFn fails a non-empty DirectoryBucket delete with "The
+   * bucket you tried to delete is not empty", 409).
+   *
+   * Directory buckets do not support versioning, so the opted-in auto-empty
+   * only needs to delete current objects.
    */
   async delete(
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    _properties?: Record<string, unknown>,
+    properties?: Record<string, unknown>,
     context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting S3 Express Directory Bucket ${logicalId}: ${physicalId}`);
 
+    const allowAutoEmpty =
+      context?.forceDataDelete === true ||
+      hasCdkAutoDeleteTag(properties, S3_AUTO_DELETE_OBJECTS_TAG);
+
     try {
-      // Empty the bucket first
-      await this.emptyBucket(physicalId);
+      if (allowAutoEmpty) {
+        this.logger.info(
+          `Emptying directory bucket ${physicalId} before deletion (auto-delete opt-in present)`
+        );
+        await this.emptyBucket(physicalId);
+      }
 
       // Delete the bucket
       await this.s3Client.send(
@@ -218,6 +238,22 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
       );
       this.logger.debug(`Successfully deleted S3 Express Directory Bucket ${logicalId}`);
     } catch (error) {
+      const notEmptyMsg = error instanceof Error ? error.message : String(error);
+      if (
+        !allowAutoEmpty &&
+        (notEmptyMsg.includes('not empty') || notEmptyMsg.includes('BucketNotEmpty'))
+      ) {
+        throw new ProvisioningError(
+          `Failed to delete S3 Express Directory Bucket ${logicalId}: bucket ${physicalId} ` +
+            `is not empty. Matching CloudFormation, cdkd does not delete a non-empty ` +
+            `directory bucket without an explicit opt-in. Delete all objects first ` +
+            `(e.g. aws s3 rm s3://${physicalId} --recursive) and destroy again.`,
+          resourceType,
+          logicalId,
+          physicalId,
+          error instanceof Error ? error : undefined
+        );
+      }
       // Bucket not found = already deleted (idempotent)
       if (
         error instanceof Error &&
