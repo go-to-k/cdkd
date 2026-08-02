@@ -689,8 +689,14 @@ Even if a process crashes, after 30 minutes the old lock is considered stale and
   before the command exits non-zero. A re-run resumes without waiting out the
   lock TTL.
 - **Second Ctrl-C** force-quits immediately (`process.exit(130)`) without
-  waiting for in-flight operations. The lock may be left behind and is
-  reclaimed after the TTL above (or cleared with `cdkd force-unlock`).
+  waiting for in-flight operations, printing the `cdkd force-unlock` recovery
+  hint. The lock may be left behind and is reclaimed after the TTL above (or
+  cleared with `cdkd force-unlock`).
+
+`SIGTERM` (what CI runners, `docker stop`, and Kubernetes send on
+cancellation) is forwarded to the same path (issue
+[#1342](https://github.com/go-to-k/cdkd/issues/1342)): the first `SIGTERM`
+behaves like the first Ctrl-C, a subsequent signal like the second.
 
 ### Destroy interruption (Ctrl-C)
 
@@ -712,15 +718,20 @@ mirroring Terraform:
 
 This is why an interrupted destroy no longer strands the lock for its full
 TTL: only an ungraceful kill (`SIGKILL`, a second Ctrl-C, or a crash) leaves a
-stale lock.
+stale lock. As with deploy, `SIGTERM` is forwarded to the same graceful path
+(issue [#1342](https://github.com/go-to-k/cdkd/issues/1342)) — the first
+`SIGTERM` drains like the first Ctrl-C, a second one force-quits.
 
 ### CI job cancellation
 
-A cancelled CI job (e.g. GitHub Actions `cancel-in-progress: true`) can kill
-the process ungracefully and strand the lock: cdkd currently handles `SIGINT`
-but not `SIGTERM` in the deploy/destroy path, and CI runners escalate to
-`SIGTERM`/`SIGKILL` on cancellation. The lock is then reclaimed after the TTL
-above, or cleared immediately with `cdkd force-unlock <stack>`. See
+A cancelled CI job (e.g. GitHub Actions `cancel-in-progress: true`) can still
+strand the lock: cdkd's `deploy` / `destroy` / `state destroy` / `rollback`
+commands handle both `SIGINT` and `SIGTERM` gracefully (issue
+[#1342](https://github.com/go-to-k/cdkd/issues/1342)), but CI runners
+escalate to `SIGKILL` — which no process can handle — after a short grace
+period (~10 s total on GitHub Actions), so a long in-flight AWS operation
+can still die before the lock release runs. The lock is then reclaimed after
+the TTL above, or cleared immediately with `cdkd force-unlock <stack>`. See
 ["Stale lock after a cancelled CI job" in the troubleshooting
 guide](./troubleshooting.md#issue-stale-lock-after-a-cancelled-ci-job) for the
 full CI story and recommended workflow patterns.

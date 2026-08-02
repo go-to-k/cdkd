@@ -36,6 +36,7 @@ import { registerAllProviders } from '../../provisioning/register-providers.js';
 import { setResolvedResourceTimeouts } from '../../provisioning/resource-timeout-registry.js';
 import { withNestedStackContext } from '../../provisioning/nested-stack-context.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
+import { forwardSigtermToSigint } from '../../utils/interrupt-signals.js';
 import { resolveApp, resolveStateBucketWithDefault } from '../config-loader.js';
 import { matchStacks, describeStack, type StackLike } from '../stack-matcher.js';
 import { runDestroyForStack } from './destroy-runner.js';
@@ -212,6 +213,10 @@ async function destroyCommand(
     ...(options.profile && { profile: options.profile }),
   });
   setAwsClients(awsClients);
+
+  // CI cancellation delivers SIGTERM, not Ctrl-C (issue #1342) — route it
+  // through the destroy-runner's graceful-SIGINT drain (issue #816).
+  const unforwardSigterm = forwardSigtermToSigint();
 
   try {
     // 1. Initialize components
@@ -689,6 +694,7 @@ async function destroyCommand(
       );
     }
   } finally {
+    unforwardSigterm();
     // Cleanup AWS clients
     awsClients.destroy();
   }

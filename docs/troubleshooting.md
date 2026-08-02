@@ -121,11 +121,17 @@ run's stale lock blocks the run that replaced it.
 Cancellation is not a clean `Ctrl-C`. GitHub Actions escalates
 `SIGINT` → `SIGTERM` (~7.5 s later) → `SIGKILL` (~2.5 s after that); other CI
 systems (GitLab CI, `docker stop`, Kubernetes) typically send `SIGTERM`
-directly. cdkd's deploy/destroy path currently handles `SIGINT` gracefully
-(finish in-flight operations, save state, release the lock) but has **no
-`SIGTERM` handler**, and `SIGKILL` cannot be handled by any process. So a
-cancelled job usually dies before the lock-release cleanup runs, stranding
-the lock.
+directly. cdkd's `deploy` / `destroy` / `state destroy` / `rollback` commands
+handle **both `SIGINT` and `SIGTERM`** gracefully (issue
+[#1342](https://github.com/go-to-k/cdkd/issues/1342)): the first signal
+finishes in-flight operations, saves state, and releases the lock; a second
+signal force-quits with a best-effort lock release. But `SIGKILL` cannot be
+handled by any process — under GitHub Actions the whole escalation completes
+in ~10 seconds, so a job whose in-flight AWS operation takes longer than
+that is still killed before the lock-release cleanup finishes, stranding the
+lock. SIGTERM-only environments with a longer grace period (Kubernetes
+defaults to 30 s; `docker stop` to 10 s) give the graceful path a better
+chance to complete.
 
 #### Solutions
 
