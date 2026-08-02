@@ -84,6 +84,28 @@ export interface DeleteContext {
    * went through (see its note above).
    */
   forceDataDelete?: boolean;
+
+  /**
+   * When set, the resource's `DeletionPolicy` is `Snapshot` (issue #1352) and
+   * the provider MUST create a final snapshot under this identifier as part
+   * of the delete — for the `ATOMIC_FINAL_SNAPSHOT_TYPES` (see
+   * `src/provisioning/final-snapshot.ts`) that means flipping the delete call
+   * from `SkipFinalSnapshot: true` to the API's atomic final-snapshot form
+   * (e.g. RDS `DeleteDBInstance(FinalDBSnapshotIdentifier, SkipFinalSnapshot:
+   * false)`). The destroy call sites generate the identifier via
+   * `buildFinalSnapshotIdentifier()` and only pass it for types in that set,
+   * so a provider that does not read the field is never silently skipped —
+   * unsupported Snapshot-tagged types are refused before the delete instead.
+   *
+   * One CFn-documented nuance the RDS provider must apply: a DBInstance that
+   * is a member of a DBCluster (`DBClusterIdentifier` present in its
+   * properties) is deleted WITHOUT a final snapshot even under `Snapshot`
+   * (cluster-level snapshots cover it) — matching CloudFormation.
+   *
+   * Absent (`undefined`) = no final snapshot: policy is not `Snapshot`, or
+   * the user passed `--skip-final-snapshot`.
+   */
+  finalSnapshotIdentifier?: string;
 }
 
 /**

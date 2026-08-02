@@ -66,7 +66,20 @@ wins and the template stays a back-compat fallback; `cdkd state destroy`
 (template-less, `destroy-runner.ts`) reads `state.deletionPolicy` only —
 pre-v5 state on `cdkd state destroy` therefore stays at the pre-fix
 "delete every resource in state" behavior until a redeploy under v5
-populates the field.
+populates the field. The `Snapshot` value is honored too (issue
+[#1352](https://github.com/go-to-k/cdkd/issues/1352)) — NOT via
+`shouldRetainResource` (which only covers the two Retain variants) but via
+the final-snapshot gating at the same two destroy sites:
+`src/provisioning/final-snapshot.ts` defines the atomic-parameter type set
+(RDS DBInstance / DBCluster, Neptune / DocDB clusters, ElastiCache
+CacheCluster → `DeleteContext.finalSnapshotIdentifier`), the pre-delete EBS
+`CreateSnapshot`+wait for `AWS::EC2::Volume`, and the refusal
+(`FINAL_SNAPSHOT_UNSUPPORTED`) for Snapshot-tagged types cdkd cannot
+snapshot yet (Redshift Cluster / ElastiCache ReplicationGroup, issue #1353).
+`--skip-final-snapshot` (deploy / destroy / state destroy) is the explicit
+data-loss opt-out. The replacement path (`UpdateReplacePolicy: Snapshot`)
+is still plain-delete behind the `--force-stateful-recreation` guard
+(follow-up #1354).
 
 **`provisionedBy`** (schema v7+, issue
 [#614](https://github.com/go-to-k/cdkd/issues/614)) is the per-resource

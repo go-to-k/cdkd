@@ -317,6 +317,7 @@ export class NestedStackProvider implements ResourceProvider {
         ...(ctx.exportIndexStore && { exportIndexStore: ctx.exportIndexStore }),
         ...(ctx.destroyOptions?.profile && { profile: ctx.destroyOptions.profile }),
         ...(deleteContext?.removeProtection === true && { removeProtection: true }),
+        ...(ctx.destroyOptions?.skipFinalSnapshot === true && { skipFinalSnapshot: true }),
         ...(ctx.destroyOptions?.resourceWarnAfterMs !== undefined && {
           resourceWarnAfterMs: ctx.destroyOptions.resourceWarnAfterMs,
         }),

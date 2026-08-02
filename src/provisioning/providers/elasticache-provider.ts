@@ -596,11 +596,24 @@ export class ElastiCacheProvider implements ResourceProvider {
     this.logger.debug(`Deleting CacheCluster ${logicalId}: ${physicalId}`);
 
     try {
+      // `DeletionPolicy: Snapshot` (issue #1352): pass the atomic
+      // final-snapshot parameter when the destroy call site passed an id.
+      // ElastiCache only supports snapshots on Redis-engine clusters; a
+      // Memcached cluster under `Snapshot` gets AWS's InvalidParameter
+      // rejection surfaced as-is — matching CloudFormation's DELETE_FAILED
+      // for the same template.
+      const finalSnapshotId = context?.finalSnapshotIdentifier;
       await this.getClient().send(
         new DeleteCacheClusterCommand({
           CacheClusterId: physicalId,
+          ...(finalSnapshotId ? { FinalSnapshotIdentifier: finalSnapshotId } : {}),
         })
       );
+      if (finalSnapshotId) {
+        this.logger.info(
+          `Deleting CacheCluster ${logicalId} with final snapshot ${finalSnapshotId} (DeletionPolicy: Snapshot)`
+        );
+      }
 
       this.logger.debug(`Successfully initiated deletion of CacheCluster ${logicalId}`);
 

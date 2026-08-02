@@ -334,7 +334,11 @@ no recorded value, preserving pre-v5 back-compat mid-flight. `cdkd
 state destroy` is template-less by design and reads `state.deletionPolicy`
 only — pre-v5 state therefore behaves as before (every resource is
 deleted, since there is no signal to skip on; redeploy under v5 to
-populate the field).
+populate the field). `DeletionPolicy: Snapshot` is honored on the same
+paths (issue #1352): cdkd creates the final snapshot CloudFormation
+promises before deleting (see the "DeletionPolicy: Snapshot" section in
+[cli-reference.md](cli-reference.md) for the per-type mechanics and the
+`--skip-final-snapshot` opt-out).
 
 > **Upgrade note (v4 → v5)** — the **first** `cdkd deploy` after
 > upgrading from a v0.99.x binary will classify every resource whose

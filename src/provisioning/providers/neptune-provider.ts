@@ -594,12 +594,22 @@ export class NeptuneProvider implements ResourceProvider {
         }
       }
 
+      // `DeletionPolicy: Snapshot` (issue #1352): flip to the atomic
+      // final-snapshot delete when the destroy call site passed an id.
+      const finalSnapshotId = context?.finalSnapshotIdentifier;
       await this.getClient().send(
         new DeleteDBClusterCommand({
           DBClusterIdentifier: physicalId,
-          SkipFinalSnapshot: true,
+          ...(finalSnapshotId
+            ? { SkipFinalSnapshot: false, FinalDBSnapshotIdentifier: finalSnapshotId }
+            : { SkipFinalSnapshot: true }),
         })
       );
+      if (finalSnapshotId) {
+        this.logger.info(
+          `Deleting Neptune DBCluster ${logicalId} with final snapshot ${finalSnapshotId} (DeletionPolicy: Snapshot)`
+        );
+      }
 
       this.logger.debug(`Successfully initiated deletion of Neptune DBCluster ${logicalId}`);
 

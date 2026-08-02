@@ -1891,6 +1891,48 @@ itself hard-deletes `AWS::SecretsManager::Secret` (no recovery window) and
 force-detaches out-of-band IAM role policy attachments on delete — cdkd's
 identical behavior for those types is parity, not a divergence.
 
+## `DeletionPolicy: Snapshot`: final snapshots on delete (`--skip-final-snapshot`)
+
+CloudFormation creates a **final snapshot before deleting** a resource whose
+`DeletionPolicy` is `Snapshot` — and the CDK RDS L2 (`DatabaseInstance` /
+`DatabaseCluster`) defaults `removalPolicy` to `SNAPSHOT`, so plain CDK
+database stacks rely on it. cdkd matches this on every delete path (issue
+[#1352](https://github.com/go-to-k/cdkd/issues/1352)): `cdkd destroy`,
+`cdkd state destroy`, and the `cdkd deploy` DELETE of a resource removed
+from the template.
+
+| Resource type | How the final snapshot is created |
+| --- | --- |
+| `AWS::RDS::DBInstance` | `DeleteDBInstance(SkipFinalSnapshot=false, FinalDBSnapshotIdentifier=<generated>)`. CFn nuance matched: an instance that is a **cluster member** (`DBClusterIdentifier` set) is deleted without an instance-level snapshot — cluster-level snapshots cover it. |
+| `AWS::RDS::DBCluster` | `DeleteDBCluster(SkipFinalSnapshot=false, FinalDBSnapshotIdentifier=<generated>)` |
+| `AWS::Neptune::DBCluster` | `DeleteDBCluster(...FinalDBSnapshotIdentifier)` (Neptune SDK) |
+| `AWS::DocDB::DBCluster` | `DeleteDBCluster(...FinalDBSnapshotIdentifier)` (DocDB SDK) |
+| `AWS::ElastiCache::CacheCluster` | `DeleteCacheCluster(FinalSnapshotIdentifier=<generated>)` — Redis engine only; a Memcached cluster under `Snapshot` surfaces AWS's rejection, matching CFn's `DELETE_FAILED` |
+| `AWS::EC2::Volume` | Pre-delete `CreateSnapshot` (tagged `cdkd:final-snapshot-of: <volumeId>`), **waited to `completed`**, then the normal delete — the type is Cloud-Control-routed and `DeleteVolume` has no snapshot parameter. Idempotent: a destroy re-run reuses the tagged snapshot instead of creating a second one. |
+| `AWS::Redshift::Cluster`, `AWS::ElastiCache::ReplicationGroup` | **Not implemented yet** (issue [#1353](https://github.com/go-to-k/cdkd/issues/1353)) — the destroy **refuses** with an actionable error instead of silently dropping the promised snapshot. |
+
+Generated snapshot identifiers are deterministic and logged:
+`<physicalId>-final-<utcTimestamp>` (sanitized to the snapshot-identifier
+character rules).
+
+`--skip-final-snapshot` (on `cdkd deploy`, `cdkd destroy`, and `cdkd state
+destroy`) is the explicit opt-out: delete WITHOUT the final snapshot (data
+loss — useful for dev/test stacks where the snapshot cost/latency is
+unwanted, and the escape hatch for the not-yet-implemented types above).
+
+Notes:
+
+- The recorded `state.deletionPolicy` (schema v5+) is what the destroy paths
+  consult; pre-v5 state keeps the legacy plain-delete behavior until a
+  redeploy records the attribute (`cdkd destroy` also falls back to the
+  synth template's `DeletionPolicy` for pre-v5 state).
+- `UpdateReplacePolicy: Snapshot` on the **replacement** path is not covered
+  yet (issue [#1354](https://github.com/go-to-k/cdkd/issues/1354)); the
+  `--force-stateful-recreation` guard still forces an explicit opt-in before
+  any data-losing replacement, so the loss is never silent.
+- Final snapshots are billed AWS resources that survive the destroy by
+  design — delete them manually when no longer needed.
+
 ## `--remove-protection`: bypass deletion protection on destroy
 
 `cdkd destroy --remove-protection` and `cdkd state destroy

@@ -107,6 +107,7 @@ export interface NestedStackProviderContext {
     resourceWarnAfterByType?: Record<string, number>;
     resourceTimeoutByType?: Record<string, number>;
     removeProtection?: boolean;
+    skipFinalSnapshot?: boolean;
     profile?: string;
   };
 }

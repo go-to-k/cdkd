@@ -7,6 +7,7 @@ import {
   stackOptions,
   destroyOptions,
   resourceTimeoutOptions,
+  skipFinalSnapshotOption,
   contextOptions,
   parseContextOptions,
   warnIfDeprecatedRegion,
@@ -161,6 +162,7 @@ async function destroyCommand(
     yes: boolean;
     force: boolean;
     removeProtection?: boolean;
+    skipFinalSnapshot?: boolean;
     purgeEvents?: boolean;
     verbose: boolean;
     context?: string[];
@@ -585,6 +587,7 @@ async function destroyCommand(
             destroyOptions: {
               ...(options.profile && { profile: options.profile }),
               ...(options.removeProtection === true && { removeProtection: true }),
+              ...(options.skipFinalSnapshot === true && { skipFinalSnapshot: true }),
               ...(options.resourceWarnAfter?.globalMs !== undefined && {
                 resourceWarnAfterMs: options.resourceWarnAfter.globalMs,
               }),
@@ -610,6 +613,7 @@ async function destroyCommand(
               stateBucket,
               skipConfirmation: options.yes || options.force,
               removeProtection: options.removeProtection === true,
+              skipFinalSnapshot: options.skipFinalSnapshot === true,
               exportIndexStore,
               ...(options.allowUnsupportedTypes?.length && {
                 allowUnsupportedTypes: options.allowUnsupportedTypes,
@@ -730,6 +734,7 @@ export function createDestroyCommand(): Command {
     ...stackOptions,
     ...destroyOptions,
     ...resourceTimeoutOptions,
+    skipFinalSnapshotOption,
     ...contextOptions,
   ].forEach((opt) => cmd.addOption(opt));
 

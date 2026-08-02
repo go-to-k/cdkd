@@ -12,6 +12,7 @@ import {
   stateOptions,
   resourceTimeoutOptions,
   allowUnsupportedTypesOption,
+  skipFinalSnapshotOption,
   warnIfDeprecatedRegion,
   validateResourceTimeouts,
   type ResourceTimeoutOption,
@@ -1099,6 +1100,7 @@ async function stateDestroyCommand(
     all?: boolean;
     yes: boolean;
     removeProtection?: boolean;
+    skipFinalSnapshot?: boolean;
     stateBucket?: string;
     statePrefix: string;
     region?: string;
@@ -1261,6 +1263,7 @@ async function stateDestroyCommand(
             destroyOptions: {
               ...(options.profile && { profile: options.profile }),
               ...(options.removeProtection === true && { removeProtection: true }),
+              ...(options.skipFinalSnapshot === true && { skipFinalSnapshot: true }),
               ...(options.resourceWarnAfter?.globalMs !== undefined && {
                 resourceWarnAfterMs: options.resourceWarnAfter.globalMs,
               }),
@@ -1290,6 +1293,7 @@ async function stateDestroyCommand(
               // already accepted the batch prompt).
               skipConfirmation: options.yes || options.all === true,
               removeProtection: options.removeProtection === true,
+              skipFinalSnapshot: options.skipFinalSnapshot === true,
               exportIndexStore: setup.exportIndexStore,
               ...(options.allowUnsupportedTypes?.length && {
                 allowUnsupportedTypes: options.allowUnsupportedTypes,
@@ -1391,6 +1395,7 @@ function createStateDestroyCommand(): Command {
     ...stateOptions,
     ...resourceTimeoutOptions,
     allowUnsupportedTypesOption,
+    skipFinalSnapshotOption,
   ].forEach((opt) => cmd.addOption(opt));
 
   // --region is deprecated on every state subcommand (PR 5). Accepted for
