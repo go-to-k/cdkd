@@ -4,6 +4,15 @@ import { bold, green, red, yellow } from '../../utils/colors.js';
 import { formatResourceLine } from '../../utils/resource-line.js';
 import { getLiveRenderer } from '../../utils/live-renderer.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
+import {
+  ATOMIC_FINAL_SNAPSHOT_TYPES,
+  PRE_DELETE_SNAPSHOT_TYPES,
+  buildFinalSnapshotIdentifier,
+  ccRoutedFinalSnapshotError,
+  createEbsFinalSnapshot,
+  isFinalSnapshotError,
+  unsupportedFinalSnapshotError,
+} from '../../provisioning/final-snapshot.js';
 import type { S3StateBackend } from '../../state/s3-state-backend.js';
 import type { LockManager } from '../../state/lock-manager.js';
 import { DagBuilder } from '../../analyzer/dag-builder.js';
@@ -83,6 +92,16 @@ export interface DestroyRunnerContext {
    * Resource types without a protection field treat this as a no-op.
    */
   removeProtection?: boolean;
+
+  /**
+   * `--skip-final-snapshot` (issue #1352) — delete `DeletionPolicy: Snapshot`
+   * resources WITHOUT the final snapshot the policy promises (data loss,
+   * explicit opt-in). Default: honor the policy — atomic final-snapshot
+   * delete parameters / pre-delete EBS `CreateSnapshot`+wait — and refuse
+   * (`FINAL_SNAPSHOT_UNSUPPORTED`) Snapshot-tagged types cdkd cannot
+   * snapshot yet (issue #1353). Mirrors `DeployEngineOptions.skipFinalSnapshot`.
+   */
+  skipFinalSnapshot?: boolean;
 
   /**
    * Per-resource warn threshold (ms). Mirrors `DeployEngineOptions` so
@@ -811,6 +830,51 @@ export async function runDestroyForStack(
           ...(resource.provisionedBy && { provisionedBy: resource.provisionedBy }),
         });
         try {
+          // Honor `DeletionPolicy: Snapshot` (issue #1352) — the template-less
+          // twin of the deploy engine's DELETE-branch gating: atomic
+          // final-snapshot delete param for the Tier-A types, pre-delete EBS
+          // `CreateSnapshot`+wait for `AWS::EC2::Volume`, refusal for
+          // Snapshot-tagged types cdkd cannot snapshot (opt out with
+          // `--skip-final-snapshot`). Pre-v5 state has no recorded
+          // `deletionPolicy`, so legacy state keeps the plain-delete behavior
+          // until a redeploy records the attribute.
+          let finalSnapshotIdentifier: string | undefined;
+          if (resource.deletionPolicy === 'Snapshot' && ctx.skipFinalSnapshot !== true) {
+            if (
+              ATOMIC_FINAL_SNAPSHOT_TYPES.has(resource.resourceType) &&
+              resource.provisionedBy !== 'cc-api'
+            ) {
+              finalSnapshotIdentifier = buildFinalSnapshotIdentifier(
+                resource.physicalId,
+                resource.resourceType
+              );
+            } else if (ATOMIC_FINAL_SNAPSHOT_TYPES.has(resource.resourceType)) {
+              // cc-api-routed atomic type: Cloud Control DeleteResource has
+              // no final-snapshot parameter — refuse instead of silently
+              // dropping the promised snapshot.
+              throw ccRoutedFinalSnapshotError(
+                logicalId,
+                resource.resourceType,
+                '--skip-final-snapshot'
+              );
+            } else if (PRE_DELETE_SNAPSHOT_TYPES.has(resource.resourceType)) {
+              // destroyAwsClients is the region-scoped set when the stack
+              // lives in a different region than the caller's base clients.
+              await createEbsFinalSnapshot(
+                (destroyAwsClients ?? ctx.baseAwsClients).ec2,
+                resource.physicalId,
+                logicalId,
+                logger
+              );
+            } else {
+              throw unsupportedFinalSnapshotError(
+                logicalId,
+                resource.resourceType,
+                '--skip-final-snapshot'
+              );
+            }
+          }
+
           // Schema v7+ (#614): route DELETE via state-recorded
           // `provisionedBy` so a CC-managed resource is deleted via Cloud
           // Control even if the SDK provider has since gained coverage.
@@ -866,6 +930,7 @@ export async function runDestroyForStack(
                     {
                       ...(state.region !== undefined && { expectedRegion: state.region }),
                       ...(ctx.removeProtection === true && { removeProtection: true }),
+                      ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
                     }
                   );
                   lastDeleteError = null;
@@ -941,13 +1006,18 @@ export async function runDestroyForStack(
         } catch (error) {
           renderer.removeTask(logicalId);
           const msg = error instanceof Error ? error.message : String(error);
-          // Treat "not found" as already deleted.
+          // Treat "not found" as already deleted — but NEVER for a typed
+          // final-snapshot failure (issue #1352): the snapshot step runs
+          // BEFORE the delete, so its error means the resource is still
+          // live; reading a snapshot-poll NotFound as "already deleted"
+          // would drop a live, un-snapshotted volume from state.
           if (
-            msg.includes('does not exist') ||
-            msg.includes('not found') ||
-            msg.includes('No policy found') ||
-            msg.includes('NoSuchEntity') ||
-            msg.includes('NotFoundException')
+            !isFinalSnapshotError(error) &&
+            (msg.includes('does not exist') ||
+              msg.includes('not found') ||
+              msg.includes('No policy found') ||
+              msg.includes('NoSuchEntity') ||
+              msg.includes('NotFoundException'))
           ) {
             logger.debug(`  ${logicalId} already deleted, removing from state`);
             result.deletedCount++;

@@ -488,6 +488,25 @@ export class CloudControlProvider implements ResourceProvider {
       `Deleting resource ${logicalId} (${resourceType}), physical ID: ${physicalId}`
     );
 
+    // Fail closed on `DeletionPolicy: Snapshot` (issue #1352): Cloud Control
+    // `DeleteResource` has no final-snapshot parameter, so this provider
+    // CANNOT honor `finalSnapshotIdentifier`. The destroy call sites already
+    // refuse cc-api-routed atomic types before the delete, so this is
+    // defense-in-depth against a future call site passing the field to a
+    // provider that would silently ignore it — the exact silent data loss
+    // the field exists to prevent.
+    if (context?.finalSnapshotIdentifier !== undefined) {
+      throw new ProvisioningError(
+        `${logicalId} (${resourceType}) requires a final snapshot ` +
+          `(DeletionPolicy: Snapshot), but the Cloud Control API delete route has no ` +
+          `final-snapshot parameter. Re-run with --skip-final-snapshot after snapshotting ` +
+          `manually, or retain the resource.`,
+        resourceType,
+        logicalId,
+        physicalId
+      );
+    }
+
     // `--remove-protection` for an `AWS::AutoScaling::AutoScalingGroup` routed
     // through Cloud Control (its template set a silent-drop property such as
     // `AvailabilityZoneIds`, so the #614 routing rule sent the whole resource

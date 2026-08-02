@@ -2102,7 +2102,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         ['DBSystemId', 'not yet implemented by cdkd'],
         [
           'DeleteAutomatedBackups',
-          'cdkd hardcodes SkipFinalSnapshot=true on destroy; this CFn lifecycle flag has no equivalent on the runtime path',
+          'delete-time lifecycle flag not threaded through cdkd destroy; final snapshots are governed by DeletionPolicy: Snapshot (issue #1352), which this flag does not control',
         ],
         ['Domain', 'not yet implemented by cdkd'],
         ['DomainIAMRoleName', 'not yet implemented by cdkd'],
@@ -2193,7 +2193,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         ['DedicatedLogVolume', 'not yet implemented by cdkd'],
         [
           'DeleteAutomatedBackups',
-          'cdkd hardcodes SkipFinalSnapshot=true on destroy; this CFn lifecycle flag has no equivalent on the runtime path',
+          'delete-time lifecycle flag not threaded through cdkd destroy; final snapshots are governed by DeletionPolicy: Snapshot (issue #1352), which this flag does not control',
         ],
         ['Domain', 'not yet implemented by cdkd'],
         ['DomainAuthSecretArn', 'not yet implemented by cdkd'],

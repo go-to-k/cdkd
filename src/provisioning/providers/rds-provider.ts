@@ -145,7 +145,7 @@ export class RDSProvider implements ResourceProvider {
       new Map<string, string>([
         [
           'DeleteAutomatedBackups',
-          'cdkd hardcodes SkipFinalSnapshot=true on destroy; this CFn lifecycle flag has no equivalent on the runtime path',
+          'delete-time lifecycle flag not threaded through cdkd destroy; final snapshots are governed by DeletionPolicy: Snapshot (issue #1352), which this flag does not control',
         ],
       ]),
     ],
@@ -162,7 +162,7 @@ export class RDSProvider implements ResourceProvider {
         ],
         [
           'DeleteAutomatedBackups',
-          'cdkd hardcodes SkipFinalSnapshot=true on destroy; this CFn lifecycle flag has no equivalent on the runtime path',
+          'delete-time lifecycle flag not threaded through cdkd destroy; final snapshots are governed by DeletionPolicy: Snapshot (issue #1352), which this flag does not control',
         ],
       ]),
     ],
@@ -244,7 +244,7 @@ export class RDSProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    _properties?: Record<string, unknown>,
+    properties?: Record<string, unknown>,
     context?: DeleteContext
   ): Promise<void> {
     switch (resourceType) {
@@ -253,7 +253,7 @@ export class RDSProvider implements ResourceProvider {
       case 'AWS::RDS::DBCluster':
         return this.deleteDBCluster(logicalId, physicalId, resourceType, context);
       case 'AWS::RDS::DBInstance':
-        return this.deleteDBInstance(logicalId, physicalId, resourceType, context);
+        return this.deleteDBInstance(logicalId, physicalId, resourceType, properties, context);
       default:
         throw new ProvisioningError(
           `Unsupported resource type: ${resourceType}`,
@@ -772,12 +772,22 @@ export class RDSProvider implements ResourceProvider {
         }
       }
 
+      // `DeletionPolicy: Snapshot` (issue #1352): flip to the atomic
+      // final-snapshot delete when the destroy call site passed an id.
+      const finalSnapshotId = context?.finalSnapshotIdentifier;
       await this.getClient().send(
         new DeleteDBClusterCommand({
           DBClusterIdentifier: physicalId,
-          SkipFinalSnapshot: true,
+          ...(finalSnapshotId
+            ? { SkipFinalSnapshot: false, FinalDBSnapshotIdentifier: finalSnapshotId }
+            : { SkipFinalSnapshot: true }),
         })
       );
+      if (finalSnapshotId) {
+        this.logger.info(
+          `Deleting DBCluster ${logicalId} with final snapshot ${finalSnapshotId} (DeletionPolicy: Snapshot)`
+        );
+      }
 
       this.logger.debug(`Successfully initiated deletion of DBCluster ${logicalId}`);
 
@@ -1104,6 +1114,7 @@ export class RDSProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
+    properties?: Record<string, unknown>,
     context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting DBInstance ${logicalId}: ${physicalId}`);
@@ -1132,12 +1143,29 @@ export class RDSProvider implements ResourceProvider {
         }
       }
 
+      // `DeletionPolicy: Snapshot` (issue #1352): the destroy call sites pass
+      // `finalSnapshotIdentifier`; flip the delete to the atomic
+      // final-snapshot form. CFn nuance: a cluster-member instance
+      // (`DBClusterIdentifier` present) is deleted WITHOUT a final snapshot
+      // even under `Snapshot` — cluster-level snapshots cover it, and the
+      // instance-level DeleteDBInstance would reject the parameter anyway.
+      const finalSnapshotId =
+        properties?.['DBClusterIdentifier'] === undefined
+          ? context?.finalSnapshotIdentifier
+          : undefined;
       await this.getClient().send(
         new DeleteDBInstanceCommand({
           DBInstanceIdentifier: physicalId,
-          SkipFinalSnapshot: true,
+          ...(finalSnapshotId
+            ? { SkipFinalSnapshot: false, FinalDBSnapshotIdentifier: finalSnapshotId }
+            : { SkipFinalSnapshot: true }),
         })
       );
+      if (finalSnapshotId) {
+        this.logger.info(
+          `Deleting DBInstance ${logicalId} with final snapshot ${finalSnapshotId} (DeletionPolicy: Snapshot)`
+        );
+      }
 
       this.logger.debug(`Successfully initiated deletion of DBInstance ${logicalId}`);
 

@@ -1136,3 +1136,24 @@ export const destroyOptions = [
   ).default(false),
   allowUnsupportedTypesOption,
 ];
+
+/**
+ * `--skip-final-snapshot` (issue #1352) — the explicit data-loss opt-out for
+ * `DeletionPolicy: Snapshot` resources. By default the destroy paths honor
+ * the policy (CloudFormation parity): an atomic final-snapshot delete
+ * parameter for RDS DBInstance / DBCluster, Neptune / DocDB clusters and
+ * ElastiCache CacheCluster, a pre-delete EBS `CreateSnapshot`+wait for
+ * `AWS::EC2::Volume`, and a refusal for Snapshot-tagged types cdkd cannot
+ * snapshot yet (issue #1353). Attached to `cdkd deploy` (template-removal
+ * deletes), `cdkd destroy`, and `cdkd state destroy` — NOT to the shared
+ * `destroyOptions` array, which `cdkd orphan` also consumes (orphan never
+ * deletes AWS resources, so the flag would be inert noise there).
+ */
+export const skipFinalSnapshotOption = new Option(
+  '--skip-final-snapshot',
+  "Delete resources whose DeletionPolicy is 'Snapshot' WITHOUT creating the final " +
+    'snapshot the policy promises (DATA LOSS — explicit opt-out of CloudFormation parity). ' +
+    'By default cdkd creates the final snapshot (RDS / Neptune / DocDB / ElastiCache ' +
+    'CacheCluster / EC2 Volume) and refuses to delete Snapshot-tagged types it cannot ' +
+    'snapshot yet.'
+).default(false);

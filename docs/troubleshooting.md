@@ -535,6 +535,37 @@ no `autoDeleteObjects` for them) — empty manually and destroy again.
 See the "Destroy data guards" section in
 [cli-reference.md](cli-reference.md) for the full semantics.
 
+### Issue: "has DeletionPolicy: Snapshot, but cdkd does not implement final snapshots for this type" on destroy
+
+**Symptoms:**
+
+```text
+MyCluster (AWS::Redshift::Cluster) has DeletionPolicy: Snapshot, but cdkd does
+not implement final snapshots for this type yet (issue #1353). Deleting it now
+would destroy its data WITHOUT the final snapshot the policy promises. ...
+```
+
+**Cause:**
+
+CloudFormation creates a final snapshot before deleting a
+`DeletionPolicy: Snapshot` resource, and cdkd matches that (issue
+[#1352](https://github.com/go-to-k/cdkd/issues/1352)) for RDS
+DBInstance / DBCluster, Neptune / DocDB clusters, ElastiCache CacheCluster,
+and EC2 Volume. For the remaining Snapshot-capable types
+(`AWS::Redshift::Cluster`, `AWS::ElastiCache::ReplicationGroup` — issue
+[#1353](https://github.com/go-to-k/cdkd/issues/1353)) cdkd refuses the
+delete instead of silently dropping the promised snapshot.
+
+**Solutions:**
+
+1. Snapshot the resource manually, then re-run with `--skip-final-snapshot`
+   (the explicit data-loss opt-out), or
+2. Change the policy to `Retain` and delete the resource manually after
+   snapshotting.
+
+See the "DeletionPolicy: Snapshot" section in
+[cli-reference.md](cli-reference.md) for the per-type mechanics.
+
 ---
 
 ## Asset Publishing Issues

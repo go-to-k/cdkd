@@ -38,6 +38,19 @@ actual delete behavior by live A/B first (CFn hard-deletes more than
 folklore says: SecretsManager no-recovery-window and IAM role
 force-detach are PARITY, verified 2026-08-02).
 
+`context.finalSnapshotIdentifier` (issue #1352) means the resource's
+`DeletionPolicy` is `Snapshot`: the provider MUST create a final snapshot
+under that identifier as part of the delete — the atomic-parameter types
+(RDS DBInstance / DBCluster, Neptune / DocDB clusters, ElastiCache
+CacheCluster) flip their delete call from `SkipFinalSnapshot: true` to the
+API's final-snapshot form. The destroy call sites only pass the field for
+types in `ATOMIC_FINAL_SNAPSHOT_TYPES`
+(`src/provisioning/final-snapshot.ts`); `AWS::EC2::Volume` is snapshotted
+engine-side pre-delete (`createEbsFinalSnapshot`), and unsupported
+Snapshot-tagged types are refused before any delete. When adding
+final-snapshot support for a new type, extend the sets there — never make a
+provider silently ignore the field.
+
 Register Provider for each resource type in Provider Registry:
 
 ```typescript

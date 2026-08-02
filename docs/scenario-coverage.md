@@ -4,7 +4,7 @@
 
 Run `vp run scenario-coverage` to regenerate.
 
-**81 / 81 canonical scenarios** have at least one integ fixture exercising them. **177 / 260 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
+**82 / 82 canonical scenarios** have at least one integ fixture exercising them. **178 / 261 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
 
 ## How this is computed
 
@@ -26,7 +26,7 @@ This report is a visibility tool, not a commit-time gate. Many cdkd fixtures leg
 
 _None._ Every canonical scenario has at least one integ fixture tagged with it.
 
-## Per-scenario coverage (81 scenarios)
+## Per-scenario coverage (82 scenarios)
 
 | Scenario | Description | Integ Fixture(s) |
 |---|---|---|
@@ -47,6 +47,7 @@ _None._ Every canonical scenario has at least one integ fixture tagged with it.
 | `custom-resource-getatt-data` | Custom Resource response `Data` consumed via `Fn::GetAtt(CR, 'Data.<key>')` / `Fn::GetAtt(CR, '<key>')` into ANOTHER resource's property (e.g. an SSM Parameter Value) — the fragile CR response-Data attribute path (#756 / #804: CR attributes only exist after the CR Lambda runs). Asserts the dependent's on-AWS value equals the value the CR handler returned, across multiple Data keys + an explicit dependent->CR dependency. | [`custom-resource-getatt-data`](../tests/integration/custom-resource-getatt-data/) |
 | `deep-getatt-chain-resolution` | Long GetAtt chain where each resource POST-CREATE attribute (ARN / generated name only known after the AWS create call) feeds the next resource property, spanning a SDK + CC-API type mix. A wrong / late attribute resolution on either path (SDK `attributes` write or CC-API stored attributes + `constructAttribute` fallback) is pinpointed by the failing link. Critical hop: an unregistered CC-API type (`AWS::CloudWatch::CompositeAlarm`) whose `Arn` feeds downstream SDK-resource properties (issue: deep-getatt-chains fixture). | [`deep-getatt-chains`](../tests/integration/deep-getatt-chains/) |
 | `deletion-policy-retain` | DeletionPolicy: Retain skip on destroy (schema v5 recorded value wins over template). | [`deletion-policy-retain`](../tests/integration/deletion-policy-retain/) |
+| `deletion-policy-snapshot` | DeletionPolicy: Snapshot honored on delete (issue #1352): final EBS snapshot created + waited to completed on BOTH the deploy engine template-removal DELETE path and the destroy-runner path; --skip-final-snapshot opt-out. | [`deletion-policy-snapshot`](../tests/integration/deletion-policy-snapshot/) |
 | `deployment-events` | Structured deployment events to S3 + `cdkd events` command (issue #808): per-run `deployments/{runId}.jsonl` + `index.json` (separate key family from state.json, no schema bump), events survive `cdkd destroy`, and carry error + metadata ONLY (no resource properties / secrets). | [`deployment-events`](../tests/integration/deployment-events/) |
 | `destroy-data-guard` | CloudFormation-parity refusal to force-clean contained data on destroy (issue #1340): a non-empty S3 bucket WITHOUT the auto-delete opt-in and an image-carrying ECR repository WITHOUT EmptyOnDelete both FAIL the destroy with the data intact, while the opted-in siblings (aws-cdk:auto-delete-objects tag / EmptyOnDelete: true) are force-cleaned in the same run; after AWS-native data cleanup a second destroy completes with zero orphans. | [`destroy-data-guard`](../tests/integration/destroy-data-guard/)<br>[`s3-directory-bucket`](../tests/integration/s3-directory-bucket/) |
 | `destroy-interrupt` | Graceful SIGINT on destroy (#816 — first Ctrl-C drains in-flight deletes, flushes trimmed state, releases the lock, exits non-zero; no 30m stranded lock) + Custom Resource replay fail-fast on re-run (#804 — the CR delete does NOT stall ~10 minutes invoking GetFunction against the already-deleted backing Lambda; the re-run resumes cleanly and quickly). | [`destroy-interrupt`](../tests/integration/destroy-interrupt/) |

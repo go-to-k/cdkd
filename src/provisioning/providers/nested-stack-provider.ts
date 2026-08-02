@@ -317,6 +317,13 @@ export class NestedStackProvider implements ResourceProvider {
         ...(ctx.exportIndexStore && { exportIndexStore: ctx.exportIndexStore }),
         ...(ctx.destroyOptions?.profile && { profile: ctx.destroyOptions.profile }),
         ...(deleteContext?.removeProtection === true && { removeProtection: true }),
+        // `--skip-final-snapshot` reaches a whole-nested-stack removal from
+        // BOTH directions: `cdkd destroy` / `state destroy` thread it via
+        // ctx.destroyOptions, while `cdkd deploy` (template-removal delete of
+        // the nested-stack row) only sets ctx.options (the parent's
+        // DeployEngineOptions) — reviewer catch on issue #1352.
+        ...((ctx.destroyOptions?.skipFinalSnapshot === true ||
+          ctx.options?.skipFinalSnapshot === true) && { skipFinalSnapshot: true }),
         ...(ctx.destroyOptions?.resourceWarnAfterMs !== undefined && {
           resourceWarnAfterMs: ctx.destroyOptions.resourceWarnAfterMs,
         }),

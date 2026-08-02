@@ -63,6 +63,7 @@ data-pipeline	2026-07-24T10:53:59Z	PASS	47	standard	0724b sweep staleness; 7 del
 deep-getatt-chains	2026-08-01T10:07:21Z	PASS	53	verify.sh	0801 regression sweep; SDK+CC chain ok, 0 orphans
 deletion-ordering-complex	2026-07-26T20:00:52Z	PASS	187	verify.sh	0727b sweep-b13 staleness re-run (rc=0); account clean
 deletion-policy-retain	2026-07-21T07:21:45Z	PASS	29	verify.sh	retain honored, manual cleanup ok, 0 orphans
+deletion-policy-snapshot	2026-08-02T19:38:25Z	PASS	170	verify.sh	re-run with review-fixed binary; engine+runner snapshots verified, orphan-zero (#1352)
 deployment-events	2026-07-26T20:00:52Z	PASS	45	verify.sh	0727b sweep-b13 staleness re-run (rc=0); account clean
 destroy-data-guard	2026-08-02T14:22:57Z	PASS	95	verify.sh	guard fired on guarded pair, opt-ins force-cleaned, 2nd destroy clean, 0 orphans
 destroy-interrupt	2026-07-26T20:00:52Z	PASS	400	verify.sh	0727b sweep-b13 staleness re-run (rc=0); account clean
@@ -193,7 +194,7 @@ migrate-from-cfn	2026-07-21T13:50:11Z	PASS	414	verify.sh	post import-tag-walk re
 monitoring	2026-07-24T10:52:15Z	PASS	40	standard	0724b sweep staleness; 7 del 0 err 0 orphans
 multi-asset	2026-07-21T18:05:41Z	PASS	106	verify.sh	rc ok, ECR swept, orph clean
 multi-region-same-stack	2026-07-26T18:04:53Z	PASS	22	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
-multi-resource	2026-08-02T16:23:15Z	PASS	66	standard	re-run after #1348 review fixes; 17 create/delete, 0 orphans
+multi-resource	2026-08-02T19:37:46Z	PASS	300	standard	broad run for #1352 cross-cutting changes; 17/17 deleted, orphan-zero
 multi-stack-deps	2026-07-30T12:17:37Z	PASS	300	standard	regression sweep post-#1289; 3-stack cross-stack deps deploy+destroy clean
 nested-stack	2026-07-26T18:10:48Z	PASS	30	standard	0727b sweep-b2 staleness re-run (rc=0); account clean
 nested-stack-3level	2026-07-21T05:11:36Z	PASS	78	verify.sh	rc ok, orph clean

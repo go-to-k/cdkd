@@ -1,0 +1,16 @@
+{
+  "name": "cdkd-example-deletion-policy-snapshot",
+  "version": "1.0.0",
+  "private": true,
+  "description": "DeletionPolicy: Snapshot — final EBS snapshot on template-removal delete (deploy engine) and on destroy (runner) (issue #1352)",
+  "type": "module",
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "aws-cdk": "^2.1112.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.169.0",
+    "constructs": "^10.0.0"
+  }
+}
