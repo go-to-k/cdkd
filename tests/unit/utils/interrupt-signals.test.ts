@@ -91,4 +91,17 @@ describe('SIGTERM forwarding command wiring (source-level pin)', () => {
       `${file}: unforwardSigterm() cleanup call not found`
     ).toBe(true);
   });
+
+  it('deploy.ts gates each stack start on the interrupt flag (pre-engine interrupt honored)', () => {
+    // Without this gate, an interrupt landing before the engine registered
+    // its SIGINT handler (during synth / asset publish) only set the flag and
+    // the deploy proceeded into lock acquisition + provisioning.
+    const src = readFileSync(join(repoRoot, 'src', 'cli', 'commands', 'deploy.ts'), 'utf8');
+    const liveLines = src
+      .split('\n')
+      .filter((line) => !line.trimStart().startsWith('//'))
+      .join('\n');
+    expect(liveLines.includes('if (deployInterrupted) {')).toBe(true);
+    expect(liveLines.includes('Deploy interrupted before stack')).toBe(true);
+  });
 });

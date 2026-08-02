@@ -282,7 +282,7 @@ async function deployCommand(
       // behind. Print the recovery command (parity with destroy's force-quit
       // path) — the lock TTL reclaims them automatically otherwise.
       process.stderr.write(
-        '\nForce exit: stack locks may not be released. ' +
+        '\nForce-quit: stack locks may not be released. ' +
           'If the next run reports a lock, run: cdkd force-unlock <stackName>\n'
       );
       process.exit(130);
@@ -626,6 +626,17 @@ async function deployCommand(
     };
 
     const runStackInner = async (stackInfo: (typeof targetStacks)[0]): Promise<void> => {
+      // An interrupt (Ctrl-C, or SIGTERM forwarded per issue #1342) that
+      // landed BEFORE this stack's engine registered its own SIGINT handler
+      // only set the flag — without this gate the deploy would proceed to
+      // acquire the lock and start provisioning after the user asked it to
+      // stop (in SIGTERM-only CI the follow-up signal is SIGKILL, which
+      // would then land mid-provisioning while the lock is held).
+      if (deployInterrupted) {
+        throw new DeployCancelledError(
+          `Deploy interrupted before stack '${stackInfo.stackName}' started — not starting it.`
+        );
+      }
       const stackRegion = stackInfo.region || baseRegion;
 
       logger.info(
