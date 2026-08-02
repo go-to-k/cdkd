@@ -1,3 +1,10 @@
+## [0.275.3](https://github.com/go-to-k/cdkd/compare/v0.275.2...v0.275.3) (2026-08-02)
+
+
+### Bug Fixes
+
+* **destroy:** gate S3 Express directory-bucket auto-empty on an explicit opt-in (CloudFormation-parity data guard) ([#1347](https://github.com/go-to-k/cdkd/issues/1347)) ([81d9d21](https://github.com/go-to-k/cdkd/commit/81d9d2176dcce7458d48d07ea31bb62f4664d8b3))
+
 ## [0.275.2](https://github.com/go-to-k/cdkd/compare/v0.275.1...v0.275.2) (2026-08-02)
 
 
