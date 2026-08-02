@@ -141,7 +141,7 @@ describe('S3DirectoryBucketProvider', () => {
     it('refuses to delete a non-empty bucket without an opt-in (CFn parity, issue #1344)', async () => {
       const notEmpty = new Error('The bucket you tried to delete is not empty');
       notEmpty.name = 'BucketNotEmpty';
-      mockSend.mockRejectedValue(notEmpty); // DeleteBucketCommand fails both attempts
+      mockSend.mockRejectedValue(notEmpty); // the single DeleteBucketCommand attempt fails
 
       await expect(
         provider.delete(
@@ -186,6 +186,26 @@ describe('S3DirectoryBucketProvider', () => {
         },
       });
       expect(mockSend.mock.calls[2][0]).toBeInstanceOf(DeleteBucketCommand);
+    });
+
+    it('ignores an auto-delete tag whose value is not truthy', async () => {
+      const notEmpty = new Error('The bucket you tried to delete is not empty');
+      notEmpty.name = 'BucketNotEmpty';
+      mockSend.mockRejectedValue(notEmpty);
+
+      await expect(
+        provider.delete(
+          'DirectoryBucket',
+          'my-bucket--use1-az4--x-s3',
+          'AWS::S3Express::DirectoryBucket',
+          { Tags: [{ Key: 'aws-cdk:auto-delete-objects', Value: 'false' }] },
+          undefined
+        )
+      ).rejects.toThrow(/not empty/);
+
+      const names = mockSend.mock.calls.map((c) => c[0].constructor.name);
+      expect(names).not.toContain('ListObjectsV2Command');
+      expect(names).not.toContain('DeleteObjectsCommand');
     });
 
     it('empties bucket before deleting when the aws-cdk:auto-delete-objects tag is present', async () => {
