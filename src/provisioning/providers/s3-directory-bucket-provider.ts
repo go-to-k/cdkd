@@ -227,6 +227,13 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
         this.logger.info(
           `Emptying directory bucket ${physicalId} before deletion (auto-delete opt-in present)`
         );
+        // Deliberately NO deleteBucketWithEmptyRetry-style race loop here
+        // (unlike the standard-bucket sibling): directory buckets cannot be
+        // ALB/CloudTrail log-delivery targets, so nothing else writes during
+        // a destroy; a lost app-write race surfaces as the generic not-empty
+        // ProvisioningError and a destroy re-run recovers. Revisit when Tags
+        // becomes a handled property for this type ((#609) makes the tag
+        // opt-in mainstream) — see PR #1347's review disposition.
         await this.emptyBucket(physicalId);
       }
 
