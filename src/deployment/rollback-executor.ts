@@ -21,11 +21,26 @@
  * Two deliberate behavior fixes vs. the pre-extraction in-process path
  * (both are pre-existing gaps; fixing them once benefits both callers):
  *
- * 1. **DeletionPolicy on CREATE rollback** — a rolled-back CREATE whose
- *    CURRENT state record carries `Retain` / `Snapshot` is ORPHANED
- *    (removed from state, left in AWS) instead of deleted;
- *    `RetainExceptOnCreate` (which exists precisely to allow cleanup of
- *    failed creates) and absent / `Delete` DELETE.
+ * 1. **DeletionPolicy on CREATE rollback** — rolling a CREATE back IS a
+ *    delete as far as the policy is concerned (CloudFormation semantics), so
+ *    the CURRENT state record's `DeletionPolicy` decides what happens:
+ *    - `Retain` → ORPHANED (removed from state, left in AWS). The policy
+ *      says KEEP the resource, so cdkd does.
+ *    - `Snapshot` → final snapshot, THEN delete (issue #1358), through the
+ *      same mechanism matrix as the deploy engine's
+ *      `prepareFinalSnapshotForDelete`: atomic delete parameter for the
+ *      SDK-routed `ATOMIC_FINAL_SNAPSHOT_TYPES`, an explicit pre-delete
+ *      snapshot for `PRE_DELETE_SNAPSHOT_TYPES`, refusal for every other
+ *      Snapshot shape (cc-api routing included) unless
+ *      `--skip-final-snapshot` opts into the data loss. This arm ORPHANED
+ *      alongside `Retain` until #1358: when this file was written cdkd could
+ *      not create a final snapshot at all, so leaving the resource behind
+ *      was the only non-destructive option — but it silently handed the user
+ *      an untracked, billing resource that state no longer knew about.
+ *      `src/provisioning/final-snapshot.ts` (#1352 / #1353) removed the
+ *      constraint, so the policy is now honored literally.
+ *    - `RetainExceptOnCreate` (which exists precisely to allow cleanup of
+ *      failed creates) and absent / `Delete` → DELETE.
  * 2. **Idempotent replay skip rules** — so a partially-failed rollback can
  *    be re-run safely (also harmless for the in-process caller, which
  *    replays each op exactly once).
@@ -39,8 +54,14 @@ import type { ProviderRegistry } from '../provisioning/provider-registry.js';
 import { STATEFUL_TYPES } from '../provisioning/stateful-types.js';
 import {
   ATOMIC_FINAL_SNAPSHOT_TYPES,
+  PRE_DELETE_SNAPSHOT_TYPES,
   buildFinalSnapshotIdentifier,
+  ccRoutedFinalSnapshotError,
+  createPreDeleteFinalSnapshot,
+  unsupportedFinalSnapshotError,
+  type PreDeleteSnapshotClients,
 } from '../provisioning/final-snapshot.js';
+import { getAwsClients } from '../utils/aws-clients.js';
 import { withRetry } from './retry.js';
 import {
   isNameCollisionError,
@@ -48,16 +69,38 @@ import {
   isRecreateRetryableError,
 } from './retryable-errors.js';
 
+/** The `--skip-final-snapshot` flag name cited by every refusal below. */
+const SKIP_FINAL_SNAPSHOT_FLAG = '--skip-final-snapshot';
+
+/**
+ * Which provisioning layer a delete must be judged against: the CURRENT
+ * state record wins (it is what state says AWS holds right now), with the
+ * journaled op's routing as the legacy-state fallback. Shared by both
+ * Snapshot paths below so the cc-api test cannot drift between them.
+ */
+function effectiveProvisionedBy(
+  record: Pick<ResourceState, 'provisionedBy'> | undefined,
+  fallbackProvisionedBy?: 'sdk' | 'cc-api'
+): 'sdk' | 'cc-api' | undefined {
+  return record?.provisionedBy ?? fallbackProvisionedBy;
+}
+
 /**
  * `UpdateReplacePolicy: Snapshot` on a rollback's delete-of-the-NEW-resource
  * (issue #1354): honor it where it costs nothing — an atomic-final-snapshot
  * type on the SDK route gets a generated identifier threaded into the delete
  * context. Every other Snapshot shape (pre-delete types, cc-api routing)
  * keeps the plain delete DELIBERATELY: the rollback executor's delete-new is
- * load-bearing for same-name re-creation (orphaning would break the revert),
- * it has no snapshot-client plumbing by design (registry + region only), and
- * the new resource was created by the deploy being reverted. Recorded as a
- * scope decision on issue #1354.
+ * load-bearing for same-name re-creation (refusing it would strand the
+ * revert half-done), and the new resource was created by the very deploy
+ * being reverted. Recorded as a scope decision on issue #1354.
+ *
+ * NOT the same call as the rolled-back-CREATE path
+ * ({@link prepareCreateRollbackFinalSnapshot}, issue #1358): there the
+ * resource is being deleted under `DeletionPolicy` and a shape cdkd cannot
+ * snapshot is REFUSED rather than plain-deleted, because the user is losing
+ * a resource that existed before this op — nothing downstream depends on
+ * that delete succeeding.
  */
 export function rollbackFinalSnapshotId(
   resourceType: string,
@@ -66,8 +109,59 @@ export function rollbackFinalSnapshotId(
 ): string | undefined {
   if (record.updateReplacePolicy !== 'Snapshot') return undefined;
   if (!ATOMIC_FINAL_SNAPSHOT_TYPES.has(resourceType)) return undefined;
-  if ((record.provisionedBy ?? fallbackProvisionedBy) === 'cc-api') return undefined;
+  if (effectiveProvisionedBy(record, fallbackProvisionedBy) === 'cc-api') return undefined;
   return buildFinalSnapshotIdentifier(record.physicalId, resourceType);
+}
+
+/**
+ * `DeletionPolicy: Snapshot` on a rolled-back CREATE (issue #1358) — the
+ * executor's copy of the deploy engine's `prepareFinalSnapshotForDelete`
+ * mechanism matrix, run BEFORE the delete:
+ *
+ *   - atomic type, SDK-routed → returns the generated identifier for the
+ *     provider's atomic final-snapshot delete parameter.
+ *   - atomic type, cc-api-routed → refuses (Cloud Control's DeleteResource
+ *     has no final-snapshot parameter; `CloudControlProvider.delete` also
+ *     fail-closes on the context field as defense-in-depth).
+ *   - `PRE_DELETE_SNAPSHOT_TYPES` → creates the snapshot and waits for it
+ *     here, then returns undefined (the subsequent delete is plain).
+ *   - anything else Snapshot-tagged → refuses.
+ *
+ * Refusals are plain throws so `replaySingle`'s per-op catch counts them as
+ * a failure (which blocks the segment pop and keeps the journal for a
+ * re-run) — deliberately NOT a silent fall-back to orphaning, which is the
+ * very leak #1358 fixes.
+ */
+async function prepareCreateRollbackFinalSnapshot(
+  op: CompletedOperation,
+  physicalId: string,
+  provisionedBy: 'sdk' | 'cc-api' | undefined,
+  ctx: RollbackExecutorContext
+): Promise<string | undefined> {
+  const { logicalId, resourceType } = op;
+  if (ATOMIC_FINAL_SNAPSHOT_TYPES.has(resourceType)) {
+    if (provisionedBy === 'cc-api') {
+      throw ccRoutedFinalSnapshotError(logicalId, resourceType, SKIP_FINAL_SNAPSHOT_FLAG);
+    }
+    return buildFinalSnapshotIdentifier(physicalId, resourceType);
+  }
+  if (PRE_DELETE_SNAPSHOT_TYPES.has(resourceType)) {
+    // Region-pinned clients: `getAwsClients()` is a process-global that a
+    // concurrent stack's deploy can repoint at ANOTHER region
+    // (`--stack-concurrency > 1` + multi-region apps); a wrong-region
+    // snapshot call 404s as a NotFound, which would be read as "source gone"
+    // and skip the snapshot. Prefer the caller-scoped clients on the context
+    // (mirrors `DeployEngineOptions.finalSnapshotClients`).
+    await createPreDeleteFinalSnapshot(
+      resourceType,
+      physicalId,
+      logicalId,
+      ctx.finalSnapshotClients ?? getAwsClients(),
+      ctx.logger
+    );
+    return undefined;
+  }
+  throw unsupportedFinalSnapshotError(logicalId, resourceType, SKIP_FINAL_SNAPSHOT_FLAG);
 }
 
 /**
@@ -154,12 +248,27 @@ export interface RollbackExecutorContext {
    * best-effort recorder. `undefined` disables event emission.
    */
   recordEvent?: (event: Omit<DeploymentEvent, 'timestamp'>) => void;
+  /**
+   * Region-pinned AWS clients for the `PRE_DELETE_SNAPSHOT_TYPES` snapshot
+   * calls a `DeletionPolicy: Snapshot` CREATE rollback makes (issue #1358).
+   * Structurally satisfied by `AwsClients`. Absent falls back to the
+   * `getAwsClients()` process-global — see
+   * {@link prepareCreateRollbackFinalSnapshot} for why pinning matters.
+   */
+  finalSnapshotClients?: PreDeleteSnapshotClients | undefined;
+  /**
+   * `--skip-final-snapshot`: delete a `DeletionPolicy: Snapshot` rolled-back
+   * CREATE WITHOUT its final snapshot (explicit data-loss opt-out). Mirrors
+   * `DeployEngineOptions.skipFinalSnapshot`.
+   */
+  skipFinalSnapshot?: boolean | undefined;
 }
 
 /** The action the planner / replayer decided for a single op. */
 export type RollbackActionKind =
   | 'delete' // CREATE rollback → delete the resource
-  | 'orphan-retain' // CREATE rollback → orphan (DeletionPolicy Retain/Snapshot)
+  | 'delete-with-final-snapshot' // CREATE rollback → snapshot, then delete (DeletionPolicy Snapshot)
+  | 'orphan-retain' // CREATE rollback → orphan (DeletionPolicy Retain)
   | 'orphan-flag' // op skipped by --orphan; leaves resource, updates state
   | 'revert' // UPDATE rollback → restore previous properties
   | 'reverse-replacement' // replacement rollback → re-create old, delete new (#1199)
@@ -271,9 +380,12 @@ export function classifyRollbackOp(
     if (op.physicalId !== undefined && current.physicalId !== op.physicalId) {
       return 'skip-mismatch';
     }
-    // Retain / Snapshot on the CURRENT record → orphan instead of delete.
+    // The CURRENT record's DeletionPolicy governs the rollback delete
+    // (issue #1358): `Retain` keeps the resource (orphan), `Snapshot`
+    // snapshots it first, everything else plain-deletes.
     const policy = current.deletionPolicy;
-    if (policy === 'Retain' || policy === 'Snapshot') return 'orphan-retain';
+    if (policy === 'Retain') return 'orphan-retain';
+    if (policy === 'Snapshot') return 'delete-with-final-snapshot';
     return 'delete';
   }
 
@@ -541,8 +653,9 @@ async function replaySingle(
       }
 
       case 'orphan-retain': {
-        // DeletionPolicy Retain / Snapshot on a rolled-back CREATE: orphan
-        // instead of delete (no data loss — the resource is left behind).
+        // DeletionPolicy Retain on a rolled-back CREATE: orphan instead of
+        // delete (the policy says KEEP the resource). `Snapshot` used to
+        // land here too — see the module header + issue #1358.
         delete stateResources[op.logicalId];
         logger.info(
           `  Rollback: Leaving ${op.logicalId} (${op.resourceType}) in AWS ` +
@@ -560,20 +673,52 @@ async function replaySingle(
         return;
       }
 
-      case 'delete': {
+      case 'delete':
+      case 'delete-with-final-snapshot': {
         if (!op.physicalId) {
           logger.warn(`  Rollback: Cannot delete ${op.logicalId} — no physical ID recorded`);
           result.warnings++;
           return;
         }
-        logger.info(`  Rollback: Deleting created resource ${op.logicalId} (${op.resourceType})`);
+        // `DeletionPolicy: Snapshot` (issue #1358): snapshot BEFORE the
+        // delete. Deliberately ahead of the delete's own call so a refusal /
+        // snapshot failure leaves the resource intact (and counts as a
+        // failure, keeping the journal for a re-run) rather than deleting
+        // the data the policy promised to preserve. `--skip-final-snapshot`
+        // is the explicit data-loss opt-out and degrades to a plain delete.
+        //
+        // The routing layer is resolved ONCE and used for BOTH the snapshot
+        // gate and the provider lookup below: the gate's cc-api refusal is
+        // only meaningful if it judges the route the delete will actually
+        // take, and the delete-of-the-NEW-resource site already resolves it
+        // this way (`current.provisionedBy ?? op.provisionedBy`).
+        const deleteProvisionedBy = effectiveProvisionedBy(
+          stateResources[op.logicalId],
+          op.provisionedBy
+        );
+        let finalSnapshotIdentifier: string | undefined;
+        if (action === 'delete-with-final-snapshot' && ctx.skipFinalSnapshot !== true) {
+          finalSnapshotIdentifier = await prepareCreateRollbackFinalSnapshot(
+            op,
+            op.physicalId,
+            deleteProvisionedBy,
+            ctx
+          );
+        }
+        logger.info(
+          `  Rollback: Deleting created resource ${op.logicalId} (${op.resourceType})` +
+            (action === 'delete-with-final-snapshot' && ctx.skipFinalSnapshot !== true
+              ? ' — DeletionPolicy: Snapshot'
+              : '')
+        );
         // Route via the SAME provider the CREATE landed on (#614).
         const { provider } = ctx.providerRegistry.getProviderFor({
           resourceType: op.resourceType,
-          provisionedBy: op.provisionedBy,
+          provisionedBy: deleteProvisionedBy,
         });
         await provider.delete(op.logicalId, op.physicalId, op.resourceType, op.properties, {
           expectedRegion: ctx.region,
+          ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
         });
         delete stateResources[op.logicalId];
         logger.info(`  Rollback: ${op.logicalId} deleted successfully`);

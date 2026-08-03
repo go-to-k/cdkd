@@ -460,6 +460,7 @@
         "replacement-fanout",
         "replacement-immutable-name",
         "rollback-command",
+        "rollback-deletion-policy-snapshot",
         "rollback-failure-injection",
         "rollback-sqs-cooldown",
         "route53",
@@ -669,6 +670,7 @@
         "replacement-fanout",
         "replacement-immutable-name",
         "rollback-command",
+        "rollback-deletion-policy-snapshot",
         "rollback-failure-injection",
         "rollback-sqs-cooldown",
         "route53",
@@ -761,7 +763,8 @@
         "deletion-policy-snapshot-heavy",
         "rds-aurora",
         "rds-dbinstance-backfill",
-        "rds-full-stack"
+        "rds-full-stack",
+        "rollback-deletion-policy-snapshot"
       ]
     },
     {
@@ -919,6 +922,7 @@
         "replacement-fanout",
         "replacement-immutable-name",
         "rollback-command",
+        "rollback-deletion-policy-snapshot",
         "rollback-failure-injection",
         "rollback-sqs-cooldown",
         "route53",
@@ -1146,6 +1150,7 @@
         "rename-refactor",
         "replacement-fanout",
         "replacement-immutable-name",
+        "rollback-deletion-policy-snapshot",
         "route53",
         "s3-asset-deploy",
         "s3-cloudfront",

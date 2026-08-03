@@ -4830,6 +4830,7 @@
         "multi-resource",
         "rename-refactor",
         "rollback-command",
+        "rollback-deletion-policy-snapshot",
         "rollback-failure-injection",
         "rollback-sqs-cooldown",
         "scheduler-custom-group",
@@ -4923,6 +4924,10 @@
         ],
         "rollback-command": [
           "l1"
+        ],
+        "rollback-deletion-policy-snapshot": [
+          "l1",
+          "literal"
         ],
         "rollback-failure-injection": [
           "l1"

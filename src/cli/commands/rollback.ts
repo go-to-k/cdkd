@@ -4,9 +4,11 @@ import {
   commonOptions,
   stateOptions,
   deprecatedRegionOption,
+  skipFinalSnapshotOption,
   warnIfDeprecatedRegion,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
+import { AwsClients } from '../../utils/aws-clients.js';
 import { forwardSigtermToSigint } from '../../utils/interrupt-signals.js';
 import { PartialFailureError, withErrorHandling } from '../../utils/error-handler.js';
 import { ProviderRegistry } from '../../provisioning/provider-registry.js';
@@ -36,6 +38,7 @@ interface RollbackOptions {
   yes?: boolean;
   orphan?: string[];
   revertFailed?: boolean;
+  skipFinalSnapshot?: boolean;
   stackRegion?: string;
   stateBucket?: string;
   statePrefix: string;
@@ -86,15 +89,24 @@ async function findJournalCandidates(
   return refs;
 }
 
-/** Human label for a planned rollback action (plan preview). */
-function actionLabel(item: RollbackPlanItem): string {
+/**
+ * Human label for a planned rollback action (plan preview). `skipFinalSnapshot`
+ * is threaded in because the classifier is pure (it cannot see CLI flags) and
+ * the Snapshot label would otherwise promise a final snapshot the run is about
+ * to skip — a data-loss-relevant lie in the one preview the user reads.
+ */
+function actionLabel(item: RollbackPlanItem, skipFinalSnapshot: boolean): string {
   const { op, action, replacement } = item;
   const rep = replacement ? ' [replacement occurred, best-effort revert]' : '';
   switch (action) {
     case 'delete':
       return `  - delete   ${op.logicalId} (${op.resourceType})${rep}`;
+    case 'delete-with-final-snapshot':
+      return skipFinalSnapshot
+        ? `  - delete   ${op.logicalId} (${op.resourceType}) [DeletionPolicy Snapshot — NO final snapshot (--skip-final-snapshot)]`
+        : `  - delete   ${op.logicalId} (${op.resourceType}) [DeletionPolicy Snapshot — final snapshot, then delete]`;
     case 'orphan-retain':
-      return `  - orphan   ${op.logicalId} (${op.resourceType}) [DeletionPolicy Retain/Snapshot — left in AWS]`;
+      return `  - orphan   ${op.logicalId} (${op.resourceType}) [DeletionPolicy Retain — left in AWS]`;
     case 'orphan-flag':
       return `  - orphan   ${op.logicalId} (${op.resourceType}) [--orphan]`;
     case 'revert':
@@ -155,6 +167,10 @@ export async function rollbackCommand(
 
   const setup = await setupStateBackend(options);
   const skipConfirmation = options.force === true || options.yes === true;
+  // Extra client set built only when the target stack lives in a region
+  // other than the CLI's (see the finalSnapshotClients note below); disposed
+  // alongside `setup` in the outer finally.
+  let stackAwsClients: AwsClients | undefined;
 
   try {
     // 1. Resolve the target stack + region.
@@ -185,6 +201,21 @@ export async function rollbackCommand(
     }
     const stackName = ref.stackName;
     const region = ref.region ?? setup.region;
+
+    // Region-pinned clients for the pre-delete final snapshots a
+    // `DeletionPolicy: Snapshot` rolled-back CREATE takes (issue #1358).
+    // `setup.awsClients` is built from --region / AWS_REGION, which can
+    // differ from the target stack's own region (--stack-region): a
+    // wrong-region snapshot call 404s as a NotFound, which reads as "source
+    // gone" and would silently skip the snapshot. Mirrors how `cdkd deploy`
+    // sources `DeployEngineOptions.finalSnapshotClients`.
+    if (region !== setup.region) {
+      stackAwsClients = new AwsClients({
+        region,
+        ...(options.profile && { profile: options.profile }),
+      });
+    }
+    const finalSnapshotClients = stackAwsClients ?? setup.awsClients;
 
     // 2. Register providers (exactly like deploy / destroy).
     const providerRegistry = new ProviderRegistry();
@@ -277,7 +308,7 @@ export async function rollbackCommand(
           }
         }
         const plan = planRollback(segment.operations, planStateView, orphanLogicalIds);
-        for (const item of plan) logger.info(actionLabel(item));
+        for (const item of plan) logger.info(actionLabel(item, options.skipFinalSnapshot === true));
         // Apply the segment's effect to the preview so an earlier segment's
         // plan reflects the later segment's already-unwound state.
         applyPlanToPreview(plan, planStateView);
@@ -305,6 +336,8 @@ export async function rollbackCommand(
         region,
         logger: logger.child('rollback'),
         recordEvent: (e) => eventRecorder.record(e),
+        finalSnapshotClients,
+        skipFinalSnapshot: options.skipFinalSnapshot === true,
       };
 
       // 7. Serialized incremental state save after every mutating op.
@@ -510,6 +543,7 @@ export async function rollbackCommand(
       });
     }
   } finally {
+    stackAwsClients?.destroy();
     setup.dispose();
   }
 }
@@ -527,6 +561,7 @@ function applyPlanToPreview(
     const { op, action } = item;
     switch (action) {
       case 'delete':
+      case 'delete-with-final-snapshot':
       case 'orphan-retain':
       case 'orphan-flag':
         if (op.changeType === 'CREATE') delete previewState[op.logicalId];
@@ -587,6 +622,7 @@ export function createRollbackCommand(): Command {
           'its previous state is opt-in.'
       ).default(false)
     )
+    .addOption(skipFinalSnapshotOption)
     .addOption(stackRegionOption())
     .addHelpText(
       'after',
@@ -598,6 +634,7 @@ export function createRollbackCommand(): Command {
         '  cdkd rollback MyStack --force',
         '  cdkd rollback MyStack --orphan MyBucket --orphan MyTable',
         '  cdkd rollback MyStack --revert-failed   # also revert the failed in-flight resource',
+        '  cdkd rollback MyStack --skip-final-snapshot  # DeletionPolicy Snapshot → delete without the snapshot',
         '  cdkd rollback MyStack --stack-region us-west-2',
         '',
         'Exit codes: 0 = clean, 2 = partial (journal kept for re-run), 1 = hard error.',

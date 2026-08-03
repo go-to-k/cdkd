@@ -1149,10 +1149,11 @@ export const destroyOptions = [
  * `AWS::ElastiCache::ReplicationGroup`; and a refusal when cdkd cannot
  * honor the policy (a Cloud-Control-routed atomic type — its delete has no
  * final-snapshot parameter). Attached to `cdkd deploy` (template-removal +
- * replacement deletes), `cdkd destroy`, and `cdkd state destroy` — NOT to
- * the shared `destroyOptions` array, which `cdkd orphan` also consumes
- * (orphan never deletes AWS resources, so the flag would be inert noise
- * there).
+ * replacement deletes), `cdkd destroy`, `cdkd state destroy`, and
+ * `cdkd rollback` (issue #1358 — a rolled-back CREATE under
+ * `DeletionPolicy: Snapshot` is snapshotted, then deleted) — NOT to the
+ * shared `destroyOptions` array, which `cdkd orphan` also consumes (orphan
+ * never deletes AWS resources, so the flag would be inert noise there).
  */
 export const skipFinalSnapshotOption = new Option(
   '--skip-final-snapshot',
