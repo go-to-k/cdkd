@@ -54,7 +54,10 @@ ReplicationGroup — issue #1353) are snapshotted engine-side pre-delete via
 engine's DELETE + replacement / recreate deletes
 (`prepareFinalSnapshotForDelete`), and — since issue #1358 — the rollback of
 a CREATE (`rollback-executor.ts`'s `delete-with-final-snapshot` action,
-driving both the automatic post-failure rollback and `cdkd rollback`). When
+driving both the automatic post-failure rollback and `cdkd rollback`), plus
+the FAILED in-flight CREATE's delete under `cdkd rollback --revert-failed`
+(`delete-failed-create-with-final-snapshot`, issue #1362 — same matrix, same
+refusals). When
 adding final-snapshot support for a new type, extend the sets there — never
 make a provider silently ignore the field.
 

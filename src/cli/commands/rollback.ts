@@ -126,14 +126,25 @@ function actionLabel(item: RollbackPlanItem, skipFinalSnapshot: boolean): string
   }
 }
 
-/** Human label for a planned FAILED-op revert (issue #1198, --revert-failed). */
-function failedActionLabel(item: FailedOpPlanItem): string {
+/**
+ * Human label for a planned FAILED-op revert (issue #1198, --revert-failed).
+ * Takes `skipFinalSnapshot` for the same reason {@link actionLabel} does: the
+ * classifier is pure, so without the flag the Snapshot label would promise a
+ * final snapshot the run is about to skip (issue #1362).
+ */
+function failedActionLabel(item: FailedOpPlanItem, skipFinalSnapshot: boolean): string {
   const { op, action } = item;
   switch (action) {
     case 'revert-failed-update':
       return `  - revert   ${op.logicalId} (${op.resourceType}) [FAILED update — remote state unknown, force-applying previous properties]`;
     case 'delete-failed-create':
       return `  - delete   ${op.logicalId} (${op.resourceType}) [FAILED create]`;
+    case 'delete-failed-create-with-final-snapshot':
+      return skipFinalSnapshot
+        ? `  - delete   ${op.logicalId} (${op.resourceType}) [FAILED create, DeletionPolicy Snapshot — NO final snapshot (--skip-final-snapshot)]`
+        : `  - delete   ${op.logicalId} (${op.resourceType}) [FAILED create, DeletionPolicy Snapshot — final snapshot, then delete]`;
+    case 'orphan-failed-create-retain':
+      return `  - orphan   ${op.logicalId} (${op.resourceType}) [FAILED create, DeletionPolicy Retain — left in AWS]`;
     case 'skip-failed-unknown':
       return `  - skip     ${op.logicalId} (${op.resourceType}) — failed CREATE recorded no physical id`;
     case 'skip-failed-noop':
@@ -305,7 +316,8 @@ export async function rollbackCommand(
         if (segment.failedOperations && segment.failedOperations.length > 0) {
           if (options.revertFailed) {
             const failedPlan = planFailedOps(segment.failedOperations, planStateView);
-            for (const item of failedPlan) logger.info(failedActionLabel(item));
+            for (const item of failedPlan)
+              logger.info(failedActionLabel(item, options.skipFinalSnapshot === true));
             applyFailedPlanToPreview(failedPlan, planStateView);
           } else {
             for (const fop of segment.failedOperations) {
@@ -603,6 +615,10 @@ function applyFailedPlanToPreview(
     const { op, action } = item;
     switch (action) {
       case 'delete-failed-create':
+      // Both Snapshot-delete and Retain-orphan drop the record (issue
+      // #1362) — the resource stops being cdkd-managed either way.
+      case 'delete-failed-create-with-final-snapshot':
+      case 'orphan-failed-create-retain':
         delete previewState[op.logicalId];
         break;
       case 'revert-failed-update':

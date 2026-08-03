@@ -488,7 +488,8 @@ in the default deploy flow.
 Flags: `--force` (skip confirm), `--orphan <logicalId>` (repeatable —
 leave the resource alone during replay, like `cdk rollback --orphan`),
 `--revert-failed` (also attempt to revert the resource whose operation
-FAILED mid-deploy — off by default because its remote state is unknown),
+FAILED mid-deploy — off by default because its remote state is unknown; its
+delete honors `DeletionPolicy` the same way a completed CREATE's does),
 `--stack-region <region>` (disambiguate a same-named stack across
 regions), `--role-arn`, `--state-bucket`. A **replacement** is reverted
 by reversing it: the old resource is re-created from its journaled
@@ -625,9 +626,11 @@ Neptune / DocDB clusters and ElastiCache CacheCluster delete via the API's
 atomic final-snapshot parameter; EC2 Volumes, Redshift Clusters and
 ElastiCache ReplicationGroups get a pre-delete snapshot waited to
 completion. The full CFn-documented Snapshot-capable type list is covered.
-Pass `--skip-final-snapshot` (on `deploy` / `destroy` / `state destroy`) to
-delete without the snapshot (explicit data-loss opt-out for dev/test
-stacks). See the "DeletionPolicy: Snapshot" section in
+Pass `--skip-final-snapshot` (on `deploy` / `destroy` / `state destroy` /
+`rollback`) to delete without the snapshot (explicit data-loss opt-out for
+dev/test stacks). Rolling a CREATE back is a delete too, so the policy
+applies there as well — for a resource whose CREATE completed and, under
+`--revert-failed`, for one whose CREATE failed after AWS provisioned it. See the "DeletionPolicy: Snapshot" section in
 [docs/cli-reference.md](docs/cli-reference.md).
 
 ## `--remove-protection`: one-shot bypass for protected resources
