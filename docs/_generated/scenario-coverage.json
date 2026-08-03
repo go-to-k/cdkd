@@ -70,7 +70,11 @@
     },
     {
       "tag": "deletion-policy-snapshot",
-      "description": "DeletionPolicy: Snapshot honored on delete (issue #1352): final EBS snapshot created + waited to completed on BOTH the deploy engine template-removal DELETE path and the destroy-runner path; --skip-final-snapshot opt-out."
+      "description": "DeletionPolicy: Snapshot honored on delete (issue #1352): final EBS snapshot created + waited to completed on BOTH the deploy engine template-removal DELETE path and the destroy-runner path; --skip-final-snapshot opt-out. (The replacement-path phase for #1354 is blocked on #1356 — see #1357.)"
+    },
+    {
+      "tag": "deletion-policy-snapshot-heavy",
+      "description": "DeletionPolicy: Snapshot pre-delete machinery for the CC-routed name-keyed snapshot APIs (issue #1353): Redshift Cluster CreateClusterSnapshot + ElastiCache ReplicationGroup CreateSnapshot, both waited to available before the delete."
     },
     {
       "tag": "deployment-events",
@@ -666,6 +670,13 @@
       "annotated": true,
       "scenarios": [
         "deletion-policy-snapshot"
+      ]
+    },
+    {
+      "name": "deletion-policy-snapshot-heavy",
+      "annotated": true,
+      "scenarios": [
+        "deletion-policy-snapshot-heavy"
       ]
     },
     {
@@ -2005,9 +2016,16 @@
     },
     {
       "scenario": "deletion-policy-snapshot",
-      "description": "DeletionPolicy: Snapshot honored on delete (issue #1352): final EBS snapshot created + waited to completed on BOTH the deploy engine template-removal DELETE path and the destroy-runner path; --skip-final-snapshot opt-out.",
+      "description": "DeletionPolicy: Snapshot honored on delete (issue #1352): final EBS snapshot created + waited to completed on BOTH the deploy engine template-removal DELETE path and the destroy-runner path; --skip-final-snapshot opt-out. (The replacement-path phase for #1354 is blocked on #1356 — see #1357.)",
       "fixtures": [
         "deletion-policy-snapshot"
+      ]
+    },
+    {
+      "scenario": "deletion-policy-snapshot-heavy",
+      "description": "DeletionPolicy: Snapshot pre-delete machinery for the CC-routed name-keyed snapshot APIs (issue #1353): Redshift Cluster CreateClusterSnapshot + ElastiCache ReplicationGroup CreateSnapshot, both waited to available before the delete.",
+      "fixtures": [
+        "deletion-policy-snapshot-heavy"
       ]
     },
     {

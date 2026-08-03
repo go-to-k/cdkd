@@ -37,10 +37,10 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({ ec2: mockEc2Client }),
 }));
 
-const mockCreateEbsFinalSnapshot = vi.hoisted(() => vi.fn());
+const mockCreatePreDeleteFinalSnapshot = vi.hoisted(() => vi.fn());
 vi.mock('../../../src/provisioning/final-snapshot.js', async () => {
   const actual = await vi.importActual('../../../src/provisioning/final-snapshot.js');
-  return { ...actual, createEbsFinalSnapshot: mockCreateEbsFinalSnapshot };
+  return { ...actual, createPreDeleteFinalSnapshot: mockCreatePreDeleteFinalSnapshot };
 });
 
 vi.mock('../../../src/utils/live-renderer.js', () => ({
@@ -119,7 +119,7 @@ describe('runDestroyForStack — DeletionPolicy: Snapshot (#1352)', () => {
     mockSaveState.mockResolvedValue('"etag"');
     mockDeleteState.mockResolvedValue(undefined);
     mockProviderDelete.mockResolvedValue(undefined);
-    mockCreateEbsFinalSnapshot.mockResolvedValue('snap-unit');
+    mockCreatePreDeleteFinalSnapshot.mockResolvedValue('snap-unit');
   });
 
   it('Tier A type: threads a generated finalSnapshotIdentifier into the DeleteContext', async () => {
@@ -141,27 +141,47 @@ describe('runDestroyForStack — DeletionPolicy: Snapshot (#1352)', () => {
     const state = makeState({ Db: res() });
     await runDestroyForStack('TestStack', state, makeCtx());
     expect(deleteContextArg()['finalSnapshotIdentifier']).toBeUndefined();
-    expect(mockCreateEbsFinalSnapshot).not.toHaveBeenCalled();
+    expect(mockCreatePreDeleteFinalSnapshot).not.toHaveBeenCalled();
   });
 
-  it('AWS::EC2::Volume: pre-delete EBS snapshot runs before the plain delete', async () => {
+  it('AWS::EC2::Volume: pre-delete snapshot dispatcher runs before the plain delete', async () => {
     const state = makeState({
       Vol: res({ resourceType: 'AWS::EC2::Volume', deletionPolicy: 'Snapshot' }),
     });
-    const result = await runDestroyForStack('TestStack', state, makeCtx());
+    const ctx = makeCtx();
+    const result = await runDestroyForStack('TestStack', state, ctx);
     expect(result.errorCount).toBe(0);
-    expect(mockCreateEbsFinalSnapshot).toHaveBeenCalledWith(
-      mockEc2Client,
+    expect(mockCreatePreDeleteFinalSnapshot).toHaveBeenCalledWith(
+      'AWS::EC2::Volume',
       'phys-id',
       'Vol',
+      ctx.baseAwsClients,
       expect.anything()
     );
     expect(deleteContextArg()['finalSnapshotIdentifier']).toBeUndefined();
   });
 
+  it('AWS::ElastiCache::ReplicationGroup: routed through the dispatcher (#1353)', async () => {
+    const state = makeState({
+      Cache: res({
+        resourceType: 'AWS::ElastiCache::ReplicationGroup',
+        deletionPolicy: 'Snapshot',
+      }),
+    });
+    const result = await runDestroyForStack('TestStack', state, makeCtx());
+    expect(result.errorCount).toBe(0);
+    expect(mockCreatePreDeleteFinalSnapshot).toHaveBeenCalledWith(
+      'AWS::ElastiCache::ReplicationGroup',
+      'phys-id',
+      'Cache',
+      expect.anything(),
+      expect.anything()
+    );
+  });
+
   it('unsupported Snapshot-tagged type: per-resource error, resource preserved in state', async () => {
     const state = makeState({
-      Cluster: res({ resourceType: 'AWS::Redshift::Cluster', deletionPolicy: 'Snapshot' }),
+      Cluster: res({ resourceType: 'AWS::S3::Bucket', deletionPolicy: 'Snapshot' }),
     });
     const result = await runDestroyForStack('TestStack', state, makeCtx());
     expect(result.errorCount).toBe(1);
@@ -200,7 +220,7 @@ describe('runDestroyForStack — DeletionPolicy: Snapshot (#1352)', () => {
     // heuristic would otherwise drop the live, un-snapshotted volume from
     // state without deleting it.
     const { CdkdError } = await import('../../../src/utils/error-handler.js');
-    mockCreateEbsFinalSnapshot.mockRejectedValueOnce(
+    mockCreatePreDeleteFinalSnapshot.mockRejectedValueOnce(
       new CdkdError(
         'Failed while waiting for final snapshot snap-x of Vol (vol-1): The snapshot does not exist.',
         'FINAL_SNAPSHOT_FAILED'
@@ -218,7 +238,7 @@ describe('runDestroyForStack — DeletionPolicy: Snapshot (#1352)', () => {
 
   it('unsupported type + skipFinalSnapshot: true — deletes plainly (explicit opt-out)', async () => {
     const state = makeState({
-      Cluster: res({ resourceType: 'AWS::Redshift::Cluster', deletionPolicy: 'Snapshot' }),
+      Cluster: res({ resourceType: 'AWS::S3::Bucket', deletionPolicy: 'Snapshot' }),
     });
     const result = await runDestroyForStack(
       'TestStack',

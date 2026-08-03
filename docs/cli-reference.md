@@ -1896,10 +1896,13 @@ identical behavior for those types is parity, not a divergence.
 CloudFormation creates a **final snapshot before deleting** a resource whose
 `DeletionPolicy` is `Snapshot` — and the CDK RDS L2 (`DatabaseInstance` /
 `DatabaseCluster`) defaults `removalPolicy` to `SNAPSHOT`, so plain CDK
-database stacks rely on it. cdkd matches this on every delete path (issue
-[#1352](https://github.com/go-to-k/cdkd/issues/1352)): `cdkd destroy`,
-`cdkd state destroy`, and the `cdkd deploy` DELETE of a resource removed
-from the template.
+database stacks rely on it. cdkd matches this on every delete path (issues
+[#1352](https://github.com/go-to-k/cdkd/issues/1352) /
+[#1353](https://github.com/go-to-k/cdkd/issues/1353) /
+[#1354](https://github.com/go-to-k/cdkd/issues/1354)): `cdkd destroy`,
+`cdkd state destroy`, the `cdkd deploy` DELETE of a resource removed from
+the template, and — for `UpdateReplacePolicy: Snapshot` — the deploy
+engine's replacement / recreate deletes of the OLD resource.
 
 | Resource type | How the final snapshot is created |
 | --- | --- |
@@ -1909,7 +1912,8 @@ from the template.
 | `AWS::DocDB::DBCluster` | `DeleteDBCluster(...FinalDBSnapshotIdentifier)` (DocDB SDK) |
 | `AWS::ElastiCache::CacheCluster` | `DeleteCacheCluster(FinalSnapshotIdentifier=<generated>)` — Redis engine only; a Memcached cluster under `Snapshot` surfaces AWS's rejection, matching CFn's `DELETE_FAILED` |
 | `AWS::EC2::Volume` | Pre-delete `CreateSnapshot` (tagged `cdkd:final-snapshot-of: <volumeId>`), **waited to `completed`**, then the normal delete — the type is Cloud-Control-routed and `DeleteVolume` has no snapshot parameter. Idempotent: a destroy re-run reuses the tagged snapshot instead of creating a second one. |
-| `AWS::Redshift::Cluster`, `AWS::ElastiCache::ReplicationGroup` | **Not implemented yet** (issue [#1353](https://github.com/go-to-k/cdkd/issues/1353)) — the destroy **refuses** with an actionable error instead of silently dropping the promised snapshot. |
+| `AWS::Redshift::Cluster` | Pre-delete `CreateClusterSnapshot` (`<clusterId>-final-<ts>`), **waited to `available`**, then a bounded wait for the CLUSTER itself to settle (the fresh snapshot leaves it busy and the delete would otherwise 400 with "There is an operation running on the Cluster"), then the CC-routed delete (issue #1353). |
+| `AWS::ElastiCache::ReplicationGroup` | Pre-delete ElastiCache `CreateSnapshot`, waited to `available`, then the CC-routed delete (issue #1353). The snapshot source depends on cluster mode: a cluster-mode-ENABLED (sharded) group is snapshotted by `ReplicationGroupId`, while the cluster-mode-DISABLED default must name its PRIMARY member cache cluster instead (AWS rejects the group form with "Please specify a cache cluster instead") — cdkd resolves this automatically. Redis only; Memcached / snapshot-incapable node types surface AWS's rejection, matching CFn's `DELETE_FAILED`. |
 
 Generated snapshot identifiers are deterministic and logged:
 `<physicalId>-final-<utcTimestamp>` (sanitized to the snapshot-identifier
@@ -1918,7 +1922,7 @@ character rules).
 `--skip-final-snapshot` (on `cdkd deploy`, `cdkd destroy`, and `cdkd state
 destroy`) is the explicit opt-out: delete WITHOUT the final snapshot (data
 loss — useful for dev/test stacks where the snapshot cost/latency is
-unwanted, and the escape hatch for the not-yet-implemented types above).
+unwanted, and the escape hatch for the cc-api-routed refusal below).
 
 Notes:
 
@@ -1928,14 +1932,31 @@ Notes:
   synth template's `DeletionPolicy` for pre-v5 state).
 - A Cloud-Control-routed resource of an atomic-parameter type (state
   records `provisionedBy: cc-api` — the #614 silent-drop routing) is
-  **refused** the same way as the not-yet-implemented types: Cloud Control's
-  `DeleteResource` has no final-snapshot parameter, so cdkd cannot honor the
-  policy on that route. Snapshot manually, then re-run with
-  `--skip-final-snapshot`.
-- `UpdateReplacePolicy: Snapshot` on the **replacement** path is not covered
-  yet (issue [#1354](https://github.com/go-to-k/cdkd/issues/1354)); the
-  `--force-stateful-recreation` guard still forces an explicit opt-in before
-  any data-losing replacement, so the loss is never silent.
+  **refused**: Cloud Control's `DeleteResource` has no final-snapshot
+  parameter, so cdkd cannot honor the policy on that route. Snapshot
+  manually, then re-run with `--skip-final-snapshot`.
+- `UpdateReplacePolicy: Snapshot` is honored on the deploy engine's
+  replacement / recreate delete sites (issue #1354) with the same mechanism
+  matrix; the `--force-stateful-recreation` stateful guard still applies
+  first where the replacement is data-losing. Failure handling differs by
+  site, deliberately: the delete-first / recreate paths surface a snapshot
+  failure as a resource failure (their delete is load-bearing for the
+  re-create), while the post-replacement CLEANUP delete keeps its
+  warn-and-continue policy for a TRANSIENT snapshot failure — it skips the
+  delete, so the old resource is leaked with a warning rather than deleted
+  un-snapshotted. A REFUSAL (a type / route cdkd cannot snapshot) always
+  fails the resource, matching CloudFormation failing the update.
+- On a ROLLBACK's delete-of-the-new-resource, only the atomic SDK-routed
+  types get a final snapshot — the other shapes deliberately keep the plain
+  delete (the rollback's delete-new is load-bearing for same-name
+  re-creation; recorded on issue #1354).
+- Snapshot reuse across a re-run resumes only an IN-FLIGHT snapshot for the
+  name-keyed APIs (Redshift / ElastiCache): their identifiers are
+  user-chosen and reusable, so adopting an already-`available` snapshot
+  could hand you a PREVIOUS generation's data. A re-run after the snapshot
+  completed therefore creates a second (timestamped, non-colliding) one.
+  EC2 Volume reuses a completed snapshot safely — its tag is keyed on an
+  AWS-generated volume id that is never reused.
 - Final snapshots are billed AWS resources that survive the destroy by
   design — delete them manually when no longer needed.
 

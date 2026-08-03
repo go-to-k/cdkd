@@ -37,12 +37,38 @@ import type { ResourceState } from '../types/state.js';
 import type { Logger } from '../types/config.js';
 import type { ProviderRegistry } from '../provisioning/provider-registry.js';
 import { STATEFUL_TYPES } from '../provisioning/stateful-types.js';
+import {
+  ATOMIC_FINAL_SNAPSHOT_TYPES,
+  buildFinalSnapshotIdentifier,
+} from '../provisioning/final-snapshot.js';
 import { withRetry } from './retry.js';
 import {
   isNameCollisionError,
   isNameCooldownError,
   isRecreateRetryableError,
 } from './retryable-errors.js';
+
+/**
+ * `UpdateReplacePolicy: Snapshot` on a rollback's delete-of-the-NEW-resource
+ * (issue #1354): honor it where it costs nothing — an atomic-final-snapshot
+ * type on the SDK route gets a generated identifier threaded into the delete
+ * context. Every other Snapshot shape (pre-delete types, cc-api routing)
+ * keeps the plain delete DELIBERATELY: the rollback executor's delete-new is
+ * load-bearing for same-name re-creation (orphaning would break the revert),
+ * it has no snapshot-client plumbing by design (registry + region only), and
+ * the new resource was created by the deploy being reverted. Recorded as a
+ * scope decision on issue #1354.
+ */
+export function rollbackFinalSnapshotId(
+  resourceType: string,
+  record: Pick<ResourceState, 'physicalId' | 'updateReplacePolicy' | 'provisionedBy'>,
+  fallbackProvisionedBy?: 'sdk' | 'cc-api'
+): string | undefined {
+  if (record.updateReplacePolicy !== 'Snapshot') return undefined;
+  if (!ATOMIC_FINAL_SNAPSHOT_TYPES.has(resourceType)) return undefined;
+  if ((record.provisionedBy ?? fallbackProvisionedBy) === 'cc-api') return undefined;
+  return buildFinalSnapshotIdentifier(record.physicalId, resourceType);
+}
 
 /**
  * Retry schedule for a re-create that must wait out a name-release delay:
@@ -578,13 +604,23 @@ async function replaySingle(
           resourceType: op.resourceType,
           provisionedBy: current.provisionedBy ?? op.provisionedBy,
         });
-        await newDeleteProvider.delete(
-          op.logicalId,
-          current.physicalId,
-          op.resourceType,
-          current.properties,
-          { expectedRegion: ctx.region }
-        );
+        {
+          const finalSnapshotIdentifier = rollbackFinalSnapshotId(
+            op.resourceType,
+            current,
+            op.provisionedBy
+          );
+          await newDeleteProvider.delete(
+            op.logicalId,
+            current.physicalId,
+            op.resourceType,
+            current.properties,
+            {
+              expectedRegion: ctx.region,
+              ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
+            }
+          );
+        }
         stateResources[op.logicalId] = prev;
         logger.info(`  Rollback: ${op.logicalId} restored to the retained old resource`);
         await afterOp?.(op.logicalId);
@@ -670,13 +706,23 @@ async function replaySingle(
             `  Rollback: re-create collided with the new resource's name — deleting the new ` +
               `resource (${current.physicalId}) first...`
           );
-          await newDeleteProvider.delete(
-            op.logicalId,
-            current.physicalId,
-            op.resourceType,
-            current.properties,
-            { expectedRegion: ctx.region }
-          );
+          {
+            const finalSnapshotIdentifier = rollbackFinalSnapshotId(
+              op.resourceType,
+              current,
+              op.provisionedBy
+            );
+            await newDeleteProvider.delete(
+              op.logicalId,
+              current.physicalId,
+              op.resourceType,
+              current.properties,
+              {
+                expectedRegion: ctx.region,
+                ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
+              }
+            );
+          }
           deletedNewFirst = true;
           // Persist the intermediate truth (resource currently absent) so an
           // interrupted re-run doesn't chase a deleted physical id.
@@ -775,12 +821,20 @@ async function replaySingle(
 
         if (!deletedNewFirst && !adoptedLiveNewResource) {
           try {
+            const finalSnapshotIdentifier = rollbackFinalSnapshotId(
+              op.resourceType,
+              current,
+              op.provisionedBy
+            );
             await newDeleteProvider.delete(
               op.logicalId,
               current.physicalId,
               op.resourceType,
               current.properties,
-              { expectedRegion: ctx.region }
+              {
+                expectedRegion: ctx.region,
+                ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
+              }
             );
           } catch (deleteError) {
             logger.warn(

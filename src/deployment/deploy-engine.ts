@@ -42,11 +42,11 @@ import {
   PRE_DELETE_SNAPSHOT_TYPES,
   buildFinalSnapshotIdentifier,
   ccRoutedFinalSnapshotError,
-  createEbsFinalSnapshot,
+  createPreDeleteFinalSnapshot,
   unsupportedFinalSnapshotError,
+  type PreDeleteSnapshotClients,
 } from '../provisioning/final-snapshot.js';
 import { getAwsClients } from '../utils/aws-clients.js';
-import type { EC2Client } from '@aws-sdk/client-ec2';
 import { getCreateOnlyPropertyPaths } from '../provisioning/create-only-properties.js';
 import { hasNoRegistrySchema } from '../provisioning/describe-type.js';
 import { TemplateParser } from '../analyzer/template-parser.js';
@@ -309,26 +309,29 @@ export interface DeployEngineOptions {
   strictGetAtt?: boolean;
 
   /**
-   * `--skip-final-snapshot` (issue #1352) — delete `DeletionPolicy: Snapshot`
-   * resources WITHOUT the final snapshot the policy promises (data loss,
-   * explicit opt-in). Default (`undefined`/`false`): the DELETE branch honors
-   * the policy — atomic final-snapshot delete parameters for the
-   * `ATOMIC_FINAL_SNAPSHOT_TYPES`, a pre-delete `CreateSnapshot`+wait for
-   * `AWS::EC2::Volume`, and a refusal (`FINAL_SNAPSHOT_UNSUPPORTED`) for
-   * Snapshot-tagged types cdkd cannot snapshot yet (issue #1353).
+   * `--skip-final-snapshot` (issues #1352 / #1354) — delete
+   * `DeletionPolicy: Snapshot` resources (and, on the replacement paths,
+   * `UpdateReplacePolicy: Snapshot` old resources) WITHOUT the final snapshot
+   * the policy promises (data loss, explicit opt-in). Default
+   * (`undefined`/`false`): the delete sites honor the policy — atomic
+   * final-snapshot delete parameters for the `ATOMIC_FINAL_SNAPSHOT_TYPES`,
+   * a pre-delete snapshot+wait for the `PRE_DELETE_SNAPSHOT_TYPES` (EC2
+   * Volume, Redshift Cluster, ElastiCache ReplicationGroup — issue #1353),
+   * and a refusal (`FINAL_SNAPSHOT_UNSUPPORTED`) otherwise.
    */
   skipFinalSnapshot?: boolean;
 
   /**
-   * Region-pinned EC2 client for the pre-delete EBS final snapshot (issue
-   * #1352). The process-global `getAwsClients()` singleton is repointed
+   * Region-pinned clients for the pre-delete final snapshots (issues #1352 /
+   * #1353). The process-global `getAwsClients()` singleton is repointed
    * per-stack under `--stack-concurrency > 1`, so a concurrent multi-region
-   * deploy could hand the DELETE branch a wrong-region client — whose
-   * `CreateSnapshot` 404s as `InvalidVolume.NotFound` and silently skips the
-   * snapshot. `deploy.ts` threads the stack-scoped `AwsClients.ec2` here;
-   * absent (tests / legacy callers), the global is used.
+   * deploy could hand a delete site a wrong-region client — whose snapshot
+   * call 404s as a NotFound and silently skips the snapshot. `deploy.ts`
+   * threads the stack-scoped `AwsClients` instance here (structurally a
+   * `PreDeleteSnapshotClients`); absent (tests / legacy callers), the global
+   * is used.
    */
-  finalSnapshotEc2?: EC2Client;
+  finalSnapshotClients?: PreDeleteSnapshotClients;
 }
 
 /**
@@ -2487,6 +2490,58 @@ export class DeployEngine {
   }
 
   /**
+   * The `Snapshot`-policy gate every engine delete site runs BEFORE its
+   * delete (issues #1352 / #1353 / #1354). Given the resource's effective
+   * policy for THIS delete (`DeletionPolicy` on the destroy / removal paths,
+   * `UpdateReplacePolicy` on the replacement paths):
+   *
+   *   - not `Snapshot` (or `--skip-final-snapshot`) → no-op.
+   *   - atomic type, SDK-routed → returns the generated identifier for the
+   *     provider's atomic final-snapshot delete parameter.
+   *   - atomic type, cc-api-routed → refuses (Cloud Control has no
+   *     final-snapshot parameter; `CloudControlProvider.delete` also
+   *     fail-closes on the context field as defense-in-depth).
+   *   - `PRE_DELETE_SNAPSHOT_TYPES` (EC2 Volume / Redshift Cluster /
+   *     ElastiCache ReplicationGroup) → creates the snapshot and waits for
+   *     it here, then returns undefined (the subsequent delete is plain).
+   *   - anything else Snapshot-tagged → refuses.
+   */
+  private async prepareFinalSnapshotForDelete(
+    logicalId: string,
+    resourceType: string,
+    currentResource: { physicalId: string; provisionedBy?: 'sdk' | 'cc-api' | undefined },
+    policy: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate' | undefined
+  ): Promise<string | undefined> {
+    if (policy !== 'Snapshot' || this.options.skipFinalSnapshot === true) return undefined;
+    if (
+      ATOMIC_FINAL_SNAPSHOT_TYPES.has(resourceType) &&
+      currentResource.provisionedBy !== 'cc-api'
+    ) {
+      return buildFinalSnapshotIdentifier(currentResource.physicalId, resourceType);
+    }
+    if (ATOMIC_FINAL_SNAPSHOT_TYPES.has(resourceType)) {
+      throw ccRoutedFinalSnapshotError(logicalId, resourceType, '--skip-final-snapshot');
+    }
+    if (PRE_DELETE_SNAPSHOT_TYPES.has(resourceType)) {
+      // Region-pinned clients: `getAwsClients()` is a process-global that a
+      // concurrent stack's deploy can repoint at ANOTHER region
+      // (`--stack-concurrency > 1` + multi-region apps); a wrong-region
+      // snapshot call 404s as a NotFound, which would be read as "source
+      // gone" and skip the snapshot. Prefer the engine-scoped clients
+      // threaded via options.
+      await createPreDeleteFinalSnapshot(
+        resourceType,
+        currentResource.physicalId,
+        logicalId,
+        this.options.finalSnapshotClients ?? getAwsClients(),
+        this.logger
+      );
+      return undefined;
+    }
+    throw unsupportedFinalSnapshotError(logicalId, resourceType, '--skip-final-snapshot');
+  }
+
+  /**
    * `--replace` delete-first fallback for a property-driven replacement of a
    * custom-named resource: delete the old name holder, then re-create it
    * under the same name. Shared by the create-first collision catch (issue
@@ -2499,8 +2554,21 @@ export class DeployEngine {
     currentResource: ResourceState,
     oldDeleteProvider: ResourceProvider,
     replaceProvider: ResourceProvider,
-    replaceProps: Record<string, unknown>
+    replaceProps: Record<string, unknown>,
+    updateReplacePolicy?: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate'
   ): Promise<Awaited<ReturnType<ResourceProvider['create']>>> {
+    // `UpdateReplacePolicy: Snapshot` (issue #1354): snapshot the OLD
+    // resource before the replacement delete, exactly like the destroy
+    // paths honor `DeletionPolicy: Snapshot`. Deliberately OUTSIDE the
+    // delete's try: a snapshot failure/refusal here must surface with its
+    // own typed FINAL_SNAPSHOT_* error, not be rewrapped as "Failed to
+    // delete old resource ..." for a delete that was never attempted.
+    const finalSnapshotIdentifier = await this.prepareFinalSnapshotForDelete(
+      logicalId,
+      resourceType,
+      currentResource,
+      updateReplacePolicy
+    );
     try {
       await oldDeleteProvider.delete(
         logicalId,
@@ -2513,6 +2581,7 @@ export class DeployEngine {
           // explicit data-loss consent, so thread it to the provider's data
           // guard (issue #1340).
           forceDataDelete: this.options.forceStatefulRecreation === true,
+          ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
         }
       );
     } catch (deleteError) {
@@ -2798,9 +2867,10 @@ export class DeployEngine {
           // object-count probe. A `Retain` UpdateReplacePolicy is exempt: the
           // old resource + its data survive the replacement (orphaned, not
           // deleted), so there is no data loss to confirm. `Snapshot` is NOT
-          // exempt — the property-driven path does not implement snapshot-on-
-          // replace and falls through to the DELETE branch, so its data really
-          // would be lost.
+          // exempt: cdkd DOES take a final snapshot on the replacement delete
+          // (issue #1354), but a snapshot is a point-in-time copy, not a
+          // surviving resource — the live resource is still destroyed and
+          // recreated, so the consent flag is still the right gate.
           if (propertyDrivenReplacement && !recreateFlagged && updateReplacePolicy !== 'Retain') {
             const statefulReason = isStatefulRecreateTargetForReplace(resourceType, currentProps);
             if (statefulReason && this.options.forceStatefulRecreation !== true) {
@@ -2908,6 +2978,17 @@ export class DeployEngine {
               this.logger.info(
                 `  Destroying old ${logicalId} (${currentResource.physicalId}) before recreate...`
               );
+              // `UpdateReplacePolicy: Snapshot` (issue #1354): snapshot the
+              // old resource before the recreate's delete. OUTSIDE the try
+              // so a snapshot failure/refusal keeps its typed
+              // FINAL_SNAPSHOT_* error instead of being rewrapped as a
+              // delete failure that never happened.
+              const recreateFinalSnapshotId = await this.prepareFinalSnapshotForDelete(
+                logicalId,
+                resourceType,
+                currentResource,
+                updateReplacePolicy
+              );
               try {
                 await oldDeleteProvider.delete(
                   logicalId,
@@ -2917,6 +2998,9 @@ export class DeployEngine {
                   {
                     expectedRegion: this.stackRegion,
                     forceDataDelete: this.options.forceStatefulRecreation === true,
+                    ...(recreateFinalSnapshotId !== undefined && {
+                      finalSnapshotIdentifier: recreateFinalSnapshotId,
+                    }),
                   }
                 );
                 this.logger.info(`  ${green('✓')} Old resource deleted`);
@@ -3024,9 +3108,9 @@ export class DeployEngine {
               if (!nameCollision) throw createError;
               // Retain pins the old resource (and its name) in place, so a
               // same-name replacement can never proceed under any flag.
-              // (Snapshot is NOT special-cased — matching the pre-existing
-              // create-then-destroy path, which also plain-deletes under
-              // Snapshot.)
+              // (Snapshot is not special-cased HERE — the old resource is
+              // still deleted so the name frees up; the delete-first helper
+              // takes its final snapshot first, issue #1354.)
               if (updateReplacePolicy === 'Retain') {
                 throw new CdkdError(
                   `${logicalId} (${resourceType}) requires replacement, but its user-supplied ` +
@@ -3066,7 +3150,8 @@ export class DeployEngine {
                 currentResource,
                 oldDeleteProvider,
                 replaceProvider,
-                replaceProps
+                replaceProps,
+                updateReplacePolicy
               );
             }
 
@@ -3129,7 +3214,8 @@ export class DeployEngine {
                 currentResource,
                 oldDeleteProvider,
                 replaceProvider,
-                replaceProps
+                replaceProps,
+                updateReplacePolicy
               );
             }
 
@@ -3141,22 +3227,62 @@ export class DeployEngine {
               );
             } else {
               this.logger.info(`  Deleting old ${logicalId} (${currentResource.physicalId})...`);
+              // `UpdateReplacePolicy: Snapshot` (issue #1354): snapshot the
+              // old resource before the post-replacement cleanup delete.
+              // Two failure classes, deliberately handled differently:
+              //   - a REFUSAL (`FINAL_SNAPSHOT_UNSUPPORTED` — cc-api routing
+              //     or a type cdkd cannot snapshot) is a CONFIGURATION error
+              //     the user must resolve, so it propagates and fails the
+              //     resource, matching CloudFormation failing the update.
+              //   - a transient snapshot failure / timeout degrades to this
+              //     site's existing warn-and-continue policy, but SKIPS the
+              //     delete: the old resource stays alive (leaked, warned)
+              //     rather than being deleted without its promised snapshot.
+              let cleanupFinalSnapshotId: string | undefined;
+              let snapshotBlockedDelete = false;
               try {
-                await oldDeleteProvider.delete(
+                cleanupFinalSnapshotId = await this.prepareFinalSnapshotForDelete(
                   logicalId,
-                  currentResource.physicalId,
                   resourceType,
-                  currentResource.properties,
-                  {
-                    expectedRegion: this.stackRegion,
-                    forceDataDelete: this.options.forceStatefulRecreation === true,
-                  }
+                  currentResource,
+                  updateReplacePolicy
                 );
-                this.logger.info(`  ${green('✓')} Old resource deleted`);
-              } catch (deleteError) {
+              } catch (snapshotError) {
+                if (
+                  snapshotError instanceof CdkdError &&
+                  snapshotError.code === 'FINAL_SNAPSHOT_UNSUPPORTED'
+                ) {
+                  throw snapshotError;
+                }
+                snapshotBlockedDelete = true;
                 this.logger.warn(
-                  `  ⚠ Failed to delete old resource ${logicalId} (${currentResource.physicalId}): ${deleteError instanceof Error ? deleteError.message : String(deleteError)}`
+                  `  ⚠ Final snapshot for old ${logicalId} (${currentResource.physicalId}) ` +
+                    `failed: ${snapshotError instanceof Error ? snapshotError.message : String(snapshotError)}. ` +
+                    `The old resource was NOT deleted (UpdateReplacePolicy: Snapshot) — delete it ` +
+                    `manually once you have a snapshot; it is no longer tracked in state.`
                 );
+              }
+              if (!snapshotBlockedDelete) {
+                try {
+                  await oldDeleteProvider.delete(
+                    logicalId,
+                    currentResource.physicalId,
+                    resourceType,
+                    currentResource.properties,
+                    {
+                      expectedRegion: this.stackRegion,
+                      forceDataDelete: this.options.forceStatefulRecreation === true,
+                      ...(cleanupFinalSnapshotId !== undefined && {
+                        finalSnapshotIdentifier: cleanupFinalSnapshotId,
+                      }),
+                    }
+                  );
+                  this.logger.info(`  ${green('✓')} Old resource deleted`);
+                } catch (deleteError) {
+                  this.logger.warn(
+                    `  ⚠ Failed to delete old resource ${logicalId} (${currentResource.physicalId}): ${deleteError instanceof Error ? deleteError.message : String(deleteError)}`
+                  );
+                }
               }
             }
           }
@@ -3268,6 +3394,23 @@ export class DeployEngine {
               this.logger.info(
                 `UPDATE not supported for ${logicalId} (${resourceType}), replacing (DELETE → CREATE)`
               );
+              // `UpdateReplacePolicy: Snapshot` (issue #1354): snapshot the
+              // old resource before the fallback replacement's delete. The
+              // TEMPLATE is authoritative here — unlike a destroy, an update
+              // necessarily has the resource in the template, and the
+              // attribute being applied is the desired one (state records
+              // only what the LAST deploy used, so a template that just
+              // gained `Snapshot` must not be overridden by a stale
+              // `Delete`). State is the fallback for a template that omits
+              // the attribute. Same ordering as the other three replacement
+              // sites, which read the template-derived variable.
+              const fallbackFinalSnapshotId = await this.prepareFinalSnapshotForDelete(
+                logicalId,
+                resourceType,
+                currentResource,
+                template?.Resources?.[logicalId]?.UpdateReplacePolicy ??
+                  currentResource.updateReplacePolicy
+              );
               try {
                 await updateProvider.delete(
                   logicalId,
@@ -3277,6 +3420,9 @@ export class DeployEngine {
                   {
                     expectedRegion: this.stackRegion,
                     forceDataDelete: this.options.forceStatefulRecreation === true,
+                    ...(fallbackFinalSnapshotId !== undefined && {
+                      finalSnapshotIdentifier: fallbackFinalSnapshotId,
+                    }),
                   }
                 );
               } catch (deleteError) {
@@ -3407,48 +3553,14 @@ export class DeployEngine {
           break;
         }
 
-        // Honor `DeletionPolicy: Snapshot` (issue #1352). CloudFormation
-        // creates a final snapshot before deleting; cdkd matches via the
-        // atomic delete parameter (Tier A providers, threaded through
-        // `DeleteContext.finalSnapshotIdentifier`) or a pre-delete
-        // `CreateSnapshot`+wait (`AWS::EC2::Volume`, whose CC-API route has
-        // no policy concept). A Snapshot-tagged type cdkd cannot snapshot is
-        // refused BEFORE any delete — `--skip-final-snapshot` is the
-        // explicit data-loss opt-out for all three shapes.
-        let finalSnapshotIdentifier: string | undefined;
-        if (deletionPolicy === 'Snapshot' && this.options.skipFinalSnapshot !== true) {
-          if (
-            ATOMIC_FINAL_SNAPSHOT_TYPES.has(resourceType) &&
-            currentResource.provisionedBy !== 'cc-api'
-          ) {
-            finalSnapshotIdentifier = buildFinalSnapshotIdentifier(
-              currentResource.physicalId,
-              resourceType
-            );
-          } else if (ATOMIC_FINAL_SNAPSHOT_TYPES.has(resourceType)) {
-            // cc-api-routed atomic type: Cloud Control DeleteResource has no
-            // final-snapshot parameter, so honoring the policy is impossible
-            // on this route — refuse instead of silently dropping the
-            // snapshot (reviewer catch; CloudControlProvider.delete also
-            // fail-closes on the field as defense-in-depth).
-            throw ccRoutedFinalSnapshotError(logicalId, resourceType, '--skip-final-snapshot');
-          } else if (PRE_DELETE_SNAPSHOT_TYPES.has(resourceType)) {
-            // Region-pinned client: `getAwsClients()` is a process-global
-            // that a concurrent stack's deploy can repoint at ANOTHER region
-            // (`--stack-concurrency > 1` + multi-region apps); a wrong-region
-            // CreateSnapshot 404s as InvalidVolume.NotFound, which would be
-            // read as "volume gone" and skip the snapshot. Prefer the
-            // engine-scoped client threaded via options.
-            await createEbsFinalSnapshot(
-              this.options.finalSnapshotEc2 ?? getAwsClients().ec2,
-              currentResource.physicalId,
-              logicalId,
-              this.logger
-            );
-          } else {
-            throw unsupportedFinalSnapshotError(logicalId, resourceType, '--skip-final-snapshot');
-          }
-        }
+        // Honor `DeletionPolicy: Snapshot` (issues #1352 / #1353) — see
+        // prepareFinalSnapshotForDelete for the mechanism matrix.
+        const finalSnapshotIdentifier = await this.prepareFinalSnapshotForDelete(
+          logicalId,
+          resourceType,
+          currentResource,
+          deletionPolicy
+        );
 
         // Schema v7+: route DELETE through the layer recorded on state
         // (`provisionedBy: 'cc-api'` → Cloud Control; absent / `'sdk'`
