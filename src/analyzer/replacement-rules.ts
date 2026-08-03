@@ -668,8 +668,12 @@ export class ReplacementRulesRegistry {
         'SnapshotId',
       ]),
       updateableProperties: new Set([
-        // ModifyVolume's mutable set (the AWS rejection message names the
-        // first four) plus tags via CreateTags/DeleteTags.
+        // ModifyVolume's mutable set (the AWS rejection message names four of
+        // these five: AutoEnableIO / type / size / IOPS) plus tags via
+        // CreateTags / DeleteTags. Pinning them here permanently bypasses the
+        // schema fallback for these names — acceptable because AWS documents
+        // every one as "Update requires: No interruption", and the opposite
+        // error (a mutable property classified as a replacement) destroys data.
         'AutoEnableIO',
         'Iops',
         'Size',

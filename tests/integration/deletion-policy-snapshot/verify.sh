@@ -145,12 +145,15 @@ node "${LOCAL_DIST}" deploy "${STACK}" \
   --region "${REGION}" \
   --yes
 
+# `deleting` / `deleted` excluded for the same reason as phase 2b below: the
+# pre-run cleanup's `delete-volume` is async and a just-deleted leftover keeps
+# showing up in describe-volumes for a while.
 VOL_KEEP_ID=$(aws ec2 describe-volumes --region "${REGION}" \
   --filters "Name=tag:cdkd-integ,Values=deletion-policy-snapshot-keep" \
-  --query 'Volumes[0].VolumeId' --output text)
+  --query "Volumes[?State!='deleting' && State!='deleted'].VolumeId | [0]" --output text)
 VOL_REMOVE_ID=$(aws ec2 describe-volumes --region "${REGION}" \
   --filters "Name=tag:cdkd-integ,Values=deletion-policy-snapshot-remove" \
-  --query 'Volumes[0].VolumeId' --output text)
+  --query "Volumes[?State!='deleting' && State!='deleted'].VolumeId | [0]" --output text)
 if [ -z "${VOL_KEEP_ID}" ] || [ "${VOL_KEEP_ID}" = "None" ] || \
    [ -z "${VOL_REMOVE_ID}" ] || [ "${VOL_REMOVE_ID}" = "None" ]; then
   echo "FAIL: deployed volumes not found (keep=${VOL_KEEP_ID}, remove=${VOL_REMOVE_ID})" >&2
@@ -195,10 +198,13 @@ CDKD_TEST_UPDATE=true CDKD_TEST_REPLACE=true node "${LOCAL_DIST}" deploy "${STAC
   --yes
 
 # The replacement volume carries the same fixture tag; identify it as the one
-# that is NOT the original physical id.
+# that is NOT the original physical id. `deleting` / `deleted` are excluded so
+# the pre-run cleanup's async `delete-volume` (or a crashed prior run's
+# leftover) cannot be picked instead of the live replacement.
 VOL_KEEP_NEW_ID=$(aws ec2 describe-volumes --region "${REGION}" \
   --filters "Name=tag:cdkd-integ,Values=deletion-policy-snapshot-keep" \
-  --query "Volumes[?VolumeId!='${VOL_KEEP_ID}'].VolumeId | [0]" --output text)
+  --query "Volumes[?VolumeId!='${VOL_KEEP_ID}' && State!='deleting' && State!='deleted'].VolumeId | [0]" \
+  --output text)
 if [ -z "${VOL_KEEP_NEW_ID}" ] || [ "${VOL_KEEP_NEW_ID}" = "None" ]; then
   echo "FAIL: no replacement volume found after the AZ flip — the immutable AvailabilityZone change was not classified as a replacement (issue #1356)" >&2
   exit 1
@@ -263,8 +269,13 @@ assert_gone "state file still present after destroy" \
 
 # --- Phase 4: artifact cleanup + zero-orphan verification -------------------
 echo "==> Phase 4: deleting the three final snapshots (test artifacts)"
+# Delete all three FIRST, then assert all three gone: DescribeSnapshots is
+# eventually consistent and can still return a snapshot immediately after its
+# DeleteSnapshot, which `gone_probe` would hard-FAIL on.
 for snap in "${SNAP_REMOVE_ID}" "${SNAP_REPLACE_ID}" "${SNAP_KEEP_ID}"; do
   aws ec2 delete-snapshot --snapshot-id "${snap}" --region "${REGION}"
+done
+for snap in "${SNAP_REMOVE_ID}" "${SNAP_REPLACE_ID}" "${SNAP_KEEP_ID}"; do
   assert_gone "final snapshot ${snap} still present after artifact cleanup" \
     aws ec2 describe-snapshots --snapshot-ids "${snap}" --region "${REGION}"
 done

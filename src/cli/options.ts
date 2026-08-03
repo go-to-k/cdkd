@@ -828,8 +828,9 @@ export const forceStatefulRecreationOption = new Option(
   '--force-stateful-recreation',
   'Bypass the stateful-resource guard for --recreate-via-cc-api targets. ' +
     'Required when ANY named target is a stateful type (RDS / DynamoDB / EFS / ' +
-    'S3 with data / Logs with retention / Cognito / Secrets / SSM / Glue / ECR / ' +
-    'CloudFront / Kinesis / OpenSearch). Destroy + recreate loses ALL data in ' +
+    'FSx / EBS Volume / S3 with data / Logs with retention / Cognito / Secrets / ' +
+    'SSM / Glue / ECR / CloudFront / Kinesis / OpenSearch). Destroy + recreate ' +
+    'loses ALL data in ' +
     'the resource — no automatic data migration. Triple-opt-in for CI use: ' +
     '--recreate-via-cc-api <id> --force-stateful-recreation --yes.'
 ).default(false);
