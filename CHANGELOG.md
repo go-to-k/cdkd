@@ -1,3 +1,10 @@
+## [0.276.1](https://github.com/go-to-k/cdkd/compare/v0.276.0...v0.276.1) (2026-08-03)
+
+
+### Bug Fixes
+
+* **analyzer:** classify AWS::EC2::Volume immutable properties as replacement ([#1360](https://github.com/go-to-k/cdkd/issues/1360)) ([4b2998d](https://github.com/go-to-k/cdkd/commit/4b2998d527dbfe6d3615230b3532417b36b743d2))
+
 # [0.276.0](https://github.com/go-to-k/cdkd/compare/v0.275.6...v0.276.0) (2026-08-03)
 
 
