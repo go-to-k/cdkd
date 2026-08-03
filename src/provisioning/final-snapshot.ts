@@ -669,7 +669,17 @@ async function waitForRedshiftClusterSettled(
       );
       return;
     }
-    if (status === undefined || status === 'available') return;
+    if (status === undefined || status === 'available') {
+      // `available` is necessary but NOT sufficient: Redshift reports it
+      // while the just-taken snapshot's cluster-side work is still draining,
+      // and there is no status field that exposes that operation (observed
+      // live 2026-08-03 — the delete right after this point still 400s with
+      // "There is an operation running on the Cluster"). Pay one grace
+      // interval here; the delete's own transient retry — the message is in
+      // RETRYABLE_ERROR_MESSAGE_PATTERNS — covers a longer tail.
+      await finalSnapshotDelays.sleep(PRE_DELETE_SNAPSHOT_POLL_INTERVAL_MS);
+      return;
+    }
     if (Date.now() >= deadline) {
       logger.info(
         `Redshift cluster ${clusterId} (${logicalId}) is still '${status}' after the ` +

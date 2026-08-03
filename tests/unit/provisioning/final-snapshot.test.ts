@@ -408,6 +408,8 @@ describe('createRedshiftFinalSnapshot', () => {
       (c) => c[0].constructor.name === 'DescribeClustersCommand'
     );
     expect(settlePolls.length).toBe(2);
+    // One grace sleep after `available` (see the comment at the return).
+    expect(finalSnapshotDelays.sleep).toHaveBeenCalled();
   });
 
   it('settle wait tolerates a gone cluster and never fails the delete', async () => {

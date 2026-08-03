@@ -267,6 +267,17 @@ const OTHER_TRANSIENT_ERROR_MESSAGE_PATTERNS: readonly string[] = [
   // Surfaced by tests/integration/throttle-wide-dag (80 SSM parameters at
   // --concurrency 40).
   'Rate exceeded',
+
+  // Redshift keeps a cluster busy for a tail AFTER an operation on it
+  // reports done — notably the final snapshot cdkd takes for
+  // `DeletionPolicy: Snapshot` (issue #1353): the snapshot reaches
+  // `available` and `DescribeClusters` already reports `ClusterStatus:
+  // available`, yet the immediately-following delete 400s with this
+  // message. There is no status field that exposes the in-flight
+  // operation, so a retry is the only way to ride it out (observed live
+  // 2026-08-03 on the deletion-policy-snapshot-heavy fixture, where the
+  // snapshot succeeded and only the delete failed).
+  'There is an operation running on the Cluster',
 ];
 
 /**

@@ -580,3 +580,18 @@ describe('RETRYABLE_ERROR_MESSAGE_PATTERNS composition', () => {
     }
   });
 });
+
+describe('Redshift post-snapshot busy state (#1353)', () => {
+  it('classifies "There is an operation running on the Cluster" as retryable', () => {
+    const msg =
+      'DELETE failed for Warehouse: There is an operation running on the Cluster. Please try ' +
+      'to delete it at a later time. (Service: Redshift, Status Code: 400)';
+    expect(isRetryableTransientError(new Error(msg), msg)).toBe(true);
+  });
+
+  it('does not classify an unrelated Redshift 400 as retryable', () => {
+    const msg =
+      'CREATE failed for Warehouse: The parameter ClusterIdentifier is not a valid identifier.';
+    expect(isRetryableTransientError(new Error(msg), msg)).toBe(false);
+  });
+});

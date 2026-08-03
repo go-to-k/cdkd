@@ -29,6 +29,13 @@ export class DeletionPolicySnapshotHeavyStack extends cdk.Stack {
     }
 
     const cluster = new redshift.CfnCluster(this, 'Warehouse', {
+      // Explicit id on purpose. Without one the identifier comes from Cloud
+      // Control's auto-naming, whose random suffix intermittently violates
+      // Redshift's rules ("The parameter ClusterIdentifier is not a valid
+      // identifier", seen live 2026-08-03 on one run while an earlier run of
+      // the same fixture happened to get a valid one). A fixed id also makes
+      // the generated final-snapshot name deterministic.
+      clusterIdentifier: 'cdkd-integ-dps-heavy-rs',
       clusterType: 'single-node',
       // Smallest node type AWS still lets you ORDER: dc2.large is retired for
       // new clusters ("Invalid node type: dc2.large", seen live 2026-08-03).
@@ -51,6 +58,8 @@ export class DeletionPolicySnapshotHeavyStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'ClusterId', { value: cluster.ref });
 
     const group = new elasticache.CfnReplicationGroup(this, 'Cache', {
+      // Explicit id for the same reason as the cluster above.
+      replicationGroupId: 'cdkd-integ-dps-heavy-rg',
       replicationGroupDescription: 'cdkd deletion-policy-snapshot-heavy integ (issue #1353)',
       engine: 'redis',
       cacheNodeType: 'cache.t3.micro',
