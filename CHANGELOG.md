@@ -1,3 +1,10 @@
+## [0.276.5](https://github.com/go-to-k/cdkd/compare/v0.276.4...v0.276.5) (2026-08-03)
+
+
+### Bug Fixes
+
+* **rollback:** keep the record for a refused Snapshot delete in the plan preview ([#1369](https://github.com/go-to-k/cdkd/issues/1369)) ([7d78ae1](https://github.com/go-to-k/cdkd/commit/7d78ae1263ddc4e730531cb41921b0b9ef1617c3))
+
 ## [0.276.4](https://github.com/go-to-k/cdkd/compare/v0.276.3...v0.276.4) (2026-08-03)
 
 
