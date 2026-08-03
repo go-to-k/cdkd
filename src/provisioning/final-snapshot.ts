@@ -6,10 +6,12 @@ import {
 import {
   CreateClusterSnapshotCommand,
   DescribeClusterSnapshotsCommand,
+  DescribeClustersCommand,
   type RedshiftClient,
 } from '@aws-sdk/client-redshift';
 import {
   CreateSnapshotCommand as CreateElastiCacheSnapshotCommand,
+  DescribeReplicationGroupsCommand,
   DescribeSnapshotsCommand as DescribeElastiCacheSnapshotsCommand,
   type ElastiCacheClient,
 } from '@aws-sdk/client-elasticache';
@@ -146,6 +148,8 @@ export const finalSnapshotDelays = {
 
 const PRE_DELETE_SNAPSHOT_POLL_INTERVAL_MS = 5_000;
 const PRE_DELETE_SNAPSHOT_TIMEOUT_MS = 60 * 60 * 1_000;
+/** Post-snapshot settle budget for a Redshift cluster before its delete. */
+const REDSHIFT_CLUSTER_SETTLE_TIMEOUT_MS = 20 * 60 * 1_000;
 
 function errMsg(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -610,7 +614,7 @@ export async function createRedshiftFinalSnapshot(
     }
   }
 
-  return waitForNamedSnapshot({
+  const readySnapshotId = await waitForNamedSnapshot({
     snapshotId,
     logicalId,
     sourceId: clusterId,
@@ -627,14 +631,76 @@ export async function createRedshiftFinalSnapshot(
     isTransientNotFound: (e) => errorNameOrMessageIncludes(e, 'ClusterSnapshotNotFoundFault'),
     logger,
   });
+
+  // The SNAPSHOT reaching `available` does not mean the CLUSTER has: Redshift
+  // keeps it busy for a short tail, and the delete that follows this call
+  // then 400s with "There is an operation running on the Cluster. Please try
+  // to delete it at a later time." (seen live 2026-08-03 — the snapshot we
+  // just took is what put the cluster in that state, so settling it is this
+  // function's job, not the caller's).
+  await waitForRedshiftClusterSettled(client, clusterId, logicalId, logger);
+  return readySnapshotId;
 }
 
 /**
- * ElastiCache `CreateSnapshot` against a replication group + wait to
- * `available` (issue #1353). Snapshots the primary node; AWS rejects the
- * call for Memcached / snapshot-incapable node types — that error surfaces
- * wrapped, matching CloudFormation's DELETE_FAILED for the same template.
- * Idempotent across delete re-runs via the `<group>-final-` name prefix.
+ * Poll a Redshift cluster until it is out of the transient state a just-taken
+ * snapshot leaves it in, so the caller's delete is not rejected. Bounded and
+ * NEVER fatal: a NotFound means the cluster is already gone, and exhausting
+ * the budget only logs — the delete (and its own retry) still runs.
+ */
+async function waitForRedshiftClusterSettled(
+  client: RedshiftClient,
+  clusterId: string,
+  logicalId: string,
+  logger: InfoLogger
+): Promise<void> {
+  const deadline = Date.now() + REDSHIFT_CLUSTER_SETTLE_TIMEOUT_MS;
+  for (;;) {
+    let status: string | undefined;
+    try {
+      const described = await client.send(
+        new DescribeClustersCommand({ ClusterIdentifier: clusterId })
+      );
+      status = described.Clusters?.[0]?.ClusterStatus;
+    } catch (pollError) {
+      if (errorNameOrMessageIncludes(pollError, 'ClusterNotFoundFault')) return;
+      logger.debug(
+        `Could not read Redshift cluster ${clusterId} while waiting for it to settle: ${errMsg(pollError)}`
+      );
+      return;
+    }
+    if (status === undefined || status === 'available') return;
+    if (Date.now() >= deadline) {
+      logger.info(
+        `Redshift cluster ${clusterId} (${logicalId}) is still '${status}' after the ` +
+          `post-snapshot settle wait — proceeding with the delete anyway.`
+      );
+      return;
+    }
+    logger.debug(`Waiting for Redshift cluster ${clusterId} to settle (status: ${status})`);
+    await finalSnapshotDelays.sleep(PRE_DELETE_SNAPSHOT_POLL_INTERVAL_MS);
+  }
+}
+
+/**
+ * ElastiCache final snapshot for a replication group + wait to `available`
+ * (issue #1353), then the caller's delete proceeds.
+ *
+ * **Cluster-mode matters** (found live 2026-08-03, not by the mocked unit
+ * tests): `CreateSnapshot` accepts `ReplicationGroupId` ONLY for a
+ * cluster-mode-ENABLED (sharded) group. For the cluster-mode-DISABLED
+ * default — which is what a plain CDK / CFn replication group is — AWS
+ * rejects it with "Cannot snapshot a replication group with cluster-mode
+ * disabled. Please specify a cache cluster instead.", and the snapshot must
+ * name the PRIMARY member cache cluster instead. Both shapes produce one
+ * snapshot of the group's data; only the parameter differs.
+ *
+ * Idempotent across delete re-runs via the `<group>-final-` name prefix,
+ * probed against whichever source this group's mode uses.
+ *
+ * Redis only — Memcached / snapshot-incapable node types surface AWS's
+ * rejection wrapped, matching CloudFormation's DELETE_FAILED for the same
+ * template.
  */
 export async function createReplicationGroupFinalSnapshot(
   client: ElastiCacheClient,
@@ -642,6 +708,53 @@ export async function createReplicationGroupFinalSnapshot(
   logicalId: string,
   logger: InfoLogger
 ): Promise<string | null> {
+  // Resolve the snapshot SOURCE first: the reuse probe has to look where the
+  // snapshot would actually be created.
+  let snapshotSource: { ReplicationGroupId: string } | { CacheClusterId: string };
+  try {
+    const described = await client.send(
+      new DescribeReplicationGroupsCommand({ ReplicationGroupId: replicationGroupId })
+    );
+    const group = described.ReplicationGroups?.[0];
+    if (group === undefined) {
+      logger.debug(
+        `Replication group ${replicationGroupId} no longer exists — skipping final snapshot for ${logicalId}`
+      );
+      return null;
+    }
+    if (group.ClusterEnabled === true) {
+      snapshotSource = { ReplicationGroupId: replicationGroupId };
+    } else {
+      const primary = group.NodeGroups?.flatMap((n) => n.NodeGroupMembers ?? []).find(
+        (m) => m.CurrentRole === 'primary'
+      )?.CacheClusterId;
+      const member = primary ?? group.MemberClusters?.[0];
+      if (member === undefined) {
+        throw new CdkdError(
+          `Replication group ${replicationGroupId} (${logicalId}) has cluster-mode disabled but ` +
+            `reports no member cache cluster to snapshot. The replication group was NOT deleted.`,
+          'FINAL_SNAPSHOT_FAILED'
+        );
+      }
+      snapshotSource = { CacheClusterId: member };
+    }
+  } catch (describeError) {
+    if (describeError instanceof CdkdError) throw describeError;
+    if (errorNameOrMessageIncludes(describeError, 'ReplicationGroupNotFoundFault')) {
+      logger.debug(
+        `Replication group ${replicationGroupId} no longer exists — skipping final snapshot for ${logicalId}`
+      );
+      return null;
+    }
+    throw new CdkdError(
+      `Failed to read replication group ${replicationGroupId} (${logicalId}) to pick the final ` +
+        `snapshot source required by DeletionPolicy: Snapshot: ${errMsg(describeError)}. The ` +
+        `replication group was NOT deleted.`,
+      'FINAL_SNAPSHOT_FAILED',
+      describeError instanceof Error ? describeError : undefined
+    );
+  }
+
   const matches = generatedSnapshotNameMatcher(
     replicationGroupId,
     'AWS::ElastiCache::ReplicationGroup'
@@ -652,7 +765,7 @@ export async function createReplicationGroupFinalSnapshot(
     for (let page = 0; page < REUSE_PROBE_MAX_PAGES && !snapshotId; page++) {
       const existing = await client.send(
         new DescribeElastiCacheSnapshotsCommand({
-          ReplicationGroupId: replicationGroupId,
+          ...snapshotSource,
           ...(marker !== undefined && { Marker: marker }),
         })
       );
@@ -685,10 +798,7 @@ export async function createReplicationGroupFinalSnapshot(
     );
     try {
       await client.send(
-        new CreateElastiCacheSnapshotCommand({
-          ReplicationGroupId: replicationGroupId,
-          SnapshotName: newId,
-        })
+        new CreateElastiCacheSnapshotCommand({ ...snapshotSource, SnapshotName: newId })
       );
       snapshotId = newId;
     } catch (createError) {

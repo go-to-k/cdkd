@@ -8,9 +8,9 @@ import { Construct } from 'constructs';
  * CFn-documented Snapshot-capable types that need cdkd's pre-delete
  * snapshot machinery on top of #1352's EBS coverage:
  *
- *   - `AWS::Redshift::Cluster` (single-node dc2.large — the cheapest
- *     Redshift shape): destroy must run `CreateClusterSnapshot` + wait to
- *     `available` before the CC-routed delete.
+ *   - `AWS::Redshift::Cluster` (single-node ra3.large — the cheapest
+ *     ORDERABLE Redshift shape): destroy must run `CreateClusterSnapshot` +
+ *     wait to `available` before the CC-routed delete.
  *   - `AWS::ElastiCache::ReplicationGroup` (1-node Redis on cache.t3.micro):
  *     destroy must run the ElastiCache `CreateSnapshot` (replication-group
  *     form) + wait before the CC-routed delete.
@@ -30,7 +30,11 @@ export class DeletionPolicySnapshotHeavyStack extends cdk.Stack {
 
     const cluster = new redshift.CfnCluster(this, 'Warehouse', {
       clusterType: 'single-node',
-      nodeType: 'dc2.large',
+      // Smallest node type AWS still lets you ORDER: dc2.large is retired for
+      // new clusters ("Invalid node type: dc2.large", seen live 2026-08-03).
+      // Confirm with `aws redshift describe-orderable-cluster-options` before
+      // changing this.
+      nodeType: 'ra3.large',
       dbName: 'cdkdinteg',
       masterUsername: 'cdkdadmin',
       masterUserPassword: password,

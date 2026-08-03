@@ -390,6 +390,40 @@ describe('createRedshiftFinalSnapshot', () => {
     ).resolves.toBeNull();
   });
 
+  it('waits for the CLUSTER to settle after the snapshot, before the caller deletes', async () => {
+    // The snapshot reaching `available` leaves the cluster briefly busy; the
+    // delete that follows then 400s with "There is an operation running on
+    // the Cluster" (seen live 2026-08-03).
+    const send = vi
+      .fn()
+      .mockResolvedValueOnce({ Snapshots: [] }) // reuse probe
+      .mockResolvedValueOnce({}) // CreateClusterSnapshot
+      .mockResolvedValueOnce({ Snapshots: [{ Status: 'available' }] }) // snapshot ready
+      .mockResolvedValueOnce({ Clusters: [{ ClusterStatus: 'modifying' }] })
+      .mockResolvedValueOnce({ Clusters: [{ ClusterStatus: 'available' }] });
+
+    await createRedshiftFinalSnapshot(mockRedshift(send), 'my-cluster', 'Db', logger);
+
+    const settlePolls = send.mock.calls.filter(
+      (c) => c[0].constructor.name === 'DescribeClustersCommand'
+    );
+    expect(settlePolls.length).toBe(2);
+  });
+
+  it('settle wait tolerates a gone cluster and never fails the delete', async () => {
+    const gone = Object.assign(new Error('Cluster not found'), { name: 'ClusterNotFoundFault' });
+    const send = vi
+      .fn()
+      .mockResolvedValueOnce({ Snapshots: [] })
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({ Snapshots: [{ Status: 'available' }] })
+      .mockRejectedValueOnce(gone);
+
+    await expect(
+      createRedshiftFinalSnapshot(mockRedshift(send), 'my-cluster', 'Db', logger)
+    ).resolves.toMatch(/-final-/);
+  });
+
   it("fails fast on a terminal 'cancelled' status instead of polling for an hour", async () => {
     const send = vi
       .fn()
@@ -455,13 +489,29 @@ describe('createReplicationGroupFinalSnapshot', () => {
   function mockElastiCache(send: ReturnType<typeof vi.fn>) {
     return { send } as unknown as PreDeleteSnapshotClients['elastiCache'];
   }
+  /** DescribeReplicationGroups response for a cluster-mode-DISABLED group. */
+  const modeDisabled = {
+    ReplicationGroups: [
+      {
+        ClusterEnabled: false,
+        MemberClusters: ['my-group-001'],
+        NodeGroups: [
+          { NodeGroupMembers: [{ CacheClusterId: 'my-group-001', CurrentRole: 'primary' }] },
+        ],
+      },
+    ],
+  };
+  /** DescribeReplicationGroups response for a cluster-mode-ENABLED group. */
+  const modeEnabled = { ReplicationGroups: [{ ClusterEnabled: true }] };
 
-  it('creates a prefixed snapshot against the replication group and waits until available', async () => {
+  it('cluster-mode DISABLED: snapshots the PRIMARY member cache cluster, not the group', async () => {
+    // AWS rejects CreateSnapshot(ReplicationGroupId) for a cluster-mode-disabled
+    // group ("Please specify a cache cluster instead") — found live 2026-08-03.
     const send = vi
       .fn()
+      .mockResolvedValueOnce(modeDisabled)
       .mockResolvedValueOnce({ Snapshots: [] })
       .mockResolvedValueOnce({})
-      .mockResolvedValueOnce({ Snapshots: [{ SnapshotStatus: 'creating' }] })
       .mockResolvedValueOnce({ Snapshots: [{ SnapshotStatus: 'available' }] });
 
     const id = await createReplicationGroupFinalSnapshot(
@@ -471,11 +521,51 @@ describe('createReplicationGroupFinalSnapshot', () => {
       logger
     );
     expect(id).toMatch(/^my-group-final-\d{8}-\d{6}$/);
-    expect(id?.length ?? 999).toBeLessThanOrEqual(50);
-    const createCall = send.mock.calls[1][0];
+    const probeCall = send.mock.calls[1][0];
+    expect(probeCall.input.CacheClusterId).toBe('my-group-001');
+    expect(probeCall.input.ReplicationGroupId).toBeUndefined();
+    const createCall = send.mock.calls[2][0];
     expect(createCall.constructor.name).toBe('CreateSnapshotCommand');
-    expect(createCall.input.ReplicationGroupId).toBe('my-group');
+    expect(createCall.input.CacheClusterId).toBe('my-group-001');
+    expect(createCall.input.ReplicationGroupId).toBeUndefined();
     expect(createCall.input.SnapshotName).toBe(id);
+  });
+
+  it('cluster-mode ENABLED: snapshots the replication group itself', async () => {
+    const send = vi
+      .fn()
+      .mockResolvedValueOnce(modeEnabled)
+      .mockResolvedValueOnce({ Snapshots: [] })
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({ Snapshots: [{ SnapshotStatus: 'available' }] });
+
+    const id = await createReplicationGroupFinalSnapshot(
+      mockElastiCache(send),
+      'my-group',
+      'Cache',
+      logger
+    );
+    const createCall = send.mock.calls[2][0];
+    expect(createCall.input.ReplicationGroupId).toBe('my-group');
+    expect(createCall.input.CacheClusterId).toBeUndefined();
+    expect(id).toMatch(/^my-group-final-/);
+  });
+
+  it('caps the generated name at the ~50-char ElastiCache limit', async () => {
+    const send = vi
+      .fn()
+      .mockResolvedValueOnce(modeEnabled)
+      .mockResolvedValueOnce({ Snapshots: [] })
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({ Snapshots: [{ SnapshotStatus: 'available' }] });
+
+    const id = await createReplicationGroupFinalSnapshot(
+      mockElastiCache(send),
+      'g'.repeat(40),
+      'Cache',
+      logger
+    );
+    expect(id?.length ?? 999).toBeLessThanOrEqual(50);
   });
 
   it('resumes an in-flight snapshot via SnapshotName / SnapshotStatus (field-name pin)', async () => {
@@ -483,6 +573,7 @@ describe('createReplicationGroupFinalSnapshot', () => {
     // here would silently duplicate the snapshot on every delete re-run.
     const send = vi
       .fn()
+      .mockResolvedValueOnce(modeDisabled)
       .mockResolvedValueOnce({
         Snapshots: [{ SnapshotName: 'my-group-final-20260803-000000', SnapshotStatus: 'creating' }],
       })
@@ -501,6 +592,7 @@ describe('createReplicationGroupFinalSnapshot', () => {
   it('does NOT reuse an already-available snapshot (cross-generation guard)', async () => {
     const send = vi
       .fn()
+      .mockResolvedValueOnce(modeDisabled)
       .mockResolvedValueOnce({
         Snapshots: [
           { SnapshotName: 'my-group-final-20260101-000000', SnapshotStatus: 'available' },
@@ -523,7 +615,11 @@ describe('createReplicationGroupFinalSnapshot', () => {
     const deleting = Object.assign(new Error('not in a valid state'), {
       name: 'InvalidReplicationGroupStateFault',
     });
-    const send = vi.fn().mockResolvedValueOnce({ Snapshots: [] }).mockRejectedValueOnce(deleting);
+    const send = vi
+      .fn()
+      .mockResolvedValueOnce(modeDisabled)
+      .mockResolvedValueOnce({ Snapshots: [] })
+      .mockRejectedValueOnce(deleting);
 
     await expect(
       createReplicationGroupFinalSnapshot(mockElastiCache(send), 'my-group', 'Cache', logger)
@@ -534,7 +630,15 @@ describe('createReplicationGroupFinalSnapshot', () => {
     const gone = Object.assign(new Error('Replication group not found.'), {
       name: 'ReplicationGroupNotFoundFault',
     });
-    const send = vi.fn().mockResolvedValueOnce({ Snapshots: [] }).mockRejectedValueOnce(gone);
+    const send = vi.fn().mockRejectedValueOnce(gone);
+
+    await expect(
+      createReplicationGroupFinalSnapshot(mockElastiCache(send), 'my-group', 'Cache', logger)
+    ).resolves.toBeNull();
+  });
+
+  it('returns null when the describe comes back with no group', async () => {
+    const send = vi.fn().mockResolvedValueOnce({ ReplicationGroups: [] });
 
     await expect(
       createReplicationGroupFinalSnapshot(mockElastiCache(send), 'my-group', 'Cache', logger)
@@ -544,6 +648,7 @@ describe('createReplicationGroupFinalSnapshot', () => {
   it('surfaces a Memcached/unsupported-node rejection as FINAL_SNAPSHOT_FAILED', async () => {
     const send = vi
       .fn()
+      .mockResolvedValueOnce(modeDisabled)
       .mockResolvedValueOnce({ Snapshots: [] })
       .mockRejectedValueOnce(
         new Error('InvalidReplicationGroupState: snapshots are not supported for this node type')

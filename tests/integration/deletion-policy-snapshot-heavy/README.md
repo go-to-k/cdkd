@@ -3,7 +3,7 @@
 Integration test for `DeletionPolicy: Snapshot` on the two CFn-documented
 Snapshot-capable types that complete cdkd's coverage (issue #1353):
 
-- `AWS::Redshift::Cluster` (single-node `dc2.large` — cheapest Redshift
+- `AWS::Redshift::Cluster` (single-node `ra3.large` — cheapest ORDERABLE Redshift
   shape): `cdkd destroy` must run `CreateClusterSnapshot` + wait to
   `available` BEFORE the CC-routed delete.
 - `AWS::ElastiCache::ReplicationGroup` (1-node Redis on `cache.t3.micro`):
