@@ -22,6 +22,17 @@ vi.mock('../../../../src/provisioning/provider-registry.js', () => ({
   })),
 }));
 
+// The `AWS::EC2::Volume` + `DeletionPolicy: Snapshot` plan cases reach the
+// pre-delete snapshot dispatcher, which would otherwise issue REAL EC2
+// DescribeSnapshots / CreateSnapshot calls (or pay IMDS timeouts on a
+// credential-less CI). The type sets / identifier builder / refusal factories
+// stay REAL so the label cases still pin the actual routing matrix.
+vi.mock('../../../../src/provisioning/final-snapshot.js', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('../../../../src/provisioning/final-snapshot.js')>();
+  return { ...actual, createPreDeleteFinalSnapshot: vi.fn(async () => 'snap-unit') };
+});
+
 vi.mock('../../../../src/provisioning/nested-stack-context.js', () => ({
   withNestedStackContext: (_ctx: unknown, fn: () => unknown) => fn(),
 }));
@@ -598,5 +609,136 @@ describe('rollbackCommand — DeletionPolicy on a failed CREATE (#1362)', () => 
     expect(
       lines().some((l) => /orphan.*FAILED create, DeletionPolicy Retain — left in AWS/.test(l))
     ).toBe(true);
+  });
+});
+
+/**
+ * Issue #1366: the plan preview must not promise a final snapshot for a
+ * shape the replay is about to REFUSE. Both label functions consult the same
+ * mechanism matrix the executor runs, keyed on the route the delete will take.
+ */
+describe('rollbackCommand — plan preview vs the refusal matrix (#1366)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  function installSnapshotPlan(
+    resourceType: string,
+    provisionedBy: 'sdk' | 'cc-api',
+    kind: 'completed' | 'failed'
+  ): FakeBackend {
+    const op = {
+      logicalId: 'D',
+      changeType: 'CREATE',
+      resourceType,
+      physicalId: 'phys-D',
+      // The JOURNAL deliberately disagrees with the record below, so a label
+      // reading the journaled route instead of the effective one is visible.
+      provisionedBy: 'sdk',
+      ...(kind === 'failed' && { attemptedProperties: {} }),
+    };
+    return installSetup({
+      listStacks: vi.fn().mockResolvedValue([{ stackName: 'S', region: 'us-east-1' }]),
+      getState: vi.fn().mockResolvedValue({
+        state: {
+          version: 8,
+          stackName: 'S',
+          region: 'us-east-1',
+          resources: {
+            D: {
+              physicalId: 'phys-D',
+              resourceType,
+              properties: {},
+              attributes: {},
+              dependencies: [],
+              deletionPolicy: 'Snapshot',
+              provisionedBy,
+            },
+          },
+          outputs: {},
+          lastModified: 1,
+        },
+        etag: 'e0',
+      }),
+      loadRollbackJournal: vi.fn().mockResolvedValue({
+        journalVersion: 1,
+        stackName: 'S',
+        region: 'us-east-1',
+        segments: [
+          {
+            timestamp: 1,
+            reason: 'auto-rollback-clean',
+            initialDeploy: false,
+            operations: kind === 'completed' ? [op] : [],
+            ...(kind === 'failed' && { failedOperations: [op] }),
+          },
+        ],
+      }),
+    });
+  }
+
+  async function planLines(
+    resourceType: string,
+    provisionedBy: 'sdk' | 'cc-api',
+    kind: 'completed' | 'failed'
+  ): Promise<string[]> {
+    const { getLogger } = await import('../../../../src/utils/logger.js');
+    const info = getLogger().info as unknown as ReturnType<typeof vi.fn>;
+    installSnapshotPlan(resourceType, provisionedBy, kind);
+    await rollbackCommand('S', {
+      ...baseOpts,
+      ...(kind === 'failed' && { revertFailed: true }),
+    }).catch(() => undefined); // a refused plan exits 2; the label is the subject
+    return info.mock.calls.map((c) => String(c[0]));
+  }
+
+  it('completed CREATE, cc-api-routed atomic type: the plan says it will REFUSE', async () => {
+    const lines = await planLines('AWS::RDS::DBInstance', 'cc-api', 'completed');
+    expect(lines.some((l) => /will REFUSE it/.test(l))).toBe(true);
+    expect(lines.some((l) => /final snapshot, then delete/.test(l))).toBe(false);
+  });
+
+  it('completed CREATE, a type cdkd cannot snapshot at all: the plan says it will REFUSE', async () => {
+    const lines = await planLines('AWS::S3::Bucket', 'sdk', 'completed');
+    expect(lines.some((l) => /will REFUSE it/.test(l))).toBe(true);
+  });
+
+  it('completed CREATE, a snapshottable shape: the plan still promises the snapshot', async () => {
+    const { createPreDeleteFinalSnapshot } = await import(
+      '../../../../src/provisioning/final-snapshot.js'
+    );
+    const lines = await planLines('AWS::EC2::Volume', 'cc-api', 'completed');
+    expect(lines.some((l) => /final snapshot, then delete/.test(l))).toBe(true);
+    expect(lines.some((l) => /will REFUSE it/.test(l))).toBe(false);
+    // The promise is kept AND the dispatcher is the stub — an un-intercepted
+    // call here would be a real EC2 DescribeSnapshots/CreateSnapshot.
+    expect(vi.mocked(createPreDeleteFinalSnapshot)).toHaveBeenCalledWith(
+      'AWS::EC2::Volume',
+      'phys-D',
+      'D',
+      expect.anything(),
+      expect.anything()
+    );
+  });
+
+  it('failed CREATE (--revert-failed) carries the same verdict', async () => {
+    const refused = await planLines('AWS::RDS::DBInstance', 'cc-api', 'failed');
+    expect(refused.some((l) => /FAILED create, DeletionPolicy Snapshot .*will REFUSE it/.test(l))).toBe(
+      true
+    );
+
+    vi.clearAllMocks();
+    const ok = await planLines('AWS::EC2::Volume', 'cc-api', 'failed');
+    expect(ok.some((l) => /FAILED create, DeletionPolicy Snapshot — final snapshot, then delete/.test(l))).toBe(
+      true
+    );
+  });
+
+  it('--skip-final-snapshot wins over the refusal note (nothing is refused under the opt-out)', async () => {
+    const { getLogger } = await import('../../../../src/utils/logger.js');
+    const info = getLogger().info as unknown as ReturnType<typeof vi.fn>;
+    installSnapshotPlan('AWS::RDS::DBInstance', 'cc-api', 'completed');
+    await rollbackCommand('S', { ...baseOpts, skipFinalSnapshot: true });
+    const lines = info.mock.calls.map((c) => String(c[0]));
+    expect(lines.some((l) => /NO final snapshot \(--skip-final-snapshot\)/.test(l))).toBe(true);
+    expect(lines.some((l) => /will REFUSE it/.test(l))).toBe(false);
   });
 });

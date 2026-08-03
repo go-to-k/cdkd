@@ -2180,7 +2180,12 @@ credentials, etc.).
   from state (the plan labels it `orphan`); `Snapshot` takes the final
   snapshot and THEN deletes, refusing (as a per-op failure, journal kept) any
   shape cdkd cannot snapshot unless `--skip-final-snapshot` is passed (issue
-  [#1358](https://github.com/go-to-k/cdkd/issues/1358)); `RetainExceptOnCreate`
+  [#1358](https://github.com/go-to-k/cdkd/issues/1358)). The plan preview says
+  which of the two will happen BEFORE you confirm — a shape cdkd cannot
+  snapshot on the route the delete will take is labelled
+  `cdkd cannot snapshot this resource; the rollback will REFUSE it` rather
+  than promising a final snapshot (issue
+  [#1366](https://github.com/go-to-k/cdkd/issues/1366)); `RetainExceptOnCreate`
   and the default `Delete` delete plainly. `--revert-failed`'s delete of a
   resource whose CREATE FAILED mid-flight applies the SAME matrix since issue
   [#1362](https://github.com/go-to-k/cdkd/issues/1362) — it acts only on a

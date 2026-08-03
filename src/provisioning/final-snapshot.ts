@@ -75,6 +75,64 @@ export function supportsFinalSnapshot(resourceType: string): boolean {
   );
 }
 
+/**
+ * How a `Snapshot`-policy delete of a given (resourceType, routing layer) is
+ * carried out — or why it cannot be.
+ *
+ *   - `atomic-delete-parameter`: the provider's delete call takes the
+ *     identifier ({@link ATOMIC_FINAL_SNAPSHOT_TYPES} on the SDK route).
+ *   - `pre-delete-snapshot`: cdkd snapshots explicitly first via
+ *     {@link createPreDeleteFinalSnapshot}, then deletes plainly.
+ *   - `refuse-cc-routed`: an atomic type routed through Cloud Control, whose
+ *     `DeleteResource` has no final-snapshot parameter
+ *     ({@link ccRoutedFinalSnapshotError}).
+ *   - `refuse-unsupported-type`: no mechanism at all
+ *     ({@link unsupportedFinalSnapshotError}).
+ */
+export type FinalSnapshotMechanism =
+  | 'atomic-delete-parameter'
+  | 'pre-delete-snapshot'
+  | 'refuse-cc-routed'
+  | 'refuse-unsupported-type';
+
+/**
+ * The mechanism matrix as a PURE function of (type, route) — issue #1366.
+ *
+ * Extracted so the executor that ACTS on it and the plan preview that
+ * DESCRIBES it read one source: the preview used to promise "final snapshot,
+ * then delete" for every Snapshot-policy resource, including the shapes the
+ * replay was about to refuse. Deciding this in the CLI's label layer rather
+ * than in the pure classifier is deliberate — whether a refusal actually
+ * happens ALSO depends on `--skip-final-snapshot`, a flag the classifier
+ * cannot see, and the label functions take it.
+ *
+ * `provisionedBy` must be the route the DELETE will take (state record first,
+ * journaled op as the legacy fallback), not merely the op's recorded one —
+ * a gate judging a different route than the delete uses is worse than none.
+ */
+export function finalSnapshotMechanism(
+  resourceType: string,
+  provisionedBy: 'sdk' | 'cc-api' | undefined
+): FinalSnapshotMechanism {
+  if (ATOMIC_FINAL_SNAPSHOT_TYPES.has(resourceType)) {
+    return provisionedBy === 'cc-api' ? 'refuse-cc-routed' : 'atomic-delete-parameter';
+  }
+  if (PRE_DELETE_SNAPSHOT_TYPES.has(resourceType)) return 'pre-delete-snapshot';
+  return 'refuse-unsupported-type';
+}
+
+/**
+ * Will a `Snapshot`-policy delete of this (type, route) be REFUSED rather
+ * than carried out? The plan preview's question (issue #1366).
+ */
+export function refusesFinalSnapshot(
+  resourceType: string,
+  provisionedBy: 'sdk' | 'cc-api' | undefined
+): boolean {
+  const mechanism = finalSnapshotMechanism(resourceType, provisionedBy);
+  return mechanism === 'refuse-cc-routed' || mechanism === 'refuse-unsupported-type';
+}
+
 /** Sanitize a physical id into the snapshot-identifier charset (shared by the
  * identifier builder and the pre-delete reuse-probe prefix match). */
 function sanitizeSnapshotBase(physicalId: string): string {
