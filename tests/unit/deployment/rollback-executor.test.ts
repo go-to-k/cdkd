@@ -38,6 +38,17 @@ vi.mock('../../../src/provisioning/final-snapshot.js', async (importOriginal) =>
   };
 });
 
+// The process-global the executor falls back to when the context pins no
+// clients (`ctx.finalSnapshotClients ?? getAwsClients()`). Distinct object
+// identity so the fallback and the pinned-clients cases cannot be confused
+// for one another (issue #1363).
+const processGlobalClients = { tag: 'process-global' };
+vi.mock('../../../src/utils/aws-clients.js', () => ({
+  getAwsClients: () => processGlobalClients,
+  setAwsClients: vi.fn(),
+  AwsClients: vi.fn(),
+}));
+
 function res(overrides: Partial<ResourceState> = {}): ResourceState {
   return {
     physicalId: 'phys',
@@ -1309,6 +1320,51 @@ describe('replayRollback — DeletionPolicy: Snapshot on a rolled-back CREATE (#
     expect(
       vi.mocked(createPreDeleteFinalSnapshot).mock.invocationCallOrder[0]!
     ).toBeLessThan(del.mock.invocationCallOrder[0]!);
+    expect(state['Res']).toBeUndefined();
+  });
+
+  it('pre-delete type with NO context clients: falls back to the process-global set (#1363)', async () => {
+    // The `ctx.finalSnapshotClients ?? getAwsClients()` fallback arm — taken
+    // by any caller that does not pin a region-scoped set (a legacy embedder,
+    // or the engine before #1358 threaded its own). Untested until #1363, so
+    // a fallback that silently resolved to `undefined` would have gone
+    // unnoticed until it reached AWS.
+    const del = vi.fn().mockResolvedValue(undefined);
+    const { ctx } = makeCtx({ delete: del });
+    expect(ctx.finalSnapshotClients).toBeUndefined();
+    const state = snapshotState('AWS::EC2::Volume', 'cc-api');
+    const result = await replayRollback([snapshotOp('AWS::EC2::Volume')], state, 'S', ctx);
+    expect(result.failures).toBe(0);
+    expect(vi.mocked(createPreDeleteFinalSnapshot).mock.calls[0]![3]).toBe(processGlobalClients);
+    expect(del).toHaveBeenCalledOnce();
+    expect(state['Res']).toBeUndefined();
+  });
+
+  it('state record wins over the journaled op in BOTH directions (record sdk, op cc-api) (#1363)', async () => {
+    // The sibling case above pins record-absent -> op-wins. This is the
+    // inverse: the record says the resource is SDK-routed while a stale
+    // journal entry says cc-api. The record is what state says AWS holds
+    // right now, so the snapshot gate must NOT refuse and the delete must
+    // take the SDK route — one routing source for both.
+    const del = vi.fn().mockResolvedValue(undefined);
+    const getProviderFor = vi.fn().mockReturnValue({ provider: { delete: del } });
+    const { ctx } = makeCtx({ delete: del });
+    ctx.providerRegistry = {
+      getProviderFor,
+    } as unknown as RollbackExecutorContext['providerRegistry'];
+    ctx.finalSnapshotClients = fakeClients;
+    const state = snapshotState('AWS::RDS::DBInstance', 'sdk');
+    const result = await replayRollback(
+      [snapshotOp('AWS::RDS::DBInstance', 'cc-api')],
+      state,
+      'S',
+      ctx
+    );
+    expect(result.failures).toBe(0);
+    expect(getProviderFor).toHaveBeenCalledWith(expect.objectContaining({ provisionedBy: 'sdk' }));
+    expect(
+      (del.mock.calls[0]![4] as Record<string, unknown>)['finalSnapshotIdentifier']
+    ).toMatch(/^phys-res-final-\d{8}-\d{6}$/);
     expect(state['Res']).toBeUndefined();
   });
 
