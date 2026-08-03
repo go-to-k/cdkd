@@ -211,7 +211,7 @@ const KNOWN_SCENARIOS: Record<string, string> = {
   'deletion-policy-retain':
     'DeletionPolicy: Retain skip on destroy (schema v5 recorded value wins over template).',
   'deletion-policy-snapshot':
-    'DeletionPolicy / UpdateReplacePolicy: Snapshot honored on delete (issues #1352 / #1354): final EBS snapshot created + waited to completed on the deploy engine template-removal DELETE path, the replacement cleanup path (immutable-property AZ flip), and the destroy-runner path; --skip-final-snapshot opt-out.',
+    'DeletionPolicy: Snapshot honored on delete (issue #1352): final EBS snapshot created + waited to completed on BOTH the deploy engine template-removal DELETE path and the destroy-runner path; --skip-final-snapshot opt-out. (The replacement-path phase for #1354 is blocked on #1356 — see #1357.)',
   'deletion-policy-snapshot-heavy':
     'DeletionPolicy: Snapshot pre-delete machinery for the CC-routed name-keyed snapshot APIs (issue #1353): Redshift Cluster CreateClusterSnapshot + ElastiCache ReplicationGroup CreateSnapshot, both waited to available before the delete.',
   'deployment-events':

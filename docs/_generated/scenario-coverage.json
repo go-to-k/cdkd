@@ -70,7 +70,7 @@
     },
     {
       "tag": "deletion-policy-snapshot",
-      "description": "DeletionPolicy / UpdateReplacePolicy: Snapshot honored on delete (issues #1352 / #1354): final EBS snapshot created + waited to completed on the deploy engine template-removal DELETE path, the replacement cleanup path (immutable-property AZ flip), and the destroy-runner path; --skip-final-snapshot opt-out."
+      "description": "DeletionPolicy: Snapshot honored on delete (issue #1352): final EBS snapshot created + waited to completed on BOTH the deploy engine template-removal DELETE path and the destroy-runner path; --skip-final-snapshot opt-out. (The replacement-path phase for #1354 is blocked on #1356 — see #1357.)"
     },
     {
       "tag": "deletion-policy-snapshot-heavy",
@@ -2016,7 +2016,7 @@
     },
     {
       "scenario": "deletion-policy-snapshot",
-      "description": "DeletionPolicy / UpdateReplacePolicy: Snapshot honored on delete (issues #1352 / #1354): final EBS snapshot created + waited to completed on the deploy engine template-removal DELETE path, the replacement cleanup path (immutable-property AZ flip), and the destroy-runner path; --skip-final-snapshot opt-out.",
+      "description": "DeletionPolicy: Snapshot honored on delete (issue #1352): final EBS snapshot created + waited to completed on BOTH the deploy engine template-removal DELETE path and the destroy-runner path; --skip-final-snapshot opt-out. (The replacement-path phase for #1354 is blocked on #1356 — see #1357.)",
       "fixtures": [
         "deletion-policy-snapshot"
       ]
