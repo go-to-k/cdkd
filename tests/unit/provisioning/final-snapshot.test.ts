@@ -12,7 +12,6 @@ import {
   finalSnapshotDelays,
   finalSnapshotNamePrefix,
   isFinalSnapshotError,
-  supportsFinalSnapshot,
   finalSnapshotMechanism,
   refusesFinalSnapshot,
   unsupportedFinalSnapshotError,
@@ -33,14 +32,41 @@ beforeEach(() => {
   vi.spyOn(finalSnapshotDelays, 'sleep').mockResolvedValue(undefined);
 });
 
-describe('supportsFinalSnapshot', () => {
-  it('covers the atomic + pre-delete sets and nothing else', () => {
-    for (const t of ATOMIC_FINAL_SNAPSHOT_TYPES) expect(supportsFinalSnapshot(t)).toBe(true);
-    for (const t of PRE_DELETE_SNAPSHOT_TYPES) expect(supportsFinalSnapshot(t)).toBe(true);
-    // #1353: the full CFn-documented Snapshot-capable list is covered now.
-    expect(supportsFinalSnapshot('AWS::Redshift::Cluster')).toBe(true);
-    expect(supportsFinalSnapshot('AWS::ElastiCache::ReplicationGroup')).toBe(true);
-    expect(supportsFinalSnapshot('AWS::S3::Bucket')).toBe(false);
+describe('the Snapshot-capable type sets', () => {
+  // Re-homed from the deleted `supportsFinalSnapshot` predicate (issue
+  // #1368), asserted on the SETS themselves so the fence survives the
+  // predicate. Both claims below are load-bearing elsewhere.
+  it('their union is exactly the CloudFormation-documented Snapshot-capable list (#1353)', () => {
+    // CloudFormation supports DeletionPolicy: Snapshot on exactly these
+    // types. Pinned as a literal so ADDING a type to a set without updating
+    // the docs (or dropping one) fails here rather than silently changing
+    // what cdkd claims to cover.
+    const CFN_SNAPSHOT_CAPABLE = [
+      'AWS::EC2::Volume',
+      'AWS::ElastiCache::CacheCluster',
+      'AWS::ElastiCache::ReplicationGroup',
+      'AWS::Neptune::DBCluster',
+      'AWS::RDS::DBCluster',
+      'AWS::RDS::DBInstance',
+      'AWS::Redshift::Cluster',
+      'AWS::DocDB::DBCluster',
+    ].sort();
+    const union = [...ATOMIC_FINAL_SNAPSHOT_TYPES, ...PRE_DELETE_SNAPSHOT_TYPES].sort();
+    expect(union).toEqual(CFN_SNAPSHOT_CAPABLE);
+  });
+
+  it('the two sets are DISJOINT (finalSnapshotMechanism tests atomic first)', () => {
+    // A type in both would silently take the atomic arm and never reach the
+    // pre-delete snapshot — an unobservable mis-route, so pin it here.
+    const overlap = [...ATOMIC_FINAL_SNAPSHOT_TYPES].filter((t) =>
+      PRE_DELETE_SNAPSHOT_TYPES.has(t)
+    );
+    expect(overlap).toEqual([]);
+  });
+
+  it('a type CloudFormation itself refuses Snapshot for is in neither set', () => {
+    expect(ATOMIC_FINAL_SNAPSHOT_TYPES.has('AWS::S3::Bucket')).toBe(false);
+    expect(PRE_DELETE_SNAPSHOT_TYPES.has('AWS::S3::Bucket')).toBe(false);
   });
 });
 

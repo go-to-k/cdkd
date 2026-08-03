@@ -742,3 +742,120 @@ describe('rollbackCommand — plan preview vs the refusal matrix (#1366)', () =>
     expect(lines.some((l) => /will REFUSE it/.test(l))).toBe(false);
   });
 });
+
+/**
+ * Issue #1368: the plan preview must not unwind a record for an op the
+ * replay will REFUSE. Only observable across SEGMENTS — the preview state is
+ * what the NEXT (older) segment's plan is classified against, so a wrongly
+ * dropped record turns the older segment's real work into
+ * `skip — already reverted` in the one preview the user reads before `y`.
+ */
+describe('rollbackCommand — plan preview vs a refused Snapshot delete (#1368)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  /**
+   * TWO segments touching the SAME logical id, under a Snapshot policy on a
+   * cc-api-routed atomic type (the shape the replay refuses).
+   */
+  function installTwoSegmentPlan(
+    kind: 'completed' | 'failed',
+    resourceType = 'AWS::RDS::DBInstance'
+  ): FakeBackend {
+    const op = {
+      logicalId: 'D',
+      changeType: 'CREATE',
+      resourceType,
+      physicalId: 'phys-D',
+      provisionedBy: 'sdk',
+      ...(kind === 'failed' && { attemptedProperties: {} }),
+    };
+    const segment = (reason: string) => ({
+      timestamp: 1,
+      reason,
+      initialDeploy: false,
+      operations: kind === 'completed' ? [op] : [],
+      ...(kind === 'failed' && { failedOperations: [op] }),
+    });
+    return installSetup({
+      listStacks: vi.fn().mockResolvedValue([{ stackName: 'S', region: 'us-east-1' }]),
+      getState: vi.fn().mockResolvedValue({
+        state: {
+          version: 8,
+          stackName: 'S',
+          region: 'us-east-1',
+          resources: {
+            D: {
+              physicalId: 'phys-D',
+              resourceType,
+              properties: {},
+              attributes: {},
+              dependencies: [],
+              deletionPolicy: 'Snapshot',
+              provisionedBy: 'cc-api',
+            },
+          },
+          outputs: {},
+          lastModified: 1,
+        },
+        etag: 'e0',
+      }),
+      loadRollbackJournal: vi.fn().mockResolvedValue({
+        journalVersion: 1,
+        stackName: 'S',
+        region: 'us-east-1',
+        // Oldest first; the preview walks newest-first.
+        segments: [segment('no-rollback-failure'), segment('auto-rollback-clean')],
+      }),
+    });
+  }
+
+  async function planLinesFor(
+    kind: 'completed' | 'failed',
+    opts: Record<string, unknown> = {},
+    resourceType = 'AWS::RDS::DBInstance'
+  ): Promise<string[]> {
+    const { getLogger } = await import('../../../../src/utils/logger.js');
+    const info = getLogger().info as unknown as ReturnType<typeof vi.fn>;
+    installTwoSegmentPlan(kind, resourceType);
+    await rollbackCommand('S', {
+      ...baseOpts,
+      ...(kind === 'failed' && { revertFailed: true }),
+      ...opts,
+    }).catch(() => undefined); // the refusal exits 2; the preview is the subject
+    return info.mock.calls.map((c) => String(c[0]));
+  }
+
+  it('a refused completed-CREATE keeps its record, so the older segment is not mislabelled', async () => {
+    const lines = await planLinesFor('completed');
+    // Both segments describe the same real work...
+    expect(lines.filter((l) => /will REFUSE it/.test(l))).toHaveLength(2);
+    // ...and neither is downgraded to a no-op by a preview that unwound a
+    // delete which never happens.
+    expect(lines.some((l) => /already reverted/.test(l))).toBe(false);
+  });
+
+  it('a refused failed-CREATE (--revert-failed) keeps its record too', async () => {
+    const lines = await planLinesFor('failed');
+    expect(lines.filter((l) => /FAILED create.*will REFUSE it/.test(l))).toHaveLength(2);
+    expect(lines.some((l) => /left nothing to revert/.test(l))).toBe(false);
+  });
+
+  it('--skip-final-snapshot: nothing is refused, so the preview DOES unwind (opposite polarity)', async () => {
+    const lines = await planLinesFor('completed', { skipFinalSnapshot: true });
+    // The newest segment deletes for real, so the older segment's item for
+    // the same id correctly becomes a no-op.
+    expect(lines.filter((l) => /NO final snapshot \(--skip-final-snapshot\)/.test(l))).toHaveLength(
+      1
+    );
+    expect(lines.some((l) => /already reverted/.test(l))).toBe(true);
+  });
+
+  it('a snapshottable shape still unwinds the preview (the carve-out is refusal-only)', async () => {
+    // Same two-segment journal, but a type cdkd CAN snapshot on this route —
+    // the delete WILL happen, so the record must still be unwound and the
+    // older segment's item correctly becomes a no-op.
+    const lines = await planLinesFor('completed', {}, 'AWS::EC2::Volume');
+    expect(lines.filter((l) => /final snapshot, then delete/.test(l))).toHaveLength(1);
+    expect(lines.some((l) => /already reverted/.test(l))).toBe(true);
+  });
+});

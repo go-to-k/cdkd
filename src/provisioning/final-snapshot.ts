@@ -61,19 +61,17 @@ export const ATOMIC_FINAL_SNAPSHOT_TYPES: ReadonlySet<string> = new Set([
  * `AWS::Redshift::Cluster` (`CreateClusterSnapshot`, issue #1353), and
  * `AWS::ElastiCache::ReplicationGroup` (ElastiCache `CreateSnapshot`
  * against the replication group, issue #1353).
+ *
+ * The two sets are DISJOINT by construction and must stay that way:
+ * {@link finalSnapshotMechanism} tests the atomic set first, so a type in
+ * both would silently take the atomic arm and never be snapshotted here.
+ * Pinned by `final-snapshot.test.ts`.
  */
 export const PRE_DELETE_SNAPSHOT_TYPES: ReadonlySet<string> = new Set([
   'AWS::EC2::Volume',
   'AWS::Redshift::Cluster',
   'AWS::ElastiCache::ReplicationGroup',
 ]);
-
-/** Can cdkd honor `DeletionPolicy: Snapshot` for this type? */
-export function supportsFinalSnapshot(resourceType: string): boolean {
-  return (
-    ATOMIC_FINAL_SNAPSHOT_TYPES.has(resourceType) || PRE_DELETE_SNAPSHOT_TYPES.has(resourceType)
-  );
-}
 
 /**
  * How a `Snapshot`-policy delete of a given (resourceType, routing layer) is
