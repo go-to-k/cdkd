@@ -303,7 +303,13 @@ export type FailedOpActionKind =
  * replay will (issue #1366); without it the label could only see the
  * journaled value and would describe a route the delete may not take.
  */
-type PlannedRoute = { effectiveProvisionedBy?: 'sdk' | 'cc-api' | undefined };
+type PlannedRoute = {
+  /** Required (not optional): a plan item that forgot to resolve the route
+   * would silently label a cc-api-routed atomic type as snapshottable — the
+   * exact defect #1366 fixes. `undefined` is a legitimate VALUE (legacy state
+   * with no routing on either side), so it must be passed explicitly. */
+  effectiveProvisionedBy: 'sdk' | 'cc-api' | undefined;
+};
 
 /** One planned failed-op revert (rendered by the command's plan preview). */
 export interface FailedOpPlanItem extends PlannedRoute {
@@ -678,6 +684,16 @@ async function replaySingle(
         if (op.changeType === 'CREATE') {
           // --orphan on a CREATE: leave the resource in AWS, drop it from
           // state (it is not part of the pre-deploy baseline).
+          //
+          // Route resolved BEFORE the record is dropped, same as the
+          // `orphan-retain` arm (issue #1366): the comment below promises the
+          // two orphan triggers emit the SAME event, so they must resolve
+          // `provisionedBy` the same way too.
+          const orphanFlagProvisionedBy = effectiveProvisionedBy(
+            stateResources[op.logicalId],
+            op.provisionedBy
+          );
+          createRollbackRoute = orphanFlagProvisionedBy;
           delete stateResources[op.logicalId];
           logger.info(`  Rollback: Orphaning created resource ${op.logicalId} (--orphan)`);
           await afterOp?.(op.logicalId);
@@ -690,7 +706,7 @@ async function replaySingle(
             operation: 'CREATE',
             logicalId: op.logicalId,
             resourceType: op.resourceType,
-            ...(op.provisionedBy && { provisionedBy: op.provisionedBy }),
+            ...(orphanFlagProvisionedBy && { provisionedBy: orphanFlagProvisionedBy }),
           });
         } else {
           // --orphan on an UPDATE: leave the resource at its new properties;

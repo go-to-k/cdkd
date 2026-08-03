@@ -2019,11 +2019,43 @@ describe('ROLLBACK_RESOURCE_FAILED route reporting (#1366)', () => {
     );
   });
 
+  it('the --orphan CREATE arm reports the record route too (parity with orphan-retain)', async () => {
+    // Its own comment promises the two orphan triggers emit the SAME event,
+    // so they must resolve `provisionedBy` the same way.
+    const { ctx, events } = makeCtx({ delete: vi.fn() });
+    const state: Record<string, ResourceState> = {
+      Res: res({ physicalId: 'phys-res', resourceType: 'AWS::S3::Bucket', provisionedBy: 'cc-api' }),
+    };
+    await replayRollback(
+      [
+        {
+          logicalId: 'Res',
+          changeType: 'CREATE',
+          resourceType: 'AWS::S3::Bucket',
+          physicalId: 'phys-res',
+          provisionedBy: 'sdk',
+        },
+      ],
+      state,
+      'S',
+      ctx,
+      { orphanLogicalIds: new Set(['Res']) }
+    );
+    expect(state['Res']).toBeUndefined();
+    expect(events.find((e) => e.eventType === 'ROLLBACK_RESOURCE_SUCCEEDED')?.provisionedBy).toBe(
+      'cc-api'
+    );
+  });
+
   it('an UPDATE-arm failure keeps the journaled route (that arm resolves its own routing)', async () => {
     const update = vi.fn().mockRejectedValue(new Error('boom'));
     const { ctx, events } = makeCtx({ update });
     const prev = res({ physicalId: 'phys-res', properties: { a: 1 } });
-    const state = { Res: res({ physicalId: 'phys-res', properties: { a: 2 } }) };
+    // The record must DISAGREE with the journal, else the assertion below
+    // holds under record-first resolution too and pins nothing.
+    const state = {
+      Res: res({ physicalId: 'phys-res', properties: { a: 2 }, provisionedBy: 'cc-api' }),
+    };
     await replayRollback(
       [
         {

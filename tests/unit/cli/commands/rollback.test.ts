@@ -22,6 +22,17 @@ vi.mock('../../../../src/provisioning/provider-registry.js', () => ({
   })),
 }));
 
+// The `AWS::EC2::Volume` + `DeletionPolicy: Snapshot` plan cases reach the
+// pre-delete snapshot dispatcher, which would otherwise issue REAL EC2
+// DescribeSnapshots / CreateSnapshot calls (or pay IMDS timeouts on a
+// credential-less CI). The type sets / identifier builder / refusal factories
+// stay REAL so the label cases still pin the actual routing matrix.
+vi.mock('../../../../src/provisioning/final-snapshot.js', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('../../../../src/provisioning/final-snapshot.js')>();
+  return { ...actual, createPreDeleteFinalSnapshot: vi.fn(async () => 'snap-unit') };
+});
+
 vi.mock('../../../../src/provisioning/nested-stack-context.js', () => ({
   withNestedStackContext: (_ctx: unknown, fn: () => unknown) => fn(),
 }));
@@ -691,9 +702,21 @@ describe('rollbackCommand — plan preview vs the refusal matrix (#1366)', () =>
   });
 
   it('completed CREATE, a snapshottable shape: the plan still promises the snapshot', async () => {
+    const { createPreDeleteFinalSnapshot } = await import(
+      '../../../../src/provisioning/final-snapshot.js'
+    );
     const lines = await planLines('AWS::EC2::Volume', 'cc-api', 'completed');
     expect(lines.some((l) => /final snapshot, then delete/.test(l))).toBe(true);
     expect(lines.some((l) => /will REFUSE it/.test(l))).toBe(false);
+    // The promise is kept AND the dispatcher is the stub — an un-intercepted
+    // call here would be a real EC2 DescribeSnapshots/CreateSnapshot.
+    expect(vi.mocked(createPreDeleteFinalSnapshot)).toHaveBeenCalledWith(
+      'AWS::EC2::Volume',
+      'phys-D',
+      'D',
+      expect.anything(),
+      expect.anything()
+    );
   });
 
   it('failed CREATE (--revert-failed) carries the same verdict', async () => {
