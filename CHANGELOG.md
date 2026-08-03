@@ -1,3 +1,10 @@
+## [0.276.2](https://github.com/go-to-k/cdkd/compare/v0.276.1...v0.276.2) (2026-08-03)
+
+
+### Bug Fixes
+
+* **rollback:** snapshot-then-delete a rolled-back CREATE under DeletionPolicy: Snapshot ([#1361](https://github.com/go-to-k/cdkd/issues/1361)) ([4b3a3ac](https://github.com/go-to-k/cdkd/commit/4b3a3aca4479779b853bdb974ab8bd81e697227f))
+
 ## [0.276.1](https://github.com/go-to-k/cdkd/compare/v0.276.0...v0.276.1) (2026-08-03)
 
 
