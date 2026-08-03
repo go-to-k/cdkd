@@ -349,7 +349,24 @@ describe('UpdateReplacePolicy: Snapshot on the create-first cleanup delete (#135
     );
     // EC2 Volume takes the pre-delete path, so the mocked creator is the
     // gate. The deploy continues (warn-and-continue) but must NOT delete.
-    await invokeReplacement('AWS::EC2::Volume', 'Snapshot');
+    // `forceStatefulRecreation` is required since #1356 put EC2 Volume in
+    // STATEFUL_TYPES — without it the stateful guard would fire FIRST and
+    // this test would never reach the snapshot gate it exists to exercise.
+    await invokeReplacement('AWS::EC2::Volume', 'Snapshot', {
+      forceStatefulRecreation: true,
+    });
+    expect(deleteProvider.delete).not.toHaveBeenCalled();
+  });
+
+  it('EC2 Volume replacement WITHOUT --force-stateful-recreation is blocked before any snapshot or delete (#1356)', async () => {
+    // The opposite polarity of the flag threaded above: a volume is stateful
+    // since #1356, so the guard must fire BEFORE the snapshot gate — a
+    // Snapshot policy is deliberately NOT an exemption (a snapshot is a
+    // point-in-time copy, not a surviving resource).
+    await expect(invokeReplacement('AWS::EC2::Volume', 'Snapshot')).rejects.toMatchObject({
+      cause: expect.objectContaining({ code: 'STATEFUL_REPLACE_BLOCKED' }),
+    });
+    expect(mockCreatePreDeleteFinalSnapshot).not.toHaveBeenCalled();
     expect(deleteProvider.delete).not.toHaveBeenCalled();
   });
 

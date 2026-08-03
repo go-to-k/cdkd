@@ -51,6 +51,14 @@ export const STATEFUL_TYPES: ReadonlySet<string> = new Set([
   'AWS::FSx::FileSystem',
   'AWS::S3::Bucket', // conditional — see isStatefulRecreateTarget
   'AWS::ECR::Repository',
+  // An EBS volume carries a filesystem; DELETE+CREATE loses every byte and
+  // AWS offers no migration. Added with the immutable-property
+  // classification in issue #1356 — before that, an AZ / Encrypted /
+  // SnapshotId change could not reach the replacement path at all, so the
+  // guard had nothing to protect. `UpdateReplacePolicy: Snapshot` still does
+  // not exempt it: a snapshot is a point-in-time copy, not a surviving
+  // resource (see the deploy engine's property-driven replacement guard).
+  'AWS::EC2::Volume',
   // Streaming.
   'AWS::Kinesis::Stream',
   // Search.

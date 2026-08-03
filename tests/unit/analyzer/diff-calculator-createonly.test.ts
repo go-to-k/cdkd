@@ -89,6 +89,41 @@ describe('DiffCalculator - createOnly replacement fallback', () => {
     expect(pc?.requiresReplacement).toBe(false);
   });
 
+  it('classifies an EC2 Volume AvailabilityZone change as a replacement even though the schema is EMPTY (#1356)', async () => {
+    // The end-to-end shape of issue #1356: the AWS registry schema for
+    // AWS::EC2::Volume declares NO createOnlyProperties (live-verified — the
+    // empty mock below IS the real response), so the fallback finds nothing
+    // and the hand-authored registry rule is the ONLY thing that can classify
+    // the change. Without that rule the diff reports an in-place UPDATE and
+    // AWS rejects the deploy.
+    mockGetCreateOnly.mockResolvedValue([]);
+
+    const state = baseState();
+    state.resources['Vol'] = {
+      physicalId: 'vol-123',
+      resourceType: 'AWS::EC2::Volume',
+      properties: { AvailabilityZone: 'us-east-1a', Size: 1, VolumeType: 'gp3' },
+      attributes: {},
+    };
+    const template: CloudFormationTemplate = {
+      Resources: {
+        Vol: {
+          Type: 'AWS::EC2::Volume',
+          Properties: { AvailabilityZone: 'us-east-1b', Size: 2, VolumeType: 'gp3' },
+        },
+      },
+    };
+
+    const changes = await new DiffCalculator().calculateDiff(state, template);
+    const az = changes.get('Vol')?.propertyChanges?.find((c) => c.path === 'AvailabilityZone');
+    expect(az?.requiresReplacement).toBe(true);
+    // The mutable sibling in the same diff stays in-place, and — being
+    // explicitly classified — never reaches the (empty) schema fallback.
+    const size = changes.get('Vol')?.propertyChanges?.find((c) => c.path === 'Size');
+    expect(size?.requiresReplacement).toBe(false);
+    expect(mockGetCreateOnly).not.toHaveBeenCalled();
+  });
+
   it('does NOT override an EXPLICIT updateable classification, even if the schema lists it createOnly', async () => {
     // S3::Bucket has a registry rule; the schema fallback must not flip an
     // explicitly-updateable property to replacement. (Contrived: pretend the
