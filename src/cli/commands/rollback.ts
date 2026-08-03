@@ -347,7 +347,7 @@ export async function rollbackCommand(
             const failedPlan = planFailedOps(segment.failedOperations, planStateView);
             for (const item of failedPlan)
               logger.info(failedActionLabel(item, options.skipFinalSnapshot === true));
-            applyFailedPlanToPreview(failedPlan, planStateView);
+            applyFailedPlanToPreview(failedPlan, planStateView, options.skipFinalSnapshot === true);
           } else {
             for (const fop of segment.failedOperations) {
               logger.info(
@@ -361,7 +361,7 @@ export async function rollbackCommand(
         for (const item of plan) logger.info(actionLabel(item, options.skipFinalSnapshot === true));
         // Apply the segment's effect to the preview so an earlier segment's
         // plan reflects the later segment's already-unwound state.
-        applyPlanToPreview(plan, planStateView);
+        applyPlanToPreview(plan, planStateView, options.skipFinalSnapshot === true);
       }
       logger.info('');
 
@@ -604,19 +604,49 @@ export async function rollbackCommand(
 }
 
 /**
+ * Will the replay REFUSE this planned Snapshot delete instead of performing
+ * it (issue #1368)? The preview must not unwind a record for an op that
+ * never runs — the same question {@link snapshotNote} answers for the label,
+ * asked with the same predicate and the same route, so the label and the
+ * previewed state cannot disagree.
+ */
+function planItemWillBeRefused(
+  resourceType: string,
+  effectiveProvisionedBy: 'sdk' | 'cc-api' | undefined,
+  skipFinalSnapshot: boolean
+): boolean {
+  // Under the opt-out nothing is refused — every shape plain-deletes.
+  if (skipFinalSnapshot) return false;
+  return refusesFinalSnapshot(resourceType, effectiveProvisionedBy);
+}
+
+/**
  * Apply a planned segment's effect to the plan-preview state so the NEXT
  * (older) segment's plan is classified against already-unwound state.
  * Mirrors what `replayRollback` mutates, without touching AWS.
  */
 function applyPlanToPreview(
   plan: RollbackPlanItem[],
-  previewState: Record<string, ResourceState>
+  previewState: Record<string, ResourceState>,
+  skipFinalSnapshot: boolean
 ): void {
   for (const item of plan) {
     const { op, action } = item;
     switch (action) {
-      case 'delete':
       case 'delete-with-final-snapshot':
+        // A refused Snapshot delete leaves the resource AND its record in
+        // place (issue #1368). Keeping the record is not cosmetic: an older
+        // segment's item for the same logical id is classified against it,
+        // and its route is stamped from it — drop it and that item silently
+        // falls back to the journaled route, the #1366 defect one layer up.
+        if (
+          planItemWillBeRefused(op.resourceType, item.effectiveProvisionedBy, skipFinalSnapshot)
+        ) {
+          break;
+        }
+        if (op.changeType === 'CREATE') delete previewState[op.logicalId];
+        break;
+      case 'delete':
       case 'orphan-retain':
       case 'orphan-flag':
         if (op.changeType === 'CREATE') delete previewState[op.logicalId];
@@ -638,15 +668,24 @@ function applyPlanToPreview(
  */
 function applyFailedPlanToPreview(
   plan: FailedOpPlanItem[],
-  previewState: Record<string, ResourceState>
+  previewState: Record<string, ResourceState>,
+  skipFinalSnapshot: boolean
 ): void {
   for (const item of plan) {
     const { op, action } = item;
     switch (action) {
-      case 'delete-failed-create':
-      // Both Snapshot-delete and Retain-orphan drop the record (issue
-      // #1362) — the resource stops being cdkd-managed either way.
       case 'delete-failed-create-with-final-snapshot':
+        // Same refusal carve-out as the completed-op path (issue #1368).
+        if (
+          planItemWillBeRefused(op.resourceType, item.effectiveProvisionedBy, skipFinalSnapshot)
+        ) {
+          break;
+        }
+        delete previewState[op.logicalId];
+        break;
+      case 'delete-failed-create':
+      // Retain-orphan drops the record too (issue #1362) — the resource
+      // stops being cdkd-managed either way.
       case 'orphan-failed-create-retain':
         delete previewState[op.logicalId];
         break;
