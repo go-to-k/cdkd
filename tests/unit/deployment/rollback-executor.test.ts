@@ -1505,7 +1505,16 @@ describe('replayFailedOperations — DeletionPolicy on a FAILED CREATE (#1362)',
   beforeEach(() => {
     vi.mocked(createPreDeleteFinalSnapshot).mockReset();
     vi.mocked(createPreDeleteFinalSnapshot).mockResolvedValue('snap-1');
+    // The logger is shared across the file; the refusal cases below assert on
+    // its text, so drain it per-test.
+    (silentLogger.warn as ReturnType<typeof vi.fn>).mockClear();
+    (silentLogger.info as ReturnType<typeof vi.fn>).mockClear();
   });
+
+  /** Every `logger.<level>` line emitted by the replay under test. */
+  function loggedLines(level: 'info' | 'warn' = 'warn'): string[] {
+    return (silentLogger[level] as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]));
+  }
 
   function failedCreate(resourceType: string, provisionedBy?: 'sdk' | 'cc-api'): FailedOperation {
     return {
@@ -1568,6 +1577,35 @@ describe('replayFailedOperations — DeletionPolicy on a FAILED CREATE (#1362)',
           stateWithPolicy('AWS::EC2::Volume', 'Delete')
         )
       ).toBe('delete-failed-create');
+    });
+
+    it('no recorded physical id wins over the policy (nothing was provisioned)', () => {
+      // The reachability precondition for the whole matrix: no physical id
+      // means AWS may never have created anything, so a Retain record must
+      // NOT turn into an "orphan" of a resource that might not exist.
+      const op: FailedOperation = {
+        logicalId: 'Res',
+        changeType: 'CREATE',
+        resourceType: 'AWS::EC2::Volume',
+      };
+      expect(classifyFailedOp(op, stateWithPolicy('AWS::EC2::Volume', 'Retain'))).toBe(
+        'skip-failed-unknown'
+      );
+    });
+
+    it('an EMPTY physical id is treated as none, not as a delete target', () => {
+      // `''` is falsy but not `undefined`; an `=== undefined` guard would let
+      // it through to `buildFinalSnapshotIdentifier('')` and a delete against
+      // an empty id. Unreachable from today's deploy engine, guarded anyway.
+      const op: FailedOperation = {
+        logicalId: 'Res',
+        changeType: 'CREATE',
+        resourceType: 'AWS::EC2::Volume',
+        physicalId: '',
+      };
+      expect(classifyFailedOp(op, stateWithPolicy('AWS::EC2::Volume', 'Snapshot'))).toBe(
+        'skip-failed-unknown'
+      );
     });
 
     it('a policy on a record whose physical id does NOT match is never consulted', () => {
@@ -1682,6 +1720,10 @@ describe('replayFailedOperations — DeletionPolicy on a FAILED CREATE (#1362)',
     expect(result.failures).toBe(1);
     expect(state['Res']).toBeDefined();
     expect(result.remainingFailedOps).toEqual([op]);
+    // Pin WHICH refusal fired: without this the case also passes via the
+    // unsupported-shape arm below (same failures/kept-record/no-delete
+    // outcome), so a matrix that collapsed to always-refuse would look green.
+    expect(loggedLines().some((l) => /cc-api/.test(l))).toBe(true);
   });
 
   it('Snapshot on a shape cdkd cannot snapshot: REFUSES instead of plain-deleting', async () => {
@@ -1694,6 +1736,10 @@ describe('replayFailedOperations — DeletionPolicy on a FAILED CREATE (#1362)',
     expect(vi.mocked(createPreDeleteFinalSnapshot)).not.toHaveBeenCalled();
     expect(result.failures).toBe(1);
     expect(state['Res']).toBeDefined();
+    // The OTHER refusal (see the cc-api case above): this shape has no
+    // snapshot mechanism at all, so the message names the type, not a route.
+    expect(loggedLines().some((l) => /does not implement final snapshots/.test(l))).toBe(true);
+    expect(loggedLines().some((l) => /cc-api/.test(l))).toBe(false);
   });
 
   it('--skip-final-snapshot: plain delete, including the otherwise-refused shapes', async () => {
@@ -1710,6 +1756,14 @@ describe('replayFailedOperations — DeletionPolicy on a FAILED CREATE (#1362)',
       (del.mock.calls[0]![4] as Record<string, unknown>)['finalSnapshotIdentifier']
     ).toBeUndefined();
     expect(state['Res']).toBeUndefined();
+    // The outcome above is byte-identical to the PRE-#1362 policy-blind
+    // delete, so it cannot bind on its own. The audit line is what says a
+    // Snapshot-policy resource was destroyed WITHOUT its snapshot on purpose.
+    expect(
+      loggedLines('info').some((l) =>
+        /DeletionPolicy: Snapshot NOT taken \(--skip-final-snapshot\)/.test(l)
+      )
+    ).toBe(true);
   });
 
   it('--skip-final-snapshot does NOT override Retain (that policy is not about snapshots)', async () => {

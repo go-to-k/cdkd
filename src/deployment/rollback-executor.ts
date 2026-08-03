@@ -141,8 +141,8 @@ async function prepareCreateRollbackFinalSnapshot(
   ctx: RollbackExecutorContext
 ): Promise<string | undefined> {
   const { logicalId, resourceType } = op;
-  // Callers reach this only past a physical-id guard: `replaySingle`'s
-  // `!op.physicalId` early return, or `classifyFailedOp`'s
+  // Callers reach this only past the SAME falsy physical-id guard:
+  // `replaySingle`'s `!op.physicalId` early return, or `classifyFailedOp`'s
   // `skip-failed-unknown` arm on the `--revert-failed` path.
   const physicalId = op.physicalId!;
   if (ATOMIC_FINAL_SNAPSHOT_TYPES.has(resourceType)) {
@@ -454,8 +454,13 @@ export function classifyFailedOp(
   const current = stateResources[op.logicalId];
   if (op.changeType === 'CREATE') {
     // A failed CREATE normally records nothing (the provider threw before
-    // returning a physical id) — the remote state is unknown.
-    if (op.physicalId === undefined) return 'skip-failed-unknown';
+    // returning a physical id) — the remote state is unknown. Falsy, not
+    // `=== undefined`: an empty physical id identifies nothing, and letting
+    // it through would reach a delete (and a final-snapshot identifier) built
+    // from `''`. Matches `replaySingle`'s `!op.physicalId` guard on the
+    // completed-CREATE path, which is what lets both share
+    // `prepareCreateRollbackFinalSnapshot`.
+    if (!op.physicalId) return 'skip-failed-unknown';
     if (!current) return 'skip-failed-noop'; // already cleaned up (re-run)
     if (current.physicalId !== op.physicalId) return 'skip-failed-noop';
     // The CURRENT record's DeletionPolicy governs this delete exactly as it
