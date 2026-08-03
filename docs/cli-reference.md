@@ -1938,11 +1938,25 @@ Notes:
 - `UpdateReplacePolicy: Snapshot` is honored on the deploy engine's
   replacement / recreate delete sites (issue #1354) with the same mechanism
   matrix; the `--force-stateful-recreation` stateful guard still applies
-  first where the replacement is data-losing. On a ROLLBACK's
-  delete-of-the-new-resource, only the atomic SDK-routed types get a final
-  snapshot — the other shapes deliberately keep the plain delete (the
-  rollback's delete-new is load-bearing for same-name re-creation; recorded
-  on issue #1354).
+  first where the replacement is data-losing. Failure handling differs by
+  site, deliberately: the delete-first / recreate paths surface a snapshot
+  failure as a resource failure (their delete is load-bearing for the
+  re-create), while the post-replacement CLEANUP delete keeps its
+  warn-and-continue policy for a TRANSIENT snapshot failure — it skips the
+  delete, so the old resource is leaked with a warning rather than deleted
+  un-snapshotted. A REFUSAL (a type / route cdkd cannot snapshot) always
+  fails the resource, matching CloudFormation failing the update.
+- On a ROLLBACK's delete-of-the-new-resource, only the atomic SDK-routed
+  types get a final snapshot — the other shapes deliberately keep the plain
+  delete (the rollback's delete-new is load-bearing for same-name
+  re-creation; recorded on issue #1354).
+- Snapshot reuse across a re-run resumes only an IN-FLIGHT snapshot for the
+  name-keyed APIs (Redshift / ElastiCache): their identifiers are
+  user-chosen and reusable, so adopting an already-`available` snapshot
+  could hand you a PREVIOUS generation's data. A re-run after the snapshot
+  completed therefore creates a second (timestamped, non-colliding) one.
+  EC2 Volume reuses a completed snapshot safely — its tag is keyed on an
+  AWS-generated volume id that is never reused.
 - Final snapshots are billed AWS resources that survive the destroy by
   design — delete them manually when no longer needed.
 

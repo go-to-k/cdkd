@@ -163,7 +163,12 @@ function isVolumeNotFound(error: unknown): boolean {
  *
  * Idempotent across destroy re-runs: an existing pending/completed snapshot
  * carrying the `cdkd:final-snapshot-of: <volumeId>` tag is reused instead of
- * creating a second one.
+ * creating a second one. Reusing a `completed` snapshot is safe HERE (and
+ * only here) because an EBS volume id is AWS-generated and never reused, so
+ * the tag can only ever point at THIS volume's data — unlike the name-keyed
+ * Redshift / ElastiCache APIs, whose user-chosen ids repeat across
+ * generations and therefore only resume an in-flight snapshot (see
+ * {@link RESUMABLE_SNAPSHOT_STATUS}).
  *
  * @returns the snapshot id, or `null` when the volume no longer exists
  *   (nothing to snapshot; the subsequent delete is idempotent too).
@@ -423,15 +428,24 @@ async function waitForNamedSnapshot(opts: {
   logicalId: string;
   sourceId: string;
   noun: string;
+  /** True when the snapshot was resumed from a previous attempt, not created now. */
+  reused: boolean;
   readyStatus: string;
-  failedStatus: string;
+  /**
+   * Every TERMINAL non-ready status. Anything outside `readyStatus` +
+   * these keeps polling, so a status the service can park in forever
+   * (Redshift `cancelled` / `deleted`) must be listed here — otherwise the
+   * wait burns its full hour before failing.
+   */
+  failedStatuses: readonly string[];
   pollStatus: () => Promise<string | undefined>;
   isTransientNotFound: (error: unknown) => boolean;
   logger: InfoLogger;
 }): Promise<string> {
   const { snapshotId, logicalId, sourceId, noun, logger } = opts;
   logger.info(
-    `Creating final snapshot ${snapshotId} for ${logicalId} (${sourceId}) — DeletionPolicy: Snapshot`
+    `${opts.reused ? 'Resuming' : 'Creating'} final snapshot ${snapshotId} for ${logicalId} ` +
+      `(${sourceId}) — DeletionPolicy: Snapshot`
   );
   const deadline = Date.now() + PRE_DELETE_SNAPSHOT_TIMEOUT_MS;
   let notFoundPolls = 0;
@@ -457,9 +471,9 @@ async function waitForNamedSnapshot(opts: {
       logger.info(`Final snapshot ${snapshotId} ready for ${logicalId} (${sourceId})`);
       return snapshotId;
     }
-    if (status === opts.failedStatus) {
+    if (status !== undefined && opts.failedStatuses.includes(status)) {
       throw new CdkdError(
-        `Final snapshot ${snapshotId} for ${logicalId} (${sourceId}) entered '${opts.failedStatus}' ` +
+        `Final snapshot ${snapshotId} for ${logicalId} (${sourceId}) entered '${status}' ` +
           `state. The ${noun} was NOT deleted.`,
         'FINAL_SNAPSHOT_FAILED'
       );
@@ -481,6 +495,41 @@ function errorNameOrMessageIncludes(error: unknown, token: string): boolean {
   return name === token || errMsg(error).includes(token);
 }
 
+/** Max reuse-probe pages to walk (bounded so a huge snapshot history cannot
+ * stall a delete; a miss only costs one extra snapshot, never data). */
+const REUSE_PROBE_MAX_PAGES = 10;
+
+/**
+ * Matcher for a snapshot cdkd itself generated for `physicalId`: the exact
+ * `<sanitized-id>-final-<yyyymmdd>-<hhmmss>` shape, NOT a bare prefix. A bare
+ * prefix would also match a USER's snapshot named e.g. `mydb-final-backup`
+ * and silently adopt it as "the" final snapshot.
+ */
+function generatedSnapshotNameMatcher(physicalId: string, resourceType: string): RegExp {
+  const prefix = finalSnapshotNamePrefix(physicalId, resourceType);
+  const escaped = prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`^${escaped}\\d{8}-\\d{6}$`);
+}
+
+/**
+ * Is this snapshot resumable from an interrupted delete attempt?
+ *
+ * ONLY an in-flight (`creating`) snapshot qualifies. This is load-bearing,
+ * not conservatism: Redshift / ElastiCache identifiers are USER-CHOSEN and
+ * REUSABLE, and a manual snapshot outlives the resource it came from — so a
+ * deploy -> destroy -> deploy -> destroy cycle of a fixed-name cluster would
+ * find generation 1's `available` snapshot, skip `CreateSnapshot`, and delete
+ * generation 2 with NO snapshot of its data. That is precisely the silent
+ * data loss this whole feature exists to prevent (reviewer catch).
+ *
+ * A `creating` snapshot cannot span generations: the new generation can only
+ * be created after the old resource is gone, by which time its snapshot has
+ * settled to `available`. The cost of the narrower rule is one redundant
+ * snapshot when a delete is re-run after its snapshot already completed —
+ * cost, never data loss, and the timestamped identifier never collides.
+ */
+const RESUMABLE_SNAPSHOT_STATUS = 'creating';
+
 /**
  * Redshift `CreateClusterSnapshot` + wait to `available` (issue #1353).
  * Idempotent across delete re-runs: a creating/available manual snapshot of
@@ -493,23 +542,30 @@ export async function createRedshiftFinalSnapshot(
   logicalId: string,
   logger: InfoLogger
 ): Promise<string | null> {
-  const prefix = finalSnapshotNamePrefix(clusterId, 'AWS::Redshift::Cluster');
+  const matches = generatedSnapshotNameMatcher(clusterId, 'AWS::Redshift::Cluster');
   let snapshotId: string | undefined;
   try {
-    const existing = await client.send(
-      new DescribeClusterSnapshotsCommand({
-        ClusterIdentifier: clusterId,
-        SnapshotType: 'manual',
-      })
-    );
-    snapshotId = existing.Snapshots?.find(
-      (s) =>
-        s.SnapshotIdentifier?.startsWith(prefix) &&
-        (s.Status === 'creating' || s.Status === 'available')
-    )?.SnapshotIdentifier;
+    let marker: string | undefined;
+    for (let page = 0; page < REUSE_PROBE_MAX_PAGES && !snapshotId; page++) {
+      const existing = await client.send(
+        new DescribeClusterSnapshotsCommand({
+          ClusterIdentifier: clusterId,
+          SnapshotType: 'manual',
+          ...(marker !== undefined && { Marker: marker }),
+        })
+      );
+      snapshotId = existing.Snapshots?.find(
+        (s) =>
+          s.SnapshotIdentifier !== undefined &&
+          matches.test(s.SnapshotIdentifier) &&
+          s.Status === RESUMABLE_SNAPSHOT_STATUS
+      )?.SnapshotIdentifier;
+      marker = existing.Marker;
+      if (marker === undefined) break;
+    }
     if (snapshotId) {
       logger.debug(
-        `Reusing existing final snapshot ${snapshotId} for ${logicalId} (${clusterId}) from a previous delete attempt`
+        `Resuming in-flight final snapshot ${snapshotId} for ${logicalId} (${clusterId}) from a previous delete attempt`
       );
     }
   } catch (probeError) {
@@ -517,6 +573,7 @@ export async function createRedshiftFinalSnapshot(
     logger.debug(`Final-snapshot reuse probe failed for ${clusterId}: ${errMsg(probeError)}`);
   }
 
+  const reused = snapshotId !== undefined;
   if (!snapshotId) {
     const newId = buildFinalSnapshotIdentifier(clusterId, 'AWS::Redshift::Cluster');
     try {
@@ -534,6 +591,17 @@ export async function createRedshiftFinalSnapshot(
         );
         return null;
       }
+      // A cluster already `deleting` (an interrupted destroy being re-run)
+      // cannot be snapshotted and is on its way out anyway — treat it as
+      // gone rather than stranding the resource behind a permanent failure
+      // (memory rule: FAILED_STATES must tolerate a stale read on recovery).
+      if (errorNameOrMessageIncludes(createError, 'InvalidClusterStateFault')) {
+        logger.info(
+          `Redshift cluster ${clusterId} is not in a snapshottable state (likely already ` +
+            `deleting) — skipping the final snapshot for ${logicalId}: ${errMsg(createError)}`
+        );
+        return null;
+      }
       throw new CdkdError(
         `Failed to create the final snapshot for ${logicalId} (${clusterId}) required by ` +
           `DeletionPolicy: Snapshot: ${errMsg(createError)}. The cluster was NOT deleted.`,
@@ -547,8 +615,9 @@ export async function createRedshiftFinalSnapshot(
     logicalId,
     sourceId: clusterId,
     noun: 'cluster',
+    reused,
     readyStatus: 'available',
-    failedStatus: 'failed',
+    failedStatuses: ['failed', 'cancelled', 'deleted'],
     pollStatus: async () => {
       const described = await client.send(
         new DescribeClusterSnapshotsCommand({ SnapshotIdentifier: snapshotId })
@@ -573,20 +642,32 @@ export async function createReplicationGroupFinalSnapshot(
   logicalId: string,
   logger: InfoLogger
 ): Promise<string | null> {
-  const prefix = finalSnapshotNamePrefix(replicationGroupId, 'AWS::ElastiCache::ReplicationGroup');
+  const matches = generatedSnapshotNameMatcher(
+    replicationGroupId,
+    'AWS::ElastiCache::ReplicationGroup'
+  );
   let snapshotId: string | undefined;
   try {
-    const existing = await client.send(
-      new DescribeElastiCacheSnapshotsCommand({ ReplicationGroupId: replicationGroupId })
-    );
-    snapshotId = existing.Snapshots?.find(
-      (s) =>
-        s.SnapshotName?.startsWith(prefix) &&
-        (s.SnapshotStatus === 'creating' || s.SnapshotStatus === 'available')
-    )?.SnapshotName;
+    let marker: string | undefined;
+    for (let page = 0; page < REUSE_PROBE_MAX_PAGES && !snapshotId; page++) {
+      const existing = await client.send(
+        new DescribeElastiCacheSnapshotsCommand({
+          ReplicationGroupId: replicationGroupId,
+          ...(marker !== undefined && { Marker: marker }),
+        })
+      );
+      snapshotId = existing.Snapshots?.find(
+        (s) =>
+          s.SnapshotName !== undefined &&
+          matches.test(s.SnapshotName) &&
+          s.SnapshotStatus === RESUMABLE_SNAPSHOT_STATUS
+      )?.SnapshotName;
+      marker = existing.Marker;
+      if (marker === undefined) break;
+    }
     if (snapshotId) {
       logger.debug(
-        `Reusing existing final snapshot ${snapshotId} for ${logicalId} (${replicationGroupId}) from a previous delete attempt`
+        `Resuming in-flight final snapshot ${snapshotId} for ${logicalId} (${replicationGroupId}) from a previous delete attempt`
       );
     }
   } catch (probeError) {
@@ -596,6 +677,7 @@ export async function createReplicationGroupFinalSnapshot(
     );
   }
 
+  const reused = snapshotId !== undefined;
   if (!snapshotId) {
     const newId = buildFinalSnapshotIdentifier(
       replicationGroupId,
@@ -616,6 +698,16 @@ export async function createReplicationGroupFinalSnapshot(
         );
         return null;
       }
+      // Already `deleting` (an interrupted destroy being re-run): the group
+      // cannot be snapshotted and is on its way out — treat it as gone
+      // instead of stranding the resource behind a permanent failure.
+      if (errorNameOrMessageIncludes(createError, 'InvalidReplicationGroupStateFault')) {
+        logger.info(
+          `Replication group ${replicationGroupId} is not in a snapshottable state (likely ` +
+            `already deleting) — skipping the final snapshot for ${logicalId}: ${errMsg(createError)}`
+        );
+        return null;
+      }
       throw new CdkdError(
         `Failed to create the final snapshot for ${logicalId} (${replicationGroupId}) required ` +
           `by DeletionPolicy: Snapshot: ${errMsg(createError)}. The replication group was NOT ` +
@@ -630,8 +722,9 @@ export async function createReplicationGroupFinalSnapshot(
     logicalId,
     sourceId: replicationGroupId,
     noun: 'replication group',
+    reused,
     readyStatus: 'available',
-    failedStatus: 'failed',
+    failedStatuses: ['failed'],
     pollStatus: async () => {
       const described = await client.send(
         new DescribeElastiCacheSnapshotsCommand({ SnapshotName: snapshotId })

@@ -35,6 +35,12 @@ export class DeletionPolicySnapshotHeavyStack extends cdk.Stack {
       masterUsername: 'cdkdadmin',
       masterUserPassword: password,
       publiclyAccessible: false,
+      // The CFn property default is `false`, which makes the delete handler
+      // take its OWN final snapshot (and demand an identifier). This fixture
+      // exercises CDKD's `DeletionPolicy: Snapshot` snapshot, so opt the
+      // CFn-level one out — otherwise the run produces two snapshots and the
+      // delete's outcome depends on the handler's identifier generation.
+      skipFinalClusterSnapshot: true,
       tags: [{ key: 'cdkd-integ', value: 'deletion-policy-snapshot-heavy-redshift' }],
     });
     cluster.cfnOptions.deletionPolicy = cdk.CfnDeletionPolicy.SNAPSHOT;

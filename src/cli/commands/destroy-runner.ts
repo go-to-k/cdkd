@@ -94,12 +94,13 @@ export interface DestroyRunnerContext {
   removeProtection?: boolean;
 
   /**
-   * `--skip-final-snapshot` (issue #1352) — delete `DeletionPolicy: Snapshot`
-   * resources WITHOUT the final snapshot the policy promises (data loss,
-   * explicit opt-in). Default: honor the policy — atomic final-snapshot
-   * delete parameters / pre-delete EBS `CreateSnapshot`+wait — and refuse
-   * (`FINAL_SNAPSHOT_UNSUPPORTED`) Snapshot-tagged types cdkd cannot
-   * snapshot yet (issue #1353). Mirrors `DeployEngineOptions.skipFinalSnapshot`.
+   * `--skip-final-snapshot` (issues #1352 / #1353) — delete
+   * `DeletionPolicy: Snapshot` resources WITHOUT the final snapshot the
+   * policy promises (data loss, explicit opt-in). Default: honor the policy
+   * — atomic final-snapshot delete parameters, or a pre-delete snapshot+wait
+   * for the CC-routed types (EC2 Volume / Redshift Cluster / ElastiCache
+   * ReplicationGroup) — and refuse (`FINAL_SNAPSHOT_UNSUPPORTED`) when cdkd
+   * cannot honor it. Mirrors `DeployEngineOptions.skipFinalSnapshot`.
    */
   skipFinalSnapshot?: boolean;
 
@@ -830,11 +831,11 @@ export async function runDestroyForStack(
           ...(resource.provisionedBy && { provisionedBy: resource.provisionedBy }),
         });
         try {
-          // Honor `DeletionPolicy: Snapshot` (issue #1352) — the template-less
-          // twin of the deploy engine's DELETE-branch gating: atomic
-          // final-snapshot delete param for the Tier-A types, pre-delete EBS
-          // `CreateSnapshot`+wait for `AWS::EC2::Volume`, refusal for
-          // Snapshot-tagged types cdkd cannot snapshot (opt out with
+          // Honor `DeletionPolicy: Snapshot` (issues #1352 / #1353) — the
+          // template-less twin of the deploy engine's DELETE-branch gating:
+          // atomic final-snapshot delete param for the SDK-routed Tier-A
+          // types, pre-delete snapshot+wait for the CC-routed
+          // `PRE_DELETE_SNAPSHOT_TYPES`, refusal otherwise (opt out with
           // `--skip-final-snapshot`). Pre-v5 state has no recorded
           // `deletionPolicy`, so legacy state keeps the plain-delete behavior
           // until a redeploy records the attribute.

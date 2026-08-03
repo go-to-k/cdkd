@@ -403,6 +403,74 @@ describe('replayRollback', () => {
     expect(state.B).toBe(prev);
   });
 
+  it('reverse-replacement delete-new threads a final snapshot id under UpdateReplacePolicy: Snapshot (#1354)', async () => {
+    // Pins the CALL SITE, not just the pure helper: deleting the
+    // `rollbackFinalSnapshotId(...)` argument here must fail this test.
+    const del = vi.fn().mockResolvedValue(undefined);
+    const create = vi.fn().mockResolvedValue({ physicalId: 'old-db', attributes: {} });
+    const { ctx } = makeCtx({ delete: del, create });
+    const prev = res({
+      physicalId: 'old-db',
+      resourceType: 'AWS::RDS::DBInstance',
+      properties: { a: 1 },
+    });
+    const ops: CompletedOperation[] = [
+      {
+        logicalId: 'Db',
+        changeType: 'UPDATE',
+        resourceType: 'AWS::RDS::DBInstance',
+        physicalId: 'new-db',
+        previousState: prev,
+      },
+    ];
+    const state: Record<string, ResourceState> = {
+      Db: res({
+        physicalId: 'new-db',
+        resourceType: 'AWS::RDS::DBInstance',
+        properties: { a: 2 },
+        updateReplacePolicy: 'Snapshot' as const,
+      }),
+    };
+    await replayRollback(ops, state, 'S', ctx);
+    expect(del).toHaveBeenCalledOnce();
+    expect(del.mock.calls[0][4]).toEqual(
+      expect.objectContaining({
+        finalSnapshotIdentifier: expect.stringMatching(/^new-db-final-\d{8}-\d{6}$/),
+      })
+    );
+  });
+
+  it('reverse-replacement delete-new passes NO snapshot id without the policy (default polarity)', async () => {
+    const del = vi.fn().mockResolvedValue(undefined);
+    const create = vi.fn().mockResolvedValue({ physicalId: 'old-db', attributes: {} });
+    const { ctx } = makeCtx({ delete: del, create });
+    const ops: CompletedOperation[] = [
+      {
+        logicalId: 'Db',
+        changeType: 'UPDATE',
+        resourceType: 'AWS::RDS::DBInstance',
+        physicalId: 'new-db',
+        previousState: res({
+          physicalId: 'old-db',
+          resourceType: 'AWS::RDS::DBInstance',
+          properties: { a: 1 },
+        }),
+      },
+    ];
+    const state: Record<string, ResourceState> = {
+      Db: res({
+        physicalId: 'new-db',
+        resourceType: 'AWS::RDS::DBInstance',
+        properties: { a: 2 },
+      }),
+    };
+    await replayRollback(ops, state, 'S', ctx);
+    expect(del).toHaveBeenCalledOnce();
+    expect(
+      (del.mock.calls[0][4] as Record<string, unknown>)['finalSnapshotIdentifier']
+    ).toBeUndefined();
+  });
+
   it('orphans a Retain CREATE without calling delete', async () => {
     const del = vi.fn();
     const { ctx } = makeCtx({ delete: del });

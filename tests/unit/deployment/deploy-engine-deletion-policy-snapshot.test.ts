@@ -270,6 +270,100 @@ describe('DeployEngine DELETE branch — DeletionPolicy: Snapshot (#1352)', () =
     expect(deleteContextArg()['finalSnapshotIdentifier']).toMatch(/^phys-target-final-/);
   });
 
+describe('UpdateReplacePolicy: Snapshot on the create-first cleanup delete (#1354)', () => {
+  // The DEFAULT replacement path (no --replace needed): create-first, then
+  // delete the old resource. The snapshot gate runs BEFORE that delete and
+  // its two failure classes are handled differently (refusal propagates,
+  // transient failure skips the delete rather than deleting un-snapshotted).
+  async function invokeReplacement(
+    resourceType: string,
+    updateReplacePolicy: string | undefined,
+    engineOptions: Record<string, unknown> = {}
+  ): Promise<void> {
+    const engine = makeEngine(engineOptions);
+    (deleteProvider.create as ReturnType<typeof vi.fn>).mockResolvedValue({
+      physicalId: 'phys-new',
+      attributes: {},
+    });
+    const change: ResourceChange = {
+      logicalId: 'Target',
+      changeType: 'UPDATE',
+      resourceType,
+      currentProperties: { Immutable: 'a' },
+      desiredProperties: { Immutable: 'b' },
+      propertyChanges: [
+        { path: 'Immutable', oldValue: 'a', newValue: 'b', requiresReplacement: true },
+      ],
+    };
+    const stateResources: Record<string, unknown> = {
+      Target: {
+        physicalId: 'phys-target',
+        resourceType,
+        properties: { Immutable: 'a' },
+        attributes: {},
+        dependencies: [],
+      },
+    };
+    const template = {
+      Resources: {
+        Target: {
+          Type: resourceType,
+          Properties: { Immutable: 'b' },
+          ...(updateReplacePolicy !== undefined && { UpdateReplacePolicy: updateReplacePolicy }),
+        },
+      },
+    } as unknown as CloudFormationTemplate;
+    type ProvisionResourceFn = (
+      logicalId: string,
+      change: ResourceChange,
+      stateResources: Record<string, unknown>,
+      stackName: string,
+      template: CloudFormationTemplate
+    ) => Promise<void>;
+    const provisionResource = (
+      engine as unknown as { provisionResource: ProvisionResourceFn }
+    ).provisionResource.bind(engine);
+    await provisionResource('Target', change, stateResources, 'MyStack', template);
+  }
+
+  it('threads a generated identifier into the cleanup delete', async () => {
+    await invokeReplacement('AWS::RDS::DBInstance', 'Snapshot', {
+      forceStatefulRecreation: true,
+    });
+    expect(deleteContextArg()['finalSnapshotIdentifier']).toMatch(
+      /^phys-target-final-\d{8}-\d{6}$/
+    );
+  });
+
+  it('policy absent — plain cleanup delete (default polarity unchanged)', async () => {
+    await invokeReplacement('AWS::RDS::DBInstance', undefined, {
+      forceStatefulRecreation: true,
+    });
+    expect(deleteContextArg()['finalSnapshotIdentifier']).toBeUndefined();
+  });
+
+  it('a TRANSIENT snapshot failure SKIPS the delete — the old resource is never deleted un-snapshotted', async () => {
+    const { CdkdError } = await import('../../../src/utils/error-handler.js');
+    mockCreatePreDeleteFinalSnapshot.mockRejectedValueOnce(
+      new CdkdError('snapshot timed out', 'FINAL_SNAPSHOT_TIMEOUT')
+    );
+    // EC2 Volume takes the pre-delete path, so the mocked creator is the
+    // gate. The deploy continues (warn-and-continue) but must NOT delete.
+    await invokeReplacement('AWS::EC2::Volume', 'Snapshot');
+    expect(deleteProvider.delete).not.toHaveBeenCalled();
+  });
+
+  it('a REFUSAL propagates and fails the resource (CFn parity: the update fails)', async () => {
+    // SNS Topic: not snapshot-capable AND not in STATEFUL_TYPES, so the
+    // snapshot refusal (not the stateful-recreation guard) is what surfaces.
+    await expect(invokeReplacement('AWS::SNS::Topic', 'Snapshot')).rejects.toMatchObject({
+      code: 'PROVISIONING_ERROR',
+      cause: expect.objectContaining({ code: 'FINAL_SNAPSHOT_UNSUPPORTED' }),
+    });
+    expect(deleteProvider.delete).not.toHaveBeenCalled();
+  });
+});
+
 describe('UpdateReplacePolicy: Snapshot on the update-not-supported replacement fallback (#1354)', () => {
   async function invokeUpdateFallback(
     engineOptions: Record<string, unknown>,
@@ -284,7 +378,7 @@ describe('UpdateReplacePolicy: Snapshot on the update-not-supported replacement 
       '../../../src/utils/error-handler.js'
     );
     (deleteProvider.update as ReturnType<typeof vi.fn>).mockRejectedValue(
-      new ResourceUpdateNotSupportedError('immutable property changed', 'AWS::RDS::DBInstance', 'Target')
+      new ResourceUpdateNotSupportedError('AWS::RDS::DBInstance', 'Target', 'immutable property changed')
     );
     (deleteProvider.create as ReturnType<typeof vi.fn>).mockResolvedValue({
       physicalId: 'phys-new',

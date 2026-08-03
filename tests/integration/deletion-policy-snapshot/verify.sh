@@ -1,19 +1,25 @@
 #!/usr/bin/env bash
-# verify.sh - DeletionPolicy: Snapshot integ (issue #1352).
+# verify.sh - DeletionPolicy / UpdateReplacePolicy: Snapshot integ
+# (issues #1352 / #1354).
 #
 # CloudFormation creates a final snapshot BEFORE deleting a resource whose
 # DeletionPolicy is Snapshot; cdkd historically plain-deleted (live-A/B
-# confirmed data loss). This fixture proves BOTH cdkd delete paths now honor
-# the policy on the cheapest Snapshot-capable type (AWS::EC2::Volume,
-# CC-API-routed → the engine-side pre-delete CreateSnapshot+wait):
+# confirmed data loss). This fixture proves ALL THREE cdkd delete paths now
+# honor the policy on the cheapest Snapshot-capable type (AWS::EC2::Volume,
+# CC-API-routed -> the engine-side pre-delete CreateSnapshot+wait):
 #
-#   Phase 1: deploy two 1 GiB gp3 volumes, both DeletionPolicy: Snapshot.
+#   Phase 1: deploy two 1 GiB gp3 volumes, both DeletionPolicy: Snapshot
+#            (VolumeKeep also UpdateReplacePolicy: Snapshot).
 #   Phase 2: redeploy with CDKD_TEST_UPDATE=true (VolumeRemove dropped from
-#            the template) — the DEPLOY ENGINE's DELETE branch must create a
+#            the template) - the DEPLOY ENGINE's DELETE branch must create a
 #            completed, tagged final snapshot before deleting the volume.
-#   Phase 3: cdkd destroy — the DESTROY RUNNER must do the same for
+#   Phase 3: redeploy with CDKD_TEST_REPLACE=true (VolumeKeep's AZ flips -
+#            an immutable-property REPLACEMENT): the engine's replacement
+#            cleanup delete must snapshot the OLD volume first (#1354), and
+#            a NEW volume must exist under a different id.
+#   Phase 4: cdkd destroy - the DESTROY RUNNER must snapshot the (new)
 #            VolumeKeep; state file gone afterwards.
-#   Phase 4: delete the two final snapshots (test artifacts; a real user
+#   Phase 5: delete the three final snapshots (test artifacts; a real user
 #            would keep them) and verify zero orphans.
 #
 # Required env vars:

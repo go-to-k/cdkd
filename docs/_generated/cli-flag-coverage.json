@@ -1447,6 +1447,7 @@
     "--subscription-arn",
     "--table-bucket-arn",
     "--table-name",
+    "--tag-filters",
     "--tags",
     "--tags-to-add",
     "--target",

@@ -89,9 +89,31 @@ redis_snapshot_id() {
   printf '%s' "${id}"
 }
 
+# tag_sweep_ids <tag-value> — resource ARNs this fixture tagged, so a deploy
+# that dies BEFORE the ids file is written still gets cleaned up. Best-effort:
+# callers run it inside the `set +eu` cleanup span.
+tag_sweep_ids() {
+  aws resourcegroupstaggingapi get-resources --region "${REGION}" \
+    --tag-filters "Key=cdkd-integ,Values=$1" \
+    --query 'ResourceTagMappingList[].ResourceARN' --output text 2>/dev/null
+}
+
 cleanup() {
   echo "==> Cleanup: dropping any leftover snapshots + clusters + state"
   set +eu
+  # Tag sweep FIRST: the ids file only exists after a successful deploy, so a
+  # Phase-1 failure would otherwise leave a billing cluster + replication
+  # group behind (both carry the cdkd-integ tag from the template).
+  for arn in $(tag_sweep_ids deletion-policy-snapshot-heavy-redshift); do
+    swept_cluster="${arn##*:}"
+    aws redshift delete-cluster --cluster-identifier "${swept_cluster}" \
+      --skip-final-cluster-snapshot --region "${REGION}" >/dev/null 2>&1
+  done
+  for arn in $(tag_sweep_ids deletion-policy-snapshot-heavy-redis); do
+    swept_group="${arn##*:}"
+    aws elasticache delete-replication-group --replication-group-id "${swept_group}" \
+      --no-retain-primary-cluster --region "${REGION}" >/dev/null 2>&1
+  done
   if [ -f "${IDS_FILE}" ]; then
     while IFS=$'\t' read -r kind src_id; do
       [ -n "${src_id}" ] || continue
@@ -101,16 +123,29 @@ cleanup() {
           aws redshift delete-cluster-snapshot --snapshot-identifier "${snap}" \
             --region "${REGION}" >/dev/null 2>&1
         fi
-        aws redshift delete-cluster --cluster-identifier "${src_id}" \
-          --skip-final-cluster-snapshot --region "${REGION}" >/dev/null 2>&1
+        # A cluster still `creating` rejects delete with
+        # InvalidClusterStateFault — retry so it cannot leak (bounded). The
+        # loop branches on the DELETE's own (mutation) output, never on a
+        # separate read probe, so it cannot conclude "gone" from a throttle.
+        for _ in $(seq 1 30); do
+          del_out=$(aws redshift delete-cluster --cluster-identifier "${src_id}" \
+            --skip-final-cluster-snapshot --region "${REGION}" 2>&1) && break
+          case "${del_out}" in *ClusterNotFound*) break ;; esac
+          sleep 20
+        done
       elif [ "${kind}" = "redis" ]; then
         snap=$(redis_snapshot_id "${src_id}")
         if [ -n "${snap}" ]; then
           aws elasticache delete-snapshot --snapshot-name "${snap}" \
             --region "${REGION}" >/dev/null 2>&1
         fi
-        aws elasticache delete-replication-group --replication-group-id "${src_id}" \
-          --no-retain-primary-cluster --region "${REGION}" >/dev/null 2>&1
+        for _ in $(seq 1 30); do
+          del_out=$(aws elasticache delete-replication-group \
+            --replication-group-id "${src_id}" --no-retain-primary-cluster \
+            --region "${REGION}" 2>&1) && break
+          case "${del_out}" in *ReplicationGroupNotFound*) break ;; esac
+          sleep 20
+        done
       fi
     done < "${IDS_FILE}"
   fi
@@ -217,6 +252,15 @@ RS_GONE=0
 for _ in $(seq 1 24); do
   if gone_probe aws redshift describe-cluster-snapshots \
     --snapshot-identifier "${SNAP_RS_ID}" --region "${REGION}"; then
+    RS_GONE=1
+    break
+  fi
+  # An empty Snapshots list is a success response, not a not-found error —
+  # treat it as gone too (same escape as the ElastiCache twin below).
+  RS_REMAINING=$(aws redshift describe-cluster-snapshots \
+    --snapshot-identifier "${SNAP_RS_ID}" --region "${REGION}" \
+    --query 'length(Snapshots)' --output text)
+  if [ "${RS_REMAINING}" = "0" ]; then
     RS_GONE=1
     break
   fi

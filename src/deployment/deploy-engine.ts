@@ -2557,16 +2557,19 @@ export class DeployEngine {
     replaceProps: Record<string, unknown>,
     updateReplacePolicy?: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate'
   ): Promise<Awaited<ReturnType<ResourceProvider['create']>>> {
+    // `UpdateReplacePolicy: Snapshot` (issue #1354): snapshot the OLD
+    // resource before the replacement delete, exactly like the destroy
+    // paths honor `DeletionPolicy: Snapshot`. Deliberately OUTSIDE the
+    // delete's try: a snapshot failure/refusal here must surface with its
+    // own typed FINAL_SNAPSHOT_* error, not be rewrapped as "Failed to
+    // delete old resource ..." for a delete that was never attempted.
+    const finalSnapshotIdentifier = await this.prepareFinalSnapshotForDelete(
+      logicalId,
+      resourceType,
+      currentResource,
+      updateReplacePolicy
+    );
     try {
-      // `UpdateReplacePolicy: Snapshot` (issue #1354): snapshot the OLD
-      // resource before the replacement delete, exactly like the destroy
-      // paths honor `DeletionPolicy: Snapshot`.
-      const finalSnapshotIdentifier = await this.prepareFinalSnapshotForDelete(
-        logicalId,
-        resourceType,
-        currentResource,
-        updateReplacePolicy
-      );
       await oldDeleteProvider.delete(
         logicalId,
         currentResource.physicalId,
@@ -2864,9 +2867,10 @@ export class DeployEngine {
           // object-count probe. A `Retain` UpdateReplacePolicy is exempt: the
           // old resource + its data survive the replacement (orphaned, not
           // deleted), so there is no data loss to confirm. `Snapshot` is NOT
-          // exempt — the property-driven path does not implement snapshot-on-
-          // replace and falls through to the DELETE branch, so its data really
-          // would be lost.
+          // exempt: cdkd DOES take a final snapshot on the replacement delete
+          // (issue #1354), but a snapshot is a point-in-time copy, not a
+          // surviving resource — the live resource is still destroyed and
+          // recreated, so the consent flag is still the right gate.
           if (propertyDrivenReplacement && !recreateFlagged && updateReplacePolicy !== 'Retain') {
             const statefulReason = isStatefulRecreateTargetForReplace(resourceType, currentProps);
             if (statefulReason && this.options.forceStatefulRecreation !== true) {
@@ -2974,15 +2978,18 @@ export class DeployEngine {
               this.logger.info(
                 `  Destroying old ${logicalId} (${currentResource.physicalId}) before recreate...`
               );
+              // `UpdateReplacePolicy: Snapshot` (issue #1354): snapshot the
+              // old resource before the recreate's delete. OUTSIDE the try
+              // so a snapshot failure/refusal keeps its typed
+              // FINAL_SNAPSHOT_* error instead of being rewrapped as a
+              // delete failure that never happened.
+              const recreateFinalSnapshotId = await this.prepareFinalSnapshotForDelete(
+                logicalId,
+                resourceType,
+                currentResource,
+                updateReplacePolicy
+              );
               try {
-                // `UpdateReplacePolicy: Snapshot` (issue #1354): snapshot the
-                // old resource before the recreate's delete.
-                const recreateFinalSnapshotId = await this.prepareFinalSnapshotForDelete(
-                  logicalId,
-                  resourceType,
-                  currentResource,
-                  updateReplacePolicy
-                );
                 await oldDeleteProvider.delete(
                   logicalId,
                   currentResource.physicalId,
@@ -3101,9 +3108,9 @@ export class DeployEngine {
               if (!nameCollision) throw createError;
               // Retain pins the old resource (and its name) in place, so a
               // same-name replacement can never proceed under any flag.
-              // (Snapshot is NOT special-cased — matching the pre-existing
-              // create-then-destroy path, which also plain-deletes under
-              // Snapshot.)
+              // (Snapshot is not special-cased HERE — the old resource is
+              // still deleted so the name frees up; the delete-first helper
+              // takes its final snapshot first, issue #1354.)
               if (updateReplacePolicy === 'Retain') {
                 throw new CdkdError(
                   `${logicalId} (${resourceType}) requires replacement, but its user-supplied ` +
@@ -3220,36 +3227,62 @@ export class DeployEngine {
               );
             } else {
               this.logger.info(`  Deleting old ${logicalId} (${currentResource.physicalId})...`);
+              // `UpdateReplacePolicy: Snapshot` (issue #1354): snapshot the
+              // old resource before the post-replacement cleanup delete.
+              // Two failure classes, deliberately handled differently:
+              //   - a REFUSAL (`FINAL_SNAPSHOT_UNSUPPORTED` — cc-api routing
+              //     or a type cdkd cannot snapshot) is a CONFIGURATION error
+              //     the user must resolve, so it propagates and fails the
+              //     resource, matching CloudFormation failing the update.
+              //   - a transient snapshot failure / timeout degrades to this
+              //     site's existing warn-and-continue policy, but SKIPS the
+              //     delete: the old resource stays alive (leaked, warned)
+              //     rather than being deleted without its promised snapshot.
+              let cleanupFinalSnapshotId: string | undefined;
+              let snapshotBlockedDelete = false;
               try {
-                // `UpdateReplacePolicy: Snapshot` (issue #1354): snapshot the
-                // old resource before the post-replacement cleanup delete.
-                // Deliberately INSIDE this warn-and-continue try: a failed
-                // snapshot leaves the old resource alive (leaked, warned) —
-                // never deleted without its promised snapshot.
-                const cleanupFinalSnapshotId = await this.prepareFinalSnapshotForDelete(
+                cleanupFinalSnapshotId = await this.prepareFinalSnapshotForDelete(
                   logicalId,
                   resourceType,
                   currentResource,
                   updateReplacePolicy
                 );
-                await oldDeleteProvider.delete(
-                  logicalId,
-                  currentResource.physicalId,
-                  resourceType,
-                  currentResource.properties,
-                  {
-                    expectedRegion: this.stackRegion,
-                    forceDataDelete: this.options.forceStatefulRecreation === true,
-                    ...(cleanupFinalSnapshotId !== undefined && {
-                      finalSnapshotIdentifier: cleanupFinalSnapshotId,
-                    }),
-                  }
-                );
-                this.logger.info(`  ${green('✓')} Old resource deleted`);
-              } catch (deleteError) {
+              } catch (snapshotError) {
+                if (
+                  snapshotError instanceof CdkdError &&
+                  snapshotError.code === 'FINAL_SNAPSHOT_UNSUPPORTED'
+                ) {
+                  throw snapshotError;
+                }
+                snapshotBlockedDelete = true;
                 this.logger.warn(
-                  `  ⚠ Failed to delete old resource ${logicalId} (${currentResource.physicalId}): ${deleteError instanceof Error ? deleteError.message : String(deleteError)}`
+                  `  ⚠ Final snapshot for old ${logicalId} (${currentResource.physicalId}) ` +
+                    `failed: ${snapshotError instanceof Error ? snapshotError.message : String(snapshotError)}. ` +
+                    `The old resource was NOT deleted (UpdateReplacePolicy: Snapshot) — delete it ` +
+                    `manually once you have a snapshot; it is no longer tracked in state.`
                 );
+              }
+              if (!snapshotBlockedDelete) {
+                try {
+                  await oldDeleteProvider.delete(
+                    logicalId,
+                    currentResource.physicalId,
+                    resourceType,
+                    currentResource.properties,
+                    {
+                      expectedRegion: this.stackRegion,
+                      forceDataDelete: this.options.forceStatefulRecreation === true,
+                      ...(cleanupFinalSnapshotId !== undefined && {
+                        finalSnapshotIdentifier: cleanupFinalSnapshotId,
+                      }),
+                    }
+                  );
+                  this.logger.info(`  ${green('✓')} Old resource deleted`);
+                } catch (deleteError) {
+                  this.logger.warn(
+                    `  ⚠ Failed to delete old resource ${logicalId} (${currentResource.physicalId}): ${deleteError instanceof Error ? deleteError.message : String(deleteError)}`
+                  );
+                }
               }
             }
           }
@@ -3362,15 +3395,21 @@ export class DeployEngine {
                 `UPDATE not supported for ${logicalId} (${resourceType}), replacing (DELETE → CREATE)`
               );
               // `UpdateReplacePolicy: Snapshot` (issue #1354): snapshot the
-              // old resource before the fallback replacement's delete. State
-              // is the source of truth (v5+ records the attribute); the synth
-              // template is the pre-v5 fallback, mirroring the destroy path.
+              // old resource before the fallback replacement's delete. The
+              // TEMPLATE is authoritative here — unlike a destroy, an update
+              // necessarily has the resource in the template, and the
+              // attribute being applied is the desired one (state records
+              // only what the LAST deploy used, so a template that just
+              // gained `Snapshot` must not be overridden by a stale
+              // `Delete`). State is the fallback for a template that omits
+              // the attribute. Same ordering as the other three replacement
+              // sites, which read the template-derived variable.
               const fallbackFinalSnapshotId = await this.prepareFinalSnapshotForDelete(
                 logicalId,
                 resourceType,
                 currentResource,
-                currentResource.updateReplacePolicy ??
-                  template?.Resources?.[logicalId]?.UpdateReplacePolicy
+                template?.Resources?.[logicalId]?.UpdateReplacePolicy ??
+                  currentResource.updateReplacePolicy
               );
               try {
                 await updateProvider.delete(
