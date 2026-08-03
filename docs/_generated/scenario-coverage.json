@@ -273,6 +273,10 @@
       "description": "Replacement propagation (#807) at FAN-OUT scale: ONE base resource (SNS Topic, TopicName change -> new ARN) referenced by MANY (10) dependents via Fn::Sub of its Ref (10 SSM Parameters + an SNS TopicPolicy). A second deploy with `-c phase=b` replaces the base; `promoteReplacementDependents` (src/analyzer/diff-calculator.ts) must propagate the new ARN to EVERY dependent so none keeps the stale phase-a ARN. Catches fan-out gaps the narrow ECS-only #807 case cannot."
     },
     {
+      "tag": "rollback-create-deletion-policy-snapshot",
+      "description": "DeletionPolicy: Snapshot on a ROLLED-BACK CREATE (issue #1358): a deploy whose second resource fails must snapshot the first one and DELETE it, not orphan it. verify.sh asserts the deploy fails, the old orphan log line is absent, a completed cdkd:final-snapshot-of EBS snapshot of the rolled-back volume exists, the volume is gone from AWS, and state.json is gone."
+    },
+    {
       "tag": "rollback-failure-injection",
       "description": "deploy-engine ROLLBACK path on a RICH multi-resource stack (VPC+SG+IAM Role+Lambda-in-VPC+SSM Parameter): a self-contained env-gated (`ROLLBACK_INTEG_FAIL`) failing SQS Queue (out-of-range messageRetentionPeriod) wired to depend on the fast siblings forces a deploy failure AFTER siblings complete; verify.sh asserts the completed siblings are rolled back (no orphan VPC/SG/ENI/Role/Lambda/SSM, state empty) and the #808 events captured RESOURCE_FAILED + ROLLBACK_* + RUN_FINISHED=FAILED."
     },
@@ -1603,6 +1607,13 @@
       "scenarios": []
     },
     {
+      "name": "rollback-deletion-policy-snapshot",
+      "annotated": true,
+      "scenarios": [
+        "rollback-create-deletion-policy-snapshot"
+      ]
+    },
+    {
       "name": "rollback-failure-injection",
       "annotated": true,
       "scenarios": [
@@ -2401,6 +2412,13 @@
       "description": "Replacement propagation (#807) at FAN-OUT scale: ONE base resource (SNS Topic, TopicName change -> new ARN) referenced by MANY (10) dependents via Fn::Sub of its Ref (10 SSM Parameters + an SNS TopicPolicy). A second deploy with `-c phase=b` replaces the base; `promoteReplacementDependents` (src/analyzer/diff-calculator.ts) must propagate the new ARN to EVERY dependent so none keeps the stale phase-a ARN. Catches fan-out gaps the narrow ECS-only #807 case cannot.",
       "fixtures": [
         "replacement-fanout"
+      ]
+    },
+    {
+      "scenario": "rollback-create-deletion-policy-snapshot",
+      "description": "DeletionPolicy: Snapshot on a ROLLED-BACK CREATE (issue #1358): a deploy whose second resource fails must snapshot the first one and DELETE it, not orphan it. verify.sh asserts the deploy fails, the old orphan log line is absent, a completed cdkd:final-snapshot-of EBS snapshot of the rolled-back volume exists, the volume is gone from AWS, and state.json is gone.",
+      "fixtures": [
+        "rollback-deletion-policy-snapshot"
       ]
     },
     {

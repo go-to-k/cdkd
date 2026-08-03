@@ -219,6 +219,7 @@ rename-refactor	2026-07-21T14:37:30Z	PASS	107	verify.sh	new fixture; review-fix 
 replacement-fanout	2026-07-21T05:17:15Z	PASS	82	verify.sh	rc ok, orph clean
 replacement-immutable-name	2026-08-01T09:51:12Z	PASS	113	verify.sh	0801 regression sweep; 6 types x 3 phases ok, 0 orphans
 rollback-command	2026-07-25T05:24:26Z	PASS	130	verify.sh	#1220 echo-before-assert on R2/F2 success-expected rollbacks, destroy clean
+rollback-deletion-policy-snapshot	2026-08-03T09:40:59Z	PASS	93	verify.sh	new fixture for #1358; rolled-back CREATE snapshot-then-deleted (not orphaned), record removed from state, 0 orphans (re-run post 3-axis review fixes)
 rollback-failure-injection	2026-07-24T10:50:16Z	PASS	368	verify.sh	0724b sweep P1: #1212 journal-after-clean-rollback coverage; 17 del 0 err 0 orphans
 rollback-sqs-cooldown	2026-07-25T05:24:26Z	PASS	180	verify.sh	#1220 echo-before-assert on steps 4/9/10, destroy clean
 route53	2026-07-22T07:59:10Z	PASS		verify.sh	TTL-refresh sweep; HostedZone/GeoProximity/CidrRouting backfills, 6 del 0 err, hosted zone + state gone

@@ -2191,6 +2191,11 @@ export class DeployEngine {
       region: this.stackRegion,
       logger: this.logger,
       recordEvent: (event) => this.recordEvent(event),
+      // `DeletionPolicy: Snapshot` on a rolled-back CREATE (issue #1358) —
+      // the executor needs the same region-pinned clients + data-loss
+      // opt-out the engine's own delete sites use.
+      finalSnapshotClients: this.options.finalSnapshotClients,
+      skipFinalSnapshot: this.options.skipFinalSnapshot,
     };
   }
 

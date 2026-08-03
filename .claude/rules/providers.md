@@ -49,9 +49,14 @@ types in `ATOMIC_FINAL_SNAPSHOT_TYPES`
 `PRE_DELETE_SNAPSHOT_TYPES` (EC2 Volume, Redshift Cluster, ElastiCache
 ReplicationGroup — issue #1353) are snapshotted engine-side pre-delete via
 `createPreDeleteFinalSnapshot`, and any other Snapshot-tagged shape
-(cc-api routing included) is refused before any delete. When adding
-final-snapshot support for a new type, extend the sets there — never make a
-provider silently ignore the field.
+(cc-api routing included) is refused before any delete. The call sites are
+`cdkd destroy` / `cdkd state destroy` (`destroy-runner.ts`), the deploy
+engine's DELETE + replacement / recreate deletes
+(`prepareFinalSnapshotForDelete`), and — since issue #1358 — the rollback of
+a CREATE (`rollback-executor.ts`'s `delete-with-final-snapshot` action,
+driving both the automatic post-failure rollback and `cdkd rollback`). When
+adding final-snapshot support for a new type, extend the sets there — never
+make a provider silently ignore the field.
 
 Register Provider for each resource type in Provider Registry:
 

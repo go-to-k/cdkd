@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import {
   classifyRollbackOp,
   classifyFailedOp,
@@ -14,6 +14,7 @@ import {
 } from '../../../src/deployment/rollback-executor.js';
 import type { ResourceState } from '../../../src/types/state.js';
 import { withRetry } from '../../../src/deployment/retry.js';
+import { createPreDeleteFinalSnapshot } from '../../../src/provisioning/final-snapshot.js';
 
 // Single-attempt pass-through for withRetry so the reverse-replacement
 // collision-retry tests do not sleep through the real 2-10s backoff schedule.
@@ -22,6 +23,18 @@ vi.mock('../../../src/deployment/retry.js', async (importOriginal) => {
   return {
     ...actual,
     withRetry: vi.fn((fn: () => Promise<unknown>) => fn()),
+  };
+});
+
+// Only the AWS-touching pre-delete snapshot dispatcher is stubbed; the type
+// sets / identifier builder / refusal factories stay REAL so the tests pin
+// the actual routing matrix (issue #1358).
+vi.mock('../../../src/provisioning/final-snapshot.js', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('../../../src/provisioning/final-snapshot.js')>();
+  return {
+    ...actual,
+    createPreDeleteFinalSnapshot: vi.fn(async () => 'snap-1'),
   };
 });
 
@@ -73,17 +86,32 @@ describe('classifyRollbackOp', () => {
     expect(classifyRollbackOp(op, state, new Set())).toBe('delete');
   });
 
-  it('CREATE with Retain / Snapshot policy → orphan-retain', () => {
+  it('CREATE with Retain policy → orphan-retain', () => {
     const op: CompletedOperation = {
       logicalId: 'B',
       changeType: 'CREATE',
       resourceType: 'AWS::S3::Bucket',
       physicalId: 'phys-B',
     };
-    for (const policy of ['Retain', 'Snapshot'] as const) {
-      const state = { B: res({ physicalId: 'phys-B', deletionPolicy: policy }) };
-      expect(classifyRollbackOp(op, state, new Set())).toBe('orphan-retain');
-    }
+    const state = { B: res({ physicalId: 'phys-B', deletionPolicy: 'Retain' as const }) };
+    expect(classifyRollbackOp(op, state, new Set())).toBe('orphan-retain');
+  });
+
+  it('CREATE with Snapshot policy → delete-with-final-snapshot (#1358, NOT orphan)', () => {
+    const op: CompletedOperation = {
+      logicalId: 'Db',
+      changeType: 'CREATE',
+      resourceType: 'AWS::RDS::DBInstance',
+      physicalId: 'phys-db',
+    };
+    const state = {
+      Db: res({
+        physicalId: 'phys-db',
+        resourceType: 'AWS::RDS::DBInstance',
+        deletionPolicy: 'Snapshot' as const,
+      }),
+    };
+    expect(classifyRollbackOp(op, state, new Set())).toBe('delete-with-final-snapshot');
   });
 
   it('CREATE with RetainExceptOnCreate policy → delete (cleanup of failed create)', () => {
@@ -1111,5 +1139,291 @@ describe('replayFailedOperations (#1198)', () => {
     const { ctx: ctx2, events: events2 } = makeCtx({ update });
     await replayFailedOperations(failedOps, { B: res({ physicalId: 'p' }) }, 'S', ctx2);
     expect(events2.map((e) => e.eventType)).not.toContain('ROLLBACK_STARTED');
+  });
+});
+
+/**
+ * `DeletionPolicy: Snapshot` on a rolled-back CREATE (issue #1358). Before
+ * the fix this whole matrix ORPHANED the resource — untracked and billing.
+ * Each case pins the CALL SITE, not just the classifier.
+ */
+describe('replayRollback — DeletionPolicy: Snapshot on a rolled-back CREATE (#1358)', () => {
+  const fakeClients = {
+    ec2: {},
+    redshift: {},
+    elastiCache: {},
+  } as unknown as NonNullable<RollbackExecutorContext['finalSnapshotClients']>;
+
+  beforeEach(() => {
+    // mockReset (not mockClear): a `mockRejectedValueOnce` queued by a test
+    // that never consumed it would otherwise leak into the next one.
+    vi.mocked(createPreDeleteFinalSnapshot).mockReset();
+    vi.mocked(createPreDeleteFinalSnapshot).mockResolvedValue('snap-1');
+  });
+
+  function snapshotOp(
+    resourceType: string,
+    provisionedBy?: 'sdk' | 'cc-api'
+  ): CompletedOperation {
+    return {
+      logicalId: 'Res',
+      changeType: 'CREATE',
+      resourceType,
+      physicalId: 'phys-res',
+      ...(provisionedBy && { provisionedBy }),
+    };
+  }
+
+  function snapshotState(
+    resourceType: string,
+    provisionedBy?: 'sdk' | 'cc-api'
+  ): Record<string, ResourceState> {
+    return {
+      Res: res({
+        physicalId: 'phys-res',
+        resourceType,
+        deletionPolicy: 'Snapshot' as const,
+        ...(provisionedBy && { provisionedBy }),
+      }),
+    };
+  }
+
+  it('atomic type on the SDK route: threads finalSnapshotIdentifier into the delete', async () => {
+    const del = vi.fn().mockResolvedValue(undefined);
+    const { ctx, events } = makeCtx({ delete: del });
+    ctx.finalSnapshotClients = fakeClients;
+    const state = snapshotState('AWS::RDS::DBInstance');
+    const result = await replayRollback(
+      [snapshotOp('AWS::RDS::DBInstance')],
+      state,
+      'S',
+      ctx
+    );
+    expect(result.failures).toBe(0);
+    expect(del).toHaveBeenCalledOnce();
+    expect(del.mock.calls[0][4]).toEqual(
+      expect.objectContaining({
+        finalSnapshotIdentifier: expect.stringMatching(/^phys-res-final-\d{8}-\d{6}$/),
+      })
+    );
+    // No pre-delete snapshot for an atomic type — the delete API takes it.
+    expect(vi.mocked(createPreDeleteFinalSnapshot)).not.toHaveBeenCalled();
+    expect(state['Res']).toBeUndefined();
+    expect(events.map((e) => e.eventType)).toContain('ROLLBACK_RESOURCE_SUCCEEDED');
+  });
+
+  it('atomic type routed via cc-api: REFUSES (no delete, counted as a failure, stays in state)', async () => {
+    const del = vi.fn().mockResolvedValue(undefined);
+    const { ctx, events } = makeCtx({ delete: del });
+    ctx.finalSnapshotClients = fakeClients;
+    const state = snapshotState('AWS::RDS::DBInstance', 'cc-api');
+    const result = await replayRollback(
+      [snapshotOp('AWS::RDS::DBInstance')],
+      state,
+      'S',
+      ctx
+    );
+    expect(del).not.toHaveBeenCalled();
+    expect(result.failures).toBe(1);
+    // NOT orphaned — the record survives so a re-run (or --skip-final-snapshot)
+    // can finish the job.
+    expect(state['Res']).toBeDefined();
+    expect(events.map((e) => e.eventType)).toContain('ROLLBACK_RESOURCE_FAILED');
+  });
+
+  it("atomic type falls back to the op's routing when the state record has none", async () => {
+    const del = vi.fn().mockResolvedValue(undefined);
+    const { ctx } = makeCtx({ delete: del });
+    ctx.finalSnapshotClients = fakeClients;
+    const result = await replayRollback(
+      [snapshotOp('AWS::RDS::DBInstance', 'cc-api')],
+      snapshotState('AWS::RDS::DBInstance'),
+      'S',
+      ctx
+    );
+    expect(del).not.toHaveBeenCalled();
+    expect(result.failures).toBe(1);
+  });
+
+  it('judges the snapshot gate against the SAME routing the delete uses', async () => {
+    // The cc-api refusal is only meaningful if it judges the route the delete
+    // will actually take. Both now resolve through `effectiveProvisionedBy`
+    // (state record first, journaled op as the legacy fallback), so a record
+    // that says cc-api cannot be refused-by-the-gate while the delete quietly
+    // routes to the SDK provider (or vice versa).
+    const del = vi.fn().mockResolvedValue(undefined);
+    const getProviderFor = vi.fn().mockReturnValue({ provider: { delete: del } });
+    const { ctx } = makeCtx({ delete: del });
+    ctx.providerRegistry = {
+      getProviderFor,
+    } as unknown as RollbackExecutorContext['providerRegistry'];
+    // Plain (non-Snapshot) delete so the run reaches the provider lookup.
+    const state = {
+      Res: res({ physicalId: 'phys-res', resourceType: 'AWS::S3::Bucket', provisionedBy: 'cc-api' }),
+    };
+    const result = await replayRollback(
+      // The journaled op carries NO routing (legacy journal shape).
+      [
+        {
+          logicalId: 'Res',
+          changeType: 'CREATE' as const,
+          resourceType: 'AWS::S3::Bucket',
+          physicalId: 'phys-res',
+        },
+      ],
+      state,
+      'S',
+      ctx
+    );
+    expect(result.failures).toBe(0);
+    expect(getProviderFor).toHaveBeenCalledWith(
+      expect.objectContaining({ provisionedBy: 'cc-api' })
+    );
+  });
+
+  it('pre-delete type: snapshots FIRST with the context clients, then plain-deletes', async () => {
+    const del = vi.fn().mockResolvedValue(undefined);
+    const { ctx } = makeCtx({ delete: del });
+    ctx.finalSnapshotClients = fakeClients;
+    const state = snapshotState('AWS::ElastiCache::ReplicationGroup', 'cc-api');
+    const result = await replayRollback(
+      [snapshotOp('AWS::ElastiCache::ReplicationGroup')],
+      state,
+      'S',
+      ctx
+    );
+    expect(result.failures).toBe(0);
+    expect(vi.mocked(createPreDeleteFinalSnapshot)).toHaveBeenCalledWith(
+      'AWS::ElastiCache::ReplicationGroup',
+      'phys-res',
+      'Res',
+      fakeClients,
+      expect.anything()
+    );
+    expect(del).toHaveBeenCalledOnce();
+    // Pre-delete types have no atomic delete parameter.
+    expect(
+      (del.mock.calls[0][4] as Record<string, unknown>)['finalSnapshotIdentifier']
+    ).toBeUndefined();
+    // Snapshot before delete, never after.
+    expect(
+      vi.mocked(createPreDeleteFinalSnapshot).mock.invocationCallOrder[0]!
+    ).toBeLessThan(del.mock.invocationCallOrder[0]!);
+    expect(state['Res']).toBeUndefined();
+  });
+
+  it('pre-delete snapshot failure aborts the delete (resource kept, failure counted)', async () => {
+    vi.mocked(createPreDeleteFinalSnapshot).mockRejectedValueOnce(new Error('snapshot boom'));
+    const del = vi.fn().mockResolvedValue(undefined);
+    const { ctx } = makeCtx({ delete: del });
+    ctx.finalSnapshotClients = fakeClients;
+    const state = snapshotState('AWS::EC2::Volume', 'cc-api');
+    const result = await replayRollback([snapshotOp('AWS::EC2::Volume')], state, 'S', ctx);
+    // Assert the SNAPSHOT branch is what failed. Without this the test also
+    // passes via the unsupported-refusal branch (same `failures: 1`, same
+    // un-called delete) if EC2 Volume ever left PRE_DELETE_SNAPSHOT_TYPES.
+    expect(vi.mocked(createPreDeleteFinalSnapshot)).toHaveBeenCalledOnce();
+    expect(del).not.toHaveBeenCalled();
+    expect(result.failures).toBe(1);
+    expect(state['Res']).toBeDefined();
+  });
+
+  it('Snapshot-tagged type cdkd cannot snapshot: REFUSES instead of orphaning', async () => {
+    const del = vi.fn().mockResolvedValue(undefined);
+    const { ctx } = makeCtx({ delete: del });
+    ctx.finalSnapshotClients = fakeClients;
+    const state = snapshotState('AWS::S3::Bucket');
+    const result = await replayRollback([snapshotOp('AWS::S3::Bucket')], state, 'S', ctx);
+    expect(del).not.toHaveBeenCalled();
+    expect(vi.mocked(createPreDeleteFinalSnapshot)).not.toHaveBeenCalled();
+    expect(result.failures).toBe(1);
+    expect(state['Res']).toBeDefined();
+  });
+
+  it('--skip-final-snapshot: plain delete, no snapshot, no identifier', async () => {
+    const del = vi.fn().mockResolvedValue(undefined);
+    const { ctx } = makeCtx({ delete: del });
+    ctx.finalSnapshotClients = fakeClients;
+    ctx.skipFinalSnapshot = true;
+    const state = snapshotState('AWS::RDS::DBInstance');
+    const result = await replayRollback(
+      [snapshotOp('AWS::RDS::DBInstance')],
+      state,
+      'S',
+      ctx
+    );
+    expect(result.failures).toBe(0);
+    expect(vi.mocked(createPreDeleteFinalSnapshot)).not.toHaveBeenCalled();
+    expect(del).toHaveBeenCalledOnce();
+    expect(
+      (del.mock.calls[0][4] as Record<string, unknown>)['finalSnapshotIdentifier']
+    ).toBeUndefined();
+    expect(state['Res']).toBeUndefined();
+  });
+
+  it('--skip-final-snapshot ALSO covers the otherwise-refused shapes', async () => {
+    const del = vi.fn().mockResolvedValue(undefined);
+    const { ctx } = makeCtx({ delete: del });
+    ctx.finalSnapshotClients = fakeClients;
+    ctx.skipFinalSnapshot = true;
+    const state = snapshotState('AWS::RDS::DBInstance', 'cc-api');
+    const result = await replayRollback(
+      [snapshotOp('AWS::RDS::DBInstance')],
+      state,
+      'S',
+      ctx
+    );
+    expect(result.failures).toBe(0);
+    expect(del).toHaveBeenCalledOnce();
+    expect(state['Res']).toBeUndefined();
+  });
+
+  it('Retain still ORPHANS (unchanged) — the policy says keep the resource', async () => {
+    const del = vi.fn();
+    const { ctx } = makeCtx({ delete: del });
+    ctx.finalSnapshotClients = fakeClients;
+    const state: Record<string, ResourceState> = {
+      Res: res({
+        physicalId: 'phys-res',
+        resourceType: 'AWS::RDS::DBInstance',
+        deletionPolicy: 'Retain' as const,
+      }),
+    };
+    const result = await replayRollback(
+      [snapshotOp('AWS::RDS::DBInstance')],
+      state,
+      'S',
+      ctx
+    );
+    expect(del).not.toHaveBeenCalled();
+    expect(vi.mocked(createPreDeleteFinalSnapshot)).not.toHaveBeenCalled();
+    expect(result.failures).toBe(0);
+    expect(state['Res']).toBeUndefined();
+  });
+
+  it('RetainExceptOnCreate still DELETES plainly (unchanged)', async () => {
+    const del = vi.fn().mockResolvedValue(undefined);
+    const { ctx } = makeCtx({ delete: del });
+    ctx.finalSnapshotClients = fakeClients;
+    const state: Record<string, ResourceState> = {
+      Res: res({
+        physicalId: 'phys-res',
+        resourceType: 'AWS::RDS::DBInstance',
+        deletionPolicy: 'RetainExceptOnCreate' as const,
+      }),
+    };
+    const result = await replayRollback(
+      [snapshotOp('AWS::RDS::DBInstance')],
+      state,
+      'S',
+      ctx
+    );
+    expect(result.failures).toBe(0);
+    expect(vi.mocked(createPreDeleteFinalSnapshot)).not.toHaveBeenCalled();
+    expect(del).toHaveBeenCalledOnce();
+    expect(
+      (del.mock.calls[0][4] as Record<string, unknown>)['finalSnapshotIdentifier']
+    ).toBeUndefined();
+    expect(state['Res']).toBeUndefined();
   });
 });
