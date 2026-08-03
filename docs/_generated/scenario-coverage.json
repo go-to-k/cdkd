@@ -70,7 +70,7 @@
     },
     {
       "tag": "deletion-policy-snapshot",
-      "description": "DeletionPolicy: Snapshot honored on delete (issue #1352): final EBS snapshot created + waited to completed on BOTH the deploy engine template-removal DELETE path and the destroy-runner path; --skip-final-snapshot opt-out. (The replacement-path phase for #1354 is blocked on #1356 — see #1357.)"
+      "description": "DeletionPolicy / UpdateReplacePolicy: Snapshot honored on delete (issues #1352 / #1354 / #1357): final EBS snapshot created + waited to completed on the deploy engine template-removal DELETE path, on the REPLACEMENT delete site (an immutable AvailabilityZone change under --force-stateful-recreation, unblocked by the #1356 EC2 Volume classification), and on the destroy-runner path; --skip-final-snapshot opt-out."
     },
     {
       "tag": "deletion-policy-snapshot-heavy",
@@ -2016,7 +2016,7 @@
     },
     {
       "scenario": "deletion-policy-snapshot",
-      "description": "DeletionPolicy: Snapshot honored on delete (issue #1352): final EBS snapshot created + waited to completed on BOTH the deploy engine template-removal DELETE path and the destroy-runner path; --skip-final-snapshot opt-out. (The replacement-path phase for #1354 is blocked on #1356 — see #1357.)",
+      "description": "DeletionPolicy / UpdateReplacePolicy: Snapshot honored on delete (issues #1352 / #1354 / #1357): final EBS snapshot created + waited to completed on the deploy engine template-removal DELETE path, on the REPLACEMENT delete site (an immutable AvailabilityZone change under --force-stateful-recreation, unblocked by the #1356 EC2 Volume classification), and on the destroy-runner path; --skip-final-snapshot opt-out.",
       "fixtures": [
         "deletion-policy-snapshot"
       ]
