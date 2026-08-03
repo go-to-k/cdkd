@@ -489,3 +489,114 @@ describe('createRollbackCommand option surface', () => {
     expect(flags).toContain('--skip-final-snapshot');
   });
 });
+
+/**
+ * `DeletionPolicy` on `--revert-failed`'s delete of a FAILED in-flight
+ * CREATE (issue #1362). Same plumbing question as the #1358 block above,
+ * one path over: nothing in the executor's own suite fails if
+ * `rollbackCommand` stops passing the flag / the clients on THIS path, and
+ * the plan preview is the only place the user sees what is about to happen.
+ */
+describe('rollbackCommand — DeletionPolicy on a failed CREATE (#1362)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  function installFailedCreateStack(
+    resourceType: string,
+    deletionPolicy: 'Snapshot' | 'Retain'
+  ): FakeBackend {
+    const failedOp = {
+      logicalId: 'D',
+      changeType: 'CREATE',
+      resourceType,
+      physicalId: 'phys-D',
+      provisionedBy: 'sdk',
+      attemptedProperties: {},
+    };
+    return installSetup({
+      listStacks: vi.fn().mockResolvedValue([{ stackName: 'S', region: 'us-east-1' }]),
+      getState: vi.fn().mockResolvedValue({
+        state: {
+          version: 8,
+          stackName: 'S',
+          region: 'us-east-1',
+          resources: {
+            D: {
+              physicalId: 'phys-D',
+              resourceType,
+              properties: {},
+              attributes: {},
+              dependencies: [],
+              deletionPolicy,
+              provisionedBy: 'sdk',
+            },
+          },
+          outputs: {},
+          lastModified: 1,
+        },
+        etag: 'e0',
+      }),
+      loadRollbackJournal: vi.fn().mockResolvedValue({
+        journalVersion: 1,
+        stackName: 'S',
+        region: 'us-east-1',
+        segments: [
+          {
+            timestamp: 1,
+            reason: 'auto-rollback-clean',
+            initialDeploy: false,
+            operations: [],
+            failedOperations: [failedOp],
+          },
+        ],
+      }),
+    });
+  }
+
+  it('Snapshot: threads a final-snapshot identifier into the --revert-failed delete', async () => {
+    installFailedCreateStack('AWS::RDS::DBInstance', 'Snapshot');
+    await rollbackCommand('S', { ...baseOpts, revertFailed: true });
+    expect(replayProvider.delete).toHaveBeenCalledOnce();
+    expect(replayProvider.delete.mock.calls[0]![4]).toEqual(
+      expect.objectContaining({
+        finalSnapshotIdentifier: expect.stringMatching(/^phys-d-final-\d{8}-\d{6}$/),
+      })
+    );
+  });
+
+  it('Snapshot + --skip-final-snapshot: plain delete (the flag reaches THIS path too)', async () => {
+    installFailedCreateStack('AWS::RDS::DBInstance', 'Snapshot');
+    await rollbackCommand('S', { ...baseOpts, revertFailed: true, skipFinalSnapshot: true });
+    expect(replayProvider.delete).toHaveBeenCalledOnce();
+    expect(replayProvider.delete.mock.calls[0]![4]).not.toHaveProperty('finalSnapshotIdentifier');
+  });
+
+  it('Retain: no delete at all — the resource is left in AWS', async () => {
+    installFailedCreateStack('AWS::EC2::Volume', 'Retain');
+    await rollbackCommand('S', { ...baseOpts, revertFailed: true });
+    expect(replayProvider.delete).not.toHaveBeenCalled();
+  });
+
+  it('the plan preview labels each policy, and says so when the flag skips the snapshot', async () => {
+    const { getLogger } = await import('../../../../src/utils/logger.js');
+    const info = getLogger().info as unknown as ReturnType<typeof vi.fn>;
+    const lines = (): string[] => info.mock.calls.map((c) => String(c[0]));
+
+    installFailedCreateStack('AWS::RDS::DBInstance', 'Snapshot');
+    await rollbackCommand('S', { ...baseOpts, revertFailed: true });
+    expect(
+      lines().some((l) => /FAILED create, DeletionPolicy Snapshot — final snapshot, then delete/.test(l))
+    ).toBe(true);
+
+    vi.clearAllMocks();
+    installFailedCreateStack('AWS::RDS::DBInstance', 'Snapshot');
+    await rollbackCommand('S', { ...baseOpts, revertFailed: true, skipFinalSnapshot: true });
+    expect(lines().some((l) => /NO final snapshot \(--skip-final-snapshot\)/.test(l))).toBe(true);
+
+    vi.clearAllMocks();
+    installFailedCreateStack('AWS::EC2::Volume', 'Retain');
+    await rollbackCommand('S', { ...baseOpts, revertFailed: true });
+    expect(
+      lines().some((l) => /orphan.*FAILED create, DeletionPolicy Retain — left in AWS/.test(l))
+    ).toBe(true);
+  });
+});

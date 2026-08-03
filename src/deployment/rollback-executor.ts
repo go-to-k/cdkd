@@ -116,7 +116,10 @@ export function rollbackFinalSnapshotId(
 /**
  * `DeletionPolicy: Snapshot` on a rolled-back CREATE (issue #1358) — the
  * executor's copy of the deploy engine's `prepareFinalSnapshotForDelete`
- * mechanism matrix, run BEFORE the delete:
+ * mechanism matrix, run BEFORE the delete. Shared with the FAILED in-flight
+ * CREATE's delete (`--revert-failed`, issue #1362) so the two sibling paths
+ * cannot drift; that caller's op is a {@link FailedOperation}, hence the
+ * structural parameter type:
  *
  *   - atomic type, SDK-routed → returns the generated identifier for the
  *     provider's atomic final-snapshot delete parameter.
@@ -133,12 +136,14 @@ export function rollbackFinalSnapshotId(
  * very leak #1358 fixes.
  */
 async function prepareCreateRollbackFinalSnapshot(
-  op: CompletedOperation,
+  op: Pick<CompletedOperation, 'logicalId' | 'resourceType' | 'physicalId'>,
   provisionedBy: 'sdk' | 'cc-api' | undefined,
   ctx: RollbackExecutorContext
 ): Promise<string | undefined> {
   const { logicalId, resourceType } = op;
-  // Callers reach this only past the `!op.physicalId` guard in `replaySingle`.
+  // Callers reach this only past the SAME falsy physical-id guard:
+  // `replaySingle`'s `!op.physicalId` early return, or `classifyFailedOp`'s
+  // `skip-failed-unknown` arm on the `--revert-failed` path.
   const physicalId = op.physicalId!;
   if (ATOMIC_FINAL_SNAPSHOT_TYPES.has(resourceType)) {
     if (provisionedBy === 'cc-api') {
@@ -283,6 +288,8 @@ export type RollbackActionKind =
 export type FailedOpActionKind =
   | 'revert-failed-update' // force-apply previousState over the half-applied update
   | 'delete-failed-create' // a partially-recorded CREATE → delete it
+  | 'delete-failed-create-with-final-snapshot' // ↑ under DeletionPolicy Snapshot (#1362)
+  | 'orphan-failed-create-retain' // ↑ under DeletionPolicy Retain → leave in AWS (#1362)
   | 'skip-failed-unknown' // failed CREATE with nothing recorded — cannot act
   | 'skip-failed-noop' // failed DELETE (resource still in place) / already handled
   | 'skip-failed-absent'; // failed UPDATE with no previousState / not in state
@@ -447,10 +454,26 @@ export function classifyFailedOp(
   const current = stateResources[op.logicalId];
   if (op.changeType === 'CREATE') {
     // A failed CREATE normally records nothing (the provider threw before
-    // returning a physical id) — the remote state is unknown.
-    if (op.physicalId === undefined) return 'skip-failed-unknown';
+    // returning a physical id) — the remote state is unknown. Falsy, not
+    // `=== undefined`: an empty physical id identifies nothing, and letting
+    // it through would reach a delete (and a final-snapshot identifier) built
+    // from `''`. Matches `replaySingle`'s `!op.physicalId` guard on the
+    // completed-CREATE path, which is what lets both share
+    // `prepareCreateRollbackFinalSnapshot`.
+    if (!op.physicalId) return 'skip-failed-unknown';
     if (!current) return 'skip-failed-noop'; // already cleaned up (re-run)
     if (current.physicalId !== op.physicalId) return 'skip-failed-noop';
+    // The CURRENT record's DeletionPolicy governs this delete exactly as it
+    // governs the COMPLETED-CREATE rollback above (issue #1362). Reaching
+    // here means AWS did provision the resource (a physical id is recorded
+    // AND state agrees), so it is a real resource the policy speaks about —
+    // "the CREATE failed" is not a licence to ignore the user's Retain /
+    // Snapshot. CloudFormation applies the policy to a failed create's
+    // rollback delete too; `RetainExceptOnCreate` exists precisely to opt
+    // OUT of that for `Retain`, and it keeps deleting here.
+    const policy = current.deletionPolicy;
+    if (policy === 'Retain') return 'orphan-failed-create-retain';
+    if (policy === 'Snapshot') return 'delete-failed-create-with-final-snapshot';
     return 'delete-failed-create';
   }
   // UPDATE
@@ -1155,14 +1178,74 @@ export async function replayFailedOperations(
           break;
         }
 
-        case 'delete-failed-create': {
+        case 'orphan-failed-create-retain': {
+          // `DeletionPolicy: Retain` on a FAILED in-flight CREATE (issue
+          // #1362): the resource WAS provisioned (physical id recorded, state
+          // agrees), so the policy applies to its rollback delete — keep it
+          // in AWS and drop the record, exactly as the completed-CREATE
+          // rollback does. `RetainExceptOnCreate` deliberately does NOT land
+          // here; it keeps deleting.
+          delete stateResources[op.logicalId];
+          logger.info(
+            `  Rollback: leaving partially-created ${op.logicalId} (${op.resourceType}) in AWS ` +
+              `(DeletionPolicy: Retain) — removed from state`
+          );
+          await options.afterOp?.(op.logicalId);
+          ctx.recordEvent?.({
+            eventType: 'ROLLBACK_RESOURCE_SUCCEEDED',
+            stackName,
+            operation: 'CREATE',
+            logicalId: op.logicalId,
+            resourceType: op.resourceType,
+            ...(op.provisionedBy && { provisionedBy: op.provisionedBy }),
+          });
+          break;
+        }
+
+        case 'delete-failed-create':
+        case 'delete-failed-create-with-final-snapshot': {
+          // Resolve the routing layer ONCE and use it for BOTH the snapshot
+          // gate and the provider lookup (the #1358 alignment): the gate's
+          // cc-api refusal is only meaningful if it judges the route the
+          // delete actually takes. The state record wins over the journaled
+          // op for the same reason it does on the completed-CREATE path.
+          const deleteProvisionedBy = effectiveProvisionedBy(
+            stateResources[op.logicalId],
+            op.provisionedBy
+          );
+          // `DeletionPolicy: Snapshot` (issue #1362): snapshot BEFORE the
+          // delete, through the same mechanism matrix as the completed-CREATE
+          // rollback. A shape cdkd cannot snapshot is REFUSED (per-op
+          // failure, journal kept) rather than plain-deleted — a half-created
+          // resource that is not snapshot-capable YET (an RDS instance still
+          // `creating` rejects a final-snapshot delete) becomes snapshot-able
+          // once it settles, so a re-run can finish the job. Destroying the
+          // data on the first refusal would be unrecoverable;
+          // `--skip-final-snapshot` is the explicit opt-out.
+          const snapshotPolicy = action === 'delete-failed-create-with-final-snapshot';
+          const takeFinalSnapshot = snapshotPolicy && ctx.skipFinalSnapshot !== true;
+          let finalSnapshotIdentifier: string | undefined;
+          if (takeFinalSnapshot) {
+            finalSnapshotIdentifier = await prepareCreateRollbackFinalSnapshot(
+              op,
+              deleteProvisionedBy,
+              ctx
+            );
+          }
           logger.info(
             `  Rollback: deleting partially-created ${op.logicalId} (${op.resourceType}) ` +
-              `(--revert-failed)`
+              `(--revert-failed)` +
+              (takeFinalSnapshot ? ' — DeletionPolicy: Snapshot' : '') +
+              // Keep the opt-out auditable: without this the line is
+              // byte-identical to a plain delete, so nothing records that a
+              // Snapshot-policy resource was destroyed with no snapshot.
+              (snapshotPolicy && !takeFinalSnapshot
+                ? ' — DeletionPolicy: Snapshot NOT taken (--skip-final-snapshot)'
+                : '')
           );
           const { provider } = ctx.providerRegistry.getProviderFor({
             resourceType: op.resourceType,
-            provisionedBy: op.provisionedBy,
+            provisionedBy: deleteProvisionedBy,
           });
           // Pass the ATTEMPTED properties so template-borne data-guard
           // opt-ins (issue #1340: CDK auto-delete tags, EmptyOnDelete) stay
@@ -1176,6 +1259,7 @@ export async function replayFailedOperations(
             op.attemptedProperties,
             {
               expectedRegion: ctx.region,
+              ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
             }
           );
           delete stateResources[op.logicalId];
