@@ -823,10 +823,10 @@ async function deployCommand(
           ...(options.replace && { replace: true }),
           ...(options.forceStatefulRecreation && { forceStatefulRecreation: true }),
           ...(options.skipFinalSnapshot && { skipFinalSnapshot: true }),
-          // Region-pinned client for the pre-delete EBS final snapshot
-          // (issue #1352): the global getAwsClients() singleton races under
-          // --stack-concurrency > 1 with multi-region stacks.
-          finalSnapshotEc2: stackAwsClients.ec2,
+          // Region-pinned clients for the pre-delete final snapshots
+          // (issues #1352 / #1353): the global getAwsClients() singleton
+          // races under --stack-concurrency > 1 with multi-region stacks.
+          finalSnapshotClients: stackAwsClients,
           ...(options.strictGetatt && { strictGetAtt: true }),
           captureObservedState: resolveCaptureObservedState(options.captureObservedState),
           ...(options.resourceWarnAfter?.globalMs !== undefined && {

@@ -37,11 +37,11 @@ vi.mock('../../../src/deployment/resource-deadline.js', () => ({
   withResourceDeadline: vi.fn(async (operation: () => Promise<unknown>) => operation()),
 }));
 
-const mockCreateEbsFinalSnapshot = vi.hoisted(() => vi.fn());
+const mockCreatePreDeleteFinalSnapshot = vi.hoisted(() => vi.fn());
 
 vi.mock('../../../src/provisioning/final-snapshot.js', async () => {
   const actual = await vi.importActual('../../../src/provisioning/final-snapshot.js');
-  return { ...actual, createEbsFinalSnapshot: mockCreateEbsFinalSnapshot };
+  return { ...actual, createPreDeleteFinalSnapshot: mockCreatePreDeleteFinalSnapshot };
 });
 
 const mockEc2Client = { send: vi.fn() };
@@ -56,7 +56,7 @@ describe('DeployEngine DELETE branch — DeletionPolicy: Snapshot (#1352)', () =
 
   beforeEach(() => {
     vi.clearAllMocks();
-    mockCreateEbsFinalSnapshot.mockResolvedValue('snap-unit');
+    mockCreatePreDeleteFinalSnapshot.mockResolvedValue('snap-unit');
     deleteProvider = {
       create: vi.fn(),
       update: vi.fn(),
@@ -160,15 +160,28 @@ describe('DeployEngine DELETE branch — DeletionPolicy: Snapshot (#1352)', () =
   it('policy Delete / absent — no identifier (default polarity unchanged)', async () => {
     await invokeDelete(makeEngine(), 'AWS::RDS::DBInstance', { deletionPolicy: 'Delete' });
     expect(deleteContextArg()['finalSnapshotIdentifier']).toBeUndefined();
-    expect(mockCreateEbsFinalSnapshot).not.toHaveBeenCalled();
+    expect(mockCreatePreDeleteFinalSnapshot).not.toHaveBeenCalled();
   });
 
-  it('AWS::EC2::Volume: runs the pre-delete EBS snapshot, then a plain delete', async () => {
+  it('AWS::EC2::Volume: runs the pre-delete snapshot dispatcher, then a plain delete', async () => {
     await invokeDelete(makeEngine(), 'AWS::EC2::Volume', { deletionPolicy: 'Snapshot' });
-    expect(mockCreateEbsFinalSnapshot).toHaveBeenCalledWith(
-      mockEc2Client,
+    expect(mockCreatePreDeleteFinalSnapshot).toHaveBeenCalledWith(
+      'AWS::EC2::Volume',
       'phys-target',
       'Target',
+      expect.anything(),
+      expect.anything()
+    );
+    expect(deleteContextArg()['finalSnapshotIdentifier']).toBeUndefined();
+  });
+
+  it('AWS::Redshift::Cluster: routed through the pre-delete snapshot dispatcher (#1353)', async () => {
+    await invokeDelete(makeEngine(), 'AWS::Redshift::Cluster', { deletionPolicy: 'Snapshot' });
+    expect(mockCreatePreDeleteFinalSnapshot).toHaveBeenCalledWith(
+      'AWS::Redshift::Cluster',
+      'phys-target',
+      'Target',
+      expect.anything(),
       expect.anything()
     );
     expect(deleteContextArg()['finalSnapshotIdentifier']).toBeUndefined();
@@ -178,16 +191,16 @@ describe('DeployEngine DELETE branch — DeletionPolicy: Snapshot (#1352)', () =
     await invokeDelete(makeEngine({ skipFinalSnapshot: true }), 'AWS::EC2::Volume', {
       deletionPolicy: 'Snapshot',
     });
-    expect(mockCreateEbsFinalSnapshot).not.toHaveBeenCalled();
+    expect(mockCreatePreDeleteFinalSnapshot).not.toHaveBeenCalled();
     expect(deleteContextArg()['finalSnapshotIdentifier']).toBeUndefined();
   });
 
-  it('unsupported Snapshot-tagged type (Redshift): refuses BEFORE any delete', async () => {
+  it('Snapshot-tagged type CFn itself would refuse (S3): refuses BEFORE any delete', async () => {
     // provisionResource wraps every failure as ProvisioningError; the
     // refusal (and its --skip-final-snapshot guidance) survives as the
     // cause, which formatError renders to the user via `Caused by:`.
     await expect(
-      invokeDelete(makeEngine(), 'AWS::Redshift::Cluster', { deletionPolicy: 'Snapshot' })
+      invokeDelete(makeEngine(), 'AWS::S3::Bucket', { deletionPolicy: 'Snapshot' })
     ).rejects.toMatchObject({
       code: 'PROVISIONING_ERROR',
       cause: expect.objectContaining({
@@ -199,7 +212,7 @@ describe('DeployEngine DELETE branch — DeletionPolicy: Snapshot (#1352)', () =
   });
 
   it('unsupported type with skipFinalSnapshot: true — deletes plainly (explicit opt-out)', async () => {
-    await invokeDelete(makeEngine({ skipFinalSnapshot: true }), 'AWS::Redshift::Cluster', {
+    await invokeDelete(makeEngine({ skipFinalSnapshot: true }), 'AWS::S3::Bucket', {
       deletionPolicy: 'Snapshot',
     });
     expect(deleteContextArg()['finalSnapshotIdentifier']).toBeUndefined();
@@ -229,15 +242,16 @@ describe('DeployEngine DELETE branch — DeletionPolicy: Snapshot (#1352)', () =
     expect(deleteContextArg()['finalSnapshotIdentifier']).toBeUndefined();
   });
 
-  it('prefers the region-pinned finalSnapshotEc2 client over the global for the EBS snapshot', async () => {
-    const pinned = { send: vi.fn() };
-    await invokeDelete(makeEngine({ finalSnapshotEc2: pinned }), 'AWS::EC2::Volume', {
+  it('prefers the region-pinned finalSnapshotClients over the global for the pre-delete snapshot', async () => {
+    const pinned = { ec2: { send: vi.fn() }, redshift: {}, elastiCache: {} };
+    await invokeDelete(makeEngine({ finalSnapshotClients: pinned }), 'AWS::EC2::Volume', {
       deletionPolicy: 'Snapshot',
     });
-    expect(mockCreateEbsFinalSnapshot).toHaveBeenCalledWith(
-      pinned,
+    expect(mockCreatePreDeleteFinalSnapshot).toHaveBeenCalledWith(
+      'AWS::EC2::Volume',
       'phys-target',
       'Target',
+      pinned,
       expect.anything()
     );
   });
@@ -255,4 +269,83 @@ describe('DeployEngine DELETE branch — DeletionPolicy: Snapshot (#1352)', () =
     );
     expect(deleteContextArg()['finalSnapshotIdentifier']).toMatch(/^phys-target-final-/);
   });
+
+describe('UpdateReplacePolicy: Snapshot on the update-not-supported replacement fallback (#1354)', () => {
+  async function invokeUpdateFallback(
+    engineOptions: Record<string, unknown>,
+    stateExtra: Record<string, unknown>
+  ): Promise<void> {
+    const engine = makeEngine({
+      replace: true,
+      forceStatefulRecreation: true,
+      ...engineOptions,
+    });
+    const { ResourceUpdateNotSupportedError } = await import(
+      '../../../src/utils/error-handler.js'
+    );
+    (deleteProvider.update as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new ResourceUpdateNotSupportedError('immutable property changed', 'AWS::RDS::DBInstance', 'Target')
+    );
+    (deleteProvider.create as ReturnType<typeof vi.fn>).mockResolvedValue({
+      physicalId: 'phys-new',
+      attributes: {},
+    });
+    const change: ResourceChange = {
+      logicalId: 'Target',
+      changeType: 'UPDATE',
+      resourceType: 'AWS::RDS::DBInstance',
+      currentProperties: { AllocatedStorage: '10' },
+      desiredProperties: { AllocatedStorage: '20' },
+      propertyChanges: [
+        {
+          path: 'AllocatedStorage',
+          oldValue: '10',
+          newValue: '20',
+          requiresReplacement: false,
+        },
+      ],
+    };
+    const stateResources: Record<string, unknown> = {
+      Target: {
+        physicalId: 'phys-target',
+        resourceType: 'AWS::RDS::DBInstance',
+        properties: { AllocatedStorage: '10' },
+        attributes: {},
+        dependencies: [],
+        ...stateExtra,
+      },
+    };
+    type ProvisionResourceFn = (
+      logicalId: string,
+      change: ResourceChange,
+      stateResources: Record<string, unknown>,
+      stackName: string,
+      template: CloudFormationTemplate
+    ) => Promise<void>;
+    const provisionResource = (
+      engine as unknown as { provisionResource: ProvisionResourceFn }
+    ).provisionResource.bind(engine);
+    await provisionResource('Target', change, stateResources, 'MyStack', {
+      Resources: {
+        Target: { Type: 'AWS::RDS::DBInstance', Properties: { AllocatedStorage: '20' } },
+      },
+    } as unknown as CloudFormationTemplate);
+  }
+
+  it('threads a generated identifier into the fallback replacement delete', async () => {
+    await invokeUpdateFallback({}, { updateReplacePolicy: 'Snapshot' });
+    const ctx = deleteContextArg();
+    expect(ctx['finalSnapshotIdentifier']).toMatch(/^phys-target-final-\d{8}-\d{6}$/);
+  });
+
+  it('skipFinalSnapshot: true — plain replacement delete (opt-out polarity)', async () => {
+    await invokeUpdateFallback({ skipFinalSnapshot: true }, { updateReplacePolicy: 'Snapshot' });
+    expect(deleteContextArg()['finalSnapshotIdentifier']).toBeUndefined();
+  });
+
+  it('policy absent — plain replacement delete (default polarity unchanged)', async () => {
+    await invokeUpdateFallback({}, {});
+    expect(deleteContextArg()['finalSnapshotIdentifier']).toBeUndefined();
+  });
+});
 });

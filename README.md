@@ -619,13 +619,13 @@ type-pair allowlist and trade-off notes.
 
 Matching CloudFormation, cdkd creates a **final snapshot before deleting**
 a resource whose `DeletionPolicy` is `Snapshot` (the CDK RDS L2 defaults
-`removalPolicy` to `SNAPSHOT`): RDS DBInstance / DBCluster, Neptune / DocDB
-clusters and ElastiCache CacheCluster delete via the API's atomic
-final-snapshot parameter, and EC2 Volumes get a pre-delete `CreateSnapshot`
-waited to completion. Snapshot-tagged types cdkd cannot snapshot yet
-(Redshift Cluster, ElastiCache ReplicationGroup) are refused with an
-actionable error instead of silently losing data. Pass
-`--skip-final-snapshot` (on `deploy` / `destroy` / `state destroy`) to
+`removalPolicy` to `SNAPSHOT`) — and, on replacements, one whose
+`UpdateReplacePolicy` is `Snapshot`: RDS DBInstance / DBCluster,
+Neptune / DocDB clusters and ElastiCache CacheCluster delete via the API's
+atomic final-snapshot parameter; EC2 Volumes, Redshift Clusters and
+ElastiCache ReplicationGroups get a pre-delete snapshot waited to
+completion. The full CFn-documented Snapshot-capable type list is covered.
+Pass `--skip-final-snapshot` (on `deploy` / `destroy` / `state destroy`) to
 delete without the snapshot (explicit data-loss opt-out for dev/test
 stacks). See the "DeletionPolicy: Snapshot" section in
 [docs/cli-reference.md](docs/cli-reference.md).

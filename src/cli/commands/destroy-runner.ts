@@ -9,7 +9,7 @@ import {
   PRE_DELETE_SNAPSHOT_TYPES,
   buildFinalSnapshotIdentifier,
   ccRoutedFinalSnapshotError,
-  createEbsFinalSnapshot,
+  createPreDeleteFinalSnapshot,
   isFinalSnapshotError,
   unsupportedFinalSnapshotError,
 } from '../../provisioning/final-snapshot.js';
@@ -860,10 +860,11 @@ export async function runDestroyForStack(
             } else if (PRE_DELETE_SNAPSHOT_TYPES.has(resource.resourceType)) {
               // destroyAwsClients is the region-scoped set when the stack
               // lives in a different region than the caller's base clients.
-              await createEbsFinalSnapshot(
-                (destroyAwsClients ?? ctx.baseAwsClients).ec2,
+              await createPreDeleteFinalSnapshot(
+                resource.resourceType,
                 resource.physicalId,
                 logicalId,
+                destroyAwsClients ?? ctx.baseAwsClients,
                 logger
               );
             } else {

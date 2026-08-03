@@ -72,14 +72,17 @@ populates the field. The `Snapshot` value is honored too (issue
 the final-snapshot gating at the same two destroy sites:
 `src/provisioning/final-snapshot.ts` defines the atomic-parameter type set
 (RDS DBInstance / DBCluster, Neptune / DocDB clusters, ElastiCache
-CacheCluster → `DeleteContext.finalSnapshotIdentifier`), the pre-delete EBS
-`CreateSnapshot`+wait for `AWS::EC2::Volume`, and the refusal
-(`FINAL_SNAPSHOT_UNSUPPORTED`) for Snapshot-tagged types cdkd cannot
-snapshot yet (Redshift Cluster / ElastiCache ReplicationGroup, issue #1353).
-`--skip-final-snapshot` (deploy / destroy / state destroy) is the explicit
-data-loss opt-out. The replacement path (`UpdateReplacePolicy: Snapshot`)
-is still plain-delete behind the `--force-stateful-recreation` guard
-(follow-up #1354).
+CacheCluster → `DeleteContext.finalSnapshotIdentifier`) and the pre-delete
+snapshot+wait set (`createPreDeleteFinalSnapshot`: EC2 Volume, Redshift
+Cluster, ElastiCache ReplicationGroup — issue #1353); a Snapshot-tagged
+type on the cc-api route (or one CFn itself would refuse the attribute on)
+is refused (`FINAL_SNAPSHOT_UNSUPPORTED`). `--skip-final-snapshot`
+(deploy / destroy / state destroy) is the explicit data-loss opt-out.
+`UpdateReplacePolicy: Snapshot` is honored on the deploy engine's
+replacement / recreate delete sites via the shared
+`prepareFinalSnapshotForDelete` (issue #1354); the rollback executor's
+delete-new honors only the atomic SDK-routed shape (scope decision recorded
+on #1354).
 
 **`provisionedBy`** (schema v7+, issue
 [#614](https://github.com/go-to-k/cdkd/issues/614)) is the per-resource

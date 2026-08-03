@@ -535,26 +535,28 @@ no `autoDeleteObjects` for them) — empty manually and destroy again.
 See the "Destroy data guards" section in
 [cli-reference.md](cli-reference.md) for the full semantics.
 
-### Issue: "has DeletionPolicy: Snapshot, but cdkd does not implement final snapshots for this type" on destroy
+### Issue: "has DeletionPolicy: Snapshot, but ..." refusal on delete
 
 **Symptoms:**
 
 ```text
-MyCluster (AWS::Redshift::Cluster) has DeletionPolicy: Snapshot, but cdkd does
-not implement final snapshots for this type yet (issue #1353). Deleting it now
-would destroy its data WITHOUT the final snapshot the policy promises. ...
+MyDb (AWS::RDS::DBInstance) has DeletionPolicy: Snapshot, but the resource is
+managed via the Cloud Control API route (provisionedBy: cc-api), which has no
+final-snapshot delete parameter ...
 ```
 
 **Cause:**
 
 CloudFormation creates a final snapshot before deleting a
-`DeletionPolicy: Snapshot` resource, and cdkd matches that (issue
-[#1352](https://github.com/go-to-k/cdkd/issues/1352)) for RDS
-DBInstance / DBCluster, Neptune / DocDB clusters, ElastiCache CacheCluster,
-and EC2 Volume. For the remaining Snapshot-capable types
-(`AWS::Redshift::Cluster`, `AWS::ElastiCache::ReplicationGroup` — issue
-[#1353](https://github.com/go-to-k/cdkd/issues/1353)) cdkd refuses the
-delete instead of silently dropping the promised snapshot.
+`DeletionPolicy: Snapshot` resource, and cdkd matches that (issues
+[#1352](https://github.com/go-to-k/cdkd/issues/1352) /
+[#1353](https://github.com/go-to-k/cdkd/issues/1353)) for the FULL
+CFn-documented Snapshot-capable type list. The delete is refused only when
+cdkd cannot create the snapshot: the resource is an atomic-parameter type
+routed via Cloud Control (`provisionedBy: cc-api`, the #614 silent-drop
+routing — Cloud Control's `DeleteResource` has no final-snapshot
+parameter), or the template carries `Snapshot` on a type CloudFormation
+itself would refuse the attribute on.
 
 **Solutions:**
 

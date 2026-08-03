@@ -16,6 +16,8 @@ import { CloudFrontClient } from '@aws-sdk/client-cloudfront';
 import { CloudWatchClient } from '@aws-sdk/client-cloudwatch';
 import { CloudWatchLogsClient } from '@aws-sdk/client-cloudwatch-logs';
 import { BedrockAgentCoreControlClient } from '@aws-sdk/client-bedrock-agentcore-control';
+import { RedshiftClient } from '@aws-sdk/client-redshift';
+import { ElastiCacheClient } from '@aws-sdk/client-elasticache';
 import { ACMClient } from '@aws-sdk/client-acm';
 import { LambdaMicrovmsClient } from '@aws-sdk/client-lambda-microvms';
 
@@ -54,6 +56,8 @@ export class AwsClients {
   private cloudWatchClient?: CloudWatchClient;
   private cloudWatchLogsClient?: CloudWatchLogsClient;
   private bedrockAgentCoreControlClient?: BedrockAgentCoreControlClient;
+  private redshiftClient?: RedshiftClient;
+  private elastiCacheClient?: ElastiCacheClient;
   private acmClient?: ACMClient;
   private lambdaMicrovmsClient?: LambdaMicrovmsClient;
   private config: AwsClientConfig;
@@ -477,6 +481,44 @@ export class AwsClients {
   }
 
   /**
+   * Get Redshift client
+   */
+  getRedshiftClient(): RedshiftClient {
+    if (!this.redshiftClient) {
+      this.redshiftClient = new RedshiftClient({
+        ...this.clientOptions,
+      });
+    }
+    return this.redshiftClient;
+  }
+
+  /**
+   * Convenience getter for Redshift client
+   */
+  get redshift(): RedshiftClient {
+    return this.getRedshiftClient();
+  }
+
+  /**
+   * Get ElastiCache client
+   */
+  getElastiCacheClient(): ElastiCacheClient {
+    if (!this.elastiCacheClient) {
+      this.elastiCacheClient = new ElastiCacheClient({
+        ...this.clientOptions,
+      });
+    }
+    return this.elastiCacheClient;
+  }
+
+  /**
+   * Convenience getter for ElastiCache client
+   */
+  get elastiCache(): ElastiCacheClient {
+    return this.getElastiCacheClient();
+  }
+
+  /**
    * Destroy all clients
    */
   destroy(): void {
@@ -498,6 +540,8 @@ export class AwsClients {
     this.cloudWatchClient?.destroy();
     this.cloudWatchLogsClient?.destroy();
     this.bedrockAgentCoreControlClient?.destroy();
+    this.redshiftClient?.destroy();
+    this.elastiCacheClient?.destroy();
     this.acmClient?.destroy();
     this.lambdaMicrovmsClient?.destroy();
   }

@@ -1,0 +1,16 @@
+{
+  "name": "cdkd-example-deletion-policy-snapshot-heavy",
+  "version": "1.0.0",
+  "private": true,
+  "description": "DeletionPolicy: Snapshot on Redshift Cluster + ElastiCache ReplicationGroup — pre-delete snapshot machinery (issue #1353)",
+  "type": "module",
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "aws-cdk": "^2.1112.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.169.0",
+    "constructs": "^10.0.0"
+  }
+}
