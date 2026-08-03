@@ -861,7 +861,7 @@ migration):
 | Category | Types |
 | --- | --- |
 | Database / storage | `AWS::RDS::DBInstance`, `AWS::RDS::DBCluster`, `AWS::DocDB::DBInstance`, `AWS::DocDB::DBCluster`, `AWS::Neptune::DBInstance`, `AWS::Neptune::DBCluster`, `AWS::DynamoDB::Table`, `AWS::DynamoDB::GlobalTable` |
-| Filesystem / blob | `AWS::EFS::FileSystem`, `AWS::ECR::Repository` |
+| Filesystem / blob | `AWS::EFS::FileSystem`, `AWS::FSx::FileSystem`, `AWS::ECR::Repository`, `AWS::EC2::Volume` |
 | Streaming | `AWS::Kinesis::Stream` |
 | Search | `AWS::Elasticsearch::Domain`, `AWS::OpenSearchService::Domain` |
 | Identity / config | `AWS::Cognito::UserPool`, `AWS::SecretsManager::Secret`, `AWS::SSM::Parameter` |
@@ -1007,9 +1007,9 @@ etc.) replace with `--replace` alone.
 
 The same stateful guard ALSO covers **property-driven replacement** — a
 replacement cdkd detects directly from the diff (an immutable / createOnly
-property changed in the template, e.g. `AWS::EFS::FileSystem.PerformanceMode`
-or an S3 `BucketName` rename) rather than from a provider's mid-deploy update
-rejection. A plain `cdkd deploy` (no `--replace` flag) that would DELETE+CREATE
+property changed in the template, e.g. `AWS::EFS::FileSystem.PerformanceMode`,
+an `AWS::EC2::Volume` `AvailabilityZone` move, or an S3 `BucketName` rename)
+rather than from a provider's mid-deploy update rejection. A plain `cdkd deploy` (no `--replace` flag) that would DELETE+CREATE
 a **stateful** resource because of such a change now requires
 `--force-stateful-recreation` and throws `STATEFUL_REPLACE_BLOCKED` without it,
 closing the prior footgun where a template immutable-property change silently

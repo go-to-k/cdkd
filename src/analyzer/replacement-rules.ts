@@ -634,6 +634,51 @@ export class ReplacementRulesRegistry {
       ]),
     });
 
+    // EC2 Volume — the CFn registry schema for this type declares NO
+    // `createOnlyProperties` at all (live-verified 2026-08-03 via
+    // `describe-type --type-name AWS::EC2::Volume`, which returns
+    // `createOnlyProperties: null`), so the `create-only-properties.ts`
+    // DescribeType fallback has nothing to classify and every change looked
+    // in-place-updatable. An immutable-property change therefore reached the
+    // update handler and AWS rejected the deploy with "Volume properties
+    // other than AutoEnableIO, type, size, and IOPS cannot be updated" —
+    // where CloudFormation REPLACES the volume for the same edit (issue
+    // #1356). The six properties below are the ones CFn documents as
+    // "Update requires: Replacement"; they are identity / encryption /
+    // seed-data fields no `ModifyVolume` call can change.
+    //
+    // Deliberately conservative: the remaining schema properties
+    // (`MultiAttachEnabled`, `SourceVolumeId`, `VolumeInitializationRate`)
+    // are left UNCLASSIFIED rather than guessed at. Misclassifying a mutable
+    // property as a replacement would DELETE a data-bearing volume, whereas
+    // leaving one unclassified keeps today's graceful degradation (attempt
+    // the update, surface AWS's error) and still lets the schema fallback
+    // pick it up if AWS ever populates `createOnlyProperties`.
+    //
+    // A volume replacement is real data loss, so `AWS::EC2::Volume` is also
+    // in `STATEFUL_TYPES` — the deploy engine's property-driven replacement
+    // path requires `--force-stateful-recreation` to confirm it.
+    this.rules.set('AWS::EC2::Volume', {
+      replacementProperties: new Set([
+        'AvailabilityZone',
+        'AvailabilityZoneId',
+        'Encrypted',
+        'KmsKeyId',
+        'OutpostArn',
+        'SnapshotId',
+      ]),
+      updateableProperties: new Set([
+        // ModifyVolume's mutable set (the AWS rejection message names the
+        // first four) plus tags via CreateTags/DeleteTags.
+        'AutoEnableIO',
+        'Iops',
+        'Size',
+        'Throughput',
+        'VolumeType',
+        'Tags',
+      ]),
+    });
+
     // ECS Task Definition
     this.rules.set('AWS::ECS::TaskDefinition', {
       replacementProperties: new Set([

@@ -11,9 +11,14 @@
 #   Phase 2: redeploy with CDKD_TEST_UPDATE=true (VolumeRemove dropped from
 #            the template) — the DEPLOY ENGINE's DELETE branch must create a
 #            completed, tagged final snapshot before deleting the volume.
-#   Phase 3: cdkd destroy — the DESTROY RUNNER must do the same for
-#            VolumeKeep; state file gone afterwards.
-#   Phase 4: delete the two final snapshots (test artifacts; a real user
+#   Phase 2b: redeploy with CDKD_TEST_REPLACE=true (VolumeKeep moves to a
+#            different AZ — an immutable property, issue #1356) — the
+#            REPLACEMENT's delete of the OLD volume must honor
+#            UpdateReplacePolicy: Snapshot (issue #1357). EC2 Volume is a
+#            stateful type, so the deploy needs --force-stateful-recreation.
+#   Phase 3: cdkd destroy — the DESTROY RUNNER must do the same for the
+#            replacement VolumeKeep; state file gone afterwards.
+#   Phase 4: delete the three final snapshots (test artifacts; a real user
 #            would keep them) and verify zero orphans.
 #
 # Required env vars:
@@ -177,6 +182,59 @@ if [ "${SNAP_REMOVE_STATE}" != "completed" ]; then
 fi
 echo "    engine path OK: ${SNAP_REMOVE_ID} completed for ${VOL_REMOVE_ID}"
 
+# --- Phase 2b: AZ flip → replacement (engine create-first cleanup delete) ----
+# `AvailabilityZone` is immutable on an EBS volume. Without the issue #1356
+# classification cdkd attempted an in-place UPDATE here and AWS rejected the
+# deploy ("Volume properties other than AutoEnableIO, type, size, and IOPS
+# cannot be updated"), which is why this phase could not exist before.
+echo "==> Phase 2b: redeploy with VolumeKeep in another AZ (replacement path)"
+CDKD_TEST_UPDATE=true CDKD_TEST_REPLACE=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --force-stateful-recreation \
+  --yes
+
+# The replacement volume carries the same fixture tag; identify it as the one
+# that is NOT the original physical id.
+VOL_KEEP_NEW_ID=$(aws ec2 describe-volumes --region "${REGION}" \
+  --filters "Name=tag:cdkd-integ,Values=deletion-policy-snapshot-keep" \
+  --query "Volumes[?VolumeId!='${VOL_KEEP_ID}'].VolumeId | [0]" --output text)
+if [ -z "${VOL_KEEP_NEW_ID}" ] || [ "${VOL_KEEP_NEW_ID}" = "None" ]; then
+  echo "FAIL: no replacement volume found after the AZ flip — the immutable AvailabilityZone change was not classified as a replacement (issue #1356)" >&2
+  exit 1
+fi
+printf '%s\n' "${VOL_KEEP_NEW_ID}" >> "${IDS_FILE}"
+
+assert_gone "old VolumeKeep ${VOL_KEEP_ID} still exists after the replacement" \
+  aws ec2 describe-volumes --volume-ids "${VOL_KEEP_ID}" --region "${REGION}"
+
+SNAP_REPLACE_ID=$(snapshot_id_for "${VOL_KEEP_ID}")
+if [ -z "${SNAP_REPLACE_ID}" ]; then
+  echo "FAIL: no final snapshot created for replaced volume ${VOL_KEEP_ID} (UpdateReplacePolicy: Snapshot ignored at the replacement delete site)" >&2
+  exit 1
+fi
+SNAP_REPLACE_STATE=$(aws ec2 describe-snapshots --snapshot-ids "${SNAP_REPLACE_ID}" \
+  --region "${REGION}" --query 'Snapshots[0].State' --output text)
+if [ "${SNAP_REPLACE_STATE}" != "completed" ]; then
+  echo "FAIL: final snapshot ${SNAP_REPLACE_ID} not completed (state=${SNAP_REPLACE_STATE}) — the engine must wait for completion before deleting" >&2
+  exit 1
+fi
+
+# The replacement must actually have landed in the other AZ (proves the AZ
+# change reached AWS rather than being silently dropped). cdkd resolves
+# Fn::GetAZs as the available zone names SORTED (see the resolver's
+# getAvailabilityZones), so index 1 is the second name alphabetically.
+EXPECTED_NEW_AZ=$(aws ec2 describe-availability-zones --region "${REGION}" \
+  --filters "Name=region-name,Values=${REGION}" "Name=state,Values=available" \
+  --query "sort(AvailabilityZones[].ZoneName)[1]" --output text)
+NEW_VOL_AZ=$(aws ec2 describe-volumes --volume-ids "${VOL_KEEP_NEW_ID}" \
+  --region "${REGION}" --query 'Volumes[0].AvailabilityZone' --output text)
+if [ "${NEW_VOL_AZ}" != "${EXPECTED_NEW_AZ}" ]; then
+  echo "FAIL: replacement volume ${VOL_KEEP_NEW_ID} is in ${NEW_VOL_AZ}, expected ${EXPECTED_NEW_AZ}" >&2
+  exit 1
+fi
+echo "    replacement path OK: ${SNAP_REPLACE_ID} completed for ${VOL_KEEP_ID}; new volume ${VOL_KEEP_NEW_ID} in ${NEW_VOL_AZ}"
+
 # --- Phase 3: destroy (destroy-runner path) ---------------------------------
 echo "==> Phase 3: cdkd destroy (runner final-snapshot path)"
 node "${LOCAL_DIST}" destroy "${STACK}" \
@@ -185,11 +243,11 @@ node "${LOCAL_DIST}" destroy "${STACK}" \
   --force
 
 assert_gone "VolumeKeep still exists after destroy" \
-  aws ec2 describe-volumes --volume-ids "${VOL_KEEP_ID}" --region "${REGION}"
+  aws ec2 describe-volumes --volume-ids "${VOL_KEEP_NEW_ID}" --region "${REGION}"
 
-SNAP_KEEP_ID=$(snapshot_id_for "${VOL_KEEP_ID}")
+SNAP_KEEP_ID=$(snapshot_id_for "${VOL_KEEP_NEW_ID}")
 if [ -z "${SNAP_KEEP_ID}" ]; then
-  echo "FAIL: no final snapshot created for destroyed volume ${VOL_KEEP_ID} (DeletionPolicy: Snapshot ignored on the destroy-runner path)" >&2
+  echo "FAIL: no final snapshot created for destroyed volume ${VOL_KEEP_NEW_ID} (DeletionPolicy: Snapshot ignored on the destroy-runner path)" >&2
   exit 1
 fi
 SNAP_KEEP_STATE=$(aws ec2 describe-snapshots --snapshot-ids "${SNAP_KEEP_ID}" \
@@ -198,19 +256,18 @@ if [ "${SNAP_KEEP_STATE}" != "completed" ]; then
   echo "FAIL: final snapshot ${SNAP_KEEP_ID} not completed (state=${SNAP_KEEP_STATE})" >&2
   exit 1
 fi
-echo "    runner path OK: ${SNAP_KEEP_ID} completed for ${VOL_KEEP_ID}"
+echo "    runner path OK: ${SNAP_KEEP_ID} completed for ${VOL_KEEP_NEW_ID}"
 
 assert_gone "state file still present after destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 
 # --- Phase 4: artifact cleanup + zero-orphan verification -------------------
-echo "==> Phase 4: deleting the two final snapshots (test artifacts)"
-aws ec2 delete-snapshot --snapshot-id "${SNAP_REMOVE_ID}" --region "${REGION}"
-aws ec2 delete-snapshot --snapshot-id "${SNAP_KEEP_ID}" --region "${REGION}"
-assert_gone "final snapshot ${SNAP_REMOVE_ID} still present after artifact cleanup" \
-  aws ec2 describe-snapshots --snapshot-ids "${SNAP_REMOVE_ID}" --region "${REGION}"
-assert_gone "final snapshot ${SNAP_KEEP_ID} still present after artifact cleanup" \
-  aws ec2 describe-snapshots --snapshot-ids "${SNAP_KEEP_ID}" --region "${REGION}"
+echo "==> Phase 4: deleting the three final snapshots (test artifacts)"
+for snap in "${SNAP_REMOVE_ID}" "${SNAP_REPLACE_ID}" "${SNAP_KEEP_ID}"; do
+  aws ec2 delete-snapshot --snapshot-id "${snap}" --region "${REGION}"
+  assert_gone "final snapshot ${snap} still present after artifact cleanup" \
+    aws ec2 describe-snapshots --snapshot-ids "${snap}" --region "${REGION}"
+done
 rm -f "${IDS_FILE}"
 
-echo "PASS: DeletionPolicy: Snapshot honored on both delete paths (engine + runner), zero orphans"
+echo "PASS: DeletionPolicy/UpdateReplacePolicy: Snapshot honored on all three delete paths (engine DELETE + replacement + runner), zero orphans"
