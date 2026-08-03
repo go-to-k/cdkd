@@ -1,3 +1,10 @@
+## [0.276.4](https://github.com/go-to-k/cdkd/compare/v0.276.3...v0.276.4) (2026-08-03)
+
+
+### Bug Fixes
+
+* **rollback:** report the delete's real route and stop previewing a refused snapshot ([#1367](https://github.com/go-to-k/cdkd/issues/1367)) ([916c028](https://github.com/go-to-k/cdkd/commit/916c02830722755c156fe1cbb2ed1bb0960789e1))
+
 ## [0.276.3](https://github.com/go-to-k/cdkd/compare/v0.276.2...v0.276.3) (2026-08-03)
 
 
