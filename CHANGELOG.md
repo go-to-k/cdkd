@@ -1,3 +1,10 @@
+## [0.276.3](https://github.com/go-to-k/cdkd/compare/v0.276.2...v0.276.3) (2026-08-03)
+
+
+### Bug Fixes
+
+* **rollback:** honor DeletionPolicy on --revert-failed's delete of a failed CREATE ([#1365](https://github.com/go-to-k/cdkd/issues/1365)) ([06681d9](https://github.com/go-to-k/cdkd/commit/06681d95024e10c8a13f1fd7fbb26f6de84d04a2))
+
 ## [0.276.2](https://github.com/go-to-k/cdkd/compare/v0.276.1...v0.276.2) (2026-08-03)
 
 
