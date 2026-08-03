@@ -1,3 +1,10 @@
+# [0.276.0](https://github.com/go-to-k/cdkd/compare/v0.275.6...v0.276.0) (2026-08-03)
+
+
+### Features
+
+* **destroy:** complete DeletionPolicy: Snapshot coverage + honor UpdateReplacePolicy: Snapshot ([#1359](https://github.com/go-to-k/cdkd/issues/1359)) ([a0b1c5b](https://github.com/go-to-k/cdkd/commit/a0b1c5b915de05b0dbd27d63f6b03d6c94e67cd4))
+
 ## [0.275.6](https://github.com/go-to-k/cdkd/compare/v0.275.5...v0.275.6) (2026-08-02)
 
 
