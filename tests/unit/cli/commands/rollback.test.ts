@@ -387,3 +387,105 @@ describe('rollbackCommand corruption path', () => {
     expect(err).not.toBeInstanceOf(PartialFailureError); // hard error → exit 1, not partial
   });
 });
+
+/**
+ * `--skip-final-snapshot` + `finalSnapshotClients` wiring (issue #1358).
+ *
+ * These pin the CLI -> `RollbackExecutorContext` plumbing specifically: the
+ * executor's own behavior is covered in
+ * `tests/unit/deployment/rollback-executor.test.ts`, but nothing there fails
+ * if `rollbackCommand` stops PASSING the flag / the clients — the executor
+ * just falls back to its defaults and the flag silently stops working.
+ */
+describe('rollbackCommand — DeletionPolicy: Snapshot wiring (#1358)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  function installSnapshotStack(resourceType: string): FakeBackend {
+    const createOp = {
+      logicalId: 'D',
+      changeType: 'CREATE',
+      resourceType,
+      physicalId: 'phys-D',
+      provisionedBy: 'sdk',
+    };
+    return installSetup({
+      listStacks: vi.fn().mockResolvedValue([{ stackName: 'S', region: 'us-east-1' }]),
+      getState: vi.fn().mockResolvedValue({
+        state: {
+          version: 8,
+          stackName: 'S',
+          region: 'us-east-1',
+          resources: {
+            D: {
+              physicalId: 'phys-D',
+              resourceType,
+              properties: {},
+              attributes: {},
+              dependencies: [],
+              deletionPolicy: 'Snapshot',
+              provisionedBy: 'sdk',
+            },
+          },
+          outputs: {},
+          lastModified: 1,
+        },
+        etag: 'e0',
+      }),
+      loadRollbackJournal: vi.fn().mockResolvedValue({
+        journalVersion: 1,
+        stackName: 'S',
+        region: 'us-east-1',
+        segments: [
+          { timestamp: 1, reason: 'no-rollback-failure', initialDeploy: false, operations: [createOp] },
+        ],
+      }),
+    });
+  }
+
+  it('default: threads a final-snapshot identifier into the rollback delete', async () => {
+    installSnapshotStack('AWS::RDS::DBInstance');
+    await rollbackCommand('S', { ...baseOpts });
+    expect(replayProvider.delete).toHaveBeenCalledOnce();
+    expect(replayProvider.delete.mock.calls[0]![4]).toEqual(
+      expect.objectContaining({
+        finalSnapshotIdentifier: expect.stringMatching(/^phys-d-final-\d{8}-\d{6}$/),
+      })
+    );
+  });
+
+  it('--skip-final-snapshot: plain delete, no identifier (the flag actually reaches the executor)', async () => {
+    installSnapshotStack('AWS::RDS::DBInstance');
+    await rollbackCommand('S', { ...baseOpts, skipFinalSnapshot: true });
+    expect(replayProvider.delete).toHaveBeenCalledOnce();
+    expect(replayProvider.delete.mock.calls[0]![4]).not.toHaveProperty('finalSnapshotIdentifier');
+  });
+
+  it('the plan preview labels the Snapshot action, and says so when the flag skips it', async () => {
+    const { getLogger } = await import('../../../../src/utils/logger.js');
+    const info = getLogger().info as unknown as ReturnType<typeof vi.fn>;
+
+    installSnapshotStack('AWS::RDS::DBInstance');
+    await rollbackCommand('S', { ...baseOpts });
+    const planned = info.mock.calls.map((c) => String(c[0]));
+    expect(planned.some((l) => /final snapshot, then delete/.test(l))).toBe(true);
+
+    vi.clearAllMocks();
+    installSnapshotStack('AWS::RDS::DBInstance');
+    await rollbackCommand('S', { ...baseOpts, skipFinalSnapshot: true });
+    const skipped = info.mock.calls.map((c) => String(c[0]));
+    expect(skipped.some((l) => /NO final snapshot \(--skip-final-snapshot\)/.test(l))).toBe(true);
+  });
+});
+
+describe('createRollbackCommand option surface', () => {
+  it('declares --skip-final-snapshot on the rollback subcommand itself (#1097 class)', async () => {
+    const { createRollbackCommand } = await import('../../../../src/cli/commands/rollback.js');
+    const flags = createRollbackCommand()
+      .options.map((o) => o.long)
+      .filter((f): f is string => typeof f === 'string');
+    // Dropping the `.addOption(skipFinalSnapshotOption)` line yields
+    // `error: unknown option '--skip-final-snapshot'` at runtime with every
+    // unit test still green - exactly the issue #1097 failure class.
+    expect(flags).toContain('--skip-final-snapshot');
+  });
+});

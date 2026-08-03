@@ -1164,5 +1164,7 @@ export const skipFinalSnapshotOption = new Option(
     'Neptune / DocDB clusters, ElastiCache CacheCluster / ReplicationGroup, Redshift ' +
     'Cluster, EC2 Volume) and refuses the delete when it cannot — e.g. a resource ' +
     'managed via the Cloud Control API route, whose delete has no final-snapshot ' +
-    'parameter.'
+    "parameter. On 'cdkd rollback' the flag governs the rolled-back CREATE's " +
+    'DeletionPolicy; a reverse-replacement delete of the NEW resource keeps its own ' +
+    'bounded UpdateReplacePolicy behavior and is unaffected.'
 ).default(false);

@@ -1949,8 +1949,9 @@ Notes:
   delete, so the old resource is leaked with a warning rather than deleted
   un-snapshotted. A REFUSAL (a type / route cdkd cannot snapshot) always
   fails the resource, matching CloudFormation failing the update.
-- Rolling back a CREATE (the automatic rollback after a failed deploy, or
-  `cdkd rollback`) IS a delete, so `DeletionPolicy: Snapshot` applies to it:
+- Rolling back a COMPLETED CREATE (the automatic rollback after a failed
+  deploy, or `cdkd rollback`) IS a delete, so `DeletionPolicy: Snapshot`
+  applies to it:
   cdkd creates the final snapshot and then deletes, using the same mechanism
   matrix as the table above, and REFUSES (counting the op as a rollback
   failure, so the journal is kept for a re-run) any shape it cannot snapshot
@@ -1958,7 +1959,11 @@ Notes:
   (issue #1358). Before #1358 such a resource was ORPHANED — dropped from
   state and left running in AWS — which silently handed you an untracked,
   billing resource. `DeletionPolicy: Retain` still orphans (that is what the
-  policy asks for).
+  policy asks for). This covers the rollback of a resource whose CREATE
+  COMPLETED; `cdkd rollback --revert-failed`'s delete of a resource whose
+  CREATE FAILED mid-flight still deletes plainly, because a half-created
+  resource may not be snapshot-capable at all — tracked as issue
+  [#1362](https://github.com/go-to-k/cdkd/issues/1362).
 - On a ROLLBACK's delete-of-the-NEW-resource (reversing a replacement, i.e.
   `UpdateReplacePolicy`), only the atomic SDK-routed types get a final
   snapshot — the other shapes deliberately keep the plain delete (that
@@ -2161,13 +2166,20 @@ credentials, etc.).
   replay; the plan labels these "reverse-replace").
 - Reverts that reference old **asset objects** (e.g. Lambda `Code.S3Key`)
   need those objects to still exist — relevant to `cdkd gc` retention.
-- The rolled-back CREATE's **`DeletionPolicy`** governs its delete, matching
-  CloudFormation: `Retain` leaves the resource in AWS and drops it from
-  state (the plan labels it `orphan`); `Snapshot` takes the final snapshot
-  and THEN deletes, refusing (as a per-op failure, journal kept) any shape
-  cdkd cannot snapshot unless `--skip-final-snapshot` is passed (issue
+- The rolled-back COMPLETED CREATE's **`DeletionPolicy`** governs its delete,
+  matching CloudFormation: `Retain` leaves the resource in AWS and drops it
+  from state (the plan labels it `orphan`); `Snapshot` takes the final
+  snapshot and THEN deletes, refusing (as a per-op failure, journal kept) any
+  shape cdkd cannot snapshot unless `--skip-final-snapshot` is passed (issue
   [#1358](https://github.com/go-to-k/cdkd/issues/1358)); `RetainExceptOnCreate`
-  and the default `Delete` delete plainly.
+  and the default `Delete` delete plainly. `--revert-failed`'s delete of a
+  resource whose CREATE FAILED mid-flight is NOT yet policy-aware — issue
+  [#1362](https://github.com/go-to-k/cdkd/issues/1362).
+- A re-run after a snapshot succeeded but its delete failed re-snapshots the
+  name-keyed types (Redshift / ElastiCache), which only resume an IN-FLIGHT
+  snapshot; EBS volumes are reused via the `cdkd:final-snapshot-of` tag. The
+  rollback replay is the flow most likely to be re-run, so expect a second
+  snapshot charge on those two types.
 
 `cdkd export` refuses (with a confirmation gate) to hand a stack over to
 CloudFormation while a rollback journal exists — the half-deployed state is

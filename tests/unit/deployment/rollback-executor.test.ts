@@ -1155,7 +1155,9 @@ describe('replayRollback — DeletionPolicy: Snapshot on a rolled-back CREATE (#
   } as unknown as NonNullable<RollbackExecutorContext['finalSnapshotClients']>;
 
   beforeEach(() => {
-    vi.mocked(createPreDeleteFinalSnapshot).mockClear();
+    // mockReset (not mockClear): a `mockRejectedValueOnce` queued by a test
+    // that never consumed it would otherwise leak into the next one.
+    vi.mocked(createPreDeleteFinalSnapshot).mockReset();
     vi.mocked(createPreDeleteFinalSnapshot).mockResolvedValue('snap-1');
   });
 
@@ -1317,6 +1319,10 @@ describe('replayRollback — DeletionPolicy: Snapshot on a rolled-back CREATE (#
     ctx.finalSnapshotClients = fakeClients;
     const state = snapshotState('AWS::EC2::Volume', 'cc-api');
     const result = await replayRollback([snapshotOp('AWS::EC2::Volume')], state, 'S', ctx);
+    // Assert the SNAPSHOT branch is what failed. Without this the test also
+    // passes via the unsupported-refusal branch (same `failures: 1`, same
+    // un-called delete) if EC2 Volume ever left PRE_DELETE_SNAPSHOT_TYPES.
+    expect(vi.mocked(createPreDeleteFinalSnapshot)).toHaveBeenCalledOnce();
     expect(del).not.toHaveBeenCalled();
     expect(result.failures).toBe(1);
     expect(state['Res']).toBeDefined();

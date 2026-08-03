@@ -85,12 +85,20 @@ cleanup() {
   # Recorded volume ids from this (or a previous failed) run — snapshots
   # outlive their volumes, so the sweep is keyed on the recorded ids, never
   # on a broad tag scan that could touch a parallel session's snapshots.
+  # `sweep_failed` keeps the ids file when a snapshot could not be deleted:
+  # the sweep is keyed ONLY on these recorded ids (a broad tag scan could
+  # touch a parallel session's snapshots), so discarding the file after a
+  # failed delete would strand the snapshot with nothing able to find it.
+  sweep_failed=""
   if [ -f "${IDS_FILE}" ]; then
     while read -r vol_id; do
       [ -n "${vol_id}" ] || continue
       snap_id=$(snapshot_id_for "${vol_id}")
       if [ -n "${snap_id}" ]; then
-        aws ec2 delete-snapshot --snapshot-id "${snap_id}" --region "${REGION}" >/dev/null 2>&1
+        if ! aws ec2 delete-snapshot --snapshot-id "${snap_id}" --region "${REGION}" >/dev/null 2>&1; then
+          sweep_failed=yes
+          echo "WARN: could not delete final snapshot ${snap_id} of ${vol_id} — keeping ${IDS_FILE} so the next run retries" >&2
+        fi
       fi
     done < "${IDS_FILE}"
   fi
@@ -117,7 +125,10 @@ cleanup() {
     aws s3 rm "s3://${STATE_BUCKET}/${JOURNAL_KEY}" >/dev/null 2>&1
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1
   fi
-  rm -f "${IDS_FILE}" "${DEPLOY_LOG}"
+  if [ -z "${sweep_failed}" ]; then
+    rm -f "${IDS_FILE}"
+  fi
+  rm -f "${DEPLOY_LOG}"
   set -eu
 }
 

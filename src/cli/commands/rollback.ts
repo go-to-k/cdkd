@@ -8,7 +8,7 @@ import {
   warnIfDeprecatedRegion,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
-import { AwsClients } from '../../utils/aws-clients.js';
+import { AwsClients, setAwsClients } from '../../utils/aws-clients.js';
 import { forwardSigtermToSigint } from '../../utils/interrupt-signals.js';
 import { PartialFailureError, withErrorHandling } from '../../utils/error-handler.js';
 import { ProviderRegistry } from '../../provisioning/provider-registry.js';
@@ -167,9 +167,9 @@ export async function rollbackCommand(
 
   const setup = await setupStateBackend(options);
   const skipConfirmation = options.force === true || options.yes === true;
-  // Extra client set built only when the target stack lives in a region
-  // other than the CLI's (see the finalSnapshotClients note below); disposed
-  // alongside `setup` in the outer finally.
+  // Stack-region-pinned client set installed as the process-global for the
+  // replay (see the note at its construction below); the original set is
+  // restored and this one disposed in the outer finally.
   let stackAwsClients: AwsClients | undefined;
 
   try {
@@ -202,20 +202,29 @@ export async function rollbackCommand(
     const stackName = ref.stackName;
     const region = ref.region ?? setup.region;
 
-    // Region-pinned clients for the pre-delete final snapshots a
-    // `DeletionPolicy: Snapshot` rolled-back CREATE takes (issue #1358).
-    // `setup.awsClients` is built from --region / AWS_REGION, which can
-    // differ from the target stack's own region (--stack-region): a
-    // wrong-region snapshot call 404s as a NotFound, which reads as "source
-    // gone" and would silently skip the snapshot. Mirrors how `cdkd deploy`
-    // sources `DeployEngineOptions.finalSnapshotClients`.
-    if (region !== setup.region) {
-      stackAwsClients = new AwsClients({
-        region,
-        ...(options.profile && { profile: options.profile }),
-      });
-    }
-    const finalSnapshotClients = stackAwsClients ?? setup.awsClients;
+    // Region-pinned clients for the whole replay: the pre-delete final
+    // snapshots a `DeletionPolicy: Snapshot` rolled-back CREATE takes (issue
+    // #1358) AND the provider deletes those snapshots precede. Both must run
+    // against the TARGET STACK's region, which `--stack-region` can point
+    // away from the CLI's --region / AWS_REGION: a wrong-region snapshot call
+    // 404s as a NotFound, which reads as "source gone" and would silently
+    // skip the snapshot, and a wrong-region delete trips `assertRegionMatch`.
+    // Pinning only the snapshot would be worse than not pinning it at all —
+    // it would take a real, billable snapshot and then fail the delete.
+    //
+    // Built UNCONDITIONALLY rather than under a `region !== setup.region`
+    // guard: `setup.region` falls back to the literal 'us-east-1' when
+    // neither --region nor AWS_REGION is set, while `setup.awsClients`
+    // resolves through the SDK chain (AWS_DEFAULT_REGION, profile config), so
+    // the two can disagree while the labels match. `setAwsClients` mirrors
+    // what `destroy-runner.ts` does for a cross-region destroy; the original
+    // set is restored in the outer finally.
+    stackAwsClients = new AwsClients({
+      region,
+      ...(options.profile && { profile: options.profile }),
+    });
+    setAwsClients(stackAwsClients);
+    const finalSnapshotClients = stackAwsClients;
 
     // 2. Register providers (exactly like deploy / destroy).
     const providerRegistry = new ProviderRegistry();
@@ -543,7 +552,12 @@ export async function rollbackCommand(
       });
     }
   } finally {
-    stackAwsClients?.destroy();
+    // Restore the process-global client set BEFORE disposing ours, so a
+    // later consumer in the same process never reaches a destroyed client.
+    if (stackAwsClients) {
+      setAwsClients(setup.awsClients);
+      stackAwsClients.destroy();
+    }
     setup.dispose();
   }
 }

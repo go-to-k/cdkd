@@ -134,11 +134,12 @@ export function rollbackFinalSnapshotId(
  */
 async function prepareCreateRollbackFinalSnapshot(
   op: CompletedOperation,
-  physicalId: string,
   provisionedBy: 'sdk' | 'cc-api' | undefined,
   ctx: RollbackExecutorContext
 ): Promise<string | undefined> {
   const { logicalId, resourceType } = op;
+  // Callers reach this only past the `!op.physicalId` guard in `replaySingle`.
+  const physicalId = op.physicalId!;
   if (ATOMIC_FINAL_SNAPSHOT_TYPES.has(resourceType)) {
     if (provisionedBy === 'cc-api') {
       throw ccRoutedFinalSnapshotError(logicalId, resourceType, SKIP_FINAL_SNAPSHOT_FLAG);
@@ -659,7 +660,7 @@ async function replaySingle(
         delete stateResources[op.logicalId];
         logger.info(
           `  Rollback: Leaving ${op.logicalId} (${op.resourceType}) in AWS ` +
-            `(DeletionPolicy: ${stateResourcesPolicyLabel(op, stateResources)}) — removed from state`
+            `(DeletionPolicy: Retain) — removed from state`
         );
         await afterOp?.(op.logicalId);
         ctx.recordEvent?.({
@@ -696,19 +697,25 @@ async function replaySingle(
           stateResources[op.logicalId],
           op.provisionedBy
         );
+        const snapshotPolicy = action === 'delete-with-final-snapshot';
+        const takeFinalSnapshot = snapshotPolicy && ctx.skipFinalSnapshot !== true;
         let finalSnapshotIdentifier: string | undefined;
-        if (action === 'delete-with-final-snapshot' && ctx.skipFinalSnapshot !== true) {
+        if (takeFinalSnapshot) {
           finalSnapshotIdentifier = await prepareCreateRollbackFinalSnapshot(
             op,
-            op.physicalId,
             deleteProvisionedBy,
             ctx
           );
         }
         logger.info(
           `  Rollback: Deleting created resource ${op.logicalId} (${op.resourceType})` +
-            (action === 'delete-with-final-snapshot' && ctx.skipFinalSnapshot !== true
-              ? ' — DeletionPolicy: Snapshot'
+            (takeFinalSnapshot ? ' — DeletionPolicy: Snapshot' : '') +
+            // Make the opt-out auditable: without this the line is
+            // byte-identical to a plain delete, so neither the log nor
+            // `cdkd events` records that a Snapshot-policy resource was
+            // destroyed with no snapshot.
+            (snapshotPolicy && !takeFinalSnapshot
+              ? ' — DeletionPolicy: Snapshot NOT taken (--skip-final-snapshot)'
               : '')
         );
         // Route via the SAME provider the CREATE landed on (#614).
@@ -1241,13 +1248,6 @@ export async function replayFailedOperations(
   if (emitEnvelope) ctx.recordEvent?.({ eventType: 'ROLLBACK_FINISHED', stackName });
   result.remainingFailedOps = failedOps.filter((op) => pending.has(op));
   return result;
-}
-
-function stateResourcesPolicyLabel(
-  op: CompletedOperation,
-  stateResources: Record<string, ResourceState>
-): string {
-  return stateResources[op.logicalId]?.deletionPolicy ?? 'Retain';
 }
 
 /**
