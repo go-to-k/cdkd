@@ -71,16 +71,27 @@ const silentLogger = {
 
 function makeCtx(provider: { delete?: unknown; update?: unknown; create?: unknown }): {
   ctx: RollbackExecutorContext;
-  events: Array<{ eventType: string; logicalId?: string }>;
+  events: Array<{ eventType: string; logicalId?: string; provisionedBy?: 'sdk' | 'cc-api' }>;
 } {
-  const events: Array<{ eventType: string; logicalId?: string }> = [];
+  // `provisionedBy` is captured so the #1366 cases can assert the event
+  // reports the route the delete actually took.
+  const events: Array<{
+    eventType: string;
+    logicalId?: string;
+    provisionedBy?: 'sdk' | 'cc-api';
+  }> = [];
   const ctx: RollbackExecutorContext = {
     region: 'us-east-1',
     logger: silentLogger,
     providerRegistry: {
       getProviderFor: () => ({ provider }),
     } as unknown as RollbackExecutorContext['providerRegistry'],
-    recordEvent: (e) => events.push({ eventType: e.eventType, logicalId: e.logicalId }),
+    recordEvent: (e) =>
+      events.push({
+        eventType: e.eventType,
+        logicalId: e.logicalId,
+        provisionedBy: e.provisionedBy,
+      }),
   };
   return { ctx, events };
 }
@@ -1822,5 +1833,214 @@ describe('replayFailedOperations — DeletionPolicy on a FAILED CREATE (#1362)',
       expectedRegion: 'us-east-1',
     });
     expect(state['Res']).toBeUndefined();
+  });
+});
+
+/**
+ * Issue #1366: the rollback event must report the route the delete ACTUALLY
+ * took, and the plan must carry that route so the CLI's preview can consult
+ * the same mechanism matrix the replay runs.
+ *
+ * Both are only observable when the journaled op and the state record
+ * DISAGREE — which is exactly the legacy-journal shape `effectiveProvisionedBy`
+ * exists for, and why every case below sets the two to different values.
+ */
+describe('rollback route reporting + plan route stamping (#1366)', () => {
+  function createOp(provisionedBy?: 'sdk' | 'cc-api'): CompletedOperation {
+    return {
+      logicalId: 'Res',
+      changeType: 'CREATE',
+      resourceType: 'AWS::S3::Bucket',
+      physicalId: 'phys-res',
+      ...(provisionedBy && { provisionedBy }),
+    };
+  }
+
+  function recordWith(
+    provisionedBy: 'sdk' | 'cc-api',
+    deletionPolicy?: ResourceState['deletionPolicy']
+  ): Record<string, ResourceState> {
+    return {
+      Res: res({
+        physicalId: 'phys-res',
+        resourceType: 'AWS::S3::Bucket',
+        provisionedBy,
+        ...(deletionPolicy && { deletionPolicy }),
+      }),
+    };
+  }
+
+  it('a completed-CREATE delete event reports the state record route, not the journaled one', async () => {
+    const del = vi.fn().mockResolvedValue(undefined);
+    const { ctx, events } = makeCtx({ delete: del });
+    // Journal says sdk; the record (authoritative) says cc-api.
+    await replayRollback([createOp('sdk')], recordWith('cc-api'), 'S', ctx);
+    expect(events.find((e) => e.eventType === 'ROLLBACK_RESOURCE_SUCCEEDED')?.provisionedBy).toBe(
+      'cc-api'
+    );
+  });
+
+  it('an orphan-retain event reports the record route, resolved BEFORE the record is dropped', async () => {
+    // The orphan arm deletes the state record first, so a naive read after
+    // the mutation would silently fall back to the journaled value.
+    const { ctx, events } = makeCtx({ delete: vi.fn() });
+    const state = recordWith('cc-api', 'Retain');
+    await replayRollback([createOp('sdk')], state, 'S', ctx);
+    expect(state['Res']).toBeUndefined();
+    expect(events.find((e) => e.eventType === 'ROLLBACK_RESOURCE_SUCCEEDED')?.provisionedBy).toBe(
+      'cc-api'
+    );
+  });
+
+  it('a failed-CREATE delete event reports the record route (--revert-failed)', async () => {
+    const del = vi.fn().mockResolvedValue(undefined);
+    const { ctx, events } = makeCtx({ delete: del });
+    const failed: FailedOperation = {
+      logicalId: 'Res',
+      changeType: 'CREATE',
+      resourceType: 'AWS::S3::Bucket',
+      physicalId: 'phys-res',
+      provisionedBy: 'sdk',
+    };
+    await replayFailedOperations([failed], recordWith('cc-api'), 'S', ctx);
+    expect(events.find((e) => e.eventType === 'ROLLBACK_RESOURCE_SUCCEEDED')?.provisionedBy).toBe(
+      'cc-api'
+    );
+  });
+
+  it('a failed-CREATE orphan event reports the record route, resolved before the drop', async () => {
+    const { ctx, events } = makeCtx({ delete: vi.fn() });
+    const state = recordWith('cc-api', 'Retain');
+    const failed: FailedOperation = {
+      logicalId: 'Res',
+      changeType: 'CREATE',
+      resourceType: 'AWS::S3::Bucket',
+      physicalId: 'phys-res',
+      provisionedBy: 'sdk',
+    };
+    await replayFailedOperations([failed], state, 'S', ctx);
+    expect(state['Res']).toBeUndefined();
+    expect(events.find((e) => e.eventType === 'ROLLBACK_RESOURCE_SUCCEEDED')?.provisionedBy).toBe(
+      'cc-api'
+    );
+  });
+
+  it('planRollback stamps the record-first effective route onto each item', () => {
+    const [item] = planRollback([createOp('sdk')], recordWith('cc-api'));
+    expect(item!.effectiveProvisionedBy).toBe('cc-api');
+  });
+
+  it('planFailedOps stamps the record-first effective route onto each item', () => {
+    const failed: FailedOperation = {
+      logicalId: 'Res',
+      changeType: 'CREATE',
+      resourceType: 'AWS::S3::Bucket',
+      physicalId: 'phys-res',
+      provisionedBy: 'sdk',
+    };
+    const [item] = planFailedOps([failed], recordWith('cc-api'));
+    expect(item!.effectiveProvisionedBy).toBe('cc-api');
+  });
+
+  it('falls back to the journaled route when the record carries none (legacy state)', () => {
+    const state = { Res: res({ physicalId: 'phys-res', resourceType: 'AWS::S3::Bucket' }) };
+    expect(planRollback([createOp('cc-api')], state)[0]!.effectiveProvisionedBy).toBe('cc-api');
+  });
+});
+
+/**
+ * The FAILED half of the same field (#1366). A Snapshot refusal is the most
+ * likely rollback failure for this feature, and its event carried the
+ * journaled route too.
+ */
+describe('ROLLBACK_RESOURCE_FAILED route reporting (#1366)', () => {
+  it('a refused Snapshot delete reports the route the delete WOULD have taken', async () => {
+    const del = vi.fn().mockResolvedValue(undefined);
+    const { ctx, events } = makeCtx({ delete: del });
+    // Journal says sdk (which would NOT be refused); the record says cc-api,
+    // which is both why it is refused and what the event must name.
+    const state: Record<string, ResourceState> = {
+      Res: res({
+        physicalId: 'phys-res',
+        resourceType: 'AWS::RDS::DBInstance',
+        deletionPolicy: 'Snapshot',
+        provisionedBy: 'cc-api',
+      }),
+    };
+    const result = await replayRollback(
+      [
+        {
+          logicalId: 'Res',
+          changeType: 'CREATE',
+          resourceType: 'AWS::RDS::DBInstance',
+          physicalId: 'phys-res',
+          provisionedBy: 'sdk',
+        },
+      ],
+      state,
+      'S',
+      ctx
+    );
+    expect(result.failures).toBe(1);
+    expect(del).not.toHaveBeenCalled();
+    expect(events.find((e) => e.eventType === 'ROLLBACK_RESOURCE_FAILED')?.provisionedBy).toBe(
+      'cc-api'
+    );
+  });
+
+  it('a refused --revert-failed Snapshot delete reports it too', async () => {
+    const del = vi.fn().mockResolvedValue(undefined);
+    const { ctx, events } = makeCtx({ delete: del });
+    const state: Record<string, ResourceState> = {
+      Res: res({
+        physicalId: 'phys-res',
+        resourceType: 'AWS::RDS::DBInstance',
+        deletionPolicy: 'Snapshot',
+        provisionedBy: 'cc-api',
+      }),
+    };
+    const result = await replayFailedOperations(
+      [
+        {
+          logicalId: 'Res',
+          changeType: 'CREATE',
+          resourceType: 'AWS::RDS::DBInstance',
+          physicalId: 'phys-res',
+          provisionedBy: 'sdk',
+        },
+      ],
+      state,
+      'S',
+      ctx
+    );
+    expect(result.failures).toBe(1);
+    expect(events.find((e) => e.eventType === 'ROLLBACK_RESOURCE_FAILED')?.provisionedBy).toBe(
+      'cc-api'
+    );
+  });
+
+  it('an UPDATE-arm failure keeps the journaled route (that arm resolves its own routing)', async () => {
+    const update = vi.fn().mockRejectedValue(new Error('boom'));
+    const { ctx, events } = makeCtx({ update });
+    const prev = res({ physicalId: 'phys-res', properties: { a: 1 } });
+    const state = { Res: res({ physicalId: 'phys-res', properties: { a: 2 } }) };
+    await replayRollback(
+      [
+        {
+          logicalId: 'Res',
+          changeType: 'UPDATE',
+          resourceType: 'AWS::S3::Bucket',
+          physicalId: 'phys-res',
+          provisionedBy: 'sdk',
+          previousState: prev,
+        },
+      ],
+      state,
+      'S',
+      ctx
+    );
+    expect(events.find((e) => e.eventType === 'ROLLBACK_RESOURCE_FAILED')?.provisionedBy).toBe(
+      'sdk'
+    );
   });
 });

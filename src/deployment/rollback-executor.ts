@@ -54,10 +54,10 @@ import type { ProviderRegistry } from '../provisioning/provider-registry.js';
 import { STATEFUL_TYPES } from '../provisioning/stateful-types.js';
 import {
   ATOMIC_FINAL_SNAPSHOT_TYPES,
-  PRE_DELETE_SNAPSHOT_TYPES,
   buildFinalSnapshotIdentifier,
   ccRoutedFinalSnapshotError,
   createPreDeleteFinalSnapshot,
+  finalSnapshotMechanism,
   unsupportedFinalSnapshotError,
   type PreDeleteSnapshotClients,
 } from '../provisioning/final-snapshot.js';
@@ -145,29 +145,31 @@ async function prepareCreateRollbackFinalSnapshot(
   // `replaySingle`'s `!op.physicalId` early return, or `classifyFailedOp`'s
   // `skip-failed-unknown` arm on the `--revert-failed` path.
   const physicalId = op.physicalId!;
-  if (ATOMIC_FINAL_SNAPSHOT_TYPES.has(resourceType)) {
-    if (provisionedBy === 'cc-api') {
+  // ONE matrix, shared with the plan preview (issue #1366) so the label the
+  // user confirms cannot promise a snapshot this function is about to refuse.
+  switch (finalSnapshotMechanism(resourceType, provisionedBy)) {
+    case 'atomic-delete-parameter':
+      return buildFinalSnapshotIdentifier(physicalId, resourceType);
+    case 'pre-delete-snapshot':
+      // Region-pinned clients: `getAwsClients()` is a process-global that a
+      // concurrent stack's deploy can repoint at ANOTHER region
+      // (`--stack-concurrency > 1` + multi-region apps); a wrong-region
+      // snapshot call 404s as a NotFound, which would be read as "source
+      // gone" and skip the snapshot. Prefer the caller-scoped clients on the
+      // context (mirrors `DeployEngineOptions.finalSnapshotClients`).
+      await createPreDeleteFinalSnapshot(
+        resourceType,
+        physicalId,
+        logicalId,
+        ctx.finalSnapshotClients ?? getAwsClients(),
+        ctx.logger
+      );
+      return undefined;
+    case 'refuse-cc-routed':
       throw ccRoutedFinalSnapshotError(logicalId, resourceType, SKIP_FINAL_SNAPSHOT_FLAG);
-    }
-    return buildFinalSnapshotIdentifier(physicalId, resourceType);
+    case 'refuse-unsupported-type':
+      throw unsupportedFinalSnapshotError(logicalId, resourceType, SKIP_FINAL_SNAPSHOT_FLAG);
   }
-  if (PRE_DELETE_SNAPSHOT_TYPES.has(resourceType)) {
-    // Region-pinned clients: `getAwsClients()` is a process-global that a
-    // concurrent stack's deploy can repoint at ANOTHER region
-    // (`--stack-concurrency > 1` + multi-region apps); a wrong-region
-    // snapshot call 404s as a NotFound, which would be read as "source gone"
-    // and skip the snapshot. Prefer the caller-scoped clients on the context
-    // (mirrors `DeployEngineOptions.finalSnapshotClients`).
-    await createPreDeleteFinalSnapshot(
-      resourceType,
-      physicalId,
-      logicalId,
-      ctx.finalSnapshotClients ?? getAwsClients(),
-      ctx.logger
-    );
-    return undefined;
-  }
-  throw unsupportedFinalSnapshotError(logicalId, resourceType, SKIP_FINAL_SNAPSHOT_FLAG);
 }
 
 /**
@@ -294,14 +296,23 @@ export type FailedOpActionKind =
   | 'skip-failed-noop' // failed DELETE (resource still in place) / already handled
   | 'skip-failed-absent'; // failed UPDATE with no previousState / not in state
 
+/**
+ * The routing layer a planned op resolves to — the state record's, falling
+ * back to the journaled op's (see {@link effectiveProvisionedBy}). Stamped
+ * onto the plan so the preview can consult the SAME mechanism matrix the
+ * replay will (issue #1366); without it the label could only see the
+ * journaled value and would describe a route the delete may not take.
+ */
+type PlannedRoute = { effectiveProvisionedBy?: 'sdk' | 'cc-api' | undefined };
+
 /** One planned failed-op revert (rendered by the command's plan preview). */
-export interface FailedOpPlanItem {
+export interface FailedOpPlanItem extends PlannedRoute {
   op: FailedOperation;
   action: FailedOpActionKind;
 }
 
 /** One planned rollback action (rendered by the command's plan preview). */
-export interface RollbackPlanItem {
+export interface RollbackPlanItem extends PlannedRoute {
   op: CompletedOperation;
   action: RollbackActionKind;
   /** For a replacement op (previousState.physicalId !== op.physicalId). */
@@ -486,7 +497,11 @@ export function planFailedOps(
   failedOps: FailedOperation[],
   stateResources: Record<string, ResourceState>
 ): FailedOpPlanItem[] {
-  return failedOps.map((op) => ({ op, action: classifyFailedOp(op, stateResources) }));
+  return failedOps.map((op) => ({
+    op,
+    action: classifyFailedOp(op, stateResources),
+    effectiveProvisionedBy: effectiveProvisionedBy(stateResources[op.logicalId], op.provisionedBy),
+  }));
 }
 
 /**
@@ -508,6 +523,7 @@ export function planRollback(
     op,
     action: classifyRollbackOp(op, stateResources, orphanLogicalIds),
     replacement: isReplacementOp(op),
+    effectiveProvisionedBy: effectiveProvisionedBy(stateResources[op.logicalId], op.provisionedBy),
   }));
 }
 
@@ -617,6 +633,14 @@ async function replaySingle(
 ): Promise<void> {
   const action = classifyRollbackOp(op, stateResources, orphanLogicalIds);
   const { logger } = ctx;
+  /**
+   * The route a CREATE-rollback arm resolved for this op (issue #1366) —
+   * hoisted so the shared catch's ROLLBACK_RESOURCE_FAILED reports the route
+   * the delete was going to take, which is the one a refusal is about. Stays
+   * `undefined` on the UPDATE / replacement arms, where the catch keeps the
+   * journaled value (those arms resolve their own routing separately).
+   */
+  let createRollbackRoute: 'sdk' | 'cc-api' | undefined;
 
   try {
     switch (action) {
@@ -680,6 +704,15 @@ async function replaySingle(
         // DeletionPolicy Retain on a rolled-back CREATE: orphan instead of
         // delete (the policy says KEEP the resource). `Snapshot` used to
         // land here too — see the module header + issue #1358.
+        //
+        // Resolved BEFORE the record is dropped: the event reports the
+        // resource's effective route (issue #1366), and the record — the
+        // authoritative side — is about to go away.
+        const orphanProvisionedBy = effectiveProvisionedBy(
+          stateResources[op.logicalId],
+          op.provisionedBy
+        );
+        createRollbackRoute = orphanProvisionedBy;
         delete stateResources[op.logicalId];
         logger.info(
           `  Rollback: Leaving ${op.logicalId} (${op.resourceType}) in AWS ` +
@@ -692,7 +725,7 @@ async function replaySingle(
           operation: 'CREATE',
           logicalId: op.logicalId,
           resourceType: op.resourceType,
-          ...(op.provisionedBy && { provisionedBy: op.provisionedBy }),
+          ...(orphanProvisionedBy && { provisionedBy: orphanProvisionedBy }),
         });
         return;
       }
@@ -720,6 +753,7 @@ async function replaySingle(
           stateResources[op.logicalId],
           op.provisionedBy
         );
+        createRollbackRoute = deleteProvisionedBy;
         const snapshotPolicy = action === 'delete-with-final-snapshot';
         const takeFinalSnapshot = snapshotPolicy && ctx.skipFinalSnapshot !== true;
         let finalSnapshotIdentifier: string | undefined;
@@ -759,7 +793,10 @@ async function replaySingle(
           operation: 'CREATE',
           logicalId: op.logicalId,
           resourceType: op.resourceType,
-          ...(op.provisionedBy && { provisionedBy: op.provisionedBy }),
+          // The route the delete ACTUALLY took, not the journaled one
+          // (issue #1366) — a legacy journal entry can disagree with the
+          // state record, and the record is what the delete was routed by.
+          ...(deleteProvisionedBy && { provisionedBy: deleteProvisionedBy }),
         });
         return;
       }
@@ -1087,13 +1124,14 @@ async function replaySingle(
     );
     logger.warn('  Continuing with remaining rollback operations...');
     result.failures++;
+    const failedRoute = createRollbackRoute ?? op.provisionedBy;
     ctx.recordEvent?.({
       eventType: 'ROLLBACK_RESOURCE_FAILED',
       stackName,
       operation: op.changeType,
       logicalId: op.logicalId,
       resourceType: op.resourceType,
-      ...(op.provisionedBy && { provisionedBy: op.provisionedBy }),
+      ...(failedRoute && { provisionedBy: failedRoute }),
       error: extractDeploymentEventError(rollbackError),
     });
   }
@@ -1150,6 +1188,10 @@ export async function replayFailedOperations(
     }
     const op = failedOps[i]!;
     const action = classifyFailedOp(op, stateResources);
+    // The route a CREATE arm resolved (issue #1366), so the shared catch's
+    // ROLLBACK_RESOURCE_FAILED names the route the delete was going to take —
+    // the one a Snapshot refusal is about. Undefined on the UPDATE arm.
+    let createRollbackRoute: 'sdk' | 'cc-api' | undefined;
     try {
       switch (action) {
         case 'skip-failed-noop': {
@@ -1185,6 +1227,15 @@ export async function replayFailedOperations(
           // in AWS and drop the record, exactly as the completed-CREATE
           // rollback does. `RetainExceptOnCreate` deliberately does NOT land
           // here; it keeps deleting.
+          //
+          // Resolved BEFORE the record is dropped (issue #1366): the event
+          // reports the resource's effective route, and the record — the
+          // authoritative side — is about to go away.
+          const orphanProvisionedBy = effectiveProvisionedBy(
+            stateResources[op.logicalId],
+            op.provisionedBy
+          );
+          createRollbackRoute = orphanProvisionedBy;
           delete stateResources[op.logicalId];
           logger.info(
             `  Rollback: leaving partially-created ${op.logicalId} (${op.resourceType}) in AWS ` +
@@ -1197,7 +1248,7 @@ export async function replayFailedOperations(
             operation: 'CREATE',
             logicalId: op.logicalId,
             resourceType: op.resourceType,
-            ...(op.provisionedBy && { provisionedBy: op.provisionedBy }),
+            ...(orphanProvisionedBy && { provisionedBy: orphanProvisionedBy }),
           });
           break;
         }
@@ -1213,6 +1264,7 @@ export async function replayFailedOperations(
             stateResources[op.logicalId],
             op.provisionedBy
           );
+          createRollbackRoute = deleteProvisionedBy;
           // `DeletionPolicy: Snapshot` (issue #1362): snapshot BEFORE the
           // delete, through the same mechanism matrix as the completed-CREATE
           // rollback. A shape cdkd cannot snapshot is REFUSED (per-op
@@ -1270,7 +1322,8 @@ export async function replayFailedOperations(
             operation: 'CREATE',
             logicalId: op.logicalId,
             resourceType: op.resourceType,
-            ...(op.provisionedBy && { provisionedBy: op.provisionedBy }),
+            // The route the delete ACTUALLY took (issue #1366).
+            ...(deleteProvisionedBy && { provisionedBy: deleteProvisionedBy }),
           });
           break;
         }
@@ -1318,13 +1371,14 @@ export async function replayFailedOperations(
       );
       result.failures++;
       pending.add(op);
+      const failedRoute = createRollbackRoute ?? op.provisionedBy;
       ctx.recordEvent?.({
         eventType: 'ROLLBACK_RESOURCE_FAILED',
         stackName,
         operation: op.changeType,
         logicalId: op.logicalId,
         resourceType: op.resourceType,
-        ...(op.provisionedBy && { provisionedBy: op.provisionedBy }),
+        ...(failedRoute && { provisionedBy: failedRoute }),
         error: extractDeploymentEventError(revertError),
       });
     }

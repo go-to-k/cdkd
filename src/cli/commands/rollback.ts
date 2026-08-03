@@ -13,6 +13,7 @@ import { forwardSigtermToSigint } from '../../utils/interrupt-signals.js';
 import { PartialFailureError, withErrorHandling } from '../../utils/error-handler.js';
 import { ProviderRegistry } from '../../provisioning/provider-registry.js';
 import { registerAllProviders } from '../../provisioning/register-providers.js';
+import { refusesFinalSnapshot } from '../../provisioning/final-snapshot.js';
 import { withNestedStackContext } from '../../provisioning/nested-stack-context.js';
 import { withStackName } from '../../provisioning/resource-name.js';
 import { setupStateBackend, resolveSingleRegion } from './state.js';
@@ -90,6 +91,32 @@ async function findJournalCandidates(
 }
 
 /**
+ * The `DeletionPolicy Snapshot — ...` note a planned Snapshot delete carries
+ * (issue #1366). Consults the SAME mechanism matrix the replay will run, so
+ * the preview cannot promise a final snapshot for a shape the executor is
+ * about to REFUSE (a cc-api-routed atomic type, or a type with no snapshot
+ * mechanism at all). `skipFinalSnapshot` is threaded in because the
+ * classifier is pure and cannot see CLI flags — under the opt-out every shape
+ * plain-deletes, refusals included, so the flag is checked first.
+ */
+function snapshotNote(
+  resourceType: string,
+  effectiveProvisionedBy: 'sdk' | 'cc-api' | undefined,
+  skipFinalSnapshot: boolean
+): string {
+  if (skipFinalSnapshot) {
+    return 'DeletionPolicy Snapshot — NO final snapshot (--skip-final-snapshot)';
+  }
+  if (refusesFinalSnapshot(resourceType, effectiveProvisionedBy)) {
+    return (
+      'DeletionPolicy Snapshot — cdkd cannot snapshot this resource; the rollback will ' +
+      'REFUSE it (re-run with --skip-final-snapshot to delete without one)'
+    );
+  }
+  return 'DeletionPolicy Snapshot — final snapshot, then delete';
+}
+
+/**
  * Human label for a planned rollback action (plan preview). `skipFinalSnapshot`
  * is threaded in because the classifier is pure (it cannot see CLI flags) and
  * the Snapshot label would otherwise promise a final snapshot the run is about
@@ -102,9 +129,10 @@ function actionLabel(item: RollbackPlanItem, skipFinalSnapshot: boolean): string
     case 'delete':
       return `  - delete   ${op.logicalId} (${op.resourceType})${rep}`;
     case 'delete-with-final-snapshot':
-      return skipFinalSnapshot
-        ? `  - delete   ${op.logicalId} (${op.resourceType}) [DeletionPolicy Snapshot — NO final snapshot (--skip-final-snapshot)]`
-        : `  - delete   ${op.logicalId} (${op.resourceType}) [DeletionPolicy Snapshot — final snapshot, then delete]`;
+      return (
+        `  - delete   ${op.logicalId} (${op.resourceType}) ` +
+        `[${snapshotNote(op.resourceType, item.effectiveProvisionedBy, skipFinalSnapshot)}]`
+      );
     case 'orphan-retain':
       return `  - orphan   ${op.logicalId} (${op.resourceType}) [DeletionPolicy Retain — left in AWS]`;
     case 'orphan-flag':
@@ -140,9 +168,10 @@ function failedActionLabel(item: FailedOpPlanItem, skipFinalSnapshot: boolean): 
     case 'delete-failed-create':
       return `  - delete   ${op.logicalId} (${op.resourceType}) [FAILED create]`;
     case 'delete-failed-create-with-final-snapshot':
-      return skipFinalSnapshot
-        ? `  - delete   ${op.logicalId} (${op.resourceType}) [FAILED create, DeletionPolicy Snapshot — NO final snapshot (--skip-final-snapshot)]`
-        : `  - delete   ${op.logicalId} (${op.resourceType}) [FAILED create, DeletionPolicy Snapshot — final snapshot, then delete]`;
+      return (
+        `  - delete   ${op.logicalId} (${op.resourceType}) [FAILED create, ` +
+        `${snapshotNote(op.resourceType, item.effectiveProvisionedBy, skipFinalSnapshot)}]`
+      );
     case 'orphan-failed-create-retain':
       return `  - orphan   ${op.logicalId} (${op.resourceType}) [FAILED create, DeletionPolicy Retain — left in AWS]`;
     case 'skip-failed-unknown':

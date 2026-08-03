@@ -13,6 +13,8 @@ import {
   finalSnapshotNamePrefix,
   isFinalSnapshotError,
   supportsFinalSnapshot,
+  finalSnapshotMechanism,
+  refusesFinalSnapshot,
   unsupportedFinalSnapshotError,
   EBS_FINAL_SNAPSHOT_TAG_KEY,
   type PreDeleteSnapshotClients,
@@ -39,6 +41,39 @@ describe('supportsFinalSnapshot', () => {
     expect(supportsFinalSnapshot('AWS::Redshift::Cluster')).toBe(true);
     expect(supportsFinalSnapshot('AWS::ElastiCache::ReplicationGroup')).toBe(true);
     expect(supportsFinalSnapshot('AWS::S3::Bucket')).toBe(false);
+  });
+});
+
+describe('finalSnapshotMechanism / refusesFinalSnapshot (#1366)', () => {
+  it('atomic types resolve by ROUTE: SDK gets the delete parameter, cc-api is refused', () => {
+    for (const t of ATOMIC_FINAL_SNAPSHOT_TYPES) {
+      expect(finalSnapshotMechanism(t, 'sdk')).toBe('atomic-delete-parameter');
+      // An unknown route is the legacy-SDK default, not a refusal.
+      expect(finalSnapshotMechanism(t, undefined)).toBe('atomic-delete-parameter');
+      expect(finalSnapshotMechanism(t, 'cc-api')).toBe('refuse-cc-routed');
+    }
+  });
+
+  it('pre-delete types are route-agnostic (cdkd snapshots them itself)', () => {
+    for (const t of PRE_DELETE_SNAPSHOT_TYPES) {
+      for (const route of ['sdk', 'cc-api', undefined] as const) {
+        expect(finalSnapshotMechanism(t, route)).toBe('pre-delete-snapshot');
+      }
+    }
+  });
+
+  it('anything else is refused as an unsupported type', () => {
+    expect(finalSnapshotMechanism('AWS::S3::Bucket', 'sdk')).toBe('refuse-unsupported-type');
+    expect(finalSnapshotMechanism('AWS::S3::Bucket', 'cc-api')).toBe('refuse-unsupported-type');
+  });
+
+  it('refusesFinalSnapshot is exactly the two refuse arms', () => {
+    // The predicate the plan preview asks. Both polarities pinned per type
+    // class so a matrix collapse cannot pass by agreeing everywhere.
+    expect(refusesFinalSnapshot('AWS::RDS::DBInstance', 'sdk')).toBe(false);
+    expect(refusesFinalSnapshot('AWS::RDS::DBInstance', 'cc-api')).toBe(true);
+    expect(refusesFinalSnapshot('AWS::EC2::Volume', 'cc-api')).toBe(false);
+    expect(refusesFinalSnapshot('AWS::S3::Bucket', 'sdk')).toBe(true);
   });
 });
 
