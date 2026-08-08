@@ -6,7 +6,13 @@
     "providerHandled": 13,
     "allowListed": 3,
     "caseDivergence": 0,
-    "noSdkMember": 0
+    "noSdkMember": 0,
+    "shapeClean": 62,
+    "shapeHandled": 17,
+    "shapeAllowListed": 1,
+    "arrayVsWrapper": 0,
+    "definitionMemberMissing": 0,
+    "shapeAmbiguous": 1
   },
   "targets": [
     {
@@ -46,6 +52,11 @@
           "nestedKey": "MaxAge",
           "bucket": "same-spelling"
         }
+      ],
+      "shapeEntries": [],
+      "shapeCleanCount": 4,
+      "unmatchedDefinitions": [
+        "BodyS3Location"
       ]
     },
     {
@@ -65,7 +76,10 @@
           "nestedKey": "Issuer",
           "bucket": "same-spelling"
         }
-      ]
+      ],
+      "shapeEntries": [],
+      "shapeCleanCount": 2,
+      "unmatchedDefinitions": []
     },
     {
       "resourceType": "AWS::ApiGatewayV2::Integration",
@@ -73,7 +87,22 @@
       "sdkClientPackage": "@aws-sdk/client-apigatewayv2",
       "keyStyle": "exact",
       "nestedKeyCount": 0,
-      "entries": []
+      "entries": [],
+      "shapeEntries": [
+        {
+          "resourceType": "AWS::ApiGatewayV2::Integration",
+          "nestedKey": "ResponseParameters",
+          "definition": "ResponseParameterMap",
+          "pass": "wrapper",
+          "bucket": "ambiguous"
+        }
+      ],
+      "shapeCleanCount": 0,
+      "unmatchedDefinitions": [
+        "ResponseParameter",
+        "ResponseParameterMap",
+        "Tag"
+      ]
     },
     {
       "resourceType": "AWS::ApiGatewayV2::Route",
@@ -81,7 +110,10 @@
       "sdkClientPackage": "@aws-sdk/client-apigatewayv2",
       "keyStyle": "exact",
       "nestedKeyCount": 0,
-      "entries": []
+      "entries": [],
+      "shapeEntries": [],
+      "shapeCleanCount": 1,
+      "unmatchedDefinitions": []
     },
     {
       "resourceType": "AWS::ApiGatewayV2::Stage",
@@ -115,7 +147,10 @@
           "nestedKey": "ThrottlingRateLimit",
           "bucket": "same-spelling"
         }
-      ]
+      ],
+      "shapeEntries": [],
+      "shapeCleanCount": 0,
+      "unmatchedDefinitions": []
     },
     {
       "resourceType": "AWS::CloudFront::Distribution",
@@ -732,6 +767,159 @@
           "nestedKey": "WhitelistedNames",
           "bucket": "same-spelling"
         }
+      ],
+      "shapeEntries": [
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "Tags",
+          "definition": "#top",
+          "pass": "wrapper",
+          "bucket": "provider-handled"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "AllowedMethods",
+          "definition": "CacheBehavior",
+          "pass": "wrapper",
+          "bucket": "provider-handled",
+          "sdkDetail": "SDK wraps it as `AllowedMethods` ({ Quantity, Items })"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "CachedMethods",
+          "definition": "CacheBehavior",
+          "pass": "wrapper",
+          "bucket": "provider-handled",
+          "sdkDetail": "SDK wraps it as `CachedMethods` ({ Quantity, Items })"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "CachedMethods",
+          "definition": "CacheBehavior",
+          "pass": "definition",
+          "bucket": "provider-handled",
+          "sdkDetail": "SDK interface `CacheBehavior` has no `CachedMethods` member"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "FunctionAssociations",
+          "definition": "CacheBehavior",
+          "pass": "wrapper",
+          "bucket": "provider-handled",
+          "sdkDetail": "SDK wraps it as `FunctionAssociations` ({ Quantity, Items })"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "LambdaFunctionAssociations",
+          "definition": "CacheBehavior",
+          "pass": "wrapper",
+          "bucket": "provider-handled",
+          "sdkDetail": "SDK wraps it as `LambdaFunctionAssociations` ({ Quantity, Items })"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "TrustedKeyGroups",
+          "definition": "CacheBehavior",
+          "pass": "wrapper",
+          "bucket": "provider-handled",
+          "sdkDetail": "SDK wraps it as `TrustedKeyGroups` ({ Quantity, Items })"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "TrustedSigners",
+          "definition": "CacheBehavior",
+          "pass": "wrapper",
+          "bucket": "provider-handled",
+          "sdkDetail": "SDK wraps it as `TrustedSigners` ({ Quantity, Items })"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "WhitelistedNames",
+          "definition": "Cookies",
+          "pass": "wrapper",
+          "bucket": "provider-handled",
+          "sdkDetail": "SDK wraps it as `CookieNames` ({ Quantity, Items })"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "CachedMethods",
+          "definition": "DefaultCacheBehavior",
+          "pass": "definition",
+          "bucket": "provider-handled",
+          "sdkDetail": "SDK interface `DefaultCacheBehavior` has no `CachedMethods` member"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "Aliases",
+          "definition": "DistributionConfig",
+          "pass": "wrapper",
+          "bucket": "provider-handled",
+          "sdkDetail": "SDK wraps it as `Aliases` ({ Quantity, Items })"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "CacheBehaviors",
+          "definition": "DistributionConfig",
+          "pass": "wrapper",
+          "bucket": "provider-handled",
+          "sdkDetail": "SDK wraps it as `CacheBehaviors` ({ Quantity, Items })"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "CustomErrorResponses",
+          "definition": "DistributionConfig",
+          "pass": "wrapper",
+          "bucket": "provider-handled",
+          "sdkDetail": "SDK wraps it as `CustomErrorResponses` ({ Quantity, Items })"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "Origins",
+          "definition": "DistributionConfig",
+          "pass": "wrapper",
+          "bucket": "provider-handled",
+          "sdkDetail": "SDK wraps it as `Origins` ({ Quantity, Items })"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "S3Origin",
+          "definition": "DistributionConfig",
+          "pass": "definition",
+          "bucket": "allow-listed",
+          "sdkDetail": "SDK interface `DistributionConfig` has no `S3Origin` member",
+          "rationale": "Legacy pre-2012 single-origin form (LegacyS3Origin definition), sibling of CustomOrigin; superseded by Origins[]. Invisible to the KEY pass because the StreamingDistribution API still has a same-spelled S3Origin member — the definition pass (issue #1378) is what catches it."
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "Headers",
+          "definition": "ForwardedValues",
+          "pass": "wrapper",
+          "bucket": "provider-handled",
+          "sdkDetail": "SDK wraps it as `Headers` ({ Quantity, Items })"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "QueryStringCacheKeys",
+          "definition": "ForwardedValues",
+          "pass": "wrapper",
+          "bucket": "provider-handled",
+          "sdkDetail": "SDK wraps it as `QueryStringCacheKeys` ({ Quantity, Items })"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "Locations",
+          "definition": "GeoRestriction",
+          "pass": "definition",
+          "bucket": "provider-handled",
+          "sdkDetail": "SDK interface `GeoRestriction` has no `Locations` member"
+        }
+      ],
+      "shapeCleanCount": 2,
+      "unmatchedDefinitions": [
+        "Cookies",
+        "LegacyCustomOrigin",
+        "LegacyS3Origin",
+        "Logging"
       ]
     },
     {
@@ -846,6 +1034,11 @@
           "nestedKey": "Value",
           "bucket": "same-spelling"
         }
+      ],
+      "shapeEntries": [],
+      "shapeCleanCount": 3,
+      "unmatchedDefinitions": [
+        "Configuration"
       ]
     },
     {
@@ -1095,6 +1288,14 @@
           "nestedKey": "Weight",
           "bucket": "same-spelling"
         }
+      ],
+      "shapeEntries": [],
+      "shapeCleanCount": 18,
+      "unmatchedDefinitions": [
+        "ForceNewDeployment",
+        "HookTimeoutConfig",
+        "ServiceConnectTestTrafficRulesHeader",
+        "ServiceConnectTestTrafficRulesHeaderValue"
       ]
     },
     {
@@ -1669,6 +1870,13 @@
           "nestedKey": "WorkingDirectory",
           "bucket": "same-spelling"
         }
+      ],
+      "shapeEntries": [],
+      "shapeCleanCount": 32,
+      "unmatchedDefinitions": [
+        "AuthorizationConfig",
+        "FSxAuthorizationConfig",
+        "RestartPolicy"
       ]
     }
   ]

@@ -68,5 +68,63 @@
       "Stat",
       "Value"
     ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "MetricCharacteristics": "object",
+      "MetricName": "scalar",
+      "Stat": "scalar",
+      "Configuration": "object",
+      "MetricMathAnomalyDetector": "object",
+      "Dimensions": "array",
+      "Id": "scalar",
+      "Namespace": "scalar",
+      "SingleMetricAnomalyDetector": "object"
+    },
+    "MetricCharacteristics": {
+      "PeriodicSpikes": "scalar"
+    },
+    "MetricMathAnomalyDetector": {
+      "MetricDataQueries": "array"
+    },
+    "Configuration": {
+      "MetricTimeZone": "scalar",
+      "ExcludedTimeRanges": "array"
+    },
+    "MetricStat": {
+      "Period": "scalar",
+      "Metric": "object",
+      "Stat": "scalar",
+      "Unit": "scalar"
+    },
+    "Metric": {
+      "MetricName": "scalar",
+      "Dimensions": "array",
+      "Namespace": "scalar"
+    },
+    "Dimension": {
+      "Value": "scalar",
+      "Name": "scalar"
+    },
+    "MetricDataQuery": {
+      "AccountId": "scalar",
+      "ReturnData": "scalar",
+      "Expression": "scalar",
+      "MetricStat": "object",
+      "Label": "scalar",
+      "Period": "scalar",
+      "Id": "scalar"
+    },
+    "Range": {
+      "EndTime": "scalar",
+      "StartTime": "scalar"
+    },
+    "SingleMetricAnomalyDetector": {
+      "MetricName": "scalar",
+      "Dimensions": "array",
+      "AccountId": "scalar",
+      "Stat": "scalar",
+      "Namespace": "scalar"
+    }
   }
 }

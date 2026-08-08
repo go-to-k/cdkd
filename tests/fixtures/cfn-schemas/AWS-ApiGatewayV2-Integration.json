@@ -41,5 +41,42 @@
     "TlsConfig": [
       "ServerNameToVerify"
     ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "ApiId": "scalar",
+      "ConnectionId": "scalar",
+      "ConnectionType": "scalar",
+      "ContentHandlingStrategy": "scalar",
+      "CredentialsArn": "scalar",
+      "Description": "scalar",
+      "IntegrationMethod": "scalar",
+      "IntegrationSubtype": "scalar",
+      "IntegrationId": "scalar",
+      "IntegrationType": "scalar",
+      "IntegrationUri": "scalar",
+      "PassthroughBehavior": "scalar",
+      "PayloadFormatVersion": "scalar",
+      "RequestParameters": "object",
+      "RequestTemplates": "object",
+      "ResponseParameters": "object",
+      "TemplateSelectionExpression": "scalar",
+      "TimeoutInMillis": "scalar",
+      "TlsConfig": "object"
+    },
+    "ResponseParameter": {
+      "Destination": "scalar",
+      "Source": "scalar"
+    },
+    "ResponseParameterMap": {
+      "ResponseParameters": "array"
+    },
+    "TlsConfig": {
+      "ServerNameToVerify": "scalar"
+    },
+    "Tag": {
+      "Key": "scalar",
+      "Value": "scalar"
+    }
   }
 }

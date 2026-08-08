@@ -50,5 +50,53 @@
       "Key",
       "Value"
     ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "ClusterSettings": "array",
+      "DefaultCapacityProviderStrategy": "array",
+      "Configuration": "object",
+      "ServiceConnectDefaults": "object",
+      "CapacityProviders": "array",
+      "ClusterName": "scalar",
+      "Arn": "scalar",
+      "Tags": "array"
+    },
+    "CapacityProviderStrategyItem": {
+      "CapacityProvider": "scalar",
+      "Weight": "scalar",
+      "Base": "scalar"
+    },
+    "ExecuteCommandLogConfiguration": {
+      "S3EncryptionEnabled": "scalar",
+      "CloudWatchEncryptionEnabled": "scalar",
+      "CloudWatchLogGroupName": "scalar",
+      "S3KeyPrefix": "scalar",
+      "S3BucketName": "scalar"
+    },
+    "ClusterSettings": {
+      "Value": "scalar",
+      "Name": "scalar"
+    },
+    "ManagedStorageConfiguration": {
+      "FargateEphemeralStorageKmsKeyId": "scalar",
+      "KmsKeyId": "scalar"
+    },
+    "ServiceConnectDefaults": {
+      "Namespace": "scalar"
+    },
+    "Tag": {
+      "Value": "scalar",
+      "Key": "scalar"
+    },
+    "ClusterConfiguration": {
+      "ManagedStorageConfiguration": "object",
+      "ExecuteCommandConfiguration": "object"
+    },
+    "ExecuteCommandConfiguration": {
+      "Logging": "scalar",
+      "KmsKeyId": "scalar",
+      "LogConfiguration": "object"
+    }
   }
 }

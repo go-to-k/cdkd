@@ -141,5 +141,237 @@
       "Key",
       "Value"
     ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "DistributionConfig": "object",
+      "DomainName": "scalar",
+      "Id": "scalar",
+      "Tags": "array"
+    },
+    "CacheBehavior": {
+      "AllowedMethods": "array",
+      "CachePolicyId": "scalar",
+      "CachedMethods": "array",
+      "Compress": "scalar",
+      "DefaultTTL": "scalar",
+      "FieldLevelEncryptionId": "scalar",
+      "ForwardedValues": "object",
+      "FunctionAssociations": "array",
+      "GrpcConfig": "object",
+      "LambdaFunctionAssociations": "array",
+      "MaxTTL": "scalar",
+      "MinTTL": "scalar",
+      "OriginRequestPolicyId": "scalar",
+      "PathPattern": "scalar",
+      "RealtimeLogConfigArn": "scalar",
+      "ResponseHeadersPolicyId": "scalar",
+      "SmoothStreaming": "scalar",
+      "TargetOriginId": "scalar",
+      "TrustedKeyGroups": "array",
+      "TrustedSigners": "array",
+      "ViewerProtocolPolicy": "scalar"
+    },
+    "Cookies": {
+      "Forward": "scalar",
+      "WhitelistedNames": "array"
+    },
+    "CustomErrorResponse": {
+      "ErrorCachingMinTTL": "scalar",
+      "ErrorCode": "scalar",
+      "ResponseCode": "scalar",
+      "ResponsePagePath": "scalar"
+    },
+    "CustomOriginConfig": {
+      "HTTPPort": "scalar",
+      "HTTPSPort": "scalar",
+      "OriginKeepaliveTimeout": "scalar",
+      "OriginProtocolPolicy": "scalar",
+      "OriginReadTimeout": "scalar",
+      "OriginSSLProtocols": "array",
+      "IpAddressType": "scalar",
+      "OriginMtlsConfig": "object"
+    },
+    "DefaultCacheBehavior": {
+      "AllowedMethods": "array",
+      "CachePolicyId": "scalar",
+      "CachedMethods": "array",
+      "Compress": "scalar",
+      "DefaultTTL": "scalar",
+      "FieldLevelEncryptionId": "scalar",
+      "ForwardedValues": "object",
+      "FunctionAssociations": "array",
+      "GrpcConfig": "object",
+      "LambdaFunctionAssociations": "array",
+      "MaxTTL": "scalar",
+      "MinTTL": "scalar",
+      "OriginRequestPolicyId": "scalar",
+      "RealtimeLogConfigArn": "scalar",
+      "ResponseHeadersPolicyId": "scalar",
+      "SmoothStreaming": "scalar",
+      "TargetOriginId": "scalar",
+      "TrustedKeyGroups": "array",
+      "TrustedSigners": "array",
+      "ViewerProtocolPolicy": "scalar"
+    },
+    "DistributionConfig": {
+      "Aliases": "array",
+      "AnycastIpListId": "scalar",
+      "CNAMEs": "array",
+      "CacheBehaviors": "array",
+      "Comment": "scalar",
+      "ConnectionMode": "scalar",
+      "ConnectionFunctionAssociation": "object",
+      "ContinuousDeploymentPolicyId": "scalar",
+      "CustomErrorResponses": "array",
+      "CustomOrigin": "object",
+      "DefaultCacheBehavior": "object",
+      "DefaultRootObject": "scalar",
+      "Enabled": "scalar",
+      "HttpVersion": "scalar",
+      "IPV6Enabled": "scalar",
+      "Logging": "object",
+      "OriginGroups": "object",
+      "Origins": "array",
+      "PriceClass": "scalar",
+      "Restrictions": "object",
+      "S3Origin": "object",
+      "Staging": "scalar",
+      "TenantConfig": "object",
+      "CacheTagConfig": "object",
+      "ViewerMtlsConfig": "object",
+      "ViewerCertificate": "object",
+      "WebACLId": "scalar"
+    },
+    "ForwardedValues": {
+      "Cookies": "object",
+      "Headers": "array",
+      "QueryString": "scalar",
+      "QueryStringCacheKeys": "array"
+    },
+    "FunctionAssociation": {
+      "EventType": "scalar",
+      "FunctionARN": "scalar"
+    },
+    "GeoRestriction": {
+      "Locations": "array",
+      "RestrictionType": "scalar"
+    },
+    "GrpcConfig": {
+      "Enabled": "scalar"
+    },
+    "LambdaFunctionAssociation": {
+      "EventType": "scalar",
+      "IncludeBody": "scalar",
+      "LambdaFunctionARN": "scalar"
+    },
+    "LegacyCustomOrigin": {
+      "DNSName": "scalar",
+      "HTTPPort": "scalar",
+      "HTTPSPort": "scalar",
+      "OriginProtocolPolicy": "scalar",
+      "OriginSSLProtocols": "array"
+    },
+    "LegacyS3Origin": {
+      "DNSName": "scalar",
+      "OriginAccessIdentity": "scalar"
+    },
+    "Logging": {
+      "Bucket": "scalar",
+      "IncludeCookies": "scalar",
+      "Prefix": "scalar"
+    },
+    "Origin": {
+      "ConnectionAttempts": "scalar",
+      "ConnectionTimeout": "scalar",
+      "ResponseCompletionTimeout": "scalar",
+      "CustomOriginConfig": "object",
+      "DomainName": "scalar",
+      "Id": "scalar",
+      "OriginAccessControlId": "scalar",
+      "OriginCustomHeaders": "array",
+      "OriginPath": "scalar",
+      "OriginShield": "object",
+      "S3OriginConfig": "object",
+      "VpcOriginConfig": "object"
+    },
+    "OriginCustomHeader": {
+      "HeaderName": "scalar",
+      "HeaderValue": "scalar"
+    },
+    "OriginGroup": {
+      "FailoverCriteria": "object",
+      "Id": "scalar",
+      "Members": "object",
+      "SelectionCriteria": "scalar"
+    },
+    "OriginGroupFailoverCriteria": {
+      "StatusCodes": "object"
+    },
+    "OriginGroupMember": {
+      "OriginId": "scalar"
+    },
+    "OriginGroupMembers": {
+      "Items": "array",
+      "Quantity": "scalar"
+    },
+    "OriginGroups": {
+      "Items": "array",
+      "Quantity": "scalar"
+    },
+    "OriginMtlsConfig": {
+      "ClientCertificateArn": "scalar"
+    },
+    "OriginShield": {
+      "Enabled": "scalar",
+      "OriginShieldRegion": "scalar"
+    },
+    "ParameterDefinition": {
+      "Name": "scalar",
+      "Definition": "object"
+    },
+    "Restrictions": {
+      "GeoRestriction": "object"
+    },
+    "S3OriginConfig": {
+      "OriginAccessIdentity": "scalar",
+      "OriginReadTimeout": "scalar"
+    },
+    "StatusCodes": {
+      "Items": "array",
+      "Quantity": "scalar"
+    },
+    "Tag": {
+      "Key": "scalar",
+      "Value": "scalar"
+    },
+    "ConnectionFunctionAssociation": {
+      "Id": "scalar"
+    },
+    "TrustStoreConfig": {
+      "TrustStoreId": "scalar",
+      "AdvertiseTrustStoreCaNames": "scalar",
+      "IgnoreCertificateExpiry": "scalar"
+    },
+    "ViewerCertificate": {
+      "AcmCertificateArn": "scalar",
+      "CloudFrontDefaultCertificate": "scalar",
+      "IamCertificateId": "scalar",
+      "MinimumProtocolVersion": "scalar",
+      "SslSupportMethod": "scalar"
+    },
+    "CacheTagConfig": {
+      "HeaderName": "scalar"
+    },
+    "ViewerMtlsConfig": {
+      "Mode": "scalar",
+      "TrustStoreConfig": "object"
+    },
+    "VpcOriginConfig": {
+      "OriginKeepaliveTimeout": "scalar",
+      "OriginReadTimeout": "scalar",
+      "OwnerAccountId": "scalar",
+      "VpcOriginId": "scalar"
+    }
   }
 }

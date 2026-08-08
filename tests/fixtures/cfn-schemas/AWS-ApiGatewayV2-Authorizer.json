@@ -30,5 +30,25 @@
       "Audience",
       "Issuer"
     ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "IdentityValidationExpression": "scalar",
+      "AuthorizerUri": "scalar",
+      "AuthorizerCredentialsArn": "scalar",
+      "AuthorizerType": "scalar",
+      "IdentitySource": "array",
+      "JwtConfiguration": "object",
+      "AuthorizerResultTtlInSeconds": "scalar",
+      "AuthorizerPayloadFormatVersion": "scalar",
+      "EnableSimpleResponses": "scalar",
+      "ApiId": "scalar",
+      "AuthorizerId": "scalar",
+      "Name": "scalar"
+    },
+    "JWTConfiguration": {
+      "Issuer": "scalar",
+      "Audience": "array"
+    }
   }
 }

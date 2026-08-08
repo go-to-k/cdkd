@@ -35,5 +35,31 @@
       "ThrottlingBurstLimit",
       "ThrottlingRateLimit"
     ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "ClientCertificateId": "scalar",
+      "DeploymentId": "scalar",
+      "Description": "scalar",
+      "AutoDeploy": "scalar",
+      "AccessLogSettings": "object",
+      "RouteSettings": "object",
+      "StageName": "scalar",
+      "StageVariables": "object",
+      "ApiId": "scalar",
+      "DefaultRouteSettings": "object",
+      "Tags": "object"
+    },
+    "AccessLogSettings": {
+      "Format": "scalar",
+      "DestinationArn": "scalar"
+    },
+    "RouteSettings": {
+      "LoggingLevel": "scalar",
+      "DataTraceEnabled": "scalar",
+      "ThrottlingBurstLimit": "scalar",
+      "DetailedMetricsEnabled": "scalar",
+      "ThrottlingRateLimit": "scalar"
+    }
   }
 }

@@ -47,15 +47,36 @@
  *     member is `IsIPV6Enabled`).
  * An allow-list records deliberate pass-throughs with a one-line rationale.
  *
- * WHAT V1 DOES NOT DO
- * -------------------
- * Shape-level divergences (bare array vs `{Quantity, Items}` wrappers,
- * sibling-vs-nested placement like CloudFront's `CachedMethods`) share a
- * spelling with a real SDK member and therefore classify `same-spelling`
- * here. Mechanizing shape audits is recorded as follow-up in issue #1373.
- * The "provider names the key" test is also deliberately loose — a literal
+ * THE SHAPE PASS (issue #1378)
+ * ----------------------------
+ * Shape-level divergences share a spelling with a real SDK member, so the
+ * key pass cannot see them. A second pass over the fixtures'
+ * `definitionShapes` capture (per-definition member -> terminal type kind)
+ * audits two such classes, both CI-blocking when neither provider-named nor
+ * allow-listed:
+ *   - array-vs-wrapper          — CFn declares a bare array where every
+ *     same-spelled SDK member is a `{Quantity, Items}` wrapper reference
+ *     (the CloudFront idiom). Mechanizes the previously hand-maintained
+ *     QUANTITY_ITEM_FIELDS class: a NEW array member AWS adds to
+ *     DistributionConfig now flags until the provider wraps it.
+ *   - definition-member-missing — a CFn definition's member that same-spells
+ *     an SDK member SOMEWHERE but is missing from the same-named SDK
+ *     interface (renamed or relocated — `CachedMethods` sibling-vs-nested,
+ *     `GeoRestriction.Locations`, the legacy `S3Origin`).
+ * Provider evidence for shapes is the DOT-SEGMENT-EXPANDED literal set (the
+ * `'ForwardedValues.Headers'` path idiom names both segments); the key pass
+ * keeps the strict, unexpanded set. Members with no same-spelled SDK member
+ * anywhere stay the key pass's domain — the passes never double-report a
+ * key-reachability finding as a shape finding. CFn definitions with no
+ * same-named SDK interface are skipped and surfaced as a visible count.
+ *
+ * WHAT THE CRITIC STILL DOES NOT DO
+ * ---------------------------------
+ * The "provider names the key" test is deliberately loose — a literal
  * mentioned for an unrelated reason counts as handled (false-negative
- * direction; the matrix keeps every verdict visible for review).
+ * direction; the matrix keeps every verdict visible for review). Scalar
+ * type-kind mismatches (string-vs-number) are not audited — providers
+ * coerce per key and the SDK serializer tolerates most of them.
  *
  * OFFLINE-ONLY (NO AWS)
  * ---------------------
@@ -243,6 +264,16 @@ export const NESTED_KEY_ALLOW_LIST: ReadonlyMap<string, AllowListEntry> = new Ma
         'LegacyS3Origin definitions); unreachable from a modern template.',
     },
   ],
+  [
+    allowKey('AWS::CloudFront::Distribution', 'S3Origin'),
+    {
+      rationale:
+        'Legacy pre-2012 single-origin form (LegacyS3Origin definition), sibling of ' +
+        'CustomOrigin; superseded by Origins[]. Invisible to the KEY pass because the ' +
+        'StreamingDistribution API still has a same-spelled S3Origin member — the ' +
+        'definition pass (issue #1378) is what catches it.',
+    },
+  ],
 ]);
 
 export type Bucket =
@@ -261,6 +292,44 @@ export interface NestedKeyClassification {
   readonly rationale?: string;
 }
 
+/**
+ * SHAPE-pass buckets (issue #1378). Only non-trivial verdicts become entries;
+ * shape-clean pairs are counted in the summary, not listed.
+ *   - provider-handled           — the provider names the key (dot-segment
+ *                                  expanded literals), so the re-shaping is
+ *                                  assumed done somewhere.
+ *   - allow-listed               — deliberate pass-through with a rationale.
+ *   - array-vs-wrapper           — CFn declares a bare array; every same-named
+ *                                  SDK member is a `{Quantity, Items}` wrapper
+ *                                  reference. Unconverted, the SDK serializer
+ *                                  drops the bare array. BLOCKS CI.
+ *   - definition-member-missing  — the CFn definition's member same-spells an
+ *                                  SDK member SOMEWHERE, but the same-named SDK
+ *                                  interface lacks it (renamed or relocated —
+ *                                  the CloudFront `CachedMethods`
+ *                                  sibling-vs-nested class). BLOCKS CI.
+ *   - ambiguous                  — CFn shape is 'mixed' or the SDK side has
+ *                                  conflicting kinds; visible, non-blocking.
+ */
+export type ShapeBucket =
+  | 'provider-handled'
+  | 'allow-listed'
+  | 'array-vs-wrapper'
+  | 'definition-member-missing'
+  | 'ambiguous';
+
+export interface NestedShapeClassification {
+  readonly resourceType: string;
+  readonly nestedKey: string;
+  /** The CFn definition the verdict came from ('#top' = top-level block). */
+  readonly definition: string;
+  readonly pass: 'wrapper' | 'definition';
+  readonly bucket: ShapeBucket;
+  /** Human-oriented detail (e.g. the wrapper interface name). */
+  readonly sdkDetail?: string;
+  readonly rationale?: string;
+}
+
 export interface TargetReport {
   readonly resourceType: string;
   readonly providerFile: string;
@@ -268,6 +337,12 @@ export interface TargetReport {
   readonly keyStyle: KeyStyle;
   readonly nestedKeyCount: number;
   readonly entries: readonly NestedKeyClassification[];
+  /** Shape-pass verdicts (only non-trivial ones — see {@link ShapeBucket}). */
+  readonly shapeEntries: readonly NestedShapeClassification[];
+  /** CFn array members whose same-named SDK member is a bare array (clean). */
+  readonly shapeCleanCount: number;
+  /** CFn definitions with no same-named SDK interface (skipped, visible). */
+  readonly unmatchedDefinitions: readonly string[];
 }
 
 export interface NestedKeyCoverageReport {
@@ -279,6 +354,12 @@ export interface NestedKeyCoverageReport {
     readonly allowListed: number;
     readonly caseDivergence: number;
     readonly noSdkMember: number;
+    readonly shapeClean: number;
+    readonly shapeHandled: number;
+    readonly shapeAllowListed: number;
+    readonly arrayVsWrapper: number;
+    readonly definitionMemberMissing: number;
+    readonly shapeAmbiguous: number;
   };
   readonly targets: readonly TargetReport[];
 }
@@ -315,6 +396,106 @@ export function collectSdkMemberNames(modelsDir: string): Set<string> {
     visit(sf);
   }
   return names;
+}
+
+/** The declared type kind of one SDK interface member. */
+export interface SdkMemberType {
+  readonly kind: 'array' | 'ref' | 'scalar';
+  /** For kind 'ref': the referenced type name. */
+  readonly refName?: string;
+}
+
+/**
+ * Collect every INTERFACE in the SDK client's model typings with its members'
+ * declared type kinds. `X | undefined` unions are unwrapped; `Y[]` and
+ * `Array<Y>` classify 'array'; a bare type reference classifies 'ref' with
+ * the referenced name; everything else 'scalar'.
+ *
+ * Consumed by the shape pass: a member whose type is a reference to an
+ * interface that itself declares a `Quantity` member is a `{Quantity, Items}`
+ * WRAPPER — the CloudFront idiom where the CFn template carries a bare array.
+ */
+export function collectSdkInterfaces(modelsDir: string): Map<string, Map<string, SdkMemberType>> {
+  const interfaces = new Map<string, Map<string, SdkMemberType>>();
+
+  const classifyType = (typeNode: ts.TypeNode | undefined): SdkMemberType => {
+    if (!typeNode) return { kind: 'scalar' };
+    let node: ts.TypeNode = typeNode;
+    if (ts.isUnionTypeNode(node)) {
+      const nonNullish = node.types.filter(
+        (t) =>
+          !(ts.isLiteralTypeNode(t) && t.literal.kind === ts.SyntaxKind.NullKeyword) &&
+          t.kind !== ts.SyntaxKind.UndefinedKeyword
+      );
+      if (nonNullish.length !== 1) return { kind: 'scalar' };
+      node = nonNullish[0]!;
+    }
+    if (ts.isArrayTypeNode(node)) return { kind: 'array' };
+    if (ts.isTypeReferenceNode(node) && ts.isIdentifier(node.typeName)) {
+      if (node.typeName.text === 'Array') return { kind: 'array' };
+      return { kind: 'ref', refName: node.typeName.text };
+    }
+    return { kind: 'scalar' };
+  };
+
+  for (const file of readdirSync(modelsDir).sort()) {
+    if (!file.endsWith('.d.ts')) continue;
+    const source = readFileSync(join(modelsDir, file), 'utf8');
+    const sf = ts.createSourceFile(file, source, ts.ScriptTarget.ESNext, true, ts.ScriptKind.TS);
+    const visit = (node: ts.Node): void => {
+      if (ts.isInterfaceDeclaration(node)) {
+        const members =
+          interfaces.get(node.name.text) ?? new Map<string, SdkMemberType>();
+        for (const member of node.members) {
+          if (
+            ts.isPropertySignature(member) &&
+            (ts.isIdentifier(member.name) || ts.isStringLiteral(member.name))
+          ) {
+            members.set(member.name.text, classifyType(member.type));
+          }
+        }
+        interfaces.set(node.name.text, members);
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(sf);
+  }
+  return interfaces;
+}
+
+/**
+ * Interface names that are `{Quantity, Items}` wrappers: they declare a
+ * `Quantity` member. (`Items` alone is not required — `TrustedSigners` /
+ * `TrustedKeyGroups` wrappers make `Items` optional but always carry
+ * `Quantity`.)
+ */
+export function wrapperInterfaceNames(
+  interfaces: ReadonlyMap<string, ReadonlyMap<string, SdkMemberType>>
+): Set<string> {
+  const wrappers = new Set<string>();
+  for (const [name, members] of interfaces) {
+    if (members.has('Quantity')) wrappers.add(name);
+  }
+  return wrappers;
+}
+
+/**
+ * Expand dotted literals into their segments: a provider that names a nested
+ * conversion path as `'ForwardedValues.Headers'` (the CloudFront
+ * `applyQuantityAtPath` idiom) has named BOTH keys for shape-handling
+ * purposes. Kept SEPARATE from the key pass's literal set — the key pass
+ * stays strict (a dotted path is not evidence of a key RENAME).
+ */
+export function expandLiteralSegments(literals: ReadonlySet<string>): Set<string> {
+  const out = new Set(literals);
+  for (const lit of literals) {
+    if (lit.includes('.')) {
+      for (const segment of lit.split('.')) {
+        if (segment.length > 0) out.add(segment);
+      }
+    }
+  }
+  return out;
 }
 
 /**
@@ -399,6 +580,148 @@ export function classifyTarget(
   return out;
 }
 
+export interface ShapePassResult {
+  readonly entries: NestedShapeClassification[];
+  readonly cleanCount: number;
+  readonly unmatchedDefinitions: string[];
+}
+
+/**
+ * SHAPE pass (issue #1378): audits divergences the key-spelling pass is blind
+ * to because the spelling exists SOMEWHERE in the SDK model.
+ *
+ * Two sub-passes over the fixture's `definitionShapes` capture:
+ *   - WRAPPER: a CFn member declared `array` whose same-spelled SDK members
+ *     are all `{Quantity, Items}` wrapper references (none is a bare array) —
+ *     the provider must wrap it or the serializer drops it.
+ *   - DEFINITION: for each CFn definition with a same-named SDK interface,
+ *     a member that same-spells an SDK member globally but is MISSING from
+ *     that interface (renamed or relocated — `CachedMethods`). Members with
+ *     no same-spelled SDK member anywhere are the KEY pass's domain and are
+ *     skipped here, so the two passes never double-report.
+ *
+ * Deliberately scoped to definitions REACHABLE from the provider's handled
+ * top-levels? No — the whole definitionShapes map is audited: definitions are
+ * shared sub-shapes and reachability pruning would re-derive the nested walk
+ * for marginal gain; an unreachable definition's divergence is at worst a
+ * false positive to allow-list, and none exists in the current targets.
+ */
+export function classifyTargetShapes(
+  target: NestedKeyTarget,
+  definitionShapes: Readonly<Record<string, Record<string, string>>>,
+  sdkInterfaces: ReadonlyMap<string, ReadonlyMap<string, SdkMemberType>>,
+  providerLiterals: ReadonlySet<string>,
+  allowList: ReadonlyMap<string, AllowListEntry> = NESTED_KEY_ALLOW_LIST
+): ShapePassResult {
+  const wrappers = wrapperInterfaceNames(sdkInterfaces);
+  const shapeLiterals = expandLiteralSegments(providerLiterals);
+
+  // Global SDK member index: styled name -> every declared kind.
+  const globalKinds = new Map<string, SdkMemberType[]>();
+  for (const members of sdkInterfaces.values()) {
+    for (const [name, type] of members) {
+      const list = globalKinds.get(name) ?? [];
+      list.push(type);
+      globalKinds.set(name, list);
+    }
+  }
+
+  const styled = (key: string): string =>
+    target.keyStyle === 'lower-first' ? lowerFirst(key) : key;
+
+  const entries: NestedShapeClassification[] = [];
+  let cleanCount = 0;
+  const unmatchedDefinitions: string[] = [];
+  // The wrapper verdict is per KEY (deduped across definitions, like the key
+  // pass); the definition verdict is per (definition, key).
+  const wrapperSeen = new Set<string>();
+
+  const resolveAudited = (
+    key: string,
+    definition: string,
+    pass: 'wrapper' | 'definition',
+    blockingBucket: ShapeBucket,
+    sdkDetail: string | undefined
+  ): void => {
+    const allowed = allowList.get(allowKey(target.resourceType, key));
+    let bucket: ShapeBucket;
+    let rationale: string | undefined;
+    if (shapeLiterals.has(key)) {
+      bucket = 'provider-handled';
+    } else if (allowed) {
+      bucket = 'allow-listed';
+      rationale = allowed.rationale;
+    } else {
+      bucket = blockingBucket;
+    }
+    entries.push({
+      resourceType: target.resourceType,
+      nestedKey: key,
+      definition,
+      pass,
+      bucket,
+      ...(sdkDetail !== undefined ? { sdkDetail } : {}),
+      ...(rationale !== undefined ? { rationale } : {}),
+    });
+  };
+
+  for (const [defName, members] of Object.entries(definitionShapes)) {
+    const sdkIface = defName === '#top' ? undefined : sdkInterfaces.get(defName);
+    if (defName !== '#top' && !sdkIface) unmatchedDefinitions.push(defName);
+
+    for (const [key, shape] of Object.entries(members)) {
+      const kinds = globalKinds.get(styled(key));
+
+      // WRAPPER sub-pass (per key, deduped).
+      if (shape === 'array' && kinds && !wrapperSeen.has(key)) {
+        wrapperSeen.add(key);
+        if (kinds.some((k) => k.kind === 'array')) {
+          cleanCount++;
+        } else {
+          const wrapperRef = kinds.find(
+            (k) => k.kind === 'ref' && k.refName !== undefined && wrappers.has(k.refName)
+          );
+          if (wrapperRef) {
+            resolveAudited(
+              key,
+              defName,
+              'wrapper',
+              'array-vs-wrapper',
+              `SDK wraps it as \`${wrapperRef.refName}\` ({ Quantity, Items })`
+            );
+          } else {
+            // Array on the CFn side, neither array nor wrapper on the SDK
+            // side — cannot be auto-judged. A provider that names the key is
+            // credited (CloudFront `Tags` — SDK `{ Items }`, no Quantity —
+            // handled by the dedicated tag path); otherwise visible as
+            // ambiguous, never blocking.
+            entries.push({
+              resourceType: target.resourceType,
+              nestedKey: key,
+              definition: defName,
+              pass: 'wrapper',
+              bucket: shapeLiterals.has(key) ? 'provider-handled' : 'ambiguous',
+            });
+          }
+        }
+      }
+
+      // DEFINITION sub-pass (per definition + key).
+      if (sdkIface && kinds && !sdkIface.has(styled(key))) {
+        resolveAudited(
+          key,
+          defName,
+          'definition',
+          'definition-member-missing',
+          `SDK interface \`${defName}\` has no \`${styled(key)}\` member`
+        );
+      }
+    }
+  }
+
+  return { entries, cleanCount, unmatchedDefinitions: unmatchedDefinitions.sort() };
+}
+
 /**
  * The nested CFn keys audited for a target: the union of the fixture's
  * `nestedProperties` entries for the top-level properties THIS PROVIDER
@@ -424,7 +747,10 @@ export function nestedKeysForTarget(
 export function buildReport(targets: readonly TargetReport[]): NestedKeyCoverageReport {
   const sorted = [...targets].sort((a, b) => a.resourceType.localeCompare(b.resourceType));
   const all = sorted.flatMap((t) => t.entries);
+  const allShapes = sorted.flatMap((t) => t.shapeEntries);
   const count = (b: Bucket): number => all.filter((e) => e.bucket === b).length;
+  const countShape = (b: ShapeBucket): number =>
+    allShapes.filter((e) => e.bucket === b).length;
   return {
     summary: {
       targetCount: sorted.length,
@@ -434,17 +760,45 @@ export function buildReport(targets: readonly TargetReport[]): NestedKeyCoverage
       allowListed: count('allow-listed'),
       caseDivergence: count('case-divergence'),
       noSdkMember: count('no-sdk-member'),
+      shapeClean: sorted.reduce((n, t) => n + t.shapeCleanCount, 0),
+      shapeHandled: countShape('provider-handled'),
+      shapeAllowListed: countShape('allow-listed'),
+      arrayVsWrapper: countShape('array-vs-wrapper'),
+      definitionMemberMissing: countShape('definition-member-missing'),
+      shapeAmbiguous: countShape('ambiguous'),
     },
     targets: sorted,
   };
 }
 
-export function findDivergences(
-  report: NestedKeyCoverageReport
-): readonly NestedKeyClassification[] {
-  return report.targets
+/** A blocking finding from either pass, normalized for reporting. */
+export interface Divergence {
+  readonly resourceType: string;
+  readonly nestedKey: string;
+  readonly bucket: Bucket | ShapeBucket;
+  readonly detail?: string;
+}
+
+export function findDivergences(report: NestedKeyCoverageReport): readonly Divergence[] {
+  const keyDivergences: Divergence[] = report.targets
     .flatMap((t) => t.entries)
-    .filter((e) => e.bucket === 'case-divergence' || e.bucket === 'no-sdk-member');
+    .filter((e) => e.bucket === 'case-divergence' || e.bucket === 'no-sdk-member')
+    .map((e) => ({
+      resourceType: e.resourceType,
+      nestedKey: e.nestedKey,
+      bucket: e.bucket,
+      ...(e.sdkNearMiss !== undefined ? { detail: `SDK has \`${e.sdkNearMiss}\`` } : {}),
+    }));
+  const shapeDivergences: Divergence[] = report.targets
+    .flatMap((t) => t.shapeEntries)
+    .filter((e) => e.bucket === 'array-vs-wrapper' || e.bucket === 'definition-member-missing')
+    .map((e) => ({
+      resourceType: e.resourceType,
+      nestedKey: e.nestedKey,
+      bucket: e.bucket,
+      ...(e.sdkDetail !== undefined ? { detail: e.sdkDetail } : {}),
+    }));
+  return [...keyDivergences, ...shapeDivergences];
 }
 
 /** Allow-list entries that no longer match any audited key — must be pruned. */
@@ -452,12 +806,16 @@ export function findStaleAllowListEntries(
   report: NestedKeyCoverageReport,
   allowList: ReadonlyMap<string, AllowListEntry> = NESTED_KEY_ALLOW_LIST
 ): string[] {
-  const used = new Set(
-    report.targets
+  const used = new Set([
+    ...report.targets
       .flatMap((t) => t.entries)
       .filter((e) => e.bucket === 'allow-listed')
-      .map((e) => allowKey(e.resourceType, e.nestedKey))
-  );
+      .map((e) => allowKey(e.resourceType, e.nestedKey)),
+    ...report.targets
+      .flatMap((t) => t.shapeEntries)
+      .filter((e) => e.bucket === 'allow-listed')
+      .map((e) => allowKey(e.resourceType, e.nestedKey)),
+  ]);
   return [...allowList.keys()].filter((k) => !used.has(k)).sort();
 }
 
@@ -488,6 +846,16 @@ function renderMarkdown(report: NestedKeyCoverageReport): string {
   lines.push(`- Allow-listed pass-throughs (does NOT block CI): **${report.summary.allowListed}**`);
   lines.push(`- **Case divergences (blocks CI): ${report.summary.caseDivergence}**`);
   lines.push(`- **No SDK member (blocks CI): ${report.summary.noSdkMember}**`);
+  lines.push(`- Shape pass — bare-array pairs clean: **${report.summary.shapeClean}**`);
+  lines.push(`- Shape pass — explicitly handled in provider: **${report.summary.shapeHandled}**`);
+  lines.push(
+    `- Shape pass — allow-listed (does NOT block CI): **${report.summary.shapeAllowListed}**`
+  );
+  lines.push(`- **Array-vs-wrapper divergences (blocks CI): ${report.summary.arrayVsWrapper}**`);
+  lines.push(
+    `- **Definition-member-missing divergences (blocks CI): ${report.summary.definitionMemberMissing}**`
+  );
+  lines.push(`- Shape pass — ambiguous (visible, non-blocking): **${report.summary.shapeAmbiguous}**`);
   lines.push('');
 
   const divergences = findDivergences(report);
@@ -501,13 +869,11 @@ function renderMarkdown(report: NestedKeyCoverageReport): string {
         'scripts/gen-nested-key-coverage.ts.'
     );
     lines.push('');
-    lines.push('| Resource type | CFn nested key | Bucket | SDK near-miss |');
+    lines.push('| Resource type | CFn nested key | Bucket | SDK detail |');
     lines.push('| --- | --- | --- | --- |');
     for (const d of divergences) {
       lines.push(
-        `| \`${d.resourceType}\` | \`${d.nestedKey}\` | ${d.bucket} | ${
-          d.sdkNearMiss ? `\`${d.sdkNearMiss}\`` : '—'
-        } |`
+        `| \`${d.resourceType}\` | \`${d.nestedKey}\` | ${d.bucket} | ${d.detail ?? '—'} |`
       );
     }
     lines.push('');
@@ -521,7 +887,10 @@ function renderMarkdown(report: NestedKeyCoverageReport): string {
     lines.push('');
   }
 
-  const allowListed = report.targets.flatMap((t) => t.entries).filter((e) => e.bucket === 'allow-listed');
+  const allowListed = [
+    ...report.targets.flatMap((t) => t.entries).filter((e) => e.bucket === 'allow-listed'),
+    ...report.targets.flatMap((t) => t.shapeEntries).filter((e) => e.bucket === 'allow-listed'),
+  ];
   if (allowListed.length > 0) {
     lines.push('## Allow-listed pass-throughs');
     lines.push('');
@@ -552,14 +921,55 @@ function renderMarkdown(report: NestedKeyCoverageReport): string {
   }
   lines.push('');
 
+  const shapeHandled = report.targets
+    .flatMap((t) => t.shapeEntries)
+    .filter((e) => e.bucket === 'provider-handled');
+  if (shapeHandled.length > 0) {
+    lines.push('## Shape pass — provider-handled re-shapings');
+    lines.push('');
+    lines.push(
+      'CFn members whose SHAPE diverges from the same-spelled SDK member ' +
+        '(bare array vs `{Quantity, Items}` wrapper, or missing from the ' +
+        'same-named SDK interface) that the provider explicitly names. A ' +
+        'provider rename that orphans one of these is visible in the diff.'
+    );
+    lines.push('');
+    lines.push('| Resource type | CFn definition | Member | Pass | SDK detail |');
+    lines.push('| --- | --- | --- | --- | --- |');
+    for (const e of shapeHandled) {
+      lines.push(
+        `| \`${e.resourceType}\` | \`${e.definition}\` | \`${e.nestedKey}\` | ${e.pass} | ${
+          e.sdkDetail ?? '—'
+        } |`
+      );
+    }
+    lines.push('');
+  }
+
+  const ambiguous = report.targets
+    .flatMap((t) => t.shapeEntries)
+    .filter((e) => e.bucket === 'ambiguous');
+  if (ambiguous.length > 0) {
+    lines.push('## Shape pass — ambiguous (non-blocking)');
+    lines.push('');
+    lines.push('| Resource type | CFn definition | Member |');
+    lines.push('| --- | --- | --- |');
+    for (const e of ambiguous) {
+      lines.push(`| \`${e.resourceType}\` | \`${e.definition}\` | \`${e.nestedKey}\` |`);
+    }
+    lines.push('');
+  }
+
   lines.push('## Audited targets');
   lines.push('');
-  lines.push('| Resource type | Provider | SDK client | Key style | Nested keys |');
-  lines.push('| --- | --- | --- | --- | --- |');
+  lines.push(
+    '| Resource type | Provider | SDK client | Key style | Nested keys | Unmatched definitions |'
+  );
+  lines.push('| --- | --- | --- | --- | --- | --- |');
   for (const t of report.targets) {
     lines.push(
       `| \`${t.resourceType}\` | \`${t.providerFile}\` | \`${t.sdkClientPackage}\` | ` +
-        `${t.keyStyle} | ${t.nestedKeyCount} |`
+        `${t.keyStyle} | ${t.nestedKeyCount} | ${t.unmatchedDefinitions.length} |`
     );
   }
   lines.push('');
@@ -579,6 +989,7 @@ export function loadReport(
   targetList: readonly NestedKeyTarget[] = NESTED_KEY_TARGETS
 ): NestedKeyCoverageReport {
   const sdkMembersByPackage = new Map<string, Set<string>>();
+  const sdkInterfacesByPackage = new Map<string, Map<string, Map<string, SdkMemberType>>>();
   const literalsByFile = new Map<string, Set<string>>();
   const handledByFile = new Map<string, Map<string, Set<string>>>();
 
@@ -593,6 +1004,7 @@ export function loadReport(
     }
     const fixture = JSON.parse(readFileSync(fixturePath, 'utf8')) as {
       nestedProperties?: Record<string, string[]>;
+      definitionShapes?: Record<string, Record<string, string>>;
     };
     // The refresher omits `nestedProperties` entirely for a type with zero
     // nested names, so absence is only an error when the target expects a
@@ -605,9 +1017,17 @@ export function loadReport(
           'added by issue #1373)'
       );
     }
+    if (!fixture.definitionShapes) {
+      throw new Error(
+        `fixture for ${target.resourceType} has no definitionShapes capture — re-run ` +
+          `\`node scripts/refresh-cfn-schemas.mjs ${target.resourceType}\` (the field was ` +
+          'added by issue #1378)'
+      );
+    }
 
     let sdkMembers = sdkMembersByPackage.get(target.sdkClientPackage);
-    if (!sdkMembers) {
+    let sdkInterfaces = sdkInterfacesByPackage.get(target.sdkClientPackage);
+    if (!sdkMembers || !sdkInterfaces) {
       const modelsDir = resolve(
         repoRoot,
         'node_modules',
@@ -624,7 +1044,19 @@ export function loadReport(
             `${sdkMembers.size} names (< ${MIN_SDK_MEMBERS_PER_CLIENT}) — parser regression?`
         );
       }
+      sdkInterfaces = collectSdkInterfaces(modelsDir);
+      // The interface parse shares the member floor: interfaces carry the
+      // same PropertySignatures, so a collapse below the floor is the same
+      // parser regression.
+      const interfaceMemberCount = [...sdkInterfaces.values()].reduce((n, m) => n + m.size, 0);
+      if (interfaceMemberCount < MIN_SDK_MEMBERS_PER_CLIENT) {
+        throw new Error(
+          `SDK interface parse for ${target.sdkClientPackage} collapsed to ` +
+            `${interfaceMemberCount} members (< ${MIN_SDK_MEMBERS_PER_CLIENT}) — parser regression?`
+        );
+      }
       sdkMembersByPackage.set(target.sdkClientPackage, sdkMembers);
+      sdkInterfacesByPackage.set(target.sdkClientPackage, sdkInterfaces);
     }
 
     const providerPath = join(PROVIDERS_DIR, target.providerFile);
@@ -653,6 +1085,13 @@ export function loadReport(
       );
     }
 
+    const shapeResult = classifyTargetShapes(
+      target,
+      fixture.definitionShapes,
+      sdkInterfaces,
+      literals
+    );
+
     targets.push({
       resourceType: target.resourceType,
       providerFile: target.providerFile,
@@ -660,6 +1099,9 @@ export function loadReport(
       keyStyle: target.keyStyle,
       nestedKeyCount: nestedKeys.length,
       entries: classifyTarget(target, nestedKeys, sdkMembers, literals),
+      shapeEntries: shapeResult.entries,
+      shapeCleanCount: shapeResult.cleanCount,
+      unmatchedDefinitions: shapeResult.unmatchedDefinitions,
     });
   }
   return buildReport(targets);
@@ -691,8 +1133,8 @@ function main(): void {
           'scripts/gen-nested-key-coverage.ts.\n\n'
       );
       for (const d of divergences) {
-        const near = d.sdkNearMiss ? ` (SDK has \`${d.sdkNearMiss}\`)` : '';
-        process.stderr.write(`  ${d.resourceType}: ${d.nestedKey} [${d.bucket}]${near}\n`);
+        const detail = d.detail ? ` (${d.detail})` : '';
+        process.stderr.write(`  ${d.resourceType}: ${d.nestedKey} [${d.bucket}]${detail}\n`);
       }
       process.exit(1);
     }
@@ -702,6 +1144,14 @@ function main(): void {
         `(${report.summary.sameSpelling} same-spelling, ` +
         `${report.summary.providerHandled} provider-handled` +
         (report.summary.allowListed > 0 ? `, ${report.summary.allowListed} allow-listed` : '') +
+        `); shape pass 0 divergences (${report.summary.shapeClean} clean, ` +
+        `${report.summary.shapeHandled} provider-handled` +
+        (report.summary.shapeAllowListed > 0
+          ? `, ${report.summary.shapeAllowListed} allow-listed`
+          : '') +
+        (report.summary.shapeAmbiguous > 0
+          ? `, ${report.summary.shapeAmbiguous} ambiguous`
+          : '') +
         ').\n'
     );
     return;
@@ -714,7 +1164,9 @@ function main(): void {
     `nested-key-coverage: wrote nested-key-coverage.{json,md} — ` +
       `${report.summary.nestedKeyCount} nested keys, ` +
       `${report.summary.caseDivergence} case divergence(s), ` +
-      `${report.summary.noSdkMember} no-sdk-member key(s).\n`
+      `${report.summary.noSdkMember} no-sdk-member key(s), ` +
+      `${report.summary.arrayVsWrapper} array-vs-wrapper, ` +
+      `${report.summary.definitionMemberMissing} definition-member-missing.\n`
   );
 }
 
