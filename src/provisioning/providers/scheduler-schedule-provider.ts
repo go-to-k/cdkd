@@ -100,8 +100,10 @@ export class SchedulerScheduleProvider implements ResourceProvider {
 
   /**
    * Map the CFn property shape to the Scheduler SDK input shape. The two
-   * are PascalCase-identical except `StartDate` / `EndDate`, which CFn
-   * carries as ISO strings and the SDK types as `Date`.
+   * are PascalCase-identical except `StartDate` / `EndDate` (CFn carries
+   * ISO strings, the SDK types `Date`) and the Target's ECS sub-shapes
+   * (camelCase islands in the SDK model — see {@link toSdkTarget},
+   * issue #1382).
    */
   private toSdkFields(
     properties: Record<string, unknown>
@@ -109,7 +111,7 @@ export class SchedulerScheduleProvider implements ResourceProvider {
     return {
       ScheduleExpression: properties['ScheduleExpression'] as string,
       FlexibleTimeWindow: properties['FlexibleTimeWindow'] as FlexibleTimeWindow,
-      Target: properties['Target'] as Target,
+      Target: this.toSdkTarget(properties['Target'] as Record<string, unknown>),
       ...(properties['Description'] !== undefined && {
         Description: properties['Description'] as string,
       }),
@@ -129,6 +131,106 @@ export class SchedulerScheduleProvider implements ResourceProvider {
         KmsKeyArn: properties['KmsKeyArn'] as string,
       }),
     };
+  }
+
+  /**
+   * Convert the CFn-shaped `Target` blob's ECS sub-shapes to the SDK shape
+   * (issue #1382). `@aws-sdk/client-scheduler` is PascalCase except a few
+   * camelCase islands the CFn schema spells PascalCase; the SDK serializer
+   * silently drops unknown keys, so a Fargate target's
+   * `NetworkConfiguration.AwsvpcConfiguration` never reached AWS and
+   * CreateSchedule rejected with "Parameter NetworkConfiguration must be
+   * specified".
+   */
+  private toSdkTarget(target: Record<string, unknown>): Target {
+    const ecs = target['EcsParameters'] as Record<string, unknown> | undefined;
+    if (!ecs) return target as unknown as Target;
+    const result: Record<string, unknown> = { ...ecs };
+    const network = result['NetworkConfiguration'] as Record<string, unknown> | undefined;
+    if (network && network['AwsvpcConfiguration'] !== undefined) {
+      const { AwsvpcConfiguration, ...restNetwork } = network;
+      result['NetworkConfiguration'] = {
+        ...restNetwork,
+        awsvpcConfiguration: AwsvpcConfiguration,
+      };
+    }
+    if (Array.isArray(result['PlacementStrategy'])) {
+      result['PlacementStrategy'] = (result['PlacementStrategy'] as Record<string, unknown>[]).map(
+        (item) => this.renameItemKeys(item, ['Type', 'Field'], 'lower')
+      );
+    }
+    if (Array.isArray(result['PlacementConstraints'])) {
+      result['PlacementConstraints'] = (
+        result['PlacementConstraints'] as Record<string, unknown>[]
+      ).map((item) => this.renameItemKeys(item, ['Type', 'Expression'], 'lower'));
+    }
+    if (Array.isArray(result['CapacityProviderStrategy'])) {
+      result['CapacityProviderStrategy'] = (
+        result['CapacityProviderStrategy'] as Record<string, unknown>[]
+      ).map((item) => this.renameItemKeys(item, ['CapacityProvider', 'Weight', 'Base'], 'lower'));
+    }
+    return { ...target, EcsParameters: result } as unknown as Target;
+  }
+
+  /**
+   * Inverse of {@link toSdkTarget} for `readCurrentState`: GetSchedule
+   * returns the SDK spellings, but drift compares against the state's CFn
+   * spellings — without the re-map every ECS Fargate schedule would report
+   * phantom drift on `AwsvpcConfiguration` after deploy.
+   */
+  private toCfnTarget(target: Target): Record<string, unknown> {
+    const raw = target as unknown as Record<string, unknown>;
+    const ecs = raw['EcsParameters'] as Record<string, unknown> | undefined;
+    if (!ecs) return raw;
+    const result: Record<string, unknown> = { ...ecs };
+    const network = result['NetworkConfiguration'] as Record<string, unknown> | undefined;
+    if (network && network['awsvpcConfiguration'] !== undefined) {
+      const { awsvpcConfiguration, ...restNetwork } = network;
+      result['NetworkConfiguration'] = {
+        ...restNetwork,
+        AwsvpcConfiguration: awsvpcConfiguration,
+      };
+    }
+    if (Array.isArray(result['PlacementStrategy'])) {
+      result['PlacementStrategy'] = (result['PlacementStrategy'] as Record<string, unknown>[]).map(
+        (item) => this.renameItemKeys(item, ['type', 'field'], 'upper')
+      );
+    }
+    if (Array.isArray(result['PlacementConstraints'])) {
+      result['PlacementConstraints'] = (
+        result['PlacementConstraints'] as Record<string, unknown>[]
+      ).map((item) => this.renameItemKeys(item, ['type', 'expression'], 'upper'));
+    }
+    if (Array.isArray(result['CapacityProviderStrategy'])) {
+      result['CapacityProviderStrategy'] = (
+        result['CapacityProviderStrategy'] as Record<string, unknown>[]
+      ).map((item) => this.renameItemKeys(item, ['capacityProvider', 'weight', 'base'], 'upper'));
+    }
+    return { ...raw, EcsParameters: result };
+  }
+
+  /**
+   * Flip the first letter's case on the listed keys of one array item
+   * (`Type` <-> `type`, `CapacityProvider` <-> `capacityProvider`); keys
+   * not listed (or absent) pass through unchanged.
+   */
+  private renameItemKeys(
+    item: Record<string, unknown>,
+    keys: string[],
+    direction: 'lower' | 'upper'
+  ): Record<string, unknown> {
+    const result: Record<string, unknown> = { ...item };
+    for (const key of keys) {
+      if (result[key] !== undefined) {
+        const flipped =
+          direction === 'lower'
+            ? key.charAt(0).toLowerCase() + key.slice(1)
+            : key.charAt(0).toUpperCase() + key.slice(1);
+        result[flipped] = result[key];
+        delete result[key];
+      }
+    }
+    return result;
   }
 
   async create(
@@ -369,7 +471,7 @@ export class SchedulerScheduleProvider implements ResourceProvider {
         ...(response.FlexibleTimeWindow !== undefined && {
           FlexibleTimeWindow: response.FlexibleTimeWindow,
         }),
-        ...(response.Target !== undefined && { Target: response.Target }),
+        ...(response.Target !== undefined && { Target: this.toCfnTarget(response.Target) }),
       };
     } catch (error) {
       if (error instanceof ResourceNotFoundException) {

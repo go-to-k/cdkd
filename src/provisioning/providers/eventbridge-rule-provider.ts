@@ -76,6 +76,75 @@ export class EventBridgeRuleProvider implements ResourceProvider {
   }
 
   /**
+   * Convert each target's CFn-shaped `EcsParameters` to the SDK shape
+   * (issue #1381). The `AWS::Events::Rule` schema and
+   * `@aws-sdk/client-eventbridge` diverge on several ECS sub-shape
+   * spellings, and the SDK serializer silently drops unknown keys — a
+   * Fargate target's `NetworkConfiguration.AwsVpcConfiguration` never
+   * reached AWS, so PutTargets rejected with "Parameter
+   * NetworkConfiguration must be specified".
+   */
+  private toSdkTargets(targets: RuleTarget[]): RuleTarget[] {
+    return targets.map((target) => {
+      const ecs = target['EcsParameters'] as Record<string, unknown> | undefined;
+      if (!ecs) return target;
+      return { ...target, EcsParameters: this.toSdkEcsParameters(ecs) };
+    });
+  }
+
+  private toSdkEcsParameters(ecs: Record<string, unknown>): Record<string, unknown> {
+    const result: Record<string, unknown> = { ...ecs };
+    const network = result['NetworkConfiguration'] as Record<string, unknown> | undefined;
+    if (network && network['AwsVpcConfiguration'] !== undefined) {
+      const { AwsVpcConfiguration, ...restNetwork } = network;
+      result['NetworkConfiguration'] = {
+        ...restNetwork,
+        awsvpcConfiguration: AwsVpcConfiguration,
+      };
+    }
+    if (result['TagList'] !== undefined) {
+      result['Tags'] = result['TagList'];
+      delete result['TagList'];
+    }
+    if (Array.isArray(result['PlacementStrategies'])) {
+      result['PlacementStrategy'] = (result['PlacementStrategies'] as Record<string, unknown>[]).map(
+        (item) => this.lowerCaseItemKeys(item, ['Type', 'Field'])
+      );
+      delete result['PlacementStrategies'];
+    }
+    if (Array.isArray(result['PlacementConstraints'])) {
+      result['PlacementConstraints'] = (
+        result['PlacementConstraints'] as Record<string, unknown>[]
+      ).map((item) => this.lowerCaseItemKeys(item, ['Type', 'Expression']));
+    }
+    if (Array.isArray(result['CapacityProviderStrategy'])) {
+      result['CapacityProviderStrategy'] = (
+        result['CapacityProviderStrategy'] as Record<string, unknown>[]
+      ).map((item) => this.lowerCaseItemKeys(item, ['CapacityProvider', 'Weight', 'Base']));
+    }
+    return result;
+  }
+
+  /**
+   * Rename the listed CFn PascalCase keys to the SDK's lowerCamelCase on one
+   * array item (`Type` -> `type`, `CapacityProvider` -> `capacityProvider`);
+   * keys not listed (or absent) pass through unchanged.
+   */
+  private lowerCaseItemKeys(
+    item: Record<string, unknown>,
+    keys: string[]
+  ): Record<string, unknown> {
+    const result: Record<string, unknown> = { ...item };
+    for (const key of keys) {
+      if (result[key] !== undefined) {
+        result[key.charAt(0).toLowerCase() + key.slice(1)] = result[key];
+        delete result[key];
+      }
+    }
+    return result;
+  }
+
+  /**
    * Create an EventBridge rule
    */
   async create(
@@ -150,7 +219,7 @@ export class EventBridgeRuleProvider implements ResourceProvider {
             new PutTargetsCommand({
               Rule: ruleName,
               EventBusName: eventBusName,
-              Targets: targets,
+              Targets: this.toSdkTargets(targets),
             })
           );
           this.logger.debug(`Added ${targets.length} targets to rule ${ruleName}`);
@@ -285,7 +354,7 @@ export class EventBridgeRuleProvider implements ResourceProvider {
           new PutTargetsCommand({
             Rule: ruleName,
             EventBusName: eventBusName,
-            Targets: newTargets,
+            Targets: this.toSdkTargets(newTargets),
           })
         );
         this.logger.debug(`Updated ${newTargets.length} targets on rule ${ruleName}`);

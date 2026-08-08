@@ -84,6 +84,70 @@ describe('EventBridgeRuleProvider', () => {
       expect(putTargetsCall.constructor.name).toBe('PutTargetsCommand');
     });
 
+    it('converts CFn-shaped EcsParameters to the SDK shape on PutTargets (#1381)', async () => {
+      // PutRule
+      mockSend.mockResolvedValueOnce({
+        RuleArn: 'arn:aws:events:us-east-1:123456789012:rule/my-rule',
+      });
+      // PutTargets
+      mockSend.mockResolvedValueOnce({});
+
+      await provider.create('MyRule', 'AWS::Events::Rule', {
+        Name: 'my-rule',
+        ScheduleExpression: 'rate(5 minutes)',
+        Targets: [
+          {
+            Id: 'Target0',
+            Arn: 'arn:aws:ecs:us-east-1:123456789012:cluster/my-cluster',
+            RoleArn: 'arn:aws:iam::123456789012:role/events-role',
+            EcsParameters: {
+              TaskDefinitionArn: 'arn:aws:ecs:us-east-1:123456789012:task-definition/td:1',
+              LaunchType: 'FARGATE',
+              TaskCount: 1,
+              NetworkConfiguration: {
+                AwsVpcConfiguration: {
+                  Subnets: ['subnet-1', 'subnet-2'],
+                  SecurityGroups: ['sg-1'],
+                  AssignPublicIp: 'ENABLED',
+                },
+              },
+              TagList: [{ Key: 'k', Value: 'v' }],
+              PlacementStrategies: [{ Type: 'spread', Field: 'attribute:ecs.availability-zone' }],
+              PlacementConstraints: [{ Type: 'memberOf', Expression: 'attribute:x == y' }],
+              CapacityProviderStrategy: [{ CapacityProvider: 'FARGATE_SPOT', Weight: 2, Base: 1 }],
+            },
+          },
+        ],
+      });
+
+      const putTargetsCall = mockSend.mock.calls[1][0];
+      const ecs = putTargetsCall.input.Targets[0].EcsParameters;
+      expect(ecs.NetworkConfiguration).toEqual({
+        awsvpcConfiguration: {
+          Subnets: ['subnet-1', 'subnet-2'],
+          SecurityGroups: ['sg-1'],
+          AssignPublicIp: 'ENABLED',
+        },
+      });
+      expect(ecs.Tags).toEqual([{ Key: 'k', Value: 'v' }]);
+      expect(ecs.TagList).toBeUndefined();
+      expect(ecs.PlacementStrategy).toEqual([
+        { type: 'spread', field: 'attribute:ecs.availability-zone' },
+      ]);
+      expect(ecs.PlacementStrategies).toBeUndefined();
+      expect(ecs.PlacementConstraints).toEqual([
+        { type: 'memberOf', expression: 'attribute:x == y' },
+      ]);
+      expect(ecs.CapacityProviderStrategy).toEqual([
+        { capacityProvider: 'FARGATE_SPOT', weight: 2, base: 1 },
+      ]);
+      // Same-spelling members pass through untouched.
+      expect(ecs.TaskDefinitionArn).toBe(
+        'arn:aws:ecs:us-east-1:123456789012:task-definition/td:1'
+      );
+      expect(ecs.LaunchType).toBe('FARGATE');
+    });
+
     it('should use logicalId as rule name when Name is not provided', async () => {
       mockSend.mockResolvedValueOnce({
         RuleArn: 'arn:aws:events:us-east-1:123456789012:rule/MyRule',
@@ -190,6 +254,47 @@ describe('EventBridgeRuleProvider', () => {
       expect(result.physicalId).toBe('arn:aws:events:us-east-1:123456789012:rule/my-rule');
       expect(result.wasReplaced).toBe(false);
       expect(mockSend).toHaveBeenCalledTimes(1);
+    });
+
+    it('converts CFn-shaped EcsParameters on the update-path PutTargets (#1381)', async () => {
+      // PutRule
+      mockSend.mockResolvedValueOnce({
+        RuleArn: 'arn:aws:events:us-east-1:123456789012:rule/my-rule',
+      });
+      // PutTargets
+      mockSend.mockResolvedValueOnce({});
+
+      await provider.update(
+        'MyRule',
+        'arn:aws:events:us-east-1:123456789012:rule/my-rule',
+        'AWS::Events::Rule',
+        {
+          Name: 'my-rule',
+          ScheduleExpression: 'rate(5 minutes)',
+          Targets: [
+            {
+              Id: 'Target0',
+              Arn: 'arn:aws:ecs:us-east-1:123456789012:cluster/my-cluster',
+              EcsParameters: {
+                TaskDefinitionArn: 'arn:aws:ecs:us-east-1:123456789012:task-definition/td:1',
+                NetworkConfiguration: {
+                  AwsVpcConfiguration: { Subnets: ['subnet-1'] },
+                },
+              },
+            },
+          ],
+        },
+        {
+          Name: 'my-rule',
+          ScheduleExpression: 'rate(5 minutes)',
+        }
+      );
+
+      const putTargetsCall = mockSend.mock.calls[1][0];
+      expect(putTargetsCall.constructor.name).toBe('PutTargetsCommand');
+      expect(putTargetsCall.input.Targets[0].EcsParameters.NetworkConfiguration).toEqual({
+        awsvpcConfiguration: { Subnets: ['subnet-1'] },
+      });
     });
 
     it('should remove old targets and add new targets', async () => {
