@@ -5,6 +5,7 @@ import {
   NESTED_KEY_ALLOW_LIST,
   NESTED_KEY_TARGETS,
   allowKey,
+  buildReport,
   classifyTarget,
   collectSdkMemberNames,
   collectStringLiterals,
@@ -64,6 +65,15 @@ describe('classifyTarget (synthetic)', () => {
     const [e] = classifyTarget(exactTarget, ['IPV6Enabled'], sdkMembers, new Set(), allow);
     expect(e?.bucket).toBe('allow-listed');
     expect(e?.rationale).toBe('legacy member');
+  });
+
+  it('an allow-listed near-miss still records the SDK member it shadows', () => {
+    const allow = new Map([
+      [allowKey('AWS::Fake::Thing', 'AcmCertificateArn'), { rationale: 'deliberate' }],
+    ]);
+    const [e] = classifyTarget(exactTarget, ['AcmCertificateArn'], sdkMembers, new Set(), allow);
+    expect(e?.bucket).toBe('allow-listed');
+    expect(e?.sdkNearMiss).toBe('ACMCertificateArn');
   });
 
   it('matches lower-first style against camelCase SDK members', () => {
@@ -146,6 +156,83 @@ describe('nestedKeysForTarget', () => {
       'B',
       'C',
     ]);
+  });
+});
+
+describe('report plumbing (positive direction)', () => {
+  // The clean-repo assertions below prove the green path; these prove the
+  // RED path actually reaches the report — a filter regression here would
+  // make `--check` vacuously green while every other test stays passing.
+  const sdkMembers = new Set(['ACMCertificateArn', 'Comment']);
+
+  it('findDivergences surfaces both blocking buckets through buildReport', () => {
+    const entries = classifyTarget(
+      exactTarget,
+      ['AcmCertificateArn', 'NoSuchMember', 'Comment'],
+      sdkMembers,
+      new Set(),
+      new Map()
+    );
+    const report = buildReport([
+      {
+        resourceType: exactTarget.resourceType,
+        providerFile: exactTarget.providerFile,
+        sdkClientPackage: exactTarget.sdkClientPackage,
+        keyStyle: exactTarget.keyStyle,
+        nestedKeyCount: entries.length,
+        entries,
+      },
+    ]);
+    const divergences = findDivergences(report);
+    expect(divergences.map((d) => [d.nestedKey, d.bucket])).toEqual([
+      ['AcmCertificateArn', 'case-divergence'],
+      ['NoSuchMember', 'no-sdk-member'],
+    ]);
+    expect(report.summary.caseDivergence).toBe(1);
+    expect(report.summary.noSdkMember).toBe(1);
+    expect(report.summary.sameSpelling).toBe(1);
+  });
+
+  it('findStaleAllowListEntries returns an entry that matches no audited divergence', () => {
+    const allow = new Map([
+      [allowKey('AWS::Fake::Thing', 'GoneKey'), { rationale: 'obsolete' }],
+    ]);
+    const entries = classifyTarget(exactTarget, ['Comment'], sdkMembers, new Set(), allow);
+    const report = buildReport([
+      {
+        resourceType: exactTarget.resourceType,
+        providerFile: exactTarget.providerFile,
+        sdkClientPackage: exactTarget.sdkClientPackage,
+        keyStyle: exactTarget.keyStyle,
+        nestedKeyCount: entries.length,
+        entries,
+      },
+    ]);
+    expect(findStaleAllowListEntries(report, allow)).toEqual(['AWS::Fake::Thing#GoneKey']);
+  });
+});
+
+describe('loadReport loud-failure fences', () => {
+  const realTarget = NESTED_KEY_TARGETS[0]!;
+
+  it('throws on a target whose fixture is missing', () => {
+    expect(() =>
+      loadReport([{ ...realTarget, resourceType: 'AWS::NoSuch::Type', minNestedKeys: 1 }])
+    ).toThrow(/missing CFn schema fixture/);
+  });
+
+  it('throws when the nested-key yield falls below the per-target floor', () => {
+    expect(() => loadReport([{ ...realTarget, minNestedKeys: 100000 }])).toThrow(
+      /fixture capture or handledProperties regression/
+    );
+  });
+
+  it('throws when the provider declares no handledProperties for the target type', () => {
+    expect(() =>
+      loadReport([
+        { ...realTarget, resourceType: 'AWS::CloudWatch::AnomalyDetector', minNestedKeys: 0 },
+      ])
+    ).toThrow(/declares no handledProperties/);
   });
 });
 

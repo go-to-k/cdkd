@@ -575,13 +575,15 @@ function atomicWrite(path: string, content: string): void {
 const isMainModule = (): boolean =>
   Boolean(process.argv[1]) && resolve(process.argv[1]!) === __filename;
 
-export function loadReport(): NestedKeyCoverageReport {
+export function loadReport(
+  targetList: readonly NestedKeyTarget[] = NESTED_KEY_TARGETS
+): NestedKeyCoverageReport {
   const sdkMembersByPackage = new Map<string, Set<string>>();
   const literalsByFile = new Map<string, Set<string>>();
   const handledByFile = new Map<string, Map<string, Set<string>>>();
 
   const targets: TargetReport[] = [];
-  for (const target of NESTED_KEY_TARGETS) {
+  for (const target of targetList) {
     const fixturePath = join(FIXTURE_DIR, fixtureFilename(target.resourceType));
     if (!existsSync(fixturePath)) {
       throw new Error(
@@ -592,7 +594,11 @@ export function loadReport(): NestedKeyCoverageReport {
     const fixture = JSON.parse(readFileSync(fixturePath, 'utf8')) as {
       nestedProperties?: Record<string, string[]>;
     };
-    if (!fixture.nestedProperties) {
+    // The refresher omits `nestedProperties` entirely for a type with zero
+    // nested names, so absence is only an error when the target expects a
+    // non-zero yield — for a `minNestedKeys: 0` target it just means
+    // "nothing to audit".
+    if (!fixture.nestedProperties && target.minNestedKeys > 0) {
       throw new Error(
         `fixture for ${target.resourceType} has no nestedProperties capture — re-run ` +
           `\`node scripts/refresh-cfn-schemas.mjs ${target.resourceType}\` (the field was ` +
@@ -716,7 +722,8 @@ if (isMainModule()) {
   try {
     main();
   } catch (err) {
-    process.stderr.write(`nested-key-coverage: failed — ${(err as Error).message}\n`);
+    const message = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`nested-key-coverage: failed — ${message}\n`);
     process.exit(1);
   }
 }

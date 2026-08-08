@@ -1663,7 +1663,12 @@ export class ECSProvider implements ResourceProvider {
       fileSystemArn: config['FileSystemArn'] as string,
       accessPointArn: config['AccessPointArn'] as string | undefined,
       rootDirectory: config['RootDirectory'] as string | undefined,
-      transitEncryptionPort: config['TransitEncryptionPort'] as number | undefined,
+      // CFn templates carry stringly-typed numerics; coerce like the EFS
+      // sibling above.
+      transitEncryptionPort:
+        config['TransitEncryptionPort'] !== undefined
+          ? Number(config['TransitEncryptionPort'])
+          : undefined,
     };
   }
 

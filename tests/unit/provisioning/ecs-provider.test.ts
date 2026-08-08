@@ -821,6 +821,27 @@ describe('ECSProvider', () => {
         expect(input.volumes[0].s3FilesVolumeConfiguration).toBeUndefined();
       });
 
+      it('coerces a stringly-typed S3Files TransitEncryptionPort to a number', async () => {
+        mockSend.mockResolvedValueOnce(arnResp);
+
+        await provider.create('S3FilesTask', 'AWS::ECS::TaskDefinition', {
+          Family: 's3files-task',
+          ContainerDefinitions: [{ Name: 'web', Image: 'nginx:latest' }],
+          Volumes: [
+            {
+              Name: 's3-data',
+              S3FilesVolumeConfiguration: {
+                FileSystemArn: 'arn:aws:s3:us-east-1:123456789012:files/my-fs',
+                TransitEncryptionPort: '443',
+              },
+            },
+          ],
+        });
+
+        const input = mockSend.mock.calls[0][0].input;
+        expect(input.volumes[0].s3filesVolumeConfiguration.transitEncryptionPort).toBe(443);
+      });
+
       it('coerces a stringly-typed EFS TransitEncryptionPort to a number', async () => {
         mockSend.mockResolvedValueOnce(arnResp);
 
