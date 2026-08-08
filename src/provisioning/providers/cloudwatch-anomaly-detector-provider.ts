@@ -353,12 +353,15 @@ function buildDeleteParams(properties: Record<string, unknown>): DeleteAnomalyDe
 function toDate(value: unknown): Date | undefined {
   if (value === undefined) return undefined;
   if (value instanceof Date) return value;
-  const parsed = new Date(String(value));
+  const parsed =
+    typeof value === 'string' || typeof value === 'number' ? new Date(value) : new Date(NaN);
   if (Number.isNaN(parsed.getTime())) {
     // Fail here with the offending value — letting the serializer throw a
     // bare `RangeError: Invalid time value` later names no property.
+    // JSON.stringify (not String) so a non-scalar renders its content
+    // rather than '[object Object]' (lint: no-base-to-string).
     throw new Error(
-      `Configuration.ExcludedTimeRanges contains an unparsable time value: ${String(value)}`
+      `Configuration.ExcludedTimeRanges contains an unparsable time value: ${JSON.stringify(value)}`
     );
   }
   return parsed;

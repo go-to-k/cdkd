@@ -1238,7 +1238,7 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
       // CachedMethods with NO AllowedMethods sibling is legal CFn
       // (AllowedMethods defaults to GET, HEAD) — synthesize the default
       // wrapper so the nested value still reaches the SDK.
-      const allowedMethods =
+      const allowedMethods: Record<string, unknown> =
         result['AllowedMethods'] && typeof result['AllowedMethods'] === 'object'
           ? { ...(result['AllowedMethods'] as Record<string, unknown>) }
           : { Quantity: 2, Items: ['GET', 'HEAD'] };
