@@ -107,9 +107,9 @@ export class EventBridgeRuleProvider implements ResourceProvider {
       delete result['TagList'];
     }
     if (Array.isArray(result['PlacementStrategies'])) {
-      result['PlacementStrategy'] = (result['PlacementStrategies'] as Record<string, unknown>[]).map(
-        (item) => this.lowerCaseItemKeys(item, ['Type', 'Field'])
-      );
+      result['PlacementStrategy'] = (
+        result['PlacementStrategies'] as Record<string, unknown>[]
+      ).map((item) => this.lowerCaseItemKeys(item, ['Type', 'Field']));
       delete result['PlacementStrategies'];
     }
     if (Array.isArray(result['PlacementConstraints'])) {
