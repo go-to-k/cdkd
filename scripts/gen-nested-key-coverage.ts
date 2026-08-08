@@ -1012,8 +1012,17 @@ function atomicWrite(path: string, content: string): void {
 const isMainModule = (): boolean =>
   Boolean(process.argv[1]) && resolve(process.argv[1]!) === __filename;
 
+/** Default SDK-model directory for a client package. Overridable in tests. */
+export const defaultModelsDir = (sdkClientPackage: string): string =>
+  resolve(repoRoot, 'node_modules', sdkClientPackage, 'dist-types/models');
+
 export function loadReport(
-  targetList: readonly NestedKeyTarget[] = NESTED_KEY_TARGETS
+  targetList: readonly NestedKeyTarget[] = NESTED_KEY_TARGETS,
+  // Injection point so the two SDK-parse floors below are provable in the
+  // RED direction (the repo's checker rules: a CI-blocking fence must be
+  // shown to fire) — the member and interface parses are SEPARATE visitors
+  // over the same files, so either can regress alone.
+  resolveModelsDir: (sdkClientPackage: string) => string = defaultModelsDir
 ): NestedKeyCoverageReport {
   const sdkMembersByPackage = new Map<string, Set<string>>();
   const sdkInterfacesByPackage = new Map<string, Map<string, Map<string, SdkMemberType>>>();
@@ -1055,12 +1064,7 @@ export function loadReport(
     let sdkMembers = sdkMembersByPackage.get(target.sdkClientPackage);
     let sdkInterfaces = sdkInterfacesByPackage.get(target.sdkClientPackage);
     if (!sdkMembers || !sdkInterfaces) {
-      const modelsDir = resolve(
-        repoRoot,
-        'node_modules',
-        target.sdkClientPackage,
-        'dist-types/models'
-      );
+      const modelsDir = resolveModelsDir(target.sdkClientPackage);
       if (!existsSync(modelsDir)) {
         throw new Error(`missing SDK model typings dir: ${modelsDir}`);
       }

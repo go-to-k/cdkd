@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vite-plus/test';
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import {
   NESTED_KEY_ALLOW_LIST,
   NESTED_KEY_TARGETS,
@@ -286,6 +287,38 @@ describe('loadReport loud-failure fences', () => {
     expect(() =>
       loadReport([{ ...realTarget, resourceType: 'AWS::S3::Bucket', minNestedKeys: 0 }])
     ).toThrow(/definitionShapes/);
+  });
+
+  it('fires the SDK MEMBER-parse floor on a collapsed model dir (red direction)', () => {
+    // A models dir whose lone .d.ts declares almost nothing: both parses
+    // collapse; the member floor (checked first) must fire.
+    const dir = mkdtempSync(join(tmpdir(), 'cdkd-nkc-members-'));
+    writeFileSync(join(dir, 'models_0.d.ts'), 'export interface A { M1?: string; }\n');
+    try {
+      expect(() => loadReport([realTarget], () => dir)).toThrow(
+        /SDK member parse .* collapsed/
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('fires the SDK INTERFACE-parse floor when only the interface visitor collapses (red direction)', () => {
+    // PropertySignatures inside a TYPE LITERAL are counted by
+    // collectSdkMemberNames but NOT by collectSdkInterfaces — the two are
+    // separate visitors, so this shape passes the member floor while the
+    // interface floor must fire (a regression in the interface visitor
+    // alone would otherwise leave the shape pass vacuously green).
+    const members = Array.from({ length: 60 }, (_, i) => `M${i}?: string;`).join(' ');
+    const dir = mkdtempSync(join(tmpdir(), 'cdkd-nkc-ifaces-'));
+    writeFileSync(join(dir, 'models_0.d.ts'), `export type Blob = { ${members} };\n`);
+    try {
+      expect(() => loadReport([realTarget], () => dir)).toThrow(
+        /SDK interface parse .* collapsed/
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('throws when the provider declares no handledProperties for the target type', () => {
@@ -753,6 +786,11 @@ describe('refresh-cfn-schemas CLI guard (#1378 rider)', () => {
     });
     expect(stdout).toContain('Usage:');
     expect(stdout).not.toContain('Refreshing CFn schemas');
+    // Pin the guarded log string to the script SOURCE: if the fetch-start
+    // message is ever reworded, this fails and forces the negative
+    // assertion above to be updated — without it, that assertion would go
+    // silently vacuous.
+    expect(readFileSync(script, 'utf8')).toContain('Refreshing CFn schemas');
   });
 
   it('an unknown flag exits 1 with usage on stderr instead of silently full-refetching', async () => {
