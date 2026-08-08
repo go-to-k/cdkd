@@ -220,7 +220,7 @@ replacement-fanout	2026-08-08T16:39:04Z	PASS	83	verify.sh	P1 post-#1360 replacem
 replacement-immutable-name	2026-08-01T09:51:12Z	PASS	113	verify.sh	0801 regression sweep; 6 types x 3 phases ok, 0 orphans
 rollback-command	2026-07-25T05:24:26Z	PASS	130	verify.sh	#1220 echo-before-assert on R2/F2 success-expected rollbacks, destroy clean
 rollback-deletion-policy-snapshot	2026-08-08T16:34:46Z	PASS	107	verify.sh	P0 first run post-#1361/#1365/#1367/#1369 rollback rework; rolled-back CREATE snapshot-then-deleted, state clean, 0 orphans
-rollback-failure-injection	2026-08-08T17:11:06Z	FAIL	600	verify.sh	run cut short by the 600s harness tool timeout (not a cdkd bug); SIGTERM graceful path worked; cleanup destroy 16 del/1 SG ENI-race err, AWS verified clean (SG+VPC NotFound), state orphaned. Needs a full re-run
+rollback-failure-injection	2026-08-08T17:42:23Z	PASS	389	verify.sh	issue #1375 re-run (background, dodging the 600s clamp); all 8 phases, 17 del/0 err, 0 orphans incl NAT/EIP/ENI
 rollback-sqs-cooldown	2026-07-25T05:24:26Z	PASS	180	verify.sh	#1220 echo-before-assert on steps 4/9/10, destroy clean
 route53	2026-07-22T07:59:10Z	PASS		verify.sh	TTL-refresh sweep; HostedZone/GeoProximity/CidrRouting backfills, 6 del 0 err, hosted zone + state gone
 s3-asset-deploy	2026-07-26T19:45:58Z	PASS	58	verify.sh	0727b sweep-b12 staleness re-run (rc=0); account clean
