@@ -798,7 +798,96 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
 
     Object.assign(merged, templateSdk);
     merged['CallerReference'] = currentConfig['CallerReference'];
+    this.completeRequiredUpdateFields(merged);
     return merged;
+  }
+
+  /**
+   * Fill the sub-fields `UpdateDistribution` REQUIRES but a CFn template
+   * legitimately omits (issue #1371, second layer). The top-level merge
+   * makes the payload complete per member, but the template-authoritative
+   * `Origins` / `DefaultCacheBehavior` / `CacheBehaviors` members carry the
+   * template's SPARSE sub-shapes, and the API — which accepts them sparse
+   * on CREATE — rejects an update with per-field errors ("The
+   * 'OriginCustomHeaders' field is missing", "OriginReadTimeout is required
+   * for updates", "The parameter SmoothStreaming flag is missing", ...).
+   *
+   * The set below is the EMPIRICALLY REQUIRED list (probed live against
+   * UpdateDistribution, 2026-08-09) plus its symmetric CFn-default
+   * companions (`FunctionAssociations` / `TrustedSigners` /
+   * `TrustedKeyGroups` — same association/signer family, filled with the
+   * same disabled/empty CFn defaults CloudFormation submits for an
+   * omitted property). Values a template DOES carry always win — every
+   * fill is absent-only. Legacy `ForwardedValues`-mode TTLs are
+   * deliberately NOT filled (they are forbidden alongside `CachePolicyId`,
+   * so a wrong guess would break the modern mode; a legacy template that
+   * needs them fails loudly and can be added here).
+   */
+  private completeRequiredUpdateFields(config: Record<string, unknown>): void {
+    const origins = config['Origins'] as Record<string, unknown> | undefined;
+    if (origins && Array.isArray(origins['Items'])) {
+      origins['Items'] = (origins['Items'] as Record<string, unknown>[]).map((origin) => {
+        const o = { ...origin };
+        if (o['OriginPath'] === undefined) o['OriginPath'] = '';
+        if (o['CustomHeaders'] === undefined) o['CustomHeaders'] = { Quantity: 0, Items: [] };
+        if (o['CustomOriginConfig'] && typeof o['CustomOriginConfig'] === 'object') {
+          const c = { ...(o['CustomOriginConfig'] as Record<string, unknown>) };
+          if (c['OriginReadTimeout'] === undefined) c['OriginReadTimeout'] = 30;
+          if (c['OriginKeepaliveTimeout'] === undefined) c['OriginKeepaliveTimeout'] = 5;
+          o['CustomOriginConfig'] = c;
+        }
+        return o;
+      });
+    }
+
+    const fillBehavior = (behavior: Record<string, unknown>): Record<string, unknown> => {
+      const b = { ...behavior };
+      if (b['SmoothStreaming'] === undefined) b['SmoothStreaming'] = false;
+      if (b['FieldLevelEncryptionId'] === undefined) b['FieldLevelEncryptionId'] = '';
+      if (b['LambdaFunctionAssociations'] === undefined) {
+        b['LambdaFunctionAssociations'] = { Quantity: 0, Items: [] };
+      }
+      if (b['FunctionAssociations'] === undefined) {
+        b['FunctionAssociations'] = { Quantity: 0, Items: [] };
+      }
+      if (b['TrustedSigners'] === undefined) {
+        b['TrustedSigners'] = { Enabled: false, Quantity: 0 };
+      }
+      if (b['TrustedKeyGroups'] === undefined) {
+        b['TrustedKeyGroups'] = { Enabled: false, Quantity: 0 };
+      }
+      if (b['AllowedMethods'] === undefined) {
+        b['AllowedMethods'] = {
+          Quantity: 2,
+          Items: ['GET', 'HEAD'],
+          CachedMethods: { Quantity: 2, Items: ['GET', 'HEAD'] },
+        };
+      } else if (
+        b['AllowedMethods'] &&
+        typeof b['AllowedMethods'] === 'object' &&
+        (b['AllowedMethods'] as Record<string, unknown>)['CachedMethods'] === undefined
+      ) {
+        // Template carried AllowedMethods but no CachedMethods sibling —
+        // fill the nested CFn default (GET, HEAD).
+        b['AllowedMethods'] = {
+          ...(b['AllowedMethods'] as Record<string, unknown>),
+          CachedMethods: { Quantity: 2, Items: ['GET', 'HEAD'] },
+        };
+      }
+      return b;
+    };
+
+    if (config['DefaultCacheBehavior'] && typeof config['DefaultCacheBehavior'] === 'object') {
+      config['DefaultCacheBehavior'] = fillBehavior(
+        config['DefaultCacheBehavior'] as Record<string, unknown>
+      );
+    }
+    const cacheBehaviors = config['CacheBehaviors'] as Record<string, unknown> | undefined;
+    if (cacheBehaviors && Array.isArray(cacheBehaviors['Items'])) {
+      cacheBehaviors['Items'] = (cacheBehaviors['Items'] as Record<string, unknown>[]).map((cb) =>
+        fillBehavior(cb)
+      );
+    }
   }
 
   /**
@@ -1067,9 +1156,12 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
     if (result['CustomOriginConfig'] && typeof result['CustomOriginConfig'] === 'object') {
       const customOriginConfig = { ...(result['CustomOriginConfig'] as Record<string, unknown>) };
       if (customOriginConfig['OriginSslProtocols'] !== undefined) {
-        customOriginConfig['OriginSslProtocols'] = this.unwrapQuantity(
+        // Unwrap AND restore the CFn spelling (`OriginSSLProtocols`) so the
+        // drift comparator sees the template's key (issue #1370).
+        customOriginConfig['OriginSSLProtocols'] = this.unwrapQuantity(
           customOriginConfig['OriginSslProtocols']
         );
+        delete customOriginConfig['OriginSslProtocols'];
       }
       result['CustomOriginConfig'] = customOriginConfig;
     }
@@ -1136,6 +1228,24 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
       this.applyQuantityAtPath(result, parts);
     }
 
+    // The CFn shape carries `AllowedMethods` and `CachedMethods` as SIBLING
+    // arrays; the SDK nests CachedMethods INSIDE the AllowedMethods wrapper
+    // and has no top-level CachedMethods member — an un-nested sibling was
+    // silently dropped by the serializer (issue #1370 shape class).
+    // `revertCacheBehavior` has always hoisted it back OUT for drift reads;
+    // this is the missing forward direction.
+    if (
+      result['CachedMethods'] !== undefined &&
+      result['AllowedMethods'] &&
+      typeof result['AllowedMethods'] === 'object'
+    ) {
+      result['AllowedMethods'] = {
+        ...(result['AllowedMethods'] as Record<string, unknown>),
+        CachedMethods: result['CachedMethods'],
+      };
+      delete result['CachedMethods'];
+    }
+
     return result;
   }
 
@@ -1155,6 +1265,14 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
     // CustomOriginConfig.OriginSslProtocols uses Quantity + Items
     if (result['CustomOriginConfig'] && typeof result['CustomOriginConfig'] === 'object') {
       const customOriginConfig = { ...(result['CustomOriginConfig'] as Record<string, unknown>) };
+      // The CFn template spelling is `OriginSSLProtocols` (capital SSL);
+      // the SDK member is `OriginSslProtocols` (issue #1370 casing class —
+      // before this rename the wrap below could never match a real
+      // template and the protocol list was silently dropped).
+      if (customOriginConfig['OriginSSLProtocols'] !== undefined) {
+        customOriginConfig['OriginSslProtocols'] = customOriginConfig['OriginSSLProtocols'];
+        delete customOriginConfig['OriginSSLProtocols'];
+      }
       if (customOriginConfig['OriginSslProtocols'] !== undefined) {
         customOriginConfig['OriginSslProtocols'] = this.wrapWithQuantity(
           customOriginConfig['OriginSslProtocols']

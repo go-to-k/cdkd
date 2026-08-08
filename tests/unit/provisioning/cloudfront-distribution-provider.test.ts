@@ -958,6 +958,94 @@ describe('CloudFrontDistributionProvider', () => {
       expect(sent.IPV6Enabled).toBeUndefined();
     });
 
+    it('completes the required-on-update sub-fields of template-authoritative Origins / DefaultCacheBehavior (live-probed set)', async () => {
+      mockUpdateChain({ CallerReference: 'ref', Enabled: true });
+
+      await provider.update(
+        'MyDistribution',
+        'EDFDVBD6EXAMPLE',
+        'AWS::CloudFront::Distribution',
+        {
+          DistributionConfig: {
+            Enabled: true,
+            DefaultCacheBehavior: {
+              CachePolicyId: '658327ea-f89d-4fab-a63d-7e88639e58f6',
+              TargetOriginId: 'origin1',
+              ViewerProtocolPolicy: 'redirect-to-https',
+            },
+            Origins: [
+              { Id: 'origin1', DomainName: 'bucket.s3.us-east-1.amazonaws.com', S3OriginConfig: { OriginAccessIdentity: '' } },
+              {
+                Id: 'origin2',
+                DomainName: 'fallback.example.com',
+                CustomOriginConfig: {
+                  OriginProtocolPolicy: 'https-only',
+                  OriginSSLProtocols: ['TLSv1.2'],
+                },
+              },
+            ],
+          },
+        },
+        { DistributionConfig: { Enabled: true } }
+      );
+
+      const sent = mockSend.mock.calls[1][0].input.DistributionConfig;
+      const [o1, o2] = sent.Origins.Items;
+      // Required-on-update origin fields filled with the CFn defaults
+      expect(o1.OriginPath).toBe('');
+      expect(o1.CustomHeaders).toEqual({ Quantity: 0, Items: [] });
+      // CustomOriginConfig timeouts filled + CFn OriginSSLProtocols renamed/wrapped
+      expect(o2.CustomOriginConfig.OriginReadTimeout).toBe(30);
+      expect(o2.CustomOriginConfig.OriginKeepaliveTimeout).toBe(5);
+      expect(o2.CustomOriginConfig.OriginSslProtocols).toEqual({ Quantity: 1, Items: ['TLSv1.2'] });
+      expect(o2.CustomOriginConfig.OriginSSLProtocols).toBeUndefined();
+      // Required-on-update cache-behavior fields filled
+      const dcb = sent.DefaultCacheBehavior;
+      expect(dcb.SmoothStreaming).toBe(false);
+      expect(dcb.FieldLevelEncryptionId).toBe('');
+      expect(dcb.LambdaFunctionAssociations).toEqual({ Quantity: 0, Items: [] });
+      expect(dcb.FunctionAssociations).toEqual({ Quantity: 0, Items: [] });
+      expect(dcb.TrustedSigners).toEqual({ Enabled: false, Quantity: 0 });
+      expect(dcb.TrustedKeyGroups).toEqual({ Enabled: false, Quantity: 0 });
+      expect(dcb.AllowedMethods).toEqual({
+        Quantity: 2,
+        Items: ['GET', 'HEAD'],
+        CachedMethods: { Quantity: 2, Items: ['GET', 'HEAD'] },
+      });
+      // Template-set values always win over the fill
+      expect(dcb.CachePolicyId).toBe('658327ea-f89d-4fab-a63d-7e88639e58f6');
+    });
+
+    it('nests sibling CachedMethods into AllowedMethods (SDK shape) instead of silently dropping it', async () => {
+      mockUpdateChain({ CallerReference: 'ref', Enabled: true });
+
+      await provider.update(
+        'MyDistribution',
+        'EDFDVBD6EXAMPLE',
+        'AWS::CloudFront::Distribution',
+        {
+          DistributionConfig: {
+            Enabled: true,
+            DefaultCacheBehavior: {
+              TargetOriginId: 'o',
+              ViewerProtocolPolicy: 'allow-all',
+              AllowedMethods: ['GET', 'HEAD', 'OPTIONS'],
+              CachedMethods: ['GET', 'HEAD'],
+            },
+          },
+        },
+        { DistributionConfig: { Enabled: true } }
+      );
+
+      const dcb = mockSend.mock.calls[1][0].input.DistributionConfig.DefaultCacheBehavior;
+      expect(dcb.CachedMethods).toBeUndefined();
+      expect(dcb.AllowedMethods).toEqual({
+        Quantity: 3,
+        Items: ['GET', 'HEAD', 'OPTIONS'],
+        CachedMethods: { Quantity: 2, Items: ['GET', 'HEAD'] },
+      });
+    });
+
     it('does not mutate the caller-owned previousProperties (state object) during the merge', async () => {
       mockUpdateChain({ CallerReference: 'ref', Enabled: true });
 
@@ -1685,7 +1773,10 @@ describe('CloudFrontDistributionProvider', () => {
       const origin = (cfg['Origins'] as Record<string, unknown>[])[0]!;
       expect(origin['CustomHeaders']).toEqual([{ HeaderName: 'X-From', HeaderValue: 'cdn' }]);
       const customOrigin = origin['CustomOriginConfig'] as Record<string, unknown>;
-      expect(customOrigin['OriginSslProtocols']).toEqual(['TLSv1.2']);
+      // Inverse restores the CFn spelling (OriginSSLProtocols) so the drift
+      // comparator sees the template's key (issue #1370 casing class).
+      expect(customOrigin['OriginSSLProtocols']).toEqual(['TLSv1.2']);
+      expect(customOrigin['OriginSslProtocols']).toBeUndefined();
 
       // DefaultCacheBehavior: AllowedMethods unwraps to a bare array, and the
       // AWS-nested CachedMethods is hoisted to a sibling bare array (matching
