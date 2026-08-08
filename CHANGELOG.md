@@ -1,3 +1,10 @@
+# [0.278.0](https://github.com/go-to-k/cdkd/compare/v0.277.0...v0.278.0) (2026-08-08)
+
+
+### Features
+
+* **audit:** shape pass for the nested-key critic — wrapper + definition-placement divergences ([#1379](https://github.com/go-to-k/cdkd/issues/1379)) ([b99fe61](https://github.com/go-to-k/cdkd/commit/b99fe610caf226bcead5cd8c01407ee42798c725))
+
 # [0.277.0](https://github.com/go-to-k/cdkd/compare/v0.276.6...v0.277.0) (2026-08-08)
 
 
