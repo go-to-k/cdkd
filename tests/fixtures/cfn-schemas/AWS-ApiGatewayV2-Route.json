@@ -30,5 +30,25 @@
     "RequestParameters": [
       "Required"
     ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "RouteId": "scalar",
+      "RouteResponseSelectionExpression": "scalar",
+      "RequestModels": "object",
+      "OperationName": "scalar",
+      "AuthorizationScopes": "array",
+      "ApiKeyRequired": "scalar",
+      "RouteKey": "scalar",
+      "AuthorizationType": "scalar",
+      "ModelSelectionExpression": "scalar",
+      "ApiId": "scalar",
+      "RequestParameters": "object",
+      "Target": "scalar",
+      "AuthorizerId": "scalar"
+    },
+    "ParameterConstraints": {
+      "Required": "scalar"
+    }
   }
 }

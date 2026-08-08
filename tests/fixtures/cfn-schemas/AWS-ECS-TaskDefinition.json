@@ -187,5 +187,238 @@
       "Key",
       "Value"
     ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "TaskRoleArn": "scalar",
+      "IpcMode": "scalar",
+      "InferenceAccelerators": "array",
+      "Memory": "scalar",
+      "PlacementConstraints": "array",
+      "Cpu": "scalar",
+      "RequiresCompatibilities": "array",
+      "NetworkMode": "scalar",
+      "PidMode": "scalar",
+      "EnableFaultInjection": "scalar",
+      "ExecutionRoleArn": "scalar",
+      "RuntimePlatform": "object",
+      "ProxyConfiguration": "object",
+      "Volumes": "array",
+      "ContainerDefinitions": "array",
+      "Family": "scalar",
+      "EphemeralStorage": "object",
+      "Tags": "array",
+      "TaskDefinitionArn": "scalar"
+    },
+    "VolumeFrom": {
+      "ReadOnly": "scalar",
+      "SourceContainer": "scalar"
+    },
+    "S3FilesVolumeConfiguration": {
+      "FileSystemArn": "scalar",
+      "AccessPointArn": "scalar",
+      "RootDirectory": "scalar",
+      "TransitEncryptionPort": "scalar"
+    },
+    "ContainerDependency": {
+      "Condition": "scalar",
+      "ContainerName": "scalar"
+    },
+    "HealthCheck": {
+      "Command": "array",
+      "Timeout": "scalar",
+      "Retries": "scalar",
+      "Interval": "scalar",
+      "StartPeriod": "scalar"
+    },
+    "HostEntry": {
+      "Hostname": "scalar",
+      "IpAddress": "scalar"
+    },
+    "ContainerDefinition": {
+      "User": "scalar",
+      "Secrets": "array",
+      "Memory": "scalar",
+      "Privileged": "scalar",
+      "HealthCheck": "object",
+      "StartTimeout": "scalar",
+      "VolumesFrom": "array",
+      "Cpu": "scalar",
+      "EntryPoint": "array",
+      "DnsServers": "array",
+      "ReadonlyRootFilesystem": "scalar",
+      "Image": "scalar",
+      "Essential": "scalar",
+      "LogConfiguration": "object",
+      "ResourceRequirements": "array",
+      "EnvironmentFiles": "array",
+      "Name": "scalar",
+      "FirelensConfiguration": "object",
+      "DockerSecurityOptions": "array",
+      "SystemControls": "array",
+      "Interactive": "scalar",
+      "DnsSearchDomains": "array",
+      "CredentialSpecs": "array",
+      "Ulimits": "array",
+      "StopTimeout": "scalar",
+      "WorkingDirectory": "scalar",
+      "MemoryReservation": "scalar",
+      "RepositoryCredentials": "object",
+      "ExtraHosts": "array",
+      "Hostname": "scalar",
+      "LinuxParameters": "object",
+      "VersionConsistency": "scalar",
+      "RestartPolicy": "object",
+      "DisableNetworking": "scalar",
+      "PseudoTerminal": "scalar",
+      "MountPoints": "array",
+      "DependsOn": "array",
+      "DockerLabels": "object",
+      "PortMappings": "array",
+      "Command": "array",
+      "Environment": "array",
+      "Links": "array"
+    },
+    "SystemControl": {
+      "Value": "scalar",
+      "Namespace": "scalar"
+    },
+    "DockerVolumeConfiguration": {
+      "DriverOpts": "object",
+      "Scope": "scalar",
+      "Autoprovision": "scalar",
+      "Driver": "scalar",
+      "Labels": "object"
+    },
+    "LogConfiguration": {
+      "SecretOptions": "array",
+      "Options": "object",
+      "LogDriver": "scalar"
+    },
+    "FirelensConfiguration": {
+      "Options": "object",
+      "Type": "scalar"
+    },
+    "RuntimePlatform": {
+      "OperatingSystemFamily": "scalar",
+      "CpuArchitecture": "scalar"
+    },
+    "KernelCapabilities": {
+      "Add": "array",
+      "Drop": "array"
+    },
+    "Tmpfs": {
+      "Size": "scalar",
+      "ContainerPath": "scalar",
+      "MountOptions": "array"
+    },
+    "AuthorizationConfig": {
+      "IAM": "scalar",
+      "AccessPointId": "scalar"
+    },
+    "PortMapping": {
+      "AppProtocol": "scalar",
+      "ContainerPortRange": "scalar",
+      "HostPort": "scalar",
+      "ContainerPort": "scalar",
+      "Protocol": "scalar",
+      "Name": "scalar"
+    },
+    "TaskDefinitionPlacementConstraint": {
+      "Type": "scalar",
+      "Expression": "scalar"
+    },
+    "FSxAuthorizationConfig": {
+      "CredentialsParameter": "scalar",
+      "Domain": "scalar"
+    },
+    "EFSVolumeConfiguration": {
+      "FilesystemId": "scalar",
+      "TransitEncryption": "scalar",
+      "AuthorizationConfig": "object",
+      "RootDirectory": "scalar",
+      "TransitEncryptionPort": "scalar"
+    },
+    "RepositoryCredentials": {
+      "CredentialsParameter": "scalar"
+    },
+    "KeyValuePair": {
+      "Value": "scalar",
+      "Name": "scalar"
+    },
+    "Device": {
+      "HostPath": "scalar",
+      "Permissions": "array",
+      "ContainerPath": "scalar"
+    },
+    "LinuxParameters": {
+      "Capabilities": "object",
+      "Swappiness": "scalar",
+      "Tmpfs": "array",
+      "SharedMemorySize": "scalar",
+      "Devices": "array",
+      "InitProcessEnabled": "scalar",
+      "MaxSwap": "scalar"
+    },
+    "Ulimit": {
+      "SoftLimit": "scalar",
+      "HardLimit": "scalar",
+      "Name": "scalar"
+    },
+    "RestartPolicy": {
+      "IgnoredExitCodes": "array",
+      "RestartAttemptPeriod": "scalar",
+      "Enabled": "scalar"
+    },
+    "HostVolumeProperties": {
+      "SourcePath": "scalar"
+    },
+    "MountPoint": {
+      "ReadOnly": "scalar",
+      "SourceVolume": "scalar",
+      "ContainerPath": "scalar"
+    },
+    "Secret": {
+      "ValueFrom": "scalar",
+      "Name": "scalar"
+    },
+    "ProxyConfiguration": {
+      "ProxyConfigurationProperties": "array",
+      "Type": "scalar",
+      "ContainerName": "scalar"
+    },
+    "Volume": {
+      "EFSVolumeConfiguration": "object",
+      "S3FilesVolumeConfiguration": "object",
+      "Host": "object",
+      "ConfiguredAtLaunch": "scalar",
+      "DockerVolumeConfiguration": "object",
+      "FSxWindowsFileServerVolumeConfiguration": "object",
+      "Name": "scalar"
+    },
+    "EnvironmentFile": {
+      "Type": "scalar",
+      "Value": "scalar"
+    },
+    "ResourceRequirement": {
+      "Type": "scalar",
+      "Value": "scalar"
+    },
+    "InferenceAccelerator": {
+      "DeviceType": "scalar",
+      "DeviceName": "scalar"
+    },
+    "Tag": {
+      "Value": "scalar",
+      "Key": "scalar"
+    },
+    "EphemeralStorage": {
+      "SizeInGiB": "scalar"
+    },
+    "FSxWindowsFileServerVolumeConfiguration": {
+      "AuthorizationConfig": "object",
+      "FileSystemId": "scalar",
+      "RootDirectory": "scalar"
+    }
   }
 }

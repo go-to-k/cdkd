@@ -186,5 +186,224 @@
       "Type",
       "Value"
     ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "PlatformVersion": "scalar",
+      "PropagateTags": "scalar",
+      "ServiceArn": "scalar",
+      "PlacementStrategies": "array",
+      "ServiceRegistries": "array",
+      "VolumeConfigurations": "array",
+      "CapacityProviderStrategy": "array",
+      "LaunchType": "scalar",
+      "Name": "scalar",
+      "AvailabilityZoneRebalancing": "scalar",
+      "SchedulingStrategy": "scalar",
+      "NetworkConfiguration": "object",
+      "Tags": "array",
+      "Monitoring": "object",
+      "ForceNewDeployment": "object",
+      "HealthCheckGracePeriodSeconds": "scalar",
+      "EnableECSManagedTags": "scalar",
+      "EnableExecuteCommand": "scalar",
+      "PlacementConstraints": "array",
+      "Cluster": "scalar",
+      "LoadBalancers": "array",
+      "ServiceConnectConfiguration": "object",
+      "DesiredCount": "scalar",
+      "VpcLatticeConfigurations": "array",
+      "DeploymentController": "object",
+      "Role": "scalar",
+      "TaskDefinition": "scalar",
+      "ServiceName": "scalar",
+      "DeploymentConfiguration": "object"
+    },
+    "TimeoutConfiguration": {
+      "PerRequestTimeoutSeconds": "scalar",
+      "IdleTimeoutSeconds": "scalar"
+    },
+    "ServiceConnectTlsCertificateAuthority": {
+      "AwsPcaAuthorityArn": "scalar"
+    },
+    "VpcLatticeConfiguration": {
+      "TargetGroupArn": "scalar",
+      "PortName": "scalar",
+      "RoleArn": "scalar"
+    },
+    "PlacementStrategy": {
+      "Field": "scalar",
+      "Type": "scalar"
+    },
+    "LogConfiguration": {
+      "SecretOptions": "array",
+      "Options": "object",
+      "LogDriver": "scalar"
+    },
+    "ServiceConnectTestTrafficRules": {
+      "Header": "object"
+    },
+    "ServiceConnectTestTrafficRulesHeader": {
+      "Value": "object",
+      "Name": "scalar"
+    },
+    "ServiceConnectClientAlias": {
+      "DnsName": "scalar",
+      "TestTrafficRules": "object",
+      "Port": "scalar"
+    },
+    "MetricConfiguration": {
+      "ResolutionSeconds": "scalar",
+      "MetricNames": "array"
+    },
+    "ServiceVolumeConfiguration": {
+      "ManagedEBSVolume": "object",
+      "Name": "scalar"
+    },
+    "NetworkConfiguration": {
+      "AwsvpcConfiguration": "object"
+    },
+    "ServiceConnectTestTrafficRulesHeaderValue": {
+      "Exact": "scalar"
+    },
+    "DeploymentCircuitBreaker": {
+      "ThresholdConfiguration": "object",
+      "Enable": "scalar",
+      "ResetOnHealthyTask": "scalar",
+      "Rollback": "scalar"
+    },
+    "HookTimeoutConfig": {
+      "Action": "scalar",
+      "TimeoutInMinutes": "scalar"
+    },
+    "EBSTagSpecification": {
+      "PropagateTags": "scalar",
+      "ResourceType": "scalar",
+      "Tags": "array"
+    },
+    "AdvancedConfiguration": {
+      "TestListenerRule": "scalar",
+      "AlternateTargetGroupArn": "scalar",
+      "ProductionListenerRule": "scalar",
+      "RoleArn": "scalar"
+    },
+    "LinearConfiguration": {
+      "StepBakeTimeInMinutes": "scalar",
+      "StepPercent": "scalar"
+    },
+    "CapacityProviderStrategyItem": {
+      "CapacityProvider": "scalar",
+      "Base": "scalar",
+      "Weight": "scalar"
+    },
+    "CanaryConfiguration": {
+      "CanaryPercent": "scalar",
+      "CanaryBakeTimeInMinutes": "scalar"
+    },
+    "ForceNewDeployment": {
+      "EnableForceNewDeployment": "scalar",
+      "ForceNewDeploymentNonce": "scalar"
+    },
+    "DeploymentAlarms": {
+      "AlarmNames": "array",
+      "Enable": "scalar",
+      "Rollback": "scalar"
+    },
+    "ServiceConnectAccessLogConfiguration": {
+      "Format": "scalar",
+      "IncludeQueryParameters": "scalar"
+    },
+    "MonitoringConfiguration": {
+      "MetricConfigurations": "array"
+    },
+    "LoadBalancer": {
+      "TargetGroupArn": "scalar",
+      "LoadBalancerName": "scalar",
+      "ContainerName": "scalar",
+      "ContainerPort": "scalar",
+      "AdvancedConfiguration": "object"
+    },
+    "ServiceConnectConfiguration": {
+      "Services": "array",
+      "AccessLogConfiguration": "object",
+      "Enabled": "scalar",
+      "LogConfiguration": "object",
+      "Namespace": "scalar"
+    },
+    "ServiceConnectTlsConfiguration": {
+      "IssuerCertificateAuthority": "object",
+      "KmsKey": "scalar",
+      "RoleArn": "scalar"
+    },
+    "DeploymentLifecycleHook": {
+      "TimeoutConfiguration": "object",
+      "LifecycleStages": "array",
+      "TargetType": "scalar",
+      "HookTargetArn": "scalar",
+      "HookDetails": "scalar",
+      "RoleArn": "scalar"
+    },
+    "DeploymentController": {
+      "Type": "scalar"
+    },
+    "Secret": {
+      "ValueFrom": "scalar",
+      "Name": "scalar"
+    },
+    "AwsVpcConfiguration": {
+      "SecurityGroups": "array",
+      "Subnets": "array",
+      "AssignPublicIp": "scalar"
+    },
+    "PlacementConstraint": {
+      "Type": "scalar",
+      "Expression": "scalar"
+    },
+    "ServiceManagedEBSVolumeConfiguration": {
+      "SnapshotId": "scalar",
+      "VolumeType": "scalar",
+      "KmsKeyId": "scalar",
+      "TagSpecifications": "array",
+      "FilesystemType": "scalar",
+      "Encrypted": "scalar",
+      "Throughput": "scalar",
+      "VolumeInitializationRate": "scalar",
+      "Iops": "scalar",
+      "SizeInGiB": "scalar",
+      "RoleArn": "scalar"
+    },
+    "ThresholdConfiguration": {
+      "Type": "scalar",
+      "Value": "scalar"
+    },
+    "ServiceRegistry": {
+      "ContainerName": "scalar",
+      "Port": "scalar",
+      "ContainerPort": "scalar",
+      "RegistryArn": "scalar"
+    },
+    "Tag": {
+      "Value": "scalar",
+      "Key": "scalar"
+    },
+    "DeploymentConfiguration": {
+      "CanaryConfiguration": "object",
+      "BakeTimeInMinutes": "scalar",
+      "LifecycleHooks": "array",
+      "Alarms": "object",
+      "Strategy": "scalar",
+      "DeploymentCircuitBreaker": "object",
+      "MaximumPercent": "scalar",
+      "MinimumHealthyPercent": "scalar",
+      "LinearConfiguration": "object"
+    },
+    "ServiceConnectService": {
+      "Timeout": "object",
+      "IngressPortOverride": "scalar",
+      "ClientAliases": "array",
+      "Tls": "object",
+      "DiscoveryName": "scalar",
+      "PortName": "scalar"
+    }
   }
 }

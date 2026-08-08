@@ -48,5 +48,43 @@
       "ExposeHeaders",
       "MaxAge"
     ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "RouteSelectionExpression": "scalar",
+      "Body": "object",
+      "BodyS3Location": "object",
+      "BasePath": "scalar",
+      "CredentialsArn": "scalar",
+      "CorsConfiguration": "object",
+      "RouteKey": "scalar",
+      "Target": "scalar",
+      "FailOnWarnings": "scalar",
+      "ApiEndpoint": "scalar",
+      "Description": "scalar",
+      "DisableExecuteApiEndpoint": "scalar",
+      "DisableSchemaValidation": "scalar",
+      "Name": "scalar",
+      "Version": "scalar",
+      "ProtocolType": "scalar",
+      "ApiId": "scalar",
+      "Tags": "object",
+      "ApiKeySelectionExpression": "scalar",
+      "IpAddressType": "scalar"
+    },
+    "BodyS3Location": {
+      "Etag": "scalar",
+      "Bucket": "scalar",
+      "Version": "scalar",
+      "Key": "scalar"
+    },
+    "Cors": {
+      "AllowOrigins": "array",
+      "AllowCredentials": "scalar",
+      "ExposeHeaders": "array",
+      "AllowHeaders": "array",
+      "MaxAge": "scalar",
+      "AllowMethods": "array"
+    }
   }
 }

@@ -246,6 +246,99 @@ export function extractNestedPropertyNames(schemaJson) {
 }
 
 /**
+ * Classify a schema node's terminal type kind, resolving local `$ref`s
+ * (cycle-guarded — a cycle resolves to 'object', which is what a
+ * self-referential definition is).
+ *
+ * @param {unknown} node
+ * @param {Record<string, unknown>} definitions
+ * @param {Set<string>} seenRefs
+ * @returns {'array' | 'object' | 'scalar' | 'mixed'}
+ */
+function classifyShape(node, definitions, seenRefs) {
+  if (node === null || typeof node !== 'object' || Array.isArray(node)) return 'scalar';
+  const obj = /** @type {Record<string, unknown>} */ (node);
+  const ref = obj['$ref'];
+  if (typeof ref === 'string' && ref.startsWith('#/definitions/')) {
+    const defName = ref.slice('#/definitions/'.length);
+    if (seenRefs.has(defName)) return 'object';
+    seenRefs.add(defName);
+    return classifyShape(definitions[defName], definitions, seenRefs);
+  }
+  // JSON-Schema array-form `type: ["array", "string"]` is legal in registry
+  // schemas — surface it as 'mixed' (visible) rather than falling through to
+  // a silent 'scalar'.
+  if (Array.isArray(obj['type'])) return 'mixed';
+  if (obj['type'] === 'array') return 'array';
+  if (
+    obj['type'] === 'object' ||
+    obj['properties'] !== undefined ||
+    obj['patternProperties'] !== undefined ||
+    obj['additionalProperties'] !== undefined
+  ) {
+    return 'object';
+  }
+  if (typeof obj['type'] === 'string') return 'scalar';
+  // oneOf / anyOf / allOf with no own type — classify each arm; agree or 'mixed'.
+  for (const key of ['oneOf', 'anyOf', 'allOf']) {
+    const arms = obj[key];
+    if (Array.isArray(arms) && arms.length > 0) {
+      const kinds = new Set(arms.map((a) => classifyShape(a, definitions, new Set(seenRefs))));
+      return kinds.size === 1 ? /** @type {any} */ ([...kinds][0]) : 'mixed';
+    }
+  }
+  return 'scalar';
+}
+
+/**
+ * Extract, per schema DEFINITION, its member names each classified to a
+ * terminal type kind ('array' | 'object' | 'scalar' | 'mixed', `$ref`s
+ * resolved). Consumed by the SHAPE pass of
+ * `scripts/gen-nested-key-coverage.ts` (issue #1378): a CFn member that is a
+ * bare array where the SDK member is a `{Quantity, Items}` wrapper, or a CFn
+ * member missing from its same-named SDK interface (the CloudFront
+ * `CachedMethods` sibling-vs-nested class), is invisible to the v1
+ * key-spelling pass because the spelling exists SOMEWHERE in the SDK model.
+ *
+ * The top-level `properties` block is included under the reserved key
+ * `#top` so top-level shapes are auditable through the same map (no CFn
+ * definition may legally be named `#top` — `#` starts a JSON-pointer).
+ *
+ * @param {string} schemaJson
+ * @returns {Record<string, Record<string, string>>}
+ */
+export function extractDefinitionShapes(schemaJson) {
+  /** @type {{properties?: Record<string, unknown>, definitions?: Record<string, unknown>}} */
+  const schema = JSON.parse(schemaJson);
+  const definitions =
+    schema.definitions && typeof schema.definitions === 'object' ? schema.definitions : {};
+
+  /** @type {Record<string, Record<string, string>>} */
+  const out = {};
+  /**
+   * @param {string} name
+   * @param {unknown} def
+   */
+  const addDefinition = (name, def) => {
+    if (def === null || typeof def !== 'object') return;
+    const props = /** @type {Record<string, unknown>} */ (def)['properties'];
+    if (!props || typeof props !== 'object' || Array.isArray(props)) return;
+    /** @type {Record<string, string>} */
+    const members = {};
+    for (const [memberName, sub] of Object.entries(props)) {
+      members[memberName] = classifyShape(sub, definitions, new Set());
+    }
+    if (Object.keys(members).length > 0) out[name] = members;
+  };
+
+  addDefinition('#top', { properties: schema.properties });
+  for (const [name, def] of Object.entries(definitions)) {
+    addDefinition(name, def);
+  }
+  return out;
+}
+
+/**
  * Retry on CloudFormation's throttling shape ("Rate exceeded" / HTTP 429).
  * Exponential backoff with jitter, 1s -> 2s -> 4s -> 8s -> 16s -> 32s.
  *
@@ -304,6 +397,7 @@ async function processType(client, resourceType) {
     const createOnlyProperties = extractCreateOnlyProperties(resp.Schema);
     const primaryIdentifier = extractPrimaryIdentifier(resp.Schema);
     const nestedProperties = extractNestedPropertyNames(resp.Schema);
+    const definitionShapes = extractDefinitionShapes(resp.Schema);
     const fixture = {
       resourceType,
       // YYYY-MM-DD only so an unchanged schema produces an unchanged fixture
@@ -316,6 +410,9 @@ async function processType(client, resourceType) {
       // Omitted entirely when the type has no nested property (keeps
       // scalar-only fixtures byte-stable vs the pre-#1373 shape).
       ...(Object.keys(nestedProperties).length > 0 ? { nestedProperties } : {}),
+      // `#top` is always present, so this field only stays out for a
+      // fixture with no properties at all.
+      ...(Object.keys(definitionShapes).length > 0 ? { definitionShapes } : {}),
     };
     const path = join(FIXTURES_DIR, fixtureFilename(resourceType));
     await writeFile(path, JSON.stringify(fixture, null, 2) + '\n', 'utf8');
@@ -354,6 +451,25 @@ async function pooled(items, concurrency, worker) {
 
 async function main() {
   const args = process.argv.slice(2);
+  const usage =
+    'Usage: node scripts/refresh-cfn-schemas.mjs [type-filter] [--only-missing]\n' +
+    '  type-filter     substring (or exact) match against registered resource types;\n' +
+    '                  WITHOUT it the FULL registered set (~135 types) is re-fetched\n' +
+    '  --only-missing  fetch only types with no fixture file yet\n';
+  if (args.includes('--help') || args.includes('-h')) {
+    process.stdout.write(usage);
+    return;
+  }
+  // An unrecognized flag must NOT silently fall through to a FULL re-fetch:
+  // `--help` did exactly that before this guard (issue #1378 rider) — the
+  // absent positional meant "no filter" and all ~135 fixtures churned.
+  // Single-dash args are guarded too: a `-x` typo is a flag attempt, not a
+  // type filter.
+  const unknownFlags = args.filter((a) => a.startsWith('-') && a !== '--only-missing');
+  if (unknownFlags.length > 0) {
+    process.stderr.write(`Unknown flag(s): ${unknownFlags.join(', ')}\n${usage}`);
+    process.exit(1);
+  }
   const typeFilter = args.find((a) => !a.startsWith('--'));
   const onlyMissing = args.includes('--only-missing');
 
