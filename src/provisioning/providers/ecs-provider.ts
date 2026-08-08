@@ -51,6 +51,7 @@ import {
   type ApplicationProtocol,
   type LogDriver,
   type EFSVolumeConfiguration,
+  type S3FilesVolumeConfiguration,
   type EFSAuthorizationConfig,
   type DockerVolumeConfiguration,
   type FSxWindowsFileServerVolumeConfiguration,
@@ -1630,6 +1631,13 @@ export class ECSProvider implements ResourceProvider {
       fsxWindowsFileServerVolumeConfiguration: this.convertFSxWindowsVolumeConfiguration(
         v['FSxWindowsFileServerVolumeConfiguration'] as Record<string, unknown> | undefined
       ),
+      // SDK member is `s3filesVolumeConfiguration` — an all-lowercase
+      // `s3files` prefix, NOT the mechanical `s3FilesVolumeConfiguration`
+      // first-letter flip, so the shared key-flip converter can never reach
+      // it (nested-key critic catch, issue #1373).
+      s3filesVolumeConfiguration: this.convertS3FilesVolumeConfiguration(
+        v['S3FilesVolumeConfiguration'] as Record<string, unknown> | undefined
+      ),
       // ConfiguredAtLaunch marks the volume as attach-at-launch so a
       // same-stack AWS::ECS::Service can carry a matching
       // VolumeConfigurations entry (managed EBS volume). Dropping it made
@@ -1638,6 +1646,30 @@ export class ECSProvider implements ResourceProvider {
       // (issue #806).
       configuredAtLaunch: this.coerceBool(v['ConfiguredAtLaunch']),
     }));
+  }
+
+  /**
+   * Convert CFn Volumes[].S3FilesVolumeConfiguration to ECS SDK format.
+   * CFn: `{FileSystemArn, AccessPointArn, RootDirectory,
+   * TransitEncryptionPort}` -> SDK members of the same spelling modulo the
+   * first-letter flip. The parent key itself is the irregular one (see
+   * `convertVolumes`).
+   */
+  private convertS3FilesVolumeConfiguration(
+    config?: Record<string, unknown>
+  ): S3FilesVolumeConfiguration | undefined {
+    if (!config) return undefined;
+    return {
+      fileSystemArn: config['FileSystemArn'] as string,
+      accessPointArn: config['AccessPointArn'] as string | undefined,
+      rootDirectory: config['RootDirectory'] as string | undefined,
+      // CFn templates carry stringly-typed numerics; coerce like the EFS
+      // sibling above.
+      transitEncryptionPort:
+        config['TransitEncryptionPort'] !== undefined
+          ? Number(config['TransitEncryptionPort'])
+          : undefined,
+    };
   }
 
   /**
@@ -1793,6 +1825,17 @@ export class ECSProvider implements ResourceProvider {
           efs['AuthorizationConfig'] = auth;
         }
         out['EFSVolumeConfiguration'] = efs;
+      }
+      if (v.s3filesVolumeConfiguration !== undefined) {
+        const s = v.s3filesVolumeConfiguration;
+        const s3f: Record<string, unknown> = {};
+        if (s.fileSystemArn !== undefined) s3f['FileSystemArn'] = s.fileSystemArn;
+        if (s.accessPointArn !== undefined) s3f['AccessPointArn'] = s.accessPointArn;
+        if (s.rootDirectory !== undefined) s3f['RootDirectory'] = s.rootDirectory;
+        if (s.transitEncryptionPort !== undefined) {
+          s3f['TransitEncryptionPort'] = s.transitEncryptionPort;
+        }
+        out['S3FilesVolumeConfiguration'] = s3f;
       }
       if (v.fsxWindowsFileServerVolumeConfiguration !== undefined) {
         const f = v.fsxWindowsFileServerVolumeConfiguration;

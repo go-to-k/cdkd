@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::ApiGatewayV2::Integration",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-08",
   "properties": [
     "ApiId",
     "ConnectionId",
@@ -27,5 +27,19 @@
   ],
   "createOnlyProperties": [
     "ApiId"
-  ]
+  ],
+  "primaryIdentifier": [
+    "ApiId",
+    "IntegrationId"
+  ],
+  "nestedProperties": {
+    "ResponseParameters": [
+      "Destination",
+      "ResponseParameters",
+      "Source"
+    ],
+    "TlsConfig": [
+      "ServerNameToVerify"
+    ]
+  }
 }

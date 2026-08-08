@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::ECS::Service",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-08",
   "properties": [
     "AvailabilityZoneRebalancing",
     "CapacityProviderStrategy",
@@ -14,6 +14,7 @@
     "HealthCheckGracePeriodSeconds",
     "LaunchType",
     "LoadBalancers",
+    "Monitoring",
     "Name",
     "NetworkConfiguration",
     "PlacementConstraints",
@@ -40,5 +41,150 @@
     "Role",
     "SchedulingStrategy",
     "ServiceName"
-  ]
+  ],
+  "primaryIdentifier": [
+    "Cluster",
+    "ServiceArn"
+  ],
+  "nestedProperties": {
+    "PlacementStrategies": [
+      "Field",
+      "Type"
+    ],
+    "ServiceRegistries": [
+      "ContainerName",
+      "ContainerPort",
+      "Port",
+      "RegistryArn"
+    ],
+    "VolumeConfigurations": [
+      "Encrypted",
+      "FilesystemType",
+      "Iops",
+      "Key",
+      "KmsKeyId",
+      "ManagedEBSVolume",
+      "Name",
+      "PropagateTags",
+      "ResourceType",
+      "RoleArn",
+      "SizeInGiB",
+      "SnapshotId",
+      "TagSpecifications",
+      "Tags",
+      "Throughput",
+      "Value",
+      "VolumeInitializationRate",
+      "VolumeType"
+    ],
+    "CapacityProviderStrategy": [
+      "Base",
+      "CapacityProvider",
+      "Weight"
+    ],
+    "NetworkConfiguration": [
+      "AssignPublicIp",
+      "AwsvpcConfiguration",
+      "SecurityGroups",
+      "Subnets"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ],
+    "Monitoring": [
+      "MetricConfigurations",
+      "MetricNames",
+      "ResolutionSeconds"
+    ],
+    "ForceNewDeployment": [
+      "EnableForceNewDeployment",
+      "ForceNewDeploymentNonce"
+    ],
+    "PlacementConstraints": [
+      "Expression",
+      "Type"
+    ],
+    "LoadBalancers": [
+      "AdvancedConfiguration",
+      "AlternateTargetGroupArn",
+      "ContainerName",
+      "ContainerPort",
+      "LoadBalancerName",
+      "ProductionListenerRule",
+      "RoleArn",
+      "TargetGroupArn",
+      "TestListenerRule"
+    ],
+    "ServiceConnectConfiguration": [
+      "AccessLogConfiguration",
+      "AwsPcaAuthorityArn",
+      "ClientAliases",
+      "DiscoveryName",
+      "DnsName",
+      "Enabled",
+      "Exact",
+      "Format",
+      "Header",
+      "IdleTimeoutSeconds",
+      "IncludeQueryParameters",
+      "IngressPortOverride",
+      "IssuerCertificateAuthority",
+      "KmsKey",
+      "LogConfiguration",
+      "LogDriver",
+      "Name",
+      "Namespace",
+      "Options",
+      "PerRequestTimeoutSeconds",
+      "Port",
+      "PortName",
+      "RoleArn",
+      "SecretOptions",
+      "Services",
+      "TestTrafficRules",
+      "Timeout",
+      "Tls",
+      "Value",
+      "ValueFrom"
+    ],
+    "VpcLatticeConfigurations": [
+      "PortName",
+      "RoleArn",
+      "TargetGroupArn"
+    ],
+    "DeploymentController": [
+      "Type"
+    ],
+    "DeploymentConfiguration": [
+      "Action",
+      "AlarmNames",
+      "Alarms",
+      "BakeTimeInMinutes",
+      "CanaryBakeTimeInMinutes",
+      "CanaryConfiguration",
+      "CanaryPercent",
+      "DeploymentCircuitBreaker",
+      "Enable",
+      "HookDetails",
+      "HookTargetArn",
+      "LifecycleHooks",
+      "LifecycleStages",
+      "LinearConfiguration",
+      "MaximumPercent",
+      "MinimumHealthyPercent",
+      "ResetOnHealthyTask",
+      "RoleArn",
+      "Rollback",
+      "StepBakeTimeInMinutes",
+      "StepPercent",
+      "Strategy",
+      "TargetType",
+      "ThresholdConfiguration",
+      "TimeoutConfiguration",
+      "TimeoutInMinutes",
+      "Type",
+      "Value"
+    ]
+  }
 }

@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::ECS::Cluster",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-08",
   "properties": [
     "Arn",
     "CapacityProviders",
@@ -16,5 +16,39 @@
   ],
   "createOnlyProperties": [
     "ClusterName"
-  ]
+  ],
+  "primaryIdentifier": [
+    "ClusterName"
+  ],
+  "nestedProperties": {
+    "ClusterSettings": [
+      "Name",
+      "Value"
+    ],
+    "DefaultCapacityProviderStrategy": [
+      "Base",
+      "CapacityProvider",
+      "Weight"
+    ],
+    "Configuration": [
+      "CloudWatchEncryptionEnabled",
+      "CloudWatchLogGroupName",
+      "ExecuteCommandConfiguration",
+      "FargateEphemeralStorageKmsKeyId",
+      "KmsKeyId",
+      "LogConfiguration",
+      "Logging",
+      "ManagedStorageConfiguration",
+      "S3BucketName",
+      "S3EncryptionEnabled",
+      "S3KeyPrefix"
+    ],
+    "ServiceConnectDefaults": [
+      "Namespace"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  }
 }

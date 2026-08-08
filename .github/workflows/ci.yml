@@ -199,6 +199,25 @@ jobs:
           fi
       - run: vp run audit:update-wrap-coverage:check
 
+      # Fail CI when docs/_generated/nested-key-coverage.{json,md} is stale
+      # relative to the provider sources / schema fixtures / SDK typings. The
+      # matrix diffs, per SDK provider forwarding a nested CFn config blob,
+      # the blob's nested CFn property names against the SDK client model's
+      # member names — a CFn key with no same-spelling SDK member and no
+      # explicit mention in the provider is a write-side silent drop (the
+      # #1370 CloudFront / #1304 MetricTimeZone class; issue #1373). The
+      # second step is the CRITIC: it hard-fails on any non-allow-listed
+      # divergence.
+      - name: nested-key-coverage matrix is up-to-date
+        run: |
+          vp run gen:nested-key-coverage
+          if ! git diff --quiet -- docs/_generated/nested-key-coverage.json docs/_generated/nested-key-coverage.md; then
+            echo "::error::nested-key-coverage matrix is stale — run \`vp run gen:nested-key-coverage\` and commit the regenerated docs/_generated/nested-key-coverage.{json,md}"
+            git --no-pager diff -- docs/_generated/nested-key-coverage.json docs/_generated/nested-key-coverage.md
+            exit 1
+          fi
+      - run: vp run audit:nested-key-coverage:check
+
   runtime-compat:
     runs-on: ubuntu-latest
     needs: check-build-test

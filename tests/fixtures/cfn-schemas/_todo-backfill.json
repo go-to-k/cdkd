@@ -227,6 +227,7 @@
       "AvailabilityZoneRebalancing",
       "DeploymentController",
       "ForceNewDeployment",
+      "Monitoring",
       "PlacementStrategies",
       "Role",
       "ServiceConnectConfiguration",

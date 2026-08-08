@@ -1150,7 +1150,11 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
     const result = { ...origin };
 
     if (result['CustomHeaders'] !== undefined) {
-      result['CustomHeaders'] = this.unwrapQuantity(result['CustomHeaders']);
+      // Unwrap AND restore the CFn spelling (`OriginCustomHeaders`) so the
+      // drift comparator sees the template's key (issue #1373, same
+      // pattern as `OriginSSLProtocols` below).
+      result['OriginCustomHeaders'] = this.unwrapQuantity(result['CustomHeaders']);
+      delete result['CustomHeaders'];
     }
 
     if (result['CustomOriginConfig'] && typeof result['CustomOriginConfig'] === 'object') {
@@ -1256,6 +1260,17 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
    */
   private convertOrigin(origin: Record<string, unknown>): Record<string, unknown> {
     const result = { ...origin };
+
+    // The CFn template spelling is `OriginCustomHeaders` (a bare
+    // `{HeaderName, HeaderValue}[]`); the SDK member is `CustomHeaders`
+    // (issue #1373 nested-key critic catch — before this rename a
+    // template's origin custom headers never reached AWS, and the update
+    // path's required-field fill actively wiped them with an empty
+    // `{Quantity: 0}` wrapper). Rename BEFORE the wrap below.
+    if (result['OriginCustomHeaders'] !== undefined) {
+      result['CustomHeaders'] = result['OriginCustomHeaders'];
+      delete result['OriginCustomHeaders'];
+    }
 
     // CustomHeaders uses the Quantity + Items pattern
     if (result['CustomHeaders'] !== undefined) {

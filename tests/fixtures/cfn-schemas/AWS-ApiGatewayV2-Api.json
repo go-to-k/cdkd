@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::ApiGatewayV2::Api",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-08",
   "properties": [
     "ApiEndpoint",
     "ApiId",
@@ -29,5 +29,24 @@
   ],
   "createOnlyProperties": [
     "ProtocolType"
-  ]
+  ],
+  "primaryIdentifier": [
+    "ApiId"
+  ],
+  "nestedProperties": {
+    "BodyS3Location": [
+      "Bucket",
+      "Etag",
+      "Key",
+      "Version"
+    ],
+    "CorsConfiguration": [
+      "AllowCredentials",
+      "AllowHeaders",
+      "AllowMethods",
+      "AllowOrigins",
+      "ExposeHeaders",
+      "MaxAge"
+    ]
+  }
 }

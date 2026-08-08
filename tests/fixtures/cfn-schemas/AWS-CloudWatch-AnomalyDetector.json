@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::CloudWatch::AnomalyDetector",
-  "generatedAt": "2026-07-30",
+  "generatedAt": "2026-08-08",
   "properties": [
     "Configuration",
     "Dimensions",
@@ -26,5 +26,47 @@
   ],
   "primaryIdentifier": [
     "Id"
-  ]
+  ],
+  "nestedProperties": {
+    "MetricCharacteristics": [
+      "PeriodicSpikes"
+    ],
+    "Configuration": [
+      "EndTime",
+      "ExcludedTimeRanges",
+      "MetricTimeZone",
+      "StartTime"
+    ],
+    "MetricMathAnomalyDetector": [
+      "AccountId",
+      "Dimensions",
+      "Expression",
+      "Id",
+      "Label",
+      "Metric",
+      "MetricDataQueries",
+      "MetricName",
+      "MetricStat",
+      "Name",
+      "Namespace",
+      "Period",
+      "ReturnData",
+      "Stat",
+      "Unit",
+      "Value"
+    ],
+    "Dimensions": [
+      "Name",
+      "Value"
+    ],
+    "SingleMetricAnomalyDetector": [
+      "AccountId",
+      "Dimensions",
+      "MetricName",
+      "Name",
+      "Namespace",
+      "Stat",
+      "Value"
+    ]
+  }
 }
