@@ -332,9 +332,7 @@ export class CognitoUserPoolProvider implements ResourceProvider {
    * resets omitted attributes to their defaults, so leaving it out also
    * wipes an existing sign-in policy on every update.
    */
-  private toSdkUserPoolPolicies(
-    policies: Record<string, unknown>
-  ): UserPoolPolicyType | undefined {
+  private toSdkUserPoolPolicies(policies: Record<string, unknown>): UserPoolPolicyType | undefined {
     const result: UserPoolPolicyType = {};
     if (policies['PasswordPolicy']) {
       result.PasswordPolicy = policies['PasswordPolicy'] as PasswordPolicyType;
