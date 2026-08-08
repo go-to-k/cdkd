@@ -1,3 +1,10 @@
+## [0.278.1](https://github.com/go-to-k/cdkd/compare/v0.278.0...v0.278.1) (2026-08-08)
+
+
+### Bug Fixes
+
+* **cognito:** forward Policies.SignInPolicy on user pool create and update ([#1395](https://github.com/go-to-k/cdkd/issues/1395)) ([5cbc884](https://github.com/go-to-k/cdkd/commit/5cbc884f5ed9030d12a8bd108270344c6c04f422))
+
 # [0.278.0](https://github.com/go-to-k/cdkd/compare/v0.277.0...v0.278.0) (2026-08-08)
 
 
