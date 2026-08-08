@@ -32,6 +32,16 @@ export class CognitoStack extends cdk.Stack {
         requireDigits: true,
         requireSymbols: false,
       },
+      // Passwordless sign-in policy (issue #1380): synthesizes
+      // Policies.SignInPolicy.AllowedFirstAuthFactors, which the provider
+      // silently dropped on create/update before the fix. EMAIL_OTP as a
+      // FIRST auth factor works with the default Cognito email sender
+      // (unlike EMAIL_OTP as MFA, which needs SES — see the BackfillUserPool
+      // note below). Requires the ESSENTIALS tier, so it is set explicitly.
+      featurePlan: cognito.FeaturePlan.ESSENTIALS,
+      signInPolicy: {
+        allowedFirstAuthFactors: { password: true, emailOtp: true },
+      },
       accountRecovery: cognito.AccountRecovery.EMAIL_ONLY,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
