@@ -1204,6 +1204,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         ['AvailabilityZoneRebalancing', 'not yet implemented by cdkd'],
         ['DeploymentController', 'not yet implemented by cdkd'],
         ['ForceNewDeployment', 'not yet implemented by cdkd'],
+        ['Monitoring', 'not yet implemented by cdkd'],
         [
           'Role',
           'Legacy classic-ELB service-linked-role override; AWS uses the AWSServiceRoleForECS service-linked role automatically since 2017',

@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::ApiGatewayV2::Authorizer",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-08",
   "properties": [
     "ApiId",
     "AuthorizerCredentialsArn",
@@ -20,5 +20,15 @@
   ],
   "createOnlyProperties": [
     "ApiId"
-  ]
+  ],
+  "primaryIdentifier": [
+    "ApiId",
+    "AuthorizerId"
+  ],
+  "nestedProperties": {
+    "JwtConfiguration": [
+      "Audience",
+      "Issuer"
+    ]
+  }
 }

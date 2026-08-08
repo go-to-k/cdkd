@@ -1,0 +1,1675 @@
+{
+  "summary": {
+    "targetCount": 9,
+    "nestedKeyCount": 316,
+    "sameSpelling": 300,
+    "providerHandled": 13,
+    "allowListed": 3,
+    "caseDivergence": 0,
+    "noSdkMember": 0
+  },
+  "targets": [
+    {
+      "resourceType": "AWS::ApiGatewayV2::Api",
+      "providerFile": "apigatewayv2-provider.ts",
+      "sdkClientPackage": "@aws-sdk/client-apigatewayv2",
+      "keyStyle": "exact",
+      "nestedKeyCount": 6,
+      "entries": [
+        {
+          "resourceType": "AWS::ApiGatewayV2::Api",
+          "nestedKey": "AllowCredentials",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ApiGatewayV2::Api",
+          "nestedKey": "AllowHeaders",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ApiGatewayV2::Api",
+          "nestedKey": "AllowMethods",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ApiGatewayV2::Api",
+          "nestedKey": "AllowOrigins",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ApiGatewayV2::Api",
+          "nestedKey": "ExposeHeaders",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ApiGatewayV2::Api",
+          "nestedKey": "MaxAge",
+          "bucket": "same-spelling"
+        }
+      ]
+    },
+    {
+      "resourceType": "AWS::ApiGatewayV2::Authorizer",
+      "providerFile": "apigatewayv2-provider.ts",
+      "sdkClientPackage": "@aws-sdk/client-apigatewayv2",
+      "keyStyle": "exact",
+      "nestedKeyCount": 2,
+      "entries": [
+        {
+          "resourceType": "AWS::ApiGatewayV2::Authorizer",
+          "nestedKey": "Audience",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ApiGatewayV2::Authorizer",
+          "nestedKey": "Issuer",
+          "bucket": "same-spelling"
+        }
+      ]
+    },
+    {
+      "resourceType": "AWS::ApiGatewayV2::Integration",
+      "providerFile": "apigatewayv2-provider.ts",
+      "sdkClientPackage": "@aws-sdk/client-apigatewayv2",
+      "keyStyle": "exact",
+      "nestedKeyCount": 0,
+      "entries": []
+    },
+    {
+      "resourceType": "AWS::ApiGatewayV2::Route",
+      "providerFile": "apigatewayv2-provider.ts",
+      "sdkClientPackage": "@aws-sdk/client-apigatewayv2",
+      "keyStyle": "exact",
+      "nestedKeyCount": 0,
+      "entries": []
+    },
+    {
+      "resourceType": "AWS::ApiGatewayV2::Stage",
+      "providerFile": "apigatewayv2-provider.ts",
+      "sdkClientPackage": "@aws-sdk/client-apigatewayv2",
+      "keyStyle": "exact",
+      "nestedKeyCount": 5,
+      "entries": [
+        {
+          "resourceType": "AWS::ApiGatewayV2::Stage",
+          "nestedKey": "DataTraceEnabled",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ApiGatewayV2::Stage",
+          "nestedKey": "DetailedMetricsEnabled",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ApiGatewayV2::Stage",
+          "nestedKey": "LoggingLevel",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ApiGatewayV2::Stage",
+          "nestedKey": "ThrottlingBurstLimit",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ApiGatewayV2::Stage",
+          "nestedKey": "ThrottlingRateLimit",
+          "bucket": "same-spelling"
+        }
+      ]
+    },
+    {
+      "resourceType": "AWS::CloudFront::Distribution",
+      "providerFile": "cloudfront-distribution-provider.ts",
+      "sdkClientPackage": "@aws-sdk/client-cloudfront",
+      "keyStyle": "exact",
+      "nestedKeyCount": 121,
+      "entries": [
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "AcmCertificateArn",
+          "bucket": "provider-handled"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "AdvertiseTrustStoreCaNames",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "Aliases",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "AllowedMethods",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "AnycastIpListId",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "Bucket",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "CNAMEs",
+          "bucket": "allow-listed",
+          "rationale": "Legacy pre-2012 DistributionConfig member (alias of Aliases); the modern CreateDistribution/UpdateDistribution API has no equivalent member and CDK never synthesizes it."
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "CacheBehaviors",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "CachePolicyId",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "CacheTagConfig",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "CachedMethods",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "ClientCertificateArn",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "CloudFrontDefaultCertificate",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "Comment",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "Compress",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "ConnectionAttempts",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "ConnectionFunctionAssociation",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "ConnectionMode",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "ConnectionTimeout",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "ContinuousDeploymentPolicyId",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "Cookies",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "CustomErrorResponses",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "CustomOrigin",
+          "bucket": "allow-listed",
+          "rationale": "Legacy pre-2012 single-origin form (LegacyCustomOrigin definition); superseded by Origins[] and absent from the modern API. CDK never synthesizes it."
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "CustomOriginConfig",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "DNSName",
+          "bucket": "allow-listed",
+          "rationale": "Member of the legacy CustomOrigin / S3Origin blocks only (LegacyCustomOrigin / LegacyS3Origin definitions); unreachable from a modern template."
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "DefaultCacheBehavior",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "DefaultRootObject",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "DefaultTTL",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "DefaultValue",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "Definition",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "DomainName",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "Enabled",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "ErrorCachingMinTTL",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "ErrorCode",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "EventType",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "FailoverCriteria",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "FieldLevelEncryptionId",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "Forward",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "ForwardedValues",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "FunctionARN",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "FunctionAssociations",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "GeoRestriction",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "GrpcConfig",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "HTTPPort",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "HTTPSPort",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "HeaderName",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "HeaderValue",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "Headers",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "HttpVersion",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "IPV6Enabled",
+          "bucket": "provider-handled"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "IamCertificateId",
+          "bucket": "provider-handled"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "Id",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "IgnoreCertificateExpiry",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "IncludeBody",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "IncludeCookies",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "IpAddressType",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "Items",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "Key",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "LambdaFunctionARN",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "LambdaFunctionAssociations",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "Locations",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "Logging",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "MaxTTL",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "Members",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "MinTTL",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "MinimumProtocolVersion",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "Mode",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "Name",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "OriginAccessControlId",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "OriginAccessIdentity",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "OriginCustomHeaders",
+          "bucket": "provider-handled"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "OriginGroups",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "OriginId",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "OriginKeepaliveTimeout",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "OriginMtlsConfig",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "OriginPath",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "OriginProtocolPolicy",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "OriginReadTimeout",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "OriginRequestPolicyId",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "OriginSSLProtocols",
+          "bucket": "provider-handled"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "OriginShield",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "OriginShieldRegion",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "Origins",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "OwnerAccountId",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "ParameterDefinitions",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "PathPattern",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "Prefix",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "PriceClass",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "Quantity",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "QueryString",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "QueryStringCacheKeys",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "RealtimeLogConfigArn",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "Required",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "ResponseCode",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "ResponseCompletionTimeout",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "ResponseHeadersPolicyId",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "ResponsePagePath",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "RestrictionType",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "Restrictions",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "S3Origin",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "S3OriginConfig",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "SelectionCriteria",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "SmoothStreaming",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "SslSupportMethod",
+          "bucket": "provider-handled"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "Staging",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "StatusCodes",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "StringSchema",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "TargetOriginId",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "TenantConfig",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "TrustStoreConfig",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "TrustStoreId",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "TrustedKeyGroups",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "TrustedSigners",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "Value",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "ViewerCertificate",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "ViewerMtlsConfig",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "ViewerProtocolPolicy",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "VpcOriginConfig",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "VpcOriginId",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "WebACLId",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudFront::Distribution",
+          "nestedKey": "WhitelistedNames",
+          "bucket": "same-spelling"
+        }
+      ]
+    },
+    {
+      "resourceType": "AWS::CloudWatch::AnomalyDetector",
+      "providerFile": "cloudwatch-anomaly-detector-provider.ts",
+      "sdkClientPackage": "@aws-sdk/client-cloudwatch",
+      "keyStyle": "exact",
+      "nestedKeyCount": 21,
+      "entries": [
+        {
+          "resourceType": "AWS::CloudWatch::AnomalyDetector",
+          "nestedKey": "AccountId",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudWatch::AnomalyDetector",
+          "nestedKey": "Dimensions",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudWatch::AnomalyDetector",
+          "nestedKey": "EndTime",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudWatch::AnomalyDetector",
+          "nestedKey": "ExcludedTimeRanges",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudWatch::AnomalyDetector",
+          "nestedKey": "Expression",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudWatch::AnomalyDetector",
+          "nestedKey": "Id",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudWatch::AnomalyDetector",
+          "nestedKey": "Label",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudWatch::AnomalyDetector",
+          "nestedKey": "Metric",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudWatch::AnomalyDetector",
+          "nestedKey": "MetricDataQueries",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudWatch::AnomalyDetector",
+          "nestedKey": "MetricName",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudWatch::AnomalyDetector",
+          "nestedKey": "MetricStat",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudWatch::AnomalyDetector",
+          "nestedKey": "MetricTimeZone",
+          "bucket": "provider-handled"
+        },
+        {
+          "resourceType": "AWS::CloudWatch::AnomalyDetector",
+          "nestedKey": "Name",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudWatch::AnomalyDetector",
+          "nestedKey": "Namespace",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudWatch::AnomalyDetector",
+          "nestedKey": "Period",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudWatch::AnomalyDetector",
+          "nestedKey": "PeriodicSpikes",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudWatch::AnomalyDetector",
+          "nestedKey": "ReturnData",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudWatch::AnomalyDetector",
+          "nestedKey": "StartTime",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudWatch::AnomalyDetector",
+          "nestedKey": "Stat",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudWatch::AnomalyDetector",
+          "nestedKey": "Unit",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CloudWatch::AnomalyDetector",
+          "nestedKey": "Value",
+          "bucket": "same-spelling"
+        }
+      ]
+    },
+    {
+      "resourceType": "AWS::ECS::Service",
+      "providerFile": "ecs-provider.ts",
+      "sdkClientPackage": "@aws-sdk/client-ecs",
+      "keyStyle": "lower-first",
+      "nestedKeyCount": 48,
+      "entries": [
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "Action",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "AdvancedConfiguration",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "AlarmNames",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "Alarms",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "AlternateTargetGroupArn",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "AssignPublicIp",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "AwsvpcConfiguration",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "BakeTimeInMinutes",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "Base",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "CanaryBakeTimeInMinutes",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "CanaryConfiguration",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "CanaryPercent",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "CapacityProvider",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "ContainerName",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "ContainerPort",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "DeploymentCircuitBreaker",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "Enable",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "Expression",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "Field",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "HookDetails",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "HookTargetArn",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "Key",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "LifecycleHooks",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "LifecycleStages",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "LinearConfiguration",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "LoadBalancerName",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "MaximumPercent",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "MinimumHealthyPercent",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "Port",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "ProductionListenerRule",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "RegistryArn",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "ResetOnHealthyTask",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "RoleArn",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "Rollback",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "SecurityGroups",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "StepBakeTimeInMinutes",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "StepPercent",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "Strategy",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "Subnets",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "TargetGroupArn",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "TargetType",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "TestListenerRule",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "ThresholdConfiguration",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "TimeoutConfiguration",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "TimeoutInMinutes",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "Type",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "Value",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "Weight",
+          "bucket": "same-spelling"
+        }
+      ]
+    },
+    {
+      "resourceType": "AWS::ECS::TaskDefinition",
+      "providerFile": "ecs-provider.ts",
+      "sdkClientPackage": "@aws-sdk/client-ecs",
+      "keyStyle": "lower-first",
+      "nestedKeyCount": 113,
+      "entries": [
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "AccessPointArn",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "AccessPointId",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "Add",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "AppProtocol",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "AuthorizationConfig",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "Autoprovision",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "Capabilities",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "Command",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "Condition",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "ConfiguredAtLaunch",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "ContainerName",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "ContainerPath",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "ContainerPort",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "ContainerPortRange",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "Cpu",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "CpuArchitecture",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "CredentialSpecs",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "CredentialsParameter",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "DependsOn",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "Devices",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "DisableNetworking",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "DnsSearchDomains",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "DnsServers",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "DockerLabels",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "DockerSecurityOptions",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "DockerVolumeConfiguration",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "Domain",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "Driver",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "DriverOpts",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "Drop",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "EFSVolumeConfiguration",
+          "bucket": "provider-handled"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "Enabled",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "EntryPoint",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "Environment",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "EnvironmentFiles",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "Essential",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "Expression",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "ExtraHosts",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "FSxWindowsFileServerVolumeConfiguration",
+          "bucket": "provider-handled"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "FileSystemArn",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "FileSystemId",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "FilesystemId",
+          "bucket": "provider-handled"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "FirelensConfiguration",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "HardLimit",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "HealthCheck",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "Host",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "HostPath",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "HostPort",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "Hostname",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "IAM",
+          "bucket": "provider-handled"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "IgnoredExitCodes",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "Image",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "InitProcessEnabled",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "Interactive",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "Interval",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "IpAddress",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "Key",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "Labels",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "Links",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "LinuxParameters",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "LogConfiguration",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "LogDriver",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "MaxSwap",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "Memory",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "MemoryReservation",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "MountOptions",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "MountPoints",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "Name",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "Namespace",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "OperatingSystemFamily",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "Options",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "Permissions",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "PortMappings",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "Privileged",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "Protocol",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "ProxyConfigurationProperties",
+          "bucket": "provider-handled"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "PseudoTerminal",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "ReadOnly",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "ReadonlyRootFilesystem",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "RepositoryCredentials",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "ResourceRequirements",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "RestartAttemptPeriod",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "RestartPolicy",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "Retries",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "RootDirectory",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "S3FilesVolumeConfiguration",
+          "bucket": "provider-handled"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "Scope",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "SecretOptions",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "Secrets",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "SharedMemorySize",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "Size",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "SizeInGiB",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "SoftLimit",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "SourceContainer",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "SourcePath",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "SourceVolume",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "StartPeriod",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "StartTimeout",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "StopTimeout",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "Swappiness",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "SystemControls",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "Timeout",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "Tmpfs",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "TransitEncryption",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "TransitEncryptionPort",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "Type",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "Ulimits",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "User",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "Value",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "ValueFrom",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "VersionConsistency",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "VolumesFrom",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "WorkingDirectory",
+          "bucket": "same-spelling"
+        }
+      ]
+    }
+  ]
+}

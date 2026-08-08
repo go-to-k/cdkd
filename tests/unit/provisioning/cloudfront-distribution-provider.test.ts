@@ -978,6 +978,11 @@ describe('CloudFrontDistributionProvider', () => {
               {
                 Id: 'origin2',
                 DomainName: 'fallback.example.com',
+                // CFn spelling `OriginCustomHeaders` (bare array) — the SDK
+                // member is `CustomHeaders` with a Quantity wrapper (issue
+                // #1373: before the rename this never reached AWS, and the
+                // update fill below actively wiped it with { Quantity: 0 }).
+                OriginCustomHeaders: [{ HeaderName: 'X-From', HeaderValue: 'cdn' }],
                 CustomOriginConfig: {
                   OriginProtocolPolicy: 'https-only',
                   OriginSSLProtocols: ['TLSv1.2'],
@@ -994,6 +999,13 @@ describe('CloudFrontDistributionProvider', () => {
       // Required-on-update origin fields filled with the CFn defaults
       expect(o1.OriginPath).toBe('');
       expect(o1.CustomHeaders).toEqual({ Quantity: 0, Items: [] });
+      // Template-carried OriginCustomHeaders renamed + wrapped, NOT wiped by
+      // the absent-only required-field fill.
+      expect(o2.CustomHeaders).toEqual({
+        Quantity: 1,
+        Items: [{ HeaderName: 'X-From', HeaderValue: 'cdn' }],
+      });
+      expect(o2.OriginCustomHeaders).toBeUndefined();
       // CustomOriginConfig timeouts filled + CFn OriginSSLProtocols renamed/wrapped
       expect(o2.CustomOriginConfig.OriginReadTimeout).toBe(30);
       expect(o2.CustomOriginConfig.OriginKeepaliveTimeout).toBe(5);
@@ -1798,9 +1810,14 @@ describe('CloudFrontDistributionProvider', () => {
       expect(Array.isArray(cfg['Origins'])).toBe(true);
       expect(Array.isArray(cfg['CacheBehaviors'])).toBe(true);
 
-      // Nested origin fields unwrapped.
+      // Nested origin fields unwrapped. The inverse ALSO restores the CFn
+      // spelling (OriginCustomHeaders — the SDK member is CustomHeaders) so
+      // the drift comparator sees the template's key (issue #1373).
       const origin = (cfg['Origins'] as Record<string, unknown>[])[0]!;
-      expect(origin['CustomHeaders']).toEqual([{ HeaderName: 'X-From', HeaderValue: 'cdn' }]);
+      expect(origin['OriginCustomHeaders']).toEqual([
+        { HeaderName: 'X-From', HeaderValue: 'cdn' },
+      ]);
+      expect(origin['CustomHeaders']).toBeUndefined();
       const customOrigin = origin['CustomOriginConfig'] as Record<string, unknown>;
       // Inverse restores the CFn spelling (OriginSSLProtocols) so the drift
       // comparator sees the template's key (issue #1370 casing class).

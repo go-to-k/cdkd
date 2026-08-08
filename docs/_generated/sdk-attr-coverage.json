@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "summary": {
     "classifiedCount": 134,
-    "covered": 55,
-    "noArnAttr": 79,
+    "covered": 53,
+    "noArnAttr": 81,
     "gap": 0
   },
   "types": [
@@ -450,24 +450,14 @@
     },
     {
       "resourceType": "AWS::ECS::Service",
-      "bucket": "covered",
-      "arnAttributes": [
-        {
-          "name": "ServiceArn",
-          "status": "cached"
-        }
-      ],
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
       "gaps": []
     },
     {
       "resourceType": "AWS::ECS::TaskDefinition",
-      "bucket": "covered",
-      "arnAttributes": [
-        {
-          "name": "TaskDefinitionArn",
-          "status": "cached"
-        }
-      ],
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
       "gaps": []
     },
     {
