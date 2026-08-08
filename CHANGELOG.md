@@ -1,3 +1,10 @@
+## [0.276.6](https://github.com/go-to-k/cdkd/compare/v0.276.5...v0.276.6) (2026-08-08)
+
+
+### Bug Fixes
+
+* **cloudfront:** map CFn->SDK casing/shapes and merge UpdateDistribution config ([#1372](https://github.com/go-to-k/cdkd/issues/1372)) ([4f2491e](https://github.com/go-to-k/cdkd/commit/4f2491e7df205941eda10c75318b2f87fd7a0a98))
+
 ## [0.276.5](https://github.com/go-to-k/cdkd/compare/v0.276.4...v0.276.5) (2026-08-03)
 
 
