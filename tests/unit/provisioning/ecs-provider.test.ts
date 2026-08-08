@@ -782,9 +782,64 @@ describe('ECSProvider', () => {
             iam: 'ENABLED',
           },
         });
-        // The Docker/FSx siblings are absent -> omitted.
+        // The Docker/FSx/S3Files siblings are absent -> omitted.
         expect(input.volumes[0].dockerVolumeConfiguration).toBeUndefined();
         expect(input.volumes[0].fsxWindowsFileServerVolumeConfiguration).toBeUndefined();
+        expect(input.volumes[0].s3filesVolumeConfiguration).toBeUndefined();
+      });
+
+      it('maps S3FilesVolumeConfiguration to the irregular SDK member s3filesVolumeConfiguration (issue #1373)', async () => {
+        mockSend.mockResolvedValueOnce(arnResp);
+
+        await provider.create('S3FilesTask', 'AWS::ECS::TaskDefinition', {
+          Family: 's3files-task',
+          ContainerDefinitions: [{ Name: 'web', Image: 'nginx:latest' }],
+          Volumes: [
+            {
+              Name: 's3-data',
+              // The SDK member is `s3filesVolumeConfiguration` (all-lowercase
+              // `s3files` prefix) — NOT the mechanical first-letter flip
+              // `s3FilesVolumeConfiguration`, which the SDK serializer would
+              // silently drop (the nested-key critic catch).
+              S3FilesVolumeConfiguration: {
+                FileSystemArn: 'arn:aws:s3:us-east-1:123456789012:files/my-fs',
+                AccessPointArn: 'arn:aws:s3:us-east-1:123456789012:files-access-point/my-ap',
+                RootDirectory: '/',
+                TransitEncryptionPort: 443,
+              },
+            },
+          ],
+        });
+
+        const input = mockSend.mock.calls[0][0].input;
+        expect(input.volumes[0].s3filesVolumeConfiguration).toEqual({
+          fileSystemArn: 'arn:aws:s3:us-east-1:123456789012:files/my-fs',
+          accessPointArn: 'arn:aws:s3:us-east-1:123456789012:files-access-point/my-ap',
+          rootDirectory: '/',
+          transitEncryptionPort: 443,
+        });
+        expect(input.volumes[0].s3FilesVolumeConfiguration).toBeUndefined();
+      });
+
+      it('coerces a stringly-typed S3Files TransitEncryptionPort to a number', async () => {
+        mockSend.mockResolvedValueOnce(arnResp);
+
+        await provider.create('S3FilesTask', 'AWS::ECS::TaskDefinition', {
+          Family: 's3files-task',
+          ContainerDefinitions: [{ Name: 'web', Image: 'nginx:latest' }],
+          Volumes: [
+            {
+              Name: 's3-data',
+              S3FilesVolumeConfiguration: {
+                FileSystemArn: 'arn:aws:s3:us-east-1:123456789012:files/my-fs',
+                TransitEncryptionPort: '443',
+              },
+            },
+          ],
+        });
+
+        const input = mockSend.mock.calls[0][0].input;
+        expect(input.volumes[0].s3filesVolumeConfiguration.transitEncryptionPort).toBe(443);
       });
 
       it('coerces a stringly-typed EFS TransitEncryptionPort to a number', async () => {

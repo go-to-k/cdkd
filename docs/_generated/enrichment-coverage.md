@@ -12,11 +12,11 @@ Gap severity depends on the tier. A gap on an **SDK-backed** type (`sdk-fallback
 ## Summary
 
 - Classified types (cached schema): **134**
-- Fully enriched: **10**
-- No computed attribute (Ref == physicalId is correct): **14**
+- Fully enriched: **14**
+- No computed attribute (Ref == physicalId is correct): **15**
 - **Pure-CC latent gaps (unenriched-computed, blocks CI): 0**
-- SDK-fallback gaps (informational, #614 path only): **110**
-- Types with allow-listed (not-a-gap) attributes: **16**
+- SDK-fallback gaps (informational, #614 path only): **105**
+- Types with allow-listed (not-a-gap) attributes: **23**
 
 ## Pure-CC latent gaps
 
@@ -32,11 +32,7 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::ApiGateway::Authorizer` | `AuthorizerId` |
 | `AWS::ApiGateway::Deployment` | `DeploymentId` |
 | `AWS::ApiGateway::Resource` | `ResourceId` |
-| `AWS::ApiGatewayV2::Api` | `ApiEndpoint`, `ApiId` |
-| `AWS::ApiGatewayV2::Authorizer` | `AuthorizerId` |
-| `AWS::ApiGatewayV2::Integration` | `IntegrationId` |
-| `AWS::ApiGatewayV2::Route` | `RouteId` |
-| `AWS::ApiGatewayV2::Stage` | `Id` |
+| `AWS::ApiGatewayV2::Api` | `ApiEndpoint` |
 | `AWS::AppSync::ApiKey` | `ApiKey`, `ApiKeyId`, `Arn` |
 | `AWS::AppSync::DataSource` | `DataSourceArn` |
 | `AWS::AppSync::GraphQLApi` | `ApiId`, `Arn`, `GraphQLDns`, `GraphQLEndpointArn`, `GraphQLUrl`, `RealtimeDns`, `RealtimeUrl` |
@@ -50,7 +46,7 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::CertificateManager::Certificate` | `Id` |
 | `AWS::CloudFormation::Stack` | `ChangeSetId`, `CreationTime`, `LastUpdateTime`, `Outputs`, `ParentId`, `RootId`, `StackId`, `StackStatus` |
 | `AWS::CloudFront::CloudFrontOriginAccessIdentity` | `Id` |
-| `AWS::CloudFront::Distribution` | `DomainName`, `Id` |
+| `AWS::CloudFront::Distribution` | `DomainName` |
 | `AWS::CloudTrail::Trail` | `Arn`, `SnsTopicArn` |
 | `AWS::CloudWatch::Alarm` | `Arn` |
 | `AWS::CodeBuild::Project` | `Arn`, `Id` |
@@ -77,8 +73,7 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::EC2::VPC` | `CidrBlockAssociations`, `DefaultNetworkAcl`, `DefaultSecurityGroup`, `Ipv6CidrBlocks`, `VpcId` |
 | `AWS::EC2::VPCGatewayAttachment` | `AttachmentType` |
 | `AWS::ECS::Cluster` | `Arn` |
-| `AWS::ECS::Service` | `Name`, `ServiceArn` |
-| `AWS::ECS::TaskDefinition` | `TaskDefinitionArn` |
+| `AWS::ECS::Service` | `Name` |
 | `AWS::EFS::AccessPoint` | `AccessPointId`, `Arn` |
 | `AWS::EFS::FileSystem` | `Arn`, `FileSystemId` |
 | `AWS::EFS::MountTarget` | `Id` |
@@ -149,11 +144,11 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::ApiGateway::Method` | yes | no-computed-attr | _(none)_ |
 | `AWS::ApiGateway::Resource` | yes | sdk-fallback-gap | `ResourceId` (GAP) |
 | `AWS::ApiGateway::Stage` | yes | no-computed-attr | _(none)_ |
-| `AWS::ApiGatewayV2::Api` | yes | sdk-fallback-gap | `ApiEndpoint` (GAP), `ApiId` (GAP) |
-| `AWS::ApiGatewayV2::Authorizer` | yes | sdk-fallback-gap | `AuthorizerId` (GAP) |
-| `AWS::ApiGatewayV2::Integration` | yes | sdk-fallback-gap | `IntegrationId` (GAP) |
-| `AWS::ApiGatewayV2::Route` | yes | sdk-fallback-gap | `RouteId` (GAP) |
-| `AWS::ApiGatewayV2::Stage` | yes | sdk-fallback-gap | `Id` (GAP) |
+| `AWS::ApiGatewayV2::Api` | yes | sdk-fallback-gap | `ApiEndpoint` (GAP), `ApiId` (allow) |
+| `AWS::ApiGatewayV2::Authorizer` | yes | enriched | `AuthorizerId` (allow) |
+| `AWS::ApiGatewayV2::Integration` | yes | enriched | `IntegrationId` (allow) |
+| `AWS::ApiGatewayV2::Route` | yes | enriched | `RouteId` (allow) |
+| `AWS::ApiGatewayV2::Stage` | yes | no-computed-attr | _(none)_ |
 | `AWS::AppSync::ApiKey` | yes | sdk-fallback-gap | `ApiKey` (GAP), `ApiKeyId` (GAP), `Arn` (GAP) |
 | `AWS::AppSync::DataSource` | yes | sdk-fallback-gap | `DataSourceArn` (GAP) |
 | `AWS::AppSync::GraphQLApi` | yes | sdk-fallback-gap | `ApiId` (GAP), `Arn` (GAP), `GraphQLDns` (GAP), `GraphQLEndpointArn` (GAP), `GraphQLUrl` (GAP), `RealtimeDns` (GAP), `RealtimeUrl` (GAP) |
@@ -169,7 +164,7 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::CloudFormation::Stack` | yes | sdk-fallback-gap | `ChangeSetId` (GAP), `CreationTime` (GAP), `LastUpdateTime` (GAP), `Outputs` (GAP), `ParentId` (GAP), `RootId` (GAP), `StackId` (GAP), `StackStatus` (GAP) |
 | `AWS::CloudFormation::WaitConditionHandle` | yes | enriched | `Id` (allow) |
 | `AWS::CloudFront::CloudFrontOriginAccessIdentity` | yes | sdk-fallback-gap | `Id` (GAP), `S3CanonicalUserId` (OK) |
-| `AWS::CloudFront::Distribution` | yes | sdk-fallback-gap | `DomainName` (GAP), `Id` (GAP) |
+| `AWS::CloudFront::Distribution` | yes | sdk-fallback-gap | `DomainName` (GAP), `Id` (allow) |
 | `AWS::CloudFront::OriginAccessControl` | yes | enriched | `Id` (OK) |
 | `AWS::CloudTrail::Trail` | yes | sdk-fallback-gap | `Arn` (GAP), `SnsTopicArn` (GAP) |
 | `AWS::CloudWatch::Alarm` | yes | sdk-fallback-gap | `Arn` (GAP) |
@@ -200,8 +195,8 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::EC2::VPCGatewayAttachment` | yes | sdk-fallback-gap | `AttachmentType` (GAP) |
 | `AWS::ECR::Repository` | yes | enriched | `Arn` (OK), `RepositoryUri` (OK) |
 | `AWS::ECS::Cluster` | yes | sdk-fallback-gap | `Arn` (GAP) |
-| `AWS::ECS::Service` | yes | sdk-fallback-gap | `Name` (GAP), `ServiceArn` (GAP) |
-| `AWS::ECS::TaskDefinition` | yes | sdk-fallback-gap | `TaskDefinitionArn` (GAP) |
+| `AWS::ECS::Service` | yes | sdk-fallback-gap | `Name` (GAP), `ServiceArn` (allow) |
+| `AWS::ECS::TaskDefinition` | yes | enriched | `TaskDefinitionArn` (allow) |
 | `AWS::EFS::AccessPoint` | yes | sdk-fallback-gap | `AccessPointId` (GAP), `Arn` (GAP) |
 | `AWS::EFS::FileSystem` | yes | sdk-fallback-gap | `Arn` (GAP), `FileSystemId` (GAP) |
 | `AWS::EFS::MountTarget` | yes | sdk-fallback-gap | `Id` (GAP) |

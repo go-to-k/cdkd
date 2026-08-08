@@ -2,11 +2,11 @@
   "schemaVersion": 1,
   "summary": {
     "classifiedCount": 134,
-    "enriched": 10,
-    "noComputedAttr": 14,
+    "enriched": 14,
+    "noComputedAttr": 15,
     "unenrichedGap": 0,
-    "sdkFallbackGap": 110,
-    "allowListedTypes": 16
+    "sdkFallbackGap": 105,
+    "allowListedTypes": 23
   },
   "types": [
     {
@@ -115,17 +115,17 @@
         },
         {
           "name": "ApiId",
-          "status": "gap"
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         }
       ],
       "gaps": [
-        "ApiEndpoint",
-        "ApiId"
+        "ApiEndpoint"
       ]
     },
     {
       "resourceType": "AWS::ApiGatewayV2::Authorizer",
-      "bucket": "sdk-fallback-gap",
+      "bucket": "enriched",
       "sdkBacked": true,
       "readOnlyProperties": [
         "AuthorizerId"
@@ -134,16 +134,15 @@
       "attributes": [
         {
           "name": "AuthorizerId",
-          "status": "gap"
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         }
       ],
-      "gaps": [
-        "AuthorizerId"
-      ]
+      "gaps": []
     },
     {
       "resourceType": "AWS::ApiGatewayV2::Integration",
-      "bucket": "sdk-fallback-gap",
+      "bucket": "enriched",
       "sdkBacked": true,
       "readOnlyProperties": [
         "IntegrationId"
@@ -152,16 +151,15 @@
       "attributes": [
         {
           "name": "IntegrationId",
-          "status": "gap"
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         }
       ],
-      "gaps": [
-        "IntegrationId"
-      ]
+      "gaps": []
     },
     {
       "resourceType": "AWS::ApiGatewayV2::Route",
-      "bucket": "sdk-fallback-gap",
+      "bucket": "enriched",
       "sdkBacked": true,
       "readOnlyProperties": [
         "RouteId"
@@ -170,30 +168,20 @@
       "attributes": [
         {
           "name": "RouteId",
-          "status": "gap"
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         }
       ],
-      "gaps": [
-        "RouteId"
-      ]
+      "gaps": []
     },
     {
       "resourceType": "AWS::ApiGatewayV2::Stage",
-      "bucket": "sdk-fallback-gap",
+      "bucket": "no-computed-attr",
       "sdkBacked": true,
-      "readOnlyProperties": [
-        "Id"
-      ],
+      "readOnlyProperties": [],
       "enrichedKeys": [],
-      "attributes": [
-        {
-          "name": "Id",
-          "status": "gap"
-        }
-      ],
-      "gaps": [
-        "Id"
-      ]
+      "attributes": [],
+      "gaps": []
     },
     {
       "resourceType": "AWS::AppSync::ApiKey",
@@ -672,12 +660,12 @@
         },
         {
           "name": "Id",
-          "status": "gap"
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         }
       ],
       "gaps": [
-        "DomainName",
-        "Id"
+        "DomainName"
       ]
     },
     {
@@ -1464,17 +1452,17 @@
         },
         {
           "name": "ServiceArn",
-          "status": "gap"
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         }
       ],
       "gaps": [
-        "Name",
-        "ServiceArn"
+        "Name"
       ]
     },
     {
       "resourceType": "AWS::ECS::TaskDefinition",
-      "bucket": "sdk-fallback-gap",
+      "bucket": "enriched",
       "sdkBacked": true,
       "readOnlyProperties": [
         "TaskDefinitionArn"
@@ -1483,12 +1471,11 @@
       "attributes": [
         {
           "name": "TaskDefinitionArn",
-          "status": "gap"
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         }
       ],
-      "gaps": [
-        "TaskDefinitionArn"
-      ]
+      "gaps": []
     },
     {
       "resourceType": "AWS::EFS::AccessPoint",

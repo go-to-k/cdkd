@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::ApiGatewayV2::Stage",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-08",
   "properties": [
     "AccessLogSettings",
     "ApiId",
@@ -9,17 +9,31 @@
     "DefaultRouteSettings",
     "DeploymentId",
     "Description",
-    "Id",
     "RouteSettings",
     "StageName",
     "StageVariables",
     "Tags"
   ],
-  "readOnlyProperties": [
-    "Id"
-  ],
+  "readOnlyProperties": [],
   "createOnlyProperties": [
     "ApiId",
     "StageName"
-  ]
+  ],
+  "primaryIdentifier": [
+    "ApiId",
+    "StageName"
+  ],
+  "nestedProperties": {
+    "AccessLogSettings": [
+      "DestinationArn",
+      "Format"
+    ],
+    "DefaultRouteSettings": [
+      "DataTraceEnabled",
+      "DetailedMetricsEnabled",
+      "LoggingLevel",
+      "ThrottlingBurstLimit",
+      "ThrottlingRateLimit"
+    ]
+  }
 }

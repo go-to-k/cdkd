@@ -169,6 +169,83 @@ export function extractPrimaryIdentifier(schemaJson) {
 }
 
 /**
+ * Extract, per top-level property, the set of NESTED property names reachable
+ * beneath it (following local `#/definitions/...` refs, cycle-guarded).
+ *
+ * Consumed by `scripts/gen-nested-key-coverage.ts` (issue #1373): the AWS SDK
+ * v3 serializer silently drops unknown keys, so an SDK provider forwarding a
+ * nested CFn config blob must convert every key whose spelling diverges from
+ * the SDK model — and the pre-flight `property-coverage` check compares
+ * TOP-LEVEL names only. This capture gives the critic the CFn-side nested key
+ * names to diff against the SDK client's model.
+ *
+ * Only top-level properties with at least one nested name get an entry, so
+ * scalar-heavy fixtures stay small.
+ *
+ * @param {string} schemaJson
+ * @returns {Record<string, string[]>}
+ */
+export function extractNestedPropertyNames(schemaJson) {
+  /** @type {{properties?: Record<string, unknown>, definitions?: Record<string, unknown>}} */
+  const schema = JSON.parse(schemaJson);
+  if (!schema.properties || typeof schema.properties !== 'object') {
+    return {};
+  }
+  const definitions =
+    schema.definitions && typeof schema.definitions === 'object' ? schema.definitions : {};
+
+  /**
+   * @param {unknown} node
+   * @param {Set<string>} names
+   * @param {Set<string>} seenRefs
+   */
+  function walk(node, names, seenRefs) {
+    if (node === null || typeof node !== 'object') return;
+    if (Array.isArray(node)) {
+      for (const item of node) walk(item, names, seenRefs);
+      return;
+    }
+    const obj = /** @type {Record<string, unknown>} */ (node);
+    const ref = obj['$ref'];
+    if (typeof ref === 'string' && ref.startsWith('#/definitions/')) {
+      const defName = ref.slice('#/definitions/'.length);
+      if (!seenRefs.has(defName)) {
+        seenRefs.add(defName);
+        walk(definitions[defName], names, seenRefs);
+      }
+    }
+    const props = obj['properties'];
+    if (props && typeof props === 'object' && !Array.isArray(props)) {
+      for (const [key, sub] of Object.entries(props)) {
+        names.add(key);
+        walk(sub, names, seenRefs);
+      }
+    }
+    // Schema combinators / containers that can hold further property maps.
+    // `patternProperties` KEYS are regexes, not property names — walk only the
+    // value schemas.
+    for (const key of ['items', 'additionalProperties', 'oneOf', 'anyOf', 'allOf']) {
+      if (obj[key] && typeof obj[key] === 'object') walk(obj[key], names, seenRefs);
+    }
+    const patternProps = obj['patternProperties'];
+    if (patternProps && typeof patternProps === 'object' && !Array.isArray(patternProps)) {
+      for (const sub of Object.values(patternProps)) walk(sub, names, seenRefs);
+    }
+  }
+
+  /** @type {Record<string, string[]>} */
+  const out = {};
+  for (const [topName, sub] of Object.entries(schema.properties)) {
+    const names = new Set();
+    walk(sub, names, new Set());
+    if (names.size > 0) {
+      out[topName] = Array.from(names).sort();
+    }
+  }
+  return out;
+}
+
+/**
  * Retry on CloudFormation's throttling shape ("Rate exceeded" / HTTP 429).
  * Exponential backoff with jitter, 1s -> 2s -> 4s -> 8s -> 16s -> 32s.
  *
@@ -226,6 +303,7 @@ async function processType(client, resourceType) {
     const readOnlyProperties = extractReadOnlyProperties(resp.Schema);
     const createOnlyProperties = extractCreateOnlyProperties(resp.Schema);
     const primaryIdentifier = extractPrimaryIdentifier(resp.Schema);
+    const nestedProperties = extractNestedPropertyNames(resp.Schema);
     const fixture = {
       resourceType,
       // YYYY-MM-DD only so an unchanged schema produces an unchanged fixture
@@ -235,6 +313,9 @@ async function processType(client, resourceType) {
       readOnlyProperties,
       createOnlyProperties,
       primaryIdentifier,
+      // Omitted entirely when the type has no nested property (keeps
+      // scalar-only fixtures byte-stable vs the pre-#1373 shape).
+      ...(Object.keys(nestedProperties).length > 0 ? { nestedProperties } : {}),
     };
     const path = join(FIXTURES_DIR, fixtureFilename(resourceType));
     await writeFile(path, JSON.stringify(fixture, null, 2) + '\n', 'utf8');

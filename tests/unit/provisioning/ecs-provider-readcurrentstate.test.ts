@@ -614,6 +614,16 @@ describe('ECSProvider.readCurrentState', () => {
             },
             configuredAtLaunch: false,
           },
+          {
+            name: 's3files-vol',
+            // The irregular all-lowercase-prefix SDK member (issue #1373).
+            s3filesVolumeConfiguration: {
+              fileSystemArn: 'arn:aws:s3:us-east-1:123:files/my-fs',
+              accessPointArn: 'arn:aws:s3:us-east-1:123:files-access-point/my-ap',
+              rootDirectory: '/',
+              transitEncryptionPort: 443,
+            },
+          },
         ],
       },
     });
@@ -648,6 +658,15 @@ describe('ECSProvider.readCurrentState', () => {
           AuthorizationConfig: { CredentialsParameter: 'arn:secret', Domain: 'corp.local' },
         },
         ConfiguredAtLaunch: false,
+      },
+      {
+        Name: 's3files-vol',
+        S3FilesVolumeConfiguration: {
+          FileSystemArn: 'arn:aws:s3:us-east-1:123:files/my-fs',
+          AccessPointArn: 'arn:aws:s3:us-east-1:123:files-access-point/my-ap',
+          RootDirectory: '/',
+          TransitEncryptionPort: 443,
+        },
       },
     ]);
   });
