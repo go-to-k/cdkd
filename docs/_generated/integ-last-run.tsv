@@ -224,7 +224,7 @@ rollback-failure-injection	2026-07-24T10:50:16Z	PASS	368	verify.sh	0724b sweep P
 rollback-sqs-cooldown	2026-07-25T05:24:26Z	PASS	180	verify.sh	#1220 echo-before-assert on steps 4/9/10, destroy clean
 route53	2026-07-22T07:59:10Z	PASS		verify.sh	TTL-refresh sweep; HostedZone/GeoProximity/CidrRouting backfills, 6 del 0 err, hosted zone + state gone
 s3-asset-deploy	2026-07-26T19:45:58Z	PASS	58	verify.sh	0727b sweep-b12 staleness re-run (rc=0); account clean
-s3-cloudfront	2026-07-30T23:04:11Z	PASS	225	verify.sh	1316 delete waits out propagating disable, 5 del/0 err
+s3-cloudfront	2026-08-08T16:49:03Z	PASS	223	verify.sh	PR1372 post-rebase+lint-fix run; destroy clean 0 orphans
 s3-directory-bucket	2026-08-02T15:38:47Z	PASS	50	verify.sh	re-run for #1347 wontdo-comment PR; guard + clean destroy, 0 orphans
 s3-event-notification	2026-07-21T05:28:05Z	PASS	79	verify.sh	rc ok, orph clean
 s3-lifecycle	2026-07-21T14:28:43Z	PASS	58	verify.sh	rc ok, orph clean

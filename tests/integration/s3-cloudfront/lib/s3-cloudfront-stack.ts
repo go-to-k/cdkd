@@ -57,14 +57,28 @@ export class S3CloudFrontStack extends cdk.Stack {
       fallbackStatusCodes: [500, 502, 503, 504],
     });
 
-    // Create CloudFront Distribution
+    // UPDATE mode (CDKD_TEST_UPDATE=true): change the comment + narrow the
+    // geo allowlist so the second deploy exercises UpdateDistribution's
+    // read-modify-write merge (issue #1371) — before that fix, ANY update
+    // failed with "WebACLId is missing for the resource" because the
+    // template config was sent verbatim instead of merged over the live one.
+    const isUpdate = process.env.CDKD_TEST_UPDATE === 'true';
+
+    // Create CloudFront Distribution. The geo allowlist synthesizes
+    // `Restrictions.GeoRestriction.Locations`, exercising the CFn -> SDK
+    // GeoRestriction shape conversion (issue #1370) on create AND update.
     const distribution = new cloudfront.Distribution(this, 'Distribution', {
       defaultBehavior: {
         origin: originGroup,
         viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
       },
       defaultRootObject: 'index.html',
-      comment: 'S3 CloudFront Distribution (cdkd integration test)',
+      comment: isUpdate
+        ? 'S3 CloudFront Distribution (cdkd integration test, updated)'
+        : 'S3 CloudFront Distribution (cdkd integration test)',
+      geoRestriction: isUpdate
+        ? cloudfront.GeoRestriction.allowlist('JP')
+        : cloudfront.GeoRestriction.allowlist('JP', 'US'),
     });
 
     // Tag the distribution end-to-end so the cdkd `Tags` backfill (#609)
