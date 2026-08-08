@@ -29,7 +29,7 @@ bench-ccapi	2026-07-26T18:43:33Z	PASS	89	standard	0727b sweep-b5 staleness re-ru
 bench-cdk-sample	2026-07-31T06:06:20Z	PASS	373	standard	regression run post-#1311/#1318 CloudFront semantics; 37 del/2 retain/0 err, retained LGs swept, orph clean
 bench-sdk	2026-07-26T18:43:33Z	PASS	33	standard	0727b sweep-b5 staleness re-run (rc=0); account clean
 bootstrap-free-region	2026-07-31T06:23:42Z	PASS	78	verify.sh	TTL-refresh sweep re-run in ca-central-1; marker+bucket swept, orph clean
-bucket-deployment	2026-07-21T18:02:21Z	PASS	125	verify.sh	rc ok, orph clean
+bucket-deployment	2026-08-08T16:22:35Z	PASS	123	verify.sh	P0 post-#1345 S3 auto-empty opt-in; autoDeleteObjects tag honored, 10 del/0 err, 0 orphans
 budgets	2026-08-01T09:36:05Z	PASS	42	verify.sh	0801 regression sweep; create/update/destroy ok, 0 orphans
 cache-streaming	2026-07-21T10:54:20Z	PASS	497	verify.sh	converted to verify.sh; GetAtt redis endpoint ok, 0 orphans
 cc-api-fallback	2026-07-27T05:30:42Z	PASS	65	verify.sh	1252 fix live-verify (CC delete path incl. new integ-destroy scope); 0 errors 0 orphans
@@ -62,8 +62,8 @@ data-analytics	2026-07-21T18:30:46Z	PASS	50	verify.sh	rc ok, orph clean
 data-pipeline	2026-07-24T10:53:59Z	PASS	47	standard	0724b sweep staleness; 7 del 0 err 0 orphans
 deep-getatt-chains	2026-08-01T10:07:21Z	PASS	53	verify.sh	0801 regression sweep; SDK+CC chain ok, 0 orphans
 deletion-ordering-complex	2026-07-26T20:00:52Z	PASS	187	verify.sh	0727b sweep-b13 staleness re-run (rc=0); account clean
-deletion-policy-retain	2026-07-21T07:21:45Z	PASS	29	verify.sh	retain honored, manual cleanup ok, 0 orphans
-deletion-policy-snapshot	2026-08-03T09:11:57Z	PASS	251	verify.sh	#1356/#1357: added AZ-flip replacement phase; engine DELETE + replacement + runner snapshots verified, orphan-zero (2nd clean run, post review-fix)
+deletion-policy-retain	2026-08-08T16:25:24Z	PASS	26	verify.sh	P0 post-#1355/#1359/#1365 DeletionPolicy rework; Retain honored, 1 del/1 retain/0 err, manual cleanup ok
+deletion-policy-snapshot	2026-08-08T16:32:34Z	PASS	259	verify.sh	P0 first run post-#1360 EC2 Volume replacement rules; all 3 snapshot paths (engine/replacement/runner) ok, 0 orphans
 deletion-policy-snapshot-heavy	2026-08-03T06:58:15Z	PASS	1500	verify.sh	#1353 Redshift+ElastiCache RepGroup pre-delete snapshots verified; found 4 live defects across 5 runs
 deployment-events	2026-07-26T20:00:52Z	PASS	45	verify.sh	0727b sweep-b13 staleness re-run (rc=0); account clean
 destroy-data-guard	2026-08-02T14:22:57Z	PASS	95	verify.sh	guard fired on guarded pair, opt-ins force-cleaned, 2nd destroy clean, 0 orphans
@@ -89,7 +89,7 @@ ec2-instance	2026-07-30T06:37:46Z	PASS	180	verify.sh	#1281 NetworkInterfaces ins
 ec2-instance-fanout	2026-07-30T06:24:02Z	PASS	150	verify.sh	new fixture (#1292): 10-inst cold fan-out converged, 13 propagation retries, 0 throttles, 32s deploy
 ec2-vpc	2026-07-26T17:21:15Z	PASS	35	standard	issue 1241 fix verified: explicit DESTROY FlowLog LogGroup; 20 deleted 0 retained 0 orphans
 ecr	2026-07-26T18:36:31Z	PASS	85	standard	0727b sweep-b4 staleness re-run (rc=0); account clean
-ecr-scanning	2026-07-20T17:37:23Z	PASS	56	verify.sh	ECR scanOnPush + tag add/change/untag update, clean destroy
+ecr-scanning	2026-08-08T16:24:26Z	PASS	52	verify.sh	P0 post-#1345 ECR force-delete opt-in; 3 phases ok, 2 del/0 err, 0 orphans
 ecs-fargate	2026-07-30T11:54:49Z	PASS	420	verify.sh	#1280 live-test: --full-wait waiter w/ new max(600,resolved) cap ran on create+update; 23 del/0 err, orph clean
 ecs-service-update-props	2026-07-23T08:20:10Z	PASS		verify.sh	#1173 re-run after VersionConsistency norm; Phase1f + drift clean; destroy 15 del 0 err 0 orph
 efs-immutable-replacement	2026-08-01T09:51:12Z	PASS	63	verify.sh	0801 regression sweep; createOnly+stateful guard ok, 0 orphans
@@ -195,7 +195,7 @@ migrate-from-cfn	2026-07-21T13:50:11Z	PASS	414	verify.sh	post import-tag-walk re
 monitoring	2026-07-24T10:52:15Z	PASS	40	standard	0724b sweep staleness; 7 del 0 err 0 orphans
 multi-asset	2026-07-21T18:05:41Z	PASS	106	verify.sh	rc ok, ECR swept, orph clean
 multi-region-same-stack	2026-07-26T18:04:53Z	PASS	22	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
-multi-resource	2026-08-03T06:59:24Z	PASS	300	standard	broad run for #1353/#1354 cross-cutting changes; 17/17 deleted, orphan-zero
+multi-resource	2026-08-08T16:36:58Z	PASS	59	standard	P0 BROAD post-#1359..#1369 deploy-engine/destroy-runner/rollback-executor; 17 created / 17 deleted 0 err, 0 orphans
 multi-stack-deps	2026-07-30T12:17:37Z	PASS	300	standard	regression sweep post-#1289; 3-stack cross-stack deps deploy+destroy clean
 nested-stack	2026-07-26T18:10:48Z	PASS	30	standard	0727b sweep-b2 staleness re-run (rc=0); account clean
 nested-stack-3level	2026-07-21T05:11:36Z	PASS	78	verify.sh	rc ok, orph clean
@@ -210,17 +210,17 @@ raw-cfn-conditions-params	2026-08-01T09:11:18Z	PASS	64	verify.sh	0801 regression
 rds-aurora	2026-07-25T06:38:38Z	PASS	2085	verify.sh	1160 removal reset: cluster DeletionProtection+IAMAuth reset live-verified, destroy 23/0
 rds-dbinstance-backfill	2026-07-25T07:01:56Z	PASS	725	verify.sh	re-run after 1222 review fixes; destroy 11/0
 rds-full-stack	2026-07-21T08:03:48Z	PASS	2346	verify.sh	15 deleted 0 orphans, RDS slow-delete floor ok
-recreate-mixed-direction	2026-07-21T05:15:35Z	PASS	100	verify.sh	rc ok, orph clean
+recreate-mixed-direction	2026-08-08T16:42:21Z	PASS	92	verify.sh	P1 post-#1360 replacement-rules touch; mixed SDK<->CC recreate ok, 3 del/0 err, 0 orphans
 recreate-via-cc-api	2026-08-01T10:00:06Z	PASS	93	verify.sh	0801 regression sweep; SDK->CC mid-life migration ok, 0 orphans
-recreate-via-sdk-provider	2026-07-21T05:13:38Z	PASS	86	verify.sh	rc ok, orph clean
+recreate-via-sdk-provider	2026-08-08T16:40:35Z	PASS	78	verify.sh	P1 post-#1360 replacement-rules touch; CC->SDK mid-life recreate ok, 2 del/0 err, 0 orphans
 redshift-cluster-getatt	2026-07-20T14:58:06Z	PASS	330	verify.sh	CC GetAtt Endpoint real hostname, 0 orphans
 remove-protection	2026-07-30T18:35:25Z	PASS	1300	verify.sh	broad run for #1312 destroy-runner touch; 12 del/0 err, orph clean
 rename-refactor	2026-07-21T14:37:30Z	PASS	107	verify.sh	new fixture; review-fix re-run; destroy 0 err 0 orph
-replacement-fanout	2026-07-21T05:17:15Z	PASS	82	verify.sh	rc ok, orph clean
+replacement-fanout	2026-08-08T16:39:04Z	PASS	83	verify.sh	P1 post-#1360 replacement-rules touch; SNS replacement fanout to 10 dependents, 12 del/0 err, 0 orphans
 replacement-immutable-name	2026-08-01T09:51:12Z	PASS	113	verify.sh	0801 regression sweep; 6 types x 3 phases ok, 0 orphans
 rollback-command	2026-07-25T05:24:26Z	PASS	130	verify.sh	#1220 echo-before-assert on R2/F2 success-expected rollbacks, destroy clean
-rollback-deletion-policy-snapshot	2026-08-03T09:40:59Z	PASS	93	verify.sh	new fixture for #1358; rolled-back CREATE snapshot-then-deleted (not orphaned), record removed from state, 0 orphans (re-run post 3-axis review fixes)
-rollback-failure-injection	2026-07-24T10:50:16Z	PASS	368	verify.sh	0724b sweep P1: #1212 journal-after-clean-rollback coverage; 17 del 0 err 0 orphans
+rollback-deletion-policy-snapshot	2026-08-08T16:34:46Z	PASS	107	verify.sh	P0 first run post-#1361/#1365/#1367/#1369 rollback rework; rolled-back CREATE snapshot-then-deleted, state clean, 0 orphans
+rollback-failure-injection	2026-08-08T17:11:06Z	FAIL	600	verify.sh	run cut short by the 600s harness tool timeout (not a cdkd bug); SIGTERM graceful path worked; cleanup destroy 16 del/1 SG ENI-race err, AWS verified clean (SG+VPC NotFound), state orphaned. Needs a full re-run
 rollback-sqs-cooldown	2026-07-25T05:24:26Z	PASS	180	verify.sh	#1220 echo-before-assert on steps 4/9/10, destroy clean
 route53	2026-07-22T07:59:10Z	PASS		verify.sh	TTL-refresh sweep; HostedZone/GeoProximity/CidrRouting backfills, 6 del 0 err, hosted zone + state gone
 s3-asset-deploy	2026-07-26T19:45:58Z	PASS	58	verify.sh	0727b sweep-b12 staleness re-run (rc=0); account clean
@@ -260,8 +260,8 @@ stepfunctions-s3-definition	2026-07-26T19:45:58Z	PASS	43	verify.sh	0727b sweep-b
 synthetics-canary	2026-07-26T19:25:15Z	PASS	144	verify.sh	0727b sweep-b10 staleness re-run (rc=0); account clean
 tags-propagation	2026-07-26T18:49:34Z	PASS	63	verify.sh	0727b sweep-b6 staleness re-run (rc=0); account clean
 throttle-wide-dag	2026-07-26T19:45:58Z	PASS	186	verify.sh	0727b sweep-b12 staleness re-run (rc=0); account clean
-update-policy-mutations	2026-07-21T14:01:35Z	PASS	74	verify.sh	post #1138 UpdateReplacePolicy Retain guard fix on merged main; retain honored, 0 leftover
-update-replace	2026-07-21T07:23:47Z	PASS	80	verify.sh	in-place+replace, 7 deleted 0 orphans
+update-policy-mutations	2026-08-08T16:27:04Z	PASS	76	verify.sh	P0 post-#1359 UpdateReplacePolicy Snapshot rework; Retain flip honored, 5 del/2 retain/0 err, 0 leftover
+update-replace	2026-08-08T16:43:56Z	PASS	80	verify.sh	P1 post-#1360 replacement-rules touch; in-place + BucketName replacement, 7 del/0 err, 0 orphans
 vpc-lambda	2026-07-26T16:53:02Z	PASS	386	standard	0727 P0 sweep (ec2-provider changed #1175/#1177); 16 deleted 0 err; NAT/ENI/EIP clean
 vpc-lambda-cr-race	2026-07-24T11:03:24Z	PASS	432	standard	0724b sweep staleness; 9 del 0 err 0 orphans incl hyperplane ENI
 vpc-lookup	2026-07-24T10:55:09Z	PASS	20	standard	0724b sweep staleness; context-provider loop ok; 1 del 0 err 0 orphans
