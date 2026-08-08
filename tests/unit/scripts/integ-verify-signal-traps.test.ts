@@ -220,7 +220,10 @@ describe('integ fixture verify.sh signal traps (#1097 pattern 1)', () => {
     expect(fixtures.length).toBeGreaterThan(100);
   });
 
-  it('every fixture verify.sh is syntactically valid bash', () => {
+  // 259 synchronous `bash -n` spawns take ~2s standalone but 5s+ under the
+  // full suite's parallel-worker contention, so the default 5s test timeout
+  // is marginal and flakes on a loaded machine (observed 2026-08-09).
+  it('every fixture verify.sh is syntactically valid bash', { timeout: 30_000 }, () => {
     const bad = fixtures
       .map((f) => ({
         name: f.name,

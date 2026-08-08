@@ -44,6 +44,63 @@ import type {
 const QUANTITY_ITEM_FIELDS = ['Origins', 'CacheBehaviors', 'CustomErrorResponses', 'Aliases'];
 
 /**
+ * `ViewerCertificate` members whose ACRONYM CASING differs between the CFn
+ * resource schema and the CloudFront API (issue #1370). The CFn template
+ * carries the left-hand spelling; the SDK model only knows the right-hand
+ * one, so an unrenamed key silently never reaches AWS — a custom-domain
+ * distribution then fails to create ("Your ViewerCertificate is missing one
+ * of ACMCertificateArn, IAMCertificateId, or CloudFrontDefaultCertificate").
+ */
+const VIEWER_CERTIFICATE_CFN_TO_SDK: Record<string, string> = {
+  AcmCertificateArn: 'ACMCertificateArn',
+  SslSupportMethod: 'SSLSupportMethod',
+  IamCertificateId: 'IAMCertificateId',
+};
+
+/**
+ * Top-level `DistributionConfig` members with the same CFn-vs-SDK casing
+ * divergence (issue #1370): the template's `IPV6Enabled` is `IsIPV6Enabled`
+ * in the SDK model, so it was silently dropped (IPv6 ended up disabled).
+ */
+const TOP_LEVEL_CFN_TO_SDK: Record<string, string> = {
+  IPV6Enabled: 'IsIPV6Enabled',
+};
+
+/**
+ * CloudFormation defaults applied when a top-level `DistributionConfig`
+ * member present in the PREVIOUS template is REMOVED from the new one
+ * (issue #1371). `UpdateDistribution` is a read-modify-write API taking the
+ * complete config, so the update path merges the template over the live
+ * config — but a member the user deleted from the template must reset to
+ * its CloudFormation default (CFn semantics), not silently keep its live
+ * value. Values are in SDK shape.
+ *
+ * Sources: the AWS::CloudFront::Distribution registry schema `default`
+ * annotations (Comment / DefaultRootObject / HttpVersion / PriceClass /
+ * Restrictions / ViewerCertificate / WebACLId — verified via
+ * `cloudformation:DescribeType`, 2026-08-09); list members reset to the
+ * empty `{ Quantity: 0, Items: [] }` wrapper (removing a list property
+ * means "no items"); `Logging` to the API's documented off shape. Removed
+ * members with NO entry here (e.g. `IsIPV6Enabled` / `Staging` — no
+ * schema-documented default) keep their live value with a warning: a
+ * visible conservative choice, never a silent guess.
+ */
+const REMOVAL_RESET_DEFAULTS: Record<string, unknown> = {
+  Aliases: { Quantity: 0, Items: [] },
+  CacheBehaviors: { Quantity: 0, Items: [] },
+  Comment: '',
+  CustomErrorResponses: { Quantity: 0, Items: [] },
+  DefaultRootObject: '',
+  HttpVersion: 'http1.1',
+  Logging: { Enabled: false, IncludeCookies: false, Bucket: '', Prefix: '' },
+  OriginGroups: { Quantity: 0, Items: [] },
+  PriceClass: 'PriceClass_All',
+  Restrictions: { GeoRestriction: { RestrictionType: 'none', Quantity: 0, Items: [] } },
+  ViewerCertificate: { CloudFrontDefaultCertificate: true },
+  WebACLId: '',
+};
+
+/**
  * Nested fields inside each CacheBehavior / DefaultCacheBehavior that use
  * the Quantity + Items pattern.
  */
@@ -150,8 +207,18 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
   /**
    * Update a CloudFront Distribution
    *
-   * Gets the current config via GetDistributionConfigCommand, merges new properties,
-   * then calls UpdateDistributionCommand with the required IfMatch ETag.
+   * `UpdateDistribution` is a read-modify-write API that expects the COMPLETE
+   * configuration, while a CFn template legitimately omits every optional
+   * member the user did not set — sending the template verbatim fails on the
+   * first required-on-update member the template lacks ("WebACLId is missing
+   * for the resource", issue #1371). So the update merges per top-level
+   * member: `GetDistributionConfigCommand`'s current config is the base, the
+   * template is the authority for every member it carries, a member REMOVED
+   * since the previous template resets to its CloudFormation default
+   * (matching CFn's omission-resets semantics rather than silently keeping
+   * the live value), and `CallerReference` is always preserved from the
+   * current config. Then calls `UpdateDistributionCommand` with the required
+   * IfMatch ETag.
    */
   async update(
     logicalId: string,
@@ -170,13 +237,18 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
       const etag = getConfigResponse.ETag!;
       const currentConfig = getConfigResponse.DistributionConfig!;
 
-      // Merge new properties into existing config, preserving CallerReference
+      // Merge the template over the current config per top-level member
+      // (issue #1371) — see the method doc for the exact semantics.
       const newDistributionConfig =
         (properties['DistributionConfig'] as Record<string, unknown>) ?? {};
-      const sdkConfig = this.convertToSdkFormat({
-        ...newDistributionConfig,
-        CallerReference: currentConfig.CallerReference,
-      });
+      const previousDistributionConfig =
+        (previousProperties['DistributionConfig'] as Record<string, unknown>) ?? {};
+      const sdkConfig = this.mergeUpdateConfig(
+        currentConfig as unknown as Record<string, unknown>,
+        newDistributionConfig,
+        previousDistributionConfig,
+        logicalId
+      );
 
       await this.cloudFrontClient.send(
         new UpdateDistributionCommand({
@@ -659,6 +731,50 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
   }
 
   /**
+   * Build the complete SDK-shape `DistributionConfig` for an update
+   * (issue #1371). Per top-level member:
+   *
+   * - present in the new template          -> template value (authority)
+   * - removed since the previous template  -> CloudFormation default
+   *   ({@link REMOVAL_RESET_DEFAULTS}); a member with no known default keeps
+   *   its live value with a WARN (visible, never a silent decision)
+   * - never templated                      -> live value from `currentConfig`
+   *   (the AWS-side default filled at create, or an out-of-band setting cdkd
+   *   never managed)
+   *
+   * `CallerReference` is always preserved from the current config (a
+   * create-time idempotency token the template never carries).
+   */
+  private mergeUpdateConfig(
+    currentConfig: Record<string, unknown>,
+    newDistributionConfig: Record<string, unknown>,
+    previousDistributionConfig: Record<string, unknown>,
+    logicalId: string
+  ): Record<string, unknown> {
+    const templateSdk = this.convertToSdkFormat(newDistributionConfig);
+    const previousSdk = this.convertToSdkFormat(previousDistributionConfig);
+
+    const merged: Record<string, unknown> = { ...currentConfig };
+
+    for (const key of Object.keys(previousSdk)) {
+      if (key in templateSdk || key === 'CallerReference') continue;
+      if (key in REMOVAL_RESET_DEFAULTS) {
+        merged[key] = structuredClone(REMOVAL_RESET_DEFAULTS[key]);
+      } else {
+        this.logger.warn(
+          `CloudFront Distribution ${logicalId}: '${key}' was removed from the template but has ` +
+            `no known CloudFormation default; keeping the live value. Set the property explicitly ` +
+            `in the template to control it.`
+        );
+      }
+    }
+
+    Object.assign(merged, templateSdk);
+    merged['CallerReference'] = currentConfig['CallerReference'];
+    return merged;
+  }
+
+  /**
    * Convert CDK/CloudFormation DistributionConfig format to SDK format.
    *
    * The main transformation is adding Quantity fields where the SDK expects
@@ -673,12 +789,54 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
       result['Comment'] = '';
     }
 
-    // Ensure Logging has IncludeCookies and Enabled defaults
+    // CFn -> SDK acronym-casing renames (issue #1370): top-level
+    // IPV6Enabled -> IsIPV6Enabled, plus the three ViewerCertificate members.
+    for (const [cfnKey, sdkKey] of Object.entries(TOP_LEVEL_CFN_TO_SDK)) {
+      if (result[cfnKey] !== undefined) {
+        result[sdkKey] = result[cfnKey];
+        delete result[cfnKey];
+      }
+    }
+    if (result['ViewerCertificate'] && typeof result['ViewerCertificate'] === 'object') {
+      const viewerCertificate = { ...(result['ViewerCertificate'] as Record<string, unknown>) };
+      for (const [cfnKey, sdkKey] of Object.entries(VIEWER_CERTIFICATE_CFN_TO_SDK)) {
+        if (viewerCertificate[cfnKey] !== undefined) {
+          viewerCertificate[sdkKey] = viewerCertificate[cfnKey];
+          delete viewerCertificate[cfnKey];
+        }
+      }
+      result['ViewerCertificate'] = viewerCertificate;
+    }
+
+    // CFn Restrictions.GeoRestriction carries a bare `Locations` array; the
+    // SDK shape is { RestrictionType, Quantity, Items } with Quantity
+    // REQUIRED even when zero (issue #1370, same class as the casing gaps).
+    if (result['Restrictions'] && typeof result['Restrictions'] === 'object') {
+      const restrictions = { ...(result['Restrictions'] as Record<string, unknown>) };
+      if (restrictions['GeoRestriction'] && typeof restrictions['GeoRestriction'] === 'object') {
+        const geo = { ...(restrictions['GeoRestriction'] as Record<string, unknown>) };
+        if (Array.isArray(geo['Locations'])) {
+          geo['Items'] = geo['Locations'];
+          delete geo['Locations'];
+        }
+        if (geo['Quantity'] === undefined) {
+          geo['Quantity'] = Array.isArray(geo['Items']) ? (geo['Items'] as unknown[]).length : 0;
+        }
+        restrictions['GeoRestriction'] = geo;
+      }
+      result['Restrictions'] = restrictions;
+    }
+
+    // Ensure Logging has IncludeCookies and Enabled defaults. Copy before
+    // filling: the update path now runs state-sourced previousProperties
+    // through this method too, and an in-place fill would mutate the caller's
+    // nested object.
     if (result['Logging'] && typeof result['Logging'] === 'object') {
-      const logging = result['Logging'] as Record<string, unknown>;
+      const logging = { ...(result['Logging'] as Record<string, unknown>) };
       if (logging['IncludeCookies'] === undefined) logging['IncludeCookies'] = false;
       if (logging['Enabled'] === undefined) logging['Enabled'] = true;
       if (logging['Prefix'] === undefined) logging['Prefix'] = '';
+      result['Logging'] = logging;
     }
 
     // Convert top-level Quantity + Items fields
@@ -747,6 +905,43 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
 
     // Drop the create-time idempotency token (never templated by CDK).
     delete result['CallerReference'];
+
+    // SDK -> CFn acronym-casing inversions (issue #1370). Without these the
+    // drift comparator would diff the template's `AcmCertificateArn` /
+    // `IPV6Enabled` against the API's `ACMCertificateArn` / `IsIPV6Enabled`
+    // and report phantom drift on every read.
+    for (const [cfnKey, sdkKey] of Object.entries(TOP_LEVEL_CFN_TO_SDK)) {
+      if (result[sdkKey] !== undefined) {
+        result[cfnKey] = result[sdkKey];
+        delete result[sdkKey];
+      }
+    }
+    if (result['ViewerCertificate'] && typeof result['ViewerCertificate'] === 'object') {
+      const viewerCertificate = { ...(result['ViewerCertificate'] as Record<string, unknown>) };
+      for (const [cfnKey, sdkKey] of Object.entries(VIEWER_CERTIFICATE_CFN_TO_SDK)) {
+        if (viewerCertificate[sdkKey] !== undefined) {
+          viewerCertificate[cfnKey] = viewerCertificate[sdkKey];
+          delete viewerCertificate[sdkKey];
+        }
+      }
+      result['ViewerCertificate'] = viewerCertificate;
+    }
+
+    // Invert the GeoRestriction shape conversion: SDK { RestrictionType,
+    // Quantity, Items } back to the CFn { RestrictionType, Locations } form.
+    if (result['Restrictions'] && typeof result['Restrictions'] === 'object') {
+      const restrictions = { ...(result['Restrictions'] as Record<string, unknown>) };
+      if (restrictions['GeoRestriction'] && typeof restrictions['GeoRestriction'] === 'object') {
+        const geo = { ...(restrictions['GeoRestriction'] as Record<string, unknown>) };
+        if (Array.isArray(geo['Items'])) {
+          geo['Locations'] = geo['Items'];
+          delete geo['Items'];
+        }
+        delete geo['Quantity'];
+        restrictions['GeoRestriction'] = geo;
+      }
+      result['Restrictions'] = restrictions;
+    }
 
     // Unwrap top-level Quantity + Items fields back to bare arrays.
     for (const field of QUANTITY_ITEM_FIELDS) {

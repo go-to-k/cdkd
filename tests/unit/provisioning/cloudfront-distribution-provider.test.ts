@@ -634,6 +634,259 @@ describe('CloudFrontDistributionProvider', () => {
     });
   });
 
+  describe('CFn -> SDK acronym casing + GeoRestriction shape (#1370)', () => {
+    it('create renames ViewerCertificate members and IPV6Enabled to the SDK spelling', async () => {
+      mockSend.mockResolvedValueOnce({
+        Distribution: { Id: 'EDFDVBD6EXAMPLE', DomainName: 'd111111abcdef8.cloudfront.net' },
+      });
+
+      await provider.create('MyDistribution', 'AWS::CloudFront::Distribution', {
+        DistributionConfig: {
+          Enabled: true,
+          IPV6Enabled: true,
+          ViewerCertificate: {
+            AcmCertificateArn: 'arn:aws:acm:us-east-1:123456789012:certificate/abc',
+            MinimumProtocolVersion: 'TLSv1.2_2021',
+            SslSupportMethod: 'sni-only',
+          },
+        },
+      });
+
+      const sent = mockSend.mock.calls[0][0].input.DistributionConfig;
+      expect(sent.IsIPV6Enabled).toBe(true);
+      expect(sent.IPV6Enabled).toBeUndefined();
+      expect(sent.ViewerCertificate).toEqual({
+        ACMCertificateArn: 'arn:aws:acm:us-east-1:123456789012:certificate/abc',
+        MinimumProtocolVersion: 'TLSv1.2_2021',
+        SSLSupportMethod: 'sni-only',
+      });
+    });
+
+    it('create converts GeoRestriction Locations to the {RestrictionType, Quantity, Items} SDK shape', async () => {
+      mockSend.mockResolvedValueOnce({
+        Distribution: { Id: 'EDFDVBD6EXAMPLE', DomainName: 'd111111abcdef8.cloudfront.net' },
+      });
+
+      await provider.create('MyDistribution', 'AWS::CloudFront::Distribution', {
+        DistributionConfig: {
+          Enabled: true,
+          Restrictions: {
+            GeoRestriction: { RestrictionType: 'whitelist', Locations: ['JP', 'US'] },
+          },
+        },
+      });
+
+      const sent = mockSend.mock.calls[0][0].input.DistributionConfig;
+      expect(sent.Restrictions.GeoRestriction).toEqual({
+        RestrictionType: 'whitelist',
+        Quantity: 2,
+        Items: ['JP', 'US'],
+      });
+    });
+
+    it('readCurrentState inverts the casing + GeoRestriction shape back to the CFn spelling', async () => {
+      // GetDistributionConfigCommand (SDK-shape response)
+      mockSend.mockResolvedValueOnce({
+        DistributionConfig: {
+          CallerReference: 'ref',
+          Enabled: true,
+          IsIPV6Enabled: true,
+          ViewerCertificate: {
+            ACMCertificateArn: 'arn:aws:acm:us-east-1:123456789012:certificate/abc',
+            MinimumProtocolVersion: 'TLSv1.2_2021',
+            SSLSupportMethod: 'sni-only',
+          },
+          Restrictions: {
+            GeoRestriction: { RestrictionType: 'whitelist', Quantity: 2, Items: ['JP', 'US'] },
+          },
+        },
+      });
+      // GetDistributionCommand (tag read)
+      mockSend.mockResolvedValueOnce({ Distribution: { ARN: 'arn:aws:cloudfront::1:distribution/E1' } });
+      // ListTagsForResourceCommand
+      mockSend.mockResolvedValueOnce({ Tags: { Items: [] } });
+
+      const state = await provider.readCurrentState(
+        'EDFDVBD6EXAMPLE',
+        'MyDistribution',
+        'AWS::CloudFront::Distribution'
+      );
+
+      const config = state!['DistributionConfig'] as Record<string, unknown>;
+      expect(config['IPV6Enabled']).toBe(true);
+      expect(config['IsIPV6Enabled']).toBeUndefined();
+      expect(config['ViewerCertificate']).toEqual({
+        AcmCertificateArn: 'arn:aws:acm:us-east-1:123456789012:certificate/abc',
+        MinimumProtocolVersion: 'TLSv1.2_2021',
+        SslSupportMethod: 'sni-only',
+      });
+      expect(config['Restrictions']).toEqual({
+        GeoRestriction: { RestrictionType: 'whitelist', Locations: ['JP', 'US'] },
+      });
+    });
+  });
+
+  describe('update read-modify-write merge (#1371)', () => {
+    /** Standard 3-call mock chain: GetDistributionConfig -> Update -> GetDistribution. */
+    function mockUpdateChain(currentConfig: Record<string, unknown>) {
+      mockSend.mockResolvedValueOnce({ ETag: 'ETAG1', DistributionConfig: currentConfig });
+      mockSend.mockResolvedValueOnce({});
+      mockSend.mockResolvedValueOnce({
+        Distribution: { Id: 'EDFDVBD6EXAMPLE', DomainName: 'd111111abcdef8.cloudfront.net' },
+      });
+    }
+
+    it('preserves live members the template never carried (WebACLId no longer "missing")', async () => {
+      mockUpdateChain({
+        CallerReference: 'ref',
+        Enabled: true,
+        WebACLId: 'arn:aws:wafv2:us-east-1:123456789012:global/webacl/x/1',
+        HttpVersion: 'http2',
+        Staging: false,
+        DefaultCacheBehavior: { TargetOriginId: 'o', ViewerProtocolPolicy: 'allow-all' },
+      });
+
+      await provider.update(
+        'MyDistribution',
+        'EDFDVBD6EXAMPLE',
+        'AWS::CloudFront::Distribution',
+        {
+          DistributionConfig: {
+            Enabled: true,
+            DefaultCacheBehavior: { TargetOriginId: 'o', ViewerProtocolPolicy: 'redirect-to-https' },
+          },
+        },
+        {
+          DistributionConfig: {
+            Enabled: true,
+            DefaultCacheBehavior: { TargetOriginId: 'o', ViewerProtocolPolicy: 'allow-all' },
+          },
+        }
+      );
+
+      const sent = mockSend.mock.calls[1][0].input.DistributionConfig;
+      // Template is the authority for members it carries
+      expect(sent.DefaultCacheBehavior.ViewerProtocolPolicy).toBe('redirect-to-https');
+      // Never-templated members are filled from the live config
+      expect(sent.WebACLId).toBe('arn:aws:wafv2:us-east-1:123456789012:global/webacl/x/1');
+      expect(sent.HttpVersion).toBe('http2');
+      expect(sent.Staging).toBe(false);
+      expect(sent.CallerReference).toBe('ref');
+    });
+
+    it('resets a member REMOVED from the template to its CloudFormation default', async () => {
+      mockUpdateChain({
+        CallerReference: 'ref',
+        Enabled: true,
+        WebACLId: 'arn:aws:wafv2:us-east-1:123456789012:global/webacl/x/1',
+        Aliases: { Quantity: 1, Items: ['cdn.example.com'] },
+      });
+
+      await provider.update(
+        'MyDistribution',
+        'EDFDVBD6EXAMPLE',
+        'AWS::CloudFront::Distribution',
+        { DistributionConfig: { Enabled: true } },
+        {
+          DistributionConfig: {
+            Enabled: true,
+            WebACLId: 'arn:aws:wafv2:us-east-1:123456789012:global/webacl/x/1',
+            Aliases: ['cdn.example.com'],
+          },
+        }
+      );
+
+      const sent = mockSend.mock.calls[1][0].input.DistributionConfig;
+      expect(sent.WebACLId).toBe('');
+      expect(sent.Aliases).toEqual({ Quantity: 0, Items: [] });
+    });
+
+    it('keeps the live value and WARNS for a removed member with no known CFn default', async () => {
+      mockUpdateChain({
+        CallerReference: 'ref',
+        Enabled: true,
+        AnycastIpListId: 'aip-123',
+      });
+
+      await provider.update(
+        'MyDistribution',
+        'EDFDVBD6EXAMPLE',
+        'AWS::CloudFront::Distribution',
+        { DistributionConfig: { Enabled: true } },
+        { DistributionConfig: { Enabled: true, AnycastIpListId: 'aip-123' } }
+      );
+
+      const sent = mockSend.mock.calls[1][0].input.DistributionConfig;
+      expect(sent.AnycastIpListId).toBe('aip-123');
+      expect(childLogger.warn).toHaveBeenCalledWith(
+        expect.stringContaining("'AnycastIpListId' was removed from the template")
+      );
+    });
+
+    it('applies the #1370 casing renames on the update path too (template ViewerCertificate wins over live)', async () => {
+      mockUpdateChain({
+        CallerReference: 'ref',
+        Enabled: true,
+        ViewerCertificate: { CloudFrontDefaultCertificate: true },
+        IsIPV6Enabled: false,
+      });
+
+      await provider.update(
+        'MyDistribution',
+        'EDFDVBD6EXAMPLE',
+        'AWS::CloudFront::Distribution',
+        {
+          DistributionConfig: {
+            Enabled: true,
+            IPV6Enabled: true,
+            ViewerCertificate: {
+              AcmCertificateArn: 'arn:aws:acm:us-east-1:123456789012:certificate/abc',
+              SslSupportMethod: 'sni-only',
+            },
+          },
+        },
+        { DistributionConfig: { Enabled: true } }
+      );
+
+      const sent = mockSend.mock.calls[1][0].input.DistributionConfig;
+      expect(sent.ViewerCertificate).toEqual({
+        ACMCertificateArn: 'arn:aws:acm:us-east-1:123456789012:certificate/abc',
+        SSLSupportMethod: 'sni-only',
+      });
+      expect(sent.IsIPV6Enabled).toBe(true);
+      expect(sent.IPV6Enabled).toBeUndefined();
+    });
+
+    it('does not mutate the caller-owned previousProperties (state object) during the merge', async () => {
+      mockUpdateChain({ CallerReference: 'ref', Enabled: true });
+
+      const previousProperties = {
+        DistributionConfig: {
+          Enabled: true,
+          Logging: { Bucket: 'logs.s3.amazonaws.com' },
+          IPV6Enabled: true,
+        },
+      };
+      const previousSnapshot = structuredClone(previousProperties);
+
+      await provider.update(
+        'MyDistribution',
+        'EDFDVBD6EXAMPLE',
+        'AWS::CloudFront::Distribution',
+        {
+          DistributionConfig: {
+            Enabled: true,
+            Logging: { Bucket: 'logs.s3.amazonaws.com' },
+            IPV6Enabled: true,
+          },
+        },
+        previousProperties
+      );
+
+      expect(previousProperties).toEqual(previousSnapshot);
+    });
+  });
+
   describe('delete', () => {
     it('should disable first if enabled, then delete with IfMatch', async () => {
       // GetDistributionConfigCommand (initial)

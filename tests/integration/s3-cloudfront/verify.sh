@@ -152,6 +152,31 @@ if [ "${OG_QTY}" != "1" ]; then
 fi
 echo "    OK: distribution carries an OriginGroup (exercises #873 OriginGroups drift normalization)"
 
+# --- Assertion: CFn -> SDK casing + GeoRestriction shape (#1370) -------
+# The CDK L2 synthesizes `IPV6Enabled: true` and a bare
+# `Restrictions.GeoRestriction.Locations` array. Before #1370 both were
+# silently dropped on the way to the SDK (wrong key spelling / wrong shape):
+# IPv6 ended up disabled and the geo allowlist never reached AWS.
+IPV6=$(aws cloudfront get-distribution-config --id "${DIST_ID}" --region "${REGION}" \
+  --query 'DistributionConfig.IsIPV6Enabled' --output text)
+if [ "${IPV6}" != "True" ] && [ "${IPV6}" != "true" ]; then
+  echo "FAIL: IsIPV6Enabled is '${IPV6}' (expected true) — the #1370 IPV6Enabled -> IsIPV6Enabled rename regressed" >&2
+  exit 1
+fi
+echo "    OK: IsIPV6Enabled=true reached AWS (#1370 casing rename)"
+
+GEO_JSON=$(aws cloudfront get-distribution-config --id "${DIST_ID}" --region "${REGION}" \
+  --query 'DistributionConfig.Restrictions.GeoRestriction' --output json)
+GEO_TYPE=$(echo "${GEO_JSON}" | jq -r '.RestrictionType')
+GEO_QTY=$(echo "${GEO_JSON}" | jq -r '.Quantity')
+GEO_HAS_JP=$(echo "${GEO_JSON}" | jq '[.Items[]? | select(. == "JP")] | length')
+GEO_HAS_US=$(echo "${GEO_JSON}" | jq '[.Items[]? | select(. == "US")] | length')
+if [ "${GEO_TYPE}" != "whitelist" ] || [ "${GEO_QTY}" != "2" ] || [ "${GEO_HAS_JP}" != "1" ] || [ "${GEO_HAS_US}" != "1" ]; then
+  echo "FAIL: GeoRestriction not applied (got: ${GEO_JSON}) — the #1370 Locations -> {Quantity, Items} conversion regressed" >&2
+  exit 1
+fi
+echo "    OK: GeoRestriction whitelist [JP, US] reached AWS (#1370 shape conversion)"
+
 # --- Assertion: AWS reflects the two CDK Tags -------------------------
 TAGS_JSON=$(aws cloudfront list-tags-for-resource --resource "${DIST_ARN}" --region "${REGION}" \
   --query 'Tags.Items' --output json)
@@ -260,6 +285,47 @@ aws cloudfront update-distribution --id "${DIST_ID}" --region "${REGION}" \
   --distribution-config "file:///tmp/cdkd-cf-drift-conf.json" >/dev/null
 rm -f /tmp/cdkd-cf-drift-conf.json
 echo "    OK: reverted; CloudFront::Distribution drift blind spot CLOSED"
+
+# --- Phase 1.5: UPDATE via the read-modify-write merge (#1371) --------
+# Re-deploy with CDKD_TEST_UPDATE=true (new comment + narrowed geo
+# allowlist). Before #1371 this UpdateDistribution failed unconditionally
+# with "WebACLId is missing for the resource": the provider sent the
+# template's DistributionConfig verbatim instead of merging it over the
+# live config, so every member the template legitimately omits was absent
+# from the read-modify-write payload.
+echo "==> Phase 1.5: update (comment + geo allowlist) through the #1371 merge"
+CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes
+
+# CloudFront's control-plane read-after-write is eventually consistent —
+# poll briefly for the updated config to become visible.
+UPDATED_OK=""
+for _ in $(seq 1 12); do
+  POST_CONF=$(aws cloudfront get-distribution-config --id "${DIST_ID}" --region "${REGION}" \
+    --query 'DistributionConfig' --output json)
+  POST_COMMENT=$(echo "${POST_CONF}" | jq -r '.Comment')
+  POST_GEO_QTY=$(echo "${POST_CONF}" | jq -r '.Restrictions.GeoRestriction.Quantity')
+  POST_GEO_JP=$(echo "${POST_CONF}" | jq '[.Restrictions.GeoRestriction.Items[]? | select(. == "JP")] | length')
+  if [ "${POST_COMMENT}" = "S3 CloudFront Distribution (cdkd integration test, updated)" ] \
+    && [ "${POST_GEO_QTY}" = "1" ] && [ "${POST_GEO_JP}" = "1" ]; then
+    UPDATED_OK=1
+    break
+  fi
+  sleep 5
+done
+if [ -z "${UPDATED_OK}" ]; then
+  echo "FAIL: updated config not visible after Phase 1.5 (Comment='${POST_COMMENT}', GeoQty='${POST_GEO_QTY}') — the #1371 merge regressed" >&2
+  exit 1
+fi
+# Members the template never carries must survive the merge untouched.
+POST_IPV6=$(echo "${POST_CONF}" | jq -r '.IsIPV6Enabled')
+if [ "${POST_IPV6}" != "true" ]; then
+  echo "FAIL: IsIPV6Enabled flipped to '${POST_IPV6}' across the #1371 merge update (expected true)" >&2
+  exit 1
+fi
+echo "    OK: update applied (comment + geo narrowed to [JP]); untouched members preserved (#1371 merge)"
 
 # --- Phase 2: destroy -------------------------------------------------
 echo "==> Phase 2: destroy"
