@@ -646,6 +646,7 @@ describe('CloudFrontDistributionProvider', () => {
           IPV6Enabled: true,
           ViewerCertificate: {
             AcmCertificateArn: 'arn:aws:acm:us-east-1:123456789012:certificate/abc',
+            IamCertificateId: 'ASCACKCEVSQ6C2EXAMPLE',
             MinimumProtocolVersion: 'TLSv1.2_2021',
             SslSupportMethod: 'sni-only',
           },
@@ -657,9 +658,24 @@ describe('CloudFrontDistributionProvider', () => {
       expect(sent.IPV6Enabled).toBeUndefined();
       expect(sent.ViewerCertificate).toEqual({
         ACMCertificateArn: 'arn:aws:acm:us-east-1:123456789012:certificate/abc',
+        IAMCertificateId: 'ASCACKCEVSQ6C2EXAMPLE',
         MinimumProtocolVersion: 'TLSv1.2_2021',
         SSLSupportMethod: 'sni-only',
       });
+    });
+
+    it('renames an EXPLICIT false IPV6Enabled too (undefined-guard, not truthiness)', async () => {
+      mockSend.mockResolvedValueOnce({
+        Distribution: { Id: 'EDFDVBD6EXAMPLE', DomainName: 'd111111abcdef8.cloudfront.net' },
+      });
+
+      await provider.create('MyDistribution', 'AWS::CloudFront::Distribution', {
+        DistributionConfig: { Enabled: true, IPV6Enabled: false },
+      });
+
+      const sent = mockSend.mock.calls[0][0].input.DistributionConfig;
+      expect(sent.IsIPV6Enabled).toBe(false);
+      expect(sent.IPV6Enabled).toBeUndefined();
     });
 
     it('create converts GeoRestriction Locations to the {RestrictionType, Quantity, Items} SDK shape', async () => {
@@ -723,6 +739,31 @@ describe('CloudFrontDistributionProvider', () => {
       expect(config['Restrictions']).toEqual({
         GeoRestriction: { RestrictionType: 'whitelist', Locations: ['JP', 'US'] },
       });
+    });
+
+    it('inverts the API-common GeoRestriction none-case ({RestrictionType, Quantity: 0}, no Items) with no Locations key', async () => {
+      mockSend.mockResolvedValueOnce({
+        DistributionConfig: {
+          CallerReference: 'ref',
+          Enabled: true,
+          IsIPV6Enabled: false,
+          Restrictions: { GeoRestriction: { RestrictionType: 'none', Quantity: 0 } },
+        },
+      });
+      mockSend.mockResolvedValueOnce({ Distribution: { ARN: 'arn:aws:cloudfront::1:distribution/E1' } });
+      mockSend.mockResolvedValueOnce({ Tags: { Items: [] } });
+
+      const state = await provider.readCurrentState(
+        'EDFDVBD6EXAMPLE',
+        'MyDistribution',
+        'AWS::CloudFront::Distribution'
+      );
+
+      const config = state!['DistributionConfig'] as Record<string, unknown>;
+      expect(config['Restrictions']).toEqual({ GeoRestriction: { RestrictionType: 'none' } });
+      // An explicit false survives the inverse rename (undefined-guard, not truthiness)
+      expect(config['IPV6Enabled']).toBe(false);
+      expect(config['IsIPV6Enabled']).toBeUndefined();
     });
   });
 
@@ -799,6 +840,66 @@ describe('CloudFrontDistributionProvider', () => {
       const sent = mockSend.mock.calls[1][0].input.DistributionConfig;
       expect(sent.WebACLId).toBe('');
       expect(sent.Aliases).toEqual({ Quantity: 0, Items: [] });
+    });
+
+    it('resets a removed ViewerCertificate to the CloudFrontDefaultCertificate default, isolated per call (structuredClone)', async () => {
+      const previous = {
+        DistributionConfig: {
+          Enabled: true,
+          ViewerCertificate: {
+            AcmCertificateArn: 'arn:aws:acm:us-east-1:123456789012:certificate/abc',
+            SslSupportMethod: 'sni-only',
+          },
+        },
+      };
+      const next = { DistributionConfig: { Enabled: true } };
+
+      mockUpdateChain({ CallerReference: 'ref', Enabled: true });
+      await provider.update(
+        'MyDistribution',
+        'EDFDVBD6EXAMPLE',
+        'AWS::CloudFront::Distribution',
+        next,
+        previous
+      );
+      const sent1 = mockSend.mock.calls[1][0].input.DistributionConfig;
+      expect(sent1.ViewerCertificate).toEqual({ CloudFrontDefaultCertificate: true });
+
+      // Mutating the first payload's reset object must not leak into the
+      // next update's reset (REMOVAL_RESET_DEFAULTS entries are cloned).
+      sent1.ViewerCertificate.CloudFrontDefaultCertificate = false;
+      mockUpdateChain({ CallerReference: 'ref', Enabled: true });
+      await provider.update(
+        'MyDistribution',
+        'EDFDVBD6EXAMPLE',
+        'AWS::CloudFront::Distribution',
+        next,
+        previous
+      );
+      const sent2 = mockSend.mock.calls[4][0].input.DistributionConfig;
+      expect(sent2.ViewerCertificate).toEqual({ CloudFrontDefaultCertificate: true });
+    });
+
+    it('no previous DistributionConfig at all (post-import state): live members preserved, nothing reset', async () => {
+      mockUpdateChain({
+        CallerReference: 'ref',
+        Enabled: true,
+        WebACLId: 'arn:aws:wafv2:us-east-1:123456789012:global/webacl/x/1',
+        Aliases: { Quantity: 1, Items: ['cdn.example.com'] },
+      });
+
+      await provider.update(
+        'MyDistribution',
+        'EDFDVBD6EXAMPLE',
+        'AWS::CloudFront::Distribution',
+        { DistributionConfig: { Enabled: true } },
+        {}
+      );
+
+      const sent = mockSend.mock.calls[1][0].input.DistributionConfig;
+      expect(sent.WebACLId).toBe('arn:aws:wafv2:us-east-1:123456789012:global/webacl/x/1');
+      expect(sent.Aliases).toEqual({ Quantity: 1, Items: ['cdn.example.com'] });
+      expect(childLogger.warn).not.toHaveBeenCalled();
     });
 
     it('keeps the live value and WARNS for a removed member with no known CFn default', async () => {
@@ -1769,6 +1870,13 @@ describe('CloudFrontDistributionProvider', () => {
         'DistributionConfig.CallerReference',
         'DistributionConfig.Logging.Bucket',
       ]);
+    });
+
+    it('declares GeoRestriction.Locations as an unordered set (CloudFront does not preserve submission order)', () => {
+      expect(provider.getDriftUnorderedPaths('AWS::CloudFront::Distribution')).toEqual([
+        'DistributionConfig.Restrictions.GeoRestriction.Locations',
+      ]);
+      expect(provider.getDriftUnorderedPaths('AWS::S3::Bucket')).toEqual([]);
     });
 
     it('returns an empty list for unrelated resource types', () => {

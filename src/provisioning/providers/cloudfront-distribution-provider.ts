@@ -557,6 +557,22 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
   }
 
   /**
+   * Plain-string arrays that are semantically UNORDERED sets, per
+   * {@link ResourceProvider.getDriftUnorderedPaths}.
+   *
+   * `GeoRestriction.Locations` is a set of ISO country codes — the
+   * CloudFront API reference documents no ordering semantics and the
+   * service does not echo the submitted order back (observed live in the
+   * `s3-cloudfront` integ, 2026-08-09: a template `[JP, US]` allowlist
+   * read back as `[US, JP]`), so a positional compare fires guaranteed
+   * phantom drift on any multi-country restriction.
+   */
+  getDriftUnorderedPaths(resourceType: string): string[] {
+    if (resourceType !== 'AWS::CloudFront::Distribution') return [];
+    return ['DistributionConfig.Restrictions.GeoRestriction.Locations'];
+  }
+
+  /**
    * Get resource attribute (for Fn::GetAtt resolution)
    */
   async getAttribute(
@@ -742,6 +758,13 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
    *   (the AWS-side default filled at create, or an out-of-band setting cdkd
    *   never managed)
    *
+   * One deliberate exception to the never-templated rule: `Comment` is
+   * always present in `templateSdk` ({@link convertToSdkFormat} injects
+   * `''` when absent — the SDK requires a non-null string), so an
+   * untemplated Comment resets to `''` rather than keeping the live value.
+   * That matches its CFn registry-schema default and the pre-merge
+   * behavior.
+   *
    * `CallerReference` is always preserved from the current config (a
    * create-time idempotency token the template never carries).
    */
@@ -761,8 +784,12 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
       if (key in REMOVAL_RESET_DEFAULTS) {
         merged[key] = structuredClone(REMOVAL_RESET_DEFAULTS[key]);
       } else {
+        // Report the key in its CFn/template spelling (the user removes
+        // `IPV6Enabled`, not the SDK's `IsIPV6Enabled`).
+        const cfnKey =
+          Object.entries(TOP_LEVEL_CFN_TO_SDK).find(([, sdkKey]) => sdkKey === key)?.[0] ?? key;
         this.logger.warn(
-          `CloudFront Distribution ${logicalId}: '${key}' was removed from the template but has ` +
+          `CloudFront Distribution ${logicalId}: '${cfnKey}' was removed from the template but has ` +
             `no known CloudFormation default; keeping the live value. Set the property explicitly ` +
             `in the template to control it.`
         );
@@ -853,24 +880,30 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
       );
     }
 
-    // Convert nested Quantity + Items fields inside each CacheBehavior
+    // Convert nested Quantity + Items fields inside each CacheBehavior.
+    // Copy the wrapper first: when the input ALREADY carries { Quantity,
+    // Items } (wrapWithQuantity returns it as-is), an in-place Items
+    // reassignment would mutate the caller-owned object — same hazard the
+    // Logging copy above closes.
     if (result['CacheBehaviors'] && typeof result['CacheBehaviors'] === 'object') {
-      const cacheBehaviors = result['CacheBehaviors'] as Record<string, unknown>;
+      const cacheBehaviors = { ...(result['CacheBehaviors'] as Record<string, unknown>) };
       if (Array.isArray(cacheBehaviors['Items'])) {
         cacheBehaviors['Items'] = (cacheBehaviors['Items'] as Record<string, unknown>[]).map((cb) =>
           this.convertCacheBehavior(cb)
         );
       }
+      result['CacheBehaviors'] = cacheBehaviors;
     }
 
     // Convert Origins items - nested Quantity + Items fields (e.g., CustomHeaders)
     if (result['Origins'] && typeof result['Origins'] === 'object') {
-      const origins = result['Origins'] as Record<string, unknown>;
+      const origins = { ...(result['Origins'] as Record<string, unknown>) };
       if (Array.isArray(origins['Items'])) {
         origins['Items'] = (origins['Items'] as Record<string, unknown>[]).map((origin) =>
           this.convertOrigin(origin)
         );
       }
+      result['Origins'] = origins;
     }
 
     return result;

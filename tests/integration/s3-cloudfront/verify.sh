@@ -319,13 +319,17 @@ if [ -z "${UPDATED_OK}" ]; then
   echo "FAIL: updated config not visible after Phase 1.5 (Comment='${POST_COMMENT}', GeoQty='${POST_GEO_QTY}') — the #1371 merge regressed" >&2
   exit 1
 fi
-# Members the template never carries must survive the merge untouched.
+# Template-carried members re-sent through the merge keep their value
+# (the CDK L2 synthesizes IPV6Enabled: true, so this re-checks the #1370
+# rename on the UPDATE path; the never-templated-member preserve side of
+# #1371 is proven by the update SUCCEEDING at all — before the merge it
+# failed on the template-omitted WebACLId).
 POST_IPV6=$(echo "${POST_CONF}" | jq -r '.IsIPV6Enabled')
 if [ "${POST_IPV6}" != "true" ]; then
   echo "FAIL: IsIPV6Enabled flipped to '${POST_IPV6}' across the #1371 merge update (expected true)" >&2
   exit 1
 fi
-echo "    OK: update applied (comment + geo narrowed to [JP]); untouched members preserved (#1371 merge)"
+echo "    OK: update applied (comment + geo narrowed to [JP]); #1370 rename holds on the update path (#1371 merge)"
 
 # --- Phase 2: destroy -------------------------------------------------
 echo "==> Phase 2: destroy"
