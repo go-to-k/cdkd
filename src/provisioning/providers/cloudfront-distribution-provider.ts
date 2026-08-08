@@ -1234,15 +1234,16 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
     // silently dropped by the serializer (issue #1370 shape class).
     // `revertCacheBehavior` has always hoisted it back OUT for drift reads;
     // this is the missing forward direction.
-    if (
-      result['CachedMethods'] !== undefined &&
-      result['AllowedMethods'] &&
-      typeof result['AllowedMethods'] === 'object'
-    ) {
-      result['AllowedMethods'] = {
-        ...(result['AllowedMethods'] as Record<string, unknown>),
-        CachedMethods: result['CachedMethods'],
-      };
+    if (result['CachedMethods'] !== undefined) {
+      // CachedMethods with NO AllowedMethods sibling is legal CFn
+      // (AllowedMethods defaults to GET, HEAD) — synthesize the default
+      // wrapper so the nested value still reaches the SDK.
+      const allowedMethods =
+        result['AllowedMethods'] && typeof result['AllowedMethods'] === 'object'
+          ? { ...(result['AllowedMethods'] as Record<string, unknown>) }
+          : { Quantity: 2, Items: ['GET', 'HEAD'] };
+      allowedMethods['CachedMethods'] = result['CachedMethods'];
+      result['AllowedMethods'] = allowedMethods;
       delete result['CachedMethods'];
     }
 

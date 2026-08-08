@@ -1046,6 +1046,35 @@ describe('CloudFrontDistributionProvider', () => {
       });
     });
 
+    it('CachedMethods with NO AllowedMethods sibling gets the default GET/HEAD wrapper synthesized (not dropped, not overridden)', async () => {
+      mockUpdateChain({ CallerReference: 'ref', Enabled: true });
+
+      await provider.update(
+        'MyDistribution',
+        'EDFDVBD6EXAMPLE',
+        'AWS::CloudFront::Distribution',
+        {
+          DistributionConfig: {
+            Enabled: true,
+            DefaultCacheBehavior: {
+              TargetOriginId: 'o',
+              ViewerProtocolPolicy: 'allow-all',
+              CachedMethods: ['GET', 'HEAD'],
+            },
+          },
+        },
+        { DistributionConfig: { Enabled: true } }
+      );
+
+      const dcb = mockSend.mock.calls[1][0].input.DistributionConfig.DefaultCacheBehavior;
+      expect(dcb.CachedMethods).toBeUndefined();
+      expect(dcb.AllowedMethods).toEqual({
+        Quantity: 2,
+        Items: ['GET', 'HEAD'],
+        CachedMethods: { Quantity: 2, Items: ['GET', 'HEAD'] },
+      });
+    });
+
     it('does not mutate the caller-owned previousProperties (state object) during the merge', async () => {
       mockUpdateChain({ CallerReference: 'ref', Enabled: true });
 
