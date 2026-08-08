@@ -43,7 +43,7 @@ cloudwatch	2026-07-26T20:00:52Z	PASS	55	standard	0727b sweep-b13 staleness re-ru
 cloudwatch-anomaly-detector	2026-07-30T16:41:15Z	PASS	35	verify.sh	final run post review fixes: GetAtt Id + phys-id stability asserted; clean
 codecommit	2026-08-01T09:36:05Z	PASS	83	verify.sh	0801 regression sweep; 3 phases ok, 0 orphans
 codedeploy-lambda-deployment-group	2026-07-26T19:45:58Z	PASS	109	verify.sh	re-run after version-agnostic fixture fix; live-verified, account clean (remnant-warning follow-up: issue #1252)
-cognito	2026-07-21T14:27:28Z	PASS	60	verify.sh	rc ok, orph clean
+cognito	2026-08-08T18:49:35Z	PASS	63	verify.sh	SignInPolicy #1380 assertion added; clean destroy
 cognito-custom-attribute-add	2026-07-26T19:05:27Z	PASS	57	verify.sh	0727b sweep-b8 staleness re-run (rc=0); account clean
 cognito-identity-pool	2026-07-26T19:16:39Z	PASS	53	verify.sh	0727b sweep-b9 staleness re-run (rc=0); account clean
 cognito-lambda-triggers	2026-07-21T18:07:01Z	PASS	66	verify.sh	rc ok, orph clean

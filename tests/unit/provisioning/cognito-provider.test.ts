@@ -109,6 +109,50 @@ describe('CognitoUserPoolProvider', () => {
         })
       ).rejects.toThrow('Failed to create Cognito User Pool MyUserPool');
     });
+
+    it('should forward Policies.SignInPolicy alongside PasswordPolicy (#1380)', async () => {
+      mockSend.mockResolvedValueOnce({
+        UserPool: {
+          Id: 'us-east-1_abc123',
+          Arn: 'arn:aws:cognito-idp:us-east-1:123456789012:userpool/us-east-1_abc123',
+        },
+      });
+
+      await provider.create('MyUserPool', 'AWS::Cognito::UserPool', {
+        Policies: {
+          PasswordPolicy: { MinimumLength: 12 },
+          SignInPolicy: { AllowedFirstAuthFactors: ['PASSWORD', 'EMAIL_OTP'] },
+        },
+      });
+
+      const createCall = mockSend.mock.calls[0][0];
+      expect(createCall.input.Policies).toEqual({
+        PasswordPolicy: { MinimumLength: 12 },
+        SignInPolicy: { AllowedFirstAuthFactors: ['PASSWORD', 'EMAIL_OTP'] },
+      });
+    });
+
+    it('should forward Policies when only SignInPolicy is present (#1380)', async () => {
+      // CDK synthesizes Policies with ONLY SignInPolicy when the user sets
+      // signInPolicy but not passwordPolicy — Policies must still be sent.
+      mockSend.mockResolvedValueOnce({
+        UserPool: {
+          Id: 'us-east-1_abc123',
+          Arn: 'arn:aws:cognito-idp:us-east-1:123456789012:userpool/us-east-1_abc123',
+        },
+      });
+
+      await provider.create('MyUserPool', 'AWS::Cognito::UserPool', {
+        Policies: {
+          SignInPolicy: { AllowedFirstAuthFactors: ['PASSWORD', 'WEB_AUTHN'] },
+        },
+      });
+
+      const createCall = mockSend.mock.calls[0][0];
+      expect(createCall.input.Policies).toEqual({
+        SignInPolicy: { AllowedFirstAuthFactors: ['PASSWORD', 'WEB_AUTHN'] },
+      });
+    });
   });
 
   describe('update', () => {
@@ -169,6 +213,40 @@ describe('CognitoUserPoolProvider', () => {
 
       const describeCall = mockSend.mock.calls[1][0];
       expect(describeCall.constructor.name).toBe('DescribeUserPoolCommand');
+    });
+
+    it('should forward Policies.SignInPolicy on update (#1380)', async () => {
+      // UpdateUserPool resets omitted attributes to defaults, so dropping
+      // SignInPolicy here wipes an existing passwordless configuration.
+      mockSend.mockResolvedValueOnce({});
+      mockSend.mockResolvedValueOnce({
+        UserPool: {
+          Arn: 'arn:aws:cognito-idp:us-east-1:123456789012:userpool/us-east-1_abc123',
+        },
+      });
+
+      await provider.update(
+        'MyUserPool',
+        'us-east-1_abc123',
+        'AWS::Cognito::UserPool',
+        {
+          Policies: {
+            PasswordPolicy: { MinimumLength: 12 },
+            SignInPolicy: { AllowedFirstAuthFactors: ['PASSWORD', 'EMAIL_OTP'] },
+          },
+        },
+        {
+          Policies: {
+            PasswordPolicy: { MinimumLength: 8 },
+          },
+        }
+      );
+
+      const updateCall = mockSend.mock.calls[0][0];
+      expect(updateCall.input.Policies).toEqual({
+        PasswordPolicy: { MinimumLength: 12 },
+        SignInPolicy: { AllowedFirstAuthFactors: ['PASSWORD', 'EMAIL_OTP'] },
+      });
     });
 
     it('adds a new custom attribute via AddCustomAttributes (Schema in-place add)', async () => {

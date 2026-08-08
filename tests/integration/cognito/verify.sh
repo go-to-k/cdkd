@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # verify.sh — cdkd Cognito::UserPool #609 backfill integ test.
 #
-# Asserts that the BackfillUserPool (an L1 CfnUserPool) lands the issue #609
-# backfill properties on AWS after `cdkd deploy`:
+# Asserts that the L2 TestUserPool's Policies.SignInPolicy (passwordless
+# first-auth factors, issue #1380) lands on AWS after `cdkd deploy`, and that
+# the BackfillUserPool (an L1 CfnUserPool) lands the issue #609
+# backfill properties:
 #   - UserPoolTier                  -> DescribeUserPool.UserPool.UserPoolTier
 #   - EnabledMfas (SOFTWARE_TOKEN_MFA)
 #                                   -> GetUserPoolMfaConfig (per-factor blocks)
@@ -124,6 +126,24 @@ if [ -z "${POOL_ID}" ]; then
 fi
 echo "    Backfill UserPool id: ${POOL_ID}"
 
+# --- Assertion 0: SignInPolicy on the L2 pool (issue #1380) -----------
+# The L2 TestUserPool sets signInPolicy (PASSWORD + EMAIL_OTP). Before the
+# #1380 fix the provider forwarded only Policies.PasswordPolicy, so the
+# deployed pool silently fell back to the PASSWORD-only default.
+L2_POOL_ID=$(echo "${STATE}" | jq -r '.outputs.UserPoolId // empty')
+if [ -z "${L2_POOL_ID}" ]; then
+  echo "FAIL: UserPoolId output missing from state" >&2
+  exit 1
+fi
+FACTORS=$(aws cognito-idp describe-user-pool \
+  --user-pool-id "${L2_POOL_ID}" --region "${REGION}" \
+  --query 'UserPool.Policies.SignInPolicy.AllowedFirstAuthFactors' --output json)
+if ! echo "${FACTORS}" | jq -e 'index("EMAIL_OTP") != null and index("PASSWORD") != null' >/dev/null; then
+  echo "FAIL: SignInPolicy.AllowedFirstAuthFactors is ${FACTORS}, expected to contain PASSWORD and EMAIL_OTP (SignInPolicy dropped — issue #1380)" >&2
+  exit 1
+fi
+echo "    OK: SignInPolicy.AllowedFirstAuthFactors == ${FACTORS}"
+
 # --- Assertion 1: UserPoolTier (DescribeUserPool) ---------------------
 TIER=$(aws cognito-idp describe-user-pool \
   --user-pool-id "${POOL_ID}" --region "${REGION}" \
@@ -196,4 +216,4 @@ assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after des
 echo "    OK: state file is gone"
 
 echo ""
-echo "==> cognito test passed (UserPoolTier / EnabledMfas(SOFTWARE_TOKEN) / WebAuthn* backfill (EMAIL_OTP unit-only) closed + clean destroy)"
+echo "==> cognito test passed (SignInPolicy #1380 / UserPoolTier / EnabledMfas(SOFTWARE_TOKEN) / WebAuthn* backfill (EMAIL_OTP-as-MFA unit-only) closed + clean destroy)"

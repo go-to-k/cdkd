@@ -17,6 +17,8 @@ import {
   type SchemaAttributeType,
   type LambdaConfigType,
   type PasswordPolicyType,
+  type SignInPolicyType,
+  type UserPoolPolicyType,
   type AdminCreateUserConfigType,
   type AccountRecoverySettingType,
   type UserAttributeUpdateSettingsType,
@@ -324,6 +326,24 @@ export class CognitoUserPoolProvider implements ResourceProvider {
   }
 
   /**
+   * Build the SDK `Policies` input from the CFn `Policies` blob. Both
+   * sub-keys must be forwarded: `SignInPolicy` (passwordless first-auth
+   * factors) was silently dropped before issue #1380, and UpdateUserPool
+   * resets omitted attributes to their defaults, so leaving it out also
+   * wipes an existing sign-in policy on every update.
+   */
+  private toSdkUserPoolPolicies(policies: Record<string, unknown>): UserPoolPolicyType | undefined {
+    const result: UserPoolPolicyType = {};
+    if (policies['PasswordPolicy']) {
+      result.PasswordPolicy = policies['PasswordPolicy'] as PasswordPolicyType;
+    }
+    if (policies['SignInPolicy']) {
+      result.SignInPolicy = policies['SignInPolicy'] as SignInPolicyType;
+    }
+    return Object.keys(result).length > 0 ? result : undefined;
+  }
+
+  /**
    * Create a Cognito User Pool
    */
   async create(
@@ -360,11 +380,11 @@ export class CognitoUserPoolProvider implements ResourceProvider {
         ] as UsernameAttributeType[];
       }
       if (properties['Policies']) {
-        const policies = properties['Policies'] as Record<string, unknown>;
-        if (policies['PasswordPolicy']) {
-          createParams.Policies = {
-            PasswordPolicy: policies['PasswordPolicy'] as PasswordPolicyType,
-          };
+        const sdkPolicies = this.toSdkUserPoolPolicies(
+          properties['Policies'] as Record<string, unknown>
+        );
+        if (sdkPolicies) {
+          createParams.Policies = sdkPolicies;
         }
       }
       if (properties['Schema']) {
@@ -581,11 +601,11 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       };
 
       if (properties['Policies']) {
-        const policies = properties['Policies'] as Record<string, unknown>;
-        if (policies['PasswordPolicy']) {
-          updateParams.Policies = {
-            PasswordPolicy: policies['PasswordPolicy'] as PasswordPolicyType,
-          };
+        const sdkPolicies = this.toSdkUserPoolPolicies(
+          properties['Policies'] as Record<string, unknown>
+        );
+        if (sdkPolicies) {
+          updateParams.Policies = sdkPolicies;
         }
       }
       if (properties['LambdaConfig']) {
