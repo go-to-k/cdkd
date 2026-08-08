@@ -1,3 +1,10 @@
+# [0.277.0](https://github.com/go-to-k/cdkd/compare/v0.276.6...v0.277.0) (2026-08-08)
+
+
+### Features
+
+* **audit:** nested CFn->SDK key-divergence critic + the two live bugs its first run caught ([#1377](https://github.com/go-to-k/cdkd/issues/1377)) ([e2753db](https://github.com/go-to-k/cdkd/commit/e2753db5c8ea0b5d137dbe09c884bf700d802d86))
+
 ## [0.276.6](https://github.com/go-to-k/cdkd/compare/v0.276.5...v0.276.6) (2026-08-08)
 
 
