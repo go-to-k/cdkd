@@ -1,3 +1,10 @@
+## [0.278.2](https://github.com/go-to-k/cdkd/compare/v0.278.1...v0.278.2) (2026-08-08)
+
+
+### Bug Fixes
+
+* **providers:** convert ECS target sub-shapes to SDK spellings in EventBridge Rule and Scheduler Schedule ([#1396](https://github.com/go-to-k/cdkd/issues/1396)) ([6556e75](https://github.com/go-to-k/cdkd/commit/6556e75e93a54eefb4f5562c42bb4a9407de3c05))
+
 ## [0.278.1](https://github.com/go-to-k/cdkd/compare/v0.278.0...v0.278.1) (2026-08-08)
 
 
