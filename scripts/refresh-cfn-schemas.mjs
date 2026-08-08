@@ -265,6 +265,10 @@ function classifyShape(node, definitions, seenRefs) {
     seenRefs.add(defName);
     return classifyShape(definitions[defName], definitions, seenRefs);
   }
+  // JSON-Schema array-form `type: ["array", "string"]` is legal in registry
+  // schemas — surface it as 'mixed' (visible) rather than falling through to
+  // a silent 'scalar'.
+  if (Array.isArray(obj['type'])) return 'mixed';
   if (obj['type'] === 'array') return 'array';
   if (
     obj['type'] === 'object' ||
@@ -459,7 +463,9 @@ async function main() {
   // An unrecognized flag must NOT silently fall through to a FULL re-fetch:
   // `--help` did exactly that before this guard (issue #1378 rider) — the
   // absent positional meant "no filter" and all ~135 fixtures churned.
-  const unknownFlags = args.filter((a) => a.startsWith('--') && a !== '--only-missing');
+  // Single-dash args are guarded too: a `-x` typo is a flag attempt, not a
+  // type filter.
+  const unknownFlags = args.filter((a) => a.startsWith('-') && a !== '--only-missing');
   if (unknownFlags.length > 0) {
     process.stderr.write(`Unknown flag(s): ${unknownFlags.join(', ')}\n${usage}`);
     process.exit(1);

@@ -224,6 +224,44 @@ describe('report plumbing (positive direction)', () => {
     ]);
     expect(findStaleAllowListEntries(report, allow)).toEqual(['AWS::Fake::Thing#GoneKey']);
   });
+
+  it('findDivergences surfaces both SHAPE blocking buckets through buildReport (#1378)', () => {
+    const report = buildReport([
+      {
+        resourceType: exactTarget.resourceType,
+        providerFile: exactTarget.providerFile,
+        sdkClientPackage: exactTarget.sdkClientPackage,
+        keyStyle: exactTarget.keyStyle,
+        nestedKeyCount: 0,
+        entries: [],
+        shapeEntries: [
+          {
+            resourceType: exactTarget.resourceType,
+            nestedKey: 'WrappedList',
+            definition: 'Config',
+            pass: 'wrapper',
+            bucket: 'array-vs-wrapper',
+            sdkDetail: 'SDK wraps it as `WrappedList` ({ Quantity, Items })',
+          },
+          {
+            resourceType: exactTarget.resourceType,
+            nestedKey: 'MovedMember',
+            definition: 'Config',
+            pass: 'definition',
+            bucket: 'definition-member-missing',
+          },
+        ],
+        shapeCleanCount: 0,
+        unmatchedDefinitions: [],
+      },
+    ]);
+    expect(findDivergences(report).map((d) => [d.nestedKey, d.bucket])).toEqual([
+      ['WrappedList', 'array-vs-wrapper'],
+      ['MovedMember', 'definition-member-missing'],
+    ]);
+    expect(report.summary.arrayVsWrapper).toBe(1);
+    expect(report.summary.definitionMemberMissing).toBe(1);
+  });
 });
 
 describe('loadReport loud-failure fences', () => {
@@ -239,6 +277,15 @@ describe('loadReport loud-failure fences', () => {
     expect(() => loadReport([{ ...realTarget, minNestedKeys: 100000 }])).toThrow(
       /fixture capture or handledProperties regression/
     );
+  });
+
+  it('throws on a fixture without a definitionShapes capture (#1378)', () => {
+    // AWS::S3::Bucket's committed fixture predates the shape capture; a
+    // minNestedKeys: 0 target passes the nestedProperties gate and must
+    // still fail loudly on the missing definitionShapes.
+    expect(() =>
+      loadReport([{ ...realTarget, resourceType: 'AWS::S3::Bucket', minNestedKeys: 0 }])
+    ).toThrow(/definitionShapes/);
   });
 
   it('throws when the provider declares no handledProperties for the target type', () => {
@@ -308,6 +355,34 @@ describe('shape pass (synthetic)', () => {
     // The KEY pass's strict set would NOT credit this (segment expansion is
     // shape-pass-only).
     expect(expandLiteralSegments(new Set(['SomeParent.Aliases'])).has('Aliases')).toBe(true);
+  });
+
+  it('segment expansion ignores non-key-path dotted literals (filenames, messages)', () => {
+    const expanded = expandLiteralSegments(
+      new Set(['index.html', 'some error. Retry later', 'ForwardedValues.Headers'])
+    );
+    expect(expanded.has('html')).toBe(false);
+    expect(expanded.has('Retry later')).toBe(false);
+    expect(expanded.has('Headers')).toBe(true);
+  });
+
+  it('classifies a mixed CFn shape as ambiguous instead of silently skipping it', () => {
+    const result = classifyTargetShapes(
+      exactTarget,
+      { DistributionConfig: { Aliases: 'mixed' } },
+      sdk,
+      new Set(),
+      new Map()
+    );
+    expect(result.entries).toEqual([
+      {
+        resourceType: exactTarget.resourceType,
+        nestedKey: 'Aliases',
+        definition: 'DistributionConfig',
+        pass: 'wrapper',
+        bucket: 'ambiguous',
+      },
+    ]);
   });
 
   it('counts a bare-array pair as clean when any same-named SDK member is an array', () => {
@@ -426,6 +501,10 @@ describe('extractDefinitionShapes (fixture capture)', () => {
             Self: { $ref: '#/definitions/Config' },
             Mixed: { oneOf: [{ type: 'string' }, { type: 'array' }] },
             Agreeing: { oneOf: [{ type: 'string' }, { type: 'string' }] },
+            // The map idiom (ECS DockerLabels) — patternProperties only.
+            LabelMap: { patternProperties: { '.*': { type: 'string' } } },
+            // JSON-Schema array-form type — must surface as mixed, not scalar.
+            ArrayFormType: { type: ['array', 'string'] },
           },
         },
         Inner: { type: 'object', properties: { Leaf: { type: 'integer' } } },
@@ -440,6 +519,8 @@ describe('extractDefinitionShapes (fixture capture)', () => {
       Self: 'object',
       Mixed: 'mixed',
       Agreeing: 'scalar',
+      LabelMap: 'object',
+      ArrayFormType: 'mixed',
     });
     expect(shapes['Inner']).toEqual({ Leaf: 'scalar' });
     // Definitions with no properties block get no entry.
@@ -667,17 +748,29 @@ describe('refresh-cfn-schemas CLI guard (#1378 rider)', () => {
   it('--help prints usage and exits 0 without fetching anything', async () => {
     const { execFile } = await import('node:child_process');
     const { promisify } = await import('node:util');
-    const { stdout } = await promisify(execFile)('node', [script, '--help']);
+    const { stdout } = await promisify(execFile)(process.execPath, [script, '--help'], {
+      timeout: 10_000,
+    });
     expect(stdout).toContain('Usage:');
     expect(stdout).not.toContain('Refreshing CFn schemas');
   });
 
-  it('an unknown flag exits non-zero instead of silently full-refetching', async () => {
+  it('an unknown flag exits 1 with usage on stderr instead of silently full-refetching', async () => {
     const { execFile } = await import('node:child_process');
     const { promisify } = await import('node:util');
-    await expect(promisify(execFile)('node', [script, '--bogus'])).rejects.toMatchObject({
-      code: 1,
-    });
+    // The 10s timeout is the offline fail-fast: a guard regression would
+    // fall through to a full ~135-type live fetch here.
+    await expect(
+      promisify(execFile)(process.execPath, [script, '--bogus'], { timeout: 10_000 })
+    ).rejects.toMatchObject({ code: 1, stderr: expect.stringContaining('Usage:') });
+  });
+
+  it('a single-dash typo is rejected as a flag attempt, not a type filter', async () => {
+    const { execFile } = await import('node:child_process');
+    const { promisify } = await import('node:util');
+    await expect(
+      promisify(execFile)(process.execPath, [script, '-only-missing'], { timeout: 10_000 })
+    ).rejects.toMatchObject({ code: 1 });
   });
 });
 

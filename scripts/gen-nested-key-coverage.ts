@@ -232,8 +232,13 @@ export const allowKey = (resourceType: string, nestedKey: string): string =>
 /**
  * Deliberate pass-throughs the critic must not fail on. Each entry is a
  * reviewable decision with a one-line rationale, same shape as
- * `UPDATE_WRAP_ALLOW_LIST`. Keep entries scoped per (type, key) so an entry
- * for one key can never silence a NEW divergence elsewhere on the same type.
+ * `UPDATE_WRAP_ALLOW_LIST`. Entries are scoped per (type, key) — an entry
+ * for one key can never silence a divergence on a DIFFERENT key of the same
+ * type. DELIBERATE cross-pass sharing (issue #1378): one entry silences the
+ * key pass AND both shape passes for that key — every audited failure mode
+ * of a key the maintainer has judged pass-through-safe (legacy members,
+ * dedicated side-channel handling) is the same decision, and a per-pass key
+ * would triple the entries for no reviewable difference.
  */
 export const NESTED_KEY_ALLOW_LIST: ReadonlyMap<string, AllowListEntry> = new Map<
   string,
@@ -488,10 +493,15 @@ export function wrapperInterfaceNames(
  */
 export function expandLiteralSegments(literals: ReadonlySet<string>): Set<string> {
   const out = new Set(literals);
+  // Only key-path-SHAPED literals expand (`Parent.Child` with PascalCase
+  // segments — CFn property names are PascalCase) — an error message or a
+  // filename like `'index.html'` must not credit its dot-segments as
+  // handling evidence.
+  const keyPath = /^[A-Z][A-Za-z0-9]*(\.[A-Z][A-Za-z0-9]*)+$/;
   for (const lit of literals) {
-    if (lit.includes('.')) {
+    if (keyPath.test(lit)) {
       for (const segment of lit.split('.')) {
-        if (segment.length > 0) out.add(segment);
+        out.add(segment);
       }
     }
   }
@@ -672,9 +682,26 @@ export function classifyTargetShapes(
     for (const [key, shape] of Object.entries(members)) {
       const kinds = globalKinds.get(styled(key));
 
+      // A 'mixed' CFn shape (conflicting oneOf arms, array-form `type`)
+      // cannot be shape-judged — surface it as ambiguous (visible,
+      // non-blocking) rather than silently skipping.
+      if (shape === 'mixed' && kinds && !wrapperSeen.has(key)) {
+        wrapperSeen.add(key);
+        entries.push({
+          resourceType: target.resourceType,
+          nestedKey: key,
+          definition: defName,
+          pass: 'wrapper',
+          bucket: shapeLiterals.has(key) ? 'provider-handled' : 'ambiguous',
+        });
+      }
+
       // WRAPPER sub-pass (per key, deduped).
       if (shape === 'array' && kinds && !wrapperSeen.has(key)) {
         wrapperSeen.add(key);
+        // Deliberately ANY-array (response shapes included), not
+        // request-interface-scoped: the false-negative direction, matching
+        // the key pass's superset philosophy.
         if (kinds.some((k) => k.kind === 'array')) {
           cleanCount++;
         } else {
