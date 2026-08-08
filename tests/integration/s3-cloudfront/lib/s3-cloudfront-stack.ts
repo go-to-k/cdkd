@@ -53,7 +53,14 @@ export class S3CloudFrontStack extends cdk.Stack {
     });
     const originGroup = new origins.OriginGroup({
       primaryOrigin: s3Origin,
-      fallbackOrigin: new origins.HttpOrigin('fallback.example.com'),
+      // `customHeaders` synthesizes the CFn `OriginCustomHeaders` key, whose
+      // SDK member is `CustomHeaders` — the issue #1373 nested-key rename.
+      // Before that fix the header was silently dropped on create and WIPED
+      // on update by the #1371 required-field fill; verify.sh asserts it
+      // reaches AWS in Phase 1 AND survives the Phase 1.5 merge update.
+      fallbackOrigin: new origins.HttpOrigin('fallback.example.com', {
+        customHeaders: { 'X-Cdkd-Test-Header': 'cdkd-integ' },
+      }),
       fallbackStatusCodes: [500, 502, 503, 504],
     });
 

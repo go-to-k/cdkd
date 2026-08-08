@@ -187,6 +187,19 @@ if [ "${GEO_TYPE}" != "whitelist" ] || [ "${GEO_QTY}" != "2" ] || [ "${GEO_HAS_J
 fi
 echo "    OK: GeoRestriction whitelist [JP, US] reached AWS (#1370 shape conversion)"
 
+# --- Assertion: OriginCustomHeaders -> CustomHeaders rename (#1373) ----
+# The CDK L2 `customHeaders` synthesizes the CFn `OriginCustomHeaders` key;
+# the SDK member is `CustomHeaders` ({ Quantity, Items }). Before #1373 the
+# rename did not exist, so the header list was silently dropped on create.
+OCH_COUNT=$(aws cloudfront get-distribution-config --id "${DIST_ID}" --region "${REGION}" \
+  --query 'DistributionConfig.Origins.Items' --output json \
+  | jq '[.[].CustomHeaders.Items[]? | select(.HeaderName == "X-Cdkd-Test-Header" and .HeaderValue == "cdkd-integ")] | length')
+if [ "${OCH_COUNT}" != "1" ]; then
+  echo "FAIL: origin custom header X-Cdkd-Test-Header did not reach AWS (matches=${OCH_COUNT}) — the #1373 OriginCustomHeaders -> CustomHeaders rename regressed" >&2
+  exit 1
+fi
+echo "    OK: OriginCustomHeaders reached AWS as CustomHeaders (#1373 rename)"
+
 # --- Assertion: AWS reflects the two CDK Tags -------------------------
 TAGS_JSON=$(aws cloudfront list-tags-for-resource --resource "${DIST_ARN}" --region "${REGION}" \
   --query 'Tags.Items' --output json)
@@ -340,6 +353,17 @@ if [ "${POST_IPV6}" != "true" ]; then
   exit 1
 fi
 echo "    OK: update applied (comment + geo narrowed to [JP]); #1370 rename holds on the update path (#1371 merge)"
+
+# The origin custom header must SURVIVE the merge update: before #1373 the
+# update path's absent-only required-field fill saw no (unrenamed)
+# CustomHeaders member and wiped the live headers with { Quantity: 0 }.
+POST_OCH_COUNT=$(echo "${POST_CONF}" \
+  | jq '[.Origins.Items[].CustomHeaders.Items[]? | select(.HeaderName == "X-Cdkd-Test-Header" and .HeaderValue == "cdkd-integ")] | length')
+if [ "${POST_OCH_COUNT}" != "1" ]; then
+  echo "FAIL: origin custom header X-Cdkd-Test-Header wiped by the update merge (matches=${POST_OCH_COUNT}) — the #1373 rename regressed on the update path" >&2
+  exit 1
+fi
+echo "    OK: OriginCustomHeaders survived the merge update (#1373 update-wipe closed)"
 
 # --- Phase 2: destroy -------------------------------------------------
 echo "==> Phase 2: destroy"
