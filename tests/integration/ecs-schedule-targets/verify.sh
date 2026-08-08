@@ -104,6 +104,15 @@ if [ "${SCHED_SUBNETS}" != "2" ]; then
 fi
 echo "    OK: schedule awsvpcConfiguration (2 subnets) landed"
 
+# --- Assertion 3: no phantom drift on the ECS targets ------------------
+# The read side maps the SDK spellings back to CFn shape (toCfnTargets /
+# toCfnTarget); without the inverse every ECS target would drift on
+# AwsVpcConfiguration / TagList / PlacementStrategies right after deploy.
+# cdkd drift exits 0 on no drift, 1 on drift, 2 on error.
+echo "==> Drift check (expects clean)"
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --stack-region "${REGION}"
+echo "    OK: no drift reported"
+
 echo "==> Destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 

@@ -126,18 +126,79 @@ export class EventBridgeRuleProvider implements ResourceProvider {
   }
 
   /**
-   * Rename the listed CFn PascalCase keys to the SDK's lowerCamelCase on one
-   * array item (`Type` -> `type`, `CapacityProvider` -> `capacityProvider`);
-   * keys not listed (or absent) pass through unchanged.
+   * Inverse of {@link toSdkEcsParameters} for `readCurrentState`:
+   * ListTargetsByRule returns the SDK spellings, but drift compares the
+   * whole `Targets` array against state's CFn spellings — without the
+   * re-map every ECS Fargate rule target would report phantom drift on
+   * `AwsVpcConfiguration` / `TagList` / `PlacementStrategies` under the
+   * `properties`-fallback baseline.
    */
+  private toCfnTargets(targets: RuleTarget[]): RuleTarget[] {
+    return targets.map((target) => {
+      const ecs = target['EcsParameters'] as Record<string, unknown> | undefined;
+      if (!ecs) return target;
+      return { ...target, EcsParameters: this.toCfnEcsParameters(ecs) };
+    });
+  }
+
+  private toCfnEcsParameters(ecs: Record<string, unknown>): Record<string, unknown> {
+    const result: Record<string, unknown> = { ...ecs };
+    const network = result['NetworkConfiguration'] as Record<string, unknown> | undefined;
+    if (network && network['awsvpcConfiguration'] !== undefined) {
+      const { awsvpcConfiguration, ...restNetwork } = network;
+      result['NetworkConfiguration'] = {
+        ...restNetwork,
+        AwsVpcConfiguration: awsvpcConfiguration,
+      };
+    }
+    if (result['Tags'] !== undefined) {
+      result['TagList'] = result['Tags'];
+      delete result['Tags'];
+    }
+    if (Array.isArray(result['PlacementStrategy'])) {
+      result['PlacementStrategies'] = (
+        result['PlacementStrategy'] as Record<string, unknown>[]
+      ).map((item) => this.renameItemKeys(item, ['type', 'field'], 'upper'));
+      delete result['PlacementStrategy'];
+    }
+    if (Array.isArray(result['PlacementConstraints'])) {
+      result['PlacementConstraints'] = (
+        result['PlacementConstraints'] as Record<string, unknown>[]
+      ).map((item) => this.renameItemKeys(item, ['type', 'expression'], 'upper'));
+    }
+    if (Array.isArray(result['CapacityProviderStrategy'])) {
+      result['CapacityProviderStrategy'] = (
+        result['CapacityProviderStrategy'] as Record<string, unknown>[]
+      ).map((item) => this.renameItemKeys(item, ['capacityProvider', 'weight', 'base'], 'upper'));
+    }
+    return result;
+  }
+
   private lowerCaseItemKeys(
     item: Record<string, unknown>,
     keys: string[]
   ): Record<string, unknown> {
+    return this.renameItemKeys(item, keys, 'lower');
+  }
+
+  /**
+   * Flip the first letter's case on the listed keys of one array item
+   * (`Type` <-> `type`, `CapacityProvider` <-> `capacityProvider`); keys
+   * not listed (or absent) pass through unchanged.
+   */
+  private renameItemKeys(
+    item: Record<string, unknown>,
+    keys: string[],
+    direction: 'lower' | 'upper'
+  ): Record<string, unknown> {
     const result: Record<string, unknown> = { ...item };
     for (const key of keys) {
       if (result[key] !== undefined) {
-        result[key.charAt(0).toLowerCase() + key.slice(1)] = result[key];
+        const flipped =
+          direction === 'lower'
+            ? key.charAt(0).toLowerCase() + key.slice(1)
+            : key.charAt(0).toUpperCase() + key.slice(1);
+        result[flipped] = result[key];
         delete result[key];
       }
     }
@@ -594,7 +655,7 @@ export class EventBridgeRuleProvider implements ResourceProvider {
           ...busParam,
         })
       );
-      result['Targets'] = targetsResp.Targets ?? [];
+      result['Targets'] = this.toCfnTargets((targetsResp.Targets ?? []) as RuleTarget[]);
     } catch (err) {
       if (!(err instanceof ResourceNotFoundException)) {
         throw err;

@@ -91,6 +91,62 @@ describe('EventBridgeRuleProvider.readCurrentState', () => {
     });
   });
 
+  it('maps ECS target sub-shapes back to CFn spellings (no phantom drift, #1381)', async () => {
+    mockSend
+      .mockResolvedValueOnce({
+        Name: 'my-rule',
+        Arn: 'arn:aws:events:us-east-1:123:rule/my-rule',
+        ScheduleExpression: 'rate(5 minutes)',
+        State: 'ENABLED',
+      })
+      .mockResolvedValueOnce({
+        Targets: [
+          {
+            Id: 't1',
+            Arn: 'arn:aws:ecs:us-east-1:123:cluster/my-cluster',
+            EcsParameters: {
+              TaskDefinitionArn: 'arn:aws:ecs:us-east-1:123:task-definition/td:1',
+              LaunchType: 'FARGATE',
+              NetworkConfiguration: {
+                awsvpcConfiguration: { Subnets: ['subnet-1'], AssignPublicIp: 'ENABLED' },
+              },
+              Tags: [{ Key: 'k', Value: 'v' }],
+              PlacementStrategy: [{ type: 'spread', field: 'attribute:ecs.availability-zone' }],
+              PlacementConstraints: [{ type: 'memberOf', expression: 'attribute:x == y' }],
+              CapacityProviderStrategy: [
+                { capacityProvider: 'FARGATE_SPOT', weight: 2, base: 1 },
+              ],
+            },
+          },
+        ],
+      })
+      .mockResolvedValueOnce({ Tags: [] });
+
+    const result = await provider.readCurrentState(
+      'arn:aws:events:us-east-1:123:rule/my-rule',
+      'RuleLogical',
+      'AWS::Events::Rule'
+    );
+
+    expect((result as Record<string, unknown>)['Targets']).toEqual([
+      {
+        Id: 't1',
+        Arn: 'arn:aws:ecs:us-east-1:123:cluster/my-cluster',
+        EcsParameters: {
+          TaskDefinitionArn: 'arn:aws:ecs:us-east-1:123:task-definition/td:1',
+          LaunchType: 'FARGATE',
+          NetworkConfiguration: {
+            AwsVpcConfiguration: { Subnets: ['subnet-1'], AssignPublicIp: 'ENABLED' },
+          },
+          TagList: [{ Key: 'k', Value: 'v' }],
+          PlacementStrategies: [{ Type: 'spread', Field: 'attribute:ecs.availability-zone' }],
+          PlacementConstraints: [{ Type: 'memberOf', Expression: 'attribute:x == y' }],
+          CapacityProviderStrategy: [{ CapacityProvider: 'FARGATE_SPOT', Weight: 2, Base: 1 }],
+        },
+      },
+    ]);
+  });
+
   it('surfaces EventBusName when not default bus', async () => {
     mockSend
       .mockResolvedValueOnce({

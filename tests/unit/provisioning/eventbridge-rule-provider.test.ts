@@ -82,6 +82,10 @@ describe('EventBridgeRuleProvider', () => {
 
       const putTargetsCall = mockSend.mock.calls[1][0];
       expect(putTargetsCall.constructor.name).toBe('PutTargetsCommand');
+      // Non-ECS targets pass through the #1381 conversion unchanged.
+      expect(putTargetsCall.input.Targets).toEqual([
+        { Id: 'Target1', Arn: 'arn:aws:lambda:us-east-1:123456789012:function:my-func' },
+      ]);
     });
 
     it('converts CFn-shaped EcsParameters to the SDK shape on PutTargets (#1381)', async () => {

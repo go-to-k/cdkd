@@ -91,7 +91,7 @@ ec2-vpc	2026-07-26T17:21:15Z	PASS	35	standard	issue 1241 fix verified: explicit 
 ecr	2026-07-26T18:36:31Z	PASS	85	standard	0727b sweep-b4 staleness re-run (rc=0); account clean
 ecr-scanning	2026-08-08T16:24:26Z	PASS	52	verify.sh	P0 post-#1345 ECR force-delete opt-in; 3 phases ok, 2 del/0 err, 0 orphans
 ecs-fargate	2026-07-30T11:54:49Z	PASS	420	verify.sh	#1280 live-test: --full-wait waiter w/ new max(600,resolved) cap ran on create+update; 23 del/0 err, orph clean
-ecs-schedule-targets	2026-08-08T18:49:38Z	PASS	53	verify.sh	new fixture for #1381/#1382; clean destroy
+ecs-schedule-targets	2026-08-08T19:04:46Z	PASS	60	verify.sh	re-run with drift assert after review fixes; clean
 ecs-service-update-props	2026-07-23T08:20:10Z	PASS		verify.sh	#1173 re-run after VersionConsistency norm; Phase1f + drift clean; destroy 15 del 0 err 0 orph
 efs-immutable-replacement	2026-08-01T09:51:12Z	PASS	63	verify.sh	0801 regression sweep; createOnly+stateful guard ok, 0 orphans
 efs-lambda	2026-07-26T18:36:31Z	PASS	499	standard	0727b sweep-b4 staleness re-run (rc=0); account clean

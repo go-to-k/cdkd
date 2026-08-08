@@ -185,6 +185,44 @@ describe('SchedulerScheduleProvider', () => {
       });
     });
 
+    it('converts ECS target sub-shapes on the update path too (#1382)', async () => {
+      mockSend.mockResolvedValueOnce({ ScheduleArn: SCHED_ARN });
+
+      await provider.update(
+        'Sched',
+        'my-sched',
+        TYPE,
+        {
+          ...BASE_PROPS,
+          Target: {
+            Arn: 'arn:aws:ecs:us-east-1:123456789012:cluster/my-cluster',
+            RoleArn: 'arn:aws:iam::123456789012:role/r',
+            EcsParameters: {
+              TaskDefinitionArn: 'arn:aws:ecs:us-east-1:123456789012:task-definition/td:1',
+              NetworkConfiguration: { AwsvpcConfiguration: { Subnets: ['subnet-1'] } },
+            },
+          },
+        },
+        { ...BASE_PROPS }
+      );
+
+      const input = sentInput(UpdateScheduleCommand) as unknown as {
+        Target: { EcsParameters: Record<string, unknown> };
+      };
+      expect(input.Target.EcsParameters['NetworkConfiguration']).toEqual({
+        awsvpcConfiguration: { Subnets: ['subnet-1'] },
+      });
+    });
+
+    it('passes a non-ECS target through unchanged', async () => {
+      mockSend.mockResolvedValueOnce({ ScheduleArn: SCHED_ARN });
+
+      await provider.update('Sched', 'my-sched', TYPE, { ...BASE_PROPS }, { ...BASE_PROPS });
+
+      const input = sentInput(UpdateScheduleCommand);
+      expect(input).toMatchObject({ Target: BASE_PROPS.Target });
+    });
+
     it('rejects a GroupName change with the typed ResourceUpdateNotSupportedError before any API call', async () => {
       await expect(
         provider.update(
