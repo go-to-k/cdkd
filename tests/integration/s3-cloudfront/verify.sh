@@ -62,11 +62,21 @@ LOCAL_DIST="${PWD}/../../../dist/cli.js"
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
+  local state_destroy_ok=1
   if [ -x "${LOCAL_DIST}" ]; then
-    node "${LOCAL_DIST}" state destroy "${STACK}" --region "${REGION}" --yes >/dev/null 2>&1
+    if node "${LOCAL_DIST}" state destroy "${STACK}" --region "${REGION}" --yes >/dev/null 2>&1; then
+      state_destroy_ok=0
+    fi
   fi
   if [ -n "${STATE_BUCKET:-}" ]; then
-    aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
+    # Remove the state file ONLY when state destroy succeeded (or never had
+    # anything to do). Force-removing it after a FAILED state destroy strands
+    # the still-live AWS resources with no state handle — a failed run then
+    # orphans an ENABLED CloudFront distribution that takes a manual
+    # disable-wait-delete to clean up (bit this session twice, 2026-08-09).
+    if [ "${state_destroy_ok}" -eq 0 ]; then
+      aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
+    fi
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
   fi
   # Belt-and-suspenders sweep of the deterministically-named standalone OAC
