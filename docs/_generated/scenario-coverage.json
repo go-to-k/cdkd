@@ -833,6 +833,11 @@
       "scenarios": []
     },
     {
+      "name": "ecs-schedule-targets",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "ecs-service-update-props",
       "annotated": true,
       "scenarios": []
@@ -2558,6 +2563,7 @@
     "dynamodb-ttl-attr-change",
     "ec2-instance-fanout",
     "ecr-scanning",
+    "ecs-schedule-targets",
     "efs-immutable-replacement",
     "eventbridge-api-destination",
     "eventbridge-input-transformer",

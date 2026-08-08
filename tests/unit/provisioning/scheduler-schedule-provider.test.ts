@@ -185,6 +185,44 @@ describe('SchedulerScheduleProvider', () => {
       });
     });
 
+    it('converts ECS target sub-shapes on the update path too (#1382)', async () => {
+      mockSend.mockResolvedValueOnce({ ScheduleArn: SCHED_ARN });
+
+      await provider.update(
+        'Sched',
+        'my-sched',
+        TYPE,
+        {
+          ...BASE_PROPS,
+          Target: {
+            Arn: 'arn:aws:ecs:us-east-1:123456789012:cluster/my-cluster',
+            RoleArn: 'arn:aws:iam::123456789012:role/r',
+            EcsParameters: {
+              TaskDefinitionArn: 'arn:aws:ecs:us-east-1:123456789012:task-definition/td:1',
+              NetworkConfiguration: { AwsvpcConfiguration: { Subnets: ['subnet-1'] } },
+            },
+          },
+        },
+        { ...BASE_PROPS }
+      );
+
+      const input = sentInput(UpdateScheduleCommand) as unknown as {
+        Target: { EcsParameters: Record<string, unknown> };
+      };
+      expect(input.Target.EcsParameters['NetworkConfiguration']).toEqual({
+        awsvpcConfiguration: { Subnets: ['subnet-1'] },
+      });
+    });
+
+    it('passes a non-ECS target through unchanged', async () => {
+      mockSend.mockResolvedValueOnce({ ScheduleArn: SCHED_ARN });
+
+      await provider.update('Sched', 'my-sched', TYPE, { ...BASE_PROPS }, { ...BASE_PROPS });
+
+      const input = sentInput(UpdateScheduleCommand);
+      expect(input).toMatchObject({ Target: BASE_PROPS.Target });
+    });
+
     it('rejects a GroupName change with the typed ResourceUpdateNotSupportedError before any API call', async () => {
       await expect(
         provider.update(
@@ -280,6 +318,90 @@ describe('SchedulerScheduleProvider', () => {
       await expect(provider.getAttribute('my-sched', TYPE, 'Nope')).rejects.toThrow(
         /Unknown attribute Nope/
       );
+    });
+  });
+
+  describe('ECS target sub-shape conversion (#1382)', () => {
+    const CFN_ECS_TARGET = {
+      Arn: 'arn:aws:ecs:us-east-1:123456789012:cluster/my-cluster',
+      RoleArn: 'arn:aws:iam::123456789012:role/r',
+      EcsParameters: {
+        TaskDefinitionArn: 'arn:aws:ecs:us-east-1:123456789012:task-definition/td:1',
+        LaunchType: 'FARGATE',
+        NetworkConfiguration: {
+          AwsvpcConfiguration: {
+            Subnets: ['subnet-1', 'subnet-2'],
+            AssignPublicIp: 'ENABLED',
+          },
+        },
+        PlacementStrategy: [{ Type: 'spread', Field: 'attribute:ecs.availability-zone' }],
+        PlacementConstraints: [{ Type: 'memberOf', Expression: 'attribute:x == y' }],
+        CapacityProviderStrategy: [{ CapacityProvider: 'FARGATE_SPOT', Weight: 2, Base: 1 }],
+      },
+    };
+
+    it('converts CFn spellings to the SDK shape on CreateSchedule', async () => {
+      mockSend.mockResolvedValueOnce({ ScheduleArn: SCHED_ARN });
+
+      await provider.create('Sched', TYPE, { ...BASE_PROPS, Target: CFN_ECS_TARGET });
+
+      const input = sentInput(CreateScheduleCommand) as unknown as {
+        Target: { EcsParameters: Record<string, unknown> };
+      };
+      const ecs = input.Target.EcsParameters;
+      expect(ecs['NetworkConfiguration']).toEqual({
+        awsvpcConfiguration: { Subnets: ['subnet-1', 'subnet-2'], AssignPublicIp: 'ENABLED' },
+      });
+      expect(ecs['PlacementStrategy']).toEqual([
+        { type: 'spread', field: 'attribute:ecs.availability-zone' },
+      ]);
+      expect(ecs['PlacementConstraints']).toEqual([
+        { type: 'memberOf', expression: 'attribute:x == y' },
+      ]);
+      expect(ecs['CapacityProviderStrategy']).toEqual([
+        { capacityProvider: 'FARGATE_SPOT', weight: 2, base: 1 },
+      ]);
+      expect(ecs['TaskDefinitionArn']).toBe(
+        'arn:aws:ecs:us-east-1:123456789012:task-definition/td:1'
+      );
+    });
+
+    it('maps the SDK spellings back to CFn shape in readCurrentState (no phantom drift)', async () => {
+      mockSend.mockResolvedValueOnce({
+        Name: 'my-sched',
+        GroupName: GROUP,
+        ScheduleExpression: 'rate(1 hour)',
+        Target: {
+          Arn: 'arn:aws:ecs:us-east-1:123456789012:cluster/my-cluster',
+          RoleArn: 'arn:aws:iam::123456789012:role/r',
+          EcsParameters: {
+            TaskDefinitionArn: 'arn:aws:ecs:us-east-1:123456789012:task-definition/td:1',
+            LaunchType: 'FARGATE',
+            NetworkConfiguration: {
+              awsvpcConfiguration: { Subnets: ['subnet-1', 'subnet-2'], AssignPublicIp: 'ENABLED' },
+            },
+            PlacementStrategy: [{ type: 'spread', field: 'attribute:ecs.availability-zone' }],
+            PlacementConstraints: [{ type: 'memberOf', expression: 'attribute:x == y' }],
+            CapacityProviderStrategy: [{ capacityProvider: 'FARGATE_SPOT', weight: 2, base: 1 }],
+          },
+        },
+      });
+
+      const state = await provider.readCurrentState('my-sched', 'Sched', TYPE, {
+        ...BASE_PROPS,
+        Target: CFN_ECS_TARGET,
+      });
+
+      expect((state as Record<string, unknown>)['Target']).toMatchObject({
+        EcsParameters: {
+          NetworkConfiguration: {
+            AwsvpcConfiguration: { Subnets: ['subnet-1', 'subnet-2'], AssignPublicIp: 'ENABLED' },
+          },
+          PlacementStrategy: [{ Type: 'spread', Field: 'attribute:ecs.availability-zone' }],
+          PlacementConstraints: [{ Type: 'memberOf', Expression: 'attribute:x == y' }],
+          CapacityProviderStrategy: [{ CapacityProvider: 'FARGATE_SPOT', Weight: 2, Base: 1 }],
+        },
+      });
     });
   });
 
