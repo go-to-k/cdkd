@@ -1163,6 +1163,23 @@ describe('DynamoDBGlobalTable GSI throughput translation (issue #1387)', () => {
       expect(sent?.MaxWriteRequestUnits).not.toBe(-1);
     });
 
+    it('does NOT reset on a PROVISIONED -> PROVISIONED drop (no flip, but no live ceiling either)', async () => {
+      // Reviewer catch on this PR. A "not flipping" gate is satisfied by
+      // PROVISIONED -> PROVISIONED too, so a provisioned template that carried
+      // the block (legal in the CFn schema, reachable from hand-authored L1)
+      // and drops it would send an on-demand field on a provisioned table and
+      // earn a ValidationException — a NEW failure where the pre-fix behavior
+      // was a correct no-op.
+      const previous = structuredClone(ON_DEMAND_TABLE_PROPS) as Record<string, unknown>;
+      previous['BillingMode'] = 'PROVISIONED';
+      const next = structuredClone(previous) as Record<string, unknown>;
+      delete next['WriteOnDemandThroughputSettings'];
+
+      await provider.update('OnDemand', 'od-table', RESOURCE_TYPE, next, previous);
+
+      expect(flatUpdate()?.input.OnDemandThroughput).toBeUndefined();
+    });
+
     it('does NOT reset while the billing mode is flipping to PROVISIONED', async () => {
       // Dropping the on-demand block on the way to PROVISIONED is the natural
       // template edit, not a request to clear a ceiling — and the flip is
