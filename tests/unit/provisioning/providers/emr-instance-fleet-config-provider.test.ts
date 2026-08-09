@@ -275,6 +275,53 @@ describe('EMRInstanceFleetConfigProvider update', () => {
     });
   });
 
+  // Regression (issue #1400, found by the emr-instance-fleets integ): AWS
+  // rejects ModifyInstanceFleet unless BOTH capacities are present —
+  //   "The instance fleet (if-...) should have both targetOnDemandCapacity
+  //    and targetSpotCapacity specified."
+  // — while AddInstanceFleet happily defaults the absent one to 0. The
+  // ordinary CDK template declares only ONE (an On-Demand-only or Spot-only
+  // fleet), the SDK v3 serializer omits `undefined` members, and so EVERY
+  // resize of such a fleet failed. Note the other tests in this file pass a
+  // BASE_PROPS that already carries both keys — which is precisely why the
+  // unit suite agreed with the bug; this test uses the REAL one-sided shape.
+  it.each([
+    ['On-Demand-only fleet', 'TargetOnDemandCapacity', 'TargetSpotCapacity'] as const,
+    ['Spot-only fleet', 'TargetSpotCapacity', 'TargetOnDemandCapacity'] as const,
+  ])('sends both capacities on a %s, defaulting the undeclared side to 0', async (
+    _label,
+    declared,
+    omitted,
+  ) => {
+    routeSend({
+      ModifyInstanceFleetCommand: {},
+      ListInstanceFleetsCommand: [fleetOf('RUNNING', 5)],
+    });
+
+    // The real CDK shape: ONLY the declared capacity is present.
+    const prev = {
+      ClusterId: CLUSTER_ID,
+      InstanceFleetType: 'TASK',
+      Name: 'task-fleet',
+      [declared]: 1,
+      InstanceTypeConfigs: [{ InstanceType: 'm5.xlarge', WeightedCapacity: 1 }],
+    };
+    const next = { ...prev, [declared]: 5 };
+
+    await newProvider().update('Fleet', FLEET_ID, RESOURCE_TYPE, next, prev);
+
+    const modify = callsOf(ModifyInstanceFleetCommand);
+    expect(modify).toHaveLength(1);
+    // Both members must be PRESENT on the wire. `toMatchObject` alone would
+    // pass on an absent key when the expected value is undefined, so assert
+    // the key set explicitly.
+    const sent = modify[0]!.input.InstanceFleet as Record<string, unknown>;
+    expect(Object.keys(sent)).toContain('TargetOnDemandCapacity');
+    expect(Object.keys(sent)).toContain('TargetSpotCapacity');
+    expect(sent[declared]).toBe(5);
+    expect(sent[omitted]).toBe(0);
+  });
+
   it('keeps waiting through the stale pre-resize RUNNING state until provisioned meets the new target', async () => {
     // Regression: right after ModifyInstanceFleet the fleet is still in the
     // PRE-resize RUNNING state with the OLD provisioned capacity (2). A

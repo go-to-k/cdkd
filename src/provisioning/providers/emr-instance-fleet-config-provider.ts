@@ -282,8 +282,21 @@ export class EMRInstanceFleetConfigProvider implements ResourceProvider {
     try {
       const modify: InstanceFleetModifyConfig = {
         InstanceFleetId: physicalId,
-        TargetOnDemandCapacity: toNumber(properties['TargetOnDemandCapacity']),
-        TargetSpotCapacity: toNumber(properties['TargetSpotCapacity']),
+        // BOTH capacities must be present, even when the template declares only
+        // one. `AddInstanceFleet` tolerates an absent capacity (AWS defaults it
+        // to 0), but `ModifyInstanceFleet` rejects the same payload with
+        //   "The instance fleet (if-...) should have both
+        //    targetOnDemandCapacity and targetSpotCapacity specified."
+        // The AWS SDK v3 serializer omits `undefined` members, so forwarding the
+        // template verbatim made EVERY resize of the ordinary
+        // On-Demand-only / Spot-only fleet fail (found by the
+        // `emr-instance-fleets` integ, issue #1400). Defaulting the absent side
+        // to 0 also matches CFn desired-state semantics — an omitted capacity
+        // means zero, not "leave whatever AWS has" — and matches this provider's
+        // own `targetCapacity()` helper and its delete-path scale-to-0, which
+        // already send both members explicitly.
+        TargetOnDemandCapacity: toNumber(properties['TargetOnDemandCapacity']) ?? 0,
+        TargetSpotCapacity: toNumber(properties['TargetSpotCapacity']) ?? 0,
         ResizeSpecifications: properties['ResizeSpecifications'] as
           | import('@aws-sdk/client-emr').InstanceFleetResizingSpecifications
           | undefined,
