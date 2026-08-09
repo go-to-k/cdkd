@@ -293,6 +293,66 @@ describe('GlueProvider read-update round-trip', () => {
     expect(input.TableInput.Name).toBe('events_iceberg');
   });
 
+  it('AWS::Glue::Table — create() renames IcebergInput.IcebergTableInput to the SDK CreateIcebergTableInput (#1390)', async () => {
+    // CFn spells the nested table spec `IcebergTableInput`; the SDK's
+    // `IcebergInput` member is `CreateIcebergTableInput`. The SDK serializer
+    // drops unknown members, so without the rename the whole Iceberg table
+    // spec vanished while CreateTable still reported success.
+    mockSend.mockResolvedValueOnce({});
+
+    const icebergTableInput = {
+      Location: 's3://b/iceberg/events/',
+      Schema: {
+        Fields: [{ Id: 1, Name: 'event_id', Type: 'string', Required: true }],
+        IdentifierFieldIds: [1],
+      },
+      PartitionSpec: {
+        Fields: [{ SourceId: 1, Transform: 'identity', Name: 'event_id' }],
+      },
+      Properties: { 'write.format.default': 'parquet' },
+    };
+
+    await provider.create('L', 'AWS::Glue::Table', {
+      DatabaseName: 'mydb',
+      OpenTableFormatInput: {
+        IcebergInput: {
+          MetadataOperation: 'CREATE',
+          Version: '2',
+          IcebergTableInput: icebergTableInput,
+        },
+      },
+      TableInput: { Name: 'events_iceberg', TableType: 'EXTERNAL_TABLE' },
+    });
+
+    const createCall = mockSend.mock.calls.find((c) => c[0] instanceof CreateTableCommand);
+    const input = createCall![0].input as { OpenTableFormatInput: Record<string, unknown> };
+    expect(input.OpenTableFormatInput).toEqual({
+      IcebergInput: {
+        MetadataOperation: 'CREATE',
+        Version: '2',
+        // Renamed key; the nested members match CFn 1:1 and stay untouched.
+        CreateIcebergTableInput: icebergTableInput,
+      },
+    });
+    expect('IcebergTableInput' in (input.OpenTableFormatInput['IcebergInput'] as object)).toBe(
+      false
+    );
+  });
+
+  it('AWS::Glue::Table — create() leaves an IcebergInput without IcebergTableInput untouched', async () => {
+    mockSend.mockResolvedValueOnce({});
+
+    await provider.create('L', 'AWS::Glue::Table', {
+      DatabaseName: 'mydb',
+      OpenTableFormatInput: { IcebergInput: { MetadataOperation: 'CREATE' } },
+      TableInput: { Name: 'events_iceberg' },
+    });
+
+    const createCall = mockSend.mock.calls.find((c) => c[0] instanceof CreateTableCommand);
+    const input = createCall![0].input as { OpenTableFormatInput: Record<string, unknown> };
+    expect(input.OpenTableFormatInput).toEqual({ IcebergInput: { MetadataOperation: 'CREATE' } });
+  });
+
   it('AWS::Glue::Table — create() omits OpenTableFormatInput when absent (omit-when-absent)', async () => {
     mockSend.mockResolvedValueOnce({});
 
