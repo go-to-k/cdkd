@@ -142,6 +142,19 @@ export class Wafv2Stack extends cdk.Stack {
     const api = new apigateway.RestApi(this, 'TestApi', {
       restApiName: `cdkd-wafv2-test-api`,
       description: 'Minimal API for WAFv2 WebACL association test',
+      // Issue #1407: `cloudWatchRole` defaults to true, and CDK gives the
+      // generated role AND the account-level `AWS::ApiGateway::Account`
+      // singleton `DeletionPolicy: Retain`. cdkd honors that correctly
+      // (destroy reported "7 deleted, 2 retained, 0 errors"), so the role
+      // survived every run under the FIXED name
+      // `Wafv2Stack-TestApiCloudWatchRole3E85D09F` and the next CREATE failed
+      // with "Role with name ... already exists" — the fixture was single-use
+      // per account until someone cleaned up by hand.
+      //
+      // This fixture never exercises API Gateway access logging, so the role
+      // is dead weight. Disabling it removes both retained resources and makes
+      // the fixture re-runnable.
+      cloudWatchRole: false,
     });
     api.root.addMethod('GET', new apigateway.MockIntegration({
       integrationResponses: [{ statusCode: '200' }],

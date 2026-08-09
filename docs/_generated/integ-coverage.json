@@ -140,13 +140,17 @@
       "resourceType": "AWS::ApiGateway::Account",
       "integs": [
         "apigateway",
-        "apigw-stage-throttling"
+        "apigw-stage-throttling",
+        "wafv2"
       ],
       "signals": {
         "apigateway": [
           "literal"
         ],
         "apigw-stage-throttling": [
+          "literal"
+        ],
+        "wafv2": [
           "literal"
         ]
       }
