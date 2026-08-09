@@ -19,6 +19,7 @@ import {
   DeleteScalingPolicyCommand,
   DeregisterScalableTargetCommand,
   DescribeScalableTargetsCommand,
+  DescribeScalingPoliciesCommand,
 } from '@aws-sdk/client-application-auto-scaling';
 
 const {
@@ -3101,7 +3102,9 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // final describe
 
       mockAutoScalingSend.mockReset();
-      // The presence probe finds the target, so the reconcile has nothing to do.
+      // The presence probe requires BOTH a target and a target-tracking
+      // policy — a target whose PutScalingPolicy failed scales nothing, so
+      // "target exists" alone must not count as present.
       mockAutoScalingSend.mockResolvedValue({
         ScalableTargets: [
           {
@@ -3109,6 +3112,13 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
             ScalableDimension: 'dynamodb:table:WriteCapacityUnits',
             MinCapacity: 5,
             MaxCapacity: 100,
+          },
+        ],
+        ScalingPolicies: [
+          {
+            ResourceId: `table/${TABLE_NAME}`,
+            ScalableDimension: 'dynamodb:table:WriteCapacityUnits',
+            PolicyType: 'TargetTrackingScaling',
           },
         ],
       });
@@ -3121,10 +3131,52 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
         { ...IDENTICAL_AUTOSCALED_PROPS }
       );
 
+      // Both probe commands are reads; only register / put / delete /
+      // deregister count as "did something".
       const mutating = mockAutoScalingSend.mock.calls
         .map((c) => c[0])
-        .filter((c) => !(c instanceof DescribeScalableTargetsCommand));
+        .filter(
+          (c) =>
+            !(c instanceof DescribeScalableTargetsCommand) &&
+            !(c instanceof DescribeScalingPoliciesCommand)
+        );
       expect(mutating).toEqual([]);
+    });
+
+    it('re-upserts when the TARGET exists but its policy does not (issue #1419)', async () => {
+      // The half-registered state: RegisterScalableTarget succeeded and
+      // PutScalingPolicy failed, which applyAutoScalingDiff swallows into a
+      // WARN. Probing the target alone would call this "present" and skip it
+      // forever, leaving a target that scales nothing.
+      mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'ACTIVE' } });
+      mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } });
+      mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } });
+
+      mockAutoScalingSend.mockReset();
+      mockAutoScalingSend.mockResolvedValue({
+        ScalableTargets: [
+          {
+            ResourceId: `table/${TABLE_NAME}`,
+            ScalableDimension: 'dynamodb:table:WriteCapacityUnits',
+            MinCapacity: 5,
+            MaxCapacity: 100,
+          },
+        ],
+        ScalingPolicies: [],
+      });
+
+      await provider.update(
+        'X',
+        TABLE_NAME,
+        RESOURCE_TYPE,
+        { ...IDENTICAL_AUTOSCALED_PROPS },
+        { ...IDENTICAL_AUTOSCALED_PROPS }
+      );
+
+      const policy = mockAutoScalingSend.mock.calls
+        .map((c) => c[0])
+        .find((c): c is PutScalingPolicyCommand => c instanceof PutScalingPolicyCommand);
+      expect(policy?.input.PolicyName).toBe(`DynamoDBWriteCapacityUtilization:table/${TABLE_NAME}`);
     });
 
     it('BACKFILLS an identical-on-both-sides target that is NOT yet registered (issue #1419)', async () => {

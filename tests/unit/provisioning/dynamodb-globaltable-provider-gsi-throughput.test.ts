@@ -873,6 +873,28 @@ describe('DynamoDBGlobalTable GSI throughput translation (issue #1387)', () => {
       expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('UpdateTable cannot express'));
     });
 
+    it('takes the TABLE-level SeedCapacity in the flip call, not MinCapacity (issue #1435)', async () => {
+      // The per-GSI flip sites are pinned below, but the TABLE-level call site
+      // was not: no fixture in the tree carried a table-level SeedCapacity, so
+      // flipping that site from 'seed' to 'min' broke nothing. This is the
+      // one context AWS documents SeedCapacity for, so it needs its own fence.
+      const next = structuredClone(PROVISIONED_TABLE_PROPS) as Record<string, unknown>;
+      (next['WriteProvisionedThroughputSettings'] as Record<string, unknown>)[
+        'WriteCapacityAutoScalingSettings'
+      ] = { MinCapacity: 1, MaxCapacity: 10, SeedCapacity: 17 };
+      const previous = { ...next, BillingMode: 'PAY_PER_REQUEST' };
+
+      await provider.update('Prov', 'prov-table', RESOURCE_TYPE, next, previous);
+
+      const flip = mockSend.mock.calls
+        .map((c) => c[0])
+        .find(
+          (c): c is UpdateTableCommand =>
+            c instanceof UpdateTableCommand && c.input.BillingMode !== undefined
+        );
+      expect(flip?.input.ProvisionedThroughput?.WriteCapacityUnits).toBe(17);
+    });
+
     it('includes per-GSI ProvisionedThroughput in the PAY_PER_REQUEST -> PROVISIONED flip call', async () => {
 
       // Previous deploy: same index, on-demand billing.

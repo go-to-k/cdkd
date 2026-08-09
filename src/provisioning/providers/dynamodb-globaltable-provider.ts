@@ -30,6 +30,10 @@ import {
   type UpdateReplicationGroupMemberAction,
   type UpdateTableCommandInput,
 } from '@aws-sdk/client-dynamodb';
+import type {
+  DescribeScalableTargetsCommandOutput,
+  DescribeScalingPoliciesCommandOutput,
+} from '@aws-sdk/client-application-auto-scaling';
 import {
   ApplicationAutoScalingClient,
   DescribeScalableTargetsCommand,
@@ -1920,7 +1924,17 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
               })
             ),
           `${resourceId} (${dimension})`,
-          { isRetryable: isThrottlingError }
+          {
+            // `isRetryable` is invoked as `(message, error)`. Passing
+            // `isThrottlingError` DIRECTLY hands it the message STRING, on
+            // which it finds no `.name` / `.$metadata` / `.cause` and always
+            // returns false — and because `isRetryable` is set at all, the
+            // call also opts out of the default schedule. It typechecks (a
+            // 1-arg `unknown` callback is assignable) and silently disables
+            // the retry entirely. Same spelling as `describe-type.ts`.
+            isRetryable: (_message, error) => isThrottlingError(error),
+            ...(autoScalingRetryDelays.sleep ? { sleep: autoScalingRetryDelays.sleep } : {}),
+          }
         );
       } catch (err) {
         this.logger.warn(
@@ -1979,7 +1993,10 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
               })
             ),
           `${policyName}`,
-          { isRetryable: isThrottlingError }
+          {
+            isRetryable: (_message, error) => isThrottlingError(error),
+            ...(autoScalingRetryDelays.sleep ? { sleep: autoScalingRetryDelays.sleep } : {}),
+          }
         );
         this.logger.debug(
           `Upserted auto-scaling policy ${policyName} on ${tableName} (${dimension})`
@@ -2082,12 +2099,20 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
    * reconcile can skip the ones that are both present and unchanged
    * (Issue #1419).
    *
-   * One `DescribeScalableTargets` per region with the resource ids batched
-   * (AWS caps `ResourceIds` at 100). Returns a set of
-   * `autoScalingTargetKey`s known to exist. Best-effort: on ANY failure it
-   * returns `null`, which the caller reads as "presence unknown" and falls
-   * back to upserting everything — an extra idempotent call is always safer
-   * than skipping a registration that was never made.
+   * Per region: `DescribeScalableTargets` (batched + paginated) AND
+   * `DescribeScalingPolicies`, returning the set of `autoScalingTargetKey`s
+   * for which BOTH a target and a target-tracking policy exist.
+   *
+   * Both halves are required. A target whose `PutScalingPolicy` failed is
+   * registered but scales nothing, and `applyAutoScalingDiff` swallows that
+   * failure into a WARN — so probing the target alone would mark it present
+   * and skip it on every later deploy, which is the same silent never-scales
+   * gap this whole change exists to close, one level down.
+   *
+   * Best-effort: on ANY failure it returns `null`, which the caller reads as
+   * "presence unknown" and falls back to upserting everything — an extra
+   * idempotent call is always safer than skipping a registration that was
+   * never made.
    */
   private async probeRegisteredTargets(
     tableName: string,
@@ -2101,32 +2126,60 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       else byRegion.set(spec.region, [spec]);
     }
 
+    // Re-key off the RESOURCE ID so the presence sets and the spec-keyed maps
+    // share one identity: strip the `table/<t>/index/` prefix back to the
+    // index name (empty at table level).
+    const indexPrefix = `${autoScalingResourceId(tableName)}/index/`;
+    const keyOf = (resourceId: string, dimension: string, region: string): string => {
+      const suffix = resourceId.startsWith(indexPrefix) ? resourceId.slice(indexPrefix.length) : '';
+      return `${region}|${dimension}|${suffix}`;
+    };
+
     const present = new Set<string>();
     for (const [region, regionSpecs] of byRegion) {
       const resourceIds = [
         ...new Set(regionSpecs.map((s) => autoScalingResourceId(tableName, s.indexName))),
       ];
       const client = await this.autoScalingClientForRegion(region, localRegion);
+      const targets = new Set<string>();
+      const policies = new Set<string>();
       for (let i = 0; i < resourceIds.length; i += DESCRIBE_SCALABLE_TARGETS_BATCH) {
         const batch = resourceIds.slice(i, i + DESCRIBE_SCALABLE_TARGETS_BATCH);
         try {
-          const res = await client.send(
-            new DescribeScalableTargetsCommand({
-              ServiceNamespace: 'dynamodb',
-              ResourceIds: batch,
-            })
-          );
-          for (const target of res.ScalableTargets ?? []) {
-            if (!target.ResourceId || !target.ScalableDimension) continue;
-            // Re-key off the RESOURCE ID so the presence set and the
-            // spec-keyed maps share one identity: strip the `table/<t>`
-            // prefix back to the index name (empty at table level).
-            const indexPrefix = `${autoScalingResourceId(tableName)}/index/`;
-            const suffix = target.ResourceId.startsWith(indexPrefix)
-              ? target.ResourceId.slice(indexPrefix.length)
-              : '';
-            present.add(`${region}|${target.ScalableDimension}|${suffix}`);
-          }
+          // Paginate: the API caps a page well below the batch size, so
+          // reading page 1 only would report absent for the wide tables the
+          // probe exists to speed up (fails safe, but defeats the point).
+          let nextToken: string | undefined;
+          do {
+            const res: DescribeScalableTargetsCommandOutput = await client.send(
+              new DescribeScalableTargetsCommand({
+                ServiceNamespace: 'dynamodb',
+                ResourceIds: batch,
+                ...(nextToken ? { NextToken: nextToken } : {}),
+              })
+            );
+            for (const target of res.ScalableTargets ?? []) {
+              if (!target.ResourceId || !target.ScalableDimension) continue;
+              targets.add(keyOf(target.ResourceId, target.ScalableDimension, region));
+            }
+            nextToken = res.NextToken;
+          } while (nextToken);
+
+          let policyToken: string | undefined;
+          do {
+            const res: DescribeScalingPoliciesCommandOutput = await client.send(
+              new DescribeScalingPoliciesCommand({
+                ServiceNamespace: 'dynamodb',
+                ...(policyToken ? { NextToken: policyToken } : {}),
+              })
+            );
+            for (const policy of res.ScalingPolicies ?? []) {
+              if (!policy.ResourceId || !policy.ScalableDimension) continue;
+              if (policy.PolicyType !== 'TargetTrackingScaling') continue;
+              policies.add(keyOf(policy.ResourceId, policy.ScalableDimension, region));
+            }
+            policyToken = res.NextToken;
+          } while (policyToken);
         } catch (err) {
           this.logger.debug(
             `Could not probe existing auto-scaling targets on ${tableName} in ${region}: ` +
@@ -2134,6 +2187,9 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           );
           return null;
         }
+      }
+      for (const key of targets) {
+        if (policies.has(key)) present.add(key);
       }
     }
     return present;
@@ -2184,8 +2240,10 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       previousByKey.set(autoScalingTargetKey(spec), spec);
     }
 
+    // The skip below requires a PREVIOUS spec, so with nothing previous
+    // (create) the probe could never save a call — don't pay for it.
     const registered =
-      desiredSpecsToUse.length > 0
+      desiredSpecsToUse.length > 0 && previousSpecsToUse.length > 0
         ? await this.probeRegisteredTargets(tableName, desiredSpecsToUse, localRegion)
         : new Set<string>();
 
@@ -2194,9 +2252,14 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       const key = autoScalingTargetKey(spec);
       handled.add(key);
       const previous = previousByKey.get(key);
-      // Already registered AND the template did not touch it: nothing to do.
-      // `registered === null` means the probe failed, so presence is unknown
-      // and the upsert runs.
+      // Already registered (target AND policy) AND the template did not touch
+      // it: nothing to do. `registered === null` means the probe failed, so
+      // presence is unknown and the upsert runs.
+      //
+      // Note this compares the TEMPLATE's two sides, not the live Min/Max, so
+      // an out-of-band console edit is not corrected while the template stays
+      // put. That matches the pre-existing diff gates' contract; drift
+      // correction is `cdkd drift`'s job, not the deploy path's.
       if (
         registered?.has(key) &&
         previous !== undefined &&
@@ -2317,7 +2380,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // Index names come from AWS, not from the template: `delete()` may be
       // running against state whose properties are stale, and an orphaned
       // scalable target is only findable by the index that actually exists.
-      const localIndexNames = (describe.Table?.GlobalSecondaryIndexes ?? [])
+      const tableIndexNames = (describe.Table?.GlobalSecondaryIndexes ?? [])
         .map((gsi) => gsi.IndexName)
         .filter((name): name is string => typeof name === 'string');
       for (const replica of replicas) {
@@ -2343,7 +2406,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           // back with the list omitted entirely, and every
           // `dynamodb:index:ReadCapacityUnits` target in that region would
           // leak past `DeleteTable`.
-          for (const indexName of localIndexNames) {
+          for (const indexName of tableIndexNames) {
             await this.applyAutoScalingDiff(
               physicalId,
               'dynamodb:index:ReadCapacityUnits',
@@ -2392,7 +2455,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // `DeleteTable` and are silently inherited by a future table of the
       // same name — the same orphan-leak the table-level teardown above
       // exists to prevent, one level down.
-      for (const indexName of localIndexNames) {
+      for (const indexName of tableIndexNames) {
         await this.applyAutoScalingDiff(
           physicalId,
           'dynamodb:index:WriteCapacityUnits',
@@ -3390,8 +3453,21 @@ export function autoScalingResourceId(tableName: string, indexName?: string): st
   return indexName ? `table/${tableName}/index/${indexName}` : `table/${tableName}`;
 }
 
-/** AWS caps `DescribeScalableTargets.ResourceIds` at 100 entries. */
-const DESCRIBE_SCALABLE_TARGETS_BATCH = 100;
+/**
+ * Test seam for the auto-scaling throttle retry's backoff, mirroring
+ * `describeTypeRetryDelays`. Production leaves `sleep` undefined so
+ * `withRetry`'s real schedule applies; a test injects a no-op so the ~47s
+ * budget does not have to be waited out.
+ */
+export const autoScalingRetryDelays: { sleep?: (ms: number) => Promise<void> } = {};
+
+/**
+ * Resource ids per `DescribeScalableTargets` request. Kept at the API's
+ * documented per-page ceiling rather than a larger guess — the request is
+ * paginated anyway, and over-asking risks a `ValidationException` that would
+ * degrade the probe to "presence unknown" for the whole region.
+ */
+const DESCRIBE_SCALABLE_TARGETS_BATCH = 50;
 
 /**
  * Collect every application-autoscaling target a CFn GlobalTable properties

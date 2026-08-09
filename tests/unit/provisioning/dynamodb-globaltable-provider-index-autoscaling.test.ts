@@ -98,6 +98,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import {
   DynamoDBGlobalTableProvider,
+  autoScalingRetryDelays,
   collectAutoScalingTargets,
   autoScalingTargetKey,
 } from '../../../src/provisioning/providers/dynamodb-globaltable-provider.js';
@@ -374,8 +375,6 @@ describe('DynamoDBGlobalTable per-index auto-scaling (issue #1419)', () => {
       // problem. `applyAutoScalingDiff` swallows send errors, so this pins
       // the surrounding guard by making the client factory itself reject.
       const boom = new Error('region resolution failed');
-      const originalRegion = mockSend.getMockImplementation();
-      void originalRegion;
       const provider2 = new DynamoDBGlobalTableProvider();
       (
         provider2 as unknown as { getLocalAutoScalingClient: () => Promise<never> }
@@ -500,6 +499,65 @@ describe('DynamoDBGlobalTable per-index auto-scaling (issue #1419)', () => {
     });
   });
 
+  describe('throttle retry', () => {
+    it('RETRIES a throttled RegisterScalableTarget instead of silently giving up', async () => {
+      // Regression guard for a fix that TYPECHECKED while doing nothing:
+      // `withRetry`'s `isRetryable` is called as `(message, error)`, so
+      // passing `isThrottlingError` directly handed it the message STRING —
+      // always false — and setting `isRetryable` at all also opted the call
+      // out of the default schedule. The retry was a complete no-op.
+      autoScalingRetryDelays.sleep = () => Promise.resolve();
+      try {
+        const throttle = new Error('Rate exceeded');
+        throttle.name = 'ThrottlingException';
+        let registerAttempts = 0;
+        mockAutoScalingSend.mockReset();
+        mockAutoScalingSend.mockImplementation((command: unknown) => {
+          if (command instanceof RegisterScalableTargetCommand) {
+            registerAttempts += 1;
+            if (registerAttempts === 1) return Promise.reject(throttle);
+          }
+          return Promise.resolve({ ScalableTargets: [], ScalingPolicies: [] });
+        });
+
+        await provider.create('Prov', RESOURCE_TYPE, AUTOSCALED_PROPS);
+
+        // Pre-fix this was 4 (one per dimension, none retried).
+        expect(registerAttempts).toBeGreaterThan(4);
+        expect(warnSpy).not.toHaveBeenCalledWith(
+          expect.stringContaining('Could not register auto-scaling target')
+        );
+      } finally {
+        delete autoScalingRetryDelays.sleep;
+      }
+    });
+
+    it('does NOT retry a non-throttle failure', async () => {
+      autoScalingRetryDelays.sleep = () => Promise.resolve();
+      try {
+        let registerAttempts = 0;
+        mockAutoScalingSend.mockReset();
+        mockAutoScalingSend.mockImplementation((command: unknown) => {
+          if (command instanceof RegisterScalableTargetCommand) {
+            registerAttempts += 1;
+            return Promise.reject(new Error('ValidationException: bad min/max'));
+          }
+          return Promise.resolve({ ScalableTargets: [], ScalingPolicies: [] });
+        });
+
+        await provider.create('Prov', RESOURCE_TYPE, AUTOSCALED_PROPS);
+
+        // Four dimensions, one attempt each — no retry, and each warns.
+        expect(registerAttempts).toBe(4);
+        expect(warnSpy).toHaveBeenCalledWith(
+          expect.stringContaining('Could not register auto-scaling target')
+        );
+      } finally {
+        delete autoScalingRetryDelays.sleep;
+      }
+    });
+  });
+
   describe('delete()', () => {
     /**
      * `delete()` ends with `waitForTableGone`, which polls `DescribeTable`
@@ -567,10 +625,17 @@ describe('DynamoDBGlobalTable per-index auto-scaling (issue #1419)', () => {
 
       await provider.delete('Prov', TABLE_NAME, RESOURCE_TYPE, AUTOSCALED_PROPS);
 
-      expect(deregistered()).toContainEqual([
-        `table/${TABLE_NAME}/index/gsi1`,
-        'dynamodb:index:ReadCapacityUnits',
-      ]);
+      // COUNT, do not `toContain`. Every region shares one mock, and the LOCAL
+      // teardown already emits this exact (resourceId, dimension) pair — so a
+      // containment assertion passes even with the whole cross-region index
+      // loop deleted, and an earlier version of this test did exactly that.
+      // Two regions carry the index, so exactly two deregisters must appear.
+      const indexReadDeregisters = deregistered().filter(
+        ([resourceId, dimension]) =>
+          resourceId === `table/${TABLE_NAME}/index/gsi1` &&
+          dimension === 'dynamodb:index:ReadCapacityUnits'
+      );
+      expect(indexReadDeregisters).toHaveLength(2);
       expect(autoScalingRegionSpy).toHaveBeenCalledWith('eu-west-1');
     });
 
