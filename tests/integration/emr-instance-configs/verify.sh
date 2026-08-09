@@ -86,10 +86,14 @@ CLEANUP_TAG_VALUE="emr-instance-configs"
 
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
-# `aws emr list-instance-groups` is an AWS-CLI-CUSTOMIZED command: in a
-# non-interactive shell it prints `Warning: Input is not a terminal (fd=0).`
-# and then dies with `aws: [ERROR]: [Errno 22] Invalid argument` (verified
-# 2026-08-09; `--no-paginate --no-cli-pager </dev/null` does not help). Read the
+# `aws emr list-instance-groups` is NOT an AWS CLI command: the CLI REMOVES it
+# from the `aws emr` command table (awscli/customizations/removals.py) even
+# though the EMR API operation exists and every SDK exposes it, so the CLI
+# answers `Found invalid choice 'list-instance-groups'`. On a machine with
+# `cli_auto_prompt` enabled that error instead surfaces as
+# `Warning: Input is not a terminal (fd=0).` + `[Errno 22] Invalid argument`
+# (or a hang), because the CLI tries to open its interactive prompter — which is
+# how this was first misdiagnosed as an "AWS CLI customization". Read the
 # per-group `Configurations` through the SDK instead — the repo root already
 # depends on @aws-sdk/client-emr, so no extra install is needed.
 REPO_ROOT="${PWD}/../../.."
@@ -136,10 +140,11 @@ cluster_state() {
 }
 
 # Count of RUNNING EC2 instances in the standalone TASK group. NOTE: we use
-# `aws emr list-instances` (a plain command) rather than
-# `aws emr list-instance-groups` — the latter is an AWS-CLI-customized command
-# that fails with `[Errno 22] Invalid argument` in a non-interactive shell,
-# while `list-instances` works. cdkd's provider polls the group to RUNNING
+# `aws emr list-instances` rather than `aws emr list-instance-groups` — the
+# latter is on the AWS CLI's removal list and so is not a CLI subcommand at all,
+# while `list-instances` is a perfectly ordinary one (being in the same
+# `list-instance-*` family means nothing; removal is per-verb).
+# cdkd's provider polls the group to RUNNING
 # before `deploy` returns, so once deploy succeeds the RUNNING instance count
 # equals the group's requested InstanceCount.
 task_group_running_count() {

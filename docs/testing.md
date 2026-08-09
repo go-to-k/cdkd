@@ -656,37 +656,67 @@ coverage floors per constructor-reference shape and per construct kind so a
 parser regression fails loudly rather than passing vacuously. Baseline
 2026-07-31: 523 fixture files scanned, 120 stateful-L2 instantiations.
 
-### Fixture convention: never call an AWS-CLI-customized command
+### Fixture convention: never call an `aws` verb the CLI does not have
 
-Some `aws` subcommands are wrapped in an interactive AWS CLI customization
-rather than being plain API pass-throughs. In a non-interactive shell — which
-is every `verify.sh` run — they print `Warning: Input is not a terminal
-(fd=0).` then die with `aws: [ERROR]: [Errno 22] Invalid argument`, and without
-a `</dev/null` they HANG instead of returning. Confirmed 2026-08-09 on `aws emr
-list-instance-groups`, where `--no-paginate --no-cli-pager </dev/null` did not
-help. The `emr` family is the known offender; treat any `aws emr` verb as
-suspect until you have probed it.
+A `verify.sh` must not call an `aws <service> <verb>` that is not a real AWS
+CLI subcommand. The trap is that such a verb can look completely legitimate:
+the AWS CLI **removes** a set of operations from its command table
+(`awscli/customizations/removals.py`) that still exist in the API, so the AWS
+SDKs, the API reference, and anything generated from them all offer it.
 
-Probe a candidate against a bogus id under a hard timeout before relying on it:
-a plain API command returns a validation / not-found error immediately, a
-customized one hangs or emits the `Errno 22` line.
+The originating case (2026-08-09) is `aws emr list-instance-groups`, which
+forced two EMR fixtures to be rewritten. Its symptom was misleading:
 
-When a command is customized, call the AWS SDK directly from `verify.sh`
-instead of substituting a different CLI verb that happens to work but returns
-less data. The repo root already depends on every `@aws-sdk/client-*` cdkd
-uses, so a `node --input-type=module -e` one-liner run from the repo root needs
-no extra install. Two details in the reference shape are load-bearing: a
-`|| return 1` so an SDK failure reaches the caller's `set -e` (otherwise an
-empty result silently satisfies a `// empty`-defaulted `jq` assertion), and a
-pagination loop matching whatever the provider under test does (a partial first
-page is a silent false pass). See `tests/integration/emr-cluster/verify.sh` and
+```text
+Warning: Input is not a terminal (fd=0).
+aws: [ERROR]: [Errno 22] Invalid argument
+```
+
+and, without a `</dev/null`, a hang. That reads like an interactive
+"customization", and it was originally written up that way — but the real cause
+is simpler and more general:
+
+1. `list-instance-groups` is on the CLI's removal list, so the CLI's answer is
+   just `Found invalid choice 'list-instance-groups'`.
+2. The `Errno 22` / hang is what `cli_auto_prompt` (`on-partial` in the
+   maintainer's `~/.aws/config`) does to **any** invalid-choice error: the CLI
+   tries to open its interactive prompter, which cannot attach to a
+   non-terminal stdin. With `AWS_CLI_AUTO_PROMPT=off` the same call fails fast
+   and legibly.
+
+The corollary matters when picking a replacement verb: **the neighbours are
+usually fine.** `aws emr list-instance-fleets` and `aws emr list-instances` are
+NOT removed and work non-interactively, so "the `list-instance-*` family is
+suspect" was the wrong generalization. The unit of the defect is the
+(service, verb) pair.
+
+Enforced by `tests/unit/scripts/integ-aws-commands.test.ts` (classifier:
+`scripts/check-integ-aws-commands.ts`), which checks every `aws <service>
+<verb>` in the fixture tree against the captured removal table
+`tests/fixtures/aws-cli-removed-commands.json`. The table is a checked-in
+capture rather than a live `aws` invocation so the check stays offline and
+deterministic — a checker that skips when its oracle is missing is a vacuous
+pass. Refresh it with `vp run gen:aws-cli-removals` after an AWS CLI upgrade.
+Escape hatch (only when you have PROVEN the call works):
+`# allow-unavailable-aws-command: <reason>` on the invocation's line or the
+line above.
+
+When the verb you wanted is unavailable, call the AWS SDK directly from
+`verify.sh` rather than substituting a different CLI verb that happens to work
+but returns less data. The repo root already depends on every
+`@aws-sdk/client-*` cdkd uses, so a `node --input-type=module -e` one-liner run
+from the repo root needs no extra install. Two details in the reference shape
+are load-bearing: a `|| return 1` so an SDK failure reaches the caller's
+`set -e` (otherwise an empty result silently satisfies a `// empty`-defaulted
+`jq` assertion), and a pagination loop matching whatever the provider under
+test does (a partial first page is a silent false pass). See
+`tests/integration/emr-cluster/verify.sh` and
 `tests/integration/emr-instance-configs/verify.sh` for the full helper.
 
-A pager invoked non-interactively is a second route to the same hang, so
+A pager invoked non-interactively is a separate route to a hang, so
 `export AWS_PAGER=""` near the top of a fixture is cheap insurance. Treat this
 as a recommendation for new and affected fixtures rather than a tree-wide
-invariant — most existing fixtures do not set it and are fine, because the hang
-only bites the customized commands.
+invariant — most existing fixtures do not set it and are fine.
 `tests/integration/emr-instance-configs/verify.sh` is the reference.
 
 ### Fixture convention: sort both sides of a list readback
