@@ -412,7 +412,15 @@ describe('integ fixture aws invocations (#1402)', () => {
   // shape the extractor claims to handle is exercised by the REAL tree.
   it('parses every invocation shape it claims to support', () => {
     const stats = collectStats();
-    const floors: Record<keyof ReturnType<typeof collectStats>['shapes'], number> = {
+    // `globalOption` is deliberately absent — it has no FLOOR (zero
+    // occurrences today) and is asserted `toBe(0)` below instead. Omitting it
+    // from this Record's key set is what keeps that distinction type-checked:
+    // adding a shape to `collectStats` now forces a conscious choice here
+    // between "give it a floor" and "assert it exactly".
+    const floors: Omit<
+      Record<keyof ReturnType<typeof collectStats>['shapes'], number>,
+      'globalOption'
+    > = {
       // Current: plain 1008, substitution 1023, helperArgument 414,
       // condition 211. Floors sit ~20% under, low enough for fixture churn and
       // high enough that losing a shape outright cannot slip through.
