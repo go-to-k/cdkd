@@ -298,6 +298,14 @@ export default defineConfig({
         command: 'node --experimental-strip-types scripts/gen-nested-key-coverage.ts --check',
         cache: false,
       },
+      'gen:handled-property-wiring': {
+        command: 'node --experimental-strip-types scripts/gen-handled-property-wiring.ts',
+        cache: false,
+      },
+      'audit:handled-property-wiring:check': {
+        command: 'node --experimental-strip-types scripts/gen-handled-property-wiring.ts --check',
+        cache: false,
+      },
       'compat-corpus': {
         command: 'node --experimental-strip-types scripts/compat-corpus.ts',
         cache: false,
