@@ -104,11 +104,20 @@ list_instance_groups_json() { # $1 = cluster id -> JSON array of InstanceGroups
   ( cd "${REPO_ROOT}" && REGION="${REGION}" node --input-type=module -e "
 import { EMRClient, ListInstanceGroupsCommand } from '@aws-sdk/client-emr';
 const client = new EMRClient({ region: process.env.REGION });
-const res = await client.send(new ListInstanceGroupsCommand({ ClusterId: process.argv[1] }));
-process.stdout.write(JSON.stringify(res.InstanceGroups ?? []));
+const groups = [];
+let marker;
+// Follow Marker for parity with the provider's own paginated listInstanceGroups
+// — a partial first page would silently satisfy the assertions below.
+do {
+  const res = await client.send(
+    new ListInstanceGroupsCommand({ ClusterId: process.argv[1], Marker: marker })
+  );
+  groups.push(...(res.InstanceGroups ?? []));
+  marker = res.Marker;
+} while (marker);
+process.stdout.write(JSON.stringify(groups));
 " "$1" ) || return 1
 }
-
 
 # Ids of ACTIVE (not terminated) clusters named like the fixture and carrying
 # the fixture's constant tag.
