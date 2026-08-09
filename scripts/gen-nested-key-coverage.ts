@@ -231,6 +231,23 @@ export const NESTED_KEY_TARGETS: readonly NestedKeyTarget[] = [
     keyStyle: 'lower-first',
     minNestedKeys: 40,
   },
+  {
+    // Added by issue #1430. `S3BucketProvider` declares a dozen nested config
+    // blobs (lifecycle, CORS, replication, notifications, encryption,
+    // inventory, analytics, metrics, intelligent-tiering, object-lock,
+    // website routing) in `handledProperties` and re-shapes each for the SDK —
+    // the forwarding shape this critic exists to audit. It was NOT a target
+    // when the #1388 / #1424 lifecycle defects were fixed by hand in PR #1426,
+    // and three of those six would have been caught mechanically here
+    // (`TagFilters` + `NoncurrentVersionTransitions[].TransitionInDays` as
+    // `no-sdk-member` on the key pass, rule-level `ExpiredObjectDeleteMarker`
+    // as `definition-member-missing` on the shape pass).
+    resourceType: 'AWS::S3::Bucket',
+    providerFile: 's3-bucket-provider.ts',
+    sdkClientPackage: '@aws-sdk/client-s3',
+    keyStyle: 'exact',
+    minNestedKeys: 100,
+  },
 ];
 
 export interface AllowListEntry {
@@ -300,6 +317,49 @@ export const NESTED_KEY_ALLOW_LIST: ReadonlyMap<string, AllowListEntry> = new Ma
         'map it onto until an SDK bump adds one (issue #1386). Naming it in the ' +
         'provider would be a false claim of support. Remove this entry once the SDK ' +
         'ships the member, at which point the key becomes genuinely mappable.',
+    },
+  ],
+  // The three S3 Metadata-Tables members below are the FIRST real instance of
+  // the unreachable-definition false positive `classifyTargetShapes` documents:
+  // the shape pass audits the whole `definitionShapes` map rather than pruning
+  // to definitions reachable from the provider's handled top-levels. All three
+  // live only under `MetadataConfiguration` / `MetadataTableConfiguration`,
+  // which `S3BucketProvider` does NOT declare in `handledProperties` — both are
+  // recorded as silent-drop ("not yet implemented by cdkd") in
+  // property-coverage, so a template using them is pre-flight-rejected and
+  // auto-routed through Cloud Control, which forwards the property map whole.
+  // There is therefore no SDK forwarding path that could drop these members.
+  // Remove these entries if the provider ever implements those top-levels, at
+  // which point the divergence becomes real and must be converted by hand.
+  [
+    allowKey('AWS::S3::Bucket', 'TableName'),
+    {
+      rationale:
+        'Member of the JournalTableConfiguration / InventoryTableConfiguration definitions, ' +
+        'reachable only from the MetadataConfiguration / MetadataTableConfiguration ' +
+        'top-levels the provider declares as silent-drop (Cloud-Control-routed), so no ' +
+        'SDK forwarding path exists to drop it (issue #1430).',
+    },
+  ],
+  [
+    allowKey('AWS::S3::Bucket', 'TableArn'),
+    {
+      rationale:
+        'Member of the S3TablesDestination / JournalTableConfiguration / ' +
+        'InventoryTableConfiguration definitions, reachable only from the ' +
+        'MetadataConfiguration / MetadataTableConfiguration top-levels the provider ' +
+        'declares as silent-drop (Cloud-Control-routed), so no SDK forwarding path ' +
+        'exists to drop it (issue #1430).',
+    },
+  ],
+  [
+    allowKey('AWS::S3::Bucket', 'TableNamespace'),
+    {
+      rationale:
+        'Member of the S3TablesDestination definition, reachable only from the ' +
+        'MetadataTableConfiguration top-level the provider declares as silent-drop ' +
+        '(Cloud-Control-routed), so no SDK forwarding path exists to drop it ' +
+        '(issue #1430).',
     },
   ],
 ]);

@@ -874,9 +874,16 @@ export class S3BucketProvider implements ResourceProvider {
         }));
       }
       const eb = notifConfig['EventBridgeConfiguration'] as Record<string, unknown> | undefined;
-      if (eb !== undefined) {
-        // CFn EventBridgeConfiguration is `{}` (empty object means enabled)
-        // SDK expects the same empty object to enable.
+      if (eb !== undefined && coerceCfnBoolean(eb['EventBridgeEnabled']) !== false) {
+        // The SDK's `EventBridgeConfiguration` is an EMPTY structure — presence
+        // enables EventBridge delivery, absence disables it. CFn instead carries
+        // a REQUIRED boolean `EventBridgeEnabled` inside the block (that is what
+        // `CfnBucket` renders), so the boolean has no SDK member to land on and
+        // has to be translated into presence/absence here. Before issue #1430
+        // the block was emitted whenever it existed, so an explicit
+        // `EventBridgeEnabled: false` silently ENABLED notifications — the
+        // inverse of the template's intent. Absent / unresolved values keep the
+        // pre-existing enable-on-presence behavior.
         cfg.EventBridgeConfiguration = {};
       }
     }
@@ -2343,9 +2350,16 @@ export class S3BucketProvider implements ResourceProvider {
         return e;
       });
     }
-    if (resp.EventBridgeConfiguration) {
-      out['EventBridgeConfiguration'] = {};
-    }
+    // Always-emit, and in the CFn shape (`{EventBridgeEnabled: <bool>}`) rather
+    // than the SDK's empty-structure shape — cdkd's state baseline holds the
+    // CFn spelling, and `drift-calculator` descends only into keys present in
+    // state, so returning `{}` reported the boolean as permanently missing on
+    // every EventBridge-enabled bucket (issue #1430). Emitting `false` when the
+    // response omits the block keeps the disabled side comparable too; a state
+    // record with no `EventBridgeConfiguration` key is unaffected either way.
+    out['EventBridgeConfiguration'] = {
+      EventBridgeEnabled: resp.EventBridgeConfiguration !== undefined,
+    };
     return out;
   }
 
