@@ -139,8 +139,39 @@ Claiming to avoid collision with parallel agents."
 (English only — committed/public artifacts are English.) This is mandatory and
 comes BEFORE the first edit. It is the issue-level twin of the worktree
 DISJOINT-FILE rule (see the "Claim a filed issue before working it" rule in
-`CLAUDE.md`). Re-check for a competing claim/PR right before you start; if one
-appeared, pick a different issue.
+`CLAUDE.md`).
+
+**Claim at SHORTLIST time, not after the analysis.** Claim the moment an issue
+enters your candidate set — before the deep read of its body, before mapping
+which files it lands in. Retracting a claim you then decided against costs one
+comment; a collision costs a whole lane. The window this closes is the one that
+actually bites: two sessions can each spend minutes triaging in total mutual
+invisibility, because neither has posted anything yet.
+
+**Then VERIFY the claim stuck (compare-and-swap).** Posting is not winning —
+another session may have posted seconds earlier. Immediately re-read the issue
+and check for a competing claim:
+
+```bash
+gh issue view <n> --json comments \
+  --jq '.comments[] | select(.body | test("Working on this")) | "\(.createdAt)\t\(.body[0:80])"'
+```
+
+**Tie-break: the EARLIEST `createdAt` wins.** If someone else's claim predates
+yours, you are the loser of the race — post a short stand-down comment naming
+the winning branch, drop the lane, and pick a different issue. Do this without
+asking; the whole point is that both sessions independently reach the same
+answer from the same timestamps. Escalate to the maintainer only when the
+timestamps cannot settle it.
+
+This exists because it has already failed once: two sessions claimed #1419 /
+#1435 twenty seconds apart (2026-08-09), both having followed every other rule
+in this skill, and it took the maintainer arbitrating to resolve. See #1446.
+
+**Do not trust a handoff table — verify it live.** A "these issues are taken"
+note you were handed is a snapshot of the moment it was written; PRs merge and
+worktrees disappear. Re-derive occupancy from `gh pr list --state open`,
+`git worktree list`, and the issues' own comments before believing any of it.
 
 ## 5. One worktree per lane, then implement
 
@@ -277,6 +308,9 @@ anything non-obvious you learned in memory.
 
 - **Claim before editing, always** — the whole point. An unclaimed lane races a
   parallel agent onto the same cross-cutting file.
+- **Claiming is not winning.** Posting the comment does not end the race — read
+  it back and yield to an earlier `createdAt` (§4). Claiming late, after the
+  triage, is what makes the race winnable in the first place.
 - **One lane per cross-cutting file.** `deploy-engine.ts` / `intrinsic-function-resolver.ts`
   / `dag-builder.ts` / `register-providers.ts` absorb most non-trivial fixes; you
   cannot parallelize two issues that both land there. Per-provider fixes ARE
