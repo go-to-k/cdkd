@@ -290,16 +290,14 @@ describe('S3 lifecycle rule-level + legacy singular keys (issue #1388)', () => {
   });
 
   describe('review fix-backs (PR #1426)', () => {
-    it('lets the plural array win over the legacy singular instead of concatenating', async () => {
-      // Concatenating emits two transitions with the same StorageClass, which
-      // S3 rejects outright ("Found two transitions with the same storage
-      // class") and fails the WHOLE PutBucketLifecycleConfiguration — a
-      // regression, since pre-fix such a template deployed with the singular
-      // simply ignored. Plural-wins also matches the NoncurrentVersionExpiration
-      // policy.
+    it('lets the plural win — and warns — when the singular COLLIDES on StorageClass', async () => {
+      // S3 rejects two transitions with the same StorageClass and fails the
+      // WHOLE PutBucketLifecycleConfiguration, so they cannot both be sent.
+      // Dropping the loser silently would be the very thing this PR argues
+      // against, so it warns.
       const rules = await putRules([
         {
-          Id: 'both',
+          Id: 'collide',
           Status: 'Enabled',
           Prefix: 'm/',
           Transitions: [{ StorageClass: 'GLACIER', TransitionInDays: 30 }],
@@ -309,20 +307,76 @@ describe('S3 lifecycle rule-level + legacy singular keys (issue #1388)', () => {
       expect(rules[0]!.Transitions).toEqual([
         { Days: 30, Date: undefined, StorageClass: 'GLACIER' },
       ]);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('storage class GLACIER'));
     });
 
-    it('lets the plural NoncurrentVersionTransitions win over the singular too', async () => {
+    it('KEEPS both when the singular is a DIFFERENT StorageClass', async () => {
+      // S3 accepts them; dropping the singular here would lose a legitimate
+      // template for no reason.
+      const rules = await putRules([
+        {
+          Id: 'distinct',
+          Status: 'Enabled',
+          Prefix: 'm/',
+          Transitions: [{ StorageClass: 'GLACIER', TransitionInDays: 30 }],
+          Transition: { StorageClass: 'DEEP_ARCHIVE', TransitionInDays: 90 },
+        },
+      ]);
+      expect(rules[0]!.Transitions.map((t: { StorageClass: string }) => t.StorageClass)).toEqual([
+        'GLACIER',
+        'DEEP_ARCHIVE',
+      ]);
+      expect(warnSpy).not.toHaveBeenCalledWith(expect.stringContaining('storage class'));
+    });
+
+    it('merges the noncurrent pair the same way', async () => {
       const rules = await putRules([
         {
           Id: 'both-nvt',
           Status: 'Enabled',
           Prefix: 'm/',
           NoncurrentVersionTransitions: [{ StorageClass: 'GLACIER', TransitionInDays: 10 }],
-          NoncurrentVersionTransition: { StorageClass: 'GLACIER', TransitionInDays: 20 },
+          NoncurrentVersionTransition: { StorageClass: 'DEEP_ARCHIVE', TransitionInDays: 20 },
         },
       ]);
-      expect(rules[0]!.NoncurrentVersionTransitions).toHaveLength(1);
-      expect(rules[0]!.NoncurrentVersionTransitions[0].NoncurrentDays).toBe(10);
+      expect(rules[0]!.NoncurrentVersionTransitions).toHaveLength(2);
+      expect(rules[0]!.NoncurrentVersionTransitions[1].NoncurrentDays).toBe(20);
+    });
+
+    it('ignores ExpiredObjectDeleteMarker: false instead of warning or emitting it', async () => {
+      // `false` is a legal synth (CDK's validation is truthy-gated). Treating
+      // it as a request warned about a cleanup nobody asked for, and on a
+      // marker-only rule emitted an action-less Expiration.
+      const rules = await putRules([
+        { Id: 'off', Status: 'Enabled', Prefix: 'o/', ExpiredObjectDeleteMarker: false },
+        {
+          Id: 'off-with-days',
+          Status: 'Enabled',
+          Prefix: 'od/',
+          ExpirationInDays: 30,
+          ExpiredObjectDeleteMarker: false,
+        },
+      ]);
+      expect(rules[0]!.Expiration).toBeUndefined();
+      expect(rules[1]!.Expiration).toEqual({ Days: 30 });
+      expect(warnSpy).not.toHaveBeenCalledWith(
+        expect.stringContaining('ExpiredObjectDeleteMarker')
+      );
+    });
+
+    it('rejects a non-scalar CFn numeric instead of coercing it to 0', async () => {
+      // `Number([])` is 0 and `Number([5])` is 5, so an unresolved-intrinsic
+      // array would become a plausible-looking day count.
+      const rules = await putRules([
+        {
+          Id: 'bad-num',
+          Status: 'Enabled',
+          Prefix: 'n/',
+          NoncurrentVersionExpirationInDays: [],
+          ExpirationInDays: 5,
+        },
+      ]);
+      expect(rules[0]!.NoncurrentVersionExpiration).toBeUndefined();
     });
 
     it('ignores a non-object singular Transition (array / unresolved intrinsic)', async () => {
