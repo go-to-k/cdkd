@@ -105,7 +105,7 @@
  * (`result['CorsConfiguration'] = ...`) WOULD vouch for the forward mapper.
  * That is #1393 item 2 — the file-global heuristic clearing a genuine
  * divergence — reappearing one bucket over, so the collector skips the bodies
- * of {@link WRITE_EVIDENCE_EXCLUDED_FUNCTIONS}. Measured on the real tree, the
+ * of {@link WRITE_EVIDENCE_EXCLUDED_FUNCTION_PREFIXES}. Measured on the real tree, the
  * exclusion withdraws 8 names from `s3-bucket-provider.ts` (`BucketName`,
  * `BucketEncryption`, `CorsConfiguration`, `LoggingConfiguration` and the four
  * `*Configurations` plurals), 71 from `codebuild-provider.ts`, and 0 from
@@ -135,11 +135,32 @@
  * converter" and the bucket would stop meaning anything.
  *
  * CodeBuild measures at exactly 0 because `CodeBuildProvider` names every
- * member by hand, so opting it in costs no allow-list entries and makes the
- * #1386 defect non-regressing today. Teaching the pass to follow a whole-blob
- * hand-off into a generic converter — the shape `gen-handled-property-wiring`
- * already tracks one level up — is what the other targets need first; that is
- * issue #1445.
+ * member by hand, so opting it in costs no allow-list entries. Teaching the
+ * pass to follow a whole-blob hand-off into a generic converter — the shape
+ * `gen-handled-property-wiring` already tracks one level up — is what the other
+ * targets need first; that is issue #1445.
+ *
+ * WRITE EVIDENCE IS NAME-GLOBAL, SO IT ONLY FENCES UNIQUELY-NAMED MEMBERS
+ * -----------------------------------------------------------------------
+ * The collected set is a flat set of names for the whole provider FILE, so a
+ * member written ANYWHERE vouches for every CFn key that maps to that spelling.
+ * Measured on `codebuild-provider.ts`: 11 of the 55 same-spelling keys have more
+ * than one write site — `Type` (9), `Location` (5), `Name` (5), `ComputeType`,
+ * `EncryptionDisabled`, `SecurityGroupIds`, `ServiceRole`, `SourceIdentifier`,
+ * `SourceVersion`, `Status`, `Value` (2 each). Deleting the forward write of any
+ * ONE of those leaves the key `same-spelling`, because a sibling site still
+ * carries the name.
+ *
+ * `BuildBatchConfig.ServiceRole` is the sharpest case — the SIBLING of the
+ * motivating bug: dropping it stays silent because the top-level `serviceRole`
+ * write vouches for it. So the honest claim is that this pass fences the 44
+ * uniquely-named members (including `BatchReportMode` itself), not all 55.
+ *
+ * This is inherent to the critic's flat key model rather than to this pass:
+ * `nestedKeysForTarget` yields a de-duplicated set of NAMES, not paths, so
+ * top-level `ServiceRole` and `BuildBatchConfig.ServiceRole` are literally the
+ * same audited key. Scoping evidence to the enclosing object literal (and the
+ * key model to paths) is tracked as issue #1448.
  *
  * WHAT THE CRITIC STILL DOES NOT DO
  * ---------------------------------
@@ -752,7 +773,8 @@ export function collectStringLiterals(sourceText: string, fileName = 'provider.t
 }
 
 /**
- * Function bodies the WRITE-EVIDENCE collector skips (issue #1432).
+ * Function-name PREFIXES whose bodies the WRITE-EVIDENCE collector skips
+ * (issue #1432).
  *
  * `readCurrentState` is the SDK->CFn REVERSE map. For a `lower-first` target
  * its writes are CFn-spelled and can never collide with an SDK member name, but
@@ -761,10 +783,17 @@ export function collectStringLiterals(sourceText: string, fileName = 'provider.t
  * never names the member — #1393 item 2 reappearing one bucket over. Excluding
  * the body is what keeps the pass direction-scoped.
  *
+ * PREFIX rather than exact match, because the reverse map is routinely split
+ * per sub-resource: `apigateway-provider.ts` declares
+ * `readCurrentStateAuthorizer` / `...Resource` / `...Deployment` / `...Stage` /
+ * `...Account` / `...Method`, none of which an exact-name set would catch.
+ *
  * Measured withdrawal on the real tree: 8 names from `s3-bucket-provider.ts`,
- * 71 from `codebuild-provider.ts`, 0 from `ecs-provider.ts`.
+ * 71 from `codebuild-provider.ts`, 0 from `ecs-provider.ts` (whose reverse map
+ * writes through a differently-named helper — see the limitation note in the
+ * file header).
  */
-export const WRITE_EVIDENCE_EXCLUDED_FUNCTIONS: ReadonlySet<string> = new Set(['readCurrentState']);
+export const WRITE_EVIDENCE_EXCLUDED_FUNCTION_PREFIXES: readonly string[] = ['readCurrentState'];
 
 /**
  * Collect every member name the provider WRITES, AST-level.
@@ -776,12 +805,12 @@ export const WRITE_EVIDENCE_EXCLUDED_FUNCTIONS: ReadonlySet<string> = new Set(['
  * count — that asymmetry is what scopes the evidence to the CFn->SDK mapping
  * direction rather than the reverse map.
  *
- * Bodies of {@link WRITE_EVIDENCE_EXCLUDED_FUNCTIONS} are skipped entirely.
+ * Bodies of {@link WRITE_EVIDENCE_EXCLUDED_FUNCTION_PREFIXES} are skipped entirely.
  */
 export function collectWrittenMemberNames(
   sourceText: string,
   fileName = 'provider.ts',
-  excludedFunctions: ReadonlySet<string> = WRITE_EVIDENCE_EXCLUDED_FUNCTIONS
+  excludedFunctionPrefixes: readonly string[] = WRITE_EVIDENCE_EXCLUDED_FUNCTION_PREFIXES
 ): Set<string> {
   const sf = ts.createSourceFile(
     fileName,
@@ -809,27 +838,55 @@ export function collectWrittenMemberNames(
    */
   const elementAccessName = (node: ts.Node): string | undefined =>
     ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node) ? node.text : undefined;
+  /**
+   * A DESTRUCTURING ASSIGNMENT target (`({ batchReportMode } = desc)`) parses
+   * as an object literal on the `left` of an `=`, so its members look like
+   * property assignments while being READS off the right-hand side — the same
+   * false-credit class as the element-access variable key above. (The
+   * DECLARATION form, `const { x } = desc`, is an `ObjectBindingPattern` and
+   * never reaches this branch.)
+   */
+  const isDestructuringTarget = (node: ts.Node): boolean => {
+    const objectLiteral = node.parent;
+    if (objectLiteral === undefined || !ts.isObjectLiteralExpression(objectLiteral)) return false;
+    const assignment = objectLiteral.parent;
+    return (
+      assignment !== undefined &&
+      ts.isBinaryExpression(assignment) &&
+      assignment.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+      assignment.left === objectLiteral
+    );
+  };
+
+  /** The declared name of a function-ish node, when it is a plain identifier. */
+  const declaredName = (node: ts.Node): string | undefined => {
+    if (
+      ts.isMethodDeclaration(node) ||
+      ts.isFunctionDeclaration(node) ||
+      ts.isPropertyDeclaration(node) ||
+      ts.isVariableDeclaration(node) ||
+      ts.isGetAccessorDeclaration(node) ||
+      ts.isSetAccessorDeclaration(node)
+    ) {
+      return node.name !== undefined && ts.isIdentifier(node.name) ? node.name.text : undefined;
+    }
+    return undefined;
+  };
 
   const visit = (node: ts.Node, excluded: boolean): void => {
     let inExcluded = excluded;
-    if (
-      !inExcluded &&
-      (ts.isMethodDeclaration(node) ||
-        ts.isFunctionDeclaration(node) ||
-        ts.isPropertyDeclaration(node) ||
-        ts.isVariableDeclaration(node)) &&
-      node.name !== undefined &&
-      ts.isIdentifier(node.name) &&
-      excludedFunctions.has(node.name.text)
-    ) {
-      inExcluded = true;
+    if (!inExcluded) {
+      const name = declaredName(node);
+      if (name !== undefined && excludedFunctionPrefixes.some((p) => name.startsWith(p))) {
+        inExcluded = true;
+      }
     }
     if (!inExcluded) {
       if (ts.isPropertyAssignment(node)) {
         const name = propertyName(node.name);
-        if (name !== undefined) written.add(name);
+        if (name !== undefined && !isDestructuringTarget(node)) written.add(name);
       } else if (ts.isShorthandPropertyAssignment(node)) {
-        written.add(node.name.text);
+        if (!isDestructuringTarget(node)) written.add(node.name.text);
       } else if (
         ts.isBinaryExpression(node) &&
         node.operatorToken.kind === ts.SyntaxKind.EqualsToken
@@ -1258,7 +1315,8 @@ function renderMarkdown(report: NestedKeyCoverageReport): string {
     lines.push('');
     lines.push(
       'None. Every audited nested CFn key either matches an SDK member spelling ' +
-        'or is explicitly named by its provider.'
+        'or is explicitly named by its provider — and on a fresh-object target, ' +
+        'its SDK member is also WRITTEN somewhere in the provider.'
     );
     lines.push('');
   }

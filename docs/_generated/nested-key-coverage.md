@@ -25,7 +25,7 @@ For every SDK provider that forwards a nested CFn config blob, diffs the blob's 
 
 ## Divergences
 
-None. Every audited nested CFn key either matches an SDK member spelling or is explicitly named by its provider.
+None. Every audited nested CFn key either matches an SDK member spelling or is explicitly named by its provider — and on a fresh-object target, its SDK member is also WRITTEN somewhere in the provider.
 
 ## Allow-listed pass-throughs
 

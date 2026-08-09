@@ -77,6 +77,32 @@ describe('collectWrittenMemberNames (synthetic)', () => {
     expect(written.has('literal')).toBe(true);
   });
 
+  it('does NOT credit a DESTRUCTURING-ASSIGNMENT target (it is a read)', () => {
+    // `({ x } = src)` parses as an object literal on the LEFT of an `=`, so its
+    // members look like property assignments while being reads off `src`.
+    const written = collectWrittenMemberNames(`
+      ({ batchReportMode } = desc);
+      ({ timeoutInMins: t } = desc);
+      const real = { combineArtifacts: 1 };
+    `);
+    expect(written.has('batchReportMode')).toBe(false);
+    expect(written.has('timeoutInMins')).toBe(false);
+    expect(written.has('combineArtifacts')).toBe(true);
+  });
+
+  it('excludes reverse-map functions by PREFIX, not exact name', () => {
+    // Real shape: `apigateway-provider.ts` splits the reverse map into
+    // `readCurrentStateAuthorizer` / `...Resource` / `...Stage` / etc.
+    const source = `
+      class P {
+        readCurrentStateAuthorizer() { const r = {}; r['CorsConfiguration'] = 1; return r; }
+        map(p) { return { forwardOnly: p['ForwardOnly'] }; }
+      }
+    `;
+    expect(collectWrittenMemberNames(source).has('CorsConfiguration')).toBe(false);
+    expect(collectWrittenMemberNames(source).has('forwardOnly')).toBe(true);
+  });
+
   it('does NOT count a read (the reverse-map direction)', () => {
     const written = collectWrittenMemberNames(`
       const out = {};
@@ -101,7 +127,7 @@ describe('collectWrittenMemberNames (synthetic)', () => {
     expect(collectWrittenMemberNames(source).has('forwardOnly')).toBe(true);
     // With no exclusion set the same write IS collected — proving the
     // exclusion, not an unrelated parse miss, is what withdraws it.
-    expect(collectWrittenMemberNames(source, 'p.ts', new Set()).has('CorsConfiguration')).toBe(
+    expect(collectWrittenMemberNames(source, 'p.ts', []).has('CorsConfiguration')).toBe(
       true
     );
   });
@@ -1249,6 +1275,30 @@ describe('real-code regression probes (per the repo checker rules)', () => {
     expect(entries.filter((e) => e.bucket === 'same-spelling').length).toBeGreaterThanOrEqual(50);
   });
 
+  it('write evidence is name-global, so a multiply-written member is NOT fenced (#1448)', () => {
+    // Documents the pass's real bound rather than asserting a guarantee it does
+    // not deliver. `BuildBatchConfig.ServiceRole` is the SIBLING of the
+    // motivating member: deleting its forward write stays silent because the
+    // top-level `serviceRole:` write vouches for the same spelling. Measured:
+    // 11 of CodeBuild's 55 same-spelling keys have >1 write site, so the pass
+    // fences the other 44 (BatchReportMode among them).
+    const anchor = "serviceRole: cfnBuildBatchConfig['ServiceRole'] as string | undefined,";
+    expect(cbSource, 'anchor still present').toContain(anchor);
+    const regressed = cbSource.replace(anchor, '');
+    const entries = classifyTarget(
+      cbTarget,
+      cbNestedKeys,
+      cbSdkMembers,
+      collectStringLiterals(regressed),
+      NESTED_KEY_ALLOW_LIST,
+      collectWrittenMemberNames(regressed)
+    );
+    expect(entries.find((e) => e.nestedKey === 'ServiceRole')?.bucket).toBe('same-spelling');
+    // ...and the uniquely-named member IS still fenced, so the limitation is a
+    // bound on coverage rather than the pass being inert.
+    expect(collectWrittenMemberNames(regressed).has('serviceRole')).toBe(true);
+  });
+
   it('the write collector sees a real provider (parser-regression floor)', () => {
     const written = collectWrittenMemberNames(cbSource);
     expect(written.size).toBeGreaterThanOrEqual(MIN_WRITTEN_MEMBERS_PER_PROVIDER);
@@ -1261,7 +1311,7 @@ describe('real-code regression probes (per the repo checker rules)', () => {
     // spellings. Those are the names that would falsely vouch for a forward
     // mapper if the exclusion were dropped.
     const scoped = collectWrittenMemberNames(s3Source);
-    const unscoped = collectWrittenMemberNames(s3Source, 's3-bucket-provider.ts', new Set());
+    const unscoped = collectWrittenMemberNames(s3Source, 's3-bucket-provider.ts', []);
     const withdrawn = [...unscoped].filter((n) => !scoped.has(n)).sort();
     expect(withdrawn).toEqual([
       'AnalyticsConfigurations',
