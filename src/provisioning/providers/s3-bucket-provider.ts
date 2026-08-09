@@ -69,6 +69,64 @@ import type {
 } from '../../types/resource.js';
 
 /**
+ * A plain (non-array) object. `typeof x === 'object'` alone accepts arrays and
+ * `null`; a `Transition: []` or an unresolved intrinsic pushed through as a
+ * single transition entry makes S3 answer `MalformedXML` for the WHOLE
+ * lifecycle configuration, so the legacy singular readers screen with this.
+ */
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Coerce a CFn numeric to a finite number. CloudFormation is stringly typed —
+ * a hand-written or imported template (the audience the legacy lifecycle
+ * branches exist for) can carry `"365"` where the schema says number.
+ */
+function coerceCfnNumber(value: unknown): number | undefined {
+  // Screen the TYPE first: `Number([])` is 0 and `Number([5])` is 5, so an
+  // unresolved-intrinsic array would coerce to a plausible-looking day count.
+  // That is the same class `isPlainObject` blocks on the object path.
+  if (typeof value !== 'number' && typeof value !== 'string') return undefined;
+  if (value === '') return undefined;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : undefined;
+}
+
+/**
+ * Merge a legacy SINGULAR action object into its modern plural array.
+ *
+ * S3 rejects two transitions with the same `StorageClass` and fails the whole
+ * `PutBucketLifecycleConfiguration`, so a blind concatenation is unsafe. But
+ * dropping the singular wholesale loses a legitimate template: a plural
+ * `[{GLACIER, 30}]` alongside a singular `{DEEP_ARCHIVE, 90}` is two different
+ * classes, which S3 accepts. So: keep both, let the PLURAL win on a
+ * StorageClass collision, and say so rather than dropping in silence.
+ */
+function mergeLegacySingular(
+  plural: unknown,
+  singular: unknown,
+  onCollision: (storageClass: string) => void
+): Array<Record<string, unknown>> {
+  const out = (Array.isArray(plural) ? plural : []).filter(isPlainObject);
+  if (!isPlainObject(singular)) return out;
+  const sc = singular['StorageClass'];
+  if (typeof sc === 'string' && out.some((e) => e['StorageClass'] === sc)) {
+    onCollision(sc);
+    return out;
+  }
+  return [...out, singular];
+}
+
+/** Coerce a CFn boolean, which may arrive as the string `"true"` / `"false"`. */
+function coerceCfnBoolean(value: unknown): boolean | undefined {
+  if (typeof value === 'boolean') return value;
+  if (value === 'true') return true;
+  if (value === 'false') return false;
+  return undefined;
+}
+
+/**
  * SDK Provider for AWS::S3::Bucket
  *
  * Uses S3 SDK directly instead of CC API for synchronous bucket creation.
@@ -326,7 +384,17 @@ export class S3BucketProvider implements ResourceProvider {
       const filter = rule['Filter'] as Record<string, unknown> | undefined;
       return {
         prefix: (filter?.['Prefix'] ?? rule['Prefix']) as string | undefined,
-        tagFilters: filter?.['TagFilters'] as Array<{ Key: string; Value: string }> | undefined,
+        // `TagFilters` lives at the RULE level in the CFn schema — there is no
+        // `Filter` member on `AWS::S3::Bucket`'s lifecycle Rule at all, and a
+        // real `cdk synth` of `LifecycleRule.tagFilters` emits it there (the
+        // `Filter` read is cdkd's own accommodation for SDK-shaped / imported
+        // input). Reading ONLY `Filter.TagFilters` dropped the tag scope, so a
+        // tag-scoped rule fell through to the empty-prefix Filter below and
+        // applied to the WHOLE bucket — for an expiration rule, that deletes
+        // objects the rule was never meant to touch (issue #1388).
+        tagFilters: (filter?.['TagFilters'] ?? rule['TagFilters']) as
+          | Array<{ Key: string; Value: string }>
+          | undefined,
         sizeGt: (filter?.['ObjectSizeGreaterThan'] ?? rule['ObjectSizeGreaterThan']) as
           | number
           | undefined,
@@ -382,43 +450,118 @@ export class S3BucketProvider implements ResourceProvider {
           ExpiredObjectDeleteMarker: exp['ExpiredObjectDeleteMarker'] as boolean | undefined,
         };
       }
+      // `ExpiredObjectDeleteMarker` is a RULE-level CFn property (it is what
+      // `LifecycleRule.expiredObjectDeleteMarker` synthesizes), not a member of
+      // a nested `Expiration` object. Read only from the nested form, a rule
+      // whose ONLY action is the delete-marker cleanup produced no `Expiration`
+      // at all and S3 rejects the action-less rule (issue #1388). S3 forbids
+      // combining it with Days / Date, so it only fills an empty Expiration.
+      // Gate on whether the built `Expiration` actually carries a Days / Date
+      // rather than on its mere existence: the nested branch above emits an
+      // object with every member `undefined` for an empty / unresolved
+      // `Expiration`, so an existence check would drop the marker AND leave the
+      // rule action-less — the exact failure this block exists to prevent.
+      // Only TRUE engages. `false` is a legal synth (CDK's own validation is
+      // truthy-gated), and treating it as a request would both warn about a
+      // cleanup nobody asked for and, on a marker-only rule, emit
+      // `Expiration: { ExpiredObjectDeleteMarker: false }` — action-less again.
+      const ruleLevelDeleteMarker = coerceCfnBoolean(rule['ExpiredObjectDeleteMarker']);
+      if (ruleLevelDeleteMarker === true) {
+        const exp = sdkRule.Expiration as Record<string, unknown> | undefined;
+        const hasDaysOrDate = exp?.['Days'] !== undefined || exp?.['Date'] !== undefined;
+        if (!hasDaysOrDate) {
+          sdkRule.Expiration = { ExpiredObjectDeleteMarker: true };
+        } else {
+          // S3 rejects ExpiredObjectDeleteMarker combined with Days / Date, so
+          // one of the two has to go. Warn instead of dropping in silence.
+          this.logger.warn(
+            `Lifecycle rule '${(rule['Id'] as string) ?? '<unnamed>'}' on ${bucketName} sets ` +
+              `ExpiredObjectDeleteMarker alongside an expiration Days/Date; S3 forbids ` +
+              `combining them, so the delete-marker cleanup was not applied.`
+          );
+        }
+      }
 
-      // NoncurrentVersionExpiration
-      const nve = rule['NoncurrentVersionExpiration'] as Record<string, unknown> | undefined;
+      // NoncurrentVersionExpiration. The CFn schema ALSO still accepts the
+      // legacy scalar `NoncurrentVersionExpirationInDays` alongside the modern
+      // object form; the object wins when both are present (issue #1388).
+      const nve = isPlainObject(rule['NoncurrentVersionExpiration'])
+        ? rule['NoncurrentVersionExpiration']
+        : undefined;
+      const legacyNveDays = rule['NoncurrentVersionExpirationInDays'];
       if (nve) {
         sdkRule.NoncurrentVersionExpiration = {
           NoncurrentDays: nve['NoncurrentDays'] as number | undefined,
           NewerNoncurrentVersions: nve['NewerNoncurrentVersions'] as number | undefined,
         };
+      } else if (coerceCfnNumber(legacyNveDays) !== undefined) {
+        // Coerced, not `typeof === 'number'`: CFn is stringly typed and this
+        // branch exists specifically for hand-written / imported templates,
+        // which is exactly where `"365"` shows up.
+        sdkRule.NoncurrentVersionExpiration = { NoncurrentDays: coerceCfnNumber(legacyNveDays) };
       }
 
-      // NoncurrentVersionTransitions
+      // NoncurrentVersionTransitions, plus the legacy singular
+      // `NoncurrentVersionTransition` object the CFn schema still accepts.
+      // Both may appear on one rule; they are MERGED, with the plural winning
+      // on a StorageClass collision (see `mergeLegacySingular`).
+      const toSdkNvt = (nvt: Record<string, unknown>): Record<string, unknown> => ({
+        // CFn spells the day count `TransitionInDays` on BOTH the singular
+        // `NoncurrentVersionTransition` and the plural
+        // `NoncurrentVersionTransitions[]`; the SDK member is `NoncurrentDays`.
+        // Reading only the SDK spelling meant the day count was `undefined` for
+        // every real template, so a CDK `noncurrentVersionTransitions` lost its
+        // schedule. The `?? nvt['NoncurrentDays']` fallback keeps SDK-shaped /
+        // imported input working, exactly as the `Transitions` mapping below
+        // already does with `TransitionInDays ?? Days` (issue #1388).
+        NoncurrentDays: (nvt['TransitionInDays'] ?? nvt['NoncurrentDays']) as number | undefined,
+        StorageClass: nvt['StorageClass'] as string | undefined,
+        NewerNoncurrentVersions: nvt['NewerNoncurrentVersions'] as number | undefined,
+      });
       const nvts = rule['NoncurrentVersionTransitions'] as
         | Array<Record<string, unknown>>
         | undefined;
-      if (nvts && Array.isArray(nvts)) {
-        sdkRule.NoncurrentVersionTransitions = nvts.map((nvt: Record<string, unknown>) => ({
-          NoncurrentDays: nvt['NoncurrentDays'] as number | undefined,
-          StorageClass: nvt['StorageClass'] as string | undefined,
-          NewerNoncurrentVersions: nvt['NewerNoncurrentVersions'] as number | undefined,
-        }));
+      const singularNvt = rule['NoncurrentVersionTransition'] as
+        | Record<string, unknown>
+        | undefined;
+      const allNvts = mergeLegacySingular(nvts, singularNvt, (sc) =>
+        this.logger.warn(
+          `Lifecycle rule '${(rule['Id'] as string) ?? '<unnamed>'}' on ${bucketName} declares ` +
+            `both NoncurrentVersionTransitions and the legacy NoncurrentVersionTransition for ` +
+            `storage class ${sc}; S3 rejects duplicates, so the legacy singular was ignored.`
+        )
+      );
+      if (allNvts.length > 0) {
+        sdkRule.NoncurrentVersionTransitions = allNvts.map(toSdkNvt);
       }
 
-      // Transitions
+      // Transitions, plus the legacy singular `Transition` object. Same merge
+      // rule as the noncurrent-version pair above.
+      const toSdkTransition = (t: Record<string, unknown>): Record<string, unknown> => ({
+        Days: (t['TransitionInDays'] ?? t['Days']) as number | undefined,
+        Date:
+          (t['TransitionDate'] ?? t['Date'])
+            ? new Date((t['TransitionDate'] ?? t['Date']) as string)
+            : undefined,
+        StorageClass: t['StorageClass'] as string | undefined,
+      });
       const transitions = rule['Transitions'] as Array<Record<string, unknown>> | undefined;
-      if (transitions && Array.isArray(transitions)) {
-        sdkRule.Transitions = transitions.map((t: Record<string, unknown>) => ({
-          Days: (t['TransitionInDays'] ?? t['Days']) as number | undefined,
-          Date:
-            (t['TransitionDate'] ?? t['Date'])
-              ? new Date((t['TransitionDate'] ?? t['Date']) as string)
-              : undefined,
-          StorageClass: t['StorageClass'] as string | undefined,
-        }));
+      const singularTransition = rule['Transition'] as Record<string, unknown> | undefined;
+      const allTransitions = mergeLegacySingular(transitions, singularTransition, (sc) =>
+        this.logger.warn(
+          `Lifecycle rule '${(rule['Id'] as string) ?? '<unnamed>'}' on ${bucketName} declares ` +
+            `both Transitions and the legacy Transition for storage class ${sc}; S3 rejects ` +
+            `duplicates, so the legacy singular was ignored.`
+        )
+      );
+      if (allTransitions.length > 0) {
+        sdkRule.Transitions = allTransitions.map(toSdkTransition);
       }
 
       // AbortIncompleteMultipartUpload
-      const abort = rule['AbortIncompleteMultipartUpload'] as Record<string, unknown> | undefined;
+      const abort = isPlainObject(rule['AbortIncompleteMultipartUpload'])
+        ? rule['AbortIncompleteMultipartUpload']
+        : undefined;
       if (abort) {
         sdkRule.AbortIncompleteMultipartUpload = {
           DaysAfterInitiation: abort['DaysAfterInitiation'] as number | undefined,
@@ -447,6 +590,14 @@ export class S3BucketProvider implements ResourceProvider {
             ObjectSizeLessThan: sizeLt,
           },
         };
+      } else if (hasTags && tagFilters!.length > 1) {
+        // Several tags and NOTHING else still needs `And` — the SDK's `Tag`
+        // member holds exactly one tag, so the pre-#1388 `Tag: tagFilters[0]`
+        // silently dropped every tag after the first. Unreachable before this
+        // change (rule-level `TagFilters` was never gathered), so fixing the
+        // gather without fixing this would have traded one silent drop for
+        // another.
+        sdkRule.Filter = { And: { Tags: tagFilters } };
       } else if (hasTags) {
         sdkRule.Filter = { Tag: tagFilters![0] };
       } else if (sizeGt !== undefined) {
@@ -2012,7 +2163,15 @@ export class S3BucketProvider implements ResourceProvider {
           if (r.NoncurrentVersionTransitions && r.NoncurrentVersionTransitions.length > 0) {
             out['NoncurrentVersionTransitions'] = r.NoncurrentVersionTransitions.map((nvt) => {
               const item: Record<string, unknown> = {};
-              if (nvt.NoncurrentDays !== undefined) item['NoncurrentDays'] = nvt.NoncurrentDays;
+              // Reverse-map to the CFn spelling `TransitionInDays`, matching
+              // the `Transitions` sibling 20 lines above. Emitting the SDK's
+              // `NoncurrentDays` here made `cdkd drift` report a permanent
+              // phantom diff on every versioned bucket with a noncurrent
+              // transition, because the template baseline carries
+              // `TransitionInDays` and `Rules` is compared array-wholesale.
+              // Latent until this PR: the write side never delivered the day
+              // count, so the two sides were both empty and agreed by accident.
+              if (nvt.NoncurrentDays !== undefined) item['TransitionInDays'] = nvt.NoncurrentDays;
               if (nvt.StorageClass !== undefined) item['StorageClass'] = nvt.StorageClass;
               if (nvt.NewerNoncurrentVersions !== undefined)
                 item['NewerNoncurrentVersions'] = nvt.NewerNoncurrentVersions;
