@@ -19,8 +19,6 @@ import {
   type GlobalSecondaryIndex,
   type GlobalSecondaryIndexUpdate,
   type LocalSecondaryIndex,
-  type OnDemandThroughput,
-  type ProvisionedThroughput,
   type ReplicaGlobalSecondaryIndex,
   type StreamSpecification,
   type Tag,
