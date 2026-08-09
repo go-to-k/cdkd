@@ -1,3 +1,10 @@
+## [0.278.9](https://github.com/go-to-k/cdkd/compare/v0.278.8...v0.278.9) (2026-08-09)
+
+
+### Bug Fixes
+
+* **wafv2:** reverse-map the Rules blob on read so drift stops reporting phantom changes ([#1413](https://github.com/go-to-k/cdkd/issues/1413)) ([cc7d807](https://github.com/go-to-k/cdkd/commit/cc7d8074ef99022d7fd76d2dd0e9a61fc91ecc46))
+
 ## [0.278.8](https://github.com/go-to-k/cdkd/compare/v0.278.7...v0.278.8) (2026-08-09)
 
 
