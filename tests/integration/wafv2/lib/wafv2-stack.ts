@@ -11,6 +11,17 @@ import * as apigateway from 'aws-cdk-lib/aws-apigateway';
  * - AWS::WAFv2::WebACL
  * - AWS::WAFv2::WebACLAssociation
  * - AWS::ApiGateway::RestApi
+ *
+ * The WebACL also exercises both CFn-vs-SDK spelling divergences in the Rules
+ * tree (issue #1389), so the deploy itself is the regression signal -- pre-fix
+ * the SDK serializer dropped each unknown key and CreateWebACL failed
+ * validation on the missing required member:
+ *
+ * - Two ByteMatchStatements written with the CFn-only `SearchStringBase64`
+ *   key, one nested under the rate-based rule's ScopeDownStatement and one
+ *   under a NotStatement.
+ * - An IPSetReferenceStatement whose CFn `Arn` member the SDK spells `ARN`,
+ *   nested under an AndStatement.
  */
 export class Wafv2Stack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -50,6 +61,77 @@ export class Wafv2Stack extends cdk.Stack {
             rateBasedStatement: {
               limit: 2000,
               aggregateKeyType: 'IP',
+              // NESTED ByteMatchStatement (issue #1389): the scope-down of a
+              // RateBasedStatement is one of the statement-tree recursion
+              // points the base64 conversion has to walk. Base64 of
+              // 'cdkd-scoped'.
+              scopeDownStatement: {
+                byteMatchStatement: {
+                  searchStringBase64: 'Y2RrZC1zY29wZWQ=',
+                  fieldToMatch: { uriPath: {} },
+                  positionalConstraint: 'CONTAINS',
+                  textTransformations: [{ priority: 0, type: 'NONE' }],
+                },
+              },
+            },
+          },
+        },
+        {
+          // Issue #1389: SearchStringBase64 exists ONLY in CloudFormation --
+          // the SDK models carry a single SearchString blob member -- so the
+          // AWS SDK v3 serializer dropped the unknown key and CreateWebACL
+          // failed validation on the missing required SearchString. This rule
+          // therefore makes the whole deploy fail without the fix, which is
+          // exactly the regression signal we want from a standard-flow fixture.
+          // Base64 of 'cdkd-blocked'.
+          name: 'Base64ByteMatchRule',
+          priority: 2,
+          action: { block: {} },
+          visibilityConfig: {
+            cloudWatchMetricsEnabled: true,
+            metricName: 'Base64ByteMatchRule',
+            sampledRequestsEnabled: true,
+          },
+          statement: {
+            notStatement: {
+              statement: {
+                byteMatchStatement: {
+                  searchStringBase64: 'Y2RrZC1ibG9ja2Vk',
+                  fieldToMatch: { singleHeader: { Name: 'user-agent' } },
+                  positionalConstraint: 'CONTAINS',
+                  textTransformations: [{ priority: 0, type: 'LOWERCASE' }],
+                },
+              },
+            },
+          },
+        },
+        {
+          // The other CFn-vs-SDK spelling divergence in the Rules tree: CFn
+          // spells the reference-statement member `Arn`, the SDK declares it
+          // `ARN` and marks it REQUIRED, so pre-fix the serializer dropped it
+          // and CreateWebACL rejected the stack. Exercised at a nested
+          // recursion point (under AndStatement) so the walk is covered too.
+          name: 'IPSetReferenceRule',
+          priority: 3,
+          action: { block: {} },
+          visibilityConfig: {
+            cloudWatchMetricsEnabled: true,
+            metricName: 'IPSetReferenceRule',
+            sampledRequestsEnabled: true,
+          },
+          statement: {
+            andStatement: {
+              statements: [
+                { ipSetReferenceStatement: { arn: ipSet.attrArn } },
+                {
+                  byteMatchStatement: {
+                    searchString: 'cdkd-plain',
+                    fieldToMatch: { uriPath: {} },
+                    positionalConstraint: 'CONTAINS',
+                    textTransformations: [{ priority: 0, type: 'NONE' }],
+                  },
+                },
+              ],
             },
           },
         },

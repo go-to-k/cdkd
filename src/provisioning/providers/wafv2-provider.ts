@@ -52,6 +52,195 @@ function sanitizeDescription(value: unknown): string | undefined {
   return value as string;
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * CFn `Rules` members that have NO counterpart in the installed
+ * `@aws-sdk/client-wafv2` model (verified: zero hits in
+ * `dist-types/models/models_0.d.ts`).
+ *
+ * The AWS SDK v3 serializer drops unknown members, so these silently do
+ * not reach AWS no matter what cdkd forwards. There is no mapping cdkd
+ * can invent — the fix is an SDK bump, after which the spellings already
+ * match and no code here has to change. Until then the drop is made LOUD
+ * (`warnOnSdkUnsupportedRuleKeys`) instead of silent.
+ *
+ * They cannot be declared in `unhandledByDesign` either: that map is
+ * TOP-LEVEL CFn property granularity, and all three are nested inside
+ * `Rules`, which the provider genuinely handles.
+ */
+const SDK_UNSUPPORTED_RULE_KEYS: readonly string[] = [
+  // TextTransformation.PreParseTextTransformations
+  'PreParseTextTransformations',
+  // Rule action Monetize / its PriceMultiplier
+  'Monetize',
+  'PriceMultiplier',
+];
+
+/**
+ * Convert a CFn `ByteMatchStatement` into the SDK shape.
+ *
+ * `SearchStringBase64` exists ONLY in CloudFormation — the SDK models
+ * carry a single `SearchString: Uint8Array | undefined` blob member
+ * (`@aws-sdk/client-wafv2/dist-types/models/models_0.d.ts:1034`).
+ * Forwarding the CFn blob raw made the serializer drop the unknown key
+ * and `CreateWebACL` then failed validation on the missing required
+ * `SearchString` (issue #1389).
+ *
+ * The decoded bytes are passed as a `Uint8Array`, matching the declared
+ * member type: the JSON serializer base64-encodes a blob member on the
+ * wire, so decoding here reproduces byte-for-byte what CloudFormation
+ * sends. Plain `SearchString` values are deliberately left untouched —
+ * the same serializer accepts a string at a blob member and UTF-8 +
+ * base64 encodes it, which is exactly the existing (working) behavior.
+ *
+ * Precedence when a template carries BOTH keys: `SearchStringBase64`
+ * wins. CloudFormation treats them as mutually exclusive and rejects
+ * such a template, so any choice is arbitrary; the explicit-encoding
+ * form is preferred because it is the only one that can express
+ * non-UTF-8 bytes, so honoring it never loses information.
+ */
+function toSdkByteMatchStatement(
+  byteMatchStatement: Record<string, unknown>
+): Record<string, unknown> {
+  const encoded = byteMatchStatement['SearchStringBase64'];
+  if (typeof encoded !== 'string') return byteMatchStatement;
+
+  const converted: Record<string, unknown> = { ...byteMatchStatement };
+  delete converted['SearchStringBase64'];
+  converted['SearchString'] = Uint8Array.from(Buffer.from(encoded, 'base64'));
+  return converted;
+}
+
+/**
+ * CFn `Statement` members that carry a reference ARN.
+ *
+ * CloudFormation spells the member `Arn`; every one of these SDK types
+ * declares it `ARN` (and marks it REQUIRED) — verified against
+ * `@aws-sdk/client-wafv2` `models_0.d.ts` (`IPSetReferenceStatement` /
+ * `RegexPatternSetReferenceStatement` / `RuleGroupReferenceStatement`),
+ * whose schema serde carries a single `_ARN = "ARN"` alias and no `Arn`.
+ * The serializer drops the CFn spelling, so `CreateWebACL` fails
+ * validation on the missing required `ARN` — the same silent-drop class
+ * as `SearchStringBase64`, and the only other one in the whole `Rules`
+ * tree (all 154 CFn keys were diffed against the SDK member set).
+ */
+const ARN_REFERENCE_STATEMENT_KEYS: readonly string[] = [
+  'IPSetReferenceStatement',
+  'RegexPatternSetReferenceStatement',
+  'RuleGroupReferenceStatement',
+];
+
+/**
+ * Recursively convert a CFn `Statement` tree into the SDK shape.
+ *
+ * Two conversions ride this walk: the `ByteMatchStatement`
+ * `SearchStringBase64` decode and the reference-statement `Arn` -> `ARN`
+ * rename (see {@link ARN_REFERENCE_STATEMENT_KEYS}). Both leaves are
+ * nestable, so the walk has to cover every recursion point the SDK
+ * `Statement` union declares:
+ *   - `NotStatement.Statement`            (single nested Statement)
+ *   - `AndStatement.Statements[]`         (Statement array)
+ *   - `OrStatement.Statements[]`          (Statement array)
+ *   - `RateBasedStatement.ScopeDownStatement`
+ *   - `ManagedRuleGroupStatement.ScopeDownStatement`
+ *
+ * That list mirrors the SDK model exactly — those are the only members
+ * typed `Statement` / `Statement[]`. `RuleGroupReferenceStatement` is
+ * NOT a recursion point (it declares no nested statement member, only
+ * `ARN` / `ExcludedRules` / `RuleActionOverrides`); it appears in the
+ * ARN list above for the rename alone. Extend either list if AWS adds a
+ * member.
+ *
+ * The caller's object is never mutated — every level is rebuilt.
+ */
+function toSdkStatement(statement: Record<string, unknown>): Record<string, unknown> {
+  const converted: Record<string, unknown> = { ...statement };
+
+  const byteMatchStatement = converted['ByteMatchStatement'];
+  if (isPlainObject(byteMatchStatement)) {
+    converted['ByteMatchStatement'] = toSdkByteMatchStatement(byteMatchStatement);
+  }
+
+  for (const key of ARN_REFERENCE_STATEMENT_KEYS) {
+    const reference = converted[key];
+    if (!isPlainObject(reference) || !('Arn' in reference)) continue;
+    const { Arn: arn, ...rest } = reference;
+    converted[key] = { ...rest, ARN: arn };
+  }
+
+  const notStatement = converted['NotStatement'];
+  if (isPlainObject(notStatement)) {
+    const nested = notStatement['Statement'];
+    if (isPlainObject(nested)) {
+      converted['NotStatement'] = { ...notStatement, Statement: toSdkStatement(nested) };
+    }
+  }
+
+  for (const key of ['AndStatement', 'OrStatement']) {
+    const combined = converted[key];
+    if (!isPlainObject(combined)) continue;
+    const nested = combined['Statements'];
+    if (!Array.isArray(nested)) continue;
+    converted[key] = {
+      ...combined,
+      Statements: nested.map((item) => (isPlainObject(item) ? toSdkStatement(item) : item)),
+    };
+  }
+
+  for (const key of ['RateBasedStatement', 'ManagedRuleGroupStatement']) {
+    const scoping = converted[key];
+    if (!isPlainObject(scoping)) continue;
+    const nested = scoping['ScopeDownStatement'];
+    if (!isPlainObject(nested)) continue;
+    converted[key] = { ...scoping, ScopeDownStatement: toSdkStatement(nested) };
+  }
+
+  return converted;
+}
+
+/**
+ * Convert the CFn `Rules` blob into the SDK `Rule[]` shape.
+ *
+ * Falsy input degrades to `[]`, matching the previous
+ * `(properties['Rules'] as Rule[]) || []` behavior exactly. A truthy NON-array
+ * (an unresolved intrinsic) is deliberately passed through instead:
+ * defaulting it to `[]` would make `update()` a silent `UpdateWebACL`
+ * that wipes every rule and still reports success, where the old code
+ * handed the value to the SDK and failed loudly.
+ */
+function toSdkRules(rules: unknown): Rule[] {
+  // Falsy (absent / null / '' / 0 / false) degrades to `[]` for EXACT parity
+  // with the previous `(properties['Rules'] as Rule[]) || []`. Only a TRUTHY
+  // non-array passes through.
+  if (!rules) return [];
+  if (!Array.isArray(rules)) return rules as unknown as Rule[];
+  return rules.map((rule) => {
+    if (!isPlainObject(rule)) return rule as unknown as Rule;
+    const statement = rule['Statement'];
+    if (!isPlainObject(statement)) return rule as unknown as Rule;
+    return { ...rule, Statement: toSdkStatement(statement) } as unknown as Rule;
+  });
+}
+
+/**
+ * Collect every {@link SDK_UNSUPPORTED_RULE_KEYS} member present anywhere
+ * in the CFn `Rules` blob, so the caller can report the silent drop.
+ */
+function collectSdkUnsupportedRuleKeys(value: unknown, found: Set<string>): void {
+  if (Array.isArray(value)) {
+    for (const item of value) collectSdkUnsupportedRuleKeys(item, found);
+    return;
+  }
+  if (!isPlainObject(value)) return;
+  for (const [key, nested] of Object.entries(value)) {
+    if (SDK_UNSUPPORTED_RULE_KEYS.includes(key)) found.add(key);
+    collectSdkUnsupportedRuleKeys(nested, found);
+  }
+}
+
 /**
  * Parse WAFv2 WebACL ARN to extract Id, Name, and Scope.
  *
@@ -140,6 +329,8 @@ export class WAFv2WebACLProvider implements ResourceProvider {
       generateResourceName(logicalId, { maxLength: 128 });
     const scope = ((properties['Scope'] as string) || 'REGIONAL') as Scope;
 
+    this.warnOnSdkUnsupportedRuleKeys(logicalId, properties['Rules']);
+
     try {
       // Build tags
       const tags: Tag[] = [];
@@ -156,7 +347,7 @@ export class WAFv2WebACLProvider implements ResourceProvider {
           Scope: scope,
           DefaultAction: properties['DefaultAction'] as DefaultAction,
           Description: sanitizeDescription(properties['Description']),
-          Rules: (properties['Rules'] as Rule[]) || [],
+          Rules: toSdkRules(properties['Rules']),
           VisibilityConfig: properties['VisibilityConfig'] as VisibilityConfig,
           ...(tags.length > 0 && { Tags: tags }),
           CustomResponseBodies: properties['CustomResponseBodies'] as
@@ -212,6 +403,8 @@ export class WAFv2WebACLProvider implements ResourceProvider {
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating WAFv2 WebACL ${logicalId}: ${physicalId}`);
 
+    this.warnOnSdkUnsupportedRuleKeys(logicalId, properties['Rules']);
+
     try {
       const { id, name, scope } = parseWebACLArn(physicalId);
 
@@ -237,7 +430,7 @@ export class WAFv2WebACLProvider implements ResourceProvider {
           LockToken: lockToken,
           DefaultAction: properties['DefaultAction'] as DefaultAction,
           Description: sanitizeDescription(properties['Description']),
-          Rules: (properties['Rules'] as Rule[]) || [],
+          Rules: toSdkRules(properties['Rules']),
           VisibilityConfig: properties['VisibilityConfig'] as VisibilityConfig,
           CustomResponseBodies: properties['CustomResponseBodies'] as
             | Record<string, CustomResponseBody>
@@ -346,6 +539,26 @@ export class WAFv2WebACLProvider implements ResourceProvider {
         cause
       );
     }
+  }
+
+  /**
+   * Report every CFn `Rules` member the installed `@aws-sdk/client-wafv2`
+   * model has no counterpart for, so the drop is visible instead of
+   * silent. See {@link SDK_UNSUPPORTED_RULE_KEYS} for why cdkd cannot map
+   * them and what makes them work (an SDK bump).
+   */
+  private warnOnSdkUnsupportedRuleKeys(logicalId: string, rules: unknown): void {
+    const found = new Set<string>();
+    collectSdkUnsupportedRuleKeys(rules, found);
+    if (found.size === 0) return;
+
+    const sorted = [...found].sort();
+    const names = sorted.join(', ');
+    const subject = sorted.length === 1 ? 'property' : 'properties';
+    const verb = sorted.length === 1 ? 'has' : 'have';
+    this.logger.warn(
+      `WAFv2 WebACL ${logicalId}: rule ${subject} ${names} ${verb} no member in the installed AWS SDK WAFv2 model and will NOT be sent to AWS. Upgrade cdkd once its @aws-sdk/client-wafv2 dependency carries the ${subject}.`
+    );
   }
 
   /**
