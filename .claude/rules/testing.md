@@ -206,6 +206,12 @@ existing fixtures do not set it and are fine, because the hang only bites the
 customized commands. `tests/integration/emr-instance-configs/verify.sh` is the
 reference.
 
+NOT mechanically enforced yet — a lint over `tests/integration/*/verify.sh` is
+tracked in issue
+[#1402](https://github.com/go-to-k/cdkd/issues/1402), so until then this is a
+read-it-and-follow-it rule. User-facing writeup in
+[docs/testing.md](../../docs/testing.md).
+
 ### `verify.sh` list readbacks must be order-insensitive (mandatory)
 
 AWS does not preserve the submitted order of list-valued members on readback.
@@ -231,6 +237,11 @@ exactly this reason. The same judgment call applies: a list that IS
 order-significant (DNS resolver lists, preference orders — see
 `getDriftUnorderedPaths`) must stay unsorted, because sorting it would HIDE a
 real regression.
+
+NOT mechanically enforced — whether a given list is order-significant is a
+judgment call a lint cannot make, so this one stays a read-it-and-follow-it
+rule by design. User-facing writeup in
+[docs/testing.md](../../docs/testing.md).
 
 ### Fixture stateful L2s need an explicit removalPolicy (mandatory)
 
