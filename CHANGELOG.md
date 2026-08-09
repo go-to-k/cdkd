@@ -1,3 +1,10 @@
+## [0.278.18](https://github.com/go-to-k/cdkd/compare/v0.278.17...v0.278.18) (2026-08-09)
+
+
+### Bug Fixes
+
+* **s3:** add AWS::S3::Bucket to NESTED_KEY_TARGETS and fix the EventBridgeEnabled inversion ([#1437](https://github.com/go-to-k/cdkd/issues/1437)) ([05c012c](https://github.com/go-to-k/cdkd/commit/05c012c4ce1845f08b47a32c44a8d12a2490fab6))
+
 ## [0.278.17](https://github.com/go-to-k/cdkd/compare/v0.278.16...v0.278.17) (2026-08-09)
 
 
