@@ -19,6 +19,7 @@ import {
   type ImageScanningConfiguration,
   type EncryptionConfiguration,
   type ImageTagMutability,
+  type ImageTagMutabilityExclusionFilter,
   type Tag,
 } from '@aws-sdk/client-ecr';
 import { getLogger } from '../../utils/logger.js';
@@ -115,6 +116,55 @@ export class ECRProvider implements ResourceProvider {
   }
 
   /**
+   * Map CFn `ImageTagMutabilityExclusionFilters`
+   * (`[{ ImageTagMutabilityExclusionFilterType, ImageTagMutabilityExclusionFilterValue }]`)
+   * to the SDK shape (`[{ filterType, filter }]`). The member NAMES diverge —
+   * not just their casing — so forwarding the CFn-shaped array verbatim makes
+   * the SDK drop every member and send `[{}]`, and AWS rejects the call (or,
+   * worse, silently loses the exclusions). Returns `undefined` for an absent /
+   * empty list so the caller can omit the field entirely.
+   */
+  private toSdkTagMutabilityExclusionFilters(
+    cfn: unknown
+  ): ImageTagMutabilityExclusionFilter[] | undefined {
+    if (!Array.isArray(cfn) || cfn.length === 0) return undefined;
+    return cfn.map((entry) => {
+      const e = (entry ?? {}) as Record<string, unknown>;
+      return {
+        filterType: e['ImageTagMutabilityExclusionFilterType'] as
+          | ImageTagMutabilityExclusionFilter['filterType']
+          | undefined,
+        filter: e['ImageTagMutabilityExclusionFilterValue'] as string | undefined,
+      };
+    });
+  }
+
+  /**
+   * Inverse of {@link toSdkTagMutabilityExclusionFilters}: SDK
+   * `[{ filterType, filter }]` back to the CFn property shape, so
+   * `cdkd drift` compares the AWS-current exclusions against the
+   * template-shaped baseline instead of a guaranteed false positive.
+   * Returns `undefined` for an absent / empty list so `readCurrentState`
+   * omits the key (a repository with no exclusions).
+   */
+  private toCfnTagMutabilityExclusionFilters(
+    sdk: Array<{ filterType?: string; filter?: string }> | undefined
+  ): Array<Record<string, unknown>> | undefined {
+    if (!sdk || sdk.length === 0) return undefined;
+    // Undefined-valued keys are omitted rather than emitted: S3 drops them when
+    // `observedProperties` is serialized, so a later drift read that DID carry
+    // them would differ by key count and report phantom drift. Both members are
+    // required in the SDK model, so this is defense against a shape AWS should
+    // never return.
+    return sdk.map((f) => ({
+      ...(f.filterType !== undefined && {
+        ImageTagMutabilityExclusionFilterType: f.filterType,
+      }),
+      ...(f.filter !== undefined && { ImageTagMutabilityExclusionFilterValue: f.filter }),
+    }));
+  }
+
+  /**
    * Create an ECR Repository
    */
   async create(
@@ -138,6 +188,9 @@ export class ECRProvider implements ResourceProvider {
       const encryptionConfig = this.toSdkEncryptionConfig(
         properties['EncryptionConfiguration'] as Record<string, unknown> | undefined
       );
+      const exclusionFilters = this.toSdkTagMutabilityExclusionFilters(
+        properties['ImageTagMutabilityExclusionFilters']
+      );
 
       const response = await this.getClient().send(
         new CreateRepositoryCommand({
@@ -148,6 +201,7 @@ export class ECRProvider implements ResourceProvider {
                 imageTagMutability: properties['ImageTagMutability'] as ImageTagMutability,
               }
             : {}),
+          ...(exclusionFilters ? { imageTagMutabilityExclusionFilters: exclusionFilters } : {}),
           ...(encryptionConfig ? { encryptionConfiguration: encryptionConfig } : {}),
           ...(tags ? { tags } : {}),
         })
@@ -216,7 +270,8 @@ export class ECRProvider implements ResourceProvider {
    * Update an ECR Repository
    *
    * Mutable properties: ImageScanningConfiguration, ImageTagMutability,
-   * LifecyclePolicy, RepositoryPolicyText, Tags.
+   * ImageTagMutabilityExclusionFilters, LifecyclePolicy, RepositoryPolicyText,
+   * Tags.
    * Immutable: RepositoryName, EncryptionConfiguration (require replacement).
    */
   async update(
@@ -251,16 +306,41 @@ export class ECRProvider implements ResourceProvider {
         this.logger.debug(`Updated image scanning configuration for ${physicalId}`);
       }
 
-      // Update ImageTagMutability if changed
+      // Update ImageTagMutability / ImageTagMutabilityExclusionFilters if
+      // changed. Both members ride the SAME PutImageTagMutability call, so the
+      // exclusion filters must be able to fire it on their own — a filters-only
+      // edit (`IMMUTABLE_WITH_EXCLUSION` throughout, only the filter values
+      // changing) would otherwise never reach AWS. `imageTagMutability` is a
+      // REQUIRED member of that request, so the filters-only case re-sends the
+      // current mutability value alongside the new filters.
       const newMutability = properties['ImageTagMutability'] as ImageTagMutability | undefined;
       const oldMutability = previousProperties['ImageTagMutability'] as
         | ImageTagMutability
         | undefined;
-      if (newMutability !== oldMutability) {
+      const newExclusionFilters = this.toSdkTagMutabilityExclusionFilters(
+        properties['ImageTagMutabilityExclusionFilters']
+      );
+      const oldExclusionFilters = this.toSdkTagMutabilityExclusionFilters(
+        previousProperties['ImageTagMutabilityExclusionFilters']
+      );
+      if (
+        newMutability !== oldMutability ||
+        JSON.stringify(newExclusionFilters) !== JSON.stringify(oldExclusionFilters)
+      ) {
         await this.getClient().send(
           new PutImageTagMutabilityCommand({
             repositoryName: physicalId,
             imageTagMutability: newMutability ?? 'MUTABLE',
+            // Omitted on removal, on the expectation that
+            // PutImageTagMutability is a full-replace setter rather than a
+            // patch. NOT probed against real AWS, because the case is not
+            // reachable: CFn/CDK reject filters without a `*_WITH_EXCLUSION`
+            // mode and reject an exclusion mode without filters, so a removal
+            // always rides a mutability change to a non-exclusion mode, where
+            // any surviving filters are inert.
+            ...(newExclusionFilters
+              ? { imageTagMutabilityExclusionFilters: newExclusionFilters }
+              : {}),
           })
         );
         this.logger.debug(`Updated image tag mutability for ${physicalId}`);
@@ -488,17 +568,20 @@ export class ECRProvider implements ResourceProvider {
    * (which `DescribeRepositories` doesn't return).
    *
    * Surfaced keys: `RepositoryName`, `ImageTagMutability`,
-   * `ImageScanningConfiguration`, `EncryptionConfiguration`, `LifecyclePolicy`
-   * (when configured — `LifecyclePolicyNotFoundException` is caught and the
-   * key omitted, NOT propagated as repo-gone).
+   * `ImageTagMutabilityExclusionFilters` (when the repository has any —
+   * `DescribeRepositories` returns them on the `Repository` shape, mapped back
+   * to the CFn member names), `ImageScanningConfiguration`,
+   * `EncryptionConfiguration`, `LifecyclePolicy` (when configured —
+   * `LifecyclePolicyNotFoundException` is caught and the key omitted, NOT
+   * propagated as repo-gone).
    *
    * Intentionally omitted:
    *   - `RepositoryPolicyText`: requires a separate `GetRepositoryPolicy`
    *     round-trip; cdkd state holds the policy as either a string or an
    *     object (depending on user input), and the comparator round-trip
    *     is not yet handled here.
-   *   - `EmptyOnDelete` / `ImageTagMutabilityExclusionFilters`: not part
-   *     of the persisted AWS state visible via standard Describe.
+   *   - `EmptyOnDelete`: a cdkd/CDK delete-time intent flag, not part of the
+   *     persisted AWS state visible via standard Describe.
    *
    * `Tags` is surfaced via a follow-up `ListTagsForResource(arn)` call
    * (using the repository ARN that `DescribeRepositories` returns). CDK's
@@ -517,6 +600,7 @@ export class ECRProvider implements ResourceProvider {
         repositoryName?: string;
         repositoryArn?: string;
         imageTagMutability?: string;
+        imageTagMutabilityExclusionFilters?: Array<{ filterType?: string; filter?: string }>;
         imageScanningConfiguration?: { scanOnPush?: boolean };
         encryptionConfiguration?: { encryptionType?: string; kmsKey?: string };
       }>;
@@ -535,6 +619,12 @@ export class ECRProvider implements ResourceProvider {
     const result: Record<string, unknown> = {};
     if (r.repositoryName !== undefined) result['RepositoryName'] = r.repositoryName;
     if (r.imageTagMutability !== undefined) result['ImageTagMutability'] = r.imageTagMutability;
+    const cfnExclusionFilters = this.toCfnTagMutabilityExclusionFilters(
+      r.imageTagMutabilityExclusionFilters
+    );
+    if (cfnExclusionFilters) {
+      result['ImageTagMutabilityExclusionFilters'] = cfnExclusionFilters;
+    }
     result['ImageScanningConfiguration'] = {
       ScanOnPush: r.imageScanningConfiguration?.scanOnPush ?? false,
     };

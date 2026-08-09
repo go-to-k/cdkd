@@ -12,12 +12,23 @@
 # TagResourceCommand only (additive), so a tag removed from the template
 # survived on AWS. The fix untags removed keys via UntagResourceCommand.
 #
+# ALSO covers issue #1392: ImageTagMutabilityExclusionFilters was declared in
+# handledProperties but sent on NO API call — omitted from CreateRepository and
+# from update's PutImageTagMutability — so the exclusions silently vanished
+# while the property-coverage pre-flight passed on the false handled claim. The
+# member names diverge as well (CFn ImageTagMutabilityExclusionFilterType /
+# ...Value vs SDK filterType / filter). The update gate also fired on
+# ImageTagMutability alone, so a filters-ONLY edit never reached AWS.
+#
 # Phases:
-#   1. Deploy with imageScanOnPush=true + Tags env=dev, team=platform. Assert
-#      AWS reports scanOnPush=true and both tags are present.
+#   1. Deploy with imageScanOnPush=true + Tags env=dev, team=platform +
+#      IMMUTABLE_WITH_EXCLUSION with one exclusion filter (dev-*). Assert AWS
+#      reports scanOnPush=true, both tags, and the filter.
 #   2. Re-deploy (CDKD_TEST_UPDATE=true) with imageScanOnPush=false, env changed
-#      to prod, team REMOVED. Assert scanOnPush=false, env=prod, team untagged,
-#      and exactly one user tag remains.
+#      to prod, team REMOVED, and the exclusion filters changed to two DIFFERENT
+#      patterns with imageTagMutability UNCHANGED. Assert scanOnPush=false,
+#      env=prod, team untagged, exactly one user tag remains, and the new
+#      filters reached AWS (the filters-only update path).
 #   3. Destroy + assert the repo is gone and the cdkd state file is removed.
 #
 # Required env vars: STATE_BUCKET; AWS_REGION (defaults us-east-1).
@@ -96,6 +107,30 @@ scan_on_push() {
     --query 'repositories[0].imageScanningConfiguration.scanOnPush' --output text
 }
 
+tag_mutability() {
+  aws ecr describe-repositories --repository-names "${REPO}" --region "${REGION}" \
+    --query 'repositories[0].imageTagMutability' --output text
+}
+
+# The exclusion filter PATTERNS, sorted and space-joined. AWS does not preserve
+# the submitted order of list-valued members on readback, so both sides of the
+# comparison are sorted (the null-list coalesce keeps an empty list from
+# aborting the script under set -e).
+exclusion_filter_patterns() {
+  aws ecr describe-repositories --repository-names "${REPO}" --region "${REGION}" \
+    --query "join(' ', sort(repositories[0].imageTagMutabilityExclusionFilters[].filter || \`[]\`))" \
+    --output text
+}
+
+# The filter types, sorted and space-joined (one entry per filter, no dedupe) —
+# proves the diverging member name (CFn ImageTagMutabilityExclusionFilterType ->
+# SDK filterType) reached AWS rather than arriving as an empty object.
+exclusion_filter_types() {
+  aws ecr describe-repositories --repository-names "${REPO}" --region "${REGION}" \
+    --query "join(' ', sort(repositories[0].imageTagMutabilityExclusionFilters[].filterType || \`[]\`))" \
+    --output text
+}
+
 # Read a single tag's value via list-tags-for-resource. Emits the value or
 # 'NONE' when the key is absent (JMESPath `[?Key==...] | [0].Value` -> null ->
 # printed as literal "None" by --output text; we normalize to NONE for the
@@ -148,6 +183,17 @@ echo "    tags (Phase 1): env=${ENVTAG1} team=${TEAMTAG1}"
 [ "${TEAMTAG1}" = "platform" ] || { echo "FAIL: expected team=platform on create, got '${TEAMTAG1}'" >&2; exit 1; }
 echo "    both tags reached AWS on create"
 
+# ImageTagMutabilityExclusionFilters on create (issue #1392). Pre-fix the
+# property never reached CreateRepository at all.
+MUT1="$(tag_mutability)"
+FILTERS1="$(exclusion_filter_patterns)"
+FTYPES1="$(exclusion_filter_types)"
+echo "    mutability (Phase 1): ${MUT1} filters=[${FILTERS1}] types=[${FTYPES1}]"
+[ "${MUT1}" = "IMMUTABLE_WITH_EXCLUSION" ] || { echo "FAIL: expected imageTagMutability=IMMUTABLE_WITH_EXCLUSION, got '${MUT1}'" >&2; exit 1; }
+[ "${FILTERS1}" = "dev-*" ] || { echo "FAIL: expected exclusion filter 'dev-*' on create, got '${FILTERS1}'" >&2; exit 1; }
+[ "${FTYPES1}" = "WILDCARD" ] || { echo "FAIL: expected filterType WILDCARD on create, got '${FTYPES1}'" >&2; exit 1; }
+echo "    exclusion filters reached AWS on create"
+
 # --- Phase 2: UPDATE scanOnPush=false ---------------------------------
 echo "==> Phase 2: re-deploy with imageScanOnPush=false (UPDATE)"
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
@@ -169,6 +215,19 @@ echo "    tags (Phase 2): env=${ENVTAG2} team=${TEAMTAG2} user_tag_count=${UTC2}
 [ "${UTC2}" = "1" ] || { echo "FAIL: expected exactly 1 user tag after update (env only), got '${UTC2}'" >&2; exit 1; }
 echo "    removed tag untagged + changed tag updated on AWS"
 
+# Filters-ONLY update (issue #1392): imageTagMutability is identical across
+# both phases, so pre-fix the PutImageTagMutability call never fired and the
+# Phase 1 filter survived on AWS.
+MUT2="$(tag_mutability)"
+FILTERS2="$(exclusion_filter_patterns)"
+FTYPES2="$(exclusion_filter_types)"
+echo "    mutability (Phase 2): ${MUT2} filters=[${FILTERS2}] types=[${FTYPES2}]"
+[ "${MUT2}" = "IMMUTABLE_WITH_EXCLUSION" ] || { echo "FAIL: expected imageTagMutability to stay IMMUTABLE_WITH_EXCLUSION, got '${MUT2}'" >&2; exit 1; }
+[ "${FILTERS2}" = "hotfix-* release-v*" ] || { echo "FAIL: expected the changed exclusion filters 'hotfix-* release-v*' after a filters-only update, got '${FILTERS2}'" >&2; exit 1; }
+# One entry per filter (no dedupe), so both mapped entries must carry the type.
+[ "${FTYPES2}" = "WILDCARD WILDCARD" ] || { echo "FAIL: expected both filters to carry filterType WILDCARD after update, got '${FTYPES2}'" >&2; exit 1; }
+echo "    filters-only update reached AWS"
+
 # --- Phase 3: destroy --------------------------------------------------
 echo "==> Phase 3: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
@@ -178,4 +237,4 @@ echo "    repo deleted"
 assert_gone "state file still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    cdkd state removed"
 
-echo "[verify] PASS — ECR scanOnPush (CFn->SDK casing) + tag add/change/untag on update reach AWS, 3 phases passed"
+echo "[verify] PASS — ECR scanOnPush (CFn->SDK casing) + tag add/change/untag on update + ImageTagMutabilityExclusionFilters on create and on a filters-only update reach AWS, 3 phases passed"
