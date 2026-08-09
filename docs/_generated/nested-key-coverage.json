@@ -1,15 +1,15 @@
 {
   "summary": {
-    "targetCount": 10,
-    "nestedKeyCount": 373,
-    "sameSpelling": 355,
-    "providerHandled": 14,
+    "targetCount": 11,
+    "nestedKeyCount": 488,
+    "sameSpelling": 444,
+    "providerHandled": 40,
     "allowListed": 4,
     "caseDivergence": 0,
     "noSdkMember": 0,
-    "shapeClean": 74,
-    "shapeHandled": 17,
-    "shapeAllowListed": 1,
+    "shapeClean": 87,
+    "shapeHandled": 31,
+    "shapeAllowListed": 7,
     "arrayVsWrapper": 0,
     "definitionMemberMissing": 0,
     "shapeAmbiguous": 1
@@ -2180,6 +2180,775 @@
         "AuthorizationConfig",
         "FSxAuthorizationConfig",
         "RestartPolicy"
+      ]
+    },
+    {
+      "resourceType": "AWS::S3::Bucket",
+      "providerFile": "s3-bucket-provider.ts",
+      "sdkClientPackage": "@aws-sdk/client-s3",
+      "keyStyle": "exact",
+      "nestedKeyCount": 115,
+      "entries": [
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "AbortIncompleteMultipartUpload",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "AccelerationStatus",
+          "bucket": "provider-handled"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "AccessControlTranslation",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "AccessPointArn",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "AccessTier",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "Account",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "AllowedHeaders",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "AllowedMethods",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "AllowedOrigins",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "And",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "BlockPublicAcls",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "BlockPublicPolicy",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "BlockedEncryptionTypes",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "Bucket",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "BucketAccountId",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "BucketArn",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "BucketKeyEnabled",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "CorsRules",
+          "bucket": "provider-handled"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "DataExport",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "Days",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "DaysAfterInitiation",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "DefaultRetention",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "DeleteMarkerReplication",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "Destination",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "DestinationBucketName",
+          "bucket": "provider-handled"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "Enabled",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "EncryptionConfiguration",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "EncryptionType",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "ErrorDocument",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "Event",
+          "bucket": "provider-handled"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "EventBridgeConfiguration",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "EventBridgeEnabled",
+          "bucket": "provider-handled"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "EventThreshold",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "ExpirationDate",
+          "bucket": "provider-handled"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "ExpirationInDays",
+          "bucket": "provider-handled"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "ExpiredObjectDeleteMarker",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "ExposedHeaders",
+          "bucket": "provider-handled"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "Filter",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "Format",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "Function",
+          "bucket": "provider-handled"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "HostName",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "HttpErrorCodeReturnedEquals",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "HttpRedirectCode",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "Id",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "IgnorePublicAcls",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "IncludedObjectVersions",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "IndexDocument",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "KMSMasterKeyID",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "Key",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "KeyPrefixEquals",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "LambdaConfigurations",
+          "bucket": "provider-handled"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "LogFilePrefix",
+          "bucket": "provider-handled"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "MaxAge",
+          "bucket": "provider-handled"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "Metrics",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "Minutes",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "Mode",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "Name",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "NewerNoncurrentVersions",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "NoncurrentDays",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "NoncurrentVersionExpiration",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "NoncurrentVersionExpirationInDays",
+          "bucket": "provider-handled"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "NoncurrentVersionTransition",
+          "bucket": "provider-handled"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "NoncurrentVersionTransitions",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "ObjectLockEnabled",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "ObjectOwnership",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "ObjectSizeGreaterThan",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "ObjectSizeLessThan",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "OptionalFields",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "OutputSchemaVersion",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "Owner",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "PartitionDateSource",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "PartitionedPrefix",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "Prefix",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "Priority",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "Protocol",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "Queue",
+          "bucket": "provider-handled"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "QueueConfigurations",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "RedirectAllRequestsTo",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "RedirectRule",
+          "bucket": "provider-handled"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "ReplaceKeyPrefixWith",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "ReplaceKeyWith",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "ReplicaKmsKeyID",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "ReplicaModifications",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "ReplicationTime",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "RestrictPublicBuckets",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "Role",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "RoutingRuleCondition",
+          "bucket": "provider-handled"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "RoutingRules",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "Rule",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "Rules",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "S3Key",
+          "bucket": "provider-handled"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "SSEAlgorithm",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "ScheduleFrequency",
+          "bucket": "provider-handled"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "ServerSideEncryptionByDefault",
+          "bucket": "provider-handled"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "ServerSideEncryptionConfiguration",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "SimplePrefix",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "SourceSelectionCriteria",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "SseKmsEncryptedObjects",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "Status",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "StorageClass",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "StorageClassAnalysis",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "TagFilter",
+          "bucket": "provider-handled"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "TagFilters",
+          "bucket": "provider-handled"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "TargetObjectKeyFormat",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "Tierings",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "Time",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "Topic",
+          "bucket": "provider-handled"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "TopicConfigurations",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "Transition",
+          "bucket": "provider-handled"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "TransitionDate",
+          "bucket": "provider-handled"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "TransitionDefaultMinimumObjectSize",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "TransitionInDays",
+          "bucket": "provider-handled"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "Transitions",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "Value",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "Years",
+          "bucket": "same-spelling"
+        }
+      ],
+      "shapeEntries": [
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "BucketArn",
+          "definition": "Destination",
+          "pass": "definition",
+          "bucket": "provider-handled",
+          "sdkDetail": "SDK interface `Destination` has no `BucketArn` member"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "BucketAccountId",
+          "definition": "Destination",
+          "pass": "definition",
+          "bucket": "provider-handled",
+          "sdkDetail": "SDK interface `Destination` has no `BucketAccountId` member"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "Format",
+          "definition": "Destination",
+          "pass": "definition",
+          "bucket": "provider-handled",
+          "sdkDetail": "SDK interface `Destination` has no `Format` member"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "Prefix",
+          "definition": "Destination",
+          "pass": "definition",
+          "bucket": "provider-handled",
+          "sdkDetail": "SDK interface `Destination` has no `Prefix` member"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "Prefix",
+          "definition": "AnalyticsConfiguration",
+          "pass": "definition",
+          "bucket": "provider-handled",
+          "sdkDetail": "SDK interface `AnalyticsConfiguration` has no `Prefix` member"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "ServerSideEncryptionConfiguration",
+          "definition": "BucketEncryption",
+          "pass": "wrapper",
+          "bucket": "provider-handled"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "Prefix",
+          "definition": "IntelligentTieringConfiguration",
+          "pass": "definition",
+          "bucket": "provider-handled",
+          "sdkDetail": "SDK interface `IntelligentTieringConfiguration` has no `Prefix` member"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "Enabled",
+          "definition": "InventoryConfiguration",
+          "pass": "definition",
+          "bucket": "provider-handled",
+          "sdkDetail": "SDK interface `InventoryConfiguration` has no `Enabled` member"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "Prefix",
+          "definition": "InventoryConfiguration",
+          "pass": "definition",
+          "bucket": "provider-handled",
+          "sdkDetail": "SDK interface `InventoryConfiguration` has no `Prefix` member"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "AccessPointArn",
+          "definition": "MetricsConfiguration",
+          "pass": "definition",
+          "bucket": "provider-handled",
+          "sdkDetail": "SDK interface `MetricsConfiguration` has no `AccessPointArn` member"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "Prefix",
+          "definition": "MetricsConfiguration",
+          "pass": "definition",
+          "bucket": "provider-handled",
+          "sdkDetail": "SDK interface `MetricsConfiguration` has no `Prefix` member"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "Rules",
+          "definition": "S3KeyFilter",
+          "pass": "definition",
+          "bucket": "provider-handled",
+          "sdkDetail": "SDK interface `S3KeyFilter` has no `Rules` member"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "Id",
+          "definition": "ReplicationRule",
+          "pass": "definition",
+          "bucket": "provider-handled",
+          "sdkDetail": "SDK interface `ReplicationRule` has no `Id` member"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "TableNamespace",
+          "definition": "S3TablesDestination",
+          "pass": "definition",
+          "bucket": "allow-listed",
+          "sdkDetail": "SDK interface `S3TablesDestination` has no `TableNamespace` member",
+          "rationale": "Member of the S3TablesDestination definition, reachable only from the MetadataTableConfiguration top-level the provider declares as silent-drop (Cloud-Control-routed), so no SDK forwarding path exists to drop it (issue #1430)."
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "TableArn",
+          "definition": "S3TablesDestination",
+          "pass": "definition",
+          "bucket": "allow-listed",
+          "sdkDetail": "SDK interface `S3TablesDestination` has no `TableArn` member",
+          "rationale": "Member of the S3TablesDestination / JournalTableConfiguration / InventoryTableConfiguration definitions, reachable only from the MetadataConfiguration / MetadataTableConfiguration top-levels the provider declares as silent-drop (Cloud-Control-routed), so no SDK forwarding path exists to drop it (issue #1430)."
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "TableName",
+          "definition": "JournalTableConfiguration",
+          "pass": "definition",
+          "bucket": "allow-listed",
+          "sdkDetail": "SDK interface `JournalTableConfiguration` has no `TableName` member",
+          "rationale": "Member of the JournalTableConfiguration / InventoryTableConfiguration definitions, reachable only from the MetadataConfiguration / MetadataTableConfiguration top-levels the provider declares as silent-drop (Cloud-Control-routed), so no SDK forwarding path exists to drop it (issue #1430)."
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "TableArn",
+          "definition": "JournalTableConfiguration",
+          "pass": "definition",
+          "bucket": "allow-listed",
+          "sdkDetail": "SDK interface `JournalTableConfiguration` has no `TableArn` member",
+          "rationale": "Member of the S3TablesDestination / JournalTableConfiguration / InventoryTableConfiguration definitions, reachable only from the MetadataConfiguration / MetadataTableConfiguration top-levels the provider declares as silent-drop (Cloud-Control-routed), so no SDK forwarding path exists to drop it (issue #1430)."
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "TableName",
+          "definition": "InventoryTableConfiguration",
+          "pass": "definition",
+          "bucket": "allow-listed",
+          "sdkDetail": "SDK interface `InventoryTableConfiguration` has no `TableName` member",
+          "rationale": "Member of the JournalTableConfiguration / InventoryTableConfiguration definitions, reachable only from the MetadataConfiguration / MetadataTableConfiguration top-levels the provider declares as silent-drop (Cloud-Control-routed), so no SDK forwarding path exists to drop it (issue #1430)."
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "TableArn",
+          "definition": "InventoryTableConfiguration",
+          "pass": "definition",
+          "bucket": "allow-listed",
+          "sdkDetail": "SDK interface `InventoryTableConfiguration` has no `TableArn` member",
+          "rationale": "Member of the S3TablesDestination / JournalTableConfiguration / InventoryTableConfiguration definitions, reachable only from the MetadataConfiguration / MetadataTableConfiguration top-levels the provider declares as silent-drop (Cloud-Control-routed), so no SDK forwarding path exists to drop it (issue #1430)."
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "Destination",
+          "definition": "MetadataConfiguration",
+          "pass": "definition",
+          "bucket": "provider-handled",
+          "sdkDetail": "SDK interface `MetadataConfiguration` has no `Destination` member"
+        }
+      ],
+      "shapeCleanCount": 13,
+      "unmatchedDefinitions": [
+        "AnnotationTableConfiguration",
+        "BucketEncryption",
+        "CorsConfiguration",
+        "CorsRule",
+        "DataExport",
+        "LambdaConfiguration",
+        "LifecycleConfiguration",
+        "LoggingConfiguration",
+        "MetadataDestination",
+        "NotificationFilter",
+        "RedirectRule",
+        "ReplicationDestination",
+        "RoutingRuleCondition",
+        "Rule",
+        "TagFilter"
       ]
     }
   ]

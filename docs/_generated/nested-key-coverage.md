@@ -7,16 +7,16 @@ For every SDK provider that forwards a nested CFn config blob, diffs the blob's 
 
 ## Summary
 
-- Audited targets: **10**
-- Nested CFn keys audited: **373**
-- Same spelling in SDK model: **355**
-- Explicitly handled in provider: **14**
+- Audited targets: **11**
+- Nested CFn keys audited: **488**
+- Same spelling in SDK model: **444**
+- Explicitly handled in provider: **40**
 - Allow-listed pass-throughs (does NOT block CI): **4**
 - **Case divergences (blocks CI): 0**
 - **No SDK member (blocks CI): 0**
-- Shape pass — bare-array pairs clean: **74**
-- Shape pass — explicitly handled in provider: **17**
-- Shape pass — allow-listed (does NOT block CI): **1**
+- Shape pass — bare-array pairs clean: **87**
+- Shape pass — explicitly handled in provider: **31**
+- Shape pass — allow-listed (does NOT block CI): **7**
 - **Array-vs-wrapper divergences (blocks CI): 0**
 - **Definition-member-missing divergences (blocks CI): 0**
 - Shape pass — ambiguous (visible, non-blocking): **1**
@@ -34,6 +34,12 @@ None. Every audited nested CFn key either matches an SDK member spelling or is e
 | `AWS::CloudFront::Distribution` | `DNSName` | Member of the legacy CustomOrigin / S3Origin blocks only (LegacyCustomOrigin / LegacyS3Origin definitions); unreachable from a modern template. |
 | `AWS::CodeBuild::Project` | `HostKernel` | Declared in the CFn registry schema but has NO member anywhere in the installed @aws-sdk/client-codebuild dist-types tree, so there is nothing to map it onto until an SDK bump adds one (issue #1386). Naming it in the provider would be a false claim of support. Remove this entry once the SDK ships the member, at which point the key becomes genuinely mappable. |
 | `AWS::CloudFront::Distribution` | `S3Origin` | Legacy pre-2012 single-origin form (LegacyS3Origin definition), sibling of CustomOrigin; superseded by Origins[]. Invisible to the KEY pass because the StreamingDistribution API still has a same-spelled S3Origin member — the definition pass (issue #1378) is what catches it. |
+| `AWS::S3::Bucket` | `TableNamespace` | Member of the S3TablesDestination definition, reachable only from the MetadataTableConfiguration top-level the provider declares as silent-drop (Cloud-Control-routed), so no SDK forwarding path exists to drop it (issue #1430). |
+| `AWS::S3::Bucket` | `TableArn` | Member of the S3TablesDestination / JournalTableConfiguration / InventoryTableConfiguration definitions, reachable only from the MetadataConfiguration / MetadataTableConfiguration top-levels the provider declares as silent-drop (Cloud-Control-routed), so no SDK forwarding path exists to drop it (issue #1430). |
+| `AWS::S3::Bucket` | `TableName` | Member of the JournalTableConfiguration / InventoryTableConfiguration definitions, reachable only from the MetadataConfiguration / MetadataTableConfiguration top-levels the provider declares as silent-drop (Cloud-Control-routed), so no SDK forwarding path exists to drop it (issue #1430). |
+| `AWS::S3::Bucket` | `TableArn` | Member of the S3TablesDestination / JournalTableConfiguration / InventoryTableConfiguration definitions, reachable only from the MetadataConfiguration / MetadataTableConfiguration top-levels the provider declares as silent-drop (Cloud-Control-routed), so no SDK forwarding path exists to drop it (issue #1430). |
+| `AWS::S3::Bucket` | `TableName` | Member of the JournalTableConfiguration / InventoryTableConfiguration definitions, reachable only from the MetadataConfiguration / MetadataTableConfiguration top-levels the provider declares as silent-drop (Cloud-Control-routed), so no SDK forwarding path exists to drop it (issue #1430). |
+| `AWS::S3::Bucket` | `TableArn` | Member of the S3TablesDestination / JournalTableConfiguration / InventoryTableConfiguration definitions, reachable only from the MetadataConfiguration / MetadataTableConfiguration top-levels the provider declares as silent-drop (Cloud-Control-routed), so no SDK forwarding path exists to drop it (issue #1430). |
 
 ## Per-provider handled keys
 
@@ -55,6 +61,32 @@ Keys with no same-spelling SDK member that the provider explicitly names (conver
 | `AWS::ECS::TaskDefinition` | `IAM` |
 | `AWS::ECS::TaskDefinition` | `ProxyConfigurationProperties` |
 | `AWS::ECS::TaskDefinition` | `S3FilesVolumeConfiguration` |
+| `AWS::S3::Bucket` | `AccelerationStatus` |
+| `AWS::S3::Bucket` | `CorsRules` |
+| `AWS::S3::Bucket` | `DestinationBucketName` |
+| `AWS::S3::Bucket` | `Event` |
+| `AWS::S3::Bucket` | `EventBridgeEnabled` |
+| `AWS::S3::Bucket` | `ExpirationDate` |
+| `AWS::S3::Bucket` | `ExpirationInDays` |
+| `AWS::S3::Bucket` | `ExposedHeaders` |
+| `AWS::S3::Bucket` | `Function` |
+| `AWS::S3::Bucket` | `LambdaConfigurations` |
+| `AWS::S3::Bucket` | `LogFilePrefix` |
+| `AWS::S3::Bucket` | `MaxAge` |
+| `AWS::S3::Bucket` | `NoncurrentVersionExpirationInDays` |
+| `AWS::S3::Bucket` | `NoncurrentVersionTransition` |
+| `AWS::S3::Bucket` | `Queue` |
+| `AWS::S3::Bucket` | `RedirectRule` |
+| `AWS::S3::Bucket` | `RoutingRuleCondition` |
+| `AWS::S3::Bucket` | `S3Key` |
+| `AWS::S3::Bucket` | `ScheduleFrequency` |
+| `AWS::S3::Bucket` | `ServerSideEncryptionByDefault` |
+| `AWS::S3::Bucket` | `TagFilter` |
+| `AWS::S3::Bucket` | `TagFilters` |
+| `AWS::S3::Bucket` | `Topic` |
+| `AWS::S3::Bucket` | `Transition` |
+| `AWS::S3::Bucket` | `TransitionDate` |
+| `AWS::S3::Bucket` | `TransitionInDays` |
 
 ## Shape pass — provider-handled re-shapings
 
@@ -79,6 +111,20 @@ CFn members whose SHAPE diverges from the same-spelled SDK member (bare array vs
 | `AWS::CloudFront::Distribution` | `ForwardedValues` | `Headers` | wrapper | SDK wraps it as `Headers` ({ Quantity, Items }) |
 | `AWS::CloudFront::Distribution` | `ForwardedValues` | `QueryStringCacheKeys` | wrapper | SDK wraps it as `QueryStringCacheKeys` ({ Quantity, Items }) |
 | `AWS::CloudFront::Distribution` | `GeoRestriction` | `Locations` | definition | SDK interface `GeoRestriction` has no `Locations` member |
+| `AWS::S3::Bucket` | `Destination` | `BucketArn` | definition | SDK interface `Destination` has no `BucketArn` member |
+| `AWS::S3::Bucket` | `Destination` | `BucketAccountId` | definition | SDK interface `Destination` has no `BucketAccountId` member |
+| `AWS::S3::Bucket` | `Destination` | `Format` | definition | SDK interface `Destination` has no `Format` member |
+| `AWS::S3::Bucket` | `Destination` | `Prefix` | definition | SDK interface `Destination` has no `Prefix` member |
+| `AWS::S3::Bucket` | `AnalyticsConfiguration` | `Prefix` | definition | SDK interface `AnalyticsConfiguration` has no `Prefix` member |
+| `AWS::S3::Bucket` | `BucketEncryption` | `ServerSideEncryptionConfiguration` | wrapper | — |
+| `AWS::S3::Bucket` | `IntelligentTieringConfiguration` | `Prefix` | definition | SDK interface `IntelligentTieringConfiguration` has no `Prefix` member |
+| `AWS::S3::Bucket` | `InventoryConfiguration` | `Enabled` | definition | SDK interface `InventoryConfiguration` has no `Enabled` member |
+| `AWS::S3::Bucket` | `InventoryConfiguration` | `Prefix` | definition | SDK interface `InventoryConfiguration` has no `Prefix` member |
+| `AWS::S3::Bucket` | `MetricsConfiguration` | `AccessPointArn` | definition | SDK interface `MetricsConfiguration` has no `AccessPointArn` member |
+| `AWS::S3::Bucket` | `MetricsConfiguration` | `Prefix` | definition | SDK interface `MetricsConfiguration` has no `Prefix` member |
+| `AWS::S3::Bucket` | `S3KeyFilter` | `Rules` | definition | SDK interface `S3KeyFilter` has no `Rules` member |
+| `AWS::S3::Bucket` | `ReplicationRule` | `Id` | definition | SDK interface `ReplicationRule` has no `Id` member |
+| `AWS::S3::Bucket` | `MetadataConfiguration` | `Destination` | definition | SDK interface `MetadataConfiguration` has no `Destination` member |
 
 ## Shape pass — ambiguous (non-blocking)
 
@@ -100,4 +146,5 @@ CFn members whose SHAPE diverges from the same-spelled SDK member (bare array vs
 | `AWS::CodeBuild::Project` | `codebuild-provider.ts` | `@aws-sdk/client-codebuild` | lower-first | 57 | 4 |
 | `AWS::ECS::Service` | `ecs-provider.ts` | `@aws-sdk/client-ecs` | lower-first | 48 | 4 |
 | `AWS::ECS::TaskDefinition` | `ecs-provider.ts` | `@aws-sdk/client-ecs` | lower-first | 113 | 3 |
+| `AWS::S3::Bucket` | `s3-bucket-provider.ts` | `@aws-sdk/client-s3` | exact | 115 | 15 |
 

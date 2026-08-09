@@ -121,8 +121,16 @@ function mergeLegacySingular(
 /** Coerce a CFn boolean, which may arrive as the string `"true"` / `"false"`. */
 function coerceCfnBoolean(value: unknown): boolean | undefined {
   if (typeof value === 'boolean') return value;
-  if (value === 'true') return true;
-  if (value === 'false') return false;
+  // Case-insensitive on purpose. CDK renders lowercase, but this also feeds
+  // `NotificationConfiguration.EventBridgeConfiguration` (issue #1430), where
+  // "not false" means "enable" — so a hand-written / imported `'False'` that
+  // fell through to `undefined` would silently ENABLE EventBridge delivery,
+  // the exact inversion #1430 fixed.
+  if (typeof value === 'string') {
+    const lowered = value.toLowerCase();
+    if (lowered === 'true') return true;
+    if (lowered === 'false') return false;
+  }
   return undefined;
 }
 
@@ -873,10 +881,24 @@ export class S3BucketProvider implements ResourceProvider {
           Filter: this.cfnNotifFilterToSdk(l['Filter']),
         }));
       }
-      const eb = notifConfig['EventBridgeConfiguration'] as Record<string, unknown> | undefined;
-      if (eb !== undefined) {
-        // CFn EventBridgeConfiguration is `{}` (empty object means enabled)
-        // SDK expects the same empty object to enable.
+      const eb = notifConfig['EventBridgeConfiguration'];
+      // `isPlainObject`, not `!== undefined`: this branch now READS a member off
+      // the block, so an explicit `null` (hand-written JSON / an intrinsic that
+      // resolved to null) would throw where it previously just emitted the
+      // block. A non-object stays on the pre-change enable-on-presence side.
+      if (
+        eb !== undefined &&
+        (!isPlainObject(eb) || coerceCfnBoolean(eb['EventBridgeEnabled']) !== false)
+      ) {
+        // The SDK's `EventBridgeConfiguration` is an EMPTY structure — presence
+        // enables EventBridge delivery, absence disables it. CFn instead carries
+        // a REQUIRED boolean `EventBridgeEnabled` inside the block (that is what
+        // `CfnBucket` renders), so the boolean has no SDK member to land on and
+        // has to be translated into presence/absence here. Before issue #1430
+        // the block was emitted whenever it existed, so an explicit
+        // `EventBridgeEnabled: false` silently ENABLED notifications — the
+        // inverse of the template's intent. Absent / unresolved values keep the
+        // pre-existing enable-on-presence behavior.
         cfg.EventBridgeConfiguration = {};
       }
     }
@@ -2343,9 +2365,28 @@ export class S3BucketProvider implements ResourceProvider {
         return e;
       });
     }
-    if (resp.EventBridgeConfiguration) {
-      out['EventBridgeConfiguration'] = {};
-    }
+    // Always-emit, and in the CFn shape (`{EventBridgeEnabled: <bool>}`) rather
+    // than the SDK's empty-structure shape — cdkd's state baseline holds the
+    // CFn spelling, so returning `{}` reported the boolean as permanently
+    // missing on every EventBridge-enabled bucket (issue #1430). Emitting
+    // `false` when the response omits the block keeps the disabled side
+    // comparable too.
+    //
+    // ONE-TIME DRIFT ON UPGRADE, accepted deliberately. `cdkd drift` runs the
+    // observed-properties path with `unionWalkObjects: true`, which walks the
+    // union of baseline+AWS keys inside a nested object, so a state record
+    // captured by an older binary reports one diff on the first run after
+    // upgrading: `EventBridgeConfiguration: {}` vs `{EventBridgeEnabled: true}`
+    // on an enabled bucket, or an added `EventBridgeConfiguration` on a bucket
+    // with no such key at all. It is cosmetic — `--revert` re-sends the old
+    // observed blob and the write side re-derives the same AWS state — and it
+    // clears on the next `cdkd state refresh-observed`, `drift --accept`, or
+    // ANY subsequent `cdkd deploy` (the engine persists refreshed
+    // `observedProperties` even on the no-change path). The alternative (emit only when present) is
+    // what caused the PERMANENT phantom drift this fixes.
+    out['EventBridgeConfiguration'] = {
+      EventBridgeEnabled: resp.EventBridgeConfiguration !== undefined,
+    };
     return out;
   }
 

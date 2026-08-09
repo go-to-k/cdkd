@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vite-plus/test';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import {
@@ -281,11 +281,39 @@ describe('loadReport loud-failure fences', () => {
   });
 
   it('throws on a fixture without a definitionShapes capture (#1378)', () => {
-    // AWS::S3::Bucket's committed fixture predates the shape capture; a
-    // minNestedKeys: 0 target passes the nestedProperties gate and must
-    // still fail loudly on the missing definitionShapes.
+    // Pick the stand-in DYNAMICALLY: most committed fixtures predate the shape
+    // capture, but re-capturing any single one must not silently defuse this
+    // fence. (It did — #1430 re-captured AWS::S3::Bucket, which this test had
+    // hardcoded.) A minNestedKeys: 0 target passes the nestedProperties gate
+    // and must still fail loudly on the missing definitionShapes.
+    const fixtureDir = resolve(repoRoot, 'tests/fixtures/cfn-schemas');
+    const preShapeCapture = readdirSync(fixtureDir)
+      // `readdirSync` order is filesystem-dependent (it differs between macOS
+      // and the Linux CI runner), so sort for a deterministic pick. And
+      // require a string `resourceType`: the directory holds at least one
+      // bookkeeping file without one, which would make `loadReport` throw a
+      // TypeError instead of the /definitionShapes/ error this asserts.
+      .filter((f) => f.endsWith('.json'))
+      .sort()
+      .map((f) => JSON.parse(readFileSync(join(fixtureDir, f), 'utf8')) as Record<string, unknown>)
+      .find(
+        (s) => s['definitionShapes'] === undefined && typeof s['resourceType'] === 'string'
+      );
+    // Never let the probe pass vacuously: if every fixture has been
+    // re-captured this fence needs a synthetic fixture instead of a stand-in.
+    // That day WILL come — `loadReport` hardcodes the fixture dir, so there is
+    // no seam to point it at a synthetic file, and the fix at that point is to
+    // add one (mirroring the existing `resolveModelsDir` seam). Failing here
+    // with this message is the intended way to find out.
+    expect(preShapeCapture, 'no pre-shape-capture fixture left to probe with').toBeDefined();
     expect(() =>
-      loadReport([{ ...realTarget, resourceType: 'AWS::S3::Bucket', minNestedKeys: 0 }])
+      loadReport([
+        {
+          ...realTarget,
+          resourceType: preShapeCapture!['resourceType'] as string,
+          minNestedKeys: 0,
+        },
+      ])
     ).toThrow(/definitionShapes/);
   });
 
@@ -623,6 +651,35 @@ describe('real-repo audit (regression floors)', () => {
     );
   });
 
+  it('audits the S3 Bucket target with a healthy nested-key count (#1430)', () => {
+    const s3 = report.targets.find((t) => t.resourceType === 'AWS::S3::Bucket');
+    expect(s3).toBeDefined();
+    expect(s3!.nestedKeyCount).toBeGreaterThanOrEqual(100);
+  });
+
+  it('fences the S3 keys the critic can actually discriminate as provider-handled (#1430)', () => {
+    // These four are the ONLY S3 keys whose bucket depends on the provider
+    // still converting them: each has exactly ONE literal occurrence, so
+    // removing that site flips it to `no-sdk-member`. Measured, not assumed —
+    // running the critic against the real pre-#1426 provider flags exactly
+    // these (minus EventBridgeEnabled, which #1430 itself introduced).
+    //
+    // `TagFilters` / `TransitionInDays` are deliberately NOT here: both are
+    // named by `readCurrentState`'s reverse map too, so the file-global
+    // literal heuristic reports `provider-handled` even with the write-side
+    // conversion gone. Fencing them would pin a value that cannot change
+    // (#1393 item 2).
+    const s3 = report.targets.find((t) => t.resourceType === 'AWS::S3::Bucket')!;
+    for (const key of [
+      'Transition',
+      'NoncurrentVersionTransition',
+      'NoncurrentVersionExpirationInDays',
+      'EventBridgeEnabled',
+    ]) {
+      expect(s3.entries.find((e) => e.nestedKey === key)?.bucket, key).toBe('provider-handled');
+    }
+  });
+
   it('fences the #1304-fixed AnomalyDetector MetricTimeZone as provider-handled', () => {
     const ad = report.targets.find((t) => t.resourceType === 'AWS::CloudWatch::AnomalyDetector')!;
     expect(ad.entries.find((e) => e.nestedKey === 'MetricTimeZone')?.bucket).toBe(
@@ -772,6 +829,148 @@ describe('real-code regression probes (per the repo checker rules)', () => {
       result.entries.find((e) => e.nestedKey === 'CachedMethods' && e.pass === 'definition')
         ?.bucket
     ).toBe('provider-handled');
+  });
+
+  // AWS::S3::Bucket (issue #1430). The target was added BECAUSE the #1388 /
+  // #1424 lifecycle defects were fixed by hand in PR #1426 with no mechanical
+  // backstop; these probes prove the critic would now reject each of those
+  // conversions being removed from the REAL provider, so the fixes cannot
+  // silently regress. A synthetic fixture would only encode our own model of
+  // the defect (see the checker rules in .claude/rules/testing.md).
+  //
+  // The probed keys are chosen by MEASUREMENT: running the critic against the
+  // real pre-#1426 provider flags `Transition`, `NoncurrentVersionTransition`
+  // and `NoncurrentVersionExpirationInDays`, and each has exactly ONE literal
+  // occurrence today, so stripping it is a regression that can really happen.
+  // `TagFilters` (17 occurrences) and `TransitionInDays` (4) are excluded: the
+  // extra sites are `readCurrentState`'s reverse map, so a strip-EVERY-
+  // occurrence probe on them would pass while testing a shape no real
+  // regression produces (#1393 item 2). An earlier draft of this file probed
+  // exactly those two and was green for that reason.
+  const s3Target = NESTED_KEY_TARGETS.find((t) => t.resourceType === 'AWS::S3::Bucket')!;
+  const s3Fixture = JSON.parse(
+    readFileSync(resolve(repoRoot, 'tests/fixtures/cfn-schemas/AWS-S3-Bucket.json'), 'utf8')
+  ) as { nestedProperties: Record<string, string[]> };
+  const s3SdkMembers = collectSdkMemberNames(
+    resolve(repoRoot, 'node_modules/@aws-sdk/client-s3/dist-types/models')
+  );
+  const s3Source = readFileSync(
+    resolve(repoRoot, 'src/provisioning/providers/s3-bucket-provider.ts'),
+    'utf8'
+  );
+  const s3HandledTopLevels = new Set([
+    'VersioningConfiguration',
+    'Tags',
+    'OwnershipControls',
+    'NotificationConfiguration',
+    'CorsConfiguration',
+    'LifecycleConfiguration',
+    'PublicAccessBlockConfiguration',
+    'BucketEncryption',
+    'LoggingConfiguration',
+    'WebsiteConfiguration',
+    'AccelerateConfiguration',
+    'MetricsConfigurations',
+    'AnalyticsConfigurations',
+    'IntelligentTieringConfigurations',
+    'InventoryConfigurations',
+    'ReplicationConfiguration',
+    'ObjectLockConfiguration',
+  ]);
+  const s3NestedKeys = nestedKeysForTarget(s3Fixture, s3HandledTopLevels);
+
+  it('SDK member parse floor holds for the real S3 model (parser-regression fence)', () => {
+    expect(s3SdkMembers.size).toBeGreaterThanOrEqual(50);
+    // The lifecycle members the #1426 conversions map ONTO — if these vanish
+    // the probes below would pass vacuously.
+    expect(s3SdkMembers.has('NoncurrentDays')).toBe(true);
+    expect(s3SdkMembers.has('Tags')).toBe(true);
+  });
+
+  // Each of these has exactly ONE literal site in the real provider, so
+  // removing it is the regression a careless refactor actually produces.
+  const S3_DISCRIMINATING_KEYS = [
+    'Transition',
+    'NoncurrentVersionTransition',
+    'NoncurrentVersionExpirationInDays',
+    'EventBridgeEnabled',
+  ];
+
+  /**
+   * Strip every EVIDENCE-bearing spelling of a key from the source. The
+   * critic's evidence set is `collectStringLiterals`, which counts quoted
+   * literals AND object-literal property names — so a probe that rewrites
+   * only `'Key'` leaves a bare `Key:` behind and silently tests nothing. That
+   * is not hypothetical: `EventBridgeEnabled` is quoted on the write side and
+   * an object-literal key on the read side, and the first version of this
+   * probe passed for exactly that reason.
+   */
+  const stripKeyEvidence = (source: string, key: string): string =>
+    source
+      .replaceAll(`'${key}'`, `'Removed${key}'`)
+      // Anchored on a non-identifier boundary so probing `Transition` does not
+      // also rewrite `NoncurrentVersionTransition:`. Collateral stripping could
+      // only ever REMOVE evidence (each probe asserts its own key, so no false
+      // pass is reachable either way), but an unanchored probe does not mean
+      // what it says, and the next reader would have to re-derive that.
+      .replace(new RegExp(`(^|[^A-Za-z0-9_$])${key}:`, 'g'), `$1Removed${key}:`);
+
+  it('the probes below actually remove the key from the evidence set (probe-validity fence)', () => {
+    // Self-validation, and the reason it exists: without it a future refactor
+    // that introduces a THIRD evidence spelling would turn every strip-probe
+    // vacuous while leaving them green.
+    for (const key of S3_DISCRIMINATING_KEYS) {
+      expect(collectStringLiterals(s3Source).has(key), `${key} present before`).toBe(true);
+      expect(
+        collectStringLiterals(stripKeyEvidence(s3Source, key)).has(key),
+        `${key} still in evidence after strip`
+      ).toBe(false);
+    }
+    // The control: TagFilters CANNOT be stripped down to zero evidence by a
+    // realistic single-site regression, which is why it is not probed.
+    expect(s3Source.split(`'TagFilters'`).length - 1).toBeGreaterThan(1);
+  });
+
+  for (const key of S3_DISCRIMINATING_KEYS) {
+    it(`flags the real S3 provider with the ${key} conversion removed`, () => {
+      const entries = classifyTarget(
+        s3Target,
+        s3NestedKeys,
+        s3SdkMembers,
+        collectStringLiterals(stripKeyEvidence(s3Source, key))
+      );
+      expect(entries.find((e) => e.nestedKey === key)?.bucket, key).toBe('no-sdk-member');
+    });
+  }
+
+  it('does NOT flag TagFilters when only its write-side conversion is removed', () => {
+    // The honest statement of the critic's limit, pinned so nobody re-adds the
+    // false "TagFilters would have been caught" claim. `readCurrentState`
+    // still names the key, and the evidence set is file-global, so the write
+    // path can be entirely broken while the bucket stays `provider-handled`.
+    // Tracked as item 2 of #1393; when that lands, this expectation flips.
+    const writeSite = "(filter?.['TagFilters'] ?? rule['TagFilters'])";
+    expect(s3Source, 'write-site anchor still present').toContain(writeSite);
+    const regressed = s3Source.replace(writeSite, '(undefined)');
+    const entries = classifyTarget(
+      s3Target,
+      s3NestedKeys,
+      s3SdkMembers,
+      collectStringLiterals(regressed)
+    );
+    expect(entries.find((e) => e.nestedKey === 'TagFilters')?.bucket).toBe('provider-handled');
+  });
+
+  it('the unregressed real S3 provider classifies every probed key as provider-handled', () => {
+    const entries = classifyTarget(
+      s3Target,
+      s3NestedKeys,
+      s3SdkMembers,
+      collectStringLiterals(s3Source)
+    );
+    for (const key of S3_DISCRIMINATING_KEYS) {
+      expect(entries.find((e) => e.nestedKey === key)?.bucket, key).toBe('provider-handled');
+    }
   });
 });
 
