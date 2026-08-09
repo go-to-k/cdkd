@@ -139,6 +139,34 @@ describe('GlueCrawlerProvider', () => {
     });
   });
 
+  it('create() coerces a stringly-typed ScanRate to a number (#1391)', async () => {
+    // CFn is stringly typed, so a template can carry `ScanRate: "0.9"`. The SDK
+    // models it as a double and the serializer forwards a string verbatim, so
+    // the conversion — now the wire boundary for Targets — has to coerce.
+    await provider.create('L', 'AWS::Glue::Crawler', {
+      Name: 'my-crawler',
+      Role: 'arn:aws:iam::123456789012:role/GlueCrawlerRole',
+      Targets: {
+        DynamoDBTargets: [
+          { Path: 'my-table', ScanRate: '0.9', ScanAll: 'false' },
+          // Non-numeric input passes through so AWS surfaces the real
+          // validation error instead of cdkd mangling it.
+          { Path: 'other-table', ScanRate: 'not-a-number', ScanAll: 'true' },
+        ],
+      },
+    });
+
+    const call = mockSend.mock.calls.find((c) => c[0] instanceof CreateCrawlerCommand);
+    expect(call![0].input.Targets).toEqual({
+      DynamoDBTargets: [
+        // `ScanAll: 'false'` MUST become the boolean false — the raw string is
+        // truthy, so forwarding it would silently invert the setting.
+        { Path: 'my-table', scanRate: 0.9, scanAll: false },
+        { Path: 'other-table', scanRate: 'not-a-number', scanAll: true },
+      ],
+    });
+  });
+
   it('create() fails when Role is missing', async () => {
     await expect(
       provider.create('L', 'AWS::Glue::Crawler', {

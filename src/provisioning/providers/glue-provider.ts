@@ -2499,6 +2499,32 @@ const CFN_TO_SDK_DYNAMODB_TARGET_KEYS: Record<string, string> = {
   ScanRate: 'scanRate',
 };
 
+/**
+ * CFn is stringly typed, so a template (or an unresolved-then-resolved
+ * intrinsic) can carry `ScanRate: "0.9"`. The SDK models it as a double and the
+ * serializer forwards a string verbatim, so the value has to be coerced HERE —
+ * this converter is the wire boundary for `Targets` now that it re-shapes the
+ * blob. Non-numeric input passes through so AWS surfaces the real validation
+ * error rather than cdkd mangling it.
+ */
+const SDK_DYNAMODB_TARGET_NUMERIC_KEYS: readonly string[] = ['scanRate'];
+
+/**
+ * Same stringly-typed-CFn reasoning as {@link SDK_DYNAMODB_TARGET_NUMERIC_KEYS},
+ * for the boolean member: a hand-written `ScanAll: "false"` would otherwise
+ * forward the STRING `"false"` — which is truthy — to a boolean member.
+ */
+const SDK_DYNAMODB_TARGET_BOOLEAN_KEYS: readonly string[] = ['scanAll'];
+
+/** CFn booleans arrive as `true` / `false` or as the strings `"true"` / `"false"`. */
+function coerceBoolean(value: unknown): unknown {
+  if (typeof value === 'string') {
+    if (value === 'true') return true;
+    if (value === 'false') return false;
+  }
+  return value;
+}
+
 const SDK_TO_CFN_DYNAMODB_TARGET_KEYS: Record<string, string> = {
   scanAll: 'ScanAll',
   scanRate: 'ScanRate',
@@ -2508,11 +2534,19 @@ const SDK_TO_CFN_DYNAMODB_TARGET_KEYS: Record<string, string> = {
  * Shallow-rename an object's keys per `renames`, leaving unlisted keys — and
  * non-object values (an unresolved intrinsic) — untouched.
  */
-function renameRecordKeys(entry: unknown, renames: Record<string, string>): unknown {
+function renameRecordKeys(
+  entry: unknown,
+  renames: Record<string, string>,
+  numericKeys: readonly string[] = [],
+  booleanKeys: readonly string[] = []
+): unknown {
   if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) return entry;
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(entry as Record<string, unknown>)) {
-    out[renames[k] ?? k] = v;
+    const key = renames[k] ?? k;
+    if (numericKeys.includes(key)) out[key] = coerceNumber(v);
+    else if (booleanKeys.includes(key)) out[key] = coerceBoolean(v);
+    else out[key] = v;
   }
   return out;
 }
@@ -2525,11 +2559,16 @@ function renameRecordKeys(entry: unknown, renames: Record<string, string>): unkn
 function renameCrawlerTargetList(
   targets: Record<string, unknown>,
   key: string,
-  renames: Record<string, string>
+  renames: Record<string, string>,
+  numericKeys: readonly string[] = [],
+  booleanKeys: readonly string[] = []
 ): Record<string, unknown> {
   const list = targets[key];
   if (!Array.isArray(list)) return targets;
-  return { ...targets, [key]: list.map((entry) => renameRecordKeys(entry, renames)) };
+  return {
+    ...targets,
+    [key]: list.map((entry) => renameRecordKeys(entry, renames, numericKeys, booleanKeys)),
+  };
 }
 
 /**
@@ -2540,7 +2579,9 @@ function toSdkCrawlerTargets(targets: Record<string, unknown>): CrawlerTargets {
   return renameCrawlerTargetList(
     targets,
     'DynamoDBTargets',
-    CFN_TO_SDK_DYNAMODB_TARGET_KEYS
+    CFN_TO_SDK_DYNAMODB_TARGET_KEYS,
+    SDK_DYNAMODB_TARGET_NUMERIC_KEYS,
+    SDK_DYNAMODB_TARGET_BOOLEAN_KEYS
   ) as CrawlerTargets;
 }
 

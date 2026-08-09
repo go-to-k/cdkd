@@ -868,6 +868,7 @@
         "dynamodb-ttl-attr-change",
         "fifo-sqs-event-source",
         "full-stack-demo",
+        "glue-update-hardening",
         "lambda",
         "local-invoke-from-cfn-stack",
         "local-run-task-from-state",
@@ -926,6 +927,9 @@
           "literal"
         ],
         "full-stack-demo": [
+          "l2"
+        ],
+        "glue-update-hardening": [
           "l2"
         ],
         "lambda": [

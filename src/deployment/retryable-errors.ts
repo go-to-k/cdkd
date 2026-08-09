@@ -43,6 +43,32 @@ export const IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS: readonly string[] = [
   // deleted role only burns the bounded retries before surfacing. Surfaced by
   // tests/integration/glue-update-hardening.
   'is unable to assume provided role',
+  // SECOND wording of the SAME Glue propagation error, seen 2026-08-09 on the
+  // same fixture once the crawler role gained an extra inline policy:
+  // "Service is unable to assume the role arn:aws:iam::...:role/... to access
+  // null. Please verify the role's TrustPolicy." The `provided role` anchor
+  // above does not match it (`the role <arn>`), so the deploy failed outright
+  // instead of retrying. Same class, same bounded retries. NOTE this entry
+  // deliberately drops the service-name anchor the Firehose comment argues for
+  // — AWS emits it with no service prefix — so a permanently mis-configured
+  // role burns the bounded retries (~48s) before surfacing. Accepted: the
+  // phrasing is specific enough that a non-propagation match is unlikely, and
+  // the alternative is failing a legitimate deploy outright.
+  'is unable to assume the role',
+  // THIRD wording of the same race, and the one that survives once the crawler
+  // is correctly ordered after the role + its policy: Glue assumes the fresh
+  // role and the resulting session's token is not valid yet, surfacing as
+  // "The security token included in the request is invalid. (Service:
+  // AmazonDynamoDBv2; ... Error Code: UnrecognizedClientException)".
+  //
+  // The `(Service:` suffix is the load-bearing part of this anchor, not
+  // decoration. That trailer is the Java SDK's wrapped-error format, so it
+  // appears ONLY when the message was produced by an AWS SERVICE acting on our
+  // behalf. cdkd's OWN expired-credential failure comes from the JS SDK and
+  // carries the bare sentence with no trailer — so an expired SSO session still
+  // fails fast instead of burning the retry budget, which a bare
+  // 'security token included in the request is invalid' pattern would break.
+  'security token included in the request is invalid. (Service:',
   'role defined for the function',
   'not authorized to perform',
   'execution role',
