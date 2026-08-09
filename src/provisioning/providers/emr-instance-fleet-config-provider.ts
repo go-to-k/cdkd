@@ -13,6 +13,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import { toSdkInstanceTypeConfigs } from '../emr-configuration.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -218,9 +219,7 @@ export class EMRInstanceFleetConfigProvider implements ResourceProvider {
       Name: properties['Name'] as string | undefined,
       TargetOnDemandCapacity: toNumber(properties['TargetOnDemandCapacity']),
       TargetSpotCapacity: toNumber(properties['TargetSpotCapacity']),
-      InstanceTypeConfigs: properties['InstanceTypeConfigs'] as
-        | import('@aws-sdk/client-emr').InstanceTypeConfig[]
-        | undefined,
+      InstanceTypeConfigs: toSdkInstanceTypeConfigs(properties['InstanceTypeConfigs']),
       LaunchSpecifications: properties['LaunchSpecifications'] as
         | import('@aws-sdk/client-emr').InstanceFleetProvisioningSpecifications
         | undefined,
@@ -288,9 +287,7 @@ export class EMRInstanceFleetConfigProvider implements ResourceProvider {
         ResizeSpecifications: properties['ResizeSpecifications'] as
           | import('@aws-sdk/client-emr').InstanceFleetResizingSpecifications
           | undefined,
-        InstanceTypeConfigs: properties['InstanceTypeConfigs'] as
-          | import('@aws-sdk/client-emr').InstanceTypeConfig[]
-          | undefined,
+        InstanceTypeConfigs: toSdkInstanceTypeConfigs(properties['InstanceTypeConfigs']),
       };
       await this.getClient().send(
         new ModifyInstanceFleetCommand({ ClusterId: clusterId, InstanceFleet: modify })

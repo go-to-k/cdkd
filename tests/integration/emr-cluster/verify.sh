@@ -93,6 +93,32 @@ CLEANUP_TAG_VALUE="emr-cluster"
 
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
+# `aws emr list-instance-groups` is an AWS-CLI-CUSTOMIZED command: in a
+# non-interactive shell it prints `Warning: Input is not a terminal (fd=0).`
+# and then dies with `aws: [ERROR]: [Errno 22] Invalid argument` (verified
+# 2026-08-09; `--no-paginate --no-cli-pager </dev/null` does not help). Read the
+# per-group `Configurations` through the SDK instead — the repo root already
+# depends on @aws-sdk/client-emr, so no extra install is needed.
+REPO_ROOT="${PWD}/../../.."
+list_instance_groups_json() { # $1 = cluster id -> JSON array of InstanceGroups
+  ( cd "${REPO_ROOT}" && REGION="${REGION}" node --input-type=module -e "
+import { EMRClient, ListInstanceGroupsCommand } from '@aws-sdk/client-emr';
+const client = new EMRClient({ region: process.env.REGION });
+const groups = [];
+let marker;
+// Follow Marker for parity with the provider's own paginated listInstanceGroups
+// — a partial first page would silently satisfy the assertions below.
+do {
+  const res = await client.send(
+    new ListInstanceGroupsCommand({ ClusterId: process.argv[1], Marker: marker })
+  );
+  groups.push(...(res.InstanceGroups ?? []));
+  marker = res.Marker;
+} while (marker);
+process.stdout.write(JSON.stringify(groups));
+" "$1" ) || return 1
+}
+
 # Ids of ACTIVE (not terminated) clusters named like the fixture and carrying
 # the fixture's constant tag.
 # Ids of ACTIVE clusters named like the fixture and carrying its constant tag.
@@ -429,6 +455,52 @@ if [ "${PROVISIONED_BY}" != "sdk" ]; then
   exit 1
 fi
 echo "    cluster routed via SDK provider (provisionedBy=sdk)"
+
+# --- Assertions: issue #1383 nested-key renames reached AWS ------------
+# CFn spells the property bag `ConfigurationProperties` and the step bag
+# `StepProperties`, while the SDK members are both `Properties`. The AWS SDK v3
+# serializer drops unknown members, so before the fix EVERY application
+# configuration silently vanished and the cluster came up unconfigured while
+# cdkd reported success. Read the values back from AWS, not from cdkd state.
+TOP_CFG="$(aws emr describe-cluster --cluster-id "${CID_P1}" --region "${REGION}" \
+  --query "Cluster.Configurations[?Classification=='core-site'].Properties.\"cdkd.integ.marker\" | [0]" \
+  --output text)"
+if [ "${TOP_CFG}" != "top-level" ]; then
+  echo "FAIL: top-level Configurations core-site 'cdkd.integ.marker' is '${TOP_CFG}', expected 'top-level' (issue #1383 NOT closed)" >&2
+  aws emr describe-cluster --cluster-id "${CID_P1}" --region "${REGION}" --query 'Cluster.Configurations' >&2
+  exit 1
+fi
+NESTED_CFG="$(aws emr describe-cluster --cluster-id "${CID_P1}" --region "${REGION}" \
+  --query "Cluster.Configurations[?Classification=='hadoop-env'].Configurations[0].Properties.CDKD_INTEG_NESTED | [0]" \
+  --output text)"
+if [ "${NESTED_CFG}" != "yes" ]; then
+  echo "FAIL: NESTED Configurations hadoop-env/export CDKD_INTEG_NESTED is '${NESTED_CFG}', expected 'yes' (recursive rename NOT applied)" >&2
+  aws emr describe-cluster --cluster-id "${CID_P1}" --region "${REGION}" --query 'Cluster.Configurations' >&2
+  exit 1
+fi
+echo "    top-level + NESTED ConfigurationProperties reached AWS (issue #1383 closed)"
+
+GROUPS_JSON="$(list_instance_groups_json "${CID_P1}")"
+GROUP_CFG="$(printf '%s' "${GROUPS_JSON}" | jq -r '
+  [ .[] | select(.InstanceGroupType == "MASTER")
+        | .Configurations[]? | select(.Classification == "core-site")
+        | .Properties["cdkd.integ.marker"] ] | first // empty')"
+if [ "${GROUP_CFG}" != "master-group" ]; then
+  echo "FAIL: master instance-group Configurations 'cdkd.integ.marker' is '${GROUP_CFG}', expected 'master-group' (per-group rename NOT applied)" >&2
+  echo "      raw groups: ${GROUPS_JSON}" >&2
+  exit 1
+fi
+echo "    per-instance-group ConfigurationProperties reached AWS"
+
+STEP_PROP="$(aws emr list-steps --cluster-id "${CID_P1}" --region "${REGION}" \
+  --query "Steps[?Name=='cdkd-integ-step'].Config.Properties.\"cdkd.integ.step\" | [0]" \
+  --output text)"
+if [ "${STEP_PROP}" != "yes" ]; then
+  echo "FAIL: step Properties 'cdkd.integ.step' is '${STEP_PROP}', expected 'yes' (StepProperties rename NOT applied)" >&2
+  aws emr list-steps --cluster-id "${CID_P1}" --region "${REGION}" --query 'Steps[].Config' >&2
+  exit 1
+fi
+echo "    HadoopJarStep StepProperties reached AWS"
 
 # --- Phase 2: in-place update ------------------------------------------
 echo "==> Phase 2: re-deploy with CDKD_TEST_UPDATE=true (step concurrency, auto-termination, tags)"

@@ -140,6 +140,54 @@ describe('EMRInstanceFleetConfigProvider create', () => {
     });
   });
 
+  it('renames InstanceTypeConfigs[].Configurations[].ConfigurationProperties on create AND update (issue #1383)', async () => {
+    const cfnInstanceTypeConfigs = [
+      {
+        InstanceType: 'm5.xlarge',
+        WeightedCapacity: 1,
+        Configurations: [
+          { Classification: 'spark-defaults', ConfigurationProperties: { 'spark.a': 'b' } },
+        ],
+      },
+    ];
+    const sdkInstanceTypeConfigs = [
+      {
+        InstanceType: 'm5.xlarge',
+        WeightedCapacity: 1,
+        Configurations: [{ Classification: 'spark-defaults', Properties: { 'spark.a': 'b' } }],
+      },
+    ];
+
+    routeSend({
+      AddInstanceFleetCommand: { ClusterId: CLUSTER_ID, InstanceFleetId: FLEET_ID },
+      ListInstanceFleetsCommand: fleetOf('RUNNING'),
+      ModifyInstanceFleetCommand: {},
+    });
+
+    await newProvider().create('Fleet', RESOURCE_TYPE, {
+      ...BASE_PROPS,
+      InstanceTypeConfigs: cfnInstanceTypeConfigs,
+    });
+    expect(
+      (callsOf(AddInstanceFleetCommand)[0]!.input.InstanceFleet as Record<string, unknown>)[
+        'InstanceTypeConfigs'
+      ]
+    ).toEqual(sdkInstanceTypeConfigs);
+
+    await newProvider().update(
+      'Fleet',
+      FLEET_ID,
+      RESOURCE_TYPE,
+      { ...BASE_PROPS, InstanceTypeConfigs: cfnInstanceTypeConfigs },
+      { ...BASE_PROPS }
+    );
+    expect(
+      (callsOf(ModifyInstanceFleetCommand)[0]!.input.InstanceFleet as Record<string, unknown>)[
+        'InstanceTypeConfigs'
+      ]
+    ).toEqual(sdkInstanceTypeConfigs);
+  });
+
   it('rejects when ClusterId is absent', async () => {
     routeSend({});
     const { ClusterId: _drop, ...noParent } = BASE_PROPS;

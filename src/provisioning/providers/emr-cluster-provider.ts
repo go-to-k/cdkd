@@ -32,6 +32,11 @@ import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
+import {
+  toSdkConfigurations,
+  toSdkInstanceTypeConfigs,
+  toSdkStepConfigs,
+} from '../emr-configuration.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -258,13 +263,11 @@ export class EMRClusterProvider implements ResourceProvider {
         Applications: properties['Applications'] as
           | import('@aws-sdk/client-emr').Application[]
           | undefined,
-        Configurations: properties['Configurations'] as
-          | import('@aws-sdk/client-emr').Configuration[]
-          | undefined,
+        Configurations: toSdkConfigurations(properties['Configurations']),
         BootstrapActions: properties['BootstrapActions'] as
           | import('@aws-sdk/client-emr').BootstrapActionConfig[]
           | undefined,
-        Steps: properties['Steps'] as import('@aws-sdk/client-emr').StepConfig[] | undefined,
+        Steps: toSdkStepConfigs(properties['Steps']),
         KerberosAttributes: properties['KerberosAttributes'] as
           | import('@aws-sdk/client-emr').KerberosAttributes
           | undefined,
@@ -413,9 +416,7 @@ export class EMRClusterProvider implements ResourceProvider {
       Name: raw['Name'] as string | undefined,
       Market: raw['Market'] as import('@aws-sdk/client-emr').MarketType | undefined,
       BidPrice: raw['BidPrice'] as string | undefined,
-      Configurations: raw['Configurations'] as
-        | import('@aws-sdk/client-emr').Configuration[]
-        | undefined,
+      Configurations: toSdkConfigurations(raw['Configurations']),
       EbsConfiguration: raw['EbsConfiguration'] as
         | import('@aws-sdk/client-emr').EbsConfiguration
         | undefined,
@@ -435,9 +436,7 @@ export class EMRClusterProvider implements ResourceProvider {
       Name: raw['Name'] as string | undefined,
       TargetOnDemandCapacity: toNumber(raw['TargetOnDemandCapacity']),
       TargetSpotCapacity: toNumber(raw['TargetSpotCapacity']),
-      InstanceTypeConfigs: raw['InstanceTypeConfigs'] as
-        | import('@aws-sdk/client-emr').InstanceTypeConfig[]
-        | undefined,
+      InstanceTypeConfigs: toSdkInstanceTypeConfigs(raw['InstanceTypeConfigs']),
       LaunchSpecifications: raw['LaunchSpecifications'] as
         | import('@aws-sdk/client-emr').InstanceFleetProvisioningSpecifications
         | undefined,

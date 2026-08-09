@@ -14,6 +14,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import { toSdkConfigurations } from '../emr-configuration.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -220,9 +221,7 @@ export class EMRInstanceGroupConfigProvider implements ResourceProvider {
       Name: properties['Name'] as string | undefined,
       Market: properties['Market'] as import('@aws-sdk/client-emr').MarketType | undefined,
       BidPrice: properties['BidPrice'] as string | undefined,
-      Configurations: properties['Configurations'] as
-        | import('@aws-sdk/client-emr').Configuration[]
-        | undefined,
+      Configurations: toSdkConfigurations(properties['Configurations']),
       EbsConfiguration: properties['EbsConfiguration'] as
         | import('@aws-sdk/client-emr').EbsConfiguration
         | undefined,

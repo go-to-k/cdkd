@@ -96,6 +96,45 @@ export class EmrClusterStack extends cdk.Stack {
       // the normal deploy+verify+destroy window, so it never races the test.
       // The UPDATE phase bumps it to exercise PutAutoTerminationPolicy.
       autoTerminationPolicy: { idleTimeout: isUpdate ? 7200 : 3600 },
+      // Issue #1383: CFn spells the property bag `ConfigurationProperties`
+      // while the SDK member is `Properties`, so the AWS SDK v3 serializer
+      // silently dropped EVERY application configuration and the cluster came
+      // up unconfigured while cdkd reported success. Two levels are used on
+      // purpose: the rename must apply at every `Configurations` depth.
+      // `core-site` / `hadoop-env`+`export` are the canonical benign
+      // classifications — an unknown key is just an extra Hadoop config entry,
+      // so the cluster still bootstraps.
+      configurations: [
+        {
+          classification: 'core-site',
+          configurationProperties: { 'cdkd.integ.marker': 'top-level' },
+        },
+        {
+          classification: 'hadoop-env',
+          configurations: [
+            {
+              classification: 'export',
+              configurationProperties: { CDKD_INTEG_NESTED: 'yes' },
+            },
+          ],
+        },
+      ],
+      // Issue #1383, second key: CFn `HadoopJarStep.StepProperties` -> SDK
+      // `Properties`. `command-runner.jar` with a trivial echo keeps the step
+      // fast and CONTINUE-on-failure keeps a step error from killing the
+      // cluster. Steps are create-only, so this block is identical in the
+      // UPDATE phase.
+      steps: [
+        {
+          name: 'cdkd-integ-step',
+          actionOnFailure: 'CONTINUE',
+          hadoopJarStep: {
+            jar: 'command-runner.jar',
+            args: ['echo', 'cdkd-integ'],
+            stepProperties: [{ key: 'cdkd.integ.step', value: 'yes' }],
+          },
+        },
+      ],
       instances: {
         ec2SubnetId: vpc.publicSubnets[0].subnetId,
         // Provide the managed SG for both roles (see EmrSg comment above).
@@ -109,6 +148,15 @@ export class EmrClusterStack extends cdk.Stack {
           instanceType: 'm5.xlarge',
           market: 'ON_DEMAND',
           name: 'Master',
+          // Issue #1383: the per-instance-group `Configurations` blob goes
+          // through the SAME rename inside `Cluster.Instances` — a separate
+          // conversion site from the top-level one above.
+          configurations: [
+            {
+              classification: 'core-site',
+              configurationProperties: { 'cdkd.integ.marker': 'master-group' },
+            },
+          ],
         },
       },
       tags: [
