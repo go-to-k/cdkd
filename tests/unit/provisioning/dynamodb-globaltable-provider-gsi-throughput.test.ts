@@ -1144,6 +1144,25 @@ describe('DynamoDBGlobalTable GSI throughput translation (issue #1387)', () => {
       expect(flatUpdate()?.input.OnDemandThroughput).toEqual({ MaxWriteRequestUnits: 500 });
     });
 
+    it('does NOT reset a PRESENT-but-unresolvable value (it must still reach AWS)', async () => {
+      // Caught reviewing this change: gating the reset on "did it coerce?"
+      // instead of "is the key there?" routes an unresolved intrinsic into the
+      // reset branch, silently CLEARING the ceiling the template was trying to
+      // set. The pre-existing loud failure is the correct outcome, so the
+      // value must still be forwarded rather than swallowed.
+      const previous = structuredClone(ON_DEMAND_TABLE_PROPS) as Record<string, unknown>;
+      const next = structuredClone(ON_DEMAND_TABLE_PROPS) as Record<string, unknown>;
+      next['WriteOnDemandThroughputSettings'] = {
+        MaxWriteRequestUnits: { Ref: 'SomeUnresolvedParameter' },
+      };
+
+      await provider.update('OnDemand', 'od-table', RESOURCE_TYPE, next, previous);
+
+      const sent = flatUpdate()?.input.OnDemandThroughput;
+      expect(sent).toBeDefined();
+      expect(sent?.MaxWriteRequestUnits).not.toBe(-1);
+    });
+
     it('does NOT reset while the billing mode is flipping to PROVISIONED', async () => {
       // Dropping the on-demand block on the way to PROVISIONED is the natural
       // template edit, not a request to clear a ceiling — and the flip is
