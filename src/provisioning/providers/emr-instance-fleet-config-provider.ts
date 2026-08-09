@@ -188,14 +188,15 @@ export class EMRInstanceFleetConfigProvider implements ResourceProvider {
         );
       }
 
-      // create always ramps capacity UP from 0, so wait for provisioned >= target.
+      // create always ramps capacity UP from 0, so the previous side is {0, 0}
+      // and every dimension settles on `provisioned >= target`.
       await this.waitForFleetReady(
         clusterId,
         fleetId,
         logicalId,
         resourceType,
-        this.targetCapacity(properties),
-        true
+        this.targetCapacities(properties),
+        { onDemand: 0, spot: 0 }
       );
 
       this.logger.debug(`Successfully added EMR instance fleet ${logicalId}: ${fleetId}`);
@@ -295,6 +296,13 @@ export class EMRInstanceFleetConfigProvider implements ResourceProvider {
         // means zero, not "leave whatever AWS has" — and matches this provider's
         // own `targetCapacity()` helper and its delete-path scale-to-0, which
         // already send both members explicitly.
+        //
+        // A template declaring NEITHER capacity while changing another mutable
+        // field therefore scales the fleet to 0. That is the desired-state
+        // reading (absent = zero) and is barely reachable — AWS requires at
+        // least one capacity > 0 at create, so such a template could never have
+        // produced this fleet — and it is only reachable for a TASK fleet at
+        // all, since AWS refuses to scale MASTER/CORE to 0.
         TargetOnDemandCapacity: toNumber(properties['TargetOnDemandCapacity']) ?? 0,
         TargetSpotCapacity: toNumber(properties['TargetSpotCapacity']) ?? 0,
         ResizeSpecifications: properties['ResizeSpecifications'] as
@@ -312,16 +320,17 @@ export class EMRInstanceFleetConfigProvider implements ResourceProvider {
       // capacity meeting the target instead — and on a scale-DOWN wait for
       // provisioned to DRAIN to the target (a State-only or `>=`-only wait would
       // return immediately because the stale pre-resize provisioned capacity is
-      // still ABOVE the new lower target). Direction from prev vs new target.
-      const newTarget = this.targetCapacity(properties);
-      const prevTarget = this.targetCapacity(previousProperties);
+      // still ABOVE the new lower target). Direction is derived PER DIMENSION
+      // from prev vs new target inside waitForFleetReady — a swap between
+      // On-Demand and Spot at a constant total would make a summed check
+      // vacuous (see its docstring).
       await this.waitForFleetReady(
         clusterId,
         physicalId,
         logicalId,
         resourceType,
-        newTarget,
-        newTarget >= prevTarget,
+        this.targetCapacities(properties),
+        this.targetCapacities(previousProperties),
         // Resize path: tolerate a stale pre-modify failed state so a deploy
         // that RECOVERS a SUSPENDED fleet is not aborted by the read lag.
         // See waitForFleetReady's docstring.
@@ -431,12 +440,24 @@ export class EMRInstanceFleetConfigProvider implements ResourceProvider {
 
   // ─── Lifecycle polling ─────────────────────────────────────────────
 
-  /** Total target capacity (On-Demand + Spot) requested for the fleet. */
-  private targetCapacity(properties: Record<string, unknown>): number {
-    return (
-      (toNumber(properties['TargetOnDemandCapacity']) ?? 0) +
-      (toNumber(properties['TargetSpotCapacity']) ?? 0)
-    );
+  /**
+   * Per-dimension target capacities.
+   *
+   * Deliberately NOT summed into a single total: the settle check must compare
+   * EACH dimension against its own provisioned counterpart. A template that
+   * swaps 2 Spot units for 2 On-Demand units leaves the TOTAL unchanged, so a
+   * summed comparison is satisfied by the stale pre-resize reading on the very
+   * first poll and the deploy reports success while EMR is still swapping
+   * instances.
+   */
+  private targetCapacities(properties: Record<string, unknown>): {
+    onDemand: number;
+    spot: number;
+  } {
+    return {
+      onDemand: toNumber(properties['TargetOnDemandCapacity']) ?? 0,
+      spot: toNumber(properties['TargetSpotCapacity']) ?? 0,
+    };
   }
 
   /**
@@ -446,15 +467,26 @@ export class EMRInstanceFleetConfigProvider implements ResourceProvider {
    * still in the PRE-resize `RUNNING` state, so a State-only wait would return
    * before the resize even starts.
    *
-   * `atLeast` selects the settle direction:
-   *  - `true` (create / scale-UP): ready when `provisioned >= targetCapacity`
-   *    (`>=`, not `==`, because a weighted-capacity allocation may overshoot).
-   *  - `false` (scale-DOWN): ready when `provisioned <= targetCapacity` — the
-   *    stale pre-resize provisioned capacity is ABOVE the new lower target, so
-   *    an `>=` check would return instantly before instances drain.
+   * Both dimensions are compared SEPARATELY against their own provisioned
+   * counterpart, with their own direction derived from `previous` -> `target`:
+   *  - scale-UP (`target >= previous`, and every create, whose `previous` is
+   *    `{0, 0}`): ready when `provisioned >= target` (`>=`, not `==`, because a
+   *    weighted-capacity allocation may overshoot).
+   *  - scale-DOWN: ready when `provisioned <= target` — the stale pre-resize
+   *    provisioned capacity is ABOVE the new lower target, so a `>=` check
+   *    would return instantly before instances drain.
    *
-   * A `targetCapacity` of 0 on the up path (never valid for a real create —
-   * at least one target must be > 0) degrades to a State-only wait.
+   * Summing the two dimensions instead would make the check vacuous whenever a
+   * template swaps capacity between them at a constant total (`{Spot: 2}` ->
+   * `{OnDemand: 2}`): the summed target equals the summed previous, so the
+   * direction reads as UP and the stale pre-resize sum satisfies it on the very
+   * first poll, reporting success while EMR is still swapping instances. That
+   * shape only became reachable once `update()` started sending both members
+   * (it previously died at `ModifyInstanceFleet`), so the per-dimension
+   * comparison ships with it.
+   *
+   * A target of 0 on the up path (never valid for a real create — at least one
+   * target must be > 0) is trivially satisfied, degrading to a State-only wait.
    *
    * `toleratesStaleFailedState` MUST be true on the resize path and false on
    * create. It exists for the RECOVERY case: `SUSPENDED` (a resize that could
@@ -481,8 +513,8 @@ export class EMRInstanceFleetConfigProvider implements ResourceProvider {
     fleetId: string,
     logicalId: string,
     resourceType: string,
-    targetCapacity: number,
-    atLeast: boolean,
+    target: { onDemand: number; spot: number },
+    previous: { onDemand: number; spot: number },
     toleratesStaleFailedState = false
   ): Promise<void> {
     const startTime = Date.now();
@@ -490,12 +522,18 @@ export class EMRInstanceFleetConfigProvider implements ResourceProvider {
     let initialState: InstanceFleetState | undefined;
     let hasLeftInitialState = false;
 
+    const settled = (provisioned: number, want: number, had: number): boolean =>
+      want >= had ? provisioned >= want : provisioned <= want;
+
     while (Date.now() - startTime < this.maxWaitMs) {
       const fleet = await this.findFleetForPoll(clusterId, fleetId, transientState);
       const state = fleet?.Status?.State;
-      const provisioned =
-        (fleet?.ProvisionedOnDemandCapacity ?? 0) + (fleet?.ProvisionedSpotCapacity ?? 0);
-      const capacityReady = atLeast ? provisioned >= targetCapacity : provisioned <= targetCapacity;
+      const onDemand = fleet?.ProvisionedOnDemandCapacity ?? 0;
+      const spot = fleet?.ProvisionedSpotCapacity ?? 0;
+      const provisioned = onDemand + spot;
+      const capacityReady =
+        settled(onDemand, target.onDemand, previous.onDemand) &&
+        settled(spot, target.spot, previous.spot);
 
       if (state) {
         if (initialState === undefined) initialState = state;
@@ -524,13 +562,16 @@ export class EMRInstanceFleetConfigProvider implements ResourceProvider {
       }
 
       this.logger.debug(
-        `EMR instance fleet ${fleetId} state: ${state ?? 'unknown'}, provisioned ${provisioned}/${targetCapacity}, waiting...`
+        `EMR instance fleet ${fleetId} state: ${state ?? 'unknown'}, provisioned ` +
+          `${onDemand}/${target.onDemand} on-demand + ${spot}/${target.spot} spot ` +
+          `(${provisioned} total), waiting...`
       );
       await new Promise((resolve) => setTimeout(resolve, this.pollIntervalMs));
     }
 
     throw new ProvisioningError(
-      `Timed out waiting for EMR instance fleet ${fleetId} to reach RUNNING with capacity ${targetCapacity} (${Math.round(this.maxWaitMs / 60000)} min)`,
+      `Timed out waiting for EMR instance fleet ${fleetId} to reach RUNNING with capacity ` +
+        `${target.onDemand} on-demand / ${target.spot} spot (${Math.round(this.maxWaitMs / 60000)} min)`,
       resourceType,
       logicalId,
       fleetId

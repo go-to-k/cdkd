@@ -121,35 +121,65 @@ process.stdout.write(JSON.stringify(fleets));
 }
 
 # Ids of ACTIVE (not terminated) clusters named like the fixture and carrying
-# the fixture's constant tag.
-active_tagged_cluster_ids() {
-  # `|| return 1`: errexit is cleared inside $( ), so a list-clusters error
-  # must be propagated explicitly (pipefail carries it through the pipeline)
-  # instead of silently reading as "no clusters".
-  local ids id
+# the fixture's constant tag — ASSERTION grade: any AWS failure propagates
+# instead of masquerading as "no clusters".
+#
+# `|| return 1` on each capture is load-bearing: errexit is cleared inside
+# `$( )`, so without it a throttled `describe-cluster` would classify a live
+# leftover as untagged and the post-destroy leak check would report clean.
+strict_active_tagged_cluster_ids() {
+  local ids id tags
   ids="$(aws emr list-clusters --active --region "${REGION}" \
-    --query "Clusters[?Name=='${CLUSTER_NAME}'].Id" --output text 2>/dev/null | tr '\t' '\n' | sed '/^$/d')" || return 1
+    --query "Clusters[?Name=='${CLUSTER_NAME}'].Id" --output text)" || return 1
+  ids="$(printf '%s' "${ids}" | tr '\t' '\n' | sed '/^$/d')"
   for id in ${ids}; do
-    if aws emr describe-cluster --cluster-id "${id}" --region "${REGION}" \
+    tags="$(aws emr describe-cluster --cluster-id "${id}" --region "${REGION}" \
       --query "Cluster.Tags[?Key=='${CLEANUP_TAG_KEY}' && Value=='${CLEANUP_TAG_VALUE}']" \
-      --output text 2>/dev/null | grep -q .; then
+      --output text)" || return 1
+    if printf '%s' "${tags}" | grep -q .; then
       echo "${id}"
     fi
   done
 }
 
-cluster_state() {
-  aws emr describe-cluster --cluster-id "$1" --region "${REGION}" \
-    --query 'Cluster.Status.State' --output text 2>/dev/null
+# Best-effort variant for cleanup(), where a transient API failure must not
+# abort the teardown — the EXIT trap runs with `set +eu` and any leftover is
+# caught by the next run's pre-run cleanup.
+active_tagged_cluster_ids() {
+  strict_active_tagged_cluster_ids 2>/dev/null || true
 }
 
+# Cluster state, assertion grade: prints the state and returns 0, or returns
+# non-zero with the AWS error on stderr. There is deliberately NO swallowing
+# variant — in assertion position `X="$(probe)"` under `set -e` aborts at the
+# ASSIGNMENT, so the FAIL branch never runs and the diagnostic never prints.
+# Callers use `&& rc=0 || rc=$?` and report properly; the polling caller passes
+# `2>/dev/null` at the call site where it genuinely tolerates "don't know".
+strict_cluster_state() {
+  aws emr describe-cluster --cluster-id "$1" --region "${REGION}" \
+    --query 'Cluster.Status.State' --output text
+}
+
+# Poll until the cluster reaches a terminal state. Returns non-zero on timeout
+# OR if the state could never be read.
+#
+# An API failure must NOT read as TERMINATED: a `[ -z "${st}" ]` branch would
+# return success on a throttle, so cleanup would walk into the VPC teardown
+# with a live cluster still holding ENIs and silently orphan the VPC.
 wait_cluster_terminated() {
   local id="$1"
   local deadline=$((SECONDS + 1800))
-  local st
+  local st rc
   while [ ${SECONDS} -lt ${deadline} ]; do
-    st="$(cluster_state "${id}")"
-    if [ "${st}" = "TERMINATED" ] || [ "${st}" = "TERMINATED_WITH_ERRORS" ] || [ -z "${st}" ]; then
+    st="$(strict_cluster_state "${id}" 2>/dev/null)" && rc=0 || rc=$?
+    if [ ${rc} -ne 0 ]; then
+      # DescribeCluster failing for an id that existed usually means it aged
+      # out of the API — treat as gone ONLY after re-confirming it is not in
+      # the active list; otherwise keep polling.
+      if ! strict_active_tagged_cluster_ids 2>/dev/null | grep -qx "${id}"; then
+        return 0
+      fi
+    elif [ "${st}" = "TERMINATED" ] || [ "${st}" = "TERMINATED_WITH_ERRORS" ]; then
       return 0
     fi
     sleep 15
@@ -160,6 +190,13 @@ wait_cluster_terminated() {
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
+  # Drop a stale lock BEFORE `state destroy`: an interrupted run leaves
+  # lock.json behind, `state destroy` then refuses to acquire it and exits
+  # without deleting anything. The tag sweep below still catches the cluster,
+  # but the IAM roles / instance profile would leak silently.
+  if [ -n "${STATE_BUCKET:-}" ]; then
+    aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1
+  fi
   if [ -f "${LOCAL_DIST}" ] && [ -n "${STATE_BUCKET:-}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET}" \
       --stack-region "${REGION}" --yes >/dev/null 2>&1
@@ -299,7 +336,11 @@ if [ "${FID_P1}" != "${FID_ATTR_P1}" ]; then
   exit 1
 fi
 
-STATE_P1="$(cluster_state "${CID_P1}")"
+STATE_P1="$(strict_cluster_state "${CID_P1}" 2>/dev/null)" && STATE_P1_RC=0 || STATE_P1_RC=$?
+if [ ${STATE_P1_RC} -ne 0 ]; then
+  echo "FAIL: could not read cluster ${CID_P1} state after Phase 1 (DescribeCluster failed)" >&2
+  exit 1
+fi
 if [ "${STATE_P1}" != "WAITING" ] && [ "${STATE_P1}" != "RUNNING" ]; then
   echo "FAIL: Phase 1 expected cluster state WAITING/RUNNING, got '${STATE_P1}'" >&2
   exit 1
@@ -366,19 +407,41 @@ echo "    resize reached AWS (ProvisionedOnDemandCapacity 2)"
 echo "==> Phase 3: destroy (EMR termination takes a few minutes)"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 
-FINAL_STATE="$(cluster_state "${CID_P1}")"
+FINAL_STATE="$(strict_cluster_state "${CID_P1}" 2>/dev/null)" && FINAL_RC=0 || FINAL_RC=$?
+if [ ${FINAL_RC} -ne 0 ]; then
+  echo "FAIL: could not read cluster ${CID_P1} state after destroy (DescribeCluster failed)" >&2
+  echo "      refusing to report PASS on an unverified termination check" >&2
+  exit 1
+fi
 if [ "${FINAL_STATE}" != "TERMINATED" ] && [ "${FINAL_STATE}" != "TERMINATED_WITH_ERRORS" ]; then
   echo "FAIL: EMR cluster ${CID_P1} not terminated after destroy (state '${FINAL_STATE}')" >&2
   exit 1
 fi
 echo "    cluster ${FINAL_STATE} (fleets released with it)"
 
-LEFTOVERS="$(active_tagged_cluster_ids)"
+# Leak assertion — STRICT lookup, so a throttled `emr list-clusters` cannot
+# masquerade as "no leftover clusters". Retry a few times, then hard-fail
+# rather than pass on an undetermined result.
+LEFTOVERS=""
+LEAK_CHECK_OK=false
+for attempt in 1 2 3; do
+  if LEFTOVERS="$(strict_active_tagged_cluster_ids)"; then
+    LEAK_CHECK_OK=true
+    break
+  fi
+  echo "    warn: 'aws emr list-clusters --active' failed (attempt ${attempt}/3), retrying" >&2
+  sleep 5
+done
+if [ "${LEAK_CHECK_OK}" != "true" ]; then
+  echo "FAIL: could not determine whether ACTIVE EMR clusters remain (AWS API calls failed 3x)" >&2
+  echo "      refusing to report PASS on an unverified leak check — check the account manually" >&2
+  exit 1
+fi
 if [ -n "${LEFTOVERS}" ]; then
   echo "FAIL: ACTIVE EMR cluster(s) with tag ${CLEANUP_TAG_KEY}=${CLEANUP_TAG_VALUE} still exist after destroy: ${LEFTOVERS}" >&2
   exit 1
 fi
-echo "    no active cluster with the fixture tag remains"
+echo "    no active cluster with the fixture tag remains (verified, not inferred from a failed call)"
 
 assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    cdkd state removed"

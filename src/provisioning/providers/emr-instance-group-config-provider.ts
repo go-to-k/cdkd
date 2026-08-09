@@ -278,7 +278,14 @@ export class EMRInstanceGroupConfigProvider implements ResourceProvider {
             InstanceGroups: [
               {
                 InstanceGroupId: physicalId,
-                InstanceCount: toNumber(properties['InstanceCount']),
+                // `?? 0` keeps the SENT count and the WAITED-FOR count (which
+                // already defaults to 0) in agreement. Without it a template
+                // that drops `InstanceCount` sends no member at all while the
+                // wait polls for `RunningInstanceCount === 0`, burning the full
+                // hour before a misleading timeout. Latent today — CFn marks
+                // `InstanceCount` required — but the sibling fleet provider hit
+                // the same send/wait mismatch for real (issue #1400).
+                InstanceCount: toNumber(properties['InstanceCount']) ?? 0,
               },
             ],
           })

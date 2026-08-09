@@ -53,11 +53,13 @@ Every fleet carries a per-`InstanceTypeConfig` `Configurations` block with a
    `WAITING`/`RUNNING`, the fleet's `Ref` / `Fn::GetAtt Id` outputs both equal
    the AWS fleet id (`if-XXXX`), state routes the fleet via the SDK provider
    (`provisionedBy=sdk`), the fleet's `ProvisionedOnDemandCapacity` is `1`, and
-   all three fleets' `Configurations` markers reached AWS. (The
-   AWS-CLI-customized `aws emr list-instance-fleets` is deliberately avoided —
-   like `list-instance-groups` it fails with `[Errno 22]` in a non-interactive
-   shell; the fleets are read through `@aws-sdk/client-emr` instead, following
-   `Marker` for full pagination.)
+   all three fleets' `Configurations` markers reached AWS. (The fleets are read
+   through `@aws-sdk/client-emr` rather than `aws emr list-instance-fleets` —
+   NOT because that verb is broken. Unlike its `list-instance-groups` sibling
+   it is not on the AWS CLI's removal list and works fine non-interactively
+   (verified 2026-08-09 against `aws-cli/2.35.13`); the SDK is used because its
+   response is the PascalCase shape the provider sent, and because the `Marker`
+   loop matches the provider's own pagination.)
 2. **Update** (`CDKD_TEST_UPDATE=true`): resize the `TASK` fleet's
    `TargetOnDemandCapacity` `1 -> 2` (`ModifyInstanceFleet`, polled until the
    provisioned capacity settles). Asserts the fleet Id is unchanged (in-place,
@@ -65,8 +67,11 @@ Every fleet carries a per-`InstanceTypeConfig` `Configurations` block with a
    `InstanceTypeConfigs` is deliberately identical across both phases: it IS
    mutable, but changing it here would make a failed capacity assertion
    ambiguous between the resize and the config conversion.
-3. **Destroy** and assert the cluster is `TERMINATED` and the VPC / state
-   are gone. There is no standalone "delete instance fleet" API — the fleet
+3. **Destroy** and assert the cluster is `TERMINATED`, that no `ACTIVE` cluster
+   carrying the fixture tag remains, and that the cdkd state file is gone. (The
+   VPC is torn down by `cdkd destroy` and swept best-effort by the cleanup trap,
+   but is deliberately NOT asserted — the cluster and the state file are the
+   leak-prone parts.) There is no standalone "delete instance fleet" API — the fleet
    is released when the parent cluster terminates (the provider's delete
    additionally best-effort scales a `TASK` fleet to 0 first). A leftover
    running EMR cluster is never acceptable (per instance-hour billing) — the
