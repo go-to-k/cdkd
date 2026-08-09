@@ -1,3 +1,10 @@
+## [0.278.19](https://github.com/go-to-k/cdkd/compare/v0.278.18...v0.278.19) (2026-08-09)
+
+
+### Bug Fixes
+
+* **dynamodb:** stop the per-GSI on-demand reset firing on an unresolvable value ([#1443](https://github.com/go-to-k/cdkd/issues/1443)) ([a6bfcc1](https://github.com/go-to-k/cdkd/commit/a6bfcc19c9b798e54b85363d060f09299d617673))
+
 ## [0.278.18](https://github.com/go-to-k/cdkd/compare/v0.278.17...v0.278.18) (2026-08-09)
 
 
