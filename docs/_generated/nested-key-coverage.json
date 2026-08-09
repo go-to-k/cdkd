@@ -1,13 +1,13 @@
 {
   "summary": {
-    "targetCount": 9,
-    "nestedKeyCount": 316,
-    "sameSpelling": 300,
-    "providerHandled": 13,
-    "allowListed": 3,
+    "targetCount": 10,
+    "nestedKeyCount": 373,
+    "sameSpelling": 355,
+    "providerHandled": 14,
+    "allowListed": 4,
     "caseDivergence": 0,
     "noSdkMember": 0,
-    "shapeClean": 62,
+    "shapeClean": 74,
     "shapeHandled": 17,
     "shapeAllowListed": 1,
     "arrayVsWrapper": 0,
@@ -1039,6 +1039,309 @@
       "shapeCleanCount": 3,
       "unmatchedDefinitions": [
         "Configuration"
+      ]
+    },
+    {
+      "resourceType": "AWS::CodeBuild::Project",
+      "providerFile": "codebuild-provider.ts",
+      "sdkClientPackage": "@aws-sdk/client-codebuild",
+      "keyStyle": "lower-first",
+      "nestedKeyCount": 57,
+      "entries": [
+        {
+          "resourceType": "AWS::CodeBuild::Project",
+          "nestedKey": "ArtifactIdentifier",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CodeBuild::Project",
+          "nestedKey": "Auth",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CodeBuild::Project",
+          "nestedKey": "BatchReportMode",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CodeBuild::Project",
+          "nestedKey": "BuildSpec",
+          "bucket": "provider-handled"
+        },
+        {
+          "resourceType": "AWS::CodeBuild::Project",
+          "nestedKey": "BuildStatusConfig",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CodeBuild::Project",
+          "nestedKey": "CacheNamespace",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CodeBuild::Project",
+          "nestedKey": "Certificate",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CodeBuild::Project",
+          "nestedKey": "CloudWatchLogs",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CodeBuild::Project",
+          "nestedKey": "CombineArtifacts",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CodeBuild::Project",
+          "nestedKey": "ComputeType",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CodeBuild::Project",
+          "nestedKey": "ComputeTypesAllowed",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CodeBuild::Project",
+          "nestedKey": "Context",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CodeBuild::Project",
+          "nestedKey": "Credential",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CodeBuild::Project",
+          "nestedKey": "CredentialProvider",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CodeBuild::Project",
+          "nestedKey": "DockerServer",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CodeBuild::Project",
+          "nestedKey": "EncryptionDisabled",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CodeBuild::Project",
+          "nestedKey": "EnvironmentVariables",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CodeBuild::Project",
+          "nestedKey": "FetchSubmodules",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CodeBuild::Project",
+          "nestedKey": "Fleet",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CodeBuild::Project",
+          "nestedKey": "FleetArn",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CodeBuild::Project",
+          "nestedKey": "GitCloneDepth",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CodeBuild::Project",
+          "nestedKey": "GitSubmodulesConfig",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CodeBuild::Project",
+          "nestedKey": "GroupName",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CodeBuild::Project",
+          "nestedKey": "HostKernel",
+          "bucket": "allow-listed",
+          "rationale": "Declared in the CFn registry schema but has NO member anywhere in the installed @aws-sdk/client-codebuild dist-types tree, so there is nothing to map it onto until an SDK bump adds one (issue #1386). Naming it in the provider would be a false claim of support. Remove this entry once the SDK ships the member, at which point the key becomes genuinely mappable."
+        },
+        {
+          "resourceType": "AWS::CodeBuild::Project",
+          "nestedKey": "Identifier",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CodeBuild::Project",
+          "nestedKey": "Image",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CodeBuild::Project",
+          "nestedKey": "ImagePullCredentialsType",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CodeBuild::Project",
+          "nestedKey": "InsecureSsl",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CodeBuild::Project",
+          "nestedKey": "Key",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CodeBuild::Project",
+          "nestedKey": "Location",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CodeBuild::Project",
+          "nestedKey": "MaximumBuildsAllowed",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CodeBuild::Project",
+          "nestedKey": "Modes",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CodeBuild::Project",
+          "nestedKey": "MountOptions",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CodeBuild::Project",
+          "nestedKey": "MountPoint",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CodeBuild::Project",
+          "nestedKey": "Name",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CodeBuild::Project",
+          "nestedKey": "NamespaceType",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CodeBuild::Project",
+          "nestedKey": "OverrideArtifactName",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CodeBuild::Project",
+          "nestedKey": "Packaging",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CodeBuild::Project",
+          "nestedKey": "Path",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CodeBuild::Project",
+          "nestedKey": "PrivilegedMode",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CodeBuild::Project",
+          "nestedKey": "RegistryCredential",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CodeBuild::Project",
+          "nestedKey": "ReportBuildStatus",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CodeBuild::Project",
+          "nestedKey": "Resource",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CodeBuild::Project",
+          "nestedKey": "Restrictions",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CodeBuild::Project",
+          "nestedKey": "S3Logs",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CodeBuild::Project",
+          "nestedKey": "SecurityGroupIds",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CodeBuild::Project",
+          "nestedKey": "ServiceRole",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CodeBuild::Project",
+          "nestedKey": "SourceIdentifier",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CodeBuild::Project",
+          "nestedKey": "SourceVersion",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CodeBuild::Project",
+          "nestedKey": "Status",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CodeBuild::Project",
+          "nestedKey": "StreamName",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CodeBuild::Project",
+          "nestedKey": "Subnets",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CodeBuild::Project",
+          "nestedKey": "TargetUrl",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CodeBuild::Project",
+          "nestedKey": "TimeoutInMins",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CodeBuild::Project",
+          "nestedKey": "Type",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CodeBuild::Project",
+          "nestedKey": "Value",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CodeBuild::Project",
+          "nestedKey": "VpcId",
+          "bucket": "same-spelling"
+        }
+      ],
+      "shapeEntries": [],
+      "shapeCleanCount": 12,
+      "unmatchedDefinitions": [
+        "Artifacts",
+        "Environment",
+        "ProjectTriggers",
+        "Source"
       ]
     },
     {

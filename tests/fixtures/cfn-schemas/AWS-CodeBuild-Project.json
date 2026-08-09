@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::CodeBuild::Project",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-09",
   "properties": [
     "Arn",
     "Artifacts",
@@ -36,5 +36,300 @@
   ],
   "createOnlyProperties": [
     "Name"
-  ]
+  ],
+  "primaryIdentifier": [
+    "Id"
+  ],
+  "nestedProperties": {
+    "VpcConfig": [
+      "SecurityGroupIds",
+      "Subnets",
+      "VpcId"
+    ],
+    "SecondarySources": [
+      "Auth",
+      "BuildSpec",
+      "BuildStatusConfig",
+      "Context",
+      "FetchSubmodules",
+      "GitCloneDepth",
+      "GitSubmodulesConfig",
+      "InsecureSsl",
+      "Location",
+      "ReportBuildStatus",
+      "Resource",
+      "SourceIdentifier",
+      "TargetUrl",
+      "Type"
+    ],
+    "SecondaryArtifacts": [
+      "ArtifactIdentifier",
+      "EncryptionDisabled",
+      "Location",
+      "Name",
+      "NamespaceType",
+      "OverrideArtifactName",
+      "Packaging",
+      "Path",
+      "Type"
+    ],
+    "Source": [
+      "Auth",
+      "BuildSpec",
+      "BuildStatusConfig",
+      "Context",
+      "FetchSubmodules",
+      "GitCloneDepth",
+      "GitSubmodulesConfig",
+      "InsecureSsl",
+      "Location",
+      "ReportBuildStatus",
+      "Resource",
+      "SourceIdentifier",
+      "TargetUrl",
+      "Type"
+    ],
+    "LogsConfig": [
+      "CloudWatchLogs",
+      "EncryptionDisabled",
+      "GroupName",
+      "Location",
+      "S3Logs",
+      "Status",
+      "StreamName"
+    ],
+    "SecondarySourceVersions": [
+      "SourceIdentifier",
+      "SourceVersion"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ],
+    "Triggers": [
+      "ApproverRoles",
+      "BuildType",
+      "Domain",
+      "FilterGroups",
+      "Name",
+      "PullRequestBuildPolicy",
+      "RequiresCommentApproval",
+      "Scope",
+      "ScopeConfiguration",
+      "Webhook"
+    ],
+    "Artifacts": [
+      "ArtifactIdentifier",
+      "EncryptionDisabled",
+      "Location",
+      "Name",
+      "NamespaceType",
+      "OverrideArtifactName",
+      "Packaging",
+      "Path",
+      "Type"
+    ],
+    "FileSystemLocations": [
+      "Identifier",
+      "Location",
+      "MountOptions",
+      "MountPoint",
+      "Type"
+    ],
+    "Environment": [
+      "Certificate",
+      "ComputeType",
+      "Credential",
+      "CredentialProvider",
+      "DockerServer",
+      "EnvironmentVariables",
+      "Fleet",
+      "FleetArn",
+      "HostKernel",
+      "Image",
+      "ImagePullCredentialsType",
+      "Name",
+      "PrivilegedMode",
+      "RegistryCredential",
+      "SecurityGroupIds",
+      "Type",
+      "Value"
+    ],
+    "BuildBatchConfig": [
+      "BatchReportMode",
+      "CombineArtifacts",
+      "ComputeTypesAllowed",
+      "MaximumBuildsAllowed",
+      "Restrictions",
+      "ServiceRole",
+      "TimeoutInMins"
+    ],
+    "Cache": [
+      "CacheNamespace",
+      "Location",
+      "Modes",
+      "Type"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "Description": "scalar",
+      "ResourceAccessRole": "scalar",
+      "VpcConfig": "object",
+      "SecondarySources": "array",
+      "EncryptionKey": "scalar",
+      "SecondaryArtifacts": "array",
+      "Source": "object",
+      "Name": "scalar",
+      "LogsConfig": "object",
+      "ServiceRole": "scalar",
+      "QueuedTimeoutInMinutes": "scalar",
+      "SecondarySourceVersions": "array",
+      "Tags": "array",
+      "AutoRetryLimit": "scalar",
+      "SourceVersion": "scalar",
+      "Triggers": "object",
+      "Artifacts": "object",
+      "BadgeEnabled": "scalar",
+      "FileSystemLocations": "array",
+      "Environment": "object",
+      "ConcurrentBuildLimit": "scalar",
+      "Visibility": "scalar",
+      "Id": "scalar",
+      "Arn": "scalar",
+      "BuildBatchConfig": "object",
+      "TimeoutInMinutes": "scalar",
+      "Cache": "object"
+    },
+    "ProjectSourceVersion": {
+      "SourceIdentifier": "scalar",
+      "SourceVersion": "scalar"
+    },
+    "VpcConfig": {
+      "Subnets": "array",
+      "VpcId": "scalar",
+      "SecurityGroupIds": "array"
+    },
+    "SourceAuth": {
+      "Resource": "scalar",
+      "Type": "scalar"
+    },
+    "ScopeConfiguration": {
+      "Scope": "scalar",
+      "Domain": "scalar",
+      "Name": "scalar"
+    },
+    "RegistryCredential": {
+      "Credential": "scalar",
+      "CredentialProvider": "scalar"
+    },
+    "Source": {
+      "Type": "scalar",
+      "ReportBuildStatus": "scalar",
+      "Auth": "object",
+      "SourceIdentifier": "scalar",
+      "BuildSpec": "scalar",
+      "GitCloneDepth": "scalar",
+      "BuildStatusConfig": "object",
+      "GitSubmodulesConfig": "object",
+      "InsecureSsl": "scalar",
+      "Location": "scalar"
+    },
+    "PullRequestBuildPolicy": {
+      "RequiresCommentApproval": "scalar",
+      "ApproverRoles": "array"
+    },
+    "ProjectCache": {
+      "Modes": "array",
+      "Type": "scalar",
+      "CacheNamespace": "scalar",
+      "Location": "scalar"
+    },
+    "Artifacts": {
+      "Path": "scalar",
+      "Type": "scalar",
+      "ArtifactIdentifier": "scalar",
+      "OverrideArtifactName": "scalar",
+      "Packaging": "scalar",
+      "EncryptionDisabled": "scalar",
+      "Location": "scalar",
+      "Name": "scalar",
+      "NamespaceType": "scalar"
+    },
+    "LogsConfig": {
+      "CloudWatchLogs": "object",
+      "S3Logs": "object"
+    },
+    "BatchRestrictions": {
+      "ComputeTypesAllowed": "array",
+      "MaximumBuildsAllowed": "scalar"
+    },
+    "ProjectBuildBatchConfig": {
+      "CombineArtifacts": "scalar",
+      "ServiceRole": "scalar",
+      "BatchReportMode": "scalar",
+      "TimeoutInMins": "scalar",
+      "Restrictions": "object"
+    },
+    "CloudWatchLogsConfig": {
+      "Status": "scalar",
+      "GroupName": "scalar",
+      "StreamName": "scalar"
+    },
+    "Environment": {
+      "Type": "scalar",
+      "EnvironmentVariables": "array",
+      "Fleet": "object",
+      "PrivilegedMode": "scalar",
+      "ImagePullCredentialsType": "scalar",
+      "HostKernel": "scalar",
+      "Image": "scalar",
+      "RegistryCredential": "object",
+      "ComputeType": "scalar",
+      "DockerServer": "object",
+      "Certificate": "scalar"
+    },
+    "EnvironmentVariable": {
+      "Value": "scalar",
+      "Type": "scalar",
+      "Name": "scalar"
+    },
+    "ProjectFileSystemLocation": {
+      "MountPoint": "scalar",
+      "Type": "scalar",
+      "Identifier": "scalar",
+      "MountOptions": "scalar",
+      "Location": "scalar"
+    },
+    "Tag": {
+      "Value": "scalar",
+      "Key": "scalar"
+    },
+    "ProjectTriggers": {
+      "BuildType": "scalar",
+      "FilterGroups": "array",
+      "Webhook": "scalar",
+      "ScopeConfiguration": "object",
+      "PullRequestBuildPolicy": "object"
+    },
+    "BuildStatusConfig": {
+      "Context": "scalar",
+      "TargetUrl": "scalar"
+    },
+    "GitSubmodulesConfig": {
+      "FetchSubmodules": "scalar"
+    },
+    "DockerServer": {
+      "ComputeType": "scalar",
+      "SecurityGroupIds": "array"
+    },
+    "S3LogsConfig": {
+      "Status": "scalar",
+      "EncryptionDisabled": "scalar",
+      "Location": "scalar"
+    },
+    "ProjectFleet": {
+      "FleetArn": "scalar"
+    }
+  }
 }

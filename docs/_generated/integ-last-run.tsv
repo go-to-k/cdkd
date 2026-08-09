@@ -37,7 +37,7 @@ cc-api-fallback-transitions	2026-08-01T10:00:06Z	PASS	123	verify.sh	0801 regress
 cc-getatt-readback	2026-08-01T10:00:06Z	PASS	90	verify.sh	0801 regression sweep; CC GetAtt read-back ok, 0 orphans
 cc-protection-flip	2026-07-31T03:56:21Z	PASS	1250	verify.sh	5 CC types incl. RDS/DocDB GlobalCluster shells (#1315); orph clean
 cc-protection-flip-eks	2026-07-31T04:30:02Z	PASS	2300	verify.sh	EKS blocked-destroy + --remove-protection flip (#1315); orph clean
-ci-cd	2026-07-21T18:23:00Z	PASS	55	verify.sh	rc ok, orph clean
+ci-cd	2026-08-09T14:25:56Z	PASS	57	verify.sh	issue #1386 nested sub-keys asserted live; rc ok, orph clean
 cloudfront-function-url	2026-07-31T06:11:38Z	PASS	209	verify.sh	regression run post-#1311/#1318; fire-and-forget create + delete-wait path clean; 7 del/0 err, 0 orphans
 cloudwatch	2026-07-26T20:00:52Z	PASS	55	standard	0727b sweep-b13 staleness re-run (rc=0); account clean
 cloudwatch-anomaly-detector	2026-07-30T16:41:15Z	PASS	35	verify.sh	final run post review fixes: GetAtt Id + phys-id stability asserted; clean
