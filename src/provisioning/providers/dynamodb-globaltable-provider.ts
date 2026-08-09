@@ -498,6 +498,26 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         );
       }
 
+      // Application-autoscaling registration (Issue #1419). Before this,
+      // `create()` registered NOTHING — only `update()` ever called
+      // `applyAutoScalingDiff` — so a freshly created PROVISIONED
+      // GlobalTable had no scaling policy at all until some later deploy
+      // happened to run an update, and per-index settings were dropped
+      // even then. Runs after the table AND every replica are ACTIVE:
+      // `RegisterScalableTarget` against a still-provisioning table or a
+      // not-yet-created index is rejected.
+      //
+      // Skipped on PAY_PER_REQUEST — scalable targets are meaningless
+      // without provisioned capacity, and AWS rejects them.
+      if (billingMode === 'PROVISIONED') {
+        await this.reconcileAutoScalingTargets(
+          tableName,
+          [],
+          collectAutoScalingTargets(properties, currentRegion),
+          currentRegion
+        );
+      }
+
       // TTL is a separate API call (UpdateTimeToLive). Applied after
       // table + replicas are ACTIVE so the AWS-side request validates.
       if (properties['TimeToLiveSpecification']) {
@@ -961,9 +981,15 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           // with non-default read/write capacity is preserved across a
           // PAY_PER_REQUEST → PROVISIONED flip (the previous hardcoded
           // `ReadCapacityUnits: 5` silently overrode the template).
+          //
+          // `'seed'` here and NOWHERE else (Issue #1435): this flip is the one
+          // context AWS documents `SeedCapacity` for — the value the table runs
+          // at until the scaling policies exist. Every other call site takes
+          // `MinCapacity`, which is what CloudFormation creates at.
           billingUpdate.ProvisionedThroughput = derivePerCallProvisionedThroughput(
             properties,
-            currentRegion
+            currentRegion,
+            'seed'
           );
           // AWS requires per-GSI `ProvisionedThroughput` in the SAME
           // UpdateTable call that flips PAY_PER_REQUEST -> PROVISIONED
@@ -974,7 +1000,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           const provisionedIndexes = toSdkGlobalSecondaryIndexes(
             properties,
             currentRegion,
-            newBilling
+            newBilling,
+            'seed'
           );
           // Only indexes that ALREADY exist on AWS can take an `Update`
           // action; a GSI introduced by this same deploy is created (with
@@ -999,7 +1026,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           for (const gsi of toSdkGlobalSecondaryIndexes(
             previousProperties,
             currentRegion,
-            newBilling
+            newBilling,
+            'seed'
           )) {
             if (gsi.IndexName) previousByIndexName.set(gsi.IndexName, gsi);
           }
@@ -1479,6 +1507,46 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         await this.waitForTableActiveAfterUpdate(physicalId, logicalId);
       }
 
+      // 6b. Per-INDEX auto-scaling, plus the LOCAL replica's read dimension
+      // (Issue #1419). Both were unreachable before this change:
+      //   - `dynamodb:index:*` was never registered anywhere, so a per-GSI
+      //     `*CapacityAutoScalingSettings` block produced only an initial
+      //     capacity and the index never scaled.
+      //   - `dynamodb:table:ReadCapacityUnits` for the LOCAL region was
+      //     never registered either — the replica loops in step 5 all
+      //     `continue` on `currentRegion`, so only CROSS-REGION replicas
+      //     ever got a read target.
+      // The dimensions those two paths DO own (table-level write in 4b,
+      // cross-region read in step 5) are excluded by the filter rather
+      // than re-applied, so their existing call sequences are unchanged.
+      //
+      // Placed after step 6 so an index added by this same deploy already
+      // exists — `RegisterScalableTarget` on `table/<t>/index/<i>` requires
+      // the index to be there — and an index dropped by it is already gone,
+      // leaving only its orphan target to deregister.
+      //
+      // Billing gating mirrors 4b: meaningful when either side is
+      // PROVISIONED, and a flip TO `PAY_PER_REQUEST` forces a full teardown
+      // regardless of what the template still says, because AWS rejects
+      // scalable targets on an on-demand table.
+      const autoScalingMeaningfulForIndexes =
+        newBilling === 'PROVISIONED' || oldBilling === 'PROVISIONED';
+      if (autoScalingMeaningfulForIndexes) {
+        const ownedByStep6b = (spec: AutoScalingTargetSpec): boolean =>
+          spec.dimension === 'dynamodb:index:WriteCapacityUnits' ||
+          spec.dimension === 'dynamodb:index:ReadCapacityUnits' ||
+          (spec.dimension === 'dynamodb:table:ReadCapacityUnits' && spec.region === currentRegion);
+        await this.reconcileAutoScalingTargets(
+          physicalId,
+          collectAutoScalingTargets(previousProperties, currentRegion),
+          newBilling === 'PAY_PER_REQUEST'
+            ? []
+            : collectAutoScalingTargets(properties, currentRegion),
+          currentRegion,
+          ownedByStep6b
+        );
+      }
+
       // 7. TimeToLiveSpecification (separate API).
       // AWS enforces a 4-hour rate limit on TTL changes per table
       // ("Time to live has been modified multiple times within a fixed
@@ -1723,19 +1791,23 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
    */
   private async applyAutoScalingDiff(
     tableName: string,
-    dimension: 'dynamodb:table:WriteCapacityUnits' | 'dynamodb:table:ReadCapacityUnits',
+    dimension: DynamoDBScalableDimension,
     oldSettings: Record<string, unknown> | undefined,
     newSettings: Record<string, unknown> | undefined,
-    client?: ApplicationAutoScalingClient
+    client?: ApplicationAutoScalingClient,
+    indexName?: string
   ): Promise<void> {
-    const isWrite = dimension === 'dynamodb:table:WriteCapacityUnits';
-    const policyName = isWrite
-      ? `DynamoDBWriteCapacityUtilization:table/${tableName}`
-      : `DynamoDBReadCapacityUtilization:table/${tableName}`;
+    const isWrite = dimension.endsWith('WriteCapacityUnits');
     const metricType = isWrite
       ? 'DynamoDBWriteCapacityUtilization'
       : 'DynamoDBReadCapacityUtilization';
-    const resourceId = `table/${tableName}`;
+    // Index-level targets register against `table/<t>/index/<i>` (Issue #1419);
+    // table-level keeps `table/<t>`. The policy name follows AWS's own
+    // `<metricType>:<resourceId>` convention, so the table-level spelling is
+    // byte-identical to what shipped before this generalization — a renamed
+    // policy would orphan the existing one on every already-deployed table.
+    const resourceId = indexName ? `table/${tableName}/index/${indexName}` : `table/${tableName}`;
+    const policyName = `${metricType}:${resourceId}`;
 
     // PR #403 review minor #4: route the no-client-arg fallback through
     // the cached `getLocalAutoScalingClient()` rather than constructing
@@ -1906,6 +1978,87 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
   }
 
   /**
+   * Resolve the application-autoscaling client that owns a given region's
+   * targets. The local region goes through the cached client; every other
+   * region gets the per-region cached client.
+   */
+  private async autoScalingClientForRegion(
+    region: string,
+    localRegion: string
+  ): Promise<ApplicationAutoScalingClient> {
+    return region === localRegion
+      ? await this.getLocalAutoScalingClient()
+      : this.getRegionalAutoScalingClient(region);
+  }
+
+  /**
+   * Reconcile the application-autoscaling targets a CFn template declares
+   * against the ones its previous version declared (Issue #1419).
+   *
+   * `filter` narrows the reconciliation to the dimensions a given call site
+   * owns — `update()` already applies the table-level WRITE dimension in
+   * step 4b and the CROSS-REGION read dimension in its replica loops, so
+   * step 6b passes a filter that leaves those alone rather than
+   * double-applying them.
+   *
+   * **A desired target is upserted UNCONDITIONALLY, not only when it
+   * differs.** `RegisterScalableTarget` / `PutScalingPolicy` are idempotent
+   * upserts, and a diff-gated register would never backfill the targets
+   * that are the entire subject of this issue: on a table deployed before
+   * this fix, the per-index (and local read) settings are byte-identical on
+   * both sides of every subsequent deploy, so a diff check would see no
+   * change and leave the index unscaled forever. The extra calls are
+   * bounded by the number of autoscaled dimensions actually declared, and
+   * only ever happen on a PROVISIONED table.
+   */
+  private async reconcileAutoScalingTargets(
+    tableName: string,
+    previousSpecs: AutoScalingTargetSpec[],
+    desiredSpecs: AutoScalingTargetSpec[],
+    localRegion: string,
+    filter: (spec: AutoScalingTargetSpec) => boolean = () => true
+  ): Promise<void> {
+    const previousByKey = new Map<string, AutoScalingTargetSpec>();
+    for (const spec of previousSpecs) {
+      if (filter(spec)) previousByKey.set(autoScalingTargetKey(spec), spec);
+    }
+
+    const handled = new Set<string>();
+    for (const spec of desiredSpecs) {
+      if (!filter(spec)) continue;
+      const key = autoScalingTargetKey(spec);
+      handled.add(key);
+      const client = await this.autoScalingClientForRegion(spec.region, localRegion);
+      await this.applyAutoScalingDiff(
+        tableName,
+        spec.dimension,
+        previousByKey.get(key)?.settings,
+        spec.settings,
+        client,
+        spec.indexName
+      );
+    }
+
+    // Anything the previous template declared and this one does not: the
+    // index was dropped, the replica was removed, or the user deleted the
+    // auto-scaling block. Tear the target down so it does not survive in
+    // AWS's application-autoscaling control plane and get silently
+    // inherited by a future resource of the same name.
+    for (const [key, spec] of previousByKey) {
+      if (handled.has(key)) continue;
+      const client = await this.autoScalingClientForRegion(spec.region, localRegion);
+      await this.applyAutoScalingDiff(
+        tableName,
+        spec.dimension,
+        spec.settings,
+        undefined,
+        client,
+        spec.indexName
+      );
+    }
+  }
+
+  /**
    * Delete a DynamoDB Global Table.
    *
    * Order is load-bearing:
@@ -1985,12 +2138,19 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         new DescribeTableCommand({ TableName: physicalId })
       );
       const replicas = describe.Table?.Replicas ?? [];
+      // Index names come from AWS, not from the template: `delete()` may be
+      // running against state whose properties are stale, and an orphaned
+      // scalable target is only findable by the index that actually exists.
+      const localIndexNames = (describe.Table?.GlobalSecondaryIndexes ?? [])
+        .map((gsi) => gsi.IndexName)
+        .filter((name): name is string => typeof name === 'string');
       for (const replica of replicas) {
         const region = replica.RegionName;
         if (!region || region === currentRegion) continue;
         try {
           // Tear down the cross-region replica's read autoscaling
-          // BEFORE deleting the replica (best-effort).
+          // BEFORE deleting the replica (best-effort) — table level first,
+          // then every per-index read target in that region (Issue #1419).
           await this.applyAutoScalingDiff(
             physicalId,
             'dynamodb:table:ReadCapacityUnits',
@@ -1998,6 +2158,17 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
             undefined /* newSettings — undefined triggers Delete+Deregister */,
             this.getRegionalAutoScalingClient(region)
           );
+          for (const gsi of replica.GlobalSecondaryIndexes ?? []) {
+            if (!gsi.IndexName) continue;
+            await this.applyAutoScalingDiff(
+              physicalId,
+              'dynamodb:index:ReadCapacityUnits',
+              {},
+              undefined,
+              this.getRegionalAutoScalingClient(region),
+              gsi.IndexName
+            );
+          }
           await this.dynamoDBClient.send(
             new UpdateTableCommand({
               TableName: physicalId,
@@ -2032,6 +2203,29 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         undefined,
         localAsClient
       );
+      // Per-index targets in the local region (Issue #1419). Without this
+      // the index-level targets registered by `create()` / step 6b survive
+      // `DeleteTable` and are silently inherited by a future table of the
+      // same name — the same orphan-leak the table-level teardown above
+      // exists to prevent, one level down.
+      for (const indexName of localIndexNames) {
+        await this.applyAutoScalingDiff(
+          physicalId,
+          'dynamodb:index:WriteCapacityUnits',
+          {},
+          undefined,
+          localAsClient,
+          indexName
+        );
+        await this.applyAutoScalingDiff(
+          physicalId,
+          'dynamodb:index:ReadCapacityUnits',
+          {},
+          undefined,
+          localAsClient,
+          indexName
+        );
+      }
     } catch (describeErr) {
       if (!(describeErr instanceof ResourceNotFoundException)) {
         const cause = describeErr instanceof Error ? describeErr : undefined;
@@ -2893,7 +3087,8 @@ export function extractLocalDeletionProtection(
 
 export function derivePerCallProvisionedThroughput(
   properties: Record<string, unknown>,
-  region: string
+  region: string,
+  source: CapacitySource = 'min'
 ): { ReadCapacityUnits: number; WriteCapacityUnits: number } {
   const replicas = (properties['Replicas'] ?? []) as Array<Record<string, unknown>>;
   const localReplica = replicas.find((r) => r['Region'] === region);
@@ -2904,11 +3099,15 @@ export function derivePerCallProvisionedThroughput(
     // cdkd's pre-flight property-coverage check rejects that spelling as
     // unsupported, so it can never reach here — do not read it.)
     ReadCapacityUnits:
-      deriveReadCapacityUnits(asRecord(localReplica?.['ReadProvisionedThroughputSettings'])) ??
-      DEFAULT_CAPACITY_UNITS,
+      deriveReadCapacityUnits(
+        asRecord(localReplica?.['ReadProvisionedThroughputSettings']),
+        source
+      ) ?? DEFAULT_CAPACITY_UNITS,
     WriteCapacityUnits:
-      deriveWriteCapacityUnits(asRecord(properties['WriteProvisionedThroughputSettings'])) ??
-      DEFAULT_CAPACITY_UNITS,
+      deriveWriteCapacityUnits(
+        asRecord(properties['WriteProvisionedThroughputSettings']),
+        source
+      ) ?? DEFAULT_CAPACITY_UNITS,
   };
 }
 
@@ -2917,6 +3116,151 @@ export function derivePerCallProvisionedThroughput(
  * capacity value at all. Matches the pre-existing table-level default.
  */
 const DEFAULT_CAPACITY_UNITS = 5;
+
+/**
+ * The four application-autoscaling scalable dimensions a DynamoDB
+ * GlobalTable can register (Issue #1419). The `dynamodb:index:*` pair was
+ * previously missing entirely, so a per-GSI `*CapacityAutoScalingSettings`
+ * block never became a real scaling policy — the index stayed pinned at its
+ * initial capacity forever.
+ */
+export type DynamoDBScalableDimension =
+  | 'dynamodb:table:WriteCapacityUnits'
+  | 'dynamodb:table:ReadCapacityUnits'
+  | 'dynamodb:index:WriteCapacityUnits'
+  | 'dynamodb:index:ReadCapacityUnits';
+
+/**
+ * One application-autoscaling target derivable from a CFn
+ * `AWS::DynamoDB::GlobalTable` properties bag.
+ */
+export interface AutoScalingTargetSpec {
+  dimension: DynamoDBScalableDimension;
+  /** Index name for `dynamodb:index:*`; `undefined` at table level. */
+  indexName?: string;
+  /** Region whose application-autoscaling control plane owns the target. */
+  region: string;
+  /** The CFn `{Read,Write}CapacityAutoScalingSettings` block. */
+  settings: Record<string, unknown>;
+}
+
+/**
+ * Stable identity for an {@link AutoScalingTargetSpec}, used to diff the
+ * previous template's targets against the desired ones.
+ */
+export function autoScalingTargetKey(spec: {
+  dimension: DynamoDBScalableDimension;
+  indexName?: string;
+  region: string;
+}): string {
+  return `${spec.region}|${spec.dimension}|${spec.indexName ?? ''}`;
+}
+
+/**
+ * Collect every application-autoscaling target a CFn GlobalTable properties
+ * bag declares (Issue #1419).
+ *
+ * Where each dimension lives in the CFn shape — this is NOT symmetric, and
+ * the asymmetry is the reason the per-index targets were missed:
+ *
+ * | dimension                            | CFn source                                                                    | region |
+ * | ------------------------------------ | ----------------------------------------------------------------------------- | ------ |
+ * | `dynamodb:table:WriteCapacityUnits`  | `WriteProvisionedThroughputSettings.WriteCapacityAutoScalingSettings`          | local  |
+ * | `dynamodb:index:WriteCapacityUnits`  | `GlobalSecondaryIndexes[].WriteProvisionedThroughputSettings.…`                | local  |
+ * | `dynamodb:table:ReadCapacityUnits`   | `Replicas[].ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings` | replica's |
+ * | `dynamodb:index:ReadCapacityUnits`   | `Replicas[].GlobalSecondaryIndexes[].ReadProvisionedThroughputSettings.…`      | replica's |
+ *
+ * WRITE capacity on a global table is owned by the source region only, so
+ * both write dimensions register in the LOCAL region. READ capacity is
+ * per-replica: each replica registers its own target with its own region's
+ * application-autoscaling endpoint — including the LOCAL replica, whose
+ * read target was never registered by any code path before this change
+ * (`update()`'s replica loops all `continue` on the local region).
+ *
+ * A replica entry with no `Region` is skipped rather than defaulted: a
+ * target registered against the wrong region's control plane is invisible
+ * to every later diff and would leak on destroy.
+ */
+export function collectAutoScalingTargets(
+  properties: Record<string, unknown>,
+  localRegion: string
+): AutoScalingTargetSpec[] {
+  const specs: AutoScalingTargetSpec[] = [];
+
+  const tableWrite = asRecord(
+    asRecord(properties['WriteProvisionedThroughputSettings'])?.['WriteCapacityAutoScalingSettings']
+  );
+  if (tableWrite) {
+    specs.push({
+      dimension: 'dynamodb:table:WriteCapacityUnits',
+      region: localRegion,
+      settings: tableWrite,
+    });
+  }
+
+  const cfnIndexes = properties['GlobalSecondaryIndexes'];
+  if (Array.isArray(cfnIndexes)) {
+    for (const entry of cfnIndexes) {
+      const gsi = asRecord(entry);
+      const indexName = gsi?.['IndexName'];
+      if (!gsi || typeof indexName !== 'string') continue;
+      const indexWrite = asRecord(
+        asRecord(gsi['WriteProvisionedThroughputSettings'])?.['WriteCapacityAutoScalingSettings']
+      );
+      if (indexWrite) {
+        specs.push({
+          dimension: 'dynamodb:index:WriteCapacityUnits',
+          indexName,
+          region: localRegion,
+          settings: indexWrite,
+        });
+      }
+    }
+  }
+
+  const replicas = properties['Replicas'];
+  if (Array.isArray(replicas)) {
+    for (const replicaEntry of replicas) {
+      const replica = asRecord(replicaEntry);
+      const region = replica?.['Region'];
+      if (!replica || typeof region !== 'string') continue;
+
+      const replicaRead = asRecord(
+        asRecord(replica['ReadProvisionedThroughputSettings'])?.['ReadCapacityAutoScalingSettings']
+      );
+      if (replicaRead) {
+        specs.push({
+          dimension: 'dynamodb:table:ReadCapacityUnits',
+          region,
+          settings: replicaRead,
+        });
+      }
+
+      const replicaIndexes = replica['GlobalSecondaryIndexes'];
+      if (!Array.isArray(replicaIndexes)) continue;
+      for (const entry of replicaIndexes) {
+        const replicaIndex = asRecord(entry);
+        const indexName = replicaIndex?.['IndexName'];
+        if (!replicaIndex || typeof indexName !== 'string') continue;
+        const indexRead = asRecord(
+          asRecord(replicaIndex['ReadProvisionedThroughputSettings'])?.[
+            'ReadCapacityAutoScalingSettings'
+          ]
+        );
+        if (indexRead) {
+          specs.push({
+            dimension: 'dynamodb:index:ReadCapacityUnits',
+            indexName,
+            region,
+            settings: indexRead,
+          });
+        }
+      }
+    }
+  }
+
+  return specs;
+}
 
 /** Narrow an unknown CFn sub-object to a record (or `undefined`). */
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -2959,16 +3303,20 @@ function toFiniteNumber(value: unknown): number | undefined {
  * forbids it, but hand-authored / imported templates and cdkd state written
  * before this helper existed can carry it, and honoring it is strictly more
  * faithful than ignoring it.
+ *
+ * `source` selects between the two contexts CloudFormation distinguishes —
+ * see {@link CapacitySource}. Defaults to `'min'`, the common case.
  */
 export function deriveWriteCapacityUnits(
-  settings: Record<string, unknown> | undefined
+  settings: Record<string, unknown> | undefined,
+  source: CapacitySource = 'min'
 ): number | undefined {
   if (!settings) return undefined;
   const literal = toFiniteNumber(settings['WriteCapacityUnits']);
   if (literal !== undefined) return literal;
   const autoScaling = asRecord(settings['WriteCapacityAutoScalingSettings']);
   if (!autoScaling) return undefined;
-  return toFiniteNumber(autoScaling['SeedCapacity']) ?? toFiniteNumber(autoScaling['MinCapacity']);
+  return pickAutoScalingCapacity(autoScaling, source);
 }
 
 /**
@@ -2976,18 +3324,58 @@ export function deriveWriteCapacityUnits(
  * `ReadProvisionedThroughputSettings` block (both the per-replica shape,
  * which carries `ReadCapacityUnits` + `ReadCapacityAutoScalingSettings`, and
  * the GSI/table-level `GlobalReadProvisionedThroughputSettings` shape, which
- * carries only `ReadCapacityUnits`). Same Seed-before-Min precedence as the
- * write side.
+ * carries only `ReadCapacityUnits`). Same {@link CapacitySource} precedence
+ * as the write side.
  */
 export function deriveReadCapacityUnits(
-  settings: Record<string, unknown> | undefined
+  settings: Record<string, unknown> | undefined,
+  source: CapacitySource = 'min'
 ): number | undefined {
   if (!settings) return undefined;
   const literal = toFiniteNumber(settings['ReadCapacityUnits']);
   if (literal !== undefined) return literal;
   const autoScaling = asRecord(settings['ReadCapacityAutoScalingSettings']);
   if (!autoScaling) return undefined;
-  return toFiniteNumber(autoScaling['SeedCapacity']) ?? toFiniteNumber(autoScaling['MinCapacity']);
+  return pickAutoScalingCapacity(autoScaling, source);
+}
+
+/**
+ * Which member of a CFn `*CapacityAutoScalingSettings` block supplies the
+ * ONE concrete number `CreateTable` / `UpdateTable` needs (Issue #1435).
+ *
+ * CloudFormation does not use a fixed precedence here — it is
+ * context-dependent, and `SeedCapacity` has a much narrower scope than the
+ * `SeedCapacity ?? MinCapacity` chain cdkd used everywhere:
+ *
+ *  - `'min'` — a fresh `CREATE`, a new index, or any same-billing-mode
+ *    edit. Live-verified against real AWS (stack `CdkdIssue1427Control`,
+ *    us-east-1): a `TableV2` with `MinCapacity: 1 / SeedCapacity: 20`
+ *    reached `CREATE_COMPLETE` with `WriteCapacityUnits: 1` at BOTH table
+ *    and index level, and `NumberOfDecreasesToday: 0` ruled out a
+ *    scale-down between create and read-back. `MinCapacity` / `MaxCapacity`
+ *    are `Required: Yes` in the registry schema; `SeedCapacity` is not.
+ *  - `'seed'` — ONLY the `PAY_PER_REQUEST -> PROVISIONED` billing flip,
+ *    which is the single context AWS documents `SeedCapacity` for ("the
+ *    table will use these provisioned values until CloudFormation creates
+ *    the autoscaling policies you configured"). Falls back to
+ *    `MinCapacity` when the template omits the seed.
+ *
+ * Taking the seed on create over-provisioned every autoscaled PROVISIONED
+ * GlobalTable by the seed-to-min ratio — a silent billing symptom, not an
+ * error. It was only safe-looking because `create()` registered no scaling
+ * target at all (Issue #1419, fixed in the same change): the over-provision
+ * was accidentally acting as headroom for the missing policy.
+ */
+export type CapacitySource = 'min' | 'seed';
+
+/** Resolve a `*CapacityAutoScalingSettings` block to one number. */
+function pickAutoScalingCapacity(
+  autoScaling: Record<string, unknown>,
+  source: CapacitySource
+): number | undefined {
+  const min = toFiniteNumber(autoScaling['MinCapacity']);
+  if (source === 'min') return min ?? toFiniteNumber(autoScaling['SeedCapacity']);
+  return toFiniteNumber(autoScaling['SeedCapacity']) ?? min;
 }
 
 /**
@@ -3030,7 +3418,8 @@ export function deriveReadCapacityUnits(
 export function toSdkGlobalSecondaryIndexes(
   properties: Record<string, unknown>,
   region: string,
-  billingMode: string
+  billingMode: string,
+  source: CapacitySource = 'min'
 ): GlobalSecondaryIndex[] {
   const rawIndexes = properties['GlobalSecondaryIndexes'];
   // A NON-ARRAY value (an unresolved `Fn::If`, a malformed template) must not
@@ -3102,11 +3491,14 @@ export function toSdkGlobalSecondaryIndexes(
     } else if (billingMode === 'PROVISIONED') {
       sdk.ProvisionedThroughput = {
         ReadCapacityUnits:
-          deriveReadCapacityUnits(asRecord(localEntry?.['ReadProvisionedThroughputSettings'])) ??
-          deriveReadCapacityUnits(asRecord(gsi['ReadProvisionedThroughputSettings'])) ??
+          deriveReadCapacityUnits(
+            asRecord(localEntry?.['ReadProvisionedThroughputSettings']),
+            source
+          ) ??
+          deriveReadCapacityUnits(asRecord(gsi['ReadProvisionedThroughputSettings']), source) ??
           DEFAULT_CAPACITY_UNITS,
         WriteCapacityUnits:
-          deriveWriteCapacityUnits(asRecord(gsi['WriteProvisionedThroughputSettings'])) ??
+          deriveWriteCapacityUnits(asRecord(gsi['WriteProvisionedThroughputSettings']), source) ??
           DEFAULT_CAPACITY_UNITS,
       };
     }

@@ -178,9 +178,19 @@ export class DynamoDBGlobalTableStack extends cdk.Stack {
           // -> Replicas[local].GlobalSecondaryIndexes[].ReadProvisionedThroughputSettings
           readCapacity: ddb.Capacity.fixed(7),
           // -> GlobalSecondaryIndexes[].WriteProvisionedThroughputSettings
-          //    .WriteCapacityAutoScalingSettings; `seedCapacity` is the
-          //    initial provisioned value AWS starts the index at, so cdkd
-          //    must send WriteCapacityUnits=3 (NOT minCapacity=2).
+          //    .WriteCapacityAutoScalingSettings.
+          //
+          // Issue #1435: on a fresh CREATE, CloudFormation provisions the
+          // index at `minCapacity` (2), NOT `seedCapacity` (3) —
+          // live-verified against a real CFn stack. `seedCapacity` applies
+          // only to the PAY_PER_REQUEST -> PROVISIONED flip. verify.sh
+          // asserts 2 here.
+          //
+          // Issue #1419: min/max/targetUtilizationPercent must ALSO become a
+          // real `dynamodb:index:WriteCapacityUnits` scalable target +
+          // target-tracking policy. Before the fix nothing at index level was
+          // ever registered, so the index sat at its initial capacity forever
+          // and the fixture's green assertion on that initial value hid it.
           writeCapacity: ddb.Capacity.autoscaled({
             minCapacity: 2,
             maxCapacity: 20,

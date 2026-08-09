@@ -220,12 +220,58 @@ describe('DynamoDBGlobalTable GSI throughput translation (issue #1387)', () => {
   });
 
   describe('capacity derivation helpers', () => {
-    it('takes SeedCapacity before MinCapacity on the write side', () => {
+    // Issue #1435: the precedence is context-dependent, not a fixed chain.
+    // CloudFormation creates an autoscaled PROVISIONED table at MinCapacity
+    // (live-verified, stack `CdkdIssue1427Control`) and only uses SeedCapacity
+    // for the PAY_PER_REQUEST -> PROVISIONED flip.
+    it('takes MinCapacity over SeedCapacity by default (the create context)', () => {
       expect(
         deriveWriteCapacityUnits({
           WriteCapacityAutoScalingSettings: { MinCapacity: 2, MaxCapacity: 20, SeedCapacity: 3 },
         })
+      ).toBe(2);
+    });
+
+    it("takes SeedCapacity before MinCapacity when the source is 'seed' (the billing flip)", () => {
+      expect(
+        deriveWriteCapacityUnits(
+          {
+            WriteCapacityAutoScalingSettings: { MinCapacity: 2, MaxCapacity: 20, SeedCapacity: 3 },
+          },
+          'seed'
+        )
       ).toBe(3);
+    });
+
+    it("falls back to SeedCapacity under the 'min' source when MinCapacity is absent", () => {
+      expect(
+        deriveWriteCapacityUnits({
+          WriteCapacityAutoScalingSettings: { MaxCapacity: 20, SeedCapacity: 3 },
+        })
+      ).toBe(3);
+    });
+
+    it("falls back to MinCapacity under the 'seed' source when SeedCapacity is absent", () => {
+      expect(
+        deriveWriteCapacityUnits(
+          { WriteCapacityAutoScalingSettings: { MinCapacity: 2, MaxCapacity: 20 } },
+          'seed'
+        )
+      ).toBe(2);
+    });
+
+    it('takes MinCapacity over SeedCapacity on the read side too', () => {
+      expect(
+        deriveReadCapacityUnits({
+          ReadCapacityAutoScalingSettings: { MinCapacity: 4, MaxCapacity: 40, SeedCapacity: 11 },
+        })
+      ).toBe(4);
+      expect(
+        deriveReadCapacityUnits(
+          { ReadCapacityAutoScalingSettings: { MinCapacity: 4, MaxCapacity: 40, SeedCapacity: 11 } },
+          'seed'
+        )
+      ).toBe(11);
     });
 
     it('falls back to MinCapacity when no SeedCapacity is present', () => {
@@ -271,9 +317,12 @@ describe('DynamoDBGlobalTable GSI throughput translation (issue #1387)', () => {
       expect(gsi).toBeDefined();
       // The bug: pre-fix this object was the raw CFn blob, so
       // `ProvisionedThroughput` was absent and CreateTable 400'd.
+      // WriteCapacityUnits is the fixture's `MinCapacity: 2`, not its
+      // `SeedCapacity: 3` — issue #1435: CloudFormation creates at MinCapacity
+      // and reserves SeedCapacity for the billing flip.
       expect(gsi!.ProvisionedThroughput).toEqual({
         ReadCapacityUnits: 7,
-        WriteCapacityUnits: 3,
+        WriteCapacityUnits: 2,
       });
       expect(gsi!.IndexName).toBe('gsi1');
       expect(gsi!.KeySchema).toEqual([{ AttributeName: 'g1pk', KeyType: 'HASH' }]);
@@ -466,10 +515,11 @@ describe('DynamoDBGlobalTable GSI throughput translation (issue #1387)', () => {
           IndexName: 'gsi1',
           KeySchema: [{ AttributeName: 'g1pk', KeyType: 'HASH' }],
           Projection: { ProjectionType: 'ALL' },
-          ProvisionedThroughput: { ReadCapacityUnits: 7, WriteCapacityUnits: 3 },
+          // MinCapacity (2), not SeedCapacity (3) — issue #1435.
+          ProvisionedThroughput: { ReadCapacityUnits: 7, WriteCapacityUnits: 2 },
         },
       ]);
-      // Table-level capacity keeps working (seed-before-min applies here too).
+      // Table-level capacity keeps working (min-before-seed applies here too).
       expect(create.input.ProvisionedThroughput).toEqual({
         ReadCapacityUnits: 5,
         WriteCapacityUnits: 1,
@@ -666,7 +716,8 @@ describe('DynamoDBGlobalTable GSI throughput translation (issue #1387)', () => {
             IndexName: 'gsi1',
             KeySchema: [{ AttributeName: 'g1pk', KeyType: 'HASH' }],
             Projection: { ProjectionType: 'ALL' },
-            ProvisionedThroughput: { ReadCapacityUnits: 7, WriteCapacityUnits: 3 },
+            // A NEW index is a create context, so MinCapacity (2) — #1435.
+            ProvisionedThroughput: { ReadCapacityUnits: 7, WriteCapacityUnits: 2 },
           },
         },
       ]);
@@ -718,7 +769,7 @@ describe('DynamoDBGlobalTable GSI throughput translation (issue #1387)', () => {
         {
           Update: {
             IndexName: 'gsi1',
-            ProvisionedThroughput: { ReadCapacityUnits: 15, WriteCapacityUnits: 3 },
+            ProvisionedThroughput: { ReadCapacityUnits: 15, WriteCapacityUnits: 2 },
           },
         },
       ]);
@@ -972,7 +1023,7 @@ describe('DynamoDBGlobalTable GSI throughput translation (issue #1387)', () => {
             c instanceof UpdateTableCommand && c.input.GlobalSecondaryIndexUpdates !== undefined
         );
       expect(gsiCall?.input.GlobalSecondaryIndexUpdates?.[0]?.Update?.ProvisionedThroughput).toEqual(
-        { ReadCapacityUnits: 19, WriteCapacityUnits: 3 }
+        { ReadCapacityUnits: 19, WriteCapacityUnits: 2 }
       );
       expect(gsiCall?.input.GlobalSecondaryIndexUpdates?.[0]?.Update?.WarmThroughput).toBe(
         undefined
