@@ -273,6 +273,61 @@ describe('LambdaEventSourceMappingProvider.readCurrentState', () => {
       expect(result?.['Topics']).not.toBe(topics);
     });
 
+    it('re-spells SelfManagedEventSource.Endpoints back to the CFn key (issue #1384)', async () => {
+      // State holds the template's `KafkaBootstrapServers`; emitting the SDK's
+      // `KAFKA_BOOTSTRAP_SERVERS` here would fire guaranteed drift on every
+      // clean run of a self-managed-Kafka ESM.
+      mockSend.mockResolvedValueOnce({
+        UUID: 'abc-123',
+        FunctionArn: 'arn:aws:lambda:us-east-1:123:function:fn',
+        EventSourceMappingArn: 'arn:aws:lambda:us-east-1:123:event-source-mapping:abc-123',
+        State: 'Enabled',
+        SelfManagedEventSource: { Endpoints: { KAFKA_BOOTSTRAP_SERVERS: ['b:9092'] } },
+        Topics: ['t-a'],
+      });
+      mockSend.mockResolvedValueOnce({ Tags: {} });
+
+      const result = await provider.readCurrentState(
+        'abc-123',
+        'L',
+        'AWS::Lambda::EventSourceMapping'
+      );
+      expect(result?.['SelfManagedEventSource']).toEqual({
+        Endpoints: { KafkaBootstrapServers: ['b:9092'] },
+      });
+    });
+
+    it('round-trips the exact template blob back out of readCurrentState (issue #1384)', async () => {
+      // The two directions are asserted separately elsewhere; this pins that
+      // they COMPOSE. A drift run compares the template-shaped state value
+      // against this output, so any asymmetry is permanent phantom drift.
+      const templateBlob = {
+        Endpoints: { KafkaBootstrapServers: ['b-1:9092', 'b-2:9092'], FutureType: ['x:1'] },
+        FutureSibling: 'keep-me',
+      };
+      // What AWS echoes back for that template (the SDK enum key).
+      mockSend.mockResolvedValueOnce({
+        UUID: 'abc-123',
+        FunctionArn: 'arn:aws:lambda:us-east-1:123:function:fn',
+        EventSourceMappingArn: 'arn:aws:lambda:us-east-1:123:event-source-mapping:abc-123',
+        State: 'Enabled',
+        SelfManagedEventSource: {
+          Endpoints: { KAFKA_BOOTSTRAP_SERVERS: ['b-1:9092', 'b-2:9092'], FutureType: ['x:1'] },
+          FutureSibling: 'keep-me',
+        },
+        Topics: ['t-a'],
+      });
+      mockSend.mockResolvedValueOnce({ Tags: {} });
+
+      const result = await provider.readCurrentState(
+        'abc-123',
+        'L',
+        'AWS::Lambda::EventSourceMapping'
+      );
+
+      expect(result?.['SelfManagedEventSource']).toEqual(templateBlob);
+    });
+
     it('converts StartingPositionTimestamp Date → epoch seconds (matches CFn shape)', async () => {
       // AWS returns Date; CFn template supplies (and state stores) the
       // epoch-seconds number per AWS::Lambda::EventSourceMapping schema.

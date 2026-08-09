@@ -3267,6 +3267,7 @@
         "iam-role-prefixed-name-update",
         "infra-security",
         "intrinsic-functions",
+        "lambda-esm-self-managed-kafka",
         "lambda-microvm-image",
         "lambda-snapstart",
         "local-invoke-dotnet",
@@ -3395,6 +3396,9 @@
         ],
         "intrinsic-functions": [
           "l2"
+        ],
+        "lambda-esm-self-managed-kafka": [
+          "literal"
         ],
         "lambda-microvm-image": [
           "l2"
@@ -3659,7 +3663,8 @@
         "dynamodb-stream-filter",
         "dynamodb-streams",
         "eventsourcemapping-race",
-        "fifo-sqs-event-source"
+        "fifo-sqs-event-source",
+        "lambda-esm-self-managed-kafka"
       ],
       "signals": {
         "dynamodb-stream-filter": [
@@ -3672,6 +3677,9 @@
           "literal"
         ],
         "fifo-sqs-event-source": [
+          "literal"
+        ],
+        "lambda-esm-self-managed-kafka": [
           "literal"
         ]
       }
@@ -3723,6 +3731,7 @@
         "lambda-config-field-removal",
         "lambda-destinations",
         "lambda-env-removal",
+        "lambda-esm-self-managed-kafka",
         "lambda-event-invoke-config-update",
         "lambda-layer-version-update",
         "lambda-log-retention",
@@ -3918,6 +3927,10 @@
           "literal"
         ],
         "lambda-env-removal": [
+          "l2",
+          "literal"
+        ],
+        "lambda-esm-self-managed-kafka": [
           "l2",
           "literal"
         ],
@@ -5292,6 +5305,7 @@
         "event-driven",
         "full-stack-demo",
         "iam-access-key",
+        "lambda-esm-self-managed-kafka",
         "local-run-task-from-state",
         "replacement-immutable-name",
         "secrets-dynamic-ref",
@@ -5310,6 +5324,10 @@
         ],
         "iam-access-key": [
           "l2"
+        ],
+        "lambda-esm-self-managed-kafka": [
+          "l2",
+          "literal"
         ],
         "local-run-task-from-state": [
           "l2",

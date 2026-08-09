@@ -99,6 +99,68 @@ function classifyEventSourceFromProperties(properties: Record<string, unknown>):
   });
 }
 
+/**
+ * CFn spells the self-managed-Kafka bootstrap-server list
+ * `SelfManagedEventSource.Endpoints.KafkaBootstrapServers`, while the SDK
+ * models `Endpoints` as `Partial<Record<EndPointType, string[]>>` keyed by the
+ * enum VALUE `KAFKA_BOOTSTRAP_SERVERS` (`@aws-sdk/client-lambda`
+ * `EndPointType`). Because `Endpoints` is a MAP rather than a modeled
+ * structure, the serializer forwards the unknown CFn key verbatim and the
+ * service rejects the whole request — so every CDK `SelfManagedKafkaEventSource`
+ * user hit a hard `CreateEventSourceMapping` failure (issue #1384).
+ *
+ * Both directions are pure key renames of the ONE diverging key; every other
+ * member of the blob (both inside `Endpoints` and beside it) is copied through
+ * untouched. Note that a future `EndPointType` whose CFn spelling also diverges
+ * would reproduce this bug exactly — it needs its own entry here, the pass-
+ * through is not a general solution.
+ *
+ * Anything that is not a re-shapeable object — a non-object blob, a missing or
+ * non-object `Endpoints`, an array `Endpoints` — is returned VERBATIM rather
+ * than dropped. Dropping would be a silent-drop regression against the raw
+ * pass-through this replaced: AWS must stay the one that rejects a malformed
+ * template, not this layer.
+ */
+const CFN_KAFKA_ENDPOINTS_KEY = 'KafkaBootstrapServers';
+const SDK_KAFKA_ENDPOINTS_KEY = 'KAFKA_BOOTSTRAP_SERVERS';
+
+function renameEndpointsKey(selfManagedEventSource: unknown, from: string, to: string): unknown {
+  if (typeof selfManagedEventSource !== 'object' || selfManagedEventSource === null) {
+    return selfManagedEventSource;
+  }
+  const source = { ...(selfManagedEventSource as Record<string, unknown>) };
+  const endpoints = source['Endpoints'];
+  if (typeof endpoints !== 'object' || endpoints === null || Array.isArray(endpoints)) {
+    return source;
+  }
+  const renamed: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(endpoints as Record<string, unknown>)) {
+    renamed[key === from ? to : key] = value;
+  }
+  source['Endpoints'] = renamed;
+  return source;
+}
+
+/** CFn property bag -> `CreateEventSourceMapping` input shape. */
+function toSdkSelfManagedEventSource(
+  selfManagedEventSource: unknown
+): import('@aws-sdk/client-lambda').SelfManagedEventSource {
+  return renameEndpointsKey(
+    selfManagedEventSource,
+    CFN_KAFKA_ENDPOINTS_KEY,
+    SDK_KAFKA_ENDPOINTS_KEY
+  ) as import('@aws-sdk/client-lambda').SelfManagedEventSource;
+}
+
+/** `GetEventSourceMapping` response -> CFn property shape (drift readback). */
+function toCfnSelfManagedEventSource(selfManagedEventSource: unknown): unknown {
+  return renameEndpointsKey(
+    selfManagedEventSource,
+    SDK_KAFKA_ENDPOINTS_KEY,
+    CFN_KAFKA_ENDPOINTS_KEY
+  );
+}
+
 const KINDS_WITH_FUNCTION_RESPONSE_TYPES: ReadonlySet<EventSourceKind> = new Set([
   'sqs',
   'kinesis',
@@ -250,9 +312,9 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
           'SourceAccessConfigurations'
         ] as import('@aws-sdk/client-lambda').SourceAccessConfiguration[];
       if (properties['SelfManagedEventSource'])
-        params.SelfManagedEventSource = properties[
-          'SelfManagedEventSource'
-        ] as import('@aws-sdk/client-lambda').SelfManagedEventSource;
+        params.SelfManagedEventSource = toSdkSelfManagedEventSource(
+          properties['SelfManagedEventSource']
+        );
       if (properties['SelfManagedKafkaEventSourceConfig'])
         params.SelfManagedKafkaEventSourceConfig = properties[
           'SelfManagedKafkaEventSourceConfig'
@@ -787,7 +849,11 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
       result['SourceAccessConfigurations'] = resp.SourceAccessConfigurations;
     }
     if (resp.SelfManagedEventSource !== undefined) {
-      result['SelfManagedEventSource'] = resp.SelfManagedEventSource;
+      // Inverse of the create-side rename: state holds the CFn spelling
+      // (`Endpoints.KafkaBootstrapServers`), so emitting the SDK's
+      // `KAFKA_BOOTSTRAP_SERVERS` here would fire guaranteed drift on every
+      // clean run of a self-managed-Kafka ESM (issue #1384).
+      result['SelfManagedEventSource'] = toCfnSelfManagedEventSource(resp.SelfManagedEventSource);
     }
     if (resp.SelfManagedKafkaEventSourceConfig !== undefined) {
       result['SelfManagedKafkaEventSourceConfig'] = resp.SelfManagedKafkaEventSourceConfig;
