@@ -143,6 +143,18 @@ export class EmrInstanceConfigsStack extends cdk.Stack {
       instanceCount: isUpdate ? 2 : 1,
       market: 'ON_DEMAND',
       name: 'cdkd-integ-task-group',
+      // Issue #1383: the standalone InstanceGroupConfig provider forwards this
+      // blob to AddInstanceGroups, where CFn `ConfigurationProperties` must be
+      // renamed to the SDK's `Properties` — a conversion site distinct from the
+      // inline `Cluster.Instances` one the emr-cluster fixture covers.
+      // `Configurations` is create-only, so it is identical in the UPDATE phase
+      // (which resizes InstanceCount only).
+      configurations: [
+        {
+          classification: 'core-site',
+          configurationProperties: { 'cdkd.integ.marker': 'task-group' },
+        },
+      ],
     });
     // AddInstanceGroups requires the cluster to be WAITING/RUNNING first; the
     // JobFlowId Ref already induces this ordering, but make it explicit.

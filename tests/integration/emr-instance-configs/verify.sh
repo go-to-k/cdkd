@@ -86,6 +86,23 @@ CLEANUP_TAG_VALUE="emr-instance-configs"
 
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
+# `aws emr list-instance-groups` is an AWS-CLI-CUSTOMIZED command: in a
+# non-interactive shell it prints `Warning: Input is not a terminal (fd=0).`
+# and then dies with `aws: [ERROR]: [Errno 22] Invalid argument` (verified
+# 2026-08-09; `--no-paginate --no-cli-pager </dev/null` does not help). Read the
+# per-group `Configurations` through the SDK instead — the repo root already
+# depends on @aws-sdk/client-emr, so no extra install is needed.
+REPO_ROOT="${PWD}/../../.."
+list_instance_groups_json() { # $1 = cluster id -> JSON array of InstanceGroups
+  ( cd "${REPO_ROOT}" && REGION="${REGION}" node --input-type=module -e "
+import { EMRClient, ListInstanceGroupsCommand } from '@aws-sdk/client-emr';
+const client = new EMRClient({ region: process.env.REGION });
+const res = await client.send(new ListInstanceGroupsCommand({ ClusterId: process.argv[1] }));
+process.stdout.write(JSON.stringify(res.InstanceGroups ?? []));
+" "$1" ) || return 1
+}
+
+
 # Ids of ACTIVE (not terminated) clusters named like the fixture and carrying
 # the fixture's constant tag.
 active_tagged_cluster_ids() {
@@ -279,6 +296,23 @@ if [ "${PROVISIONED_BY}" != "sdk" ]; then
   exit 1
 fi
 echo "    group routed via SDK provider (provisionedBy=sdk)"
+
+# --- Assertion: issue #1383 per-group ConfigurationProperties ----------
+# CFn spells the property bag `ConfigurationProperties`; the SDK member is
+# `Properties`, and the AWS SDK v3 serializer drops unknown members — so before
+# the fix AddInstanceGroups silently created the group WITHOUT its application
+# configuration while cdkd reported success. Read it back from AWS.
+GROUPS_JSON="$(list_instance_groups_json "${CID_P1}")"
+GROUP_CFG="$(printf '%s' "${GROUPS_JSON}" | jq -r --arg gid "${GID_P1}" '
+  [ .[] | select(.Id == $gid)
+        | .Configurations[]? | select(.Classification == "core-site")
+        | .Properties["cdkd.integ.marker"] ] | first // empty')"
+if [ "${GROUP_CFG}" != "task-group" ]; then
+  echo "FAIL: TASK group Configurations 'cdkd.integ.marker' is '${GROUP_CFG}', expected 'task-group' (issue #1383 NOT closed)" >&2
+  echo "      raw groups: ${GROUPS_JSON}" >&2
+  exit 1
+fi
+echo "    standalone-group ConfigurationProperties reached AWS (issue #1383 closed)"
 
 # --- Phase 2: in-place resize ------------------------------------------
 echo "==> Phase 2: re-deploy with CDKD_TEST_UPDATE=true (resize TASK group 1 -> 2)"

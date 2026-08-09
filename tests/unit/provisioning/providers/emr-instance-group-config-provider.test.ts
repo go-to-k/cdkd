@@ -143,6 +143,27 @@ describe('EMRInstanceGroupConfigProvider create', () => {
     });
   });
 
+  it('renames Configurations[].ConfigurationProperties to the SDK Properties member (issue #1383)', async () => {
+    routeSend({
+      AddInstanceGroupsCommand: { JobFlowId: CLUSTER_ID, InstanceGroupIds: [GROUP_ID] },
+      ListInstanceGroupsCommand: groupOf('RUNNING'),
+    });
+
+    await newProvider().create('Grp', RESOURCE_TYPE, {
+      ...BASE_PROPS,
+      Configurations: [
+        { Classification: 'yarn-site', ConfigurationProperties: { 'yarn.nodemanager.a': 'b' } },
+      ],
+    });
+
+    const groups = callsOf(AddInstanceGroupsCommand)[0]!.input.InstanceGroups as Array<
+      Record<string, unknown>
+    >;
+    expect(groups[0]!['Configurations']).toEqual([
+      { Classification: 'yarn-site', Properties: { 'yarn.nodemanager.a': 'b' } },
+    ]);
+  });
+
   it('rejects when JobFlowId is absent', async () => {
     routeSend({});
     const { JobFlowId: _drop, ...noParent } = BASE_PROPS;

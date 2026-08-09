@@ -212,6 +212,98 @@ describe('EMRClusterProvider create', () => {
     expect(fleets[1]!['TargetSpotCapacity']).toBe(2);
   });
 
+  it('renames ConfigurationProperties / StepProperties to the SDK Properties member on RunJobFlow (issue #1383)', async () => {
+    routeSend({
+      RunJobFlowCommand: { JobFlowId: CLUSTER_ID },
+      DescribeClusterCommand: [clusterOf('WAITING')],
+    });
+
+    await newProvider().create('MyCluster', RESOURCE_TYPE, {
+      ...BASE_PROPS,
+      Configurations: [
+        {
+          Classification: 'spark-defaults',
+          ConfigurationProperties: { 'spark.executor.memory': '4g' },
+        },
+      ],
+      Steps: [
+        {
+          Name: 'my-step',
+          ActionOnFailure: 'CONTINUE',
+          HadoopJarStep: {
+            Jar: 's3://bucket/job.jar',
+            StepProperties: [{ Key: 'k', Value: 'v' }],
+          },
+        },
+      ],
+      Instances: {
+        Ec2SubnetId: 'subnet-abc',
+        MasterInstanceGroup: {
+          InstanceCount: 1,
+          InstanceType: 'm5.xlarge',
+          Configurations: [
+            { Classification: 'yarn-site', ConfigurationProperties: { 'yarn.a': 'b' } },
+          ],
+        },
+      },
+    });
+
+    const input = callsOf(RunJobFlowCommand)[0]!.input;
+    expect(input['Configurations']).toEqual([
+      { Classification: 'spark-defaults', Properties: { 'spark.executor.memory': '4g' } },
+    ]);
+    expect(input['Steps']).toEqual([
+      {
+        Name: 'my-step',
+        ActionOnFailure: 'CONTINUE',
+        HadoopJarStep: {
+          Jar: 's3://bucket/job.jar',
+          Properties: [{ Key: 'k', Value: 'v' }],
+        },
+      },
+    ]);
+    const groups = (input['Instances'] as { InstanceGroups: Array<Record<string, unknown>> })
+      .InstanceGroups;
+    expect(groups[0]!['Configurations']).toEqual([
+      { Classification: 'yarn-site', Properties: { 'yarn.a': 'b' } },
+    ]);
+  });
+
+  it('renames per-instance-type-config Configurations inside an instance fleet (issue #1383)', async () => {
+    routeSend({
+      RunJobFlowCommand: { JobFlowId: CLUSTER_ID },
+      DescribeClusterCommand: [clusterOf('WAITING')],
+    });
+
+    await newProvider().create('MyCluster', RESOURCE_TYPE, {
+      ...BASE_PROPS,
+      Instances: {
+        Ec2SubnetIds: ['subnet-abc'],
+        MasterInstanceFleet: {
+          TargetOnDemandCapacity: 1,
+          InstanceTypeConfigs: [
+            {
+              InstanceType: 'm5.xlarge',
+              Configurations: [
+                { Classification: 'hive-site', ConfigurationProperties: { 'hive.a': 'b' } },
+              ],
+            },
+          ],
+        },
+      },
+    });
+
+    const input = callsOf(RunJobFlowCommand)[0]!.input;
+    const fleets = (input['Instances'] as { InstanceFleets: Array<Record<string, unknown>> })
+      .InstanceFleets;
+    expect(fleets[0]!['InstanceTypeConfigs']).toEqual([
+      {
+        InstanceType: 'm5.xlarge',
+        Configurations: [{ Classification: 'hive-site', Properties: { 'hive.a': 'b' } }],
+      },
+    ]);
+  });
+
   it('errors and best-effort terminates when the cluster reaches a terminal state during create', async () => {
     routeSend({
       RunJobFlowCommand: { JobFlowId: CLUSTER_ID },
