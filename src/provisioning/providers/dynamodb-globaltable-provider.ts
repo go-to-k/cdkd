@@ -19,6 +19,8 @@ import {
   type GlobalSecondaryIndex,
   type GlobalSecondaryIndexUpdate,
   type LocalSecondaryIndex,
+  type OnDemandThroughput,
+  type ProvisionedThroughput,
   type ReplicaGlobalSecondaryIndex,
   type StreamSpecification,
   type Tag,
@@ -2785,51 +2787,6 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
     : undefined;
 }
 
-/**
- * Normalize an explicitly-supplied, already-SDK-shaped throughput block.
- *
- * The CFn schema forbids these members, but cdkd state written before Issue
- * #1387 and hand-authored templates can carry them. Forwarding the raw record
- * would be the ONE path that skips {@link toFiniteNumber}, so a stringly-typed
- * CFn `"5"` would reach the SDK unnormalized while every DERIVED value is
- * coerced — an inconsistency that only shows up on the rarest input. Picking
- * the known members explicitly also drops junk keys the SDK serializer would
- * discard silently anyway.
- *
- * THROWS on a member that is PRESENT but will not coerce (an unresolved
- * intrinsic, a malformed value). Silently omitting it would let the caller's
- * `??` chain fall through to a derived value or to
- * {@link DEFAULT_CAPACITY_UNITS}, i.e. quietly deploy 5/5 for a table whose
- * template explicitly asked to be sized — the same silent-substitution class
- * this provider throws on for a non-array `GlobalSecondaryIndexes`.
- *
- * Absent members are simply omitted, so the result is a PARTIAL block the
- * caller merges per-member over the derived values. Returning a whole-block
- * winner instead would let a half-filled explicit block suppress a valid
- * derived sibling.
- */
-function coerceThroughputNumbers<K extends string>(
-  block: Record<string, unknown>,
-  members: readonly K[],
-  blockName: string
-): Partial<Record<K, number>> {
-  const out: Partial<Record<K, number>> = {};
-  for (const member of members) {
-    const raw = block[member];
-    if (raw === undefined || raw === null || raw === '') continue;
-    const n = toFiniteNumber(raw);
-    if (n === undefined) {
-      throw new Error(
-        `AWS::DynamoDB::GlobalTable ${blockName}.${member} must be a number, got ` +
-          `${JSON.stringify(raw)?.slice(0, 120)}. Leaving it out would silently ` +
-          `substitute a derived or default capacity for an explicitly sized table.`
-      );
-    }
-    out[member] = n;
-  }
-  return out;
-}
-
 /** Coerce a CFn numeric (CFn is stringly-typed) to a finite number. */
 function toFiniteNumber(value: unknown): number | undefined {
   if (value === undefined || value === null || value === '') return undefined;
@@ -2985,50 +2942,34 @@ export function toSdkGlobalSecondaryIndexes(
       sdk.WarmThroughput = gsi['WarmThroughput'] as GlobalSecondaryIndex['WarmThroughput'];
     }
 
-    // Explicit already-SDK-shaped blocks merge over the derived ones PER
-    // MEMBER. Whole-block replacement was wrong in both directions: a partial
-    // explicit block suppressed a perfectly valid derived sibling (silent
-    // loss), and a fully-unparseable one fell through to the derived defaults,
-    // silently deploying 5/5 for a table the template asked to size.
-    // `coerceThroughputNumbers` throws on a PRESENT member that will not
-    // coerce, so an unresolved intrinsic is loud rather than defaulted.
-    const explicitProvisionedRaw = asRecord(gsi['ProvisionedThroughput']);
-    const explicitOnDemandRaw = asRecord(gsi['OnDemandThroughput']);
-    const explicitProvisioned = explicitProvisionedRaw
-      ? coerceThroughputNumbers(
-          explicitProvisionedRaw,
-          ['ReadCapacityUnits', 'WriteCapacityUnits'],
-          'GlobalSecondaryIndexes[].ProvisionedThroughput'
-        )
-      : {};
-    const explicitOnDemand = explicitOnDemandRaw
-      ? coerceThroughputNumbers(
-          explicitOnDemandRaw,
-          ['MaxReadRequestUnits', 'MaxWriteRequestUnits'],
-          'GlobalSecondaryIndexes[].OnDemandThroughput'
-        )
-      : {};
-
-    if (billingMode === 'PROVISIONED' || Object.keys(explicitProvisioned).length > 0) {
+    // An explicit already-SDK-shaped block is forwarded as-is. The CFn schema
+    // forbids these members, so this only fires for pre-#1387 cdkd state and
+    // hand-authored templates. Normalizing them (numeric coercion, per-member
+    // merge over the derived values, billing-mode gating) is deliberately NOT
+    // attempted here — see issue #1428, which records three failed designs.
+    const explicitProvisioned = asRecord(gsi['ProvisionedThroughput']);
+    const explicitOnDemand = asRecord(gsi['OnDemandThroughput']);
+    if (explicitProvisioned) {
+      sdk.ProvisionedThroughput = explicitProvisioned as unknown as ProvisionedThroughput;
+    } else if (billingMode === 'PROVISIONED') {
       sdk.ProvisionedThroughput = {
         ReadCapacityUnits:
-          explicitProvisioned.ReadCapacityUnits ??
           deriveReadCapacityUnits(asRecord(localEntry?.['ReadProvisionedThroughputSettings'])) ??
           deriveReadCapacityUnits(asRecord(gsi['ReadProvisionedThroughputSettings'])) ??
           DEFAULT_CAPACITY_UNITS,
         WriteCapacityUnits:
-          explicitProvisioned.WriteCapacityUnits ??
           deriveWriteCapacityUnits(asRecord(gsi['WriteProvisionedThroughputSettings'])) ??
           DEFAULT_CAPACITY_UNITS,
       };
     }
 
-    if (billingMode !== 'PROVISIONED' || Object.keys(explicitOnDemand).length > 0) {
-      const maxWrite =
-        explicitOnDemand.MaxWriteRequestUnits ??
-        toFiniteNumber(asRecord(gsi['WriteOnDemandThroughputSettings'])?.['MaxWriteRequestUnits']);
+    if (explicitOnDemand) {
+      sdk.OnDemandThroughput = explicitOnDemand as unknown as OnDemandThroughput;
+    } else if (billingMode !== 'PROVISIONED') {
+      const maxWrite = toFiniteNumber(
+        asRecord(gsi['WriteOnDemandThroughputSettings'])?.['MaxWriteRequestUnits']
+      );
       const maxRead =
-        explicitOnDemand.MaxReadRequestUnits ??
         toFiniteNumber(
           asRecord(localEntry?.['ReadOnDemandThroughputSettings'])?.['MaxReadRequestUnits']
         ) ??
@@ -3076,41 +3017,24 @@ export function toSdkReplicaGlobalSecondaryIndexes(
     const sdk: ReplicaGlobalSecondaryIndex = {
       IndexName: cfn['IndexName'] as string | undefined,
     };
-    // An explicit override merges over the derived value per member (each of
-    // these blocks has exactly one member today, so that reduces to "explicit
-    // wins"). An unparseable member THROWS rather than being dropped: omitting
-    // the override entirely has the same "inherit the source table's settings"
-    // meaning as sending `{}`, so a dropped value would not fail loudly — it
-    // would just quietly ignore what the template asked for.
-    const explicitProvisionedRaw = asRecord(cfn['ProvisionedThroughputOverride']);
-    const explicitOnDemandRaw = asRecord(cfn['OnDemandThroughputOverride']);
-    const explicitProvisioned = explicitProvisionedRaw
-      ? coerceThroughputNumbers(
-          explicitProvisionedRaw,
-          ['ReadCapacityUnits'],
-          'Replicas[].GlobalSecondaryIndexes[].ProvisionedThroughputOverride'
-        )
-      : {};
-    const explicitOnDemand = explicitOnDemandRaw
-      ? coerceThroughputNumbers(
-          explicitOnDemandRaw,
-          ['MaxReadRequestUnits'],
-          'Replicas[].GlobalSecondaryIndexes[].OnDemandThroughputOverride'
-        )
-      : {};
+    // Forwarded as-is, same rationale as the GSI-level blocks above (#1428).
+    const explicitProvisioned = asRecord(cfn['ProvisionedThroughputOverride']);
+    const explicitOnDemand = asRecord(cfn['OnDemandThroughputOverride']);
     const readCapacity = deriveReadCapacityUnits(
       asRecord(cfn['ReadProvisionedThroughputSettings'])
     );
     const maxReadRequestUnits = toFiniteNumber(
       asRecord(cfn['ReadOnDemandThroughputSettings'])?.['MaxReadRequestUnits']
     );
-    const mergedReadCapacity = explicitProvisioned.ReadCapacityUnits ?? readCapacity;
-    const mergedMaxRead = explicitOnDemand.MaxReadRequestUnits ?? maxReadRequestUnits;
-    if (mergedReadCapacity !== undefined) {
-      sdk.ProvisionedThroughputOverride = { ReadCapacityUnits: mergedReadCapacity };
+    if (explicitProvisioned) {
+      sdk.ProvisionedThroughputOverride = explicitProvisioned;
+    } else if (readCapacity !== undefined) {
+      sdk.ProvisionedThroughputOverride = { ReadCapacityUnits: readCapacity };
     }
-    if (mergedMaxRead !== undefined) {
-      sdk.OnDemandThroughputOverride = { MaxReadRequestUnits: mergedMaxRead };
+    if (explicitOnDemand) {
+      sdk.OnDemandThroughputOverride = explicitOnDemand;
+    } else if (maxReadRequestUnits !== undefined) {
+      sdk.OnDemandThroughputOverride = { MaxReadRequestUnits: maxReadRequestUnits };
     }
     return sdk;
   });
