@@ -254,6 +254,12 @@ export class S3VectorsProvider implements ResourceProvider {
       );
     }
 
+    // CFn spells the two sub-keys `SseType` / `KmsKeyArn` (verified against the
+    // live `AWS::S3Vectors::VectorBucket` registry schema and CDK's
+    // `CfnVectorBucket` renderer) — NOT `SSEType` / `KMSKeyArn`. Reading the
+    // all-caps spellings made both lookups permanently `undefined`, so
+    // `CreateVectorBucket` silently shipped the account-default encryption
+    // instead of the requested KMS key (issue #1385).
     const encryptionConfiguration = properties['EncryptionConfiguration'] as
       | Record<string, unknown>
       | undefined;
@@ -271,8 +277,8 @@ export class S3VectorsProvider implements ResourceProvider {
           vectorBucketName,
           encryptionConfiguration: encryptionConfiguration
             ? {
-                sseType: encryptionConfiguration['SSEType'] as SseType | undefined,
-                kmsKeyArn: encryptionConfiguration['KMSKeyArn'] as string | undefined,
+                sseType: encryptionConfiguration['SseType'] as SseType | undefined,
+                kmsKeyArn: encryptionConfiguration['KmsKeyArn'] as string | undefined,
               }
             : undefined,
           ...(tags && Object.keys(tags).length > 0 ? { tags } : {}),
@@ -383,8 +389,8 @@ export class S3VectorsProvider implements ResourceProvider {
    *
    * Issues `GetVectorBucket` for the bucket name (the physical id) and
    * surfaces `VectorBucketName` and `EncryptionConfiguration` (re-shaping
-   * the camelCase SDK response back to PascalCase CFn property names —
-   * `sseType` → `SSEType`, `kmsKeyArn` → `KMSKeyArn`).
+   * the camelCase SDK response back to the CFn property names —
+   * `sseType` → `SseType`, `kmsKeyArn` → `KmsKeyArn`).
    *
    * Returns `undefined` when the bucket is gone (`NotFoundException` /
    * `NoSuchVectorBucket`).
@@ -415,17 +421,17 @@ export class S3VectorsProvider implements ResourceProvider {
       const enc: Record<string, unknown> = {};
       const sseType = bucket.encryptionConfiguration.sseType;
       if (sseType !== undefined) {
-        enc['SSEType'] = sseType;
+        enc['SseType'] = sseType;
       }
-      // Class 1 guard (docs/provider-development.md § 3b): KMSKeyArn is
-      // KMS-only — only valid when SSEType === 'aws:kms'. AWS will not
+      // Class 1 guard (docs/provider-development.md § 3b): KmsKeyArn is
+      // KMS-only — only valid when SseType === 'aws:kms'. AWS will not
       // return kmsKeyArn for AES256-encrypted buckets, but defend
       // against a future SDK that surfaces an account-default KMS key
       // ARN on AES256 responses (which would round-trip back via
       // `cdkd drift --revert` and AWS would reject as
-      // "KMSKeyArn is only valid when SSEType is aws:kms").
+      // "KmsKeyArn is only valid when SseType is aws:kms").
       if (sseType === 'aws:kms' && bucket.encryptionConfiguration.kmsKeyArn !== undefined) {
-        enc['KMSKeyArn'] = bucket.encryptionConfiguration.kmsKeyArn;
+        enc['KmsKeyArn'] = bucket.encryptionConfiguration.kmsKeyArn;
       }
       if (Object.keys(enc).length > 0) result['EncryptionConfiguration'] = enc;
     }
