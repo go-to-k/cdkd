@@ -411,15 +411,29 @@ echo "[verify] step 13b: cdkd deploy with drop-gsi-ondemand-limits (issue #1423 
 CDKD_TEST_UPDATE=ttl,tags,drop-gsi-ondemand-limits ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose
 
 # The reset reads back as ABSENCE, never as -1 (live-probed on #1423). Pre-fix
-# the template removal emitted nothing at all, so the 50/60 ceiling stayed live
-# in AWS forever while cdkd reported success.
-OD_AFTER="$(aws dynamodb describe-table --table-name "${GSI_OD_TABLE}" --region "${REGION}" \
-  --query "Table.GlobalSecondaryIndexes[?IndexName=='byOwner'].OnDemandThroughput | [0]" --output text)"
-if [ "${OD_AFTER}" != "None" ]; then
-  echo "FAIL: issue #1423 — byOwner still carries OnDemandThroughput after the template removed it: ${OD_AFTER}" >&2
+# the template removal emitted nothing at all, so the 60 write ceiling stayed
+# live in AWS forever while cdkd reported success.
+#
+# Assert the index still EXISTS first: a `| [0]` query against a MISSING index
+# also answers "None", so the absence check alone would pass if `byOwner` had
+# vanished entirely.
+OD_IDX="$(aws dynamodb describe-table --table-name "${GSI_OD_TABLE}" --region "${REGION}" \
+  --query "length(Table.GlobalSecondaryIndexes[?IndexName=='byOwner'])" --output text)"
+if [ "${OD_IDX}" != "1" ]; then
+  echo "FAIL: byOwner index missing after the drop-limits update (count=${OD_IDX})" >&2
   exit 1
 fi
-echo "    per-GSI on-demand limits reset (OnDemandThroughput absent), issue #1423 closed"
+# The DROPPED member must be gone...
+OD_WRITE="$(aws dynamodb describe-table --table-name "${GSI_OD_TABLE}" --region "${REGION}" \
+  --query "Table.GlobalSecondaryIndexes[?IndexName=='byOwner'].OnDemandThroughput.MaxWriteRequestUnits | [0]" --output text)"
+# ...while the one the template STILL declares must survive untouched.
+OD_READ="$(aws dynamodb describe-table --table-name "${GSI_OD_TABLE}" --region "${REGION}" \
+  --query "Table.GlobalSecondaryIndexes[?IndexName=='byOwner'].OnDemandThroughput.MaxReadRequestUnits | [0]" --output text)"
+if [ "${OD_WRITE}" != "None" ] || [ "${OD_READ}" != "50" ]; then
+  echo "FAIL: issue #1423 — expected write=None (reset) / read=50 (kept), got write=${OD_WRITE} / read=${OD_READ}" >&2
+  exit 1
+fi
+echo "    per-GSI write limit reset (absent) and read limit kept at 50, issue #1423 closed"
 
 echo "[verify] step 14a: assert DeletionProtectionEnabled flipped back to false on AWS"
 DP_FINAL="$(aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" \

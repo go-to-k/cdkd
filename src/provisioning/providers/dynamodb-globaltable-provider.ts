@@ -1298,38 +1298,46 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         // a flip to on-demand — the same silent-drop class #1387 exists to close.
         const billingFlipped = oldBilling !== newBilling;
         const update: UpdateGlobalSecondaryIndexAction = { IndexName: gsi.IndexName };
-        if (gsi.OnDemandThroughput) {
-          update.OnDemandThroughput = gsi.OnDemandThroughput;
-        } else if (!billingFlipped) {
-          // REMOVING a per-GSI on-demand limit from the template has to be sent
-          // as an explicit reset. Omitting the member leaves the old ceiling
-          // live in AWS forever while cdkd reports success — the
-          // absent-field-reset silent-drop class (#1160), one level down inside
-          // a nested block (#1225). CloudFormation resets it.
-          //
-          // `-1` is the reset sentinel, and that is LIVE-VERIFIED rather than
-          // inferred from the table-level field's docs (issue #1423): a real
-          // UpdateTable with `{-1, -1}` on the per-GSI Update action was
-          // ACCEPTED, and DescribeTable afterwards reported the member as
-          // ABSENT — i.e. genuinely cleared, not stored as -1. Reset semantics
-          // are field-specific, so this was probed, never assumed.
-          //
-          // Only the members that were actually SET before are reset: blanket
-          // `{-1, -1}` would clear a sibling limit the template still declares.
-          // Skipped on a billing flip, where "no on-demand fields" is just the
-          // translation of a PROVISIONED side, not a template removal.
-          const previousOnDemand = previousSdkByName.get(gsi.IndexName)?.OnDemandThroughput;
-          if (previousOnDemand) {
-            const reset: OnDemandThroughput = {};
-            if (previousOnDemand.MaxReadRequestUnits !== undefined) {
-              reset.MaxReadRequestUnits = ON_DEMAND_LIMIT_RESET;
-            }
-            if (previousOnDemand.MaxWriteRequestUnits !== undefined) {
-              reset.MaxWriteRequestUnits = ON_DEMAND_LIMIT_RESET;
-            }
-            if (Object.keys(reset).length > 0) update.OnDemandThroughput = reset;
+        // On-demand limits: MERGE the desired side with an explicit reset for
+        // every member the template DROPPED. Omitting a removed member leaves
+        // the old ceiling live in AWS forever while cdkd reports success — the
+        // absent-field-reset silent-drop class (#1160), one level down inside a
+        // nested block (#1225). CloudFormation resets it.
+        //
+        // Merging rather than branching is load-bearing: the read limit comes
+        // from `Replicas[local].GlobalSecondaryIndexes[].ReadOnDemandThroughput-
+        // Settings` and the write limit from `GSI.WriteOnDemandThroughputSettings`
+        // — two INDEPENDENT CDK props. An `else if` that only fired when the new
+        // side had no on-demand block at all would still silently drop the
+        // single-member removal, which is the likelier user edit.
+        //
+        // `-1` is the reset sentinel, LIVE-VERIFIED rather than inferred from
+        // the table-level field's docs (issue #1423). Both payload shapes were
+        // probed against real AWS: `{-1, -1}` cleared both members, and the
+        // MIXED `{MaxReadRequestUnits: 50, MaxWriteRequestUnits: -1}` was
+        // accepted and read back as `{MaxReadRequestUnits: 50}` — the dropped
+        // member cleared, the kept one preserved. In both cases the reset reads
+        // back as ABSENCE, never as -1, so drift comparisons must expect that.
+        //
+        // Skipped on a billing flip, where "no on-demand fields" is just the
+        // translation of a PROVISIONED side rather than a template removal.
+        const previousOnDemand = previousSdkByName.get(gsi.IndexName)?.OnDemandThroughput;
+        const onDemand: OnDemandThroughput = { ...gsi.OnDemandThroughput };
+        if (!billingFlipped && previousOnDemand) {
+          if (
+            previousOnDemand.MaxReadRequestUnits !== undefined &&
+            onDemand.MaxReadRequestUnits === undefined
+          ) {
+            onDemand.MaxReadRequestUnits = ON_DEMAND_LIMIT_RESET;
+          }
+          if (
+            previousOnDemand.MaxWriteRequestUnits !== undefined &&
+            onDemand.MaxWriteRequestUnits === undefined
+          ) {
+            onDemand.MaxWriteRequestUnits = ON_DEMAND_LIMIT_RESET;
           }
         }
+        if (Object.keys(onDemand).length > 0) update.OnDemandThroughput = onDemand;
         // Provisioned capacity on a flip is step 4's job, so only a real
         // same-billing-mode edit sends it from here.
         if (!billingFlipped && gsi.ProvisionedThroughput) {

@@ -556,6 +556,36 @@ describe('DynamoDBGlobalTable GSI throughput translation (issue #1387)', () => {
       ]);
     });
 
+    it('resets the DROPPED member while KEEPING the one still declared (partial removal)', async () => {
+      // The likeliest user edit: read and write limits are two independent CDK
+      // props (read via the local replica, write on the GSI), so removing ONE
+      // is common. A branch that only reset when the new side had NO on-demand
+      // block at all would silently leave the other ceiling live — the very
+      // #1423 bug, shipped as fixed. Live-probed: the MIXED payload
+      // {MaxReadRequestUnits: 50, MaxWriteRequestUnits: -1} is accepted and
+      // reads back as {MaxReadRequestUnits: 50}.
+      const previous = structuredClone(ON_DEMAND_TABLE_PROPS) as Record<string, unknown>;
+      const next = structuredClone(ON_DEMAND_TABLE_PROPS) as Record<string, unknown>;
+      // Drop ONLY the write limit; the replica-side read limit (50) stays.
+      delete (next['GlobalSecondaryIndexes'] as Record<string, unknown>[])[0]![
+        'WriteOnDemandThroughputSettings'
+      ];
+
+      await provider.update('OnDemand', 'od-table', RESOURCE_TYPE, next, previous);
+
+      const gsiUpdates = mockSend.mock.calls
+        .map((c) => c[0])
+        .filter(
+          (c): c is UpdateTableCommand =>
+            c instanceof UpdateTableCommand &&
+            (c.input.GlobalSecondaryIndexUpdates ?? []).some((u) => u.Update !== undefined)
+        );
+      expect(gsiUpdates).toHaveLength(1);
+      expect(
+        gsiUpdates[0]!.input.GlobalSecondaryIndexUpdates?.[0]?.Update?.OnDemandThroughput
+      ).toEqual({ MaxReadRequestUnits: 50, MaxWriteRequestUnits: -1 });
+    });
+
     it('resets ONLY the member that was actually set before', async () => {
       // A blanket {-1, -1} would clear a sibling limit the template still
       // declares.
