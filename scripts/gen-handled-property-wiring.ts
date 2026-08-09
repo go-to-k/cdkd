@@ -49,19 +49,72 @@
  *     tainted. Nothing else counts.
  *   - TABLE-DRIVEN EVIDENCE — a computed read `t[k]` where `k` is the loop
  *     variable of a `for...of` over a literal name list credits every name in
- *     that list. Three real shapes in the tree depend on it: `GlueJobProvider`'s
- *     `for (const k of stringPassThrough) p[k as string]`, `SQSQueueProvider`'s
- *     `for (const [cdkKey] of Object.entries(CDK_TO_SQS_ATTRIBUTES))
- *     properties[cdkKey]`, and `EC2Provider`'s inline
- *     `for (const createOnly of ['VpcId', ...])`. Recognizing the shape is
- *     strictly better than allow-listing those ~30 properties: the names come
- *     from the table, so ADDING a declared property without adding it to the
- *     table still fails.
+ *     that list, but ONLY when the loop body actually DELIVERS one of those
+ *     reads (see below). Two real shapes in the tree depend on it:
+ *     `GlueJobProvider`'s `for (const k of stringPassThrough) r[k] = p[k as string]`
+ *     and `SQSQueueProvider`'s `for (const [cdkKey] of
+ *     Object.entries(CDK_TO_SQS_ATTRIBUTES)) attributes[sqsKey] =
+ *     properties[cdkKey]`. Recognizing the shape is strictly better than
+ *     allow-listing those 29 properties: the names come from the table, so
+ *     ADDING a declared property without adding it to the table still fails.
+ *     43 declared properties across 5 classes carry a `table-loop` tag today;
+ *     29 of them have it as their ONLY evidence (GlueJobProvider 16,
+ *     SQSQueueProvider 13), which is what makes the delivery requirement below
+ *     load-bearing rather than cosmetic.
+ *
+ * TABLE LOOPS MUST DELIVER, NOT MERELY COMPARE
+ * --------------------------------------------
+ * A `for...of` over a literal name list is not automatically a delivery. The
+ * third real shape in the tree, `EC2Provider.updateSubnet`, is
+ *
+ *   for (const createOnly of ['VpcId', 'CidrBlock', 'AvailabilityZone']) {
+ *     const next = properties[createOnly];
+ *     const prev = previousProperties[createOnly];
+ *     if (next !== undefined && prev !== undefined && next !== prev) throw ...;
+ *   }
+ *
+ * — a change GUARD whose body only compares the two bags and throws. Crediting
+ * it would smuggle back exactly the disguise the `previousProperties` exclusion
+ * below exists to block, one syntactic level up and multiplied by the size of
+ * the table. So a table read credits its names only when at least one read of
+ * `t[k]` inside that loop body is NOT comparison-only, where "comparison-only"
+ * follows the value one `const` hop: `const next = properties[k]` whose every
+ * reference is a comparison / `typeof` / truthiness operand is still just a
+ * comparison. `Glue`'s `r[k] = p[k]` and `SQS`'s `attributes[sqsKey] =
+ * stringifyValue(value)` are assignments into the outgoing request and pass;
+ * the EC2 guard does not (its three names keep their independent
+ * `element-read` evidence from `createSubnet`, so nothing regressed).
+ * A recognized-but-comparison-only loop is not recorded as a blind spot: it is
+ * fully understood, just not a delivery — the same treatment
+ * {@link isInertWholeBagUse} gives a compared-only whole-bag call.
+ *
+ * Measured on introduction: the rule withdrew the `table-loop` tag from 46
+ * declared properties across 8 classes — every one of them an immutability /
+ * change-detection guard (`EC2Provider.updateSubnet`,
+ * `AppSyncProvider.updateDataSource`, `EFSProvider.updateFileSystem`,
+ * `LambdaFunctionProvider`'s `configFields` scan, `RDSDBProxy*`'s immutable
+ * field scan, `FirehoseProvider.detectDestinationKey`) — and NONE of them
+ * became a gap, because all 46 are also read individually off the desired bag.
+ * `RDSDBProxyProvider` is the clean demonstration that the check discriminates
+ * rather than blanket-denies: its immutable-field loop lost the credit while
+ * its `mutableFields` loop three lines later, whose body does
+ * `input[sdkKey] = properties[key]`, kept it.
+ *
+ * The delivery requirement is applied to TABLE loops specifically, not to every
+ * `element-read`, because a table read converts ONE syntactic site into credit
+ * for N properties. The leverage is what makes a false positive there
+ * qualitatively worse than a single mis-credited `properties['X']`.
  *
  * Scoping the walk to one class is what makes a sibling class in the same file
  * unable to vouch for this class's declaration; module-level helpers are walked
  * per CALLING class, so a shared helper only lends evidence to classes that
- * actually call it.
+ * actually call it. The literal name table behind a loop is likewise resolved
+ * LEXICALLY — from the loop outward through its enclosing blocks, function
+ * bodies and finally module scope (see {@link resolveLiteralNameSetAt}). An
+ * earlier draft pooled every `const x = [...]` in the FILE into one map, which
+ * let a table declared inside one class's method vouch for a different class in
+ * the same file, and let two same-named tables (`glue-provider.ts` has `result`
+ * x12, `out` x5, `toAdd` x3) silently override each other last-wins.
  *
  * INDIRECT CONSUMPTION — BLIND SPOTS ARE RECORDED, NEVER AN EXCUSE
  * ----------------------------------------------------------------
@@ -84,15 +137,23 @@
  * exactly ZERO properties while creating a general-purpose mute button.
  * The sanctioned escape hatch for a genuinely un-followable shape is a
  * rationale'd {@link HANDLED_WIRING_ALLOW_LIST} entry (or, better, teaching the
- * walk the shape, as the table-driven rule above does for ~30 properties).
+ * walk the shape, as the table-driven rule above does for 43 properties).
  *
- * A whole-bag call whose RESULT is only compared or measured is not a forward
- * at all and is not even recorded: `JSON.stringify(properties) ===
+ * An UNRESOLVABLE whole-bag call whose RESULT is only compared or measured is
+ * not a forward at all and is not even recorded: `JSON.stringify(properties) ===
  * JSON.stringify(previousProperties)` (a no-op-change check) and
  * `Object.keys(properties).length > 0` (an emptiness check) both appear in
  * `EC2Provider`. See {@link isInertWholeBagUse} — the exemption is by SHAPE
- * (result feeds an equality / relational comparison, possibly through
- * `.length`), not by a callee-name list.
+ * (result feeds an equality / relational comparison, or its `.length` is taken
+ * at all), not by a callee-name list.
+ *
+ * The exemption applies ONLY to that unresolvable branch. A callee this walk CAN
+ * resolve is always descended into, whatever its result feeds: an earlier
+ * revision tested inertness first and so skipped the whole branch on
+ * `if (this.buildInput(properties) !== undefined)`, dropping every read inside
+ * `buildInput` AND recording no blind spot — evidence disappearing with nothing
+ * in the matrix to show for it, the one failure mode this section exists to
+ * prevent.
  *
  * OFFLINE-ONLY (NO AWS)
  * ---------------------
@@ -149,13 +210,30 @@ export const PROPERTY_BAG_PARAM_NAMES: ReadonlySet<string> = new Set([
  *
  * `previousProperties['X']` proves only that X participates in CHANGE
  * DETECTION; it says nothing about X ever reaching AWS, which is the property
- * this critic exists to establish. A provider that diffs a property and then
- * forgets to send it is the #1392 shape wearing a disguise.
+ * this critic exists to establish.
  *
- * Measured before tightening: excluding these names moves ZERO of the 1063
- * declared properties out of `wired` (every one that is diffed is also read off
- * the desired bag), so the strictness costs nothing today and closes the
- * disguise for tomorrow.
+ * WHAT THIS EXCLUSION DOES AND DOES NOT BUY. It does NOT close the
+ * "diffs it, then forgets to send it" disguise, and an earlier revision of this
+ * comment wrongly claimed it did. A diff reads BOTH bags, so
+ * `if (properties['X'] !== previousProperties['X']) throw` still clears X on
+ * the strength of its DESIRED-side read — the exclusion cannot see that the
+ * desired read fed a comparison rather than a request. (Denying credit to every
+ * compared-only `element-read` is a much larger change than this critic's
+ * charter; the TABLE-loop case above IS denied, because one site there credits
+ * N properties at once.) What the exclusion actually buys is narrower and still
+ * worth having: a helper reached ONLY with the previous bag
+ * (`this.diff(previousProperties)`) contributes nothing, and a property read
+ * exclusively off the previous bag — never off the desired one — is reported as
+ * a gap instead of silently passing.
+ *
+ * The converse misfire is real and accepted: a delivery driven purely off the
+ * previous bag, such as `for (const t of previousProperties['Tags']) untag(t)`
+ * in a removal path, would be reported as a gap even though it does reach AWS.
+ * No such shape exists in the tree today; if one appears, the fix is an
+ * allow-list entry naming it, not re-admitting the previous bag wholesale.
+ *
+ * Measured: excluding these names moves ZERO of the 1063 declared properties
+ * out of `wired`, so the strictness costs nothing today.
  */
 export const PREVIOUS_PROPERTY_BAG_PARAM_NAMES: ReadonlySet<string> = new Set([
   'previousProperties',
@@ -243,9 +321,16 @@ export const HANDLED_WIRING_ALLOW_LIST: ReadonlyMap<string, AllowListEntry> = ne
   ],
 ]);
 
-/** One callable this walk can descend into: a class member or a file-local function. */
+/**
+ * One callable this walk can descend into: a class member or a file-local
+ * function. `scope` disambiguates the two namespaces — a class member and a
+ * file-local free function may share a name (`build()` / `this.build()`), and a
+ * cycle-guard key that dropped the namespace made the first one walked shadow
+ * the second, silently losing the second one's reads.
+ */
 export interface Callable {
   readonly name: string;
+  readonly scope: 'member' | 'file';
   readonly params: readonly string[];
   readonly body: ts.Node;
 }
@@ -272,6 +357,7 @@ export function collectClassMembers(cls: ts.ClassDeclaration): Map<string, Calla
     if (ts.isMethodDeclaration(member) && ts.isIdentifier(member.name) && member.body) {
       out.set(member.name.text, {
         name: member.name.text,
+        scope: 'member',
         params: paramNames(member.parameters),
         body: member.body,
       });
@@ -280,6 +366,7 @@ export function collectClassMembers(cls: ts.ClassDeclaration): Map<string, Calla
       if (init && (ts.isArrowFunction(init) || ts.isFunctionExpression(init))) {
         out.set(member.name.text, {
           name: member.name.text,
+          scope: 'member',
           params: paramNames(init.parameters),
           body: init.body,
         });
@@ -301,6 +388,7 @@ export function collectFileFunctions(sf: ts.SourceFile): Map<string, Callable> {
     if (ts.isFunctionDeclaration(stmt) && stmt.name && stmt.body) {
       out.set(stmt.name.text, {
         name: stmt.name.text,
+        scope: 'file',
         params: paramNames(stmt.parameters),
         body: stmt.body,
       });
@@ -314,6 +402,7 @@ export function collectFileFunctions(sf: ts.SourceFile): Map<string, Callable> {
         ) {
           out.set(decl.name.text, {
             name: decl.name.text,
+            scope: 'file',
             params: paramNames(init.parameters),
             body: init.body,
           });
@@ -336,40 +425,55 @@ function unwrap(node: ts.Expression): ts.Expression {
   return n;
 }
 
+/** The statement list a node introduces as a lexical scope, if it introduces one. */
+function scopeStatements(node: ts.Node): readonly ts.Statement[] | undefined {
+  if (ts.isSourceFile(node) || ts.isBlock(node) || ts.isModuleBlock(node)) return node.statements;
+  if (ts.isCaseClause(node) || ts.isDefaultClause(node)) return node.statements;
+  return undefined;
+}
+
 /**
- * Every `const x = ['A', 'B']` / `const x = { A: ..., B: ... }` in the file,
- * mapped to its literal name set. Used to resolve the table behind a
- * `for (const k of TABLE)` loop.
+ * Resolve `const NAME = ['A', 'B']` / `const NAME = { A: ... }` by walking
+ * LEXICALLY outward from `at` — the enclosing block, then the enclosing
+ * function body, then module scope — and return NAME's literal name set.
  *
- * Collected FILE-wide (not per scope), so two same-named locals in different
- * functions pool their names. That looseness only ever ADDS evidence names for
- * a table-driven read the walk already saw, which is a far smaller risk than
- * missing the shape entirely; a shadowed table name is not a pattern in this
- * tree.
+ * Lexical resolution is the safety property this critic is sold on. A FILE-wide
+ * map (the earlier draft) let a table declared inside `ClassA.create()`'s body
+ * resolve a loop in `ClassB.create()`, so one class's pass-through table
+ * vouched for a sibling class's declarations, and two same-named tables in one
+ * file silently overrode each other last-wins. Walking `parent` from the use
+ * site makes both impossible: a binding that does not enclose the loop is
+ * simply not found.
  */
-export function collectLiteralNameSets(sf: ts.SourceFile): Map<string, Set<string>> {
-  const out = new Map<string, Set<string>>();
-  const visit = (node: ts.Node): void => {
-    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
-      const names = literalNameSetOf(unwrap(node.initializer), out);
-      if (names) out.set(node.name.text, names);
+export function resolveLiteralNameSetAt(
+  name: string,
+  at: ts.Node,
+  seen: Set<string> = new Set()
+): Set<string> | null {
+  if (seen.has(name)) return null; // `const a = b; const b = a;`
+  seen.add(name);
+  for (let scope: ts.Node | undefined = at; scope; scope = scope.parent) {
+    const statements = scopeStatements(scope);
+    if (!statements) continue;
+    for (const stmt of statements) {
+      if (!ts.isVariableStatement(stmt)) continue;
+      for (const decl of stmt.declarationList.declarations) {
+        if (ts.isIdentifier(decl.name) && decl.name.text === name && decl.initializer) {
+          return literalNameSetOf(decl.initializer, seen);
+        }
+      }
     }
-    ts.forEachChild(node, visit);
-  };
-  visit(sf);
-  return out;
+  }
+  return null;
 }
 
 /**
  * The set of NAMES an expression can yield as an object key: an array literal's
  * string elements, an object literal's property names, `Object.keys(...)` /
- * `Object.entries(...)` of either, or an identifier bound to one of those.
- * Returns null when the expression is not a literal name source.
+ * `Object.entries(...)` of either, or an identifier lexically bound to one of
+ * those. Returns null when the expression is not a literal name source.
  */
-function literalNameSetOf(
-  expr: ts.Expression,
-  known: ReadonlyMap<string, Set<string>>
-): Set<string> | null {
+function literalNameSetOf(expr: ts.Expression, seen: Set<string> = new Set()): Set<string> | null {
   const node = unwrap(expr);
   if (ts.isArrayLiteralExpression(node)) {
     const names = new Set<string>();
@@ -390,7 +494,7 @@ function literalNameSetOf(
     }
     return names;
   }
-  if (ts.isIdentifier(node)) return known.get(node.text) ?? null;
+  if (ts.isIdentifier(node)) return resolveLiteralNameSetAt(node.text, node, seen);
   if (
     ts.isCallExpression(node) &&
     ts.isPropertyAccessExpression(node.expression) &&
@@ -399,9 +503,73 @@ function literalNameSetOf(
     (node.expression.name.text === 'keys' || node.expression.name.text === 'entries') &&
     node.arguments.length === 1
   ) {
-    return literalNameSetOf(node.arguments[0]!, known);
+    return literalNameSetOf(node.arguments[0]!, seen);
   }
   return null;
+}
+
+/**
+ * The `for...of` statement that lexically binds `id` as its (first) loop
+ * variable, together with the literal name set its iterable yields. Resolved
+ * from the USE site outward, so the binding is necessarily the one in scope —
+ * an earlier draft kept a method-scoped `keySets` map, which credited a read
+ * outside the loop that bound the key, and pooled two loops that reused the
+ * same variable name.
+ */
+export interface LoopKeyBinding {
+  readonly names: Set<string>;
+  readonly loop: ts.ForOfStatement;
+}
+
+export function resolveLoopKey(id: ts.Identifier): LoopKeyBinding | null {
+  for (let n: ts.Node | undefined = id; n; n = n.parent) {
+    if (!ts.isForOfStatement(n) || !ts.isVariableDeclarationList(n.initializer)) continue;
+    const decl = n.initializer.declarations[0];
+    if (!decl) continue;
+    let binds = false;
+    if (ts.isIdentifier(decl.name)) {
+      binds = decl.name.text === id.text;
+    } else if (ts.isArrayBindingPattern(decl.name)) {
+      // `for (const [cdkKey, sqsKey] of Object.entries(TABLE))` — the KEY is
+      // the first element; the value binding names nothing.
+      const first = decl.name.elements[0];
+      binds =
+        !!first &&
+        ts.isBindingElement(first) &&
+        ts.isIdentifier(first.name) &&
+        first.name.text === id.text;
+    }
+    if (!binds) continue;
+    const names = literalNameSetOf(n.expression);
+    return names ? { names, loop: n } : null;
+  }
+  return null;
+}
+
+const COMPARISON_OPERATORS: ReadonlySet<ts.SyntaxKind> = new Set([
+  ts.SyntaxKind.EqualsEqualsToken,
+  ts.SyntaxKind.EqualsEqualsEqualsToken,
+  ts.SyntaxKind.ExclamationEqualsToken,
+  ts.SyntaxKind.ExclamationEqualsEqualsToken,
+  ts.SyntaxKind.GreaterThanToken,
+  ts.SyntaxKind.GreaterThanEqualsToken,
+  ts.SyntaxKind.LessThanToken,
+  ts.SyntaxKind.LessThanEqualsToken,
+]);
+
+/** Climb the wrappers that pass a value through unchanged (`as T`, parens, `!`-assertions). */
+function climb(node: ts.Node): ts.Node {
+  let n = node;
+  while (
+    n.parent &&
+    (ts.isParenthesizedExpression(n.parent) ||
+      ts.isAsExpression(n.parent) ||
+      ts.isSatisfiesExpression(n.parent) ||
+      ts.isNonNullExpression(n.parent))
+  ) {
+    n = n.parent;
+  }
+  return n;
 }
 
 /**
@@ -410,36 +578,169 @@ function literalNameSetOf(
  * and `Object.keys(properties).length > 0` are checks, not deliveries, and
  * treating them as opaque forwards blinds the class to REAL gaps.
  *
- * Shape-based on purpose: a call whose result is an operand of an equality /
- * relational comparison (optionally through a `.length` read) cannot have
- * delivered a property value to AWS.
+ * Shape-based on purpose. Two inert shapes: the result is an operand of an
+ * equality / relational comparison, or the result's `.length` is read at all —
+ * once a caller has taken `.length`, no property VALUE can have left the
+ * process, whichever way the number is then consumed
+ * (`!Object.keys(properties).length`, `if (Object.keys(properties).length)`).
+ * Bare truthiness of the call itself is deliberately NOT inert here: the
+ * `ECRProvider` blind spot this critic protects (`hasCdkAutoDeleteTag(properties)`)
+ * wears exactly that shape.
  */
 export function isInertWholeBagUse(call: ts.Node): boolean {
-  let node: ts.Node = call;
-  let parent = node.parent as ts.Node | undefined;
-  // Step through `.length` (and any parenthesization) once.
-  while (
-    parent &&
-    (ts.isParenthesizedExpression(parent) ||
-      (ts.isPropertyAccessExpression(parent) && parent.name.text === 'length'))
+  let node = climb(call);
+  let measured = false;
+  while (node.parent && ts.isPropertyAccessExpression(node.parent) && node.parent.name.text === 'length') {
+    node = climb(node.parent);
+    measured = true;
+  }
+  const parent = node.parent;
+  if (!parent) return false;
+  if (ts.isBinaryExpression(parent) && COMPARISON_OPERATORS.has(parent.operatorToken.kind)) {
+    return true;
+  }
+  return measured;
+}
+
+/**
+ * Callees that only INSPECT or SERIALIZE their argument. Passing a value to one
+ * does not decide whether the value was delivered — what the RESULT feeds does.
+ * `JSON.stringify(next) !== JSON.stringify(prev)` (the `EFSProvider` immutable
+ * guard) is a comparison; `body: JSON.stringify(properties)` is a delivery, and
+ * the recursion in {@link feedsOnlyComparison} tells them apart by looking at
+ * the call's own parent.
+ */
+const isPureInspectionCallee = (callee: ts.Expression): boolean => {
+  if (ts.isIdentifier(callee)) return ['String', 'Number', 'Boolean'].includes(callee.text);
+  if (!ts.isPropertyAccessExpression(callee) || !ts.isIdentifier(callee.expression)) return false;
+  const target = `${callee.expression.text}.${callee.name.text}`;
+  return ['JSON.stringify', 'Object.keys', 'Object.entries', 'Object.values', 'Array.isArray'].includes(
+    target
+  );
+};
+
+/**
+ * Does this value flow ONLY into a comparison / measurement — never into a
+ * request, a variable that escapes, or a call argument?
+ *
+ * Stricter than {@link isInertWholeBagUse} on purpose: this one gates whether a
+ * table read counts as DELIVERY, where the fail-closed direction is "not a
+ * delivery", so bare truthiness (`if (properties[k])`), `!`, `typeof` and
+ * `.length` all count as inert.
+ */
+function feedsOnlyComparison(value: ts.Node): boolean {
+  const top = climb(value);
+  const parent = top.parent;
+  if (!parent) return false;
+  if (ts.isTypeOfExpression(parent)) return feedsOnlyComparison(parent);
+  if (ts.isPropertyAccessExpression(parent) && parent.name.text === 'length') {
+    return feedsOnlyComparison(parent);
+  }
+  if (ts.isPrefixUnaryExpression(parent) && parent.operator === ts.SyntaxKind.ExclamationToken) {
+    return true;
+  }
+  if (
+    ts.isCallExpression(parent) &&
+    parent.arguments.some((a) => a === top) &&
+    isPureInspectionCallee(parent.expression)
   ) {
-    node = parent;
-    parent = node.parent as ts.Node | undefined;
+    return feedsOnlyComparison(parent);
   }
-  if (!parent || !ts.isBinaryExpression(parent)) return false;
-  switch (parent.operatorToken.kind) {
-    case ts.SyntaxKind.EqualsEqualsToken:
-    case ts.SyntaxKind.EqualsEqualsEqualsToken:
-    case ts.SyntaxKind.ExclamationEqualsToken:
-    case ts.SyntaxKind.ExclamationEqualsEqualsToken:
-    case ts.SyntaxKind.GreaterThanToken:
-    case ts.SyntaxKind.GreaterThanEqualsToken:
-    case ts.SyntaxKind.LessThanToken:
-    case ts.SyntaxKind.LessThanEqualsToken:
-      return true;
-    default:
-      return false;
+  if (ts.isBinaryExpression(parent)) {
+    return COMPARISON_OPERATORS.has(parent.operatorToken.kind);
   }
+  if (ts.isIfStatement(parent) || ts.isWhileStatement(parent) || ts.isDoStatement(parent)) {
+    return parent.expression === top;
+  }
+  if (ts.isConditionalExpression(parent)) return parent.condition === top;
+  return false;
+}
+
+/** The nearest enclosing function body / source file — the scope to search for references. */
+function enclosingBody(node: ts.Node): ts.Node {
+  for (let n: ts.Node | undefined = node.parent; n; n = n.parent) {
+    if (isFunctionLike(n) || ts.isSourceFile(n)) return n;
+  }
+  return node;
+}
+
+/** Is this identifier a DECLARATION site / member name rather than a value reference? */
+function isNonReferenceIdentifier(id: ts.Identifier): boolean {
+  const p = id.parent;
+  if (!p) return false;
+  if (ts.isPropertyAccessExpression(p) && p.name === id) return true;
+  if (ts.isPropertyAssignment(p) && p.name === id) return true;
+  if (ts.isVariableDeclaration(p) && p.name === id) return true;
+  if (ts.isParameter(p) && p.name === id) return true;
+  if (ts.isBindingElement(p) && (p.name === id || p.propertyName === id)) return true;
+  return false;
+}
+
+/**
+ * Every reference to `name` within `scope` feeds only a comparison. Used for
+ * the one `const` hop the delivery check follows: `const next = properties[k]`
+ * is still just a comparison when every use of `next` is one.
+ *
+ * A binding with no references at all counts as inert — a dead read delivers
+ * nothing.
+ */
+function allReferencesInert(name: string, scope: ts.Node, declName: ts.Node): boolean {
+  let inert = true;
+  const visit = (n: ts.Node): void => {
+    if (ts.isIdentifier(n) && n.text === name && n !== declName && !isNonReferenceIdentifier(n)) {
+      if (!feedsOnlyComparison(n)) inert = false;
+    }
+    if (inert) ts.forEachChild(n, visit);
+  };
+  visit(scope);
+  return inert;
+}
+
+/**
+ * Is this READ of the property bag comparison-only? Follows one `const` hop so
+ * the `EC2Provider.updateSubnet` guard shape
+ * (`const next = properties[k]; ... next !== prev`) is seen for what it is.
+ */
+function isComparisonOnlyRead(read: ts.Node): boolean {
+  if (feedsOnlyComparison(read)) return true;
+  const top = climb(read);
+  const parent = top.parent;
+  if (
+    parent &&
+    ts.isVariableDeclaration(parent) &&
+    parent.initializer === top &&
+    ts.isIdentifier(parent.name)
+  ) {
+    return allReferencesInert(parent.name.text, enclosingBody(parent), parent.name);
+  }
+  return false;
+}
+
+/**
+ * Does the body of a table-driven loop actually DELIVER one of its reads, or
+ * does it only compare them? See the module header's "TABLE LOOPS MUST DELIVER"
+ * section: crediting a comparison-only loop re-admits the diff-is-not-delivery
+ * disguise, multiplied by the size of the table.
+ */
+export function loopDeliversKeyedReads(
+  loop: ts.ForOfStatement,
+  keyName: string,
+  isTainted: (node: ts.Node) => boolean
+): boolean {
+  let delivers = false;
+  const visit = (n: ts.Node): void => {
+    if (delivers) return;
+    if (ts.isElementAccessExpression(n) && isTainted(n.expression)) {
+      const arg = unwrap(n.argumentExpression);
+      if (ts.isIdentifier(arg) && arg.text === keyName && !isComparisonOnlyRead(n)) {
+        delivers = true;
+        return;
+      }
+    }
+    ts.forEachChild(n, visit);
+  };
+  visit(loop.statement);
+  return delivers;
 }
 
 /**
@@ -459,9 +760,25 @@ export type EvidenceShape =
   | 'table-loop'
   | 'delegated';
 
+export interface PropertyEvidence {
+  /** Which shape(s) proved the read. */
+  readonly shapes: Set<EvidenceShape>;
+  /**
+   * The class MEMBER(s) whose walk produced the evidence — the seed the walk
+   * started from, not the (possibly delegated) callable holding the read.
+   *
+   * Recorded because the module header claims evidence comes from a DELIVERY
+   * path, while the walk seeds EVERY member: a read inside `readCurrentState()`
+   * would classify the property wired and contradict the header. There are zero
+   * such cases today (see the unit suite's real-tree fence), but without the
+   * seed in the JSON a future one would be invisible.
+   */
+  readonly seeds: Set<string>;
+}
+
 export interface EvidenceResult {
-  /** Property names read off a tainted property bag, with the shapes that proved it. */
-  readonly readNames: Map<string, Set<EvidenceShape>>;
+  /** Property names read off a tainted property bag, with the evidence that proved it. */
+  readonly readNames: Map<string, PropertyEvidence>;
   /**
    * Sites where the whole bag left the walk's sight: `{ ...properties }`, an
    * unresolvable computed key, `someImport(properties)`. Reported as matrix
@@ -479,29 +796,32 @@ export interface EvidenceResult {
  */
 export function collectEvidence(
   cls: ts.ClassDeclaration,
-  fileFunctions: ReadonlyMap<string, Callable> = new Map(),
-  literalNameSets: ReadonlyMap<string, Set<string>> = new Map()
+  fileFunctions: ReadonlyMap<string, Callable> = new Map()
 ): EvidenceResult {
   const members = collectClassMembers(cls);
-  const readNames = new Map<string, Set<EvidenceShape>>();
+  const readNames = new Map<string, PropertyEvidence>();
   const blindSpots = new Set<string>();
   const visited = new Set<string>();
 
   const walkCallable = (
     fn: Callable,
     taintedParams: ReadonlySet<number>,
-    owner: string,
+    seedMember: string,
     viaDelegation: boolean
   ): void => {
-    const key = `${owner}.${fn.name}:${[...taintedParams].sort((a, b) => a - b).join(',')}`;
+    // The namespace prefix is load-bearing: a class member and a file-local free
+    // function can share a name, and a bare `name:params` key made the first one
+    // walked shadow the other, dropping its reads.
+    const key = `${seedMember}/${fn.scope}:${fn.name}:${[...taintedParams].sort((a, b) => a - b).join(',')}`;
     if (visited.has(key)) return;
     visited.add(key);
 
     const record = (name: string, shape: EvidenceShape): void => {
-      const shapes = readNames.get(name) ?? new Set<EvidenceShape>();
-      shapes.add(shape);
-      if (viaDelegation) shapes.add('delegated');
-      readNames.set(name, shapes);
+      const evidence = readNames.get(name) ?? { shapes: new Set<EvidenceShape>(), seeds: new Set<string>() };
+      evidence.shapes.add(shape);
+      if (viaDelegation) evidence.shapes.add('delegated');
+      evidence.seeds.add(seedMember);
+      readNames.set(name, evidence);
     };
 
     // Seed: desired-state-bag parameter names + the call-edge tainted indices.
@@ -518,27 +838,7 @@ export function collectEvidence(
       return ts.isIdentifier(u) && tainted.has(u.text);
     };
 
-    // Loop variables whose value set is a known list of literal names, so a
-    // computed read `t[k]` credits every name in the table (see the module
-    // header's TABLE-DRIVEN EVIDENCE note).
-    const keySets = new Map<string, Set<string>>();
-
     const walk = (node: ts.Node): void => {
-      // `for (const k of TABLE)` / `for (const [k] of Object.entries(TABLE))`
-      if (ts.isForOfStatement(node) && ts.isVariableDeclarationList(node.initializer)) {
-        const names = literalNameSetOf(node.expression, literalNameSets);
-        const decl = node.initializer.declarations[0];
-        if (names && decl) {
-          if (ts.isIdentifier(decl.name)) keySets.set(decl.name.text, names);
-          else if (ts.isArrayBindingPattern(decl.name)) {
-            const first = decl.name.elements[0];
-            if (first && ts.isBindingElement(first) && ts.isIdentifier(first.name)) {
-              keySets.set(first.name.text, names);
-            }
-          }
-        }
-      }
-
       // `const alias = properties;` — the alias reads the same bag.
       if (
         ts.isVariableDeclaration(node) &&
@@ -571,13 +871,23 @@ export function collectEvidence(
         const arg = unwrap(node.argumentExpression);
         if (ts.isStringLiteral(arg) || ts.isNoSubstitutionTemplateLiteral(arg)) {
           if (isCfnPropertyName(arg.text)) record(arg.text, 'element-read');
-        } else if (ts.isIdentifier(arg) && keySets.has(arg.text)) {
-          for (const n of keySets.get(arg.text)!) {
-            if (isCfnPropertyName(n)) record(n, 'table-loop');
+        } else if (ts.isIdentifier(arg)) {
+          // The table is resolved LEXICALLY from this read outward, so only a
+          // binding that actually encloses the loop can vouch for it.
+          const binding = resolveLoopKey(arg);
+          if (!binding) {
+            // `properties[someVar]` with no resolvable name table — the read
+            // could name any property, so nothing here can be verified.
+            blindSpots.add(`computed key in ${fn.name}()`);
+          } else if (loopDeliversKeyedReads(binding.loop, arg.text, isTainted)) {
+            for (const n of binding.names) {
+              if (isCfnPropertyName(n)) record(n, 'table-loop');
+            }
           }
+          // else: a fully-understood comparison-only loop (the EC2 createOnly
+          // guard shape). No credit, and no blind spot either — nothing is
+          // hidden from the walk, the loop simply does not deliver.
         } else {
-          // `properties[someVar]` with no resolvable name table — the read
-          // could name any property, so nothing here can be verified.
           blindSpots.add(`computed key in ${fn.name}()`);
         }
       }
@@ -604,7 +914,7 @@ export function collectEvidence(
           if (isTainted(a)) taintedArgIdx.add(i);
           else if (ts.isSpreadElement(a) && isTainted(a.expression)) taintedArgIdx.add(i);
         });
-        if (taintedArgIdx.size > 0 && !isInertWholeBagUse(node)) {
+        if (taintedArgIdx.size > 0) {
           const callee = node.expression;
           let target: Callable | undefined;
           let calleeName = 'callee';
@@ -620,8 +930,17 @@ export function collectEvidence(
           } else if (ts.isPropertyAccessExpression(callee)) {
             calleeName = `${callee.expression.getText()}.${callee.name.text}`;
           }
-          if (target) walkCallable(target, taintedArgIdx, owner, true);
-          else blindSpots.add(`${calleeName}(...) in ${fn.name}()`);
+          // A RESOLVABLE callee is always walked, even when the call's result is
+          // only compared (`if (this.buildInput(properties) !== undefined)`):
+          // the reads inside it are real, and the earlier order — skipping the
+          // whole branch on `isInertWholeBagUse` — dropped them AND recorded no
+          // blind spot, so the evidence vanished invisibly. The inert exemption
+          // belongs only to the un-resolvable branch, where all it does is keep
+          // a comparison from being reported as a place the walk cannot see.
+          if (target) walkCallable(target, taintedArgIdx, seedMember, true);
+          else if (!isInertWholeBagUse(node)) {
+            blindSpots.add(`${calleeName}(...) in ${fn.name}()`);
+          }
         }
       }
 
@@ -631,7 +950,9 @@ export function collectEvidence(
     walk(fn.body);
   };
 
-  for (const member of members.values()) walkCallable(member, new Set(), 'this', false);
+  for (const member of members.values()) {
+    walkCallable(member, new Set(), member.name, false);
+  }
   return { readNames, blindSpots };
 }
 
@@ -674,17 +995,21 @@ export function parseHandledProperties(cls: ts.ClassDeclaration): Map<string, Se
   return out;
 }
 
+/** The verdict vocabulary, shared by a class's bucket and a single property's status. */
 export type Bucket = 'wired' | 'gap' | 'allow-listed';
-
-export type PropertyStatus = 'wired' | 'allow-listed' | 'gap';
 
 export interface PropertyClassification {
   readonly name: string;
-  readonly status: PropertyStatus;
+  readonly status: Bucket;
   /** Resource types whose declaration includes this property. */
   readonly types: readonly string[];
   /** Which evidence shape(s) proved the read. Empty for non-`wired` statuses. */
   readonly evidence: readonly EvidenceShape[];
+  /**
+   * The class member(s) whose walk produced the evidence. Empty for non-`wired`
+   * statuses. See {@link PropertyEvidence.seeds} for why this is recorded.
+   */
+  readonly seededBy: readonly string[];
   readonly rationale?: string;
 }
 
@@ -708,7 +1033,6 @@ export function classifySource(
 ): ClassClassification[] {
   const sf = ts.createSourceFile(fileName, source, ts.ScriptTarget.ESNext, true, ts.ScriptKind.TS);
   const fileFunctions = collectFileFunctions(sf);
-  const literalNameSets = collectLiteralNameSets(sf);
   const out: ClassClassification[] = [];
 
   const visit = (node: ts.Node): void => {
@@ -716,11 +1040,7 @@ export function classifySource(
       const handled = parseHandledProperties(node);
       if (handled.size > 0) {
         const className = node.name.text;
-        const { readNames, blindSpots } = collectEvidence(
-          node,
-          fileFunctions,
-          literalNameSets
-        );
+        const { readNames, blindSpots } = collectEvidence(node, fileFunctions);
 
         // Pool the declared properties across the types this class serves;
         // evidence is class-scoped, so per-type scoping would be false
@@ -739,13 +1059,14 @@ export function classifySource(
         let allowListedHits = 0;
         for (const name of [...typesByProp.keys()].sort((a, b) => a.localeCompare(b))) {
           const types = (typesByProp.get(name) ?? []).sort((a, b) => a.localeCompare(b));
-          const shapes = readNames.get(name);
-          if (shapes) {
+          const evidence = readNames.get(name);
+          if (evidence) {
             properties.push({
               name,
               status: 'wired',
               types,
-              evidence: [...shapes].sort((a, b) => a.localeCompare(b)),
+              evidence: [...evidence.shapes].sort((a, b) => a.localeCompare(b)),
+              seededBy: [...evidence.seeds].sort((a, b) => a.localeCompare(b)),
             });
             continue;
           }
@@ -757,10 +1078,11 @@ export function classifySource(
               status: 'allow-listed',
               types,
               evidence: [],
+              seededBy: [],
               rationale: allow.rationale,
             });
           } else {
-            properties.push({ name, status: 'gap', types, evidence: [] });
+            properties.push({ name, status: 'gap', types, evidence: [], seededBy: [] });
             gaps.push(name);
           }
         }
@@ -869,6 +1191,17 @@ function renderMarkdown(report: HandledPropertyWiringReport): string {
       'strength of the declaration alone.'
   );
   lines.push('');
+  lines.push(
+    'A computed read `properties[k]` also counts when `k` iterates a literal name ' +
+      'table (`table-loop`), but only when the loop body DELIVERS one of those reads. ' +
+      'A body that merely compares them — an immutability guard or a change-detection ' +
+      'scan — earns nothing, since crediting it would let one syntactic site vouch for ' +
+      'every name in the table on the strength of a diff. The table itself is resolved ' +
+      'LEXICALLY from the loop outward, so a table declared inside another class\'s ' +
+      'method cannot vouch for this one. Reads off `previousProperties` are never ' +
+      'evidence.'
+  );
+  lines.push('');
   lines.push('## Summary');
   lines.push('');
   lines.push(`- Provider classes classified: **${report.summary.classifiedCount}**`);
@@ -940,9 +1273,11 @@ function renderMarkdown(report: HandledPropertyWiringReport): string {
       'Sites where a whole property bag left the evidence walk (a spread, an ' +
         'unresolvable computed key, a call this script cannot resolve). Every class ' +
         'below still had to earn read evidence for each declared property; the list ' +
-        'exists so a reviewer can see where the analysis is blind. Calls whose result ' +
-        'only feeds a comparison (`JSON.stringify(properties) === ...`) are not blind ' +
-        'spots and are not listed.'
+        'exists so a reviewer can see where the analysis is blind. Two fully-understood ' +
+        'non-deliveries are deliberately NOT listed: a call whose result only feeds a ' +
+        'comparison or a `.length` measurement (`JSON.stringify(properties) === ...`), ' +
+        'and a comparison-only table loop. Nothing is hidden from the walk in either ' +
+        'case — the site simply does not deliver.'
     );
     lines.push('');
     lines.push('| Provider class | Blind spot(s) |');
@@ -987,13 +1322,31 @@ export function loadReport(providersDir: string = PROVIDERS_DIR): HandledPropert
   return buildReport(classes);
 }
 
-function main(): void {
-  const checkMode = process.argv.includes('--check');
-  const report = loadReport();
+const STALE_FAILURE =
+  'handled-property-wiring: FAIL — stale HANDLED_WIRING_ALLOW_LIST entries.\n' +
+  'These no longer match an un-wired declaration (the property is now wired,\n' +
+  'renamed, or removed). Delete them so the critic verifies the fix:\n\n';
+
+function main(argv: readonly string[] = process.argv.slice(2)): void {
+  const checkMode = argv.includes('--check');
+  // Test seam: point the walk at a scratch copy of the providers tree so the
+  // shipped `--check` exit path can be exercised against a REAL provider file
+  // carrying an injected gap, without ever mutating `src/` on disk.
+  const dirFlag = argv.find((a) => a.startsWith('--providers-dir='));
+  const report = loadReport(dirFlag ? resolve(dirFlag.slice('--providers-dir='.length)) : undefined);
   const stale = findStaleAllowListEntries(report);
 
   if (checkMode) {
+    // BOTH verdicts are reported before exiting: an earlier revision returned
+    // after the gap block, so a stale entry stayed invisible until the unrelated
+    // gap was fixed (and vice versa in the writer path). Stale first, mirroring
+    // gen-nested-key-coverage.ts.
     const gaps = findGaps(report);
+    if (stale.length > 0) {
+      process.stderr.write(STALE_FAILURE);
+      for (const k of stale) process.stderr.write(`  ${k}\n`);
+      if (gaps.length > 0) process.stderr.write('\n');
+    }
     if (gaps.length > 0) {
       process.stderr.write(
         'handled-property-wiring: FAIL — declared-but-unwired handledProperties entries.\n' +
@@ -1009,17 +1362,8 @@ function main(): void {
       for (const c of gaps) {
         for (const g of c.gaps) process.stderr.write(`  ${c.className}#${g} (${c.file})\n`);
       }
-      process.exit(1);
     }
-    if (stale.length > 0) {
-      process.stderr.write(
-        'handled-property-wiring: FAIL — stale HANDLED_WIRING_ALLOW_LIST entries.\n' +
-          'These no longer match an un-wired declaration (the property is now wired,\n' +
-          'renamed, or removed). Delete them so the critic verifies the fix:\n\n'
-      );
-      for (const k of stale) process.stderr.write(`  ${k}\n`);
-      process.exit(1);
-    }
+    if (stale.length > 0 || gaps.length > 0) process.exit(1);
     process.stderr.write(
       `handled-property-wiring: OK — ${report.summary.classifiedCount} provider classes, ` +
         `${report.summary.wiredProperties}/${report.summary.declaredProperties} declared ` +
@@ -1031,9 +1375,8 @@ function main(): void {
   }
 
   if (stale.length > 0) {
-    process.stderr.write(
-      `handled-property-wiring: stale allow-list entr(ies): ${stale.join(', ')}\n`
-    );
+    process.stderr.write(STALE_FAILURE);
+    for (const k of stale) process.stderr.write(`  ${k}\n`);
     process.exit(1);
   }
 

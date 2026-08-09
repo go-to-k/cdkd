@@ -5,13 +5,15 @@
 
 For every SDK provider class declaring `handledProperties`, checks that each declared property is actually CONSUMED — a read off the template property bag (`properties['X']` / `properties.X` / a destructure), tracked per class through `this.helper(properties)` delegation. A declaration with no such evidence is either a wiring gap or a mis-declared property (the #1392 `ECRProvider` class), and `gen-property-coverage.ts` cannot see it: that pre-flight passes on the strength of the declaration alone.
 
+A computed read `properties[k]` also counts when `k` iterates a literal name table (`table-loop`), but only when the loop body DELIVERS one of those reads. A body that merely compares them — an immutability guard or a change-detection scan — earns nothing, since crediting it would let one syntactic site vouch for every name in the table on the strength of a diff. The table itself is resolved LEXICALLY from the loop outward, so a table declared inside another class's method cannot vouch for this one. Reads off `previousProperties` are never evidence.
+
 ## Summary
 
 - Provider classes classified: **84**
 - Declared properties: **1063** (**1059** with read evidence)
 - Fully wired classes: **80**
 - Allow-listed classes (visible, non-blocking): **4**
-- Classes with a whole-bag blind spot (recorded, never an excuse): **18**
+- Classes with a whole-bag blind spot (recorded, never an excuse): **19**
 - **Wiring gaps (blocks CI): 0**
 
 ## Wiring gaps
@@ -31,7 +33,7 @@ Declared handled with no read evidence, deliberately not failing CI. A `KNOWN GA
 
 ## Whole-bag blind spots — visibility only, NOT an excuse
 
-Sites where a whole property bag left the evidence walk (a spread, an unresolvable computed key, a call this script cannot resolve). Every class below still had to earn read evidence for each declared property; the list exists so a reviewer can see where the analysis is blind. Calls whose result only feeds a comparison (`JSON.stringify(properties) === ...`) are not blind spots and are not listed.
+Sites where a whole property bag left the evidence walk (a spread, an unresolvable computed key, a call this script cannot resolve). Every class below still had to earn read evidence for each declared property; the list exists so a reviewer can see where the analysis is blind. Two fully-understood non-deliveries are deliberately NOT listed: a call whose result only feeds a comparison or a `.length` measurement (`JSON.stringify(properties) === ...`), and a comparison-only table loop. Nothing is hidden from the walk in either case — the site simply does not deliver.
 
 | Provider class | Blind spot(s) |
 | --- | --- |
@@ -40,6 +42,7 @@ Sites where a whole property bag left the evidence walk (a spread, an unresolvab
 | `AppSyncProvider` (appsync-provider.ts) | `computed key in updateResolver()` |
 | `DynamoDBGlobalTableProvider` (dynamodb-globaltable-provider.ts) | `extractLocalTags(...) in update()` |
 | `ECRProvider` (ecr-provider.ts) | `hasCdkAutoDeleteTag(...) in delete()` |
+| `EFSProvider` (efs-provider.ts) | `computed key in updateFileSystem()` |
 | `ELBv2Provider` (elbv2-provider.ts) | `stripHandled(...) in updateLoadBalancer()` |
 | `EMRClusterProvider` (emr-cluster-provider.ts) | `computed key in update()`, `object spread in update()` |
 | `EMRInstanceFleetConfigProvider` (emr-instance-fleet-config-provider.ts) | `computed key in update()`, `object spread in update()` |
