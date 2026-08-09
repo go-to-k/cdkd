@@ -1,3 +1,10 @@
+## [0.278.5](https://github.com/go-to-k/cdkd/compare/v0.278.4...v0.278.5) (2026-08-09)
+
+
+### Bug Fixes
+
+* **lambda:** translate self-managed Kafka Endpoints key to the SDK enum value ([#1398](https://github.com/go-to-k/cdkd/issues/1398)) ([8c947d4](https://github.com/go-to-k/cdkd/commit/8c947d480837386a0b509190b9448010bb2971e8))
+
 ## [0.278.4](https://github.com/go-to-k/cdkd/compare/v0.278.3...v0.278.4) (2026-08-09)
 
 
