@@ -422,7 +422,15 @@ export class S3BucketProvider implements ResourceProvider {
       // Both may appear on one rule, so they are concatenated rather than
       // treated as alternatives.
       const toSdkNvt = (nvt: Record<string, unknown>): Record<string, unknown> => ({
-        NoncurrentDays: nvt['NoncurrentDays'] as number | undefined,
+        // CFn spells the day count `TransitionInDays` on BOTH the singular
+        // `NoncurrentVersionTransition` and the plural
+        // `NoncurrentVersionTransitions[]`; the SDK member is `NoncurrentDays`.
+        // Reading only the SDK spelling meant the day count was `undefined` for
+        // every real template, so a CDK `noncurrentVersionTransitions` lost its
+        // schedule. The `?? nvt['NoncurrentDays']` fallback keeps SDK-shaped /
+        // imported input working, exactly as the `Transitions` mapping below
+        // already does with `TransitionInDays ?? Days` (issue #1388).
+        NoncurrentDays: (nvt['TransitionInDays'] ?? nvt['NoncurrentDays']) as number | undefined,
         StorageClass: nvt['StorageClass'] as string | undefined,
         NewerNoncurrentVersions: nvt['NewerNoncurrentVersions'] as number | undefined,
       });

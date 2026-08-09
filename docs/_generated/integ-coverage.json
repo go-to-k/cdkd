@@ -4635,6 +4635,7 @@
           "l2"
         ],
         "s3-lifecycle": [
+          "l1",
           "l2",
           "literal"
         ],

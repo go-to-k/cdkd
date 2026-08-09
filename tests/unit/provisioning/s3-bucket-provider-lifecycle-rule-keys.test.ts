@@ -94,7 +94,10 @@ const LEGACY_SINGULAR_RULES: Array<Record<string, unknown>> = [
     Id: 'legacyNoncurrent',
     Status: 'Enabled',
     Prefix: 'archive/',
-    NoncurrentVersionTransition: { StorageClass: 'GLACIER', NoncurrentDays: 30 },
+    // CFn spells the day count `TransitionInDays` here, NOT `NoncurrentDays`
+    // (that is the SDK's name). Getting this wrong in a fixture would hide the
+    // very translation the provider has to do.
+    NoncurrentVersionTransition: { StorageClass: 'GLACIER', TransitionInDays: 30 },
     NoncurrentVersionExpirationInDays: 365,
   },
 ];
@@ -197,6 +200,40 @@ describe('S3 lifecycle rule-level + legacy singular keys (issue #1388)', () => {
         },
       ]);
       expect(rules[0]!.Expiration).toEqual({ Days: 30 });
+    });
+  });
+
+  describe('NoncurrentVersionTransitions day field (CFn TransitionInDays)', () => {
+    it('reads TransitionInDays, the spelling a real cdk synth emits', async () => {
+      // CFn spells the day count `TransitionInDays` here (verified in
+      // aws-cdk-lib's NoncurrentVersionTransitionProperty AND in a real synth);
+      // the SDK member is `NoncurrentDays`. The provider read only the SDK
+      // spelling, so the value was `undefined` for EVERY real template and the
+      // noncurrent-version transition lost its schedule. This is the plural
+      // path, which predates the legacy-singular work below.
+      const rules = await putRules([
+        {
+          Id: 'nvt',
+          Status: 'Enabled',
+          Prefix: 'x/',
+          NoncurrentVersionTransitions: [{ StorageClass: 'GLACIER', TransitionInDays: 3 }],
+        },
+      ]);
+      expect(rules[0]!.NoncurrentVersionTransitions).toEqual([
+        { NoncurrentDays: 3, StorageClass: 'GLACIER', NewerNoncurrentVersions: undefined },
+      ]);
+    });
+
+    it('still accepts the SDK spelling for imported / SDK-shaped input', async () => {
+      const rules = await putRules([
+        {
+          Id: 'nvt',
+          Status: 'Enabled',
+          Prefix: 'x/',
+          NoncurrentVersionTransitions: [{ StorageClass: 'GLACIER', NoncurrentDays: 9 }],
+        },
+      ]);
+      expect(rules[0]!.NoncurrentVersionTransitions[0].NoncurrentDays).toBe(9);
     });
   });
 

@@ -56,6 +56,25 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 }
 # ---------------------------------------------------------------------------
 
+# S3 propagates a DeleteBucket to HeadBucket asynchronously: a probe issued
+# immediately after a successful delete can still answer 200 for a few seconds
+# (observed 2026-08-09 with two buckets deleted in one destroy). Retry the
+# gone-probe on a bounded schedule instead of asserting once. This does NOT
+# weaken leak detection -- a bucket that never disappears still FAILs, and
+# gone_probe still hard-fails on any non-not-found probe error.
+assert_gone_eventually() { # usage: assert_gone_eventually "<desc>" aws s3api head-bucket ...
+  local desc="$1"; shift
+  local attempt
+  for attempt in $(seq 1 10); do
+    if gone_probe "$@"; then
+      return 0
+    fi
+    sleep 3
+  done
+  echo "FAIL: ${desc} (still present after 10 probes over ~30s)" >&2
+  exit 1
+}
+
 cd "$(dirname "$0")"
 
 STACK="CdkdS3LifecycleExample"
@@ -63,6 +82,7 @@ REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
 BUCKET_NAME="cdkd-lifecycle-test-${ACCOUNT_ID}"
+LEGACY_BUCKET="cdkd-lifecycle-legacy-${ACCOUNT_ID}"
 
 # Resolve the built CLI path without a `cd` into dist/ that fails cryptically
 # (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
@@ -76,6 +96,7 @@ cleanup() {
     node "${LOCAL_DIST}" state destroy "${STACK}" --region "${REGION}" --yes >/dev/null 2>&1
   fi
   aws s3api delete-bucket --bucket "${BUCKET_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
+  aws s3api delete-bucket --bucket "${LEGACY_BUCKET}" --region "${REGION}" >/dev/null 2>&1 || true
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
@@ -112,8 +133,8 @@ env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
 
 RULE_COUNT_P1="$(aws s3api get-bucket-lifecycle-configuration --bucket "${BUCKET_NAME}" --region "${REGION}" \
   --query 'length(Rules)' --output text)"
-if [ "${RULE_COUNT_P1}" != "2" ]; then
-  echo "FAIL: expected 2 lifecycle rules after Phase 1, got ${RULE_COUNT_P1}" >&2
+if [ "${RULE_COUNT_P1}" != "3" ]; then
+  echo "FAIL: expected 3 lifecycle rules after Phase 1, got ${RULE_COUNT_P1}" >&2
   exit 1
 fi
 
@@ -134,7 +155,54 @@ if [ "${ARCHIVE_PREFIX_P1}" != "logs/" ] || [ "${EXP_P1}" != "730" ]; then
   echo "FAIL: expected archive Filter.Prefix=logs/ + Expiration.Days=730, got ${ARCHIVE_PREFIX_P1}/${EXP_P1}" >&2
   exit 1
 fi
-echo "    2 rules applied, all V2 Filter form (no top-level Prefix), archive expiration=730"
+echo "    3 rules applied, all V2 Filter form (no top-level Prefix), archive expiration=730"
+
+# --- the issue #1388 / #1424 rule-level + legacy-key assertions ------------
+# Every one of these FAILS against the pre-fix binary, which is the point:
+# a green deploy proved nothing here before, because each dropped key made
+# cdkd send a DIFFERENT but still-valid lifecycle config.
+LC() { # $1 = bucket, $2 = jmespath
+  aws s3api get-bucket-lifecycle-configuration --bucket "$1" --region "${REGION}" \
+    --query "$2" --output text
+}
+
+# #1424, the data-loss one: a tag-scoped rule must carry BOTH tags under
+# Filter.And.Tags. Pre-fix it gathered no scope and landed as Filter.Prefix=""
+# — an expiration against the WHOLE bucket. Sorted because AWS does not
+# preserve list order on readback.
+TAGS="$(LC "${BUCKET_NAME}" "join(' ', sort(Rules[?ID=='tag-scoped'].Filter.And.Tags[].join('=', [Key, Value])))")"
+if [ "${TAGS}" != "env=prod team=core" ]; then
+  echo "FAIL: tag-scoped rule tags = '${TAGS}', expected 'env=prod team=core'" >&2
+  exit 1
+fi
+TAG_PREFIX="$(LC "${BUCKET_NAME}" "Rules[?ID=='tag-scoped'].Filter.Prefix | [0]")"
+if [ "${TAG_PREFIX}" != "None" ]; then
+  echo "FAIL: tag-scoped rule carries Filter.Prefix='${TAG_PREFIX}' (whole-bucket scope leak)" >&2
+  exit 1
+fi
+echo "    tag-scoped rule: both tags applied via Filter.And.Tags, no whole-bucket fallback"
+
+# CFn TransitionInDays -> SDK NoncurrentDays on the PLURAL form (standard L2).
+NVT_DAYS="$(LC "${BUCKET_NAME}" "Rules[?ID=='archive'].NoncurrentVersionTransitions[0].NoncurrentDays | [0]")"
+if [ "${NVT_DAYS}" != "15" ]; then
+  echo "FAIL: archive NoncurrentVersionTransitions[0].NoncurrentDays = ${NVT_DAYS}, expected 15" >&2
+  exit 1
+fi
+echo "    noncurrent-version transition schedule reached AWS (NoncurrentDays=15)"
+
+# Legacy singular forms on the L1 bucket.
+LEG_RULES="$(LC "${LEGACY_BUCKET}" 'length(Rules)')"
+LEG_T="$(LC "${LEGACY_BUCKET}" "Rules[?ID=='legacy-singular'].Transitions[0].Days | [0]")"
+LEG_NVT="$(LC "${LEGACY_BUCKET}" "Rules[?ID=='legacy-singular'].NoncurrentVersionTransitions[0].NoncurrentDays | [0]")"
+LEG_NVE="$(LC "${LEGACY_BUCKET}" "Rules[?ID=='legacy-singular'].NoncurrentVersionExpiration.NoncurrentDays | [0]")"
+LEG_MARKER="$(LC "${LEGACY_BUCKET}" "Rules[?ID=='legacy-delete-marker'].Expiration.ExpiredObjectDeleteMarker | [0]")"
+if [ "${LEG_RULES}" != "2" ] || [ "${LEG_T}" != "90" ] || [ "${LEG_NVT}" != "30" ] \
+   || [ "${LEG_NVE}" != "365" ] || [ "${LEG_MARKER}" != "True" ]; then
+  echo "FAIL: legacy bucket rules=${LEG_RULES} transition=${LEG_T} nvt=${LEG_NVT} nve=${LEG_NVE} marker=${LEG_MARKER}" >&2
+  echo "      expected 2 / 90 / 30 / 365 / True" >&2
+  exit 1
+fi
+echo "    legacy singular Transition + NoncurrentVersionTransition + NoncurrentVersionExpirationInDays + rule-level ExpiredObjectDeleteMarker all applied"
 
 CREATION_P1="$(aws s3api list-buckets \
   --query "Buckets[?Name=='${BUCKET_NAME}'].CreationDate | [0]" --output text)"
@@ -151,11 +219,11 @@ EXP_P2="$(aws s3api get-bucket-lifecycle-configuration --bucket "${BUCKET_NAME}"
   --query "Rules[?ID=='archive'].Expiration.Days | [0]" --output text)"
 BIG_SIZE_P2="$(aws s3api get-bucket-lifecycle-configuration --bucket "${BUCKET_NAME}" --region "${REGION}" \
   --query "Rules[?ID=='big-objects'].Filter.ObjectSizeGreaterThan | [0]" --output text)"
-if [ "${RULE_COUNT_P2}" != "3" ] || [ "${EXP_P2}" != "365" ] || [ "${BIG_SIZE_P2}" != "1048576" ]; then
-  echo "FAIL: expected 3 rules / archive exp=365 / big-objects size=1048576, got ${RULE_COUNT_P2}/${EXP_P2}/${BIG_SIZE_P2}" >&2
+if [ "${RULE_COUNT_P2}" != "4" ] || [ "${EXP_P2}" != "365" ] || [ "${BIG_SIZE_P2}" != "1048576" ]; then
+  echo "FAIL: expected 4 rules / archive exp=365 / big-objects size=1048576, got ${RULE_COUNT_P2}/${EXP_P2}/${BIG_SIZE_P2}" >&2
   exit 1
 fi
-echo "    3 rules, archive expiration=365, big-objects ObjectSizeGreaterThan=1048576"
+echo "    4 rules, archive expiration=365, big-objects ObjectSizeGreaterThan=1048576"
 
 CREATION_P2="$(aws s3api list-buckets \
   --query "Buckets[?Name=='${BUCKET_NAME}'].CreationDate | [0]" --output text)"
@@ -169,8 +237,11 @@ echo "    bucket identity preserved (CreationDate unchanged) — no replacement"
 echo "==> Phase 3: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 
-assert_gone "bucket ${BUCKET_NAME} still exists after destroy" aws s3api head-bucket --bucket "${BUCKET_NAME}" --region "${REGION}"
+assert_gone_eventually "bucket ${BUCKET_NAME} still exists after destroy" aws s3api head-bucket --bucket "${BUCKET_NAME}" --region "${REGION}"
 echo "    bucket deleted"
+
+assert_gone_eventually "legacy bucket ${LEGACY_BUCKET} still exists after destroy" aws s3api head-bucket --bucket "${LEGACY_BUCKET}" --region "${REGION}"
+echo "    legacy bucket deleted"
 
 assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    cdkd state removed"
