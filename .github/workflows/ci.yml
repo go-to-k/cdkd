@@ -218,6 +218,27 @@ jobs:
           fi
       - run: vp run audit:nested-key-coverage:check
 
+      # Fail CI when docs/_generated/handled-property-wiring.{json,md} is stale
+      # relative to the provider sources. The matrix records, per SDK provider
+      # class declaring handledProperties, whether each DECLARED property is
+      # actually READ off the template property bag (following
+      # this.helper(properties) delegation and table-driven loops). A
+      # declaration with no read evidence is either a wiring gap or a
+      # mis-declared property — the #1392 ECRProvider class, which
+      # gen-property-coverage.ts structurally cannot see because that pre-flight
+      # passes on the strength of the declaration alone (issue #1404). The
+      # second step is the CRITIC: it hard-fails on any un-wired declaration
+      # that is not allow-listed, and on a stale allow-list entry.
+      - name: handled-property-wiring matrix is up-to-date
+        run: |
+          vp run gen:handled-property-wiring
+          if ! git diff --quiet -- docs/_generated/handled-property-wiring.json docs/_generated/handled-property-wiring.md; then
+            echo "::error::handled-property-wiring matrix is stale — run \`vp run gen:handled-property-wiring\` and commit the regenerated docs/_generated/handled-property-wiring.{json,md}"
+            git --no-pager diff -- docs/_generated/handled-property-wiring.json docs/_generated/handled-property-wiring.md
+            exit 1
+          fi
+      - run: vp run audit:handled-property-wiring:check
+
   runtime-compat:
     runs-on: ubuntu-latest
     needs: check-build-test
