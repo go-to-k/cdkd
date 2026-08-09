@@ -199,6 +199,13 @@
             "if": "Bash(git commit*) or Bash(git -C * commit*)",
             "timeout": 10,
             "statusMessage": "Checking staged verify.sh for state destroy --force..."
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/restore-backup.sh",
+            "if": "Bash(git checkout*) or Bash(git restore*) or Bash(git reset*) or Bash(git clean*) or Bash(git stash*) or Bash(git -C * checkout*) or Bash(git -C * restore*) or Bash(git -C * reset*) or Bash(git -C * clean*) or Bash(git -C * stash*) or Bash(cd * && git checkout*) or Bash(cd * && git restore*) or Bash(cd * && git reset*) or Bash(cd * && git clean*) or Bash(cd * && git stash*)",
+            "timeout": 20,
+            "statusMessage": "Snapshotting the working tree before a destructive restore..."
           }
         ]
       },
@@ -210,6 +217,17 @@
             "command": ".claude/hooks/main-tree-edit-gate.sh",
             "timeout": 10,
             "statusMessage": "Checking main-tree tracked-file edit policy..."
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/worktree-owner-gate.sh",
+            "timeout": 10,
+            "statusMessage": "Checking worktree ownership..."
           }
         ]
       }

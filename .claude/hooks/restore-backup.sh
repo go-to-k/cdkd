@@ -1,0 +1,163 @@
+#!/usr/bin/env bash
+# restore-backup.sh
+#
+# PreToolUse hook. NON-BLOCKING. Before a command that can destroy
+# uncommitted work (`git checkout -- <path>`, `git restore <path>`,
+# `git reset --hard`, `git clean -f`, `git stash`), snapshot whatever
+# the working tree currently holds into `.git/wipe-backups/` and let
+# the command proceed.
+#
+# WHY this exists (incident 2026-08-09): two sessions were working in
+# ONE worktree. Session B found ~228 lines of uncommitted changes it
+# did not recognize, could not attribute them, and ran
+# `git checkout -- <2 files>` to get back to a known state. Those lines
+# were session A's finished, tested bug fix plus its regression tests.
+# Nothing in git recorded them — `git checkout --` leaves no reflog
+# entry and creates no stash — so the work was simply gone. It was
+# recoverable only because session B happened to have saved a diff by
+# hand first.
+#
+# The collision (two sessions, one worktree) is the separate concern of
+# worktree-owner-gate.sh. THIS hook targets the second, independent
+# failure: a destructive restore is irreversible for uncommitted work.
+# Making it reversible is cheap, so nothing here blocks or prompts —
+# blocking a legitimate `git checkout --` would be constant friction,
+# and the whole point is that the operator does not know the changes
+# are precious at the moment they run it.
+#
+# Deliberately NOT limited to multi-session setups: the same command in
+# a single session (a revert-proof probe restore, an "undo my scratch
+# edits" reflex) destroys work the same way. Related memory rule:
+# feedback_revert_proof_restore_must_not_git_checkout.
+#
+# Output: `.git/wipe-backups/<UTC timestamp>-<verb>/` containing
+#   tracked.patch   — `git diff HEAD` (staged + unstaged, tracked files)
+#   untracked.tar   — every untracked, non-ignored file (only when the
+#                     command can delete untracked files, i.e. clean)
+#   COMMAND         — the command line that triggered the snapshot
+# Restore with: git apply .git/wipe-backups/<dir>/tracked.patch
+#
+# Failure policy: fail OPEN and SILENT on anything unexpected. A backup
+# helper that blocks the user's command when the snapshot fails would
+# be worse than no helper at all.
+
+set -u
+
+input=$(cat 2>/dev/null || true)
+
+cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // ""' 2>/dev/null || echo "")
+hook_cwd=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null || echo "")
+
+[ -n "$cmd" ] || exit 0
+
+# ---------------------------------------------------------------- match
+# Only the shapes that can DESTROY uncommitted work.
+#
+#   git checkout -- <path> / git checkout .        (worktree overwrite)
+#   git restore <path>                             (worktree overwrite)
+#   git reset --hard                               (worktree + index)
+#   git clean -f / -fd / -xf                       (deletes untracked)
+#   git stash / git stash push                     (moves work aside)
+#
+# `git checkout <branch>` (no `--`, no pathspec) is a branch switch, not
+# a restore, and is covered by main-tree-branch-gate.sh — matching it
+# here would snapshot on every ordinary switch. `git restore --staged`
+# alone only unstages (worktree untouched), but it is cheap to include
+# and a combined `--staged --worktree` IS destructive, so it stays in.
+#
+# Line-start anchored per feedback_hook_command_match_line_start: a
+# `git checkout --` mentioned inside a quoted PR body must not trigger.
+prefix='^[[:space:]]*(cd[[:space:]]+[^[:space:]]+[[:space:]]*&&[[:space:]]*)?git([[:space:]]+-[^[:space:]]+([[:space:]]+[^[:space:]-][^[:space:]]*)?)*[[:space:]]+'
+verb=""
+if printf '%s' "$cmd" | grep -qE "${prefix}checkout([[:space:]]+-[^[:space:]]+)*[[:space:]]+(--|\.)([[:space:]]|$)"; then
+  verb="checkout"
+elif printf '%s' "$cmd" | grep -qE "${prefix}restore([[:space:]]|$)"; then
+  verb="restore"
+elif printf '%s' "$cmd" | grep -qE "${prefix}reset([[:space:]]+-[^[:space:]]+)*[[:space:]]+--hard([[:space:]]|$)"; then
+  verb="reset-hard"
+elif printf '%s' "$cmd" | grep -qE "${prefix}clean([[:space:]]+-[^[:space:]]*f[^[:space:]]*)"; then
+  verb="clean"
+elif printf '%s' "$cmd" | grep -qE "${prefix}stash([[:space:]]|$)"; then
+  verb="stash"
+fi
+[ -n "$verb" ] || exit 0
+
+# ------------------------------------------------------- resolve target
+# Same resolution order as branch-gate.sh: `git -C <path>` wins, then a
+# leading `cd <path> &&`, then the Bash tool's persisted cwd.
+target_dir="${hook_cwd:-$PWD}"
+
+if [[ "$cmd" =~ ^[[:space:]]*cd[[:space:]]+([^[:space:]\&\;\|]+) ]]; then
+  cd_target="${BASH_REMATCH[1]}"
+  cd_target="${cd_target%\"}"; cd_target="${cd_target#\"}"
+  cd_target="${cd_target%\'}"; cd_target="${cd_target#\'}"
+  [[ "$cd_target" == /* ]] || cd_target="$target_dir/$cd_target"
+  target_dir="$cd_target"
+fi
+
+remaining="$cmd"
+while [[ "$remaining" =~ git[[:space:]]+-C[[:space:]]+([^[:space:]]+) ]]; do
+  c_target="${BASH_REMATCH[1]}"
+  remaining="${remaining#*"${BASH_REMATCH[0]}"}"
+  c_target="${c_target%\"}"; c_target="${c_target#\"}"
+  c_target="${c_target%\'}"; c_target="${c_target#\'}"
+  [[ "$c_target" == /* ]] || c_target="$target_dir/$c_target"
+  target_dir="$c_target"
+done
+
+git -C "$target_dir" rev-parse --git-dir >/dev/null 2>&1 || exit 0
+
+# --------------------------------------------------------------- snapshot
+# Nothing uncommitted and nothing untracked => nothing to lose. Note
+# `--porcelain` covers both, so a `git clean` against a pristine tree
+# correctly writes no snapshot.
+status=$(git -C "$target_dir" status --porcelain 2>/dev/null || echo "")
+[ -n "$status" ] || exit 0
+
+# Per-worktree git dir, so a snapshot taken in a linked worktree lands
+# beside that worktree's own git metadata rather than in the shared
+# common dir. (markgate resolves its marker store the same way — see
+# memory feedback_markgate_markers_are_per_worktree.)
+git_dir=$(git -C "$target_dir" rev-parse --absolute-git-dir 2>/dev/null || echo "")
+[ -n "$git_dir" ] || exit 0
+
+ts=$(date -u +%Y%m%dT%H%M%SZ)
+dest="$git_dir/wipe-backups/${ts}-${verb}"
+mkdir -p "$dest" 2>/dev/null || exit 0
+
+printf '%s\n' "$cmd" > "$dest/COMMAND" 2>/dev/null || true
+
+# `git diff HEAD` captures staged AND unstaged changes to tracked files
+# in one applyable patch. On a repo with no commits yet HEAD does not
+# resolve; fall back to the plain worktree diff rather than emitting an
+# empty file.
+if ! git -C "$target_dir" diff HEAD --binary > "$dest/tracked.patch" 2>/dev/null; then
+  git -C "$target_dir" diff --binary > "$dest/tracked.patch" 2>/dev/null || true
+fi
+
+# Untracked files are only at risk from `git clean`; archiving them on
+# every stash/checkout would copy build output on a large tree for no
+# reason.
+if [ "$verb" = "clean" ]; then
+  ( cd "$target_dir" 2>/dev/null &&
+    git ls-files --others --exclude-standard -z 2>/dev/null |
+      tar -cf "$dest/untracked.tar" --null -T - 2>/dev/null ) || true
+fi
+
+# Drop an empty snapshot so the directory does not fill with noise.
+if [ ! -s "$dest/tracked.patch" ] && [ ! -s "$dest/untracked.tar" ]; then
+  rm -rf "$dest" 2>/dev/null || true
+  exit 0
+fi
+
+echo "restore-backup: snapshotted the working tree before '$verb'." >&2
+echo "  $dest" >&2
+# The patch covers the WHOLE tree, so a plain `git apply` fails once any
+# other change in it is still present ("patch does not apply"). Both
+# forms below were verified against a real wipe-and-recover replay:
+# --include re-applies exactly one path and exits 0; --3way restores
+# everything recoverable and reports the hunks already in place.
+echo "  recover ONE file:  git -C \"$target_dir\" apply --include=<path> \"$dest/tracked.patch\"" >&2
+echo "  recover the tree:  git -C \"$target_dir\" apply --3way \"$dest/tracked.patch\"" >&2
+
+exit 0
