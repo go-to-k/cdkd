@@ -222,10 +222,13 @@ export function formatAwsCommandViolation(v: AwsCommandViolation): string {
     `  every AWS SDK exposes it. The CLI answers "Found invalid choice"; on a machine with`,
     `  cli_auto_prompt enabled it instead prints "Warning: Input is not a terminal (fd=0)" and dies`,
     `  with "[Errno 22] Invalid argument" — or hangs.`,
-    `  Fix: call the operation through @aws-sdk/client-${v.service} from a`,
+    // Deliberately does NOT name a package: the CLI service name is not always
+    // the SDK package suffix (`s3api` -> @aws-sdk/client-s3), and a confidently
+    // wrong `npm i` hint is worse than none.
+    `  Fix: call the operation through the matching @aws-sdk/client-* package from a`,
     `  \`node --input-type=module -e\` one-liner run from REPO_ROOT (the repo already depends on the`,
-    `  clients cdkd uses, so no install is needed). See list_instance_fleets_json in`,
-    `  tests/integration/emr-instance-fleets/verify.sh for the reference shape, including the`,
+    `  clients cdkd uses, so no install is needed). See list_instance_groups_json in`,
+    `  tests/integration/emr-instance-configs/verify.sh for the reference shape, including the`,
     `  \`|| return 1\` and the Marker pagination loop.`,
     `  Escape hatch (only if you have PROVEN the call works): # ${ALLOW_MARKER} <reason>`,
     `    ${v.raw}`,

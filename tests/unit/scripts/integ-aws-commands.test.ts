@@ -191,7 +191,7 @@ describe('lintScriptAwsCommands', () => {
     expect(v[0]!.verb).toBe('list-instance-groups');
     const report = formatAwsCommandViolation(v[0]!);
     expect(report).toContain('removal list');
-    expect(report).toContain('@aws-sdk/client-emr');
+    expect(report).toContain('@aws-sdk/client-*');
   });
 
   it('accepts the working sibling verb', () => {
