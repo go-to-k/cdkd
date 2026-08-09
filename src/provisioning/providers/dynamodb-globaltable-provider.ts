@@ -1338,7 +1338,12 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         await this.waitForTableActiveAfterUpdate(physicalId, logicalId);
       }
       for (const gsi of gsiDiff.modified) {
-        if (!gsi.IndexName) continue;
+        // Explicit `typeof` rather than truthiness: an unresolved-intrinsic
+        // `IndexName` is a truthy OBJECT, and everything downstream (the
+        // declaration map, `previousSdkByName`) is keyed by string. Such an
+        // entry used to fall through and be safe only by a Map identity miss —
+        // an accident, not a guarantee.
+        if (typeof gsi.IndexName !== 'string' || gsi.IndexName.length === 0) continue;
         // Already applied atomically with the BillingMode flip above.
         if (gsiHandledByBillingFlip.has(gsi.IndexName)) continue;
         // A BillingMode flip re-shapes EVERY index by construction: the two
@@ -3130,6 +3135,24 @@ export function toSdkGlobalSecondaryIndexes(
   return result;
 }
 
+/**
+ * True when a CFn sub-object is nothing but an unresolved intrinsic
+ * (`{"Fn::If": […]}` / `{"Ref": …}`), i.e. the template DID declare the block
+ * but its value could not be resolved to a shape with members.
+ *
+ * Needed because presence is otherwise tested on the MEMBER key: an
+ * intrinsic-valued block IS a record, so `asRecord` succeeds while
+ * `['MaxReadRequestUnits']` is undefined — reporting "not declared" and firing
+ * the destructive `-1` reset on a ceiling the template was trying to SET. That
+ * is issue #1440 one level up from where the member test looks.
+ */
+function isUnresolvedIntrinsicBlock(value: unknown): boolean {
+  const record = asRecord(value);
+  if (!record) return false;
+  const keys = Object.keys(record);
+  return keys.length > 0 && keys.every((k) => k === 'Ref' || k.startsWith('Fn::'));
+}
+
 /** Which on-demand members a GSI's CFn side actually DECLARES (issue #1440). */
 export interface RawOnDemandDeclaration {
   readonly readDeclared: boolean;
@@ -3210,18 +3233,28 @@ export function collectRawOnDemandDeclarations(
       });
       continue;
     }
+    // A block that is ITSELF an unresolved intrinsic counts as declared: the
+    // member test cannot see into it, and reporting "not declared" would fire
+    // the destructive reset on a ceiling the template was trying to set.
+    const readBlocks = [
+      localEntry?.['ReadOnDemandThroughputSettings'],
+      gsi['ReadOnDemandThroughputSettings'],
+    ];
+    const writeBlock = gsi['WriteOnDemandThroughputSettings'];
     out.set(name, {
       // Same sources as the SDK translation: replica entry first, GSI-level
       // spelling as the hand-authored fallback. Declared in EITHER place
       // counts — the translation resolves "first PARSEABLE", so an OR here is
       // a safe superset for suppression (it can never report not-declared for
       // a member the translation did resolve).
-      readDeclared:
-        asRecord(localEntry?.['ReadOnDemandThroughputSettings'])?.['MaxReadRequestUnits'] !==
-          undefined ||
-        asRecord(gsi['ReadOnDemandThroughputSettings'])?.['MaxReadRequestUnits'] !== undefined,
+      readDeclared: readBlocks.some(
+        (block) =>
+          asRecord(block)?.['MaxReadRequestUnits'] !== undefined ||
+          isUnresolvedIntrinsicBlock(block)
+      ),
       writeDeclared:
-        asRecord(gsi['WriteOnDemandThroughputSettings'])?.['MaxWriteRequestUnits'] !== undefined,
+        asRecord(writeBlock)?.['MaxWriteRequestUnits'] !== undefined ||
+        isUnresolvedIntrinsicBlock(writeBlock),
     });
   }
   return out;

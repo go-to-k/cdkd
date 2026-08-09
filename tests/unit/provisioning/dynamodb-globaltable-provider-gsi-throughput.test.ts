@@ -1368,6 +1368,42 @@ describe('DynamoDBGlobalTable GSI throughput translation (issue #1387)', () => {
       expect(onDemand?.['MaxWriteRequestUnits']).toBe(-1);
     });
 
+    it('treats a BLOCK-level unresolved intrinsic as declared, not as a removal', async () => {
+      // Third-review catch (#1444 item D, folded in): presence was tested on
+      // the MEMBER key, so `WriteOnDemandThroughputSettings: {"Fn::If": [...]}`
+      // — a record with no MaxWriteRequestUnits — reported "not declared" and
+      // fired the destructive -1 on a ceiling the template was trying to set.
+      const previous = structuredClone(ON_DEMAND_TABLE_PROPS) as Record<string, unknown>;
+      const next = structuredClone(ON_DEMAND_TABLE_PROPS) as Record<string, unknown>;
+      (next['GlobalSecondaryIndexes'] as Record<string, unknown>[])[0]![
+        'WriteOnDemandThroughputSettings'
+      ] = { 'Fn::If': ['SomeCondition', { MaxWriteRequestUnits: 60 }, { Ref: 'AWS::NoValue' }] };
+
+      await provider.update('OnDemand', 'od-table', RESOURCE_TYPE, next, previous);
+
+      const onDemand = gsiUpdateAction()?.['OnDemandThroughput'] as
+        | Record<string, unknown>
+        | undefined;
+      expect(onDemand?.['MaxWriteRequestUnits']).not.toBe(-1);
+    });
+
+    it('does not treat a REAL block that merely lacks the member as an intrinsic', async () => {
+      // The intrinsic test must not become a blanket "any block counts" —
+      // a genuine `{}` / sibling-only block IS a removal of the member.
+      const previous = structuredClone(ON_DEMAND_TABLE_PROPS) as Record<string, unknown>;
+      const next = structuredClone(ON_DEMAND_TABLE_PROPS) as Record<string, unknown>;
+      (next['GlobalSecondaryIndexes'] as Record<string, unknown>[])[0]![
+        'WriteOnDemandThroughputSettings'
+      ] = {};
+
+      await provider.update('OnDemand', 'od-table', RESOURCE_TYPE, next, previous);
+
+      const onDemand = gsiUpdateAction()?.['OnDemandThroughput'] as
+        | Record<string, unknown>
+        | undefined;
+      expect(onDemand?.['MaxWriteRequestUnits']).toBe(-1);
+    });
+
     it('STILL resets a genuinely removed member (the #1423 behavior is intact)', async () => {
       // The guard must narrow the reset to real removals only — not disable it.
       const previous = structuredClone(ON_DEMAND_TABLE_PROPS) as Record<string, unknown>;
