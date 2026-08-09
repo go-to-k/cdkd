@@ -83,12 +83,12 @@ import type {
  *  - The serialization is load-bearing: AWS's `UpdateTable` does not accept
  *    `ReplicaUpdates` alongside `BillingMode` / `GlobalSecondaryIndexUpdates`,
  *    so each category is its own SDK round-trip with a wait-for-ACTIVE in
- *    between. The ONE documented exception is the `PAY_PER_REQUEST ->
- *    PROVISIONED` flip, where AWS REQUIRES per-GSI `ProvisionedThroughput` in
- *    the SAME call as `BillingMode` ("you must specify read and write capacity
- *    unit values for the table and for each global secondary index") — so that
- *    path deliberately sends both together (Issue #1387). Immutable property
- *    changes (TableName, KeySchema,
+ *    between. `BillingMode` and `GlobalSecondaryIndexUpdates` DO combine, and
+ *    only in the `PAY_PER_REQUEST -> PROVISIONED` flip, where AWS REQUIRES
+ *    per-GSI `ProvisionedThroughput` in the SAME call as `BillingMode` ("you
+ *    must specify read and write capacity unit values for the table and for
+ *    each global secondary index") — so that path deliberately sends both
+ *    together (Issue #1387). Immutable property changes (TableName, KeySchema,
  *    AttributeDefinitions removal, LocalSecondaryIndexes) throw
  *    `ProvisioningError` naming the offending field — the deploy engine's
  *    diff classification should catch these as REPLACEMENT before ever
@@ -654,9 +654,10 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
    * AWS-side state-machine constraint: `UpdateTable` does not accept
    * `ReplicaUpdates` alongside `BillingMode` / `GlobalSecondaryIndexUpdates`,
    * so each category must serialize into its own SDK round-trip with a
-   * `waitForTableActiveAfterUpdate` between every step. The ONE exception is
-   * step 4's `PAY_PER_REQUEST -> PROVISIONED` flip, which AWS requires to
-   * carry per-GSI `ProvisionedThroughput` in the same call (Issue #1387).
+   * `waitForTableActiveAfterUpdate` between every step. `BillingMode` and
+   * `GlobalSecondaryIndexUpdates` DO combine, and only in step 4's
+   * `PAY_PER_REQUEST -> PROVISIONED` flip, which AWS requires to carry
+   * per-GSI `ProvisionedThroughput` in the same call (Issue #1387).
    * Order:
    *   1. Wait for current ACTIVE (defensive).
    *   2. Tags diff (TagResource / UntagResource — no wait needed).
@@ -2785,7 +2786,6 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
     : undefined;
 }
 
-/** Coerce a CFn numeric (CFn is stringly-typed) to a finite number. */
 /**
  * Normalize an explicitly-supplied, already-SDK-shaped throughput block.
  *
@@ -2796,19 +2796,32 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
  * coerced — an inconsistency that only shows up on the rarest input. Picking
  * the known members explicitly also drops junk keys the SDK serializer would
  * discard silently anyway.
+ *
+ * Returns `undefined` — NOT an empty object — when no member survives
+ * coercion. That distinction is load-bearing on the replica overrides: AWS
+ * documents an EMPTY `{Provisioned,OnDemand}ThroughputOverride` as "inherit
+ * the source table's settings", so assigning `{}` for an unparseable value
+ * would turn a loud serialization failure into a silent inherit, and on the
+ * GSI side would additionally suppress the derived fallback. Callers treat
+ * `undefined` as "no explicit block" and fall through.
  */
 function coerceThroughputNumbers<K extends string>(
   block: Record<string, unknown>,
   members: readonly K[]
-): Record<K, number | undefined> {
-  const out = {} as Record<K, number | undefined>;
+): Record<K, number> | undefined {
+  const out = {} as Record<K, number>;
+  let any = false;
   for (const member of members) {
     const n = toFiniteNumber(block[member]);
-    if (n !== undefined) out[member] = n;
+    if (n !== undefined) {
+      out[member] = n;
+      any = true;
+    }
   }
-  return out;
+  return any ? out : undefined;
 }
 
+/** Coerce a CFn numeric (CFn is stringly-typed) to a finite number. */
 function toFiniteNumber(value: unknown): number | undefined {
   if (value === undefined || value === null || value === '') return undefined;
   const n = Number(value);
@@ -2963,13 +2976,20 @@ export function toSdkGlobalSecondaryIndexes(
       sdk.WarmThroughput = gsi['WarmThroughput'] as GlobalSecondaryIndex['WarmThroughput'];
     }
 
-    const explicitProvisioned = asRecord(gsi['ProvisionedThroughput']);
-    const explicitOnDemand = asRecord(gsi['OnDemandThroughput']);
+    const explicitProvisioned = asRecord(gsi['ProvisionedThroughput'])
+      ? coerceThroughputNumbers(asRecord(gsi['ProvisionedThroughput'])!, [
+          'ReadCapacityUnits',
+          'WriteCapacityUnits',
+        ])
+      : undefined;
+    const explicitOnDemand = asRecord(gsi['OnDemandThroughput'])
+      ? coerceThroughputNumbers(asRecord(gsi['OnDemandThroughput'])!, [
+          'MaxReadRequestUnits',
+          'MaxWriteRequestUnits',
+        ])
+      : undefined;
     if (explicitProvisioned) {
-      sdk.ProvisionedThroughput = coerceThroughputNumbers(explicitProvisioned, [
-        'ReadCapacityUnits',
-        'WriteCapacityUnits',
-      ]) as ProvisionedThroughput;
+      sdk.ProvisionedThroughput = explicitProvisioned;
     } else if (billingMode === 'PROVISIONED') {
       sdk.ProvisionedThroughput = {
         ReadCapacityUnits:
@@ -2983,10 +3003,7 @@ export function toSdkGlobalSecondaryIndexes(
     }
 
     if (explicitOnDemand) {
-      sdk.OnDemandThroughput = coerceThroughputNumbers(explicitOnDemand, [
-        'MaxReadRequestUnits',
-        'MaxWriteRequestUnits',
-      ]) as OnDemandThroughput;
+      sdk.OnDemandThroughput = explicitOnDemand;
     } else if (billingMode !== 'PROVISIONED') {
       const maxWrite = toFiniteNumber(
         asRecord(gsi['WriteOnDemandThroughputSettings'])?.['MaxWriteRequestUnits']
@@ -3039,8 +3056,17 @@ export function toSdkReplicaGlobalSecondaryIndexes(
     const sdk: ReplicaGlobalSecondaryIndex = {
       IndexName: cfn['IndexName'] as string | undefined,
     };
-    const explicitProvisioned = asRecord(cfn['ProvisionedThroughputOverride']);
-    const explicitOnDemand = asRecord(cfn['OnDemandThroughputOverride']);
+    // Coerced to `undefined` when nothing parses: AWS reads an EMPTY override
+    // as "inherit the source table's settings", so assigning `{}` here would
+    // silently change replica behavior instead of failing loudly.
+    const explicitProvisionedRaw = asRecord(cfn['ProvisionedThroughputOverride']);
+    const explicitOnDemandRaw = asRecord(cfn['OnDemandThroughputOverride']);
+    const explicitProvisioned = explicitProvisionedRaw
+      ? coerceThroughputNumbers(explicitProvisionedRaw, ['ReadCapacityUnits'])
+      : undefined;
+    const explicitOnDemand = explicitOnDemandRaw
+      ? coerceThroughputNumbers(explicitOnDemandRaw, ['MaxReadRequestUnits'])
+      : undefined;
     const readCapacity = deriveReadCapacityUnits(
       asRecord(cfn['ReadProvisionedThroughputSettings'])
     );
@@ -3048,16 +3074,12 @@ export function toSdkReplicaGlobalSecondaryIndexes(
       asRecord(cfn['ReadOnDemandThroughputSettings'])?.['MaxReadRequestUnits']
     );
     if (explicitProvisioned) {
-      sdk.ProvisionedThroughputOverride = coerceThroughputNumbers(explicitProvisioned, [
-        'ReadCapacityUnits',
-      ]);
+      sdk.ProvisionedThroughputOverride = explicitProvisioned;
     } else if (readCapacity !== undefined) {
       sdk.ProvisionedThroughputOverride = { ReadCapacityUnits: readCapacity };
     }
     if (explicitOnDemand) {
-      sdk.OnDemandThroughputOverride = coerceThroughputNumbers(explicitOnDemand, [
-        'MaxReadRequestUnits',
-      ]);
+      sdk.OnDemandThroughputOverride = explicitOnDemand;
     } else if (maxReadRequestUnits !== undefined) {
       sdk.OnDemandThroughputOverride = { MaxReadRequestUnits: maxReadRequestUnits };
     }

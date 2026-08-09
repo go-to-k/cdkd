@@ -437,6 +437,40 @@ describe('DynamoDBGlobalTable GSI throughput translation (issue #1387)', () => {
       });
     });
 
+    it('falls through to the derived value when an explicit block coerces to nothing', () => {
+      // An explicit block whose every member is unparseable must NOT become an
+      // empty object: AWS reads an empty throughput block as "inherit", which
+      // would turn a loud failure into a silent wrong value, and on the GSI
+      // side it would also beat a perfectly valid derived setting.
+      const [gsi] = toSdkGlobalSecondaryIndexes(
+        {
+          GlobalSecondaryIndexes: [
+            {
+              IndexName: 'garbage',
+              KeySchema: [{ AttributeName: 'g', KeyType: 'HASH' }],
+              Projection: { ProjectionType: 'ALL' },
+              OnDemandThroughput: { MaxReadRequestUnits: 'abc' },
+              ReadOnDemandThroughputSettings: { MaxReadRequestUnits: 41 },
+              WriteOnDemandThroughputSettings: { MaxWriteRequestUnits: 42 },
+            },
+          ],
+        },
+        'us-east-1',
+        'PAY_PER_REQUEST'
+      );
+      expect(gsi!.OnDemandThroughput).toEqual({
+        MaxReadRequestUnits: 41,
+        MaxWriteRequestUnits: 42,
+      });
+    });
+
+    it('leaves a replica override unset when it coerces to nothing, rather than sending an inherit-me empty block', () => {
+      const [replica] = toSdkReplicaGlobalSecondaryIndexes([
+        { IndexName: 'r', OnDemandThroughputOverride: { MaxReadRequestUnits: 'abc' } },
+      ])!;
+      expect(replica!.OnDemandThroughputOverride).toBe(undefined);
+    });
+
     it('throws on a non-array GlobalSecondaryIndexes instead of deploying a table with none', () => {
       // Absent is legitimately empty; present-but-not-an-array (an unresolved
       // intrinsic) previously collapsed to [] and created the table with ZERO
