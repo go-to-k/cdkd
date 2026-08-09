@@ -1286,6 +1286,10 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         previousSdkIndexes,
         toSdkGlobalSecondaryIndexes(properties, currentRegion, newBilling)
       );
+      // RAW per-index on-demand key presence for the DESIRED side, so the
+      // `modified` loop can tell "the template dropped this member" from "the
+      // template set it to something that did not coerce" (issue #1440).
+      const rawOnDemandDeclarations = collectRawOnDemandDeclarations(properties, currentRegion);
       // Needed by the `modified` loop to tell a REAL edit from the reshaping a
       // BillingMode flip causes by construction (both sides are translated
       // under different billing modes, so every index necessarily differs).
@@ -1373,18 +1377,29 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         //
         // Skipped on a billing flip, where "no on-demand fields" is just the
         // translation of a PROVISIONED side rather than a template removal.
+        //
+        // The "was it dropped" test reads the RAW CFn keys, not the translated
+        // side (issue #1440). `toSdkGlobalSecondaryIndexes` coerces through
+        // `toFiniteNumber`, so a present-but-unparseable value (an unresolved
+        // `{Ref: …}`) arrives here as `undefined` and is indistinguishable from
+        // a removal — which sent `-1` and silently CLEARED the ceiling the
+        // template was trying to SET. Gating on raw presence keeps such a value
+        // on the path where it reaches AWS and fails loudly instead.
         const previousOnDemand = previousSdkByName.get(gsi.IndexName)?.OnDemandThroughput;
+        const declared = rawOnDemandDeclarations.get(gsi.IndexName);
         const onDemand: OnDemandThroughput = { ...gsi.OnDemandThroughput };
         if (!billingFlipped && previousOnDemand) {
           if (
             previousOnDemand.MaxReadRequestUnits !== undefined &&
-            onDemand.MaxReadRequestUnits === undefined
+            onDemand.MaxReadRequestUnits === undefined &&
+            !declared?.readDeclared
           ) {
             onDemand.MaxReadRequestUnits = ON_DEMAND_LIMIT_RESET;
           }
           if (
             previousOnDemand.MaxWriteRequestUnits !== undefined &&
-            onDemand.MaxWriteRequestUnits === undefined
+            onDemand.MaxWriteRequestUnits === undefined &&
+            !declared?.writeDeclared
           ) {
             onDemand.MaxWriteRequestUnits = ON_DEMAND_LIMIT_RESET;
           }
@@ -3108,6 +3123,79 @@ export function toSdkGlobalSecondaryIndexes(
  * status back in `readCurrentState`). Recorded here rather than silently
  * dropped; tracked with the other GlobalTable nested-key gaps.
  */
+/** Which on-demand members a GSI's CFn side actually DECLARES (issue #1440). */
+export interface RawOnDemandDeclaration {
+  readonly readDeclared: boolean;
+  readonly writeDeclared: boolean;
+}
+
+/**
+ * Per-index RAW presence of the two per-GSI on-demand members, keyed by
+ * `IndexName` (issue #1440).
+ *
+ * The per-GSI reset needs to know "did the template DROP this member", and the
+ * only faithful answer is whether the CFn key is THERE — not whether its value
+ * coerced. `toSdkGlobalSecondaryIndexes` runs every value through
+ * {@link toFiniteNumber}, which returns `undefined` for a present-but-
+ * unparseable value (an unresolved `{Ref: …}`, `''`, an object). Deciding
+ * "dropped" from that collapsed view sent the `-1` reset for a member the
+ * template was actively trying to SET, silently clearing the ceiling — the same
+ * silent-wrong-action class the reset exists to remove, and the exact hazard
+ * the table-level path was corrected for in #1434's PR.
+ *
+ * So this walks the same two sources as `toSdkGlobalSecondaryIndexes` — the
+ * top-level GSI for the write half, the LOCAL replica's index entry (with the
+ * GSI-level spelling as the documented fallback) for the read half — and
+ * reports presence only. Keeping it beside that function is deliberate: the
+ * two must agree on where each member lives, and a divergence between them is
+ * exactly what would re-open the bug.
+ *
+ * Malformed shapes report "not declared" rather than throwing:
+ * `toSdkGlobalSecondaryIndexes` already refuses a non-array `GlobalSecondaryIndexes`
+ * loudly, and this helper is consulted only to SUPPRESS a reset, so the
+ * conservative answer is the one that leaves the live value alone.
+ */
+export function collectRawOnDemandDeclarations(
+  properties: Record<string, unknown>,
+  region: string
+): Map<string, RawOnDemandDeclaration> {
+  const out = new Map<string, RawOnDemandDeclaration>();
+  const rawIndexes = properties['GlobalSecondaryIndexes'];
+  if (!Array.isArray(rawIndexes)) return out;
+
+  const replicas = properties['Replicas'];
+  const localReplica = Array.isArray(replicas)
+    ? replicas.find((r) => asRecord(r)?.['Region'] === region)
+    : undefined;
+  const localReplicaIndexes = asRecord(localReplica)?.['GlobalSecondaryIndexes'];
+  const localByName = new Map<string, Record<string, unknown>>();
+  if (Array.isArray(localReplicaIndexes)) {
+    for (const entry of localReplicaIndexes) {
+      const record = asRecord(entry);
+      const name = record?.['IndexName'];
+      if (record && typeof name === 'string') localByName.set(name, record);
+    }
+  }
+
+  for (const entry of rawIndexes) {
+    const gsi = asRecord(entry);
+    const name = gsi?.['IndexName'];
+    if (!gsi || typeof name !== 'string') continue;
+    const localEntry = localByName.get(name);
+    out.set(name, {
+      // Same precedence as the SDK translation: replica entry first, GSI-level
+      // spelling as the hand-authored fallback. Declared in EITHER place counts.
+      readDeclared:
+        asRecord(localEntry?.['ReadOnDemandThroughputSettings'])?.['MaxReadRequestUnits'] !==
+          undefined ||
+        asRecord(gsi['ReadOnDemandThroughputSettings'])?.['MaxReadRequestUnits'] !== undefined,
+      writeDeclared:
+        asRecord(gsi['WriteOnDemandThroughputSettings'])?.['MaxWriteRequestUnits'] !== undefined,
+    });
+  }
+  return out;
+}
+
 export function toSdkReplicaGlobalSecondaryIndexes(
   replicaIndexes: unknown
 ): ReplicaGlobalSecondaryIndex[] | undefined {
