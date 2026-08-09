@@ -216,7 +216,10 @@ echo "    OK: state file is gone"
 # rather than disappearing. Assert that state explicitly so a key left ENABLED
 # (a real leak — the destroy never scheduled it) still fails the run.
 KEY_STATE=$(aws kms describe-key --key-id "${EXPECTED_KEY_ARN}" --region "${REGION}" \
-  --query 'KeyMetadata.KeyState' --output text)
+  --query 'KeyMetadata.KeyState' --output text) || {
+  echo "FAIL: describe-key on ${EXPECTED_KEY_ARN} failed — cannot determine whether the CMK was scheduled for deletion" >&2
+  exit 1
+}
 if [ "${KEY_STATE}" != "PendingDeletion" ]; then
   echo "FAIL: CMK ${EXPECTED_KEY_ARN} is '${KEY_STATE}' after destroy, expected PendingDeletion" >&2
   exit 1

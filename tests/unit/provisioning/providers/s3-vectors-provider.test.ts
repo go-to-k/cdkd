@@ -107,7 +107,7 @@ describe('S3VectorsProvider', () => {
       const createCall = mockSend.mock.calls.find(
         (call: unknown[]) => call[0] instanceof CreateVectorBucketCommand
       );
-      expect(createCall![0].input).toEqual({
+      expect(createCall![0].input).toStrictEqual({
         vectorBucketName: 'kms-vector-bucket',
         encryptionConfiguration: {
           sseType: 'aws:kms',
