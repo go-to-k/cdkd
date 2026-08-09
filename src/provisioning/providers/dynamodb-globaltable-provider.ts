@@ -906,17 +906,40 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
               .map((entry) => (entry as Record<string, unknown> | null)?.['IndexName'])
               .filter((name): name is string => typeof name === 'string')
           );
-          const indexUpdates: GlobalSecondaryIndexUpdate[] = [];
+          // EVERY index live on AWS needs throughput in this call, including
+          // one this deploy REMOVES: its `Delete` is issued by step 6, which
+          // runs AFTER the flip, so at flip time it is still a live index on
+          // a table becoming PROVISIONED and AWS rejects the call if it has
+          // no capacity. Its throughput therefore has to come from the
+          // PREVIOUS template — the new one no longer mentions it.
+          const byIndexName = new Map<string, GlobalSecondaryIndex>();
+          for (const gsi of toSdkGlobalSecondaryIndexes(
+            previousProperties,
+            currentRegion,
+            newBilling
+          )) {
+            if (gsi.IndexName) byIndexName.set(gsi.IndexName, gsi);
+          }
+          const survivingIndexNames = new Set<string>();
           for (const gsi of provisionedIndexes) {
-            if (!gsi.IndexName || !gsi.ProvisionedThroughput) continue;
-            if (!existingIndexNames.has(gsi.IndexName)) continue;
+            if (!gsi.IndexName) continue;
+            survivingIndexNames.add(gsi.IndexName);
+            byIndexName.set(gsi.IndexName, gsi);
+          }
+          const indexUpdates: GlobalSecondaryIndexUpdate[] = [];
+          for (const indexName of existingIndexNames) {
+            const gsi = byIndexName.get(indexName);
+            if (!gsi?.ProvisionedThroughput) continue;
             indexUpdates.push({
               Update: {
-                IndexName: gsi.IndexName,
+                IndexName: indexName,
                 ProvisionedThroughput: gsi.ProvisionedThroughput,
               },
             });
-            gsiHandledByBillingFlip.add(gsi.IndexName);
+            // Only a SURVIVING index is "handled" — step 6's `modified` loop
+            // is what this set suppresses, and a removed index belongs to the
+            // `removed` loop, which must still run.
+            if (survivingIndexNames.has(indexName)) gsiHandledByBillingFlip.add(indexName);
           }
           if (indexUpdates.length > 0) {
             billingUpdate.GlobalSecondaryIndexUpdates = indexUpdates;
@@ -1204,6 +1227,14 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         if (!gsi.IndexName) continue;
         // Already applied atomically with the BillingMode flip above.
         if (gsiHandledByBillingFlip.has(gsi.IndexName)) continue;
+        // A BillingMode flip re-shapes EVERY index by construction (the two
+        // sides are translated under different billing modes, so the old
+        // side carries `ProvisionedThroughput` and the new side carries
+        // on-demand fields or neither). Those entries are not template
+        // edits at all, and the flip in step 4 already applied the
+        // throughput change atomically — emitting anything here, least of
+        // all the immutable-field warning below, would be actively wrong.
+        if (oldBilling !== newBilling) continue;
         // A GSI whose only change is KeySchema / Projection produces no
         // throughput fields; AWS rejects an `Update` action with nothing
         // but an IndexName, so skip and let the (immutable) change surface

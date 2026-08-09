@@ -382,6 +382,13 @@ describe('DynamoDBGlobalTable GSI throughput translation (issue #1387)', () => {
         ReadUnitsPerSecond: 12000,
         WriteUnitsPerSecond: 4000,
       });
+      // Load-bearing: the throughput members must be OMITTED, not emitted
+      // empty. This index declares no on-demand limits, so relaxing the
+      // emit-when-present guard would send `OnDemandThroughput: {}`, which
+      // AWS rejects — and without this assertion that regression is
+      // invisible to the whole suite.
+      expect(gsi!.OnDemandThroughput).toBeUndefined();
+      expect(gsi!.ProvisionedThroughput).toBeUndefined();
     });
 
     it('returns an empty array when the template declares no GSIs', () => {
@@ -550,14 +557,61 @@ describe('DynamoDBGlobalTable GSI throughput translation (issue #1387)', () => {
 
       await provider.update('Prov', 'prov-table', RESOURCE_TYPE, next, PROVISIONED_TABLE_PROPS);
 
-      // Pre-fix the raw-CFn diff saw a "modified" GSI and sent
-      // `Update: { IndexName }` with no throughput — a ValidationException.
+      // NOTE ON WHAT THIS BINDS: under PROVISIONED billing the translated
+      // GSIs are byte-identical here (MaxCapacity 20 -> 30 does not move
+      // Seed=3 / read=7), so the diff reports nothing modified and the
+      // warn-and-skip guard is never reached. Reverting EITHER the
+      // translation or the guard alone still leaves this green — the
+      // translation revert is masked by the guard, and the guard revert is
+      // masked by the translation. It is a both-must-hold end-state
+      // assertion, not a binding test for either mechanism on its own.
+      // The translation is bound by the two Create/Update tests above; the
+      // guard is bound by the PAY_PER_REQUEST case below.
       const gsiCalls = mockSend.mock.calls
         .map((c) => c[0])
         .filter(
           (c) => c instanceof UpdateTableCommand && c.input.GlobalSecondaryIndexUpdates !== undefined
         );
       expect(gsiCalls).toHaveLength(0);
+    });
+
+    it('warns and skips a modified GSI that yields no throughput at all, instead of sending an empty Update action', async () => {
+      // Binds the warn-and-skip guard specifically. A PAY_PER_REQUEST GSI
+      // carrying no on-demand limits translates to a GSI with NEITHER
+      // ProvisionedThroughput nor OnDemandThroughput, so a KeySchema /
+      // Projection-only edit reaches the guard with nothing to send. Without
+      // the guard the provider emits `Update: { IndexName }`, which AWS
+      // rejects with a ValidationException mid-deploy.
+      const previous = structuredClone(ON_DEMAND_TABLE_PROPS) as Record<string, unknown>;
+      const prevGsi = (previous['GlobalSecondaryIndexes'] as Array<Record<string, unknown>>)[0]!;
+      delete prevGsi['ReadOnDemandThroughputSettings'];
+      delete prevGsi['WriteOnDemandThroughputSettings'];
+      for (const replica of previous['Replicas'] as Array<Record<string, unknown>>) {
+        for (const rGsi of (replica['GlobalSecondaryIndexes'] ?? []) as Array<
+          Record<string, unknown>
+        >) {
+          delete rGsi['ReadOnDemandThroughputSettings'];
+          delete rGsi['ReadProvisionedThroughputSettings'];
+        }
+      }
+
+      // Projection is immutable on an existing index, so this is exactly the
+      // shape DynamoDB's UpdateTable cannot express.
+      const next = structuredClone(previous) as Record<string, unknown>;
+      ((next['GlobalSecondaryIndexes'] as Array<Record<string, unknown>>)[0]! as Record<
+        string,
+        unknown
+      >)['Projection'] = { ProjectionType: 'KEYS_ONLY' };
+
+      await provider.update('OnDemand', 'ondemand-table', RESOURCE_TYPE, next, previous);
+
+      const gsiCalls = mockSend.mock.calls
+        .map((c) => c[0])
+        .filter(
+          (c) => c instanceof UpdateTableCommand && c.input.GlobalSecondaryIndexUpdates !== undefined
+        );
+      expect(gsiCalls).toHaveLength(0);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('UpdateTable cannot express'));
     });
 
     it('includes per-GSI ProvisionedThroughput in the PAY_PER_REQUEST -> PROVISIONED flip call', async () => {
@@ -602,6 +656,84 @@ describe('DynamoDBGlobalTable GSI throughput translation (issue #1387)', () => {
             c.input.BillingMode === undefined
         );
       expect(standaloneGsiCalls).toHaveLength(0);
+    });
+
+    it('gives an index this deploy REMOVES throughput in the flip call, since its Delete is issued later', async () => {
+      // The flip runs in step 4; the `Delete` for a dropped index runs in
+      // step 6. So at flip time the dropped index is still a LIVE index on
+      // a table becoming PROVISIONED, and AWS rejects the call unless it
+      // carries capacity. Its throughput can only come from the PREVIOUS
+      // template, since the new one no longer mentions it.
+      const doomed = {
+        IndexName: 'gsiDoomed',
+        KeySchema: [{ AttributeName: 'dpk', KeyType: 'HASH' }],
+        Projection: { ProjectionType: 'ALL' },
+        WriteProvisionedThroughputSettings: {
+          WriteCapacityAutoScalingSettings: { MinCapacity: 2, MaxCapacity: 20, SeedCapacity: 9 },
+        },
+      };
+      const previous = structuredClone(PROVISIONED_TABLE_PROPS) as Record<string, unknown>;
+      previous['BillingMode'] = 'PAY_PER_REQUEST';
+      (previous['GlobalSecondaryIndexes'] as unknown[]).push(doomed);
+      (
+        (previous['Replicas'] as Array<Record<string, unknown>>)[0]![
+          'GlobalSecondaryIndexes'
+        ] as unknown[]
+      ).push({
+        IndexName: 'gsiDoomed',
+        ReadProvisionedThroughputSettings: { ReadCapacityUnits: 4 },
+      });
+
+      // The new template keeps only gsi1 and flips to PROVISIONED.
+      await provider.update('Prov', 'prov-table', RESOURCE_TYPE, PROVISIONED_TABLE_PROPS, previous);
+
+      const flip = mockSend.mock.calls
+        .map((c) => c[0])
+        .find(
+          (c): c is UpdateTableCommand =>
+            c instanceof UpdateTableCommand && c.input.BillingMode !== undefined
+        );
+      expect(flip?.input.GlobalSecondaryIndexUpdates).toEqual(
+        expect.arrayContaining([
+          {
+            Update: {
+              IndexName: 'gsiDoomed',
+              ProvisionedThroughput: { ReadCapacityUnits: 4, WriteCapacityUnits: 9 },
+            },
+          },
+        ])
+      );
+      // The removed index must still reach step 6's Delete — being handled
+      // by the flip must not suppress its deletion.
+      const deletes = mockSend.mock.calls
+        .map((c) => c[0])
+        .filter(
+          (c): c is UpdateTableCommand =>
+            c instanceof UpdateTableCommand &&
+            (c.input.GlobalSecondaryIndexUpdates ?? []).some((u) => u.Delete !== undefined)
+        );
+      expect(deletes).toHaveLength(1);
+      expect(deletes[0]!.input.GlobalSecondaryIndexUpdates).toEqual([
+        { Delete: { IndexName: 'gsiDoomed' } },
+      ]);
+    });
+
+    it('does not emit the immutable-field warning when the BillingMode flipped PROVISIONED -> PAY_PER_REQUEST', async () => {
+      // A flip re-shapes every index by construction: the old side is
+      // translated under PROVISIONED (so it carries ProvisionedThroughput)
+      // and the new side under PAY_PER_REQUEST with no on-demand limits (so
+      // it carries neither field). Every GSI therefore lands in `modified`
+      // with nothing to send. That is NOT a KeySchema / Projection edit, and
+      // warning about immutable fields would send the user hunting a
+      // non-existent template problem.
+      const next = structuredClone(PROVISIONED_TABLE_PROPS) as Record<string, unknown>;
+      next['BillingMode'] = 'PAY_PER_REQUEST';
+
+      await provider.update('Prov', 'prov-table', RESOURCE_TYPE, next, PROVISIONED_TABLE_PROPS);
+
+      expect(warnSpy).not.toHaveBeenCalledWith(
+        expect.stringContaining('UpdateTable cannot express')
+      );
     });
 
     it('translates the per-replica GSI override on a cross-region UpdateReplica', async () => {
