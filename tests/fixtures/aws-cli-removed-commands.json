@@ -1,0 +1,75 @@
+{
+  "$source": "Captured from awscli/customizations/removals.py by scripts/refresh-aws-cli-removals.ts. These verbs exist in the AWS API / SDK models but are DELETED from the AWS CLI command table, so `aws <service> <verb>` fails with \"Found invalid choice\". Refresh with: node scripts/refresh-aws-cli-removals.ts",
+  "$awsCliVersion": "aws-cli/2.35.13 Python/3.14.6 Darwin/24.5.0 source/arm64",
+  "removed": {
+    "bedrock-agent-runtime": [
+      "agentic-retrieve-stream",
+      "invoke-agent",
+      "invoke-flow",
+      "invoke-inline-agent",
+      "optimize-prompt",
+      "retrieve-and-generate-stream"
+    ],
+    "bedrock-agentcore": [
+      "invoke-agent-runtime-command",
+      "invoke-code-interpreter",
+      "invoke-harness"
+    ],
+    "bedrock-runtime": [
+      "converse-stream",
+      "invoke-model-with-bidirectional-stream",
+      "invoke-model-with-response-stream"
+    ],
+    "connecthealth": [
+      "start-medical-scribe-listening-session"
+    ],
+    "devops-agent": [
+      "send-message"
+    ],
+    "ec2": [
+      "import-instance",
+      "import-volume"
+    ],
+    "emr": [
+      "add-job-flow-steps",
+      "describe-job-flows",
+      "list-bootstrap-actions",
+      "list-instance-groups",
+      "run-job-flow",
+      "set-keep-job-flow-alive-when-no-steps",
+      "set-termination-protection",
+      "set-unhealthy-node-replacement",
+      "set-visible-to-all-users",
+      "terminate-job-flows"
+    ],
+    "iotsitewise": [
+      "invoke-assistant"
+    ],
+    "kinesis": [
+      "subscribe-to-shard"
+    ],
+    "lambda": [
+      "invoke-with-response-stream"
+    ],
+    "lexv2-runtime": [
+      "start-conversation"
+    ],
+    "logs": [
+      "get-log-object"
+    ],
+    "polly": [
+      "start-speech-synthesis-stream"
+    ],
+    "qbusiness": [
+      "chat"
+    ],
+    "sagemaker-runtime": [
+      "invoke-endpoint-with-response-stream"
+    ],
+    "ses": [
+      "delete-verified-email-address",
+      "list-verified-email-addresses",
+      "verify-email-address"
+    ]
+  }
+}

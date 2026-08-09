@@ -143,28 +143,57 @@ by `tests/unit/scripts/integ-verify-version-literals.test.ts` (classifier:
 `scripts/check-integ-version-literals.ts`); user-facing writeup in
 [docs/testing.md](../../docs/testing.md).
 
-### `verify.sh` must not call an AWS-CLI-CUSTOMIZED command (mandatory)
+### `verify.sh` must not call an `aws` verb the CLI does not have (mandatory)
 
-Some `aws` subcommands are not plain API pass-throughs — the AWS CLI wraps them
-in an interactive customization. Run from a non-interactive shell (an integ
-`verify.sh`, a background task, CI) they print
+A fixture must not call an `aws <service> <verb>` that is not a real AWS CLI
+subcommand. The trap is that such a verb can look entirely legitimate: the AWS
+CLI **removes** a set of operations from its command table
+(`awscli/customizations/removals.py`) that still exist in the API, so the SDKs,
+the API reference, and anything generated from them all offer it.
+
+Originating case, verified 2026-08-09 against `aws-cli/2.35.13`:
+`aws emr list-instance-groups`, which forced two EMR fixtures to be rewritten.
+Its symptom was misleading —
 
 ```text
 Warning: Input is not a terminal (fd=0).
 aws: [ERROR]: [Errno 22] Invalid argument
 ```
 
-and, without a `</dev/null`, HANG instead of returning. Verified 2026-08-09 on
-`aws emr list-instance-groups`: `--no-paginate --no-cli-pager </dev/null` does
-NOT help. The `emr` family is the known offender (`create-cluster`, `ssh`,
-`socks`, the `list-instance-*` commands); assume any `aws emr` verb is suspect
-until proven otherwise, and re-probe when adding a fixture for a new service.
+plus a hang without `</dev/null`, and `--no-paginate --no-cli-pager` did not
+help. That reads like an interactive "customization" and was first written up
+that way. **That diagnosis was wrong.** The actual cause:
 
-**Probe before you rely on it.** Run the candidate against a bogus id with a
-hard timeout; a plain API command answers with a validation / not-found error
-in under a second, a customized one hangs or emits the `Errno 22` line above.
+1. `list-instance-groups` is on the CLI's REMOVAL list — it is not an `aws emr`
+   subcommand at all, and the CLI's own answer is
+   `Found invalid choice 'list-instance-groups'`.
+2. The `Errno 22` / hang is what `cli_auto_prompt` (`on-partial` in the
+   maintainer's `~/.aws/config`) does to ANY invalid-choice error: the CLI
+   opens its interactive prompter, which cannot attach to a non-terminal stdin.
+   `AWS_CLI_AUTO_PROMPT=off` makes the same call fail fast and legibly.
 
-**When the command is customized, call the SDK directly** rather than reaching
+The corollary changes how you pick a replacement: **the neighbouring verbs are
+usually fine.** `aws emr list-instance-fleets` and `aws emr list-instances` are
+NOT removed and work non-interactively — so "the `list-instance-*` family is
+suspect" was the wrong generalization, and "assume any `aws emr` verb is
+suspect" over-blocks (the EMR fixtures rely on `list-clusters` /
+`describe-cluster` / `modify-cluster-attributes` / `terminate-clusters`). The
+unit of the defect is the (service, verb) pair.
+
+Enforced by `tests/unit/scripts/integ-aws-commands.test.ts` (classifier:
+`scripts/check-integ-aws-commands.ts`) against the captured table
+`tests/fixtures/aws-cli-removed-commands.json` (refresh:
+`vp run gen:aws-cli-removals`). The table is a checked-in capture, not a live
+`aws` call, so the check is offline + deterministic — a checker that skips when
+its oracle is missing is the vacuous pass this file's checker rules forbid.
+Escape hatch: `# allow-unavailable-aws-command: <reason>` on the invocation's
+line or the line above.
+
+**Probe before you rely on an unfamiliar verb.** `AWS_CLI_AUTO_PROMPT=off aws
+<service> <verb> --help` settles existence in under a second; running it against
+a bogus id settles behavior.
+
+**When the verb is unavailable, call the SDK directly** rather than reaching
 for a different CLI verb that happens to work but returns less. The repo root
 already depends on every `@aws-sdk/client-*` cdkd uses, so a `node
 --input-type=module -e` one-liner from `REPO_ROOT` needs no extra install, and
@@ -199,18 +228,15 @@ silent false pass. Reference implementations:
 `tests/integration/emr-cluster/verify.sh` and
 `tests/integration/emr-instance-configs/verify.sh`.
 
-A pager invoked non-interactively is a second route to the same hang, so
+A pager invoked non-interactively is a SEPARATE route to a hang, so
 `export AWS_PAGER=""` near the top of a fixture is cheap insurance. This is a
 recommendation for NEW and affected fixtures, not a tree-wide invariant — most
-existing fixtures do not set it and are fine, because the hang only bites the
-customized commands. `tests/integration/emr-instance-configs/verify.sh` is the
-reference.
+existing fixtures do not set it and are fine.
+`tests/integration/emr-instance-configs/verify.sh` is the reference.
 
-NOT mechanically enforced yet — a lint over `tests/integration/*/verify.sh` is
-tracked in issue
-[#1402](https://github.com/go-to-k/cdkd/issues/1402), so until then this is a
-read-it-and-follow-it rule. User-facing writeup in
-[docs/testing.md](../../docs/testing.md).
+Mechanically enforced since issue
+[#1402](https://github.com/go-to-k/cdkd/issues/1402) (see the lint named
+above). User-facing writeup in [docs/testing.md](../../docs/testing.md).
 
 ### `verify.sh` list readbacks must be order-insensitive (mandatory)
 

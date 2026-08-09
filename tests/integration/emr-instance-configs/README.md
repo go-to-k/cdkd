@@ -38,10 +38,11 @@ instance-hour.
    (`aws emr list-instances --instance-group-id` — cdkd's provider polls the
    group to `RUNNING` before `deploy` returns), the group's `Ref` /
    `Fn::GetAtt Id` outputs both equal the AWS group id (`ig-XXXX`), and state
-   routes the group via the SDK provider (`provisionedBy=sdk`). (The
-   AWS-CLI-customized `aws emr list-instance-groups` is deliberately avoided —
-   it fails with `[Errno 22]` in a non-interactive shell; `list-instances`
-   works.)
+   routes the group via the SDK provider (`provisionedBy=sdk`).
+   (`aws emr list-instance-groups` is deliberately avoided: it is on the AWS
+   CLI's removal list and so is not a CLI subcommand at all, even though the
+   EMR API operation exists. `list-instances` is unaffected — removal is
+   per-verb, not per-family.)
 2. **Update** (`CDKD_TEST_UPDATE=true`): resize the `TASK` group `1 -> 2`
    (`ModifyInstanceGroups`, polled to `RUNNING`). Asserts the group Id is
    unchanged (in-place, no replacement) and the group has `2` `RUNNING`

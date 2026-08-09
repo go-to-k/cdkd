@@ -93,10 +93,14 @@ CLEANUP_TAG_VALUE="emr-cluster"
 
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
-# `aws emr list-instance-groups` is an AWS-CLI-CUSTOMIZED command: in a
-# non-interactive shell it prints `Warning: Input is not a terminal (fd=0).`
-# and then dies with `aws: [ERROR]: [Errno 22] Invalid argument` (verified
-# 2026-08-09; `--no-paginate --no-cli-pager </dev/null` does not help). Read the
+# `aws emr list-instance-groups` is NOT an AWS CLI command: the CLI REMOVES it
+# from the `aws emr` command table (awscli/customizations/removals.py) even
+# though the EMR API operation exists and every SDK exposes it, so the CLI
+# answers `Found invalid choice 'list-instance-groups'`. On a machine with
+# `cli_auto_prompt` enabled that error instead surfaces as
+# `Warning: Input is not a terminal (fd=0).` + `[Errno 22] Invalid argument`
+# (or a hang), because the CLI tries to open its interactive prompter — which is
+# how this was first misdiagnosed as an "AWS CLI customization". Read the
 # per-group `Configurations` through the SDK instead — the repo root already
 # depends on @aws-sdk/client-emr, so no extra install is needed.
 REPO_ROOT="${PWD}/../../.."

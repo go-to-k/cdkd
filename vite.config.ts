@@ -290,6 +290,20 @@ export default defineConfig({
         command: 'node --experimental-strip-types scripts/gen-update-wrap-coverage.ts --check',
         cache: false,
       },
+      // Re-captures the AWS CLI's removed-command table into
+      // tests/fixtures/aws-cli-removed-commands.json (issue #1402). Needs a
+      // locally installed AWS CLI v2, so it is deliberately NOT wired into CI:
+      // the committed capture is the oracle, and a `--check` in CI would go red
+      // whenever AWS ships a CLI that removes one more command — noise on a
+      // schedule nobody controls. Run it by hand after an AWS CLI upgrade.
+      'gen:aws-cli-removals': {
+        command: 'node --experimental-strip-types scripts/refresh-aws-cli-removals.ts',
+        cache: false,
+      },
+      'audit:aws-cli-removals:check': {
+        command: 'node --experimental-strip-types scripts/refresh-aws-cli-removals.ts --check',
+        cache: false,
+      },
       'gen:nested-key-coverage': {
         command: 'node --experimental-strip-types scripts/gen-nested-key-coverage.ts',
         cache: false,
