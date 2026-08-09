@@ -394,6 +394,20 @@ describe('DynamoDBGlobalTable GSI throughput translation (issue #1387)', () => {
     it('returns an empty array when the template declares no GSIs', () => {
       expect(toSdkGlobalSecondaryIndexes({}, 'us-east-1', 'PROVISIONED')).toEqual([]);
     });
+
+    it('throws on a non-array GlobalSecondaryIndexes instead of deploying a table with none', () => {
+      // Absent is legitimately empty; present-but-not-an-array (an unresolved
+      // intrinsic) previously collapsed to [] and created the table with ZERO
+      // indexes while reporting success — the #1387 silent-drop class one
+      // level up.
+      expect(() =>
+        toSdkGlobalSecondaryIndexes(
+          { GlobalSecondaryIndexes: { 'Fn::If': ['UseGsi', [], []] } },
+          'us-east-1',
+          'PROVISIONED'
+        )
+      ).toThrow(/GlobalSecondaryIndexes must be an array/);
+    });
   });
 
   describe('toSdkReplicaGlobalSecondaryIndexes', () => {
@@ -516,6 +530,31 @@ describe('DynamoDBGlobalTable GSI throughput translation (issue #1387)', () => {
           },
         },
       ]);
+    });
+
+    it('carries WarmThroughput on a GSI Create action, matching what create() sends', async () => {
+      // create() translates WarmThroughput for a GSI declared up front. If the
+      // update-add path omits it, the same template yields a different index
+      // depending on whether the GSI was in the first deploy or a later one.
+      const next = structuredClone(PROVISIONED_TABLE_PROPS) as Record<string, unknown>;
+      (next['GlobalSecondaryIndexes'] as Array<Record<string, unknown>>)[0]!['WarmThroughput'] = {
+        ReadUnitsPerSecond: 12000,
+        WriteUnitsPerSecond: 4000,
+      };
+      const previous = { ...PROVISIONED_TABLE_PROPS, GlobalSecondaryIndexes: [] };
+
+      await provider.update('Prov', 'prov-table', RESOURCE_TYPE, next, previous);
+
+      const gsiCall = mockSend.mock.calls
+        .map((c) => c[0])
+        .find(
+          (c): c is UpdateTableCommand =>
+            c instanceof UpdateTableCommand && c.input.GlobalSecondaryIndexUpdates !== undefined
+        );
+      expect(gsiCall?.input.GlobalSecondaryIndexUpdates?.[0]?.Create?.WarmThroughput).toEqual({
+        ReadUnitsPerSecond: 12000,
+        WriteUnitsPerSecond: 4000,
+      });
     });
 
     it('carries ProvisionedThroughput on a GSI Update action when the per-replica read capacity changes', async () => {
@@ -693,16 +732,26 @@ describe('DynamoDBGlobalTable GSI throughput translation (issue #1387)', () => {
           (c): c is UpdateTableCommand =>
             c instanceof UpdateTableCommand && c.input.BillingMode !== undefined
         );
-      expect(flip?.input.GlobalSecondaryIndexUpdates).toEqual(
-        expect.arrayContaining([
-          {
-            Update: {
-              IndexName: 'gsiDoomed',
-              ProvisionedThroughput: { ReadCapacityUnits: 4, WriteCapacityUnits: 9 },
-            },
-          },
-        ])
+      // NOT `arrayContaining`: that passes even if the SURVIVING index is
+      // dropped from the flip call, which would break the flip just as surely.
+      // Sorted so the assertion pins the SET, not AWS-irrelevant ordering.
+      const flipUpdates = [...(flip?.input.GlobalSecondaryIndexUpdates ?? [])].sort((a, b) =>
+        (a.Update?.IndexName ?? '').localeCompare(b.Update?.IndexName ?? '')
       );
+      expect(flipUpdates).toEqual([
+        {
+          Update: {
+            IndexName: 'gsi1',
+            ProvisionedThroughput: { ReadCapacityUnits: 7, WriteCapacityUnits: 3 },
+          },
+        },
+        {
+          Update: {
+            IndexName: 'gsiDoomed',
+            ProvisionedThroughput: { ReadCapacityUnits: 4, WriteCapacityUnits: 9 },
+          },
+        },
+      ]);
       // The removed index must still reach step 6's Delete — being handled
       // by the flip must not suppress its deletion.
       const deletes = mockSend.mock.calls
@@ -716,6 +765,49 @@ describe('DynamoDBGlobalTable GSI throughput translation (issue #1387)', () => {
       expect(deletes[0]!.input.GlobalSecondaryIndexUpdates).toEqual([
         { Delete: { IndexName: 'gsiDoomed' } },
       ]);
+    });
+
+    it('still applies per-GSI on-demand limits when the BillingMode flips PROVISIONED -> PAY_PER_REQUEST', async () => {
+      // The flip call carries per-GSI fields only in the PAY_PER_REQUEST ->
+      // PROVISIONED direction. The reverse has no such field, so the on-demand
+      // limits must be issued as their own Update — a blanket "skip the
+      // modified loop on a flip" silently dropped them.
+      const next = structuredClone(PROVISIONED_TABLE_PROPS) as Record<string, unknown>;
+      next['BillingMode'] = 'PAY_PER_REQUEST';
+      const nextGsi = (next['GlobalSecondaryIndexes'] as Array<Record<string, unknown>>)[0]!;
+      delete nextGsi['WriteProvisionedThroughputSettings'];
+      nextGsi['WriteOnDemandThroughputSettings'] = { MaxWriteRequestUnits: 88 };
+      for (const replica of next['Replicas'] as Array<Record<string, unknown>>) {
+        for (const rGsi of (replica['GlobalSecondaryIndexes'] ?? []) as Array<
+          Record<string, unknown>
+        >) {
+          delete rGsi['ReadProvisionedThroughputSettings'];
+          rGsi['ReadOnDemandThroughputSettings'] = { MaxReadRequestUnits: 77 };
+        }
+      }
+
+      await provider.update('Prov', 'prov-table', RESOURCE_TYPE, next, PROVISIONED_TABLE_PROPS);
+
+      const gsiCall = mockSend.mock.calls
+        .map((c) => c[0])
+        .find(
+          (c): c is UpdateTableCommand =>
+            c instanceof UpdateTableCommand &&
+            c.input.GlobalSecondaryIndexUpdates !== undefined &&
+            c.input.BillingMode === undefined
+        );
+      expect(gsiCall?.input.GlobalSecondaryIndexUpdates).toEqual([
+        {
+          Update: {
+            IndexName: 'gsi1',
+            OnDemandThroughput: { MaxReadRequestUnits: 77, MaxWriteRequestUnits: 88 },
+          },
+        },
+      ]);
+      // Provisioned capacity must NOT ride along into an on-demand table.
+      expect(gsiCall?.input.GlobalSecondaryIndexUpdates?.[0]?.Update?.ProvisionedThroughput).toBe(
+        undefined
+      );
     });
 
     it('does not emit the immutable-field warning when the BillingMode flipped PROVISIONED -> PAY_PER_REQUEST', async () => {
