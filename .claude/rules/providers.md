@@ -143,14 +143,35 @@ That is a far more common template shape than the base64 search string.
   count you compared, so a reviewer can tell a full diff from a spot-check.
 - Prefer adding the type to `NESTED_KEY_TARGETS` (see step 4 below) over relying
   on this being done by hand next time — the mechanical critic is the durable
-  form of this rule, and a type inside it cannot regress.
+  form of this rule.
+- **Know what membership does and does not guarantee.** For a provider that
+  FORWARDS a config blob, membership makes the key-spelling class
+  non-regressing. For one that builds a FRESH SDK object naming each member,
+  a matching spelling proves nothing: the critic's `same-spelling` bucket is
+  silent, and a member the mapper never names is dropped anyway. That is issue
+  #1432, found on `AWS::CodeBuild::Project` `BuildBatchConfig.BatchReportMode`
+  — CFn declares it, the SDK declares `batchReportMode`, the provider named
+  four of five members, and the critic stayed silent even with every
+  occurrence of the SDK spelling renamed away.
+  So a fresh-object provider must ALSO set `freshObjectMapper: true` on its
+  target, which turns on the WRITE-EVIDENCE pass: each would-be
+  `same-spelling` key then has to appear as a WRITTEN SDK member
+  (`batchReportMode: ...`, `{ batchReportMode }`, `sdk.batchReportMode = ...`)
+  or it lands in the CI-blocking `no-write-evidence` bucket. Reads do not
+  count and `readCurrentState`'s reverse map is excluded, so the evidence is
+  scoped to the CFn->SDK direction.
+  Measure before setting it: a provider that hands a whole sub-blob to a
+  GENERIC key converter (`pascalToCamelCaseKeys(config)`) delivers every key
+  under it with no write to find, and the pass cannot see that yet (issue
+  #1445). That is why only `AWS::CodeBuild::Project` opts in today — the
+  measured counts for every target are in the script's file header.
 
 ## Adding a New SDK Provider
 
 1. Create new file in `src/provisioning/providers/`
 2. Implement `ResourceProvider` interface
 3. Register in `src/provisioning/register-providers.ts` within the `registerAllProviders()` function
-4. Refresh the CFn schema fixture for the new type: `node scripts/refresh-cfn-schemas.mjs --only-missing` (requires AWS credentials with `cloudformation:DescribeType`). Then classify every unaccounted property into `handledProperties` (if `create()`/`update()` wires the field) or `unhandledByDesign` (with a one-line rationale) so the new `property-coverage` test stays green — see [docs/provider-development.md](../../docs/provider-development.md) §3c. If the provider FORWARDS a nested config blob (a `handledProperties` entry whose value is a nested object/array the provider re-shapes for the SDK), ALSO add it to `NESTED_KEY_TARGETS` in `scripts/gen-nested-key-coverage.ts` — the critic's first run audits every nested key spelling against the SDK model (the #1370 silent-drop class, issue #1373).
+4. Refresh the CFn schema fixture for the new type: `node scripts/refresh-cfn-schemas.mjs --only-missing` (requires AWS credentials with `cloudformation:DescribeType`). Then classify every unaccounted property into `handledProperties` (if `create()`/`update()` wires the field) or `unhandledByDesign` (with a one-line rationale) so the new `property-coverage` test stays green — see [docs/provider-development.md](../../docs/provider-development.md) §3c. If the provider FORWARDS a nested config blob (a `handledProperties` entry whose value is a nested object/array the provider re-shapes for the SDK), ALSO add it to `NESTED_KEY_TARGETS` in `scripts/gen-nested-key-coverage.ts` — the critic's first run audits every nested key spelling against the SDK model (the #1370 silent-drop class, issue #1373). If the provider builds FRESH SDK objects naming each member rather than forwarding the blob, set `freshObjectMapper: true` too, after measuring the finding count — see the "Know what membership does and does not guarantee" bullet above (issue #1432).
 5. Write tests
 6. Add the resource type to [docs/supported-resources.md](../../docs/supported-resources.md) (deploy/manage capability table) AND to [docs/import.md](../../docs/import.md) (import-side coverage: auto-lookup vs override-only vs sub-resource)
 7. **If the provider gates a stabilization wait on `process.env['CDKD_NO_WAIT']`** (i.e. `--no-wait` skips a multi-minute poll for this type), add the resource type to the `--no-wait` docs in ALL of: the `--no-wait` table + intro in [docs/cli-reference.md](../../docs/cli-reference.md), the `--no-wait` feature bullet in [README.md](../../README.md), and the `noWaitOption` help string + JSDoc in [src/cli/options.ts](../../src/cli/options.ts). Enforced by `tests/unit/provisioning/no-wait-doc-coverage.test.ts` (fails CI if a `CDKD_NO_WAIT`-honoring provider has no handled type in the cli-reference table). The `AWS::Lambda::MicrovmImage` provider shipped honoring `--no-wait` but missed this list — the test is the backstop.
