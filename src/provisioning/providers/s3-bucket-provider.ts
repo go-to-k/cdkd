@@ -326,7 +326,17 @@ export class S3BucketProvider implements ResourceProvider {
       const filter = rule['Filter'] as Record<string, unknown> | undefined;
       return {
         prefix: (filter?.['Prefix'] ?? rule['Prefix']) as string | undefined,
-        tagFilters: filter?.['TagFilters'] as Array<{ Key: string; Value: string }> | undefined,
+        // `TagFilters` lives at the RULE level in the CFn schema — there is no
+        // `Filter` member on `AWS::S3::Bucket`'s lifecycle Rule at all, and a
+        // real `cdk synth` of `LifecycleRule.tagFilters` emits it there (the
+        // `Filter` read is cdkd's own accommodation for SDK-shaped / imported
+        // input). Reading ONLY `Filter.TagFilters` dropped the tag scope, so a
+        // tag-scoped rule fell through to the empty-prefix Filter below and
+        // applied to the WHOLE bucket — for an expiration rule, that deletes
+        // objects the rule was never meant to touch (issue #1388).
+        tagFilters: (filter?.['TagFilters'] ?? rule['TagFilters']) as
+          | Array<{ Key: string; Value: string }>
+          | undefined,
         sizeGt: (filter?.['ObjectSizeGreaterThan'] ?? rule['ObjectSizeGreaterThan']) as
           | number
           | undefined,
@@ -382,39 +392,74 @@ export class S3BucketProvider implements ResourceProvider {
           ExpiredObjectDeleteMarker: exp['ExpiredObjectDeleteMarker'] as boolean | undefined,
         };
       }
+      // `ExpiredObjectDeleteMarker` is a RULE-level CFn property (it is what
+      // `LifecycleRule.expiredObjectDeleteMarker` synthesizes), not a member of
+      // a nested `Expiration` object. Read only from the nested form, a rule
+      // whose ONLY action is the delete-marker cleanup produced no `Expiration`
+      // at all and S3 rejects the action-less rule (issue #1388). S3 forbids
+      // combining it with Days / Date, so it only fills an empty Expiration.
+      const ruleLevelDeleteMarker = rule['ExpiredObjectDeleteMarker'];
+      if (typeof ruleLevelDeleteMarker === 'boolean' && sdkRule.Expiration === undefined) {
+        sdkRule.Expiration = { ExpiredObjectDeleteMarker: ruleLevelDeleteMarker };
+      }
 
-      // NoncurrentVersionExpiration
+      // NoncurrentVersionExpiration. The CFn schema ALSO still accepts the
+      // legacy scalar `NoncurrentVersionExpirationInDays` alongside the modern
+      // object form; the object wins when both are present (issue #1388).
       const nve = rule['NoncurrentVersionExpiration'] as Record<string, unknown> | undefined;
+      const legacyNveDays = rule['NoncurrentVersionExpirationInDays'];
       if (nve) {
         sdkRule.NoncurrentVersionExpiration = {
           NoncurrentDays: nve['NoncurrentDays'] as number | undefined,
           NewerNoncurrentVersions: nve['NewerNoncurrentVersions'] as number | undefined,
         };
+      } else if (typeof legacyNveDays === 'number') {
+        sdkRule.NoncurrentVersionExpiration = { NoncurrentDays: legacyNveDays };
       }
 
-      // NoncurrentVersionTransitions
+      // NoncurrentVersionTransitions, plus the legacy singular
+      // `NoncurrentVersionTransition` object the CFn schema still accepts.
+      // Both may appear on one rule, so they are concatenated rather than
+      // treated as alternatives.
+      const toSdkNvt = (nvt: Record<string, unknown>): Record<string, unknown> => ({
+        NoncurrentDays: nvt['NoncurrentDays'] as number | undefined,
+        StorageClass: nvt['StorageClass'] as string | undefined,
+        NewerNoncurrentVersions: nvt['NewerNoncurrentVersions'] as number | undefined,
+      });
       const nvts = rule['NoncurrentVersionTransitions'] as
         | Array<Record<string, unknown>>
         | undefined;
-      if (nvts && Array.isArray(nvts)) {
-        sdkRule.NoncurrentVersionTransitions = nvts.map((nvt: Record<string, unknown>) => ({
-          NoncurrentDays: nvt['NoncurrentDays'] as number | undefined,
-          StorageClass: nvt['StorageClass'] as string | undefined,
-          NewerNoncurrentVersions: nvt['NewerNoncurrentVersions'] as number | undefined,
-        }));
+      const singularNvt = rule['NoncurrentVersionTransition'] as
+        | Record<string, unknown>
+        | undefined;
+      const allNvts = [
+        ...(Array.isArray(nvts) ? nvts : []),
+        ...(singularNvt && typeof singularNvt === 'object' ? [singularNvt] : []),
+      ];
+      if (allNvts.length > 0) {
+        sdkRule.NoncurrentVersionTransitions = allNvts.map(toSdkNvt);
       }
 
-      // Transitions
+      // Transitions, plus the legacy singular `Transition` object. Same
+      // concatenation rule as the noncurrent-version pair above.
+      const toSdkTransition = (t: Record<string, unknown>): Record<string, unknown> => ({
+        Days: (t['TransitionInDays'] ?? t['Days']) as number | undefined,
+        Date:
+          (t['TransitionDate'] ?? t['Date'])
+            ? new Date((t['TransitionDate'] ?? t['Date']) as string)
+            : undefined,
+        StorageClass: t['StorageClass'] as string | undefined,
+      });
       const transitions = rule['Transitions'] as Array<Record<string, unknown>> | undefined;
-      if (transitions && Array.isArray(transitions)) {
-        sdkRule.Transitions = transitions.map((t: Record<string, unknown>) => ({
-          Days: (t['TransitionInDays'] ?? t['Days']) as number | undefined,
-          Date:
-            (t['TransitionDate'] ?? t['Date'])
-              ? new Date((t['TransitionDate'] ?? t['Date']) as string)
-              : undefined,
-          StorageClass: t['StorageClass'] as string | undefined,
-        }));
+      const singularTransition = rule['Transition'] as Record<string, unknown> | undefined;
+      const allTransitions = [
+        ...(Array.isArray(transitions) ? transitions : []),
+        ...(singularTransition && typeof singularTransition === 'object'
+          ? [singularTransition]
+          : []),
+      ];
+      if (allTransitions.length > 0) {
+        sdkRule.Transitions = allTransitions.map(toSdkTransition);
       }
 
       // AbortIncompleteMultipartUpload
@@ -447,6 +492,14 @@ export class S3BucketProvider implements ResourceProvider {
             ObjectSizeLessThan: sizeLt,
           },
         };
+      } else if (hasTags && tagFilters!.length > 1) {
+        // Several tags and NOTHING else still needs `And` — the SDK's `Tag`
+        // member holds exactly one tag, so the pre-#1388 `Tag: tagFilters[0]`
+        // silently dropped every tag after the first. Unreachable before this
+        // change (rule-level `TagFilters` was never gathered), so fixing the
+        // gather without fixing this would have traded one silent drop for
+        // another.
+        sdkRule.Filter = { And: { Tags: tagFilters } };
       } else if (hasTags) {
         sdkRule.Filter = { Tag: tagFilters![0] };
       } else if (sizeGt !== undefined) {
