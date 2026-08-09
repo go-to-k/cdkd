@@ -71,6 +71,34 @@ echo "== fresh owner is NOT stolen =="
 printf 'sessA %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$WGD/session-owner"
 pl sessB "$wt/f.txt" | bash "$HOOK" >/dev/null 2>&1; chk $? 2 "recent owner still blocks"
 
+echo "== the sentinel is itself gated (2026-08-10 bypass) =="
+# The sentinel lives INSIDE the git dir, which has no work tree, so
+# `rev-parse --show-toplevel` fails on it and the repo opt-in check used to
+# fall through to a pass. That made the LOCK the one file the lock did not
+# protect: a foreign session could take the worktree with a single Write.
+printf 'sessA %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$WGD/session-owner"
+pl sessB "$WGD/session-owner" | bash "$HOOK" 2>"$tmp/err"; chk $? 2 "foreign session cannot WRITE the sentinel"
+grep -q "This file IS the lock" "$tmp/err" && ok "message says the write IS a takeover" || no "takeover framing missing"
+grep -q "presumed LIVE" "$tmp/err" && ok "message refuses the dead-owner inference" || no "no presume-live guidance"
+grep -q "ASK THE MAINTAINER FIRST" "$tmp/err" && ok "message routes to the maintainer" || no "no maintainer escalation"
+grep -q sessA "$WGD/session-owner" && ok "sentinel still records the original owner" || no "sentinel was overwritten"
+
+# The owner refreshing its own claim, and claiming a stale/absent one, must
+# still work — the guard tailors the message, it does not add a new rule.
+pl sessA "$WGD/session-owner" | bash "$HOOK" >/dev/null 2>&1; chk $? 0 "owner may write its own sentinel"
+printf 'sessOLD 2020-01-01T00:00:00Z\n' > "$WGD/session-owner"
+pl sessB "$WGD/session-owner" | bash "$HOOK" >/dev/null 2>&1; chk $? 0 "stale sentinel may be claimed by writing it"
+rm -f "$WGD/session-owner"
+pl sessB "$WGD/session-owner" | bash "$HOOK" >/dev/null 2>&1; chk $? 0 "absent sentinel may be claimed by writing it"
+
+# Opt-in still applies on the sentinel path: it is resolved from the linked
+# worktree's own checkout via `<git dir>/gitdir`, not from the main tree.
+rm -f "$wt/.markgate.yml"
+printf 'sessA %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$WGD/session-owner"
+pl sessB "$WGD/session-owner" | bash "$HOOK" >/dev/null 2>&1; chk $? 0 "non-opted-in repo => sentinel write passes"
+git -C "$wt" checkout -q -- .markgate.yml
+printf 'sessA %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$WGD/session-owner"
+
 echo "== explicit bypass =="
 CDKD_SKIP_WORKTREE_OWNER_GATE=1 bash -c "printf '%s' '$(pl sessB "$wt/f.txt")' | bash '$HOOK'" >/dev/null 2>&1
 chk $? 0 "CDKD_SKIP_WORKTREE_OWNER_GATE=1 bypasses"
