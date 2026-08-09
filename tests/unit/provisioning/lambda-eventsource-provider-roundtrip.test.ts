@@ -264,14 +264,14 @@ describe('LambdaEventSourceMappingProvider read-update round-trip', () => {
         'AWS::Lambda::EventSourceMapping',
         {
           FunctionName: 'fn',
-          SelfManagedEventSource: { Endpoints: { KAFKA_BOOTSTRAP_SERVERS: ['b.example:9092'] } },
+          SelfManagedEventSource: { Endpoints: { KafkaBootstrapServers: ['b.example:9092'] } },
           Queues: ['queue-a'],
           Topics: ['topic-a'],
           StartingPositionTimestamp: 1717000000,
         },
         {
           FunctionName: 'fn',
-          SelfManagedEventSource: { Endpoints: { KAFKA_BOOTSTRAP_SERVERS: ['b.example:9092'] } },
+          SelfManagedEventSource: { Endpoints: { KafkaBootstrapServers: ['b.example:9092'] } },
         }
       );
 

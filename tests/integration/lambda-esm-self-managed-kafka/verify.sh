@@ -136,8 +136,32 @@ if [ "${BROKERS_P1}" != "${EXPECTED_BROKERS}" ]; then
 fi
 echo "    OK: KafkaBootstrapServers translated to the SDK enum key and reached AWS"
 
+# --- Phase 1.5: drift must be clean ------------------------------------
+# The read-side inverse (SDK enum key -> CFn spelling) is otherwise unreachable
+# from this fixture: readCurrentState feeds observedProperties / drift, which
+# the deploy diff does not consume, so deleting it would leave every phase
+# below green. A clean drift run is what proves the inverse.
+echo "==> Phase 1.5: cdkd drift must report no drift"
+if ! node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}"; then
+  echo "FAIL: cdkd drift reported drift on a freshly deployed stack — the readCurrentState inverse for Endpoints is missing or wrong (issue #1384)" >&2
+  exit 1
+fi
+echo "    OK: no drift (readCurrentState re-spells Endpoints back to the CFn key)"
+
 # --- Phase 2: in-place update -----------------------------------------
-echo "==> Phase 2: re-deploy with CDKD_TEST_UPDATE=true (batchSize 10 -> 20)"
+# Wait out `Creating`: UpdateEventSourceMapping rejects a mapping that is still
+# being created with ResourceInUseException, which is NOT in cdkd's retryable
+# pattern table.
+echo "==> Phase 2: wait for the ESM to settle, then re-deploy with CDKD_TEST_UPDATE=true (batchSize 10 -> 20)"
+SETTLED=""
+for _ in $(seq 1 24); do
+  ESM_STATE="$(aws lambda get-event-source-mapping --uuid "${UUID_P1}" --region "${REGION}" \
+    --query 'State' --output text)"
+  if [ "${ESM_STATE}" != "Creating" ] && [ "${ESM_STATE}" != "Updating" ]; then SETTLED=1; break; fi
+  sleep 5
+done
+[ -z "${SETTLED}" ] && { echo "FAIL: ESM ${UUID_P1} never left Creating/Updating" >&2; exit 1; }
+echo "    ESM settled (State=${ESM_STATE})"
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
@@ -171,8 +195,22 @@ done
 [ -z "${GONE}" ] && { echo "FAIL: function ${FN} still exists after destroy" >&2; exit 1; }
 echo "    OK: function gone"
 
-assert_gone "event source mapping ${UUID_P1} still exists after destroy" aws lambda get-event-source-mapping --uuid "${UUID_P1}" --region "${REGION}"
+# DeleteEventSourceMapping is ASYNC: the mapping keeps answering 200 with
+# State=Deleting for tens of seconds, so a bare assert_gone races (the same
+# trap tests/integration/eventsourcemapping-race/verify.sh documents).
+ESM_GONE=""
+for _ in $(seq 1 24); do
+  if gone_probe aws lambda get-event-source-mapping --uuid "${UUID_P1}" --region "${REGION}"; then ESM_GONE=1; break; fi
+  sleep 5
+done
+[ -z "${ESM_GONE}" ] && { echo "FAIL: event source mapping ${UUID_P1} still exists after destroy" >&2; exit 1; }
 echo "    OK: event source mapping gone"
+
+# The Secret is the one resource this fixture adds beyond Lambda, and cleanup()
+# force-deletes it on EXIT — so without an explicit assert here a destroy-path
+# regression that strands it in a 7-day recovery window would pass green.
+assert_gone "secret ${SECRET} still exists after destroy" aws secretsmanager describe-secret --secret-id "${SECRET}" --region "${REGION}"
+echo "    OK: secret gone"
 
 assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: state gone"

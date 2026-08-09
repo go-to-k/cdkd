@@ -219,6 +219,63 @@ describe('LambdaEventSourceMappingProvider', () => {
       expect(getCreateInput()['SelfManagedEventSource']).toEqual({});
     });
 
+    it('preserves sibling members beside Endpoints and beside the renamed key', async () => {
+      // The rename must not rebuild the blob from a known-key allow-list — a
+      // future SDK member would then be silently dropped by the very layer
+      // that exists to stop silent drops.
+      await provider.create('L', 'AWS::Lambda::EventSourceMapping', {
+        FunctionName: 'fn',
+        SelfManagedEventSource: {
+          Endpoints: { KafkaBootstrapServers: ['b:9092'], FutureEndpointType: ['x:1'] },
+          FutureSibling: 'keep-me',
+        },
+        Topics: ['topic-a'],
+      });
+
+      expect(getCreateInput()['SelfManagedEventSource']).toEqual({
+        Endpoints: { KAFKA_BOOTSTRAP_SERVERS: ['b:9092'], FutureEndpointType: ['x:1'] },
+        FutureSibling: 'keep-me',
+      });
+    });
+
+    it('does not mutate the caller-supplied properties object', async () => {
+      // Load-bearing: the deploy engine saves cdkd state FROM this same object,
+      // so an in-place rename would persist the SDK spelling into state and
+      // fire permanent phantom drift against the CFn-spelled template.
+      const properties = {
+        FunctionName: 'fn',
+        SelfManagedEventSource: { Endpoints: { KafkaBootstrapServers: ['b:9092'] } },
+        Topics: ['topic-a'],
+      };
+
+      await provider.create('L', 'AWS::Lambda::EventSourceMapping', properties);
+
+      expect(properties.SelfManagedEventSource).toEqual({
+        Endpoints: { KafkaBootstrapServers: ['b:9092'] },
+      });
+    });
+
+    it('forwards a malformed SelfManagedEventSource verbatim rather than dropping it', async () => {
+      // Regression guard against turning the fix into a NEW silent drop: the
+      // raw pass-through this replaced sent whatever the template held, and AWS
+      // is the layer that must reject a malformed blob. An array `Endpoints` is
+      // likewise re-shapeable-looking but not a map, so it also passes through.
+      await provider.create('L', 'AWS::Lambda::EventSourceMapping', {
+        FunctionName: 'fn',
+        SelfManagedEventSource: 'not-an-object',
+        Topics: ['topic-a'],
+      });
+      expect(getCreateInput()['SelfManagedEventSource']).toBe('not-an-object');
+
+      mockSend.mockClear();
+      await provider.create('L', 'AWS::Lambda::EventSourceMapping', {
+        FunctionName: 'fn',
+        SelfManagedEventSource: { Endpoints: ['b:9092'] },
+        Topics: ['topic-a'],
+      });
+      expect(getCreateInput()['SelfManagedEventSource']).toEqual({ Endpoints: ['b:9092'] });
+    });
+
     it('coerces StartingPositionTimestamp number (epoch seconds) → Date', async () => {
       // CFn schema says `Number` for the field; the AWS::Lambda::EventSourceMapping
       // CFn docs phrase it as a Unix epoch in seconds. SDK expects a `Date`.

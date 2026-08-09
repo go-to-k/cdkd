@@ -109,20 +109,24 @@ function classifyEventSourceFromProperties(properties: Record<string, unknown>):
  * service rejects the whole request — so every CDK `SelfManagedKafkaEventSource`
  * user hit a hard `CreateEventSourceMapping` failure (issue #1384).
  *
- * Both directions are pure key renames; every other member of the blob (there
- * are none today) is copied through untouched so an SDK addition does not need
- * a code change here.
+ * Both directions are pure key renames of the ONE diverging key; every other
+ * member of the blob (both inside `Endpoints` and beside it) is copied through
+ * untouched. Note that a future `EndPointType` whose CFn spelling also diverges
+ * would reproduce this bug exactly — it needs its own entry here, the pass-
+ * through is not a general solution.
+ *
+ * Anything that is not a re-shapeable object — a non-object blob, a missing or
+ * non-object `Endpoints`, an array `Endpoints` — is returned VERBATIM rather
+ * than dropped. Dropping would be a silent-drop regression against the raw
+ * pass-through this replaced: AWS must stay the one that rejects a malformed
+ * template, not this layer.
  */
 const CFN_KAFKA_ENDPOINTS_KEY = 'KafkaBootstrapServers';
 const SDK_KAFKA_ENDPOINTS_KEY = 'KAFKA_BOOTSTRAP_SERVERS';
 
-function renameEndpointsKey(
-  selfManagedEventSource: unknown,
-  from: string,
-  to: string
-): Record<string, unknown> | undefined {
+function renameEndpointsKey(selfManagedEventSource: unknown, from: string, to: string): unknown {
   if (typeof selfManagedEventSource !== 'object' || selfManagedEventSource === null) {
-    return undefined;
+    return selfManagedEventSource;
   }
   const source = { ...(selfManagedEventSource as Record<string, unknown>) };
   const endpoints = source['Endpoints'];
@@ -140,18 +144,16 @@ function renameEndpointsKey(
 /** CFn property bag -> `CreateEventSourceMapping` input shape. */
 function toSdkSelfManagedEventSource(
   selfManagedEventSource: unknown
-): import('@aws-sdk/client-lambda').SelfManagedEventSource | undefined {
+): import('@aws-sdk/client-lambda').SelfManagedEventSource {
   return renameEndpointsKey(
     selfManagedEventSource,
     CFN_KAFKA_ENDPOINTS_KEY,
     SDK_KAFKA_ENDPOINTS_KEY
-  ) as import('@aws-sdk/client-lambda').SelfManagedEventSource | undefined;
+  ) as import('@aws-sdk/client-lambda').SelfManagedEventSource;
 }
 
 /** `GetEventSourceMapping` response -> CFn property shape (drift readback). */
-function toCfnSelfManagedEventSource(
-  selfManagedEventSource: unknown
-): Record<string, unknown> | undefined {
+function toCfnSelfManagedEventSource(selfManagedEventSource: unknown): unknown {
   return renameEndpointsKey(
     selfManagedEventSource,
     SDK_KAFKA_ENDPOINTS_KEY,
