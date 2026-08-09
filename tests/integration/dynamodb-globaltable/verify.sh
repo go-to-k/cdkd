@@ -19,10 +19,15 @@
 #      with the cdkd `${StackName}-` prefix
 #   4. assert the deployed table exists on AWS via DescribeTable
 #   4b. assert per-GSI throughput round-tripped (Issue #1387): the
-#       PROVISIONED table's GSI carries ProvisionedThroughput 7/3 and the
+#       PROVISIONED table's GSI carries ProvisionedThroughput 7/2 and the
 #       on-demand table's GSI carries OnDemandThroughput 50/60. Pre-fix the
 #       first table could not be created at all and the second silently lost
-#       its per-index limits.
+#       its per-index limits. The write half is `MinCapacity` (2), not
+#       `SeedCapacity` (3) — issue #1435.
+#   4c. assert the per-INDEX scalable target + target-tracking policy exist
+#       (Issue #1419). Runs against the BASELINE deploy, so it pins the
+#       create-side half: pre-fix `create()` registered no autoscaling at
+#       all and NO code path ever registered a `dynamodb:index:*` dimension.
 #   5. cdkd deploy with CDKD_TEST_UPDATE=deletion-protection
 #   8. assert DeletionProtectionEnabled is now true on AWS
 #   9. cdkd deploy with CDKD_TEST_UPDATE=deletion-protection,billing-provisioned
@@ -32,6 +37,9 @@
 #       (Issue #402 Item B — table-level write + per-replica read autoscaling)
 #  12. assert RegisterScalableTarget + PutScalingPolicy reached AWS via
 #       application-autoscaling describe-scaling-policies
+#  12a. assert the LOCAL replica's read dimension is registered too (Issue
+#       #1419) — update()'s replica loops skip the local region, so only
+#       CROSS-REGION replicas ever got a read target before the fix.
 #  12b-e: optional cross-region (CDKD_INTEG_MULTI_REGION=1, see below).
 #  12f. cdkd deploy with CDKD_TEST_UPDATE=...,ttl,tags (TTL toggle MUST be
 #       LAST among structural changes — AWS's "Time to live has been
@@ -46,7 +54,10 @@
 #       policy is gone (DeleteScalingPolicy + DeregisterScalableTarget)
 #  15. cdkd destroy --remove-protection --force (works regardless of
 #       the last DeletionProtectionEnabled state)
-#  16. assert the AWS-side table is gone and cdkd state is empty
+#  16. assert the AWS-side table is gone, the per-INDEX scalable target was
+#       deregistered (Issue #1419 — application-autoscaling is a separate
+#       control plane, so DeleteTable alone leaves an orphan target a future
+#       same-named table would inherit), and cdkd state is empty
 #
 # Wall-clock budget: ~7-10 min (each deploy + describe pair is ~30-60s;
 # autoscaling apply adds ~5-10s per direction).
@@ -196,7 +207,7 @@ echo "[verify] step 4b (Issue #1387): assert per-GSI throughput reached AWS"
 #
 # Expected values, and where each half comes from in the synthesized template:
 #   byStatus.ProvisionedThroughput.ReadCapacityUnits  = 7  <- Replicas[local].GlobalSecondaryIndexes[].ReadProvisionedThroughputSettings
-#   byStatus.ProvisionedThroughput.WriteCapacityUnits = 3  <- GSI.WriteProvisionedThroughputSettings...SeedCapacity
+#   byStatus.ProvisionedThroughput.WriteCapacityUnits = 2  <- GSI.WriteProvisionedThroughputSettings...MinCapacity (issue #1435: CFn creates at MinCapacity, not the SeedCapacity=3 cdkd used to send)
 #   byOwner.OnDemandThroughput.MaxReadRequestUnits    = 50 <- Replicas[local].GlobalSecondaryIndexes[].ReadOnDemandThroughputSettings
 #   byOwner.OnDemandThroughput.MaxWriteRequestUnits   = 60 <- GSI.WriteOnDemandThroughputSettings
 gsi_field() { # $1 = table, $2 = index name, $3 = JMESPath under the index object
@@ -216,7 +227,7 @@ assert_gsi_field() { # $1 = table, $2 = index, $3 = JMESPath, $4 = expected
   echo "[verify] step 4b ok: ${2}.${3} = ${actual}"
 }
 assert_gsi_field "${GSI_PROV_TABLE}" byStatus ProvisionedThroughput.ReadCapacityUnits 7
-assert_gsi_field "${GSI_PROV_TABLE}" byStatus ProvisionedThroughput.WriteCapacityUnits 3
+assert_gsi_field "${GSI_PROV_TABLE}" byStatus ProvisionedThroughput.WriteCapacityUnits 2
 assert_gsi_field "${GSI_OD_TABLE}" byOwner OnDemandThroughput.MaxReadRequestUnits 50
 assert_gsi_field "${GSI_OD_TABLE}" byOwner OnDemandThroughput.MaxWriteRequestUnits 60
 
@@ -234,6 +245,72 @@ if [ "${OD_TABLE_MAX_WRITE}" != "200" ]; then
   exit 1
 fi
 echo "[verify] step 4b ok: table-level throughput preserved on both GSI fixtures"
+
+echo "[verify] step 4c (Issue #1419): assert the per-INDEX auto-scaling target + policy exist on AWS"
+# The bug: cdkd registered application-autoscaling targets only for
+# `dynamodb:table:*`. A per-GSI `writeCapacity: Capacity.autoscaled(...)`
+# produced a correct INITIAL capacity (which step 4b asserts and which is why
+# this went unnoticed) but no scalable target at all, so the index was pinned
+# at that capacity forever — min/max/targetUtilizationPercent silently dropped.
+#
+# `create()` additionally registered NOTHING, so this assertion runs against
+# the BASELINE deploy: no update deploy has happened yet at this point in the
+# flow. That is deliberate — it pins the create-side half of the fix.
+INDEX_RESOURCE_ID="table/${GSI_PROV_TABLE}/index/byStatus"
+INDEX_TARGET_JSON="$(aws application-autoscaling describe-scalable-targets \
+  --service-namespace dynamodb \
+  --resource-ids "${INDEX_RESOURCE_ID}" \
+  --scalable-dimension dynamodb:index:WriteCapacityUnits \
+  --region "${REGION}" \
+  --query 'ScalableTargets[0].[MinCapacity,MaxCapacity]' --output text)"
+if [ "${INDEX_TARGET_JSON}" != "2	20" ]; then
+  echo "[verify] FAIL (issue #1419): no dynamodb:index:WriteCapacityUnits target on ${INDEX_RESOURCE_ID}" >&2
+  echo "[verify]   got Min/Max '${INDEX_TARGET_JSON}', expected tab-separated '2' and '20' from Capacity.autoscaled" >&2
+  echo "[verify]   pre-fix cdkd never registered ANY index-level scalable target" >&2
+  exit 1
+fi
+INDEX_POLICY_TARGET="$(aws application-autoscaling describe-scaling-policies \
+  --service-namespace dynamodb \
+  --resource-id "${INDEX_RESOURCE_ID}" \
+  --scalable-dimension dynamodb:index:WriteCapacityUnits \
+  --region "${REGION}" \
+  --query 'ScalingPolicies[?PolicyType==`TargetTrackingScaling`] | [0].TargetTrackingScalingPolicyConfiguration.TargetValue' \
+  --output text)"
+case "${INDEX_POLICY_TARGET}" in
+  60|60.0)
+    echo "[verify] step 4c ok: index write autoscaling registered (Min=2 Max=20 TargetValue=${INDEX_POLICY_TARGET})"
+    ;;
+  *)
+    echo "[verify] FAIL (issue #1419): index write autoscaling TargetValue is '${INDEX_POLICY_TARGET}' (expected 60)" >&2
+    exit 1
+    ;;
+esac
+
+# The READ half of the same index. Registered from a DIFFERENT CFn location
+# than the write half (`Replicas[local].GlobalSecondaryIndexes[]` rather than
+# the top-level GSI), so it is a genuinely separate path, not a mirror.
+INDEX_READ_MINMAX="$(aws application-autoscaling describe-scalable-targets \
+  --service-namespace dynamodb \
+  --resource-ids "${INDEX_RESOURCE_ID}" \
+  --scalable-dimension dynamodb:index:ReadCapacityUnits \
+  --region "${REGION}" \
+  --query 'ScalableTargets[0].[MinCapacity,MaxCapacity]' --output text)"
+if [ "${INDEX_READ_MINMAX}" != "7	70" ]; then
+  echo "[verify] FAIL (issue #1419): no dynamodb:index:ReadCapacityUnits target on ${INDEX_RESOURCE_ID}" >&2
+  echo "[verify]   got Min/Max '${INDEX_READ_MINMAX}', expected tab-separated '7' and '70'" >&2
+  exit 1
+fi
+echo "[verify] step 4c ok: index read autoscaling registered (${INDEX_READ_MINMAX})"
+
+# Issue #1435 at TABLE level: the fixture declares minCapacity 1 / seedCapacity 8,
+# and CloudFormation creates at MinCapacity. Pre-fix cdkd sent the seed (8).
+PROV_TABLE_WRITE="$(aws dynamodb describe-table --table-name "${GSI_PROV_TABLE}" --region "${REGION}" \
+  --query 'Table.ProvisionedThroughput.WriteCapacityUnits' --output text)"
+if [ "${PROV_TABLE_WRITE}" != "1" ]; then
+  echo "[verify] FAIL (issue #1435): ${GSI_PROV_TABLE} table-level WriteCapacityUnits is '${PROV_TABLE_WRITE}' (expected 1 = MinCapacity, not 8 = SeedCapacity)" >&2
+  exit 1
+fi
+echo "[verify] step 4c ok: table-level write capacity created at MinCapacity (${PROV_TABLE_WRITE})"
 
 echo "[verify] step 5 (was steps 5/6/7): cdkd deploy with CDKD_TEST_UPDATE=deletion-protection (in-place update — Issue #389)"
 # ORDER NOTE (PR follow-up to #403): TTL toggle is intentionally
@@ -306,6 +383,25 @@ case "${WRITE_TARGET_VALUE}" in
     exit 1
     ;;
 esac
+
+echo "[verify] step 12a (Issue #1419): assert the LOCAL replica's read dimension is registered too"
+# `readCapacity: Capacity.autoscaled(...)` on the deploy-region replica
+# synthesizes to `Replicas[local].ReadProvisionedThroughputSettings`. No code
+# path ever registered it: update()'s replica loops all `continue` on the
+# local region, so only CROSS-REGION replicas got a read target, and create()
+# registered nothing at all. The read half of a single-region autoscaled
+# table was therefore silently unscaled.
+LOCAL_READ_MINMAX="$(aws application-autoscaling describe-scalable-targets \
+  --service-namespace dynamodb \
+  --resource-ids "table/${TABLE_NAME}" \
+  --scalable-dimension dynamodb:table:ReadCapacityUnits \
+  --region "${REGION}" \
+  --query 'ScalableTargets[0].[MinCapacity,MaxCapacity]' --output text)"
+if [ "${LOCAL_READ_MINMAX}" != "5	50" ]; then
+  echo "[verify] FAIL (issue #1419): local read target on table/${TABLE_NAME} is '${LOCAL_READ_MINMAX}' (expected Min 5 / Max 50)" >&2
+  exit 1
+fi
+echo "[verify] step 12a ok: local replica read autoscaling registered (${LOCAL_READ_MINMAX})"
 
 # Item D — opt-in cross-region replica round-trip. Guarded behind
 # CDKD_INTEG_MULTI_REGION=1 because the wall-clock + cost is large.
@@ -511,6 +607,33 @@ assert_gone "table '${TABLE_NAME}' still exists after destroy" aws dynamodb desc
 assert_gone "table '${GSI_PROV_TABLE}' still exists after destroy" aws dynamodb describe-table --table-name "${GSI_PROV_TABLE}" --region "${REGION}"
 assert_gone "table '${GSI_OD_TABLE}' still exists after destroy" aws dynamodb describe-table --table-name "${GSI_OD_TABLE}" --region "${REGION}"
 echo "[verify] step 16a ok: all three tables deleted"
+
+echo "[verify] step 16a2 (Issue #1419): assert the per-INDEX scalable target did not survive destroy"
+# application-autoscaling is a SEPARATE control plane: DeleteTable does not
+# remove a registered target. An orphan `table/<t>/index/<i>` target is
+# silently inherited by a future table of the same name, so delete() has to
+# deregister the index dimensions the way it already did the table ones.
+assert_target_gone() { # $1 = resource id, $2 = scalable dimension
+  local remaining
+  remaining="$(aws application-autoscaling describe-scalable-targets \
+    --service-namespace dynamodb \
+    --resource-ids "$1" \
+    --scalable-dimension "$2" \
+    --region "${REGION}" \
+    --query 'length(ScalableTargets)' --output text)" || return 1
+  if [ "${remaining}" != "0" ]; then
+    echo "[verify] FAIL (issue #1419): scalable target $1 ($2) survived destroy (count=${remaining}, expected 0)" >&2
+    exit 1
+  fi
+  echo "[verify] step 16a2 ok: $2 on $1 deregistered"
+}
+# BOTH index dimensions, and the local table read dimension this change is
+# what first registers. A teardown that covers only the write half leaks the
+# other three onto whatever table next takes this name.
+assert_target_gone "table/${GSI_PROV_TABLE}/index/byStatus" dynamodb:index:WriteCapacityUnits
+assert_target_gone "table/${GSI_PROV_TABLE}/index/byStatus" dynamodb:index:ReadCapacityUnits
+assert_target_gone "table/${TABLE_NAME}" dynamodb:table:ReadCapacityUnits
+assert_target_gone "table/${TABLE_NAME}" dynamodb:table:WriteCapacityUnits
 
 echo "[verify] step 16b: assert cdkd state is empty"
 assert_gone "cdkd state file still exists at s3://${STATE_BUCKET}/${STATE_KEY}" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
