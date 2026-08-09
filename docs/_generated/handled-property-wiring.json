@@ -4876,6 +4876,7 @@
             "AWS::DynamoDB::GlobalTable"
           ],
           "evidence": [
+            "delegated",
             "element-read"
           ],
           "seededBy": [

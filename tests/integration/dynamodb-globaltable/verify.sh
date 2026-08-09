@@ -18,6 +18,11 @@
 #   3. read the deployed table name from cdkd state and assert it starts
 #      with the cdkd `${StackName}-` prefix
 #   4. assert the deployed table exists on AWS via DescribeTable
+#   4b. assert per-GSI throughput round-tripped (Issue #1387): the
+#       PROVISIONED table's GSI carries ProvisionedThroughput 7/3 and the
+#       on-demand table's GSI carries OnDemandThroughput 50/60. Pre-fix the
+#       first table could not be created at all and the second silently lost
+#       its per-index limits.
 #   5. cdkd deploy with CDKD_TEST_UPDATE=deletion-protection
 #   8. assert DeletionProtectionEnabled is now true on AWS
 #   9. cdkd deploy with CDKD_TEST_UPDATE=deletion-protection,billing-provisioned
@@ -131,22 +136,35 @@ echo "[verify] step 2: cdkd deploy (baseline — no UPDATE flags)"
 unset CDKD_TEST_UPDATE
 ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose
 
-echo "[verify] step 3: read deployed table name from cdkd state"
+echo "[verify] step 3: read deployed table names from cdkd state"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 STATE_JSON="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)"
-TABLE_NAME="$(echo "${STATE_JSON}" | python3 -c '
+# The stack deploys THREE AWS::DynamoDB::GlobalTable resources (the original
+# HistoryTable plus the two Issue #1387 GSI fixtures), so select by logical-id
+# prefix rather than "first GlobalTable in state".
+table_name_for() { # $1 = construct id prefix -> physical table name
+  echo "${STATE_JSON}" | python3 -c '
 import json, sys
+prefix = sys.argv[1]
 state = json.load(sys.stdin)
 for logical_id, resource in state.get("resources", {}).items():
-    if resource.get("resourceType") == "AWS::DynamoDB::GlobalTable":
+    if resource.get("resourceType") == "AWS::DynamoDB::GlobalTable" and logical_id.startswith(prefix):
         print(resource["physicalId"])
         break
-')"
+' "$1"
+}
+TABLE_NAME="$(table_name_for HistoryTable)"
+GSI_PROV_TABLE="$(table_name_for GsiProvisionedTable)"
+GSI_OD_TABLE="$(table_name_for GsiOnDemandTable)"
 if [ -z "${TABLE_NAME}" ]; then
-  echo "[verify] FAIL: no AWS::DynamoDB::GlobalTable resource in cdkd state"
+  echo "[verify] FAIL: no HistoryTable AWS::DynamoDB::GlobalTable resource in cdkd state"
   exit 1
 fi
-echo "[verify] step 3 ok: deployed table name = ${TABLE_NAME}"
+if [ -z "${GSI_PROV_TABLE}" ] || [ -z "${GSI_OD_TABLE}" ]; then
+  echo "[verify] FAIL: Issue #1387 GSI fixture tables missing from cdkd state (prov='${GSI_PROV_TABLE}' on-demand='${GSI_OD_TABLE}')"
+  exit 1
+fi
+echo "[verify] step 3 ok: deployed table names = ${TABLE_NAME} / ${GSI_PROV_TABLE} / ${GSI_OD_TABLE}"
 
 # The canonical bug fix assertion: pre-PR the name was an opaque random
 # string (`yq2phLewTEUtzr4sy2gYFRU4I-1OGJ0UFLOKOOV`-style); post-PR it
@@ -167,6 +185,55 @@ esac
 echo "[verify] step 4: assert table exists on AWS"
 aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" >/dev/null
 echo "[verify] step 4 ok: DescribeTable succeeded"
+
+echo "[verify] step 4b (Issue #1387): assert per-GSI throughput reached AWS"
+# The bug: cdkd cast the CFn `GlobalSecondaryIndexes` blob straight to the
+# SDK's `GlobalSecondaryIndex[]`, and the SDK serializer drops unknown
+# members. So the PROVISIONED table's CreateTable used to fail outright
+# ("Neither ProvisionedThroughput nor OnDemandThroughput was specified for
+# index: byStatus") and the on-demand table's per-index limits were dropped
+# silently. Read every value back off DescribeTable.
+#
+# Expected values, and where each half comes from in the synthesized template:
+#   byStatus.ProvisionedThroughput.ReadCapacityUnits  = 7  <- Replicas[local].GlobalSecondaryIndexes[].ReadProvisionedThroughputSettings
+#   byStatus.ProvisionedThroughput.WriteCapacityUnits = 3  <- GSI.WriteProvisionedThroughputSettings...SeedCapacity
+#   byOwner.OnDemandThroughput.MaxReadRequestUnits    = 50 <- Replicas[local].GlobalSecondaryIndexes[].ReadOnDemandThroughputSettings
+#   byOwner.OnDemandThroughput.MaxWriteRequestUnits   = 60 <- GSI.WriteOnDemandThroughputSettings
+gsi_field() { # $1 = table, $2 = index name, $3 = JMESPath under the index object
+  local out
+  out="$(aws dynamodb describe-table --table-name "$1" --region "${REGION}" \
+    --query "Table.GlobalSecondaryIndexes[?IndexName=='$2'] | [0].$3" --output text)" || return 1
+  printf '%s' "${out}"
+}
+assert_gsi_field() { # $1 = table, $2 = index, $3 = JMESPath, $4 = expected
+  local actual
+  actual="$(gsi_field "$1" "$2" "$3")"
+  if [ "${actual}" != "$4" ]; then
+    echo "[verify] FAIL (issue #1387): ${1} index ${2} ${3} is '${actual}' (expected '$4')" >&2
+    echo "[verify]   pre-fix cdkd forwarded the CFn-only spelling and the SDK dropped it" >&2
+    exit 1
+  fi
+  echo "[verify] step 4b ok: ${2}.${3} = ${actual}"
+}
+assert_gsi_field "${GSI_PROV_TABLE}" byStatus ProvisionedThroughput.ReadCapacityUnits 7
+assert_gsi_field "${GSI_PROV_TABLE}" byStatus ProvisionedThroughput.WriteCapacityUnits 3
+assert_gsi_field "${GSI_OD_TABLE}" byOwner OnDemandThroughput.MaxReadRequestUnits 50
+assert_gsi_field "${GSI_OD_TABLE}" byOwner OnDemandThroughput.MaxWriteRequestUnits 60
+
+# Table-level throughput must survive alongside the per-index values.
+PROV_TABLE_READ="$(aws dynamodb describe-table --table-name "${GSI_PROV_TABLE}" --region "${REGION}" \
+  --query 'Table.ProvisionedThroughput.ReadCapacityUnits' --output text)"
+if [ "${PROV_TABLE_READ}" != "5" ]; then
+  echo "[verify] FAIL: ${GSI_PROV_TABLE} table-level ReadCapacityUnits is '${PROV_TABLE_READ}' (expected 5)" >&2
+  exit 1
+fi
+OD_TABLE_MAX_WRITE="$(aws dynamodb describe-table --table-name "${GSI_OD_TABLE}" --region "${REGION}" \
+  --query 'Table.OnDemandThroughput.MaxWriteRequestUnits' --output text)"
+if [ "${OD_TABLE_MAX_WRITE}" != "200" ]; then
+  echo "[verify] FAIL: ${GSI_OD_TABLE} table-level MaxWriteRequestUnits is '${OD_TABLE_MAX_WRITE}' (expected 200)" >&2
+  exit 1
+fi
+echo "[verify] step 4b ok: table-level throughput preserved on both GSI fixtures"
 
 echo "[verify] step 5 (was steps 5/6/7): cdkd deploy with CDKD_TEST_UPDATE=deletion-protection (in-place update — Issue #389)"
 # ORDER NOTE (PR follow-up to #403): TTL toggle is intentionally
@@ -383,9 +450,11 @@ echo "[verify] step 15: cdkd destroy --remove-protection --force"
 # residual state without requiring operator intervention.
 ${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --remove-protection --force
 
-echo "[verify] step 16a: assert table is gone on AWS"
+echo "[verify] step 16a: assert tables are gone on AWS"
 assert_gone "table '${TABLE_NAME}' still exists after destroy" aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}"
-echo "[verify] step 16a ok: table deleted"
+assert_gone "table '${GSI_PROV_TABLE}' still exists after destroy" aws dynamodb describe-table --table-name "${GSI_PROV_TABLE}" --region "${REGION}"
+assert_gone "table '${GSI_OD_TABLE}' still exists after destroy" aws dynamodb describe-table --table-name "${GSI_OD_TABLE}" --region "${REGION}"
+echo "[verify] step 16a ok: all three tables deleted"
 
 echo "[verify] step 16b: assert cdkd state is empty"
 assert_gone "cdkd state file still exists at s3://${STATE_BUCKET}/${STATE_KEY}" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
