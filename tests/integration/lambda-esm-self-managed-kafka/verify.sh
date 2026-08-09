@@ -209,7 +209,15 @@ echo "    OK: event source mapping gone"
 # The Secret is the one resource this fixture adds beyond Lambda, and cleanup()
 # force-deletes it on EXIT — so without an explicit assert here a destroy-path
 # regression that strands it in a 7-day recovery window would pass green.
-assert_gone "secret ${SECRET} still exists after destroy" aws secretsmanager describe-secret --secret-id "${SECRET}" --region "${REGION}"
+# DeleteSecret is eventually consistent the same way DeleteEventSourceMapping
+# is: observed 2026-08-09, describe-secret still answered 200 right after a
+# clean destroy and returned ResourceNotFoundException ~a minute later. Poll.
+SECRET_GONE=""
+for _ in $(seq 1 24); do
+  if gone_probe aws secretsmanager describe-secret --secret-id "${SECRET}" --region "${REGION}"; then SECRET_GONE=1; break; fi
+  sleep 5
+done
+[ -z "${SECRET_GONE}" ] && { echo "FAIL: secret ${SECRET} still exists after destroy" >&2; exit 1; }
 echo "    OK: secret gone"
 
 assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"

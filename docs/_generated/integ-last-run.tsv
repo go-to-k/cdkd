@@ -145,7 +145,7 @@ lambda-arch-switch	2026-07-26T19:25:15Z	PASS	63	verify.sh	0727b sweep-b10 stalen
 lambda-config-field-removal	2026-07-22T08:19:38Z	PASS	140	verify.sh	issue #1158 post-rebase re-verify; 6-field removal reset + destroy clean
 lambda-destinations	2026-07-21T18:15:21Z	PASS	81	verify.sh	fixture fix: EventInvokeConfig now sdk-routed (#919); rc ok, orph clean
 lambda-env-removal	2026-07-26T19:16:39Z	PASS	70	verify.sh	0727b sweep-b9 staleness re-run (rc=0); account clean
-lambda-esm-self-managed-kafka	2026-08-09T03:52:02Z	PASS	150	verify.sh	new fixture for #1384; destroy 0 errors, 0 orphans
+lambda-esm-self-managed-kafka	2026-08-09T04:13:11Z	PASS	210	verify.sh	#1384 enum key + clean drift asserted; destroy 5 deleted, 0 errors, 0 orphans
 lambda-event-invoke-config-update	2026-07-26T18:20:27Z	PASS	80	verify.sh	0727b sweep-b3 staleness re-run (rc=0); account clean
 lambda-layer-version-update	2026-07-26T21:13:17Z	PASS	82	verify.sh	re-run post review fixes (tab-safe version list); account clean
 lambda-log-retention	2026-07-21T14:46:30Z	PASS	95	verify.sh	rc ok, orph clean
