@@ -116,6 +116,72 @@ describe('S3 NotificationConfiguration.EventBridgeConfiguration (issue #1430)', 
       expect(cfg.EventBridgeConfiguration).toBeUndefined();
     });
 
+    it.each(['False', 'FALSE'])('OMITS the block for the case-variant "%s"', async (value) => {
+      // This is the ONE call site where "not false" means "turn it on", so a
+      // spelling that falls through to `undefined` would silently ENABLE
+      // delivery -- the exact inversion this fix exists to close.
+      const cfg = await putNotification({ EventBridgeEnabled: value });
+      expect(cfg.EventBridgeConfiguration).toBeUndefined();
+    });
+
+    it('tolerates a null block instead of throwing', async () => {
+      // The condition now READS a member off the block, so a hand-written or
+      // intrinsic-resolved `null` would throw where the pre-fix
+      // `eb !== undefined` test merely emitted. Non-objects stay on the
+      // enable-on-presence side.
+      const cfg = await putNotification(null);
+      expect(cfg.EventBridgeConfiguration).toEqual({});
+    });
+
+    it('leaves sibling Topic configurations untouched when EventBridge is false', async () => {
+      await provider.update(
+        'L',
+        BUCKET_NAME,
+        RESOURCE_TYPE,
+        {
+          BucketName: BUCKET_NAME,
+          NotificationConfiguration: {
+            EventBridgeConfiguration: { EventBridgeEnabled: false },
+            TopicConfigurations: [{ Topic: 'arn:aws:sns:us-east-1:1:t', Event: 's3:ObjectCreated:*' }],
+          },
+        },
+        { BucketName: BUCKET_NAME }
+      );
+      const call = mockSend.mock.calls
+        .map((c) => c[0])
+        .find((c) => c instanceof PutBucketNotificationConfigurationCommand);
+      const cfg = (call as PutBucketNotificationConfigurationCommand).input
+        .NotificationConfiguration as Record<string, unknown>;
+      expect(cfg.EventBridgeConfiguration).toBeUndefined();
+      expect(cfg.TopicConfigurations).toHaveLength(1);
+    });
+
+    it('turns delivery OFF on a true -> false UPDATE flip', async () => {
+      // The user-visible scenario this fix creates: a live bucket with
+      // EventBridge on, whose template flips the boolean. Every other write
+      // test starts from a bare previous state, so none of them exercise it.
+      await provider.update(
+        'L',
+        BUCKET_NAME,
+        RESOURCE_TYPE,
+        {
+          BucketName: BUCKET_NAME,
+          NotificationConfiguration: { EventBridgeConfiguration: { EventBridgeEnabled: false } },
+        },
+        {
+          BucketName: BUCKET_NAME,
+          NotificationConfiguration: { EventBridgeConfiguration: { EventBridgeEnabled: true } },
+        }
+      );
+      const call = mockSend.mock.calls
+        .map((c) => c[0])
+        .find((c) => c instanceof PutBucketNotificationConfigurationCommand);
+      expect(call, 'the flip must actually issue a Put').toBeDefined();
+      const cfg = (call as PutBucketNotificationConfigurationCommand).input
+        .NotificationConfiguration as Record<string, unknown>;
+      expect(cfg.EventBridgeConfiguration).toBeUndefined();
+    });
+
     it('emits the block for the stringly-typed CFn "true"', async () => {
       const cfg = await putNotification({ EventBridgeEnabled: 'true' });
       expect(cfg.EventBridgeConfiguration).toEqual({});
@@ -194,13 +260,12 @@ describe('S3 NotificationConfiguration.EventBridgeConfiguration (issue #1430)', 
       expect(notification['EventBridgeConfiguration']).toEqual({ EventBridgeEnabled: false });
     });
 
-    it('round-trips: the read shape is what the write side accepts', async () => {
-      // The two halves have to agree, or a drift REVERT would re-send a shape
-      // the write path misreads. Feed the reader's output straight back in.
-      const notification = await readNotification({});
+    /** Feed a `readNotification` result straight back into the write path. */
+    const roundTrip = async (
+      notification: Record<string, unknown>
+    ): Promise<Record<string, unknown>> => {
       vi.clearAllMocks();
       mockSend.mockResolvedValue({});
-
       await provider.update(
         'L',
         BUCKET_NAME,
@@ -211,9 +276,28 @@ describe('S3 NotificationConfiguration.EventBridgeConfiguration (issue #1430)', 
       const call = mockSend.mock.calls
         .map((c) => c[0])
         .find((c) => c instanceof PutBucketNotificationConfigurationCommand);
-      const cfg = (call as PutBucketNotificationConfigurationCommand).input
+      expect(call).toBeDefined();
+      return (call as PutBucketNotificationConfigurationCommand).input
         .NotificationConfiguration as Record<string, unknown>;
-      expect(cfg.EventBridgeConfiguration).toEqual({});
+    };
+
+    it('round-trips the ENABLED shape: read output re-sends as enabled', async () => {
+      const notification = await readNotification({});
+      expect(await roundTrip(notification)).toMatchObject({ EventBridgeConfiguration: {} });
+    });
+
+    it('round-trips the DISABLED shape: read output must NOT re-enable delivery', async () => {
+      // This is the discriminating direction, and the one that matters: a
+      // `cdkd drift --revert` feeds the reader's output back through the write
+      // path, so if `{EventBridgeEnabled: false}` came back out as an emitted
+      // block, a revert would silently turn EventBridge ON.
+      //
+      // The enabled case above passes even with the read fix reverted (the old
+      // reader returned `{}`, which the write path also emits as `{}`), so it
+      // pins nothing on its own.
+      const notification = await readNotification(undefined);
+      expect(notification['EventBridgeConfiguration']).toEqual({ EventBridgeEnabled: false });
+      expect((await roundTrip(notification)).EventBridgeConfiguration).toBeUndefined();
     });
   });
 });

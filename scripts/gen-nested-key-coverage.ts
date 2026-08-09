@@ -237,11 +237,28 @@ export const NESTED_KEY_TARGETS: readonly NestedKeyTarget[] = [
     // inventory, analytics, metrics, intelligent-tiering, object-lock,
     // website routing) in `handledProperties` and re-shapes each for the SDK —
     // the forwarding shape this critic exists to audit. It was NOT a target
-    // when the #1388 / #1424 lifecycle defects were fixed by hand in PR #1426,
-    // and three of those six would have been caught mechanically here
-    // (`TagFilters` + `NoncurrentVersionTransitions[].TransitionInDays` as
-    // `no-sdk-member` on the key pass, rule-level `ExpiredObjectDeleteMarker`
-    // as `definition-member-missing` on the shape pass).
+    // when the #1388 / #1424 lifecycle defects were fixed by hand in PR #1426.
+    //
+    // WHAT THIS TARGET WOULD ACTUALLY HAVE CAUGHT, measured rather than
+    // predicted: running this critic against the REAL pre-#1426 provider
+    // (`git show 768cd44b^:…/s3-bucket-provider.ts`) flags exactly three
+    // lifecycle keys as `no-sdk-member` — `Transition`,
+    // `NoncurrentVersionTransition` and `NoncurrentVersionExpirationInDays`,
+    // i.e. the LEGACY SINGULAR FORMS defect.
+    //
+    // Issue #1430 predicted a different three, and it was wrong on all of
+    // them. `TagFilters` (16 literal occurrences pre-#1426) and
+    // `TransitionInDays` (2) were already named elsewhere in the file — by
+    // `readCurrentState`'s reverse map — so the file-global literal heuristic
+    // classifies both `provider-handled` no matter how broken the WRITE path
+    // is. That is exactly the blind spot tracked as item 2 of #1393, and it is
+    // why the strip-probes in the unit test use only single-occurrence keys: a
+    // probe that deletes EVERY occurrence of a 16-site literal tests a
+    // regression shape that cannot occur. Rule-level `ExpiredObjectDeleteMarker`
+    // is not reachable either — the shape pass matches CFn definitions to
+    // same-named SDK interfaces, and `@aws-sdk/client-s3` spells it
+    // `LifecycleRule`, so CFn's `Rule` sits in `unmatchedDefinitions` and the
+    // whole lifecycle-rule blob is shape-unaudited.
     resourceType: 'AWS::S3::Bucket',
     providerFile: 's3-bucket-provider.ts',
     sdkClientPackage: '@aws-sdk/client-s3',
