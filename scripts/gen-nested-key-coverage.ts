@@ -219,6 +219,18 @@ export const NESTED_KEY_TARGETS: readonly NestedKeyTarget[] = [
     keyStyle: 'lower-first',
     minNestedKeys: 50,
   },
+  {
+    // Added by issue #1386. The provider rebuilds Source / Environment / Cache /
+    // BuildBatchConfig as FRESH SDK objects, which is exactly the forwarding
+    // shape this critic exists to audit. Bringing it under the critic is the
+    // durable form of that fix: the hand sweep for #1386 still missed
+    // `BuildBatchConfig.BatchReportMode`, which this pass catches mechanically.
+    resourceType: 'AWS::CodeBuild::Project',
+    providerFile: 'codebuild-provider.ts',
+    sdkClientPackage: '@aws-sdk/client-codebuild',
+    keyStyle: 'lower-first',
+    minNestedKeys: 40,
+  },
 ];
 
 export interface AllowListEntry {
@@ -277,6 +289,17 @@ export const NESTED_KEY_ALLOW_LIST: ReadonlyMap<string, AllowListEntry> = new Ma
         'CustomOrigin; superseded by Origins[]. Invisible to the KEY pass because the ' +
         'StreamingDistribution API still has a same-spelled S3Origin member — the ' +
         'definition pass (issue #1378) is what catches it.',
+    },
+  ],
+  [
+    allowKey('AWS::CodeBuild::Project', 'HostKernel'),
+    {
+      rationale:
+        'Declared in the CFn registry schema but has NO member anywhere in the ' +
+        'installed @aws-sdk/client-codebuild dist-types tree, so there is nothing to ' +
+        'map it onto until an SDK bump adds one (issue #1386). Naming it in the ' +
+        'provider would be a false claim of support. Remove this entry once the SDK ' +
+        'ships the member, at which point the key becomes genuinely mappable.',
     },
   ],
 ]);

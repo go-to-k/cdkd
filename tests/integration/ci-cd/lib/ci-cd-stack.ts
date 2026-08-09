@@ -78,6 +78,10 @@ export class CiCdStack extends cdk.Stack {
       source: {
         type: 'GITHUB',
         location: 'https://github.com/aws-samples/aws-codebuild-samples.git',
+        // Source.SourceIdentifier -> SDK sourceIdentifier. Newly sent on the
+        // PRIMARY source too (AWS requires it on SecondarySources), so the
+        // fixture exercises that against real AWS rather than only a mock.
+        sourceIdentifier: 'primary',
         buildSpec: 'version: 0.2\nphases:\n  build:\n    commands:\n      - echo "sub-keys"\n',
         // The project is never built by this test, so keep CodeBuild from
         // trying to post a commit status back to the public repository.

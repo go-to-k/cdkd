@@ -196,6 +196,38 @@ describe('CodeBuildProvider', () => {
       expect(command.input.cache.cacheNamespace).toBe('shared-ns');
     });
 
+    it('wires BuildBatchConfig.BatchReportMode on create', async () => {
+      // The fifth member of the CFn ProjectBuildBatchConfig definition. The
+      // #1386 sweep named the other four and missed this one; `readCurrentState`
+      // already read it back, so the file was internally asymmetric.
+      mockSend.mockResolvedValue({
+        project: {
+          name: 'my-project',
+          arn: 'arn:aws:codebuild:us-east-1:123456789012:project/my-project',
+        },
+      });
+
+      await provider.create('MyProject', 'AWS::CodeBuild::Project', {
+        Name: 'my-project',
+        Source: { Type: 'NO_SOURCE' },
+        Environment: {
+          Type: 'LINUX_CONTAINER',
+          ComputeType: 'BUILD_GENERAL1_SMALL',
+          Image: 'aws/codebuild/standard:7.0',
+        },
+        ServiceRole: 'arn:aws:iam::123456789012:role/codebuild-role',
+        Artifacts: { Type: 'NO_ARTIFACTS' },
+        BuildBatchConfig: {
+          ServiceRole: 'arn:aws:iam::123456789012:role/batch-role',
+          BatchReportMode: 'REPORT_INDIVIDUAL_BUILDS',
+          TimeoutInMins: 60,
+        },
+      });
+
+      const command = mockSend.mock.calls[0][0];
+      expect(command.input.buildBatchConfig.batchReportMode).toBe('REPORT_INDIVIDUAL_BUILDS');
+    });
+
     // SecondarySources route through the SAME `mapSource` helper, so the
     // sub-key wiring must cover them without a second code path.
     it('wires the same sub-keys on every SecondarySources entry', async () => {
@@ -458,6 +490,81 @@ describe('CodeBuildProvider', () => {
       expect(state?.['Environment']).not.toHaveProperty('Fleet');
       expect(state?.['Environment']).not.toHaveProperty('DockerServer');
       expect(state?.['Cache']).not.toHaveProperty('CacheNamespace');
+    });
+
+    it('reverse-maps the sub-keys on SECONDARY sources too', async () => {
+      // SecondarySources share `mapSource` on the write side, so the read
+      // side has to match or a project with a submodule-fetching secondary
+      // source reports phantom drift on every run.
+      mockSend.mockResolvedValue({
+        projects: [
+          {
+            name: 'my-project',
+            source: { type: 'NO_SOURCE' },
+            secondarySources: [
+              {
+                type: 'GITHUB',
+                location: 'https://github.com/example/lib.git',
+                sourceIdentifier: 'lib',
+                gitSubmodulesConfig: { fetchSubmodules: true },
+                buildStatusConfig: { context: 'lib-ctx', targetUrl: 'https://example.com/lib' },
+              },
+            ],
+            environment: {
+              type: 'LINUX_CONTAINER',
+              image: 'aws/codebuild/standard:7.0',
+              computeType: 'BUILD_GENERAL1_SMALL',
+            },
+          },
+        ],
+        projectsNotFound: [],
+      });
+
+      const state = await provider.readCurrentState(
+        'my-project',
+        'MyProject',
+        'AWS::CodeBuild::Project'
+      );
+
+      const secondary = (state?.['SecondarySources'] as Array<Record<string, unknown>>)[0]!;
+      expect(secondary['SourceIdentifier']).toBe('lib');
+      expect(secondary['GitSubmodulesConfig']).toEqual({ FetchSubmodules: true });
+      expect(secondary['BuildStatusConfig']).toEqual({
+        Context: 'lib-ctx',
+        TargetUrl: 'https://example.com/lib',
+      });
+    });
+
+    it('deliberately does NOT reverse-map Source.Auth', async () => {
+      // BatchGetProjects echoes `auth` back only partially, so emitting it
+      // would fire phantom drift on every project that sets it. This pins the
+      // omission so a later "symmetry" edit cannot reintroduce it untested.
+      mockSend.mockResolvedValue({
+        projects: [
+          {
+            name: 'my-project',
+            source: {
+              type: 'GITHUB',
+              location: 'https://github.com/example/repo.git',
+              auth: { type: 'OAUTH' },
+            },
+            environment: {
+              type: 'LINUX_CONTAINER',
+              image: 'aws/codebuild/standard:7.0',
+              computeType: 'BUILD_GENERAL1_SMALL',
+            },
+          },
+        ],
+        projectsNotFound: [],
+      });
+
+      const state = await provider.readCurrentState(
+        'my-project',
+        'MyProject',
+        'AWS::CodeBuild::Project'
+      );
+
+      expect(state?.['Source']).not.toHaveProperty('Auth');
     });
   });
 

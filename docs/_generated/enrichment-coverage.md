@@ -16,7 +16,7 @@ Gap severity depends on the tier. A gap on an **SDK-backed** type (`sdk-fallback
 - No computed attribute (Ref == physicalId is correct): **15**
 - **Pure-CC latent gaps (unenriched-computed, blocks CI): 0**
 - SDK-fallback gaps (informational, #614 path only): **105**
-- Types with allow-listed (not-a-gap) attributes: **23**
+- Types with allow-listed (not-a-gap) attributes: **24**
 
 ## Pure-CC latent gaps
 
@@ -49,7 +49,7 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::CloudFront::Distribution` | `DomainName` |
 | `AWS::CloudTrail::Trail` | `Arn`, `SnsTopicArn` |
 | `AWS::CloudWatch::Alarm` | `Arn` |
-| `AWS::CodeBuild::Project` | `Arn`, `Id` |
+| `AWS::CodeBuild::Project` | `Arn` |
 | `AWS::CodeCommit::Repository` | `Arn`, `CloneUrlHttp`, `CloneUrlSsh`, `Name` |
 | `AWS::Cognito::UserPool` | `Arn`, `ProviderName`, `ProviderURL`, `UserPoolId` |
 | `AWS::DLM::LifecyclePolicy` | `Arn` |
@@ -169,7 +169,7 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::CloudTrail::Trail` | yes | sdk-fallback-gap | `Arn` (GAP), `SnsTopicArn` (GAP) |
 | `AWS::CloudWatch::Alarm` | yes | sdk-fallback-gap | `Arn` (GAP) |
 | `AWS::CloudWatch::AnomalyDetector` | yes | enriched | `Id` (allow) |
-| `AWS::CodeBuild::Project` | yes | sdk-fallback-gap | `Arn` (GAP), `Id` (GAP) |
+| `AWS::CodeBuild::Project` | yes | sdk-fallback-gap | `Arn` (GAP), `Id` (allow) |
 | `AWS::CodeCommit::Repository` | yes | sdk-fallback-gap | `Arn` (GAP), `CloneUrlHttp` (GAP), `CloneUrlSsh` (GAP), `Id` (allow), `Name` (GAP) |
 | `AWS::Cognito::UserPool` | yes | sdk-fallback-gap | `Arn` (GAP), `ProviderName` (GAP), `ProviderURL` (GAP), `UserPoolId` (GAP) |
 | `AWS::DLM::LifecyclePolicy` | yes | sdk-fallback-gap | `Arn` (GAP), `Id` (allow) |

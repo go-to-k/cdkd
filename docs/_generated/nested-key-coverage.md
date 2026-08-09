@@ -7,14 +7,14 @@ For every SDK provider that forwards a nested CFn config blob, diffs the blob's 
 
 ## Summary
 
-- Audited targets: **9**
-- Nested CFn keys audited: **316**
-- Same spelling in SDK model: **300**
-- Explicitly handled in provider: **13**
-- Allow-listed pass-throughs (does NOT block CI): **3**
+- Audited targets: **10**
+- Nested CFn keys audited: **373**
+- Same spelling in SDK model: **355**
+- Explicitly handled in provider: **14**
+- Allow-listed pass-throughs (does NOT block CI): **4**
 - **Case divergences (blocks CI): 0**
 - **No SDK member (blocks CI): 0**
-- Shape pass — bare-array pairs clean: **62**
+- Shape pass — bare-array pairs clean: **74**
 - Shape pass — explicitly handled in provider: **17**
 - Shape pass — allow-listed (does NOT block CI): **1**
 - **Array-vs-wrapper divergences (blocks CI): 0**
@@ -32,6 +32,7 @@ None. Every audited nested CFn key either matches an SDK member spelling or is e
 | `AWS::CloudFront::Distribution` | `CNAMEs` | Legacy pre-2012 DistributionConfig member (alias of Aliases); the modern CreateDistribution/UpdateDistribution API has no equivalent member and CDK never synthesizes it. |
 | `AWS::CloudFront::Distribution` | `CustomOrigin` | Legacy pre-2012 single-origin form (LegacyCustomOrigin definition); superseded by Origins[] and absent from the modern API. CDK never synthesizes it. |
 | `AWS::CloudFront::Distribution` | `DNSName` | Member of the legacy CustomOrigin / S3Origin blocks only (LegacyCustomOrigin / LegacyS3Origin definitions); unreachable from a modern template. |
+| `AWS::CodeBuild::Project` | `HostKernel` | Declared in the CFn registry schema but has NO member anywhere in the installed @aws-sdk/client-codebuild dist-types tree, so there is nothing to map it onto until an SDK bump adds one (issue #1386). Naming it in the provider would be a false claim of support. Remove this entry once the SDK ships the member, at which point the key becomes genuinely mappable. |
 | `AWS::CloudFront::Distribution` | `S3Origin` | Legacy pre-2012 single-origin form (LegacyS3Origin definition), sibling of CustomOrigin; superseded by Origins[]. Invisible to the KEY pass because the StreamingDistribution API still has a same-spelled S3Origin member — the definition pass (issue #1378) is what catches it. |
 
 ## Per-provider handled keys
@@ -47,6 +48,7 @@ Keys with no same-spelling SDK member that the provider explicitly names (conver
 | `AWS::CloudFront::Distribution` | `OriginSSLProtocols` |
 | `AWS::CloudFront::Distribution` | `SslSupportMethod` |
 | `AWS::CloudWatch::AnomalyDetector` | `MetricTimeZone` |
+| `AWS::CodeBuild::Project` | `BuildSpec` |
 | `AWS::ECS::TaskDefinition` | `EFSVolumeConfiguration` |
 | `AWS::ECS::TaskDefinition` | `FSxWindowsFileServerVolumeConfiguration` |
 | `AWS::ECS::TaskDefinition` | `FilesystemId` |
@@ -95,6 +97,7 @@ CFn members whose SHAPE diverges from the same-spelled SDK member (bare array vs
 | `AWS::ApiGatewayV2::Stage` | `apigatewayv2-provider.ts` | `@aws-sdk/client-apigatewayv2` | exact | 5 | 0 |
 | `AWS::CloudFront::Distribution` | `cloudfront-distribution-provider.ts` | `@aws-sdk/client-cloudfront` | exact | 121 | 4 |
 | `AWS::CloudWatch::AnomalyDetector` | `cloudwatch-anomaly-detector-provider.ts` | `@aws-sdk/client-cloudwatch` | exact | 21 | 1 |
+| `AWS::CodeBuild::Project` | `codebuild-provider.ts` | `@aws-sdk/client-codebuild` | lower-first | 57 | 4 |
 | `AWS::ECS::Service` | `ecs-provider.ts` | `@aws-sdk/client-ecs` | lower-first | 48 | 4 |
 | `AWS::ECS::TaskDefinition` | `ecs-provider.ts` | `@aws-sdk/client-ecs` | lower-first | 113 | 3 |
 

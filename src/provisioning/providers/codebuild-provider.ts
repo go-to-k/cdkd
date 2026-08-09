@@ -16,6 +16,9 @@ import {
   type CacheMode,
   type ImagePullCredentialsType,
   type SourceAuthType,
+  type ProjectSource,
+  type CreateProjectCommandInput,
+  type BatchReportModeType,
 } from '@aws-sdk/client-codebuild';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
@@ -80,7 +83,16 @@ export class CodeBuildProvider implements ResourceProvider {
     return this.client;
   }
 
-  private mapSource(source: Record<string, unknown> | undefined) {
+  /**
+   * Return type is DECLARED on purpose. `new CreateProjectCommand(input)` takes
+   * a variable, so TypeScript's excess-property check never runs there and a
+   * misspelled SDK member (`gitSubModulesConfig`) would compile, be dropped by
+   * the serializer, and still pass every unit test — the tests read back the
+   * same key the mapper wrote, so they are tautological on spelling. A fresh
+   * object literal returned against a declared type IS excess-property checked,
+   * which turns each member name into a compile-time fact (issue #1386).
+   */
+  private mapSource(source: Record<string, unknown> | undefined): ProjectSource {
     if (!source) {
       return { type: 'NO_SOURCE' as SourceType };
     }
@@ -147,7 +159,11 @@ export class CodeBuildProvider implements ResourceProvider {
     };
   }
 
-  private mapProperties(logicalId: string, properties: Record<string, unknown>) {
+  /** Declared return type for the same excess-property reason as {@link mapSource}. */
+  private mapProperties(
+    logicalId: string,
+    properties: Record<string, unknown>
+  ): CreateProjectCommandInput {
     const name = (properties['Name'] as string | undefined) ?? logicalId;
     const source = properties['Source'] as Record<string, unknown> | undefined;
     const environment = properties['Environment'] as Record<string, unknown> | undefined;
@@ -288,6 +304,11 @@ export class CodeBuildProvider implements ResourceProvider {
         serviceRole: cfnBuildBatchConfig['ServiceRole'] as string | undefined,
         combineArtifacts: cfnBuildBatchConfig['CombineArtifacts'] as boolean | undefined,
         timeoutInMins: cfnBuildBatchConfig['TimeoutInMins'] as number | undefined,
+        // Fifth member of the CFn `ProjectBuildBatchConfig` definition. It was
+        // the one sub-key this file still dropped after the #1386 sweep, and
+        // `readCurrentState` already reads it back — so the asymmetry sat in
+        // this same file. Found by review, not by the sweep.
+        batchReportMode: cfnBuildBatchConfig['BatchReportMode'] as BatchReportModeType | undefined,
         restrictions: restrictions
           ? {
               maximumBuildsAllowed: restrictions['MaximumBuildsAllowed'] as number | undefined,
@@ -832,6 +853,19 @@ export class CodeBuildProvider implements ResourceProvider {
     result['Tags'] = tags;
 
     return result;
+  }
+
+  getDriftUnknownPaths(): string[] {
+    return [
+      // `readCurrentState` deliberately does NOT reverse-map `Source.Auth`:
+      // BatchGetProjects echoes the source-credential block back only
+      // partially, so emitting a partial shape would fire phantom drift on
+      // every project that sets it (issue #1386). Declaring it here is the
+      // repo's mechanism for "state key the provider can never read back" —
+      // without it, a baseline that falls back to `properties` (an imported
+      // project, or a failed observed capture) reports permanent drift on it.
+      'Source.Auth',
+    ];
   }
 
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {

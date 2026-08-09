@@ -6,7 +6,7 @@
     "noComputedAttr": 15,
     "unenrichedGap": 0,
     "sdkFallbackGap": 105,
-    "allowListedTypes": 23
+    "allowListedTypes": 24
   },
   "types": [
     {
@@ -761,12 +761,12 @@
         },
         {
           "name": "Id",
-          "status": "gap"
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         }
       ],
       "gaps": [
-        "Arn",
-        "Id"
+        "Arn"
       ]
     },
     {

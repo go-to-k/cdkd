@@ -191,6 +191,8 @@ assert_subkey '.source.buildStatusConfig.targetUrl' 'https://example.com/cdkd-in
   'Source.BuildStatusConfig.TargetUrl'
 assert_subkey '.cache.cacheNamespace' 'cdkd-integ-namespace' \
   'Cache.CacheNamespace'
+assert_subkey '.source.sourceIdentifier' 'primary' \
+  'Source.SourceIdentifier (primary source)'
 
 echo "    OK: every issue #1386 nested sub-key reached AWS"
 
