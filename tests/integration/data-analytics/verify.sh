@@ -8,8 +8,15 @@
 # was a silent-drop before the #609 backfill. OpenTableFormatInput is a
 # create-time directive that GetTable does NOT echo back as an
 # OpenTableFormatInput field; an Iceberg table surfaces via
-# `Table.Parameters.table_type == 'ICEBERG'`, which is what we assert. Also
-# asserts the destroy path cleans up.
+# `Table.Parameters.table_type == 'ICEBERG'`, which is what we assert.
+#
+# Since issue #1408 it ALSO asserts `Table.Parameters.metadata_location` is an
+# s3:// URI, i.e. that `MetadataOperation: CREATE` made Glue write real Iceberg
+# metadata rather than merely tagging the catalog entry. See the comment at
+# that assertion for why the `IcebergTableInput` coverage #1408 originally asked
+# for is unreachable (CloudFormation itself cannot deploy that shape).
+#
+# Also asserts the destroy path cleans up.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -153,6 +160,40 @@ if [ "${TABLE_TYPE_UPPER}" != "ICEBERG" ]; then
   exit 1
 fi
 echo "    OK: Table.Parameters.table_type == ICEBERG on AWS (OpenTableFormatInput silent-drop CLOSED by #609)"
+
+# --- Assertion: Glue actually WROTE Iceberg metadata to S3 ------------
+# `table_type == ICEBERG` alone only proves the parameter was tagged onto the
+# table. `MetadataOperation: CREATE` is supposed to make Glue write a real
+# Iceberg metadata file under the StorageDescriptor location and record its
+# key in `Parameters.metadata_location`; a table tagged ICEBERG with an EMPTY
+# metadata_location would be a catalog entry no Iceberg reader can open.
+#
+# This is the achievable half of issue #1408. That issue asked for a fixture
+# asserting a column that exists ONLY in `IcebergInput.IcebergTableInput`, and
+# its live probe (2026-08-09, 5 raw glue:CreateTable shapes + 5 CloudFormation
+# stacks) proved that unreachable: CloudFormation itself cannot deploy
+# `IcebergTableInput` in ANY shape, every one failing with "Table metadata is
+# expected only via TableInput or via IcebergTableInputProperties inside
+# OpenTableFormatInput" — a third spelling present in neither the CFn registry
+# schema (`IcebergTableInput`) nor `@aws-sdk/client-glue`
+# (`CreateIcebergTableInput`). cdkd's compatibility target is CloudFormation,
+# so there is nothing to be compatible WITH there. What a CDK user can actually
+# deploy today is this shape, and this assertion is what pins it.
+METADATA_LOCATION=$(aws glue get-table \
+  --database-name "${DB_NAME}" --name "${TABLE_NAME}" --region "${REGION}" \
+  --query 'Table.Parameters.metadata_location' --output text)
+
+case "${METADATA_LOCATION}" in
+  s3://*)
+    ;;
+  *)
+    echo "FAIL: Table.Parameters.metadata_location is '${METADATA_LOCATION}', expected an s3:// URI (MetadataOperation: CREATE did not write Iceberg metadata)" >&2
+    aws glue get-table --database-name "${DB_NAME}" --name "${TABLE_NAME}" --region "${REGION}" \
+      --query 'Table.Parameters' --output json 2>/dev/null || true
+    exit 1
+    ;;
+esac
+echo "    OK: Table.Parameters.metadata_location == ${METADATA_LOCATION} (Glue wrote real Iceberg metadata)"
 
 # --- Phase 2: destroy -------------------------------------------------
 echo "==> Phase 2: destroy"
