@@ -1,3 +1,10 @@
+## [0.278.11](https://github.com/go-to-k/cdkd/compare/v0.278.10...v0.278.11) (2026-08-09)
+
+
+### Bug Fixes
+
+* **skill:** regenerate every CI-guarded artifact via one aggregate task ([#1418](https://github.com/go-to-k/cdkd/issues/1418)) ([6e14ca6](https://github.com/go-to-k/cdkd/commit/6e14ca6d0051f239c73f14b40e568fa281b3bb00))
+
 ## [0.278.10](https://github.com/go-to-k/cdkd/compare/v0.278.9...v0.278.10) (2026-08-09)
 
 
