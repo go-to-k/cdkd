@@ -1,3 +1,10 @@
+## [0.278.10](https://github.com/go-to-k/cdkd/compare/v0.278.9...v0.278.10) (2026-08-09)
+
+
+### Bug Fixes
+
+* **emr:** send both fleet capacities on ModifyInstanceFleet, and add the fleet integ ([#1416](https://github.com/go-to-k/cdkd/issues/1416)) ([f845375](https://github.com/go-to-k/cdkd/commit/f845375a270fe31e446c3f09c9a1b3626e2c450a))
+
 ## [0.278.9](https://github.com/go-to-k/cdkd/compare/v0.278.8...v0.278.9) (2026-08-09)
 
 
