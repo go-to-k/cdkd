@@ -435,6 +435,34 @@ if [ "${OD_WRITE}" != "None" ] || [ "${OD_READ}" != "50" ]; then
 fi
 echo "    per-GSI write limit reset (absent) and read limit kept at 50, issue #1423 closed"
 
+echo "[verify] step 13c: cdkd deploy with drop-table-ondemand-limit (issue #1434 — the TABLE-level sibling of #1423)"
+# BEFORE/AFTER, not just after: step 13b dropped only the per-GSI limit, so the
+# TABLE-level ceiling must still be live here. Asserting that first is what
+# stops the post-drop absence check from passing vacuously (it would also read
+# "None" if the ceiling had never reached AWS in the first place).
+TBL_WRITE_BEFORE="$(aws dynamodb describe-table --table-name "${GSI_OD_TABLE}" --region "${REGION}" \
+  --query 'Table.OnDemandThroughput.MaxWriteRequestUnits' --output text)"
+if [ "${TBL_WRITE_BEFORE}" != "200" ]; then
+  echo "FAIL: issue #1434 precondition — expected table-level write ceiling 200 before the drop, got ${TBL_WRITE_BEFORE}" >&2
+  exit 1
+fi
+
+CDKD_TEST_UPDATE=ttl,tags,drop-gsi-ondemand-limits,drop-table-ondemand-limit ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose
+
+# Pre-fix the template removal emitted no UpdateTable at all, so the 200 write
+# ceiling stayed live in AWS forever while cdkd reported success. The reset
+# surfaces as ABSENCE, never as -1 (live-probed on #1434).
+TBL_WRITE_AFTER="$(aws dynamodb describe-table --table-name "${GSI_OD_TABLE}" --region "${REGION}" \
+  --query 'Table.OnDemandThroughput.MaxWriteRequestUnits' --output text)"
+if [ "${TBL_WRITE_AFTER}" != "None" ]; then
+  echo "FAIL: issue #1434 — expected the table-level write ceiling to reset to absent, got ${TBL_WRITE_AFTER}" >&2
+  exit 1
+fi
+# Deliberately NOT asserted: the table-level READ ceiling. The canonical
+# `Billing.onDemand({maxReadRequestUnits})` is never wired by cdkd at all
+# (issue #1436), so pinning it here would encode that gap as expected behavior.
+echo "    table-level write ceiling reset (absent), issue #1434 closed"
+
 echo "[verify] step 14a: assert DeletionProtectionEnabled flipped back to false on AWS"
 DP_FINAL="$(aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" \
   --query 'Table.DeletionProtectionEnabled' --output text)"
