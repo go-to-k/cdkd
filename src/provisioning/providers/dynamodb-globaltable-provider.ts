@@ -1298,7 +1298,46 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         // a flip to on-demand — the same silent-drop class #1387 exists to close.
         const billingFlipped = oldBilling !== newBilling;
         const update: UpdateGlobalSecondaryIndexAction = { IndexName: gsi.IndexName };
-        if (gsi.OnDemandThroughput) update.OnDemandThroughput = gsi.OnDemandThroughput;
+        // On-demand limits: MERGE the desired side with an explicit reset for
+        // every member the template DROPPED. Omitting a removed member leaves
+        // the old ceiling live in AWS forever while cdkd reports success — the
+        // absent-field-reset silent-drop class (#1160), one level down inside a
+        // nested block (#1225). CloudFormation resets it.
+        //
+        // Merging rather than branching is load-bearing: the read limit comes
+        // from `Replicas[local].GlobalSecondaryIndexes[].ReadOnDemandThroughput-
+        // Settings` and the write limit from `GSI.WriteOnDemandThroughputSettings`
+        // — two INDEPENDENT CDK props. An `else if` that only fired when the new
+        // side had no on-demand block at all would still silently drop the
+        // single-member removal, which is the likelier user edit.
+        //
+        // `-1` is the reset sentinel, LIVE-VERIFIED rather than inferred from
+        // the table-level field's docs (issue #1423). Both payload shapes were
+        // probed against real AWS: `{-1, -1}` cleared both members, and the
+        // MIXED `{MaxReadRequestUnits: 50, MaxWriteRequestUnits: -1}` was
+        // accepted and read back as `{MaxReadRequestUnits: 50}` — the dropped
+        // member cleared, the kept one preserved. In both cases the reset reads
+        // back as ABSENCE, never as -1, so drift comparisons must expect that.
+        //
+        // Skipped on a billing flip, where "no on-demand fields" is just the
+        // translation of a PROVISIONED side rather than a template removal.
+        const previousOnDemand = previousSdkByName.get(gsi.IndexName)?.OnDemandThroughput;
+        const onDemand: OnDemandThroughput = { ...gsi.OnDemandThroughput };
+        if (!billingFlipped && previousOnDemand) {
+          if (
+            previousOnDemand.MaxReadRequestUnits !== undefined &&
+            onDemand.MaxReadRequestUnits === undefined
+          ) {
+            onDemand.MaxReadRequestUnits = ON_DEMAND_LIMIT_RESET;
+          }
+          if (
+            previousOnDemand.MaxWriteRequestUnits !== undefined &&
+            onDemand.MaxWriteRequestUnits === undefined
+          ) {
+            onDemand.MaxWriteRequestUnits = ON_DEMAND_LIMIT_RESET;
+          }
+        }
+        if (Object.keys(onDemand).length > 0) update.OnDemandThroughput = onDemand;
         // Provisioned capacity on a flip is step 4's job, so only a real
         // same-billing-mode edit sends it from here.
         if (!billingFlipped && gsi.ProvisionedThroughput) {
@@ -2786,6 +2825,16 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
     ? (value as Record<string, unknown>)
     : undefined;
 }
+
+/**
+ * The sentinel DynamoDB accepts to CLEAR a per-GSI on-demand request-unit
+ * ceiling (issue #1423). Live-verified against real AWS: `UpdateTable` with
+ * `GlobalSecondaryIndexUpdates[].Update.OnDemandThroughput = {-1, -1}` is
+ * accepted, and the member reads back ABSENT from `DescribeTable` afterwards —
+ * so it is genuinely reset to unlimited rather than stored as -1. Any drift /
+ * read-back comparison must therefore expect ABSENCE, not this value.
+ */
+const ON_DEMAND_LIMIT_RESET = -1;
 
 /** Coerce a CFn numeric (CFn is stringly-typed) to a finite number. */
 function toFiniteNumber(value: unknown): number | undefined {

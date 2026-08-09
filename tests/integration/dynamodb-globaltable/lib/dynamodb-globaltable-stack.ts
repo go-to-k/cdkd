@@ -204,8 +204,17 @@ export class DynamoDBGlobalTableStack extends cdk.Stack {
           partitionKey: { name: 'owner', type: ddb.AttributeType.STRING },
           // -> Replicas[local].GlobalSecondaryIndexes[].ReadOnDemandThroughputSettings
           maxReadRequestUnits: 50,
+          // Issue #1423: REMOVING this from the template must RESET the live
+          // ceiling, not silently no-op. `drop-gsi-ondemand-limits` drops ONLY
+          // the write limit and keeps the read one, which is the harder case:
+          // the two are independent CDK props, so a fix that only reset when
+          // the whole on-demand block disappeared would still drop this edit.
+          // verify.sh asserts the write member is ABSENT while read is still
+          // 50 (the reset reads back as absence, never as -1).
           // -> GlobalSecondaryIndexes[].WriteOnDemandThroughputSettings
-          maxWriteRequestUnits: 60,
+          ...(updateMode.includes('drop-gsi-ondemand-limits')
+            ? {}
+            : { maxWriteRequestUnits: 60 }),
         },
       ],
       removalPolicy: cdk.RemovalPolicy.DESTROY,
