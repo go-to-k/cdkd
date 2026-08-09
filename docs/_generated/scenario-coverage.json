@@ -877,6 +877,11 @@
       "scenarios": []
     },
     {
+      "name": "emr-instance-fleets",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
       "name": "event-driven",
       "annotated": true,
       "scenarios": []

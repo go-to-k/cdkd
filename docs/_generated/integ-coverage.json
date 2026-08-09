@@ -1037,6 +1037,7 @@
         "elasticache-replicationgroup-getatt",
         "emr-cluster",
         "emr-instance-configs",
+        "emr-instance-fleets",
         "fsx-lustre",
         "fsx-ontap",
         "fsx-openzfs",
@@ -1122,6 +1123,9 @@
           "l2"
         ],
         "emr-instance-configs": [
+          "l2"
+        ],
+        "emr-instance-fleets": [
           "l2"
         ],
         "fsx-lustre": [
@@ -1209,6 +1213,7 @@
         "elasticache-replicationgroup-getatt",
         "emr-cluster",
         "emr-instance-configs",
+        "emr-instance-fleets",
         "fsx-lustre",
         "fsx-ontap",
         "fsx-openzfs",
@@ -1294,6 +1299,9 @@
           "l2"
         ],
         "emr-instance-configs": [
+          "l2"
+        ],
+        "emr-instance-fleets": [
           "l2"
         ],
         "fsx-lustre": [
@@ -1403,6 +1411,7 @@
         "elasticache-replicationgroup-getatt",
         "emr-cluster",
         "emr-instance-configs",
+        "emr-instance-fleets",
         "fsx-lustre",
         "fsx-ontap",
         "fsx-openzfs",
@@ -1488,6 +1497,9 @@
           "l2"
         ],
         "emr-instance-configs": [
+          "l2"
+        ],
+        "emr-instance-fleets": [
           "l2"
         ],
         "fsx-lustre": [
@@ -1575,6 +1587,7 @@
         "elasticache-replicationgroup-getatt",
         "emr-cluster",
         "emr-instance-configs",
+        "emr-instance-fleets",
         "fsx-lustre",
         "fsx-ontap",
         "fsx-openzfs",
@@ -1662,6 +1675,9 @@
         "emr-instance-configs": [
           "l2"
         ],
+        "emr-instance-fleets": [
+          "l2"
+        ],
         "fsx-lustre": [
           "l2"
         ],
@@ -1742,6 +1758,7 @@
         "elasticache-replicationgroup-getatt",
         "emr-cluster",
         "emr-instance-configs",
+        "emr-instance-fleets",
         "fsx-lustre",
         "local-start-alb-from-state",
         "multi-stack-deps",
@@ -1808,6 +1825,10 @@
           "literal"
         ],
         "emr-instance-configs": [
+          "l2",
+          "literal"
+        ],
+        "emr-instance-fleets": [
           "l2",
           "literal"
         ],
@@ -1898,6 +1919,7 @@
         "elasticache-replicationgroup-getatt",
         "emr-cluster",
         "emr-instance-configs",
+        "emr-instance-fleets",
         "fsx-lustre",
         "fsx-ontap",
         "fsx-openzfs",
@@ -1983,6 +2005,9 @@
           "l2"
         ],
         "emr-instance-configs": [
+          "l2"
+        ],
+        "emr-instance-fleets": [
           "l2"
         ],
         "fsx-lustre": [
@@ -2081,6 +2106,7 @@
         "elasticache-replicationgroup-getatt",
         "emr-cluster",
         "emr-instance-configs",
+        "emr-instance-fleets",
         "fsx-lustre",
         "fsx-ontap",
         "fsx-openzfs",
@@ -2168,6 +2194,9 @@
         "emr-instance-configs": [
           "l2"
         ],
+        "emr-instance-fleets": [
+          "l2"
+        ],
         "fsx-lustre": [
           "l2"
         ],
@@ -2253,6 +2282,7 @@
         "elasticache-replicationgroup-getatt",
         "emr-cluster",
         "emr-instance-configs",
+        "emr-instance-fleets",
         "fsx-lustre",
         "fsx-ontap",
         "fsx-openzfs",
@@ -2341,6 +2371,10 @@
           "literal"
         ],
         "emr-instance-configs": [
+          "l2",
+          "literal"
+        ],
+        "emr-instance-fleets": [
           "l2",
           "literal"
         ],
@@ -2436,6 +2470,7 @@
         "elasticache-replicationgroup-getatt",
         "emr-cluster",
         "emr-instance-configs",
+        "emr-instance-fleets",
         "fsx-lustre",
         "fsx-ontap",
         "fsx-openzfs",
@@ -2521,6 +2556,9 @@
           "l2"
         ],
         "emr-instance-configs": [
+          "l2"
+        ],
+        "emr-instance-fleets": [
           "l2"
         ],
         "fsx-lustre": [
@@ -2843,13 +2881,28 @@
       "resourceType": "AWS::EMR::Cluster",
       "integs": [
         "emr-cluster",
-        "emr-instance-configs"
+        "emr-instance-configs",
+        "emr-instance-fleets"
       ],
       "signals": {
         "emr-cluster": [
           "literal"
         ],
         "emr-instance-configs": [
+          "literal"
+        ],
+        "emr-instance-fleets": [
+          "literal"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::EMR::InstanceFleetConfig",
+      "integs": [
+        "emr-instance-fleets"
+      ],
+      "signals": {
+        "emr-instance-fleets": [
           "literal"
         ]
       }
@@ -3177,6 +3230,7 @@
         "ec2-instance-fanout",
         "emr-cluster",
         "emr-instance-configs",
+        "emr-instance-fleets",
         "propagation-races-2",
         "remove-protection"
       ],
@@ -3189,6 +3243,10 @@
           "literal"
         ],
         "emr-instance-configs": [
+          "l1",
+          "literal"
+        ],
+        "emr-instance-fleets": [
           "l1",
           "literal"
         ],
@@ -3262,6 +3320,7 @@
         "ec2-instance-fanout",
         "emr-cluster",
         "emr-instance-configs",
+        "emr-instance-fleets",
         "eventbridge",
         "eventbridge-pipes",
         "eventbridge-scheduler",
@@ -3359,6 +3418,10 @@
           "literal"
         ],
         "emr-instance-configs": [
+          "l2",
+          "literal"
+        ],
+        "emr-instance-fleets": [
           "l2",
           "literal"
         ],
@@ -5457,10 +5520,6 @@
   ],
   "orphans": [],
   "allowListed": [
-    {
-      "resourceType": "AWS::EMR::InstanceFleetConfig",
-      "rationale": "A cluster's instance-collection type is fixed at create (instance groups XOR instance fleets), so a single cost-bounded EMR cluster cannot exercise both InstanceGroupConfig and InstanceFleetConfig. The emr-instance-configs integ covers InstanceGroupConfig (the CDK-default group-based case); InstanceFleetConfig is structurally identical (same AddInstanceFleet create-poll / no-standalone-delete / best-effort-scale-to-0-for-TASK design, different API) and is covered by unit tests. Add a fleet-based integ if a real-AWS fleet-specific bug surfaces."
-    },
     {
       "resourceType": "AWS::Glue::Connection",
       "rationale": "drift coverage only; Connection is a passive config object, no real-AWS lifecycle to exercise."

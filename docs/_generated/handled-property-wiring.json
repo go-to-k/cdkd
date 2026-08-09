@@ -9039,7 +9039,7 @@
           ],
           "seededBy": [
             "create",
-            "targetCapacity",
+            "targetCapacities",
             "toInstanceFleetConfig",
             "update"
           ]
@@ -9056,7 +9056,7 @@
           ],
           "seededBy": [
             "create",
-            "targetCapacity",
+            "targetCapacities",
             "toInstanceFleetConfig",
             "update"
           ]

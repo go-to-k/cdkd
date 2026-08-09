@@ -69,6 +69,19 @@ const fleetOf = (state: string, provisionedOnDemand = 2) => ({
   ],
 });
 
+/** Spot-dimension twin of {@link fleetOf}, for a Spot-only fleet's poll. */
+const fleetOfSpot = (state: string, provisionedSpot = 2) => ({
+  InstanceFleets: [
+    {
+      Id: FLEET_ID,
+      InstanceFleetType: 'TASK',
+      ProvisionedOnDemandCapacity: 0,
+      ProvisionedSpotCapacity: provisionedSpot,
+      Status: { State: state, StateChangeReason: { Message: `state is ${state}` } },
+    },
+  ],
+});
+
 function callsOf(commandClass: abstract new (...args: never[]) => object): Array<{
   input: Record<string, unknown>;
 }> {
@@ -273,6 +286,93 @@ describe('EMRInstanceFleetConfigProvider update', () => {
       TargetOnDemandCapacity: 5,
       TargetSpotCapacity: 0,
     });
+  });
+
+  // Regression (issue #1400, found by the emr-instance-fleets integ): AWS
+  // rejects ModifyInstanceFleet unless BOTH capacities are present —
+  //   "The instance fleet (if-...) should have both targetOnDemandCapacity
+  //    and targetSpotCapacity specified."
+  // — while AddInstanceFleet happily defaults the absent one to 0. The
+  // ordinary CDK template declares only ONE (an On-Demand-only or Spot-only
+  // fleet), the SDK v3 serializer omits `undefined` members, and so EVERY
+  // resize of such a fleet failed. Note the other tests in this file pass a
+  // BASE_PROPS that already carries both keys — which is precisely why the
+  // unit suite agreed with the bug; this test uses the REAL one-sided shape.
+  it.each([
+    ['On-Demand-only fleet', 'TargetOnDemandCapacity', 'TargetSpotCapacity'] as const,
+    ['Spot-only fleet', 'TargetSpotCapacity', 'TargetOnDemandCapacity'] as const,
+  ])('sends both capacities on a %s, defaulting the undeclared side to 0', async (
+    _label,
+    declared,
+    omitted,
+  ) => {
+    // The settled poll must report the resize in the SAME dimension the
+    // template declares, otherwise the per-dimension wait legitimately never
+    // settles (which is what this mock proved when it only ever set On-Demand).
+    const settledFleet =
+      declared === 'TargetOnDemandCapacity'
+        ? fleetOf('RUNNING', 5)
+        : fleetOfSpot('RUNNING', 5);
+    routeSend({
+      ModifyInstanceFleetCommand: {},
+      ListInstanceFleetsCommand: [settledFleet],
+    });
+
+    // The real CDK shape: ONLY the declared capacity is present.
+    const prev = {
+      ClusterId: CLUSTER_ID,
+      InstanceFleetType: 'TASK',
+      Name: 'task-fleet',
+      [declared]: 1,
+      InstanceTypeConfigs: [{ InstanceType: 'm5.xlarge', WeightedCapacity: 1 }],
+    };
+    const next = { ...prev, [declared]: 5 };
+
+    await newProvider().update('Fleet', FLEET_ID, RESOURCE_TYPE, next, prev);
+
+    const modify = callsOf(ModifyInstanceFleetCommand);
+    expect(modify).toHaveLength(1);
+    // The undeclared side must carry a real 0, not `undefined`. An
+    // `Object.keys(...)` presence check would NOT pin this: the object literal
+    // always sets both keys, so pre-fix it holds `undefined` and the key is
+    // still "present" — the key only disappears later, in the SDK serializer.
+    // `toBe(0)` is the assertion that actually fails without the fix.
+    const sent = modify[0]!.input.InstanceFleet as Record<string, unknown>;
+    expect(sent[declared]).toBe(5);
+    expect(sent[omitted]).toBe(0);
+    expect(sent[omitted]).not.toBeUndefined();
+  });
+
+  // Regression: swapping capacity BETWEEN dimensions at a constant total.
+  // A summed comparison reads newTarget === prevTarget === 2, calls that
+  // scale-UP, and the stale pre-resize sum (still 2) satisfies it on the FIRST
+  // poll — deploy reports success while EMR is still swapping. Only reachable
+  // since update() started sending both members, so it ships with that fix.
+  it('does not settle on the first poll when capacity is swapped between dimensions', async () => {
+    const stale = {
+      InstanceFleets: [
+        {
+          Id: FLEET_ID,
+          InstanceFleetType: 'TASK',
+          ProvisionedOnDemandCapacity: 0,
+          ProvisionedSpotCapacity: 2,
+          Status: { State: 'RUNNING', StateChangeReason: { Message: 'pre-resize' } },
+        },
+      ],
+    };
+    routeSend({
+      ModifyInstanceFleetCommand: {},
+      // Stale pre-resize reading first, then the settled swap.
+      ListInstanceFleetsCommand: [stale, stale, fleetOf('RUNNING', 2)],
+    });
+
+    const prev = { ...BASE_PROPS, TargetOnDemandCapacity: 0, TargetSpotCapacity: 2 };
+    const next = { ...BASE_PROPS, TargetOnDemandCapacity: 2, TargetSpotCapacity: 0 };
+
+    await newProvider().update('Fleet', FLEET_ID, RESOURCE_TYPE, next, prev);
+
+    // Had the check been summed, one poll would have sufficed.
+    expect(callsOf(ListInstanceFleetsCommand).length).toBeGreaterThan(1);
   });
 
   it('keeps waiting through the stale pre-resize RUNNING state until provisioned meets the new target', async () => {

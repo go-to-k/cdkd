@@ -456,9 +456,16 @@ describe('integ fixture aws invocations (#1402)', () => {
   it('does not flag the fixtures that DISCUSS the removed command in comments', () => {
     const discussing = readdirSync(INTEG_ROOT, { withFileTypes: true })
       .filter((e) => e.isDirectory() && existsSync(join(INTEG_ROOT, e.name, 'verify.sh')))
+      // Must be the FULL invocation, not a bare mention of the verb name. The
+      // `emr-instance-fleets` fixture names `` `list-instance-groups` `` in prose
+      // ("...it is only its `list-instance-groups` sibling that is unusable")
+      // with no `aws emr` prefix, so uncommenting that line yields no
+      // invocation and the positive control below cannot fire. Matching the
+      // whole invocation keeps this fence about the case it exists for: a
+      // comment that spells out the banned COMMAND.
       .filter((e) =>
         readFileSync(join(INTEG_ROOT, e.name, 'verify.sh'), 'utf8').includes(
-          'list-instance-groups'
+          'aws emr list-instance-groups'
         )
       )
       .map((e) => e.name);
@@ -479,7 +486,7 @@ describe('integ fixture aws invocations (#1402)', () => {
       const uncommented = content
         .split('\n')
         .map((l) =>
-          l.trimStart().startsWith('#') && l.includes('list-instance-groups')
+          l.trimStart().startsWith('#') && l.includes('aws emr list-instance-groups')
             ? l.replace(/^(\s*)#\s?/, '$1')
             : l
         )
