@@ -19,6 +19,9 @@ import {
   type GlobalSecondaryIndex,
   type GlobalSecondaryIndexUpdate,
   type LocalSecondaryIndex,
+  type OnDemandThroughput,
+  type ProvisionedThroughput,
+  type ReplicaGlobalSecondaryIndex,
   type StreamSpecification,
   type Tag,
   type ReplicationGroupUpdate,
@@ -343,10 +346,16 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       } as StreamSpecification;
     }
 
+    // GSIs: the CFn GlobalTable GSI shape models throughput differently
+    // from the SDK's `GlobalSecondaryIndex` (Issue #1387) — translate
+    // rather than cast. Pre-fix a PROVISIONED GlobalTable with a GSI
+    // failed `CreateTable` outright (AWS requires per-GSI
+    // `ProvisionedThroughput`) and per-GSI on-demand limits were dropped.
     if (properties['GlobalSecondaryIndexes']) {
-      createParams.GlobalSecondaryIndexes = properties[
-        'GlobalSecondaryIndexes'
-      ] as GlobalSecondaryIndex[];
+      const sdkIndexes = toSdkGlobalSecondaryIndexes(properties, currentRegion, billingMode);
+      if (sdkIndexes.length > 0) {
+        createParams.GlobalSecondaryIndexes = sdkIndexes;
+      }
     }
     if (properties['LocalSecondaryIndexes']) {
       createParams.LocalSecondaryIndexes = properties[
@@ -565,6 +574,20 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
    * `DescribeTable` until the replica's `ReplicaStatus` flips to ACTIVE.
    * Capped at 10 minutes per replica (AWS Replica provisioning typically
    * takes 1–5 min).
+   *
+   * DELIBERATELY UNMAPPED replica sub-keys (Issue #1387 — recorded rather
+   * than silently dropped; `CreateReplicationGroupMemberAction` simply has
+   * no member for them, so they need their own follow-up API calls):
+   *  - `ReplicaStreamSpecification.ResourcePolicy` — the DynamoDB Streams
+   *    resource policy is set by `PutResourcePolicy` against the replica's
+   *    STREAM ARN, not by any `UpdateTable` field.
+   *  - `ResourcePolicy` — the table-level resource policy, likewise a
+   *    separate `PutResourcePolicy` call.
+   *  - `GlobalSecondaryIndexes[].ContributorInsightsSpecification` — a
+   *    per-index `UpdateContributorInsights` call.
+   * `Replicas` is declared in `handledProperties` at the TOP level, which
+   * is the granularity cdkd's pre-flight property-coverage check works at;
+   * these nested keys are tracked as a known gap, not a supported surface.
    */
   private async addReplica(
     tableName: string,
@@ -578,12 +601,13 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     if (replica['KMSMasterKeyId']) {
       create.KMSMasterKeyId = replica['KMSMasterKeyId'] as string;
     }
-    if (replica['GlobalSecondaryIndexes']) {
-      // Replica-level GSI overrides (per-replica throughput overrides).
-      // AWS-SDK shape: ReplicaGlobalSecondaryIndex[].
-      create.GlobalSecondaryIndexes = replica['GlobalSecondaryIndexes'] as Array<{
-        IndexName: string;
-      }>;
+    // Replica-level GSI overrides. The CFn
+    // `ReplicaGlobalSecondaryIndexSpecification` spells the per-replica read
+    // throughput `Read{Provisioned,OnDemand}ThroughputSettings`, while the SDK
+    // wants `{Provisioned,OnDemand}ThroughputOverride` — translate (Issue #1387).
+    const replicaIndexes = toSdkReplicaGlobalSecondaryIndexes(replica['GlobalSecondaryIndexes']);
+    if (replicaIndexes) {
+      create.GlobalSecondaryIndexes = replicaIndexes;
     }
     if (replica['TableClassOverride']) {
       create.TableClassOverride = replica['TableClassOverride'] as
@@ -847,6 +871,9 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       const oldBilling =
         (previousProperties['BillingMode'] as string | undefined) ?? 'PAY_PER_REQUEST';
       const newBilling = (properties['BillingMode'] as string | undefined) ?? 'PAY_PER_REQUEST';
+      // GSIs whose ProvisionedThroughput was already applied as part of the
+      // BillingMode flip below — step 6 must not re-issue an Update for them.
+      const gsiHandledByBillingFlip = new Set<string>();
       if (oldBilling !== newBilling) {
         const billingUpdate: UpdateTableCommandInput = {
           TableName: physicalId,
@@ -861,6 +888,39 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
             properties,
             currentRegion
           );
+          // AWS requires per-GSI `ProvisionedThroughput` in the SAME
+          // UpdateTable call that flips PAY_PER_REQUEST -> PROVISIONED
+          // (Issue #1387): the throughput-mode change applies to the table
+          // AND every index atomically. `GlobalSecondaryIndexUpdates` is the
+          // one companion field UpdateTable accepts alongside `BillingMode`.
+          const provisionedIndexes = toSdkGlobalSecondaryIndexes(
+            properties,
+            currentRegion,
+            newBilling
+          );
+          // Only indexes that ALREADY exist on AWS can take an `Update`
+          // action; a GSI introduced by this same deploy is created (with
+          // its throughput) by step 6's `added` loop.
+          const existingIndexNames = new Set(
+            ((previousProperties['GlobalSecondaryIndexes'] ?? []) as unknown[])
+              .map((entry) => (entry as Record<string, unknown> | null)?.['IndexName'])
+              .filter((name): name is string => typeof name === 'string')
+          );
+          const indexUpdates: GlobalSecondaryIndexUpdate[] = [];
+          for (const gsi of provisionedIndexes) {
+            if (!gsi.IndexName || !gsi.ProvisionedThroughput) continue;
+            if (!existingIndexNames.has(gsi.IndexName)) continue;
+            indexUpdates.push({
+              Update: {
+                IndexName: gsi.IndexName,
+                ProvisionedThroughput: gsi.ProvisionedThroughput,
+              },
+            });
+            gsiHandledByBillingFlip.add(gsi.IndexName);
+          }
+          if (indexUpdates.length > 0) {
+            billingUpdate.GlobalSecondaryIndexUpdates = indexUpdates;
+          }
         }
         await this.dynamoDBClient.send(new UpdateTableCommand(billingUpdate));
         await this.waitForTableActiveAfterUpdate(physicalId, logicalId);
@@ -1050,10 +1110,13 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         if (replica['KMSMasterKeyId'] !== undefined) {
           updateAction.KMSMasterKeyId = replica['KMSMasterKeyId'] as string;
         }
-        if (replica['GlobalSecondaryIndexes']) {
-          updateAction.GlobalSecondaryIndexes = replica['GlobalSecondaryIndexes'] as Array<{
-            IndexName: string;
-          }>;
+        // Same CFn -> SDK per-replica GSI throughput translation as the
+        // create-side `addReplica` (Issue #1387).
+        const replicaIndexes = toSdkReplicaGlobalSecondaryIndexes(
+          replica['GlobalSecondaryIndexes']
+        );
+        if (replicaIndexes) {
+          updateAction.GlobalSecondaryIndexes = replicaIndexes;
         }
         if (replica['TableClassOverride']) {
           updateAction.TableClassOverride = replica['TableClassOverride'] as
@@ -1090,9 +1153,17 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // 6. GSI diff. New GSI Create may need additional AttributeDefinitions
       // — AWS allows combining `AttributeDefinitions` and one GSI
       // `Create` action in the same UpdateTable call.
+      //
+      // Both sides are translated CFn -> SDK first (Issue #1387) so the diff
+      // is over the shapes actually sent to AWS. That is load-bearing twice
+      // over: the emitted Create / Update actions carry real throughput
+      // (pre-fix they carried none, so a PROVISIONED GSI add was rejected),
+      // and an auto-scaling-only template edit — `MaxCapacity` 20 -> 30,
+      // invisible to DynamoDB's own API — no longer produces a bare
+      // `Update: { IndexName }` that AWS rejects as an empty update.
       const gsiDiff = diffGlobalSecondaryIndexes(
-        (previousProperties['GlobalSecondaryIndexes'] ?? []) as GlobalSecondaryIndex[],
-        (properties['GlobalSecondaryIndexes'] ?? []) as GlobalSecondaryIndex[]
+        toSdkGlobalSecondaryIndexes(previousProperties, currentRegion, oldBilling),
+        toSdkGlobalSecondaryIndexes(properties, currentRegion, newBilling)
       );
       for (const gsi of gsiDiff.removed) {
         if (!gsi.IndexName) continue;
@@ -1131,6 +1202,20 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       }
       for (const gsi of gsiDiff.modified) {
         if (!gsi.IndexName) continue;
+        // Already applied atomically with the BillingMode flip above.
+        if (gsiHandledByBillingFlip.has(gsi.IndexName)) continue;
+        // A GSI whose only change is KeySchema / Projection produces no
+        // throughput fields; AWS rejects an `Update` action with nothing
+        // but an IndexName, so skip and let the (immutable) change surface
+        // as a no-op rather than a confusing ValidationException.
+        if (!gsi.ProvisionedThroughput && !gsi.OnDemandThroughput) {
+          this.logger.warn(
+            `GSI '${gsi.IndexName}' on ${physicalId} changed in a way DynamoDB's ` +
+              `UpdateTable cannot express (KeySchema / Projection are immutable on an ` +
+              `existing index). Recreate the index under a new name to apply the change.`
+          );
+          continue;
+        }
         const gsiUpdate: GlobalSecondaryIndexUpdate = {
           Update: {
             IndexName: gsi.IndexName,
@@ -2560,30 +2645,262 @@ export function derivePerCallProvisionedThroughput(
   properties: Record<string, unknown>,
   region: string
 ): { ReadCapacityUnits: number; WriteCapacityUnits: number } {
-  const wps = properties['WriteProvisionedThroughputSettings'] as
-    | Record<string, unknown>
-    | undefined;
-  const writeAutoScaling = wps?.['WriteCapacityAutoScalingSettings'] as
-    | Record<string, unknown>
-    | undefined;
-  const writeCapacity = Number(
-    wps?.['WriteCapacityUnits'] ?? writeAutoScaling?.['MinCapacity'] ?? 5
-  );
   const replicas = (properties['Replicas'] ?? []) as Array<Record<string, unknown>>;
   const localReplica = replicas.find((r) => r['Region'] === region);
-  const localReadSettings = localReplica?.['ReadProvisionedThroughputSettings'] as
-    | Record<string, unknown>
-    | undefined;
-  const readAutoScaling = localReadSettings?.['ReadCapacityAutoScalingSettings'] as
-    | Record<string, unknown>
-    | undefined;
-  const readCapacity = Number(
-    localReadSettings?.['ReadCapacityUnits'] ?? readAutoScaling?.['MinCapacity'] ?? 5
-  );
   return {
-    ReadCapacityUnits: readCapacity,
-    WriteCapacityUnits: writeCapacity,
+    // Read capacity is per-replica on a GlobalTable; the deploy region's
+    // replica is the one `CreateTable` / `UpdateTable` provisions. (The
+    // schema also has a TOP-LEVEL `ReadProvisionedThroughputSettings`, but
+    // cdkd's pre-flight property-coverage check rejects that spelling as
+    // unsupported, so it can never reach here — do not read it.)
+    ReadCapacityUnits:
+      deriveReadCapacityUnits(asRecord(localReplica?.['ReadProvisionedThroughputSettings'])) ??
+      DEFAULT_CAPACITY_UNITS,
+    WriteCapacityUnits:
+      deriveWriteCapacityUnits(asRecord(properties['WriteProvisionedThroughputSettings'])) ??
+      DEFAULT_CAPACITY_UNITS,
   };
+}
+
+/**
+ * Capacity units applied when a PROVISIONED template carries no usable
+ * capacity value at all. Matches the pre-existing table-level default.
+ */
+const DEFAULT_CAPACITY_UNITS = 5;
+
+/** Narrow an unknown CFn sub-object to a record (or `undefined`). */
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+/** Coerce a CFn numeric (CFn is stringly-typed) to a finite number. */
+function toFiniteNumber(value: unknown): number | undefined {
+  if (value === undefined || value === null || value === '') return undefined;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : undefined;
+}
+
+/**
+ * Derive a single WRITE capacity number from a CFn
+ * `WriteProvisionedThroughputSettings` block.
+ *
+ * The `AWS::DynamoDB::GlobalTable` registry schema (verified 2026-08-09 via
+ * `aws cloudformation describe-type`) declares this block with exactly ONE
+ * member — `WriteCapacityAutoScalingSettings` — i.e. write capacity on a
+ * GlobalTable is ALWAYS auto-scaled; there is no literal `WriteCapacityUnits`
+ * (that is why CDK 2.244's `TableV2` rejects `Capacity.fixed()` for write).
+ * `CreateTable` / `UpdateTable` still require a concrete starting number, so
+ * we take `SeedCapacity` ("the initial provisioned capacity units") when the
+ * template supplies it, else `MinCapacity`.
+ *
+ * A literal `WriteCapacityUnits` is still honored first: the CFn schema
+ * forbids it, but hand-authored / imported templates and cdkd state written
+ * before this helper existed can carry it, and honoring it is strictly more
+ * faithful than ignoring it.
+ */
+export function deriveWriteCapacityUnits(
+  settings: Record<string, unknown> | undefined
+): number | undefined {
+  if (!settings) return undefined;
+  const literal = toFiniteNumber(settings['WriteCapacityUnits']);
+  if (literal !== undefined) return literal;
+  const autoScaling = asRecord(settings['WriteCapacityAutoScalingSettings']);
+  if (!autoScaling) return undefined;
+  return toFiniteNumber(autoScaling['SeedCapacity']) ?? toFiniteNumber(autoScaling['MinCapacity']);
+}
+
+/**
+ * Derive a single READ capacity number from a CFn
+ * `ReadProvisionedThroughputSettings` block (both the per-replica shape,
+ * which carries `ReadCapacityUnits` + `ReadCapacityAutoScalingSettings`, and
+ * the GSI/table-level `GlobalReadProvisionedThroughputSettings` shape, which
+ * carries only `ReadCapacityUnits`). Same Seed-before-Min precedence as the
+ * write side.
+ */
+export function deriveReadCapacityUnits(
+  settings: Record<string, unknown> | undefined
+): number | undefined {
+  if (!settings) return undefined;
+  const literal = toFiniteNumber(settings['ReadCapacityUnits']);
+  if (literal !== undefined) return literal;
+  const autoScaling = asRecord(settings['ReadCapacityAutoScalingSettings']);
+  if (!autoScaling) return undefined;
+  return toFiniteNumber(autoScaling['SeedCapacity']) ?? toFiniteNumber(autoScaling['MinCapacity']);
+}
+
+/**
+ * Translate the CFn `AWS::DynamoDB::GlobalTable` `GlobalSecondaryIndexes[]`
+ * blob into the SDK's `GlobalSecondaryIndex[]` shape (Issue #1387).
+ *
+ * The two schemas model per-GSI throughput COMPLETELY differently, and the
+ * AWS SDK v3 serializer silently drops unknown members — so the pre-fix raw
+ * cast meant a PROVISIONED GlobalTable with a GSI failed `CreateTable`
+ * outright (AWS requires `ProvisionedThroughput` on every GSI), and every
+ * `TableV2` per-GSI on-demand limit vanished without a trace.
+ *
+ * Verified mapping (CFn registry schema `AWS::DynamoDB::GlobalTable` +
+ * `@aws-sdk/client-dynamodb` `models_0.d.ts`, both read 2026-08-09; the CFn
+ * side additionally confirmed against a real `cdk synth` of `TableV2` with a
+ * GSI under both billing modes):
+ *
+ * | CFn                                                                    | SDK                                     |
+ * | ---------------------------------------------------------------------- | --------------------------------------- |
+ * | `GSI.WriteProvisionedThroughputSettings.WriteCapacityAutoScalingSettings` | `ProvisionedThroughput.WriteCapacityUnits` |
+ * | `Replicas[local].GlobalSecondaryIndexes[].ReadProvisionedThroughputSettings.ReadCapacityUnits` | `ProvisionedThroughput.ReadCapacityUnits` |
+ * | `GSI.WriteOnDemandThroughputSettings.MaxWriteRequestUnits`             | `OnDemandThroughput.MaxWriteRequestUnits` |
+ * | `Replicas[local].GlobalSecondaryIndexes[].ReadOnDemandThroughputSettings.MaxReadRequestUnits` | `OnDemandThroughput.MaxReadRequestUnits` |
+ * | `GSI.WarmThroughput`                                                   | `WarmThroughput` (same spelling)        |
+ *
+ * READ capacity really does live on the REPLICA's GSI entry, not on the
+ * top-level GSI — CDK's `globalSecondaryIndexes[].readCapacity` synthesizes
+ * to `Replicas[?Region==<deploy region>].GlobalSecondaryIndexes[].
+ * ReadProvisionedThroughputSettings`. `CreateTable` only ever provisions the
+ * LOCAL replica, so the local entry is the right source. The GSI-level
+ * `ReadProvisionedThroughputSettings` / `ReadOnDemandThroughputSettings`
+ * (which the schema also permits) are honored as a fallback for
+ * hand-authored templates.
+ *
+ * Already-SDK-shaped `ProvisionedThroughput` / `OnDemandThroughput` members
+ * win over the derivation: the CFn schema forbids them, but cdkd state
+ * written before this fix (and hand-authored templates) can carry them, and
+ * silently re-deriving over an explicit value would be a regression.
+ */
+export function toSdkGlobalSecondaryIndexes(
+  properties: Record<string, unknown>,
+  region: string,
+  billingMode: string
+): GlobalSecondaryIndex[] {
+  const cfnIndexes = (properties['GlobalSecondaryIndexes'] ?? []) as unknown[];
+  if (!Array.isArray(cfnIndexes) || cfnIndexes.length === 0) return [];
+
+  const replicas = (properties['Replicas'] ?? []) as Array<Record<string, unknown>>;
+  const localReplica = Array.isArray(replicas)
+    ? replicas.find((r) => asRecord(r)?.['Region'] === region)
+    : undefined;
+  const localReplicaIndexes = (localReplica?.['GlobalSecondaryIndexes'] ?? []) as unknown[];
+  const localByName = new Map<string, Record<string, unknown>>();
+  if (Array.isArray(localReplicaIndexes)) {
+    for (const entry of localReplicaIndexes) {
+      const record = asRecord(entry);
+      const name = record?.['IndexName'];
+      if (record && typeof name === 'string') localByName.set(name, record);
+    }
+  }
+
+  const result: GlobalSecondaryIndex[] = [];
+  for (const entry of cfnIndexes) {
+    const gsi = asRecord(entry);
+    // A non-object entry is an unresolved intrinsic or a malformed
+    // template — pass it through untouched so AWS surfaces the real
+    // validation error instead of cdkd swallowing it.
+    if (!gsi) {
+      result.push(entry as GlobalSecondaryIndex);
+      continue;
+    }
+    const indexName = gsi['IndexName'] as string | undefined;
+    const localEntry = typeof indexName === 'string' ? localByName.get(indexName) : undefined;
+
+    const sdk: GlobalSecondaryIndex = {
+      IndexName: indexName,
+      KeySchema: gsi['KeySchema'] as GlobalSecondaryIndex['KeySchema'],
+      Projection: gsi['Projection'] as GlobalSecondaryIndex['Projection'],
+    };
+    if (gsi['WarmThroughput'] !== undefined) {
+      sdk.WarmThroughput = gsi['WarmThroughput'] as GlobalSecondaryIndex['WarmThroughput'];
+    }
+
+    const explicitProvisioned = asRecord(gsi['ProvisionedThroughput']);
+    const explicitOnDemand = asRecord(gsi['OnDemandThroughput']);
+    if (explicitProvisioned) {
+      sdk.ProvisionedThroughput = explicitProvisioned as unknown as ProvisionedThroughput;
+    } else if (billingMode === 'PROVISIONED') {
+      sdk.ProvisionedThroughput = {
+        ReadCapacityUnits:
+          deriveReadCapacityUnits(asRecord(localEntry?.['ReadProvisionedThroughputSettings'])) ??
+          deriveReadCapacityUnits(asRecord(gsi['ReadProvisionedThroughputSettings'])) ??
+          DEFAULT_CAPACITY_UNITS,
+        WriteCapacityUnits:
+          deriveWriteCapacityUnits(asRecord(gsi['WriteProvisionedThroughputSettings'])) ??
+          DEFAULT_CAPACITY_UNITS,
+      };
+    }
+
+    if (explicitOnDemand) {
+      sdk.OnDemandThroughput = explicitOnDemand as unknown as OnDemandThroughput;
+    } else if (billingMode !== 'PROVISIONED') {
+      const maxWrite = toFiniteNumber(
+        asRecord(gsi['WriteOnDemandThroughputSettings'])?.['MaxWriteRequestUnits']
+      );
+      const maxRead =
+        toFiniteNumber(
+          asRecord(localEntry?.['ReadOnDemandThroughputSettings'])?.['MaxReadRequestUnits']
+        ) ??
+        toFiniteNumber(asRecord(gsi['ReadOnDemandThroughputSettings'])?.['MaxReadRequestUnits']);
+      if (maxWrite !== undefined || maxRead !== undefined) {
+        sdk.OnDemandThroughput = {
+          ...(maxRead !== undefined && { MaxReadRequestUnits: maxRead }),
+          ...(maxWrite !== undefined && { MaxWriteRequestUnits: maxWrite }),
+        };
+      }
+    }
+
+    result.push(sdk);
+  }
+  return result;
+}
+
+/**
+ * Translate a CFn `Replicas[].GlobalSecondaryIndexes[]` blob (the
+ * `ReplicaGlobalSecondaryIndexSpecification` shape) into the SDK's
+ * `ReplicaGlobalSecondaryIndex[]` used by `CreateReplicationGroupMemberAction`
+ * / `UpdateReplicationGroupMemberAction` (Issue #1387).
+ *
+ * Verified mapping:
+ *
+ * | CFn                                                        | SDK                                            |
+ * | ---------------------------------------------------------- | ---------------------------------------------- |
+ * | `ReadProvisionedThroughputSettings.ReadCapacityUnits`      | `ProvisionedThroughputOverride.ReadCapacityUnits` |
+ * | `ReadOnDemandThroughputSettings.MaxReadRequestUnits`       | `OnDemandThroughputOverride.MaxReadRequestUnits`  |
+ *
+ * DELIBERATELY UNMAPPED: `ContributorInsightsSpecification`. The replica-GSI
+ * SDK shape has no member for it — per-index contributor insights are toggled
+ * by a separate `UpdateContributorInsights(TableName, IndexName)` call, which
+ * this provider does not issue for any index (it only reads the TABLE-level
+ * status back in `readCurrentState`). Recorded here rather than silently
+ * dropped; tracked with the other GlobalTable nested-key gaps.
+ */
+export function toSdkReplicaGlobalSecondaryIndexes(
+  replicaIndexes: unknown
+): ReplicaGlobalSecondaryIndex[] | undefined {
+  if (!Array.isArray(replicaIndexes) || replicaIndexes.length === 0) return undefined;
+  return replicaIndexes.map((entry) => {
+    const cfn = asRecord(entry);
+    if (!cfn) return entry as ReplicaGlobalSecondaryIndex;
+    const sdk: ReplicaGlobalSecondaryIndex = {
+      IndexName: cfn['IndexName'] as string | undefined,
+    };
+    const explicitProvisioned = asRecord(cfn['ProvisionedThroughputOverride']);
+    const explicitOnDemand = asRecord(cfn['OnDemandThroughputOverride']);
+    const readCapacity = deriveReadCapacityUnits(
+      asRecord(cfn['ReadProvisionedThroughputSettings'])
+    );
+    const maxReadRequestUnits = toFiniteNumber(
+      asRecord(cfn['ReadOnDemandThroughputSettings'])?.['MaxReadRequestUnits']
+    );
+    if (explicitProvisioned) {
+      sdk.ProvisionedThroughputOverride = explicitProvisioned;
+    } else if (readCapacity !== undefined) {
+      sdk.ProvisionedThroughputOverride = { ReadCapacityUnits: readCapacity };
+    }
+    if (explicitOnDemand) {
+      sdk.OnDemandThroughputOverride = explicitOnDemand;
+    } else if (maxReadRequestUnits !== undefined) {
+      sdk.OnDemandThroughputOverride = { MaxReadRequestUnits: maxReadRequestUnits };
+    }
+    return sdk;
+  });
 }
 
 export function diffReplicas(

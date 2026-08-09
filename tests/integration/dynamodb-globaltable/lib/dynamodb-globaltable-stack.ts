@@ -42,6 +42,10 @@ import * as ddb from 'aws-cdk-lib/aws-dynamodb';
  * `CDKD_TEST_UPDATE=ttl,tags`. Unknown values are silently ignored so
  * future verify.sh scenarios can add new keys without touching the
  * stack.
+ *
+ * The stack ALSO deploys two unconditional GSI-carrying tables for Issue
+ * #1387 (per-GSI throughput CFn -> SDK translation) — see the block at the
+ * bottom of the constructor.
  */
 export class DynamoDBGlobalTableStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: cdk.StackProps) {
@@ -128,6 +132,92 @@ export class DynamoDBGlobalTableStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'DeployRegion', {
       value: deployRegion,
       description: 'Deploy (primary) region',
+    });
+
+    // ─── Issue #1387: per-GSI throughput translation ────────────────────
+    //
+    // The CFn `AWS::DynamoDB::GlobalTable` schema models per-GSI throughput
+    // completely differently from the DynamoDB SDK's `CreateTable` shape, and
+    // cdkd used to forward the blob raw. The AWS SDK v3 serializer drops
+    // unknown members, so:
+    //
+    //   - a PROVISIONED GlobalTable with a GSI failed `CreateTable` outright
+    //     (AWS requires `ProvisionedThroughput` on every index), and
+    //   - `TableV2`'s per-GSI on-demand limits vanished silently.
+    //
+    // Both tables are UNCONDITIONAL (not gated behind `CDKD_TEST_UPDATE`) so
+    // the very first baseline deploy exercises the create path that used to
+    // fail. A single table cannot carry both billing modes, hence two.
+    //
+    // `TableV2` (L2) is used rather than `CfnGlobalTable` (L1) because the L2
+    // exposes every property this fixture needs — per-GSI `readCapacity` /
+    // `writeCapacity` and per-GSI `maxReadRequestUnits` /
+    // `maxWriteRequestUnits` — so no escape hatch is required.
+    //
+    // NOTE the asymmetry the fix had to get right: per-GSI READ capacity
+    // synthesizes onto `Replicas[?Region==<deploy region>]
+    // .GlobalSecondaryIndexes[]`, while WRITE capacity stays on the
+    // top-level GSI. `CreateTable` needs both halves in ONE
+    // `ProvisionedThroughput` object.
+    const gsiProvisionedTable = new ddb.TableV2(this, 'GsiProvisionedTable', {
+      partitionKey: { name: 'pk', type: ddb.AttributeType.STRING },
+      billing: ddb.Billing.provisioned({
+        readCapacity: ddb.Capacity.fixed(5),
+        // TableV2 requires auto-scaled write capacity (the GlobalTable CFn
+        // shape has no literal WriteCapacityUnits).
+        writeCapacity: ddb.Capacity.autoscaled({
+          minCapacity: 1,
+          maxCapacity: 10,
+          targetUtilizationPercent: 70,
+        }),
+      }),
+      globalSecondaryIndexes: [
+        {
+          indexName: 'byStatus',
+          partitionKey: { name: 'status', type: ddb.AttributeType.STRING },
+          // -> Replicas[local].GlobalSecondaryIndexes[].ReadProvisionedThroughputSettings
+          readCapacity: ddb.Capacity.fixed(7),
+          // -> GlobalSecondaryIndexes[].WriteProvisionedThroughputSettings
+          //    .WriteCapacityAutoScalingSettings; `seedCapacity` is the
+          //    initial provisioned value AWS starts the index at, so cdkd
+          //    must send WriteCapacityUnits=3 (NOT minCapacity=2).
+          writeCapacity: ddb.Capacity.autoscaled({
+            minCapacity: 2,
+            maxCapacity: 20,
+            seedCapacity: 3,
+            targetUtilizationPercent: 60,
+          }),
+        },
+      ],
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
+    const gsiOnDemandTable = new ddb.TableV2(this, 'GsiOnDemandTable', {
+      partitionKey: { name: 'pk', type: ddb.AttributeType.STRING },
+      billing: ddb.Billing.onDemand({
+        maxReadRequestUnits: 100,
+        maxWriteRequestUnits: 200,
+      }),
+      globalSecondaryIndexes: [
+        {
+          indexName: 'byOwner',
+          partitionKey: { name: 'owner', type: ddb.AttributeType.STRING },
+          // -> Replicas[local].GlobalSecondaryIndexes[].ReadOnDemandThroughputSettings
+          maxReadRequestUnits: 50,
+          // -> GlobalSecondaryIndexes[].WriteOnDemandThroughputSettings
+          maxWriteRequestUnits: 60,
+        },
+      ],
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
+    new cdk.CfnOutput(this, 'GsiProvisionedTableName', {
+      value: gsiProvisionedTable.tableName,
+      description: 'PROVISIONED GlobalTable whose GSI carries WriteProvisionedThroughputSettings',
+    });
+    new cdk.CfnOutput(this, 'GsiOnDemandTableName', {
+      value: gsiOnDemandTable.tableName,
+      description: 'On-demand GlobalTable whose GSI carries per-index on-demand limits',
     });
   }
 }
