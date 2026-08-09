@@ -1,3 +1,10 @@
+## [0.278.14](https://github.com/go-to-k/cdkd/compare/v0.278.13...v0.278.14) (2026-08-09)
+
+
+### Bug Fixes
+
+* **codebuild:** wire the dropped nested Source/Environment/Cache sub-keys and the required SourceIdentifier ([#1431](https://github.com/go-to-k/cdkd/issues/1431)) ([76e80a3](https://github.com/go-to-k/cdkd/commit/76e80a37384891d95dc6a36d110c78eb9d7c59be))
+
 ## [0.278.13](https://github.com/go-to-k/cdkd/compare/v0.278.12...v0.278.13) (2026-08-09)
 
 
