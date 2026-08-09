@@ -83,6 +83,9 @@ STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
 BUCKET_NAME="cdkd-lifecycle-test-${ACCOUNT_ID}"
 LEGACY_BUCKET="cdkd-lifecycle-legacy-${ACCOUNT_ID}"
+# The EventBridgeEnabled: true half of the issue #1430 pair (the `false` half
+# rides on LEGACY_BUCKET).
+EB_TRUE_BUCKET="cdkd-lifecycle-ebtrue-${ACCOUNT_ID}"
 
 # Resolve the built CLI path without a `cd` into dist/ that fails cryptically
 # (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
@@ -97,6 +100,7 @@ cleanup() {
   fi
   aws s3api delete-bucket --bucket "${BUCKET_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
   aws s3api delete-bucket --bucket "${LEGACY_BUCKET}" --region "${REGION}" >/dev/null 2>&1 || true
+  aws s3api delete-bucket --bucket "${EB_TRUE_BUCKET}" --region "${REGION}" >/dev/null 2>&1 || true
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
@@ -204,6 +208,62 @@ if [ "${LEG_RULES}" != "2" ] || [ "${LEG_T}" != "90" ] || [ "${LEG_NVT}" != "30"
 fi
 echo "    legacy singular Transition + NoncurrentVersionTransition + NoncurrentVersionExpirationInDays + rule-level ExpiredObjectDeleteMarker all applied"
 
+# --- issue #1430: NotificationConfiguration.EventBridgeConfiguration --------
+# Same class as the legacy lifecycle keys above -- a CFn spelling with no SDK
+# member behind it. CFn carries a REQUIRED boolean `EventBridgeEnabled`; the
+# SDK's block is an EMPTY structure whose PRESENCE enables delivery. cdkd
+# emitted the block whenever the CFn block existed, so an explicit `false`
+# ENABLED notifications.
+#
+# Expected values are CloudFormation ground truth, not a guess: a real CFn A/B
+# of this exact shape (stack Cdkd1430EbProbe, us-east-1, 2026-08-10) returned
+# an EMPTY body for `false` and `{"EventBridgeConfiguration": {}}` for `true`.
+#
+# An unconfigured bucket returns an EMPTY body, not `{}`, so both captures are
+# normalized before jq sees them -- without that the `false` assertion fails on
+# cdkd's CORRECT output. (The first real run of this assertion did exactly
+# that.) The captures are unguarded on purpose: `set -e` aborts on a genuine
+# API failure, so reaching the normalization with an empty string means a
+# successful call on an unconfigured bucket.
+EB_TRUE_JSON="$(aws s3api get-bucket-notification-configuration \
+  --bucket "${EB_TRUE_BUCKET}" --region "${REGION}" --output json)"
+EB_FALSE_JSON="$(aws s3api get-bucket-notification-configuration \
+  --bucket "${LEGACY_BUCKET}" --region "${REGION}" --output json)"
+[ -n "${EB_TRUE_JSON//[[:space:]]/}" ] || EB_TRUE_JSON='{}'
+[ -n "${EB_FALSE_JSON//[[:space:]]/}" ] || EB_FALSE_JSON='{}'
+
+EB_TRUE_HAS="$(printf '%s' "${EB_TRUE_JSON}" | jq -r 'has("EventBridgeConfiguration")')"
+EB_FALSE_HAS="$(printf '%s' "${EB_FALSE_JSON}" | jq -r 'has("EventBridgeConfiguration")')"
+
+# The `true` side runs FIRST and is the vacuity guard: asserting only that the
+# `false` bucket lacks the block would pass just as happily if cdkd stopped
+# applying NotificationConfiguration altogether.
+if [ "${EB_TRUE_HAS}" != "true" ]; then
+  echo "FAIL: ${EB_TRUE_BUCKET} (EventBridgeEnabled: true) has NO EventBridgeConfiguration" >&2
+  echo "      response: ${EB_TRUE_JSON}" >&2
+  exit 1
+fi
+if [ "${EB_FALSE_HAS}" != "false" ]; then
+  echo "FAIL: ${LEGACY_BUCKET} (EventBridgeEnabled: false) HAS an EventBridgeConfiguration" >&2
+  echo "      this is the issue #1430 inversion: an explicit false enabled delivery" >&2
+  echo "      response: ${EB_FALSE_JSON}" >&2
+  exit 1
+fi
+echo "    EventBridgeEnabled true -> block present, false -> block absent (matches CloudFormation)"
+
+# Read side: `readCurrentState` must return the CFn shape
+# (`{EventBridgeEnabled: <bool>}`), not the SDK's `{}` -- the state baseline
+# holds the CFn spelling and drift-calculator only descends into keys present
+# in state, so the SDK shape reported permanent phantom drift on every
+# EventBridge-enabled bucket. `cdkd drift` exits 0 only when it finds none.
+if ! node "${LOCAL_DIST}" drift "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}"; then
+  echo "FAIL: cdkd drift reported drift on a clean, freshly-deployed stack" >&2
+  echo "      (pre-#1430 the EventBridge boolean read back as permanently missing)" >&2
+  exit 1
+fi
+echo "    no drift on a clean stack (#1430 read side)"
+
 CREATION_P1="$(aws s3api list-buckets \
   --query "Buckets[?Name=='${BUCKET_NAME}'].CreationDate | [0]" --output text)"
 echo "    baseline bucket CreationDate=${CREATION_P1}"
@@ -241,6 +301,7 @@ assert_gone_eventually "bucket ${BUCKET_NAME} still exists after destroy" aws s3
 echo "    bucket deleted"
 
 assert_gone_eventually "legacy bucket ${LEGACY_BUCKET} still exists after destroy" aws s3api head-bucket --bucket "${LEGACY_BUCKET}" --region "${REGION}"
+assert_gone_eventually "EventBridge bucket ${EB_TRUE_BUCKET} still exists after destroy" aws s3api head-bucket --bucket "${EB_TRUE_BUCKET}" --region "${REGION}"
 echo "    legacy bucket deleted"
 
 assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"

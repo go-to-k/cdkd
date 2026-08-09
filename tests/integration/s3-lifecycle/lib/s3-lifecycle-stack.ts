@@ -112,6 +112,23 @@ export class S3LifecycleStack extends cdk.Stack {
     new s3.CfnBucket(this, 'LegacyBucket', {
       bucketName: `cdkd-lifecycle-legacy-${cdk.Stack.of(this).account}`,
       versioningConfiguration: { status: 'Enabled' },
+      // Issue #1430, same class as the lifecycle shapes below: a CFn spelling
+      // with no SDK member behind it. CFn's `EventBridgeConfiguration` carries
+      // a REQUIRED boolean, while the SDK's block is an EMPTY structure whose
+      // PRESENCE enables delivery — so the boolean has nothing to map onto and
+      // has to be translated into presence/absence. cdkd emitted the SDK block
+      // whenever the CFn block existed, so this `false` came up with
+      // EventBridge notifications ON: the inverse of the template.
+      //
+      // Ground truth is a real CloudFormation A/B of this exact shape (stack
+      // Cdkd1430EbProbe, us-east-1, 2026-08-10): `false` -> no EventBridge
+      // block; `true` -> `{}`. `EbEnabledBucket` below is the `true` half, and
+      // it is what keeps the `false` assertion from passing vacuously.
+      //
+      // L1 is required, not a stylistic choice: the L2's `eventBridgeEnabled`
+      // routes through a Custom::S3BucketNotifications custom resource, which
+      // never reaches `S3BucketProvider`'s own NotificationConfiguration path.
+      notificationConfiguration: { eventBridgeConfiguration: { eventBridgeEnabled: false } },
       lifecycleConfiguration: {
         rules: [
           {
@@ -130,6 +147,16 @@ export class S3LifecycleStack extends cdk.Stack {
           },
         ],
       },
+    });
+
+    // The `true` half of the issue #1430 pair. Kept as its own bucket rather
+    // than folded into LegacyBucket because the two values are mutually
+    // exclusive on one bucket, and asserting only the `false` side would pass
+    // just as happily if cdkd stopped applying NotificationConfiguration
+    // altogether — this bucket is the vacuity guard for that assertion.
+    new s3.CfnBucket(this, 'EbEnabledBucket', {
+      bucketName: `cdkd-lifecycle-ebtrue-${cdk.Stack.of(this).account}`,
+      notificationConfiguration: { eventBridgeConfiguration: { eventBridgeEnabled: true } },
     });
   }
 }
