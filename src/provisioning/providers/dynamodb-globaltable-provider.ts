@@ -1450,7 +1450,12 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         // but an IndexName, so skip and let the (immutable) change surface
         // as a no-op rather than a confusing ValidationException.
         if (!update.ProvisionedThroughput && !update.OnDemandThroughput && !update.WarmThroughput) {
-          if (!billingFlipped) {
+          // `unresolvedMembers` already explained the emptiness above. Falling
+          // through would ALSO print "recreate the index under a new name",
+          // which is wrong advice for an unresolved intrinsic and contradicts
+          // the warning just emitted — the user would get two messages, one of
+          // them misleading.
+          if (!billingFlipped && unresolvedMembers.length === 0) {
             this.logger.warn(
               `GSI '${gsi.IndexName}' on ${physicalId} changed in a way DynamoDB's ` +
                 `UpdateTable cannot express (KeySchema / Projection are immutable on an ` +
@@ -3153,11 +3158,15 @@ export interface RawOnDemandDeclaration {
  * exactly what would re-open the bug.
  *
  * A missing entry means "not declared", which lets the reset FIRE — i.e. the
- * DESTRUCTIVE direction, not a conservative one. That is safe only because
- * `toSdkGlobalSecondaryIndexes` refuses a non-array `GlobalSecondaryIndexes`
- * and a malformed per-entry shape LOUDLY before this map is ever consulted, so
- * a template that reaches the reset has already been validated. Do not relax
- * either of those refusals on the assumption that this helper degrades safely.
+ * DESTRUCTIVE direction, not a conservative one. Two DIFFERENT mechanisms keep
+ * that safe, and neither is "the translation validates everything":
+ *   - a non-array `GlobalSecondaryIndexes` is refused LOUDLY by
+ *     `toSdkGlobalSecondaryIndexes` before any of this runs;
+ *   - a malformed per-ENTRY shape is NOT refused — it is passed through
+ *     untouched so AWS surfaces the real error — but such an entry carries no
+ *     usable `IndexName`, so the reset loop skips it before consulting this map.
+ * Do not relax either behavior on the assumption that this helper degrades
+ * safely on its own; it does not.
  */
 export function collectRawOnDemandDeclarations(
   properties: Record<string, unknown>,

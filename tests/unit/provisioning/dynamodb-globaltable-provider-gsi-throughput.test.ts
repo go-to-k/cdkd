@@ -1314,6 +1314,39 @@ describe('DynamoDBGlobalTable GSI throughput translation (issue #1387)', () => {
       expect(warned.some((m) => m.includes('unresolved intrinsic'))).toBe(true);
     });
 
+    it('does NOT also print the misleading "recreate the index" advice', async () => {
+      // Re-review catch: suppressing the reset can leave the Update action with
+      // no throughput field at all, which fell through to the immutable-field
+      // branch — so the user got BOTH the accurate warning and advice to
+      // recreate their index. The PR claims to replace that advice, so it must
+      // not still fire.
+      const previous = structuredClone(ON_DEMAND_TABLE_PROPS) as Record<string, unknown>;
+      const next = structuredClone(ON_DEMAND_TABLE_PROPS) as Record<string, unknown>;
+      // Drop the read half entirely so the ONLY on-demand member in play is the
+      // unresolvable write one — the shape that empties the Update action.
+      delete (
+        (next['Replicas'] as Record<string, unknown>[])[0]!['GlobalSecondaryIndexes'] as Record<
+          string,
+          unknown
+        >[]
+      )[0]!['ReadOnDemandThroughputSettings'];
+      delete (
+        (previous['Replicas'] as Record<string, unknown>[])[0]!['GlobalSecondaryIndexes'] as Record<
+          string,
+          unknown
+        >[]
+      )[0]!['ReadOnDemandThroughputSettings'];
+      (next['GlobalSecondaryIndexes'] as Record<string, unknown>[])[0]![
+        'WriteOnDemandThroughputSettings'
+      ] = { MaxWriteRequestUnits: { Ref: 'SomeUnresolvedParameter' } };
+
+      await provider.update('OnDemand', 'od-table', RESOURCE_TYPE, next, previous);
+
+      const warned = warnSpy.mock.calls.map((c) => String(c[0]));
+      expect(warned.some((m) => m.includes('UNCHANGED'))).toBe(true);
+      expect(warned.some((m) => m.includes('Recreate the index under a new name'))).toBe(false);
+    });
+
     it('honors an explicit SDK-shaped OnDemandThroughput over the derived spellings', async () => {
       // Reviewer catch: `toSdkGlobalSecondaryIndexes` lets an already-SDK-shaped
       // `OnDemandThroughput` WIN over the derived members, so reading the
