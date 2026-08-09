@@ -1,3 +1,10 @@
+## [0.278.3](https://github.com/go-to-k/cdkd/compare/v0.278.2...v0.278.3) (2026-08-09)
+
+
+### Bug Fixes
+
+* **emr:** rename ConfigurationProperties / StepProperties to the SDK Properties member ([#1399](https://github.com/go-to-k/cdkd/issues/1399)) ([8547784](https://github.com/go-to-k/cdkd/commit/8547784041cc4b2367cf04119106a2e9206a0bd5))
+
 ## [0.278.2](https://github.com/go-to-k/cdkd/compare/v0.278.1...v0.278.2) (2026-08-08)
 
 
