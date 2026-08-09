@@ -268,5 +268,5 @@ vpc-lambda	2026-07-26T16:53:02Z	PASS	386	standard	0727 P0 sweep (ec2-provider ch
 vpc-lambda-cr-race	2026-07-24T11:03:24Z	PASS	432	standard	0724b sweep staleness; 9 del 0 err 0 orphans incl hyperplane ENI
 vpc-lookup	2026-07-24T10:55:09Z	PASS	20	standard	0724b sweep staleness; context-provider loop ok; 1 del 0 err 0 orphans
 vpc-nat-gateway	2026-07-22T08:08:02Z	PASS		standard	TTL-refresh sweep; standard flow (classifier-approved direct deploy/destroy); 21 created / 21 deleted 0 err; NAT GW + VPC + EIP + ENI all gone, state gone
-wafv2	2026-08-09T08:03:56Z	PASS	150	standard	#1407 cloudWatchRole:false -> re-runnable; TWO consecutive cycles clean, 7 del/0 retained/0 err, no manual IAM cleanup
+wafv2	2026-08-09T08:37:03Z	PASS	115	standard	#1403 drift reverse map (post-review): deploy + cdkd drift = no drift; 7 del/0 retained/0 err
 wait-condition-handle	2026-07-31T06:19:56Z	PASS	44	verify.sh	TTL-refresh sweep re-run; rc ok, orph clean

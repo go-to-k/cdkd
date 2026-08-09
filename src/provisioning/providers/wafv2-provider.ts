@@ -226,6 +226,201 @@ function toSdkRules(rules: unknown): Rule[] {
 }
 
 /**
+ * Inverse of {@link toSdkByteMatchStatement}.
+ *
+ * `GetWebACL` returns `SearchString` as the SDK blob type (a `Uint8Array`),
+ * but the template — and therefore cdkd state — carries EITHER a plain
+ * `SearchString` string OR a `SearchStringBase64` string. The bytes are
+ * identical for both spellings, so the AWS value alone cannot say which
+ * one to emit: only the BASELINE can. That is why every function on this
+ * side takes the corresponding state node alongside the AWS node.
+ *
+ * Whenever the baseline string RE-ENCODES to exactly the AWS bytes, it is
+ * emitted VERBATIM rather than re-derived. That is what keeps two otherwise
+ * permanent false positives from appearing:
+ *
+ *   - a non-canonical `SearchStringBase64` (whitespace / newlines, missing
+ *     padding, base64url) would never equal a canonically re-encoded string,
+ *     so the WebACL would drift forever;
+ *   - `Buffer.toString('utf8')` is LOSSY for non-UTF-8 bytes (U+FFFD), so a
+ *     binary needle under a plain-`SearchString` baseline would both drift
+ *     and — via `drift --accept`, which writes the AWS value into
+ *     `observedProperties`, then `--revert` — push a mangled needle to AWS.
+ *
+ * When the bytes genuinely differ from the baseline (REAL drift) or no usable
+ * baseline exists, the value is derived: base64 if the baseline used base64,
+ * otherwise plain UTF-8 but ONLY when that round-trips losslessly, falling
+ * back to base64 so binary content is never corrupted.
+ */
+function toCfnByteMatchStatement(
+  byteMatchStatement: Record<string, unknown>,
+  baseline: unknown
+): Record<string, unknown> {
+  const raw = byteMatchStatement['SearchString'];
+  if (raw === undefined) return byteMatchStatement;
+
+  const bytes =
+    raw instanceof Uint8Array
+      ? Buffer.from(raw)
+      : typeof raw === 'string'
+        ? Buffer.from(raw, 'utf8')
+        : undefined;
+  if (!bytes) return byteMatchStatement;
+
+  const base = isPlainObject(baseline) ? baseline : undefined;
+  const baseEncoded = base?.['SearchStringBase64'];
+  const basePlain = base?.['SearchString'];
+
+  const converted: Record<string, unknown> = { ...byteMatchStatement };
+  delete converted['SearchString'];
+  delete converted['SearchStringBase64'];
+
+  // Undrifted: hand back the baseline's own string, byte-for-byte.
+  if (typeof baseEncoded === 'string' && Buffer.from(baseEncoded, 'base64').equals(bytes)) {
+    converted['SearchStringBase64'] = baseEncoded;
+    return converted;
+  }
+  if (typeof basePlain === 'string' && Buffer.from(basePlain, 'utf8').equals(bytes)) {
+    converted['SearchString'] = basePlain;
+    return converted;
+  }
+
+  // Real drift, or no baseline to follow.
+  if (typeof baseEncoded === 'string') {
+    converted['SearchStringBase64'] = bytes.toString('base64');
+    return converted;
+  }
+  const utf8 = bytes.toString('utf8');
+  if (Buffer.from(utf8, 'utf8').equals(bytes)) {
+    converted['SearchString'] = utf8;
+  } else {
+    converted['SearchStringBase64'] = bytes.toString('base64');
+  }
+  return converted;
+}
+
+/**
+ * Inverse of {@link toSdkStatement}: re-shape an AWS-returned `Statement`
+ * tree back into the CFn spelling, walking the state baseline in lockstep
+ * so the per-`ByteMatchStatement` spelling choice is baseline-driven.
+ *
+ * Recursion points are IDENTICAL to the forward walk by construction — if
+ * one gains a member, so must the other, or drift silently reappears at
+ * the new nesting depth. When the baseline diverges structurally (a real
+ * drift, or a rule added console-side) the walk simply passes `undefined`
+ * down and the defaults apply; the resulting difference is exactly the
+ * drift the user should see.
+ */
+function toCfnStatement(
+  statement: Record<string, unknown>,
+  baseline: unknown
+): Record<string, unknown> {
+  const converted: Record<string, unknown> = { ...statement };
+  const base = isPlainObject(baseline) ? baseline : undefined;
+
+  const byteMatchStatement = converted['ByteMatchStatement'];
+  if (isPlainObject(byteMatchStatement)) {
+    converted['ByteMatchStatement'] = toCfnByteMatchStatement(
+      byteMatchStatement,
+      base?.['ByteMatchStatement']
+    );
+  }
+
+  // CFn spells the reference ARN `Arn`; AWS returns `ARN`. Unconditional —
+  // unlike the search string there is no ambiguity about the CFn spelling.
+  for (const key of ARN_REFERENCE_STATEMENT_KEYS) {
+    const reference = converted[key];
+    if (!isPlainObject(reference) || !('ARN' in reference)) continue;
+    const { ARN: arn, ...rest } = reference;
+    converted[key] = { ...rest, Arn: arn };
+  }
+
+  const notStatement = converted['NotStatement'];
+  if (isPlainObject(notStatement)) {
+    const nested = notStatement['Statement'];
+    if (isPlainObject(nested)) {
+      const baseNot = base?.['NotStatement'];
+      converted['NotStatement'] = {
+        ...notStatement,
+        Statement: toCfnStatement(
+          nested,
+          isPlainObject(baseNot) ? baseNot['Statement'] : undefined
+        ),
+      };
+    }
+  }
+
+  for (const key of ['AndStatement', 'OrStatement']) {
+    const combined = converted[key];
+    if (!isPlainObject(combined)) continue;
+    const nested = combined['Statements'];
+    if (!Array.isArray(nested)) continue;
+    const baseCombined = base?.[key];
+    const baseList =
+      isPlainObject(baseCombined) && Array.isArray(baseCombined['Statements'])
+        ? (baseCombined['Statements'] as unknown[])
+        : undefined;
+    converted[key] = {
+      ...combined,
+      Statements: nested.map((item, i) =>
+        isPlainObject(item) ? toCfnStatement(item, baseList?.[i]) : item
+      ),
+    };
+  }
+
+  for (const key of ['RateBasedStatement', 'ManagedRuleGroupStatement']) {
+    const scoping = converted[key];
+    if (!isPlainObject(scoping)) continue;
+    const nested = scoping['ScopeDownStatement'];
+    if (!isPlainObject(nested)) continue;
+    const baseScoping = base?.[key];
+    converted[key] = {
+      ...scoping,
+      ScopeDownStatement: toCfnStatement(
+        nested,
+        isPlainObject(baseScoping) ? baseScoping['ScopeDownStatement'] : undefined
+      ),
+    };
+  }
+
+  return converted;
+}
+
+/**
+ * Inverse of {@link toSdkRules}: re-shape the AWS `Rules` array back into
+ * the CFn spelling so `cdkd drift` compares like with like.
+ *
+ * Without this every WebACL carrying a `ByteMatchStatement` or a reference
+ * statement reported permanent phantom drift, because `drift-calculator`
+ * compares `Rules` wholesale via `deepEqual` (issue #1403).
+ *
+ * Rules are matched to the baseline POSITIONALLY, which is what the
+ * comparator itself does — a reordered or console-added rule therefore
+ * still surfaces as drift, correctly.
+ */
+function toCfnRules(rules: unknown, baselineRules: unknown): unknown[] {
+  // `GetWebACL` always returns an array (or nothing), so unlike the forward
+  // walk there is no unresolved-intrinsic case to pass through here.
+  if (!Array.isArray(rules)) return [];
+  const baseList = Array.isArray(baselineRules) ? (baselineRules as unknown[]) : undefined;
+  return rules.map((rule, i) => {
+    // A non-object entry is not a rule cdkd can re-shape; hand it back
+    // untouched rather than casting a lie onto it.
+    if (!isPlainObject(rule)) return rule;
+    const statement = rule['Statement'];
+    if (!isPlainObject(statement)) return rule;
+    const baseRule = baseList?.[i];
+    return {
+      ...rule,
+      Statement: toCfnStatement(
+        statement,
+        isPlainObject(baseRule) ? baseRule['Statement'] : undefined
+      ),
+    };
+  });
+}
+
+/**
  * Collect every {@link SDK_UNSUPPORTED_RULE_KEYS} member present anywhere
  * in the CFn `Rules` blob, so the caller can report the silent drop.
  */
@@ -623,7 +818,12 @@ export class WAFv2WebACLProvider implements ResourceProvider {
   async readCurrentState(
     physicalId: string,
     _logicalId: string,
-    _resourceType: string
+    _resourceType: string,
+    // The state-recorded baseline. Load-bearing, not decoration: the AWS
+    // `Rules` blob cannot say whether the template spelled a byte-match
+    // needle `SearchString` or `SearchStringBase64` (identical bytes), so
+    // the reverse mapping is baseline-driven. See {@link toCfnRules}.
+    properties?: Record<string, unknown>
   ): Promise<Record<string, unknown> | undefined> {
     const { id, name, scope } = parseWebACLArn(physicalId);
     if (!id || !name) return undefined;
@@ -647,7 +847,7 @@ export class WAFv2WebACLProvider implements ResourceProvider {
     if (webACL.DefaultAction) {
       result['DefaultAction'] = webACL.DefaultAction as unknown as Record<string, unknown>;
     }
-    result['Rules'] = (webACL.Rules ?? []).map((r) => r as unknown as Record<string, unknown>);
+    result['Rules'] = toCfnRules(webACL.Rules ?? [], properties?.['Rules']);
     if (webACL.VisibilityConfig) {
       result['VisibilityConfig'] = webACL.VisibilityConfig as unknown as Record<string, unknown>;
     }
