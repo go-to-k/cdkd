@@ -3,6 +3,7 @@ import { Construct } from 'constructs';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as glue from 'aws-cdk-lib/aws-glue';
+import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 
 /**
  * Glue update / delete hardening integ stack.
@@ -18,6 +19,13 @@ import * as glue from 'aws-cdk-lib/aws-glue';
  *     CDKD_TEST_UPDATE flips its description to exercise the update path.
  *  4. Glue Workflow Tags from a MAP shape (CfnWorkflow `tags` is a `{k:v}` map)
  *     must reach AWS, not be silently dropped.
+ *  5. Glue Crawler `Targets.DynamoDBTargets[].ScanAll` / `.ScanRate` (issue
+ *     #1391). The SDK `DynamoDBTarget` is a lowercase island — `Path` is
+ *     PascalCase but the scan tuning is `scanAll` / `scanRate` — while CFn
+ *     spells them `ScanAll` / `ScanRate`. The SDK v3 serializer drops unknown
+ *     members, so the tuning silently never reached AWS while the target
+ *     itself (matched by `Path`) survived. CDKD_TEST_UPDATE flips both values
+ *     so the update path is covered too.
  *
  * All resources are idle (no schedule, ON_DEMAND trigger), so deploy + destroy
  * is fast and clean — no quota, no running jobs.
@@ -67,15 +75,52 @@ export class GlueUpdateHardeningStack extends cdk.Stack {
       },
     });
 
-    // Glue Crawler — idle (no schedule). Targets a path under the script bucket.
-    new glue.CfnCrawler(this, 'EventsCrawler', {
+    // DynamoDB table referenced by the Crawler's `dynamoDbTargets` entry below.
+    // Never crawled (the crawler is idle) — it only has to exist so the target
+    // is a real table. `tableName` is a Ref, which gives the DAG the
+    // Crawler -> Table edge for free.
+    const crawlerTable = new dynamodb.Table(this, 'CrawlerTable', {
+      partitionKey: { name: 'pk', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+    // CreateCrawler VALIDATES a DynamoDB target eagerly — it calls
+    // dynamodb:DescribeTable as the crawler role — so the grant is required at
+    // create time even though this crawler never runs. Without it the create
+    // fails with AccessDeniedException on DescribeTable.
+    crawlerTable.grantReadData(glueRole);
+
+    // Glue Crawler — idle (no schedule). Targets a path under the script bucket
+    // plus the DynamoDB table above.
+    //
+    // The scan tuning (issue #1391) deliberately uses NON-DEFAULT values so the
+    // readback cannot be satisfied by an AWS-side default: `ScanAll` defaults to
+    // `true` when unset, and `ScanRate` is stored as null when unset (the 0.5 /
+    // 0.25 fallbacks are runtime behavior, not a persisted value). Base deploy
+    // sends `false` / 0.9; CDKD_TEST_UPDATE sends `true` / 1.2 so the update
+    // path is exercised with a second distinct pair.
+    const crawler = new glue.CfnCrawler(this, 'EventsCrawler', {
       name: `${this.stackName}-crawler`.toLowerCase(),
       role: glueRole.roleArn,
       databaseName: `${this.stackName}-crawler-db`.toLowerCase(),
       targets: {
         s3Targets: [{ path: `s3://${scriptBucket.bucketName}/data/` }],
+        dynamoDbTargets: [
+          {
+            path: crawlerTable.tableName,
+            scanAll: isUpdate,
+            scanRate: isUpdate ? 1.2 : 0.9,
+          },
+        ],
       },
     });
+    // `grantReadData` above mutates GlueRoleDefaultPolicy, and nothing gives
+    // the crawler a DAG edge to that policy (cdkd only adds implicit
+    // role -> policy edges for Custom Resources and Lambda VpcConfig). Since
+    // CreateCrawler eagerly calls dynamodb:DescribeTable AS the role, the
+    // create otherwise races the policy attach and AWS reports it as
+    // "Service is unable to assume the role ... to access null".
+    crawler.node.addDependency(glueRole);
 
     // Glue Workflow — `tags` is a MAP shape (the shape that exposed the
     // silent-drop bug). MaxConcurrentRuns set as a NUMBER (synths as a string).
@@ -100,6 +145,7 @@ export class GlueUpdateHardeningStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'JobName', { value: job.name! });
     new cdk.CfnOutput(this, 'WorkflowName', { value: `${this.stackName}-workflow`.toLowerCase() });
     new cdk.CfnOutput(this, 'CrawlerName', { value: `${this.stackName}-crawler`.toLowerCase() });
+    new cdk.CfnOutput(this, 'CrawlerTableName', { value: crawlerTable.tableName });
     new cdk.CfnOutput(this, 'TriggerName', { value: `${this.stackName}-trigger`.toLowerCase() });
   }
 }

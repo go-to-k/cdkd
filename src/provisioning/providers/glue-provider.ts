@@ -370,13 +370,16 @@ export class GlueProvider implements ResourceProvider {
 
     // `OpenTableFormatInput` (Apache Iceberg) is a top-level `CreateTableCommand`
     // param — a SIBLING of `TableInput`, NOT nested inside it. The CFn shape
-    // (`{ IcebergInput: { MetadataOperation, Version } }`) maps 1:1 to the SDK
-    // `OpenTableFormatInput` type (same PascalCase). Omit when absent.
+    // matches the SDK `OpenTableFormatInput` type key-for-key EXCEPT for
+    // `IcebergInput.IcebergTableInput`, which cdkd renames — see
+    // {@link toSdkOpenTableFormatInput}. Omit when absent.
     // Iceberg's `MetadataOperation: 'CREATE'` is a create-time directive, so it
-    // is intentionally wired on create only — `UpdateTableCommandInput` does not
-    // accept `OpenTableFormatInput` (verified against @aws-sdk/client-glue).
+    // is intentionally wired on create only — `UpdateTableCommandInput` has no
+    // `OpenTableFormatInput` member at all (it carries the different,
+    // update-only `UpdateOpenTableFormatInput` shape, which CFn does not model;
+    // verified against @aws-sdk/client-glue `UpdateTableRequest`).
     const openTableFormatInput = properties['OpenTableFormatInput'] as
-      | OpenTableFormatInput
+      | Record<string, unknown>
       | undefined;
 
     try {
@@ -386,7 +389,7 @@ export class GlueProvider implements ResourceProvider {
           DatabaseName: databaseName,
           TableInput: this.buildTableInput(tableInput, tableName),
           ...(openTableFormatInput !== undefined && {
-            OpenTableFormatInput: openTableFormatInput,
+            OpenTableFormatInput: toSdkOpenTableFormatInput(openTableFormatInput),
           }),
         })
       );
@@ -1435,6 +1438,39 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
+ * Convert the CFn `AWS::Glue::Table.OpenTableFormatInput` blob to the SDK
+ * `OpenTableFormatInput` shape.
+ *
+ * Every key matches the SDK model except one: CFn's
+ * `IcebergInput.IcebergTableInput` is the SDK's
+ * `IcebergInput.CreateIcebergTableInput` (@aws-sdk/client-glue `models_1.d.ts`
+ * `IcebergInput`). The AWS SDK v3 serializer drops unknown members, so leaving
+ * the CFn spelling in place silently discarded the ENTIRE Iceberg table spec
+ * (`Location` / `Schema` / `PartitionSpec` / `WriteOrder` / `Properties`) while
+ * `CreateTable` still reported success. The renamed object's own members match
+ * CFn 1:1, so this is a single key rename.
+ *
+ * Non-object inputs (an unresolved intrinsic) pass through untouched so AWS
+ * surfaces the real validation error.
+ */
+function toSdkOpenTableFormatInput(input: Record<string, unknown>): OpenTableFormatInput {
+  const iceberg = input['IcebergInput'];
+  if (
+    typeof iceberg !== 'object' ||
+    iceberg === null ||
+    Array.isArray(iceberg) ||
+    !('IcebergTableInput' in iceberg)
+  ) {
+    return input as OpenTableFormatInput;
+  }
+  const { IcebergTableInput: icebergTableInput, ...rest } = iceberg as Record<string, unknown>;
+  return {
+    ...input,
+    IcebergInput: { ...rest, CreateIcebergTableInput: icebergTableInput },
+  } as OpenTableFormatInput;
+}
+
+/**
  * Build the SDK `EncryptionConfiguration` from the CFn-shape input
  * (`AWS::Glue::SecurityConfiguration.EncryptionConfiguration`). Each
  * sub-config (`S3Encryptions[]` / `CloudWatchEncryption` /
@@ -2127,7 +2163,7 @@ export class GlueCrawlerProvider implements ResourceProvider {
         new CreateCrawlerCommand({
           Name: name,
           Role: role,
-          Targets: targets as CrawlerTargets,
+          Targets: toSdkCrawlerTargets(targets),
           ...buildCrawlerCommonFields(properties),
           ...(tags && { Tags: tags }),
         })
@@ -2159,7 +2195,7 @@ export class GlueCrawlerProvider implements ResourceProvider {
         Name: physicalId,
         ...(properties['Role'] !== undefined && { Role: properties['Role'] as string }),
         ...(properties['Targets'] !== undefined && {
-          Targets: properties['Targets'] as CrawlerTargets,
+          Targets: toSdkCrawlerTargets(properties['Targets'] as Record<string, unknown>),
         }),
         ...buildCrawlerCommonFields(properties),
       };
@@ -2303,7 +2339,11 @@ export class GlueCrawlerProvider implements ResourceProvider {
     const result: Record<string, unknown> = {
       Name: crawler.Name ?? physicalId,
       Role: crawler.Role ?? '',
-      Targets: crawler.Targets ? pickDefined(crawler.Targets as Record<string, unknown>) : {},
+      // SDK `DynamoDBTarget.{scanAll,scanRate}` -> the CFn `ScanAll` / `ScanRate`
+      // spelling recorded in state, so drift compares like with like.
+      Targets: crawler.Targets
+        ? toCfnCrawlerTargets(pickDefined(crawler.Targets as Record<string, unknown>))
+        : {},
       DatabaseName: crawler.DatabaseName ?? '',
       Description: crawler.Description ?? '',
       // CFn `Schedule` is the structured wrapper; reverse-map from the
@@ -2439,6 +2479,119 @@ function buildCrawlerCommonFields(p: Record<string, unknown>): Record<string, un
     r['CrawlerSecurityConfiguration'] = p['CrawlerSecurityConfiguration'] as string;
   }
   return r;
+}
+
+/**
+ * CFn -> SDK key renames for `Targets.DynamoDBTargets[]`.
+ *
+ * The SDK's `DynamoDBTarget` is a lowercase island in an otherwise-PascalCase
+ * model: `Path` is PascalCase but the scan-tuning members are `scanAll` /
+ * `scanRate` (@aws-sdk/client-glue `models_0.d.ts` `DynamoDBTarget`), while CFn
+ * spells them `ScanAll` / `ScanRate`. The AWS SDK v3 serializer drops unknown
+ * members, so forwarding the CFn spelling silently loses the scan tuning while
+ * the target itself (matched by `Path`) still reaches AWS. Every other
+ * `CrawlerTargets` sub-type (`S3Target` / `JdbcTarget` / `MongoDBTarget` —
+ * whose own `ScanAll` IS PascalCase — `CatalogTarget` / `DeltaTarget` /
+ * `IcebergTarget` / `HudiTarget`) spells every member exactly as CFn does.
+ */
+const CFN_TO_SDK_DYNAMODB_TARGET_KEYS: Record<string, string> = {
+  ScanAll: 'scanAll',
+  ScanRate: 'scanRate',
+};
+
+/**
+ * CFn is stringly typed, so a template (or an unresolved-then-resolved
+ * intrinsic) can carry `ScanRate: "0.9"`. The SDK models it as a double and the
+ * serializer forwards a string verbatim, so the value has to be coerced HERE —
+ * this converter is the wire boundary for `Targets` now that it re-shapes the
+ * blob. Non-numeric input passes through so AWS surfaces the real validation
+ * error rather than cdkd mangling it.
+ */
+const SDK_DYNAMODB_TARGET_NUMERIC_KEYS: readonly string[] = ['scanRate'];
+
+/**
+ * Same stringly-typed-CFn reasoning as {@link SDK_DYNAMODB_TARGET_NUMERIC_KEYS},
+ * for the boolean member: a hand-written `ScanAll: "false"` would otherwise
+ * forward the STRING `"false"` — which is truthy — to a boolean member.
+ */
+const SDK_DYNAMODB_TARGET_BOOLEAN_KEYS: readonly string[] = ['scanAll'];
+
+/** CFn booleans arrive as `true` / `false` or as the strings `"true"` / `"false"`. */
+function coerceBoolean(value: unknown): unknown {
+  if (typeof value === 'string') {
+    if (value === 'true') return true;
+    if (value === 'false') return false;
+  }
+  return value;
+}
+
+const SDK_TO_CFN_DYNAMODB_TARGET_KEYS: Record<string, string> = {
+  scanAll: 'ScanAll',
+  scanRate: 'ScanRate',
+};
+
+/**
+ * Shallow-rename an object's keys per `renames`, leaving unlisted keys — and
+ * non-object values (an unresolved intrinsic) — untouched.
+ */
+function renameRecordKeys(
+  entry: unknown,
+  renames: Record<string, string>,
+  numericKeys: readonly string[] = [],
+  booleanKeys: readonly string[] = []
+): unknown {
+  if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) return entry;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(entry as Record<string, unknown>)) {
+    const key = renames[k] ?? k;
+    if (numericKeys.includes(key)) out[key] = coerceNumber(v);
+    else if (booleanKeys.includes(key)) out[key] = coerceBoolean(v);
+    else out[key] = v;
+  }
+  return out;
+}
+
+/**
+ * Apply `renames` to every element of `targets[key]` when that entry is an
+ * array, returning the original object untouched otherwise so a non-array value
+ * reaches AWS verbatim and surfaces the real validation error.
+ */
+function renameCrawlerTargetList(
+  targets: Record<string, unknown>,
+  key: string,
+  renames: Record<string, string>,
+  numericKeys: readonly string[] = [],
+  booleanKeys: readonly string[] = []
+): Record<string, unknown> {
+  const list = targets[key];
+  if (!Array.isArray(list)) return targets;
+  return {
+    ...targets,
+    [key]: list.map((entry) => renameRecordKeys(entry, renames, numericKeys, booleanKeys)),
+  };
+}
+
+/**
+ * Convert the CFn `AWS::Glue::Crawler.Targets` blob to the SDK `CrawlerTargets`
+ * shape — see {@link CFN_TO_SDK_DYNAMODB_TARGET_KEYS} for the one divergence.
+ */
+function toSdkCrawlerTargets(targets: Record<string, unknown>): CrawlerTargets {
+  return renameCrawlerTargetList(
+    targets,
+    'DynamoDBTargets',
+    CFN_TO_SDK_DYNAMODB_TARGET_KEYS,
+    SDK_DYNAMODB_TARGET_NUMERIC_KEYS,
+    SDK_DYNAMODB_TARGET_BOOLEAN_KEYS
+  ) as CrawlerTargets;
+}
+
+/**
+ * Inverse of {@link toSdkCrawlerTargets}: re-shape a `GetCrawler` `Targets`
+ * blob back into the CFn spelling so `cdkd drift` compares like with like
+ * instead of reporting a phantom `ScanRate` removal + `scanRate` addition.
+ */
+function toCfnCrawlerTargets(targets: Record<string, unknown>): Record<string, unknown> {
+  return renameCrawlerTargetList(targets, 'DynamoDBTargets', SDK_TO_CFN_DYNAMODB_TARGET_KEYS);
 }
 
 /**

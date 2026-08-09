@@ -1231,6 +1231,7 @@
     "--apply-immediately",
     "--archive-name",
     "--arg",
+    "--argjson",
     "--asset-bucket",
     "--assume-role",
     "--attribute",

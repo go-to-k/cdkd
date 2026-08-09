@@ -12,6 +12,12 @@
 #      is exercised here).
 #   4. Workflow Tags from a MAP shape reaching AWS — asserted via
 #      `aws glue get-tags` on the workflow ARN.
+#   5. Crawler `Targets.DynamoDBTargets[].ScanAll` / `.ScanRate` reaching AWS
+#      (issue #1391). CFn spells them PascalCase; the SDK `DynamoDBTarget` is a
+#      lowercase island (`scanAll` / `scanRate`), and the SDK v3 serializer
+#      drops unknown members, so the scan tuning silently never reached AWS
+#      while the target itself (matched by `Path`) survived. Asserted via
+#      `aws glue get-crawler` on BOTH the base deploy and the UPDATE re-deploy.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -132,8 +138,15 @@ CRAWLER_NAME=$(echo "${STATE}" | jq -r '.outputs.CrawlerName // empty')
 [ -z "${CRAWLER_NAME}" ] && CRAWLER_NAME="${CRAWLER_NAME_FALLBACK}"
 TRIGGER_NAME=$(echo "${STATE}" | jq -r '.outputs.TriggerName // empty')
 [ -z "${TRIGGER_NAME}" ] && TRIGGER_NAME="${TRIGGER_NAME_FALLBACK}"
+# The crawler's DynamoDB target table is CDK-autonamed, so there is no
+# deterministic fallback — the output is the only source.
+CRAWLER_TABLE_NAME=$(echo "${STATE}" | jq -r '.outputs.CrawlerTableName // empty')
+if [ -z "${CRAWLER_TABLE_NAME}" ]; then
+  echo "FAIL: state has no CrawlerTableName output after deploy" >&2
+  exit 1
+fi
 
-echo "    Using job '${JOB_NAME}', workflow '${WORKFLOW_NAME}', crawler '${CRAWLER_NAME}', trigger '${TRIGGER_NAME}'"
+echo "    Using job '${JOB_NAME}', workflow '${WORKFLOW_NAME}', crawler '${CRAWLER_NAME}', trigger '${TRIGGER_NAME}', crawler table '${CRAWLER_TABLE_NAME}'"
 
 # --- Assertion 1: Job numeric props reached AWS as NUMBERS ------------
 # The provider's numeric-coercion fix sends real numbers to the Glue SDK.
@@ -181,13 +194,65 @@ if [ "${ENV_TAG}" != "integ" ] || [ "${TEAM_TAG}" != "data-platform" ]; then
 fi
 echo "    OK: Workflow MAP-shape tags reached AWS (env=integ, team=data-platform)"
 
-# --- Sanity: crawler + trigger exist ----------------------------------
-if aws glue get-crawler --name "${CRAWLER_NAME}" --region "${REGION}" >/dev/null 2>&1; then
-  echo "    OK: crawler ${CRAWLER_NAME} exists"
-else
-  echo "FAIL: crawler ${CRAWLER_NAME} missing" >&2
+# --- Assertion 3: Crawler DynamoDB scan tuning reached AWS (#1391) -----
+# The SDK `DynamoDBTarget` spells the scan tuning `scanAll` / `scanRate`
+# (lowercase) while CFn spells it `ScanAll` / `ScanRate`; the SDK v3 serializer
+# DROPS unknown members, so without the rename the target still reaches AWS
+# (matched by `Path`) but the tuning is silently lost. The fixture sends
+# NON-DEFAULT values (`ScanAll: false`, `ScanRate: 0.9`) precisely so an
+# AWS-side default cannot satisfy this assertion: `ScanAll` defaults to true
+# when unset, and `ScanRate` is stored as null when unset.
+assert_ddb_scan_tuning() { # usage: assert_ddb_scan_tuning <crawler-json> <want scanAll> <want scanRate> <phase label>
+  local json="$1" want_all="$2" want_rate="$3" phase="$4"
+  local target got_all got_rate rate_ok
+  target=$(printf '%s' "${json}" | jq -c '.Crawler.Targets.DynamoDBTargets[0]')
+  if [ -z "${target}" ] || [ "${target}" = "null" ]; then
+    echo "FAIL: ${phase}: Crawler has no DynamoDBTargets entry at all" >&2
+    printf '%s\n' "${json}" >&2
+    exit 1
+  fi
+  # `has()` rather than jq's `//` alternative operator: `//` treats a
+  # legitimate `false` as absent, which is exactly the base-phase ScanAll
+  # value. The PascalCase branch is a diagnostic fallback — if AWS ever starts
+  # echoing the CFn spelling we want a value mismatch, not a bogus "absent".
+  got_all=$(printf '%s' "${target}" | jq -r 'if has("scanAll") then (.scanAll|tostring) elif has("ScanAll") then (.ScanAll|tostring) else "<absent>" end')
+  got_rate=$(printf '%s' "${target}" | jq -r 'if has("scanRate") then (.scanRate|tostring) elif has("ScanRate") then (.ScanRate|tostring) else "<absent>" end')
+  if [ "${got_all}" != "${want_all}" ]; then
+    echo "FAIL: ${phase}: DynamoDBTargets[0] scanAll is '${got_all}', expected '${want_all}' — CFn ScanAll never reached AWS (issue #1391)" >&2
+    printf '%s\n' "${target}" >&2
+    exit 1
+  fi
+  if [ "${got_rate}" = "<absent>" ]; then
+    echo "FAIL: ${phase}: DynamoDBTargets[0] scanRate is absent, expected ${want_rate} — CFn ScanRate never reached AWS (issue #1391)" >&2
+    printf '%s\n' "${target}" >&2
+    exit 1
+  fi
+  # AWS echoes ScanRate as a JSON double, so compare numerically with a
+  # tolerance instead of string-matching a float rendering.
+  rate_ok=$(jq -rn --argjson got "${got_rate}" --argjson want "${want_rate}" \
+    'if ($got > ($want - 0.0001) and $got < ($want + 0.0001)) then "yes" else "no" end')
+  if [ "${rate_ok}" != "yes" ]; then
+    echo "FAIL: ${phase}: DynamoDBTargets[0] scanRate is ${got_rate}, expected ${want_rate} (issue #1391)" >&2
+    printf '%s\n' "${target}" >&2
+    exit 1
+  fi
+  echo "    OK: ${phase}: DynamoDBTargets[0] scanAll=${got_all} scanRate=${got_rate} reached AWS"
+}
+
+CRAWLER_JSON=$(aws glue get-crawler --name "${CRAWLER_NAME}" --region "${REGION}" --output json)
+echo "    OK: crawler ${CRAWLER_NAME} exists"
+# `Path` is the member that survived even BEFORE the #1391 fix (it is
+# PascalCase in the SDK too), so asserting it separately keeps the two halves
+# of the bug distinguishable in a failure report: target present, tuning lost.
+DDB_TARGET_PATH=$(printf '%s' "${CRAWLER_JSON}" | jq -r '.Crawler.Targets.DynamoDBTargets[0].Path // "<absent>"')
+if [ "${DDB_TARGET_PATH}" != "${CRAWLER_TABLE_NAME}" ]; then
+  echo "FAIL: DynamoDBTargets[0].Path is '${DDB_TARGET_PATH}', expected '${CRAWLER_TABLE_NAME}'" >&2
   exit 1
 fi
+echo "    OK: DynamoDBTargets[0].Path == ${CRAWLER_TABLE_NAME}"
+assert_ddb_scan_tuning "${CRAWLER_JSON}" 'false' '0.9' 'create'
+
+# --- Sanity: trigger exists -------------------------------------------
 if aws glue get-trigger --name "${TRIGGER_NAME}" --region "${REGION}" >/dev/null 2>&1; then
   echo "    OK: trigger ${TRIGGER_NAME} exists"
 else
@@ -202,7 +267,7 @@ fi
 # would (a) skip the update test on a plain `bash verify.sh` run and (b) make
 # Phase 1's base-shape deploy synth the updated values, so the env must be
 # controlled per-phase, not globally.
-echo "==> Phase 2: re-deploy with CDKD_TEST_UPDATE=true (trigger desc + job timeout)"
+echo "==> Phase 2: re-deploy with CDKD_TEST_UPDATE=true (trigger desc + job timeout + crawler scan tuning)"
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
@@ -214,6 +279,15 @@ if [ "${NEW_TIMEOUT}" != "90" ]; then
   exit 1
 fi
 echo "    OK: Job.Timeout updated to 90 (number)"
+
+# The UPDATE path has its own CFn -> SDK rename call site (UpdateCrawler), so
+# re-assert the scan tuning against the second, distinct pair.
+CRAWLER_JSON=$(aws glue get-crawler --name "${CRAWLER_NAME}" --region "${REGION}" --output json)
+# NOTE: scanRate carries the regression signal for THIS phase. `true` is AWS's
+# own default for scanAll, so that half of the assertion would also pass if the
+# update dropped the tuning entirely — only the 1.2 discriminates. (The create
+# phase asserts the drop-proof pair, false/0.9, and fails first anyway.)
+assert_ddb_scan_tuning "${CRAWLER_JSON}" 'true' '1.2' 'update'
 
 # --- Phase 3: destroy -------------------------------------------------
 echo "==> Phase 3: destroy"
@@ -238,8 +312,28 @@ for chk in \
 done
 echo "    OK: all Glue resources are gone"
 
+# DeleteTable is async and the provider does not wait, so the table is normally
+# still DELETING moments after destroy returns. Accept GONE or DELETING; only a
+# live state (ACTIVE / UPDATING) means the delete never happened. Same shape as
+# dynamodb-gsi-update/verify.sh. (No sleep: DeleteTable transitions the table to
+# DELETING synchronously, so one check right after destroy is sufficient.)
+if gone_probe aws dynamodb describe-table --table-name "${CRAWLER_TABLE_NAME}" --region "${REGION}"; then
+  ddb_status="GONE"
+elif ! ddb_status="$(aws dynamodb describe-table --table-name "${CRAWLER_TABLE_NAME}" --region "${REGION}" \
+    --query 'Table.TableStatus' --output text 2>&1)"; then
+  # TOCTOU: the table can vanish between gone_probe and this requery.
+  printf '%s' "${ddb_status}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' \
+    && ddb_status="GONE" \
+    || { echo "FAIL: describe-table requery undetermined: ${ddb_status}" >&2; exit 1; }
+fi
+if [ "${ddb_status}" != "GONE" ] && [ "${ddb_status}" != "DELETING" ]; then
+  echo "FAIL: DynamoDB crawler-target table ${CRAWLER_TABLE_NAME} still exists (status ${ddb_status}) after destroy" >&2
+  exit 1
+fi
+echo "    OK: DynamoDB crawler-target table is gone (status: ${ddb_status})"
+
 assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: state file is gone"
 
 echo ""
-echo "==> glue-update-hardening test passed (numeric coercion + MAP tags + clean destroy)"
+echo "==> glue-update-hardening test passed (numeric coercion + MAP tags + DynamoDB scan tuning + clean destroy)"

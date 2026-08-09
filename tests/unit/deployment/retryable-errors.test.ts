@@ -66,6 +66,20 @@ describe('isRetryableTransientError', () => {
         'Service is unable to assume provided role. Please verify role\'s TrustPolicy.',
         'Glue assume-role IAM propagation',
       ],
+      // Second AWS wording of the SAME Glue race, observed 2026-08-09 on the
+      // same fixture: `the role <arn>` instead of `provided role`, which the
+      // anchor above does not match.
+      [
+        "Failed to create Glue Crawler EventsCrawler: com.amazonaws.services.glue.model.AccessDeniedException: You need to enable AWS Security Token Service for this region. Service is unable to assume the role arn:aws:iam::111122223333:role/Stack-GlueRole to access null. Please verify the role's TrustPolicy.",
+        'Glue assume-role IAM propagation (the-role wording)',
+      ],
+      // Third wording: Glue assumed the fresh role and the resulting session's
+      // token is not valid yet. Anchored on the Java-SDK `(Service:` trailer so
+      // only a SERVICE-wrapped error matches.
+      [
+        'Failed to create Glue Crawler EventsCrawler: The security token included in the request is invalid. (Service: AmazonDynamoDBv2; Status Code: 400; Error Code: UnrecognizedClientException; Request ID: abc; Proxy: null)',
+        'Glue assumed-session token propagation',
+      ],
       // Step Functions same-stack role IAM-propagation race: CreateStateMachine
       // is issued before the just-created role's trust policy propagates to
       // Step Functions' assume layer (surfaced by a bug-hunt sweep on an
@@ -192,6 +206,16 @@ describe('isRetryableTransientError', () => {
 
     it('does not retry on a generic non-matching message', () => {
       const message = 'InvalidParameterValue: BucketName must be globally unique';
+      expect(isRetryableTransientError(new Error(message), message)).toBe(false);
+    });
+
+    it('does not retry on cdkd OWN expired credentials (no service-wrapped trailer)', () => {
+      // The load-bearing guard for the assumed-session-token pattern: the JS
+      // SDK reports the developer's own expired SSO session with the SAME
+      // sentence but NO Java-SDK `(Service: ...)` trailer. Retrying it would
+      // burn ~48s before surfacing a condition that will never resolve.
+      const message =
+        'UnrecognizedClientException: The security token included in the request is invalid.';
       expect(isRetryableTransientError(new Error(message), message)).toBe(false);
     });
 
@@ -514,6 +538,11 @@ describe('isIamPropagationError', () => {
     ],
     ['The role defined for the function cannot be assumed by Lambda.', 'Lambda exec role'],
     ['Service is unable to assume provided role. Please verify role TrustPolicy', 'Glue'],
+    ['Service is unable to assume the role arn:aws:iam::1:role/r to access null.', 'Glue the-role'],
+    [
+      'The security token included in the request is invalid. (Service: AmazonDynamoDBv2; Error Code: UnrecognizedClientException)',
+      'Glue assumed-session token',
+    ],
     ['User: arn:aws:iam::1:user/x is not authorized to perform: sts:AssumeRole', 'authz'],
     ['Invalid principal in policy', 'S3 bucket policy'],
     ['Invalid parameter: Policy Error: PrincipalNotFound', 'SNS topic policy'],
