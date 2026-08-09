@@ -167,6 +167,46 @@ describe('extractAwsInvocations', () => {
     expect(extractAwsInvocations('aws --version\n')).toEqual([]);
   });
 
+  // False positives found by review against the REAL tree. None of these is an
+  // invocation, and before the quoted-span blanking + `:`-in-token change all
+  // three parsed as one — inflating the coverage floors with non-invocations
+  // and, worse, making a fixture's own `echo "... aws emr list-instance-groups
+  // ..."` explanation a CI-blocking violation curable only by deleting the
+  // explanation.
+  it.each([
+    ['prose in a double-quoted echo', 'echo "==> Verifying deploy via aws cli (sanity)"'],
+    ['an ARN literal', 'ARN="arn:aws:s3:::my-bucket"'],
+    ['an unquoted ARN literal', 'aws s3 rm arn:aws:s3:::my-bucket'],
+    ['a JMESPath backtick literal', "QUERY=\"Tags[?Key==\\`aws:cdk:path\\`]\""],
+    ['a single-quoted explanation', "echo 'do not call aws emr list-instance-groups'"],
+  ])('does not parse %s as an invocation', (_label, body) => {
+    const found = extractAwsInvocations(`${body}\n`).map((i) => `${i.service} ${i.verb}`);
+    // `aws s3 rm ...` IS a real invocation in one case — assert only that the
+    // ARN did not additionally yield a bogus `s3 my-bucket`.
+    expect(found.filter((f) => f !== 's3 rm')).toEqual([]);
+  });
+
+  // The capture form must SURVIVE quoted-span blanking — it is the single
+  // largest shape in the tree (~1000 invocations) and lives inside double
+  // quotes, so blanking without preserving `$( )` would delete it wholesale.
+  it('still sees an invocation inside a double-quoted command substitution', () => {
+    const inv = extractAwsInvocations('IDS="$(aws emr list-clusters --active)"\n');
+    expect(inv.map((i) => `${i.service} ${i.verb}`)).toEqual(['emr list-clusters']);
+  });
+
+  // Without the global-option skip this invocation VANISHED silently — the
+  // service slot held `--region`, `NAME` rejected it, and the call went
+  // unchecked with no diagnostic.
+  it.each([
+    ['--region', 'aws --region us-east-1 emr list-instance-groups --cluster-id j-A'],
+    ['--region=value', 'aws --region=us-east-1 emr list-instance-groups --cluster-id j-A'],
+    ['a boolean global', 'aws --no-cli-pager emr list-instance-groups --cluster-id j-A'],
+    ['two globals', 'aws --profile p --debug emr list-instance-groups --cluster-id j-A'],
+  ])('sees the invocation behind a leading global option: %s', (_label, body) => {
+    const inv = extractAwsInvocations(`${body}\n`);
+    expect(inv.map((i) => `${i.service} ${i.verb}`)).toEqual(['emr list-instance-groups']);
+  });
+
   it('marks the escape hatch on the same line and the line above', () => {
     const same = extractAwsInvocations(
       `aws emr list-instance-groups --cluster-id x # ${ALLOW_MARKER} proven to work here\n`
@@ -177,6 +217,22 @@ describe('extractAwsInvocations', () => {
       `# ${ALLOW_MARKER} proven to work here\naws emr list-instance-groups --cluster-id x\n`
     );
     expect(above[0]!.allowed).toBe(true);
+
+    // The marker must be a COMMENT, not any occurrence of the string. A
+    // fixture that merely PRINTS the marker text must not silently disarm the
+    // check for the command on that line.
+    const inString = extractAwsInvocations(
+      `echo "${ALLOW_MARKER} nope"; aws emr list-instance-groups --cluster-id x\n`
+    );
+    expect(inString.some((i) => i.allowed)).toBe(false);
+
+    // "The line above" means a WHOLE-line comment. A marker trailing the
+    // PREVIOUS command is about that command, not the next one.
+    const trailingAbove = extractAwsInvocations(
+      `aws emr list-clusters # ${ALLOW_MARKER} about this line only\naws emr list-instance-groups --cluster-id x\n`
+    );
+    const leaked = trailingAbove.find((i) => i.verb === 'list-instance-groups');
+    expect(leaked?.allowed).toBe(false);
   });
 });
 
@@ -232,7 +288,7 @@ describe('integ fixture aws invocations (#1402)', () => {
   it('parses a substantial share of the fixture tree', () => {
     const stats = collectStats();
     expect(stats.fixtures).toBeGreaterThan(150);
-    // Current: 2687 invocations across 221 fixtures, 70 services, 362 verbs.
+    // Current: 2640 invocations across 221 fixtures, 68 services, 355 verbs.
     expect(stats.total).toBeGreaterThan(2200);
     expect(stats.services.size).toBeGreaterThan(55);
     expect(stats.verbs.size).toBeGreaterThan(290);
@@ -249,7 +305,7 @@ describe('integ fixture aws invocations (#1402)', () => {
   it('parses every invocation shape it claims to support', () => {
     const stats = collectStats();
     const floors: Record<keyof ReturnType<typeof collectStats>['shapes'], number> = {
-      // Current: plain 1012, substitution 1030, helperArgument 414,
+      // Current: plain 1008, substitution 1028, helperArgument 414,
       // condition 211. Floors sit ~20% under, low enough for fixture churn and
       // high enough that losing a shape outright cannot slip through.
       // `aws ...` at the start of a segment — the common form.

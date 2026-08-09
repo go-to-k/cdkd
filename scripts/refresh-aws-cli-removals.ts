@@ -78,7 +78,15 @@ export function findAwsCliPackageRoot(explicitRoot?: string): string {
     return explicitRoot;
   }
 
-  const awsBin = execFileSync('sh', ['-c', 'command -v aws'], { encoding: 'utf8' }).trim();
+  // `command -v` EXITS 1 when the binary is absent, so execFileSync throws
+  // before any empty-string check could run — catch it and surface the
+  // actionable message instead of a raw `Command failed: sh -c command -v aws`.
+  let awsBin = '';
+  try {
+    awsBin = execFileSync('sh', ['-c', 'command -v aws'], { encoding: 'utf8' }).trim();
+  } catch {
+    awsBin = '';
+  }
   if (!awsBin) throw new Error('aws CLI not found on PATH — pass --aws-root <awscli package dir>');
   // `aws` is usually a symlink into the versioned install; resolve it, then walk
   // up looking for the packaged `awscli` directory.
@@ -116,8 +124,23 @@ function pythonSitePackages(dir: string): string[] {
 export function buildFixture(pkgRoot: string): RemovedCommandsFixture {
   const source = readFileSync(join(pkgRoot, 'customizations', 'removals.py'), 'utf8');
   const parsed = parseRemovalsSource(source);
+  // Reconcile against an INDEPENDENT count of the events in the file. The
+  // regex requires `on_event` to be immediately followed by `remove_commands`,
+  // so a reordered or interleaved `remove()` call would drop that service
+  // SILENTLY; a bare `size === 0` guard only catches total failure, which is
+  // the vacuous-pass shape `.claude/rules/testing.md` warns about.
+  const declaredEvents = new Set(
+    [...source.matchAll(/building-command-table\.([a-z0-9-]+)/g)].map((m) => m[1]!)
+  );
   if (parsed.size === 0) {
     throw new Error(`parsed 0 removals from ${pkgRoot}/customizations/removals.py — parser is stale`);
+  }
+  const missed = [...declaredEvents].filter((s) => !parsed.has(s));
+  if (missed.length > 0) {
+    throw new Error(
+      `parser missed ${missed.length} command-table removal event(s) (${missed.join(', ')}) in ` +
+        `${pkgRoot}/customizations/removals.py — the AWS CLI changed the call shape, update parseRemovalsSource`
+    );
   }
   let version = 'unknown';
   try {
@@ -143,7 +166,14 @@ function main(): void {
   const argv = process.argv.slice(2);
   const check = argv.includes('--check');
   const rootIdx = argv.indexOf('--aws-root');
-  const explicitRoot = rootIdx >= 0 ? argv[rootIdx + 1] : undefined;
+  const rootValue = rootIdx >= 0 ? argv[rootIdx + 1] : undefined;
+  // `--aws-root` with no value (or followed by another flag) must ERROR, not
+  // silently fall back to PATH — or worse, take `--check` as the root path.
+  if (rootIdx >= 0 && (rootValue === undefined || rootValue.startsWith('-'))) {
+    console.error('--aws-root requires a path argument (the awscli package directory)');
+    process.exit(1);
+  }
+  const explicitRoot = rootValue;
 
   const fixture = buildFixture(findAwsCliPackageRoot(explicitRoot));
   const serialized = `${JSON.stringify(fixture, null, 2)}\n`;
@@ -151,11 +181,18 @@ function main(): void {
   if (check) {
     const current = existsSync(FIXTURE_PATH) ? readFileSync(FIXTURE_PATH, 'utf8') : '';
     // Compare the removal DATA only: the captured `aws --version` differs per
-    // machine and must not make a same-data capture read as drift.
+    // machine and must not make a same-data capture read as drift. A corrupt
+    // or missing fixture reports STALE (the actionable verdict) rather than
+    // throwing a parse error at the user.
+    let currentRemoved: unknown;
+    try {
+      currentRemoved = current === '' ? undefined : (JSON.parse(current) as RemovedCommandsFixture).removed;
+    } catch {
+      currentRemoved = undefined;
+    }
     const sameData =
-      current !== '' &&
-      JSON.stringify((JSON.parse(current) as RemovedCommandsFixture).removed) ===
-        JSON.stringify(fixture.removed);
+      currentRemoved !== undefined &&
+      JSON.stringify(currentRemoved) === JSON.stringify(fixture.removed);
     if (!sameData) {
       console.error(
         `aws-cli-removed-commands.json is stale vs ${fixture.$awsCliVersion} — re-run: node scripts/refresh-aws-cli-removals.ts`

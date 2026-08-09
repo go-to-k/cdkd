@@ -86,7 +86,96 @@ const NAME = /^[a-z][a-z0-9-]*$/;
  * being read as a verb; keeping `/` is what stops `s3://bucket` from splitting
  * into a service-looking `s3`.
  */
-const TOKEN_SEPARATOR = /[^A-Za-z0-9._/-]+/;
+const TOKEN_SEPARATOR = /[^A-Za-z0-9._/:-]+/;
+
+/**
+ * AWS CLI global options that CONSUME the following token, so a leading
+ * `aws --region us-east-1 emr <verb>` is not read as service `us-east-1`.
+ * Boolean globals (`--debug`, `--no-cli-pager`, ...) need no entry — they are
+ * skipped by the generic "starts with `-`" rule.
+ */
+const VALUE_TAKING_GLOBAL_OPTIONS: ReadonlySet<string> = new Set([
+  '--region',
+  '--profile',
+  '--endpoint-url',
+  '--output',
+  '--query',
+  '--color',
+  '--ca-bundle',
+  '--cli-read-timeout',
+  '--cli-connect-timeout',
+  '--cli-binary-format',
+]);
+
+/**
+ * Blanks out quoted spans so their contents are not mistaken for commands,
+ * while PRESERVING `$( ... )` command substitutions inside them.
+ *
+ * Both halves are load-bearing. Without blanking, prose and data parse as
+ * invocations — confirmed live in this tree: `echo "==> Verifying deploy via
+ * aws cli (sanity)"` read as `aws cli sanity`, and `arn:aws:s3:::bucket` read
+ * as `aws s3 bucket`. That inflates the coverage floors with non-invocations
+ * and, worse, would make a fixture's own `echo "... aws emr
+ * list-instance-groups ..."` explanation a CI-blocking violation whose only
+ * cure is deleting the explanation — the outcome comment-stripping exists to
+ * prevent. And without preserving `$( )`, the capture form
+ * `IDS="$(aws emr list-clusters)"` — over a thousand invocations, the single
+ * largest shape in the tree — would vanish wholesale.
+ *
+ * Note `:` is INSIDE {@link TOKEN_SEPARATOR}'s allowed set for the same
+ * family of reasons: it keeps `arn:aws:...` and a JMESPath `` `aws:cdk:path` ``
+ * as ONE token rather than splitting out a bare `aws`.
+ */
+export function blankQuotedSpans(line: string): string {
+  let out = '';
+  let i = 0;
+  while (i < line.length) {
+    const ch = line[i]!;
+    if (ch !== '"' && ch !== "'") {
+      out += ch;
+      i++;
+      continue;
+    }
+    const quote = ch;
+    out += ch;
+    i++;
+    while (i < line.length && line[i] !== quote) {
+      // `\"` inside a double-quoted span is an escaped quote, not the closer.
+      if (quote === '"' && line[i] === '\\' && i + 1 < line.length) {
+        out += '  ';
+        i += 2;
+        continue;
+      }
+      // A command substitution runs a real command — keep it verbatim and let
+      // the tokenizer see it. Single quotes suppress expansion, so only the
+      // double-quoted case substitutes.
+      if (quote === '"' && line[i] === '$' && line[i + 1] === '(') {
+        let depth = 0;
+        while (i < line.length) {
+          if (line[i] === '(') depth++;
+          else if (line[i] === ')') {
+            depth--;
+            if (depth === 0) {
+              out += line[i]!;
+              i++;
+              break;
+            }
+          }
+          out += line[i]!;
+          i++;
+        }
+        continue;
+      }
+      out += ' ';
+      i++;
+    }
+    if (i < line.length) {
+      out += line[i]!;
+      i++;
+    }
+  }
+  return out;
+}
 
 /**
  * Pulls each `aws <service> <verb>` out of a verify.sh.
@@ -109,23 +198,50 @@ export function extractAwsInvocations(content: string): AwsInvocation[] {
 
   for (let i = 0; i < joined.length; i++) {
     const { text, line } = joined[i]!;
-    // The hatch lives in a COMMENT, so it has to be read off the raw text
-    // before the comment is stripped. Accept it on the invocation's own line or
-    // the line immediately above (the idiomatic placement for a long rationale).
-    const allowed = text.includes(ALLOW_MARKER) || (joined[i - 1]?.text.includes(ALLOW_MARKER) ?? false);
-
+    // The hatch lives in a COMMENT, so it is read from the part
+    // `stripTrailingComment` removes — NOT from the raw line, which would also
+    // honor the marker when it merely appears inside a string literal.
     const stripped = stripTrailingComment(text);
+    const ownComment = text.slice(stripped.length);
+    const prevText = joined[i - 1]?.text ?? '';
+    // On the line above, require a WHOLE-line comment: a marker trailing a
+    // previous command is about that command, not this one.
+    const prevIsCommentLine = prevText.trimStart().startsWith('#');
+    const allowed =
+      ownComment.includes(ALLOW_MARKER) ||
+      (prevIsCommentLine && prevText.includes(ALLOW_MARKER));
 
-    for (const segment of splitShellCommands(stripped)) {
+    for (const segment of splitShellCommands(blankQuotedSpans(stripped))) {
       const tokens = segment.split(TOKEN_SEPARATOR).filter(Boolean);
       for (let t = 0; t < tokens.length - 2; t++) {
         if (tokens[t] !== 'aws') continue;
-        const service = tokens[t + 1]!;
-        const verb = tokens[t + 2]!;
-        // A flag or a variable right after `aws` means this is not a plain
-        // `aws <service> <verb>` we can classify statically — skip rather than
-        // guess (an unclassifiable invocation is reported by the coverage
-        // floors, not by a wrong verdict).
+
+        // Step past any leading GLOBAL options — `aws --region us-east-1 emr
+        // list-clusters` must resolve to (emr, list-clusters), not
+        // (us-east-1, emr). Without this the invocation silently vanishes:
+        // `NAME` rejects `--region` and the whole call goes unchecked.
+        let k = t + 1;
+        while (k < tokens.length && tokens[k]!.startsWith('-')) {
+          const flag = tokens[k]!.split('=')[0]!;
+          k++;
+          // `--flag=value` already carries its value; a bare value-taking flag
+          // consumes the next token.
+          if (
+            VALUE_TAKING_GLOBAL_OPTIONS.has(flag) &&
+            !tokens[k - 1]!.includes('=') &&
+            k < tokens.length &&
+            !tokens[k]!.startsWith('-')
+          ) {
+            k++;
+          }
+        }
+
+        const service = tokens[k];
+        const verb = tokens[k + 1];
+        // A variable or otherwise unclassifiable token means this is not a
+        // plain `aws <service> <verb>` we can judge statically — skip rather
+        // than guess.
+        if (service === undefined || verb === undefined) continue;
         if (!NAME.test(service) || !NAME.test(verb)) continue;
         invocations.push({ line, service, verb, raw: segment.trim(), allowed });
       }
