@@ -58,6 +58,25 @@ describe('collectWrittenMemberNames (synthetic)', () => {
     ]);
   });
 
+  it('does NOT credit a VARIABLE key in an element-access write', () => {
+    // `sdk[k] = v` names a variable, not a member. Crediting it would let a
+    // local called `type` / `name` clear a CI-blocking bucket for the SDK
+    // member of that name.
+    const written = collectWrittenMemberNames(`
+      const type = 'x';
+      sdk[type] = 1;
+      sdk['batchReportMode'] = 2;
+    `);
+    expect(written.has('type')).toBe(false);
+    expect(written.has('batchReportMode')).toBe(true);
+  });
+
+  it('does NOT credit a computed object-literal property name', () => {
+    const written = collectWrittenMemberNames(`const o = { [k]: 1, literal: 2 };`);
+    expect(written.has('k')).toBe(false);
+    expect(written.has('literal')).toBe(true);
+  });
+
   it('does NOT count a read (the reverse-map direction)', () => {
     const written = collectWrittenMemberNames(`
       const out = {};

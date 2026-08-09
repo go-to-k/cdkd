@@ -791,10 +791,24 @@ export function collectWrittenMemberNames(
     ts.ScriptKind.TS
   );
   const written = new Set<string>();
-  const literalName = (node: ts.Node): string | undefined =>
+  /**
+   * The written name of an object-literal property. An Identifier IS the name
+   * here (`{ batchReportMode: … }`), and a computed name (`{ [k]: … }`) is a
+   * `ComputedPropertyName`, which yields nothing.
+   */
+  const propertyName = (node: ts.Node): string | undefined =>
     ts.isIdentifier(node) || ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)
       ? node.text
       : undefined;
+  /**
+   * The written name of an element access. Deliberately STRICTER than
+   * {@link propertyName}: in `sdk[k] = v` the argument is an Identifier naming
+   * a VARIABLE, not a member, so crediting it would let a local called `type`
+   * or `name` vouch for an SDK member of that name — a false clear on a
+   * CI-blocking bucket. Only a literal key counts.
+   */
+  const elementAccessName = (node: ts.Node): string | undefined =>
+    ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node) ? node.text : undefined;
 
   const visit = (node: ts.Node, excluded: boolean): void => {
     let inExcluded = excluded;
@@ -812,7 +826,7 @@ export function collectWrittenMemberNames(
     }
     if (!inExcluded) {
       if (ts.isPropertyAssignment(node)) {
-        const name = literalName(node.name);
+        const name = propertyName(node.name);
         if (name !== undefined) written.add(name);
       } else if (ts.isShorthandPropertyAssignment(node)) {
         written.add(node.name.text);
@@ -824,7 +838,7 @@ export function collectWrittenMemberNames(
         if (ts.isPropertyAccessExpression(lhs)) {
           written.add(lhs.name.text);
         } else if (ts.isElementAccessExpression(lhs)) {
-          const name = literalName(lhs.argumentExpression);
+          const name = elementAccessName(lhs.argumentExpression);
           if (name !== undefined) written.add(name);
         }
       }
