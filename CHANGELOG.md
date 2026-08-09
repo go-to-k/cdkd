@@ -1,3 +1,10 @@
+## [0.278.7](https://github.com/go-to-k/cdkd/compare/v0.278.6...v0.278.7) (2026-08-09)
+
+
+### Bug Fixes
+
+* **wafv2:** decode SearchStringBase64 and rename reference-statement Arn to the SDK ARN ([#1405](https://github.com/go-to-k/cdkd/issues/1405)) ([615c33b](https://github.com/go-to-k/cdkd/commit/615c33b846235d6febb41c066f68265dab67129e))
+
 ## [0.278.6](https://github.com/go-to-k/cdkd/compare/v0.278.5...v0.278.6) (2026-08-09)
 
 
