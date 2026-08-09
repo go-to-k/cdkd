@@ -80,10 +80,15 @@ import type {
  *  - `update()` covers every mutable surface — Tags, DeletionProtection,
  *    TableClass, SSE, StreamSpec, OnDemand throughput, BillingMode flip,
  *    Replica add / remove / modify, GSI add / remove / modify, TTL toggle.
- *  - The serialization is load-bearing: AWS's `UpdateTable` accepts only
- *    ONE of `{BillingMode, ReplicaUpdates, GlobalSecondaryIndexUpdates}`
- *    per call, so each category is its own SDK round-trip with a wait-for
- *    -ACTIVE in between. Immutable property changes (TableName, KeySchema,
+ *  - The serialization is load-bearing: AWS's `UpdateTable` does not accept
+ *    `ReplicaUpdates` alongside `BillingMode` / `GlobalSecondaryIndexUpdates`,
+ *    so each category is its own SDK round-trip with a wait-for-ACTIVE in
+ *    between. The ONE documented exception is the `PAY_PER_REQUEST ->
+ *    PROVISIONED` flip, where AWS REQUIRES per-GSI `ProvisionedThroughput` in
+ *    the SAME call as `BillingMode` ("you must specify read and write capacity
+ *    unit values for the table and for each global secondary index") — so that
+ *    path deliberately sends both together (Issue #1387). Immutable property
+ *    changes (TableName, KeySchema,
  *    AttributeDefinitions removal, LocalSecondaryIndexes) throw
  *    `ProvisioningError` naming the offending field — the deploy engine's
  *    diff classification should catch these as REPLACEMENT before ever
@@ -646,10 +651,13 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
   /**
    * Update a DynamoDB Global Table in place.
    *
-   * AWS-side state-machine constraint: `UpdateTable` accepts only ONE of
-   * `{BillingMode, ReplicaUpdates, GlobalSecondaryIndexUpdates}` per call,
+   * AWS-side state-machine constraint: `UpdateTable` does not accept
+   * `ReplicaUpdates` alongside `BillingMode` / `GlobalSecondaryIndexUpdates`,
    * so each category must serialize into its own SDK round-trip with a
-   * `waitForTableActiveAfterUpdate` between every step. Order:
+   * `waitForTableActiveAfterUpdate` between every step. The ONE exception is
+   * step 4's `PAY_PER_REQUEST -> PROVISIONED` flip, which AWS requires to
+   * carry per-GSI `ProvisionedThroughput` in the same call (Issue #1387).
+   * Order:
    *   1. Wait for current ACTIVE (defensive).
    *   2. Tags diff (TagResource / UntagResource — no wait needed).
    *   3. Non-conflicting flat fields (DeletionProtectionEnabled / TableClass
@@ -917,8 +925,13 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           // Only indexes that ALREADY exist on AWS can take an `Update`
           // action; a GSI introduced by this same deploy is created (with
           // its throughput) by step 6's `added` loop.
+          // `Array.isArray` rather than a bare cast: this scan runs BEFORE the
+          // translation below, so a non-array value (an unresolved intrinsic)
+          // would hit `.map` on a plain object and die with a bare TypeError
+          // instead of the named error the translator raises a few lines down.
+          const previousCfnIndexes = previousProperties['GlobalSecondaryIndexes'];
           const existingIndexNames = new Set(
-            ((previousProperties['GlobalSecondaryIndexes'] ?? []) as unknown[])
+            (Array.isArray(previousCfnIndexes) ? (previousCfnIndexes as unknown[]) : [])
               .map((entry) => (entry as Record<string, unknown> | null)?.['IndexName'])
               .filter((name): name is string => typeof name === 'string')
           );
@@ -2773,6 +2786,29 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 }
 
 /** Coerce a CFn numeric (CFn is stringly-typed) to a finite number. */
+/**
+ * Normalize an explicitly-supplied, already-SDK-shaped throughput block.
+ *
+ * The CFn schema forbids these members, but cdkd state written before Issue
+ * #1387 and hand-authored templates can carry them. Forwarding the raw record
+ * would be the ONE path that skips {@link toFiniteNumber}, so a stringly-typed
+ * CFn `"5"` would reach the SDK unnormalized while every DERIVED value is
+ * coerced — an inconsistency that only shows up on the rarest input. Picking
+ * the known members explicitly also drops junk keys the SDK serializer would
+ * discard silently anyway.
+ */
+function coerceThroughputNumbers<K extends string>(
+  block: Record<string, unknown>,
+  members: readonly K[]
+): Record<K, number | undefined> {
+  const out = {} as Record<K, number | undefined>;
+  for (const member of members) {
+    const n = toFiniteNumber(block[member]);
+    if (n !== undefined) out[member] = n;
+  }
+  return out;
+}
+
 function toFiniteNumber(value: unknown): number | undefined {
   if (value === undefined || value === null || value === '') return undefined;
   const n = Number(value);
@@ -2930,7 +2966,10 @@ export function toSdkGlobalSecondaryIndexes(
     const explicitProvisioned = asRecord(gsi['ProvisionedThroughput']);
     const explicitOnDemand = asRecord(gsi['OnDemandThroughput']);
     if (explicitProvisioned) {
-      sdk.ProvisionedThroughput = explicitProvisioned as unknown as ProvisionedThroughput;
+      sdk.ProvisionedThroughput = coerceThroughputNumbers(explicitProvisioned, [
+        'ReadCapacityUnits',
+        'WriteCapacityUnits',
+      ]) as ProvisionedThroughput;
     } else if (billingMode === 'PROVISIONED') {
       sdk.ProvisionedThroughput = {
         ReadCapacityUnits:
@@ -2944,7 +2983,10 @@ export function toSdkGlobalSecondaryIndexes(
     }
 
     if (explicitOnDemand) {
-      sdk.OnDemandThroughput = explicitOnDemand as unknown as OnDemandThroughput;
+      sdk.OnDemandThroughput = coerceThroughputNumbers(explicitOnDemand, [
+        'MaxReadRequestUnits',
+        'MaxWriteRequestUnits',
+      ]) as OnDemandThroughput;
     } else if (billingMode !== 'PROVISIONED') {
       const maxWrite = toFiniteNumber(
         asRecord(gsi['WriteOnDemandThroughputSettings'])?.['MaxWriteRequestUnits']
@@ -3006,12 +3048,16 @@ export function toSdkReplicaGlobalSecondaryIndexes(
       asRecord(cfn['ReadOnDemandThroughputSettings'])?.['MaxReadRequestUnits']
     );
     if (explicitProvisioned) {
-      sdk.ProvisionedThroughputOverride = explicitProvisioned;
+      sdk.ProvisionedThroughputOverride = coerceThroughputNumbers(explicitProvisioned, [
+        'ReadCapacityUnits',
+      ]);
     } else if (readCapacity !== undefined) {
       sdk.ProvisionedThroughputOverride = { ReadCapacityUnits: readCapacity };
     }
     if (explicitOnDemand) {
-      sdk.OnDemandThroughputOverride = explicitOnDemand;
+      sdk.OnDemandThroughputOverride = coerceThroughputNumbers(explicitOnDemand, [
+        'MaxReadRequestUnits',
+      ]);
     } else if (maxReadRequestUnits !== undefined) {
       sdk.OnDemandThroughputOverride = { MaxReadRequestUnits: maxReadRequestUnits };
     }

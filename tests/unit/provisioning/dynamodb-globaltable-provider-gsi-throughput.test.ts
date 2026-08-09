@@ -408,6 +408,35 @@ describe('DynamoDBGlobalTable GSI throughput translation (issue #1387)', () => {
       ).rejects.toThrow(/GlobalSecondaryIndexes must be an array/);
     });
 
+    it('coerces a stringly-typed explicit ProvisionedThroughput instead of forwarding it raw', () => {
+      // CFn is stringly typed, and an explicitly-supplied already-SDK-shaped
+      // block is the one path that would otherwise skip toFiniteNumber, so a
+      // "5" would reach the SDK unnormalized while every derived value is a
+      // number. Junk keys are dropped too.
+      const [gsi] = toSdkGlobalSecondaryIndexes(
+        {
+          GlobalSecondaryIndexes: [
+            {
+              IndexName: 'explicit',
+              KeySchema: [{ AttributeName: 'g', KeyType: 'HASH' }],
+              Projection: { ProjectionType: 'ALL' },
+              ProvisionedThroughput: {
+                ReadCapacityUnits: '5',
+                WriteCapacityUnits: '11',
+                NotAnSdkMember: 'junk',
+              },
+            },
+          ],
+        },
+        'us-east-1',
+        'PROVISIONED'
+      );
+      expect(gsi!.ProvisionedThroughput).toEqual({
+        ReadCapacityUnits: 5,
+        WriteCapacityUnits: 11,
+      });
+    });
+
     it('throws on a non-array GlobalSecondaryIndexes instead of deploying a table with none', () => {
       // Absent is legitimately empty; present-but-not-an-array (an unresolved
       // intrinsic) previously collapsed to [] and created the table with ZERO
