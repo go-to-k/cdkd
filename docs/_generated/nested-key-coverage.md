@@ -14,6 +14,8 @@ For every SDK provider that forwards a nested CFn config blob, diffs the blob's 
 - Allow-listed pass-throughs (does NOT block CI): **4**
 - **Case divergences (blocks CI): 0**
 - **No SDK member (blocks CI): 0**
+- Write-evidence pass — fresh-object targets audited: **1**
+- **No write evidence (blocks CI): 0**
 - Shape pass — bare-array pairs clean: **87**
 - Shape pass — explicitly handled in provider: **31**
 - Shape pass — allow-listed (does NOT block CI): **7**
@@ -23,7 +25,7 @@ For every SDK provider that forwards a nested CFn config blob, diffs the blob's 
 
 ## Divergences
 
-None. Every audited nested CFn key either matches an SDK member spelling or is explicitly named by its provider.
+None. Every audited nested CFn key either matches an SDK member spelling or is explicitly named by its provider — and on a fresh-object target, its SDK member is also WRITTEN somewhere in the provider.
 
 ## Allow-listed pass-throughs
 
@@ -134,17 +136,17 @@ CFn members whose SHAPE diverges from the same-spelled SDK member (bare array vs
 
 ## Audited targets
 
-| Resource type | Provider | SDK client | Key style | Nested keys | Unmatched definitions |
-| --- | --- | --- | --- | --- | --- |
-| `AWS::ApiGatewayV2::Api` | `apigatewayv2-provider.ts` | `@aws-sdk/client-apigatewayv2` | exact | 6 | 1 |
-| `AWS::ApiGatewayV2::Authorizer` | `apigatewayv2-provider.ts` | `@aws-sdk/client-apigatewayv2` | exact | 2 | 0 |
-| `AWS::ApiGatewayV2::Integration` | `apigatewayv2-provider.ts` | `@aws-sdk/client-apigatewayv2` | exact | 0 | 3 |
-| `AWS::ApiGatewayV2::Route` | `apigatewayv2-provider.ts` | `@aws-sdk/client-apigatewayv2` | exact | 0 | 0 |
-| `AWS::ApiGatewayV2::Stage` | `apigatewayv2-provider.ts` | `@aws-sdk/client-apigatewayv2` | exact | 5 | 0 |
-| `AWS::CloudFront::Distribution` | `cloudfront-distribution-provider.ts` | `@aws-sdk/client-cloudfront` | exact | 121 | 4 |
-| `AWS::CloudWatch::AnomalyDetector` | `cloudwatch-anomaly-detector-provider.ts` | `@aws-sdk/client-cloudwatch` | exact | 21 | 1 |
-| `AWS::CodeBuild::Project` | `codebuild-provider.ts` | `@aws-sdk/client-codebuild` | lower-first | 57 | 4 |
-| `AWS::ECS::Service` | `ecs-provider.ts` | `@aws-sdk/client-ecs` | lower-first | 48 | 4 |
-| `AWS::ECS::TaskDefinition` | `ecs-provider.ts` | `@aws-sdk/client-ecs` | lower-first | 113 | 3 |
-| `AWS::S3::Bucket` | `s3-bucket-provider.ts` | `@aws-sdk/client-s3` | exact | 115 | 15 |
+| Resource type | Provider | SDK client | Key style | Fresh-object | Nested keys | Unmatched definitions |
+| --- | --- | --- | --- | --- | --- | --- |
+| `AWS::ApiGatewayV2::Api` | `apigatewayv2-provider.ts` | `@aws-sdk/client-apigatewayv2` | exact | no | 6 | 1 |
+| `AWS::ApiGatewayV2::Authorizer` | `apigatewayv2-provider.ts` | `@aws-sdk/client-apigatewayv2` | exact | no | 2 | 0 |
+| `AWS::ApiGatewayV2::Integration` | `apigatewayv2-provider.ts` | `@aws-sdk/client-apigatewayv2` | exact | no | 0 | 3 |
+| `AWS::ApiGatewayV2::Route` | `apigatewayv2-provider.ts` | `@aws-sdk/client-apigatewayv2` | exact | no | 0 | 0 |
+| `AWS::ApiGatewayV2::Stage` | `apigatewayv2-provider.ts` | `@aws-sdk/client-apigatewayv2` | exact | no | 5 | 0 |
+| `AWS::CloudFront::Distribution` | `cloudfront-distribution-provider.ts` | `@aws-sdk/client-cloudfront` | exact | no | 121 | 4 |
+| `AWS::CloudWatch::AnomalyDetector` | `cloudwatch-anomaly-detector-provider.ts` | `@aws-sdk/client-cloudwatch` | exact | no | 21 | 1 |
+| `AWS::CodeBuild::Project` | `codebuild-provider.ts` | `@aws-sdk/client-codebuild` | lower-first | yes | 57 | 4 |
+| `AWS::ECS::Service` | `ecs-provider.ts` | `@aws-sdk/client-ecs` | lower-first | no | 48 | 4 |
+| `AWS::ECS::TaskDefinition` | `ecs-provider.ts` | `@aws-sdk/client-ecs` | lower-first | no | 113 | 3 |
+| `AWS::S3::Bucket` | `s3-bucket-provider.ts` | `@aws-sdk/client-s3` | exact | no | 115 | 15 |
 

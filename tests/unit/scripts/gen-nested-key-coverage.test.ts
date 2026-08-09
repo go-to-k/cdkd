@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'n
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import {
+  MIN_WRITTEN_MEMBERS_PER_PROVIDER,
   NESTED_KEY_ALLOW_LIST,
   NESTED_KEY_TARGETS,
   allowKey,
@@ -12,6 +13,7 @@ import {
   collectSdkInterfaces,
   collectSdkMemberNames,
   collectStringLiterals,
+  collectWrittenMemberNames,
   expandLiteralSegments,
   findDivergences,
   findStaleAllowListEntries,
@@ -26,6 +28,7 @@ import {
   extractDefinitionShapes,
   extractNestedPropertyNames,
 } from '../../../scripts/refresh-cfn-schemas.mjs';
+import { parseProviderSource } from '../../../scripts/gen-property-coverage.ts';
 
 const repoRoot = process.cwd();
 
@@ -37,8 +40,267 @@ const exactTarget: NestedKeyTarget = {
   minNestedKeys: 0,
 };
 
+const freshTarget: NestedKeyTarget = { ...exactTarget, freshObjectMapper: true };
+
+describe('collectWrittenMemberNames (synthetic)', () => {
+  it('counts object-literal, shorthand and assignment writes', () => {
+    const written = collectWrittenMemberNames(`
+      const batchReportMode = 1;
+      const sdk = { serviceRole: p['ServiceRole'], batchReportMode };
+      sdk.timeoutInMins = 5;
+      sdk['combineArtifacts'] = true;
+    `);
+    expect([...written].sort()).toEqual([
+      'batchReportMode',
+      'combineArtifacts',
+      'serviceRole',
+      'timeoutInMins',
+    ]);
+  });
+
+  it('does NOT credit a VARIABLE key in an element-access write', () => {
+    // `sdk[k] = v` names a variable, not a member. Crediting it would let a
+    // local called `type` / `name` clear a CI-blocking bucket for the SDK
+    // member of that name.
+    const written = collectWrittenMemberNames(`
+      const type = 'x';
+      sdk[type] = 1;
+      sdk['batchReportMode'] = 2;
+    `);
+    expect(written.has('type')).toBe(false);
+    expect(written.has('batchReportMode')).toBe(true);
+  });
+
+  it('does NOT credit a computed object-literal property name', () => {
+    const written = collectWrittenMemberNames(`const o = { [k]: 1, literal: 2 };`);
+    expect(written.has('k')).toBe(false);
+    expect(written.has('literal')).toBe(true);
+  });
+
+  it('does NOT credit a DESTRUCTURING-ASSIGNMENT target (it is a read)', () => {
+    // `({ x } = src)` parses as an object literal on the LEFT of an `=`, so its
+    // members look like property assignments while being reads off `src`.
+    const written = collectWrittenMemberNames(`
+      ({ batchReportMode } = desc);
+      ({ timeoutInMins: t } = desc);
+      const real = { combineArtifacts: 1 };
+    `);
+    expect(written.has('batchReportMode')).toBe(false);
+    expect(written.has('timeoutInMins')).toBe(false);
+    expect(written.has('combineArtifacts')).toBe(true);
+  });
+
+  it('does NOT credit a NESTED / ARRAY / for-of destructuring target', () => {
+    // A depth-1 parent check misses all three of these — the inner literal's
+    // parent is a PropertyAssignment / ArrayLiteralExpression / ForOfStatement
+    // rather than the assignment itself.
+    const written = collectWrittenMemberNames(`
+      ({ outer: { batchReportMode } } = desc);
+      [{ combineArtifacts }] = arr;
+      for ({ timeoutInMins } of list) { use(timeoutInMins); }
+      ({ serviceRole = 'x' } = desc);
+      const real = { queuedTimeoutInMinutes: 1 };
+    `);
+    expect(written.has('batchReportMode')).toBe(false);
+    expect(written.has('combineArtifacts')).toBe(false);
+    expect(written.has('timeoutInMins')).toBe(false);
+    expect(written.has('serviceRole')).toBe(false);
+    expect(written.has('queuedTimeoutInMinutes')).toBe(true);
+  });
+
+  it('excludes an arrow-function PROPERTY reverse map, not just a method', () => {
+    // A regression here fails in the DANGEROUS direction: reverse-map writes
+    // would be silently re-credited, false-clearing a CI-blocking bucket.
+    const source = `
+      class P {
+        readCurrentState = async () => { const r = {}; r['CorsConfiguration'] = 1; return r; };
+        map(p) { return { forwardOnly: p['ForwardOnly'] }; }
+      }
+    `;
+    expect(collectWrittenMemberNames(source).has('CorsConfiguration')).toBe(false);
+    expect(collectWrittenMemberNames(source).has('forwardOnly')).toBe(true);
+  });
+
+  it('the exclusion prefix respects a word boundary', () => {
+    // `readCurrentStateless…` is a different function and must NOT be swallowed.
+    const written = collectWrittenMemberNames(`
+      function readCurrentStatelessThing() { return { stillCounted: 1 }; }
+      function readCurrentStateService() { return { notCounted: 1 }; }
+    `);
+    expect(written.has('stillCounted')).toBe(true);
+    expect(written.has('notCounted')).toBe(false);
+  });
+
+  it('excludes writes in a nested function inside an excluded body', () => {
+    const source = `
+      class P {
+        readCurrentState() {
+          const build = () => ({ corsConfiguration: 1 });
+          return build();
+        }
+      }
+    `;
+    expect(collectWrittenMemberNames(source).has('corsConfiguration')).toBe(false);
+  });
+
+  it('counts a string-literal property name and a template element-access key', () => {
+    const written = collectWrittenMemberNames(
+      "const o = { 'batchReportMode': 1 }; sdk[`combineArtifacts`] = 2;"
+    );
+    expect(written.has('batchReportMode')).toBe(true);
+    expect(written.has('combineArtifacts')).toBe(true);
+  });
+
+  it('excludes reverse-map functions by PREFIX, not exact name', () => {
+    // Real shape: `apigateway-provider.ts` splits the reverse map into
+    // `readCurrentStateAuthorizer` / `...Resource` / `...Stage` / etc.
+    const source = `
+      class P {
+        readCurrentStateAuthorizer() { const r = {}; r['CorsConfiguration'] = 1; return r; }
+        map(p) { return { forwardOnly: p['ForwardOnly'] }; }
+      }
+    `;
+    expect(collectWrittenMemberNames(source).has('CorsConfiguration')).toBe(false);
+    expect(collectWrittenMemberNames(source).has('forwardOnly')).toBe(true);
+  });
+
+  it('does NOT count a read (the reverse-map direction)', () => {
+    const written = collectWrittenMemberNames(`
+      const out = {};
+      out['BatchReportMode'] = desc.batchReportMode;
+    `);
+    expect(written.has('BatchReportMode')).toBe(true);
+    expect(written.has('batchReportMode')).toBe(false);
+  });
+
+  it('skips the body of an excluded function (issue #1393 item 2)', () => {
+    const source = `
+      class P {
+        map(p) { return { forwardOnly: p['ForwardOnly'] }; }
+        async readCurrentState() {
+          const r = {};
+          r['CorsConfiguration'] = 1;
+          return r;
+        }
+      }
+    `;
+    expect(collectWrittenMemberNames(source).has('CorsConfiguration')).toBe(false);
+    expect(collectWrittenMemberNames(source).has('forwardOnly')).toBe(true);
+    // With no exclusion set the same write IS collected — proving the
+    // exclusion, not an unrelated parse miss, is what withdraws it.
+    expect(collectWrittenMemberNames(source, 'p.ts', []).has('CorsConfiguration')).toBe(
+      true
+    );
+  });
+});
+
 describe('classifyTarget (synthetic)', () => {
   const sdkMembers = new Set(['ACMCertificateArn', 'IsIPV6Enabled', 'Comment', 'items']);
+
+  it('a same-spelling key on a NON-fresh-object target stays silent without any write', () => {
+    // The forwarding case: the serializer carries the key through, so an
+    // absent write proves nothing. Guards the opt-in from becoming default-on.
+    const [e] = classifyTarget(exactTarget, ['Comment'], sdkMembers, new Set(), new Map(), new Set());
+    expect(e?.bucket).toBe('same-spelling');
+  });
+
+  it('flags a same-spelling key with no write evidence on a fresh-object target (#1432)', () => {
+    const [e] = classifyTarget(freshTarget, ['Comment'], sdkMembers, new Set(), new Map(), new Set());
+    expect(e?.bucket).toBe('no-write-evidence');
+    expect(e?.sdkNearMiss).toBe('Comment');
+  });
+
+  it('clears the same key once the provider writes the SDK member', () => {
+    const [e] = classifyTarget(
+      freshTarget,
+      ['Comment'],
+      sdkMembers,
+      new Set(),
+      new Map(),
+      new Set(['Comment'])
+    );
+    expect(e?.bucket).toBe('same-spelling');
+  });
+
+  it('does NOT let the loose literal heuristic rescue a missing write', () => {
+    // The CFn spelling named somewhere in the file is exactly the evidence
+    // #1432 says is insufficient for a fresh-object mapper.
+    const [e] = classifyTarget(
+      freshTarget,
+      ['Comment'],
+      sdkMembers,
+      new Set(['Comment']),
+      new Map(),
+      new Set()
+    );
+    expect(e?.bucket).toBe('no-write-evidence');
+  });
+
+  it('an allow-list entry silences a no-write-evidence key', () => {
+    const allow = new Map([
+      [allowKey(freshTarget.resourceType, 'Comment'), { rationale: 'deliberate' }],
+    ]);
+    const [e] = classifyTarget(freshTarget, ['Comment'], sdkMembers, new Set(), allow, new Set());
+    expect(e?.bucket).toBe('allow-listed');
+    expect(e?.rationale).toBe('deliberate');
+  });
+
+  it('lower-first styling applies to the write lookup too', () => {
+    const camel = new Set(['batchReportMode']);
+    const lowerFirstFresh: NestedKeyTarget = {
+      ...exactTarget,
+      keyStyle: 'lower-first',
+      freshObjectMapper: true,
+    };
+    const [missing] = classifyTarget(
+      lowerFirstFresh,
+      ['BatchReportMode'],
+      camel,
+      new Set(),
+      new Map(),
+      new Set(['BatchReportMode']) // the CFn spelling written — wrong side
+    );
+    expect(missing?.bucket).toBe('no-write-evidence');
+    const [ok] = classifyTarget(
+      lowerFirstFresh,
+      ['BatchReportMode'],
+      camel,
+      new Set(),
+      new Map(),
+      new Set(['batchReportMode'])
+    );
+    expect(ok?.bucket).toBe('same-spelling');
+  });
+
+  it('a no-write-evidence key is a CI-blocking divergence', () => {
+    const entries = classifyTarget(
+      freshTarget,
+      ['Comment'],
+      sdkMembers,
+      new Set(),
+      new Map(),
+      new Set()
+    );
+    const report = buildReport([
+      {
+        resourceType: freshTarget.resourceType,
+        providerFile: freshTarget.providerFile,
+        sdkClientPackage: freshTarget.sdkClientPackage,
+        keyStyle: freshTarget.keyStyle,
+        freshObjectMapper: true,
+        nestedKeyCount: entries.length,
+        entries,
+        shapeEntries: [],
+        shapeCleanCount: 0,
+        unmatchedDefinitions: [],
+      },
+    ]);
+    expect(report.summary.noWriteEvidence).toBe(1);
+    expect(report.summary.freshObjectTargets).toBe(1);
+    const [d] = findDivergences(report);
+    expect(d?.bucket).toBe('no-write-evidence');
+    expect(d?.detail).toContain('never writes it');
+  });
 
   it('classifies a same-spelling key as reachable', () => {
     const [e] = classifyTarget(exactTarget, ['Comment'], sdkMembers, new Set(), new Map());
@@ -188,6 +450,7 @@ describe('report plumbing (positive direction)', () => {
         providerFile: exactTarget.providerFile,
         sdkClientPackage: exactTarget.sdkClientPackage,
         keyStyle: exactTarget.keyStyle,
+        freshObjectMapper: false,
         nestedKeyCount: entries.length,
         entries,
         shapeEntries: [],
@@ -216,6 +479,7 @@ describe('report plumbing (positive direction)', () => {
         providerFile: exactTarget.providerFile,
         sdkClientPackage: exactTarget.sdkClientPackage,
         keyStyle: exactTarget.keyStyle,
+        freshObjectMapper: false,
         nestedKeyCount: entries.length,
         entries,
         shapeEntries: [],
@@ -233,6 +497,7 @@ describe('report plumbing (positive direction)', () => {
         providerFile: exactTarget.providerFile,
         sdkClientPackage: exactTarget.sdkClientPackage,
         keyStyle: exactTarget.keyStyle,
+        freshObjectMapper: false,
         nestedKeyCount: 0,
         entries: [],
         shapeEntries: [
@@ -971,6 +1236,168 @@ describe('real-code regression probes (per the repo checker rules)', () => {
     for (const key of S3_DISCRIMINATING_KEYS) {
       expect(entries.find((e) => e.nestedKey === key)?.bucket, key).toBe('provider-handled');
     }
+  });
+
+  // WRITE-EVIDENCE pass (issue #1432). Same real-code discipline: the bucket is
+  // CI-blocking, so it has to be shown rejecting a REAL regression. The probed
+  // defect is the one #1386 shipped and #1432 filed — `mapProperties` rebuilding
+  // `buildBatchConfig` without naming `batchReportMode`.
+  const cbTarget = NESTED_KEY_TARGETS.find((t) => t.resourceType === 'AWS::CodeBuild::Project')!;
+  const cbFixture = JSON.parse(
+    readFileSync(resolve(repoRoot, 'tests/fixtures/cfn-schemas/AWS-CodeBuild-Project.json'), 'utf8')
+  ) as { nestedProperties: Record<string, string[]> };
+  const cbSdkMembers = collectSdkMemberNames(
+    resolve(repoRoot, 'node_modules/@aws-sdk/client-codebuild/dist-types/models')
+  );
+  const cbSource = readFileSync(
+    resolve(repoRoot, 'src/provisioning/providers/codebuild-provider.ts'),
+    'utf8'
+  );
+  // The provider's OWN handled top-levels, exactly as `loadReport` scopes them
+  // — an unhandled top-level is pre-flight-rejected by `property-coverage`, so
+  // auditing its interior here would probe keys the critic never sees.
+  const cbHandledTopLevel = parseProviderSource(
+    cbSource,
+    resolve(repoRoot, 'src/provisioning/providers/codebuild-provider.ts')
+  ).handled.get('AWS::CodeBuild::Project')!;
+  const cbNestedKeys = nestedKeysForTarget(cbFixture, cbHandledTopLevel);
+  // The FORWARD mapper's single write site. Deleting just this line reproduces
+  // the #1386 defect exactly, and deliberately leaves `readCurrentState`'s
+  // reverse map (`bbc['BatchReportMode'] = project.buildBatchConfig.batchReportMode`)
+  // intact — the check must still fail with that vouching evidence present.
+  const CB_FORWARD_WRITE =
+    "batchReportMode: cfnBuildBatchConfig['BatchReportMode'] as BatchReportModeType | undefined,";
+
+  it('CodeBuild is opted into the write-evidence pass', () => {
+    expect(cbTarget.freshObjectMapper).toBe(true);
+  });
+
+  it('the forward-write anchor is still present (probe-validity fence)', () => {
+    expect(cbSource).toContain(CB_FORWARD_WRITE);
+  });
+
+  it('flags the real provider with the forward batchReportMode write deleted (#1386 / #1432)', () => {
+    const regressed = cbSource.replace(CB_FORWARD_WRITE, '');
+    const entries = classifyTarget(
+      cbTarget,
+      cbNestedKeys,
+      cbSdkMembers,
+      collectStringLiterals(regressed),
+      NESTED_KEY_ALLOW_LIST,
+      collectWrittenMemberNames(regressed)
+    );
+    const hit = entries.find((e) => e.nestedKey === 'BatchReportMode');
+    expect(hit?.bucket).toBe('no-write-evidence');
+    expect(hit?.sdkNearMiss).toBe('batchReportMode');
+    // The reverse map still writes the CFn spelling and reads the SDK one —
+    // proving neither rescues the forward mapper.
+    expect(regressed).toContain("bbc['BatchReportMode'] = project.buildBatchConfig.batchReportMode");
+  });
+
+  it('the SAME regression is invisible without the pass (the gap #1432 filed)', () => {
+    const regressed = cbSource.replace(CB_FORWARD_WRITE, '');
+    const entries = classifyTarget(
+      { ...cbTarget, freshObjectMapper: false },
+      cbNestedKeys,
+      cbSdkMembers,
+      collectStringLiterals(regressed),
+      NESTED_KEY_ALLOW_LIST,
+      collectWrittenMemberNames(regressed)
+    );
+    expect(entries.find((e) => e.nestedKey === 'BatchReportMode')?.bucket).toBe('same-spelling');
+    expect(findDivergences(buildReport([
+      {
+        resourceType: cbTarget.resourceType,
+        providerFile: cbTarget.providerFile,
+        sdkClientPackage: cbTarget.sdkClientPackage,
+        keyStyle: cbTarget.keyStyle,
+        freshObjectMapper: false,
+        nestedKeyCount: entries.length,
+        entries,
+        shapeEntries: [],
+        shapeCleanCount: 0,
+        unmatchedDefinitions: [],
+      },
+    ]))).toHaveLength(0);
+  });
+
+  it('the unregressed real CodeBuild provider has zero no-write-evidence keys', () => {
+    const entries = classifyTarget(
+      cbTarget,
+      cbNestedKeys,
+      cbSdkMembers,
+      collectStringLiterals(cbSource),
+      NESTED_KEY_ALLOW_LIST,
+      collectWrittenMemberNames(cbSource)
+    );
+    expect(entries.filter((e) => e.bucket === 'no-write-evidence')).toHaveLength(0);
+    // Coverage floor: the pass must be auditing a real number of keys, not
+    // vacuously green on an empty same-spelling set.
+    expect(entries.filter((e) => e.bucket === 'same-spelling').length).toBeGreaterThanOrEqual(50);
+  });
+
+  it('write evidence is name-global, so a multiply-written member is NOT fenced (#1448)', () => {
+    // Documents the pass's real bound rather than asserting a guarantee it does
+    // not deliver. `BuildBatchConfig.ServiceRole` is the SIBLING of the
+    // motivating member: deleting its forward write stays silent because the
+    // top-level `serviceRole:` write vouches for the same spelling. Measured:
+    // 11 of CodeBuild's 55 same-spelling keys have >1 write site, so the pass
+    // fences the other 44 (BatchReportMode among them).
+    const anchor = "serviceRole: cfnBuildBatchConfig['ServiceRole'] as string | undefined,";
+    expect(cbSource, 'anchor still present').toContain(anchor);
+    const regressed = cbSource.replace(anchor, '');
+    const entries = classifyTarget(
+      cbTarget,
+      cbNestedKeys,
+      cbSdkMembers,
+      collectStringLiterals(regressed),
+      NESTED_KEY_ALLOW_LIST,
+      collectWrittenMemberNames(regressed)
+    );
+    expect(entries.find((e) => e.nestedKey === 'ServiceRole')?.bucket).toBe('same-spelling');
+    // ...and the uniquely-named member IS still fenced, so the limitation is a
+    // bound on coverage rather than the pass being inert.
+    expect(collectWrittenMemberNames(regressed).has('serviceRole')).toBe(true);
+  });
+
+  it('the write collector sees a real provider (parser-regression floor)', () => {
+    const written = collectWrittenMemberNames(cbSource);
+    expect(written.size).toBeGreaterThanOrEqual(MIN_WRITTEN_MEMBERS_PER_PROVIDER);
+    expect(written.has('batchReportMode')).toBe(true);
+  });
+
+  it('the readCurrentState exclusion withdraws real reverse-map writes (#1393 item 2)', () => {
+    // Measured on the real tree: `s3-bucket-provider.ts` is an `exact`-style
+    // target, so its reverse map writes CFn spellings that ARE SDK member
+    // spellings. Those are the names that would falsely vouch for a forward
+    // mapper if the exclusion were dropped.
+    const scoped = collectWrittenMemberNames(s3Source);
+    const unscoped = collectWrittenMemberNames(s3Source, 's3-bucket-provider.ts', []);
+    // The ECS number is the one that proves the PREFIX match earns its keep:
+    // `ecs-provider.ts` splits its reverse map into `readCurrentStateService` /
+    // `readCurrentStateTaskDefinition`, which an EXACT-name match reached not
+    // at all (it withdrew 0). Pinned so the file header's measured numbers
+    // cannot drift away from the code again.
+    const ecsSource = readFileSync(
+      resolve(repoRoot, 'src/provisioning/providers/ecs-provider.ts'),
+      'utf8'
+    );
+    const ecsWithdrawn =
+      collectWrittenMemberNames(ecsSource, 'ecs-provider.ts', []).size -
+      collectWrittenMemberNames(ecsSource).size;
+    expect(ecsWithdrawn).toBeGreaterThanOrEqual(40);
+
+    const withdrawn = [...unscoped].filter((n) => !scoped.has(n)).sort();
+    expect(withdrawn).toEqual([
+      'AnalyticsConfigurations',
+      'BucketEncryption',
+      'BucketName',
+      'CorsConfiguration',
+      'IntelligentTieringConfigurations',
+      'InventoryConfigurations',
+      'LoggingConfiguration',
+      'MetricsConfigurations',
+    ]);
   });
 });
 

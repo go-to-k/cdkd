@@ -7,6 +7,8 @@
     "allowListed": 4,
     "caseDivergence": 0,
     "noSdkMember": 0,
+    "noWriteEvidence": 0,
+    "freshObjectTargets": 1,
     "shapeClean": 87,
     "shapeHandled": 31,
     "shapeAllowListed": 7,
@@ -20,6 +22,7 @@
       "providerFile": "apigatewayv2-provider.ts",
       "sdkClientPackage": "@aws-sdk/client-apigatewayv2",
       "keyStyle": "exact",
+      "freshObjectMapper": false,
       "nestedKeyCount": 6,
       "entries": [
         {
@@ -64,6 +67,7 @@
       "providerFile": "apigatewayv2-provider.ts",
       "sdkClientPackage": "@aws-sdk/client-apigatewayv2",
       "keyStyle": "exact",
+      "freshObjectMapper": false,
       "nestedKeyCount": 2,
       "entries": [
         {
@@ -86,6 +90,7 @@
       "providerFile": "apigatewayv2-provider.ts",
       "sdkClientPackage": "@aws-sdk/client-apigatewayv2",
       "keyStyle": "exact",
+      "freshObjectMapper": false,
       "nestedKeyCount": 0,
       "entries": [],
       "shapeEntries": [
@@ -109,6 +114,7 @@
       "providerFile": "apigatewayv2-provider.ts",
       "sdkClientPackage": "@aws-sdk/client-apigatewayv2",
       "keyStyle": "exact",
+      "freshObjectMapper": false,
       "nestedKeyCount": 0,
       "entries": [],
       "shapeEntries": [],
@@ -120,6 +126,7 @@
       "providerFile": "apigatewayv2-provider.ts",
       "sdkClientPackage": "@aws-sdk/client-apigatewayv2",
       "keyStyle": "exact",
+      "freshObjectMapper": false,
       "nestedKeyCount": 5,
       "entries": [
         {
@@ -157,6 +164,7 @@
       "providerFile": "cloudfront-distribution-provider.ts",
       "sdkClientPackage": "@aws-sdk/client-cloudfront",
       "keyStyle": "exact",
+      "freshObjectMapper": false,
       "nestedKeyCount": 121,
       "entries": [
         {
@@ -927,6 +935,7 @@
       "providerFile": "cloudwatch-anomaly-detector-provider.ts",
       "sdkClientPackage": "@aws-sdk/client-cloudwatch",
       "keyStyle": "exact",
+      "freshObjectMapper": false,
       "nestedKeyCount": 21,
       "entries": [
         {
@@ -1046,6 +1055,7 @@
       "providerFile": "codebuild-provider.ts",
       "sdkClientPackage": "@aws-sdk/client-codebuild",
       "keyStyle": "lower-first",
+      "freshObjectMapper": true,
       "nestedKeyCount": 57,
       "entries": [
         {
@@ -1349,6 +1359,7 @@
       "providerFile": "ecs-provider.ts",
       "sdkClientPackage": "@aws-sdk/client-ecs",
       "keyStyle": "lower-first",
+      "freshObjectMapper": false,
       "nestedKeyCount": 48,
       "entries": [
         {
@@ -1606,6 +1617,7 @@
       "providerFile": "ecs-provider.ts",
       "sdkClientPackage": "@aws-sdk/client-ecs",
       "keyStyle": "lower-first",
+      "freshObjectMapper": false,
       "nestedKeyCount": 113,
       "entries": [
         {
@@ -2187,6 +2199,7 @@
       "providerFile": "s3-bucket-provider.ts",
       "sdkClientPackage": "@aws-sdk/client-s3",
       "keyStyle": "exact",
+      "freshObjectMapper": false,
       "nestedKeyCount": 115,
       "entries": [
         {
