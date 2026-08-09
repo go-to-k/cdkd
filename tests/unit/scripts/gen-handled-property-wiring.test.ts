@@ -748,18 +748,17 @@ describe('real-repo coverage floors', () => {
   });
 
   it('pins the exact set of allow-listed declarations', () => {
-    // Pinned by name, not floored: these are the four findings of the critic's
-    // first run. Two are KNOWN GAPS awaiting a provider fix and must not
-    // quietly grow a fifth neighbour; the list is the filing queue.
+    // Pinned by name, not floored. The critic's first run found four; the two
+    // KNOWN GAPS are gone (issues #1411 / #1412 moved
+    // `EC2Provider#MaxDrainDurationSeconds` and
+    // `LogsLogGroupProvider#ResourcePolicyDocument` into `unhandledByDesign`,
+    // so they are no longer a wiring claim at all). What remains is the two
+    // rationale'd NOT-A-BUG entries, and the pin is what stops a third
+    // neighbour appearing quietly.
     const allowed = classes
       .flatMap((c) => c.properties.filter((p) => p.status === 'allow-listed').map((p) => allowKey(c.className, p.name)))
       .sort();
-    expect(allowed).toEqual([
-      'EC2Provider#MaxDrainDurationSeconds',
-      'IAMAccessKeyProvider#Serial',
-      'LogsLogGroupProvider#ResourcePolicyDocument',
-      'NestedStackProvider#TemplateURL',
-    ]);
+    expect(allowed).toEqual(['IAMAccessKeyProvider#Serial', 'NestedStackProvider#TemplateURL']);
     expect([...HANDLED_WIRING_ALLOW_LIST.keys()].sort()).toEqual(allowed);
   });
 
@@ -799,6 +798,7 @@ describe('REAL-CODE regression probes', () => {
   const realEc2 = providerSource('ec2-provider.ts');
   const realGlue = providerSource('glue-provider.ts');
   const realSqs = providerSource('sqs-queue-provider.ts');
+  const realIamAccessKey = providerSource('iam-access-key-provider.ts');
 
   const classOf = (source: string, file: string, name: string): ClassClassification => {
     const found = classifySource(source, file).find((c) => c.className === name);
@@ -929,28 +929,48 @@ export class BorrowerProvider {
     ]);
   });
 
-  it('reports the EC2 allow-list entry as STALE once the real provider reads it', () => {
+  it('reports the IAM access-key allow-list entry as STALE once the real provider reads it', () => {
     // The stale verdict is what forces an allow-list entry out once the gap is
-    // fixed, so it needs a real-code probe of its own: inject the read that
-    // issue #1411 will eventually add and require the entry to be named.
-    const key = allowKey('EC2Provider', 'MaxDrainDurationSeconds');
-    // Scoped to the entry under probe: the other three entries name classes in
-    // files this single-file parse never sees, so they would read as stale for
-    // an unrelated reason.
+    // fixed, so it needs a real-code probe of its own. It used to probe
+    // `EC2Provider#MaxDrainDurationSeconds`; issues #1411 / #1412 retired both
+    // KNOWN GAP entries, so the probe moved to a still-live entry —
+    // `IAMAccessKeyProvider#Serial` — which keeps the verdict covered against
+    // real code rather than only against a synthetic fixture.
+    const key = allowKey('IAMAccessKeyProvider', 'Serial');
+    // Scoped to the entry under probe: the other entry names a class in a file
+    // this single-file parse never sees, so it would read as stale for an
+    // unrelated reason.
     const allow = new Map([[key, HANDLED_WIRING_ALLOW_LIST.get(key)!]]);
-    const anchor = 'this.logger.debug(`Creating NatGateway ${logicalId}`);';
-    expect(realEc2).toContain(anchor);
-    const wired = realEc2.replace(
+    const anchor = 'this.logger.debug(`Creating IAM access key ${logicalId}`);';
+    expect(realIamAccessKey).toContain(anchor);
+    const wired = realIamAccessKey.replace(
       anchor,
-      `${anchor}\n    const drain = properties['MaxDrainDurationSeconds'];\n    void drain;`
+      `${anchor}\n    const serial = properties['Serial'];\n    void serial;`
     );
-    expect(wired).not.toBe(realEc2);
-    const report = buildReport(classifySource(wired, 'ec2-provider.ts', allow));
+    expect(wired).not.toBe(realIamAccessKey);
+    const report = buildReport(classifySource(wired, 'iam-access-key-provider.ts', allow));
     expect(findStaleAllowListEntries(report, allow)).toEqual([key]);
     // Un-mutated, the entry is live (not stale) — the other half of the probe.
     expect(
-      findStaleAllowListEntries(buildReport(classifySource(realEc2, 'ec2-provider.ts', allow)), allow)
+      findStaleAllowListEntries(
+        buildReport(classifySource(realIamAccessKey, 'iam-access-key-provider.ts', allow)),
+        allow
+      )
     ).toEqual([]);
+  });
+
+  it('keeps AWS::EC2::NatGateway.MaxDrainDurationSeconds and AWS::Logs::LogGroup.ResourcePolicyDocument out of handledProperties', () => {
+    // Issues #1411 / #1412: both were declared handled while nothing read them
+    // (the #1392 silent-drop class). The fix moved them to `unhandledByDesign`,
+    // so they must not reappear as a wiring CLAIM — re-adding one without a
+    // read would be a silent drop again, and re-adding one WITH a read would
+    // need a real API call this provider has no way to make.
+    const declared = (file: string, className: string): string[] =>
+      classOf(providerSource(file), file, className).properties.map((p) => p.name);
+    expect(declared('ec2-provider.ts', 'EC2Provider')).not.toContain('MaxDrainDurationSeconds');
+    expect(declared('logs-loggroup-provider.ts', 'LogsLogGroupProvider')).not.toContain(
+      'ResourcePolicyDocument'
+    );
   });
 });
 
@@ -1003,13 +1023,15 @@ describe('the shipped --check command', () => {
     // gap was fixed.
     const dir = join(scratch, 'providers-stale');
     cpSync(PROVIDERS_DIR, dir, { recursive: true });
-    const ec2 = join(dir, 'ec2-provider.ts');
-    const anchor = 'this.logger.debug(`Creating NatGateway ${logicalId}`);';
+    const accessKey = join(dir, 'iam-access-key-provider.ts');
+    const anchor = 'this.logger.debug(`Creating IAM access key ${logicalId}`);';
+    const accessKeySource = readFileSync(accessKey, 'utf8');
+    expect(accessKeySource, 'the stale probe needs its anchor').toContain(anchor);
     writeFileSync(
-      ec2,
-      readFileSync(ec2, 'utf8').replace(
+      accessKey,
+      accessKeySource.replace(
         anchor,
-        `${anchor}\n    const drain = properties['MaxDrainDurationSeconds'];\n    void drain;`
+        `${anchor}\n    const serial = properties['Serial'];\n    void serial;`
       )
     );
     const ecr = join(dir, 'ecr-provider.ts');
@@ -1023,7 +1045,7 @@ describe('the shipped --check command', () => {
     const { status, stderr } = runCheck(dir);
     expect(status).toBe(1);
     expect(stderr).toContain('stale HANDLED_WIRING_ALLOW_LIST entries');
-    expect(stderr).toContain('EC2Provider#MaxDrainDurationSeconds');
+    expect(stderr).toContain('IAMAccessKeyProvider#Serial');
     expect(stderr).toContain('ECRProvider#ImageTagMutabilityExclusionFilters');
   });
 });

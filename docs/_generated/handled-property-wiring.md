@@ -10,9 +10,9 @@ A computed read `properties[k]` also counts when `k` iterates a literal name tab
 ## Summary
 
 - Provider classes classified: **84**
-- Declared properties: **1063** (**1059** with read evidence)
-- Fully wired classes: **80**
-- Allow-listed classes (visible, non-blocking): **4**
+- Declared properties: **1061** (**1059** with read evidence)
+- Fully wired classes: **82**
+- Allow-listed classes (visible, non-blocking): **2**
 - Classes with a whole-bag blind spot (recorded, never an excuse): **19**
 - **Wiring gaps (blocks CI): 0**
 
@@ -26,9 +26,7 @@ Declared handled with no read evidence, deliberately not failing CI. A `KNOWN GA
 
 | Provider class | Property | Type(s) | Rationale |
 | --- | --- | --- | --- |
-| `EC2Provider` | `MaxDrainDurationSeconds` | `AWS::EC2::NatGateway` | KNOWN GAP (issue #1411): AWS::EC2::NatGateway.MaxDrainDurationSeconds is declared handled but read nowhere in src/ — a real silent drop found by this critic on introduction; remove this entry when the provider wires it |
 | `IAMAccessKeyProvider` | `Serial` | `AWS::IAM::AccessKey` | NOT-A-BUG: Serial is a createOnly REPLACEMENT TRIGGER with no IAM API counterpart; the diff layer implements it, and moving it to unhandledByDesign would hard-reject templates via the #614 viability guard |
-| `LogsLogGroupProvider` | `ResourcePolicyDocument` | `AWS::Logs::LogGroup` | KNOWN GAP (issue #1412, pre-existing, documented in-code): declared handled only to suppress CC API fallback; the value maps to the separate account-wide AWS::Logs::ResourcePolicy type and is not wired into create/update |
 | `NestedStackProvider` | `TemplateURL` | `AWS::CloudFormation::Stack` | NOT-A-BUG: the child template is read from the local cloud assembly via Metadata['aws:asset:path'], so the published TemplateURL value is informational and never read |
 
 ## Whole-bag blind spots — visibility only, NOT an excuse
@@ -84,7 +82,7 @@ Sites where a whole property bag left the evidence walk (a spread, an unresolvab
 | `DocDBProvider` | docdb-provider.ts | wired | 21 | 21 |
 | `DynamoDBGlobalTableProvider` | dynamodb-globaltable-provider.ts | wired | 14 | 14 |
 | `DynamoDBTableProvider` | dynamodb-table-provider.ts | wired | 19 | 19 |
-| `EC2Provider` | ec2-provider.ts | allow-listed | 65 | 64 |
+| `EC2Provider` | ec2-provider.ts | wired | 64 | 64 |
 | `ECRProvider` | ecr-provider.ts | wired | 9 | 9 |
 | `ECSProvider` | ecs-provider.ts | wired | 40 | 40 |
 | `EFSProvider` | efs-provider.ts | wired | 18 | 18 |
@@ -120,7 +118,7 @@ Sites where a whole property bag left the evidence walk (a spread, an unresolvab
 | `LambdaMicrovmImageProvider` | lambda-microvm-image-provider.ts | wired | 14 | 14 |
 | `LambdaPermissionProvider` | lambda-permission-provider.ts | wired | 9 | 9 |
 | `LambdaUrlProvider` | lambda-url-provider.ts | wired | 5 | 5 |
-| `LogsLogGroupProvider` | logs-loggroup-provider.ts | allow-listed | 10 | 9 |
+| `LogsLogGroupProvider` | logs-loggroup-provider.ts | wired | 9 | 9 |
 | `NeptuneProvider` | neptune-provider.ts | wired | 22 | 22 |
 | `NestedStackProvider` | nested-stack-provider.ts | allow-listed | 2 | 1 |
 | `RDSDBProxyEndpointProvider` | rds-dbproxy-endpoint-provider.ts | wired | 6 | 6 |

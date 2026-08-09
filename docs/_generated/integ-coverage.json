@@ -1360,6 +1360,7 @@
           "l2"
         ],
         "vpc-nat-gateway": [
+          "l1",
           "l2",
           "literal"
         ]
