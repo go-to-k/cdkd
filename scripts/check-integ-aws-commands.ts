@@ -105,7 +105,36 @@ const VALUE_TAKING_GLOBAL_OPTIONS: ReadonlySet<string> = new Set([
   '--cli-read-timeout',
   '--cli-connect-timeout',
   '--cli-binary-format',
+  // Completing the documented set matters: an unrecognised value-taking global
+  // is skipped as if it were boolean, so its VALUE lands in the service slot,
+  // fails NAME, and the whole invocation vanishes with no diagnostic.
+  '--metadata-service-timeout',
+  '--metadata-service-num-attempts',
 ]);
+
+/**
+ * Index of the first token at or after `start` that is not an option (nor an
+ * option's consumed value). Used at BOTH the service and the verb slot, since
+ * the AWS CLI accepts a global option in either position.
+ */
+function skipOptions(tokens: string[], start: number): number {
+  let k = start;
+  while (k < tokens.length && tokens[k]!.startsWith('-')) {
+    // NOTE `=` is a TOKEN_SEPARATOR, so `--region=us-east-1` already arrived
+    // as two tokens and needs no special case here — the value is consumed by
+    // the same branch as the space-separated form.
+    const flag = tokens[k]!;
+    k++;
+    if (
+      VALUE_TAKING_GLOBAL_OPTIONS.has(flag) &&
+      k < tokens.length &&
+      !tokens[k]!.startsWith('-')
+    ) {
+      k++;
+    }
+  }
+  return k;
+}
 
 /**
  * Blanks out quoted spans so their contents are not mistaken for commands,
@@ -126,52 +155,141 @@ const VALUE_TAKING_GLOBAL_OPTIONS: ReadonlySet<string> = new Set([
  * family of reasons: it keeps `arn:aws:...` and a JMESPath `` `aws:cdk:path` ``
  * as ONE token rather than splitting out a bare `aws`.
  */
-export function blankQuotedSpans(line: string): string {
+export interface ScanState {
+  /** Quote character of a span left OPEN at the end of the previous line. */
+  openQuote: '"' | "'" | null;
+  /** Delimiter of a heredoc whose body we are inside, or null. */
+  heredoc: string | null;
+}
+
+export function newScanState(): ScanState {
+  return { openQuote: null, heredoc: null };
+}
+
+/** Blanking filler. See {@link blankQuotedSpans} for why it is not a space. */
+const BLANK = '_';
+
+/**
+ * Blanks non-code spans of a line — quoted strings and heredoc bodies — so
+ * their contents are not mistaken for commands, while PRESERVING `$( ... )`
+ * command substitutions inside double quotes.
+ *
+ * `state` carries quote / heredoc context ACROSS lines and is mutated. That is
+ * load-bearing, not tidiness: this repo's fixtures embed multi-line
+ * `node --input-type=module -e "` programs (see
+ * `tests/integration/emr-instance-configs/verify.sh`), and with per-line state
+ * a JS comment inside such a block — `// do not use aws emr
+ * list-instance-groups here` — parses as a command and becomes a CI-blocking
+ * violation whose only cure is deleting the explanation. That is precisely the
+ * outcome this blanking exists to prevent, one layer up. Same for a
+ * `cat <<EOF ... EOF` body.
+ *
+ * The filler is `_`, NOT a space, and that choice is also load-bearing. A
+ * blanked span must remain ONE token: `_` is inside {@link TOKEN_SEPARATOR}'s
+ * allowed set (and can never start a {@link NAME}), whereas spaces would make
+ * the span vanish as a token entirely — and then
+ * `aws --region "${REGION}" emr list-clusters` loses its option VALUE, the skip
+ * loop consumes `emr` in its place, and the whole invocation disappears with no
+ * diagnostic. `"${REGION}"` is the spelling every fixture here uses, so
+ * space-filling would have been blind to the form it actually meets.
+ *
+ * Length is preserved so downstream line/column accounting is unaffected.
+ */
+export function blankQuotedSpans(line: string, state: ScanState = newScanState()): string {
+  // Inside a heredoc body: the whole line is data until the delimiter line.
+  if (state.heredoc !== null) {
+    if (line.trim() === state.heredoc) state.heredoc = null;
+    return BLANK.repeat(line.length);
+  }
+
   let out = '';
   let i = 0;
+
+  // Finish a quoted span left open by the previous line.
+  if (state.openQuote !== null) {
+    const quote = state.openQuote;
+    while (i < line.length && line[i] !== quote) {
+      out += BLANK;
+      i++;
+    }
+    if (i < line.length) {
+      out += line[i]!;
+      i++;
+      state.openQuote = null;
+    } else {
+      return out;
+    }
+  }
+
   while (i < line.length) {
     const ch = line[i]!;
+
+    // Heredoc introducer: `<<EOF`, `<<-EOF`, `<<'EOF'`, `<<"EOF"`. The body
+    // starts on the NEXT line, so record it and keep scanning this one.
+    if (ch === '<' && line[i + 1] === '<') {
+      const m = /^<<-?\s*(["']?)([A-Za-z_][A-Za-z0-9_]*)\1/.exec(line.slice(i));
+      if (m) {
+        state.heredoc = m[2]!;
+        out += line.slice(i, i + m[0].length);
+        i += m[0].length;
+        continue;
+      }
+    }
+
     if (ch !== '"' && ch !== "'") {
       out += ch;
       i++;
       continue;
     }
+
     const quote = ch;
     out += ch;
     i++;
     while (i < line.length && line[i] !== quote) {
       // `\"` inside a double-quoted span is an escaped quote, not the closer.
       if (quote === '"' && line[i] === '\\' && i + 1 < line.length) {
-        out += '  ';
+        out += BLANK + BLANK;
         i += 2;
         continue;
       }
-      // A command substitution runs a real command — keep it verbatim and let
-      // the tokenizer see it. Single quotes suppress expansion, so only the
+      // A command substitution runs a real command — keep it verbatim so the
+      // tokenizer sees it. Single quotes suppress expansion, so only the
       // double-quoted case substitutes.
       if (quote === '"' && line[i] === '$' && line[i + 1] === '(') {
         let depth = 0;
+        let inner: '"' | "'" | null = null;
         while (i < line.length) {
-          if (line[i] === '(') depth++;
-          else if (line[i] === ')') {
+          const c = line[i]!;
+          // Track quotes INSIDE the substitution so a `)` in a quoted argument
+          // (`--query "a)b"`) does not close it early and blank the remainder.
+          if (inner !== null) {
+            if (c === inner) inner = null;
+          } else if (c === '"' || c === "'") {
+            inner = c;
+          } else if (c === '(') {
+            depth++;
+          } else if (c === ')') {
             depth--;
             if (depth === 0) {
-              out += line[i]!;
+              out += c;
               i++;
               break;
             }
           }
-          out += line[i]!;
+          out += c;
           i++;
         }
         continue;
       }
-      out += ' ';
+      out += BLANK;
       i++;
     }
     if (i < line.length) {
       out += line[i]!;
       i++;
+    } else {
+      // Unterminated on this line — the span continues onto the next.
+      state.openQuote = quote;
     }
   }
   return out;
@@ -183,25 +301,34 @@ export function blankQuotedSpans(line: string): string {
  * Deliberately NOT anchored at a command start. The repo's canonical
  * gone-probe helpers take the probe as ARGUMENTS —
  * `assert_gone "<desc>" aws s3api head-object ...` — so a command-start anchor
- * would skip every destroy assertion in the tree, which is a large and
- * high-value share of the `aws` calls. Scanning for the `aws` token anywhere in
- * a segment covers the plain form, the helper-argument form, `$( ... )`
- * substitutions, and `if ! aws ...` conditions with one rule.
+ * would skip every destroy assertion in the tree (414 invocations), a large and
+ * high-value share. Scanning for the `aws` token anywhere in a segment covers
+ * the plain form, the helper-argument form, `$( ... )` substitutions, and
+ * `if ! aws ...` conditions with one rule.
  *
- * Comments are stripped BEFORE matching (both trailing and whole-line): three
+ * Comments are stripped BEFORE matching (both trailing and whole-line): two
  * `verify.sh` files discuss `aws emr list-instance-groups` in prose explaining
  * why they avoid it, and flagging those would make the check unusable.
  */
 export function extractAwsInvocations(content: string): AwsInvocation[] {
   const joined = joinContinuedLines(content);
   const invocations: AwsInvocation[] = [];
+  // ONE state for the whole file: quote / heredoc context spans lines (the
+  // multi-line `node -e "..."` blocks these fixtures embed).
+  const scan = newScanState();
 
   for (let i = 0; i < joined.length; i++) {
     const { text, line } = joined[i]!;
-    // The hatch lives in a COMMENT, so it is read from the part
-    // `stripTrailingComment` removes — NOT from the raw line, which would also
-    // honor the marker when it merely appears inside a string literal.
-    const stripped = stripTrailingComment(text);
+
+    // Inside a multi-line string or heredoc there is no shell comment to
+    // strip — `#` is data there — so blank first and skip the comment logic.
+    const insideNonCode = scan.openQuote !== null || scan.heredoc !== null;
+    const stripped = insideNonCode ? text : stripTrailingComment(text);
+    const blanked = blankQuotedSpans(stripped, scan);
+    if (insideNonCode) continue;
+
+    // The hatch is read from the part `stripTrailingComment` removed — NOT
+    // from the raw line, which would also honor a marker inside a string.
     const ownComment = text.slice(stripped.length);
     const prevText = joined[i - 1]?.text ?? '';
     // On the line above, require a WHOLE-line comment: a marker trailing a
@@ -211,33 +338,18 @@ export function extractAwsInvocations(content: string): AwsInvocation[] {
       ownComment.includes(ALLOW_MARKER) ||
       (prevIsCommentLine && prevText.includes(ALLOW_MARKER));
 
-    for (const segment of splitShellCommands(blankQuotedSpans(stripped))) {
+    for (const segment of splitShellCommands(blanked)) {
       const tokens = segment.split(TOKEN_SEPARATOR).filter(Boolean);
       for (let t = 0; t < tokens.length - 2; t++) {
         if (tokens[t] !== 'aws') continue;
 
-        // Step past any leading GLOBAL options — `aws --region us-east-1 emr
-        // list-clusters` must resolve to (emr, list-clusters), not
-        // (us-east-1, emr). Without this the invocation silently vanishes:
-        // `NAME` rejects `--region` and the whole call goes unchecked.
-        let k = t + 1;
-        while (k < tokens.length && tokens[k]!.startsWith('-')) {
-          const flag = tokens[k]!.split('=')[0]!;
-          k++;
-          // `--flag=value` already carries its value; a bare value-taking flag
-          // consumes the next token.
-          if (
-            VALUE_TAKING_GLOBAL_OPTIONS.has(flag) &&
-            !tokens[k - 1]!.includes('=') &&
-            k < tokens.length &&
-            !tokens[k]!.startsWith('-')
-          ) {
-            k++;
-          }
-        }
+        // Step past GLOBAL options, which the AWS CLI accepts BOTH before the
+        // service (`aws --region us-east-1 emr list-clusters`) and between the
+        // service and the verb (`aws emr --region us-east-1 list-clusters`).
+        const serviceIdx = skipOptions(tokens, t + 1);
+        const service = tokens[serviceIdx];
+        const verb = tokens[skipOptions(tokens, serviceIdx + 1)];
 
-        const service = tokens[k];
-        const verb = tokens[k + 1];
         // A variable or otherwise unclassifiable token means this is not a
         // plain `aws <service> <verb>` we can judge statically — skip rather
         // than guess.
@@ -315,19 +427,33 @@ export function lintScriptAwsCommands(
   return violations;
 }
 
+/**
+ * Every fixture that has a `verify.sh`, as `{ fixture, content }`.
+ *
+ * Exported so the coverage floors measure the SAME enumeration the lint walks.
+ * When the test re-implemented this walk, breaking the filter here left the
+ * suite fully green: `lintFixtureTreeAwsCommands` would yield zero violations
+ * (vacuously satisfying the "no fixture calls a removed verb" assertion) while
+ * the floors kept passing against their private copy of the walk. That is the
+ * "0 violations and parsed nothing at all look identical" failure mode
+ * `.claude/rules/testing.md` exists to prevent, reintroduced one level up.
+ */
+export function readFixtureScripts(integRoot: string): { fixture: string; content: string }[] {
+  return readdirSync(integRoot, { withFileTypes: true })
+    .filter((e) => e.isDirectory() && existsSync(join(integRoot, e.name, 'verify.sh')))
+    .map((e) => ({
+      fixture: e.name,
+      content: readFileSync(join(integRoot, e.name, 'verify.sh'), 'utf8'),
+    }));
+}
+
 export function lintFixtureTreeAwsCommands(
   integRoot: string,
   table: RemovedCommands
 ): AwsCommandViolation[] {
-  return readdirSync(integRoot, { withFileTypes: true })
-    .filter((e) => e.isDirectory() && existsSync(join(integRoot, e.name, 'verify.sh')))
-    .flatMap((e) =>
-      lintScriptAwsCommands(
-        e.name,
-        readFileSync(join(integRoot, e.name, 'verify.sh'), 'utf8'),
-        table
-      )
-    );
+  return readFixtureScripts(integRoot).flatMap(({ fixture, content }) =>
+    lintScriptAwsCommands(fixture, content, table)
+  );
 }
 
 export function formatAwsCommandViolation(v: AwsCommandViolation): string {

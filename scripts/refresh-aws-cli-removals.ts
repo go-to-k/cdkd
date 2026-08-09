@@ -90,7 +90,14 @@ export function findAwsCliPackageRoot(explicitRoot?: string): string {
   if (!awsBin) throw new Error('aws CLI not found on PATH — pass --aws-root <awscli package dir>');
   // `aws` is usually a symlink into the versioned install; resolve it, then walk
   // up looking for the packaged `awscli` directory.
-  const real = realpathSync(awsBin);
+  // A dangling symlink makes realpathSync throw — right after the careful
+  // try/catch above, which would be an odd place to lose the actionable error.
+  let real: string;
+  try {
+    real = realpathSync(awsBin);
+  } catch {
+    real = awsBin;
+  }
   let dir = dirname(real);
   for (let i = 0; i < 8; i++) {
     const candidates = [
@@ -129,8 +136,14 @@ export function buildFixture(pkgRoot: string): RemovedCommandsFixture {
   // so a reordered or interleaved `remove()` call would drop that service
   // SILENTLY; a bare `size === 0` guard only catches total failure, which is
   // the vacuous-pass shape `.claude/rules/testing.md` warns about.
+  // Scoped to lines that actually pass the event to `remove(...)`: a future
+  // DOC mention of `building-command-table.x` in a comment or docstring would
+  // otherwise throw a misleading "parser is stale" and block the refresh.
   const declaredEvents = new Set(
-    [...source.matchAll(/building-command-table\.([a-z0-9-]+)/g)].map((m) => m[1]!)
+    source
+      .split('\n')
+      .filter((l) => l.includes('on_event') && !l.trimStart().startsWith('#'))
+      .flatMap((l) => [...l.matchAll(/building-command-table\.([a-z0-9-]+)/g)].map((m) => m[1]!))
   );
   if (parsed.size === 0) {
     throw new Error(`parsed 0 removals from ${pkgRoot}/customizations/removals.py — parser is stale`);
@@ -165,11 +178,19 @@ const FIXTURE_PATH = join(import.meta.dirname, '../tests/fixtures/aws-cli-remove
 function main(): void {
   const argv = process.argv.slice(2);
   const check = argv.includes('--check');
+  // Accept BOTH `--aws-root <path>` and `--aws-root=<path>`; recognising only
+  // the bare flag meant the `=` form fell through to the PATH lookup, silently
+  // defeating the validation below.
+  const inlineRoot = argv.find((a) => a.startsWith('--aws-root='));
   const rootIdx = argv.indexOf('--aws-root');
-  const rootValue = rootIdx >= 0 ? argv[rootIdx + 1] : undefined;
+  const rootValue = inlineRoot
+    ? inlineRoot.slice('--aws-root='.length)
+    : rootIdx >= 0
+      ? argv[rootIdx + 1]
+      : undefined;
   // `--aws-root` with no value (or followed by another flag) must ERROR, not
   // silently fall back to PATH — or worse, take `--check` as the root path.
-  if (rootIdx >= 0 && (rootValue === undefined || rootValue.startsWith('-'))) {
+  if ((rootIdx >= 0 || inlineRoot) && (!rootValue || rootValue.startsWith('-'))) {
     console.error('--aws-root requires a path argument (the awscli package directory)');
     process.exit(1);
   }

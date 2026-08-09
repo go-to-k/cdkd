@@ -1,10 +1,12 @@
 import { describe, it, expect } from 'vite-plus/test';
 import {
+  blankQuotedSpans,
   extractAwsInvocations,
   formatAwsCommandViolation,
   lintFixtureTreeAwsCommands,
   lintScriptAwsCommands,
   loadRemovedCommands,
+  readFixtureScripts,
   parseRemovedCommandsContent,
   ALLOW_MARKER,
 } from '../../../scripts/check-integ-aws-commands.js';
@@ -148,7 +150,7 @@ describe('extractAwsInvocations', () => {
     expect(inv[0]!.verb).toBe('list-clusters');
   });
 
-  // Three fixtures discuss `aws emr list-instance-groups` in prose explaining
+  // Two fixtures discuss `aws emr list-instance-groups` in prose explaining
   // why they avoid it. Flagging prose would make the check unusable, and
   // stripping comments is also what stops a "don't do this" example from
   // becoming a violation.
@@ -202,9 +204,66 @@ describe('extractAwsInvocations', () => {
     ['--region=value', 'aws --region=us-east-1 emr list-instance-groups --cluster-id j-A'],
     ['a boolean global', 'aws --no-cli-pager emr list-instance-groups --cluster-id j-A'],
     ['two globals', 'aws --profile p --debug emr list-instance-groups --cluster-id j-A'],
+    // The AWS CLI accepts a global option AFTER the service too.
+    ['a global after the service', 'aws emr --region us-east-1 list-instance-groups --cluster-id j-A'],
+    ['globals on both sides', 'aws --debug emr --region us-east-1 list-instance-groups'],
   ])('sees the invocation behind a leading global option: %s', (_label, body) => {
     const inv = extractAwsInvocations(`${body}\n`);
     expect(inv.map((i) => `${i.service} ${i.verb}`)).toEqual(['emr list-instance-groups']);
+  });
+
+  // Review finding: a QUOTED global-option value made the whole invocation
+  // vanish. Blanking replaced `"${REGION}"` with spaces, so it stopped being a
+  // token and the skip loop consumed `emr` as the option's value instead.
+  // `"${REGION}"` is the spelling EVERY fixture here uses, so the earlier fix
+  // was blind to the form it actually meets. Blanking to `_` keeps the span as
+  // one token.
+  it.each([
+    ['a quoted global value', 'aws --region "${REGION}" emr list-instance-groups --cluster-id j-A'],
+    ['a single-quoted global value', "aws --region 'us-east-1' emr list-instance-groups"],
+    ['a quoted value after the service', 'aws emr --region "${REGION}" list-instance-groups'],
+  ])('sees the invocation when the global option value is quoted: %s', (_label, body) => {
+    const inv = extractAwsInvocations(`${body}\n`);
+    expect(inv.map((i) => `${i.service} ${i.verb}`)).toEqual(['emr list-instance-groups']);
+  });
+
+  // Review finding: quote state was per-LINE, so the body of a multi-line
+  // string was parsed as code. These fixtures embed exactly that shape (a
+  // `node --input-type=module -e "` program spanning many lines), so a comment
+  // inside one mentioning the removed verb became a CI-blocking violation
+  // curable only by deleting the comment.
+  it('does not parse the body of a multi-line quoted string as commands', () => {
+    const script = [
+      'run_it() {',
+      '  node --input-type=module -e "',
+      "import { EMRClient } from '@aws-sdk/client-emr';",
+      '// do not use aws emr list-instance-groups here',
+      'process.stdout.write(JSON.stringify(x));',
+      '" "$1"',
+      '}',
+      'aws emr list-clusters --active',
+    ].join('\n');
+    const inv = extractAwsInvocations(`${script}\n`);
+    expect(inv.map((i) => `${i.service} ${i.verb}`)).toEqual(['emr list-clusters']);
+  });
+
+  it('does not parse a heredoc body as commands', () => {
+    const script = [
+      'cat <<EOF',
+      'never call aws emr list-instance-groups from a fixture',
+      'EOF',
+      'aws emr list-clusters --active',
+    ].join('\n');
+    const inv = extractAwsInvocations(`${script}\n`);
+    expect(inv.map((i) => `${i.service} ${i.verb}`)).toEqual(['emr list-clusters']);
+  });
+
+  it('resumes scanning after a quoted heredoc delimiter', () => {
+    const script = ["cat <<'EOF'", 'aws emr list-instance-groups', 'EOF', 'aws emr list-clusters'].join(
+      '\n'
+    );
+    const inv = extractAwsInvocations(`${script}\n`);
+    expect(inv.map((i) => `${i.service} ${i.verb}`)).toEqual(['emr list-clusters']);
   });
 
   it('marks the escape hatch on the same line and the line above', () => {
@@ -233,6 +292,50 @@ describe('extractAwsInvocations', () => {
     );
     const leaked = trailingAbove.find((i) => i.verb === 'list-instance-groups');
     expect(leaked?.allowed).toBe(false);
+  });
+});
+
+describe('blankQuotedSpans', () => {
+  it('blanks a double-quoted span but keeps a $( ) substitution inside it', () => {
+    const out = blankQuotedSpans('IDS="prose $(aws emr list-clusters) more"');
+    expect(out).toContain('$(aws emr list-clusters)');
+    expect(out).not.toContain('prose');
+    // Length must be PRESERVED so column/line accounting downstream is intact.
+    expect(out).toHaveLength('IDS="prose $(aws emr list-clusters) more"'.length);
+  });
+
+  it('blanks a single-quoted span entirely (no expansion happens there)', () => {
+    const out = blankQuotedSpans("echo 'aws emr list-instance-groups'");
+    expect(out).not.toContain('list-instance-groups');
+    expect(out).toHaveLength("echo 'aws emr list-instance-groups'".length);
+  });
+
+  it('handles a nested quote inside a preserved substitution', () => {
+    const out = blankQuotedSpans('X="$(aws emr describe-cluster --query "Cluster.Id")"');
+    expect(out).toContain('aws emr describe-cluster');
+  });
+
+  it('does not treat an escaped quote as the closer', () => {
+    const out = blankQuotedSpans('echo "a \\"b" ; aws emr list-clusters');
+    expect(out).toContain('aws emr list-clusters');
+  });
+
+  // KNOWN LIMITATIONS, pinned so a future change is a deliberate decision
+  // rather than a silent behavior shift.
+  it('pins the known limitations: unterminated quote, backticks, heredocs', () => {
+    // An unterminated quote blanks the rest of the line — conservative
+    // (under-reports) rather than dangerous (over-reports).
+    expect(blankQuotedSpans('echo "unterminated aws emr list-instance-groups')).not.toContain(
+      'list-instance-groups'
+    );
+    // Backtick substitution inside double quotes is NOT preserved. No fixture
+    // uses the legacy form; if one appears its invocation is missed, not
+    // misreported.
+    expect(blankQuotedSpans('X="`aws emr list-clusters`"')).not.toContain('list-clusters');
+    // Heredoc BODIES are not quoted spans, so they are scanned as commands.
+    // Prose in a heredoc could therefore false-positive; accepted because the
+    // removal table is tiny and every entry is an implausible prose word.
+    expect(blankQuotedSpans('aws emr list-clusters')).toContain('aws emr list-clusters');
   });
 });
 
@@ -288,10 +391,15 @@ describe('integ fixture aws invocations (#1402)', () => {
   it('parses a substantial share of the fixture tree', () => {
     const stats = collectStats();
     expect(stats.fixtures).toBeGreaterThan(150);
-    // Current: 2640 invocations across 221 fixtures, 68 services, 355 verbs.
+    // Current: 2635 invocations across 221 fixtures, 68 services, 355 verbs.
     expect(stats.total).toBeGreaterThan(2200);
     expect(stats.services.size).toBeGreaterThan(55);
     expect(stats.verbs.size).toBeGreaterThan(290);
+    // CEILING as well as floor. Floors catch a parser that stops seeing things;
+    // only a ceiling catches one that starts seeing things that are not there
+    // (the quoted-prose / ARN false positives review found were exactly that,
+    // and no floor could have flagged them).
+    expect(stats.total).toBeLessThan(3000);
     // The highest-traffic services must always be represented.
     for (const svc of ['s3api', 'lambda', 'ec2', 'iam', 'logs']) {
       expect(stats.services.has(svc), `no aws ${svc} invocation parsed`).toBe(true);
@@ -305,7 +413,7 @@ describe('integ fixture aws invocations (#1402)', () => {
   it('parses every invocation shape it claims to support', () => {
     const stats = collectStats();
     const floors: Record<keyof ReturnType<typeof collectStats>['shapes'], number> = {
-      // Current: plain 1008, substitution 1028, helperArgument 414,
+      // Current: plain 1008, substitution 1023, helperArgument 414,
       // condition 211. Floors sit ~20% under, low enough for fixture churn and
       // high enough that losing a shape outright cannot slip through.
       // `aws ...` at the start of a segment — the common form.
@@ -320,6 +428,10 @@ describe('integ fixture aws invocations (#1402)', () => {
       // `if aws ...` / `if ! aws ...` / `while ...` conditions.
       condition: 160,
     };
+    // No fixture uses a global option before the service today. Asserted
+    // EXACTLY 0 rather than floored: if one appears, this fails and the shape
+    // gets a real floor, instead of the branch rotting untested.
+    expect(stats.shapes.globalOption).toBe(0);
     for (const [name, floor] of Object.entries(floors)) {
       expect(
         stats.shapes[name as keyof typeof stats.shapes],
@@ -350,21 +462,68 @@ describe('integ fixture aws invocations (#1402)', () => {
       expect(lintScriptAwsCommands(fixture, content, TABLE), `${fixture} falsely flagged`).toEqual(
         []
       );
+
+      // POSITIVE CONTROL. Without it the fence is satisfied by a checker that
+      // flags NOTHING at all, and equally by one whose quoted-span blanking
+      // swallowed the mention for the wrong reason. Strip the leading `#` from
+      // the discussing comment lines and the SAME content must now flag — so
+      // the fence proves comment-stripping specifically, not general silence.
+      const uncommented = content
+        .split('\n')
+        .map((l) =>
+          l.trimStart().startsWith('#') && l.includes('list-instance-groups')
+            ? l.replace(/^(\s*)#\s?/, '$1')
+            : l
+        )
+        .join('\n');
+      expect(
+        lintScriptAwsCommands(fixture, uncommented, TABLE).length,
+        `${fixture}: fence is vacuous — uncommenting the mention did not flag`
+      ).toBeGreaterThan(0);
     }
+  });
+
+  // The real-code fail probe, automated so it cannot bit-rot between manual
+  // runs. Splices a removed verb into the REAL emr-cluster/verify.sh content
+  // in memory (no file is touched) and asserts the checker names it.
+  it('flags a removed verb spliced into a real fixture, reporting its line', () => {
+    const real = readFileSync(join(INTEG_ROOT, 'emr-cluster', 'verify.sh'), 'utf8');
+    expect(lintScriptAwsCommands('emr-cluster', real, TABLE)).toEqual([]);
+
+    const lines = real.split('\n');
+    lines.splice(10, 0, 'PROBE="$(aws emr list-instance-groups --cluster-id "${CID}")"');
+    const violations = lintScriptAwsCommands('emr-cluster', lines.join('\n'), TABLE);
+
+    expect(violations).toHaveLength(1);
+    expect(violations[0]!.verb).toBe('list-instance-groups');
+    expect(violations[0]!.line).toBe(11);
+    expect(formatAwsCommandViolation(violations[0]!)).toContain(
+      'tests/integration/emr-cluster/verify.sh:11'
+    );
   });
 });
 
 function collectStats() {
   const services = new Set<string>();
   const verbs = new Set<string>();
-  const shapes = { plain: 0, substitution: 0, helperArgument: 0, condition: 0 };
+  const shapes = {
+    plain: 0,
+    substitution: 0,
+    helperArgument: 0,
+    condition: 0,
+    // Currently 0 in the tree. Asserted `toBe(0)` rather than floored, so the
+    // day a fixture DOES use `aws --region ... <service> <verb>` this fails and
+    // the shape is converted into a real floor instead of silently regressing.
+    globalOption: 0,
+  };
   let total = 0;
-  let fixtures = 0;
 
-  for (const e of readdirSync(INTEG_ROOT, { withFileTypes: true })) {
-    if (!e.isDirectory() || !existsSync(join(INTEG_ROOT, e.name, 'verify.sh'))) continue;
-    fixtures++;
-    const content = readFileSync(join(INTEG_ROOT, e.name, 'verify.sh'), 'utf8');
+  // Drive off the LINT's own enumeration, not a private copy: measuring a
+  // re-implemented walk means a broken filter in the real one leaves every
+  // floor green while the lint silently scans nothing.
+  const scripts = readFixtureScripts(INTEG_ROOT);
+
+  for (const { content } of scripts) {
     for (const inv of extractAwsInvocations(content)) {
       total++;
       services.add(inv.service);
@@ -373,8 +532,9 @@ function collectStats() {
       if (inv.raw.includes('$(')) shapes.substitution++;
       if (/^(?:assert_gone|gone_probe)\b/.test(inv.raw)) shapes.helperArgument++;
       if (/^(?:if|while|until)\b|^!\s/.test(inv.raw)) shapes.condition++;
+      if (/\baws\s+-/.test(inv.raw)) shapes.globalOption++;
     }
   }
 
-  return { fixtures, total, services, verbs, shapes };
+  return { fixtures: scripts.length, total, services, verbs, shapes };
 }
