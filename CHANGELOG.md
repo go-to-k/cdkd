@@ -1,3 +1,10 @@
+## [0.278.8](https://github.com/go-to-k/cdkd/compare/v0.278.7...v0.278.8) (2026-08-09)
+
+
+### Bug Fixes
+
+* **glue:** rename the Crawler DynamoDB scan members and the Iceberg table input to their SDK spellings ([#1409](https://github.com/go-to-k/cdkd/issues/1409)) ([ffef506](https://github.com/go-to-k/cdkd/commit/ffef506b8091e3ce514a401a447b2a7fbeb8c97d))
+
 ## [0.278.7](https://github.com/go-to-k/cdkd/compare/v0.278.6...v0.278.7) (2026-08-09)
 
 
