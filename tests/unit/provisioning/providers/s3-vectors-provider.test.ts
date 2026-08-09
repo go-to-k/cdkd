@@ -82,6 +82,64 @@ describe('S3VectorsProvider', () => {
       });
     });
 
+    it('maps the CFn EncryptionConfiguration spellings (SseType / KmsKeyArn) onto the SDK members (issue #1385)', async () => {
+      // Regression guard: the provider used to read `SSEType` / `KMSKeyArn`,
+      // which the CFn registry schema (and CDK's CfnVectorBucket renderer)
+      // never emit — both lookups were always `undefined`, so a KMS-encrypted
+      // vector bucket silently came up with the account-default encryption.
+      mockSend.mockImplementation((cmd: unknown) => {
+        if (cmd instanceof CreateVectorBucketCommand) {
+          return Promise.resolve({
+            vectorBucketArn: 'arn:aws:s3vectors:us-east-1:0:vector-bucket/kms-vector-bucket',
+          });
+        }
+        return Promise.resolve({});
+      });
+
+      await provider.create('MyVectorBucket', 'AWS::S3Vectors::VectorBucket', {
+        VectorBucketName: 'kms-vector-bucket',
+        EncryptionConfiguration: {
+          SseType: 'aws:kms',
+          KmsKeyArn: 'arn:aws:kms:us-east-1:123456789012:key/abc',
+        },
+      });
+
+      const createCall = mockSend.mock.calls.find(
+        (call: unknown[]) => call[0] instanceof CreateVectorBucketCommand
+      );
+      expect(createCall![0].input).toEqual({
+        vectorBucketName: 'kms-vector-bucket',
+        encryptionConfiguration: {
+          sseType: 'aws:kms',
+          kmsKeyArn: 'arn:aws:kms:us-east-1:123456789012:key/abc',
+        },
+      });
+    });
+
+    it('maps AES256 EncryptionConfiguration with no KmsKeyArn', async () => {
+      mockSend.mockImplementation((cmd: unknown) => {
+        if (cmd instanceof CreateVectorBucketCommand) {
+          return Promise.resolve({
+            vectorBucketArn: 'arn:aws:s3vectors:us-east-1:0:vector-bucket/aes-vector-bucket',
+          });
+        }
+        return Promise.resolve({});
+      });
+
+      await provider.create('MyVectorBucket', 'AWS::S3Vectors::VectorBucket', {
+        VectorBucketName: 'aes-vector-bucket',
+        EncryptionConfiguration: { SseType: 'AES256' },
+      });
+
+      const createCall = mockSend.mock.calls.find(
+        (call: unknown[]) => call[0] instanceof CreateVectorBucketCommand
+      );
+      expect(createCall![0].input).toEqual({
+        vectorBucketName: 'aes-vector-bucket',
+        encryptionConfiguration: { sseType: 'AES256', kmsKeyArn: undefined },
+      });
+    });
+
     it('forwards Tags into CreateVectorBucket as the SDK Record<string,string> shape', async () => {
       mockSend.mockImplementation((cmd: unknown) => {
         if (cmd instanceof CreateVectorBucketCommand) {
@@ -340,8 +398,8 @@ describe('S3VectorsProvider', () => {
           'MyVectorBucket',
           'my-vector-bucket',
           'AWS::S3Vectors::VectorBucket',
-          { EncryptionConfiguration: { SSEType: 'aws:kms' } },
-          { EncryptionConfiguration: { SSEType: 'AES256' } }
+          { EncryptionConfiguration: { SseType: 'aws:kms' } },
+          { EncryptionConfiguration: { SseType: 'AES256' } }
         )
       ).rejects.toThrow(ResourceUpdateNotSupportedError);
       // Must fail BEFORE any AWS call.

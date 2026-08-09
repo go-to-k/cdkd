@@ -3555,7 +3555,8 @@
         "infra-security",
         "kms-encryption",
         "loggroup-kms-associate",
-        "propagation-races-2"
+        "propagation-races-2",
+        "s3-vectors"
       ],
       "signals": {
         "composite-stack": [
@@ -3582,6 +3583,9 @@
         ],
         "propagation-races-2": [
           "l1"
+        ],
+        "s3-vectors": [
+          "l2"
         ]
       }
     },

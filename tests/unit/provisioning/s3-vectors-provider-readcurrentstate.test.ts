@@ -71,8 +71,8 @@ describe('S3VectorsProvider.readCurrentState', () => {
     expect(result).toEqual({
       VectorBucketName: 'my-vec-bucket',
       EncryptionConfiguration: {
-        SSEType: 'aws:kms',
-        KMSKeyArn: 'arn:aws:kms:us-east-1:123:key/abc',
+        SseType: 'aws:kms',
+        KmsKeyArn: 'arn:aws:kms:us-east-1:123:key/abc',
       },
       Tags: [],
     });

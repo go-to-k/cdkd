@@ -52,8 +52,8 @@ describe('S3VectorsProvider read-update round-trip', () => {
     const observed = {
       VectorBucketName: PHYSICAL_ID,
       EncryptionConfiguration: {
-        SSEType: 'aws:kms',
-        KMSKeyArn: 'arn:aws:kms:us-east-1:123:key/abc',
+        SseType: 'aws:kms',
+        KmsKeyArn: 'arn:aws:kms:us-east-1:123:key/abc',
       },
     };
 
@@ -66,31 +66,31 @@ describe('S3VectorsProvider read-update round-trip', () => {
   it('round-trip on AES256 snapshot does not surface AWS-rejection-shape inputs', async () => {
     // Even if a future code path were to ship update() with real
     // SetEncryption-style mutations, an AES256 snapshot must not carry a
-    // KMSKeyArn. This is the Class 1 guard mirrored on the round-trip
+    // KmsKeyArn. This is the Class 1 guard mirrored on the round-trip
     // path: standard-encryption resources must not round-trip
     // KMS-only fields.
     const observed = {
       VectorBucketName: PHYSICAL_ID,
       EncryptionConfiguration: {
-        SSEType: 'AES256',
+        SseType: 'AES256',
       },
     };
 
     await provider.update('L', PHYSICAL_ID, RESOURCE_TYPE, observed, observed);
 
     expect(mockSend).not.toHaveBeenCalled();
-    // Sanity check: the snapshot itself does not carry KMSKeyArn for AES256.
+    // Sanity check: the snapshot itself does not carry KmsKeyArn for AES256.
     const enc = observed.EncryptionConfiguration as Record<string, unknown>;
-    expect(enc['KMSKeyArn']).toBeUndefined();
+    expect(enc['KmsKeyArn']).toBeUndefined();
   });
 
-  it('Class 1 — readCurrentState does not emit KMSKeyArn on an AES256 bucket', async () => {
+  it('Class 1 — readCurrentState does not emit KmsKeyArn on an AES256 bucket', async () => {
     // Defensive Class 1 guard: even if AWS surfaces an account-default
     // KMS key ARN alongside sseType=AES256 (not the documented behavior
     // today, but an SDK surface change away), readCurrentState must NOT
-    // emit KMSKeyArn — round-tripping it back via `cdkd drift --revert`
+    // emit KmsKeyArn — round-tripping it back via `cdkd drift --revert`
     // would push a KMS-only field on a standard-encryption bucket and
-    // AWS rejects with "KMSKeyArn is only valid when SSEType is aws:kms".
+    // AWS rejects with "KmsKeyArn is only valid when SseType is aws:kms".
     mockSend.mockResolvedValueOnce({
       vectorBucket: {
         vectorBucketName: PHYSICAL_ID,
@@ -108,16 +108,16 @@ describe('S3VectorsProvider read-update round-trip', () => {
 
     expect(result).toEqual({
       VectorBucketName: PHYSICAL_ID,
-      EncryptionConfiguration: { SSEType: 'AES256' },
+      EncryptionConfiguration: { SseType: 'AES256' },
       Tags: [],
     });
     const enc = (result?.['EncryptionConfiguration'] ?? {}) as Record<string, unknown>;
-    expect(enc['KMSKeyArn']).toBeUndefined();
+    expect(enc['KmsKeyArn']).toBeUndefined();
   });
 
-  it('readCurrentState emits both SSEType and KMSKeyArn on aws:kms (legitimate KMS path)', async () => {
+  it('readCurrentState emits both SseType and KmsKeyArn on aws:kms (legitimate KMS path)', async () => {
     // Complement of the AES256 case: aws:kms encryption legitimately
-    // carries KMSKeyArn, and round-tripping it must preserve both.
+    // carries KmsKeyArn, and round-tripping it must preserve both.
     mockSend.mockResolvedValueOnce({
       vectorBucket: {
         vectorBucketName: PHYSICAL_ID,
@@ -135,8 +135,8 @@ describe('S3VectorsProvider read-update round-trip', () => {
     expect(result).toEqual({
       VectorBucketName: PHYSICAL_ID,
       EncryptionConfiguration: {
-        SSEType: 'aws:kms',
-        KMSKeyArn: 'arn:aws:kms:us-east-1:123:key/abc',
+        SseType: 'aws:kms',
+        KmsKeyArn: 'arn:aws:kms:us-east-1:123:key/abc',
       },
       Tags: [],
     });

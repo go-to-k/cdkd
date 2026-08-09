@@ -107,14 +107,42 @@ if [ -z "${BUCKET_NAME}" ]; then
   exit 1
 fi
 
-# Resolve the bucket ARN — ListTagsForResource is keyed by ARN, not name.
-BUCKET_ARN=$(aws s3vectors get-vector-bucket \
+EXPECTED_KEY_ARN=$(echo "${STATE}" | jq -r '.outputs.VectorBucketKeyArn // empty')
+if [ -z "${EXPECTED_KEY_ARN}" ]; then
+  echo "FAIL: state.outputs.VectorBucketKeyArn missing after deploy" >&2
+  echo "${STATE}" | jq '.outputs'
+  exit 1
+fi
+
+# One GetVectorBucket read serves both the ARN resolution (ListTagsForResource
+# is keyed by ARN, not name) and the #1385 encryption assertion below.
+BUCKET_JSON=$(aws s3vectors get-vector-bucket \
   --vector-bucket-name "${BUCKET_NAME}" --region "${REGION}" \
-  --query 'vectorBucket.vectorBucketArn' --output text 2>/dev/null)
+  --query 'vectorBucket' --output json)
+BUCKET_ARN=$(echo "${BUCKET_JSON}" | jq -r '.vectorBucketArn // empty')
 if [ -z "${BUCKET_ARN}" ] || [ "${BUCKET_ARN}" = "None" ]; then
   echo "FAIL: GetVectorBucket(${BUCKET_NAME}) returned no ARN" >&2
   exit 1
 fi
+
+# --- Assertion: EncryptionConfiguration reached AWS (issue #1385) ----
+# The provider used to read the non-existent CFn keys `SSEType` / `KMSKeyArn`,
+# so both were always undefined and the bucket came up with the account-default
+# AES256 encryption while cdkd reported success. Assert the CMK actually stuck.
+SSE_TYPE=$(echo "${BUCKET_JSON}" | jq -r '.encryptionConfiguration.sseType // empty')
+KMS_KEY_ARN=$(echo "${BUCKET_JSON}" | jq -r '.encryptionConfiguration.kmsKeyArn // empty')
+
+if [ "${SSE_TYPE}" != "aws:kms" ]; then
+  echo "FAIL: encryptionConfiguration.sseType is '${SSE_TYPE}', expected 'aws:kms' (issue #1385 NOT closed)" >&2
+  echo "      raw bucket: ${BUCKET_JSON}" >&2
+  exit 1
+fi
+if [ "${KMS_KEY_ARN}" != "${EXPECTED_KEY_ARN}" ]; then
+  echo "FAIL: encryptionConfiguration.kmsKeyArn is '${KMS_KEY_ARN}', expected '${EXPECTED_KEY_ARN}' (issue #1385 NOT closed)" >&2
+  echo "      raw bucket: ${BUCKET_JSON}" >&2
+  exit 1
+fi
+echo "    OK: VectorBucket encrypted with the requested CMK (SseType/KmsKeyArn reach AWS)"
 
 # --- Assertion: Tags reached AWS via CreateVectorBucket.tags ---------
 TAGS_JSON=$(aws s3vectors list-tags-for-resource \
@@ -183,5 +211,17 @@ echo "    OK: VectorBucket is gone"
 assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: state file is gone"
 
+# The CMK is NOT an orphan: AWS never hard-deletes a KMS key, so a destroyed
+# `RemovalPolicy.DESTROY` key lands in PendingDeletion (7-day default window)
+# rather than disappearing. Assert that state explicitly so a key left ENABLED
+# (a real leak — the destroy never scheduled it) still fails the run.
+KEY_STATE=$(aws kms describe-key --key-id "${EXPECTED_KEY_ARN}" --region "${REGION}" \
+  --query 'KeyMetadata.KeyState' --output text)
+if [ "${KEY_STATE}" != "PendingDeletion" ]; then
+  echo "FAIL: CMK ${EXPECTED_KEY_ARN} is '${KEY_STATE}' after destroy, expected PendingDeletion" >&2
+  exit 1
+fi
+echo "    OK: CMK scheduled for deletion (PendingDeletion)"
+
 echo ""
-echo "==> s3-vectors test passed (Tags backfill closed + clean destroy)"
+echo "==> s3-vectors test passed (Tags backfill + #1385 CMK encryption + clean destroy)"
