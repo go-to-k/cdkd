@@ -136,17 +136,44 @@ if [ "${BROKERS_P1}" != "${EXPECTED_BROKERS}" ]; then
 fi
 echo "    OK: KafkaBootstrapServers translated to the SDK enum key and reached AWS"
 
-# --- Phase 1.5: drift must be clean ------------------------------------
-# The read-side inverse (SDK enum key -> CFn spelling) is otherwise unreachable
-# from this fixture: readCurrentState feeds observedProperties / drift, which
-# the deploy diff does not consume, so deleting it would leave every phase
-# below green. A clean drift run is what proves the inverse.
-echo "==> Phase 1.5: cdkd drift must report no drift"
-if ! node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}"; then
-  echo "FAIL: cdkd drift reported drift on a freshly deployed stack — the readCurrentState inverse for Endpoints is missing or wrong (issue #1384)" >&2
+# --- Phase 1.5: read-side inverse ---------------------------------------
+# The persisted observedProperties spelling is the ONLY asymmetric probe for the
+# read-side inverse. A `cdkd drift` run is NOT: its baseline is
+# observedProperties, captured at deploy time from the SAME readCurrentState
+# call, so both comparison sides pass through toCfnSelfManagedEventSource and
+# the rename cancels — deleting the inverse (or renaming to a third key) leaves
+# drift green. State, by contrast, must hold the CFn spelling the template used,
+# so a missing inverse shows up immediately.
+echo "==> Phase 1.5: observedProperties must hold the CFn spelling, and drift must be clean"
+OBS_STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)
+OBS_ENDPOINTS=$(printf '%s' "${OBS_STATE}" | jq -r '
+  [ .resources[] | select(.resourceType == "AWS::Lambda::EventSourceMapping")
+                 | .observedProperties.SelfManagedEventSource.Endpoints // {} ] | first // {}')
+if [ "$(printf '%s' "${OBS_ENDPOINTS}" | jq -r 'has("KafkaBootstrapServers")')" != "true" ]; then
+  echo "FAIL: observedProperties Endpoints has no 'KafkaBootstrapServers' — the readCurrentState inverse is missing (issue #1384)" >&2
+  echo "      raw: ${OBS_ENDPOINTS}" >&2
   exit 1
 fi
-echo "    OK: no drift (readCurrentState re-spells Endpoints back to the CFn key)"
+if [ "$(printf '%s' "${OBS_ENDPOINTS}" | jq -r 'has("KAFKA_BOOTSTRAP_SERVERS")')" != "false" ]; then
+  echo "FAIL: observedProperties Endpoints still carries the SDK enum key 'KAFKA_BOOTSTRAP_SERVERS' — the inverse did not run (issue #1384)" >&2
+  echo "      raw: ${OBS_ENDPOINTS}" >&2
+  exit 1
+fi
+echo "    OK: state holds the CFn spelling (readCurrentState inverse applied)"
+
+# Belt-and-braces: the two sides must also agree end to end. Branch on the exit
+# code — cdkd drift exits 1 for "drift found" and 2 for a command error, and
+# conflating them reports an IAM/throttle failure as a real drift finding.
+DRIFT_RC=0
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" || DRIFT_RC=$?
+if [ "${DRIFT_RC}" = "1" ]; then
+  echo "FAIL: cdkd drift reported drift on a freshly deployed stack" >&2
+  exit 1
+elif [ "${DRIFT_RC}" != "0" ]; then
+  echo "FAIL: cdkd drift errored (exit ${DRIFT_RC}) — result undetermined" >&2
+  exit 1
+fi
+echo "    OK: no drift"
 
 # --- Phase 2: in-place update -----------------------------------------
 # Wait out `Creating`: UpdateEventSourceMapping rejects a mapping that is still
@@ -157,10 +184,14 @@ SETTLED=""
 for _ in $(seq 1 24); do
   ESM_STATE="$(aws lambda get-event-source-mapping --uuid "${UUID_P1}" --region "${REGION}" \
     --query 'State' --output text)"
-  if [ "${ESM_STATE}" != "Creating" ] && [ "${ESM_STATE}" != "Updating" ]; then SETTLED=1; break; fi
+  # Gate on the TERMINAL set, not on "not Creating": Enabling / Disabling are
+  # also in-flight states that would break the loop early.
+  case "${ESM_STATE}" in
+    Enabled | Disabled) SETTLED=1; break ;;
+  esac
   sleep 5
 done
-[ -z "${SETTLED}" ] && { echo "FAIL: ESM ${UUID_P1} never left Creating/Updating" >&2; exit 1; }
+[ -z "${SETTLED}" ] && { echo "FAIL: ESM ${UUID_P1} never reached Enabled/Disabled (last State=${ESM_STATE})" >&2; exit 1; }
 echo "    ESM settled (State=${ESM_STATE})"
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
