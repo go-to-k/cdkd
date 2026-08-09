@@ -437,20 +437,39 @@ describe('DynamoDBGlobalTable GSI throughput translation (issue #1387)', () => {
       });
     });
 
-    it('falls through to the derived value when an explicit block coerces to nothing', () => {
-      // An explicit block whose every member is unparseable must NOT become an
-      // empty object: AWS reads an empty throughput block as "inherit", which
-      // would turn a loud failure into a silent wrong value, and on the GSI
-      // side it would also beat a perfectly valid derived setting.
+    it('throws on a present-but-unparseable explicit member instead of substituting a default', () => {
+      // Dropping it would let the `??` chain fall through to a derived value or
+      // to DEFAULT_CAPACITY_UNITS, i.e. quietly deploy 5/5 for a table the
+      // template explicitly sized. An unresolved intrinsic must be loud.
+      expect(() =>
+        toSdkGlobalSecondaryIndexes(
+          {
+            GlobalSecondaryIndexes: [
+              {
+                IndexName: 'garbage',
+                KeySchema: [{ AttributeName: 'g', KeyType: 'HASH' }],
+                Projection: { ProjectionType: 'ALL' },
+                ProvisionedThroughput: { ReadCapacityUnits: { Ref: 'Unresolved' } },
+              },
+            ],
+          },
+          'us-east-1',
+          'PROVISIONED'
+        )
+      ).toThrow(/ProvisionedThroughput\.ReadCapacityUnits must be a number/);
+    });
+
+    it('merges a PARTIAL explicit block over the derived values instead of suppressing them', () => {
+      // Whole-block replacement let a half-filled explicit block silently drop
+      // a perfectly valid derived sibling — the exact class this work closes.
       const [gsi] = toSdkGlobalSecondaryIndexes(
         {
           GlobalSecondaryIndexes: [
             {
-              IndexName: 'garbage',
+              IndexName: 'partial',
               KeySchema: [{ AttributeName: 'g', KeyType: 'HASH' }],
               Projection: { ProjectionType: 'ALL' },
-              OnDemandThroughput: { MaxReadRequestUnits: 'abc' },
-              ReadOnDemandThroughputSettings: { MaxReadRequestUnits: 41 },
+              OnDemandThroughput: { MaxReadRequestUnits: 41 },
               WriteOnDemandThroughputSettings: { MaxWriteRequestUnits: 42 },
             },
           ],
@@ -464,11 +483,14 @@ describe('DynamoDBGlobalTable GSI throughput translation (issue #1387)', () => {
       });
     });
 
-    it('leaves a replica override unset when it coerces to nothing, rather than sending an inherit-me empty block', () => {
-      const [replica] = toSdkReplicaGlobalSecondaryIndexes([
-        { IndexName: 'r', OnDemandThroughputOverride: { MaxReadRequestUnits: 'abc' } },
-      ])!;
-      expect(replica!.OnDemandThroughputOverride).toBe(undefined);
+    it('throws on an unparseable replica override rather than quietly ignoring it', () => {
+      // Omitting the override means "inherit the source table's settings" —
+      // identical to sending `{}` — so a dropped value would NOT fail loudly.
+      expect(() =>
+        toSdkReplicaGlobalSecondaryIndexes([
+          { IndexName: 'r', OnDemandThroughputOverride: { MaxReadRequestUnits: 'abc' } },
+        ])
+      ).toThrow(/OnDemandThroughputOverride\.MaxReadRequestUnits must be a number/);
     });
 
     it('throws on a non-array GlobalSecondaryIndexes instead of deploying a table with none', () => {
