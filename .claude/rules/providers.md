@@ -114,6 +114,37 @@ hand-fed inline `Tags` and so agreed with the bug.
 - Ask of any test: "would this still pass if the API returned nothing for this
   field?" If yes, it pins your assumption, not the behavior.
 
+## Fixing ONE nested-key divergence: diff the WHOLE blob, not the reported key
+
+A filed silent-drop bug names the key someone happened to notice. Fixing only
+that key leaves its siblings broken, and the sibling is often the WIDER
+breakage — the reported key may be the rarer shape.
+
+Issue #1389 reported `ByteMatchStatement.SearchStringBase64` (CFn-only, no SDK
+member) on `AWS::WAFv2::WebACL`. A reviewer extracted **all 154** CFn keys in the
+`CfnWebACL` tree from `aws-cdk-lib`'s `convertCfnWebACL*PropertyToCloudFormation`
+renderers and diffed them against the SDK schema member-name set. That found a
+second divergence the issue never mentioned: CFn spells the reference-statement
+ARN `Arn` while `IPSetReferenceStatement` / `RegexPatternSetReferenceStatement` /
+`RuleGroupReferenceStatement` all declare it `ARN` **and mark it required** — so
+every WebACL using a reference statement failed `CreateWebACL`, base64 or not.
+That is a far more common template shape than the base64 search string.
+
+**Before fixing a nested-key divergence:**
+
+- Enumerate the CFn side MECHANICALLY, from `aws-cdk-lib`'s generated
+  `convertCfn<Type><Prop>PropertyToCloudFormation` functions or the registry
+  schema's `nestedProperties` capture — not by reading the type by eye.
+- Enumerate the SDK side from the schema serde aliases
+  (`node_modules/@aws-sdk/client-*/dist-cjs/schemas/schemas_0.js`) as well as the
+  `.d.ts` members: the aliases are what the serializer actually iterates, so
+  "`_ARN = "ARN"` exists and `_Arn` does not" is the decisive evidence.
+- Diff the two sets and fix EVERY divergence in the same change. Report the
+  count you compared, so a reviewer can tell a full diff from a spot-check.
+- Prefer adding the type to `NESTED_KEY_TARGETS` (see step 4 below) over relying
+  on this being done by hand next time — the mechanical critic is the durable
+  form of this rule, and a type inside it cannot regress.
+
 ## Adding a New SDK Provider
 
 1. Create new file in `src/provisioning/providers/`

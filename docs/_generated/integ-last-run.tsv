@@ -268,5 +268,5 @@ vpc-lambda	2026-07-26T16:53:02Z	PASS	386	standard	0727 P0 sweep (ec2-provider ch
 vpc-lambda-cr-race	2026-07-24T11:03:24Z	PASS	432	standard	0724b sweep staleness; 9 del 0 err 0 orphans incl hyperplane ENI
 vpc-lookup	2026-07-24T10:55:09Z	PASS	20	standard	0724b sweep staleness; context-provider loop ok; 1 del 0 err 0 orphans
 vpc-nat-gateway	2026-07-22T08:08:02Z	PASS		standard	TTL-refresh sweep; standard flow (classifier-approved direct deploy/destroy); 21 created / 21 deleted 0 err; NAT GW + VPC + EIP + ENI all gone, state gone
-wafv2	2026-07-26T19:36:49Z	PASS	58	standard	0727b sweep-b11 staleness re-run (rc=0); account clean
+wafv2	2026-08-09T06:52:50Z	PASS	130	standard	#1389 SearchStringBase64 + reference-statement Arn->ARN asserted via GetWebACL at all 3 sites; 7 del/2 retained/0 err. NOT re-runnable: RETAIN ApiGateway CloudWatch role collides (#1407)
 wait-condition-handle	2026-07-31T06:19:56Z	PASS	44	verify.sh	TTL-refresh sweep re-run; rc ok, orph clean
