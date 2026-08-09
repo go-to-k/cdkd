@@ -1286,6 +1286,10 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         previousSdkIndexes,
         toSdkGlobalSecondaryIndexes(properties, currentRegion, newBilling)
       );
+      // RAW per-index on-demand key presence for the DESIRED side, so the
+      // `modified` loop can tell "the template dropped this member" from "the
+      // template set it to something that did not coerce" (issue #1440).
+      const rawOnDemandDeclarations = collectRawOnDemandDeclarations(properties, currentRegion);
       // Needed by the `modified` loop to tell a REAL edit from the reshaping a
       // BillingMode flip causes by construction (both sides are translated
       // under different billing modes, so every index necessarily differs).
@@ -1334,7 +1338,12 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         await this.waitForTableActiveAfterUpdate(physicalId, logicalId);
       }
       for (const gsi of gsiDiff.modified) {
-        if (!gsi.IndexName) continue;
+        // Explicit `typeof` rather than truthiness: an unresolved-intrinsic
+        // `IndexName` is a truthy OBJECT, and everything downstream (the
+        // declaration map, `previousSdkByName`) is keyed by string. Such an
+        // entry used to fall through and be safe only by a Map identity miss —
+        // an accident, not a guarantee.
+        if (typeof gsi.IndexName !== 'string' || gsi.IndexName.length === 0) continue;
         // Already applied atomically with the BillingMode flip above.
         if (gsiHandledByBillingFlip.has(gsi.IndexName)) continue;
         // A BillingMode flip re-shapes EVERY index by construction: the two
@@ -1373,21 +1382,54 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         //
         // Skipped on a billing flip, where "no on-demand fields" is just the
         // translation of a PROVISIONED side rather than a template removal.
+        //
+        // The "was it dropped" test reads the RAW CFn keys, not the translated
+        // side (issue #1440). `toSdkGlobalSecondaryIndexes` coerces through
+        // `toFiniteNumber`, so a present-but-unparseable value (an unresolved
+        // `{Ref: …}`) arrives here as `undefined` and is indistinguishable from
+        // a removal — which sent `-1` and silently CLEARED the ceiling the
+        // template was trying to SET.
+        //
+        // Be precise about what the guard buys, because the obvious claim is
+        // WRONG: it does NOT put the value back on a path that reaches AWS.
+        // The coercion happened upstream, so the unparseable value is already
+        // gone by the time this loop runs and NOTHING is sent for that member.
+        // What the guard removes is the DESTRUCTIVE half — cdkd no longer
+        // deletes a ceiling the user was trying to set — and what remains is a
+        // no-op. A no-op with no explanation is its own trap, so the
+        // suppression is reported: without it the only output was the
+        // immutable-field warning below, which tells the user to RECREATE THE
+        // INDEX — advice that is both useless and alarming for what is really
+        // an unresolved intrinsic in their template.
         const previousOnDemand = previousSdkByName.get(gsi.IndexName)?.OnDemandThroughput;
+        const declared = rawOnDemandDeclarations.get(gsi.IndexName);
         const onDemand: OnDemandThroughput = { ...gsi.OnDemandThroughput };
+        const unresolvedMembers: string[] = [];
         if (!billingFlipped && previousOnDemand) {
           if (
             previousOnDemand.MaxReadRequestUnits !== undefined &&
             onDemand.MaxReadRequestUnits === undefined
           ) {
-            onDemand.MaxReadRequestUnits = ON_DEMAND_LIMIT_RESET;
+            if (declared?.readDeclared) unresolvedMembers.push('MaxReadRequestUnits');
+            else onDemand.MaxReadRequestUnits = ON_DEMAND_LIMIT_RESET;
           }
           if (
             previousOnDemand.MaxWriteRequestUnits !== undefined &&
             onDemand.MaxWriteRequestUnits === undefined
           ) {
-            onDemand.MaxWriteRequestUnits = ON_DEMAND_LIMIT_RESET;
+            if (declared?.writeDeclared) unresolvedMembers.push('MaxWriteRequestUnits');
+            else onDemand.MaxWriteRequestUnits = ON_DEMAND_LIMIT_RESET;
           }
+        }
+        if (unresolvedMembers.length > 0) {
+          this.logger.warn(
+            `GSI '${gsi.IndexName}' on ${physicalId}: the template declares ` +
+              `${unresolvedMembers.join(' / ')} but the value did not resolve to a ` +
+              `number, so the on-demand limit was left UNCHANGED on AWS rather than ` +
+              `applied or cleared. This is usually an unresolved intrinsic in the ` +
+              `template; resolve it to a literal to change the ceiling, or remove the ` +
+              `property entirely to clear it.`
+          );
         }
         if (Object.keys(onDemand).length > 0) update.OnDemandThroughput = onDemand;
         // Provisioned capacity on a flip is step 4's job, so only a real
@@ -1413,7 +1455,12 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         // but an IndexName, so skip and let the (immutable) change surface
         // as a no-op rather than a confusing ValidationException.
         if (!update.ProvisionedThroughput && !update.OnDemandThroughput && !update.WarmThroughput) {
-          if (!billingFlipped) {
+          // `unresolvedMembers` already explained the emptiness above. Falling
+          // through would ALSO print "recreate the index under a new name",
+          // which is wrong advice for an unresolved intrinsic and contradicts
+          // the warning just emitted — the user would get two messages, one of
+          // them misleading.
+          if (!billingFlipped && unresolvedMembers.length === 0) {
             this.logger.warn(
               `GSI '${gsi.IndexName}' on ${physicalId} changed in a way DynamoDB's ` +
                 `UpdateTable cannot express (KeySchema / Projection are immutable on an ` +
@@ -3086,6 +3133,131 @@ export function toSdkGlobalSecondaryIndexes(
     result.push(sdk);
   }
   return result;
+}
+
+/**
+ * True when a CFn sub-object is nothing but an unresolved intrinsic
+ * (`{"Fn::If": […]}` / `{"Ref": …}`), i.e. the template DID declare the block
+ * but its value could not be resolved to a shape with members.
+ *
+ * Needed because presence is otherwise tested on the MEMBER key: an
+ * intrinsic-valued block IS a record, so `asRecord` succeeds while
+ * `['MaxReadRequestUnits']` is undefined — reporting "not declared" and firing
+ * the destructive `-1` reset on a ceiling the template was trying to SET. That
+ * is issue #1440 one level up from where the member test looks.
+ */
+function isUnresolvedIntrinsicBlock(value: unknown): boolean {
+  const record = asRecord(value);
+  if (!record) return false;
+  const keys = Object.keys(record);
+  return keys.length > 0 && keys.every((k) => k === 'Ref' || k.startsWith('Fn::'));
+}
+
+/** Which on-demand members a GSI's CFn side actually DECLARES (issue #1440). */
+export interface RawOnDemandDeclaration {
+  readonly readDeclared: boolean;
+  readonly writeDeclared: boolean;
+}
+
+/**
+ * Per-index RAW presence of the two per-GSI on-demand members, keyed by
+ * `IndexName` (issue #1440).
+ *
+ * The per-GSI reset needs to know "did the template DROP this member", and the
+ * only faithful answer is whether the CFn key is THERE — not whether its value
+ * coerced. `toSdkGlobalSecondaryIndexes` runs every value through
+ * {@link toFiniteNumber}, which returns `undefined` for a present-but-
+ * unparseable value (an unresolved `{Ref: …}`, `''`, an object). Deciding
+ * "dropped" from that collapsed view sent the `-1` reset for a member the
+ * template was actively trying to SET, silently clearing the ceiling — the same
+ * silent-wrong-action class the reset exists to remove, and the exact hazard
+ * the table-level path was corrected for in #1434's PR.
+ *
+ * So this walks the same two sources as `toSdkGlobalSecondaryIndexes` — the
+ * top-level GSI for the write half, the LOCAL replica's index entry (with the
+ * GSI-level spelling as the documented fallback) for the read half — and
+ * reports presence only. Keeping it beside that function is deliberate: the
+ * two must agree on where each member lives, and a divergence between them is
+ * exactly what would re-open the bug.
+ *
+ * A missing entry means "not declared", which lets the reset FIRE — i.e. the
+ * DESTRUCTIVE direction, not a conservative one. Two DIFFERENT mechanisms keep
+ * that safe, and neither is "the translation validates everything":
+ *   - a non-array `GlobalSecondaryIndexes` is refused LOUDLY by
+ *     `toSdkGlobalSecondaryIndexes` before any of this runs;
+ *   - a malformed per-ENTRY shape is NOT refused — it is passed through
+ *     untouched so AWS surfaces the real error — but such an entry carries no
+ *     usable `IndexName`, so the reset loop skips it before consulting this map.
+ * Do not relax either behavior on the assumption that this helper degrades
+ * safely on its own; it does not.
+ */
+export function collectRawOnDemandDeclarations(
+  properties: Record<string, unknown>,
+  region: string
+): Map<string, RawOnDemandDeclaration> {
+  const out = new Map<string, RawOnDemandDeclaration>();
+  const rawIndexes = properties['GlobalSecondaryIndexes'];
+  if (!Array.isArray(rawIndexes)) return out;
+
+  const replicas = properties['Replicas'];
+  const localReplica = Array.isArray(replicas)
+    ? replicas.find((r) => asRecord(r)?.['Region'] === region)
+    : undefined;
+  const localReplicaIndexes = asRecord(localReplica)?.['GlobalSecondaryIndexes'];
+  const localByName = new Map<string, Record<string, unknown>>();
+  if (Array.isArray(localReplicaIndexes)) {
+    for (const entry of localReplicaIndexes) {
+      const record = asRecord(entry);
+      const name = record?.['IndexName'];
+      if (record && typeof name === 'string') localByName.set(name, record);
+    }
+  }
+
+  for (const entry of rawIndexes) {
+    const gsi = asRecord(entry);
+    const name = gsi?.['IndexName'];
+    if (!gsi || typeof name !== 'string') continue;
+    const localEntry = localByName.get(name);
+    // An already-SDK-shaped `OnDemandThroughput` WINS over the derived members
+    // in `toSdkGlobalSecondaryIndexes`, so it has to win here too. Reading the
+    // derived spellings anyway would report a member DECLARED that the
+    // translation never sends — e.g. an explicit `{MaxReadRequestUnits: 50}`
+    // next to a leftover `WriteOnDemandThroughputSettings` — and the
+    // suppressed reset would leave the old write ceiling live in AWS: the very
+    // #1160 silent drop this reset exists to close, reintroduced by the guard.
+    const explicitOnDemand = asRecord(gsi['OnDemandThroughput']);
+    if (explicitOnDemand) {
+      out.set(name, {
+        readDeclared: explicitOnDemand['MaxReadRequestUnits'] !== undefined,
+        writeDeclared: explicitOnDemand['MaxWriteRequestUnits'] !== undefined,
+      });
+      continue;
+    }
+    // A block that is ITSELF an unresolved intrinsic counts as declared: the
+    // member test cannot see into it, and reporting "not declared" would fire
+    // the destructive reset on a ceiling the template was trying to set.
+    const readBlocks = [
+      localEntry?.['ReadOnDemandThroughputSettings'],
+      gsi['ReadOnDemandThroughputSettings'],
+    ];
+    const writeBlock = gsi['WriteOnDemandThroughputSettings'];
+    out.set(name, {
+      // Same sources as the SDK translation: replica entry first, GSI-level
+      // spelling as the hand-authored fallback. Declared in EITHER place
+      // counts — the translation resolves "first PARSEABLE", so an OR here is
+      // a safe superset for suppression (it can never report not-declared for
+      // a member the translation did resolve).
+      readDeclared: readBlocks.some(
+        (block) =>
+          asRecord(block)?.['MaxReadRequestUnits'] !== undefined ||
+          isUnresolvedIntrinsicBlock(block)
+      ),
+      writeDeclared:
+        asRecord(writeBlock)?.['MaxWriteRequestUnits'] !== undefined ||
+        isUnresolvedIntrinsicBlock(writeBlock),
+    });
+  }
+  return out;
 }
 
 /**

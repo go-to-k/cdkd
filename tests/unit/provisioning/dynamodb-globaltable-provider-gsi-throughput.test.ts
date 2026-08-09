@@ -1204,4 +1204,220 @@ describe('DynamoDBGlobalTable GSI throughput translation (issue #1387)', () => {
       expect(flatUpdate()?.input.OnDemandThroughput).toBeUndefined();
     });
   });
+
+  /**
+   * Issue #1440: the per-GSI reset (#1423) decided "the template dropped this
+   * member" from the TRANSLATED side, which runs every value through
+   * `toFiniteNumber`. A present-but-unparseable value therefore looked exactly
+   * like a removal and was answered with the `-1` reset — silently CLEARING the
+   * ceiling the template was trying to SET. The desired side is now read from
+   * the RAW CFn keys, so such a value stays on the path that reaches AWS and
+   * fails loudly. Same correction the table-level path took in #1434's PR.
+   */
+  describe('per-GSI on-demand reset reads RAW key presence (issue #1440)', () => {
+    /** The per-GSI Update action for `gsi2`, if one was issued. */
+    const gsiUpdateAction = (): Record<string, unknown> | undefined => {
+      const cmd = mockSend.mock.calls
+        .map((c) => c[0])
+        .find(
+          (c): c is UpdateTableCommand =>
+            c instanceof UpdateTableCommand &&
+            (c.input.GlobalSecondaryIndexUpdates ?? []).some((u) => u.Update !== undefined)
+        );
+      return cmd?.input.GlobalSecondaryIndexUpdates?.[0]?.Update as
+        | Record<string, unknown>
+        | undefined;
+    };
+
+    it('does NOT reset the WRITE limit when the template sets an unresolved intrinsic', async () => {
+      const previous = structuredClone(ON_DEMAND_TABLE_PROPS) as Record<string, unknown>;
+      const next = structuredClone(ON_DEMAND_TABLE_PROPS) as Record<string, unknown>;
+      (next['GlobalSecondaryIndexes'] as Record<string, unknown>[])[0]![
+        'WriteOnDemandThroughputSettings'
+      ] = { MaxWriteRequestUnits: { Ref: 'SomeUnresolvedParameter' } };
+
+      await provider.update('OnDemand', 'od-table', RESOURCE_TYPE, next, previous);
+
+      const onDemand = gsiUpdateAction()?.['OnDemandThroughput'] as
+        | Record<string, unknown>
+        | undefined;
+      expect(onDemand?.['MaxWriteRequestUnits']).not.toBe(-1);
+    });
+
+    it('does NOT reset the READ limit when the replica entry sets an unresolved intrinsic', async () => {
+      // The read half lives on the LOCAL REPLICA's index entry, so the raw
+      // presence walk has to look there — a write-only fix would leave this
+      // half of the bug live.
+      const previous = structuredClone(ON_DEMAND_TABLE_PROPS) as Record<string, unknown>;
+      const next = structuredClone(ON_DEMAND_TABLE_PROPS) as Record<string, unknown>;
+      (
+        (next['Replicas'] as Record<string, unknown>[])[0]!['GlobalSecondaryIndexes'] as Record<
+          string,
+          unknown
+        >[]
+      )[0]!['ReadOnDemandThroughputSettings'] = {
+        MaxReadRequestUnits: { Ref: 'SomeUnresolvedParameter' },
+      };
+
+      await provider.update('OnDemand', 'od-table', RESOURCE_TYPE, next, previous);
+
+      const onDemand = gsiUpdateAction()?.['OnDemandThroughput'] as
+        | Record<string, unknown>
+        | undefined;
+      expect(onDemand?.['MaxReadRequestUnits']).not.toBe(-1);
+    });
+
+    it('honors the GSI-level read spelling as a declaration (hand-authored fallback)', async () => {
+      // `toSdkGlobalSecondaryIndexes` accepts the GSI-level
+      // `ReadOnDemandThroughputSettings` as a fallback for hand-authored
+      // templates; the presence walk must accept it in the same place, or such
+      // a template's declared value is reset out from under it.
+      const previous = structuredClone(ON_DEMAND_TABLE_PROPS) as Record<string, unknown>;
+      const next = structuredClone(ON_DEMAND_TABLE_PROPS) as Record<string, unknown>;
+      delete (
+        (next['Replicas'] as Record<string, unknown>[])[0]!['GlobalSecondaryIndexes'] as Record<
+          string,
+          unknown
+        >[]
+      )[0]!['ReadOnDemandThroughputSettings'];
+      (next['GlobalSecondaryIndexes'] as Record<string, unknown>[])[0]![
+        'ReadOnDemandThroughputSettings'
+      ] = { MaxReadRequestUnits: { Ref: 'SomeUnresolvedParameter' } };
+
+      await provider.update('OnDemand', 'od-table', RESOURCE_TYPE, next, previous);
+
+      const onDemand = gsiUpdateAction()?.['OnDemandThroughput'] as
+        | Record<string, unknown>
+        | undefined;
+      expect(onDemand?.['MaxReadRequestUnits']).not.toBe(-1);
+    });
+
+    it('WARNS that the limit was left unchanged, naming the member (not "recreate the index")', async () => {
+      // Reviewer catch: suppressing the reset leaves a NO-OP, and the only
+      // output was the immutable-field warning below the reset — which tells
+      // the user to RECREATE THE INDEX. That is useless and alarming advice for
+      // what is really an unresolved intrinsic, so the suppression reports
+      // itself accurately.
+      const previous = structuredClone(ON_DEMAND_TABLE_PROPS) as Record<string, unknown>;
+      const next = structuredClone(ON_DEMAND_TABLE_PROPS) as Record<string, unknown>;
+      (next['GlobalSecondaryIndexes'] as Record<string, unknown>[])[0]![
+        'WriteOnDemandThroughputSettings'
+      ] = { MaxWriteRequestUnits: { Ref: 'SomeUnresolvedParameter' } };
+
+      await provider.update('OnDemand', 'od-table', RESOURCE_TYPE, next, previous);
+
+      const warned = warnSpy.mock.calls.map((c) => String(c[0]));
+      expect(warned.some((m) => m.includes('MaxWriteRequestUnits') && m.includes('UNCHANGED'))).toBe(
+        true
+      );
+      // ...and the misleading advice must NOT be the only thing the user sees.
+      expect(warned.some((m) => m.includes('unresolved intrinsic'))).toBe(true);
+    });
+
+    it('does NOT also print the misleading "recreate the index" advice', async () => {
+      // Re-review catch: suppressing the reset can leave the Update action with
+      // no throughput field at all, which fell through to the immutable-field
+      // branch — so the user got BOTH the accurate warning and advice to
+      // recreate their index. The PR claims to replace that advice, so it must
+      // not still fire.
+      const previous = structuredClone(ON_DEMAND_TABLE_PROPS) as Record<string, unknown>;
+      const next = structuredClone(ON_DEMAND_TABLE_PROPS) as Record<string, unknown>;
+      // Drop the read half entirely so the ONLY on-demand member in play is the
+      // unresolvable write one — the shape that empties the Update action.
+      delete (
+        (next['Replicas'] as Record<string, unknown>[])[0]!['GlobalSecondaryIndexes'] as Record<
+          string,
+          unknown
+        >[]
+      )[0]!['ReadOnDemandThroughputSettings'];
+      delete (
+        (previous['Replicas'] as Record<string, unknown>[])[0]!['GlobalSecondaryIndexes'] as Record<
+          string,
+          unknown
+        >[]
+      )[0]!['ReadOnDemandThroughputSettings'];
+      (next['GlobalSecondaryIndexes'] as Record<string, unknown>[])[0]![
+        'WriteOnDemandThroughputSettings'
+      ] = { MaxWriteRequestUnits: { Ref: 'SomeUnresolvedParameter' } };
+
+      await provider.update('OnDemand', 'od-table', RESOURCE_TYPE, next, previous);
+
+      const warned = warnSpy.mock.calls.map((c) => String(c[0]));
+      expect(warned.some((m) => m.includes('UNCHANGED'))).toBe(true);
+      expect(warned.some((m) => m.includes('Recreate the index under a new name'))).toBe(false);
+    });
+
+    it('honors an explicit SDK-shaped OnDemandThroughput over the derived spellings', async () => {
+      // Reviewer catch: `toSdkGlobalSecondaryIndexes` lets an already-SDK-shaped
+      // `OnDemandThroughput` WIN over the derived members, so reading the
+      // derived spellings here reported a member DECLARED that the translation
+      // never sends — and the suppressed reset left the old write ceiling live.
+      // That is the #1160 silent drop, reintroduced by the guard itself.
+      const previous = structuredClone(ON_DEMAND_TABLE_PROPS) as Record<string, unknown>;
+      const next = structuredClone(ON_DEMAND_TABLE_PROPS) as Record<string, unknown>;
+      const gsi = (next['GlobalSecondaryIndexes'] as Record<string, unknown>[])[0]!;
+      // Explicit block declares READ only; the leftover derived WRITE spelling
+      // is ignored by the translation, so the write ceiling must still reset.
+      gsi['OnDemandThroughput'] = { MaxReadRequestUnits: 50 };
+
+      await provider.update('OnDemand', 'od-table', RESOURCE_TYPE, next, previous);
+
+      const onDemand = gsiUpdateAction()?.['OnDemandThroughput'] as
+        | Record<string, unknown>
+        | undefined;
+      expect(onDemand?.['MaxWriteRequestUnits']).toBe(-1);
+    });
+
+    it('treats a BLOCK-level unresolved intrinsic as declared, not as a removal', async () => {
+      // Third-review catch (#1444 item D, folded in): presence was tested on
+      // the MEMBER key, so `WriteOnDemandThroughputSettings: {"Fn::If": [...]}`
+      // — a record with no MaxWriteRequestUnits — reported "not declared" and
+      // fired the destructive -1 on a ceiling the template was trying to set.
+      const previous = structuredClone(ON_DEMAND_TABLE_PROPS) as Record<string, unknown>;
+      const next = structuredClone(ON_DEMAND_TABLE_PROPS) as Record<string, unknown>;
+      (next['GlobalSecondaryIndexes'] as Record<string, unknown>[])[0]![
+        'WriteOnDemandThroughputSettings'
+      ] = { 'Fn::If': ['SomeCondition', { MaxWriteRequestUnits: 60 }, { Ref: 'AWS::NoValue' }] };
+
+      await provider.update('OnDemand', 'od-table', RESOURCE_TYPE, next, previous);
+
+      const onDemand = gsiUpdateAction()?.['OnDemandThroughput'] as
+        | Record<string, unknown>
+        | undefined;
+      expect(onDemand?.['MaxWriteRequestUnits']).not.toBe(-1);
+    });
+
+    it('does not treat a REAL block that merely lacks the member as an intrinsic', async () => {
+      // The intrinsic test must not become a blanket "any block counts" —
+      // a genuine `{}` / sibling-only block IS a removal of the member.
+      const previous = structuredClone(ON_DEMAND_TABLE_PROPS) as Record<string, unknown>;
+      const next = structuredClone(ON_DEMAND_TABLE_PROPS) as Record<string, unknown>;
+      (next['GlobalSecondaryIndexes'] as Record<string, unknown>[])[0]![
+        'WriteOnDemandThroughputSettings'
+      ] = {};
+
+      await provider.update('OnDemand', 'od-table', RESOURCE_TYPE, next, previous);
+
+      const onDemand = gsiUpdateAction()?.['OnDemandThroughput'] as
+        | Record<string, unknown>
+        | undefined;
+      expect(onDemand?.['MaxWriteRequestUnits']).toBe(-1);
+    });
+
+    it('STILL resets a genuinely removed member (the #1423 behavior is intact)', async () => {
+      // The guard must narrow the reset to real removals only — not disable it.
+      const previous = structuredClone(ON_DEMAND_TABLE_PROPS) as Record<string, unknown>;
+      const next = structuredClone(ON_DEMAND_TABLE_PROPS) as Record<string, unknown>;
+      delete (next['GlobalSecondaryIndexes'] as Record<string, unknown>[])[0]![
+        'WriteOnDemandThroughputSettings'
+      ];
+
+      await provider.update('OnDemand', 'od-table', RESOURCE_TYPE, next, previous);
+
+      const onDemand = gsiUpdateAction()?.['OnDemandThroughput'] as
+        | Record<string, unknown>
+        | undefined;
+      expect(onDemand?.['MaxWriteRequestUnits']).toBe(-1);
+    });
+  });
 });
