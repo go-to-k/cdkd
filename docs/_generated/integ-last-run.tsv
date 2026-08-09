@@ -97,8 +97,8 @@ efs-immutable-replacement	2026-08-01T09:51:12Z	PASS	63	verify.sh	0801 regression
 efs-lambda	2026-07-26T18:36:31Z	PASS	499	standard	0727b sweep-b4 staleness re-run (rc=0); account clean
 efs-standalone	2026-07-26T18:36:31Z	PASS	148	verify.sh	0727b sweep-b4 staleness re-run (rc=0); account clean
 elasticache-replicationgroup-getatt	2026-07-20T14:51:32Z	PASS	596	verify.sh	CC GetAtt PrimaryEndPoint real hostname, 0 orphans
-emr-cluster	2026-08-02T14:15:43Z	PASS	605	verify.sh	#1339 fix verified: cleanup warning gone on clean run (gone_probe-gated); 12 del/0 err, 0 orphans
-emr-instance-configs	2026-08-02T06:50:46Z	PASS	997	verify.sh	0802 heavy TTL sweep; deploy+resize+destroy ok, 0 orphans
+emr-cluster	2026-08-09T04:01:57Z	PASS	700	verify.sh	#1383 top-level+nested+group Configurations and StepProperties asserted; 12 deleted, 0 errors, 0 orphans
+emr-instance-configs	2026-08-09T04:19:21Z	PASS	1250	verify.sh	#1383 standalone-group ConfigurationProperties asserted; destroy clean, 0 orphans
 event-driven	2026-07-26T18:36:31Z	PASS	42	standard	0727b sweep-b4 staleness re-run (rc=0); account clean
 eventbridge	2026-07-27T11:04:52Z	PASS	87	verify.sh	issue #1267 post-review re-run; 10 del 0 err, 0 orphans
 eventbridge-api-destination	2026-07-21T14:48:06Z	PASS	70	verify.sh	rc ok, orph clean
