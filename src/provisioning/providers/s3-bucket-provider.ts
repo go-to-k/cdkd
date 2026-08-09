@@ -2381,7 +2381,8 @@ export class S3BucketProvider implements ResourceProvider {
     // with no such key at all. It is cosmetic — `--revert` re-sends the old
     // observed blob and the write side re-derives the same AWS state — and it
     // clears on the next `cdkd state refresh-observed`, `drift --accept`, or
-    // real UPDATE of the bucket. The alternative (emit only when present) is
+    // ANY subsequent `cdkd deploy` (the engine persists refreshed
+    // `observedProperties` even on the no-change path). The alternative (emit only when present) is
     // what caused the PERMANENT phantom drift this fixes.
     out['EventBridgeConfiguration'] = {
       EventBridgeEnabled: resp.EventBridgeConfiguration !== undefined,

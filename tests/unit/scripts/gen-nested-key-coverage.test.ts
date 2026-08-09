@@ -906,7 +906,14 @@ describe('real-code regression probes (per the repo checker rules)', () => {
    * probe passed for exactly that reason.
    */
   const stripKeyEvidence = (source: string, key: string): string =>
-    source.replaceAll(`'${key}'`, `'Removed${key}'`).replaceAll(`${key}:`, `Removed${key}:`);
+    source
+      .replaceAll(`'${key}'`, `'Removed${key}'`)
+      // Anchored on a non-identifier boundary so probing `Transition` does not
+      // also rewrite `NoncurrentVersionTransition:`. Collateral stripping could
+      // only ever REMOVE evidence (each probe asserts its own key, so no false
+      // pass is reachable either way), but an unanchored probe does not mean
+      // what it says, and the next reader would have to re-derive that.
+      .replace(new RegExp(`(^|[^A-Za-z0-9_$])${key}:`, 'g'), `$1Removed${key}:`);
 
   it('the probes below actually remove the key from the evidence set (probe-validity fence)', () => {
     // Self-validation, and the reason it exists: without it a future refactor

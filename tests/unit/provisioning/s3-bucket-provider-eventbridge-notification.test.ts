@@ -116,6 +116,15 @@ describe('S3 NotificationConfiguration.EventBridgeConfiguration (issue #1430)', 
       expect(cfg.EventBridgeConfiguration).toBeUndefined();
     });
 
+    it.each(['True', 'TRUE'])('emits the block for the case-variant "%s"', async (value) => {
+      // The positive direction of the same coercion. It shares a call site
+      // with `ExpiredObjectDeleteMarker`, where a `'True'` falling through to
+      // `undefined` used to DROP the marker and leave the rule action-less —
+      // so both directions are worth pinning.
+      const cfg = await putNotification({ EventBridgeEnabled: value });
+      expect(cfg.EventBridgeConfiguration).toEqual({});
+    });
+
     it.each(['False', 'FALSE'])('OMITS the block for the case-variant "%s"', async (value) => {
       // This is the ONE call site where "not false" means "turn it on", so a
       // spelling that falls through to `undefined` would silently ENABLE

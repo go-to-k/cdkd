@@ -19,7 +19,8 @@
 #   2. Re-deploy with CDKD_TEST_UPDATE=true (expiration 730 -> 365, GLACIER
 #      transition 90 -> 60, + a new big-objects Filter rule). Assert the new
 #      values reached AWS, there are 4 rules, and the bucket was NOT replaced.
-#      Re-assert the EventBridge pair + drift, so the UPDATE path is covered too.
+#      The two EventBridge booleans SWAP here, so re-asserting the pair with
+#      the expectation inverted really exercises the UPDATE path.
 #   3. Destroy; assert all three buckets are gone and the state file is removed.
 #
 # Required env vars:
@@ -226,19 +227,21 @@ echo "    legacy singular Transition + NoncurrentVersionTransition + NoncurrentV
 # Run after BOTH phases: Phase 1 covers create(), Phase 2 covers the
 # diffSubConfig -> applyNotificationConfiguration UPDATE path, which is a
 # different call site and was previously unexercised against real AWS.
-assert_eventbridge_pair() { # $1 = phase label
-  local phase="$1"
+assert_eventbridge_pair() { # $1 = phase label, $2 = expected-true bucket, $3 = expected-false bucket
+  local phase="$1" expect_true="$2" expect_false="$3"
   # An unconfigured bucket returns an EMPTY body, not `{}`, so both captures
   # are normalized before jq sees them -- without that the `false` assertion
   # fails on cdkd's CORRECT output. (The first real run of this assertion did
-  # exactly that.) The captures are unguarded on purpose: `set -e` aborts on a
-  # genuine API failure, so reaching the normalization with an empty string
-  # means a successful call on an unconfigured bucket.
+  # exactly that.) Each capture carries `|| return 1` because errexit is
+  # CLEARED inside `$( )`, so without it a failed probe would fall through to
+  # the normalization and read as "unconfigured" -- the gone-probe failure mode
+  # one layer up. Reaching the normalization therefore means a SUCCESSFUL call
+  # on a bucket that genuinely has no notification configuration.
   local eb_true_json eb_false_json eb_true_has eb_false_has
   eb_true_json="$(aws s3api get-bucket-notification-configuration \
-    --bucket "${EB_TRUE_BUCKET}" --region "${REGION}" --output json)" || return 1
+    --bucket "${expect_true}" --region "${REGION}" --output json)" || return 1
   eb_false_json="$(aws s3api get-bucket-notification-configuration \
-    --bucket "${LEGACY_BUCKET}" --region "${REGION}" --output json)" || return 1
+    --bucket "${expect_false}" --region "${REGION}" --output json)" || return 1
   [ -n "${eb_true_json//[[:space:]]/}" ] || eb_true_json='{}'
   [ -n "${eb_false_json//[[:space:]]/}" ] || eb_false_json='{}'
 
@@ -251,12 +254,12 @@ assert_eventbridge_pair() { # $1 = phase label
   # it is the PRESENCE of the true-side check that is load-bearing, not the
   # order in which they appear.
   if [ "${eb_true_has}" != "true" ]; then
-    echo "FAIL [${phase}]: ${EB_TRUE_BUCKET} (EventBridgeEnabled: true) has NO EventBridgeConfiguration" >&2
+    echo "FAIL [${phase}]: ${expect_true} (EventBridgeEnabled: true) has NO EventBridgeConfiguration" >&2
     echo "      response: ${eb_true_json}" >&2
     exit 1
   fi
   if [ "${eb_false_has}" != "false" ]; then
-    echo "FAIL [${phase}]: ${LEGACY_BUCKET} (EventBridgeEnabled: false) HAS an EventBridgeConfiguration" >&2
+    echo "FAIL [${phase}]: ${expect_false} (EventBridgeEnabled: false) HAS an EventBridgeConfiguration" >&2
     echo "      this is the issue #1430 inversion: an explicit false enabled delivery" >&2
     echo "      response: ${eb_false_json}" >&2
     exit 1
@@ -269,16 +272,17 @@ assert_eventbridge_pair() { # $1 = phase label
 # holds the CFn spelling, so the SDK shape reported permanent phantom drift on
 # every EventBridge-enabled bucket. `cdkd drift` exits 0 only when it finds none.
 assert_no_drift() { # $1 = phase label
+  local phase="$1"
   if ! node "${LOCAL_DIST}" drift "${STACK}" \
     --state-bucket "${STATE_BUCKET}" --region "${REGION}"; then
-    echo "FAIL [$1]: cdkd drift reported drift on a clean, freshly-deployed stack" >&2
+    echo "FAIL [${phase}]: cdkd drift reported drift on an unmodified stack" >&2
     echo "      (pre-#1430 the EventBridge boolean read back as permanently missing)" >&2
     exit 1
   fi
-  echo "    [$1] no drift on a clean stack (#1430 read side)"
+  echo "    [${phase}] no drift on a clean stack (#1430 read side)"
 }
 
-assert_eventbridge_pair "phase 1"
+assert_eventbridge_pair "phase 1" "${EB_TRUE_BUCKET}" "${LEGACY_BUCKET}"
 assert_no_drift "phase 1"
 
 CREATION_P1="$(aws s3api list-buckets \
@@ -310,7 +314,11 @@ if [ "${CREATION_P1}" != "${CREATION_P2}" ]; then
 fi
 echo "    bucket identity preserved (CreationDate unchanged) — no replacement"
 
-assert_eventbridge_pair "phase 2"
+# Phase 2 SWAPS the expectation: the fixture inverts both booleans under
+# CDKD_TEST_UPDATE, so this really drives diffSubConfig ->
+# applyNotificationConfiguration, in BOTH directions at once. A same-value
+# re-deploy would short-circuit on JSON equality and prove nothing.
+assert_eventbridge_pair "phase 2" "${LEGACY_BUCKET}" "${EB_TRUE_BUCKET}"
 assert_no_drift "phase 2"
 
 # --- Phase 3: destroy --------------------------------------------------
