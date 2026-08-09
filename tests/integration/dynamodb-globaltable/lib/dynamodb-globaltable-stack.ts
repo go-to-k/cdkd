@@ -165,9 +165,16 @@ export class DynamoDBGlobalTableStack extends cdk.Stack {
         readCapacity: ddb.Capacity.fixed(5),
         // TableV2 requires auto-scaled write capacity (the GlobalTable CFn
         // shape has no literal WriteCapacityUnits).
+        //
+        // `seedCapacity` (8) differs from `minCapacity` (1) so the TABLE-level
+        // half of issue #1435 is discriminating against real AWS: verify.sh
+        // asserts the created table-level WriteCapacityUnits is 1. Without a
+        // seed here, flipping the table-level call site back to 'seed' would
+        // break no assertion and only the per-index value would be pinned.
         writeCapacity: ddb.Capacity.autoscaled({
           minCapacity: 1,
           maxCapacity: 10,
+          seedCapacity: 8,
           targetUtilizationPercent: 70,
         }),
       }),
@@ -176,7 +183,18 @@ export class DynamoDBGlobalTableStack extends cdk.Stack {
           indexName: 'byStatus',
           partitionKey: { name: 'status', type: ddb.AttributeType.STRING },
           // -> Replicas[local].GlobalSecondaryIndexes[].ReadProvisionedThroughputSettings
-          readCapacity: ddb.Capacity.fixed(7),
+          //
+          // AUTOSCALED rather than fixed so the fourth scalable dimension,
+          // `dynamodb:index:ReadCapacityUnits`, gets real-AWS coverage — with
+          // a fixed read capacity that dimension is never registered and half
+          // the new index-level surface would be unit-tested only. minCapacity
+          // is 7 so step 4b's existing `ReadCapacityUnits = 7` assertion holds
+          // unchanged (issue #1435: a create takes MinCapacity).
+          readCapacity: ddb.Capacity.autoscaled({
+            minCapacity: 7,
+            maxCapacity: 70,
+            targetUtilizationPercent: 65,
+          }),
           // -> GlobalSecondaryIndexes[].WriteProvisionedThroughputSettings
           //    .WriteCapacityAutoScalingSettings.
           //

@@ -18,6 +18,7 @@ import {
   PutScalingPolicyCommand,
   DeleteScalingPolicyCommand,
   DeregisterScalableTargetCommand,
+  DescribeScalableTargetsCommand,
 } from '@aws-sdk/client-application-auto-scaling';
 
 const {
@@ -3077,40 +3078,84 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       );
     });
 
-    it('no-op when WriteCapacityAutoScalingSettings is identical on both sides', async () => {
+    // Issue #1419 changed this contract. An unchanged template used to mean
+    // "do nothing", which is why a table created before per-index / create-side
+    // registration existed could NEVER acquire its scaling targets: its
+    // settings are byte-identical on both sides of every later deploy, so the
+    // diff gate never fired. The rule is now "unchanged AND already registered
+    // means do nothing" — the presence probe is what distinguishes the two.
+    const IDENTICAL_AUTOSCALED_PROPS = {
+      BillingMode: 'PROVISIONED',
+      WriteProvisionedThroughputSettings: {
+        WriteCapacityAutoScalingSettings: {
+          MinCapacity: 5,
+          MaxCapacity: 100,
+          TargetTrackingScalingPolicyConfiguration: { TargetValue: 70 },
+        },
+      },
+    };
+
+    it('no-op when the settings are identical AND the target is already registered', async () => {
       mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'ACTIVE' } }); // wait
       mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // DescribeTable for ARN
       mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // final describe
 
       mockAutoScalingSend.mockReset();
+      // The presence probe finds the target, so the reconcile has nothing to do.
+      mockAutoScalingSend.mockResolvedValue({
+        ScalableTargets: [
+          {
+            ResourceId: `table/${TABLE_NAME}`,
+            ScalableDimension: 'dynamodb:table:WriteCapacityUnits',
+            MinCapacity: 5,
+            MaxCapacity: 100,
+          },
+        ],
+      });
 
       await provider.update(
         'X',
         TABLE_NAME,
         RESOURCE_TYPE,
-        {
-          BillingMode: 'PROVISIONED',
-          WriteProvisionedThroughputSettings: {
-            WriteCapacityAutoScalingSettings: {
-              MinCapacity: 5,
-              MaxCapacity: 100,
-              TargetTrackingScalingPolicyConfiguration: { TargetValue: 70 },
-            },
-          },
-        },
-        {
-          BillingMode: 'PROVISIONED',
-          WriteProvisionedThroughputSettings: {
-            WriteCapacityAutoScalingSettings: {
-              MinCapacity: 5,
-              MaxCapacity: 100,
-              TargetTrackingScalingPolicyConfiguration: { TargetValue: 70 },
-            },
-          },
-        }
+        { ...IDENTICAL_AUTOSCALED_PROPS },
+        { ...IDENTICAL_AUTOSCALED_PROPS }
       );
 
-      expect(mockAutoScalingSend).not.toHaveBeenCalled();
+      const mutating = mockAutoScalingSend.mock.calls
+        .map((c) => c[0])
+        .filter((c) => !(c instanceof DescribeScalableTargetsCommand));
+      expect(mutating).toEqual([]);
+    });
+
+    it('BACKFILLS an identical-on-both-sides target that is NOT yet registered (issue #1419)', async () => {
+      // The pre-#1419 table: nothing ever registered its write dimension, and
+      // the template has not changed since, so the step-4b diff gate declines.
+      // Step 6b is what rescues it.
+      mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'ACTIVE' } }); // wait
+      mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // DescribeTable for ARN
+      mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // final describe
+
+      mockAutoScalingSend.mockReset();
+      mockAutoScalingSend.mockResolvedValue({ ScalableTargets: [], ScalingPolicies: [] });
+
+      await provider.update(
+        'X',
+        TABLE_NAME,
+        RESOURCE_TYPE,
+        { ...IDENTICAL_AUTOSCALED_PROPS },
+        { ...IDENTICAL_AUTOSCALED_PROPS }
+      );
+
+      const register = mockAutoScalingSend.mock.calls
+        .map((c) => c[0])
+        .find((c): c is RegisterScalableTargetCommand => c instanceof RegisterScalableTargetCommand);
+      expect(register?.input.ResourceId).toBe(`table/${TABLE_NAME}`);
+      expect(register?.input.ScalableDimension).toBe('dynamodb:table:WriteCapacityUnits');
+      expect(register?.input.MinCapacity).toBe(5);
+      const policy = mockAutoScalingSend.mock.calls
+        .map((c) => c[0])
+        .find((c): c is PutScalingPolicyCommand => c instanceof PutScalingPolicyCommand);
+      expect(policy?.input.PolicyName).toBe(`DynamoDBWriteCapacityUtilization:table/${TABLE_NAME}`);
     });
 
     it('skips autoscaling when both sides are PAY_PER_REQUEST (no provisioned throughput → no autoscaling possible)', async () => {

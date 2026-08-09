@@ -76,6 +76,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import {
   DynamoDBGlobalTableProvider,
+  derivePerCallProvisionedThroughput,
   deriveReadCapacityUnits,
   deriveWriteCapacityUnits,
   toSdkGlobalSecondaryIndexes,
@@ -258,6 +259,34 @@ describe('DynamoDBGlobalTable GSI throughput translation (issue #1387)', () => {
           'seed'
         )
       ).toBe(2);
+    });
+
+    it('applies the source to the TABLE-level write block, not just per-GSI', () => {
+      // The table-level flip call site passes 'seed' too. Without this, every
+      // fixture in the tree carries SeedCapacity only on a GSI, so flipping
+      // that call site to 'min' would break nothing and the seed context
+      // would be pinned per-index only.
+      const props = {
+        WriteProvisionedThroughputSettings: {
+          WriteCapacityAutoScalingSettings: { MinCapacity: 4, MaxCapacity: 40, SeedCapacity: 31 },
+        },
+        Replicas: [
+          {
+            Region: 'us-east-1',
+            ReadProvisionedThroughputSettings: {
+              ReadCapacityAutoScalingSettings: { MinCapacity: 6, MaxCapacity: 60, SeedCapacity: 22 },
+            },
+          },
+        ],
+      };
+      expect(derivePerCallProvisionedThroughput(props, 'us-east-1')).toEqual({
+        ReadCapacityUnits: 6,
+        WriteCapacityUnits: 4,
+      });
+      expect(derivePerCallProvisionedThroughput(props, 'us-east-1', 'seed')).toEqual({
+        ReadCapacityUnits: 22,
+        WriteCapacityUnits: 31,
+      });
     });
 
     it('takes MinCapacity over SeedCapacity on the read side too', () => {

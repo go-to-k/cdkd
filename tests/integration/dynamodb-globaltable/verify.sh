@@ -286,6 +286,32 @@ case "${INDEX_POLICY_TARGET}" in
     ;;
 esac
 
+# The READ half of the same index. Registered from a DIFFERENT CFn location
+# than the write half (`Replicas[local].GlobalSecondaryIndexes[]` rather than
+# the top-level GSI), so it is a genuinely separate path, not a mirror.
+INDEX_READ_MINMAX="$(aws application-autoscaling describe-scalable-targets \
+  --service-namespace dynamodb \
+  --resource-ids "${INDEX_RESOURCE_ID}" \
+  --scalable-dimension dynamodb:index:ReadCapacityUnits \
+  --region "${REGION}" \
+  --query 'ScalableTargets[0].[MinCapacity,MaxCapacity]' --output text)"
+if [ "${INDEX_READ_MINMAX}" != "7	70" ]; then
+  echo "[verify] FAIL (issue #1419): no dynamodb:index:ReadCapacityUnits target on ${INDEX_RESOURCE_ID}" >&2
+  echo "[verify]   got Min/Max '${INDEX_READ_MINMAX}', expected tab-separated '7' and '70'" >&2
+  exit 1
+fi
+echo "[verify] step 4c ok: index read autoscaling registered (${INDEX_READ_MINMAX})"
+
+# Issue #1435 at TABLE level: the fixture declares minCapacity 1 / seedCapacity 8,
+# and CloudFormation creates at MinCapacity. Pre-fix cdkd sent the seed (8).
+PROV_TABLE_WRITE="$(aws dynamodb describe-table --table-name "${GSI_PROV_TABLE}" --region "${REGION}" \
+  --query 'Table.ProvisionedThroughput.WriteCapacityUnits' --output text)"
+if [ "${PROV_TABLE_WRITE}" != "1" ]; then
+  echo "[verify] FAIL (issue #1435): ${GSI_PROV_TABLE} table-level WriteCapacityUnits is '${PROV_TABLE_WRITE}' (expected 1 = MinCapacity, not 8 = SeedCapacity)" >&2
+  exit 1
+fi
+echo "[verify] step 4c ok: table-level write capacity created at MinCapacity (${PROV_TABLE_WRITE})"
+
 echo "[verify] step 5 (was steps 5/6/7): cdkd deploy with CDKD_TEST_UPDATE=deletion-protection (in-place update — Issue #389)"
 # ORDER NOTE (PR follow-up to #403): TTL toggle is intentionally
 # deferred to the END of the integ flow. AWS's DynamoDB
@@ -587,17 +613,27 @@ echo "[verify] step 16a2 (Issue #1419): assert the per-INDEX scalable target did
 # remove a registered target. An orphan `table/<t>/index/<i>` target is
 # silently inherited by a future table of the same name, so delete() has to
 # deregister the index dimensions the way it already did the table ones.
-INDEX_TARGETS_AFTER="$(aws application-autoscaling describe-scalable-targets \
-  --service-namespace dynamodb \
-  --resource-ids "table/${GSI_PROV_TABLE}/index/byStatus" \
-  --scalable-dimension dynamodb:index:WriteCapacityUnits \
-  --region "${REGION}" \
-  --query 'length(ScalableTargets)' --output text)"
-if [ "${INDEX_TARGETS_AFTER}" != "0" ]; then
-  echo "[verify] FAIL (issue #1419): index scalable target survived destroy (count=${INDEX_TARGETS_AFTER}, expected 0)" >&2
-  exit 1
-fi
-echo "[verify] step 16a2 ok: index scalable target deregistered on destroy"
+assert_target_gone() { # $1 = resource id, $2 = scalable dimension
+  local remaining
+  remaining="$(aws application-autoscaling describe-scalable-targets \
+    --service-namespace dynamodb \
+    --resource-ids "$1" \
+    --scalable-dimension "$2" \
+    --region "${REGION}" \
+    --query 'length(ScalableTargets)' --output text)" || return 1
+  if [ "${remaining}" != "0" ]; then
+    echo "[verify] FAIL (issue #1419): scalable target $1 ($2) survived destroy (count=${remaining}, expected 0)" >&2
+    exit 1
+  fi
+  echo "[verify] step 16a2 ok: $2 on $1 deregistered"
+}
+# BOTH index dimensions, and the local table read dimension this change is
+# what first registers. A teardown that covers only the write half leaks the
+# other three onto whatever table next takes this name.
+assert_target_gone "table/${GSI_PROV_TABLE}/index/byStatus" dynamodb:index:WriteCapacityUnits
+assert_target_gone "table/${GSI_PROV_TABLE}/index/byStatus" dynamodb:index:ReadCapacityUnits
+assert_target_gone "table/${TABLE_NAME}" dynamodb:table:ReadCapacityUnits
+assert_target_gone "table/${TABLE_NAME}" dynamodb:table:WriteCapacityUnits
 
 echo "[verify] step 16b: assert cdkd state is empty"
 assert_gone "cdkd state file still exists at s3://${STATE_BUCKET}/${STATE_KEY}" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"

@@ -1,5 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
-import { DescribeTableCommand, ResourceNotFoundException } from '@aws-sdk/client-dynamodb';
+import {
+  DescribeTableCommand,
+  DeleteTableCommand,
+  UpdateTimeToLiveCommand,
+  ResourceNotFoundException,
+} from '@aws-sdk/client-dynamodb';
 import {
   RegisterScalableTargetCommand,
   PutScalingPolicyCommand,
@@ -327,6 +332,64 @@ describe('DynamoDBGlobalTable per-index auto-scaling (issue #1419)', () => {
       });
     });
 
+    it('registers LAST, so a failed wiring step can never orphan a target it created', async () => {
+      // The partial-create cleanup deletes the table directly (it does not
+      // route through delete(), so it deregisters nothing). A target
+      // registered before a later wiring step failed would therefore be
+      // orphaned in the application-autoscaling control plane with no table
+      // left to name it. Registration is deliberately the last wiring step;
+      // this pins it by failing the step that used to run after it (TTL).
+      mockSend.mockImplementation((command: unknown) => {
+        if (command instanceof UpdateTimeToLiveCommand) {
+          return Promise.reject(new Error('ttl boom'));
+        }
+        if (command instanceof DescribeTableCommand) {
+          return Promise.resolve({
+            Table: {
+              TableName: TABLE_NAME,
+              TableArn: TABLE_ARN,
+              TableStatus: 'ACTIVE',
+              GlobalSecondaryIndexes: [{ IndexName: 'gsi1', IndexStatus: 'ACTIVE' }],
+              Replicas: [{ RegionName: 'us-east-1', ReplicaStatus: 'ACTIVE' }],
+            },
+          });
+        }
+        return Promise.resolve({});
+      });
+
+      await expect(
+        provider.create('Prov', RESOURCE_TYPE, {
+          ...AUTOSCALED_PROPS,
+          TimeToLiveSpecification: { AttributeName: 'expiresAt', Enabled: true },
+        })
+      ).rejects.toThrow(/ttl boom/);
+
+      // Nothing was registered, so the cleanup's DeleteTable leaves no orphan.
+      expect(registerInputs()).toEqual([]);
+    });
+
+    it('does not fail the deploy when auto-scaling registration itself throws', async () => {
+      // Best-effort contract: a table that AWS created successfully must not
+      // be destroyed by the partial-create cleanup over a scaling-target
+      // problem. `applyAutoScalingDiff` swallows send errors, so this pins
+      // the surrounding guard by making the client factory itself reject.
+      const boom = new Error('region resolution failed');
+      const originalRegion = mockSend.getMockImplementation();
+      void originalRegion;
+      const provider2 = new DynamoDBGlobalTableProvider();
+      (
+        provider2 as unknown as { getLocalAutoScalingClient: () => Promise<never> }
+      ).getLocalAutoScalingClient = () => Promise.reject(boom);
+
+      const result = await provider2.create('Prov', RESOURCE_TYPE, AUTOSCALED_PROPS);
+
+      expect(result.physicalId).toBe(TABLE_NAME);
+      expect(
+        mockSend.mock.calls.map((c) => c[0]).some((c) => c instanceof DeleteTableCommand)
+      ).toBe(false);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Auto-scaling registration failed'));
+    });
+
     it('registers nothing on a PAY_PER_REQUEST table (AWS rejects targets there)', async () => {
       await provider.create('Prov', RESOURCE_TYPE, {
         ...AUTOSCALED_PROPS,
@@ -479,6 +542,59 @@ describe('DynamoDBGlobalTable per-index auto-scaling (issue #1419)', () => {
       // The pre-existing table-level teardown must still happen.
       expect(gone).toContainEqual([`table/${TABLE_NAME}`, 'dynamodb:table:WriteCapacityUnits']);
       expect(gone).toContainEqual([`table/${TABLE_NAME}`, 'dynamodb:table:ReadCapacityUnits']);
+    });
+
+    it("deregisters a cross-region replica's index targets using the TABLE's index list", async () => {
+      // A replica that inherits throughput can come back with its own
+      // `GlobalSecondaryIndexes` list OMITTED (the per-replica entry is
+      // "replica-specific settings", and its ProvisionedThroughputOverride is
+      // documented as "if not described, uses the source table's"). Reading
+      // index names off the replica would then leak every
+      // dynamodb:index:ReadCapacityUnits target in that region past
+      // DeleteTable. Index names are identical across replicas, so the
+      // table-level list is the correct source.
+      describeOnceThenGone({
+        TableName: TABLE_NAME,
+        TableArn: TABLE_ARN,
+        TableStatus: 'ACTIVE',
+        GlobalSecondaryIndexes: [{ IndexName: 'gsi1' }],
+        Replicas: [
+          { RegionName: 'us-east-1' },
+          // No GlobalSecondaryIndexes key at all — the inheriting shape.
+          { RegionName: 'eu-west-1' },
+        ],
+      });
+
+      await provider.delete('Prov', TABLE_NAME, RESOURCE_TYPE, AUTOSCALED_PROPS);
+
+      expect(deregistered()).toContainEqual([
+        `table/${TABLE_NAME}/index/gsi1`,
+        'dynamodb:index:ReadCapacityUnits',
+      ]);
+      expect(autoScalingRegionSpy).toHaveBeenCalledWith('eu-west-1');
+    });
+
+    it('stays silent when a target was never registered (ObjectNotFoundException suppression)', async () => {
+      // delete() tears down index dimensions for every table that has GSIs,
+      // including tables that never had auto-scaling at all. AWS answers
+      // ObjectNotFoundException for those, which must be suppressed — an
+      // unsuppressed one would print two WARN lines per index on every
+      // destroy of an ordinary table.
+      describeOnceThenGone({
+        TableName: TABLE_NAME,
+        TableArn: TABLE_ARN,
+        TableStatus: 'ACTIVE',
+        GlobalSecondaryIndexes: [{ IndexName: 'gsi1' }],
+        Replicas: [{ RegionName: 'us-east-1' }],
+      });
+      const notFound = new Error('No scaling policy found for service namespace: dynamodb');
+      notFound.name = 'ObjectNotFoundException';
+      mockAutoScalingSend.mockReset();
+      mockAutoScalingSend.mockRejectedValue(notFound);
+
+      await provider.delete('Prov', TABLE_NAME, RESOURCE_TYPE, AUTOSCALED_PROPS);
+
+      expect(warnSpy).not.toHaveBeenCalled();
     });
 
     it('takes index names from the live DescribeTable, not from the (possibly stale) template', async () => {
