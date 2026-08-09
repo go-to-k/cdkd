@@ -776,6 +776,18 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         );
       }
 
+      // Resolved BEFORE the flat-field block below (step 4 re-reads them for
+      // the flip itself). The on-demand reset in that block has to know
+      // whether this deploy also flips the billing mode: dropping
+      // `WriteOnDemandThroughputSettings` while moving to PROVISIONED is the
+      // natural template edit, not a request to clear an on-demand ceiling,
+      // and sending `OnDemandThroughput` on that call is meaningless. Same
+      // guard shape as the per-GSI reset (#1423).
+      const oldBillingMode =
+        (previousProperties['BillingMode'] as string | undefined) ?? 'PAY_PER_REQUEST';
+      const newBillingMode = (properties['BillingMode'] as string | undefined) ?? 'PAY_PER_REQUEST';
+      const billingModeFlipping = oldBillingMode !== newBillingMode;
+
       // 3. Non-conflicting flat fields in one combined UpdateTable.
       // AWS allows combining these in a single call because they don't
       // conflict with each other or with each other's modes.
@@ -876,10 +888,30 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         const wodts = properties['WriteOnDemandThroughputSettings'] as
           | Record<string, unknown>
           | undefined;
-        if (wodts?.['MaxWriteRequestUnits'] !== undefined) {
-          flatUpdate.OnDemandThroughput = {
-            MaxWriteRequestUnits: Number(wodts['MaxWriteRequestUnits']),
-          };
+        const previousWodts = previousProperties['WriteOnDemandThroughputSettings'] as
+          | Record<string, unknown>
+          | undefined;
+        const maxWrite = toFiniteNumber(wodts?.['MaxWriteRequestUnits']);
+        if (maxWrite !== undefined) {
+          flatUpdate.OnDemandThroughput = { MaxWriteRequestUnits: maxWrite };
+          flatChanged = true;
+        } else if (!billingModeFlipping && previousWodts?.['MaxWriteRequestUnits'] !== undefined) {
+          // The template DROPPED the table-level on-demand write ceiling.
+          // Omitting the field left the old ceiling live in AWS forever while
+          // cdkd reported success — the absent-field-reset silent-drop class
+          // (#1160), the table-level sibling of the per-GSI case #1423 fixed.
+          //
+          // `-1` is the reset sentinel. Unlike the per-GSI action (where it
+          // had to be discovered by probe) AWS documents it for the
+          // table-level `OnDemandThroughput`, and it was LIVE-VERIFIED anyway
+          // (issue #1434, us-east-1): `UpdateTable` with
+          // `OnDemandThroughput: {MaxWriteRequestUnits: -1}` was accepted and
+          // `DescribeTable` afterwards returned `{MaxReadRequestUnits: 100}` —
+          // the dropped member cleared, the untouched read sibling preserved.
+          // A follow-up `{MaxReadRequestUnits: -1}` removed the block entirely.
+          // So the reset reads back as ABSENCE, never as -1, and any drift /
+          // read-back comparison must expect that.
+          flatUpdate.OnDemandThroughput = { MaxWriteRequestUnits: ON_DEMAND_LIMIT_RESET };
           flatChanged = true;
         }
       }
@@ -892,10 +924,11 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // Defaults must match `create()` (line 183: `PAY_PER_REQUEST`) so
       // a template with no explicit `BillingMode` doesn't false-fire
       // a PROVISIONED → PAY_PER_REQUEST diff on every update of a
-      // PAY_PER_REQUEST table.
-      const oldBilling =
-        (previousProperties['BillingMode'] as string | undefined) ?? 'PAY_PER_REQUEST';
-      const newBilling = (properties['BillingMode'] as string | undefined) ?? 'PAY_PER_REQUEST';
+      // PAY_PER_REQUEST table. Resolved above step 3, which needs the same
+      // pair to suppress its on-demand reset during a flip — one binding so
+      // the two sites cannot disagree about what "flipping" means.
+      const oldBilling = oldBillingMode;
+      const newBilling = newBillingMode;
       // GSIs whose ProvisionedThroughput was already applied as part of the
       // BillingMode flip below — step 6 must not re-issue an Update for them.
       const gsiHandledByBillingFlip = new Set<string>();
