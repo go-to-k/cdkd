@@ -1,3 +1,10 @@
+## [0.278.20](https://github.com/go-to-k/cdkd/compare/v0.278.19...v0.278.20) (2026-08-09)
+
+
+### Bug Fixes
+
+* **dynamodb:** register per-index auto-scaling and create GlobalTables at MinCapacity ([#1451](https://github.com/go-to-k/cdkd/issues/1451)) ([62e378b](https://github.com/go-to-k/cdkd/commit/62e378ba38fa529df8fe8b5d39b4da1e742d85a2))
+
 ## [0.278.19](https://github.com/go-to-k/cdkd/compare/v0.278.18...v0.278.19) (2026-08-09)
 
 
