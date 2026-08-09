@@ -107,10 +107,12 @@ esm_uuid() {
 # an empty string (the `|| ` + backtick-empty-array coalesces null INSIDE
 # JMESPath so the CLI never errors on `join` receiving None, which under
 # `set -e` would abort at the `$( )` assignment instead of hitting the FAIL
-# branch below).
+# branch below). SORTED because AWS does not preserve the submitted order —
+# an order-sensitive compare fails intermittently (observed 2026-08-09: AWS
+# returned b-2 before b-1).
 esm_brokers() {
   aws lambda list-event-source-mappings --function-name "${FN}" --region "${REGION}" \
-    --query "join(' ', EventSourceMappings[0].SelfManagedEventSource.Endpoints.KAFKA_BOOTSTRAP_SERVERS || \`[]\`)" \
+    --query "join(' ', sort(EventSourceMappings[0].SelfManagedEventSource.Endpoints.KAFKA_BOOTSTRAP_SERVERS || \`[]\`))" \
     --output text
 }
 
