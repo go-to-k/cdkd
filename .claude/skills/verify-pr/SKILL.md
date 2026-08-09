@@ -59,43 +59,49 @@ Run each check and report pass/fail:
 5. **Documentation consistency**
    - Invoke `/check-docs` skill logic: verify docs match code changes
    - Check for stale references to removed code
-   - **Coverage matrix freshness**: CI runs four independent matrix checks (`integ-coverage`, `scenario-coverage`, `cli-flag-coverage`, `audit:coverage:check`) and hard-fails on staleness. PR #548 hit two of these in succession because `/verify-pr` only regenerated `integ-coverage` locally — the contributor pushed, CI failed on `audit:coverage:check`, the contributor regenerated provider-coverage and pushed again, CI failed on `scenario-coverage matrix is up-to-date`. PR #1104 then hit the SAME round-trip on `cli-flag-coverage` (added to CI by #1072 without updating this step): a new fixture's `verify.sh` joined the per-flag user lists, CI failed, one more regen+push cycle. The block below covers all four so the round-trip can't happen again:
+   - **Generated-artifact freshness**: CI carries a staleness guard per generated
+     artifact — it runs the generator and fails if the working tree changes.
+     There are NINE of them, and this step used to name only four, so the list
+     drifted every time one was added. Do NOT re-list them here; regenerate
+     everything in one shot:
      ```bash
-     fixtures_changed=$(git diff main...HEAD --name-only | grep -qE '^src/provisioning/register-providers\.ts$|^tests/integration/[^/]+/(lib|bin)/.+\.ts$|^tests/integration/[^/]+/\.scenarios\.json$|^tests/integration/[^/]+/verify\.sh$' && echo yes)
-     providers_changed=$(git diff main...HEAD --name-only | grep -qE '^src/provisioning/register-providers\.ts$' && echo yes)
-     # cli-flag-coverage counts DECLARED flags, so a flag-only diff (options.ts
-     # or a command file adding/removing an Option) stales it with NO fixture
-     # change — PR #1231 (--strict/--ignore-errors) merged that way and turned
-     # main's check-build-test red until the regen landed (PR #1232).
-     cli_flags_changed=$(git diff main...HEAD --name-only | grep -qE '^src/cli/options\.ts$|^src/cli/commands/.+\.ts$' && echo yes)
+     # Regenerates every artifact CI guards (offline static analysis, seconds
+     # each). Unconditional on purpose: the old per-matrix `git diff` triggers
+     # were themselves the drift, since each new matrix needed a new trigger.
+     vp run gen:all-matrices
 
-     if [ "$fixtures_changed" = "yes" ]; then
-       vp run integ-coverage
-       vp run scenario-coverage
-     fi
+     # `--check` is offline (~0.5s) and verifies the cached
+     # docs/_generated/provider-coverage.json matches register-providers.ts
+     # under the current Tier classification. It is a CRITIC, not a generator,
+     # so it is not part of the aggregate. If it fails, run
+     # `vp run audit:coverage:regenerate` (heavy: ~15 min, needs AWS creds with
+     # cloudformation:ListTypes + DescribeType) and commit the regenerated
+     # cache. /verify-pr does NOT auto-run :regenerate — too costly, and the
+     # creds may not be present locally.
+     vp run audit:coverage:check
 
-     if [ "$fixtures_changed" = "yes" ] || [ "$cli_flags_changed" = "yes" ]; then
-       vp run cli-flag-coverage
-     fi
-
-     if [ "$providers_changed" = "yes" ]; then
-       # `--check` is offline (~0.5s) and verifies the cached
-       # docs/_generated/provider-coverage.json matches register-providers.ts
-       # under the current Tier classification. If it fails, the contributor
-       # must run `vp run audit:coverage:regenerate` (heavy: ~15 min, requires
-       # AWS creds with cloudformation:ListTypes + DescribeType) and commit
-       # the regenerated cache. /verify-pr does NOT auto-run :regenerate
-       # because the cost is too high and AWS creds may not be present in
-       # the local dev environment.
-       vp run audit:coverage:check
-     fi
-
-     git status --short docs/integ-coverage.md docs/_generated/integ-coverage.json \
-                        docs/scenario-coverage.md docs/_generated/scenario-coverage.json \
-                        docs/cli-flag-coverage.md docs/_generated/cli-flag-coverage.json \
-                        docs/_generated/provider-coverage.json docs/_generated/provider-coverage.md
+     # Anything dirty here was stale before you ran the above.
+     git status --short docs/ src/provisioning/property-coverage.generated.ts \
+                        src/provisioning/unsupported-types.generated.ts
      ```
-     If `git status` reports any of these files as dirty, the contributor forgot to regenerate after their code change. Stage the regenerated output, amend / new-commit it onto the PR, and re-run `/check-docs` to refresh the docs marker. If `vp run audit:coverage:check` exits non-zero, run `vp run audit:coverage:regenerate` (heavy — see above) and commit the regenerated `docs/_generated/provider-coverage.{json,md}`.
+     If `git status` reports anything dirty, the contributor forgot to
+     regenerate after their code change. Stage it, add it to the PR, and re-run
+     `/check-docs` to refresh the docs marker.
+
+     `tests/unit/scripts/matrix-regen-coverage.test.ts` pins `gen:all-matrices`
+     against the guards actually present in `.github/workflows/ci.yml` in BOTH
+     directions, so a new CI guard cannot be added without landing in the
+     aggregate, and a removed one cannot linger. That test is what makes this
+     step non-drifting; keep pointing at the aggregate rather than re-listing.
+
+     History, because the same round-trip has now happened four times: PR #548
+     hit two matrices in succession; PR #1104 hit `cli-flag-coverage` (added to
+     CI by #1072 without updating this step); PR #1231 merged a flag-only diff
+     that staled `cli-flag-coverage` with no fixture change and turned main's
+     `check-build-test` red until #1232; and PR #1416 hit
+     `handled-property-wiring` (added by #1414), which is staled by an ordinary
+     private-method rename inside a provider — a refactor nobody associates with
+     a generated file (issue #1417).
      The `provider-integ-gate.sh` PreToolUse hook blocks `git commit` when a new `registry.register('AWS::Foo::Bar', ...)` is added without integ coverage (literal type id, `Cfn<Type>(` L1 class, or `// allow-no-integ: <rationale>` carve-out) — but it does not enforce that the matrix snapshots themselves are regenerated. This step closes that gap.
 
 6. **Leftover resources**

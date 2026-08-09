@@ -320,6 +320,45 @@ export default defineConfig({
         command: 'node --experimental-strip-types scripts/gen-handled-property-wiring.ts --check',
         cache: false,
       },
+      // Regenerates EVERY CI-enforced matrix in one shot, so `/verify-pr` (and
+      // anyone about to push) can check freshness without knowing the list.
+      //
+      // The list used to live only in `.claude/skills/verify-pr/SKILL.md`, and
+      // it drifted: CI grew to NINE staleness guards while the skill still
+      // named four. Issue #1417 — a private method rename staled
+      // `handled-property-wiring`, `/verify-pr` reported clean, and CI failed.
+      // `tests/unit/scripts/matrix-regen-coverage.test.ts` pins this task
+      // against the guards actually present in `.github/workflows/ci.yml`, so a
+      // NEW matrix cannot be added to CI without also landing here.
+      //
+      // Deliberately excludes `audit:coverage:regenerate` (needs AWS creds,
+      // 10-30 min) and `gen:aws-cli-removals` (needs a local AWS CLI); neither
+      // is a CI staleness guard.
+      'gen:all-matrices': {
+        command: [
+          'vp run integ-coverage',
+          'vp run scenario-coverage',
+          'vp run cli-flag-coverage',
+          'vp run gen:unsupported-types',
+          'vp run gen:property-coverage',
+          // The property-coverage codegen writes a raw multi-line shape while
+          // the committed module is Prettier-formatted, so CI's guard runs
+          // `format` before diffing. Regenerating WITHOUT it produces a
+          // formatting-only diff that looks like real drift (hit live while
+          // preparing #1416).
+          'vp run format',
+          'vp run gen:enrichment-coverage',
+          'vp run gen:sdk-attr-coverage',
+          'vp run gen:update-wrap-coverage',
+          'vp run gen:nested-key-coverage',
+          'vp run gen:handled-property-wiring',
+          // Not a matrix, but the same class of CI guard: a rebase can
+          // denormalize the committed integ ledger, and the failure looks
+          // identical (regenerate-and-commit).
+          'vp run integ-ledger-normalize',
+        ].join(' && '),
+        cache: false,
+      },
       'compat-corpus': {
         command: 'node --experimental-strip-types scripts/compat-corpus.ts',
         cache: false,
