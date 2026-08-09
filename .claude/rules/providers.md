@@ -165,6 +165,18 @@ That is a far more common template shape than the base64 search string.
   under it with no write to find, and the pass cannot see that yet (issue
   #1445). That is why only `AWS::CodeBuild::Project` opts in today — the
   measured counts for every target are in the script's file header.
+- **The write-evidence pass has its own bound — do not repeat the mistake this
+  bullet exists to correct.** Evidence is a flat per-FILE set of member names,
+  and the audited unit is a nested key NAME rather than a path, so a member
+  written ANYWHERE vouches for every key of that spelling. Measured on
+  `codebuild-provider.ts`: 11 of its 55 same-spelling keys have more than one
+  write site, and `BuildBatchConfig.ServiceRole` — the sibling of the member
+  that motivated #1432 — stays silent when dropped, because the top-level
+  `serviceRole` write covers it. So the pass fences the **uniquely-named**
+  members (44 of 55 on CodeBuild), not all of them. Issue #1448 tracks moving
+  the key model to paths and scoping evidence per object literal. Until it
+  lands, a hand diff of the WHOLE blob (the first bullet in this section) is
+  still the thing that catches a duplicate-named sub-key.
 
 ## Adding a New SDK Provider
 

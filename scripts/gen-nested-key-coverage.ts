@@ -105,12 +105,13 @@
  * (`result['CorsConfiguration'] = ...`) WOULD vouch for the forward mapper.
  * That is #1393 item 2 — the file-global heuristic clearing a genuine
  * divergence — reappearing one bucket over, so the collector skips the bodies
- * of {@link WRITE_EVIDENCE_EXCLUDED_FUNCTION_PREFIXES}. Measured on the real tree, the
- * exclusion withdraws 8 names from `s3-bucket-provider.ts` (`BucketName`,
- * `BucketEncryption`, `CorsConfiguration`, `LoggingConfiguration` and the four
- * `*Configurations` plurals), 71 from `codebuild-provider.ts`, and 0 from
- * `ecs-provider.ts` (whose reverse map writes through a helper) — exactly the
- * names a reverse map invents.
+ * of {@link WRITE_EVIDENCE_EXCLUDED_FUNCTION_PREFIXES}. Measured on the real
+ * tree, the exclusion withdraws 8 names from `s3-bucket-provider.ts`
+ * (`BucketName`, `BucketEncryption`, `CorsConfiguration`, `LoggingConfiguration`
+ * and the four `*Configurations` plurals), 71 from `codebuild-provider.ts`, and
+ * 42 from `ecs-provider.ts` (via `readCurrentStateService` /
+ * `readCurrentStateTaskDefinition`, which only the PREFIX match reaches) —
+ * exactly the names a reverse map invents.
  *
  * WHY THE PASS IS OPT-IN PER TARGET, AND WHY ONLY CODEBUILD TODAY
  * ---------------------------------------------------------------
@@ -212,11 +213,23 @@ export const MIN_SDK_MEMBERS_PER_CLIENT = 50;
 
 /**
  * Parser-regression floor for the WRITE-EVIDENCE collector (issue #1432),
- * applied only to targets that opt into the pass. A provider that builds fresh
- * SDK objects writes hundreds of member names; this floor sits far below the
- * 82 `codebuild-provider.ts` yields after the `readCurrentState` exclusion.
+ * applied only to targets that opt into the pass. It exists to turn a COLLAPSED
+ * parse into one legible error instead of 55 bogus divergences, so it is
+ * deliberately set below the smallest legitimate yield rather than near the
+ * current one.
+ *
+ * Measured yields after the reverse-map exclusion:
+ * `ecs-provider.ts` 231, `s3-bucket-provider.ts` 160, `codebuild-provider.ts`
+ * 82 (the only opted-in target today), `apigatewayv2-provider.ts` 46,
+ * `cloudfront-distribution-provider.ts` 64,
+ * `cloudwatch-anomaly-detector-provider.ts` **17**. That last one is why the
+ * floor is 10 rather than a value tuned to CodeBuild: a floor of 30 would throw
+ * "parser regression?" on a perfectly correct parse the moment the smallest
+ * provider opts in (#1445). A per-target floor, mirroring
+ * {@link NestedKeyTarget.minNestedKeys}, is what a genuinely tight fence would
+ * need — tracked in #1448.
  */
-export const MIN_WRITTEN_MEMBERS_PER_PROVIDER = 30;
+export const MIN_WRITTEN_MEMBERS_PER_PROVIDER = 10;
 
 /**
  * How a target's CFn nested key spelling maps onto its SDK model spelling
@@ -788,10 +801,14 @@ export function collectStringLiterals(sourceText: string, fileName = 'provider.t
  * `readCurrentStateAuthorizer` / `...Resource` / `...Deployment` / `...Stage` /
  * `...Account` / `...Method`, none of which an exact-name set would catch.
  *
+ * A prefix must be followed by a WORD BOUNDARY (end of name, or an uppercase
+ * letter), so `readCurrentStatelessThing` is not swallowed by the
+ * `readCurrentState` prefix.
+ *
  * Measured withdrawal on the real tree: 8 names from `s3-bucket-provider.ts`,
- * 71 from `codebuild-provider.ts`, 0 from `ecs-provider.ts` (whose reverse map
- * writes through a differently-named helper — see the limitation note in the
- * file header).
+ * 71 from `codebuild-provider.ts`, 42 from `ecs-provider.ts`. The ECS number is
+ * what the earlier EXACT-name match missed entirely — its reverse map is split
+ * into `readCurrentStateService` / `readCurrentStateTaskDefinition`.
  */
 export const WRITE_EVIDENCE_EXCLUDED_FUNCTION_PREFIXES: readonly string[] = ['readCurrentState'];
 
@@ -847,15 +864,37 @@ export function collectWrittenMemberNames(
    * never reaches this branch.)
    */
   const isDestructuringTarget = (node: ts.Node): boolean => {
-    const objectLiteral = node.parent;
-    if (objectLiteral === undefined || !ts.isObjectLiteralExpression(objectLiteral)) return false;
-    const assignment = objectLiteral.parent;
-    return (
-      assignment !== undefined &&
-      ts.isBinaryExpression(assignment) &&
-      assignment.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-      assignment.left === objectLiteral
-    );
+    // Walk to the OUTERMOST pattern node: a destructuring target nests
+    // (`({ outer: { batchReportMode } } = desc)`), can sit inside an array
+    // pattern (`[{ batchReportMode }] = arr`), and can carry a default
+    // (`({ batchReportMode = 1 } = desc)`, whose member is a BinaryExpression
+    // the walk passes straight through). A depth-1 check misses all three.
+    let current: ts.Node | undefined = node.parent;
+    let root: ts.Node | undefined;
+    while (
+      current !== undefined &&
+      (ts.isObjectLiteralExpression(current) ||
+        ts.isArrayLiteralExpression(current) ||
+        ts.isPropertyAssignment(current) ||
+        ts.isShorthandPropertyAssignment(current) ||
+        ts.isSpreadAssignment(current) ||
+        ts.isSpreadElement(current))
+    ) {
+      if (ts.isObjectLiteralExpression(current) || ts.isArrayLiteralExpression(current)) {
+        root = current;
+      }
+      current = current.parent;
+    }
+    if (root === undefined || current === undefined) return false;
+    // `= ` assignment, or the binding position of a `for (… of …)` loop.
+    if (
+      ts.isBinaryExpression(current) &&
+      current.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+      current.left === root
+    ) {
+      return true;
+    }
+    return ts.isForOfStatement(current) && current.initializer === root;
   };
 
   /** The declared name of a function-ish node, when it is a plain identifier. */
@@ -877,7 +916,14 @@ export function collectWrittenMemberNames(
     let inExcluded = excluded;
     if (!inExcluded) {
       const name = declaredName(node);
-      if (name !== undefined && excludedFunctionPrefixes.some((p) => name.startsWith(p))) {
+      // Word-boundary prefix: the whole name, or the prefix followed by an
+      // uppercase letter (`readCurrentStateService`). Without it,
+      // `readCurrentStatelessThing` would be silently excluded.
+      const excluded = (n: string): boolean =>
+        excludedFunctionPrefixes.some(
+          (p) => n === p || (n.startsWith(p) && /[A-Z]/.test(n.charAt(p.length)))
+        );
+      if (name !== undefined && excluded(name)) {
         inExcluded = true;
       }
     }

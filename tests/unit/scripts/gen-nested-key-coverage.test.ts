@@ -90,6 +90,67 @@ describe('collectWrittenMemberNames (synthetic)', () => {
     expect(written.has('combineArtifacts')).toBe(true);
   });
 
+  it('does NOT credit a NESTED / ARRAY / for-of destructuring target', () => {
+    // A depth-1 parent check misses all three of these — the inner literal's
+    // parent is a PropertyAssignment / ArrayLiteralExpression / ForOfStatement
+    // rather than the assignment itself.
+    const written = collectWrittenMemberNames(`
+      ({ outer: { batchReportMode } } = desc);
+      [{ combineArtifacts }] = arr;
+      for ({ timeoutInMins } of list) { use(timeoutInMins); }
+      ({ serviceRole = 'x' } = desc);
+      const real = { queuedTimeoutInMinutes: 1 };
+    `);
+    expect(written.has('batchReportMode')).toBe(false);
+    expect(written.has('combineArtifacts')).toBe(false);
+    expect(written.has('timeoutInMins')).toBe(false);
+    expect(written.has('serviceRole')).toBe(false);
+    expect(written.has('queuedTimeoutInMinutes')).toBe(true);
+  });
+
+  it('excludes an arrow-function PROPERTY reverse map, not just a method', () => {
+    // A regression here fails in the DANGEROUS direction: reverse-map writes
+    // would be silently re-credited, false-clearing a CI-blocking bucket.
+    const source = `
+      class P {
+        readCurrentState = async () => { const r = {}; r['CorsConfiguration'] = 1; return r; };
+        map(p) { return { forwardOnly: p['ForwardOnly'] }; }
+      }
+    `;
+    expect(collectWrittenMemberNames(source).has('CorsConfiguration')).toBe(false);
+    expect(collectWrittenMemberNames(source).has('forwardOnly')).toBe(true);
+  });
+
+  it('the exclusion prefix respects a word boundary', () => {
+    // `readCurrentStateless…` is a different function and must NOT be swallowed.
+    const written = collectWrittenMemberNames(`
+      function readCurrentStatelessThing() { return { stillCounted: 1 }; }
+      function readCurrentStateService() { return { notCounted: 1 }; }
+    `);
+    expect(written.has('stillCounted')).toBe(true);
+    expect(written.has('notCounted')).toBe(false);
+  });
+
+  it('excludes writes in a nested function inside an excluded body', () => {
+    const source = `
+      class P {
+        readCurrentState() {
+          const build = () => ({ corsConfiguration: 1 });
+          return build();
+        }
+      }
+    `;
+    expect(collectWrittenMemberNames(source).has('corsConfiguration')).toBe(false);
+  });
+
+  it('counts a string-literal property name and a template element-access key', () => {
+    const written = collectWrittenMemberNames(
+      "const o = { 'batchReportMode': 1 }; sdk[`combineArtifacts`] = 2;"
+    );
+    expect(written.has('batchReportMode')).toBe(true);
+    expect(written.has('combineArtifacts')).toBe(true);
+  });
+
   it('excludes reverse-map functions by PREFIX, not exact name', () => {
     // Real shape: `apigateway-provider.ts` splits the reverse map into
     // `readCurrentStateAuthorizer` / `...Resource` / `...Stage` / etc.
@@ -1312,6 +1373,20 @@ describe('real-code regression probes (per the repo checker rules)', () => {
     // mapper if the exclusion were dropped.
     const scoped = collectWrittenMemberNames(s3Source);
     const unscoped = collectWrittenMemberNames(s3Source, 's3-bucket-provider.ts', []);
+    // The ECS number is the one that proves the PREFIX match earns its keep:
+    // `ecs-provider.ts` splits its reverse map into `readCurrentStateService` /
+    // `readCurrentStateTaskDefinition`, which an EXACT-name match reached not
+    // at all (it withdrew 0). Pinned so the file header's measured numbers
+    // cannot drift away from the code again.
+    const ecsSource = readFileSync(
+      resolve(repoRoot, 'src/provisioning/providers/ecs-provider.ts'),
+      'utf8'
+    );
+    const ecsWithdrawn =
+      collectWrittenMemberNames(ecsSource, 'ecs-provider.ts', []).size -
+      collectWrittenMemberNames(ecsSource).size;
+    expect(ecsWithdrawn).toBeGreaterThanOrEqual(40);
+
     const withdrawn = [...unscoped].filter((n) => !scoped.has(n)).sort();
     expect(withdrawn).toEqual([
       'AnalyticsConfigurations',
