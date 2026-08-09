@@ -1,3 +1,10 @@
+## [0.278.12](https://github.com/go-to-k/cdkd/compare/v0.278.11...v0.278.12) (2026-08-09)
+
+
+### Bug Fixes
+
+* **dynamodb:** translate GlobalTable GSI throughput to the CreateTable SDK shape ([#1422](https://github.com/go-to-k/cdkd/issues/1422)) ([73442c1](https://github.com/go-to-k/cdkd/commit/73442c1bac5e549044a66fd7a53f1c237a050720))
+
 ## [0.278.11](https://github.com/go-to-k/cdkd/compare/v0.278.10...v0.278.11) (2026-08-09)
 
 
