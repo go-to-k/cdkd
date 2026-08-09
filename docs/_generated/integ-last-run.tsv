@@ -232,7 +232,7 @@ s3-lifecycle	2026-07-21T14:28:43Z	PASS	58	verify.sh	rc ok, orph clean
 s3-object-lock	2026-07-21T14:42:20Z	PASS	53	verify.sh	rc ok, orph clean
 s3-replication-and-filter	2026-07-21T14:43:45Z	PASS	63	verify.sh	rc ok, orph clean
 s3-tables	2026-07-27T16:53:47Z	PASS	45	verify.sh	issue #1270/#1272 post-review re-run; 5 del 0 err, 0 orphans
-s3-vectors	2026-07-26T18:49:34Z	PASS	43	verify.sh	0727b sweep-b6 staleness re-run (rc=0); account clean
+s3-vectors	2026-08-09T03:50:21Z	PASS	230	verify.sh	#1385 CMK encryption asserted; destroy 0 errors, 0 orphans
 scheduled-task	2026-07-26T18:04:53Z	PASS	44	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
 scheduler-custom-group	2026-07-26T19:25:15Z	PASS	103	verify.sh	0727b sweep-b10 staleness re-run (rc=0); account clean
 schema-v5-to-v6-migration	2026-07-24T10:27:22Z	PASS	61	verify.sh	0724 P0 sweep: v5->v8 transparent upgrade verified; 1 del 0 err
