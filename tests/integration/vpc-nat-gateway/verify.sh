@@ -77,12 +77,20 @@ LOCAL_DIST="${PWD}/../../../dist/cli.js"
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
+  destroy_rc=0
   if [ -f "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --region "${REGION}" --yes >/dev/null 2>&1
+    destroy_rc=$?
   fi
-  if [ -n "${STATE_BUCKET:-}" ]; then
+  # Only drop the state file when the destroy actually succeeded. A classic NAT
+  # stuck in `deleting` makes the VPC delete fail with DependencyViolation; if
+  # the state were wiped anyway, the per-hour-billed NAT + VPC would be orphaned
+  # with nothing left to retry from.
+  if [ -n "${STATE_BUCKET:-}" ] && [ "${destroy_rc}" -eq 0 ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1
+  elif [ -n "${STATE_BUCKET:-}" ]; then
+    echo "    NOTE: state destroy exited ${destroy_rc}; keeping cdkd state so the stack stays retryable" >&2
   fi
   set -eu
 }
@@ -103,7 +111,7 @@ fi
 
 # The single source of truth for the value under test lives in the stack file;
 # grep it rather than re-typing so the two cannot drift.
-EXPECTED_DRAIN=$(grep -oE 'DRAIN_DURATION_SECONDS = [0-9]+' lib/vpc-nat-gateway-stack.ts | grep -oE '[0-9]+$')
+EXPECTED_DRAIN=$(grep -oE 'DRAIN_DURATION_SECONDS = [0-9]+' lib/vpc-nat-gateway-stack.ts | grep -oE '[0-9]+$' || true)
 if [ -z "${EXPECTED_DRAIN}" ]; then
   echo "FAIL: could not read DRAIN_DURATION_SECONDS from lib/vpc-nat-gateway-stack.ts" >&2
   exit 1
@@ -243,7 +251,7 @@ assert_nat_gone() { # usage: assert_nat_gone <nat-gateway-id> <label>
     echo "FAIL: ${label} NAT gateway ${id} state re-read undetermined: ${state}" >&2
     exit 1
   fi
-  if [ "${state}" != "deleted" ] && [ "${state}" != "deleting" ]; then
+  if [ "${state}" != "deleted" ]; then
     echo "FAIL: ${label} NAT gateway ${id} is in state '${state}' after destroy, expected 'deleted'" >&2
     exit 1
   fi
