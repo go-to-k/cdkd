@@ -1,3 +1,10 @@
+## [0.278.17](https://github.com/go-to-k/cdkd/compare/v0.278.16...v0.278.17) (2026-08-09)
+
+
+### Bug Fixes
+
+* **dynamodb:** reset the table-level GlobalTable on-demand write ceiling when the template drops it ([#1439](https://github.com/go-to-k/cdkd/issues/1439)) ([654391b](https://github.com/go-to-k/cdkd/commit/654391b0b4847c22278b3544d3c540f0d9c3cdc0))
+
 ## [0.278.16](https://github.com/go-to-k/cdkd/compare/v0.278.15...v0.278.16) (2026-08-09)
 
 
