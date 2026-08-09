@@ -11,11 +11,11 @@
 #   - an in-place UPDATE that shortens a transition + adds a Filter-based rule
 #
 # Phases:
-#   1. Deploy; assert both rules reached AWS, none carries a top-level Prefix
+#   1. Deploy; assert all three rules reached AWS, none carries a top-level Prefix
 #      (all normalized to V2 Filter form), and the archive rule's expiration=730.
 #   2. Re-deploy with CDKD_TEST_UPDATE=true (expiration 730 -> 365, GLACIER
 #      transition 90 -> 60, + a new big-objects Filter rule). Assert the new
-#      values reached AWS, there are 3 rules, and the bucket was NOT replaced.
+#      values reached AWS, there are 4 rules, and the bucket was NOT replaced.
 #   3. Destroy; assert the bucket is gone and the state file is removed.
 #
 # Required env vars:

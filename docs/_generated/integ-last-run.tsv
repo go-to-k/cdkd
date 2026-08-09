@@ -230,7 +230,7 @@ s3-asset-deploy	2026-07-26T19:45:58Z	PASS	58	verify.sh	0727b sweep-b12 staleness
 s3-cloudfront	2026-08-08T17:42:05Z	PASS	228	verify.sh	1373 OriginCustomHeaders create+update-survive asserts green; destroy 0 errors 0 orphans
 s3-directory-bucket	2026-08-02T15:38:47Z	PASS	50	verify.sh	re-run for #1347 wontdo-comment PR; guard + clean destroy, 0 orphans
 s3-event-notification	2026-07-21T05:28:05Z	PASS	79	verify.sh	rc ok, orph clean
-s3-lifecycle	2026-08-09T13:29:41Z	PASS	58	verify.sh	issue #1388/#1424 rule-level keys asserted live (tags, NoncurrentDays, 4 legacy keys); 2 del/0 err, 0 orphans
+s3-lifecycle	2026-08-09T13:48:40Z	PASS	57	verify.sh	post-review re-run (#1388/#1424); rule-level keys asserted live; 2 del/0 err, 0 orphans
 s3-object-lock	2026-07-21T14:42:20Z	PASS	53	verify.sh	rc ok, orph clean
 s3-replication-and-filter	2026-07-21T14:43:45Z	PASS	63	verify.sh	rc ok, orph clean
 s3-tables	2026-07-27T16:53:47Z	PASS	45	verify.sh	issue #1270/#1272 post-review re-run; 5 del 0 err, 0 orphans

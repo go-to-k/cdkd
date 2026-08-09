@@ -17,7 +17,7 @@ import { PutBucketLifecycleConfigurationCommand } from '@aws-sdk/client-s3';
  * not just legacy-template trivia.
  */
 
-const mockSend = vi.fn();
+const { mockSend, warnSpy } = vi.hoisted(() => ({ mockSend: vi.fn(), warnSpy: vi.fn() }));
 
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
@@ -29,7 +29,7 @@ vi.mock('../../../src/utils/logger.js', () => {
   const childLogger = {
     debug: vi.fn(),
     info: vi.fn(),
-    warn: vi.fn(),
+    warn: warnSpy,
     error: vi.fn(),
     child: vi.fn().mockReturnThis(),
   };
@@ -38,7 +38,7 @@ vi.mock('../../../src/utils/logger.js', () => {
       child: () => childLogger,
       debug: vi.fn(),
       info: vi.fn(),
-      warn: vi.fn(),
+      warn: warnSpy,
       error: vi.fn(),
     }),
   };
@@ -255,20 +255,20 @@ describe('S3 lifecycle rule-level + legacy singular keys (issue #1388)', () => {
       expect(n.NoncurrentVersionExpiration).toEqual({ NoncurrentDays: 365 });
     });
 
-    it('concatenates the plural and singular forms when a rule carries both', async () => {
+    it('uses the singular form only when the plural array is absent', async () => {
+      // The both-present case is covered in the fix-back block below: the
+      // plural wins, because concatenating can emit two transitions with the
+      // same StorageClass and S3 rejects the whole configuration.
       const rules = await putRules([
         {
-          Id: 'mixed',
+          Id: 'singular-only',
           Status: 'Enabled',
           Prefix: 'm/',
-          Transitions: [{ StorageClass: 'STANDARD_IA', TransitionInDays: 30 }],
           Transition: { StorageClass: 'GLACIER', TransitionInDays: 90 },
         },
       ]);
-      expect(rules[0]!.Transitions).toHaveLength(2);
-      expect(rules[0]!.Transitions.map((t: { StorageClass: string }) => t.StorageClass)).toEqual([
-        'STANDARD_IA',
-        'GLACIER',
+      expect(rules[0]!.Transitions).toEqual([
+        { Days: 90, Date: undefined, StorageClass: 'GLACIER' },
       ]);
     });
 
@@ -286,6 +286,136 @@ describe('S3 lifecycle rule-level + legacy singular keys (issue #1388)', () => {
         NoncurrentDays: 10,
         NewerNoncurrentVersions: 2,
       });
+    });
+  });
+
+  describe('review fix-backs (PR #1426)', () => {
+    it('lets the plural array win over the legacy singular instead of concatenating', async () => {
+      // Concatenating emits two transitions with the same StorageClass, which
+      // S3 rejects outright ("Found two transitions with the same storage
+      // class") and fails the WHOLE PutBucketLifecycleConfiguration — a
+      // regression, since pre-fix such a template deployed with the singular
+      // simply ignored. Plural-wins also matches the NoncurrentVersionExpiration
+      // policy.
+      const rules = await putRules([
+        {
+          Id: 'both',
+          Status: 'Enabled',
+          Prefix: 'm/',
+          Transitions: [{ StorageClass: 'GLACIER', TransitionInDays: 30 }],
+          Transition: { StorageClass: 'GLACIER', TransitionInDays: 90 },
+        },
+      ]);
+      expect(rules[0]!.Transitions).toEqual([
+        { Days: 30, Date: undefined, StorageClass: 'GLACIER' },
+      ]);
+    });
+
+    it('lets the plural NoncurrentVersionTransitions win over the singular too', async () => {
+      const rules = await putRules([
+        {
+          Id: 'both-nvt',
+          Status: 'Enabled',
+          Prefix: 'm/',
+          NoncurrentVersionTransitions: [{ StorageClass: 'GLACIER', TransitionInDays: 10 }],
+          NoncurrentVersionTransition: { StorageClass: 'GLACIER', TransitionInDays: 20 },
+        },
+      ]);
+      expect(rules[0]!.NoncurrentVersionTransitions).toHaveLength(1);
+      expect(rules[0]!.NoncurrentVersionTransitions[0].NoncurrentDays).toBe(10);
+    });
+
+    it('ignores a non-object singular Transition (array / unresolved intrinsic)', async () => {
+      // `typeof [] === 'object'`, so an unguarded check pushed it through as a
+      // transition with no StorageClass and S3 answered MalformedXML for the
+      // whole config.
+      const rules = await putRules([
+        { Id: 'bad', Status: 'Enabled', Prefix: 'b/', Transition: [], ExpirationInDays: 5 },
+      ]);
+      expect(rules[0]!.Transitions).toBeUndefined();
+    });
+
+    it('still applies the delete marker when Expiration is present but empty', async () => {
+      // The nested branch emits an all-undefined object for an empty
+      // `Expiration`, so gating on mere existence dropped the marker AND left
+      // the rule action-less — the very failure the block exists to prevent.
+      const rules = await putRules([
+        {
+          Id: 'degenerate',
+          Status: 'Enabled',
+          Prefix: 'd/',
+          Expiration: {},
+          ExpiredObjectDeleteMarker: true,
+        },
+      ]);
+      expect(rules[0]!.Expiration).toEqual({ ExpiredObjectDeleteMarker: true });
+    });
+
+    it('warns instead of silently dropping a delete marker that conflicts with Days', async () => {
+      await putRules([
+        {
+          Id: 'conflict',
+          Status: 'Enabled',
+          Prefix: 'c/',
+          ExpirationInDays: 30,
+          ExpiredObjectDeleteMarker: true,
+        },
+      ]);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('ExpiredObjectDeleteMarker'));
+    });
+
+    it('coerces stringly-typed CFn scalars from hand-written templates', async () => {
+      // CFn is stringly typed and these legacy branches exist precisely for
+      // hand-written / imported templates, where `"365"` / `"true"` show up.
+      const rules = await putRules([
+        {
+          Id: 'stringly',
+          Status: 'Enabled',
+          Prefix: 's/',
+          NoncurrentVersionExpirationInDays: '365',
+        },
+        {
+          Id: 'stringly-marker',
+          Status: 'Enabled',
+          Prefix: 'sm/',
+          ExpiredObjectDeleteMarker: 'true',
+        },
+      ]);
+      expect(rules[0]!.NoncurrentVersionExpiration).toEqual({ NoncurrentDays: 365 });
+      expect(rules[1]!.Expiration).toEqual({ ExpiredObjectDeleteMarker: true });
+    });
+
+    it('combines rule-level tags with a size constraint under And', async () => {
+      // A real synth emits tags AND ObjectSizeGreaterThan at the rule level on
+      // one rule; that hits the multi-component `And` branch.
+      const rules = await putRules([
+        {
+          Id: 'tags-and-size',
+          Status: 'Enabled',
+          TagFilters: [{ Key: 'env', Value: 'prod' }],
+          ObjectSizeGreaterThan: 1024,
+          ExpirationInDays: 30,
+        },
+      ]);
+      expect(rules[0]!.Filter.And).toMatchObject({
+        Tags: [{ Key: 'env', Value: 'prod' }],
+        ObjectSizeGreaterThan: 1024,
+      });
+    });
+
+    it('applies the delete marker alongside an ExpirationDate-free rule', async () => {
+      const rules = await putRules([
+        {
+          Id: 'date-marker',
+          Status: 'Enabled',
+          Prefix: 'dm/',
+          ExpirationDate: '2030-01-01T00:00:00Z',
+          ExpiredObjectDeleteMarker: true,
+        },
+      ]);
+      // Date is set, so the marker must NOT be smuggled in beside it.
+      expect(rules[0]!.Expiration.Date).toBeInstanceOf(Date);
+      expect(rules[0]!.Expiration.ExpiredObjectDeleteMarker).toBeUndefined();
     });
   });
 

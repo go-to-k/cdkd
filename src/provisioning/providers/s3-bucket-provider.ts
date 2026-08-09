@@ -69,6 +69,35 @@ import type {
 } from '../../types/resource.js';
 
 /**
+ * A plain (non-array) object. `typeof x === 'object'` alone accepts arrays and
+ * `null`; a `Transition: []` or an unresolved intrinsic pushed through as a
+ * single transition entry makes S3 answer `MalformedXML` for the WHOLE
+ * lifecycle configuration, so the legacy singular readers screen with this.
+ */
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Coerce a CFn numeric to a finite number. CloudFormation is stringly typed —
+ * a hand-written or imported template (the audience the legacy lifecycle
+ * branches exist for) can carry `"365"` where the schema says number.
+ */
+function coerceCfnNumber(value: unknown): number | undefined {
+  if (value === undefined || value === null || value === '') return undefined;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : undefined;
+}
+
+/** Coerce a CFn boolean, which may arrive as the string `"true"` / `"false"`. */
+function coerceCfnBoolean(value: unknown): boolean | undefined {
+  if (typeof value === 'boolean') return value;
+  if (value === 'true') return true;
+  if (value === 'false') return false;
+  return undefined;
+}
+
+/**
  * SDK Provider for AWS::S3::Bucket
  *
  * Uses S3 SDK directly instead of CC API for synchronous bucket creation.
@@ -398,9 +427,26 @@ export class S3BucketProvider implements ResourceProvider {
       // whose ONLY action is the delete-marker cleanup produced no `Expiration`
       // at all and S3 rejects the action-less rule (issue #1388). S3 forbids
       // combining it with Days / Date, so it only fills an empty Expiration.
-      const ruleLevelDeleteMarker = rule['ExpiredObjectDeleteMarker'];
-      if (typeof ruleLevelDeleteMarker === 'boolean' && sdkRule.Expiration === undefined) {
-        sdkRule.Expiration = { ExpiredObjectDeleteMarker: ruleLevelDeleteMarker };
+      // Gate on whether the built `Expiration` actually carries a Days / Date
+      // rather than on its mere existence: the nested branch above emits an
+      // object with every member `undefined` for an empty / unresolved
+      // `Expiration`, so an existence check would drop the marker AND leave the
+      // rule action-less — the exact failure this block exists to prevent.
+      const ruleLevelDeleteMarker = coerceCfnBoolean(rule['ExpiredObjectDeleteMarker']);
+      if (ruleLevelDeleteMarker !== undefined) {
+        const exp = sdkRule.Expiration as Record<string, unknown> | undefined;
+        const hasDaysOrDate = exp?.['Days'] !== undefined || exp?.['Date'] !== undefined;
+        if (!hasDaysOrDate) {
+          sdkRule.Expiration = { ExpiredObjectDeleteMarker: ruleLevelDeleteMarker };
+        } else {
+          // S3 rejects ExpiredObjectDeleteMarker combined with Days / Date, so
+          // one of the two has to go. Warn instead of dropping in silence.
+          this.logger.warn(
+            `Lifecycle rule '${(rule['Id'] as string) ?? '<unnamed>'}' on ${bucketName} sets ` +
+              `ExpiredObjectDeleteMarker alongside an expiration Days/Date; S3 forbids ` +
+              `combining them, so the delete-marker cleanup was not applied.`
+          );
+        }
       }
 
       // NoncurrentVersionExpiration. The CFn schema ALSO still accepts the
@@ -413,8 +459,11 @@ export class S3BucketProvider implements ResourceProvider {
           NoncurrentDays: nve['NoncurrentDays'] as number | undefined,
           NewerNoncurrentVersions: nve['NewerNoncurrentVersions'] as number | undefined,
         };
-      } else if (typeof legacyNveDays === 'number') {
-        sdkRule.NoncurrentVersionExpiration = { NoncurrentDays: legacyNveDays };
+      } else if (coerceCfnNumber(legacyNveDays) !== undefined) {
+        // Coerced, not `typeof === 'number'`: CFn is stringly typed and this
+        // branch exists specifically for hand-written / imported templates,
+        // which is exactly where `"365"` shows up.
+        sdkRule.NoncurrentVersionExpiration = { NoncurrentDays: coerceCfnNumber(legacyNveDays) };
       }
 
       // NoncurrentVersionTransitions, plus the legacy singular
@@ -440,10 +489,19 @@ export class S3BucketProvider implements ResourceProvider {
       const singularNvt = rule['NoncurrentVersionTransition'] as
         | Record<string, unknown>
         | undefined;
-      const allNvts = [
-        ...(Array.isArray(nvts) ? nvts : []),
-        ...(singularNvt && typeof singularNvt === 'object' ? [singularNvt] : []),
-      ];
+      // The PLURAL array wins when both forms are present, matching the
+      // NoncurrentVersionExpiration policy 30 lines above. Concatenating them
+      // instead would be a REGRESSION: S3 rejects two transitions with the same
+      // StorageClass (`InvalidRequest: Found two transitions with the same
+      // storage class`) and fails the whole PutBucketLifecycleConfiguration,
+      // whereas pre-fix such a template deployed because the singular form was
+      // simply ignored.
+      const allNvts =
+        Array.isArray(nvts) && nvts.length > 0
+          ? nvts
+          : isPlainObject(singularNvt)
+            ? [singularNvt]
+            : [];
       if (allNvts.length > 0) {
         sdkRule.NoncurrentVersionTransitions = allNvts.map(toSdkNvt);
       }
@@ -460,12 +518,14 @@ export class S3BucketProvider implements ResourceProvider {
       });
       const transitions = rule['Transitions'] as Array<Record<string, unknown>> | undefined;
       const singularTransition = rule['Transition'] as Record<string, unknown> | undefined;
-      const allTransitions = [
-        ...(Array.isArray(transitions) ? transitions : []),
-        ...(singularTransition && typeof singularTransition === 'object'
-          ? [singularTransition]
-          : []),
-      ];
+      // Plural wins over the legacy singular — see the NVT note above for why
+      // concatenating is not safe.
+      const allTransitions =
+        Array.isArray(transitions) && transitions.length > 0
+          ? transitions
+          : isPlainObject(singularTransition)
+            ? [singularTransition]
+            : [];
       if (allTransitions.length > 0) {
         sdkRule.Transitions = allTransitions.map(toSdkTransition);
       }
@@ -2073,7 +2133,15 @@ export class S3BucketProvider implements ResourceProvider {
           if (r.NoncurrentVersionTransitions && r.NoncurrentVersionTransitions.length > 0) {
             out['NoncurrentVersionTransitions'] = r.NoncurrentVersionTransitions.map((nvt) => {
               const item: Record<string, unknown> = {};
-              if (nvt.NoncurrentDays !== undefined) item['NoncurrentDays'] = nvt.NoncurrentDays;
+              // Reverse-map to the CFn spelling `TransitionInDays`, matching
+              // the `Transitions` sibling 20 lines above. Emitting the SDK's
+              // `NoncurrentDays` here made `cdkd drift` report a permanent
+              // phantom diff on every versioned bucket with a noncurrent
+              // transition, because the template baseline carries
+              // `TransitionInDays` and `Rules` is compared array-wholesale.
+              // Latent until this PR: the write side never delivered the day
+              // count, so the two sides were both empty and agreed by accident.
+              if (nvt.NoncurrentDays !== undefined) item['TransitionInDays'] = nvt.NoncurrentDays;
               if (nvt.StorageClass !== undefined) item['StorageClass'] = nvt.StorageClass;
               if (nvt.NewerNoncurrentVersions !== undefined)
                 item['NewerNoncurrentVersions'] = nvt.NewerNoncurrentVersions;
