@@ -1,3 +1,10 @@
+## [0.278.13](https://github.com/go-to-k/cdkd/compare/v0.278.12...v0.278.13) (2026-08-09)
+
+
+### Bug Fixes
+
+* **s3:** read every lifecycle rule-level key and translate the noncurrent transition day field ([#1426](https://github.com/go-to-k/cdkd/issues/1426)) ([768cd44](https://github.com/go-to-k/cdkd/commit/768cd44b9a04c1e9e450aa4d45d4dd10a61bf57d))
+
 ## [0.278.12](https://github.com/go-to-k/cdkd/compare/v0.278.11...v0.278.12) (2026-08-09)
 
 
