@@ -89,7 +89,35 @@ esac
 # Repo opt-in, matching branch-gate.sh: only repos carrying the
 # markgate convention participate.
 top=$(git -C "$probe_dir" rev-parse --show-toplevel 2>/dev/null || echo "")
+
+# A path INSIDE the git dir has no work tree, so `--show-toplevel` fails
+# there and the opt-in check below used to fall through to a pass. The one
+# path that matters is the `session-owner` sentinel itself — which is the
+# LOCK. So the lock was the single file the lock did not protect, and
+# "take another session's worktree" was a one-line Write to it.
+#
+# That is not hypothetical: on 2026-08-10 a session found a sentinel owned
+# by another session, guessed the owner was dead, Wrote its own id over the
+# sentinel, and worked a worktree another live agent was driving. The
+# blocking branch below did its job for every ordinary file and was simply
+# routed around here.
+#
+# Recover the worktree root from `<git dir>/gitdir` (which points at the
+# linked worktree's `.git` file) so the opt-in still consults the WORKTREE's
+# own `.markgate.yml`, matching the non-sentinel path.
+if [ -z "$top" ] && [ -f "$git_dir/gitdir" ]; then
+  linked_dotgit=$(cat "$git_dir/gitdir" 2>/dev/null || echo "")
+  [ -n "$linked_dotgit" ] && top=$(dirname "$linked_dotgit")
+fi
 [ -n "$top" ] && [ -f "$top/.markgate.yml" ] || exit 0
+
+# Is this write targeting the sentinel itself? Used only to tailor the
+# refusal message — the ownership logic below is deliberately identical,
+# so claiming an unowned or stale worktree by writing the file still works.
+sentinel_write=0
+case "$target" in
+  */worktrees/*/session-owner) sentinel_write=1 ;;
+esac
 
 sentinel="$git_dir/session-owner"
 worktree_name=$(basename "$git_dir")
@@ -129,7 +157,11 @@ if [ -n "$claimed_at" ]; then
   fi
 fi
 
-echo "Blocked by worktree-owner-gate: '$worktree_name' is owned by another session." >&2
+if [ "$sentinel_write" = "1" ]; then
+  echo "Blocked by worktree-owner-gate: refusing to overwrite the ownership sentinel of '$worktree_name'." >&2
+else
+  echo "Blocked by worktree-owner-gate: '$worktree_name' is owned by another session." >&2
+fi
 echo "  worktree:      $top" >&2
 echo "  owner session: $owner (claimed $claimed_at)" >&2
 echo "  your session:  $session" >&2
@@ -139,9 +171,24 @@ echo "Two sessions editing one worktree is how uncommitted work gets destroyed" 
 echo "(2026-08-09: a session reverted another's finished, tested fix because it" >&2
 echo "could not attribute the diff)." >&2
 echo "" >&2
+
+if [ "$sentinel_write" = "1" ]; then
+  echo "This file IS the lock. Writing it is taking the worktree, not editing a file." >&2
+  echo "" >&2
+fi
+
+echo "The claim above is younger than the ${OWNER_TTL_HOURS}h TTL, so the owning session is" >&2
+echo "presumed LIVE. You cannot tell a live session from a dead one by looking:" >&2
+echo "a recent claim, a stale-looking diff, and a /clear you did not observe all" >&2
+echo "produce the same evidence. Do NOT infer that the owner is gone (2026-08-10:" >&2
+echo "a session did exactly that, took this sentinel, and worked a lane another" >&2
+echo "live agent was driving)." >&2
+echo "" >&2
 echo "Use your OWN worktree for this lane:" >&2
 echo "  git worktree add .claude/worktrees/<branch> -b <branch> origin/main" >&2
 echo "" >&2
-echo "If the other session is genuinely finished, take ownership explicitly:" >&2
-echo "  rm \"$sentinel\"" >&2
+echo "If you believe the owner is finished, ASK THE MAINTAINER FIRST -- especially" >&2
+echo "when the worktree has uncommitted changes (check: git -C \"$top\" status --short)." >&2
+echo "Only after they confirm, hand off deliberately:" >&2
+echo "  rm \"$sentinel\"          # or re-run with CDKD_SKIP_WORKTREE_OWNER_GATE=1" >&2
 exit 2
