@@ -63,9 +63,46 @@ export class LogsLogGroupProvider implements ResourceProvider {
         'DataProtectionPolicy',
         'LogGroupClass',
         'FieldIndexPolicies',
-        'ResourcePolicyDocument',
         'DeletionProtectionEnabled',
         'BearerTokenAuthenticationEnabled',
+      ]),
+    ],
+  ]);
+
+  /**
+   * Issue #1412. `ResourcePolicyDocument` used to sit in
+   * {@link handledProperties} purely to keep the log group off the Cloud
+   * Control fallback path — but nothing ever wired it, so a template setting
+   * it deployed "successfully" with the policy silently discarded (the
+   * #1392 silent-drop class the `handled-property-wiring` critic exists to
+   * catch).
+   *
+   * It cannot be honestly wired from here. The value maps to the SEPARATE
+   * `AWS::Logs::ResourcePolicy` resource type, whose CloudWatch Logs API
+   * counterpart (`PutResourcePolicy` / `DeleteResourcePolicy`) is
+   * **account-wide**, not per-log-group: the policy is keyed by a policy NAME
+   * in the account, not by the log group. Owning it from the log group's
+   * lifecycle would mean inventing an ownership/lifecycle answer cdkd has no
+   * basis for — which policy name to claim, what to do on delete when the
+   * account-wide policy may be shared, and how to resolve two log groups
+   * declaring conflicting documents. Managing the sibling
+   * `AWS::Logs::ResourcePolicy` resource is a separate feature (option 1 in
+   * issue #1412), deliberately not attempted here.
+   *
+   * Declaring the drop instead makes the omission visible: the #614 routing
+   * pass sends any log group whose template sets `ResourcePolicyDocument`
+   * through the Cloud Control fallback, where AWS's own resource handler
+   * applies the policy. This provider does NOT set `disableCcApiFallback`,
+   * so that route is always available and no template is hard-rejected.
+   */
+  unhandledByDesign = new Map<string, ReadonlyMap<string, string>>([
+    [
+      'AWS::Logs::LogGroup',
+      new Map<string, string>([
+        [
+          'ResourcePolicyDocument',
+          'covered by the separate account-wide AWS::Logs::ResourcePolicy resource type; logs:PutResourcePolicy is account-scoped, not per-log-group, so it has no CreateLogGroup / PutRetentionPolicy counterpart — routed via Cloud Control instead',
+        ],
       ]),
     ],
   ]);
@@ -200,11 +237,6 @@ export class LogsLogGroupProvider implements ResourceProvider {
             })
           );
         }
-
-        // Note: ResourcePolicyDocument is declared in handledProperties to
-        // prevent CC API fallback but is not yet wired into create/update —
-        // it maps to the separate AWS::Logs::ResourcePolicy resource type
-        // (account-wide, not per-log-group).
       } catch (innerError) {
         if (createdNewLogGroup) {
           try {
@@ -648,9 +680,11 @@ export class LogsLogGroupProvider implements ResourceProvider {
    * `deletionProtectionEnabled` / `bearerTokenAuthenticationEnabled`),
    * and `FieldIndexPolicies` (via `DescribeIndexPolicies`, filtered to
    * log-group-level policies and JSON-parsed). Still out of scope:
-   * `ResourcePolicyDocument` (managed by the separate
-   * `AWS::Logs::ResourcePolicy` resource type — account-wide, not
-   * per-log-group).
+   * `ResourcePolicyDocument`, which is declared in
+   * {@link unhandledByDesign} (issue #1412) — it is managed by the separate
+   * account-wide `AWS::Logs::ResourcePolicy` resource type, so a log group
+   * whose template sets it routes via Cloud Control rather than through this
+   * provider at all.
    *
    * Write-side coverage: `FieldIndexPolicies` is applied via
    * `PutIndexPolicy` (CloudWatch Logs allows at most one log-group-level

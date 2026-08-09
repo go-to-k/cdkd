@@ -143,7 +143,6 @@ export class EC2Provider implements ResourceProvider {
         'SecondaryAllocationIds',
         'SecondaryPrivateIpAddresses',
         'SecondaryPrivateIpAddressCount',
-        'MaxDrainDurationSeconds',
         'Tags',
       ]),
     ],
@@ -279,6 +278,28 @@ export class EC2Provider implements ResourceProvider {
         [
           'VpcId',
           'AWS derives the VPC from SubnetId; the ec2:CreateNatGateway API has no VpcId parameter',
+        ],
+        [
+          // Issue #1411. Verified against the installed @aws-sdk/client-ec2:
+          // `CreateNatGatewayRequest` (models/models_1.d.ts) has NO
+          // `MaxDrainDurationSeconds` member, and EC2 ships no
+          // `ModifyNatGateway*` operation at all. The ONLY two SDK inputs
+          // carrying the field are `DisassociateNatGatewayAddressRequest`
+          // (models/models_5.d.ts) and `UnassignPrivateNatGatewayAddressRequest`
+          // (models/models_7.d.ts) — i.e. it is a per-call drain timeout for
+          // RELEASING secondary addresses, which is why the CFn registry schema
+          // lists it under `writeOnlyProperties` (no read handler can return
+          // it). cdkd's NatGateway update path rejects every property change
+          // (`ResourceUpdateNotSupportedError`, see `updateNatGateway`), so it
+          // never issues those two calls and has nowhere to deliver the value.
+          // It is NOT modelled as a replacement trigger either: the registry
+          // schema does not list it under `createOnlyProperties`, so recreating
+          // the gateway on a drain-timeout change would diverge from
+          // CloudFormation and needlessly break the data plane. Declaring the
+          // silent drop here routes any template that sets it through the #614
+          // Cloud Control fallback, where AWS's own resource handler applies it.
+          'MaxDrainDurationSeconds',
+          'write-only address-drain timeout with no CreateNatGateway member and no NAT gateway modify API; only ec2:DisassociateNatGatewayAddress / UnassignPrivateNatGatewayAddress accept it, and cdkd rejects NatGateway updates outright — routed via Cloud Control instead',
         ],
       ]),
     ],

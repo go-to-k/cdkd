@@ -2,11 +2,11 @@
   "schemaVersion": 1,
   "summary": {
     "classifiedCount": 84,
-    "declaredProperties": 1063,
+    "declaredProperties": 1061,
     "wiredProperties": 1059,
-    "wired": 80,
+    "wired": 82,
     "gap": 0,
-    "allowListed": 4,
+    "allowListed": 2,
     "classesWithBlindSpots": 19
   },
   "classes": [
@@ -5307,8 +5307,8 @@
     {
       "file": "ec2-provider.ts",
       "className": "EC2Provider",
-      "bucket": "allow-listed",
-      "declaredCount": 65,
+      "bucket": "wired",
+      "declaredCount": 64,
       "properties": [
         {
           "name": "AllocationId",
@@ -5909,16 +5909,6 @@
             "update",
             "updateSubnet"
           ]
-        },
-        {
-          "name": "MaxDrainDurationSeconds",
-          "status": "allow-listed",
-          "types": [
-            "AWS::EC2::NatGateway"
-          ],
-          "evidence": [],
-          "seededBy": [],
-          "rationale": "KNOWN GAP (issue #1411): AWS::EC2::NatGateway.MaxDrainDurationSeconds is declared handled but read nowhere in src/ — a real silent drop found by this critic on introduction; remove this entry when the provider wires it"
         },
         {
           "name": "MetadataOptions",
@@ -13364,8 +13354,8 @@
     {
       "file": "logs-loggroup-provider.ts",
       "className": "LogsLogGroupProvider",
-      "bucket": "allow-listed",
-      "declaredCount": 10,
+      "bucket": "wired",
+      "declaredCount": 9,
       "properties": [
         {
           "name": "BearerTokenAuthenticationEnabled",
@@ -13475,16 +13465,6 @@
           "seededBy": [
             "create"
           ]
-        },
-        {
-          "name": "ResourcePolicyDocument",
-          "status": "allow-listed",
-          "types": [
-            "AWS::Logs::LogGroup"
-          ],
-          "evidence": [],
-          "seededBy": [],
-          "rationale": "KNOWN GAP (issue #1412, pre-existing, documented in-code): declared handled only to suppress CC API fallback; the value maps to the separate account-wide AWS::Logs::ResourcePolicy type and is not wired into create/update"
         },
         {
           "name": "RetentionInDays",

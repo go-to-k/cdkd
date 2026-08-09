@@ -266,22 +266,12 @@ export const HANDLED_WIRING_ALLOW_LIST: ReadonlyMap<string, AllowListEntry> = ne
   string,
   AllowListEntry
 >([
-  [
-    allowKey('EC2Provider', 'MaxDrainDurationSeconds'),
-    {
-      // KNOWN GAP (real #1392-class silent drop), found by this critic's FIRST
-      // run against the tree. `AWS::EC2::NatGateway.MaxDrainDurationSeconds` is
-      // declared handled but the string appears nowhere else in `src/` — not in
-      // CreateNatGateway, not in update, not in readCurrentState. Seeded here so
-      // CI goes green on the NEW class only, mirroring how
-      // `gen-sdk-attr-coverage.ts` seeded `AWS::Lambda::EventSourceMapping`;
-      // deliberately NOT fixed in the PR that introduces the critic (that PR
-      // must not touch `src/`, and a critic whose introduction also changes
-      // provider behavior cannot be reviewed as a critic).
-      rationale:
-        'KNOWN GAP (issue #1411): AWS::EC2::NatGateway.MaxDrainDurationSeconds is declared handled but read nowhere in src/ — a real silent drop found by this critic on introduction; remove this entry when the provider wires it',
-    },
-  ],
+  // NOTE: `EC2Provider#MaxDrainDurationSeconds` (issue #1411) and
+  // `LogsLogGroupProvider#ResourcePolicyDocument` (issue #1412) — the two KNOWN
+  // GAP entries this critic's first real-tree run seeded — are GONE: both
+  // properties moved out of `handledProperties` into `unhandledByDesign`, so
+  // they are no longer a wiring claim at all and the stale-entry check now
+  // enforces that they stay out.
   [
     allowKey('IAMAccessKeyProvider', 'Serial'),
     {
@@ -294,17 +284,6 @@ export const HANDLED_WIRING_ALLOW_LIST: ReadonlyMap<string, AllowListEntry> = ne
       // using `serial`.
       rationale:
         'NOT-A-BUG: Serial is a createOnly REPLACEMENT TRIGGER with no IAM API counterpart; the diff layer implements it, and moving it to unhandledByDesign would hard-reject templates via the #614 viability guard',
-    },
-  ],
-  [
-    allowKey('LogsLogGroupProvider', 'ResourcePolicyDocument'),
-    {
-      // KNOWN GAP, already documented in-code at the create() site: the property
-      // maps to the SEPARATE account-wide `AWS::Logs::ResourcePolicy` resource
-      // type, and is declared handled purely to keep the log group off the CC
-      // API fallback path. Pre-existing, not introduced by this critic.
-      rationale:
-        'KNOWN GAP (issue #1412, pre-existing, documented in-code): declared handled only to suppress CC API fallback; the value maps to the separate account-wide AWS::Logs::ResourcePolicy type and is not wired into create/update',
     },
   ],
   [

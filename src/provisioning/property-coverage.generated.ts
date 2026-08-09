@@ -967,7 +967,6 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
       handled: new Set<string>([
         'AllocationId',
         'ConnectivityType',
-        'MaxDrainDurationSeconds',
         'PrivateIpAddress',
         'SecondaryAllocationIds',
         'SecondaryPrivateIpAddressCount',
@@ -978,6 +977,10 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
       silentDrop: new Map<string, string>([
         ['AvailabilityMode', 'not yet implemented by cdkd'],
         ['AvailabilityZoneAddresses', 'not yet implemented by cdkd'],
+        [
+          'MaxDrainDurationSeconds',
+          'write-only address-drain timeout with no CreateNatGateway member and no NAT gateway modify API; only ec2:DisassociateNatGatewayAddress / UnassignPrivateNatGatewayAddress accept it, and cdkd rejects NatGateway updates outright — routed via Cloud Control instead',
+        ],
         [
           'VpcId',
           'AWS derives the VPC from SubnetId; the ec2:CreateNatGateway API has no VpcId parameter',
@@ -1986,11 +1989,15 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'KmsKeyId',
         'LogGroupClass',
         'LogGroupName',
-        'ResourcePolicyDocument',
         'RetentionInDays',
         'Tags',
       ]),
-      silentDrop: new Map<string, string>(),
+      silentDrop: new Map<string, string>([
+        [
+          'ResourcePolicyDocument',
+          'covered by the separate account-wide AWS::Logs::ResourcePolicy resource type; logs:PutResourcePolicy is account-scoped, not per-log-group, so it has no CreateLogGroup / PutRetentionPolicy counterpart — routed via Cloud Control instead',
+        ],
+      ]),
     },
   ],
   [

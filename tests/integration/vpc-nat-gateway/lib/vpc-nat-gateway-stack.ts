@@ -3,6 +3,21 @@ import { Construct } from 'constructs';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 
 /**
+ * The `MaxDrainDurationSeconds` value under test. Exported so `verify.sh` and
+ * this stack cannot drift: the fixture greps this literal rather than
+ * re-typing it.
+ *
+ * NOTE for anyone extending the assertion: the value is NOT readable back from
+ * AWS. The CloudFormation registry schema lists
+ * `/properties/MaxDrainDurationSeconds` under `writeOnlyProperties`, and no EC2
+ * API (`DescribeNatGateways` included) returns it — so `verify.sh` asserts the
+ * ROUTING consequence (`provisionedBy == 'cc-api'`) plus a live, available NAT
+ * gateway, which is the strongest observable evidence that the value reached
+ * AWS's own resource handler instead of being dropped.
+ */
+export const DRAIN_DURATION_SECONDS = 120;
+
+/**
  * Integration test for the `AWS::EC2::NatGateway` SDK provider.
  *
  * The stack is the smallest shape that exercises every code path in
@@ -24,6 +39,15 @@ import * as ec2 from 'aws-cdk-lib/aws-ec2';
  * `vpc-lambda-cr-race` already covers. A misbehaving NAT delete
  * (DependencyViolation) still surfaces here because the VPC and
  * Subnets that depend on it have to come down too.
+ *
+ * A SECOND, L1-only NAT gateway (`DrainNatGateway`) covers issue #1411:
+ * `MaxDrainDurationSeconds` is declared `unhandledByDesign`, so a NAT
+ * gateway whose template sets it must auto-route via Cloud Control API
+ * (#614) instead of being silently dropped by the SDK provider. It is a
+ * separate resource on purpose — the L2 gateway above must stay on the
+ * SDK path so this fixture keeps covering `CreateNatGateway` /
+ * `waitUntilNatGatewayAvailable` / `DeleteNatGateway`, and the two
+ * together assert heterogeneous routing inside one stack.
  */
 export class VpcNatGatewayStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -47,9 +71,35 @@ export class VpcNatGatewayStack extends cdk.Stack {
       ],
     });
 
+    // Issue #1411 coverage. `MaxDrainDurationSeconds` is not exposed by any
+    // CDK L2 (`ec2.Vpc` / `NatProvider.gateway()` have no such prop), so this
+    // is an L1 `CfnNatGateway` rather than an L2 escape hatch — per the repo's
+    // "L1 over L2 override for a backfill fixture" convention, the L1 shows the
+    // exact CFn shape under test with nothing synthesized around it.
+    //
+    // `connectivityType: 'private'` keeps it EIP-free (a public NAT would need
+    // a second Elastic IP allocation for no added coverage). It is deliberately
+    // NOT wired into any route table: the assertion is about ROUTING OF THE
+    // PROVISIONING CALL (SDK vs Cloud Control), not about NAT data-plane
+    // behavior, and an unused private NAT still exercises the full CC
+    // create/delete round trip.
+    const drainNat = new ec2.CfnNatGateway(this, 'DrainNatGateway', {
+      subnetId: vpc.privateSubnets[0]!.subnetId,
+      connectivityType: 'private',
+      maxDrainDurationSeconds: DRAIN_DURATION_SECONDS,
+      tags: [{ key: 'Name', value: 'cdkd-vpc-nat-gateway-drain' }],
+    });
+
     new cdk.CfnOutput(this, 'VpcId', {
       value: vpc.vpcId,
       description: 'VPC ID (NAT Gateway lives in the public subnet of this VPC)',
     });
+
+    new cdk.CfnOutput(this, 'DrainNatGatewayId', {
+      value: drainNat.ref,
+      description:
+        'NAT Gateway ID of the MaxDrainDurationSeconds gateway (issue #1411 — must be provisioned via Cloud Control API)',
+    });
   }
 }
+
