@@ -143,6 +143,106 @@ by `tests/unit/scripts/integ-verify-version-literals.test.ts` (classifier:
 `scripts/check-integ-version-literals.ts`); user-facing writeup in
 [docs/testing.md](../../docs/testing.md).
 
+### `verify.sh` must not call an AWS-CLI-CUSTOMIZED command (mandatory)
+
+Some `aws` subcommands are not plain API pass-throughs — the AWS CLI wraps them
+in an interactive customization. Run from a non-interactive shell (an integ
+`verify.sh`, a background task, CI) they print
+
+```text
+Warning: Input is not a terminal (fd=0).
+aws: [ERROR]: [Errno 22] Invalid argument
+```
+
+and, without a `</dev/null`, HANG instead of returning. Verified 2026-08-09 on
+`aws emr list-instance-groups`: `--no-paginate --no-cli-pager </dev/null` does
+NOT help. The `emr` family is the known offender (`create-cluster`, `ssh`,
+`socks`, the `list-instance-*` commands); assume any `aws emr` verb is suspect
+until proven otherwise, and re-probe when adding a fixture for a new service.
+
+**Probe before you rely on it.** Run the candidate against a bogus id with a
+hard timeout; a plain API command answers with a validation / not-found error
+in under a second, a customized one hangs or emits the `Errno 22` line above.
+
+**When the command is customized, call the SDK directly** rather than reaching
+for a different CLI verb that happens to work but returns less. The repo root
+already depends on every `@aws-sdk/client-*` cdkd uses, so a `node
+--input-type=module -e` one-liner from `REPO_ROOT` needs no extra install, and
+its response keys are the SDK's (PascalCase) shape:
+
+```bash
+REPO_ROOT="${PWD}/../../.."
+list_instance_groups_json() { # $1 = cluster id -> JSON array of InstanceGroups
+  ( cd "${REPO_ROOT}" && REGION="${REGION}" node --input-type=module -e "
+import { EMRClient, ListInstanceGroupsCommand } from '@aws-sdk/client-emr';
+const client = new EMRClient({ region: process.env.REGION });
+const groups = [];
+let marker;
+do {
+  const res = await client.send(
+    new ListInstanceGroupsCommand({ ClusterId: process.argv[1], Marker: marker })
+  );
+  groups.push(...(res.InstanceGroups ?? []));
+  marker = res.Marker;
+} while (marker);
+process.stdout.write(JSON.stringify(groups));
+" "$1" ) || return 1
+}
+```
+
+Two things in that shape are load-bearing, not decoration. The `|| return 1`
+propagates a node/SDK failure to the caller's `set -e` — without it an empty
+result silently satisfies a `// empty`-defaulted `jq` assertion (the
+gone-probe rule's failure mode, one layer up). And the `Marker` loop matches
+whatever pagination the provider under test does; a partial first page is a
+silent false pass. Reference implementations:
+`tests/integration/emr-cluster/verify.sh` and
+`tests/integration/emr-instance-configs/verify.sh`.
+
+A pager invoked non-interactively is a second route to the same hang, so
+`export AWS_PAGER=""` near the top of a fixture is cheap insurance. This is a
+recommendation for NEW and affected fixtures, not a tree-wide invariant — most
+existing fixtures do not set it and are fine, because the hang only bites the
+customized commands. `tests/integration/emr-instance-configs/verify.sh` is the
+reference.
+
+NOT mechanically enforced yet — a lint over `tests/integration/*/verify.sh` is
+tracked in issue
+[#1402](https://github.com/go-to-k/cdkd/issues/1402), so until then this is a
+read-it-and-follow-it rule. User-facing writeup in
+[docs/testing.md](../../docs/testing.md).
+
+### `verify.sh` list readbacks must be order-insensitive (mandatory)
+
+AWS does not preserve the submitted order of list-valued members on readback.
+An assertion that string-compares a joined list against the submitted order is
+flaky, and its failure message ACCUSES THE FIX — the worst kind of false
+negative. Verified 2026-08-09 on the `lambda-esm-self-managed-kafka` fixture:
+cdkd sent `Endpoints.KAFKA_BOOTSTRAP_SERVERS = [b-1…, b-2…]`,
+`list-event-source-mappings` returned `[b-2…, b-1…]`, and the assertion
+reported "issue #1384 NOT closed" while the fix was working perfectly.
+
+Sort BOTH sides unless the list is genuinely order-significant:
+
+```bash
+--query "join(' ', sort(Path.To.List || \`[]\`))"
+```
+
+(The `|| \`[]\`` coalesce is the separate null-list guard the gone-probe rule
+covers — keep both.)
+
+This is the integ-side twin of `src/analyzer/drift-normalize.ts`, which
+canonicalizes tag lists and resource-id/ARN arrays on BOTH comparison sides for
+exactly this reason. The same judgment call applies: a list that IS
+order-significant (DNS resolver lists, preference orders — see
+`getDriftUnorderedPaths`) must stay unsorted, because sorting it would HIDE a
+real regression.
+
+NOT mechanically enforced — whether a given list is order-significant is a
+judgment call a lint cannot make, so this one stays a read-it-and-follow-it
+rule by design. User-facing writeup in
+[docs/testing.md](../../docs/testing.md).
+
 ### Fixture stateful L2s need an explicit removalPolicy (mandatory)
 
 Stateful CDK L2 constructs (`kinesis.Stream`, `dynamodb.Table`/`TableV2`,
