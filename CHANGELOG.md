@@ -1,3 +1,10 @@
+## [0.278.6](https://github.com/go-to-k/cdkd/compare/v0.278.5...v0.278.6) (2026-08-09)
+
+
+### Bug Fixes
+
+* **ecr:** wire ImageTagMutabilityExclusionFilters onto the create and mutability calls ([#1406](https://github.com/go-to-k/cdkd/issues/1406)) ([5518934](https://github.com/go-to-k/cdkd/commit/5518934f9d76bbbb665b9bff82deef3a600296e9))
+
 ## [0.278.5](https://github.com/go-to-k/cdkd/compare/v0.278.4...v0.278.5) (2026-08-09)
 
 
