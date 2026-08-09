@@ -1073,4 +1073,135 @@ describe('DynamoDBGlobalTable GSI throughput translation (issue #1387)', () => {
       ]);
     });
   });
+
+  /**
+   * Issue #1434: the TABLE-level sibling of the per-GSI reset #1423 fixed.
+   * Removing `WriteOnDemandThroughputSettings` never set `flatChanged`, so no
+   * `UpdateTable` went out and the old ceiling stayed live in AWS while cdkd
+   * reported success.
+   *
+   * The sentinel is the same `-1`, but that is NOT an assumption carried over
+   * from #1423 — reset semantics are field-specific, and a live probe
+   * (us-east-1, 2026-08-09) confirmed the table-level behavior separately:
+   * `OnDemandThroughput: {MaxWriteRequestUnits: -1}` was accepted and
+   * `DescribeTable` then returned `{MaxReadRequestUnits: 100}` — the dropped
+   * member cleared, the untouched sibling preserved. The same probe found the
+   * REPLICA overrides behave differently (`-1` is stored literally there), which
+   * is why this change deliberately covers the table level only.
+   */
+  describe('table-level on-demand ceiling reset (issue #1434)', () => {
+    /** The flat step-3 UpdateTable: no per-GSI and no per-replica actions. */
+    const flatUpdate = (): UpdateTableCommand | undefined =>
+      mockSend.mock.calls
+        .map((c) => c[0])
+        .find(
+          (c): c is UpdateTableCommand =>
+            c instanceof UpdateTableCommand &&
+            c.input.GlobalSecondaryIndexUpdates === undefined &&
+            c.input.ReplicaUpdates === undefined
+        );
+
+    it('resets a REMOVED table-level write ceiling with -1 instead of no-oping', async () => {
+      const previous = structuredClone(ON_DEMAND_TABLE_PROPS) as Record<string, unknown>;
+      const next = structuredClone(ON_DEMAND_TABLE_PROPS) as Record<string, unknown>;
+      delete next['WriteOnDemandThroughputSettings'];
+
+      await provider.update('OnDemand', 'od-table', RESOURCE_TYPE, next, previous);
+
+      expect(flatUpdate()?.input.OnDemandThroughput).toEqual({ MaxWriteRequestUnits: -1 });
+    });
+
+    it('resets when the block survives but its member was dropped (partial removal)', async () => {
+      // The shape the #1433 review caught on the per-GSI side: a branch keyed
+      // on "the whole block disappeared" misses the likelier single-member
+      // edit. Pinned here so the table-level path cannot regress into it.
+      const previous = structuredClone(ON_DEMAND_TABLE_PROPS) as Record<string, unknown>;
+      const next = structuredClone(ON_DEMAND_TABLE_PROPS) as Record<string, unknown>;
+      next['WriteOnDemandThroughputSettings'] = {};
+
+      await provider.update('OnDemand', 'od-table', RESOURCE_TYPE, next, previous);
+
+      expect(flatUpdate()?.input.OnDemandThroughput).toEqual({ MaxWriteRequestUnits: -1 });
+    });
+
+    it('sends the NEW value (never the sentinel) when the ceiling merely changed', async () => {
+      const previous = structuredClone(ON_DEMAND_TABLE_PROPS) as Record<string, unknown>;
+      const next = structuredClone(ON_DEMAND_TABLE_PROPS) as Record<string, unknown>;
+      next['WriteOnDemandThroughputSettings'] = { MaxWriteRequestUnits: 500 };
+
+      await provider.update('OnDemand', 'od-table', RESOURCE_TYPE, next, previous);
+
+      expect(flatUpdate()?.input.OnDemandThroughput).toEqual({ MaxWriteRequestUnits: 500 });
+    });
+
+    it('coerces the stringly-typed CFn number rather than passing it through', async () => {
+      const previous = structuredClone(ON_DEMAND_TABLE_PROPS) as Record<string, unknown>;
+      const next = structuredClone(ON_DEMAND_TABLE_PROPS) as Record<string, unknown>;
+      next['WriteOnDemandThroughputSettings'] = { MaxWriteRequestUnits: '500' };
+
+      await provider.update('OnDemand', 'od-table', RESOURCE_TYPE, next, previous);
+
+      expect(flatUpdate()?.input.OnDemandThroughput).toEqual({ MaxWriteRequestUnits: 500 });
+    });
+
+    it('does NOT reset a PRESENT-but-unresolvable value (it must still reach AWS)', async () => {
+      // Caught reviewing this change: gating the reset on "did it coerce?"
+      // instead of "is the key there?" routes an unresolved intrinsic into the
+      // reset branch, silently CLEARING the ceiling the template was trying to
+      // set. The pre-existing loud failure is the correct outcome, so the
+      // value must still be forwarded rather than swallowed.
+      const previous = structuredClone(ON_DEMAND_TABLE_PROPS) as Record<string, unknown>;
+      const next = structuredClone(ON_DEMAND_TABLE_PROPS) as Record<string, unknown>;
+      next['WriteOnDemandThroughputSettings'] = {
+        MaxWriteRequestUnits: { Ref: 'SomeUnresolvedParameter' },
+      };
+
+      await provider.update('OnDemand', 'od-table', RESOURCE_TYPE, next, previous);
+
+      const sent = flatUpdate()?.input.OnDemandThroughput;
+      expect(sent).toBeDefined();
+      expect(sent?.MaxWriteRequestUnits).not.toBe(-1);
+    });
+
+    it('does NOT reset on a PROVISIONED -> PROVISIONED drop (no flip, but no live ceiling either)', async () => {
+      // Reviewer catch on this PR. A "not flipping" gate is satisfied by
+      // PROVISIONED -> PROVISIONED too, so a provisioned template that carried
+      // the block (legal in the CFn schema, reachable from hand-authored L1)
+      // and drops it would send an on-demand field on a provisioned table and
+      // earn a ValidationException — a NEW failure where the pre-fix behavior
+      // was a correct no-op.
+      const previous = structuredClone(ON_DEMAND_TABLE_PROPS) as Record<string, unknown>;
+      previous['BillingMode'] = 'PROVISIONED';
+      const next = structuredClone(previous) as Record<string, unknown>;
+      delete next['WriteOnDemandThroughputSettings'];
+
+      await provider.update('OnDemand', 'od-table', RESOURCE_TYPE, next, previous);
+
+      expect(flatUpdate()?.input.OnDemandThroughput).toBeUndefined();
+    });
+
+    it('does NOT reset while the billing mode is flipping to PROVISIONED', async () => {
+      // Dropping the on-demand block on the way to PROVISIONED is the natural
+      // template edit, not a request to clear a ceiling — and the flip is
+      // step 4's own UpdateTable. Emitting a reset here would send a
+      // meaningless on-demand field on a provisioned table.
+      const previous = structuredClone(ON_DEMAND_TABLE_PROPS) as Record<string, unknown>;
+      const next = structuredClone(ON_DEMAND_TABLE_PROPS) as Record<string, unknown>;
+      delete next['WriteOnDemandThroughputSettings'];
+      next['BillingMode'] = 'PROVISIONED';
+
+      await provider.update('OnDemand', 'od-table', RESOURCE_TYPE, next, previous);
+
+      expect(flatUpdate()?.input.OnDemandThroughput).toBeUndefined();
+    });
+
+    it('emits no on-demand field at all on a no-change redeploy', async () => {
+      const previous = structuredClone(ON_DEMAND_TABLE_PROPS) as Record<string, unknown>;
+      const next = structuredClone(ON_DEMAND_TABLE_PROPS) as Record<string, unknown>;
+
+      await provider.update('OnDemand', 'od-table', RESOURCE_TYPE, next, previous);
+
+      expect(flatUpdate()?.input.OnDemandThroughput).toBeUndefined();
+    });
+  });
 });

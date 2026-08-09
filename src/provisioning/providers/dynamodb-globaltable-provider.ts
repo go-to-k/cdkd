@@ -776,6 +776,32 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         );
       }
 
+      // Resolved BEFORE the flat-field block below (step 4 re-reads them for
+      // the flip itself). The on-demand reset in that block has to know the
+      // billing mode on BOTH sides — see `onDemandCeilingLive` below.
+      const oldBilling =
+        (previousProperties['BillingMode'] as string | undefined) ?? 'PAY_PER_REQUEST';
+      const newBilling = (properties['BillingMode'] as string | undefined) ?? 'PAY_PER_REQUEST';
+      // The table-level on-demand ceiling is only a live, resettable setting
+      // when the table is on-demand on BOTH sides of this deploy.
+      //
+      // A "not flipping" test is NOT enough, and getting that wrong introduces
+      // a failure where none existed: PROVISIONED -> PROVISIONED is also "not
+      // flipping", so a provisioned template that carried
+      // `WriteOnDemandThroughputSettings` (legal in the CFn schema; reachable
+      // from hand-authored L1 and from state written before this fix) and then
+      // drops it would send `OnDemandThroughput` on a PROVISIONED table and
+      // earn a ValidationException — where the pre-fix behavior was a correct
+      // no-op, since the ceiling was never live there in the first place.
+      //
+      // Requiring PAY_PER_REQUEST on both sides subsumes the flip suppression
+      // too: a flip makes the two sides differ, so at least one is not
+      // PAY_PER_REQUEST. Dropping the block while moving to PROVISIONED is the
+      // natural template edit, not a clear request, and step 4's flip owns
+      // that call.
+      const onDemandCeilingLive =
+        oldBilling === 'PAY_PER_REQUEST' && newBilling === 'PAY_PER_REQUEST';
+
       // 3. Non-conflicting flat fields in one combined UpdateTable.
       // AWS allows combining these in a single call because they don't
       // conflict with each other or with each other's modes.
@@ -876,10 +902,36 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         const wodts = properties['WriteOnDemandThroughputSettings'] as
           | Record<string, unknown>
           | undefined;
-        if (wodts?.['MaxWriteRequestUnits'] !== undefined) {
-          flatUpdate.OnDemandThroughput = {
-            MaxWriteRequestUnits: Number(wodts['MaxWriteRequestUnits']),
-          };
+        const previousWodts = previousProperties['WriteOnDemandThroughputSettings'] as
+          | Record<string, unknown>
+          | undefined;
+        // Gate on the RAW presence of the key, not on whether it coerces:
+        // "present but unparseable" (an unresolved intrinsic) must keep
+        // reaching AWS as it always did, so the request fails loudly. Routing
+        // it into the reset branch below would silently CLEAR the ceiling the
+        // template was trying to set — a worse outcome than the noisy failure,
+        // and the exact silent-wrong-action class this fix exists to remove.
+        const rawMaxWrite = wodts?.['MaxWriteRequestUnits'];
+        if (rawMaxWrite !== undefined) {
+          flatUpdate.OnDemandThroughput = { MaxWriteRequestUnits: Number(rawMaxWrite) };
+          flatChanged = true;
+        } else if (onDemandCeilingLive && previousWodts?.['MaxWriteRequestUnits'] !== undefined) {
+          // The template DROPPED the table-level on-demand write ceiling.
+          // Omitting the field left the old ceiling live in AWS forever while
+          // cdkd reported success — the absent-field-reset silent-drop class
+          // (#1160), the table-level sibling of the per-GSI case #1423 fixed.
+          //
+          // `-1` is the reset sentinel. Unlike the per-GSI action (where it
+          // had to be discovered by probe) AWS documents it for the
+          // table-level `OnDemandThroughput`, and it was LIVE-VERIFIED anyway
+          // (issue #1434, us-east-1): `UpdateTable` with
+          // `OnDemandThroughput: {MaxWriteRequestUnits: -1}` was accepted and
+          // `DescribeTable` afterwards returned `{MaxReadRequestUnits: 100}` —
+          // the dropped member cleared, the untouched read sibling preserved.
+          // A follow-up `{MaxReadRequestUnits: -1}` removed the block entirely.
+          // So the reset reads back as ABSENCE, never as -1, and any drift /
+          // read-back comparison must expect that.
+          flatUpdate.OnDemandThroughput = { MaxWriteRequestUnits: ON_DEMAND_LIMIT_RESET };
           flatChanged = true;
         }
       }
@@ -892,10 +944,10 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // Defaults must match `create()` (line 183: `PAY_PER_REQUEST`) so
       // a template with no explicit `BillingMode` doesn't false-fire
       // a PROVISIONED → PAY_PER_REQUEST diff on every update of a
-      // PAY_PER_REQUEST table.
-      const oldBilling =
-        (previousProperties['BillingMode'] as string | undefined) ?? 'PAY_PER_REQUEST';
-      const newBilling = (properties['BillingMode'] as string | undefined) ?? 'PAY_PER_REQUEST';
+      // PAY_PER_REQUEST table. Both are resolved just above step 3, which
+      // needs the same pair to suppress its on-demand reset during a flip —
+      // ONE binding, so the two sites cannot disagree about what "flipping"
+      // means.
       // GSIs whose ProvisionedThroughput was already applied as part of the
       // BillingMode flip below — step 6 must not re-issue an Update for them.
       const gsiHandledByBillingFlip = new Set<string>();

@@ -195,8 +195,22 @@ export class DynamoDBGlobalTableStack extends cdk.Stack {
     const gsiOnDemandTable = new ddb.TableV2(this, 'GsiOnDemandTable', {
       partitionKey: { name: 'pk', type: ddb.AttributeType.STRING },
       billing: ddb.Billing.onDemand({
+        // NOTE: cdkd does not wire this TABLE-level read ceiling at all today
+        // (it synthesizes to `Replicas[local].ReadOnDemandThroughputSettings`,
+        // which the provider never reads) — tracked as issue #1436. It stays
+        // here because it is what the canonical CDK call emits; verify.sh
+        // deliberately asserts only the WRITE member so this fixture does not
+        // encode the gap as expected behavior.
         maxReadRequestUnits: 100,
-        maxWriteRequestUnits: 200,
+        // Issue #1434: REMOVING this from the template must RESET the live
+        // table-level ceiling, not silently no-op — the table-level sibling of
+        // the per-GSI case #1423. `drop-table-ondemand-limit` drops it, and
+        // verify.sh asserts the member reads back ABSENT (the reset surfaces
+        // as absence, never as -1).
+        // -> WriteOnDemandThroughputSettings.MaxWriteRequestUnits
+        ...(updateMode.includes('drop-table-ondemand-limit')
+          ? {}
+          : { maxWriteRequestUnits: 200 }),
       }),
       globalSecondaryIndexes: [
         {
