@@ -1,3 +1,10 @@
+## [0.278.16](https://github.com/go-to-k/cdkd/compare/v0.278.15...v0.278.16) (2026-08-09)
+
+
+### Bug Fixes
+
+* **providers:** declare the two NatGateway / LogGroup wiring gaps as silent drops so they auto-route via Cloud Control ([#1429](https://github.com/go-to-k/cdkd/issues/1429)) ([a39e201](https://github.com/go-to-k/cdkd/commit/a39e201cc1e7ab6ae2dba67440527cb108392894))
+
 ## [0.278.15](https://github.com/go-to-k/cdkd/compare/v0.278.14...v0.278.15) (2026-08-09)
 
 
