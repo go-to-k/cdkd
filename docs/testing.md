@@ -656,6 +656,61 @@ coverage floors per constructor-reference shape and per construct kind so a
 parser regression fails loudly rather than passing vacuously. Baseline
 2026-07-31: 523 fixture files scanned, 120 stateful-L2 instantiations.
 
+### Fixture convention: never call an AWS-CLI-customized command
+
+Some `aws` subcommands are wrapped in an interactive AWS CLI customization
+rather than being plain API pass-throughs. In a non-interactive shell — which
+is every `verify.sh` run — they print `Warning: Input is not a terminal
+(fd=0).` then die with `aws: [ERROR]: [Errno 22] Invalid argument`, and without
+a `</dev/null` they HANG instead of returning. Confirmed 2026-08-09 on `aws emr
+list-instance-groups`, where `--no-paginate --no-cli-pager </dev/null` did not
+help. The `emr` family is the known offender; treat any `aws emr` verb as
+suspect until you have probed it.
+
+Probe a candidate against a bogus id under a hard timeout before relying on it:
+a plain API command returns a validation / not-found error immediately, a
+customized one hangs or emits the `Errno 22` line.
+
+When a command is customized, call the AWS SDK directly from `verify.sh`
+instead of substituting a different CLI verb that happens to work but returns
+less data. The repo root already depends on every `@aws-sdk/client-*` cdkd
+uses, so a `node --input-type=module -e` one-liner run from the repo root needs
+no extra install. Two details in the reference shape are load-bearing: a
+`|| return 1` so an SDK failure reaches the caller's `set -e` (otherwise an
+empty result silently satisfies a `// empty`-defaulted `jq` assertion), and a
+pagination loop matching whatever the provider under test does (a partial first
+page is a silent false pass). See `tests/integration/emr-cluster/verify.sh` and
+`tests/integration/emr-instance-configs/verify.sh` for the full helper.
+
+A pager invoked non-interactively is a second route to the same hang, so
+`export AWS_PAGER=""` near the top of a fixture is cheap insurance. Treat this
+as a recommendation for new and affected fixtures rather than a tree-wide
+invariant — most existing fixtures do not set it and are fine, because the hang
+only bites the customized commands.
+`tests/integration/emr-instance-configs/verify.sh` is the reference.
+
+### Fixture convention: sort both sides of a list readback
+
+AWS does not preserve the submitted order of list-valued members when you read
+them back, so an assertion that string-compares a joined list against the order
+you sent is flaky — and because it fails on a correct implementation, its error
+message accuses the fix. Seen 2026-08-09 in the `lambda-esm-self-managed-kafka`
+fixture: cdkd submitted two Kafka bootstrap servers in one order,
+`list-event-source-mappings` returned them in the other, and the run reported
+"issue #1384 NOT closed" while the fix was working.
+
+Sort both sides in the query, unless the list is genuinely order-significant:
+
+```bash
+--query "join(' ', sort(Path.To.List || `[]`))"
+```
+
+This mirrors what `src/analyzer/drift-normalize.ts` does for the drift
+comparator — it canonicalizes tag lists and resource-id/ARN arrays on both
+sides for the same reason. The same caveat applies too: a list whose order
+carries meaning (DNS resolver lists, preference orders) must NOT be sorted,
+because sorting would hide a real regression rather than reveal one.
+
 ## 3. Deploy Using cdkd
 
 ```bash
