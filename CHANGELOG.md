@@ -1,3 +1,10 @@
+## [0.278.4](https://github.com/go-to-k/cdkd/compare/v0.278.3...v0.278.4) (2026-08-09)
+
+
+### Bug Fixes
+
+* **s3vectors:** read EncryptionConfiguration with the CFn SseType / KmsKeyArn spellings ([#1397](https://github.com/go-to-k/cdkd/issues/1397)) ([58aa6ee](https://github.com/go-to-k/cdkd/commit/58aa6ee65a612fa784d5aefaeef9d7767b8dad75))
+
 ## [0.278.3](https://github.com/go-to-k/cdkd/compare/v0.278.2...v0.278.3) (2026-08-09)
 
 
