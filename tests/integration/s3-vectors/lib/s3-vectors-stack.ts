@@ -36,6 +36,12 @@ export class S3VectorsStack extends cdk.Stack {
     // is create-only, so it is held CONSTANT across the CDKD_TEST_UPDATE branch
     // above (a change would force a replacement, not the Tags in-place update
     // that phase exercises).
+    // Default key policy (account root) only — deliberately NO
+    // `s3vectors.amazonaws.com` grant. This fixture proves the CONFIGURATION
+    // reaches AWS (CreateVectorBucket / GetVectorBucket both succeed and echo
+    // the key back); it writes no vectors, so it would not catch an
+    // AccessDenied on the actual encrypt path. That is out of scope for #1385,
+    // which is purely about the CFn key spelling never reaching the SDK call.
     const key = new kms.Key(this, 'VectorBucketKey', {
       description: 'cdkd s3-vectors integ CMK (issue #1385)',
       enableKeyRotation: false,

@@ -120,7 +120,7 @@ BUCKET_JSON=$(aws s3vectors get-vector-bucket \
   --vector-bucket-name "${BUCKET_NAME}" --region "${REGION}" \
   --query 'vectorBucket' --output json)
 BUCKET_ARN=$(echo "${BUCKET_JSON}" | jq -r '.vectorBucketArn // empty')
-if [ -z "${BUCKET_ARN}" ] || [ "${BUCKET_ARN}" = "None" ]; then
+if [ -z "${BUCKET_ARN}" ]; then
   echo "FAIL: GetVectorBucket(${BUCKET_NAME}) returned no ARN" >&2
   exit 1
 fi

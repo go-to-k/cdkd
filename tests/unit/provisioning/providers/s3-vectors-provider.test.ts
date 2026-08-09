@@ -134,7 +134,10 @@ describe('S3VectorsProvider', () => {
       const createCall = mockSend.mock.calls.find(
         (call: unknown[]) => call[0] instanceof CreateVectorBucketCommand
       );
-      expect(createCall![0].input).toEqual({
+      // toStrictEqual, not toEqual: toEqual ignores undefined-valued keys, so
+      // `kmsKeyArn: undefined` would READ as a pinned absence while checking
+      // nothing. AES256 must never carry a key ARN (AWS rejects it).
+      expect(createCall![0].input).toStrictEqual({
         vectorBucketName: 'aes-vector-bucket',
         encryptionConfiguration: { sseType: 'AES256', kmsKeyArn: undefined },
       });
