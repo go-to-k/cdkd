@@ -731,6 +731,7 @@
       ],
       "signals": {
         "ci-cd": [
+          "l1",
           "l2",
           "literal"
         ]
@@ -3311,6 +3312,7 @@
         "cc-api-fallback-transitions",
         "cc-getatt-readback",
         "cc-protection-flip-eks",
+        "ci-cd",
         "composite-stack",
         "deep-getatt-chains",
         "destroy-interrupt",
@@ -3388,6 +3390,9 @@
           "l2"
         ],
         "cc-protection-flip-eks": [
+          "l2"
+        ],
+        "ci-cd": [
           "l2"
         ],
         "composite-stack": [

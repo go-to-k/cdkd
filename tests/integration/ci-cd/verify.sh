@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
-# verify.sh — cdkd CodeBuild::Project AutoRetryLimit backfill integ test
-# (issue #609).
+# verify.sh — cdkd CodeBuild::Project property backfill integ test
+# (issues #609 and #1386).
 #
 # Asserts that a CodeBuild Project whose template sets AutoRetryLimit has
 # that value reach AWS after `cdkd deploy` — the property was a
 # silent-drop before the #609 backfill. AutoRetryLimit rides
 # CreateProject / UpdateProject directly (no separate control-plane API).
+#
+# Also asserts the issue #1386 NESTED sub-keys reach AWS
+# (Source.GitSubmodulesConfig.FetchSubmodules, Source.BuildStatusConfig.*,
+# Cache.CacheNamespace) — the provider builds fresh SDK objects, so every
+# unnamed sub-key was dropped by the serializer with deploy still green.
 # Also asserts the destroy path cleans up.
 #
 # Required env vars:
@@ -139,6 +144,56 @@ if [ "${ACTUAL}" != "${EXPECTED_AUTO_RETRY_LIMIT}" ]; then
 fi
 echo "    OK: projects[0].autoRetryLimit == ${EXPECTED_AUTO_RETRY_LIMIT} on AWS (silent-drop CLOSED by #609)"
 
+# --- Assertion: issue #1386 nested Source / Cache sub-keys -------------
+# `mapSource` / `mapProperties` build FRESH SDK objects, so any CFn sub-key
+# they do not name is dropped by the SDK serializer while deploy still
+# reports success. These read-backs prove each newly-wired sub-key actually
+# reached AWS.
+#
+# The sub-keys ride the SECOND project in the fixture (SubKeysProject) —
+# a CODEPIPELINE-typed source rejects both nested Source sub-blocks
+# ("Git submodules config is not supported for CodePipeline source" /
+# "Source type CODEPIPELINE does not support BuildStatusConfig"), so the
+# pipeline-fed BuildProject cannot carry them.
+SUBKEYS_PROJECT=$(echo "${STATE}" | jq -r '.outputs.SubKeysProjectName // empty')
+if [ -z "${SUBKEYS_PROJECT}" ]; then
+  echo "FAIL: no SubKeysProjectName output in state file" >&2
+  echo "${STATE}" | jq '.outputs'
+  exit 1
+fi
+echo "    Resolved sub-keys project name: ${SUBKEYS_PROJECT}"
+
+# One BatchGetProjects call, then assert each sub-key off the same blob so a
+# throttle cannot make some assertions pass and others silently vanish.
+SUBKEYS_JSON=$(aws codebuild batch-get-projects \
+  --names "${SUBKEYS_PROJECT}" --region "${REGION}" \
+  --query 'projects[0]' --output json)
+
+assert_subkey() { # usage: assert_subkey <jq-path> <expected> <cfn-key description>
+  local path="$1" expected="$2" desc="$3" actual
+  # NOT `${path} // "<absent>"`: jq's alternative operator treats a literal
+  # `false` as absent, so a boolean sub-key that AWS really did return as
+  # false would be reported as dropped. Test for null explicitly.
+  actual=$(echo "${SUBKEYS_JSON}" | jq -r "${path} | if . == null then \"<absent>\" else . end")
+  if [ "${actual}" != "${expected}" ]; then
+    echo "FAIL: ${desc} is '${actual}', expected '${expected}' (silent-drop NOT closed)" >&2
+    echo "${SUBKEYS_JSON}" | jq '{source, cache}'
+    exit 1
+  fi
+  echo "    OK: ${desc} == ${expected}"
+}
+
+assert_subkey '.source.gitSubmodulesConfig.fetchSubmodules' 'true' \
+  'Source.GitSubmodulesConfig.FetchSubmodules'
+assert_subkey '.source.buildStatusConfig.context' 'cdkd-integ-context' \
+  'Source.BuildStatusConfig.Context'
+assert_subkey '.source.buildStatusConfig.targetUrl' 'https://example.com/cdkd-integ-build' \
+  'Source.BuildStatusConfig.TargetUrl'
+assert_subkey '.cache.cacheNamespace' 'cdkd-integ-namespace' \
+  'Cache.CacheNamespace'
+
+echo "    OK: every issue #1386 nested sub-key reached AWS"
+
 # --- Phase 2: destroy -------------------------------------------------
 echo "==> Phase 2: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \
@@ -162,8 +217,21 @@ if [ "${NOT_FOUND}" != "${PROJECT_NAME}" ] || [ "${PROJECTS_LEN}" != "0" ]; then
 fi
 echo "    OK: CodeBuild project is gone"
 
+SUBKEYS_NOT_FOUND=$(aws codebuild batch-get-projects \
+  --names "${SUBKEYS_PROJECT}" --region "${REGION}" \
+  --query 'projectsNotFound[0]' --output text 2>/dev/null)
+SUBKEYS_LEN=$(aws codebuild batch-get-projects \
+  --names "${SUBKEYS_PROJECT}" --region "${REGION}" \
+  --query 'length(projects)' --output text 2>/dev/null)
+
+if [ "${SUBKEYS_NOT_FOUND}" != "${SUBKEYS_PROJECT}" ] || [ "${SUBKEYS_LEN}" != "0" ]; then
+  echo "FAIL: CodeBuild project ${SUBKEYS_PROJECT} still exists after destroy (projectsNotFound='${SUBKEYS_NOT_FOUND}', projects len='${SUBKEYS_LEN}')" >&2
+  exit 1
+fi
+echo "    OK: sub-keys CodeBuild project is gone"
+
 assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: state file is gone"
 
 echo ""
-echo "==> ci-cd test passed (AutoRetryLimit backfill closed + clean destroy)"
+echo "==> ci-cd test passed (AutoRetryLimit + #1386 nested sub-keys closed + clean destroy)"

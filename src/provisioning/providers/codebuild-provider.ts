@@ -15,6 +15,7 @@ import {
   type CacheType,
   type CacheMode,
   type ImagePullCredentialsType,
+  type SourceAuthType,
 } from '@aws-sdk/client-codebuild';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
@@ -90,6 +91,15 @@ export class CodeBuildProvider implements ResourceProvider {
       buildspec = typeof bs === 'object' ? JSON.stringify(bs) : (bs as string);
     }
 
+    // Nested sub-blocks (issue #1386). `mapSource` builds a FRESH object, so
+    // every CFn sub-key that is not named here is silently dropped by the SDK
+    // serializer. CFn spellings verified against the live registry schema
+    // (`cloudformation:DescribeType AWS::CodeBuild::Project`); SDK members
+    // verified against `@aws-sdk/client-codebuild`'s `ProjectSource`.
+    const cfnAuth = source['Auth'] as Record<string, unknown> | undefined;
+    const cfnGitSubmodules = source['GitSubmodulesConfig'] as Record<string, unknown> | undefined;
+    const cfnBuildStatus = source['BuildStatusConfig'] as Record<string, unknown> | undefined;
+
     return {
       type: ((source['Type'] as string) ?? 'NO_SOURCE') as SourceType,
       buildspec,
@@ -97,6 +107,25 @@ export class CodeBuildProvider implements ResourceProvider {
       gitCloneDepth: source['GitCloneDepth'] as number | undefined,
       insecureSsl: source['InsecureSsl'] as boolean | undefined,
       reportBuildStatus: source['ReportBuildStatus'] as boolean | undefined,
+      // SourceIdentifier is required by AWS on every SecondarySources entry
+      // (which routes through this same helper) and optional on the primary
+      // Source; omitting it made every SecondarySources template fail.
+      sourceIdentifier: source['SourceIdentifier'] as string | undefined,
+      auth: cfnAuth
+        ? {
+            type: cfnAuth['Type'] as SourceAuthType,
+            resource: cfnAuth['Resource'] as string | undefined,
+          }
+        : undefined,
+      gitSubmodulesConfig: cfnGitSubmodules
+        ? { fetchSubmodules: cfnGitSubmodules['FetchSubmodules'] as boolean }
+        : undefined,
+      buildStatusConfig: cfnBuildStatus
+        ? {
+            context: cfnBuildStatus['Context'] as string | undefined,
+            targetUrl: cfnBuildStatus['TargetUrl'] as string | undefined,
+          }
+        : undefined,
     };
   }
 
@@ -144,6 +173,20 @@ export class CodeBuildProvider implements ResourceProvider {
       | Array<{ Name: string; Value: string; Type?: string }>
       | undefined;
 
+    // Environment nested sub-blocks (issue #1386). Same fresh-object drop
+    // hazard as `mapSource`.
+    //
+    // `Environment.HostKernel` is deliberately NOT mapped: it exists in the
+    // CFn registry schema but has NO corresponding member on the installed
+    // `@aws-sdk/client-codebuild` `ProjectEnvironment` model, so there is
+    // nothing to map it onto until an SDK bump adds one. Naming it here
+    // would be a false claim of support. It is a NESTED key, so it cannot be
+    // declared in `unhandledByDesign` (that map is top-level-only), and
+    // `AWS::CodeBuild::Project` is not yet a `NESTED_KEY_TARGETS` entry in
+    // `scripts/gen-nested-key-coverage.ts` — this comment is the record.
+    const cfnFleet = environment?.['Fleet'] as Record<string, unknown> | undefined;
+    const cfnDockerServer = environment?.['DockerServer'] as Record<string, unknown> | undefined;
+
     // Map Cache (CFn PascalCase -> SDK camelCase)
     const cfnCache = properties['Cache'] as Record<string, unknown> | undefined;
     const cache = cfnCache
@@ -151,6 +194,9 @@ export class CodeBuildProvider implements ResourceProvider {
           type: cfnCache['Type'] as string as CacheType,
           location: cfnCache['Location'] as string | undefined,
           modes: cfnCache['Modes'] as CacheMode[] | undefined,
+          // CacheNamespace (issue #1386): scopes an S3 cache so it can be
+          // shared across projects. SDK member `cacheNamespace`.
+          cacheNamespace: cfnCache['CacheNamespace'] as string | undefined,
         }
       : undefined;
 
@@ -271,6 +317,13 @@ export class CodeBuildProvider implements ResourceProvider {
         imagePullCredentialsType: environment?.['ImagePullCredentialsType'] as
           | ImagePullCredentialsType
           | undefined,
+        fleet: cfnFleet ? { fleetArn: cfnFleet['FleetArn'] as string | undefined } : undefined,
+        dockerServer: cfnDockerServer
+          ? {
+              computeType: cfnDockerServer['ComputeType'] as ComputeType,
+              securityGroupIds: cfnDockerServer['SecurityGroupIds'] as string[] | undefined,
+            }
+          : undefined,
         registryCredential: environment?.['RegistryCredential']
           ? {
               credential: (environment['RegistryCredential'] as Record<string, unknown>)[
@@ -517,6 +570,33 @@ export class CodeBuildProvider implements ResourceProvider {
       if (project.source?.reportBuildStatus !== undefined) {
         src['ReportBuildStatus'] = project.source.reportBuildStatus;
       }
+      // Sub-blocks wired on the write side by issue #1386 — reverse-mapped
+      // emit-when-present (same policy as every key above) so the drift
+      // baseline and the AWS-current snapshot stay symmetric.
+      if (project.source?.sourceIdentifier !== undefined) {
+        src['SourceIdentifier'] = project.source.sourceIdentifier;
+      }
+      if (project.source?.gitSubmodulesConfig !== undefined) {
+        src['GitSubmodulesConfig'] = {
+          FetchSubmodules: project.source.gitSubmodulesConfig.fetchSubmodules,
+        };
+      }
+      if (project.source?.buildStatusConfig !== undefined) {
+        const bsc: Record<string, unknown> = {};
+        if (project.source.buildStatusConfig.context !== undefined) {
+          bsc['Context'] = project.source.buildStatusConfig.context;
+        }
+        if (project.source.buildStatusConfig.targetUrl !== undefined) {
+          bsc['TargetUrl'] = project.source.buildStatusConfig.targetUrl;
+        }
+        src['BuildStatusConfig'] = bsc;
+      }
+      // `Source.Auth` is deliberately NOT reverse-mapped: it is the source
+      // credential authorization block, and BatchGetProjects returns it
+      // partially (the `resource` value is not echoed back for every auth
+      // type). Emitting a partial shape would fire phantom drift on every
+      // project that sets it, so the write side wires it while the read side
+      // leaves it out — same policy as the v1-omitted keys listed above.
       result['Source'] = src;
     }
 
@@ -558,6 +638,25 @@ export class CodeBuildProvider implements ResourceProvider {
       }
       if (project.environment?.certificate !== undefined) {
         env['Certificate'] = project.environment.certificate;
+      }
+      // Fleet / DockerServer wired on the write side by issue #1386.
+      // `HostKernel` has no SDK member, so there is nothing to read back.
+      if (project.environment?.fleet !== undefined) {
+        const fleet: Record<string, unknown> = {};
+        if (project.environment.fleet.fleetArn !== undefined) {
+          fleet['FleetArn'] = project.environment.fleet.fleetArn;
+        }
+        env['Fleet'] = fleet;
+      }
+      if (project.environment?.dockerServer !== undefined) {
+        const ds: Record<string, unknown> = {};
+        if (project.environment.dockerServer.computeType !== undefined) {
+          ds['ComputeType'] = project.environment.dockerServer.computeType;
+        }
+        if (project.environment.dockerServer.securityGroupIds !== undefined) {
+          ds['SecurityGroupIds'] = project.environment.dockerServer.securityGroupIds;
+        }
+        env['DockerServer'] = ds;
       }
       env['EnvironmentVariables'] = (project.environment?.environmentVariables ?? []).map((ev) => {
         const out: Record<string, unknown> = {};
@@ -624,6 +723,10 @@ export class CodeBuildProvider implements ResourceProvider {
       };
       if (project.cache?.location !== undefined) cache['Location'] = project.cache.location;
       if (project.cache?.modes !== undefined) cache['Modes'] = project.cache.modes;
+      // CacheNamespace wired on the write side by issue #1386.
+      if (project.cache?.cacheNamespace !== undefined) {
+        cache['CacheNamespace'] = project.cache.cacheNamespace;
+      }
       result['Cache'] = cache;
     }
 
@@ -639,6 +742,19 @@ export class CodeBuildProvider implements ResourceProvider {
       if (s.insecureSsl !== undefined) out['InsecureSsl'] = s.insecureSsl;
       if (s.reportBuildStatus !== undefined) out['ReportBuildStatus'] = s.reportBuildStatus;
       if (s.sourceIdentifier !== undefined) out['SourceIdentifier'] = s.sourceIdentifier;
+      // Same #1386 sub-blocks as the primary Source above (SecondarySources
+      // share the `mapSource` write path, so they must share the read shape).
+      if (s.gitSubmodulesConfig !== undefined) {
+        out['GitSubmodulesConfig'] = { FetchSubmodules: s.gitSubmodulesConfig.fetchSubmodules };
+      }
+      if (s.buildStatusConfig !== undefined) {
+        const bsc: Record<string, unknown> = {};
+        if (s.buildStatusConfig.context !== undefined) bsc['Context'] = s.buildStatusConfig.context;
+        if (s.buildStatusConfig.targetUrl !== undefined) {
+          bsc['TargetUrl'] = s.buildStatusConfig.targetUrl;
+        }
+        out['BuildStatusConfig'] = bsc;
+      }
       return out;
     });
 
