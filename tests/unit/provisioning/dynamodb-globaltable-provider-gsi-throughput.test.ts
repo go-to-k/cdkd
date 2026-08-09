@@ -395,6 +395,19 @@ describe('DynamoDBGlobalTable GSI throughput translation (issue #1387)', () => {
       expect(toSdkGlobalSecondaryIndexes({}, 'us-east-1', 'PROVISIONED')).toEqual([]);
     });
 
+    it('surfaces a non-array GlobalSecondaryIndexes from create() as a ProvisioningError', async () => {
+      // create() has no wrapping catch at the translation point, so it converts
+      // the helper's plain Error itself. A falsy-but-present value (null) is the
+      // case a truthiness gate would have skipped entirely, deploying a
+      // zero-GSI table.
+      await expect(
+        provider.create('Prov', RESOURCE_TYPE, {
+          ...PROVISIONED_TABLE_PROPS,
+          GlobalSecondaryIndexes: null,
+        })
+      ).rejects.toThrow(/GlobalSecondaryIndexes must be an array/);
+    });
+
     it('throws on a non-array GlobalSecondaryIndexes instead of deploying a table with none', () => {
       // Absent is legitimately empty; present-but-not-an-array (an unresolved
       // intrinsic) previously collapsed to [] and created the table with ZERO
@@ -765,6 +778,64 @@ describe('DynamoDBGlobalTable GSI throughput translation (issue #1387)', () => {
       expect(deletes[0]!.input.GlobalSecondaryIndexUpdates).toEqual([
         { Delete: { IndexName: 'gsiDoomed' } },
       ]);
+    });
+
+    it('carries a changed WarmThroughput in the PAY_PER_REQUEST -> PROVISIONED flip call', async () => {
+      // Indexes handled by the flip are skipped by the `modified` loop, so a
+      // simultaneous WarmThroughput change has to ride the flip's own Update
+      // or it vanishes with no warning.
+      const previous = structuredClone(PROVISIONED_TABLE_PROPS) as Record<string, unknown>;
+      previous['BillingMode'] = 'PAY_PER_REQUEST';
+      (previous['GlobalSecondaryIndexes'] as Array<Record<string, unknown>>)[0]!['WarmThroughput'] =
+        { ReadUnitsPerSecond: 12000, WriteUnitsPerSecond: 4000 };
+
+      const next = structuredClone(PROVISIONED_TABLE_PROPS) as Record<string, unknown>;
+      (next['GlobalSecondaryIndexes'] as Array<Record<string, unknown>>)[0]!['WarmThroughput'] = {
+        ReadUnitsPerSecond: 24000,
+        WriteUnitsPerSecond: 4000,
+      };
+
+      await provider.update('Prov', 'prov-table', RESOURCE_TYPE, next, previous);
+
+      const flip = mockSend.mock.calls
+        .map((c) => c[0])
+        .find(
+          (c): c is UpdateTableCommand =>
+            c instanceof UpdateTableCommand && c.input.BillingMode !== undefined
+        );
+      expect(flip?.input.GlobalSecondaryIndexUpdates?.[0]?.Update?.WarmThroughput).toEqual({
+        ReadUnitsPerSecond: 24000,
+        WriteUnitsPerSecond: 4000,
+      });
+    });
+
+    it('does not re-send an unchanged WarmThroughput on an unrelated capacity edit', async () => {
+      // Warm throughput is increase-only on the AWS side, so re-asserting the
+      // current value on a capacity-only edit is a needless risk.
+      const previous = structuredClone(PROVISIONED_TABLE_PROPS) as Record<string, unknown>;
+      (previous['GlobalSecondaryIndexes'] as Array<Record<string, unknown>>)[0]!['WarmThroughput'] =
+        { ReadUnitsPerSecond: 12000, WriteUnitsPerSecond: 4000 };
+      const next = structuredClone(previous) as Record<string, unknown>;
+      (
+        (next['Replicas'] as Array<Record<string, unknown>>)[0]![
+          'GlobalSecondaryIndexes'
+        ] as Array<Record<string, unknown>>
+      )[0]!['ReadProvisionedThroughputSettings'] = { ReadCapacityUnits: 19 };
+
+      await provider.update('Prov', 'prov-table', RESOURCE_TYPE, next, previous);
+
+      const gsiCall = mockSend.mock.calls
+        .map((c) => c[0])
+        .find(
+          (c): c is UpdateTableCommand =>
+            c instanceof UpdateTableCommand && c.input.GlobalSecondaryIndexUpdates !== undefined
+        );
+      expect(gsiCall?.input.GlobalSecondaryIndexUpdates?.[0]?.Update?.ProvisionedThroughput).toEqual(
+        { ReadCapacityUnits: 19, WriteCapacityUnits: 3 }
+      );
+      expect(gsiCall?.input.GlobalSecondaryIndexUpdates?.[0]?.Update?.WarmThroughput).toBe(
+        undefined
+      );
     });
 
     it('still applies per-GSI on-demand limits when the BillingMode flips PROVISIONED -> PAY_PER_REQUEST', async () => {

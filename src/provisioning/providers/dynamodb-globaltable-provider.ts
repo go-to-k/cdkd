@@ -352,11 +352,26 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     // rather than cast. Pre-fix a PROVISIONED GlobalTable with a GSI
     // failed `CreateTable` outright (AWS requires per-GSI
     // `ProvisionedThroughput`) and per-GSI on-demand limits were dropped.
-    if (properties['GlobalSecondaryIndexes']) {
-      const sdkIndexes = toSdkGlobalSecondaryIndexes(properties, currentRegion, billingMode);
-      if (sdkIndexes.length > 0) {
-        createParams.GlobalSecondaryIndexes = sdkIndexes;
-      }
+    // Called UNCONDITIONALLY (it returns [] for an absent value): a truthiness
+    // gate here would let `null` / `''` / `0` skip the helper's non-array guard
+    // and deploy a zero-GSI table — the very case that guard exists for.
+    // `create()` has no wrapping catch around this point, so the helper's plain
+    // Error is converted to a ProvisioningError here rather than escaping
+    // untyped into the deploy engine's retry loop.
+    let sdkIndexes: GlobalSecondaryIndex[];
+    try {
+      sdkIndexes = toSdkGlobalSecondaryIndexes(properties, currentRegion, billingMode);
+    } catch (error) {
+      throw new ProvisioningError(
+        error instanceof Error ? error.message : String(error),
+        resourceType,
+        logicalId,
+        undefined,
+        error instanceof Error ? error : undefined
+      );
+    }
+    if (sdkIndexes.length > 0) {
+      createParams.GlobalSecondaryIndexes = sdkIndexes;
     }
     if (properties['LocalSecondaryIndexes']) {
       createParams.LocalSecondaryIndexes = properties[
@@ -913,14 +928,15 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           // a table becoming PROVISIONED and AWS rejects the call if it has
           // no capacity. Its throughput therefore has to come from the
           // PREVIOUS template — the new one no longer mentions it.
-          const byIndexName = new Map<string, GlobalSecondaryIndex>();
+          const previousByIndexName = new Map<string, GlobalSecondaryIndex>();
           for (const gsi of toSdkGlobalSecondaryIndexes(
             previousProperties,
             currentRegion,
             newBilling
           )) {
-            if (gsi.IndexName) byIndexName.set(gsi.IndexName, gsi);
+            if (gsi.IndexName) previousByIndexName.set(gsi.IndexName, gsi);
           }
+          const byIndexName = new Map(previousByIndexName);
           const survivingIndexNames = new Set<string>();
           for (const gsi of provisionedIndexes) {
             if (!gsi.IndexName) continue;
@@ -931,10 +947,19 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           for (const indexName of existingIndexNames) {
             const gsi = byIndexName.get(indexName);
             if (!gsi?.ProvisionedThroughput) continue;
+            // Every index handled here is skipped by step 6's `modified` loop,
+            // so a simultaneous WarmThroughput change has to ride along or it
+            // is dropped with no warning. Sent only when it actually differs —
+            // warm throughput is increase-only, so re-asserting the current
+            // value on an unrelated capacity edit is a needless AWS-side risk.
+            const previousWarm = previousByIndexName.get(indexName)?.WarmThroughput;
+            const warmChanged =
+              gsi.WarmThroughput !== undefined && !deepEqual(gsi.WarmThroughput, previousWarm);
             indexUpdates.push({
               Update: {
                 IndexName: indexName,
                 ProvisionedThroughput: gsi.ProvisionedThroughput,
+                ...(warmChanged && { WarmThroughput: gsi.WarmThroughput }),
               },
             });
             // Only a SURVIVING index is "handled" — step 6's `modified` loop
@@ -1265,14 +1290,15 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           update.ProvisionedThroughput = gsi.ProvisionedThroughput;
         }
         // `WarmThroughput` is billing-mode independent, so a flip must not
-        // swallow a simultaneous change to it — but re-sending an unchanged
-        // value would cost an extra UpdateTable + wait-for-ACTIVE on every
-        // flip, so during one it rides along only when it actually differs.
+        // swallow a simultaneous change to it. Sent only when it actually
+        // differs, in EVERY case — DynamoDB warm throughput is increase-only,
+        // so re-asserting the current value on an unrelated capacity edit is a
+        // needless AWS-side risk, and the extra UpdateTable would also cost a
+        // wait-for-ACTIVE.
         const previousSdk = previousSdkByName.get(gsi.IndexName);
         if (
-          gsi.WarmThroughput &&
-          (!billingFlipped ||
-            JSON.stringify(gsi.WarmThroughput) !== JSON.stringify(previousSdk?.WarmThroughput))
+          gsi.WarmThroughput !== undefined &&
+          !deepEqual(gsi.WarmThroughput, previousSdk?.WarmThroughput)
         ) {
           update.WarmThroughput = gsi.WarmThroughput;
         }
@@ -2852,9 +2878,10 @@ export function toSdkGlobalSecondaryIndexes(
   // per-ENTRY policy below, which also refuses to swallow a bad entry.
   if (rawIndexes !== undefined && !Array.isArray(rawIndexes)) {
     // A plain Error on purpose: this is a module-level pure helper with no
-    // logicalId to build a ProvisioningError from. Both callers run inside
-    // create()/update()'s wrapping catch, which re-throws it as a
-    // ProvisioningError carrying the resource context.
+    // logicalId to build a ProvisioningError from. `update()` runs inside a
+    // wrapping catch that converts it; `create()` does NOT, so its call site
+    // converts it explicitly. Both paths therefore surface a ProvisioningError
+    // carrying the resource context.
     throw new Error(
       `AWS::DynamoDB::GlobalTable GlobalSecondaryIndexes must be an array, got ` +
         `${typeof rawIndexes} (${JSON.stringify(rawIndexes)?.slice(0, 200)}). ` +
