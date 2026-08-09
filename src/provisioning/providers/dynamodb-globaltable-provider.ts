@@ -1383,26 +1383,48 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         // `toFiniteNumber`, so a present-but-unparseable value (an unresolved
         // `{Ref: …}`) arrives here as `undefined` and is indistinguishable from
         // a removal — which sent `-1` and silently CLEARED the ceiling the
-        // template was trying to SET. Gating on raw presence keeps such a value
-        // on the path where it reaches AWS and fails loudly instead.
+        // template was trying to SET.
+        //
+        // Be precise about what the guard buys, because the obvious claim is
+        // WRONG: it does NOT put the value back on a path that reaches AWS.
+        // The coercion happened upstream, so the unparseable value is already
+        // gone by the time this loop runs and NOTHING is sent for that member.
+        // What the guard removes is the DESTRUCTIVE half — cdkd no longer
+        // deletes a ceiling the user was trying to set — and what remains is a
+        // no-op. A no-op with no explanation is its own trap, so the
+        // suppression is reported: without it the only output was the
+        // immutable-field warning below, which tells the user to RECREATE THE
+        // INDEX — advice that is both useless and alarming for what is really
+        // an unresolved intrinsic in their template.
         const previousOnDemand = previousSdkByName.get(gsi.IndexName)?.OnDemandThroughput;
         const declared = rawOnDemandDeclarations.get(gsi.IndexName);
         const onDemand: OnDemandThroughput = { ...gsi.OnDemandThroughput };
+        const unresolvedMembers: string[] = [];
         if (!billingFlipped && previousOnDemand) {
           if (
             previousOnDemand.MaxReadRequestUnits !== undefined &&
-            onDemand.MaxReadRequestUnits === undefined &&
-            !declared?.readDeclared
+            onDemand.MaxReadRequestUnits === undefined
           ) {
-            onDemand.MaxReadRequestUnits = ON_DEMAND_LIMIT_RESET;
+            if (declared?.readDeclared) unresolvedMembers.push('MaxReadRequestUnits');
+            else onDemand.MaxReadRequestUnits = ON_DEMAND_LIMIT_RESET;
           }
           if (
             previousOnDemand.MaxWriteRequestUnits !== undefined &&
-            onDemand.MaxWriteRequestUnits === undefined &&
-            !declared?.writeDeclared
+            onDemand.MaxWriteRequestUnits === undefined
           ) {
-            onDemand.MaxWriteRequestUnits = ON_DEMAND_LIMIT_RESET;
+            if (declared?.writeDeclared) unresolvedMembers.push('MaxWriteRequestUnits');
+            else onDemand.MaxWriteRequestUnits = ON_DEMAND_LIMIT_RESET;
           }
+        }
+        if (unresolvedMembers.length > 0) {
+          this.logger.warn(
+            `GSI '${gsi.IndexName}' on ${physicalId}: the template declares ` +
+              `${unresolvedMembers.join(' / ')} but the value did not resolve to a ` +
+              `number, so the on-demand limit was left UNCHANGED on AWS rather than ` +
+              `applied or cleared. This is usually an unresolved intrinsic in the ` +
+              `template; resolve it to a literal to change the ceiling, or remove the ` +
+              `property entirely to clear it.`
+          );
         }
         if (Object.keys(onDemand).length > 0) update.OnDemandThroughput = onDemand;
         // Provisioned capacity on a flip is step 4's job, so only a real
@@ -3103,26 +3125,6 @@ export function toSdkGlobalSecondaryIndexes(
   return result;
 }
 
-/**
- * Translate a CFn `Replicas[].GlobalSecondaryIndexes[]` blob (the
- * `ReplicaGlobalSecondaryIndexSpecification` shape) into the SDK's
- * `ReplicaGlobalSecondaryIndex[]` used by `CreateReplicationGroupMemberAction`
- * / `UpdateReplicationGroupMemberAction` (Issue #1387).
- *
- * Verified mapping:
- *
- * | CFn                                                        | SDK                                            |
- * | ---------------------------------------------------------- | ---------------------------------------------- |
- * | `ReadProvisionedThroughputSettings.ReadCapacityUnits`      | `ProvisionedThroughputOverride.ReadCapacityUnits` |
- * | `ReadOnDemandThroughputSettings.MaxReadRequestUnits`       | `OnDemandThroughputOverride.MaxReadRequestUnits`  |
- *
- * DELIBERATELY UNMAPPED: `ContributorInsightsSpecification`. The replica-GSI
- * SDK shape has no member for it — per-index contributor insights are toggled
- * by a separate `UpdateContributorInsights(TableName, IndexName)` call, which
- * this provider does not issue for any index (it only reads the TABLE-level
- * status back in `readCurrentState`). Recorded here rather than silently
- * dropped; tracked with the other GlobalTable nested-key gaps.
- */
 /** Which on-demand members a GSI's CFn side actually DECLARES (issue #1440). */
 export interface RawOnDemandDeclaration {
   readonly readDeclared: boolean;
@@ -3150,10 +3152,12 @@ export interface RawOnDemandDeclaration {
  * two must agree on where each member lives, and a divergence between them is
  * exactly what would re-open the bug.
  *
- * Malformed shapes report "not declared" rather than throwing:
- * `toSdkGlobalSecondaryIndexes` already refuses a non-array `GlobalSecondaryIndexes`
- * loudly, and this helper is consulted only to SUPPRESS a reset, so the
- * conservative answer is the one that leaves the live value alone.
+ * A missing entry means "not declared", which lets the reset FIRE — i.e. the
+ * DESTRUCTIVE direction, not a conservative one. That is safe only because
+ * `toSdkGlobalSecondaryIndexes` refuses a non-array `GlobalSecondaryIndexes`
+ * and a malformed per-entry shape LOUDLY before this map is ever consulted, so
+ * a template that reaches the reset has already been validated. Do not relax
+ * either of those refusals on the assumption that this helper degrades safely.
  */
 export function collectRawOnDemandDeclarations(
   properties: Record<string, unknown>,
@@ -3182,9 +3186,27 @@ export function collectRawOnDemandDeclarations(
     const name = gsi?.['IndexName'];
     if (!gsi || typeof name !== 'string') continue;
     const localEntry = localByName.get(name);
+    // An already-SDK-shaped `OnDemandThroughput` WINS over the derived members
+    // in `toSdkGlobalSecondaryIndexes`, so it has to win here too. Reading the
+    // derived spellings anyway would report a member DECLARED that the
+    // translation never sends — e.g. an explicit `{MaxReadRequestUnits: 50}`
+    // next to a leftover `WriteOnDemandThroughputSettings` — and the
+    // suppressed reset would leave the old write ceiling live in AWS: the very
+    // #1160 silent drop this reset exists to close, reintroduced by the guard.
+    const explicitOnDemand = asRecord(gsi['OnDemandThroughput']);
+    if (explicitOnDemand) {
+      out.set(name, {
+        readDeclared: explicitOnDemand['MaxReadRequestUnits'] !== undefined,
+        writeDeclared: explicitOnDemand['MaxWriteRequestUnits'] !== undefined,
+      });
+      continue;
+    }
     out.set(name, {
-      // Same precedence as the SDK translation: replica entry first, GSI-level
-      // spelling as the hand-authored fallback. Declared in EITHER place counts.
+      // Same sources as the SDK translation: replica entry first, GSI-level
+      // spelling as the hand-authored fallback. Declared in EITHER place
+      // counts — the translation resolves "first PARSEABLE", so an OR here is
+      // a safe superset for suppression (it can never report not-declared for
+      // a member the translation did resolve).
       readDeclared:
         asRecord(localEntry?.['ReadOnDemandThroughputSettings'])?.['MaxReadRequestUnits'] !==
           undefined ||
@@ -3196,6 +3218,26 @@ export function collectRawOnDemandDeclarations(
   return out;
 }
 
+/**
+ * Translate a CFn `Replicas[].GlobalSecondaryIndexes[]` blob (the
+ * `ReplicaGlobalSecondaryIndexSpecification` shape) into the SDK's
+ * `ReplicaGlobalSecondaryIndex[]` used by `CreateReplicationGroupMemberAction`
+ * / `UpdateReplicationGroupMemberAction` (Issue #1387).
+ *
+ * Verified mapping:
+ *
+ * | CFn                                                        | SDK                                            |
+ * | ---------------------------------------------------------- | ---------------------------------------------- |
+ * | `ReadProvisionedThroughputSettings.ReadCapacityUnits`      | `ProvisionedThroughputOverride.ReadCapacityUnits` |
+ * | `ReadOnDemandThroughputSettings.MaxReadRequestUnits`       | `OnDemandThroughputOverride.MaxReadRequestUnits`  |
+ *
+ * DELIBERATELY UNMAPPED: `ContributorInsightsSpecification`. The replica-GSI
+ * SDK shape has no member for it — per-index contributor insights are toggled
+ * by a separate `UpdateContributorInsights(TableName, IndexName)` call, which
+ * this provider does not issue for any index (it only reads the TABLE-level
+ * status back in `readCurrentState`). Recorded here rather than silently
+ * dropped; tracked with the other GlobalTable nested-key gaps.
+ */
 export function toSdkReplicaGlobalSecondaryIndexes(
   replicaIndexes: unknown
 ): ReplicaGlobalSecondaryIndex[] | undefined {
