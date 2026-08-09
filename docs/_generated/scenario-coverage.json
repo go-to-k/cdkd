@@ -1140,6 +1140,11 @@
       "scenarios": []
     },
     {
+      "name": "lambda-esm-self-managed-kafka",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "lambda-event-invoke-config-update",
       "annotated": false,
       "scenarios": []
@@ -2584,6 +2589,7 @@
     "lambda-config-field-removal",
     "lambda-destinations",
     "lambda-env-removal",
+    "lambda-esm-self-managed-kafka",
     "lambda-event-invoke-config-update",
     "lambda-layer-version-update",
     "lambda-log-retention",

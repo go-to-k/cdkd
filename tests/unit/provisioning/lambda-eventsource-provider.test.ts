@@ -170,7 +170,7 @@ describe('LambdaEventSourceMappingProvider', () => {
     it('forwards Queues (self-managed source target list)', async () => {
       await provider.create('L', 'AWS::Lambda::EventSourceMapping', {
         FunctionName: 'fn',
-        SelfManagedEventSource: { Endpoints: { KAFKA_BOOTSTRAP_SERVERS: ['b.example:9092'] } },
+        SelfManagedEventSource: { Endpoints: { KafkaBootstrapServers: ['b.example:9092'] } },
         Queues: ['queue-a', 'queue-b'],
       });
 
@@ -181,12 +181,42 @@ describe('LambdaEventSourceMappingProvider', () => {
     it('forwards Topics (self-managed Kafka topic list)', async () => {
       await provider.create('L', 'AWS::Lambda::EventSourceMapping', {
         FunctionName: 'fn',
-        SelfManagedEventSource: { Endpoints: { KAFKA_BOOTSTRAP_SERVERS: ['b.example:9092'] } },
+        SelfManagedEventSource: { Endpoints: { KafkaBootstrapServers: ['b.example:9092'] } },
         Topics: ['topic-a'],
       });
 
       const input = getCreateInput();
       expect(input['Topics']).toEqual(['topic-a']);
+    });
+
+    it('translates SelfManagedEventSource.Endpoints.KafkaBootstrapServers to the SDK enum key (issue #1384)', async () => {
+      // CFn / CDK's `CfnEventSourceMapping` spell the map key
+      // `KafkaBootstrapServers`; the SDK models `Endpoints` as
+      // `Partial<Record<EndPointType, string[]>>` keyed `KAFKA_BOOTSTRAP_SERVERS`.
+      // `Endpoints` is a MAP, so the serializer forwards an unknown key verbatim
+      // and CreateEventSourceMapping fails outright.
+      await provider.create('L', 'AWS::Lambda::EventSourceMapping', {
+        FunctionName: 'fn',
+        SelfManagedEventSource: {
+          Endpoints: { KafkaBootstrapServers: ['b1.example:9092', 'b2.example:9092'] },
+        },
+        Topics: ['topic-a'],
+      });
+
+      const input = getCreateInput();
+      expect(input['SelfManagedEventSource']).toEqual({
+        Endpoints: { KAFKA_BOOTSTRAP_SERVERS: ['b1.example:9092', 'b2.example:9092'] },
+      });
+    });
+
+    it('leaves a SelfManagedEventSource without an Endpoints map untouched', async () => {
+      await provider.create('L', 'AWS::Lambda::EventSourceMapping', {
+        FunctionName: 'fn',
+        SelfManagedEventSource: {},
+        Topics: ['topic-a'],
+      });
+
+      expect(getCreateInput()['SelfManagedEventSource']).toEqual({});
     });
 
     it('coerces StartingPositionTimestamp number (epoch seconds) → Date', async () => {
