@@ -809,6 +809,20 @@ describe('DynamoDBGlobalTable GSI throughput translation (issue #1387)', () => {
       ]);
     });
 
+    it('reports the named error, not a bare TypeError, for a non-array previous GlobalSecondaryIndexes during a flip', async () => {
+      // The existing-index scan in the flip runs BEFORE the translation, so an
+      // unguarded `.map` on a plain object died with `.map is not a function`
+      // — an opaque failure that names nothing. The scan is guarded, so the
+      // translator's own named error is what surfaces.
+      const previous = structuredClone(PROVISIONED_TABLE_PROPS) as Record<string, unknown>;
+      previous['BillingMode'] = 'PAY_PER_REQUEST';
+      previous['GlobalSecondaryIndexes'] = { 'Fn::If': ['UseGsi', [], []] };
+
+      await expect(
+        provider.update('Prov', 'prov-table', RESOURCE_TYPE, PROVISIONED_TABLE_PROPS, previous)
+      ).rejects.toThrow(/GlobalSecondaryIndexes must be an array/);
+    });
+
     it('carries a changed WarmThroughput in the PAY_PER_REQUEST -> PROVISIONED flip call', async () => {
       // Indexes handled by the flip are skipped by the `modified` loop, so a
       // simultaneous WarmThroughput change has to ride the flip's own Update
