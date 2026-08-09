@@ -407,6 +407,20 @@ echo "[verify] step 13: cdkd deploy with CDKD_TEST_UPDATE=ttl,tags (structural t
 # cleans up the table regardless of TTL state.
 CDKD_TEST_UPDATE=ttl,tags ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose
 
+echo "[verify] step 13b: cdkd deploy with drop-gsi-ondemand-limits (issue #1423 — REMOVING a per-GSI on-demand limit must RESET it, not no-op)"
+CDKD_TEST_UPDATE=ttl,tags,drop-gsi-ondemand-limits ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose
+
+# The reset reads back as ABSENCE, never as -1 (live-probed on #1423). Pre-fix
+# the template removal emitted nothing at all, so the 50/60 ceiling stayed live
+# in AWS forever while cdkd reported success.
+OD_AFTER="$(aws dynamodb describe-table --table-name "${GSI_OD_TABLE}" --region "${REGION}" \
+  --query "Table.GlobalSecondaryIndexes[?IndexName=='byOwner'].OnDemandThroughput | [0]" --output text)"
+if [ "${OD_AFTER}" != "None" ]; then
+  echo "FAIL: issue #1423 — byOwner still carries OnDemandThroughput after the template removed it: ${OD_AFTER}" >&2
+  exit 1
+fi
+echo "    per-GSI on-demand limits reset (OnDemandThroughput absent), issue #1423 closed"
+
 echo "[verify] step 14a: assert DeletionProtectionEnabled flipped back to false on AWS"
 DP_FINAL="$(aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" \
   --query 'Table.DeletionProtectionEnabled' --output text)"

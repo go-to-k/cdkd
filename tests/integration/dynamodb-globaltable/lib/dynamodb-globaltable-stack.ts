@@ -202,10 +202,19 @@ export class DynamoDBGlobalTableStack extends cdk.Stack {
         {
           indexName: 'byOwner',
           partitionKey: { name: 'owner', type: ddb.AttributeType.STRING },
-          // -> Replicas[local].GlobalSecondaryIndexes[].ReadOnDemandThroughputSettings
-          maxReadRequestUnits: 50,
-          // -> GlobalSecondaryIndexes[].WriteOnDemandThroughputSettings
-          maxWriteRequestUnits: 60,
+          // Issue #1423: REMOVING these from the template must reset the live
+          // ceiling, not silently no-op. Under `drop-gsi-ondemand-limits` both
+          // are omitted, and verify.sh asserts DescribeTable reports the
+          // member ABSENT afterwards (the reset reads back as absence, never
+          // as -1).
+          ...(updateMode.includes('drop-gsi-ondemand-limits')
+            ? {}
+            : {
+                // -> Replicas[local].GlobalSecondaryIndexes[].ReadOnDemandThroughputSettings
+                maxReadRequestUnits: 50,
+                // -> GlobalSecondaryIndexes[].WriteOnDemandThroughputSettings
+                maxWriteRequestUnits: 60,
+              }),
         },
       ],
       removalPolicy: cdk.RemovalPolicy.DESTROY,
