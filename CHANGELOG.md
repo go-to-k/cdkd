@@ -1,3 +1,10 @@
+## [0.278.15](https://github.com/go-to-k/cdkd/compare/v0.278.14...v0.278.15) (2026-08-09)
+
+
+### Bug Fixes
+
+* **dynamodb:** reset a removed per-GSI on-demand limit instead of silently no-oping ([#1433](https://github.com/go-to-k/cdkd/issues/1433)) ([0e10091](https://github.com/go-to-k/cdkd/commit/0e100915c6754f8f0a220de6718ccd5f23752865))
+
 ## [0.278.14](https://github.com/go-to-k/cdkd/compare/v0.278.13...v0.278.14) (2026-08-09)
 
 
