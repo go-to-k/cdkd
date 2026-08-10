@@ -174,6 +174,52 @@ if [ "${HAS_STATEMENT}" != "yes" ] || [ "${HAS_CLIENTMOUNT}" != "true" ]; then
 fi
 echo "    OK: FileSystemPolicy attached with ClientMount statement (PutFileSystemPolicy wired)"
 
+# --- Assertion 5: baseline throughput is provisioned@1 ----------------
+TM_P1=$(aws efs describe-file-systems \
+  --file-system-id "${FS_ID}" --region "${REGION}" \
+  --query 'FileSystems[0].ThroughputMode' --output text)
+if [ "${TM_P1}" != "provisioned" ]; then
+  echo "FAIL: baseline ThroughputMode is '${TM_P1}', expected 'provisioned'" >&2
+  exit 1
+fi
+echo "    OK: baseline ThroughputMode == provisioned"
+
+# --- Phase 1b: throughput removal redeploy (issue #1160 efs batch) ----
+# The removal template drops ThroughputMode + ProvisionedThroughputInMibps.
+# EFS UpdateFileSystem merges (absent = "no change"), so pre-fix the live
+# file system silently stayed provisioned (billing included); post-fix the
+# provider mirrors CloudFormation's reset to the create default 'bursting'
+# (live CFn A/B 2026-08-11: provisioned@1MiBps -> bursting on removal).
+echo "==> Phase 1b: re-deploy dropping ThroughputMode/ProvisionedThroughputInMibps (removal reset)"
+CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes
+
+# The provider waits for the file system to return to `available`, but poll
+# with a bounded retry anyway so read-after-write lag cannot flake the run.
+TM_P2=""
+for _i in 1 2 3 4 5 6; do
+  TM_P2=$(aws efs describe-file-systems \
+    --file-system-id "${FS_ID}" --region "${REGION}" \
+    --query 'FileSystems[0].ThroughputMode' --output text)
+  [ "${TM_P2}" = "bursting" ] && break
+  sleep 10
+done
+if [ "${TM_P2}" != "bursting" ]; then
+  echo "FAIL: expected ThroughputMode=bursting after the removal redeploy (waited 60s), got '${TM_P2}' (removal silent-drop NOT closed)" >&2
+  exit 1
+fi
+# Replacement guard: the removal must be an in-place UPDATE (the file system
+# id must survive the redeploy).
+STATE_P2=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
+FS_ID_P2=$(echo "${STATE_P2}" | jq -r '.outputs.FileSystemId // empty')
+if [ "${FS_ID_P2}" != "${FS_ID}" ]; then
+  echo "FAIL: FileSystem was REPLACED by the removal redeploy (${FS_ID} -> ${FS_ID_P2})" >&2
+  exit 1
+fi
+echo "    OK: ThroughputMode reset to bursting in place (removal silent-drop closed)"
+
 # --- Phase 2: destroy -------------------------------------------------
 echo "==> Phase 2: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \

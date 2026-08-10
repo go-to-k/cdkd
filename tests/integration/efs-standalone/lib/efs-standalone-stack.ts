@@ -33,6 +33,14 @@ export class EfsStandaloneStack extends cdk.Stack {
       ],
     });
 
+    // CDKD_TEST_REMOVAL (issue #1160, efs batch): the baseline template sets
+    // ThroughputMode: provisioned + ProvisionedThroughputInMibps: 1; the
+    // removal phase drops both. EFS UpdateFileSystem MERGES (absent = "no
+    // change"), so pre-fix the live file system silently stayed provisioned
+    // (and kept billing); the provider must mirror CloudFormation's reset to
+    // the create default 'bursting' (live CFn A/B 2026-08-11).
+    const removal = process.env.CDKD_TEST_REMOVAL === 'true';
+
     // EFS FileSystem — exercises the #609 backfilled top-level properties:
     //  - LifecyclePolicies     (lifecyclePolicy → PutLifecycleConfiguration)
     //  - BackupPolicy          (enableAutomaticBackups → PutBackupPolicy)
@@ -41,6 +49,12 @@ export class EfsStandaloneStack extends cdk.Stack {
     const fs = new efs.FileSystem(this, 'Fs', {
       vpc,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
+      ...(removal
+        ? {}
+        : {
+            throughputMode: efs.ThroughputMode.PROVISIONED,
+            provisionedThroughputPerSecond: cdk.Size.mebibytes(1),
+          }),
       lifecyclePolicy: efs.LifecyclePolicy.AFTER_30_DAYS,
       enableAutomaticBackups: true,
       replicationOverwriteProtection: efs.ReplicationOverwriteProtection.ENABLED,

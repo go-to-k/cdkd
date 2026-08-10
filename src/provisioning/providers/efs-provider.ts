@@ -221,8 +221,32 @@ export class EFSProvider implements ResourceProvider {
     const oldThroughputMode = previousProperties['ThroughputMode'] as ThroughputMode | undefined;
     const oldProvisioned = previousProperties['ProvisionedThroughputInMibps'] as number | undefined;
 
+    // Removal semantics (issue #1160, efs batch) — live CFn A/B 2026-08-11
+    // split the SUSPECT row in two:
+    //  - Removing ThroughputMode alone from a NON-provisioned file system is
+    //    RETAINED by CloudFormation (elastic stayed elastic through a CFn
+    //    removal update), so the pass-through skip below is CFn parity there.
+    //    Pinned by a negative unit test — do not "fix" it into a divergence.
+    //  - Removing ThroughputMode + ProvisionedThroughputInMibps from a
+    //    'provisioned' file system IS reset by CloudFormation to the create
+    //    default 'bursting' (provisioned@1MiBps -> bursting, Provisioned
+    //    cleared). UpdateFileSystem itself merges (an absent field keeps the
+    //    live value), so mirror CFn by sending ThroughputMode: 'bursting'
+    //    explicitly. This also stops provisioned-throughput billing, which
+    //    the pre-fix silent drop kept running.
+    //  - Removing ONLY ProvisionedThroughputInMibps while keeping
+    //    ThroughputMode: 'provisioned' is deferred (no wire shape can reset
+    //    it — the API requires a value while the mode is provisioned, and
+    //    there is no documented default to reset to).
+    const effectiveThroughputMode =
+      newThroughputMode === undefined &&
+      newProvisioned === undefined &&
+      oldThroughputMode === 'provisioned'
+        ? ('bursting' as ThroughputMode)
+        : newThroughputMode;
+
     const throughputModeChanged =
-      newThroughputMode !== undefined && newThroughputMode !== oldThroughputMode;
+      effectiveThroughputMode !== undefined && effectiveThroughputMode !== oldThroughputMode;
     const provisionedChanged = newProvisioned !== undefined && newProvisioned !== oldProvisioned;
 
     // Separate post-create control-plane properties — each compares deep so a
@@ -256,7 +280,7 @@ export class EFSProvider implements ResourceProvider {
         await this.getClient().send(
           new UpdateFileSystemCommand({
             FileSystemId: physicalId,
-            ...(throughputModeChanged && { ThroughputMode: newThroughputMode }),
+            ...(throughputModeChanged && { ThroughputMode: effectiveThroughputMode }),
             ...(provisionedChanged && { ProvisionedThroughputInMibps: newProvisioned }),
           })
         );
