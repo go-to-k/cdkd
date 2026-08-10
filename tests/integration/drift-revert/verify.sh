@@ -41,6 +41,7 @@ fi
 
 cleanup() {
   rc=$?
+  rm -f "${BOGUS_DRIFT_LOG:-}"
   if [ "${rc}" -ne 0 ]; then
     echo "[verify] FAIL (exit ${rc}) — attempting destroy to clean up"
     ${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force || true
@@ -85,6 +86,10 @@ ${CLI} drift "${STACK}" --state-bucket "${STATE_BUCKET}"
 # field silently dropping out of the comparison.
 echo "[verify] step 6b: bogus principal unique id in the baseline (expect exit 1)"
 STACK="${STACK}" STATE_BUCKET="${STATE_BUCKET}" node inject-principal-uniqueid.ts bogus
+# Removed by `cleanup` rather than inline or by a second EXIT trap: both
+# assertion paths below `exit 1` before any inline `rm`, and a second
+# `trap ... EXIT` would REPLACE the cleanup trap and silently disable the
+# destroy-on-failure this fixture depends on.
 BOGUS_DRIFT_LOG="$(mktemp)"
 set +e
 ${CLI} drift "${STACK}" --state-bucket "${STATE_BUCKET}" >"${BOGUS_DRIFT_LOG}" 2>&1
@@ -102,7 +107,6 @@ if ! grep -q "DriftBucketPolicy" "${BOGUS_DRIFT_LOG}"; then
   cat "${BOGUS_DRIFT_LOG}" >&2
   exit 1
 fi
-rm -f "${BOGUS_DRIFT_LOG}"
 echo "[verify] step 6b ok: exit ${rc}, bucket policy named"
 
 echo "[verify] step 6c: the role's REAL unique id in the baseline (expect exit 0)"

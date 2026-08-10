@@ -159,16 +159,6 @@ export function collectPrincipalForms(value: unknown): {
   return { uniqueIds, arns };
 }
 
-/** The IAM unique ids used as principals anywhere in `value`. */
-export function collectPrincipalUniqueIds(value: unknown): Set<string> {
-  return collectPrincipalForms(value).uniqueIds;
-}
-
-/** The IAM role / user ARNs used as principals anywhere in `value`. */
-export function collectPrincipalArns(value: unknown): Set<string> {
-  return collectPrincipalForms(value).arns;
-}
-
 /**
  * Replace every principal string that is a KNOWN unique id with the ARN it was
  * proven to stand for. Only `Principal` / `NotPrincipal` positions are touched

@@ -36,6 +36,7 @@ import { CloudControlProvider } from '../../provisioning/cloud-control-provider.
 import { withStackName } from '../../provisioning/resource-name.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { withRetry } from '../../deployment/retry.js';
+import { isThrottlingError } from '../../deployment/retryable-errors.js';
 import type { ReadCurrentStateContext, ResourceProvider } from '../../types/resource.js';
 import type { ResourceState, StackState } from '../../types/state.js';
 
@@ -399,34 +400,53 @@ function createIamPrincipalUniqueIdResolver(awsClients: AwsClients): PrincipalUn
           entityId = user?.UserId;
         }
         // Same principal, not merely the same NAME — see the note above.
-        if (entityArn === arn) {
+        // Compared case-INSENSITIVELY on the name-bearing tail: `GetRole` is
+        // case-insensitive on the name, so `…:role/MyRole` legitimately comes
+        // back as the ARN AWS stored, and treating that as "a different
+        // entity" would refuse a principal that is provably the same one.
+        if (entityArn !== undefined && entityArn.toLowerCase() === arn.toLowerCase()) {
           uniqueId = entityId;
-        } else if (entityArn !== undefined) {
+        } else {
           getLogger().debug(
-            `Principal ${arn} resolved to a different entity (${entityArn}) — ` +
+            `Principal ${arn} resolved to ${entityArn ?? 'no entity'} — ` +
               `same name in this account or under another IAM path; ` +
               `leaving the policy principal comparison untouched.`
           );
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
+        // Classified on the ERROR NAME, never on the message: IAM's
+        // `NoSuchEntity` text embeds the ROLE NAME ("The role with name
+        // AccessDeniedHandlerRole cannot be found"), so a message match turns
+        // an ordinary deleted role into the scary permission warning — the
+        // exact swallow this classification exists to avoid.
         const name = error instanceof Error ? error.name : '';
-        // A missing permission is the one failure the user can act on, and it
-        // otherwise surfaces as unexplained permanent drift. NoSuchEntity —
-        // the expected deleted-principal case — stays at debug.
-        if (!warnedOnDenied && /AccessDenied|not authorized/i.test(`${name} ${message}`)) {
+        const status = (error as { $metadata?: { httpStatusCode?: number } })?.$metadata
+          ?.httpStatusCode;
+        const denied = /^AccessDenied|^NotAuthorized/i.test(name) || status === 403;
+        if (!warnedOnDenied && denied) {
           warnedOnDenied = true;
+          // The AWS message names the CALLER's principal ARN + account id, so
+          // it stays at debug (below) rather than riding a warn line into a
+          // screenshot or a public CI log — same reason the state-bucket
+          // banner was demoted.
           getLogger().warn(
-            `Cannot read IAM principals (${message}). A resource policy whose principal AWS ` +
-              `rendered as a unique id (AROA…/AIDA…) may therefore report drift that is only a ` +
-              `spelling difference; grant iam:GetRole / iam:GetUser to resolve it.`
-          );
-        } else {
-          getLogger().debug(
-            `Could not resolve the unique id of principal ${arn} (${message}); ` +
-              `leaving the policy principal comparison untouched.`
+            `Cannot read IAM principals (${name || 'access denied'}). A resource policy whose ` +
+              `principal AWS rendered as a unique id (AROA…/AIDA…) may therefore report drift ` +
+              `that is only a spelling difference; grant iam:GetRole / iam:GetUser to resolve ` +
+              `it, or re-run with --verbose for the full error.`
           );
         }
+        getLogger().debug(
+          `Could not resolve the unique id of principal ${arn} (${message}); ` +
+            `leaving the policy principal comparison untouched.`
+        );
+        // A THROTTLE is transient, and caching it would poison the rest of the
+        // run: every later resource sharing this principal would inherit the
+        // phantom drift, and `--revert` would then push the `AROA…` form at
+        // S3, which rejects it outright. Mirrors `write-only-properties.ts`,
+        // which likewise caches only conclusive answers.
+        if (isThrottlingError(error)) return undefined;
       }
     }
     cache.set(arn, uniqueId);

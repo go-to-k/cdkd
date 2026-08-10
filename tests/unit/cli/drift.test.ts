@@ -2,13 +2,15 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test'
 import type { ResourceState, StackState } from '../../../src/types/state.js';
 
 const errorSpy = vi.hoisted(() => vi.fn());
+// Hoisted so the issue-#1515 denial tests can read what the command WARNED.
+const warnSpy = vi.hoisted(() => vi.fn());
 
 vi.mock('../../../src/utils/logger.js', () => ({
   getLogger: () => ({
     setLevel: vi.fn(),
     debug: vi.fn(),
     info: vi.fn(),
-    warn: vi.fn(),
+    warn: warnSpy,
     error: errorSpy,
     child: () => ({
       debug: vi.fn(),
@@ -204,6 +206,7 @@ describe('cdkd drift', () => {
     mockCcReadCurrentState.mockReset().mockResolvedValue(undefined);
     mockIamSend.mockReset();
     errorSpy.mockReset();
+    warnSpy.mockReset();
     // Stub process.exit so DriftDetectedError -> exit(1) doesn't kill the test.
     exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
       throw new Error('__exit__');
@@ -1356,6 +1359,129 @@ describe('cdkd drift', () => {
       expect(error).toBeUndefined();
       expect(output).toContain('no drift detected');
       expect(exitSpy).not.toHaveBeenCalled();
+    });
+
+    it('warns ONCE when the IAM lookup is denied, and stays quiet for a deleted role', async () => {
+      // A missing `iam:GetRole` otherwise surfaces as unexplained permanent
+      // drift, visible only under --verbose. The classification is on the
+      // error NAME, never the message: IAM's NoSuchEntity text embeds the ROLE
+      // NAME, so `The role with name AccessDeniedHandler cannot be found`
+      // would otherwise be reported as a permission problem.
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValueOnce(
+        makeState({
+          PolicyA: makeResource({
+            physicalId: 'bucket-a',
+            resourceType: 'AWS::S3::BucketPolicy',
+            properties: policyProps(ROLE_UNIQUE_ID),
+            observedProperties: policyProps(ROLE_UNIQUE_ID),
+          }),
+          PolicyB: makeResource({
+            physicalId: 'bucket-b',
+            resourceType: 'AWS::S3::BucketPolicy',
+            properties: policyProps(ROLE_UNIQUE_ID.replace('FATO', 'FATX')),
+            observedProperties: policyProps(ROLE_UNIQUE_ID.replace('FATO', 'FATX')),
+          }),
+        })
+      );
+      mockRegistryGetProvider.mockReturnValue({
+        readCurrentState: async () => policyProps(ROLE_ARN),
+      });
+      const denied = Object.assign(new Error('User is not authorized to perform: iam:GetRole'), {
+        name: 'AccessDeniedException',
+      });
+      mockIamSend.mockRejectedValue(denied);
+
+      await runDrift(['TestStack']);
+
+      const denialWarnings = warnSpy.mock.calls
+        .map((c) => String(c[0]))
+        .filter((m) => m.includes('Cannot read IAM principals'));
+      expect(denialWarnings).toHaveLength(1);
+      // The raw AWS message names the CALLER's principal + account, so it must
+      // not ride the warn line.
+      expect(denialWarnings[0]).not.toContain('User is not authorized to perform');
+    });
+
+    it('does not warn about permissions when the role is simply GONE', async () => {
+      arrangeBucketPolicy(ROLE_UNIQUE_ID, ROLE_ARN);
+      mockIamSend.mockRejectedValue(
+        Object.assign(
+          new Error('The role with name AccessDeniedHandlerRole cannot be found.'),
+          { name: 'NoSuchEntityException' }
+        )
+      );
+
+      const { output } = await runDrift(['TestStack']);
+
+      expect(output).toContain('drift detected');
+      expect(
+        warnSpy.mock.calls.map((c) => String(c[0])).some((m) => m.includes('Cannot read IAM'))
+      ).toBe(false);
+    });
+
+    it('caches a conclusive failure but NOT a throttle', async () => {
+      // Caching a throttle would poison the rest of the run: every later
+      // resource sharing the principal inherits the phantom drift, and
+      // `--revert` then pushes the AROA form at S3, which rejects it.
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValueOnce(
+        makeState({
+          PolicyA: makeResource({
+            physicalId: 'bucket-a',
+            resourceType: 'AWS::S3::BucketPolicy',
+            properties: policyProps(ROLE_UNIQUE_ID),
+            observedProperties: policyProps(ROLE_UNIQUE_ID),
+          }),
+          PolicyB: makeResource({
+            physicalId: 'bucket-b',
+            resourceType: 'AWS::S3::BucketPolicy',
+            properties: policyProps(ROLE_UNIQUE_ID),
+            observedProperties: policyProps(ROLE_UNIQUE_ID),
+          }),
+        })
+      );
+      mockRegistryGetProvider.mockReturnValue({
+        readCurrentState: async () => policyProps(ROLE_ARN),
+      });
+      mockIamSend.mockRejectedValue(
+        Object.assign(new Error('Rate exceeded'), { name: 'ThrottlingException' })
+      );
+
+      await runDrift(['TestStack']);
+
+      // Both resources tried — the first failure was NOT cached.
+      expect(mockIamSend).toHaveBeenCalledTimes(2);
+    });
+
+    it('caches a DEFINITIVE failure so a deleted role costs one call, not one per resource', async () => {
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValueOnce(
+        makeState({
+          PolicyA: makeResource({
+            physicalId: 'bucket-a',
+            resourceType: 'AWS::S3::BucketPolicy',
+            properties: policyProps(ROLE_UNIQUE_ID),
+            observedProperties: policyProps(ROLE_UNIQUE_ID),
+          }),
+          PolicyB: makeResource({
+            physicalId: 'bucket-b',
+            resourceType: 'AWS::S3::BucketPolicy',
+            properties: policyProps(ROLE_UNIQUE_ID),
+            observedProperties: policyProps(ROLE_UNIQUE_ID),
+          }),
+        })
+      );
+      mockRegistryGetProvider.mockReturnValue({
+        readCurrentState: async () => policyProps(ROLE_ARN),
+      });
+      mockIamSend.mockRejectedValue(
+        Object.assign(new Error('Role not found'), { name: 'NoSuchEntityException' })
+      );
+
+      await runDrift(['TestStack']);
+
+      expect(mockIamSend).toHaveBeenCalledTimes(1);
     });
 
     it('resolves one ARN ONCE across resources that share it', async () => {

@@ -1,11 +1,14 @@
 import { describe, it, expect, vi } from 'vite-plus/test';
 import {
   canonicalizePrincipalUniqueIds,
-  collectPrincipalArns,
-  collectPrincipalUniqueIds,
+  collectPrincipalForms,
   parseIamPrincipalArn,
   rewritePrincipalUniqueIds,
 } from '../../../src/analyzer/drift-principal-normalize.js';
+
+// The module exports ONE walk; these read the two halves it returns.
+const collectPrincipalUniqueIds = (v: unknown): Set<string> => collectPrincipalForms(v).uniqueIds;
+const collectPrincipalArns = (v: unknown): Set<string> => collectPrincipalForms(v).arns;
 
 /**
  * Issue #1515: AWS renders an IAM principal inside a resource policy either as
@@ -241,14 +244,42 @@ describe('drift principal unique-id canonicalization (issue #1515)', () => {
       expect(baseline).toEqual(aws);
     });
 
-    it('makes NO resolver call when a unique id has no candidate ARN opposite it', async () => {
+    it('returns both sides UNTOUCHED when a unique id has no candidate ARN opposite it', async () => {
+      // Asserting "the resolver was not called" here would be vacuous — the
+      // loop that calls it iterates the ARN set, so deleting the guard changes
+      // nothing. The observable contract is that the short-circuit returns the
+      // ORIGINAL objects, which is also what keeps the comparator's inputs
+      // free of a needless deep copy per resource.
+      const baselineIn = policy(ROLE_UNIQUE_ID);
+      const awsIn = policy(ROLE_UNIQUE_ID);
       const resolve = resolverFor({ [ROLE_ARN]: ROLE_UNIQUE_ID });
-      await canonicalizePrincipalUniqueIds(
-        policy(ROLE_UNIQUE_ID),
-        policy(ROLE_UNIQUE_ID),
+
+      const { baseline, aws } = await canonicalizePrincipalUniqueIds(baselineIn, awsIn, resolve);
+
+      expect(baseline).toBe(baselineIn);
+      expect(aws).toBe(awsIn);
+      expect(resolve).not.toHaveBeenCalled();
+    });
+
+    it('leaves a policy carried as a JSON STRING alone (documented bound)', async () => {
+      // Re-serializing a parsed string could change its formatting and
+      // manufacture a DIFFERENT phantom drift, so the walk is scoped to the
+      // object shape. Pinned so the bound is a decision, not an accident.
+      const asString = {
+        Bucket: 'my-bucket',
+        PolicyDocument: JSON.stringify({
+          Statement: [{ Principal: { AWS: ROLE_UNIQUE_ID } }],
+        }),
+      };
+      const resolve = resolverFor({ [ROLE_ARN]: ROLE_UNIQUE_ID });
+
+      const { baseline } = await canonicalizePrincipalUniqueIds(
+        asString,
+        { Bucket: 'my-bucket', PolicyDocument: JSON.stringify({ Statement: [] }) },
         resolve
       );
 
+      expect(baseline).toBe(asString);
       expect(resolve).not.toHaveBeenCalled();
     });
 

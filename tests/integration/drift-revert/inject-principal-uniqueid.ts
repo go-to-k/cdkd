@@ -94,11 +94,14 @@ const state = JSON.parse(await body.Body!.transformToString()) as {
 let rewritten = 0;
 for (const [logicalId, resource] of Object.entries(state.resources ?? {})) {
   if (resource['resourceType'] !== 'AWS::S3::BucketPolicy') continue;
-  // The TEMPLATE side keeps the ARN even after a previous mode rewrote the
-  // baseline, so it is the reliable source for the role to look up.
-  const templateSlots: Array<{ get: () => string; set: (next: string) => void }> = [];
-  principalSlots(resource['properties'], templateSlots);
-  const roleArn = templateSlots.map((s) => s.get()).find((v) => /^arn:[a-z0-9-]+:iam::\d{12}:role\//.test(v));
+  // Both sides are searched for the role to look up: `--revert` (step 5) rewrites `properties` from
+  // the AWS snapshot for any resource it reverted, so the template side alone
+  // could already hold the `AROA…` form and this script would then throw on a
+  // fixture that is perfectly healthy — a self-inflicted flake.
+  const slots: Array<{ get: () => string; set: (next: string) => void }> = [];
+  principalSlots(resource['properties'], slots);
+  principalSlots(resource['observedProperties'], slots);
+  const roleArn = slots.map((s) => s.get()).find((v) => /^arn:[a-z0-9-]+:iam::\d{12}:role\//.test(v));
   if (!roleArn) continue;
 
   let replacement = BOGUS_UNIQUE_ID;
