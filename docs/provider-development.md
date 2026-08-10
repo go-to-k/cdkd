@@ -887,19 +887,46 @@ implementation. Three details are worth copying:
   that only asserts message CONTENT cannot catch this being moved inside the
   `try`, because the wrapper EMBEDS the original message — assert the raw
   message PREFIX and an absent `cause` instead.
-- **Refuse on `create()`; on `update()`, WARN.** This asymmetry is the rule,
-  not a Glue quirk. **`cdkd rollback` replays from cdkd STATE, not from the
-  template** — `rollback-executor.ts` calls
-  `provider.update(..., op.previousState.properties, ...)`. So a resource whose
-  state record already carries the offending value (written by an older cdkd
-  build, or by an import) becomes not just un-updatable but **UN-ROLLBACKABLE**,
-  and unlike the update case the user has no template-side remedy at all — only
-  hand-editing `state.json`. Before adding ANY refusal to an `update()`, ask
-  what happens when the rollback executor feeds it a historical state record.
-  Note the same exposure reaches `create()` through the reverse-replacement
-  arm, which revives the OLD resource from `previousState.properties` — issue
-  [#1463](https://github.com/go-to-k/cdkd/issues/1463) tracks giving providers
-  a way to tell a replay apart from a fresh provision.
+- **Refuse a TEMPLATE-driven call; WARN on a STATE REPLAY.** This asymmetry is
+  the rule, not a Glue quirk, and the axis is the ORIGIN of the properties, not
+  the operation name. **`cdkd rollback` replays from cdkd STATE, not from the
+  template.** A resource whose state record already carries the offending value
+  (written by an older cdkd build, or by an import) would become not just
+  un-updatable but **UN-RESTORABLE**, and unlike the template case the user has
+  no remedy at all — only hand-editing `state.json`. Concretely:
+
+  - **`update()` — always warn.** `rollback-executor.ts` calls
+    `provider.update(..., op.previousState.properties, ...)`, so `update()` is
+    a replay path unconditionally and there is no signal to test.
+  - **`create()` — refuse, unless `CreateContext.replayingState` is set.**
+    `create()` is a replay path only through the rollback executor's
+    reverse-replacement arm, which revives the OLD resource from
+    `previousState.properties` (issue
+    [#1199](https://github.com/go-to-k/cdkd/issues/1199)). That arm — and
+    nothing else in cdkd — passes the optional 4th parameter
+    `context?: CreateContext` with `replayingState: true` (issue
+    [#1463](https://github.com/go-to-k/cdkd/issues/1463)). Every other create
+    call site (the deploy engine's CREATE, its property-driven / `--replace` /
+    `--recreate-via-*` replacement creates, and the providers that re-create
+    inside their own `update()`) is driven by freshly resolved TEMPLATE
+    properties and passes no context, so the refusal stands where the user can
+    actually act on it.
+
+  The parameter is optional, so a provider with no pre-flight needs no change.
+  A provider that HAS one threads `context` from `create()` to its check and
+  emits a warning instead of throwing when the flag is set. What the flag means
+  (and, just as importantly, what it does NOT license — nothing about the
+  properties' content, no relaxing of data-safety guards, no skipping the
+  validation that protects the AWS call itself) is spelled out on `CreateContext`
+  in [src/provisioning/region-check.ts](../src/provisioning/region-check.ts),
+  alongside its sibling `DeleteContext`.
+
+  One honest consequence: warning on a replay means the value IS forwarded on
+  the create path, unlike the update path where the SDK command has no member
+  for it. So the re-created resource is degraded in whatever way the original
+  was, and the AWS call may still fail. That is strictly better than refusing —
+  a refusal guarantees the resource is not restored — but the warning must SAY
+  so and name the fix-forward (`cdkd deploy` with the working shape).
 - Where update genuinely does not forward the property anyway (cdkd does not
   wire Glue's update-only `UpdateOpenTableFormatInput` shape), warning costs nothing:
   no bad value can reach AWS from that path, and the user still gets the full

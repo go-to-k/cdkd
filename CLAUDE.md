@@ -80,7 +80,7 @@ Full per-field semantics (v1-v8 migration story, `observedProperties` / `deletio
 
 ```typescript
 interface ResourceProvider {
-  create(logicalId: string, resourceType: string, properties: Record<string, unknown>): Promise<ResourceCreateResult>;
+  create(logicalId: string, resourceType: string, properties: Record<string, unknown>, context?: CreateContext): Promise<ResourceCreateResult>;
   update(logicalId: string, physicalId: string, resourceType: string, properties: Record<string, unknown>, previousProperties: Record<string, unknown>): Promise<ResourceUpdateResult>;
   delete(logicalId: string, physicalId: string, resourceType: string, properties?: Record<string, unknown>, context?: DeleteContext): Promise<void>;
   getAttribute(physicalId: string, resourceType: string, attributeName: string): Promise<unknown>;

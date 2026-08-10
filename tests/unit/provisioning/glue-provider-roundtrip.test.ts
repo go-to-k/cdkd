@@ -472,6 +472,76 @@ describe('GlueProvider read-update round-trip', () => {
     expect(hit).toContain('A CREATE of this table would be refused outright');
   });
 
+  // ─── #1463: CreateContext.replayingState downgrades the refusal ──────
+  //
+  // The create-side twin of the update asymmetry above. `rollback-executor`'s
+  // reverse-replacement arm revives the OLD resource by calling `create()`
+  // with `previousState.properties` — a cdkd STATE record, not a template — so
+  // the refusal would fail that rollback operation and leave the old table
+  // gone, with no template-side remedy. `CreateContext.replayingState` is how
+  // the executor says so, and the pre-flight warns instead.
+
+  /** The properties shape both #1463 cases below feed to `create()`. */
+  const REPLAY_TABLE_PROPS = {
+    DatabaseName: 'mydb',
+    OpenTableFormatInput: {
+      IcebergInput: { MetadataOperation: 'CREATE', IcebergTableInput: ICEBERG_TABLE_SPEC },
+    },
+    TableInput: { Name: 'events_iceberg', TableType: 'EXTERNAL_TABLE' },
+  };
+
+  it('AWS::Glue::Table — create() WARNS instead of refusing when replaying a state record, and the create goes through (#1463)', async () => {
+    mockSend.mockResolvedValueOnce({});
+
+    const result = await provider.create('L', 'AWS::Glue::Table', REPLAY_TABLE_PROPS, {
+      replayingState: true,
+    });
+
+    // The whole point: the rollback's re-create SUCCEEDS. Without the fix this
+    // throws and the old table is never restored.
+    expect(result.physicalId).toBe('mydb|events_iceberg');
+    const createCall = mockSend.mock.calls.find((c) => c[0] instanceof CreateTableCommand);
+    expect(createCall).toBeDefined();
+    // UNLIKE the update path (whose command has no OpenTableFormatInput member
+    // at all), the create DOES forward the blob verbatim — so the re-created
+    // table is degraded in exactly the way the original was, which is what the
+    // warning tells the user. Pinning this stops a future "just strip the key
+    // on replay" edit from silently changing what AWS receives.
+    expect(
+      (createCall![0].input as { OpenTableFormatInput?: unknown }).OpenTableFormatInput
+    ).toStrictEqual({
+      IcebergInput: { MetadataOperation: 'CREATE', IcebergTableInput: ICEBERG_TABLE_SPEC },
+    });
+
+    // Same actionable body as the refusal, with the replay-specific lead.
+    const hit = warnMessages().find((m) => m.includes('IcebergTableInput'));
+    expect(hit).toBeDefined();
+    expectIcebergMessageBody(hit!, 'IcebergTableInput', 'L');
+    expect(hit).toContain('REPLAYING a historical cdkd STATE record');
+    expect(hit).toContain('#1463');
+    // It is a WARNING, not the refusal text.
+    expect(hit).not.toContain('cdkd refuses it before calling Glue');
+  });
+
+  it.each([
+    ['no context at all (the deploy-engine CREATE)', undefined],
+    ['an explicit replayingState: false', { replayingState: false } as const],
+    ['a context that carries no replayingState', {} as const],
+  ])(
+    'AWS::Glue::Table — the template path still REFUSES with %s (#1463)',
+    async (_label, context) => {
+      // The refusal must survive the new parameter. Only a state replay earns
+      // the downgrade; a template-driven create can be fixed by the user, so a
+      // fast, actionable failure is still the right answer.
+      const error = await captureRejection(
+        provider.create('L', 'AWS::Glue::Table', REPLAY_TABLE_PROPS, context)
+      );
+      expectIcebergRefusal(error, 'IcebergTableInput', 'L');
+      expect(mockSend).not.toHaveBeenCalled();
+      expect(warnMessages()).toEqual([]);
+    }
+  );
+
   it('AWS::Glue::Table — the refusal also covers the SDK spelling CreateIcebergTableInput (#1454)', async () => {
     // A hand-written template can carry either spelling; neither deploys.
     const error = await captureRejection(

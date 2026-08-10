@@ -148,14 +148,14 @@ export interface ResourceImportResult {
 }
 
 /**
- * Context passed to a provider's `delete` method.
+ * Contexts passed to a provider's `create` / `delete` methods.
  *
  * Re-exported from `src/provisioning/region-check.ts` so that callers
  * implementing the provider interface only need to import from
  * `src/types/resource.ts`.
  */
-export type { DeleteContext } from '../provisioning/region-check.js';
-import type { DeleteContext } from '../provisioning/region-check.js';
+export type { CreateContext, DeleteContext } from '../provisioning/region-check.js';
+import type { CreateContext, DeleteContext } from '../provisioning/region-check.js';
 
 /**
  * Cross-resource context passed to `ResourceProvider.readCurrentState`
@@ -307,12 +307,21 @@ export interface ResourceProvider {
    * @param logicalId Logical ID from template
    * @param resourceType CloudFormation resource type (e.g., "AWS::S3::Bucket")
    * @param properties Resource properties
+   * @param context Create-time context (optional, for back-compat). Today it
+   *   carries only `replayingState`, set by the rollback executor's
+   *   reverse-replacement arm when `properties` come from a historical cdkd
+   *   STATE record instead of the template — a provider PRE-FLIGHT REFUSAL
+   *   must downgrade to a warning in that case, because the user has no
+   *   template-side remedy (issue #1463). See `CreateContext` in
+   *   `src/provisioning/region-check.ts` for the full contract, and
+   *   `docs/provider-development.md` §1a for when a refusal is allowed at all.
    * @returns Physical resource ID and attributes
    */
   create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult>;
 
   /**

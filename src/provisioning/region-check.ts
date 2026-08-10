@@ -1,6 +1,53 @@
 import { ProvisioningError } from '../utils/error-handler.js';
 
 /**
+ * Context passed to provider create operations (issue #1463).
+ *
+ * The sibling of {@link DeleteContext}: optional, so a provider that does not
+ * care about it needs no change, and absent means "assume the historical
+ * behavior".
+ *
+ * It exists for ONE question a provider's `create()` could not previously
+ * answer: is this call provisioning from the user's TEMPLATE, or replaying a
+ * historical cdkd STATE record?
+ */
+export interface CreateContext {
+  /**
+   * `true` when the properties handed to `create()` come from a cdkd STATE
+   * record rather than from the synthesized template — today that is the
+   * rollback executor's REVERSE-REPLACEMENT arm, which revives the OLD
+   * physical resource from `previousState.properties` (issue #1199).
+   *
+   * **What a provider MAY conclude from it.** That the user has no
+   * template-side remedy for whatever the properties contain. A state record
+   * was written by some earlier cdkd build against some earlier AWS API, and
+   * the only way a user could edit it is by hand-editing `state.json`. So a
+   * PRE-FLIGHT REFUSAL (see `docs/provider-development.md` §1a) must downgrade
+   * to a WARNING here: refusing would leave the old resource unrestorable with
+   * no action the user can take. This is the create-side twin of the
+   * refuse-on-create / warn-on-update asymmetry `update()` already has — the
+   * update path is a replay path unconditionally, whereas `create()` is one
+   * only when this flag is set.
+   *
+   * **What a provider MUST NOT conclude from it.** Nothing about the
+   * properties' CONTENT: they are neither more nor less trustworthy than
+   * template properties, are NOT pre-resolved differently, and carry no
+   * guarantee of being a superset or subset of what the template would say.
+   * It is also not a "best effort" or "dry run" signal — the create must still
+   * either produce a real resource or throw. Validation that protects the AWS
+   * call itself (a required field is missing, a physical id is malformed)
+   * stays a hard error: warning past it would just move the failure later.
+   * And it says nothing about WHY the rollback is happening, so it must not be
+   * used to relax data-safety guards.
+   *
+   * Absent / `false` = an ordinary template-path create (`cdkd deploy`, the
+   * replacement create, the `--replace` / `--recreate-via-*` re-creates), where
+   * a refusal IS the right behavior because the user can edit the template.
+   */
+  replayingState?: boolean;
+}
+
+/**
  * Context passed to provider delete operations.
  *
  * `expectedRegion` is the region that the resource is expected to live in,

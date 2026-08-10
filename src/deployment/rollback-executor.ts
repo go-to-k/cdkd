@@ -49,7 +49,7 @@
 import type { DeploymentEvent } from '../types/deployment-events.js';
 import { extractDeploymentEventError } from '../types/deployment-events.js';
 import type { ResourceState } from '../types/state.js';
-import type { ResourceProvider } from '../types/resource.js';
+import type { CreateContext, ResourceProvider } from '../types/resource.js';
 import type { Logger } from '../types/config.js';
 import type { ProviderRegistry } from '../provisioning/provider-registry.js';
 import { STATEFUL_TYPES } from '../provisioning/stateful-types.js';
@@ -72,6 +72,22 @@ import {
 
 /** The `--skip-final-snapshot` flag name cited by every refusal below. */
 const SKIP_FINAL_SNAPSHOT_FLAG = '--skip-final-snapshot';
+
+/**
+ * The {@link CreateContext} every reverse-replacement re-create passes
+ * (issue #1463). Both arms of that path — the create-first attempt and the
+ * delete-new-first retry — revive the OLD resource from
+ * `previousState.properties`, i.e. from a cdkd STATE record rather than the
+ * template, so a provider pre-flight refusal has no template-side remedy and
+ * must downgrade to a warning. Declared once so the two arms cannot drift.
+ *
+ * This is the ONLY create call site in cdkd that replays state; every other
+ * one (the deploy engine's CREATE, its property-driven / `--replace` /
+ * `--recreate-via-*` replacement creates, and the providers that re-create
+ * inside their own `update()`) is driven by freshly resolved TEMPLATE
+ * properties and deliberately passes no context, keeping the refusal.
+ */
+const REPLAYING_STATE_CREATE_CONTEXT: CreateContext = { replayingState: true };
 
 /**
  * Which provisioning layer a delete must be judged against: the CURRENT
@@ -956,7 +972,13 @@ async function replaySingle(
           // A genuine collision must NOT be retried here — it falls through
           // to the delete-new-first fallback below instead.
           createResult = await withRetry(
-            () => createProvider.create(op.logicalId, op.resourceType, { ...prev.properties }),
+            () =>
+              createProvider.create(
+                op.logicalId,
+                op.resourceType,
+                { ...prev.properties },
+                REPLAYING_STATE_CREATE_CONTEXT
+              ),
             op.logicalId,
             {
               ...RECREATE_RETRY_SCHEDULE,
@@ -1001,7 +1023,13 @@ async function replaySingle(
           await afterOp?.(op.logicalId);
           try {
             createResult = await withRetry(
-              () => createProvider.create(op.logicalId, op.resourceType, { ...prev.properties }),
+              () =>
+                createProvider.create(
+                  op.logicalId,
+                  op.resourceType,
+                  { ...prev.properties },
+                  REPLAYING_STATE_CREATE_CONTEXT
+                ),
               op.logicalId,
               {
                 ...RECREATE_RETRY_SCHEDULE,

@@ -8,12 +8,31 @@ paths:
 
 ```typescript
 interface ResourceProvider {
-  create(logicalId: string, resourceType: string, properties: Record<string, unknown>): Promise<ResourceCreateResult>;
+  create(logicalId: string, resourceType: string, properties: Record<string, unknown>, context?: CreateContext): Promise<ResourceCreateResult>;
   update(logicalId: string, physicalId: string, resourceType: string, properties: Record<string, unknown>, previousProperties: Record<string, unknown>): Promise<ResourceUpdateResult>;
   delete(logicalId: string, physicalId: string, resourceType: string, properties?: Record<string, unknown>, context?: DeleteContext): Promise<void>;
   getAttribute(physicalId: string, resourceType: string, attributeName: string): Promise<unknown>;
 }
 ```
+
+`create`'s `context` (issue #1463) is the sibling of `delete`'s: optional,
+so most providers need no change, and it carries exactly one field today.
+`context.replayingState` is `true` when the properties come from a cdkd
+STATE record rather than the template — set ONLY by the rollback executor's
+reverse-replacement arm (`rollback-executor.ts`), which revives the OLD
+resource from `previousState.properties`. A provider PRE-FLIGHT REFUSAL
+(see [docs/provider-development.md](../../docs/provider-development.md) §1a)
+MUST downgrade to a warning when it is set: the user cannot edit a state
+record from the template, so refusing would leave the old resource
+unrestorable with only a hand-edit of `state.json` as a remedy. It licenses
+NOTHING else — it says nothing about the properties' content, is not a
+dry-run signal, and must not relax data-safety guards or the validation that
+protects the AWS call itself. Absent / `false` = an ordinary template-path
+create (`cdkd deploy`, the replacement / `--replace` / `--recreate-via-*`
+creates), where the refusal stands. `GlueProvider`'s
+`assertIcebergTableInputAbsent` is the only consumer today; the full contract
+is on `CreateContext` in `src/provisioning/region-check.ts`, next to
+`DeleteContext`.
 
 The `context.expectedRegion` parameter on `delete` is the region recorded
 in the stack state when the resource was created. Providers MUST verify
