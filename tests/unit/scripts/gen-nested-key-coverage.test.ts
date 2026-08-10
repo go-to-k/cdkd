@@ -24,10 +24,11 @@ import {
   collectWriteEvidence,
   collectWrittenMemberNames,
   countExpandingHandoffPoints,
-  expandGenericHandoffScopes,
   expandLiteralSegments,
   findDivergences,
   findStaleAllowListEntries,
+  findStaleSegmentRenames,
+  isHandoffCovered,
   loadReport,
   lowerFirst,
   lookupAllowEntry,
@@ -43,6 +44,7 @@ import {
 import {
   extractDefinitionShapes,
   extractNestedPropertyNames,
+  extractNestedPropertyPaths,
 } from '../../../scripts/refresh-cfn-schemas.mjs';
 import { parseProviderSource } from '../../../scripts/gen-property-coverage.ts';
 
@@ -61,18 +63,30 @@ const exactTarget: NestedKeyTarget = {
 const freshTarget: NestedKeyTarget = { ...exactTarget, freshObjectMapper: true };
 
 /**
- * Build the PATH-shaped audited units the classifier takes since #1448. Every
- * synthetic probe hangs its keys off one top-level so the scoped write lookup
- * has something to resolve against.
+ * Build the PATH-shaped audited units the classifier takes since #1448, at the
+ * FULL depth it audits since #1464. Every synthetic probe hangs its chains off
+ * one top-level so the scoped write lookup has something to resolve against;
+ * a chain may be dotted (`'EnvironmentVariables.Type'`) to probe depth.
  */
-const keyPaths = (topLevelProperty: string, ...keys: string[]): NestedKeyPath[] =>
-  keys.map((key) => ({ topLevelProperty, key, path: `${topLevelProperty}.${key}` }));
+const keyPaths = (topLevelProperty: string, ...chains: string[]): NestedKeyPath[] =>
+  chains.map((chain) => {
+    const segments = [topLevelProperty, ...chain.split('.')];
+    return {
+      topLevelProperty,
+      key: segments[segments.length - 1]!,
+      path: segments.join('.'),
+      segments,
+    };
+  });
 
-/** Build write evidence from a `{ scopeName: [membersBeneathIt] }` sketch. */
-const writeEvidence = (scopes: Record<string, readonly string[]>): ProviderWriteEvidence => ({
+/** Build write evidence from a `{ scopePath: [membersDirectlyBeneathIt] }` sketch. */
+const writeEvidence = (
+  scopes: Record<string, readonly string[]>,
+  handoffScopes: readonly string[] = []
+): ProviderWriteEvidence => ({
   written: new Set(Object.values(scopes).flat()),
   scopes: new Map(Object.entries(scopes).map(([k, v]) => [k, new Set(v)])),
-  handoffPoints: new Map(),
+  handoffScopes: new Set(handoffScopes),
 });
 
 /** The sibling module the real generic converter lives in (issue #1445). */
@@ -83,9 +97,14 @@ const CASE_CONVERT_SOURCE = readFileSync(
 const resolveCaseConvert = (specifier: string): string | undefined =>
   specifier === './agentcore-case-convert.js' ? CASE_CONVERT_SOURCE : undefined;
 
-/** Every hand-off point recorded anywhere in a provider's evidence. */
+/**
+ * Every hand-off POINT recorded anywhere in a provider's evidence — the
+ * terminal segment of each hand-off PATH, which is the unit the pre-#1464
+ * probes were written against and the unit
+ * {@link countExpandingHandoffPoints} still counts.
+ */
 const allHandoffPoints = (evidence: ProviderWriteEvidence): Set<string> =>
-  new Set([...evidence.handoffPoints.values()].flatMap((points) => [...points]));
+  new Set([...evidence.handoffScopes].map((p) => p.slice(p.lastIndexOf('.') + 1)));
 
 /** Every classification whose TERMINAL key is `key` (a key can span paths). */
 const entriesFor = (
@@ -304,14 +323,55 @@ describe('collectWriteEvidence (synthetic)', () => {
     expect([...(scopes.get('merged') ?? [])].sort()).toEqual(['inner', 'own']);
   });
 
-  it('records a member written ANY depth beneath the scope (the fixture is flat)', () => {
-    // `nestedProperties` flattens the whole interior of a top-level property,
-    // so `BuildBatchConfig.ComputeTypesAllowed` is an audited path even though
-    // the member lives under `Restrictions`. The scope has to match that depth.
+  it('records a nested member at its OWN path, not flattened into the ancestor (#1464)', () => {
+    // The #1464 inversion of "records a member written ANY depth beneath the
+    // scope": the CFn side now audits `BuildBatchConfig.Restrictions.
+    // ComputeTypesAllowed`, so the write index must place the member one level
+    // down instead of merging it into `buildBatchConfig`. Merging is what let a
+    // member vouch for its same-named cousin.
     const { scopes } = collectWriteEvidence(`
       const sdk = { buildBatchConfig: { restrictions: { computeTypesAllowed: [] } } };
     `);
-    expect(scopes.get('buildBatchConfig')?.has('computeTypesAllowed')).toBe(true);
+    expect([...(scopes.get('buildBatchConfig') ?? [])]).toEqual(['restrictions']);
+    expect([...(scopes.get('buildBatchConfig.restrictions') ?? [])]).toEqual([
+      'computeTypesAllowed',
+    ]);
+  });
+
+  it('keeps two same-named members at DIFFERENT depths apart (#1464)', () => {
+    // The bug the whole issue is about, in miniature: `Environment.Type` and
+    // `Environment.EnvironmentVariables.Type` are separate facts, so deleting
+    // one write must not leave the other vouching for it.
+    const { scopes } = collectWriteEvidence(`
+      const sdk = {
+        environment: {
+          type: p['Type'],
+          environmentVariables: vars.map((v) => ({ name: v.Name, type: v.Type })),
+        },
+      };
+    `);
+    expect([...(scopes.get('environment') ?? [])].sort()).toEqual([
+      'environmentVariables',
+      'type',
+    ]);
+    expect([...(scopes.get('environment.environmentVariables') ?? [])].sort()).toEqual([
+      'name',
+      'type',
+    ]);
+  });
+
+  it('a purely NESTED write opens no root scope of its own (#1464, bound 2 closed)', () => {
+    // Through #1448 every property assignment in the file opened a root scope,
+    // so `cloudWatchLogs` looked like a top-level even though it only ever
+    // appears nested — and a CFn top-level of that spelling was checked against
+    // it. Lexical nesting is now recorded only under its parent's path.
+    const { scopes } = collectWriteEvidence(`
+      class P {
+        c() { return { logsConfig: { cloudWatchLogs: { groupName: 3 } } }; }
+      }
+    `);
+    expect(scopes.has('cloudWatchLogs')).toBe(false);
+    expect([...(scopes.get('logsConfig.cloudWatchLogs') ?? [])]).toEqual(['groupName']);
   });
 
   it('peels `await` off a resolved value', () => {
@@ -750,15 +810,14 @@ describe('whole-blob hand-off walk (synthetic, issue #1445)', () => {
       `,
       'provider.ts'
     );
-    expect(evidence.handoffPoints.get('PlacementStrategies')).toEqual(
-      new Set(['placementStrategy'])
-    );
-    expect(evidence.handoffPoints.get('placementStrategies')).toEqual(
-      new Set(['placementStrategy'])
-    );
+    expect(evidence.handoffScopes.has('placementStrategy')).toBe(true);
+    // …and the CFn spelling is registered as a SIBLING path (both renderings),
+    // which is what the audited `PlacementStrategies.Type` resolves against.
+    expect(evidence.handoffScopes.has('PlacementStrategies')).toBe(true);
+    expect(evidence.handoffScopes.has('placementStrategies')).toBe(true);
   });
 
-  it('records a NESTED hand-off against its enclosing scope, not only its own name', () => {
+  it('records a NESTED hand-off at its FULL path, so the credit is prefix-bounded', () => {
     const evidence = collectWriteEvidence(
       `
       class P {
@@ -775,13 +834,29 @@ describe('whole-blob hand-off walk (synthetic, issue #1445)', () => {
       `,
       'provider.ts'
     );
-    expect(evidence.handoffPoints.get('containerDefinitions')?.has('linuxParameters')).toBe(
-      true
-    );
+    expect(evidence.handoffScopes.has('containerDefinitions.linuxParameters')).toBe(true);
+    // The bounding, restated in the #1464 shape: the SIBLING blob is NOT
+    // wildcarded, so `containerDefinitions.portMappings.containerPortRange`
+    // (the #1472 drop) keeps having to prove itself.
+    expect(isHandoffCovered(evidence.handoffScopes, 'containerDefinitions')).toBe(false);
+    expect(
+      isHandoffCovered(
+        evidence.handoffScopes,
+        'containerDefinitions.linuxParameters.capabilities',
+        'add'
+      )
+    ).toBe(true);
+    expect(
+      isHandoffCovered(
+        evidence.handoffScopes,
+        'containerDefinitions.portMappings',
+        'containerPortRange'
+      )
+    ).toBe(false);
   });
 });
 
-describe('reachableSdkMemberNames + expandGenericHandoffScopes (issue #1445)', () => {
+describe('reachableSdkMemberNames + hand-off credit bounding (issues #1445 / #1464)', () => {
   const interfaces = new Map<string, Map<string, SdkMemberType>>([
     [
       'ContainerDefinition',
@@ -860,29 +935,46 @@ describe('reachableSdkMemberNames + expandGenericHandoffScopes (issue #1445)', (
     ]);
   });
 
-  it('folds the hand-off point INTO the scope its enclosing write owns', () => {
-    const expanded = expandGenericHandoffScopes(
-      {
-        written: new Set(['containerDefinitions', 'linuxParameters']),
-        scopes: new Map([['containerDefinitions', new Set(['name', 'linuxParameters'])]]),
-        handoffPoints: new Map([['containerDefinitions', new Set(['linuxParameters'])]]),
-      },
-      interfaces
-    );
-    const scope = expanded.scopes.get('containerDefinitions')!;
-    expect(scope.has('capabilities')).toBe(true);
-    expect(scope.has('mountOptions')).toBe(true);
-    // …and it does NOT become a wildcard. `containerPortRange` IS reachable
-    // from `ContainerDefinition` (through the `portMappings` sibling), so a
-    // whole-scope credit WOULD contain it — which is what makes this the
-    // rubber-stamp guard rather than a tautology. It is also the real shape:
-    // `ContainerDefinitions.ContainerPortRange` is the drop issue #1472 tracks.
-    expect(scope.has('containerPortRange')).toBe(false);
-    expect(scope.has('portMappings')).toBe(false);
-    // Sanity: the member IS reachable one level up, so the assertion above is
-    // about the BOUNDING, not about the fixture lacking the name.
-    expect(reachableSdkMemberNames('containerDefinitions', interfaces).has('containerPortRange'))
-      .toBe(false);
+  it('bounds the hand-off credit to the blob, by PATH PREFIX (#1464)', () => {
+    // The #1445 fold through the SDK model is gone; the credit is now a prefix
+    // test over the write path. Same guard, stated in the new unit:
+    // `containerDefinitions` as a whole is NOT wildcarded, so the SIBLING
+    // `portMappings.containerPortRange` (the drop issue #1472 tracks) keeps
+    // having to prove itself.
+    const handoffScopes = new Set(['containerDefinitions.linuxParameters']);
+    const split = (path: string): [string, string] => [
+      path.slice(0, path.lastIndexOf('.')),
+      path.slice(path.lastIndexOf('.') + 1),
+    ];
+    for (const covered of [
+      'containerDefinitions.linuxParameters',
+      'containerDefinitions.linuxParameters.capabilities',
+      'containerDefinitions.linuxParameters.capabilities.add',
+      'containerDefinitions.linuxParameters.tmpfs.mountOptions',
+    ]) {
+      expect(isHandoffCovered(handoffScopes, ...split(covered)), covered).toBe(true);
+    }
+    for (const uncovered of [
+      'containerDefinitions',
+      'containerDefinitions.name',
+      'containerDefinitions.portMappings.containerPortRange',
+      // A PREFIX that is not a path SEGMENT boundary must not match.
+      'containerDefinitions.linuxParametersExtra.add',
+    ]) {
+      expect(isHandoffCovered(handoffScopes, ...split(uncovered)), uncovered).toBe(false);
+    }
+    // The TERMINAL of a SELF hand-off is compared VERBATIM, unlike the parent
+    // chain — a wildcard spelled `…CORSRules.ID` must not vouch for `….Id`.
+    const cased = new Set(['corsConfiguration.CORSRules.ID']);
+    expect(isHandoffCovered(cased, 'corsConfiguration.CorsRules', 'ID')).toBe(true);
+    expect(isHandoffCovered(cased, 'corsConfiguration.CorsRules', 'Id')).toBe(false);
+    // ...while an ANCESTOR hand-off delivers whatever is beneath it, so the
+    // chain's own casing is still folded (there is no written terminal to
+    // compare against in that case).
+    const ancestor = new Set(['corsConfiguration.CORSRules']);
+    expect(isHandoffCovered(ancestor, 'corsConfiguration.CorsRules', 'Id')).toBe(true);
+    // Sanity: the SDK model WOULD have reached the sibling one level up, so the
+    // assertions above are about the BOUNDING, not about a name being absent.
     expect(reachableSdkMemberNames('portMappings', interfaces).has('containerPortRange'))
       .toBe(true);
   });
@@ -893,20 +985,22 @@ describe('reachableSdkMemberNames + expandGenericHandoffScopes (issue #1445)', (
     const evidence: ProviderWriteEvidence = {
       written: new Set(['linuxParameters', 'name', 'swappiness']),
       scopes: new Map(),
-      handoffPoints: new Map([
-        ['containerDefinitions', new Set(['linuxParameters', 'name', 'swappiness'])],
+      handoffScopes: new Set([
+        'containerDefinitions.linuxParameters',
+        'containerDefinitions.name',
+        'containerDefinitions.swappiness',
       ]),
     };
     expect(countExpandingHandoffPoints(evidence, interfaces)).toBe(1);
   });
 
-  it('is a no-op when the provider hands nothing off', () => {
+  it('counts zero when the provider hands nothing off', () => {
     const evidence: ProviderWriteEvidence = {
       written: new Set(['a']),
       scopes: new Map([['a', new Set(['b'])]]),
-      handoffPoints: new Map(),
+      handoffScopes: new Set(),
     };
-    expect(expandGenericHandoffScopes(evidence, interfaces)).toBe(evidence);
+    expect(countExpandingHandoffPoints(evidence, interfaces)).toBe(0);
   });
 });
 
@@ -1059,7 +1153,9 @@ describe('classifyTarget (synthetic)', () => {
       camel,
       new Set(),
       new Map(),
-      // the CFn spellings written — wrong side, on both segments
+      // the CFn spellings written. Since #1464 the PARENT is matched
+      // case-insensitively, so `BuildBatchConfig` resolves — the TERMINAL
+      // `BatchReportMode` is what fails, and it is the only one that may.
       writeEvidence({ BuildBatchConfig: ['BatchReportMode'] })
     );
     expect(missing?.bucket).toBe('no-write-evidence');
@@ -1072,6 +1168,181 @@ describe('classifyTarget (synthetic)', () => {
       writeEvidence({ buildBatchConfig: ['batchReportMode'] })
     );
     expect(ok?.bucket).toBe('same-spelling');
+  });
+
+  it('the PARENT chain is case-folded and the TERMINAL is NOT (#1464)', () => {
+    // `normalizeWritePath`'s whole contract, in one probe. The relaxation this
+    // PR adds is on a CI-BLOCKING pass, so both directions are pinned: a parent
+    // whose casing diverges (the real `EFSVolumeConfiguration` ->
+    // `efsVolumeConfiguration` shape) must still clear, and a TERMINAL whose
+    // casing diverges must still flag.
+    const fresh: NestedKeyTarget = { ...exactTarget, freshObjectMapper: true };
+    const sdk = new Set(['RootDirectory']);
+    const path = keyPaths('Volumes', 'EFSVolumeConfiguration.RootDirectory');
+    const [parentDiverges] = classifyTarget(
+      fresh,
+      path,
+      sdk,
+      new Set(),
+      new Map(),
+      writeEvidence({ volumes: ['efsVolumeConfiguration'], 'volumes.efsVolumeConfiguration': ['RootDirectory'] })
+    );
+    expect(parentDiverges?.bucket, 'divergent PARENT casing clears').toBe('same-spelling');
+    const [terminalDiverges] = classifyTarget(
+      fresh,
+      path,
+      sdk,
+      new Set(),
+      new Map(),
+      writeEvidence({
+        Volumes: ['EFSVolumeConfiguration'],
+        'Volumes.EFSVolumeConfiguration': ['rootdirectory'],
+      })
+    );
+    expect(terminalDiverges?.bucket, 'divergent TERMINAL casing flags').toBe('no-write-evidence');
+  });
+
+  it('the case-fold is per LEVEL, not a global union of the write index (#1464)', () => {
+    // A whole-file lowercase fold merges the MEMBER SETS of every same-spelled
+    // scope — measured at 80 collision groups on `ecs-provider.ts`. Descending
+    // level by level keeps them apart: `a.Name` is matched against `a`'s own
+    // children only, so an unrelated root `name` cannot vouch for it.
+    const fresh: NestedKeyTarget = { ...exactTarget, freshObjectMapper: true };
+    const [entry] = classifyTarget(
+      fresh,
+      keyPaths('Alpha', 'Name.Value'),
+      new Set(['Value']),
+      new Set(),
+      new Map(),
+      writeEvidence({
+        Alpha: ['Name'],
+        'Alpha.Name': [],
+        // A DIFFERENT `name` scope elsewhere in the file that DOES carry the
+        // member. A global fold would union it in and clear the path.
+        name: ['Value'],
+      })
+    );
+    expect(entry?.bucket).toBe('no-write-evidence');
+  });
+
+  it('segmentRenames resolves an intermediate segment the provider RENAMES (#1464)', () => {
+    // The real shape: CFn `ProxyConfiguration.ProxyConfigurationProperties` is
+    // the SDK's `ProxyConfiguration.properties`. Case-folding cannot bridge a
+    // rename, so without the map the children of a member the provider DOES
+    // write report `no-write-evidence`.
+    const target: NestedKeyTarget = { ...exactTarget, freshObjectMapper: true };
+    const paths = keyPaths('ProxyConfiguration', 'ProxyConfigurationProperties.Name');
+    const evidence = writeEvidence({
+      ProxyConfiguration: ['properties'],
+      'ProxyConfiguration.properties': ['Name'],
+    });
+    const [without] = classifyTarget(target, paths, new Set(['Name']), new Set(), new Map(), evidence);
+    expect(without?.bucket).toBe('no-write-evidence');
+    const renamed: NestedKeyTarget = {
+      ...target,
+      segmentRenames: { ProxyConfigurationProperties: 'properties' },
+    };
+    const used = new Set<string>();
+    const [with_] = classifyTarget(
+      renamed,
+      paths,
+      new Set(['Name']),
+      new Set(),
+      new Map(),
+      evidence,
+      used
+    );
+    expect(with_?.bucket).toBe('same-spelling');
+    expect([...used]).toEqual(['ProxyConfigurationProperties']);
+  });
+
+  it('segmentRenames NEVER applies to the terminal segment (#1464)', () => {
+    // The terminal IS the audited key. Renaming it would let the map answer the
+    // pass's own question, which is the rubber stamp the whole critic avoids.
+    const target: NestedKeyTarget = {
+      ...exactTarget,
+      freshObjectMapper: true,
+      segmentRenames: { Name: 'properties' },
+    };
+    const [entry] = classifyTarget(
+      target,
+      keyPaths('Top', 'Name'),
+      new Set(['Name']),
+      new Set(),
+      new Map(),
+      writeEvidence({ Top: ['properties'] })
+    );
+    expect(entry?.bucket).toBe('no-write-evidence');
+  });
+
+  it('a segmentRename whose UN-RENAMED chain resolves is reported unused (#1464)', () => {
+    // The staleness fence's input. An entry goes unused exactly when the
+    // un-renamed chain resolves — the SDK renamed the member back and the map
+    // is now redundant — so `findStaleSegmentRenames` forces its removal.
+    const target: NestedKeyTarget = {
+      ...exactTarget,
+      freshObjectMapper: true,
+      segmentRenames: { Middle: 'renamedMiddle' },
+    };
+    const used = new Set<string>();
+    classifyTarget(
+      target,
+      keyPaths('Top', 'Middle.Leaf'),
+      new Set(['Leaf']),
+      new Set(),
+      new Map(),
+      writeEvidence({ Top: ['Middle'], 'Top.Middle': ['Leaf'] }),
+      used
+    );
+    expect([...used]).toEqual([]);
+  });
+
+  it('a segmentRename stays USED when the provider stops writing the member (#1464)', () => {
+    // The fence must not MASK the finding it exists to make reachable. With
+    // neither chain resolving, the entry is still the right bridge and the
+    // divergence is the thing to report — a stale-map error standing in front
+    // of it would hide a real silent drop behind a tooling complaint.
+    const target: NestedKeyTarget = {
+      ...exactTarget,
+      freshObjectMapper: true,
+      segmentRenames: { Middle: 'renamedMiddle' },
+    };
+    const used = new Set<string>();
+    const [entry] = classifyTarget(
+      target,
+      keyPaths('Top', 'Middle.Leaf'),
+      new Set(['Leaf']),
+      new Set(),
+      new Map(),
+      writeEvidence({ Top: ['renamedMiddle'], 'Top.renamedMiddle': [] }),
+      used
+    );
+    expect(entry?.bucket).toBe('no-write-evidence');
+    expect([...used]).toEqual(['Middle']);
+  });
+
+  it('findStaleSegmentRenames reports the entry the classifier never needed', () => {
+    const target: NestedKeyTarget = {
+      ...exactTarget,
+      resourceType: 'AWS::Fake::Thing',
+      segmentRenames: { Middle: 'renamedMiddle', Gone: 'nope' },
+    };
+    const report = buildReport([
+      {
+        resourceType: target.resourceType,
+        providerFile: target.providerFile,
+        sdkClientPackage: target.sdkClientPackage,
+        keyStyle: target.keyStyle,
+        freshObjectMapper: true,
+        nestedKeyCount: 0,
+        entries: [],
+        shapeEntries: [],
+        shapeCleanCount: 0,
+        unmatchedDefinitions: [],
+        usedSegmentRenames: ['Middle'],
+      },
+    ]);
+    expect(findStaleSegmentRenames(report, [target])).toEqual(['AWS::Fake::Thing#Gone']);
   });
 
   it('a no-write-evidence key is a CI-blocking divergence', () => {
@@ -1088,6 +1359,7 @@ describe('classifyTarget (synthetic)', () => {
         shapeEntries: [],
         shapeCleanCount: 0,
         unmatchedDefinitions: [],
+        usedSegmentRenames: [],
       },
     ]);
     expect(report.summary.noWriteEvidence).toBe(1);
@@ -1253,10 +1525,158 @@ describe('extractNestedPropertyNames (fixture capture)', () => {
   });
 });
 
+describe('extractNestedPropertyPaths (fixture capture, issue #1464)', () => {
+  const schema = JSON.stringify({
+    properties: {
+      Config: { $ref: '#/definitions/Config' },
+      Scalar: { type: 'string' },
+      List: { type: 'array', items: { properties: { Entry: { type: 'string' } } } },
+    },
+    definitions: {
+      Config: {
+        properties: {
+          Name: { type: 'string' },
+          Self: { $ref: '#/definitions/Config' },
+          Choice: { oneOf: [{ properties: { OptionA: { type: 'string' } } }] },
+        },
+      },
+    },
+  });
+
+  it('keeps the full chain where the flattened capture keeps only names', () => {
+    const paths = extractNestedPropertyPaths(schema);
+    // `Config` is ALREADY on the branch when `Self` re-references it, so the
+    // ancestor guard stops there — `Self` is recorded, its interior is not.
+    // Without the guard this call never returns.
+    expect(paths['Config']).toEqual(['Choice', 'Choice.OptionA', 'Name', 'Self']);
+    // Arrays are TRANSPARENT — no `[]` marker, matching the write side.
+    expect(paths['List']).toEqual(['Entry']);
+    expect(paths['Scalar']).toBeUndefined();
+  });
+
+  it('re-visits a definition reached down TWO sibling branches', () => {
+    // The flattened capture shares one `seenRefs` set per top-level, so a
+    // definition referenced twice contributes once — harmless for names,
+    // lossy for paths.
+    const shared = JSON.stringify({
+      properties: {
+        Top: {
+          properties: {
+            Left: { $ref: '#/definitions/Leaf' },
+            Right: { $ref: '#/definitions/Leaf' },
+          },
+        },
+      },
+      definitions: { Leaf: { properties: { Value: { type: 'string' } } } },
+    });
+    expect(extractNestedPropertyPaths(shared)['Top']).toEqual([
+      'Left',
+      'Left.Value',
+      'Right',
+      'Right.Value',
+    ]);
+    // ...where the flattened capture reports `Value` once, with no chain.
+    expect(extractNestedPropertyNames(shared)['Top']).toEqual(['Left', 'Right', 'Value']);
+  });
+
+  it('walks patternProperties, additionalProperties, anyOf and allOf', () => {
+    // Floor per input SHAPE: the walk CLAIMS these four containers, and the
+    // headline probe above only exercises `properties` / `$ref` / array `items`
+    // / `oneOf`. A container silently dropped from the walk is a capture that
+    // under-reports, i.e. a bucket that goes quiet for the wrong reason.
+    const shaped = JSON.stringify({
+      properties: {
+        Pattern: { patternProperties: { '^x-': { properties: { Inner: { type: 'string' } } } } },
+        Map: { additionalProperties: { properties: { Value: { type: 'string' } } } },
+        Any: { anyOf: [{ properties: { FromAny: { type: 'string' } } }] },
+        All: { allOf: [{ properties: { FromAll: { type: 'string' } } }] },
+      },
+    });
+    const paths = extractNestedPropertyPaths(shaped);
+    // A `patternProperties` KEY is a regex, not a property name — only the
+    // value schema's members are captured.
+    expect(paths['Pattern']).toEqual(['Inner']);
+    expect(paths['Map']).toEqual(['Value']);
+    expect(paths['Any']).toEqual(['FromAny']);
+    expect(paths['All']).toEqual(['FromAll']);
+  });
+
+  it('throws a NAMED error on a diamond-shaped definition graph', () => {
+    // Per-branch ancestry is right for paths and drops the flattened walk's
+    // linear bound: a diamond is 2^k paths. Measured at k=18: 786,430 paths in
+    // about a second, and `processType` runs this for EVERY refreshed type — so
+    // an AWS schema of that shape would hang the refresher and emit a
+    // multi-megabyte fixture. The cap must fail LOUDLY and name the type.
+    const definitions: Record<string, unknown> = {};
+    const depth = 18;
+    for (let i = 0; i < depth; i++) {
+      definitions[`D${i}`] = {
+        properties: {
+          L: { $ref: `#/definitions/D${i + 1}` },
+          R: { $ref: `#/definitions/D${i + 1}` },
+        },
+      };
+    }
+    definitions[`D${depth}`] = { properties: { Leaf: { type: 'string' } } };
+    const diamond = JSON.stringify({
+      properties: { Top: { $ref: '#/definitions/D0' } },
+      definitions,
+    });
+    expect(() => extractNestedPropertyPaths(diamond, 'AWS::Fake::Diamond')).toThrow(
+      /AWS::Fake::Diamond: nested path capture for "Top" exceeded/
+    );
+  });
+
+  it('every flattened name reappears as a PATH terminal under the same top-level', () => {
+    // The consistency fence between the two committed captures. Nothing else
+    // ties them together, so a partially re-captured (or hand-edited) fixture
+    // tree — the exact failure mode a targeted refresh can leave behind — would
+    // otherwise pass every check while the critic audits a stale interior.
+    // ONE-DIRECTIONAL on purpose: paths legitimately outnumber names (a name
+    // reachable down two branches is two paths), so the reverse would fail.
+    for (const file of readdirSync(resolve(repoRoot, 'tests/fixtures/cfn-schemas'))) {
+      if (!file.endsWith('.json') || file.startsWith('_')) continue;
+      const fixture = JSON.parse(
+        readFileSync(resolve(repoRoot, 'tests/fixtures/cfn-schemas', file), 'utf8')
+      ) as {
+        nestedProperties?: Record<string, string[]>;
+        nestedPropertyPaths?: Record<string, string[]>;
+      };
+      if (fixture.nestedPropertyPaths === undefined) continue; // not re-captured yet
+      for (const [top, names] of Object.entries(fixture.nestedProperties ?? {})) {
+        const terminals = new Set(
+          (fixture.nestedPropertyPaths[top] ?? []).map((p) => p.slice(p.lastIndexOf('.') + 1))
+        );
+        for (const name of names) {
+          expect(terminals.has(name), `${file} ${top}.${name}`).toBe(true);
+        }
+      }
+    }
+  });
+
+  it('every audited fixture carries the capture the critic reads', () => {
+    // A missing capture is a LOUD failure in `loadReport`, but only for a target
+    // whose `minNestedKeys` is non-zero — this makes the whole audited set an
+    // assertion, so a partially re-captured fixture tree cannot slip through.
+    for (const target of NESTED_KEY_TARGETS) {
+      const fixture = JSON.parse(
+        readFileSync(
+          resolve(
+            repoRoot,
+            `tests/fixtures/cfn-schemas/${target.resourceType.replace(/::/g, '-')}.json`
+          ),
+          'utf8'
+        )
+      ) as { nestedPropertyPaths?: Record<string, string[]> };
+      expect(fixture.nestedPropertyPaths, target.resourceType).toBeDefined();
+    }
+  });
+});
+
 describe('nestedKeyPathsForTarget', () => {
-  it('yields one PATH per (handled top-level, nested key) pair (#1448)', () => {
+  it('yields one PATH per (handled top-level, nested chain) pair (#1448)', () => {
     const fixture = {
-      nestedProperties: {
+      nestedPropertyPaths: {
         Handled: ['A', 'B'],
         AlsoHandled: ['B', 'C'],
         Unhandled: ['D'],
@@ -1280,12 +1700,46 @@ describe('nestedKeyPathsForTarget', () => {
     ]);
   });
 
-  it('de-duplicates a repeated name within one top-level', () => {
+  it('keeps the FULL chain, and the terminal name as the key (#1464)', () => {
+    // The whole point of the per-PATH capture: two same-named members at
+    // different depths of ONE top-level stay distinct audited units.
     const paths = nestedKeyPathsForTarget(
-      { nestedProperties: { Handled: ['A', 'A'] } },
+      { nestedPropertyPaths: { Environment: ['Type', 'EnvironmentVariables', 'EnvironmentVariables.Type'] } },
+      new Set(['Environment'])
+    );
+    expect(paths.map((p) => p.path)).toEqual([
+      'Environment.EnvironmentVariables',
+      'Environment.EnvironmentVariables.Type',
+      'Environment.Type',
+    ]);
+    expect(paths.map((p) => p.key)).toEqual(['EnvironmentVariables', 'Type', 'Type']);
+    expect(paths.map((p) => p.segments)).toEqual([
+      ['Environment', 'EnvironmentVariables'],
+      ['Environment', 'EnvironmentVariables', 'Type'],
+      ['Environment', 'Type'],
+    ]);
+    // Every chain stays rooted at its top-level, which is what the write-side
+    // parent lookup is built from.
+    expect(new Set(paths.map((p) => p.topLevelProperty))).toEqual(new Set(['Environment']));
+  });
+
+  it('de-duplicates a repeated chain within one top-level', () => {
+    const paths = nestedKeyPathsForTarget(
+      { nestedPropertyPaths: { Handled: ['A', 'A'] } },
       new Set(['Handled'])
     );
     expect(paths.map((p) => p.path)).toEqual(['Handled.A']);
+  });
+
+  it('reads nestedPropertyPaths, NOT the flattened nestedProperties (#1464)', () => {
+    // The flattened capture is still emitted for the shape pass and the floor
+    // calibration story; consulting it here would silently restore the bug.
+    expect(
+      nestedKeyPathsForTarget(
+        { nestedProperties: { Handled: ['A'] } } as { nestedPropertyPaths?: Record<string, string[]> },
+        new Set(['Handled'])
+      )
+    ).toEqual([]);
   });
 });
 
@@ -1315,6 +1769,7 @@ describe('report plumbing (positive direction)', () => {
         shapeEntries: [],
         shapeCleanCount: 0,
         unmatchedDefinitions: [],
+        usedSegmentRenames: [],
       },
     ]);
     const divergences = findDivergences(report);
@@ -1350,6 +1805,7 @@ describe('report plumbing (positive direction)', () => {
         shapeEntries: [],
         shapeCleanCount: 0,
         unmatchedDefinitions: [],
+        usedSegmentRenames: [],
       },
     ]);
     expect(findStaleAllowListEntries(report, allow)).toEqual(['AWS::Fake::Thing#GoneKey']);
@@ -1381,6 +1837,7 @@ describe('report plumbing (positive direction)', () => {
         shapeEntries: [],
         shapeCleanCount: 0,
         unmatchedDefinitions: [],
+        usedSegmentRenames: [],
       },
     ]);
     expect(findStaleAllowListEntries(report, allow)).toEqual([]);
@@ -1415,6 +1872,7 @@ describe('report plumbing (positive direction)', () => {
         ],
         shapeCleanCount: 0,
         unmatchedDefinitions: [],
+        usedSegmentRenames: [],
       },
     ]);
     expect(findDivergences(report).map((d) => [d.nestedKey, d.bucket])).toEqual([
@@ -1914,12 +2372,13 @@ describe('whole-blob hand-off walk (real repo, issue #1445)', () => {
   it('credits the members of LinuxParameters, and ONLY through the walk', () => {
     // The issue's headline case, against the real `ecs-provider.ts`:
     // `convertLinuxParameters` is `return pascalToCamelCaseKeys(config)`, so
-    // there is no per-member write anywhere in the tree to find.
+    // there is no per-member write anywhere in the tree to find. Since #1464 the
+    // credit is a path PREFIX rather than a fold through the SDK model, so the
+    // assertion is stated in paths — and it is the same claim: nothing under
+    // `linuxParameters` has a write, and all of it is delivered.
     const raw = evidenceFor('ecs-provider.ts');
-    const rawScope = raw.scopes.get('containerDefinitions')!;
-    const expanded = expandGenericHandoffScopes(raw, ecsInterfaces).scopes.get(
-      'containerDefinitions'
-    )!;
+    const handoff = 'containerDefinitions.linuxParameters';
+    expect(raw.handoffScopes.has(handoff)).toBe(true);
     for (const member of [
       'capabilities',
       'devices',
@@ -1928,23 +2387,32 @@ describe('whole-blob hand-off walk (real repo, issue #1445)', () => {
       'maxSwap',
       'sharedMemorySize',
       'initProcessEnabled',
-      // …and two levels down, reached through the array-element edge.
-      'add',
-      'drop',
-      'hostPath',
-      'mountOptions',
+      // …and two levels down.
+      'capabilities.add',
+      'capabilities.drop',
+      'devices.hostPath',
+      'tmpfs.mountOptions',
     ]) {
-      expect(rawScope.has(member), `${member} must be invisible before the fold`).toBe(false);
-      expect(expanded.has(member), `${member} must be credited after the fold`).toBe(true);
+      const path = `${handoff}.${member}`;
+      const parent = path.slice(0, path.lastIndexOf('.'));
+      const terminal = path.slice(path.lastIndexOf('.') + 1);
+      expect(
+        raw.scopes.get(parent)?.has(terminal) ?? false,
+        `${member} must have no per-member write`
+      ).toBe(false);
+      expect(isHandoffCovered(raw.handoffScopes, parent, terminal), `${member} must be credited`)
+        .toBe(true);
     }
     // Since #1472 `containerPortRange` is DIRECTLY written by
-    // convertPortMappings, so it sits in the raw scope before any fold.
-    expect(rawScope.has('containerPortRange')).toBe(true);
+    // convertPortMappings, so it sits in its own path's scope with no wildcard.
+    expect(
+      raw.scopes.get('containerDefinitions.portMappings')?.has('containerPortRange')
+    ).toBe(true);
     // The rubber-stamp guard: a SIBLING of the handed-off blob that the
-    // provider re-shapes per member is NOT credited by the FOLD. With the
-    // direct write present the raw/expanded sets can no longer distinguish
-    // fold-credit from write-credit, so the guard is asserted on evidence
-    // with the #1472 write stripped: the fold alone must not resurrect it.
+    // provider re-shapes per member is NOT credited by the hand-off. With the
+    // #1472 direct write present the live tree can no longer distinguish
+    // wildcard-credit from write-credit, so the guard is asserted on evidence
+    // with that write stripped: the prefix test alone must not resurrect it.
     const strippedSource = providerSource('ecs-provider.ts').replace(
       /^\s*containerPortRange: m\['ContainerPortRange'\] as string \| undefined,\n/m,
       ''
@@ -1956,12 +2424,19 @@ describe('whole-blob hand-off walk (real repo, issue #1445)', () => {
       ['readCurrentState'],
       resolveCaseConvert
     );
-    expect(stripped.scopes.get('containerDefinitions')!.has('containerPortRange')).toBe(false);
+    expect(stripped.scopes.get('containerDefinitions.portMappings')?.has('containerPortRange'))
+      .toBe(false);
     expect(
-      expandGenericHandoffScopes(stripped, ecsInterfaces)
-        .scopes.get('containerDefinitions')!
-        .has('containerPortRange')
+      isHandoffCovered(
+        stripped.handoffScopes,
+        'containerDefinitions.portMappings',
+        'containerPortRange'
+      )
     ).toBe(false);
+    // ...and the SDK model still reaches it, so the guard is about the
+    // bounding rather than about an absent name.
+    expect(reachableSdkMemberNames('portMappings', ecsInterfaces).has('containerPortRange'))
+      .toBe(true);
   });
 
   it('records the real ECS / API Gateway v2 hand-off points and skips the naming converters', () => {
@@ -2043,11 +2518,11 @@ describe('whole-blob hand-off walk (real repo, issue #1445)', () => {
       'AWS::ApiGatewayV2::Route': 0,
       'AWS::ApiGatewayV2::Stage': 0,
       'AWS::CodeBuild::Project': 0,
-      'AWS::CloudFront::Distribution': 110,
+      'AWS::CloudFront::Distribution': 162,
       'AWS::CloudWatch::AnomalyDetector': 3,
       'AWS::ECS::Service': 0,
       'AWS::ECS::TaskDefinition': 0,
-      'AWS::S3::Bucket': 104,
+      'AWS::S3::Bucket': 125,
     });
   });
 
@@ -2103,12 +2578,12 @@ describe('whole-blob hand-off walk (real repo, issue #1445)', () => {
         .sort();
     };
 
-    it('ContainerDefinitions.ContainerPortRange (#1472)', () => {
+    it('ContainerDefinitions.PortMappings.ContainerPortRange (#1472)', () => {
       const dir = regressedProviders('portrange', (source) =>
         source.replace(/^\s*containerPortRange: m\['ContainerPortRange'\] as string \| undefined,\n/m, '')
       );
       expect(flaggedFrom(dir, 'AWS::ECS::TaskDefinition')).toEqual([
-        'ContainerDefinitions.ContainerPortRange',
+        'ContainerDefinitions.PortMappings.ContainerPortRange',
       ]);
     });
 
@@ -2121,10 +2596,10 @@ describe('whole-blob hand-off walk (real repo, issue #1445)', () => {
       );
       expect(flaggedFrom(dir, 'AWS::ECS::Service')).toEqual([
         'LoadBalancers.AdvancedConfiguration',
-        'LoadBalancers.AlternateTargetGroupArn',
-        'LoadBalancers.ProductionListenerRule',
-        'LoadBalancers.RoleArn',
-        'LoadBalancers.TestListenerRule',
+        'LoadBalancers.AdvancedConfiguration.AlternateTargetGroupArn',
+        'LoadBalancers.AdvancedConfiguration.ProductionListenerRule',
+        'LoadBalancers.AdvancedConfiguration.RoleArn',
+        'LoadBalancers.AdvancedConfiguration.TestListenerRule',
       ]);
     });
   });
@@ -2142,7 +2617,7 @@ describe('real-code regression probes (per the repo checker rules)', () => {
       resolve(repoRoot, 'tests/fixtures/cfn-schemas/AWS-CloudFront-Distribution.json'),
       'utf8'
     )
-  ) as { nestedProperties: Record<string, string[]> };
+  ) as { nestedPropertyPaths: Record<string, string[]> };
   const cfSdkMembers = collectSdkMemberNames(
     resolve(repoRoot, 'node_modules/@aws-sdk/client-cloudfront/dist-types/models')
   );
@@ -2158,7 +2633,9 @@ describe('real-code regression probes (per the repo checker rules)', () => {
     const entries = classifyTarget(cfTarget, cfNestedKeys, cfSdkMembers, literals);
     const [hit] = entriesFor(entries, 'AcmCertificateArn');
     expect(hit?.bucket).toBe('case-divergence');
-    expect(hit?.nestedKey).toBe('DistributionConfig.AcmCertificateArn');
+    // The FULL chain since #1464 — the member lives under `ViewerCertificate`,
+    // which the flattened capture could not say.
+    expect(hit?.nestedKey).toBe('DistributionConfig.ViewerCertificate.AcmCertificateArn');
     expect(hit?.sdkNearMiss).toBe('ACMCertificateArn');
   });
 
@@ -2252,7 +2729,7 @@ describe('real-code regression probes (per the repo checker rules)', () => {
   const s3Target = NESTED_KEY_TARGETS.find((t) => t.resourceType === 'AWS::S3::Bucket')!;
   const s3Fixture = JSON.parse(
     readFileSync(resolve(repoRoot, 'tests/fixtures/cfn-schemas/AWS-S3-Bucket.json'), 'utf8')
-  ) as { nestedProperties: Record<string, string[]> };
+  ) as { nestedPropertyPaths: Record<string, string[]> };
   const s3SdkMembers = collectSdkMemberNames(
     resolve(repoRoot, 'node_modules/@aws-sdk/client-s3/dist-types/models')
   );
@@ -2382,7 +2859,7 @@ describe('real-code regression probes (per the repo checker rules)', () => {
   const cbTarget = NESTED_KEY_TARGETS.find((t) => t.resourceType === 'AWS::CodeBuild::Project')!;
   const cbFixture = JSON.parse(
     readFileSync(resolve(repoRoot, 'tests/fixtures/cfn-schemas/AWS-CodeBuild-Project.json'), 'utf8')
-  ) as { nestedProperties: Record<string, string[]> };
+  ) as { nestedPropertyPaths: Record<string, string[]> };
   const cbSdkMembers = collectSdkMemberNames(
     resolve(repoRoot, 'node_modules/@aws-sdk/client-codebuild/dist-types/models')
   );
@@ -2455,6 +2932,7 @@ describe('real-code regression probes (per the repo checker rules)', () => {
         shapeEntries: [],
         shapeCleanCount: 0,
         unmatchedDefinitions: [],
+        usedSegmentRenames: [],
       },
     ]))).toHaveLength(0);
   });
@@ -2501,54 +2979,96 @@ describe('real-code regression probes (per the repo checker rules)', () => {
     expect(evidence.scopes.get('buildBatchConfig')?.has('serviceRole')).toBe(false);
   });
 
-  it('DOES NOT fence a duplicate name INSIDE the same top-level (recorded bound, #1448)', () => {
-    // The bound path-scoping narrows but does not close, pinned so nobody
-    // writes "membership makes this non-regressing" again. The fixture's
-    // `nestedProperties` capture is FLATTENED per top-level, so
-    // `Environment.Type` and `Environment.EnvironmentVariables[].Type` are the
-    // SAME audited path — and the scope index is flattened to match, so the
-    // surviving sibling write vouches for the deleted one. Both deletions below
-    // are GENUINE silent drops that stay silent; closing them needs a per-PATH
-    // fixture capture (a `refresh-cfn-schemas.mjs` change + an AWS re-capture),
-    // which is bigger than this critic.
+  it('FENCES a duplicate name INSIDE the same top-level (#1464 — the #1448 bound, inverted)', () => {
+    // The INVERSION of #1448's recorded bound. The fixture then flattened
+    // `Environment.Type` and `Environment.EnvironmentVariables.Type` into one
+    // audited path, so deleting either write left the other vouching for it and
+    // both genuine silent drops stayed silent. The per-PATH capture separates
+    // them, so each deletion now names ITS OWN path — and, just as importantly,
+    // leaves the cousin clean.
     const cases = [
       {
-        top: 'Environment',
+        path: 'Environment.Type',
+        cousin: 'Environment.EnvironmentVariables.Type',
         anchor:
           "        type: ((environment?.['Type'] as string) ?? 'LINUX_CONTAINER') as EnvironmentType,\n",
-        survivor: 'environmentVariables[].type',
       },
       {
-        top: 'Source',
-        anchor: "      type: ((source['Type'] as string) ?? 'NO_SOURCE') as SourceType,\n",
-        survivor: 'auth.type',
+        path: 'Environment.EnvironmentVariables.Type',
+        cousin: 'Environment.Type',
+        anchor: "              type: (v.Type ?? 'PLAINTEXT') as EnvironmentVariableType,\n",
       },
     ];
-    for (const { top, anchor, survivor } of cases) {
-      expect(cbSource, `${top} anchor still present`).toContain(anchor);
+    for (const { path, cousin, anchor } of cases) {
+      expect(cbSource, `${path} anchor still present`).toContain(anchor);
       const regressed = cbSource.replace(anchor, '');
-      const evidence = collectWriteEvidence(regressed);
       const entries = classifyTarget(
         cbTarget,
         cbNestedKeys,
         cbSdkMembers,
         collectStringLiterals(regressed),
         NESTED_KEY_ALLOW_LIST,
-        evidence
+        collectWriteEvidence(regressed)
       );
-      const hit = entries.find((e) => e.nestedKey === `${top}.Type`);
-      expect(hit, `${top}.Type is audited`).toBeDefined();
-      expect(hit?.bucket, `${top}.Type stays silent (covered by ${survivor})`).toBe(
-        'same-spelling'
-      );
-      expect(evidence.scopes.get(lowerFirst(top))?.has('type')).toBe(true);
+      expect(entries.find((e) => e.nestedKey === path)?.bucket, path).toBe('no-write-evidence');
+      expect(entries.find((e) => e.nestedKey === cousin)?.bucket, cousin).toBe('same-spelling');
+    }
+    // The UNREGRESSED provider keeps both clean — so the assertions above are
+    // about the deletion, not about a target that flags either way.
+    const clean = classifyTarget(
+      cbTarget,
+      cbNestedKeys,
+      cbSdkMembers,
+      collectStringLiterals(cbSource),
+      NESTED_KEY_ALLOW_LIST,
+      collectWriteEvidence(cbSource)
+    );
+    for (const path of ['Environment.Type', 'Environment.EnvironmentVariables.Type']) {
+      expect(clean.find((e) => e.nestedKey === path)?.bucket, path).toBe('same-spelling');
     }
   });
 
-  it('scopes are keyed by NAME and unioned across write sites (recorded bound, #1448)', () => {
-    // The name-global weakness reappearing one level down: `record()` merges
-    // every write of a name, so two unrelated literals contribute to one scope
-    // and a name that only ever appears NESTED still gets a scope of its own.
+  it('a SECOND REAL WRITE of the same path still clears it — Source.Type (#1464)', () => {
+    // #1448 also listed `source: { type: … }` as a cousin-vouching case. Under
+    // per-PATH scoping the exit code is unchanged (0), and the REASON is not:
+    // `mapSource`'s guard arm `return { type: 'NO_SOURCE' }` is a genuine second
+    // write of `type` under `source`. Deleting BOTH arms flags. Pinned so the
+    // distinction between "a real second write" and "a cousin one level down"
+    // stays visible.
+    const forward = "      type: ((source['Type'] as string) ?? 'NO_SOURCE') as SourceType,\n";
+    const guard = "      return { type: 'NO_SOURCE' as SourceType };\n";
+    expect(cbSource).toContain(forward);
+    expect(cbSource).toContain(guard);
+    const classify = (source: string): NestedKeyClassification[] =>
+      classifyTarget(
+        cbTarget,
+        cbNestedKeys,
+        cbSdkMembers,
+        collectStringLiterals(source),
+        NESTED_KEY_ALLOW_LIST,
+        collectWriteEvidence(source)
+      );
+    const forwardGone = classify(cbSource.replace(forward, ''));
+    expect(forwardGone.find((e) => e.nestedKey === 'Source.Type')?.bucket).toBe('same-spelling');
+    // ...and it is THE GUARD ARM that supplies the evidence, not some other
+    // clearing path: `source` scopes to a `type` even with the forward gone,
+    // and no wildcard covers the path. Without this half a future hand-off (or
+    // a looser fold) could satisfy the assertion above for the wrong reason.
+    const guardOnly = collectWriteEvidence(cbSource.replace(forward, ''));
+    expect(guardOnly.scopes.get('source')?.has('type')).toBe(true);
+    expect(isHandoffCovered(guardOnly.handoffScopes, 'source', 'type')).toBe(false);
+    const bothGone = classify(
+      cbSource.replace(forward, '').replace(guard, '      return {};\n')
+    );
+    expect(bothGone.find((e) => e.nestedKey === 'Source.Type')?.bucket).toBe('no-write-evidence');
+  });
+
+  it('a purely NESTED write opens no root scope (#1464 — the #1448 bound, inverted)', () => {
+    // The INVERSION of "scopes are keyed by NAME and unioned across write
+    // sites". Two halves of that bound: (a) unrelated write SITES of one name
+    // merge, which is intrinsic and STAYS (recorded bound 1); (b) a name that
+    // only ever appears nested got a root-level scope a CFn top-level of that
+    // spelling was then checked against — closed here.
     const { scopes } = collectWriteEvidence(`
       class P {
         a() { return { environment: { alpha: 1 } }; }
@@ -2556,11 +3076,12 @@ describe('real-code regression probes (per the repo checker rules)', () => {
         c() { return { logsConfig: { cloudWatchLogs: { groupName: 3 } } }; }
       }
     `);
-    // Unrelated write sites of the same name are indistinguishable...
+    // (a) still true — a key is cleared when ANY site covers it, which IS the
+    // union, so per-site sets would not change the answer.
     expect([...(scopes.get('environment') ?? [])].sort()).toEqual(['alpha', 'beta']);
-    // ...and a purely nested name still yields a scope that a TOP-LEVEL CFn
-    // property of that spelling would be checked against.
-    expect([...(scopes.get('cloudWatchLogs') ?? [])].sort()).toEqual(['groupName']);
+    // (b) closed: the nested name lives ONLY under its parent path now.
+    expect(scopes.has('cloudWatchLogs')).toBe(false);
+    expect([...(scopes.get('logsConfig.cloudWatchLogs') ?? [])]).toEqual(['groupName']);
   });
 
   it('the two collector outputs regress independently (why there are two floors)', () => {
@@ -2584,15 +3105,19 @@ describe('real-code regression probes (per the repo checker rules)', () => {
     // SHORTHAND property of `mapProperties`\' return — so the scope only resolves
     // if the binding walk works. Pinned because a regression there would flag all
     // seven members at once with a misleading "never writes it".
-    const scope = collectWriteEvidence(cbSource).scopes.get('buildBatchConfig');
-    expect([...(scope ?? [])].sort()).toEqual([
+    const { scopes } = collectWriteEvidence(cbSource);
+    expect([...(scopes.get('buildBatchConfig') ?? [])].sort()).toEqual([
       'batchReportMode',
       'combineArtifacts',
-      'computeTypesAllowed',
-      'maximumBuildsAllowed',
       'restrictions',
       'serviceRole',
       'timeoutInMins',
+    ]);
+    // ...and the two members one level deeper sit under THEIR path since #1464,
+    // which is where `BuildBatchConfig.Restrictions.*` now looks for them.
+    expect([...(scopes.get('buildBatchConfig.restrictions') ?? [])].sort()).toEqual([
+      'computeTypesAllowed',
+      'maximumBuildsAllowed',
     ]);
   });
 
@@ -2600,12 +3125,15 @@ describe('real-code regression probes (per the repo checker rules)', () => {
     // `source: this.mapSource(source)` — the #1404-style hop. `Source.BuildSpec`
     // is deliberately absent from the SDK-member side, so the members below are
     // the ones the pass actually consults.
-    const scope = collectWriteEvidence(cbSource).scopes.get('source');
+    const { scopes } = collectWriteEvidence(cbSource);
+    const scope = scopes.get('source');
     for (const member of ['type', 'location', 'gitCloneDepth', 'auth', 'buildStatusConfig']) {
       expect(scope?.has(member), member).toBe(true);
     }
-    // ...and one level deeper, through the nested `auth: { … }` literal.
-    expect(scope?.has('resource')).toBe(true);
+    // ...and one level deeper, through the nested `auth: { … }` literal — at
+    // its own path since #1464, NOT merged into `source`.
+    expect(scope?.has('resource')).toBe(false);
+    expect([...(scopes.get('source.auth') ?? [])].sort()).toEqual(['resource', 'type']);
   });
 
   it('a scope resolves through an array .map(cb) callback literal', () => {
@@ -2793,6 +3321,48 @@ describe('the shipped --check command', { timeout: 30_000 }, () => {
     expect(stderr).toContain('AWS::CodeBuild::Project: BuildBatchConfig.ServiceRole');
     expect(stderr).toContain('no-write-evidence');
   });
+
+  // The #1464 acceptance, end to end against REAL provider source: two writes of
+  // `type` under ONE top-level, each fenced by its own path. Through #1448 both
+  // deletions exited 0 (the flattened fixture made them the same audited unit),
+  // so these are the shipped-command twins of the inverted library probes above.
+  const DUPLICATE_NAME_PROBES: ReadonlyArray<{
+    readonly name: string;
+    readonly anchor: string;
+    readonly flagged: string;
+    readonly clean: string;
+  }> = [
+    {
+      name: 'environment-type',
+      anchor:
+        "        type: ((environment?.['Type'] as string) ?? 'LINUX_CONTAINER') as EnvironmentType,\n",
+      flagged: 'AWS::CodeBuild::Project: Environment.Type',
+      clean: 'Environment.EnvironmentVariables.Type',
+    },
+    {
+      name: 'environment-variables-type',
+      anchor: "              type: (v.Type ?? 'PLAINTEXT') as EnvironmentVariableType,\n",
+      flagged: 'AWS::CodeBuild::Project: Environment.EnvironmentVariables.Type',
+      clean: 'Environment.Type',
+    },
+  ];
+
+  for (const { name, anchor, flagged, clean } of DUPLICATE_NAME_PROBES) {
+    it(`exits 1 naming ${flagged.split(': ')[1]}, leaving its cousin clean (#1464)`, () => {
+      const dir = regressedTree(`providers-${name}`, 'codebuild-provider.ts', (source) => {
+        expect(source, `${name} anchor drifted`).toContain(anchor);
+        return source.replace(anchor, '');
+      });
+      const { status, stderr } = runCheck(dir);
+      expect(status).toBe(1);
+      expect(stderr).toContain('nested-key-coverage: FAIL');
+      expect(stderr).toContain(flagged);
+      expect(stderr).toContain('no-write-evidence');
+      // The cousin must NOT be reported — this is the half that proves the two
+      // paths are separated rather than both flagging.
+      expect(stderr).not.toContain(`AWS::CodeBuild::Project: ${clean} [`);
+    });
+  }
 
   it('exits 1 naming BuildBatchConfig.BatchReportMode when its forward write is deleted', () => {
     const dir = regressedTree('providers-batchreport', 'codebuild-provider.ts', (source) =>
@@ -3010,6 +3580,64 @@ describe('the shipped --check command', { timeout: 30_000 }, () => {
     });
   }
 
+  it('exits 1 naming a STALE segmentRenames entry (#1464)', () => {
+    // The other staleness fence, proven RED against real code. Renaming the SDK
+    // member `properties` back to the CFn spelling makes the un-renamed chain
+    // resolve, so `ProxyConfigurationProperties -> properties` stops earning
+    // its place and must be reported rather than left as an inert exception —
+    // the discipline `NESTED_KEY_ALLOW_LIST` has carried since #1373.
+    const dir = regressedTree('providers-stale-rename', 'ecs-provider.ts', (source) =>
+      source.replace(
+        "      properties: this.convertEnvironment(\n",
+        "      proxyConfigurationProperties: this.convertEnvironment(\n"
+      )
+    );
+    const { status, stderr } = runCheck(dir);
+    expect(status).toBe(1);
+    expect(stderr).toContain('stale segmentRenames');
+    expect(stderr).toContain('AWS::ECS::TaskDefinition#ProxyConfigurationProperties');
+  });
+
+  it('exits 1 on the ECS ProxyConfiguration children when the rename map is the only bridge', () => {
+    // The POSITIVE half, inverted: the rename exists because deleting the
+    // provider's write must still flag. Strip the `properties:` write entirely
+    // and the two children re-surface by name — which is what proves the map is
+    // a spelling bridge, not a silencer.
+    const dir = regressedTree('providers-proxy-props-gone', 'ecs-provider.ts', (source) =>
+      source.replace(
+        "      properties: this.convertEnvironment(\n" +
+          "        config['ProxyConfigurationProperties'] as Array<Record<string, unknown>> | undefined\n" +
+          '      ),\n',
+        ''
+      )
+    );
+    const { status, stderr } = runCheck(dir);
+    expect(status).toBe(1);
+    for (const key of ['Name', 'Value']) {
+      expect(stderr, key).toContain(
+        `AWS::ECS::TaskDefinition: ProxyConfiguration.ProxyConfigurationProperties.${key}`
+      );
+    }
+  });
+
+  it('exits 1 when a target fixture has no nestedPropertyPaths capture (#1464)', () => {
+    // The RED direction of `loadReport`'s new loud failure, the twin of the
+    // `definitionShapes` probe. A fixture tree that was only PARTIALLY
+    // re-captured must name the missing capture and the command that fixes it,
+    // not silently audit zero paths.
+    const fixtureDir = mkdtempSync(join(tmpdir(), 'cdkd-nkc-fx-'));
+    cpSync(resolve(repoRoot, 'tests/fixtures/cfn-schemas'), fixtureDir, { recursive: true });
+    const path = join(fixtureDir, 'AWS-CodeBuild-Project.json');
+    const fixture = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
+    delete fixture['nestedPropertyPaths'];
+    writeFileSync(path, JSON.stringify(fixture, null, 2));
+    const target = NESTED_KEY_TARGETS.find((t) => t.resourceType === 'AWS::CodeBuild::Project')!;
+    expect(() => loadReport([target], undefined, undefined, fixtureDir)).toThrow(
+      /has no nestedPropertyPaths capture/
+    );
+    rmSync(fixtureDir, { recursive: true, force: true });
+  });
+
   it('exits 1 naming a STALE allow-list entry', () => {
     // `AWS::CodeBuild::Project#HostKernel` is allow-listed because no SDK member
     // exists. Naming the key in the provider flips it to `provider-handled`, so
@@ -3101,7 +3729,7 @@ describe('target-table hygiene', { timeout: 30_000 }, () => {
               ),
               'utf8'
             )
-          ) as { nestedProperties?: Record<string, string[]> },
+          ) as { nestedPropertyPaths?: Record<string, string[]> },
           parseProviderSource(source, join(PROVIDERS_DIR, target.providerFile)).handled.get(
             target.resourceType
           )!
@@ -3111,12 +3739,7 @@ describe('target-table hygiene', { timeout: 30_000 }, () => {
         ),
         collectStringLiterals(source, target.providerFile),
         NESTED_KEY_ALLOW_LIST,
-        expandGenericHandoffScopes(
-          { ...evidence, handoffPoints: new Map() },
-          collectSdkInterfaces(
-            resolve(repoRoot, `node_modules/${target.sdkClientPackage}/dist-types/models`)
-          )
-        )
+        { ...evidence, handoffScopes: new Set<string>() }
       );
       const walkDependent = stripped.some((e) => e.bucket === 'no-write-evidence');
       expect(withoutWalk.entries.filter((e) => e.bucket === 'no-write-evidence')).toEqual([]);
@@ -3161,6 +3784,16 @@ describe('target-table hygiene', { timeout: 30_000 }, () => {
       expect(target.minWriteScopes!, `${label} minWriteScopes above yield`).toBeLessThanOrEqual(
         scopes
       );
+      // ...and banded from BELOW like `minWrittenMembers`, which it was not
+      // until the #1464 review pointed out the asymmetry: an upper bound alone
+      // lets a floor drift arbitrarily far under the yield and fence nothing.
+      // The band is looser (0.25 vs 0.5) because this count is the one that
+      // legitimately collapses toward 1 on a blob-forwarding provider — API
+      // Gateway v2 measures exactly 1, which is why the floor there is 1 and is
+      // recorded as fencing nothing.
+      expect(target.minWriteScopes!, `${label} minWriteScopes too slack`).toBeGreaterThanOrEqual(
+        Math.floor(scopes * 0.25)
+      );
       if (target.minHandoffPoints !== undefined) {
         const expanding = countExpandingHandoffPoints(
           evidence,
@@ -3187,14 +3820,26 @@ describe('target-table hygiene', { timeout: 30_000 }, () => {
     }
   });
 
-  it('every minNestedKeys floor is calibrated to the PATH unit (#1448)', () => {
-    // The floors were name-era values until #1448 re-derived them; a floor far
-    // below the real yield fences nothing. Each must be within 40% of the
-    // measured path count (and never above it).
+  it('every minNestedKeys floor is calibrated to the PATH unit (#1448 / #1464)', () => {
+    // The floors were name-era values until #1448 re-derived them, and
+    // 2-segment-era values until #1464 did; a floor far below the real yield
+    // fences nothing. Each must be within 40% of the measured path count.
+    //
+    // The upper bound is STRICTLY below the yield, not `<=`: a floor sitting
+    // exactly AT the measurement is the "every legitimate change is a false
+    // alarm" shape — the moment AWS removes one property from the schema, the
+    // refresher's next run aborts with "fixture capture regression?" instead of
+    // reporting the one path that went away. Two targets used to sit there
+    // (`AWS::ApiGatewayV2::Stage` at 5/5 and `::Authorizer` at 2/2); the
+    // exemption below is only for targets too small for headroom to exist.
     const report = loadReport();
     for (const t of NESTED_KEY_TARGETS) {
       const audited = report.targets.find((r) => r.resourceType === t.resourceType)!.nestedKeyCount;
-      expect(t.minNestedKeys, `${t.resourceType} floor above yield`).toBeLessThanOrEqual(audited);
+      if (audited >= 3) {
+        expect(t.minNestedKeys, `${t.resourceType} floor at or above yield`).toBeLessThan(audited);
+      } else {
+        expect(t.minNestedKeys, `${t.resourceType} floor above yield`).toBeLessThanOrEqual(audited);
+      }
       if (audited >= 5) {
         expect(t.minNestedKeys, `${t.resourceType} floor too slack`).toBeGreaterThanOrEqual(
           Math.floor(audited * 0.6)

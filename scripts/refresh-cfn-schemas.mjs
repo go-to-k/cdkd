@@ -47,6 +47,16 @@ const FIXTURES_DIR = join(REPO_ROOT, 'tests/fixtures/cfn-schemas');
 // (~10 RPS measured); keep concurrency low and let withRetry handle the rest.
 const CONCURRENCY = 3;
 const MAX_RETRIES = 6;
+/**
+ * Caps on {@link extractNestedPropertyPaths}, whose per-branch cycle guard is
+ * combinatorial rather than linear (see that function). Both are far above any
+ * registered type's real yield — the deepest chain across the ~135 fixtures is
+ * 6 segments and the largest single top-level is 223 paths — so they only fire
+ * on the runaway shape, and they fire LOUDLY rather than emitting a
+ * multi-megabyte fixture.
+ */
+const MAX_NESTED_PATHS_PER_PROPERTY = 5000;
+const MAX_NESTED_PATH_DEPTH = 12;
 
 /**
  * Convert a CFn resource type to a filesystem-safe filename.
@@ -246,6 +256,121 @@ export function extractNestedPropertyNames(schemaJson) {
 }
 
 /**
+ * Extract, per top-level property, the set of NESTED property PATHS reachable
+ * beneath it — the full `A.B.C` chain rather than the flattened bag of names
+ * {@link extractNestedPropertyNames} produces (issue #1464).
+ *
+ * Same walk, same `$ref` resolution, same container handling; the only
+ * differences are that the chain is KEPT and that the cycle guard is
+ * PER-BRANCH rather than per-top-level. The flattened capture could share one
+ * `seenRefs` set across the whole top-level because a definition visited twice
+ * contributes the same NAMES both times. Paths are different: `EnvironmentImage`
+ * reached under `Environment` and under `Environment.Fleet` are two distinct
+ * facts, so the guard has to be "is this definition already an ANCESTOR of the
+ * current path" (which stops infinite recursion) rather than "has it been seen
+ * anywhere" (which would silently drop sibling occurrences).
+ *
+ * Chains are stored RELATIVE to the top-level property (the map key already
+ * carries it), and ARRAYS ARE TRANSPARENT: `EnvironmentVariables` being a list
+ * of `EnvironmentVariable` yields `EnvironmentVariables.Name`, not
+ * `EnvironmentVariables[].Name`. That matches the write side, where
+ * `envs.map((e) => ({ name: … }))` puts `name` exactly one level beneath
+ * `environmentVariables`.
+ *
+ * Emitted ALONGSIDE `nestedProperties`, not instead of it: the shape pass and
+ * the per-target `minNestedKeys` floors of
+ * `scripts/gen-nested-key-coverage.ts` are calibrated against the flattened
+ * capture, and the two must be able to coexist while targets migrate.
+ *
+ * BOUNDED, because per-branch ancestry trades the flattened walk's linear cost
+ * for a combinatorial one: a DIAMOND-shaped definition graph (a definition
+ * reachable down two sibling branches, whose children are the same shape again)
+ * yields `2^k` paths, and a k=18 synthetic schema measured 786,430 paths in
+ * about a second. The registered types are nowhere near that today (the biggest
+ * is `AWS::S3::Bucket` at 223 paths, max depth 6), but `processType` runs this
+ * for EVERY refreshed type, so an AWS schema that IS that shape would hang the
+ * refresher and emit a multi-megabyte fixture. Both caps below throw a NAMED
+ * error instead — the operator learns which type and which limit, and the
+ * fixture is not written at all.
+ *
+ * @param {string} schemaJson
+ * @param {string} [typeName] resource type, for the error message
+ * @returns {Record<string, string[]>}
+ */
+export function extractNestedPropertyPaths(schemaJson, typeName = '<schema>') {
+  /** @type {{properties?: Record<string, unknown>, definitions?: Record<string, unknown>}} */
+  const schema = JSON.parse(schemaJson);
+  if (!schema.properties || typeof schema.properties !== 'object') {
+    return {};
+  }
+  const definitions =
+    schema.definitions && typeof schema.definitions === 'object' ? schema.definitions : {};
+
+  /**
+   * @param {unknown} node
+   * @param {readonly string[]} prefix
+   * @param {ReadonlySet<string>} ancestorRefs
+   * @param {Set<string>} paths
+   */
+  function walk(node, prefix, ancestorRefs, paths) {
+    if (node === null || typeof node !== 'object') return;
+    if (Array.isArray(node)) {
+      for (const item of node) walk(item, prefix, ancestorRefs, paths);
+      return;
+    }
+    if (prefix.length >= MAX_NESTED_PATH_DEPTH) return;
+    const obj = /** @type {Record<string, unknown>} */ (node);
+    const ref = obj['$ref'];
+    if (typeof ref === 'string' && ref.startsWith('#/definitions/')) {
+      const defName = ref.slice('#/definitions/'.length);
+      if (!ancestorRefs.has(defName)) {
+        walk(definitions[defName], prefix, new Set([...ancestorRefs, defName]), paths);
+      }
+    }
+    const props = obj['properties'];
+    if (props && typeof props === 'object' && !Array.isArray(props)) {
+      for (const [key, sub] of Object.entries(props)) {
+        const next = [...prefix, key];
+        paths.add(next.join('.'));
+        walk(sub, next, ancestorRefs, paths);
+      }
+    }
+    // Same combinator / container set as the flattened walk, and for the same
+    // reason: `patternProperties` KEYS are regexes, not property names.
+    for (const key of ['items', 'additionalProperties', 'oneOf', 'anyOf', 'allOf']) {
+      if (obj[key] && typeof obj[key] === 'object') {
+        walk(obj[key], prefix, ancestorRefs, paths);
+      }
+    }
+    const patternProps = obj['patternProperties'];
+    if (patternProps && typeof patternProps === 'object' && !Array.isArray(patternProps)) {
+      for (const sub of Object.values(patternProps)) walk(sub, prefix, ancestorRefs, paths);
+    }
+  }
+
+  /** @type {Record<string, string[]>} */
+  const out = {};
+  for (const [topName, sub] of Object.entries(schema.properties)) {
+    /** @type {Set<string>} */
+    const paths = new Set();
+    walk(sub, [], new Set(), paths);
+    if (paths.size > MAX_NESTED_PATHS_PER_PROPERTY) {
+      throw new Error(
+        `${typeName}: nested path capture for "${topName}" exceeded ` +
+          `${MAX_NESTED_PATHS_PER_PROPERTY} paths (${paths.size}) — a diamond-shaped ` +
+          'definition graph makes the per-branch walk combinatorial. Raise ' +
+          'MAX_NESTED_PATHS_PER_PROPERTY in scripts/refresh-cfn-schemas.mjs only after ' +
+          'confirming the fixture stays reviewable.'
+      );
+    }
+    if (paths.size > 0) {
+      out[topName] = Array.from(paths).sort();
+    }
+  }
+  return out;
+}
+
+/**
  * Classify a schema node's terminal type kind, resolving local `$ref`s
  * (cycle-guarded — a cycle resolves to 'object', which is what a
  * self-referential definition is).
@@ -397,6 +522,7 @@ async function processType(client, resourceType) {
     const createOnlyProperties = extractCreateOnlyProperties(resp.Schema);
     const primaryIdentifier = extractPrimaryIdentifier(resp.Schema);
     const nestedProperties = extractNestedPropertyNames(resp.Schema);
+    const nestedPropertyPaths = extractNestedPropertyPaths(resp.Schema, resourceType);
     const definitionShapes = extractDefinitionShapes(resp.Schema);
     const fixture = {
       resourceType,
@@ -410,6 +536,11 @@ async function processType(client, resourceType) {
       // Omitted entirely when the type has no nested property (keeps
       // scalar-only fixtures byte-stable vs the pre-#1373 shape).
       ...(Object.keys(nestedProperties).length > 0 ? { nestedProperties } : {}),
+      // The PER-PATH twin (issue #1464), emitted alongside the flattened
+      // capture rather than replacing it — see
+      // {@link extractNestedPropertyPaths}. Same omit-when-empty rule, so a
+      // scalar-only fixture keeps its pre-#1464 byte shape.
+      ...(Object.keys(nestedPropertyPaths).length > 0 ? { nestedPropertyPaths } : {}),
       // `#top` is always present, so this field only stays out for a
       // fixture with no properties at all.
       ...(Object.keys(definitionShapes).length > 0 ? { definitionShapes } : {}),

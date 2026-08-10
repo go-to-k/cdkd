@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::CodeBuild::Project",
-  "generatedAt": "2026-08-09",
+  "generatedAt": "2026-08-10",
   "properties": [
     "Arn",
     "Artifacts",
@@ -161,6 +161,142 @@
       "ComputeTypesAllowed",
       "MaximumBuildsAllowed",
       "Restrictions",
+      "ServiceRole",
+      "TimeoutInMins"
+    ],
+    "Cache": [
+      "CacheNamespace",
+      "Location",
+      "Modes",
+      "Type"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "VpcConfig": [
+      "SecurityGroupIds",
+      "Subnets",
+      "VpcId"
+    ],
+    "SecondarySources": [
+      "Auth",
+      "Auth.Resource",
+      "Auth.Type",
+      "BuildSpec",
+      "BuildStatusConfig",
+      "BuildStatusConfig.Context",
+      "BuildStatusConfig.TargetUrl",
+      "GitCloneDepth",
+      "GitSubmodulesConfig",
+      "GitSubmodulesConfig.FetchSubmodules",
+      "InsecureSsl",
+      "Location",
+      "ReportBuildStatus",
+      "SourceIdentifier",
+      "Type"
+    ],
+    "SecondaryArtifacts": [
+      "ArtifactIdentifier",
+      "EncryptionDisabled",
+      "Location",
+      "Name",
+      "NamespaceType",
+      "OverrideArtifactName",
+      "Packaging",
+      "Path",
+      "Type"
+    ],
+    "Source": [
+      "Auth",
+      "Auth.Resource",
+      "Auth.Type",
+      "BuildSpec",
+      "BuildStatusConfig",
+      "BuildStatusConfig.Context",
+      "BuildStatusConfig.TargetUrl",
+      "GitCloneDepth",
+      "GitSubmodulesConfig",
+      "GitSubmodulesConfig.FetchSubmodules",
+      "InsecureSsl",
+      "Location",
+      "ReportBuildStatus",
+      "SourceIdentifier",
+      "Type"
+    ],
+    "LogsConfig": [
+      "CloudWatchLogs",
+      "CloudWatchLogs.GroupName",
+      "CloudWatchLogs.Status",
+      "CloudWatchLogs.StreamName",
+      "S3Logs",
+      "S3Logs.EncryptionDisabled",
+      "S3Logs.Location",
+      "S3Logs.Status"
+    ],
+    "SecondarySourceVersions": [
+      "SourceIdentifier",
+      "SourceVersion"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ],
+    "Triggers": [
+      "BuildType",
+      "FilterGroups",
+      "PullRequestBuildPolicy",
+      "PullRequestBuildPolicy.ApproverRoles",
+      "PullRequestBuildPolicy.RequiresCommentApproval",
+      "ScopeConfiguration",
+      "ScopeConfiguration.Domain",
+      "ScopeConfiguration.Name",
+      "ScopeConfiguration.Scope",
+      "Webhook"
+    ],
+    "Artifacts": [
+      "ArtifactIdentifier",
+      "EncryptionDisabled",
+      "Location",
+      "Name",
+      "NamespaceType",
+      "OverrideArtifactName",
+      "Packaging",
+      "Path",
+      "Type"
+    ],
+    "FileSystemLocations": [
+      "Identifier",
+      "Location",
+      "MountOptions",
+      "MountPoint",
+      "Type"
+    ],
+    "Environment": [
+      "Certificate",
+      "ComputeType",
+      "DockerServer",
+      "DockerServer.ComputeType",
+      "DockerServer.SecurityGroupIds",
+      "EnvironmentVariables",
+      "EnvironmentVariables.Name",
+      "EnvironmentVariables.Type",
+      "EnvironmentVariables.Value",
+      "Fleet",
+      "Fleet.FleetArn",
+      "HostKernel",
+      "Image",
+      "ImagePullCredentialsType",
+      "PrivilegedMode",
+      "RegistryCredential",
+      "RegistryCredential.Credential",
+      "RegistryCredential.CredentialProvider",
+      "Type"
+    ],
+    "BuildBatchConfig": [
+      "BatchReportMode",
+      "CombineArtifacts",
+      "Restrictions",
+      "Restrictions.ComputeTypesAllowed",
+      "Restrictions.MaximumBuildsAllowed",
       "ServiceRole",
       "TimeoutInMins"
     ],

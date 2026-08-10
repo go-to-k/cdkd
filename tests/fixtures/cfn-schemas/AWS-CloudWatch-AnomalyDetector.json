@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::CloudWatch::AnomalyDetector",
-  "generatedAt": "2026-08-08",
+  "generatedAt": "2026-08-10",
   "properties": [
     "Configuration",
     "Dimensions",
@@ -67,6 +67,49 @@
       "Namespace",
       "Stat",
       "Value"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "MetricCharacteristics": [
+      "PeriodicSpikes"
+    ],
+    "Configuration": [
+      "ExcludedTimeRanges",
+      "ExcludedTimeRanges.EndTime",
+      "ExcludedTimeRanges.StartTime",
+      "MetricTimeZone"
+    ],
+    "MetricMathAnomalyDetector": [
+      "MetricDataQueries",
+      "MetricDataQueries.AccountId",
+      "MetricDataQueries.Expression",
+      "MetricDataQueries.Id",
+      "MetricDataQueries.Label",
+      "MetricDataQueries.MetricStat",
+      "MetricDataQueries.MetricStat.Metric",
+      "MetricDataQueries.MetricStat.Metric.Dimensions",
+      "MetricDataQueries.MetricStat.Metric.Dimensions.Name",
+      "MetricDataQueries.MetricStat.Metric.Dimensions.Value",
+      "MetricDataQueries.MetricStat.Metric.MetricName",
+      "MetricDataQueries.MetricStat.Metric.Namespace",
+      "MetricDataQueries.MetricStat.Period",
+      "MetricDataQueries.MetricStat.Stat",
+      "MetricDataQueries.MetricStat.Unit",
+      "MetricDataQueries.Period",
+      "MetricDataQueries.ReturnData"
+    ],
+    "Dimensions": [
+      "Name",
+      "Value"
+    ],
+    "SingleMetricAnomalyDetector": [
+      "AccountId",
+      "Dimensions",
+      "Dimensions.Name",
+      "Dimensions.Value",
+      "MetricName",
+      "Namespace",
+      "Stat"
     ]
   },
   "definitionShapes": {
