@@ -996,16 +996,27 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // `newBilling` alone, which would warn about a value nothing consumes.
       // Same `'seed'` source step 4 uses, so the blamed member matches what it
       // would have read. Result discarded: this call is for the diagnostics.
-      if (oldBilling !== newBilling && newBilling === 'PROVISIONED') {
+      const flippingToProvisioned = oldBilling !== newBilling && newBilling === 'PROVISIONED';
+      if (flippingToProvisioned) {
         derivePerCallProvisionedThroughput(properties, currentRegion, 'seed', diagnostics);
       }
+      // The DIFF's translation stays on `'min'` (step 6 compares against it),
+      // but the diagnostics must be raised with the source step 4 will actually
+      // READ: on a flip that is `'seed'`, and naming `MinCapacity` for a value
+      // the flip never consulted is the same mismatch the table-level call
+      // above avoids (issue #1435's precedence, one level down). Firing itself
+      // is source-independent — `pickAutoScalingCapacity` falls back both ways
+      // — so this only ever changes WHICH member the sentence names.
       const desiredSdkIndexes = toSdkGlobalSecondaryIndexes(
         properties,
         currentRegion,
         newBilling,
         'min',
-        diagnostics
+        flippingToProvisioned ? undefined : diagnostics
       );
+      if (flippingToProvisioned) {
+        toSdkGlobalSecondaryIndexes(properties, currentRegion, newBilling, 'seed', diagnostics);
+      }
       for (const replica of (properties['Replicas'] ?? []) as Array<Record<string, unknown>>) {
         const replicaRegion = asRecord(replica)?.['Region'];
         if (typeof replicaRegion !== 'string' || replicaRegion === currentRegion) continue;
@@ -2662,6 +2673,9 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     // application-autoscaling control plane indefinitely; a future
     // create of the same `tableName` (same region) inherits the orphan
     // target silently. PR #403 code-reviewer caught this as a blocker.
+    // Captured from the pre-delete describe so the #1521 index-settled gate
+    // below needs no second call.
+    let preDeleteIndexes: ReadonlyArray<{ readonly IndexStatus?: string | undefined }> | undefined;
     try {
       const describe = await this.dynamoDBClient.send(
         new DescribeTableCommand({ TableName: physicalId })
@@ -2670,6 +2684,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // Index names come from AWS, not from the template: `delete()` may be
       // running against state whose properties are stale, and an orphaned
       // scalable target is only findable by the index that actually exists.
+      preDeleteIndexes = describe.Table?.GlobalSecondaryIndexes;
       const tableIndexNames = (describe.Table?.GlobalSecondaryIndexes ?? [])
         .map((gsi) => gsi.IndexName)
         .filter((name): name is string => typeof name === 'string');
@@ -2780,6 +2795,21 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     }
 
     try {
+      // AWS refuses `DeleteTable` while an index is transitioning
+      // (`Cannot delete table while indexes are being created, updated, or
+      // deleted`), and that is not a theoretical destroy failure: it is what
+      // ORPHANED this fixture's table on 2026-08-10 after a deploy failed
+      // mid-flip (issue #1521). Gated on what the PRE-DELETE describe above
+      // already reported, so the overwhelmingly common case (no index in
+      // flight) costs no extra call at all; only a table that really is
+      // mid-transition pays for the poll. Best-effort — on timeout the delete
+      // goes ahead and AWS's own error stays the backstop.
+      if (hasTransitionalIndex(preDeleteIndexes)) {
+        this.logger.debug(
+          `Waiting for indexes on ${physicalId} to settle before DeleteTable (issue #1521)`
+        );
+        await this.waitForIndexesActive(physicalId, logicalId);
+      }
       await this.dynamoDBClient.send(new DeleteTableCommand({ TableName: physicalId }));
       // DeleteTable is async; wait until DescribeTable returns
       // ResourceNotFoundException so siblings / verify steps observing
@@ -3592,6 +3622,22 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
    * `waitForTableActive`, this tolerates any non-terminal status — the
    * table may already be ACTIVE on the no-op path (already-disabled
    * protection) or transition through UPDATING.
+   *
+   * **A table is ACTIVE while one of its INDEXES is still transitioning**, and
+   * the next `UpdateTable` in the serialized sequence is then rejected with
+   * `Attempt to change a resource which is still in use: Index is being
+   * updated` (issue #1521). That is not hypothetical: it broke the
+   * `PAY_PER_REQUEST -> PROVISIONED` flip that also drops a GSI — AWS applies
+   * the flip to every index, and cdkd issued the index DELETE while the index
+   * was still absorbing it. Reproduced on pristine `main`, three runs out of
+   * four on 2026-08-10, and the failed deploy's own `cdkd destroy` then
+   * ORPHANED the table for the same reason.
+   *
+   * So the table wait is followed by an index wait. The two halves keep
+   * DIFFERENT failure semantics on purpose: the table not reaching ACTIVE is a
+   * hard error (nothing can proceed), while the index wait is best-effort —
+   * a large index backfill legitimately outlives any cap, and throwing there
+   * would fail a deploy whose resources are all correct.
    */
   private async waitForTableActiveAfterUpdate(
     tableName: string,
@@ -3602,7 +3648,15 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       const response = await this.dynamoDBClient.send(
         new DescribeTableCommand({ TableName: tableName })
       );
-      if (response.Table?.TableStatus === 'ACTIVE') return;
+      // Both halves are read off the SAME response on purpose: an extra
+      // DescribeTable per wait would double this path's API traffic for a
+      // condition the response already carries.
+      if (
+        response.Table?.TableStatus === 'ACTIVE' &&
+        !hasTransitionalIndex(response.Table?.GlobalSecondaryIndexes)
+      ) {
+        return;
+      }
       await new Promise((resolve) => setTimeout(resolve, 1000));
     }
     throw new ProvisioningError(
@@ -3622,11 +3676,19 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
    * resource is not ready, so registering right after the GSI-add loop
    * would skip the very index the deploy just introduced.
    *
+   * Since issue #1521 it is ALSO the gate between two serialized mutating
+   * calls (see {@link waitForTableActiveAfterUpdate}) and before
+   * `DeleteTable`, because AWS rejects both while an index is transitioning
+   * — an index that is `DELETING` still reports here, so waiting for every
+   * index to be ACTIVE covers `CREATING` / `UPDATING` / `DELETING` alike.
+   *
    * **Best-effort by design**: on timeout it warns and returns rather than
    * throwing. A missed registration self-heals on the next deploy (the
    * reconcile re-asserts anything not already present), whereas throwing
    * here would fail a deploy whose actual resources are all correct. Index
    * backfill on a large table can take a long time, hence the 15-minute cap.
+   * The caller that follows it with a mutating call keeps AWS's own error as
+   * the backstop for the case where even that cap is not enough.
    */
   private async waitForIndexesActive(tableName: string, logicalId: string): Promise<void> {
     const maxAttempts = 900;
@@ -3636,7 +3698,12 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           new DescribeTableCommand({ TableName: tableName })
         );
         const indexes = response.Table?.GlobalSecondaryIndexes ?? [];
-        if (indexes.every((gsi) => gsi.IndexStatus === 'ACTIVE')) return;
+        // Block on the TRANSITIONAL statuses, not on "!== ACTIVE": an absent
+        // or unrecognized `IndexStatus` must not park the deploy for the full
+        // cap on a table that is fine. AWS always sets the field, so the two
+        // readings only differ for a partial response — where proceeding and
+        // letting AWS answer is the better failure mode.
+        if (!hasTransitionalIndex(indexes)) return;
       } catch (err) {
         this.logger.debug(
           `DescribeTable while waiting for indexes on ${tableName}: ` +
@@ -3807,8 +3874,16 @@ export function derivePerCallProvisionedThroughput(
   source: CapacitySource = 'min',
   diagnostics?: ThroughputDiagnostic[]
 ): { ReadCapacityUnits: number; WriteCapacityUnits: number } {
-  const replicas = (properties['Replicas'] ?? []) as Array<Record<string, unknown>>;
-  const localReplica = replicas.find((r) => r['Region'] === region);
+  // `Array.isArray` rather than a bare cast: a non-array `Replicas` (an
+  // unresolved intrinsic, a malformed template) would otherwise die on `.find`
+  // with a bare `TypeError`. That was survivable while this helper only
+  // computed numbers; it now also produces a user-facing diagnostic, so the
+  // sibling `toSdkGlobalSecondaryIndexes` treatment applies here too.
+  const rawReplicas = properties['Replicas'];
+  const replicas = Array.isArray(rawReplicas) ? rawReplicas : [];
+  const localReplica = replicas.find((r) => asRecord(r)?.['Region'] === region) as
+    | Record<string, unknown>
+    | undefined;
   // Read capacity is per-replica on a GlobalTable; the deploy region's
   // replica is the one `CreateTable` / `UpdateTable` provisions. (The
   // schema also has a TOP-LEVEL `ReadProvisionedThroughputSettings`, but
@@ -4073,6 +4148,26 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
  */
 const ON_DEMAND_LIMIT_RESET = -1;
 
+/**
+ * The GSI states during which AWS refuses another `UpdateTable` or a
+ * `DeleteTable` on the table (issue #1521) — a table is ACTIVE while one of
+ * its indexes is still transitioning, which is what made the serialized
+ * update sequence race and what left a table ORPHANED when the follow-up
+ * destroy hit the same rule.
+ *
+ * `DELETING` is included because a dropped index keeps reporting until it is
+ * actually gone. The test is on the TRANSITIONAL values rather than on
+ * `!== 'ACTIVE'`: an absent or unrecognized status must not park the caller
+ * for its whole cap on a table that is fine.
+ */
+const INDEX_TRANSITIONAL_STATUSES = new Set(['CREATING', 'UPDATING', 'DELETING']);
+
+function hasTransitionalIndex(
+  indexes: ReadonlyArray<{ readonly IndexStatus?: string | undefined }> | undefined
+): boolean {
+  return (indexes ?? []).some((gsi) => INDEX_TRANSITIONAL_STATUSES.has(gsi.IndexStatus ?? ''));
+}
+
 /** Coerce a CFn numeric (CFn is stringly-typed) to a finite number. */
 function toFiniteNumber(value: unknown): number | undefined {
   if (value === undefined || value === null || value === '') return undefined;
@@ -4099,8 +4194,15 @@ function toFiniteNumber(value: unknown): number | undefined {
 export interface ThroughputDiagnostic {
   /**
    * `unresolved-member` — the template DECLARED the member but its value did
-   * not coerce to a number (an unresolved `{Ref: …}`, an object, `''`), so
-   * NOTHING is sent for it and the live AWS value is left alone.
+   * not coerce to a number (an unresolved `{Ref: …}`, an object, `''`). What
+   * FOLLOWS from that differs by side, and the message says which: an
+   * ON-DEMAND ceiling is SUPPRESSED (nothing is sent, the live AWS value is
+   * left alone), while a PROVISIONED capacity CANNOT be — AWS requires a
+   * concrete `ProvisionedThroughput` on a provisioned table and on every GSI
+   * of one — so cdkd substitutes {@link DEFAULT_CAPACITY_UNITS} and says so
+   * (issue #1511). The one provisioned exception is a replica's
+   * `ProvisionedThroughputOverride`, whose absence means "inherit the source
+   * table", so it suppresses like the on-demand side.
    *
    * `billing-mode-mismatch` — an explicitly SDK-shaped block contradicts the
    * table's billing mode (a `ProvisionedThroughput` on a PAY_PER_REQUEST
@@ -4295,18 +4397,23 @@ function reportUnresolvedProvisionedCapacity(
   const blame = blameUnresolvedProvisionedMember(rawSettings, side, source);
   if (!blame) return;
   const path = blame.relPath ? `${context.blockName}.${blame.relPath}` : context.blockName;
+  // Every substituting caller passes the default today, so the sentence names
+  // it unconditionally; the value stays a parameter because it is what the
+  // user has to recognize in `DescribeTable`, and hard-coding "5" here would
+  // silently lie the day a caller substitutes something else.
   const consequence =
     'appliedUnits' in outcome
-      ? `so cdkd sent ${outcome.appliedUnits} capacity units instead` +
-        (outcome.appliedUnits === DEFAULT_CAPACITY_UNITS
-          ? ` (cdkd's default — AWS requires a concrete provisioned capacity here, ` +
-            `so there was nothing to suppress)`
-          : '')
+      ? `so cdkd sent ${outcome.appliedUnits} capacity units instead ` +
+        `(its default — AWS requires a concrete provisioned capacity here, ` +
+        `so there was nothing to suppress)`
       : outcome.suppressed;
   diagnostics.push({
     kind: 'unresolved-member',
     ...(context.indexName !== undefined && { indexName: context.indexName }),
-    member: path.split('.').pop() ?? context.blockName,
+    // `split` always yields at least one element, so the last segment is the
+    // terminal member name (or the block name, when the block ITSELF is what
+    // could not be read).
+    member: path.slice(path.lastIndexOf('.') + 1),
     message:
       `${path} is declared but did not resolve to a number ` +
       `(${JSON.stringify(blame.value)?.slice(0, 80)}), ${consequence}. This is usually an ` +

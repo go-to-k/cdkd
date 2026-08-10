@@ -336,6 +336,75 @@ export class DynamoDBGlobalTableStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
+    // Issue #1511: a DECLARED provisioned-capacity member that does not
+    // resolve to a number makes the derivation fall through to cdkd's 5/5
+    // default — a table the template explicitly sized deploys at 5/5. The
+    // provider now warns instead of doing that silently, and this table is
+    // what proves it against REAL AWS rather than only in unit tests.
+    //
+    // A dedicated L1, gated behind the mode, rather than a tweak to a table
+    // above, for two reasons. `TableV2` cannot express the shape at all (it
+    // requires an AUTO-SCALED write capacity, and the CFn GlobalTable schema
+    // has no literal `WriteCapacityUnits` — the spelling here is the
+    // hand-authored / `cdkd import`ed one the provider deliberately still
+    // honors). And every capacity in the tables above feeds a scalable
+    // target, so breaking one would break `RegisterScalableTarget` and test
+    // something else entirely; this table declares NO auto-scaling, so the
+    // only thing under test is the capacity derivation.
+    if (updateMode.includes('unresolvable-capacity')) {
+      // The value has to survive SYNTH and only fail to resolve at DEPLOY
+      // time, which rules out the obvious `''` / `{}`: aws-cdk-lib's
+      // generated L1 validator rejects both outright
+      // (`Supplied properties not correct for "CfnGlobalTableProps"`), and
+      // an `addPropertyOverride` of the whole block hits the same validator.
+      // A numeric TOKEN passes validation and renders as an intrinsic — but
+      // only while it stays UNRESOLVED: an all-literal `Fn::join` is
+      // constant-folded at synth and then rejected as `"1-x" should be a
+      // number`, so the pseudo-parameter is load-bearing rather than
+      // decoration. It keeps `{"Fn::Join": ["-", [{"Ref": "AWS::Region"},
+      // "x"]]}` in the template, which cdkd resolves at DEPLOY time to
+      // `us-east-1-x` — exactly the present-but-unparseable class issue #1511
+      // is about (a real template gets here via an `Fn::If` arm or a `Ref` to
+      // a non-numeric parameter).
+      const unparseableCapacity = cdk.Token.asNumber(cdk.Fn.join('-', [cdk.Aws.REGION, 'x']));
+      const unresolvableCapacityTable = new ddb.CfnGlobalTable(
+        this,
+        'UnresolvableCapacityTable',
+        {
+          keySchema: [{ attributeName: 'pk', keyType: 'HASH' }],
+          attributeDefinitions: [{ attributeName: 'pk', attributeType: 'S' }],
+          billingMode: 'PROVISIONED',
+          // The READ capacity is the one under test, and it carries NO
+          // auto-scaling block — so the only thing the unparseable value can
+          // break is the capacity derivation, not `RegisterScalableTarget`.
+          replicas: [
+            {
+              region: this.region,
+              readProvisionedThroughputSettings: { readCapacityUnits: unparseableCapacity },
+            },
+          ],
+          // Write stays VALID: a provisioned GlobalTable must have some write
+          // capacity, and keeping it resolvable is what makes the assertion
+          // discriminating — read lands on cdkd's 5 default, write on the
+          // template's 1.
+          writeProvisionedThroughputSettings: {
+            writeCapacityAutoScalingSettings: {
+              minCapacity: 1,
+              maxCapacity: 10,
+              targetTrackingScalingPolicyConfiguration: { targetValue: 70 },
+            },
+          },
+        }
+      );
+      unresolvableCapacityTable.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+
+      new cdk.CfnOutput(this, 'UnresolvableCapacityTableName', {
+        value: unresolvableCapacityTable.ref,
+        description:
+          'PROVISIONED GlobalTable whose declared read + write capacities do not resolve to a number (issue #1511)',
+      });
+    }
+
     new cdk.CfnOutput(this, 'GsiFlipTableName', {
       value: gsiFlipTable.tableName,
       description:

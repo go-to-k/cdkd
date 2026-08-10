@@ -839,24 +839,61 @@ describe('DynamoDB GlobalTable throughput cluster', () => {
       expect(flip?.input.ProvisionedThroughput?.WriteCapacityUnits).toBe(5);
     });
 
-    it('says nothing about the table-level value while the billing mode holds still', () => {
+    it('says nothing about the table-level value while the billing mode holds still', async () => {
       // Recorded rather than incidental: outside the flip nothing SENDS a
       // table-level `ProvisionedThroughput`, so no default is substituted and a
       // warning would name a value that never reached AWS.
-      const diagnostics: ThroughputDiagnostic[] = [];
-      toSdkGlobalSecondaryIndexes(
-        provProps({
-          WriteProvisionedThroughputSettings: {
-            WriteCapacityAutoScalingSettings: { MinCapacity: { Ref: 'Unresolved' } },
-          },
-        }),
-        REGION,
-        'PROVISIONED',
-        'min',
-        diagnostics
+      //
+      // Driven through `update()` on purpose. An earlier version of this test
+      // called the GSI translator directly with a table-level block, which that
+      // function never reads — it passed for ANY implementation and pinned the
+      // gate it names not at all. The sibling billing-flip case above is the
+      // positive control that keeps this one honest.
+      const bad = {
+        WriteProvisionedThroughputSettings: {
+          WriteCapacityAutoScalingSettings: { MinCapacity: { Ref: 'Unresolved' } },
+        },
+      };
+
+      await provider.update(
+        'Prov',
+        'od-table',
+        RESOURCE_TYPE,
+        provProps(bad),
+        provProps({ ...bad, DeletionProtectionEnabled: true })
       );
 
-      expect(diagnostics).toEqual([]);
+      expect(capacityWarnings()).toEqual([]);
+    });
+
+    it('names the member the FLIP reads for a per-GSI block too, not just the table one', async () => {
+      // Same #1435 precedence one level down: step 4's flip translates the
+      // indexes with `'seed'`, so a diagnostic raised from the `'min'` pass
+      // would name `MinCapacity` for a value the failing call never consulted.
+      const gsiWithBothUnresolvable = {
+        GlobalSecondaryIndexes: [
+          provGsi({
+            WriteProvisionedThroughputSettings: {
+              WriteCapacityAutoScalingSettings: {
+                SeedCapacity: { Ref: 'Unresolved' },
+                MinCapacity: { 'Fn::If': ['C', 1, 2] },
+              },
+            },
+          }),
+        ],
+      };
+
+      await provider.update(
+        'Prov',
+        'od-table',
+        RESOURCE_TYPE,
+        provProps(gsiWithBothUnresolvable),
+        { ...provProps(gsiWithBothUnresolvable), BillingMode: 'PAY_PER_REQUEST' }
+      );
+
+      const hits = capacityWarnings();
+      expect(hits.some((m) => m.includes('SeedCapacity'))).toBe(true);
+      expect(hits.some((m) => m.includes('MinCapacity'))).toBe(false);
     });
 
     it('reports nothing for the PREVIOUS side, so bad state cannot shout every deploy', async () => {
