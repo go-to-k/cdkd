@@ -256,19 +256,37 @@ echo "[verify] step 4c (Issue #1419): assert the per-INDEX auto-scaling target +
 # `create()` additionally registered NOTHING, so this assertion runs against
 # the BASELINE deploy: no update deploy has happened yet at this point in the
 # flow. That is deliberate — it pins the create-side half of the fix.
+# Read ONE scalable-target field. Per-value queries rather than a joined
+# multi-field `--output text` row: the joined form compares against a literal
+# embedded TAB, which is invisible in review and breaks if the AWS CLI ever
+# changes its text-output separator. `|| return 1` propagates a probe failure
+# to the caller's `set -e` (errexit is cleared inside `$( )`).
+scalable_target_field() { # $1 = resource id, $2 = dimension, $3 = field
+  local out
+  out="$(aws application-autoscaling describe-scalable-targets \
+    --service-namespace dynamodb \
+    --resource-ids "$1" \
+    --scalable-dimension "$2" \
+    --region "${REGION}" \
+    --query "ScalableTargets[0].$3" --output text)" || return 1
+  printf '%s' "${out}"
+}
+assert_scalable_target() { # $1 = resource id, $2 = dimension, $3 = min, $4 = max, $5 = label
+  local got_min got_max
+  got_min="$(scalable_target_field "$1" "$2" MinCapacity)"
+  got_max="$(scalable_target_field "$1" "$2" MaxCapacity)"
+  if [ "${got_min}" != "$3" ] || [ "${got_max}" != "$4" ]; then
+    echo "[verify] FAIL (issue #1419): $5 on $1 ($2)" >&2
+    echo "[verify]   got Min=${got_min} Max=${got_max}, expected Min=$3 Max=$4" >&2
+    echo "[verify]   pre-fix cdkd never registered this scalable dimension" >&2
+    exit 1
+  fi
+  echo "[verify] $5 ok: Min=${got_min} Max=${got_max}"
+}
+
 INDEX_RESOURCE_ID="table/${GSI_PROV_TABLE}/index/byStatus"
-INDEX_TARGET_JSON="$(aws application-autoscaling describe-scalable-targets \
-  --service-namespace dynamodb \
-  --resource-ids "${INDEX_RESOURCE_ID}" \
-  --scalable-dimension dynamodb:index:WriteCapacityUnits \
-  --region "${REGION}" \
-  --query 'ScalableTargets[0].[MinCapacity,MaxCapacity]' --output text)"
-if [ "${INDEX_TARGET_JSON}" != "2	20" ]; then
-  echo "[verify] FAIL (issue #1419): no dynamodb:index:WriteCapacityUnits target on ${INDEX_RESOURCE_ID}" >&2
-  echo "[verify]   got Min/Max '${INDEX_TARGET_JSON}', expected tab-separated '2' and '20' from Capacity.autoscaled" >&2
-  echo "[verify]   pre-fix cdkd never registered ANY index-level scalable target" >&2
-  exit 1
-fi
+assert_scalable_target "${INDEX_RESOURCE_ID}" dynamodb:index:WriteCapacityUnits 2 20 \
+  "step 4c index write autoscaling"
 INDEX_POLICY_TARGET="$(aws application-autoscaling describe-scaling-policies \
   --service-namespace dynamodb \
   --resource-id "${INDEX_RESOURCE_ID}" \
@@ -289,18 +307,8 @@ esac
 # The READ half of the same index. Registered from a DIFFERENT CFn location
 # than the write half (`Replicas[local].GlobalSecondaryIndexes[]` rather than
 # the top-level GSI), so it is a genuinely separate path, not a mirror.
-INDEX_READ_MINMAX="$(aws application-autoscaling describe-scalable-targets \
-  --service-namespace dynamodb \
-  --resource-ids "${INDEX_RESOURCE_ID}" \
-  --scalable-dimension dynamodb:index:ReadCapacityUnits \
-  --region "${REGION}" \
-  --query 'ScalableTargets[0].[MinCapacity,MaxCapacity]' --output text)"
-if [ "${INDEX_READ_MINMAX}" != "7	70" ]; then
-  echo "[verify] FAIL (issue #1419): no dynamodb:index:ReadCapacityUnits target on ${INDEX_RESOURCE_ID}" >&2
-  echo "[verify]   got Min/Max '${INDEX_READ_MINMAX}', expected tab-separated '7' and '70'" >&2
-  exit 1
-fi
-echo "[verify] step 4c ok: index read autoscaling registered (${INDEX_READ_MINMAX})"
+assert_scalable_target "${INDEX_RESOURCE_ID}" dynamodb:index:ReadCapacityUnits 7 70 \
+  "step 4c index read autoscaling"
 
 # Issue #1435 at TABLE level: the fixture declares minCapacity 1 / seedCapacity 8,
 # and CloudFormation creates at MinCapacity. Pre-fix cdkd sent the seed (8).
@@ -391,17 +399,8 @@ echo "[verify] step 12a (Issue #1419): assert the LOCAL replica's read dimension
 # local region, so only CROSS-REGION replicas got a read target, and create()
 # registered nothing at all. The read half of a single-region autoscaled
 # table was therefore silently unscaled.
-LOCAL_READ_MINMAX="$(aws application-autoscaling describe-scalable-targets \
-  --service-namespace dynamodb \
-  --resource-ids "table/${TABLE_NAME}" \
-  --scalable-dimension dynamodb:table:ReadCapacityUnits \
-  --region "${REGION}" \
-  --query 'ScalableTargets[0].[MinCapacity,MaxCapacity]' --output text)"
-if [ "${LOCAL_READ_MINMAX}" != "5	50" ]; then
-  echo "[verify] FAIL (issue #1419): local read target on table/${TABLE_NAME} is '${LOCAL_READ_MINMAX}' (expected Min 5 / Max 50)" >&2
-  exit 1
-fi
-echo "[verify] step 12a ok: local replica read autoscaling registered (${LOCAL_READ_MINMAX})"
+assert_scalable_target "table/${TABLE_NAME}" dynamodb:table:ReadCapacityUnits 5 50 \
+  "step 12a local replica read autoscaling"
 
 # Item D — opt-in cross-region replica round-trip. Guarded behind
 # CDKD_INTEG_MULTI_REGION=1 because the wall-clock + cost is large.
