@@ -677,27 +677,6 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
   }
 
   /**
-   * Add a single replica region. Issues one `UpdateTableCommand` with
-   * `ReplicaUpdates: [{ Create: { RegionName, ... } }]` and polls
-   * `DescribeTable` until the replica's `ReplicaStatus` flips to ACTIVE.
-   * Capped at 10 minutes per replica (AWS Replica provisioning typically
-   * takes 1–5 min).
-   *
-   * DELIBERATELY UNMAPPED replica sub-keys (Issue #1387 — recorded rather
-   * than silently dropped; `CreateReplicationGroupMemberAction` simply has
-   * no member for them, so they need their own follow-up API calls):
-   *  - `ReplicaStreamSpecification.ResourcePolicy` — the DynamoDB Streams
-   *    resource policy is set by `PutResourcePolicy` against the replica's
-   *    STREAM ARN, not by any `UpdateTable` field.
-   *  - `ResourcePolicy` — the table-level resource policy, likewise a
-   *    separate `PutResourcePolicy` call.
-   *  - `GlobalSecondaryIndexes[].ContributorInsightsSpecification` — a
-   *    per-index `UpdateContributorInsights` call.
-   * `Replicas` is declared in `handledProperties` at the TOP level, which
-   * is the granularity cdkd's pre-flight property-coverage check works at;
-   * these nested keys are tracked as a known gap, not a supported surface.
-   */
-  /**
    * Log a batch of {@link ThroughputDiagnostic}s at WARN, de-duplicated.
    *
    * The translators run over every index on both the create and the update
@@ -723,6 +702,27 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     }
   }
 
+  /**
+   * Add a single replica region. Issues one `UpdateTableCommand` with
+   * `ReplicaUpdates: [{ Create: { RegionName, ... } }]` and polls
+   * `DescribeTable` until the replica's `ReplicaStatus` flips to ACTIVE.
+   * Capped at 10 minutes per replica (AWS Replica provisioning typically
+   * takes 1–5 min).
+   *
+   * DELIBERATELY UNMAPPED replica sub-keys (Issue #1387 — recorded rather
+   * than silently dropped; `CreateReplicationGroupMemberAction` simply has
+   * no member for them, so they need their own follow-up API calls):
+   *  - `ReplicaStreamSpecification.ResourcePolicy` — the DynamoDB Streams
+   *    resource policy is set by `PutResourcePolicy` against the replica's
+   *    STREAM ARN, not by any `UpdateTable` field.
+   *  - `ResourcePolicy` — the table-level resource policy, likewise a
+   *    separate `PutResourcePolicy` call.
+   *  - `GlobalSecondaryIndexes[].ContributorInsightsSpecification` — a
+   *    per-index `UpdateContributorInsights` call.
+   * `Replicas` is declared in `handledProperties` at the TOP level, which
+   * is the granularity cdkd's pre-flight property-coverage check works at;
+   * these nested keys are tracked as a known gap, not a supported surface.
+   */
   private async addReplica(
     tableName: string,
     replica: Record<string, unknown>,
@@ -1075,6 +1075,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       //
       // The sentinel is NOT transferable to the REPLICA-level overrides; see
       // the note on the replica loop below for the probe that proved it.
+      //
       // The comparison baseline is AWS's OBSERVED ceiling, not the state
       // record — the same AWS-aware diff the DeletionProtectionEnabled block
       // above uses, and for a sharper reason here. A table deployed before
