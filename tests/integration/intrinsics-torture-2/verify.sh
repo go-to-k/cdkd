@@ -103,13 +103,11 @@ triage() {
 }
 
 echo "==> Installing fixture deps"
-if [[ ! -d node_modules ]]; then
-  pnpm install --ignore-workspace --prefer-offline
-fi
-# Vendored cdk CLI (issue 1485): the guard re-runs the install when
-# node_modules pre-exists without the cdk bin (stale checkout from before
-# aws-cdk was pinned), and the PATH prepend guarantees `npx cdk` resolves
-# the fixture-local CLI rather than a possibly stale global one.
+# Vendored cdk CLI (issue 1485): guard on the cdk BIN, not on the directory —
+# a node_modules left over from before aws-cdk was pinned exists but has no
+# cdk in it, so a `[ ! -d node_modules ]` test would skip the very install
+# that fixes it. The PATH prepend then guarantees `npx cdk` resolves the
+# fixture-local CLI rather than a possibly stale global one.
 [ -x "node_modules/.bin/cdk" ] || pnpm install --ignore-workspace --prefer-offline
 export PATH="${PWD}/node_modules/.bin:${PATH}"
 
