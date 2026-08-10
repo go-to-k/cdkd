@@ -6,6 +6,34 @@ paths:
   - '.markgate.yml'
 ---
 
+# Running the hook suites
+
+```bash
+vp run test:hooks     # or: bash .claude/hooks/run-tests.sh
+```
+
+Most hooks in this file ship a `*.test.sh` smoke suite next to them (31 suites
+for 35 hooks as of issue #1477 — `gh-label-validity-gate`,
+`gh-pr-edit-deprecation-gate`, `post-merge-sync-reminder`, and `stop-warn` have
+none), and the runner executes every suite that exists under **every bash on
+the machine** — `bash` from PATH (Homebrew 5.x on a dev Mac) and `/bin/bash`
+(macOS's system **3.2**).
+Both matter because the hooks are `#!/usr/bin/env bash`: on a machine without a
+newer bash first on PATH they execute under 3.2, where bash 4+ syntax
+(`mapfile`, `declare -A`, `${var^}`, `${var,,}`) is a runtime error. Issue
+#1458 shipped exactly that into `lib/command-match.sh`, and issue #1477 found
+`provider-integ-gate.test.sh` failing 3 of its 17 cases there — neither
+detectable from a bash-5-only run.
+
+The runner also treats a suite that exits 0 while printing a non-zero `fail: N`
+tally as a failure; the runners report their tally rather than propagating a
+count, which is how the 3.2 breakage stayed invisible.
+
+Deliberately NOT part of `vp run check` / `vp run verify`: the suites build
+throwaway git repos and take ~6 minutes, which is the wrong cost for the inner
+dev loop. `.github/workflows/hooks.yml` runs it on `macos-latest` (the only
+runner image carrying bash 3.2) whenever a PR touches `.claude/hooks/**`.
+
 # Other PreToolUse safety hooks
 
 Thirteen additional one-shot hooks block known foot-guns at the source.

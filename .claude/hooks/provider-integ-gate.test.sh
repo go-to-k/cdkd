@@ -85,12 +85,18 @@ add_register() {
 # that pass a single line don't need to worry.
 add_integ_fixture() {
   local dir="$1" name="$2" body="$3"
+  # `${name^}` (uppercase-first) is a bash 4+ expansion and expands to
+  # `bad substitution` under macOS's system bash 3.2, which silently
+  # truncated the heredoc and made three cases fail there (issue #1477).
+  # `${name:0:1}` / `${name:1}` + `tr` is the 3.2-compatible equivalent.
+  local class_name
+  class_name="$(printf '%s' "${name:0:1}" | tr '[:lower:]' '[:upper:]')${name:1}"
   mkdir -p "$dir/tests/integration/$name/lib"
   cat > "$dir/tests/integration/$name/lib/${name}-stack.ts" <<EOF
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 
-export class ${name^}Stack extends cdk.Stack {
+export class ${class_name}Stack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 ${body}
@@ -281,7 +287,7 @@ if [[ $rc -eq 2 ]]; then ok; else ng 2 "$rc"; fi
 # `$schema-doc` / `$why-sidecar` keys in the real sidecar must NEVER
 # exempt the type. A regex regression that drops the `$` filter would
 # silently allow every entry — this case catches that.
-case_label "sidecar with only `$`-prefixed keys (no real entry) -> block"
+case_label 'sidecar with only `$`-prefixed keys (no real entry) -> block'
 D="$TMPDIR/case14"; init_repo "$D"
 cat > "$D/.claude/integ-coverage-allowlist.json" <<'EOF'
 {
