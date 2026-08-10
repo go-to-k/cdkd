@@ -109,10 +109,10 @@ Registered without an integ fixture, with an explicit `// allow-no-integ: <ratio
 | `AWS::Events::Rule` | [`ecs-schedule-targets`](../tests/integration/ecs-schedule-targets/) (l2,literal)<br>[`eventbridge`](../tests/integration/eventbridge/) (l2,literal)<br>[`eventbridge-api-destination`](../tests/integration/eventbridge-api-destination/) (l2)<br>[`eventbridge-input-transformer`](../tests/integration/eventbridge-input-transformer/) (l2,literal)<br>[`iam-propagation-stress`](../tests/integration/iam-propagation-stress/) (l2)<br>[`rename-refactor`](../tests/integration/rename-refactor/) (l2,literal)<br>[`replacement-immutable-name`](../tests/integration/replacement-immutable-name/) (l2,literal)<br>[`scheduled-task`](../tests/integration/scheduled-task/) (l2) |
 | `AWS::FSx::FileSystem` | [`fsx-lustre`](../tests/integration/fsx-lustre/) (literal)<br>[`fsx-ontap`](../tests/integration/fsx-ontap/) (literal)<br>[`fsx-openzfs`](../tests/integration/fsx-openzfs/) (literal)<br>[`fsx-windows`](../tests/integration/fsx-windows/) (literal) |
 | `AWS::Glue::Crawler` | [`glue-update-hardening`](../tests/integration/glue-update-hardening/) (l1) |
-| `AWS::Glue::Database` | [`data-analytics`](../tests/integration/data-analytics/) (l1,literal)<br>[`drift-revert`](../tests/integration/drift-revert/) (l1) |
+| `AWS::Glue::Database` | [`data-analytics`](../tests/integration/data-analytics/) (l1,literal)<br>[`drift-revert`](../tests/integration/drift-revert/) (l1)<br>[`glue-update-hardening`](../tests/integration/glue-update-hardening/) (l1) |
 | `AWS::Glue::Job` | [`glue-update-hardening`](../tests/integration/glue-update-hardening/) (l1) |
 | `AWS::Glue::SecurityConfiguration` | [`glue-securityconfig-replace`](../tests/integration/glue-securityconfig-replace/) (l1,literal) |
-| `AWS::Glue::Table` | [`data-analytics`](../tests/integration/data-analytics/) (l1,literal) |
+| `AWS::Glue::Table` | [`data-analytics`](../tests/integration/data-analytics/) (l1,literal)<br>[`glue-update-hardening`](../tests/integration/glue-update-hardening/) (l1) |
 | `AWS::Glue::Trigger` | [`glue-update-hardening`](../tests/integration/glue-update-hardening/) (l1) |
 | `AWS::Glue::Workflow` | [`glue-update-hardening`](../tests/integration/glue-update-hardening/) (l1) |
 | `AWS::IAM::AccessKey` | [`iam-access-key`](../tests/integration/iam-access-key/) (literal) |
