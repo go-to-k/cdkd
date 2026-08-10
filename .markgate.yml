@@ -83,10 +83,14 @@ gates:
       - "package.json"
       - "pnpm-lock.yaml"
       - "tsconfig*.json"
-      - "vitest.config.ts"
-      - "build.mjs"
-      - ".eslintrc*"
-      - ".prettierrc*"
+      # vite.config.ts holds the build / test / lint / codegen task
+      # definitions (Vite+), so it defines what "green" means for this
+      # gate — editing it must invalidate a previously-recorded marker.
+      # Issue 1487: the old list scoped a non-existent vitest.config.ts
+      # (plus vestigial build.mjs / .eslintrc* / .prettierrc* — this
+      # repo builds via vp/tsdown and lints/formats via Oxlint/Oxfmt,
+      # all configured in vite.config.ts).
+      - "vite.config.ts"
 
   docs:
     hash: files
