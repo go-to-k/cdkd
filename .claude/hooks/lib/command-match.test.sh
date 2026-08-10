@@ -83,6 +83,62 @@ check "real invocation on a line AFTER the heredoc is still caught" 0 "$MERGE" "
 # The heredoc-opening line itself carries a real command and must be kept.
 check "the heredoc-opening line's own verb is still seen" 0 "$COMMIT" "$heredoc_msg"
 
+# --- Reviewer-found regressions of the FIRST cut (all must MATCH) ---------
+#
+# The first stripper treated `<<<`, a `<<EOF` mentioned in prose, and an
+# unterminated heredoc as real openers, latched `in_heredoc` on, and dropped
+# every remaining line — turning the gate OFF for these commands. Strict
+# false negatives vs the old anchored matcher, i.e. worse than the bug.
+check "here-string <<< does not swallow a later invocation" 0 "$MERGE" \
+  "$(printf 'grep -q a <<< "$v"\ngh pr merge 1\n')"
+check "a <<EOF mentioned in quoted prose does not swallow" 0 "$MERGE" \
+  "$(printf 'echo "docs say <<EOF works"\ngh pr merge 1\n')"
+check "an UNTERMINATED heredoc does not swallow" 0 "$MERGE" \
+  "$(printf 'cat <<EOF\nsome text\ngh pr merge 1\n')"
+
+# The other direction: a multi-line QUOTED argument was left intact by the
+# per-line sed, producing a NEW hard block on prose describing the command.
+check "multi-line -m message quoting a chained merge" 1 "$MERGE" \
+  "$(printf 'git commit -m "fix: x\n\nrun: git push && gh pr merge 5"\n')"
+check "multi-line --body quoting a chained merge" 1 "$MERGE" \
+  "$(printf 'gh pr create --title x --body "intro\nthen git push && gh pr merge 5"\n')"
+
+# An apostrophe inside a double-quoted span is literal, not an opener — the
+# state machine must not use it to swallow a following real command.
+check "apostrophe inside double quotes does not swallow" 0 "$MERGE" \
+  "$(printf 'echo "don%st do this"\ngh pr merge 1\n' "'")"
+
+# A heredoc body full of prose apostrophes is why heredocs are removed BEFORE
+# quotes; reversing the order would let "don't" swallow the trailing command.
+check "heredoc prose with an apostrophe, real invocation after" 0 "$MERGE" \
+  "$(printf 'git commit -F - <<%sEOF%s\ndon%st do this\nEOF\ngh pr merge 1\n' "'" "'" "'")"
+
+# --- cmd_last_cd_target ---------------------------------------------------
+#
+# Which tree the verb runs in decides whose per-worktree markgate markers the
+# gate consults. Reading only a LEADING `cd` was safe while the verb matcher
+# was line-start anchored (a mid-chain `cd` command did not fire the gate at
+# all); now that it does fire, the wrong tree means the wrong markers — which
+# can produce a spurious PASS.
+cd_check() { # name, expected, command
+  local name="$1" want="$2" cmd="$3" got
+  got="$(cmd_last_cd_target "$cmd")"
+  if [ "$got" = "$want" ]; then
+    pass=$((pass + 1)); printf 'OK   %s\n' "$name"
+  else
+    fail=$((fail + 1)); printf 'FAIL %s (want "%s", got "%s")\n' "$name" "$want" "$got"
+    fail_log+="FAIL $name\n  command: $cmd\n"
+  fi
+}
+cd_check "no cd yields nothing" "" "gh pr merge 1"
+cd_check "leading cd" "/tmp/w" "cd /tmp/w && gh pr merge 1"
+cd_check "MID-CHAIN cd is found" "/tmp/w" "git push && cd /tmp/w && gh pr merge 1"
+cd_check "the LAST cd wins" "/tmp/second" "cd /tmp/first && cd /tmp/second && gh pr merge 1"
+cd_check "cd after a semicolon" "/tmp/w" "echo hi; cd /tmp/w; gh pr merge 1"
+cd_check "quoted path is unquoted" "/tmp/a b" "$(printf 'cd "/tmp/a b" && gh pr merge 1')"
+cd_check "a cd mentioned in a quoted body is ignored" "" 'echo "then cd /tmp/w and merge"'
+cd_check "cdkd (a different command) is not a cd" "" "cdkd deploy && gh pr merge 1"
+
 # --- Non-matches ----------------------------------------------------------
 check "different subcommand" 1 "$MERGE" "gh pr create --title x"
 check "substring inside a path" 1 "$COMMIT" "ls /tmp/git-commit-notes"

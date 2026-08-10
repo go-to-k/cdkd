@@ -43,7 +43,17 @@
 # after ANY chained command (`git push && gh pr create`), not just after an
 # optional leading `cd`. See .claude/hooks/lib/command-match.sh.
 # shellcheck source=lib/command-match.sh
-. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/command-match.sh"
+if ! . "${BASH_SOURCE[0]%/*}/lib/command-match.sh" 2>/dev/null \
+  || ! declare -F cmd_matches_verb >/dev/null; then
+  # FAIL CLOSED. Without the helper `cmd_matches_verb` is undefined, the
+  # `if ! cmd_matches_verb ...` guard below sees exit 127 (truthy for `!`),
+  # and the hook would `exit 0` -- silently disabling the gate, which is the
+  # exact failure mode this file exists to prevent. Refuse instead.
+  echo "Blocked: .claude/hooks/lib/command-match.sh is missing or unloadable," >&2
+  echo "so this gate cannot evaluate the command. Restore the file; do not" >&2
+  echo "work around the gate." >&2
+  exit 2
+fi
 
 set -u
 
@@ -53,19 +63,12 @@ cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // ""' 2>/dev/null || ec
 hook_cwd=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null || echo "")
 
 # Match `git switch` / `git checkout` in the subcommand position.
-# Line-start anchored (per memory rule
-# feedback_hook_command_match_line_start.md) so `git switch` /
-# `git checkout` substrings inside quoted argument bodies
-# (`gh issue create --body "remember to git switch back"`) do NOT
-# false-positive into a hard block. The optional leading
-# `cd <path> &&` prefix preserves the worktree-aware
-# `cd <main> && git switch <feat>` chain shape, mirroring
-# check-gate.sh (PR #562 fix pattern). Reuses the branch-gate
-# flag-token grammar so `git -C <path> switch` /
-# `git -c <key>=<val> switch` / etc. all qualify.
-#
-# We deliberately do NOT match `git worktree` — `git worktree add`
-# is the sanctioned escape and must always pass.
+# Matching goes through the SHARED command-position matcher
+# (.claude/hooks/lib/command-match.sh, issue #1455): heredoc bodies and
+# quoted spans are stripped, then the verb is matched at line start OR
+# after a `&&` / `||` / `;` / `|` operator. That catches chained
+# invocations the old line-start anchor missed, while a quoted mention
+# still does not fire (it is removed rather than dodged by position).
 if ! cmd_matches_verb "$cmd" 'git([[:space:]]+(-[^[:space:]]+([[:space:]]+[^[:space:]-][^[:space:]]*)?))*[[:space:]]+(switch|checkout)([[:space:]]|$|[|;&`)])'; then
   exit 0
 fi
@@ -73,10 +76,8 @@ fi
 # Resolve the target dir the same way branch-gate.sh does.
 target_dir="${hook_cwd:-$PWD}"
 
-if [[ "$cmd" =~ ^[[:space:]]*cd[[:space:]]+([^[:space:]\&\;\|]+) ]]; then
-  cd_target="${BASH_REMATCH[1]}"
-  cd_target="${cd_target%\"}"; cd_target="${cd_target#\"}"
-  cd_target="${cd_target%\'}"; cd_target="${cd_target#\'}"
+cd_target="$(cmd_last_cd_target "$cmd")"
+if [[ -n "$cd_target" ]]; then
   if [[ "$cd_target" != /* ]]; then
     cd_target="$target_dir/$cd_target"
   fi

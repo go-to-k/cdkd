@@ -46,7 +46,17 @@
 # after ANY chained command (`git push && gh pr create`), not just after an
 # optional leading `cd`. See .claude/hooks/lib/command-match.sh.
 # shellcheck source=lib/command-match.sh
-. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/command-match.sh"
+if ! . "${BASH_SOURCE[0]%/*}/lib/command-match.sh" 2>/dev/null \
+  || ! declare -F cmd_matches_verb >/dev/null; then
+  # FAIL CLOSED. Without the helper `cmd_matches_verb` is undefined, the
+  # `if ! cmd_matches_verb ...` guard below sees exit 127 (truthy for `!`),
+  # and the hook would `exit 0` -- silently disabling the gate, which is the
+  # exact failure mode this file exists to prevent. Refuse instead.
+  echo "Blocked: .claude/hooks/lib/command-match.sh is missing or unloadable," >&2
+  echo "so this gate cannot evaluate the command. Restore the file; do not" >&2
+  echo "work around the gate." >&2
+  exit 2
+fi
 
 set -u
 
@@ -83,10 +93,8 @@ fi
 target_dir="${hook_cwd:-$PWD}"
 
 # Leading `cd <path> && ...` shifts the target dir.
-if [[ "$cmd" =~ ^[[:space:]]*cd[[:space:]]+([^[:space:]\&\;\|]+) ]]; then
-  cd_target="${BASH_REMATCH[1]}"
-  cd_target="${cd_target%\"}"; cd_target="${cd_target#\"}"
-  cd_target="${cd_target%\'}"; cd_target="${cd_target#\'}"
+cd_target="$(cmd_last_cd_target "$cmd")"
+if [[ -n "$cd_target" ]]; then
   if [[ "$cd_target" != /* ]]; then
     cd_target="$target_dir/$cd_target"
   fi

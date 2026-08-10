@@ -16,6 +16,12 @@
 # ("なぜ忘れた? 絶対忘れないようにして欲しい") was the trigger to upgrade
 # from memory-only to hook-enforced.
 
+if ! . "${BASH_SOURCE[0]%/*}/lib/command-match.sh" 2>/dev/null \
+  || ! declare -F cmd_matches_verb >/dev/null; then
+  # Non-blocking reminder: skip rather than refuse when the helper is absent.
+  exit 0
+fi
+
 set -euo pipefail
 
 input_json=$(cat)
@@ -46,7 +52,7 @@ command=$(jq -r '.tool_input.command // empty' <<<"$input_json" 2>/dev/null || t
 #      `"command":"... && gh pr merge ..."` triggered the
 #      `[;&|]`-shell-separator branch (BSD grep doesn't know about
 #      shell quoting). Fixed by dropping that branch.
-if ! printf '%s\n' "$command" | grep -qE '^[[:space:]]*gh[[:space:]]+(-[A-Za-z][[:space:]]+\S+[[:space:]]+)*pr[[:space:]]+merge\b'; then
+if ! cmd_matches_verb "$command" 'gh([[:space:]]+-[A-Za-z][[:space:]]+[^[:space:]]+)*[[:space:]]+pr[[:space:]]+merge([[:space:]]|$|[|;&`)])'; then
   exit 0
 fi
 
