@@ -1,3 +1,10 @@
+## [0.278.34](https://github.com/go-to-k/cdkd/compare/v0.278.33...v0.278.34) (2026-08-10)
+
+
+### Bug Fixes
+
+* **drift:** preserve AWS-service-authored tags on --revert instead of stripping them ([#1516](https://github.com/go-to-k/cdkd/issues/1516)) ([9f6fb0a](https://github.com/go-to-k/cdkd/commit/9f6fb0ab13eb9346ff0734bc928b4cf9c3e33751))
+
 ## [0.278.33](https://github.com/go-to-k/cdkd/compare/v0.278.32...v0.278.33) (2026-08-10)
 
 
