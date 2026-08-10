@@ -253,7 +253,7 @@ sg-circular-dependency	2026-07-26T18:49:34Z	PASS	51	verify.sh	0727b sweep-b6 sta
 sns-event-source	2026-08-01T10:07:21Z	PASS	59	verify.sh	0801 regression sweep; e2e delivery ok, log groups swept, 0 orphans
 sns-inline-subscription	2026-07-27T11:04:52Z	PASS	53	verify.sh	issue #1267 SNS topic update wrap; 3 del 0 err
 sns-pending-subscription	2026-07-30T12:40:16Z	PASS	22	verify.sh	issue #1301 re-run after review fixes, clean
-sns-sqs-event	2026-08-10T17:28:58Z	PASS	180	verify.sh	1160 sns batch post-rebase re-run: removal reset verified; destroy clean
+sns-sqs-event	2026-08-10T19:02:06Z	PASS	81	verify.sh	issue #1529 http/s assertions; rc ok, orph clean
 sns-subscription-filter	2026-08-10T05:38:11Z	PASS	39	verify.sh	0810 P2 sweep b9; rc ok, 0 orph
 sqs-cloudwatch	2026-07-31T07:00:20Z	PASS	75	standard	removalPolicy DESTROY fix verified: stream deleted on destroy, 0 orphans
 sqs-esm-max-concurrency	2026-08-10T04:23:28Z	PASS	76	verify.sh	0810 sweep b2; lambda-eventsource re-verify, 5 del 0 err, 0 orph

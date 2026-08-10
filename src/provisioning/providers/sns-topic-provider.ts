@@ -647,7 +647,7 @@ export class SNSTopicProvider implements ResourceProvider {
    * attributes (`{Protocol}SuccessFeedbackRoleArn` etc.) back to the CFn
    * array shape `[{Protocol, SuccessFeedbackRoleArn?, SuccessFeedbackSampleRate?,
    * FailureFeedbackRoleArn?}]`. Walks the known protocol prefix list
-   * (`HTTP` / `HTTPS` / `SQS` / `Lambda` / `Firehose` / `Application`); a
+   * (`HTTP` / `SQS` / `Lambda` / `Firehose` / `Application`); a
    * protocol is included in the result iff at least one of its three
    * sub-attributes is set on the topic. Entries are sorted by canonical
    * PascalCase `Protocol` for stable positional compare (AWS does not
@@ -731,7 +731,7 @@ export class SNSTopicProvider implements ResourceProvider {
 
     // DeliveryStatusLogging: reverse-map from per-protocol flat attributes
     // back to the CFn array shape. Walks the known protocol prefix list
-    // (HTTP / HTTPS / SQS / Lambda / Firehose / Application) and emits a
+    // (HTTP / SQS / Lambda / Firehose / Application) and emits a
     // CFn entry whenever any of the three sub-attributes is set.
     //
     // CDK templates emit `Protocol` lowercase (`'lambda'` / `'sqs'` / ...),
@@ -867,7 +867,7 @@ export class SNSTopicProvider implements ResourceProvider {
 //
 // CFn input shape:
 //   DeliveryStatusLogging: [
-//     { Protocol: 'HTTP'|'HTTPS'|'SQS'|'Lambda'|'Firehose'|'Application',
+//     { Protocol: 'http/s'|'sqs'|'lambda'|'firehose'|'application',
 //       SuccessFeedbackRoleArn?, SuccessFeedbackSampleRate?, FailureFeedbackRoleArn? }
 //   ]
 // AWS GetTopicAttributes flat attribute shape (one per protocol):
@@ -877,13 +877,20 @@ export class SNSTopicProvider implements ResourceProvider {
 // where <Protocol> is the canonical PascalCase prefix.
 //
 // Wire-format note: AWS's attribute prefix is always PascalCase
-// (`Lambda`, `SQS`, `HTTPS`, ...) regardless of how `Protocol` was
+// (`Lambda`, `SQS`, `HTTP`, ...) regardless of how `Protocol` was
 // spelled in the template. CDK emits lowercase (`'lambda'` / `'sqs'`
-// / `'http'`) — passing those through directly to
+// / `'http/s'`) — passing those through directly to
 // `${protocol}SuccessFeedbackRoleArn` produces invalid attribute names
 // AWS rejects with `InvalidParameter: Invalid parameter:
 // AttributeName`. `normalizeDeliveryStatusProtocol` is the single
 // chokepoint mapping any-case input to the canonical PascalCase prefix.
+//
+// The template spelling set and the prefix set are NOT the same set, and
+// conflating them was issue #1529: the canonical HTTP-family template
+// value is `http/s` (`sns.LoggingProtocol.HTTP`), while the ONLY
+// HTTP-family attribute prefix AWS accepts is `HTTP`. There is no `HTTPS`
+// prefix — `SetTopicAttributes` rejects `HTTPSSuccessFeedbackRoleArn`
+// outright (live-verified 2026-08-11).
 
 // ─── Inline Subscription attribute mapping (issue #980) ────────────────
 //
@@ -919,16 +926,29 @@ export function buildSubscriptionAttributes(sub: Record<string, unknown>): Recor
   return attributes;
 }
 
-const SNS_DELIVERY_STATUS_PROTOCOLS = [
-  'Application',
-  'Firehose',
-  'HTTP',
-  'HTTPS',
-  'Lambda',
-  'SQS',
-] as const;
+// The canonical AWS attribute PREFIXES, NOT the template spellings. There is
+// exactly one HTTP-family prefix (`HTTP`) — see the header note above and
+// `SNS_DELIVERY_STATUS_PROTOCOL_SPELLINGS` for the accepted template values.
+const SNS_DELIVERY_STATUS_PROTOCOLS = ['Application', 'Firehose', 'HTTP', 'Lambda', 'SQS'] as const;
 
 type SnsDeliveryStatusProtocol = (typeof SNS_DELIVERY_STATUS_PROTOCOLS)[number];
+
+/**
+ * The template-side `Protocol` spellings `normalizeDeliveryStatusProtocol`
+ * accepts, for the fail-fast error message. This is deliberately NOT
+ * `SNS_DELIVERY_STATUS_PROTOCOLS` (the AWS attribute prefixes): the canonical
+ * CFn / CDK spelling of the HTTP-family protocol is `http/s`, which is not a
+ * prefix, and `https` is accepted only as a tolerated legacy alias. Listing
+ * the prefixes would tell a user to write `HTTP`, which is not what the CFn
+ * schema's allowed-value list nor `sns.LoggingProtocol` says.
+ */
+const SNS_DELIVERY_STATUS_PROTOCOL_SPELLINGS = [
+  'application',
+  'firehose',
+  'http/s',
+  'lambda',
+  'sqs',
+] as const;
 
 /**
  * The per-protocol attribute suffixes an inline `DeliveryStatusLogging`
@@ -956,6 +976,28 @@ const SNS_DELIVERY_STATUS_ATTRIBUTE_SUFFIXES = [
  * side (cdkd state — refusing a value an older binary recorded would make
  * the stack permanently undeployable, and an entry whose protocol cannot
  * be canonicalized maps to no attribute names anyway).
+ *
+ * Two entries whose `Protocol` values canonicalize to the SAME prefix
+ * (`http/s` + `https`, say) collapse onto one set of attribute names. The
+ * collapse is a PER-FIELD merge, not a per-entry overwrite: a later entry
+ * overwrites only the sub-fields it declares, because the loop below skips
+ * an absent field (`value == null`) rather than clearing it. So
+ * `[{http/s, RoleArn: A, SampleRate: 10}, {https, RoleArn: B}]` yields
+ * `RoleArn: B` AND `SampleRate: 10`. The warning says exactly that.
+ * The case became reachable only with issue #1529, which folded the whole
+ * HTTP family onto the single `HTTP` prefix — before it, the `https` arm
+ * produced `HTTPS*` names AWS rejected outright, so no such template ever
+ * deployed.
+ *
+ * The collision WARNS rather than throws because this function's `'throw'`
+ * side is also fed by the rollback executor's `update()` replay of a cdkd
+ * STATE record, where the user has no template-side remedy. NOTE the three
+ * pre-existing throws below (unsupported protocol, non-array container,
+ * non-object entry) sit on that same side and are NOT covered by that
+ * reasoning — a state record carrying one of those is permanently
+ * unreplayable. That is a real but latent gap, tracked as issue #1538;
+ * #1529 deliberately did not widen its scope to change the create path's
+ * validation contract.
  */
 export function buildDeliveryStatusAttributeMap(
   logging: unknown,
@@ -964,6 +1006,7 @@ export function buildDeliveryStatusAttributeMap(
 ): Map<string, string> {
   const map = new Map<string, string>();
   if (logging == null) return map;
+  const seenProtocols = new Set<SnsDeliveryStatusProtocol>();
   if (!Array.isArray(logging)) {
     if (onMalformed === 'skip') return map;
     throw new Error(
@@ -988,6 +1031,22 @@ export function buildDeliveryStatusAttributeMap(
       if (normalized === undefined) continue;
       protocol = normalized;
     }
+    // Desired side only, per this function's guard-the-desired-side rule:
+    // on the PREVIOUS side the entries come from a cdkd state record, where
+    // "declare a single entry per protocol" is advice the user cannot act on.
+    if (onMalformed === 'throw' && seenProtocols.has(protocol)) {
+      getLogger()
+        .child('SNSTopicProvider')
+        .warn(
+          `SNS topic ${logicalId}: DeliveryStatusLogging declares more than one entry ` +
+            `for the "${protocol}" attribute prefix (${JSON.stringify(config['Protocol'])} ` +
+            `canonicalizes to it). AWS has one attribute set per prefix, so these are ` +
+            `merged per field — a later entry overwrites only the sub-fields it ` +
+            `declares, and a field it omits keeps the earlier entry's value. ` +
+            `Declare a single entry per protocol.`
+        );
+    }
+    seenProtocols.add(protocol);
     for (const suffix of SNS_DELIVERY_STATUS_ATTRIBUTE_SUFFIXES) {
       const value = config[suffix];
       if (value == null) continue;
@@ -1025,13 +1084,30 @@ function deliveryStatusRemovalResetValue(attributeName: string): string {
  * `InvalidParameter: Invalid parameter: AttributeName` message; failing
  * fast in cdkd lets us name the offending value.
  *
- * Case map (lowercase canonical → PascalCase prefix):
+ * The whole HTTP family collapses onto the single `HTTP` prefix, which is
+ * the ONLY HTTP-family prefix AWS accepts (issue #1529, live-verified
+ * 2026-08-11 against CloudFormation + `SetTopicAttributes`):
+ *
+ * - A CFn template carrying the canonical `Protocol: http/s` produces
+ *   `HTTPSuccessFeedbackRoleArn` / `HTTPFailureFeedbackRoleArn` /
+ *   `HTTPSuccessFeedbackSampleRate` on the live topic. `http/s` is what
+ *   `sns.LoggingProtocol.HTTP` and the CFn schema's allowed-value list both
+ *   spell, so it is the spelling most real templates carry — and it used to
+ *   throw `unsupported DeliveryStatusLogging protocol "http/s"`.
+ * - `HTTPS*` attribute names do NOT exist: `SetTopicAttributes` rejects
+ *   `HTTPSSuccessFeedbackRoleArn` with `InvalidParameter: Invalid parameter:
+ *   AttributeName`. Mapping `https` to a `HTTPS` prefix (the pre-#1529
+ *   behavior) therefore produced a hard AWS failure on write and a
+ *   permanently-absent attribute on read.
+ *
+ * Case map (lowercase input → PascalCase prefix):
  *   application → Application
  *   firehose    → Firehose
- *   http        → HTTP
- *   https       → HTTPS
+ *   http/s      → HTTP   (the canonical CFn / CDK L2 spelling)
+ *   http        → HTTP   (tolerated alias)
+ *   https       → HTTP   (tolerated alias; NOT a distinct prefix)
  *   lambda      → Lambda
- *   sqs        → SQS
+ *   sqs         → SQS
  */
 export function normalizeDeliveryStatusProtocol(
   input: unknown
@@ -1043,10 +1119,10 @@ export function normalizeDeliveryStatusProtocol(
       return 'Application';
     case 'firehose':
       return 'Firehose';
+    case 'http/s':
     case 'http':
-      return 'HTTP';
     case 'https':
-      return 'HTTPS';
+      return 'HTTP';
     case 'lambda':
       return 'Lambda';
     case 'sqs':
@@ -1070,7 +1146,7 @@ function normalizeDeliveryStatusProtocolOrThrow(
   if (normalized === undefined) {
     throw new Error(
       `SNS topic ${logicalId}: unsupported DeliveryStatusLogging protocol ${JSON.stringify(input)}. ` +
-        `Expected one of ${SNS_DELIVERY_STATUS_PROTOCOLS.join(', ')} (case-insensitive).`
+        `Expected one of ${SNS_DELIVERY_STATUS_PROTOCOL_SPELLINGS.join(', ')} (case-insensitive).`
     );
   }
   return normalized;
@@ -1096,9 +1172,17 @@ function stateProtocolCaseMap(stateLogging: unknown): Map<SnsDeliveryStatusProto
     if (typeof raw !== 'string') continue;
     const normalized = normalizeDeliveryStatusProtocol(raw);
     if (!normalized) continue;
-    // First state entry per canonical protocol wins; duplicates would
-    // already be a state error and the map's last-write semantics is
-    // immaterial in practice.
+    // First state entry per canonical protocol wins. Since issue #1529
+    // folded the HTTP family onto one prefix, two entries CAN legitimately
+    // normalize to the same key (`http/s` + `https`) — that template warns
+    // but deploys, so state really can hold both. First-wins just picks
+    // which spelling the reverse map echoes back; either choice matches one
+    // of the recorded entries. Note the resulting array is shorter than the
+    // recorded one (two entries in, one out), so a resource whose drift
+    // baseline falls back to template `properties` rather than
+    // `observedProperties` would see a positional length mismatch — an
+    // argument for the "declare a single entry per protocol" warning, not a
+    // reason to synthesize a duplicate entry here.
     if (!map.has(normalized)) map.set(normalized, raw);
   }
   return map;

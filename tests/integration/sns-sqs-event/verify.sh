@@ -176,6 +176,31 @@ if [ -z "${DS_ROLE_P1}" ] || [ -z "${DS_FAIL_ROLE_P1}" ] || [ "${DS_RATE_P1}" !=
 fi
 echo "    OK: delivery-status topic deployed with Lambda feedback attrs (rate 25)"
 
+# --- Assertion 1d: the http/s protocol reached AWS (issue #1529) ----------
+# The canonical CFn / CDK L2 HTTP-family spelling is `http/s`, and it lands
+# under the `HTTP` attribute prefix. Pre-fix cdkd threw on `http/s` outright,
+# so the deploy above would not even have completed; the `https` spelling it
+# did accept emitted `HTTPS*` names AWS rejects with `InvalidParameter`.
+# Asserting the HTTPS* names are ABSENT is what pins the second half — they
+# are spelled out rather than matched by a `HTTPS` prefix test, because
+# `HTTPSuccessFeedbackRoleArn` (HTTP + Success...) also starts with those
+# five characters.
+DS_HTTP_ROLE_P1=$(echo "${DS_ATTRS_P1}" | jq -r '.HTTPSuccessFeedbackRoleArn // empty')
+DS_HTTP_RATE_P1=$(echo "${DS_ATTRS_P1}" | jq -r '.HTTPSuccessFeedbackSampleRate // empty')
+DS_HTTP_FAIL_P1=$(echo "${DS_ATTRS_P1}" | jq -r '.HTTPFailureFeedbackRoleArn // empty')
+if [ -z "${DS_HTTP_ROLE_P1}" ] || [ -z "${DS_HTTP_FAIL_P1}" ] || [ "${DS_HTTP_RATE_P1}" != "35" ]; then
+  echo "FAIL: delivery-status topic missing http/s feedback attrs under the HTTP prefix (role='${DS_HTTP_ROLE_P1}', failRole='${DS_HTTP_FAIL_P1}', rate='${DS_HTTP_RATE_P1}', expected rate 35)" >&2
+  exit 1
+fi
+for BAD_ATTR in HTTPSSuccessFeedbackRoleArn HTTPSSuccessFeedbackSampleRate HTTPSFailureFeedbackRoleArn; do
+  BAD_VAL=$(echo "${DS_ATTRS_P1}" | jq -r --arg k "${BAD_ATTR}" '.[$k] // empty')
+  if [ -n "${BAD_VAL}" ]; then
+    echo "FAIL: nonexistent HTTPS-prefixed attribute ${BAD_ATTR} is set ('${BAD_VAL}') — AWS has no such attribute" >&2
+    exit 1
+  fi
+done
+echo "    OK: http/s mapped to the HTTP prefix (rate 35), no HTTPS* attributes"
+
 # --- Resolve the topic + subscription ARNs --------------------------------
 TOPIC_ARN=$(aws sns list-topics --region "${REGION}" \
   --query "Topics[?ends_with(TopicArn, ':${TOPIC_NAME}')].TopicArn | [0]" \
@@ -297,6 +322,22 @@ if [ "${DS_RATE_P2}" != "0" ]; then
   exit 1
 fi
 echo "    OK: delivery-status feedback attrs reset on removal (RoleArns cleared, rate 0)"
+
+# --- Assertion 2c: the http/s entry resets too (issues #1160 + #1529) -----
+# The removal reset must cover EVERY protocol the baseline declared, not just
+# the first one — the http/s entry is the second element of the list.
+DS_HTTP_ROLE_P2=$(echo "${DS_ATTRS_P2}" | jq -r '.HTTPSuccessFeedbackRoleArn // empty')
+DS_HTTP_RATE_P2=$(echo "${DS_ATTRS_P2}" | jq -r '.HTTPSuccessFeedbackSampleRate // empty')
+DS_HTTP_FAIL_P2=$(echo "${DS_ATTRS_P2}" | jq -r '.HTTPFailureFeedbackRoleArn // empty')
+if [ -n "${DS_HTTP_ROLE_P2}" ] || [ -n "${DS_HTTP_FAIL_P2}" ]; then
+  echo "FAIL: http/s feedback RoleArns survived the removal redeploy (role='${DS_HTTP_ROLE_P2}', failRole='${DS_HTTP_FAIL_P2}')" >&2
+  exit 1
+fi
+if [ "${DS_HTTP_RATE_P2}" != "0" ]; then
+  echo "FAIL: HTTPSuccessFeedbackSampleRate is '${DS_HTTP_RATE_P2}' after removal, expected the CFn-parity reset '0'" >&2
+  exit 1
+fi
+echo "    OK: http/s feedback attrs reset on removal (RoleArns cleared, rate 0)"
 
 # --- Phase 3: destroy -----------------------------------------------------
 echo "==> Phase 3: destroy"
