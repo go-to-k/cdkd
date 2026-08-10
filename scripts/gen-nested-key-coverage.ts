@@ -280,7 +280,13 @@
  * REASSIGNED as a whole is refused for the builder's reason. The same rule now
  * also guards the ORIGINAL spread-only forward: {@link deliversWholeBlob}
  * refuses a binding that has deletes on it, handing the site to the bounded
- * registration instead of a full wildcard that would ignore the deletes.
+ * registration instead of a full wildcard that would ignore the deletes — and
+ * refuses a VERBATIM member forward whose subtree the root binding deletes
+ * into (`delete config['VC']['Id']` then `{ VC: config['VC'] }`), where no
+ * literal remains to carry a bounded credit at all. Deletes on the RESOLUTION
+ * CHAIN between a write and its seed literal (a helper-returned seed whose
+ * RECEIVING binding is deleted from) travel via the chain-source walk in
+ * {@link registerSpreadHandoff}.
  *
  * What is deliberately NOT excluded is recorded as known bound (9): a member
  * the patches OVERWRITE stays credited through the enclosing spread, and the
@@ -2899,6 +2905,34 @@ export function collectWriteEvidence(
     seen.add(e);
     if (ts.isElementAccessExpression(e) || ts.isPropertyAccessExpression(e)) {
       if (!isBagDerived(e, new Set())) return false;
+      // A member whose SUBTREE the function deletes into is not delivered
+      // whole (issue #1475 review): `delete config['VC']['Id']` mutates the
+      // very object `config['VC']` then forwards. Deletes on the root binding
+      // are recorded by FIRST segment, so the accessed member's name showing
+      // up there refuses the forward — loud, since no literal remains to
+      // register a bounded credit for an opaque access.
+      let rootExpr: ts.Node = e;
+      let firstSegment: string | undefined;
+      while (ts.isElementAccessExpression(rootExpr) || ts.isPropertyAccessExpression(rootExpr)) {
+        firstSegment = ts.isPropertyAccessExpression(rootExpr)
+          ? rootExpr.name.text
+          : elementAccessName(unwrapExpression(rootExpr.argumentExpression));
+        rootExpr = unwrapExpression(rootExpr.expression);
+      }
+      if (ts.isIdentifier(rootExpr)) {
+        const rootDeclaration = declarationOf(rootExpr);
+        if (
+          rootDeclaration !== undefined &&
+          (ts.isVariableDeclaration(rootDeclaration) || ts.isParameter(rootDeclaration))
+        ) {
+          const rootDeletes = deleteExclusionsOf(rootDeclaration);
+          if (rootDeletes === undefined) return false;
+          if (rootDeletes.size > 0) {
+            if (firstSegment === undefined) return false;
+            if (rootDeletes.has(firstSegment.toLowerCase())) return false;
+          }
+        }
+      }
       const key = ts.isElementAccessExpression(e)
         ? elementAccessName(e.argumentExpression)
         : e.name.text;
@@ -3498,6 +3532,28 @@ export function collectWriteEvidence(
       return rootDeletes.has(firstSegment.toLowerCase()) ? undefined : new Set<string>();
     }
     if (ts.isCallExpression(e)) {
+      // Mirror {@link resolveLiterals}' call reach: `.map(cb)` delivers the
+      // callbacks' returns, `.filter(...)` its receiver — the chain has to
+      // follow the same hops or every registration those hops feed refuses.
+      const callee = unwrapExpression(e.expression);
+      if (ts.isPropertyAccessExpression(callee)) {
+        if (CALLBACK_RETURNING_METHODS.has(callee.name.text)) {
+          const out = new Set<string>();
+          for (const a of e.arguments) {
+            const fn = unwrapExpression(a);
+            if (!ts.isArrowFunction(fn) && !ts.isFunctionExpression(fn)) return undefined;
+            for (const r of returnedExpressions(fn)) {
+              const inner = spreadSourceExclusions(r, seen);
+              if (inner === undefined) return undefined;
+              for (const k of inner) out.add(k);
+            }
+          }
+          return out;
+        }
+        if (RECEIVER_PRESERVING_METHODS.has(callee.name.text)) {
+          return spreadSourceExclusions(callee.expression, seen);
+        }
+      }
       // `{ ...this.toSdk(x) }` — deletes on the callee's returned binding
       // travel with the returned value.
       const name = resolvableCalleeName(e);
@@ -3514,6 +3570,16 @@ export function collectWriteEvidence(
       }
       return out;
     }
+    if (ts.isArrayLiteralExpression(e)) {
+      const out = new Set<string>();
+      for (const el of e.elements) {
+        const inner = spreadSourceExclusions(el, seen);
+        if (inner === undefined) return undefined;
+        for (const k of inner) out.add(k);
+      }
+      return out;
+    }
+    if (ts.isSpreadElement(e)) return spreadSourceExclusions(e.expression, seen);
     if (ts.isConditionalExpression(e) || ts.isBinaryExpression(e)) {
       if (
         ts.isBinaryExpression(e) &&
@@ -3549,7 +3615,11 @@ export function collectWriteEvidence(
    * registrations at the same path union their coverage, so exclusion sets
    * INTERSECT; a FULL hand-off at the path supersedes every exclusion.
    */
-  const registerSpreadHandoff = (path: string, lit: ts.ObjectLiteralExpression): void => {
+  const registerSpreadHandoff = (
+    path: string,
+    lit: ts.ObjectLiteralExpression,
+    chainSource?: ts.Node
+  ): void => {
     let excluded: Set<string> | undefined;
     for (const p of lit.properties) {
       if (!ts.isSpreadAssignment(p)) continue;
@@ -3560,6 +3630,16 @@ export function collectWriteEvidence(
       for (const k of sourceExcluded) excluded.add(k);
     }
     if (excluded === undefined) return; // no bag-derived spread in this literal
+    // Deletes on the RESOLUTION CHAIN between the write and this literal
+    // (issue #1475 review): `const r = this.seed(cfg); delete r['K'];` and the
+    // `?:`-arm seed both reach here with a holder that is not the deleted
+    // binding — the chain walk is what sees those. An unfollowable chain
+    // refuses, fail-closed.
+    if (chainSource !== undefined && unwrapExpression(chainSource) !== lit) {
+      const chainExcluded = spreadSourceExclusions(chainSource, new Set());
+      if (chainExcluded === undefined) return;
+      for (const k of chainExcluded) excluded.add(k);
+    }
     const holder = climbOutOfWrappers(lit).parent;
     if (holder !== undefined && ts.isVariableDeclaration(holder) && ts.isIdentifier(holder.name)) {
       if (isWhollyReassigned(holder)) return;
@@ -3689,7 +3769,11 @@ export function collectWriteEvidence(
       handoffExclusions.delete(path);
       registerSeedKeyHandoffs(path, handoff.seedKeys);
     }
-    for (const literal of resolveLiterals(value, new Set())) walkLiteralAt(path, literal);
+    // The write VALUE is the spread recognizer's CHAIN SOURCE (issue #1475
+    // review): a literal can reach this write through bindings whose deletes
+    // the literal's own holder cannot see (`const r = this.seed(cfg);
+    // delete r['K'];` — the seed literal's holder is the callee's return).
+    for (const literal of resolveLiterals(value, new Set())) walkLiteralAt(path, literal, value);
     // The BUILDER twin (issue #1474): the value can also be a binding the file
     // populated by assignment after seeding it with a literal, in which case
     // the seed walked just above carries none of the members.
@@ -3731,13 +3815,18 @@ export function collectWriteEvidence(
     }
   }
 
-  /** Every member of `lit` is written directly at `path`. */
-  function walkLiteralAt(path: string, lit: ts.ObjectLiteralExpression): void {
+  /**
+   * Every member of `lit` is written directly at `path`. `chainSource` is the
+   * expression the literal was RESOLVED FROM (the write's value, or a spread's
+   * own expression one level up) — the spread registration walks its binding
+   * chain for deletes the literal's holder cannot see (issue #1475 review).
+   */
+  function walkLiteralAt(path: string, lit: ts.ObjectLiteralExpression, chainSource?: ts.Node): void {
     const guard = `${path}#${literalId(lit)}`;
     if (walkedAtPath.has(guard)) return;
     walkedAtPath.add(guard);
     if (isComparisonOnlyLiteral(lit)) return;
-    registerSpreadHandoff(path, lit);
+    registerSpreadHandoff(path, lit, chainSource);
     for (const p of lit.properties) {
       if (ts.isPropertyAssignment(p)) {
         const name = propertyName(p.name);
@@ -3750,7 +3839,9 @@ export function collectWriteEvidence(
       } else if (ts.isSpreadAssignment(p)) {
         // A spread merges the source's members AT THIS LEVEL — including a
         // BUILDER's (`return { ...out, Extra: 1 }`), issue #1474.
-        for (const child of resolveLiterals(p.expression, new Set())) walkLiteralAt(path, child);
+        for (const child of resolveLiterals(p.expression, new Set())) {
+          walkLiteralAt(path, child, p.expression);
+        }
         for (const builder of resolveBuilders(p.expression, new Set())) {
           walkBuilderAt(path, builder);
         }

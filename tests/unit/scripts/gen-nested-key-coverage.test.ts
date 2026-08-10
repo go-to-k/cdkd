@@ -1381,6 +1381,18 @@ describe('the SPREAD-AND-PATCH forwarder (synthetic, issue #1475)', () => {
       'ipv6enabled',
       'staging',
     ]);
+    // A COMPUTED-key rename write (`result[sdkKey] = result[cfnKey]`) yields
+    // no seed-key alias, so the exclusion is the last word — pinned here
+    // because the literal-key rename shape DOES alias (see the first test's
+    // comment) and the two must not be confused.
+    expect(
+      isHandoffCovered(
+        evidence.handoffScopes,
+        'DistributionConfig',
+        'IPV6Enabled',
+        evidence.handoffExclusions
+      )
+    ).toBe(false);
   });
 
   it('resolves delete keys through for-of over a literal array and Object.keys(TABLE)', () => {
@@ -1461,6 +1473,76 @@ describe('the SPREAD-AND-PATCH forwarder (synthetic, issue #1475)', () => {
       `)
     );
     expect(evidence.handoffScopes.has('DistributionConfig')).toBe(false);
+  });
+
+  it('a delete on the RECEIVING binding of a helper-returned seed still excludes (#1475 review)', () => {
+    // The seed literal lives inside the helper, so its HOLDER is the callee's
+    // return — the delete is on the CALLER's binding, visible only through
+    // the chain-source walk from the write value.
+    const evidence = evidenceOf(`
+      class P {
+        async create(logicalId: string, resourceType: string, properties: Record<string, unknown>) {
+          const config = properties['DistributionConfig'] as Record<string, unknown>;
+          const result = this.seed(config);
+          delete result['IPV6Enabled'];
+          await this.send({ DistributionConfig: result });
+        }
+        private seed(config: Record<string, unknown>) {
+          return { ...config };
+        }
+      }
+    `);
+    expect(evidence.handoffScopes.has('DistributionConfig')).toBe(true);
+    expect([...(evidence.handoffExclusions?.get('DistributionConfig') ?? [])]).toEqual([
+      'ipv6enabled',
+    ]);
+    expect(
+      isHandoffCovered(
+        evidence.handoffScopes,
+        'DistributionConfig',
+        'IPV6Enabled',
+        evidence.handoffExclusions
+      )
+    ).toBe(false);
+  });
+
+  it('a VERBATIM member forward whose subtree the function deletes into is refused (#1475 review)', () => {
+    // deliversWholeBlob's access branch: `delete config['VC']['Id']` mutates
+    // the very object `config['VC']` then forwards it whole. No literal
+    // remains to register a bounded credit, so the refusal is total — loud.
+    const evidence = evidenceOf(`
+      class P {
+        async create(logicalId: string, resourceType: string, properties: Record<string, unknown>) {
+          const config = properties['DistributionConfig'] as Record<string, unknown>;
+          delete (config['ViewerCertificate'] as Record<string, unknown>)['IamCertificateId'];
+          await this.send({
+            DistributionConfig: { ViewerCertificate: config['ViewerCertificate'] },
+          });
+        }
+      }
+    `);
+    expect(evidence.handoffScopes.has('DistributionConfig.ViewerCertificate')).toBe(false);
+    expect(
+      isHandoffCovered(
+        evidence.handoffScopes,
+        'DistributionConfig.ViewerCertificate',
+        'IamCertificateId',
+        evidence.handoffExclusions
+      )
+    ).toBe(false);
+    // ...while a SIBLING member the deletes never touch still forwards whole.
+    const sibling = evidenceOf(`
+      class P {
+        async create(logicalId: string, resourceType: string, properties: Record<string, unknown>) {
+          const config = properties['DistributionConfig'] as Record<string, unknown>;
+          delete config['Staging'];
+          await this.send({
+            DistributionConfig: { ViewerCertificate: config['ViewerCertificate'] },
+          });
+        }
+      }
+    `);
+    expect(sibling.handoffScopes.has('DistributionConfig.ViewerCertificate')).toBe(true);
   });
 
   it('a delete on an EARLIER binding in the spread chain still excludes (#1475 review)', () => {
@@ -1555,10 +1637,39 @@ describe('the SPREAD-AND-PATCH forwarder (synthetic, issue #1475)', () => {
     ]);
   });
 
-  it('two registrations at one path INTERSECT their exclusions (union of coverage)', () => {
-    // Two sites deliver the same path: one deletes a key, the other does not.
-    // Coverage is the union, so the exclusion set is the intersection — empty
-    // here, meaning the clean site vouches for the key the other deleted.
+  it('two BOUNDED registrations at one path INTERSECT their exclusions (union of coverage)', () => {
+    // Both sites carry deletes, so BOTH register bounded (a delete-free site
+    // would register a FULL hand-off through deliversWholeBlob and supersede —
+    // the next test). Coverage is the union: a key only ONE site deletes is
+    // delivered by the other, so the merged exclusion drops it; a key BOTH
+    // delete must survive — that surviving-key half is the fail-open direction
+    // if the merge ever regresses to always-clearing.
+    const both = evidenceOf(`
+      class P {
+        async create(logicalId: string, resourceType: string, properties: Record<string, unknown>) {
+          const a = { ...(properties['Cfg'] as Record<string, unknown>) };
+          delete a['Shared'];
+          delete a['OnlyA'];
+          await this.send({ Cfg: a });
+        }
+        async update(logicalId: string, physicalId: string, resourceType: string, properties: Record<string, unknown>) {
+          const b = { ...(properties['Cfg'] as Record<string, unknown>) };
+          delete b['Shared'];
+          await this.send({ Cfg: b });
+        }
+      }
+    `);
+    expect(both.handoffScopes.has('Cfg')).toBe(true);
+    expect([...(both.handoffExclusions?.get('Cfg') ?? [])]).toEqual(['shared']);
+    expect(isHandoffCovered(both.handoffScopes, 'Cfg', 'Shared', both.handoffExclusions)).toBe(
+      false
+    );
+    expect(isHandoffCovered(both.handoffScopes, 'Cfg', 'OnlyA', both.handoffExclusions)).toBe(
+      true
+    );
+  });
+
+  it('a delete-free second site supersedes via a FULL hand-off (exclusion entry cleared)', () => {
     const evidence = evidenceOf(`
       class P {
         async create(logicalId: string, resourceType: string, properties: Record<string, unknown>) {
