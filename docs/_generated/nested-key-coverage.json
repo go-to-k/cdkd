@@ -2,13 +2,13 @@
   "summary": {
     "targetCount": 11,
     "nestedKeyCount": 703,
-    "sameSpelling": 644,
+    "sameSpelling": 642,
     "providerHandled": 54,
-    "allowListed": 5,
+    "allowListed": 7,
     "caseDivergence": 0,
     "noSdkMember": 0,
     "noWriteEvidence": 0,
-    "freshObjectTargets": 9,
+    "freshObjectTargets": 10,
     "shapeClean": 87,
     "shapeHandled": 32,
     "shapeAllowListed": 7,
@@ -195,7 +195,7 @@
       "providerFile": "cloudfront-distribution-provider.ts",
       "sdkClientPackage": "@aws-sdk/client-cloudfront",
       "keyStyle": "exact",
-      "freshObjectMapper": false,
+      "freshObjectMapper": true,
       "nestedKeyCount": 173,
       "entries": [
         {
@@ -1408,14 +1408,20 @@
           "nestedKey": "Tags.Key",
           "topLevelProperty": "Tags",
           "terminalKey": "Key",
-          "bucket": "same-spelling"
+          "bucket": "allow-listed",
+          "sdkNearMiss": "Key",
+          "rationale": "Written by toSdkTags on the forward path (`.map(([Key, Value]) => ({ Key, Value }))`), but one wrapper level below the audited chain: the SDK Tags shape is the { Items: Tag[] } wrapper, so the write scope is Tags.Items while the CFn transparent-array chain is Tags.Key. A wrapper-level insertion is neither a case fold nor a segmentRename, so the write pass cannot see it.",
+          "allowMatchKey": "AWS::CloudFront::Distribution#Tags.Key"
         },
         {
           "resourceType": "AWS::CloudFront::Distribution",
           "nestedKey": "Tags.Value",
           "topLevelProperty": "Tags",
           "terminalKey": "Value",
-          "bucket": "same-spelling"
+          "bucket": "allow-listed",
+          "sdkNearMiss": "Value",
+          "rationale": "Same wrapper-level insertion as Tags.Key: written by toSdkTags beneath the SDK { Items: Tag[] } wrapper (scope Tags.Items), one level below the CFn chain.",
+          "allowMatchKey": "AWS::CloudFront::Distribution#Tags.Value"
         }
       ],
       "shapeEntries": [

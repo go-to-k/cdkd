@@ -250,29 +250,81 @@
  * Recognizing the shape is MONOTONE — it only ever adds scoped members — so no
  * target gained a finding; measured, the tree's total residual fell 290 -> 260.
  *
+ * THE SPREAD-AND-PATCH FORWARDER (issue #1475)
+ * --------------------------------------------
+ * The fourth recognizer, and the one the genericity test structurally cannot
+ * host. `CloudFrontDistributionProvider.convertToSdkFormat` is —
+ *
+ *     const result = { ...config };          // <- delivers EVERY member verbatim
+ *     if (result['Comment'] == null) result['Comment'] = '';
+ *     for (const [cfnKey, sdkKey] of Object.entries(TOP_LEVEL_CFN_TO_SDK)) {
+ *       result[sdkKey] = result[cfnKey];
+ *       delete result[cfnKey];               // <- the spread no longer vouches here
+ *     }
+ *     …                                      // ~30 more named patches
+ *     return result;
+ *
+ * — a function that names 30+ members, so {@link isGenericConverter} rejects it
+ * (correctly, by its own rule), while the SPREAD alone delivers everything the
+ * patches never touch. {@link registerSpreadHandoff} credits exactly that: a
+ * literal that spreads a BAG-DERIVED seed (the #1445 taint root — a config read
+ * back off `GetDistributionConfig` still measures as nothing) registers the
+ * write path as a hand-off scope, BOUNDED by an exclusion set
+ * ({@link ProviderWriteEvidence.handoffExclusions}): the first-segment keys the
+ * function `delete`s off the seeded binding. Without the exclusion, a rename
+ * that writes the WRONG SDK key would be vouched for by the very spread it just
+ * removed the key from. Delete keys are resolved through the one computed shape
+ * the tree uses — `for (const [cfnKey, sdkKey] of Object.entries(TABLE))` /
+ * `for (const k of TABLE)` over a LITERAL table — and a delete whose key set
+ * cannot be bounded refuses the WHOLE registration, fail-closed. A binding
+ * REASSIGNED as a whole is refused for the builder's reason. The same rule now
+ * also guards the ORIGINAL spread-only forward: {@link deliversWholeBlob}
+ * refuses a binding that has deletes on it, handing the site to the bounded
+ * registration instead of a full wildcard that would ignore the deletes.
+ *
+ * What is deliberately NOT excluded is recorded as known bound (9): a member
+ * the patches OVERWRITE stays credited through the enclosing spread, and the
+ * spread delivers the seed's spelling VERBATIM. The issue's own model — "every
+ * key the template carries reaches AWS through the spread; the named patches
+ * only rename / wrap specific keys" — is what the recognizer encodes, and the
+ * two-sided fence (delete exclusions + the key pass judging every non-SDK
+ * spelling at full strictness) is what keeps it from being the rubber stamp
+ * the issue warned it could become: deleting the `IPV6Enabled -> IsIPV6Enabled`
+ * rename from the real provider still exits non-zero, via the key pass
+ * (`case-divergence` — the literal evidence disappears with the map entry and
+ * the installed model's `Ipv6Enabled` is the near-miss), and that fence is
+ * pinned by a real-code probe.
+ *
  * WHY THE PASS IS OPT-IN PER TARGET, AND WHICH TARGETS ARE IN
  * -----------------------------------------------------------
  * Measured against the real tree. Counts are would-be `same-spelling` key PATHS
- * with no scoped write evidence, at the three recognizer stages: BEFORE the
- * hand-off walk, after it, and after the BUILDER recognizer (#1474). RE-MEASURED
+ * with no scoped write evidence, at the four recognizer stages: BEFORE the
+ * hand-off walk, after it, after the BUILDER recognizer (#1474), and after the
+ * SPREAD-AND-PATCH recognizer (#1475). RE-MEASURED
  * for #1464 — the audited unit is now the FULL chain, so both the denominators and
  * the residuals moved, and the #1448/#1445 numbers are kept in brackets so the
  * shift is visible rather than asserted:
  *
- *   target                             before      walk     +builder   status
- *   AWS::CodeBuild::Project             0 /  95   0 /  95    0 /  95   opted in (#1432)   [0/90 -> 0/90]
- *   AWS::ApiGatewayV2::Api              6 /   6   0 /   6    0 /   6   OPTED IN (#1445)   [6/6 -> 0/6]
- *   AWS::ApiGatewayV2::Stage            5 /   5   0 /   5    0 /   5   OPTED IN (#1445)   [5/5 -> 0/5]
- *   AWS::ApiGatewayV2::Authorizer       2 /   2   0 /   2    0 /   2   OPTED IN (#1445)   [2/2 -> 0/2]
- *   AWS::ApiGatewayV2::Integration      0 /   0   0 /   0    0 /   0   OPTED IN (#1445)   [0/0 -> 0/0]
- *   AWS::ApiGatewayV2::Route            0 /   0   0 /   0    0 /   0   OPTED IN (#1445)   [0/0 -> 0/0]
- *   AWS::ECS::TaskDefinition           30 / 136   0 / 136    0 / 136   OPTED IN (#1472)   [25/115 -> 1/115]
- *   AWS::ECS::Service                  45 /  56   0 /  56    0 /  56   OPTED IN (#1473)   [44/54 -> 5/54]
- *   AWS::CloudWatch::AnomalyDetector   30 /  30   3 /  30    0 /  30   OPTED IN (#1474)   [29/29 -> 3/29]
- *   AWS::S3::Bucket                   130 / 152 125 / 152   98 / 152   out — see (C)      [106/125 -> 104/125]
- *   AWS::CloudFront::Distribution     162 / 162 162 / 162  162 / 162   out — see (D)      [110/112 -> 110/112]
- *                                     -------   -------    -------
- *                                        410       290        260
+ *   target                             before      walk     +builder   +spread   status
+ *   AWS::CodeBuild::Project             0 /  95   0 /  95    0 /  95    0 /  95  opted in (#1432)   [0/90 -> 0/90]
+ *   AWS::ApiGatewayV2::Api              6 /   6   0 /   6    0 /   6    0 /   6  OPTED IN (#1445)   [6/6 -> 0/6]
+ *   AWS::ApiGatewayV2::Stage            5 /   5   0 /   5    0 /   5    0 /   5  OPTED IN (#1445)   [5/5 -> 0/5]
+ *   AWS::ApiGatewayV2::Authorizer       2 /   2   0 /   2    0 /   2    0 /   2  OPTED IN (#1445)   [2/2 -> 0/2]
+ *   AWS::ApiGatewayV2::Integration      0 /   0   0 /   0    0 /   0    0 /   0  OPTED IN (#1445)   [0/0 -> 0/0]
+ *   AWS::ApiGatewayV2::Route            0 /   0   0 /   0    0 /   0    0 /   0  OPTED IN (#1445)   [0/0 -> 0/0]
+ *   AWS::ECS::TaskDefinition           30 / 136   0 / 136    0 / 136    0 / 136  OPTED IN (#1472)   [25/115 -> 1/115]
+ *   AWS::ECS::Service                  45 /  56   0 /  56    0 /  56    0 /  56  OPTED IN (#1473)   [44/54 -> 5/54]
+ *   AWS::CloudWatch::AnomalyDetector   30 /  30   3 /  30    0 /  30    0 /  30  OPTED IN (#1474)   [29/29 -> 3/29]
+ *   AWS::S3::Bucket                   130 / 152 125 / 152   98 / 152   98 / 152  out — see (C)      [106/125 -> 104/125]
+ *   AWS::CloudFront::Distribution     162 / 162 162 / 162  162 / 162    0 / 162  OPTED IN (#1475)   [110/112 -> 110/112]
+ *                                     -------   -------    -------    -------
+ *                                        410       290        260         98
+ *
+ * CloudFront's 162 -> 0 is 160 spread/scope-covered plus 2 allow-listed with
+ * `passes: ['write']` (`Tags.Key` / `Tags.Value` — genuinely written by
+ * `toSdkTags`, but one SDK wrapper level below the CFn transparent-array
+ * chain; see their entries). S3 is deliberately unmoved: its residual is
+ * segment renames + never-written drops (#1495), not an unrecognized shape.
  *
  * The RECORDED, MEASURED reasons the remaining targets cannot opt in — none
  * of them "add an allow-list entry", which is what the issue forbids:
@@ -339,17 +391,19 @@
  *     Opting S3 in needs BOTH halves, so it stays out; adding allow-list
  *     entries for either would make the bucket stop meaning anything.
  *
- * (D) `CloudFrontDistributionProvider.convertToSdkFormat` is a SPREAD-AND-PATCH
- *     forwarder: `const result = { ...config }` delivers every member, then ~30
- *     named patches rename / wrap specific keys. The genericity test rejects it
- *     on those names — correctly, by its own rule — so all 162 stay
- *     unmeasurable. Recognizing "a spread of the SEED inside an otherwise
- *     member-naming function" is a third recognizer, tracked in issue #1475.
- *     Deliberately not done here: it is the shape most likely to become a rubber
- *     stamp, since it would credit 162 of 162 paths in one step.
+ * (D) [RESOLVED by issue #1475] `CloudFrontDistributionProvider.convertToSdkFormat`
+ *     is a SPREAD-AND-PATCH forwarder: `const result = { ...config }` delivers
+ *     every member, then ~30 named patches rename / wrap specific keys. The
+ *     genericity test rejects it on those names — correctly, by its own rule —
+ *     so all 162 stayed unmeasurable until the fourth recognizer (THE
+ *     SPREAD-AND-PATCH FORWARDER section below) credited the spread itself,
+ *     bounded by the `delete result[cfnKey]` exclusions. The target is opted
+ *     in at 0 findings; the pre-fix counts stay in the table as the record of
+ *     what the shape hid.
  *
- * The counts under (B) / (C) / (D) remain UNMEASURABLE rather than vouched-for —
- * not a list of 290 confirmed silent drops, and not a clean bill of health.
+ * The counts under (B) / (C) / (D) — (C) being the one still open — remain
+ * UNMEASURABLE rather than vouched-for where they stand: not a list of
+ * confirmed silent drops, and not a clean bill of health.
  *
  * WRITE EVIDENCE IS PATH-SCOPED (issue #1448)
  * -------------------------------------------
@@ -425,13 +479,13 @@
  * was ECS's `minWriteScopes` (34 -> 58 non-empty scopes: path keys split one
  * flattened scope into one per depth).
  *
- * WHAT THE THREE RECOGNIZERS DO **NOT** CLOSE — MEASURED, NOT PREDICTED
+ * WHAT THE FOUR RECOGNIZERS DO **NOT** CLOSE — MEASURED, NOT PREDICTED
  * -----------------------------------------------------------------------------------
  * All of the bounds below are RECORDED, not tracked — the two that were tracked
  * (issue #1464's per-PATH capture) are closed above, and what is left of them is
- * restated as (1) and (2) at their new, much smaller scope. The one provider
- * shape still unrecognized (spread-and-patch) is separate and is recorded with
- * its count in the opt-in section above, under (D).
+ * restated as (1) and (2) at their new, much smaller scope. The spread-and-patch
+ * shape that sat here as the last unrecognized one is CLOSED by issue #1475 —
+ * see the section above and its bounds under (9).
  *
  * Depth-scoping NARROWS the duplicate-name class further; it does not make it
  * vanish. Read this before writing "membership makes X non-regressing"
@@ -522,12 +576,14 @@
  *     and it would be credited the moment a Glue target opted in. Closing it
  *     needs the walk to model the converter's KEY SET, not just its member
  *     names — a materially bigger analysis than this one.
- *     The two SAFE directions are also crude and are left that way:
- *     `{ ...blob, Extra: 1 }` DOES deliver `blob` but is rejected for naming
- *     `Extra` (the target keeps flagging, visibly), and a helper that names
- *     nothing but returns a SCALAR (`toDate(r['EndTime'])`) is accepted as a
- *     converter but is inert, because a scalar has no audited path BENEATH it
- *     and so the wildcard credits only the name that was already recorded.
+ *     One safe direction is also crude and is left that way: a helper that
+ *     names nothing but returns a SCALAR (`toDate(r['EndTime'])`) is accepted
+ *     as a converter but is inert, because a scalar has no audited path
+ *     BENEATH it and so the wildcard credits only the name that was already
+ *     recorded. (`{ ...blob, Extra: 1 }` used to be the other crude-safe
+ *     refusal here — the GENERICITY test still rejects a callee that names
+ *     `Extra`, but the LITERAL itself is now credited by the #1475 spread
+ *     recognizer, bounded per bound (9).)
  *
  * (6) THE PARENT CHAIN IS MATCHED CASE-INSENSITIVELY, THE TERMINAL MEMBER IS
  *     NOT ({@link normalizeWritePath}). A CFn->SDK segment spelling is routinely
@@ -590,7 +646,33 @@
  *     Ordering the walk would need a control-flow model, which is a materially
  *     bigger analysis than this one and buys nothing measurable today.
  *
- * Each of (1), (2) and (8) is pinned by a test, so the bound is a recorded fact
+ * (9) THE SPREAD RECOGNIZER EXCLUDES DELETES, NOT OVERWRITES, AND DELIVERS THE
+ *     SEED'S SPELLING VERBATIM (issue #1475). Three bounds, deliberate:
+ *       - An OVERWRITTEN member stays credited through the enclosing spread:
+ *         `result['Logging'] = reshape(result['Logging'])` replaces the
+ *         member, and a reshape that drops a sub-key is masked by the
+ *         wildcard. That is the issue's own model ("the named patches only
+ *         rename / wrap specific keys") and the statement-granularity twin of
+ *         bounds (1) / (8) — the overwrite IS a write of the member, judged by
+ *         the same flow-insensitive union everything else uses. The DELETE
+ *         case is different in kind, not degree: after `delete result[k]` the
+ *         member reaches AWS not at the wrong shape but NOT AT ALL, so it is
+ *         excluded ({@link ProviderWriteEvidence.handoffExclusions}), and an
+ *         unresolvable delete key refuses the whole registration fail-closed.
+ *       - The exclusion is FIRST-SEGMENT wholesale: `delete result['A']['B']`
+ *         excludes `A` entirely — over-excluding flags correct code (loud),
+ *         under-excluding silences a real drop.
+ *       - The spread delivers the seed's keys VERBATIM, so the credit is only
+ *         sound where the CFn and SDK spellings agree — which the audited
+ *         verdicts already encode: a same-spelling key IS the agreement, and
+ *         every diverging spelling is judged by the key pass at full
+ *         strictness. (The pre-existing spread-only forward in
+ *         {@link deliversWholeBlob} has always had this property; the
+ *         recognizer extends it, not the exposure.) A `delete` inside a
+ *         GENERIC converter's own body remains bound (5)'s territory — a
+ *         filtering converter names nothing and is still credited.
+ *
+ * Each of (1), (2), (8) and (9) is pinned by a test, so the bound is a recorded fact
  * rather than a surprise for the next reader — and the two bounds #1464 CLOSED
  * are pinned by their inverted twins (the same probes, now asserting the
  * divergence), so the closure cannot silently regress either.
@@ -868,11 +950,27 @@ const ECS_TASK_DEFINITION_SEGMENT_RENAMES = {
  */
 export const NESTED_KEY_TARGETS: readonly NestedKeyTarget[] = [
   {
+    // Opted into the WRITE-EVIDENCE pass by issue #1475, once the
+    // SPREAD-AND-PATCH recognizer landed. `convertToSdkFormat` seeds
+    // `const result = { ...config }` off the tainted parameter and patches
+    // ~30 named members around it; the spread delivers everything the patches
+    // never touch, bounded by the `delete result[cfnKey]` exclusions the
+    // recognizer resolves from TOP_LEVEL_CFN_TO_SDK. Measured at 0 findings:
+    // 173 audited paths, 171 spread/scope-covered, 2 allow-listed
+    // (`Tags.Key` / `Tags.Value` — written one SDK wrapper level below the
+    // CFn chain, see their entries). Floors measured at opt-in: 64 written
+    // names, 51 non-empty scopes, 14 expanding hand-off points
+    // (`minHandoffPoints` deliberately 1, not 14 — see the API GW v2 floors
+    // note for why a floor AT the measurement is the wrong fence).
     resourceType: 'AWS::CloudFront::Distribution',
     providerFile: 'cloudfront-distribution-provider.ts',
     sdkClientPackage: '@aws-sdk/client-cloudfront',
     keyStyle: 'exact',
     minNestedKeys: 155,
+    freshObjectMapper: true,
+    minWrittenMembers: 40,
+    minWriteScopes: 25,
+    minHandoffPoints: 1,
   },
   {
     // Opted into the WRITE-EVIDENCE pass by issue #1474, once the BUILDER
@@ -1155,6 +1253,27 @@ export const NESTED_KEY_ALLOW_LIST: ReadonlyMap<string, AllowListEntry> = new Ma
   string,
   AllowListEntry
 >([
+  [
+    allowKey('AWS::CloudFront::Distribution', 'Tags.Key'),
+    {
+      rationale:
+        'Written by toSdkTags on the forward path (`.map(([Key, Value]) => ({ Key, Value }))`), ' +
+        'but one wrapper level below the audited chain: the SDK Tags shape is the ' +
+        '{ Items: Tag[] } wrapper, so the write scope is Tags.Items while the CFn ' +
+        'transparent-array chain is Tags.Key. A wrapper-level insertion is neither a ' +
+        'case fold nor a segmentRename, so the write pass cannot see it.',
+      passes: ['write'],
+    },
+  ],
+  [
+    allowKey('AWS::CloudFront::Distribution', 'Tags.Value'),
+    {
+      rationale:
+        'Same wrapper-level insertion as Tags.Key: written by toSdkTags beneath the ' +
+        'SDK { Items: Tag[] } wrapper (scope Tags.Items), one level below the CFn chain.',
+      passes: ['write'],
+    },
+  ],
   [
     allowKey('AWS::CloudFront::Distribution', 'CNAMEs'),
     {
@@ -1830,6 +1949,19 @@ export interface ProviderWriteEvidence {
    * alone ({@link countExpandingHandoffPoints}).
    */
   readonly handoffScopes: ReadonlySet<string>;
+  /**
+   * Per-hand-off EXCLUSIONS for a SPREAD-AND-PATCH forwarder (issue #1475): a
+   * {@link handoffScopes} entry registered from `const result = { ...config }`
+   * — a literal spreading a bag-derived SEED inside an otherwise member-naming
+   * function — delivers every seed member verbatim EXCEPT the keys the
+   * function subsequently `delete`s off the binding. The value is the
+   * lowercased first-segment names the wildcard must NOT vouch for; a scope
+   * with no entry here (or an empty set) is an ordinary full hand-off.
+   *
+   * Optional so hand-built evidence objects in tests stay valid; absent means
+   * "no exclusions anywhere".
+   */
+  readonly handoffExclusions?: ReadonlyMap<string, ReadonlySet<string>>;
 }
 
 /** The evidence a target that has NOT opted into the pass is classified with. */
@@ -1837,6 +1969,7 @@ export const EMPTY_WRITE_EVIDENCE: ProviderWriteEvidence = {
   written: new Set<string>(),
   scopes: new Map<string, ReadonlySet<string>>(),
   handoffScopes: new Set<string>(),
+  handoffExclusions: new Map<string, ReadonlySet<string>>(),
 };
 
 /**
@@ -1860,12 +1993,26 @@ export const EMPTY_WRITE_EVIDENCE: ProviderWriteEvidence = {
 export const isHandoffCovered = (
   handoffScopes: ReadonlySet<string>,
   parentPath: string,
-  terminal?: string
+  terminal?: string,
+  // SPREAD-AND-PATCH exclusions (issue #1475): when the matched scope carries
+  // an exclusion set, the FIRST segment beyond the scope decides — a deleted
+  // key (and everything beneath it) is not delivered by the spread. A segment
+  // the walk cannot determine (no terminal supplied) fails CLOSED.
+  exclusions?: ReadonlyMap<string, ReadonlySet<string>>
 ): boolean => {
   const needle = normalizeWritePath(parentPath);
   for (const scope of handoffScopes) {
     const folded = normalizeWritePath(scope);
-    if (needle.length > 0 && (needle === folded || needle.startsWith(`${folded}.`))) return true;
+    if (needle.length > 0 && (needle === folded || needle.startsWith(`${folded}.`))) {
+      const excluded = exclusions?.get(scope);
+      if (excluded === undefined || excluded.size === 0) return true;
+      const firstBeyond =
+        needle === folded
+          ? terminal?.toLowerCase()
+          : needle.slice(folded.length + 1).split('.')[0]!;
+      if (firstBeyond !== undefined && !excluded.has(firstBeyond)) return true;
+      continue;
+    }
     if (terminal === undefined) continue;
     const cut = scope.lastIndexOf('.');
     const scopeParent = cut === -1 ? '' : scope.slice(0, cut);
@@ -2046,6 +2193,7 @@ export function collectWriteEvidence(
   const written = new Set<string>();
   const scopes = new Map<string, Set<string>>();
   const handoffScopes = new Set<string>();
+  const handoffExclusions = new Map<string, Set<string>>();
 
   /**
    * The written name of an object-literal property. An Identifier IS the name
@@ -2751,6 +2899,16 @@ export function collectWriteEvidence(
     if (ts.isIdentifier(e)) {
       const nearest = enclosingScope(e);
       if (isBoundAsParameter(nearest, e.text)) return isBagDerived(e, new Set());
+      // A binding the function `delete`s keys off does NOT deliver the whole
+      // blob (issue #1475) — refusing here hands the site to the BOUNDED
+      // spread registration in `walkLiteralAt`, which carries the deleted keys
+      // as exclusions. Without this, `const vc = { ...bag }; delete vc[k];`
+      // registered a FULL hand-off and the exclusion fence never fired.
+      const declaration = declarationOf(e);
+      if (declaration !== undefined && ts.isVariableDeclaration(declaration)) {
+        const deletes = deleteExclusionsOf(declaration);
+        if (deletes === undefined || deletes.size > 0) return false;
+      }
       const bindings = identifierBindings(e);
       return (
         bindings.length > 0 && bindings.every((b) => deliversWholeBlob(b, seen, seedKeys))
@@ -3043,6 +3201,252 @@ export function collectWriteEvidence(
     return [];
   };
 
+  // ---- THE SPREAD-AND-PATCH FORWARDER (issue #1475). A literal that SPREADS
+  // a bag-derived seed (`const result = { ...config }` where `config` carries
+  // the taint root) delivers every seed member VERBATIM at the literal's write
+  // path — inside an otherwise member-naming function, which is exactly what
+  // the genericity test (correctly, by its own rule) rejects. The named
+  // patches around the spread are already credited by the literal / builder
+  // walks; what was missing is the wildcard for the members the patches never
+  // touch. The wildcard is BOUNDED: a key the function subsequently `delete`s
+  // off the binding is NOT delivered (a rename that writes the WRONG SDK key
+  // would otherwise be vouched for by the spread it just removed the key
+  // from), and a delete whose key set cannot be resolved refuses the whole
+  // registration — fail CLOSED, the same direction every other refusal here
+  // takes. See the module header's bound (9) for what is deliberately NOT
+  // excluded (overwritten members, verbatim spelling).
+
+  /**
+   * The literal names a computed KEY expression can take, resolved through the
+   * one shape the real tree uses: a `for (const k of TABLE)` /
+   * `for (const [k, v] of Object.entries(TABLE))` /
+   * `for (const k of Object.keys(TABLE))` loop over a LITERAL table. Returns
+   * `undefined` when the key cannot be bounded — the caller fails CLOSED.
+   */
+  const literalObjectOf = (expr: ts.Node): ts.ObjectLiteralExpression | undefined => {
+    const e = unwrapExpression(expr);
+    if (ts.isObjectLiteralExpression(e)) return e;
+    if (!ts.isIdentifier(e)) return undefined;
+    const declaration = declarationOf(e);
+    if (
+      declaration === undefined ||
+      !ts.isVariableDeclaration(declaration) ||
+      declaration.initializer === undefined
+    ) {
+      return undefined;
+    }
+    const init = unwrapExpression(declaration.initializer);
+    return ts.isObjectLiteralExpression(init) ? init : undefined;
+  };
+  const literalKeysOfObject = (lit: ts.ObjectLiteralExpression): string[] | undefined => {
+    const keys: string[] = [];
+    for (const p of lit.properties) {
+      if (!ts.isPropertyAssignment(p)) return undefined;
+      const name = propertyName(p.name);
+      if (name === undefined) return undefined;
+      keys.push(name);
+    }
+    return keys;
+  };
+  const literalValuesOfObject = (lit: ts.ObjectLiteralExpression): string[] | undefined => {
+    const values: string[] = [];
+    for (const p of lit.properties) {
+      if (!ts.isPropertyAssignment(p)) return undefined;
+      const v = unwrapExpression(p.initializer);
+      if (!ts.isStringLiteral(v) && !ts.isNoSubstitutionTemplateLiteral(v)) return undefined;
+      values.push(v.text);
+    }
+    return values;
+  };
+  const loopKeyNames = (
+    declaration: ts.VariableDeclaration,
+    elementIndex: number | undefined
+  ): string[] | undefined => {
+    const list = declaration.parent;
+    if (list === undefined || !ts.isVariableDeclarationList(list)) return undefined;
+    const forOf = list.parent;
+    if (forOf === undefined || !ts.isForOfStatement(forOf)) return undefined;
+    const iterated = unwrapExpression(forOf.expression);
+    if (ts.isArrayLiteralExpression(iterated)) {
+      if (elementIndex !== undefined) return undefined;
+      const names: string[] = [];
+      for (const el of iterated.elements) {
+        const e = unwrapExpression(el);
+        if (!ts.isStringLiteral(e) && !ts.isNoSubstitutionTemplateLiteral(e)) return undefined;
+        names.push(e.text);
+      }
+      return names;
+    }
+    if (ts.isIdentifier(iterated)) {
+      // `for (const k of TABLE)` where TABLE is a const string array.
+      if (elementIndex !== undefined) return undefined;
+      const decl = declarationOf(iterated);
+      if (decl === undefined || !ts.isVariableDeclaration(decl) || decl.initializer === undefined) {
+        return undefined;
+      }
+      const init = unwrapExpression(decl.initializer);
+      if (!ts.isArrayLiteralExpression(init)) return undefined;
+      const names: string[] = [];
+      for (const el of init.elements) {
+        const e = unwrapExpression(el);
+        if (!ts.isStringLiteral(e) && !ts.isNoSubstitutionTemplateLiteral(e)) return undefined;
+        names.push(e.text);
+      }
+      return names;
+    }
+    if (!ts.isCallExpression(iterated)) return undefined;
+    const callee = unwrapExpression(iterated.expression);
+    if (
+      !ts.isPropertyAccessExpression(callee) ||
+      !ts.isIdentifier(callee.expression) ||
+      callee.expression.text !== 'Object' ||
+      iterated.arguments.length !== 1
+    ) {
+      return undefined;
+    }
+    const table = literalObjectOf(iterated.arguments[0]!);
+    if (table === undefined) return undefined;
+    if (callee.name.text === 'keys') {
+      return elementIndex === undefined ? literalKeysOfObject(table) : undefined;
+    }
+    if (callee.name.text === 'entries') {
+      if (elementIndex === 0) return literalKeysOfObject(table);
+      if (elementIndex === 1) return literalValuesOfObject(table);
+      return undefined;
+    }
+    return undefined;
+  };
+  const computedKeyNames = (expr: ts.Node): string[] | undefined => {
+    const e = unwrapExpression(expr);
+    if (ts.isStringLiteral(e) || ts.isNoSubstitutionTemplateLiteral(e)) return [e.text];
+    if (!ts.isIdentifier(e)) return undefined;
+    // Resolve the identifier to a loop binding — plain (`const k of …`) or an
+    // array-destructured element (`const [k, v] of Object.entries(…)`), which
+    // `declarationOf` cannot see (it matches Identifier names only).
+    for (let scope: ts.Node | undefined = e.parent; scope !== undefined; scope = scope.parent) {
+      if (!isBindingScope(scope)) continue;
+      let found: { declaration: ts.VariableDeclaration; elementIndex?: number } | undefined;
+      const visit = (n: ts.Node): void => {
+        if (found !== undefined) return;
+        if (isBindingScope(n)) return;
+        if (ts.isVariableDeclaration(n)) {
+          if (ts.isIdentifier(n.name) && n.name.text === e.text) {
+            found = { declaration: n };
+            return;
+          }
+          if (ts.isArrayBindingPattern(n.name)) {
+            n.name.elements.forEach((el, i) => {
+              if (
+                found === undefined &&
+                ts.isBindingElement(el) &&
+                ts.isIdentifier(el.name) &&
+                el.name.text === e.text
+              ) {
+                found = { declaration: n, elementIndex: i };
+              }
+            });
+            if (found !== undefined) return;
+          }
+        }
+        ts.forEachChild(n, visit);
+      };
+      ts.forEachChild(scope, visit);
+      if (found !== undefined) return loopKeyNames(found.declaration, found.elementIndex);
+    }
+    return undefined;
+  };
+
+  /**
+   * The keys `delete` removes from `declaration`'s binding, LOWERCASED for the
+   * exclusion compare, or `undefined` when any delete's key cannot be bounded
+   * (fail CLOSED — the spread must not be credited at all). A delete through a
+   * longer chain (`delete result['A']['B']`) excludes its FIRST segment
+   * wholesale: over-excluding flags correct code (loud), under-excluding
+   * silences a real drop. Deletes are collected across the WHOLE scope,
+   * excluded (reverse-map) function bodies included — a delete anywhere
+   * removes the key from the delivered object, so skipping any body would be
+   * the fail-OPEN direction.
+   */
+  const deleteExclusionCache = new Map<ts.VariableDeclaration, Set<string> | undefined>();
+  const deleteExclusionsOf = (declaration: ts.VariableDeclaration): Set<string> | undefined => {
+    if (deleteExclusionCache.has(declaration)) return deleteExclusionCache.get(declaration);
+    const excluded = new Set<string>();
+    let unresolvable = false;
+    const visit = (n: ts.Node): void => {
+      if (unresolvable) return;
+      if (ts.isDeleteExpression(n)) {
+        let current: ts.Node = unwrapExpression(n.expression);
+        const accesses: Array<ts.PropertyAccessExpression | ts.ElementAccessExpression> = [];
+        while (ts.isPropertyAccessExpression(current) || ts.isElementAccessExpression(current)) {
+          accesses.unshift(current);
+          current = unwrapExpression(current.expression);
+        }
+        if (
+          ts.isIdentifier(current) &&
+          accesses.length > 0 &&
+          declarationOf(current) === declaration
+        ) {
+          const first = accesses[0]!;
+          const names = ts.isPropertyAccessExpression(first)
+            ? [first.name.text]
+            : computedKeyNames(first.argumentExpression);
+          if (names === undefined) {
+            unresolvable = true;
+            return;
+          }
+          for (const name of names) excluded.add(name.toLowerCase());
+        }
+      }
+      ts.forEachChild(n, visit);
+    };
+    visit(enclosingScope(declaration));
+    const result = unresolvable ? undefined : excluded;
+    deleteExclusionCache.set(declaration, result);
+    return result;
+  };
+
+  /**
+   * Register the spread of a bag-derived seed as a BOUNDED hand-off at `path`
+   * (issue #1475). Refusals, each fail-CLOSED: a non-bag seed (the taint root
+   * — a config read back off AWS must not measure as a hand-off), a binding
+   * REASSIGNED as a whole (the delivered value may not be the seed), and an
+   * unresolvable `delete` key (the exclusion set cannot be bounded). Two
+   * registrations at the same path union their coverage, so exclusion sets
+   * INTERSECT; a FULL hand-off at the path supersedes every exclusion.
+   */
+  const registerSpreadHandoff = (path: string, lit: ts.ObjectLiteralExpression): void => {
+    let excluded: Set<string> | undefined;
+    for (const p of lit.properties) {
+      if (!ts.isSpreadAssignment(p)) continue;
+      if (!isBagDerived(p.expression, new Set())) continue;
+      if (excluded === undefined) {
+        const holder = climbOutOfWrappers(lit).parent;
+        if (
+          holder !== undefined &&
+          ts.isVariableDeclaration(holder) &&
+          ts.isIdentifier(holder.name)
+        ) {
+          if (isWhollyReassigned(holder)) return;
+          excluded = deleteExclusionsOf(holder);
+          if (excluded === undefined) return;
+        } else {
+          excluded = new Set<string>();
+        }
+      }
+    }
+    if (excluded === undefined) return; // no bag-derived spread in this literal
+    const existing = handoffExclusions.get(path);
+    if (handoffScopes.has(path) && existing === undefined) return; // full hand-off wins
+    if (existing !== undefined) {
+      const merged = new Set([...existing].filter((k) => excluded!.has(k)));
+      if (merged.size === 0) handoffExclusions.delete(path);
+      else handoffExclusions.set(path, merged);
+    } else if (excluded.size > 0) {
+      handoffExclusions.set(path, excluded);
+    }
+    handoffScopes.add(path);
+  };
+
   /**
    * Is this expression a WHOLE-BLOB HAND-OFF worth recording (issue #1445)?
    * `feedsOnlyComparison` is re-applied here for the same reason the literal
@@ -3133,6 +3537,9 @@ export function collectWriteEvidence(
     const handoff = isWholeBlobHandoff(value);
     if (handoff !== undefined) {
       handoffScopes.add(path);
+      // A FULL hand-off (generic converter / verbatim forward) delivers every
+      // member, so it supersedes any bounded SPREAD registration at the path.
+      handoffExclusions.delete(path);
       registerSeedKeyHandoffs(path, handoff.seedKeys);
     }
     for (const literal of resolveLiterals(value, new Set())) walkLiteralAt(path, literal);
@@ -3183,6 +3590,7 @@ export function collectWriteEvidence(
     if (walkedAtPath.has(guard)) return;
     walkedAtPath.add(guard);
     if (isComparisonOnlyLiteral(lit)) return;
+    registerSpreadHandoff(path, lit);
     for (const p of lit.properties) {
       if (ts.isPropertyAssignment(p)) {
         const name = propertyName(p.name);
@@ -3360,7 +3768,7 @@ export function collectWriteEvidence(
     ts.forEachChild(node, (child) => visit(child, inExcluded));
   };
   visit(sf, false);
-  return { written, scopes, handoffScopes };
+  return { written, scopes, handoffScopes, handoffExclusions };
 }
 
 /**
@@ -3574,7 +3982,8 @@ export function classifyTarget(
         isHandoffCovered(
           writeEvidence.handoffScopes,
           parentChain.join('.'),
-          expected
+          expected,
+          writeEvidence.handoffExclusions
         );
       // Record which renames still EARN their place. The test is stated as its
       // negation so it cannot MASK a real finding: an entry goes unused only
