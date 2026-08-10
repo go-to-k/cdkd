@@ -58,7 +58,7 @@ cross-region-state-bucket	2026-08-01T09:42:37Z	PASS	29	verify.sh	0801 regression
 cross-stack-references	2026-08-08T17:48:34Z	PASS	25	standard	marker re-flip after review coercion fix; deploy+destroy clean
 custom-resource-getatt-data	2026-07-20T14:59:39Z	PASS	63	verify.sh	CR Data GetAtt->dependent prop, 6 res clean
 custom-resource-provider	2026-07-24T08:31:58Z	PASS	480	standard	cross-region us-west-2 vs us-east-1 bucket (issue #1195 fix + hardening live-verified); 17 res, destroy 0 err 0 orphan
-data-analytics	2026-08-09T19:29:29Z	PASS	51	verify.sh	rc ok, orph clean (swept 1 pre-existing autoDeleteObjects log group)
+data-analytics	2026-08-10T02:41:23Z	PASS	51	verify.sh	#1454 Glue IcebergTableInput pre-flight refusal; working Iceberg shape still deploys; 10 deleted 0 errors, swept 1 autoDeleteObjects log group
 data-pipeline	2026-07-24T10:53:59Z	PASS	47	standard	0724b sweep staleness; 7 del 0 err 0 orphans
 deep-getatt-chains	2026-08-01T10:07:21Z	PASS	53	verify.sh	0801 regression sweep; SDK+CC chain ok, 0 orphans
 deletion-ordering-complex	2026-07-26T20:00:52Z	PASS	187	verify.sh	0727b sweep-b13 staleness re-run (rc=0); account clean
