@@ -81,6 +81,10 @@ table_query() { # usage: table_query <table-name> <jmespath> -> value
     --query "$2" --output text
 }
 
+db_query() { # usage: db_query <jmespath> -> value
+  aws glue get-database --name "${DB_NAME}" --region "${REGION}" --query "$1" --output text
+}
+
 # Both AWS-authored Iceberg markers, asserted identically after CREATE and
 # after UPDATE. `$1` labels which phase is being checked.
 assert_iceberg_markers() { # usage: assert_iceberg_markers "<phase label>"
@@ -92,6 +96,8 @@ assert_iceberg_markers() { # usage: assert_iceberg_markers "<phase label>"
   table_type_upper="$(echo "${table_type}" | tr '[:lower:]' '[:upper:]')"
   if [ "${table_type_upper}" != "ICEBERG" ]; then
     echo "FAIL: ${phase}: Table.Parameters.table_type is '${table_type}', expected 'ICEBERG'" >&2
+    echo "      after CREATE this means the #609 OpenTableFormatInput silent-drop is NOT closed;" >&2
+    echo "      after UPDATE it means the #1461 AWS-managed-Parameters wipe is NOT closed." >&2
     # Strict (unsilenced) diagnostic dump: a failing read here must abort
     # loudly under `set -e` rather than be swallowed inside this wrapper.
     aws glue get-table --database-name "${DB_NAME}" --name "${TABLE_NAME}" --region "${REGION}" \
@@ -105,6 +111,8 @@ assert_iceberg_markers() { # usage: assert_iceberg_markers "<phase label>"
       ;;
     *)
       echo "FAIL: ${phase}: Table.Parameters.metadata_location is '${metadata_location}', expected an s3:// URI" >&2
+      echo "      after CREATE this means MetadataOperation: CREATE did not write Iceberg metadata (#609/#1408);" >&2
+      echo "      after UPDATE it means the #1461 AWS-managed-Parameters wipe is NOT closed." >&2
       aws glue get-table --database-name "${DB_NAME}" --name "${TABLE_NAME}" --region "${REGION}" \
         --query 'Table.Parameters' --output json >&2
       exit 1
@@ -241,6 +249,54 @@ if [ "${EVENTS_CLASSIFICATION}" != "json" ] || [ "${EVENTS_OWNER_TEAM}" != "anal
 fi
 echo "    OK: user-authored events Parameters present after CREATE"
 
+DB_KEEP="$(db_query 'Database.Parameters.keep_me')"
+DB_DROP="$(db_query 'Database.Parameters.drop_me')"
+if [ "${DB_KEEP}" != "yes" ] || [ "${DB_DROP}" != "phase-1-only" ]; then
+  echo "FAIL: after CREATE: expected database Parameters {keep_me=yes, drop_me=phase-1-only}, got {keep_me=${DB_KEEP}, drop_me=${DB_DROP}}" >&2
+  exit 1
+fi
+echo "    OK: user-authored database Parameters present after CREATE"
+
+# --- Simulate an AWS-authored DATABASE parameter ----------------------
+# The database's #1461 exposure is real but cannot be produced from a template:
+# an AWS-authored value is BY DEFINITION one the template never declares, and a
+# plain Glue database has no equivalent of the Iceberg markers Glue writes onto
+# a table. So we write one out-of-band, which is indistinguishable to cdkd from
+# any other AWS-authored entry (Lake Formation / federated-catalog markers, or
+# a console edit) -- present in NEITHER the desired nor the previous template
+# side, which is exactly the merge branch under test.
+#
+# UpdateDatabase is itself full-replace, so the injected input must carry the
+# existing fields too; jq rebuilds DatabaseInput from the live read rather than
+# hardcoding them.
+echo "==> Injecting an out-of-band (AWS-authored-equivalent) database parameter"
+DB_LIVE_JSON="$(aws glue get-database --name "${DB_NAME}" --region "${REGION}" --query 'Database' --output json)"
+DB_INJECT_INPUT="$(printf '%s' "${DB_LIVE_JSON}" | jq -c '{
+  Name,
+  Description,
+  LocationUri,
+  Parameters: ((.Parameters // {}) + {"out_of_band_marker": "must-survive"})
+} | with_entries(select(.value != null))')"
+aws glue update-database --name "${DB_NAME}" --region "${REGION}" \
+  --database-input "${DB_INJECT_INPUT}" >/dev/null
+if [ "$(db_query 'Database.Parameters.out_of_band_marker')" != "must-survive" ]; then
+  echo "FAIL: the out-of-band database parameter injection did not take" >&2
+  exit 1
+fi
+echo "    OK: out_of_band_marker injected"
+
+# --- Capture the pre-update identity of the Iceberg table -------------
+# Asserted unchanged after phase 2. Without it the phase-2 assertions would
+# also pass on a REPLACEMENT (delete + create), which would legitimately carry
+# a fresh Description AND freshly-written Iceberg markers while having thrown
+# away the table -- i.e. the exact failure this phase exists to detect, dressed
+# up as a pass.
+ICEBERG_CREATE_TIME_BEFORE="$(table_query "${TABLE_NAME}" 'Table.CreateTime')"
+if [ -z "${ICEBERG_CREATE_TIME_BEFORE}" ] || [ "${ICEBERG_CREATE_TIME_BEFORE}" = "None" ]; then
+  echo "FAIL: could not read Table.CreateTime before the update phase" >&2
+  exit 1
+fi
+
 # --- Phase 2: UPDATE — unrelated edit must not wipe AWS Parameters ----
 # Issue #1461. `UpdateTable` replaces `TableInput` wholesale, so a payload
 # rebuilt purely from the template erased the AWS-authored `Parameters` bag:
@@ -265,6 +321,13 @@ if [ "${ICEBERG_DESCRIPTION}" != "phase-2 update" ]; then
 fi
 echo "    OK: the unrelated TableInput.Description edit reached AWS"
 
+ICEBERG_CREATE_TIME_AFTER="$(table_query "${TABLE_NAME}" 'Table.CreateTime')"
+if [ "${ICEBERG_CREATE_TIME_AFTER}" != "${ICEBERG_CREATE_TIME_BEFORE}" ]; then
+  echo "FAIL: after UPDATE: Table.CreateTime changed (${ICEBERG_CREATE_TIME_BEFORE} -> ${ICEBERG_CREATE_TIME_AFTER}) -- the table was REPLACED, not updated in place, so the Iceberg assertions below would only prove a fresh create" >&2
+  exit 1
+fi
+echo "    OK: Table.CreateTime unchanged (the update was in-place, not a replacement)"
+
 # The headline #1461 assertion: both AWS-authored Iceberg markers survived an
 # update whose template never mentioned them. Pre-fix, both are gone here.
 assert_iceberg_markers "after UPDATE"
@@ -285,9 +348,36 @@ if [ "${EVENTS_CLASSIFICATION}" != "json" ]; then
 fi
 echo "    OK: user-removed events parameter is gone, kept one passed through"
 
+# --- The DATABASE half of #1461 (UpdateDatabase, same full-replace bag) ---
+DB_MARKER="$(db_query 'Database.Parameters.out_of_band_marker')"
+DB_KEEP="$(db_query 'Database.Parameters.keep_me')"
+DB_DROP="$(db_query 'Database.Parameters.drop_me')"
+DB_DESCRIPTION="$(db_query 'Database.Description')"
+if [ "${DB_DESCRIPTION}" != "phase-2 update" ]; then
+  echo "FAIL: after UPDATE: Database.Description is '${DB_DESCRIPTION}', expected 'phase-2 update' (the UpdateDatabase never landed, so the assertions below would be vacuous)" >&2
+  exit 1
+fi
+if [ "${DB_MARKER}" != "must-survive" ]; then
+  echo "FAIL: after UPDATE: database Parameters.out_of_band_marker is '${DB_MARKER}', expected 'must-survive' (UpdateDatabase wiped an entry no template side declared -- the #1461 database half is NOT closed)" >&2
+  exit 1
+fi
+if [ "${DB_DROP}" != "None" ]; then
+  echo "FAIL: after UPDATE: database Parameters.drop_me is '${DB_DROP}', expected it to be REMOVED (the merge must not resurrect a user-removed database parameter)" >&2
+  exit 1
+fi
+if [ "${DB_KEEP}" != "yes" ]; then
+  echo "FAIL: after UPDATE: database Parameters.keep_me is '${DB_KEEP}', expected 'yes' (a kept user parameter must pass through unchanged)" >&2
+  exit 1
+fi
+echo "    OK: database AWS-authored parameter survived, user removal applied, kept one unchanged"
+
 # --- Phase 3: destroy -------------------------------------------------
 echo "==> Phase 3: destroy"
-node "${LOCAL_DIST}" destroy "${STACK}" \
+# CDKD_TEST_UPDATE stays SET here on purpose: phase 2 is what is deployed, so
+# destroy should synth the same shape. (Phase 1 uses `env -u` for the opposite
+# reason -- an inherited value from the caller's shell would silently deploy
+# the phase-2 template as the baseline and make phase 2 a no-op.)
+CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --force

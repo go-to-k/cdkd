@@ -1066,6 +1066,27 @@ break `cdkd drift --revert`'s ability to clear a console-side addition (that
 path passes the AWS-current snapshot as `previousProperties`, so every live
 key lands in the previous column and nothing is added back).
 
+**State the price.** The merge cannot distinguish an AWS-written entry from a
+console-written one — neither appears on either template side — so every
+out-of-band addition to that bag becomes permanent, and invisible to
+`cdkd drift` once the next deploy folds it into the state baseline. That is an
+acceptable trade against silently destroying an AWS-authored value, but it is a
+real semantic change: document it on the resource type, and give users the
+removal path (delete it directly, or declare-then-undeclare it so it becomes a
+normal user-authored removal).
+
+**Close the TOCTOU window if the API lets you.** Reading a value and writing it
+back is not atomic; a concurrent writer landing in between is silently undone
+by your write-back. Check the update request for an optimistic-concurrency
+member (Glue's `UpdateTableRequest.VersionId`; the `ConcurrentModificationException`
+in a command's documented error list is the tell) and send the version you
+read, so a concurrent change fails loudly instead. Scope it to updates that
+actually write back live values — an update that only pushes template-declared
+values has nothing stale to write, and guarding it would turn
+`drift --revert`'s intentional overwrite into a spurious failure. When the API
+has no such member, say so where users will read it rather than leaving the
+exposure implicit.
+
 Two placement rules go with it:
 
 - **Fail closed on a read failure.** Only a definitive not-found may degrade
@@ -1075,7 +1096,16 @@ Two placement rules go with it:
   error as `cause` so a transient throttle stays retryable.
 - **Throw OUTSIDE the update's `try`**, and order the read AFTER the
   pre-flight validation, so the typed error is not re-labelled by the catch
-  wrapper and a refused update issues no extra API call.
+  wrapper and a refused update issues no extra API call. Move ONLY the read —
+  leaving the payload-building code outside the `try` as well turns a
+  malformed-template crash into a raw `TypeError` with no resource context.
+- **Check that every `provider.update()` call site retries.** Adding a read to
+  `update()` makes it newly sensitive to throttling. `deploy-engine.ts` and
+  `drift.ts` wrap their calls in `withRetry`; `rollback-executor.ts` did not
+  until issue #1461, so the new read would have failed a rollback op that
+  previously issued no read at all — and the best-effort catch there counts
+  that as a failure and moves on. A transient failure on a RECOVERY path is
+  the worst place to introduce one.
 
 Only bags AWS actually writes into qualify. A purely user-authored bag
 (Glue's `JobUpdate.DefaultArguments`, `ConnectionInput.ConnectionProperties`)

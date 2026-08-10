@@ -1098,6 +1098,9 @@ async function replaySingle(
           result.warnings++;
           return;
         }
+        // Bound before the retry closure below: the narrowing from the guard
+        // above does not survive into a deferred callback.
+        const previousState = op.previousState;
         const current = stateResources[op.logicalId];
         if (!current) {
           logger.warn(
@@ -1112,14 +1115,26 @@ async function replaySingle(
           resourceType: op.resourceType,
           provisionedBy: op.provisionedBy,
         });
-        await provider.update(
+        // Retry-wrapped for the same reason the deploy engine
+        // (`deploy-engine.ts`) and `drift --revert` (`drift.ts`) wrap theirs:
+        // a provider `update()` can issue reads as well as writes — Glue's
+        // now does a pre-update `GetTable` (issue #1461) — and an unwrapped
+        // throttle here is counted as a failure by the best-effort catch
+        // below, leaving the resource unreverted. A transient error on a
+        // RECOVERY path is the worst place to give up on the first attempt.
+        await withRetry(
+          () =>
+            provider.update(
+              op.logicalId,
+              current.physicalId,
+              op.resourceType,
+              previousState.properties,
+              current.properties
+            ),
           op.logicalId,
-          current.physicalId,
-          op.resourceType,
-          op.previousState.properties,
-          current.properties
+          { logger }
         );
-        stateResources[op.logicalId] = op.previousState;
+        stateResources[op.logicalId] = previousState;
         logger.info(`  Rollback: ${op.logicalId} restored successfully`);
         await afterOp?.(op.logicalId);
         ctx.recordEvent?.({
@@ -1359,12 +1374,21 @@ export async function replayFailedOperations(
           // failed op may have partially applied), so a patch-based provider
           // generates ops that undo them. Falls back to the current state
           // properties when resolution never got that far.
-          await provider.update(
+          // Retry-wrapped for the same reason as the `restore-previous` arm
+          // above: a provider `update()` can read as well as write (Glue's
+          // pre-update `GetTable`, issue #1461), and an unwrapped throttle on
+          // a recovery path is swallowed by the best-effort catch below.
+          await withRetry(
+            () =>
+              provider.update(
+                op.logicalId,
+                current.physicalId,
+                op.resourceType,
+                prev.properties,
+                op.attemptedProperties ?? current.properties
+              ),
             op.logicalId,
-            current.physicalId,
-            op.resourceType,
-            prev.properties,
-            op.attemptedProperties ?? current.properties
+            { logger }
           );
           stateResources[op.logicalId] = prev;
           logger.info(`  Rollback: ${op.logicalId} reverted successfully`);

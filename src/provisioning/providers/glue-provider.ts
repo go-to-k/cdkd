@@ -39,6 +39,7 @@ import {
   StopCrawlerCommand,
   EntityNotFoundException,
   CrawlerRunningException,
+  ConcurrentModificationException,
   type DatabaseInput,
   type TableInput,
   type OpenTableFormatInput,
@@ -270,24 +271,29 @@ export class GlueProvider implements ResourceProvider {
     const catalogId = properties['CatalogId'] as string | undefined;
 
     // Read-merge-write for AWS-authored `DatabaseInput.Parameters` — see
-    // {@link preserveAwsManagedParameters}. Deliberately OUTSIDE the `try`
-    // below so its typed `ProvisioningError` is not re-labelled by that
-    // catch wrapper.
+    // {@link preserveAwsManagedParameters}. ONLY the read sits outside the
+    // `try`, because only IT raises a typed `ProvisioningError` the catch
+    // wrapper below would re-label. The build + merge stay inside so a
+    // malformed template (`Parameters: null`) still surfaces as a
+    // `ProvisioningError` rather than a raw `TypeError`.
     const liveParameters = await this.readLiveDatabaseParameters(
       logicalId,
       resourceType,
       physicalId,
       catalogId
     );
-    const builtDatabaseInput = this.buildDatabaseInput(databaseInput, physicalId);
-    this.preserveAwsManagedParameters(
-      builtDatabaseInput,
-      databaseInput['Parameters'],
-      (previousProperties['DatabaseInput'] as Record<string, unknown> | undefined)?.['Parameters'],
-      liveParameters
-    );
 
     try {
+      const builtDatabaseInput = this.buildDatabaseInput(databaseInput, physicalId);
+      this.preserveAwsManagedParameters(
+        builtDatabaseInput,
+        databaseInput['Parameters'],
+        (previousProperties?.['DatabaseInput'] as Record<string, unknown> | undefined)?.[
+          'Parameters'
+        ],
+        liveParameters
+      );
+
       await this.getClient().send(
         new UpdateDatabaseCommand({
           ...(catalogId !== undefined && { CatalogId: catalogId }),
@@ -509,10 +515,12 @@ export class GlueProvider implements ResourceProvider {
     }
 
     // Read-merge-write for AWS-authored `TableInput.Parameters` — see
-    // {@link preserveAwsManagedParameters}. Deliberately OUTSIDE the `try`
-    // below so its typed `ProvisioningError` is not re-labelled by that
-    // catch wrapper.
-    const liveParameters = await this.readLiveTableParameters(
+    // {@link preserveAwsManagedParameters}. ONLY the read sits outside the
+    // `try`, because only IT raises a typed `ProvisioningError` the catch
+    // wrapper below would re-label. The build + merge stay inside so a
+    // malformed template (`Parameters: null`) still surfaces as a
+    // `ProvisioningError` rather than a raw `TypeError`.
+    const live = await this.readLiveTableState(
       logicalId,
       resourceType,
       physicalId,
@@ -520,20 +528,27 @@ export class GlueProvider implements ResourceProvider {
       tableName,
       catalogId
     );
-    const builtTableInput = this.buildTableInput(tableInput, tableName);
-    this.preserveAwsManagedParameters(
-      builtTableInput,
-      tableInput['Parameters'],
-      (previousProperties['TableInput'] as Record<string, unknown> | undefined)?.['Parameters'],
-      liveParameters
-    );
 
     try {
+      const builtTableInput = this.buildTableInput(tableInput, tableName);
+      const preservedAwsAuthored = this.preserveAwsManagedParameters(
+        builtTableInput,
+        tableInput['Parameters'],
+        (previousProperties?.['TableInput'] as Record<string, unknown> | undefined)?.['Parameters'],
+        live.parameters
+      );
+
       await this.getClient().send(
         new UpdateTableCommand({
-          CatalogId: catalogId,
+          ...(catalogId !== undefined && { CatalogId: catalogId }),
           DatabaseName: databaseName,
           TableInput: builtTableInput,
+          // Optimistic-concurrency guard for the read-modify-write window,
+          // sent ONLY when the merge actually carried live values into the
+          // payload. See {@link readLiveTableState} for why it is scoped that
+          // way rather than sent unconditionally.
+          ...(preservedAwsAuthored &&
+            live.versionId !== undefined && { VersionId: live.versionId }),
         })
       );
 
@@ -545,13 +560,21 @@ export class GlueProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update Glue Table ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
-      );
+      const detail = error instanceof Error ? error.message : String(error);
+      // A `VersionId` precondition failure means someone else committed to the
+      // table between our pre-read and this call. Say so explicitly: the
+      // generic wrap would leave the user staring at a bare
+      // `ConcurrentModificationException` with no hint that a concurrent
+      // Iceberg commit is the likely cause and that a re-run is the fix.
+      const message =
+        error instanceof ConcurrentModificationException
+          ? `Failed to update Glue Table ${logicalId}: ${detail}. Another writer changed the ` +
+            `table between cdkd's pre-update read and its UpdateTable call. cdkd refused rather ` +
+            `than write back the AWS-managed Parameters it read a moment earlier, which for an ` +
+            `Apache Iceberg table would have pinned it to an older metadata_location (an ` +
+            `effective snapshot rollback). Re-run the deploy to pick up the current values.`
+          : `Failed to update Glue Table ${logicalId}: ${detail}`;
+      throw new ProvisioningError(message, resourceType, logicalId, physicalId, cause);
     }
   }
 
@@ -648,14 +671,19 @@ export class GlueProvider implements ResourceProvider {
    * `desiredParameters` / `previousParameters` are the raw CFn-side maps
    * (their KEY SET is all that matters here; `buildTableInput` already
    * stringified the desired VALUES into `built.Parameters`).
+   *
+   * Returns `true` when at least one AWS-authored entry was carried into
+   * `built` — i.e. when this update is a read-modify-write rather than a pure
+   * template push. The Table caller uses that to decide whether to send the
+   * `VersionId` concurrency guard.
    */
   private preserveAwsManagedParameters(
     built: { Parameters?: Record<string, string> | undefined },
     desiredParameters: unknown,
     previousParameters: unknown,
     liveParameters: Record<string, string> | undefined
-  ): void {
-    if (!liveParameters || Object.keys(liveParameters).length === 0) return;
+  ): boolean {
+    if (!liveParameters || Object.keys(liveParameters).length === 0) return false;
 
     const desiredKeys = parameterKeySet(desiredParameters);
     const previousKeys = parameterKeySet(previousParameters);
@@ -667,31 +695,54 @@ export class GlueProvider implements ResourceProvider {
       if (desiredKeys.has(key) || previousKeys.has(key)) continue;
       awsAuthored[key] = value;
     }
-    if (Object.keys(awsAuthored).length === 0) return;
+    if (Object.keys(awsAuthored).length === 0) return false;
 
     // Desired values are spread LAST so a template-declared key always wins
     // over the live readback (which is a snapshot from before this update).
     built.Parameters = { ...awsAuthored, ...(built.Parameters ?? {}) };
+    return true;
   }
 
   /**
-   * `Table.Parameters` as AWS currently holds them, for
-   * {@link preserveAwsManagedParameters}.
+   * The live table state {@link preserveAwsManagedParameters} needs: its
+   * current `Parameters` plus the `VersionId` that pins them.
    *
-   * A missing table returns `undefined` rather than throwing: `UpdateTable`
-   * is about to surface the real, more actionable error. Any OTHER failure is
-   * fatal by design — degrading to "skip the merge" would silently reinstate
-   * the very wipe this read exists to prevent, and the wrapped cause keeps a
-   * transient throttle retryable by the deploy engine's outer `withRetry`.
+   * A missing table returns empty rather than throwing: `UpdateTable` is about
+   * to surface the real, more actionable error. Any OTHER failure is fatal by
+   * design — degrading to "skip the merge" would silently reinstate the very
+   * wipe this read exists to prevent, and the wrapped cause keeps a transient
+   * throttle retryable by the deploy engine's outer `withRetry` (every
+   * `provider.update()` call site wraps it, including both rollback arms since
+   * this issue).
+   *
+   * **Why `VersionId` matters and why it is SCOPED.** Reading `Parameters`
+   * here and writing them back in the next call opens a TOCTOU window: an
+   * Apache Iceberg commit from Spark / Athena / EMR landing in between would
+   * be undone by writing back the `metadata_location` we read, pinning the
+   * table to an older snapshot — silent data-visibility loss, strictly worse
+   * than the bug this read fixes. `UpdateTableRequest.VersionId` is AWS's
+   * optimistic-concurrency token for exactly this
+   * (`ConcurrentModificationException` is a documented `UpdateTable` error),
+   * so the caller sends the version it read and a concurrent commit makes the
+   * update fail loudly instead of silently rolling back.
+   *
+   * It is sent ONLY when the merge actually carried live values into the
+   * payload, not on every update. When the template declares every parameter
+   * itself, nothing read here reaches AWS, so there is no stale value to write
+   * back and the pre-existing last-writer-wins semantic (which is also
+   * CloudFormation's) is the correct one. `cdkd drift --revert` is exactly
+   * that shape — it deliberately pushes the state snapshot over whatever AWS
+   * currently holds — and guarding it would turn an intentional overwrite into
+   * a spurious failure.
    */
-  private async readLiveTableParameters(
+  private async readLiveTableState(
     logicalId: string,
     resourceType: string,
     physicalId: string,
     databaseName: string,
     tableName: string,
     catalogId: string | undefined
-  ): Promise<Record<string, string> | undefined> {
+  ): Promise<{ parameters: Record<string, string> | undefined; versionId: string | undefined }> {
     try {
       const resp = await this.getClient().send(
         new GetTableCommand({
@@ -700,9 +751,11 @@ export class GlueProvider implements ResourceProvider {
           Name: tableName,
         })
       );
-      return resp.Table?.Parameters;
+      return { parameters: resp.Table?.Parameters, versionId: resp.Table?.VersionId };
     } catch (error) {
-      if (error instanceof EntityNotFoundException) return undefined;
+      if (error instanceof EntityNotFoundException) {
+        return { parameters: undefined, versionId: undefined };
+      }
       throw new ProvisioningError(
         preUpdateReadFailureMessage('Table', 'glue:GetTable', logicalId, error),
         resourceType,
@@ -716,7 +769,14 @@ export class GlueProvider implements ResourceProvider {
   /**
    * `Database.Parameters` as AWS currently holds them, for
    * {@link preserveAwsManagedParameters}. Same not-found / fail-closed
-   * contract as {@link readLiveTableParameters}.
+   * contract as {@link readLiveTableState}.
+   *
+   * There is NO `VersionId` analogue here: `UpdateDatabaseRequest` has no such
+   * member (verified against `@aws-sdk/client-glue`), so the database merge
+   * carries the TOCTOU exposure the table merge closes. It is far narrower in
+   * practice — nothing commits to a Glue DATABASE out of band the way an
+   * Iceberg engine commits to a table — but it is real, and is written up in
+   * docs/supported-resources.md rather than left implicit.
    */
   private async readLiveDatabaseParameters(
     logicalId: string,
@@ -769,7 +829,10 @@ export class GlueProvider implements ResourceProvider {
       result.LocationUri = databaseInput['LocationUri'] as string;
     }
     if (databaseInput['Parameters'] !== undefined) {
-      result.Parameters = databaseInput['Parameters'] as Record<string, string>;
+      // Stringified like `buildTableInput` does: CFn may deliver booleans /
+      // numbers, and the SDK member is `Record<string, string>`. The two
+      // builders diverging here was a latent inconsistency, not a decision.
+      result.Parameters = stringifyParameterValues(databaseInput['Parameters']);
     }
 
     return result;
@@ -793,12 +856,7 @@ export class GlueProvider implements ResourceProvider {
 
     if (tableInput['Parameters'] !== undefined) {
       // Convert all values to strings (CDK may pass booleans/numbers)
-      const rawParams = tableInput['Parameters'] as Record<string, unknown>;
-      const params: Record<string, string> = {};
-      for (const [k, v] of Object.entries(rawParams)) {
-        params[k] = String(v);
-      }
-      result.Parameters = params;
+      result.Parameters = stringifyParameterValues(tableInput['Parameters']);
     }
 
     if (tableInput['Owner'] !== undefined) {
@@ -929,13 +987,19 @@ export class GlueProvider implements ResourceProvider {
   async readCurrentState(
     physicalId: string,
     _logicalId: string,
-    resourceType: string
+    resourceType: string,
+    properties?: Record<string, unknown>
   ): Promise<Record<string, unknown> | undefined> {
+    // `CatalogId` is threaded through the same way the pre-update readers do
+    // it (issue #1461). On a cross-account / non-default Data Catalog, a
+    // `GetTable` without it reads the ACCOUNT-DEFAULT catalog — so drift
+    // compares against the wrong table, or reports the resource gone.
+    const catalogId = properties?.['CatalogId'] as string | undefined;
     switch (resourceType) {
       case 'AWS::Glue::Database':
-        return this.readDatabase(physicalId);
+        return this.readDatabase(physicalId, catalogId);
       case 'AWS::Glue::Table':
-        return this.readTable(physicalId);
+        return this.readTable(physicalId, catalogId);
       default:
         return undefined;
     }
@@ -958,10 +1022,18 @@ export class GlueProvider implements ResourceProvider {
     return [];
   }
 
-  private async readDatabase(physicalId: string): Promise<Record<string, unknown> | undefined> {
+  private async readDatabase(
+    physicalId: string,
+    catalogId?: string
+  ): Promise<Record<string, unknown> | undefined> {
     let db;
     try {
-      const resp = await this.getClient().send(new GetDatabaseCommand({ Name: physicalId }));
+      const resp = await this.getClient().send(
+        new GetDatabaseCommand({
+          ...(catalogId !== undefined && { CatalogId: catalogId }),
+          Name: physicalId,
+        })
+      );
       db = resp.Database;
     } catch (err) {
       if (err instanceof EntityNotFoundException) return undefined;
@@ -982,14 +1054,21 @@ export class GlueProvider implements ResourceProvider {
     return result;
   }
 
-  private async readTable(physicalId: string): Promise<Record<string, unknown> | undefined> {
+  private async readTable(
+    physicalId: string,
+    catalogId?: string
+  ): Promise<Record<string, unknown> | undefined> {
     const [databaseName, tableName] = physicalId.split('|');
     if (!databaseName || !tableName) return undefined;
 
     let table;
     try {
       const resp = await this.getClient().send(
-        new GetTableCommand({ DatabaseName: databaseName, Name: tableName })
+        new GetTableCommand({
+          ...(catalogId !== undefined && { CatalogId: catalogId }),
+          DatabaseName: databaseName,
+          Name: tableName,
+        })
       );
       table = resp.Table;
     } catch (err) {
@@ -2356,6 +2435,18 @@ function buildJobCommonFields(p: Record<string, unknown>): Partial<JobUpdate> {
     r.SourceControlDetails = p['SourceControlDetails'] as SourceControlDetails;
   }
   return r;
+}
+
+/**
+ * CFn `Parameters` map -> the SDK's `Record<string, string>`. CDK may deliver
+ * booleans / numbers; the SDK member is string-valued.
+ */
+function stringifyParameterValues(raw: unknown): Record<string, string> {
+  const params: Record<string, string> = {};
+  for (const [k, v] of Object.entries((raw ?? {}) as Record<string, unknown>)) {
+    params[k] = String(v);
+  }
+  return params;
 }
 
 /**

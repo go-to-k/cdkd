@@ -426,6 +426,17 @@ describe('planRollback ordering', () => {
 });
 
 describe('replayRollback', () => {
+  // `withRetry` is module-mocked ONCE for the file, so its call history
+  // accumulates across tests in this block — and two tests below index into it
+  // positionally (`calls[0]` = the initial create wrap, `calls.at(-1)` = the
+  // post-delete re-create wrap). Clear it per test so those indices mean what
+  // they say; without this, ANY new withRetry call site reached by an earlier
+  // test in the block silently shifts `calls[0]` (which is exactly what issue
+  // #1461's rollback-path retry wrapping did).
+  beforeEach(() => {
+    vi.mocked(withRetry).mockClear();
+  });
+
   it('deletes a CREATE and removes it from state, emits SUCCEEDED', async () => {
     const del = vi.fn().mockResolvedValue(undefined);
     const { ctx, events } = makeCtx({ delete: del });
@@ -715,6 +726,33 @@ describe('replayRollback', () => {
     expect(retryOpts?.onInterrupted).toBeTypeOf('function');
   });
 
+  it("the 'revert' arm wraps provider.update in withRetry (issue #1461)", async () => {
+    // Deploy (`deploy-engine.ts`) and `drift --revert` (`drift.ts`) have always
+    // wrapped their provider.update() calls; this arm did not. That became a
+    // REGRESSION once a provider's update() started issuing a read of its own
+    // (Glue's pre-update GetTable): a throttle would fail the op, and the
+    // best-effort catch in this executor counts that as a failure and moves on,
+    // leaving the resource unreverted. A transient failure on a recovery path
+    // is the worst place to give up on the first attempt.
+    const update = vi.fn().mockResolvedValue({ physicalId: 'phys-B' });
+    const { ctx } = makeCtx({ update });
+    const prev = res({ physicalId: 'phys-B', properties: { a: 1 } });
+    const ops: CompletedOperation[] = [
+      { logicalId: 'B', changeType: 'UPDATE', resourceType: 'T', physicalId: 'phys-B', previousState: prev },
+    ];
+    const state: Record<string, ResourceState> = {
+      B: res({ physicalId: 'phys-B', properties: { a: 2 } }),
+    };
+
+    const result = await replayRollback(ops, state, 'S', ctx);
+
+    expect(result.failures).toBe(0);
+    expect(update).toHaveBeenCalledWith('B', 'phys-B', 'T', { a: 1 }, { a: 2 });
+    // The update went THROUGH withRetry, not around it.
+    expect(vi.mocked(withRetry)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(withRetry).mock.calls[0]![1]).toBe('B');
+  });
+
   it('reverse-replacement initial re-create retries ONLY the SQS name cooldown (issue #1206)', async () => {
     // The initial create-first attempt is wrapped in withRetry with a
     // cooldown-only filter: QueueDeletedRecently is waited out (the forward
@@ -996,6 +1034,26 @@ describe('replayFailedOperations (#1198)', () => {
     expect(result.failures).toBe(0);
     expect(afterOp).toHaveBeenCalledWith('B');
     expect(events.map((e) => e.eventType)).toContain('ROLLBACK_RESOURCE_SUCCEEDED');
+  });
+
+  it("the 'revert-failed-update' arm wraps provider.update in withRetry (issue #1461)", async () => {
+    // Twin of the `revert`-arm guard in the replayRollback block: same
+    // best-effort catch, same newly-read-issuing provider update.
+    vi.mocked(withRetry).mockClear();
+    const update = vi.fn().mockResolvedValue({ physicalId: 'phys-B' });
+    const { ctx } = makeCtx({ update });
+    const prev = res({ physicalId: 'phys-B', properties: { a: 1 } });
+    const failedOps: FailedOperation[] = [
+      { logicalId: 'B', changeType: 'UPDATE', resourceType: 'T', physicalId: 'phys-B', previousState: prev, attemptedProperties: { a: 2 } },
+    ];
+    const state = { B: res({ physicalId: 'phys-B', properties: { a: 1 } }) };
+
+    const result = await replayFailedOperations(failedOps, state, 'S', ctx);
+
+    expect(result.failures).toBe(0);
+    expect(update).toHaveBeenCalledWith('B', 'phys-B', 'T', { a: 1 }, { a: 2 });
+    expect(vi.mocked(withRetry)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(withRetry).mock.calls[0]![1]).toBe('B');
   });
 
   it('falls back to current props as the previous side when attemptedProperties absent', async () => {

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import {
+  ConcurrentModificationException,
   CreateTableCommand,
   DeleteTableCommand,
   EntityNotFoundException,
@@ -653,9 +654,28 @@ describe('GlueProvider — AWS-managed Parameters preservation (#1461)', () => {
   };
 
   /** Queue the pre-update `GetTable` readback, then the `UpdateTable` reply. */
-  const mockLiveTable = (parameters: Record<string, string> | undefined): void => {
-    mockSend.mockResolvedValueOnce({ Table: { Name: 'mytbl', Parameters: parameters } });
+  // `versionId` takes an explicit `null` for "AWS returned none" — a JS default
+  // parameter fires on an explicit `undefined`, so `mockLiveTable(p, undefined)`
+  // would silently keep the default and the omit-VersionId test would be
+  // vacuous. (It was, until the test caught it.)
+  const mockLiveTable = (
+    parameters: Record<string, string> | undefined,
+    versionId: string | null = '3'
+  ): void => {
+    mockSend.mockResolvedValueOnce({
+      Table: {
+        Name: 'mytbl',
+        Parameters: parameters,
+        ...(versionId !== null && { VersionId: versionId }),
+      },
+    });
     mockSend.mockResolvedValueOnce({});
+  };
+
+  const sentUpdateTableInputRoot = (): Record<string, unknown> => {
+    const call = mockSend.mock.calls.find((c) => c[0] instanceof UpdateTableCommand);
+    expect(call).toBeDefined();
+    return call![0].input as Record<string, unknown>;
   };
 
   /** Queue the pre-update `GetDatabase` readback, then the `UpdateDatabase` reply. */
@@ -993,5 +1013,290 @@ describe('GlueProvider — AWS-managed Parameters preservation (#1461)', () => {
       provider.update('L', 'mydb', 'AWS::Glue::Database', {}, {})
     ).rejects.toThrow(ProvisioningError);
     expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  // ─── Database parity with the Table arms above ─────────────────────
+
+  it('AWS::Glue::Database — a NOT-FOUND readback does not mask the real UpdateDatabase error', async () => {
+    // The Database twin of the Table not-found arm. Mutation-proved: without
+    // the EntityNotFoundException branch in readLiveDatabaseParameters this
+    // test fails, whereas the whole rest of the suite stays green.
+    mockSend.mockRejectedValueOnce(
+      new EntityNotFoundException({ message: 'Entity Not Found', $metadata: {} })
+    );
+    mockSend.mockRejectedValueOnce(new Error('Database not found.'));
+
+    const error = await captureRejection(
+      provider.update('L', 'mydb', 'AWS::Glue::Database', { DatabaseInput: { Name: 'mydb' } }, {})
+    );
+
+    expect(mockSend.mock.calls.find((c) => c[0] instanceof UpdateDatabaseCommand)).toBeDefined();
+    expect(error.message).toContain('Failed to update Glue Database L');
+    expect(error.message).toContain('Database not found.');
+  });
+
+  it('AWS::Glue::Database — a WHOLE Parameters block the user removed stays removed', async () => {
+    mockLiveDatabase({ 'lakeformation.managed': 'true', owner_team: 'analytics' });
+
+    await provider.update(
+      'L',
+      'mydb',
+      'AWS::Glue::Database',
+      { DatabaseInput: { Name: 'mydb' } },
+      { DatabaseInput: { Name: 'mydb', Parameters: { owner_team: 'analytics' } } }
+    );
+
+    expect(sentDatabaseInput().Parameters).toStrictEqual({ 'lakeformation.managed': 'true' });
+  });
+
+  it('AWS::Glue::Database — a template that never declared Parameters still keeps AWS-authored ones', async () => {
+    mockLiveDatabase({ 'lakeformation.managed': 'true' });
+
+    await provider.update(
+      'L',
+      'mydb',
+      'AWS::Glue::Database',
+      { DatabaseInput: { Name: 'mydb', Description: 'b' } },
+      { DatabaseInput: { Name: 'mydb', Description: 'a' } }
+    );
+
+    expect(sentDatabaseInput().Parameters).toStrictEqual({ 'lakeformation.managed': 'true' });
+  });
+
+  it('AWS::Glue::Database — an empty live Parameters map leaves the payload byte-identical', async () => {
+    mockLiveDatabase({});
+
+    await provider.update(
+      'L',
+      'mydb',
+      'AWS::Glue::Database',
+      { DatabaseInput: { Name: 'mydb', Description: 'b' } },
+      { DatabaseInput: { Name: 'mydb', Description: 'a' } }
+    );
+
+    expect('Parameters' in sentDatabaseInput()).toBe(false);
+  });
+
+  it('AWS::Glue::Database — drift --revert still CLEARS a console-added parameter', async () => {
+    mockLiveDatabase({ 'lakeformation.managed': 'true', console_added: 'oops' });
+
+    await provider.update(
+      'L',
+      'mydb',
+      'AWS::Glue::Database',
+      { DatabaseInput: { Name: 'mydb', Parameters: { 'lakeformation.managed': 'true' } } },
+      {
+        DatabaseInput: {
+          Name: 'mydb',
+          Parameters: { 'lakeformation.managed': 'true', console_added: 'oops' },
+        },
+      }
+    );
+
+    expect(sentDatabaseInput().Parameters).toStrictEqual({ 'lakeformation.managed': 'true' });
+  });
+
+  it('AWS::Glue::Database — Parameters values are stringified like the Table builder does', async () => {
+    // buildDatabaseInput used to forward the raw map while buildTableInput
+    // stringified — a latent inconsistency, since the SDK member is
+    // Record<string,string> and CDK can deliver booleans / numbers.
+    mockLiveDatabase({});
+
+    await provider.update(
+      'L',
+      'mydb',
+      'AWS::Glue::Database',
+      { DatabaseInput: { Name: 'mydb', Parameters: { enabled: true, count: 3 } } },
+      { DatabaseInput: { Name: 'mydb' } }
+    );
+
+    expect(sentDatabaseInput().Parameters).toStrictEqual({ enabled: 'true', count: '3' });
+  });
+
+  // ─── TOCTOU: UpdateTable VersionId concurrency guard ───────────────
+
+  it('AWS::Glue::Table — VersionId is sent when the merge writes back live values', async () => {
+    // Reading Parameters here and writing them back next call opens a TOCTOU
+    // window: an Iceberg commit from Spark / Athena landing in between would
+    // be undone by writing back the metadata_location we read. VersionId makes
+    // AWS reject that instead (ConcurrentModificationException).
+    mockLiveTable({ table_type: 'ICEBERG', metadata_location: 's3://b/m.json' }, '7');
+
+    await provider.update(
+      'L',
+      TABLE_PHYSICAL_ID,
+      'AWS::Glue::Table',
+      { DatabaseName: 'mydb', TableInput: { Name: 'mytbl', Description: 'b' } },
+      { DatabaseName: 'mydb', TableInput: { Name: 'mytbl', Description: 'a' } }
+    );
+
+    expect(sentUpdateTableInputRoot().VersionId).toBe('7');
+  });
+
+  it('AWS::Glue::Table — VersionId is NOT sent when nothing live was written back (drift --revert)', async () => {
+    // Scoped deliberately. When the template declares every parameter, nothing
+    // read here reaches AWS, so there is no stale value to write back — and
+    // `drift --revert` is exactly that shape (it INTENDS to overwrite whatever
+    // AWS currently holds). Guarding it would turn a deliberate overwrite into
+    // a spurious ConcurrentModificationException.
+    mockLiveTable({ table_type: 'ICEBERG', console_added: 'oops' }, '7');
+
+    await provider.update(
+      'L',
+      TABLE_PHYSICAL_ID,
+      'AWS::Glue::Table',
+      { DatabaseName: 'mydb', TableInput: { Name: 'mytbl', Parameters: { table_type: 'ICEBERG' } } },
+      {
+        DatabaseName: 'mydb',
+        TableInput: {
+          Name: 'mytbl',
+          Parameters: { table_type: 'ICEBERG', console_added: 'oops' },
+        },
+      }
+    );
+
+    const input = sentUpdateTableInputRoot();
+    // `in`, not toBeUndefined: an explicit `VersionId: undefined` key would be
+    // a different wire shape.
+    expect('VersionId' in input).toBe(false);
+  });
+
+  it('AWS::Glue::Table — VersionId is omitted when AWS did not return one', async () => {
+    mockLiveTable({ table_type: 'ICEBERG' }, null);
+
+    await provider.update(
+      'L',
+      TABLE_PHYSICAL_ID,
+      'AWS::Glue::Table',
+      { DatabaseName: 'mydb', TableInput: { Name: 'mytbl', Description: 'b' } },
+      { DatabaseName: 'mydb', TableInput: { Name: 'mytbl', Description: 'a' } }
+    );
+
+    expect('VersionId' in sentUpdateTableInputRoot()).toBe(false);
+    // The merge still happened — omitting the guard must not skip the fix.
+    expect(sentTableInput().Parameters).toStrictEqual({ table_type: 'ICEBERG' });
+  });
+
+  it('AWS::Glue::Table — a ConcurrentModificationException is explained, not passed through bare', async () => {
+    mockSend.mockResolvedValueOnce({
+      Table: { Name: 'mytbl', Parameters: { table_type: 'ICEBERG' }, VersionId: '7' },
+    });
+    mockSend.mockRejectedValueOnce(
+      new ConcurrentModificationException({ message: 'Update table failed', $metadata: {} })
+    );
+
+    const error = await captureRejection(
+      provider.update(
+        'L',
+        TABLE_PHYSICAL_ID,
+        'AWS::Glue::Table',
+        { DatabaseName: 'mydb', TableInput: { Name: 'mytbl', Description: 'b' } },
+        { DatabaseName: 'mydb', TableInput: { Name: 'mytbl', Description: 'a' } }
+      )
+    );
+
+    expect(error.message).toContain('Failed to update Glue Table L');
+    expect(error.message).toContain('Another writer changed the table');
+    expect(error.message).toContain('metadata_location');
+    expect(error.message).toContain('Re-run the deploy');
+  });
+
+  // ─── Build-time failures stay typed (the build is INSIDE the try) ──
+
+  it('AWS::Glue::Table — a null Parameters value is tolerated and the AWS-authored merge still runs', async () => {
+    // `Parameters: null` used to reach `Object.entries(null)` and throw a bare
+    // TypeError with no resource context. It is now coerced to "no declared
+    // parameters", which the full-replace semantics already mean — and the
+    // AWS-authored merge still applies on top.
+    //
+    // The build + merge also moved back INSIDE the update `try` (only the
+    // pre-read needs to be outside it, being the one thing that raises a typed
+    // error the catch would re-label), so any FUTURE build-time throw surfaces
+    // as a ProvisioningError carrying the resource context rather than raw.
+    mockLiveTable({ table_type: 'ICEBERG' });
+
+    await provider.update(
+      'L',
+      TABLE_PHYSICAL_ID,
+      'AWS::Glue::Table',
+      { DatabaseName: 'mydb', TableInput: { Name: 'mytbl', Parameters: null } },
+      { DatabaseName: 'mydb', TableInput: { Name: 'mytbl' } }
+    );
+
+    expect(sentTableInput().Parameters).toStrictEqual({ table_type: 'ICEBERG' });
+  });
+
+  // ─── parameterKeySet's non-object arms ─────────────────────────────
+
+  it('AWS::Glue::Table — an ARRAY-valued Parameters side contributes no keys (unresolved intrinsic)', async () => {
+    // parameterKeySet treats a non-object (or an array) as "declares nothing",
+    // so an unresolved-intrinsic previous side can never be mistaken for a
+    // user removal, and every live key stays preserved.
+    mockLiveTable({ table_type: 'ICEBERG', owner_team: 'analytics' });
+
+    await provider.update(
+      'L',
+      TABLE_PHYSICAL_ID,
+      'AWS::Glue::Table',
+      { DatabaseName: 'mydb', TableInput: { Name: 'mytbl', Description: 'b' } },
+      { DatabaseName: 'mydb', TableInput: { Name: 'mytbl', Parameters: ['Fn::If', 'a', 'b'] } }
+    );
+
+    expect(sentTableInput().Parameters).toStrictEqual({
+      table_type: 'ICEBERG',
+      owner_team: 'analytics',
+    });
+  });
+
+  it('AWS::Glue::Table — an absent live Parameters field is treated as no live values', async () => {
+    // AWS omits Table.Parameters entirely on a table that has none; the merge
+    // must handle undefined the same as {} and leave the payload untouched.
+    mockLiveTable(undefined);
+
+    await provider.update(
+      'L',
+      TABLE_PHYSICAL_ID,
+      'AWS::Glue::Table',
+      { DatabaseName: 'mydb', TableInput: { Name: 'mytbl', Description: 'b' } },
+      { DatabaseName: 'mydb', TableInput: { Name: 'mytbl', Description: 'a' } }
+    );
+
+    expect('Parameters' in sentTableInput()).toBe(false);
+    expect('VersionId' in sentUpdateTableInputRoot()).toBe(false);
+  });
+
+  // ─── readCurrentState CatalogId parity (same call, same catalog) ───
+
+  it('readCurrentState forwards CatalogId to GetTable and GetDatabase', async () => {
+    // The pre-update readers forwarded CatalogId while the drift readers did
+    // not — same file, same API. On a cross-account catalog the drift read
+    // hit the account-default catalog and reported the resource gone.
+    mockSend.mockResolvedValueOnce({ Table: { Name: 'mytbl' } });
+    await provider.readCurrentState('mydb|mytbl', 'L', 'AWS::Glue::Table', {
+      CatalogId: '123456789012',
+    });
+    expect(
+      (mockSend.mock.calls.find((c) => c[0] instanceof GetTableCommand)![0].input as {
+        CatalogId?: string;
+      }).CatalogId
+    ).toBe('123456789012');
+
+    mockSend.mockResolvedValueOnce({ Database: { Name: 'mydb' } });
+    await provider.readCurrentState('mydb', 'L', 'AWS::Glue::Database', {
+      CatalogId: '123456789012',
+    });
+    expect(
+      (mockSend.mock.calls.find((c) => c[0] instanceof GetDatabaseCommand)![0].input as {
+        CatalogId?: string;
+      }).CatalogId
+    ).toBe('123456789012');
+  });
+
+  it('readCurrentState omits CatalogId when the template does not set one', async () => {
+    mockSend.mockResolvedValueOnce({ Table: { Name: 'mytbl' } });
+    await provider.readCurrentState('mydb|mytbl', 'L', 'AWS::Glue::Table');
+    const input = mockSend.mock.calls.find((c) => c[0] instanceof GetTableCommand)![0].input as
+      Record<string, unknown>;
+    expect('CatalogId' in input).toBe(false);
   });
 });

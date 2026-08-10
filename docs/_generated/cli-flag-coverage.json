@@ -1278,6 +1278,7 @@
     "--container-repo",
     "--content-type",
     "--create-bucket-configuration",
+    "--database-input",
     "--database-name",
     "--db-cluster-identifier",
     "--db-instance-identifier",

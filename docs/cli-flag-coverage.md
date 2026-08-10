@@ -116,6 +116,7 @@ These are mostly third-party CLI flags (`--query` for `aws` / `--region` for `aw
 - `--container-repo`
 - `--content-type`
 - `--create-bucket-configuration`
+- `--database-input`
 - `--database-name`
 - `--db-cluster-identifier`
 - `--db-instance-identifier`

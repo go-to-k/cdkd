@@ -27,6 +27,12 @@ import * as athena from 'aws-cdk-lib/aws-athena';
  *    template-expressed removal unremovable. It rides the non-Iceberg table
  *    deliberately, so a user-parameter edit can never be confused with (or
  *    interfere with) Glue's own Iceberg bookkeeping.
+ *  - the DATABASE takes the same treatment (new Description, one parameter
+ *    dropped, one kept). `UpdateDatabase` is the sibling full-replace API with
+ *    the same `Parameters` bag, and without this it had zero real-AWS
+ *    coverage — the phase-2 template left the database untouched, so
+ *    `readLiveDatabaseParameters` and the database merge were never exercised
+ *    against AWS at all.
  */
 export class DataAnalyticsStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -43,11 +49,19 @@ export class DataAnalyticsStack extends cdk.Stack {
       autoDeleteObjects: true,
     });
 
-    // Glue Database
+    // Glue Database. Same phase-1 / phase-2 shape as the `events` table below,
+    // so verify.sh can exercise the UpdateDatabase merge against real AWS.
+    const databaseParameters: Record<string, string> = { keep_me: 'yes' };
+    if (!updateMode) {
+      databaseParameters.drop_me = 'phase-1-only';
+    }
+
     const database = new glue.CfnDatabase(this, 'AnalyticsDb', {
       catalogId: this.account,
       databaseInput: {
         name: `${this.stackName}-analytics-db`.toLowerCase(),
+        description: updateMode ? 'phase-2 update' : 'phase-1 create',
+        parameters: databaseParameters,
       },
     });
 
