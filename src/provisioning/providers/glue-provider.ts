@@ -47,6 +47,8 @@ import {
   type Column,
   type Order,
   type SerDeInfo,
+  type SkewedInfo,
+  type SchemaReference,
   type EncryptionConfiguration,
   type S3Encryption,
   type CloudWatchEncryption,
@@ -1099,14 +1101,15 @@ export class GlueProvider implements ResourceProvider {
     if (sd['SerdeInfo'] !== undefined) {
       const serde = sd['SerdeInfo'] as Record<string, unknown>;
       if (serde['Parameters']) {
-        const params = serde['Parameters'] as Record<string, unknown>;
-        const converted: Record<string, string> = {};
-        for (const [k, v] of Object.entries(params)) {
-          converted[k] = String(v);
-        }
-        serde['Parameters'] = converted;
+        // Copy rather than mutate: `sd` is the caller's template object, and
+        // the same block is re-read by the #1479 merge's key-set walk.
+        result.SerdeInfo = {
+          ...serde,
+          Parameters: stringifyParameterValues(serde['Parameters']),
+        } as SerDeInfo;
+      } else {
+        result.SerdeInfo = serde as SerDeInfo;
       }
-      result.SerdeInfo = serde as SerDeInfo;
     }
 
     if (sd['BucketColumns'] !== undefined) {
@@ -1123,6 +1126,43 @@ export class GlueProvider implements ResourceProvider {
 
     if (sd['StoredAsSubDirectories'] !== undefined) {
       result.StoredAsSubDirectories = sd['StoredAsSubDirectories'] as boolean;
+    }
+
+    // `SkewedInfo` / `SchemaReference` complete the CFn `StorageDescriptor`
+    // member set (issue #1505). Before this they were dropped by the
+    // allow-list, and the #1479 merge made that WORSE than a plain drop: its
+    // key sets come from the RAW template, so DECLARING one suppressed the
+    // live carry-forward (the member counts as user-authored) while the
+    // builder never sent a value — erasing the live value with nothing
+    // replacing it. An UNDECLARED member was, and still is, preserved by the
+    // carry-forward.
+    //
+    // The issue also named `AdditionalLocations`, but the live CFn registry
+    // schema declares exactly the 13 members handled here with
+    // `additionalProperties: false` — that one exists only in the SDK model,
+    // so no template can reach it and forwarding it would be dead code.
+    if (sd['SkewedInfo'] !== undefined) {
+      const skewed = sd['SkewedInfo'] as Record<string, unknown>;
+      // CFn types `SkewedColumnValueLocationMaps` as a free-form object while
+      // the SDK member is `Record<string, string>` — the same CFn-delivers-
+      // non-strings case `Parameters` handles.
+      result.SkewedInfo =
+        skewed['SkewedColumnValueLocationMaps'] !== undefined
+          ? ({
+              ...skewed,
+              SkewedColumnValueLocationMaps: stringifyParameterValues(
+                skewed['SkewedColumnValueLocationMaps']
+              ),
+            } as SkewedInfo)
+          : (skewed as SkewedInfo);
+    }
+
+    if (sd['SchemaReference'] !== undefined) {
+      // Every member (`SchemaId.{RegistryName,SchemaName,SchemaArn}`,
+      // `SchemaVersionId`, `SchemaVersionNumber`) is same-spelled and
+      // same-shaped between the CFn schema and `@aws-sdk/client-glue`, so the
+      // block forwards verbatim.
+      result.SchemaReference = sd['SchemaReference'] as SchemaReference;
     }
 
     return result;
