@@ -20,6 +20,12 @@
 # branch-gate.sh / integ-local-gate.sh, so the markgate verify runs
 # against the worktree the commit will actually land in.
 
+# Shared command-position matcher (issue #1455): catches the guarded verb
+# after ANY chained command (`git push && gh pr create`), not just after an
+# optional leading `cd`. See .claude/hooks/lib/command-match.sh.
+# shellcheck source=lib/command-match.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/command-match.sh"
+
 set -u
 
 # Read the entire stdin payload once; we need both .tool_input.command
@@ -47,7 +53,7 @@ hook_cwd=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null || echo "")
 # SUBCOMMAND POSITION — not as the prefix of `commit-tree` /
 # `commit-graph`. Single-line `git status && git commit` shapes are
 # an accepted false-negative (per the memory rule's trade-off).
-if ! printf '%s' "$cmd" | grep -qE '^[[:space:]]*(cd[[:space:]]+[^[:space:]]+[[:space:]]*&&[[:space:]]*)?git([[:space:]]+(-[^[:space:]]+([[:space:]]+[^[:space:]-][^[:space:]]*)?))*[[:space:]]+commit([[:space:]]|$|[|;&`)])'; then
+if ! cmd_matches_verb "$cmd" 'git([[:space:]]+(-[^[:space:]]+([[:space:]]+[^[:space:]-][^[:space:]]*)?))*[[:space:]]+commit([[:space:]]|$|[|;&`)])'; then
   exit 0
 fi
 

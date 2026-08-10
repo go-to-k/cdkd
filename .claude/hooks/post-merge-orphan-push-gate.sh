@@ -34,6 +34,12 @@
 # resolved `gh` binary. The test injects a per-case shell script that
 # emits the desired `gh pr list ... --json ...` response.
 
+# Shared command-position matcher (issue #1455): catches the guarded verb
+# after ANY chained command (`git push && gh pr create`), not just after an
+# optional leading `cd`. See .claude/hooks/lib/command-match.sh.
+# shellcheck source=lib/command-match.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/command-match.sh"
+
 set -u
 
 # Read the entire stdin payload once; we need both .tool_input.command
@@ -55,7 +61,7 @@ hook_cwd=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null || echo "")
 # between `git` and the subcommand without crossing pipeline
 # separators. We intentionally do NOT match `git push origin :branch`
 # (delete push) — see explicit deletion check below.
-if ! printf '%s' "$cmd" | grep -qE '^[[:space:]]*(cd[[:space:]]+[^[:space:]]+[[:space:]]*&&[[:space:]]*)?git[^|;&]*[[:space:]]push([[:space:]]|$|[|;&`)])'; then
+if ! cmd_matches_verb "$cmd" 'git[^|;&]*[[:space:]]push([[:space:]]|$|[|;&`)])'; then
   exit 0
 fi
 

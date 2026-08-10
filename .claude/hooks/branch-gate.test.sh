@@ -157,16 +157,18 @@ run_case "git -C <main> commit blocked" 2 \
 #     shape where the second `git` is NOT at line-start. With the
 #     line-start anchored matcher (per memory rule
 #     feedback_hook_command_match_line_start.md, issue #563), the
-#     matcher fires on the FIRST `git -C <feature> status` token
-#     (the line-start one), which is not a commit/push subcommand,
-#     so the hook short-circuits at the matcher (exit 0). This is
-#     an ACCEPTED FALSE-NEGATIVE of the line-start tightening — the
-#     trade-off we make to eliminate quoted-body false-positives
-#     (see Part C false-positive cases below). For the agent
-#     workflow this is fine: chained-on-one-line commits to main
-#     are rare; the dominant shape is `cd <repo> && git commit ...`,
-#     which IS line-start matched.
-run_case "single-line chained git -C status; git -C commit (accepted false-negative)" 0 \
+#     Formerly an ACCEPTED FALSE-NEGATIVE: the line-start matcher saw
+#     only the first `git -C <feature> status` token, which is not a
+#     commit/push subcommand, so the hook short-circuited (exit 0) and
+#     a commit to main chained after a `;` went through.
+#
+#     Issue #1455 closed that. The matcher now recognises the verb in
+#     COMMAND POSITION (line start OR after `&&` / `||` / `;` / `|`),
+#     so the second `git -C <main> commit` is seen and blocked. The
+#     quoted-body false-positives this anchoring originally existed to
+#     prevent are handled directly now, by stripping quoted spans
+#     before matching — see the Part C cases below, which still pass.
+run_case "single-line chained git -C status; git -C commit is now CAUGHT (#1455)" 2 \
   "$(printf '{"cwd":"%s","tool_input":{"command":"git -C %s status; git -C %s commit -m oops"}}' "$feature_repo" "$feature_repo" "$main_repo")"
 
 # 11b. `git -c <key>=<val> commit` — global `-c` flag before commit

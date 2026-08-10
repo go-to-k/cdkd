@@ -355,13 +355,16 @@ run_case "gh pr merge <N> --auto + stale marker → block" 2 \
 #     (per memory rule feedback_hook_command_match_line_start.md) to
 #     eliminate quoted-body false-positives (the `gh issue create
 #     --body "...gh pr merge..."` shape, see the Part C cases below).
-#     The trade-off is that single-line chained `... ; gh pr merge`
-#     shapes now fall through the matcher (the line starts with
-#     `echo`, not `gh`) — an ACCEPTED FALSE-NEGATIVE of the line-
-#     start tightening. The dominant agent shape is
-#     `cd <worktree> && gh pr merge ...` which IS line-start matched
-#     because of the leading `cd <path> &&` allowance.
-run_case "single-line chained gh pr merge after echo (accepted false-negative)" 0 \
+#     Formerly an ACCEPTED FALSE-NEGATIVE: a chained `... ; gh pr merge`
+#     fell through the matcher because the line started with `echo`, so
+#     an un-reviewed PR could be merged by chaining the command.
+#
+#     Issue #1455 closed that. The verb is now matched in COMMAND
+#     POSITION (line start OR after `&&` / `||` / `;` / `|`), so this
+#     merge is blocked. The quoted-body false-positives the anchoring
+#     originally guarded against are handled by stripping quoted spans
+#     before matching — the Part C cases below still pass.
+run_case "single-line chained gh pr merge after echo is now CAUGHT (#1455)" 2 \
   medium stale "" \
   "echo merge first; for i in 1 2 3; do echo loop; done; gh pr merge 800 --squash"
 

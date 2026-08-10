@@ -67,7 +67,7 @@ hook_cwd=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null || echo "")
 #
 # Line-start anchored per feedback_hook_command_match_line_start: a
 # `git checkout --` mentioned inside a quoted PR body must not trigger.
-prefix='^[[:space:]]*(cd[[:space:]]+[^[:space:]]+[[:space:]]*&&[[:space:]]*)?git([[:space:]]+-[^[:space:]]+([[:space:]]+[^[:space:]-][^[:space:]]*)?)*[[:space:]]+'
+prefix='(^|[|;&][[:space:]]*)[[:space:]]*git([[:space:]]+-[^[:space:]]+([[:space:]]+[^[:space:]-][^[:space:]]*)?)*[[:space:]]+'
 verb=""
 if printf '%s' "$cmd" | grep -qE "${prefix}checkout([[:space:]]+-[^[:space:]]+)*[[:space:]]+(--|\.)([[:space:]]|$)"; then
   verb="checkout"

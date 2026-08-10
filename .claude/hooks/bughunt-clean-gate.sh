@@ -18,6 +18,12 @@
 # so a fix committed from a feature worktree still sees a sentinel armed from
 # the main tree.
 
+# Shared command-position matcher (issue #1455): catches the guarded verb
+# after ANY chained command (`git push && gh pr create`), not just after an
+# optional leading `cd`. See .claude/hooks/lib/command-match.sh.
+# shellcheck source=lib/command-match.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/command-match.sh"
+
 set -u
 
 input=$(cat 2>/dev/null || true)
@@ -28,11 +34,11 @@ hook_cwd=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null || echo "")
 # Gate only `git commit`, `gh pr create`, and `gh pr merge`. Line-start anchored
 # (tolerating an optional `cd <path> &&` prefix and `gh -C <path>`) so the
 # command words inside a quoted argument body do NOT false-positive.
-git_commit_re='^[[:space:]]*(cd[[:space:]]+[^[:space:]]+[[:space:]]*&&[[:space:]]*)?git([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+commit([[:space:]]|$)'
-gh_pr_re='^[[:space:]]*(cd[[:space:]]+[^[:space:]]+[[:space:]]*&&[[:space:]]*)?gh([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+pr[[:space:]]+(create|merge)([[:space:]]|$|[|;&`)])'
+git_commit_re='git([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+commit([[:space:]]|$)'
+gh_pr_re='gh([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+pr[[:space:]]+(create|merge)([[:space:]]|$|[|;&`)])'
 
-if ! printf '%s' "$cmd" | grep -qE "$git_commit_re" \
-  && ! printf '%s' "$cmd" | grep -qE "$gh_pr_re"; then
+if ! cmd_matches_verb "$cmd" "$git_commit_re" \
+  && ! cmd_matches_verb "$cmd" "$gh_pr_re"; then
   exit 0
 fi
 

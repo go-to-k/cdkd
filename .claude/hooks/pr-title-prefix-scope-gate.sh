@@ -42,6 +42,12 @@
 # is not a git repo (matches commit-prefix-scope-gate.sh's behavior
 # on freshly-cloned trees with nothing staged).
 
+# Shared command-position matcher (issue #1455): catches the guarded verb
+# after ANY chained command (`git push && gh pr create`), not just after an
+# optional leading `cd`. See .claude/hooks/lib/command-match.sh.
+# shellcheck source=lib/command-match.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/command-match.sh"
+
 set -u
 
 input=$(cat 2>/dev/null || true)
@@ -56,10 +62,10 @@ hook_cwd=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null || echo "")
 # trigger string in a quoted arg body.
 is_pr_create=0
 is_api_patch=0
-if printf '%s' "$cmd" | grep -qE '^[[:space:]]*(cd[[:space:]]+[^[:space:]]+[[:space:]]*&&[[:space:]]*)?gh([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+pr[[:space:]]+create([[:space:]]|$)'; then
+if cmd_matches_verb "$cmd" 'gh([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+pr[[:space:]]+create([[:space:]]|$)'; then
   is_pr_create=1
 fi
-if printf '%s' "$cmd" | grep -qE '^[[:space:]]*(cd[[:space:]]+[^[:space:]]+[[:space:]]*&&[[:space:]]*)?gh([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+api[[:space:]].*pulls/[0-9]+'; then
+if cmd_matches_verb "$cmd" 'gh([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+api[[:space:]].*pulls/[0-9]+'; then
   is_api_patch=1
 fi
 if [[ "$is_pr_create" -eq 0 && "$is_api_patch" -eq 0 ]]; then

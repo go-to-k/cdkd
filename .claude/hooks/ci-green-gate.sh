@@ -29,6 +29,12 @@
 # outage should not block merges); a successful `gh pr checks` answer
 # is enforced strictly.
 
+# Shared command-position matcher (issue #1455): catches the guarded verb
+# after ANY chained command (`git push && gh pr create`), not just after an
+# optional leading `cd`. See .claude/hooks/lib/command-match.sh.
+# shellcheck source=lib/command-match.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/command-match.sh"
+
 set -u
 
 input=$(cat 2>/dev/null || true)
@@ -38,7 +44,7 @@ hook_cwd=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null || echo "")
 # Only gate `gh pr merge`. Line-start anchored (memory rule
 # feedback_hook_command_match_line_start.md); tolerates an optional
 # leading `cd <path> &&` and `gh -C <path>` (mirrors pr-review-gate.sh).
-if ! printf '%s' "$cmd" | grep -qE '^[[:space:]]*(cd[[:space:]]+[^[:space:]]+[[:space:]]*&&[[:space:]]*)?(CDKD_SKIP_CI_GREEN_GATE=1[[:space:]]+)?gh([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+pr[[:space:]]+merge([[:space:]]|$|[|;&`)])'; then
+if ! cmd_matches_verb "$cmd" '(CDKD_SKIP_CI_GREEN_GATE=1[[:space:]]+)?gh([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+pr[[:space:]]+merge([[:space:]]|$|[|;&`)])'; then
   exit 0
 fi
 

@@ -38,6 +38,12 @@
 # Set ONLY by /run-integ; never call `markgate set integ-broad` by hand
 # (same rule as the other AWS-coupled gates).
 
+# Shared command-position matcher (issue #1455): catches the guarded verb
+# after ANY chained command (`git push && gh pr create`), not just after an
+# optional leading `cd`. See .claude/hooks/lib/command-match.sh.
+# shellcheck source=lib/command-match.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/command-match.sh"
+
 set -u
 
 # Read the PreToolUse payload (command + cwd).
@@ -55,7 +61,7 @@ hook_cwd=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null || echo "")
 # into a hard block. The optional leading `cd <path> &&` prefix
 # preserves the worktree-aware `cd <side> && gh pr merge` chain
 # shape, mirroring check-gate.sh (PR #562 fix pattern).
-if ! printf '%s' "$cmd" | grep -qE '^[[:space:]]*(cd[[:space:]]+[^[:space:]]+[[:space:]]*&&[[:space:]]*)?gh([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+pr[[:space:]]+merge([[:space:]]|$|[|;&`)])'; then
+if ! cmd_matches_verb "$cmd" 'gh([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+pr[[:space:]]+merge([[:space:]]|$|[|;&`)])'; then
   exit 0
 fi
 

@@ -41,6 +41,12 @@
 #   3. The hook input's `cwd` field.
 #   4. The hook process's own $PWD.
 
+# Shared command-position matcher (issue #1455): catches the guarded verb
+# after ANY chained command (`git push && gh pr create`), not just after an
+# optional leading `cd`. See .claude/hooks/lib/command-match.sh.
+# shellcheck source=lib/command-match.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/command-match.sh"
+
 set -u
 
 # Read the entire stdin payload once; we need both .tool_input.command
@@ -66,7 +72,8 @@ hook_cwd=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null || echo "")
 # (PR #562 fix pattern). `[^|;&]*` matches flags / values between
 # `gh`/`git` and the subcommand without crossing pipeline separators.
 # Tolerate an optional `gh -C <path>` between `gh` and `pr`.
-if ! printf '%s' "$cmd" | grep -qE '^[[:space:]]*(cd[[:space:]]+[^[:space:]]+[[:space:]]*&&[[:space:]]*)?gh([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+pr[[:space:]]+merge([[:space:]]|$|[|;&`)])|^[[:space:]]*(cd[[:space:]]+[^[:space:]]+[[:space:]]*&&[[:space:]]*)?git[^|;&]*[[:space:]]merge([[:space:]]|$|[|;&`)])'; then
+if ! { cmd_matches_verb "$cmd" 'gh([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+pr[[:space:]]+merge([[:space:]]|$|[|;&`)])' \
+     || cmd_matches_verb "$cmd" 'git[^|;&]*[[:space:]]merge([[:space:]]|$|[|;&`)])'; }; then
   exit 0
 fi
 
@@ -199,7 +206,7 @@ fi
 # `gh pr merge <N>` path above. Bail conservatively (fall through to
 # the unconditional verify) on `--abort` / `--continue` / `--quit`,
 # octopus (2+ refs), a ref we cannot resolve, or an unparsable shape.
-if printf '%s' "$cmd" | grep -qE '^[[:space:]]*(cd[[:space:]]+[^[:space:]]+[[:space:]]*&&[[:space:]]*)?git[^|;&]*[[:space:]]merge([[:space:]]|$|[|;&`)])' \
+if cmd_matches_verb "$cmd" 'git[^|;&]*[[:space:]]merge([[:space:]]|$|[|;&`)])' \
   && ! printf '%s' "$cmd" | grep -qE 'gh([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+pr[[:space:]]+merge'; then
   merge_ref=""
   parse_ok=1

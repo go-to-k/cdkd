@@ -22,6 +22,12 @@
 # is not independent review" rule — see PR #267 / issue #270 and
 # memory rule feedback_subagent_review_not_self_review.md.
 
+# Shared command-position matcher (issue #1455): catches the guarded verb
+# after ANY chained command (`git push && gh pr create`), not just after an
+# optional leading `cd`. See .claude/hooks/lib/command-match.sh.
+# shellcheck source=lib/command-match.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/command-match.sh"
+
 set -u
 
 # Read the PreToolUse payload (command + cwd) once — separate jq
@@ -38,7 +44,7 @@ hook_cwd=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null || echo "")
 # into a hard block. The optional leading `cd <path> &&` prefix
 # preserves the worktree-aware `cd <side> && gh pr merge` chain
 # shape, mirroring check-gate.sh (PR #562 fix pattern).
-if ! printf '%s' "$cmd" | grep -qE '^[[:space:]]*(cd[[:space:]]+[^[:space:]]+[[:space:]]*&&[[:space:]]*)?gh([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+pr[[:space:]]+merge([[:space:]]|$|[|;&`)])'; then
+if ! cmd_matches_verb "$cmd" 'gh([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+pr[[:space:]]+merge([[:space:]]|$|[|;&`)])'; then
   exit 0
 fi
 

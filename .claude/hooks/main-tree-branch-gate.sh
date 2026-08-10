@@ -39,6 +39,12 @@
 # documented escape. The hook only fires when the target dir IS
 # the main repo top-level.
 
+# Shared command-position matcher (issue #1455): catches the guarded verb
+# after ANY chained command (`git push && gh pr create`), not just after an
+# optional leading `cd`. See .claude/hooks/lib/command-match.sh.
+# shellcheck source=lib/command-match.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/command-match.sh"
+
 set -u
 
 input=$(cat 2>/dev/null || true)
@@ -60,7 +66,7 @@ hook_cwd=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null || echo "")
 #
 # We deliberately do NOT match `git worktree` — `git worktree add`
 # is the sanctioned escape and must always pass.
-if ! printf '%s' "$cmd" | grep -qE '^[[:space:]]*(cd[[:space:]]+[^[:space:]]+[[:space:]]*&&[[:space:]]*)?git([[:space:]]+(-[^[:space:]]+([[:space:]]+[^[:space:]-][^[:space:]]*)?))*[[:space:]]+(switch|checkout)([[:space:]]|$|[|;&`)])'; then
+if ! cmd_matches_verb "$cmd" 'git([[:space:]]+(-[^[:space:]]+([[:space:]]+[^[:space:]-][^[:space:]]*)?))*[[:space:]]+(switch|checkout)([[:space:]]|$|[|;&`)])'; then
   exit 0
 fi
 
