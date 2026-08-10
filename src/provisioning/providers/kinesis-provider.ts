@@ -17,6 +17,7 @@ import {
   type EncryptionType,
 } from '@aws-sdk/client-kinesis';
 import { getLogger } from '../../utils/logger.js';
+import { readConfigString } from '../config-shape.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
@@ -101,7 +102,12 @@ export class KinesisStreamProvider implements ResourceProvider {
       const streamModeDetails = properties['StreamModeDetails'] as
         | Record<string, unknown>
         | undefined;
-      const streamMode = (streamModeDetails?.['StreamMode'] as string) || 'PROVISIONED';
+      const streamMode = readConfigString(
+        streamModeDetails,
+        'StreamMode',
+        'PROVISIONED',
+        'AWS::Kinesis::Stream StreamModeDetails'
+      );
 
       // ShardCount is required for PROVISIONED mode
       const shardCount =
@@ -235,7 +241,18 @@ export class KinesisStreamProvider implements ResourceProvider {
       const streamModeDetails = properties['StreamModeDetails'] as
         | Record<string, unknown>
         | undefined;
-      const streamMode = (streamModeDetails?.['StreamMode'] as string) || 'PROVISIONED';
+      const streamMode = readConfigString(
+        streamModeDetails,
+        'StreamMode',
+        'PROVISIONED',
+        'AWS::Kinesis::Stream StreamModeDetails'
+      );
+      // Deliberately NOT routed through `readConfigString` (issue #1471): the
+      // PREVIOUS side comes from cdkd state, not the user's template. Refusing
+      // a malformed value recorded there by an older binary would make the
+      // stack permanently undeployable — editing the template would not help,
+      // because the previous side stays malformed until a deploy succeeds. The
+      // desired side above is guarded, which is what stops the silent default.
       const oldStreamMode =
         ((previousProperties['StreamModeDetails'] as Record<string, unknown> | undefined)?.[
           'StreamMode'

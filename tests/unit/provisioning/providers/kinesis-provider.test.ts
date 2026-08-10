@@ -298,6 +298,98 @@ describe('KinesisStreamProvider', () => {
       expect(shardCall).toBeUndefined();
     });
 
+    it('a malformed PREVIOUS StreamModeDetails stays permissive (issue #1471)', async () => {
+      // INVARIANT, not an incidental behavior. `previousProperties` comes from
+      // cdkd STATE, not the user's template. An earlier attempt at #1471
+      // guarded BOTH sides and had to be reverted: a stack whose state already
+      // held a malformed value could then never deploy again, and editing the
+      // template would not help, because the previous side stays malformed
+      // until a deploy succeeds.
+      //
+      // This test exists so that "completing the fix" by wrapping the previous
+      // read in `readConfigString` FAILS here instead of shipping. Without it
+      // the only thing defending the invariant is a code comment.
+      mockSend.mockImplementation((cmd: unknown) => {
+        if (cmd instanceof UpdateStreamModeCommand) return Promise.resolve({});
+        if (cmd instanceof DescribeStreamSummaryCommand)
+          return Promise.resolve({
+            StreamDescriptionSummary: {
+              StreamARN: 'arn:aws:kinesis:us-east-1:123456789012:stream/test-stream',
+              OpenShardCount: 1,
+            },
+          });
+        if (cmd instanceof DescribeStreamCommand)
+          return Promise.resolve({
+            StreamDescription: {
+              StreamStatus: 'ACTIVE',
+              StreamARN: 'arn:aws:kinesis:us-east-1:123456789012:stream/test-stream',
+            },
+          });
+        return Promise.resolve({});
+      });
+
+      await expect(
+        provider.update(
+          'MyStream',
+          'test-stream',
+          'AWS::Kinesis::Stream',
+          { StreamModeDetails: { StreamMode: 'ON_DEMAND' } },
+          // A string where the object belongs — exactly the shape #1471
+          // refuses on the DESIRED side.
+          { StreamModeDetails: 'PROVISIONED' as never }
+        )
+      ).resolves.toBeDefined();
+
+      // ... and the desired mode was still applied, so the deploy is not just
+      // "not throwing" but actually correct.
+      const modeCall = mockSend.mock.calls.find(
+        (call: unknown[]) => call[0] instanceof UpdateStreamModeCommand
+      );
+      expect(modeCall).toBeDefined();
+      expect(modeCall![0].input).toMatchObject({
+        StreamModeDetails: { StreamMode: 'ON_DEMAND' },
+      });
+    });
+
+    it('a malformed DESIRED StreamModeDetails is refused before UpdateStreamMode (issue #1471)', async () => {
+      // The guard's PLACEMENT is the load-bearing part: it runs before the
+      // mode switch, so a malformed desired value cannot silently resolve to
+      // 'PROVISIONED' and issue the wrong UpdateStreamMode.
+      mockSend.mockImplementation((cmd: unknown) => {
+        if (cmd instanceof UpdateStreamModeCommand) return Promise.resolve({});
+        if (cmd instanceof DescribeStreamSummaryCommand)
+          return Promise.resolve({
+            StreamDescriptionSummary: {
+              StreamARN: 'arn:aws:kinesis:us-east-1:123456789012:stream/test-stream',
+              OpenShardCount: 1,
+            },
+          });
+        if (cmd instanceof DescribeStreamCommand)
+          return Promise.resolve({
+            StreamDescription: {
+              StreamStatus: 'ACTIVE',
+              StreamARN: 'arn:aws:kinesis:us-east-1:123456789012:stream/test-stream',
+            },
+          });
+        return Promise.resolve({});
+      });
+
+      await expect(
+        provider.update(
+          'MyStream',
+          'test-stream',
+          'AWS::Kinesis::Stream',
+          { StreamModeDetails: 'ON_DEMAND' as never },
+          { StreamModeDetails: { StreamMode: 'PROVISIONED' } }
+        )
+      ).rejects.toThrow(/StreamModeDetails must be an object \(got a string\)/);
+
+      const modeCall = mockSend.mock.calls.find(
+        (call: unknown[]) => call[0] instanceof UpdateStreamModeCommand
+      );
+      expect(modeCall).toBeUndefined();
+    });
+
     it('switches ON_DEMAND -> PROVISIONED then reconciles shards against the live open-shard count', async () => {
       mockSend.mockImplementation((cmd: unknown) => {
         if (cmd instanceof UpdateStreamModeCommand) return Promise.resolve({});

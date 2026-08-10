@@ -9,6 +9,7 @@ import {
 import { STSClient, GetCallerIdentityCommand } from '@aws-sdk/client-sts';
 import { EC2Client, DescribeAvailabilityZonesCommand } from '@aws-sdk/client-ec2';
 import { getLogger } from '../../utils/logger.js';
+import { requireConfigString } from '../config-shape.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
@@ -116,7 +117,11 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating S3 Express Directory Bucket ${logicalId}`);
 
-    const dataRedundancy = (properties['DataRedundancy'] as string) || 'SingleAvailabilityZone';
+    const dataRedundancy = requireConfigString(
+      properties['DataRedundancy'],
+      'SingleAvailabilityZone',
+      'AWS::S3Express::DirectoryBucket DataRedundancy'
+    );
     // CFn LocationName: "us-east-1a--x-s3" → extract AZ name: "us-east-1a"
     const cfnLocationName = properties['LocationName'] as string | undefined;
     const azName = cfnLocationName?.replace(/--x-s3$/, '') || 'us-east-1a';

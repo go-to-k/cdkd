@@ -12,6 +12,7 @@ import {
   type Tag,
 } from '@aws-sdk/client-secrets-manager';
 import { getLogger } from '../../utils/logger.js';
+import { readConfigString } from '../config-shape.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
@@ -364,7 +365,12 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
     const excludeLowercase = config['ExcludeLowercase'] as boolean;
     const excludeNumbers = config['ExcludeNumbers'] as boolean;
     const excludePunctuation = config['ExcludePunctuation'] as boolean;
-    const excludeCharacters = (config['ExcludeCharacters'] as string) || '';
+    const excludeCharacters = readConfigString(
+      config,
+      'ExcludeCharacters',
+      '',
+      'AWS::SecretsManager::Secret GenerateSecretString'
+    );
 
     let chars = '';
     if (!excludeUppercase) chars += 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';

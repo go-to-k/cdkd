@@ -62,6 +62,7 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { S3_AUTO_DELETE_OBJECTS_TAG, hasCdkAutoDeleteTag } from '../data-delete-intent.js';
+import { readConfigString, requireConfigString } from '../config-shape.js';
 import { generateResourceName } from '../resource-name.js';
 import type {
   ResourceProvider,
@@ -238,11 +239,17 @@ export class S3BucketProvider implements ResourceProvider {
   /**
    * Apply versioning configuration if specified
    */
-  private async applyVersioning(
-    bucketName: string,
-    versioningConfig: Record<string, unknown>
-  ): Promise<void> {
-    const status = (versioningConfig['Status'] as string) || 'Suspended';
+  private async applyVersioning(bucketName: string, versioningConfig: unknown): Promise<void> {
+    // `unknown`, not `Record<string, unknown>`: the CREATE path's truthiness
+    // gate lets a malformed value (`VersioningConfiguration: 'Enabled'`) reach
+    // here, and defaulting its missing `Status` to Suspended is exactly the
+    // silent versioning-OFF of issue #1471. Refuse instead.
+    const status = readConfigString(
+      versioningConfig,
+      'Status',
+      'Suspended',
+      'AWS::S3::Bucket VersioningConfiguration'
+    );
     await this.s3Client.send(
       new PutBucketVersioningCommand({
         Bucket: bucketName,
@@ -441,7 +448,12 @@ export class S3BucketProvider implements ResourceProvider {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const sdkRule: any = {
         ID: rule['Id'] as string | undefined,
-        Status: (rule['Status'] as string) || 'Enabled',
+        Status: readConfigString(
+          rule,
+          'Status',
+          'Enabled',
+          'AWS::S3::Bucket LifecycleConfiguration.Rules[]'
+        ),
         // In V2-Filter form the location scope lives under `Filter` (set below);
         // a top-level `Prefix` alongside a `Filter` is exactly the illegal mix.
         Prefix: useFilterForm ? undefined : (rule['Prefix'] as string | undefined),
@@ -723,12 +735,29 @@ export class S3BucketProvider implements ResourceProvider {
    */
   private async applyLoggingConfiguration(
     bucketName: string,
-    loggingConfig: Record<string, unknown> | undefined
+    loggingConfig: unknown
   ): Promise<void> {
+    // Shape-check the CONTAINER before the clearing branch below (issue
+    // #1471). That branch reads `loggingConfig['DestinationBucketName']`, so a
+    // malformed value (`LoggingConfiguration: 'my-log-bucket'`) indexes to
+    // `undefined`, takes the clear path, and turns logging OFF on a bucket
+    // whose template declares it — the same declaring-the-feature-disables-it
+    // shape this issue exists to remove. Guarding only the `LogFilePrefix`
+    // read below would leave it live, because control never reaches it.
+    //
+    // An ABSENT config still resolves to the fallback and clears, which is the
+    // legitimate removal path.
+    const destinationBucket = readConfigString(
+      loggingConfig,
+      'DestinationBucketName',
+      '',
+      'AWS::S3::Bucket LoggingConfiguration'
+    );
+
     // S3 supports clearing logging by sending an empty BucketLoggingStatus
     // (no LoggingEnabled field). When loggingConfig is undefined or has no
     // DestinationBucketName, we issue the clearing call.
-    if (!loggingConfig || !loggingConfig['DestinationBucketName']) {
+    if (!loggingConfig || destinationBucket === '') {
       await this.s3Client.send(
         new PutBucketLoggingCommand({
           Bucket: bucketName,
@@ -743,8 +772,13 @@ export class S3BucketProvider implements ResourceProvider {
         Bucket: bucketName,
         BucketLoggingStatus: {
           LoggingEnabled: {
-            TargetBucket: loggingConfig['DestinationBucketName'] as string,
-            TargetPrefix: (loggingConfig['LogFilePrefix'] as string) || '',
+            TargetBucket: destinationBucket,
+            TargetPrefix: readConfigString(
+              loggingConfig,
+              'LogFilePrefix',
+              '',
+              'AWS::S3::Bucket LoggingConfiguration'
+            ),
           },
         },
       })
@@ -1045,13 +1079,23 @@ export class S3BucketProvider implements ResourceProvider {
             : (dest?.['S3BucketDestination'] as Record<string, unknown> | undefined);
         analyticsConfig.StorageClassAnalysis = {
           DataExport: {
-            OutputSchemaVersion: (dataExport['OutputSchemaVersion'] as string) || 'V_1',
+            OutputSchemaVersion: readConfigString(
+              dataExport,
+              'OutputSchemaVersion',
+              'V_1',
+              'AWS::S3::Bucket AnalyticsConfigurations[].StorageClassAnalysis.DataExport'
+            ),
             Destination: s3Dest
               ? {
                   S3BucketDestination: {
                     Bucket: (s3Dest['BucketArn'] ?? s3Dest['Bucket']) as string,
                     BucketAccountId: s3Dest['BucketAccountId'] as string | undefined,
-                    Format: (s3Dest['Format'] as string) || 'CSV',
+                    Format: readConfigString(
+                      s3Dest,
+                      'Format',
+                      'CSV',
+                      'AWS::S3::Bucket AnalyticsConfigurations[].StorageClassAnalysis.DataExport.Destination.S3BucketDestination'
+                    ),
                     Prefix: s3Dest['Prefix'] as string | undefined,
                   },
                 }
@@ -1089,7 +1133,12 @@ export class S3BucketProvider implements ResourceProvider {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const itConfig: any = {
         Id: id,
-        Status: (config['Status'] as string) || 'Enabled',
+        Status: readConfigString(
+          config,
+          'Status',
+          'Enabled',
+          'AWS::S3::Bucket IntelligentTieringConfigurations[]'
+        ),
         Tierings: (tierings || []).map((t: Record<string, unknown>) => ({
           AccessTier: t['AccessTier'] as string,
           Days: t['Days'] as number,
@@ -1144,18 +1193,41 @@ export class S3BucketProvider implements ResourceProvider {
       const inventoryConfig: any = {
         Id: id,
         IsEnabled: (config['Enabled'] as boolean) ?? true,
-        IncludedObjectVersions: (config['IncludedObjectVersions'] as string) || 'All',
+        IncludedObjectVersions: readConfigString(
+          config,
+          'IncludedObjectVersions',
+          'All',
+          'AWS::S3::Bucket InventoryConfigurations[]'
+        ),
         Schedule: {
-          Frequency: (config['ScheduleFrequency'] ??
-            (config['Schedule'] as Record<string, unknown> | undefined)?.['Frequency'] ??
-            'Weekly') as string,
+          // Same class as the guarded siblings above (issue #1471): a
+          // malformed `Schedule` used to index to `undefined` and silently
+          // default to Weekly. The two-source precedence is preserved.
+          Frequency:
+            config['ScheduleFrequency'] !== undefined
+              ? requireConfigString(
+                  config['ScheduleFrequency'],
+                  'Weekly',
+                  'AWS::S3::Bucket InventoryConfigurations[].ScheduleFrequency'
+                )
+              : readConfigString(
+                  config['Schedule'],
+                  'Frequency',
+                  'Weekly',
+                  'AWS::S3::Bucket InventoryConfigurations[].Schedule'
+                ),
         },
         Destination: {
           S3BucketDestination: s3Dest
             ? {
                 Bucket: (s3Dest['BucketArn'] ?? s3Dest['Bucket']) as string,
                 AccountId: s3Dest['BucketAccountId'] as string | undefined,
-                Format: (s3Dest['Format'] as string) || 'CSV',
+                Format: readConfigString(
+                  s3Dest,
+                  'Format',
+                  'CSV',
+                  'AWS::S3::Bucket InventoryConfigurations[].Destination.S3BucketDestination'
+                ),
                 Prefix: s3Dest['Prefix'] as string | undefined,
               }
             : undefined,
@@ -1200,7 +1272,12 @@ export class S3BucketProvider implements ResourceProvider {
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             const sdkRule: any = {
               ID: rule['Id'] as string | undefined,
-              Status: (rule['Status'] as string) || 'Enabled',
+              Status: readConfigString(
+                rule,
+                'Status',
+                'Enabled',
+                'AWS::S3::Bucket ReplicationConfiguration.Rules[]'
+              ),
               Priority: rule['Priority'] as number | undefined,
               Destination: {
                 Bucket: dest['Bucket'] as string,
@@ -1331,10 +1408,15 @@ export class S3BucketProvider implements ResourceProvider {
     const { skipTags = false, skipDiffManaged = false } = options;
 
     // Versioning
-    const versioningConfig = properties['VersioningConfiguration'] as
-      | Record<string, unknown>
-      | undefined;
-    if (!skipDiffManaged && versioningConfig) {
+    const versioningConfig = properties['VersioningConfiguration'];
+    // `!= null`, not truthiness: a falsy non-object ('' / 0 / false) is
+    // MALFORMED and must reach the apply call so create refuses it the same
+    // way update does (issue #1471). A truthy check silently skipped it on
+    // create only, and a truthy-but-malformed value ('Enabled') then had its
+    // missing `Status` defaulted to Suspended. Same rationale as the
+    // OwnershipControls / BucketEncryption gates below; nullish rather than
+    // strict-undefined to match `diffSubConfig`'s treatment of a desired null.
+    if (!skipDiffManaged && versioningConfig != null) {
       await this.applyVersioning(bucketName, versioningConfig);
     }
 
@@ -1459,10 +1541,10 @@ export class S3BucketProvider implements ResourceProvider {
    * declares the config.
    *
    * NOTE this helper does NOT cover `VersioningConfiguration` (it has no list
-   * key), and that property is NOT malformed-shape-refused anywhere: a
-   * malformed value there still resolves to 'Suspended', matching `main`.
-   * That pre-existing gap is tracked in issue #1471 — see the note in
-   * `applySubConfigDiffs` for why guarding it is not as simple as it looks.
+   * key). That property is malformed-shape-refused separately, by
+   * `readConfigString` in `applyVersioning` + `applySubConfigDiffs`
+   * (issue #1471) — same outcome, different mechanism, because a versioning
+   * block has an inner FIELD to validate rather than a list to measure.
    */
   private static emptyListConfigToUndefined<T extends Record<string, unknown>>(
     config: T | undefined,
@@ -1596,23 +1678,25 @@ export class S3BucketProvider implements ResourceProvider {
     const nextVersioning = properties['VersioningConfiguration'] as
       | Record<string, unknown>
       | undefined;
-    // NOTE a MALFORMED VersioningConfiguration (a string / array / unresolved
-    // intrinsic) still resolves to 'Suspended' below, because `applyVersioning`
-    // defaults a missing Status that way. That silent-suspend predates this
-    // change (`main` had the identical default) and is NOT part of issue
-    // #1466's removal semantics, so it is tracked separately rather than
-    // guarded here: an earlier attempt to refuse it also rejected the PREVIOUS
-    // side, which comes from cdkd STATE rather than the user's template — a
-    // stack whose state already held a malformed value could then never deploy
-    // again, and editing the template would not help. See issue #1471.
     // Nullish (not strict-undefined) to match `diffSubConfig`'s own semantics;
     // a desired `null` is a removal there, so it must be one here too.
     const versioningChanged =
       JSON.stringify(previousVersioning ?? null) !== JSON.stringify(nextVersioning ?? null);
-    // `applyVersioning` defaults a missing Status to 'Suspended', so the
+    // An absent (or `{}`) VersioningConfiguration means Suspended, so the
     // effective desired status is what decides which side of the split runs.
-    const desiredVersioningStatus =
-      nextVersioning == null ? 'Suspended' : (nextVersioning['Status'] as string) || 'Suspended';
+    // Guarded on the DESIRED side only (issue #1471): `previousVersioning`
+    // comes from cdkd state, and refusing a malformed value there would make a
+    // stack whose state already holds one permanently undeployable. It is only
+    // compared as a whole above, never field-read, so it stays permissive.
+    // Computing this BEFORE `applyVersioning` is load-bearing — a malformed
+    // desired value used to resolve to 'Suspended' here and take the SUSPEND
+    // branch below, turning versioning off on a live bucket.
+    const desiredVersioningStatus = readConfigString(
+      nextVersioning,
+      'Status',
+      'Suspended',
+      'AWS::S3::Bucket VersioningConfiguration'
+    );
 
     // `nextVersioning != null` is implied by the status check (a null value
     // resolves to 'Suspended'); it is kept for TypeScript's narrowing.
@@ -1919,8 +2003,20 @@ export class S3BucketProvider implements ResourceProvider {
     }
 
     // Logging
-    const loggingConfig = properties['LoggingConfiguration'] as Record<string, unknown> | undefined;
-    if (loggingConfig?.['DestinationBucketName']) {
+    const loggingConfig = properties['LoggingConfiguration'];
+    // Shape-check the container BEFORE the has-a-destination gate (issue
+    // #1471): the old `loggingConfig?.['DestinationBucketName']` test indexed a
+    // malformed value to `undefined` and silently skipped the whole block, so
+    // a bucket whose template declares logging came up with none. Absent /
+    // `{}` still resolve to '' and skip, which is the legitimate no-logging
+    // path — this adds a refusal, not an extra API call.
+    const loggingDestination = readConfigString(
+      loggingConfig,
+      'DestinationBucketName',
+      '',
+      'AWS::S3::Bucket LoggingConfiguration'
+    );
+    if (loggingDestination !== '') {
       await this.applyLoggingConfiguration(bucketName, loggingConfig);
     }
 
