@@ -679,6 +679,62 @@ if [ "${FLIP_TABLE_WRITE}" != "6" ]; then
 fi
 echo "    billing flip with GSIs succeeded, dropped index gone, seed capacities applied, issue #1421 closed"
 
+echo "[verify] step 13f: cdkd deploy with unresolvable-capacity (issue #1511 — a DECLARED capacity that does not resolve must WARN, not silently deploy the 5/5 default)"
+# The provider derives a provisioned capacity through `toFiniteNumber`, so a
+# present-but-unparseable value (an unresolved intrinsic, `''`, an object)
+# yields `undefined` and the translation falls through to cdkd's 5 default —
+# a table the template explicitly sized deploys at 5, silently. The provider
+# now emits a diagnostic naming the member and the substituted default; this
+# step is what proves it against REAL AWS rather than against a mock.
+#
+# The fixture table declares an unparseable READ capacity (`Fn::Join` over the
+# region pseudo-parameter -> `us-east-1-x`) and a VALID write capacity, so the
+# assertion is discriminating in both directions: read must land on cdkd's 5,
+# write on the template's 1.
+UNRESOLVABLE_LOG="$(mktemp)"
+CDKD_TEST_UPDATE=ttl,tags,drop-gsi-ondemand-limits,drop-table-ondemand-limit,drop-table-ondemand-read-limit,gsi-billing-flip,unresolvable-capacity \
+  ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose 2>&1 | tee "${UNRESOLVABLE_LOG}"
+
+# ONE line-coupled grep, not three independent ones: `did not resolve to a
+# number` is also emitted by the on-demand diagnostic and `ReadCapacityUnits`
+# appears throughout a --verbose log, so three separate greps can all pass on
+# sentences about other things. This ties the member, the block it lives in,
+# and the substitution together.
+if ! grep -q "Replicas\[local\].ReadProvisionedThroughputSettings.ReadCapacityUnits is declared but did not resolve to a number" "${UNRESOLVABLE_LOG}"; then
+  echo "FAIL: issue #1511 — no unresolved-capacity diagnostic naming the table-level read member" >&2
+  grep -i "did not resolve to a number" "${UNRESOLVABLE_LOG}" >&2 || echo "  (no such diagnostic at all)" >&2
+  exit 1
+fi
+if ! grep -q "capacity units instead" "${UNRESOLVABLE_LOG}"; then
+  echo "FAIL: issue #1511 — the diagnostic did not name the substituted default" >&2
+  exit 1
+fi
+rm -f "${UNRESOLVABLE_LOG}"
+
+# Re-read state: this table is created by THIS deploy, so step 3's name lookup
+# ran before it existed.
+UNRESOLVABLE_TABLE="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | python3 -c '
+import json, sys
+state = json.load(sys.stdin)
+for logical_id, resource in state.get("resources", {}).items():
+    if resource.get("resourceType") == "AWS::DynamoDB::GlobalTable" and logical_id.startswith("UnresolvableCapacityTable"):
+        print(resource["physicalId"])
+        break
+')"
+if [ -z "${UNRESOLVABLE_TABLE}" ]; then
+  echo "FAIL: issue #1511 — no UnresolvableCapacityTable in cdkd state after the deploy" >&2
+  exit 1
+fi
+UNRESOLVABLE_READ="$(aws dynamodb describe-table --table-name "${UNRESOLVABLE_TABLE}" --region "${REGION}" \
+  --query 'Table.ProvisionedThroughput.ReadCapacityUnits' --output text)"
+UNRESOLVABLE_WRITE="$(aws dynamodb describe-table --table-name "${UNRESOLVABLE_TABLE}" --region "${REGION}" \
+  --query 'Table.ProvisionedThroughput.WriteCapacityUnits' --output text)"
+if [ "${UNRESOLVABLE_READ}" != "5" ] || [ "${UNRESOLVABLE_WRITE}" != "1" ]; then
+  echo "FAIL: issue #1511 — expected read=5 (cdkd default) / write=1 (template), got read=${UNRESOLVABLE_READ} / write=${UNRESOLVABLE_WRITE}" >&2
+  exit 1
+fi
+echo "    unresolvable capacity warned and defaulted to 5 while the valid sibling kept 1, issue #1511 closed"
+
 echo "[verify] step 14a: assert DeletionProtectionEnabled flipped back to false on AWS"
 DP_FINAL="$(aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" \
   --query 'Table.DeletionProtectionEnabled' --output text)"

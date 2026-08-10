@@ -936,6 +936,52 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       expect(updateCalls[0]!.input.ProvisionedThroughput?.WriteCapacityUnits).toBe(7);
     });
 
+    it('does not issue the next UpdateTable while an INDEX is still transitioning (issue #1521)', async () => {
+      // The serialized update sequence waited on `TableStatus` alone, but a
+      // table is ACTIVE while an index it just re-provisioned is still
+      // UPDATING — and AWS then rejects the next call with `Attempt to change
+      // a resource which is still in use: Index is being updated`. That is
+      // what broke the `gsi-billing-flip` step on real AWS (three runs out of
+      // four on 2026-08-10, pristine main included).
+      mockSend.mockResolvedValueOnce({
+        Table: {
+          TableStatus: 'ACTIVE',
+          GlobalSecondaryIndexes: [{ IndexName: 'byStatus', IndexStatus: 'UPDATING' }],
+        },
+      }); // first wait poll — table ready, index NOT
+      mockSend.mockResolvedValueOnce({
+        Table: {
+          TableStatus: 'ACTIVE',
+          GlobalSecondaryIndexes: [{ IndexName: 'byStatus', IndexStatus: 'ACTIVE' }],
+        },
+      }); // second poll — settled
+      mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // DescribeTable for ARN
+      mockSend.mockResolvedValueOnce({}); // UpdateTable (billing flip)
+      mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'ACTIVE' } }); // wait
+      mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // final describe
+
+      await provider.update(
+        'X',
+        TABLE_NAME,
+        RESOURCE_TYPE,
+        { BillingMode: 'PROVISIONED', WriteProvisionedThroughputSettings: { WriteCapacityUnits: 7 } },
+        { BillingMode: 'PAY_PER_REQUEST' }
+      );
+
+      // Exactly THREE describes precede the first mutating call: the poll that
+      // saw the index UPDATING, the poll that saw it settle, and the ARN read.
+      // Asserting `> 1` instead would pass without the fix, since the ARN read
+      // is itself a DescribeTable — the wait would simply have returned on the
+      // first poll and the index would still have been mid-transition.
+      const names = mockSend.mock.calls.map((c) => c[0].constructor.name);
+      expect(names.indexOf('UpdateTableCommand')).toBe(3);
+      expect(names.slice(0, 3)).toEqual([
+        'DescribeTableCommand',
+        'DescribeTableCommand',
+        'DescribeTableCommand',
+      ]);
+    });
+
     it('serializes Replica add via ReplicaUpdates: [{Create}] + waits for ACTIVE', async () => {
       mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'ACTIVE' } }); // wait
       mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // DescribeTable for ARN
@@ -1533,6 +1579,67 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
 
       const names = mockSend.mock.calls.map((c) => c[0].constructor.name);
       expect(names).toEqual([
+        'DescribeTableCommand',
+        'DeleteTableCommand',
+        'DescribeTableCommand',
+      ]);
+    });
+
+    it('waits for a transitioning index to settle before DeleteTable (issue #1521)', async () => {
+      // A table is ACTIVE while one of its indexes is still DELETING, and
+      // `DeleteTable` is then rejected with `Cannot delete table while indexes
+      // are being created, updated, or deleted` — which is what ORPHANED the
+      // `dynamodb-globaltable` fixture's table on 2026-08-10 after a deploy
+      // failed mid-flip. Reproduced on pristine main, so pre-existing.
+      mockSend.mockResolvedValueOnce({
+        Table: {
+          TableName: TABLE_NAME,
+          Replicas: [{ RegionName: 'us-east-1' }],
+          GlobalSecondaryIndexes: [{ IndexName: 'byStatus', IndexStatus: 'DELETING' }],
+        },
+      }); // DescribeTable (pre-delete scan) — index still going away
+      mockSend.mockResolvedValueOnce({
+        Table: {
+          TableName: TABLE_NAME,
+          TableStatus: 'ACTIVE',
+          GlobalSecondaryIndexes: [{ IndexName: 'byStatus', IndexStatus: 'ACTIVE' }],
+        },
+      }); // the settle poll
+      mockSend.mockResolvedValueOnce({}); // DeleteTable
+      mockSend.mockRejectedValueOnce(newRnf()); // waitForTableGone -> RNF
+
+      await provider.delete('X', TABLE_NAME, RESOURCE_TYPE, undefined, {
+        expectedRegion: 'us-east-1',
+      });
+
+      const names = mockSend.mock.calls.map((c) => c[0].constructor.name);
+      expect(names).toEqual([
+        'DescribeTableCommand',
+        'DescribeTableCommand',
+        'DeleteTableCommand',
+        'DescribeTableCommand',
+      ]);
+    });
+
+    it('costs NO extra call when every index is already settled', async () => {
+      // The gate reads the pre-delete describe it already had, so the common
+      // case must be byte-identical to the pre-#1521 call sequence — that is
+      // what keeps destroy's API traffic flat.
+      mockSend.mockResolvedValueOnce({
+        Table: {
+          TableName: TABLE_NAME,
+          Replicas: [{ RegionName: 'us-east-1' }],
+          GlobalSecondaryIndexes: [{ IndexName: 'byStatus', IndexStatus: 'ACTIVE' }],
+        },
+      }); // DescribeTable
+      mockSend.mockResolvedValueOnce({}); // DeleteTable
+      mockSend.mockRejectedValueOnce(newRnf()); // waitForTableGone -> RNF
+
+      await provider.delete('X', TABLE_NAME, RESOURCE_TYPE, undefined, {
+        expectedRegion: 'us-east-1',
+      });
+
+      expect(mockSend.mock.calls.map((c) => c[0].constructor.name)).toEqual([
         'DescribeTableCommand',
         'DeleteTableCommand',
         'DescribeTableCommand',

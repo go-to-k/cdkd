@@ -318,6 +318,12 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       BillingMode: billingMode as 'PROVISIONED' | 'PAY_PER_REQUEST',
     };
 
+    // The DESIRED side, so it collects diagnostics (issues #1428 / #1444 A /
+    // #1511). Declared before the first translation below — every one of them
+    // pushes into it, and they are all emitted BEFORE `CreateTable` (a
+    // translation complaint must never arrive after a real table exists).
+    const diagnostics: ThroughputDiagnostic[] = [];
+
     // ProvisionedThroughput: GlobalTable's CFn shape uses
     // `WriteProvisionedThroughputSettings` for write capacity and a
     // per-replica `ReadProvisionedThroughputSettings` for read capacity.
@@ -329,7 +335,9 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     if (billingMode === 'PROVISIONED') {
       createParams.ProvisionedThroughput = derivePerCallProvisionedThroughput(
         properties,
-        currentRegion
+        currentRegion,
+        'min',
+        diagnostics
       );
     }
 
@@ -395,10 +403,6 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     // `create()` has no wrapping catch around this point, so the helper's plain
     // Error is converted to a ProvisioningError here rather than escaping
     // untyped into the deploy engine's retry loop.
-    // The DESIRED side, so it collects diagnostics (issues #1428 / #1444 A).
-    // They are emitted BEFORE `CreateTable` — a translation complaint must
-    // never arrive after a real table exists.
-    const diagnostics: ThroughputDiagnostic[] = [];
     let sdkIndexes: GlobalSecondaryIndex[];
     try {
       sdkIndexes = toSdkGlobalSecondaryIndexes(
@@ -986,13 +990,33 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // the previous side").
       const diagnostics: ThroughputDiagnostic[] = [];
       const desiredCeilings = collectTableOnDemandCeilings(properties, currentRegion, diagnostics);
+      // The TABLE-level provisioned capacity is only SENT by step 4's billing
+      // flip, which is also the only place it can fall through to 5/5 — so the
+      // #1511 diagnostic is gated on exactly that condition rather than on
+      // `newBilling` alone, which would warn about a value nothing consumes.
+      // Same `'seed'` source step 4 uses, so the blamed member matches what it
+      // would have read. Result discarded: this call is for the diagnostics.
+      const flippingToProvisioned = oldBilling !== newBilling && newBilling === 'PROVISIONED';
+      if (flippingToProvisioned) {
+        derivePerCallProvisionedThroughput(properties, currentRegion, 'seed', diagnostics);
+      }
+      // The DIFF's translation stays on `'min'` (step 6 compares against it),
+      // but the diagnostics must be raised with the source step 4 will actually
+      // READ: on a flip that is `'seed'`, and naming `MinCapacity` for a value
+      // the flip never consulted is the same mismatch the table-level call
+      // above avoids (issue #1435's precedence, one level down). Firing itself
+      // is source-independent — `pickAutoScalingCapacity` falls back both ways
+      // — so this only ever changes WHICH member the sentence names.
       const desiredSdkIndexes = toSdkGlobalSecondaryIndexes(
         properties,
         currentRegion,
         newBilling,
         'min',
-        diagnostics
+        flippingToProvisioned ? undefined : diagnostics
       );
+      if (flippingToProvisioned) {
+        toSdkGlobalSecondaryIndexes(properties, currentRegion, newBilling, 'seed', diagnostics);
+      }
       for (const replica of (properties['Replicas'] ?? []) as Array<Record<string, unknown>>) {
         const replicaRegion = asRecord(replica)?.['Region'];
         if (typeof replicaRegion !== 'string' || replicaRegion === currentRegion) continue;
@@ -2649,6 +2673,9 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     // application-autoscaling control plane indefinitely; a future
     // create of the same `tableName` (same region) inherits the orphan
     // target silently. PR #403 code-reviewer caught this as a blocker.
+    // Captured from the pre-delete describe so the #1521 index-settled gate
+    // below needs no second call.
+    let preDeleteIndexes: ReadonlyArray<{ readonly IndexStatus?: string | undefined }> | undefined;
     try {
       const describe = await this.dynamoDBClient.send(
         new DescribeTableCommand({ TableName: physicalId })
@@ -2657,6 +2684,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // Index names come from AWS, not from the template: `delete()` may be
       // running against state whose properties are stale, and an orphaned
       // scalable target is only findable by the index that actually exists.
+      preDeleteIndexes = describe.Table?.GlobalSecondaryIndexes;
       const tableIndexNames = (describe.Table?.GlobalSecondaryIndexes ?? [])
         .map((gsi) => gsi.IndexName)
         .filter((name): name is string => typeof name === 'string');
@@ -2767,6 +2795,21 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     }
 
     try {
+      // AWS refuses `DeleteTable` while an index is transitioning
+      // (`Cannot delete table while indexes are being created, updated, or
+      // deleted`), and that is not a theoretical destroy failure: it is what
+      // ORPHANED this fixture's table on 2026-08-10 after a deploy failed
+      // mid-flip (issue #1521). Gated on what the PRE-DELETE describe above
+      // already reported, so the overwhelmingly common case (no index in
+      // flight) costs no extra call at all; only a table that really is
+      // mid-transition pays for the poll. Best-effort — on timeout the delete
+      // goes ahead and AWS's own error stays the backstop.
+      if (hasTransitionalIndex(preDeleteIndexes)) {
+        this.logger.debug(
+          `Waiting for indexes on ${physicalId} to settle before DeleteTable (issue #1521)`
+        );
+        await this.waitForIndexesActive(physicalId, logicalId);
+      }
       await this.dynamoDBClient.send(new DeleteTableCommand({ TableName: physicalId }));
       // DeleteTable is async; wait until DescribeTable returns
       // ResourceNotFoundException so siblings / verify steps observing
@@ -3579,18 +3622,54 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
    * `waitForTableActive`, this tolerates any non-terminal status — the
    * table may already be ACTIVE on the no-op path (already-disabled
    * protection) or transition through UPDATING.
+   *
+   * **A table is ACTIVE while one of its INDEXES is still transitioning**, and
+   * the next `UpdateTable` in the serialized sequence is then rejected with
+   * `Attempt to change a resource which is still in use: Index is being
+   * updated` (issue #1521). That is not hypothetical: it broke the
+   * `PAY_PER_REQUEST -> PROVISIONED` flip that also drops a GSI — AWS applies
+   * the flip to every index, and cdkd issued the index DELETE while the index
+   * was still absorbing it. Reproduced on pristine `main`, three runs out of
+   * four on 2026-08-10, and the failed deploy's own `cdkd destroy` then
+   * ORPHANED the table for the same reason.
+   *
+   * So the wait has TWO conditions read off the SAME response (an extra
+   * `DescribeTable` per wait would double this path's API traffic for
+   * something the response already carries) — but they keep DIFFERENT failure
+   * semantics, and conflating them is a real regression rather than a
+   * simplification. A table that never reaches ACTIVE is a hard error: nothing
+   * can proceed. A still-transitioning INDEX is best-effort: `IndexStatus`
+   * stays `CREATING` for the whole BACKFILL of a newly added GSI, which on a
+   * populated table routinely outlives any cap — so throwing there would fail
+   * a deploy whose resources are all correct, and would do it on an unrelated
+   * tag-only edit that merely ran while an earlier index was still building.
+   * Past the cap the index half warns and proceeds, leaving AWS's own
+   * rejection as the backstop, which is the behavior it had before #1521 for
+   * every case except the one the wait exists to fix.
    */
   private async waitForTableActiveAfterUpdate(
     tableName: string,
     logicalId: string,
     maxAttempts = 600
   ): Promise<void> {
+    let tableReachedActive = false;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       const response = await this.dynamoDBClient.send(
         new DescribeTableCommand({ TableName: tableName })
       );
-      if (response.Table?.TableStatus === 'ACTIVE') return;
+      if (response.Table?.TableStatus === 'ACTIVE') {
+        tableReachedActive = true;
+        if (!hasTransitionalIndex(response.Table?.GlobalSecondaryIndexes)) return;
+      }
       await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+    if (tableReachedActive) {
+      this.logger.warn(
+        `Indexes on ${tableName} (${logicalId}) were still transitioning after ` +
+          `${maxAttempts}s — a large index backfill can outlive this wait. Proceeding; ` +
+          `AWS rejects the next call if it is still too early.`
+      );
+      return;
     }
     throw new ProvisioningError(
       `Table ${tableName} did not reach ACTIVE within ${maxAttempts}s after UpdateTable`,
@@ -3603,17 +3682,28 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
   /**
    * Wait until every GSI reports `IndexStatus: ACTIVE` (Issue #1419).
    *
-   * `waitForTableActiveAfterUpdate` only checks `TableStatus`, and a GSI
-   * added by `UpdateTable` leaves the TABLE ACTIVE while the index itself
-   * is still `CREATING` — application-autoscaling rejects a target whose
-   * resource is not ready, so registering right after the GSI-add loop
+   * A GSI added by `UpdateTable` leaves the TABLE ACTIVE while the index
+   * itself is still `CREATING` — application-autoscaling rejects a target
+   * whose resource is not ready, so registering right after the GSI-add loop
    * would skip the very index the deploy just introduced.
+   *
+   * Since issue #1521 the same distinction is enforced INSIDE
+   * {@link waitForTableActiveAfterUpdate} (which now reads both conditions off
+   * its own response), so this helper is no longer the only place that knows
+   * it. It remains the explicit wait for the two callers that have no
+   * table-status wait to piggyback on: the autoscaling registration above and
+   * the pre-`DeleteTable` gate, which AWS rejects while an index is
+   * transitioning. An index that is `DELETING` still reports, so the shared
+   * {@link hasTransitionalIndex} predicate covers `CREATING` / `UPDATING` /
+   * `DELETING` alike.
    *
    * **Best-effort by design**: on timeout it warns and returns rather than
    * throwing. A missed registration self-heals on the next deploy (the
    * reconcile re-asserts anything not already present), whereas throwing
    * here would fail a deploy whose actual resources are all correct. Index
    * backfill on a large table can take a long time, hence the 15-minute cap.
+   * The caller that follows it with a mutating call keeps AWS's own error as
+   * the backstop for the case where even that cap is not enough.
    */
   private async waitForIndexesActive(tableName: string, logicalId: string): Promise<void> {
     const maxAttempts = 900;
@@ -3623,7 +3713,12 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           new DescribeTableCommand({ TableName: tableName })
         );
         const indexes = response.Table?.GlobalSecondaryIndexes ?? [];
-        if (indexes.every((gsi) => gsi.IndexStatus === 'ACTIVE')) return;
+        // Block on the TRANSITIONAL statuses, not on "!== ACTIVE": an absent
+        // or unrecognized `IndexStatus` must not park the deploy for the full
+        // cap on a table that is fine. AWS always sets the field, so the two
+        // readings only differ for a partial response — where proceeding and
+        // letting AWS answer is the better failure mode.
+        if (!hasTransitionalIndex(indexes)) return;
       } catch (err) {
         this.logger.debug(
           `DescribeTable while waiting for indexes on ${tableName}: ` +
@@ -3791,26 +3886,53 @@ export function extractLocalDeletionProtection(
 export function derivePerCallProvisionedThroughput(
   properties: Record<string, unknown>,
   region: string,
-  source: CapacitySource = 'min'
+  source: CapacitySource = 'min',
+  diagnostics?: ThroughputDiagnostic[]
 ): { ReadCapacityUnits: number; WriteCapacityUnits: number } {
-  const replicas = (properties['Replicas'] ?? []) as Array<Record<string, unknown>>;
-  const localReplica = replicas.find((r) => r['Region'] === region);
+  // `Array.isArray` rather than a bare cast: a non-array `Replicas` (an
+  // unresolved intrinsic, a malformed template) would otherwise die on `.find`
+  // with a bare `TypeError`. That was survivable while this helper only
+  // computed numbers; it now also produces a user-facing diagnostic, so the
+  // sibling `toSdkGlobalSecondaryIndexes` treatment applies here too.
+  const rawReplicas = properties['Replicas'];
+  const replicas = Array.isArray(rawReplicas) ? rawReplicas : [];
+  const localReplica = replicas.find((r) => asRecord(r)?.['Region'] === region) as
+    | Record<string, unknown>
+    | undefined;
+  // Read capacity is per-replica on a GlobalTable; the deploy region's
+  // replica is the one `CreateTable` / `UpdateTable` provisions. (The
+  // schema also has a TOP-LEVEL `ReadProvisionedThroughputSettings`, but
+  // cdkd's pre-flight property-coverage check rejects that spelling as
+  // unsupported, so it can never reach here — do not read it.)
+  const rawRead = localReplica?.['ReadProvisionedThroughputSettings'];
+  const rawWrite = properties['WriteProvisionedThroughputSettings'];
+  const read = deriveReadCapacityUnits(asRecord(rawRead), source);
+  const write = deriveWriteCapacityUnits(asRecord(rawWrite), source);
+  // A DECLARED-but-unreadable value falling through to 5/5 is the silent
+  // mis-size issue #1511 filed; an ABSENT block defaults silently, as before.
+  if (read === undefined) {
+    reportUnresolvedProvisionedCapacity(
+      rawRead,
+      'Read',
+      source,
+      { appliedUnits: DEFAULT_CAPACITY_UNITS },
+      diagnostics,
+      { blockName: 'Replicas[local].ReadProvisionedThroughputSettings' }
+    );
+  }
+  if (write === undefined) {
+    reportUnresolvedProvisionedCapacity(
+      rawWrite,
+      'Write',
+      source,
+      { appliedUnits: DEFAULT_CAPACITY_UNITS },
+      diagnostics,
+      { blockName: 'WriteProvisionedThroughputSettings' }
+    );
+  }
   return {
-    // Read capacity is per-replica on a GlobalTable; the deploy region's
-    // replica is the one `CreateTable` / `UpdateTable` provisions. (The
-    // schema also has a TOP-LEVEL `ReadProvisionedThroughputSettings`, but
-    // cdkd's pre-flight property-coverage check rejects that spelling as
-    // unsupported, so it can never reach here — do not read it.)
-    ReadCapacityUnits:
-      deriveReadCapacityUnits(
-        asRecord(localReplica?.['ReadProvisionedThroughputSettings']),
-        source
-      ) ?? DEFAULT_CAPACITY_UNITS,
-    WriteCapacityUnits:
-      deriveWriteCapacityUnits(
-        asRecord(properties['WriteProvisionedThroughputSettings']),
-        source
-      ) ?? DEFAULT_CAPACITY_UNITS,
+    ReadCapacityUnits: read ?? DEFAULT_CAPACITY_UNITS,
+    WriteCapacityUnits: write ?? DEFAULT_CAPACITY_UNITS,
   };
 }
 
@@ -4041,6 +4163,26 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
  */
 const ON_DEMAND_LIMIT_RESET = -1;
 
+/**
+ * The GSI states during which AWS refuses another `UpdateTable` or a
+ * `DeleteTable` on the table (issue #1521) — a table is ACTIVE while one of
+ * its indexes is still transitioning, which is what made the serialized
+ * update sequence race and what left a table ORPHANED when the follow-up
+ * destroy hit the same rule.
+ *
+ * `DELETING` is included because a dropped index keeps reporting until it is
+ * actually gone. The test is on the TRANSITIONAL values rather than on
+ * `!== 'ACTIVE'`: an absent or unrecognized status must not park the caller
+ * for its whole cap on a table that is fine.
+ */
+const INDEX_TRANSITIONAL_STATUSES = new Set(['CREATING', 'UPDATING', 'DELETING']);
+
+function hasTransitionalIndex(
+  indexes: ReadonlyArray<{ readonly IndexStatus?: string | undefined }> | undefined
+): boolean {
+  return (indexes ?? []).some((gsi) => INDEX_TRANSITIONAL_STATUSES.has(gsi.IndexStatus ?? ''));
+}
+
 /** Coerce a CFn numeric (CFn is stringly-typed) to a finite number. */
 function toFiniteNumber(value: unknown): number | undefined {
   if (value === undefined || value === null || value === '') return undefined;
@@ -4067,8 +4209,15 @@ function toFiniteNumber(value: unknown): number | undefined {
 export interface ThroughputDiagnostic {
   /**
    * `unresolved-member` — the template DECLARED the member but its value did
-   * not coerce to a number (an unresolved `{Ref: …}`, an object, `''`), so
-   * NOTHING is sent for it and the live AWS value is left alone.
+   * not coerce to a number (an unresolved `{Ref: …}`, an object, `''`). What
+   * FOLLOWS from that differs by side, and the message says which: an
+   * ON-DEMAND ceiling is SUPPRESSED (nothing is sent, the live AWS value is
+   * left alone), while a PROVISIONED capacity CANNOT be — AWS requires a
+   * concrete `ProvisionedThroughput` on a provisioned table and on every GSI
+   * of one — so cdkd substitutes {@link DEFAULT_CAPACITY_UNITS} and says so
+   * (issue #1511). The one provisioned exception is a replica's
+   * `ProvisionedThroughputOverride`, whose absence means "inherit the source
+   * table", so it suppresses like the on-demand side.
    *
    * `billing-mode-mismatch` — an explicitly SDK-shaped block contradicts the
    * table's billing mode (a `ProvisionedThroughput` on a PAY_PER_REQUEST
@@ -4183,6 +4332,111 @@ function reportUnresolvedRawMember(
       `sent for it and the live AWS setting was left unchanged. This is usually an ` +
       `unresolved intrinsic; resolve it to a literal to apply the limit, or remove the ` +
       `property entirely to clear it.`,
+  });
+}
+
+/**
+ * Which member of a `*ProvisionedThroughputSettings` block to blame when the
+ * derivation came back `undefined` (issue #1511).
+ *
+ * The derivation reports only "no number", so the member is re-derived here in
+ * the SAME order {@link deriveWriteCapacityUnits} / {@link deriveReadCapacityUnits}
+ * / {@link pickAutoScalingCapacity} consult members — the literal first, then
+ * the auto-scaling block's `source`-selected member. Reaching this function at
+ * all means every one of them failed, so the first DECLARED one is the value
+ * the user was trying to set.
+ *
+ * `relPath` is relative to the block, `''` meaning the block ITSELF is the
+ * unusable value (a string / array / bare unresolved intrinsic, or an object
+ * carrying no capacity member at all).
+ *
+ * Returns `undefined` for an ABSENT block: defaulting there is the documented
+ * pre-existing behavior for a template that never asked for a capacity, and
+ * warning about it would shout on every deploy of a table that is fine.
+ */
+function blameUnresolvedProvisionedMember(
+  rawSettings: unknown,
+  side: 'Read' | 'Write',
+  source: CapacitySource
+): { relPath: string; value: unknown } | undefined {
+  if (rawSettings === undefined) return undefined;
+  const settings = asRecord(rawSettings);
+  if (!settings || isUnresolvedIntrinsicBlock(settings)) return { relPath: '', value: rawSettings };
+  const literal = settings[`${side}CapacityUnits`];
+  if (literal !== undefined) return { relPath: `${side}CapacityUnits`, value: literal };
+  const autoKey = `${side}CapacityAutoScalingSettings`;
+  const rawAutoScaling = settings[autoKey];
+  if (rawAutoScaling === undefined) return { relPath: '', value: rawSettings };
+  const autoScaling = asRecord(rawAutoScaling);
+  if (!autoScaling || isUnresolvedIntrinsicBlock(autoScaling)) {
+    return { relPath: autoKey, value: rawAutoScaling };
+  }
+  const order =
+    source === 'seed' ? ['SeedCapacity', 'MinCapacity'] : ['MinCapacity', 'SeedCapacity'];
+  for (const member of order) {
+    const value = autoScaling[member];
+    if (value !== undefined) return { relPath: `${autoKey}.${member}`, value };
+  }
+  return { relPath: autoKey, value: rawAutoScaling };
+}
+
+/**
+ * Report a DECLARED provisioned capacity the template could not resolve — the
+ * PROVISIONED twin of {@link reportUnresolvedRawMember} (issue #1511).
+ *
+ * The two sides need different wording because they have different outcomes,
+ * which is exactly why #1503 deferred this half. An unreadable ON-DEMAND
+ * ceiling is SUPPRESSED (nothing is sent, the live ceiling stands), so its
+ * diagnostic says "nothing was sent". A provisioned table cannot suppress —
+ * AWS requires `ProvisionedThroughput` on the table and on every GSI of it —
+ * so the derivation falls through to {@link DEFAULT_CAPACITY_UNITS} and a
+ * table the template explicitly sized is deployed at 5/5. That is a throttling
+ * symptom days later rather than an error, which is what makes naming it here
+ * worth a warning at all. The one provisioned site that CAN suppress is a
+ * replica's `ProvisionedThroughputOverride` (absent = inherit the source
+ * table), hence the `suppressed` outcome arm.
+ *
+ * Caller decides WHEN: only when the derivation returned `undefined` AND no
+ * explicit SDK-shaped member is standing in for it, so the warning always
+ * describes what actually reached AWS.
+ */
+function reportUnresolvedProvisionedCapacity(
+  rawSettings: unknown,
+  side: 'Read' | 'Write',
+  source: CapacitySource,
+  outcome: { readonly appliedUnits: number } | { readonly suppressed: string },
+  diagnostics: ThroughputDiagnostic[] | undefined,
+  context: { indexName?: string; blockName: string }
+): void {
+  if (!diagnostics) return;
+  const blame = blameUnresolvedProvisionedMember(rawSettings, side, source);
+  if (!blame) return;
+  const path = blame.relPath ? `${context.blockName}.${blame.relPath}` : context.blockName;
+  // Every substituting caller passes the default today, so the sentence names
+  // it unconditionally; the value stays a parameter because it is what the
+  // user has to recognize in `DescribeTable`, and hard-coding "5" here would
+  // silently lie the day a caller substitutes something else.
+  const consequence =
+    'appliedUnits' in outcome
+      ? `so cdkd sent ${outcome.appliedUnits} capacity units instead ` +
+        `(its default — AWS requires a concrete provisioned capacity here, ` +
+        `so there was nothing to suppress)`
+      : outcome.suppressed;
+  diagnostics.push({
+    kind: 'unresolved-member',
+    ...(context.indexName !== undefined && { indexName: context.indexName }),
+    // The terminal member name — or, when the BLOCK itself is what could not be
+    // read, the block's own last segment. Taken off `relPath` rather than the
+    // joined path so a block name carrying dots
+    // (`Replicas[local].GlobalSecondaryIndexes[].Read…Settings`) reports the
+    // member it names, not the tail of its container chain.
+    member: blame.relPath
+      ? blame.relPath.slice(blame.relPath.lastIndexOf('.') + 1)
+      : context.blockName.slice(context.blockName.lastIndexOf('.') + 1),
+    message:
+      `${path} is declared but did not resolve to a number ` +
+      `(${JSON.stringify(blame.value)?.slice(0, 80)}), ${consequence}. This is usually an ` +
+      `unresolved intrinsic; resolve it to a literal to apply the capacity you declared.`,
   });
 }
 
@@ -4418,22 +4672,62 @@ export function toSdkGlobalSecondaryIndexes(
     }
 
     if (billingMode === 'PROVISIONED') {
+      // Capacity diagnostics fire from HERE, where the value is lost, for the
+      // same reason the on-demand ones do (#1444 A): the per-GSI reset gate in
+      // `update()` never runs for a first-time set or across a billing flip,
+      // which are the two likeliest ways to hit this (#1511).
+      const rawLocalRead = localEntry?.['ReadProvisionedThroughputSettings'];
+      const rawGsiRead = gsi['ReadProvisionedThroughputSettings'];
+      const rawWrite = gsi['WriteProvisionedThroughputSettings'];
+      const derivedRead =
+        deriveReadCapacityUnits(asRecord(rawLocalRead), source) ??
+        deriveReadCapacityUnits(asRecord(rawGsiRead), source);
+      const derivedWrite = deriveWriteCapacityUnits(asRecord(rawWrite), source);
+      // An explicit SDK-shaped member wins in the merge below, so a value it
+      // supplies is what reaches AWS and there is nothing to warn about.
+      const explicitCovers = (member: string): boolean =>
+        explicitProvisioned !== undefined &&
+        toFiniteNumber(explicitProvisioned[member]) !== undefined;
+      if (derivedRead === undefined && !explicitCovers('ReadCapacityUnits')) {
+        // The replica spelling is the canonical CDK one and is blamed when
+        // DECLARED, matching the on-demand half's choice of which of the two
+        // read spellings to name.
+        const fromReplica = rawLocalRead !== undefined;
+        reportUnresolvedProvisionedCapacity(
+          fromReplica ? rawLocalRead : rawGsiRead,
+          'Read',
+          source,
+          { appliedUnits: DEFAULT_CAPACITY_UNITS },
+          diagnostics,
+          {
+            ...(typeof indexName === 'string' && { indexName }),
+            blockName: fromReplica
+              ? 'Replicas[local].GlobalSecondaryIndexes[].ReadProvisionedThroughputSettings'
+              : 'ReadProvisionedThroughputSettings',
+          }
+        );
+      }
+      if (derivedWrite === undefined && !explicitCovers('WriteCapacityUnits')) {
+        reportUnresolvedProvisionedCapacity(
+          rawWrite,
+          'Write',
+          source,
+          { appliedUnits: DEFAULT_CAPACITY_UNITS },
+          diagnostics,
+          {
+            ...(typeof indexName === 'string' && { indexName }),
+            blockName: 'WriteProvisionedThroughputSettings',
+          }
+        );
+      }
       // The derived side always yields both members (defaulting to 5/5), so
       // the merge can never come back `undefined` here — AWS REQUIRES
       // `ProvisionedThroughput` on every GSI of a provisioned table.
       sdk.ProvisionedThroughput = mergeExplicitThroughputBlock<ProvisionedThroughput>(
         explicitProvisioned,
         {
-          ReadCapacityUnits:
-            deriveReadCapacityUnits(
-              asRecord(localEntry?.['ReadProvisionedThroughputSettings']),
-              source
-            ) ??
-            deriveReadCapacityUnits(asRecord(gsi['ReadProvisionedThroughputSettings']), source) ??
-            DEFAULT_CAPACITY_UNITS,
-          WriteCapacityUnits:
-            deriveWriteCapacityUnits(asRecord(gsi['WriteProvisionedThroughputSettings']), source) ??
-            DEFAULT_CAPACITY_UNITS,
+          ReadCapacityUnits: derivedRead ?? DEFAULT_CAPACITY_UNITS,
+          WriteCapacityUnits: derivedWrite ?? DEFAULT_CAPACITY_UNITS,
         },
         ['ReadCapacityUnits', 'WriteCapacityUnits'],
         diagnostics,
@@ -4708,9 +5002,29 @@ function toSdkReplicaThroughputOverrides(
   }
 
   if (billingMode === 'PROVISIONED') {
-    const readCapacity = deriveReadCapacityUnits(
-      asRecord(cfn['ReadProvisionedThroughputSettings'])
-    );
+    const rawRead = cfn['ReadProvisionedThroughputSettings'];
+    const readCapacity = deriveReadCapacityUnits(asRecord(rawRead));
+    // The one PROVISIONED site that CAN suppress: an absent
+    // `ProvisionedThroughputOverride` means "inherit the source table", so an
+    // unreadable value here silently keeps the inherited capacity rather than
+    // defaulting to 5 (issue #1511).
+    if (
+      readCapacity === undefined &&
+      toFiniteNumber(explicitProvisioned?.['ReadCapacityUnits']) === undefined
+    ) {
+      reportUnresolvedProvisionedCapacity(
+        rawRead,
+        'Read',
+        'min',
+        {
+          suppressed:
+            `so no ProvisionedThroughputOverride was sent and the replica keeps the ` +
+            `source table's read capacity`,
+        },
+        diagnostics,
+        { ...context, blockName: 'ReadProvisionedThroughputSettings' }
+      );
+    }
     const merged = mergeExplicitThroughputBlock<{ ReadCapacityUnits: number }>(
       explicitProvisioned,
       readCapacity !== undefined ? { ReadCapacityUnits: readCapacity } : undefined,

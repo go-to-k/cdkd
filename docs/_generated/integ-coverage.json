@@ -847,6 +847,7 @@
       ],
       "signals": {
         "dynamodb-globaltable": [
+          "l1",
           "l2",
           "literal"
         ],
