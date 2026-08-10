@@ -79,6 +79,20 @@ describe('S3DirectoryBucketProvider Tags (issue #609)', () => {
   });
 
   describe('create', () => {
+    it('forwards a malformed non-array Tags verbatim (AWS rejects loudly)', async () => {
+      mockS3Send.mockResolvedValue({});
+      const malformed = { team: 'not-a-tag-array' };
+
+      await provider.create('DirectoryBucket', RESOURCE_TYPE, {
+        BucketName: PHYSICAL_ID,
+        DataRedundancy: 'SingleAvailabilityZone',
+        LocationName: 'us-east-1c--x-s3',
+        Tags: malformed,
+      });
+
+      expect(mockS3Send.mock.calls[0][0].input.CreateBucketConfiguration.Tags).toBe(malformed);
+    });
+
     it('forwards Tags on CreateBucketConfiguration', async () => {
       mockS3Send.mockResolvedValueOnce({}); // CreateBucketCommand
 
@@ -205,6 +219,27 @@ describe('S3DirectoryBucketProvider Tags (issue #609)', () => {
       expect(mockStsSend).not.toHaveBeenCalled();
     });
 
+    it('forwards a malformed non-array Tags verbatim and never untags from garbage', async () => {
+      // Same policy as create: AWS rejects the malformed value loudly.
+      // Computing "removed keys" against garbage would silently strip every
+      // live tag (reviewer catch on PR #1528).
+      mockControlSend.mockResolvedValue({});
+      const malformed = { team: 'not-a-tag-array' };
+
+      await provider.update(
+        'DirectoryBucket',
+        PHYSICAL_ID,
+        RESOURCE_TYPE,
+        { Tags: malformed },
+        { Tags: [{ Key: 'keep-me', Value: 'v' }] }
+      );
+
+      expect(mockControlSend).toHaveBeenCalledTimes(1);
+      const cmd = mockControlSend.mock.calls[0][0];
+      expect(cmd).toBeInstanceOf(TagResourceCommand);
+      expect(cmd.input.Tags).toBe(malformed);
+    });
+
     it('wraps S3 Control failures in ProvisioningError', async () => {
       mockControlSend.mockRejectedValue(new Error('AccessDenied'));
 
@@ -221,6 +256,17 @@ describe('S3DirectoryBucketProvider Tags (issue #609)', () => {
   });
 
   describe('readCurrentState', () => {
+    it('fails loudly when the tag read errors (no silent placeholder)', async () => {
+      // A silent `Tags: []` placeholder on a permission error would read as
+      // "all tags removed" phantom drift; propagating is the honest failure.
+      mockS3Send.mockResolvedValueOnce({}); // HeadBucket
+      mockControlSend.mockRejectedValueOnce(new Error('AccessDenied'));
+
+      await expect(
+        provider.readCurrentState(PHYSICAL_ID, 'Logical', RESOURCE_TYPE)
+      ).rejects.toThrow('AccessDenied');
+    });
+
     it('surfaces Tags from S3 Control ListTagsForResource', async () => {
       mockS3Send.mockResolvedValueOnce({}); // HeadBucket
       mockControlSend.mockResolvedValueOnce({

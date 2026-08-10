@@ -245,13 +245,21 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
     try {
       const newTags = properties['Tags'] as Tag[] | undefined;
       const oldTags = previousProperties['Tags'] as Tag[] | undefined;
+      // A malformed non-array desired value is forwarded verbatim to
+      // TagResource so AWS rejects it loudly — the same policy as the create
+      // path — and never drives UntagResource (computing "removed keys"
+      // against garbage would silently strip every live tag).
+      const malformedNewTags = newTags != null && !Array.isArray(newTags);
       const newKeys = new Set(
         (Array.isArray(newTags) ? newTags : []).map((t) => t.Key).filter((k): k is string => !!k)
       );
-      const removedKeys = (Array.isArray(oldTags) ? oldTags : [])
-        .map((t) => t.Key)
-        .filter((k): k is string => !!k && !newKeys.has(k));
-      const tagsToApply = Array.isArray(newTags) && newTags.length > 0 ? newTags : undefined;
+      const removedKeys = malformedNewTags
+        ? []
+        : (Array.isArray(oldTags) ? oldTags : [])
+            .map((t) => t.Key)
+            .filter((k): k is string => !!k && !newKeys.has(k));
+      const tagsToApply =
+        malformedNewTags || (Array.isArray(newTags) && newTags.length > 0) ? newTags : undefined;
       if (
         JSON.stringify(newTags) !== JSON.stringify(oldTags) &&
         (removedKeys.length > 0 || tagsToApply !== undefined)

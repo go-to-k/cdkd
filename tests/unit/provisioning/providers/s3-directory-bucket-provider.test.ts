@@ -272,6 +272,64 @@ describe('S3DirectoryBucketProvider', () => {
       expect(mockSend.mock.calls[3][0]).toBeInstanceOf(DeleteBucketCommand);
     });
 
+    it('takes the post-loop final delete after exhausting the in-loop attempts', async () => {
+      // 3 in-loop delete attempts each lose the race and re-empty; the
+      // post-loop final DeleteBucket succeeds (10 calls total).
+      const notEmpty = new Error('The bucket you tried to delete is not empty');
+      notEmpty.name = 'BucketNotEmpty';
+      const emptyCycle = [
+        { Contents: [{ Key: 'raced.txt' }], IsTruncated: false }, // ListObjectsV2
+        {}, // DeleteObjects
+      ];
+      mockSend
+        .mockRejectedValueOnce(notEmpty) // DeleteBucket (attempt 1)
+        .mockResolvedValueOnce(emptyCycle[0])
+        .mockResolvedValueOnce(emptyCycle[1])
+        .mockRejectedValueOnce(notEmpty) // DeleteBucket (attempt 2)
+        .mockResolvedValueOnce(emptyCycle[0])
+        .mockResolvedValueOnce(emptyCycle[1])
+        .mockRejectedValueOnce(notEmpty) // DeleteBucket (attempt 3)
+        .mockResolvedValueOnce(emptyCycle[0])
+        .mockResolvedValueOnce(emptyCycle[1])
+        .mockResolvedValueOnce({}); // DeleteBucket (post-loop final attempt)
+
+      await provider.delete(
+        'DirectoryBucket',
+        'my-bucket--use1-az4--x-s3',
+        'AWS::S3Express::DirectoryBucket',
+        undefined,
+        { forceDataDelete: true }
+      );
+
+      const names = mockSend.mock.calls.map((c) => c[0].constructor.name);
+      expect(names.filter((n) => n === 'DeleteBucketCommand')).toHaveLength(4);
+      expect(names[names.length - 1]).toBe('DeleteBucketCommand');
+    });
+
+    it('surfaces the raw not-empty error (no guard remediation text) when even the final attempt fails', async () => {
+      const notEmpty = new Error('The bucket you tried to delete is not empty');
+      notEmpty.name = 'BucketNotEmpty';
+      mockSend.mockImplementation((cmd) => {
+        if (cmd.constructor.name === 'DeleteBucketCommand') return Promise.reject(notEmpty);
+        if (cmd.constructor.name === 'ListObjectsV2Command') {
+          return Promise.resolve({ Contents: [{ Key: 'r.txt' }], IsTruncated: false });
+        }
+        return Promise.resolve({});
+      });
+
+      const p = provider.delete(
+        'DirectoryBucket',
+        'my-bucket--use1-az4--x-s3',
+        'AWS::S3Express::DirectoryBucket',
+        undefined,
+        { forceDataDelete: true }
+      );
+      await expect(p).rejects.toThrow(/not empty/);
+      // The opted-in exhaustion is NOT the CFn-parity guard: no manual-empty
+      // remediation text.
+      await expect(p).rejects.not.toThrow(/Matching CloudFormation/);
+    });
+
     it('should handle bucket not found (idempotent)', async () => {
       const error = new Error('NoSuchBucket');
       error.name = 'NoSuchBucket';
