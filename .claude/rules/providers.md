@@ -271,10 +271,10 @@ That is a far more common template shape than the base64 search string.
   Measure before setting it. The opt-in set is decided by measurement, never
   by prediction, and the full before/after table lives in the script's file
   header. Today `AWS::CodeBuild::Project`, the five `AWS::ApiGatewayV2::*`
-  targets, both `AWS::ECS::*` targets and
-  `AWS::CloudWatch::AnomalyDetector` are in; `AWS::S3::Bucket` and
-  `AWS::CloudFront::Distribution` each carry a recorded, measured reason they
-  are not.
+  targets, both `AWS::ECS::*` targets, `AWS::CloudWatch::AnomalyDetector` and
+  `AWS::CloudFront::Distribution` (issue #1475, via the spread-and-patch
+  recognizer) are in; `AWS::S3::Bucket` carries a recorded, measured reason it
+  is not.
 - **A whole sub-blob handed to a GENERIC key converter is credited (issue
   #1445).** `ECSProvider.convertLinuxParameters` is
   `return pascalToCamelCaseKeys(config)` — one call delivers `Capabilities` /
@@ -472,15 +472,21 @@ That is a far more common template shape than the base64 search string.
      exactly the rename-map shape and would be credited the moment a Glue
      target opted in. Closing it needs the walk to model the converter's KEY
      SET, not just its member names.
-  6. **One provider SHAPE the three recognizers still do not cover**, measured
-     on the real tree and tracked: the SPREAD-AND-PATCH forwarder
-     (`const result = { ...config }` plus ~30 named patches, which the
-     genericity test rejects on those names; CloudFront 162 — issue
-     [#1475](https://github.com/go-to-k/cdkd/issues/1475)). The BUILDER idiom
-     that sat here alongside it is CLOSED by issue
+  6. **The SPREAD-AND-PATCH forwarder is CLOSED by issue
+     [#1475](https://github.com/go-to-k/cdkd/issues/1475)** (it sat here as the
+     last unrecognized shape; the BUILDER idiom beside it was closed by issue
      [#1474](https://github.com/go-to-k/cdkd/issues/1474) — see the builder
-     bullet above; the bounds it left behind are known bound (8) in the script
-     header (seed-literal-only, computed keys refused, flow-insensitive).
+     bullet above, bounds under known bound (8)). A literal spreading a
+     BAG-DERIVED seed (`const result = { ...config }`) inside an otherwise
+     member-naming function registers a hand-off at its write path, BOUNDED by
+     the keys the function `delete`s off the binding (resolved through the
+     `Object.entries(TABLE)` / literal-array loop shapes; an unresolvable
+     delete key refuses the whole registration, fail-closed) — which is what
+     opted `AWS::CloudFront::Distribution` in at 0 findings (162 -> 0, two
+     `Tags.*` paths allow-listed as written one SDK wrapper level below the
+     CFn chain). What it deliberately does NOT exclude is known bound (9) in
+     the script header: an OVERWRITTEN member stays credited through the
+     spread, and the spread delivers the seed's spelling verbatim.
   7. **An intermediate segment the provider RENAMES leaves its children
      unresolvable** (new with #1464). Case differences are absorbed; a rename is
      not — CFn `ProxyConfiguration.ProxyConfigurationProperties` is the SDK's

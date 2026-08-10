@@ -1117,8 +1117,12 @@ describe('whole-blob hand-off walk (synthetic, issue #1445)', () => {
     expect(points.has('loadBalancers')).toBe(false);
   });
 
-  it('refuses a spread-and-patch converter (the CloudFront shape)', () => {
-    const points = pointsOf(`
+  it('credits a spread-and-patch converter through the SPREAD, not genericity (#1475)', () => {
+    // The genericity test still rejects `toSdk` (it names `Comment`), which
+    // is what this test used to pin. Since issue #1475 the SPREAD of the
+    // tainted seed registers the point itself — the fourth recognizer.
+    const evidence = collectWriteEvidence(
+      `
       class P {
         async create(logicalId: string, resourceType: string, properties: Record<string, unknown>) {
           return { DistributionConfig: this.toSdk(properties['DistributionConfig']) };
@@ -1129,8 +1133,13 @@ describe('whole-blob hand-off walk (synthetic, issue #1445)', () => {
           return result;
         }
       }
-    `);
-    expect(points.has('DistributionConfig')).toBe(false);
+      `,
+      'provider.ts',
+      ['readCurrentState']
+    );
+    expect(allHandoffPoints(evidence).has('DistributionConfig')).toBe(true);
+    // No deletes on the binding, so the wildcard carries no exclusions.
+    expect(evidence.handoffExclusions?.get('DistributionConfig')).toBeUndefined();
   });
 
   it('refuses a blob that did NOT come off the property bag', () => {
@@ -1268,6 +1277,521 @@ describe('whole-blob hand-off walk (synthetic, issue #1445)', () => {
         'containerPortRange'
       )
     ).toBe(false);
+  });
+});
+
+describe('the SPREAD-AND-PATCH forwarder (synthetic, issue #1475)', () => {
+  /** The CloudFront shape, parameterized by the converter body. */
+  const converter = (body: string): string => `
+    class P {
+      async create(logicalId: string, resourceType: string, properties: Record<string, unknown>) {
+        return { DistributionConfig: this.toSdk(properties['DistributionConfig']) };
+      }
+      private toSdk(config: Record<string, unknown>) {
+        ${body}
+      }
+    }
+  `;
+  const evidenceOf = (source: string) =>
+    collectWriteEvidence(source, 'provider.ts', ['readCurrentState']);
+
+  it('a LITERAL-key delete on the seeded binding becomes an exclusion, not a refusal', () => {
+    // Delete-only on purpose: a rename WRITE with literal keys
+    // (`result['IsIPV6Enabled'] = result['IPV6Enabled']`) would ALSO register
+    // the member as a hand-off under its CFn spelling via the seed-key alias
+    // (`registerSeedKeyHandoffs`) — correct, since the value IS delivered
+    // under the renamed key — and that would mask the exclusion this test
+    // exists to prove. The real provider's rename loop uses COMPUTED keys, so
+    // no alias fires there.
+    const evidence = evidenceOf(
+      converter(`
+        const result = { ...config };
+        delete result['IPV6Enabled'];
+        return result;
+      `)
+    );
+    expect(evidence.handoffScopes.has('DistributionConfig')).toBe(true);
+    expect([...(evidence.handoffExclusions?.get('DistributionConfig') ?? [])]).toEqual([
+      'ipv6enabled',
+    ]);
+    // The exclusion is what the coverage test consults: the deleted key (and
+    // anything beneath it) is refused, a sibling is covered.
+    expect(
+      isHandoffCovered(
+        evidence.handoffScopes,
+        'DistributionConfig',
+        'IPV6Enabled',
+        evidence.handoffExclusions
+      )
+    ).toBe(false);
+    expect(
+      isHandoffCovered(
+        evidence.handoffScopes,
+        'DistributionConfig.IPV6Enabled',
+        'Anything',
+        evidence.handoffExclusions
+      )
+    ).toBe(false);
+    expect(
+      isHandoffCovered(
+        evidence.handoffScopes,
+        'DistributionConfig',
+        'PriceClass',
+        evidence.handoffExclusions
+      )
+    ).toBe(true);
+    expect(
+      isHandoffCovered(
+        evidence.handoffScopes,
+        'DistributionConfig.Origins',
+        'Id',
+        evidence.handoffExclusions
+      )
+    ).toBe(true);
+    // A first-segment the caller cannot supply fails CLOSED.
+    expect(
+      isHandoffCovered(
+        evidence.handoffScopes,
+        'DistributionConfig',
+        undefined,
+        evidence.handoffExclusions
+      )
+    ).toBe(false);
+  });
+
+  it('resolves delete keys through an Object.entries(TABLE) rename loop (the real shape)', () => {
+    const evidence = evidenceOf(`
+      const CFN_TO_SDK: Record<string, string> = { IPV6Enabled: 'IsIPV6Enabled', Staging: 'IsStaging' };
+      class P {
+        async create(logicalId: string, resourceType: string, properties: Record<string, unknown>) {
+          return { DistributionConfig: this.toSdk(properties['DistributionConfig']) };
+        }
+        private toSdk(config: Record<string, unknown>) {
+          const result = { ...config };
+          for (const [cfnKey, sdkKey] of Object.entries(CFN_TO_SDK)) {
+            result[sdkKey] = result[cfnKey];
+            delete result[cfnKey];
+          }
+          return result;
+        }
+      }
+    `);
+    expect(evidence.handoffScopes.has('DistributionConfig')).toBe(true);
+    expect([...(evidence.handoffExclusions?.get('DistributionConfig') ?? [])].sort()).toEqual([
+      'ipv6enabled',
+      'staging',
+    ]);
+    // A COMPUTED-key rename write (`result[sdkKey] = result[cfnKey]`) yields
+    // no seed-key alias, so the exclusion is the last word — pinned here
+    // because the literal-key rename shape DOES alias (see the first test's
+    // comment) and the two must not be confused.
+    expect(
+      isHandoffCovered(
+        evidence.handoffScopes,
+        'DistributionConfig',
+        'IPV6Enabled',
+        evidence.handoffExclusions
+      )
+    ).toBe(false);
+  });
+
+  it('resolves delete keys through for-of over a literal array and Object.keys(TABLE)', () => {
+    const evidence = evidenceOf(`
+      const DROP_LIST = ['Alpha', 'Beta'];
+      const DROP_MAP = { Gamma: 1 };
+      class P {
+        async create(logicalId: string, resourceType: string, properties: Record<string, unknown>) {
+          return { DistributionConfig: this.toSdk(properties['DistributionConfig']) };
+        }
+        private toSdk(config: Record<string, unknown>) {
+          const result = { ...config };
+          for (const k of DROP_LIST) delete result[k];
+          for (const k of Object.keys(DROP_MAP)) delete result[k];
+          return result;
+        }
+      }
+    `);
+    expect([...(evidence.handoffExclusions?.get('DistributionConfig') ?? [])].sort()).toEqual([
+      'alpha',
+      'beta',
+      'gamma',
+    ]);
+  });
+
+  it('an UNRESOLVABLE delete key refuses the whole registration (fail closed)', () => {
+    const evidence = evidenceOf(
+      converter(`
+        const result = { ...config };
+        const dynamic = Object.keys(config)[0]!;
+        delete result[dynamic];
+        return result;
+      `)
+    );
+    expect(evidence.handoffScopes.has('DistributionConfig')).toBe(false);
+  });
+
+  it('a delete through a LONGER chain excludes its first segment wholesale', () => {
+    const evidence = evidenceOf(
+      converter(`
+        const result = { ...config };
+        delete (result['Restrictions'] as Record<string, unknown>)['GeoRestriction'];
+        return result;
+      `)
+    );
+    expect([...(evidence.handoffExclusions?.get('DistributionConfig') ?? [])]).toEqual([
+      'restrictions',
+    ]);
+  });
+
+  it('BOUND (9): an OVERWRITTEN member stays credited through the spread', () => {
+    // The named patch is a write of the member (walked on its own), and the
+    // wildcard deliberately does not exclude it — the issue's "patches only
+    // rename / wrap" model. If a future change tightens this, update bound (9).
+    const evidence = evidenceOf(
+      converter(`
+        const result = { ...config };
+        result['Logging'] = { Enabled: false };
+        return result;
+      `)
+    );
+    expect(
+      isHandoffCovered(
+        evidence.handoffScopes,
+        'DistributionConfig.Logging',
+        'IncludeCookies',
+        evidence.handoffExclusions
+      )
+    ).toBe(true);
+  });
+
+  it('a binding REASSIGNED as a whole is refused (the delivered value may not be the seed)', () => {
+    const evidence = evidenceOf(
+      converter(`
+        let result = { ...config };
+        result = {};
+        return result;
+      `)
+    );
+    expect(evidence.handoffScopes.has('DistributionConfig')).toBe(false);
+  });
+
+  it('a delete on the RECEIVING binding of a helper-returned seed still excludes (#1475 review)', () => {
+    // The seed literal lives inside the helper, so its HOLDER is the callee's
+    // return — the delete is on the CALLER's binding, visible only through
+    // the chain-source walk from the write value.
+    const evidence = evidenceOf(`
+      class P {
+        async create(logicalId: string, resourceType: string, properties: Record<string, unknown>) {
+          const config = properties['DistributionConfig'] as Record<string, unknown>;
+          const result = this.seed(config);
+          delete result['IPV6Enabled'];
+          await this.send({ DistributionConfig: result });
+        }
+        private seed(config: Record<string, unknown>) {
+          return { ...config };
+        }
+      }
+    `);
+    expect(evidence.handoffScopes.has('DistributionConfig')).toBe(true);
+    expect([...(evidence.handoffExclusions?.get('DistributionConfig') ?? [])]).toEqual([
+      'ipv6enabled',
+    ]);
+    expect(
+      isHandoffCovered(
+        evidence.handoffScopes,
+        'DistributionConfig',
+        'IPV6Enabled',
+        evidence.handoffExclusions
+      )
+    ).toBe(false);
+  });
+
+  it('a VERBATIM member forward whose subtree the function deletes into is refused (#1475 review)', () => {
+    // deliversWholeBlob's access branch: `delete config['VC']['Id']` mutates
+    // the very object `config['VC']` then forwards it whole. No literal
+    // remains to register a bounded credit, so the refusal is total — loud.
+    const evidence = evidenceOf(`
+      class P {
+        async create(logicalId: string, resourceType: string, properties: Record<string, unknown>) {
+          const config = properties['DistributionConfig'] as Record<string, unknown>;
+          delete (config['ViewerCertificate'] as Record<string, unknown>)['IamCertificateId'];
+          await this.send({
+            DistributionConfig: { ViewerCertificate: config['ViewerCertificate'] },
+          });
+        }
+      }
+    `);
+    expect(evidence.handoffScopes.has('DistributionConfig.ViewerCertificate')).toBe(false);
+    expect(
+      isHandoffCovered(
+        evidence.handoffScopes,
+        'DistributionConfig.ViewerCertificate',
+        'IamCertificateId',
+        evidence.handoffExclusions
+      )
+    ).toBe(false);
+    // ...while a SIBLING member the deletes never touch still forwards whole.
+    const sibling = evidenceOf(`
+      class P {
+        async create(logicalId: string, resourceType: string, properties: Record<string, unknown>) {
+          const config = properties['DistributionConfig'] as Record<string, unknown>;
+          delete config['Staging'];
+          await this.send({
+            DistributionConfig: { ViewerCertificate: config['ViewerCertificate'] },
+          });
+        }
+      }
+    `);
+    expect(sibling.handoffScopes.has('DistributionConfig.ViewerCertificate')).toBe(true);
+  });
+
+  it('a delete on an EARLIER binding in the spread chain still excludes (#1475 review)', () => {
+    // `{ ...b }` where `const a = { ...config }; delete a['K']; const b = { ...a }`
+    // delivers the object a's delete already mutated — the exclusion must
+    // travel through the binding chain, not just the literal's own holder.
+    const evidence = evidenceOf(
+      converter(`
+        const a = { ...config };
+        delete a['IPV6Enabled'];
+        const b = { ...a };
+        return b;
+      `)
+    );
+    expect(evidence.handoffScopes.has('DistributionConfig')).toBe(true);
+    expect([...(evidence.handoffExclusions?.get('DistributionConfig') ?? [])]).toEqual([
+      'ipv6enabled',
+    ]);
+  });
+
+  it('a delete on the SEED PARAMETER itself excludes (#1475 review)', () => {
+    const evidence = evidenceOf(
+      converter(`
+        delete config['IPV6Enabled'];
+        const result = { ...config };
+        return result;
+      `)
+    );
+    expect(evidence.handoffScopes.has('DistributionConfig')).toBe(true);
+    expect([...(evidence.handoffExclusions?.get('DistributionConfig') ?? [])]).toEqual([
+      'ipv6enabled',
+    ]);
+  });
+
+  it('a VERBATIM forward of a deleted-from parameter is refused as a full hand-off (#1475 review)', () => {
+    // Reaches deliversWholeBlob's parameter branch, not the spread walk: the
+    // helper deletes off its own tainted parameter and forwards it whole. A
+    // full hand-off here would silently vouch for the deleted key.
+    const evidence = evidenceOf(`
+      class P {
+        async create(logicalId: string, resourceType: string, properties: Record<string, unknown>) {
+          return { CorsConfiguration: this.pass(properties['CorsConfiguration'] as Record<string, unknown>) };
+        }
+        private pass(config: Record<string, unknown>) {
+          delete config['AllowOrigins'];
+          return config;
+        }
+      }
+    `);
+    expect(evidence.handoffScopes.has('CorsConfiguration')).toBe(false);
+  });
+
+  it('a REASSIGNED delete-key table refuses the registration (#1475 review)', () => {
+    // The table's initial literal is stale after `TABLE = OTHER;` — resolving
+    // it anyway would under-exclude, so the whole registration refuses.
+    const evidence = evidenceOf(`
+      const OTHER = { Staging: 1 };
+      class P {
+        async create(logicalId: string, resourceType: string, properties: Record<string, unknown>) {
+          return { DistributionConfig: this.toSdk(properties['DistributionConfig']) };
+        }
+        private toSdk(config: Record<string, unknown>) {
+          let TABLE: Record<string, number> = { IPV6Enabled: 1 };
+          TABLE = OTHER;
+          const result = { ...config };
+          for (const k of Object.keys(TABLE)) delete result[k];
+          return result;
+        }
+      }
+    `);
+    expect(evidence.handoffScopes.has('DistributionConfig')).toBe(false);
+  });
+
+  it('resolves VALUE-side delete keys of an Object.entries loop (elementIndex 1)', () => {
+    const evidence = evidenceOf(`
+      const SDK_TO_CFN: Record<string, string> = { IsIPV6Enabled: 'IPV6Enabled' };
+      class P {
+        async create(logicalId: string, resourceType: string, properties: Record<string, unknown>) {
+          return { DistributionConfig: this.toSdk(properties['DistributionConfig']) };
+        }
+        private toSdk(config: Record<string, unknown>) {
+          const result = { ...config };
+          for (const [sdkKey, cfnKey] of Object.entries(SDK_TO_CFN)) {
+            delete result[cfnKey];
+          }
+          return result;
+        }
+      }
+    `);
+    expect([...(evidence.handoffExclusions?.get('DistributionConfig') ?? [])]).toEqual([
+      'ipv6enabled',
+    ]);
+  });
+
+  it('two BOUNDED registrations at one path INTERSECT their exclusions (union of coverage)', () => {
+    // Both sites carry deletes, so BOTH register bounded (a delete-free site
+    // would register a FULL hand-off through deliversWholeBlob and supersede —
+    // the next test). Coverage is the union: a key only ONE site deletes is
+    // delivered by the other, so the merged exclusion drops it; a key BOTH
+    // delete must survive — that surviving-key half is the fail-open direction
+    // if the merge ever regresses to always-clearing.
+    const both = evidenceOf(`
+      class P {
+        async create(logicalId: string, resourceType: string, properties: Record<string, unknown>) {
+          const a = { ...(properties['Cfg'] as Record<string, unknown>) };
+          delete a['Shared'];
+          delete a['OnlyA'];
+          await this.send({ Cfg: a });
+        }
+        async update(logicalId: string, physicalId: string, resourceType: string, properties: Record<string, unknown>) {
+          const b = { ...(properties['Cfg'] as Record<string, unknown>) };
+          delete b['Shared'];
+          await this.send({ Cfg: b });
+        }
+      }
+    `);
+    expect(both.handoffScopes.has('Cfg')).toBe(true);
+    expect([...(both.handoffExclusions?.get('Cfg') ?? [])]).toEqual(['shared']);
+    expect(isHandoffCovered(both.handoffScopes, 'Cfg', 'Shared', both.handoffExclusions)).toBe(
+      false
+    );
+    expect(isHandoffCovered(both.handoffScopes, 'Cfg', 'OnlyA', both.handoffExclusions)).toBe(
+      true
+    );
+  });
+
+  it('a delete-free second site supersedes via a FULL hand-off (exclusion entry cleared)', () => {
+    const evidence = evidenceOf(`
+      class P {
+        async create(logicalId: string, resourceType: string, properties: Record<string, unknown>) {
+          const a = { ...(properties['Cfg'] as Record<string, unknown>) };
+          delete a['Dropped'];
+          await this.send({ Cfg: a });
+        }
+        async update(logicalId: string, physicalId: string, resourceType: string, properties: Record<string, unknown>) {
+          const b = { ...(properties['Cfg'] as Record<string, unknown>) };
+          await this.send({ Cfg: b });
+        }
+      }
+    `);
+    expect(evidence.handoffScopes.has('Cfg')).toBe(true);
+    expect(evidence.handoffExclusions?.get('Cfg')).toBeUndefined();
+  });
+
+  it('a FULL hand-off at the path supersedes a bounded registration', () => {
+    // One site forwards the blob VERBATIM (a full hand-off), another spreads a
+    // deleted-from copy — the verbatim forward delivers everything, so the
+    // exclusion entry must not survive.
+    const evidence = evidenceOf(`
+      class P {
+        async create(logicalId: string, resourceType: string, properties: Record<string, unknown>) {
+          const a = { ...(properties['Cfg'] as Record<string, unknown>) };
+          delete a['Dropped'];
+          await this.send({ Cfg: a });
+        }
+        async update(logicalId: string, physicalId: string, resourceType: string, properties: Record<string, unknown>) {
+          await this.send({ Cfg: properties['Cfg'] });
+        }
+      }
+    `);
+    expect(evidence.handoffScopes.has('Cfg')).toBe(true);
+    expect(evidence.handoffExclusions?.get('Cfg')).toBeUndefined();
+  });
+
+  it('a binding seeded by LATE ASSIGNMENT is refused (its deletes would be invisible)', () => {
+    // `let x; x = { ...bag }` reaches the literal through the assignment, not
+    // the declaration, so the delete scan cannot anchor — and a
+    // `delete x['K']` after it would silently survive the wildcard. Refused
+    // outright, the loud direction (same classification isWhollyReassigned
+    // gives the builder recognizer).
+    const evidence = evidenceOf(
+      converter(`
+        let result: Record<string, unknown>;
+        result = { ...config };
+        delete result['IPV6Enabled'];
+        return result;
+      `)
+    );
+    expect(evidence.handoffScopes.has('DistributionConfig')).toBe(false);
+  });
+
+  it('a NON-BAG seed is refused (the #1445 taint root)', () => {
+    const evidence = evidenceOf(`
+      class P {
+        async delete(logicalId: string, physicalId: string) {
+          const response = await this.client.send(new GetDistributionConfigCommand({}));
+          const config = response.DistributionConfig!;
+          const result = { ...config };
+          result['Enabled'] = false;
+          await this.client.send(new UpdateDistributionCommand({ DistributionConfig: result }));
+        }
+      }
+    `);
+    expect(evidence.handoffScopes.has('DistributionConfig')).toBe(false);
+  });
+
+  it('a MIXED literal `{ ...bag, Extra }` registers too (the old crude-safe refusal)', () => {
+    // deliversWholeBlob still requires spread-ONLY; the recognizer credits the
+    // literal from walkLiteralAt regardless of named siblings — the sibling is
+    // an overwrite, bound (9).
+    const evidence = evidenceOf(`
+      class P {
+        async create(logicalId: string, resourceType: string, properties: Record<string, unknown>) {
+          await this.send({
+            CorsConfiguration: { ...(properties['CorsConfiguration'] as Record<string, unknown>), AllowCredentials: true },
+          });
+        }
+      }
+    `);
+    expect(evidence.handoffScopes.has('CorsConfiguration')).toBe(true);
+  });
+
+  it('deliversWholeBlob refuses a deleted-from binding, handing it to the bounded path', () => {
+    // Before #1475 this shape registered a FULL hand-off (spread-only literal
+    // through a binding) and the delete was silently ignored — the exclusion
+    // fence never fired. Now the full path refuses and the bounded
+    // registration carries the exclusion.
+    const evidence = evidenceOf(`
+      class P {
+        async create(logicalId: string, resourceType: string, properties: Record<string, unknown>) {
+          const vc = { ...(properties['ViewerCertificate'] as Record<string, unknown>) };
+          delete vc['AcmCertificateArn'];
+          await this.send({ ViewerCertificate: vc });
+        }
+      }
+    `);
+    expect(evidence.handoffScopes.has('ViewerCertificate')).toBe(true);
+    expect([...(evidence.handoffExclusions?.get('ViewerCertificate') ?? [])]).toEqual([
+      'acmcertificatearn',
+    ]);
+  });
+
+  it('classifyTarget lands an excluded same-spelling key in no-write-evidence', () => {
+    const evidence: ProviderWriteEvidence = {
+      written: new Set(['DistributionConfig']),
+      scopes: new Map([['DistributionConfig', new Set<string>()]]),
+      handoffScopes: new Set(['DistributionConfig']),
+      handoffExclusions: new Map([['DistributionConfig', new Set(['ipv6enabled'])]]),
+    };
+    const out = classifyTarget(
+      freshTarget,
+      keyPaths('DistributionConfig', 'IPV6Enabled', 'PriceClass'),
+      new Set(['IPV6Enabled', 'PriceClass']),
+      new Set<string>(),
+      new Map(),
+      evidence
+    );
+    expect(bucketOf(out, 'IPV6Enabled')).toBe('no-write-evidence');
+    expect(bucketOf(out, 'PriceClass')).toBe('same-spelling');
   });
 });
 
@@ -2878,10 +3402,14 @@ describe('whole-blob hand-off walk (real repo, issue #1445)', () => {
     for (const point of ['CorsConfiguration', 'DefaultRouteSettings', 'JwtConfiguration']) {
       expect(apigw.has(point), point).toBe(true);
     }
-    // CloudFront's spread-and-patch is NOT generic — known bound (D).
-    expect(allHandoffPoints(evidenceFor('cloudfront-distribution-provider.ts')).has(
-      'DistributionConfig'
-    )).toBe(false);
+    // CloudFront's spread-and-patch is NOT generic (the genericity test still
+    // rejects the member-naming `convertToSdkFormat`) — but since issue #1475
+    // the SPREAD itself registers the point, bounded by the delete exclusions.
+    const cloudfront = evidenceFor('cloudfront-distribution-provider.ts');
+    expect(allHandoffPoints(cloudfront).has('DistributionConfig')).toBe(true);
+    expect([...(cloudfront.handoffExclusions?.get('DistributionConfig') ?? [])]).toEqual([
+      'ipv6enabled',
+    ]);
   });
 
   it('holds the API Gateway v2 opt-in floors it declares', () => {
@@ -2933,7 +3461,7 @@ describe('whole-blob hand-off walk (real repo, issue #1445)', () => {
       'AWS::ApiGatewayV2::Route': 0,
       'AWS::ApiGatewayV2::Stage': 0,
       'AWS::CodeBuild::Project': 0,
-      'AWS::CloudFront::Distribution': 162,
+      'AWS::CloudFront::Distribution': 0,
       'AWS::CloudWatch::AnomalyDetector': 0,
       'AWS::ECS::Service': 0,
       'AWS::ECS::TaskDefinition': 0,
@@ -3061,6 +3589,25 @@ describe('whole-blob hand-off walk (real repo, issue #1445)', () => {
         'LoadBalancers.AdvancedConfiguration.TestListenerRule',
       ]);
     });
+  });
+
+  it('keeps the CloudFront Distribution opt-in at ZERO findings (#1475)', () => {
+    // The positive half of the spread recognizer against REAL code: the 162
+    // paths reason (D) recorded as unmeasurable are delivered by the spread
+    // (bounded by the delete exclusions), except the two Tags entries that are
+    // genuinely written one SDK wrapper level below the CFn chain — those must
+    // stay VISIBLE as write-pass allow-list verdicts, never as silence.
+    const target = NESTED_KEY_TARGETS.find(
+      (t) => t.resourceType === 'AWS::CloudFront::Distribution'
+    )!;
+    expect(target.freshObjectMapper).toBe(true);
+    const entries = loadReport([target]).targets[0]!.entries;
+    expect(entries.filter((e) => e.bucket === 'no-write-evidence')).toEqual([]);
+    const writeAllowed = entries
+      .filter((e) => e.bucket === 'allow-listed' && e.sdkNearMiss === e.terminalKey)
+      .map((e) => e.nestedKey)
+      .sort();
+    expect(writeAllowed).toEqual(['Tags.Key', 'Tags.Value']);
   });
 
   it('keeps the CloudWatch AnomalyDetector opt-in at ZERO findings (#1474)', () => {
@@ -3962,7 +4509,7 @@ describe('the shipped --check command', { timeout: 30_000 }, () => {
     // a target silently dropping out of the table cannot satisfy this probe.
     expect(stderr).toContain('nested-key-coverage: OK');
     expect(stderr).toContain('0 divergences');
-    expect(stderr).toContain('9 fresh-object target(s)');
+    expect(stderr).toContain('10 fresh-object target(s)');
   });
 
   it('exits 1 naming ONLY the members a partial hand-mapping leaves out', () => {
@@ -4149,6 +4696,90 @@ describe('the shipped --check command', { timeout: 30_000 }, () => {
     expect(status).toBe(1);
     expect(stderr).toContain('Configuration.ExcludedTimeRanges.EndTime');
     expect(stderr).not.toContain('Configuration.ExcludedTimeRanges.StartTime');
+  });
+
+  it('exits 1 naming DistributionConfig.IPV6Enabled when the rename map entry is deleted (#1475)', () => {
+    // The issue's REQUIRED fence: the spread recognizer must not turn the
+    // CloudFront opt-in into a rubber stamp, so deleting the
+    // `IPV6Enabled -> IsIPV6Enabled` rename from the real provider must still
+    // exit non-zero. The failing pass is the KEY pass (`case-divergence` — the
+    // map entry carried the only literal evidence for the CFn spelling, and
+    // the installed SDK model carries `Ipv6Enabled` as the near-miss), which
+    // is precisely why the write-pass wildcard cannot silence it: the deleted
+    // key is EXCLUDED from the spread's credit, and the key pass judges the
+    // non-SDK spelling at full strictness regardless.
+    const dir = regressedTree(
+      'providers-spread-rename',
+      'cloudfront-distribution-provider.ts',
+      (source) => source.replace("  IPV6Enabled: 'IsIPV6Enabled',\n", '')
+    );
+    const { status, stderr } = runCheck(dir);
+    expect(status).toBe(1);
+    expect(stderr).toContain('nested-key-coverage: FAIL');
+    expect(stderr).toContain('AWS::CloudFront::Distribution: DistributionConfig.IPV6Enabled');
+    expect(stderr).toContain('case-divergence');
+  });
+
+  it('exits 1 when a same-spelling member is deleted off the spread seed (#1475)', () => {
+    // The DELETE-EXCLUSION fence live on real code: inserting
+    // `delete result['Aliases']` after the spread removes the member from the
+    // delivered object, so the wildcard must stop vouching for it.
+    const dir = regressedTree(
+      'providers-spread-delete',
+      'cloudfront-distribution-provider.ts',
+      (source) =>
+        source.replace(
+          '    const result = { ...config };\n',
+          "    const result = { ...config };\n    delete result['Aliases'];\n"
+        )
+    );
+    const { status, stderr } = runCheck(dir);
+    expect(status).toBe(1);
+    expect(stderr).toContain('nested-key-coverage: FAIL');
+    expect(stderr).toContain('AWS::CloudFront::Distribution: DistributionConfig.Aliases');
+    expect(stderr).toContain('no-write-evidence');
+  });
+
+  it('exits 1 on an UNRESOLVABLE delete key — the registration refuses fail-closed (#1475)', () => {
+    // A delete whose key set cannot be bounded must refuse the WHOLE spread
+    // credit, which re-flags the entire wildcard-covered interior — the loud
+    // direction, proven at the exit-code level.
+    const dir = regressedTree(
+      'providers-spread-unresolvable',
+      'cloudfront-distribution-provider.ts',
+      (source) =>
+        source.replace(
+          '    const result = { ...config };\n',
+          '    const result = { ...config };\n' +
+            '    const dynamicKey = Object.keys(config)[0]!;\n' +
+            '    delete result[dynamicKey];\n'
+        )
+    );
+    const { status, stderr } = runCheck(dir);
+    expect(status).toBe(1);
+    expect(stderr).toContain('nested-key-coverage: FAIL');
+    expect(stderr).toContain('no-write-evidence');
+  });
+
+  it('exits 1 when the spread seed stops being bag-derived (#1475)', () => {
+    // Every CloudFront hand-off point derives from the root spread (the nested
+    // seeds spread `result['X']`, whose taint flows from `{ ...config }`), so
+    // removing the seed collapses the walk to zero points and the
+    // `minHandoffPoints` floor fires — one legible error, not 160 findings.
+    // This is the collapse mode that floor exists for, proven on real code.
+    const dir = regressedTree(
+      'providers-spread-seedless',
+      'cloudfront-distribution-provider.ts',
+      (source) =>
+        source.replace(
+          '    const result = { ...config };\n',
+          '    const result: Record<string, unknown> = {};\n'
+        )
+    );
+    const { status, stderr } = runCheck(dir);
+    expect(status).toBe(1);
+    expect(stderr).toContain('whole-blob hand-off walk for cloudfront-distribution-provider.ts');
+    expect(stderr).toContain('collapsed to 0 blob-carrying hand-off point(s)');
   });
 
   it('exits 1 naming a STALE segmentRenames entry (#1464)', () => {
