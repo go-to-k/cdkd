@@ -1455,3 +1455,293 @@ describe('GlueProvider — AWS-managed Parameters preservation (#1461)', () => {
     expect('CatalogId' in input).toBe(false);
   });
 });
+
+// ─── #1479: out-of-band-authored StorageDescriptor members must survive ──
+//
+// Live probes (2026-08-10, recorded on the issue) showed a Glue crawler
+// authors Columns / InputFormat / OutputFormat / SerdeInfo (incl. its
+// Parameters bag) / StorageDescriptor.Parameters, and Glue re-derives an
+// Iceberg table's catalog Columns from table metadata — while UpdateTable is
+// a full replace, so an update restating only the template wiped all of them
+// (Columns -> [], SerdeInfo gone) and reported success. The merge applies the
+// #1461 "present in NEITHER template side" rule per SD member, with the two
+// nested bags getting the per-key rule.
+describe('GlueProvider — out-of-band StorageDescriptor preservation (#1479)', () => {
+  let provider: GlueProvider;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    provider = new GlueProvider();
+  });
+
+  /** Queue the pre-update `GetTable` readback (full Table), then the UpdateTable reply. */
+  const mockLiveTableFull = (table: Record<string, unknown>): void => {
+    mockSend.mockResolvedValueOnce({ Table: { Name: 'mytbl', VersionId: '3', ...table } });
+    mockSend.mockResolvedValueOnce({});
+  };
+
+  const sentTableInput = (): Record<string, unknown> => {
+    const call = mockSend.mock.calls.find((c) => c[0] instanceof UpdateTableCommand);
+    expect(call).toBeDefined();
+    return (call![0].input as { TableInput: Record<string, unknown> }).TableInput;
+  };
+
+  const CRAWLER_SD = {
+    Columns: [
+      { Name: 'id', Type: 'bigint' },
+      { Name: 'name', Type: 'string' },
+    ],
+    Location: 's3://b/crawl/',
+    InputFormat: 'org.apache.hadoop.mapred.TextInputFormat',
+    OutputFormat: 'org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat',
+    SerdeInfo: {
+      SerializationLibrary: 'org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe',
+      Parameters: { 'field.delim': ',' },
+    },
+    Parameters: { UPDATED_BY_CRAWLER: 'my-crawler', recordCount: '3' },
+  };
+
+  it('crawler-authored SD members survive an unrelated update that declares only Location', async () => {
+    mockLiveTableFull({ StorageDescriptor: CRAWLER_SD });
+
+    const templateSide = (description: string) => ({
+      DatabaseName: 'mydb',
+      TableInput: {
+        Name: 'mytbl',
+        Description: description,
+        StorageDescriptor: { Location: 's3://b/crawl/' },
+      },
+    });
+    await provider.update(
+      'L',
+      TABLE_PHYSICAL_ID,
+      'AWS::Glue::Table',
+      templateSide('v2'),
+      templateSide('v1')
+    );
+
+    const sd = sentTableInput().StorageDescriptor as Record<string, unknown>;
+    expect(sd.Location).toBe('s3://b/crawl/');
+    expect(sd.Columns).toStrictEqual(CRAWLER_SD.Columns);
+    expect(sd.InputFormat).toBe(CRAWLER_SD.InputFormat);
+    expect(sd.OutputFormat).toBe(CRAWLER_SD.OutputFormat);
+    expect(sd.SerdeInfo).toStrictEqual(CRAWLER_SD.SerdeInfo);
+    expect(sd.Parameters).toStrictEqual(CRAWLER_SD.Parameters);
+  });
+
+  it('a template that never declared StorageDescriptor carries the WHOLE live block forward', async () => {
+    mockLiveTableFull({ StorageDescriptor: CRAWLER_SD });
+
+    await provider.update(
+      'L',
+      TABLE_PHYSICAL_ID,
+      'AWS::Glue::Table',
+      { DatabaseName: 'mydb', TableInput: { Name: 'mytbl', Description: 'v2' } },
+      { DatabaseName: 'mydb', TableInput: { Name: 'mytbl', Description: 'v1' } }
+    );
+
+    expect(sentTableInput().StorageDescriptor).toStrictEqual(CRAWLER_SD);
+  });
+
+  it('the Iceberg headline case: catalog Columns the template never declared survive', async () => {
+    // Glue derives an Iceberg table's catalog Columns from table metadata;
+    // the raw full-replace wiped them to [] (probed live on the issue).
+    mockLiveTableFull({
+      StorageDescriptor: {
+        Columns: [{ Name: 'id', Type: 'int' }],
+        Location: 's3://b/iceberg_t/',
+      },
+      Parameters: { table_type: 'ICEBERG', metadata_location: 's3://b/iceberg_t/metadata/0.json' },
+    });
+
+    const templateSide = (description: string) => ({
+      DatabaseName: 'mydb',
+      TableInput: {
+        Name: 'mytbl',
+        Description: description,
+        TableType: 'EXTERNAL_TABLE',
+        StorageDescriptor: { Location: 's3://b/iceberg_t/' },
+      },
+    });
+    await provider.update(
+      'L',
+      TABLE_PHYSICAL_ID,
+      'AWS::Glue::Table',
+      templateSide('v2'),
+      templateSide('v1')
+    );
+
+    const sent = sentTableInput();
+    const sd = sent.StorageDescriptor as Record<string, unknown>;
+    expect(sd.Columns).toStrictEqual([{ Name: 'id', Type: 'int' }]);
+    // The #1461 half still holds alongside the SD merge.
+    expect(sent.Parameters).toStrictEqual({
+      table_type: 'ICEBERG',
+      metadata_location: 's3://b/iceberg_t/metadata/0.json',
+    });
+  });
+
+  it('an SD member the USER removed stays removed (previous declared it, desired does not)', async () => {
+    mockLiveTableFull({
+      StorageDescriptor: {
+        Columns: [{ Name: 'id', Type: 'int' }],
+        Location: 's3://b/t/',
+      },
+    });
+
+    await provider.update(
+      'L',
+      TABLE_PHYSICAL_ID,
+      'AWS::Glue::Table',
+      {
+        DatabaseName: 'mydb',
+        TableInput: { Name: 'mytbl', StorageDescriptor: { Location: 's3://b/t/' } },
+      },
+      {
+        DatabaseName: 'mydb',
+        TableInput: {
+          Name: 'mytbl',
+          StorageDescriptor: {
+            Location: 's3://b/t/',
+            Columns: [{ Name: 'id', Type: 'int' }],
+          },
+        },
+      }
+    );
+
+    expect('Columns' in (sentTableInput().StorageDescriptor as Record<string, unknown>)).toBe(
+      false
+    );
+  });
+
+  it('drift --revert still clears a console-side change to a template-declared member', async () => {
+    // Live Columns diverge from the template (console edit); the template
+    // DECLARES Columns, so the template value must win — a blanket merge here
+    // would make drift --revert a no-op, the exact trap the issue warns about.
+    mockLiveTableFull({
+      StorageDescriptor: {
+        Columns: [{ Name: 'added_in_console', Type: 'string' }],
+        Location: 's3://b/t/',
+      },
+    });
+
+    const templateSide = () => ({
+      DatabaseName: 'mydb',
+      TableInput: {
+        Name: 'mytbl',
+        StorageDescriptor: {
+          Location: 's3://b/t/',
+          Columns: [{ Name: 'id', Type: 'int' }],
+        },
+      },
+    });
+    await provider.update('L', TABLE_PHYSICAL_ID, 'AWS::Glue::Table', templateSide(), templateSide());
+
+    expect((sentTableInput().StorageDescriptor as Record<string, unknown>).Columns).toStrictEqual([
+      { Name: 'id', Type: 'int' },
+    ]);
+  });
+
+  it('SD.Parameters gets the per-KEY bag rule when the template declares the bag', async () => {
+    mockLiveTableFull({
+      StorageDescriptor: {
+        Location: 's3://b/t/',
+        Parameters: { UPDATED_BY_CRAWLER: 'my-crawler', user_key: 'v1', removed_key: 'x' },
+      },
+    });
+
+    await provider.update(
+      'L',
+      TABLE_PHYSICAL_ID,
+      'AWS::Glue::Table',
+      {
+        DatabaseName: 'mydb',
+        TableInput: {
+          Name: 'mytbl',
+          StorageDescriptor: { Location: 's3://b/t/', Parameters: { user_key: 'v2' } },
+        },
+      },
+      {
+        DatabaseName: 'mydb',
+        TableInput: {
+          Name: 'mytbl',
+          StorageDescriptor: {
+            Location: 's3://b/t/',
+            Parameters: { user_key: 'v1', removed_key: 'x' },
+          },
+        },
+      }
+    );
+
+    expect((sentTableInput().StorageDescriptor as Record<string, unknown>).Parameters).toStrictEqual(
+      {
+        UPDATED_BY_CRAWLER: 'my-crawler', // authored by neither side -> preserved
+        user_key: 'v2', // template wins
+        // removed_key: user removed it -> stays removed
+      }
+    );
+  });
+
+  it('SerdeInfo merges per member, with its Parameters bag per key', async () => {
+    mockLiveTableFull({
+      StorageDescriptor: {
+        Location: 's3://b/t/',
+        SerdeInfo: {
+          SerializationLibrary: 'org.live.Serde',
+          Parameters: { 'field.delim': ',', 'crawler.added': 'yes' },
+        },
+      },
+    });
+
+    const templateSide = (lib: string) => ({
+      DatabaseName: 'mydb',
+      TableInput: {
+        Name: 'mytbl',
+        StorageDescriptor: {
+          Location: 's3://b/t/',
+          SerdeInfo: {
+            SerializationLibrary: lib,
+            Parameters: { 'field.delim': ',' },
+          },
+        },
+      },
+    });
+    await provider.update(
+      'L',
+      TABLE_PHYSICAL_ID,
+      'AWS::Glue::Table',
+      templateSide('org.user.SerdeV2'),
+      templateSide('org.user.SerdeV1')
+    );
+
+    const serde = (sentTableInput().StorageDescriptor as Record<string, unknown>)
+      .SerdeInfo as Record<string, unknown>;
+    expect(serde.SerializationLibrary).toBe('org.user.SerdeV2'); // template wins
+    expect(serde.Parameters).toStrictEqual({
+      'field.delim': ',', // template-declared key, template value
+      'crawler.added': 'yes', // authored by neither side -> preserved
+    });
+  });
+
+  it('a live table with no StorageDescriptor leaves the payload untouched', async () => {
+    mockLiveTableFull({});
+
+    const templateSide = (description: string) => ({
+      DatabaseName: 'mydb',
+      TableInput: {
+        Name: 'mytbl',
+        Description: description,
+        StorageDescriptor: { Location: 's3://b/t/' },
+      },
+    });
+    await provider.update(
+      'L',
+      TABLE_PHYSICAL_ID,
+      'AWS::Glue::Table',
+      templateSide('v2'),
+      templateSide('v1')
+    );
+
+    expect(sentTableInput().StorageDescriptor).toStrictEqual({ Location: 's3://b/t/' });
+  });
+});

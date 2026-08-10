@@ -58,7 +58,7 @@ cross-region-state-bucket	2026-08-01T09:42:37Z	PASS	29	verify.sh	0801 regression
 cross-stack-references	2026-08-08T17:48:34Z	PASS	25	standard	marker re-flip after review coercion fix; deploy+destroy clean
 custom-resource-getatt-data	2026-08-10T06:18:10Z	PASS	59	verify.sh	0810 P2 sweep b12; CR Data GetAtt -> dependent prop, 0 orph
 custom-resource-provider	2026-08-10T06:18:10Z	PASS	256	standard	0810 P2 sweep b12; 0 err 0 orph
-data-analytics	2026-08-10T09:11:46Z	PASS	88	verify.sh	#1463 CreateContext (glue-provider pre-flight now context-aware); 10 deleted 0 errors, VersionId precondition re-proved
+data-analytics	2026-08-10T11:12:36Z	PASS	87	verify.sh	#1479 SD-subtree merge verified (out-of-band members survive; template members intact)
 data-pipeline	2026-08-10T05:19:05Z	PASS	48	standard	0810 P2 sweep b6; 7 del 0 err, 0 orph
 deep-getatt-chains	2026-08-01T10:07:21Z	PASS	53	verify.sh	0801 regression sweep; SDK+CC chain ok, 0 orphans
 deletion-ordering-complex	2026-07-26T20:00:52Z	PASS	187	verify.sh	0727b sweep-b13 staleness re-run (rc=0); account clean
