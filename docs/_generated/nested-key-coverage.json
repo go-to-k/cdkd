@@ -3,8 +3,8 @@
     "targetCount": 11,
     "nestedKeyCount": 703,
     "sameSpelling": 642,
-    "providerHandled": 54,
-    "allowListed": 7,
+    "providerHandled": 53,
+    "allowListed": 8,
     "caseDivergence": 0,
     "noSdkMember": 0,
     "noWriteEvidence": 0,
@@ -4113,7 +4113,10 @@
           "nestedKey": "CorsConfiguration.CorsRules",
           "topLevelProperty": "CorsConfiguration",
           "terminalKey": "CorsRules",
-          "bucket": "provider-handled"
+          "bucket": "allow-listed",
+          "sdkNearMiss": "CORSRules",
+          "rationale": "Delivered by applyCorsConfiguration, which reads the CFn key via typed property access (`corsConfig.CorsRules.map(...)`) and writes the SDK spelling `CORSRules` — the literal walk deliberately counts neither a property ACCESS nor a type-literal member, and the only literal mention of the CFn spelling is `readCors`, excluded as a reverse map by the #1520 widening. Key pass only; the members BENEATH it need no entry — the per-level case fold resolves `CorsConfiguration.CorsRules` onto the written `CORSConfiguration.CORSRules` scope, so they stay write-audited (issue #1520).",
+          "allowMatchKey": "AWS::S3::Bucket#CorsConfiguration.CorsRules"
         },
         {
           "resourceType": "AWS::S3::Bucket",
@@ -5483,7 +5486,18 @@
         "Rule",
         "TagFilter"
       ],
-      "usedSegmentRenames": []
+      "usedSegmentRenames": [
+        "AnalyticsConfigurations",
+        "BucketEncryption",
+        "IntelligentTieringConfigurations",
+        "InventoryConfigurations",
+        "LoggingConfiguration",
+        "MetricsConfigurations",
+        "RedirectRule",
+        "RoutingRuleCondition",
+        "ServerSideEncryptionByDefault",
+        "ServerSideEncryptionConfiguration"
+      ]
     }
   ]
 }

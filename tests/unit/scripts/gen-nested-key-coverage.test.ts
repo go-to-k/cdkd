@@ -214,14 +214,22 @@ describe('collectWrittenMemberNames (synthetic)', () => {
     expect(collectWrittenMemberNames(source).has('forwardOnly')).toBe(true);
   });
 
-  it('the exclusion prefix respects a word boundary', () => {
-    // `readCurrentStateless…` is a different function and must NOT be swallowed.
+  it('the exclusion matchers respect word boundaries (#1520 widened set)', () => {
+    // `read` must sit at a camelCase boundary — `readonly…` is a different
+    // word and must NOT be swallowed — and the `*ToCfn` suffix must sit at
+    // the END of the name on a non-empty stem.
     const written = collectWrittenMemberNames(`
-      function readCurrentStatelessThing() { return { stillCounted: 1 }; }
+      function readonlyHelper() { return { stillCounted: 1 }; }
       function readCurrentStateService() { return { notCounted: 1 }; }
+      function readLifecycle() { return { alsoNotCounted: 1 }; }
+      function volumesToCfn() { return { suffixNotCounted: 1 }; }
+      function toCfnFirst() { return { midNameCounted: 1 }; }
     `);
     expect(written.has('stillCounted')).toBe(true);
     expect(written.has('notCounted')).toBe(false);
+    expect(written.has('alsoNotCounted')).toBe(false);
+    expect(written.has('suffixNotCounted')).toBe(false);
+    expect(written.has('midNameCounted')).toBe(true);
   });
 
   it('excludes writes in a nested function inside an excluded body', () => {
@@ -3465,26 +3473,25 @@ describe('whole-blob hand-off walk (real repo, issue #1445)', () => {
       'AWS::CloudWatch::AnomalyDetector': 0,
       'AWS::ECS::Service': 0,
       'AWS::ECS::TaskDefinition': 0,
-      'AWS::S3::Bucket': 81,
+      // 81 before issue #1520 declared the S3 segment renames and widened the
+      // reverse-map exclusion; the 50 that remain are the recorded structural
+      // bounds in header reason (C) (Filter relocation, terminal renames,
+      // rename-name collisions, builder flow bounds, the request-level hoist).
+      'AWS::S3::Bucket': 50,
     });
   });
 
-  // MEASURED LIMITATION of the two tests below, found by review rather than
-  // assumed away: an empty never-written set is NOT on its own a re-drop fence.
-  // `REVERSE_MAP_FUNCTION_PREFIXES` is prefix-only (`readCurrentState`), so the
-  // CFn-spelled writes #1495 added inside `readEncryption` / `readLifecycle` /
-  // `readLogging` / `readReplication` land in `evidence.written` and vouch for
-  // the forward mapper. A variant with the entire WRITE half reverted (read side
-  // kept) was measured at `no-write-evidence` 98 with `neverWritten` EMPTY and
-  // all 17 members reported written — i.e. both assertions below pass on it.
-  //
-  // What actually fails on that variant is the COUNT pin above (98 vs 81), so
-  // that is the fence; it just fails as an opaque number rather than by member
-  // name. Widening the exclusion to a suffix match is the mechanism fix and
-  // belongs to the S3 opt-in (issue #1520) — the script header has said so since
-  // #1474, and this is the change that made it bite. Recorded here rather than
-  // left for the next reader to rediscover.
-  it('keeps S3 reason (C) CLOSED: NOTHING is never-written any more (#1495)', () => {
+  // The two tests below used to carry a MEASURED LIMITATION: with the
+  // exclusion prefix-only (`readCurrentState`), the CFn-spelled writes #1495
+  // added inside `readEncryption` / `readLifecycle` / `readLogging` /
+  // `readReplication` landed in `evidence.written` and vouched for the forward
+  // mapper — a variant with the entire WRITE half reverted still reported all
+  // 17 members "written", so both tests passed on it and only the opaque count
+  // pin above failed. Issue #1520 widened the exclusion to the `read*` /
+  // `*ToCfn` reverse families, which makes the empty-never-written assertion a
+  // REAL by-name re-drop fence; the RED-direction probe further below proves
+  // that direction against the real provider source.
+  it('keeps S3 reason (C) CLOSED: only the recorded terminal renames are never-written (#1495/#1520)', () => {
     // Reason (C) in the header, RESOLVED. This test used to pin the 20 paths
     // whose terminal member appeared NOWHERE in `s3-bucket-provider.ts` — the
     // confirmed write-side silent drops (the `TargetObjectKeyFormat` family,
@@ -3494,13 +3501,10 @@ describe('whole-blob hand-off walk (real repo, issue #1445)', () => {
     // an EMPTY never-written set is now the assertion, and a future provider
     // change that drops a member back out fails here by name.
     //
-    // The remaining 81 `no-write-evidence` paths ARE written somewhere in the
-    // file and fail only to resolve at the audited CHAIN — CFn->SDK segment
-    // renames (`LoggingConfiguration` -> `BucketLoggingStatus.LoggingEnabled`),
-    // an SDK-only wrapper segment (`ServerSideEncryptionConfiguration` ->
-    // `...Rules`), a member CFn nests that the SDK hoists onto the REQUEST
-    // (`TransitionDefaultMinimumObjectSize`), and plural-vs-singular per-item
-    // PUT APIs. Those are `segmentRenames` work (issue #1520), not drops.
+    // The remaining `no-write-evidence` paths (50 after #1520's segment
+    // renames; 81 before) ARE written somewhere in the file and fail only to
+    // resolve at the audited CHAIN, for the recorded structural bounds in
+    // header reason (C) — shapes a segment rename cannot express, not drops.
     const forced = NESTED_KEY_TARGETS.map((t) => ({ ...t, freshObjectMapper: true }));
     const s3 = loadReport(forced).targets.find((t) => t.resourceType === 'AWS::S3::Bucket')!;
     const evidence = collectWriteEvidence(
@@ -3512,15 +3516,26 @@ describe('whole-blob hand-off walk (real repo, issue #1445)', () => {
       .filter((e) => !evidence.written.has(e.nestedKey.split('.').pop()!))
       .map((e) => e.nestedKey)
       .sort();
-    expect(neverWritten).toEqual([]);
+    // The three CFn spellings below are never written BY DESIGN, not drops:
+    // the provider delivers them under the SDK's TERMINAL RENAME —
+    // `Bucket: (s3Dest['BucketArn'] ?? …)` for both destination blocks and
+    // `IsEnabled: (config['Enabled'] …)` for inventory — and #1520's widened
+    // reverse-map exclusion withdrew the reverse-map mentions that used to
+    // mask them. Pinned EXACTLY so any NEW never-written member (a real
+    // re-drop of a #1495 write) still fails here by name.
+    expect(neverWritten).toEqual([
+      'AnalyticsConfigurations.StorageClassAnalysis.DataExport.Destination.BucketArn',
+      'InventoryConfigurations.Destination.BucketArn',
+      'InventoryConfigurations.Enabled',
+    ]);
   });
 
   it('pins the #1495 members as present in the write-evidence name set', () => {
-    // Companion to the fence above, with the SAME measured limitation: this
-    // passes on a write-half-reverted variant too, because the read-side
-    // helpers contribute these CFn spellings. It fences a WALK regression that
-    // stops seeing the names at all, not a provider re-drop — the count pin
-    // does that. Titled for what it actually proves.
+    // Companion to the fence above. Since #1520 widened the reverse-map
+    // exclusion, the read-side helpers no longer contribute these CFn
+    // spellings, so this now pins the FORWARD writes themselves: a provider
+    // re-drop (or a walk regression) makes a name vanish and fails here by
+    // member name.
     const evidence = collectWriteEvidence(
       readFileSync(join(PROVIDERS_DIR, 's3-bucket-provider.ts'), 'utf8'),
       's3-bucket-provider.ts'
@@ -3546,6 +3561,44 @@ describe('whole-blob hand-off walk (real repo, issue #1445)', () => {
     ]) {
       expect(evidence.written.has(member), `${member} must be WRITTEN (#1495)`).toBe(true);
     }
+  });
+
+  it('RED probe (#1520): dropping a #1495 forward write is caught BY NAME, which the old prefix-only exclusion missed', () => {
+    // Real-code proof of what the #1520 widening closes. Renaming every quoted
+    // occurrence of `SseKmsEncryptedObjects` simulates the provider dropping
+    // the member's handling entirely — the exact #1495 regression shape.
+    const source = readFileSync(
+      join(PROVIDERS_DIR, 's3-bucket-provider.ts'),
+      'utf8'
+    );
+    // Only the FORWARD write is stripped (single occurrence): the reverse
+    // read-back in `readReplication` keeps its spelling, which is exactly
+    // what used to falsely vouch under the prefix-only exclusion.
+    const regressed = source.replace(
+      "sdkCriteria['SseKmsEncryptedObjects']",
+      "sdkCriteria['XseKmsEncryptedObjects']"
+    );
+    expect(regressed).not.toBe(source);
+
+    // Under the OLD prefix-only exclusion the regression is INVISIBLE: the
+    // reverse write inside `readReplication` still contributes the CFn
+    // spelling, so `written` keeps the member — the documented limitation the
+    // two tests above used to carry.
+    const oldExclusion = collectWriteEvidence(regressed, 's3-bucket-provider.ts', [
+      'readCurrentState',
+    ]);
+    expect(oldExclusion.written.has('SseKmsEncryptedObjects')).toBe(true);
+
+    // Under the widened DEFAULT exclusion the reverse body no longer vouches,
+    // so the member vanishes from `written` and the never-written fence above
+    // fails by name on exactly this variant.
+    const widened = collectWriteEvidence(regressed, 's3-bucket-provider.ts');
+    expect(widened.written.has('SseKmsEncryptedObjects')).toBe(false);
+
+    // ...and the unregressed source keeps the member under the SAME defaults,
+    // so this probe cannot pass vacuously.
+    const clean = collectWriteEvidence(source, 's3-bucket-provider.ts');
+    expect(clean.written.has('SseKmsEncryptedObjects')).toBe(true);
   });
 
   it('keeps the six #1472/#1473 ECS silent drops CLOSED (fixed, both targets opted in)', () => {
@@ -4313,15 +4366,42 @@ describe('real-code regression probes (per the repo checker rules)', () => {
     expect(ecsWithdrawn).toBeGreaterThanOrEqual(40);
 
     const withdrawn = [...unscoped].filter((n) => !scoped.has(n)).sort();
+    // Re-measured for #1520: the widened `read*` / `*ToCfn` exclusion
+    // withdraws the whole reverse-map surface (30 names), not just the 8 the
+    // original `readCurrentState`-only prefix reached — the added 22 are the
+    // CFn spellings the `read<Block>` builder helpers and the `*SdkToCfn`
+    // converters write on the read-back path.
     expect(withdrawn).toEqual([
       'AnalyticsConfigurations',
+      'BucketArn',
       'BucketEncryption',
       'BucketName',
+      'ContinuationToken',
       'CorsConfiguration',
+      'CorsRules',
+      'DestinationBucketName',
+      'Enabled',
+      'EventBridgeEnabled',
+      'ExposedHeaders',
+      'Function',
       'IntelligentTieringConfigurations',
       'InventoryConfigurations',
+      'LambdaConfigurations',
+      'LogFilePrefix',
       'LoggingConfiguration',
+      'MaxAge',
       'MetricsConfigurations',
+      'Queue',
+      'RedirectRule',
+      'RoutingRuleCondition',
+      'S3Key',
+      'ScheduleFrequency',
+      'ServerSideEncryptionByDefault',
+      'TagFilter',
+      'TagFilters',
+      'Topic',
+      'TransitionDate',
+      'TransitionInDays',
     ]);
   });
 
