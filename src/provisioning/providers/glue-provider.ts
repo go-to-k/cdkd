@@ -49,6 +49,8 @@ import {
   type SerDeInfo,
   type SkewedInfo,
   type SchemaReference,
+  type TableIdentifier,
+  type ViewDefinitionInput,
   type EncryptionConfiguration,
   type S3Encryption,
   type CloudWatchEncryption,
@@ -1065,6 +1067,30 @@ export class GlueProvider implements ResourceProvider {
       result.PartitionKeys = tableInput['PartitionKeys'] as Column[];
     }
 
+    // `TargetTable` (resource-link tables) and `ViewDefinition` complete the CFn
+    // `TableInput` member set. Found by diffing the WHOLE blob against the live
+    // registry schema while fixing the StorageDescriptor allow-list (issue
+    // #1505) — the same silent-drop class one level up, and WORSE there: the
+    // #1479 read-merge-write only covers the `StorageDescriptor` subtree and
+    // `Parameters`, so nothing carries these forward and `UpdateTable`'s full
+    // replace erased a live value unconditionally. `readCurrentState` already
+    // reads `TargetTable` back, so drift surfaced a member deploy could never
+    // send.
+    //
+    // Both forward verbatim: all 12 CFn `TableInput` members were compared
+    // against `@aws-sdk/client-glue`, and `TableIdentifier`
+    // ({CatalogId, DatabaseName, Name, Region}) plus `ViewDefinition`
+    // ({Definer, SubObjects, Representations, IsProtected}, whose
+    // `ViewRepresentation` is {Dialect, DialectVersion, ValidationConnection,
+    // ViewExpandedText, ViewOriginalText}) are same-spelled and same-shaped.
+    if (tableInput['TargetTable'] !== undefined) {
+      result.TargetTable = tableInput['TargetTable'] as TableIdentifier;
+    }
+
+    if (tableInput['ViewDefinition'] !== undefined) {
+      result.ViewDefinition = tableInput['ViewDefinition'] as ViewDefinitionInput;
+    }
+
     return result;
   }
 
@@ -1142,7 +1168,11 @@ export class GlueProvider implements ResourceProvider {
     // `additionalProperties: false` — that one exists only in the SDK model,
     // so no template can reach it and forwarding it would be dead code.
     if (sd['SkewedInfo'] !== undefined) {
-      const skewed = sd['SkewedInfo'] as Record<string, unknown>;
+      // `asRecord` rather than a cast: a malformed / null block would otherwise
+      // throw a raw TypeError from the member read below, surfacing as
+      // "Cannot read properties of null" instead of AWS's real validation
+      // error. Same convention as `parameterKeySet` / the #1471 shape guards.
+      const skewed = asRecord(sd['SkewedInfo']) ?? {};
       // CFn types `SkewedColumnValueLocationMaps` as a free-form object while
       // the SDK member is `Record<string, string>` — the same CFn-delivers-
       // non-strings case `Parameters` handles.
@@ -1162,7 +1192,16 @@ export class GlueProvider implements ResourceProvider {
       // `SchemaVersionId`, `SchemaVersionNumber`) is same-spelled and
       // same-shaped between the CFn schema and `@aws-sdk/client-glue`, so the
       // block forwards verbatim.
-      result.SchemaReference = sd['SchemaReference'] as SchemaReference;
+      // `SchemaVersionNumber` is the one member needing coercion: CFn types it
+      // as an integer, but a hand-authored template (or a `Ref` to a Number
+      // parameter) can deliver "2", which the SDK's number field rejects with a
+      // SerializationException. Same treatment the Job numerics get.
+      const schemaRef = asRecord(sd['SchemaReference']) ?? {};
+      result.SchemaReference = (
+        schemaRef['SchemaVersionNumber'] !== undefined
+          ? { ...schemaRef, SchemaVersionNumber: coerceNumber(schemaRef['SchemaVersionNumber']) }
+          : schemaRef
+      ) as SchemaReference;
     }
 
     return result;
@@ -2695,7 +2734,13 @@ function buildJobCommonFields(p: Record<string, unknown>): Partial<JobUpdate> {
  */
 function stringifyParameterValues(raw: unknown): Record<string, string> {
   const params: Record<string, string> = {};
-  for (const [k, v] of Object.entries((raw ?? {}) as Record<string, unknown>)) {
+  // A non-object (a string / array / unresolved intrinsic) must contribute NO
+  // keys: `Object.entries('s3://x')` yields {'0':'s','1':'3',...}, which would
+  // be written to AWS as a real map. Same refusal as `parameterKeySet` /
+  // `asRecord` (the #1471 convention).
+  const source = asRecord(raw);
+  if (source === undefined) return params;
+  for (const [k, v] of Object.entries(source)) {
     params[k] = String(v);
   }
   return params;

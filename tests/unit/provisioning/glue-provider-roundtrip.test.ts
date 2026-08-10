@@ -2121,3 +2121,105 @@ describe('GlueProvider — StorageDescriptor declared-member coverage (#1505)', 
     expect(serdeInfo.Parameters).toStrictEqual({ 'skip.header.line.count': 1 });
   });
 });
+
+// ─── #1505 review: the same silent-drop class one level up + shape guards ────
+//
+// Diffing the WHOLE `TableInput` blob (not just the reported StorageDescriptor)
+// against the live CFn registry schema found two more dropped members. That is
+// WORSE than the StorageDescriptor case: the #1479 read-merge-write only covers
+// the `StorageDescriptor` subtree and `Parameters`, so nothing carries these
+// forward and UpdateTable's full replace erased a live value unconditionally.
+describe('GlueProvider — TableInput member coverage + shape guards (#1505 review)', () => {
+  let provider: GlueProvider;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    provider = new GlueProvider();
+  });
+
+  const createdTableInput = (): Record<string, unknown> => {
+    const call = mockSend.mock.calls.find((c) => c[0] instanceof CreateTableCommand);
+    expect(call).toBeDefined();
+    return (call![0].input as { TableInput: Record<string, unknown> }).TableInput;
+  };
+
+  const createWith = async (tableInput: Record<string, unknown>): Promise<void> => {
+    mockSend.mockResolvedValueOnce({});
+    await provider.create('L', 'AWS::Glue::Table', {
+      DatabaseName: 'mydb',
+      TableInput: { Name: 'mytbl', ...tableInput },
+    });
+  };
+
+  it('create() sends TargetTable (resource-link table) instead of dropping it', async () => {
+    const targetTable = {
+      CatalogId: '111122223333',
+      DatabaseName: 'shared-db',
+      Name: 'shared-table',
+      Region: 'us-west-2',
+    };
+    await createWith({ TargetTable: targetTable });
+    expect(createdTableInput().TargetTable).toStrictEqual(targetTable);
+  });
+
+  it('create() sends ViewDefinition instead of dropping it', async () => {
+    const viewDefinition = {
+      IsProtected: true,
+      Definer: 'arn:aws:iam::111122223333:role/definer',
+      SubObjects: ['arn:aws:glue:us-east-1:111122223333:table/mydb/base'],
+      Representations: [
+        {
+          Dialect: 'ATHENA',
+          DialectVersion: '3',
+          ViewOriginalText: 'SELECT 1',
+          ViewExpandedText: 'SELECT 1',
+          ValidationConnection: 'my-conn',
+        },
+      ],
+    };
+    await createWith({ ViewDefinition: viewDefinition });
+    expect(createdTableInput().ViewDefinition).toStrictEqual(viewDefinition);
+  });
+
+  it('coerces a stringly-typed SchemaReference.SchemaVersionNumber to a number', async () => {
+    // CFn types it as an integer, but a hand-authored template (or a Ref to a
+    // Number parameter) can deliver "2", which the SDK number field rejects.
+    await createWith({
+      StorageDescriptor: {
+        Location: 's3://b/t/',
+        SchemaReference: { SchemaVersionId: 'abc', SchemaVersionNumber: '2' },
+      },
+    });
+    const sd = createdTableInput().StorageDescriptor as Record<string, unknown>;
+    expect(sd.SchemaReference).toStrictEqual({ SchemaVersionId: 'abc', SchemaVersionNumber: 2 });
+  });
+
+  it('a malformed SkewedColumnValueLocationMaps contributes NO keys instead of index garbage', async () => {
+    // `Object.entries('s3://x')` yields {'0':'s','1':'3',...}; before the guard
+    // that index garbage was written to AWS as a real location map.
+    await createWith({
+      StorageDescriptor: {
+        Location: 's3://b/t/',
+        SkewedInfo: { SkewedColumnNames: ['c'], SkewedColumnValueLocationMaps: 's3://b/x/' },
+      },
+    });
+    const sd = createdTableInput().StorageDescriptor as Record<string, unknown>;
+    expect(sd.SkewedInfo).toStrictEqual({
+      SkewedColumnNames: ['c'],
+      SkewedColumnValueLocationMaps: {},
+    });
+  });
+
+  it('a malformed Parameters block contributes NO keys (same guard, shared helper)', async () => {
+    await createWith({ Parameters: 'not-an-object' });
+    expect(createdTableInput().Parameters).toStrictEqual({});
+  });
+
+  it('a null SkewedInfo does not throw a raw TypeError', async () => {
+    await expect(
+      createWith({ StorageDescriptor: { Location: 's3://b/t/', SkewedInfo: null } })
+    ).resolves.not.toThrow();
+    const sd = createdTableInput().StorageDescriptor as Record<string, unknown>;
+    expect(sd.SkewedInfo).toStrictEqual({});
+  });
+});
