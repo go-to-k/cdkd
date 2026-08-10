@@ -30,6 +30,7 @@ import {
   type ContainerDefinition,
   type NetworkConfiguration,
   type LoadBalancer,
+  type AdvancedConfiguration,
   type DeploymentConfiguration,
   type CapacityProviderStrategyItem,
   type PlacementConstraint,
@@ -1448,6 +1449,7 @@ export class ECSProvider implements ResourceProvider {
 
     return mappings.map((m) => ({
       containerPort: m['ContainerPort'] as number | undefined,
+      containerPortRange: m['ContainerPortRange'] as string | undefined,
       hostPort: m['HostPort'] as number | undefined,
       protocol: m['Protocol'] as TransportProtocol | undefined,
       appProtocol: m['AppProtocol'] as ApplicationProtocol | undefined,
@@ -2091,6 +2093,13 @@ export class ECSProvider implements ResourceProvider {
       containerName: lb['ContainerName'] as string | undefined,
       containerPort: lb['ContainerPort'] as number | undefined,
       loadBalancerName: lb['LoadBalancerName'] as string | undefined,
+      // Blue/green deployment block (AlternateTargetGroupArn /
+      // ProductionListenerRule / TestListenerRule / RoleArn) — every member is
+      // a pure first-letter case flip, so the shared recursive converter
+      // delivers the whole subtree including members CFn adds later.
+      advancedConfiguration: lb['AdvancedConfiguration']
+        ? (pascalToCamelCaseKeys(lb['AdvancedConfiguration']) as AdvancedConfiguration)
+        : undefined,
     }));
   }
 

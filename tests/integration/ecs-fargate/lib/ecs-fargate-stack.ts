@@ -100,6 +100,20 @@ export class EcsFargateStack extends cdk.Stack {
       ],
     });
 
+    // Exercise the #1472 fix: PortMappings[].ContainerPortRange must reach
+    // RegisterTaskDefinition (the SDK member is containerPortRange; before
+    // the fix convertPortMappings never wrote it, so the range was silently
+    // dropped while cdkd reported success). Injected via addPropertyOverride
+    // so the property is guaranteed present in the synthesized template
+    // regardless of whether the installed aws-cdk-lib L2 PortMapping
+    // declares it. On awsvpc network mode the hostPortRange is set equal to
+    // the containerPortRange by ECS, and with desiredCount: 0 no task ever
+    // binds the ports.
+    cfnTaskDef.addPropertyOverride('ContainerDefinitions.0.PortMappings.1', {
+      ContainerPortRange: '8080-8090',
+      Protocol: 'tcp',
+    });
+
     // Exercise the #806 fix: Volumes[].ConfiguredAtLaunch must reach
     // RegisterTaskDefinition, otherwise a same-stack Service carrying
     // VolumeConfigurations (managed EBS volume) fails to create with
