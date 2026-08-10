@@ -318,6 +318,12 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       BillingMode: billingMode as 'PROVISIONED' | 'PAY_PER_REQUEST',
     };
 
+    // The DESIRED side, so it collects diagnostics (issues #1428 / #1444 A /
+    // #1511). Declared before the first translation below — every one of them
+    // pushes into it, and they are all emitted BEFORE `CreateTable` (a
+    // translation complaint must never arrive after a real table exists).
+    const diagnostics: ThroughputDiagnostic[] = [];
+
     // ProvisionedThroughput: GlobalTable's CFn shape uses
     // `WriteProvisionedThroughputSettings` for write capacity and a
     // per-replica `ReadProvisionedThroughputSettings` for read capacity.
@@ -329,7 +335,9 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     if (billingMode === 'PROVISIONED') {
       createParams.ProvisionedThroughput = derivePerCallProvisionedThroughput(
         properties,
-        currentRegion
+        currentRegion,
+        'min',
+        diagnostics
       );
     }
 
@@ -395,10 +403,6 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     // `create()` has no wrapping catch around this point, so the helper's plain
     // Error is converted to a ProvisioningError here rather than escaping
     // untyped into the deploy engine's retry loop.
-    // The DESIRED side, so it collects diagnostics (issues #1428 / #1444 A).
-    // They are emitted BEFORE `CreateTable` — a translation complaint must
-    // never arrive after a real table exists.
-    const diagnostics: ThroughputDiagnostic[] = [];
     let sdkIndexes: GlobalSecondaryIndex[];
     try {
       sdkIndexes = toSdkGlobalSecondaryIndexes(
@@ -986,6 +990,15 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // the previous side").
       const diagnostics: ThroughputDiagnostic[] = [];
       const desiredCeilings = collectTableOnDemandCeilings(properties, currentRegion, diagnostics);
+      // The TABLE-level provisioned capacity is only SENT by step 4's billing
+      // flip, which is also the only place it can fall through to 5/5 — so the
+      // #1511 diagnostic is gated on exactly that condition rather than on
+      // `newBilling` alone, which would warn about a value nothing consumes.
+      // Same `'seed'` source step 4 uses, so the blamed member matches what it
+      // would have read. Result discarded: this call is for the diagnostics.
+      if (oldBilling !== newBilling && newBilling === 'PROVISIONED') {
+        derivePerCallProvisionedThroughput(properties, currentRegion, 'seed', diagnostics);
+      }
       const desiredSdkIndexes = toSdkGlobalSecondaryIndexes(
         properties,
         currentRegion,
@@ -3791,26 +3804,45 @@ export function extractLocalDeletionProtection(
 export function derivePerCallProvisionedThroughput(
   properties: Record<string, unknown>,
   region: string,
-  source: CapacitySource = 'min'
+  source: CapacitySource = 'min',
+  diagnostics?: ThroughputDiagnostic[]
 ): { ReadCapacityUnits: number; WriteCapacityUnits: number } {
   const replicas = (properties['Replicas'] ?? []) as Array<Record<string, unknown>>;
   const localReplica = replicas.find((r) => r['Region'] === region);
+  // Read capacity is per-replica on a GlobalTable; the deploy region's
+  // replica is the one `CreateTable` / `UpdateTable` provisions. (The
+  // schema also has a TOP-LEVEL `ReadProvisionedThroughputSettings`, but
+  // cdkd's pre-flight property-coverage check rejects that spelling as
+  // unsupported, so it can never reach here — do not read it.)
+  const rawRead = localReplica?.['ReadProvisionedThroughputSettings'];
+  const rawWrite = properties['WriteProvisionedThroughputSettings'];
+  const read = deriveReadCapacityUnits(asRecord(rawRead), source);
+  const write = deriveWriteCapacityUnits(asRecord(rawWrite), source);
+  // A DECLARED-but-unreadable value falling through to 5/5 is the silent
+  // mis-size issue #1511 filed; an ABSENT block defaults silently, as before.
+  if (read === undefined) {
+    reportUnresolvedProvisionedCapacity(
+      rawRead,
+      'Read',
+      source,
+      { appliedUnits: DEFAULT_CAPACITY_UNITS },
+      diagnostics,
+      { blockName: 'Replicas[local].ReadProvisionedThroughputSettings' }
+    );
+  }
+  if (write === undefined) {
+    reportUnresolvedProvisionedCapacity(
+      rawWrite,
+      'Write',
+      source,
+      { appliedUnits: DEFAULT_CAPACITY_UNITS },
+      diagnostics,
+      { blockName: 'WriteProvisionedThroughputSettings' }
+    );
+  }
   return {
-    // Read capacity is per-replica on a GlobalTable; the deploy region's
-    // replica is the one `CreateTable` / `UpdateTable` provisions. (The
-    // schema also has a TOP-LEVEL `ReadProvisionedThroughputSettings`, but
-    // cdkd's pre-flight property-coverage check rejects that spelling as
-    // unsupported, so it can never reach here — do not read it.)
-    ReadCapacityUnits:
-      deriveReadCapacityUnits(
-        asRecord(localReplica?.['ReadProvisionedThroughputSettings']),
-        source
-      ) ?? DEFAULT_CAPACITY_UNITS,
-    WriteCapacityUnits:
-      deriveWriteCapacityUnits(
-        asRecord(properties['WriteProvisionedThroughputSettings']),
-        source
-      ) ?? DEFAULT_CAPACITY_UNITS,
+    ReadCapacityUnits: read ?? DEFAULT_CAPACITY_UNITS,
+    WriteCapacityUnits: write ?? DEFAULT_CAPACITY_UNITS,
   };
 }
 
@@ -4187,6 +4219,102 @@ function reportUnresolvedRawMember(
 }
 
 /**
+ * Which member of a `*ProvisionedThroughputSettings` block to blame when the
+ * derivation came back `undefined` (issue #1511).
+ *
+ * The derivation reports only "no number", so the member is re-derived here in
+ * the SAME order {@link deriveWriteCapacityUnits} / {@link deriveReadCapacityUnits}
+ * / {@link pickAutoScalingCapacity} consult members — the literal first, then
+ * the auto-scaling block's `source`-selected member. Reaching this function at
+ * all means every one of them failed, so the first DECLARED one is the value
+ * the user was trying to set.
+ *
+ * `relPath` is relative to the block, `''` meaning the block ITSELF is the
+ * unusable value (a string / array / bare unresolved intrinsic, or an object
+ * carrying no capacity member at all).
+ *
+ * Returns `undefined` for an ABSENT block: defaulting there is the documented
+ * pre-existing behavior for a template that never asked for a capacity, and
+ * warning about it would shout on every deploy of a table that is fine.
+ */
+function blameUnresolvedProvisionedMember(
+  rawSettings: unknown,
+  side: 'Read' | 'Write',
+  source: CapacitySource
+): { relPath: string; value: unknown } | undefined {
+  if (rawSettings === undefined) return undefined;
+  const settings = asRecord(rawSettings);
+  if (!settings || isUnresolvedIntrinsicBlock(settings)) return { relPath: '', value: rawSettings };
+  const literal = settings[`${side}CapacityUnits`];
+  if (literal !== undefined) return { relPath: `${side}CapacityUnits`, value: literal };
+  const autoKey = `${side}CapacityAutoScalingSettings`;
+  const rawAutoScaling = settings[autoKey];
+  if (rawAutoScaling === undefined) return { relPath: '', value: rawSettings };
+  const autoScaling = asRecord(rawAutoScaling);
+  if (!autoScaling || isUnresolvedIntrinsicBlock(autoScaling)) {
+    return { relPath: autoKey, value: rawAutoScaling };
+  }
+  const order =
+    source === 'seed' ? ['SeedCapacity', 'MinCapacity'] : ['MinCapacity', 'SeedCapacity'];
+  for (const member of order) {
+    const value = autoScaling[member];
+    if (value !== undefined) return { relPath: `${autoKey}.${member}`, value };
+  }
+  return { relPath: autoKey, value: rawAutoScaling };
+}
+
+/**
+ * Report a DECLARED provisioned capacity the template could not resolve — the
+ * PROVISIONED twin of {@link reportUnresolvedRawMember} (issue #1511).
+ *
+ * The two sides need different wording because they have different outcomes,
+ * which is exactly why #1503 deferred this half. An unreadable ON-DEMAND
+ * ceiling is SUPPRESSED (nothing is sent, the live ceiling stands), so its
+ * diagnostic says "nothing was sent". A provisioned table cannot suppress —
+ * AWS requires `ProvisionedThroughput` on the table and on every GSI of it —
+ * so the derivation falls through to {@link DEFAULT_CAPACITY_UNITS} and a
+ * table the template explicitly sized is deployed at 5/5. That is a throttling
+ * symptom days later rather than an error, which is what makes naming it here
+ * worth a warning at all. The one provisioned site that CAN suppress is a
+ * replica's `ProvisionedThroughputOverride` (absent = inherit the source
+ * table), hence the `suppressed` outcome arm.
+ *
+ * Caller decides WHEN: only when the derivation returned `undefined` AND no
+ * explicit SDK-shaped member is standing in for it, so the warning always
+ * describes what actually reached AWS.
+ */
+function reportUnresolvedProvisionedCapacity(
+  rawSettings: unknown,
+  side: 'Read' | 'Write',
+  source: CapacitySource,
+  outcome: { readonly appliedUnits: number } | { readonly suppressed: string },
+  diagnostics: ThroughputDiagnostic[] | undefined,
+  context: { indexName?: string; blockName: string }
+): void {
+  if (!diagnostics) return;
+  const blame = blameUnresolvedProvisionedMember(rawSettings, side, source);
+  if (!blame) return;
+  const path = blame.relPath ? `${context.blockName}.${blame.relPath}` : context.blockName;
+  const consequence =
+    'appliedUnits' in outcome
+      ? `so cdkd sent ${outcome.appliedUnits} capacity units instead` +
+        (outcome.appliedUnits === DEFAULT_CAPACITY_UNITS
+          ? ` (cdkd's default — AWS requires a concrete provisioned capacity here, ` +
+            `so there was nothing to suppress)`
+          : '')
+      : outcome.suppressed;
+  diagnostics.push({
+    kind: 'unresolved-member',
+    ...(context.indexName !== undefined && { indexName: context.indexName }),
+    member: path.split('.').pop() ?? context.blockName,
+    message:
+      `${path} is declared but did not resolve to a number ` +
+      `(${JSON.stringify(blame.value)?.slice(0, 80)}), ${consequence}. This is usually an ` +
+      `unresolved intrinsic; resolve it to a literal to apply the capacity you declared.`,
+  });
+}
+
+/**
  * Derive a single WRITE capacity number from a CFn
  * `WriteProvisionedThroughputSettings` block.
  *
@@ -4418,22 +4546,62 @@ export function toSdkGlobalSecondaryIndexes(
     }
 
     if (billingMode === 'PROVISIONED') {
+      // Capacity diagnostics fire from HERE, where the value is lost, for the
+      // same reason the on-demand ones do (#1444 A): the per-GSI reset gate in
+      // `update()` never runs for a first-time set or across a billing flip,
+      // which are the two likeliest ways to hit this (#1511).
+      const rawLocalRead = localEntry?.['ReadProvisionedThroughputSettings'];
+      const rawGsiRead = gsi['ReadProvisionedThroughputSettings'];
+      const rawWrite = gsi['WriteProvisionedThroughputSettings'];
+      const derivedRead =
+        deriveReadCapacityUnits(asRecord(rawLocalRead), source) ??
+        deriveReadCapacityUnits(asRecord(rawGsiRead), source);
+      const derivedWrite = deriveWriteCapacityUnits(asRecord(rawWrite), source);
+      // An explicit SDK-shaped member wins in the merge below, so a value it
+      // supplies is what reaches AWS and there is nothing to warn about.
+      const explicitCovers = (member: string): boolean =>
+        explicitProvisioned !== undefined &&
+        toFiniteNumber(explicitProvisioned[member]) !== undefined;
+      if (derivedRead === undefined && !explicitCovers('ReadCapacityUnits')) {
+        // The replica spelling is the canonical CDK one and is blamed when
+        // DECLARED, matching the on-demand half's choice of which of the two
+        // read spellings to name.
+        const fromReplica = rawLocalRead !== undefined;
+        reportUnresolvedProvisionedCapacity(
+          fromReplica ? rawLocalRead : rawGsiRead,
+          'Read',
+          source,
+          { appliedUnits: DEFAULT_CAPACITY_UNITS },
+          diagnostics,
+          {
+            ...(typeof indexName === 'string' && { indexName }),
+            blockName: fromReplica
+              ? 'Replicas[local].GlobalSecondaryIndexes[].ReadProvisionedThroughputSettings'
+              : 'ReadProvisionedThroughputSettings',
+          }
+        );
+      }
+      if (derivedWrite === undefined && !explicitCovers('WriteCapacityUnits')) {
+        reportUnresolvedProvisionedCapacity(
+          rawWrite,
+          'Write',
+          source,
+          { appliedUnits: DEFAULT_CAPACITY_UNITS },
+          diagnostics,
+          {
+            ...(typeof indexName === 'string' && { indexName }),
+            blockName: 'WriteProvisionedThroughputSettings',
+          }
+        );
+      }
       // The derived side always yields both members (defaulting to 5/5), so
       // the merge can never come back `undefined` here — AWS REQUIRES
       // `ProvisionedThroughput` on every GSI of a provisioned table.
       sdk.ProvisionedThroughput = mergeExplicitThroughputBlock<ProvisionedThroughput>(
         explicitProvisioned,
         {
-          ReadCapacityUnits:
-            deriveReadCapacityUnits(
-              asRecord(localEntry?.['ReadProvisionedThroughputSettings']),
-              source
-            ) ??
-            deriveReadCapacityUnits(asRecord(gsi['ReadProvisionedThroughputSettings']), source) ??
-            DEFAULT_CAPACITY_UNITS,
-          WriteCapacityUnits:
-            deriveWriteCapacityUnits(asRecord(gsi['WriteProvisionedThroughputSettings']), source) ??
-            DEFAULT_CAPACITY_UNITS,
+          ReadCapacityUnits: derivedRead ?? DEFAULT_CAPACITY_UNITS,
+          WriteCapacityUnits: derivedWrite ?? DEFAULT_CAPACITY_UNITS,
         },
         ['ReadCapacityUnits', 'WriteCapacityUnits'],
         diagnostics,
@@ -4708,9 +4876,29 @@ function toSdkReplicaThroughputOverrides(
   }
 
   if (billingMode === 'PROVISIONED') {
-    const readCapacity = deriveReadCapacityUnits(
-      asRecord(cfn['ReadProvisionedThroughputSettings'])
-    );
+    const rawRead = cfn['ReadProvisionedThroughputSettings'];
+    const readCapacity = deriveReadCapacityUnits(asRecord(rawRead));
+    // The one PROVISIONED site that CAN suppress: an absent
+    // `ProvisionedThroughputOverride` means "inherit the source table", so an
+    // unreadable value here silently keeps the inherited capacity rather than
+    // defaulting to 5 (issue #1511).
+    if (
+      readCapacity === undefined &&
+      toFiniteNumber(explicitProvisioned?.['ReadCapacityUnits']) === undefined
+    ) {
+      reportUnresolvedProvisionedCapacity(
+        rawRead,
+        'Read',
+        'min',
+        {
+          suppressed:
+            `so no ProvisionedThroughputOverride was sent and the replica keeps the ` +
+            `source table's read capacity`,
+        },
+        diagnostics,
+        { ...context, blockName: 'ReadProvisionedThroughputSettings' }
+      );
+    }
     const merged = mergeExplicitThroughputBlock<{ ReadCapacityUnits: number }>(
       explicitProvisioned,
       readCapacity !== undefined ? { ReadCapacityUnits: readCapacity } : undefined,

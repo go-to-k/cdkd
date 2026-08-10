@@ -75,6 +75,7 @@ import {
   collectDesiredKeyAttributeNames,
   collectTableOnDemandCeilings,
   collectRawOnDemandDeclarations,
+  derivePerCallProvisionedThroughput,
   toSdkGlobalSecondaryIndexes,
   toSdkReplicaGlobalSecondaryIndexes,
   type ThroughputDiagnostic,
@@ -574,6 +575,307 @@ describe('DynamoDB GlobalTable throughput cluster', () => {
 
       const hits = warnings().filter((m) => m.includes('did not resolve to a number'));
       expect(hits).toHaveLength(1);
+    });
+  });
+
+  /**
+   * Issue #1511: the #1444 A diagnostic covered the ON-DEMAND members only.
+   * The PROVISIONED side has the same input class with a worse outcome — the
+   * derivation falls through to 5/5 and a table the template explicitly sized
+   * is deployed at the default, silently. It cannot suppress the way the
+   * on-demand side does (AWS requires `ProvisionedThroughput` on a provisioned
+   * table and on every GSI of one), so the correct behavior is
+   * warn-and-default, which is what these pin.
+   */
+  describe('unresolvable PROVISIONED capacity warns instead of defaulting silently (issue #1511)', () => {
+    /** `TableV2` with `Capacity.autoscaled(...)` on the write side. */
+    const provProps = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
+      AttributeDefinitions: [{ AttributeName: 'pk', AttributeType: 'S' }],
+      BillingMode: 'PROVISIONED',
+      KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
+      Replicas: [
+        { Region: REGION, ReadProvisionedThroughputSettings: { ReadCapacityUnits: 11 } },
+      ],
+      WriteProvisionedThroughputSettings: {
+        WriteCapacityAutoScalingSettings: { MinCapacity: 7, MaxCapacity: 70 },
+      },
+      ...overrides,
+    });
+
+    const provGsi = (gsi: Record<string, unknown>): Record<string, unknown> => ({
+      IndexName: 'gsi1',
+      KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
+      Projection: { ProjectionType: 'ALL' },
+      ...gsi,
+    });
+
+    const capacityWarnings = (): string[] =>
+      warnings().filter((m) => m.includes('did not resolve to a number'));
+
+    it('names the auto-scaling member and the substituted default', () => {
+      const diagnostics: ThroughputDiagnostic[] = [];
+      const throughput = derivePerCallProvisionedThroughput(
+        provProps({
+          WriteProvisionedThroughputSettings: {
+            WriteCapacityAutoScalingSettings: { MinCapacity: { Ref: 'Unresolved' }, MaxCapacity: 70 },
+          },
+        }),
+        REGION,
+        'min',
+        diagnostics
+      );
+
+      // The silent 5 the issue is about — still sent, because AWS requires a
+      // number, but no longer silent.
+      expect(throughput.WriteCapacityUnits).toBe(5);
+      expect(throughput.ReadCapacityUnits).toBe(11);
+      expect(diagnostics).toHaveLength(1);
+      expect(diagnostics[0]?.member).toBe('MinCapacity');
+      expect(diagnostics[0]?.message).toContain(
+        'WriteProvisionedThroughputSettings.WriteCapacityAutoScalingSettings.MinCapacity'
+      );
+      expect(diagnostics[0]?.message).toContain('cdkd sent 5 capacity units instead');
+    });
+
+    it('blames the member the FLIP would have read, which is not the one create reads', () => {
+      // `SeedCapacity` is consulted first on a PAY_PER_REQUEST -> PROVISIONED
+      // flip and `MinCapacity` everywhere else (#1435), so a diagnostic that
+      // ignored `source` would name a member the failing call never looked at.
+      const props = provProps({
+        WriteProvisionedThroughputSettings: {
+          WriteCapacityAutoScalingSettings: {
+            SeedCapacity: { Ref: 'Unresolved' },
+            MinCapacity: { 'Fn::If': ['C', 1, 2] },
+          },
+        },
+      });
+      const onFlip: ThroughputDiagnostic[] = [];
+      const onCreate: ThroughputDiagnostic[] = [];
+
+      derivePerCallProvisionedThroughput(props, REGION, 'seed', onFlip);
+      derivePerCallProvisionedThroughput(props, REGION, 'min', onCreate);
+
+      expect(onFlip[0]?.member).toBe('SeedCapacity');
+      expect(onCreate[0]?.member).toBe('MinCapacity');
+    });
+
+    it('blames the BLOCK when the block itself is the unusable value', () => {
+      const diagnostics: ThroughputDiagnostic[] = [];
+      derivePerCallProvisionedThroughput(
+        provProps({ WriteProvisionedThroughputSettings: { 'Fn::If': ['C', {}, {}] } }),
+        REGION,
+        'min',
+        diagnostics
+      );
+
+      expect(diagnostics[0]?.member).toBe('WriteProvisionedThroughputSettings');
+    });
+
+    it('stays silent for an ABSENT block, which legitimately defaults', () => {
+      // The pre-existing contract for a template that never asked for a
+      // capacity. Warning here would shout on every deploy of a fine table.
+      const props = provProps();
+      delete props['WriteProvisionedThroughputSettings'];
+      delete props['Replicas'];
+      const diagnostics: ThroughputDiagnostic[] = [];
+
+      const throughput = derivePerCallProvisionedThroughput(props, REGION, 'min', diagnostics);
+
+      expect(throughput).toEqual({ ReadCapacityUnits: 5, WriteCapacityUnits: 5 });
+      expect(diagnostics).toEqual([]);
+    });
+
+    it('fires for a per-GSI block, naming the index', () => {
+      const diagnostics: ThroughputDiagnostic[] = [];
+      const [sdk] = toSdkGlobalSecondaryIndexes(
+        provProps({
+          GlobalSecondaryIndexes: [
+            provGsi({
+              WriteProvisionedThroughputSettings: { WriteCapacityUnits: 'not-a-number' },
+            }),
+          ],
+        }),
+        REGION,
+        'PROVISIONED',
+        'min',
+        diagnostics
+      );
+
+      expect(sdk?.ProvisionedThroughput?.WriteCapacityUnits).toBe(5);
+      expect(diagnostics).toHaveLength(1);
+      expect(diagnostics[0]?.indexName).toBe('gsi1');
+      expect(diagnostics[0]?.member).toBe('WriteCapacityUnits');
+    });
+
+    it('blames the replica spelling for a per-GSI READ capacity, as the on-demand half does', () => {
+      const diagnostics: ThroughputDiagnostic[] = [];
+      toSdkGlobalSecondaryIndexes(
+        {
+          ...provProps({
+            GlobalSecondaryIndexes: [provGsi({})],
+          }),
+          Replicas: [
+            {
+              Region: REGION,
+              GlobalSecondaryIndexes: [
+                {
+                  IndexName: 'gsi1',
+                  ReadProvisionedThroughputSettings: { ReadCapacityUnits: { Ref: 'Unresolved' } },
+                },
+              ],
+            },
+          ],
+        },
+        REGION,
+        'PROVISIONED',
+        'min',
+        diagnostics
+      );
+
+      expect(diagnostics.map((d) => d.member)).toContain('ReadCapacityUnits');
+      expect(diagnostics[0]?.message).toContain(
+        'Replicas[local].GlobalSecondaryIndexes[].ReadProvisionedThroughputSettings'
+      );
+    });
+
+    it('says nothing when an explicit SDK-shaped member stands in for the unreadable one', () => {
+      // The merge takes the explicit member, so that value IS what reaches
+      // AWS — warning about a substitution that did not happen would be wrong.
+      const diagnostics: ThroughputDiagnostic[] = [];
+      const [sdk] = toSdkGlobalSecondaryIndexes(
+        provProps({
+          GlobalSecondaryIndexes: [
+            provGsi({
+              ProvisionedThroughput: { ReadCapacityUnits: 3, WriteCapacityUnits: 9 },
+              WriteProvisionedThroughputSettings: { WriteCapacityUnits: { Ref: 'Unresolved' } },
+            }),
+          ],
+        }),
+        REGION,
+        'PROVISIONED',
+        'min',
+        diagnostics
+      );
+
+      expect(sdk?.ProvisionedThroughput?.WriteCapacityUnits).toBe(9);
+      expect(diagnostics).toEqual([]);
+    });
+
+    it('reports the SUPPRESSION, not a default, for a replica override', () => {
+      // The one provisioned site that can suppress: an absent
+      // `ProvisionedThroughputOverride` means "inherit the source table".
+      const diagnostics: ThroughputDiagnostic[] = [];
+      const [sdk] = toSdkReplicaGlobalSecondaryIndexes(
+        [
+          {
+            IndexName: 'gsi1',
+            ReadProvisionedThroughputSettings: { ReadCapacityUnits: { Ref: 'Unresolved' } },
+          },
+        ],
+        'PROVISIONED',
+        diagnostics
+      ) ?? [];
+
+      expect(sdk?.ProvisionedThroughputOverride).toBeUndefined();
+      expect(diagnostics[0]?.message).toContain('no ProvisionedThroughputOverride was sent');
+      expect(diagnostics[0]?.message).not.toContain('capacity units instead');
+    });
+
+    it('fires on CREATE, before any table exists', async () => {
+      await provider.create(
+        'Prov',
+        RESOURCE_TYPE,
+        provProps({
+          WriteProvisionedThroughputSettings: {
+            WriteCapacityAutoScalingSettings: { MinCapacity: { Ref: 'Unresolved' }, MaxCapacity: 9 },
+          },
+        })
+      );
+
+      const create = mockSend.mock.calls
+        .map((c) => c[0])
+        .find((c): c is CreateTableCommand => c instanceof CreateTableCommand);
+      expect(create?.input.ProvisionedThroughput?.WriteCapacityUnits).toBe(5);
+      expect(capacityWarnings()).toHaveLength(1);
+      // Same ordering rule as the on-demand half: the complaint must not
+      // arrive after a real (billable) table exists.
+      expect(warnSpy.mock.invocationCallOrder[0]).toBeLessThan(
+        mockSend.mock.invocationCallOrder[0]!
+      );
+    });
+
+    it('fires on a FIRST-TIME per-GSI set during update, where the reset gate never runs', async () => {
+      const previous = provProps({ GlobalSecondaryIndexes: [provGsi({})] });
+      const next = provProps({
+        GlobalSecondaryIndexes: [
+          provGsi({
+            WriteProvisionedThroughputSettings: { WriteCapacityUnits: { Ref: 'Unresolved' } },
+          }),
+        ],
+      });
+
+      await provider.update('Prov', 'od-table', RESOURCE_TYPE, next, previous);
+
+      expect(capacityWarnings().some((m) => m.includes('gsi1'))).toBe(true);
+    });
+
+    it('fires across a billing flip, where the table-level value is what gets sent', async () => {
+      const previous = { ...provProps(), BillingMode: 'PAY_PER_REQUEST' };
+      const next = provProps({
+        WriteProvisionedThroughputSettings: {
+          WriteCapacityAutoScalingSettings: { SeedCapacity: { Ref: 'Unresolved' } },
+        },
+      });
+
+      await provider.update('Prov', 'od-table', RESOURCE_TYPE, next, previous);
+
+      expect(capacityWarnings().some((m) => m.includes('SeedCapacity'))).toBe(true);
+      const flip = mockSend.mock.calls
+        .map((c) => c[0])
+        .find(
+          (c): c is UpdateTableCommand =>
+            c instanceof UpdateTableCommand && c.input.BillingMode === 'PROVISIONED'
+        );
+      expect(flip?.input.ProvisionedThroughput?.WriteCapacityUnits).toBe(5);
+    });
+
+    it('says nothing about the table-level value while the billing mode holds still', () => {
+      // Recorded rather than incidental: outside the flip nothing SENDS a
+      // table-level `ProvisionedThroughput`, so no default is substituted and a
+      // warning would name a value that never reached AWS.
+      const diagnostics: ThroughputDiagnostic[] = [];
+      toSdkGlobalSecondaryIndexes(
+        provProps({
+          WriteProvisionedThroughputSettings: {
+            WriteCapacityAutoScalingSettings: { MinCapacity: { Ref: 'Unresolved' } },
+          },
+        }),
+        REGION,
+        'PROVISIONED',
+        'min',
+        diagnostics
+      );
+
+      expect(diagnostics).toEqual([]);
+    });
+
+    it('reports nothing for the PREVIOUS side, so bad state cannot shout every deploy', async () => {
+      // The #1428 asymmetry, re-asserted for the provisioned half: a value an
+      // older binary recorded in cdkd state is not editable from the template.
+      const previous = provProps({
+        WriteProvisionedThroughputSettings: {
+          WriteCapacityAutoScalingSettings: { MinCapacity: { Ref: 'GarbageInState' } },
+        },
+      });
+      const next = provProps({
+        WriteProvisionedThroughputSettings: {
+          WriteCapacityAutoScalingSettings: { MinCapacity: 12, MaxCapacity: 70 },
+        },
+      });
+
+      await provider.update('Prov', 'od-table', RESOURCE_TYPE, next, previous);
+
+      expect(warnings().some((m) => m.includes('GarbageInState'))).toBe(false);
     });
   });
 
