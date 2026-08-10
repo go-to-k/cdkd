@@ -1,3 +1,10 @@
+## [0.278.26](https://github.com/go-to-k/cdkd/compare/v0.278.25...v0.278.26) (2026-08-10)
+
+
+### Bug Fixes
+
+* **drift:** warn before --revert drops AWS-authored values on state with no observed baseline ([#1491](https://github.com/go-to-k/cdkd/issues/1491)) ([2a4b68c](https://github.com/go-to-k/cdkd/commit/2a4b68c0e6c5e547a1ac31d3ca5879cf551561e0))
+
 ## [0.278.25](https://github.com/go-to-k/cdkd/compare/v0.278.24...v0.278.25) (2026-08-10)
 
 
