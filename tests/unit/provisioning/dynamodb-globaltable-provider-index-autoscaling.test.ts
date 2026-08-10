@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import {
+  CreateTableCommand,
   DescribeTableCommand,
   DeleteTableCommand,
+  UpdateTableCommand,
   UpdateTimeToLiveCommand,
   ResourceNotFoundException,
 } from '@aws-sdk/client-dynamodb';
@@ -420,6 +422,22 @@ describe('DynamoDBGlobalTable per-index auto-scaling (issue #1419)', () => {
         ReadProvisionedThroughputSettings: { ReadCapacityAutoScalingSettings: TABLE_READ_AS },
       });
       await provider.create('Prov', RESOURCE_TYPE, props);
+
+      // Asserting only that a client was built for eu-west-1 would pass even
+      // if the register carried the wrong ResourceId, dimension or Min/Max —
+      // the local-region registrations alone already construct clients. Pin
+      // the actual input the way the local-region tests do.
+      const register = registerInputs().find(
+        (i) =>
+          i['ScalableDimension'] === 'dynamodb:table:ReadCapacityUnits' &&
+          i['ResourceId'] === `table/${TABLE_NAME}` &&
+          i['MinCapacity'] === TABLE_READ_AS.MinCapacity
+      );
+      expect(register).toBeDefined();
+      expect(register).toMatchObject({
+        ServiceNamespace: 'dynamodb',
+        MaxCapacity: TABLE_READ_AS.MaxCapacity,
+      });
       expect(autoScalingRegionSpy).toHaveBeenCalledWith('eu-west-1');
     });
   });
@@ -499,6 +517,68 @@ describe('DynamoDBGlobalTable per-index auto-scaling (issue #1419)', () => {
     });
   });
 
+  describe('ordering', () => {
+    // Two ordering claims are load-bearing and were documented only in code
+    // comments: registration must follow the table AND replicas going ACTIVE,
+    // and step 6b must follow step 6 so an index added by the same deploy
+    // exists. The DynamoDB and application-autoscaling mocks are separate
+    // `vi.fn()`s, so per-mock assertions cannot see the interleaving —
+    // `mock.invocationCallOrder` spans mocks and can.
+    it('registers only AFTER the table is created and observed ACTIVE', async () => {
+      await provider.create('Prov', RESOURCE_TYPE, AUTOSCALED_PROPS);
+
+      const createOrder = mockSend.mock.calls
+        .map((c, i) => ({ c: c[0], i }))
+        .filter(({ c }) => c instanceof CreateTableCommand)
+        .map(({ i }) => mockSend.mock.invocationCallOrder[i]!);
+      const describeOrder = mockSend.mock.calls
+        .map((c, i) => ({ c: c[0], i }))
+        .filter(({ c }) => c instanceof DescribeTableCommand)
+        .map(({ i }) => mockSend.mock.invocationCallOrder[i]!);
+      const firstRegister = mockAutoScalingSend.mock.calls
+        .map((c, i) => ({ c: c[0], i }))
+        .filter(({ c }) => c instanceof RegisterScalableTargetCommand)
+        .map(({ i }) => mockAutoScalingSend.mock.invocationCallOrder[i]!)[0];
+
+      expect(firstRegister).toBeDefined();
+      expect(createOrder[0]).toBeLessThan(firstRegister!);
+      // At least one ACTIVE-observing DescribeTable precedes registration.
+      expect(describeOrder.some((o) => o < firstRegister!)).toBe(true);
+    });
+
+    it('registers an index target only AFTER the GSI-create UpdateTable', async () => {
+      // A GSI added by this deploy: step 6 creates it, step 6b registers it.
+      // Reversed, application-autoscaling would reject a target whose index
+      // does not exist yet.
+      const previous = structuredClone(AUTOSCALED_PROPS) as Record<string, unknown>;
+      previous['GlobalSecondaryIndexes'] = [];
+      (previous['Replicas'] as Array<Record<string, unknown>>)[0]!['GlobalSecondaryIndexes'] = [];
+
+      await provider.update('Prov', TABLE_NAME, RESOURCE_TYPE, AUTOSCALED_PROPS, previous);
+
+      const gsiCreateOrder = mockSend.mock.calls
+        .map((c, i) => ({ c: c[0], i }))
+        .filter(
+          ({ c }) =>
+            c instanceof UpdateTableCommand &&
+            (c.input.GlobalSecondaryIndexUpdates ?? []).some((u) => u.Create !== undefined)
+        )
+        .map(({ i }) => mockSend.mock.invocationCallOrder[i]!);
+      const indexRegisterOrder = mockAutoScalingSend.mock.calls
+        .map((c, i) => ({ c: c[0], i }))
+        .filter(
+          ({ c }) =>
+            c instanceof RegisterScalableTargetCommand &&
+            String(c.input.ScalableDimension).startsWith('dynamodb:index:')
+        )
+        .map(({ i }) => mockAutoScalingSend.mock.invocationCallOrder[i]!);
+
+      expect(gsiCreateOrder.length).toBeGreaterThan(0);
+      expect(indexRegisterOrder.length).toBeGreaterThan(0);
+      expect(gsiCreateOrder[0]).toBeLessThan(indexRegisterOrder[0]!);
+    });
+  });
+
   describe('throttle retry', () => {
     it('RETRIES a throttled RegisterScalableTarget instead of silently giving up', async () => {
       // Regression guard for a fix that TYPECHECKED while doing nothing:
@@ -565,17 +645,24 @@ describe('DynamoDBGlobalTable per-index auto-scaling (issue #1419)', () => {
      * would poll forever, so serve the table once (the pre-delete describe
      * the teardown reads index names from) and RNF after that.
      */
-    function describeOnceThenGone(table: Record<string, unknown>): void {
-      let served = false;
+    // `serves` controls how many DescribeTable calls return the table before
+    // RNF. The default of 1 covers the pre-delete describe only, which means
+    // `waitForTableGone` sees RNF on its very first poll and its loop never
+    // iterates — fine for the teardown assertions, but it leaves the polling
+    // itself unexercised, so a regression that broke the loop would not show
+    // up here. The `serves > 1` form below closes that.
+    function describeNTimesThenGone(table: Record<string, unknown>, serves = 1): void {
+      let served = 0;
       mockSend.mockImplementation((command: unknown) => {
         if (command instanceof DescribeTableCommand) {
-          if (served) return Promise.reject(newRnf());
-          served = true;
+          if (served >= serves) return Promise.reject(newRnf());
+          served += 1;
           return Promise.resolve({ Table: table });
         }
         return Promise.resolve({});
       });
     }
+    const describeOnceThenGone = (t: Record<string, unknown>): void => describeNTimesThenGone(t, 1);
 
     it('deregisters the per-index targets so they are not inherited by a future table of the same name', async () => {
       describeOnceThenGone({
@@ -660,6 +747,35 @@ describe('DynamoDBGlobalTable per-index auto-scaling (issue #1419)', () => {
       await provider.delete('Prov', TABLE_NAME, RESOURCE_TYPE, AUTOSCALED_PROPS);
 
       expect(warnSpy).not.toHaveBeenCalled();
+    });
+
+    it('polls DescribeTable until the table is really gone, then finishes cleanly', async () => {
+      // Two extra serves after the pre-delete describe, so waitForTableGone
+      // actually loops before observing RNF. Without this every delete test
+      // proves only the one-shot path.
+      describeNTimesThenGone(
+        {
+          TableName: TABLE_NAME,
+          TableArn: TABLE_ARN,
+          TableStatus: 'ACTIVE',
+          GlobalSecondaryIndexes: [{ IndexName: 'gsi1' }],
+          Replicas: [{ RegionName: 'us-east-1' }],
+        },
+        3
+      );
+
+      await provider.delete('Prov', TABLE_NAME, RESOURCE_TYPE, AUTOSCALED_PROPS);
+
+      const describeCalls = mockSend.mock.calls
+        .map((c) => c[0])
+        .filter((c) => c instanceof DescribeTableCommand);
+      // 1 pre-delete + at least 2 poll iterations + the RNF that ends the wait.
+      expect(describeCalls.length).toBeGreaterThanOrEqual(4);
+      // And the teardown still ran to completion.
+      expect(deregistered()).toContainEqual([
+        `table/${TABLE_NAME}/index/gsi1`,
+        'dynamodb:index:WriteCapacityUnits',
+      ]);
     });
 
     it('takes index names from the live DescribeTable, not from the (possibly stale) template', async () => {
