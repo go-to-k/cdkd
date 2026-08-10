@@ -8,10 +8,22 @@
 # collapsed to an empty `Filter: {}` (replicate EVERY object) — a scope-
 # broadening divergence. This verifies the And filter reaches AWS verbatim.
 #
+# It ALSO carries the issue #1495 read-backs: five nested blocks the S3 provider
+# never assembled at all (TargetObjectKeyFormat, Destination.ReplicationTime +
+# Metrics, SourceSelectionCriteria, TransitionDefaultMinimumObjectSize). Those
+# are write-side silent drops — nothing errored, the field just never left the
+# process — so reading them back off the live bucket is the ONLY proof of
+# delivery. Two of the twenty #1495 members are deliberately NOT covered here
+# and carry unit coverage instead: Destination.EncryptionConfiguration /
+# SourceSelectionCriteria.SseKmsEncryptedObjects would need a customer-managed
+# KMS key, whose 7-day minimum deletion window leaves a pending-deletion orphan
+# behind every run, and AccessControlTranslation is only meaningful across two
+# accounts. Tracked in issue #1523.
+#
 # Phases:
 #   1. Deploy; assert GetBucketReplication returns the rule with
 #      Filter.And.Prefix='logs/' AND Filter.And.Tags carrying replicate=yes
-#      (NOT an empty filter / replicate-all).
+#      (NOT an empty filter / replicate-all), plus the five #1495 read-backs.
 #   2. Re-deploy with CDKD_TEST_UPDATE=true (And prefix logs/ -> data/); assert
 #      the new prefix reached AWS via an in-place PutBucketReplication (the
 #      source bucket was NOT replaced) and the tag filter is still present.
@@ -63,6 +75,7 @@ STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
 SRC_BUCKET="cdkd-repl-src-${ACCOUNT_ID}"
 DST_BUCKET="cdkd-repl-dst-${ACCOUNT_ID}"
+LOG_BUCKET="cdkd-repl-log-${ACCOUNT_ID}"
 
 # Resolve the built CLI path without a `cd` into dist/ that fails cryptically
 # (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
@@ -79,6 +92,10 @@ cleanup() {
   aws s3api delete-bucket-replication --bucket "${SRC_BUCKET}" --region "${REGION}" >/dev/null 2>&1 || true
   aws s3api delete-bucket --bucket "${SRC_BUCKET}" --region "${REGION}" >/dev/null 2>&1 || true
   aws s3api delete-bucket --bucket "${DST_BUCKET}" --region "${REGION}" >/dev/null 2>&1 || true
+  # The log bucket can receive a server-access-log object at any point after the
+  # run, so empty it before the delete rather than leaving a stuck bucket.
+  aws s3 rm "s3://${LOG_BUCKET}" --recursive --region "${REGION}" >/dev/null 2>&1 || true
+  aws s3api delete-bucket --bucket "${LOG_BUCKET}" --region "${REGION}" >/dev/null 2>&1 || true
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
@@ -126,6 +143,53 @@ if [ "${AND_PREFIX_P1}" != "logs/" ] || [ "${AND_TAG_KEY_P1}" != "replicate" ] |
 fi
 echo "    And filter reached AWS: prefix=logs/ + tag replicate=yes (NOT replicate-all)"
 
+# --- issue #1495: blocks the provider never built at all ---------------------
+# Each of these has a same-spelled member in @aws-sdk/client-s3 and was simply
+# never assembled, so the deploy reported success with the setting missing.
+# Only a read-back off the live bucket can prove delivery.
+KEY_FORMAT="$(aws s3api get-bucket-logging --bucket "${SRC_BUCKET}" --region "${REGION}" \
+  --query "LoggingEnabled.TargetObjectKeyFormat.PartitionedPrefix.PartitionDateSource" --output text)"
+if [ "${KEY_FORMAT}" != "EventTime" ]; then
+  echo "FAIL: expected LoggingEnabled.TargetObjectKeyFormat.PartitionedPrefix.PartitionDateSource=EventTime, got ${KEY_FORMAT}" >&2
+  echo "      (pre-fix bug #1495: TargetObjectKeyFormat never built -> flat default key format)" >&2
+  exit 1
+fi
+echo "    TargetObjectKeyFormat.PartitionedPrefix reached AWS (issue #1495)"
+
+RTC_STATUS="$(aws s3api get-bucket-replication --bucket "${SRC_BUCKET}" --region "${REGION}" \
+  --query "ReplicationConfiguration.Rules[0].Destination.ReplicationTime.Status" --output text)"
+RTC_MINUTES="$(aws s3api get-bucket-replication --bucket "${SRC_BUCKET}" --region "${REGION}" \
+  --query "ReplicationConfiguration.Rules[0].Destination.ReplicationTime.Time.Minutes" --output text)"
+METRICS_STATUS="$(aws s3api get-bucket-replication --bucket "${SRC_BUCKET}" --region "${REGION}" \
+  --query "ReplicationConfiguration.Rules[0].Destination.Metrics.Status" --output text)"
+METRICS_MINUTES="$(aws s3api get-bucket-replication --bucket "${SRC_BUCKET}" --region "${REGION}" \
+  --query "ReplicationConfiguration.Rules[0].Destination.Metrics.EventThreshold.Minutes" --output text)"
+if [ "${RTC_STATUS}" != "Enabled" ] || [ "${RTC_MINUTES}" != "15" ] || \
+   [ "${METRICS_STATUS}" != "Enabled" ] || [ "${METRICS_MINUTES}" != "15" ]; then
+  echo "FAIL: expected Replication Time Control (ReplicationTime + Metrics, 15 min each), got rtc=${RTC_STATUS}/${RTC_MINUTES} metrics=${METRICS_STATUS}/${METRICS_MINUTES}" >&2
+  echo "      (pre-fix bug #1495: both blocks dropped -> plain async replication, no RTC SLA)" >&2
+  exit 1
+fi
+echo "    Destination.ReplicationTime + Metrics reached AWS — RTC is really on (issue #1495)"
+
+SSC_STATUS="$(aws s3api get-bucket-replication --bucket "${SRC_BUCKET}" --region "${REGION}" \
+  --query "ReplicationConfiguration.Rules[0].SourceSelectionCriteria.ReplicaModifications.Status" --output text)"
+if [ "${SSC_STATUS}" != "Enabled" ]; then
+  echo "FAIL: expected SourceSelectionCriteria.ReplicaModifications.Status=Enabled, got ${SSC_STATUS}" >&2
+  echo "      (pre-fix bug #1495: the whole block dropped -> a different object set replicated)" >&2
+  exit 1
+fi
+echo "    SourceSelectionCriteria.ReplicaModifications reached AWS (issue #1495)"
+
+MIN_SIZE="$(aws s3api get-bucket-lifecycle-configuration --bucket "${SRC_BUCKET}" --region "${REGION}" \
+  --query "TransitionDefaultMinimumObjectSize" --output text)"
+if [ "${MIN_SIZE}" != "all_storage_classes_128K" ]; then
+  echo "FAIL: expected TransitionDefaultMinimumObjectSize=all_storage_classes_128K, got ${MIN_SIZE}" >&2
+  echo "      (pre-fix bug #1495: it lives on the PUT REQUEST, not inside LifecycleConfiguration, so the rules-only mapper never sent it)" >&2
+  exit 1
+fi
+echo "    LifecycleConfiguration.TransitionDefaultMinimumObjectSize reached AWS (issue #1495)"
+
 CREATION_P1="$(aws s3api list-buckets \
   --query "Buckets[?Name=='${SRC_BUCKET}'].CreationDate | [0]" --output text)"
 echo "    baseline source-bucket CreationDate=${CREATION_P1}"
@@ -157,10 +221,10 @@ echo "    source bucket identity preserved (CreationDate unchanged) — no repla
 echo "==> Phase 3: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 
-for b in "${SRC_BUCKET}" "${DST_BUCKET}"; do
+for b in "${SRC_BUCKET}" "${DST_BUCKET}" "${LOG_BUCKET}"; do
   assert_gone "bucket ${b} still exists after destroy" aws s3api head-bucket --bucket "${b}" --region "${REGION}"
 done
-echo "    both buckets deleted"
+echo "    all three buckets deleted"
 
 assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    cdkd state removed"

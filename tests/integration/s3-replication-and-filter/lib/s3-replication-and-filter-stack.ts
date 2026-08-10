@@ -31,6 +31,38 @@ export class S3ReplicationAndFilterStack extends cdk.Stack {
 
     const srcName = `cdkd-repl-src-${account}`;
     const dstName = `cdkd-repl-dst-${account}`;
+    const logName = `cdkd-repl-log-${account}`;
+
+    // Server-access-log target for the issue #1495 TargetObjectKeyFormat
+    // assertion. It carries CDK's auto-delete-objects tag because S3 may
+    // deliver a log object into it at any point after the run, and cdkd's
+    // delete refuses a non-empty bucket without that opt-in (the same marker
+    // `autoDeleteObjects: true` stamps) — see data-delete-intent.ts.
+    const log = new s3.CfnBucket(this, 'LogBucket', {
+      bucketName: logName,
+      tags: [{ key: 'aws-cdk:auto-delete-objects', value: 'true' }],
+    });
+    log.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+
+    // S3 validates the target bucket's policy during PutBucketLogging, so the
+    // policy has to exist before the source bucket is written.
+    const logPolicy = new s3.CfnBucketPolicy(this, 'LogBucketPolicy', {
+      bucket: logName,
+      policyDocument: {
+        Version: '2012-10-17',
+        Statement: [
+          {
+            Sid: 'S3ServerAccessLogsPolicy',
+            Effect: 'Allow',
+            Principal: { Service: 'logging.s3.amazonaws.com' },
+            Action: 's3:PutObject',
+            Resource: `arn:aws:s3:::${logName}/access/*`,
+            Condition: { StringEquals: { 'aws:SourceAccount': account } },
+          },
+        ],
+      },
+    });
+    logPolicy.node.addDependency(log);
 
     // Destination bucket — replication requires versioning on both ends.
     const dst = new s3.CfnBucket(this, 'DestBucket', {
@@ -70,6 +102,23 @@ export class S3ReplicationAndFilterStack extends cdk.Stack {
     const src = new s3.CfnBucket(this, 'SourceBucket', {
       bucketName: srcName,
       versioningConfiguration: { status: 'Enabled' },
+      // Issue #1495: the partitioned server-access-log key format. cdkd never
+      // built `TargetObjectKeyFormat` at all, so a bucket declaring it got the
+      // FLAT default and the deploy still reported success. Only a read-back
+      // off the live bucket can prove delivery.
+      loggingConfiguration: {
+        destinationBucketName: logName,
+        logFilePrefix: 'access/',
+        targetObjectKeyFormat: { partitionedPrefix: { partitionDateSource: 'EventTime' } },
+      },
+      // Issue #1495: `TransitionDefaultMinimumObjectSize` sits on the
+      // PutBucketLifecycleConfiguration REQUEST rather than inside
+      // `LifecycleConfiguration`, which is exactly why the rules-only mapper
+      // never reached it — the default (`varies_by_storage_class`) silently won.
+      lifecycleConfiguration: {
+        transitionDefaultMinimumObjectSize: 'all_storage_classes_128K',
+        rules: [{ id: 'expire-noncurrent', status: 'Enabled', expirationInDays: 30 }],
+      },
       replicationConfiguration: {
         role: role.roleArn,
         rules: [
@@ -84,7 +133,18 @@ export class S3ReplicationAndFilterStack extends cdk.Stack {
                 tagFilters: [{ key: 'replicate', value: 'yes' }],
               },
             },
-            destination: { bucket: dst.attrArn },
+            // Issue #1495: Replication Time Control. `ReplicationTime` and
+            // `Metrics` were both dropped, so a template asking for the RTC SLA
+            // got plain asynchronous replication with no error anywhere. AWS
+            // requires the two together and only accepts 15 minutes.
+            destination: {
+              bucket: dst.attrArn,
+              replicationTime: { status: 'Enabled', time: { minutes: 15 } },
+              metrics: { status: 'Enabled', eventThreshold: { minutes: 15 } },
+            },
+            // Issue #1495: which SOURCE objects are eligible. Dropped, so the
+            // rule replicated a different set of objects than declared.
+            sourceSelectionCriteria: { replicaModifications: { status: 'Enabled' } },
           },
         ],
       },
@@ -92,6 +152,7 @@ export class S3ReplicationAndFilterStack extends cdk.Stack {
     src.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
     src.node.addDependency(dst);
     src.node.addDependency(role);
+    src.node.addDependency(logPolicy);
 
     new cdk.CfnOutput(this, 'SourceBucketName', { value: srcName });
   }
