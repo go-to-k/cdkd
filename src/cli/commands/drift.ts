@@ -704,49 +704,6 @@ async function runAccept(
   }
 }
 
-/**
- * Build the `newProperties` object passed to `provider.update` during
- * `--revert`. Strategy:
- *
- *   1. Start from `awsProperties` (the AWS-current snapshot returned
- *      by `readCurrentState`, which `runRevert` already passes as the
- *      `previousProperties` argument to `provider.update`).
- *   2. For every top-level key whose subtree contains a drifted path,
- *      overwrite it with the corresponding sub-shape from
- *      `desiredProperties` (the state-recorded `observedProperties`).
- *
- * Why "AWS-current base + drifted overlay" instead of "drifted-only
- * partial":
- *
- *   Several providers' `update()` implementations diff
- *   `newProperties[K]` against `previousProperties[K]` and treat
- *   `newVal === undefined` as "remove K from AWS" (e.g.
- *   `SNSTopicProvider` calls `SetTopicAttributes(K, '')`,
- *   `IAMRoleProvider.updateManagedPolicies` detaches every previously
- *   attached policy when the new arg is undefined). Passing a
- *   drifted-only partial would silently clear non-drifted attributes
- *   on those providers. Sending the AWS-current value back as the
- *   "new" value for non-drifted keys keeps `JSON.stringify(newVal) ===
- *   JSON.stringify(oldVal)` so the diff is a no-op — no provider
- *   changes required.
- *
- *   For non-diff providers (e.g. `SQSQueueProvider` blindly pushes
- *   every defined key via `SetQueueAttributes`), the AWS-current
- *   value still gets serialised back to the same string AWS already
- *   has, so the round-trip is a no-op for the AWS resource state.
- *   The one exception is `readCurrentState`'s always-emit
- *   placeholder values — e.g. SQS `RedrivePolicy: {}` — which AWS
- *   rejects as invalid input even though they're round-tripped. That
- *   class of value (Class 2 / structurally-incomplete-when-empty) is
- *   handled by per-provider sanitize at the wire-layer; see the SQS
- *   provider's `serializeRedrivePolicy` helper for the canonical
- *   pattern.
- *
- * The drift comparator never produces array-index segments
- * (`Tags[0].Value`) — array drifts surface as a single entry on the
- * parent path — so `path.split('.', 1)` is always safe to extract the
- * top-level key.
- */
 /** A CFn-shaped tag list: a non-empty array whose every element has a string `Key`. */
 function isCfnTagList(value: unknown): value is Array<Record<string, unknown>> {
   return (
@@ -965,6 +922,49 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+/**
+ * Build the `newProperties` object passed to `provider.update` during
+ * `--revert`. Strategy:
+ *
+ *   1. Start from `awsProperties` (the AWS-current snapshot returned
+ *      by `readCurrentState`, which `runRevert` already passes as the
+ *      `previousProperties` argument to `provider.update`).
+ *   2. For every top-level key whose subtree contains a drifted path,
+ *      overwrite it with the corresponding sub-shape from
+ *      `desiredProperties` (the state-recorded `observedProperties`).
+ *
+ * Why "AWS-current base + drifted overlay" instead of "drifted-only
+ * partial":
+ *
+ *   Several providers' `update()` implementations diff
+ *   `newProperties[K]` against `previousProperties[K]` and treat
+ *   `newVal === undefined` as "remove K from AWS" (e.g.
+ *   `SNSTopicProvider` calls `SetTopicAttributes(K, '')`,
+ *   `IAMRoleProvider.updateManagedPolicies` detaches every previously
+ *   attached policy when the new arg is undefined). Passing a
+ *   drifted-only partial would silently clear non-drifted attributes
+ *   on those providers. Sending the AWS-current value back as the
+ *   "new" value for non-drifted keys keeps `JSON.stringify(newVal) ===
+ *   JSON.stringify(oldVal)` so the diff is a no-op — no provider
+ *   changes required.
+ *
+ *   For non-diff providers (e.g. `SQSQueueProvider` blindly pushes
+ *   every defined key via `SetQueueAttributes`), the AWS-current
+ *   value still gets serialised back to the same string AWS already
+ *   has, so the round-trip is a no-op for the AWS resource state.
+ *   The one exception is `readCurrentState`'s always-emit
+ *   placeholder values — e.g. SQS `RedrivePolicy: {}` — which AWS
+ *   rejects as invalid input even though they're round-tripped. That
+ *   class of value (Class 2 / structurally-incomplete-when-empty) is
+ *   handled by per-provider sanitize at the wire-layer; see the SQS
+ *   provider's `serializeRedrivePolicy` helper for the canonical
+ *   pattern.
+ *
+ * The drift comparator never produces array-index segments
+ * (`Tags[0].Value`) — array drifts surface as a single entry on the
+ * parent path — so `path.split('.', 1)` is always safe to extract the
+ * top-level key.
+ */
 export function buildRevertNewProperties(
   drifts: readonly PropertyDrift[],
   desiredProperties: Record<string, unknown>,
