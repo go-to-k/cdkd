@@ -156,13 +156,16 @@ export class EcsBluegreenStack extends cdk.Stack {
         },
       },
     ]);
-    // The listener rules / role only enter the template through the property
-    // override above, which CDK cannot trace — make the edges explicit so
-    // cdkd's DAG creates them before (and deletes them after) the service.
+    // The override's tokens DO resolve to Ref/GetAtt in the synthesized
+    // template, so cdkd's analyzer derives the implicit edges on its own —
+    // these explicit edges are deliberate belt-and-suspenders so the ordering
+    // does not silently depend on the override's token resolution.
     service.node.addDependency(prodRule, testRule, infraRole);
 
     new cdk.CfnOutput(this, 'ClusterName', { value: cluster.clusterName });
     new cdk.CfnOutput(this, 'ServiceName', { value: service.serviceName });
+    new cdk.CfnOutput(this, 'BlueTgArn', { value: blueTg.targetGroupArn });
+    new cdk.CfnOutput(this, 'TaskRoleArn', { value: taskDefinition.taskRole.roleArn });
     new cdk.CfnOutput(this, 'GreenTgArn', { value: greenTg.targetGroupArn });
     new cdk.CfnOutput(this, 'ProdRuleArn', { value: prodRule.listenerRuleArn });
     new cdk.CfnOutput(this, 'TestRuleArn', { value: testRule.listenerRuleArn });

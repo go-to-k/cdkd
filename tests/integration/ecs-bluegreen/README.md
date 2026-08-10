@@ -1,8 +1,8 @@
 # ecs-bluegreen
 
 Real-AWS coverage for ECS Service `LoadBalancers[].AdvancedConfiguration`
-(the built-in blue/green deployment shape) — issue #1480, follow-up to the
-#1473 silent-drop fix.
+(the built-in blue/green deployment shape) — issue #1480, follow-up to
+the #1473 silent-drop fix.
 
 ## What it proves
 
@@ -25,9 +25,10 @@ Real-AWS coverage for ECS Service `LoadBalancers[].AdvancedConfiguration`
   real-AWS reach plus clean teardown is what a fixture uniquely adds
   (decision recorded on issue #1480).
 - The `LoadBalancers` block is injected via the L1 escape hatch because the
-  ECS L2 does not model `AdvancedConfiguration`; explicit
-  `node.addDependency` edges stand in for the references CDK cannot trace
-  through the override.
+  ECS L2 does not model `AdvancedConfiguration`. The override's tokens still
+  resolve to Ref/GetAtt in the synthesized template (cdkd's analyzer derives
+  the implicit ordering edges from them); the explicit `node.addDependency`
+  edges are deliberate belt-and-suspenders.
 
 ## Run
 

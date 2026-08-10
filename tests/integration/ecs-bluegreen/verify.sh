@@ -67,16 +67,26 @@ LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
-  set +eu
-  if [ -x "${LOCAL_DIST}" ] && [ -n "${STATE_BUCKET:-}" ]; then
-    node "${LOCAL_DIST}" state destroy "${STACK}" --region "${REGION}" \
-      --state-bucket "${STATE_BUCKET}" --yes >/dev/null 2>&1
-  fi
-  if [ -n "${STATE_BUCKET:-}" ]; then
-    aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
-    aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
-  fi
-  set -eu
+  ( set +eu
+    if [ -x "${LOCAL_DIST}" ] && [ -n "${STATE_BUCKET:-}" ]; then
+      node "${LOCAL_DIST}" state destroy "${STACK}" --region "${REGION}" \
+        --state-bucket "${STATE_BUCKET}" --yes >/dev/null 2>&1
+    fi
+    # Out-of-band sweep of the fixed-name ECS pieces so a crashed run cannot
+    # poison the next one even if state destroy failed. Deliberately does NOT
+    # remove state.json: when state destroy fails, that file is the only
+    # ledger of what leaked (VPC/ALB etc.), and the pre-run cleanup below
+    # retries it on the next invocation. Only the transient lock is dropped.
+    for SVC_ARN in $(aws ecs list-services --cluster "${CLUSTER_NAME}" --region "${REGION}" \
+        --query 'serviceArns[]' --output text 2>/dev/null); do
+      aws ecs delete-service --cluster "${CLUSTER_NAME}" --service "${SVC_ARN}" \
+        --force --region "${REGION}" >/dev/null 2>&1
+    done
+    aws ecs delete-cluster --cluster "${CLUSTER_NAME}" --region "${REGION}" >/dev/null 2>&1
+    if [ -n "${STATE_BUCKET:-}" ]; then
+      aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1
+    fi
+  )
 }
 
 trap cleanup EXIT
@@ -98,6 +108,9 @@ if [ ! -d node_modules ]; then
   npm install
 fi
 
+echo "==> Pre-run cleanup"
+cleanup
+
 # --- Phase 1: deploy ---------------------------------------------------
 echo "==> Phase 1: deploy ECS blue/green service (ALB + 2 TGs + rules + infra role)"
 node "${LOCAL_DIST}" deploy "${STACK}" \
@@ -115,11 +128,18 @@ state_output() { # $1 = output key -> value
   printf '%s' "${out}"
 }
 SERVICE_NAME="$(state_output ServiceName)"
+DEPLOYED_CLUSTER_NAME="$(state_output ClusterName)"
+BLUE_TG_ARN="$(state_output BlueTgArn)"
 GREEN_TG_ARN="$(state_output GreenTgArn)"
 PROD_RULE_ARN="$(state_output ProdRuleArn)"
 TEST_RULE_ARN="$(state_output TestRuleArn)"
 INFRA_ROLE_ARN="$(state_output InfraRoleArn)"
+TASK_ROLE_ARN="$(state_output TaskRoleArn)"
 VPC_ID="$(state_output VpcId)"
+if [ "${DEPLOYED_CLUSTER_NAME}" != "${CLUSTER_NAME}" ]; then
+  echo "FAIL: deployed cluster name '${DEPLOYED_CLUSTER_NAME}' != expected '${CLUSTER_NAME}' (fixture drifted from its cleanup sweep)" >&2
+  exit 1
+fi
 echo "    service: ${SERVICE_NAME}"
 
 # --- The #1480 assertion: AdvancedConfiguration reached AWS -------------
@@ -175,8 +195,13 @@ if [ "${CLUSTER_STATUS}" != "None" ] && [ "${CLUSTER_STATUS}" != "INACTIVE" ]; t
   echo "FAIL: cluster status after destroy is '${CLUSTER_STATUS}', expected gone/INACTIVE" >&2
   exit 1
 fi
+# Target groups are NOT children of the ALB (they survive ALB deletion), so
+# BOTH get their own probe — a blue-TG-only leak is invisible to every other
+# assertion here.
+assert_gone "blue target group still exists after destroy" aws elbv2 describe-target-groups --target-group-arns "${BLUE_TG_ARN}" --region "${REGION}"
 assert_gone "green target group still exists after destroy" aws elbv2 describe-target-groups --target-group-arns "${GREEN_TG_ARN}" --region "${REGION}"
 assert_gone "production listener rule still exists after destroy" aws elbv2 describe-rules --rule-arns "${PROD_RULE_ARN}" --region "${REGION}"
+assert_gone "test listener rule still exists after destroy" aws elbv2 describe-rules --rule-arns "${TEST_RULE_ARN}" --region "${REGION}"
 ALB_COUNT="$(aws elbv2 describe-load-balancers --region "${REGION}" \
   --query "length(LoadBalancers[?VpcId=='${VPC_ID}'])" --output text)"
 if [ "${ALB_COUNT}" != "0" ]; then
@@ -185,6 +210,8 @@ if [ "${ALB_COUNT}" != "0" ]; then
 fi
 ROLE_NAME="${INFRA_ROLE_ARN##*/}"
 assert_gone "ECS infrastructure role still exists after destroy" aws iam get-role --role-name "${ROLE_NAME}"
+TASK_ROLE_NAME="${TASK_ROLE_ARN##*/}"
+assert_gone "task role still exists after destroy" aws iam get-role --role-name "${TASK_ROLE_NAME}"
 assert_gone "VPC still exists after destroy" aws ec2 describe-vpcs --vpc-ids "${VPC_ID}" --region "${REGION}"
 echo "    ECS + ELB + IAM + VPC resources deleted"
 
