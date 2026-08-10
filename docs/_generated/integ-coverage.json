@@ -4360,6 +4360,7 @@
         "loggroup-kms-associate",
         "monitoring",
         "remove-protection",
+        "route53",
         "scheduled-task",
         "stepfunctions-logging",
         "tags-propagation"
@@ -4411,6 +4412,9 @@
         "remove-protection": [
           "l1",
           "literal"
+        ],
+        "route53": [
+          "l2"
         ],
         "scheduled-task": [
           "l2"
@@ -5665,6 +5669,7 @@
     "AWS::Lambda::Version",
     "AWS::Logs::LogStream",
     "AWS::Logs::MetricFilter",
+    "AWS::Logs::ResourcePolicy",
     "AWS::Logs::SubscriptionFilter",
     "AWS::NeptuneGraph::Graph",
     "AWS::OpenSearchService::Domain",
