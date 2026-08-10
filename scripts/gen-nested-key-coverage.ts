@@ -675,8 +675,15 @@
  *         BINDING-ROOTED, not alias-aware: a delete through a SECOND binding
  *         to the same object (`const vc = result['VC']; delete vc['K'];`
  *         while `{ ...result['VC'] }` is spread) mutates the shared object
- *         invisibly. True alias analysis is a materially bigger job; no
- *         provider in the tree aliases a blob it deletes from.
+ *         invisibly — and a CALL EDGE is an alias the same way, in both
+ *         directions (a caller that deletes then PASSES the binding to the
+ *         helper whose literal spreads its parameter, and a
+ *         `this.strip(result)` helper that deletes off its own parameter):
+ *         the delete scan never crosses a call boundary. Both directions are
+ *         pre-existing on the FULL hand-off path too, so the recognizer
+ *         narrows the class rather than opening it. True alias analysis is a
+ *         materially bigger job; no provider in the tree aliases — or passes
+ *         to a deleting callee — a blob it spreads.
  *       - The spread delivers the seed's keys VERBATIM, so the credit is only
  *         sound where the CFn and SDK spellings agree — which the audited
  *         verdicts already encode: a same-spelling key IS the agreement, and
@@ -3729,6 +3736,15 @@ export function collectWriteEvidence(
    * Guard for the recursive descent: one (path, literal) pair is walked once.
    * Keyed by pair rather than by literal alone because the SAME literal legally
    * appears at two paths (a shared helper's return delivered to two members).
+   *
+   * The guard makes SPREAD-EXCLUSION precision traversal-order-dependent in
+   * the LOUD direction only (#1475 review): the same seed literal reached at
+   * one path via two chains with different deletes registers with the FIRST
+   * chain's exclusions. A clean second site either rescues coverage through
+   * its FULL hand-off in `recordAt` (a generic-converter seed) or, when it
+   * cannot, leaves an over-exclusion that flags a delivered key — never a
+   * false clear, since the kept registration always corresponds to a real
+   * site whose chain was fully computed.
    */
   const walkedAtPath = new Set<string>();
   let literalIdSeq = 0;
