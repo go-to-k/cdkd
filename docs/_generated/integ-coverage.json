@@ -1030,6 +1030,7 @@
         "ec2-instance",
         "ec2-instance-fanout",
         "ec2-vpc",
+        "ecs-bluegreen",
         "ecs-fargate",
         "ecs-schedule-targets",
         "ecs-service-update-props",
@@ -1100,6 +1101,9 @@
           "l2"
         ],
         "ec2-vpc": [
+          "l2"
+        ],
+        "ecs-bluegreen": [
           "l2"
         ],
         "ecs-fargate": [
@@ -1206,6 +1210,7 @@
         "ec2-instance",
         "ec2-instance-fanout",
         "ec2-vpc",
+        "ecs-bluegreen",
         "ecs-fargate",
         "ecs-schedule-targets",
         "ecs-service-update-props",
@@ -1276,6 +1281,9 @@
           "l2"
         ],
         "ec2-vpc": [
+          "l2"
+        ],
+        "ecs-bluegreen": [
           "l2"
         ],
         "ecs-fargate": [
@@ -1405,6 +1413,7 @@
         "ec2-instance",
         "ec2-instance-fanout",
         "ec2-vpc",
+        "ecs-bluegreen",
         "ecs-fargate",
         "ecs-schedule-targets",
         "ecs-service-update-props",
@@ -1475,6 +1484,9 @@
           "l2"
         ],
         "ec2-vpc": [
+          "l2"
+        ],
+        "ecs-bluegreen": [
           "l2"
         ],
         "ecs-fargate": [
@@ -1581,6 +1593,7 @@
         "ec2-instance",
         "ec2-instance-fanout",
         "ec2-vpc",
+        "ecs-bluegreen",
         "ecs-fargate",
         "ecs-schedule-targets",
         "ecs-service-update-props",
@@ -1651,6 +1664,9 @@
           "l2"
         ],
         "ec2-vpc": [
+          "l2"
+        ],
+        "ecs-bluegreen": [
           "l2"
         ],
         "ecs-fargate": [
@@ -1913,6 +1929,7 @@
         "ec2-instance",
         "ec2-instance-fanout",
         "ec2-vpc",
+        "ecs-bluegreen",
         "ecs-fargate",
         "ecs-schedule-targets",
         "ecs-service-update-props",
@@ -1983,6 +2000,9 @@
           "l2"
         ],
         "ec2-vpc": [
+          "l2"
+        ],
+        "ecs-bluegreen": [
           "l2"
         ],
         "ecs-fargate": [
@@ -2100,6 +2120,7 @@
         "ec2-instance",
         "ec2-instance-fanout",
         "ec2-vpc",
+        "ecs-bluegreen",
         "ecs-fargate",
         "ecs-schedule-targets",
         "ecs-service-update-props",
@@ -2170,6 +2191,9 @@
           "l2"
         ],
         "ec2-vpc": [
+          "l2"
+        ],
+        "ecs-bluegreen": [
           "l2"
         ],
         "ecs-fargate": [
@@ -2276,6 +2300,7 @@
         "ec2-instance",
         "ec2-instance-fanout",
         "ec2-vpc",
+        "ecs-bluegreen",
         "ecs-fargate",
         "ecs-schedule-targets",
         "ecs-service-update-props",
@@ -2347,6 +2372,9 @@
           "l2"
         ],
         "ec2-vpc": [
+          "l2"
+        ],
+        "ecs-bluegreen": [
           "l2"
         ],
         "ecs-fargate": [
@@ -2464,6 +2492,7 @@
         "ec2-instance",
         "ec2-instance-fanout",
         "ec2-vpc",
+        "ecs-bluegreen",
         "ecs-fargate",
         "ecs-schedule-targets",
         "ecs-service-update-props",
@@ -2534,6 +2563,9 @@
           "l2"
         ],
         "ec2-vpc": [
+          "l2"
+        ],
+        "ecs-bluegreen": [
           "l2"
         ],
         "ecs-fargate": [
@@ -2657,6 +2689,7 @@
       "resourceType": "AWS::ECS::Cluster",
       "integs": [
         "drift-revert",
+        "ecs-bluegreen",
         "ecs-fargate",
         "ecs-schedule-targets",
         "ecs-service-update-props",
@@ -2669,6 +2702,9 @@
       "signals": {
         "drift-revert": [
           "l1"
+        ],
+        "ecs-bluegreen": [
+          "l2"
         ],
         "ecs-fargate": [
           "l2"
@@ -2701,6 +2737,7 @@
     {
       "resourceType": "AWS::ECS::Service",
       "integs": [
+        "ecs-bluegreen",
         "ecs-fargate",
         "ecs-service-update-props",
         "local-ecs-service-connect",
@@ -2710,6 +2747,9 @@
         "local-start-service-watch-fast"
       ],
       "signals": {
+        "ecs-bluegreen": [
+          "l2"
+        ],
         "ecs-fargate": [
           "l2",
           "literal"
@@ -2742,6 +2782,7 @@
     {
       "resourceType": "AWS::ECS::TaskDefinition",
       "integs": [
+        "ecs-bluegreen",
         "ecs-fargate",
         "ecs-schedule-targets",
         "ecs-service-update-props",
@@ -2757,6 +2798,9 @@
         "local-start-service-watch-fast"
       ],
       "signals": {
+        "ecs-bluegreen": [
+          "l2"
+        ],
         "ecs-fargate": [
           "l2"
         ],
@@ -2980,6 +3024,7 @@
         "alb-advanced",
         "deletion-ordering-complex",
         "drift-revert-vpc",
+        "ecs-bluegreen",
         "local-start-alb",
         "local-start-alb-from-state",
         "remove-protection"
@@ -2998,6 +3043,9 @@
         "drift-revert-vpc": [
           "l2",
           "literal"
+        ],
+        "ecs-bluegreen": [
+          "l2"
         ],
         "local-start-alb": [
           "l1",
@@ -3321,6 +3369,7 @@
         "dlm-lifecycle-policy",
         "drift-revert",
         "ec2-instance-fanout",
+        "ecs-bluegreen",
         "emr-cluster",
         "emr-instance-configs",
         "emr-instance-fleets",
@@ -3417,6 +3466,9 @@
           "l2"
         ],
         "ec2-instance-fanout": [
+          "l2"
+        ],
+        "ecs-bluegreen": [
           "l2"
         ],
         "emr-cluster": [
