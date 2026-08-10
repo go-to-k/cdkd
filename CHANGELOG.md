@@ -1,3 +1,10 @@
+## [0.278.40](https://github.com/go-to-k/cdkd/compare/v0.278.39...v0.278.40) (2026-08-10)
+
+
+### Bug Fixes
+
+* **elbv2:** reset a removed TargetGroup HealthCheckPort to traffic-port ([#1160](https://github.com/go-to-k/cdkd/issues/1160) elbv2 batch) ([#1532](https://github.com/go-to-k/cdkd/issues/1532)) ([54a26e5](https://github.com/go-to-k/cdkd/commit/54a26e560316c39aeded7d921b86ebaae33d749d))
+
 ## [0.278.39](https://github.com/go-to-k/cdkd/compare/v0.278.38...v0.278.39) (2026-08-10)
 
 
