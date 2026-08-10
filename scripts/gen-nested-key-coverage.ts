@@ -23,17 +23,22 @@
  * ----------------------
  * For each declared TARGET (a provider that forwards nested CFn config):
  *   1. CFn side: the schema fixture's `nestedProperties` capture
- *      (tests/fixtures/cfn-schemas/*.json, refreshed by
+ *      (tests/fixtures/cfn-schemas/<type>.json, refreshed by
  *      `node scripts/refresh-cfn-schemas.mjs`) lists every nested property
  *      name reachable beneath each top-level property. Only the provider's
  *      OWN `handledProperties` top-levels are audited — unhandled top-levels
- *      are already rejected pre-flight by `property-coverage`.
+ *      are already rejected pre-flight by `property-coverage`. The audited
+ *      unit is the PATH `TopLevelProperty.NestedKey` (issue #1448), not a
+ *      de-duplicated bare name: `ServiceRole` beneath `BuildBatchConfig` and
+ *      `ServiceRole` beneath anything else are different facts.
  *   2. SDK side: every property name declared in the SDK client's model
  *      typings (`node_modules/@aws-sdk/client-<svc>/dist-types/models/`),
  *      parsed via the TypeScript Compiler API.
  *   3. Provider side: every string literal in the provider source (AST-level,
- *      so comments do not count). A key the provider names explicitly is
- *      evidence it converts / special-cases that key somewhere.
+ *      so comments do not count), excluding the reverse map's body
+ *      ({@link REVERSE_MAP_FUNCTION_PREFIXES}). A key the provider names
+ *      explicitly on the FORWARD path is evidence it converts / special-cases
+ *      that key somewhere.
  *
  * A CFn nested key is a FLAGGED divergence when its spelling (after the
  * target's declared key style — `exact` for PascalCase SDK models like
@@ -89,9 +94,19 @@
  * So for a target that declares {@link NestedKeyTarget.freshObjectMapper}, a
  * would-be `same-spelling` key must ALSO carry WRITE evidence: its SDK-side
  * spelling must appear as a WRITTEN member name — an object-literal property
- * (`batchReportMode: ...`), a shorthand property, or an assignment target
- * (`sdk.batchReportMode = ...` / `sdk['batchReportMode'] = ...`). Otherwise it
- * lands in the CI-blocking `no-write-evidence` bucket.
+ * (`batchReportMode: ...`), a shorthand property, an assignment target
+ * (`sdk.batchReportMode = ...` / `sdk['batchReportMode'] = ...`, including the
+ * compound `??=` / `||=` / `+=` forms), or an
+ * `Object.defineProperty(sdk, 'batchReportMode', ...)` call. Otherwise it lands
+ * in the CI-blocking `no-write-evidence` bucket.
+ *
+ * A literal built only to be DIFFED is not delivery: an object whose only
+ * consumer is a comparison or a measurement
+ * (`JSON.stringify({ batchReportMode: x }) !== JSON.stringify(prev)`, the
+ * change-detection idiom of a diff-heavy `update()`) names its members without
+ * sending any of them, so it contributes no evidence. The sibling critic
+ * `gen-handled-property-wiring` encodes the same rule on the READ side; this is
+ * its write-side twin ({@link feedsOnlyComparison}).
  *
  * READS DO NOT COUNT, AND `readCurrentState` IS EXCLUDED
  * ------------------------------------------------------
@@ -105,7 +120,7 @@
  * (`result['CorsConfiguration'] = ...`) WOULD vouch for the forward mapper.
  * That is #1393 item 2 — the file-global heuristic clearing a genuine
  * divergence — reappearing one bucket over, so the collector skips the bodies
- * of {@link WRITE_EVIDENCE_EXCLUDED_FUNCTION_PREFIXES}. Measured on the real
+ * of {@link REVERSE_MAP_FUNCTION_PREFIXES}. Measured on the real
  * tree, the exclusion withdraws 8 names from `s3-bucket-provider.ts`
  * (`BucketName`, `BucketEncryption`, `CorsConfiguration`, `LoggingConfiguration`
  * and the four `*Configurations` plurals), 71 from `codebuild-provider.ts`, and
@@ -115,20 +130,29 @@
  *
  * WHY THE PASS IS OPT-IN PER TARGET, AND WHY ONLY CODEBUILD TODAY
  * ---------------------------------------------------------------
- * Measured against the real tree before choosing. Counts are would-be
- * `same-spelling` keys with no write evidence:
+ * Measured against the real tree, RE-RUN under the path-scoped evidence of
+ * issue #1448 (the pre-#1448 name-global numbers were 0/55, 12/20, 13/13,
+ * 19/89, 22/107, 37/48, 70/112 — a 173 total). Counts are would-be
+ * `same-spelling` key PATHS with no scoped write evidence:
  *
- *   AWS::CodeBuild::Project             0 / 55   <- opted in
- *   AWS::CloudWatch::AnomalyDetector   12 / 20
+ *   AWS::CodeBuild::Project             0 / 90   <- opted in
  *   AWS::ApiGatewayV2::* (combined)    13 / 13
- *   AWS::S3::Bucket                    19 / 89
- *   AWS::ECS::TaskDefinition           22 / 107
- *   AWS::ECS::Service                  37 / 48
- *   AWS::CloudFront::Distribution      70 / 112
+ *   AWS::ECS::TaskDefinition           25 / 115
+ *   AWS::CloudWatch::AnomalyDetector   29 / 29
+ *   AWS::ECS::Service                  44 / 54
+ *   AWS::S3::Bucket                   106 / 125
+ *   AWS::CloudFront::Distribution     110 / 112
  *
- * Those non-zero counts are NOT 173 silent drops. They are this pass's blind
- * spot: a GENERIC key converter delivers a whole sub-blob without naming any
- * member. `ECSProvider.convertLinuxParameters` is the clean demonstration —
+ * Scoping raised the blind-spot total from 173 to 327 while leaving the only
+ * opted-in target at 0 — the counts grew because a generic converter delivers a
+ * blob under a name the scope index cannot see INTO, so every member beneath it
+ * now misses its scope instead of being vouched for by an unrelated same-spelled
+ * write elsewhere in the file. That is the honest measurement of the same blind
+ * spot, not a new one.
+ *
+ * Those non-zero counts are NOT 327 silent drops. They are this pass's LARGEST
+ * blind spot (not its only one — see the known-bounds section below): a GENERIC
+ * key converter delivers a whole sub-blob without naming any member. `ECSProvider.convertLinuxParameters` is the clean demonstration —
  * `return pascalToCamelCaseKeys(config)` delivers `Capabilities`, `Devices`,
  * `Tmpfs`, `Swappiness` and the rest with zero writes to find. Enabling the
  * pass tree-wide would bury a real finding under dozens of false ones, and an
@@ -141,27 +165,81 @@
  * `gen-handled-property-wiring` already tracks one level up — is what the other
  * targets need first; that is issue #1445.
  *
- * WRITE EVIDENCE IS NAME-GLOBAL, SO IT ONLY FENCES UNIQUELY-NAMED MEMBERS
- * -----------------------------------------------------------------------
- * The collected set is a flat set of names for the whole provider FILE, so a
- * member written ANYWHERE vouches for every CFn key that maps to that spelling.
- * Measured on `codebuild-provider.ts`: 11 of the 55 same-spelling keys have more
- * than one write site — `Type` (9), `Location` (5), `Name` (5), `ComputeType`,
- * `EncryptionDisabled`, `SecurityGroupIds`, `ServiceRole`, `SourceIdentifier`,
- * `SourceVersion`, `Status`, `Value` (2 each). Deleting the forward write of any
- * ONE of those leaves the key `same-spelling`, because a sibling site still
- * carries the name.
+ * WRITE EVIDENCE IS PATH-SCOPED (issue #1448)
+ * -------------------------------------------
+ * As shipped in #1432 the evidence was a flat set of names for the whole
+ * provider FILE, so a member written ANYWHERE vouched for every CFn key with
+ * that spelling. Measured on `codebuild-provider.ts` at the time: 11 of the 55
+ * same-spelling keys had more than one write site — `Type` (9), `Location` (5),
+ * `Name` (5), `ComputeType`, `EncryptionDisabled`, `SecurityGroupIds`,
+ * `ServiceRole`, `SourceIdentifier`, `SourceVersion`, `Status`, `Value` (2
+ * each) — so deleting the forward write of any ONE of them stayed silent, and
+ * the pass really only fenced the 44 uniquely-named members.
  *
- * `BuildBatchConfig.ServiceRole` is the sharpest case — the SIBLING of the
- * motivating bug: dropping it stays silent because the top-level `serviceRole`
- * write vouches for it. So the honest claim is that this pass fences the 44
- * uniquely-named members (including `BatchReportMode` itself), not all 55.
+ * `BuildBatchConfig.ServiceRole` was the sharpest case: the SIBLING of the
+ * member that motivated #1432, cleared by the unrelated top-level
+ * `serviceRole:` write.
  *
- * This is inherent to the critic's flat key model rather than to this pass:
- * `nestedKeysForTarget` yields a de-duplicated set of NAMES, not paths, so
- * top-level `ServiceRole` and `BuildBatchConfig.ServiceRole` are literally the
- * same audited key. Scoping evidence to the enclosing object literal (and the
- * key model to paths) is tracked as issue #1448.
+ * The root cause was the flat KEY model, not the pass, so both sides moved:
+ *   - CFn side — the audited unit is now the PATH `Top.NestedKey`
+ *     ({@link nestedKeyPathsForTarget}), so top-level `ServiceRole` and
+ *     `BuildBatchConfig.ServiceRole` stop being the same audited key.
+ *   - Provider side — {@link collectWriteEvidence} indexes each written member
+ *     name to every member written BENEATH the value it is written with,
+ *     resolving `this.mapSource(source)` calls, `const`/`let` bindings, `?:` /
+ *     `??` arms, array elements and `.map(cb)` callbacks the way the #1404 taint
+ *     walk resolves its forwards. `buildBatchConfig` therefore scopes to exactly
+ *     the seven members of the literal it is assigned.
+ *
+ * A path's terminal member is checked against the scope its TOP-LEVEL maps to.
+ * Deleting `serviceRole:` from the `buildBatchConfig` literal of the real
+ * provider now exits 1 naming `BuildBatchConfig.ServiceRole` (asserted by a
+ * spawned `--check` against a scratch copy of the real tree), while the
+ * name-global set still contains `serviceRole` — which is what makes the fix
+ * measurable rather than asserted.
+ *
+ * WHAT PATH-SCOPING DOES **NOT** CLOSE — MEASURED, NOT PREDICTED
+ * --------------------------------------------------------------
+ * Scoping NARROWS the duplicate-name class; it does not close it. Read this
+ * before writing "membership makes X non-regressing" anywhere: the bullet
+ * #1448 replaced made exactly that over-promise one level up, and the same
+ * mistake is available one level down.
+ *
+ * (1) DUPLICATE NAME INSIDE THE SAME TOP-LEVEL still vouches. The fixture's
+ *     `nestedProperties` capture is FLATTENED per top-level, so
+ *     `Environment.Type` and `Environment.EnvironmentVariables[].Type` are the
+ *     SAME audited path, and the scope index is flattened to match. Both of
+ *     these are real, and both stay silent on the only opted-in target —
+ *     verified by deleting the line from a scratch copy of the real
+ *     `codebuild-provider.ts` and running `--check`:
+ *       - `environment: { type: … }` deleted -> exit 0, because
+ *         `environmentVariables[].type` is also under `environment`.
+ *       - `source: { type: … }` deleted (in `mapSource`) -> exit 0, because
+ *         `auth.type` is also under `source`.
+ *     Both are genuine silent drops. Closing this needs a per-PATH fixture
+ *     capture (`nestedPropertyPaths` in `scripts/refresh-cfn-schemas.mjs` plus
+ *     an AWS re-capture of every fixture), which is a bigger change than the
+ *     critic and is NOT done here.
+ *
+ * (2) SCOPES ARE KEYED BY NAME AND UNIONED ACROSS WRITE SITES. `record()` merges
+ *     every write of the same member name, so two unrelated `environment: { … }`
+ *     literals in different methods contribute to one `environment` scope, and a
+ *     write that only ever appears NESTED (`logsConfig: { cloudWatchLogs: { … } }`)
+ *     still creates a top-level-looking `cloudWatchLogs` scope. This is the
+ *     name-global weakness reappearing one level down. Keeping per-SITE sets
+ *     would not help the positive test (a key is cleared if ANY site covers it,
+ *     which is the union), so the honest fix is the same per-path capture as (1).
+ *
+ * (3) VALUE RESOLUTION IS BEST-EFFORT AND BARE-NAME. Same-file callables are
+ *     indexed by name (`this.helper(…)` / `helper(…)`), identifier bindings are
+ *     searched per enclosing scope OUTWARD and are not block-scope-aware (two
+ *     disjoint `if` branches binding the same name are unioned), and a hop the
+ *     walk cannot follow yields NO literals — which flags CORRECT code. That
+ *     last direction is the dangerous one, which is why {@link unwrapExpression}
+ *     peels `await` and the identifier search climbs to the module scope.
+ *
+ * Each of (1) and (2) is pinned by a test, so the bound is a recorded fact
+ * rather than a surprise for the next reader.
  *
  * WHAT THE CRITIC STILL DOES NOT DO
  * ---------------------------------
@@ -179,6 +257,12 @@
  * Usage:
  *   node --experimental-strip-types scripts/gen-nested-key-coverage.ts          # write the matrix
  *   node --experimental-strip-types scripts/gen-nested-key-coverage.ts --check  # fail on a divergence
+ *
+ * `--providers-dir=<path>` is a TEST SEAM (issue #1448): it points the provider
+ * walk at a scratch COPY of `src/provisioning/providers`, so the unit tests can
+ * inject a regression into REAL provider source and assert the shipped exit
+ * code — the repo's checker rule that a CI-blocking fence must be proven to
+ * fire against real code, not only against synthetic fixtures.
  */
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -223,11 +307,11 @@ export const MIN_SDK_MEMBERS_PER_CLIENT = 50;
  * 82 (the only opted-in target today), `apigatewayv2-provider.ts` 46,
  * `cloudfront-distribution-provider.ts` 64,
  * `cloudwatch-anomaly-detector-provider.ts` **17**. That last one is why the
- * floor is 10 rather than a value tuned to CodeBuild: a floor of 30 would throw
- * "parser regression?" on a perfectly correct parse the moment the smallest
- * provider opts in (#1445). A per-target floor, mirroring
- * {@link NestedKeyTarget.minNestedKeys}, is what a genuinely tight fence would
- * need — tracked in #1448.
+ * DEFAULT is 10 rather than a value tuned to CodeBuild: a floor of 30 would
+ * throw "parser regression?" on a perfectly correct parse the moment the
+ * smallest provider opts in (#1445). Each opted-in target then tightens it with
+ * {@link NestedKeyTarget.minWrittenMembers}, mirroring
+ * {@link NestedKeyTarget.minNestedKeys} — issue #1448.
  */
 export const MIN_WRITTEN_MEMBERS_PER_PROVIDER = 10;
 
@@ -252,11 +336,18 @@ export interface NestedKeyTarget {
   readonly sdkClientPackage: string;
   readonly keyStyle: KeyStyle;
   /**
-   * CFn-side parser-regression floor: the MINIMUM nested-key count this
+   * CFn-side parser-regression floor: the MINIMUM nested-key PATH count this
    * target is known to yield. A yield below it means the fixture capture or
    * the provider's `handledProperties` parse regressed — fail loudly rather
-   * than report a vacuously clean target. Set from the observed count at
-   * introduction, rounded down generously (schemas only grow).
+   * than report a vacuously clean target. Set from the observed count, rounded
+   * down generously (schemas only grow).
+   *
+   * RE-CALIBRATED to the path unit by #1448 — the audited unit changed from a
+   * de-duplicated name to a `Top.Key` path, so every yield grew (CodeBuild
+   * 57 -> 93, S3 115 -> 155, CloudWatch AnomalyDetector 21 -> 30) while the
+   * floors stayed at their name-era values. Leaving them would have been the
+   * same miscalibration this issue fixed on the write side: a floor that no
+   * longer fences anything.
    */
   readonly minNestedKeys: number;
   /**
@@ -267,6 +358,33 @@ export interface NestedKeyTarget {
    * the remaining targets need before they can set it.
    */
   readonly freshObjectMapper?: boolean;
+  /**
+   * Per-target tightening of {@link MIN_WRITTEN_MEMBERS_PER_PROVIDER}. Set from
+   * the observed yield at opt-in, rounded down generously. Only meaningful
+   * alongside {@link freshObjectMapper}.
+   */
+  readonly minWrittenMembers?: number;
+  /**
+   * Parser-regression floor for the write SCOPE index (issue #1448), needed
+   * separately from {@link minWrittenMembers} because the two collector outputs
+   * regress independently: a break in the VALUE resolution (the
+   * `this.mapSource(...)` / binding / `.map(cb)` walk) leaves every write NAME
+   * collected and every scope EMPTY, which flags every same-spelling key while
+   * the name floor sits comfortably clear.
+   *
+   * Deliberately per-target with NO module-wide default: measured non-empty
+   * scope counts on the real tree span two orders of magnitude
+   * (`s3-bucket-provider.ts` 51, `ecs-provider.ts` 34, `codebuild-provider.ts`
+   * 23, `cloudfront-distribution-provider.ts` 21,
+   * `cloudwatch-anomaly-detector-provider.ts` 2, `apigatewayv2-provider.ts` 1),
+   * because a provider that forwards blobs through a generic converter builds
+   * almost no scoped literals. Any shared floor high enough to fence CodeBuild
+   * would throw "parser regression?" on a perfectly correct parse the moment
+   * API Gateway v2 opts in — the miscalibration the #1449 review caught in
+   * {@link MIN_WRITTEN_MEMBERS_PER_PROVIDER}. So the target that opts in
+   * declares the floor from its own measurement.
+   */
+  readonly minWriteScopes?: number;
 }
 
 /**
@@ -282,14 +400,14 @@ export const NESTED_KEY_TARGETS: readonly NestedKeyTarget[] = [
     providerFile: 'cloudfront-distribution-provider.ts',
     sdkClientPackage: '@aws-sdk/client-cloudfront',
     keyStyle: 'exact',
-    minNestedKeys: 100,
+    minNestedKeys: 110,
   },
   {
     resourceType: 'AWS::CloudWatch::AnomalyDetector',
     providerFile: 'cloudwatch-anomaly-detector-provider.ts',
     sdkClientPackage: '@aws-sdk/client-cloudwatch',
     keyStyle: 'exact',
-    minNestedKeys: 5,
+    minNestedKeys: 25,
   },
   {
     resourceType: 'AWS::ApiGatewayV2::Api',
@@ -324,21 +442,21 @@ export const NESTED_KEY_TARGETS: readonly NestedKeyTarget[] = [
     providerFile: 'apigatewayv2-provider.ts',
     sdkClientPackage: '@aws-sdk/client-apigatewayv2',
     keyStyle: 'exact',
-    minNestedKeys: 0,
+    minNestedKeys: 2,
   },
   {
     resourceType: 'AWS::ECS::Service',
     providerFile: 'ecs-provider.ts',
     sdkClientPackage: '@aws-sdk/client-ecs',
     keyStyle: 'lower-first',
-    minNestedKeys: 30,
+    minNestedKeys: 45,
   },
   {
     resourceType: 'AWS::ECS::TaskDefinition',
     providerFile: 'ecs-provider.ts',
     sdkClientPackage: '@aws-sdk/client-ecs',
     keyStyle: 'lower-first',
-    minNestedKeys: 50,
+    minNestedKeys: 105,
   },
   {
     // Added by issue #1386. The provider rebuilds Source / Environment / Cache /
@@ -350,13 +468,17 @@ export const NESTED_KEY_TARGETS: readonly NestedKeyTarget[] = [
     providerFile: 'codebuild-provider.ts',
     sdkClientPackage: '@aws-sdk/client-codebuild',
     keyStyle: 'lower-first',
-    minNestedKeys: 40,
+    minNestedKeys: 80,
     // Issue #1432: the fresh-object shape this target was added FOR is exactly
     // the one `same-spelling` cannot vouch for, and the #1386 sweep still
     // missed `BuildBatchConfig.BatchReportMode` under it. Measured at 0
     // findings today (55 same-spelling keys, all hand-named), so the opt-in
-    // costs no allow-list entries and makes that fix non-regressing.
+    // costs no allow-list entries and makes that fix non-regressing. Still 0
+    // after #1448 made the evidence PATH-SCOPED (90 same-spelling paths).
     freshObjectMapper: true,
+    // Measured: 82 written member names, 23 non-empty write scopes.
+    minWrittenMembers: 60,
+    minWriteScopes: 15,
   },
   {
     // Added by issue #1430. `S3BucketProvider` declares a dozen nested config
@@ -390,17 +512,67 @@ export const NESTED_KEY_TARGETS: readonly NestedKeyTarget[] = [
     providerFile: 's3-bucket-provider.ts',
     sdkClientPackage: '@aws-sdk/client-s3',
     keyStyle: 'exact',
-    minNestedKeys: 100,
+    minNestedKeys: 140,
   },
 ];
 
+/**
+ * Which pass an allow-list entry is allowed to silence (issue #1448).
+ *   - `key`   — the key pass's `case-divergence` / `no-sdk-member` verdicts.
+ *   - `shape` — both shape-pass verdicts.
+ *   - `write` — the write-evidence pass's `no-write-evidence` verdict.
+ */
+export type AllowPass = 'key' | 'shape' | 'write';
+
+/**
+ * The passes an entry silences when it does not say. Preserves the DELIBERATE
+ * #1378 cross-pass sharing between the key and shape passes — every audited
+ * failure mode of a key judged pass-through-safe is the same decision.
+ *
+ * `write` is deliberately NOT in the default. The #1378 decision predates the
+ * write-evidence pass, and the two questions are unrelated: "this key is a
+ * legacy member with no modern SDK equivalent" says nothing about whether the
+ * provider WRITES a member it demonstrably has. Without this split, one entry
+ * rationale'd for a SHAPE verdict silently clears a future `no-write-evidence`
+ * on the same key — one entry silencing three blocking buckets.
+ */
+const DEFAULT_ALLOW_PASSES: readonly AllowPass[] = ['key', 'shape'];
+
 export interface AllowListEntry {
   readonly rationale: string;
+  /** Defaults to {@link DEFAULT_ALLOW_PASSES}; opt into `write` explicitly. */
+  readonly passes?: readonly AllowPass[];
 }
+
+/** Does this entry silence `pass`? */
+export const allowEntryApplies = (entry: AllowListEntry, pass: AllowPass): boolean =>
+  (entry.passes ?? DEFAULT_ALLOW_PASSES).includes(pass);
 
 /** Allow-list key: `ResourceType#NestedKey` via {@link allowKey}. */
 export const allowKey = (resourceType: string, nestedKey: string): string =>
   `${resourceType}#${nestedKey}`;
+
+/**
+ * Look an entry up for a PATH-shaped audited key (issue #1448). A path-precise
+ * entry (`AWS::CodeBuild::Project#BuildBatchConfig.ServiceRole`) wins; a
+ * terminal-name entry (`…#ServiceRole`) is the fallback, so the pre-path
+ * entries stay valid and one decision can still cover a key reachable beneath
+ * several top-levels. Returns the MATCHED key too, so staleness is exact.
+ */
+export function lookupAllowEntry(
+  allowList: ReadonlyMap<string, AllowListEntry>,
+  resourceType: string,
+  path: string,
+  terminalKey: string,
+  pass: AllowPass
+): { key: string; entry: AllowListEntry } | undefined {
+  for (const candidate of path === terminalKey ? [path] : [path, terminalKey]) {
+    const key = allowKey(resourceType, candidate);
+    const entry = allowList.get(key);
+    if (entry !== undefined && allowEntryApplies(entry, pass)) return { key, entry };
+  }
+  return undefined;
+}
 
 /**
  * Deliberate pass-throughs the critic must not fail on. Each entry is a
@@ -412,6 +584,12 @@ export const allowKey = (resourceType: string, nestedKey: string): string =>
  * of a key the maintainer has judged pass-through-safe (legacy members,
  * dedicated side-channel handling) is the same decision, and a per-pass key
  * would triple the entries for no reviewable difference.
+ *
+ * The WRITE-EVIDENCE pass is outside that sharing and needs an explicit
+ * `passes: ['write', ...]` (issue #1448) — see {@link AllowPass}. Keys are
+ * matched path-first, terminal-name-second ({@link lookupAllowEntry}), so an
+ * entry can be scoped to one `Top.Key` path or left to cover the key wherever
+ * it is reachable.
  */
 export const NESTED_KEY_ALLOW_LIST: ReadonlyMap<string, AllowListEntry> = new Map<
   string,
@@ -525,7 +703,16 @@ export type Bucket =
 
 export interface NestedKeyClassification {
   readonly resourceType: string;
+  /**
+   * The audited unit: a PATH `TopLevelProperty.NestedKey` (issue #1448). It was
+   * a bare de-duplicated NAME through #1432, which made top-level `ServiceRole`
+   * and `BuildBatchConfig.ServiceRole` literally the same audited key.
+   */
   readonly nestedKey: string;
+  /** The path's first segment — the provider-handled top-level property. */
+  readonly topLevelProperty: string;
+  /** The path's last segment — the CFn member name itself. */
+  readonly terminalKey: string;
   readonly bucket: Bucket;
   /**
    * For case-divergence: the SDK member the key case-insensitively matches.
@@ -534,6 +721,8 @@ export interface NestedKeyClassification {
    */
   readonly sdkNearMiss?: string;
   readonly rationale?: string;
+  /** For allow-listed: the allow-list key that matched (path or terminal). */
+  readonly allowMatchKey?: string;
 }
 
 /**
@@ -572,6 +761,8 @@ export interface NestedShapeClassification {
   /** Human-oriented detail (e.g. the wrapper interface name). */
   readonly sdkDetail?: string;
   readonly rationale?: string;
+  /** For allow-listed: the allow-list key that matched. */
+  readonly allowMatchKey?: string;
 }
 
 export interface TargetReport {
@@ -753,48 +944,25 @@ export function expandLiteralSegments(literals: ReadonlySet<string>): Set<string
 }
 
 /**
- * Collect every string literal in the provider source, AST-level (so a key
- * named only in a comment does NOT count as handled). Covers conversion-map
- * keys (`AcmCertificateArn: 'ACMCertificateArn'` — the property NAME is an
- * identifier, but the paired SDK spelling and every element-access site are
- * literals), element accesses (`config['OriginSSLProtocols']`), and
- * conversion-list entries (`['Origins', 'CacheBehaviors']`).
- */
-export function collectStringLiterals(sourceText: string, fileName = 'provider.ts'): Set<string> {
-  const sf = ts.createSourceFile(
-    fileName,
-    sourceText,
-    ts.ScriptTarget.ESNext,
-    true,
-    ts.ScriptKind.TS
-  );
-  const literals = new Set<string>();
-  const visit = (node: ts.Node): void => {
-    if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
-      literals.add(node.text);
-    }
-    // Object-literal property NAMES are identifiers, not literals — but a
-    // conversion map keyed by CFn spelling (`AcmCertificateArn: '...'`) is
-    // exactly the "provider names this key" evidence we want.
-    if (ts.isPropertyAssignment(node) && ts.isIdentifier(node.name)) {
-      literals.add(node.name.text);
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(sf);
-  return literals;
-}
-
-/**
- * Function-name PREFIXES whose bodies the WRITE-EVIDENCE collector skips
- * (issue #1432).
+ * Function-name PREFIXES whose bodies every evidence collector in this file
+ * skips: the SDK->CFn REVERSE map (issue #1432, widened to the key / shape
+ * passes by #1448).
  *
- * `readCurrentState` is the SDK->CFn REVERSE map. For a `lower-first` target
- * its writes are CFn-spelled and can never collide with an SDK member name, but
- * for an `exact` target the two spellings are identical, so its
+ * `readCurrentState` reads the SDK member and writes the CFn spelling. For a
+ * `lower-first` target its writes can never collide with an SDK member name,
+ * but for an `exact` target the two spellings are identical, so its
  * `result['CorsConfiguration'] = ...` would vouch for a forward mapper that
  * never names the member — #1393 item 2 reappearing one bucket over. Excluding
- * the body is what keeps the pass direction-scoped.
+ * the body is what keeps the evidence direction-scoped.
+ *
+ * The same argument applies to the LITERAL set behind the `provider-handled`
+ * verdict: a CFn key mentioned only by the reverse map is evidence the provider
+ * can READ it back, not that the forward mapper converts it (issue #1448
+ * comment item 2 — the asymmetry of excluding the reverse map from the write
+ * pass but not from the key pass). Measured on the real tree, applying the
+ * exclusion to the literal set moves NO key into a blocking bucket in either
+ * the key or the shape pass, so the tightening is free today and fences the
+ * next reverse-map-only mention.
  *
  * PREFIX rather than exact match, because the reverse map is routinely split
  * per sub-resource: `apigateway-provider.ts` declares
@@ -805,29 +973,51 @@ export function collectStringLiterals(sourceText: string, fileName = 'provider.t
  * letter), so `readCurrentStatelessThing` is not swallowed by the
  * `readCurrentState` prefix.
  *
- * Measured withdrawal on the real tree: 8 names from `s3-bucket-provider.ts`,
- * 71 from `codebuild-provider.ts`, 42 from `ecs-provider.ts`. The ECS number is
- * what the earlier EXACT-name match missed entirely — its reverse map is split
- * into `readCurrentStateService` / `readCurrentStateTaskDefinition`.
+ * Measured withdrawal from the WRITE set on the real tree: 8 names from
+ * `s3-bucket-provider.ts`, 71 from `codebuild-provider.ts`, 42 from
+ * `ecs-provider.ts`. The ECS number is what the earlier EXACT-name match missed
+ * entirely — its reverse map is split into `readCurrentStateService` /
+ * `readCurrentStateTaskDefinition`.
  */
-export const WRITE_EVIDENCE_EXCLUDED_FUNCTION_PREFIXES: readonly string[] = ['readCurrentState'];
+export const REVERSE_MAP_FUNCTION_PREFIXES: readonly string[] = ['readCurrentState'];
 
 /**
- * Collect every member name the provider WRITES, AST-level.
- *
- * A write is an object-literal property name (`batchReportMode: value`), a
- * shorthand property (`{ batchReportMode }`), or an assignment target
- * (`sdk.batchReportMode = ...` / `sdk['batchReportMode'] = ...`). A READ
- * (`desc.batchReportMode` in a non-assignment position) deliberately does NOT
- * count — that asymmetry is what scopes the evidence to the CFn->SDK mapping
- * direction rather than the reverse map.
- *
- * Bodies of {@link WRITE_EVIDENCE_EXCLUDED_FUNCTION_PREFIXES} are skipped entirely.
+ * Does `name` match one of `prefixes` at a word boundary (the whole name, or
+ * the prefix followed by an uppercase letter)?
  */
-export function collectWrittenMemberNames(
+const matchesFunctionPrefix = (name: string, prefixes: readonly string[]): boolean =>
+  prefixes.some((p) => name === p || (name.startsWith(p) && /[A-Z]/.test(name.charAt(p.length))));
+
+/** The declared name of a function-ish node, when it is a plain identifier. */
+const declaredFunctionName = (node: ts.Node): string | undefined => {
+  if (
+    ts.isMethodDeclaration(node) ||
+    ts.isFunctionDeclaration(node) ||
+    ts.isPropertyDeclaration(node) ||
+    ts.isVariableDeclaration(node) ||
+    ts.isGetAccessorDeclaration(node) ||
+    ts.isSetAccessorDeclaration(node)
+  ) {
+    return node.name !== undefined && ts.isIdentifier(node.name) ? node.name.text : undefined;
+  }
+  return undefined;
+};
+
+/**
+ * Collect every string literal in the provider source, AST-level (so a key
+ * named only in a comment does NOT count as handled). Covers conversion-map
+ * keys (`AcmCertificateArn: 'ACMCertificateArn'` — the property NAME is an
+ * identifier, but the paired SDK spelling and every element-access site are
+ * literals), element accesses (`config['OriginSSLProtocols']`), and
+ * conversion-list entries (`['Origins', 'CacheBehaviors']`).
+ *
+ * Bodies of {@link REVERSE_MAP_FUNCTION_PREFIXES} are skipped, for the reason
+ * documented there.
+ */
+export function collectStringLiterals(
   sourceText: string,
   fileName = 'provider.ts',
-  excludedFunctionPrefixes: readonly string[] = WRITE_EVIDENCE_EXCLUDED_FUNCTION_PREFIXES
+  excludedFunctionPrefixes: readonly string[] = REVERSE_MAP_FUNCTION_PREFIXES
 ): Set<string> {
   const sf = ts.createSourceFile(
     fileName,
@@ -836,7 +1026,253 @@ export function collectWrittenMemberNames(
     true,
     ts.ScriptKind.TS
   );
+  const literals = new Set<string>();
+  const visit = (node: ts.Node, excluded: boolean): void => {
+    let inExcluded = excluded;
+    if (!inExcluded) {
+      const name = declaredFunctionName(node);
+      if (name !== undefined && matchesFunctionPrefix(name, excludedFunctionPrefixes)) {
+        inExcluded = true;
+      }
+    }
+    if (!inExcluded) {
+      if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
+        literals.add(node.text);
+      }
+      // Object-literal property NAMES are identifiers, not literals — but a
+      // conversion map keyed by CFn spelling (`AcmCertificateArn: '...'`) is
+      // exactly the "provider names this key" evidence we want.
+      if (ts.isPropertyAssignment(node) && ts.isIdentifier(node.name)) {
+        literals.add(node.name.text);
+      }
+    }
+    ts.forEachChild(node, (child) => visit(child, inExcluded));
+  };
+  visit(sf, false);
+  return literals;
+}
+
+/**
+ * Peel `(x)` / `x as T` / `x satisfies T` / `x!` / `await x` off a value
+ * expression.
+ *
+ * `await` matters in the FALSE-POSITIVE direction: an un-peeled
+ * `source: await this.mapSource(x)` resolves to zero literals, which flags every
+ * path under that top-level with the misleading "the provider never writes it"
+ * on CORRECT code. No opted-in provider awaits a mapper today; the peel is here
+ * so the first one that does is not punished for it.
+ */
+function unwrapExpression(node: ts.Node): ts.Node {
+  let current = node;
+  for (;;) {
+    if (ts.isParenthesizedExpression(current)) current = current.expression;
+    else if (ts.isAsExpression(current)) current = current.expression;
+    else if (ts.isSatisfiesExpression(current)) current = current.expression;
+    else if (ts.isNonNullExpression(current)) current = current.expression;
+    else if (ts.isAwaitExpression(current)) current = current.expression;
+    else return current;
+  }
+}
+
+/** Climb OUT of the same wrappers, so a node's real consumer is visible. */
+function climbOutOfWrappers(node: ts.Node): ts.Node {
+  let current = node;
+  while (
+    current.parent !== undefined &&
+    (ts.isParenthesizedExpression(current.parent) ||
+      ts.isAsExpression(current.parent) ||
+      ts.isSatisfiesExpression(current.parent) ||
+      ts.isNonNullExpression(current.parent))
+  ) {
+    current = current.parent;
+  }
+  return current;
+}
+
+const COMPARISON_OPERATORS: ReadonlySet<ts.SyntaxKind> = new Set([
+  ts.SyntaxKind.EqualsEqualsToken,
+  ts.SyntaxKind.EqualsEqualsEqualsToken,
+  ts.SyntaxKind.ExclamationEqualsToken,
+  ts.SyntaxKind.ExclamationEqualsEqualsToken,
+  ts.SyntaxKind.LessThanToken,
+  ts.SyntaxKind.LessThanEqualsToken,
+  ts.SyntaxKind.GreaterThanToken,
+  ts.SyntaxKind.GreaterThanEqualsToken,
+]);
+
+/**
+ * Callees that only INSPECT or SERIALIZE their argument, so passing a value to
+ * one decides nothing — what the RESULT feeds does.
+ */
+const isPureInspectionCallee = (callee: ts.Expression): boolean => {
+  if (ts.isIdentifier(callee)) return ['String', 'Number', 'Boolean'].includes(callee.text);
+  if (!ts.isPropertyAccessExpression(callee) || !ts.isIdentifier(callee.expression)) return false;
+  const target = `${callee.expression.text}.${callee.name.text}`;
+  return [
+    'JSON.stringify',
+    'Object.keys',
+    'Object.entries',
+    'Object.values',
+    'Array.isArray',
+  ].includes(target);
+};
+
+/**
+ * DIFF IS NOT DELIVERY (issue #1448).
+ *
+ * Does this value flow ONLY into a comparison / measurement — never into a
+ * request, an escaping variable, or a non-inspecting call argument? An object
+ * literal built purely to be serialized and compared
+ * (`JSON.stringify({ batchReportMode: x }) !== JSON.stringify(prev)`, the
+ * change-detection idiom of a diff-heavy `update()`) names its members without
+ * DELIVERING any of them, so crediting it as write evidence is exactly the
+ * false clear this pass exists to stop.
+ *
+ * The sibling critic `gen-handled-property-wiring` encodes the same rule on the
+ * READ side; this is its write-side twin, deliberately fail-closed the same way
+ * (bare truthiness, `!`, `typeof` and `.length` all count as inert).
+ */
+export function feedsOnlyComparison(value: ts.Node): boolean {
+  const top = climbOutOfWrappers(value);
+  const parent = top.parent;
+  if (parent === undefined) return false;
+  if (ts.isTypeOfExpression(parent)) return feedsOnlyComparison(parent);
+  if (ts.isPropertyAccessExpression(parent) && parent.name.text === 'length') {
+    return feedsOnlyComparison(parent);
+  }
+  if (ts.isPrefixUnaryExpression(parent) && parent.operator === ts.SyntaxKind.ExclamationToken) {
+    return true;
+  }
+  if (
+    ts.isCallExpression(parent) &&
+    parent.arguments.some((a) => a === top) &&
+    isPureInspectionCallee(parent.expression)
+  ) {
+    return feedsOnlyComparison(parent);
+  }
+  if (ts.isBinaryExpression(parent)) {
+    return COMPARISON_OPERATORS.has(parent.operatorToken.kind);
+  }
+  if (ts.isIfStatement(parent) || ts.isWhileStatement(parent) || ts.isDoStatement(parent)) {
+    return parent.expression === top;
+  }
+  if (ts.isConditionalExpression(parent)) return parent.condition === top;
+  return false;
+}
+
+/**
+ * {@link feedsOnlyComparison}, applied to the OUTERMOST literal a value sits
+ * inside. `JSON.stringify({ outer: { inner: 1 } })` compared against a previous
+ * render is comparison-only for `inner` too, even though `inner`'s own parent
+ * chain stops at a PropertyAssignment — without the climb the nested half of a
+ * diff literal would still be credited.
+ */
+export function isComparisonOnlyLiteral(node: ts.Node): boolean {
+  let current: ts.Node = node;
+  for (;;) {
+    const parent = climbOutOfWrappers(current).parent;
+    if (
+      parent !== undefined &&
+      (ts.isPropertyAssignment(parent) ||
+        ts.isShorthandPropertyAssignment(parent) ||
+        ts.isSpreadAssignment(parent) ||
+        ts.isSpreadElement(parent) ||
+        ts.isObjectLiteralExpression(parent) ||
+        ts.isArrayLiteralExpression(parent))
+    ) {
+      current = parent;
+      continue;
+    }
+    return feedsOnlyComparison(current);
+  }
+}
+
+/**
+ * PATH-SCOPED write evidence for one provider file (issue #1448).
+ *
+ * - `written` — every member name written ANYWHERE in the file. Name-global,
+ *   and therefore only strong enough to fence a UNIQUELY-named member; kept as
+ *   the parser-regression floor's input and as the `#top` scope's stand-in.
+ * - `scopes` — the fix: written member name -> every member name written
+ *   ANYWHERE BENEATH the value that name is written with. `buildBatchConfig`
+ *   maps to the seven members of the literal `buildBatchConfig` is assigned,
+ *   so `BuildBatchConfig.ServiceRole` is checked against THAT set rather than
+ *   against the file-global one that the unrelated top-level `serviceRole:`
+ *   write also lands in. Keyed by NAME and flattened to any depth, with the
+ *   bounds that implies — see the module header's known-bounds section.
+ */
+export interface ProviderWriteEvidence {
+  readonly written: ReadonlySet<string>;
+  readonly scopes: ReadonlyMap<string, ReadonlySet<string>>;
+}
+
+/** The evidence a target that has NOT opted into the pass is classified with. */
+export const EMPTY_WRITE_EVIDENCE: ProviderWriteEvidence = {
+  written: new Set<string>(),
+  scopes: new Map<string, ReadonlySet<string>>(),
+};
+
+/** Array methods whose callback's RETURN value is the delivered element. */
+const CALLBACK_RETURNING_METHODS: ReadonlySet<string> = new Set(['map', 'flatMap', 'reduce']);
+
+/**
+ * Array methods that deliver an element (or a subset) of the RECEIVER, so the
+ * literals to resolve are the receiver's, not the callback's. `filter` / `find`
+ * were briefly in {@link CALLBACK_RETURNING_METHODS}, which is wrong twice
+ * over: their callback returns a PREDICATE (so nothing resolves), and the value
+ * actually delivered comes from the array being filtered.
+ */
+const RECEIVER_PRESERVING_METHODS: ReadonlySet<string> = new Set([
+  'filter',
+  'find',
+  'slice',
+  'concat',
+  'sort',
+  'toSorted',
+  'reverse',
+  'toReversed',
+  'at',
+]);
+
+/**
+ * Collect PATH-SCOPED write evidence, AST-level.
+ *
+ * A write is an object-literal property name (`batchReportMode: value`), a
+ * shorthand property (`{ batchReportMode }`), an assignment target
+ * (`sdk.batchReportMode = ...` / `sdk['batchReportMode'] = ...` — including the
+ * compound forms `??=` / `||=` / `+=`, which are still writes), or an
+ * `Object.defineProperty(sdk, 'batchReportMode', { ... })` call. A READ
+ * (`desc.batchReportMode` in a non-assignment position) deliberately does NOT
+ * count — that asymmetry is what scopes the evidence to the CFn->SDK mapping
+ * direction rather than the reverse map.
+ *
+ * For each write, the VALUE expression is resolved to the object literals it
+ * can evaluate to, and every member name reachable beneath them is recorded as
+ * that name's SCOPE. Resolution mirrors the `gen-handled-property-wiring`
+ * (#1404) taint walk's reach — same-file `this.method(...)` and free-function
+ * calls, `const`/`let` bindings, `?:` / `??` / `||` arms, array elements and
+ * `.map(cb)` callbacks — because CodeBuild's `source: this.mapSource(source)`
+ * and `buildBatchConfig` (a `let` bound to a literal, delivered as a shorthand
+ * property) are both that shape.
+ *
+ * Bodies of {@link REVERSE_MAP_FUNCTION_PREFIXES} are skipped
+ * entirely, and a literal that {@link feedsOnlyComparison} contributes nothing.
+ */
+export function collectWriteEvidence(
+  sourceText: string,
+  fileName = 'provider.ts',
+  excludedFunctionPrefixes: readonly string[] = REVERSE_MAP_FUNCTION_PREFIXES
+): ProviderWriteEvidence {
+  const sf = ts.createSourceFile(
+    fileName,
+    sourceText,
+    ts.ScriptTarget.ESNext,
+    true,
+    ts.ScriptKind.TS
+  );
   const written = new Set<string>();
+  const scopes = new Map<string, Set<string>>();
+
   /**
    * The written name of an object-literal property. An Identifier IS the name
    * here (`{ batchReportMode: … }`), and a computed name (`{ [k]: … }`) is a
@@ -897,98 +1333,388 @@ export function collectWrittenMemberNames(
     return ts.isForOfStatement(current) && current.initializer === root;
   };
 
-  /** The declared name of a function-ish node, when it is a plain identifier. */
-  const declaredName = (node: ts.Node): string | undefined => {
-    if (
-      ts.isMethodDeclaration(node) ||
-      ts.isFunctionDeclaration(node) ||
-      ts.isPropertyDeclaration(node) ||
-      ts.isVariableDeclaration(node) ||
-      ts.isGetAccessorDeclaration(node) ||
-      ts.isSetAccessorDeclaration(node)
+  const isExcludedName = (n: string): boolean =>
+    matchesFunctionPrefix(n, excludedFunctionPrefixes);
+
+  // ---- Same-file callable index, so `source: this.mapSource(source)` can be
+  // followed into `mapSource`'s returned literal. Excluded (reverse-map)
+  // functions are left OUT of the index: a same-named helper on the read side
+  // must never vouch for the write side.
+  const callables = new Map<string, ts.Node[]>();
+  /** Non-function property / variable initializers, for `this.blob` hops. */
+  const initializers = new Map<string, ts.Node[]>();
+  const indexCallable = (name: string, fn: ts.Node): void => {
+    if (isExcludedName(name)) return;
+    const list = callables.get(name) ?? [];
+    list.push(fn);
+    callables.set(name, list);
+  };
+  const indexInitializer = (name: string, init: ts.Node): void => {
+    if (isExcludedName(name)) return;
+    const list = initializers.get(name) ?? [];
+    list.push(init);
+    initializers.set(name, list);
+  };
+  const indexVisit = (node: ts.Node): void => {
+    if (ts.isMethodDeclaration(node) && ts.isIdentifier(node.name)) {
+      indexCallable(node.name.text, node);
+    } else if (ts.isFunctionDeclaration(node) && node.name !== undefined) {
+      indexCallable(node.name.text, node);
+    } else if (
+      (ts.isVariableDeclaration(node) || ts.isPropertyDeclaration(node)) &&
+      ts.isIdentifier(node.name) &&
+      node.initializer !== undefined
     ) {
-      return node.name !== undefined && ts.isIdentifier(node.name) ? node.name.text : undefined;
+      const init = unwrapExpression(node.initializer);
+      if (ts.isArrowFunction(init) || ts.isFunctionExpression(init)) {
+        indexCallable(node.name.text, init);
+      } else if (ts.isPropertyDeclaration(node)) {
+        indexInitializer(node.name.text, init);
+      }
     }
-    return undefined;
+    ts.forEachChild(node, indexVisit);
+  };
+  indexVisit(sf);
+
+  /** The nearest enclosing function body / source file — the binding scope. */
+  const enclosingScope = (node: ts.Node): ts.Node => {
+    for (let n: ts.Node | undefined = node.parent; n !== undefined; n = n.parent) {
+      if (ts.isFunctionLike(n) || ts.isSourceFile(n)) return n;
+    }
+    return sf;
+  };
+
+  /** Every expression a function can RETURN (concise arrow body included). */
+  const returnedExpressions = (fn: ts.Node): ts.Expression[] => {
+    const body = (fn as ts.SignatureDeclaration & { body?: ts.Node }).body;
+    if (body === undefined) return [];
+    if (!ts.isBlock(body)) return [body as ts.Expression];
+    const out: ts.Expression[] = [];
+    const visit = (n: ts.Node): void => {
+      // Do not descend into a NESTED function — its returns are its own.
+      if (n !== body && ts.isFunctionLike(n)) return;
+      if (ts.isReturnStatement(n) && n.expression !== undefined) out.push(n.expression);
+      ts.forEachChild(n, visit);
+    };
+    visit(body);
+    return out;
+  };
+
+  /**
+   * The object literals a value expression can evaluate to. `seen` guards the
+   * cycles a `const a = b; const b = a;` pair (or a recursive helper) would
+   * otherwise spin on.
+   */
+  const resolveLiterals = (
+    expr: ts.Node,
+    seen: Set<ts.Node>
+  ): ts.ObjectLiteralExpression[] => {
+    const e = unwrapExpression(expr);
+    if (seen.has(e)) return [];
+    seen.add(e);
+    if (ts.isObjectLiteralExpression(e)) return [e];
+    if (ts.isConditionalExpression(e)) {
+      return [...resolveLiterals(e.whenTrue, seen), ...resolveLiterals(e.whenFalse, seen)];
+    }
+    if (ts.isBinaryExpression(e)) {
+      const k = e.operatorToken.kind;
+      if (
+        k === ts.SyntaxKind.QuestionQuestionToken ||
+        k === ts.SyntaxKind.BarBarToken ||
+        k === ts.SyntaxKind.AmpersandAmpersandToken
+      ) {
+        return [...resolveLiterals(e.left, seen), ...resolveLiterals(e.right, seen)];
+      }
+      return [];
+    }
+    if (ts.isArrayLiteralExpression(e)) {
+      return e.elements.flatMap((el) => resolveLiterals(el, seen));
+    }
+    if (ts.isSpreadElement(e)) return resolveLiterals(e.expression, seen);
+    if (ts.isArrowFunction(e) || ts.isFunctionExpression(e)) {
+      return returnedExpressions(e).flatMap((r) => resolveLiterals(r, seen));
+    }
+    if (ts.isCallExpression(e)) {
+      const callee = unwrapExpression(e.expression);
+      if (ts.isPropertyAccessExpression(callee)) {
+        // `xs.map((x) => ({ … }))` delivers the CALLBACK's literal.
+        if (CALLBACK_RETURNING_METHODS.has(callee.name.text)) {
+          return e.arguments.flatMap((a) => resolveLiterals(a, seen));
+        }
+        // `xs.filter(p)` delivers an element of the RECEIVER.
+        if (RECEIVER_PRESERVING_METHODS.has(callee.name.text)) {
+          return resolveLiterals(callee.expression, seen);
+        }
+      }
+      // Same-file callable, resolved by NAME. Restricted to `this.helper(…)`
+      // and a bare `helper(…)`: an earlier revision resolved ANY
+      // `receiver.helper(…)`, so an unrelated `client.mapSource(x)` would have
+      // been credited with the provider's own `mapSource` literal.
+      const name = ts.isIdentifier(callee)
+        ? callee.text
+        : ts.isPropertyAccessExpression(callee) && callee.expression.kind === ts.SyntaxKind.ThisKeyword
+          ? callee.name.text
+          : undefined;
+      if (name === undefined) return [];
+      return (callables.get(name) ?? []).flatMap((fn) =>
+        returnedExpressions(fn).flatMap((r) => resolveLiterals(r, seen))
+      );
+    }
+    // `this.someBlob` / `Helpers.DEFAULTS` — a property or module constant
+    // holding a literal. Same bare-name index as the callable resolution.
+    if (ts.isPropertyAccessExpression(e)) {
+      return (initializers.get(e.name.text) ?? []).flatMap((init) =>
+        resolveLiterals(init, seen)
+      );
+    }
+    if (ts.isIdentifier(e)) {
+      // Nearest enclosing function first, then outward to the module — an
+      // outer-scope `const DEFAULTS = { … }` used inside a method is a real
+      // shape, and not finding it flags CORRECT code. The search stops at the
+      // FIRST scope that yields a literal, which is the shadowing rule for the
+      // cases that matter. It is NOT block-scope-aware: two disjoint
+      // `if` branches each binding `cfg = { … }` are unioned, which
+      // over-credits in the false-NEGATIVE direction (see the module header's
+      // known-bounds section).
+      for (let scope: ts.Node | undefined = enclosingScope(e); scope; ) {
+        const out: ts.ObjectLiteralExpression[] = [];
+        const visit = (n: ts.Node): void => {
+          if (
+            ts.isVariableDeclaration(n) &&
+            ts.isIdentifier(n.name) &&
+            n.name.text === e.text &&
+            n.initializer !== undefined
+          ) {
+            out.push(...resolveLiterals(n.initializer, seen));
+          } else if (
+            ts.isBinaryExpression(n) &&
+            isWriteAssignment(n.operatorToken.kind) &&
+            ts.isIdentifier(n.left) &&
+            n.left.text === e.text
+          ) {
+            out.push(...resolveLiterals(n.right, seen));
+          }
+          ts.forEachChild(n, visit);
+        };
+        visit(scope);
+        if (out.length > 0) return out;
+        scope = ts.isSourceFile(scope) ? undefined : enclosingScope(scope);
+      }
+      return [];
+    }
+    return [];
+  };
+
+  /** Every member name written anywhere beneath these literals. */
+  const subtreeMemberNames = (literals: readonly ts.ObjectLiteralExpression[]): Set<string> => {
+    const out = new Set<string>();
+    const visited = new Set<ts.Node>();
+    const walk = (lit: ts.ObjectLiteralExpression): void => {
+      if (visited.has(lit)) return;
+      visited.add(lit);
+      if (isComparisonOnlyLiteral(lit)) return;
+      for (const p of lit.properties) {
+        if (ts.isPropertyAssignment(p)) {
+          const name = propertyName(p.name);
+          if (name !== undefined) out.add(name);
+          for (const child of resolveLiterals(p.initializer, new Set())) walk(child);
+        } else if (ts.isShorthandPropertyAssignment(p)) {
+          out.add(p.name.text);
+          for (const child of resolveLiterals(p.name, new Set())) walk(child);
+        } else if (ts.isSpreadAssignment(p)) {
+          // A spread merges the source's members AT THIS LEVEL.
+          for (const child of resolveLiterals(p.expression, new Set())) walk(child);
+        }
+      }
+    };
+    for (const lit of literals) walk(lit);
+    return out;
+  };
+
+  /**
+   * Record one write, and merge the members reachable beneath its value into
+   * that name's scope.
+   *
+   * The merge is deliberate but IS a bound (see the module header's
+   * known-bounds section, item 2): scopes are keyed by member NAME and unioned
+   * across every write site sharing it, so two unrelated `environment: { … }`
+   * literals contribute to one `environment` scope, and a name that only ever
+   * appears NESTED still gets a scope of its own. Keeping per-site sets would
+   * not change the positive test — a key is cleared when ANY site covers it,
+   * which is the union.
+   */
+  const record = (name: string, value: ts.Node | undefined): void => {
+    written.add(name);
+    const scope = scopes.get(name) ?? new Set<string>();
+    if (value !== undefined) {
+      for (const m of subtreeMemberNames(resolveLiterals(value, new Set()))) scope.add(m);
+    }
+    scopes.set(name, scope);
+  };
+
+  /**
+   * `Object.defineProperty(sdk, 'batchReportMode', { value: … })` IS a write of
+   * `batchReportMode` — but the DESCRIPTOR literal's own keys are not writes of
+   * anything: crediting them would put `value` / `get` / `set` / `writable`
+   * into the set, and `value` is a real CodeBuild member (`Value`). So the
+   * descriptor literal is suppressed and only its `value:` payload is walked as
+   * the named member's scope.
+   */
+  const suppressedLiterals = new Set<ts.Node>();
+  const definePropertyWrite = (
+    node: ts.CallExpression
+  ): { name: string; value: ts.Node | undefined; descriptor: ts.Node | undefined } | undefined => {
+    const callee = unwrapExpression(node.expression);
+    if (
+      !ts.isPropertyAccessExpression(callee) ||
+      !ts.isIdentifier(callee.expression) ||
+      callee.expression.text !== 'Object' ||
+      callee.name.text !== 'defineProperty' ||
+      node.arguments.length < 2
+    ) {
+      return undefined;
+    }
+    const name = elementAccessName(unwrapExpression(node.arguments[1]!));
+    if (name === undefined) return undefined;
+    const descriptor =
+      node.arguments.length > 2 ? unwrapExpression(node.arguments[2]!) : undefined;
+    let value: ts.Node | undefined;
+    if (descriptor !== undefined && ts.isObjectLiteralExpression(descriptor)) {
+      for (const p of descriptor.properties) {
+        if (ts.isPropertyAssignment(p) && propertyName(p.name) === 'value') value = p.initializer;
+      }
+    }
+    return { name, value, descriptor };
   };
 
   const visit = (node: ts.Node, excluded: boolean): void => {
     let inExcluded = excluded;
     if (!inExcluded) {
-      const name = declaredName(node);
-      // Word-boundary prefix: the whole name, or the prefix followed by an
-      // uppercase letter (`readCurrentStateService`). Without it,
-      // `readCurrentStatelessThing` would be silently excluded.
-      const excluded = (n: string): boolean =>
-        excludedFunctionPrefixes.some(
-          (p) => n === p || (n.startsWith(p) && /[A-Z]/.test(n.charAt(p.length)))
-        );
-      if (name !== undefined && excluded(name)) {
-        inExcluded = true;
-      }
+      const name = declaredFunctionName(node);
+      if (name !== undefined && isExcludedName(name)) inExcluded = true;
     }
     if (!inExcluded) {
       if (ts.isPropertyAssignment(node)) {
         const name = propertyName(node.name);
-        if (name !== undefined && !isDestructuringTarget(node)) written.add(name);
+        if (
+          name !== undefined &&
+          !isDestructuringTarget(node) &&
+          !suppressedLiterals.has(node.parent) &&
+          !isComparisonOnlyLiteral(node.parent)
+        ) {
+          record(name, node.initializer);
+        }
       } else if (ts.isShorthandPropertyAssignment(node)) {
-        if (!isDestructuringTarget(node)) written.add(node.name.text);
-      } else if (
-        ts.isBinaryExpression(node) &&
-        node.operatorToken.kind === ts.SyntaxKind.EqualsToken
-      ) {
+        if (
+          !isDestructuringTarget(node) &&
+          !suppressedLiterals.has(node.parent) &&
+          !isComparisonOnlyLiteral(node.parent)
+        ) {
+          record(node.name.text, node.name);
+        }
+      } else if (ts.isBinaryExpression(node) && isWriteAssignment(node.operatorToken.kind)) {
         const lhs = node.left;
         if (ts.isPropertyAccessExpression(lhs)) {
-          written.add(lhs.name.text);
+          record(lhs.name.text, node.right);
         } else if (ts.isElementAccessExpression(lhs)) {
           const name = elementAccessName(lhs.argumentExpression);
-          if (name !== undefined) written.add(name);
+          if (name !== undefined) record(name, node.right);
+        }
+      } else if (ts.isCallExpression(node)) {
+        const defined = definePropertyWrite(node);
+        if (defined !== undefined) {
+          if (defined.descriptor !== undefined) suppressedLiterals.add(defined.descriptor);
+          record(defined.name, defined.value);
         }
       }
     }
     ts.forEachChild(node, (child) => visit(child, inExcluded));
   };
   visit(sf, false);
-  return written;
+  return { written, scopes };
 }
 
 /**
- * Classify one target's nested keys. Pure + exported for unit tests.
+ * Assignment operators that WRITE their left-hand side. `sdk.x = v` is the
+ * common form, but `??=` / `||=` / `&&=` / `+=` are writes too — an opted-in
+ * provider refactored into one of them would otherwise fail CI with the
+ * MISLEADING "the provider never writes it" (issue #1448 comment item 1).
+ * `FirstAssignment`..`LastAssignment` is the compiler's own token range for
+ * exactly this set.
+ */
+function isWriteAssignment(kind: ts.SyntaxKind): boolean {
+  return kind >= ts.SyntaxKind.FirstAssignment && kind <= ts.SyntaxKind.LastAssignment;
+}
+
+/**
+ * The NAME-GLOBAL write set — every member name written anywhere in the file.
  *
- * `writtenMembers` is consulted only for a {@link NestedKeyTarget.freshObjectMapper}
- * target (issue #1432); the default empty set makes every same-spelling key
- * flag, so callers that opt a target in MUST pass it.
+ * TEST-ONLY since #1448: `loadReport` reads `ProviderWriteEvidence.written`
+ * directly for the name floor, and the classification consults
+ * {@link ProviderWriteEvidence.scopes}. Kept exported because the unit tests
+ * assert per-SHAPE recognition and the reverse-map withdrawal counts against
+ * it, and because it is the set every "would the OLD evidence have caught
+ * this?" probe compares against.
+ */
+export function collectWrittenMemberNames(
+  sourceText: string,
+  fileName = 'provider.ts',
+  excludedFunctionPrefixes: readonly string[] = REVERSE_MAP_FUNCTION_PREFIXES
+): Set<string> {
+  return new Set(collectWriteEvidence(sourceText, fileName, excludedFunctionPrefixes).written);
+}
+
+/**
+ * Classify one target's nested key PATHS. Pure + exported for unit tests.
+ *
+ * `writeEvidence` is consulted only for a {@link NestedKeyTarget.freshObjectMapper}
+ * target (issue #1432); the default empty evidence makes every same-spelling
+ * key flag, so callers that opt a target in MUST pass it.
+ *
+ * The write test is SCOPED (issue #1448): the path's terminal member must be
+ * written beneath the write scope its TOP-LEVEL maps to, not merely somewhere
+ * in the file. `BuildBatchConfig.ServiceRole` therefore has to be written under
+ * `buildBatchConfig`; the unrelated top-level `serviceRole:` write no longer
+ * vouches for it.
  */
 export function classifyTarget(
   target: NestedKeyTarget,
-  nestedKeys: readonly string[],
+  nestedKeyPaths: readonly NestedKeyPath[],
   sdkMembers: ReadonlySet<string>,
   providerLiterals: ReadonlySet<string>,
   allowList: ReadonlyMap<string, AllowListEntry> = NESTED_KEY_ALLOW_LIST,
-  writtenMembers: ReadonlySet<string> = new Set()
+  writeEvidence: ProviderWriteEvidence = EMPTY_WRITE_EVIDENCE
 ): NestedKeyClassification[] {
   const sdkLower = new Map<string, string>();
   for (const m of sdkMembers) {
     if (!sdkLower.has(m.toLowerCase())) sdkLower.set(m.toLowerCase(), m);
   }
+  const styled = (s: string): string => (target.keyStyle === 'lower-first' ? lowerFirst(s) : s);
   const out: NestedKeyClassification[] = [];
-  for (const key of [...new Set(nestedKeys)].sort()) {
-    const expected = target.keyStyle === 'lower-first' ? lowerFirst(key) : key;
+  const seenPaths = new Set<string>();
+  const sorted = [...nestedKeyPaths].sort((a, b) => a.path.localeCompare(b.path));
+  for (const { path, topLevelProperty, key } of sorted) {
+    if (seenPaths.has(path)) continue;
+    seenPaths.add(path);
+    const expected = styled(key);
     let bucket: Bucket;
     let sdkNearMiss: string | undefined;
     let rationale: string | undefined;
+    let allowMatchKey: string | undefined;
     if (sdkMembers.has(expected)) {
-      // WRITE-EVIDENCE pass (issue #1432). A matching SDK spelling only proves
-      // delivery for a provider that FORWARDS the blob; a fresh-object mapper
-      // has to name the member. Deliberately NOT rescued by
-      // `providerLiterals` — the CFn spelling appearing somewhere in the file
-      // is the loose heuristic this pass exists to stop trusting.
-      const allowed = allowList.get(allowKey(target.resourceType, key));
-      if (target.freshObjectMapper === true && !writtenMembers.has(expected)) {
+      // WRITE-EVIDENCE pass (issue #1432 / #1448). A matching SDK spelling only
+      // proves delivery for a provider that FORWARDS the blob; a fresh-object
+      // mapper has to name the member IN THE RIGHT PLACE. Deliberately NOT
+      // rescued by `providerLiterals` — the CFn spelling appearing somewhere in
+      // the file is the loose heuristic this pass exists to stop trusting.
+      const scope = writeEvidence.scopes.get(styled(topLevelProperty));
+      if (target.freshObjectMapper === true && !(scope?.has(expected) ?? false)) {
         sdkNearMiss = expected;
+        const allowed = lookupAllowEntry(allowList, target.resourceType, path, key, 'write');
         if (allowed) {
           bucket = 'allow-listed';
-          rationale = allowed.rationale;
+          rationale = allowed.entry.rationale;
+          allowMatchKey = allowed.key;
         } else {
           bucket = 'no-write-evidence';
         }
@@ -999,10 +1725,11 @@ export function classifyTarget(
       bucket = 'provider-handled';
     } else {
       const near = sdkLower.get(key.toLowerCase());
-      const allowed = allowList.get(allowKey(target.resourceType, key));
+      const allowed = lookupAllowEntry(allowList, target.resourceType, path, key, 'key');
       if (allowed) {
         bucket = 'allow-listed';
-        rationale = allowed.rationale;
+        rationale = allowed.entry.rationale;
+        allowMatchKey = allowed.key;
         sdkNearMiss = near;
       } else if (near !== undefined) {
         bucket = 'case-divergence';
@@ -1013,10 +1740,13 @@ export function classifyTarget(
     }
     out.push({
       resourceType: target.resourceType,
-      nestedKey: key,
+      nestedKey: path,
+      topLevelProperty,
+      terminalKey: key,
       bucket,
       ...(sdkNearMiss !== undefined ? { sdkNearMiss } : {}),
       ...(rationale !== undefined ? { rationale } : {}),
+      ...(allowMatchKey !== undefined ? { allowMatchKey } : {}),
     });
   }
   return out;
@@ -1085,14 +1815,16 @@ export function classifyTargetShapes(
     blockingBucket: ShapeBucket,
     sdkDetail: string | undefined
   ): void => {
-    const allowed = allowList.get(allowKey(target.resourceType, key));
+    const allowed = lookupAllowEntry(allowList, target.resourceType, key, key, 'shape');
     let bucket: ShapeBucket;
     let rationale: string | undefined;
+    let allowMatchKey: string | undefined;
     if (shapeLiterals.has(key)) {
       bucket = 'provider-handled';
     } else if (allowed) {
       bucket = 'allow-listed';
-      rationale = allowed.rationale;
+      rationale = allowed.entry.rationale;
+      allowMatchKey = allowed.key;
     } else {
       bucket = blockingBucket;
     }
@@ -1104,6 +1836,7 @@ export function classifyTargetShapes(
       bucket,
       ...(sdkDetail !== undefined ? { sdkDetail } : {}),
       ...(rationale !== undefined ? { rationale } : {}),
+      ...(allowMatchKey !== undefined ? { allowMatchKey } : {}),
     });
   };
 
@@ -1182,25 +1915,52 @@ export function classifyTargetShapes(
 }
 
 /**
- * The nested CFn keys audited for a target: the union of the fixture's
+ * One audited unit: a nested CFn key together with the handled TOP-LEVEL
+ * property it is reachable beneath (issue #1448).
+ *
+ * The fixture's `nestedProperties` capture is per top-level property and
+ * flattens the whole reachable interior, so `path` is a two-segment
+ * `Top.Member` rather than the full chain — `BuildBatchConfig.ComputeTypesAllowed`
+ * for a member that actually lives one level deeper, under `Restrictions`.
+ * That is the granularity the CFn side offers, and it is exactly the
+ * granularity the write side is scoped at (every member written ANYWHERE
+ * beneath `buildBatchConfig`), so the two line up.
+ */
+export interface NestedKeyPath {
+  /** Handled top-level CFn property the key is reachable beneath. */
+  readonly topLevelProperty: string;
+  /** The nested key's own name. */
+  readonly key: string;
+  /** `TopLevelProperty.Key` — the audited unit. */
+  readonly path: string;
+}
+
+/**
+ * The nested CFn key PATHS audited for a target: the fixture's
  * `nestedProperties` entries for the top-level properties THIS PROVIDER
  * handles on the type. Unhandled top-levels are pre-flight-rejected by
  * `property-coverage`, so their interiors are unreachable through this
  * provider by construction.
+ *
+ * Was a de-duplicated set of bare NAMES through #1432; see {@link NestedKeyPath}
+ * for why the audited unit had to become a path.
  */
-export function nestedKeysForTarget(
+export function nestedKeyPathsForTarget(
   fixture: {
     nestedProperties?: Record<string, string[]>;
   },
   handledTopLevel: ReadonlySet<string>
-): string[] {
+): NestedKeyPath[] {
   const nested = fixture.nestedProperties ?? {};
-  const keys = new Set<string>();
-  for (const [top, names] of Object.entries(nested)) {
-    if (!handledTopLevel.has(top)) continue;
-    for (const n of names) keys.add(n);
+  const out = new Map<string, NestedKeyPath>();
+  for (const [topLevelProperty, names] of Object.entries(nested)) {
+    if (!handledTopLevel.has(topLevelProperty)) continue;
+    for (const key of names) {
+      const path = `${topLevelProperty}.${key}`;
+      if (!out.has(path)) out.set(path, { topLevelProperty, key, path });
+    }
   }
-  return [...keys].sort();
+  return [...out.values()].sort((a, b) => a.path.localeCompare(b.path));
 }
 
 export function buildReport(targets: readonly TargetReport[]): NestedKeyCoverageReport {
@@ -1274,21 +2034,26 @@ export function findDivergences(report: NestedKeyCoverageReport): readonly Diver
   return [...keyDivergences, ...shapeDivergences];
 }
 
-/** Allow-list entries that no longer match any audited key — must be pruned. */
+/**
+ * Allow-list entries that no longer match any audited key — must be pruned.
+ *
+ * Uses the MATCHED allow key recorded on each allow-listed verdict rather than
+ * re-deriving it from `nestedKey`: since #1448 the key pass's audited unit is a
+ * PATH, so a terminal-name entry (`…#DNSName`) that legitimately silenced
+ * `Origins.DNSName` would otherwise be reported stale.
+ */
 export function findStaleAllowListEntries(
   report: NestedKeyCoverageReport,
   allowList: ReadonlyMap<string, AllowListEntry> = NESTED_KEY_ALLOW_LIST
 ): string[] {
-  const used = new Set([
-    ...report.targets
-      .flatMap((t) => t.entries)
+  const used = new Set(
+    [
+      ...report.targets.flatMap((t) => t.entries),
+      ...report.targets.flatMap((t) => t.shapeEntries),
+    ]
       .filter((e) => e.bucket === 'allow-listed')
-      .map((e) => allowKey(e.resourceType, e.nestedKey)),
-    ...report.targets
-      .flatMap((t) => t.shapeEntries)
-      .filter((e) => e.bucket === 'allow-listed')
-      .map((e) => allowKey(e.resourceType, e.nestedKey)),
-  ]);
+      .map((e) => e.allowMatchKey ?? allowKey(e.resourceType, e.nestedKey))
+  );
   return [...allowList.keys()].filter((k) => !used.has(k)).sort();
 }
 
@@ -1313,7 +2078,7 @@ function renderMarkdown(report: NestedKeyCoverageReport): string {
   lines.push('## Summary');
   lines.push('');
   lines.push(`- Audited targets: **${report.summary.targetCount}**`);
-  lines.push(`- Nested CFn keys audited: **${report.summary.nestedKeyCount}**`);
+  lines.push(`- Nested CFn key paths audited: **${report.summary.nestedKeyCount}**`);
   lines.push(`- Same spelling in SDK model: **${report.summary.sameSpelling}**`);
   lines.push(`- Explicitly handled in provider: **${report.summary.providerHandled}**`);
   lines.push(`- Allow-listed pass-throughs (does NOT block CI): **${report.summary.allowListed}**`);
@@ -1348,7 +2113,9 @@ function renderMarkdown(report: NestedKeyCoverageReport): string {
         'scripts/gen-nested-key-coverage.ts.'
     );
     lines.push('');
-    lines.push('| Resource type | CFn nested key | Bucket | SDK detail |');
+    // Key-pass rows carry a `Top.Key` PATH; shape-pass rows carry a bare
+    // definition member (the shape pass is per definition, not per path).
+    lines.push('| Resource type | CFn nested key / path | Bucket | SDK detail |');
     lines.push('| --- | --- | --- | --- |');
     for (const d of divergences) {
       lines.push(
@@ -1374,7 +2141,7 @@ function renderMarkdown(report: NestedKeyCoverageReport): string {
   if (allowListed.length > 0) {
     lines.push('## Allow-listed pass-throughs');
     lines.push('');
-    lines.push('| Resource type | CFn nested key | Rationale |');
+    lines.push('| Resource type | CFn nested key / path | Rationale |');
     lines.push('| --- | --- | --- |');
     for (const e of allowListed) {
       lines.push(`| \`${e.resourceType}\` | \`${e.nestedKey}\` | ${e.rationale ?? ''} |`);
@@ -1390,7 +2157,7 @@ function renderMarkdown(report: NestedKeyCoverageReport): string {
       'provider that orphans one of these is visible in the diff.'
   );
   lines.push('');
-  lines.push('| Resource type | CFn nested key |');
+  lines.push('| Resource type | CFn nested key path |');
   lines.push('| --- | --- |');
   for (const t of report.targets) {
     for (const e of t.entries) {
@@ -1443,7 +2210,7 @@ function renderMarkdown(report: NestedKeyCoverageReport): string {
   lines.push('## Audited targets');
   lines.push('');
   lines.push(
-    '| Resource type | Provider | SDK client | Key style | Fresh-object | Nested keys | Unmatched definitions |'
+    '| Resource type | Provider | SDK client | Key style | Fresh-object | Nested key paths | Unmatched definitions |'
   );
   lines.push('| --- | --- | --- | --- | --- | --- | --- |');
   for (const t of report.targets) {
@@ -1476,12 +2243,17 @@ export function loadReport(
   // RED direction (the repo's checker rules: a CI-blocking fence must be
   // shown to fire) — the member and interface parses are SEPARATE visitors
   // over the same files, so either can regress alone.
-  resolveModelsDir: (sdkClientPackage: string) => string = defaultModelsDir
+  resolveModelsDir: (sdkClientPackage: string) => string = defaultModelsDir,
+  // Test seam (issue #1448): point the walk at a scratch COPY of the providers
+  // tree so the SHIPPED `--check` exit path — and the write-collector floor,
+  // which nothing else can reach — are provable against REAL provider code
+  // carrying an injected regression, with `src/` untouched.
+  providersDir: string = PROVIDERS_DIR
 ): NestedKeyCoverageReport {
   const sdkMembersByPackage = new Map<string, Set<string>>();
   const sdkInterfacesByPackage = new Map<string, Map<string, Map<string, SdkMemberType>>>();
   const literalsByFile = new Map<string, Set<string>>();
-  const writtenByFile = new Map<string, Set<string>>();
+  const writtenByFile = new Map<string, ProviderWriteEvidence>();
   const handledByFile = new Map<string, Map<string, Set<string>>>();
 
   const targets: TargetReport[] = [];
@@ -1545,14 +2317,14 @@ export function loadReport(
       sdkInterfacesByPackage.set(target.sdkClientPackage, sdkInterfaces);
     }
 
-    const providerPath = join(PROVIDERS_DIR, target.providerFile);
+    const providerPath = join(providersDir, target.providerFile);
     let literals = literalsByFile.get(target.providerFile);
     let written = writtenByFile.get(target.providerFile);
     let handled = handledByFile.get(target.providerFile);
     if (!literals || !written || !handled) {
       const source = readFileSync(providerPath, 'utf8');
       literals = collectStringLiterals(source, target.providerFile);
-      written = collectWrittenMemberNames(source, target.providerFile);
+      written = collectWriteEvidence(source, target.providerFile);
       handled = parseProviderSource(source, providerPath).handled;
       literalsByFile.set(target.providerFile, literals);
       writtenByFile.set(target.providerFile, written);
@@ -1566,20 +2338,35 @@ export function loadReport(
       );
     }
 
-    // Write-collector regression floor (issue #1432). A collapsed parse would
-    // fail in the LOUD direction — every same-spelling key flags — but as 55
-    // bogus divergences rather than one legible error, so name the real cause.
-    // Only opted-in targets consult the set, so only they need the floor.
-    // Measured at introduction: `codebuild-provider.ts` yields 82 written
-    // member names after the `readCurrentState` exclusion.
-    if (target.freshObjectMapper === true && written.size < MIN_WRITTEN_MEMBERS_PER_PROVIDER) {
-      throw new Error(
-        `written-member parse for ${target.providerFile} collapsed to ${written.size} names ` +
-          `(< ${MIN_WRITTEN_MEMBERS_PER_PROVIDER}) — parser regression?`
-      );
+    // Write-collector regression floors (issues #1432 / #1448). A collapsed
+    // parse would fail in the LOUD direction — every same-spelling key flags —
+    // but as dozens of bogus divergences rather than one legible error, so name
+    // the real cause. Only opted-in targets consult the evidence, so only they
+    // need the floors. TWO floors, because the collector now has two outputs
+    // that regress independently: the NAME set (a broken write-shape visitor)
+    // and the SCOPE index (a broken value resolution, which would leave every
+    // name collected and every scope empty).
+    if (target.freshObjectMapper === true) {
+      const nameFloor = target.minWrittenMembers ?? MIN_WRITTEN_MEMBERS_PER_PROVIDER;
+      if (written.written.size < nameFloor) {
+        throw new Error(
+          `written-member parse for ${target.providerFile} collapsed to ` +
+            `${written.written.size} names (< ${nameFloor}) — parser regression?`
+        );
+      }
+      if (target.minWriteScopes !== undefined) {
+        const populatedScopes = [...written.scopes.values()].filter((s) => s.size > 0).length;
+        if (populatedScopes < target.minWriteScopes) {
+          throw new Error(
+            `write-scope resolution for ${target.providerFile} collapsed to ` +
+              `${populatedScopes} non-empty scopes (< ${target.minWriteScopes}) — ` +
+              'parser regression?'
+          );
+        }
+      }
     }
 
-    const nestedKeys = nestedKeysForTarget(fixture, handledTopLevel);
+    const nestedKeys = nestedKeyPathsForTarget(fixture, handledTopLevel);
     if (nestedKeys.length < target.minNestedKeys) {
       throw new Error(
         `${target.resourceType} yielded only ${nestedKeys.length} nested keys ` +
@@ -1617,9 +2404,22 @@ export function loadReport(
   return buildReport(targets);
 }
 
-function main(): void {
-  const checkMode = process.argv.includes('--check');
-  const report = loadReport();
+function main(argv: readonly string[] = process.argv.slice(2)): void {
+  const checkMode = argv.includes('--check');
+  // Test seam: point the provider walk at a scratch copy of the tree so the
+  // shipped exit path can be exercised against a REAL provider file carrying an
+  // injected regression, without ever mutating `src/` on disk (issue #1448).
+  const dirFlag = argv.find((a) => a.startsWith('--providers-dir='));
+  if (dirFlag !== undefined && !checkMode) {
+    // The WRITER path would render the committed matrix from a scratch tree,
+    // silently rewriting docs/_generated from code that is not `src/`.
+    throw new Error('--providers-dir= is a --check-only test seam; refusing to write the matrix');
+  }
+  const report = loadReport(
+    NESTED_KEY_TARGETS,
+    defaultModelsDir,
+    dirFlag ? resolve(dirFlag.slice('--providers-dir='.length)) : PROVIDERS_DIR
+  );
 
   const stale = findStaleAllowListEntries(report);
   if (stale.length > 0) {
@@ -1652,7 +2452,7 @@ function main(): void {
       process.exit(1);
     }
     process.stderr.write(
-      `nested-key-coverage: OK — ${report.summary.nestedKeyCount} nested keys across ` +
+      `nested-key-coverage: OK — ${report.summary.nestedKeyCount} nested key paths across ` +
         `${report.summary.targetCount} targets, 0 divergences ` +
         `(${report.summary.sameSpelling} same-spelling, ` +
         `${report.summary.providerHandled} provider-handled` +
@@ -1677,7 +2477,7 @@ function main(): void {
   atomicWrite(OUT_MD, renderMarkdown(report) + '\n');
   process.stderr.write(
     `nested-key-coverage: wrote nested-key-coverage.{json,md} — ` +
-      `${report.summary.nestedKeyCount} nested keys, ` +
+      `${report.summary.nestedKeyCount} nested key paths, ` +
       `${report.summary.caseDivergence} case divergence(s), ` +
       `${report.summary.noSdkMember} no-sdk-member key(s), ` +
       `${report.summary.noWriteEvidence} no-write-evidence key(s), ` +

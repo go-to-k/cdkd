@@ -156,27 +156,71 @@ That is a far more common template shape than the base64 search string.
   So a fresh-object provider must ALSO set `freshObjectMapper: true` on its
   target, which turns on the WRITE-EVIDENCE pass: each would-be
   `same-spelling` key then has to appear as a WRITTEN SDK member
-  (`batchReportMode: ...`, `{ batchReportMode }`, `sdk.batchReportMode = ...`)
-  or it lands in the CI-blocking `no-write-evidence` bucket. Reads do not
-  count and `readCurrentState`'s reverse map is excluded, so the evidence is
-  scoped to the CFn->SDK direction.
+  (`batchReportMode: ...`, `{ batchReportMode }`, `sdk.batchReportMode = ...`,
+  the compound `??=` / `||=` / `+=` forms, or
+  `Object.defineProperty(sdk, 'batchReportMode', ...)`) or it lands in the
+  CI-blocking `no-write-evidence` bucket. Reads do not count,
+  `readCurrentState`'s reverse map is excluded, and a literal built only to be
+  DIFFED (`JSON.stringify({ … }) !== JSON.stringify(prev)`) is not delivery —
+  so the evidence is scoped to the CFn->SDK direction.
   Measure before setting it: a provider that hands a whole sub-blob to a
   GENERIC key converter (`pascalToCamelCaseKeys(config)`) delivers every key
   under it with no write to find, and the pass cannot see that yet (issue
   #1445). That is why only `AWS::CodeBuild::Project` opts in today — the
   measured counts for every target are in the script's file header.
-- **The write-evidence pass has its own bound — do not repeat the mistake this
-  bullet exists to correct.** Evidence is a flat per-FILE set of member names,
-  and the audited unit is a nested key NAME rather than a path, so a member
-  written ANYWHERE vouches for every key of that spelling. Measured on
-  `codebuild-provider.ts`: 11 of its 55 same-spelling keys have more than one
-  write site, and `BuildBatchConfig.ServiceRole` — the sibling of the member
-  that motivated #1432 — stays silent when dropped, because the top-level
-  `serviceRole` write covers it. So the pass fences the **uniquely-named**
-  members (44 of 55 on CodeBuild), not all of them. Issue #1448 tracks moving
-  the key model to paths and scoping evidence per object literal. Until it
-  lands, a hand diff of the WHOLE blob (the first bullet in this section) is
-  still the thing that catches a duplicate-named sub-key.
+- **Write evidence is PATH-SCOPED (issue #1448), and the bound it replaced is
+  worth knowing.** As shipped in #1432 the evidence was a flat per-FILE set of
+  member names and the audited unit was a key NAME, so a member written
+  ANYWHERE vouched for every key of that spelling — 11 of CodeBuild's 55
+  same-spelling keys had more than one write site, and
+  `BuildBatchConfig.ServiceRole` (the sibling of the member that motivated
+  #1432) stayed silent when dropped because the unrelated top-level
+  `serviceRole` write covered it.
+  Both sides moved in #1448: the audited unit is now the PATH
+  `TopLevelProperty.NestedKey`, and each written name is indexed to the members
+  written BENEATH the value it is written with (`collectWriteEvidence`,
+  resolving `this.mapSource(x)` calls, `const` / `let` bindings, `?:` / `??`
+  arms and `.map(cb)` callbacks — the same reach as the #1404 taint walk). A
+  path's terminal member is checked against the scope its top-level maps to, so
+  the `BuildBatchConfig.ServiceRole` deletion now exits 1.
+- **The pass still has a measured BOUND — do not repeat the over-promise this
+  bullet exists to correct.** Path-scoping NARROWS the duplicate-name class; it
+  does not close it, and the residual is NOT only #1445's generic converter.
+  1. **A duplicate name inside the SAME top-level still vouches.** The fixture's
+     `nestedProperties` capture is flattened per top-level, so `Environment.Type`
+     and `Environment.EnvironmentVariables[].Type` are the SAME audited path, and
+     the write scope is flattened to match. Measured on the only opted-in target,
+     by deleting the line from a scratch copy of the real `codebuild-provider.ts`
+     and running `--check`: deleting `environment: { type: … }` exits **0**
+     (`environmentVariables[].type` covers it), and deleting
+     `source: { type: … }` in `mapSource` exits **0** (`auth.type` covers it).
+     Both are genuine silent drops. Closing this needs a per-PATH fixture
+     capture (`refresh-cfn-schemas.mjs` + an AWS re-capture), not a critic
+     change.
+  2. **Scopes are keyed by NAME and unioned across write sites.** Two unrelated
+     `environment: { … }` literals in different methods share one `environment`
+     scope, and a name that only ever appears nested still gets a scope a
+     same-spelled TOP-LEVEL property would be checked against.
+  3. **Value resolution is best-effort and bare-name** (same-file callables by
+     name, identifier bindings not block-scope-aware). A hop it cannot follow
+     yields no literals and flags CORRECT code, which is why it peels `await`
+     and climbs to the module scope.
+  Both (1) and (2) are pinned by tests, and the full measured statement lives in
+  the script's file header. What ALSO remains outside the fence is a blob handed
+  WHOLE to a generic converter: the scope index cannot see inside it, so those
+  keys are unmeasurable rather than vouched-for, and that is what keeps the other
+  targets from opting in (issue #1445). For all of the above, a hand diff of the
+  WHOLE blob (the first bullet in this section) is still the thing that catches a
+  dropped sub-key.
+- **Allow-listing a nested key does NOT silence the write pass by default.**
+  `NESTED_KEY_ALLOW_LIST` entries silence the key and shape passes (the
+  deliberate #1378 cross-pass sharing); an entry must say
+  `passes: ['write', ...]` to clear a `no-write-evidence` verdict, because "this
+  key is a legacy member with no modern SDK equivalent" says nothing about
+  whether the provider writes a member it demonstrably has. Entries are matched
+  PATH-first, terminal-name-second, so `…#BuildBatchConfig.ServiceRole` scopes a
+  decision to one path while `…#ServiceRole` covers the key wherever it is
+  reachable.
 
 ## Adding a New SDK Provider
 
