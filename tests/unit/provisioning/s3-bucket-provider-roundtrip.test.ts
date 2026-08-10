@@ -2284,11 +2284,15 @@ describe('S3BucketProvider removal semantics (issue #1466)', () => {
     for (const { label, key, malformed, real } of cases) {
       vi.clearAllMocks();
       mockSend.mockResolvedValue({});
-      await update({ ...base, [key]: malformed as never }, { ...base, [key]: real as never }).catch(
-        () => {
-          /* a malformed value may throw locally — that is the loud path */
-        }
-      );
+      // Assert the LOUD path explicitly rather than swallowing. "No delete"
+      // alone is too weak: silently SKIPPING a malformed value -- the sibling
+      // failure mode that existed on the CREATE path until this PR -- also
+      // produces zero deletes and zero throws, and would pass a
+      // swallow-and-count-deletes check.
+      await expect(
+        update({ ...base, [key]: malformed as never }, { ...base, [key]: real as never }),
+        `${label} must fail loudly`
+      ).rejects.toThrow();
       const deletes =
         key === 'BucketEncryption'
           ? callsOf(DeleteBucketEncryptionCommand)
@@ -2302,5 +2306,170 @@ describe('S3BucketProvider removal semantics (issue #1466)', () => {
     // genuinely "not declared" and must still remove, matching CloudFormation.
     await update({ ...base, BucketEncryption: {} as never }, { ...base, BucketEncryption: sseKms });
     expect(callsOf(DeleteBucketEncryptionCommand)).toHaveLength(1);
+  });
+  it('CREATE rejects a malformed encryption block instead of silently skipping it', async () => {
+    // Round-2 routed CREATE through the same normalizer as UPDATE. That is a
+    // deliberate BEHAVIOR CHANGE: the old inline guard skipped a malformed
+    // value, leaving a bucket unencrypted-by-declaration with no error and
+    // nothing for drift to see. It now fails loudly (and the provider's
+    // partial-create cleanup drops the just-created bucket).
+    await expect(
+      provider.create('L', 'AWS::S3::Bucket', {
+        BucketName: BUCKET_NAME,
+        BucketEncryption: { Bogus: 1 } as never,
+      })
+    ).rejects.toThrow();
+    expect(callsOf(PutBucketEncryptionCommand)).toHaveLength(0);
+  });
+
+  it('CREATE skips the empty-list encryption placeholder without a Put', async () => {
+    await provider.create('L', 'AWS::S3::Bucket', {
+      BucketName: BUCKET_NAME,
+      BucketEncryption: { ServerSideEncryptionConfiguration: [] },
+    });
+    expect(callsOf(PutBucketEncryptionCommand)).toHaveLength(0);
+  });
+
+  it('a scalar config value is malformed, not a removal', async () => {
+    await expect(
+      update({ ...base, BucketEncryption: 'unresolved' as never }, {
+        ...base,
+        BucketEncryption: sseKms,
+      })
+    ).rejects.toThrow();
+    expect(callsOf(DeleteBucketEncryptionCommand)).toHaveLength(0);
+  });
+
+  it('{Rules: null} as the SOLE key is malformed; {} is a removal', async () => {
+    // Deliberate asymmetry: `{}` carries nothing and is "not declared", but a
+    // block that names the list key with a null value is a partially-pruned /
+    // malformed shape and must not be read as a removal.
+    await expect(
+      update({ ...base, OwnershipControls: { Rules: null } as never }, {
+        ...base,
+        OwnershipControls: { Rules: [{ ObjectOwnership: 'BucketOwnerPreferred' }] },
+      })
+    ).rejects.toThrow();
+    expect(callsOf(DeleteBucketOwnershipControlsCommand)).toHaveLength(0);
+
+    vi.clearAllMocks();
+    mockSend.mockResolvedValue({});
+    await update({ ...base, OwnershipControls: {} as never }, {
+      ...base,
+      OwnershipControls: { Rules: [{ ObjectOwnership: 'BucketOwnerPreferred' }] },
+    });
+    expect(callsOf(DeleteBucketOwnershipControlsCommand)).toHaveLength(1);
+  });
+
+  it('Object-Lock guard: previous-side string and configuration-block forms', async () => {
+    // The previous-side coverage that matters -- these are the shapes reachable
+    // when the template DROPS object lock and versioning in the same update.
+    await update(base, {
+      ...base,
+      ObjectLockEnabled: 'true',
+      VersioningConfiguration: { Status: 'Enabled' },
+    });
+    expect(callsOf(PutBucketVersioningCommand)).toHaveLength(0);
+
+    vi.clearAllMocks();
+    mockSend.mockResolvedValue({});
+    await update(base, {
+      ...base,
+      ObjectLockConfiguration: { ObjectLockEnabled: 'Enabled' },
+      VersioningConfiguration: { Status: 'Enabled' },
+    });
+    expect(callsOf(PutBucketVersioningCommand)).toHaveLength(0);
+  });
+
+  it('re-ENABLE alongside an ADDED replication config stays EARLY', async () => {
+    // The drift-revert re-enable shape: previously Suspended, now Enabled, with
+    // replication added in the same update. Versioning must precede the
+    // replication Put or S3 rejects the replication config.
+    await update(
+      {
+        ...base,
+        VersioningConfiguration: { Status: 'Enabled' },
+        ReplicationConfiguration: {
+          Role: 'arn:aws:iam::123456789012:role/r',
+          Rules: [{ Destination: { Bucket: 'arn:aws:s3:::dest' }, Status: 'Enabled' }],
+        },
+      },
+      { ...base, VersioningConfiguration: { Status: 'Suspended' } }
+    );
+    const names = mockSend.mock.calls.map(
+      (c) => (c[0] as { constructor: { name: string } }).constructor.name
+    );
+    const verIdx = names.indexOf('PutBucketVersioningCommand');
+    const replIdx = names.indexOf('PutBucketReplicationCommand');
+    expect(verIdx).toBeGreaterThanOrEqual(0);
+    expect(replIdx).toBeGreaterThanOrEqual(0);
+    expect(verIdx).toBeLessThan(replIdx);
+  });
+
+  it('an empty VersioningConfiguration block means Suspended', async () => {
+    await update(
+      { ...base, VersioningConfiguration: {} },
+      { ...base, VersioningConfiguration: { Status: 'Enabled' } }
+    );
+    const calls = callsOf(PutBucketVersioningCommand);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.input).toMatchObject({ VersioningConfiguration: { Status: 'Suspended' } });
+  });
+  it('BLOCKER regression: an EMPTY ObjectLockConfiguration must not suppress the suspend', async () => {
+    // `readObjectLock` always-emits `ObjectLockConfiguration` and returns `{}`
+    // for a bucket with NO object lock, and `cdkd drift --revert` feeds that
+    // snapshot in as both sides. A presence-only guard (`!== undefined`) is
+    // therefore true for EVERY bucket on the revert path and would suppress
+    // every legitimate suspend, leaving the drift permanently unfixable while
+    // warning about object lock the bucket does not have.
+    await update(
+      { ...base, ObjectLockConfiguration: {} },
+      {
+        ...base,
+        ObjectLockConfiguration: {},
+        VersioningConfiguration: { Status: 'Enabled' },
+      }
+    );
+    const calls = callsOf(PutBucketVersioningCommand);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.input).toMatchObject({ VersioningConfiguration: { Status: 'Suspended' } });
+  });
+
+  it('a REAL ObjectLockConfiguration (Enabled) still suppresses the suspend', async () => {
+    await update(
+      { ...base, ObjectLockConfiguration: { ObjectLockEnabled: 'Enabled' } },
+      {
+        ...base,
+        ObjectLockConfiguration: { ObjectLockEnabled: 'Enabled' },
+        VersioningConfiguration: { Status: 'Enabled' },
+      }
+    );
+    expect(callsOf(PutBucketVersioningCommand)).toHaveLength(0);
+  });
+
+  it('a malformed VersioningConfiguration is refused, never silently suspended', async () => {
+    // `applyVersioning` defaults a missing Status to 'Suspended', so a string
+    // or unresolved intrinsic would quietly turn versioning OFF. The list-config
+    // normalizer does not cover this property, so it refuses by name instead.
+    for (const malformed of ['Enabled', ['Enabled'], 42]) {
+      vi.clearAllMocks();
+      mockSend.mockResolvedValue({});
+      await expect(
+        update({ ...base, VersioningConfiguration: malformed as never }, {
+          ...base,
+          VersioningConfiguration: { Status: 'Enabled' },
+        })
+      ).rejects.toThrow(/VersioningConfiguration/);
+      expect(callsOf(PutBucketVersioningCommand)).toHaveLength(0);
+    }
+  });
+
+  it('malformed list configs fail by NAME, not with a bare TypeError', async () => {
+    await expect(
+      update({ ...base, OwnershipControls: { Rules: 'nope' } as never }, {
+        ...base,
+        OwnershipControls: { Rules: [{ ObjectOwnership: 'BucketOwnerPreferred' }] },
+      })
+    ).rejects.toThrow(/OwnershipControls\.Rules must be an array/);
   });
 });

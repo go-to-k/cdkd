@@ -674,6 +674,21 @@ export class S3BucketProvider implements ResourceProvider {
     bucketName: string,
     encryptionConfig: { ServerSideEncryptionConfiguration: Array<Record<string, unknown>> }
   ): Promise<void> {
+    // See applyOwnershipControls: malformed values reach here deliberately, so
+    // fail by name rather than with a bare `.map` TypeError.
+    if (!Array.isArray(encryptionConfig?.ServerSideEncryptionConfiguration)) {
+      // Plain Error on purpose: create()/update() wrap every throw into a
+      // ProvisioningError carrying the real logicalId (which this private
+      // helper does not have), so raising one here would only be re-labelled.
+      throw new Error(
+        `BucketEncryption.ServerSideEncryptionConfiguration must be an array (got ` +
+          `${
+            encryptionConfig?.ServerSideEncryptionConfiguration === undefined
+              ? 'undefined'
+              : typeof encryptionConfig.ServerSideEncryptionConfiguration
+          }) — check for an unresolved intrinsic or a mis-nested template value`
+      );
+    }
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const rules = encryptionConfig.ServerSideEncryptionConfiguration.map((rule): any => {
       const byDefault = rule['ServerSideEncryptionByDefault'] as
@@ -1342,7 +1357,10 @@ export class S3BucketProvider implements ResourceProvider {
       ownershipControls,
       'Rules'
     );
-    if (!skipDiffManaged && normalizedOwnership) {
+    // `!== undefined`, not truthiness: a falsy non-object ('' / 0 / false) is
+    // MALFORMED and must reach the apply call so create fails the same way
+    // update does. A truthy check would silently skip it on create only.
+    if (!skipDiffManaged && normalizedOwnership !== undefined) {
       await this.applyOwnershipControls(bucketName, normalizedOwnership);
     }
 
@@ -1373,7 +1391,7 @@ export class S3BucketProvider implements ResourceProvider {
         | undefined,
       'ServerSideEncryptionConfiguration'
     );
-    if (!skipDiffManaged && normalizedEncryption) {
+    if (!skipDiffManaged && normalizedEncryption !== undefined) {
       await this.applyBucketEncryption(bucketName, normalizedEncryption);
     }
   }
@@ -1386,6 +1404,16 @@ export class S3BucketProvider implements ResourceProvider {
     bucketName: string,
     ownershipControls: { Rules: Array<{ ObjectOwnership: string }> }
   ): Promise<void> {
+    // A malformed value reaches here by design (the normalizer passes it
+    // through rather than reading it as a removal). Name the property instead
+    // of letting `.map` throw a bare "Cannot read properties of undefined".
+    if (!Array.isArray(ownershipControls?.Rules)) {
+      throw new Error(
+        `OwnershipControls.Rules must be an array (got ` +
+          `${ownershipControls?.Rules === undefined ? 'undefined' : typeof ownershipControls.Rules}` +
+          `) — check for an unresolved intrinsic or a mis-nested template value`
+      );
+    }
     await this.s3Client.send(
       new PutBucketOwnershipControlsCommand({
         Bucket: bucketName,
@@ -1419,6 +1447,20 @@ export class S3BucketProvider implements ResourceProvider {
    *                                      declared -> not-declared transition,
    *                                      which is exactly what CloudFormation
    *                                      removes.
+   *
+   * "Empty" is deliberately NARROW. Only two shapes fold to `undefined`:
+   * a block with NO keys at all (`{}`), and a block whose list key holds an
+   * empty array. Everything else — a non-object, an array where the object
+   * belongs (wrong nesting), a block whose list key is absent but which
+   * carries OTHER keys, or a non-array list (an unresolved intrinsic) — is
+   * MALFORMED, not empty, and passes through so the apply call refuses it by
+   * name. Folding any of those to `undefined` would emit a Delete and
+   * silently downgrade a live bucket (KMS -> AES256) while the template still
+   * declares the config.
+   *
+   * NOTE this helper does NOT cover `VersioningConfiguration` (it has no list
+   * key); that property does its own malformed-shape refusal in
+   * `applySubConfigDiffs`.
    */
   private static emptyListConfigToUndefined<T extends Record<string, unknown>>(
     config: T | undefined,
@@ -1445,7 +1487,7 @@ export class S3BucketProvider implements ResourceProvider {
   /**
    * Diff CFn-shape sub-config values between previous and new state.
    *
-   * Three transitions:
+   * Four transitions:
    * - undefined -> defined  (value differs from previous, OR previous undefined): Put
    * - defined -> undefined: Delete
    * - defined -> defined (different): Put
@@ -1552,6 +1594,24 @@ export class S3BucketProvider implements ResourceProvider {
     const nextVersioning = properties['VersioningConfiguration'] as
       | Record<string, unknown>
       | undefined;
+    // A MALFORMED value must not silently become a suspend. `applyVersioning`
+    // defaults a missing Status to 'Suspended', so a string / array /
+    // unresolved intrinsic here would quietly turn versioning OFF -- the same
+    // silent-downgrade class `emptyListConfigToUndefined` closes for the list
+    // configs, which do not cover this property. Refuse it by name instead.
+    for (const [side, value] of [
+      ['previous', previousVersioning],
+      ['desired', nextVersioning],
+    ] as const) {
+      if (value != null && (typeof value !== 'object' || Array.isArray(value))) {
+        throw new Error(
+          `${side} VersioningConfiguration is ` +
+            `${Array.isArray(value) ? 'an array' : `a ${typeof value}`}, not an object — ` +
+            `refusing to infer a status from a malformed value, which would silently ` +
+            `suspend versioning`
+        );
+      }
+    }
     // Nullish (not strict-undefined) to match `diffSubConfig`'s own semantics;
     // a desired `null` is a removal there, so it must be one here too.
     const versioningChanged =
@@ -1561,6 +1621,8 @@ export class S3BucketProvider implements ResourceProvider {
     const desiredVersioningStatus =
       nextVersioning == null ? 'Suspended' : (nextVersioning['Status'] as string) || 'Suspended';
 
+    // `nextVersioning != null` is implied by the status check (a null value
+    // resolves to 'Suspended'); it is kept for TypeScript's narrowing.
     if (versioningChanged && nextVersioning != null && desiredVersioningStatus !== 'Suspended') {
       await this.applyVersioning(bucketName, nextVersioning);
     }
@@ -1798,10 +1860,18 @@ export class S3BucketProvider implements ResourceProvider {
       // drops `ObjectLockEnabled` and `VersioningConfiguration` together takes
       // the in-place UPDATE path. Reading only the desired side would see no
       // Object Lock and issue the suspend the live bucket still refuses.
-      const hasObjectLock = (p: Record<string, unknown>): boolean =>
-        p['ObjectLockEnabled'] === true ||
-        p['ObjectLockEnabled'] === 'true' ||
-        p['ObjectLockConfiguration'] !== undefined;
+      // Test the MEANINGFUL field, never mere presence of the block.
+      // `readObjectLock` always-emits `ObjectLockConfiguration` and returns
+      // `{}` for a bucket with no object lock, and `cdkd drift --revert` feeds
+      // that snapshot in as BOTH sides — so a presence check
+      // (`!== undefined`) is true for EVERY bucket on the revert path and
+      // would suppress every legitimate suspend, leaving the drift
+      // unfixable and warning about object lock the bucket does not have.
+      const hasObjectLock = (p: Record<string, unknown>): boolean => {
+        if (p['ObjectLockEnabled'] === true || p['ObjectLockEnabled'] === 'true') return true;
+        const cfg = p['ObjectLockConfiguration'] as Record<string, unknown> | undefined;
+        return cfg?.['ObjectLockEnabled'] === 'Enabled';
+      };
       if (hasObjectLock(properties) || hasObjectLock(previousProperties)) {
         this.logger.warn(
           `Bucket ${bucketName}: versioning would be suspended (VersioningConfiguration removed ` +
