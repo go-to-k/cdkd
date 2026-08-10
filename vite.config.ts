@@ -225,6 +225,22 @@ export default defineConfig({
       verify: {
         command: 'vp run check && vp run typecheck:test && vp run test && vp run build',
       },
+      // The `.claude/hooks/**` smoke tests, run under every bash on the
+      // machine. Before issue #1477 no task and no CI job ran them at all,
+      // so a suite could rot unnoticed — `provider-integ-gate.test.sh` was
+      // failing 3 of its 17 cases under macOS's system bash 3.2, and
+      // #1458 shipped a bash-4-only `mapfile` into the shared matcher that
+      // only an explicit `/bin/bash` run would have caught. NOT part of
+      // `vp run check` / `verify`: the suites build throwaway git repos and
+      // take ~6 minutes, which is the wrong cost for the inner dev loop.
+      // `.github/workflows/hooks.yml` runs this on any `.claude/hooks/**`
+      // change.
+      'test:hooks': {
+        command: 'bash .claude/hooks/run-tests.sh',
+        // A correctness gate must never replay a cached green: the task's
+        // inputs are shell scripts outside any source glob Vite+ tracks.
+        cache: false,
+      },
       'runtime:smoke': {
         command: 'node dist/cli.js --version',
         dependsOn: ['build'],

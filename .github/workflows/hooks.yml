@@ -1,0 +1,40 @@
+name: Hook suites
+
+# The `.claude/hooks/**` smoke tests. Kept out of `ci.yml` on purpose:
+# they build throwaway git repos and take several minutes, and they are
+# only interesting when a hook or its test changes — so this workflow is
+# path-filtered instead of running on every push.
+#
+# Runs on macOS because that is the only runner image carrying bash 3.2
+# (`/bin/bash`). The hooks are `#!/usr/bin/env bash`, so on a machine
+# without a newer bash first on PATH they execute under 3.2, where bash 4+
+# syntax (`mapfile`, `declare -A`, `${var^}`) is a runtime error. Issue
+# #1458 shipped exactly that into the shared matcher, and issue #1477
+# found `provider-integ-gate.test.sh` failing 3 of 17 cases there. A Linux
+# runner would resolve both `bash` and `/bin/bash` to the same 5.x binary
+# and prove nothing about that path.
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.claude/hooks/**'
+      - '.github/workflows/hooks.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - '.claude/hooks/**'
+      - '.github/workflows/hooks.yml'
+
+jobs:
+  hook-suites:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Report available shells
+        run: |
+          echo "bash on PATH: $(command -v bash) -> $(bash -c 'echo $BASH_VERSION')"
+          echo "/bin/bash:    $(/bin/bash -c 'echo $BASH_VERSION')"
+
+      - run: bash .claude/hooks/run-tests.sh
