@@ -15450,13 +15450,10 @@
             "AWS::S3::Bucket"
           ],
           "evidence": [
-            "delegated",
             "element-read"
           ],
           "seededBy": [
-            "applySubConfigDiffs",
-            "create",
-            "update"
+            "create"
           ]
         },
         {
@@ -15562,7 +15559,8 @@
       ],
       "gaps": [],
       "blindSpots": [
-        "hasCdkAutoDeleteTag(...) in delete()"
+        "hasCdkAutoDeleteTag(...) in delete()",
+        "hasObjectLock(...) in applySubConfigDiffs()"
       ]
     },
     {

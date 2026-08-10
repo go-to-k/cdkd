@@ -326,20 +326,20 @@ describe('S3BucketProvider.readCurrentState', () => {
       TagFilter: { Key: 'replicate', Value: 'yes' },
     });
   });
-  it('readOwnershipControls: NotFound -> empty placeholder, other errors rethrow', async () => {
+  it('readOwnershipControls rethrows a non-NotFound error (e.g. AccessDenied)', async () => {
     // Matches every sibling reader in this provider (readEncryption /
     // readTags both rethrow anything that is not their own "not configured"
     // signature). Pinned deliberately: this read ADDS a dependency on
     // s3:GetBucketOwnershipControls, so the failure mode on a missing
     // permission must be a loud error, not a silent wrong answer that would
     // report phantom drift on every bucket.
-    const ownershipIsCall = (n: number) => n === 3; // Head, Versioning, Encryption, Ownership
-
-    // AccessDenied on the ownership read must propagate.
-    let i = -1;
-    mockSend.mockImplementation(() => {
-      i += 1;
-      if (ownershipIsCall(i)) {
+    //
+    // Injected by COMMAND CLASS, not by call index: an index-keyed injection
+    // silently retargets a DIFFERENT reader if the Promise.all order ever
+    // changes, and since the siblings also rethrow the test would stay green
+    // while testing nothing.
+    mockSend.mockImplementation((cmd: unknown) => {
+      if (cmd instanceof GetBucketOwnershipControlsCommand) {
         const err = new Error('AccessDenied: not authorized');
         err.name = 'AccessDenied';
         return Promise.reject(err);
@@ -349,5 +349,18 @@ describe('S3BucketProvider.readCurrentState', () => {
     await expect(provider.readCurrentState('b', 'L', 'AWS::S3::Bucket')).rejects.toThrow(
       /AccessDenied/
     );
+  });
+
+  it('readOwnershipControls maps NotFound to the empty-Rules placeholder', async () => {
+    // The other half of the contract the title above used to claim but never
+    // asserted in the same test.
+    mockSend.mockImplementation((cmd: unknown) => {
+      if (cmd instanceof GetBucketOwnershipControlsCommand) {
+        return Promise.reject(notConfigured('OwnershipControlsNotFoundError'));
+      }
+      return Promise.resolve({});
+    });
+    const result = await provider.readCurrentState('b', 'L', 'AWS::S3::Bucket');
+    expect(result?.OwnershipControls).toEqual({ Rules: [] });
   });
 });

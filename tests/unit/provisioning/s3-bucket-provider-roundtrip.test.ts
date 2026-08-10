@@ -2086,7 +2086,9 @@ describe('S3BucketProvider removal semantics (issue #1466)', () => {
     // lists. An unresolved intrinsic or a wrong-shaped L1 value is MALFORMED:
     // folding it to `undefined` would fire DeleteBucketEncryption and silently
     // downgrade a live bucket from KMS to AES256 while the template still
-    // DECLARES encryption. It must pass through so AWS surfaces the error.
+    // DECLARES encryption. It must pass through and FAIL LOUDLY instead --
+    // in practice a local TypeError from the `.map` in applyBucketEncryption,
+    // before any send(); the point is loud-not-silent, not where it throws.
     await expect(
       update(
         {
@@ -2142,5 +2144,163 @@ describe('S3BucketProvider removal semantics (issue #1466)', () => {
       OwnershipControls: { Rules: [] },
     });
     expect(callsOf(PutBucketOwnershipControlsCommand)).toHaveLength(0);
+  });
+  it('EXPLICIT Suspended also defers past the replication removal (G1)', async () => {
+    // The deferral is keyed on the RESULTING STATUS, not on "was the property
+    // removed". An explicit `{Status:'Suspended'}` must take the late path too,
+    // or dropping replication in the same update hits the very S3 rejection the
+    // split exists to avoid. `drift --revert` reaches this form routinely,
+    // because readCurrentState always emits Suspended for un-versioned buckets.
+    await update(
+      { ...base, VersioningConfiguration: { Status: 'Suspended' } },
+      {
+        ...base,
+        VersioningConfiguration: { Status: 'Enabled' },
+        ReplicationConfiguration: {
+          Role: 'arn:aws:iam::123456789012:role/r',
+          Rules: [{ Destination: { Bucket: 'arn:aws:s3:::dest' }, Status: 'Enabled' }],
+        },
+      }
+    );
+    const names = mockSend.mock.calls.map(
+      (c) => (c[0] as { constructor: { name: string } }).constructor.name
+    );
+    const replIdx = names.indexOf('DeleteBucketReplicationCommand');
+    const verIdx = names.indexOf('PutBucketVersioningCommand');
+    expect(replIdx).toBeGreaterThanOrEqual(0);
+    expect(verIdx).toBeGreaterThanOrEqual(0);
+    expect(replIdx).toBeLessThan(verIdx);
+  });
+
+  it('ENABLE stays BEFORE an added replication config (G3)', async () => {
+    // The mirror constraint: S3 requires versioning ON before a replication
+    // config can be added, so the enable half must NOT drift to the tail.
+    await update(
+      {
+        ...base,
+        VersioningConfiguration: { Status: 'Enabled' },
+        ReplicationConfiguration: {
+          Role: 'arn:aws:iam::123456789012:role/r',
+          Rules: [{ Destination: { Bucket: 'arn:aws:s3:::dest' }, Status: 'Enabled' }],
+        },
+      },
+      base
+    );
+    const names = mockSend.mock.calls.map(
+      (c) => (c[0] as { constructor: { name: string } }).constructor.name
+    );
+    const verIdx = names.indexOf('PutBucketVersioningCommand');
+    const replIdx = names.indexOf('PutBucketReplicationCommand');
+    expect(verIdx).toBeGreaterThanOrEqual(0);
+    expect(replIdx).toBeGreaterThanOrEqual(0);
+    expect(verIdx).toBeLessThan(replIdx);
+  });
+
+  it('null desired VersioningConfiguration is a removal, not a no-op', async () => {
+    // `diffSubConfig` treats null as absent; the deferred suspend must use the
+    // same nullish semantics or the removal is silently dropped.
+    await update(
+      { ...base, VersioningConfiguration: null as never },
+      { ...base, VersioningConfiguration: { Status: 'Enabled' } }
+    );
+    const calls = callsOf(PutBucketVersioningCommand);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.input).toMatchObject({ VersioningConfiguration: { Status: 'Suspended' } });
+  });
+
+  it('Object-Lock guard consults the PREVIOUS side too', async () => {
+    // ObjectLockEnabled is not replacement-forcing for AWS::S3::Bucket, so
+    // dropping it together with VersioningConfiguration takes the in-place
+    // UPDATE path. Reading only the desired side would issue a suspend the
+    // live bucket still refuses.
+    await update(base, {
+      ...base,
+      ObjectLockEnabled: true,
+      VersioningConfiguration: { Status: 'Enabled' },
+    });
+    expect(callsOf(PutBucketVersioningCommand)).toHaveLength(0);
+  });
+
+  it('Object-Lock guard accepts the string and the configuration-block forms', async () => {
+    await update(
+      { ...base, ObjectLockEnabled: 'true' },
+      { ...base, ObjectLockEnabled: 'true', VersioningConfiguration: { Status: 'Enabled' } }
+    );
+    expect(callsOf(PutBucketVersioningCommand)).toHaveLength(0);
+
+    vi.clearAllMocks();
+    mockSend.mockResolvedValue({});
+    await update(
+      { ...base, ObjectLockConfiguration: { ObjectLockEnabled: 'Enabled' } },
+      {
+        ...base,
+        ObjectLockConfiguration: { ObjectLockEnabled: 'Enabled' },
+        VersioningConfiguration: { Status: 'Enabled' },
+      }
+    );
+    expect(callsOf(PutBucketVersioningCommand)).toHaveLength(0);
+  });
+
+  it('malformed shapes never become a removal (G4: {}, wrong nesting, non-array Rules)', async () => {
+    // Every shape below previously normalized to `undefined` -> Delete.
+    // `{}` alone IS "not declared" and legitimately removes; the others are
+    // malformed and must not.
+    // Each case scopes previous+desired to the ONE property under test, so the
+    // assertion measures only that property's delete (a sibling property
+    // absent from `desired` would be a legitimate removal and pollute a
+    // summed counter).
+    const realOwnership = { Rules: [{ ObjectOwnership: 'BucketOwnerPreferred' }] };
+    const cases: Array<{
+      label: string;
+      key: 'BucketEncryption' | 'OwnershipControls';
+      malformed: unknown;
+      real: unknown;
+    }> = [
+      {
+        label: 'encryption: list key absent but other keys present',
+        key: 'BucketEncryption',
+        malformed: { Bogus: 1 },
+        real: sseKms,
+      },
+      {
+        label: 'encryption: wrong nesting (array where object belongs)',
+        key: 'BucketEncryption',
+        malformed: [],
+        real: sseKms,
+      },
+      {
+        label: 'ownership: non-array Rules (unresolved intrinsic)',
+        key: 'OwnershipControls',
+        malformed: { Rules: { 'Fn::If': [] } },
+        real: realOwnership,
+      },
+      {
+        label: 'ownership: null Rules with other keys present',
+        key: 'OwnershipControls',
+        malformed: { Rules: null, X: 1 },
+        real: realOwnership,
+      },
+    ];
+    for (const { label, key, malformed, real } of cases) {
+      vi.clearAllMocks();
+      mockSend.mockResolvedValue({});
+      await update({ ...base, [key]: malformed as never }, { ...base, [key]: real as never }).catch(
+        () => {
+          /* a malformed value may throw locally — that is the loud path */
+        }
+      );
+      const deletes =
+        key === 'BucketEncryption'
+          ? callsOf(DeleteBucketEncryptionCommand)
+          : callsOf(DeleteBucketOwnershipControlsCommand);
+      expect(deletes, `${label} must not delete`).toHaveLength(0);
+    }
+  });
+
+  it('a bare empty block IS a removal ({} == not declared)', async () => {
+    // The counterpart to the case above: `{}` carries nothing, so it is
+    // genuinely "not declared" and must still remove, matching CloudFormation.
+    await update({ ...base, BucketEncryption: {} as never }, { ...base, BucketEncryption: sseKms });
+    expect(callsOf(DeleteBucketEncryptionCommand)).toHaveLength(1);
   });
 });
