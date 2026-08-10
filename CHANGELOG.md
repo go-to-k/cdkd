@@ -1,3 +1,10 @@
+## [0.278.21](https://github.com/go-to-k/cdkd/compare/v0.278.20...v0.278.21) (2026-08-10)
+
+
+### Bug Fixes
+
+* **glue:** refuse AWS::Glue::Table IcebergTableInput at pre-flight on create, warn on update ([#1462](https://github.com/go-to-k/cdkd/issues/1462)) ([c2f39a0](https://github.com/go-to-k/cdkd/commit/c2f39a08ccc143bb0414661c2d5feede75344f4b))
+
 ## [0.278.20](https://github.com/go-to-k/cdkd/compare/v0.278.19...v0.278.20) (2026-08-09)
 
 
