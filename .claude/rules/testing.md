@@ -411,6 +411,23 @@ Practical rules:
 - Allows testing UPDATE operations without modifying code
 - JSON Patch (RFC 6902) verified working for S3, Lambda, IAM resources
 
+## REMOVAL Testing (CDKD_TEST_REMOVAL)
+
+- Environment variable `CDKD_TEST_REMOVAL=true` makes a fixture synthesize a
+  template that genuinely LACKS a property, which is the only way to exercise
+  the #1160 absent-field removal class — `CDKD_TEST_UPDATE` changes a value,
+  and a changed value never takes the removal branch
+- Two conventions keep the assertion from being vacuous: the BASELINE phase
+  must assert the property is live before the removal phase asserts it is
+  gone (otherwise "gone" also passes when it never reached AWS), and a
+  sibling must be RETAINED (otherwise a reset that clears everything passes
+  too)
+- Examples: `tests/integration/route53/` (hosted-zone tags + query logging
+  config), `alb`, `sns-sqs-event`, `secrets-dynamic-ref`,
+  `cloudfront-function-url`, `iam-role-prefixed-name-update` (combined with
+  `CDKD_TEST_UPDATE`)
+- Full writeup in [docs/testing.md](../../docs/testing.md)
+
 ## Rollback Testing (failure injection)
 
 - Environment variable `CDKD_TEST_FAIL=true` injects a deliberately-failing

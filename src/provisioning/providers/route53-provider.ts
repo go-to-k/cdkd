@@ -391,11 +391,14 @@ export class Route53Provider implements ResourceProvider {
         })
       );
 
-      // Update tags (replace all tags)
-      await this.applyHostedZoneTags(physicalId, properties, logicalId);
+      // Update tags. Passing the PREVIOUS side is what makes this a diff
+      // rather than an add-only apply — a tag dropped from the template is
+      // sent as a `RemoveTagKeys` entry (issue #1160).
+      await this.applyHostedZoneTags(physicalId, properties, logicalId, previousProperties);
 
-      // Update query logging config
-      await this.applyQueryLoggingConfig(physicalId, properties, logicalId);
+      // Update query logging config. The previous side likewise turns an
+      // absent desired block from "nothing to do" into a REMOVAL.
+      await this.applyQueryLoggingConfig(physicalId, properties, logicalId, previousProperties);
 
       // Note: VPC associations on update are complex (need to diff current vs desired).
       // For now, we handle VPCs that need to be added. Full diff requires GetHostedZone
@@ -1146,29 +1149,75 @@ export class Route53Provider implements ResourceProvider {
   /**
    * Apply tags to a hosted zone using ChangeTagsForResource.
    * CFn property: HostedZoneTags (array of {Key, Value}).
+   *
+   * `previousProperties` is passed on the UPDATE path only, and turns this
+   * from an add-only apply into a real DIFF (issue #1160). Without it a tag
+   * removed from the template stayed on the zone forever — the add-only shape
+   * has no way to express a removal, and the `length === 0` early return made
+   * clearing ALL tags a silent no-op. `ChangeTagsForResource` takes
+   * `RemoveTagKeys` alongside `AddTags` in ONE call, and CloudFormation does
+   * untag a removed tag (live A/B, 2026-08-10), so the previous-minus-desired
+   * key set is sent as removals. Create keeps passing `undefined` — there is
+   * nothing to remove from a zone that did not exist a moment ago.
    */
   private async applyHostedZoneTags(
     zoneId: string,
     properties: Record<string, unknown>,
-    logicalId: string
+    logicalId: string,
+    previousProperties?: Record<string, unknown>
   ): Promise<void> {
-    const tags = properties['HostedZoneTags'] as Array<{ Key: string; Value: string }> | undefined;
-    if (!tags || !Array.isArray(tags) || tags.length === 0) return;
+    const tags = this.readHostedZoneTags(properties);
+    const previousTags = previousProperties
+      ? this.readHostedZoneTags(previousProperties)
+      : undefined;
+
+    const desiredKeys = new Set(tags.map((t) => t.Key));
+    // Removals are the previous side minus the desired side. Computing them
+    // this way guarantees no key appears in BOTH lists, which the API would
+    // otherwise have to arbitrate.
+    const removeTagKeys = (previousTags ?? [])
+      .map((t) => t.Key)
+      .filter((key) => typeof key === 'string' && key.length > 0 && !desiredKeys.has(key));
+
+    if (tags.length === 0 && removeTagKeys.length === 0) return;
 
     try {
       await this.getClient().send(
         new ChangeTagsForResourceCommand({
           ResourceType: 'hostedzone',
           ResourceId: zoneId,
-          AddTags: tags.map((t) => ({ Key: t.Key, Value: t.Value })),
+          ...(tags.length > 0 && {
+            AddTags: tags.map((t) => ({ Key: t.Key, Value: t.Value })),
+          }),
+          ...(removeTagKeys.length > 0 && { RemoveTagKeys: removeTagKeys }),
         })
       );
-      this.logger.debug(`Applied ${tags.length} tag(s) to hosted zone ${logicalId}`);
+      this.logger.debug(
+        `Applied ${tags.length} tag(s) and removed ${removeTagKeys.length} tag(s) on hosted zone ${logicalId}`
+      );
     } catch (error) {
       this.logger.warn(
         `Failed to apply tags to hosted zone ${logicalId}: ${error instanceof Error ? error.message : String(error)}`
       );
     }
+  }
+
+  /**
+   * Read `HostedZoneTags` off a property bag, tolerating the malformed shapes
+   * an unresolved intrinsic or a hand-authored L1 can produce. Returns `[]`
+   * rather than throwing: this is a best-effort tag apply whose failures are
+   * already warn-and-continue, and a hard refusal here would ALSO fire on the
+   * previous (state-borne) side, which a rollback replay cannot edit.
+   */
+  private readHostedZoneTags(
+    properties: Record<string, unknown>
+  ): Array<{ Key: string; Value: string }> {
+    const tags = properties['HostedZoneTags'];
+    if (!Array.isArray(tags)) return [];
+    return tags.filter(
+      (t): t is { Key: string; Value: string } =>
+        typeof t === 'object' && t !== null && typeof (t as { Key?: unknown }).Key === 'string'
+    );
   }
 
   /**
@@ -1179,17 +1228,33 @@ export class Route53Provider implements ResourceProvider {
   private async applyQueryLoggingConfig(
     zoneId: string,
     properties: Record<string, unknown>,
-    logicalId: string
+    logicalId: string,
+    previousProperties?: Record<string, unknown>
   ): Promise<void> {
-    const queryLoggingConfig = properties['QueryLoggingConfig'] as
-      | Record<string, unknown>
-      | undefined;
-    if (!queryLoggingConfig) return;
+    const cloudWatchLogsLogGroupArn = this.readQueryLogGroupArn(properties);
 
-    const cloudWatchLogsLogGroupArn = queryLoggingConfig['CloudWatchLogsLogGroupArn'] as
-      | string
-      | undefined;
-    if (!cloudWatchLogsLogGroupArn) return;
+    if (cloudWatchLogsLogGroupArn === undefined) {
+      // REMOVAL (issue #1160). `previousProperties` is supplied on the UPDATE
+      // path only, so create still returns silently for an absent block.
+      // Dropping `QueryLoggingConfig` from the template used to leave the live
+      // config in place: query logging kept writing to CloudWatch — and kept
+      // billing — with the template saying otherwise and `cdkd diff` reporting
+      // no changes, i.e. permanently invisible. CloudFormation deletes it
+      // (live A/B, 2026-08-10).
+      //
+      // Gated on the PREVIOUS side actually having carried a config rather
+      // than firing on every update: a `ListQueryLoggingConfigs` probe per
+      // hosted-zone update would cost a call on every deploy to discover
+      // nothing, and deleting a config cdkd never created is out of scope for
+      // a removal reset (that is drift, which `cdkd drift` owns).
+      if (previousProperties !== undefined && this.readQueryLogGroupArn(previousProperties)) {
+        this.logger.debug(
+          `QueryLoggingConfig removed from template for hosted zone ${logicalId}; deleting the live config`
+        );
+        await this.deleteQueryLoggingConfigForZone(zoneId, logicalId);
+      }
+      return;
+    }
 
     try {
       // Delete existing query logging config first (only one allowed per zone)
@@ -1212,6 +1277,20 @@ export class Route53Provider implements ResourceProvider {
         `Failed to apply query logging config to hosted zone ${logicalId}: ${error instanceof Error ? error.message : String(error)}`
       );
     }
+  }
+
+  /**
+   * Read `QueryLoggingConfig.CloudWatchLogsLogGroupArn` off a property bag,
+   * returning `undefined` for an absent block, a malformed container, or a
+   * blank / non-string ARN. One helper so the DESIRED and PREVIOUS sides
+   * cannot classify the same shape differently — an asymmetry there would
+   * make a removal fire (or not) depending on which side was malformed.
+   */
+  private readQueryLogGroupArn(properties: Record<string, unknown>): string | undefined {
+    const config = properties['QueryLoggingConfig'];
+    if (typeof config !== 'object' || config === null || Array.isArray(config)) return undefined;
+    const arn = (config as Record<string, unknown>)['CloudWatchLogsLogGroupArn'];
+    return typeof arn === 'string' && arn.length > 0 ? arn : undefined;
   }
 
   /**

@@ -1148,6 +1148,21 @@ Checklist when writing or reviewing an `update()`:
   stays absent; mixed kept/removed → kept fields pass through unchanged.
 - A per-key removal test (one key dropped from a still-present map) does NOT
   cover whole-block removal (the map itself dropped) — test both.
+- **Not every removal is a VALUE on the same call.** `clearOnUpdateRemoval`
+  fits a property that maps to an input FIELD, so a reset is "send the default
+  instead of omitting". A property whose apply is a *separate API call* needs a
+  different call on removal, and there is no reset value to pass — the
+  `route53-provider.ts` pair (issue #1160) is both spellings: `HostedZoneTags`
+  applies via `ChangeTagsForResource` and its removal is the `RemoveTagKeys`
+  argument (a previous-minus-desired KEY DIFF, not a value), while
+  `QueryLoggingConfig` applies via `CreateQueryLoggingConfig` and its removal
+  is `DeleteQueryLoggingConfig` on a sub-resource. Both looked like no-ops
+  precisely because the apply helper took only the DESIRED bag and had nothing
+  to diff against; the fix is threading `previousProperties` into the helper,
+  keeping it optional so `create()` stays byte-identical. Gate the removal on
+  the previous side actually having carried the thing, rather than probing AWS
+  on every update — a config cdkd never created is drift, which `cdkd drift`
+  owns, not a removal reset.
 
 ### 2b. Full-replace update APIs erase AWS-AUTHORED values (issue #1461)
 

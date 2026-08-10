@@ -844,6 +844,43 @@ CDKD_TEST_UPDATE=true node ../../../../dist/cli.js deploy CdkdBasicExample \
 
 The `CDKD_TEST_UPDATE=true` environment variable adds an additional tag to the S3 bucket without modifying the code. This allows testing UPDATE operations repeatedly.
 
+### Removal testing (CDKD_TEST_REMOVAL)
+
+`CDKD_TEST_REMOVAL=true` is the third env toggle a fixture stack can read, and
+it exists for a bug class `CDKD_TEST_UPDATE` structurally cannot reach: the
+**absent-field removal silent drop** (issue
+[#1160](https://github.com/go-to-k/cdkd/issues/1160)). CloudFormation resets a
+property REMOVED from the template to its default, while most AWS `Update*` /
+`Modify*` APIs read an absent input field as "no change" — so a provider that
+passes template properties straight through keeps the old live value, reports
+success, and drops the field from state, after which `cdkd diff` says "No
+changes" forever. Only a redeploy whose template genuinely LACKS the property
+exercises that path, which is what this toggle produces.
+
+The fixture branches on it when building the stack, and its `verify.sh`
+redeploys with the toggle set after the baseline phase:
+
+```bash
+CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes
+```
+
+Two conventions make the result meaningful rather than vacuous:
+
+- **Assert the baseline is live first.** A phase that only checks "the value is
+  gone" passes identically when the value never reached AWS at all, so the
+  baseline phase asserts the property IS set before the removal phase asserts
+  it is not.
+- **Keep a sibling that is NOT removed.** A reset that clears everything is as
+  wrong as one that clears nothing; the retained sibling is what distinguishes
+  them.
+
+Fixtures using it today: `route53` (hosted-zone tags + query logging config),
+`alb`, `sns-sqs-event`, `secrets-dynamic-ref`, `cloudfront-function-url`, and
+`iam-role-prefixed-name-update` (which combines it with `CDKD_TEST_UPDATE`).
+
 ### Failure injection (CDKD_TEST_FAIL)
 
 To verify rollback against real AWS, the `basic` stack supports a third toggle:
