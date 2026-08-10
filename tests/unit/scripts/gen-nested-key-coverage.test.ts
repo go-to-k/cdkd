@@ -23,6 +23,7 @@ import {
   collectStringLiterals,
   collectWriteEvidence,
   collectWrittenMemberNames,
+  expandGenericHandoffScopes,
   expandLiteralSegments,
   findDivergences,
   findStaleAllowListEntries,
@@ -30,6 +31,7 @@ import {
   lowerFirst,
   lookupAllowEntry,
   nestedKeyPathsForTarget,
+  reachableSdkMemberNames,
   wrapperInterfaceNames,
   type NestedKeyClassification,
   type NestedKeyPath,
@@ -69,7 +71,20 @@ const keyPaths = (topLevelProperty: string, ...keys: string[]): NestedKeyPath[] 
 const writeEvidence = (scopes: Record<string, readonly string[]>): ProviderWriteEvidence => ({
   written: new Set(Object.values(scopes).flat()),
   scopes: new Map(Object.entries(scopes).map(([k, v]) => [k, new Set(v)])),
+  handoffPoints: new Map(),
 });
+
+/** The sibling module the real generic converter lives in (issue #1445). */
+const CASE_CONVERT_SOURCE = readFileSync(
+  join(PROVIDERS_DIR, 'agentcore-case-convert.ts'),
+  'utf8'
+);
+const resolveCaseConvert = (specifier: string): string | undefined =>
+  specifier === './agentcore-case-convert.js' ? CASE_CONVERT_SOURCE : undefined;
+
+/** Every hand-off point recorded anywhere in a provider's evidence. */
+const allHandoffPoints = (evidence: ProviderWriteEvidence): Set<string> =>
+  new Set([...evidence.handoffPoints.values()].flatMap((points) => [...points]));
 
 /** Every classification whose TERMINAL key is `key` (a key can span paths). */
 const entriesFor = (
@@ -439,6 +454,305 @@ describe('collectWriteEvidence (synthetic)', () => {
       `const req = { body: JSON.stringify({ batchReportMode: 1 }) };`
     ).written;
     expect(written.has('batchReportMode')).toBe(true);
+  });
+});
+
+describe('whole-blob hand-off walk (synthetic, issue #1445)', () => {
+  /** Wrap a body in a `create(…, properties)` so the bag taint root exists. */
+  const inCreate = (body: string): string => `
+    class P {
+      async create(logicalId: string, resourceType: string, properties: Record<string, unknown>) {
+        ${body}
+      }
+      ${'' /* helpers appended by callers below */}
+    }
+  `;
+
+  const pointsOf = (source: string, resolveImport?: (s: string) => string | undefined): Set<string> =>
+    allHandoffPoints(
+      collectWriteEvidence(source, 'provider.ts', ['readCurrentState'], resolveImport)
+    );
+
+  it('records a VERBATIM whole-blob forward off the property bag', () => {
+    // `ApiGatewayV2Provider`'s real shape: CFn and SDK spell the blob the same,
+    // so the provider hands it over untouched and every member lands.
+    const points = pointsOf(
+      inCreate(`await this.send({ CorsConfiguration: properties['CorsConfiguration'] });`)
+    );
+    expect(points.has('CorsConfiguration')).toBe(true);
+  });
+
+  it('follows the forward through a const binding', () => {
+    // `CloudWatchAnomalyDetectorProvider.buildPutParams`'s shape.
+    const points = pointsOf(
+      inCreate(`
+        const single = properties['SingleMetricAnomalyDetector'] as unknown;
+        const params: Record<string, unknown> = {};
+        params.SingleMetricAnomalyDetector = single;
+      `)
+    );
+    expect(points.has('SingleMetricAnomalyDetector')).toBe(true);
+  });
+
+  it('follows the blob into a same-file GENERIC converter and back out', () => {
+    const points = pointsOf(`
+      class P {
+        async create(logicalId: string, resourceType: string, properties: Record<string, unknown>) {
+          return { linuxParameters: this.convertLinuxParameters(properties['LinuxParameters']) };
+        }
+        private convertLinuxParameters(config?: unknown) {
+          if (!config) return undefined;
+          return flip(config);
+        }
+      }
+      function flip(value: unknown): unknown {
+        if (typeof value !== 'object' || value === null) return value;
+        const result: Record<string, unknown> = {};
+        for (const [key, val] of Object.entries(value)) {
+          result[key.charAt(0).toLowerCase() + key.slice(1)] = flip(val);
+        }
+        return result;
+      }
+    `);
+    expect(points.has('linuxParameters')).toBe(true);
+  });
+
+  it('follows the blob into the REAL sibling-module pascalToCamelCaseKeys', () => {
+    // Cross-module resolution is load-bearing, not a nicety: the tree's only
+    // generic converter lives in `agentcore-case-convert.ts`.
+    const source = `
+      import { pascalToCamelCaseKeys } from './agentcore-case-convert.js';
+      class P {
+        async create(logicalId: string, resourceType: string, properties: Record<string, unknown>) {
+          return { runtimePlatform: pascalToCamelCaseKeys(properties['RuntimePlatform']) };
+        }
+      }
+    `;
+    expect(pointsOf(source, resolveCaseConvert).has('runtimePlatform')).toBe(true);
+    // …and WITHOUT the resolver the same callee is unresolvable, so it is not
+    // credited. That is the fail-closed direction, asserted rather than assumed.
+    expect(pointsOf(source).has('runtimePlatform')).toBe(false);
+  });
+
+  it('refuses a converter that NAMES A MEMBER of its own', () => {
+    // `ECSProvider.convertLoadBalancers`'s shape — per-member re-shaping, so
+    // every member keeps having to prove itself.
+    const points = pointsOf(`
+      class P {
+        async create(logicalId: string, resourceType: string, properties: Record<string, unknown>) {
+          return { loadBalancers: this.convertLoadBalancers(properties['LoadBalancers']) };
+        }
+        private convertLoadBalancers(lbs?: Array<Record<string, unknown>>) {
+          return lbs?.map((lb) => ({ targetGroupArn: lb['TargetGroupArn'] }));
+        }
+      }
+    `);
+    expect(points.has('loadBalancers')).toBe(false);
+  });
+
+  it('refuses a spread-and-patch converter (the CloudFront shape)', () => {
+    const points = pointsOf(`
+      class P {
+        async create(logicalId: string, resourceType: string, properties: Record<string, unknown>) {
+          return { DistributionConfig: this.toSdk(properties['DistributionConfig']) };
+        }
+        private toSdk(config: Record<string, unknown>) {
+          const result = { ...config };
+          result['Comment'] = '';
+          return result;
+        }
+      }
+    `);
+    expect(points.has('DistributionConfig')).toBe(false);
+  });
+
+  it('refuses a blob that did NOT come off the property bag', () => {
+    // The measured false clear this taint root exists to stop: CloudFront's
+    // disable-then-delete path re-sends the config it just READ from AWS.
+    const points = pointsOf(`
+      class P {
+        async delete(logicalId: string, physicalId: string) {
+          const response = await this.client.send(new GetDistributionConfigCommand({}));
+          const config = response.DistributionConfig!;
+          await this.client.send(new UpdateDistributionCommand({ DistributionConfig: config }));
+        }
+      }
+    `);
+    expect(points.has('DistributionConfig')).toBe(false);
+  });
+
+  it('refuses a blob read off the PREVIOUS bag', () => {
+    const points = pointsOf(`
+      class P {
+        async update(id: string, properties: Record<string, unknown>, previousProperties: Record<string, unknown>) {
+          await this.send({ CorsConfiguration: previousProperties['CorsConfiguration'] });
+        }
+      }
+    `);
+    expect(points.has('CorsConfiguration')).toBe(false);
+  });
+
+  it('refuses a hand-off whose result only feeds a comparison', () => {
+    const points = pointsOf(
+      inCreate(`
+        const changed =
+          JSON.stringify({ CorsConfiguration: properties['CorsConfiguration'] }) !==
+          JSON.stringify({ CorsConfiguration: {} });
+      `)
+    );
+    expect(points.has('CorsConfiguration')).toBe(false);
+  });
+
+  it('sees through `?:` / `??` guard arms and a spread-only literal', () => {
+    const points = pointsOf(
+      inCreate(`
+        await this.send({
+          A: properties['A'] ? properties['A'] : undefined,
+          B: properties['B'] ?? undefined,
+          C: { ...(properties['C'] as Record<string, unknown>) },
+        });
+      `)
+    );
+    expect([...points].sort()).toEqual(expect.arrayContaining(['A', 'B', 'C']));
+  });
+
+  it('registers the point under the SEED key too, so a plural/singular rename resolves', () => {
+    // `ECSProvider` writes `placementStrategy` for CFn's `PlacementStrategies`;
+    // keying only by the write name leaves the CFn top-level with no scope.
+    const evidence = collectWriteEvidence(
+      `
+      class P {
+        async create(logicalId: string, resourceType: string, properties: Record<string, unknown>) {
+          return { placementStrategy: this.pass(properties['PlacementStrategies']) };
+        }
+        private pass(items?: unknown) { return items; }
+      }
+      `,
+      'provider.ts'
+    );
+    expect(evidence.handoffPoints.get('PlacementStrategies')).toEqual(
+      new Set(['placementStrategy'])
+    );
+    expect(evidence.handoffPoints.get('placementStrategies')).toEqual(
+      new Set(['placementStrategy'])
+    );
+  });
+
+  it('records a NESTED hand-off against its enclosing scope, not only its own name', () => {
+    const evidence = collectWriteEvidence(
+      `
+      class P {
+        async create(logicalId: string, resourceType: string, properties: Record<string, unknown>) {
+          return {
+            containerDefinitions: (properties['ContainerDefinitions'] as Array<Record<string, unknown>>).map((def) => ({
+              name: def['Name'],
+              linuxParameters: this.pass(def['LinuxParameters']),
+            })),
+          };
+        }
+        private pass(config?: unknown) { return config; }
+      }
+      `,
+      'provider.ts'
+    );
+    expect(evidence.handoffPoints.get('containerDefinitions')?.has('linuxParameters')).toBe(
+      true
+    );
+  });
+});
+
+describe('reachableSdkMemberNames + expandGenericHandoffScopes (issue #1445)', () => {
+  const interfaces = new Map<string, Map<string, SdkMemberType>>([
+    [
+      'ContainerDefinition',
+      new Map<string, SdkMemberType>([
+        ['name', { kind: 'scalar' }],
+        ['linuxParameters', { kind: 'ref', refName: 'LinuxParameters' }],
+      ]),
+    ],
+    [
+      'LinuxParameters',
+      new Map<string, SdkMemberType>([
+        ['capabilities', { kind: 'ref', refName: 'KernelCapabilities' }],
+        ['tmpfs', { kind: 'array', refName: 'Tmpfs' }],
+        ['swappiness', { kind: 'scalar' }],
+      ]),
+    ],
+    [
+      'KernelCapabilities',
+      new Map<string, SdkMemberType>([
+        ['add', { kind: 'array' }],
+        ['drop', { kind: 'array' }],
+      ]),
+    ],
+    [
+      'Tmpfs',
+      new Map<string, SdkMemberType>([
+        ['containerPath', { kind: 'scalar' }],
+        ['mountOptions', { kind: 'array' }],
+      ]),
+    ],
+  ]);
+
+  it('walks ref AND array-element edges transitively', () => {
+    expect([...reachableSdkMemberNames('linuxParameters', interfaces)].sort()).toEqual([
+      'add',
+      'capabilities',
+      'containerPath',
+      'drop',
+      'mountOptions',
+      'swappiness',
+      'tmpfs',
+    ]);
+  });
+
+  it('expands a SCALAR member to nothing at all', () => {
+    // Why bound (5) is inert: a converter that returns a scalar credits only the
+    // name that was already a recorded write.
+    expect(reachableSdkMemberNames('swappiness', interfaces).size).toBe(0);
+  });
+
+  it('survives a reference cycle', () => {
+    const cyclic = new Map<string, Map<string, SdkMemberType>>([
+      ['Holder', new Map<string, SdkMemberType>([['node', { kind: 'ref', refName: 'Node' }]])],
+      [
+        'Node',
+        new Map<string, SdkMemberType>([
+          ['child', { kind: 'ref', refName: 'Node' }],
+          ['leaf', { kind: 'scalar' }],
+        ]),
+      ],
+    ]);
+    expect([...reachableSdkMemberNames('node', cyclic).values()].sort()).toEqual([
+      'child',
+      'leaf',
+    ]);
+  });
+
+  it('folds the hand-off point INTO the scope its enclosing write owns', () => {
+    const expanded = expandGenericHandoffScopes(
+      {
+        written: new Set(['containerDefinitions', 'linuxParameters']),
+        scopes: new Map([['containerDefinitions', new Set(['name', 'linuxParameters'])]]),
+        handoffPoints: new Map([['containerDefinitions', new Set(['linuxParameters'])]]),
+      },
+      interfaces
+    );
+    const scope = expanded.scopes.get('containerDefinitions')!;
+    expect(scope.has('capabilities')).toBe(true);
+    expect(scope.has('mountOptions')).toBe(true);
+    // …and it does NOT become a wildcard: a sibling member of the ENCLOSING
+    // blob that nobody writes still misses. This is the rubber-stamp guard.
+    expect(scope.has('portMappings')).toBe(false);
+  });
+
+  it('is a no-op when the provider hands nothing off', () => {
+    const evidence: ProviderWriteEvidence = {
+      written: new Set(['a']),
+      scopes: new Map([['a', new Set(['b'])]]),
+      handoffPoints: new Map(),
+    };
+    expect(expandGenericHandoffScopes(evidence, interfaces)).toBe(evidence);
   });
 });
 
@@ -1434,6 +1748,147 @@ describe('real-repo audit (regression floors)', () => {
   });
 });
 
+describe('whole-blob hand-off walk (real repo, issue #1445)', () => {
+  const providerSource = (file: string): string =>
+    readFileSync(join(PROVIDERS_DIR, file), 'utf8');
+  const evidenceFor = (file: string): ProviderWriteEvidence =>
+    collectWriteEvidence(providerSource(file), file, ['readCurrentState'], resolveCaseConvert);
+  const ecsInterfaces = collectSdkInterfaces(
+    resolve(repoRoot, 'node_modules/@aws-sdk/client-ecs/dist-types/models')
+  );
+
+  it('credits the members of LinuxParameters, and ONLY through the walk', () => {
+    // The issue's headline case, against the real `ecs-provider.ts`:
+    // `convertLinuxParameters` is `return pascalToCamelCaseKeys(config)`, so
+    // there is no per-member write anywhere in the tree to find.
+    const raw = evidenceFor('ecs-provider.ts');
+    const rawScope = raw.scopes.get('containerDefinitions')!;
+    const expanded = expandGenericHandoffScopes(raw, ecsInterfaces).scopes.get(
+      'containerDefinitions'
+    )!;
+    for (const member of [
+      'capabilities',
+      'devices',
+      'tmpfs',
+      'swappiness',
+      'maxSwap',
+      'sharedMemorySize',
+      'initProcessEnabled',
+      // …and two levels down, reached through the array-element edge.
+      'add',
+      'drop',
+      'hostPath',
+      'mountOptions',
+    ]) {
+      expect(rawScope.has(member), `${member} must be invisible before the fold`).toBe(false);
+      expect(expanded.has(member), `${member} must be credited after the fold`).toBe(true);
+    }
+    // The rubber-stamp guard: a SIBLING of the handed-off blob that the
+    // provider re-shapes per member is NOT credited by it.
+    expect(expanded.has('containerPortRange')).toBe(false);
+  });
+
+  it('records the real ECS / API Gateway v2 hand-off points and skips the naming converters', () => {
+    const ecs = allHandoffPoints(evidenceFor('ecs-provider.ts'));
+    for (const point of [
+      'linuxParameters',
+      'repositoryCredentials',
+      'systemControls',
+      'extraHosts',
+      'restartPolicy',
+      'resourceRequirements',
+      'runtimePlatform',
+      'ephemeralStorage',
+      'deploymentConfiguration',
+    ]) {
+      expect(ecs.has(point), point).toBe(true);
+    }
+    // `convertContainerDefinitions` / `convertLoadBalancers` / `convertPortMappings`
+    // all name members, so their blobs keep proving themselves write by write.
+    for (const point of ['containerDefinitions', 'loadBalancers', 'portMappings']) {
+      expect(ecs.has(point), point).toBe(false);
+    }
+    const apigw = allHandoffPoints(evidenceFor('apigatewayv2-provider.ts'));
+    for (const point of ['CorsConfiguration', 'DefaultRouteSettings', 'JwtConfiguration']) {
+      expect(apigw.has(point), point).toBe(true);
+    }
+    // CloudFront's spread-and-patch is NOT generic — known bound (D).
+    expect(allHandoffPoints(evidenceFor('cloudfront-distribution-provider.ts')).has(
+      'DistributionConfig'
+    )).toBe(false);
+  });
+
+  it('holds the API Gateway v2 opt-in floors it declares', () => {
+    const evidence = evidenceFor('apigatewayv2-provider.ts');
+    expect(evidence.written.size).toBeGreaterThanOrEqual(30);
+    expect([...evidence.scopes.values()].filter((s) => s.size > 0).length).toBeGreaterThanOrEqual(
+      1
+    );
+    expect(allHandoffPoints(evidence).size).toBeGreaterThanOrEqual(20);
+  });
+
+  it('keeps CodeBuild independent of the walk (its opt-in predates it)', () => {
+    const codebuild = NESTED_KEY_TARGETS.find(
+      (t) => t.resourceType === 'AWS::CodeBuild::Project'
+    )!;
+    expect(codebuild.minHandoffPoints).toBeUndefined();
+  });
+
+  it('reproduces the measured opt-in table in the script header', () => {
+    // The header's before/after table is a CLAIM about the real tree; this is
+    // the fence that keeps it true. Every non-zero entry is a RECORDED reason a
+    // target stays out, so a provider fix (or a walk improvement) has to update
+    // the header rather than silently drift from it.
+    const forced = NESTED_KEY_TARGETS.map((t) => ({ ...t, freshObjectMapper: true }));
+    const report = loadReport(forced);
+    const counts = new Map(
+      report.targets.map((t) => [
+        t.resourceType,
+        t.entries.filter((e) => e.bucket === 'no-write-evidence').length,
+      ])
+    );
+    expect(Object.fromEntries(counts)).toEqual({
+      'AWS::ApiGatewayV2::Api': 0,
+      'AWS::ApiGatewayV2::Authorizer': 0,
+      'AWS::ApiGatewayV2::Integration': 0,
+      'AWS::ApiGatewayV2::Route': 0,
+      'AWS::ApiGatewayV2::Stage': 0,
+      'AWS::CodeBuild::Project': 0,
+      'AWS::CloudFront::Distribution': 110,
+      'AWS::CloudWatch::AnomalyDetector': 3,
+      'AWS::ECS::Service': 5,
+      'AWS::ECS::TaskDefinition': 1,
+      'AWS::S3::Bucket': 104,
+    });
+  });
+
+  it('names the six REAL ECS silent drops the walk uncovered (#1472 / #1473)', () => {
+    // Reason (A) in the header: these are not blind spots, they are bugs, and
+    // pinning them by NAME is what makes the two ECS targets' opt-in blocked on
+    // a provider fix rather than on an allow-list entry.
+    const forced = NESTED_KEY_TARGETS.filter((t) => t.providerFile === 'ecs-provider.ts').map(
+      (t) => ({ ...t, freshObjectMapper: true })
+    );
+    const report = loadReport(forced);
+    const flagged = (type: string): string[] =>
+      report
+        .targets.find((t) => t.resourceType === type)!
+        .entries.filter((e) => e.bucket === 'no-write-evidence')
+        .map((e) => e.nestedKey)
+        .sort();
+    expect(flagged('AWS::ECS::TaskDefinition')).toEqual([
+      'ContainerDefinitions.ContainerPortRange',
+    ]);
+    expect(flagged('AWS::ECS::Service')).toEqual([
+      'LoadBalancers.AdvancedConfiguration',
+      'LoadBalancers.AlternateTargetGroupArn',
+      'LoadBalancers.ProductionListenerRule',
+      'LoadBalancers.RoleArn',
+      'LoadBalancers.TestListenerRule',
+    ]);
+  });
+});
+
 describe('real-code regression probes (per the repo checker rules)', () => {
   // Prove each CI-blocking verdict against REAL code: strip the real
   // provider's handling of a real key and assert the classifier flags it —
@@ -2108,6 +2563,138 @@ describe('the shipped --check command', () => {
     const { status, stderr } = runCheck(dir);
     expect(status).toBe(1);
     expect(stderr).toContain('AWS::CodeBuild::Project: BuildBatchConfig.BatchReportMode');
+  });
+
+  // WHOLE-BLOB HAND-OFF probes (issue #1445), on the newly opted-in
+  // `AWS::ApiGatewayV2::Stage`. `DefaultRouteSettings` is forwarded whole at
+  // TWO sites (create + update) and the scope index unions write sites, so
+  // every probe below edits BOTH — see the module header's known bound (2),
+  // which the first probe pins.
+  const ROUTE_SETTINGS_CREATE =
+    "          DefaultRouteSettings: properties['DefaultRouteSettings'] as RouteSettings | undefined,\n";
+  const ROUTE_SETTINGS_UPDATE =
+    "      input.DefaultRouteSettings = properties['DefaultRouteSettings'] as RouteSettings;\n";
+  const editRouteSettings =
+    (create: string, update: string) =>
+    (source: string): string => {
+      expect(source, 'create-side anchor drifted').toContain(ROUTE_SETTINGS_CREATE);
+      expect(source, 'update-side anchor drifted').toContain(ROUTE_SETTINGS_UPDATE);
+      return source
+        .replace(ROUTE_SETTINGS_CREATE, create)
+        .replace(ROUTE_SETTINGS_UPDATE, update);
+    };
+
+  it('exits 1 naming every DefaultRouteSettings member when BOTH forwards are deleted', () => {
+    const dir = regressedTree(
+      'providers-handoff-gone',
+      'apigatewayv2-provider.ts',
+      editRouteSettings('', '')
+    );
+    const { status, stderr } = runCheck(dir);
+    expect(status).toBe(1);
+    for (const key of [
+      'DataTraceEnabled',
+      'DetailedMetricsEnabled',
+      'LoggingLevel',
+      'ThrottlingBurstLimit',
+      'ThrottlingRateLimit',
+    ]) {
+      expect(stderr, key).toContain(`AWS::ApiGatewayV2::Stage: DefaultRouteSettings.${key}`);
+    }
+    expect(stderr).toContain('no-write-evidence');
+  });
+
+  it('exits 0 when only ONE of the two forwards is deleted (known bound 2, measured)', () => {
+    // Hand-off points are unioned across write sites exactly as scopes are, so
+    // a provider that stops forwarding on ONE path is not fenced. Recorded as a
+    // bound rather than discovered later.
+    const dir = regressedTree('providers-handoff-one-site', 'apigatewayv2-provider.ts', (source) =>
+      source.replace(ROUTE_SETTINGS_CREATE, '')
+    );
+    expect(runCheck(dir).status).toBe(0);
+  });
+
+  it('exits 1 naming ONLY the members a partial hand-mapping leaves out', () => {
+    // The discrimination the whole issue turns on: the moment the provider
+    // stops handing the blob over whole and starts naming members, every member
+    // it does NOT name has to prove itself — and the one it does name passes.
+    const dir = regressedTree(
+      'providers-handoff-partial',
+      'apigatewayv2-provider.ts',
+      editRouteSettings(
+        '          DefaultRouteSettings: {\n' +
+          "            LoggingLevel: (properties['DefaultRouteSettings'] as RouteSettings | undefined)\n" +
+          '              ?.LoggingLevel,\n' +
+          '          },\n',
+        '      input.DefaultRouteSettings = {\n' +
+          "        LoggingLevel: (properties['DefaultRouteSettings'] as RouteSettings).LoggingLevel,\n" +
+          '      };\n'
+      )
+    );
+    const { status, stderr } = runCheck(dir);
+    expect(status).toBe(1);
+    for (const key of [
+      'DataTraceEnabled',
+      'DetailedMetricsEnabled',
+      'ThrottlingBurstLimit',
+      'ThrottlingRateLimit',
+    ]) {
+      expect(stderr, key).toContain(`AWS::ApiGatewayV2::Stage: DefaultRouteSettings.${key}`);
+    }
+    expect(stderr).not.toContain('DefaultRouteSettings.LoggingLevel');
+  });
+
+  it('exits 0 when the forward is routed through the REAL generic converter', () => {
+    // The positive half of the acceptance: a generic-converter-delivered key
+    // does NOT flag, proven end to end against real provider source and the
+    // real sibling-module `pascalToCamelCaseKeys`.
+    const dir = regressedTree('providers-handoff-generic', 'apigatewayv2-provider.ts', (source) =>
+      "import { pascalToCamelCaseKeys } from './agentcore-case-convert.js';\n" +
+      editRouteSettings(
+        '          DefaultRouteSettings: pascalToCamelCaseKeys(\n' +
+          "            properties['DefaultRouteSettings']\n" +
+          '          ) as RouteSettings | undefined,\n',
+        '      input.DefaultRouteSettings = pascalToCamelCaseKeys(\n' +
+          "        properties['DefaultRouteSettings']\n" +
+          '      ) as RouteSettings;\n'
+      )(source)
+    );
+    const { status, stderr } = runCheck(dir);
+    expect(status).toBe(0);
+    expect(stderr).toContain('nested-key-coverage: OK');
+  });
+
+  it('exits 1 on the SAME shape when the blob is not read off the property bag', () => {
+    // Identical syntax, different origin: the taint root is what stops an
+    // AWS-response echo from counting as a template forward.
+    const dir = regressedTree('providers-handoff-untainted', 'apigatewayv2-provider.ts', (source) =>
+      source
+        .replace(
+          ROUTE_SETTINGS_CREATE,
+          "          DefaultRouteSettings: this.echoed['DefaultRouteSettings'] as RouteSettings | undefined,\n"
+        )
+        .replace(
+          ROUTE_SETTINGS_UPDATE,
+          "      input.DefaultRouteSettings = this.echoed['DefaultRouteSettings'] as RouteSettings;\n"
+        )
+    );
+    const { status, stderr } = runCheck(dir);
+    expect(status).toBe(1);
+    expect(stderr).toContain('AWS::ApiGatewayV2::Stage: DefaultRouteSettings.LoggingLevel');
+  });
+
+  it('exits 1 on a collapsed hand-off walk, naming the walk (not 13 divergences)', () => {
+    // Renaming the desired-state bag out of `HANDOFF_BAG_PARAM_NAMES` is a real
+    // shape of collapse: every write NAME and every SCOPE survives, so only the
+    // dedicated floor can name the cause.
+    const dir = regressedTree('providers-handoff-collapsed', 'apigatewayv2-provider.ts', (source) =>
+      source.replaceAll(/\bproperties\b/g, 'bag')
+    );
+    const { status, stderr } = runCheck(dir);
+    expect(status).toBe(1);
+    expect(stderr).toContain('whole-blob hand-off walk for apigatewayv2-provider.ts collapsed');
+    expect(stderr).toContain('parser regression?');
+    expect(stderr).not.toContain('no-write-evidence');
   });
 
   it('exits 1 on a collapsed write-collector parse, naming the parser (not 90 divergences)', () => {

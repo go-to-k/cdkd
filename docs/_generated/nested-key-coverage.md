@@ -14,7 +14,7 @@ For every SDK provider that forwards a nested CFn config blob, diffs the blob's 
 - Allow-listed pass-throughs (does NOT block CI): **4**
 - **Case divergences (blocks CI): 0**
 - **No SDK member (blocks CI): 0**
-- Write-evidence pass — fresh-object targets audited: **1**
+- Write-evidence pass — fresh-object targets audited: **6**
 - **No write evidence (blocks CI): 0**
 - Shape pass — bare-array pairs clean: **87**
 - Shape pass — explicitly handled in provider: **31**
@@ -143,11 +143,11 @@ CFn members whose SHAPE diverges from the same-spelled SDK member (bare array vs
 
 | Resource type | Provider | SDK client | Key style | Fresh-object | Nested key paths | Unmatched definitions |
 | --- | --- | --- | --- | --- | --- | --- |
-| `AWS::ApiGatewayV2::Api` | `apigatewayv2-provider.ts` | `@aws-sdk/client-apigatewayv2` | exact | no | 6 | 1 |
-| `AWS::ApiGatewayV2::Authorizer` | `apigatewayv2-provider.ts` | `@aws-sdk/client-apigatewayv2` | exact | no | 2 | 0 |
-| `AWS::ApiGatewayV2::Integration` | `apigatewayv2-provider.ts` | `@aws-sdk/client-apigatewayv2` | exact | no | 0 | 3 |
-| `AWS::ApiGatewayV2::Route` | `apigatewayv2-provider.ts` | `@aws-sdk/client-apigatewayv2` | exact | no | 0 | 0 |
-| `AWS::ApiGatewayV2::Stage` | `apigatewayv2-provider.ts` | `@aws-sdk/client-apigatewayv2` | exact | no | 5 | 0 |
+| `AWS::ApiGatewayV2::Api` | `apigatewayv2-provider.ts` | `@aws-sdk/client-apigatewayv2` | exact | yes | 6 | 1 |
+| `AWS::ApiGatewayV2::Authorizer` | `apigatewayv2-provider.ts` | `@aws-sdk/client-apigatewayv2` | exact | yes | 2 | 0 |
+| `AWS::ApiGatewayV2::Integration` | `apigatewayv2-provider.ts` | `@aws-sdk/client-apigatewayv2` | exact | yes | 0 | 3 |
+| `AWS::ApiGatewayV2::Route` | `apigatewayv2-provider.ts` | `@aws-sdk/client-apigatewayv2` | exact | yes | 0 | 0 |
+| `AWS::ApiGatewayV2::Stage` | `apigatewayv2-provider.ts` | `@aws-sdk/client-apigatewayv2` | exact | yes | 5 | 0 |
 | `AWS::CloudFront::Distribution` | `cloudfront-distribution-provider.ts` | `@aws-sdk/client-cloudfront` | exact | no | 121 | 4 |
 | `AWS::CloudWatch::AnomalyDetector` | `cloudwatch-anomaly-detector-provider.ts` | `@aws-sdk/client-cloudwatch` | exact | no | 30 | 1 |
 | `AWS::CodeBuild::Project` | `codebuild-provider.ts` | `@aws-sdk/client-codebuild` | lower-first | yes | 93 | 4 |

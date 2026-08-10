@@ -128,45 +128,120 @@
  * `readCurrentStateTaskDefinition`, which only the PREFIX match reaches) —
  * exactly the names a reverse map invents.
  *
- * WHY THE PASS IS OPT-IN PER TARGET, AND WHY ONLY CODEBUILD TODAY
- * ---------------------------------------------------------------
- * Measured against the real tree, RE-RUN under the path-scoped evidence of
- * issue #1448 (the pre-#1448 name-global numbers were 0/55, 12/20, 13/13,
- * 19/89, 22/107, 37/48, 70/112 — a 173 total). Counts are would-be
- * `same-spelling` key PATHS with no scoped write evidence:
+ * THE WHOLE-BLOB HAND-OFF WALK (issue #1445)
+ * ------------------------------------------
+ * The pass's largest blind spot was a provider that hands a whole sub-blob to a
+ * GENERIC KEY CONVERTER: one call delivers every member under it and there is
+ * no per-member write to find. `ECSProvider.convertLinuxParameters` is the
+ * clean demonstration —
  *
- *   AWS::CodeBuild::Project             0 / 90   <- opted in
- *   AWS::ApiGatewayV2::* (combined)    13 / 13
- *   AWS::ECS::TaskDefinition           25 / 115
- *   AWS::CloudWatch::AnomalyDetector   29 / 29
- *   AWS::ECS::Service                  44 / 54
- *   AWS::S3::Bucket                   106 / 125
- *   AWS::CloudFront::Distribution     110 / 112
+ *     private convertLinuxParameters(config?: Record<string, unknown>) {
+ *       if (!config) return undefined;
+ *       return pascalToCamelCaseKeys(config) as LinuxParameters;
+ *     }
  *
- * Scoping raised the blind-spot total from 173 to 327 while leaving the only
- * opted-in target at 0 — the counts grew because a generic converter delivers a
- * blob under a name the scope index cannot see INTO, so every member beneath it
- * now misses its scope instead of being vouched for by an unrelated same-spelled
- * write elsewhere in the file. That is the honest measurement of the same blind
- * spot, not a new one.
+ * — which delivers `Capabilities` / `Devices` / `Tmpfs` / `Swappiness` /
+ * `MaxSwap` / `SharedMemorySize` / `InitProcessEnabled` and everything beneath
+ * them, all correctly wired and all invisible to a per-member write search.
  *
- * Those non-zero counts are UNMEASURABLE rather than vouched-for — not a list
- * of 327 confirmed silent drops, and not a clean bill of health either. They
- * are this pass's LARGEST blind spot (not its only one — see the known-bounds
- * section below): a GENERIC key converter delivers a whole sub-blob without
- * naming any member. `ECSProvider.convertLinuxParameters` is the clean
- * demonstration —
- * `return pascalToCamelCaseKeys(config)` delivers `Capabilities`, `Devices`,
- * `Tmpfs`, `Swappiness` and the rest with zero writes to find. Enabling the
- * pass tree-wide would bury a real finding under dozens of false ones, and an
- * allow-list cannot fix that: every entry would read "delivered by a generic
- * converter" and the bucket would stop meaning anything.
+ * {@link collectWriteEvidence} now follows that hand-off, in the three steps the
+ * #1404 taint walk uses one level up:
+ *   SEED      — a value read off the DESIRED property bag
+ *               ({@link HANDOFF_BAG_PARAM_NAMES}, declaration-scoped taint, so a
+ *               config read back off `GetDistributionConfig` is NOT a seed).
+ *   PROPAGATE — the seed handed WHOLE to a callee, through `?:` / `??` / `||`
+ *               arms, `const` bindings, spread-only literals, and `this.f(…)` /
+ *               free-function / SIBLING-MODULE calls (`pascalToCamelCaseKeys`
+ *               lives in `agentcore-case-convert.ts`, so cross-module
+ *               resolution is load-bearing, not a nicety).
+ *   DELIVERY  — the callee RETURNS the blob rather than measuring it, and the
+ *               value is WRITTEN. A converted blob whose only consumer is a
+ *               diff is refused by the same {@link feedsOnlyComparison} rule
+ *               the literal walk uses.
  *
- * CodeBuild measures at exactly 0 because `CodeBuildProvider` names every
- * member by hand, so opting it in costs no allow-list entries. Teaching the
- * pass to follow a whole-blob hand-off into a generic converter — the shape
- * `gen-handled-property-wiring` already tracks one level up — is what the other
- * targets need first; that is issue #1445.
+ * GENERIC vs SPECIFIC is the whole job, and the test is deliberately crude and
+ * fail-closed: a callee is generic only when it NAMES NO MEMBER of its own
+ * anywhere in its body (no object-literal property, no shorthand, no
+ * `o.Foo = …` / `o['Foo'] = …`), so it can only be emitting keys it read.
+ * `pascalToCamelCaseKeys` qualifies (its only write is the computed
+ * `result[camelKey] = …`); `convertContainerDefinitions` (45 named members),
+ * `convertLoadBalancers` (4) and `CloudFrontDistributionProvider.convertToSdkFormat`
+ * (a spread-and-patch naming 30+) do not, and every member under THEM keeps
+ * having to prove itself write by write.
+ *
+ * The credit is then bounded to the blob: {@link expandGenericHandoffScopes}
+ * expands each hand-off point through the SDK model's own reference graph
+ * ({@link reachableSdkMemberNames}), so `linuxParameters` credits exactly the
+ * members of `LinuxParameters` and its descendants. Crediting the whole
+ * ENCLOSING scope instead would have been the rubber stamp: `ContainerDefinitions`
+ * carries both that hand-off AND `convertPortMappings`, whose missing
+ * `containerPortRange` is a REAL silent drop the walk must keep reporting.
+ *
+ * WHY THE PASS IS OPT-IN PER TARGET, AND WHICH TARGETS ARE IN
+ * -----------------------------------------------------------
+ * Measured against the real tree. Counts are would-be `same-spelling` key PATHS
+ * with no scoped write evidence, BEFORE the hand-off walk (the #1448 numbers)
+ * and AFTER it:
+ *
+ *   target                             before   after   status
+ *   AWS::CodeBuild::Project             0 / 90   0 / 90  opted in (#1432)
+ *   AWS::ApiGatewayV2::Api              6 /  6   0 /  6  OPTED IN (#1445)
+ *   AWS::ApiGatewayV2::Stage            5 /  5   0 /  5  OPTED IN (#1445)
+ *   AWS::ApiGatewayV2::Authorizer       2 /  2   0 /  2  OPTED IN (#1445)
+ *   AWS::ApiGatewayV2::Integration      0 /  0   0 /  0  OPTED IN (#1445)
+ *   AWS::ApiGatewayV2::Route            0 /  0   0 /  0  OPTED IN (#1445)
+ *   AWS::ECS::TaskDefinition           25 / 115  1 / 115 out — see (A)
+ *   AWS::ECS::Service                  44 /  54  5 /  54 out — see (A)
+ *   AWS::CloudWatch::AnomalyDetector   29 /  29  3 /  29 out — see (B)
+ *   AWS::S3::Bucket                   106 / 125 104 / 125 out — see (B)/(C)
+ *   AWS::CloudFront::Distribution     110 / 112 110 / 112 out — see (D)
+ *                                     -------   -------
+ *                                        327      223
+ *
+ * The four RECORDED, MEASURED reasons the remaining targets cannot opt in — none
+ * of them "add an allow-list entry", which is what the issue forbids:
+ *
+ * (A) ECS's six residuals are REAL SILENT DROPS, not blind spots, and were found
+ *     BY this walk. `ContainerDefinitions.ContainerPortRange` (SDK
+ *     `PortMapping.containerPortRange`, which `convertPortMappings` never
+ *     writes) and `LoadBalancers.{AdvancedConfiguration, AlternateTargetGroupArn,
+ *     ProductionListenerRule, RoleArn, TestListenerRule}` (SDK
+ *     `LoadBalancer.advancedConfiguration` and its members, which
+ *     `convertLoadBalancers` never writes — the blue/green deployment block).
+ *     Opting the two ECS targets in is blocked on FIXING the provider, tracked
+ *     in issues #1472 / #1473; an allow-list entry would silence a genuine bug.
+ *     This is the pass working: 44 unmeasurable paths collapsed to 5 real ones.
+ *
+ * (B) The BUILDER IDIOM (`const out: any = {}; out.Foo = …; return out;`) is a
+ *     per-member write the SCOPE index cannot see: `resolveLiterals` resolves
+ *     the identifier to the EMPTY literal it was declared with, and the later
+ *     `out.Foo = …` assignments are property-access writes no literal walk
+ *     visits. `CloudWatchAnomalyDetectorProvider.buildPutParams` builds
+ *     `Configuration` exactly that way, which is all three of its residuals
+ *     (`ExcludedTimeRanges` / `StartTime` / `EndTime` ARE written, just not
+ *     where the scope index looks), and `S3BucketProvider` uses it in
+ *     `applyWebsiteConfiguration` / `applyObjectLockConfiguration` /
+ *     `applyReplicationConfiguration`. This is a DIFFERENT mechanism from the
+ *     hand-off — per-member writes in the wrong place, not a blob with no writes
+ *     at all — so it is tracked separately in issue #1474 rather than folded in
+ *     here.
+ *
+ * (C) S3's remainder past (B) is genuine per-member re-shaping across a dozen
+ *     `apply*Configuration` helpers, each of which names members and therefore
+ *     has to keep proving them. It is not measurable as "N confirmed drops"
+ *     until (B) lands and the residual is re-measured.
+ *
+ * (D) `CloudFrontDistributionProvider.convertToSdkFormat` is a SPREAD-AND-PATCH
+ *     forwarder: `const result = { ...config }` delivers every member, then ~30
+ *     named patches rename / wrap specific keys. The genericity test rejects it
+ *     on those names — correctly, by its own rule — so all 110 stay
+ *     unmeasurable. Recognizing "a spread of the SEED inside an otherwise
+ *     member-naming function" is a third recognizer, tracked in issue #1475.
+ *     Deliberately not done here: it is the shape most likely to become a rubber
+ *     stamp, since it would credit 110 of 112 paths in one step.
+ *
+ * The counts under (B) / (C) / (D) remain UNMEASURABLE rather than vouched-for —
+ * not a list of 217 confirmed silent drops, and not a clean bill of health.
  *
  * WRITE EVIDENCE IS PATH-SCOPED (issue #1448)
  * -------------------------------------------
@@ -201,10 +276,13 @@
  * name-global set still contains `serviceRole` — which is what makes the fix
  * measurable rather than asserted.
  *
- * WHAT PATH-SCOPING DOES **NOT** CLOSE — MEASURED, NOT PREDICTED
- * --------------------------------------------------------------
+ * WHAT PATH-SCOPING AND THE HAND-OFF WALK DO **NOT** CLOSE — MEASURED, NOT PREDICTED
+ * -----------------------------------------------------------------------------------
  * Bounds (1) and (2) below are tracked in issue #1464 (they need a per-PATH
- * fixture capture, not a critic change); (3) is recorded, not tracked.
+ * fixture capture, not a critic change); (3) / (4) / (5) / (6) / (7) are
+ * recorded, not tracked. The provider-shape blind spots the hand-off walk does
+ * NOT recognize (builder idiom, spread-and-patch) are separate and are recorded
+ * with their counts in the opt-in section above, under (B) and (D).
  *
  * Scoping NARROWS the duplicate-name class; it does not close it. Read this
  * before writing "membership makes X non-regressing" anywhere: the bullet
@@ -236,6 +314,14 @@
  *     would not help the positive test (a key is cleared if ANY site covers it,
  *     which is the union), so the honest fix is the same per-path capture as (1).
  *
+ *     HAND-OFF POINTS ARE UNIONED THE SAME WAY (issue #1445), and it is
+ *     measurable: `ApiGatewayV2Provider` forwards `DefaultRouteSettings` whole
+ *     at TWO sites (create and update). Deleting only the create-side forward
+ *     from a scratch copy of the real provider exits **0** — the update-side
+ *     forward still vouches — and deleting BOTH exits 1 naming all five
+ *     `DefaultRouteSettings.*` paths. A provider that stops forwarding on ONE
+ *     path is therefore not fenced.
+ *
  * (3) VALUE RESOLUTION IS BEST-EFFORT AND BARE-NAME. Same-file callables and
  *     property initializers are indexed by NAME, so `this.mapSource(…)` and a
  *     free `mapSource(…)` resolve to the same declaration (a `receiver.mapSource(…)`
@@ -258,6 +344,38 @@
  *     suffix providers are not opted in. Widening the match is deliberately NOT
  *     done here — it would withdraw names from the LITERAL set too (the
  *     `provider-handled` bucket) on targets nobody has measured for it.
+ *
+ * (5) THE GENERICITY TEST IS BODY-LOCAL AND CRUDE (issue #1445). "Names no
+ *     member of its own" is the whole test, so `{ ...blob, Extra: 1 }` — which
+ *     DOES deliver `blob` — is rejected for naming `Extra`, and a helper that
+ *     names nothing but returns a SCALAR (`toDate(r['EndTime'])`) is accepted as
+ *     a converter. The first is the safe direction (the target keeps flagging,
+ *     visibly); the second is inert, because a scalar member expands to NOTHING
+ *     in {@link reachableSdkMemberNames}, so the only thing it credits is a name
+ *     that was already a recorded write.
+ *
+ * (6) THE SDK EXPANSION IS BARE-NAME AND UNIONED. `reachableSdkMemberNames`
+ *     looks the hand-off point up as a member name across EVERY interface in the
+ *     client model and unions the reference targets, so two unrelated interfaces
+ *     declaring the same member name expand together. Same bound as (3), one
+ *     model over; bounded in practice because only a name the provider actually
+ *     hands a whole blob to is ever expanded.
+ *
+ *     The point is registered under the WRITE name and ALSO under the SEED's own
+ *     CFn key (in both spellings), because the two disagree often enough to
+ *     matter: `ECSProvider` writes `placementStrategy` for CFn's
+ *     `PlacementStrategies`, and keying only by the write name left
+ *     `PlacementStrategies.Type` / `.Field` with no scope at all.
+ *
+ * (7) CROSS-MODULE RESOLUTION IS SAME-DIRECTORY ONLY. The hand-off walk reads a
+ *     sibling module (`./agentcore-case-convert.js`) so the tree's one real
+ *     generic converter is resolvable; a package import, a parent-directory
+ *     path, a namespace import and a re-export are all unresolvable and
+ *     therefore NOT credited. The imported module's own body is also not
+ *     taint-propagated — only its parameters are, from the calls seen in the
+ *     provider file — which is sufficient for a converter whose first guard arm
+ *     returns the parameter outright and insufficient for one that only returns
+ *     through its own recursion.
  *
  * Each of (1) and (2) is pinned by a test, so the bound is a recorded fact
  * rather than a surprise for the next reader.
@@ -412,7 +530,33 @@ export interface NestedKeyTarget {
    * declares the floor from its own measurement.
    */
   readonly minWriteScopes?: number;
+  /**
+   * Parser-regression floor for the WHOLE-BLOB HAND-OFF walk (issue #1445):
+   * the minimum number of DISTINCT hand-off point names the provider is known
+   * to yield. Declared only by a target whose opt-in DEPENDS on the walk — a
+   * target that reaches 0 findings on per-member writes alone (CodeBuild) must
+   * NOT declare it, or a genuinely hand-off-free provider would fail its own
+   * floor. Set from the observed count, rounded down.
+   */
+  readonly minHandoffPoints?: number;
 }
+
+/**
+ * The write-collector floors shared by the five `apigatewayv2-provider.ts`
+ * targets (issue #1445). Measured at opt-in: 46 written member names, 1
+ * non-empty write scope, 35 distinct whole-blob hand-off points.
+ *
+ * The SCOPE floor of 1 is not a typo and not a weak fence by accident — this
+ * provider builds almost no per-member literals BECAUSE it forwards, which is
+ * the exact shape {@link NestedKeyTarget.minWriteScopes}'s "no module-wide
+ * default" note predicted. What actually fences this target is
+ * {@link NestedKeyTarget.minHandoffPoints}.
+ */
+const API_GATEWAY_V2_WRITE_FLOORS = {
+  minWrittenMembers: 30,
+  minWriteScopes: 1,
+  minHandoffPoints: 20,
+} as const;
 
 /**
  * The audited targets: SDK providers that forward nested CFn config blobs.
@@ -436,12 +580,21 @@ export const NESTED_KEY_TARGETS: readonly NestedKeyTarget[] = [
     keyStyle: 'exact',
     minNestedKeys: 25,
   },
+  // The five API Gateway v2 targets opted into the WRITE-EVIDENCE pass with
+  // issue #1445, once the whole-blob hand-off walk landed. `ApiGatewayV2Provider`
+  // forwards `CorsConfiguration` / `DefaultRouteSettings` / `JwtConfiguration`
+  // VERBATIM off the property bag (the CFn and SDK spellings are identical on
+  // this service), so all 13 of its would-be `same-spelling` paths were
+  // unmeasurable before the walk and measure at 0 findings after it. The floors
+  // are per-file and therefore identical across the five.
   {
     resourceType: 'AWS::ApiGatewayV2::Api',
     providerFile: 'apigatewayv2-provider.ts',
     sdkClientPackage: '@aws-sdk/client-apigatewayv2',
     keyStyle: 'exact',
     minNestedKeys: 5,
+    freshObjectMapper: true,
+    ...API_GATEWAY_V2_WRITE_FLOORS,
   },
   {
     resourceType: 'AWS::ApiGatewayV2::Stage',
@@ -449,6 +602,8 @@ export const NESTED_KEY_TARGETS: readonly NestedKeyTarget[] = [
     sdkClientPackage: '@aws-sdk/client-apigatewayv2',
     keyStyle: 'exact',
     minNestedKeys: 5,
+    freshObjectMapper: true,
+    ...API_GATEWAY_V2_WRITE_FLOORS,
   },
   {
     resourceType: 'AWS::ApiGatewayV2::Integration',
@@ -456,6 +611,8 @@ export const NESTED_KEY_TARGETS: readonly NestedKeyTarget[] = [
     sdkClientPackage: '@aws-sdk/client-apigatewayv2',
     keyStyle: 'exact',
     minNestedKeys: 0,
+    freshObjectMapper: true,
+    ...API_GATEWAY_V2_WRITE_FLOORS,
   },
   {
     resourceType: 'AWS::ApiGatewayV2::Route',
@@ -463,6 +620,8 @@ export const NESTED_KEY_TARGETS: readonly NestedKeyTarget[] = [
     sdkClientPackage: '@aws-sdk/client-apigatewayv2',
     keyStyle: 'exact',
     minNestedKeys: 0,
+    freshObjectMapper: true,
+    ...API_GATEWAY_V2_WRITE_FLOORS,
   },
   {
     resourceType: 'AWS::ApiGatewayV2::Authorizer',
@@ -470,6 +629,8 @@ export const NESTED_KEY_TARGETS: readonly NestedKeyTarget[] = [
     sdkClientPackage: '@aws-sdk/client-apigatewayv2',
     keyStyle: 'exact',
     minNestedKeys: 2,
+    freshObjectMapper: true,
+    ...API_GATEWAY_V2_WRITE_FLOORS,
   },
   {
     resourceType: 'AWS::ECS::Service',
@@ -868,15 +1029,27 @@ export function collectSdkMemberNames(modelsDir: string): Set<string> {
 /** The declared type kind of one SDK interface member. */
 export interface SdkMemberType {
   readonly kind: 'array' | 'ref' | 'scalar';
-  /** For kind 'ref': the referenced type name. */
+  /**
+   * The referenced type name — for kind 'ref' the member's own type, and for
+   * kind 'array' the ELEMENT type when it is a bare reference (`Tmpfs[]` ->
+   * `Tmpfs`, `Array<Device>` -> `Device`).
+   *
+   * The array case was added by issue #1445: {@link reachableSdkMemberNames}
+   * walks this graph to enumerate the members beneath a blob handed WHOLE to a
+   * generic converter, and `LinuxParameters.tmpfs` / `.devices` are arrays — a
+   * ref-only graph would stop at the array edge and leave `ContainerPath` /
+   * `MountOptions` / `HostPath` uncredited. The shape pass is unaffected: every
+   * one of its `refName` tests is guarded by `kind === 'ref'`.
+   */
   readonly refName?: string;
 }
 
 /**
  * Collect every INTERFACE in the SDK client's model typings with its members'
  * declared type kinds. `X | undefined` unions are unwrapped; `Y[]` and
- * `Array<Y>` classify 'array'; a bare type reference classifies 'ref' with
- * the referenced name; everything else 'scalar'.
+ * `Array<Y>` classify 'array' (carrying the element's reference name when it
+ * has one); a bare type reference classifies 'ref' with the referenced name;
+ * everything else 'scalar'.
  *
  * Consumed by the shape pass: a member whose type is a reference to an
  * interface that itself declares a `Quantity` member is a `{Quantity, Items}`
@@ -897,9 +1070,21 @@ export function collectSdkInterfaces(modelsDir: string): Map<string, Map<string,
       if (nonNullish.length !== 1) return { kind: 'scalar' };
       node = nonNullish[0]!;
     }
-    if (ts.isArrayTypeNode(node)) return { kind: 'array' };
+    if (ts.isArrayTypeNode(node)) {
+      const element = node.elementType;
+      return ts.isTypeReferenceNode(element) && ts.isIdentifier(element.typeName)
+        ? { kind: 'array', refName: element.typeName.text }
+        : { kind: 'array' };
+    }
     if (ts.isTypeReferenceNode(node) && ts.isIdentifier(node.typeName)) {
-      if (node.typeName.text === 'Array') return { kind: 'array' };
+      if (node.typeName.text === 'Array') {
+        const element = node.typeArguments?.[0];
+        return element !== undefined &&
+          ts.isTypeReferenceNode(element) &&
+          ts.isIdentifier(element.typeName)
+          ? { kind: 'array', refName: element.typeName.text }
+          : { kind: 'array' };
+      }
       return { kind: 'ref', refName: node.typeName.text };
     }
     return { kind: 'scalar' };
@@ -1231,12 +1416,65 @@ export function isComparisonOnlyLiteral(node: ts.Node): boolean {
 export interface ProviderWriteEvidence {
   readonly written: ReadonlySet<string>;
   readonly scopes: ReadonlyMap<string, ReadonlySet<string>>;
+  /**
+   * WHOLE-BLOB HAND-OFF points (issue #1445): scope name -> every member name
+   * at or beneath that scope whose written VALUE is a whole sub-blob delivered
+   * through a GENERIC key converter (or verbatim), so the members underneath it
+   * are delivered with no per-member write to find.
+   *
+   * `containerDefinitions` maps to `{ linuxParameters, repositoryCredentials,
+   * systemControls, extraHosts, restartPolicy, resourceRequirements }`, and the
+   * top-level `CorsConfiguration` maps to `{ CorsConfiguration }` (a scope whose
+   * OWN value is the hand-off). The set is deliberately just NAMES: expanding a
+   * name into the members beneath it needs the SDK model, which this collector
+   * does not read — {@link expandGenericHandoffScopes} does that fold.
+   */
+  readonly handoffPoints: ReadonlyMap<string, ReadonlySet<string>>;
 }
 
 /** The evidence a target that has NOT opted into the pass is classified with. */
 export const EMPTY_WRITE_EVIDENCE: ProviderWriteEvidence = {
   written: new Set<string>(),
   scopes: new Map<string, ReadonlySet<string>>(),
+  handoffPoints: new Map<string, ReadonlySet<string>>(),
+};
+
+/**
+ * Parameter names that hold the DESIRED-state CFn property bag — the origin
+ * every WHOLE-BLOB HAND-OFF has to trace back to (issue #1445). Same list, and
+ * the same reasoning, as `gen-handled-property-wiring`'s
+ * `PROPERTY_BAG_PARAM_NAMES`: the bag reaches a private helper by call edge, but
+ * seeding by NAME keeps the entry points observable.
+ *
+ * `previousProperties` is deliberately absent, exactly as it is there: a blob
+ * read off the PREVIOUS bag participates in change detection and proves nothing
+ * about delivery. And without the taint root at all, `DistributionConfig:
+ * config` on `CloudFrontDistributionProvider`'s disable-then-delete path — a
+ * whole config read straight off `GetDistributionConfig` and sent back —
+ * measured as a hand-off and cleared 108 of CloudFront's 110 findings. That is
+ * the rubber stamp this critic must not become.
+ */
+export const HANDOFF_BAG_PARAM_NAMES: ReadonlySet<string> = new Set([
+  'properties',
+  'props',
+  'newProperties',
+  'currentProperties',
+  'desiredProperties',
+  'resourceProperties',
+]);
+
+/**
+ * `undefined` / `null` written as an expression — the arm of a
+ * `blob ? convert(blob) : undefined` guard that carries no blob and must not
+ * disqualify the other arm from being a whole-blob hand-off (issue #1445).
+ */
+const isNullishExpression = (node: ts.Node): boolean => {
+  const e = unwrapExpression(node);
+  return (
+    e.kind === ts.SyntaxKind.NullKeyword ||
+    e.kind === ts.SyntaxKind.UndefinedKeyword ||
+    (ts.isIdentifier(e) && e.text === 'undefined')
+  );
 };
 
 /** Array methods whose callback's RETURN value is the delivered element. */
@@ -1268,6 +1506,21 @@ const RECEIVER_PRESERVING_METHODS: ReadonlySet<string> = new Set([
 const RECEIVER_AND_ARGUMENT_METHODS: ReadonlySet<string> = new Set(['concat']);
 
 /**
+ * Array methods whose callback's FIRST parameter is an element of the receiver.
+ * Used by the hand-off walk's taint pass (issue #1445): the `def` of
+ * `defs.map((def) => …)` is bag data exactly when `defs` is.
+ */
+const ARRAY_ELEMENT_CALLBACK_METHODS: ReadonlySet<string> = new Set([
+  'map',
+  'flatMap',
+  'filter',
+  'find',
+  'forEach',
+  'some',
+  'every',
+]);
+
+/**
  * Collect PATH-SCOPED write evidence, AST-level.
  *
  * A write is an object-literal property name (`batchReportMode: value`), a
@@ -1290,11 +1543,21 @@ const RECEIVER_AND_ARGUMENT_METHODS: ReadonlySet<string> = new Set(['concat']);
  *
  * Bodies of {@link REVERSE_MAP_FUNCTION_PREFIXES} are skipped
  * entirely, and a literal that {@link feedsOnlyComparison} contributes nothing.
+ *
+ * A write whose value is a WHOLE-BLOB HAND-OFF into a generic key converter
+ * (issue #1445) has no per-member literal to walk, so it is recorded separately
+ * as a hand-off POINT — see {@link ProviderWriteEvidence.handoffPoints} and
+ * {@link isWholeBlobHandoff}. `resolveImportSource` lets the hand-off walk
+ * follow a converter imported from a SIBLING module (`pascalToCamelCaseKeys`
+ * lives in `agentcore-case-convert.ts`, not in any provider): without it the
+ * only real generic converter in the tree is unresolvable, and an unresolvable
+ * callee is deliberately NOT credited.
  */
 export function collectWriteEvidence(
   sourceText: string,
   fileName = 'provider.ts',
-  excludedFunctionPrefixes: readonly string[] = REVERSE_MAP_FUNCTION_PREFIXES
+  excludedFunctionPrefixes: readonly string[] = REVERSE_MAP_FUNCTION_PREFIXES,
+  resolveImportSource?: (specifier: string) => string | undefined
 ): ProviderWriteEvidence {
   const sf = ts.createSourceFile(
     fileName,
@@ -1305,6 +1568,7 @@ export function collectWriteEvidence(
   );
   const written = new Set<string>();
   const scopes = new Map<string, Set<string>>();
+  const handoffPoints = new Map<string, Set<string>>();
 
   /**
    * The written name of an object-literal property. An Identifier IS the name
@@ -1408,6 +1672,60 @@ export function collectWriteEvidence(
     ts.forEachChild(node, indexVisit);
   };
   indexVisit(sf);
+
+  /**
+   * Callables the WHOLE-BLOB HAND-OFF walk may descend into (issue #1445):
+   * every same-file callable, PLUS free functions imported by name from a
+   * SIBLING module. The two indexes are kept apart on purpose — widening the
+   * general {@link resolveLiterals} index to imported modules would change the
+   * scope sets of every already-opted-in target, which is a different change
+   * with a different blast radius. The hand-off walk only ever ASKS whether a
+   * callee names members of its own, so importing that answer is safe.
+   */
+  const handoffCallables = new Map<string, ts.Node[]>(
+    [...callables].map(([name, fns]) => [name, [...fns]])
+  );
+  if (resolveImportSource !== undefined) {
+    for (const stmt of sf.statements) {
+      if (!ts.isImportDeclaration(stmt) || stmt.importClause?.isTypeOnly === true) continue;
+      if (!ts.isStringLiteral(stmt.moduleSpecifier)) continue;
+      const bindings = stmt.importClause?.namedBindings;
+      if (bindings === undefined || !ts.isNamedImports(bindings)) continue;
+      const importedSource = resolveImportSource(stmt.moduleSpecifier.text);
+      if (importedSource === undefined) continue;
+      const importedSf = ts.createSourceFile(
+        stmt.moduleSpecifier.text,
+        importedSource,
+        ts.ScriptTarget.ESNext,
+        true,
+        ts.ScriptKind.TS
+      );
+      const exported = new Map<string, ts.Node>();
+      for (const s of importedSf.statements) {
+        if (ts.isFunctionDeclaration(s) && s.name !== undefined) {
+          exported.set(s.name.text, s);
+        } else if (ts.isVariableStatement(s)) {
+          for (const d of s.declarationList.declarations) {
+            if (!ts.isIdentifier(d.name) || d.initializer === undefined) continue;
+            const init = unwrapExpression(d.initializer);
+            if (ts.isArrowFunction(init) || ts.isFunctionExpression(init)) {
+              exported.set(d.name.text, init);
+            }
+          }
+        }
+      }
+      for (const element of bindings.elements) {
+        if (element.isTypeOnly) continue;
+        const fn = exported.get((element.propertyName ?? element.name).text);
+        if (fn === undefined) continue;
+        const local = element.name.text;
+        if (isExcludedName(local)) continue;
+        const list = handoffCallables.get(local) ?? [];
+        list.push(fn);
+        handoffCallables.set(local, list);
+      }
+    }
+  }
 
   /**
    * Is `name` a PARAMETER of `scope`? A parameter shadows every outer binding,
@@ -1565,9 +1883,415 @@ export function collectWriteEvidence(
     return [];
   };
 
-  /** Every member name written anywhere beneath these literals. */
-  const subtreeMemberNames = (literals: readonly ts.ObjectLiteralExpression[]): Set<string> => {
+  // ---- PROPERTY-BAG TAINT, the ROOT of the whole-blob hand-off walk (#1445).
+  // Declaration-scoped, never bare-name: `cloudfront-distribution-provider.ts`
+  // binds the template's config AND the AWS-returned one to identifiers that
+  // share the name `config` in different methods, so a name-keyed taint set
+  // would credit the delete path's `GetDistributionConfig` echo.
+
+  /** The declaration a plain identifier resolves to, searched lexically. */
+  function declarationOf(id: ts.Identifier): ts.Node | undefined {
+    const nearest = enclosingScope(id);
+    for (let scope: ts.Node | undefined = nearest; scope; ) {
+      if (ts.isFunctionLike(scope)) {
+        const parameter = scope.parameters.find(
+          (p) => ts.isIdentifier(p.name) && p.name.text === id.text
+        );
+        if (parameter !== undefined) return parameter;
+      }
+      const descendIntoFunctions = scope === nearest;
+      let found: ts.Node | undefined;
+      const visit = (n: ts.Node): void => {
+        if (found !== undefined) return;
+        if (!descendIntoFunctions && n !== scope && ts.isFunctionLike(n)) return;
+        if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.name.text === id.text) {
+          found = n;
+          return;
+        }
+        ts.forEachChild(n, visit);
+      };
+      visit(scope);
+      if (found !== undefined) return found;
+      scope = ts.isSourceFile(scope) ? undefined : enclosingScope(scope);
+    }
+    return undefined;
+  }
+
+  const tainted = new Set<ts.Node>();
+
+  /** Does this expression carry data that came out of the property bag? */
+  function isBagDerived(expr: ts.Node, seen: Set<ts.Node>): boolean {
+    const e = unwrapExpression(expr);
+    if (seen.has(e)) return false;
+    seen.add(e);
+    if (ts.isIdentifier(e)) {
+      const declaration = declarationOf(e);
+      return declaration !== undefined && tainted.has(declaration);
+    }
+    if (ts.isElementAccessExpression(e) || ts.isPropertyAccessExpression(e)) {
+      return isBagDerived(e.expression, seen);
+    }
+    if (ts.isConditionalExpression(e)) {
+      return isBagDerived(e.whenTrue, seen) || isBagDerived(e.whenFalse, seen);
+    }
+    if (ts.isBinaryExpression(e)) {
+      return isBagDerived(e.left, seen) || isBagDerived(e.right, seen);
+    }
+    if (ts.isObjectLiteralExpression(e)) {
+      return e.properties.some(
+        (p) => ts.isSpreadAssignment(p) && isBagDerived(p.expression, seen)
+      );
+    }
+    if (ts.isArrayLiteralExpression(e)) {
+      return e.elements.some((el) => isBagDerived(el, seen));
+    }
+    if (ts.isSpreadElement(e)) return isBagDerived(e.expression, seen);
+    if (ts.isCallExpression(e)) {
+      const callee = unwrapExpression(e.expression);
+      if (ts.isPropertyAccessExpression(callee) && isBagDerived(callee.expression, seen)) {
+        return true; // `bag.map(...)` / `bag.filter(...)` — still bag data.
+      }
+      const name = ts.isIdentifier(callee)
+        ? callee.text
+        : ts.isPropertyAccessExpression(callee) &&
+            callee.expression.kind === ts.SyntaxKind.ThisKeyword
+          ? callee.name.text
+          : undefined;
+      if (name === undefined) return false;
+      return (handoffCallables.get(name) ?? []).some((fn) =>
+        returnedExpressions(fn).some((r) => isBagDerived(r, seen))
+      );
+    }
+    return false;
+  }
+
+  /**
+   * Taint the property-bag parameters, then propagate to fixpoint: a binding
+   * initialized (or assigned) from bag data, a callee parameter handed bag data
+   * at a resolvable call site, and an array-callback parameter iterating bag
+   * data. Three iterations settle the real tree; the loop is bounded anyway.
+   */
+  const seedTaint = (): void => {
+    const collectRoots = (n: ts.Node): void => {
+      if (
+        ts.isParameter(n) &&
+        ts.isIdentifier(n.name) &&
+        HANDOFF_BAG_PARAM_NAMES.has(n.name.text)
+      ) {
+        tainted.add(n);
+      }
+      ts.forEachChild(n, collectRoots);
+    };
+    collectRoots(sf);
+
+    const taintParameter = (fn: ts.Node, index: number): boolean => {
+      const params = (fn as ts.SignatureDeclaration).parameters;
+      const parameter = params?.[index];
+      if (parameter === undefined || tainted.has(parameter)) return false;
+      tainted.add(parameter);
+      return true;
+    };
+
+    for (let pass = 0; pass < 8; pass++) {
+      let changed = false;
+      const propagate = (n: ts.Node): void => {
+        if (
+          ts.isVariableDeclaration(n) &&
+          n.initializer !== undefined &&
+          !tainted.has(n) &&
+          isBagDerived(n.initializer, new Set())
+        ) {
+          tainted.add(n);
+          changed = true;
+        } else if (
+          ts.isBinaryExpression(n) &&
+          n.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+          ts.isIdentifier(n.left) &&
+          isBagDerived(n.right, new Set())
+        ) {
+          const declaration = declarationOf(n.left);
+          if (declaration !== undefined && !tainted.has(declaration)) {
+            tainted.add(declaration);
+            changed = true;
+          }
+        } else if (ts.isCallExpression(n)) {
+          const callee = unwrapExpression(n.expression);
+          // `bag.map((element) => …)` taints the callback's element parameter.
+          if (
+            ts.isPropertyAccessExpression(callee) &&
+            ARRAY_ELEMENT_CALLBACK_METHODS.has(callee.name.text) &&
+            isBagDerived(callee.expression, new Set())
+          ) {
+            for (const argument of n.arguments) {
+              const fn = unwrapExpression(argument);
+              if (
+                (ts.isArrowFunction(fn) || ts.isFunctionExpression(fn)) &&
+                taintParameter(fn, 0)
+              ) {
+                changed = true;
+              }
+            }
+          }
+          const name = ts.isIdentifier(callee)
+            ? callee.text
+            : ts.isPropertyAccessExpression(callee) &&
+                callee.expression.kind === ts.SyntaxKind.ThisKeyword
+              ? callee.name.text
+              : undefined;
+          if (name !== undefined) {
+            const fns = handoffCallables.get(name) ?? [];
+            n.arguments.forEach((argument, index) => {
+              if (!isBagDerived(argument, new Set())) return;
+              for (const fn of fns) {
+                if (taintParameter(fn, index)) changed = true;
+              }
+            });
+          }
+        }
+        ts.forEachChild(n, propagate);
+      };
+      propagate(sf);
+      if (!changed) break;
+    }
+  };
+  seedTaint();
+
+  /**
+   * Does this function NAME a member of its own? A generic key converter is
+   * mechanical — every key it emits comes from the input, so it writes only
+   * through COMPUTED names (`result[camelKey] = …`). One fixed member name
+   * anywhere in the body (an object-literal property, a shorthand, or an
+   * `o.Foo = …` / `o['Foo'] = …` assignment) means the function is re-shaping
+   * per member, and per-member re-shaping is exactly what has to keep proving
+   * itself write by write.
+   *
+   * Deliberately fail-CLOSED and deliberately crude: `{ ...blob, Extra: 1 }`
+   * still delivers `blob` whole, but naming `Extra` disqualifies the function.
+   * The cost of that is a target that keeps flagging (visible); the cost of the
+   * other direction is a silent clear on a CI-blocking bucket.
+   */
+  function namesOwnMember(fn: ts.Node): boolean {
+    const body = (fn as ts.SignatureDeclaration & { body?: ts.Node }).body;
+    if (body === undefined) return false;
+    let found = false;
+    const visit = (n: ts.Node): void => {
+      if (found) return;
+      if (ts.isPropertyAssignment(n) && propertyName(n.name) !== undefined) found = true;
+      else if (ts.isShorthandPropertyAssignment(n)) found = true;
+      else if (ts.isBinaryExpression(n) && isWriteAssignment(n.operatorToken.kind)) {
+        if (ts.isPropertyAccessExpression(n.left)) found = true;
+        else if (
+          ts.isElementAccessExpression(n.left) &&
+          elementAccessName(n.left.argumentExpression) !== undefined
+        ) {
+          found = true;
+        }
+      }
+      if (!found) ts.forEachChild(n, visit);
+    };
+    visit(body);
+    return found;
+  }
+
+  const genericConverterCache = new Map<ts.Node, boolean>();
+  /**
+   * Is this function a GENERIC KEY CONVERTER — a mechanical whole-object
+   * transform that (a) names no member of its own and (b) actually RETURNS its
+   * input blob (possibly through another generic converter), rather than only
+   * measuring or comparing it?
+   *
+   * `pascalToCamelCaseKeys` passes on both counts: it writes only
+   * `result[camelKey]`, and its guard arm `return value` returns the parameter
+   * outright. `ECSProvider.convertLinuxParameters` passes because its single
+   * return is `pascalToCamelCaseKeys(config)`. `convertContainerDefinitions`
+   * (45 named members) and `CloudFrontDistributionProvider.convertToSdkFormat`
+   * (a spread-and-patch that names 30+) both fail (a).
+   */
+  function isGenericConverter(fn: ts.Node, seen: Set<ts.Node>): boolean {
+    const cached = genericConverterCache.get(fn);
+    if (cached !== undefined) return cached;
+    if (seen.has(fn)) return true; // a recursive converter: judged by its other arms
+    seen.add(fn);
+    const params = (fn as ts.SignatureDeclaration).parameters;
+    const verdict =
+      params !== undefined &&
+      params.length > 0 &&
+      !namesOwnMember(fn) &&
+      returnedExpressions(fn).some((r) => deliversWholeBlob(r, seen));
+    genericConverterCache.set(fn, verdict);
+    return verdict;
+  }
+
+  /**
+   * Does this expression deliver a WHOLE BLOB — a value read off the property
+   * bag (or a converter's own parameter) that reaches the write with no member
+   * of it named along the way?
+   *
+   * SEED     — a BAG-DERIVED element / property access (`def['LinuxParameters']`),
+   *            an identifier bound to one, or a bag-tainted PARAMETER (which is
+   *            what makes a converter body's `config` a seed rather than an
+   *            unresolvable identifier). Bag-derivation is the load-bearing half:
+   *            without it a whole config read back off `GetDistributionConfig`
+   *            and re-sent looks identical to a template forward.
+   * PROPAGATE— `?:` / `??` / `||` / `&&` arms, a spread-only object literal,
+   *            and a call handing the seed WHOLE to a same-file or
+   *            sibling-module callee that {@link isGenericConverter} accepts.
+   * DELIVERY — the caller records this only where a WRITE takes the value, so
+   *            reaching here already means the value is written somewhere; a
+   *            value that only feeds a comparison is refused by the caller's
+   *            {@link feedsOnlyComparison} guard.
+   *
+   * Every unhandled shape returns false. An UNRESOLVABLE callee is therefore
+   * not credited — the false-clear direction is the dangerous one for a
+   * CI-blocking bucket, and it is why `resolveImportSource` exists at all.
+   */
+  function deliversWholeBlob(expr: ts.Node, seen: Set<ts.Node>, seedKeys?: Set<string>): boolean {
+    const e = unwrapExpression(expr);
+    if (seen.has(e)) return false;
+    seen.add(e);
+    if (ts.isElementAccessExpression(e) || ts.isPropertyAccessExpression(e)) {
+      if (!isBagDerived(e, new Set())) return false;
+      const key = ts.isElementAccessExpression(e)
+        ? elementAccessName(e.argumentExpression)
+        : e.name.text;
+      if (key !== undefined) seedKeys?.add(key);
+      return true;
+    }
+    if (ts.isIdentifier(e)) {
+      const nearest = enclosingScope(e);
+      if (isBoundAsParameter(nearest, e.text)) return isBagDerived(e, new Set());
+      const bindings = identifierBindings(e);
+      return (
+        bindings.length > 0 && bindings.every((b) => deliversWholeBlob(b, seen, seedKeys))
+      );
+    }
+    if (ts.isConditionalExpression(e)) {
+      const arms = [e.whenTrue, e.whenFalse].filter((a) => !isNullishExpression(a));
+      return arms.length > 0 && arms.every((a) => deliversWholeBlob(a, seen, seedKeys));
+    }
+    if (ts.isBinaryExpression(e)) {
+      const k = e.operatorToken.kind;
+      if (k === ts.SyntaxKind.AmpersandAmpersandToken) {
+        return deliversWholeBlob(e.right, seen, seedKeys);
+      }
+      if (k === ts.SyntaxKind.QuestionQuestionToken || k === ts.SyntaxKind.BarBarToken) {
+        const arms = [e.left, e.right].filter((a) => !isNullishExpression(a));
+        return arms.length > 0 && arms.every((a) => deliversWholeBlob(a, seen, seedKeys));
+      }
+      return false;
+    }
+    if (ts.isObjectLiteralExpression(e)) {
+      // `{ ...blob }` — a spread-ONLY literal re-delivers every member.
+      return (
+        e.properties.length > 0 &&
+        e.properties.every(
+          (p) => ts.isSpreadAssignment(p) && deliversWholeBlob(p.expression, seen, seedKeys)
+        )
+      );
+    }
+    if (ts.isCallExpression(e)) {
+      const callee = unwrapExpression(e.expression);
+      const name = ts.isIdentifier(callee)
+        ? callee.text
+        : ts.isPropertyAccessExpression(callee) &&
+            callee.expression.kind === ts.SyntaxKind.ThisKeyword
+          ? callee.name.text
+          : undefined;
+      if (name === undefined) return false;
+      const fns = handoffCallables.get(name) ?? [];
+      if (fns.length === 0) return false;
+      return (
+        fns.every((fn) => isGenericConverter(fn, seen)) &&
+        e.arguments.some((a) => deliversWholeBlob(a, seen, seedKeys))
+      );
+    }
+    return false;
+  }
+
+  /**
+   * Every VALUE a plain identifier can hold. Mirrors {@link resolveLiterals}'s
+   * identifier branch — nearest function scope descended fully, then outward
+   * without entering sibling functions — with one deliberate difference: it
+   * stops at the first scope carrying a BINDING, where `resolveLiterals` climbs
+   * past a binding that yields no object literal. For a hand-off a binding to a
+   * NON-literal (`const single = properties['X']`) is the interesting case, so
+   * climbing past it would resolve the name against an unrelated outer one.
+   */
+  function identifierBindings(id: ts.Identifier): ts.Node[] {
+    const nearest = enclosingScope(id);
+    for (let scope: ts.Node | undefined = nearest; scope; ) {
+      const descendIntoFunctions = scope === nearest;
+      const out: ts.Node[] = [];
+      const visit = (n: ts.Node): void => {
+        if (!descendIntoFunctions && n !== scope && ts.isFunctionLike(n)) return;
+        if (
+          ts.isVariableDeclaration(n) &&
+          ts.isIdentifier(n.name) &&
+          n.name.text === id.text &&
+          n.initializer !== undefined
+        ) {
+          out.push(n.initializer);
+        } else if (
+          ts.isBinaryExpression(n) &&
+          isWriteAssignment(n.operatorToken.kind) &&
+          ts.isIdentifier(n.left) &&
+          n.left.text === id.text
+        ) {
+          out.push(n.right);
+        }
+        ts.forEachChild(n, visit);
+      };
+      visit(scope);
+      if (out.length > 0) return out;
+      scope = ts.isSourceFile(scope) ? undefined : enclosingScope(scope);
+    }
+    return [];
+  }
+
+  /**
+   * Is this expression a WHOLE-BLOB HAND-OFF worth recording (issue #1445)?
+   * `feedsOnlyComparison` is re-applied here for the same reason the literal
+   * walk applies it: a converted blob whose only consumer is a diff delivers
+   * nothing.
+   */
+  function isWholeBlobHandoff(value: ts.Node): { seedKeys: Set<string> } | undefined {
+    if (feedsOnlyComparison(value)) return undefined;
+    const seedKeys = new Set<string>();
+    return deliversWholeBlob(value, new Set(), seedKeys) ? { seedKeys } : undefined;
+  }
+
+  /**
+   * Register a hand-off point under every scope name it can be looked up by.
+   *
+   * The write NAME is the SDK spelling; the audited path's top level is the CFn
+   * spelling, and the two do not always agree — `ECSProvider` writes
+   * `placementStrategy` for CFn's `PlacementStrategies`, so keying only by the
+   * write name leaves `PlacementStrategies.Type` / `.Field` with no scope at all
+   * on a target that forwards the whole array. The SEED's own key IS the CFn
+   * spelling, so it is registered too (in both the `exact` and `lower-first`
+   * renderings, since the collector does not know the target's key style).
+   */
+  const registerHandoff = (scopeName: string, point: string): void => {
+    const points = handoffPoints.get(scopeName) ?? new Set<string>();
+    points.add(point);
+    handoffPoints.set(scopeName, points);
+  };
+  const registerSeedKeyHandoffs = (point: string, seedKeys: ReadonlySet<string>): void => {
+    for (const key of seedKeys) {
+      registerHandoff(key, point);
+      registerHandoff(lowerFirst(key), point);
+    }
+  };
+
+  /**
+   * Every member name written anywhere beneath these literals, plus the
+   * WHOLE-BLOB HAND-OFF points found among them (issue #1445).
+   */
+  const subtreeMemberNames = (
+    literals: readonly ts.ObjectLiteralExpression[]
+  ): { members: Set<string>; handoffs: Set<string> } => {
     const out = new Set<string>();
+    const handoffs = new Set<string>();
     const visited = new Set<ts.Node>();
     const walk = (lit: ts.ObjectLiteralExpression): void => {
       if (visited.has(lit)) return;
@@ -1576,10 +2300,22 @@ export function collectWriteEvidence(
       for (const p of lit.properties) {
         if (ts.isPropertyAssignment(p)) {
           const name = propertyName(p.name);
-          if (name !== undefined) out.add(name);
+          if (name !== undefined) {
+            out.add(name);
+            const handoff = isWholeBlobHandoff(p.initializer);
+            if (handoff !== undefined) {
+              handoffs.add(name);
+              registerSeedKeyHandoffs(name, handoff.seedKeys);
+            }
+          }
           for (const child of resolveLiterals(p.initializer, new Set())) walk(child);
         } else if (ts.isShorthandPropertyAssignment(p)) {
           out.add(p.name.text);
+          const handoff = isWholeBlobHandoff(p.name);
+          if (handoff !== undefined) {
+            handoffs.add(p.name.text);
+            registerSeedKeyHandoffs(p.name.text, handoff.seedKeys);
+          }
           for (const child of resolveLiterals(p.name, new Set())) walk(child);
         } else if (ts.isSpreadAssignment(p)) {
           // A spread merges the source's members AT THIS LEVEL.
@@ -1588,7 +2324,7 @@ export function collectWriteEvidence(
       }
     };
     for (const lit of literals) walk(lit);
-    return out;
+    return { members: out, handoffs };
   };
 
   /**
@@ -1607,7 +2343,18 @@ export function collectWriteEvidence(
     written.add(name);
     const scope = scopes.get(name) ?? new Set<string>();
     if (value !== undefined) {
-      for (const m of subtreeMemberNames(resolveLiterals(value, new Set()))) scope.add(m);
+      // A write whose OWN value is the hand-off (`CorsConfiguration:
+      // properties['CorsConfiguration']`) makes the scope its own hand-off
+      // point — the audited paths beneath that top-level are exactly the
+      // members of the blob it forwards.
+      const handoff = isWholeBlobHandoff(value);
+      if (handoff !== undefined) {
+        registerHandoff(name, name);
+        registerSeedKeyHandoffs(name, handoff.seedKeys);
+      }
+      const { members, handoffs } = subtreeMemberNames(resolveLiterals(value, new Set()));
+      for (const m of members) scope.add(m);
+      for (const h of handoffs) registerHandoff(name, h);
     }
     scopes.set(name, scope);
   };
@@ -1691,7 +2438,88 @@ export function collectWriteEvidence(
     ts.forEachChild(node, (child) => visit(child, inExcluded));
   };
   visit(sf, false);
-  return { written, scopes };
+  return { written, scopes, handoffPoints };
+}
+
+/**
+ * Every SDK member name reachable BENEATH an SDK member, following the model's
+ * own reference graph (issue #1445).
+ *
+ * This is what turns a hand-off POINT into a credit set: the provider source
+ * says `linuxParameters` receives a whole blob through a generic converter, and
+ * the SDK model says `LinuxParameters` carries `capabilities` / `devices` /
+ * `tmpfs` / … and those carry `add` / `hostPath` / `mountOptions` / …. The CFn
+ * side cannot answer this — the fixture's `nestedProperties` capture is
+ * FLATTENED per top-level, so it knows `ContainerDefinitions.Add` exists but not
+ * that `Add` lives under `LinuxParameters`.
+ *
+ * The starting member is looked up by BARE NAME across every interface in the
+ * client model, so two unrelated interfaces declaring the same member name are
+ * UNIONED. That is the same bare-name bound the rest of this collector carries
+ * (module header, known-bounds item 3), and it is bounded in practice: only a
+ * name the provider actually hands a whole blob to is ever expanded, and a
+ * scalar member expands to nothing at all.
+ */
+export function reachableSdkMemberNames(
+  memberName: string,
+  interfaces: ReadonlyMap<string, ReadonlyMap<string, SdkMemberType>>
+): Set<string> {
+  const out = new Set<string>();
+  const queue: string[] = [];
+  for (const members of interfaces.values()) {
+    const type = members.get(memberName);
+    if (type?.refName !== undefined) queue.push(type.refName);
+  }
+  const visited = new Set<string>();
+  while (queue.length > 0) {
+    const name = queue.shift()!;
+    if (visited.has(name)) continue;
+    visited.add(name);
+    const members = interfaces.get(name);
+    if (members === undefined) continue;
+    for (const [member, type] of members) {
+      out.add(member);
+      if (type.refName !== undefined) queue.push(type.refName);
+    }
+  }
+  return out;
+}
+
+/**
+ * Fold the WHOLE-BLOB HAND-OFF points into the write scopes (issue #1445), so
+ * `classifyTarget` keeps its single question: "is the path's terminal member in
+ * the scope its top-level maps to?".
+ *
+ * Kept OUT of {@link collectWriteEvidence} because the two halves have
+ * different inputs and regress independently: the collector reads only the
+ * provider source (and answers "what is handed off whole?"), while the
+ * expansion reads only the SDK model (and answers "what lives beneath it?").
+ */
+export function expandGenericHandoffScopes(
+  evidence: ProviderWriteEvidence,
+  sdkInterfaces: ReadonlyMap<string, ReadonlyMap<string, SdkMemberType>>
+): ProviderWriteEvidence {
+  if (evidence.handoffPoints.size === 0) return evidence;
+  const memo = new Map<string, Set<string>>();
+  const reachable = (name: string): Set<string> => {
+    let hit = memo.get(name);
+    if (hit === undefined) {
+      hit = reachableSdkMemberNames(name, sdkInterfaces);
+      memo.set(name, hit);
+    }
+    return hit;
+  };
+  const scopes = new Map<string, Set<string>>();
+  for (const [name, members] of evidence.scopes) scopes.set(name, new Set(members));
+  for (const [scopeName, points] of evidence.handoffPoints) {
+    const scope = scopes.get(scopeName) ?? new Set<string>();
+    for (const point of points) {
+      scope.add(point);
+      for (const member of reachable(point)) scope.add(member);
+    }
+    scopes.set(scopeName, scope);
+  }
+  return { written: evidence.written, scopes, handoffPoints: evidence.handoffPoints };
 }
 
 /**
@@ -2314,7 +3142,30 @@ export function loadReport(
   const sdkInterfacesByPackage = new Map<string, Map<string, Map<string, SdkMemberType>>>();
   const literalsByFile = new Map<string, Set<string>>();
   const writtenByFile = new Map<string, ProviderWriteEvidence>();
+  const expandedByFile = new Map<string, ProviderWriteEvidence>();
   const handledByFile = new Map<string, Map<string, Set<string>>>();
+
+  /**
+   * Source resolver for the WHOLE-BLOB HAND-OFF walk (issue #1445). Scoped to
+   * SIBLING modules of the provider — `./agentcore-case-convert.js`, where the
+   * tree's one real generic converter lives — and deliberately not to package
+   * imports or parent directories: the walk only needs "does this callee name
+   * members of its own?", and widening the resolver would pull the whole
+   * `src/` graph into a per-file parse for no measured gain. Honors
+   * `providersDir`, so a `--providers-dir=` scratch copy resolves its OWN
+   * sibling and a regression injected there is seen.
+   */
+  const importSourceCache = new Map<string, string | undefined>();
+  const resolveImportSource = (specifier: string): string | undefined => {
+    if (!specifier.startsWith('./')) return undefined;
+    const base = specifier.slice(2).replace(/\.js$/, '');
+    if (base.length === 0 || base.includes('/')) return undefined;
+    const path = join(providersDir, `${base}.ts`);
+    if (!importSourceCache.has(path)) {
+      importSourceCache.set(path, existsSync(path) ? readFileSync(path, 'utf8') : undefined);
+    }
+    return importSourceCache.get(path);
+  };
 
   const targets: TargetReport[] = [];
   for (const target of targetList) {
@@ -2384,7 +3235,12 @@ export function loadReport(
     if (!literals || !written || !handled) {
       const source = readFileSync(providerPath, 'utf8');
       literals = collectStringLiterals(source, target.providerFile);
-      written = collectWriteEvidence(source, target.providerFile);
+      written = collectWriteEvidence(
+        source,
+        target.providerFile,
+        REVERSE_MAP_FUNCTION_PREFIXES,
+        resolveImportSource
+      );
       handled = parseProviderSource(source, providerPath).handled;
       literalsByFile.set(target.providerFile, literals);
       writtenByFile.set(target.providerFile, written);
@@ -2424,6 +3280,23 @@ export function loadReport(
           );
         }
       }
+      // THIRD floor (issue #1445): the hand-off walk regresses independently of
+      // both sets above — a broken import resolution or genericity test leaves
+      // every NAME collected and every SCOPE populated while silently finding
+      // zero hand-offs, which flags a correct provider by the dozen instead of
+      // naming the cause. Only a target whose opt-in DEPENDS on the walk
+      // declares it.
+      if (target.minHandoffPoints !== undefined) {
+        const points = new Set(
+          [...written.handoffPoints.values()].flatMap((s) => [...s])
+        ).size;
+        if (points < target.minHandoffPoints) {
+          throw new Error(
+            `whole-blob hand-off walk for ${target.providerFile} collapsed to ` +
+              `${points} hand-off point(s) (< ${target.minHandoffPoints}) — parser regression?`
+          );
+        }
+      }
     }
 
     const nestedKeys = nestedKeyPathsForTarget(fixture, handledTopLevel);
@@ -2432,6 +3305,17 @@ export function loadReport(
         `${target.resourceType} yielded only ${nestedKeys.length} nested keys ` +
           `(< ${target.minNestedKeys}) — fixture capture or handledProperties regression?`
       );
+    }
+
+    // Fold the hand-off points into the scopes with THIS target's SDK model
+    // (issue #1445). Keyed by (provider file, SDK package) rather than by file
+    // alone: every target sharing a file shares its package today, but the fold
+    // is only valid for the model it was computed against.
+    const expansionKey = `${target.providerFile} ${target.sdkClientPackage}`;
+    let expandedWriteEvidence = expandedByFile.get(expansionKey);
+    if (expandedWriteEvidence === undefined) {
+      expandedWriteEvidence = expandGenericHandoffScopes(written, sdkInterfaces);
+      expandedByFile.set(expansionKey, expandedWriteEvidence);
     }
 
     const shapeResult = classifyTargetShapes(
@@ -2454,7 +3338,7 @@ export function loadReport(
         sdkMembers,
         literals,
         NESTED_KEY_ALLOW_LIST,
-        written
+        expandedWriteEvidence
       ),
       shapeEntries: shapeResult.entries,
       shapeCleanCount: shapeResult.cleanCount,
