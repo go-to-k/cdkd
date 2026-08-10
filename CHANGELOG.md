@@ -1,3 +1,10 @@
+## [0.278.33](https://github.com/go-to-k/cdkd/compare/v0.278.32...v0.278.33) (2026-08-10)
+
+
+### Bug Fixes
+
+* **glue:** send the Table members the allow-lists dropped (SkewedInfo / SchemaReference / TargetTable / ViewDefinition) ([#1514](https://github.com/go-to-k/cdkd/issues/1514)) ([cee234e](https://github.com/go-to-k/cdkd/commit/cee234e1d5ca2d67c4be96b2a4e6791011d4f2bc))
+
 ## [0.278.32](https://github.com/go-to-k/cdkd/compare/v0.278.31...v0.278.32) (2026-08-10)
 
 
