@@ -4,7 +4,7 @@
 
 Run `vp run scenario-coverage` to regenerate.
 
-**84 / 84 canonical scenarios** have at least one integ fixture exercising them. **182 / 267 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
+**85 / 85 canonical scenarios** have at least one integ fixture exercising them. **182 / 267 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
 
 ## How this is computed
 
@@ -26,7 +26,7 @@ This report is a visibility tool, not a commit-time gate. Many cdkd fixtures leg
 
 _None._ Every canonical scenario has at least one integ fixture tagged with it.
 
-## Per-scenario coverage (84 scenarios)
+## Per-scenario coverage (85 scenarios)
 
 | Scenario | Description | Integ Fixture(s) |
 |---|---|---|
@@ -63,6 +63,7 @@ _None._ Every canonical scenario has at least one integ fixture tagged with it.
 | `failed-only-journal-retention-cycle` | Failed-only rollback-journal retention after a CLEAN automatic rollback (issue #1208): the journal survives as a SINGLE popped-and-re-recorded segment (reason=auto-rollback-clean / operations=[] / failedOperations=[<bad resource>], raw S3 read), the next deploy prints the --revert-failed note and its own clean auto-rollback PRESERVES the older failed-only segment (PR #1216, exactly 2 segments), `cdkd rollback --force --revert-failed` consumes it via the #1198 skip-with-warning for a physical-id-less failed CREATE (exit 2 accepted), and a NO-CHANGE fix-forward deploy (bad resource removed) clears the journal + note (the PR #1212 no-change gap). | [`rollback-sqs-cooldown`](../tests/integration/rollback-sqs-cooldown/) |
 | `fresh-principal-consumer-race` | A consumer resource created moments after the fresh principal/resource it references in the SAME deploy: IAM InstanceProfile -> EC2 Instance (RunInstances validates the profile), Lambda::Permission granting a fresh S3 source (AddPermission validates SourceArn + function), S3 BucketPolicy referencing a fresh role principal ("Invalid principal in policy"), KMS key policy referencing a fresh role (CreateKey validates principals). Each is a distinct propagation-race edge from the original IAM-propagation-stress integ (Lambda exec role / SFN role / EventBridge target / SQS+SNS policy, #839). Pass condition = deploy SUCCEEDS, so the fixture is a race detector for missing transient-retry coverage in src/deployment/retryable-errors.ts. | [`propagation-races-2`](../tests/integration/propagation-races-2/) |
 | `getstackoutput-cross-region` | Cross-REGION `Fn::GetStackOutput` (cdkd-specific): a CONSUMER stack deployed in region Y reads a PRODUCER stack output from region X via the `Region` argument. Works same-account because the cdkd state bucket is account-scoped (not region-scoped) — the resolver reads `cdkd/{Producer}/{regionX}/state.json` from the same bucket the consumer state lives in. No CFn equivalent (CFn Exports are region-scoped). | [`getstackoutput-crossregion`](../tests/integration/getstackoutput-crossregion/) |
+| `globaltable-billing-flip-with-gsi` | DynamoDB GlobalTable `PAY_PER_REQUEST` -> `PROVISIONED` billing flip on a table that HAS GSIs (issue #1421). AWS requires per-index `ProvisionedThroughput` in the SAME `UpdateTable` call that changes `BillingMode`, and an index the deploy REMOVES is still live at flip time (its Delete is issued later), so it must carry throughput in that call too — both claims were previously asserted only against a mocked DynamoDB client. Also pins the surviving index + table onto their `SeedCapacity` rather than `MinCapacity`, the one context AWS documents the seed for (issue #1435). | [`dynamodb-globaltable`](../tests/integration/dynamodb-globaltable/) |
 | `globaltable-cross-region-replica` | DynamoDB GlobalTable cross-region replica add/remove serialization (AWS rejects multiple ReplicaUpdates per UpdateTable call). | [`dynamodb-globaltable`](../tests/integration/dynamodb-globaltable/) |
 | `iam-fresh-role-immediate-assume` | Race detector: SEVERAL brand-new IAM roles each consumed within ~1s by a DIFFERENT service in ONE deploy (Lambda exec role -> CreateFunction; SFN role -> CreateStateMachine; EventBridge target role -> PutTargets; fresh principal -> SQS QueuePolicy + SNS TopicPolicy). Deploy SUCCESS is the pass condition — a failure is an unprotected consumer racing IAM propagation (the narrow #794/#805/#756 fixes cover only a few consumers). | [`iam-propagation-stress`](../tests/integration/iam-propagation-stress/) |
 | `iam-policy-propagation-retry` | CREATE retry with exponential backoff after IAM-EC2/Lambda eventual-consistency race. | [`lambda`](../tests/integration/lambda/)<br>[`microservices`](../tests/integration/microservices/)<br>[`propagation-races-2`](../tests/integration/propagation-races-2/)<br>[`stepfunctions-logging`](../tests/integration/stepfunctions-logging/) |

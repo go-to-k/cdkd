@@ -1,5 +1,6 @@
 {
   "scenarios": [
-    "globaltable-cross-region-replica"
+    "globaltable-cross-region-replica",
+    "globaltable-billing-flip-with-gsi"
   ]
 }

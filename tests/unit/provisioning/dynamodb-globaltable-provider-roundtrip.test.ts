@@ -1198,6 +1198,12 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
         TABLE_NAME,
         RESOURCE_TYPE,
         {
+          // `BillingMode` is load-bearing since issue #1428 added the gate: an
+          // explicit SDK-shaped `ProvisionedThroughput` is only forwarded on a
+          // PROVISIONED table, because AWS rejects provisioned capacity on an
+          // on-demand one. Both sides previously omitted it — defaulting to
+          // PAY_PER_REQUEST — so this case pinned a payload AWS would 400.
+          BillingMode: 'PROVISIONED',
           GlobalSecondaryIndexes: [
             {
               IndexName: 'G1',
@@ -1208,6 +1214,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
           ],
         },
         {
+          BillingMode: 'PROVISIONED',
           GlobalSecondaryIndexes: [
             {
               IndexName: 'G1',

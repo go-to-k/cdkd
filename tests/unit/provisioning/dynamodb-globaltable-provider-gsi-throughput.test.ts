@@ -577,26 +577,49 @@ describe('DynamoDBGlobalTable GSI throughput translation (issue #1387)', () => {
   });
 
   describe('toSdkReplicaGlobalSecondaryIndexes', () => {
-    it('maps per-replica read settings to the SDK Override members', () => {
-      const result = toSdkReplicaGlobalSecondaryIndexes([
-        { IndexName: 'gsi1', ReadProvisionedThroughputSettings: { ReadCapacityUnits: 7 } },
-        { IndexName: 'gsi2', ReadOnDemandThroughputSettings: { MaxReadRequestUnits: 50 } },
-      ]);
+    // Split by billing mode since issue #1428 added the gate: a single call
+    // can no longer produce a provisioned AND an on-demand override, because
+    // AWS rejects each on the wrong billing mode. BOTH polarities are pinned
+    // — asserting only the mode under test would let the gate silently invert.
+    it('maps per-replica read settings to the SDK Override members (PROVISIONED)', () => {
+      const result = toSdkReplicaGlobalSecondaryIndexes(
+        [
+          { IndexName: 'gsi1', ReadProvisionedThroughputSettings: { ReadCapacityUnits: 7 } },
+          { IndexName: 'gsi2', ReadOnDemandThroughputSettings: { MaxReadRequestUnits: 50 } },
+        ],
+        'PROVISIONED'
+      );
       expect(result).toEqual([
         { IndexName: 'gsi1', ProvisionedThroughputOverride: { ReadCapacityUnits: 7 } },
+        // On-demand is not live on a provisioned table, so the ceiling is not
+        // forwarded into a guaranteed 400.
+        { IndexName: 'gsi2' },
+      ]);
+    });
+
+    it('maps per-replica read settings to the SDK Override members (PAY_PER_REQUEST)', () => {
+      const result = toSdkReplicaGlobalSecondaryIndexes(
+        [
+          { IndexName: 'gsi1', ReadProvisionedThroughputSettings: { ReadCapacityUnits: 7 } },
+          { IndexName: 'gsi2', ReadOnDemandThroughputSettings: { MaxReadRequestUnits: 50 } },
+        ],
+        'PAY_PER_REQUEST'
+      );
+      expect(result).toEqual([
+        { IndexName: 'gsi1' },
         { IndexName: 'gsi2', OnDemandThroughputOverride: { MaxReadRequestUnits: 50 } },
       ]);
     });
 
     it('emits IndexName only when the replica entry carries no throughput override', () => {
-      expect(toSdkReplicaGlobalSecondaryIndexes([{ IndexName: 'plain' }])).toEqual([
-        { IndexName: 'plain' },
-      ]);
+      expect(toSdkReplicaGlobalSecondaryIndexes([{ IndexName: 'plain' }], 'PAY_PER_REQUEST')).toEqual(
+        [{ IndexName: 'plain' }]
+      );
     });
 
     it('returns undefined for an absent / empty list so the SDK field stays unset', () => {
-      expect(toSdkReplicaGlobalSecondaryIndexes(undefined)).toBeUndefined();
-      expect(toSdkReplicaGlobalSecondaryIndexes([])).toBeUndefined();
+      expect(toSdkReplicaGlobalSecondaryIndexes(undefined, 'PAY_PER_REQUEST')).toBeUndefined();
+      expect(toSdkReplicaGlobalSecondaryIndexes([], 'PAY_PER_REQUEST')).toBeUndefined();
     });
   });
 
@@ -1267,6 +1290,26 @@ describe('DynamoDBGlobalTable GSI throughput translation (issue #1387)', () => {
    * is why this change deliberately covers the table level only.
    */
   describe('table-level on-demand ceiling reset (issue #1434)', () => {
+    // The comparison baseline is AWS's OBSERVED ceiling, not the state record
+    // (issue #1436) — a table deployed before the read half was wired has
+    // `maxReadRequestUnits` in state while AWS never received it, so a
+    // state-vs-state diff reads "unchanged" and the drop is never repaired.
+    // The suite's blanket DescribeTable response reports no `OnDemandThroughput`
+    // at all, which no real on-demand table with ceilings would; these tests
+    // deploy FROM `ON_DEMAND_TABLE_PROPS`, so AWS holds exactly its two values.
+    beforeEach(() => {
+      mockSend.mockResolvedValue({
+        Table: {
+          TableName: 'prov-table',
+          TableArn: TABLE_ARN,
+          TableId: 'tid-1',
+          TableStatus: 'ACTIVE',
+          Replicas: [{ RegionName: 'eu-west-1', ReplicaStatus: 'ACTIVE' }],
+          OnDemandThroughput: { MaxReadRequestUnits: 100, MaxWriteRequestUnits: 200 },
+        },
+      });
+    });
+
     /** The flat step-3 UpdateTable: no per-GSI and no per-replica actions. */
     const flatUpdate = (): UpdateTableCommand | undefined =>
       mockSend.mock.calls
@@ -1321,12 +1364,18 @@ describe('DynamoDBGlobalTable GSI throughput translation (issue #1387)', () => {
       expect(flatUpdate()?.input.OnDemandThroughput).toEqual({ MaxWriteRequestUnits: 500 });
     });
 
-    it('does NOT reset a PRESENT-but-unresolvable value (it must still reach AWS)', async () => {
-      // Caught reviewing this change: gating the reset on "did it coerce?"
-      // instead of "is the key there?" routes an unresolved intrinsic into the
-      // reset branch, silently CLEARING the ceiling the template was trying to
-      // set. The pre-existing loud failure is the correct outcome, so the
-      // value must still be forwarded rather than swallowed.
+    it('does NOT reset a PRESENT-but-unresolvable value, and says why (issue #1444 A)', async () => {
+      // The destructive half is what matters and has not changed: gating the
+      // reset on "did it coerce?" instead of "is the key there?" routes an
+      // unresolved intrinsic into the reset branch, silently CLEARING the
+      // ceiling the template was trying to SET.
+      //
+      // What DID change with #1444 A is the other half. The value used to be
+      // forwarded raw (`Number({Ref: …})` is `NaN`) so AWS would reject the
+      // call — "loud", but loud in the wrong place and with an error naming
+      // nothing the user wrote. It is now suppressed and REPORTED, which is
+      // what the per-GSI path (#1440) already did; having the two levels
+      // disagree was the actual defect.
       const previous = structuredClone(ON_DEMAND_TABLE_PROPS) as Record<string, unknown>;
       const next = structuredClone(ON_DEMAND_TABLE_PROPS) as Record<string, unknown>;
       next['WriteOnDemandThroughputSettings'] = {
@@ -1335,9 +1384,14 @@ describe('DynamoDBGlobalTable GSI throughput translation (issue #1387)', () => {
 
       await provider.update('OnDemand', 'od-table', RESOURCE_TYPE, next, previous);
 
-      const sent = flatUpdate()?.input.OnDemandThroughput;
-      expect(sent).toBeDefined();
-      expect(sent?.MaxWriteRequestUnits).not.toBe(-1);
+      // Nothing sent for the member: not the sentinel, and not NaN either.
+      expect(flatUpdate()?.input.OnDemandThroughput?.MaxWriteRequestUnits).toBeUndefined();
+      const warned = warnSpy.mock.calls.map((c) => String(c[0]));
+      expect(
+        warned.some(
+          (m) => m.includes('MaxWriteRequestUnits') && m.includes('did not resolve to a number')
+        )
+      ).toBe(true);
     });
 
     it('does NOT reset on a PROVISIONED -> PROVISIONED drop (no flip, but no live ceiling either)', async () => {
@@ -1484,9 +1538,15 @@ describe('DynamoDBGlobalTable GSI throughput translation (issue #1387)', () => {
       await provider.update('OnDemand', 'od-table', RESOURCE_TYPE, next, previous);
 
       const warned = warnSpy.mock.calls.map((c) => String(c[0]));
-      expect(warned.some((m) => m.includes('MaxWriteRequestUnits') && m.includes('UNCHANGED'))).toBe(
-        true
-      );
+      // Wording moved with issue #1444 A: the diagnostic is now raised inside
+      // the translation, where the value is actually lost, so it also fires
+      // for a first-time set and across a billing flip — two cases the reset
+      // gate never runs for. Same content, one source.
+      expect(
+        warned.some(
+          (m) => m.includes('MaxWriteRequestUnits') && m.includes('left unchanged')
+        )
+      ).toBe(true);
       // ...and the misleading advice must NOT be the only thing the user sees.
       expect(warned.some((m) => m.includes('unresolved intrinsic'))).toBe(true);
     });
@@ -1520,29 +1580,33 @@ describe('DynamoDBGlobalTable GSI throughput translation (issue #1387)', () => {
       await provider.update('OnDemand', 'od-table', RESOURCE_TYPE, next, previous);
 
       const warned = warnSpy.mock.calls.map((c) => String(c[0]));
-      expect(warned.some((m) => m.includes('UNCHANGED'))).toBe(true);
+      expect(warned.some((m) => m.includes('left unchanged'))).toBe(true);
       expect(warned.some((m) => m.includes('Recreate the index under a new name'))).toBe(false);
     });
 
-    it('honors an explicit SDK-shaped OnDemandThroughput over the derived spellings', async () => {
-      // Reviewer catch: `toSdkGlobalSecondaryIndexes` lets an already-SDK-shaped
-      // `OnDemandThroughput` WIN over the derived members, so reading the
-      // derived spellings here reported a member DECLARED that the translation
-      // never sends — and the suppressed reset left the old write ceiling live.
-      // That is the #1160 silent drop, reintroduced by the guard itself.
+    it('MERGES an explicit SDK-shaped OnDemandThroughput with the derived spellings (issue #1428)', async () => {
+      // This case inverted with #1428 and the inversion is the fix, not a
+      // regression. The old contract was "an explicit block WINS over the
+      // derived members", so a PARTIAL explicit block suppressed valid derived
+      // siblings — here an explicit READ-only block discarded a perfectly good
+      // `WriteOnDemandThroughputSettings: {MaxWriteRequestUnits: 60}` from the
+      // SAME template, and the reset then cleared the write ceiling the user
+      // had just declared. Whole-block replacement was #1428's defect 2.
+      //
+      // Under the merge each member resolves independently: explicit read 50,
+      // derived write 60, and NO reset — nothing was dropped.
       const previous = structuredClone(ON_DEMAND_TABLE_PROPS) as Record<string, unknown>;
       const next = structuredClone(ON_DEMAND_TABLE_PROPS) as Record<string, unknown>;
       const gsi = (next['GlobalSecondaryIndexes'] as Record<string, unknown>[])[0]!;
-      // Explicit block declares READ only; the leftover derived WRITE spelling
-      // is ignored by the translation, so the write ceiling must still reset.
-      gsi['OnDemandThroughput'] = { MaxReadRequestUnits: 50 };
+      gsi['OnDemandThroughput'] = { MaxReadRequestUnits: 41 };
 
       await provider.update('OnDemand', 'od-table', RESOURCE_TYPE, next, previous);
 
       const onDemand = gsiUpdateAction()?.['OnDemandThroughput'] as
         | Record<string, unknown>
         | undefined;
-      expect(onDemand?.['MaxWriteRequestUnits']).toBe(-1);
+      expect(onDemand?.['MaxReadRequestUnits']).toBe(41);
+      expect(onDemand?.['MaxWriteRequestUnits']).toBe(60);
     });
 
     it('treats a BLOCK-level unresolved intrinsic as declared, not as a removal', async () => {
