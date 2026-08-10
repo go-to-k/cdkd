@@ -896,18 +896,78 @@ describe('DynamoDB GlobalTable throughput cluster', () => {
       expect(hits.some((m) => m.includes('MinCapacity'))).toBe(false);
     });
 
+    it('warns about the table-level READ capacity, not only the write half', async () => {
+      // The two halves are separate call sites, and only the write one was
+      // covered: deleting the read `if (read === undefined) { report… }` block
+      // left the whole unit suite green, with integ step 13f — a real-AWS run
+      // behind a TTL gate — as its only guard.
+      const props = provProps({
+        Replicas: [
+          { Region: REGION, ReadProvisionedThroughputSettings: { ReadCapacityUnits: {} } },
+        ],
+      });
+      const diagnostics: ThroughputDiagnostic[] = [];
+
+      const throughput = derivePerCallProvisionedThroughput(props, REGION, 'min', diagnostics);
+
+      expect(throughput.ReadCapacityUnits).toBe(5);
+      // The write half is valid here, so a single diagnostic proves the read
+      // site fired on its own rather than riding its sibling.
+      expect(throughput.WriteCapacityUnits).toBe(7);
+      expect(diagnostics).toHaveLength(1);
+      expect(diagnostics[0]?.member).toBe('ReadCapacityUnits');
+      expect(diagnostics[0]?.message).toContain(
+        'Replicas[local].ReadProvisionedThroughputSettings.ReadCapacityUnits'
+      );
+    });
+
+    it('says nothing about a replica override an explicit block already covers', async () => {
+      // The GSI twin of this gate is pinned; the replica one was deletable
+      // with the suite green.
+      const diagnostics: ThroughputDiagnostic[] = [];
+      const [sdk] = toSdkReplicaGlobalSecondaryIndexes(
+        [
+          {
+            IndexName: 'gsi1',
+            ProvisionedThroughputOverride: { ReadCapacityUnits: 12 },
+            ReadProvisionedThroughputSettings: { ReadCapacityUnits: { Ref: 'Unresolved' } },
+          },
+        ],
+        'PROVISIONED',
+        diagnostics
+      ) ?? [];
+
+      expect(sdk?.ProvisionedThroughputOverride?.ReadCapacityUnits).toBe(12);
+      expect(diagnostics).toEqual([]);
+    });
+
     it('reports nothing for the PREVIOUS side, so bad state cannot shout every deploy', async () => {
       // The #1428 asymmetry, re-asserted for the provisioned half: a value an
       // older binary recorded in cdkd state is not editable from the template.
-      const previous = provProps({
+      //
+      // The billing FLIP is what makes this non-vacuous. With both sides
+      // PROVISIONED the previous-side translations that could even be handed a
+      // collector never run, so the test passed no matter what every previous
+      // call site did — it would have stayed green with `diagnostics` threaded
+      // into all of them. Flipping PAY_PER_REQUEST -> PROVISIONED while the
+      // PREVIOUS side carries the garbage on a GSI drives the real path.
+      const garbageGsi = provGsi({
         WriteProvisionedThroughputSettings: {
           WriteCapacityAutoScalingSettings: { MinCapacity: { Ref: 'GarbageInState' } },
         },
       });
+      const previous = {
+        ...provProps({ GlobalSecondaryIndexes: [garbageGsi] }),
+        BillingMode: 'PAY_PER_REQUEST',
+      };
       const next = provProps({
-        WriteProvisionedThroughputSettings: {
-          WriteCapacityAutoScalingSettings: { MinCapacity: 12, MaxCapacity: 70 },
-        },
+        GlobalSecondaryIndexes: [
+          provGsi({
+            WriteProvisionedThroughputSettings: {
+              WriteCapacityAutoScalingSettings: { MinCapacity: 12, MaxCapacity: 70 },
+            },
+          }),
+        ],
       });
 
       await provider.update('Prov', 'od-table', RESOURCE_TYPE, next, previous);

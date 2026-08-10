@@ -3633,31 +3633,43 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
    * four on 2026-08-10, and the failed deploy's own `cdkd destroy` then
    * ORPHANED the table for the same reason.
    *
-   * So the table wait is followed by an index wait. The two halves keep
-   * DIFFERENT failure semantics on purpose: the table not reaching ACTIVE is a
-   * hard error (nothing can proceed), while the index wait is best-effort —
-   * a large index backfill legitimately outlives any cap, and throwing there
-   * would fail a deploy whose resources are all correct.
+   * So the wait has TWO conditions read off the SAME response (an extra
+   * `DescribeTable` per wait would double this path's API traffic for
+   * something the response already carries) — but they keep DIFFERENT failure
+   * semantics, and conflating them is a real regression rather than a
+   * simplification. A table that never reaches ACTIVE is a hard error: nothing
+   * can proceed. A still-transitioning INDEX is best-effort: `IndexStatus`
+   * stays `CREATING` for the whole BACKFILL of a newly added GSI, which on a
+   * populated table routinely outlives any cap — so throwing there would fail
+   * a deploy whose resources are all correct, and would do it on an unrelated
+   * tag-only edit that merely ran while an earlier index was still building.
+   * Past the cap the index half warns and proceeds, leaving AWS's own
+   * rejection as the backstop, which is the behavior it had before #1521 for
+   * every case except the one the wait exists to fix.
    */
   private async waitForTableActiveAfterUpdate(
     tableName: string,
     logicalId: string,
     maxAttempts = 600
   ): Promise<void> {
+    let tableReachedActive = false;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       const response = await this.dynamoDBClient.send(
         new DescribeTableCommand({ TableName: tableName })
       );
-      // Both halves are read off the SAME response on purpose: an extra
-      // DescribeTable per wait would double this path's API traffic for a
-      // condition the response already carries.
-      if (
-        response.Table?.TableStatus === 'ACTIVE' &&
-        !hasTransitionalIndex(response.Table?.GlobalSecondaryIndexes)
-      ) {
-        return;
+      if (response.Table?.TableStatus === 'ACTIVE') {
+        tableReachedActive = true;
+        if (!hasTransitionalIndex(response.Table?.GlobalSecondaryIndexes)) return;
       }
       await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+    if (tableReachedActive) {
+      this.logger.warn(
+        `Indexes on ${tableName} (${logicalId}) were still transitioning after ` +
+          `${maxAttempts}s — a large index backfill can outlive this wait. Proceeding; ` +
+          `AWS rejects the next call if it is still too early.`
+      );
+      return;
     }
     throw new ProvisioningError(
       `Table ${tableName} did not reach ACTIVE within ${maxAttempts}s after UpdateTable`,
@@ -3670,17 +3682,20 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
   /**
    * Wait until every GSI reports `IndexStatus: ACTIVE` (Issue #1419).
    *
-   * `waitForTableActiveAfterUpdate` only checks `TableStatus`, and a GSI
-   * added by `UpdateTable` leaves the TABLE ACTIVE while the index itself
-   * is still `CREATING` — application-autoscaling rejects a target whose
-   * resource is not ready, so registering right after the GSI-add loop
+   * A GSI added by `UpdateTable` leaves the TABLE ACTIVE while the index
+   * itself is still `CREATING` — application-autoscaling rejects a target
+   * whose resource is not ready, so registering right after the GSI-add loop
    * would skip the very index the deploy just introduced.
    *
-   * Since issue #1521 it is ALSO the gate between two serialized mutating
-   * calls (see {@link waitForTableActiveAfterUpdate}) and before
-   * `DeleteTable`, because AWS rejects both while an index is transitioning
-   * — an index that is `DELETING` still reports here, so waiting for every
-   * index to be ACTIVE covers `CREATING` / `UPDATING` / `DELETING` alike.
+   * Since issue #1521 the same distinction is enforced INSIDE
+   * {@link waitForTableActiveAfterUpdate} (which now reads both conditions off
+   * its own response), so this helper is no longer the only place that knows
+   * it. It remains the explicit wait for the two callers that have no
+   * table-status wait to piggyback on: the autoscaling registration above and
+   * the pre-`DeleteTable` gate, which AWS rejects while an index is
+   * transitioning. An index that is `DELETING` still reports, so the shared
+   * {@link hasTransitionalIndex} predicate covers `CREATING` / `UPDATING` /
+   * `DELETING` alike.
    *
    * **Best-effort by design**: on timeout it warns and returns rather than
    * throwing. A missed registration self-heals on the next deploy (the
@@ -4410,10 +4425,14 @@ function reportUnresolvedProvisionedCapacity(
   diagnostics.push({
     kind: 'unresolved-member',
     ...(context.indexName !== undefined && { indexName: context.indexName }),
-    // `split` always yields at least one element, so the last segment is the
-    // terminal member name (or the block name, when the block ITSELF is what
-    // could not be read).
-    member: path.slice(path.lastIndexOf('.') + 1),
+    // The terminal member name — or, when the BLOCK itself is what could not be
+    // read, the block's own last segment. Taken off `relPath` rather than the
+    // joined path so a block name carrying dots
+    // (`Replicas[local].GlobalSecondaryIndexes[].Read…Settings`) reports the
+    // member it names, not the tail of its container chain.
+    member: blame.relPath
+      ? blame.relPath.slice(blame.relPath.lastIndexOf('.') + 1)
+      : context.blockName.slice(context.blockName.lastIndexOf('.') + 1),
     message:
       `${path} is declared but did not resolve to a number ` +
       `(${JSON.stringify(blame.value)?.slice(0, 80)}), ${consequence}. This is usually an ` +

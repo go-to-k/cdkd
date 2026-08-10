@@ -695,12 +695,14 @@ UNRESOLVABLE_LOG="$(mktemp)"
 CDKD_TEST_UPDATE=ttl,tags,drop-gsi-ondemand-limits,drop-table-ondemand-limit,drop-table-ondemand-read-limit,gsi-billing-flip,unresolvable-capacity \
   ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose 2>&1 | tee "${UNRESOLVABLE_LOG}"
 
-if ! grep -q "did not resolve to a number" "${UNRESOLVABLE_LOG}"; then
-  echo "FAIL: issue #1511 — no unresolved-capacity diagnostic in the deploy log" >&2
-  exit 1
-fi
-if ! grep -q "ReadCapacityUnits" "${UNRESOLVABLE_LOG}"; then
-  echo "FAIL: issue #1511 — the diagnostic did not name ReadCapacityUnits" >&2
+# ONE line-coupled grep, not three independent ones: `did not resolve to a
+# number` is also emitted by the on-demand diagnostic and `ReadCapacityUnits`
+# appears throughout a --verbose log, so three separate greps can all pass on
+# sentences about other things. This ties the member, the block it lives in,
+# and the substitution together.
+if ! grep -q "Replicas\[local\].ReadProvisionedThroughputSettings.ReadCapacityUnits is declared but did not resolve to a number" "${UNRESOLVABLE_LOG}"; then
+  echo "FAIL: issue #1511 — no unresolved-capacity diagnostic naming the table-level read member" >&2
+  grep -i "did not resolve to a number" "${UNRESOLVABLE_LOG}" >&2 || echo "  (no such diagnostic at all)" >&2
   exit 1
 fi
 if ! grep -q "capacity units instead" "${UNRESOLVABLE_LOG}"; then
