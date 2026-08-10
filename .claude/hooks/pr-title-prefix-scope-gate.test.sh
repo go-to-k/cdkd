@@ -70,6 +70,18 @@ run_case() {
     api-f)
       cmdstr=$(printf 'gh -C %q api -X PATCH repos/owner/repo/pulls/562 -f title="%s"' "$tmpdir" "$title")
       ;;
+    api-quoted-endpoint)
+      # The endpoint in quotes. Under the #1455 matcher the neutralised text
+      # turns it into one placeholder token, so testing `pulls/[0-9]+` against
+      # THAT found nothing and the gate exited 0 -- letting a mislabelled
+      # `fix:` title edit through, which is the PR #562 incident this gate
+      # exists to stop. The endpoint is now matched against the raw command
+      # once `gh api` is confirmed in command position.
+      cmdstr=$(printf 'gh -C %q api -X PATCH "repos/owner/repo/pulls/562" -f title="%s"' "$tmpdir" "$title")
+      ;;
+    api-chained)
+      cmdstr=$(printf 'git push && gh -C %q api -X PATCH "repos/owner/repo/pulls/562" -f title="%s"' "$tmpdir" "$title")
+      ;;
     api-F)
       cmdstr=$(printf 'gh -C %q api -X PATCH repos/owner/repo/pulls/562 -F title="%s"' "$tmpdir" "$title")
       ;;
@@ -231,6 +243,14 @@ else
   fail_log+="FAIL false-positive echo: want 0 got $got\n"
   printf 'FAIL %s (want 0, got %s)\n' "false-positive: echo body containing 'gh pr create --title'" "$got"
 fi
+
+# --- #1455: quoted / chained `gh api` endpoint must still be seen ---------
+run_case "fix: via api with a QUOTED endpoint BLOCKED" 2 \
+  "fix(hooks): x" ".claude/hooks/x.sh" "api-quoted-endpoint"
+run_case "chore: via api with a QUOTED endpoint passes" 0 \
+  "chore(hooks): x" ".claude/hooks/x.sh" "api-quoted-endpoint"
+run_case "fix: via CHAINED api with a quoted endpoint BLOCKED" 2 \
+  "fix(hooks): x" ".claude/hooks/x.sh" "api-chained"
 
 echo
 echo "Pass: $pass  Fail: $fail"

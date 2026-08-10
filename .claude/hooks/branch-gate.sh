@@ -84,7 +84,7 @@ target_dir="${hook_cwd:-$PWD}"
 # enough that handling only the leading one covers the realistic
 # foot-gun (the "cd into parent for tooling" case) without parsing
 # arbitrary shell.
-cd_target="$(cmd_last_cd_target "$cmd" "$target_dir")"
+cd_target="$(cmd_last_cd_target "$cmd" "$target_dir" 'git([[:space:]]+(-[^[:space:]]+([[:space:]]+[^[:space:]-][^[:space:]]*)?))*[[:space:]]+(commit|push)([[:space:]]|$|[|;&`)])')"
 if [[ -n "$cd_target" ]]; then
   target_dir="$cd_target"
 fi

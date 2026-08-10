@@ -64,7 +64,7 @@ fi
 
 # Resolve where the command runs (cwd-aware; mirrors the other gates).
 target_dir="${hook_cwd:-$PWD}"
-cd_target="$(cmd_last_cd_target "$cmd" "$target_dir")"
+cd_target="$(cmd_last_cd_target "$cmd" "$target_dir" "$git_commit_re")"
 if [[ -n "$cd_target" ]]; then
   target_dir="$cd_target"
 fi

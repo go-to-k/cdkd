@@ -90,7 +90,7 @@ target_dir="${hook_cwd:-$PWD}"
 # `cd <path>` at the start of the command shifts the target dir.
 # Pass the current target as the BASE so chained relative cds compose
 # (`cd /abs/one && cd sub`); the helper returns a fully-resolved path.
-cd_target="$(cmd_last_cd_target "$cmd" "$target_dir")"
+cd_target="$(cmd_last_cd_target "$cmd" "$target_dir" 'git[^|;&]*[[:space:]]push([[:space:]]|$|[|;&`)])')"
 if [[ -n "$cd_target" ]]; then
   target_dir="$cd_target"
 fi

@@ -89,7 +89,7 @@ target_dir="${hook_cwd:-$PWD}"
 
 # Pass the current target as the BASE so chained relative cds compose
 # (`cd /abs/one && cd sub`); the helper returns a fully-resolved path.
-cd_target="$(cmd_last_cd_target "$cmd" "$target_dir")"
+cd_target="$(cmd_last_cd_target "$cmd" "$target_dir" 'gh([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+pr[[:space:]]+merge([[:space:]]|$|[|;&`)])')"
 if [[ -n "$cd_target" ]]; then
   target_dir="$cd_target"
 fi

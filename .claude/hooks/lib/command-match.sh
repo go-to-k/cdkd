@@ -130,28 +130,40 @@ strip_noncommand_spans() {
       }
 
       # ---- pass 2: quoted spans -> placeholder ---------------------------
-      res = ""; st = 0; esc = 0; emitted = 0
+      #
+      # Emitted as RUNS (substr of the kept stretch) rather than character by
+      # character. `res = res c` in a loop is quadratic in most awks: measured
+      # 0.21s at 50 KB and 3.0s at 200 KB, and every gate calls this twice, so
+      # a large command turned each hook into seconds of latency.
+      st = 0; esc = 0; emitted = 0; runstart = 1
       n = length(out)
       for (k = 1; k <= n; k++) {
         c = substr(out, k, 1)
-        if (esc) { esc = 0; if (st == 0) res = res c; continue }
+        if (esc) { esc = 0; continue }
         if (st == 0) {
-          if (c == "\\") { esc = 1; res = res c; continue }
-          if (c == "\047") { st = 1; emitted = 0; continue }
-          if (c == "\"") { st = 2; emitted = 0; continue }
-          res = res c
+          if (c == "\\") { esc = 1; continue }
+          if (c == "\047" || c == "\"") {
+            # Flush the code run that ended just before this quote.
+            if (k > runstart) printf "%s", substr(out, runstart, k - runstart)
+            st = (c == "\047") ? 1 : 2
+            emitted = 0
+            continue
+          }
         } else if (st == 1) {
-          if (c == "\047") { st = 0; if (!emitted) { res = res ph; emitted = 1 } }
-          else if (c == "\n") { if (!emitted) { res = res ph; emitted = 1 } res = res c }
+          if (c == "\047") { st = 0; if (!emitted) { printf "%s", ph; emitted = 1 } runstart = k + 1 }
+          else if (c == "\n") { if (!emitted) { printf "%s", ph; emitted = 1 } printf "%s", c }
         } else {
           if (c == "\\") { esc = 1; continue }
-          if (c == "\"") { st = 0; if (!emitted) { res = res ph; emitted = 1 } }
-          else if (c == "\n") { if (!emitted) { res = res ph; emitted = 1 } res = res c }
+          if (c == "\"") { st = 0; if (!emitted) { printf "%s", ph; emitted = 1 } runstart = k + 1 }
+          else if (c == "\n") { if (!emitted) { printf "%s", ph; emitted = 1 } printf "%s", c }
         }
       }
-      # An unterminated quote still contributes its placeholder.
-      if (st != 0 && !emitted) res = res ph
-      printf "%s", res
+      if (st == 0) {
+        if (n >= runstart) printf "%s", substr(out, runstart, n - runstart + 1)
+      } else if (!emitted) {
+        # An unterminated quote still contributes its placeholder.
+        printf "%s", ph
+      }
     }
   '
 }
@@ -170,63 +182,60 @@ cmd_matches_verb() {
   grep -qE "(^|[|;&][[:space:]]*)[[:space:]]*${verb}" <<< "$stripped"
 }
 
-# cmd_last_cd_target <command> [base-dir]
+# cmd_last_cd_target <command> [base-dir] [verb-ere]
 #
-# Print the working directory the command ends up in, following every `cd` in
-# command position in order, or nothing when there is no `cd`.
+# Print the working directory the guarded command runs in — following every
+# `cd` in command position that occurs BEFORE the verb — or nothing when
+# there is no such `cd`.
 #
-# The gates use this to resolve which working tree the guarded command runs
-# in — which decides whose per-worktree markgate markers get consulted.
+# The gates use this to decide which working tree, and therefore whose
+# per-worktree markgate markers, to consult.
 #
-# Matching only a LEADING `cd` was consistent while the verb matcher was
-# line-start anchored, because a command with a mid-chain `cd` did not fire
-# the gate at all. Now that `git push && cd /w && gh pr merge 1` DOES fire,
-# reading only the leading one would consult the wrong tree's markers and
-# could produce a spurious PASS.
+# Two properties are load-bearing, and both were review findings:
 #
-# Chained RELATIVE cds compose (`cd /abs/one && cd sub` -> `/abs/one/sub`),
-# which is why the base dir is a parameter rather than the caller resolving a
-# single returned segment.
+#   - Only cds BEFORE the verb count. Following every cd in the command let a
+#     trailing one hijack the lookup: `gh pr merge N --squash --delete-branch
+#     && cd <repo> && git pull` — the standing post-merge step — silently
+#     redirected all seven markgate gates to the main tree's store. Pass the
+#     verb ERE so the scan stops there; without it, every cd is followed
+#     (correct only for callers that have no verb, i.e. none today).
+#   - Chained RELATIVE cds compose (`cd /abs/one && cd sub` -> `/abs/one/sub`),
+#     which is why the base dir is a parameter rather than the caller
+#     resolving a single returned segment.
+#
+# A cd whose path was entirely quoted (`cd "/a b"`) resolves to NOTHING, and
+# the caller then falls back to the payload cwd. Recovering it from the raw
+# command was tried and removed: the raw text still contains quoted `cd`
+# mentions that the neutralised pass correctly ignored, so pairing the two by
+# order silently resolved the WRONG directory. Falling back to the cwd matches
+# what the pre-#1455 parser did for this shape and is the conservative half of
+# an already-imperfect case.
 cmd_last_cd_target() {
-  local cmd="$1" base="${2:-}" stripped cur="" seen=0 idx=0 __p
-  local -a raw_paths
-  raw_paths=()
+  local cmd="$1" base="${2:-}" verb="${3:-}" stripped cur="" seen=0 seg
   stripped="$(strip_noncommand_spans "$cmd")"
-
-  # Quoted paths were replaced by the placeholder, so recover them, in order,
-  # from the RAW command. Safe to read raw only for paths whose `cd` the
-  # stripped pass has already proven to be in command position.
-  #
-  # A read loop rather than `mapfile`: macOS ships bash 3.2 as /bin/bash and
-  # has no `mapfile`, so under it the array would silently stay empty and a
-  # quoted cd path would resolve to the wrong directory. No other hook in
-  # this tree requires bash 4+, so this helper must not be the first.
-  while IFS= read -r __p; do
-    raw_paths+=("$__p")
-  done < <(printf '%s' "$cmd" | grep -oE "cd[[:space:]]+(\"[^\"]*\"|'[^']*')" | sed -E "s/^cd[[:space:]]+//; s/^[\"']//; s/[\"']$//")
 
   cur="$base"
   while IFS= read -r seg; do
     [ -n "$seg" ] || continue
-    if [[ "$seg" == *"$CMD_MATCH_PLACEHOLDER"* ]]; then
-      seg="${raw_paths[$idx]:-}"
-      idx=$((idx + 1))
-      [ -n "$seg" ] || continue
-    fi
     seen=1
     if [[ "$seg" == /* ]]; then cur="$seg"; else cur="${cur:+$cur/}$seg"; fi
-  done < <(printf '%s' "$stripped" | awk '
+  done < <(printf '%s' "$stripped" | awk -v verb="$verb" -v ph="$CMD_MATCH_PLACEHOLDER" '
     {
       n = split($0, seg, /[|;&]+/)
       for (k = 1; k <= n; k++) {
         s = seg[k]
         sub(/^[ \t]+/, "", s)
+        # Stop at the guarded verb: a cd after it cannot affect where it ran.
+        if (verb != "" && s ~ verb) { stop = 1; break }
         if (s ~ /^cd([ \t]|$)/) {
           sub(/^cd[ \t]*/, "", s)
           sub(/[ \t].*$/, "", s)
-          if (s != "") print s
+          # A path that was entirely quoted is now just the placeholder; it
+          # cannot be resolved, so skip it rather than resolve it wrongly.
+          if (s != "" && index(s, ph) == 0) print s
         }
       }
+      if (stop) exit
     }
   ')
 

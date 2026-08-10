@@ -120,9 +120,9 @@ check "heredoc prose with an apostrophe, real invocation after" 0 "$MERGE" \
 # was line-start anchored (a mid-chain `cd` command did not fire the gate at
 # all); now that it does fire, the wrong tree means the wrong markers — which
 # can produce a spurious PASS.
-cd_check() { # name, expected, command
-  local name="$1" want="$2" cmd="$3" got
-  got="$(cmd_last_cd_target "$cmd")"
+cd_check() { # name, expected, command [, verb-ere]
+  local name="$1" want="$2" cmd="$3" verb="${4:-}" got
+  got="$(cmd_last_cd_target "$cmd" "" "$verb")"
   if [ "$got" = "$want" ]; then
     pass=$((pass + 1)); printf 'OK   %s\n' "$name"
   else
@@ -136,9 +136,28 @@ cd_check "MID-CHAIN cd is found" "/tmp/w" "git push && cd /tmp/w && gh pr merge 
 cd_check "the LAST absolute cd wins" "/tmp/second" "cd /tmp/first && cd /tmp/second && gh pr merge 1"
 cd_check "chained RELATIVE cd composes against the previous one" "/abs/one/sub" "cd /abs/one && cd sub && gh pr merge 1"
 cd_check "cd after a semicolon" "/tmp/w" "echo hi; cd /tmp/w; gh pr merge 1"
-cd_check "quoted path is unquoted" "/tmp/a b" "$(printf 'cd "/tmp/a b" && gh pr merge 1')"
 cd_check "a cd mentioned in a quoted body is ignored" "" 'echo "then cd /tmp/w and merge"'
 cd_check "cdkd (a different command) is not a cd" "" "cdkd deploy && gh pr merge 1"
+
+# --- Round-3: a cd AFTER the verb must not move the target ----------------
+#
+# Following every cd let a trailing one hijack the marker lookup:
+# `gh pr merge N --squash --delete-branch && cd <repo> && git pull` -- the
+# standing post-merge step -- silently redirected all seven markgate gates to
+# the main tree's store.
+cd_check "cd AFTER the verb is ignored" "" \
+  "gh pr merge 1 --squash --delete-branch && cd /tmp/other" "$MERGE"
+cd_check "cd BEFORE the verb still counts, cd after does not" "/tmp/before" \
+  "cd /tmp/before && gh pr merge 1 && cd /tmp/after" "$MERGE"
+cd_check "without a verb every cd is followed (back-compat)" "/tmp/after" \
+  "gh pr merge 1 && cd /tmp/after"
+
+# A fully-quoted cd path resolves to NOTHING so the caller falls back to the
+# payload cwd. Recovering it from raw text was tried and removed: the raw
+# command still holds quoted `cd` mentions the neutralised pass ignored, and
+# pairing the two by order resolved the WRONG directory.
+cd_check "a fully-quoted cd path is not resolved (documented fallback)" "" \
+  'cd "/tmp/a b" && gh pr merge 1' "$MERGE"
 
 # --- Round-2 review regressions (quoted VALUES must survive) --------------
 #

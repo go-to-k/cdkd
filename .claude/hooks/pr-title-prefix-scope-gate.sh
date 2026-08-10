@@ -82,7 +82,17 @@ is_api_patch=0
 if cmd_matches_verb "$cmd" 'gh([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+pr[[:space:]]+create([[:space:]]|$)'; then
   is_pr_create=1
 fi
-if cmd_matches_verb "$cmd" 'gh([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+api[[:space:]].*pulls/[0-9]+'; then
+# Two steps on purpose. `cmd_matches_verb` confirms `gh api` runs in command
+# position, which it decides on the NEUTRALISED text; the endpoint is then
+# matched against the RAW command. A quoted endpoint
+# (`gh api -X PATCH "repos/o/r/pulls/1458"`) is one placeholder token by the
+# time the neutraliser is done, so testing `pulls/[0-9]+` against the
+# neutralised text found nothing and the gate exited 0 — letting a mislabelled
+# `fix:` title edit through, which is the PR #562 incident this gate exists to
+# stop. Reading raw is safe only for the endpoint, and only after the verb has
+# been confirmed above.
+if cmd_matches_verb "$cmd" 'gh([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+api([[:space:]]|$)' \
+  && printf '%s' "$cmd" | grep -qE 'pulls/[0-9]+'; then
   is_api_patch=1
 fi
 if [[ "$is_pr_create" -eq 0 && "$is_api_patch" -eq 0 ]]; then
@@ -102,7 +112,7 @@ target_dir="${hook_cwd:-$PWD}"
 # Leading `cd <path> && ...` shifts the target dir.
 # Pass the current target as the BASE so chained relative cds compose
 # (`cd /abs/one && cd sub`); the helper returns a fully-resolved path.
-cd_target="$(cmd_last_cd_target "$cmd" "$target_dir")"
+cd_target="$(cmd_last_cd_target "$cmd" "$target_dir" 'gh([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+pr[[:space:]]+create([[:space:]]|$)')"
 if [[ -n "$cd_target" ]]; then
   target_dir="$cd_target"
 fi
