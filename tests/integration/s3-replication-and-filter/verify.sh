@@ -23,10 +23,13 @@
 # Phases:
 #   1. Deploy; assert GetBucketReplication returns the rule with
 #      Filter.And.Prefix='logs/' AND Filter.And.Tags carrying replicate=yes
-#      (NOT an empty filter / replicate-all), plus the five #1495 read-backs.
+#      (NOT an empty filter / replicate-all), plus the five #1495 read-backs,
+#      plus `cdkd drift` clean (issue #1530 — the READ side of the #1495
+#      blocks must reassemble what AWS returns, not report phantom drift).
 #   2. Re-deploy with CDKD_TEST_UPDATE=true (And prefix logs/ -> data/); assert
 #      the new prefix reached AWS via an in-place PutBucketReplication (the
-#      source bucket was NOT replaced) and the tag filter is still present.
+#      source bucket was NOT replaced) and the tag filter is still present,
+#      then `cdkd drift` clean again on the updated state.
 #   3. Destroy; assert both buckets are gone and the state file is removed.
 #
 # Required env vars:
@@ -64,6 +67,39 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
     echo "FAIL: ${desc}" >&2
     exit 1
   fi
+}
+# ---------------------------------------------------------------------------
+
+# --- issue #1530: read-side drift proof --------------------------------------
+# The #1495 read-backs prove the WRITE side delivered each nested block. This
+# proves the READ side: `readCurrentState` must reassemble the live config into
+# the same shape the deploy captured, so `cdkd drift` reports the stack clean
+# immediately after a deploy. The concrete phantom-drift candidate is a
+# sub-block AWS returns that the template never declared (e.g.
+# `SourceSelectionCriteria.SseKmsEncryptedObjects` next to the declared
+# `ReplicaModifications`): drift-calculator.ts compares arrays WHOLESALE, so
+# one extra observed member would flag the entire Rules array as drifted.
+# Exit 0 alone is NOT sufficient — an unsupported/skipped SourceBucket also
+# exits 0 — so the by-name check asserts the bucket was CHECKED and clean.
+assert_drift_clean() { # usage: assert_drift_clean "<phase label>"
+  local phase="$1" rc=0 json
+  set +e
+  json="$(node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --json)"
+  rc=$?
+  set -e
+  if [ "${rc}" -ne 0 ]; then
+    echo "FAIL: expected no drift ${phase}, cdkd drift exited ${rc} — phantom drift on the newly-read S3 nested blocks (issue #1530):" >&2
+    printf '%s\n' "${json}" >&2
+    exit 1
+  fi
+  local clean_count
+  clean_count="$(printf '%s' "${json}" | jq -r '[.[].clean[] | select(.logicalId | startswith("SourceBucket"))] | length')"
+  if [ "${clean_count}" != "1" ]; then
+    echo "FAIL: SourceBucket not reported CLEAN by cdkd drift ${phase} (an unsupported/skipped bucket would mask a read-side gap):" >&2
+    printf '%s\n' "${json}" >&2
+    exit 1
+  fi
+  echo "    cdkd drift clean ${phase} — SourceBucket checked + clean (issue #1530)"
 }
 # ---------------------------------------------------------------------------
 
@@ -193,6 +229,8 @@ if [ "${MIN_SIZE}" != "varies_by_storage_class" ]; then
 fi
 echo "    LifecycleConfiguration.TransitionDefaultMinimumObjectSize reached AWS (issue #1495)"
 
+assert_drift_clean "after the phase-1 deploy"
+
 CREATION_P1="$(aws s3api list-buckets \
   --query "Buckets[?Name=='${SRC_BUCKET}'].CreationDate | [0]" --output text)"
 echo "    baseline source-bucket CreationDate=${CREATION_P1}"
@@ -219,6 +257,8 @@ if [ "${CREATION_P1}" != "${CREATION_P2}" ]; then
   exit 1
 fi
 echo "    source bucket identity preserved (CreationDate unchanged) — no replacement"
+
+assert_drift_clean "after the phase-2 update"
 
 # --- Phase 3: destroy ----------------------------------------------------
 echo "==> Phase 3: destroy"

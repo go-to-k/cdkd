@@ -28,11 +28,19 @@ bug-hunt sweep.
    replication role. The source rule uses `Filter.And { Prefix: 'logs/', TagFilters:
    [replicate=yes] }`. Assert `GetBucketReplication` returns the rule with
    `Filter.And.Prefix='logs/'` **and** `Filter.And.Tags` carrying `replicate=yes`
-   (NOT an empty filter / replicate-all).
+   (NOT an empty filter / replicate-all), plus the five issue #1495 read-backs
+   (`TargetObjectKeyFormat`, `Destination.ReplicationTime` + `Metrics`,
+   `SourceSelectionCriteria.ReplicaModifications`,
+   `TransitionDefaultMinimumObjectSize`), plus a `cdkd drift` clean assertion
+   (issue #1530) — the READ side of those blocks must reassemble what AWS
+   returns without phantom drift, and the source bucket must be reported
+   **checked + clean** by name (exit 0 alone would also pass on a
+   skipped/unsupported resource).
 2. **Re-deploy** with `CDKD_TEST_UPDATE=true` — changes the `And` prefix
    `logs/` → `data/` (tag unchanged). Assert the new prefix reached AWS via an
    in-place `PutBucketReplication` (the source bucket was **not** replaced — same
-   `CreationDate`) and the tag filter is still present.
+   `CreationDate`) and the tag filter is still present, then `cdkd drift` clean
+   again on the updated state (issue #1530).
 3. **Destroy** — assert both buckets are gone and the cdkd state file is removed.
 
 ## Run
