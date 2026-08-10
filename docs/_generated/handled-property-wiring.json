@@ -10557,6 +10557,7 @@
             "createTable",
             "delete",
             "deleteDatabase",
+            "readCurrentState",
             "update",
             "updateDatabase",
             "updateTable"

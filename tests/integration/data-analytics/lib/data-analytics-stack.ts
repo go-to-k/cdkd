@@ -14,10 +14,32 @@ import * as athena from 'aws-cdk-lib/aws-athena';
  * - AWS::Athena::NamedQuery (L1 CfnNamedQuery)
  * - AWS::S3::Bucket for query results
  * - CfnOutputs for workgroup name, database name, bucket name, iceberg table
+ *
+ * UPDATE mode (`CDKD_TEST_UPDATE=true`, issue #1461) re-shapes two tables so a
+ * second deploy exercises the full-replace `UpdateTable` path:
+ *
+ *  - the Iceberg table gets a NEW Description and nothing else. That is an
+ *    edit to a property completely unrelated to `Parameters`, and it is what
+ *    used to erase the AWS-authored `table_type` / `metadata_location` the
+ *    catalog needs to still read the table as Iceberg.
+ *  - the plain `events` table DROPS one user-authored parameter and keeps the
+ *    other. That pins the mirror-image half: the fix must not make a
+ *    template-expressed removal unremovable. It rides the non-Iceberg table
+ *    deliberately, so a user-parameter edit can never be confused with (or
+ *    interfere with) Glue's own Iceberg bookkeeping.
+ *  - the DATABASE takes the same treatment (new Description, one parameter
+ *    dropped, one kept). `UpdateDatabase` is the sibling full-replace API with
+ *    the same `Parameters` bag, and without this it had zero real-AWS
+ *    coverage — the phase-2 template left the database untouched, so
+ *    `readLiveDatabaseParameters` and the database merge were never exercised
+ *    against AWS at all.
  */
 export class DataAnalyticsStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
+
+    // Phase 2 of the #1461 UPDATE round-trip. See the class docstring.
+    const updateMode = process.env.CDKD_TEST_UPDATE === 'true';
 
     // S3 bucket for Athena query results. autoDeleteObjects is enabled so
     // destroy can empty the Iceberg metadata the table below writes under
@@ -27,21 +49,37 @@ export class DataAnalyticsStack extends cdk.Stack {
       autoDeleteObjects: true,
     });
 
-    // Glue Database
+    // Glue Database. Same phase-1 / phase-2 shape as the `events` table below,
+    // so verify.sh can exercise the UpdateDatabase merge against real AWS.
+    const databaseParameters: Record<string, string> = { keep_me: 'yes' };
+    if (!updateMode) {
+      databaseParameters.drop_me = 'phase-1-only';
+    }
+
     const database = new glue.CfnDatabase(this, 'AnalyticsDb', {
       catalogId: this.account,
       databaseInput: {
         name: `${this.stackName}-analytics-db`.toLowerCase(),
+        description: updateMode ? 'phase-2 update' : 'phase-1 create',
+        parameters: databaseParameters,
       },
     });
 
-    // Glue Table
+    // Glue Table. `parameters` here are USER-authored: phase 1 sets both,
+    // phase 2 drops `owner_team` and keeps `classification`, so verify.sh can
+    // assert a template-expressed removal still reaches AWS after #1461.
+    const eventsParameters: Record<string, string> = { classification: 'json' };
+    if (!updateMode) {
+      eventsParameters.owner_team = 'analytics';
+    }
+
     const table = new glue.CfnTable(this, 'EventsTable', {
       catalogId: this.account,
       databaseName: database.ref,
       tableInput: {
         name: 'events',
         tableType: 'EXTERNAL_TABLE',
+        parameters: eventsParameters,
         storageDescriptor: {
           columns: [
             { name: 'event_id', type: 'string' },
@@ -68,6 +106,9 @@ export class DataAnalyticsStack extends cdk.Stack {
       tableInput: {
         name: 'events_iceberg',
         tableType: 'EXTERNAL_TABLE',
+        // The ONLY thing phase 2 changes on this table. `Parameters` is never
+        // declared here, so every entry on the live table is AWS-authored.
+        description: updateMode ? 'phase-2 update' : 'phase-1 create',
         storageDescriptor: {
           columns: [
             { name: 'event_id', type: 'string' },

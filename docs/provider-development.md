@@ -1013,7 +1013,8 @@ Checklist when writing or reviewing an `update()`:
 - Classify the API: **merge** (absent = unchanged — most `Update*` /
   `Modify*` calls) vs **full-replace** (the whole config object is replaced,
   or removal is handled by a dedicated `Delete*` call, like the S3 bucket
-  sub-config pattern). Only merge APIs need clear-on-removal.
+  sub-config pattern). Only merge APIs need clear-on-removal — but a
+  full-replace API has the MIRROR hazard instead, see §2b.
 - For each optional mutable property: what does AWS need to receive to get
   back to the CFn default? Common shapes: the documented default scalar
   (`3`, `128`), an empty container (`{ Variables: {} }`, `[]`), an empty
@@ -1032,6 +1033,103 @@ Checklist when writing or reviewing an `update()`:
   stays absent; mixed kept/removed → kept fields pass through unchanged.
 - A per-key removal test (one key dropped from a still-present map) does NOT
   cover whole-block removal (the map itself dropped) — test both.
+
+### 2b. Full-replace update APIs erase AWS-AUTHORED values (issue #1461)
+
+A **full-replace** update API needs no clear-on-removal (§2a) — omitting a key
+IS the reset. Its hazard runs the other way: whatever the payload omits is
+erased, including values **AWS itself wrote** and your template therefore has
+no representation for. No template-side diff hints at the loss, and no unit
+test can catch it, because the values only exist on the live resource.
+
+The live case (`GlueProvider`, issue
+[#1461](https://github.com/go-to-k/cdkd/issues/1461)): `UpdateTable` replaces
+`TableInput` wholesale, so an Iceberg table's `Parameters.table_type` and
+`Parameters.metadata_location` — written by Glue at create time — were erased
+by a deploy that changed only `TableInput.Description`, silently degrading the
+table to a plain external table while the deploy reported success.
+
+When a full-replace update sends a general-purpose bag (a `Parameters` /
+`Properties` / `Tags`-shaped map AWS can write into), read the live resource
+first and merge those entries back. Key the merge on **"present in NEITHER
+template side"**, using `previousProperties`:
+
+| key in desired | key in previous | outcome                              |
+| -------------- | --------------- | ------------------------------------ |
+| yes            | (either)        | the user's value wins                |
+| no             | yes             | the USER REMOVED it -> stays removed |
+| no             | no              | AWS-authored -> preserved from live  |
+
+Restoring anything merely absent from the DESIRED side would make
+user-authored entries unremovable — the mirror image of the bug — and would
+break `cdkd drift --revert`'s ability to clear a console-side addition (that
+path passes the AWS-current snapshot as `previousProperties`, so every live
+key lands in the previous column and nothing is added back).
+
+**State the price.** The merge cannot distinguish an AWS-written entry from a
+console-written one — neither appears on either template side — so every
+out-of-band addition to that bag becomes permanent, and invisible to
+`cdkd drift` once the next deploy folds it into the state baseline. That is an
+acceptable trade against silently destroying an AWS-authored value, but it is a
+real semantic change: document it on the resource type, and give users the
+removal path (delete it directly, or declare-then-undeclare it so it becomes a
+normal user-authored removal).
+
+**Close the TOCTOU window if the API lets you.** Reading a value and writing it
+back is not atomic; a concurrent writer landing in between is silently undone
+by your write-back. Check the update request for an optimistic-concurrency
+member (Glue's `UpdateTableRequest.VersionId`; the `ConcurrentModificationException`
+in a command's documented error list is the tell) and send the version you
+read, so a concurrent change fails loudly instead. Send it on EVERY update
+rather than only on the ones that write back live values: the read runs
+immediately before the write, so the version is never stale unless somebody
+else really wrote in between, and an update that merged nothing still ships a
+wholesale replace that a concurrent write would lose. (Scoping it was tried on
+Glue and was wrong twice over — it left the empty-live-read case unguarded,
+and its premise that a pure template push carries a stale version was false.)
+When the API has no such member, say so where users will read it rather than
+leaving the exposure implicit.
+
+**Prove the precondition, do not assume it.** An AWS field named like a version
+token is not necessarily enforced — Glue documents `VersionId` only as "the
+version ID at which to update the table contents". Pin the semantics with a
+real-AWS probe that advances the version out of band and requires the stale
+replay to be REFUSED (and refused with a concurrency error, not any error).
+Without that, an ignored token makes the whole guard a placebo that reads as
+protection in review.
+
+Two placement rules go with it:
+
+- **Fail closed on a read failure.** Only a definitive not-found may degrade
+  to "no live values" (the update's own error is more actionable). Any other
+  failure must throw, naming the required IAM action — silently skipping the
+  merge reinstates the erasure the read exists to prevent. Wrap the original
+  error as `cause` so a transient throttle stays retryable.
+- **Throw OUTSIDE the update's `try`**, and order the read AFTER the
+  pre-flight validation, so the typed error is not re-labelled by the catch
+  wrapper and a refused update issues no extra API call. Move ONLY the read —
+  leaving the payload-building code outside the `try` as well turns a
+  malformed-template crash into a raw `TypeError` with no resource context.
+- **Check that every `provider.update()` call site retries.** Adding a read to
+  `update()` makes it newly sensitive to throttling. `deploy-engine.ts` and
+  `drift.ts` wrap their calls in `withRetry`; `rollback-executor.ts` did not
+  until issue #1461, so the new read would have failed a rollback op that
+  previously issued no read at all — and the best-effort catch there counts
+  that as a failure and moves on. A transient failure on a RECOVERY path is
+  the worst place to introduce one. **A new `withRetry` must carry the two
+  conventions the surrounding sites use**, or it trades one bug for another:
+  honor `provider.disableOuterRetry` (`CustomResourceProvider` /
+  `NestedStackProvider` set it AND implement `update()` — re-invoking a Custom
+  Resource derives a fresh RequestId + pre-signed URL and strands the first
+  response at an S3 key nobody polls), and thread `isInterrupted` /
+  `onInterrupted` (a rollback polls interrupts only BETWEEN ops, so an
+  un-threaded probe leaves Ctrl-C dead for the whole backoff schedule).
+
+Only bags AWS actually writes into qualify. A purely user-authored bag
+(Glue's `JobUpdate.DefaultArguments`, `ConnectionInput.ConnectionProperties`)
+must NOT be merged — preserving a console-side addition there would break
+`drift --revert`. Audit the sibling update APIs on the same provider when you
+fix one; the divergence is per-bag, not per-provider.
 
 ### 3. Returning Attributes
 
