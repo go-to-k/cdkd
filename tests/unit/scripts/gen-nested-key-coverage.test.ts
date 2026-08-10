@@ -1,5 +1,13 @@
-import { describe, it, expect } from 'vite-plus/test';
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { afterAll, describe, it, expect } from 'vite-plus/test';
+import { spawnSync } from 'node:child_process';
+import {
+  cpSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import {
@@ -13,15 +21,20 @@ import {
   collectSdkInterfaces,
   collectSdkMemberNames,
   collectStringLiterals,
+  collectWriteEvidence,
   collectWrittenMemberNames,
   expandLiteralSegments,
   findDivergences,
   findStaleAllowListEntries,
   loadReport,
   lowerFirst,
-  nestedKeysForTarget,
+  lookupAllowEntry,
+  nestedKeyPathsForTarget,
   wrapperInterfaceNames,
+  type NestedKeyClassification,
+  type NestedKeyPath,
   type NestedKeyTarget,
+  type ProviderWriteEvidence,
   type SdkMemberType,
 } from '../../../scripts/gen-nested-key-coverage.ts';
 import {
@@ -31,6 +44,8 @@ import {
 import { parseProviderSource } from '../../../scripts/gen-property-coverage.ts';
 
 const repoRoot = process.cwd();
+const SCRIPT = resolve(repoRoot, 'scripts/gen-nested-key-coverage.ts');
+const PROVIDERS_DIR = resolve(repoRoot, 'src/provisioning/providers');
 
 const exactTarget: NestedKeyTarget = {
   resourceType: 'AWS::Fake::Thing',
@@ -41,6 +56,35 @@ const exactTarget: NestedKeyTarget = {
 };
 
 const freshTarget: NestedKeyTarget = { ...exactTarget, freshObjectMapper: true };
+
+/**
+ * Build the PATH-shaped audited units the classifier takes since #1448. Every
+ * synthetic probe hangs its keys off one top-level so the scoped write lookup
+ * has something to resolve against.
+ */
+const keyPaths = (topLevelProperty: string, ...keys: string[]): NestedKeyPath[] =>
+  keys.map((key) => ({ topLevelProperty, key, path: `${topLevelProperty}.${key}` }));
+
+/** Build write evidence from a `{ scopeName: [membersBeneathIt] }` sketch. */
+const writeEvidence = (scopes: Record<string, readonly string[]>): ProviderWriteEvidence => ({
+  written: new Set(Object.values(scopes).flat()),
+  scopes: new Map(Object.entries(scopes).map(([k, v]) => [k, new Set(v)])),
+});
+
+/** Every classification whose TERMINAL key is `key` (a key can span paths). */
+const entriesFor = (
+  entries: readonly NestedKeyClassification[],
+  key: string
+): NestedKeyClassification[] => entries.filter((e) => e.terminalKey === key);
+
+/** The single bucket every path of `key` landed in (fails loudly if they differ). */
+const bucketOf = (
+  entries: readonly NestedKeyClassification[],
+  key: string
+): string | undefined => {
+  const buckets = [...new Set(entriesFor(entries, key).map((e) => e.bucket))];
+  return buckets.length === 1 ? buckets[0] : buckets.length === 0 ? undefined : buckets.join('+');
+};
 
 describe('collectWrittenMemberNames (synthetic)', () => {
   it('counts object-literal, shorthand and assignment writes', () => {
@@ -194,32 +238,277 @@ describe('collectWrittenMemberNames (synthetic)', () => {
   });
 });
 
+describe('collectWriteEvidence (synthetic)', () => {
+  it('scopes a write to the members beneath the value it is written with (#1448)', () => {
+    const { written, scopes } = collectWriteEvidence(`
+      const sdk = {
+        serviceRole: p['ServiceRole'],
+        buildBatchConfig: { serviceRole: p['Inner'], batchReportMode: 1 },
+      };
+    `);
+    // The name-global set cannot tell the two `serviceRole` writes apart...
+    expect(written.has('serviceRole')).toBe(true);
+    // ...the scope index can.
+    expect([...(scopes.get('buildBatchConfig') ?? [])].sort()).toEqual([
+      'batchReportMode',
+      'serviceRole',
+    ]);
+    expect(scopes.get('serviceRole')?.size ?? 0).toBe(0);
+  });
+
+  it('resolves a scope through a const binding, a call and a .map callback', () => {
+    const { scopes } = collectWriteEvidence(`
+      class P {
+        build() { return { type: 'X', location: 'Y' }; }
+        map(p) {
+          const cache = { modes: p['Modes'] };
+          return {
+            source: this.build(),
+            cache,
+            tags: p['Tags'].map((t) => ({ key: t.Key, value: t.Value })),
+          };
+        }
+      }
+    `);
+    expect([...(scopes.get('source') ?? [])].sort()).toEqual(['location', 'type']);
+    expect([...(scopes.get('cache') ?? [])].sort()).toEqual(['modes']);
+    expect([...(scopes.get('tags') ?? [])].sort()).toEqual(['key', 'value']);
+  });
+
+  it('resolves both arms of a conditional / ?? and merges a spread', () => {
+    const { scopes } = collectWriteEvidence(`
+      const sdk = {
+        auth: flag ? { type: 1 } : { resource: 2 },
+        env: base ?? { image: 3 },
+        merged: { ...{ inner: 4 }, own: 5 },
+      };
+    `);
+    expect([...(scopes.get('auth') ?? [])].sort()).toEqual(['resource', 'type']);
+    expect([...(scopes.get('env') ?? [])].sort()).toEqual(['image']);
+    expect([...(scopes.get('merged') ?? [])].sort()).toEqual(['inner', 'own']);
+  });
+
+  it('records a member written ANY depth beneath the scope (the fixture is flat)', () => {
+    // `nestedProperties` flattens the whole interior of a top-level property,
+    // so `BuildBatchConfig.ComputeTypesAllowed` is an audited path even though
+    // the member lives under `Restrictions`. The scope has to match that depth.
+    const { scopes } = collectWriteEvidence(`
+      const sdk = { buildBatchConfig: { restrictions: { computeTypesAllowed: [] } } };
+    `);
+    expect(scopes.get('buildBatchConfig')?.has('computeTypesAllowed')).toBe(true);
+  });
+
+  it('peels `await` off a resolved value', () => {
+    // FALSE-POSITIVE direction: un-peeled, `await this.build()` resolves to no
+    // literals and every path under `source` flags with the misleading "the
+    // provider never writes it". No opted-in provider awaits a mapper today, so
+    // this synthetic case IS the fence.
+    const { scopes } = collectWriteEvidence(`
+      class P {
+        async build() { return { type: 1, location: 2 }; }
+        async map() { return { source: await this.build() }; }
+      }
+    `);
+    expect([...(scopes.get('source') ?? [])].sort()).toEqual(['location', 'type']);
+  });
+
+  it('climbs OUT to an enclosing scope for a binding, but not into sibling functions', () => {
+    // A module-level `const DEFAULTS = { … }` used inside a method is a real
+    // shape; not finding it flags CORRECT code. The climb must NOT reach a
+    // same-named binding in an unrelated method, and a PARAMETER of the nearest
+    // scope stops it entirely.
+    const { scopes } = collectWriteEvidence(`
+      const DEFAULTS = { alpha: 1 };
+      class P {
+        other() { const cfg = { fromSibling: 1 }; return cfg; }
+        map(cfg) { return { environment: DEFAULTS, cache: cfg }; }
+      }
+    `);
+    expect([...(scopes.get('environment') ?? [])].sort()).toEqual(['alpha']);
+    // `cfg` is a PARAMETER here — the sibling method's `const cfg` must not
+    // resolve it, or an unrelated literal would vouch for a CI-blocking bucket.
+    expect([...(scopes.get('cache') ?? [])]).toEqual([]);
+  });
+
+  it('does NOT resolve a same-named method on an UNRELATED receiver', () => {
+    // `client.mapSource(x)` is not the provider's own mapper. Crediting it was
+    // a false CLEAR on a CI-blocking bucket, so only `this.helper(…)` and a
+    // bare `helper(…)` resolve.
+    const source = `
+      class P {
+        mapSource(s) { return { type: 1, location: 2 }; }
+        own() { return { source: this.mapSource(s) }; }
+        foreign() { return { artifacts: client.mapSource(s) }; }
+      }
+    `;
+    const { scopes } = collectWriteEvidence(source);
+    expect([...(scopes.get('source') ?? [])].sort()).toEqual(['location', 'type']);
+    expect([...(scopes.get('artifacts') ?? [])]).toEqual([]);
+  });
+
+  it('resolves filter / find / concat through the RECEIVER, not the predicate', () => {
+    // `filter` / `find` were briefly treated as callback-returning, which
+    // resolves a PREDICATE and yields nothing; the delivered value comes from
+    // the array. `concat` delivers the receiver AND its arguments.
+    const { scopes } = collectWriteEvidence(`
+      const pool = [{ alpha: 1 }];
+      const extra = [{ beta: 2 }];
+      const sdk = {
+        picked: pool.find((x) => x.alpha === 1),
+        kept: pool.filter((x) => Boolean(x)),
+        joined: pool.concat(extra),
+      };
+    `);
+    expect([...(scopes.get('picked') ?? [])].sort()).toEqual(['alpha']);
+    expect([...(scopes.get('kept') ?? [])].sort()).toEqual(['alpha']);
+    expect([...(scopes.get('joined') ?? [])].sort()).toEqual(['alpha', 'beta']);
+  });
+
+  it('counts compound assignment operators as writes (#1448 comment item 1)', () => {
+    // `??=` / `||=` / `+=` are writes. Treating them as non-writes would fail CI
+    // with the MISLEADING "the provider never writes it" after a refactor.
+    const written = collectWriteEvidence(`
+      sdk.batchReportMode ??= 'REPORT_AGGREGATED_BATCH';
+      sdk.timeoutInMins ||= 60;
+      sdk['combineArtifacts'] &&= true;
+      sdk.queuedTimeoutInMinutes += 1;
+    `).written;
+    expect([...written].sort()).toEqual([
+      'batchReportMode',
+      'combineArtifacts',
+      'queuedTimeoutInMinutes',
+      'timeoutInMins',
+    ]);
+  });
+
+  it('recognizes Object.defineProperty WITHOUT crediting the descriptor keys', () => {
+    // The descriptor literal would otherwise put `value` / `get` / `writable`
+    // into the set — and `value` IS a real CodeBuild member (`Value`).
+    const { written, scopes } = collectWriteEvidence(`
+      Object.defineProperty(sdk, 'batchReportMode', {
+        value: { serviceRole: 1 },
+        writable: true,
+        enumerable: true,
+      });
+    `);
+    expect(written.has('batchReportMode')).toBe(true);
+    expect(written.has('value')).toBe(false);
+    expect(written.has('writable')).toBe(false);
+    expect(written.has('enumerable')).toBe(false);
+    // ...and the descriptor's `value` payload still becomes the member's scope.
+    expect(scopes.get('batchReportMode')?.has('serviceRole')).toBe(true);
+  });
+
+  it('a computed / variable defineProperty name is not credited', () => {
+    const written = collectWriteEvidence(
+      `Object.defineProperty(sdk, key, { value: 1 });`
+    ).written;
+    expect(written.has('key')).toBe(false);
+  });
+
+  it('a COMPARISON-ONLY literal is not delivery (#1448 diff-is-not-delivery)', () => {
+    // The change-detection idiom of a diff-heavy `update()`: the literal names
+    // the member but nothing is ever sent.
+    const written = collectWriteEvidence(`
+      const changed =
+        JSON.stringify({ batchReportMode: next }) !== JSON.stringify({ batchReportMode: prev });
+      const empty = Object.keys({ combineArtifacts: next }).length === 0;
+      const delivered = { timeoutInMins: 5 };
+      send(delivered);
+    `).written;
+    expect(written.has('batchReportMode')).toBe(false);
+    expect(written.has('combineArtifacts')).toBe(false);
+    expect(written.has('timeoutInMins')).toBe(true);
+  });
+
+  it('the NESTED half of a comparison-only literal is not delivery either', () => {
+    // `inner`'s own parent chain stops at a PropertyAssignment, so the check has
+    // to climb to the OUTERMOST literal before asking what consumes it.
+    const written = collectWriteEvidence(`
+      const changed =
+        JSON.stringify({ buildBatchConfig: { batchReportMode: next } }) !==
+        JSON.stringify({ buildBatchConfig: { batchReportMode: prev } });
+    `).written;
+    expect(written.has('buildBatchConfig')).toBe(false);
+    expect(written.has('batchReportMode')).toBe(false);
+  });
+
+  it('a literal serialized into a REQUEST is still delivery', () => {
+    // The other side of the same rule: `body: JSON.stringify(x)` sends the value.
+    const written = collectWriteEvidence(
+      `const req = { body: JSON.stringify({ batchReportMode: 1 }) };`
+    ).written;
+    expect(written.has('batchReportMode')).toBe(true);
+  });
+});
+
 describe('classifyTarget (synthetic)', () => {
   const sdkMembers = new Set(['ACMCertificateArn', 'IsIPV6Enabled', 'Comment', 'items']);
+  const commentPath = keyPaths('Top', 'Comment');
 
   it('a same-spelling key on a NON-fresh-object target stays silent without any write', () => {
     // The forwarding case: the serializer carries the key through, so an
     // absent write proves nothing. Guards the opt-in from becoming default-on.
-    const [e] = classifyTarget(exactTarget, ['Comment'], sdkMembers, new Set(), new Map(), new Set());
+    const [e] = classifyTarget(exactTarget, commentPath, sdkMembers, new Set(), new Map());
     expect(e?.bucket).toBe('same-spelling');
   });
 
+  it('the audited unit is the PATH, not the bare key (#1448)', () => {
+    const entries = classifyTarget(
+      exactTarget,
+      [...keyPaths('Alpha', 'Comment'), ...keyPaths('Beta', 'Comment')],
+      sdkMembers,
+      new Set(),
+      new Map()
+    );
+    expect(entries.map((e) => e.nestedKey)).toEqual(['Alpha.Comment', 'Beta.Comment']);
+    expect(entries.map((e) => e.terminalKey)).toEqual(['Comment', 'Comment']);
+    expect(entries.map((e) => e.topLevelProperty)).toEqual(['Alpha', 'Beta']);
+  });
+
   it('flags a same-spelling key with no write evidence on a fresh-object target (#1432)', () => {
-    const [e] = classifyTarget(freshTarget, ['Comment'], sdkMembers, new Set(), new Map(), new Set());
+    const [e] = classifyTarget(freshTarget, commentPath, sdkMembers, new Set(), new Map());
     expect(e?.bucket).toBe('no-write-evidence');
     expect(e?.sdkNearMiss).toBe('Comment');
   });
 
-  it('clears the same key once the provider writes the SDK member', () => {
+  it('clears the same key once the provider writes the SDK member IN THAT SCOPE', () => {
     const [e] = classifyTarget(
       freshTarget,
-      ['Comment'],
+      commentPath,
       sdkMembers,
       new Set(),
       new Map(),
-      new Set(['Comment'])
+      writeEvidence({ Top: ['Comment'] })
     );
     expect(e?.bucket).toBe('same-spelling');
+  });
+
+  it('does NOT clear a key written under a DIFFERENT scope (the #1448 fix)', () => {
+    // The name-global model cleared this: `Comment` is written somewhere, so
+    // every `*.Comment` path was vouched for. Scoped evidence sees that the
+    // write is under `Elsewhere`, not under this path's `Top`.
+    const [e] = classifyTarget(
+      freshTarget,
+      commentPath,
+      sdkMembers,
+      new Set(),
+      new Map(),
+      writeEvidence({ Elsewhere: ['Comment'], Top: ['SomethingElse'] })
+    );
+    expect(e?.bucket).toBe('no-write-evidence');
+  });
+
+  it('does NOT clear a key when the top-level scope resolves to nothing at all', () => {
+    const [e] = classifyTarget(
+      freshTarget,
+      commentPath,
+      sdkMembers,
+      new Set(),
+      new Map(),
+      writeEvidence({ Comment: ['Comment'] }) // a scope NAMED like the key, not the parent
+    );
+    expect(e?.bucket).toBe('no-write-evidence');
   });
 
   it('does NOT let the loose literal heuristic rescue a missing write', () => {
@@ -227,60 +516,98 @@ describe('classifyTarget (synthetic)', () => {
     // #1432 says is insufficient for a fresh-object mapper.
     const [e] = classifyTarget(
       freshTarget,
-      ['Comment'],
+      commentPath,
       sdkMembers,
       new Set(['Comment']),
-      new Map(),
-      new Set()
+      new Map()
     );
     expect(e?.bucket).toBe('no-write-evidence');
   });
 
-  it('an allow-list entry silences a no-write-evidence key', () => {
-    const allow = new Map([
+  it('an allow-list entry silences a no-write-evidence key ONLY with the write pass opted in', () => {
+    const shapeOnly = new Map([
       [allowKey(freshTarget.resourceType, 'Comment'), { rationale: 'deliberate' }],
     ]);
-    const [e] = classifyTarget(freshTarget, ['Comment'], sdkMembers, new Set(), allow, new Set());
+    // Default passes are ['key','shape'] — the #1378 cross-pass sharing, which
+    // predates the write pass and says nothing about delivery (#1448).
+    expect(
+      classifyTarget(freshTarget, commentPath, sdkMembers, new Set(), shapeOnly)[0]?.bucket
+    ).toBe('no-write-evidence');
+
+    const writeOptIn = new Map([
+      [
+        allowKey(freshTarget.resourceType, 'Comment'),
+        { rationale: 'deliberate', passes: ['write'] as const },
+      ],
+    ]);
+    const [e] = classifyTarget(freshTarget, commentPath, sdkMembers, new Set(), writeOptIn);
     expect(e?.bucket).toBe('allow-listed');
     expect(e?.rationale).toBe('deliberate');
+    expect(e?.allowMatchKey).toBe('AWS::Fake::Thing#Comment');
   });
 
-  it('lower-first styling applies to the write lookup too', () => {
+  it('a PATH-precise allow-list entry beats the terminal-name fallback', () => {
+    const allow = new Map([
+      [
+        allowKey(freshTarget.resourceType, 'Top.Comment'),
+        { rationale: 'scoped to this path', passes: ['write'] as const },
+      ],
+    ]);
+    const [scoped] = classifyTarget(freshTarget, commentPath, sdkMembers, new Set(), allow);
+    expect(scoped?.bucket).toBe('allow-listed');
+    expect(scoped?.allowMatchKey).toBe('AWS::Fake::Thing#Top.Comment');
+    // ...and it does NOT silence the same key under another top-level.
+    const [other] = classifyTarget(
+      freshTarget,
+      keyPaths('Other', 'Comment'),
+      sdkMembers,
+      new Set(),
+      allow
+    );
+    expect(other?.bucket).toBe('no-write-evidence');
+  });
+
+  it('lookupAllowEntry prefers the path, falls back to the terminal name', () => {
+    const allow = new Map([
+      [allowKey('T', 'A.B'), { rationale: 'path' }],
+      [allowKey('T', 'B'), { rationale: 'terminal' }],
+    ]);
+    expect(lookupAllowEntry(allow, 'T', 'A.B', 'B', 'key')?.entry.rationale).toBe('path');
+    expect(lookupAllowEntry(allow, 'T', 'C.B', 'B', 'key')?.entry.rationale).toBe('terminal');
+    expect(lookupAllowEntry(allow, 'T', 'C.B', 'B', 'write')).toBeUndefined();
+  });
+
+  it('lower-first styling applies to the write lookup on BOTH path segments', () => {
     const camel = new Set(['batchReportMode']);
     const lowerFirstFresh: NestedKeyTarget = {
       ...exactTarget,
       keyStyle: 'lower-first',
       freshObjectMapper: true,
     };
+    const path = keyPaths('BuildBatchConfig', 'BatchReportMode');
     const [missing] = classifyTarget(
       lowerFirstFresh,
-      ['BatchReportMode'],
+      path,
       camel,
       new Set(),
       new Map(),
-      new Set(['BatchReportMode']) // the CFn spelling written — wrong side
+      // the CFn spellings written — wrong side, on both segments
+      writeEvidence({ BuildBatchConfig: ['BatchReportMode'] })
     );
     expect(missing?.bucket).toBe('no-write-evidence');
     const [ok] = classifyTarget(
       lowerFirstFresh,
-      ['BatchReportMode'],
+      path,
       camel,
       new Set(),
       new Map(),
-      new Set(['batchReportMode'])
+      writeEvidence({ buildBatchConfig: ['batchReportMode'] })
     );
     expect(ok?.bucket).toBe('same-spelling');
   });
 
   it('a no-write-evidence key is a CI-blocking divergence', () => {
-    const entries = classifyTarget(
-      freshTarget,
-      ['Comment'],
-      sdkMembers,
-      new Set(),
-      new Map(),
-      new Set()
-    );
+    const entries = classifyTarget(freshTarget, commentPath, sdkMembers, new Set(), new Map());
     const report = buildReport([
       {
         resourceType: freshTarget.resourceType,
@@ -299,18 +626,19 @@ describe('classifyTarget (synthetic)', () => {
     expect(report.summary.freshObjectTargets).toBe(1);
     const [d] = findDivergences(report);
     expect(d?.bucket).toBe('no-write-evidence');
+    expect(d?.nestedKey).toBe('Top.Comment');
     expect(d?.detail).toContain('never writes it');
   });
 
   it('classifies a same-spelling key as reachable', () => {
-    const [e] = classifyTarget(exactTarget, ['Comment'], sdkMembers, new Set(), new Map());
+    const [e] = classifyTarget(exactTarget, commentPath, sdkMembers, new Set(), new Map());
     expect(e?.bucket).toBe('same-spelling');
   });
 
   it('classifies a provider-named key as provider-handled', () => {
     const [e] = classifyTarget(
       exactTarget,
-      ['AcmCertificateArn'],
+      keyPaths('Top', 'AcmCertificateArn'),
       sdkMembers,
       new Set(['AcmCertificateArn']),
       new Map()
@@ -319,13 +647,25 @@ describe('classifyTarget (synthetic)', () => {
   });
 
   it('flags a case-insensitive near-miss as case-divergence with the SDK member named', () => {
-    const [e] = classifyTarget(exactTarget, ['AcmCertificateArn'], sdkMembers, new Set(), new Map());
+    const [e] = classifyTarget(
+      exactTarget,
+      keyPaths('Top', 'AcmCertificateArn'),
+      sdkMembers,
+      new Set(),
+      new Map()
+    );
     expect(e?.bucket).toBe('case-divergence');
     expect(e?.sdkNearMiss).toBe('ACMCertificateArn');
   });
 
   it('flags a key with no SDK member at all as no-sdk-member', () => {
-    const [e] = classifyTarget(exactTarget, ['IPV6Enabled'], sdkMembers, new Set(), new Map());
+    const [e] = classifyTarget(
+      exactTarget,
+      keyPaths('Top', 'IPV6Enabled'),
+      sdkMembers,
+      new Set(),
+      new Map()
+    );
     expect(e?.bucket).toBe('no-sdk-member');
   });
 
@@ -333,7 +673,13 @@ describe('classifyTarget (synthetic)', () => {
     const allow = new Map([
       [allowKey('AWS::Fake::Thing', 'IPV6Enabled'), { rationale: 'legacy member' }],
     ]);
-    const [e] = classifyTarget(exactTarget, ['IPV6Enabled'], sdkMembers, new Set(), allow);
+    const [e] = classifyTarget(
+      exactTarget,
+      keyPaths('Top', 'IPV6Enabled'),
+      sdkMembers,
+      new Set(),
+      allow
+    );
     expect(e?.bucket).toBe('allow-listed');
     expect(e?.rationale).toBe('legacy member');
   });
@@ -342,7 +688,13 @@ describe('classifyTarget (synthetic)', () => {
     const allow = new Map([
       [allowKey('AWS::Fake::Thing', 'AcmCertificateArn'), { rationale: 'deliberate' }],
     ]);
-    const [e] = classifyTarget(exactTarget, ['AcmCertificateArn'], sdkMembers, new Set(), allow);
+    const [e] = classifyTarget(
+      exactTarget,
+      keyPaths('Top', 'AcmCertificateArn'),
+      sdkMembers,
+      new Set(),
+      allow
+    );
     expect(e?.bucket).toBe('allow-listed');
     expect(e?.sdkNearMiss).toBe('ACMCertificateArn');
   });
@@ -350,13 +702,19 @@ describe('classifyTarget (synthetic)', () => {
   it('matches lower-first style against camelCase SDK members', () => {
     const target: NestedKeyTarget = { ...exactTarget, keyStyle: 'lower-first' };
     const camelMembers = new Set(['maximumPercent', 's3filesVolumeConfiguration']);
-    const [max] = classifyTarget(target, ['MaximumPercent'], camelMembers, new Set(), new Map());
+    const [max] = classifyTarget(
+      target,
+      keyPaths('Top', 'MaximumPercent'),
+      camelMembers,
+      new Set(),
+      new Map()
+    );
     expect(max?.bucket).toBe('same-spelling');
     // The irregular `s3filesVolumeConfiguration` (all-lowercase prefix) is NOT
     // a first-letter flip of the CFn key — must flag unless provider-handled.
     const [s3f] = classifyTarget(
       target,
-      ['S3FilesVolumeConfiguration'],
+      keyPaths('Top', 'S3FilesVolumeConfiguration'),
       camelMembers,
       new Set(),
       new Map()
@@ -372,6 +730,20 @@ describe('classifyTarget (synthetic)', () => {
 });
 
 describe('collectStringLiterals', () => {
+  it('skips the reverse map body (#1448 comment item 2)', () => {
+    const source = `
+      class P {
+        map(p) { return { forward: p['ForwardOnly'] }; }
+        readCurrentStateStage() { const r = {}; r['ReadOnlyKey'] = 1; return r; }
+      }
+    `;
+    expect(collectStringLiterals(source).has('ForwardOnly')).toBe(true);
+    expect(collectStringLiterals(source).has('ReadOnlyKey')).toBe(false);
+    // With no exclusion set the same literal IS collected — proving the
+    // exclusion, not an unrelated parse miss, is what withdraws it.
+    expect(collectStringLiterals(source, 'p.ts', []).has('ReadOnlyKey')).toBe(true);
+  });
+
   it('collects string literals, object-literal property names, and template literals — not comments', () => {
     const literals = collectStringLiterals(`
       // AcmCommentOnly should not count
@@ -413,8 +785,8 @@ describe('extractNestedPropertyNames (fixture capture)', () => {
   });
 });
 
-describe('nestedKeysForTarget', () => {
-  it('unions nested keys across handled top-levels only', () => {
+describe('nestedKeyPathsForTarget', () => {
+  it('yields one PATH per (handled top-level, nested key) pair (#1448)', () => {
     const fixture = {
       nestedProperties: {
         Handled: ['A', 'B'],
@@ -422,11 +794,30 @@ describe('nestedKeysForTarget', () => {
         Unhandled: ['D'],
       },
     };
-    expect(nestedKeysForTarget(fixture, new Set(['Handled', 'AlsoHandled']))).toEqual([
-      'A',
-      'B',
-      'C',
+    const paths = nestedKeyPathsForTarget(fixture, new Set(['Handled', 'AlsoHandled']));
+    // `B` is reachable beneath BOTH handled top-levels, and the two are now
+    // DIFFERENT audited units — the de-duplication that collapsed them is
+    // exactly what let one write vouch for the other.
+    expect(paths.map((p) => p.path)).toEqual([
+      'AlsoHandled.B',
+      'AlsoHandled.C',
+      'Handled.A',
+      'Handled.B',
     ]);
+    expect(paths.map((p) => p.topLevelProperty)).toEqual([
+      'AlsoHandled',
+      'AlsoHandled',
+      'Handled',
+      'Handled',
+    ]);
+  });
+
+  it('de-duplicates a repeated name within one top-level', () => {
+    const paths = nestedKeyPathsForTarget(
+      { nestedProperties: { Handled: ['A', 'A'] } },
+      new Set(['Handled'])
+    );
+    expect(paths.map((p) => p.path)).toEqual(['Handled.A']);
   });
 });
 
@@ -439,7 +830,7 @@ describe('report plumbing (positive direction)', () => {
   it('findDivergences surfaces both blocking buckets through buildReport', () => {
     const entries = classifyTarget(
       exactTarget,
-      ['AcmCertificateArn', 'NoSuchMember', 'Comment'],
+      keyPaths('Top', 'AcmCertificateArn', 'NoSuchMember', 'Comment'),
       sdkMembers,
       new Set(),
       new Map()
@@ -460,8 +851,8 @@ describe('report plumbing (positive direction)', () => {
     ]);
     const divergences = findDivergences(report);
     expect(divergences.map((d) => [d.nestedKey, d.bucket])).toEqual([
-      ['AcmCertificateArn', 'case-divergence'],
-      ['NoSuchMember', 'no-sdk-member'],
+      ['Top.AcmCertificateArn', 'case-divergence'],
+      ['Top.NoSuchMember', 'no-sdk-member'],
     ]);
     expect(report.summary.caseDivergence).toBe(1);
     expect(report.summary.noSdkMember).toBe(1);
@@ -472,7 +863,13 @@ describe('report plumbing (positive direction)', () => {
     const allow = new Map([
       [allowKey('AWS::Fake::Thing', 'GoneKey'), { rationale: 'obsolete' }],
     ]);
-    const entries = classifyTarget(exactTarget, ['Comment'], sdkMembers, new Set(), allow);
+    const entries = classifyTarget(
+      exactTarget,
+      keyPaths('Top', 'Comment'),
+      sdkMembers,
+      new Set(),
+      allow
+    );
     const report = buildReport([
       {
         resourceType: exactTarget.resourceType,
@@ -488,6 +885,37 @@ describe('report plumbing (positive direction)', () => {
       },
     ]);
     expect(findStaleAllowListEntries(report, allow)).toEqual(['AWS::Fake::Thing#GoneKey']);
+  });
+
+  it('a TERMINAL-name allow entry that matched a PATH is not reported stale (#1448)', () => {
+    // The audited unit is `Top.IPV6Enabled`; the entry is keyed on the bare
+    // name. Re-deriving the allow key from `nestedKey` would call it stale.
+    const allow = new Map([
+      [allowKey('AWS::Fake::Thing', 'IPV6Enabled'), { rationale: 'legacy member' }],
+    ]);
+    const entries = classifyTarget(
+      exactTarget,
+      keyPaths('Top', 'IPV6Enabled'),
+      sdkMembers,
+      new Set(),
+      allow
+    );
+    expect(entries[0]?.bucket).toBe('allow-listed');
+    const report = buildReport([
+      {
+        resourceType: exactTarget.resourceType,
+        providerFile: exactTarget.providerFile,
+        sdkClientPackage: exactTarget.sdkClientPackage,
+        keyStyle: exactTarget.keyStyle,
+        freshObjectMapper: false,
+        nestedKeyCount: entries.length,
+        entries,
+        shapeEntries: [],
+        shapeCleanCount: 0,
+        unmatchedDefinitions: [],
+      },
+    ]);
+    expect(findStaleAllowListEntries(report, allow)).toEqual([]);
   });
 
   it('findDivergences surfaces both SHAPE blocking buckets through buildReport (#1378)', () => {
@@ -612,6 +1040,29 @@ describe('loadReport loud-failure fences', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it('fires the write-collector NAME floor (red direction, #1432 / #1448)', () => {
+    const cb = NESTED_KEY_TARGETS.find((t) => t.resourceType === 'AWS::CodeBuild::Project')!;
+    expect(() => loadReport([{ ...cb, minWrittenMembers: 100_000 }])).toThrow(
+      /written-member parse .* collapsed/
+    );
+  });
+
+  it('fires the write-SCOPE floor, and it is a SEPARATE fence from the name floor', () => {
+    // Red direction for the second floor. Deliberately named for what it pins
+    // — that the fence is wired and reachable — rather than for a scenario it
+    // does not build: reaching it through `--providers-dir=` would need a
+    // synthetic provider file, which proves less than the collector-level
+    // scenario test below (`the two collector outputs regress independently`).
+    const cb = NESTED_KEY_TARGETS.find((t) => t.resourceType === 'AWS::CodeBuild::Project')!;
+    expect(() => loadReport([{ ...cb, minWriteScopes: 100_000 }])).toThrow(
+      /write-scope resolution .* collapsed/
+    );
+    // ...and it is NOT the name floor firing under another message.
+    expect(() => loadReport([{ ...cb, minWriteScopes: 100_000 }])).not.toThrow(
+      /written-member parse/
+    );
   });
 
   it('throws when the provider declares no handledProperties for the target type', () => {
@@ -904,16 +1355,13 @@ describe('real-repo audit (regression floors)', () => {
       'OriginSSLProtocols',
       'OriginCustomHeaders',
     ]) {
-      const entry = cf.entries.find((e) => e.nestedKey === key);
-      expect(entry?.bucket, key).toBe('provider-handled');
+      expect(bucketOf(cf.entries, key), key).toBe('provider-handled');
     }
   });
 
   it('fences the #1373-fixed ECS S3FilesVolumeConfiguration as provider-handled', () => {
     const td = report.targets.find((t) => t.resourceType === 'AWS::ECS::TaskDefinition')!;
-    expect(td.entries.find((e) => e.nestedKey === 'S3FilesVolumeConfiguration')?.bucket).toBe(
-      'provider-handled'
-    );
+    expect(bucketOf(td.entries, 'S3FilesVolumeConfiguration')).toBe('provider-handled');
   });
 
   it('audits the S3 Bucket target with a healthy nested-key count (#1430)', () => {
@@ -941,15 +1389,13 @@ describe('real-repo audit (regression floors)', () => {
       'NoncurrentVersionExpirationInDays',
       'EventBridgeEnabled',
     ]) {
-      expect(s3.entries.find((e) => e.nestedKey === key)?.bucket, key).toBe('provider-handled');
+      expect(bucketOf(s3.entries, key), key).toBe('provider-handled');
     }
   });
 
   it('fences the #1304-fixed AnomalyDetector MetricTimeZone as provider-handled', () => {
     const ad = report.targets.find((t) => t.resourceType === 'AWS::CloudWatch::AnomalyDetector')!;
-    expect(ad.entries.find((e) => e.nestedKey === 'MetricTimeZone')?.bucket).toBe(
-      'provider-handled'
-    );
+    expect(bucketOf(ad.entries, 'MetricTimeZone')).toBe('provider-handled');
   });
 
   it('shape pass reports zero blocking divergences with healthy floors (#1378)', () => {
@@ -984,7 +1430,7 @@ describe('real-repo audit (regression floors)', () => {
     expect(s3Origin?.bucket).toBe('allow-listed');
     // The key pass must NOT list S3Origin at all — the StreamingDistribution
     // API's same-spelled member makes it same-spelling there.
-    expect(cf.entries.find((e) => e.nestedKey === 'S3Origin')?.bucket).toBe('same-spelling');
+    expect(bucketOf(cf.entries, 'S3Origin')).toBe('same-spelling');
   });
 });
 
@@ -1008,14 +1454,15 @@ describe('real-code regression probes (per the repo checker rules)', () => {
     resolve(repoRoot, 'src/provisioning/providers/cloudfront-distribution-provider.ts'),
     'utf8'
   );
-  const cfNestedKeys = nestedKeysForTarget(cfFixture, new Set(['DistributionConfig', 'Tags']));
+  const cfNestedKeys = nestedKeyPathsForTarget(cfFixture, new Set(['DistributionConfig', 'Tags']));
 
   it('flags the real provider with the AcmCertificateArn conversion removed (the #1370 rename)', () => {
     const regressed = cfSource.replaceAll('AcmCertificateArn', 'XcmCertificateArn');
     const literals = collectStringLiterals(regressed);
     const entries = classifyTarget(cfTarget, cfNestedKeys, cfSdkMembers, literals);
-    const hit = entries.find((e) => e.nestedKey === 'AcmCertificateArn');
+    const [hit] = entriesFor(entries, 'AcmCertificateArn');
     expect(hit?.bucket).toBe('case-divergence');
+    expect(hit?.nestedKey).toBe('DistributionConfig.AcmCertificateArn');
     expect(hit?.sdkNearMiss).toBe('ACMCertificateArn');
   });
 
@@ -1023,20 +1470,14 @@ describe('real-code regression probes (per the repo checker rules)', () => {
     const regressed = cfSource.replaceAll('OriginCustomHeaders', 'RemovedCustomHeaders');
     const literals = collectStringLiterals(regressed);
     const entries = classifyTarget(cfTarget, cfNestedKeys, cfSdkMembers, literals);
-    expect(entries.find((e) => e.nestedKey === 'OriginCustomHeaders')?.bucket).toBe(
-      'no-sdk-member'
-    );
+    expect(bucketOf(entries, 'OriginCustomHeaders')).toBe('no-sdk-member');
   });
 
   it('the unregressed real provider classifies both keys as provider-handled', () => {
     const literals = collectStringLiterals(cfSource);
     const entries = classifyTarget(cfTarget, cfNestedKeys, cfSdkMembers, literals);
-    expect(entries.find((e) => e.nestedKey === 'AcmCertificateArn')?.bucket).toBe(
-      'provider-handled'
-    );
-    expect(entries.find((e) => e.nestedKey === 'OriginCustomHeaders')?.bucket).toBe(
-      'provider-handled'
-    );
+    expect(bucketOf(entries, 'AcmCertificateArn')).toBe('provider-handled');
+    expect(bucketOf(entries, 'OriginCustomHeaders')).toBe('provider-handled');
   });
 
   it('SDK member parse floor holds (parser-regression fence)', () => {
@@ -1142,7 +1583,7 @@ describe('real-code regression probes (per the repo checker rules)', () => {
     'ReplicationConfiguration',
     'ObjectLockConfiguration',
   ]);
-  const s3NestedKeys = nestedKeysForTarget(s3Fixture, s3HandledTopLevels);
+  const s3NestedKeys = nestedKeyPathsForTarget(s3Fixture, s3HandledTopLevels);
 
   it('SDK member parse floor holds for the real S3 model (parser-regression fence)', () => {
     expect(s3SdkMembers.size).toBeGreaterThanOrEqual(50);
@@ -1204,7 +1645,7 @@ describe('real-code regression probes (per the repo checker rules)', () => {
         s3SdkMembers,
         collectStringLiterals(stripKeyEvidence(s3Source, key))
       );
-      expect(entries.find((e) => e.nestedKey === key)?.bucket, key).toBe('no-sdk-member');
+      expect(bucketOf(entries, key), key).toBe('no-sdk-member');
     });
   }
 
@@ -1223,7 +1664,7 @@ describe('real-code regression probes (per the repo checker rules)', () => {
       s3SdkMembers,
       collectStringLiterals(regressed)
     );
-    expect(entries.find((e) => e.nestedKey === 'TagFilters')?.bucket).toBe('provider-handled');
+    expect(bucketOf(entries, 'TagFilters')).toBe('provider-handled');
   });
 
   it('the unregressed real S3 provider classifies every probed key as provider-handled', () => {
@@ -1234,7 +1675,7 @@ describe('real-code regression probes (per the repo checker rules)', () => {
       collectStringLiterals(s3Source)
     );
     for (const key of S3_DISCRIMINATING_KEYS) {
-      expect(entries.find((e) => e.nestedKey === key)?.bucket, key).toBe('provider-handled');
+      expect(bucketOf(entries, key), key).toBe('provider-handled');
     }
   });
 
@@ -1260,7 +1701,7 @@ describe('real-code regression probes (per the repo checker rules)', () => {
     cbSource,
     resolve(repoRoot, 'src/provisioning/providers/codebuild-provider.ts')
   ).handled.get('AWS::CodeBuild::Project')!;
-  const cbNestedKeys = nestedKeysForTarget(cbFixture, cbHandledTopLevel);
+  const cbNestedKeys = nestedKeyPathsForTarget(cbFixture, cbHandledTopLevel);
   // The FORWARD mapper's single write site. Deleting just this line reproduces
   // the #1386 defect exactly, and deliberately leaves `readCurrentState`'s
   // reverse map (`bbc['BatchReportMode'] = project.buildBatchConfig.batchReportMode`)
@@ -1284,10 +1725,11 @@ describe('real-code regression probes (per the repo checker rules)', () => {
       cbSdkMembers,
       collectStringLiterals(regressed),
       NESTED_KEY_ALLOW_LIST,
-      collectWrittenMemberNames(regressed)
+      collectWriteEvidence(regressed)
     );
-    const hit = entries.find((e) => e.nestedKey === 'BatchReportMode');
+    const [hit] = entriesFor(entries, 'BatchReportMode');
     expect(hit?.bucket).toBe('no-write-evidence');
+    expect(hit?.nestedKey).toBe('BuildBatchConfig.BatchReportMode');
     expect(hit?.sdkNearMiss).toBe('batchReportMode');
     // The reverse map still writes the CFn spelling and reads the SDK one —
     // proving neither rescues the forward mapper.
@@ -1302,9 +1744,9 @@ describe('real-code regression probes (per the repo checker rules)', () => {
       cbSdkMembers,
       collectStringLiterals(regressed),
       NESTED_KEY_ALLOW_LIST,
-      collectWrittenMemberNames(regressed)
+      collectWriteEvidence(regressed)
     );
-    expect(entries.find((e) => e.nestedKey === 'BatchReportMode')?.bucket).toBe('same-spelling');
+    expect(bucketOf(entries, 'BatchReportMode')).toBe('same-spelling');
     expect(findDivergences(buildReport([
       {
         resourceType: cbTarget.resourceType,
@@ -1328,42 +1770,190 @@ describe('real-code regression probes (per the repo checker rules)', () => {
       cbSdkMembers,
       collectStringLiterals(cbSource),
       NESTED_KEY_ALLOW_LIST,
-      collectWrittenMemberNames(cbSource)
+      collectWriteEvidence(cbSource)
     );
     expect(entries.filter((e) => e.bucket === 'no-write-evidence')).toHaveLength(0);
-    // Coverage floor: the pass must be auditing a real number of keys, not
+    // Coverage floor: the pass must be auditing a real number of key PATHS, not
     // vacuously green on an empty same-spelling set.
-    expect(entries.filter((e) => e.bucket === 'same-spelling').length).toBeGreaterThanOrEqual(50);
+    expect(entries.filter((e) => e.bucket === 'same-spelling').length).toBeGreaterThanOrEqual(80);
   });
 
-  it('write evidence is name-global, so a multiply-written member is NOT fenced (#1448)', () => {
-    // Documents the pass's real bound rather than asserting a guarantee it does
-    // not deliver. `BuildBatchConfig.ServiceRole` is the SIBLING of the
-    // motivating member: deleting its forward write stays silent because the
-    // top-level `serviceRole:` write vouches for the same spelling. Measured:
-    // 11 of CodeBuild's 55 same-spelling keys have >1 write site, so the pass
-    // fences the other 44 (BatchReportMode among them).
+  it('FENCES a MULTIPLY-written member once evidence is path-scoped (#1448)', () => {
+    // `BuildBatchConfig.ServiceRole` is the SIBLING of the member that motivated
+    // #1432 and the sharpest case of the name-global bound: deleting its forward
+    // write used to stay silent because the unrelated top-level `serviceRole:`
+    // write carried the same spelling. Scoped evidence looks only under
+    // `buildBatchConfig`, so the deletion is now a divergence.
     const anchor = "serviceRole: cfnBuildBatchConfig['ServiceRole'] as string | undefined,";
     expect(cbSource, 'anchor still present').toContain(anchor);
     const regressed = cbSource.replace(anchor, '');
+    const evidence = collectWriteEvidence(regressed);
     const entries = classifyTarget(
       cbTarget,
       cbNestedKeys,
       cbSdkMembers,
       collectStringLiterals(regressed),
       NESTED_KEY_ALLOW_LIST,
-      collectWrittenMemberNames(regressed)
+      evidence
     );
-    expect(entries.find((e) => e.nestedKey === 'ServiceRole')?.bucket).toBe('same-spelling');
-    // ...and the uniquely-named member IS still fenced, so the limitation is a
-    // bound on coverage rather than the pass being inert.
-    expect(collectWrittenMemberNames(regressed).has('serviceRole')).toBe(true);
+    const [hit] = entriesFor(entries, 'ServiceRole');
+    expect(hit?.nestedKey).toBe('BuildBatchConfig.ServiceRole');
+    expect(hit?.bucket).toBe('no-write-evidence');
+    // ...and the OLD name-global evidence still contains the spelling, which is
+    // what proves the scoping (not an unrelated parse change) is doing the work.
+    expect(evidence.written.has('serviceRole')).toBe(true);
+    expect(evidence.scopes.get('buildBatchConfig')?.has('serviceRole')).toBe(false);
   });
 
-  it('the write collector sees a real provider (parser-regression floor)', () => {
-    const written = collectWrittenMemberNames(cbSource);
-    expect(written.size).toBeGreaterThanOrEqual(MIN_WRITTEN_MEMBERS_PER_PROVIDER);
-    expect(written.has('batchReportMode')).toBe(true);
+  it('DOES NOT fence a duplicate name INSIDE the same top-level (recorded bound, #1448)', () => {
+    // The bound path-scoping narrows but does not close, pinned so nobody
+    // writes "membership makes this non-regressing" again. The fixture's
+    // `nestedProperties` capture is FLATTENED per top-level, so
+    // `Environment.Type` and `Environment.EnvironmentVariables[].Type` are the
+    // SAME audited path — and the scope index is flattened to match, so the
+    // surviving sibling write vouches for the deleted one. Both deletions below
+    // are GENUINE silent drops that stay silent; closing them needs a per-PATH
+    // fixture capture (a `refresh-cfn-schemas.mjs` change + an AWS re-capture),
+    // which is bigger than this critic.
+    const cases = [
+      {
+        top: 'Environment',
+        anchor:
+          "        type: ((environment?.['Type'] as string) ?? 'LINUX_CONTAINER') as EnvironmentType,\n",
+        survivor: 'environmentVariables[].type',
+      },
+      {
+        top: 'Source',
+        anchor: "      type: ((source['Type'] as string) ?? 'NO_SOURCE') as SourceType,\n",
+        survivor: 'auth.type',
+      },
+    ];
+    for (const { top, anchor, survivor } of cases) {
+      expect(cbSource, `${top} anchor still present`).toContain(anchor);
+      const regressed = cbSource.replace(anchor, '');
+      const evidence = collectWriteEvidence(regressed);
+      const entries = classifyTarget(
+        cbTarget,
+        cbNestedKeys,
+        cbSdkMembers,
+        collectStringLiterals(regressed),
+        NESTED_KEY_ALLOW_LIST,
+        evidence
+      );
+      const hit = entries.find((e) => e.nestedKey === `${top}.Type`);
+      expect(hit, `${top}.Type is audited`).toBeDefined();
+      expect(hit?.bucket, `${top}.Type stays silent (covered by ${survivor})`).toBe(
+        'same-spelling'
+      );
+      expect(evidence.scopes.get(lowerFirst(top))?.has('type')).toBe(true);
+    }
+  });
+
+  it('scopes are keyed by NAME and unioned across write sites (recorded bound, #1448)', () => {
+    // The name-global weakness reappearing one level down: `record()` merges
+    // every write of a name, so two unrelated literals contribute to one scope
+    // and a name that only ever appears NESTED still gets a scope of its own.
+    const { scopes } = collectWriteEvidence(`
+      class P {
+        a() { return { environment: { alpha: 1 } }; }
+        b() { return { environment: { beta: 2 } }; }
+        c() { return { logsConfig: { cloudWatchLogs: { groupName: 3 } } }; }
+      }
+    `);
+    // Unrelated write sites of the same name are indistinguishable...
+    expect([...(scopes.get('environment') ?? [])].sort()).toEqual(['alpha', 'beta']);
+    // ...and a purely nested name still yields a scope that a TOP-LEVEL CFn
+    // property of that spelling would be checked against.
+    expect([...(scopes.get('cloudWatchLogs') ?? [])].sort()).toEqual(['groupName']);
+  });
+
+  it('the two collector outputs regress independently (why there are two floors)', () => {
+    // The real scenario behind `minWriteScopes`: when no write VALUE resolves to
+    // a literal, every NAME is still collected and every scope is empty. The
+    // name floor cannot see this; the scope floor is the only thing that can.
+    const { written, scopes } = collectWriteEvidence(`
+      const sdk = {
+        source: external(a),
+        environment: external(b),
+        cache: external(c),
+        artifacts: external(d),
+      };
+    `);
+    expect([...written].sort()).toEqual(['artifacts', 'cache', 'environment', 'source']);
+    expect([...scopes.values()].filter((v) => v.size > 0)).toHaveLength(0);
+  });
+
+  it('the unregressed BuildBatchConfig scope resolves through a let-bound literal', () => {
+    // `buildBatchConfig` is a `let` assigned an object literal and delivered as a
+    // SHORTHAND property of `mapProperties`\' return — so the scope only resolves
+    // if the binding walk works. Pinned because a regression there would flag all
+    // seven members at once with a misleading "never writes it".
+    const scope = collectWriteEvidence(cbSource).scopes.get('buildBatchConfig');
+    expect([...(scope ?? [])].sort()).toEqual([
+      'batchReportMode',
+      'combineArtifacts',
+      'computeTypesAllowed',
+      'maximumBuildsAllowed',
+      'restrictions',
+      'serviceRole',
+      'timeoutInMins',
+    ]);
+  });
+
+  it('a scope resolves through a this.method(...) call returning a literal', () => {
+    // `source: this.mapSource(source)` — the #1404-style hop. `Source.BuildSpec`
+    // is deliberately absent from the SDK-member side, so the members below are
+    // the ones the pass actually consults.
+    const scope = collectWriteEvidence(cbSource).scopes.get('source');
+    for (const member of ['type', 'location', 'gitCloneDepth', 'auth', 'buildStatusConfig']) {
+      expect(scope?.has(member), member).toBe(true);
+    }
+    // ...and one level deeper, through the nested `auth: { … }` literal.
+    expect(scope?.has('resource')).toBe(true);
+  });
+
+  it('a scope resolves through an array .map(cb) callback literal', () => {
+    // `tags: tags.map((t) => ({ key: t.Key, value: t.Value }))`.
+    const scope = collectWriteEvidence(cbSource).scopes.get('tags');
+    expect([...(scope ?? [])].sort()).toEqual(['key', 'value']);
+  });
+
+  it('the write collector sees a real provider (parser-regression floors)', () => {
+    const evidence = collectWriteEvidence(cbSource);
+    expect(evidence.written.size).toBeGreaterThanOrEqual(MIN_WRITTEN_MEMBERS_PER_PROVIDER);
+    expect(evidence.written.size).toBeGreaterThanOrEqual(cbTarget.minWrittenMembers ?? 0);
+    expect(evidence.written.has('batchReportMode')).toBe(true);
+    const populated = [...evidence.scopes.values()].filter((v) => v.size > 0).length;
+    expect(populated).toBeGreaterThanOrEqual(cbTarget.minWriteScopes ?? 0);
+  });
+
+  it('every write SHAPE the collector claims is anchored on REAL provider code', () => {
+    // Per-SHAPE real-code floors (issue #1448 comment item 4): the aggregate
+    // `written.size` floor cannot see a PARTIAL collapse — one dead shape hides
+    // under it. Each assertion below names a real site in a real provider.
+    const evidence = collectWriteEvidence(cbSource);
+    // object-literal property: `batchReportMode: cfnBuildBatchConfig['BatchReportMode']`
+    expect(evidence.written.has('batchReportMode'), 'property assignment').toBe(true);
+    // shorthand property: `buildBatchConfig,` in mapProperties\' return literal
+    expect(cbSource).toMatch(/^\s{6}buildBatchConfig,$/m);
+    expect(evidence.written.has('buildBatchConfig'), 'shorthand property').toBe(true);
+    // element-access assignment with a literal key, on a genuine FORWARD path:
+    // `CloudFrontDistributionProvider.completeRequiredUpdateFields` fills the
+    // members UpdateDistribution requires. The name has to be reachable through
+    // THAT SHAPE ALONE — an earlier revision asserted `written.size > 100` on
+    // `ecs-provider.ts`, which stays at 158 with the element-access branch
+    // entirely dead (a vacuous floor), and its `out['DockerVolumeConfiguration']`
+    // site is a REVERSE `volumesToCfn` map besides.
+    // `c['OriginKeepaliveTimeout'] = 5` is the only write of this name.
+    const cfEvidence = collectWriteEvidence(cfSource, 'cloudfront-distribution-provider.ts');
+    expect(cfSource).toContain("c['OriginKeepaliveTimeout'] = 5");
+    expect(cfEvidence.written.has('OriginKeepaliveTimeout'), 'element access').toBe(true);
+    // property-access assignment: `this.client = new CodeBuildClient(…)` is the
+    // only write of `client` in the file, and it is a property access. The
+    // earlier revision only regex-matched the SOURCE here and asserted nothing
+    // about the collector at all.
+    expect(cbSource).toContain('this.client = new CodeBuildClient(');
+    expect(evidence.written.has('client'), 'property access').toBe(true);
   });
 
   it('the readCurrentState exclusion withdraws real reverse-map writes (#1393 item 2)', () => {
@@ -1398,6 +1988,23 @@ describe('real-code regression probes (per the repo checker rules)', () => {
       'LoggingConfiguration',
       'MetricsConfigurations',
     ]);
+  });
+
+  it('the reverse map no longer supplies LITERAL evidence either (#1448 comment item 2)', () => {
+    // The key pass used to accept a CFn key mentioned only by `readCurrentState`
+    // as proof the FORWARD mapper converts it — the write pass excluded the
+    // reverse map and the key pass did not. Measured on the real tree, applying
+    // the exclusion moves no key into a blocking bucket, so this is a free
+    // tightening; the assertion pins that the exclusion is actually applied.
+    const scoped = collectStringLiterals(cbSource, 'codebuild-provider.ts');
+    const unscoped = collectStringLiterals(cbSource, 'codebuild-provider.ts', []);
+    const withdrawn = [...unscoped].filter((n) => !scoped.has(n));
+    // Measured on `codebuild-provider.ts`: these CFn spellings appear ONLY in
+    // `readCurrentState`, so before the exclusion each was "provider names this
+    // key" evidence produced entirely by the read path.
+    for (const key of ['BucketOwnerAccess', 'ResourceAccessRole', 'Value']) {
+      expect(withdrawn, key).toContain(key);
+    }
   });
 });
 
@@ -1438,7 +2045,220 @@ describe('refresh-cfn-schemas CLI guard (#1378 rider)', () => {
   });
 });
 
-describe('allow-list hygiene', () => {
+// The probes above all drive the library functions. This block drives the
+// SHIPPED command — argv parsing, `loadReport`, the failure text and the EXIT
+// CODE — because that is what CI actually runs, and because two fences (the
+// write-collector floors) are unreachable any other way: `loadReport`'s
+// handledProperties throw precedes them unless the providers tree itself is
+// swapped. Pattern copied from `gen-handled-property-wiring.test.ts` (#1448).
+describe('the shipped --check command', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'cdkd-nkc-cli-'));
+  afterAll(() => rmSync(scratch, { recursive: true, force: true }));
+
+  const runCheck = (providersDir?: string): { status: number; stderr: string } => {
+    const args = ['--check', ...(providersDir ? [`--providers-dir=${providersDir}`] : [])];
+    const run = spawnSync(process.execPath, [SCRIPT, ...args], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+    });
+    expect(run.error, 'the critic must be spawnable').toBeUndefined();
+    return { status: run.status ?? -1, stderr: run.stderr };
+  };
+
+  /** A scratch COPY of the REAL providers tree, with one regression injected. */
+  const regressedTree = (name: string, file: string, edit: (source: string) => string): string => {
+    const dir = join(scratch, name);
+    cpSync(PROVIDERS_DIR, dir, { recursive: true });
+    const path = join(dir, file);
+    const before = readFileSync(path, 'utf8');
+    const after = edit(before);
+    expect(after, `the ${name} probe changed nothing — anchor drifted?`).not.toBe(before);
+    writeFileSync(path, after);
+    return dir;
+  };
+
+  it('exits 0 and reports its coverage on the real providers tree', () => {
+    const { status, stderr } = runCheck();
+    expect(status).toBe(0);
+    expect(stderr).toContain('nested-key-coverage: OK');
+    expect(stderr).toContain('0 divergences');
+  });
+
+  it('exits 1 naming BuildBatchConfig.ServiceRole when its forward write is deleted (#1448)', () => {
+    // The issue's acceptance criterion, run end to end against REAL provider
+    // source: a MULTIPLY-written member whose forward write is gone. Under the
+    // name-global evidence of #1432 this exited 0.
+    const dir = regressedTree('providers-scoped', 'codebuild-provider.ts', (source) =>
+      source.replace("        serviceRole: cfnBuildBatchConfig['ServiceRole'] as string | undefined,\n", '')
+    );
+    const { status, stderr } = runCheck(dir);
+    expect(status).toBe(1);
+    expect(stderr).toContain('nested-key-coverage: FAIL');
+    expect(stderr).toContain('AWS::CodeBuild::Project: BuildBatchConfig.ServiceRole');
+    expect(stderr).toContain('no-write-evidence');
+  });
+
+  it('exits 1 naming BuildBatchConfig.BatchReportMode when its forward write is deleted', () => {
+    const dir = regressedTree('providers-batchreport', 'codebuild-provider.ts', (source) =>
+      source.replace(
+        "batchReportMode: cfnBuildBatchConfig['BatchReportMode'] as BatchReportModeType | undefined,",
+        ''
+      )
+    );
+    const { status, stderr } = runCheck(dir);
+    expect(status).toBe(1);
+    expect(stderr).toContain('AWS::CodeBuild::Project: BuildBatchConfig.BatchReportMode');
+  });
+
+  it('exits 1 on a collapsed write-collector parse, naming the parser (not 90 divergences)', () => {
+    // Renaming the forward mappers into the reverse-map prefix is a real shape
+    // of collapse (the exclusion swallows them), and it is the ONLY way to
+    // reach `MIN_WRITTEN_MEMBERS_PER_PROVIDER` — hence the providers-dir seam.
+    const dir = regressedTree('providers-collapsed', 'codebuild-provider.ts', (source) => {
+      let out = source;
+      for (const name of ['mapProperties', 'mapSource', 'mapArtifacts']) {
+        out = out.replaceAll(name, `readCurrentState${name[0]!.toUpperCase()}${name.slice(1)}`);
+      }
+      return out;
+    });
+    const { status, stderr } = runCheck(dir);
+    expect(status).toBe(1);
+    expect(stderr).toContain('written-member parse for codebuild-provider.ts collapsed');
+    expect(stderr).toContain('parser regression?');
+    // ...and NOT a wall of bogus per-key divergences.
+    expect(stderr).not.toContain('no-write-evidence');
+  });
+
+  // One spawned case per CI-BLOCKING verdict, per the repo's checker rules —
+  // "each" means each, and four of these were previously proven only through
+  // the library functions. Each regression below is the same one the
+  // corresponding library-level probe injects, so the two stay in step.
+  const BLOCKING_VERDICT_PROBES: ReadonlyArray<{
+    readonly bucket: string;
+    readonly file: string;
+    readonly named: string;
+    readonly edit: (source: string) => string;
+  }> = [
+    {
+      bucket: 'no-sdk-member',
+      file: 'cloudfront-distribution-provider.ts',
+      named: 'OriginCustomHeaders',
+      edit: (source) => source.replaceAll('OriginCustomHeaders', 'RemovedCustomHeaders'),
+    },
+    {
+      bucket: 'case-divergence',
+      file: 'cloudfront-distribution-provider.ts',
+      named: 'AcmCertificateArn',
+      edit: (source) => source.replaceAll('AcmCertificateArn', 'XcmCertificateArn'),
+    },
+    {
+      bucket: 'array-vs-wrapper',
+      file: 'cloudfront-distribution-provider.ts',
+      named: 'Aliases',
+      edit: (source) => source.replaceAll('Aliases', 'Xliases'),
+    },
+    {
+      bucket: 'definition-member-missing',
+      file: 'cloudfront-distribution-provider.ts',
+      named: 'CachedMethods',
+      edit: (source) => source.replaceAll('CachedMethods', 'XachedMethods'),
+    },
+  ];
+
+  for (const { bucket, file, named, edit } of BLOCKING_VERDICT_PROBES) {
+    it(`exits 1 naming a real ${bucket} divergence from the seam`, () => {
+      const dir = regressedTree(`providers-${bucket}`, file, edit);
+      const { status, stderr } = runCheck(dir);
+      expect(status).toBe(1);
+      expect(stderr).toContain('nested-key-coverage: FAIL');
+      expect(stderr).toContain(named);
+      expect(stderr).toContain(bucket);
+    });
+  }
+
+  it('exits 1 naming a STALE allow-list entry', () => {
+    // `AWS::CodeBuild::Project#HostKernel` is allow-listed because no SDK member
+    // exists. Naming the key in the provider flips it to `provider-handled`, so
+    // the entry stops matching and must be reported rather than silently kept.
+    const dir = regressedTree('providers-stale', 'codebuild-provider.ts', (source) =>
+      source.replace(
+        'export class CodeBuildProvider',
+        "const NAMES_THE_KEY = ['HostKernel'];\nvoid NAMES_THE_KEY;\nexport class CodeBuildProvider"
+      )
+    );
+    const { status, stderr } = runCheck(dir);
+    expect(status).toBe(1);
+    expect(stderr).toContain('stale NESTED_KEY_ALLOW_LIST');
+    expect(stderr).toContain('AWS::CodeBuild::Project#HostKernel');
+  });
+
+  it('rejects an unrecognized flag instead of falling through to WRITER mode', () => {
+    // `--chekc` used to REWRITE the committed matrix and exit 0 — the same
+    // silent-full-run trap `refresh-cfn-schemas.mjs --help` had before its
+    // guard (#1378 rider). The SPACE form of the seam is caught here too: it
+    // does not match the `--providers-dir=` prefix, so without this guard it
+    // would slip into the writer path.
+    for (const flag of ['--chekc', '-c', '--providers-dir']) {
+      const run = spawnSync(process.execPath, [SCRIPT, flag, '/tmp'], {
+        cwd: repoRoot,
+        encoding: 'utf8',
+      });
+      expect(run.status, flag).toBe(1);
+      expect(run.stderr, flag).toContain('Usage:');
+      expect(run.stdout, flag).not.toContain('wrote nested-key-coverage');
+    }
+  });
+
+  it('--help prints usage and exits 0 without writing anything', () => {
+    const run = spawnSync(process.execPath, [SCRIPT, '--help'], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+    });
+    expect(run.status).toBe(0);
+    expect(run.stdout).toContain('Usage:');
+    expect(run.stderr).not.toContain('wrote nested-key-coverage');
+  });
+
+  it('refuses --providers-dir= in WRITER mode instead of rewriting the matrix', () => {
+    // Without the guard the seam renders docs/_generated from a scratch tree.
+    const run = spawnSync(process.execPath, [SCRIPT, `--providers-dir=${PROVIDERS_DIR}`], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+    });
+    expect(run.status).toBe(1);
+    expect(run.stderr).toContain('--check-only test seam');
+  });
+});
+
+describe('target-table hygiene', () => {
+  it('every freshObjectMapper target declares BOTH write floors (#1448)', () => {
+    // `minWrittenMembers` falls back to MIN_WRITTEN_MEMBERS_PER_PROVIDER, but
+    // `minWriteScopes` is skipped entirely when undefined — deliberately, since
+    // real-tree scope counts span 51 down to 1 and no shared default is a real
+    // fence. That decline is only defensible if opting in FORCES the target to
+    // declare its own, which is what this test makes true.
+    for (const t of NESTED_KEY_TARGETS.filter((x) => x.freshObjectMapper === true)) {
+      expect(t.minWrittenMembers, `${t.resourceType} minWrittenMembers`).toBeGreaterThan(0);
+      expect(t.minWriteScopes, `${t.resourceType} minWriteScopes`).toBeGreaterThan(0);
+    }
+  });
+
+  it('every minNestedKeys floor is calibrated to the PATH unit (#1448)', () => {
+    // The floors were name-era values until #1448 re-derived them; a floor far
+    // below the real yield fences nothing. Each must be within 40% of the
+    // measured path count (and never above it).
+    const report = loadReport();
+    for (const t of NESTED_KEY_TARGETS) {
+      const audited = report.targets.find((r) => r.resourceType === t.resourceType)!.nestedKeyCount;
+      expect(t.minNestedKeys, `${t.resourceType} floor above yield`).toBeLessThanOrEqual(audited);
+      if (audited >= 5) {
+        expect(t.minNestedKeys, `${t.resourceType} floor too slack`).toBeGreaterThanOrEqual(
+          Math.floor(audited * 0.6)
+        );
+      }
+    }
+  });
+
   it('every allow-list entry names a target resource type', () => {
     const targetTypes = new Set(NESTED_KEY_TARGETS.map((t) => t.resourceType));
     for (const key of NESTED_KEY_ALLOW_LIST.keys()) {

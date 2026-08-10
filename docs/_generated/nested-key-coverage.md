@@ -8,9 +8,9 @@ For every SDK provider that forwards a nested CFn config blob, diffs the blob's 
 ## Summary
 
 - Audited targets: **11**
-- Nested CFn keys audited: **488**
-- Same spelling in SDK model: **444**
-- Explicitly handled in provider: **40**
+- Nested CFn key paths audited: **587**
+- Same spelling in SDK model: **538**
+- Explicitly handled in provider: **45**
 - Allow-listed pass-throughs (does NOT block CI): **4**
 - **Case divergences (blocks CI): 0**
 - **No SDK member (blocks CI): 0**
@@ -29,12 +29,12 @@ None. Every audited nested CFn key either matches an SDK member spelling or is e
 
 ## Allow-listed pass-throughs
 
-| Resource type | CFn nested key | Rationale |
+| Resource type | CFn nested key / path | Rationale |
 | --- | --- | --- |
-| `AWS::CloudFront::Distribution` | `CNAMEs` | Legacy pre-2012 DistributionConfig member (alias of Aliases); the modern CreateDistribution/UpdateDistribution API has no equivalent member and CDK never synthesizes it. |
-| `AWS::CloudFront::Distribution` | `CustomOrigin` | Legacy pre-2012 single-origin form (LegacyCustomOrigin definition); superseded by Origins[] and absent from the modern API. CDK never synthesizes it. |
-| `AWS::CloudFront::Distribution` | `DNSName` | Member of the legacy CustomOrigin / S3Origin blocks only (LegacyCustomOrigin / LegacyS3Origin definitions); unreachable from a modern template. |
-| `AWS::CodeBuild::Project` | `HostKernel` | Declared in the CFn registry schema but has NO member anywhere in the installed @aws-sdk/client-codebuild dist-types tree, so there is nothing to map it onto until an SDK bump adds one (issue #1386). Naming it in the provider would be a false claim of support. Remove this entry once the SDK ships the member, at which point the key becomes genuinely mappable. |
+| `AWS::CloudFront::Distribution` | `DistributionConfig.CNAMEs` | Legacy pre-2012 DistributionConfig member (alias of Aliases); the modern CreateDistribution/UpdateDistribution API has no equivalent member and CDK never synthesizes it. |
+| `AWS::CloudFront::Distribution` | `DistributionConfig.CustomOrigin` | Legacy pre-2012 single-origin form (LegacyCustomOrigin definition); superseded by Origins[] and absent from the modern API. CDK never synthesizes it. |
+| `AWS::CloudFront::Distribution` | `DistributionConfig.DNSName` | Member of the legacy CustomOrigin / S3Origin blocks only (LegacyCustomOrigin / LegacyS3Origin definitions); unreachable from a modern template. |
+| `AWS::CodeBuild::Project` | `Environment.HostKernel` | Declared in the CFn registry schema but has NO member anywhere in the installed @aws-sdk/client-codebuild dist-types tree, so there is nothing to map it onto until an SDK bump adds one (issue #1386). Naming it in the provider would be a false claim of support. Remove this entry once the SDK ships the member, at which point the key becomes genuinely mappable. |
 | `AWS::CloudFront::Distribution` | `S3Origin` | Legacy pre-2012 single-origin form (LegacyS3Origin definition), sibling of CustomOrigin; superseded by Origins[]. Invisible to the KEY pass because the StreamingDistribution API still has a same-spelled S3Origin member — the definition pass (issue #1378) is what catches it. |
 | `AWS::S3::Bucket` | `TableNamespace` | Member of the S3TablesDestination definition, reachable only from the MetadataTableConfiguration top-level the provider declares as silent-drop (Cloud-Control-routed), so no SDK forwarding path exists to drop it (issue #1430). |
 | `AWS::S3::Bucket` | `TableArn` | Member of the S3TablesDestination / JournalTableConfiguration / InventoryTableConfiguration definitions, reachable only from the MetadataConfiguration / MetadataTableConfiguration top-levels the provider declares as silent-drop (Cloud-Control-routed), so no SDK forwarding path exists to drop it (issue #1430). |
@@ -47,48 +47,53 @@ None. Every audited nested CFn key either matches an SDK member spelling or is e
 
 Keys with no same-spelling SDK member that the provider explicitly names (conversion maps / special-case handling). Listed so a rename in the provider that orphans one of these is visible in the diff.
 
-| Resource type | CFn nested key |
+| Resource type | CFn nested key path |
 | --- | --- |
-| `AWS::CloudFront::Distribution` | `AcmCertificateArn` |
-| `AWS::CloudFront::Distribution` | `IPV6Enabled` |
-| `AWS::CloudFront::Distribution` | `IamCertificateId` |
-| `AWS::CloudFront::Distribution` | `OriginCustomHeaders` |
-| `AWS::CloudFront::Distribution` | `OriginSSLProtocols` |
-| `AWS::CloudFront::Distribution` | `SslSupportMethod` |
-| `AWS::CloudWatch::AnomalyDetector` | `MetricTimeZone` |
-| `AWS::CodeBuild::Project` | `BuildSpec` |
-| `AWS::ECS::TaskDefinition` | `EFSVolumeConfiguration` |
-| `AWS::ECS::TaskDefinition` | `FSxWindowsFileServerVolumeConfiguration` |
-| `AWS::ECS::TaskDefinition` | `FilesystemId` |
-| `AWS::ECS::TaskDefinition` | `IAM` |
-| `AWS::ECS::TaskDefinition` | `ProxyConfigurationProperties` |
-| `AWS::ECS::TaskDefinition` | `S3FilesVolumeConfiguration` |
-| `AWS::S3::Bucket` | `AccelerationStatus` |
-| `AWS::S3::Bucket` | `CorsRules` |
-| `AWS::S3::Bucket` | `DestinationBucketName` |
-| `AWS::S3::Bucket` | `Event` |
-| `AWS::S3::Bucket` | `EventBridgeEnabled` |
-| `AWS::S3::Bucket` | `ExpirationDate` |
-| `AWS::S3::Bucket` | `ExpirationInDays` |
-| `AWS::S3::Bucket` | `ExposedHeaders` |
-| `AWS::S3::Bucket` | `Function` |
-| `AWS::S3::Bucket` | `LambdaConfigurations` |
-| `AWS::S3::Bucket` | `LogFilePrefix` |
-| `AWS::S3::Bucket` | `MaxAge` |
-| `AWS::S3::Bucket` | `NoncurrentVersionExpirationInDays` |
-| `AWS::S3::Bucket` | `NoncurrentVersionTransition` |
-| `AWS::S3::Bucket` | `Queue` |
-| `AWS::S3::Bucket` | `RedirectRule` |
-| `AWS::S3::Bucket` | `RoutingRuleCondition` |
-| `AWS::S3::Bucket` | `S3Key` |
-| `AWS::S3::Bucket` | `ScheduleFrequency` |
-| `AWS::S3::Bucket` | `ServerSideEncryptionByDefault` |
-| `AWS::S3::Bucket` | `TagFilter` |
-| `AWS::S3::Bucket` | `TagFilters` |
-| `AWS::S3::Bucket` | `Topic` |
-| `AWS::S3::Bucket` | `Transition` |
-| `AWS::S3::Bucket` | `TransitionDate` |
-| `AWS::S3::Bucket` | `TransitionInDays` |
+| `AWS::CloudFront::Distribution` | `DistributionConfig.AcmCertificateArn` |
+| `AWS::CloudFront::Distribution` | `DistributionConfig.IamCertificateId` |
+| `AWS::CloudFront::Distribution` | `DistributionConfig.IPV6Enabled` |
+| `AWS::CloudFront::Distribution` | `DistributionConfig.OriginCustomHeaders` |
+| `AWS::CloudFront::Distribution` | `DistributionConfig.OriginSSLProtocols` |
+| `AWS::CloudFront::Distribution` | `DistributionConfig.SslSupportMethod` |
+| `AWS::CloudWatch::AnomalyDetector` | `Configuration.MetricTimeZone` |
+| `AWS::CodeBuild::Project` | `SecondarySources.BuildSpec` |
+| `AWS::CodeBuild::Project` | `Source.BuildSpec` |
+| `AWS::ECS::TaskDefinition` | `ProxyConfiguration.ProxyConfigurationProperties` |
+| `AWS::ECS::TaskDefinition` | `Volumes.EFSVolumeConfiguration` |
+| `AWS::ECS::TaskDefinition` | `Volumes.FilesystemId` |
+| `AWS::ECS::TaskDefinition` | `Volumes.FSxWindowsFileServerVolumeConfiguration` |
+| `AWS::ECS::TaskDefinition` | `Volumes.IAM` |
+| `AWS::ECS::TaskDefinition` | `Volumes.S3FilesVolumeConfiguration` |
+| `AWS::S3::Bucket` | `AccelerateConfiguration.AccelerationStatus` |
+| `AWS::S3::Bucket` | `AnalyticsConfigurations.TagFilters` |
+| `AWS::S3::Bucket` | `BucketEncryption.ServerSideEncryptionByDefault` |
+| `AWS::S3::Bucket` | `CorsConfiguration.CorsRules` |
+| `AWS::S3::Bucket` | `CorsConfiguration.ExposedHeaders` |
+| `AWS::S3::Bucket` | `CorsConfiguration.MaxAge` |
+| `AWS::S3::Bucket` | `IntelligentTieringConfigurations.TagFilters` |
+| `AWS::S3::Bucket` | `InventoryConfigurations.ScheduleFrequency` |
+| `AWS::S3::Bucket` | `LifecycleConfiguration.ExpirationDate` |
+| `AWS::S3::Bucket` | `LifecycleConfiguration.ExpirationInDays` |
+| `AWS::S3::Bucket` | `LifecycleConfiguration.NoncurrentVersionExpirationInDays` |
+| `AWS::S3::Bucket` | `LifecycleConfiguration.NoncurrentVersionTransition` |
+| `AWS::S3::Bucket` | `LifecycleConfiguration.TagFilters` |
+| `AWS::S3::Bucket` | `LifecycleConfiguration.Transition` |
+| `AWS::S3::Bucket` | `LifecycleConfiguration.TransitionDate` |
+| `AWS::S3::Bucket` | `LifecycleConfiguration.TransitionInDays` |
+| `AWS::S3::Bucket` | `LoggingConfiguration.DestinationBucketName` |
+| `AWS::S3::Bucket` | `LoggingConfiguration.LogFilePrefix` |
+| `AWS::S3::Bucket` | `MetricsConfigurations.TagFilters` |
+| `AWS::S3::Bucket` | `NotificationConfiguration.Event` |
+| `AWS::S3::Bucket` | `NotificationConfiguration.EventBridgeEnabled` |
+| `AWS::S3::Bucket` | `NotificationConfiguration.Function` |
+| `AWS::S3::Bucket` | `NotificationConfiguration.LambdaConfigurations` |
+| `AWS::S3::Bucket` | `NotificationConfiguration.Queue` |
+| `AWS::S3::Bucket` | `NotificationConfiguration.S3Key` |
+| `AWS::S3::Bucket` | `NotificationConfiguration.Topic` |
+| `AWS::S3::Bucket` | `ReplicationConfiguration.TagFilter` |
+| `AWS::S3::Bucket` | `ReplicationConfiguration.TagFilters` |
+| `AWS::S3::Bucket` | `WebsiteConfiguration.RedirectRule` |
+| `AWS::S3::Bucket` | `WebsiteConfiguration.RoutingRuleCondition` |
 
 ## Shape pass — provider-handled re-shapings
 
@@ -136,7 +141,7 @@ CFn members whose SHAPE diverges from the same-spelled SDK member (bare array vs
 
 ## Audited targets
 
-| Resource type | Provider | SDK client | Key style | Fresh-object | Nested keys | Unmatched definitions |
+| Resource type | Provider | SDK client | Key style | Fresh-object | Nested key paths | Unmatched definitions |
 | --- | --- | --- | --- | --- | --- | --- |
 | `AWS::ApiGatewayV2::Api` | `apigatewayv2-provider.ts` | `@aws-sdk/client-apigatewayv2` | exact | no | 6 | 1 |
 | `AWS::ApiGatewayV2::Authorizer` | `apigatewayv2-provider.ts` | `@aws-sdk/client-apigatewayv2` | exact | no | 2 | 0 |
@@ -144,9 +149,9 @@ CFn members whose SHAPE diverges from the same-spelled SDK member (bare array vs
 | `AWS::ApiGatewayV2::Route` | `apigatewayv2-provider.ts` | `@aws-sdk/client-apigatewayv2` | exact | no | 0 | 0 |
 | `AWS::ApiGatewayV2::Stage` | `apigatewayv2-provider.ts` | `@aws-sdk/client-apigatewayv2` | exact | no | 5 | 0 |
 | `AWS::CloudFront::Distribution` | `cloudfront-distribution-provider.ts` | `@aws-sdk/client-cloudfront` | exact | no | 121 | 4 |
-| `AWS::CloudWatch::AnomalyDetector` | `cloudwatch-anomaly-detector-provider.ts` | `@aws-sdk/client-cloudwatch` | exact | no | 21 | 1 |
-| `AWS::CodeBuild::Project` | `codebuild-provider.ts` | `@aws-sdk/client-codebuild` | lower-first | yes | 57 | 4 |
-| `AWS::ECS::Service` | `ecs-provider.ts` | `@aws-sdk/client-ecs` | lower-first | no | 48 | 4 |
-| `AWS::ECS::TaskDefinition` | `ecs-provider.ts` | `@aws-sdk/client-ecs` | lower-first | no | 113 | 3 |
-| `AWS::S3::Bucket` | `s3-bucket-provider.ts` | `@aws-sdk/client-s3` | exact | no | 115 | 15 |
+| `AWS::CloudWatch::AnomalyDetector` | `cloudwatch-anomaly-detector-provider.ts` | `@aws-sdk/client-cloudwatch` | exact | no | 30 | 1 |
+| `AWS::CodeBuild::Project` | `codebuild-provider.ts` | `@aws-sdk/client-codebuild` | lower-first | yes | 93 | 4 |
+| `AWS::ECS::Service` | `ecs-provider.ts` | `@aws-sdk/client-ecs` | lower-first | no | 54 | 4 |
+| `AWS::ECS::TaskDefinition` | `ecs-provider.ts` | `@aws-sdk/client-ecs` | lower-first | no | 121 | 3 |
+| `AWS::S3::Bucket` | `s3-bucket-provider.ts` | `@aws-sdk/client-s3` | exact | no | 155 | 15 |
 
