@@ -1,5 +1,6 @@
 import * as readline from 'node:readline/promises';
 import { Command, Option } from 'commander';
+import { GetRoleCommand, GetUserCommand } from '@aws-sdk/client-iam';
 import {
   commonOptions,
   deprecatedRegionOption,
@@ -24,12 +25,18 @@ import {
   undeclaredEmptyObservedKeys,
   type PropertyDrift,
 } from '../../analyzer/drift-calculator.js';
+import {
+  canonicalizePrincipalUniqueIds,
+  parseIamPrincipalArn,
+  type PrincipalUniqueIdResolver,
+} from '../../analyzer/drift-principal-normalize.js';
 import { CC_API_FALLBACK_DENY_LIST } from '../../analyzer/drift-cc-api-deny-list.js';
 import { stripCcApiAwsManagedFields } from '../../analyzer/cc-api-strip.js';
 import { CloudControlProvider } from '../../provisioning/cloud-control-provider.js';
 import { withStackName } from '../../provisioning/resource-name.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { withRetry } from '../../deployment/retry.js';
+import { isThrottlingError } from '../../deployment/retryable-errors.js';
 import type { ReadCurrentStateContext, ResourceProvider } from '../../types/resource.js';
 import type { ResourceState, StackState } from '../../types/state.js';
 
@@ -200,6 +207,10 @@ async function driftCommand(
     // don't re-instantiate the underlying CloudControl client per stack.
     const ccApiFallback = new CloudControlProvider();
 
+    // Issue #1515: one resolver (and one cache) per command, so a stack whose
+    // resources reference the same role only pays a single `iam:GetRole`.
+    const resolvePrincipalUniqueId = createIamPrincipalUniqueIdResolver(awsClients);
+
     const stateRefs = await stateBackend.listStacks();
     const targetRefs = resolveTargetRefs(stacks, stateRefs, options);
 
@@ -219,7 +230,8 @@ async function driftCommand(
         ref.region,
         stateBackend,
         providerRegistry,
-        ccApiFallback
+        ccApiFallback,
+        resolvePrincipalUniqueId
       );
       reports.push(report);
     }
@@ -341,6 +353,108 @@ function resolveTargetRefs(
 }
 
 /**
+ * The live half of the #1515 principal canonicalization: resolve an IAM role /
+ * user ARN to that principal's unique id (`AROA…` / `AIDA…`).
+ *
+ * Results are cached per ARN for the whole command — INCLUDING the failures, so
+ * a deleted role (the case where AWS keeps the unique id forever, and therefore
+ * the likeliest one to appear here) costs exactly one API call rather than one
+ * per resource that references it.
+ *
+ * Every failure resolves to `undefined` rather than throwing: a missing
+ * `iam:GetRole` permission, a cross-account principal, or a deleted role must
+ * leave the comparison exactly as it was — the drift is then reported, which is
+ * the safe direction. Drift detection must never fail because a cosmetic
+ * normalization could not run.
+ *
+ * **The response ARN is compared back to the requested one, and that check is
+ * what makes the "never hides a real change" claim true rather than aspirational.**
+ * `GetRole` / `GetUser` are account-local and take a NAME, not an ARN, so the
+ * lookup silently answers about the CALLER's account and about the wrong IAM
+ * path: `arn:aws:iam::<other-acct>:role/Foo` and
+ * `arn:aws:iam::<self>:role/prod/Foo` would both come back as this account's
+ * root-path `Foo`, and the pass would then "prove" two DIFFERENT principals
+ * equal and collapse a genuine drift. Round-tripping the ARN costs nothing and
+ * turns both cases into an unresolved lookup, i.e. drift reported.
+ */
+function createIamPrincipalUniqueIdResolver(awsClients: AwsClients): PrincipalUniqueIdResolver {
+  const cache = new Map<string, string | undefined>();
+  let warnedOnDenied = false;
+  return async (arn: string): Promise<string | undefined> => {
+    if (cache.has(arn)) return cache.get(arn);
+    let uniqueId: string | undefined;
+    const principal = parseIamPrincipalArn(arn);
+    if (principal) {
+      try {
+        let entityArn: string | undefined;
+        let entityId: string | undefined;
+        if (principal.kind === 'role') {
+          const role = (await awsClients.iam.send(new GetRoleCommand({ RoleName: principal.name })))
+            .Role;
+          entityArn = role?.Arn;
+          entityId = role?.RoleId;
+        } else {
+          const user = (await awsClients.iam.send(new GetUserCommand({ UserName: principal.name })))
+            .User;
+          entityArn = user?.Arn;
+          entityId = user?.UserId;
+        }
+        // Same principal, not merely the same NAME — see the note above.
+        // Compared case-INSENSITIVELY on the name-bearing tail: `GetRole` is
+        // case-insensitive on the name, so `…:role/MyRole` legitimately comes
+        // back as the ARN AWS stored, and treating that as "a different
+        // entity" would refuse a principal that is provably the same one.
+        if (entityArn !== undefined && entityArn.toLowerCase() === arn.toLowerCase()) {
+          uniqueId = entityId;
+        } else {
+          getLogger().debug(
+            `Principal ${arn} resolved to ${entityArn ?? 'no entity'} — ` +
+              `same name in this account or under another IAM path; ` +
+              `leaving the policy principal comparison untouched.`
+          );
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        // Classified on the ERROR NAME, never on the message: IAM's
+        // `NoSuchEntity` text embeds the ROLE NAME ("The role with name
+        // AccessDeniedHandlerRole cannot be found"), so a message match turns
+        // an ordinary deleted role into the scary permission warning — the
+        // exact swallow this classification exists to avoid.
+        const name = error instanceof Error ? error.name : '';
+        const status = (error as { $metadata?: { httpStatusCode?: number } })?.$metadata
+          ?.httpStatusCode;
+        const denied = /^AccessDenied|^NotAuthorized/i.test(name) || status === 403;
+        if (!warnedOnDenied && denied) {
+          warnedOnDenied = true;
+          // The AWS message names the CALLER's principal ARN + account id, so
+          // it stays at debug (below) rather than riding a warn line into a
+          // screenshot or a public CI log — same reason the state-bucket
+          // banner was demoted.
+          getLogger().warn(
+            `Cannot read IAM principals (${name || 'access denied'}). A resource policy whose ` +
+              `principal AWS rendered as a unique id (AROA…/AIDA…) may therefore report drift ` +
+              `that is only a spelling difference; grant iam:GetRole / iam:GetUser to resolve ` +
+              `it, or re-run with --verbose for the full error.`
+          );
+        }
+        getLogger().debug(
+          `Could not resolve the unique id of principal ${arn} (${message}); ` +
+            `leaving the policy principal comparison untouched.`
+        );
+        // A THROTTLE is transient, and caching it would poison the rest of the
+        // run: every later resource sharing this principal would inherit the
+        // phantom drift, and `--revert` would then push the `AROA…` form at
+        // S3, which rejects it outright. Mirrors `write-only-properties.ts`,
+        // which likewise caches only conclusive answers.
+        if (isThrottlingError(error)) return undefined;
+      }
+    }
+    cache.set(arn, uniqueId);
+    return uniqueId;
+  };
+}
+
+/**
  * Run drift detection for one stack and shape the per-resource outcomes
  * into a {@link StackDriftReport}. The state object + etag are stored on
  * the report so `--accept` can write back without a re-read, and
@@ -352,7 +466,8 @@ async function runDriftForStack(
   region: string,
   stateBackend: S3StateBackend,
   providerRegistry: ProviderRegistry,
-  ccApiFallback: CloudControlProvider
+  ccApiFallback: CloudControlProvider,
+  resolvePrincipalUniqueId: PrincipalUniqueIdResolver
 ): Promise<StackDriftReport> {
   const result = await stateBackend.getState(stackName, region);
   if (!result) {
@@ -517,7 +632,21 @@ async function runDriftForStack(
       const observedIgnorePaths = useObserved
         ? undeclaredEmptyObservedKeys(resource.observedProperties!, resource.properties ?? {})
         : [];
-      const changes = calculateResourceDrift(baseline, aws, {
+      // Issue #1515: AWS renders an IAM principal inside a resource policy as
+      // either its ARN or its `AROA…` / `AIDA…` unique id, choosing on its own
+      // schedule — so the deploy-time capture and this read can hold two
+      // spellings of ONE principal, which is permanent phantom drift `--revert`
+      // cannot clear (it writes the recorded form back and AWS re-canonicalizes
+      // on write). Canonicalized on BOTH sides, and only for a pair PROVEN
+      // equal by an `iam:GetRole` / `GetUser` lookup; anything unresolvable is
+      // left alone and still reported. No AWS call unless a unique id is
+      // actually present.
+      const normalized = await canonicalizePrincipalUniqueIds(
+        baseline,
+        aws,
+        resolvePrincipalUniqueId
+      );
+      const changes = calculateResourceDrift(normalized.baseline, normalized.aws, {
         ignorePaths: observedIgnorePaths.length
           ? [...ignorePaths, ...observedIgnorePaths]
           : ignorePaths,

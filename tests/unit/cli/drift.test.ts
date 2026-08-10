@@ -2,13 +2,15 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test'
 import type { ResourceState, StackState } from '../../../src/types/state.js';
 
 const errorSpy = vi.hoisted(() => vi.fn());
+// Hoisted so the issue-#1515 denial tests can read what the command WARNED.
+const warnSpy = vi.hoisted(() => vi.fn());
 
 vi.mock('../../../src/utils/logger.js', () => ({
   getLogger: () => ({
     setLevel: vi.fn(),
     debug: vi.fn(),
     info: vi.fn(),
-    warn: vi.fn(),
+    warn: warnSpy,
     error: errorSpy,
     child: () => ({
       debug: vi.fn(),
@@ -23,10 +25,18 @@ vi.mock('../../../src/cli/config-loader.js', () => ({
   resolveStateBucketWithDefault: vi.fn(async () => 'test-bucket'),
 }));
 
+// Issue #1515: the principal canonicalization resolves an IAM role/user ARN to
+// its unique id via `iam:GetRole` / `GetUser`. The client is only touched when
+// a policy actually carries a unique-id principal, so every other test in this
+// file never reaches it.
+const mockIamSend = vi.hoisted(() => vi.fn());
 vi.mock('../../../src/utils/aws-clients.ts', () => ({
   AwsClients: vi.fn().mockImplementation(() => ({
     get s3() {
       return {};
+    },
+    get iam() {
+      return { send: mockIamSend };
     },
     destroy: vi.fn(),
   })),
@@ -194,7 +204,9 @@ describe('cdkd drift', () => {
     mockRegistryGetProvider.mockReset();
     mockRegistryShouldSkip.mockReset().mockReturnValue(false);
     mockCcReadCurrentState.mockReset().mockResolvedValue(undefined);
+    mockIamSend.mockReset();
     errorSpy.mockReset();
+    warnSpy.mockReset();
     // Stub process.exit so DriftDetectedError -> exit(1) doesn't kill the test.
     exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
       throw new Error('__exit__');
@@ -1227,6 +1239,281 @@ describe('cdkd drift', () => {
     expect(output).toContain('✓ StackA (us-east-1): no drift detected');
     expect(output).toContain('✓ StackB (us-west-2): no drift detected');
     expect(exitSpy).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Issue #1515: `AWS::S3::BucketPolicy` reported permanent phantom drift on
+   * `PolicyDocument.Statement[].Principal.AWS` because AWS renders an IAM role
+   * principal as either its ARN or its `AROA…` unique id and re-canonicalizes on
+   * write — so `--revert` reported success and the next `cdkd drift` reported the
+   * identical difference. Two back-to-back runs of the `drift-revert` fixture on
+   * 2026-08-10 differed for exactly this reason with no code change in between.
+   */
+  describe('cdkd drift: IAM principal ARN vs unique id (issue #1515)', () => {
+    const ROLE_ARN =
+      'arn:aws:iam::123456789012:role/CdkdDriftRevertExample-CustomS3AutoDeleteObjectsCustomR-30ff9234';
+    const ROLE_UNIQUE_ID = 'AROAXXXJN2LNV2SMSFATO';
+
+    const policyProps = (principal: string): Record<string, unknown> => ({
+      Bucket: 'my-bucket',
+      PolicyDocument: {
+        Version: '2012-10-17',
+        Statement: [
+          {
+            Effect: 'Allow',
+            Principal: { AWS: principal },
+            Action: 's3:GetBucket*',
+            Resource: 'arn:aws:s3:::my-bucket',
+          },
+        ],
+      },
+    });
+
+    const arrangeBucketPolicy = (baselinePrincipal: string, awsPrincipal: string): void => {
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValueOnce(
+        makeState({
+          DriftBucketPolicy: makeResource({
+            physicalId: 'my-bucket',
+            resourceType: 'AWS::S3::BucketPolicy',
+            properties: policyProps(baselinePrincipal),
+            observedProperties: policyProps(baselinePrincipal),
+          }),
+        })
+      );
+      mockRegistryGetProvider.mockReturnValue({
+        readCurrentState: async () => policyProps(awsPrincipal),
+      });
+    };
+
+    it('reports no drift when the two sides hold two spellings of ONE principal', async () => {
+      arrangeBucketPolicy(ROLE_UNIQUE_ID, ROLE_ARN);
+      mockIamSend.mockResolvedValue({ Role: { Arn: ROLE_ARN, RoleId: ROLE_UNIQUE_ID } });
+
+      const { output, error } = await runDrift(['TestStack']);
+
+      expect(error).toBeUndefined();
+      expect(output).toContain('no drift detected');
+      expect(mockIamSend).toHaveBeenCalledTimes(1);
+      expect(exitSpy).not.toHaveBeenCalled();
+    });
+
+    it('still reports drift when the unique id belongs to a DIFFERENT principal', async () => {
+      arrangeBucketPolicy(ROLE_UNIQUE_ID, ROLE_ARN);
+      mockIamSend.mockResolvedValue({ Role: { Arn: ROLE_ARN, RoleId: 'AROASOMEOTHERROLE99' } });
+
+      const { output } = await runDrift(['TestStack']);
+
+      expect(output).toContain('drift detected');
+      expect(output).toContain('PolicyDocument');
+      expect(exitSpy).toHaveBeenCalledWith(1);
+    });
+
+    it('still reports drift when the lookup fails (deleted role / missing iam:GetRole)', async () => {
+      arrangeBucketPolicy(ROLE_UNIQUE_ID, ROLE_ARN);
+      mockIamSend.mockRejectedValue(new Error('NoSuchEntity'));
+
+      const { output } = await runDrift(['TestStack']);
+
+      expect(output).toContain('drift detected');
+      expect(exitSpy).toHaveBeenCalledWith(1);
+    });
+
+    it('makes no IAM call for a policy with no unique-id principal', async () => {
+      arrangeBucketPolicy(ROLE_ARN, ROLE_ARN);
+
+      const { output } = await runDrift(['TestStack']);
+
+      expect(output).toContain('no drift detected');
+      expect(mockIamSend).not.toHaveBeenCalled();
+    });
+
+    it('still reports drift when the lookup answers about a DIFFERENT entity', async () => {
+      // `GetRole` is account-local and takes a NAME, so a cross-account ARN or
+      // one under another IAM path resolves to THIS account's same-named role.
+      // Without the response-ARN round-trip the pass would "prove" two
+      // different principals equal and collapse a real change — the one way it
+      // could hide drift.
+      arrangeBucketPolicy(ROLE_UNIQUE_ID, ROLE_ARN);
+      mockIamSend.mockResolvedValue({
+        Role: {
+          Arn: 'arn:aws:iam::999999999999:role/CdkdDriftRevertExample-CustomS3AutoDeleteObjectsCustomR-30ff9234',
+          RoleId: ROLE_UNIQUE_ID,
+        },
+      });
+
+      const { output } = await runDrift(['TestStack']);
+
+      expect(output).toContain('drift detected');
+      expect(exitSpy).toHaveBeenCalledWith(1);
+    });
+
+    it('canonicalizes a USER principal through GetUser', async () => {
+      const userArn = 'arn:aws:iam::123456789012:user/deployer';
+      const userUniqueId = 'AIDAXXXJN2LNV2SMSFATO';
+      arrangeBucketPolicy(userUniqueId, userArn);
+      mockIamSend.mockResolvedValue({ User: { Arn: userArn, UserId: userUniqueId } });
+
+      const { output, error } = await runDrift(['TestStack']);
+
+      expect(error).toBeUndefined();
+      expect(output).toContain('no drift detected');
+      expect(exitSpy).not.toHaveBeenCalled();
+    });
+
+    it('warns ONCE when the IAM lookup is denied, and stays quiet for a deleted role', async () => {
+      // A missing `iam:GetRole` otherwise surfaces as unexplained permanent
+      // drift, visible only under --verbose. The classification is on the
+      // error NAME, never the message: IAM's NoSuchEntity text embeds the ROLE
+      // NAME, so `The role with name AccessDeniedHandler cannot be found`
+      // would otherwise be reported as a permission problem.
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValueOnce(
+        makeState({
+          PolicyA: makeResource({
+            physicalId: 'bucket-a',
+            resourceType: 'AWS::S3::BucketPolicy',
+            properties: policyProps(ROLE_UNIQUE_ID),
+            observedProperties: policyProps(ROLE_UNIQUE_ID),
+          }),
+          PolicyB: makeResource({
+            physicalId: 'bucket-b',
+            resourceType: 'AWS::S3::BucketPolicy',
+            properties: policyProps(ROLE_UNIQUE_ID.replace('FATO', 'FATX')),
+            observedProperties: policyProps(ROLE_UNIQUE_ID.replace('FATO', 'FATX')),
+          }),
+        })
+      );
+      mockRegistryGetProvider.mockReturnValue({
+        readCurrentState: async () => policyProps(ROLE_ARN),
+      });
+      const denied = Object.assign(new Error('User is not authorized to perform: iam:GetRole'), {
+        name: 'AccessDeniedException',
+      });
+      mockIamSend.mockRejectedValue(denied);
+
+      await runDrift(['TestStack']);
+
+      const denialWarnings = warnSpy.mock.calls
+        .map((c) => String(c[0]))
+        .filter((m) => m.includes('Cannot read IAM principals'));
+      expect(denialWarnings).toHaveLength(1);
+      // The raw AWS message names the CALLER's principal + account, so it must
+      // not ride the warn line.
+      expect(denialWarnings[0]).not.toContain('User is not authorized to perform');
+    });
+
+    it('does not warn about permissions when the role is simply GONE', async () => {
+      arrangeBucketPolicy(ROLE_UNIQUE_ID, ROLE_ARN);
+      mockIamSend.mockRejectedValue(
+        Object.assign(
+          new Error('The role with name AccessDeniedHandlerRole cannot be found.'),
+          { name: 'NoSuchEntityException' }
+        )
+      );
+
+      const { output } = await runDrift(['TestStack']);
+
+      expect(output).toContain('drift detected');
+      expect(
+        warnSpy.mock.calls.map((c) => String(c[0])).some((m) => m.includes('Cannot read IAM'))
+      ).toBe(false);
+    });
+
+    it('caches a conclusive failure but NOT a throttle', async () => {
+      // Caching a throttle would poison the rest of the run: every later
+      // resource sharing the principal inherits the phantom drift, and
+      // `--revert` then pushes the AROA form at S3, which rejects it.
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValueOnce(
+        makeState({
+          PolicyA: makeResource({
+            physicalId: 'bucket-a',
+            resourceType: 'AWS::S3::BucketPolicy',
+            properties: policyProps(ROLE_UNIQUE_ID),
+            observedProperties: policyProps(ROLE_UNIQUE_ID),
+          }),
+          PolicyB: makeResource({
+            physicalId: 'bucket-b',
+            resourceType: 'AWS::S3::BucketPolicy',
+            properties: policyProps(ROLE_UNIQUE_ID),
+            observedProperties: policyProps(ROLE_UNIQUE_ID),
+          }),
+        })
+      );
+      mockRegistryGetProvider.mockReturnValue({
+        readCurrentState: async () => policyProps(ROLE_ARN),
+      });
+      mockIamSend.mockRejectedValue(
+        Object.assign(new Error('Rate exceeded'), { name: 'ThrottlingException' })
+      );
+
+      await runDrift(['TestStack']);
+
+      // Both resources tried — the first failure was NOT cached.
+      expect(mockIamSend).toHaveBeenCalledTimes(2);
+    });
+
+    it('caches a DEFINITIVE failure so a deleted role costs one call, not one per resource', async () => {
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValueOnce(
+        makeState({
+          PolicyA: makeResource({
+            physicalId: 'bucket-a',
+            resourceType: 'AWS::S3::BucketPolicy',
+            properties: policyProps(ROLE_UNIQUE_ID),
+            observedProperties: policyProps(ROLE_UNIQUE_ID),
+          }),
+          PolicyB: makeResource({
+            physicalId: 'bucket-b',
+            resourceType: 'AWS::S3::BucketPolicy',
+            properties: policyProps(ROLE_UNIQUE_ID),
+            observedProperties: policyProps(ROLE_UNIQUE_ID),
+          }),
+        })
+      );
+      mockRegistryGetProvider.mockReturnValue({
+        readCurrentState: async () => policyProps(ROLE_ARN),
+      });
+      mockIamSend.mockRejectedValue(
+        Object.assign(new Error('Role not found'), { name: 'NoSuchEntityException' })
+      );
+
+      await runDrift(['TestStack']);
+
+      expect(mockIamSend).toHaveBeenCalledTimes(1);
+    });
+
+    it('resolves one ARN ONCE across resources that share it', async () => {
+      // The per-command cache is the reason the lookup is affordable at all;
+      // a single-resource fixture would pass with no cache whatsoever.
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValueOnce(
+        makeState({
+          PolicyA: makeResource({
+            physicalId: 'bucket-a',
+            resourceType: 'AWS::S3::BucketPolicy',
+            properties: policyProps(ROLE_UNIQUE_ID),
+            observedProperties: policyProps(ROLE_UNIQUE_ID),
+          }),
+          PolicyB: makeResource({
+            physicalId: 'bucket-b',
+            resourceType: 'AWS::S3::BucketPolicy',
+            properties: policyProps(ROLE_UNIQUE_ID),
+            observedProperties: policyProps(ROLE_UNIQUE_ID),
+          }),
+        })
+      );
+      mockRegistryGetProvider.mockReturnValue({
+        readCurrentState: async () => policyProps(ROLE_ARN),
+      });
+      mockIamSend.mockResolvedValue({ Role: { Arn: ROLE_ARN, RoleId: ROLE_UNIQUE_ID } });
+
+      const { output } = await runDrift(['TestStack']);
+
+      expect(output).toContain('no drift detected');
+      expect(mockIamSend).toHaveBeenCalledTimes(1);
+    });
   });
 });
 

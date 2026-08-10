@@ -1,0 +1,301 @@
+import { describe, it, expect, vi } from 'vite-plus/test';
+import {
+  canonicalizePrincipalUniqueIds,
+  collectPrincipalForms,
+  parseIamPrincipalArn,
+  rewritePrincipalUniqueIds,
+} from '../../../src/analyzer/drift-principal-normalize.js';
+
+// The module exports ONE walk; these read the two halves it returns.
+const collectPrincipalUniqueIds = (v: unknown): Set<string> => collectPrincipalForms(v).uniqueIds;
+const collectPrincipalArns = (v: unknown): Set<string> => collectPrincipalForms(v).arns;
+
+/**
+ * Issue #1515: AWS renders an IAM principal inside a resource policy either as
+ * its ARN or as its `AROA…` / `AIDA…` unique id, substituting the unique id
+ * when the principal is transiently unresolvable and re-rendering the ARN once
+ * it resolves. The deploy-time capture stores whichever form came back, so the
+ * two sides of a later drift comparison can hold two spellings of ONE
+ * principal — permanent phantom drift that `--revert` cannot clear, because
+ * AWS re-canonicalizes on write.
+ *
+ * The fixture is the live shape from the 2026-08-10 `drift-revert` run: the
+ * CDK `autoDeleteObjects` custom-resource role, created concurrently with the
+ * bucket policy that references it.
+ */
+const ROLE_ARN =
+  'arn:aws:iam::123456789012:role/CdkdDriftRevertExample-CustomS3AutoDeleteObjectsCustomR-30ff9234';
+const ROLE_UNIQUE_ID = 'AROAXXXJN2LNV2SMSFATO';
+
+const policy = (principal: unknown): Record<string, unknown> => ({
+  Bucket: 'my-bucket',
+  PolicyDocument: {
+    Version: '2012-10-17',
+    Statement: [
+      {
+        Effect: 'Allow',
+        Principal: { AWS: principal },
+        Action: 's3:GetBucket*',
+        Resource: 'arn:aws:s3:::my-bucket',
+      },
+    ],
+  },
+});
+
+const resolverFor = (
+  pairs: Record<string, string>
+): ((arn: string) => Promise<string | undefined>) =>
+  vi.fn(async (arn: string) => pairs[arn]);
+
+describe('drift principal unique-id canonicalization (issue #1515)', () => {
+  describe('shape detection', () => {
+    it('finds a unique id and an ARN at a Principal.AWS position', () => {
+      expect(collectPrincipalUniqueIds(policy(ROLE_UNIQUE_ID))).toEqual(new Set([ROLE_UNIQUE_ID]));
+      expect(collectPrincipalArns(policy(ROLE_ARN))).toEqual(new Set([ROLE_ARN]));
+    });
+
+    it('reads the array form and the bare-string form of Principal', () => {
+      expect(collectPrincipalUniqueIds(policy([ROLE_UNIQUE_ID, ROLE_ARN]))).toEqual(
+        new Set([ROLE_UNIQUE_ID])
+      );
+      expect(
+        collectPrincipalUniqueIds({
+          Statement: [{ Principal: ROLE_UNIQUE_ID }, { NotPrincipal: { AWS: [ROLE_UNIQUE_ID] } }],
+        })
+      ).toEqual(new Set([ROLE_UNIQUE_ID]));
+    });
+
+    it('ignores an id-looking string that is NOT at a principal position', () => {
+      // A unique id inside a Condition is not interchangeable with the ARN
+      // there — AWS compares those values literally.
+      const value = {
+        Statement: [
+          {
+            Principal: { Service: 's3.amazonaws.com' },
+            Condition: { StringEquals: { 'aws:userId': ROLE_UNIQUE_ID } },
+          },
+        ],
+      };
+      expect(collectPrincipalUniqueIds(value).size).toBe(0);
+    });
+
+    it('ignores non-IAM principal members and non-role ARNs', () => {
+      expect(
+        collectPrincipalArns({
+          Statement: [
+            { Principal: { Service: 'lambda.amazonaws.com', CanonicalUser: 'abc123' } },
+            { Principal: { AWS: 'arn:aws:sts::123456789012:assumed-role/Foo/session' } },
+            { Principal: { AWS: '*' } },
+          ],
+        })
+      ).toEqual(new Set());
+    });
+  });
+
+  describe('parseIamPrincipalArn', () => {
+    it('splits a plain role / user ARN into the API lookup name', () => {
+      expect(parseIamPrincipalArn(ROLE_ARN)).toEqual({
+        kind: 'role',
+        name: 'CdkdDriftRevertExample-CustomS3AutoDeleteObjectsCustomR-30ff9234',
+      });
+      expect(parseIamPrincipalArn('arn:aws:iam::123456789012:user/alice')).toEqual({
+        kind: 'user',
+        name: 'alice',
+      });
+    });
+
+    it('takes the trailing NAME off an IAM path, which is what GetRole wants', () => {
+      // The lookup is by name, so the path has to be stripped — and because it
+      // is stripped, the caller MUST round-trip the response ARN (two roles can
+      // share a name under different paths). See the resolver in drift.ts.
+      expect(parseIamPrincipalArn('arn:aws:iam::123456789012:role/prod/team/Foo')).toEqual({
+        kind: 'role',
+        name: 'Foo',
+      });
+    });
+
+    it('accepts the non-commercial partitions', () => {
+      expect(parseIamPrincipalArn('arn:aws-cn:iam::123456789012:role/Foo')?.name).toBe('Foo');
+      expect(parseIamPrincipalArn('arn:aws-us-gov:iam::123456789012:user/Foo')?.kind).toBe('user');
+    });
+
+    it('refuses everything that is not a role / user principal ARN', () => {
+      for (const value of [
+        '*',
+        '123456789012',
+        'arn:aws:iam::123456789012:root',
+        'arn:aws:sts::123456789012:assumed-role/Foo/session',
+        'arn:aws:iam::123456789012:group/Devs',
+        'arn:aws:iam::123456789012:role/',
+        ROLE_UNIQUE_ID,
+      ]) {
+        expect(parseIamPrincipalArn(value)).toBeUndefined();
+      }
+    });
+  });
+
+  describe('rewrite', () => {
+    it('swaps only the proven unique id, leaving every sibling value alone', () => {
+      const rewritten = rewritePrincipalUniqueIds(
+        {
+          Statement: [
+            { Principal: { AWS: [ROLE_UNIQUE_ID, 'AROAOTHERPRINCIPAL1'] } },
+            { Principal: { Service: 's3.amazonaws.com' } },
+            { Condition: { StringEquals: { 'aws:userId': ROLE_UNIQUE_ID } } },
+          ],
+        },
+        new Map([[ROLE_UNIQUE_ID, ROLE_ARN]])
+      ) as { Statement: Array<Record<string, Record<string, unknown>>> };
+
+      expect(rewritten.Statement[0]?.['Principal']?.['AWS']).toEqual([
+        ROLE_ARN,
+        'AROAOTHERPRINCIPAL1',
+      ]);
+      expect(rewritten.Statement[1]?.['Principal']?.['Service']).toBe('s3.amazonaws.com');
+      expect(rewritten.Statement[2]?.['Condition']?.['StringEquals']).toEqual({
+        'aws:userId': ROLE_UNIQUE_ID,
+      });
+    });
+
+    it('leaves a wildcard principal alone while rewriting a sibling in the same map', () => {
+      const rewritten = rewritePrincipalUniqueIds(
+        {
+          Statement: [
+            { Principal: '*' },
+            { Principal: { AWS: '*', Service: 's3.amazonaws.com' } },
+            { Principal: { AWS: [ROLE_UNIQUE_ID, '*'] } },
+          ],
+        },
+        new Map([[ROLE_UNIQUE_ID, ROLE_ARN]])
+      ) as { Statement: Array<Record<string, unknown>> };
+
+      expect(rewritten.Statement[0]?.['Principal']).toBe('*');
+      expect(rewritten.Statement[1]?.['Principal']).toEqual({
+        AWS: '*',
+        Service: 's3.amazonaws.com',
+      });
+      expect((rewritten.Statement[2]?.['Principal'] as Record<string, unknown>)['AWS']).toEqual([
+        ROLE_ARN,
+        '*',
+      ]);
+    });
+  });
+
+  describe('canonicalization across the two comparison sides', () => {
+    it('makes the two spellings of one principal compare equal', async () => {
+      const { baseline, aws } = await canonicalizePrincipalUniqueIds(
+        policy(ROLE_UNIQUE_ID),
+        policy(ROLE_ARN),
+        resolverFor({ [ROLE_ARN]: ROLE_UNIQUE_ID })
+      );
+
+      expect(baseline).toEqual(aws);
+    });
+
+    it('normalizes in the reverse direction too, since the race is symmetric', async () => {
+      // Run 1 of the live fixture captured the ARN and read back the unique
+      // id; run 2 was the other way round. Normalizing one side only is the
+      // mistake drift-normalize.ts's header already records.
+      const { baseline, aws } = await canonicalizePrincipalUniqueIds(
+        policy(ROLE_ARN),
+        policy(ROLE_UNIQUE_ID),
+        resolverFor({ [ROLE_ARN]: ROLE_UNIQUE_ID })
+      );
+
+      expect(baseline).toEqual(aws);
+    });
+
+    it('still reports a REAL principal change — the id belongs to another role', async () => {
+      const other =
+        'arn:aws:iam::123456789012:role/CdkdDriftRevertExample-SomeoneElse-abcdef12';
+      const { baseline, aws } = await canonicalizePrincipalUniqueIds(
+        policy(ROLE_UNIQUE_ID),
+        policy(other),
+        resolverFor({ [other]: 'AROADIFFERENTROLE99' })
+      );
+
+      expect(baseline).not.toEqual(aws);
+    });
+
+    it('leaves both sides untouched when the principal cannot be resolved', async () => {
+      // The deleted-role case (AWS keeps the unique id forever) and the
+      // missing-iam:GetRole case both land here. Reporting the drift is the
+      // safe direction — this pass may only remove a PROVEN-equal difference.
+      const before = policy(ROLE_UNIQUE_ID);
+      const { baseline, aws } = await canonicalizePrincipalUniqueIds(
+        before,
+        policy(ROLE_ARN),
+        resolverFor({})
+      );
+
+      expect(baseline).toEqual(before);
+      expect(aws).toEqual(policy(ROLE_ARN));
+    });
+
+    it('makes NO resolver call when no unique id is present', async () => {
+      const resolve = resolverFor({ [ROLE_ARN]: ROLE_UNIQUE_ID });
+      const { baseline, aws } = await canonicalizePrincipalUniqueIds(
+        policy(ROLE_ARN),
+        policy(ROLE_ARN),
+        resolve
+      );
+
+      expect(resolve).not.toHaveBeenCalled();
+      expect(baseline).toEqual(aws);
+    });
+
+    it('returns both sides UNTOUCHED when a unique id has no candidate ARN opposite it', async () => {
+      // Asserting "the resolver was not called" here would be vacuous — the
+      // loop that calls it iterates the ARN set, so deleting the guard changes
+      // nothing. The observable contract is that the short-circuit returns the
+      // ORIGINAL objects, which is also what keeps the comparator's inputs
+      // free of a needless deep copy per resource.
+      const baselineIn = policy(ROLE_UNIQUE_ID);
+      const awsIn = policy(ROLE_UNIQUE_ID);
+      const resolve = resolverFor({ [ROLE_ARN]: ROLE_UNIQUE_ID });
+
+      const { baseline, aws } = await canonicalizePrincipalUniqueIds(baselineIn, awsIn, resolve);
+
+      expect(baseline).toBe(baselineIn);
+      expect(aws).toBe(awsIn);
+      expect(resolve).not.toHaveBeenCalled();
+    });
+
+    it('leaves a policy carried as a JSON STRING alone (documented bound)', async () => {
+      // Re-serializing a parsed string could change its formatting and
+      // manufacture a DIFFERENT phantom drift, so the walk is scoped to the
+      // object shape. Pinned so the bound is a decision, not an accident.
+      const asString = {
+        Bucket: 'my-bucket',
+        PolicyDocument: JSON.stringify({
+          Statement: [{ Principal: { AWS: ROLE_UNIQUE_ID } }],
+        }),
+      };
+      const resolve = resolverFor({ [ROLE_ARN]: ROLE_UNIQUE_ID });
+
+      const { baseline } = await canonicalizePrincipalUniqueIds(
+        asString,
+        { Bucket: 'my-bucket', PolicyDocument: JSON.stringify({ Statement: [] }) },
+        resolve
+      );
+
+      expect(baseline).toBe(asString);
+      expect(resolve).not.toHaveBeenCalled();
+    });
+
+    it('returns the ORIGINAL objects untouched on the short-circuit paths', async () => {
+      // Identity matters: the drift command feeds the result straight into the
+      // comparator, and a needless deep copy per resource would be pure cost.
+      const baselineIn = policy(ROLE_ARN);
+      const awsIn = policy(ROLE_ARN);
+      const { baseline, aws } = await canonicalizePrincipalUniqueIds(
+        baselineIn,
+        awsIn,
+        resolverFor({})
+      );
+
+      expect(baseline).toBe(baselineIn);
+      expect(aws).toBe(awsIn);
+    });
+  });
+});

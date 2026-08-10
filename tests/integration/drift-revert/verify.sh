@@ -9,6 +9,10 @@
 #   4. cdkd drift  -> assert exit 1 (drift detected)
 #   5. cdkd drift --revert -y  -> assert exit 0
 #   6. cdkd drift  -> assert exit 0 (clean)
+#  6b. rewrite the recorded bucket-policy principal to a BOGUS unique id
+#      -> assert exit 1 (a real principal change is still drift)
+#  6c. rewrite it to the role's REAL unique id
+#      -> assert exit 0 (issue #1515 canonicalization)
 #   7. cdkd destroy --force
 #
 # Auto-resolves AWS account ID + state bucket. Run from anywhere.
@@ -37,6 +41,7 @@ fi
 
 cleanup() {
   rc=$?
+  rm -f "${BOGUS_DRIFT_LOG:-}"
   if [ "${rc}" -ne 0 ]; then
     echo "[verify] FAIL (exit ${rc}) — attempting destroy to clean up"
     ${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force || true
@@ -69,6 +74,45 @@ ${CLI} drift "${STACK}" --revert -y --state-bucket "${STATE_BUCKET}"
 
 echo "[verify] step 6: cdkd drift again (expect exit 0)"
 ${CLI} drift "${STACK}" --state-bucket "${STATE_BUCKET}"
+
+# Issue #1515: AWS renders an IAM role principal inside a resource policy as
+# either its ARN or its `AROA…` unique id, so the deploy-time capture and a
+# later read can hold two spellings of ONE principal — permanent phantom drift
+# `--revert` cannot clear. Which form gets captured is a RACE (this fixture's
+# autoDeleteObjects role is created concurrently with the policy referencing
+# it), so the state baseline is rewritten HERE to make it deterministic.
+# Both directions are asserted: a BOGUS unique id must still read as drift,
+# which is what proves the clean verdict below is canonicalization and not the
+# field silently dropping out of the comparison.
+echo "[verify] step 6b: bogus principal unique id in the baseline (expect exit 1)"
+STACK="${STACK}" STATE_BUCKET="${STATE_BUCKET}" node inject-principal-uniqueid.ts bogus
+# Removed by `cleanup` rather than inline or by a second EXIT trap: both
+# assertion paths below `exit 1` before any inline `rm`, and a second
+# `trap ... EXIT` would REPLACE the cleanup trap and silently disable the
+# destroy-on-failure this fixture depends on.
+BOGUS_DRIFT_LOG="$(mktemp)"
+set +e
+${CLI} drift "${STACK}" --state-bucket "${STATE_BUCKET}" >"${BOGUS_DRIFT_LOG}" 2>&1
+rc=$?
+set -e
+cat "${BOGUS_DRIFT_LOG}"
+if [ "${rc}" -ne 1 ]; then
+  echo "[verify] FAIL: a principal that is nobody's unique id must still be drift, got exit ${rc}"
+  exit 1
+fi
+# Exit 1 alone is satisfied by ANY drifted resource, which would make this
+# step's non-vacuity argument false — name the resource under test.
+if ! grep -q "DriftBucketPolicy" "${BOGUS_DRIFT_LOG}"; then
+  echo "[verify] FAIL: expected the BUCKET POLICY to be the drifted resource, got:" >&2
+  cat "${BOGUS_DRIFT_LOG}" >&2
+  exit 1
+fi
+echo "[verify] step 6b ok: exit ${rc}, bucket policy named"
+
+echo "[verify] step 6c: the role's REAL unique id in the baseline (expect exit 0)"
+STACK="${STACK}" STATE_BUCKET="${STATE_BUCKET}" node inject-principal-uniqueid.ts real
+${CLI} drift "${STACK}" --state-bucket "${STATE_BUCKET}"
+echo "[verify] step 6c ok: issue #1515 canonicalization holds"
 
 echo "[verify] step 7: cdkd destroy --force"
 ${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force
