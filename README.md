@@ -55,6 +55,28 @@ cdkd diff
 cdkd destroy
 ```
 
+## Use with Claude Code
+
+This repository includes a project-scoped Claude Code skill for building
+and using cdkd safely:
+
+- [`/use-cdkd`](.claude/skills/use-cdkd/SKILL.md)
+
+Start Claude Code from this repository and invoke `/use-cdkd`, or ask
+Claude to deploy a dev/test CDK stack with cdkd. Claude can also invoke
+the skill automatically when the request matches its description.
+
+To use the skill while working in another CDK project, clone this
+repository and add it to the Claude Code session:
+
+```bash
+claude --add-dir /path/to/cdkd
+```
+
+The skill covers local-checkout builds, published releases, AWS
+preflight checks, preview and deployment, wait modes, verification,
+CloudFormation migration boundaries, and destructive-operation safety.
+
 ## Benchmark
 
 **cdkd deploys up to 15x faster than AWS CDK (CloudFormation)** on SDK-Provider-handled stacks; the per-stack speedup widens with size and parallelism.
