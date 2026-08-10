@@ -72,37 +72,76 @@ describe('classifyCdkCliUsage (issue 1485)', () => {
     expect(c.bareInvocations + c.npxInvocations + c.explicitBinInvocations).toBe(0);
   });
 
-  it('detects the canonical PATH prepend and install guard', () => {
+  // Reviewer finding on v1: keyword/wrapper prefixes kept segments out of
+  // command position, so these shapes were silent false negatives.
+  it.each([
+    ['negated condition', 'if ! cdk deploy "${STACK}"; then exit 1; fi'],
+    ['then-branch', 'if true; then cdk deploy "${STACK}"; fi'],
+    ['loop body', 'for s in a b; do cdk deploy "$s"; done'],
+    ['timeout wrapper', 'timeout 600 npx cdk deploy "${STACK}"'],
+    ['quoted env value with space', 'FOO="a b" cdk deploy "${STACK}"'],
+  ])('counts keyword/wrapper-prefixed invocations: %s', (_label, line) => {
+    const c = classifyCdkCliUsage(`${line}\n`);
+    expect(c.bareInvocations + c.npxInvocations).toBe(1);
+  });
+
+  it('detects the canonical PATH prepend, install step, and cdk-bin guard', () => {
     const c = classifyCdkCliUsage(
       '[ -x "${TEST_DIR}/node_modules/.bin/cdk" ] || (cd "${TEST_DIR}" && npm install)\nexport PATH="${TEST_DIR}/node_modules/.bin:${PATH}"\n',
     );
     expect(c.hasPathPrepend).toBe(true);
     expect(c.hasInstallStep).toBe(true);
+    expect(c.hasCdkBinGuard).toBe(true);
+  });
+
+  // Reviewer finding on v1: these signals were matched against
+  // comment-INCLUSIVE text, so a comment mentioning "npm install" (which the
+  // canonical block's own explanation does) satisfied the requirement.
+  it('does not accept install / prepend / guard signals from comments', () => {
+    const c = classifyCdkCliUsage(
+      '# remember to npm install first\n# and export PATH="${TEST_DIR}/node_modules/.bin:${PATH}"\n# guard: [ -x "${TEST_DIR}/node_modules/.bin/cdk" ]\n',
+    );
+    expect(c.hasInstallStep).toBe(false);
+    expect(c.hasPathPrepend).toBe(false);
+    expect(c.hasCdkBinGuard).toBe(false);
   });
 });
 
 describe('checkFixture verdicts (issue 1485)', () => {
   const pinnedPkg = JSON.stringify({ devDependencies: { 'aws-cdk': '^2.1133.0' } });
+  const guardAndInstall = '[ -x "${PWD}/node_modules/.bin/cdk" ] || npm install\n';
 
   it('flags a bare invocation with a pin but no PATH prepend (the incident shape)', () => {
-    const v = checkFixture('npm install\ncdk deploy "${STACK}"\n', pinnedPkg);
+    const v = checkFixture(`${guardAndInstall}cdk deploy "\${STACK}"\n`, pinnedPkg);
     expect(v.violations).toHaveLength(1);
     expect(v.violations[0]).toContain('PATH');
   });
 
   it('flags an npx invocation with no pin at all', () => {
     const v = checkFixture(
-      'pnpm install --ignore-workspace\nexport PATH="${PWD}/node_modules/.bin:${PATH}"\nnpx cdk synth\n',
+      `if [[ ! -x "node_modules/.bin/cdk" ]]; then pnpm install --ignore-workspace; fi\nexport PATH="\${PWD}/node_modules/.bin:\${PATH}"\nnpx cdk synth\n`,
       JSON.stringify({ dependencies: { 'aws-cdk-lib': '^2.169.0' } }),
     );
     expect(v.violations).toHaveLength(1);
     expect(v.violations[0]).toContain('pin');
   });
 
-  it('flags a pinned + prepended fixture with no install step', () => {
-    const v = checkFixture('export PATH="${PWD}/node_modules/.bin:${PATH}"\nnpx cdk deploy X\n', pinnedPkg);
+  it('flags a pinned + prepended fixture with no install step (comment mentions do not count)', () => {
+    const v = checkFixture(
+      '# install deps via npm install before running\n[ -x "node_modules/.bin/cdk" ] || true\nexport PATH="${PWD}/node_modules/.bin:${PATH}"\nnpx cdk deploy X\n',
+      pinnedPkg,
+    );
     expect(v.violations).toHaveLength(1);
     expect(v.violations[0]).toContain('install');
+  });
+
+  it('flags a fixture whose install has no cdk-bin guard', () => {
+    const v = checkFixture(
+      'npm install\nexport PATH="${PWD}/node_modules/.bin:${PATH}"\nnpx cdk deploy X\n',
+      pinnedPkg,
+    );
+    expect(v.violations).toHaveLength(1);
+    expect(v.violations[0]).toContain('-x');
   });
 
   it('accepts the canonical hermetic shape', () => {

@@ -26,7 +26,7 @@
  */
 
 const CDK_VERBS =
-  'deploy|synth|synthesize|bootstrap|destroy|diff|migrate|import|watch|ls|list|context|acknowledge|doctor|version|--version';
+  'deploy|synth|synthesize|bootstrap|destroy|diff|migrate|import|watch|ls|list|context|acknowledge|doctor|version|gc|rollback|init|drift|notices|metadata|--version';
 
 /** Segments of a line that sit in command position (after ; & | ( ` and $( ). */
 function commandSegments(line: string): string[] {
@@ -36,9 +36,22 @@ function commandSegments(line: string): string[] {
     .filter((s) => s.length > 0);
 }
 
-/** Strip leading inline env-var assignments (`FOO=bar BAZ=qux cmd ...`). */
-function stripEnvAssignments(segment: string): string {
-  return segment.replace(/^(?:[A-Za-z_][A-Za-z0-9_]*=[^\s]*\s+)+/, '');
+/**
+ * Strip leading tokens that keep the rest of the segment in command
+ * position: shell keywords (`if ! cdk deploy`, `then cdk deploy`, ...),
+ * negation, `time` / `timeout <n>` wrappers, and inline env-var assignments
+ * (quoted values included: `FOO="a b" cdk deploy`).
+ */
+function stripToCommandWord(segment: string): string {
+  let s = segment;
+  let prev;
+  do {
+    prev = s;
+    s = s.replace(/^(?:!|if|then|else|elif|do|while|until|time)\s+/, '');
+    s = s.replace(/^timeout\s+(?:-\S+\s+)*\d+\S*\s+/, '');
+    s = s.replace(/^(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|\S*)\s+)+/, '');
+  } while (s !== prev);
+  return s;
 }
 
 export interface CdkCliUsage {
@@ -48,10 +61,12 @@ export interface CdkCliUsage {
   npxInvocations: number;
   /** `"${...CDK_BIN...}" <verb>` invocations */
   explicitBinInvocations: number;
-  /** `export PATH="<...>/node_modules/.bin:${PATH}"` present */
+  /** `export PATH="<...>/node_modules/.bin:${PATH}"` present (non-comment) */
   hasPathPrepend: boolean;
-  /** an `npm install` / `pnpm install` / `vp install` step present */
+  /** an `npm install` / `pnpm install` / `vp install` step present (non-comment) */
   hasInstallStep: boolean;
+  /** an `-x .../node_modules/.bin/cdk` existence test present (non-comment) */
+  hasCdkBinGuard: boolean;
   /** every `*CDK_BIN*` variable used is defined to a node_modules/.bin/cdk */
   cdkBinPointsAtLocalBin: boolean;
 }
@@ -75,7 +90,7 @@ export function classifyCdkCliUsage(script: string): CdkCliUsage {
     if (defMatch) binVarsLocal.add(defMatch[1]);
 
     for (const rawSegment of commandSegments(line)) {
-      const segment = stripEnvAssignments(rawSegment);
+      const segment = stripToCommandWord(rawSegment);
       // echo/printf arguments are prose, not invocations
       if (/^(echo|printf)\b/.test(segment)) continue;
       if (npxRe.test(segment)) {
@@ -92,8 +107,21 @@ export function classifyCdkCliUsage(script: string): CdkCliUsage {
     }
   }
 
-  const hasPathPrepend = /export\s+PATH=["']?[^"'\n]*node_modules\/\.bin:/.test(joined);
-  const hasInstallStep = /\b(?:npm|pnpm|vp)\s+install\b/.test(joined);
+  // Match hermeticity signals against NON-COMMENT lines only: a comment like
+  // "# remember to npm install first" must not satisfy the install
+  // requirement (reviewer finding on the first version of this classifier —
+  // the canonical block's own explanatory comment mentions the install
+  // command, so comment-inclusive matching passed a fixture whose real guard
+  // had been deleted).
+  const code = lines.join('\n');
+  const hasPathPrepend = /export\s+PATH=["']?[^"'\n]*node_modules\/\.bin:/.test(code);
+  const hasInstallStep = /\b(?:npm|pnpm|vp)\s+install\b/.test(code);
+  // Directory-blindness bound (recorded, not solved): these regexes cannot
+  // statically track the cwd of the install or the prepended path's prefix, so
+  // an install in the wrong directory could still pass. The `-x` guard
+  // requirement narrows that: the guard names node_modules/.bin/cdk relative
+  // to the fixture in every canonical shape, and its absence fails the lint.
+  const hasCdkBinGuard = /-x\s+["']?[^"'\n]*node_modules\/\.bin\/cdk/.test(code);
   const cdkBinPointsAtLocalBin =
     binVarsUsed.size > 0 && [...binVarsUsed].every((v) => binVarsLocal.has(v));
 
@@ -103,6 +131,7 @@ export function classifyCdkCliUsage(script: string): CdkCliUsage {
     explicitBinInvocations: explicitBin,
     hasPathPrepend,
     hasInstallStep,
+    hasCdkBinGuard,
     cdkBinPointsAtLocalBin,
   };
 }
@@ -144,6 +173,11 @@ export function checkFixture(
     }
     if (!usage.hasInstallStep) {
       violations.push('no install step (npm/pnpm/vp install) — a gitignored node_modules leaves the pin inert');
+    }
+    if (!usage.hasCdkBinGuard) {
+      violations.push(
+        'no `-x .../node_modules/.bin/cdk` guard — a node_modules that pre-exists without the cdk bin (stale checkout from before the pin) silently skips the install',
+      );
     }
     const bareOrNpx = usage.bareInvocations + usage.npxInvocations > 0;
     if (bareOrNpx && !usage.hasPathPrepend) {
