@@ -51,6 +51,13 @@ run_case() {
       echo "$subject" > "$msgfile"
       cmdstr=$(printf 'git -C %q commit -F %q' "$tmpdir" "$msgfile")
       ;;
+    Fdash)
+      # `git commit -F -` + heredoc: the message never touches disk, so the
+      # subject has to be read out of the command string itself. This shape
+      # used to fall through the path parser (resolving to a nonexistent
+      # "<dir>/-") and silently skip the whole gate.
+      cmdstr=$(printf "git -C %q commit -q -F - <<'MSGEOF'\n%s\n\nbody\nMSGEOF" "$tmpdir" "$subject")
+      ;;
     amend)
       cmdstr=$(printf 'git -C %q commit --amend -m "%s"' "$tmpdir" "$subject")
       ;;
@@ -197,6 +204,23 @@ run_case "feat!: breaking, no src/** BLOCKED" 2 \
 
 run_case "feat: via -F file, .claude/** only BLOCKED" 2 \
   "feat(review-pr): add bucket entry" ".claude/skills/review-pr/SKILL.md" "F"
+
+# --- BLOCK / PASS: via `-F -` heredoc shape (the #1455 blind spot) ---
+#
+# `-F -` matched the path parser, resolved to a nonexistent "<dir>/-", left
+# the subject empty and fell through to the pass-through. It let a
+# `fix(hooks):` commit touching only `.claude/**` land -- on the very commit
+# that fixed #1455. The heredoc form is what commit-msg-heredoc-gate.sh
+# steers people toward, so it is the common shape here, not a rare one.
+
+run_case "fix: via -F - heredoc, .claude/** only BLOCKED" 2 \
+  "fix(hooks): match verbs in command position" ".claude/hooks/verify-pr-gate.sh" "Fdash"
+
+run_case "chore: via -F - heredoc, .claude/** only passes" 0 \
+  "chore(hooks): match verbs in command position" ".claude/hooks/verify-pr-gate.sh" "Fdash"
+
+run_case "feat: via -F - heredoc with src/** passes" 0 \
+  "feat(cli): add flag" "src/cli/options.ts" "Fdash"
 
 # --- BLOCK: variant subject formats ---
 

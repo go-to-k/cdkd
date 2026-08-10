@@ -42,6 +42,29 @@
 # is not a git repo (matches commit-prefix-scope-gate.sh's behavior
 # on freshly-cloned trees with nothing staged).
 
+# Shared command-position matcher (issue #1455): catches the guarded verb
+# after ANY chained command (`git push && gh pr create`), not just after an
+# optional leading `cd`. See .claude/hooks/lib/command-match.sh.
+# shellcheck source=lib/command-match.sh
+__hook_dir="${BASH_SOURCE[0]%/*}"
+# `%/*` leaves the string unchanged when the path has no slash (invoked as
+# `bash verify-pr-gate.sh` from inside the hooks dir), which would look for
+# `<script-name>/lib/...`. Fall back to the cwd in that case.
+[ "$__hook_dir" = "${BASH_SOURCE[0]}" ] && __hook_dir="."
+if ! . "$__hook_dir/lib/command-match.sh" 2>/dev/null \
+  || ! declare -F cmd_matches_verb >/dev/null \
+  || ! declare -F cmd_last_cd_target >/dev/null \
+  || ! declare -F strip_noncommand_spans >/dev/null; then
+  # FAIL CLOSED. Without the helper `cmd_matches_verb` is undefined, the
+  # `if ! cmd_matches_verb ...` guard below sees exit 127 (truthy for `!`),
+  # and the hook would `exit 0` -- silently disabling the gate, which is the
+  # exact failure mode this file exists to prevent. Refuse instead.
+  echo "Blocked: .claude/hooks/lib/command-match.sh is missing or unloadable," >&2
+  echo "so this gate cannot evaluate the command. Restore the file; do not" >&2
+  echo "work around the gate." >&2
+  exit 2
+fi
+
 set -u
 
 input=$(cat 2>/dev/null || true)
@@ -56,10 +79,20 @@ hook_cwd=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null || echo "")
 # trigger string in a quoted arg body.
 is_pr_create=0
 is_api_patch=0
-if printf '%s' "$cmd" | grep -qE '^[[:space:]]*(cd[[:space:]]+[^[:space:]]+[[:space:]]*&&[[:space:]]*)?gh([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+pr[[:space:]]+create([[:space:]]|$)'; then
+if cmd_matches_verb "$cmd" 'gh([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+pr[[:space:]]+create([[:space:]]|$)'; then
   is_pr_create=1
 fi
-if printf '%s' "$cmd" | grep -qE '^[[:space:]]*(cd[[:space:]]+[^[:space:]]+[[:space:]]*&&[[:space:]]*)?gh([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+api[[:space:]].*pulls/[0-9]+'; then
+# Two steps on purpose. `cmd_matches_verb` confirms `gh api` runs in command
+# position, which it decides on the NEUTRALISED text; the endpoint is then
+# matched against the RAW command. A quoted endpoint
+# (`gh api -X PATCH "repos/o/r/pulls/1458"`) is one placeholder token by the
+# time the neutraliser is done, so testing `pulls/[0-9]+` against the
+# neutralised text found nothing and the gate exited 0 — letting a mislabelled
+# `fix:` title edit through, which is the PR #562 incident this gate exists to
+# stop. Reading raw is safe only for the endpoint, and only after the verb has
+# been confirmed above.
+if cmd_matches_verb "$cmd" 'gh([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+api([[:space:]]|$)' \
+  && printf '%s' "$cmd" | grep -qE 'pulls/[0-9]+'; then
   is_api_patch=1
 fi
 if [[ "$is_pr_create" -eq 0 && "$is_api_patch" -eq 0 ]]; then
@@ -77,13 +110,10 @@ fi
 target_dir="${hook_cwd:-$PWD}"
 
 # Leading `cd <path> && ...` shifts the target dir.
-if [[ "$cmd" =~ ^[[:space:]]*cd[[:space:]]+([^[:space:]\&\;\|]+) ]]; then
-  cd_target="${BASH_REMATCH[1]}"
-  cd_target="${cd_target%\"}"; cd_target="${cd_target#\"}"
-  cd_target="${cd_target%\'}"; cd_target="${cd_target#\'}"
-  if [[ "$cd_target" != /* ]]; then
-    cd_target="$target_dir/$cd_target"
-  fi
+# Pass the current target as the BASE so chained relative cds compose
+# (`cd /abs/one && cd sub`); the helper returns a fully-resolved path.
+cd_target="$(cmd_last_cd_target "$cmd" "$target_dir" 'gh([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+pr[[:space:]]+create([[:space:]]|$)')"
+if [[ -n "$cd_target" ]]; then
   target_dir="$cd_target"
 fi
 

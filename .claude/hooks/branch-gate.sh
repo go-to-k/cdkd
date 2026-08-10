@@ -22,6 +22,29 @@
 #   3. The hook input's `cwd` field (the Bash tool's persisted cwd).
 #   4. The hook process's own $PWD (fallback, almost never reached).
 
+# Shared command-position matcher (issue #1455): catches the guarded verb
+# after ANY chained command (`git push && gh pr create`), not just after an
+# optional leading `cd`. See .claude/hooks/lib/command-match.sh.
+# shellcheck source=lib/command-match.sh
+__hook_dir="${BASH_SOURCE[0]%/*}"
+# `%/*` leaves the string unchanged when the path has no slash (invoked as
+# `bash verify-pr-gate.sh` from inside the hooks dir), which would look for
+# `<script-name>/lib/...`. Fall back to the cwd in that case.
+[ "$__hook_dir" = "${BASH_SOURCE[0]}" ] && __hook_dir="."
+if ! . "$__hook_dir/lib/command-match.sh" 2>/dev/null \
+  || ! declare -F cmd_matches_verb >/dev/null \
+  || ! declare -F cmd_last_cd_target >/dev/null \
+  || ! declare -F strip_noncommand_spans >/dev/null; then
+  # FAIL CLOSED. Without the helper `cmd_matches_verb` is undefined, the
+  # `if ! cmd_matches_verb ...` guard below sees exit 127 (truthy for `!`),
+  # and the hook would `exit 0` -- silently disabling the gate, which is the
+  # exact failure mode this file exists to prevent. Refuse instead.
+  echo "Blocked: .claude/hooks/lib/command-match.sh is missing or unloadable," >&2
+  echo "so this gate cannot evaluate the command. Restore the file; do not" >&2
+  echo "work around the gate." >&2
+  exit 2
+fi
+
 set -u
 
 # Read the entire stdin payload once; we need both .tool_input.command
@@ -42,40 +65,13 @@ hook_cwd=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null || echo "")
 #
 # Anchors:
 #   `^[[:space:]]*(cd[[:space:]]+...&&[[:space:]]*)?git`
-#                             — line-start anchored (per memory rule
-#                               feedback_hook_command_match_line_start.md)
-#                               so `git commit` / `git push` substrings
-#                               inside quoted argument bodies
-#                               (`gh issue create --body "we should add
-#                               git commit hook later"`) do NOT
-#                               false-positive into a hard block. The
-#                               optional leading `cd <path> &&` prefix
-#                               preserves the worktree-aware
-#                               `cd <side> && git commit` chain shape —
-#                               `cd ... &&` at the literal line-start
-#                               cannot match inside a JSON literal
-#                               containing `&&` because the line-start
-#                               anchor requires no leading characters
-#                               except whitespace. Mirrors check-gate.sh
-#                               (PR #562 fix pattern).
-#   `([[:space:]]+(-[^[:space:]]+([[:space:]]+[^[:space:]-][^[:space:]]*)?))*`
-#                             — zero or more "flag tokens": each flag
-#                               (`-X` or `--foo[=val]`) optionally
-#                               followed by a separate non-flag value
-#                               token (covers `-C <path>` /
-#                               `-c <key>=<val>`).
-#   `[[:space:]]+(commit|push)` — the subcommand position.
-#   `([[:space:]]|$|[|;&`)])` — must end at a token boundary so
-#                               `commit.gpgSign=false` (a `-c` value)
-#                               is NOT counted as the subcommand;
-#                               also recognizes pipeline / subshell
-#                               separators so `git status; git commit`,
-#                               `` `git push` `` all match.
-#                               `$(git commit)` / backtick-wrapped
-#                               forms are an accepted false-negative
-#                               of the line-start tightening (per the
-#                               memory rule's trade-off).
-if ! printf '%s' "$cmd" | grep -qE '^[[:space:]]*(cd[[:space:]]+[^[:space:]]+[[:space:]]*&&[[:space:]]*)?git([[:space:]]+(-[^[:space:]]+([[:space:]]+[^[:space:]-][^[:space:]]*)?))*[[:space:]]+(commit|push)([[:space:]]|$|[|;&`)])'; then
+# Matching goes through the SHARED command-position matcher
+# (.claude/hooks/lib/command-match.sh, issue #1455): heredoc bodies and
+# quoted spans are stripped, then the verb is matched at line start OR
+# after a `&&` / `||` / `;` / `|` operator. That catches chained
+# invocations the old line-start anchor missed, while a quoted mention
+# still does not fire (it is removed rather than dodged by position).
+if ! cmd_matches_verb "$cmd" 'git([[:space:]]+(-[^[:space:]]+([[:space:]]+[^[:space:]-][^[:space:]]*)?))*[[:space:]]+(commit|push)([[:space:]]|$|[|;&`)])'; then
   exit 0
 fi
 
@@ -88,15 +84,8 @@ target_dir="${hook_cwd:-$PWD}"
 # enough that handling only the leading one covers the realistic
 # foot-gun (the "cd into parent for tooling" case) without parsing
 # arbitrary shell.
-if [[ "$cmd" =~ ^[[:space:]]*cd[[:space:]]+([^[:space:]\&\;\|]+) ]]; then
-  cd_target="${BASH_REMATCH[1]}"
-  # Strip surrounding single or double quotes if present.
-  cd_target="${cd_target%\"}"; cd_target="${cd_target#\"}"
-  cd_target="${cd_target%\'}"; cd_target="${cd_target#\'}"
-  # Resolve relative paths against the inherited cwd.
-  if [[ "$cd_target" != /* ]]; then
-    cd_target="$target_dir/$cd_target"
-  fi
+cd_target="$(cmd_last_cd_target "$cmd" "$target_dir" 'git([[:space:]]+(-[^[:space:]]+([[:space:]]+[^[:space:]-][^[:space:]]*)?))*[[:space:]]+(commit|push)([[:space:]]|$|[|;&`)])')"
+if [[ -n "$cd_target" ]]; then
   target_dir="$cd_target"
 fi
 

@@ -134,7 +134,37 @@ if [[ -z "$subject" ]]; then
   elif [[ "$cmd" =~ [[:space:]]--file[[:space:]]+([^[:space:]\"\'\;\&\|]+) ]]; then
     msg_file="${BASH_REMATCH[1]}"
   fi
-  if [[ -n "$msg_file" ]]; then
+  if [[ "$msg_file" == "-" ]]; then
+    # `git commit -F -` reads the message from STDIN, which in practice is a
+    # heredoc whose body is part of this very command string — so the subject
+    # IS available at PreToolUse time, it just is not on disk.
+    #
+    # This was a silent blind spot: `-F -` matched the path parser, resolved
+    # to a nonexistent "<dir>/-", left $subject empty, and fell through to the
+    # pass-through below. It let a `fix(hooks):` commit touching only
+    # `.claude/**` through — exactly the mislabelled-release shape this gate
+    # exists to stop — and it did so on the commit that fixed issue #1455.
+    # The `-F -` heredoc form is also what `commit-msg-heredoc-gate.sh` steers
+    # people toward, so it is the COMMON shape here, not a rare one.
+    #
+    # Take the first non-empty line after the heredoc opener that belongs to
+    # the `git ... commit` invocation — NOT merely the first heredoc anywhere
+    # in the command. A command can open an unrelated heredoc first:
+    #
+    #   cat <<A > /tmp/f
+    #   chore: unrelated
+    #   A
+    #   git commit -F - <<'EOF'
+    #   fix(hooks): the real subject
+    #   EOF
+    #
+    # Latching on the first opener returns "chore: unrelated" and lets the
+    # mislabelled `fix:` through — the exact outcome this gate exists to stop.
+    subject=$(printf '%s' "$cmd" | awk '
+      seen { if ($0 != "") { print; exit } next }
+      /git[^|;&]*commit/ && /<<-?[ \t]*("[^"]+"|\047[^\047]+\047|[A-Za-z_][A-Za-z0-9_]*)/ { seen = 1 }
+    ')
+  elif [[ -n "$msg_file" ]]; then
     # Resolve relative path against target_dir.
     if [[ "$msg_file" != /* ]]; then
       msg_file="$target_dir/$msg_file"

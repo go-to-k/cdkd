@@ -41,6 +41,21 @@
 # helper that blocks the user's command when the snapshot fails would
 # be worse than no helper at all.
 
+__hook_dir="${BASH_SOURCE[0]%/*}"
+# `%/*` leaves the string unchanged when the path has no slash (invoked as
+# `bash verify-pr-gate.sh` from inside the hooks dir), which would look for
+# `<script-name>/lib/...`. Fall back to the cwd in that case.
+[ "$__hook_dir" = "${BASH_SOURCE[0]}" ] && __hook_dir="."
+if ! . "$__hook_dir/lib/command-match.sh" 2>/dev/null \
+  || ! declare -F cmd_matches_verb >/dev/null \
+  || ! declare -F cmd_last_cd_target >/dev/null \
+  || ! declare -F strip_noncommand_spans >/dev/null; then
+  # Non-blocking hook: without the helper, skip rather than refuse. Missing a
+  # backup is a smaller harm than blocking an operation this hook only
+  # observes.
+  exit 0
+fi
+
 set -u
 
 input=$(cat 2>/dev/null || true)
@@ -65,19 +80,23 @@ hook_cwd=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null || echo "")
 # alone only unstages (worktree untouched), but it is cheap to include
 # and a combined `--staged --worktree` IS destructive, so it stays in.
 #
-# Line-start anchored per feedback_hook_command_match_line_start: a
-# `git checkout --` mentioned inside a quoted PR body must not trigger.
-prefix='^[[:space:]]*(cd[[:space:]]+[^[:space:]]+[[:space:]]*&&[[:space:]]*)?git([[:space:]]+-[^[:space:]]+([[:space:]]+[^[:space:]-][^[:space:]]*)?)*[[:space:]]+'
+# Matching goes through the SHARED command-position matcher
+# (.claude/hooks/lib/command-match.sh, issue #1455): heredoc bodies and
+# quoted spans are stripped, then the verb is matched at line start OR
+# after a `&&` / `||` / `;` / `|` operator. That catches chained
+# invocations the old line-start anchor missed, while a quoted mention
+# still does not fire (it is removed rather than dodged by position).
+prefix='git([[:space:]]+-[^[:space:]]+([[:space:]]+[^[:space:]-][^[:space:]]*)?)*[[:space:]]+'
 verb=""
-if printf '%s' "$cmd" | grep -qE "${prefix}checkout([[:space:]]+-[^[:space:]]+)*[[:space:]]+(--|\.)([[:space:]]|$)"; then
+if cmd_matches_verb "$cmd" "${prefix}checkout([[:space:]]+-[^[:space:]]+)*[[:space:]]+(--|\.)([[:space:]]|$)"; then
   verb="checkout"
-elif printf '%s' "$cmd" | grep -qE "${prefix}restore([[:space:]]|$)"; then
+elif cmd_matches_verb "$cmd" "${prefix}restore([[:space:]]|$)"; then
   verb="restore"
-elif printf '%s' "$cmd" | grep -qE "${prefix}reset([[:space:]]+-[^[:space:]]+)*[[:space:]]+--hard([[:space:]]|$)"; then
+elif cmd_matches_verb "$cmd" "${prefix}reset([[:space:]]+-[^[:space:]]+)*[[:space:]]+--hard([[:space:]]|$)"; then
   verb="reset-hard"
-elif printf '%s' "$cmd" | grep -qE "${prefix}clean([[:space:]]+-[^[:space:]]*f[^[:space:]]*)"; then
+elif cmd_matches_verb "$cmd" "${prefix}clean([[:space:]]+-[^[:space:]]*f[^[:space:]]*)"; then
   verb="clean"
-elif printf '%s' "$cmd" | grep -qE "${prefix}stash([[:space:]]|$)"; then
+elif cmd_matches_verb "$cmd" "${prefix}stash([[:space:]]|$)"; then
   verb="stash"
 fi
 [ -n "$verb" ] || exit 0

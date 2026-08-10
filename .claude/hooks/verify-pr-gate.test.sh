@@ -162,6 +162,40 @@ run_case "gh issue body quoting 'gh pr create' passes through" 0 stale "" \
 run_case "echo body quoting 'gh pr merge' passes through" 0 stale "" \
   "$(printf '{"cwd":"%s","tool_input":{"command":"echo \"after CI green: gh pr merge --squash\""}}' "$side_repo")"
 
+# --- COMMAND-POSITION cases (issue #1455) ---
+#
+# The line-start anchor these Part-C cases motivated also let a REAL
+# invocation through whenever any other command came first. That is not a
+# hypothetical shape: `git push && gh pr create` is the natural way to push a
+# branch and open its PR in one step, and it is exactly how PR #1451's own
+# `gh pr create` slipped past this gate. The verb is now matched in command
+# position — line start OR after `&&` / `||` / `;` / `|` — while the
+# false-positive cases above keep passing because quoted spans are stripped
+# before matching rather than dodged by position.
+
+# 14. `git push && gh pr create` — the shape that motivated the issue.
+run_case "git push && gh pr create is caught" 2 stale "" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git push && gh pr create --title x --body y"}}' "$side_repo")"
+
+# 15. `; gh pr merge` — chained after an unrelated command.
+run_case "chained ; gh pr merge is caught" 2 stale "" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"echo done; gh pr merge 1 --squash"}}' "$side_repo")"
+
+# 16. `|| gh pr merge` — chained on failure.
+run_case "chained || gh pr merge is caught" 2 stale "" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"false || gh pr merge 1 --squash"}}' "$side_repo")"
+
+# 17. A fresh marker still passes through the chained shape — the gate is
+#     matching MORE commands, not blocking unconditionally.
+run_case "git push && gh pr create passes with a fresh marker" 0 fresh "" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git push && gh pr create --title x"}}' "$side_repo")"
+
+# 18. A quoted mention AFTER a chain operator must still pass: this is the
+#     case where stripping quoted spans is doing the work, since position
+#     alone no longer saves us.
+run_case "chained echo quoting 'gh pr merge' still passes through" 0 stale "" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git status && echo \"then: gh pr merge --squash\""}}' "$side_repo")"
+
 echo
 echo "Pass: $pass  Fail: $fail"
 if [[ "$fail" -gt 0 ]]; then
