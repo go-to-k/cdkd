@@ -1,3 +1,10 @@
+## [0.278.38](https://github.com/go-to-k/cdkd/compare/v0.278.37...v0.278.38) (2026-08-10)
+
+
+### Bug Fixes
+
+* **drift:** canonicalize an IAM principal's ARN and unique-id spellings so a resource policy stops reporting permanent phantom drift ([#1527](https://github.com/go-to-k/cdkd/issues/1527)) ([5d05595](https://github.com/go-to-k/cdkd/commit/5d05595abad85e73451587241f7ab799c68c9f3b))
+
 ## [0.278.37](https://github.com/go-to-k/cdkd/compare/v0.278.36...v0.278.37) (2026-08-10)
 
 
