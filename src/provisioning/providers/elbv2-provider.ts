@@ -41,6 +41,7 @@ import {
   ResourceUpdateNotSupportedError,
 } from '../../utils/error-handler.js';
 import { generateResourceNameWithFallback } from '../resource-name.js';
+import { clearOnUpdateRemoval } from '../update-removal.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import type {
@@ -716,11 +717,37 @@ export class ELBv2Provider implements ResourceProvider {
           ? rawMatcher
           : undefined;
 
+      // Removal semantics (issue #1160, live CFn A/B 2026-08-10 on an HTTP
+      // target group): CloudFormation itself RETAINS every health-check
+      // field EXCEPT `HealthCheckPort` when the property is removed from
+      // the template — HealthCheckProtocol / HealthCheckPath /
+      // HealthCheckEnabled / HealthCheckIntervalSeconds /
+      // HealthCheckTimeoutSeconds / HealthyThresholdCount /
+      // UnhealthyThresholdCount and the listener's SslPolicy all kept their
+      // customized values through a CFn removal update, so cdkd's
+      // pass-through (absent -> undefined -> ModifyTargetGroup merge) is
+      // already CFn parity for those. `HealthCheckPort` is the one field
+      // CFn resets, to its create default `traffic-port`; mirror that.
+      // GENEVE target groups are deferred (retain, no reset): their create
+      // default is port 80, not `traffic-port`, and CFn's removal behavior
+      // for a Gateway Load Balancer TG has not been A/B-verified.
+      const targetGroupProtocol = String(
+        properties['Protocol'] ?? previousProperties['Protocol'] ?? ''
+      ).toUpperCase();
+      const healthCheckPort =
+        targetGroupProtocol === 'GENEVE'
+          ? (properties['HealthCheckPort'] as string | undefined)
+          : clearOnUpdateRemoval(
+              properties['HealthCheckPort'] as string | undefined,
+              previousProperties['HealthCheckPort'] as string | undefined,
+              'traffic-port'
+            );
+
       await this.getClient().send(
         new ModifyTargetGroupCommand({
           TargetGroupArn: physicalId,
           HealthCheckProtocol: properties['HealthCheckProtocol'] as ProtocolEnum | undefined,
-          HealthCheckPort: properties['HealthCheckPort'] as string | undefined,
+          HealthCheckPort: healthCheckPort,
           HealthCheckPath: properties['HealthCheckPath'] as string | undefined,
           HealthCheckEnabled:
             properties['HealthCheckEnabled'] !== undefined

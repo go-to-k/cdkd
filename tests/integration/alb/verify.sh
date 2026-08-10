@@ -4,7 +4,10 @@
 # Deploys the ALB stack (VPC + ALB + TargetGroup + Listener), asserts the
 # Listener's `routing.http.response.server.enabled` attribute the fixture sets
 # via the L1 escape hatch actually reached AWS (cdkd applies it through a
-# post-create ModifyListenerAttributes call), then destroys and verifies clean.
+# post-create ModifyListenerAttributes call), re-deploys with
+# CDKD_TEST_REMOVAL=true (drops the TargetGroup's custom HealthCheckPort —
+# issue #1160 elbv2 batch) and asserts the live TG resets to the CFn-parity
+# default `traffic-port`, then destroys and verifies clean.
 #
 # Run via: /run-integ alb
 #         or: bash tests/integration/alb/verify.sh
@@ -102,6 +105,44 @@ if [[ "${ATTR_VAL}" != "${EXPECTED_ATTR_VAL}" ]]; then
   exit 1
 fi
 echo "    ${EXPECTED_ATTR_KEY}=${ATTR_VAL} reached AWS (✓)"
+
+echo ""
+echo "==> Assert TargetGroup baseline HealthCheckPort (issue #1160 elbv2 batch)"
+TG_ARN=$(echo "${STATE_BODY}" | python3 -c '
+import sys, json
+s = json.load(sys.stdin)
+for v in s["resources"].values():
+    if v["resourceType"] == "AWS::ElasticLoadBalancingV2::TargetGroup":
+        print(v["physicalId"]); break
+')
+if [[ -z "${TG_ARN}" ]]; then
+  echo "FAIL: could not find TargetGroup ARN in cdkd state"
+  exit 1
+fi
+HC_PORT_P1=$(aws elbv2 describe-target-groups --target-group-arns "${TG_ARN}" --region "${AWS_REGION}" \
+  --query 'TargetGroups[0].HealthCheckPort' --output text)
+if [[ "${HC_PORT_P1}" != "8080" ]]; then
+  echo "FAIL: baseline HealthCheckPort is '${HC_PORT_P1}', expected '8080'"
+  exit 1
+fi
+echo "    baseline HealthCheckPort=8080 reached AWS (✓)"
+
+echo ""
+echo "==> Removal redeploy: drop HealthCheckPort (issue #1160 elbv2 batch)"
+CDKD_TEST_REMOVAL=true ${CDKD} deploy ${STACK} --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}"
+
+# Pre-fix the provider passed the absent field through and ModifyTargetGroup
+# merged (port stayed 8080); post-fix the removal sends the explicit
+# `traffic-port` reset — the one health-check field CloudFormation itself
+# resets on removal (live CFn A/B 2026-08-10; the other HC fields are
+# retained by CFn and stay pass-through).
+HC_PORT_P2=$(aws elbv2 describe-target-groups --target-group-arns "${TG_ARN}" --region "${AWS_REGION}" \
+  --query 'TargetGroups[0].HealthCheckPort' --output text)
+if [[ "${HC_PORT_P2}" != "traffic-port" ]]; then
+  echo "FAIL: HealthCheckPort is '${HC_PORT_P2}' after the removal redeploy, expected the CFn-parity reset 'traffic-port'"
+  exit 1
+fi
+echo "    HealthCheckPort reset to traffic-port on removal (✓)"
 
 echo ""
 echo "==> Destroy ${STACK}"

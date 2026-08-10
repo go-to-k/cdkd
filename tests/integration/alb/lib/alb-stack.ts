@@ -41,6 +41,15 @@ export class AlbStack extends cdk.Stack {
     });
 
     // Target Group (IP target for simplicity - no instances needed)
+    //
+    // CDKD_TEST_REMOVAL (issue #1160, elbv2 batch): the baseline template
+    // sets a custom health-check port; the removal phase drops it.
+    // ModifyTargetGroup merges (absent = "no change"), so pre-fix the live
+    // TG silently kept port 8080; the provider must reset it to the
+    // CFn-parity default `traffic-port` (live CFn A/B 2026-08-10 — the ONE
+    // health-check field CloudFormation resets on removal; the others are
+    // retained by CFn itself and stay pass-through).
+    const removal = process.env.CDKD_TEST_REMOVAL === 'true';
     const targetGroup = new elbv2.ApplicationTargetGroup(this, 'TargetGroup', {
       vpc,
       port: 80,
@@ -49,6 +58,7 @@ export class AlbStack extends cdk.Stack {
       healthCheck: {
         path: '/',
         interval: cdk.Duration.seconds(30),
+        ...(removal ? {} : { port: '8080' }),
       },
     });
 
