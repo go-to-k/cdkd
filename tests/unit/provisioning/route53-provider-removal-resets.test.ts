@@ -168,10 +168,14 @@ describe('Route53Provider HostedZone removal resets (#1160 route53 batch)', () =
       expect(calls[0][0].input.RemoveTagKeys).toBeUndefined();
     });
 
-    it('tolerates a malformed tag list on either side instead of throwing', async () => {
-      // A best-effort tag apply whose failures are already warn-and-continue,
-      // and the PREVIOUS side is state-borne — a hard refusal there would fire
-      // on a rollback replay the user cannot edit.
+    it('a MALFORMED desired list does NOT untag the live zone', async () => {
+      // The destructive direction of the #1471 / #1493 rule. A malformed
+      // desired value reads as `[]` at the value level, which is
+      // indistinguishable from "the user removed every tag" — so acting on it
+      // would UNTAG a live zone on the strength of an unresolved intrinsic.
+      // It warns and leaves AWS alone instead, and never throws (the previous
+      // side is state-borne, so a refusal would fire on a rollback replay the
+      // user cannot edit).
       await expect(
         update(
           { Name: 'example.com', HostedZoneTags: 'not-a-list' },
@@ -179,9 +183,23 @@ describe('Route53Provider HostedZone removal resets (#1160 route53 batch)', () =
         )
       ).resolves.toBeDefined();
 
+      expect(callsOf('ChangeTagsForResourceCommand')).toHaveLength(0);
+    });
+
+    it('a malformed PREVIOUS list still lets a well-formed desired side apply', async () => {
+      // Only the DESIRED side gates the removal computation; a state record an
+      // older binary wrote must not block an ordinary update.
+      await expect(
+        update(
+          { Name: 'example.com', HostedZoneTags: [{ Key: 'New', Value: 'v' }] },
+          { Name: 'example.com', HostedZoneTags: 'not-a-list' }
+        )
+      ).resolves.toBeDefined();
+
       const calls = callsOf('ChangeTagsForResourceCommand');
       expect(calls).toHaveLength(1);
-      expect(calls[0][0].input.RemoveTagKeys).toEqual(['Old']);
+      expect(calls[0][0].input.AddTags).toEqual([{ Key: 'New', Value: 'v' }]);
+      expect(calls[0][0].input.RemoveTagKeys).toBeUndefined();
     });
   });
 
@@ -276,6 +294,41 @@ describe('Route53Provider HostedZone removal resets (#1160 route53 batch)', () =
       );
 
       expect(callsOf('ListQueryLoggingConfigsCommand')).toHaveLength(0);
+    });
+
+    it('a MALFORMED desired block does NOT delete the live config', async () => {
+      // Same destructive direction as the tag case: only a genuinely ABSENT
+      // block means "removed". A present block this provider cannot use warns
+      // and leaves AWS alone — which is also the pre-#1160 behavior for that
+      // shape, so the fix cannot regress a template that used to be a no-op
+      // into one that deletes.
+      await update(
+        { Name: 'example.com', QueryLoggingConfig: 'arn:aws:logs:us-east-1:1:log-group:/x' },
+        {
+          Name: 'example.com',
+          QueryLoggingConfig: {
+            CloudWatchLogsLogGroupArn: 'arn:aws:logs:us-east-1:1:log-group:/aws/route53/x',
+          },
+        }
+      );
+
+      expect(callsOf('ListQueryLoggingConfigsCommand')).toHaveLength(0);
+      expect(callsOf('DeleteQueryLoggingConfigCommand')).toHaveLength(0);
+      expect(callsOf('CreateQueryLoggingConfigCommand')).toHaveLength(0);
+    });
+
+    it('a desired block with a BLANK arn is likewise not a delete', async () => {
+      await update(
+        { Name: 'example.com', QueryLoggingConfig: { CloudWatchLogsLogGroupArn: '' } },
+        {
+          Name: 'example.com',
+          QueryLoggingConfig: {
+            CloudWatchLogsLogGroupArn: 'arn:aws:logs:us-east-1:1:log-group:/aws/route53/x',
+          },
+        }
+      );
+
+      expect(callsOf('DeleteQueryLoggingConfigCommand')).toHaveLength(0);
     });
   });
 });

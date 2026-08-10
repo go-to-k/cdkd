@@ -1167,6 +1167,25 @@ export class Route53Provider implements ResourceProvider {
     previousProperties?: Record<string, unknown>
   ): Promise<void> {
     const tags = this.readHostedZoneTags(properties);
+
+    // A present-but-MALFORMED desired list must not be read as "the user
+    // removed every tag". `readHostedZoneTags` collapses a malformed value to
+    // `[]`, which is indistinguishable from a real removal at the value level
+    // — and acting on it would UNTAG a live zone on the strength of an
+    // unresolved intrinsic. So removals are computed only when the desired
+    // side is genuinely absent or genuinely a list, matching the
+    // "never infer a default from a possibly-malformed value" rule
+    // (issues #1471 / #1493) in the one direction that is destructive here.
+    const desiredRaw = properties['HostedZoneTags'];
+    const desiredUsable = desiredRaw == null || Array.isArray(desiredRaw);
+    if (!desiredUsable) {
+      this.logger.warn(
+        `AWS::Route53::HostedZone HostedZoneTags must be an array on ${logicalId}; ` +
+          `ignoring it and leaving the live tags untouched (no tag is added or removed)`
+      );
+      return;
+    }
+
     const previousTags = previousProperties
       ? this.readHostedZoneTags(previousProperties)
       : undefined;
@@ -1232,6 +1251,22 @@ export class Route53Provider implements ResourceProvider {
     previousProperties?: Record<string, unknown>
   ): Promise<void> {
     const cloudWatchLogsLogGroupArn = this.readQueryLogGroupArn(properties);
+
+    // A present-but-MALFORMED desired block must not be read as a REMOVAL —
+    // deleting a live query-logging config on the strength of an unresolved
+    // intrinsic is the destructive direction of the #1471 / #1493 rule. Only
+    // a genuinely ABSENT block means "the user removed it"; anything present
+    // that this provider cannot use warns and leaves AWS alone, which is also
+    // the pre-#1160 behavior for that shape.
+    const desiredBlock = properties['QueryLoggingConfig'];
+    if (cloudWatchLogsLogGroupArn === undefined && desiredBlock != null) {
+      this.logger.warn(
+        `AWS::Route53::HostedZone QueryLoggingConfig on ${logicalId} carries no usable ` +
+          `CloudWatchLogsLogGroupArn; leaving the live query logging config untouched ` +
+          `(omit the block entirely to delete it)`
+      );
+      return;
+    }
 
     if (cloudWatchLogsLogGroupArn === undefined) {
       // REMOVAL (issue #1160). `previousProperties` is supplied on the UPDATE
