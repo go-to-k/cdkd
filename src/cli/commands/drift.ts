@@ -747,6 +747,107 @@ async function runAccept(
  * parent path — so `path.split('.', 1)` is always safe to extract the
  * top-level key.
  */
+/** A CFn-shaped tag list: a non-empty array whose every element has a string `Key`. */
+function isCfnTagList(value: unknown): value is Array<Record<string, unknown>> {
+  return (
+    Array.isArray(value) &&
+    value.length > 0 &&
+    value.every((t) => isPlainRecord(t) && typeof (t as { Key?: unknown }).Key === 'string')
+  );
+}
+
+/** The `Key` of every entry in a CFn tag list, in list order. */
+function tagKeys(tags: ReadonlyArray<Record<string, unknown>>): string[] {
+  return tags.map((t) => t['Key'] as string);
+}
+
+/**
+ * Revert a TAG LIST as a diff against the baseline rather than as a whole-value
+ * overwrite (issue #1501).
+ *
+ * Everything else in {@link buildRevertNewProperties} overwrites a drifted
+ * top-level key wholesale, which for `Tags` means "AWS ends up with exactly the
+ * tags cdkd state recorded" — so an AWS-SERVICE-authored tag added after
+ * deploy is stripped. The concrete case that forced this: ECS attaches
+ * `AmazonECSManaged` to an ASG when a capacity provider binds it, and that tag
+ * is REQUIRED for managed scaling to work. Because any CDK ASG declares at
+ * least a `Name` tag, `Tags` is template-DECLARED, so the #1498 carve-out
+ * (undeclared + captured-empty) correctly does not apply — and the tag list is
+ * an ARRAY, which {@link findRevertDroppedAwsKeys}'s walk compares wholesale
+ * and never descends into. Post-revert the ASG kept the capacity provider with
+ * its managed scaling silently broken (verified live 2026-08-10).
+ *
+ * The semantic, which mirrors the `applyTagDiff` several providers already use
+ * on update:
+ *
+ * - a tag the baseline has and AWS LOST is re-added;
+ * - a tag whose VALUE differs is reset to the baseline value;
+ * - a tag ONLY AWS has is PRESERVED — the baseline never knew about it, so
+ *   "push state over AWS" cannot express an intent to remove it.
+ *
+ * The trade-off is deliberate and recorded rather than hidden: reverting a
+ * console-added tag now needs an explicit action (delete it in the console, or
+ * `cdkd drift --accept` then re-deploy), because a revert cannot tell a
+ * console-added tag from a service-required one. Detection is unchanged — the
+ * drift is still REPORTED, and the plan names every preserved key via
+ * {@link findRevertPreservedTagKeys}, so nothing becomes invisible. Losing a
+ * service-required tag silently breaks a live resource; keeping an unwanted one
+ * does not.
+ *
+ * Scope: TOP-LEVEL tag lists, which is where `buildRevertNewProperties`
+ * operates. A tag list nested inside another property (an EC2 launch template's
+ * `TagSpecifications`) still reverts wholesale.
+ *
+ * Order: baseline entries first in baseline order, then the AWS-only entries.
+ * Providers apply tags as a set and the drift comparator canonicalizes tag-list
+ * order on both sides (`drift-normalize.ts`), so the order is for
+ * readability / determinism only.
+ */
+export function mergeTagListForRevert(
+  baselineTags: ReadonlyArray<Record<string, unknown>>,
+  awsTags: ReadonlyArray<Record<string, unknown>>
+): Array<Record<string, unknown>> {
+  const baselineKeys = new Set(tagKeys(baselineTags));
+  return [...baselineTags, ...awsTags.filter((t) => !baselineKeys.has(t['Key'] as string))];
+}
+
+/**
+ * The tag keys a `--revert` will PRESERVE rather than strip, i.e. the ones
+ * present on the AWS side of a drifted top-level tag list and absent from the
+ * revert baseline (issue #1501).
+ *
+ * Reported in the plan so the diff semantic of {@link mergeTagListForRevert} is
+ * visible BEFORE the confirmation prompt: a user who did want the tag gone
+ * learns here that the revert will not do it.
+ *
+ * @returns dotted `<Key>.<TagKey>` paths, sorted, e.g. `['Tags.AmazonECSManaged']`.
+ */
+export function findRevertPreservedTagKeys(
+  drifts: readonly PropertyDrift[],
+  desiredProperties: Record<string, unknown>,
+  awsProperties: Record<string, unknown>
+): string[] {
+  const preserved = new Set<string>();
+  const driftedTopLevelKeys = new Set<string>();
+  for (const d of drifts) {
+    const topLevelKey = d.path.split('.', 1)[0];
+    if (topLevelKey) driftedTopLevelKeys.add(topLevelKey);
+  }
+
+  for (const key of driftedTopLevelKeys) {
+    if (!(key in desiredProperties)) continue;
+    const desiredValue = desiredProperties[key];
+    const awsValue = awsProperties[key];
+    if (!isCfnTagList(desiredValue) || !isCfnTagList(awsValue)) continue;
+    const baselineKeys = new Set(tagKeys(desiredValue));
+    for (const tagKey of tagKeys(awsValue)) {
+      if (!baselineKeys.has(tagKey)) preserved.add(`${key}.${tagKey}`);
+    }
+  }
+
+  return [...preserved].sort();
+}
+
 /**
  * The AWS-authored property paths a `--revert` is about to DROP, for a
  * resource whose state predates observed-capture (issue #1478).
@@ -852,7 +953,14 @@ export function buildRevertNewProperties(
     const topLevelKey = d.path.split('.', 1)[0];
     if (!topLevelKey) continue;
     if (topLevelKey in desiredProperties) {
-      result[topLevelKey] = desiredProperties[topLevelKey];
+      const desiredValue = desiredProperties[topLevelKey];
+      const awsValue = awsProperties[topLevelKey];
+      // A TAG LIST is reverted as a DIFF, not as a whole-value overwrite
+      // (issue #1501). See `mergeTagListForRevert`.
+      result[topLevelKey] =
+        isCfnTagList(desiredValue) && isCfnTagList(awsValue)
+          ? mergeTagListForRevert(desiredValue, awsValue)
+          : desiredValue;
     } else {
       // Drift surfaced on a key that's no longer in `desiredProperties`
       // (defensive — drift was computed against `desiredProperties`, so
@@ -1088,6 +1196,28 @@ function printRevertPlan(reports: StackDriftReport[]): void {
       // a warning the user only sees after the writes have happened is not
       // a warning.
       const stateResource = report.state.resources[o.logicalId];
+      // Issue #1501, printed for the same reason: a tag AWS added
+      // out-of-band SURVIVES the revert, so say so before the user confirms.
+      // Not gated on the observed-capture baseline — the diff semantic
+      // applies on both baselines.
+      if (stateResource) {
+        const preserved = findRevertPreservedTagKeys(
+          o.changes,
+          stateResource.observedProperties ?? stateResource.properties ?? {},
+          o.awsProperties
+        );
+        if (preserved.length > 0) {
+          const word = preserved.length === 1 ? 'tag' : 'tags';
+          process.stdout.write(
+            `    ! reverting a tag list restores the recorded tags but KEEPS ${preserved.length} ` +
+              `${word} only AWS has (a service may require them):\n`
+          );
+          for (const path of preserved) {
+            process.stdout.write(`        ${path}\n`);
+          }
+          process.stdout.write(`      Remove them in the AWS console if they are unwanted.\n`);
+        }
+      }
       if (stateResource && stateResource.observedProperties === undefined) {
         const dropped = findRevertDroppedAwsKeys(
           o.changes,

@@ -1542,3 +1542,114 @@ describe('findRevertDroppedAwsKeys (pure helper, issue #1478)', () => {
     expect(findRevertDroppedAwsKeys(drifts, desired, aws)).toEqual([]);
   });
 });
+
+describe('tag-list revert is a DIFF, not an overwrite (pure helpers, issue #1501)', () => {
+  const loadDrift = async () => await import('../../../src/cli/commands/drift.js');
+
+  // The live case: ECS attaches `AmazonECSManaged` to an ASG when a capacity
+  // provider binds it, and managed scaling breaks without it. `Tags` is
+  // template-DECLARED (every CDK ASG carries at least `Name`), so the #1498
+  // undeclared-and-captured-empty carve-out does not apply, and the tag list
+  // is an array, which the #1478 walk compares wholesale.
+  const baseline = [{ Key: 'Name', Value: 'my-asg' }];
+  const awsCurrent = [
+    { Key: 'Name', Value: 'renamed-in-console' },
+    { Key: 'AmazonECSManaged', Value: 'true' },
+  ];
+  const drifts = [{ path: 'Tags', stateValue: baseline, awsValue: awsCurrent }];
+
+  it('keeps the AWS-only tag while reverting the changed one', async () => {
+    const { buildRevertNewProperties } = await loadDrift();
+
+    const result = buildRevertNewProperties(drifts, { Tags: baseline }, { Tags: awsCurrent });
+
+    expect(result['Tags']).toEqual([
+      { Key: 'Name', Value: 'my-asg' },
+      { Key: 'AmazonECSManaged', Value: 'true' },
+    ]);
+  });
+
+  it('re-adds a baseline tag AWS lost', async () => {
+    const { mergeTagListForRevert } = await loadDrift();
+
+    expect(
+      mergeTagListForRevert(
+        [
+          { Key: 'Name', Value: 'my-asg' },
+          { Key: 'Env', Value: 'prod' },
+        ],
+        [{ Key: 'Name', Value: 'my-asg' }]
+      )
+    ).toEqual([
+      { Key: 'Name', Value: 'my-asg' },
+      { Key: 'Env', Value: 'prod' },
+    ]);
+  });
+
+  it('the baseline VALUE wins for a tag both sides carry', async () => {
+    const { mergeTagListForRevert } = await loadDrift();
+
+    expect(
+      mergeTagListForRevert([{ Key: 'Env', Value: 'prod' }], [{ Key: 'Env', Value: 'dev' }])
+    ).toEqual([{ Key: 'Env', Value: 'prod' }]);
+  });
+
+  it('a non-tag list still reverts WHOLESALE, so the merge cannot leak into other keys', async () => {
+    const { buildRevertNewProperties } = await loadDrift();
+
+    const desired = { SecurityGroups: ['sg-1'] };
+    const aws = { SecurityGroups: ['sg-1', 'sg-added-in-console'] };
+    const result = buildRevertNewProperties(
+      [{ path: 'SecurityGroups', stateValue: desired.SecurityGroups, awsValue: aws.SecurityGroups }],
+      desired,
+      aws
+    );
+
+    expect(result['SecurityGroups']).toEqual(['sg-1']);
+  });
+
+  it('an EMPTY baseline tag list still reverts wholesale (nothing to diff against)', async () => {
+    const { buildRevertNewProperties } = await loadDrift();
+
+    const result = buildRevertNewProperties(
+      [{ path: 'Tags', stateValue: [], awsValue: awsCurrent }],
+      { Tags: [] },
+      { Tags: awsCurrent }
+    );
+
+    expect(result['Tags']).toEqual([]);
+  });
+
+  it('names every preserved tag so the plan can surface it before the prompt', async () => {
+    const { findRevertPreservedTagKeys } = await loadDrift();
+
+    expect(findRevertPreservedTagKeys(drifts, { Tags: baseline }, { Tags: awsCurrent })).toEqual([
+      'Tags.AmazonECSManaged',
+    ]);
+  });
+
+  it('reports nothing to preserve when AWS carries no extra tag', async () => {
+    const { findRevertPreservedTagKeys } = await loadDrift();
+
+    expect(
+      findRevertPreservedTagKeys(
+        [{ path: 'Tags', stateValue: baseline, awsValue: baseline }],
+        { Tags: baseline },
+        { Tags: [{ Key: 'Name', Value: 'renamed' }] }
+      )
+    ).toEqual([]);
+  });
+
+  it('reports nothing for a non-drifted tag list, since revert never touches it', async () => {
+    const { findRevertPreservedTagKeys } = await loadDrift();
+
+    expect(
+      findRevertPreservedTagKeys(
+        [{ path: 'MinSize', stateValue: 1, awsValue: 2 }],
+        { Tags: baseline, MinSize: 1 },
+        { Tags: awsCurrent, MinSize: 2 }
+      )
+    ).toEqual([]);
+  });
+});
+

@@ -1632,9 +1632,21 @@ Flags:
   the drifted top-level subtrees overlaid from
   `observedProperties ?? properties` — same precedence as the
   comparator, so `--revert` undoes exactly the delta `cdkd drift`
-  reported and leaves non-drifted attributes untouched. Requires a
-  stack lock. Mutually exclusive with `--accept`. See "Resolving
-  drift" below.
+  reported and leaves non-drifted attributes untouched. One exception:
+  a drifted **top-level tag list** is reverted as a DIFF rather than
+  overwritten wholesale (issue #1501) — a recorded tag AWS lost is
+  re-added and a changed value is reset, but a tag only AWS has is
+  PRESERVED, because "push state over AWS" cannot distinguish a
+  console-added tag from a service-required one. ECS attaches
+  `AmazonECSManaged` to an ASG when a capacity provider binds it and
+  managed scaling breaks without it, so the overwrite silently broke
+  live resources. Detection is unchanged (the drift is still reported),
+  and the `--revert` plan names every preserved tag before the
+  confirmation prompt — remove an unwanted one in the console, or
+  `--accept` it and re-deploy. A tag list NESTED inside another
+  property (an EC2 launch template's `TagSpecifications`) still reverts
+  wholesale. Requires a stack lock. Mutually exclusive with
+  `--accept`. See "Resolving drift" below.
 - `--dry-run` — for `--accept` / `--revert`: print the planned mutations
   and exit without acquiring a lock or hitting AWS / S3.
 - `--concurrency <number>` — maximum concurrent `provider.update` calls
