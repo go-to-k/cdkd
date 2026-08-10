@@ -72,6 +72,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import {
   DynamoDBGlobalTableProvider,
+  collectDesiredKeyAttributeNames,
   collectTableOnDemandCeilings,
   collectRawOnDemandDeclarations,
   toSdkGlobalSecondaryIndexes,
@@ -927,6 +928,92 @@ describe('DynamoDB GlobalTable throughput cluster', () => {
       await provider.update('OnDemand', 'od-table', RESOURCE_TYPE, next, previous);
 
       expect(warnings().some((m) => m.includes('STILL IN'))).toBe(false);
+    });
+
+    it('allows an AttributeDefinitions removal that accompanies the GSI it belonged to', async () => {
+      // Caught LIVE by the gsi-billing-flip integ: dropping a GSI from a
+      // TableV2 also drops its key attribute from the synthesized
+      // AttributeDefinitions (CDK derives the list from the keys in use, and
+      // DynamoDB rejects an unused entry), so the pre-#1421 blanket
+      // removal-refusal made EVERY GSI deletion a forced replacement. The
+      // GSI Delete action takes no AttributeDefinitions at all.
+      const gsi = (name: string, attr: string): Record<string, unknown> => ({
+        IndexName: name,
+        KeySchema: [{ AttributeName: attr, KeyType: 'HASH' }],
+        Projection: { ProjectionType: 'ALL' },
+      });
+      const previous: Record<string, unknown> = {
+        ...clone(OD_PROPS),
+        AttributeDefinitions: [
+          { AttributeName: 'pk', AttributeType: 'S' },
+          { AttributeName: 'keep', AttributeType: 'S' },
+          { AttributeName: 'drop', AttributeType: 'S' },
+        ],
+        GlobalSecondaryIndexes: [gsi('flipKeep', 'keep'), gsi('flipDrop', 'drop')],
+      };
+      const next: Record<string, unknown> = {
+        ...clone(OD_PROPS),
+        AttributeDefinitions: [
+          { AttributeName: 'pk', AttributeType: 'S' },
+          { AttributeName: 'keep', AttributeType: 'S' },
+        ],
+        GlobalSecondaryIndexes: [gsi('flipKeep', 'keep')],
+      };
+
+      await provider.update('OnDemand', 'od-table', RESOURCE_TYPE, next, previous);
+
+      const gsiDelete = mockSend.mock.calls
+        .map((c) => c[0])
+        .find(
+          (c): c is UpdateTableCommand =>
+            c instanceof UpdateTableCommand &&
+            c.input.GlobalSecondaryIndexUpdates?.[0]?.Delete?.IndexName === 'flipDrop'
+        );
+      expect(gsiDelete).toBeDefined();
+    });
+
+    it('still refuses an AttributeDefinitions removal a surviving key schema references', async () => {
+      // The genuine redefine-in-place: the attribute vanishes from
+      // AttributeDefinitions while an index still keys on it. AWS rejects
+      // that; only a replacement can apply it.
+      const previous: Record<string, unknown> = {
+        ...clone(OD_PROPS),
+        AttributeDefinitions: [
+          { AttributeName: 'pk', AttributeType: 'S' },
+          { AttributeName: 'keep', AttributeType: 'S' },
+        ],
+        GlobalSecondaryIndexes: [
+          {
+            IndexName: 'flipKeep',
+            KeySchema: [{ AttributeName: 'keep', KeyType: 'HASH' }],
+            Projection: { ProjectionType: 'ALL' },
+          },
+        ],
+      };
+      const next = clone(previous);
+      next['AttributeDefinitions'] = [{ AttributeName: 'pk', AttributeType: 'S' }];
+
+      await expect(
+        provider.update('OnDemand', 'od-table', RESOURCE_TYPE, next, previous)
+      ).rejects.toThrow(/AttributeDefinitions removals are immutable.*keep/);
+    });
+
+    it('collects every desired key attribute across table, GSI and LSI schemas', () => {
+      expect(
+        collectDesiredKeyAttributeNames({
+          KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
+          GlobalSecondaryIndexes: [
+            { IndexName: 'g', KeySchema: [{ AttributeName: 'gpk', KeyType: 'HASH' }] },
+          ],
+          LocalSecondaryIndexes: [
+            { IndexName: 'l', KeySchema: [{ AttributeName: 'lsk', KeyType: 'RANGE' }] },
+          ],
+        })
+      ).toEqual(new Set(['pk', 'gpk', 'lsk']));
+      // Malformed shapes contribute nothing — permissive, per the guard note.
+      expect(
+        collectDesiredKeyAttributeNames({ KeySchema: { 'Fn::If': ['C', [], []] } })
+      ).toEqual(new Set());
     });
 
     it('reports a replica-level explicit block on the wrong billing mode', () => {

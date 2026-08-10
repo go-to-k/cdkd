@@ -853,17 +853,35 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         physicalId
       );
     }
-    // AttributeDefinitions: additions are allowed (needed for new GSIs)
-    // but removals are not — AWS rejects removing an attr that an index
-    // still references.
+    // AttributeDefinitions: additions are allowed (needed for new GSIs).
+    // A removal is refused ONLY when some key schema in the DESIRED template
+    // still references the removed attribute — that is a real
+    // redefine-in-place, which AWS rejects and only a replacement can apply.
+    //
+    // A removal whose attribute nothing references anymore is the ORDINARY
+    // way a GSI is deleted: dropping the index from a `TableV2` also drops
+    // its key attribute from the synthesized `AttributeDefinitions` (CDK
+    // derives the list from the keys in use, and DynamoDB rejects an entry
+    // no key schema uses). The pre-#1421 blanket refusal therefore made
+    // every GSI removal a forced replacement — caught live by the
+    // `gsi-billing-flip` integ, whose drop-one-index phase this guard
+    // failed. The `UpdateTable` GSI `Delete` action takes no
+    // `AttributeDefinitions` at all, so an unreferenced removal is pure
+    // bookkeeping on the cdkd side.
     const oldAttrs = (previousProperties['AttributeDefinitions'] ?? []) as AttributeDefinition[];
     const newAttrs = (properties['AttributeDefinitions'] ?? []) as AttributeDefinition[];
+    const desiredKeyAttrNames = collectDesiredKeyAttributeNames(properties);
     const removedAttrs = oldAttrs.filter(
       (o) => !newAttrs.some((n) => n.AttributeName === o.AttributeName)
     );
-    if (removedAttrs.length > 0) {
+    const removedButStillReferenced = removedAttrs.filter(
+      (a) => a.AttributeName !== undefined && desiredKeyAttrNames.has(a.AttributeName)
+    );
+    if (removedButStillReferenced.length > 0) {
       throw new ProvisioningError(
-        `AttributeDefinitions removals are immutable on AWS::DynamoDB::GlobalTable (offenders: ${removedAttrs.map((a) => a.AttributeName).join(', ')}); replacement required`,
+        `AttributeDefinitions removals are immutable on AWS::DynamoDB::GlobalTable while a ` +
+          `key schema still references them (offenders: ${removedButStillReferenced.map((a) => a.AttributeName).join(', ')}); ` +
+          `replacement required`,
         resourceType,
         logicalId,
         physicalId
@@ -3938,6 +3956,39 @@ export function collectAutoScalingTargets(
   }
 
   return specs;
+}
+
+/**
+ * Every attribute name some KEY SCHEMA in the desired template references:
+ * the table's own `KeySchema`, each GSI's, and each LSI's. This is the set
+ * the `AttributeDefinitions`-removal guard in `update()` tests membership
+ * against — a removed attribute still in this set is a genuine
+ * redefine-in-place (replacement required); one outside it is the normal
+ * bookkeeping of a GSI deletion and must NOT force a replacement.
+ *
+ * Malformed / intrinsic-valued entries contribute nothing, which errs on the
+ * PERMISSIVE side of the guard — correct here, because the guard's failure
+ * mode is a forced replacement of a live table, and AWS itself still rejects
+ * a genuinely-bad `UpdateTable` loudly.
+ */
+export function collectDesiredKeyAttributeNames(properties: Record<string, unknown>): Set<string> {
+  const names = new Set<string>();
+  const addKeySchema = (value: unknown): void => {
+    if (!Array.isArray(value)) return;
+    for (const element of value) {
+      const name = asRecord(element)?.['AttributeName'];
+      if (typeof name === 'string') names.add(name);
+    }
+  };
+  addKeySchema(properties['KeySchema']);
+  for (const indexListKey of ['GlobalSecondaryIndexes', 'LocalSecondaryIndexes'] as const) {
+    const indexes = properties[indexListKey];
+    if (!Array.isArray(indexes)) continue;
+    for (const index of indexes) {
+      addKeySchema(asRecord(index)?.['KeySchema']);
+    }
+  }
+  return names;
 }
 
 /** Narrow an unknown CFn sub-object to a record (or `undefined`). */
