@@ -59,6 +59,10 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { S3BucketProvider } from '../../../src/provisioning/providers/s3-bucket-provider.js';
+import { getLogger } from '../../../src/utils/logger.js';
+
+/** The single mocked child logger every provider instance resolves to. */
+const childLogger = (getLogger() as unknown as { child: () => { warn: ReturnType<typeof vi.fn> } }).child();
 
 const BUCKET_NAME = 'my-bucket';
 
@@ -2127,15 +2131,20 @@ describe('S3BucketProvider removal semantics (issue #1466)', () => {
     expect(replIdx).toBeLessThan(verIdx);
   });
 
-  it('versioning SUSPEND is skipped (warn) on an Object-Lock bucket', async () => {
+  it('versioning SUSPEND is skipped WITH A WARNING on an Object-Lock bucket', async () => {
     // S3 refuses to suspend versioning on an Object-Lock bucket
     // (InvalidBucketState). Before the deferral this would have newly FAILED a
     // deploy that used to be a silent no-op.
+    //
+    // The warn is asserted, not just the absence of the Put: skipping SILENTLY
+    // would satisfy a call-count-only check while leaving the user with no
+    // signal that a property they removed was not applied.
     await update(
       { ...base, ObjectLockEnabled: true },
       { ...base, ObjectLockEnabled: true, VersioningConfiguration: { Status: 'Enabled' } }
     );
     expect(callsOf(PutBucketVersioningCommand)).toHaveLength(0);
+    expect(childLogger.warn).toHaveBeenCalledWith(expect.stringContaining('Object Lock'));
   });
 
   it('create() with an empty OwnershipControls.Rules issues no Put', async () => {
@@ -2221,22 +2230,12 @@ describe('S3BucketProvider removal semantics (issue #1466)', () => {
     expect(callsOf(PutBucketVersioningCommand)).toHaveLength(0);
   });
 
-  it('Object-Lock guard accepts the string and the configuration-block forms', async () => {
+  it("Object-Lock guard accepts the 'true' STRING form of ObjectLockEnabled", async () => {
+    // The configuration-block form is covered by 'a REAL ObjectLockConfiguration
+    // (Enabled) still suppresses the suspend'; only the string form is new here.
     await update(
       { ...base, ObjectLockEnabled: 'true' },
       { ...base, ObjectLockEnabled: 'true', VersioningConfiguration: { Status: 'Enabled' } }
-    );
-    expect(callsOf(PutBucketVersioningCommand)).toHaveLength(0);
-
-    vi.clearAllMocks();
-    mockSend.mockResolvedValue({});
-    await update(
-      { ...base, ObjectLockConfiguration: { ObjectLockEnabled: 'Enabled' } },
-      {
-        ...base,
-        ObjectLockConfiguration: { ObjectLockEnabled: 'Enabled' },
-        VersioningConfiguration: { Status: 'Enabled' },
-      }
     );
     expect(callsOf(PutBucketVersioningCommand)).toHaveLength(0);
   });

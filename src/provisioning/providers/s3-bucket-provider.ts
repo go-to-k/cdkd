@@ -1459,8 +1459,10 @@ export class S3BucketProvider implements ResourceProvider {
    * declares the config.
    *
    * NOTE this helper does NOT cover `VersioningConfiguration` (it has no list
-   * key); that property does its own malformed-shape refusal in
-   * `applySubConfigDiffs`.
+   * key), and that property is NOT malformed-shape-refused anywhere: a
+   * malformed value there still resolves to 'Suspended', matching `main`.
+   * That pre-existing gap is tracked in issue #1471 — see the note in
+   * `applySubConfigDiffs` for why guarding it is not as simple as it looks.
    */
   private static emptyListConfigToUndefined<T extends Record<string, unknown>>(
     config: T | undefined,
