@@ -149,3 +149,38 @@ describe('requireConfigString', () => {
     );
   });
 });
+
+describe('a blank value is legitimate when the fallback is itself blank', () => {
+  // Rule 4 refuses a blank string because it silently takes the default. When
+  // the default IS blank there is no divergence to hide, and an empty value is
+  // a meaningful template input at exactly those sites — refusing it would
+  // make this guard a regression for correct templates.
+  it('accepts an empty LogFilePrefix (S3 logging: "no prefix")', () => {
+    expect(readConfigString({ LogFilePrefix: '' }, 'LogFilePrefix', '', 'AWS::S3::Bucket LoggingConfiguration')).toBe('');
+  });
+
+  it('accepts an empty ExcludeCharacters (Secrets Manager: "exclude nothing")', () => {
+    expect(
+      requireConfigString('', '', 'AWS::SecretsManager::Secret GenerateSecretString.ExcludeCharacters')
+    ).toBe('');
+  });
+
+  it('still refuses a NON-string at a blank-fallback site', () => {
+    // The container/type guard is unaffected — only the blank-string rule is
+    // relaxed, and only where blank equals the default.
+    expect(() => requireConfigString(42, '', 'AWS::S3::Bucket LoggingConfiguration.LogFilePrefix')).toThrow(
+      /must be a non-empty string \(got a number\)/
+    );
+    expect(() => requireConfigString(null, '', 'AWS::S3::Bucket LoggingConfiguration.LogFilePrefix')).toThrow(
+      /got null/
+    );
+  });
+
+  it('keeps refusing a blank value where the fallback is NOT blank', () => {
+    // The versioning case must be unaffected: '' there really would flip to
+    // the opposite meaning (Suspended).
+    expect(() => requireConfigString('', 'Suspended', 'AWS::S3::Bucket VersioningConfiguration.Status')).toThrow(
+      /must be a non-empty string/
+    );
+  });
+});

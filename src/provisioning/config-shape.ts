@@ -105,6 +105,15 @@ export function readConfigString(
 export function requireConfigString(value: unknown, fallback: string, path: string): string {
   if (value === undefined) return fallback;
 
+  // A BLANK string is only suspicious because it silently takes the default.
+  // When the default is itself blank there is no divergence to hide, and an
+  // empty value is a legitimate, meaningful template input at exactly those
+  // sites — `LoggingConfiguration.LogFilePrefix: ''` means "no prefix" and
+  // `GenerateSecretString.ExcludeCharacters: ''` means "exclude nothing".
+  // Refusing them would turn this guard into a regression for correct
+  // templates, which is the opposite of its purpose.
+  if (fallback === '' && typeof value === 'string') return value;
+
   if (typeof value !== 'string' || value.trim() === '') {
     throw new Error(
       `${path} must be a non-empty string (got ${describe(value)}) — check for an ` +
