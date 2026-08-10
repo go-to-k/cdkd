@@ -1744,4 +1744,195 @@ describe('GlueProvider — out-of-band StorageDescriptor preservation (#1479)', 
 
     expect(sentTableInput().StorageDescriptor).toStrictEqual({ Location: 's3://b/t/' });
   });
+
+  it('a whole SD.Parameters bag the user removed keeps its AWS-authored keys (per-key, like #1461)', async () => {
+    // Removing the whole bag while keeping StorageDescriptor is the same user
+    // action the top-level #1461 helper handles per key: user keys removed,
+    // AWS-authored keys survive. A desired-side-only gate would wipe the
+    // crawler keys here — the review-caught divergence this test pins.
+    mockLiveTableFull({
+      StorageDescriptor: {
+        Location: 's3://b/t/',
+        Parameters: { UPDATED_BY_CRAWLER: 'my-crawler', user_key: 'v1' },
+      },
+    });
+
+    await provider.update(
+      'L',
+      TABLE_PHYSICAL_ID,
+      'AWS::Glue::Table',
+      {
+        DatabaseName: 'mydb',
+        TableInput: { Name: 'mytbl', StorageDescriptor: { Location: 's3://b/t/' } },
+      },
+      {
+        DatabaseName: 'mydb',
+        TableInput: {
+          Name: 'mytbl',
+          StorageDescriptor: { Location: 's3://b/t/', Parameters: { user_key: 'v1' } },
+        },
+      }
+    );
+
+    expect((sentTableInput().StorageDescriptor as Record<string, unknown>).Parameters).toStrictEqual(
+      { UPDATED_BY_CRAWLER: 'my-crawler' }
+    );
+  });
+
+  it('a whole SerdeInfo.Parameters bag the user removed keeps its AWS-authored keys', async () => {
+    mockLiveTableFull({
+      StorageDescriptor: {
+        Location: 's3://b/t/',
+        SerdeInfo: {
+          SerializationLibrary: 'org.user.Serde',
+          Parameters: { 'crawler.added': 'yes', 'user.key': 'v1' },
+        },
+      },
+    });
+
+    await provider.update(
+      'L',
+      TABLE_PHYSICAL_ID,
+      'AWS::Glue::Table',
+      {
+        DatabaseName: 'mydb',
+        TableInput: {
+          Name: 'mytbl',
+          StorageDescriptor: {
+            Location: 's3://b/t/',
+            SerdeInfo: { SerializationLibrary: 'org.user.Serde' },
+          },
+        },
+      },
+      {
+        DatabaseName: 'mydb',
+        TableInput: {
+          Name: 'mytbl',
+          StorageDescriptor: {
+            Location: 's3://b/t/',
+            SerdeInfo: {
+              SerializationLibrary: 'org.user.Serde',
+              Parameters: { 'user.key': 'v1' },
+            },
+          },
+        },
+      }
+    );
+
+    const serde = (sentTableInput().StorageDescriptor as Record<string, unknown>)
+      .SerdeInfo as Record<string, unknown>;
+    expect(serde.Parameters).toStrictEqual({ 'crawler.added': 'yes' });
+  });
+
+  it('a whole SerdeInfo block the user removed stays removed (structural member, not a bag)', async () => {
+    // Unlike the Parameters bags, SerdeInfo's members are user-authored in
+    // every template shape — resurrecting a partial SerdeInfo carrying only
+    // crawler keys would leave an incoherent serde, so whole-member removal
+    // is honored.
+    mockLiveTableFull({
+      StorageDescriptor: {
+        Location: 's3://b/t/',
+        SerdeInfo: {
+          SerializationLibrary: 'org.user.Serde',
+          Parameters: { 'crawler.added': 'yes' },
+        },
+      },
+    });
+
+    await provider.update(
+      'L',
+      TABLE_PHYSICAL_ID,
+      'AWS::Glue::Table',
+      {
+        DatabaseName: 'mydb',
+        TableInput: { Name: 'mytbl', StorageDescriptor: { Location: 's3://b/t/' } },
+      },
+      {
+        DatabaseName: 'mydb',
+        TableInput: {
+          Name: 'mytbl',
+          StorageDescriptor: {
+            Location: 's3://b/t/',
+            SerdeInfo: { SerializationLibrary: 'org.user.Serde' },
+          },
+        },
+      }
+    );
+
+    expect(
+      'SerdeInfo' in (sentTableInput().StorageDescriptor as Record<string, unknown>)
+    ).toBe(false);
+  });
+
+  it('a whole StorageDescriptor the user removed: authored members go, out-of-band members survive', async () => {
+    // The per-member rule extends to the block's own removal: members the
+    // user declared before are removed; members no template side ever
+    // authored (a crawler's SD.Parameters bag) are still carried.
+    mockLiveTableFull({
+      StorageDescriptor: {
+        Location: 's3://b/t/',
+        Columns: [{ Name: 'id', Type: 'int' }],
+        Parameters: { UPDATED_BY_CRAWLER: 'my-crawler' },
+      },
+    });
+
+    await provider.update(
+      'L',
+      TABLE_PHYSICAL_ID,
+      'AWS::Glue::Table',
+      { DatabaseName: 'mydb', TableInput: { Name: 'mytbl' } },
+      {
+        DatabaseName: 'mydb',
+        TableInput: {
+          Name: 'mytbl',
+          StorageDescriptor: {
+            Location: 's3://b/t/',
+            Columns: [{ Name: 'id', Type: 'int' }],
+          },
+        },
+      }
+    );
+
+    expect(sentTableInput().StorageDescriptor).toStrictEqual({
+      Parameters: { UPDATED_BY_CRAWLER: 'my-crawler' },
+    });
+  });
+
+  it('a declared-but-empty StorageDescriptor {} on both sides still carries live members', async () => {
+    // Pins the declaration test: `undefined`, not key-set emptiness. An empty
+    // declared block means "I author nothing here", so every live member is
+    // out-of-band and carried.
+    mockLiveTableFull({ StorageDescriptor: CRAWLER_SD });
+
+    const templateSide = () => ({
+      DatabaseName: 'mydb',
+      TableInput: { Name: 'mytbl', StorageDescriptor: {} },
+    });
+    await provider.update('L', TABLE_PHYSICAL_ID, 'AWS::Glue::Table', templateSide(), templateSide());
+
+    expect(sentTableInput().StorageDescriptor).toStrictEqual(CRAWLER_SD);
+  });
+
+  it('a malformed (string-valued) desired StorageDescriptor does not crash the merge', async () => {
+    // asRecord tolerance: a malformed container contributes no keys, so live
+    // members are carried and AWS surfaces the real validation error.
+    mockLiveTableFull({
+      StorageDescriptor: { Location: 's3://b/t/', Columns: [{ Name: 'id', Type: 'int' }] },
+    });
+
+    await provider.update(
+      'L',
+      TABLE_PHYSICAL_ID,
+      'AWS::Glue::Table',
+      {
+        DatabaseName: 'mydb',
+        TableInput: { Name: 'mytbl', StorageDescriptor: 'not-an-object' },
+      },
+      { DatabaseName: 'mydb', TableInput: { Name: 'mytbl' } }
+    );
+
+    const sd = sentTableInput().StorageDescriptor as Record<string, unknown>;
+    expect(sd.Columns).toStrictEqual([{ Name: 'id', Type: 'int' }]);
+    expect(sd.Location).toBe('s3://b/t/');
+  });
 });

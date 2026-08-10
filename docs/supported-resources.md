@@ -365,8 +365,13 @@ an Iceberg table's catalog `Columns` from table metadata — all of which an
 unrelated update used to wipe (`Columns` -> `[]`, `SerdeInfo` gone; probed
 live 2026-08-10, recorded on the issue). The preservation rule is the same
 "present in neither template side" test, applied per SD *member* (with the
-two nested `Parameters` bags merged per key). A template that never declared
-`StorageDescriptor` at all carries the whole live block forward. Scope is
+two nested `Parameters` bags merged per key — including when a whole bag is
+removed from the template, which keeps the top-level #1461 semantics: your
+keys are removed, AWS-authored keys survive). `SerdeInfo` is structural, not
+a bag: removing the whole block from the template removes it on AWS, since a
+partial serde carrying only crawler-authored entries would be incoherent. A
+template that never declared `StorageDescriptor` at all carries the whole
+live block forward. Scope is
 deliberately the `StorageDescriptor` subtree only — the crawler also authors
 `PartitionKeys` / `Owner`, which remain template-authoritative for now.
 
