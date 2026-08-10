@@ -1,3 +1,10 @@
+## [0.278.37](https://github.com/go-to-k/cdkd/compare/v0.278.36...v0.278.37) (2026-08-10)
+
+
+### Bug Fixes
+
+* **provisioning:** warn instead of silently deploying the 5/5 default when a GlobalTable provisioned capacity does not resolve ([#1526](https://github.com/go-to-k/cdkd/issues/1526)) ([07bfcc6](https://github.com/go-to-k/cdkd/commit/07bfcc68ac2f096dd73916e4cab0e294865254e0))
+
 ## [0.278.36](https://github.com/go-to-k/cdkd/compare/v0.278.35...v0.278.36) (2026-08-10)
 
 
