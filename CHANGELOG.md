@@ -1,3 +1,10 @@
+## [0.278.44](https://github.com/go-to-k/cdkd/compare/v0.278.43...v0.278.44) (2026-08-10)
+
+
+### Bug Fixes
+
+* **servicediscovery:** reset removed namespace Description and SOA TTL on update ([#1160](https://github.com/go-to-k/cdkd/issues/1160) servicediscovery batch) ([#1537](https://github.com/go-to-k/cdkd/issues/1537)) ([404e83a](https://github.com/go-to-k/cdkd/commit/404e83afa2255183f9a0b5c67320897980946e00))
+
 ## [0.278.43](https://github.com/go-to-k/cdkd/compare/v0.278.42...v0.278.43) (2026-08-10)
 
 
