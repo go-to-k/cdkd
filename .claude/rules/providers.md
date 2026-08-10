@@ -210,7 +210,8 @@ That is a far more common template shape than the base64 search string.
 
 - Enumerate the CFn side MECHANICALLY, from `aws-cdk-lib`'s generated
   `convertCfn<Type><Prop>PropertyToCloudFormation` functions or the registry
-  schema's `nestedProperties` capture — not by reading the type by eye.
+  schema's `nestedPropertyPaths` capture (or its flattened `nestedProperties`
+  sibling) — not by reading the type by eye.
 - Enumerate the SDK side from the schema serde aliases
   (`node_modules/@aws-sdk/client-*/dist-cjs/schemas/schemas_0.js`) as well as the
   `.d.ts` members: the aliases are what the serializer actually iterates, so
@@ -253,16 +254,17 @@ That is a far more common template shape than the base64 search string.
   (`HANDOFF_BAG_PARAM_NAMES`, declaration-scoped taint) that reaches a WRITE
   without any member of it being named — through `?:` / `??` arms, `const`
   bindings, spread-only literals, and `this.f(…)` / free-function /
-  sibling-module calls — is a hand-off POINT, and
-  `expandGenericHandoffScopes` credits exactly the members the SDK model
-  declares beneath it.
+  sibling-module calls — is a hand-off PATH, and everything AT OR BENEATH that
+  path is credited (`isHandoffCovered`'s prefix test since #1464; #1445 shipped
+  it as a fold through the SDK model's reference graph, which a flat scope
+  needed and a path-keyed one does not).
   Two halves of that are what keep it from becoming a rubber stamp, and both
   are worth knowing before you rely on it:
   - A callee counts as GENERIC only when it names NO member — anywhere in its
     body OR in any callee it can reach. `convertLoadBalancers` names four, so
     every member of the blob it builds still has to prove itself, which is how
-    the pass found that `LoadBalancers[].AdvancedConfiguration` is silently
-    dropped. The TRANSITIVE part is what refuses a DELEGATING GUARD
+    the pass found that `LoadBalancers.AdvancedConfiguration` was silently
+    dropped (fixed in #1473; both ECS targets are opted in since). The TRANSITIVE part is what refuses a DELEGATING GUARD
     (`convertLog(cfg) { if (!cfg) return cfg; return this.buildLog(cfg); }`),
     which a body-local test would accept.
     Read the rule as exactly "names no member", NOT as "can only emit keys it
@@ -284,36 +286,75 @@ That is a far more common template shape than the base64 search string.
   `BuildBatchConfig.ServiceRole` (the sibling of the member that motivated
   #1432) stayed silent when dropped because the unrelated top-level
   `serviceRole` write covered it.
-  Both sides moved in #1448: the audited unit is now the PATH
-  `TopLevelProperty.NestedKey`, and each written name is indexed to the members
+  Both sides moved in #1448: the audited unit became the PATH
+  `TopLevelProperty.NestedKey`, and each written name was indexed to the members
   written BENEATH the value it is written with (`collectWriteEvidence`,
   resolving `this.mapSource(x)` calls, `const` / `let` bindings, `?:` / `??`
-  arms and `.map(cb)` callbacks — the same reach as the #1404 taint walk). A
-  path's terminal member is checked against the scope its top-level maps to, so
-  the `BuildBatchConfig.ServiceRole` deletion now exits 1.
+  arms and `.map(cb)` callbacks — the same reach as the #1404 taint walk), so
+  the `BuildBatchConfig.ServiceRole` deletion exits 1.
+- **...and scoped at FULL DEPTH since issue #1464.** #1448 stopped one level
+  short because of the FIXTURE: `nestedProperties` is a flattened transitive
+  closure per top-level, so `Environment.Type` and
+  `Environment.EnvironmentVariables.Type` were literally the same audited path
+  and each vouched for the other. The fixture now also carries
+  `nestedPropertyPaths` (full `$ref`-resolved, cycle-guarded chains,
+  `extractNestedPropertyPaths` in `scripts/refresh-cfn-schemas.mjs`; arrays are
+  transparent), and the write index is keyed by the matching write PATH. Three
+  consequences: a terminal member is checked against the scope its FULL PARENT
+  CHAIN maps to; a whole-blob hand-off credits by path PREFIX (tighter than the
+  #1445 fold through the SDK model, which is now only a parser floor); and a
+  write that only ever appears LEXICALLY nested no longer opens a root scope.
+  Measured against the real `codebuild-provider.ts` via `--providers-dir=`:
+  deleting `environment: { type: … }` exits **1** naming `Environment.Type`
+  with the cousin clean, and deleting `environmentVariables[].type` exits **1**
+  naming `Environment.EnvironmentVariables.Type` with the cousin clean.
+  The audited unit grew 587 -> 703 paths, so every `minNestedKeys` floor was
+  re-calibrated, as was ECS's `minWriteScopes` (34 -> 58 non-empty scopes).
+  **Two SEGMENT-SPELLING mechanisms sit under the full-depth match, and they are
+  not interchangeable.** A CASE difference on an intermediate segment is
+  absorbed: the parent chain is matched case-insensitively (the terminal member
+  is not — it is the only thing that proves delivery), because a CFn->SDK
+  segment spelling is routinely not the mechanical first-letter flip
+  (`EFSVolumeConfiguration` -> `efsVolumeConfiguration`) and an exact parent
+  match reported 16 members `ecs-provider.ts` demonstrably does write. The fold
+  is applied one LEVEL at a time while descending the write index, never as a
+  global lowercase union — that would merge the member sets of the 80 unrelated
+  `name` / `Name`-style scope pairs the same file carries. A genuine RENAME is
+  out of the fold's reach and needs an explicit
+  `segmentRenames` entry on the target (`ProxyConfigurationProperties` ->
+  `properties`, the one in the tree), which is STALENESS-FENCED exactly like
+  `NESTED_KEY_ALLOW_LIST`: `--check` fails when the un-renamed chain starts
+  resolving (the SDK renamed it back) or the CFn segment disappears. It does NOT
+  fail when the provider merely stops writing the member — that is the
+  divergence the map exists to make reachable, and a stale-map error standing in
+  front of it would hide a real silent drop behind a tooling complaint.
 - **The pass still has a measured BOUND — do not repeat the over-promise this
-  bullet exists to correct.** Path-scoping NARROWS the duplicate-name class; it
-  does not close it, and the residual is NOT only #1445's generic converter.
-  1. **A duplicate name inside the SAME top-level still vouches.** The fixture's
-     `nestedProperties` capture is flattened per top-level, so `Environment.Type`
-     and `Environment.EnvironmentVariables[].Type` are the SAME audited path, and
-     the write scope is flattened to match. Measured on the only opted-in target,
-     by deleting the line from a scratch copy of the real `codebuild-provider.ts`
-     and running `--check`: deleting `environment: { type: … }` exits **0**
-     (`environmentVariables[].type` covers it), and deleting
-     `source: { type: … }` in `mapSource` exits **0** (`auth.type` covers it).
-     Both are genuine silent drops. Closing this needs a per-PATH fixture
-     capture (`refresh-cfn-schemas.mjs` + an AWS re-capture), not a critic
-     change — tracked in issue
-     [#1464](https://github.com/go-to-k/cdkd/issues/1464).
-  2. **Scopes are keyed by NAME and unioned across write sites.** Two unrelated
-     `environment: { … }` literals in different methods share one `environment`
-     scope, and a name that only ever appears nested still gets a scope a
-     same-spelled TOP-LEVEL property would be checked against.
-     Hand-off POINTS are unioned the same way, and it is measurable:
+  bullet exists to correct.** Depth-scoping NARROWS the duplicate-name class
+  further; it does not make it vanish, and the residual is NOT only #1445's
+  generic converter.
+  1. **A duplicate name at the SAME PATH still vouches**, because the write index
+     unions across write SITES. Two `environment: { … }` literals in different
+     methods both feed the one `environment` scope, so a provider that stops
+     writing a member on ONE code path is not fenced. Per-site sets would not
+     change the answer — a key is cleared when ANY site covers it, which IS the
+     union.
+     Hand-off points are unioned the same way, and it is measurable:
      `ApiGatewayV2Provider` forwards `DefaultRouteSettings` whole at two sites
      (create + update), and deleting only ONE of them leaves `--check` at exit
-     0. A provider that stops forwarding on one path is not fenced.
+     0.
+  2. **A literal reached only by INDIRECTION still opens a root scope.** Root
+     suppression is lexical, so a literal returned by a helper (or bound to a
+     `const`) has no object-literal ancestor and its members are recorded at
+     depth 1 as well as under the caller's path. Harmless unless a nested member
+     name collides with an audited TOP-LEVEL property of the same type —
+     measured today: on the API Gateway v2 targets every path cleared by a
+     hand-off wildcard is one of the 13 legitimate blob members (6
+     `CorsConfiguration.*` + 5 `DefaultRouteSettings.*` + 2
+     `JwtConfiguration.*`), none by a stray root. Suppression follows a
+     `.map(v => ({ … }))` callback, because `resolveLiterals` does; it does NOT
+     follow an opaque call such as `JSON.stringify({ … })`, because nothing
+     resolves that in the other direction and suppressing there would LOSE the
+     write.
   3. **Value resolution is best-effort and bare-name.** Same-file callables and
      property initializers are indexed by NAME, so `this.mapSource(…)` and a
      free `mapSource(…)` resolve to the same declaration while a
@@ -324,13 +365,10 @@ That is a far more common template shape than the base64 search string.
      the nearest scope stopping the climb. A hop it cannot follow yields no
      literals and flags CORRECT code, which is why it peels `await` and climbs
      to the module scope at all.
-     The #1445 SDK-side expansion is bare-name the same way: a hand-off point is
-     looked up as a member name across EVERY interface in the client model and
-     the reference targets are UNIONED, which can be enormous — `Items` reaches
-     217 members in the CloudFront model. What keeps that from clearing anything
-     is not the expansion, it is `classifyTarget` looking a scope up ONLY by the
-     audited path's CFn TOP-LEVEL property name, so an over-broad expansion
-     hung off some other name is never consulted.
+     The #1445 SDK-side expansion was bare-name the same way (`Items` reached
+     217 members in the CloudFront model); since #1464 the hand-off credit is a
+     path-prefix test that never consults the SDK model, and the expansion
+     survives only as the `minHandoffPoints` parser floor.
   4. **The reverse-map exclusion is PREFIX-only**, so a suffix-named reverse
      helper (`volumesToCfn`, `metricsSdkToCfn`) is not skipped. No live impact —
      the only opted-in target keeps its reverse map inside `readCurrentState` —
@@ -349,12 +387,23 @@ That is a far more common template shape than the base64 search string.
      measured on the real tree and both tracked: the BUILDER idiom
      (`const out: any = {}; out.Foo = …; return out;` — the members ARE written,
      just not where the scope index looks; CloudWatch AnomalyDetector 3, most of
-     S3's 104 — issue
+     S3's 125 — issue
      [#1474](https://github.com/go-to-k/cdkd/issues/1474)) and the
      SPREAD-AND-PATCH forwarder (`const result = { ...config }` plus ~30 named
-     patches, which the genericity test rejects on those names; CloudFront 110 —
+     patches, which the genericity test rejects on those names; CloudFront 162 —
      issue [#1475](https://github.com/go-to-k/cdkd/issues/1475)).
-  Both (1) and (2) are pinned by tests, and the full measured statement lives in
+  7. **An intermediate segment the provider RENAMES leaves its children
+     unresolvable** (new with #1464). Case differences are absorbed; a rename is
+     not — CFn `ProxyConfiguration.ProxyConfigurationProperties` is the SDK's
+     `ProxyConfiguration.properties`, so
+     `ProxyConfiguration.ProxyConfigurationProperties.{Name,Value}` report
+     `no-write-evidence` although `convertProxyConfiguration` writes both. Two
+     occurrences in the tree, both on `AWS::ECS::TaskDefinition`, both pinned by
+     a test rather than allow-listed. The direction is the SAFE one (a loud
+     false positive, never a silent clear), but it has to be resolved before
+     that target opts in.
+  Bounds (1) and (2) are pinned by tests, and so are the two bounds #1464 CLOSED
+  (the same probes, inverted into fences). The full measured statement lives in
   the script's file header. For all of the above, a hand diff of the WHOLE blob
   (the first bullet in this section) is still the thing that catches a dropped
   sub-key.

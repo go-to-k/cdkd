@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::ApiGatewayV2::Stage",
-  "generatedAt": "2026-08-08",
+  "generatedAt": "2026-08-10",
   "properties": [
     "AccessLogSettings",
     "ApiId",
@@ -24,6 +24,19 @@
     "StageName"
   ],
   "nestedProperties": {
+    "AccessLogSettings": [
+      "DestinationArn",
+      "Format"
+    ],
+    "DefaultRouteSettings": [
+      "DataTraceEnabled",
+      "DetailedMetricsEnabled",
+      "LoggingLevel",
+      "ThrottlingBurstLimit",
+      "ThrottlingRateLimit"
+    ]
+  },
+  "nestedPropertyPaths": {
     "AccessLogSettings": [
       "DestinationArn",
       "Format"

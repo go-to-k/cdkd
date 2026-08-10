@@ -11,6 +11,10 @@ export declare function extractReadOnlyProperties(schemaJson: string): string[];
 export declare function extractCreateOnlyProperties(schemaJson: string): string[];
 export declare function extractPrimaryIdentifier(schemaJson: string): string[];
 export declare function extractNestedPropertyNames(schemaJson: string): Record<string, string[]>;
+export declare function extractNestedPropertyPaths(
+  schemaJson: string,
+  typeName?: string
+): Record<string, string[]>;
 export declare function extractDefinitionShapes(
   schemaJson: string
 ): Record<string, Record<string, string>>;

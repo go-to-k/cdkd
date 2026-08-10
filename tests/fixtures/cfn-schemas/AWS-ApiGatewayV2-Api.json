@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::ApiGatewayV2::Api",
-  "generatedAt": "2026-08-08",
+  "generatedAt": "2026-08-10",
   "properties": [
     "ApiEndpoint",
     "ApiId",
@@ -34,6 +34,22 @@
     "ApiId"
   ],
   "nestedProperties": {
+    "BodyS3Location": [
+      "Bucket",
+      "Etag",
+      "Key",
+      "Version"
+    ],
+    "CorsConfiguration": [
+      "AllowCredentials",
+      "AllowHeaders",
+      "AllowMethods",
+      "AllowOrigins",
+      "ExposeHeaders",
+      "MaxAge"
+    ]
+  },
+  "nestedPropertyPaths": {
     "BodyS3Location": [
       "Bucket",
       "Etag",

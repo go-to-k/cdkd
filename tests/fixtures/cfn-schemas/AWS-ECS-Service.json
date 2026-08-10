@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::ECS::Service",
-  "generatedAt": "2026-08-08",
+  "generatedAt": "2026-08-10",
   "properties": [
     "AvailabilityZoneRebalancing",
     "CapacityProviderStrategy",
@@ -187,6 +187,150 @@
       "Value"
     ]
   },
+  "nestedPropertyPaths": {
+    "PlacementStrategies": [
+      "Field",
+      "Type"
+    ],
+    "ServiceRegistries": [
+      "ContainerName",
+      "ContainerPort",
+      "Port",
+      "RegistryArn"
+    ],
+    "VolumeConfigurations": [
+      "ManagedEBSVolume",
+      "ManagedEBSVolume.Encrypted",
+      "ManagedEBSVolume.FilesystemType",
+      "ManagedEBSVolume.Iops",
+      "ManagedEBSVolume.KmsKeyId",
+      "ManagedEBSVolume.RoleArn",
+      "ManagedEBSVolume.SizeInGiB",
+      "ManagedEBSVolume.SnapshotId",
+      "ManagedEBSVolume.TagSpecifications",
+      "ManagedEBSVolume.TagSpecifications.PropagateTags",
+      "ManagedEBSVolume.TagSpecifications.ResourceType",
+      "ManagedEBSVolume.TagSpecifications.Tags",
+      "ManagedEBSVolume.TagSpecifications.Tags.Key",
+      "ManagedEBSVolume.TagSpecifications.Tags.Value",
+      "ManagedEBSVolume.Throughput",
+      "ManagedEBSVolume.VolumeInitializationRate",
+      "ManagedEBSVolume.VolumeType",
+      "Name"
+    ],
+    "CapacityProviderStrategy": [
+      "Base",
+      "CapacityProvider",
+      "Weight"
+    ],
+    "NetworkConfiguration": [
+      "AwsvpcConfiguration",
+      "AwsvpcConfiguration.AssignPublicIp",
+      "AwsvpcConfiguration.SecurityGroups",
+      "AwsvpcConfiguration.Subnets"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ],
+    "Monitoring": [
+      "MetricConfigurations",
+      "MetricConfigurations.MetricNames",
+      "MetricConfigurations.ResolutionSeconds"
+    ],
+    "ForceNewDeployment": [
+      "EnableForceNewDeployment",
+      "ForceNewDeploymentNonce"
+    ],
+    "PlacementConstraints": [
+      "Expression",
+      "Type"
+    ],
+    "LoadBalancers": [
+      "AdvancedConfiguration",
+      "AdvancedConfiguration.AlternateTargetGroupArn",
+      "AdvancedConfiguration.ProductionListenerRule",
+      "AdvancedConfiguration.RoleArn",
+      "AdvancedConfiguration.TestListenerRule",
+      "ContainerName",
+      "ContainerPort",
+      "LoadBalancerName",
+      "TargetGroupArn"
+    ],
+    "ServiceConnectConfiguration": [
+      "AccessLogConfiguration",
+      "AccessLogConfiguration.Format",
+      "AccessLogConfiguration.IncludeQueryParameters",
+      "Enabled",
+      "LogConfiguration",
+      "LogConfiguration.LogDriver",
+      "LogConfiguration.Options",
+      "LogConfiguration.SecretOptions",
+      "LogConfiguration.SecretOptions.Name",
+      "LogConfiguration.SecretOptions.ValueFrom",
+      "Namespace",
+      "Services",
+      "Services.ClientAliases",
+      "Services.ClientAliases.DnsName",
+      "Services.ClientAliases.Port",
+      "Services.ClientAliases.TestTrafficRules",
+      "Services.ClientAliases.TestTrafficRules.Header",
+      "Services.ClientAliases.TestTrafficRules.Header.Name",
+      "Services.ClientAliases.TestTrafficRules.Header.Value",
+      "Services.ClientAliases.TestTrafficRules.Header.Value.Exact",
+      "Services.DiscoveryName",
+      "Services.IngressPortOverride",
+      "Services.PortName",
+      "Services.Timeout",
+      "Services.Timeout.IdleTimeoutSeconds",
+      "Services.Timeout.PerRequestTimeoutSeconds",
+      "Services.Tls",
+      "Services.Tls.IssuerCertificateAuthority",
+      "Services.Tls.IssuerCertificateAuthority.AwsPcaAuthorityArn",
+      "Services.Tls.KmsKey",
+      "Services.Tls.RoleArn"
+    ],
+    "VpcLatticeConfigurations": [
+      "PortName",
+      "RoleArn",
+      "TargetGroupArn"
+    ],
+    "DeploymentController": [
+      "Type"
+    ],
+    "DeploymentConfiguration": [
+      "Alarms",
+      "Alarms.AlarmNames",
+      "Alarms.Enable",
+      "Alarms.Rollback",
+      "BakeTimeInMinutes",
+      "CanaryConfiguration",
+      "CanaryConfiguration.CanaryBakeTimeInMinutes",
+      "CanaryConfiguration.CanaryPercent",
+      "DeploymentCircuitBreaker",
+      "DeploymentCircuitBreaker.Enable",
+      "DeploymentCircuitBreaker.ResetOnHealthyTask",
+      "DeploymentCircuitBreaker.Rollback",
+      "DeploymentCircuitBreaker.ThresholdConfiguration",
+      "DeploymentCircuitBreaker.ThresholdConfiguration.Type",
+      "DeploymentCircuitBreaker.ThresholdConfiguration.Value",
+      "LifecycleHooks",
+      "LifecycleHooks.HookDetails",
+      "LifecycleHooks.HookTargetArn",
+      "LifecycleHooks.LifecycleStages",
+      "LifecycleHooks.RoleArn",
+      "LifecycleHooks.TargetType",
+      "LifecycleHooks.TimeoutConfiguration",
+      "LifecycleHooks.TimeoutConfiguration.Action",
+      "LifecycleHooks.TimeoutConfiguration.TimeoutInMinutes",
+      "LinearConfiguration",
+      "LinearConfiguration.StepBakeTimeInMinutes",
+      "LinearConfiguration.StepPercent",
+      "MaximumPercent",
+      "MinimumHealthyPercent",
+      "Strategy"
+    ]
+  },
   "definitionShapes": {
     "#top": {
       "PlatformVersion": "scalar",
@@ -340,7 +484,7 @@
       "LifecycleStages": "array",
       "TargetType": "scalar",
       "HookTargetArn": "scalar",
-      "HookDetails": "scalar",
+      "HookDetails": "mixed",
       "RoleArn": "scalar"
     },
     "DeploymentController": {
