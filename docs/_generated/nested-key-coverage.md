@@ -10,8 +10,8 @@ For every SDK provider that forwards a nested CFn config blob, diffs the blob's 
 - Audited targets: **11**
 - Nested CFn key paths audited: **703**
 - Same spelling in SDK model: **642**
-- Explicitly handled in provider: **54**
-- Allow-listed pass-throughs (does NOT block CI): **7**
+- Explicitly handled in provider: **53**
+- Allow-listed pass-throughs (does NOT block CI): **8**
 - **Case divergences (blocks CI): 0**
 - **No SDK member (blocks CI): 0**
 - Write-evidence pass — fresh-object targets audited: **10**
@@ -38,6 +38,7 @@ None. Every audited nested CFn key either matches an SDK member spelling or is e
 | `AWS::CloudFront::Distribution` | `Tags.Key` | Written by toSdkTags on the forward path (`.map(([Key, Value]) => ({ Key, Value }))`), but one wrapper level below the audited chain: the SDK Tags shape is the { Items: Tag[] } wrapper, so the write scope is Tags.Items while the CFn transparent-array chain is Tags.Key. A wrapper-level insertion is neither a case fold nor a segmentRename, so the write pass cannot see it. |
 | `AWS::CloudFront::Distribution` | `Tags.Value` | Same wrapper-level insertion as Tags.Key: written by toSdkTags beneath the SDK { Items: Tag[] } wrapper (scope Tags.Items), one level below the CFn chain. |
 | `AWS::CodeBuild::Project` | `Environment.HostKernel` | Declared in the CFn registry schema but has NO member anywhere in the installed @aws-sdk/client-codebuild dist-types tree, so there is nothing to map it onto until an SDK bump adds one (issue #1386). Naming it in the provider would be a false claim of support. Remove this entry once the SDK ships the member, at which point the key becomes genuinely mappable. |
+| `AWS::S3::Bucket` | `CorsConfiguration.CorsRules` | Delivered by applyCorsConfiguration, which reads the CFn key via typed property access (`corsConfig.CorsRules.map(...)`) and writes the SDK spelling `CORSRules` — the literal walk deliberately counts neither a property ACCESS nor a type-literal member, and the only literal mention of the CFn spelling is `readCors`, excluded as a reverse map by the #1520 widening. Key pass only; the members BENEATH it need no entry — the per-level case fold resolves `CorsConfiguration.CorsRules` onto the written `CORSConfiguration.CORSRules` scope, so they stay write-audited (issue #1520). |
 | `AWS::CloudFront::Distribution` | `S3Origin` | Legacy pre-2012 single-origin form (LegacyS3Origin definition), sibling of CustomOrigin; superseded by Origins[]. Invisible to the KEY pass because the StreamingDistribution API still has a same-spelled S3Origin member — the definition pass (issue #1378) is what catches it. |
 | `AWS::S3::Bucket` | `TableNamespace` | Member of the S3TablesDestination definition, reachable only from the MetadataTableConfiguration top-level the provider declares as silent-drop (Cloud-Control-routed), so no SDK forwarding path exists to drop it (issue #1430). |
 | `AWS::S3::Bucket` | `TableArn` | Member of the S3TablesDestination / JournalTableConfiguration / InventoryTableConfiguration definitions, reachable only from the MetadataConfiguration / MetadataTableConfiguration top-levels the provider declares as silent-drop (Cloud-Control-routed), so no SDK forwarding path exists to drop it (issue #1430). |
@@ -71,7 +72,6 @@ Keys with no same-spelling SDK member that the provider explicitly names (conver
 | `AWS::S3::Bucket` | `AccelerateConfiguration.AccelerationStatus` |
 | `AWS::S3::Bucket` | `AnalyticsConfigurations.TagFilters` |
 | `AWS::S3::Bucket` | `BucketEncryption.ServerSideEncryptionConfiguration.ServerSideEncryptionByDefault` |
-| `AWS::S3::Bucket` | `CorsConfiguration.CorsRules` |
 | `AWS::S3::Bucket` | `CorsConfiguration.CorsRules.ExposedHeaders` |
 | `AWS::S3::Bucket` | `CorsConfiguration.CorsRules.MaxAge` |
 | `AWS::S3::Bucket` | `IntelligentTieringConfigurations.TagFilters` |

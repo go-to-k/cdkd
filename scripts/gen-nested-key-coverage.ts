@@ -129,12 +129,15 @@
  * That is #1393 item 2 — the file-global heuristic clearing a genuine
  * divergence — reappearing one bucket over, so the collector skips the bodies
  * of {@link REVERSE_MAP_FUNCTION_PREFIXES}. Measured on the real
- * tree, the exclusion withdraws 8 names from `s3-bucket-provider.ts`
- * (`BucketName`, `BucketEncryption`, `CorsConfiguration`, `LoggingConfiguration`
- * and the four `*Configurations` plurals), 71 from `codebuild-provider.ts`, and
- * 42 from `ecs-provider.ts` (via `readCurrentStateService` /
- * `readCurrentStateTaskDefinition`, which only the PREFIX match reaches) —
- * exactly the names a reverse map invents.
+ * tree AT THE ORIGINAL `readCurrentState`-only exclusion, it withdrew 8 names
+ * from `s3-bucket-provider.ts` (`BucketName`, `BucketEncryption`,
+ * `CorsConfiguration`, `LoggingConfiguration` and the four `*Configurations`
+ * plurals), 71 from `codebuild-provider.ts`, and 42 from `ecs-provider.ts`
+ * (via `readCurrentStateService` / `readCurrentStateTaskDefinition`, which
+ * only the PREFIX match reaches) — exactly the names a reverse map invents.
+ * Issue #1520 widened the exclusion to the whole `read*` / `*ToCfn` reverse
+ * families; the measured literal-set delta of THAT step is recorded on the
+ * constant itself.
  *
  * THE WHOLE-BLOB HAND-OFF WALK (issue #1445)
  * ------------------------------------------
@@ -321,7 +324,7 @@
  *   AWS::ECS::TaskDefinition           30 / 136   0 / 136    0 / 136    0 / 136  OPTED IN (#1472)   [25/115 -> 1/115]
  *   AWS::ECS::Service                  45 /  56   0 /  56    0 /  56    0 /  56  OPTED IN (#1473)   [44/54 -> 5/54]
  *   AWS::CloudWatch::AnomalyDetector   30 /  30   3 /  30    0 /  30    0 /  30  OPTED IN (#1474)   [29/29 -> 3/29]
- *   AWS::S3::Bucket                   130 / 152 125 / 152   98 / 152   81 / 152  out — see (C)      [106/125 -> 104/125]
+ *   AWS::S3::Bucket                   130 / 152 125 / 152   98 / 152   81 / 152  out — see (C)      [106/125 -> 104/125; #1520 renames: 81 -> 50]
  *   AWS::CloudFront::Distribution     162 / 162 162 / 162  162 / 162    0 / 162  OPTED IN (#1475)   [110/112 -> 110/112]
  *                                     -------   -------    -------    -------
  *                                        410       290        260         81
@@ -403,11 +406,50 @@
  *       - a per-item PUT API whose SDK top-level is SINGULAR where CFn's is
  *         plural (`AnalyticsConfigurations` -> `AnalyticsConfiguration`, same
  *         for Inventory / Metrics / IntelligentTiering).
- *     All four are what {@link NestedKeyTarget.segmentRenames} exists for, and
- *     declaring them is the remaining work S3's opt-in needs (issue #1520).
- *     S3 therefore stays out for now — but for a purely STRUCTURAL reason, with
- *     no known silent drop left behind it. Adding allow-list entries instead
- *     would make the bucket stop meaning anything.
+ *     All four are what {@link NestedKeyTarget.segmentRenames} exists for.
+ *     Issue #1520 DECLARED them ({@link S3_BUCKET_SEGMENT_RENAMES}: the
+ *     Logging wrapper, the Website Redirect/Condition pair, the encryption
+ *     wrapper chain + ApplyServerSideEncryptionByDefault, the four
+ *     plural->singular per-item PUT tops) and widened the reverse-map
+ *     exclusion, which moved the OPT-IN-FORCED residual 81 -> 50.
+ *
+ *     The remaining 50, RE-MEASURED for #1520, are all shapes a segment
+ *     rename cannot express — each a recorded bound, none a known drop:
+ *       - RELOCATION under the SDK's `Filter`: CFn puts `Prefix` /
+ *         `TagFilters` / `AccessPointArn` (and lifecycle's rule-level
+ *         `ObjectSizeGreaterThan` / `LessThan`) at the config/rule level,
+ *         the SDK nests them under `Filter{,.And}` with `TagFilters` becoming
+ *         `Tag`/`Tags` — Analytics (7) / IntelligentTiering (3) /
+ *         Metrics (4) / part of Lifecycle;
+ *       - TERMINAL renames (out of a rename's reach by design):
+ *         `Destination.BucketArn` -> `Bucket`, `BucketAccountId` ->
+ *         `AccountId`, `Enabled` -> `IsEnabled` (Inventory, 6), and
+ *         `BucketEncryption.ServerSideEncryptionConfiguration` itself (the
+ *         CFn LIST is the SDK's `Rules` wrapper member, 1);
+ *       - RENAME-NAME COLLISIONS: the map is keyed by segment name per
+ *         TARGET, so Notification's `Rules` -> `FilterRules` / `S3Key` ->
+ *         `Key` would corrupt `LifecycleConfiguration.Rules`, and
+ *         `Destination` -> `Destination.S3BucketDestination` (Analytics /
+ *         Inventory) would corrupt `ReplicationConfiguration.Rules.
+ *         Destination` (Notification, 10);
+ *       - BUILDER FLOW BOUNDS (bound (8)): lifecycle's `sdkRule` builder
+ *         populates members through merge helpers (`mergeLegacySingular` /
+ *         `toSdkTransition` / `toSdkNvt`) and forwarded CFn blobs the
+ *         seed-literal-only recognizer refuses (rest of Lifecycle's 19);
+ *       - a REQUEST-LEVEL HOIST: `TransitionDefaultMinimumObjectSize` sits on
+ *         `PutBucketLifecycleConfigurationRequest`, not inside
+ *         `LifecycleConfiguration` — a rename cannot express a hoist, the
+ *         terminal is out of a rename's reach by design, and a
+ *         `passes: ['write']` allow-list entry cannot be added TODAY because
+ *         the write pass does not run on a non-opted-in target and the
+ *         staleness fence (correctly) rejects a workless entry. The eventual
+ *         opt-in change adds it, rationale'd against the write at the
+ *         PutBucketLifecycleConfigurationCommand call site (1).
+ *     S3 therefore stays out — still for STRUCTURAL reasons, with no known
+ *     silent drop behind the number, and the number itself is pinned by the
+ *     header-table test so it cannot drift silently. Closing the remaining
+ *     50 needs per-path rename scoping and/or a relocation form — a
+ *     materially bigger analysis, recorded here rather than half-built.
  *
  * (D) [RESOLVED by issue #1475] `CloudFrontDistributionProvider.convertToSdkFormat`
  *     is a SPREAD-AND-PATCH forwarder: `const result = { ...config }` delivers
@@ -553,31 +595,22 @@
  *     {@link unwrapExpression} peels `await` and the climb reaches module
  *     scope at all.
  *
- * (4) THE REVERSE-MAP EXCLUSION IS PREFIX-ONLY. A reverse SDK->CFn helper named
- *     by SUFFIX rather than prefix — `ecs-provider.ts`'s `volumesToCfn` /
- *     `containerDefinitionsToCfn`, `s3-bucket-provider.ts`'s `metricsSdkToCfn`
- *     — is NOT skipped by {@link REVERSE_MAP_FUNCTION_PREFIXES}, so its
- *     CFn-spelled writes land in the evidence. No live impact: the only opted-in
- *     target keeps its whole reverse map inside `readCurrentState`, and the
- *     suffix providers are not opted in. Widening the match is deliberately NOT
- *     done here — it would withdraw names from the LITERAL set too (the
- *     `provider-handled` bucket) on targets nobody has measured for it.
- *
- *     THE BUILDER RECOGNIZER WIDENS THIS BOUND, measured (#1474 review). A
- *     suffix-named reverse helper that uses the BUILDER idiom previously
- *     contributed only its EMPTY SEED and now contributes a fully populated
- *     SCOPE: `s3-bucket-provider.ts`'s `readLifecycle` builds `const out = {}`
- *     and fills it with CFn-spelled `out['Id']` / `out['Status']`, and
- *     `ecs-provider.ts`'s `volumesToCfn` is the same shape — S3's non-empty
- *     scope count jumped 85 -> 144 on the strength of that. Still no live
- *     impact today (S3 is not opted in; ECS is `lower-first`, so a CFn-spelled
- *     terminal misses the exact compare) — but S3 is an `exact`-style target,
- *     where a CFn-spelled reverse write vouches for the forward mapper
- *     verbatim, so this is precisely the direction that will bite the moment
- *     issue #1495 unblocks the S3 opt-in. Widening
- *     {@link REVERSE_MAP_FUNCTION_PREFIXES} to a suffix match is the fix and
- *     belongs to that change, where its effect on the LITERAL set can be
- *     measured on the target it affects.
+ * (4) [RESOLVED by issue #1520] THE REVERSE-MAP EXCLUSION WAS PREFIX-ONLY
+ *     (`readCurrentState`). Two reverse-helper families escaped it and their
+ *     CFn-spelled writes landed in the evidence: suffix-named helpers
+ *     (`ecs-provider.ts`'s `volumesToCfn` / `containerDefinitionsToCfn`,
+ *     `s3-bucket-provider.ts`'s `metricsSdkToCfn`) and the `read<Block>`
+ *     builder-idiom family #1495 added (`readEncryption` / `readLifecycle` /
+ *     `readLogging` / `readReplication`), which the #1474 BUILDER recognizer
+ *     turned from empty seeds into fully populated scopes (S3's non-empty
+ *     scope count 85 -> 144 came from exactly that). Measured on a variant of
+ *     `s3-bucket-provider.ts` with the entire WRITE half deleted: all 17
+ *     #1495 members still reported "written" — reverse-only credit on an
+ *     `exact`-style target, the direction this bound warned would bite.
+ *     {@link REVERSE_MAP_FUNCTION_PREFIXES} now matches the `read` prefix and
+ *     the `*ToCfn` suffix; the measured literal-set cost of the widening (one
+ *     key, `CorsConfiguration.CorsRules`) is recorded on that constant and
+ *     carried by a reviewed allow-list entry.
  *
  * (5) THE GENERICITY TEST IS "NAMES NO MEMBER", NOT "PRESERVES EVERY KEY"
  *     (issue #1445). It is TRANSITIVE through resolvable callees, which closes
@@ -976,6 +1009,45 @@ const ECS_TASK_DEFINITION_SEGMENT_RENAMES = {
 } as const;
 
 /**
+ * The S3 structural renames (issue #1520) — the four causes reason (C)
+ * recorded, each one a CFn segment whose SDK counterpart the per-level case
+ * fold cannot absorb:
+ *
+ *   - A CFn segment the SDK RENAMES, including an SDK-only WRAPPER level the
+ *     CFn shape flattens (dotted value): CFn `LoggingConfiguration` is the
+ *     SDK's `BucketLoggingStatus.LoggingEnabled` (PutBucketLogging);
+ *     `WebsiteConfiguration.RoutingRules.RedirectRule` is `Redirect` and
+ *     `.RoutingRuleCondition` is `Condition` (PutBucketWebsite).
+ *   - An SDK-only wrapper around a CFn LIST: CFn
+ *     `BucketEncryption.ServerSideEncryptionConfiguration` (a list) is the
+ *     SDK's `ServerSideEncryptionConfiguration.Rules` (PutBucketEncryption) —
+ *     expressed as two chained single-segment renames.
+ *   - A per-item PUT API whose SDK top-level is SINGULAR where CFn's is
+ *     plural: `AnalyticsConfigurations` -> `AnalyticsConfiguration`
+ *     (PutBucketAnalyticsConfiguration), same for Inventory / Metrics /
+ *     IntelligentTiering.
+ *
+ * The fourth recorded cause — `TransitionDefaultMinimumObjectSize`, a member
+ * CFn nests inside `LifecycleConfiguration` that the SDK HOISTS onto
+ * `PutBucketLifecycleConfigurationRequest` — is a TERMINAL, and terminals are
+ * deliberately out of a rename's reach (the terminal IS the audited key), so
+ * it carries a `passes: ['write']` allow-list entry instead; see it in
+ * {@link NESTED_KEY_ALLOW_LIST}.
+ */
+const S3_BUCKET_SEGMENT_RENAMES = {
+  LoggingConfiguration: 'BucketLoggingStatus.LoggingEnabled',
+  RedirectRule: 'Redirect',
+  RoutingRuleCondition: 'Condition',
+  BucketEncryption: 'ServerSideEncryptionConfiguration',
+  ServerSideEncryptionConfiguration: 'Rules',
+  ServerSideEncryptionByDefault: 'ApplyServerSideEncryptionByDefault',
+  AnalyticsConfigurations: 'AnalyticsConfiguration',
+  InventoryConfigurations: 'InventoryConfiguration',
+  MetricsConfigurations: 'MetricsConfiguration',
+  IntelligentTieringConfigurations: 'IntelligentTieringConfiguration',
+} as const;
+
+/**
  * The audited targets: SDK providers that forward nested CFn config blobs.
  *
  * Start-set per issue #1373 — the four provider families where this bug class
@@ -1205,6 +1277,15 @@ export const NESTED_KEY_TARGETS: readonly NestedKeyTarget[] = [
     sdkClientPackage: '@aws-sdk/client-s3',
     keyStyle: 'exact',
     minNestedKeys: 170,
+    // Still NOT opted into the write-evidence pass. Issue #1520 declared the
+    // structural renames (see S3_BUCKET_SEGMENT_RENAMES) and widened the
+    // reverse-map exclusion, which moved the opt-in-forced residual 81 -> 50 —
+    // but 50 is not 0, and every remaining path has a RECORDED cause in reason
+    // (C) that a segment rename cannot express (relocation under the SDK's
+    // Filter, terminal renames, rename-name collisions, builder-recognizer
+    // flow bounds). The renames stay declared so they are staleness-fenced
+    // and the header-table pin measures the honest number.
+    segmentRenames: S3_BUCKET_SEGMENT_RENAMES,
   },
 ];
 
@@ -1395,6 +1476,22 @@ export const NESTED_KEY_ALLOW_LIST: ReadonlyMap<string, AllowListEntry> = new Ma
         'MetadataTableConfiguration top-level the provider declares as silent-drop ' +
         '(Cloud-Control-routed), so no SDK forwarding path exists to drop it ' +
         '(issue #1430).',
+    },
+  ],
+  [
+    allowKey('AWS::S3::Bucket', 'CorsConfiguration.CorsRules'),
+    {
+      rationale:
+        'Delivered by applyCorsConfiguration, which reads the CFn key via typed ' +
+        'property access (`corsConfig.CorsRules.map(...)`) and writes the SDK ' +
+        'spelling `CORSRules` — the literal walk deliberately counts neither a ' +
+        'property ACCESS nor a type-literal member, and the only literal mention ' +
+        'of the CFn spelling is `readCors`, excluded as a reverse map by the ' +
+        '#1520 widening. Key pass only; the members BENEATH it need no entry — ' +
+        'the per-level case fold resolves `CorsConfiguration.CorsRules` onto the ' +
+        'written `CORSConfiguration.CORSRules` scope, so they stay write-audited ' +
+        '(issue #1520).',
+      passes: ['key'],
     },
   ],
 ]);
@@ -1713,23 +1810,55 @@ export function expandLiteralSegments(literals: ReadonlySet<string>): Set<string
  * `...Account` / `...Method`, none of which an exact-name set would catch.
  *
  * A prefix must be followed by a WORD BOUNDARY (end of name, or an uppercase
- * letter), so `readCurrentStatelessThing` is not swallowed by the
- * `readCurrentState` prefix.
+ * letter), so `readCurrentStatelessThing` is not swallowed by the `read`
+ * prefix.
  *
- * Measured withdrawal from the WRITE set on the real tree: 8 names from
- * `s3-bucket-provider.ts`, 71 from `codebuild-provider.ts`, 42 from
- * `ecs-provider.ts`. The ECS number is what the earlier EXACT-name match missed
- * entirely — its reverse map is split into `readCurrentStateService` /
- * `readCurrentStateTaskDefinition`.
+ * WIDENED BY ISSUE #1520, in both directions the module header's bound (4)
+ * and the #1520 measurement recorded:
+ *   - the prefix is now `read` rather than `readCurrentState`. Issue #1495
+ *     added CFn-spelled read-back writes inside `readEncryption` /
+ *     `readLifecycle` / `readLogging` / `readReplication` — builder-idiom
+ *     reverse helpers the old prefix did not cover, whose writes therefore
+ *     landed in `evidence.written` and over-credited the write pass (measured:
+ *     a variant of `s3-bucket-provider.ts` with the entire WRITE half deleted
+ *     still reported all 17 #1495 members "written"). `apigatewayv2-provider.ts`'s
+ *     `readApi` / `readStage` / `readIntegration` / `readRoute` /
+ *     `readAuthorizer` are the same family.
+ *   - a `*ToCfn` SUFFIX entry now matches too (`volumesToCfn` /
+ *     `containerDefinitionsToCfn` / `metricsSdkToCfn` / `sdkNotifFilterToCfn`
+ *     — reverse helpers named by suffix, previously bound (4)'s recorded gap).
+ *     A suffix entry is spelled `*ToCfn` in the matcher list and requires a
+ *     non-empty stem.
+ *
+ * Measured effect of the #1520 widening on the real tree (both passes, all
+ * targets): the WRITE-pass residual of every target is unchanged (S3 stays at
+ * its pre-rename 81) — on today's HEAD no write-pass path was credited ONLY by
+ * a reverse-map write, so the widening's value there is the FENCE it restores:
+ * with the reverse bodies excluded, deleting the #1495 write half makes the
+ * checker name those members again (the #1495-HEAD state where the read-back
+ * hunks alone kept all 17 reported "written" is exactly what this closes; the
+ * RED-direction probe in the unit test pins it). The LITERAL-set withdrawal
+ * moves exactly ONE key into a blocking bucket:
+ * `CorsConfiguration.CorsRules` (case-divergence, SDK `CORSRules`) — its CFn
+ * spelling was named only by `readCors`, while the forward conversion reads it
+ * via property access (`corsConfig.CorsRules`), which the literal walk
+ * deliberately does not count. That one carries a reviewed allow-list entry;
+ * see it in {@link NESTED_KEY_ALLOW_LIST}.
  */
-export const REVERSE_MAP_FUNCTION_PREFIXES: readonly string[] = ['readCurrentState'];
+export const REVERSE_MAP_FUNCTION_PREFIXES: readonly string[] = ['read', '*ToCfn'];
 
 /**
- * Does `name` match one of `prefixes` at a word boundary (the whole name, or
- * the prefix followed by an uppercase letter)?
+ * Does `name` match one of `matchers`? A `*Suffix` entry matches a name that
+ * ENDS with `Suffix` on a non-empty stem; any other entry is a prefix that
+ * must sit at a word boundary (the whole name, or followed by an uppercase
+ * letter).
  */
-const matchesFunctionPrefix = (name: string, prefixes: readonly string[]): boolean =>
-  prefixes.some((p) => name === p || (name.startsWith(p) && /[A-Z]/.test(name.charAt(p.length))));
+const matchesFunctionPrefix = (name: string, matchers: readonly string[]): boolean =>
+  matchers.some((p) =>
+    p.startsWith('*')
+      ? name.length > p.length - 1 && name.endsWith(p.slice(1))
+      : name === p || (name.startsWith(p) && /[A-Z]/.test(name.charAt(p.length)))
+  );
 
 /** The declared name of a function-ish node, when it is a plain identifier. */
 const declaredFunctionName = (node: ts.Node): string | undefined => {
@@ -4238,10 +4367,14 @@ export function classifyTarget(
       // appearing somewhere in the file is the loose heuristic this pass exists
       // to stop trusting.
       // Non-terminal segments carry the target's declared RENAMES; the terminal
-      // never does (it IS the audited key — see `segmentRenames`).
+      // never does (it IS the audited key — see `segmentRenames`). A rename
+      // value may be DOTTED (`LoggingConfiguration` ->
+      // `BucketLoggingStatus.LoggingEnabled` — an SDK-only wrapper level the
+      // CFn shape flattens), so the chain is flattened one write-index level
+      // per dotted part (issue #1520).
       const parentChain = segments
         .slice(0, -1)
-        .map((seg) => renames[seg] ?? styled(seg));
+        .flatMap((seg) => (renames[seg] ?? styled(seg)).split('.'));
       const parentPaths = resolveWritePaths(parentChain);
       const covered =
         parentPaths.some((p) => writeEvidence.scopes.get(p)?.has(expected) ?? false) ||
