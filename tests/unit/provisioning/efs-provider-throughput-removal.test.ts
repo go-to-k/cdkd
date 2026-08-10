@@ -160,4 +160,25 @@ describe('EFSProvider FileSystem throughput removal semantics (#1160)', () => {
     await provider.update('L', 'fs-1', 'AWS::EFS::FileSystem', next, previous);
     expect(updateFileSystemCall()).toBeUndefined();
   });
+
+  it('removal of ThroughputMode with a CHANGED kept ProvisionedThroughputInMibps sends only the value', async () => {
+    // The last matrix cell: mode removed but the provisioned value changed.
+    // The reset arm must not fire (a value is still present), and the update
+    // passes only the changed value through — mode stays provisioned on AWS.
+    mockUpdateFileSystemAvailable();
+
+    const previous = { ThroughputMode: 'provisioned', ProvisionedThroughputInMibps: 1 };
+    const next = { ProvisionedThroughputInMibps: 2 };
+
+    await provider.update('L', 'fs-1', 'AWS::EFS::FileSystem', next, previous);
+
+    const call = updateFileSystemCall();
+    expect(call).toBeDefined();
+    const input = call![0].input as {
+      ThroughputMode?: string;
+      ProvisionedThroughputInMibps?: number;
+    };
+    expect(input.ThroughputMode).toBeUndefined();
+    expect(input.ProvisionedThroughputInMibps).toBe(2);
+  });
 });
