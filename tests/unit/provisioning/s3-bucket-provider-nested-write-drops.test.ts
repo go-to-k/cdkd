@@ -335,8 +335,10 @@ describe('LifecycleConfiguration.TransitionDefaultMinimumObjectSize (issue #1495
     // default". That polarity is wrong — AWS defaults buckets created after
     // September 2024 to `all_storage_classes_128K` — so the filter suppressed
     // the one value a template meaningfully declares and a bucket declaring it
-    // reported permanent phantom drift. Unconditional emission is also simply
-    // safe: the drift comparator only descends into keys present in cdkd state.
+    // reported permanent phantom drift. Emitting it unconditionally is not free
+    // — `drift.ts` union-walks nested objects on the observed baseline, so the
+    // sub-key IS compared — but the cost is one stale-baseline diff that clears
+    // on the next deploy, against a forever-drift for the declaring template.
     for (const value of ['varies_by_storage_class', 'all_storage_classes_128K']) {
       mockSend.mockImplementation((cmd: { constructor: { name: string } }) => {
         if (cmd.constructor.name === 'GetBucketLifecycleConfigurationCommand') {

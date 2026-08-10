@@ -732,8 +732,8 @@ export class S3BucketProvider implements ResourceProvider {
           : undefined,
         BucketKeyEnabled: rule['BucketKeyEnabled'] as boolean | undefined,
         BlockedEncryptionTypes:
-          blocked != null
-            ? { EncryptionType: blocked['EncryptionType'] as string[] | undefined }
+          blocked != null && blocked['EncryptionType'] !== undefined
+            ? { EncryptionType: blocked['EncryptionType'] as string[] }
             : undefined,
       };
     });
@@ -814,9 +814,9 @@ export class S3BucketProvider implements ResourceProvider {
       // is an EMPTY object whose PRESENCE is the signal, so it must survive.
       if (keyFormat['SimplePrefix'] !== undefined) sdkKeyFormat.SimplePrefix = {};
       const partitioned = keyFormat['PartitionedPrefix'] as Record<string, unknown> | undefined;
-      if (partitioned != null) {
+      if (partitioned != null && partitioned['PartitionDateSource'] !== undefined) {
         sdkKeyFormat.PartitionedPrefix = {
-          PartitionDateSource: partitioned['PartitionDateSource'] as string | undefined,
+          PartitionDateSource: partitioned['PartitionDateSource'] as string,
         };
       }
       if (Object.keys(sdkKeyFormat).length > 0) {
@@ -1417,17 +1417,17 @@ export class S3BucketProvider implements ResourceProvider {
               const replicaMods = criteria['ReplicaModifications'] as
                 | Record<string, unknown>
                 | undefined;
-              if (replicaMods != null) {
+              if (replicaMods != null && replicaMods['Status'] !== undefined) {
                 sdkCriteria['ReplicaModifications'] = {
-                  Status: replicaMods['Status'] as string | undefined,
+                  Status: replicaMods['Status'] as string,
                 };
               }
               const sseKms = criteria['SseKmsEncryptedObjects'] as
                 | Record<string, unknown>
                 | undefined;
-              if (sseKms != null) {
+              if (sseKms != null && sseKms['Status'] !== undefined) {
                 sdkCriteria['SseKmsEncryptedObjects'] = {
-                  Status: sseKms['Status'] as string | undefined,
+                  Status: sseKms['Status'] as string,
                 };
               }
               if (Object.keys(sdkCriteria).length > 0) {
@@ -2698,10 +2698,14 @@ export class S3BucketProvider implements ResourceProvider {
       // phantom drift on the `properties`-fallback baseline — exactly the
       // asymmetry this issue set out to remove.
       //
-      // Unconditional is also simply correct: `drift-calculator.ts` only
-      // descends into keys present in cdkd STATE, so a key the template never
-      // declared cannot surface as drift no matter what the observed side
-      // carries.
+      // Emitting it even when the template never declared it is deliberate and
+      // NOT free: `drift.ts` passes `unionWalkObjects` on the observed-baseline
+      // path, so a new sub-key under the state-present `LifecycleConfiguration`
+      // IS compared. The effect is the same one-time stale-observed-baseline
+      // drift the `EventBridgeConfiguration` block below already documents, and
+      // it clears on the next deploy — strictly better than the alternative,
+      // where a template that DOES declare the value never reads it back and
+      // drifts forever.
       if (resp.TransitionDefaultMinimumObjectSize !== undefined) {
         lifecycleOut['TransitionDefaultMinimumObjectSize'] =
           resp.TransitionDefaultMinimumObjectSize;
@@ -3073,7 +3077,7 @@ export class S3BucketProvider implements ResourceProvider {
             }
             if (Object.keys(cfnFilter).length > 0) ruleOut['Filter'] = cfnFilter;
           }
-          if (r.DeleteMarkerReplication) {
+          if (r.DeleteMarkerReplication?.Status !== undefined) {
             ruleOut['DeleteMarkerReplication'] = {
               Status: r.DeleteMarkerReplication.Status,
             };
