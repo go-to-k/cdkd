@@ -148,6 +148,48 @@ hand-fed inline `Tags` and so agreed with the bug.
 - Ask of any test: "would this still pass if the API returned nothing for this
   field?" If yes, it pins your assumption, not the behavior.
 
+## Never infer a default from a possibly-malformed value
+
+`(config['Status'] as string) || 'Suspended'` reads correctly and is wrong: when
+`config` is a STRING / array / unresolved intrinsic rather than the object the
+template was supposed to carry, the index yields `undefined` and the `||`
+substitutes the default — frequently the OPPOSITE of what the template declared,
+with no error anywhere. `VersioningConfiguration: 'Enabled'` on an
+`AWS::S3::Bucket` turned versioning OFF on a live bucket (issue #1471); the shape
+was measured at 16 sites across 5 providers.
+
+Use `src/provisioning/config-shape.ts` instead of hand-writing the guard:
+
+```ts
+// nested container (may itself be malformed)
+const status = readConfigString(
+  versioningConfig, 'Status', 'Suspended', 'AWS::S3::Bucket VersioningConfiguration'
+);
+// top-level field — keep the properties['X'] read at the call site
+const scope = requireConfigString(properties['Scope'], 'REGIONAL', 'AWS::WAFv2::WebACL Scope');
+```
+
+Three things about it are non-obvious and each was forced by the real tree:
+
+- **Guard the DESIRED side only.** `previousProperties` comes from cdkd STATE,
+  not the user's template. Refusing a malformed value recorded there by an older
+  binary makes the stack permanently undeployable — editing the template does not
+  help, because the previous side stays malformed until a deploy succeeds. An
+  earlier attempt guarded both sides and had to be reverted.
+- **Validate the FIELD, not just the container.** `{ Status: null }` and
+  `{ Status: '' }` both pass a `typeof === 'object'` check and still fall through
+  to the default. An ABSENT key must keep defaulting, though — `{}` legitimately
+  means Suspended.
+- **Cover the CREATE path.** A truthiness gate (`if (versioningConfig)`) lets a
+  truthy-but-malformed value through on create only, so create and update
+  disagree; use `!= null` so both refuse it. Same rationale as the
+  OwnershipControls / BucketEncryption gates.
+
+Pre-flight template validation is NOT the right layer for the field rules: at
+pre-flight time intrinsics are unresolved, so a legitimate `Fn::If`-valued block
+is an object whose inner key does not exist yet and a field check would reject
+valid templates.
+
 ## Fixing ONE nested-key divergence: diff the WHOLE blob, not the reported key
 
 A filed silent-drop bug names the key someone happened to notice. Fixing only

@@ -2446,12 +2446,50 @@ describe('S3BucketProvider removal semantics (issue #1466)', () => {
     expect(callsOf(PutBucketVersioningCommand)).toHaveLength(0);
   });
 
-  it('a malformed VersioningConfiguration resolves to Suspended (known gap, issue #1471)', async () => {
-    // Documents the PRE-EXISTING behavior rather than asserting a fix: `main`
-    // defaults a missing Status to 'Suspended' the same way, so this is not a
-    // regression from #1466 and is tracked in #1471. Pinned so the follow-up
-    // has a starting point and so a future change here is a conscious one.
-    await update({ ...base, VersioningConfiguration: 'Enabled' as never }, {
+  it('a malformed DESIRED VersioningConfiguration is refused, never silently suspended (issue #1471)', async () => {
+    // The headline case. `VersioningConfiguration: 'Enabled'` used to index to
+    // `undefined`, default to 'Suspended', and turn versioning OFF on a live
+    // bucket with no error anywhere. It must now fail by name.
+    await expect(
+      update({ ...base, VersioningConfiguration: 'Enabled' as never }, {
+        ...base,
+        VersioningConfiguration: { Status: 'Enabled' },
+      })
+    ).rejects.toThrow(/VersioningConfiguration must be an object \(got a string\)/);
+    // The load-bearing half: no suspend was issued on the way to the throw.
+    expect(callsOf(PutBucketVersioningCommand)).toHaveLength(0);
+  });
+
+  it('a malformed PREVIOUS VersioningConfiguration stays permissive (issue #1471)', async () => {
+    // The previous side comes from cdkd STATE, not the template. Refusing it
+    // would make a stack whose state already holds a malformed value
+    // permanently undeployable — editing the template would not help, because
+    // the previous side stays malformed until a deploy succeeds. So this must
+    // deploy cleanly and apply the (well-formed) desired value.
+    await update({ ...base, VersioningConfiguration: { Status: 'Enabled' } }, {
+      ...base,
+      VersioningConfiguration: 'Enabled' as never,
+    });
+    const calls = callsOf(PutBucketVersioningCommand);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.input).toMatchObject({ VersioningConfiguration: { Status: 'Enabled' } });
+  });
+
+  it('a present-but-blank desired Status is refused, but {} still means Suspended (issue #1471)', async () => {
+    // Validating the CONTAINER alone is not enough: `{ Status: '' }` and
+    // `{ Status: null }` both pass a typeof-object check and still fall
+    // through to the 'Suspended' default.
+    await expect(
+      update({ ...base, VersioningConfiguration: { Status: '' } }, {
+        ...base,
+        VersioningConfiguration: { Status: 'Enabled' },
+      })
+    ).rejects.toThrow(/VersioningConfiguration\.Status must be a non-empty string/);
+
+    // ... while an EMPTY block legitimately means Suspended and must keep
+    // working — the rule is "absent key defaults", not "any object defaults".
+    mockSend.mockClear();
+    await update({ ...base, VersioningConfiguration: {} }, {
       ...base,
       VersioningConfiguration: { Status: 'Enabled' },
     });
@@ -2500,5 +2538,42 @@ describe('S3BucketProvider removal semantics (issue #1466)', () => {
     await expect(
       update({ ...base, BucketEncryption: '' as never }, { ...base, BucketEncryption: sseKms })
     ).rejects.toThrow(/ServerSideEncryptionConfiguration must be an array/);
+  });
+
+  it('CREATE and UPDATE agree on a malformed VersioningConfiguration (issue #1471)', async () => {
+    // The create path had the SAME asymmetry the encryption test above
+    // describes, one property over: a truthy-but-malformed
+    // `VersioningConfiguration: 'Enabled'` passed the truthiness gate, indexed
+    // to `undefined`, and PUT Suspended — so a brand-new bucket came up
+    // unversioned while the template declared Enabled, and the malformed value
+    // was then recorded in state.
+    await expect(
+      provider.create('L', 'AWS::S3::Bucket', {
+        BucketName: BUCKET_NAME,
+        VersioningConfiguration: 'Enabled' as never,
+      })
+    ).rejects.toThrow(/VersioningConfiguration must be an object \(got a string\)/);
+    expect(callsOf(PutBucketVersioningCommand)).toHaveLength(0);
+
+    vi.clearAllMocks();
+    mockSend.mockResolvedValue({});
+    await expect(
+      update({ ...base, VersioningConfiguration: 'Enabled' as never }, {
+        ...base,
+        VersioningConfiguration: { Status: 'Enabled' },
+      })
+    ).rejects.toThrow(/VersioningConfiguration must be an object \(got a string\)/);
+  });
+
+  it('CREATE still applies a well-formed VersioningConfiguration', async () => {
+    // The guard must not turn into a blanket refusal — the normal path has to
+    // keep working, including the `{}`-means-Suspended shape.
+    await provider.create('L', 'AWS::S3::Bucket', {
+      BucketName: BUCKET_NAME,
+      VersioningConfiguration: { Status: 'Enabled' },
+    });
+    const calls = callsOf(PutBucketVersioningCommand);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.input).toMatchObject({ VersioningConfiguration: { Status: 'Enabled' } });
   });
 });

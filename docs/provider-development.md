@@ -853,6 +853,47 @@ try {
 }
 ```
 
+### 1b. Never infer a default from a possibly-malformed value
+
+Reading a string out of a nested config block with `||` looks harmless and is
+not:
+
+```typescript
+// WRONG — a string / array / unresolved intrinsic container indexes to
+// `undefined`, and the `||` silently substitutes the OPPOSITE of the
+// declared intent.
+const status = (versioningConfig['Status'] as string) || 'Suspended';
+```
+
+`VersioningConfiguration: 'Enabled'` (a hand-written L1 template, or an
+intrinsic the resolver could not resolve) therefore turned versioning **off**
+on a live bucket, with no error anywhere. Use the shared guards instead:
+
+```typescript
+import { readConfigString, requireConfigString } from '../config-shape.js';
+
+// nested container, which may itself be malformed
+const status = readConfigString(
+  versioningConfig,
+  'Status',
+  'Suspended',
+  'AWS::S3::Bucket VersioningConfiguration'
+);
+
+// top-level field — keep the `properties['X']` read at the call site so the
+// handled-property-wiring critic can still see the property is consumed
+const scope = requireConfigString(properties['Scope'], 'REGIONAL', 'AWS::WAFv2::WebACL Scope');
+```
+
+An absent container and an absent key still take the default (`{}` legitimately
+means "defaulted"); a container that is present but not an object, and a key
+that is present but not a non-blank string, are refused by name.
+
+Pass the **desired** side only. `previousProperties` comes from cdkd state
+rather than the user's template, so refusing a malformed value recorded there
+by an older binary would make the stack undeployable with no way out short of
+hand-editing the state file.
+
 ### 1a. Pre-flight refusal — when a provider may reject what CloudFormation forwards
 
 cdkd's compatibility target is CloudFormation, so the default for a property

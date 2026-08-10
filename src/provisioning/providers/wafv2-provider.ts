@@ -19,6 +19,7 @@ import {
   type AssociationConfig,
 } from '@aws-sdk/client-wafv2';
 import { getLogger } from '../../utils/logger.js';
+import { requireConfigString } from '../config-shape.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
@@ -522,7 +523,11 @@ export class WAFv2WebACLProvider implements ResourceProvider {
     const name =
       (properties['Name'] as string | undefined) ||
       generateResourceName(logicalId, { maxLength: 128 });
-    const scope = ((properties['Scope'] as string) || 'REGIONAL') as Scope;
+    const scope = requireConfigString(
+      properties['Scope'],
+      'REGIONAL',
+      'AWS::WAFv2::WebACL Scope'
+    ) as Scope;
 
     this.warnOnSdkUnsupportedRuleKeys(logicalId, properties['Rules']);
 
