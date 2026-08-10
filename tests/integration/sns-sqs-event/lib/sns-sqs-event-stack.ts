@@ -22,6 +22,32 @@ export class SnsSqsEventStack extends cdk.Stack {
       ...(removal ? {} : { sqsManagedSseEnabled: false }),
     });
 
+    // CDKD_TEST_REMOVAL (issue #1160, sns batch): the baseline template sets a
+    // Lambda DeliveryStatusLogging block on the L1 topic below; the removal
+    // phase drops the property entirely. SNS SetTopicAttributes is
+    // per-attribute merge (an attribute never sent keeps its live value), so
+    // pre-fix the per-protocol feedback attributes silently survived the
+    // removal; the provider must reset them (RoleArns cleared via '',
+    // SampleRate reset to 0 — the CFn-parity shape, live A/B'd 2026-08-10).
+    const feedbackRole = new iam.Role(this, 'DeliveryStatusRole', {
+      assumedBy: new iam.ServicePrincipal('sns.amazonaws.com'),
+    });
+    new sns.CfnTopic(this, 'DeliveryStatusTopic', {
+      topicName: 'cdkd-sns-sqs-test-delivery-status',
+      ...(removal
+        ? {}
+        : {
+            deliveryStatusLogging: [
+              {
+                protocol: 'lambda',
+                successFeedbackRoleArn: feedbackRole.roleArn,
+                successFeedbackSampleRate: '25',
+                failureFeedbackRoleArn: feedbackRole.roleArn,
+              },
+            ],
+          }),
+    });
+
     // SNS Topic
     const topic = new sns.Topic(this, 'EventTopic', {
       topicName: 'cdkd-sns-sqs-test-topic',

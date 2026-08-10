@@ -3422,6 +3422,7 @@
         "scheduler-custom-group",
         "sdk-ccapi-crossref",
         "serverless-api",
+        "sns-sqs-event",
         "stepfunctions-s3-definition",
         "synthetics-canary",
         "tags-propagation",
@@ -3617,6 +3618,9 @@
           "literal"
         ],
         "serverless-api": [
+          "l2"
+        ],
+        "sns-sqs-event": [
           "l2"
         ],
         "stepfunctions-s3-definition": [
@@ -4960,6 +4964,7 @@
           "l2"
         ],
         "sns-sqs-event": [
+          "l1",
           "l2"
         ],
         "sns-subscription-filter": [

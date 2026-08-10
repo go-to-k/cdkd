@@ -555,6 +555,12 @@ describe('isIamPropagationError', () => {
       'NoSuchEntity: The user with name cdkd-iam-access-key-user cannot be found.',
       'IAM per-user write racing CreateUser',
     ],
+    // SNS delivery-status feedback role created ~1s earlier in the same stack
+    // (issue #1160 sns batch — sns-sqs-event fixture).
+    [
+      'Invalid parameter: LambdaSuccessFeedbackRoleArn: arn:aws:iam::1:role/r is not a valid role to allow SNS to write to Cloudwatch Logs',
+      'SNS delivery-status feedback role',
+    ],
   ])('classifies %j as IAM propagation (%s)', (message) => {
     expect(isIamPropagationError(message)).toBe(true);
     // Cadence selection must never widen retryability.

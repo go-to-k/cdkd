@@ -188,44 +188,23 @@ export class SNSTopicProvider implements ResourceProvider {
         // `Protocol` value lowercase (`'lambda'` / `'sqs'` / `'http'`), so
         // the raw `${protocol}<Suffix>` concatenation produces invalid
         // attribute names that AWS rejects with `InvalidParameter: Invalid
-        // parameter: AttributeName`. Normalize every entry's protocol via
-        // `normalizeDeliveryStatusProtocol` before building the SDK input;
-        // an unknown / unsupported protocol throws a clear error rather
-        // than letting AWS produce the cryptic generic rejection.
-        if (properties['DeliveryStatusLogging']) {
-          const loggingConfigs = properties['DeliveryStatusLogging'] as Array<
-            Record<string, unknown>
-          >;
-          for (const config of loggingConfigs) {
-            const protocol = normalizeDeliveryStatusProtocolOrThrow(config['Protocol'], logicalId);
-            if (config['SuccessFeedbackRoleArn']) {
-              await this.snsClient.send(
-                new SetTopicAttributesCommand({
-                  TopicArn: topicArn,
-                  AttributeName: `${protocol}SuccessFeedbackRoleArn`,
-                  AttributeValue: config['SuccessFeedbackRoleArn'] as string,
-                })
-              );
-            }
-            if (config['SuccessFeedbackSampleRate']) {
-              await this.snsClient.send(
-                new SetTopicAttributesCommand({
-                  TopicArn: topicArn,
-                  AttributeName: `${protocol}SuccessFeedbackSampleRate`,
-                  AttributeValue: stringifyValue(config['SuccessFeedbackSampleRate']),
-                })
-              );
-            }
-            if (config['FailureFeedbackRoleArn']) {
-              await this.snsClient.send(
-                new SetTopicAttributesCommand({
-                  TopicArn: topicArn,
-                  AttributeName: `${protocol}FailureFeedbackRoleArn`,
-                  AttributeValue: config['FailureFeedbackRoleArn'] as string,
-                })
-              );
-            }
-          }
+        // parameter: AttributeName`. `buildDeliveryStatusAttributeMap`
+        // normalizes every entry's protocol; an unknown / unsupported
+        // protocol throws a clear error rather than letting AWS produce
+        // the cryptic generic rejection.
+        const deliveryStatusAttributes = buildDeliveryStatusAttributeMap(
+          properties['DeliveryStatusLogging'],
+          logicalId,
+          'throw'
+        );
+        for (const [attributeName, attributeValue] of deliveryStatusAttributes) {
+          await this.snsClient.send(
+            new SetTopicAttributesCommand({
+              TopicArn: topicArn,
+              AttributeName: attributeName,
+              AttributeValue: attributeValue,
+            })
+          );
         }
 
         // Inline Subscription property - matches CloudFormation, which creates
@@ -368,43 +347,53 @@ export class SNSTopicProvider implements ResourceProvider {
     }
 
     // Update DeliveryStatusLogging if changed — same lowercase-rejection
-    // pitfall as create(). Normalize every entry's `Protocol` before
-    // building attribute names. See `normalizeDeliveryStatusProtocol`.
+    // pitfall as create(); `buildDeliveryStatusAttributeMap` normalizes
+    // every entry's `Protocol` before building attribute names.
+    //
+    // Removal semantics (issue #1160): SetTopicAttributes is per-attribute
+    // merge — an attribute we never send keeps its live value, so both a
+    // whole `DeliveryStatusLogging` removal and a dropped sub-field /
+    // protocol entry must be reset EXPLICITLY. The desired side throws on
+    // a malformed container (template error, fail fast); the previous side
+    // comes from cdkd state, so it is walked in 'skip' mode — a state
+    // record an older binary wrote must never make the stack permanently
+    // undeployable (guard-the-desired-side-only rule).
     if (
       JSON.stringify(properties['DeliveryStatusLogging']) !==
       JSON.stringify(previousProperties['DeliveryStatusLogging'])
     ) {
-      const loggingConfigs =
-        (properties['DeliveryStatusLogging'] as Array<Record<string, unknown>>) || [];
-      for (const config of loggingConfigs) {
-        const protocol = normalizeDeliveryStatusProtocolOrThrow(config['Protocol'], logicalId);
-        if (config['SuccessFeedbackRoleArn']) {
-          await this.snsClient.send(
-            new SetTopicAttributesCommand({
-              TopicArn: physicalId,
-              AttributeName: `${protocol}SuccessFeedbackRoleArn`,
-              AttributeValue: config['SuccessFeedbackRoleArn'] as string,
-            })
-          );
-        }
-        if (config['SuccessFeedbackSampleRate']) {
-          await this.snsClient.send(
-            new SetTopicAttributesCommand({
-              TopicArn: physicalId,
-              AttributeName: `${protocol}SuccessFeedbackSampleRate`,
-              AttributeValue: stringifyValue(config['SuccessFeedbackSampleRate']),
-            })
-          );
-        }
-        if (config['FailureFeedbackRoleArn']) {
-          await this.snsClient.send(
-            new SetTopicAttributesCommand({
-              TopicArn: physicalId,
-              AttributeName: `${protocol}FailureFeedbackRoleArn`,
-              AttributeValue: config['FailureFeedbackRoleArn'] as string,
-            })
-          );
-        }
+      const desiredAttributes = buildDeliveryStatusAttributeMap(
+        properties['DeliveryStatusLogging'],
+        logicalId,
+        'throw'
+      );
+      const previousAttributes = buildDeliveryStatusAttributeMap(
+        previousProperties['DeliveryStatusLogging'],
+        logicalId,
+        'skip'
+      );
+      for (const [attributeName, attributeValue] of desiredAttributes) {
+        if (previousAttributes.get(attributeName) === attributeValue) continue;
+        await this.snsClient.send(
+          new SetTopicAttributesCommand({
+            TopicArn: physicalId,
+            AttributeName: attributeName,
+            AttributeValue: attributeValue,
+          })
+        );
+      }
+      for (const attributeName of previousAttributes.keys()) {
+        if (desiredAttributes.has(attributeName)) continue;
+        await this.snsClient.send(
+          new SetTopicAttributesCommand({
+            TopicArn: physicalId,
+            AttributeName: attributeName,
+            AttributeValue: deliveryStatusRemovalResetValue(attributeName),
+          })
+        );
+        this.logger.debug(
+          `Reset removed delivery status attribute ${attributeName} for topic ${physicalId}`
+        );
       }
     }
 
@@ -940,6 +929,90 @@ const SNS_DELIVERY_STATUS_PROTOCOLS = [
 ] as const;
 
 type SnsDeliveryStatusProtocol = (typeof SNS_DELIVERY_STATUS_PROTOCOLS)[number];
+
+/**
+ * The per-protocol attribute suffixes an inline `DeliveryStatusLogging`
+ * entry maps to (`<Protocol><Suffix>` flat attribute names on the topic).
+ */
+const SNS_DELIVERY_STATUS_ATTRIBUTE_SUFFIXES = [
+  'SuccessFeedbackRoleArn',
+  'SuccessFeedbackSampleRate',
+  'FailureFeedbackRoleArn',
+] as const;
+
+/**
+ * Flatten a CFn `DeliveryStatusLogging` array into the AWS flat attribute
+ * map (`{LambdaSuccessFeedbackRoleArn: '...', ...}`) that
+ * `SetTopicAttributes` consumes one entry at a time.
+ *
+ * Field presence is `!= null`, NOT truthiness, so
+ * `SuccessFeedbackSampleRate: 0` is sent as `'0'` instead of being
+ * silently skipped (the pre-#1160 truthiness gates dropped a 0 sample
+ * rate on create and update alike).
+ *
+ * `onMalformed` picks the failure mode for a malformed container / entry
+ * / unknown protocol: `'throw'` for the DESIRED side (a template error
+ * must fail fast, naming the offending value), `'skip'` for the PREVIOUS
+ * side (cdkd state — refusing a value an older binary recorded would make
+ * the stack permanently undeployable, and an entry whose protocol cannot
+ * be canonicalized maps to no attribute names anyway).
+ */
+export function buildDeliveryStatusAttributeMap(
+  logging: unknown,
+  logicalId: string,
+  onMalformed: 'throw' | 'skip'
+): Map<string, string> {
+  const map = new Map<string, string>();
+  if (logging == null) return map;
+  if (!Array.isArray(logging)) {
+    if (onMalformed === 'skip') return map;
+    throw new Error(
+      `SNS topic ${logicalId}: DeliveryStatusLogging must be an array of ` +
+        `{Protocol, ...} objects, got ${JSON.stringify(logging)}`
+    );
+  }
+  for (const entry of logging) {
+    if (entry == null || typeof entry !== 'object' || Array.isArray(entry)) {
+      if (onMalformed === 'skip') continue;
+      throw new Error(
+        `SNS topic ${logicalId}: DeliveryStatusLogging entries must be ` +
+          `{Protocol, ...} objects, got ${JSON.stringify(entry)}`
+      );
+    }
+    const config = entry as Record<string, unknown>;
+    let protocol: SnsDeliveryStatusProtocol;
+    if (onMalformed === 'throw') {
+      protocol = normalizeDeliveryStatusProtocolOrThrow(config['Protocol'], logicalId);
+    } else {
+      const normalized = normalizeDeliveryStatusProtocol(config['Protocol']);
+      if (normalized === undefined) continue;
+      protocol = normalized;
+    }
+    for (const suffix of SNS_DELIVERY_STATUS_ATTRIBUTE_SUFFIXES) {
+      const value = config[suffix];
+      if (value == null) continue;
+      map.set(`${protocol}${suffix}`, stringifyValue(value));
+    }
+  }
+  return map;
+}
+
+/**
+ * The `SetTopicAttributes` value that resets a REMOVED per-protocol
+ * delivery status attribute to its CloudFormation-removal state.
+ *
+ * Live CFn A/B (2026-08-10, issue #1160): removing `DeliveryStatusLogging`
+ * from a template clears both RoleArn attributes (AWS accepts `''` as the
+ * clear sentinel — the attribute disappears from `GetTopicAttributes`) and
+ * explicitly resets `SuccessFeedbackSampleRate` to `'0'`. The `''`
+ * sentinel is REJECTED for the sample rate ("value provided is not an
+ * integer between 0-100"), so the numeric reset is the only wire shape
+ * that clears it — the `'0'` attribute itself remains visible on the
+ * topic afterwards, exactly as it does after a CloudFormation removal.
+ */
+function deliveryStatusRemovalResetValue(attributeName: string): string {
+  return attributeName.endsWith('SuccessFeedbackSampleRate') ? '0' : '';
+}
 
 /**
  * Map a (possibly-mixed-case) protocol string from a CFn template to the

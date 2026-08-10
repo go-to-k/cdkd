@@ -10,9 +10,12 @@
 #     (true) and RedrivePolicy on the secondary subscription (a
 #     deadLetterQueue), both via the Subscribe Attributes map.
 # Then re-deploys with CDKD_TEST_REMOVAL=true (drops SqsManagedSseEnabled from
-# the SSE-removal queue — issue #1160 sqs batch) and asserts the live queue
-# resets to the SQS/CFn default (SSE on) instead of silently keeping SSE off.
-# Then destroys and confirms a clean teardown.
+# the SSE-removal queue — issue #1160 sqs batch — AND the DeliveryStatusLogging
+# block from the delivery-status topic — issue #1160 sns batch) and asserts the
+# live queue resets to the SQS/CFn default (SSE on) and the topic's
+# per-protocol feedback attributes reset (RoleArns cleared, SampleRate 0 — the
+# CFn-parity removal shape, live A/B'd 2026-08-10) instead of silently keeping
+# the old values. Then destroys and confirms a clean teardown.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -63,6 +66,7 @@ DLQ_NAME="cdkd-sns-sqs-test-dlq"
 PRIMARY_QUEUE_NAME="cdkd-sns-sqs-test-primary"
 SECONDARY_QUEUE_NAME="cdkd-sns-sqs-test-secondary"
 SSE_QUEUE_NAME="cdkd-sns-sqs-test-sse-removal"
+DS_TOPIC_NAME="cdkd-sns-sqs-test-delivery-status"
 
 # Resolve the built CLI path without a `cd` into dist/ that fails cryptically
 # (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
@@ -152,6 +156,25 @@ if [ "${SSE_P1}" != "false" ]; then
   exit 1
 fi
 echo "    OK: SSE-removal queue deployed with SqsManagedSseEnabled=false"
+
+# --- Assertion 1c: DeliveryStatusLogging reached AWS (issue #1160 sns) ----
+DS_TOPIC_ARN=$(aws sns list-topics --region "${REGION}" \
+  --query "Topics[?ends_with(TopicArn, ':${DS_TOPIC_NAME}')].TopicArn | [0]" \
+  --output text)
+if [ -z "${DS_TOPIC_ARN}" ] || [ "${DS_TOPIC_ARN}" = "None" ]; then
+  echo "FAIL: could not resolve topic ARN for ${DS_TOPIC_NAME}" >&2
+  exit 1
+fi
+DS_ATTRS_P1=$(aws sns get-topic-attributes --topic-arn "${DS_TOPIC_ARN}" \
+  --region "${REGION}" --query 'Attributes' --output json)
+DS_ROLE_P1=$(echo "${DS_ATTRS_P1}" | jq -r '.LambdaSuccessFeedbackRoleArn // empty')
+DS_RATE_P1=$(echo "${DS_ATTRS_P1}" | jq -r '.LambdaSuccessFeedbackSampleRate // empty')
+DS_FAIL_ROLE_P1=$(echo "${DS_ATTRS_P1}" | jq -r '.LambdaFailureFeedbackRoleArn // empty')
+if [ -z "${DS_ROLE_P1}" ] || [ -z "${DS_FAIL_ROLE_P1}" ] || [ "${DS_RATE_P1}" != "25" ]; then
+  echo "FAIL: delivery-status topic missing baseline feedback attrs (role='${DS_ROLE_P1}', failRole='${DS_FAIL_ROLE_P1}', rate='${DS_RATE_P1}', expected rate 25)" >&2
+  exit 1
+fi
+echo "    OK: delivery-status topic deployed with Lambda feedback attrs (rate 25)"
 
 # --- Resolve the topic + subscription ARNs --------------------------------
 TOPIC_ARN=$(aws sns list-topics --region "${REGION}" \
@@ -254,6 +277,27 @@ if [ "${SSE_CREATED_P1}" != "${SSE_CREATED_P2}" ]; then
 fi
 echo "    OK: SqsManagedSseEnabled reset to true in place (CreatedTimestamp unchanged)"
 
+# --- Assertion 2b: DeliveryStatusLogging removal reset (issue #1160 sns) --
+# Pre-fix the provider iterated only the (now empty) desired list and the
+# per-protocol attributes silently kept their live values; post-fix the
+# removal resets them: RoleArns cleared via '' (the attribute disappears
+# from GetTopicAttributes), SampleRate explicitly reset to 0 — the exact
+# shape a CloudFormation removal leaves (live A/B 2026-08-10).
+DS_ATTRS_P2=$(aws sns get-topic-attributes --topic-arn "${DS_TOPIC_ARN}" \
+  --region "${REGION}" --query 'Attributes' --output json)
+DS_ROLE_P2=$(echo "${DS_ATTRS_P2}" | jq -r '.LambdaSuccessFeedbackRoleArn // empty')
+DS_RATE_P2=$(echo "${DS_ATTRS_P2}" | jq -r '.LambdaSuccessFeedbackSampleRate // empty')
+DS_FAIL_ROLE_P2=$(echo "${DS_ATTRS_P2}" | jq -r '.LambdaFailureFeedbackRoleArn // empty')
+if [ -n "${DS_ROLE_P2}" ] || [ -n "${DS_FAIL_ROLE_P2}" ]; then
+  echo "FAIL: delivery-status feedback RoleArns survived the removal redeploy (role='${DS_ROLE_P2}', failRole='${DS_FAIL_ROLE_P2}')" >&2
+  exit 1
+fi
+if [ "${DS_RATE_P2}" != "0" ]; then
+  echo "FAIL: LambdaSuccessFeedbackSampleRate is '${DS_RATE_P2}' after removal, expected the CFn-parity reset '0'" >&2
+  exit 1
+fi
+echo "    OK: delivery-status feedback attrs reset on removal (RoleArns cleared, rate 0)"
+
 # --- Phase 3: destroy -----------------------------------------------------
 echo "==> Phase 3: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \
@@ -269,6 +313,9 @@ echo "    OK: SSE-removal queue is gone"
 
 assert_gone "primary subscription still exists after destroy" aws sns get-subscription-attributes --subscription-arn "${PRIMARY_SUB_ARN}" --region "${REGION}"
 echo "    OK: subscriptions are gone"
+
+assert_gone "delivery-status topic ${DS_TOPIC_NAME} still exists after destroy" aws sns get-topic-attributes --topic-arn "${DS_TOPIC_ARN}" --region "${REGION}"
+echo "    OK: delivery-status topic is gone"
 
 assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: state file is gone"
