@@ -3465,19 +3465,27 @@ describe('whole-blob hand-off walk (real repo, issue #1445)', () => {
       'AWS::CloudWatch::AnomalyDetector': 0,
       'AWS::ECS::Service': 0,
       'AWS::ECS::TaskDefinition': 0,
-      'AWS::S3::Bucket': 98,
+      'AWS::S3::Bucket': 81,
     });
   });
 
-  it('pins S3 reason (C): 20 of the 98 are never written ANYWHERE (#1495)', () => {
-    // The header's reason (C) is a MEASURED split, not a hand-wave, and this is
-    // what keeps it one. `AWS::S3::Bucket` is not opted in, so these are
-    // recorded rather than fenced — but the moment the provider starts writing
-    // one, this test fails by name and the header has to be re-measured.
+  it('keeps S3 reason (C) CLOSED: NOTHING is never-written any more (#1495)', () => {
+    // Reason (C) in the header, RESOLVED. This test used to pin the 20 paths
+    // whose terminal member appeared NOWHERE in `s3-bucket-provider.ts` — the
+    // confirmed write-side silent drops (the `TargetObjectKeyFormat` family,
+    // the four `Destination` blocks, `SourceSelectionCriteria`,
+    // `TransitionDefaultMinimumObjectSize`, `BlockedEncryptionTypes`). Issue
+    // #1495 wired every one of them, so the probe is INVERTED into a fence:
+    // an EMPTY never-written set is now the assertion, and a future provider
+    // change that drops a member back out fails here by name.
     //
-    // The other 78 of the 98 ARE written somewhere in the file and fail only to
-    // resolve at the audited chain (CFn->SDK segment renames, plural-vs-
-    // singular per-item PUT APIs); those are `segmentRenames` work, not drops.
+    // The remaining 81 `no-write-evidence` paths ARE written somewhere in the
+    // file and fail only to resolve at the audited CHAIN — CFn->SDK segment
+    // renames (`LoggingConfiguration` -> `BucketLoggingStatus.LoggingEnabled`),
+    // an SDK-only wrapper segment (`ServerSideEncryptionConfiguration` ->
+    // `...Rules`), a member CFn nests that the SDK hoists onto the REQUEST
+    // (`TransitionDefaultMinimumObjectSize`), and plural-vs-singular per-item
+    // PUT APIs. Those are `segmentRenames` work (issue #1520), not drops.
     const forced = NESTED_KEY_TARGETS.map((t) => ({ ...t, freshObjectMapper: true }));
     const s3 = loadReport(forced).targets.find((t) => t.resourceType === 'AWS::S3::Bucket')!;
     const evidence = collectWriteEvidence(
@@ -3489,28 +3497,39 @@ describe('whole-blob hand-off walk (real repo, issue #1445)', () => {
       .filter((e) => !evidence.written.has(e.nestedKey.split('.').pop()!))
       .map((e) => e.nestedKey)
       .sort();
-    expect(neverWritten).toEqual([
-      'BucketEncryption.ServerSideEncryptionConfiguration.BlockedEncryptionTypes',
-      'BucketEncryption.ServerSideEncryptionConfiguration.BlockedEncryptionTypes.EncryptionType',
-      'LifecycleConfiguration.TransitionDefaultMinimumObjectSize',
-      'LoggingConfiguration.TargetObjectKeyFormat',
-      'LoggingConfiguration.TargetObjectKeyFormat.PartitionedPrefix',
-      'LoggingConfiguration.TargetObjectKeyFormat.PartitionedPrefix.PartitionDateSource',
-      'LoggingConfiguration.TargetObjectKeyFormat.SimplePrefix',
-      'ReplicationConfiguration.Rules.Destination.AccessControlTranslation',
-      'ReplicationConfiguration.Rules.Destination.AccessControlTranslation.Owner',
-      'ReplicationConfiguration.Rules.Destination.EncryptionConfiguration',
-      'ReplicationConfiguration.Rules.Destination.EncryptionConfiguration.ReplicaKmsKeyID',
-      'ReplicationConfiguration.Rules.Destination.Metrics',
-      'ReplicationConfiguration.Rules.Destination.Metrics.EventThreshold',
-      'ReplicationConfiguration.Rules.Destination.Metrics.EventThreshold.Minutes',
-      'ReplicationConfiguration.Rules.Destination.ReplicationTime',
-      'ReplicationConfiguration.Rules.Destination.ReplicationTime.Time',
-      'ReplicationConfiguration.Rules.Destination.ReplicationTime.Time.Minutes',
-      'ReplicationConfiguration.Rules.SourceSelectionCriteria',
-      'ReplicationConfiguration.Rules.SourceSelectionCriteria.ReplicaModifications',
-      'ReplicationConfiguration.Rules.SourceSelectionCriteria.SseKmsEncryptedObjects',
-    ]);
+    expect(neverWritten).toEqual([]);
+  });
+
+  it('pins the #1495 members as WRITTEN, so a silent re-drop fails by name', () => {
+    // The inverted fence above proves the SET is empty; this proves the twenty
+    // specific members are the reason. Asserting the name set directly means a
+    // walk change that stops SEEING these writes cannot pass by shrinking the
+    // audited universe instead of by the provider still writing them.
+    const evidence = collectWriteEvidence(
+      readFileSync(join(PROVIDERS_DIR, 's3-bucket-provider.ts'), 'utf8'),
+      's3-bucket-provider.ts'
+    );
+    for (const member of [
+      'TargetObjectKeyFormat',
+      'SimplePrefix',
+      'PartitionedPrefix',
+      'PartitionDateSource',
+      'AccessControlTranslation',
+      'Owner',
+      'EncryptionConfiguration',
+      'ReplicaKmsKeyID',
+      'Metrics',
+      'EventThreshold',
+      'ReplicationTime',
+      'SourceSelectionCriteria',
+      'ReplicaModifications',
+      'SseKmsEncryptedObjects',
+      'TransitionDefaultMinimumObjectSize',
+      'BlockedEncryptionTypes',
+      'EncryptionType',
+    ]) {
+      expect(evidence.written.has(member), `${member} must be WRITTEN (#1495)`).toBe(true);
+    }
   });
 
   it('keeps the six #1472/#1473 ECS silent drops CLOSED (fixed, both targets opted in)', () => {
