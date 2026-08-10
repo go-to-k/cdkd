@@ -368,16 +368,22 @@ export class GlueProvider implements ResourceProvider {
 
     const catalogId = properties['CatalogId'] as string | undefined;
 
+    assertIcebergTableInputAbsent(logicalId, resourceType, properties);
+
     // `OpenTableFormatInput` (Apache Iceberg) is a top-level `CreateTableCommand`
-    // param — a SIBLING of `TableInput`, NOT nested inside it. The CFn shape
-    // matches the SDK `OpenTableFormatInput` type key-for-key EXCEPT for
-    // `IcebergInput.IcebergTableInput`, which cdkd renames — see
-    // {@link toSdkOpenTableFormatInput}. Omit when absent.
+    // param — a SIBLING of `TableInput`, NOT nested inside it. Omit when absent.
     // Iceberg's `MetadataOperation: 'CREATE'` is a create-time directive, so it
     // is intentionally wired on create only — `UpdateTableCommandInput` has no
     // `OpenTableFormatInput` member at all (it carries the different,
     // update-only `UpdateOpenTableFormatInput` shape, which CFn does not model;
     // verified against @aws-sdk/client-glue `UpdateTableRequest`).
+    //
+    // Every member of the DEPLOYABLE shape (`IcebergInput.MetadataOperation` /
+    // `.Version`) is spelled identically in CFn and the SDK, so the blob is
+    // forwarded verbatim. The one divergent member —
+    // `IcebergInput.IcebergTableInput` — is refused pre-flight just above; see
+    // {@link assertIcebergTableInputAbsent} for why, and read its warning
+    // before ever relaxing that refusal.
     const openTableFormatInput = properties['OpenTableFormatInput'] as
       | Record<string, unknown>
       | undefined;
@@ -389,7 +395,7 @@ export class GlueProvider implements ResourceProvider {
           DatabaseName: databaseName,
           TableInput: this.buildTableInput(tableInput, tableName),
           ...(openTableFormatInput !== undefined && {
-            OpenTableFormatInput: toSdkOpenTableFormatInput(openTableFormatInput),
+            OpenTableFormatInput: openTableFormatInput as OpenTableFormatInput,
           }),
         })
       );
@@ -442,6 +448,33 @@ export class GlueProvider implements ResourceProvider {
     }
 
     const catalogId = properties['CatalogId'] as string | undefined;
+
+    // UPDATE only WARNS where create REFUSES, and the asymmetry is deliberate.
+    //
+    // Rollback restores a resource from cdkd STATE, not from the template
+    // (`rollback-executor.ts` calls `provider.update(..., op.previousState.properties)`).
+    // A table created by a cdkd build older than #1390 succeeded with the
+    // property silently dropped by the SDK serializer, so its state record
+    // still carries the key. Refusing here would hard-fail both any UPDATE to
+    // such a table AND its ROLLBACK — and for the rollback there is no
+    // template-side remedy, only hand-editing state.json. That is a worse
+    // outcome than the one this refusal exists to prevent.
+    //
+    // Warning costs nothing HERE: cdkd does not wire Glue's update-only
+    // `UpdateOpenTableFormatInput` shape, and `buildTableInput` is an explicit
+    // allow-list, so no `OpenTableFormatInput` value can reach AWS from this
+    // path by any route. The user still gets the full actionable message, and
+    // the CREATE path (where the property could actually be sent) still refuses.
+    //
+    // NOT every rollback arm is covered — see issue #1463. `replayRollback`'s
+    // reverse-replacement arm revives the OLD resource by calling `create()`
+    // with `previousState.properties`, which DOES hit the create refusal. That
+    // op fails individually (the executor catches per-op) rather than wedging
+    // the rollback, but the old table is not restored.
+    const updateIcebergKey = findIcebergTableInputKey(properties);
+    if (updateIcebergKey !== undefined) {
+      this.logger.warn(icebergTableInputRefusalMessage(logicalId, updateIcebergKey, 'update'));
+    }
 
     try {
       await this.getClient().send(
@@ -1438,36 +1471,151 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
- * Convert the CFn `AWS::Glue::Table.OpenTableFormatInput` blob to the SDK
- * `OpenTableFormatInput` shape.
- *
- * Every key matches the SDK model except one: CFn's
- * `IcebergInput.IcebergTableInput` is the SDK's
- * `IcebergInput.CreateIcebergTableInput` (@aws-sdk/client-glue `models_1.d.ts`
- * `IcebergInput`). The AWS SDK v3 serializer drops unknown members, so leaving
- * the CFn spelling in place silently discarded the ENTIRE Iceberg table spec
- * (`Location` / `Schema` / `PartitionSpec` / `WriteOrder` / `Properties`) while
- * `CreateTable` still reported success. The renamed object's own members match
- * CFn 1:1, so this is a single key rename.
- *
- * Non-object inputs (an unresolved intrinsic) pass through untouched so AWS
- * surfaces the real validation error.
+ * Both spellings of the Iceberg table spec cdkd refuses inside
+ * `OpenTableFormatInput.IcebergInput`: the CFn registry schema's
+ * `IcebergTableInput` and `@aws-sdk/client-glue`'s `CreateIcebergTableInput`.
+ * A hand-written template can carry either, and neither is deployable, so the
+ * pre-flight matches both and names whichever it found.
  */
-function toSdkOpenTableFormatInput(input: Record<string, unknown>): OpenTableFormatInput {
-  const iceberg = input['IcebergInput'];
+const ICEBERG_TABLE_INPUT_KEYS = ['IcebergTableInput', 'CreateIcebergTableInput'] as const;
+
+/**
+ * Return whichever {@link ICEBERG_TABLE_INPUT_KEYS} spelling the template
+ * carries under `OpenTableFormatInput.IcebergInput`, or `undefined`.
+ *
+ * Non-object shapes at either level (an unresolved intrinsic) are treated as
+ * "absent" so AWS surfaces the real validation error rather than this refusal.
+ */
+function findIcebergTableInputKey(properties: Record<string, unknown>): string | undefined {
+  const openTableFormatInput = properties['OpenTableFormatInput'];
   if (
-    typeof iceberg !== 'object' ||
-    iceberg === null ||
-    Array.isArray(iceberg) ||
-    !('IcebergTableInput' in iceberg)
+    typeof openTableFormatInput !== 'object' ||
+    openTableFormatInput === null ||
+    Array.isArray(openTableFormatInput)
   ) {
-    return input as OpenTableFormatInput;
+    return undefined;
   }
-  const { IcebergTableInput: icebergTableInput, ...rest } = iceberg as Record<string, unknown>;
-  return {
-    ...input,
-    IcebergInput: { ...rest, CreateIcebergTableInput: icebergTableInput },
-  } as OpenTableFormatInput;
+  const iceberg = (openTableFormatInput as Record<string, unknown>)['IcebergInput'];
+  if (typeof iceberg !== 'object' || iceberg === null || Array.isArray(iceberg)) {
+    return undefined;
+  }
+  return ICEBERG_TABLE_INPUT_KEYS.find((key) => key in iceberg);
+}
+
+/**
+ * PRE-FLIGHT REFUSAL of `AWS::Glue::Table`
+ * `OpenTableFormatInput.IcebergInput.IcebergTableInput` (issue #1454).
+ *
+ * **This is a deliberate PARITY DIVERGENCE, and it was a conscious choice.**
+ * cdkd's compatibility target is CloudFormation, and CloudFormation does not
+ * validate this property — it forwards it and lets the deploy roll back. cdkd
+ * refuses it EARLIER and with a better message instead. The justification is
+ * that no user is losing a working deployment: the live probe on issue #1408
+ * (2026-08-09, us-east-1 — 5 raw `glue:CreateTable` shapes plus 5
+ * `AWS::Glue::Table` CloudFormation stacks) proved the property is undeployable
+ * on BOTH paths.
+ *
+ * - **The raw `glue:CreateTable` API — the call cdkd itself makes** — rejects
+ *   every `CreateIcebergTableInput` shape: without a
+ *   `TableInput.StorageDescriptor` it fails `Location information cannot be
+ *   null while creating an iceberg table`, and with one it fails `Table
+ *   metadata information present at multiple parts of input request`. The
+ *   spec's own `Location` is never read. So this is NOT merely cdkd declining
+ *   what CloudFormation declines — cdkd's own path cannot deploy it either.
+ * - **CloudFormation** rolls back all three variants with `Table metadata is
+ *   expected only via TableInput or via IcebergTableInputProperties inside
+ *   OpenTableFormatInput` — naming a property that exists in NEITHER the CFn
+ *   registry schema (`IcebergInput.IcebergTableInput`) NOR
+ *   `@aws-sdk/client-glue` (`IcebergInput.CreateIcebergTableInput`). That
+ *   three-way contract mismatch is an AWS-side bug.
+ *
+ * Because there is no shape in which the property works, forwarding it can only
+ * produce a late, cryptic AWS error. Failing fast with the working shape spelled
+ * out is strictly more useful.
+ *
+ * **CREATE only — update WARNS instead.** See the comment at the `updateTable`
+ * call site: rollback replays from cdkd STATE, and a table created by a
+ * pre-#1390 build carries the key in its state record, so refusing on update
+ * would make such a table unrollbackable with no template-side remedy. cdkd
+ * does not wire Glue's update-only `UpdateOpenTableFormatInput` shape and
+ * `buildTableInput` is an explicit allow-list, so warning there forwards
+ * nothing and loses no protection. One rollback arm is still exposed — the
+ * reverse-replacement re-create replays a state record through `create()`;
+ * see issue #1463 and the note at the `updateTable` call site.
+ *
+ * **Known bypass: the sticky Cloud Control route.** This is a GlueProvider
+ * pre-flight, so it only runs on the SDK route. When a table's state record
+ * carries `provisionedBy: 'cc-api'`, `ProviderRegistry.getProviderFor` sticky-
+ * routes it to `CloudControlProvider`, which forwards the property to
+ * CloudFormation and gets AWS's rollback instead of this message. That route is
+ * opt-in only (`--recreate-via-cc-api`, or a legacy state record) —
+ * `AWS::Glue::Table` has an empty `silentDrop` map, so no ordinary deploy takes
+ * it. The outcome there is still a failure, just a later and less helpful one,
+ * which is why this is documented rather than duplicated into the CC provider.
+ *
+ * **WARNING before relaxing this refusal.** cdkd used to RENAME the CFn
+ * `IcebergTableInput` to the SDK's `CreateIcebergTableInput` (issue #1390); that
+ * rename existed because the AWS SDK v3 serializer DROPS unknown members, so the
+ * CFn spelling silently discarded the entire Iceberg spec while `CreateTable`
+ * reported success. The rename was removed here as unreachable once this
+ * refusal landed. If AWS ever ships a deployable shape and this check is
+ * relaxed, the rename MUST be restored in the same change — otherwise the
+ * silent-drop bug of #1390 comes straight back.
+ */
+function assertIcebergTableInputAbsent(
+  logicalId: string,
+  resourceType: string,
+  properties: Record<string, unknown>,
+  physicalId?: string
+): void {
+  const key = findIcebergTableInputKey(properties);
+  if (key === undefined) {
+    return;
+  }
+  throw new ProvisioningError(
+    icebergTableInputRefusalMessage(logicalId, key, 'create'),
+    resourceType,
+    logicalId,
+    physicalId
+  );
+}
+
+/**
+ * The shared #1454 message body, so the CREATE refusal and the UPDATE warning
+ * cannot drift apart. `mode` only changes the lead clause — everything after it
+ * (the probe evidence and the working shape) is identical, because the user's
+ * next action is the same either way.
+ */
+function icebergTableInputRefusalMessage(
+  logicalId: string,
+  key: string,
+  mode: 'create' | 'update'
+): string {
+  const lead =
+    mode === 'create'
+      ? `cannot be deployed by AWS in any shape, so cdkd refuses it before calling Glue (issue #1454).`
+      : `cannot be deployed by AWS in any shape and is IGNORED on update — cdkd does not wire ` +
+        `Glue's update-only UpdateOpenTableFormatInput shape, so it forwards nothing here and ` +
+        `only warns (issue #1454). A CREATE of this table would be refused outright.`;
+  return (
+    `AWS::Glue::Table ${logicalId}: OpenTableFormatInput.IcebergInput.${key} ${lead}\n` +
+    `  Live-probed 2026-08-09 in us-east-1 (issue #1408): glue:CreateTable — the API cdkd ` +
+    `calls — rejects every Iceberg table spec ("Location information cannot be null while ` +
+    `creating an iceberg table" without a TableInput.StorageDescriptor, "Table metadata ` +
+    `information present at multiple parts of input request" with one), and CloudFormation ` +
+    `rolls the same template back with "Table metadata is expected only via TableInput or ` +
+    `via IcebergTableInputProperties inside OpenTableFormatInput" — a property name that ` +
+    `exists in neither the CFn registry schema (IcebergInput.IcebergTableInput) nor ` +
+    `@aws-sdk/client-glue (IcebergInput.CreateIcebergTableInput).\n` +
+    `  Working shape — put the table metadata in TableInput and leave IcebergInput carrying ` +
+    `only the create-time directive:\n` +
+    `    TableInput: { Name, TableType: 'EXTERNAL_TABLE', StorageDescriptor: { Location: ` +
+    `'s3://your-bucket/prefix/', Columns: [...] } }\n` +
+    `    OpenTableFormatInput: { IcebergInput: { MetadataOperation: 'CREATE' } }   ` +
+    `// Version: '2' is also accepted\n` +
+    `  Glue then writes the Iceberg metadata itself — the created table comes back with ` +
+    `Parameters.table_type = ICEBERG and a populated Parameters.metadata_location.`
+  );
 }
 
 /**

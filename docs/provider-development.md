@@ -853,6 +853,69 @@ try {
 }
 ```
 
+### 1a. Pre-flight refusal — when a provider may reject what CloudFormation forwards
+
+cdkd's compatibility target is CloudFormation, so the default for a property
+cdkd cannot handle is to **forward it and let AWS answer**, never to invent a
+validation CloudFormation does not have. A provider that refuses a template
+CloudFormation would accept is a parity break, and parity breaks are how a
+tool that claims template compatibility stops being trustworthy.
+
+There is one narrow exception, and it has a high bar. A provider MAY refuse a
+property before the AWS call when **all** of the following hold:
+
+1. **The property is undeployable on cdkd's OWN path**, proven by a live probe
+   against the real API the provider calls — not inferred from CloudFormation
+   also rejecting it. This is the load-bearing condition: "CFn rejects it too"
+   is not sufficient, because cdkd calls the service API directly and could in
+   principle succeed where a CFn resource handler fails.
+2. **No shape of it works**, so no user loses a working deployment. If some
+   combination deploys, forward it.
+3. **The refusal names the working alternative**, concretely enough to copy.
+   A refusal that only says "no" is worse than AWS's own error.
+4. **The rationale is recorded at the check site**, as a comment naming the
+   probe (date, region, what was tried, what AWS said) and flagging it as a
+   deliberate parity divergence — so the next reader can re-evaluate it when
+   AWS changes.
+
+`GlueProvider`'s `assertIcebergTableInputAbsent` (issue
+[#1454](https://github.com/go-to-k/cdkd/issues/1454)) is the reference
+implementation. Three details are worth copying:
+
+- The check runs **before** the `try` block, so the typed `ProvisioningError`
+  is not caught and re-labelled by the provider's own error wrapper. A test
+  that only asserts message CONTENT cannot catch this being moved inside the
+  `try`, because the wrapper EMBEDS the original message — assert the raw
+  message PREFIX and an absent `cause` instead.
+- **Refuse on `create()`; on `update()`, WARN.** This asymmetry is the rule,
+  not a Glue quirk. **`cdkd rollback` replays from cdkd STATE, not from the
+  template** — `rollback-executor.ts` calls
+  `provider.update(..., op.previousState.properties, ...)`. So a resource whose
+  state record already carries the offending value (written by an older cdkd
+  build, or by an import) becomes not just un-updatable but **UN-ROLLBACKABLE**,
+  and unlike the update case the user has no template-side remedy at all — only
+  hand-editing `state.json`. Before adding ANY refusal to an `update()`, ask
+  what happens when the rollback executor feeds it a historical state record.
+  Note the same exposure reaches `create()` through the reverse-replacement
+  arm, which revives the OLD resource from `previousState.properties` — issue
+  [#1463](https://github.com/go-to-k/cdkd/issues/1463) tracks giving providers
+  a way to tell a replay apart from a fresh provision.
+- Where update genuinely does not forward the property anyway (cdkd does not
+  wire Glue's update-only `UpdateOpenTableFormatInput` shape), warning costs nothing:
+  no bad value can reach AWS from that path, and the user still gets the full
+  message. Share ONE message builder between the refusal and the warning so
+  they cannot drift.
+
+A pre-flight in a provider only covers the **SDK route**. A resource whose
+state records `provisionedBy: 'cc-api'` is sticky-routed to
+`CloudControlProvider` and bypasses it entirely. That is usually acceptable
+(the deploy still fails, just later and less helpfully) — but say so in the
+docs rather than letting a reader assume the refusal is total.
+
+If a property is merely *unimplemented* rather than undeployable, this is the
+wrong mechanism — move it to `unhandledByDesign`, which converts the silent
+drop into the Cloud Control auto-route (see §3c).
+
 ### 2. Idempotency
 
 - Handle when `create` is called on existing resource
