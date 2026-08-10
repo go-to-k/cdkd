@@ -1,3 +1,10 @@
+## [0.278.41](https://github.com/go-to-k/cdkd/compare/v0.278.40...v0.278.41) (2026-08-10)
+
+
+### Bug Fixes
+
+* **provisioning:** write the 20 nested S3 keys the provider never built at all ([#1525](https://github.com/go-to-k/cdkd/issues/1525)) ([12bbbaf](https://github.com/go-to-k/cdkd/commit/12bbbafc07c1733114c48a23f71672a2d7b8d814))
+
 ## [0.278.40](https://github.com/go-to-k/cdkd/compare/v0.278.39...v0.278.40) (2026-08-10)
 
 
