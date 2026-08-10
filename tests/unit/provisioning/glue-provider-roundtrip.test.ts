@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import {
   CreateTableCommand,
+  DeleteTableCommand,
   UpdateDatabaseCommand,
   UpdateTableCommand,
 } from '@aws-sdk/client-glue';
@@ -39,6 +40,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { GlueProvider } from '../../../src/provisioning/providers/glue-provider.js';
+import { getLogger } from '../../../src/utils/logger.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
 
 const TABLE_PHYSICAL_ID = 'mydb|mytbl';
@@ -287,7 +289,11 @@ describe('GlueProvider read-update round-trip', () => {
       OpenTableFormatInput?: Record<string, unknown>;
     };
     // Top-level sibling of TableInput — must NOT be nested inside TableInput.
-    expect(input.OpenTableFormatInput).toEqual({
+    // toStrictEqual, not toEqual: toEqual ignores undefined-valued keys, so a
+    // forward yielding { MetadataOperation: undefined } would pass — and
+    // undefined is exactly what the SDK v3 serializer treats as absent, i.e.
+    // the #1390 silent-drop failure mode this test is meant to fence.
+    expect(input.OpenTableFormatInput).toStrictEqual({
       IcebergInput: { MetadataOperation: 'CREATE', Version: '2' },
     });
     expect(input.TableInput.OpenTableFormatInput).toBeUndefined();
@@ -325,8 +331,50 @@ describe('GlueProvider read-update round-trip', () => {
     throw new Error('expected the call to reject, but it resolved');
   };
 
-  /** Assertions every #1454 refusal message must satisfy, on any code path. */
-  const expectIcebergRefusalMessage = (message: string, offendingKey: string): void => {
+  /**
+   * Assertions every #1454 refusal must satisfy, on any code path.
+   *
+   * `error` (not just its message) is taken deliberately. The refusal's whole
+   * point is that it fires BEFORE the `try`, so the provider's catch wrapper
+   * never sees it — and a `toContain`-only helper cannot tell the difference,
+   * because that wrapper EMBEDS the original message
+   * (`Failed to create Glue Table L: <original>`) and re-supplies
+   * resourceType / logicalId / physicalId. Moving the assert inside the `try`
+   * would therefore have passed every content assertion below, and
+   * `expect(mockSend).not.toHaveBeenCalled()` too. The prefix + absent-`cause`
+   * checks are what actually pin the placement.
+   */
+  /** Warn lines the provider emitted through the mocked logger. */
+  const warnMessages = (): string[] => {
+    const warn = (getLogger().child('x') as unknown as { warn: { mock: { calls: unknown[][] } } })
+      .warn;
+    return warn.mock.calls.map((c) => String(c[0]));
+  };
+
+  const expectIcebergRefusal = (
+    error: ProvisioningError,
+    offendingKey: string,
+    logicalId: string
+  ): void => {
+    const message = error.message;
+    // PLACEMENT: the raw refusal, not a wrapper-relabelled one. The catch
+    // wrappers prepend 'Failed to create/update Glue Table <id>: ' and attach
+    // the original as `cause`; an unwrapped throw has neither.
+    expect(message.startsWith(`AWS::Glue::Table ${logicalId}:`)).toBe(true);
+    expect(message).not.toContain('Failed to create Glue Table');
+    expect(message).not.toContain('Failed to update Glue Table');
+    expect(error.cause).toBeUndefined();
+    expect(message).toContain('cdkd refuses it before calling Glue');
+    expectIcebergMessageBody(message, offendingKey, logicalId);
+  };
+
+  /** The shared body both the create refusal and the update warning must carry. */
+  function expectIcebergMessageBody(
+    message: string,
+    offendingKey: string,
+    logicalId: string
+  ): void {
+    expect(message.startsWith(`AWS::Glue::Table ${logicalId}:`)).toBe(true);
     // Names the offending property PATH, not just the resource.
     expect(message).toContain(`OpenTableFormatInput.IcebergInput.${offendingKey}`);
     // Explains that AWS — CloudFormation included — rejects every shape.
@@ -342,7 +390,7 @@ describe('GlueProvider read-update round-trip', () => {
     // Cites the decision + the probe transcript.
     expect(message).toContain('#1454');
     expect(message).toContain('#1408');
-  };
+  }
 
   it('AWS::Glue::Table — create() refuses IcebergInput.IcebergTableInput pre-flight, before any AWS call (#1454)', async () => {
     await expect(
@@ -371,34 +419,48 @@ describe('GlueProvider read-update round-trip', () => {
         TableInput: { Name: 'events_iceberg', TableType: 'EXTERNAL_TABLE' },
       })
     );
-    expectIcebergRefusalMessage(error.message, 'IcebergTableInput');
+    expectIcebergRefusal(error, 'IcebergTableInput', 'L');
     expect(error.resourceType).toBe('AWS::Glue::Table');
     expect(error.logicalId).toBe('L');
   });
 
-  it('AWS::Glue::Table — update() refuses IcebergInput.IcebergTableInput pre-flight too (#1454)', async () => {
-    // UpdateTableCommandInput has no OpenTableFormatInput member at all, so an
-    // unguarded update would SILENTLY accept a template create can never take.
-    const error = await captureRejection(
-      provider.update(
-        'L',
-        TABLE_PHYSICAL_ID,
-        'AWS::Glue::Table',
-        {
-          DatabaseName: 'mydb',
-          OpenTableFormatInput: {
-            IcebergInput: { MetadataOperation: 'CREATE', IcebergTableInput: ICEBERG_TABLE_SPEC },
-          },
-          TableInput: { Name: 'mytbl', TableType: 'EXTERNAL_TABLE' },
+  it('AWS::Glue::Table — update() WARNS about IcebergInput.IcebergTableInput but still succeeds (#1454)', async () => {
+    // Deliberately asymmetric with create. Rollback replays from cdkd STATE
+    // (rollback-executor calls update with previousState.properties), and a
+    // table created by a pre-#1390 build carries the key in its state record —
+    // so refusing here would make such a table unrollbackable with no
+    // template-side remedy. UpdateTableCommandInput has no OpenTableFormatInput
+    // member, so nothing is forwarded and warning loses no protection.
+    mockSend.mockResolvedValueOnce({});
+
+    const result = await provider.update(
+      'L',
+      TABLE_PHYSICAL_ID,
+      'AWS::Glue::Table',
+      {
+        DatabaseName: 'mydb',
+        OpenTableFormatInput: {
+          IcebergInput: { MetadataOperation: 'CREATE', IcebergTableInput: ICEBERG_TABLE_SPEC },
         },
-        {}
-      )
+        TableInput: { Name: 'mytbl', TableType: 'EXTERNAL_TABLE' },
+      },
+      {}
     );
 
-    expect(error).toBeInstanceOf(ProvisioningError);
-    expectIcebergRefusalMessage(error.message, 'IcebergTableInput');
-    expect(error.physicalId).toBe(TABLE_PHYSICAL_ID);
-    expect(mockSend).not.toHaveBeenCalled();
+    // The update MUST go through — this is the rollback path.
+    expect(result).toEqual({ physicalId: TABLE_PHYSICAL_ID, wasReplaced: false });
+    const updateCall = mockSend.mock.calls.find((c) => c[0] instanceof UpdateTableCommand);
+    expect(updateCall).toBeDefined();
+    // ...and must NOT forward the offending blob.
+    expect('OpenTableFormatInput' in (updateCall![0].input as object)).toBe(false);
+
+    // The user is still told, with the same actionable body as the create refusal.
+    const warn = warnMessages();
+    const hit = warn.find((m) => m.includes('IcebergTableInput'));
+    expect(hit).toBeDefined();
+    expectIcebergMessageBody(hit!, 'IcebergTableInput', 'L');
+    expect(hit).toContain('IGNORED on update');
+    expect(hit).toContain('A CREATE of this table would be refused outright');
   });
 
   it('AWS::Glue::Table — the refusal also covers the SDK spelling CreateIcebergTableInput (#1454)', async () => {
@@ -417,7 +479,7 @@ describe('GlueProvider read-update round-trip', () => {
     );
 
     expect(error).toBeInstanceOf(ProvisioningError);
-    expectIcebergRefusalMessage(error.message, 'CreateIcebergTableInput');
+    expectIcebergRefusal(error, 'CreateIcebergTableInput', 'L');
     expect(mockSend).not.toHaveBeenCalled();
   });
 
@@ -443,7 +505,11 @@ describe('GlueProvider read-update round-trip', () => {
 
     const createCall = mockSend.mock.calls.find((c) => c[0] instanceof CreateTableCommand);
     const input = createCall![0].input as { OpenTableFormatInput: Record<string, unknown> };
-    expect(input.OpenTableFormatInput).toEqual({
+    // toStrictEqual, not toEqual: toEqual ignores undefined-valued keys, so a
+    // forward yielding { MetadataOperation: undefined } would pass — and
+    // undefined is exactly what the SDK v3 serializer treats as absent, i.e.
+    // the #1390 silent-drop failure mode this test is meant to fence.
+    expect(input.OpenTableFormatInput).toStrictEqual({
       IcebergInput: { MetadataOperation: 'CREATE', Version: '2' },
     });
   });
@@ -470,18 +536,56 @@ describe('GlueProvider read-update round-trip', () => {
     expect('OpenTableFormatInput' in (updateCall![0].input as object)).toBe(false);
   });
 
-  it('AWS::Glue::Table — an unresolved-intrinsic OpenTableFormatInput is left to AWS, not refused (#1454)', async () => {
-    // A non-object shape means cdkd cannot tell what is inside; surfacing AWS's
-    // real validation error beats a misleading Iceberg-specific refusal.
+  // A non-object shape at EITHER level means cdkd cannot tell what is inside;
+  // surfacing AWS's real validation error beats a misleading Iceberg-specific
+  // refusal. Both levels are covered because they are separate guards in
+  // `findIcebergTableInputKey`, and the INNER one (IcebergInput itself
+  // unresolved) is the likelier real-world shape.
+  it.each([
+    ['outer: OpenTableFormatInput is a string', 'unresolved'],
+    ['outer: OpenTableFormatInput is null', null],
+    ['outer: OpenTableFormatInput is an array', [{ IcebergInput: {} }]],
+    ['inner: IcebergInput is a string', { IcebergInput: 'unresolved' }],
+    ['inner: IcebergInput is null', { IcebergInput: null }],
+    ['inner: IcebergInput is an array', { IcebergInput: [{ IcebergTableInput: {} }] }],
+  ])(
+    'AWS::Glue::Table — a non-object OpenTableFormatInput (%s) is forwarded to AWS, not refused (#1454)',
+    async (_label, openTableFormatInput) => {
+      mockSend.mockResolvedValueOnce({});
+
+      await provider.create('L', 'AWS::Glue::Table', {
+        DatabaseName: 'mydb',
+        OpenTableFormatInput: openTableFormatInput,
+        TableInput: { Name: 'events_iceberg' },
+      });
+
+      const createCall = mockSend.mock.calls.find((c) => c[0] instanceof CreateTableCommand);
+      expect(createCall).toBeDefined();
+      // Not merely "no refusal" — the blob must reach AWS VERBATIM. Dropping it
+      // would also produce a passing "did not throw" assertion while silently
+      // discarding the property, which is the #1390 failure mode one level up.
+      const input = createCall![0].input as { OpenTableFormatInput?: unknown };
+      expect(input.OpenTableFormatInput).toStrictEqual(openTableFormatInput);
+    }
+  );
+
+  it('AWS::Glue::Table — delete() does NOT refuse a table whose template carries IcebergTableInput (#1454)', async () => {
+    // The refusal is a CREATE/UPDATE pre-flight only. Destroy must stay
+    // possible for a resource that somehow reached AWS carrying the key
+    // (imported state, a pre-refusal cdkd version, cc-api routing). Hoisting
+    // the assert into the shared `delete` dispatcher would break destroy, and
+    // nothing else in the suite would notice.
     mockSend.mockResolvedValueOnce({});
 
-    await provider.create('L', 'AWS::Glue::Table', {
+    await provider.delete('L', TABLE_PHYSICAL_ID, 'AWS::Glue::Table', {
       DatabaseName: 'mydb',
-      OpenTableFormatInput: 'unresolved',
-      TableInput: { Name: 'events_iceberg' },
+      OpenTableFormatInput: {
+        IcebergInput: { MetadataOperation: 'CREATE', IcebergTableInput: ICEBERG_TABLE_SPEC },
+      },
+      TableInput: { Name: 'mytbl' },
     });
 
-    expect(mockSend.mock.calls.find((c) => c[0] instanceof CreateTableCommand)).toBeDefined();
+    expect(mockSend.mock.calls.find((c) => c[0] instanceof DeleteTableCommand)).toBeDefined();
   });
 
   it('AWS::Glue::Table — create() omits OpenTableFormatInput when absent (omit-when-absent)', async () => {

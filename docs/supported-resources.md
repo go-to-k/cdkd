@@ -255,11 +255,19 @@ storage capacity.
 ### Glue table Iceberg support (`IcebergTableInput` is refused)
 
 `AWS::Glue::Table` can create Apache Iceberg tables, but only in one shape.
-cdkd **refuses** a template whose
+On **create**, cdkd **refuses** a template whose
 `OpenTableFormatInput.IcebergInput` carries the nested table spec
 `IcebergTableInput` (or its SDK spelling `CreateIcebergTableInput`), failing at
 pre-flight before any AWS call with an error naming the working shape (issue
 [#1454](https://github.com/go-to-k/cdkd/issues/1454)).
+
+On **update** the same condition only produces a WARNING and the deploy
+continues. Glue's `UpdateTable` has no `OpenTableFormatInput` member, so cdkd
+forwards nothing and no bad value can reach AWS from that path — and refusing
+there would break `cdkd rollback` for a table created by a cdkd build older
+than the #1390 fix, whose state record still carries the key. A rollback
+replays from cdkd state rather than from your template, so that failure would
+have had no template-side remedy.
 
 This is a deliberate **parity divergence**: CloudFormation does not validate the
 property, it forwards it and then rolls the stack back. No working deployment is
@@ -279,6 +287,12 @@ undeployable on **both** paths:
   registry schema (`IcebergInput.IcebergTableInput`) nor `@aws-sdk/client-glue`
   (`IcebergInput.CreateIcebergTableInput`). That three-way contract mismatch is
   an AWS-side bug.
+
+One route is not covered: a table whose cdkd state records
+`provisionedBy: 'cc-api'` (reachable only via `--recreate-via-cc-api` or a
+legacy state record) is routed to the Cloud Control provider, which forwards
+the property and gets CloudFormation's rollback instead of the message above.
+The deploy still fails; it just fails later and less helpfully.
 
 **Where the property can even come from.** `aws-cdk-lib`'s L1
 `CfnTable.IcebergInputProperty` declares only `metadataOperation` and
