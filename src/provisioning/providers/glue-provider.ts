@@ -136,13 +136,25 @@ export class GlueProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    _previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     switch (resourceType) {
       case 'AWS::Glue::Database':
-        return this.updateDatabase(logicalId, physicalId, resourceType, properties);
+        return this.updateDatabase(
+          logicalId,
+          physicalId,
+          resourceType,
+          properties,
+          previousProperties
+        );
       case 'AWS::Glue::Table':
-        return this.updateTable(logicalId, physicalId, resourceType, properties);
+        return this.updateTable(
+          logicalId,
+          physicalId,
+          resourceType,
+          properties,
+          previousProperties
+        );
       default:
         throw new ProvisioningError(
           `Unsupported resource type: ${resourceType}`,
@@ -240,7 +252,8 @@ export class GlueProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating Glue Database ${logicalId}: ${physicalId}`);
 
@@ -256,12 +269,30 @@ export class GlueProvider implements ResourceProvider {
 
     const catalogId = properties['CatalogId'] as string | undefined;
 
+    // Read-merge-write for AWS-authored `DatabaseInput.Parameters` — see
+    // {@link preserveAwsManagedParameters}. Deliberately OUTSIDE the `try`
+    // below so its typed `ProvisioningError` is not re-labelled by that
+    // catch wrapper.
+    const liveParameters = await this.readLiveDatabaseParameters(
+      logicalId,
+      resourceType,
+      physicalId,
+      catalogId
+    );
+    const builtDatabaseInput = this.buildDatabaseInput(databaseInput, physicalId);
+    this.preserveAwsManagedParameters(
+      builtDatabaseInput,
+      databaseInput['Parameters'],
+      (previousProperties['DatabaseInput'] as Record<string, unknown> | undefined)?.['Parameters'],
+      liveParameters
+    );
+
     try {
       await this.getClient().send(
         new UpdateDatabaseCommand({
           ...(catalogId !== undefined && { CatalogId: catalogId }),
           Name: physicalId,
-          DatabaseInput: this.buildDatabaseInput(databaseInput, physicalId),
+          DatabaseInput: builtDatabaseInput,
         })
       );
 
@@ -423,7 +454,8 @@ export class GlueProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating Glue Table ${logicalId}: ${physicalId}`);
 
@@ -476,12 +508,32 @@ export class GlueProvider implements ResourceProvider {
       this.logger.warn(icebergTableInputRefusalMessage(logicalId, updateIcebergKey, 'update'));
     }
 
+    // Read-merge-write for AWS-authored `TableInput.Parameters` — see
+    // {@link preserveAwsManagedParameters}. Deliberately OUTSIDE the `try`
+    // below so its typed `ProvisioningError` is not re-labelled by that
+    // catch wrapper.
+    const liveParameters = await this.readLiveTableParameters(
+      logicalId,
+      resourceType,
+      physicalId,
+      databaseName,
+      tableName,
+      catalogId
+    );
+    const builtTableInput = this.buildTableInput(tableInput, tableName);
+    this.preserveAwsManagedParameters(
+      builtTableInput,
+      tableInput['Parameters'],
+      (previousProperties['TableInput'] as Record<string, unknown> | undefined)?.['Parameters'],
+      liveParameters
+    );
+
     try {
       await this.getClient().send(
         new UpdateTableCommand({
           CatalogId: catalogId,
           DatabaseName: databaseName,
-          TableInput: this.buildTableInput(tableInput, tableName),
+          TableInput: builtTableInput,
         })
       );
 
@@ -551,6 +603,146 @@ export class GlueProvider implements ResourceProvider {
   }
 
   // ─── Helpers ───────────────────────────────────────────────────────
+
+  /**
+   * Merge AWS-AUTHORED `Parameters` back into a full-replace update payload
+   * (issue [#1461](https://github.com/go-to-k/cdkd/issues/1461)).
+   *
+   * `UpdateTable` / `UpdateDatabase` replace `TableInput` / `DatabaseInput`
+   * **wholesale**: whatever the payload omits is erased. `Parameters` is a
+   * general-purpose bag that AWS itself writes into, so keys with NO template
+   * representation were wiped by the first unrelated edit. For an Apache
+   * Iceberg table that is not cosmetic — `table_type: ICEBERG` and
+   * `metadata_location` are what make the table readable as Iceberg by
+   * Athena / Spark / EMR, and losing them silently degrades it to a plain
+   * external table pointing at Iceberg data files. Verified live 2026-08-10
+   * in us-east-1: a deploy changing only `TableInput.Description` left
+   * `Table.Parameters` as `null`. The same exposure covers a Glue crawler's
+   * `classification`, `EXTERNAL`, `comment`, and Lake Formation markers.
+   *
+   * The merge is keyed on **"present in NEITHER template side"**, not on
+   * "absent from the desired side" — the latter would make user-authored
+   * parameters unremovable, i.e. the mirror image of the bug:
+   *
+   * | key in desired | key in previous | outcome                              |
+   * | -------------- | --------------- | ------------------------------------ |
+   * | yes            | (either)        | the user's value wins                |
+   * | no             | yes             | the USER REMOVED it -> stays removed |
+   * | no             | no              | AWS-AUTHORED -> preserved from live  |
+   *
+   * That keeps this provider on the repo's established clear-on-removal
+   * position (docs/provider-development.md §2a, issue #1155): a removal the
+   * user expressed in the template still reaches AWS. Glue's update APIs are
+   * full-replace, so removal needs no explicit reset sentinel — omitting the
+   * key IS the reset, and the only thing this helper adds back is the set of
+   * keys the user never authored in the first place. The generalized rule for
+   * any full-replace update API lives in docs/provider-development.md §2b.
+   *
+   * Audited siblings that do NOT get this treatment: `JobUpdate`'s
+   * `DefaultArguments` / `NonOverridableArguments`, `ConnectionInput`'s
+   * `ConnectionProperties`, `WorkflowUpdate.DefaultRunProperties` and
+   * `Crawler.Configuration` are purely USER-authored bags — AWS does not
+   * write into them, so merging live values back would only resurrect
+   * console-side additions and break `cdkd drift --revert`.
+   *
+   * `desiredParameters` / `previousParameters` are the raw CFn-side maps
+   * (their KEY SET is all that matters here; `buildTableInput` already
+   * stringified the desired VALUES into `built.Parameters`).
+   */
+  private preserveAwsManagedParameters(
+    built: { Parameters?: Record<string, string> | undefined },
+    desiredParameters: unknown,
+    previousParameters: unknown,
+    liveParameters: Record<string, string> | undefined
+  ): void {
+    if (!liveParameters || Object.keys(liveParameters).length === 0) return;
+
+    const desiredKeys = parameterKeySet(desiredParameters);
+    const previousKeys = parameterKeySet(previousParameters);
+
+    const awsAuthored: Record<string, string> = {};
+    for (const [key, value] of Object.entries(liveParameters)) {
+      // Present in the desired template -> the user's value wins.
+      // Present only in the previous template -> the user removed it.
+      if (desiredKeys.has(key) || previousKeys.has(key)) continue;
+      awsAuthored[key] = value;
+    }
+    if (Object.keys(awsAuthored).length === 0) return;
+
+    // Desired values are spread LAST so a template-declared key always wins
+    // over the live readback (which is a snapshot from before this update).
+    built.Parameters = { ...awsAuthored, ...(built.Parameters ?? {}) };
+  }
+
+  /**
+   * `Table.Parameters` as AWS currently holds them, for
+   * {@link preserveAwsManagedParameters}.
+   *
+   * A missing table returns `undefined` rather than throwing: `UpdateTable`
+   * is about to surface the real, more actionable error. Any OTHER failure is
+   * fatal by design — degrading to "skip the merge" would silently reinstate
+   * the very wipe this read exists to prevent, and the wrapped cause keeps a
+   * transient throttle retryable by the deploy engine's outer `withRetry`.
+   */
+  private async readLiveTableParameters(
+    logicalId: string,
+    resourceType: string,
+    physicalId: string,
+    databaseName: string,
+    tableName: string,
+    catalogId: string | undefined
+  ): Promise<Record<string, string> | undefined> {
+    try {
+      const resp = await this.getClient().send(
+        new GetTableCommand({
+          ...(catalogId !== undefined && { CatalogId: catalogId }),
+          DatabaseName: databaseName,
+          Name: tableName,
+        })
+      );
+      return resp.Table?.Parameters;
+    } catch (error) {
+      if (error instanceof EntityNotFoundException) return undefined;
+      throw new ProvisioningError(
+        preUpdateReadFailureMessage('Table', 'glue:GetTable', logicalId, error),
+        resourceType,
+        logicalId,
+        physicalId,
+        error instanceof Error ? error : undefined
+      );
+    }
+  }
+
+  /**
+   * `Database.Parameters` as AWS currently holds them, for
+   * {@link preserveAwsManagedParameters}. Same not-found / fail-closed
+   * contract as {@link readLiveTableParameters}.
+   */
+  private async readLiveDatabaseParameters(
+    logicalId: string,
+    resourceType: string,
+    physicalId: string,
+    catalogId: string | undefined
+  ): Promise<Record<string, string> | undefined> {
+    try {
+      const resp = await this.getClient().send(
+        new GetDatabaseCommand({
+          ...(catalogId !== undefined && { CatalogId: catalogId }),
+          Name: physicalId,
+        })
+      );
+      return resp.Database?.Parameters;
+    } catch (error) {
+      if (error instanceof EntityNotFoundException) return undefined;
+      throw new ProvisioningError(
+        preUpdateReadFailureMessage('Database', 'glue:GetDatabase', logicalId, error),
+        resourceType,
+        logicalId,
+        physicalId,
+        error instanceof Error ? error : undefined
+      );
+    }
+  }
 
   /**
    * Build DatabaseInput for Glue API from CFn template properties.
@@ -2164,6 +2356,42 @@ function buildJobCommonFields(p: Record<string, unknown>): Partial<JobUpdate> {
     r.SourceControlDetails = p['SourceControlDetails'] as SourceControlDetails;
   }
   return r;
+}
+
+/**
+ * Key set of a CFn-side `Parameters` map, for
+ * {@link GlueProvider.preserveAwsManagedParameters}.
+ *
+ * A non-object (absent, or an unresolved intrinsic) contributes NO keys — so
+ * a template that declares no `Parameters` at all can never be mistaken for
+ * one that removed a key, and every live key stays preserved.
+ */
+function parameterKeySet(value: unknown): Set<string> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return new Set<string>();
+  }
+  return new Set(Object.keys(value as Record<string, unknown>));
+}
+
+/**
+ * Message for a failed pre-update `Get*` read (issue #1461). Names the IAM
+ * action so a permission gap is one line away from fixed, and says what the
+ * read is FOR so the failure does not read as gratuitous.
+ */
+function preUpdateReadFailureMessage(
+  kind: 'Table' | 'Database',
+  iamAction: string,
+  logicalId: string,
+  error: unknown
+): string {
+  const detail = error instanceof Error ? error.message : String(error);
+  return (
+    `Failed to read the current Glue ${kind} ${logicalId} before update: ${detail}. ` +
+    `cdkd reads the live ${kind.toLowerCase()} so AWS-managed Parameters (Apache Iceberg's ` +
+    `table_type / metadata_location, a crawler's classification, Lake Formation markers) ` +
+    `survive an update that Glue applies as a full replace. Grant ${iamAction} to the ` +
+    `deploy identity — proceeding without the read would silently erase them.`
+  );
 }
 
 /**

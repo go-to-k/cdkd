@@ -331,6 +331,38 @@ Glue then writes the Iceberg metadata itself: the created table comes back with
 That shape has real-AWS coverage in the
 [`data-analytics`](../tests/integration/data-analytics/) integ fixture.
 
+### Glue table / database: AWS-managed `Parameters` survive an update
+
+Glue's `UpdateTable` / `UpdateDatabase` replace `TableInput` / `DatabaseInput`
+**wholesale** — whatever the payload omits is erased. `Parameters` is a
+general-purpose bag that AWS itself writes into, so entries with no template
+representation used to disappear on the first unrelated edit (issue
+[#1461](https://github.com/go-to-k/cdkd/issues/1461)). For an Iceberg table
+that was not cosmetic: a deploy changing only `TableInput.Description` cleared
+`table_type` and `metadata_location`, silently degrading the table to a plain
+external table pointing at Iceberg data files, with the deploy reporting
+success. The same exposure covered a crawler's `classification`, `EXTERNAL`,
+`comment`, and Lake Formation markers.
+
+cdkd now reads the live table / database (`glue:GetTable` /
+`glue:GetDatabase`) immediately before the update and merges those
+AWS-authored entries back into the payload. Two consequences worth knowing:
+
+- **Your removals still work.** A parameter you delete from your template is
+  still deleted on AWS. The merge only restores keys present in *neither* the
+  new template nor the last-deployed one — i.e. keys you never authored.
+  A key present in the previously deployed template and absent now is read as
+  a deliberate removal, exactly as before.
+- **The deploy identity needs `glue:GetTable` / `glue:GetDatabase`.** If the
+  read fails for any reason other than "not found", the update is refused with
+  an error naming the missing action rather than proceeding — silently
+  skipping the merge would reinstate the erasure this read exists to prevent.
+
+Real-AWS coverage: the [`data-analytics`](../tests/integration/data-analytics/)
+fixture's UPDATE phase re-asserts both Iceberg markers after an unrelated
+`Description` edit, and asserts a user-removed parameter on the sibling plain
+table is still gone.
+
 ## Not planned (deprecated services)
 
 Some Tier 3 (`NON_PROVISIONABLE`) types belong to AWS services or platforms
