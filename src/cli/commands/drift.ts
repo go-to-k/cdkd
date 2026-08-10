@@ -365,27 +365,68 @@ function resolveTargetRefs(
  * leave the comparison exactly as it was — the drift is then reported, which is
  * the safe direction. Drift detection must never fail because a cosmetic
  * normalization could not run.
+ *
+ * **The response ARN is compared back to the requested one, and that check is
+ * what makes the "never hides a real change" claim true rather than aspirational.**
+ * `GetRole` / `GetUser` are account-local and take a NAME, not an ARN, so the
+ * lookup silently answers about the CALLER's account and about the wrong IAM
+ * path: `arn:aws:iam::<other-acct>:role/Foo` and
+ * `arn:aws:iam::<self>:role/prod/Foo` would both come back as this account's
+ * root-path `Foo`, and the pass would then "prove" two DIFFERENT principals
+ * equal and collapse a genuine drift. Round-tripping the ARN costs nothing and
+ * turns both cases into an unresolved lookup, i.e. drift reported.
  */
 function createIamPrincipalUniqueIdResolver(awsClients: AwsClients): PrincipalUniqueIdResolver {
   const cache = new Map<string, string | undefined>();
+  let warnedOnDenied = false;
   return async (arn: string): Promise<string | undefined> => {
     if (cache.has(arn)) return cache.get(arn);
     let uniqueId: string | undefined;
     const principal = parseIamPrincipalArn(arn);
     if (principal) {
       try {
-        uniqueId =
-          principal.kind === 'role'
-            ? (await awsClients.iam.send(new GetRoleCommand({ RoleName: principal.name }))).Role
-                ?.RoleId
-            : (await awsClients.iam.send(new GetUserCommand({ UserName: principal.name }))).User
-                ?.UserId;
+        let entityArn: string | undefined;
+        let entityId: string | undefined;
+        if (principal.kind === 'role') {
+          const role = (await awsClients.iam.send(new GetRoleCommand({ RoleName: principal.name })))
+            .Role;
+          entityArn = role?.Arn;
+          entityId = role?.RoleId;
+        } else {
+          const user = (await awsClients.iam.send(new GetUserCommand({ UserName: principal.name })))
+            .User;
+          entityArn = user?.Arn;
+          entityId = user?.UserId;
+        }
+        // Same principal, not merely the same NAME — see the note above.
+        if (entityArn === arn) {
+          uniqueId = entityId;
+        } else if (entityArn !== undefined) {
+          getLogger().debug(
+            `Principal ${arn} resolved to a different entity (${entityArn}) — ` +
+              `same name in this account or under another IAM path; ` +
+              `leaving the policy principal comparison untouched.`
+          );
+        }
       } catch (error) {
-        getLogger().debug(
-          `Could not resolve the unique id of principal ${arn} ` +
-            `(${error instanceof Error ? error.message : String(error)}); ` +
-            `leaving the policy principal comparison untouched.`
-        );
+        const message = error instanceof Error ? error.message : String(error);
+        const name = error instanceof Error ? error.name : '';
+        // A missing permission is the one failure the user can act on, and it
+        // otherwise surfaces as unexplained permanent drift. NoSuchEntity —
+        // the expected deleted-principal case — stays at debug.
+        if (!warnedOnDenied && /AccessDenied|not authorized/i.test(`${name} ${message}`)) {
+          warnedOnDenied = true;
+          getLogger().warn(
+            `Cannot read IAM principals (${message}). A resource policy whose principal AWS ` +
+              `rendered as a unique id (AROA…/AIDA…) may therefore report drift that is only a ` +
+              `spelling difference; grant iam:GetRole / iam:GetUser to resolve it.`
+          );
+        } else {
+          getLogger().debug(
+            `Could not resolve the unique id of principal ${arn} (${message}); ` +
+              `leaving the policy principal comparison untouched.`
+          );
+        }
       }
     }
     cache.set(arn, uniqueId);

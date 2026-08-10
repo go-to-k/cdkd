@@ -33,10 +33,21 @@
  * passes — it manufactures drift on the `properties`-fallback baseline.
  *
  * FAILING IS VISIBLE, never silent: when the resolver cannot answer (the role
- * was deleted — which is exactly when AWS keeps the unique id forever — or the
- * caller lacks `iam:GetRole`), both sides are left untouched and the drift is
- * still reported. This pass only ever removes a difference it has PROVEN to be
- * two spellings of one principal; it can never hide a real principal change.
+ * was deleted — which is exactly when AWS keeps the unique id forever — the
+ * caller lacks `iam:GetRole`, or the ARN names another ACCOUNT / IAM PATH, for
+ * which the name-only `GetRole` API would otherwise answer about the caller's
+ * own same-named role), both sides are left untouched and the drift is still
+ * reported. This pass only ever removes a difference it has PROVEN to be two
+ * spellings of one principal; it can never hide a real principal change.
+ *
+ * One downstream note: because the comparator's inputs are canonicalized,
+ * `cdkd drift --accept` records the ARN form for a policy subtree that drifts
+ * for some OTHER reason while also carrying a canonicalized principal — i.e.
+ * the accepted baseline can hold a spelling AWS did not literally return. That
+ * is benign (it is the form AWS re-canonicalizes to, and a later run
+ * normalizes either way) but it is a real difference from "state records
+ * exactly what AWS said", so it is written down rather than left to be
+ * rediscovered.
  *
  * Known bound: a policy carried as a JSON STRING rather than a parsed object is
  * not walked. Re-serializing a parsed string would risk changing its formatting
@@ -128,18 +139,34 @@ function pushPrincipalValue(value: unknown, out: string[]): void {
     for (const element of awsMember) if (typeof element === 'string') out.push(element);
 }
 
-/** The IAM unique ids used as principals anywhere in `value`. */
-export function collectPrincipalUniqueIds(value: unknown): Set<string> {
+/**
+ * Both interesting principal kinds in ONE walk — the pass runs per resource on
+ * both comparison sides, so walking the bag twice to answer two questions about
+ * the same strings is pure cost.
+ */
+export function collectPrincipalForms(value: unknown): {
+  uniqueIds: Set<string>;
+  arns: Set<string>;
+} {
   const strings: string[] = [];
   collectPrincipalStrings(value, strings);
-  return new Set(strings.filter((s) => PRINCIPAL_UNIQUE_ID_RE.test(s)));
+  const uniqueIds = new Set<string>();
+  const arns = new Set<string>();
+  for (const s of strings) {
+    if (PRINCIPAL_UNIQUE_ID_RE.test(s)) uniqueIds.add(s);
+    else if (IAM_PRINCIPAL_ARN_RE.test(s)) arns.add(s);
+  }
+  return { uniqueIds, arns };
+}
+
+/** The IAM unique ids used as principals anywhere in `value`. */
+export function collectPrincipalUniqueIds(value: unknown): Set<string> {
+  return collectPrincipalForms(value).uniqueIds;
 }
 
 /** The IAM role / user ARNs used as principals anywhere in `value`. */
 export function collectPrincipalArns(value: unknown): Set<string> {
-  const strings: string[] = [];
-  collectPrincipalStrings(value, strings);
-  return new Set(strings.filter((s) => IAM_PRINCIPAL_ARN_RE.test(s)));
+  return collectPrincipalForms(value).arns;
 }
 
 /**
@@ -199,12 +226,11 @@ export async function canonicalizePrincipalUniqueIds(
   aws: Record<string, unknown>,
   resolve: PrincipalUniqueIdResolver
 ): Promise<{ baseline: Record<string, unknown>; aws: Record<string, unknown> }> {
-  const uniqueIds = new Set([
-    ...collectPrincipalUniqueIds(baseline),
-    ...collectPrincipalUniqueIds(aws),
-  ]);
+  const baselineForms = collectPrincipalForms(baseline);
+  const awsForms = collectPrincipalForms(aws);
+  const uniqueIds = new Set([...baselineForms.uniqueIds, ...awsForms.uniqueIds]);
   if (uniqueIds.size === 0) return { baseline, aws };
-  const arns = new Set([...collectPrincipalArns(baseline), ...collectPrincipalArns(aws)]);
+  const arns = new Set([...baselineForms.arns, ...awsForms.arns]);
   if (arns.size === 0) return { baseline, aws };
 
   const arnByUniqueId = new Map<string, string>();

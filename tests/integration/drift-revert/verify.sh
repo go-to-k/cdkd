@@ -85,15 +85,25 @@ ${CLI} drift "${STACK}" --state-bucket "${STATE_BUCKET}"
 # field silently dropping out of the comparison.
 echo "[verify] step 6b: bogus principal unique id in the baseline (expect exit 1)"
 STACK="${STACK}" STATE_BUCKET="${STATE_BUCKET}" node inject-principal-uniqueid.ts bogus
+BOGUS_DRIFT_LOG="$(mktemp)"
 set +e
-${CLI} drift "${STACK}" --state-bucket "${STATE_BUCKET}"
+${CLI} drift "${STACK}" --state-bucket "${STATE_BUCKET}" >"${BOGUS_DRIFT_LOG}" 2>&1
 rc=$?
 set -e
+cat "${BOGUS_DRIFT_LOG}"
 if [ "${rc}" -ne 1 ]; then
   echo "[verify] FAIL: a principal that is nobody's unique id must still be drift, got exit ${rc}"
   exit 1
 fi
-echo "[verify] step 6b ok: exit ${rc}"
+# Exit 1 alone is satisfied by ANY drifted resource, which would make this
+# step's non-vacuity argument false — name the resource under test.
+if ! grep -q "DriftBucketPolicy" "${BOGUS_DRIFT_LOG}"; then
+  echo "[verify] FAIL: expected the BUCKET POLICY to be the drifted resource, got:" >&2
+  cat "${BOGUS_DRIFT_LOG}" >&2
+  exit 1
+fi
+rm -f "${BOGUS_DRIFT_LOG}"
+echo "[verify] step 6b ok: exit ${rc}, bucket policy named"
 
 echo "[verify] step 6c: the role's REAL unique id in the baseline (expect exit 0)"
 STACK="${STACK}" STATE_BUCKET="${STATE_BUCKET}" node inject-principal-uniqueid.ts real

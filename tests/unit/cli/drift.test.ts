@@ -1285,7 +1285,7 @@ describe('cdkd drift', () => {
 
     it('reports no drift when the two sides hold two spellings of ONE principal', async () => {
       arrangeBucketPolicy(ROLE_UNIQUE_ID, ROLE_ARN);
-      mockIamSend.mockResolvedValue({ Role: { RoleId: ROLE_UNIQUE_ID } });
+      mockIamSend.mockResolvedValue({ Role: { Arn: ROLE_ARN, RoleId: ROLE_UNIQUE_ID } });
 
       const { output, error } = await runDrift(['TestStack']);
 
@@ -1297,7 +1297,7 @@ describe('cdkd drift', () => {
 
     it('still reports drift when the unique id belongs to a DIFFERENT principal', async () => {
       arrangeBucketPolicy(ROLE_UNIQUE_ID, ROLE_ARN);
-      mockIamSend.mockResolvedValue({ Role: { RoleId: 'AROASOMEOTHERROLE99' } });
+      mockIamSend.mockResolvedValue({ Role: { Arn: ROLE_ARN, RoleId: 'AROASOMEOTHERROLE99' } });
 
       const { output } = await runDrift(['TestStack']);
 
@@ -1323,6 +1323,70 @@ describe('cdkd drift', () => {
 
       expect(output).toContain('no drift detected');
       expect(mockIamSend).not.toHaveBeenCalled();
+    });
+
+    it('still reports drift when the lookup answers about a DIFFERENT entity', async () => {
+      // `GetRole` is account-local and takes a NAME, so a cross-account ARN or
+      // one under another IAM path resolves to THIS account's same-named role.
+      // Without the response-ARN round-trip the pass would "prove" two
+      // different principals equal and collapse a real change — the one way it
+      // could hide drift.
+      arrangeBucketPolicy(ROLE_UNIQUE_ID, ROLE_ARN);
+      mockIamSend.mockResolvedValue({
+        Role: {
+          Arn: 'arn:aws:iam::999999999999:role/CdkdDriftRevertExample-CustomS3AutoDeleteObjectsCustomR-30ff9234',
+          RoleId: ROLE_UNIQUE_ID,
+        },
+      });
+
+      const { output } = await runDrift(['TestStack']);
+
+      expect(output).toContain('drift detected');
+      expect(exitSpy).toHaveBeenCalledWith(1);
+    });
+
+    it('canonicalizes a USER principal through GetUser', async () => {
+      const userArn = 'arn:aws:iam::123456789012:user/deployer';
+      const userUniqueId = 'AIDAXXXJN2LNV2SMSFATO';
+      arrangeBucketPolicy(userUniqueId, userArn);
+      mockIamSend.mockResolvedValue({ User: { Arn: userArn, UserId: userUniqueId } });
+
+      const { output, error } = await runDrift(['TestStack']);
+
+      expect(error).toBeUndefined();
+      expect(output).toContain('no drift detected');
+      expect(exitSpy).not.toHaveBeenCalled();
+    });
+
+    it('resolves one ARN ONCE across resources that share it', async () => {
+      // The per-command cache is the reason the lookup is affordable at all;
+      // a single-resource fixture would pass with no cache whatsoever.
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValueOnce(
+        makeState({
+          PolicyA: makeResource({
+            physicalId: 'bucket-a',
+            resourceType: 'AWS::S3::BucketPolicy',
+            properties: policyProps(ROLE_UNIQUE_ID),
+            observedProperties: policyProps(ROLE_UNIQUE_ID),
+          }),
+          PolicyB: makeResource({
+            physicalId: 'bucket-b',
+            resourceType: 'AWS::S3::BucketPolicy',
+            properties: policyProps(ROLE_UNIQUE_ID),
+            observedProperties: policyProps(ROLE_UNIQUE_ID),
+          }),
+        })
+      );
+      mockRegistryGetProvider.mockReturnValue({
+        readCurrentState: async () => policyProps(ROLE_ARN),
+      });
+      mockIamSend.mockResolvedValue({ Role: { Arn: ROLE_ARN, RoleId: ROLE_UNIQUE_ID } });
+
+      const { output } = await runDrift(['TestStack']);
+
+      expect(output).toContain('no drift detected');
+      expect(mockIamSend).toHaveBeenCalledTimes(1);
     });
   });
 });

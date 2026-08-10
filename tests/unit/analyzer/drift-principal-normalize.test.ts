@@ -3,6 +3,7 @@ import {
   canonicalizePrincipalUniqueIds,
   collectPrincipalArns,
   collectPrincipalUniqueIds,
+  parseIamPrincipalArn,
   rewritePrincipalUniqueIds,
 } from '../../../src/analyzer/drift-principal-normalize.js';
 
@@ -88,6 +89,48 @@ describe('drift principal unique-id canonicalization (issue #1515)', () => {
     });
   });
 
+  describe('parseIamPrincipalArn', () => {
+    it('splits a plain role / user ARN into the API lookup name', () => {
+      expect(parseIamPrincipalArn(ROLE_ARN)).toEqual({
+        kind: 'role',
+        name: 'CdkdDriftRevertExample-CustomS3AutoDeleteObjectsCustomR-30ff9234',
+      });
+      expect(parseIamPrincipalArn('arn:aws:iam::123456789012:user/alice')).toEqual({
+        kind: 'user',
+        name: 'alice',
+      });
+    });
+
+    it('takes the trailing NAME off an IAM path, which is what GetRole wants', () => {
+      // The lookup is by name, so the path has to be stripped — and because it
+      // is stripped, the caller MUST round-trip the response ARN (two roles can
+      // share a name under different paths). See the resolver in drift.ts.
+      expect(parseIamPrincipalArn('arn:aws:iam::123456789012:role/prod/team/Foo')).toEqual({
+        kind: 'role',
+        name: 'Foo',
+      });
+    });
+
+    it('accepts the non-commercial partitions', () => {
+      expect(parseIamPrincipalArn('arn:aws-cn:iam::123456789012:role/Foo')?.name).toBe('Foo');
+      expect(parseIamPrincipalArn('arn:aws-us-gov:iam::123456789012:user/Foo')?.kind).toBe('user');
+    });
+
+    it('refuses everything that is not a role / user principal ARN', () => {
+      for (const value of [
+        '*',
+        '123456789012',
+        'arn:aws:iam::123456789012:root',
+        'arn:aws:sts::123456789012:assumed-role/Foo/session',
+        'arn:aws:iam::123456789012:group/Devs',
+        'arn:aws:iam::123456789012:role/',
+        ROLE_UNIQUE_ID,
+      ]) {
+        expect(parseIamPrincipalArn(value)).toBeUndefined();
+      }
+    });
+  });
+
   describe('rewrite', () => {
     it('swaps only the proven unique id, leaving every sibling value alone', () => {
       const rewritten = rewritePrincipalUniqueIds(
@@ -109,6 +152,29 @@ describe('drift principal unique-id canonicalization (issue #1515)', () => {
       expect(rewritten.Statement[2]?.['Condition']?.['StringEquals']).toEqual({
         'aws:userId': ROLE_UNIQUE_ID,
       });
+    });
+
+    it('leaves a wildcard principal alone while rewriting a sibling in the same map', () => {
+      const rewritten = rewritePrincipalUniqueIds(
+        {
+          Statement: [
+            { Principal: '*' },
+            { Principal: { AWS: '*', Service: 's3.amazonaws.com' } },
+            { Principal: { AWS: [ROLE_UNIQUE_ID, '*'] } },
+          ],
+        },
+        new Map([[ROLE_UNIQUE_ID, ROLE_ARN]])
+      ) as { Statement: Array<Record<string, unknown>> };
+
+      expect(rewritten.Statement[0]?.['Principal']).toBe('*');
+      expect(rewritten.Statement[1]?.['Principal']).toEqual({
+        AWS: '*',
+        Service: 's3.amazonaws.com',
+      });
+      expect((rewritten.Statement[2]?.['Principal'] as Record<string, unknown>)['AWS']).toEqual([
+        ROLE_ARN,
+        '*',
+      ]);
     });
   });
 
