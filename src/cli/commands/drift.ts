@@ -705,48 +705,156 @@ async function runAccept(
 }
 
 /**
- * Build the `newProperties` object passed to `provider.update` during
- * `--revert`. Strategy:
+ * A top-level property NAME that carries tags.
  *
- *   1. Start from `awsProperties` (the AWS-current snapshot returned
- *      by `readCurrentState`, which `runRevert` already passes as the
- *      `previousProperties` argument to `provider.update`).
- *   2. For every top-level key whose subtree contains a drifted path,
- *      overwrite it with the corresponding sub-shape from
- *      `desiredProperties` (the state-recorded `observedProperties`).
- *
- * Why "AWS-current base + drifted overlay" instead of "drifted-only
- * partial":
- *
- *   Several providers' `update()` implementations diff
- *   `newProperties[K]` against `previousProperties[K]` and treat
- *   `newVal === undefined` as "remove K from AWS" (e.g.
- *   `SNSTopicProvider` calls `SetTopicAttributes(K, '')`,
- *   `IAMRoleProvider.updateManagedPolicies` detaches every previously
- *   attached policy when the new arg is undefined). Passing a
- *   drifted-only partial would silently clear non-drifted attributes
- *   on those providers. Sending the AWS-current value back as the
- *   "new" value for non-drifted keys keeps `JSON.stringify(newVal) ===
- *   JSON.stringify(oldVal)` so the diff is a no-op — no provider
- *   changes required.
- *
- *   For non-diff providers (e.g. `SQSQueueProvider` blindly pushes
- *   every defined key via `SetQueueAttributes`), the AWS-current
- *   value still gets serialised back to the same string AWS already
- *   has, so the round-trip is a no-op for the AWS resource state.
- *   The one exception is `readCurrentState`'s always-emit
- *   placeholder values — e.g. SQS `RedrivePolicy: {}` — which AWS
- *   rejects as invalid input even though they're round-tripped. That
- *   class of value (Class 2 / structurally-incomplete-when-empty) is
- *   handled by per-provider sanitize at the wire-layer; see the SQS
- *   provider's `serializeRedrivePolicy` helper for the canonical
- *   pattern.
- *
- * The drift comparator never produces array-index segments
- * (`Tags[0].Value`) — array drifts surface as a single entry on the
- * parent path — so `path.split('.', 1)` is always safe to extract the
- * top-level key.
+ * The shape test below is deliberately NOT sufficient on its own: a top-level
+ * `[{ Key, Value }]` list is not tag-exclusive — `LoadBalancerAttributes`,
+ * `TargetGroupAttributes` and SSM `Association.Targets` all match it. No such
+ * property can carry an `aws:`-prefixed or `AmazonECSManaged` key today, so the
+ * carve-out would degrade to the identity of the old wholesale overwrite there
+ * — but borrowing `canonicalizeTagListsDeep`'s heuristic for a WRITE decision
+ * is not justified by its use for a SORT: a sort false positive is harmless, an
+ * append is not.
  */
+function isTagListKey(key: string): boolean {
+  return key === 'Tags' || key.endsWith('Tags');
+}
+
+/** A CFn-shaped tag list: a non-empty array whose every element has a string `Key`. */
+function isCfnTagList(value: unknown): value is Array<Record<string, unknown>> {
+  return (
+    Array.isArray(value) &&
+    value.length > 0 &&
+    value.every((t) => isPlainRecord(t) && typeof (t as { Key?: unknown }).Key === 'string')
+  );
+}
+
+/** The `Key` of every entry in a CFn tag list, in list order. */
+function tagKeys(tags: ReadonlyArray<Record<string, unknown>>): string[] {
+  return tags.map((t) => t['Key'] as string);
+}
+
+/**
+ * AWS-SERVICE-authored tag keys a `--revert` must not strip (issue #1501).
+ *
+ * `AmazonECSManaged` is attached by ECS when a capacity provider binds an Auto
+ * Scaling group, and managed scaling stops working without it. That entry is
+ * the load-bearing one.
+ *
+ * The `aws:` prefix is DEFENSIVE rather than load-bearing, and the distinction
+ * is worth stating: AWS reserves the prefix and rejects a write of one, and the
+ * 45 providers that route reads through `normalizeAwsTagsToCfn` strip such keys
+ * on the way in — so an `aws:` key can only reach the AWS side of a comparison
+ * via the Cloud Control `readCurrentState` path, which returns the raw model.
+ * It costs nothing to honor and cdkd can never have authored one.
+ */
+const SERVICE_MANAGED_TAG_KEYS: ReadonlySet<string> = new Set(['AmazonECSManaged']);
+
+/** Whether a tag key is AWS-service-authored, per {@link SERVICE_MANAGED_TAG_KEYS}. */
+function isServiceManagedTagKey(key: string): boolean {
+  return SERVICE_MANAGED_TAG_KEYS.has(key) || key.startsWith('aws:');
+}
+
+/**
+ * Revert a TAG LIST, preserving AWS-SERVICE-authored entries (issue #1501).
+ *
+ * Everything in {@link buildRevertNewProperties} overwrites a drifted top-level
+ * key wholesale, which for `Tags` means "AWS ends up with exactly the tags cdkd
+ * state recorded" — so a service-authored tag added after deploy is stripped.
+ * The concrete case: ECS attaches `AmazonECSManaged` to an ASG when a capacity
+ * provider binds it, and that tag is REQUIRED for managed scaling. Because any
+ * CDK ASG declares at least a `Name` tag, `Tags` is template-DECLARED, so the
+ * #1498 carve-out (undeclared + captured-empty) correctly does not apply — and
+ * the tag list is an ARRAY, which {@link findRevertDroppedAwsKeys}'s walk
+ * compares wholesale and never descends into. Post-revert the ASG kept the
+ * capacity provider with its managed scaling silently broken (verified live
+ * 2026-08-10).
+ *
+ * The semantic: the baseline still WINS for every ordinary tag — one it has and
+ * AWS lost is re-added, one whose value differs is reset, and a
+ * user/console-added tag AWS alone has is still REMOVED. Only a
+ * {@link isServiceManagedTagKey} entry survives.
+ *
+ * **This is the issue's option 2, not its option 1, and the choice was settled
+ * by a live test rather than by taste.** Option 1 (revert the whole tag list as
+ * a diff, so ANY out-of-band add survives) was implemented first and failed the
+ * `drift-revert` integ at its final assertion: that fixture injects an
+ * `IntegInjected` tag and requires `--revert` to strip it, i.e. "revert removes
+ * a console-added tag" is an established contract with a test behind it.
+ * Option 1 would redefine revert semantics for a whole property class — which
+ * is exactly the design pass the issue said it needed — so the narrow safeguard
+ * ships instead, fixing the reported breakage while leaving ordinary tag revert
+ * untouched.
+ *
+ * Scope: TOP-LEVEL tag lists, which is where `buildRevertNewProperties`
+ * operates. A tag list nested inside another property (an EC2 launch template's
+ * `TagSpecifications`) still reverts wholesale.
+ *
+ * Order: baseline entries first in baseline order, then the preserved
+ * service-managed entries. Providers apply tags as a set and the drift
+ * comparator canonicalizes tag-list order on both sides
+ * (`drift-normalize.ts`), so the order is for readability / determinism only.
+ */
+export function mergeTagListForRevert(
+  baselineTags: ReadonlyArray<Record<string, unknown>>,
+  awsTags: ReadonlyArray<Record<string, unknown>>
+): Array<Record<string, unknown>> {
+  const baselineKeys = new Set(tagKeys(baselineTags));
+  const seen = new Set<string>();
+  const preserved = awsTags.filter((t) => {
+    const key = t['Key'] as string;
+    if (baselineKeys.has(key) || !isServiceManagedTagKey(key) || seen.has(key)) return false;
+    // Deduped so the merge and `findRevertPreservedTagKeys` (which reports a
+    // SET) cannot disagree when AWS returns the same key twice.
+    seen.add(key);
+    return true;
+  });
+  return [...baselineTags, ...preserved];
+}
+
+/**
+ * The AWS-service-authored tag keys a `--revert` will PRESERVE rather than
+ * strip, i.e. those present on the AWS side of a drifted top-level tag list,
+ * absent from the revert baseline, and {@link isServiceManagedTagKey} (issue
+ * #1501).
+ *
+ * Reported in the plan so the carve-out of {@link mergeTagListForRevert} is
+ * visible BEFORE the confirmation prompt: a user who did want the tag gone
+ * learns here that the revert will not do it.
+ *
+ * @returns dotted `<Key>.<TagKey>` paths, sorted, e.g. `['Tags.AmazonECSManaged']`.
+ */
+export function findRevertPreservedTagKeys(
+  drifts: readonly PropertyDrift[],
+  desiredProperties: Record<string, unknown>,
+  awsProperties: Record<string, unknown>
+): string[] {
+  const preserved = new Set<string>();
+  const driftedTopLevelKeys = new Set<string>();
+  for (const d of drifts) {
+    const topLevelKey = d.path.split('.', 1)[0];
+    if (topLevelKey) driftedTopLevelKeys.add(topLevelKey);
+  }
+
+  for (const key of driftedTopLevelKeys) {
+    if (!(key in desiredProperties)) continue;
+    if (!isTagListKey(key)) continue;
+    const desiredValue = desiredProperties[key];
+    const awsValue = awsProperties[key];
+    const baselineIsTagList =
+      isCfnTagList(desiredValue) || (Array.isArray(desiredValue) && desiredValue.length === 0);
+    if (!baselineIsTagList || !isCfnTagList(awsValue)) continue;
+    const baselineKeys = new Set(tagKeys(desiredValue as Array<Record<string, unknown>>));
+    for (const tagKey of tagKeys(awsValue)) {
+      if (!baselineKeys.has(tagKey) && isServiceManagedTagKey(tagKey)) {
+        preserved.add(`${key}.${tagKey}`);
+      }
+    }
+  }
+
+  return [...preserved].sort();
+}
+
 /**
  * The AWS-authored property paths a `--revert` is about to DROP, for a
  * resource whose state predates observed-capture (issue #1478).
@@ -842,6 +950,49 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+/**
+ * Build the `newProperties` object passed to `provider.update` during
+ * `--revert`. Strategy:
+ *
+ *   1. Start from `awsProperties` (the AWS-current snapshot returned
+ *      by `readCurrentState`, which `runRevert` already passes as the
+ *      `previousProperties` argument to `provider.update`).
+ *   2. For every top-level key whose subtree contains a drifted path,
+ *      overwrite it with the corresponding sub-shape from
+ *      `desiredProperties` (the state-recorded `observedProperties`).
+ *
+ * Why "AWS-current base + drifted overlay" instead of "drifted-only
+ * partial":
+ *
+ *   Several providers' `update()` implementations diff
+ *   `newProperties[K]` against `previousProperties[K]` and treat
+ *   `newVal === undefined` as "remove K from AWS" (e.g.
+ *   `SNSTopicProvider` calls `SetTopicAttributes(K, '')`,
+ *   `IAMRoleProvider.updateManagedPolicies` detaches every previously
+ *   attached policy when the new arg is undefined). Passing a
+ *   drifted-only partial would silently clear non-drifted attributes
+ *   on those providers. Sending the AWS-current value back as the
+ *   "new" value for non-drifted keys keeps `JSON.stringify(newVal) ===
+ *   JSON.stringify(oldVal)` so the diff is a no-op — no provider
+ *   changes required.
+ *
+ *   For non-diff providers (e.g. `SQSQueueProvider` blindly pushes
+ *   every defined key via `SetQueueAttributes`), the AWS-current
+ *   value still gets serialised back to the same string AWS already
+ *   has, so the round-trip is a no-op for the AWS resource state.
+ *   The one exception is `readCurrentState`'s always-emit
+ *   placeholder values — e.g. SQS `RedrivePolicy: {}` — which AWS
+ *   rejects as invalid input even though they're round-tripped. That
+ *   class of value (Class 2 / structurally-incomplete-when-empty) is
+ *   handled by per-provider sanitize at the wire-layer; see the SQS
+ *   provider's `serializeRedrivePolicy` helper for the canonical
+ *   pattern.
+ *
+ * The drift comparator never produces array-index segments
+ * (`Tags[0].Value`) — array drifts surface as a single entry on the
+ * parent path — so `path.split('.', 1)` is always safe to extract the
+ * top-level key.
+ */
 export function buildRevertNewProperties(
   drifts: readonly PropertyDrift[],
   desiredProperties: Record<string, unknown>,
@@ -852,7 +1003,24 @@ export function buildRevertNewProperties(
     const topLevelKey = d.path.split('.', 1)[0];
     if (!topLevelKey) continue;
     if (topLevelKey in desiredProperties) {
-      result[topLevelKey] = desiredProperties[topLevelKey];
+      const desiredValue = desiredProperties[topLevelKey];
+      const awsValue = awsProperties[topLevelKey];
+      // A TAG LIST keeps its AWS-service-authored entries instead of being
+      // overwritten wholesale (issue #1501). See `mergeTagListForRevert`.
+      //
+      // The baseline side accepts an EMPTY array as well as a populated tag
+      // list: a template that DECLARES `Tags` with a condition-collapsed or
+      // empty list still has an AWS side worth diffing against, and treating
+      // that as "nothing to diff" would strip `AmazonECSManaged` — the exact
+      // failure this carve-out exists to prevent. (The #1498 rule covers the
+      // commoner UNDECLARED + captured-empty shape by ignoring the key
+      // outright, so it never reaches here.)
+      const baselineIsTagList =
+        isCfnTagList(desiredValue) || (Array.isArray(desiredValue) && desiredValue.length === 0);
+      result[topLevelKey] =
+        isTagListKey(topLevelKey) && baselineIsTagList && isCfnTagList(awsValue)
+          ? mergeTagListForRevert(desiredValue as Array<Record<string, unknown>>, awsValue)
+          : desiredValue;
     } else {
       // Drift surfaced on a key that's no longer in `desiredProperties`
       // (defensive — drift was computed against `desiredProperties`, so
@@ -1088,6 +1256,32 @@ function printRevertPlan(reports: StackDriftReport[]): void {
       // a warning the user only sees after the writes have happened is not
       // a warning.
       const stateResource = report.state.resources[o.logicalId];
+      // Issue #1501, printed for the same reason: a tag AWS added
+      // out-of-band SURVIVES the revert, so say so before the user confirms.
+      // Not gated on the observed-capture baseline — the diff semantic
+      // applies on both baselines.
+      if (stateResource) {
+        const preserved = findRevertPreservedTagKeys(
+          o.changes,
+          stateResource.observedProperties ?? stateResource.properties ?? {},
+          o.awsProperties
+        );
+        if (preserved.length > 0) {
+          const tagWord = preserved.length === 1 ? 'tag' : 'tags';
+          process.stdout.write(
+            `    ! reverting this tag list KEEPS ${preserved.length} AWS-authored ` +
+              `${tagWord} the baseline does not carry:\n`
+          );
+          for (const path of preserved) {
+            process.stdout.write(`        ${path}\n`);
+          }
+          process.stdout.write(
+            `      Every other tag reverts normally. A service may require these ` +
+              `(ECS needs AmazonECSManaged for managed scaling); 'aws:'-prefixed keys are ` +
+              `AWS-reserved and cannot be removed by hand.\n`
+          );
+        }
+      }
       if (stateResource && stateResource.observedProperties === undefined) {
         const dropped = findRevertDroppedAwsKeys(
           o.changes,
