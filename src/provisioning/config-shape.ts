@@ -43,6 +43,54 @@
  * is why `KinesisProvider`'s read of `previousProperties.StreamModeDetails`
  * is deliberately left unguarded.
  *
+ * **The `??` spelling has the same failure mode (issue #1493), and it defaults
+ * on MORE than `||` did.** The #1471 sweep measured the `||` form;
+ * `(cfg['K'] as string) ?? 'default'` substitutes on the same `undefined` a
+ * malformed container indexes to, and ALSO on an explicit `null` — so a
+ * `{ Comment: null }` that used to default now refuses, per rule 4.
+ *
+ * Measuring it is the part worth copying, because the obvious grep is wrong.
+ * `\] \?\? '` finds NONE of the real sites (the cast sits inside the parens) and
+ * the cast-word form `as [A-Za-z]+\) \?\? '` misses every `as string | undefined`
+ * / quoted-union / line-wrapped site — including four this change rolls. The
+ * class-covering pattern is `as [A-Za-z<>,| ]+\) \?\? '` (20 sites in
+ * `providers/` on the pre-fix tree), plus a hand pass for the wrapped ones.
+ *
+ * ROLLED here: the 9 sites that INDEX A NESTED CONTAINER — CodeBuild
+ * `Source` / `SecondarySources[]` / `Artifacts` / `SecondaryArtifacts[]` and
+ * `Environment.{Type,ComputeType}`, DynamoDB GlobalTable
+ * `StreamSpecification`, Route 53 `HostedZoneConfig` (create + update),
+ * CloudFront OAI config (create + update), ECS `DeploymentController` — plus
+ * the two `AWS::Lambda::Url` `AuthType` sites the #1471 sweep's
+ * cast-specific grep missed (`as FunctionUrlAuthType`, not `as string`),
+ * where the default is a PUBLIC function URL.
+ *
+ * Deliberately NOT rolled, so the decision is challengeable rather than
+ * invisible:
+ *
+ * - **TOP-LEVEL `properties['X'] ?? 'default'` reads** (EC2 `InstanceType` /
+ *   `Domain`, API Gateway `AuthorizationType`, IAM access-key `Status`, Lambda
+ *   event-invoke `Qualifier`, RDS DB-proxy `TargetGroupName`, GlobalTable
+ *   `BillingMode` on create and on the desired side of update). The container
+ *   is the provider's own property bag, so rule 2 cannot fire; only rules 3/4
+ *   would apply, and refusing a present-but-non-string value there is a
+ *   stricter-value decision with its own regression surface (an unquoted YAML
+ *   `IpProtocol: -1` is a NUMBER today and deploys fine). Tracked as issue #1513.
+ * - **Nested reads whose value is an identity key or a label, never sent to
+ *   AWS**: EC2's `rule['IpProtocol'] ?? '-1'` (composes a physical id and is
+ *   read from BOTH the previous and next rule), `agentcore-evaluator`'s
+ *   `(tag as Record<string, unknown>)['Value'] ?? ''`, and S3's three
+ *   `rule['Id'] ?? '<unnamed>'` warning labels. These ARE nested containers —
+ *   rule 2 could fire — but a refusal would buy nothing.
+ * - **`EC2Provider`'s two `VpcId ?? ''` reads** — they populate the returned
+ *   ATTRIBUTE cache only, and `CreateSecurityGroup` already forwards the same
+ *   value, so AWS rejects a malformed one first. On the create site a guard
+ *   would additionally throw AFTER a successful create and orphan the security
+ *   group.
+ * - **Reads off the PREVIOUS / state side** (GlobalTable `previousProperties`
+ *   `BillingMode`, RDS DB-proxy `delete()` / `readCurrentState`) — the
+ *   desired-side-only rule above.
+ *
  * This is a provider-layer guard rather than a pre-flight template check
  * because **rule 4** is only decidable AFTER intrinsic resolution: at pre-flight
  * time a legitimate `Fn::If`-valued block is an object whose `Status` key does
@@ -136,6 +184,32 @@ export function requireConfigString(value: unknown, fallback: string, path: stri
   }
 
   return value;
+}
+
+/**
+ * Refuse a present-but-non-ARRAY value where a CFn LIST block belongs.
+ *
+ * The list-shaped sibling of {@link readConfigString}, for the container one
+ * level up from a per-item mapper. Without it a truthy non-array
+ * (`SecondarySources: 'GITHUB'`) reaches `.map` and dies with a raw
+ * `TypeError: … .map is not a function`, and a FALSY one (`''`) is silently
+ * dropped by the truthiness gate that usually guards these — the same class
+ * `readConfigString` exists for, one level up (issue #1493 review).
+ *
+ * Callers keep the ABSENT case themselves (`== null ? undefined : …`), because
+ * an absent list block legitimately means "no entries" and the caller's own
+ * `undefined` is what the SDK expects.
+ *
+ * @throws Error when the value is not an array.
+ */
+export function requireConfigArray(value: unknown, path: string): Array<Record<string, unknown>> {
+  if (!Array.isArray(value)) {
+    throw new Error(
+      `${path} must be an array (got ${describe(value)}) — check for an ` +
+        `unresolved intrinsic or a mis-nested template value`
+    );
+  }
+  return value as Array<Record<string, unknown>>;
 }
 
 /**

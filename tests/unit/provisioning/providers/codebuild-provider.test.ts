@@ -632,4 +632,172 @@ describe('CodeBuildProvider', () => {
       expect(mockSend).not.toHaveBeenCalled();
     });
   });
+  // ─── malformed nested config (issue #1493) ──────────────────────────
+
+  describe('malformed nested config blocks (issue #1493)', () => {
+    // The `??`-shaped sibling of the #1471 / #1490 `||` class. `mapSource` /
+    // `mapArtifacts` / the Environment block all INDEX a nested container, so
+    // a string / array / unresolved intrinsic there yields `undefined` and the
+    // fallback substituted a value the template never asked for — a project
+    // with NO source (`NO_SOURCE`), no artifacts, or the wrong compute size,
+    // reported as a successful deploy.
+    const base = {
+      Name: 'my-project',
+      Source: { Type: 'GITHUB', Location: 'https://github.com/example/repo' },
+      Environment: { Type: 'LINUX_CONTAINER', ComputeType: 'BUILD_GENERAL1_LARGE' },
+      ServiceRole: 'arn:aws:iam::123456789012:role/codebuild-role',
+      Artifacts: { Type: 'NO_ARTIFACTS' },
+    };
+
+    it('refuses a string Source instead of silently building a NO_SOURCE project', async () => {
+      await expect(
+        provider.create('MyProject', 'AWS::CodeBuild::Project', { ...base, Source: 'GITHUB' })
+      ).rejects.toThrow(/AWS::CodeBuild::Project Source must be an object \(got a string\)/);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('refuses a string Artifacts instead of silently building a NO_ARTIFACTS project', async () => {
+      await expect(
+        provider.create('MyProject', 'AWS::CodeBuild::Project', {
+          ...base,
+          Artifacts: 'NO_ARTIFACTS',
+        })
+      ).rejects.toThrow(/AWS::CodeBuild::Project Artifacts must be an object \(got a string\)/);
+    });
+
+    it('refuses a string Environment instead of silently downsizing the compute type', async () => {
+      await expect(
+        provider.create('MyProject', 'AWS::CodeBuild::Project', {
+          ...base,
+          Environment: 'LINUX_CONTAINER',
+        })
+      ).rejects.toThrow(/AWS::CodeBuild::Project Environment must be an object \(got a string\)/);
+    });
+
+    it('names the SecondarySources path so the message points at the right block', async () => {
+      await expect(
+        provider.create('MyProject', 'AWS::CodeBuild::Project', {
+          ...base,
+          SecondarySources: ['GITHUB'],
+        })
+      ).rejects.toThrow(/AWS::CodeBuild::Project SecondarySources\[\] must be an object/);
+    });
+
+    it('refuses a blank Environment.Type rather than defaulting it away', async () => {
+      await expect(
+        provider.create('MyProject', 'AWS::CodeBuild::Project', {
+          ...base,
+          Environment: { Type: '', ComputeType: 'BUILD_GENERAL1_LARGE' },
+        })
+      ).rejects.toThrow(/AWS::CodeBuild::Project Environment.Type must be a non-empty string/);
+    });
+
+    // The truthiness gate the guard sits behind used to let a FALSY malformed
+    // container through: `Source: ''` skipped `readConfigString` entirely and
+    // built a NO_SOURCE project. `.claude/rules/providers.md` requires `!= null`
+    // for exactly this ("cover the CREATE path").
+    it('refuses a BLANK-STRING Source, which a truthiness gate would have skipped', async () => {
+      await expect(
+        provider.create('MyProject', 'AWS::CodeBuild::Project', { ...base, Source: '' })
+      ).rejects.toThrow(/AWS::CodeBuild::Project Source must be an object \(got a blank string\)/);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('refuses a BLANK-STRING Artifacts for the same reason', async () => {
+      await expect(
+        provider.create('MyProject', 'AWS::CodeBuild::Project', { ...base, Artifacts: '' })
+      ).rejects.toThrow(/AWS::CodeBuild::Project Artifacts must be an object/);
+    });
+
+    it('names the SecondaryArtifacts path, so an array-site refusal points at the right block', async () => {
+      await expect(
+        provider.create('MyProject', 'AWS::CodeBuild::Project', {
+          ...base,
+          SecondaryArtifacts: ['NO_ARTIFACTS'],
+        })
+      ).rejects.toThrow(/AWS::CodeBuild::Project SecondaryArtifacts\[\] must be an object/);
+    });
+
+    // The ARRAY container one level up was still truthiness-gated after the
+    // first fix pass: `SecondarySources: ''` was silently dropped, and a truthy
+    // non-array died with a raw `TypeError: .map is not a function` instead of
+    // the guard's diagnostic.
+    it('refuses a non-array SecondarySources instead of a raw TypeError', async () => {
+      await expect(
+        provider.create('MyProject', 'AWS::CodeBuild::Project', {
+          ...base,
+          SecondarySources: 'GITHUB',
+        })
+      ).rejects.toThrow(
+        /AWS::CodeBuild::Project SecondarySources must be an array \(got a string\)/
+      );
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('refuses a BLANK-STRING SecondaryArtifacts rather than dropping it', async () => {
+      await expect(
+        provider.create('MyProject', 'AWS::CodeBuild::Project', {
+          ...base,
+          SecondaryArtifacts: '',
+        })
+      ).rejects.toThrow(
+        /AWS::CodeBuild::Project SecondaryArtifacts must be an array \(got a blank string\)/
+      );
+    });
+
+    it('still omits both list blocks when they are ABSENT', async () => {
+      mockSend.mockResolvedValue({
+        project: { name: 'my-project', arn: 'arn:aws:codebuild:us-east-1:123456789012:project/p' },
+      });
+
+      await provider.create('MyProject', 'AWS::CodeBuild::Project', base);
+
+      const input = mockSend.mock.calls[0][0].input;
+      expect(input.secondarySources).toBeUndefined();
+      expect(input.secondaryArtifacts).toBeUndefined();
+    });
+
+    it('refuses a blank Environment.ComputeType, not just Type', async () => {
+      await expect(
+        provider.create('MyProject', 'AWS::CodeBuild::Project', {
+          ...base,
+          Environment: { Type: 'LINUX_CONTAINER', ComputeType: '' },
+        })
+      ).rejects.toThrow(
+        /AWS::CodeBuild::Project Environment.ComputeType must be a non-empty string/
+      );
+    });
+
+    it('still defaults for an ABSENT container and an ABSENT key', async () => {
+      mockSend.mockResolvedValue({
+        project: { name: 'my-project', arn: 'arn:aws:codebuild:us-east-1:123456789012:project/p' },
+      });
+
+      await provider.create('MyProject', 'AWS::CodeBuild::Project', {
+        Name: 'my-project',
+        ServiceRole: 'arn:aws:iam::123456789012:role/codebuild-role',
+        Environment: {},
+      });
+
+      const input = mockSend.mock.calls[0][0].input;
+      expect(input.source).toMatchObject({ type: 'NO_SOURCE' });
+      expect(input.artifacts).toMatchObject({ type: 'NO_ARTIFACTS' });
+      expect(input.environment).toMatchObject({
+        type: 'LINUX_CONTAINER',
+        computeType: 'BUILD_GENERAL1_SMALL',
+      });
+    });
+
+    it('applies the update path guard too, so create and update agree', async () => {
+      await expect(
+        provider.update(
+          'MyProject',
+          'my-project',
+          'AWS::CodeBuild::Project',
+          { ...base, Source: ['GITHUB'] },
+          base
+        )
+      ).rejects.toThrow(/AWS::CodeBuild::Project Source must be an object \(got an array\)/);
+    });
+  });
 });

@@ -158,6 +158,34 @@ with no error anywhere. `VersioningConfiguration: 'Enabled'` on an
 `AWS::S3::Bucket` turned versioning OFF on a live bucket (issue #1471); the shape
 was measured at 16 sites across 5 providers.
 
+**The `??` spelling is the same bug** (issue #1493), it defaults on MORE than
+`||` did (`??` also substitutes on an explicit `null`), and measuring it is
+where the work actually goes wrong. Three greps, in increasing order of
+usefulness:
+
+- `\] \?\? '` — the obvious one, and it finds **zero** real sites. The cast sits
+  INSIDE the parens.
+- `as [A-Za-z]+\) \?\? '` — better, still blind to every `as string | undefined`,
+  quoted-union and line-wrapped site, four of which #1493 had to fix.
+- `as [A-Za-z<>,| ]+\) \?\? '` — the class-covering form. Follow it with a hand
+  pass for wrapped sites; a purely mechanical count will be short.
+
+Do not trust a cast-specific pattern in either spelling:
+`(properties['AuthType'] as FunctionUrlAuthType) || 'NONE'` survived the #1471
+sweep for exactly that reason and kept defaulting a blank AuthType to a PUBLIC
+Lambda function URL.
+
+**And check the GATE in front of the guard, not just the read.** A guard behind
+`if (container)` is skipped entirely by a FALSY malformed value — `Source: ''`
+still built a `NO_SOURCE` project after the guard was added. Use `!= null`, per
+the "cover the CREATE path" rule above; #1493 shipped the gate bug and a
+reviewer caught it. Roll the
+guard onto the sites that INDEX A NESTED CONTAINER; a top-level
+`properties['X'] ?? 'default'` read cannot hit rule 2 at all (the bag is always
+an object) and refusing a non-string there is a separate, riskier decision —
+issue #1513 carries it, and `config-shape.ts`'s header records the full
+rolled / not-rolled split.
+
 Use `src/provisioning/config-shape.ts` instead of hand-writing the guard:
 
 ```ts

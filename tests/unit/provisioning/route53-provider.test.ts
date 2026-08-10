@@ -231,6 +231,96 @@ describe('Route53Provider', () => {
       });
     });
 
+    // Nested-container guard for the `??` defaulting class (issue #1493).
+    // `HostedZoneConfig` is INDEXED on both paths, so a string / array /
+    // unresolved intrinsic yielded `undefined` and the comment silently
+    // vanished on create — and on update it WIPED a live comment, because
+    // UpdateHostedZoneComment is a whole-value write.
+    describe('malformed HostedZoneConfig (issue #1493)', () => {
+      it('refuses a string container on create instead of dropping the comment', async () => {
+        await expect(
+          provider.create('MyZone', 'AWS::Route53::HostedZone', {
+            Name: 'example.com',
+            HostedZoneConfig: 'my comment',
+          })
+        ).rejects.toThrow(
+          /AWS::Route53::HostedZone HostedZoneConfig must be an object \(got a string\)/
+        );
+        expect(mockSend).not.toHaveBeenCalled();
+      });
+
+      it('refuses a string container on update instead of wiping the live comment', async () => {
+        await expect(
+          provider.update(
+            'MyZone',
+            'Z1234567890',
+            'AWS::Route53::HostedZone',
+            { Name: 'example.com', HostedZoneConfig: 'my comment' },
+            { Name: 'example.com' }
+          )
+        ).rejects.toThrow(/AWS::Route53::HostedZone HostedZoneConfig must be an object/);
+        expect(mockSend).not.toHaveBeenCalled();
+      });
+
+      it('still sends the comment for a well-formed container', async () => {
+        mockSend.mockResolvedValueOnce({
+          HostedZone: { Id: '/hostedzone/Z1234567890', Name: 'example.com.' },
+          DelegationSet: { NameServers: ['ns-1.example.com'] },
+        });
+
+        await provider.create('MyZone', 'AWS::Route53::HostedZone', {
+          Name: 'example.com',
+          HostedZoneConfig: { Comment: 'my comment' },
+        });
+
+        expect(mockSend.mock.calls[0][0].input.HostedZoneConfig).toMatchObject({
+          Comment: 'my comment',
+        });
+      });
+
+      // The rewrite swapped a truthiness gate (`cfg && cfg['Comment']`) for
+      // `createComment !== ''`. These are the two inputs where the two forms
+      // must agree, and neither was covered.
+      it('still omits HostedZoneConfig for an EMPTY container object', async () => {
+        mockSend.mockResolvedValueOnce({
+          HostedZone: { Id: '/hostedzone/Z1234567890', Name: 'example.com.' },
+          DelegationSet: { NameServers: ['ns-1.example.com'] },
+        });
+
+        await provider.create('MyZone', 'AWS::Route53::HostedZone', {
+          Name: 'example.com',
+          HostedZoneConfig: {},
+        });
+
+        expect(mockSend.mock.calls[0][0].input.HostedZoneConfig).toBeUndefined();
+      });
+
+      it('still omits HostedZoneConfig for a BLANK Comment', async () => {
+        mockSend.mockResolvedValueOnce({
+          HostedZone: { Id: '/hostedzone/Z1234567890', Name: 'example.com.' },
+          DelegationSet: { NameServers: ['ns-1.example.com'] },
+        });
+
+        await provider.create('MyZone', 'AWS::Route53::HostedZone', {
+          Name: 'example.com',
+          HostedZoneConfig: { Comment: '' },
+        });
+
+        expect(mockSend.mock.calls[0][0].input.HostedZoneConfig).toBeUndefined();
+      });
+
+      it('still omits HostedZoneConfig entirely when the container is absent', async () => {
+        mockSend.mockResolvedValueOnce({
+          HostedZone: { Id: '/hostedzone/Z1234567890', Name: 'example.com.' },
+          DelegationSet: { NameServers: ['ns-1.example.com'] },
+        });
+
+        await provider.create('MyZone', 'AWS::Route53::HostedZone', { Name: 'example.com' });
+
+        expect(mockSend.mock.calls[0][0].input.HostedZoneConfig).toBeUndefined();
+      });
+    });
+
     describe('delete', () => {
       it('should delete hosted zone', async () => {
         // 1. ListQueryLoggingConfigs (cleanup before delete)

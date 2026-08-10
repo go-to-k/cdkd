@@ -49,6 +49,7 @@ import { ProvisioningError } from '../../utils/error-handler.js';
 import { generateResourceName } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
+import { readConfigString } from '../config-shape.js';
 import { withRetry } from '../../deployment/retry.js';
 import { isThrottlingError } from '../../deployment/retryable-errors.js';
 import type {
@@ -343,10 +344,35 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       | undefined;
     const hasNonLocalReplica = replicas.some((r) => r['Region'] !== currentRegion);
     const needsStream = hasNonLocalReplica || replicas.length > 1;
-    if (streamSpecInput) {
+    // `!= null` rather than a truthiness gate: `StreamSpecification: ''` is
+    // exactly the malformed shape `readConfigString` exists to refuse, and a
+    // falsy gate would skip the guard and silently fall through to the
+    // auto-enable arm below (.claude/rules/providers.md, "cover the CREATE
+    // path"). `create()` has no wrapping catch around this point, so the
+    // helper's plain Error is converted here rather than escaping untyped
+    // into the deploy engine's retry loop -- same treatment as the GSI
+    // translation below.
+    if (streamSpecInput != null) {
+      let streamViewType: string;
+      try {
+        streamViewType = readConfigString(
+          streamSpecInput,
+          'StreamViewType',
+          'NEW_AND_OLD_IMAGES',
+          'AWS::DynamoDB::GlobalTable StreamSpecification'
+        );
+      } catch (error) {
+        throw new ProvisioningError(
+          error instanceof Error ? error.message : String(error),
+          resourceType,
+          logicalId,
+          undefined,
+          error instanceof Error ? error : undefined
+        );
+      }
       createParams.StreamSpecification = {
         StreamEnabled: true,
-        StreamViewType: (streamSpecInput['StreamViewType'] as string) ?? 'NEW_AND_OLD_IMAGES',
+        StreamViewType: streamViewType,
       } as StreamSpecification;
     } else if (needsStream) {
       this.logger.info(
@@ -1063,10 +1089,17 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         properties['StreamSpecification'] !== undefined &&
         !deepEqual(properties['StreamSpecification'], previousProperties['StreamSpecification'])
       ) {
-        const ss = properties['StreamSpecification'] as Record<string, unknown>;
+        // Guarded like the create path, so the two cannot disagree: without
+        // it a malformed container here sent `StreamViewType: undefined`
+        // while create refused the identical template (issue #1493 review).
         flatUpdate.StreamSpecification = {
           StreamEnabled: true,
-          StreamViewType: ss['StreamViewType'] as string,
+          StreamViewType: readConfigString(
+            properties['StreamSpecification'],
+            'StreamViewType',
+            'NEW_AND_OLD_IMAGES',
+            'AWS::DynamoDB::GlobalTable StreamSpecification'
+          ),
         } as StreamSpecification;
         flatChanged = true;
       }

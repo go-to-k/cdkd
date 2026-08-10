@@ -23,6 +23,7 @@ import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
+import { readConfigString } from '../config-shape.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -210,6 +211,15 @@ export class Route53Provider implements ResourceProvider {
       const hostedZoneConfig = properties['HostedZoneConfig'] as
         | Record<string, unknown>
         | undefined;
+      // Refuse a malformed container rather than silently dropping the comment
+      // (issue #1493): the truthiness gate below indexes it, so a string /
+      // array / unresolved intrinsic would yield `undefined` and no comment.
+      const createComment = readConfigString(
+        hostedZoneConfig,
+        'Comment',
+        '',
+        'AWS::Route53::HostedZone HostedZoneConfig'
+      );
 
       // VPCs property (for private hosted zones)
       const vpcs = properties['VPCs'] as Array<Record<string, unknown>> | undefined;
@@ -220,10 +230,10 @@ export class Route53Provider implements ResourceProvider {
         new CreateHostedZoneCommand({
           Name: name,
           CallerReference: `${logicalId}-${Date.now()}`,
-          ...(hostedZoneConfig && hostedZoneConfig['Comment']
+          ...(createComment !== ''
             ? {
                 HostedZoneConfig: {
-                  Comment: hostedZoneConfig['Comment'] as string,
+                  Comment: createComment,
                   // When VPCs are specified, this is a private hosted zone
                   ...(firstVpc ? { PrivateZone: true } : {}),
                 },
@@ -367,7 +377,12 @@ export class Route53Provider implements ResourceProvider {
       const hostedZoneConfig = properties['HostedZoneConfig'] as
         | Record<string, unknown>
         | undefined;
-      const comment = (hostedZoneConfig?.['Comment'] as string) ?? '';
+      const comment = readConfigString(
+        hostedZoneConfig,
+        'Comment',
+        '',
+        'AWS::Route53::HostedZone HostedZoneConfig'
+      );
 
       await this.getClient().send(
         new UpdateHostedZoneCommentCommand({

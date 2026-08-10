@@ -3514,7 +3514,12 @@ describe('real-code regression probes (per the repo checker rules)', () => {
         path: 'Environment.Type',
         cousin: 'Environment.EnvironmentVariables.Type',
         anchor:
-          "        type: ((environment?.['Type'] as string) ?? 'LINUX_CONTAINER') as EnvironmentType,\n",
+          "        type: readConfigString(\n" +
+          "          environment,\n" +
+          "          'Type',\n" +
+          "          'LINUX_CONTAINER',\n" +
+          "          'AWS::CodeBuild::Project Environment'\n" +
+          "        ) as EnvironmentType,\n",
       },
       {
         path: 'Environment.EnvironmentVariables.Type',
@@ -3558,7 +3563,8 @@ describe('real-code regression probes (per the repo checker rules)', () => {
     // write of `type` under `source`. Deleting BOTH arms flags. Pinned so the
     // distinction between "a real second write" and "a cousin one level down"
     // stays visible.
-    const forward = "      type: ((source['Type'] as string) ?? 'NO_SOURCE') as SourceType,\n";
+    const forward =
+      "      type: readConfigString(source, 'Type', 'NO_SOURCE', containerPath) as SourceType,\n";
     const guard = "      return { type: 'NO_SOURCE' as SourceType };\n";
     expect(cbSource).toContain(forward);
     expect(cbSource).toContain(guard);
@@ -3858,7 +3864,12 @@ describe('the shipped --check command', { timeout: 30_000 }, () => {
     {
       name: 'environment-type',
       anchor:
-        "        type: ((environment?.['Type'] as string) ?? 'LINUX_CONTAINER') as EnvironmentType,\n",
+        "        type: readConfigString(\n" +
+        "          environment,\n" +
+        "          'Type',\n" +
+        "          'LINUX_CONTAINER',\n" +
+        "          'AWS::CodeBuild::Project Environment'\n" +
+        "        ) as EnvironmentType,\n",
       flagged: 'AWS::CodeBuild::Project: Environment.Type',
       clean: 'Environment.EnvironmentVariables.Type',
     },

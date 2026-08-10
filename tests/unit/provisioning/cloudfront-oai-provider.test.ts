@@ -30,6 +30,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { CloudFrontOAIProvider } from '../../../src/provisioning/providers/cloudfront-oai-provider.js';
+import { ProvisioningError } from '../../../src/utils/error-handler.js';
 
 describe('CloudFrontOAIProvider', () => {
   let provider: CloudFrontOAIProvider;
@@ -336,6 +337,55 @@ describe('CloudFrontOAIProvider', () => {
 
       expect(result).toBeNull();
       expect(mockSend).not.toHaveBeenCalled();
+    });
+  });
+  // Nested-container guard for the `??` defaulting class (issue #1493). The
+  // OAI Comment is read by INDEXING `CloudFrontOriginAccessIdentityConfig`,
+  // so a malformed container silently sent a blank comment — and on update
+  // that OVERWRITES the live one.
+  describe('malformed CloudFrontOriginAccessIdentityConfig (issue #1493)', () => {
+    it('refuses a string container on create', async () => {
+      await expect(
+        provider.create('MyOai', 'AWS::CloudFront::CloudFrontOriginAccessIdentity', {
+          CloudFrontOriginAccessIdentityConfig: 'my comment',
+        })
+      ).rejects.toThrow(/CloudFrontOriginAccessIdentityConfig must be an object \(got a string\)/);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('refuses a string container on update, so the live comment is not blanked', async () => {
+      await expect(
+        provider.update(
+          'MyOai',
+          'E1ABCDEF123456',
+          'AWS::CloudFront::CloudFrontOriginAccessIdentity',
+          { CloudFrontOriginAccessIdentityConfig: 'my comment' },
+          { CloudFrontOriginAccessIdentityConfig: { Comment: 'old' } }
+        )
+      ).rejects.toThrow(/CloudFrontOriginAccessIdentityConfig must be an object/);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('surfaces the refusal as a ProvisioningError, not a bare Error', async () => {
+      const err = await provider
+        .create('MyOai', 'AWS::CloudFront::CloudFrontOriginAccessIdentity', {
+          CloudFrontOriginAccessIdentityConfig: 'my comment',
+        })
+        .catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(ProvisioningError);
+    });
+
+    it('still defaults to a blank comment when the container is absent', async () => {
+      mockSend.mockResolvedValueOnce({
+        CloudFrontOriginAccessIdentity: { Id: 'E1ABCDEF123456', S3CanonicalUserId: 'abc' },
+      });
+
+      await provider.create('MyOai', 'AWS::CloudFront::CloudFrontOriginAccessIdentity', {});
+
+      expect(
+        mockSend.mock.calls[0][0].input.CloudFrontOriginAccessIdentityConfig.Comment
+      ).toBe('');
     });
   });
 });

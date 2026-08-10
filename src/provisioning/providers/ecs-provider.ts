@@ -88,6 +88,7 @@ import type {
   ResourceImportResult,
 } from '../../types/resource.js';
 import { clearOnUpdateRemoval } from '../update-removal.js';
+import { readConfigString } from '../config-shape.js';
 import { resolvedResourceTimeoutMs } from '../resource-timeout-registry.js';
 
 /**
@@ -989,10 +990,26 @@ export class ECSProvider implements ResourceProvider {
     // deployment controller defaults to ECS when unspecified. enableECSManagedTags
     // / propagateTags are accepted under ALL three controllers, so they are
     // mapped unconditionally.
-    const deploymentControllerType =
-      ((properties['DeploymentController'] as Record<string, unknown> | undefined)?.['Type'] as
-        | string
-        | undefined) ?? 'ECS';
+    // Wrapped: this point in `updateService` has no enclosing catch, so the
+    // helper's plain Error would otherwise escape untyped into the deploy
+    // engine's retry loop instead of surfacing as a ProvisioningError.
+    let deploymentControllerType: string;
+    try {
+      deploymentControllerType = readConfigString(
+        properties['DeploymentController'],
+        'Type',
+        'ECS',
+        'AWS::ECS::Service DeploymentController'
+      );
+    } catch (error) {
+      throw new ProvisioningError(
+        error instanceof Error ? error.message : String(error),
+        resourceType,
+        logicalId,
+        physicalId,
+        error instanceof Error ? error : undefined
+      );
+    }
     const isEcsController = deploymentControllerType === 'ECS';
 
     // Only send loadBalancers / serviceRegistries when they actually changed, so

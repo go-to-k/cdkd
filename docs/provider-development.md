@@ -855,14 +855,17 @@ try {
 
 ### 1b. Never infer a default from a possibly-malformed value
 
-Reading a string out of a nested config block with `||` looks harmless and is
-not:
+Reading a string out of a nested config block with `||` — or with `??` — looks
+harmless and is not:
 
 ```typescript
 // WRONG — a string / array / unresolved intrinsic container indexes to
 // `undefined`, and the `||` silently substitutes the OPPOSITE of the
 // declared intent.
 const status = (versioningConfig['Status'] as string) || 'Suspended';
+
+// EQUALLY WRONG — `??` defaults on exactly the same `undefined` (issue #1493).
+const type = (source['Type'] as string) ?? 'NO_SOURCE';
 ```
 
 `VersioningConfiguration: 'Enabled'` (a hand-written L1 template, or an

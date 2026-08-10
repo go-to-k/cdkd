@@ -10,6 +10,7 @@ import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import { readConfigString } from '../config-shape.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -53,9 +54,17 @@ export class CloudFrontOAIProvider implements ResourceProvider {
     const config = properties['CloudFrontOriginAccessIdentityConfig'] as
       | Record<string, unknown>
       | undefined;
-    const comment = (config?.['Comment'] as string | undefined) ?? '';
-
     try {
+      // Inside the try so a malformed container surfaces as a ProvisioningError
+      // like every other failure of this method, rather than escaping untyped
+      // into the deploy engine's retry loop.
+      const comment = readConfigString(
+        config,
+        'Comment',
+        '',
+        'AWS::CloudFront::CloudFrontOriginAccessIdentity CloudFrontOriginAccessIdentityConfig'
+      );
+
       const response = await this.cloudFrontClient.send(
         new CreateCloudFrontOriginAccessIdentityCommand({
           CloudFrontOriginAccessIdentityConfig: {
@@ -115,9 +124,17 @@ export class CloudFrontOAIProvider implements ResourceProvider {
     const config = properties['CloudFrontOriginAccessIdentityConfig'] as
       | Record<string, unknown>
       | undefined;
-    const comment = (config?.['Comment'] as string | undefined) ?? '';
-
     try {
+      // Inside the try so a malformed container surfaces as a ProvisioningError
+      // like every other failure of this method, rather than escaping untyped
+      // into the deploy engine's retry loop.
+      const comment = readConfigString(
+        config,
+        'Comment',
+        '',
+        'AWS::CloudFront::CloudFrontOriginAccessIdentity CloudFrontOriginAccessIdentityConfig'
+      );
+
       const getResponse = await this.cloudFrontClient.send(
         new GetCloudFrontOriginAccessIdentityCommand({ Id: physicalId })
       );
