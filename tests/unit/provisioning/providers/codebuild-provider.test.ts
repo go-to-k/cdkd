@@ -718,6 +718,45 @@ describe('CodeBuildProvider', () => {
       ).rejects.toThrow(/AWS::CodeBuild::Project SecondaryArtifacts\[\] must be an object/);
     });
 
+    // The ARRAY container one level up was still truthiness-gated after the
+    // first fix pass: `SecondarySources: ''` was silently dropped, and a truthy
+    // non-array died with a raw `TypeError: .map is not a function` instead of
+    // the guard's diagnostic.
+    it('refuses a non-array SecondarySources instead of a raw TypeError', async () => {
+      await expect(
+        provider.create('MyProject', 'AWS::CodeBuild::Project', {
+          ...base,
+          SecondarySources: 'GITHUB',
+        })
+      ).rejects.toThrow(
+        /AWS::CodeBuild::Project SecondarySources must be an array \(got a string\)/
+      );
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('refuses a BLANK-STRING SecondaryArtifacts rather than dropping it', async () => {
+      await expect(
+        provider.create('MyProject', 'AWS::CodeBuild::Project', {
+          ...base,
+          SecondaryArtifacts: '',
+        })
+      ).rejects.toThrow(
+        /AWS::CodeBuild::Project SecondaryArtifacts must be an array \(got a blank string\)/
+      );
+    });
+
+    it('still omits both list blocks when they are ABSENT', async () => {
+      mockSend.mockResolvedValue({
+        project: { name: 'my-project', arn: 'arn:aws:codebuild:us-east-1:123456789012:project/p' },
+      });
+
+      await provider.create('MyProject', 'AWS::CodeBuild::Project', base);
+
+      const input = mockSend.mock.calls[0][0].input;
+      expect(input.secondarySources).toBeUndefined();
+      expect(input.secondaryArtifacts).toBeUndefined();
+    });
+
     it('refuses a blank Environment.ComputeType, not just Type', async () => {
       await expect(
         provider.create('MyProject', 'AWS::CodeBuild::Project', {

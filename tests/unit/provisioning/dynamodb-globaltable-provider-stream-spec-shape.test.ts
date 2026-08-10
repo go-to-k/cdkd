@@ -144,4 +144,41 @@ describe('DynamoDBGlobalTableProvider malformed StreamSpecification (issue #1493
       StreamViewType: 'KEYS_ONLY',
     });
   });
+
+  // Create refused a malformed container while update sent
+  // `StreamViewType: undefined` for the identical template — the create/update
+  // asymmetry the "cover the CREATE path" rule exists to prevent.
+  it('refuses a malformed container on UPDATE too, so create and update agree', async () => {
+    mockSend.mockResolvedValue({
+      Table: { TableName: 'my-test-table-xxx', TableStatus: 'ACTIVE' },
+    });
+
+    await expect(
+      provider.update('MyTable', 'my-test-table-xxx', RESOURCE_TYPE, {
+        ...baseProps,
+        StreamSpecification: 'NEW_IMAGE',
+      }, { ...baseProps })
+    ).rejects.toThrow(
+      /AWS::DynamoDB::GlobalTable StreamSpecification must be an object \(got a string\)/
+    );
+  });
+
+  it('still sends a well-formed view type on UPDATE', async () => {
+    mockSend.mockResolvedValue({
+      Table: { TableName: 'my-test-table-xxx', TableStatus: 'ACTIVE' },
+    });
+
+    await provider.update('MyTable', 'my-test-table-xxx', RESOURCE_TYPE, {
+      ...baseProps,
+      StreamSpecification: { StreamViewType: 'KEYS_ONLY' },
+    }, { ...baseProps });
+
+    const updateCall = mockSend.mock.calls.find(
+      (c) => c[0].constructor.name === 'UpdateTableCommand' && c[0].input.StreamSpecification
+    );
+    expect(updateCall?.[0].input.StreamSpecification).toEqual({
+      StreamEnabled: true,
+      StreamViewType: 'KEYS_ONLY',
+    });
+  });
 });

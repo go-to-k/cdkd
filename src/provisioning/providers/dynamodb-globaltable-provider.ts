@@ -1089,10 +1089,17 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         properties['StreamSpecification'] !== undefined &&
         !deepEqual(properties['StreamSpecification'], previousProperties['StreamSpecification'])
       ) {
-        const ss = properties['StreamSpecification'] as Record<string, unknown>;
+        // Guarded like the create path, so the two cannot disagree: without
+        // it a malformed container here sent `StreamViewType: undefined`
+        // while create refused the identical template (issue #1493 review).
         flatUpdate.StreamSpecification = {
           StreamEnabled: true,
-          StreamViewType: ss['StreamViewType'] as string,
+          StreamViewType: readConfigString(
+            properties['StreamSpecification'],
+            'StreamViewType',
+            'NEW_AND_OLD_IMAGES',
+            'AWS::DynamoDB::GlobalTable StreamSpecification'
+          ),
         } as StreamSpecification;
         flatChanged = true;
       }

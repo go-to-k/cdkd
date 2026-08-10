@@ -24,7 +24,7 @@ import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
-import { readConfigString } from '../config-shape.js';
+import { readConfigString, requireConfigArray } from '../config-shape.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -263,21 +263,24 @@ export class CodeBuildProvider implements ResourceProvider {
     const cfnSecondarySources = properties['SecondarySources'] as
       | Array<Record<string, unknown>>
       | undefined;
-    const secondarySources = cfnSecondarySources
-      ? cfnSecondarySources.map((s) =>
-          this.mapSource(s, 'AWS::CodeBuild::Project SecondarySources[]')
-        )
-      : undefined;
+    const secondarySources =
+      cfnSecondarySources == null
+        ? undefined
+        : requireConfigArray(cfnSecondarySources, 'AWS::CodeBuild::Project SecondarySources').map(
+            (s) => this.mapSource(s, 'AWS::CodeBuild::Project SecondarySources[]')
+          );
 
     // Map SecondaryArtifacts
     const cfnSecondaryArtifacts = properties['SecondaryArtifacts'] as
       | Array<Record<string, unknown>>
       | undefined;
-    const secondaryArtifacts = cfnSecondaryArtifacts
-      ? cfnSecondaryArtifacts.map((a) =>
-          this.mapArtifacts(a, 'AWS::CodeBuild::Project SecondaryArtifacts[]')
-        )
-      : undefined;
+    const secondaryArtifacts =
+      cfnSecondaryArtifacts == null
+        ? undefined
+        : requireConfigArray(
+            cfnSecondaryArtifacts,
+            'AWS::CodeBuild::Project SecondaryArtifacts'
+          ).map((a) => this.mapArtifacts(a, 'AWS::CodeBuild::Project SecondaryArtifacts[]'));
 
     // Map SecondarySourceVersions
     const cfnSecondarySourceVersions = properties['SecondarySourceVersions'] as

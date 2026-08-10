@@ -187,6 +187,32 @@ export function requireConfigString(value: unknown, fallback: string, path: stri
 }
 
 /**
+ * Refuse a present-but-non-ARRAY value where a CFn LIST block belongs.
+ *
+ * The list-shaped sibling of {@link readConfigString}, for the container one
+ * level up from a per-item mapper. Without it a truthy non-array
+ * (`SecondarySources: 'GITHUB'`) reaches `.map` and dies with a raw
+ * `TypeError: … .map is not a function`, and a FALSY one (`''`) is silently
+ * dropped by the truthiness gate that usually guards these — the same class
+ * `readConfigString` exists for, one level up (issue #1493 review).
+ *
+ * Callers keep the ABSENT case themselves (`== null ? undefined : …`), because
+ * an absent list block legitimately means "no entries" and the caller's own
+ * `undefined` is what the SDK expects.
+ *
+ * @throws Error when the value is not an array.
+ */
+export function requireConfigArray(value: unknown, path: string): Array<Record<string, unknown>> {
+  if (!Array.isArray(value)) {
+    throw new Error(
+      `${path} must be an array (got ${describe(value)}) — check for an ` +
+        `unresolved intrinsic or a mis-nested template value`
+    );
+  }
+  return value as Array<Record<string, unknown>>;
+}
+
+/**
  * A plain object, i.e. something a CFn config block can legitimately be.
  * Arrays are excluded on purpose: an array where an object belongs is one of
  * the malformed shapes this module exists to catch, and `typeof [] === 'object'`
