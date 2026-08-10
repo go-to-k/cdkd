@@ -182,10 +182,16 @@ That is a far more common template shape than the base64 search string.
   declares beneath it.
   Two halves of that are what keep it from becoming a rubber stamp, and both
   are worth knowing before you rely on it:
-  - A callee counts as GENERIC only when it names NO member of its own
-    anywhere in its body. `convertLoadBalancers` names four, so every member of
-    the blob it builds still has to prove itself — which is how the pass found
-    that `LoadBalancers[].AdvancedConfiguration` is silently dropped.
+  - A callee counts as GENERIC only when it names NO member — anywhere in its
+    body OR in any callee it can reach. `convertLoadBalancers` names four, so
+    every member of the blob it builds still has to prove itself, which is how
+    the pass found that `LoadBalancers[].AdvancedConfiguration` is silently
+    dropped. The TRANSITIVE part is what refuses a DELEGATING GUARD
+    (`convertLog(cfg) { if (!cfg) return cfg; return this.buildLog(cfg); }`),
+    which a body-local test would accept.
+    Read the rule as exactly "names no member", NOT as "can only emit keys it
+    read": a converter that FILTERS, RENAMES via a map, or PICKs a key list
+    names nothing and is still credited — recorded as known bound (5).
   - The credit is bounded to the BLOB, not to the enclosing scope.
     `ContainerDefinitions` carries the `LinuxParameters` hand-off AND
     `convertPortMappings`; crediting the whole scope would have hidden the
@@ -242,25 +248,28 @@ That is a far more common template shape than the base64 search string.
      the nearest scope stopping the climb. A hop it cannot follow yields no
      literals and flags CORRECT code, which is why it peels `await` and climbs
      to the module scope at all.
-  3. **Value resolution is best-effort and bare-name.** Same-file callables and
-     property initializers are indexed by NAME, so `this.mapSource(…)` and a
-     free `mapSource(…)` resolve to the same declaration while a
-     `receiver.mapSource(…)` on some other object deliberately does not.
-     Identifier bindings are searched in the nearest function scope (descended
-     FULLY, so two disjoint `if` branches binding the same name are unioned),
-     then OUTWARD without descending into sibling functions, with a PARAMETER of
-     the nearest scope stopping the climb. A hop it cannot follow yields no
-     literals and flags CORRECT code, which is why it peels `await` and climbs
-     to the module scope at all.
-     The same applies to the #1445 SDK-side expansion: a hand-off point is
+     The #1445 SDK-side expansion is bare-name the same way: a hand-off point is
      looked up as a member name across EVERY interface in the client model and
-     the reference targets are unioned.
+     the reference targets are UNIONED, which can be enormous — `Items` reaches
+     217 members in the CloudFront model. What keeps that from clearing anything
+     is not the expansion, it is `classifyTarget` looking a scope up ONLY by the
+     audited path's CFn TOP-LEVEL property name, so an over-broad expansion
+     hung off some other name is never consulted.
   4. **The reverse-map exclusion is PREFIX-only**, so a suffix-named reverse
      helper (`volumesToCfn`, `metricsSdkToCfn`) is not skipped. No live impact —
      the only opted-in target keeps its reverse map inside `readCurrentState` —
      but widening the match would also withdraw names from the LITERAL set on
      targets nobody has measured for it, so it is deliberately not done.
-  5. **Two provider SHAPES the #1445 walk still does not recognize**, both
+  5. **The genericity test means "names no member", not "preserves every
+     key".** It is transitive through resolvable callees, which closes the
+     delegating guard — but a FILTERING (`if (DROP.has(k)) continue`),
+     RENAME-MAP (`out[MAP[k] ?? k] = v`) or PICK (`for (const k of KEEP)`)
+     converter names nothing and is credited anyway. No such shape is a
+     hand-off callee today, but `glue-provider.ts`'s `renameRecordKeys` is
+     exactly the rename-map shape and would be credited the moment a Glue
+     target opted in. Closing it needs the walk to model the converter's KEY
+     SET, not just its member names.
+  6. **Two provider SHAPES the #1445 walk still does not recognize**, both
      measured on the real tree and both tracked: the BUILDER idiom
      (`const out: any = {}; out.Foo = …; return out;` — the members ARE written,
      just not where the scope index looks; CloudWatch AnomalyDetector 3, most of

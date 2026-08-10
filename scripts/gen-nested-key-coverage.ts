@@ -159,15 +159,29 @@
  *               diff is refused by the same {@link feedsOnlyComparison} rule
  *               the literal walk uses.
  *
- * GENERIC vs SPECIFIC is the whole job, and the test is deliberately crude and
- * fail-closed: a callee is generic only when it NAMES NO MEMBER of its own
- * anywhere in its body (no object-literal property, no shorthand, no
- * `o.Foo = …` / `o['Foo'] = …`), so it can only be emitting keys it read.
- * `pascalToCamelCaseKeys` qualifies (its only write is the computed
+ * GENERIC vs SPECIFIC is the whole job, and the test is deliberately crude: a
+ * callee is generic only when it NAMES NO MEMBER — no object-literal property
+ * (including the computed-but-literal `{ ['Foo']: v }`), no shorthand, no
+ * `o.Foo = …` / `o['Foo'] = …` — anywhere in its body OR in any callee it can
+ * reach. `pascalToCamelCaseKeys` qualifies (its only write is the computed
  * `result[camelKey] = …`); `convertContainerDefinitions` (45 named members),
  * `convertLoadBalancers` (4) and `CloudFrontDistributionProvider.convertToSdkFormat`
  * (a spread-and-patch naming 30+) do not, and every member under THEM keeps
  * having to prove itself write by write.
+ *
+ * The TRANSITIVE part is load-bearing, not tidiness. With a body-local test the
+ * DELEGATING GUARD `convertLog(cfg) { if (!cfg) return cfg; return this.buildLog(cfg); }`
+ * passes — `convertLog` names nothing, and the delivery test is existential, so
+ * the `return cfg` arm alone satisfies it — while `buildLog` does the real,
+ * member-naming work. That is a silent clear on a CI-blocking bucket, so
+ * {@link namesOwnMember} descends into resolvable callees. (The delivery test
+ * cannot be tightened to `.every` as the alternative fix:
+ * `pascalToCamelCaseKeys` returns `result`, a binding to an empty literal, so
+ * requiring every return to deliver rejects the tree's one real converter.)
+ *
+ * Read the test as exactly what it says — "names no member" — and NOT as "can
+ * only emit keys it read". A converter that names nothing and still drops or
+ * renames keys passes; see known bound (5).
  *
  * The credit is then bounded to the blob: {@link expandGenericHandoffScopes}
  * expands each hand-off point through the SDK model's own reference graph
@@ -210,7 +224,8 @@
  *     `convertLoadBalancers` never writes — the blue/green deployment block).
  *     Opting the two ECS targets in is blocked on FIXING the provider, tracked
  *     in issues #1472 / #1473; an allow-list entry would silence a genuine bug.
- *     This is the pass working: 44 unmeasurable paths collapsed to 5 real ones.
+ *     This is the pass working: on `AWS::ECS::Service` 44 unmeasurable paths
+ *     collapsed to 5 real ones, and on `AWS::ECS::TaskDefinition` 25 to 1.
  *
  * (B) The BUILDER IDIOM (`const out: any = {}; out.Foo = …; return out;`) is a
  *     per-member write the SCOPE index cannot see: `resolveLiterals` resolves
@@ -345,21 +360,42 @@
  *     done here — it would withdraw names from the LITERAL set too (the
  *     `provider-handled` bucket) on targets nobody has measured for it.
  *
- * (5) THE GENERICITY TEST IS BODY-LOCAL AND CRUDE (issue #1445). "Names no
- *     member of its own" is the whole test, so `{ ...blob, Extra: 1 }` — which
- *     DOES deliver `blob` — is rejected for naming `Extra`, and a helper that
- *     names nothing but returns a SCALAR (`toDate(r['EndTime'])`) is accepted as
- *     a converter. The first is the safe direction (the target keeps flagging,
- *     visibly); the second is inert, because a scalar member expands to NOTHING
- *     in {@link reachableSdkMemberNames}, so the only thing it credits is a name
- *     that was already a recorded write.
+ * (5) THE GENERICITY TEST IS "NAMES NO MEMBER", NOT "PRESERVES EVERY KEY"
+ *     (issue #1445). It is TRANSITIVE through resolvable callees, which closes
+ *     the delegating guard described above — but three shapes name nothing and
+ *     still fail to deliver everything, and all three would be credited:
+ *       - FILTERING — `for (const [k, v] of entries) { if (DROP.has(k)) continue; out[k] = v; }`
+ *       - RENAME-MAP — `out[MAP[k] ?? k] = v` (a key the map renames to an SDK
+ *         spelling the CFn side never had still counts as delivered)
+ *       - PICK — `for (const k of KEEP) out[k] = blob[k]`
+ *     NO such shape is a hand-off callee in the tree today, so this is a bound
+ *     rather than a live false clear — but it is one edit away:
+ *     `glue-provider.ts`'s `renameRecordKeys(entry, renames, numericKeys, booleanKeys)`
+ *     is exactly the rename-map shape (all writes computed, zero member names),
+ *     and it would be credited the moment a Glue target opted in. Closing it
+ *     needs the walk to model the converter's KEY SET, not just its member
+ *     names — a materially bigger analysis than this one.
+ *     The two SAFE directions are also crude and are left that way:
+ *     `{ ...blob, Extra: 1 }` DOES deliver `blob` but is rejected for naming
+ *     `Extra` (the target keeps flagging, visibly), and a helper that names
+ *     nothing but returns a SCALAR (`toDate(r['EndTime'])`) is accepted as a
+ *     converter but is inert, because a scalar expands to NOTHING in
+ *     {@link reachableSdkMemberNames} and so credits only a name that was
+ *     already a recorded write.
  *
  * (6) THE SDK EXPANSION IS BARE-NAME AND UNIONED. `reachableSdkMemberNames`
  *     looks the hand-off point up as a member name across EVERY interface in the
  *     client model and unions the reference targets, so two unrelated interfaces
- *     declaring the same member name expand together. Same bound as (3), one
- *     model over; bounded in practice because only a name the provider actually
- *     hands a whole blob to is ever expanded.
+ *     declaring the same member name expand together — and the result can be
+ *     enormous: `Items` reaches 217 members in the CloudFront model, and `Items`
+ *     IS a registered hand-off point there.
+ *
+ *     What bounds that is NOT the expansion and NOT "only a handed-off name is
+ *     expanded" — it is {@link classifyTarget} looking a scope up only by the
+ *     audited path's CFn TOP-LEVEL property name. An over-broad expansion hung
+ *     off `Items` is never consulted, because no audited top-level is called
+ *     `Items`. A hand-off point whose name DOES collide with an audited
+ *     top-level is the case to watch.
  *
  *     The point is registered under the WRITE name and ALSO under the SEED's own
  *     CFn key (in both spellings), because the two disagree often enough to
@@ -532,11 +568,16 @@ export interface NestedKeyTarget {
   readonly minWriteScopes?: number;
   /**
    * Parser-regression floor for the WHOLE-BLOB HAND-OFF walk (issue #1445):
-   * the minimum number of DISTINCT hand-off point names the provider is known
-   * to yield. Declared only by a target whose opt-in DEPENDS on the walk — a
-   * target that reaches 0 findings on per-member writes alone (CodeBuild) must
-   * NOT declare it, or a genuinely hand-off-free provider would fail its own
-   * floor. Set from the observed count, rounded down.
+   * the minimum number of BLOB-CARRYING hand-off points the provider is known
+   * to yield — points that expand to at least one SDK member
+   * ({@link countExpandingHandoffPoints}). Counting RAW points instead is
+   * vacuous; the measured reason is on that function.
+   *
+   * Declared only by a target whose opt-in DEPENDS on the walk — a target that
+   * reaches 0 findings on per-member writes alone (CodeBuild) must NOT declare
+   * it, or a genuinely hand-off-free provider would fail its own floor. The
+   * hygiene test derives "walk-dependent" by re-classifying with the hand-off
+   * points removed, so this stays a measurement rather than a judgement call.
    */
   readonly minHandoffPoints?: number;
 }
@@ -544,18 +585,38 @@ export interface NestedKeyTarget {
 /**
  * The write-collector floors shared by the five `apigatewayv2-provider.ts`
  * targets (issue #1445). Measured at opt-in: 46 written member names, 1
- * non-empty write scope, 35 distinct whole-blob hand-off points.
+ * non-empty write scope, 3 BLOB-CARRYING hand-off points (35 raw).
  *
- * The SCOPE floor of 1 is not a typo and not a weak fence by accident — this
- * provider builds almost no per-member literals BECAUSE it forwards, which is
- * the exact shape {@link NestedKeyTarget.minWriteScopes}'s "no module-wide
- * default" note predicted. What actually fences this target is
- * {@link NestedKeyTarget.minHandoffPoints}.
+ * `minWriteScopes: 1` FENCES NOTHING on this target and is recorded as such
+ * rather than left looking meaningful. The provider forwards whole blobs, so it
+ * builds almost no per-member literals, and its single non-empty scope is
+ * `attributes` -> `{ ApiId, ApiEndpoint, IntegrationId, RouteId, AuthorizerId }`
+ * — a cdkd-internal `ResourceCreateResult` field that no audited path is ever
+ * looked up against. The floor exists only because the hygiene test requires
+ * every opted-in target to declare it; the value is the honest measurement.
+ * (This is exactly the spread {@link NestedKeyTarget.minWriteScopes}'s
+ * "no module-wide default" note predicted, now realized.)
+ *
+ * What actually fences this target is {@link NestedKeyTarget.minHandoffPoints},
+ * and it is deliberately 1 against a measured 3 — NOT the usual "round the
+ * measurement down". The three points are `CorsConfiguration` /
+ * `DefaultRouteSettings` / `JwtConfiguration`, one per audited blob top-level,
+ * so a floor AT the measurement makes every legitimate PROVIDER-side change
+ * (the provider stops forwarding one blob and starts naming its members) abort
+ * with "parser regression?" instead of reporting the divergences that change
+ * actually causes. Measured: with the floor at 3, all three hand-off probes
+ * stopped reaching the classifier.
+ *
+ * The failure this floor exists for is the walk COLLAPSING — every write name
+ * collected, every scope populated, zero blobs recognized — and that mode
+ * yields 0. So 1 is the threshold that discriminates, and the raw-vs-expanding
+ * counting change is what makes 1 meaningful: under raw counting the collapsed
+ * walk still reported 32 inert scalar points.
  */
 const API_GATEWAY_V2_WRITE_FLOORS = {
   minWrittenMembers: 30,
   minWriteScopes: 1,
-  minHandoffPoints: 20,
+  minHandoffPoints: 1,
 } as const;
 
 /**
@@ -1883,6 +1944,35 @@ export function collectWriteEvidence(
     return [];
   };
 
+  /**
+   * The name of a callee the hand-off walk can resolve — a bare `helper(…)` or
+   * a `this.helper(…)`, never a `receiver.helper(…)` on some other object (the
+   * same restriction {@link resolveLiterals} carries, and for the same reason:
+   * borrowing an unrelated object's same-named method is a false clear).
+   */
+  const resolvableCalleeName = (call: ts.CallExpression): string | undefined => {
+    const callee = unwrapExpression(call.expression);
+    if (ts.isIdentifier(callee)) return callee.text;
+    return ts.isPropertyAccessExpression(callee) &&
+      callee.expression.kind === ts.SyntaxKind.ThisKeyword
+      ? callee.name.text
+      : undefined;
+  };
+
+  /**
+   * {@link propertyName}, plus the COMPUTED-but-literal form `{ ['Foo']: v }`.
+   * Used only by {@link namesOwnMember}, where missing it would let a converter
+   * name members through a spelling the write collector ignores; the write set
+   * itself deliberately stays on the stricter {@link propertyName}.
+   */
+  const memberNameOfPropertyName = (node: ts.Node): string | undefined => {
+    if (ts.isComputedPropertyName(node)) return elementAccessName(node.expression);
+    return propertyName(node);
+  };
+
+  /** Memo for the ORDER-INDEPENDENT half of {@link isGenericConverter}. */
+  const namesMemberCache = new Map<ts.Node, boolean>();
+
   // ---- PROPERTY-BAG TAINT, the ROOT of the whole-blob hand-off walk (#1445).
   // Declaration-scoped, never bare-name: `cloudfront-distribution-provider.ts`
   // binds the template's config AND the AWS-returned one to identifiers that
@@ -1951,12 +2041,7 @@ export function collectWriteEvidence(
       if (ts.isPropertyAccessExpression(callee) && isBagDerived(callee.expression, seen)) {
         return true; // `bag.map(...)` / `bag.filter(...)` — still bag data.
       }
-      const name = ts.isIdentifier(callee)
-        ? callee.text
-        : ts.isPropertyAccessExpression(callee) &&
-            callee.expression.kind === ts.SyntaxKind.ThisKeyword
-          ? callee.name.text
-          : undefined;
+      const name = resolvableCalleeName(e);
       if (name === undefined) return false;
       return (handoffCallables.get(name) ?? []).some((fn) =>
         returnedExpressions(fn).some((r) => isBagDerived(r, seen))
@@ -2057,32 +2142,64 @@ export function collectWriteEvidence(
   seedTaint();
 
   /**
-   * Does this function NAME a member of its own? A generic key converter is
-   * mechanical — every key it emits comes from the input, so it writes only
-   * through COMPUTED names (`result[camelKey] = …`). One fixed member name
-   * anywhere in the body (an object-literal property, a shorthand, or an
-   * `o.Foo = …` / `o['Foo'] = …` assignment) means the function is re-shaping
-   * per member, and per-member re-shaping is exactly what has to keep proving
-   * itself write by write.
+   * Does this function NAME a member — anywhere in its body, OR inside any
+   * callee it can reach? A generic key converter is mechanical: every key it
+   * emits came from the input, so it writes only through COMPUTED names
+   * (`result[camelKey] = …`). One fixed member name (an object-literal
+   * property including a computed-but-literal `{ ['Foo']: v }`, a shorthand, or
+   * an `o.Foo = …` / `o['Foo'] = …` assignment) means per-member re-shaping,
+   * which is exactly what has to keep proving itself write by write.
    *
-   * Deliberately fail-CLOSED and deliberately crude: `{ ...blob, Extra: 1 }`
-   * still delivers `blob` whole, but naming `Extra` disqualifies the function.
-   * The cost of that is a target that keeps flagging (visible); the cost of the
-   * other direction is a silent clear on a CI-blocking bucket.
+   * TRANSITIVE, not body-local, and that is load-bearing rather than tidy. A
+   * body-local test accepts the DELEGATING GUARD —
+   *
+   *     private convertLog(cfg?: Record<string, unknown>) {
+   *       if (!cfg) return cfg;          // <- an existential delivery test passes HERE
+   *       return this.buildLog(cfg);     // <- while the real work names members
+   *     }
+   *
+   * — because `convertLog` itself names nothing and one of its returns is the
+   * parameter outright. That is a silent clear on a CI-blocking bucket, so the
+   * check descends into `buildLog`. (The delivery test cannot be tightened to
+   * `.every` instead: `pascalToCamelCaseKeys` returns `result`, a binding to an
+   * empty literal, so requiring EVERY return to deliver rejects the one real
+   * generic converter in the tree.)
+   *
+   * Deliberately fail-CLOSED and deliberately crude in the other direction too:
+   * `{ ...blob, Extra: 1 }` still delivers `blob` whole, but naming `Extra`
+   * disqualifies the function. The cost of that is a target that keeps flagging
+   * (visible); the cost of the opposite is a silent clear.
+   *
+   * What it does NOT catch is a converter that names nothing AND still drops or
+   * renames keys — a filtering `if (DROP.has(key)) continue`, a rename-map
+   * `out[MAP[key] ?? key] = v`, a `pick(blob, KEEP)`. See known bound (5) in the
+   * module header: no such shape is a hand-off callee in the tree today, and the
+   * honest statement is "names no member", NOT "can only emit keys it read".
    */
-  function namesOwnMember(fn: ts.Node): boolean {
+  function namesOwnMember(fn: ts.Node, seenFns: Set<ts.Node> = new Set()): boolean {
+    if (seenFns.has(fn)) return false; // recursion: judged by its other paths
+    seenFns.add(fn);
     const body = (fn as ts.SignatureDeclaration & { body?: ts.Node }).body;
     if (body === undefined) return false;
     let found = false;
     const visit = (n: ts.Node): void => {
       if (found) return;
-      if (ts.isPropertyAssignment(n) && propertyName(n.name) !== undefined) found = true;
-      else if (ts.isShorthandPropertyAssignment(n)) found = true;
+      if (ts.isPropertyAssignment(n) && memberNameOfPropertyName(n.name) !== undefined) {
+        found = true;
+      } else if (ts.isShorthandPropertyAssignment(n)) found = true;
       else if (ts.isBinaryExpression(n) && isWriteAssignment(n.operatorToken.kind)) {
         if (ts.isPropertyAccessExpression(n.left)) found = true;
         else if (
           ts.isElementAccessExpression(n.left) &&
           elementAccessName(n.left.argumentExpression) !== undefined
+        ) {
+          found = true;
+        }
+      } else if (ts.isCallExpression(n)) {
+        const name = resolvableCalleeName(n);
+        if (
+          name !== undefined &&
+          (handoffCallables.get(name) ?? []).some((callee) => namesOwnMember(callee, seenFns))
         ) {
           found = true;
         }
@@ -2096,16 +2213,18 @@ export function collectWriteEvidence(
   const genericConverterCache = new Map<ts.Node, boolean>();
   /**
    * Is this function a GENERIC KEY CONVERTER — a mechanical whole-object
-   * transform that (a) names no member of its own and (b) actually RETURNS its
-   * input blob (possibly through another generic converter), rather than only
-   * measuring or comparing it?
+   * transform that (a) names no member of its own or of anything it calls, and
+   * (b) actually RETURNS its input blob (possibly through another generic
+   * converter), rather than only measuring or comparing it?
    *
    * `pascalToCamelCaseKeys` passes on both counts: it writes only
    * `result[camelKey]`, and its guard arm `return value` returns the parameter
    * outright. `ECSProvider.convertLinuxParameters` passes because its single
-   * return is `pascalToCamelCaseKeys(config)`. `convertContainerDefinitions`
+   * return is `pascalToCamelCaseKeys(config)` — and, under the transitive (a),
+   * only because that callee names nothing either. `convertContainerDefinitions`
    * (45 named members) and `CloudFrontDistributionProvider.convertToSdkFormat`
-   * (a spread-and-patch that names 30+) both fail (a).
+   * (a spread-and-patch that names 30+) both fail (a) directly; a converter that
+   * delegates the naming to a helper fails it transitively.
    */
   function isGenericConverter(fn: ts.Node, seen: Set<ts.Node>): boolean {
     const cached = genericConverterCache.get(fn);
@@ -2113,12 +2232,24 @@ export function collectWriteEvidence(
     if (seen.has(fn)) return true; // a recursive converter: judged by its other arms
     seen.add(fn);
     const params = (fn as ts.SignatureDeclaration).parameters;
-    const verdict =
-      params !== undefined &&
-      params.length > 0 &&
-      !namesOwnMember(fn) &&
-      returnedExpressions(fn).some((r) => deliversWholeBlob(r, seen));
-    genericConverterCache.set(fn, verdict);
+    // (a) is cached on its own: it depends only on the function and the callable
+    // index, so unlike the composite verdict it is order-INDEPENDENT.
+    let names = namesMemberCache.get(fn);
+    if (names === undefined) {
+      names = params === undefined || params.length === 0 || namesOwnMember(fn);
+      namesMemberCache.set(fn, names);
+    }
+    if (names) {
+      genericConverterCache.set(fn, false);
+      return false;
+    }
+    // (b) is NOT cached: `deliversWholeBlob` consults the caller-shared `seen`
+    // cycle guard, so a `false` here can be an artifact of the traversal order
+    // rather than a property of `fn`. Caching it would make the verdict
+    // order-dependent; recomputing is cheap because (a) already rejected the
+    // large converters.
+    const verdict = returnedExpressions(fn).some((r) => deliversWholeBlob(r, seen));
+    if (verdict) genericConverterCache.set(fn, true);
     return verdict;
   }
 
@@ -2190,13 +2321,7 @@ export function collectWriteEvidence(
       );
     }
     if (ts.isCallExpression(e)) {
-      const callee = unwrapExpression(e.expression);
-      const name = ts.isIdentifier(callee)
-        ? callee.text
-        : ts.isPropertyAccessExpression(callee) &&
-            callee.expression.kind === ts.SyntaxKind.ThisKeyword
-          ? callee.name.text
-          : undefined;
+      const name = resolvableCalleeName(e);
       if (name === undefined) return false;
       const fns = handoffCallables.get(name) ?? [];
       if (fns.length === 0) return false;
@@ -2495,6 +2620,30 @@ export function reachableSdkMemberNames(
  * provider source (and answers "what is handed off whole?"), while the
  * expansion reads only the SDK model (and answers "what lives beneath it?").
  */
+/**
+ * How many distinct hand-off points actually EXPAND to at least one SDK member
+ * — the only ones that can clear an audited path.
+ *
+ * The raw point count is the wrong fence and was measured to be vacuous: on
+ * `apigatewayv2-provider.ts` the walk records 35 points, but 32 of them are
+ * inert scalar forwards (`Name`, `ApiId`, `StageName`, …) whose SDK member is a
+ * string. Only `CorsConfiguration` / `DefaultRouteSettings` / `JwtConfiguration`
+ * carry a sub-blob, so a regression that broke exactly the blob recognition
+ * would leave ~32 raw points standing and sail past a floor of 20 while CI
+ * emitted the 13 bogus divergences the floor exists to prevent.
+ */
+export function countExpandingHandoffPoints(
+  evidence: ProviderWriteEvidence,
+  sdkInterfaces: ReadonlyMap<string, ReadonlyMap<string, SdkMemberType>>
+): number {
+  const points = new Set([...evidence.handoffPoints.values()].flatMap((set) => [...set]));
+  let expanding = 0;
+  for (const point of points) {
+    if (reachableSdkMemberNames(point, sdkInterfaces).size > 0) expanding++;
+  }
+  return expanding;
+}
+
 export function expandGenericHandoffScopes(
   evidence: ProviderWriteEvidence,
   sdkInterfaces: ReadonlyMap<string, ReadonlyMap<string, SdkMemberType>>
@@ -3285,15 +3434,15 @@ export function loadReport(
       // every NAME collected and every SCOPE populated while silently finding
       // zero hand-offs, which flags a correct provider by the dozen instead of
       // naming the cause. Only a target whose opt-in DEPENDS on the walk
-      // declares it.
+      // declares it, and it counts EXPANDING points only (see
+      // {@link countExpandingHandoffPoints} for why the raw count is vacuous).
       if (target.minHandoffPoints !== undefined) {
-        const points = new Set(
-          [...written.handoffPoints.values()].flatMap((s) => [...s])
-        ).size;
+        const points = countExpandingHandoffPoints(written, sdkInterfaces);
         if (points < target.minHandoffPoints) {
           throw new Error(
             `whole-blob hand-off walk for ${target.providerFile} collapsed to ` +
-              `${points} hand-off point(s) (< ${target.minHandoffPoints}) — parser regression?`
+              `${points} blob-carrying hand-off point(s) (< ${target.minHandoffPoints}) — ` +
+              'parser regression?'
           );
         }
       }
@@ -3311,7 +3460,7 @@ export function loadReport(
     // (issue #1445). Keyed by (provider file, SDK package) rather than by file
     // alone: every target sharing a file shares its package today, but the fold
     // is only valid for the model it was computed against.
-    const expansionKey = `${target.providerFile} ${target.sdkClientPackage}`;
+    const expansionKey = `${target.providerFile} | ${target.sdkClientPackage}`;
     let expandedWriteEvidence = expandedByFile.get(expansionKey);
     if (expandedWriteEvidence === undefined) {
       expandedWriteEvidence = expandGenericHandoffScopes(written, sdkInterfaces);
