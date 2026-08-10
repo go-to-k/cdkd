@@ -1,5 +1,19 @@
 import { describe, it, expect } from 'vite-plus/test';
 import { ProviderRegistry } from '../../../src/provisioning/provider-registry.js';
+// STATIC, not `await import(...)` inside the test (issue #1450).
+//
+// `register-providers.js` pulls in all 80 provider modules and their AWS SDK
+// clients. Imported lazily inside a test, that whole graph is resolved against
+// the 5s PER-TEST timeout: ~260ms warm and single-file, but under a loaded
+// 12-worker full-suite run it could exceed the budget and fail as a timeout —
+// which reads like a real assertion failure, passes on re-run once the FS
+// cache is warm, and passes in isolation. A static import resolves at
+// file-evaluation time instead, outside any test's budget.
+//
+// Nothing here required the laziness: this file has no `vi.mock`, so there was
+// no mock-ordering reason to defer the import.
+import { registerAllProviders } from '../../../src/provisioning/register-providers.js';
+import { WaitConditionHandleProvider } from '../../../src/provisioning/providers/wait-condition-handle-provider.js';
 
 describe('ProviderRegistry pre-flight (validateResourceTypes)', () => {
   it('passes for SDK + Cloud-Control-supported types', () => {
@@ -9,11 +23,7 @@ describe('ProviderRegistry pre-flight (validateResourceTypes)', () => {
     ).not.toThrow();
   });
 
-  it('passes for AWS::CloudFormation::WaitConditionHandle via its no-op SDK provider (issue #1020)', async () => {
-    const { registerAllProviders } = await import('../../../src/provisioning/register-providers.js');
-    const { WaitConditionHandleProvider } = await import(
-      '../../../src/provisioning/providers/wait-condition-handle-provider.js'
-    );
+  it('passes for AWS::CloudFormation::WaitConditionHandle via its no-op SDK provider (issue #1020)', () => {
     const registry = new ProviderRegistry();
     registerAllProviders(registry);
     expect(() =>
