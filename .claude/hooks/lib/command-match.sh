@@ -188,13 +188,22 @@ cmd_matches_verb() {
 # which is why the base dir is a parameter rather than the caller resolving a
 # single returned segment.
 cmd_last_cd_target() {
-  local cmd="$1" base="${2:-}" stripped cur="" seen=0 raw_paths=() idx=0
+  local cmd="$1" base="${2:-}" stripped cur="" seen=0 idx=0 __p
+  local -a raw_paths
+  raw_paths=()
   stripped="$(strip_noncommand_spans "$cmd")"
 
   # Quoted paths were replaced by the placeholder, so recover them, in order,
   # from the RAW command. Safe to read raw only for paths whose `cd` the
   # stripped pass has already proven to be in command position.
-  mapfile -t raw_paths < <(printf '%s' "$cmd" | grep -oE "cd[[:space:]]+(\"[^\"]*\"|'[^']*')" | sed -E "s/^cd[[:space:]]+//; s/^[\"']//; s/[\"']$//") || true
+  #
+  # A read loop rather than `mapfile`: macOS ships bash 3.2 as /bin/bash and
+  # has no `mapfile`, so under it the array would silently stay empty and a
+  # quoted cd path would resolve to the wrong directory. No other hook in
+  # this tree requires bash 4+, so this helper must not be the first.
+  while IFS= read -r __p; do
+    raw_paths+=("$__p")
+  done < <(printf '%s' "$cmd" | grep -oE "cd[[:space:]]+(\"[^\"]*\"|'[^']*')" | sed -E "s/^cd[[:space:]]+//; s/^[\"']//; s/[\"']$//")
 
   cur="$base"
   while IFS= read -r seg; do
