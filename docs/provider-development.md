@@ -853,6 +853,47 @@ try {
 }
 ```
 
+### 1a. Pre-flight refusal — when a provider may reject what CloudFormation forwards
+
+cdkd's compatibility target is CloudFormation, so the default for a property
+cdkd cannot handle is to **forward it and let AWS answer**, never to invent a
+validation CloudFormation does not have. A provider that refuses a template
+CloudFormation would accept is a parity break, and parity breaks are how a
+tool that claims template compatibility stops being trustworthy.
+
+There is one narrow exception, and it has a high bar. A provider MAY refuse a
+property before the AWS call when **all** of the following hold:
+
+1. **The property is undeployable on cdkd's OWN path**, proven by a live probe
+   against the real API the provider calls — not inferred from CloudFormation
+   also rejecting it. This is the load-bearing condition: "CFn rejects it too"
+   is not sufficient, because cdkd calls the service API directly and could in
+   principle succeed where a CFn resource handler fails.
+2. **No shape of it works**, so no user loses a working deployment. If some
+   combination deploys, forward it.
+3. **The refusal names the working alternative**, concretely enough to copy.
+   A refusal that only says "no" is worse than AWS's own error.
+4. **The rationale is recorded at the check site**, as a comment naming the
+   probe (date, region, what was tried, what AWS said) and flagging it as a
+   deliberate parity divergence — so the next reader can re-evaluate it when
+   AWS changes.
+
+`GlueProvider`'s `assertIcebergTableInputAbsent` (issue
+[#1454](https://github.com/go-to-k/cdkd/issues/1454)) is the reference
+implementation. Note two details worth copying:
+
+- The check runs **before** the `try` block, so the typed `ProvisioningError`
+  is not caught and re-labelled by the provider's own error wrapper.
+- It is applied on `create()` **and** `update()`. The update path mattered
+  more there: `UpdateTableCommandInput` has no such member at all, so an
+  unguarded update would have *silently accepted* a template `create` can never
+  take — a split verdict on the same template depending on which operation the
+  deploy engine happened to pick.
+
+If a property is merely *unimplemented* rather than undeployable, this is the
+wrong mechanism — move it to `unhandledByDesign`, which converts the silent
+drop into the Cloud Control auto-route (see §3c).
+
 ### 2. Idempotency
 
 - Handle when `create` is called on existing resource

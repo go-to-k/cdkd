@@ -10623,7 +10623,9 @@
           ],
           "seededBy": [
             "create",
-            "createTable"
+            "createTable",
+            "update",
+            "updateTable"
           ]
         },
         {

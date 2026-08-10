@@ -180,7 +180,7 @@ catalog with Tier 2 and Tier 3 entries included.
 | **GraphQL** | AWS::AppSync::Resolver | SDK Provider | ✅ |
 | **GraphQL** | AWS::AppSync::ApiKey | SDK Provider | ✅ |
 | **Analytics** | AWS::Glue::Database | SDK Provider | ✅ |
-| **Analytics** | AWS::Glue::Table (Apache Iceberg supported via `OpenTableFormatInput.IcebergInput.MetadataOperation`; the sibling `IcebergTableInput` is refused at pre-flight — see [Glue table Iceberg support](#glue-table-iceberg-support-icebergtableinput-is-refused)) | SDK Provider | ✅ |
+| **Analytics** | AWS::Glue::Table ([Iceberg caveat](#glue-table-iceberg-support-icebergtableinput-is-refused)) | SDK Provider | ✅ |
 | **Analytics** | AWS::Glue::Job | SDK Provider | ✅ |
 | **Analytics** | AWS::Glue::Crawler | SDK Provider | ✅ |
 | **Analytics** | AWS::Glue::Connection | SDK Provider | ✅ |
@@ -279,6 +279,17 @@ undeployable on **both** paths:
   registry schema (`IcebergInput.IcebergTableInput`) nor `@aws-sdk/client-glue`
   (`IcebergInput.CreateIcebergTableInput`). That three-way contract mismatch is
   an AWS-side bug.
+
+**Where the property can even come from.** `aws-cdk-lib`'s L1
+`CfnTable.IcebergInputProperty` declares only `metadataOperation` and
+`version` — it does NOT declare `icebergTableInput`, and the L1 renderer drops
+undeclared members silently. So an ordinary CDK app cannot emit this property
+at all; verified 2026-08-10 by synthesizing it and reading the template. It
+reaches a deploy only from a hand-written CloudFormation template, a
+`cdkd import --migrate-from-cloudformation` of one, or an explicit
+`addPropertyOverride('OpenTableFormatInput.IcebergInput.IcebergTableInput', …)`.
+That is why the refusal is safe to make unconditional: no CDK user can trip it
+by accident.
 
 Use the shape that deploys — table metadata in `TableInput`, and `IcebergInput`
 carrying only the create-time directive:
