@@ -661,7 +661,16 @@
  *         unresolvable delete key refuses the whole registration fail-closed.
  *       - The exclusion is FIRST-SEGMENT wholesale: `delete result['A']['B']`
  *         excludes `A` entirely — over-excluding flags correct code (loud),
- *         under-excluding silences a real drop.
+ *         under-excluding silences a real drop. Deletes are followed through
+ *         the spread SOURCE's binding chain, PARAMETER deletes included
+ *         (`const a = { ...config }; delete a['K']; { ...a }` carries `K`,
+ *         and `delete config['K']` before a verbatim forward refuses the full
+ *         hand-off — both #1475-review catches), but the scan is
+ *         BINDING-ROOTED, not alias-aware: a delete through a SECOND binding
+ *         to the same object (`const vc = result['VC']; delete vc['K'];`
+ *         while `{ ...result['VC'] }` is spread) mutates the shared object
+ *         invisibly. True alias analysis is a materially bigger job; no
+ *         provider in the tree aliases a blob it deletes from.
  *       - The spread delivers the seed's keys VERBATIM, so the credit is only
  *         sound where the CFn and SDK spellings agree — which the audited
  *         verdicts already encode: a same-spelling key IS the agreement, and
@@ -2897,18 +2906,24 @@ export function collectWriteEvidence(
       return true;
     }
     if (ts.isIdentifier(e)) {
-      const nearest = enclosingScope(e);
-      if (isBoundAsParameter(nearest, e.text)) return isBagDerived(e, new Set());
-      // A binding the function `delete`s keys off does NOT deliver the whole
-      // blob (issue #1475) — refusing here hands the site to the BOUNDED
-      // spread registration in `walkLiteralAt`, which carries the deleted keys
-      // as exclusions. Without this, `const vc = { ...bag }; delete vc[k];`
-      // registered a FULL hand-off and the exclusion fence never fired.
+      // A binding — or a PARAMETER — the function `delete`s keys off does NOT
+      // deliver the whole blob (issue #1475, its review for the parameter
+      // half): refusing here hands the site to the BOUNDED spread
+      // registration in `walkLiteralAt`, which carries the deleted keys as
+      // exclusions. Without this, `const vc = { ...bag }; delete vc[k];`
+      // registered a FULL hand-off (and `delete config['X']` before a
+      // verbatim forward was invisible entirely) and the exclusion fence
+      // never fired.
       const declaration = declarationOf(e);
-      if (declaration !== undefined && ts.isVariableDeclaration(declaration)) {
+      if (
+        declaration !== undefined &&
+        (ts.isVariableDeclaration(declaration) || ts.isParameter(declaration))
+      ) {
         const deletes = deleteExclusionsOf(declaration);
         if (deletes === undefined || deletes.size > 0) return false;
       }
+      const nearest = enclosingScope(e);
+      if (isBoundAsParameter(nearest, e.text)) return isBagDerived(e, new Set());
       const bindings = identifierBindings(e);
       return (
         bindings.length > 0 && bindings.every((b) => deliversWholeBlob(b, seen, seedKeys))
@@ -3231,7 +3246,10 @@ export function collectWriteEvidence(
     if (
       declaration === undefined ||
       !ts.isVariableDeclaration(declaration) ||
-      declaration.initializer === undefined
+      declaration.initializer === undefined ||
+      // A reassigned table no longer holds its initial literal — resolving it
+      // anyway would under-exclude off stale keys (#1475 review).
+      isWhollyReassigned(declaration)
     ) {
       return undefined;
     }
@@ -3278,10 +3296,16 @@ export function collectWriteEvidence(
       return names;
     }
     if (ts.isIdentifier(iterated)) {
-      // `for (const k of TABLE)` where TABLE is a const string array.
+      // `for (const k of TABLE)` where TABLE is a const string array. A
+      // reassigned TABLE is refused for literalObjectOf's reason.
       if (elementIndex !== undefined) return undefined;
       const decl = declarationOf(iterated);
-      if (decl === undefined || !ts.isVariableDeclaration(decl) || decl.initializer === undefined) {
+      if (
+        decl === undefined ||
+        !ts.isVariableDeclaration(decl) ||
+        decl.initializer === undefined ||
+        isWhollyReassigned(decl)
+      ) {
         return undefined;
       }
       const init = unwrapExpression(decl.initializer);
@@ -3367,8 +3391,13 @@ export function collectWriteEvidence(
    * removes the key from the delivered object, so skipping any body would be
    * the fail-OPEN direction.
    */
-  const deleteExclusionCache = new Map<ts.VariableDeclaration, Set<string> | undefined>();
-  const deleteExclusionsOf = (declaration: ts.VariableDeclaration): Set<string> | undefined => {
+  const deleteExclusionCache = new Map<
+    ts.VariableDeclaration | ts.ParameterDeclaration,
+    Set<string> | undefined
+  >();
+  const deleteExclusionsOf = (
+    declaration: ts.VariableDeclaration | ts.ParameterDeclaration
+  ): Set<string> | undefined => {
     if (deleteExclusionCache.has(declaration)) return deleteExclusionCache.get(declaration);
     const excluded = new Set<string>();
     let unresolvable = false;
@@ -3406,11 +3435,117 @@ export function collectWriteEvidence(
   };
 
   /**
+   * The delete exclusions carried by a spread SOURCE, followed through the
+   * binding chain (issue #1475 review): `{ ...a }` where
+   * `const a = { ...config }; delete a['K'];` must carry `K`, and so must a
+   * spread of a PARAMETER the function `delete`s off, an accessed member
+   * whose root binding deletes into its subtree, and a call whose returned
+   * binding was deleted from. Every unhandled shape returns `undefined` and
+   * the caller refuses the registration — fail closed, since a chain the walk
+   * cannot follow may be hiding a delete.
+   */
+  const spreadSourceExclusions = (expr: ts.Node, seen: Set<ts.Node>): Set<string> | undefined => {
+    const e = unwrapExpression(expr);
+    if (seen.has(e)) return undefined;
+    seen.add(e);
+    if (ts.isIdentifier(e)) {
+      const declaration = declarationOf(e);
+      if (declaration === undefined) return undefined;
+      if (ts.isParameter(declaration)) return deleteExclusionsOf(declaration);
+      if (!ts.isVariableDeclaration(declaration)) return undefined;
+      if (isWhollyReassigned(declaration)) return undefined;
+      const own = deleteExclusionsOf(declaration);
+      if (own === undefined || declaration.initializer === undefined) return own;
+      const chained = spreadSourceExclusions(declaration.initializer, seen);
+      if (chained === undefined) return undefined;
+      const out = new Set(own);
+      for (const k of chained) out.add(k);
+      return out;
+    }
+    if (ts.isObjectLiteralExpression(e)) {
+      // A seed literal in the chain: only its BAG-DERIVED spreads carry
+      // deletes onward; named members are overrides (bound 9).
+      const out = new Set<string>();
+      for (const p of e.properties) {
+        if (!ts.isSpreadAssignment(p) || !isBagDerived(p.expression, new Set())) continue;
+        const inner = spreadSourceExclusions(p.expression, seen);
+        if (inner === undefined) return undefined;
+        for (const k of inner) out.add(k);
+      }
+      return out;
+    }
+    if (ts.isElementAccessExpression(e) || ts.isPropertyAccessExpression(e)) {
+      // `{ ...result['ViewerCertificate'] }` — deletes on the ROOT binding are
+      // recorded by FIRST segment, so any delete under the accessed member
+      // surfaces as that member's name; refuse then (what remains beneath it
+      // cannot be bounded). A root with no deletes contributes nothing.
+      let current: ts.Node = e;
+      let firstSegment: string | undefined;
+      while (ts.isElementAccessExpression(current) || ts.isPropertyAccessExpression(current)) {
+        firstSegment = ts.isPropertyAccessExpression(current)
+          ? current.name.text
+          : elementAccessName(unwrapExpression(current.argumentExpression));
+        current = unwrapExpression(current.expression);
+      }
+      if (!ts.isIdentifier(current)) return undefined;
+      const root = declarationOf(current);
+      if (root === undefined) return undefined;
+      if (!ts.isParameter(root) && !ts.isVariableDeclaration(root)) return undefined;
+      const rootDeletes = deleteExclusionsOf(root);
+      if (rootDeletes === undefined) return undefined;
+      if (rootDeletes.size === 0) return new Set<string>();
+      if (firstSegment === undefined) return undefined;
+      return rootDeletes.has(firstSegment.toLowerCase()) ? undefined : new Set<string>();
+    }
+    if (ts.isCallExpression(e)) {
+      // `{ ...this.toSdk(x) }` — deletes on the callee's returned binding
+      // travel with the returned value.
+      const name = resolvableCalleeName(e);
+      if (name === undefined) return undefined;
+      const fns = handoffCallables.get(name) ?? [];
+      if (fns.length === 0) return undefined;
+      const out = new Set<string>();
+      for (const fn of fns) {
+        for (const r of returnedExpressions(fn)) {
+          const inner = spreadSourceExclusions(r, seen);
+          if (inner === undefined) return undefined;
+          for (const k of inner) out.add(k);
+        }
+      }
+      return out;
+    }
+    if (ts.isConditionalExpression(e) || ts.isBinaryExpression(e)) {
+      if (
+        ts.isBinaryExpression(e) &&
+        e.operatorToken.kind !== ts.SyntaxKind.QuestionQuestionToken &&
+        e.operatorToken.kind !== ts.SyntaxKind.BarBarToken &&
+        e.operatorToken.kind !== ts.SyntaxKind.AmpersandAmpersandToken
+      ) {
+        return undefined;
+      }
+      const arms = (
+        ts.isConditionalExpression(e) ? [e.whenTrue, e.whenFalse] : [e.left, e.right]
+      ).filter((a) => !isNullishExpression(a));
+      const out = new Set<string>();
+      for (const arm of arms) {
+        const inner = spreadSourceExclusions(arm, seen);
+        if (inner === undefined) return undefined;
+        for (const k of inner) out.add(k);
+      }
+      return out;
+    }
+    return undefined;
+  };
+
+  /**
    * Register the spread of a bag-derived seed as a BOUNDED hand-off at `path`
    * (issue #1475). Refusals, each fail-CLOSED: a non-bag seed (the taint root
    * — a config read back off AWS must not measure as a hand-off), a binding
-   * REASSIGNED as a whole (the delivered value may not be the seed), and an
-   * unresolvable `delete` key (the exclusion set cannot be bounded). Two
+   * REASSIGNED as a whole or seeded by LATE ASSIGNMENT (the delivered value
+   * may not be the seed / its deletes are invisible from the literal), an
+   * unresolvable `delete` key, and a spread SOURCE chain the walk cannot
+   * follow ({@link spreadSourceExclusions}). Exclusions union across the
+   * literal's bag spreads AND the holder binding's own deletes. Two
    * registrations at the same path union their coverage, so exclusion sets
    * INTERSECT; a FULL hand-off at the path supersedes every exclusion.
    */
@@ -3419,22 +3554,31 @@ export function collectWriteEvidence(
     for (const p of lit.properties) {
       if (!ts.isSpreadAssignment(p)) continue;
       if (!isBagDerived(p.expression, new Set())) continue;
-      if (excluded === undefined) {
-        const holder = climbOutOfWrappers(lit).parent;
-        if (
-          holder !== undefined &&
-          ts.isVariableDeclaration(holder) &&
-          ts.isIdentifier(holder.name)
-        ) {
-          if (isWhollyReassigned(holder)) return;
-          excluded = deleteExclusionsOf(holder);
-          if (excluded === undefined) return;
-        } else {
-          excluded = new Set<string>();
-        }
-      }
+      const sourceExcluded = spreadSourceExclusions(p.expression, new Set());
+      if (sourceExcluded === undefined) return;
+      if (excluded === undefined) excluded = new Set<string>();
+      for (const k of sourceExcluded) excluded.add(k);
     }
     if (excluded === undefined) return; // no bag-derived spread in this literal
+    const holder = climbOutOfWrappers(lit).parent;
+    if (holder !== undefined && ts.isVariableDeclaration(holder) && ts.isIdentifier(holder.name)) {
+      if (isWhollyReassigned(holder)) return;
+      const holderDeletes = deleteExclusionsOf(holder);
+      if (holderDeletes === undefined) return;
+      for (const k of holderDeletes) excluded.add(k);
+    } else if (
+      holder !== undefined &&
+      ts.isBinaryExpression(holder) &&
+      isWriteAssignment(holder.operatorToken.kind)
+    ) {
+      // The literal seeds a binding by ASSIGNMENT (`let x; x = { ...bag }`),
+      // which `isWhollyReassigned` classifies as a whole reassignment on the
+      // declaration — refuse outright, same as the builder does. A delete on
+      // that binding would otherwise be invisible from here (the holder is
+      // the assignment, not the declaration), and refusing is the loud
+      // direction.
+      return;
+    }
     const existing = handoffExclusions.get(path);
     if (handoffScopes.has(path) && existing === undefined) return; // full hand-off wins
     if (existing !== undefined) {
@@ -3493,6 +3637,9 @@ export function collectWriteEvidence(
    */
   const registerSeedKeyHandoffs = (path: string, seedKeys: ReadonlySet<string>): void => {
     for (const key of seedKeys) {
+      // Alias paths never carry a spread-exclusion entry and never clear one:
+      // a stale entry at an alias path could only OVER-exclude (loud), and no
+      // shape in the tree produces one (#1475 review nit, recorded).
       handoffScopes.add(siblingPath(path, key));
       handoffScopes.add(siblingPath(path, lowerFirst(key)));
     }

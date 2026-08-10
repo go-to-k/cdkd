@@ -1463,6 +1463,156 @@ describe('the SPREAD-AND-PATCH forwarder (synthetic, issue #1475)', () => {
     expect(evidence.handoffScopes.has('DistributionConfig')).toBe(false);
   });
 
+  it('a delete on an EARLIER binding in the spread chain still excludes (#1475 review)', () => {
+    // `{ ...b }` where `const a = { ...config }; delete a['K']; const b = { ...a }`
+    // delivers the object a's delete already mutated — the exclusion must
+    // travel through the binding chain, not just the literal's own holder.
+    const evidence = evidenceOf(
+      converter(`
+        const a = { ...config };
+        delete a['IPV6Enabled'];
+        const b = { ...a };
+        return b;
+      `)
+    );
+    expect(evidence.handoffScopes.has('DistributionConfig')).toBe(true);
+    expect([...(evidence.handoffExclusions?.get('DistributionConfig') ?? [])]).toEqual([
+      'ipv6enabled',
+    ]);
+  });
+
+  it('a delete on the SEED PARAMETER itself excludes (#1475 review)', () => {
+    const evidence = evidenceOf(
+      converter(`
+        delete config['IPV6Enabled'];
+        const result = { ...config };
+        return result;
+      `)
+    );
+    expect(evidence.handoffScopes.has('DistributionConfig')).toBe(true);
+    expect([...(evidence.handoffExclusions?.get('DistributionConfig') ?? [])]).toEqual([
+      'ipv6enabled',
+    ]);
+  });
+
+  it('a VERBATIM forward of a deleted-from parameter is refused as a full hand-off (#1475 review)', () => {
+    // Reaches deliversWholeBlob's parameter branch, not the spread walk: the
+    // helper deletes off its own tainted parameter and forwards it whole. A
+    // full hand-off here would silently vouch for the deleted key.
+    const evidence = evidenceOf(`
+      class P {
+        async create(logicalId: string, resourceType: string, properties: Record<string, unknown>) {
+          return { CorsConfiguration: this.pass(properties['CorsConfiguration'] as Record<string, unknown>) };
+        }
+        private pass(config: Record<string, unknown>) {
+          delete config['AllowOrigins'];
+          return config;
+        }
+      }
+    `);
+    expect(evidence.handoffScopes.has('CorsConfiguration')).toBe(false);
+  });
+
+  it('a REASSIGNED delete-key table refuses the registration (#1475 review)', () => {
+    // The table's initial literal is stale after `TABLE = OTHER;` — resolving
+    // it anyway would under-exclude, so the whole registration refuses.
+    const evidence = evidenceOf(`
+      const OTHER = { Staging: 1 };
+      class P {
+        async create(logicalId: string, resourceType: string, properties: Record<string, unknown>) {
+          return { DistributionConfig: this.toSdk(properties['DistributionConfig']) };
+        }
+        private toSdk(config: Record<string, unknown>) {
+          let TABLE: Record<string, number> = { IPV6Enabled: 1 };
+          TABLE = OTHER;
+          const result = { ...config };
+          for (const k of Object.keys(TABLE)) delete result[k];
+          return result;
+        }
+      }
+    `);
+    expect(evidence.handoffScopes.has('DistributionConfig')).toBe(false);
+  });
+
+  it('resolves VALUE-side delete keys of an Object.entries loop (elementIndex 1)', () => {
+    const evidence = evidenceOf(`
+      const SDK_TO_CFN: Record<string, string> = { IsIPV6Enabled: 'IPV6Enabled' };
+      class P {
+        async create(logicalId: string, resourceType: string, properties: Record<string, unknown>) {
+          return { DistributionConfig: this.toSdk(properties['DistributionConfig']) };
+        }
+        private toSdk(config: Record<string, unknown>) {
+          const result = { ...config };
+          for (const [sdkKey, cfnKey] of Object.entries(SDK_TO_CFN)) {
+            delete result[cfnKey];
+          }
+          return result;
+        }
+      }
+    `);
+    expect([...(evidence.handoffExclusions?.get('DistributionConfig') ?? [])]).toEqual([
+      'ipv6enabled',
+    ]);
+  });
+
+  it('two registrations at one path INTERSECT their exclusions (union of coverage)', () => {
+    // Two sites deliver the same path: one deletes a key, the other does not.
+    // Coverage is the union, so the exclusion set is the intersection — empty
+    // here, meaning the clean site vouches for the key the other deleted.
+    const evidence = evidenceOf(`
+      class P {
+        async create(logicalId: string, resourceType: string, properties: Record<string, unknown>) {
+          const a = { ...(properties['Cfg'] as Record<string, unknown>) };
+          delete a['Dropped'];
+          await this.send({ Cfg: a });
+        }
+        async update(logicalId: string, physicalId: string, resourceType: string, properties: Record<string, unknown>) {
+          const b = { ...(properties['Cfg'] as Record<string, unknown>) };
+          await this.send({ Cfg: b });
+        }
+      }
+    `);
+    expect(evidence.handoffScopes.has('Cfg')).toBe(true);
+    expect(evidence.handoffExclusions?.get('Cfg')).toBeUndefined();
+  });
+
+  it('a FULL hand-off at the path supersedes a bounded registration', () => {
+    // One site forwards the blob VERBATIM (a full hand-off), another spreads a
+    // deleted-from copy — the verbatim forward delivers everything, so the
+    // exclusion entry must not survive.
+    const evidence = evidenceOf(`
+      class P {
+        async create(logicalId: string, resourceType: string, properties: Record<string, unknown>) {
+          const a = { ...(properties['Cfg'] as Record<string, unknown>) };
+          delete a['Dropped'];
+          await this.send({ Cfg: a });
+        }
+        async update(logicalId: string, physicalId: string, resourceType: string, properties: Record<string, unknown>) {
+          await this.send({ Cfg: properties['Cfg'] });
+        }
+      }
+    `);
+    expect(evidence.handoffScopes.has('Cfg')).toBe(true);
+    expect(evidence.handoffExclusions?.get('Cfg')).toBeUndefined();
+  });
+
+  it('a binding seeded by LATE ASSIGNMENT is refused (its deletes would be invisible)', () => {
+    // `let x; x = { ...bag }` reaches the literal through the assignment, not
+    // the declaration, so the delete scan cannot anchor — and a
+    // `delete x['K']` after it would silently survive the wildcard. Refused
+    // outright, the loud direction (same classification isWhollyReassigned
+    // gives the builder recognizer).
+    const evidence = evidenceOf(
+      converter(`
+        let result: Record<string, unknown>;
+        result = { ...config };
+        delete result['IPV6Enabled'];
+        return result;
+      `)
+    );
+    expect(evidence.handoffScopes.has('DistributionConfig')).toBe(false);
+  });
+
   it('a NON-BAG seed is refused (the #1445 taint root)', () => {
     const evidence = evidenceOf(`
       class P {
