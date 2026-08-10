@@ -62,13 +62,26 @@
 # Wall-clock budget: ~7-10 min (each deploy + describe pair is ~30-60s;
 # autoscaling apply adds ~5-10s per direction).
 #
-# Opt-in cross-region scenario (Issue #402 Item D):
+# Opt-in cross-region scenario (Issue #402 Item D, extended by Issue #1512):
 #   Set CDKD_INTEG_MULTI_REGION=1 to enable the cross-region replica
-#   round-trip. Adds ~15-25 min (replica provisioning is 5-10 min per
-#   region and per direction) and ~$0.10-0.20 in cross-region replication.
-#   The default `bash verify.sh` invocation does NOT run this — it stays
-#   under 8 min as before. Runs BEFORE the TTL toggle so the
+#   round-trips. Replica provisioning is 5-10 min per region and per
+#   direction, and there are now five of them:
+#     12b-e  main table (PROVISIONED): add a replica carrying its own
+#            ReadProvisionedThroughputSettings, assert the resulting
+#            ProvisionedThroughputOverride, then remove the replica.
+#     12g-i  OnDemandReplicaTable (PAY_PER_REQUEST): add a replica with an
+#            on-demand ceiling, CHANGE it, then DROP it — the last asserting
+#            the live value is UNCHANGED and cdkd warned, since AWS offers
+#            no way to clear a replica-level override.
+#   Budget ~45-75 min total and ~$0.10-0.20 in cross-region replication.
+#   The default `bash verify.sh` invocation does NOT run any of this — it
+#   stays under 8 min as before. Runs BEFORE the TTL toggle so the
 #   cross-region UpdateTable is not blocked by AWS's TTL rate limit.
+#
+#   Only 12d removes a replica from a live table (pre-existing). The #1512
+#   rounds deliberately only ADD: a live replica-delete is what arms
+#   DynamoDB's 24h source-region delete lock (issue #1436 / #1442), and
+#   `cdkd destroy` tears the whole GlobalTable down as one resource instead.
 #
 # Auto-resolves AWS account ID + state bucket. Run from anywhere.
 set -euo pipefail
@@ -168,6 +181,7 @@ TABLE_NAME="$(table_name_for HistoryTable)"
 GSI_PROV_TABLE="$(table_name_for GsiProvisionedTable)"
 GSI_OD_TABLE="$(table_name_for GsiOnDemandTable)"
 GSI_FLIP_TABLE="$(table_name_for GsiFlipTable)"
+OD_REPLICA_TABLE="$(table_name_for OnDemandReplicaTable)"
 if [ -z "${TABLE_NAME}" ]; then
   echo "[verify] FAIL: no HistoryTable AWS::DynamoDB::GlobalTable resource in cdkd state"
   exit 1
@@ -464,6 +478,28 @@ if [ "${CDKD_INTEG_MULTI_REGION:-0}" = "1" ]; then
   fi
   echo "[verify] step 12c ok: eu-west-1 replica = ${EU_STATUS}"
 
+  # --- step 12c-2 (Issue #1512): the PROVISIONED replica-level override ----
+  # PR (#1503) taught `addReplica` to send the replica's TABLE-level
+  # `ProvisionedThroughputOverride`, derived from the CFn
+  # `Replicas[].ReadProvisionedThroughputSettings` the fixture now declares
+  # (autoscaled 7..70 -> the override takes MinCapacity, issue #1435). No
+  # real-AWS run had ever asserted it; unit coverage is mocked-SDK only, and
+  # a wrong wire assumption agrees with its own mock.
+  # 7 is deliberately different from the source table's 5, so a replica that
+  # merely INHERITED the source capacity cannot pass this.
+  # Strict capture: the source table demonstrably exists here (step 12c just
+  # asserted its replica is ACTIVE), so a probe failure is a real error and
+  # `set -e` must surface it. A `|| echo MISSING` fallback would turn a
+  # throttle into a plain assertion failure blaming the fix (#1120).
+  EU_PROV_OVERRIDE="$(aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" \
+    --query "Table.Replicas[?RegionName=='eu-west-1'].ProvisionedThroughputOverride.ReadCapacityUnits | [0]" \
+    --output text)"
+  if [ "${EU_PROV_OVERRIDE}" != "7" ]; then
+    echo "[verify] FAIL: eu-west-1 ProvisionedThroughputOverride.ReadCapacityUnits is '${EU_PROV_OVERRIDE}', expected 7 (the replica's declared min capacity)"
+    exit 1
+  fi
+  echo "[verify] step 12c-2 ok: eu-west-1 ProvisionedThroughputOverride = 7"
+
   echo "[verify] step 12d: remove the eu-west-1 replica"
   CDKD_TEST_UPDATE=deletion-protection,autoscaling ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose
 
@@ -504,6 +540,94 @@ if [ "${CDKD_INTEG_MULTI_REGION:-0}" = "1" ]; then
     exit 1
   fi
   echo "[verify] step 12e ok: eu-west-1 replica removed (DescribeTable returns RNF)"
+
+  # ─── Issue #1512: the ON-DEMAND replica throughput override ────────────
+  #
+  # Steps 12b-e above run the main table, which is PROVISIONED under this
+  # mode list — so they can only reach the `ProvisionedThroughputOverride`
+  # arm of `toSdkReplicaThroughputOverrides`. `OnDemandThroughputOverride`
+  # on the Create/Update ReplicationGroupMemberAction is a DIFFERENT wire
+  # shape and needs the PAY_PER_REQUEST `OnDemandReplicaTable`.
+  #
+  # These rounds only ever ADD a replica. Removing one from a still-live
+  # table is what arms DynamoDB's 24h source-region delete lock (issue
+  # #1436 / #1442); teardown is left to `cdkd destroy`, which drops the
+  # GlobalTable as one resource with all replicas together.
+  if [ -z "${OD_REPLICA_TABLE}" ]; then
+    echo "[verify] FAIL: no OnDemandReplicaTable AWS::DynamoDB::GlobalTable resource in cdkd state"
+    exit 1
+  fi
+
+  # Read the replica's live ceiling from BOTH directions: the source table's
+  # Replicas[] entry (what cdkd wrote) and the replica region's own
+  # DescribeTable (what the replica actually serves).
+  # Both are TAIL-LESS captures: the probe is the last command of the body,
+  # so a failure propagates as the function's own non-zero status instead of
+  # being laundered into a sentinel string (#1120). The replica-region probe
+  # legitimately fails with RNF until the replica exists, which is precisely
+  # why the poll below branches on the STATUS rather than on a sentinel.
+  od_override_from_source() {
+    aws dynamodb describe-table --table-name "${OD_REPLICA_TABLE}" --region "${REGION}" \
+      --query "Table.Replicas[?RegionName=='eu-west-1'].OnDemandThroughputOverride.MaxReadRequestUnits | [0]" \
+      --output text
+  }
+  od_override_from_replica() {
+    aws dynamodb describe-table --table-name "${OD_REPLICA_TABLE}" --region eu-west-1 \
+      --query 'Table.OnDemandThroughput.MaxReadRequestUnits' --output text
+  }
+  # The replica flips ACTIVE well before its override is readable; poll. The
+  # last-seen values are kept so a timeout can report what it actually saw
+  # rather than re-probing (which could itself fail and mask the real value).
+  OD_LAST_SRC=""
+  OD_LAST_REP=""
+  wait_od_override() { # $1 = expected value -> 0 when both sides agree
+    for _ in $(seq 1 60); do
+      if OD_LAST_SRC="$(od_override_from_source 2>/dev/null)" &&
+        OD_LAST_REP="$(od_override_from_replica 2>/dev/null)" &&
+        [ "${OD_LAST_SRC}" = "$1" ] && [ "${OD_LAST_REP}" = "$1" ]; then
+        return 0
+      fi
+      sleep 10
+    done
+    return 1
+  }
+
+  echo "[verify] step 12g (Issue #1512): add the eu-west-1 replica WITH an on-demand ceiling (20)"
+  CDKD_TEST_UPDATE=deletion-protection,autoscaling,cross-region-ondemand ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose
+  if ! wait_od_override 20; then
+    echo "[verify] FAIL: eu-west-1 OnDemandThroughputOverride is source='${OD_LAST_SRC}' replica='${OD_LAST_REP}', expected 20 on both"
+    echo "[verify]       (pre-(#1503) the addReplica call dropped the override entirely and the replica inherited the source default)"
+    exit 1
+  fi
+  echo "[verify] step 12g ok: addReplica sent OnDemandThroughputOverride = 20"
+
+  echo "[verify] step 12h (Issue #1512): CHANGE the ceiling 20 -> 40 (replica-modify action)"
+  CDKD_TEST_UPDATE=deletion-protection,autoscaling,cross-region-ondemand-changed ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose
+  if ! wait_od_override 40; then
+    echo "[verify] FAIL: eu-west-1 OnDemandThroughputOverride is source='${OD_LAST_SRC}' replica='${OD_LAST_REP}', expected 40 after the change round"
+    exit 1
+  fi
+  echo "[verify] step 12h ok: the Update action applied OnDemandThroughputOverride = 40"
+
+  echo "[verify] step 12i (Issue #1512): DROP the ceiling — must stay 40 and WARN"
+  # AWS offers no way to clear a replica-level override: a -1 sentinel is
+  # stored literally and an empty block wedges the table in UPDATING (both
+  # live-probed, issue #1436). So cdkd deliberately leaves the old value in
+  # effect and says so. Asserting the value is UNCHANGED is what pins that
+  # decision; asserting the warning is what pins the user being told.
+  OD_DROP_LOG="$(mktemp)"
+  CDKD_TEST_UPDATE=deletion-protection,autoscaling,cross-region-ondemand-dropped ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose 2>&1 | tee "${OD_DROP_LOG}"
+  OD_AFTER_DROP="$(od_override_from_source)"
+  if [ "${OD_AFTER_DROP}" != "40" ]; then
+    echo "[verify] FAIL: dropping the ceiling changed the live override to '${OD_AFTER_DROP}', expected it to stay 40 (AWS cannot clear it; cdkd must not try)"
+    exit 1
+  fi
+  if ! grep -q "STILL IN EFFECT" "${OD_DROP_LOG}"; then
+    echo "[verify] FAIL: dropping the ceiling did not emit the 'STILL IN EFFECT' warning — the user is not told the old override survives"
+    exit 1
+  fi
+  rm -f "${OD_DROP_LOG}"
+  echo "[verify] step 12i ok: dropped override left at 40 and cdkd warned STILL IN EFFECT"
 else
   echo "[verify] (skipping Item D — set CDKD_INTEG_MULTI_REGION=1 to opt into the cross-region scenario)"
 fi
@@ -782,7 +906,43 @@ echo "[verify] step 16a: assert tables are gone on AWS"
 assert_gone "table '${TABLE_NAME}' still exists after destroy" aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}"
 assert_gone "table '${GSI_PROV_TABLE}' still exists after destroy" aws dynamodb describe-table --table-name "${GSI_PROV_TABLE}" --region "${REGION}"
 assert_gone "table '${GSI_OD_TABLE}' still exists after destroy" aws dynamodb describe-table --table-name "${GSI_OD_TABLE}" --region "${REGION}"
-echo "[verify] step 16a ok: all three tables deleted"
+assert_gone "table '${OD_REPLICA_TABLE}' still exists after destroy" aws dynamodb describe-table --table-name "${OD_REPLICA_TABLE}" --region "${REGION}"
+echo "[verify] step 16a ok: all four tables deleted"
+
+# Issue #1512: the on-demand replica table is the one whose eu-west-1 replica
+# is never removed by an update — teardown relies entirely on `cdkd destroy`
+# deleting the GlobalTable as ONE resource, all replicas together. If that
+# claim is wrong the replica survives in eu-west-1 as a silent cross-region
+# orphan that a same-region-only sweep would never see, so assert it here.
+# The replica's regional copy can linger in DELETING for a few minutes after
+# the source is gone, so poll rather than probe once.
+if [ "${CDKD_INTEG_MULTI_REGION:-0}" = "1" ]; then
+  echo "[verify] step 16a3 (Issue #1512): assert the eu-west-1 replica of the on-demand table is gone"
+  OD_EU_GONE=0
+  for i in $(seq 1 60); do
+    OD_EU_ERR="$(aws dynamodb describe-table --table-name "${OD_REPLICA_TABLE}" --region eu-west-1 2>&1 >/dev/null || true)"
+    if [ -z "${OD_EU_ERR}" ]; then
+      sleep 10
+      continue
+    fi
+    case "${OD_EU_ERR}" in
+      *ResourceNotFoundException*|*"Requested resource not found"*)
+        OD_EU_GONE=1
+        echo "[verify] step 16a3: eu-west-1 copy gone after ~$((i * 10))s"
+        break
+        ;;
+      *)
+        echo "[verify] step 16a3: transient error from eu-west-1 DescribeTable, retrying: ${OD_EU_ERR}"
+        sleep 10
+        ;;
+    esac
+  done
+  if [ "${OD_EU_GONE}" != "1" ]; then
+    echo "[verify] FAIL: eu-west-1 copy of '${OD_REPLICA_TABLE}' still exists after destroy — cross-region orphan"
+    exit 1
+  fi
+  echo "[verify] step 16a3 ok: no cross-region orphan left behind"
+fi
 
 echo "[verify] step 16a2 (Issue #1419): assert the per-INDEX scalable target did not survive destroy"
 # application-autoscaling is a SEPARATE control plane: DeleteTable does not
