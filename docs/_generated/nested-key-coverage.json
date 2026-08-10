@@ -8,7 +8,7 @@
     "caseDivergence": 0,
     "noSdkMember": 0,
     "noWriteEvidence": 0,
-    "freshObjectTargets": 8,
+    "freshObjectTargets": 9,
     "shapeClean": 87,
     "shapeHandled": 32,
     "shapeAllowListed": 7,
@@ -1579,7 +1579,7 @@
       "providerFile": "cloudwatch-anomaly-detector-provider.ts",
       "sdkClientPackage": "@aws-sdk/client-cloudwatch",
       "keyStyle": "exact",
-      "freshObjectMapper": false,
+      "freshObjectMapper": true,
       "nestedKeyCount": 31,
       "entries": [
         {

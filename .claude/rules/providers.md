@@ -242,9 +242,11 @@ That is a far more common template shape than the base64 search string.
   so the evidence is scoped to the CFn->SDK direction.
   Measure before setting it. The opt-in set is decided by measurement, never
   by prediction, and the full before/after table lives in the script's file
-  header. Today `AWS::CodeBuild::Project` and the five `AWS::ApiGatewayV2::*`
-  targets are in; ECS / CloudWatch / S3 / CloudFront each carry a recorded,
-  measured reason they are not.
+  header. Today `AWS::CodeBuild::Project`, the five `AWS::ApiGatewayV2::*`
+  targets, both `AWS::ECS::*` targets and
+  `AWS::CloudWatch::AnomalyDetector` are in; `AWS::S3::Bucket` and
+  `AWS::CloudFront::Distribution` each carry a recorded, measured reason they
+  are not.
 - **A whole sub-blob handed to a GENERIC key converter is credited (issue
   #1445).** `ECSProvider.convertLinuxParameters` is
   `return pascalToCamelCaseKeys(config)` — one call delivers `Capabilities` /
@@ -278,6 +280,30 @@ That is a far more common template shape than the base64 search string.
   disable-then-delete path) is NOT a hand-off — that is what the property-bag
   taint root is for, and without it 108 of CloudFront's 110 findings cleared
   falsely.
+- **The BUILDER idiom is credited too (issue #1474).** A sub-blob assembled by
+  MUTATION — `const mapped = {}; mapped.MetricTimezone = …;
+  mapped.ExcludedTimeRanges = …; params.Configuration = mapped;` — names every
+  member it delivers, per member, on the forward path; only the AST location
+  differs from a literal's, so `resolveLiterals` stopped at the empty seed and
+  every child of `Configuration` reported `no-write-evidence` falsely. That was
+  all three of `AWS::CloudWatch::AnomalyDetector`'s residuals, and it is why
+  that target can now opt in at 0. A BUILDER is a local binding whose
+  INITIALIZER is an object literal (empty or partial), populated afterwards by
+  `out.Foo = …` / `out['Foo'] = …` assignments onto THAT BINDING, and reaching
+  a write; the credit lands at the same path a literal would have got, at full
+  depth (`out.Rule.DefaultRetention = { Mode }` opens the intermediate scopes
+  rather than flattening). Three things keep it from being a rubber stamp:
+  the literal initializer (so the object's identity is this file's — a
+  `const out = makeThing()` or a `let out;` seeded later is refused);
+  DECLARATION IDENTITY rather than the bare name (a same-named `out` in a
+  sibling method vouches for nothing); and the credit bounded to the BUILDER,
+  never the enclosing scope — the `ContainerPortRange` trap one recognizer
+  over. Delivery stays the caller's question: the builder walk only runs from a
+  write site, which the `feedsOnlyComparison` rule has already filtered, so a
+  builder that is never handed to a write, or handed only to a diff, is never
+  credited. Recognizing the shape is MONOTONE (it only adds scoped members), so
+  no target gained a finding; the tree's residual fell 290 -> 260 and
+  `AWS::S3::Bucket`'s 125 -> 98.
 - **Write evidence is PATH-SCOPED (issue #1448), and the bound it replaced is
   worth knowing.** As shipped in #1432 the evidence was a flat per-FILE set of
   member names and the audited unit was a key NAME, so a member written
@@ -309,7 +335,9 @@ That is a far more common template shape than the base64 search string.
   with the cousin clean, and deleting `environmentVariables[].type` exits **1**
   naming `Environment.EnvironmentVariables.Type` with the cousin clean.
   The audited unit grew 587 -> 703 paths, so every `minNestedKeys` floor was
-  re-calibrated, as was ECS's `minWriteScopes` (34 -> 58 non-empty scopes).
+  re-calibrated, as was ECS's `minWriteScopes` (34 -> 58 non-empty scopes; 70
+  after #1474's builder recognizer opened the scopes a mutated binding
+  populates — the declared floor is a lower bound, so it did not need moving).
   **Two SEGMENT-SPELLING mechanisms sit under the full-depth match, and they are
   not interchangeable.** A CASE difference on an intermediate segment is
   absorbed: the parent chain is matched case-insensitively (the terminal member
@@ -383,15 +411,15 @@ That is a far more common template shape than the base64 search string.
      exactly the rename-map shape and would be credited the moment a Glue
      target opted in. Closing it needs the walk to model the converter's KEY
      SET, not just its member names.
-  6. **Two provider SHAPES the #1445 walk still does not recognize**, both
-     measured on the real tree and both tracked: the BUILDER idiom
-     (`const out: any = {}; out.Foo = …; return out;` — the members ARE written,
-     just not where the scope index looks; CloudWatch AnomalyDetector 3, most of
-     S3's 125 — issue
-     [#1474](https://github.com/go-to-k/cdkd/issues/1474)) and the
-     SPREAD-AND-PATCH forwarder (`const result = { ...config }` plus ~30 named
-     patches, which the genericity test rejects on those names; CloudFront 162 —
-     issue [#1475](https://github.com/go-to-k/cdkd/issues/1475)).
+  6. **One provider SHAPE the three recognizers still do not cover**, measured
+     on the real tree and tracked: the SPREAD-AND-PATCH forwarder
+     (`const result = { ...config }` plus ~30 named patches, which the
+     genericity test rejects on those names; CloudFront 162 — issue
+     [#1475](https://github.com/go-to-k/cdkd/issues/1475)). The BUILDER idiom
+     that sat here alongside it is CLOSED by issue
+     [#1474](https://github.com/go-to-k/cdkd/issues/1474) — see the builder
+     bullet above; the bounds it left behind are known bound (8) in the script
+     header (seed-literal-only, computed keys refused, flow-insensitive).
   7. **An intermediate segment the provider RENAMES leaves its children
      unresolvable** (new with #1464). Case differences are absorbed; a rename is
      not — CFn `ProxyConfiguration.ProxyConfigurationProperties` is the SDK's
