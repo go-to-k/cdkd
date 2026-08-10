@@ -1018,7 +1018,10 @@ export function buildDeliveryStatusAttributeMap(
       if (normalized === undefined) continue;
       protocol = normalized;
     }
-    if (seenProtocols.has(protocol)) {
+    // Desired side only, per this function's guard-the-desired-side rule:
+    // on the PREVIOUS side the entries come from a cdkd state record, where
+    // "declare a single entry per protocol" is advice the user cannot act on.
+    if (onMalformed === 'throw' && seenProtocols.has(protocol)) {
       getLogger()
         .child('SNSTopicProvider')
         .warn(

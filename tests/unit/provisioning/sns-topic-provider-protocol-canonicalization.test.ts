@@ -152,6 +152,26 @@ describe('buildDeliveryStatusAttributeMap HTTP family (issue #1529)', () => {
     expect(warn.mock.calls[0]?.[0]).toContain('MyTopic');
   });
 
+  it('does not warn on the PREVIOUS side, where the advice is unactionable', () => {
+    warn.mockClear();
+
+    // Skip mode is the cdkd-STATE side. A duplicate recorded there cannot be
+    // fixed by editing the template, so warning on every update would be
+    // pure noise — same rationale as the guard-the-desired-side-only rule.
+    const map = buildDeliveryStatusAttributeMap(
+      [
+        { Protocol: 'http/s', SuccessFeedbackRoleArn: ROLE_A },
+        { Protocol: 'https', SuccessFeedbackRoleArn: ROLE_B },
+      ],
+      'MyTopic',
+      'skip'
+    );
+
+    // The collapse itself still happens — only the warning is suppressed.
+    expect([...map.entries()]).toEqual([['HTTPSuccessFeedbackRoleArn', ROLE_B]]);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
   it('does not warn for distinct protocols', () => {
     warn.mockClear();
 
