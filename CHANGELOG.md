@@ -1,3 +1,10 @@
+## [0.278.25](https://github.com/go-to-k/cdkd/compare/v0.278.24...v0.278.25) (2026-08-10)
+
+
+### Bug Fixes
+
+* **route53:** wait out the AcceleratedRecovery mutation lock when deleting record sets ([#1483](https://github.com/go-to-k/cdkd/issues/1483)) ([94f7491](https://github.com/go-to-k/cdkd/commit/94f74913eb37a32cefad9cbcb44e1b83b838ddbe))
+
 ## [0.278.24](https://github.com/go-to-k/cdkd/compare/v0.278.23...v0.278.24) (2026-08-10)
 
 
