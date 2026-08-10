@@ -1656,7 +1656,13 @@ describe('tag-list revert preserves SERVICE-authored tags (pure helpers, issue #
     expect(result['SecurityGroups']).toEqual(['sg-1']);
   });
 
-  it('an EMPTY baseline tag list still reverts wholesale (nothing to diff against)', async () => {
+  // Corrected after review: the first version of this test pinned "an EMPTY
+  // baseline reverts wholesale" as intended, which strips `AmazonECSManaged` —
+  // the exact failure this carve-out exists to prevent. There IS something to
+  // diff against (the AWS side), and a template that DECLARES `Tags` with a
+  // condition-collapsed empty list reaches exactly this path. The commoner
+  // UNDECLARED + captured-empty shape never gets here: #1498 ignores the key.
+  it('an EMPTY baseline tag list still preserves the service tag', async () => {
     const { buildRevertNewProperties } = await loadDrift();
 
     const result = buildRevertNewProperties(
@@ -1665,7 +1671,71 @@ describe('tag-list revert preserves SERVICE-authored tags (pure helpers, issue #
       { Tags: awsCurrent }
     );
 
+    expect(result['Tags']).toEqual([{ Key: 'AmazonECSManaged', Value: 'true' }]);
+  });
+
+  it('an EMPTY baseline still strips an ordinary tag, so the carve-out stays narrow', async () => {
+    const { buildRevertNewProperties } = await loadDrift();
+
+    const result = buildRevertNewProperties(
+      [{ path: 'Tags', stateValue: [], awsValue: [{ Key: 'HandAdded', Value: '1' }] }],
+      { Tags: [] },
+      { Tags: [{ Key: 'HandAdded', Value: '1' }] }
+    );
+
     expect(result['Tags']).toEqual([]);
+  });
+
+  // The shape `[{ Key, Value }]` is NOT tag-exclusive at top level:
+  // `LoadBalancerAttributes`, `TargetGroupAttributes` and SSM
+  // `Association.Targets` all match it. Borrowing the sort heuristic for a
+  // WRITE decision needs the name gate — a sort false positive is harmless,
+  // an append is not.
+  it('does not touch a non-Tags property that happens to have the same shape', async () => {
+    const { buildRevertNewProperties } = await loadDrift();
+
+    const desired = { LoadBalancerAttributes: [{ Key: 'idle_timeout.timeout_seconds', Value: '60' }] };
+    const aws = {
+      LoadBalancerAttributes: [
+        { Key: 'idle_timeout.timeout_seconds', Value: '4000' },
+        { Key: 'aws:something', Value: 'x' },
+      ],
+    };
+    const result = buildRevertNewProperties(
+      [
+        {
+          path: 'LoadBalancerAttributes',
+          stateValue: desired.LoadBalancerAttributes,
+          awsValue: aws.LoadBalancerAttributes,
+        },
+      ],
+      desired,
+      aws
+    );
+
+    expect(result['LoadBalancerAttributes']).toEqual([
+      { Key: 'idle_timeout.timeout_seconds', Value: '60' },
+    ]);
+  });
+
+  it('preserves a duplicate AWS key only once, so merge and plan agree', async () => {
+    const { mergeTagListForRevert, findRevertPreservedTagKeys } = await loadDrift();
+
+    const dupes = [
+      { Key: 'AmazonECSManaged', Value: 'true' },
+      { Key: 'AmazonECSManaged', Value: 'true' },
+    ];
+    expect(mergeTagListForRevert(baseline, dupes)).toEqual([
+      { Key: 'Name', Value: 'my-asg' },
+      { Key: 'AmazonECSManaged', Value: 'true' },
+    ]);
+    expect(
+      findRevertPreservedTagKeys(
+        [{ path: 'Tags', stateValue: baseline, awsValue: dupes }],
+        { Tags: baseline },
+        { Tags: dupes }
+      )
+    ).toEqual(['Tags.AmazonECSManaged']);
   });
 
   it('names every preserved service tag so the plan can surface it before the prompt', async () => {

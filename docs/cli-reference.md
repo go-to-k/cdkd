@@ -1642,9 +1642,13 @@ Flags:
   attaches `AmazonECSManaged` to an ASG when a capacity provider binds
   it and managed scaling breaks without it, so the previous
   strip-everything revert silently broke live resources. The `--revert`
-  plan names each preserved key before the confirmation prompt. A tag
-  list NESTED inside another property (an EC2 launch template's
-  `TagSpecifications`) still reverts wholesale. Requires a stack lock. Mutually exclusive with
+  plan names each preserved key before the confirmation prompt. The
+  carve-out applies to a top-level property NAMED `Tags` (or ending in
+  `Tags`) — the `[{Key, Value}]` shape alone is not tag-exclusive, e.g.
+  `LoadBalancerAttributes` — and it applies even when the recorded
+  baseline list is EMPTY, since a declared-but-empty `Tags` still has an
+  AWS side worth diffing. A tag list NESTED inside another property (an
+  EC2 launch template's `TagSpecifications`) still reverts wholesale. Requires a stack lock. Mutually exclusive with
   `--accept`. See "Resolving drift" below.
 - `--dry-run` — for `--accept` / `--revert`: print the planned mutations
   and exit without acquiring a lock or hitting AWS / S3.

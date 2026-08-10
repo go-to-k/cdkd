@@ -704,6 +704,22 @@ async function runAccept(
   }
 }
 
+/**
+ * A top-level property NAME that carries tags.
+ *
+ * The shape test below is deliberately NOT sufficient on its own: a top-level
+ * `[{ Key, Value }]` list is not tag-exclusive — `LoadBalancerAttributes`,
+ * `TargetGroupAttributes` and SSM `Association.Targets` all match it. No such
+ * property can carry an `aws:`-prefixed or `AmazonECSManaged` key today, so the
+ * carve-out would degrade to the identity of the old wholesale overwrite there
+ * — but borrowing `canonicalizeTagListsDeep`'s heuristic for a WRITE decision
+ * is not justified by its use for a SORT: a sort false positive is harmless, an
+ * append is not.
+ */
+function isTagListKey(key: string): boolean {
+  return key === 'Tags' || key.endsWith('Tags');
+}
+
 /** A CFn-shaped tag list: a non-empty array whose every element has a string `Key`. */
 function isCfnTagList(value: unknown): value is Array<Record<string, unknown>> {
   return (
@@ -722,11 +738,15 @@ function tagKeys(tags: ReadonlyArray<Record<string, unknown>>): string[] {
  * AWS-SERVICE-authored tag keys a `--revert` must not strip (issue #1501).
  *
  * `AmazonECSManaged` is attached by ECS when a capacity provider binds an Auto
- * Scaling group, and managed scaling stops working without it. `aws:`-prefixed
- * keys are AWS-reserved (a write of one is rejected outright, which is why
- * `normalizeAwsTagsToCfn` strips them on import) — so cdkd can never have been
- * the author of one, and a revert that dropped one would be pushing an intent
- * the template cannot express.
+ * Scaling group, and managed scaling stops working without it. That entry is
+ * the load-bearing one.
+ *
+ * The `aws:` prefix is DEFENSIVE rather than load-bearing, and the distinction
+ * is worth stating: AWS reserves the prefix and rejects a write of one, and the
+ * 45 providers that route reads through `normalizeAwsTagsToCfn` strip such keys
+ * on the way in — so an `aws:` key can only reach the AWS side of a comparison
+ * via the Cloud Control `readCurrentState` path, which returns the raw model.
+ * It costs nothing to honor and cdkd can never have authored one.
  */
 const SERVICE_MANAGED_TAG_KEYS: ReadonlySet<string> = new Set(['AmazonECSManaged']);
 
@@ -780,9 +800,14 @@ export function mergeTagListForRevert(
   awsTags: ReadonlyArray<Record<string, unknown>>
 ): Array<Record<string, unknown>> {
   const baselineKeys = new Set(tagKeys(baselineTags));
+  const seen = new Set<string>();
   const preserved = awsTags.filter((t) => {
     const key = t['Key'] as string;
-    return !baselineKeys.has(key) && isServiceManagedTagKey(key);
+    if (baselineKeys.has(key) || !isServiceManagedTagKey(key) || seen.has(key)) return false;
+    // Deduped so the merge and `findRevertPreservedTagKeys` (which reports a
+    // SET) cannot disagree when AWS returns the same key twice.
+    seen.add(key);
+    return true;
   });
   return [...baselineTags, ...preserved];
 }
@@ -813,10 +838,13 @@ export function findRevertPreservedTagKeys(
 
   for (const key of driftedTopLevelKeys) {
     if (!(key in desiredProperties)) continue;
+    if (!isTagListKey(key)) continue;
     const desiredValue = desiredProperties[key];
     const awsValue = awsProperties[key];
-    if (!isCfnTagList(desiredValue) || !isCfnTagList(awsValue)) continue;
-    const baselineKeys = new Set(tagKeys(desiredValue));
+    const baselineIsTagList =
+      isCfnTagList(desiredValue) || (Array.isArray(desiredValue) && desiredValue.length === 0);
+    if (!baselineIsTagList || !isCfnTagList(awsValue)) continue;
+    const baselineKeys = new Set(tagKeys(desiredValue as Array<Record<string, unknown>>));
     for (const tagKey of tagKeys(awsValue)) {
       if (!baselineKeys.has(tagKey) && isServiceManagedTagKey(tagKey)) {
         preserved.add(`${key}.${tagKey}`);
@@ -977,11 +1005,21 @@ export function buildRevertNewProperties(
     if (topLevelKey in desiredProperties) {
       const desiredValue = desiredProperties[topLevelKey];
       const awsValue = awsProperties[topLevelKey];
-      // A TAG LIST is reverted as a DIFF, not as a whole-value overwrite
-      // (issue #1501). See `mergeTagListForRevert`.
+      // A TAG LIST keeps its AWS-service-authored entries instead of being
+      // overwritten wholesale (issue #1501). See `mergeTagListForRevert`.
+      //
+      // The baseline side accepts an EMPTY array as well as a populated tag
+      // list: a template that DECLARES `Tags` with a condition-collapsed or
+      // empty list still has an AWS side worth diffing against, and treating
+      // that as "nothing to diff" would strip `AmazonECSManaged` — the exact
+      // failure this carve-out exists to prevent. (The #1498 rule covers the
+      // commoner UNDECLARED + captured-empty shape by ignoring the key
+      // outright, so it never reaches here.)
+      const baselineIsTagList =
+        isCfnTagList(desiredValue) || (Array.isArray(desiredValue) && desiredValue.length === 0);
       result[topLevelKey] =
-        isCfnTagList(desiredValue) && isCfnTagList(awsValue)
-          ? mergeTagListForRevert(desiredValue, awsValue)
+        isTagListKey(topLevelKey) && baselineIsTagList && isCfnTagList(awsValue)
+          ? mergeTagListForRevert(desiredValue as Array<Record<string, unknown>>, awsValue)
           : desiredValue;
     } else {
       // Drift surfaced on a key that's no longer in `desiredProperties`
@@ -1229,17 +1267,18 @@ function printRevertPlan(reports: StackDriftReport[]): void {
           o.awsProperties
         );
         if (preserved.length > 0) {
-          const word = preserved.length === 1 ? 'tag' : 'tags';
+          const tagWord = preserved.length === 1 ? 'tag' : 'tags';
           process.stdout.write(
-            `    ! reverting this tag list KEEPS ${preserved.length} AWS-service-authored ` +
-              `${word} the baseline does not carry (a service requires them):\n`
+            `    ! reverting this tag list KEEPS ${preserved.length} AWS-authored ` +
+              `${tagWord} the baseline does not carry:\n`
           );
           for (const path of preserved) {
             process.stdout.write(`        ${path}\n`);
           }
           process.stdout.write(
-            `      Every other tag reverts normally. Remove a kept one in the AWS ` +
-              `console if it is genuinely unwanted.\n`
+            `      Every other tag reverts normally. A service may require these ` +
+              `(ECS needs AmazonECSManaged for managed scaling); 'aws:'-prefixed keys are ` +
+              `AWS-reserved and cannot be removed by hand.\n`
           );
         }
       }
