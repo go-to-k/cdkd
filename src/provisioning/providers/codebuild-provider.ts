@@ -25,6 +25,7 @@ import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import { readConfigString, requireConfigArray } from '../config-shape.js';
+import { clearOnUpdateRemoval } from '../update-removal.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -446,12 +447,39 @@ export class CodeBuildProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    _previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating CodeBuild Project ${logicalId}: ${physicalId}`);
 
     try {
-      const input = this.mapProperties(logicalId, properties);
+      // Removal semantics (issue #1160, live CFn A/B 2026-08-10 on a
+      // NO_SOURCE project). `UpdateProject` is a merge-semantics API — a
+      // name-only update left every other live value untouched — so the
+      // umbrella flagged all eight optional fields this provider forwards.
+      // The A/B narrowed that to ONE: CloudFormation itself RETAINS
+      // `Description` / `TimeoutInMinutes` / `QueuedTimeoutInMinutes` /
+      // `ConcurrentBuildLimit` / `AutoRetryLimit` / `Cache` / `LogsConfig`
+      // when the template drops them (CFn's own handler omits them from
+      // `UpdateProject` and CodeBuild merges), so the pass-through below is
+      // ALREADY CFn parity for those seven and they are deliberately NOT
+      // reset — pinned by the retention tests rather than "fixed" into a
+      // divergence.
+      //
+      // `BuildBatchConfig` is the one field CFn resets: after the removal
+      // update the live project reported `buildBatchConfig: null`. The only
+      // shape that clears it is an EMPTY object — omitting the field is the
+      // no-op that produced the silent drop this issue tracks. An empty CFn
+      // block maps to an all-`undefined` SDK object, which the serializer
+      // emits as `{}`, so routing the reset through the shared mapper keeps
+      // create and update on one code path.
+      const input = this.mapProperties(logicalId, {
+        ...properties,
+        BuildBatchConfig: clearOnUpdateRemoval(
+          properties['BuildBatchConfig'] as Record<string, unknown> | undefined,
+          previousProperties['BuildBatchConfig'] as Record<string, unknown> | undefined,
+          {}
+        ),
+      });
       // Ensure the update targets the existing project
       input.name = physicalId;
 

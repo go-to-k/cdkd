@@ -727,11 +727,16 @@
     {
       "resourceType": "AWS::CodeBuild::Project",
       "integs": [
-        "ci-cd"
+        "ci-cd",
+        "codebuild-project"
       ],
       "signals": {
         "ci-cd": [
           "l1",
+          "l2",
+          "literal"
+        ],
+        "codebuild-project": [
           "l2",
           "literal"
         ]

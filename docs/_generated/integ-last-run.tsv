@@ -41,6 +41,7 @@ ci-cd	2026-08-09T14:25:56Z	PASS	57	verify.sh	issue #1386 nested sub-keys asserte
 cloudfront-function-url	2026-07-31T06:11:38Z	PASS	209	verify.sh	regression run post-#1311/#1318; fire-and-forget create + delete-wait path clean; 7 del/0 err, 0 orphans
 cloudwatch	2026-07-26T20:00:52Z	PASS	55	standard	0727b sweep-b13 staleness re-run (rc=0); account clean
 cloudwatch-anomaly-detector	2026-07-30T16:41:15Z	PASS	35	verify.sh	final run post review fixes: GetAtt Id + phys-id stability asserted; clean
+codebuild-project	2026-08-10T18:17:23Z	PASS	62	verify.sh	#1160 codebuild batch: BuildBatchConfig reset + 7 CFn retentions live-verified; destroy 3/0
 codecommit	2026-08-01T09:36:05Z	PASS	83	verify.sh	0801 regression sweep; 3 phases ok, 0 orphans
 codedeploy-lambda-deployment-group	2026-07-26T19:45:58Z	PASS	109	verify.sh	re-run after version-agnostic fixture fix; live-verified, account clean (remnant-warning follow-up: issue #1252)
 cognito	2026-08-08T18:49:35Z	PASS	63	verify.sh	SignInPolicy #1380 assertion added; clean destroy
