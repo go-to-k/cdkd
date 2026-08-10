@@ -41,8 +41,15 @@
 # helper that blocks the user's command when the snapshot fails would
 # be worse than no helper at all.
 
-if ! . "${BASH_SOURCE[0]%/*}/lib/command-match.sh" 2>/dev/null \
-  || ! declare -F cmd_matches_verb >/dev/null; then
+__hook_dir="${BASH_SOURCE[0]%/*}"
+# `%/*` leaves the string unchanged when the path has no slash (invoked as
+# `bash verify-pr-gate.sh` from inside the hooks dir), which would look for
+# `<script-name>/lib/...`. Fall back to the cwd in that case.
+[ "$__hook_dir" = "${BASH_SOURCE[0]}" ] && __hook_dir="."
+if ! . "$__hook_dir/lib/command-match.sh" 2>/dev/null \
+  || ! declare -F cmd_matches_verb >/dev/null \
+  || ! declare -F cmd_last_cd_target >/dev/null \
+  || ! declare -F strip_noncommand_spans >/dev/null; then
   # Non-blocking hook: without the helper, skip rather than refuse. Missing a
   # backup is a smaller harm than blocking an operation this hook only
   # observes.

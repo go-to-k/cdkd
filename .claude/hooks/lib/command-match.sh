@@ -8,73 +8,75 @@
 #   ^[[:space:]]*(cd[[:space:]]+[^[:space:]]+[[:space:]]*&&[[:space:]]*)?gh ... pr (create|merge)
 #
 # So `git push && gh pr create` — the natural way to push a branch and open
-# its PR in one step, and what a session reached for unprompted — did not
-# match, and the gate never fired. The same hole existed in all six
-# merge-time gates, which is strictly worse: those are what stand between an
-# unverified destroy path and `main`.
+# its PR in one step — did not match, and the gate never fired. The same hole
+# existed in all six merge-time gates, which is strictly worse: those are what
+# stand between an unverified destroy path and `main`.
 #
-# The anchoring was deliberate, not an oversight: it kept a mention of the
-# verb inside a quoted argument (`echo "next step: gh pr merge"`) from
-# false-positiving into a hard block. Simply removing the anchor would
-# reopen that. So the fix is two-part:
+# The anchoring was deliberate: it kept a mention of the verb inside a quoted
+# argument (`echo "next step: gh pr merge"`) from false-positiving into a hard
+# block. Simply removing the anchor would reopen that. So the fix is two-part:
 #
-#   1. STRIP the spans that are DATA rather than executable code — heredoc
-#      bodies and quoted spans — which removes the false-positive source
-#      directly rather than relying on position to dodge it; then
+#   1. NEUTRALISE the spans that are DATA rather than executable code —
+#      heredoc bodies and quoted spans — which removes the false-positive
+#      source directly rather than relying on position to dodge it; then
 #   2. match the verb in COMMAND POSITION — line start OR just after a
 #      `&&` / `||` / `;` / `|` control operator — instead of line start only.
 #
-# Note the `cd <path> &&` special case disappears from the pattern: `cd X &&
-# gh pr create` is just a verb in command position after `&&`. Hooks that
-# need the cd TARGET still parse it from the raw command themselves; this
-# helper only answers "does the guarded verb run here?".
-#
 # ── Failure direction is the whole design ──────────────────────────────────
 #
-# A stripper bug has two very different costs. Dropping too much text makes a
-# gate SILENTLY NOT FIRE, which is indistinguishable from "no problem found"
-# and is exactly the class of defect this file exists to remove. Dropping too
-# little merely leaves a false positive, which is loud and fixable. So every
-# ambiguous case below resolves toward KEEPING text.
+# A stripper bug has two very different costs. Losing text makes a gate
+# SILENTLY NOT FIRE, which is indistinguishable from "no problem found" and is
+# exactly the defect class this file exists to remove. Keeping too much merely
+# leaves a false positive, which is loud and fixable. Every ambiguous case
+# below therefore resolves toward KEEPING.
 #
-# The first cut of this helper got that backwards and review caught it: its
-# heredoc scanner treated `<<<` here-strings and a `<<EOF` mentioned inside
-# quoted prose as real openers, and never checked that the delimiter was ever
-# terminated — so `in_heredoc` latched on and every remaining line was
-# dropped, turning all six merge-time gates off for that command. The rules
-# below are written against those three cases specifically.
+# Two review rounds found this getting it backwards, which is why the rules
+# are spelled out rather than implied:
+#
+#   round 1 — `<<<` here-strings, a `<<EOF` mentioned in prose, and
+#     unterminated heredocs were all treated as real openers, so the scanner
+#     latched on and dropped every remaining line.
+#   round 2 — quoted spans were DELETED rather than replaced, so a quoted
+#     ARGUMENT VALUE vanished and patterns that need it stopped matching:
+#     `gh -C "$WT" pr merge` (the documented worktree shape) failed to match
+#     in nine gates. And an escaped `\"` desynced the quote state machine,
+#     swallowing every following line.
+#
+# Hence: a neutralised quoted span leaves a PLACEHOLDER token behind, so
+# `-C "<path>"` still looks like `-C <token>` to a `[^[:space:]]+`
+# sub-pattern, while the CONTENT that could impersonate a command is gone.
 
-# Remove the spans of a command that are DATA rather than executable code.
+# Placeholder standing in for a removed quoted span. Must be a single
+# non-space, non-operator character so it satisfies `[^[:space:]]+` value
+# sub-patterns without ever looking like a command separator.
+CMD_MATCH_PLACEHOLDER=$'\002'
+
+# Neutralise the spans of a command that are DATA rather than executable code.
 #
-# Order is heredocs first, then quotes, and that order is load-bearing: a
-# heredoc body is prose and routinely contains an unbalanced apostrophe
-# ("don't"), which a quote scanner run first would treat as an opening quote
-# and use to swallow everything up to the next quote — including a real
-# command after the heredoc. Removing verified heredoc bodies first means the
-# quote scanner never sees that prose.
+# Heredocs first, then quotes, and that order is load-bearing: a heredoc body
+# is prose and routinely contains an unbalanced apostrophe ("don't"), which a
+# quote scanner run first would treat as an opening quote and use to swallow
+# everything up to the next quote — including a real command after the
+# heredoc.
 #
-# Heredoc rules, each closing a reviewed false-negative:
-#   - `<<<` (here-string) is NOT an opener. The naive pattern matched the
-#     inner `<<` of `<<<`, so `grep -q a <<< "$v"` swallowed the rest.
-#   - an opener only counts when its delimiter is actually TERMINATED later
-#     in the command. An unterminated one (or a `<<EOF` merely mentioned in
-#     prose) leaves every following line intact.
-#   - the opening line itself is KEPT: it carries the real command
-#     (`git commit -F - <<'EOF'`).
+# Heredoc rules, each closing a reviewed false negative:
+#   - `<<<` (here-string) is NOT an opener;
+#   - a `<<X` sitting inside a quoted span on its own line is NOT an opener;
+#   - an opener counts only when its delimiter is actually TERMINATED later;
+#   - the opening line itself is KEPT — it carries the real command.
 #
-# Quote stripping is a character state machine over the WHOLE remaining text,
-# not a per-line regex. A quoted argument can span newlines — a commit
-# message passed as `-m "line1\n\nline2"` is the common case — and a per-line
-# `sed` leaves every line after the first, which review showed producing a
-# NEW hard block on `git commit -m "...\n\nrun: git push && gh pr merge 5"`.
-# The machine also gets nesting-by-context right for free: an apostrophe
-# inside a double-quoted span is literal, not an opener.
+# Quote rules:
+#   - a whole-text character state machine, because a quoted argument can span
+#     newlines (a `-m "line1\n\nline2"` commit message is the common case) and
+#     a per-line regex leaves every line after the first;
+#   - a backslash escapes the next character in code and in double quotes, so
+#     `"a \" b"` does not desync the machine;
+#   - inside single quotes a backslash is literal, matching the shell.
 #
-# Still out of scope, unchanged from the old line-start anchor so neither is
-# a regression: backslash-escaped quotes, and an inner shell
-# (`bash -c "<verb> ..."`), which would need real parsing to detect.
+# Out of scope, as before: `$'...'` ANSI-C quoting, and an inner shell
+# (`bash -c "<verb> ..."`), which would need real parsing.
 strip_noncommand_spans() {
-  printf '%s' "$1" | awk '
+  printf '%s' "$1" | awk -v ph="$CMD_MATCH_PLACEHOLDER" '
     { lines[NR] = $0 }
     END {
       # ---- pass 1: heredoc bodies, only when verifiably terminated -------
@@ -85,33 +87,41 @@ strip_noncommand_spans() {
         out = out line "\n"
         delim = ""
 
-        # Find `<<` that is NOT part of `<<<`, i.e. not preceded by `<` and
-        # not followed by `<`. Scan from the line start so an earlier
-        # here-string cannot shadow a later real opener.
-        rest = line
-        offset = 0
-        while (match(rest, /<<-?[ \t]*("[^"]+"|\047[^\047]+\047|[A-Za-z_][A-Za-z0-9_]*)/)) {
-          start = offset + RSTART
-          before = (start > 1) ? substr(line, start - 1, 1) : ""
-          # substr(line,start,2) is "<<"; the char after decides here-string.
-          after2 = substr(line, start + 2, 1)
-          if (before != "<" && after2 != "<") {
-            d = substr(rest, RSTART, RLENGTH)
-            sub(/^<<-?[ \t]*/, "", d)
-            gsub(/["\047]/, "", d)
-            if (d != "") { delim = d }
-            break
+        # Per-line quote state, so a `<<X` inside quotes is not an opener.
+        q = 0; esc = 0
+        len = length(line)
+        for (c = 1; c <= len; c++) {
+          ch = substr(line, c, 1)
+          if (esc) { esc = 0; continue }
+          if (q == 0) {
+            if (ch == "\\") { esc = 1; continue }
+            if (ch == "\047") { q = 1; continue }
+            if (ch == "\"") { q = 2; continue }
+            if (ch == "<" && substr(line, c + 1, 1) == "<") {
+              if (substr(line, c + 2, 1) == "<") { c = c + 2; continue }  # <<<
+              if (c > 1 && substr(line, c - 1, 1) == "<") continue
+              rest = substr(line, c)
+              if (match(rest, /^<<-?[ \t]*("[^"]+"|\047[^\047]+\047|[A-Za-z_][A-Za-z0-9_]*)/)) {
+                d = substr(rest, RSTART, RLENGTH)
+                sub(/^<<-?[ \t]*/, "", d)
+                gsub(/["\047]/, "", d)
+                if (d != "") { delim = d; break }
+              }
+            }
+          } else if (q == 1) {
+            if (ch == "\047") q = 0
+          } else {
+            if (ch == "\\") { esc = 1; continue }
+            if (ch == "\"") q = 0
           }
-          offset = offset + RSTART + RLENGTH - 1
-          rest = substr(line, offset + 1)
         }
 
         if (delim != "") {
-          # Only strip when the delimiter is actually terminated later.
           found = 0
           for (j = i + 1; j <= NR; j++) {
             t = lines[j]
             sub(/^[ \t]+/, "", t)
+            sub(/\r$/, "", t)
             if (t == delim) { found = j; break }
           }
           if (found > 0) { i = found + 1; continue }
@@ -119,24 +129,28 @@ strip_noncommand_spans() {
         i++
       }
 
-      # ---- pass 2: quoted spans, whole-text char state machine ----------
-      res = ""
-      st = 0          # 0 = code, 1 = inside single quotes, 2 = inside double
+      # ---- pass 2: quoted spans -> placeholder ---------------------------
+      res = ""; st = 0; esc = 0; emitted = 0
       n = length(out)
       for (k = 1; k <= n; k++) {
         c = substr(out, k, 1)
+        if (esc) { esc = 0; if (st == 0) res = res c; continue }
         if (st == 0) {
-          if (c == "\047") st = 1
-          else if (c == "\"") st = 2
-          else res = res c
+          if (c == "\\") { esc = 1; res = res c; continue }
+          if (c == "\047") { st = 1; emitted = 0; continue }
+          if (c == "\"") { st = 2; emitted = 0; continue }
+          res = res c
         } else if (st == 1) {
-          if (c == "\047") st = 0
-          else if (c == "\n") res = res c   # keep line structure
+          if (c == "\047") { st = 0; if (!emitted) { res = res ph; emitted = 1 } }
+          else if (c == "\n") { if (!emitted) { res = res ph; emitted = 1 } res = res c }
         } else {
-          if (c == "\"") st = 0
-          else if (c == "\n") res = res c
+          if (c == "\\") { esc = 1; continue }
+          if (c == "\"") { st = 0; if (!emitted) { res = res ph; emitted = 1 } }
+          else if (c == "\n") { if (!emitted) { res = res ph; emitted = 1 } res = res c }
         }
       }
+      # An unterminated quote still contributes its placeholder.
+      if (st != 0 && !emitted) res = res ph
       printf "%s", res
     }
   '
@@ -148,33 +162,51 @@ strip_noncommand_spans() {
 # <verb-ere> must match from the verb onward (e.g. 'gh[[:space:]]+pr[[:space:]]+merge')
 # and should carry its own trailing boundary.
 cmd_matches_verb() {
-  local cmd="$1" verb="$2"
-  strip_noncommand_spans "$cmd" \
-    | grep -qE "(^|[|;&][[:space:]]*)[[:space:]]*${verb}"
+  local cmd="$1" verb="$2" stripped
+  # Capture first, then feed grep from a here-string. A `... | grep -q`
+  # pipeline exits 141 (SIGPIPE) on a large command under `set -o pipefail`,
+  # which a caller reads as "no match" — a silent gate miss.
+  stripped="$(strip_noncommand_spans "$cmd")"
+  grep -qE "(^|[|;&][[:space:]]*)[[:space:]]*${verb}" <<< "$stripped"
 }
 
-# cmd_last_cd_target <command>
+# cmd_last_cd_target <command> [base-dir]
 #
-# Print the path of the LAST `cd <path>` in command position, or nothing.
+# Print the working directory the command ends up in, following every `cd` in
+# command position in order, or nothing when there is no `cd`.
 #
-# The gates use this to resolve which working tree the guarded command will
-# actually run in — which decides whose per-worktree markgate markers get
-# consulted. It has to be the LAST one, because that is the directory in
-# effect by the time the verb runs, and it mirrors how the hooks already take
-# the last `gh -C` / `git -C`.
+# The gates use this to resolve which working tree the guarded command runs
+# in — which decides whose per-worktree markgate markers get consulted.
 #
-# Matching only a LEADING `cd` was safe while the verb matcher itself was
-# line-start anchored: a command with a mid-chain `cd` did not fire the gate
-# at all. Now that `git push && cd /w && gh pr merge 1` DOES fire, reading
-# only a leading `cd` would resolve the wrong tree and consult the wrong
-# markers — which can produce a spurious PASS, the same class of hole this
-# file exists to close.
+# Matching only a LEADING `cd` was consistent while the verb matcher was
+# line-start anchored, because a command with a mid-chain `cd` did not fire
+# the gate at all. Now that `git push && cd /w && gh pr merge 1` DOES fire,
+# reading only the leading one would consult the wrong tree's markers and
+# could produce a spurious PASS.
+#
+# Chained RELATIVE cds compose (`cd /abs/one && cd sub` -> `/abs/one/sub`),
+# which is why the base dir is a parameter rather than the caller resolving a
+# single returned segment.
 cmd_last_cd_target() {
-  local cmd="$1" out
-  # Segment the QUOTE-STRIPPED text, so a `cd` mentioned inside a quoted body
-  # (`echo "then cd /tmp/w"`) is never seen as a command. A segment counts
-  # only when it STARTS with `cd`, which is what makes that safe.
-  out="$(strip_noncommand_spans "$cmd" | awk '
+  local cmd="$1" base="${2:-}" stripped cur="" seen=0 raw_paths=() idx=0
+  stripped="$(strip_noncommand_spans "$cmd")"
+
+  # Quoted paths were replaced by the placeholder, so recover them, in order,
+  # from the RAW command. Safe to read raw only for paths whose `cd` the
+  # stripped pass has already proven to be in command position.
+  mapfile -t raw_paths < <(printf '%s' "$cmd" | grep -oE "cd[[:space:]]+(\"[^\"]*\"|'[^']*')" | sed -E "s/^cd[[:space:]]+//; s/^[\"']//; s/[\"']$//") || true
+
+  cur="$base"
+  while IFS= read -r seg; do
+    [ -n "$seg" ] || continue
+    if [[ "$seg" == *"$CMD_MATCH_PLACEHOLDER"* ]]; then
+      seg="${raw_paths[$idx]:-}"
+      idx=$((idx + 1))
+      [ -n "$seg" ] || continue
+    fi
+    seen=1
+    if [[ "$seg" == /* ]]; then cur="$seg"; else cur="${cur:+$cur/}$seg"; fi
+  done < <(printf '%s' "$stripped" | awk '
     {
       n = split($0, seg, /[|;&]+/)
       for (k = 1; k <= n; k++) {
@@ -183,21 +215,11 @@ cmd_last_cd_target() {
         if (s ~ /^cd([ \t]|$)/) {
           sub(/^cd[ \t]*/, "", s)
           sub(/[ \t].*$/, "", s)
-          # A path that was entirely quoted is gone by now; record that a cd
-          # WAS in command position so the caller can recover it from the raw
-          # command rather than silently resolving to nothing.
-          last = (s == "") ? "\001quoted" : s
+          if (s != "") print s
         }
       }
     }
-    END { if (last != "") print last }
-  ')"
+  ')
 
-  if [ "$out" = $'\001quoted' ]; then
-    # Recover a quoted path (`cd "/tmp/a b"`) from the RAW command. Safe to
-    # read raw here precisely because the pass above already established that
-    # a `cd` occupies command position — prose can never reach this branch.
-    out="$(printf '%s' "$cmd" | sed -n 's/.*cd[[:space:]]*"\([^"]*\)".*/\1/p; s/.*cd[[:space:]]*'"'"'\([^'"'"']*\)'"'"'.*/\1/p' | tail -n 1)"
-  fi
-  [ -n "$out" ] && printf '%s' "$out"
+  [ "$seen" = "1" ] && printf '%s' "$cur"
 }

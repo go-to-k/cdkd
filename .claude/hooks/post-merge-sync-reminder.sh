@@ -16,8 +16,15 @@
 # ("なぜ忘れた? 絶対忘れないようにして欲しい") was the trigger to upgrade
 # from memory-only to hook-enforced.
 
-if ! . "${BASH_SOURCE[0]%/*}/lib/command-match.sh" 2>/dev/null \
-  || ! declare -F cmd_matches_verb >/dev/null; then
+__hook_dir="${BASH_SOURCE[0]%/*}"
+# `%/*` leaves the string unchanged when the path has no slash (invoked as
+# `bash verify-pr-gate.sh` from inside the hooks dir), which would look for
+# `<script-name>/lib/...`. Fall back to the cwd in that case.
+[ "$__hook_dir" = "${BASH_SOURCE[0]}" ] && __hook_dir="."
+if ! . "$__hook_dir/lib/command-match.sh" 2>/dev/null \
+  || ! declare -F cmd_matches_verb >/dev/null \
+  || ! declare -F cmd_last_cd_target >/dev/null \
+  || ! declare -F strip_noncommand_spans >/dev/null; then
   # Non-blocking reminder: skip rather than refuse when the helper is absent.
   exit 0
 fi

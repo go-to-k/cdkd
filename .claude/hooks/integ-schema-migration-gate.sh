@@ -55,8 +55,15 @@
 # after ANY chained command (`git push && gh pr create`), not just after an
 # optional leading `cd`. See .claude/hooks/lib/command-match.sh.
 # shellcheck source=lib/command-match.sh
-if ! . "${BASH_SOURCE[0]%/*}/lib/command-match.sh" 2>/dev/null \
-  || ! declare -F cmd_matches_verb >/dev/null; then
+__hook_dir="${BASH_SOURCE[0]%/*}"
+# `%/*` leaves the string unchanged when the path has no slash (invoked as
+# `bash verify-pr-gate.sh` from inside the hooks dir), which would look for
+# `<script-name>/lib/...`. Fall back to the cwd in that case.
+[ "$__hook_dir" = "${BASH_SOURCE[0]}" ] && __hook_dir="."
+if ! . "$__hook_dir/lib/command-match.sh" 2>/dev/null \
+  || ! declare -F cmd_matches_verb >/dev/null \
+  || ! declare -F cmd_last_cd_target >/dev/null \
+  || ! declare -F strip_noncommand_spans >/dev/null; then
   # FAIL CLOSED. Without the helper `cmd_matches_verb` is undefined, the
   # `if ! cmd_matches_verb ...` guard below sees exit 127 (truthy for `!`),
   # and the hook would `exit 0` -- silently disabling the gate, which is the
@@ -93,11 +100,10 @@ fi
 # see memory rule feedback_cross_agent_main_tree_contention.md).
 target_dir="${hook_cwd:-$PWD}"
 
-cd_target="$(cmd_last_cd_target "$cmd")"
+# Pass the current target as the BASE so chained relative cds compose
+# (`cd /abs/one && cd sub`); the helper returns a fully-resolved path.
+cd_target="$(cmd_last_cd_target "$cmd" "$target_dir")"
 if [[ -n "$cd_target" ]]; then
-  if [[ "$cd_target" != /* ]]; then
-    cd_target="$target_dir/$cd_target"
-  fi
   target_dir="$cd_target"
 fi
 

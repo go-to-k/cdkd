@@ -133,11 +133,33 @@ cd_check() { # name, expected, command
 cd_check "no cd yields nothing" "" "gh pr merge 1"
 cd_check "leading cd" "/tmp/w" "cd /tmp/w && gh pr merge 1"
 cd_check "MID-CHAIN cd is found" "/tmp/w" "git push && cd /tmp/w && gh pr merge 1"
-cd_check "the LAST cd wins" "/tmp/second" "cd /tmp/first && cd /tmp/second && gh pr merge 1"
+cd_check "the LAST absolute cd wins" "/tmp/second" "cd /tmp/first && cd /tmp/second && gh pr merge 1"
+cd_check "chained RELATIVE cd composes against the previous one" "/abs/one/sub" "cd /abs/one && cd sub && gh pr merge 1"
 cd_check "cd after a semicolon" "/tmp/w" "echo hi; cd /tmp/w; gh pr merge 1"
 cd_check "quoted path is unquoted" "/tmp/a b" "$(printf 'cd "/tmp/a b" && gh pr merge 1')"
 cd_check "a cd mentioned in a quoted body is ignored" "" 'echo "then cd /tmp/w and merge"'
 cd_check "cdkd (a different command) is not a cd" "" "cdkd deploy && gh pr merge 1"
+
+# --- Round-2 review regressions (quoted VALUES must survive) --------------
+#
+# The second cut DELETED quoted spans instead of replacing them, so a quoted
+# argument VALUE vanished and every pattern that needs it stopped matching.
+# `gh -C "$WT" pr merge` is the documented worktree shape, and it failed to
+# match in nine gates -- a silent fail-open, the worst direction.
+check "gh -C with a QUOTED path still matches" 0 "$MERGE" 'gh -C "/tmp/wt" pr merge 5'
+check "gh -C with a single-quoted path still matches" 0 "$MERGE" "gh -C '/tmp/wt' pr merge 5"
+check "git -C with a quoted path still matches" 0 "$COMMIT" 'git -C "/tmp/wt" commit -m x'
+check "quoted path after a chain still matches" 0 "$MERGE" 'git push && gh -C "/tmp/wt" pr merge 5'
+
+# An escaped quote inside a double-quoted span must not desync the machine
+# and swallow the following line.
+esc_cmd=$(printf 'git commit -m "a \\" b"\ngh pr merge 5')
+check "escaped quote does not swallow the next line" 0 "$MERGE" "$esc_cmd"
+
+# A `<<X` inside a quoted span is not a heredoc opener, even when a bare line
+# equal to the delimiter turns up later.
+fake_open=$(printf 'echo "delimiter is <<DONE"\ngh pr merge 5\nDONE')
+check "quoted <<DELIM plus a later bare DELIM line does not swallow" 0 "$MERGE" "$fake_open"
 
 # --- Non-matches ----------------------------------------------------------
 check "different subcommand" 1 "$MERGE" "gh pr create --title x"
