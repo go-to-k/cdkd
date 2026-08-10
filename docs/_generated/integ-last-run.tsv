@@ -225,7 +225,7 @@ rollback-command	2026-07-25T05:24:26Z	PASS	130	verify.sh	#1220 echo-before-asser
 rollback-deletion-policy-snapshot	2026-08-08T16:34:46Z	PASS	107	verify.sh	P0 first run post-#1361/#1365/#1367/#1369 rollback rework; rolled-back CREATE snapshot-then-deleted, state clean, 0 orphans
 rollback-failure-injection	2026-08-08T17:42:23Z	PASS	389	verify.sh	issue #1375 re-run (background, dodging the 600s clamp); all 8 phases, 17 del/0 err, 0 orphans incl NAT/EIP/ENI
 rollback-sqs-cooldown	2026-07-25T05:24:26Z	PASS	180	verify.sh	#1220 echo-before-assert on steps 4/9/10, destroy clean
-route53	2026-08-10T08:48:49Z	PASS	301	verify.sh	clean destroy x3 on #1467 fix; rebased tree
+route53	2026-08-10T08:57:21Z	PASS	371	verify.sh	clean destroy x4 on #1467 fix; final tree
 s3-asset-deploy	2026-07-26T19:45:58Z	PASS	58	verify.sh	0727b sweep-b12 staleness re-run (rc=0); account clean
 s3-cloudfront	2026-08-08T17:42:05Z	PASS	228	verify.sh	1373 OriginCustomHeaders create+update-survive asserts green; destroy 0 errors 0 orphans
 s3-directory-bucket	2026-08-02T15:38:47Z	PASS	50	verify.sh	re-run for #1347 wontdo-comment PR; guard + clean destroy, 0 orphans
