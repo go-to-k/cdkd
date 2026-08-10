@@ -722,17 +722,22 @@ invariant — most existing fixtures do not set it and are fine.
 ### Fixture convention: pin and resolve a fixture-local `cdk` CLI
 
 A fixture whose `verify.sh` shells out to the upstream `cdk` CLI must be
-hermetic about which `cdk` it gets. Three requirements (enforced by
+hermetic about which `cdk` it gets. Four requirements (enforced by
 `tests/unit/scripts/integ-cdk-cli-pins.test.ts`, classifier
 `scripts/check-integ-cdk-cli-pins.ts`):
 
-1. Pin `aws-cdk` in the fixture's `package.json`, at a version whose
-   cloud-assembly schema support covers the fixture's `aws-cdk-lib`.
-2. Install the fixture's deps when absent — `node_modules` is gitignored and
-   the repo-root `pnpm install` does not populate fixture dirs, so without an
-   install step the pin is inert.
-3. Resolve the local CLI on every invocation, either by PATH prepend or by an
-   explicit bin path:
+1. Pin `aws-cdk` in the fixture's `package.json` at a real version range
+   whose cloud-assembly schema support covers the fixture's `aws-cdk-lib`
+   (`*` / `latest` are rejected — they re-admit the skew).
+2. Install the **fixture's own** deps. `node_modules` is gitignored and the
+   repo-root `pnpm install` does not populate fixture dirs, so a root install
+   alone leaves the pin inert.
+3. Guard a conditional install on the cdk **binary**, not on the directory: a
+   `node_modules` left from before the pin exists but contains no `cdk`, so
+   `[ -d node_modules ]` skips the very install that would fix it. An
+   unconditional install needs no guard.
+4. Resolve the local CLI on every invocation, by PATH prepend or an explicit
+   local bin path:
 
    ```bash
    [ -x "${TEST_DIR}/node_modules/.bin/cdk" ] || (cd "${TEST_DIR}" && npm install)
@@ -744,8 +749,12 @@ the machine's global CLI. When that CLI lags the fixture's `aws-cdk-lib`, the
 run fails with `Cloud assembly schema version mismatch` — which is how
 `import-nested-stack` failed on the 2026-08-10 staleness sweep even though its
 `package.json` pinned `aws-cdk` (the pin was never on the resolution path).
-The check matches invocations in command position only, so comments and
-`echo` prose mentioning `cdk deploy` don't count.
+
+The check reads code, never prose: heredoc bodies and comments (including
+trailing ones) are stripped, and each line is split quote-aware into
+command-position segments, so a `cdk deploy` inside an `echo` string or a
+`grep` pattern is not an invocation — and equally, an `npm install` mentioned
+in a comment does not satisfy requirement 2.
 
 ### Fixture convention: sort both sides of a list readback
 

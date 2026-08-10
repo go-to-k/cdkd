@@ -165,7 +165,12 @@ echo "[verify] step 2: install fixture deps (aws-cdk-lib + pinned aws-cdk CLI)"
 # the 2026-08-10 staleness sweep while its package.json pin sat unused).
 (cd "${TEST_DIR}" && { [ -x node_modules/.bin/cdk ] || npm install; })
 export PATH="${TEST_DIR}/node_modules/.bin:${PATH}"
-echo "[verify] step 2 ok: using $(command -v cdk) ($(cdk --version))"
+# Capture into variables first: a failing command substitution inside an echo
+# ARGUMENT does not trip `set -e`, so a missing cdk would print "using ()" and
+# let the run limp on to the deploy.
+CDK_RESOLVED="$(command -v cdk)"
+CDK_VERSION="$(cdk --version)"
+echo "[verify] step 2 ok: using ${CDK_RESOLVED} (${CDK_VERSION})"
 
 echo "[verify] step 3: pre-flight orphan scan"
 if aws cloudformation describe-stacks --stack-name "${PARENT_STACK}" --region "${REGION}" >/dev/null 2>&1; then
