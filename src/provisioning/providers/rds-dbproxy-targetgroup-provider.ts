@@ -12,6 +12,8 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import { replayWarn, requireConfigString } from '../config-shape.js';
+import type { CreateContext } from '../../types/resource.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -87,7 +89,8 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     const dbProxyName = properties['DBProxyName'] as string | undefined;
     if (!dbProxyName) {
@@ -97,7 +100,12 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
         logicalId
       );
     }
-    const targetGroupName = (properties['TargetGroupName'] as string | undefined) ?? 'default';
+    const targetGroupName = requireConfigString(
+      properties['TargetGroupName'],
+      'default',
+      'AWS::RDS::DBProxyTargetGroup TargetGroupName',
+      replayWarn(this.logger, context)
+    );
     const dbClusterIdentifiers = properties['DBClusterIdentifiers'] as string[] | undefined;
     const dbInstanceIdentifiers = properties['DBInstanceIdentifiers'] as string[] | undefined;
     const connectionPoolConfig = properties['ConnectionPoolConfigurationInfo'] as
@@ -204,14 +212,29 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
         physicalId
       );
     }
-    const targetGroupName = (properties['TargetGroupName'] as string | undefined) ?? 'default';
+    // WARN, not throw: a rollback replays through `update()` with a historical
+    // cdkd STATE record as the desired bag, so refusing here could leave a
+    // resource un-rollbackable with no template-side remedy (issue #1513). The
+    // `delete()` / `readCurrentState` reads below stay unguarded for the same
+    // reason — both are state-side, never template-borne.
+    const targetGroupName = requireConfigString(
+      properties['TargetGroupName'],
+      'default',
+      'AWS::RDS::DBProxyTargetGroup TargetGroupName',
+      { onUnusable: (message) => this.logger.warn(message) }
+    );
 
     // Defensive: reject diffs in immutable identity fields. Replacement-rules.ts
     // SHOULD have routed those to a CREATE+DELETE replacement upstream; we
     // double-check here so a missing rule entry doesn't silently corrupt state.
     for (const field of ['DBProxyName', 'TargetGroupName']) {
       const oldVal = previousProperties[field];
-      const newVal = properties[field];
+      // Compare the GUARDED value for TargetGroupName, not the raw one. The
+      // guard above may have warned and substituted 'default'; comparing the
+      // raw `null` here would then throw `ResourceUpdateNotSupportedError` and
+      // send the engine into a REPLACEMENT — making the warning's "using the
+      // default for this update" a lie twelve lines after it was logged.
+      const newVal = field === 'TargetGroupName' ? targetGroupName : properties[field];
       // TargetGroupName defaults to 'default' on AWS — treat undefined and
       // 'default' as equivalent on either side to avoid false-positive diff.
       const normalize = (v: unknown) =>

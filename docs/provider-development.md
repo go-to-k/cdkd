@@ -897,6 +897,36 @@ rather than the user's template, so refusing a malformed value recorded there
 by an older binary would make the stack undeployable with no way out short of
 hand-editing the state file.
 
+A **top-level** read takes two further decisions, both per site (issue
+[#1513](https://github.com/go-to-k/cdkd/issues/1513)), expressed as options on
+`requireConfigString`:
+
+```typescript
+// CFn coerces scalars and cdkd does not, so an unquoted YAML `IpProtocol: -1`
+// arrives as a NUMBER and deploys fine today — refusing it would break a
+// working template. Only for genuinely numeric-looking fields; a number where
+// an enum belongs (`InstanceType`) stays a refusal.
+const ipProtocol = requireConfigString(
+  properties['IpProtocol'],
+  '-1',
+  'AWS::EC2::SecurityGroupIngress IpProtocol',
+  { coerceNumber: true }
+);
+
+// UPDATE-path sites WARN instead of throwing — see §1a: `update()` is a state
+// replay path unconditionally, so a refusal there can leave the resource
+// un-rollbackable with no template-side remedy.
+const status = requireConfigString(properties['Status'], 'Active', 'AWS::IAM::AccessKey Status', {
+  onUnusable: (message) => this.logger.warn(message),
+});
+```
+
+And check WHERE the read lives before guarding it: a helper the `delete()` or
+diff paths also reach is fed state-borne values, so guard the create CALL SITE
+instead (`EC2Provider.buildIpPermission` is the tree's example — it is shared
+with `deleteSecurityGroupIngress` and with the revoke half of the inline-rule
+update diff).
+
 ### 1a. Pre-flight refusal — when a provider may reject what CloudFormation forwards
 
 cdkd's compatibility target is CloudFormation, so the default for a property

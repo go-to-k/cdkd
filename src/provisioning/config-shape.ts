@@ -68,14 +68,6 @@
  * Deliberately NOT rolled, so the decision is challengeable rather than
  * invisible:
  *
- * - **TOP-LEVEL `properties['X'] ?? 'default'` reads** (EC2 `InstanceType` /
- *   `Domain`, API Gateway `AuthorizationType`, IAM access-key `Status`, Lambda
- *   event-invoke `Qualifier`, RDS DB-proxy `TargetGroupName`, GlobalTable
- *   `BillingMode` on create and on the desired side of update). The container
- *   is the provider's own property bag, so rule 2 cannot fire; only rules 3/4
- *   would apply, and refusing a present-but-non-string value there is a
- *   stricter-value decision with its own regression surface (an unquoted YAML
- *   `IpProtocol: -1` is a NUMBER today and deploys fine). Tracked as issue #1513.
  * - **Nested reads whose value is an identity key or a label, never sent to
  *   AWS**: EC2's `rule['IpProtocol'] ?? '-1'` (composes a physical id and is
  *   read from BOTH the previous and next rule), `agentcore-evaluator`'s
@@ -90,6 +82,40 @@
  * - **Reads off the PREVIOUS / state side** (GlobalTable `previousProperties`
  *   `BillingMode`, RDS DB-proxy `delete()` / `readCurrentState`) — the
  *   desired-side-only rule above.
+ *
+ * **The TOP-LEVEL `properties['X'] ?? 'default'` reads followed in issue
+ * #1513**, per site rather than as a sweep: the container there is the
+ * provider's own property bag, so rule 2 cannot fire and only rules 3/4 apply —
+ * and those turn a present-but-non-string value into a hard refusal, which is a
+ * stricter-value decision with its own regression surface. Three axes came out
+ * of it, each an option or an omission rather than a blanket:
+ *
+ * - **Coerce where the value is legitimately numeric-looking.** An unquoted
+ *   YAML `IpProtocol: -1` / `Qualifier: 1` is a NUMBER today and deploys fine,
+ *   so those sites pass `coerceNumber` (CFn coerces scalars; cdkd does not).
+ *   The enum-valued sites — EC2 `InstanceType` / `Domain`, API Gateway
+ *   `AuthorizationType`, IAM access-key `Status`, RDS DB-proxy
+ *   `TargetGroupName` — do not: a number there is a template bug.
+ * - **Throw on CREATE, warn on any STATE-REPLAY path** (`onUnusable`). A rollback
+ *   replays via `provider.update(..., previousState.properties, ...)`, so an
+ *   update-path refusal can strand a historical state record with no
+ *   template-side remedy. "Create is always template-borne" is FALSE and was
+ *   corrected in review: the reverse-replacement arm also calls
+ *   `provider.create(..., previousState.properties, REPLAYING_STATE_CREATE_CONTEXT)`,
+ *   so a create guard downgrades too — see {@link replayWarn}. A create reached
+ *   as the re-create half of a delete-then-create UPDATE
+ *   (`EC2Provider.updateSecurityGroupIngress`) is the third such path, and the
+ *   worst: the revoke has already committed, so a refusal leaves the rule
+ *   deleted from AWS.
+ * - **Left unguarded: `EC2Provider.buildIpPermission`'s `IpProtocol` read.**
+ *   Textually a top-level read, but the helper is also reached from
+ *   `deleteSecurityGroupIngress` and from the REVOKE half of the inline-rule
+ *   update diff, both carrying STATE-borne rules — a refusal there would break
+ *   destroy and rollback. The create path is guarded at its own call site
+ *   instead, which refuses before the helper is ever reached.
+ *
+ * The one site #1513 leaves open is GlobalTable `BillingMode`, whose file was
+ * owned by a parallel lane at the time.
  *
  * This is a provider-layer guard rather than a pre-flight template check
  * because **rule 4** is only decidable AFTER intrinsic resolution: at pre-flight
@@ -143,6 +169,40 @@ export function readConfigString(
 }
 
 /**
+ * Per-call-site relaxations for {@link requireConfigString}, both introduced by
+ * the TOP-LEVEL sweep (issue #1513). Each is opt-in per site because the whole
+ * point of that issue is that these are PER-SITE decisions, not a blanket rule.
+ */
+export interface ConfigStringOptions {
+  /**
+   * Accept a finite NUMBER and stringify it, instead of refusing it.
+   *
+   * CloudFormation coerces scalars and cdkd does not, so an unquoted YAML
+   * `IpProtocol: -1` or `Qualifier: 1` arrives here as a number and deploys
+   * fine today. Refusing it would break a template that works — so the sites
+   * whose value is legitimately numeric-looking coerce, and only those. A
+   * number where an enum belongs (`InstanceType`, `AuthorizationType`,
+   * `Status`, `Domain`) stays a refusal.
+   */
+  coerceNumber?: boolean;
+
+  /**
+   * Warn through this callback and return the fallback, instead of throwing.
+   *
+   * For UPDATE-path call sites ONLY. `rollback-executor.ts` replays a rollback
+   * by calling `provider.update(..., previousState.properties, ...)`, so the
+   * "desired" bag an `update()` sees can be a HISTORICAL cdkd state record
+   * written by an older binary — one that may already carry the malformed value
+   * this guard refuses. A hard refusal there would make such a resource not
+   * merely un-updatable but UN-ROLLBACKABLE, with no template-side remedy
+   * (editing the template does not change the state record). Warning keeps the
+   * divergence loud without stranding the user, while the CREATE path — where
+   * the value is always template-borne — stays strict.
+   */
+  onUnusable?: (message: string) => void;
+}
+
+/**
  * The value-level half of {@link readConfigString}, for a value the caller has
  * ALREADY read out of a container it knows is a plain object — in practice a
  * TOP-LEVEL property read straight off the provider's `properties` bag, where
@@ -160,9 +220,16 @@ export function readConfigString(
  * @param value The already-read field value.
  * @param fallback The value to use when the field is absent.
  * @param path CFn path used in the error message, e.g. `AWS::WAFv2::WebACL Scope`.
- * @throws Error when the value is present but not a non-blank string.
+ * @param options Per-site relaxations — see {@link ConfigStringOptions}.
+ * @throws Error when the value is present but not a non-blank string (and not a
+ *   finite number under `coerceNumber`), unless `onUnusable` is supplied.
  */
-export function requireConfigString(value: unknown, fallback: string, path: string): string {
+export function requireConfigString(
+  value: unknown,
+  fallback: string,
+  path: string,
+  options?: ConfigStringOptions
+): string {
   if (value === undefined) return fallback;
 
   // A BLANK string is only suspicious because it silently takes the default.
@@ -174,16 +241,62 @@ export function requireConfigString(value: unknown, fallback: string, path: stri
   // templates, which is the opposite of its purpose.
   if (fallback === '' && typeof value === 'string') return value;
 
+  // CloudFormation coerces scalars; cdkd does not. An unquoted YAML
+  // `IpProtocol: -1` / `Qualifier: 1` is a NUMBER today and deploys fine, so
+  // at those sites a refusal would break a working template — stringify
+  // instead, which is what CFn does. Opt-in per call site, never blanket:
+  // a number where an enum belongs (`InstanceType: 5`) is still a refusal.
+  if (options?.coerceNumber === true && typeof value === 'number' && Number.isFinite(value)) {
+    return String(value);
+  }
+
   if (typeof value !== 'string' || value.trim() === '') {
+    const detail =
+      `(got ${describe(value)}) — check for an unresolved intrinsic or a ` +
+      `mis-nested template value`;
+    const named = fallback === '' ? '' : ` (${fallback})`;
+
+    if (options?.onUnusable) {
+      options.onUnusable(
+        `${path} must be a non-empty string ${detail}. Ignoring it and using the ` +
+          `default${named} here; the same value is REFUSED on a template-path create`
+      );
+      return fallback;
+    }
+
     throw new Error(
-      `${path} must be a non-empty string (got ${describe(value)}) — check for an ` +
-        `unresolved intrinsic or a mis-nested template value. Omit the field ` +
+      `${path} must be a non-empty string ${detail}. Omit the field ` +
         `entirely to use the default` +
-        (fallback === '' ? '' : ` (${fallback})`)
+        named
     );
   }
 
   return value;
+}
+
+/**
+ * The CREATE-path counterpart of {@link ConfigStringOptions.onUnusable}.
+ *
+ * `create()` is NOT always template-borne, which is the correction that made
+ * this helper necessary: `rollback-executor.ts`'s reverse-replacement arm
+ * revives the OLD resource by calling `provider.create(..., previousState.properties,
+ * REPLAYING_STATE_CREATE_CONTEXT)`. A resource written by an older binary with a
+ * value this guard now refuses would otherwise become un-rollbackable, with only
+ * a hand-edit of `state.json` as a remedy — the same failure the update-path
+ * warn exists to prevent, and what `.claude/rules/providers.md` requires a
+ * create-side pre-flight refusal to downgrade for.
+ *
+ * Spread into the options bag so a site can combine it with `coerceNumber`:
+ * `{ coerceNumber: true, ...replayWarn(this.logger, context) }`.
+ *
+ * @returns `{ onUnusable }` when the caller declared a state replay, else `{}`
+ *   (an ordinary template-path create, where the refusal stands).
+ */
+export function replayWarn(
+  logger: { warn: (message: string) => void },
+  context?: { replayingState?: boolean }
+): ConfigStringOptions {
+  return context?.replayingState === true ? { onUnusable: (message) => logger.warn(message) } : {};
 }
 
 /**

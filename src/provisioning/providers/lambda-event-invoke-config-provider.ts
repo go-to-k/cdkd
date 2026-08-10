@@ -10,6 +10,8 @@ import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import { replayWarn, requireConfigString } from '../config-shape.js';
+import type { CreateContext } from '../../types/resource.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -115,7 +117,18 @@ export class LambdaEventInvokeConfigProvider implements ResourceProvider {
     properties: Record<string, unknown>
   ): import('@aws-sdk/client-lambda').PutFunctionEventInvokeConfigCommandInput {
     const functionName = properties['FunctionName'] as string;
-    const qualifier = (properties['Qualifier'] as string | undefined) ?? '$LATEST';
+    // Shared by create() and update(), so this one WARNS: a rollback replays
+    // through `update()` with a historical cdkd STATE record as the desired
+    // bag, and refusing there could leave the resource un-rollbackable. The
+    // create path refuses at its own call site before reaching this helper
+    // (issue #1513). `coerceNumber` because an unquoted YAML `Qualifier: 1` is
+    // a NUMBER today and deploys fine.
+    const qualifier = requireConfigString(
+      properties['Qualifier'],
+      '$LATEST',
+      'AWS::Lambda::EventInvokeConfig Qualifier',
+      { coerceNumber: true, onUnusable: (message) => this.logger.warn(message) }
+    );
     const input: import('@aws-sdk/client-lambda').PutFunctionEventInvokeConfigCommandInput = {
       FunctionName: functionName,
     };
@@ -138,7 +151,8 @@ export class LambdaEventInvokeConfigProvider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating Lambda EventInvokeConfig ${logicalId}`);
 
@@ -150,7 +164,12 @@ export class LambdaEventInvokeConfigProvider implements ResourceProvider {
         logicalId
       );
     }
-    const qualifier = (properties['Qualifier'] as string | undefined) ?? '$LATEST';
+    const qualifier = requireConfigString(
+      properties['Qualifier'],
+      '$LATEST',
+      'AWS::Lambda::EventInvokeConfig Qualifier',
+      { coerceNumber: true, ...replayWarn(this.logger, context) }
+    );
 
     try {
       await this.lambdaClient.send(

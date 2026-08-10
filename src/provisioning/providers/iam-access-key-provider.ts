@@ -12,6 +12,8 @@ import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import { replayWarn, requireConfigString } from '../config-shape.js';
+import type { CreateContext } from '../../types/resource.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -88,7 +90,8 @@ export class IAMAccessKeyProvider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating IAM access key ${logicalId}`);
 
@@ -100,7 +103,12 @@ export class IAMAccessKeyProvider implements ResourceProvider {
         logicalId
       );
     }
-    const status = (properties['Status'] as string | undefined) ?? 'Active';
+    const status = requireConfigString(
+      properties['Status'],
+      'Active',
+      'AWS::IAM::AccessKey Status',
+      replayWarn(this.logger, context)
+    );
 
     try {
       const response = await this.iamClient.send(
@@ -191,12 +199,41 @@ export class IAMAccessKeyProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    _previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating IAM access key ${logicalId}: ${physicalId}`);
 
     const userName = properties['UserName'] as string | undefined;
-    const status = ((properties['Status'] as string | undefined) ?? 'Active') as StatusType;
+    // WARN, not throw: a rollback replays through `update()` with a historical
+    // cdkd STATE record as the desired bag, so refusing here could leave a
+    // resource un-rollbackable with no template-side remedy (issue #1513).
+    //
+    // The warn fallback is the PREVIOUS status, not the CFn default `Active`.
+    // Defaulting to `Active` on an unusable value would ENABLE a credential the
+    // template did not ask to enable — the opposite-of-declared-intent
+    // substitution this whole guard exists to prevent, and a security-relevant
+    // one. Leaving the key as it is, loudly, is the conservative answer; the
+    // create path still refuses outright, where nothing exists to preserve.
+    // (`previousProperties` is only a FALLBACK here — the desired side is still
+    // the sole guarded value, per the desired-side-only rule.)
+    // An ABSENT Status keeps resetting to the CFn default `Active` — that is
+    // absent-field removal semantics, documented above and asserted by an
+    // existing test. The previous-status fallback applies ONLY to a
+    // present-but-unusable value, so the two cases are split rather than folded
+    // into one `fallback` argument (the helper cannot tell them apart).
+    // Gated to the ENUM, not merely to a non-blank string: the previous side is
+    // a STATE record, so it can itself carry `'inactive'` / `'Deleted'` / a
+    // stray-whitespace value. Passing that through would send AWS a
+    // ValidationException on the very replay path this fallback exists to keep
+    // alive — the old code always sent a valid `Active`.
+    const previousStatus = previousProperties['Status'] === 'Inactive' ? 'Inactive' : 'Active';
+    const status = (
+      properties['Status'] === undefined
+        ? 'Active'
+        : requireConfigString(properties['Status'], previousStatus, 'AWS::IAM::AccessKey Status', {
+            onUnusable: (message) => this.logger.warn(message),
+          })
+    ) as StatusType;
 
     try {
       await this.iamClient.send(
