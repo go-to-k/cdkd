@@ -1,3 +1,10 @@
+## [0.278.23](https://github.com/go-to-k/cdkd/compare/v0.278.22...v0.278.23) (2026-08-10)
+
+
+### Bug Fixes
+
+* **glue:** preserve AWS-managed Table/Database Parameters across a full-replace update ([#1481](https://github.com/go-to-k/cdkd/issues/1481)) ([cfe73c1](https://github.com/go-to-k/cdkd/commit/cfe73c110135492b49c983525f8a4ede88c2ec4b))
+
 ## [0.278.22](https://github.com/go-to-k/cdkd/compare/v0.278.21...v0.278.22) (2026-08-10)
 
 
