@@ -762,61 +762,81 @@ function tagKeys(tags: ReadonlyArray<Record<string, unknown>>): string[] {
 }
 
 /**
- * Revert a TAG LIST as a diff against the baseline rather than as a whole-value
- * overwrite (issue #1501).
+ * AWS-SERVICE-authored tag keys a `--revert` must not strip (issue #1501).
  *
- * Everything else in {@link buildRevertNewProperties} overwrites a drifted
- * top-level key wholesale, which for `Tags` means "AWS ends up with exactly the
- * tags cdkd state recorded" — so an AWS-SERVICE-authored tag added after
- * deploy is stripped. The concrete case that forced this: ECS attaches
- * `AmazonECSManaged` to an ASG when a capacity provider binds it, and that tag
- * is REQUIRED for managed scaling to work. Because any CDK ASG declares at
- * least a `Name` tag, `Tags` is template-DECLARED, so the #1498 carve-out
- * (undeclared + captured-empty) correctly does not apply — and the tag list is
- * an ARRAY, which {@link findRevertDroppedAwsKeys}'s walk compares wholesale
- * and never descends into. Post-revert the ASG kept the capacity provider with
- * its managed scaling silently broken (verified live 2026-08-10).
+ * `AmazonECSManaged` is attached by ECS when a capacity provider binds an Auto
+ * Scaling group, and managed scaling stops working without it. `aws:`-prefixed
+ * keys are AWS-reserved (a write of one is rejected outright, which is why
+ * `normalizeAwsTagsToCfn` strips them on import) — so cdkd can never have been
+ * the author of one, and a revert that dropped one would be pushing an intent
+ * the template cannot express.
+ */
+const SERVICE_MANAGED_TAG_KEYS: ReadonlySet<string> = new Set(['AmazonECSManaged']);
+
+/** Whether a tag key is AWS-service-authored, per {@link SERVICE_MANAGED_TAG_KEYS}. */
+function isServiceManagedTagKey(key: string): boolean {
+  return SERVICE_MANAGED_TAG_KEYS.has(key) || key.startsWith('aws:');
+}
+
+/**
+ * Revert a TAG LIST, preserving AWS-SERVICE-authored entries (issue #1501).
  *
- * The semantic, which mirrors the `applyTagDiff` several providers already use
- * on update:
+ * Everything in {@link buildRevertNewProperties} overwrites a drifted top-level
+ * key wholesale, which for `Tags` means "AWS ends up with exactly the tags cdkd
+ * state recorded" — so a service-authored tag added after deploy is stripped.
+ * The concrete case: ECS attaches `AmazonECSManaged` to an ASG when a capacity
+ * provider binds it, and that tag is REQUIRED for managed scaling. Because any
+ * CDK ASG declares at least a `Name` tag, `Tags` is template-DECLARED, so the
+ * #1498 carve-out (undeclared + captured-empty) correctly does not apply — and
+ * the tag list is an ARRAY, which {@link findRevertDroppedAwsKeys}'s walk
+ * compares wholesale and never descends into. Post-revert the ASG kept the
+ * capacity provider with its managed scaling silently broken (verified live
+ * 2026-08-10).
  *
- * - a tag the baseline has and AWS LOST is re-added;
- * - a tag whose VALUE differs is reset to the baseline value;
- * - a tag ONLY AWS has is PRESERVED — the baseline never knew about it, so
- *   "push state over AWS" cannot express an intent to remove it.
+ * The semantic: the baseline still WINS for every ordinary tag — one it has and
+ * AWS lost is re-added, one whose value differs is reset, and a
+ * user/console-added tag AWS alone has is still REMOVED. Only a
+ * {@link isServiceManagedTagKey} entry survives.
  *
- * The trade-off is deliberate and recorded rather than hidden: reverting a
- * console-added tag now needs an explicit action (delete it in the console, or
- * `cdkd drift --accept` then re-deploy), because a revert cannot tell a
- * console-added tag from a service-required one. Detection is unchanged — the
- * drift is still REPORTED, and the plan names every preserved key via
- * {@link findRevertPreservedTagKeys}, so nothing becomes invisible. Losing a
- * service-required tag silently breaks a live resource; keeping an unwanted one
- * does not.
+ * **This is the issue's option 2, not its option 1, and the choice was settled
+ * by a live test rather than by taste.** Option 1 (revert the whole tag list as
+ * a diff, so ANY out-of-band add survives) was implemented first and failed the
+ * `drift-revert` integ at its final assertion: that fixture injects an
+ * `IntegInjected` tag and requires `--revert` to strip it, i.e. "revert removes
+ * a console-added tag" is an established contract with a test behind it.
+ * Option 1 would redefine revert semantics for a whole property class — which
+ * is exactly the design pass the issue said it needed — so the narrow safeguard
+ * ships instead, fixing the reported breakage while leaving ordinary tag revert
+ * untouched.
  *
  * Scope: TOP-LEVEL tag lists, which is where `buildRevertNewProperties`
  * operates. A tag list nested inside another property (an EC2 launch template's
  * `TagSpecifications`) still reverts wholesale.
  *
- * Order: baseline entries first in baseline order, then the AWS-only entries.
- * Providers apply tags as a set and the drift comparator canonicalizes tag-list
- * order on both sides (`drift-normalize.ts`), so the order is for
- * readability / determinism only.
+ * Order: baseline entries first in baseline order, then the preserved
+ * service-managed entries. Providers apply tags as a set and the drift
+ * comparator canonicalizes tag-list order on both sides
+ * (`drift-normalize.ts`), so the order is for readability / determinism only.
  */
 export function mergeTagListForRevert(
   baselineTags: ReadonlyArray<Record<string, unknown>>,
   awsTags: ReadonlyArray<Record<string, unknown>>
 ): Array<Record<string, unknown>> {
   const baselineKeys = new Set(tagKeys(baselineTags));
-  return [...baselineTags, ...awsTags.filter((t) => !baselineKeys.has(t['Key'] as string))];
+  const preserved = awsTags.filter((t) => {
+    const key = t['Key'] as string;
+    return !baselineKeys.has(key) && isServiceManagedTagKey(key);
+  });
+  return [...baselineTags, ...preserved];
 }
 
 /**
- * The tag keys a `--revert` will PRESERVE rather than strip, i.e. the ones
- * present on the AWS side of a drifted top-level tag list and absent from the
- * revert baseline (issue #1501).
+ * The AWS-service-authored tag keys a `--revert` will PRESERVE rather than
+ * strip, i.e. those present on the AWS side of a drifted top-level tag list,
+ * absent from the revert baseline, and {@link isServiceManagedTagKey} (issue
+ * #1501).
  *
- * Reported in the plan so the diff semantic of {@link mergeTagListForRevert} is
+ * Reported in the plan so the carve-out of {@link mergeTagListForRevert} is
  * visible BEFORE the confirmation prompt: a user who did want the tag gone
  * learns here that the revert will not do it.
  *
@@ -841,7 +861,9 @@ export function findRevertPreservedTagKeys(
     if (!isCfnTagList(desiredValue) || !isCfnTagList(awsValue)) continue;
     const baselineKeys = new Set(tagKeys(desiredValue));
     for (const tagKey of tagKeys(awsValue)) {
-      if (!baselineKeys.has(tagKey)) preserved.add(`${key}.${tagKey}`);
+      if (!baselineKeys.has(tagKey) && isServiceManagedTagKey(tagKey)) {
+        preserved.add(`${key}.${tagKey}`);
+      }
     }
   }
 
@@ -1209,13 +1231,16 @@ function printRevertPlan(reports: StackDriftReport[]): void {
         if (preserved.length > 0) {
           const word = preserved.length === 1 ? 'tag' : 'tags';
           process.stdout.write(
-            `    ! reverting a tag list restores the recorded tags but KEEPS ${preserved.length} ` +
-              `${word} only AWS has (a service may require them):\n`
+            `    ! reverting this tag list KEEPS ${preserved.length} AWS-service-authored ` +
+              `${word} the baseline does not carry (a service requires them):\n`
           );
           for (const path of preserved) {
             process.stdout.write(`        ${path}\n`);
           }
-          process.stdout.write(`      Remove them in the AWS console if they are unwanted.\n`);
+          process.stdout.write(
+            `      Every other tag reverts normally. Remove a kept one in the AWS ` +
+              `console if it is genuinely unwanted.\n`
+          );
         }
       }
       if (stateResource && stateResource.observedProperties === undefined) {

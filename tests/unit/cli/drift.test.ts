@@ -1543,14 +1543,14 @@ describe('findRevertDroppedAwsKeys (pure helper, issue #1478)', () => {
   });
 });
 
-describe('tag-list revert is a DIFF, not an overwrite (pure helpers, issue #1501)', () => {
+describe('tag-list revert preserves SERVICE-authored tags (pure helpers, issue #1501)', () => {
   const loadDrift = async () => await import('../../../src/cli/commands/drift.js');
 
   // The live case: ECS attaches `AmazonECSManaged` to an ASG when a capacity
   // provider binds it, and managed scaling breaks without it. `Tags` is
   // template-DECLARED (every CDK ASG carries at least `Name`), so the #1498
-  // undeclared-and-captured-empty carve-out does not apply, and the tag list
-  // is an array, which the #1478 walk compares wholesale.
+  // undeclared-and-captured-empty carve-out does not apply, and the tag list is
+  // an array, which the #1478 walk compares wholesale.
   const baseline = [{ Key: 'Name', Value: 'my-asg' }];
   const awsCurrent = [
     { Key: 'Name', Value: 'renamed-in-console' },
@@ -1558,7 +1558,7 @@ describe('tag-list revert is a DIFF, not an overwrite (pure helpers, issue #1501
   ];
   const drifts = [{ path: 'Tags', stateValue: baseline, awsValue: awsCurrent }];
 
-  it('keeps the AWS-only tag while reverting the changed one', async () => {
+  it('keeps the service-authored tag while reverting the changed one', async () => {
     const { buildRevertNewProperties } = await loadDrift();
 
     const result = buildRevertNewProperties(drifts, { Tags: baseline }, { Tags: awsCurrent });
@@ -1566,6 +1566,43 @@ describe('tag-list revert is a DIFF, not an overwrite (pure helpers, issue #1501
     expect(result['Tags']).toEqual([
       { Key: 'Name', Value: 'my-asg' },
       { Key: 'AmazonECSManaged', Value: 'true' },
+    ]);
+  });
+
+  // THE BOUND, and the reason this is the issue's option 2 rather than option 1.
+  // A blanket "preserve every AWS-only tag" was implemented first and FAILED the
+  // `drift-revert` integ, whose fixture injects an `IntegInjected` tag and
+  // requires --revert to strip it. Removing a user/console-added tag is an
+  // established contract with a test behind it; only the service-managed
+  // carve-out is new.
+  it('still STRIPS an ordinary console-added tag, as revert always has', async () => {
+    const { buildRevertNewProperties } = await loadDrift();
+
+    const injected = [
+      { Key: 'Name', Value: 'my-asg' },
+      { Key: 'IntegInjected', Value: 'yes' },
+    ];
+    const result = buildRevertNewProperties(
+      [{ path: 'Tags', stateValue: baseline, awsValue: injected }],
+      { Tags: baseline },
+      { Tags: injected }
+    );
+
+    expect(result['Tags']).toEqual([{ Key: 'Name', Value: 'my-asg' }]);
+  });
+
+  it('preserves an `aws:`-prefixed reserved key, which cdkd can never have authored', async () => {
+    const { mergeTagListForRevert } = await loadDrift();
+
+    expect(
+      mergeTagListForRevert(baseline, [
+        { Key: 'Name', Value: 'my-asg' },
+        { Key: 'aws:cloudformation:stack-name', Value: 'legacy' },
+        { Key: 'HandAdded', Value: '1' },
+      ])
+    ).toEqual([
+      { Key: 'Name', Value: 'my-asg' },
+      { Key: 'aws:cloudformation:stack-name', Value: 'legacy' },
     ]);
   });
 
@@ -1594,6 +1631,17 @@ describe('tag-list revert is a DIFF, not an overwrite (pure helpers, issue #1501
     ).toEqual([{ Key: 'Env', Value: 'prod' }]);
   });
 
+  it('a baseline entry for a service tag still wins, so a real revert of it works', async () => {
+    const { mergeTagListForRevert } = await loadDrift();
+
+    expect(
+      mergeTagListForRevert(
+        [{ Key: 'AmazonECSManaged', Value: 'true' }],
+        [{ Key: 'AmazonECSManaged', Value: 'tampered' }]
+      )
+    ).toEqual([{ Key: 'AmazonECSManaged', Value: 'true' }]);
+  });
+
   it('a non-tag list still reverts WHOLESALE, so the merge cannot leak into other keys', async () => {
     const { buildRevertNewProperties } = await loadDrift();
 
@@ -1620,7 +1668,7 @@ describe('tag-list revert is a DIFF, not an overwrite (pure helpers, issue #1501
     expect(result['Tags']).toEqual([]);
   });
 
-  it('names every preserved tag so the plan can surface it before the prompt', async () => {
+  it('names every preserved service tag so the plan can surface it before the prompt', async () => {
     const { findRevertPreservedTagKeys } = await loadDrift();
 
     expect(findRevertPreservedTagKeys(drifts, { Tags: baseline }, { Tags: awsCurrent })).toEqual([
@@ -1628,14 +1676,18 @@ describe('tag-list revert is a DIFF, not an overwrite (pure helpers, issue #1501
     ]);
   });
 
-  it('reports nothing to preserve when AWS carries no extra tag', async () => {
+  it('does NOT name an ordinary AWS-only tag, which the revert removes anyway', async () => {
     const { findRevertPreservedTagKeys } = await loadDrift();
 
+    const injected = [
+      { Key: 'Name', Value: 'my-asg' },
+      { Key: 'IntegInjected', Value: 'yes' },
+    ];
     expect(
       findRevertPreservedTagKeys(
-        [{ path: 'Tags', stateValue: baseline, awsValue: baseline }],
+        [{ path: 'Tags', stateValue: baseline, awsValue: injected }],
         { Tags: baseline },
-        { Tags: [{ Key: 'Name', Value: 'renamed' }] }
+        { Tags: injected }
       )
     ).toEqual([]);
   });
@@ -1652,4 +1704,3 @@ describe('tag-list revert is a DIFF, not an overwrite (pure helpers, issue #1501
     ).toEqual([]);
   });
 });
-

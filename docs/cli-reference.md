@@ -1633,19 +1633,18 @@ Flags:
   `observedProperties ?? properties` — same precedence as the
   comparator, so `--revert` undoes exactly the delta `cdkd drift`
   reported and leaves non-drifted attributes untouched. One exception:
-  a drifted **top-level tag list** is reverted as a DIFF rather than
-  overwritten wholesale (issue #1501) — a recorded tag AWS lost is
-  re-added and a changed value is reset, but a tag only AWS has is
-  PRESERVED, because "push state over AWS" cannot distinguish a
-  console-added tag from a service-required one. ECS attaches
-  `AmazonECSManaged` to an ASG when a capacity provider binds it and
-  managed scaling breaks without it, so the overwrite silently broke
-  live resources. Detection is unchanged (the drift is still reported),
-  and the `--revert` plan names every preserved tag before the
-  confirmation prompt — remove an unwanted one in the console, or
-  `--accept` it and re-deploy. A tag list NESTED inside another
-  property (an EC2 launch template's `TagSpecifications`) still reverts
-  wholesale. Requires a stack lock. Mutually exclusive with
+  a drifted **top-level tag list** keeps any AWS-SERVICE-authored entry
+  instead of stripping it (issue #1501). Every ordinary tag still
+  reverts exactly as before — one the baseline lost is re-added, a
+  changed value is reset, and a user- or console-added tag AWS alone
+  carries is still REMOVED — but a service-managed key
+  (`AmazonECSManaged`, or any `aws:`-reserved prefix) survives. ECS
+  attaches `AmazonECSManaged` to an ASG when a capacity provider binds
+  it and managed scaling breaks without it, so the previous
+  strip-everything revert silently broke live resources. The `--revert`
+  plan names each preserved key before the confirmation prompt. A tag
+  list NESTED inside another property (an EC2 launch template's
+  `TagSpecifications`) still reverts wholesale. Requires a stack lock. Mutually exclusive with
   `--accept`. See "Resolving drift" below.
 - `--dry-run` — for `--accept` / `--revert`: print the planned mutations
   and exit without acquiring a lock or hitting AWS / S3.
