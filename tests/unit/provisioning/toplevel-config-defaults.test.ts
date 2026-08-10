@@ -130,6 +130,31 @@ describe('AWS::EC2::SecurityGroupIngress IpProtocol (create)', () => {
     // The physical id is composed from the protocol, so coercion must not
     // change it for a template that already worked.
     expect(result.physicalId).toBe('sg-123|-1|-1|-1');
+    // ...and the rule still reaches AWS. Asserting ONLY the physical id would
+    // pin nothing: `${-1}` is `'-1'` with or without the coercion (reviewer
+    // finding). `buildIpPermission` re-reads the raw bag deliberately — see the
+    // unguarded-helper decision — so the wire value stays the number AWS has
+    // always accepted here; what matters is that the rule is sent at all.
+    expect(inputOf().IpPermissions).toEqual([
+      { IpProtocol: -1, IpRanges: [{ CidrIp: '0.0.0.0/0' }] },
+    ]);
+  });
+
+  it('sends a string protocol through untouched', async () => {
+    mockSend.mockResolvedValue({});
+    const provider = new EC2Provider();
+
+    await provider.create('Ingress', 'AWS::EC2::SecurityGroupIngress', {
+      GroupId: 'sg-123',
+      IpProtocol: 'tcp',
+      FromPort: 443,
+      ToPort: 443,
+      CidrIp: '0.0.0.0/0',
+    });
+
+    expect(inputOf().IpPermissions).toEqual([
+      { IpProtocol: 'tcp', FromPort: 443, ToPort: 443, IpRanges: [{ CidrIp: '0.0.0.0/0' }] },
+    ]);
   });
 
   it('refuses a null protocol', async () => {
@@ -310,6 +335,25 @@ describe('AWS::IAM::AccessKey Status', () => {
     expect(logWarn).toHaveBeenCalledWith(expect.stringMatching(/REFUSED on create/));
     expect(inputOf().Status).toBe('Active');
   });
+
+  it('falls back to the PREVIOUS status, never silently ENABLING the key', async () => {
+    // Reviewer finding: defaulting an unusable value to the CFn default
+    // `Active` would enable a credential the template did not ask to enable —
+    // the opposite-of-declared-intent substitution this guard exists to stop.
+    mockSend.mockResolvedValue({});
+    const provider = new IAMAccessKeyProvider();
+
+    await provider.update(
+      'Key',
+      'AKIAEXAMPLE',
+      'AWS::IAM::AccessKey',
+      { UserName: 'alice', Status: null },
+      { UserName: 'alice', Status: 'Inactive' }
+    );
+
+    expect(logWarn).toHaveBeenCalled();
+    expect(inputOf().Status).toBe('Inactive');
+  });
 });
 
 describe('AWS::Lambda::EventInvokeConfig Qualifier', () => {
@@ -371,24 +415,43 @@ describe('AWS::RDS::DBProxyTargetGroup TargetGroupName', () => {
     ).rejects.toThrow(/AWS::RDS::DBProxyTargetGroup TargetGroupName must be a non-empty string/);
   });
 
-  it('WARNS on update rather than refusing a historical state record', async () => {
+  it('WARNS on update and actually CONTINUES with the default', async () => {
+    // Reviewer finding: the immutable-identity loop below the guard used to
+    // compare the RAW value, so a warned-about `null` still threw
+    // ResourceUpdateNotSupportedError twelve lines later — making the warning's
+    // "using the default for this update" false. It now compares the GUARDED
+    // value, so the update proceeds exactly as the message promises.
+    mockSend.mockResolvedValue({});
     const provider = new RDSDBProxyTargetGroupProvider();
 
-    // The pre-existing immutable-identity guard still fires after the warning
-    // (null !== the normalized 'default'); what matters is that the shape guard
-    // itself did not throw.
+    const result = await provider.update(
+      'Tg',
+      'proxy1|default',
+      'AWS::RDS::DBProxyTargetGroup',
+      { DBProxyName: 'proxy1', TargetGroupName: null },
+      { DBProxyName: 'proxy1' }
+    );
+
+    expect(result.wasReplaced).toBe(false);
+    expect(logWarn).toHaveBeenCalledWith(
+      expect.stringMatching(
+        /AWS::RDS::DBProxyTargetGroup TargetGroupName must be a non-empty string/
+      )
+    );
+  });
+
+  it('still refuses a REAL immutable-identity change', async () => {
+    // The guard change must not weaken the immutability check itself.
+    const provider = new RDSDBProxyTargetGroupProvider();
+
     await expect(
       provider.update(
         'Tg',
         'proxy1|default',
         'AWS::RDS::DBProxyTargetGroup',
-        { DBProxyName: 'proxy1', TargetGroupName: null },
-        { DBProxyName: 'proxy1' }
+        { DBProxyName: 'proxy1', TargetGroupName: 'other' },
+        { DBProxyName: 'proxy1', TargetGroupName: 'default' }
       )
     ).rejects.toThrow(/immutable/);
-
-    expect(logWarn).toHaveBeenCalledWith(
-      expect.stringMatching(/AWS::RDS::DBProxyTargetGroup TargetGroupName must be a non-empty string/)
-    );
   });
 });

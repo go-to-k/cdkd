@@ -199,7 +199,7 @@ export class IAMAccessKeyProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    _previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating IAM access key ${logicalId}: ${physicalId}`);
 
@@ -207,13 +207,30 @@ export class IAMAccessKeyProvider implements ResourceProvider {
     // WARN, not throw: a rollback replays through `update()` with a historical
     // cdkd STATE record as the desired bag, so refusing here could leave a
     // resource un-rollbackable with no template-side remedy (issue #1513).
-    const status = requireConfigString(
-      properties['Status'],
-      'Active',
-      'AWS::IAM::AccessKey Status',
-      {
-        onUnusable: (message) => this.logger.warn(message),
-      }
+    //
+    // The warn fallback is the PREVIOUS status, not the CFn default `Active`.
+    // Defaulting to `Active` on an unusable value would ENABLE a credential the
+    // template did not ask to enable — the opposite-of-declared-intent
+    // substitution this whole guard exists to prevent, and a security-relevant
+    // one. Leaving the key as it is, loudly, is the conservative answer; the
+    // create path still refuses outright, where nothing exists to preserve.
+    // (`previousProperties` is only a FALLBACK here — the desired side is still
+    // the sole guarded value, per the desired-side-only rule.)
+    // An ABSENT Status keeps resetting to the CFn default `Active` — that is
+    // absent-field removal semantics, documented above and asserted by an
+    // existing test. The previous-status fallback applies ONLY to a
+    // present-but-unusable value, so the two cases are split rather than folded
+    // into one `fallback` argument (the helper cannot tell them apart).
+    const previousStatus =
+      typeof previousProperties['Status'] === 'string' && previousProperties['Status'].trim() !== ''
+        ? (previousProperties['Status'] as string)
+        : 'Active';
+    const status = (
+      properties['Status'] === undefined
+        ? 'Active'
+        : requireConfigString(properties['Status'], previousStatus, 'AWS::IAM::AccessKey Status', {
+            onUnusable: (message) => this.logger.warn(message),
+          })
     ) as StatusType;
 
     try {

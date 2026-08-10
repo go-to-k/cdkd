@@ -229,7 +229,12 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
     // double-check here so a missing rule entry doesn't silently corrupt state.
     for (const field of ['DBProxyName', 'TargetGroupName']) {
       const oldVal = previousProperties[field];
-      const newVal = properties[field];
+      // Compare the GUARDED value for TargetGroupName, not the raw one. The
+      // guard above may have warned and substituted 'default'; comparing the
+      // raw `null` here would then throw `ResourceUpdateNotSupportedError` and
+      // send the engine into a REPLACEMENT — making the warning's "using the
+      // default for this update" a lie twelve lines after it was logged.
+      const newVal = field === 'TargetGroupName' ? targetGroupName : properties[field];
       // TargetGroupName defaults to 'default' on AWS — treat undefined and
       // 'default' as equivalent on either side to avoid false-positive diff.
       const normalize = (v: unknown) =>
