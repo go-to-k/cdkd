@@ -30,9 +30,24 @@ dry-run signal, and must not relax data-safety guards or the validation that
 protects the AWS call itself. Absent / `false` = an ordinary template-path
 create (`cdkd deploy`, the replacement / `--replace` / `--recreate-via-*`
 creates), where the refusal stands. `GlueProvider`'s
-`assertIcebergTableInputAbsent` is the only consumer today; the full contract
-is on `CreateContext` in `src/provisioning/region-check.ts`, next to
-`DeleteContext`.
+`enforceIcebergTableInputAbsent` is the only consumer today; the full contract
+is on `CreateContext` in `src/types/resource.ts` (NOT in `region-check.ts`
+where `DeleteContext` lives — that type belongs there because its
+`expectedRegion` feeds `assertRegionMatch`; a one-line pointer sits next to
+`DeleteContext` so a reader looking for one finds the other).
+
+**A create-side pre-flight refusal forbids re-creating inside `update()`.**
+Several providers call `this.create(logicalId, resourceType, properties)` from
+their own `update()` (ACM certificate, IAM managed policy, IAM role, Lambda
+permission, SNS subscription). Those internal re-creates CANNOT receive a
+context — `update()` has no context parameter — and the `properties` they
+forward ARE a state record during a rollback replay (`rollback-executor.ts`'s
+`revert` arm calls `provider.update(..., previousState.properties, ...)`, as
+does `drift --revert`). So a provider that both refuses on create AND
+re-creates inside `update()` would fire that refusal on a replay with no way
+to detect it. None of the five does today (required-field validation only,
+which correctly stays a hard error), so this is a constraint on the next
+provider rather than a description of the current tree.
 
 The `context.expectedRegion` parameter on `delete` is the region recorded
 in the stack state when the resource was created. Providers MUST verify

@@ -186,6 +186,27 @@ describe('DeployEngine — --replace wire-through', () => {
     expect(callOrder).toEqual(['update', 'delete', 'create']);
   });
 
+  it('the update-failure replacement create passes NO CreateContext (#1463 inverse fence)', async () => {
+    // `CreateContext.replayingState` is the rollback executor's signal that a
+    // create replays a cdkd STATE record, and a provider pre-flight refusal
+    // DOWNGRADES to a warning when it is set. This arm is template-driven, so
+    // it must never set it — the refusal has to stand where the user can fix
+    // the input.
+    //
+    // Arity, not just value: a reviewer injected `{ replayingState: true }`
+    // at each deploy-engine create site and the full 9270-test suite stayed
+    // green, so nothing pinned this direction. Asserting `call.length === 3`
+    // fails on ANY 4th argument, including a future context with some other
+    // field.
+    const engine = makeEngine({ replace: true });
+    await invokeProvision(engine, 'AWS::Glue::SecurityConfiguration');
+    const calls = vi.mocked(provider.create).mock.calls;
+    expect(calls).toHaveLength(1);
+    for (const call of calls) {
+      expect(call).toHaveLength(3);
+    }
+  });
+
   it('without --replace the ResourceUpdateNotSupportedError propagates (deploy fails)', async () => {
     const engine = makeEngine({});
     // provisionResource wraps the provider failure in a ProvisioningError; the

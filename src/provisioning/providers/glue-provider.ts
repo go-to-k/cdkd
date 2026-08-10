@@ -71,9 +71,10 @@ import {
 import { STSClient, GetCallerIdentityCommand } from '@aws-sdk/client-sts';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
-import { assertRegionMatch, type CreateContext, type DeleteContext } from '../region-check.js';
+import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import type {
+  CreateContext,
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
@@ -407,7 +408,7 @@ export class GlueProvider implements ResourceProvider {
 
     const catalogId = properties['CatalogId'] as string | undefined;
 
-    assertIcebergTableInputAbsent(logicalId, resourceType, properties, {
+    enforceIcebergTableInputAbsent(logicalId, resourceType, properties, {
       warn: (message) => this.logger.warn(message),
       replayingState: context?.replayingState === true,
     });
@@ -423,9 +424,14 @@ export class GlueProvider implements ResourceProvider {
     // Every member of the DEPLOYABLE shape (`IcebergInput.MetadataOperation` /
     // `.Version`) is spelled identically in CFn and the SDK, so the blob is
     // forwarded verbatim. The one divergent member —
-    // `IcebergInput.IcebergTableInput` — is refused pre-flight just above; see
-    // {@link assertIcebergTableInputAbsent} for why, and read its warning
-    // before ever relaxing that refusal.
+    // `IcebergInput.IcebergTableInput` — is refused pre-flight just above on a
+    // TEMPLATE-driven create, so it never reaches here from that path. On a
+    // STATE REPLAY (`CreateContext.replayingState`, issue #1463) the pre-flight
+    // only WARNS, so the blob DOES arrive carrying it and is forwarded verbatim
+    // — deliberately: that reproduces the degraded table the replay is
+    // restoring rather than failing the rollback. See
+    // {@link enforceIcebergTableInputAbsent} for the full reasoning, and read
+    // its warning before ever relaxing the refusal.
     const openTableFormatInput = properties['OpenTableFormatInput'] as
       | Record<string, unknown>
       | undefined;
@@ -1838,10 +1844,18 @@ function findIcebergTableInputKey(properties: Record<string, unknown>): string |
  *   in exactly the way the original was (the CFn spelling is dropped by the
  *   SDK serializer per #1390; the SDK spelling is sent and Glue rejects it) —
  *   the warning says so, and the fix-forward is a `cdkd deploy`.
- * - Every other `create()` refuses: the deploy engine's CREATE, its
- *   property-driven / `--replace` / `--recreate-via-*` replacement creates.
+ * - Every deploy-engine `create()` refuses: the CREATE branch, the
+ *   property-driven replacement, the `--recreate-via-*` destroy-then-create,
+ *   the `--replace` delete-first fallback, and the update-failure replacement.
  *   All are driven by freshly resolved TEMPLATE properties, so the user CAN
  *   fix the input and a fast, actionable refusal is strictly better.
+ *
+ * The asymmetry constrains where this provider may re-create. `GlueProvider`
+ * must never call `this.create()` from inside its own `update()` the way ACM /
+ * IAM / Lambda-permission / SNS-subscription do: those internal re-creates
+ * forward `update()`'s `properties` — a STATE record during a rollback replay —
+ * and `update()` has no context parameter to carry the flag, so this refusal
+ * would fire on a replay with no way to detect it.
  *
  * **Known bypass: the sticky Cloud Control route.** This is a GlueProvider
  * pre-flight, so it only runs on the SDK route. When a table's state record
@@ -1862,7 +1876,7 @@ function findIcebergTableInputKey(properties: Record<string, unknown>): string |
  * relaxed, the rename MUST be restored in the same change — otherwise the
  * silent-drop bug of #1390 comes straight back.
  */
-function assertIcebergTableInputAbsent(
+function enforceIcebergTableInputAbsent(
   logicalId: string,
   resourceType: string,
   properties: Record<string, unknown>,

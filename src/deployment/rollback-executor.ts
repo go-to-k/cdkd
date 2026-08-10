@@ -81,11 +81,22 @@ const SKIP_FINAL_SNAPSHOT_FLAG = '--skip-final-snapshot';
  * template, so a provider pre-flight refusal has no template-side remedy and
  * must downgrade to a warning. Declared once so the two arms cannot drift.
  *
- * This is the ONLY create call site in cdkd that replays state; every other
- * one (the deploy engine's CREATE, its property-driven / `--replace` /
- * `--recreate-via-*` replacement creates, and the providers that re-create
- * inside their own `update()`) is driven by freshly resolved TEMPLATE
- * properties and deliberately passes no context, keeping the refusal.
+ * These are the only create call sites that can DECLARE a replay. The deploy
+ * engine's five sites (CREATE, the property-driven replacement, the
+ * `--recreate-via-*` destroy-then-create, the `--replace` delete-first
+ * fallback, and the update-failure replacement) are all driven by freshly
+ * resolved TEMPLATE properties, so they deliberately pass no context and the
+ * refusal stands where the user can edit the input.
+ *
+ * The remaining call sites are the providers that re-create inside their own
+ * `update()` (`this.create(...)` in ACM certificate / IAM managed policy / IAM
+ * role / Lambda permission / SNS subscription). Those are NOT template-driven
+ * — this executor's `revert` arm calls `provider.update(...)` with
+ * `previousState.properties`, so they forward a STATE record on a replay — but
+ * they CANNOT receive a context, because `update()` has no context parameter.
+ * The constraint that follows is on providers, not on this constant: a
+ * provider with a create-side pre-flight refusal must not re-create inside
+ * `update()`. See `CreateContext` in `src/types/resource.ts`.
  */
 const REPLAYING_STATE_CREATE_CONTEXT: CreateContext = { replayingState: true };
 

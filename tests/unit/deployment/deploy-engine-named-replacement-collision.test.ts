@@ -204,6 +204,30 @@ describe('DeployEngine — custom-named replacement collision', () => {
     );
   });
 
+  it('neither the create-first attempt nor the --replace delete-first re-create passes a CreateContext (#1463 inverse fence)', async () => {
+    // `CreateContext.replayingState` is the rollback executor's signal that a
+    // create replays a cdkd STATE record, and a provider pre-flight refusal
+    // DOWNGRADES to a warning when it is set. Both creates on this path are
+    // template-driven, so neither may set it — the refusal has to stand where
+    // the user can fix the input.
+    //
+    // Arity, not just value: a reviewer injected `{ replayingState: true }`
+    // at each deploy-engine create site and the full 9270-test suite stayed
+    // green, so nothing pinned this direction. Asserting `call.length === 3`
+    // fails on ANY 4th argument, including a future context with some other
+    // field.
+    createFailures = [alreadyExists()];
+
+    await invokeProvision(makeEngine({ replace: true }));
+
+    const calls = vi.mocked(provider.create).mock.calls;
+    // The collided create-first AND the post-delete re-create.
+    expect(calls).toHaveLength(2);
+    for (const call of calls) {
+      expect(call).toHaveLength(3);
+    }
+  });
+
   it('refuses a same-name replacement under UpdateReplacePolicy: Retain even with --replace', async () => {
     createFailures = [alreadyExists()];
 

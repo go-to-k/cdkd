@@ -148,14 +148,76 @@ export interface ResourceImportResult {
 }
 
 /**
- * Contexts passed to a provider's `create` / `delete` methods.
+ * Context passed to a provider's `create` method (issue #1463).
+ *
+ * The sibling of {@link DeleteContext}: optional, so a provider that does not
+ * care about it needs no change, and absent means "assume the historical
+ * behavior". Unlike `DeleteContext` — which lives in
+ * `src/provisioning/region-check.ts` because its `expectedRegion` feeds that
+ * module's `assertRegionMatch` helper — this type has no region-checking role,
+ * so it is defined here next to the `ResourceProvider` interface that consumes
+ * it.
+ *
+ * It exists for ONE question a provider's `create()` could not previously
+ * answer: is this call provisioning from the user's TEMPLATE, or replaying a
+ * historical cdkd STATE record?
+ */
+export interface CreateContext {
+  /**
+   * `true` when the properties handed to `create()` come from a cdkd STATE
+   * record rather than from the synthesized template — today that is the
+   * rollback executor's REVERSE-REPLACEMENT arm, which revives the OLD
+   * physical resource from `previousState.properties` (issue #1199).
+   *
+   * **What a provider MAY conclude from it.** That the user has no
+   * template-side remedy for whatever the properties contain. A state record
+   * was written by some earlier cdkd build against some earlier AWS API, and
+   * the only way a user could edit it is by hand-editing `state.json`. So a
+   * PRE-FLIGHT REFUSAL (see `docs/provider-development.md` §1a) must downgrade
+   * to a WARNING here: refusing would leave the old resource unrestorable with
+   * no action the user can take. This is the create-side twin of the
+   * refuse-on-template / warn-on-replay asymmetry `update()` already has — the
+   * update path is a replay path unconditionally, whereas `create()` is one
+   * only when this flag is set.
+   *
+   * **What a provider MUST NOT conclude from it.** Nothing about the
+   * properties' CONTENT: they are neither more nor less trustworthy than
+   * template properties, are NOT pre-resolved differently, and carry no
+   * guarantee of being a superset or subset of what the template would say.
+   * It is also not a "best effort" or "dry run" signal — the create must still
+   * either produce a real resource or throw. Validation that protects the AWS
+   * call itself (a required field is missing, a physical id is malformed)
+   * stays a hard error: warning past it would just move the failure later.
+   * And it says nothing about WHY the rollback is happening, so it must not be
+   * used to relax data-safety guards.
+   *
+   * Absent / `false` = an ordinary template-path create (`cdkd deploy`, the
+   * replacement create, the `--replace` / `--recreate-via-*` re-creates), where
+   * a refusal IS the right behavior because the user can edit the template.
+   *
+   * **Constraint this places on providers.** A provider that re-creates inside
+   * its own `update()` (`this.create(logicalId, resourceType, properties)` —
+   * ACM certificate, IAM managed policy, IAM role, Lambda permission, SNS
+   * subscription today) CANNOT receive a context: `update()` has no context
+   * parameter to thread, and during a rollback replay the `properties` it
+   * forwards ARE a state record. So a provider with a create-side pre-flight
+   * refusal MUST NOT re-create inside `update()` — the refusal would fire on a
+   * replay with no way to detect it. None of today's self-recreating providers
+   * has such a refusal (they validate required fields only, which stays a hard
+   * error by the rule above), so there is no live gap.
+   */
+  replayingState?: boolean;
+}
+
+/**
+ * Context passed to a provider's `delete` method.
  *
  * Re-exported from `src/provisioning/region-check.ts` so that callers
  * implementing the provider interface only need to import from
  * `src/types/resource.ts`.
  */
-export type { CreateContext, DeleteContext } from '../provisioning/region-check.js';
-import type { CreateContext, DeleteContext } from '../provisioning/region-check.js';
+export type { DeleteContext } from '../provisioning/region-check.js';
+import type { DeleteContext } from '../provisioning/region-check.js';
 
 /**
  * Cross-resource context passed to `ResourceProvider.readCurrentState`
@@ -313,8 +375,8 @@ export interface ResourceProvider {
    *   STATE record instead of the template — a provider PRE-FLIGHT REFUSAL
    *   must downgrade to a warning in that case, because the user has no
    *   template-side remedy (issue #1463). See `CreateContext` in
-   *   `src/provisioning/region-check.ts` for the full contract, and
-   *   `docs/provider-development.md` §1a for when a refusal is allowed at all.
+   *   this file for the full contract, and `docs/provider-development.md` §1a
+   *   for when a refusal is allowed at all.
    * @returns Physical resource ID and attributes
    */
   create(

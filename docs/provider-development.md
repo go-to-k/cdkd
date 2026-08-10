@@ -878,7 +878,7 @@ property before the AWS call when **all** of the following hold:
    deliberate parity divergence — so the next reader can re-evaluate it when
    AWS changes.
 
-`GlueProvider`'s `assertIcebergTableInputAbsent` (issue
+`GlueProvider`'s `enforceIcebergTableInputAbsent` (issue
 [#1454](https://github.com/go-to-k/cdkd/issues/1454)) is the reference
 implementation. Three details are worth copying:
 
@@ -905,12 +905,22 @@ implementation. Three details are worth copying:
     [#1199](https://github.com/go-to-k/cdkd/issues/1199)). That arm — and
     nothing else in cdkd — passes the optional 4th parameter
     `context?: CreateContext` with `replayingState: true` (issue
-    [#1463](https://github.com/go-to-k/cdkd/issues/1463)). Every other create
-    call site (the deploy engine's CREATE, its property-driven / `--replace` /
-    `--recreate-via-*` replacement creates, and the providers that re-create
-    inside their own `update()`) is driven by freshly resolved TEMPLATE
-    properties and passes no context, so the refusal stands where the user can
-    actually act on it.
+    [#1463](https://github.com/go-to-k/cdkd/issues/1463)). The deploy engine's
+    five create sites (CREATE, the property-driven replacement, the
+    `--recreate-via-*` destroy-then-create, the `--replace` delete-first
+    fallback, the update-failure replacement) are driven by freshly resolved
+    TEMPLATE properties and pass no context, so the refusal stands where the
+    user can actually act on it.
+  - **Do not re-create inside `update()` if you have a create-side refusal.**
+    Several providers call `this.create(logicalId, resourceType, properties)`
+    from their own `update()` (ACM certificate, IAM managed policy, IAM role,
+    Lambda permission, SNS subscription). Those internal re-creates CANNOT
+    receive a context — `update()` has no context parameter — and the
+    `properties` they forward ARE a state record during a rollback replay. So
+    the refusal would fire on a replay with no way to detect it. None of those
+    providers has a pre-flight refusal today (they validate required fields
+    only, which correctly stays a hard error), so there is no live gap; this is
+    a constraint on the NEXT provider, not a description of the current tree.
 
   The parameter is optional, so a provider with no pre-flight needs no change.
   A provider that HAS one threads `context` from `create()` to its check and
@@ -918,8 +928,12 @@ implementation. Three details are worth copying:
   (and, just as importantly, what it does NOT license — nothing about the
   properties' content, no relaxing of data-safety guards, no skipping the
   validation that protects the AWS call itself) is spelled out on `CreateContext`
-  in [src/provisioning/region-check.ts](../src/provisioning/region-check.ts),
-  alongside its sibling `DeleteContext`.
+  in [src/types/resource.ts](../src/types/resource.ts), next to the
+  `ResourceProvider` interface that consumes it. Its sibling `DeleteContext`
+  lives in [src/provisioning/region-check.ts](../src/provisioning/region-check.ts)
+  instead, because `expectedRegion` feeds that module's `assertRegionMatch`
+  helper; `CreateContext` has no region-checking role, so it is not filed there
+  for symmetry alone. A pointer next to `DeleteContext` links the two.
 
   One honest consequence: warning on a replay means the value IS forwarded on
   the create path, unlike the update path where the SDK command has no member
