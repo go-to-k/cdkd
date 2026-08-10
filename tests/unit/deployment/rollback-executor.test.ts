@@ -663,7 +663,7 @@ describe('replayRollback', () => {
     };
     const afterOp = vi.fn();
     const result = await replayRollback(ops, state, 'S', ctx, { afterOp });
-    expect(create).toHaveBeenCalledWith('B', 'AWS::SQS::Queue', { a: 1 });
+    expect(create).toHaveBeenCalledWith('B', 'AWS::SQS::Queue', { a: 1 }, { replayingState: true });
     expect(del).toHaveBeenCalledWith('B', 'phys-new', 'AWS::SQS::Queue', { a: 2 }, { expectedRegion: 'us-east-1' });
     expect(state.B).toMatchObject({ physicalId: 'phys-old-2', properties: { a: 1 }, attributes: { Arn: 'arn:old' } });
     expect(result.failures).toBe(0);
@@ -729,6 +729,42 @@ describe('replayRollback', () => {
       | undefined;
     expect(retryOpts?.isInterrupted).toBeTypeOf('function');
     expect(retryOpts?.onInterrupted).toBeTypeOf('function');
+  });
+
+  it('reverse-replacement passes CreateContext.replayingState at BOTH create arms (#1463)', async () => {
+    // `prev.properties` is a cdkd STATE record, not the template, so a
+    // provider pre-flight refusal has no template-side remedy and must
+    // downgrade to a warning. The executor is what tells the provider — and
+    // it has TWO create sites (create-first, and the delete-new-first retry
+    // after a name collision), so both are pinned here. Missing the second
+    // would leave the bug alive for exactly the collision case.
+    const create = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('Queue already exists'))
+      .mockResolvedValue({ physicalId: 'phys-old' });
+    const del = vi.fn().mockResolvedValue(undefined);
+    const { ctx } = makeCtx({ create, delete: del });
+    const prev = res({ physicalId: 'phys-old', properties: { a: 1 } });
+    const ops: CompletedOperation[] = [
+      {
+        logicalId: 'B',
+        changeType: 'UPDATE',
+        resourceType: 'AWS::SQS::Queue',
+        physicalId: 'phys-new',
+        previousState: prev,
+      },
+    ];
+    const state: Record<string, ResourceState> = {
+      B: res({ physicalId: 'phys-new', properties: { a: 2 } }),
+    };
+
+    const result = await replayRollback(ops, state, 'S', ctx, { isInterrupted: () => false });
+
+    expect(result.failures).toBe(0);
+    expect(create).toHaveBeenCalledTimes(2);
+    for (const call of create.mock.calls) {
+      expect(call[3]).toEqual({ replayingState: true });
+    }
   });
 
   it("the 'revert' arm wraps provider.update in withRetry (issue #1461)", async () => {

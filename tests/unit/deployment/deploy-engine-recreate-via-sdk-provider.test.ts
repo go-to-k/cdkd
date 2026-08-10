@@ -233,6 +233,27 @@ describe('DeployEngine — --recreate-via-sdk-provider wire-through (#651)', () 
     expect(callOrder).toEqual(['cc.delete', 'sdk.create']);
   });
 
+  it('the destroy-then-create re-create passes NO CreateContext (#1463 inverse fence)', async () => {
+    // `CreateContext.replayingState` is the rollback executor's signal that a
+    // create replays a cdkd STATE record, and a provider pre-flight refusal
+    // DOWNGRADES to a warning when it is set. `--recreate-via-*` re-creates
+    // from freshly resolved TEMPLATE properties, so it must never set it —
+    // the refusal has to stand where the user can fix the input.
+    //
+    // Arity, not just value: a reviewer injected `{ replayingState: true }`
+    // at each deploy-engine create site and the full 9270-test suite stayed
+    // green, so nothing pinned this direction. Asserting `call.length === 3`
+    // fails on ANY 4th argument, including a future context with some other
+    // field.
+    const engine = makeEngine();
+    await invokeProvision(engine, makeUpdateChange(), makeState(), makeTemplate());
+    const calls = vi.mocked(sdkProvider.create).mock.calls;
+    expect(calls).toHaveLength(1);
+    for (const call of calls) {
+      expect(call).toHaveLength(3);
+    }
+  });
+
   it('routes the destroy via the recorded provisionedBy (cc-api) AND the create via the forced sdk hint', async () => {
     const engine = makeEngine();
     await invokeProvision(engine, makeUpdateChange(), makeState(), makeTemplate());

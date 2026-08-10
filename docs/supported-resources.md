@@ -261,13 +261,26 @@ On **create**, cdkd **refuses** a template whose
 pre-flight before any AWS call with an error naming the working shape (issue
 [#1454](https://github.com/go-to-k/cdkd/issues/1454)).
 
-On **update** the same condition only produces a WARNING and the deploy
-continues. cdkd does not wire Glue's update-only `UpdateOpenTableFormatInput`
-shape, so it forwards nothing and no bad value can reach AWS from that path — and refusing
-there would break `cdkd rollback` for a table created by a cdkd build older
-than the #1390 fix, whose state record still carries the key. A rollback
-replays from cdkd state rather than from your template, so that failure would
-have had no template-side remedy.
+**A `cdkd rollback` never hits that refusal.** A rollback replays from cdkd
+state rather than from your template, so refusing would leave you with no
+remedy at all — you cannot edit a state record from your CDK code, only by hand
+in `state.json`. Both rollback paths therefore WARN and continue:
+
+- **Update** — `rollback-executor.ts` calls `provider.update(...)` with the
+  previous state's properties. cdkd does not wire Glue's update-only
+  `UpdateOpenTableFormatInput` shape, so nothing is forwarded and no bad value
+  can reach AWS from that path.
+- **Reverse-replacement create** — the arm that revives the OLD table after a
+  failed replacement calls `provider.create(...)` with the previous state's
+  properties, flagged as a state replay (issue
+  [#1463](https://github.com/go-to-k/cdkd/issues/1463)). Here the value IS
+  forwarded, so the restored table is degraded exactly as the original was:
+  under the CFn spelling the AWS SDK drops the unknown member (the #1390 silent
+  drop that produced these state records) and the table comes back without its
+  Iceberg metadata; under the SDK spelling Glue rejects the call and that one
+  rollback operation fails. Either way the warning names `cdkd deploy` with the
+  working shape as the fix-forward — strictly better than a refusal, which
+  guaranteed the table was not restored at all.
 
 This is a deliberate **parity divergence**: CloudFormation does not validate the
 property, it forwards it and then rolls the stack back. No working deployment is

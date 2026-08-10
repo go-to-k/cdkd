@@ -3,6 +3,12 @@ import { ProvisioningError } from '../utils/error-handler.js';
 /**
  * Context passed to provider delete operations.
  *
+ * The create-side sibling, `CreateContext`, deliberately does NOT live here:
+ * `DeleteContext` belongs in this module because its `expectedRegion` feeds
+ * {@link assertRegionMatch} below, whereas `CreateContext` has nothing to do
+ * with region checking. It is defined in `src/types/resource.ts` next to the
+ * `ResourceProvider` interface that consumes it.
+ *
  * `expectedRegion` is the region that the resource is expected to live in,
  * sourced from the stack state (`StackState.region`). When set, providers
  * use it to verify that a `NotFound` error from the AWS client is genuinely

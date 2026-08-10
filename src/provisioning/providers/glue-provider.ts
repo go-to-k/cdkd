@@ -74,6 +74,7 @@ import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import type {
+  CreateContext,
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
@@ -116,13 +117,14 @@ export class GlueProvider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     switch (resourceType) {
       case 'AWS::Glue::Database':
         return this.createDatabase(logicalId, resourceType, properties);
       case 'AWS::Glue::Table':
-        return this.createTable(logicalId, resourceType, properties);
+        return this.createTable(logicalId, resourceType, properties, context);
       default:
         throw new ProvisioningError(
           `Unsupported resource type: ${resourceType}`,
@@ -367,7 +369,8 @@ export class GlueProvider implements ResourceProvider {
   private async createTable(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating Glue Table ${logicalId}`);
 
@@ -405,7 +408,10 @@ export class GlueProvider implements ResourceProvider {
 
     const catalogId = properties['CatalogId'] as string | undefined;
 
-    assertIcebergTableInputAbsent(logicalId, resourceType, properties);
+    enforceIcebergTableInputAbsent(logicalId, resourceType, properties, {
+      warn: (message) => this.logger.warn(message),
+      replayingState: context?.replayingState === true,
+    });
 
     // `OpenTableFormatInput` (Apache Iceberg) is a top-level `CreateTableCommand`
     // param — a SIBLING of `TableInput`, NOT nested inside it. Omit when absent.
@@ -418,9 +424,14 @@ export class GlueProvider implements ResourceProvider {
     // Every member of the DEPLOYABLE shape (`IcebergInput.MetadataOperation` /
     // `.Version`) is spelled identically in CFn and the SDK, so the blob is
     // forwarded verbatim. The one divergent member —
-    // `IcebergInput.IcebergTableInput` — is refused pre-flight just above; see
-    // {@link assertIcebergTableInputAbsent} for why, and read its warning
-    // before ever relaxing that refusal.
+    // `IcebergInput.IcebergTableInput` — is refused pre-flight just above on a
+    // TEMPLATE-driven create, so it never reaches here from that path. On a
+    // STATE REPLAY (`CreateContext.replayingState`, issue #1463) the pre-flight
+    // only WARNS, so the blob DOES arrive carrying it and is forwarded verbatim
+    // — deliberately: that reproduces the degraded table the replay is
+    // restoring rather than failing the rollback. See
+    // {@link enforceIcebergTableInputAbsent} for the full reasoning, and read
+    // its warning before ever relaxing the refusal.
     const openTableFormatInput = properties['OpenTableFormatInput'] as
       | Record<string, unknown>
       | undefined;
@@ -504,11 +515,11 @@ export class GlueProvider implements ResourceProvider {
     // path by any route. The user still gets the full actionable message, and
     // the CREATE path (where the property could actually be sent) still refuses.
     //
-    // NOT every rollback arm is covered — see issue #1463. `replayRollback`'s
-    // reverse-replacement arm revives the OLD resource by calling `create()`
-    // with `previousState.properties`, which DOES hit the create refusal. That
-    // op fails individually (the executor catches per-op) rather than wedging
-    // the rollback, but the old table is not restored.
+    // The other rollback arm is covered too, since issue #1463:
+    // `replayRollback`'s reverse-replacement path revives the OLD resource by
+    // calling `create()` with `previousState.properties`, and it now passes
+    // `CreateContext.replayingState` so the create-side pre-flight downgrades
+    // to the same warning instead of failing that rollback operation.
     const updateIcebergKey = findIcebergTableInputKey(properties);
     if (updateIcebergKey !== undefined) {
       this.logger.warn(icebergTableInputRefusalMessage(logicalId, updateIcebergKey, 'update'));
@@ -1816,15 +1827,35 @@ function findIcebergTableInputKey(properties: Record<string, unknown>): string |
  * produce a late, cryptic AWS error. Failing fast with the working shape spelled
  * out is strictly more useful.
  *
- * **CREATE only — update WARNS instead.** See the comment at the `updateTable`
- * call site: rollback replays from cdkd STATE, and a table created by a
- * pre-#1390 build carries the key in its state record, so refusing on update
- * would make such a table unrollbackable with no template-side remedy. cdkd
- * does not wire Glue's update-only `UpdateOpenTableFormatInput` shape and
- * `buildTableInput` is an explicit allow-list, so warning there forwards
- * nothing and loses no protection. One rollback arm is still exposed — the
- * reverse-replacement re-create replays a state record through `create()`;
- * see issue #1463 and the note at the `updateTable` call site.
+ * **TEMPLATE creates only — every STATE REPLAY warns instead.** The refusal is
+ * conditioned on the ORIGIN of the properties, not on the operation name:
+ *
+ * - `update()` warns unconditionally. Rollback replays from cdkd STATE, and a
+ *   table created by a pre-#1390 build carries the key in its state record, so
+ *   refusing there would make such a table unrollbackable with no
+ *   template-side remedy. cdkd does not wire Glue's update-only
+ *   `UpdateOpenTableFormatInput` shape and `buildTableInput` is an explicit
+ *   allow-list, so warning forwards nothing and loses no protection.
+ * - `create()` warns when {@link CreateContext.replayingState} is set — the
+ *   rollback executor's reverse-replacement arm, which revives the OLD
+ *   resource from `previousState.properties` (issue #1463). Same reasoning:
+ *   the user cannot edit a state record from the template. Unlike the update
+ *   path this one DOES forward the value, so the re-created table is degraded
+ *   in exactly the way the original was (the CFn spelling is dropped by the
+ *   SDK serializer per #1390; the SDK spelling is sent and Glue rejects it) —
+ *   the warning says so, and the fix-forward is a `cdkd deploy`.
+ * - Every deploy-engine `create()` refuses: the CREATE branch, the
+ *   property-driven replacement, the `--recreate-via-*` destroy-then-create,
+ *   the `--replace` delete-first fallback, and the update-failure replacement.
+ *   All are driven by freshly resolved TEMPLATE properties, so the user CAN
+ *   fix the input and a fast, actionable refusal is strictly better.
+ *
+ * The asymmetry constrains where this provider may re-create. `GlueProvider`
+ * must never call `this.create()` from inside its own `update()` the way ACM /
+ * IAM / Lambda-permission / SNS-subscription do: those internal re-creates
+ * forward `update()`'s `properties` — a STATE record during a rollback replay —
+ * and `update()` has no context parameter to carry the flag, so this refusal
+ * would fire on a replay with no way to detect it.
  *
  * **Known bypass: the sticky Cloud Control route.** This is a GlueProvider
  * pre-flight, so it only runs on the SDK route. When a table's state record
@@ -1845,41 +1876,56 @@ function findIcebergTableInputKey(properties: Record<string, unknown>): string |
  * relaxed, the rename MUST be restored in the same change — otherwise the
  * silent-drop bug of #1390 comes straight back.
  */
-function assertIcebergTableInputAbsent(
+function enforceIcebergTableInputAbsent(
   logicalId: string,
   resourceType: string,
   properties: Record<string, unknown>,
-  physicalId?: string
+  options: { warn: (message: string) => void; replayingState: boolean }
 ): void {
   const key = findIcebergTableInputKey(properties);
   if (key === undefined) {
     return;
   }
+  if (options.replayingState) {
+    options.warn(icebergTableInputRefusalMessage(logicalId, key, 'create-replay'));
+    return;
+  }
   throw new ProvisioningError(
     icebergTableInputRefusalMessage(logicalId, key, 'create'),
     resourceType,
-    logicalId,
-    physicalId
+    logicalId
   );
 }
 
 /**
- * The shared #1454 message body, so the CREATE refusal and the UPDATE warning
- * cannot drift apart. `mode` only changes the lead clause — everything after it
- * (the probe evidence and the working shape) is identical, because the user's
- * next action is the same either way.
+ * The shared #1454 message body, so the CREATE refusal, the UPDATE warning and
+ * the rollback-replay CREATE warning cannot drift apart. `mode` only changes
+ * the lead clause — everything after it (the probe evidence and the working
+ * shape) is identical, because the user's next action is the same either way.
  */
 function icebergTableInputRefusalMessage(
   logicalId: string,
   key: string,
-  mode: 'create' | 'update'
+  mode: 'create' | 'create-replay' | 'update'
 ): string {
   const lead =
     mode === 'create'
       ? `cannot be deployed by AWS in any shape, so cdkd refuses it before calling Glue (issue #1454).`
-      : `cannot be deployed by AWS in any shape and is IGNORED on update — cdkd does not wire ` +
-        `Glue's update-only UpdateOpenTableFormatInput shape, so it forwards nothing here and ` +
-        `only warns (issue #1454). A CREATE of this table would be refused outright.`;
+      : mode === 'create-replay'
+        ? `cannot be deployed by AWS in any shape, so cdkd normally refuses it before calling ` +
+          `Glue (issue #1454) — but this create is REPLAYING a historical cdkd STATE record (a ` +
+          `rollback reverse-replacement re-creating the OLD table), not your template, and ` +
+          `refusing would leave that table unrestorable with no template-side remedy, only a ` +
+          `hand-edit of state.json. cdkd therefore warns and proceeds (issue #1463). The ` +
+          `re-created table is DEGRADED exactly as the original was: under the CFn spelling ` +
+          `IcebergTableInput the AWS SDK serializer drops the unknown member (issue #1390), so ` +
+          `the table comes back without its Iceberg metadata; under the SDK spelling ` +
+          `CreateIcebergTableInput the value IS sent and Glue rejects the call, failing this ` +
+          `one rollback operation. Either way, fix it forward with 'cdkd deploy' using the ` +
+          `working shape below.`
+        : `cannot be deployed by AWS in any shape and is IGNORED on update — cdkd does not wire ` +
+          `Glue's update-only UpdateOpenTableFormatInput shape, so it forwards nothing here and ` +
+          `only warns (issue #1454). A CREATE of this table would be refused outright.`;
   return (
     `AWS::Glue::Table ${logicalId}: OpenTableFormatInput.IcebergInput.${key} ${lead}\n` +
     `  Live-probed 2026-08-09 in us-east-1 (issue #1408): glue:CreateTable — the API cdkd ` +

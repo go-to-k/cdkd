@@ -519,10 +519,10 @@ class ProviderRegistry {
 
 ```typescript
 interface ResourceProvider {
-  create(logicalId: string, properties: any): Promise<string>
-  update(physicalId: string, oldProps: any, newProps: any): Promise<void>
-  delete(physicalId: string): Promise<void>
-  getAttribute(physicalId: string, attrName: string): Promise<any>
+  create(logicalId: string, resourceType: string, properties: Record<string, unknown>, context?: CreateContext): Promise<ResourceCreateResult>
+  update(logicalId: string, physicalId: string, resourceType: string, properties: Record<string, unknown>, previousProperties: Record<string, unknown>): Promise<ResourceUpdateResult>
+  delete(logicalId: string, physicalId: string, resourceType: string, properties?: Record<string, unknown>, context?: DeleteContext): Promise<void>
+  getAttribute(physicalId: string, resourceType: string, attributeName: string): Promise<unknown>
 }
 ```
 

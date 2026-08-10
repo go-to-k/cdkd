@@ -582,11 +582,15 @@ cannot be deployed by AWS in any shape, so cdkd refuses it before calling Glue
 
 **Cause:**
 
-cdkd refuses this property at pre-flight on **create**, before any AWS call.
-(On **update** it is only a warning — cdkd does not wire Glue's update-only
-`UpdateOpenTableFormatInput` shape, so nothing is forwarded, and refusing there would
-break `cdkd rollback` for tables created by a cdkd build older than the #1390
-fix, whose state records still carry the key.) It is a
+cdkd refuses this property at pre-flight on a **template-driven create**,
+before any AWS call. (A `cdkd rollback` only ever WARNS, on both of its paths —
+the update replay and the reverse-replacement re-create — because a rollback
+replays from cdkd state rather than from your template, so refusing there would
+leave you no remedy but hand-editing `state.json`. That matters for tables
+created by a cdkd build older than the #1390 fix, whose state records still
+carry the key. See "Glue table Iceberg support" in
+[supported-resources.md](supported-resources.md) for what the restored table
+looks like.) It is a
 deliberate parity divergence — CloudFormation forwards the property instead of
 validating it, but a live probe (issue
 [#1408](https://github.com/go-to-k/cdkd/issues/1408)) showed the spec is
