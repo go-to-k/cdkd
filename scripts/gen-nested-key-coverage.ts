@@ -200,6 +200,9 @@
  *
  * WHAT PATH-SCOPING DOES **NOT** CLOSE — MEASURED, NOT PREDICTED
  * --------------------------------------------------------------
+ * Bounds (1) and (2) below are tracked in issue #1464 (they need a per-PATH
+ * fixture capture, not a critic change); (3) is recorded, not tracked.
+ *
  * Scoping NARROWS the duplicate-name class; it does not close it. Read this
  * before writing "membership makes X non-regressing" anywhere: the bullet
  * #1448 replaced made exactly that over-promise one level up, and the same

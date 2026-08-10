@@ -196,7 +196,8 @@ That is a far more common template shape than the base64 search string.
      `source: { type: … }` in `mapSource` exits **0** (`auth.type` covers it).
      Both are genuine silent drops. Closing this needs a per-PATH fixture
      capture (`refresh-cfn-schemas.mjs` + an AWS re-capture), not a critic
-     change.
+     change — tracked in issue
+     [#1464](https://github.com/go-to-k/cdkd/issues/1464).
   2. **Scopes are keyed by NAME and unioned across write sites.** Two unrelated
      `environment: { … }` literals in different methods share one `environment`
      scope, and a name that only ever appears nested still gets a scope a
