@@ -1,3 +1,10 @@
+## [0.278.24](https://github.com/go-to-k/cdkd/compare/v0.278.23...v0.278.24) (2026-08-10)
+
+
+### Bug Fixes
+
+* **ecs:** forward PortMappings ContainerPortRange and LoadBalancers AdvancedConfiguration onto the ECS SDK calls ([#1484](https://github.com/go-to-k/cdkd/issues/1484)) ([5780b8d](https://github.com/go-to-k/cdkd/commit/5780b8d18ee44d6f0d45b1a5479e088ed5bb55b5))
+
 ## [0.278.23](https://github.com/go-to-k/cdkd/compare/v0.278.22...v0.278.23) (2026-08-10)
 
 
