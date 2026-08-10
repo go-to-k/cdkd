@@ -1,3 +1,10 @@
+## [0.278.28](https://github.com/go-to-k/cdkd/compare/v0.278.27...v0.278.28) (2026-08-10)
+
+
+### Bug Fixes
+
+* **provisioning:** refuse a malformed config value instead of inferring a default from it ([#1490](https://github.com/go-to-k/cdkd/issues/1490)) ([e426078](https://github.com/go-to-k/cdkd/commit/e426078a421f2f59e74b87d1c525a27abc94258b))
+
 ## [0.278.27](https://github.com/go-to-k/cdkd/compare/v0.278.26...v0.278.27) (2026-08-10)
 
 
