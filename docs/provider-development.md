@@ -896,8 +896,12 @@ implementation. Three details are worth copying:
   and unlike the update case the user has no template-side remedy at all — only
   hand-editing `state.json`. Before adding ANY refusal to an `update()`, ask
   what happens when the rollback executor feeds it a historical state record.
-- Where update genuinely cannot forward the property anyway (Glue's
-  `UpdateTable` has no `OpenTableFormatInput` member), warning costs nothing:
+  Note the same exposure reaches `create()` through the reverse-replacement
+  arm, which revives the OLD resource from `previousState.properties` — issue
+  [#1463](https://github.com/go-to-k/cdkd/issues/1463) tracks giving providers
+  a way to tell a replay apart from a fresh provision.
+- Where update genuinely does not forward the property anyway (cdkd does not
+  wire Glue's update-only `UpdateOpenTableFormatInput` shape), warning costs nothing:
   no bad value can reach AWS from that path, and the user still gets the full
   message. Share ONE message builder between the refusal and the warning so
   they cannot drift.

@@ -460,11 +460,17 @@ export class GlueProvider implements ResourceProvider {
     // template-side remedy, only hand-editing state.json. That is a worse
     // outcome than the one this refusal exists to prevent.
     //
-    // Warning costs nothing: `UpdateTableCommandInput` has no
-    // `OpenTableFormatInput` member at all, so update never forwards the
-    // property and no silent drop can reach AWS from here. The user still gets
-    // the full actionable message, and the CREATE path (where the property
-    // could actually be sent) still refuses.
+    // Warning costs nothing HERE: cdkd does not wire Glue's update-only
+    // `UpdateOpenTableFormatInput` shape, and `buildTableInput` is an explicit
+    // allow-list, so no `OpenTableFormatInput` value can reach AWS from this
+    // path by any route. The user still gets the full actionable message, and
+    // the CREATE path (where the property could actually be sent) still refuses.
+    //
+    // NOT every rollback arm is covered — see issue #1463. `replayRollback`'s
+    // reverse-replacement arm revives the OLD resource by calling `create()`
+    // with `previousState.properties`, which DOES hit the create refusal. That
+    // op fails individually (the executor catches per-op) rather than wedging
+    // the rollback, but the old table is not restored.
     const updateIcebergKey = findIcebergTableInputKey(properties);
     if (updateIcebergKey !== undefined) {
       this.logger.warn(icebergTableInputRefusalMessage(logicalId, updateIcebergKey, 'update'));
@@ -1530,9 +1536,12 @@ function findIcebergTableInputKey(properties: Record<string, unknown>): string |
  * **CREATE only — update WARNS instead.** See the comment at the `updateTable`
  * call site: rollback replays from cdkd STATE, and a table created by a
  * pre-#1390 build carries the key in its state record, so refusing on update
- * would make such a table unrollbackable with no template-side remedy. Update
- * forwards nothing (`UpdateTableCommandInput` has no `OpenTableFormatInput`),
- * so warning there loses no protection.
+ * would make such a table unrollbackable with no template-side remedy. cdkd
+ * does not wire Glue's update-only `UpdateOpenTableFormatInput` shape and
+ * `buildTableInput` is an explicit allow-list, so warning there forwards
+ * nothing and loses no protection. One rollback arm is still exposed — the
+ * reverse-replacement re-create replays a state record through `create()`;
+ * see issue #1463 and the note at the `updateTable` call site.
  *
  * **Known bypass: the sticky Cloud Control route.** This is a GlueProvider
  * pre-flight, so it only runs on the SDK route. When a table's state record
@@ -1585,9 +1594,9 @@ function icebergTableInputRefusalMessage(
   const lead =
     mode === 'create'
       ? `cannot be deployed by AWS in any shape, so cdkd refuses it before calling Glue (issue #1454).`
-      : `cannot be deployed by AWS in any shape and is IGNORED on update — Glue's UpdateTable ` +
-        `has no OpenTableFormatInput member, so cdkd forwards nothing and only warns (issue #1454). ` +
-        `A CREATE of this table would be refused outright.`;
+      : `cannot be deployed by AWS in any shape and is IGNORED on update — cdkd does not wire ` +
+        `Glue's update-only UpdateOpenTableFormatInput shape, so it forwards nothing here and ` +
+        `only warns (issue #1454). A CREATE of this table would be refused outright.`;
   return (
     `AWS::Glue::Table ${logicalId}: OpenTableFormatInput.IcebergInput.${key} ${lead}\n` +
     `  Live-probed 2026-08-09 in us-east-1 (issue #1408): glue:CreateTable — the API cdkd ` +

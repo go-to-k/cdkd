@@ -332,7 +332,19 @@ describe('GlueProvider read-update round-trip', () => {
   };
 
   /**
-   * Assertions every #1454 refusal must satisfy, on any code path.
+   * Warn lines the provider emitted through the mocked logger. The mock's
+   * `child()` ignores its argument and returns one closed-over object, so this
+   * is the SAME `vi.fn()` the provider writes to (and `vi.clearAllMocks()` in
+   * `beforeEach` isolates it per test) — the assertion is not vacuous.
+   */
+  const warnMessages = (): string[] => {
+    const warn = (getLogger().child('x') as unknown as { warn: { mock: { calls: unknown[][] } } })
+      .warn;
+    return warn.mock.calls.map((c) => String(c[0]));
+  };
+
+  /**
+   * Assertions every #1454 CREATE refusal must satisfy.
    *
    * `error` (not just its message) is taken deliberately. The refusal's whole
    * point is that it fires BEFORE the `try`, so the provider's catch wrapper
@@ -344,13 +356,6 @@ describe('GlueProvider read-update round-trip', () => {
    * `expect(mockSend).not.toHaveBeenCalled()` too. The prefix + absent-`cause`
    * checks are what actually pin the placement.
    */
-  /** Warn lines the provider emitted through the mocked logger. */
-  const warnMessages = (): string[] => {
-    const warn = (getLogger().child('x') as unknown as { warn: { mock: { calls: unknown[][] } } })
-      .warn;
-    return warn.mock.calls.map((c) => String(c[0]));
-  };
-
   const expectIcebergRefusal = (
     error: ProvisioningError,
     offendingKey: string,

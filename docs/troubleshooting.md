@@ -583,8 +583,8 @@ cannot be deployed by AWS in any shape, so cdkd refuses it before calling Glue
 **Cause:**
 
 cdkd refuses this property at pre-flight on **create**, before any AWS call.
-(On **update** it is only a warning — Glue's `UpdateTable` has no
-`OpenTableFormatInput` member, so nothing is forwarded, and refusing there would
+(On **update** it is only a warning — cdkd does not wire Glue's update-only
+`UpdateOpenTableFormatInput` shape, so nothing is forwarded, and refusing there would
 break `cdkd rollback` for tables created by a cdkd build older than the #1390
 fix, whose state records still carry the key.) It is a
 deliberate parity divergence — CloudFormation forwards the property instead of

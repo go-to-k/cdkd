@@ -262,8 +262,8 @@ pre-flight before any AWS call with an error naming the working shape (issue
 [#1454](https://github.com/go-to-k/cdkd/issues/1454)).
 
 On **update** the same condition only produces a WARNING and the deploy
-continues. Glue's `UpdateTable` has no `OpenTableFormatInput` member, so cdkd
-forwards nothing and no bad value can reach AWS from that path — and refusing
+continues. cdkd does not wire Glue's update-only `UpdateOpenTableFormatInput`
+shape, so it forwards nothing and no bad value can reach AWS from that path — and refusing
 there would break `cdkd rollback` for a table created by a cdkd build older
 than the #1390 fix, whose state record still carries the key. A rollback
 replays from cdkd state rather than from your template, so that failure would
