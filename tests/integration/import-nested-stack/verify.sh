@@ -156,14 +156,16 @@ echo "[verify] step 1: install + build cdkd"
 (cd "${REPO_ROOT}" && pnpm install)
 (cd "${REPO_ROOT}" && vp run build)
 
-echo "[verify] step 2: install fixture deps (aws-cdk-lib for synth)"
+echo "[verify] step 2: install fixture deps (aws-cdk-lib + pinned aws-cdk CLI)"
 # pnpm at this repo's root ignores per-fixture package.json under
-# tests/integration/* (no workspace registration), so the fixture's
-# aws-cdk-lib + aws-cdk deps come from the global vp-managed npm
-# environment instead. CDK CLI is `cdk` (global), and aws-cdk-lib is
-# resolved via Node's parent-directory lookup against the repo-root
-# install. No `pnpm install` round-trip needed.
-echo "[verify] step 2 ok: using global cdk (\$(which cdk))"
+# tests/integration/* (no workspace registration), so install the fixture's
+# own deps and PATH-prepend its bin dir. The pinned aws-cdk CLI must be the
+# one that runs: a stale global `cdk` fails the synth with a cloud-assembly
+# schema-version mismatch (issue 1485 — exactly how this fixture failed on
+# the 2026-08-10 staleness sweep while its package.json pin sat unused).
+(cd "${TEST_DIR}" && { [ -x node_modules/.bin/cdk ] || npm install; })
+export PATH="${TEST_DIR}/node_modules/.bin:${PATH}"
+echo "[verify] step 2 ok: using $(command -v cdk) ($(cdk --version))"
 
 echo "[verify] step 3: pre-flight orphan scan"
 if aws cloudformation describe-stacks --stack-name "${PARENT_STACK}" --region "${REGION}" >/dev/null 2>&1; then
@@ -178,10 +180,8 @@ fi
 echo "[verify] step 4: cdk deploy parent + nested child (simulating existing CFn stack)"
 # `--require-approval never` skips the IAM prompt; `--no-version-reporting`
 # and friends keep CDK quiet. The CDK toolkit handles asset publishing
-# (nested-stack child template upload) automatically. Uses the global
-# `cdk` binary supplied by vp (`/Users/goto/.vite-plus/bin/cdk` on dev
-# machines, vp-bin path in CI) — see step 2's note on why no per-fixture
-# install is needed.
+# (nested-stack child template upload) automatically. Uses the fixture's
+# pinned aws-cdk from node_modules/.bin (PATH-prepended in step 2).
 (cd "${TEST_DIR}" && cdk deploy "${PARENT_STACK}" \
   --require-approval never \
   --no-version-reporting \

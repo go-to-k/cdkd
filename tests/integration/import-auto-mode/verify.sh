@@ -24,6 +24,14 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+# Vendored cdk CLI (issue 1485): install the fixture's deps when absent
+# (node_modules is gitignored, and the repo-root pnpm install does NOT
+# populate fixture dirs), otherwise the PATH prepend is inert and `npx cdk`
+# falls through to a possibly stale global CLI whose cloud-assembly schema
+# no longer matches the fixture's aws-cdk-lib.
+[ -x "${PWD}/node_modules/.bin/cdk" ] || npm install
+export PATH="${PWD}/node_modules/.bin:${PATH}"
+
 STACK="CdkdImportAutoModeExample"
 REGION="${AWS_REGION:-us-east-1}"
 LOCAL_DIST="${PWD}/../../../dist/cli.js"

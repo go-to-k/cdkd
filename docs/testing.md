@@ -719,6 +719,34 @@ as a recommendation for new and affected fixtures rather than a tree-wide
 invariant — most existing fixtures do not set it and are fine.
 `tests/integration/emr-instance-configs/verify.sh` is the reference.
 
+### Fixture convention: pin and resolve a fixture-local `cdk` CLI
+
+A fixture whose `verify.sh` shells out to the upstream `cdk` CLI must be
+hermetic about which `cdk` it gets. Three requirements (enforced by
+`tests/unit/scripts/integ-cdk-cli-pins.test.ts`, classifier
+`scripts/check-integ-cdk-cli-pins.ts`):
+
+1. Pin `aws-cdk` in the fixture's `package.json`, at a version whose
+   cloud-assembly schema support covers the fixture's `aws-cdk-lib`.
+2. Install the fixture's deps when absent — `node_modules` is gitignored and
+   the repo-root `pnpm install` does not populate fixture dirs, so without an
+   install step the pin is inert.
+3. Resolve the local CLI on every invocation, either by PATH prepend or by an
+   explicit bin path:
+
+   ```bash
+   [ -x "${TEST_DIR}/node_modules/.bin/cdk" ] || (cd "${TEST_DIR}" && npm install)
+   export PATH="${TEST_DIR}/node_modules/.bin:${PATH}"
+   ```
+
+Why: a bare `cdk deploy` (or `npx cdk` with no local install) silently takes
+the machine's global CLI. When that CLI lags the fixture's `aws-cdk-lib`, the
+run fails with `Cloud assembly schema version mismatch` — which is how
+`import-nested-stack` failed on the 2026-08-10 staleness sweep even though its
+`package.json` pinned `aws-cdk` (the pin was never on the resolution path).
+The check matches invocations in command position only, so comments and
+`echo` prose mentioning `cdk deploy` don't count.
+
 ### Fixture convention: sort both sides of a list readback
 
 AWS does not preserve the submitted order of list-valued members when you read

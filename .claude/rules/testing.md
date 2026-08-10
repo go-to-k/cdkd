@@ -238,6 +238,33 @@ Mechanically enforced since issue
 [#1402](https://github.com/go-to-k/cdkd/issues/1402) (see the lint named
 above). User-facing writeup in [docs/testing.md](../../docs/testing.md).
 
+### `verify.sh` upstream-cdk callers must pin AND resolve a fixture-local CLI (mandatory)
+
+A fixture whose `verify.sh` invokes the upstream `cdk` CLI (bare `cdk deploy`,
+`npx cdk ...`, or a `CDK_BIN`-style variable) must (1) pin `aws-cdk` in its
+package.json, (2) carry an install step so a gitignored `node_modules` cannot
+leave the pin inert, and (3) make every invocation resolve the fixture-local
+CLI — the canonical shape:
+
+```bash
+[ -x "${TEST_DIR}/node_modules/.bin/cdk" ] || (cd "${TEST_DIR}" && npm install)
+export PATH="${TEST_DIR}/node_modules/.bin:${PATH}"
+```
+
+(an explicit `CDK_BIN="${TEST_DIR}/node_modules/.bin/cdk"` used for every
+invocation is equally hermetic and needs no PATH prepend.) A pin without
+resolution is dead weight: the run silently takes whatever global `cdk` the
+machine has, and when that lags the fixture's `aws-cdk-lib` the synth dies
+with a cloud-assembly schema-version mismatch. `import-nested-stack` failed
+exactly this way on the 2026-08-10 staleness sweep — its package.json pinned
+`aws-cdk` while its verify.sh logged `using global cdk` — seven weeks after
+PR #1253 fixed the identical trap in three other fixtures individually
+(issue #1485 closed the class). Enforced by
+`tests/unit/scripts/integ-cdk-cli-pins.test.ts` (classifier:
+`scripts/check-integ-cdk-cli-pins.ts`, command-position matching so comments
+and echo prose don't count); user-facing writeup in
+[docs/testing.md](../../docs/testing.md).
+
 ### `verify.sh` list readbacks must be order-insensitive (mandatory)
 
 AWS does not preserve the submitted order of list-valued members on readback.

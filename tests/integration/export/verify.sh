@@ -87,6 +87,12 @@ cd "${TEST_DIR}"
 if [ ! -d node_modules ]; then
   vp install
 fi
+# Vendored cdk CLI (issue 1485): the guard re-runs the install when
+# node_modules pre-exists without the cdk bin (stale checkout from before
+# aws-cdk was pinned), and the PATH prepend guarantees `npx cdk` resolves
+# the fixture-local CLI rather than a possibly stale global one.
+[ -x "${TEST_DIR}/node_modules/.bin/cdk" ] || vp install
+export PATH="${TEST_DIR}/node_modules/.bin:${PATH}"
 
 cleanup() {
   rc=$?
