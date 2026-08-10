@@ -1,4 +1,4 @@
-import { afterAll, describe, it, expect } from 'vite-plus/test';
+import { afterAll, describe, it, expect, vi } from 'vite-plus/test';
 import { spawnSync } from 'node:child_process';
 import {
   cpSync,
@@ -10,6 +10,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+
 import {
   MIN_WRITTEN_MEMBERS_PER_PROVIDER,
   NESTED_KEY_ALLOW_LIST,
@@ -47,6 +48,19 @@ import {
   extractNestedPropertyPaths,
 } from '../../../scripts/refresh-cfn-schemas.mjs';
 import { parseProviderSource } from '../../../scripts/gen-property-coverage.ts';
+
+// Vitest's 5s default does not fit this file. 26 of its tests parse the WHOLE
+// real `src/provisioning/providers` tree through the TypeScript compiler API,
+// or spawn the shipped `--check` against a scratch copy of it — inherently
+// 1-2s each locally and ~3x that on CI. Two of them (the opt-in-table and S3
+// reason-(C) fences, 1.6s / 2.2s locally) timed out on CI at 5s while passing
+// locally three runs in a row, which is exactly the boundary this raises off.
+//
+// Set once per FILE rather than per test on purpose: the failure that prompted
+// it was a heavyweight test added WITHOUT a timeout argument, and the repo's
+// per-test convention (`}, 15_000)`) guarantees that recurs every time this
+// file grows. Slowness here is a property of the file, not of individual tests.
+vi.setConfig({ testTimeout: 15_000 });
 
 const repoRoot = process.cwd();
 const SCRIPT = resolve(repoRoot, 'scripts/gen-nested-key-coverage.ts');
