@@ -22,6 +22,7 @@ import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
+import { clearOnUpdateRemoval } from '../update-removal.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -190,29 +191,92 @@ export class CloudTrailProvider implements ResourceProvider {
     // optional ARN-shaped fields (KMSKeyId, SnsTopicName) so console-side
     // adds are detectable as drift (per docs/provider-development.md
     // § 3b "always emit user-controllable top-level keys"). `cdkd drift
-    // --revert` round-trips the placeholder back through this `update()`.
-    // `UpdateTrail` rejects empty strings for ARN-shaped fields with
-    // "KmsKeyId is not in valid ARN format" / "SnsTopicName is not in
-    // valid format", so sanitize empty-string → undefined at the wire
-    // layer. This mirrors the canonical Class 2 pattern in
-    // `sqs-queue-provider.ts` (`serializeRedrivePolicy`).
+    // --revert` round-trips the placeholder back through this `update()`,
+    // and this helper drops the placeholder so the wire layer never sees
+    // it. Mirrors the canonical Class 2 pattern in `sqs-queue-provider.ts`
+    // (`serializeRedrivePolicy`).
+    //
+    // The helper's ORIGINAL rationale — that `UpdateTrail` rejects an
+    // empty string outright — is only half true, and the surviving half
+    // is unverified. A live probe (2026-08-10, issue #1160) sent `''`
+    // ALONE for `SnsTopicName` and for `CloudWatchLogsLogGroupArn`
+    // against a real trail: both were ACCEPTED and nulled the field out,
+    // which is exactly why `''` is now the removal-reset sentinel below.
+    // `KMSKeyId` was NOT probed (see the reset comment / issue #1533), so
+    // it keeps the conservative drop.
     const sanitizeArn = (v: unknown): string | undefined => {
       if (v === undefined || v === null || v === '') return undefined;
       return v as string;
     };
 
+    // Removal semantics (issue #1160, live CFn A/B 2026-08-10 on a real
+    // trail with every optional field set, then removed from the template).
+    // `UpdateTrail` is a merge-semantics API — a Name+S3BucketName-only
+    // update left every other live value untouched — so an absent field is
+    // a silent no-op where CloudFormation resets. The A/B split the
+    // umbrella's SUSPECT row in two:
+    //
+    //   RESET by CFn (mirrored below): S3KeyPrefix -> '', SnsTopicName ->
+    //   '', IsMultiRegionTrail -> false, EnableLogFileValidation -> false,
+    //   IncludeGlobalServiceEvents -> false. Each clear sentinel was probed
+    //   ALONE against the live trail; the empty string is accepted for both
+    //   string fields and nulls them out.
+    //
+    //   RETAINED by CFn (left as pass-through, pinned by tests):
+    //   CloudWatchLogsLogGroupArn / CloudWatchLogsRoleArn kept their live
+    //   values through the removal update, so the pass-through is already
+    //   CFn parity. `KMSKeyId` and `IsOrganizationTrail` are NOT reset
+    //   either, but for a different reason — neither could be A/B'd
+    //   (a customer-managed KMS key's 7-day minimum deletion window would
+    //   leave a pending-deletion orphan, and an organization trail needs an
+    //   Organizations management account), so they are recorded as
+    //   unmeasured rather than guessed. Tracked in issue #1533.
+    //
+    // The previous side is normalized through `sanitizeArn` for presence
+    // detection: `readCurrentState` always-emits `''` placeholders for
+    // S3KeyPrefix / SnsTopicName, and a placeholder means "was not set" —
+    // without this a never-configured field would look like a removal and
+    // send a pointless clear.
     const s3BucketName = properties['S3BucketName'] as string | undefined;
-    const s3KeyPrefix = properties['S3KeyPrefix'] as string | undefined;
-    const isMultiRegionTrail = properties['IsMultiRegionTrail'] as boolean | undefined;
-    const includeGlobalServiceEvents = properties['IncludeGlobalServiceEvents'] as
-      | boolean
-      | undefined;
-    const enableLogFileValidation = properties['EnableLogFileValidation'] as boolean | undefined;
+    const s3KeyPrefix = clearOnUpdateRemoval(
+      sanitizeArn(properties['S3KeyPrefix']),
+      sanitizeArn(previousProperties['S3KeyPrefix']),
+      ''
+    );
+    const isMultiRegionTrail = clearOnUpdateRemoval(
+      properties['IsMultiRegionTrail'] as boolean | undefined,
+      previousProperties['IsMultiRegionTrail'] as boolean | undefined,
+      false
+    );
+    // AWS rejects a multi-region trail that excludes global service events
+    // ("Multi-Region trail must include global service events"), so the
+    // reset is skipped while the trail stays multi-region. In the A/B both
+    // fields were removed together and CFn reset multi-region in the same
+    // call, which is why the combination never came up; resetting it under
+    // a retained `IsMultiRegionTrail: true` would manufacture a hard AWS
+    // failure on a combination that was never measured.
+    const includeGlobalServiceEvents =
+      isMultiRegionTrail === true
+        ? (properties['IncludeGlobalServiceEvents'] as boolean | undefined)
+        : clearOnUpdateRemoval(
+            properties['IncludeGlobalServiceEvents'] as boolean | undefined,
+            previousProperties['IncludeGlobalServiceEvents'] as boolean | undefined,
+            false
+          );
+    const enableLogFileValidation = clearOnUpdateRemoval(
+      properties['EnableLogFileValidation'] as boolean | undefined,
+      previousProperties['EnableLogFileValidation'] as boolean | undefined,
+      false
+    );
     const isLogging = properties['IsLogging'] as boolean | undefined;
     const cloudWatchLogsLogGroupArn = sanitizeArn(properties['CloudWatchLogsLogGroupArn']);
     const cloudWatchLogsRoleArn = sanitizeArn(properties['CloudWatchLogsRoleArn']);
     const kmsKeyId = sanitizeArn(properties['KMSKeyId']);
-    const snsTopicName = sanitizeArn(properties['SnsTopicName']);
+    const snsTopicName = clearOnUpdateRemoval(
+      sanitizeArn(properties['SnsTopicName']),
+      sanitizeArn(previousProperties['SnsTopicName']),
+      ''
+    );
     const isOrganizationTrail = properties['IsOrganizationTrail'] as boolean | undefined;
 
     try {

@@ -561,6 +561,13 @@ describe('isIamPropagationError', () => {
       'Invalid parameter: LambdaSuccessFeedbackRoleArn: arn:aws:iam::1:role/r is not a valid role to allow SNS to write to Cloudwatch Logs',
       'SNS delivery-status feedback role',
     ],
+    // CloudTrail CloudWatch Logs delivery role created ~1s earlier in the same
+    // stack (issue #1160 cloudtrail batch — cloudtrail-trail fixture). The live
+    // CFn A/B passed with this same trust policy because CFn is slower.
+    [
+      'Failed to create CloudTrail Trail Trail: Access denied. Verify in IAM that the role has adequate trust relationships.',
+      'CloudTrail CW Logs delivery role',
+    ],
   ])('classifies %j as IAM propagation (%s)', (message) => {
     expect(isIamPropagationError(message)).toBe(true);
     // Cadence selection must never widen retryability.
