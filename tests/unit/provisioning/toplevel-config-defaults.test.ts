@@ -14,10 +14,13 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
  * Three per-site decisions are pinned here, because the issue's whole point is
  * that this is not a blanket sweep:
  *
- * - CREATE refuses (the value is always template-borne there);
- * - UPDATE warns and defaults instead (a rollback replays `update()` with a
- *   historical cdkd STATE record as the desired bag — refusing would leave the
- *   resource un-rollbackable with no template-side remedy);
+ * - a TEMPLATE-borne CREATE refuses;
+ * - every STATE-REPLAY path warns and defaults instead. There are three: an
+ *   `update()` (a rollback replays it with a historical cdkd STATE record as
+ *   the desired bag), a `create()` carrying `CreateContext.replayingState`
+ *   (the reverse-replacement arm), and the re-create half of a
+ *   delete-then-create update. Refusing on any of them would leave the
+ *   resource un-rollbackable with no template-side remedy;
  * - a numeric value is COERCED at the sites where an unquoted YAML scalar is a
  *   legitimate template shape (`IpProtocol: -1`, `Qualifier: 1`) and REFUSED at
  *   the enum-valued ones.
@@ -130,13 +133,14 @@ describe('AWS::EC2::SecurityGroupIngress IpProtocol (create)', () => {
     // The physical id is composed from the protocol, so coercion must not
     // change it for a template that already worked.
     expect(result.physicalId).toBe('sg-123|-1|-1|-1');
-    // ...and the rule still reaches AWS. Asserting ONLY the physical id would
-    // pin nothing: `${-1}` is `'-1'` with or without the coercion (reviewer
-    // finding). `buildIpPermission` re-reads the raw bag deliberately — see the
-    // unguarded-helper decision — so the wire value stays the number AWS has
-    // always accepted here; what matters is that the rule is sent at all.
+    // ...and the COERCED value is what reaches AWS. Asserting only the physical
+    // id would pin nothing — `${-1}` is `'-1'` either way (reviewer finding).
+    // `buildIpPermission` re-reads the raw bag (it is shared with the
+    // state-borne revoke paths), so the create site overrides `IpProtocol` with
+    // the guarded value; the number AWS accepted before is now sent as the
+    // equivalent string.
     expect(inputOf().IpPermissions).toEqual([
-      { IpProtocol: -1, IpRanges: [{ CidrIp: '0.0.0.0/0' }] },
+      { IpProtocol: '-1', IpRanges: [{ CidrIp: '0.0.0.0/0' }] },
     ]);
   });
 
@@ -261,6 +265,56 @@ describe('SecurityGroupIngress UPDATE re-creates, so its guard must WARN', () =>
     expect(result.physicalId).toBe('sg-123|-1|-1|-1');
   });
 
+  it('sends the WARNED default to AWS, not the raw junk (reviewer blocker)', async () => {
+    // The first fix warned but still sent `this.buildIpPermission(properties)`,
+    // which re-reads the raw bag with its own `?? '-1'` — and `??` only rescues
+    // null/undefined. So a blank / object / boolean protocol was warned about
+    // and then sent verbatim, failing AuthorizeSecurityGroupIngress and leaving
+    // the rule REVOKED: the blocker outcome, one level further along. The
+    // earlier test passed only because `null` is exactly the case `??` rescues.
+    for (const malformed of ['', '   ', {}, true]) {
+      vi.clearAllMocks();
+      mockSend.mockResolvedValue({});
+      const provider = new EC2Provider();
+
+      await provider.update(
+        'Ingress',
+        'sg-123|-1|-1|-1',
+        'AWS::EC2::SecurityGroupIngress',
+        { GroupId: 'sg-123', IpProtocol: malformed, CidrIp: '10.0.0.0/8' },
+        { GroupId: 'sg-123', IpProtocol: 'tcp', CidrIp: '0.0.0.0/0' }
+      );
+
+      expect(logWarn).toHaveBeenCalled();
+      const authorize = mockSend.mock.calls
+        .map((c) => c[0])
+        .find((c) => c.constructor.name === 'AuthorizeSecurityGroupIngressCommand');
+      expect(authorize, `no authorize sent for ${JSON.stringify(malformed)}`).toBeDefined();
+      expect(
+        (authorize.input.IpPermissions as Array<{ IpProtocol: unknown }>)[0]!.IpProtocol,
+        `raw ${JSON.stringify(malformed)} reached AWS`
+      ).toBe('-1');
+    }
+  });
+
+  it('WARNS on a replay CREATE of the rule, not just on update', async () => {
+    // `rollback-executor.ts`'s reverse-replacement arm calls create() with a
+    // STATE record. The dispatch has to thread the downgrade too — the first
+    // fix threaded EIP and Instance but missed this case.
+    mockSend.mockResolvedValue({});
+    const provider = new EC2Provider();
+
+    const result = await provider.create(
+      'Ingress',
+      'AWS::EC2::SecurityGroupIngress',
+      { GroupId: 'sg-123', IpProtocol: null, CidrIp: '0.0.0.0/0' },
+      { replayingState: true }
+    );
+
+    expect(logWarn).toHaveBeenCalled();
+    expect(result.physicalId).toBe('sg-123|-1|-1|-1');
+  });
+
   it('keeps THROWING on the plain CREATE dispatch, where nothing was revoked', async () => {
     const provider = new EC2Provider();
 
@@ -332,7 +386,9 @@ describe('AWS::IAM::AccessKey Status', () => {
     );
     // The warning must say the value is ignored HERE and refused on create —
     // otherwise the two paths read as an inconsistency rather than a decision.
-    expect(logWarn).toHaveBeenCalledWith(expect.stringMatching(/REFUSED on create/));
+    expect(logWarn).toHaveBeenCalledWith(
+      expect.stringMatching(/REFUSED on a template-path create/)
+    );
     expect(inputOf().Status).toBe('Active');
   });
 

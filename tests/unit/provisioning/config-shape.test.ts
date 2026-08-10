@@ -248,8 +248,9 @@ describe('onUnusable (issue #1513)', () => {
     requireConfigString({ Ref: 'P' }, 'Active', PATH, { onUnusable: warn });
     const message = warn.mock.calls[0][0] as string;
     expect(message).toMatch(/AWS::IAM::AccessKey Status must be a non-empty string \(got an object\)/);
-    expect(message).toMatch(/Ignoring it and using the default \(Active\) for this update/);
-    expect(message).toMatch(/REFUSED on create/);
+    expect(message).toMatch(/Ignoring it and using the default \(Active\) here/);
+    // Wording must stay true on a replay CREATE too, not just an update.
+    expect(message).toMatch(/REFUSED on a template-path create/);
   });
 
   it('stays silent for a well-formed value and for an absent one', () => {

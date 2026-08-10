@@ -221,10 +221,12 @@ export class IAMAccessKeyProvider implements ResourceProvider {
     // existing test. The previous-status fallback applies ONLY to a
     // present-but-unusable value, so the two cases are split rather than folded
     // into one `fallback` argument (the helper cannot tell them apart).
-    const previousStatus =
-      typeof previousProperties['Status'] === 'string' && previousProperties['Status'].trim() !== ''
-        ? (previousProperties['Status'] as string)
-        : 'Active';
+    // Gated to the ENUM, not merely to a non-blank string: the previous side is
+    // a STATE record, so it can itself carry `'inactive'` / `'Deleted'` / a
+    // stray-whitespace value. Passing that through would send AWS a
+    // ValidationException on the very replay path this fallback exists to keep
+    // alive — the old code always sent a valid `Active`.
+    const previousStatus = previousProperties['Status'] === 'Inactive' ? 'Inactive' : 'Active';
     const status = (
       properties['Status'] === undefined
         ? 'Active'

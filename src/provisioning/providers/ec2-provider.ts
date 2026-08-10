@@ -356,7 +356,14 @@ export class EC2Provider implements ResourceProvider {
       case 'AWS::EC2::SecurityGroup':
         return this.createSecurityGroup(logicalId, resourceType, properties);
       case 'AWS::EC2::SecurityGroupIngress':
-        return this.createSecurityGroupIngress(logicalId, resourceType, properties);
+        return this.createSecurityGroupIngress(
+          logicalId,
+          resourceType,
+          properties,
+          // A reverse-replacement rollback creates from a STATE record, so the
+          // refusal downgrades here exactly as it does on the update path.
+          context?.replayingState === true ? (message) => this.logger.warn(message) : undefined
+        );
       case 'AWS::EC2::Instance':
         return this.createInstance(logicalId, resourceType, properties, context);
       case 'AWS::EC2::NetworkAcl':
@@ -2684,7 +2691,14 @@ export class EC2Provider implements ResourceProvider {
       await this.ec2Client.send(
         new AuthorizeSecurityGroupIngressCommand({
           GroupId: groupId,
-          IpPermissions: [this.buildIpPermission(properties)],
+          // Override the protocol with the GUARDED value. `buildIpPermission`
+          // deliberately re-reads the raw bag (it is shared with the
+          // state-borne delete / revoke paths), and its own `?? '-1'` only
+          // rescues null/undefined — so without this override a warned-about
+          // `''` / `{}` / `true` would reach AWS verbatim, fail the call, and
+          // leave the rule revoked on the update path. That is the blocker this
+          // guard exists to prevent, one level further along.
+          IpPermissions: [{ ...this.buildIpPermission(properties), IpProtocol: ipProtocol }],
         })
       );
 

@@ -259,7 +259,7 @@ export function requireConfigString(
     if (options?.onUnusable) {
       options.onUnusable(
         `${path} must be a non-empty string ${detail}. Ignoring it and using the ` +
-          `default${named} for this update; the same value is REFUSED on create`
+          `default${named} here; the same value is REFUSED on a template-path create`
       );
       return fallback;
     }
