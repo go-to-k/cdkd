@@ -361,6 +361,81 @@ describe('DynamoDBGlobalTable GSI throughput translation (issue #1387)', () => {
       expect(gsi!.OnDemandThroughput).toBeUndefined();
     });
 
+    // Issue #1452 FENCE. The CFn docs for CapacityAutoScalingSettings claim a
+    // CROSS-REGION max: "if your global secondary index myGSI has a
+    // SeedCapacity of 10 in us-east-1 and a fixed ReadCapacityUnits of 20 in
+    // eu-west-1, CloudFormation will initially set the read capacity for myGSI
+    // to 20." A live probe DISPROVED that sentence, so deriving read capacity
+    // from the LOCAL replica alone is CORRECT and must stay that way.
+    //
+    // Probe (stack Cdkd1452ProbeXRegionRead, us-east-1 + us-west-2, 2026-08-10):
+    // an AWS::DynamoDB::GlobalTable whose local (us-east-1) replica GSI carried
+    // ReadCapacityAutoScalingSettings{MinCapacity 1, MaxCapacity 100,
+    // SeedCapacity 10} and whose remote (us-west-2) replica GSI carried a fixed
+    // ReadCapacityUnits 20 reached CREATE_COMPLETE with:
+    //   us-east-1 myGSI ProvisionedThroughput.ReadCapacityUnits = 1
+    //   us-west-2 myGSI ProvisionedThroughputOverride.ReadCapacityUnits = 20
+    // So CloudFormation took the LOCAL replica's MinCapacity (1) and applied
+    // the remote's 20 only as that replica's own override. It took neither the
+    // remote's higher value NOR the local SeedCapacity — the latter
+    // independently re-confirming issue #1435's 'min'-on-create finding.
+    //
+    // Taking a max across replicas here would OVER-provision every such table
+    // and diverge from CloudFormation. This is the same failure mode as #1427,
+    // whose doc-derived premise the same probe family also disproved.
+    it('does NOT raise the local read capacity to a higher REMOTE replica value (issue #1452)', () => {
+      const [gsi] = toSdkGlobalSecondaryIndexes(
+        {
+          BillingMode: 'PROVISIONED',
+          GlobalSecondaryIndexes: [
+            {
+              IndexName: 'myGSI',
+              KeySchema: [{ AttributeName: 'gsipk', KeyType: 'HASH' }],
+              Projection: { ProjectionType: 'KEYS_ONLY' },
+              WriteProvisionedThroughputSettings: {
+                WriteCapacityAutoScalingSettings: { MinCapacity: 1, MaxCapacity: 10 },
+              },
+            },
+          ],
+          Replicas: [
+            {
+              Region: 'us-east-1',
+              GlobalSecondaryIndexes: [
+                {
+                  IndexName: 'myGSI',
+                  ReadProvisionedThroughputSettings: {
+                    ReadCapacityAutoScalingSettings: {
+                      MinCapacity: 1,
+                      MaxCapacity: 100,
+                      SeedCapacity: 10,
+                    },
+                  },
+                },
+              ],
+            },
+            {
+              Region: 'us-west-2',
+              GlobalSecondaryIndexes: [
+                {
+                  IndexName: 'myGSI',
+                  ReadProvisionedThroughputSettings: { ReadCapacityUnits: 20 },
+                },
+              ],
+            },
+          ],
+        },
+        'us-east-1',
+        'PROVISIONED'
+      );
+      // 1 = the LOCAL replica's MinCapacity. NOT 20 (the remote replica's
+      // fixed value) and NOT 10 (the local SeedCapacity) — both were rejected
+      // by the live probe above.
+      expect(gsi!.ProvisionedThroughput).toEqual({
+        ReadCapacityUnits: 1,
+        WriteCapacityUnits: 1,
+      });
+    });
+
     it('maps the on-demand CDK shape to SDK OnDemandThroughput (both directions)', () => {
       const [gsi] = toSdkGlobalSecondaryIndexes(
         ON_DEMAND_TABLE_PROPS,
