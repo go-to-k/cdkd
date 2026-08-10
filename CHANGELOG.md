@@ -1,3 +1,10 @@
+## [0.278.35](https://github.com/go-to-k/cdkd/compare/v0.278.34...v0.278.35) (2026-08-10)
+
+
+### Bug Fixes
+
+* **provisioning:** guard the ?? spelling of the malformed-container defaulting class, and the AuthType sites the || sweep missed ([#1517](https://github.com/go-to-k/cdkd/issues/1517)) ([8838137](https://github.com/go-to-k/cdkd/commit/8838137e3a0e484be8ddd3d1653e843473e8cccb))
+
 ## [0.278.34](https://github.com/go-to-k/cdkd/compare/v0.278.33...v0.278.34) (2026-08-10)
 
 
