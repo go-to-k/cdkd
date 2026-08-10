@@ -23,10 +23,18 @@ vi.mock('../../../src/cli/config-loader.js', () => ({
   resolveStateBucketWithDefault: vi.fn(async () => 'test-bucket'),
 }));
 
+// Issue #1515: the principal canonicalization resolves an IAM role/user ARN to
+// its unique id via `iam:GetRole` / `GetUser`. The client is only touched when
+// a policy actually carries a unique-id principal, so every other test in this
+// file never reaches it.
+const mockIamSend = vi.hoisted(() => vi.fn());
 vi.mock('../../../src/utils/aws-clients.ts', () => ({
   AwsClients: vi.fn().mockImplementation(() => ({
     get s3() {
       return {};
+    },
+    get iam() {
+      return { send: mockIamSend };
     },
     destroy: vi.fn(),
   })),
@@ -194,6 +202,7 @@ describe('cdkd drift', () => {
     mockRegistryGetProvider.mockReset();
     mockRegistryShouldSkip.mockReset().mockReturnValue(false);
     mockCcReadCurrentState.mockReset().mockResolvedValue(undefined);
+    mockIamSend.mockReset();
     errorSpy.mockReset();
     // Stub process.exit so DriftDetectedError -> exit(1) doesn't kill the test.
     exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
@@ -1227,6 +1236,94 @@ describe('cdkd drift', () => {
     expect(output).toContain('✓ StackA (us-east-1): no drift detected');
     expect(output).toContain('✓ StackB (us-west-2): no drift detected');
     expect(exitSpy).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Issue #1515: `AWS::S3::BucketPolicy` reported permanent phantom drift on
+   * `PolicyDocument.Statement[].Principal.AWS` because AWS renders an IAM role
+   * principal as either its ARN or its `AROA…` unique id and re-canonicalizes on
+   * write — so `--revert` reported success and the next `cdkd drift` reported the
+   * identical difference. Two back-to-back runs of the `drift-revert` fixture on
+   * 2026-08-10 differed for exactly this reason with no code change in between.
+   */
+  describe('cdkd drift: IAM principal ARN vs unique id (issue #1515)', () => {
+    const ROLE_ARN =
+      'arn:aws:iam::123456789012:role/CdkdDriftRevertExample-CustomS3AutoDeleteObjectsCustomR-30ff9234';
+    const ROLE_UNIQUE_ID = 'AROAXXXJN2LNV2SMSFATO';
+
+    const policyProps = (principal: string): Record<string, unknown> => ({
+      Bucket: 'my-bucket',
+      PolicyDocument: {
+        Version: '2012-10-17',
+        Statement: [
+          {
+            Effect: 'Allow',
+            Principal: { AWS: principal },
+            Action: 's3:GetBucket*',
+            Resource: 'arn:aws:s3:::my-bucket',
+          },
+        ],
+      },
+    });
+
+    const arrangeBucketPolicy = (baselinePrincipal: string, awsPrincipal: string): void => {
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValueOnce(
+        makeState({
+          DriftBucketPolicy: makeResource({
+            physicalId: 'my-bucket',
+            resourceType: 'AWS::S3::BucketPolicy',
+            properties: policyProps(baselinePrincipal),
+            observedProperties: policyProps(baselinePrincipal),
+          }),
+        })
+      );
+      mockRegistryGetProvider.mockReturnValue({
+        readCurrentState: async () => policyProps(awsPrincipal),
+      });
+    };
+
+    it('reports no drift when the two sides hold two spellings of ONE principal', async () => {
+      arrangeBucketPolicy(ROLE_UNIQUE_ID, ROLE_ARN);
+      mockIamSend.mockResolvedValue({ Role: { RoleId: ROLE_UNIQUE_ID } });
+
+      const { output, error } = await runDrift(['TestStack']);
+
+      expect(error).toBeUndefined();
+      expect(output).toContain('no drift detected');
+      expect(mockIamSend).toHaveBeenCalledTimes(1);
+      expect(exitSpy).not.toHaveBeenCalled();
+    });
+
+    it('still reports drift when the unique id belongs to a DIFFERENT principal', async () => {
+      arrangeBucketPolicy(ROLE_UNIQUE_ID, ROLE_ARN);
+      mockIamSend.mockResolvedValue({ Role: { RoleId: 'AROASOMEOTHERROLE99' } });
+
+      const { output } = await runDrift(['TestStack']);
+
+      expect(output).toContain('drift detected');
+      expect(output).toContain('PolicyDocument');
+      expect(exitSpy).toHaveBeenCalledWith(1);
+    });
+
+    it('still reports drift when the lookup fails (deleted role / missing iam:GetRole)', async () => {
+      arrangeBucketPolicy(ROLE_UNIQUE_ID, ROLE_ARN);
+      mockIamSend.mockRejectedValue(new Error('NoSuchEntity'));
+
+      const { output } = await runDrift(['TestStack']);
+
+      expect(output).toContain('drift detected');
+      expect(exitSpy).toHaveBeenCalledWith(1);
+    });
+
+    it('makes no IAM call for a policy with no unique-id principal', async () => {
+      arrangeBucketPolicy(ROLE_ARN, ROLE_ARN);
+
+      const { output } = await runDrift(['TestStack']);
+
+      expect(output).toContain('no drift detected');
+      expect(mockIamSend).not.toHaveBeenCalled();
+    });
   });
 });
 
