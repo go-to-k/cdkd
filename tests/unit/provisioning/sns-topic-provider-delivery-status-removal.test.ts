@@ -247,6 +247,82 @@ describe('SNSTopicProvider DeliveryStatusLogging removal resets (issue #1160)', 
       AttributeValue: '0',
     });
   });
+
+  // ─── HTTP family on the update path (issue #1529) ────────────────────
+  //
+  // Every case above uses `lambda` / `sqs`. Both sides of the update diff go
+  // through `buildDeliveryStatusAttributeMap`, so the FOLD itself is covered
+  // by the canonicalization suite — but the removal-reset arm applied to an
+  // `HTTP*` attribute name, and the old-binary state migration, only existed
+  // in the integ.
+
+  it('removal of an http/s entry resets the HTTP attributes, never an HTTPS* name', async () => {
+    const previous = {
+      TopicName: 'topic',
+      DeliveryStatusLogging: [
+        {
+          Protocol: 'http/s',
+          SuccessFeedbackRoleArn: ROLE_A,
+          SuccessFeedbackSampleRate: 35,
+          FailureFeedbackRoleArn: ROLE_B,
+        },
+      ],
+    };
+
+    await provider.update('L', TOPIC_ARN, 'AWS::SNS::Topic', { TopicName: 'topic' }, previous);
+
+    const calls = setAttributeCalls();
+    expect(calls).toContainEqual({
+      TopicArn: TOPIC_ARN,
+      AttributeName: 'HTTPSuccessFeedbackRoleArn',
+      AttributeValue: '',
+    });
+    expect(calls).toContainEqual({
+      TopicArn: TOPIC_ARN,
+      AttributeName: 'HTTPFailureFeedbackRoleArn',
+      AttributeValue: '',
+    });
+    expect(calls).toContainEqual({
+      TopicArn: TOPIC_ARN,
+      AttributeName: 'HTTPSuccessFeedbackSampleRate',
+      AttributeValue: '0',
+    });
+    // The reset must not aim at the names AWS rejects. Enumerated rather
+    // than prefix-matched: `HTTPSuccessFeedbackRoleArn` also begins "HTTPS".
+    const names = calls.map((c) => c.AttributeName);
+    for (const rejected of [
+      'HTTPSSuccessFeedbackRoleArn',
+      'HTTPSSuccessFeedbackSampleRate',
+      'HTTPSFailureFeedbackRoleArn',
+    ]) {
+      expect(names).not.toContain(rejected);
+    }
+  });
+
+  it('a STATE record spelled https against a desired http/s is a no-op (old-binary migration)', async () => {
+    // The old binary canonicalized `https` to an `HTTPS` prefix; the new one
+    // folds it to `HTTP`, same as the desired `http/s`. Both sides therefore
+    // flatten to the SAME attribute map, so the correct outcome is ZERO
+    // SetTopicAttributes calls — no spurious reset of a live attribute and
+    // no redundant re-write. The raw JSON diff DOES fire (the spellings
+    // differ), so this branch runs on every such deploy.
+    const previous = {
+      TopicName: 'topic',
+      DeliveryStatusLogging: [
+        { Protocol: 'https', SuccessFeedbackRoleArn: ROLE_A, SuccessFeedbackSampleRate: 35 },
+      ],
+    };
+    const desired = {
+      TopicName: 'topic',
+      DeliveryStatusLogging: [
+        { Protocol: 'http/s', SuccessFeedbackRoleArn: ROLE_A, SuccessFeedbackSampleRate: 35 },
+      ],
+    };
+
+    await provider.update('L', TOPIC_ARN, 'AWS::SNS::Topic', desired, previous);
+
+    expect(setAttributeCalls()).toEqual([]);
+  });
 });
 
 describe('buildDeliveryStatusAttributeMap', () => {

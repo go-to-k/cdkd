@@ -978,13 +978,26 @@ const SNS_DELIVERY_STATUS_ATTRIBUTE_SUFFIXES = [
  * be canonicalized maps to no attribute names anyway).
  *
  * Two entries whose `Protocol` values canonicalize to the SAME prefix
- * (`http/s` + `https`, say) collapse onto one set of attribute names,
- * last-one-wins. That became reachable only with issue #1529, which folded
- * the whole HTTP family onto the single `HTTP` prefix — before it, the
- * `https` arm produced `HTTPS*` names AWS rejected outright, so no such
- * template ever deployed. It is WARNED, not thrown: this function's
- * `'throw'` side is also fed by the rollback executor's `update()` replay
- * of a cdkd STATE record, where the user has no template-side remedy.
+ * (`http/s` + `https`, say) collapse onto one set of attribute names. The
+ * collapse is a PER-FIELD merge, not a per-entry overwrite: a later entry
+ * overwrites only the sub-fields it declares, because the loop below skips
+ * an absent field (`value == null`) rather than clearing it. So
+ * `[{http/s, RoleArn: A, SampleRate: 10}, {https, RoleArn: B}]` yields
+ * `RoleArn: B` AND `SampleRate: 10`. The warning says exactly that.
+ * The case became reachable only with issue #1529, which folded the whole
+ * HTTP family onto the single `HTTP` prefix — before it, the `https` arm
+ * produced `HTTPS*` names AWS rejected outright, so no such template ever
+ * deployed.
+ *
+ * The collision WARNS rather than throws because this function's `'throw'`
+ * side is also fed by the rollback executor's `update()` replay of a cdkd
+ * STATE record, where the user has no template-side remedy. NOTE the three
+ * pre-existing throws below (unsupported protocol, non-array container,
+ * non-object entry) sit on that same side and are NOT covered by that
+ * reasoning — a state record carrying one of those is permanently
+ * unreplayable. That is a real but latent gap, tracked as issue #1538;
+ * #1529 deliberately did not widen its scope to change the create path's
+ * validation contract.
  */
 export function buildDeliveryStatusAttributeMap(
   logging: unknown,
@@ -992,8 +1005,8 @@ export function buildDeliveryStatusAttributeMap(
   onMalformed: 'throw' | 'skip'
 ): Map<string, string> {
   const map = new Map<string, string>();
-  const seenProtocols = new Set<SnsDeliveryStatusProtocol>();
   if (logging == null) return map;
+  const seenProtocols = new Set<SnsDeliveryStatusProtocol>();
   if (!Array.isArray(logging)) {
     if (onMalformed === 'skip') return map;
     throw new Error(
@@ -1027,8 +1040,10 @@ export function buildDeliveryStatusAttributeMap(
         .warn(
           `SNS topic ${logicalId}: DeliveryStatusLogging declares more than one entry ` +
             `for the "${protocol}" attribute prefix (${JSON.stringify(config['Protocol'])} ` +
-            `canonicalizes to it). AWS has one attribute set per prefix, so the LAST ` +
-            `entry wins. Declare a single entry per protocol.`
+            `canonicalizes to it). AWS has one attribute set per prefix, so these are ` +
+            `merged per field — a later entry overwrites only the sub-fields it ` +
+            `declares, and a field it omits keeps the earlier entry's value. ` +
+            `Declare a single entry per protocol.`
         );
     }
     seenProtocols.add(protocol);
@@ -1157,9 +1172,17 @@ function stateProtocolCaseMap(stateLogging: unknown): Map<SnsDeliveryStatusProto
     if (typeof raw !== 'string') continue;
     const normalized = normalizeDeliveryStatusProtocol(raw);
     if (!normalized) continue;
-    // First state entry per canonical protocol wins; duplicates would
-    // already be a state error and the map's last-write semantics is
-    // immaterial in practice.
+    // First state entry per canonical protocol wins. Since issue #1529
+    // folded the HTTP family onto one prefix, two entries CAN legitimately
+    // normalize to the same key (`http/s` + `https`) — that template warns
+    // but deploys, so state really can hold both. First-wins just picks
+    // which spelling the reverse map echoes back; either choice matches one
+    // of the recorded entries. Note the resulting array is shorter than the
+    // recorded one (two entries in, one out), so a resource whose drift
+    // baseline falls back to template `properties` rather than
+    // `observedProperties` would see a positional length mismatch — an
+    // argument for the "declare a single entry per protocol" warning, not a
+    // reason to synthesize a duplicate entry here.
     if (!map.has(normalized)) map.set(normalized, raw);
   }
   return map;

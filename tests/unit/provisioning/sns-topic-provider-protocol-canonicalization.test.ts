@@ -82,6 +82,33 @@ describe('normalizeDeliveryStatusProtocol (issue #1529)', () => {
     expect(normalizeDeliveryStatusProtocol('application')).toBe('Application');
   });
 
+  it('every spelling the error message advertises actually normalizes (sync fence)', () => {
+    // `SNS_DELIVERY_STATUS_PROTOCOL_SPELLINGS` and the switch are two
+    // hand-maintained sources. Without this fence, a protocol added to one
+    // and not the other ships silently: either the error message advertises
+    // a value the switch rejects, or a supported value is never suggested.
+    // Both constants are module-private, so the fence goes through the two
+    // public surfaces that expose them.
+    const advertised = (() => {
+      try {
+        buildDeliveryStatusAttributeMap([{ Protocol: 'definitely-not-a-protocol' }], 'L', 'throw');
+      } catch (e) {
+        const m = /Expected one of (.+?) \(case-insensitive\)/.exec((e as Error).message);
+        return m?.[1]?.split(', ') ?? [];
+      }
+      return [];
+    })();
+
+    expect(advertised.length).toBeGreaterThan(0);
+    for (const spelling of advertised) {
+      expect(normalizeDeliveryStatusProtocol(spelling), `advertised: ${spelling}`).toBeDefined();
+    }
+    // ...and the advertised set must REACH every prefix the reverse map
+    // walks, else a protocol is supported but undiscoverable from the error.
+    const reachable = new Set(advertised.map((s) => normalizeDeliveryStatusProtocol(s)));
+    expect([...reachable].sort()).toEqual(['Application', 'Firehose', 'HTTP', 'Lambda', 'SQS']);
+  });
+
   it('still rejects genuinely unknown protocols and non-strings', () => {
     expect(normalizeDeliveryStatusProtocol('smtp')).toBeUndefined();
     expect(normalizeDeliveryStatusProtocol('http/')).toBeUndefined();
@@ -150,6 +177,29 @@ describe('buildDeliveryStatusAttributeMap HTTP family (issue #1529)', () => {
     expect(warn.mock.calls[0]?.[0]).toContain('more than one entry');
     expect(warn.mock.calls[0]?.[0]).toContain('"HTTP"');
     expect(warn.mock.calls[0]?.[0]).toContain('MyTopic');
+  });
+
+  it('merges a collision PER FIELD — an omitted sub-field keeps the earlier value', () => {
+    warn.mockClear();
+
+    // The collapse is NOT a per-entry overwrite: the loop skips an absent
+    // field rather than clearing it, so the second entry replaces only
+    // SuccessFeedbackRoleArn and the first entry's sample rate survives.
+    // The warning text has to describe this, not "the last entry wins".
+    const map = buildDeliveryStatusAttributeMap(
+      [
+        { Protocol: 'http/s', SuccessFeedbackRoleArn: ROLE_A, SuccessFeedbackSampleRate: 10 },
+        { Protocol: 'https', SuccessFeedbackRoleArn: ROLE_B },
+      ],
+      'MyTopic',
+      'throw'
+    );
+
+    expect([...map.entries()]).toEqual([
+      ['HTTPSuccessFeedbackRoleArn', ROLE_B],
+      ['HTTPSuccessFeedbackSampleRate', '10'],
+    ]);
+    expect(warn.mock.calls[0]?.[0]).toContain('merged per field');
   });
 
   it('does not warn on the PREVIOUS side, where the advice is unactionable', () => {
