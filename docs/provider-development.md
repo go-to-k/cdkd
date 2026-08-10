@@ -1080,12 +1080,23 @@ back is not atomic; a concurrent writer landing in between is silently undone
 by your write-back. Check the update request for an optimistic-concurrency
 member (Glue's `UpdateTableRequest.VersionId`; the `ConcurrentModificationException`
 in a command's documented error list is the tell) and send the version you
-read, so a concurrent change fails loudly instead. Scope it to updates that
-actually write back live values — an update that only pushes template-declared
-values has nothing stale to write, and guarding it would turn
-`drift --revert`'s intentional overwrite into a spurious failure. When the API
-has no such member, say so where users will read it rather than leaving the
-exposure implicit.
+read, so a concurrent change fails loudly instead. Send it on EVERY update
+rather than only on the ones that write back live values: the read runs
+immediately before the write, so the version is never stale unless somebody
+else really wrote in between, and an update that merged nothing still ships a
+wholesale replace that a concurrent write would lose. (Scoping it was tried on
+Glue and was wrong twice over — it left the empty-live-read case unguarded,
+and its premise that a pure template push carries a stale version was false.)
+When the API has no such member, say so where users will read it rather than
+leaving the exposure implicit.
+
+**Prove the precondition, do not assume it.** An AWS field named like a version
+token is not necessarily enforced — Glue documents `VersionId` only as "the
+version ID at which to update the table contents". Pin the semantics with a
+real-AWS probe that advances the version out of band and requires the stale
+replay to be REFUSED (and refused with a concurrency error, not any error).
+Without that, an ignored token makes the whole guard a placebo that reads as
+protection in review.
 
 Two placement rules go with it:
 
@@ -1105,7 +1116,14 @@ Two placement rules go with it:
   until issue #1461, so the new read would have failed a rollback op that
   previously issued no read at all — and the best-effort catch there counts
   that as a failure and moves on. A transient failure on a RECOVERY path is
-  the worst place to introduce one.
+  the worst place to introduce one. **A new `withRetry` must carry the two
+  conventions the surrounding sites use**, or it trades one bug for another:
+  honor `provider.disableOuterRetry` (`CustomResourceProvider` /
+  `NestedStackProvider` set it AND implement `update()` — re-invoking a Custom
+  Resource derives a fresh RequestId + pre-signed URL and strands the first
+  response at an S3 key nobody polls), and thread `isInterrupted` /
+  `onInterrupted` (a rollback polls interrupts only BETWEEN ops, so an
+  un-threaded probe leaves Ctrl-C dead for the whole backoff schedule).
 
 Only bags AWS actually writes into qualify. A purely user-authored bag
 (Glue's `JobUpdate.DefaultArguments`, `ConnectionInput.ConnectionProperties`)

@@ -69,7 +69,12 @@ const silentLogger = {
   child: () => silentLogger,
 } as unknown as RollbackExecutorContext['logger'];
 
-function makeCtx(provider: { delete?: unknown; update?: unknown; create?: unknown }): {
+function makeCtx(provider: {
+  delete?: unknown;
+  update?: unknown;
+  create?: unknown;
+  disableOuterRetry?: boolean;
+}): {
   ctx: RollbackExecutorContext;
   events: Array<{ eventType: string; logicalId?: string; provisionedBy?: 'sdk' | 'cc-api' }>;
 } {
@@ -753,6 +758,55 @@ describe('replayRollback', () => {
     expect(vi.mocked(withRetry).mock.calls[0]![1]).toBe('B');
   });
 
+  it("the 'revert' arm honors provider.disableOuterRetry (issue #1461)", async () => {
+    // CustomResourceProvider and NestedStackProvider both set the flag AND
+    // implement update(). Re-invoking a Custom Resource derives a FRESH
+    // RequestId + pre-signed response URL, so the first attempt's response
+    // lands at an S3 key nobody polls — the hang the flag exists to prevent.
+    const update = vi.fn().mockResolvedValue({ physicalId: 'phys-B' });
+    const { ctx } = makeCtx({ update, disableOuterRetry: true });
+    const prev = res({ physicalId: 'phys-B', properties: { a: 1 } });
+    const ops: CompletedOperation[] = [
+      { logicalId: 'B', changeType: 'UPDATE', resourceType: 'Custom::X', physicalId: 'phys-B', previousState: prev },
+    ];
+    const state: Record<string, ResourceState> = {
+      B: res({ physicalId: 'phys-B', properties: { a: 2 } }),
+    };
+
+    const result = await replayRollback(ops, state, 'S', ctx);
+
+    expect(result.failures).toBe(0);
+    // The update still ran — exactly once, and NOT through withRetry.
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(withRetry)).not.toHaveBeenCalled();
+  });
+
+  it("the 'revert' arm threads isInterrupted into the retry (issue #1461)", async () => {
+    // replayRollback polls interrupts only BETWEEN ops, so an un-threaded
+    // isInterrupted leaves Ctrl-C dead for the whole backoff schedule.
+    const update = vi.fn().mockResolvedValue({ physicalId: 'phys-B' });
+    const { ctx } = makeCtx({ update });
+    const prev = res({ physicalId: 'phys-B', properties: { a: 1 } });
+    const ops: CompletedOperation[] = [
+      { logicalId: 'B', changeType: 'UPDATE', resourceType: 'T', physicalId: 'phys-B', previousState: prev },
+    ];
+    const state: Record<string, ResourceState> = {
+      B: res({ physicalId: 'phys-B', properties: { a: 2 } }),
+    };
+    // Must return false: replayRollback polls interrupts BETWEEN ops, so a
+    // permanently-true probe stops the replay before the op runs and withRetry
+    // is never reached. What is under test is that the reference is THREADED.
+    const isInterrupted = () => false;
+
+    await replayRollback(ops, state, 'S', ctx, { isInterrupted });
+
+    const opts = vi.mocked(withRetry).mock.calls[0]?.[2] as
+      | { isInterrupted?: () => boolean; onInterrupted?: () => Error }
+      | undefined;
+    expect(opts?.isInterrupted).toBe(isInterrupted);
+    expect(opts?.onInterrupted?.()).toBeInstanceOf(Error);
+  });
+
   it('reverse-replacement initial re-create retries ONLY the SQS name cooldown (issue #1206)', async () => {
     // The initial create-first attempt is wrapped in withRetry with a
     // cooldown-only filter: QueueDeletedRecently is waited out (the forward
@@ -1005,6 +1059,13 @@ describe('replayRollback', () => {
 });
 
 describe('replayFailedOperations (#1198)', () => {
+  // Same latent cross-test leak the `replayRollback` block has: `withRetry` is
+  // module-mocked ONCE for the file, so its call history accumulates and any
+  // positional assertion silently reads an earlier test's calls.
+  beforeEach(() => {
+    vi.mocked(withRetry).mockClear();
+  });
+
   it('force-reverts a failed UPDATE with previous-vs-attempted diff sides', async () => {
     const update = vi.fn().mockResolvedValue({ physicalId: 'phys-B' });
     const { ctx, events } = makeCtx({ update });
@@ -1039,7 +1100,6 @@ describe('replayFailedOperations (#1198)', () => {
   it("the 'revert-failed-update' arm wraps provider.update in withRetry (issue #1461)", async () => {
     // Twin of the `revert`-arm guard in the replayRollback block: same
     // best-effort catch, same newly-read-issuing provider update.
-    vi.mocked(withRetry).mockClear();
     const update = vi.fn().mockResolvedValue({ physicalId: 'phys-B' });
     const { ctx } = makeCtx({ update });
     const prev = res({ physicalId: 'phys-B', properties: { a: 1 } });
@@ -1054,6 +1114,37 @@ describe('replayFailedOperations (#1198)', () => {
     expect(update).toHaveBeenCalledWith('B', 'phys-B', 'T', { a: 1 }, { a: 2 });
     expect(vi.mocked(withRetry)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(withRetry).mock.calls[0]![1]).toBe('B');
+  });
+
+  it("the 'revert-failed-update' arm honors disableOuterRetry and threads isInterrupted (issue #1461)", async () => {
+    const update = vi.fn().mockResolvedValue({ physicalId: 'phys-B' });
+    const { ctx } = makeCtx({ update, disableOuterRetry: true });
+    const prev = res({ physicalId: 'phys-B', properties: { a: 1 } });
+    const failedOps: FailedOperation[] = [
+      { logicalId: 'B', changeType: 'UPDATE', resourceType: 'Custom::X', physicalId: 'phys-B', previousState: prev, attemptedProperties: { a: 2 } },
+    ];
+    const state = { B: res({ physicalId: 'phys-B', properties: { a: 1 } }) };
+
+    await replayFailedOperations(failedOps, state, 'S', ctx);
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(withRetry)).not.toHaveBeenCalled();
+
+    // And the retrying (non-opt-out) path carries the interrupt hook.
+    vi.mocked(withRetry).mockClear();
+    const { ctx: retryCtx } = makeCtx({ update: vi.fn().mockResolvedValue({}) });
+    const isInterrupted = () => false;
+    await replayFailedOperations(
+      failedOps,
+      { B: res({ physicalId: 'phys-B', properties: { a: 1 } }) },
+      'S',
+      retryCtx,
+      { isInterrupted }
+    );
+    const opts = vi.mocked(withRetry).mock.calls[0]?.[2] as
+      | { isInterrupted?: () => boolean; onInterrupted?: () => Error }
+      | undefined;
+    expect(opts?.isInterrupted).toBe(isInterrupted);
+    expect(opts?.onInterrupted?.()).toBeInstanceOf(Error);
   });
 
   it('falls back to current props as the previous side when attemptedProperties absent', async () => {

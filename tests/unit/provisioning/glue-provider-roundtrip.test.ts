@@ -1133,12 +1133,17 @@ describe('GlueProvider — AWS-managed Parameters preservation (#1461)', () => {
     expect(sentUpdateTableInputRoot().VersionId).toBe('7');
   });
 
-  it('AWS::Glue::Table — VersionId is NOT sent when nothing live was written back (drift --revert)', async () => {
-    // Scoped deliberately. When the template declares every parameter, nothing
-    // read here reaches AWS, so there is no stale value to write back — and
-    // `drift --revert` is exactly that shape (it INTENDS to overwrite whatever
-    // AWS currently holds). Guarding it would turn a deliberate overwrite into
-    // a spurious ConcurrentModificationException.
+  it('AWS::Glue::Table — VersionId is sent on a pure template push too (drift --revert)', async () => {
+    // Deliberately UNCONDITIONAL. An earlier cut scoped this to "only when the
+    // merge wrote back live values", which was wrong twice over. Unsafe: the
+    // merge also reports nothing-written-back when the LIVE READ WAS EMPTY,
+    // and that update still ships a wholesale TableInput replace — so a commit
+    // landing in the window would have been wiped with no guard at all.
+    // And the premise was false: the pre-read runs milliseconds before the
+    // send on EVERY update, so a pure template push carries a fresh version
+    // too and cannot fail spuriously. It fails only when someone else really
+    // wrote in between, which is exactly when a revert should stop rather than
+    // clobber a change it never saw.
     mockLiveTable({ table_type: 'ICEBERG', console_added: 'oops' }, '7');
 
     await provider.update(
@@ -1155,10 +1160,28 @@ describe('GlueProvider — AWS-managed Parameters preservation (#1461)', () => {
       }
     );
 
-    const input = sentUpdateTableInputRoot();
-    // `in`, not toBeUndefined: an explicit `VersionId: undefined` key would be
-    // a different wire shape.
-    expect('VersionId' in input).toBe(false);
+    expect(sentUpdateTableInputRoot().VersionId).toBe('7');
+    // The revert still clears the console addition — guarding does not change
+    // what is written, only whether the write is allowed to land.
+    expect(sentTableInput().Parameters).toStrictEqual({ table_type: 'ICEBERG' });
+  });
+
+  it('AWS::Glue::Table — VersionId is sent even when the live Parameters map is EMPTY', async () => {
+    // The hole the old scoping left: an empty live read means the merge adds
+    // nothing, but the update is still a wholesale TableInput replace, so a
+    // concurrent commit in the window is wiped. Unguarded, that was #1461
+    // surviving its own fix.
+    mockLiveTable({}, '9');
+
+    await provider.update(
+      'L',
+      TABLE_PHYSICAL_ID,
+      'AWS::Glue::Table',
+      { DatabaseName: 'mydb', TableInput: { Name: 'mytbl', Description: 'b' } },
+      { DatabaseName: 'mydb', TableInput: { Name: 'mytbl', Description: 'a' } }
+    );
+
+    expect(sentUpdateTableInputRoot().VersionId).toBe('9');
   });
 
   it('AWS::Glue::Table — VersionId is omitted when AWS did not return one', async () => {
@@ -1172,8 +1195,10 @@ describe('GlueProvider — AWS-managed Parameters preservation (#1461)', () => {
       { DatabaseName: 'mydb', TableInput: { Name: 'mytbl', Description: 'a' } }
     );
 
+    // `in`, not toBeUndefined: an explicit `VersionId: undefined` key would be
+    // a different wire shape.
     expect('VersionId' in sentUpdateTableInputRoot()).toBe(false);
-    // The merge still happened — omitting the guard must not skip the fix.
+    // The merge still happened — no version to guard with must not skip the fix.
     expect(sentTableInput().Parameters).toStrictEqual({ table_type: 'ICEBERG' });
   });
 
@@ -1197,8 +1222,33 @@ describe('GlueProvider — AWS-managed Parameters preservation (#1461)', () => {
 
     expect(error.message).toContain('Failed to update Glue Table L');
     expect(error.message).toContain('Another writer changed the table');
+    expect(error.message).toContain('cdkd sent the version it read (7)');
     expect(error.message).toContain('metadata_location');
     expect(error.message).toContain('Re-run the deploy');
+  });
+
+  it('AWS::Glue::Table — the CME message does NOT claim a precondition cdkd never sent', async () => {
+    // Wording is gated on whether a VersionId was actually attached. With none,
+    // AWS raised this on its own, and claiming "cdkd sent the version it read"
+    // would be a lie about our own behavior.
+    mockSend.mockResolvedValueOnce({ Table: { Name: 'mytbl', Parameters: {} } });
+    mockSend.mockRejectedValueOnce(
+      new ConcurrentModificationException({ message: 'Update table failed', $metadata: {} })
+    );
+
+    const error = await captureRejection(
+      provider.update(
+        'L',
+        TABLE_PHYSICAL_ID,
+        'AWS::Glue::Table',
+        { DatabaseName: 'mydb', TableInput: { Name: 'mytbl', Description: 'b' } },
+        { DatabaseName: 'mydb', TableInput: { Name: 'mytbl', Description: 'a' } }
+      )
+    );
+
+    expect(error.message).toContain('Another writer changed the table');
+    expect(error.message).toContain('AWS returned no VersionId');
+    expect(error.message).not.toContain('cdkd sent the version it read');
   });
 
   // ─── Build-time failures stay typed (the build is INSIDE the try) ──
@@ -1262,7 +1312,9 @@ describe('GlueProvider — AWS-managed Parameters preservation (#1461)', () => {
     );
 
     expect('Parameters' in sentTableInput()).toBe(false);
-    expect('VersionId' in sentUpdateTableInputRoot()).toBe(false);
+    // The concurrency guard is independent of whether anything was merged —
+    // the wholesale TableInput replace still needs it.
+    expect(sentUpdateTableInputRoot().VersionId).toBe('3');
   });
 
   // ─── readCurrentState CatalogId parity (same call, same catalog) ───

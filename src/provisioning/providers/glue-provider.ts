@@ -531,7 +531,7 @@ export class GlueProvider implements ResourceProvider {
 
     try {
       const builtTableInput = this.buildTableInput(tableInput, tableName);
-      const preservedAwsAuthored = this.preserveAwsManagedParameters(
+      this.preserveAwsManagedParameters(
         builtTableInput,
         tableInput['Parameters'],
         (previousProperties?.['TableInput'] as Record<string, unknown> | undefined)?.['Parameters'],
@@ -543,12 +543,10 @@ export class GlueProvider implements ResourceProvider {
           ...(catalogId !== undefined && { CatalogId: catalogId }),
           DatabaseName: databaseName,
           TableInput: builtTableInput,
-          // Optimistic-concurrency guard for the read-modify-write window,
-          // sent ONLY when the merge actually carried live values into the
-          // payload. See {@link readLiveTableState} for why it is scoped that
-          // way rather than sent unconditionally.
-          ...(preservedAwsAuthored &&
-            live.versionId !== undefined && { VersionId: live.versionId }),
+          // Optimistic-concurrency guard for the read-modify-write window.
+          // Sent whenever the pre-read returned a version — see
+          // {@link readLiveTableState} for why this is unconditional.
+          ...(live.versionId !== undefined && { VersionId: live.versionId }),
         })
       );
 
@@ -561,19 +559,29 @@ export class GlueProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       const detail = error instanceof Error ? error.message : String(error);
-      // A `VersionId` precondition failure means someone else committed to the
-      // table between our pre-read and this call. Say so explicitly: the
-      // generic wrap would leave the user staring at a bare
-      // `ConcurrentModificationException` with no hint that a concurrent
+      // A `ConcurrentModificationException` means someone else changed the
+      // table under us. Say so explicitly — the generic wrap would leave the
+      // user staring at a bare SDK error with no hint that a concurrent
       // Iceberg commit is the likely cause and that a re-run is the fix.
-      const message =
-        error instanceof ConcurrentModificationException
-          ? `Failed to update Glue Table ${logicalId}: ${detail}. Another writer changed the ` +
-            `table between cdkd's pre-update read and its UpdateTable call. cdkd refused rather ` +
-            `than write back the AWS-managed Parameters it read a moment earlier, which for an ` +
-            `Apache Iceberg table would have pinned it to an older metadata_location (an ` +
-            `effective snapshot rollback). Re-run the deploy to pick up the current values.`
-          : `Failed to update Glue Table ${logicalId}: ${detail}`;
+      //
+      // The wording is gated on whether cdkd actually attached the `VersionId`
+      // precondition. Without one, AWS raised this on its own and claiming
+      // "cdkd refused" would be a lie about our own behavior.
+      let message = `Failed to update Glue Table ${logicalId}: ${detail}`;
+      if (error instanceof ConcurrentModificationException) {
+        message +=
+          `. Another writer changed the table between cdkd's pre-update read and its ` +
+          `UpdateTable call.`;
+        message +=
+          live.versionId !== undefined
+            ? ` cdkd sent the version it read (${live.versionId}) as a precondition and AWS ` +
+              `rejected the write, rather than let it put back the AWS-managed Parameters read ` +
+              `a moment earlier — which for an Apache Iceberg table would have pinned it to an ` +
+              `older metadata_location (an effective snapshot rollback).`
+            : ` AWS returned no VersionId on the pre-update read, so cdkd could not attach a ` +
+              `precondition; AWS rejected the write on its own.`;
+        message += ` Re-run the deploy to pick up the current values.`;
+      }
       throw new ProvisioningError(message, resourceType, logicalId, physicalId, cause);
     }
   }
@@ -671,19 +679,14 @@ export class GlueProvider implements ResourceProvider {
    * `desiredParameters` / `previousParameters` are the raw CFn-side maps
    * (their KEY SET is all that matters here; `buildTableInput` already
    * stringified the desired VALUES into `built.Parameters`).
-   *
-   * Returns `true` when at least one AWS-authored entry was carried into
-   * `built` — i.e. when this update is a read-modify-write rather than a pure
-   * template push. The Table caller uses that to decide whether to send the
-   * `VersionId` concurrency guard.
    */
   private preserveAwsManagedParameters(
     built: { Parameters?: Record<string, string> | undefined },
     desiredParameters: unknown,
     previousParameters: unknown,
     liveParameters: Record<string, string> | undefined
-  ): boolean {
-    if (!liveParameters || Object.keys(liveParameters).length === 0) return false;
+  ): void {
+    if (!liveParameters || Object.keys(liveParameters).length === 0) return;
 
     const desiredKeys = parameterKeySet(desiredParameters);
     const previousKeys = parameterKeySet(previousParameters);
@@ -695,12 +698,11 @@ export class GlueProvider implements ResourceProvider {
       if (desiredKeys.has(key) || previousKeys.has(key)) continue;
       awsAuthored[key] = value;
     }
-    if (Object.keys(awsAuthored).length === 0) return false;
+    if (Object.keys(awsAuthored).length === 0) return;
 
     // Desired values are spread LAST so a template-declared key always wins
     // over the live readback (which is a snapshot from before this update).
     built.Parameters = { ...awsAuthored, ...(built.Parameters ?? {}) };
-    return true;
   }
 
   /**
@@ -726,14 +728,24 @@ export class GlueProvider implements ResourceProvider {
    * so the caller sends the version it read and a concurrent commit makes the
    * update fail loudly instead of silently rolling back.
    *
-   * It is sent ONLY when the merge actually carried live values into the
-   * payload, not on every update. When the template declares every parameter
-   * itself, nothing read here reaches AWS, so there is no stale value to write
-   * back and the pre-existing last-writer-wins semantic (which is also
-   * CloudFormation's) is the correct one. `cdkd drift --revert` is exactly
-   * that shape — it deliberately pushes the state snapshot over whatever AWS
-   * currently holds — and guarding it would turn an intentional overwrite into
-   * a spurious failure.
+   * It is sent UNCONDITIONALLY whenever this read returned a version, and the
+   * earlier attempt to scope it to "only when the merge wrote back live
+   * values" was wrong on both counts. Wrong on SAFETY: the merge also reports
+   * nothing-written-back when the live read came back EMPTY, and that update
+   * still ships a wholesale `TableInput` replace — so a commit landing in the
+   * window would have been wiped with no guard at all, i.e. #1461 surviving
+   * its own fix. Wrong on its PREMISE: this read runs milliseconds before the
+   * send on every update, so a pure template push (`cdkd drift --revert`, the
+   * case the scoping was meant to protect) carries a FRESH version too. An
+   * unconditional guard therefore cannot fire spuriously — it fires only when
+   * somebody else genuinely wrote in between, which is exactly when a revert
+   * should stop and be re-run against current values rather than clobber a
+   * change it never saw.
+   *
+   * The precondition's real-AWS semantics are pinned by the `data-analytics`
+   * integ, which advances a table's version out of band and asserts cdkd's
+   * update is REFUSED — without that, "AWS silently ignores a stale VersionId"
+   * would make this guard a placebo.
    */
   private async readLiveTableState(
     logicalId: string,

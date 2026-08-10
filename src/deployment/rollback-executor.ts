@@ -49,6 +49,7 @@
 import type { DeploymentEvent } from '../types/deployment-events.js';
 import { extractDeploymentEventError } from '../types/deployment-events.js';
 import type { ResourceState } from '../types/state.js';
+import type { ResourceProvider } from '../types/resource.js';
 import type { Logger } from '../types/config.js';
 import type { ProviderRegistry } from '../provisioning/provider-registry.js';
 import { STATEFUL_TYPES } from '../provisioning/stateful-types.js';
@@ -627,6 +628,48 @@ export async function replayRollback(
   return result;
 }
 
+/**
+ * `provider.update()` for a rollback arm, retried unless the provider opts out.
+ *
+ * Both rollback UPDATE arms need the same three things, and getting any of
+ * them wrong is only visible on a recovery path (issue #1461):
+ *
+ *  - **Retry.** A provider `update()` can issue reads as well as writes (Glue
+ *    does a pre-update `GetTable`), and the callers' best-effort catch counts
+ *    a transient failure as a real one and moves on, leaving state unreverted.
+ *    `deploy-engine.ts` and `drift.ts` have always wrapped their calls; these
+ *    arms did not.
+ *  - **`disableOuterRetry`.** `CustomResourceProvider` and
+ *    `NestedStackProvider` set it AND implement `update()`. Re-invoking a
+ *    Custom Resource derives a FRESH RequestId + pre-signed response URL, so
+ *    the first attempt's response lands at an S3 key nobody polls — the exact
+ *    hang the flag exists to prevent. Those providers retry internally.
+ *  - **Interrupt.** `replayRollback` polls interrupts only BETWEEN ops, so an
+ *    un-threaded `isInterrupted` leaves Ctrl-C dead for the length of the
+ *    backoff schedule (~47s) per op.
+ */
+async function updateWithRollbackRetry(
+  provider: ResourceProvider,
+  args: Parameters<ResourceProvider['update']>,
+  logicalId: string,
+  logger: RollbackExecutorContext['logger'],
+  isInterrupted: (() => boolean) | undefined
+): Promise<void> {
+  if (provider.disableOuterRetry) {
+    // Single-shot — the provider handles transient errors internally, and an
+    // outer retry would invalidate its per-call invariant state.
+    await provider.update(...args);
+    return;
+  }
+  await withRetry(() => provider.update(...args), logicalId, {
+    logger,
+    ...(isInterrupted && {
+      isInterrupted,
+      onInterrupted: () => new Error('Rollback interrupted while retrying a resource update'),
+    }),
+  });
+}
+
 async function replaySingle(
   op: CompletedOperation,
   stateResources: Record<string, ResourceState>,
@@ -1115,24 +1158,20 @@ async function replaySingle(
           resourceType: op.resourceType,
           provisionedBy: op.provisionedBy,
         });
-        // Retry-wrapped for the same reason the deploy engine
-        // (`deploy-engine.ts`) and `drift --revert` (`drift.ts`) wrap theirs:
-        // a provider `update()` can issue reads as well as writes — Glue's
-        // now does a pre-update `GetTable` (issue #1461) — and an unwrapped
-        // throttle here is counted as a failure by the best-effort catch
-        // below, leaving the resource unreverted. A transient error on a
-        // RECOVERY path is the worst place to give up on the first attempt.
-        await withRetry(
-          () =>
-            provider.update(
-              op.logicalId,
-              current.physicalId,
-              op.resourceType,
-              previousState.properties,
-              current.properties
-            ),
+        // See {@link updateWithRollbackRetry} for why this is not a bare
+        // `provider.update()` and not a bare `withRetry` either.
+        await updateWithRollbackRetry(
+          provider,
+          [
+            op.logicalId,
+            current.physicalId,
+            op.resourceType,
+            previousState.properties,
+            current.properties,
+          ],
           op.logicalId,
-          { logger }
+          logger,
+          isInterrupted
         );
         stateResources[op.logicalId] = previousState;
         logger.info(`  Rollback: ${op.logicalId} restored successfully`);
@@ -1374,21 +1413,20 @@ export async function replayFailedOperations(
           // failed op may have partially applied), so a patch-based provider
           // generates ops that undo them. Falls back to the current state
           // properties when resolution never got that far.
-          // Retry-wrapped for the same reason as the `restore-previous` arm
-          // above: a provider `update()` can read as well as write (Glue's
-          // pre-update `GetTable`, issue #1461), and an unwrapped throttle on
-          // a recovery path is swallowed by the best-effort catch below.
-          await withRetry(
-            () =>
-              provider.update(
-                op.logicalId,
-                current.physicalId,
-                op.resourceType,
-                prev.properties,
-                op.attemptedProperties ?? current.properties
-              ),
+          // See {@link updateWithRollbackRetry} — same three concerns as the
+          // `revert` arm (retry / disableOuterRetry / interrupt).
+          await updateWithRollbackRetry(
+            provider,
+            [
+              op.logicalId,
+              current.physicalId,
+              op.resourceType,
+              prev.properties,
+              op.attemptedProperties ?? current.properties,
+            ],
             op.logicalId,
-            { logger }
+            logger,
+            options.isInterrupted
           );
           stateResources[op.logicalId] = prev;
           logger.info(`  Rollback: ${op.logicalId} reverted successfully`);

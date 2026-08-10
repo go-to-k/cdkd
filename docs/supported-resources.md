@@ -375,23 +375,28 @@ AWS-authored entries back into the payload. Four consequences worth knowing:
   parameters and writing them back opens a window: an Apache Iceberg commit
   from Spark / Athena / EMR landing in between would be undone by writing back
   the `metadata_location` cdkd read, pinning the table to an older snapshot.
-  cdkd therefore sends `UpdateTable`'s `VersionId` precondition whenever the
-  merge carries live values, so a concurrent commit fails the deploy loudly
-  (with an error naming the cause) instead of silently rolling the table back.
-  Re-running the deploy picks up the current values. The guard is *not* sent
-  when your template declares every parameter itself — nothing read is written
-  back then, so last-writer-wins is correct and `drift --revert` is not turned
-  into a spurious failure. `UpdateDatabase` has no `VersionId` equivalent in
-  the AWS API, so the database merge keeps this exposure; in practice nothing
-  commits to a Glue *database* out of band the way an engine commits to a
-  table.
+  cdkd therefore sends `UpdateTable`'s `VersionId` precondition on **every**
+  table update, so a concurrent commit fails the deploy loudly (with an error
+  naming the cause) instead of silently rolling the table back. Re-running the
+  deploy picks up the current values. It cannot fail spuriously: the version is
+  read milliseconds before the write, so it is stale only when somebody else
+  genuinely wrote in between — including under `cdkd drift --revert`, where
+  stopping is the right outcome rather than clobbering a change the revert
+  never saw. `UpdateDatabase` has no `VersionId` equivalent in the AWS API, so
+  the database merge keeps this exposure; in practice nothing commits to a Glue
+  *database* out of band the way an engine commits to a table.
 
 Real-AWS coverage: the [`data-analytics`](../tests/integration/data-analytics/)
 fixture's UPDATE phase re-asserts both Iceberg markers after an unrelated
 `Description` edit (having first pinned that the update was in-place, via an
 unchanged `Table.CreateTime`), asserts a user-removed parameter on the sibling
 plain table is still gone, and runs the same removal-plus-preservation pair
-against the database.
+against the database. It also pins the concurrency guard's *premise*: AWS
+documents `VersionId` only as "the version ID at which to update the table
+contents", so the fixture advances a table's version out of band and requires
+AWS to refuse a replay of the stale one. If AWS ever starts ignoring it, that
+assertion fails and the guard is removed rather than left in place as a
+placebo.
 
 ## Not planned (deprecated services)
 

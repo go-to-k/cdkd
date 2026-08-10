@@ -271,12 +271,15 @@ echo "    OK: user-authored database Parameters present after CREATE"
 # hardcoding them.
 echo "==> Injecting an out-of-band (AWS-authored-equivalent) database parameter"
 DB_LIVE_JSON="$(aws glue get-database --name "${DB_NAME}" --region "${REGION}" --query 'Database' --output json)"
-DB_INJECT_INPUT="$(printf '%s' "${DB_LIVE_JSON}" | jq -c '{
-  Name,
-  Description,
-  LocationUri,
-  Parameters: ((.Parameters // {}) + {"out_of_band_marker": "must-survive"})
-} | with_entries(select(.value != null))')"
+# Whitelisting individual fields here would silently DROP the ones not listed
+# (CreateTableDefaultPermissions / TargetDatabase / FederatedDatabase), which
+# is the very wholesale-replace data loss this test exists to detect -- caused
+# by the test itself. Instead: take the live object, delete the read-only
+# members UpdateDatabase does not accept, and keep everything else.
+DB_INJECT_INPUT="$(printf '%s' "${DB_LIVE_JSON}" | jq -c '
+  del(.CatalogId, .CreateTime)
+  | .Parameters = ((.Parameters // {}) + {"out_of_band_marker": "must-survive"})
+  | with_entries(select(.value != null))')"
 aws glue update-database --name "${DB_NAME}" --region "${REGION}" \
   --database-input "${DB_INJECT_INPUT}" >/dev/null
 if [ "$(db_query 'Database.Parameters.out_of_band_marker')" != "must-survive" ]; then
@@ -370,6 +373,82 @@ if [ "${DB_KEEP}" != "yes" ]; then
   exit 1
 fi
 echo "    OK: database AWS-authored parameter survived, user removal applied, kept one unchanged"
+
+# --- Phase 2b: is UpdateTable's VersionId a real precondition? --------
+# THE GUARD'S PREMISE, PINNED AGAINST LIVE AWS.
+#
+# `UpdateTableRequest.VersionId` is documented only as "the version ID at which
+# to update the table contents" -- NOT explicitly as a precondition. cdkd sends
+# it to close the read->write TOCTOU window (an Iceberg commit from Spark /
+# Athena landing between the pre-read and the write would otherwise be undone
+# by putting back the metadata_location cdkd read). If AWS silently IGNORES a
+# stale value, that guard is a placebo and should be removed rather than
+# shipped -- so this asserts the semantics directly instead of assuming them.
+#
+# Method: read the current VersionId, advance it with an out-of-band
+# UpdateTable, then replay the ORIGINAL (now stale) version and require AWS to
+# refuse. Run against the plain `events` table, never the Iceberg one, so a
+# failed probe cannot leave the Iceberg fixture in a half-written state.
+echo "==> Phase 2b: proving UpdateTable VersionId is a precondition (not advisory)"
+EVENTS_LIVE_JSON="$(aws glue get-table --database-name "${DB_NAME}" --name "${EVENTS_TABLE_NAME}" --region "${REGION}" --query 'Table' --output json)"
+STALE_VERSION_ID="$(printf '%s' "${EVENTS_LIVE_JSON}" | jq -r '.VersionId // empty')"
+if [ -z "${STALE_VERSION_ID}" ]; then
+  echo "FAIL: GetTable returned no VersionId for ${EVENTS_TABLE_NAME} -- cdkd's concurrency guard can never attach a precondition, so it is dead code. Remove the guard or find the shape that does return one." >&2
+  exit 1
+fi
+echo "    Current VersionId: ${STALE_VERSION_ID}"
+
+# Same del-the-read-only-members approach as the database injection above:
+# UpdateTable rejects fields GetTable echoes back but TableInput has no room
+# for, and an allow-list would silently drop the rest of the table definition.
+EVENTS_TABLE_INPUT="$(printf '%s' "${EVENTS_LIVE_JSON}" | jq -c '
+  del(.DatabaseName, .CatalogId, .CreateTime, .UpdateTime, .CreatedBy,
+      .IsRegisteredWithLakeFormation, .VersionId, .FederatedTable,
+      .IsMultiDialectView, .IsMaterializedView, .Status, .LastAccessTime,
+      .LastAnalyzedTime)
+  | with_entries(select(.value != null))')"
+
+# Advance the version out of band. This is the "concurrent writer" cdkd's
+# precondition is supposed to notice.
+BUMPED_TABLE_INPUT="$(printf '%s' "${EVENTS_TABLE_INPUT}" | jq -c '.Description = "version-bump-probe"')"
+aws glue update-table --database-name "${DB_NAME}" --region "${REGION}" \
+  --table-input "${BUMPED_TABLE_INPUT}" >/dev/null
+
+NEW_VERSION_ID="$(table_query "${EVENTS_TABLE_NAME}" 'Table.VersionId')"
+if [ "${NEW_VERSION_ID}" = "${STALE_VERSION_ID}" ]; then
+  echo "FAIL: VersionId did not advance after an out-of-band UpdateTable (${STALE_VERSION_ID} -> ${NEW_VERSION_ID}); the probe cannot distinguish stale from current, so it cannot prove anything." >&2
+  exit 1
+fi
+echo "    VersionId advanced: ${STALE_VERSION_ID} -> ${NEW_VERSION_ID}"
+
+# Now replay the STALE version. A real precondition rejects this.
+PROBE_TABLE_INPUT="$(printf '%s' "${EVENTS_TABLE_INPUT}" | jq -c '.Description = "stale-version-probe"')"
+set +e
+STALE_UPDATE_OUT="$(aws glue update-table \
+  --database-name "${DB_NAME}" --region "${REGION}" \
+  --table-input "${PROBE_TABLE_INPUT}" \
+  --version-id "${STALE_VERSION_ID}" 2>&1)"
+STALE_UPDATE_RC=$?
+set -e
+
+if [ "${STALE_UPDATE_RC}" -eq 0 ]; then
+  echo "FAIL: AWS ACCEPTED an UpdateTable carrying a stale VersionId (${STALE_VERSION_ID}, current ${NEW_VERSION_ID})." >&2
+  echo "      UpdateTable's VersionId is therefore ADVISORY, not a precondition, and cdkd's" >&2
+  echo "      TOCTOU guard in GlueProvider.updateTable is a PLACEBO: it cannot detect a" >&2
+  echo "      concurrent Iceberg commit and must be removed rather than shipped, with the" >&2
+  echo "      exposure documented instead. See issue #1461." >&2
+  exit 1
+fi
+
+# Refused -- but for the RIGHT reason. Any old failure (bad shape, auth,
+# throttle) would otherwise read as a pass and vouch for a guard that does not
+# work. AWS raises ConcurrentModificationException for this.
+if ! printf '%s' "${STALE_UPDATE_OUT}" | grep -qiE 'ConcurrentModification|concurrent'; then
+  echo "FAIL: the stale-VersionId UpdateTable was refused, but NOT with a concurrency error -- so this does not prove the precondition works. AWS said: ${STALE_UPDATE_OUT}" >&2
+  exit 1
+fi
+echo "    OK: AWS refused the stale-VersionId UpdateTable with a concurrency error"
+echo "        (UpdateTable.VersionId IS a precondition -- cdkd's TOCTOU guard is real)"
 
 # --- Phase 3: destroy -------------------------------------------------
 echo "==> Phase 3: destroy"
