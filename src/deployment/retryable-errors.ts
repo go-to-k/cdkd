@@ -294,6 +294,18 @@ const OTHER_TRANSIENT_ERROR_MESSAGE_PATTERNS: readonly string[] = [
   // --concurrency 40).
   'Rate exceeded',
 
+  // Route 53: while a hosted zone's Accelerated Recovery (Application
+  // Recovery Controller) feature is transitioning (ENABLING / DISABLING /
+  // *_HOSTED_ZONE_LOCKED), Route 53 rejects EVERY mutation on the zone —
+  // ChangeResourceRecordSets and DeleteHostedZone both fail with
+  // "HostedZone <id> is marked disabled for mutation". The transition is an
+  // async AWS-side state change that settles on its own (typically minutes),
+  // so a retry recovers; a re-run also recovers. The Route53 provider's
+  // delete path additionally waits for the transition to settle before
+  // retrying (issue #1467) — this pattern is the generic net for the
+  // create/update paths and for windows shorter than the retry budget.
+  'is marked disabled for mutation',
+
   // Redshift keeps a cluster busy for a tail AFTER an operation on it
   // reports done — notably the final snapshot cdkd takes for
   // `DeletionPolicy: Snapshot` (issue #1353): the snapshot reaches
