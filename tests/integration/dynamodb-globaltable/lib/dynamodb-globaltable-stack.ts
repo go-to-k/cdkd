@@ -32,6 +32,18 @@ import * as ddb from 'aws-cdk-lib/aws-dynamodb';
  *                            read AND write (closes Issue #402 Item B —
  *                            exercises the write path's RegisterScalableTarget
  *                            + PutScalingPolicy wiring end-to-end).
+ *   - `drop-gsi-ondemand-limits`:       drop the per-GSI WRITE ceiling only,
+ *                            keeping the read one (issue #1423).
+ *   - `drop-table-ondemand-limit`:      drop the TABLE-level WRITE ceiling
+ *                            (issue #1434).
+ *   - `drop-table-ondemand-read-limit`: drop the TABLE-level READ ceiling,
+ *                            which lives on the local replica (issue #1436).
+ *   - `gsi-billing-flip`:    flip `GsiFlipTable` PAY_PER_REQUEST ->
+ *                            PROVISIONED while dropping one of its two
+ *                            indexes (issue #1421 — AWS requires per-index
+ *                            throughput in the same UpdateTable as the
+ *                            BillingMode change, and the index this deploy
+ *                            REMOVES is still live at flip time).
  *   - `cross-region`:        add a second replica region (eu-west-1).
  *                            Gated behind `CDKD_INTEG_MULTI_REGION=1` in
  *                            verify.sh because the wall-clock is 15–25
@@ -43,8 +55,9 @@ import * as ddb from 'aws-cdk-lib/aws-dynamodb';
  * future verify.sh scenarios can add new keys without touching the
  * stack.
  *
- * The stack ALSO deploys two unconditional GSI-carrying tables for Issue
- * #1387 (per-GSI throughput CFn -> SDK translation) — see the block at the
+ * The stack ALSO deploys three unconditional GSI-carrying tables — two for
+ * Issue #1387 (per-GSI throughput CFn -> SDK translation) and one for Issue
+ * #1421 (the billing flip on a table that HAS indexes) — see the block at the
  * bottom of the constructor.
  */
 export class DynamoDBGlobalTableStack extends cdk.Stack {
@@ -223,13 +236,16 @@ export class DynamoDBGlobalTableStack extends cdk.Stack {
     const gsiOnDemandTable = new ddb.TableV2(this, 'GsiOnDemandTable', {
       partitionKey: { name: 'pk', type: ddb.AttributeType.STRING },
       billing: ddb.Billing.onDemand({
-        // NOTE: cdkd does not wire this TABLE-level read ceiling at all today
-        // (it synthesizes to `Replicas[local].ReadOnDemandThroughputSettings`,
-        // which the provider never reads) — tracked as issue #1436. It stays
-        // here because it is what the canonical CDK call emits; verify.sh
-        // deliberately asserts only the WRITE member so this fixture does not
-        // encode the gap as expected behavior.
-        maxReadRequestUnits: 100,
+        // Issue #1436: this TABLE-level READ ceiling synthesizes to
+        // `Replicas[local].ReadOnDemandThroughputSettings`, a location the
+        // provider never read — so it was dropped on the way IN and the table
+        // deployed with NO read ceiling while cdkd reported success. Now
+        // wired, so verify.sh asserts the live member on the baseline, and
+        // `drop-table-ondemand-read-limit` drops it to prove the reset
+        // (absence, never -1) — the read half of the #1434 pair.
+        ...(updateMode.includes('drop-table-ondemand-read-limit')
+          ? {}
+          : { maxReadRequestUnits: 100 }),
         // Issue #1434: REMOVING this from the template must RESET the live
         // table-level ceiling, not silently no-op — the table-level sibling of
         // the per-GSI case #1423. `drop-table-ondemand-limit` drops it, and
@@ -262,6 +278,69 @@ export class DynamoDBGlobalTableStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
+    // Issue #1421: the PAY_PER_REQUEST -> PROVISIONED billing flip on a table
+    // that HAS GSIs. AWS requires per-index `ProvisionedThroughput` in the
+    // SAME `UpdateTable` call that changes `BillingMode`, and that claim was
+    // asserted only against a mocked DynamoDB client — the two tables above
+    // are never mutated, and `HistoryTable` (the one the `CDKD_TEST_UPDATE`
+    // flow does flip) has no GSI. So the flip path had no real-AWS coverage at
+    // all: if AWS rejected the combination, the unit suite stayed green and
+    // every such deploy failed in the field.
+    //
+    // The `gsi-billing-flip` mode ALSO drops one of the two indexes, which
+    // covers the second unverified sub-path in the same phase: an index this
+    // deploy REMOVES is still live on AWS at flip time (its `Delete` is issued
+    // later, in step 6), so it too must carry throughput in the flip call.
+    const flipToProvisioned = updateMode.includes('gsi-billing-flip');
+    const gsiFlipTable = new ddb.TableV2(this, 'GsiFlipTable', {
+      partitionKey: { name: 'pk', type: ddb.AttributeType.STRING },
+      billing: flipToProvisioned
+        ? ddb.Billing.provisioned({
+            readCapacity: ddb.Capacity.fixed(4),
+            writeCapacity: ddb.Capacity.autoscaled({
+              minCapacity: 1,
+              maxCapacity: 10,
+              // Distinct from `minCapacity` so the assertion discriminates:
+              // the flip is the ONE context AWS documents `SeedCapacity` for
+              // (issue #1435), so verify.sh expects 6 here — a regression to
+              // `MinCapacity` would read back 1.
+              seedCapacity: 6,
+              targetUtilizationPercent: 70,
+            }),
+          })
+        : ddb.Billing.onDemand(),
+      globalSecondaryIndexes: flipToProvisioned
+        ? [
+            {
+              indexName: 'flipKeep',
+              partitionKey: { name: 'keep', type: ddb.AttributeType.STRING },
+              readCapacity: ddb.Capacity.fixed(3),
+              writeCapacity: ddb.Capacity.autoscaled({
+                minCapacity: 2,
+                maxCapacity: 20,
+                seedCapacity: 5,
+                targetUtilizationPercent: 60,
+              }),
+            },
+          ]
+        : [
+            {
+              indexName: 'flipKeep',
+              partitionKey: { name: 'keep', type: ddb.AttributeType.STRING },
+            },
+            {
+              indexName: 'flipDrop',
+              partitionKey: { name: 'drop', type: ddb.AttributeType.STRING },
+            },
+          ],
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
+    new cdk.CfnOutput(this, 'GsiFlipTableName', {
+      value: gsiFlipTable.tableName,
+      description:
+        'PAY_PER_REQUEST GlobalTable with two GSIs; CDKD_TEST_UPDATE=gsi-billing-flip flips it to PROVISIONED and drops one index',
+    });
     new cdk.CfnOutput(this, 'GsiProvisionedTableName', {
       value: gsiProvisionedTable.tableName,
       description: 'PROVISIONED GlobalTable whose GSI carries WriteProvisionedThroughputSettings',

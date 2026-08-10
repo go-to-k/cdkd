@@ -133,6 +133,10 @@
       "description": "Cross-REGION `Fn::GetStackOutput` (cdkd-specific): a CONSUMER stack deployed in region Y reads a PRODUCER stack output from region X via the `Region` argument. Works same-account because the cdkd state bucket is account-scoped (not region-scoped) — the resolver reads `cdkd/{Producer}/{regionX}/state.json` from the same bucket the consumer state lives in. No CFn equivalent (CFn Exports are region-scoped)."
     },
     {
+      "tag": "globaltable-billing-flip-with-gsi",
+      "description": "DynamoDB GlobalTable `PAY_PER_REQUEST` -> `PROVISIONED` billing flip on a table that HAS GSIs (issue #1421). AWS requires per-index `ProvisionedThroughput` in the SAME `UpdateTable` call that changes `BillingMode`, and an index the deploy REMOVES is still live at flip time (its Delete is issued later), so it must carry throughput in that call too — both claims were previously asserted only against a mocked DynamoDB client. Also pins the surviving index + table onto their `SeedCapacity` rather than `MinCapacity`, the one context AWS documents the seed for (issue #1435)."
+    },
+    {
       "tag": "globaltable-cross-region-replica",
       "description": "DynamoDB GlobalTable cross-region replica add/remove serialization (AWS rejects multiple ReplicaUpdates per UpdateTable call)."
     },
@@ -764,6 +768,7 @@
       "name": "dynamodb-globaltable",
       "annotated": true,
       "scenarios": [
+        "globaltable-billing-flip-with-gsi",
         "globaltable-cross-region-replica"
       ]
     },
@@ -2158,6 +2163,13 @@
       "description": "Cross-REGION `Fn::GetStackOutput` (cdkd-specific): a CONSUMER stack deployed in region Y reads a PRODUCER stack output from region X via the `Region` argument. Works same-account because the cdkd state bucket is account-scoped (not region-scoped) — the resolver reads `cdkd/{Producer}/{regionX}/state.json` from the same bucket the consumer state lives in. No CFn equivalent (CFn Exports are region-scoped).",
       "fixtures": [
         "getstackoutput-crossregion"
+      ]
+    },
+    {
+      "scenario": "globaltable-billing-flip-with-gsi",
+      "description": "DynamoDB GlobalTable `PAY_PER_REQUEST` -> `PROVISIONED` billing flip on a table that HAS GSIs (issue #1421). AWS requires per-index `ProvisionedThroughput` in the SAME `UpdateTable` call that changes `BillingMode`, and an index the deploy REMOVES is still live at flip time (its Delete is issued later), so it must carry throughput in that call too — both claims were previously asserted only against a mocked DynamoDB client. Also pins the surviving index + table onto their `SeedCapacity` rather than `MinCapacity`, the one context AWS documents the seed for (issue #1435).",
+      "fixtures": [
+        "dynamodb-globaltable"
       ]
     },
     {

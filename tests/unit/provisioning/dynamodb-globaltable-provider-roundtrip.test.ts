@@ -1198,6 +1198,12 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
         TABLE_NAME,
         RESOURCE_TYPE,
         {
+          // `BillingMode` is load-bearing since issue #1428 added the gate: an
+          // explicit SDK-shaped `ProvisionedThroughput` is only forwarded on a
+          // PROVISIONED table, because AWS rejects provisioned capacity on an
+          // on-demand one. Both sides previously omitted it — defaulting to
+          // PAY_PER_REQUEST — so this case pinned a payload AWS would 400.
+          BillingMode: 'PROVISIONED',
           GlobalSecondaryIndexes: [
             {
               IndexName: 'G1',
@@ -1208,6 +1214,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
           ],
         },
         {
+          BillingMode: 'PROVISIONED',
           GlobalSecondaryIndexes: [
             {
               IndexName: 'G1',
@@ -1922,13 +1929,21 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       expect(local!['Tags']).toEqual([]);
     });
 
-    it('always-emits Replicas placeholder even when AWS reports no replicas', async () => {
+    it('synthesizes the LOCAL replica entry when AWS reports no replicas', async () => {
+      // Changed by the #1436/#1420 reverse-map work: `DescribeTable` only
+      // carries `Replicas` once a table actually has replicas, but the CFn
+      // schema REQUIRES the local entry — so the state baseline always has
+      // one, and emitting `[]` here left every local-replica-homed member
+      // (read ceilings, per-replica PITR/Tags) without a drift home for the
+      // common single-region case.
       mockSend.mockResolvedValueOnce({
         Table: { TableArn: TABLE_ARN }, // no Replicas in response
       });
       queueReadCurrentStateTail({ localReplica: false });
       const observed = await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE);
-      expect(observed!['Replicas']).toEqual([]);
+      const replicas = observed!['Replicas'] as Array<Record<string, unknown>>;
+      expect(replicas).toHaveLength(1);
+      expect(replicas[0]!['Region']).toBe('us-east-1');
     });
 
     it('surfaces enabled stream but omits disabled placeholder', async () => {
@@ -1977,12 +1992,20 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
     });
 
     it('surfaces TimeToLiveSpecification when AWS reports ENABLED with AttributeName', async () => {
-      mockSend.mockResolvedValueOnce({
-        Table: { TableArn: TABLE_ARN, Replicas: [] },
-      });
-      queueReadCurrentStateTail({
-        localReplica: false,
-        ttl: { Status: 'ENABLED', AttributeName: 'expiresAt' },
+      // Command-dispatching mock rather than the ordered tail: the
+      // synthesized local replica (see the placeholder test above) issues its
+      // own sub-spec reads before TTL, which an ordered queue cannot absorb.
+      mockSend.mockImplementation((cmd: { constructor: { name: string } }) => {
+        const name = cmd.constructor.name;
+        if (name === 'DescribeTableCommand') {
+          return Promise.resolve({ Table: { TableArn: TABLE_ARN, Replicas: [] } });
+        }
+        if (name === 'DescribeTimeToLiveCommand') {
+          return Promise.resolve({
+            TimeToLiveDescription: { TimeToLiveStatus: 'ENABLED', AttributeName: 'expiresAt' },
+          });
+        }
+        return Promise.resolve({});
       });
       const observed = await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE);
       expect(observed!['TimeToLiveSpecification']).toEqual({
@@ -2142,23 +2165,21 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       // Autoscaling-active: 1st call is DescribeScalableTargets
       // (recovers Min/Max), 2nd is DescribeScalingPolicies (recovers
       // the TargetTrackingScaling policy).
+      // Dimension-dispatching mock: the synthesized local replica probes the
+      // READ dimension first, so an ordered queue would hand it the write
+      // responses. Only the write dimension answers here.
       mockAutoScalingSend.mockReset();
-      mockAutoScalingSend.mockResolvedValueOnce({
-        ScalableTargets: [{ MinCapacity: 5, MaxCapacity: 100 }],
-      });
-      mockAutoScalingSend.mockResolvedValueOnce({
-        ScalingPolicies: [
-          {
-            PolicyType: 'TargetTrackingScaling',
-            TargetTrackingScalingPolicyConfiguration: {
-              TargetValue: 70,
-              ScaleInCooldown: 60,
-              ScaleOutCooldown: 30,
-              DisableScaleIn: false,
-            },
-          },
-        ],
-      });
+      mockAutoScalingSend.mockImplementation(
+        (cmd: { constructor: { name: string }; input?: Record<string, unknown> }) => {
+          if (cmd.input?.['ScalableDimension'] !== 'dynamodb:table:WriteCapacityUnits') {
+            return Promise.resolve({ ScalableTargets: [], ScalingPolicies: [] });
+          }
+          if (cmd.constructor.name === 'DescribeScalableTargetsCommand') {
+            return Promise.resolve({ ScalableTargets: [{ MinCapacity: 5, MaxCapacity: 100 }] });
+          }
+          return Promise.resolve({ ScalingPolicies: [ { PolicyType: 'TargetTrackingScaling', TargetTrackingScalingPolicyConfiguration: { TargetValue: 70, ScaleInCooldown: 60, ScaleOutCooldown: 30, DisableScaleIn: false } } ] });
+        }
+      );
 
       const observed = await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE);
       expect(observed!['WriteProvisionedThroughputSettings']).toEqual({
@@ -2189,18 +2210,21 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
         },
       });
       queueReadCurrentStateTail({ localReplica: false });
+      // Dimension-dispatching mock: the synthesized local replica probes the
+      // READ dimension first, so an ordered queue would hand it the write
+      // responses. Only the write dimension answers here.
       mockAutoScalingSend.mockReset();
-      mockAutoScalingSend.mockResolvedValueOnce({
-        ScalableTargets: [{ MinCapacity: 5, MaxCapacity: 100 }],
-      });
-      mockAutoScalingSend.mockResolvedValueOnce({
-        ScalingPolicies: [
-          {
-            PolicyType: 'TargetTrackingScaling',
-            TargetTrackingScalingPolicyConfiguration: { TargetValue: 70 },
-          },
-        ],
-      });
+      mockAutoScalingSend.mockImplementation(
+        (cmd: { constructor: { name: string }; input?: Record<string, unknown> }) => {
+          if (cmd.input?.['ScalableDimension'] !== 'dynamodb:table:WriteCapacityUnits') {
+            return Promise.resolve({ ScalableTargets: [], ScalingPolicies: [] });
+          }
+          if (cmd.constructor.name === 'DescribeScalableTargetsCommand') {
+            return Promise.resolve({ ScalableTargets: [{ MinCapacity: 5, MaxCapacity: 100 }] });
+          }
+          return Promise.resolve({ ScalingPolicies: [ { PolicyType: 'TargetTrackingScaling', TargetTrackingScalingPolicyConfiguration: { TargetValue: 70 } } ] });
+        }
+      );
 
       const observed = await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE);
       expect(observed!['WriteProvisionedThroughputSettings']).toEqual({
@@ -2225,18 +2249,21 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       // ScalableTarget exists but the only policy is StepScaling —
       // CFn's shape only carries TargetTrackingScaling, so fall back
       // to the flat surface.
+      // Dimension-dispatching mock: the synthesized local replica probes the
+      // READ dimension first, so an ordered queue would hand it the write
+      // responses. Only the write dimension answers here.
       mockAutoScalingSend.mockReset();
-      mockAutoScalingSend.mockResolvedValueOnce({
-        ScalableTargets: [{ MinCapacity: 5, MaxCapacity: 100 }],
-      });
-      mockAutoScalingSend.mockResolvedValueOnce({
-        ScalingPolicies: [
-          {
-            PolicyType: 'StepScaling',
-            StepScalingPolicyConfiguration: { AdjustmentType: 'ChangeInCapacity' },
-          },
-        ],
-      });
+      mockAutoScalingSend.mockImplementation(
+        (cmd: { constructor: { name: string }; input?: Record<string, unknown> }) => {
+          if (cmd.input?.['ScalableDimension'] !== 'dynamodb:table:WriteCapacityUnits') {
+            return Promise.resolve({ ScalableTargets: [], ScalingPolicies: [] });
+          }
+          if (cmd.constructor.name === 'DescribeScalableTargetsCommand') {
+            return Promise.resolve({ ScalableTargets: [{ MinCapacity: 5, MaxCapacity: 100 }] });
+          }
+          return Promise.resolve({ ScalingPolicies: [ { PolicyType: 'StepScaling', StepScalingPolicyConfiguration: { AdjustmentType: 'ChangeInCapacity' } } ] });
+        }
+      );
 
       const observed = await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE);
       expect(observed!['WriteProvisionedThroughputSettings']).toEqual({
@@ -2254,19 +2281,21 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
         },
       });
       queueReadCurrentStateTail({ localReplica: false });
+      // Dimension-dispatching mock: the synthesized local replica probes the
+      // READ dimension first, so an ordered queue would hand it the write
+      // responses. Only the write dimension answers here.
       mockAutoScalingSend.mockReset();
-      mockAutoScalingSend.mockResolvedValueOnce({
-        ScalableTargets: [{ MinCapacity: 10, MaxCapacity: 200 }],
-      });
-      mockAutoScalingSend.mockResolvedValueOnce({
-        ScalingPolicies: [
-          { PolicyType: 'StepScaling' },
-          {
-            PolicyType: 'TargetTrackingScaling',
-            TargetTrackingScalingPolicyConfiguration: { TargetValue: 80 },
-          },
-        ],
-      });
+      mockAutoScalingSend.mockImplementation(
+        (cmd: { constructor: { name: string }; input?: Record<string, unknown> }) => {
+          if (cmd.input?.['ScalableDimension'] !== 'dynamodb:table:WriteCapacityUnits') {
+            return Promise.resolve({ ScalableTargets: [], ScalingPolicies: [] });
+          }
+          if (cmd.constructor.name === 'DescribeScalableTargetsCommand') {
+            return Promise.resolve({ ScalableTargets: [{ MinCapacity: 10, MaxCapacity: 200 }] });
+          }
+          return Promise.resolve({ ScalingPolicies: [ { PolicyType: 'StepScaling' }, { PolicyType: 'TargetTrackingScaling', TargetTrackingScalingPolicyConfiguration: { TargetValue: 80 } } ] });
+        }
+      );
 
       const observed = await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE);
       expect(observed!['WriteProvisionedThroughputSettings']).toEqual({
@@ -2288,22 +2317,29 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
         },
       });
       queueReadCurrentStateTail({ localReplica: false });
+      // Dimension-dispatching mock: the synthesized local replica probes the
+      // READ dimension first, so an ordered queue would hand it the write
+      // responses. Only the write dimension answers here.
       mockAutoScalingSend.mockReset();
-      mockAutoScalingSend.mockResolvedValueOnce({
-        ScalableTargets: [{ MinCapacity: 5, MaxCapacity: 100 }],
-      });
-      mockAutoScalingSend.mockResolvedValueOnce({
-        ScalingPolicies: [
-          {
-            PolicyType: 'TargetTrackingScaling',
-            TargetTrackingScalingPolicyConfiguration: { TargetValue: 70 },
-          },
-        ],
-      });
+      mockAutoScalingSend.mockImplementation(
+        (cmd: { constructor: { name: string }; input?: Record<string, unknown> }) => {
+          if (cmd.input?.['ScalableDimension'] !== 'dynamodb:table:WriteCapacityUnits') {
+            return Promise.resolve({ ScalableTargets: [], ScalingPolicies: [] });
+          }
+          if (cmd.constructor.name === 'DescribeScalableTargetsCommand') {
+            return Promise.resolve({ ScalableTargets: [{ MinCapacity: 5, MaxCapacity: 100 }] });
+          }
+          return Promise.resolve({ ScalingPolicies: [ { PolicyType: 'TargetTrackingScaling', TargetTrackingScalingPolicyConfiguration: { TargetValue: 70 } } ] });
+        }
+      );
 
       await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE);
 
-      const calls = mockAutoScalingSend.mock.calls.map((c) => c[0].constructor.name);
+      // Filtered to the WRITE dimension: the synthesized local replica adds
+      // its own read-dimension probe, which is not what this test pins.
+      const calls = mockAutoScalingSend.mock.calls
+        .filter((c) => c[0].input?.ScalableDimension === 'dynamodb:table:WriteCapacityUnits')
+        .map((c) => c[0].constructor.name);
       expect(calls).toEqual(['DescribeScalableTargetsCommand', 'DescribeScalingPoliciesCommand']);
     });
 

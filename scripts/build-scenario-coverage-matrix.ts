@@ -242,6 +242,8 @@ const KNOWN_SCENARIOS: Record<string, string> = {
   // ---- Type-family-specific tricky patterns ----
   'globaltable-cross-region-replica':
     'DynamoDB GlobalTable cross-region replica add/remove serialization (AWS rejects multiple ReplicaUpdates per UpdateTable call).',
+  'globaltable-billing-flip-with-gsi':
+    'DynamoDB GlobalTable `PAY_PER_REQUEST` -> `PROVISIONED` billing flip on a table that HAS GSIs (issue #1421). AWS requires per-index `ProvisionedThroughput` in the SAME `UpdateTable` call that changes `BillingMode`, and an index the deploy REMOVES is still live at flip time (its Delete is issued later), so it must carry throughput in that call too — both claims were previously asserted only against a mocked DynamoDB client. Also pins the surviving index + table onto their `SeedCapacity` rather than `MinCapacity`, the one context AWS documents the seed for (issue #1435).',
   'cloudfront-oai-attribute-enrichment':
     'CloudFront OAI `S3CanonicalUserId` attribute enrichment (the attribute is not on `GetCloudFrontOriginAccessIdentity` directly).',
   'cc-api-getatt-enrichment-elasticache-replicationgroup':

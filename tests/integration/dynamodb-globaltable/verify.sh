@@ -167,8 +167,13 @@ for logical_id, resource in state.get("resources", {}).items():
 TABLE_NAME="$(table_name_for HistoryTable)"
 GSI_PROV_TABLE="$(table_name_for GsiProvisionedTable)"
 GSI_OD_TABLE="$(table_name_for GsiOnDemandTable)"
+GSI_FLIP_TABLE="$(table_name_for GsiFlipTable)"
 if [ -z "${TABLE_NAME}" ]; then
   echo "[verify] FAIL: no HistoryTable AWS::DynamoDB::GlobalTable resource in cdkd state"
+  exit 1
+fi
+if [ -z "${GSI_FLIP_TABLE}" ]; then
+  echo "[verify] FAIL: Issue #1421 billing-flip fixture table missing from cdkd state"
   exit 1
 fi
 if [ -z "${GSI_PROV_TABLE}" ] || [ -z "${GSI_OD_TABLE}" ]; then
@@ -244,7 +249,47 @@ if [ "${OD_TABLE_MAX_WRITE}" != "200" ]; then
   echo "[verify] FAIL: ${GSI_OD_TABLE} table-level MaxWriteRequestUnits is '${OD_TABLE_MAX_WRITE}' (expected 200)" >&2
   exit 1
 fi
-echo "[verify] step 4b ok: table-level throughput preserved on both GSI fixtures"
+# Issue #1436: the canonical `Billing.onDemand({maxReadRequestUnits})` renders
+# onto `Replicas[local].ReadOnDemandThroughputSettings`, a location the provider
+# never read — so this member used to be dropped on the way IN and the table
+# deployed with NO read ceiling while cdkd reported success (a surprise bill,
+# not an error). Asserting it on the BASELINE is what proves the create-side
+# wiring; step 13d then proves the reset.
+OD_TABLE_MAX_READ="$(aws dynamodb describe-table --table-name "${GSI_OD_TABLE}" --region "${REGION}" \
+  --query 'Table.OnDemandThroughput.MaxReadRequestUnits' --output text)"
+if [ "${OD_TABLE_MAX_READ}" != "100" ]; then
+  echo "[verify] FAIL (issue #1436): ${GSI_OD_TABLE} table-level MaxReadRequestUnits is '${OD_TABLE_MAX_READ}' (expected 100)" >&2
+  echo "[verify]   pre-fix cdkd read only the WRITE half and dropped this one entirely" >&2
+  exit 1
+fi
+echo "[verify] step 4b ok: table-level throughput preserved on both GSI fixtures (incl. the #1436 read ceiling)"
+
+echo "[verify] step 4d (Issue #1421): assert the billing-flip fixture starts PAY_PER_REQUEST with BOTH indexes"
+# Precondition for step 13e. Without it the post-flip checks could pass
+# vacuously — "flipDrop is gone" is also true if it never existed.
+FLIP_BILLING_BEFORE="$(aws dynamodb describe-table --table-name "${GSI_FLIP_TABLE}" --region "${REGION}" \
+  --query 'Table.BillingModeSummary.BillingMode' --output text)"
+FLIP_IDX_BEFORE="$(aws dynamodb describe-table --table-name "${GSI_FLIP_TABLE}" --region "${REGION}" \
+  --query "join(' ', sort(Table.GlobalSecondaryIndexes[].IndexName || \`[]\`))" --output text)"
+if [ "${FLIP_BILLING_BEFORE}" != "PAY_PER_REQUEST" ] || [ "${FLIP_IDX_BEFORE}" != "flipDrop flipKeep" ]; then
+  echo "[verify] FAIL (issue #1421 precondition): expected PAY_PER_REQUEST with 'flipDrop flipKeep', got '${FLIP_BILLING_BEFORE}' / '${FLIP_IDX_BEFORE}'" >&2
+  exit 1
+fi
+echo "[verify] step 4d ok: ${GSI_FLIP_TABLE} is PAY_PER_REQUEST with indexes ${FLIP_IDX_BEFORE}"
+
+echo "[verify] step 4e (Issue #1420): assert cdkd drift reports NO drift on the freshly-deployed GSI tables"
+# The whole point of the #1420 fix: readCurrentState used to store the raw SDK
+# GlobalSecondaryIndexDescription[] into the CFn-shaped state key, so a clean,
+# unmodified GlobalTable with a GSI reported PERMANENT phantom drift. This step
+# is the end-to-end proof the reverse map round-trips against real AWS — it
+# also pins the single-region `DescribeTable` shape (no `Replicas` member) the
+# reverse map synthesizes a local entry for.
+if ${CLI} drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}"; then
+  echo "[verify] step 4e ok: zero drift on the freshly-deployed stack (issue #1420 closed)"
+else
+  echo "[verify] FAIL (issue #1420): cdkd drift reported drift on a freshly-deployed stack — the GSI reverse map does not round-trip" >&2
+  exit 1
+fi
 
 echo "[verify] step 4c (Issue #1419): assert the per-INDEX auto-scaling target + policy exist on AWS"
 # The bug: cdkd registered application-autoscaling targets only for
@@ -553,10 +598,86 @@ if [ "${TBL_WRITE_AFTER}" != "None" ]; then
   echo "FAIL: issue #1434 — expected the table-level write ceiling to reset to absent, got ${TBL_WRITE_AFTER}" >&2
   exit 1
 fi
-# Deliberately NOT asserted: the table-level READ ceiling. The canonical
-# `Billing.onDemand({maxReadRequestUnits})` is never wired by cdkd at all
-# (issue #1436), so pinning it here would encode that gap as expected behavior.
-echo "    table-level write ceiling reset (absent), issue #1434 closed"
+# The table-level READ ceiling is NOT touched by this deploy — the template
+# still declares it — so it must survive the write-half reset untouched. That
+# is the per-member half of #1434: a fix that branched on "the whole block
+# disappeared" would have cleared both, and read / write are independent CDK
+# props (`maxReadRequestUnits` / `maxWriteRequestUnits`).
+TBL_READ_AFTER="$(aws dynamodb describe-table --table-name "${GSI_OD_TABLE}" --region "${REGION}" \
+  --query 'Table.OnDemandThroughput.MaxReadRequestUnits' --output text)"
+if [ "${TBL_READ_AFTER}" != "100" ]; then
+  echo "FAIL: issue #1434 — the untouched table-level READ ceiling should still be 100, got ${TBL_READ_AFTER}" >&2
+  exit 1
+fi
+echo "    table-level write ceiling reset (absent), read ceiling kept at 100, issue #1434 closed"
+
+echo "[verify] step 13d: cdkd deploy with drop-table-ondemand-read-limit (issue #1436 — the READ half of the same pair)"
+# The read ceiling lives on `Replicas[local].ReadOnDemandThroughputSettings`
+# rather than at the top level, so it needed its own wiring on BOTH sides:
+# step 4b proved it reaches AWS at all, and this proves removing it RESETS the
+# live value instead of leaving the old ceiling in place forever.
+CDKD_TEST_UPDATE=ttl,tags,drop-gsi-ondemand-limits,drop-table-ondemand-limit,drop-table-ondemand-read-limit ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose
+
+TBL_READ_DROPPED="$(aws dynamodb describe-table --table-name "${GSI_OD_TABLE}" --region "${REGION}" \
+  --query 'Table.OnDemandThroughput.MaxReadRequestUnits' --output text)"
+if [ "${TBL_READ_DROPPED}" != "None" ]; then
+  echo "FAIL: issue #1436 — expected the table-level read ceiling to reset to absent, got ${TBL_READ_DROPPED}" >&2
+  exit 1
+fi
+echo "    table-level read ceiling reset (absent), issue #1436 closed"
+
+echo "[verify] step 13e: cdkd deploy with gsi-billing-flip (issue #1421 — PAY_PER_REQUEST -> PROVISIONED on a table WITH GSIs)"
+# AWS requires per-index `ProvisionedThroughput` in the SAME `UpdateTable` call
+# that changes `BillingMode`. That claim was asserted only against a mocked
+# DynamoDB client: the two GSI fixtures above are never mutated, and the table
+# the UPDATE flow does flip has no GSI. So if AWS rejected the combination, the
+# unit suite stayed green and every such deploy failed in the field.
+#
+# The mode also DROPS one of the two indexes, covering the second unverified
+# sub-path in the same phase: `flipDrop` is still live on AWS at flip time (its
+# Delete is issued later), so it too must carry throughput in the flip call.
+CDKD_TEST_UPDATE=ttl,tags,drop-gsi-ondemand-limits,drop-table-ondemand-limit,drop-table-ondemand-read-limit,gsi-billing-flip ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose
+
+FLIP_BILLING_AFTER="$(aws dynamodb describe-table --table-name "${GSI_FLIP_TABLE}" --region "${REGION}" \
+  --query 'Table.BillingModeSummary.BillingMode' --output text)"
+if [ "${FLIP_BILLING_AFTER}" != "PROVISIONED" ]; then
+  echo "FAIL: issue #1421 — expected PROVISIONED after the flip, got ${FLIP_BILLING_AFTER}" >&2
+  exit 1
+fi
+# Sorted on both sides: AWS does not preserve submitted list order on readback.
+# BOUNDED POLL, not a single read: the removed-GSI loop only waits for the
+# TABLE to flip ACTIVE, and a table is ACTIVE while an index is still
+# DELETING — so an immediate describe can transiently list flipDrop (the
+# async-delete gone-probe convention, one level down).
+FLIP_IDX_AFTER=""
+for _ in $(seq 1 36); do
+  FLIP_IDX_AFTER="$(aws dynamodb describe-table --table-name "${GSI_FLIP_TABLE}" --region "${REGION}" \
+    --query "join(' ', sort(Table.GlobalSecondaryIndexes[].IndexName || \`[]\`))" --output text)"
+  if [ "${FLIP_IDX_AFTER}" = "flipKeep" ]; then
+    break
+  fi
+  sleep 5
+done
+if [ "${FLIP_IDX_AFTER}" != "flipKeep" ]; then
+  echo "FAIL: issue #1421 — expected only 'flipKeep' to survive the flip (waited 180s), got '${FLIP_IDX_AFTER}'" >&2
+  exit 1
+fi
+FLIP_KEEP_READ="$(gsi_field "${GSI_FLIP_TABLE}" flipKeep ProvisionedThroughput.ReadCapacityUnits)"
+FLIP_KEEP_WRITE="$(gsi_field "${GSI_FLIP_TABLE}" flipKeep ProvisionedThroughput.WriteCapacityUnits)"
+# Issue #1435: the flip is the ONE context AWS documents `SeedCapacity` for, so
+# the surviving index must land on its seed (5), not its min (2). A regression
+# to `MinCapacity` reads back 2 here.
+if [ "${FLIP_KEEP_READ}" != "3" ] || [ "${FLIP_KEEP_WRITE}" != "5" ]; then
+  echo "FAIL: issue #1421 — expected flipKeep read=3 / write=5 (SeedCapacity) after the flip, got read=${FLIP_KEEP_READ} / write=${FLIP_KEEP_WRITE}" >&2
+  exit 1
+fi
+FLIP_TABLE_WRITE="$(aws dynamodb describe-table --table-name "${GSI_FLIP_TABLE}" --region "${REGION}" \
+  --query 'Table.ProvisionedThroughput.WriteCapacityUnits' --output text)"
+if [ "${FLIP_TABLE_WRITE}" != "6" ]; then
+  echo "FAIL: issue #1421 — expected table-level write seed 6 after the flip, got ${FLIP_TABLE_WRITE}" >&2
+  exit 1
+fi
+echo "    billing flip with GSIs succeeded, dropped index gone, seed capacities applied, issue #1421 closed"
 
 echo "[verify] step 14a: assert DeletionProtectionEnabled flipped back to false on AWS"
 DP_FINAL="$(aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" \

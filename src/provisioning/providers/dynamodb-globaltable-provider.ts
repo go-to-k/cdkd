@@ -369,9 +369,19 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     // `create()` has no wrapping catch around this point, so the helper's plain
     // Error is converted to a ProvisioningError here rather than escaping
     // untyped into the deploy engine's retry loop.
+    // The DESIRED side, so it collects diagnostics (issues #1428 / #1444 A).
+    // They are emitted BEFORE `CreateTable` — a translation complaint must
+    // never arrive after a real table exists.
+    const diagnostics: ThroughputDiagnostic[] = [];
     let sdkIndexes: GlobalSecondaryIndex[];
     try {
-      sdkIndexes = toSdkGlobalSecondaryIndexes(properties, currentRegion, billingMode);
+      sdkIndexes = toSdkGlobalSecondaryIndexes(
+        properties,
+        currentRegion,
+        billingMode,
+        'min',
+        diagnostics
+      );
     } catch (error) {
       throw new ProvisioningError(
         error instanceof Error ? error.message : String(error),
@@ -418,15 +428,24 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         | 'STANDARD_INFREQUENT_ACCESS';
     }
 
-    // OnDemand throughput (GlobalTable: WriteOnDemandThroughputSettings).
-    // CDK's TableV2 maps `maxWriteRequestUnits` here.
-    const wodts = properties['WriteOnDemandThroughputSettings'] as
-      | Record<string, unknown>
-      | undefined;
-    if (wodts?.['MaxWriteRequestUnits'] !== undefined) {
-      createParams.OnDemandThroughput = {
-        MaxWriteRequestUnits: Number(wodts['MaxWriteRequestUnits']),
-      };
+    // Table-level on-demand ceilings. CDK's `Billing.onDemand({ maxRead…,
+    // maxWrite… })` splits the pair across two CFn locations — the write half
+    // at top-level `WriteOnDemandThroughputSettings`, the read half on the
+    // LOCAL replica's `ReadOnDemandThroughputSettings` — and only the write
+    // half was ever wired, so a user who capped read request units got a table
+    // with NO read ceiling and a success report (issue #1436). Both halves go
+    // into the SAME `CreateTable` member.
+    const createCeilings = collectTableOnDemandCeilings(properties, currentRegion, diagnostics);
+    const createOnDemand: OnDemandThroughput = {
+      ...(createCeilings.read.value !== undefined && {
+        MaxReadRequestUnits: createCeilings.read.value,
+      }),
+      ...(createCeilings.write.value !== undefined && {
+        MaxWriteRequestUnits: createCeilings.write.value,
+      }),
+    };
+    if (billingMode !== 'PROVISIONED' && Object.keys(createOnDemand).length > 0) {
+      createParams.OnDemandThroughput = createOnDemand;
     }
 
     // Tags are per-replica in the CFn `AWS::DynamoDB::GlobalTable`
@@ -442,6 +461,26 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     if (localReplicaTags && localReplicaTags.length > 0) {
       createParams.Tags = localReplicaTags;
     }
+
+    // Pre-flight the CROSS-REGION replica blocks through the same translators
+    // the post-`CreateTable` wiring will use, discarding the result and
+    // keeping only the diagnostics. Issue #1428's third rejected design
+    // surfaced its complaint from inside that wiring, which meant a
+    // statically-detectable garbage value created a real table first — and
+    // under `DeletionProtectionEnabled: true` the compensating delete fails,
+    // orphaning a billing table with no state record. Reporting is cheap and
+    // pure, so it happens BEFORE the first mutating call instead.
+    for (const replica of replicas) {
+      const replicaRegion = replica['Region'] as string | undefined;
+      if (!replicaRegion || replicaRegion === currentRegion) continue;
+      toSdkReplicaGlobalSecondaryIndexes(
+        replica['GlobalSecondaryIndexes'],
+        billingMode,
+        diagnostics
+      );
+      toSdkReplicaThroughputOverrides(replica, billingMode, diagnostics, {});
+    }
+    this.reportThroughputDiagnostics(diagnostics, logicalId, tableName);
 
     try {
       await this.dynamoDBClient.send(new CreateTableCommand(createParams));
@@ -473,7 +512,9 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       for (const replica of replicas) {
         const region = replica['Region'] as string | undefined;
         if (!region || region === currentRegion) continue;
-        await this.addReplica(tableName, replica, region, logicalId);
+        // No diagnostics collector: the same translation already ran in the
+        // pre-flight scan above, so passing one here would warn twice.
+        await this.addReplica(tableName, replica, region, logicalId, billingMode);
       }
 
       // Cross-region replica Tags propagation (Issue #441 — closes the
@@ -636,6 +677,32 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
   }
 
   /**
+   * Log a batch of {@link ThroughputDiagnostic}s at WARN, de-duplicated.
+   *
+   * The translators run over every index on both the create and the update
+   * path, so the same malformed block can be reported more than once in one
+   * call; a repeated warning reads as repeated damage and is worse than
+   * useless. Kept as ONE formatter so the five translation call sites cannot
+   * word the same defect differently.
+   */
+  private reportThroughputDiagnostics(
+    diagnostics: readonly ThroughputDiagnostic[],
+    logicalId: string,
+    physicalId: string
+  ): void {
+    const seen = new Set<string>();
+    for (const diagnostic of diagnostics) {
+      const scope = diagnostic.indexName
+        ? `GSI '${diagnostic.indexName}' on ${physicalId}`
+        : physicalId;
+      const line = `DynamoDB GlobalTable ${logicalId}: ${scope}: ${diagnostic.message}`;
+      if (seen.has(line)) continue;
+      seen.add(line);
+      this.logger.warn(line);
+    }
+  }
+
+  /**
    * Add a single replica region. Issues one `UpdateTableCommand` with
    * `ReplicaUpdates: [{ Create: { RegionName, ... } }]` and polls
    * `DescribeTable` until the replica's `ReplicaStatus` flips to ACTIVE.
@@ -660,7 +727,9 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     tableName: string,
     replica: Record<string, unknown>,
     region: string,
-    logicalId: string
+    logicalId: string,
+    billingMode: string,
+    diagnostics?: ThroughputDiagnostic[]
   ): Promise<void> {
     const create: CreateReplicationGroupMemberAction = {
       RegionName: region,
@@ -672,9 +741,24 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     // `ReplicaGlobalSecondaryIndexSpecification` spells the per-replica read
     // throughput `Read{Provisioned,OnDemand}ThroughputSettings`, while the SDK
     // wants `{Provisioned,OnDemand}ThroughputOverride` — translate (Issue #1387).
-    const replicaIndexes = toSdkReplicaGlobalSecondaryIndexes(replica['GlobalSecondaryIndexes']);
+    const replicaIndexes = toSdkReplicaGlobalSecondaryIndexes(
+      replica['GlobalSecondaryIndexes'],
+      billingMode,
+      diagnostics
+    );
     if (replicaIndexes) {
       create.GlobalSecondaryIndexes = replicaIndexes;
+    }
+    // The replica's own TABLE-level read ceiling / read capacity, which uses
+    // the SAME two CFn spellings one level up (issue #1436). A non-local
+    // replica's `ReadOnDemandThroughputSettings` was dropped entirely before
+    // this — the replica silently kept the source table's default.
+    const tableOverrides = toSdkReplicaThroughputOverrides(replica, billingMode, diagnostics, {});
+    if (tableOverrides.ProvisionedThroughputOverride) {
+      create.ProvisionedThroughputOverride = tableOverrides.ProvisionedThroughputOverride;
+    }
+    if (tableOverrides.OnDemandThroughputOverride) {
+      create.OnDemandThroughputOverride = tableOverrides.OnDemandThroughputOverride;
     }
     if (replica['TableClassOverride']) {
       create.TableClassOverride = replica['TableClassOverride'] as
@@ -769,17 +853,35 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         physicalId
       );
     }
-    // AttributeDefinitions: additions are allowed (needed for new GSIs)
-    // but removals are not — AWS rejects removing an attr that an index
-    // still references.
+    // AttributeDefinitions: additions are allowed (needed for new GSIs).
+    // A removal is refused ONLY when some key schema in the DESIRED template
+    // still references the removed attribute — that is a real
+    // redefine-in-place, which AWS rejects and only a replacement can apply.
+    //
+    // A removal whose attribute nothing references anymore is the ORDINARY
+    // way a GSI is deleted: dropping the index from a `TableV2` also drops
+    // its key attribute from the synthesized `AttributeDefinitions` (CDK
+    // derives the list from the keys in use, and DynamoDB rejects an entry
+    // no key schema uses). The pre-#1421 blanket refusal therefore made
+    // every GSI removal a forced replacement — caught live by the
+    // `gsi-billing-flip` integ, whose drop-one-index phase this guard
+    // failed. The `UpdateTable` GSI `Delete` action takes no
+    // `AttributeDefinitions` at all, so an unreferenced removal is pure
+    // bookkeeping on the cdkd side.
     const oldAttrs = (previousProperties['AttributeDefinitions'] ?? []) as AttributeDefinition[];
     const newAttrs = (properties['AttributeDefinitions'] ?? []) as AttributeDefinition[];
+    const desiredKeyAttrNames = collectDesiredKeyAttributeNames(properties);
     const removedAttrs = oldAttrs.filter(
       (o) => !newAttrs.some((n) => n.AttributeName === o.AttributeName)
     );
-    if (removedAttrs.length > 0) {
+    const removedButStillReferenced = removedAttrs.filter(
+      (a) => a.AttributeName !== undefined && desiredKeyAttrNames.has(a.AttributeName)
+    );
+    if (removedButStillReferenced.length > 0) {
       throw new ProvisioningError(
-        `AttributeDefinitions removals are immutable on AWS::DynamoDB::GlobalTable (offenders: ${removedAttrs.map((a) => a.AttributeName).join(', ')}); replacement required`,
+        `AttributeDefinitions removals are immutable on AWS::DynamoDB::GlobalTable while a ` +
+          `key schema still references them (offenders: ${removedButStillReferenced.map((a) => a.AttributeName).join(', ')}); ` +
+          `replacement required`,
         resourceType,
         logicalId,
         physicalId
@@ -847,6 +949,35 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // that call.
       const onDemandCeilingLive =
         oldBilling === 'PAY_PER_REQUEST' && newBilling === 'PAY_PER_REQUEST';
+
+      // Every DESIRED-side translation runs HERE, before the first mutating
+      // call, so a template defect is reported while the table is still
+      // untouched rather than between two half-applied UpdateTable steps.
+      // Only the desired side gets a collector: `previousProperties` comes
+      // from cdkd STATE, and complaining about a value an older binary
+      // recorded there would shout on every deploy about a template the user
+      // never wrote (issue #1428's "asymmetric between the desired side and
+      // the previous side").
+      const diagnostics: ThroughputDiagnostic[] = [];
+      const desiredCeilings = collectTableOnDemandCeilings(properties, currentRegion, diagnostics);
+      const desiredSdkIndexes = toSdkGlobalSecondaryIndexes(
+        properties,
+        currentRegion,
+        newBilling,
+        'min',
+        diagnostics
+      );
+      for (const replica of (properties['Replicas'] ?? []) as Array<Record<string, unknown>>) {
+        const replicaRegion = asRecord(replica)?.['Region'];
+        if (typeof replicaRegion !== 'string' || replicaRegion === currentRegion) continue;
+        toSdkReplicaGlobalSecondaryIndexes(
+          replica['GlobalSecondaryIndexes'],
+          newBilling,
+          diagnostics
+        );
+        toSdkReplicaThroughputOverrides(replica, newBilling, diagnostics, {});
+      }
+      this.reportThroughputDiagnostics(diagnostics, logicalId, physicalId);
 
       // 3. Non-conflicting flat fields in one combined UpdateTable.
       // AWS allows combining these in a single call because they don't
@@ -939,47 +1070,82 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         } as StreamSpecification;
         flatChanged = true;
       }
-      if (
-        !deepEqual(
-          properties['WriteOnDemandThroughputSettings'],
-          previousProperties['WriteOnDemandThroughputSettings']
-        )
-      ) {
-        const wodts = properties['WriteOnDemandThroughputSettings'] as
-          | Record<string, unknown>
-          | undefined;
-        const previousWodts = previousProperties['WriteOnDemandThroughputSettings'] as
-          | Record<string, unknown>
-          | undefined;
-        // Gate on the RAW presence of the key, not on whether it coerces:
-        // "present but unparseable" (an unresolved intrinsic) must keep
-        // reaching AWS as it always did, so the request fails loudly. Routing
-        // it into the reset branch below would silently CLEAR the ceiling the
-        // template was trying to set — a worse outcome than the noisy failure,
-        // and the exact silent-wrong-action class this fix exists to remove.
-        const rawMaxWrite = wodts?.['MaxWriteRequestUnits'];
-        if (rawMaxWrite !== undefined) {
-          flatUpdate.OnDemandThroughput = { MaxWriteRequestUnits: Number(rawMaxWrite) };
-          flatChanged = true;
-        } else if (onDemandCeilingLive && previousWodts?.['MaxWriteRequestUnits'] !== undefined) {
-          // The template DROPPED the table-level on-demand write ceiling.
-          // Omitting the field left the old ceiling live in AWS forever while
-          // cdkd reported success — the absent-field-reset silent-drop class
-          // (#1160), the table-level sibling of the per-GSI case #1423 fixed.
-          //
-          // `-1` is the reset sentinel. Unlike the per-GSI action (where it
-          // had to be discovered by probe) AWS documents it for the
-          // table-level `OnDemandThroughput`, and it was LIVE-VERIFIED anyway
-          // (issue #1434, us-east-1): `UpdateTable` with
-          // `OnDemandThroughput: {MaxWriteRequestUnits: -1}` was accepted and
-          // `DescribeTable` afterwards returned `{MaxReadRequestUnits: 100}` —
-          // the dropped member cleared, the untouched read sibling preserved.
-          // A follow-up `{MaxReadRequestUnits: -1}` removed the block entirely.
-          // So the reset reads back as ABSENCE, never as -1, and any drift /
-          // read-back comparison must expect that.
-          flatUpdate.OnDemandThroughput = { MaxWriteRequestUnits: ON_DEMAND_LIMIT_RESET };
-          flatChanged = true;
+      // Table-level on-demand ceilings, BOTH halves. The write half lives at
+      // top-level `WriteOnDemandThroughputSettings`; the read half lives on
+      // the LOCAL replica as `ReadOnDemandThroughputSettings` and was never
+      // read at all before issue #1436 — so `maxReadRequestUnits` was dropped
+      // on the way in and could not be reset on the way out either.
+      //
+      // Per-member, and MERGED rather than branched on "the whole block
+      // disappeared": read and write are INDEPENDENT CDK props living in
+      // different parts of the template, so a branch would silently drop the
+      // single-member removal, which is the likelier user edit. That branch
+      // shape is exactly the blocker the #1433 review caught one level down.
+      //
+      // `-1` is the reset sentinel, LIVE-VERIFIED for this member pair
+      // (issue #1434, us-east-1 + us-west-2, 2026-08-09): `UpdateTable` with
+      // `OnDemandThroughput: {MaxWriteRequestUnits: -1}` was accepted and
+      // `DescribeTable` afterwards returned `{MaxReadRequestUnits: 100}` — the
+      // dropped member cleared, the untouched sibling preserved — and a
+      // follow-up `{MaxReadRequestUnits: -1}` removed the block entirely. So
+      // the reset reads back as ABSENCE, never as -1, and any drift /
+      // read-back comparison must expect that.
+      //
+      // The sentinel is NOT transferable to the REPLICA-level overrides; see
+      // the note on the replica loop below for the probe that proved it.
+      //
+      // The comparison baseline is AWS's OBSERVED ceiling, not the state
+      // record — the same AWS-aware diff the DeletionProtectionEnabled block
+      // above uses, and for a sharper reason here. A table deployed before
+      // #1436 has `maxReadRequestUnits` recorded in cdkd state (state stores
+      // template intent) while AWS never received it, so a state-vs-state
+      // comparison sees "unchanged" and the drop is never repaired. Reading
+      // the live value converges the table on the FIRST post-fix deploy, and
+      // doubles as console-drift correction.
+      const awsOnDemand = describeResp.Table?.OnDemandThroughput;
+      const onDemandPayload: OnDemandThroughput = {};
+      const resolveCeiling = (
+        desired: RawCeiling,
+        live: number | undefined
+      ): number | undefined => {
+        // A declared-but-unresolvable value (an unresolved intrinsic) sends
+        // NOTHING. It must not take the reset branch, which would silently
+        // clear the ceiling the template was trying to SET — the exact
+        // silent-wrong-action class the reset exists to remove. The
+        // `diagnostics` pass above already told the user why nothing moved.
+        if (desired.declared) {
+          if (desired.value === undefined) return undefined;
+          return desired.value !== live ? desired.value : undefined;
         }
+        if (onDemandCeilingLive && live !== undefined) return ON_DEMAND_LIMIT_RESET;
+        return undefined;
+      };
+      const nextMaxRead = resolveCeiling(desiredCeilings.read, awsOnDemand?.MaxReadRequestUnits);
+      const nextMaxWrite = resolveCeiling(desiredCeilings.write, awsOnDemand?.MaxWriteRequestUnits);
+      if (nextMaxRead !== undefined) onDemandPayload.MaxReadRequestUnits = nextMaxRead;
+      if (nextMaxWrite !== undefined) onDemandPayload.MaxWriteRequestUnits = nextMaxWrite;
+      // Never sent while EITHER side is PROVISIONED. The new side is obvious
+      // (AWS rejects an on-demand ceiling on a provisioned table; a template
+      // carrying one while moving to PROVISIONED is a stale leftover, not a
+      // request — issue #1428 defect 3, one level up). The OLD side matters
+      // because step 3 runs BEFORE step 4's flip: on a PROVISIONED ->
+      // PAY_PER_REQUEST flip the live table is still provisioned here, so a
+      // ceiling the new template declares must wait for the flip to land —
+      // sending it now would 400 and, since state is only saved on success,
+      // make the flip template repeatedly undeployable. The per-GSI path has
+      // the same shape for free (its on-demand limits are applied by step 6,
+      // which runs after the flip); this deferral is the table-level twin.
+      const deferCeilingsPastFlip =
+        oldBilling === 'PROVISIONED' &&
+        newBilling === 'PAY_PER_REQUEST' &&
+        Object.keys(onDemandPayload).length > 0;
+      if (
+        newBilling !== 'PROVISIONED' &&
+        !deferCeilingsPastFlip &&
+        Object.keys(onDemandPayload).length > 0
+      ) {
+        flatUpdate.OnDemandThroughput = onDemandPayload;
+        flatChanged = true;
       }
       if (flatChanged) {
         await this.dynamoDBClient.send(new UpdateTableCommand(flatUpdate));
@@ -1096,6 +1262,19 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         await this.waitForTableActiveAfterUpdate(physicalId, logicalId);
       }
 
+      // 4a. The table-level on-demand ceilings a PROVISIONED ->
+      // PAY_PER_REQUEST flip deferred (see step 3's `deferCeilingsPastFlip`):
+      // now that the table IS on-demand, the declared ceilings are a plain
+      // ceiling-set. Sent as its own UpdateTable — AWS's state-machine rule
+      // wants the flip call to carry the flip, and the well-probed payload
+      // shape here is the same one step 3 sends on a non-flip deploy.
+      if (deferCeilingsPastFlip) {
+        await this.dynamoDBClient.send(
+          new UpdateTableCommand({ TableName: physicalId, OnDemandThroughput: onDemandPayload })
+        );
+        await this.waitForTableActiveAfterUpdate(physicalId, logicalId);
+      }
+
       // 4b. Table-level write auto-scaling diff (Issue #402 / closes #395
       // deferred items). Fires whenever the WriteCapacityAutoScalingSettings
       // sub-shape differs between old and new (incl. add / remove). Skipped
@@ -1191,7 +1370,9 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       for (const replica of replicaDiff.added) {
         const region = replica['Region'] as string | undefined;
         if (!region || region === currentRegion) continue;
-        await this.addReplica(physicalId, replica, region, logicalId);
+        // Diagnostics already emitted by the pre-flight scan at the top of
+        // update(); passing the collector again would warn twice.
+        await this.addReplica(physicalId, replica, region, logicalId, newBilling);
 
         // Cross-region Tags propagation for the newly-added replica
         // (Issue #441 follow-up — mirrors the create-side + modified
@@ -1303,10 +1484,74 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         // Same CFn -> SDK per-replica GSI throughput translation as the
         // create-side `addReplica` (Issue #1387).
         const replicaIndexes = toSdkReplicaGlobalSecondaryIndexes(
-          replica['GlobalSecondaryIndexes']
+          replica['GlobalSecondaryIndexes'],
+          newBilling
         );
         if (replicaIndexes) {
           updateAction.GlobalSecondaryIndexes = replicaIndexes;
+        }
+        // The replica's own TABLE-level read ceiling / read capacity, which
+        // uses the same two CFn spellings one level up (issue #1436).
+        //
+        // SET only — there is deliberately NO reset arm here, and that is a
+        // probe-informed decision rather than an omission. Live probe
+        // (us-east-1 source + us-west-2 replica, 2026-08-09, recorded on
+        // issue #1436): `OnDemandThroughputOverride: {MaxReadRequestUnits: -1}`
+        // is ACCEPTED but reads back LITERALLY as -1 — it is not a reset
+        // sentinel here, unlike the table-level member — and the empty-block
+        // form `OnDemandThroughputOverride: {}` left the table stuck in
+        // UPDATING for over an hour, after which AWS refused to delete it for
+        // 24 hours. So a template that DROPS a non-local replica's ceiling
+        // leaves the old override live, and says so, rather than corrupting
+        // the table with a payload probing already proved hazardous.
+        const replicaOverrides = toSdkReplicaThroughputOverrides(
+          replica,
+          newBilling,
+          undefined,
+          {}
+        );
+        if (replicaOverrides.ProvisionedThroughputOverride) {
+          updateAction.ProvisionedThroughputOverride =
+            replicaOverrides.ProvisionedThroughputOverride;
+        }
+        if (replicaOverrides.OnDemandThroughputOverride) {
+          updateAction.OnDemandThroughputOverride = replicaOverrides.OnDemandThroughputOverride;
+        }
+        // A DROPPED override is reported rather than acted on, for the reason
+        // above. Only when the billing mode held still — a flip re-shapes both
+        // sides by construction, so "the old override is gone" there is the
+        // translation, not a template edit.
+        if (oldBilling === newBilling) {
+          const oldReplicaOverrides = toSdkReplicaThroughputOverrides(
+            oldReplica ?? {},
+            oldBilling,
+            undefined,
+            {}
+          );
+          const droppedOverrides: string[] = [];
+          if (
+            oldReplicaOverrides.OnDemandThroughputOverride &&
+            !replicaOverrides.OnDemandThroughputOverride
+          ) {
+            droppedOverrides.push('ReadOnDemandThroughputSettings');
+          }
+          if (
+            oldReplicaOverrides.ProvisionedThroughputOverride &&
+            !replicaOverrides.ProvisionedThroughputOverride
+          ) {
+            droppedOverrides.push('ReadProvisionedThroughputSettings');
+          }
+          if (droppedOverrides.length > 0) {
+            this.logger.warn(
+              `Cross-region replica ${region} of ${physicalId}: the template no longer ` +
+                `declares ${droppedOverrides.join(' / ')}, but DynamoDB offers no way to ` +
+                `CLEAR a replica-level throughput override — a -1 sentinel is stored ` +
+                `literally, and an empty override block wedges the table in UPDATING ` +
+                `(both live-probed, issue #1436). The previous override is STILL IN ` +
+                `EFFECT on AWS. Set an explicit value, or remove and re-add the replica, ` +
+                `to change it.`
+            );
+          }
         }
         if (replica['TableClassOverride']) {
           updateAction.TableClassOverride = replica['TableClassOverride'] as
@@ -1322,7 +1567,9 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         const hasUpdateField =
           updateAction.KMSMasterKeyId !== undefined ||
           updateAction.GlobalSecondaryIndexes !== undefined ||
-          updateAction.TableClassOverride !== undefined;
+          updateAction.TableClassOverride !== undefined ||
+          updateAction.ProvisionedThroughputOverride !== undefined ||
+          updateAction.OnDemandThroughputOverride !== undefined;
         if (!hasUpdateField) {
           this.logger.debug(
             `Cross-region replica ${region} of ${physicalId}: only Tags-style ` +
@@ -1356,10 +1603,10 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         currentRegion,
         oldBilling
       );
-      const gsiDiff = diffGlobalSecondaryIndexes(
-        previousSdkIndexes,
-        toSdkGlobalSecondaryIndexes(properties, currentRegion, newBilling)
-      );
+      // `desiredSdkIndexes` was translated once at the top of update() — the
+      // same call, reused rather than repeated, so the diagnostics reported
+      // there provably describe the indexes actually being applied here.
+      const gsiDiff = diffGlobalSecondaryIndexes(previousSdkIndexes, desiredSdkIndexes);
       // RAW per-index on-demand key presence for the DESIRED side, so the
       // `modified` loop can tell "the template dropped this member" from "the
       // template set it to something that did not coerce" (issue #1440).
@@ -1495,16 +1742,13 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
             else onDemand.MaxWriteRequestUnits = ON_DEMAND_LIMIT_RESET;
           }
         }
-        if (unresolvedMembers.length > 0) {
-          this.logger.warn(
-            `GSI '${gsi.IndexName}' on ${physicalId}: the template declares ` +
-              `${unresolvedMembers.join(' / ')} but the value did not resolve to a ` +
-              `number, so the on-demand limit was left UNCHANGED on AWS rather than ` +
-              `applied or cleared. This is usually an unresolved intrinsic in the ` +
-              `template; resolve it to a literal to change the ceiling, or remove the ` +
-              `property entirely to clear it.`
-          );
-        }
+        // `unresolvedMembers` is no longer REPORTED from here (issue #1444 A
+        // moved the diagnostic into the translation, where the value is
+        // actually lost and where it also fires for a first-time set and
+        // across a billing flip — two cases this gate never runs for). It is
+        // still TRACKED, because it suppresses the immutable-field warning
+        // below: telling the user to recreate the index is wrong and alarming
+        // advice for what is really an unresolved intrinsic.
         if (Object.keys(onDemand).length > 0) update.OnDemandThroughput = onDemand;
         // Provisioned capacity on a flip is step 4's job, so only a real
         // same-billing-mode edit sends it from here.
@@ -2619,13 +2863,11 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         result['BillingMode'] = billingMode;
       }
 
-      // Type-discriminator-gated: GSI / LSI placeholders. AWS omits these
-      // when there are none; an empty-array placeholder would round-trip
-      // as "remove all GSIs" on any future update() that learns the
-      // field. Only surface when AWS reports indexes.
-      if (table.GlobalSecondaryIndexes && table.GlobalSecondaryIndexes.length > 0) {
-        result['GlobalSecondaryIndexes'] = table.GlobalSecondaryIndexes;
-      }
+      // Type-discriminator-gated: LSI placeholder. AWS omits it when there
+      // are none; an empty-array placeholder would round-trip as "remove all
+      // LSIs" on any future update() that learns the field. The GSI reverse
+      // map is built further down, once the local region is resolved — it
+      // needs the region to know which replica entry carries the read half.
       if (table.LocalSecondaryIndexes && table.LocalSecondaryIndexes.length > 0) {
         result['LocalSecondaryIndexes'] = table.LocalSecondaryIndexes;
       }
@@ -2669,8 +2911,23 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // LOCAL-only limitation).
       const currentRegion = (await this.dynamoDBClient.config.region()) ?? '';
       const tableNameForSubs = table.TableName ?? physicalId;
+      // `DescribeTable` only carries `Replicas` once a table actually HAS
+      // replicas — a single-region GlobalTable (the common case: every
+      // `TableV2` without `replicas`) returns none. But the CFn schema
+      // REQUIRES `Replicas` to include the deploy region, so the state
+      // baseline always has a local entry; emitting `[]` here made drift
+      // compare `[{Region: <local>, …}]` against `[]` and, worse, left the
+      // local-replica-homed members this provider reverse-maps
+      // (`ReadOnDemandThroughputSettings`, the per-GSI read halves — issue
+      // #1436 / #1420) with nowhere to land, so their drift detection was
+      // silently dead for exactly the single-region case. Synthesize the
+      // local entry; the sub-spec / Tags reads below work on it unchanged.
+      const sdkReplicas =
+        table.Replicas && table.Replicas.length > 0
+          ? table.Replicas
+          : [{ RegionName: currentRegion }];
       const replicas = await Promise.all(
-        (table.Replicas ?? []).map(async (r) => {
+        sdkReplicas.map(async (r) => {
           const entry: Record<string, unknown> = { Region: r.RegionName };
           if (r.KMSMasterKeyId !== undefined) entry['KMSMasterKeyId'] = r.KMSMasterKeyId;
           if (!r.RegionName) return entry;
@@ -2757,16 +3014,124 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       );
       result['Replicas'] = replicas;
 
-      // WriteOnDemandThroughputSettings: trivial reverse-map from
-      // `Table.OnDemandThroughput.MaxWriteRequestUnits`. Always-emit
-      // `{}` placeholder when on-demand has no override so a console-side
-      // ADD on a previously-default table fires drift (PR #145 pattern).
+      // GlobalSecondaryIndexes: a real CFn-shaped REVERSE MAP (issue #1420).
+      //
+      // The pre-fix code assigned the raw SDK `GlobalSecondaryIndexDescription[]`
+      // straight into the CFn-shaped state key. Those descriptions carry
+      // members CFn has no concept of (`IndexArn` / `IndexStatus` / `ItemCount`
+      // / `IndexSizeBytes` / `Backfilling`) and — since #1387 — model
+      // throughput COMPLETELY differently from the CFn side, so `cdkd drift`
+      // compared a CFn-shaped baseline against an SDK-shaped snapshot and
+      // reported PERMANENT phantom drift on any GlobalTable with a GSI.
+      //
+      // #1420 offered a stopgap (declare the whole subtree in
+      // `getDriftUnknownPaths`) precisely because a correct map needed the
+      // per-index auto-scaling read, which was blocked on the registration
+      // gap. That gap shipped in #1419, so the correct map is buildable now
+      // and the stopgap — which would have turned drift OFF for the entire
+      // GSI subtree — is not taken.
+      const localReplicaEntry = replicas.find((r) => r['Region'] === currentRegion);
+      if (table.GlobalSecondaryIndexes && table.GlobalSecondaryIndexes.length > 0) {
+        const cfnIndexes: Array<Record<string, unknown>> = [];
+        const replicaIndexEntries: Array<Record<string, unknown>> = [];
+        for (const gsi of table.GlobalSecondaryIndexes) {
+          if (!gsi.IndexName) continue;
+          const entry: Record<string, unknown> = { IndexName: gsi.IndexName };
+          if (gsi.KeySchema) entry['KeySchema'] = gsi.KeySchema;
+          if (gsi.Projection) entry['Projection'] = gsi.Projection;
+          if (gsi.WarmThroughput) entry['WarmThroughput'] = gsi.WarmThroughput;
+
+          const replicaEntry: Record<string, unknown> = { IndexName: gsi.IndexName };
+          if (billingMode === 'PROVISIONED') {
+            // Same two sub-shapes as the table-level write settings, and the
+            // same reason they are mutually exclusive: when auto-scaling owns
+            // the dimension the template carries the settings block, and
+            // emitting the flat number instead would fire drift on every
+            // clean run of an autoscaled table.
+            const writeAutoScaling = await this.readAutoScalingSettings(
+              tableNameForSubs,
+              'dynamodb:index:WriteCapacityUnits',
+              undefined,
+              gsi.IndexName
+            );
+            if (writeAutoScaling) {
+              entry['WriteProvisionedThroughputSettings'] = {
+                WriteCapacityAutoScalingSettings: writeAutoScaling,
+              };
+            } else if (gsi.ProvisionedThroughput?.WriteCapacityUnits !== undefined) {
+              entry['WriteProvisionedThroughputSettings'] = {
+                WriteCapacityUnits: gsi.ProvisionedThroughput.WriteCapacityUnits,
+              };
+            }
+            // READ capacity lives on the local REPLICA's index entry, not on
+            // the top-level GSI — the shape #1387 established. Reverse-mapping
+            // it to the top level would fire drift against every CDK-authored
+            // template, which puts it on the replica.
+            const readAutoScaling = await this.readAutoScalingSettings(
+              tableNameForSubs,
+              'dynamodb:index:ReadCapacityUnits',
+              undefined,
+              gsi.IndexName
+            );
+            if (readAutoScaling) {
+              replicaEntry['ReadProvisionedThroughputSettings'] = {
+                ReadCapacityAutoScalingSettings: readAutoScaling,
+              };
+            } else if (gsi.ProvisionedThroughput?.ReadCapacityUnits !== undefined) {
+              replicaEntry['ReadProvisionedThroughputSettings'] = {
+                ReadCapacityUnits: gsi.ProvisionedThroughput.ReadCapacityUnits,
+              };
+            }
+          } else {
+            // On-demand ceilings split the same write-here / read-on-the-
+            // replica way. A CLEARED ceiling reads back as ABSENCE, never as
+            // the `-1` reset sentinel (live-verified, #1423 / #1434), so an
+            // omitted key is the correct "no ceiling" representation and no
+            // `{}` placeholder is emitted: the template omits the block
+            // entirely in that case too.
+            if (gsi.OnDemandThroughput?.MaxWriteRequestUnits !== undefined) {
+              entry['WriteOnDemandThroughputSettings'] = {
+                MaxWriteRequestUnits: gsi.OnDemandThroughput.MaxWriteRequestUnits,
+              };
+            }
+            if (gsi.OnDemandThroughput?.MaxReadRequestUnits !== undefined) {
+              replicaEntry['ReadOnDemandThroughputSettings'] = {
+                MaxReadRequestUnits: gsi.OnDemandThroughput.MaxReadRequestUnits,
+              };
+            }
+          }
+          cfnIndexes.push(entry);
+          if (Object.keys(replicaEntry).length > 1) replicaIndexEntries.push(replicaEntry);
+        }
+        result['GlobalSecondaryIndexes'] = cfnIndexes;
+        // Only attach the replica-side half when there is one: an empty array
+        // would read as "this replica overrides nothing", which is true but
+        // is not what a template omitting the key says, and the comparator
+        // only descends into keys the state baseline already has anyway.
+        if (localReplicaEntry && replicaIndexEntries.length > 0) {
+          localReplicaEntry['GlobalSecondaryIndexes'] = replicaIndexEntries;
+        }
+      }
+
+      // Table-level on-demand ceilings. The WRITE half reverse-maps to the
+      // top-level `WriteOnDemandThroughputSettings`; the READ half belongs on
+      // the LOCAL REPLICA as `ReadOnDemandThroughputSettings` (issue #1436 —
+      // `readCurrentState` had no read counterpart at all, so drift was blind
+      // to it in exactly the same way `create()` / `update()` were). Always-
+      // emit `{}` placeholder on the write side when on-demand has no
+      // override so a console-side ADD on a previously-default table fires
+      // drift (PR #145 pattern).
       if (table.OnDemandThroughput?.MaxWriteRequestUnits !== undefined) {
         result['WriteOnDemandThroughputSettings'] = {
           MaxWriteRequestUnits: table.OnDemandThroughput.MaxWriteRequestUnits,
         };
       } else {
         result['WriteOnDemandThroughputSettings'] = {};
+      }
+      if (localReplicaEntry && table.OnDemandThroughput?.MaxReadRequestUnits !== undefined) {
+        localReplicaEntry['ReadOnDemandThroughputSettings'] = {
+          MaxReadRequestUnits: table.OnDemandThroughput.MaxReadRequestUnits,
+        };
       }
 
       // WriteProvisionedThroughputSettings — type-discriminator-gated on
@@ -2984,17 +3349,24 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
    * under `--verbose`.
    *
    * @param tableName DynamoDB table name (the `physicalId`).
-   * @param scalableDimension `'dynamodb:table:WriteCapacityUnits'` or
-   *   `'dynamodb:table:ReadCapacityUnits'`.
+   * @param scalableDimension Any of the four dimensions a GlobalTable can
+   *   register — the two `dynamodb:table:*` ones and, since issue #1420's
+   *   GSI reverse map, the two `dynamodb:index:*` ones.
    * @param client Pre-built region-scoped autoscaling client. Defaults to
    *   a fresh client in the local region — pass an explicit client when
    *   reading from a cross-region replica.
+   * @param indexName Required for a `dynamodb:index:*` dimension; the
+   *   `ResourceId` is built through the shared {@link autoScalingResourceId}
+   *   so the read cannot spell it differently from the register / deregister
+   *   calls.
    */
   private async readAutoScalingSettings(
     tableName: string,
-    scalableDimension: 'dynamodb:table:WriteCapacityUnits' | 'dynamodb:table:ReadCapacityUnits',
-    client?: ApplicationAutoScalingClient
+    scalableDimension: DynamoDBScalableDimension,
+    client?: ApplicationAutoScalingClient,
+    indexName?: string
   ): Promise<Record<string, unknown> | null> {
+    const resourceId = autoScalingResourceId(tableName, indexName);
     try {
       const asClient =
         client ??
@@ -3006,7 +3378,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       const targetsResp = await asClient.send(
         new DescribeScalableTargetsCommand({
           ServiceNamespace: 'dynamodb',
-          ResourceIds: [`table/${tableName}`],
+          ResourceIds: [resourceId],
           ScalableDimension: scalableDimension,
         })
       );
@@ -3021,7 +3393,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       const policiesResp = await asClient.send(
         new DescribeScalingPoliciesCommand({
           ServiceNamespace: 'dynamodb',
-          ResourceId: `table/${tableName}`,
+          ResourceId: resourceId,
           ScalableDimension: scalableDimension,
         })
       );
@@ -3049,7 +3421,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       };
     } catch (err) {
       this.logger.debug(
-        `Could not read application-autoscaling settings for ${tableName} (${scalableDimension}): ${err instanceof Error ? err.message : String(err)}`
+        `Could not read application-autoscaling settings for ${resourceId} (${scalableDimension}): ${err instanceof Error ? err.message : String(err)}`
       );
       return null;
     }
@@ -3076,6 +3448,17 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
    *    `{}` placeholder when AWS reports no override.
    *  - `TimeToLiveSpecification` is reverse-mapped via
    *    `DescribeTimeToLive` in `readCurrentState`.
+   *
+   * Issue #1420 + #1436 kept it empty rather than growing it:
+   *  - `GlobalSecondaryIndexes` is a real CFn-shaped reverse map (SDK-only
+   *    members stripped, write throughput at the top level, read throughput
+   *    on the local replica's index entry, auto-scaling recovered per index
+   *    via `dynamodb:index:*`). The alternative #1420 offered — declaring the
+   *    subtree here — would have turned drift OFF for every GSI, which is a
+   *    strictly worse trade than the phantom drift it removes.
+   *  - The table-level on-demand READ ceiling is reverse-mapped onto
+   *    `Replicas[local].ReadOnDemandThroughputSettings`, the CFn location it
+   *    is authored at.
    *
    * Returning an empty list is the canonical "no known-unknown paths"
    * shape — keeping the method present (rather than removing it) for
@@ -3575,6 +3958,39 @@ export function collectAutoScalingTargets(
   return specs;
 }
 
+/**
+ * Every attribute name some KEY SCHEMA in the desired template references:
+ * the table's own `KeySchema`, each GSI's, and each LSI's. This is the set
+ * the `AttributeDefinitions`-removal guard in `update()` tests membership
+ * against — a removed attribute still in this set is a genuine
+ * redefine-in-place (replacement required); one outside it is the normal
+ * bookkeeping of a GSI deletion and must NOT force a replacement.
+ *
+ * Malformed / intrinsic-valued entries contribute nothing, which errs on the
+ * PERMISSIVE side of the guard — correct here, because the guard's failure
+ * mode is a forced replacement of a live table, and AWS itself still rejects
+ * a genuinely-bad `UpdateTable` loudly.
+ */
+export function collectDesiredKeyAttributeNames(properties: Record<string, unknown>): Set<string> {
+  const names = new Set<string>();
+  const addKeySchema = (value: unknown): void => {
+    if (!Array.isArray(value)) return;
+    for (const element of value) {
+      const name = asRecord(element)?.['AttributeName'];
+      if (typeof name === 'string') names.add(name);
+    }
+  };
+  addKeySchema(properties['KeySchema']);
+  for (const indexListKey of ['GlobalSecondaryIndexes', 'LocalSecondaryIndexes'] as const) {
+    const indexes = properties[indexListKey];
+    if (!Array.isArray(indexes)) continue;
+    for (const index of indexes) {
+      addKeySchema(asRecord(index)?.['KeySchema']);
+    }
+  }
+  return names;
+}
+
 /** Narrow an unknown CFn sub-object to a record (or `undefined`). */
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -3595,8 +4011,146 @@ const ON_DEMAND_LIMIT_RESET = -1;
 /** Coerce a CFn numeric (CFn is stringly-typed) to a finite number. */
 function toFiniteNumber(value: unknown): number | undefined {
   if (value === undefined || value === null || value === '') return undefined;
+  if (typeof value !== 'number' && typeof value !== 'string') return undefined;
   const n = Number(value);
   return Number.isFinite(n) ? n : undefined;
+}
+
+/**
+ * What went wrong with ONE throughput member, reported by the module-level
+ * pure translators rather than logged by them (issues #1428 / #1444).
+ *
+ * These helpers have five call sites (`create`, `addReplica`, the replica
+ * modify action, and both sides of the GSI diff) and no logger, so they
+ * COLLECT instead of logging — which is also what makes the desired /
+ * previous asymmetry expressible: only the DESIRED-side call sites pass a
+ * collector, so a garbage value already recorded in cdkd state cannot make
+ * every subsequent deploy shout about a template the user never wrote.
+ *
+ * `message` is a finished sentence: the caller's only job is to pick a level
+ * and prefix the resource. Building it here keeps the wording identical
+ * across the five sites.
+ */
+export interface ThroughputDiagnostic {
+  /**
+   * `unresolved-member` — the template DECLARED the member but its value did
+   * not coerce to a number (an unresolved `{Ref: …}`, an object, `''`), so
+   * NOTHING is sent for it and the live AWS value is left alone.
+   *
+   * `billing-mode-mismatch` — an explicitly SDK-shaped block contradicts the
+   * table's billing mode (a `ProvisionedThroughput` on a PAY_PER_REQUEST
+   * table or vice versa). AWS rejects both, so the block is dropped instead
+   * of forwarded into a guaranteed 400.
+   */
+  readonly kind: 'unresolved-member' | 'billing-mode-mismatch';
+  /** The index the member belongs to; absent for a table-level member. */
+  readonly indexName?: string;
+  /** The CFn / SDK member name, for the caller's own bookkeeping. */
+  readonly member: string;
+  /** Finished, user-facing sentence. */
+  readonly message: string;
+}
+
+/**
+ * Merge an explicitly-supplied, already-SDK-shaped throughput block over a
+ * derived one, PER MEMBER (issue #1428).
+ *
+ * The CFn schema forbids `ProvisionedThroughput` / `OnDemandThroughput` /
+ * `*ThroughputOverride` on `AWS::DynamoDB::GlobalTable`, so this only fires
+ * for pre-#1387 cdkd state and hand-authored templates — but those ARE a
+ * first-class cdkd surface (`cdkd import --migrate-from-cloudformation`,
+ * `cdkd migrate --from-cfn-stack`), and the pre-fix code forwarded such a
+ * block VERBATIM. Three defects followed, and fixing any subset leaves a
+ * live one, which is why this helper does all three at once:
+ *
+ *  1. **Coercion.** The verbatim forward was the ONE path that skipped
+ *     {@link toFiniteNumber}, so a stringly-typed CFn `"5"` reached the SDK
+ *     unnormalized while every derived value was a number.
+ *  2. **Per-member merge.** Whole-block replacement meant a PARTIAL explicit
+ *     block SUPPRESSED valid derived siblings — an explicit
+ *     `{MaxReadRequestUnits: 41}` discarded a perfectly good
+ *     `WriteOnDemandThroughputSettings.MaxWriteRequestUnits` from the same
+ *     template.
+ *  3. **Billing gate.** That is the CALLER's job (it owns `billingMode`), but
+ *     it only works because this helper never emits a block the caller did
+ *     not ask for.
+ *
+ * WARN-AND-FALL-BACK, never throw. Three earlier designs are recorded on
+ * issue #1428 and each was broken by the same lever: a present-but-
+ * uncoercible member that THREW made a stack whose STATE carried the garbage
+ * permanently undeployable (the helper also runs on `previousProperties`),
+ * and throwing from the replica path threw AFTER `CreateTable` had already
+ * committed a real table. So an uncoercible member is dropped, reported
+ * through `diagnostics`, and the derived value stands in.
+ *
+ * Returns `undefined` when neither side contributes a single member — an
+ * EMPTY block is not a safe stand-in, because AWS documents an empty
+ * `ProvisionedThroughputOverride` / `OnDemandThroughputOverride` as "inherit
+ * the source table's settings".
+ */
+function mergeExplicitThroughputBlock<T>(
+  explicit: Record<string, unknown> | undefined,
+  derived: Partial<Record<keyof T & string, number>> | undefined,
+  members: ReadonlyArray<keyof T & string>,
+  diagnostics: ThroughputDiagnostic[] | undefined,
+  context: { indexName?: string; blockName: string }
+): T | undefined {
+  const out: Record<string, number> = {};
+  for (const member of members) {
+    if (explicit && explicit[member] !== undefined) {
+      const coerced = toFiniteNumber(explicit[member]);
+      if (coerced !== undefined) {
+        out[member] = coerced;
+        continue;
+      }
+      diagnostics?.push({
+        kind: 'unresolved-member',
+        ...(context.indexName !== undefined && { indexName: context.indexName }),
+        member,
+        message:
+          `${context.blockName}.${member} is present but did not resolve to a number ` +
+          `(${JSON.stringify(explicit[member])?.slice(0, 80)}), so it was ignored. ` +
+          `This is usually an unresolved intrinsic; resolve it to a literal.`,
+      });
+    }
+    const derivedValue = derived?.[member];
+    if (typeof derivedValue === 'number') out[member] = derivedValue;
+  }
+  return Object.keys(out).length > 0 ? (out as T) : undefined;
+}
+
+/**
+ * Report a member the template DECLARED whose value did not coerce (#1444 A).
+ *
+ * The diagnostic has to be raised WHERE THE VALUE IS LOST — inside the
+ * translation — not from the per-GSI reset gate in `update()`. That gate only
+ * runs for an index the diff already classified `modified` AND only when a
+ * previous ceiling happened to exist AND only when the billing mode did not
+ * flip, so the very same template defect was silent in the two most likely
+ * cases: a FIRST-TIME set (both translated sides lack the member, so the index
+ * is not `modified` at all and the loop never runs) and a BILLING FLIP (the
+ * gate short-circuits). The defect is identical in all three; only the
+ * diagnostic was conditional.
+ */
+function reportUnresolvedRawMember(
+  rawValue: unknown,
+  diagnostics: ThroughputDiagnostic[] | undefined,
+  context: { indexName?: string; blockName: string; member: string }
+): void {
+  if (!diagnostics) return;
+  if (rawValue === undefined) return;
+  if (toFiniteNumber(rawValue) !== undefined) return;
+  diagnostics.push({
+    kind: 'unresolved-member',
+    ...(context.indexName !== undefined && { indexName: context.indexName }),
+    member: context.member,
+    message:
+      `${context.blockName}.${context.member} is declared but did not resolve to a ` +
+      `number (${JSON.stringify(rawValue)?.slice(0, 80)}), so no throughput value was ` +
+      `sent for it and the live AWS setting was left unchanged. This is usually an ` +
+      `unresolved intrinsic; resolve it to a literal to apply the limit, or remove the ` +
+      `property entirely to clear it.`,
+  });
 }
 
 /**
@@ -3733,7 +4287,8 @@ export function toSdkGlobalSecondaryIndexes(
   properties: Record<string, unknown>,
   region: string,
   billingMode: string,
-  source: CapacitySource = 'min'
+  source: CapacitySource = 'min',
+  diagnostics?: ThroughputDiagnostic[]
 ): GlobalSecondaryIndex[] {
   const rawIndexes = properties['GlobalSecondaryIndexes'];
   // A NON-ARRAY value (an unresolved `Fn::If`, a malformed template) must not
@@ -3793,47 +4348,105 @@ export function toSdkGlobalSecondaryIndexes(
       sdk.WarmThroughput = gsi['WarmThroughput'] as GlobalSecondaryIndex['WarmThroughput'];
     }
 
-    // An explicit already-SDK-shaped block is forwarded as-is. The CFn schema
-    // forbids these members, so this only fires for pre-#1387 cdkd state and
-    // hand-authored templates. Normalizing them (numeric coercion, per-member
-    // merge over the derived values, billing-mode gating) is deliberately NOT
-    // attempted here — see issue #1428, which records three failed designs.
+    // An explicit already-SDK-shaped block is MERGED over the derived one, per
+    // member, after coercion, and only on the side the billing mode allows
+    // (issue #1428 — the pre-fix code forwarded it verbatim, which skipped
+    // coercion, let a partial block suppress valid derived siblings, and sent
+    // a PROVISIONED block on a PAY_PER_REQUEST table). The CFn schema forbids
+    // these members, so this only fires for pre-#1387 cdkd state and
+    // hand-authored templates.
     const explicitProvisioned = asRecord(gsi['ProvisionedThroughput']);
     const explicitOnDemand = asRecord(gsi['OnDemandThroughput']);
-    if (explicitProvisioned) {
-      sdk.ProvisionedThroughput = explicitProvisioned as unknown as ProvisionedThroughput;
-    } else if (billingMode === 'PROVISIONED') {
-      sdk.ProvisionedThroughput = {
-        ReadCapacityUnits:
-          deriveReadCapacityUnits(
-            asRecord(localEntry?.['ReadProvisionedThroughputSettings']),
-            source
-          ) ??
-          deriveReadCapacityUnits(asRecord(gsi['ReadProvisionedThroughputSettings']), source) ??
-          DEFAULT_CAPACITY_UNITS,
-        WriteCapacityUnits:
-          deriveWriteCapacityUnits(asRecord(gsi['WriteProvisionedThroughputSettings']), source) ??
-          DEFAULT_CAPACITY_UNITS,
-      };
+    // The billing gate drops the block AWS would reject rather than
+    // forwarding it into a guaranteed 400. Reported, never silent: the
+    // template did ask for something, and dropping it without a word is the
+    // same silent-wrong-action class the merge exists to remove.
+    if (explicitProvisioned && billingMode !== 'PROVISIONED') {
+      diagnostics?.push({
+        kind: 'billing-mode-mismatch',
+        ...(typeof indexName === 'string' && { indexName }),
+        member: 'ProvisionedThroughput',
+        message:
+          `an explicit ProvisionedThroughput block was dropped because the table's ` +
+          `BillingMode is ${billingMode}; AWS rejects provisioned capacity on an ` +
+          `on-demand table. Remove the block, or set BillingMode: PROVISIONED.`,
+      });
+    }
+    if (explicitOnDemand && billingMode === 'PROVISIONED') {
+      diagnostics?.push({
+        kind: 'billing-mode-mismatch',
+        ...(typeof indexName === 'string' && { indexName }),
+        member: 'OnDemandThroughput',
+        message:
+          `an explicit OnDemandThroughput block was dropped because the table's ` +
+          `BillingMode is PROVISIONED; AWS rejects on-demand ceilings on a ` +
+          `provisioned table. Remove the block, or set BillingMode: PAY_PER_REQUEST.`,
+      });
     }
 
-    if (explicitOnDemand) {
-      sdk.OnDemandThroughput = explicitOnDemand as unknown as OnDemandThroughput;
-    } else if (billingMode !== 'PROVISIONED') {
-      const maxWrite = toFiniteNumber(
-        asRecord(gsi['WriteOnDemandThroughputSettings'])?.['MaxWriteRequestUnits']
+    if (billingMode === 'PROVISIONED') {
+      // The derived side always yields both members (defaulting to 5/5), so
+      // the merge can never come back `undefined` here — AWS REQUIRES
+      // `ProvisionedThroughput` on every GSI of a provisioned table.
+      sdk.ProvisionedThroughput = mergeExplicitThroughputBlock<ProvisionedThroughput>(
+        explicitProvisioned,
+        {
+          ReadCapacityUnits:
+            deriveReadCapacityUnits(
+              asRecord(localEntry?.['ReadProvisionedThroughputSettings']),
+              source
+            ) ??
+            deriveReadCapacityUnits(asRecord(gsi['ReadProvisionedThroughputSettings']), source) ??
+            DEFAULT_CAPACITY_UNITS,
+          WriteCapacityUnits:
+            deriveWriteCapacityUnits(asRecord(gsi['WriteProvisionedThroughputSettings']), source) ??
+            DEFAULT_CAPACITY_UNITS,
+        },
+        ['ReadCapacityUnits', 'WriteCapacityUnits'],
+        diagnostics,
+        { ...(typeof indexName === 'string' && { indexName }), blockName: 'ProvisionedThroughput' }
       );
-      const maxRead =
-        toFiniteNumber(
-          asRecord(localEntry?.['ReadOnDemandThroughputSettings'])?.['MaxReadRequestUnits']
-        ) ??
-        toFiniteNumber(asRecord(gsi['ReadOnDemandThroughputSettings'])?.['MaxReadRequestUnits']);
-      if (maxWrite !== undefined || maxRead !== undefined) {
-        sdk.OnDemandThroughput = {
+    } else {
+      // Raw-key diagnostics fire regardless of whether the value survives
+      // coercion, and regardless of whether this index ends up `modified` —
+      // that is the whole point of raising them here (#1444 A).
+      const rawWrite = asRecord(gsi['WriteOnDemandThroughputSettings'])?.['MaxWriteRequestUnits'];
+      const rawReadLocal = asRecord(localEntry?.['ReadOnDemandThroughputSettings'])?.[
+        'MaxReadRequestUnits'
+      ];
+      const rawReadGsi = asRecord(gsi['ReadOnDemandThroughputSettings'])?.['MaxReadRequestUnits'];
+      reportUnresolvedRawMember(rawWrite, diagnostics, {
+        ...(typeof indexName === 'string' && { indexName }),
+        blockName: 'WriteOnDemandThroughputSettings',
+        member: 'MaxWriteRequestUnits',
+      });
+      // The replica spelling is the canonical CDK one and wins when it
+      // coerces, so only report the GSI-level fallback when the replica entry
+      // contributed nothing — otherwise a hand-authored leftover would draw a
+      // warning about a value that was never going to be used.
+      const rawRead = rawReadLocal !== undefined ? rawReadLocal : rawReadGsi;
+      reportUnresolvedRawMember(rawRead, diagnostics, {
+        ...(typeof indexName === 'string' && { indexName }),
+        blockName:
+          rawReadLocal !== undefined
+            ? 'Replicas[local].GlobalSecondaryIndexes[].ReadOnDemandThroughputSettings'
+            : 'ReadOnDemandThroughputSettings',
+        member: 'MaxReadRequestUnits',
+      });
+
+      const maxWrite = toFiniteNumber(rawWrite);
+      const maxRead = toFiniteNumber(rawReadLocal) ?? toFiniteNumber(rawReadGsi);
+      const merged = mergeExplicitThroughputBlock<OnDemandThroughput>(
+        explicitOnDemand,
+        {
           ...(maxRead !== undefined && { MaxReadRequestUnits: maxRead }),
           ...(maxWrite !== undefined && { MaxWriteRequestUnits: maxWrite }),
-        };
-      }
+        },
+        ['MaxReadRequestUnits', 'MaxWriteRequestUnits'],
+        diagnostics,
+        { ...(typeof indexName === 'string' && { indexName }), blockName: 'OnDemandThroughput' }
+      );
+      if (merged) sdk.OnDemandThroughput = merged;
     }
 
     result.push(sdk);
@@ -3924,24 +4537,22 @@ export function collectRawOnDemandDeclarations(
     const name = gsi?.['IndexName'];
     if (!gsi || typeof name !== 'string') continue;
     const localEntry = localByName.get(name);
-    // An already-SDK-shaped `OnDemandThroughput` WINS over the derived members
-    // in `toSdkGlobalSecondaryIndexes`, so it has to win here too. Reading the
-    // derived spellings anyway would report a member DECLARED that the
-    // translation never sends — e.g. an explicit `{MaxReadRequestUnits: 50}`
-    // next to a leftover `WriteOnDemandThroughputSettings` — and the
-    // suppressed reset would leave the old write ceiling live in AWS: the very
-    // #1160 silent drop this reset exists to close, reintroduced by the guard.
+    // An already-SDK-shaped `OnDemandThroughput` no longer WINS over the
+    // derived members — since #1428 the two are MERGED per member — so this
+    // has to be the UNION of both sources, not the explicit block alone.
+    // Reading only the explicit block would report a member not-declared that
+    // the derived side does declare, and the reset would then clear a ceiling
+    // the template was actively setting.
     const explicitOnDemand = asRecord(gsi['OnDemandThroughput']);
-    if (explicitOnDemand) {
-      out.set(name, {
-        readDeclared: explicitOnDemand['MaxReadRequestUnits'] !== undefined,
-        writeDeclared: explicitOnDemand['MaxWriteRequestUnits'] !== undefined,
-      });
-      continue;
-    }
     // A block that is ITSELF an unresolved intrinsic counts as declared: the
     // member test cannot see into it, and reporting "not declared" would fire
     // the destructive reset on a ceiling the template was trying to set.
+    // That applies to the EXPLICIT SDK-shaped block too — an
+    // `OnDemandThroughput: {"Fn::If": …}` has no member keys, so without this
+    // arm it reported "not declared" for BOTH members and the reset cleared a
+    // ceiling a hand-authored template was setting (review catch on this PR;
+    // the same class as #1440, one spelling over).
+    const explicitIsIntrinsic = isUnresolvedIntrinsicBlock(gsi['OnDemandThroughput']);
     const readBlocks = [
       localEntry?.['ReadOnDemandThroughputSettings'],
       gsi['ReadOnDemandThroughputSettings'],
@@ -3949,16 +4560,21 @@ export function collectRawOnDemandDeclarations(
     const writeBlock = gsi['WriteOnDemandThroughputSettings'];
     out.set(name, {
       // Same sources as the SDK translation: replica entry first, GSI-level
-      // spelling as the hand-authored fallback. Declared in EITHER place
-      // counts — the translation resolves "first PARSEABLE", so an OR here is
-      // a safe superset for suppression (it can never report not-declared for
-      // a member the translation did resolve).
-      readDeclared: readBlocks.some(
-        (block) =>
-          asRecord(block)?.['MaxReadRequestUnits'] !== undefined ||
-          isUnresolvedIntrinsicBlock(block)
-      ),
+      // spelling as the hand-authored fallback, explicit SDK-shaped block on
+      // top. Declared in ANY place counts — the translation resolves "first
+      // PARSEABLE", so an OR here is a safe superset for suppression (it can
+      // never report not-declared for a member the translation did resolve).
+      readDeclared:
+        explicitOnDemand?.['MaxReadRequestUnits'] !== undefined ||
+        explicitIsIntrinsic ||
+        readBlocks.some(
+          (block) =>
+            asRecord(block)?.['MaxReadRequestUnits'] !== undefined ||
+            isUnresolvedIntrinsicBlock(block)
+        ),
       writeDeclared:
+        explicitOnDemand?.['MaxWriteRequestUnits'] !== undefined ||
+        explicitIsIntrinsic ||
         asRecord(writeBlock)?.['MaxWriteRequestUnits'] !== undefined ||
         isUnresolvedIntrinsicBlock(writeBlock),
     });
@@ -3987,36 +4603,172 @@ export function collectRawOnDemandDeclarations(
  * dropped; tracked with the other GlobalTable nested-key gaps.
  */
 export function toSdkReplicaGlobalSecondaryIndexes(
-  replicaIndexes: unknown
+  replicaIndexes: unknown,
+  billingMode: string,
+  diagnostics?: ThroughputDiagnostic[]
 ): ReplicaGlobalSecondaryIndex[] | undefined {
   if (!Array.isArray(replicaIndexes) || replicaIndexes.length === 0) return undefined;
   return replicaIndexes.map((entry) => {
     const cfn = asRecord(entry);
     if (!cfn) return entry as ReplicaGlobalSecondaryIndex;
-    const sdk: ReplicaGlobalSecondaryIndex = {
-      IndexName: cfn['IndexName'] as string | undefined,
-    };
-    // Forwarded as-is, same rationale as the GSI-level blocks above (#1428).
-    const explicitProvisioned = asRecord(cfn['ProvisionedThroughputOverride']);
-    const explicitOnDemand = asRecord(cfn['OnDemandThroughputOverride']);
-    const readCapacity = deriveReadCapacityUnits(
-      asRecord(cfn['ReadProvisionedThroughputSettings'])
-    );
-    const maxReadRequestUnits = toFiniteNumber(
-      asRecord(cfn['ReadOnDemandThroughputSettings'])?.['MaxReadRequestUnits']
-    );
-    if (explicitProvisioned) {
-      sdk.ProvisionedThroughputOverride = explicitProvisioned;
-    } else if (readCapacity !== undefined) {
-      sdk.ProvisionedThroughputOverride = { ReadCapacityUnits: readCapacity };
+    const indexName = cfn['IndexName'] as string | undefined;
+    const sdk: ReplicaGlobalSecondaryIndex = { IndexName: indexName };
+    const overrides = toSdkReplicaThroughputOverrides(cfn, billingMode, diagnostics, {
+      ...(typeof indexName === 'string' && { indexName }),
+    });
+    if (overrides.ProvisionedThroughputOverride) {
+      sdk.ProvisionedThroughputOverride = overrides.ProvisionedThroughputOverride;
     }
-    if (explicitOnDemand) {
-      sdk.OnDemandThroughputOverride = explicitOnDemand;
-    } else if (maxReadRequestUnits !== undefined) {
-      sdk.OnDemandThroughputOverride = { MaxReadRequestUnits: maxReadRequestUnits };
+    if (overrides.OnDemandThroughputOverride) {
+      sdk.OnDemandThroughputOverride = overrides.OnDemandThroughputOverride;
     }
     return sdk;
   });
+}
+
+/**
+ * The `{Provisioned,OnDemand}ThroughputOverride` pair for ONE replica-scoped
+ * CFn block — shared by the per-GSI replica entries and, since issue #1436,
+ * by the replica's own TABLE-level entry, which carries the very same two CFn
+ * spellings (`ReadProvisionedThroughputSettings` /
+ * `ReadOnDemandThroughputSettings`) and maps to the very same two SDK members
+ * on `{Create,Update}ReplicationGroupMemberAction`. One helper so the two
+ * levels cannot disagree about the mapping.
+ *
+ * Same #1428 treatment as the GSI-level blocks: coerce, merge an explicit
+ * SDK-shaped override PER MEMBER over the derived value, and gate on billing
+ * mode. Both override members are READ-side only — a replica has no
+ * independent write capacity, since writes replicate from the source table.
+ */
+function toSdkReplicaThroughputOverrides(
+  cfn: Record<string, unknown>,
+  billingMode: string,
+  diagnostics: ThroughputDiagnostic[] | undefined,
+  context: { indexName?: string }
+): {
+  ProvisionedThroughputOverride?: { ReadCapacityUnits: number };
+  OnDemandThroughputOverride?: { MaxReadRequestUnits: number };
+} {
+  const explicitProvisioned = asRecord(cfn['ProvisionedThroughputOverride']);
+  const explicitOnDemand = asRecord(cfn['OnDemandThroughputOverride']);
+  if (explicitProvisioned && billingMode !== 'PROVISIONED') {
+    diagnostics?.push({
+      kind: 'billing-mode-mismatch',
+      ...context,
+      member: 'ProvisionedThroughputOverride',
+      message:
+        `an explicit ProvisionedThroughputOverride was dropped because the table's ` +
+        `BillingMode is ${billingMode}; AWS rejects provisioned capacity on an ` +
+        `on-demand table.`,
+    });
+  }
+  if (explicitOnDemand && billingMode === 'PROVISIONED') {
+    diagnostics?.push({
+      kind: 'billing-mode-mismatch',
+      ...context,
+      member: 'OnDemandThroughputOverride',
+      message:
+        `an explicit OnDemandThroughputOverride was dropped because the table's ` +
+        `BillingMode is PROVISIONED; AWS rejects on-demand ceilings on a ` +
+        `provisioned table.`,
+    });
+  }
+
+  if (billingMode === 'PROVISIONED') {
+    const readCapacity = deriveReadCapacityUnits(
+      asRecord(cfn['ReadProvisionedThroughputSettings'])
+    );
+    const merged = mergeExplicitThroughputBlock<{ ReadCapacityUnits: number }>(
+      explicitProvisioned,
+      readCapacity !== undefined ? { ReadCapacityUnits: readCapacity } : undefined,
+      ['ReadCapacityUnits'],
+      diagnostics,
+      { ...context, blockName: 'ProvisionedThroughputOverride' }
+    );
+    return merged ? { ProvisionedThroughputOverride: merged } : {};
+  }
+
+  const rawMaxRead = asRecord(cfn['ReadOnDemandThroughputSettings'])?.['MaxReadRequestUnits'];
+  reportUnresolvedRawMember(rawMaxRead, diagnostics, {
+    ...context,
+    blockName: 'ReadOnDemandThroughputSettings',
+    member: 'MaxReadRequestUnits',
+  });
+  const maxReadRequestUnits = toFiniteNumber(rawMaxRead);
+  const merged = mergeExplicitThroughputBlock<{ MaxReadRequestUnits: number }>(
+    explicitOnDemand,
+    maxReadRequestUnits !== undefined ? { MaxReadRequestUnits: maxReadRequestUnits } : undefined,
+    ['MaxReadRequestUnits'],
+    diagnostics,
+    { ...context, blockName: 'OnDemandThroughputOverride' }
+  );
+  return merged ? { OnDemandThroughputOverride: merged } : {};
+}
+
+/** One CFn on-demand ceiling as the template states it, before coercion. */
+export interface RawCeiling {
+  /**
+   * The CFn key is PRESENT (or its containing block is an unresolved
+   * intrinsic). Distinguishing this from "coerced to a number" is what
+   * separates a template REMOVAL — which must reset the live ceiling — from a
+   * template that declared a value cdkd could not read, which must leave AWS
+   * alone rather than clear it.
+   */
+  readonly declared: boolean;
+  /** The coerced value, or `undefined` when absent OR present-but-unparseable. */
+  readonly value: number | undefined;
+}
+
+/**
+ * The TABLE-level on-demand ceilings, gathered from the two DIFFERENT places
+ * the CFn `AWS::DynamoDB::GlobalTable` shape puts them (issue #1436).
+ *
+ * The write ceiling is top-level `WriteOnDemandThroughputSettings`, but the
+ * READ ceiling lives on the LOCAL REPLICA as `ReadOnDemandThroughputSettings`
+ * — the same write-here / read-on-the-replica split #1387 established one
+ * level down for a GSI. The provider read only the write half, so the plain
+ * CDK spelling
+ *
+ *     billing: Billing.onDemand({ maxReadRequestUnits: 100, maxWriteRequestUnits: 200 })
+ *
+ * deployed a table with NO read ceiling and reported success. That is a
+ * drop on the way IN, not the absent-field-reset class of #1423 / #1434.
+ *
+ * The registry schema (`cloudformation:DescribeType`, 2026-08-09) confirms the
+ * member on `ReplicaSpecification`:
+ * `ReadOnDemandThroughputSettings: { MaxReadRequestUnits: integer, minimum 1 }`.
+ */
+export function collectTableOnDemandCeilings(
+  properties: Record<string, unknown>,
+  region: string,
+  diagnostics?: ThroughputDiagnostic[]
+): { read: RawCeiling; write: RawCeiling } {
+  const writeBlock = properties['WriteOnDemandThroughputSettings'];
+  const replicas = properties['Replicas'];
+  const localReplica = Array.isArray(replicas)
+    ? replicas.find((r) => asRecord(r)?.['Region'] === region)
+    : undefined;
+  const readBlock = asRecord(localReplica)?.['ReadOnDemandThroughputSettings'];
+  const rawRead = asRecord(readBlock)?.['MaxReadRequestUnits'];
+  const rawWrite = asRecord(writeBlock)?.['MaxWriteRequestUnits'];
+  reportUnresolvedRawMember(rawRead, diagnostics, {
+    blockName: 'Replicas[local].ReadOnDemandThroughputSettings',
+    member: 'MaxReadRequestUnits',
+  });
+  reportUnresolvedRawMember(rawWrite, diagnostics, {
+    blockName: 'WriteOnDemandThroughputSettings',
+    member: 'MaxWriteRequestUnits',
+  });
+  return {
+    read: {
+      declared: rawRead !== undefined || isUnresolvedIntrinsicBlock(readBlock),
+      value: toFiniteNumber(rawRead),
+    },
+    write: {
+      declared: rawWrite !== undefined || isUnresolvedIntrinsicBlock(writeBlock),
+      value: toFiniteNumber(rawWrite),
+    },
+  };
 }
 
 export function diffReplicas(
