@@ -10,7 +10,10 @@ Application Load Balancer deployment example for cdkd.
 - **Route Tables** - Public route tables with internet gateway routes
 - **Security Group** - Allows inbound HTTP (port 80) from anywhere
 - **Application Load Balancer** - Internet-facing ALB
-- **Target Group** - IP-based target group with HTTP health check
+- **Target Group** - IP-based target group with HTTP health check (baseline
+  sets a custom `HealthCheckPort: 8080`; the `CDKD_TEST_REMOVAL=true` redeploy
+  drops it and asserts the live TG resets to the CFn-parity default
+  `traffic-port` — issue #1160 elbv2 batch)
 - **Listener** - HTTP listener on port 80 forwarding to target group
 
 No EC2 instances or containers are created to avoid costs.

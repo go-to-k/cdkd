@@ -8356,7 +8356,8 @@
             "createListener",
             "createTargetGroup",
             "update",
-            "updateListener"
+            "updateListener",
+            "updateTargetGroup"
           ]
         },
         {
