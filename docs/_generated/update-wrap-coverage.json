@@ -1,8 +1,8 @@
 {
   "summary": {
     "classifiedCount": 86,
-    "wrapped": 79,
-    "noAws": 7,
+    "wrapped": 80,
+    "noAws": 6,
     "gap": 0,
     "unguardedWrap": 0,
     "allowListed": 0,
@@ -572,7 +572,7 @@
     {
       "file": "s3-directory-bucket-provider.ts",
       "className": "S3DirectoryBucketProvider",
-      "bucket": "no-aws",
+      "bucket": "wrapped",
       "unwrappedSendMethods": [],
       "unguardedWrapMethods": [],
       "unresolvedCallees": []

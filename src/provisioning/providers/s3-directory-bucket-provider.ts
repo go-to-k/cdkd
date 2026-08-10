@@ -5,7 +5,14 @@ import {
   HeadBucketCommand,
   ListObjectsV2Command,
   DeleteObjectsCommand,
+  type Tag,
 } from '@aws-sdk/client-s3';
+import {
+  S3ControlClient,
+  TagResourceCommand,
+  UntagResourceCommand,
+  ListTagsForResourceCommand,
+} from '@aws-sdk/client-s3-control';
 import { STSClient, GetCallerIdentityCommand } from '@aws-sdk/client-sts';
 import { EC2Client, DescribeAvailabilityZonesCommand } from '@aws-sdk/client-ec2';
 import { getLogger } from '../../utils/logger.js';
@@ -15,7 +22,7 @@ import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { S3_AUTO_DELETE_OBJECTS_TAG, hasCdkAutoDeleteTag } from '../data-delete-intent.js';
 import { generateResourceName } from '../resource-name.js';
-import { resolveExplicitPhysicalId } from '../import-helpers.js';
+import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -37,10 +44,14 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
   private logger = getLogger().child('S3DirectoryBucketProvider');
 
   handledProperties = new Map<string, ReadonlySet<string>>([
-    ['AWS::S3Express::DirectoryBucket', new Set(['DataRedundancy', 'LocationName', 'BucketName'])],
+    [
+      'AWS::S3Express::DirectoryBucket',
+      new Set(['DataRedundancy', 'LocationName', 'BucketName', 'Tags']),
+    ],
   ]);
 
   private ec2Client: EC2Client | undefined;
+  private s3ControlClient: S3ControlClient | undefined;
   private readonly providerRegion = process.env['AWS_REGION'];
 
   constructor() {
@@ -54,6 +65,22 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
       this.ec2Client = new EC2Client(this.providerRegion ? { region: this.providerRegion } : {});
     }
     return this.ec2Client;
+  }
+
+  /**
+   * Directory-bucket tags live on the S3 control plane: `PutBucketTagging`
+   * is documented "not supported for directory buckets", and the tag CRUD
+   * after create is S3 Control's `TagResource` / `UntagResource` /
+   * `ListTagsForResource` (requiring the `s3express:TagResource` /
+   * `s3express:UntagResource` / `s3express:ListTagsForResource` permissions).
+   */
+  private getS3ControlClient(): S3ControlClient {
+    if (!this.s3ControlClient) {
+      this.s3ControlClient = new S3ControlClient(
+        this.providerRegion ? { region: this.providerRegion } : {}
+      );
+    }
+    return this.s3ControlClient;
   }
 
   /**
@@ -100,11 +127,21 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
    * Build attributes for a directory bucket
    */
   private async buildAttributes(bucketName: string): Promise<Record<string, unknown>> {
-    const region = await this.getRegion();
-    const accountId = await this.getAccountId();
     return {
-      Arn: `arn:aws:s3express:${region}:${accountId}:bucket/${bucketName}`,
+      Arn: await this.buildBucketArn(bucketName),
     };
+  }
+
+  /**
+   * Directory bucket ARN: `arn:aws:s3express:{region}:{account}:bucket/{name}`.
+   * Also the `ResourceArn` for the S3 Control tag operations. Callers that
+   * already resolved the account (for the S3 Control `AccountId` parameter)
+   * pass it in so the STS lookup runs once per operation.
+   */
+  private async buildBucketArn(bucketName: string, accountId?: string): Promise<string> {
+    const region = await this.getRegion();
+    const account = accountId ?? (await this.getAccountId());
+    return `arn:aws:s3express:${region}:${account}:bucket/${bucketName}`;
   }
 
   /**
@@ -140,6 +177,14 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
       bucketName = `${baseName}--${azId}--x-s3`;
     }
 
+    // Tags ride the create call itself (`CreateBucketConfiguration.Tags`,
+    // needing `s3express:TagResource`) — the ONLY tag write the plain
+    // s3express data/control split supports at create time. A malformed
+    // non-array value is forwarded verbatim so AWS rejects it loudly
+    // instead of cdkd silently dropping it.
+    const tags = properties['Tags'] as Tag[] | undefined;
+    const includeTags = tags != null && !(Array.isArray(tags) && tags.length === 0);
+
     try {
       await this.s3Client.send(
         new CreateBucketCommand({
@@ -153,6 +198,7 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
               Name: azId,
               Type: 'AvailabilityZone',
             },
+            ...(includeTags ? { Tags: tags } : {}),
           },
         })
       );
@@ -179,22 +225,80 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
   /**
    * Update an S3 Express Directory Bucket
    *
-   * Most properties are immutable, so this is a no-op.
+   * `BucketName` / `DataRedundancy` / `LocationName` are create-only (the
+   * registry-schema fallback classifies changes to them as replacement), so
+   * the only in-place mutable property is `Tags` — applied via S3 Control's
+   * `TagResource` / `UntagResource` (the directory-bucket tag CRUD; the
+   * bucket-level `PutBucketTagging` is not supported for directory buckets).
+   * `TagResource` is additive-only, so a tag dropped from the template
+   * (partial removal) — or the entire `Tags` property removed (full removal,
+   * `newTags === undefined`) — would survive on AWS unless the removed keys
+   * are explicitly `UntagResource`d.
    */
-  update(
+  async update(
     logicalId: string,
     physicalId: string,
-    _resourceType: string,
-    _properties: Record<string, unknown>,
-    _previousProperties: Record<string, unknown>
+    resourceType: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
-    this.logger.debug(
-      `Update for S3 Express Directory Bucket ${logicalId} is a no-op (immutable properties)`
-    );
-    return Promise.resolve({
-      physicalId,
-      wasReplaced: false,
-    });
+    try {
+      const newTags = properties['Tags'] as Tag[] | undefined;
+      const oldTags = previousProperties['Tags'] as Tag[] | undefined;
+      const newKeys = new Set(
+        (Array.isArray(newTags) ? newTags : []).map((t) => t.Key).filter((k): k is string => !!k)
+      );
+      const removedKeys = (Array.isArray(oldTags) ? oldTags : [])
+        .map((t) => t.Key)
+        .filter((k): k is string => !!k && !newKeys.has(k));
+      const tagsToApply = Array.isArray(newTags) && newTags.length > 0 ? newTags : undefined;
+      if (
+        JSON.stringify(newTags) !== JSON.stringify(oldTags) &&
+        (removedKeys.length > 0 || tagsToApply !== undefined)
+      ) {
+        const accountId = await this.getAccountId();
+        const resourceArn = await this.buildBucketArn(physicalId, accountId);
+
+        if (removedKeys.length > 0) {
+          await this.getS3ControlClient().send(
+            new UntagResourceCommand({
+              AccountId: accountId,
+              ResourceArn: resourceArn,
+              TagKeys: removedKeys,
+            })
+          );
+        }
+        // Apply added / changed tags. Skip the call when the new set is
+        // empty (a pure removal has nothing left to add).
+        if (tagsToApply) {
+          await this.getS3ControlClient().send(
+            new TagResourceCommand({
+              AccountId: accountId,
+              ResourceArn: resourceArn,
+              Tags: tagsToApply,
+            })
+          );
+        }
+        this.logger.debug(`Updated tags for S3 Express Directory Bucket ${physicalId}`);
+      } else {
+        this.logger.debug(
+          `Update for S3 Express Directory Bucket ${logicalId} is a no-op (no tag changes; other properties are immutable)`
+        );
+      }
+      return {
+        physicalId,
+        wasReplaced: false,
+      };
+    } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to update S3 Express Directory Bucket ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        cause
+      );
+    }
   }
 
   /**
@@ -202,14 +306,13 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
    *
    * CloudFormation-parity data guard (issue #1344, sibling of #1340): a
    * non-empty directory bucket is only auto-emptied when the user opted in —
-   * the `aws-cdk:auto-delete-objects` tag on the bucket (settable only via
-   * `--allow-unsupported-properties` today, since `Tags` is not yet a
-   * handled property for this type) or the deploy engine's
-   * `--force-stateful-recreation` consent on a replacement delete
-   * (`DeleteContext.forceDataDelete`). Otherwise the not-empty error
-   * surfaces exactly like CloudFormation's DELETE_FAILED (live-A/B-verified
-   * 2026-08-03: CFn fails a non-empty DirectoryBucket delete with "The
-   * bucket you tried to delete is not empty", 409).
+   * the `aws-cdk:auto-delete-objects` tag on the bucket (a first-class
+   * template `Tags` entry now that `Tags` is a handled property, issue #609)
+   * or the deploy engine's `--force-stateful-recreation` consent on a
+   * replacement delete (`DeleteContext.forceDataDelete`). Otherwise the
+   * not-empty error surfaces exactly like CloudFormation's DELETE_FAILED
+   * (live-A/B-verified 2026-08-03: CFn fails a non-empty DirectoryBucket
+   * delete with "The bucket you tried to delete is not empty", 409).
    *
    * Directory buckets do not support versioning, so the opted-in auto-empty
    * only needs to delete current objects.
@@ -228,44 +331,8 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
       hasCdkAutoDeleteTag(properties, S3_AUTO_DELETE_OBJECTS_TAG);
 
     try {
-      if (allowAutoEmpty) {
-        this.logger.info(
-          `Emptying directory bucket ${physicalId} before deletion (auto-delete opt-in present)`
-        );
-        // Deliberately NO deleteBucketWithEmptyRetry-style race loop here
-        // (unlike the standard-bucket sibling): directory buckets cannot be
-        // ALB/CloudTrail log-delivery targets, so nothing else writes during
-        // a destroy; a lost app-write race surfaces as the generic not-empty
-        // ProvisioningError and a destroy re-run recovers. Revisit when Tags
-        // becomes a handled property for this type ((#609) makes the tag
-        // opt-in mainstream) — see PR #1347's review disposition.
-        await this.emptyBucket(physicalId);
-      }
-
-      // Delete the bucket
-      await this.s3Client.send(
-        new DeleteBucketCommand({
-          Bucket: physicalId,
-        })
-      );
-      this.logger.debug(`Successfully deleted S3 Express Directory Bucket ${logicalId}`);
+      await this.deleteBucketWithEmptyRetry(logicalId, physicalId, allowAutoEmpty);
     } catch (error) {
-      const notEmptyMsg = error instanceof Error ? error.message : String(error);
-      if (
-        !allowAutoEmpty &&
-        (notEmptyMsg.includes('not empty') || notEmptyMsg.includes('BucketNotEmpty'))
-      ) {
-        throw new ProvisioningError(
-          `Failed to delete S3 Express Directory Bucket ${logicalId}: bucket ${physicalId} ` +
-            `is not empty. Matching CloudFormation, cdkd does not delete a non-empty ` +
-            `directory bucket without an explicit opt-in. Delete all objects first ` +
-            `(e.g. aws s3 rm s3://${physicalId} --recursive) and destroy again.`,
-          resourceType,
-          logicalId,
-          physicalId,
-          error instanceof Error ? error : undefined
-        );
-      }
       // Bucket not found = already deleted (idempotent)
       if (
         error instanceof Error &&
@@ -291,6 +358,51 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
         cause
       );
     }
+  }
+
+  /**
+   * Delete the bucket, absorbing the write race on an opted-in auto-empty:
+   * an object written between the empty pass and the delete makes AWS reject
+   * the delete as not-empty, so re-empty and retry (bounded) — the same
+   * bounded loop as the standard-bucket sibling, ported per issue #609's
+   * "Tags becomes a handled property" note (the tag opt-in is mainstream
+   * now, so the ~zero-opt-in rationale for skipping the loop in PR #1347 no
+   * longer holds). Without the opt-in, the first not-empty error surfaces
+   * as the CloudFormation-parity guard (issue #1344).
+   */
+  private async deleteBucketWithEmptyRetry(
+    logicalId: string,
+    bucketName: string,
+    allowAutoEmpty: boolean
+  ): Promise<void> {
+    const maxAttempts = 3;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        await this.s3Client.send(new DeleteBucketCommand({ Bucket: bucketName }));
+        this.logger.debug(`Successfully deleted S3 Express Directory Bucket ${logicalId}`);
+        return;
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        if (msg.includes('not empty') || msg.includes('BucketNotEmpty')) {
+          if (!allowAutoEmpty) {
+            throw new Error(
+              `bucket ${bucketName} is not empty. Matching CloudFormation, cdkd does not ` +
+                `delete a non-empty directory bucket without an explicit opt-in. Delete all ` +
+                `objects first (e.g. aws s3 rm s3://${bucketName} --recursive) and destroy again.`
+            );
+          }
+          this.logger.info(
+            `Directory bucket ${bucketName} not empty (attempt ${attempt}/${maxAttempts}), emptying (auto-delete opt-in present)...`
+          );
+          await this.emptyBucket(bucketName);
+          continue;
+        }
+        throw error;
+      }
+    }
+    // Final attempt after emptying
+    await this.s3Client.send(new DeleteBucketCommand({ Bucket: bucketName }));
+    this.logger.debug(`Successfully deleted S3 Express Directory Bucket ${logicalId}`);
   }
 
   /**
@@ -332,10 +444,11 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
    * CFn-property shape.
    *
    * Issues `HeadBucket` to verify existence and surfaces `BucketName`
-   * (the physicalId). `DataRedundancy` and `LocationName` are not exposed
-   * by any cheap S3 Express API — the only way to inspect them is by
-   * parsing the bucket name's `--<az-id>--x-s3` suffix, which is best
-   * effort. We surface them when they are recoverable from the bucket
+   * (the physicalId) plus `Tags` (via S3 Control `ListTagsForResource`,
+   * the directory-bucket tag read). `DataRedundancy` and `LocationName`
+   * are not exposed by any cheap S3 Express API — the only way to inspect
+   * them is by parsing the bucket name's `--<az-id>--x-s3` suffix, which is
+   * best effort. We surface them when they are recoverable from the bucket
    * name to give the comparator a chance to detect mismatches.
    *
    * `--<az-id>--x-s3` suffix parsing: directory bucket names follow the
@@ -379,7 +492,22 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
       result['DataRedundancy'] = 'SingleAvailabilityZone';
     }
 
+    // Tags via S3 Control ListTagsForResource (always-emit per
+    // docs/provider-development.md §3b; an untagged bucket returns an empty
+    // list, not an error, and the comparator's "key absent in state never
+    // drifts" rule keeps pre-Tags-support stacks quiet).
+    result['Tags'] = await this.readTags(physicalId);
+
     return result;
+  }
+
+  private async readTags(bucketName: string): Promise<Array<{ Key: string; Value: string }>> {
+    const accountId = await this.getAccountId();
+    const resourceArn = await this.buildBucketArn(bucketName, accountId);
+    const resp = await this.getS3ControlClient().send(
+      new ListTagsForResourceCommand({ AccountId: accountId, ResourceArn: resourceArn })
+    );
+    return normalizeAwsTagsToCfn(resp.Tags);
   }
 
   /**

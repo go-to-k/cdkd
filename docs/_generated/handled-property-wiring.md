@@ -10,7 +10,7 @@ A computed read `properties[k]` also counts when `k` iterates a literal name tab
 ## Summary
 
 - Provider classes classified: **84**
-- Declared properties: **1061** (**1059** with read evidence)
+- Declared properties: **1062** (**1060** with read evidence)
 - Fully wired classes: **82**
 - Allow-listed classes (visible, non-blocking): **2**
 - Classes with a whole-bag blind spot (recorded, never an excuse): **19**
@@ -128,7 +128,7 @@ Sites where a whole property bag left the evidence walk (a spread, an unresolvab
 | `Route53Provider` | route53-provider.ts | wired | 22 | 22 |
 | `S3BucketPolicyProvider` | s3-bucket-policy-provider.ts | wired | 2 | 2 |
 | `S3BucketProvider` | s3-bucket-provider.ts | wired | 19 | 19 |
-| `S3DirectoryBucketProvider` | s3-directory-bucket-provider.ts | wired | 3 | 3 |
+| `S3DirectoryBucketProvider` | s3-directory-bucket-provider.ts | wired | 4 | 4 |
 | `S3TablesProvider` | s3-tables-provider.ts | wired | 8 | 8 |
 | `S3VectorsProvider` | s3-vectors-provider.ts | wired | 3 | 3 |
 | `SchedulerScheduleProvider` | scheduler-schedule-provider.ts | wired | 11 | 11 |

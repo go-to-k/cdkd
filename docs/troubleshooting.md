@@ -513,13 +513,16 @@ repository ...
 [#1344](https://github.com/go-to-k/cdkd/issues/1344)): an S3 bucket (standard
 or S3 Express directory bucket) that still contains objects, or an ECR
 repository that still contains images, is NOT force-cleaned unless the
-resource opted in. Directory buckets have no template opt-in today (CDK has
-no `autoDeleteObjects` for them) — empty manually and destroy again.
+resource opted in.
 
 **Solutions:**
 
 1. Opt in from the CDK app and redeploy, then destroy:
    - S3: `autoDeleteObjects: true` (with `removalPolicy: DESTROY`)
+   - S3 Express directory bucket: CDK has no `autoDeleteObjects` sugar —
+     declare the opt-in tag on the L1 (`Tags` is a handled property since
+     issue [#609](https://github.com/go-to-k/cdkd/issues/609)):
+     `tags: [{ key: 'aws-cdk:auto-delete-objects', value: 'true' }]`
    - ECR: `emptyOnDelete: true` (or the legacy `autoDeleteImages: true`)
 2. Or empty the data manually and re-run the destroy:
 

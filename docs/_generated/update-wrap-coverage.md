@@ -8,8 +8,8 @@ For every SDK provider class declaring `update()`, walks from `update()` through
 ## Summary
 
 - Provider classes with `update()`: **86**
-- Wrapped: **79**
-- No AWS call in update(): **7**
+- Wrapped: **80**
+- No AWS call in update(): **6**
 - **Unwrapped-send gaps (blocks CI): 0**
 - **Unguarded wraps (blocks CI): 0**
 - Allow-listed known gaps (does NOT block CI): **0**
@@ -93,7 +93,7 @@ None. Every provider `update()` either makes no AWS call or wraps every reachabl
 | `Route53Provider` | `route53-provider.ts` | wrapped |
 | `S3BucketPolicyProvider` | `s3-bucket-policy-provider.ts` | wrapped |
 | `S3BucketProvider` | `s3-bucket-provider.ts` | wrapped |
-| `S3DirectoryBucketProvider` | `s3-directory-bucket-provider.ts` | no-aws |
+| `S3DirectoryBucketProvider` | `s3-directory-bucket-provider.ts` | wrapped |
 | `S3TablesProvider` | `s3-tables-provider.ts` | wrapped |
 | `S3VectorsProvider` | `s3-vectors-provider.ts` | wrapped |
 | `SchedulerScheduleProvider` | `scheduler-schedule-provider.ts` | wrapped |

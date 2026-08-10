@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "summary": {
     "classifiedCount": 84,
-    "declaredProperties": 1061,
-    "wiredProperties": 1059,
+    "declaredProperties": 1062,
+    "wiredProperties": 1060,
     "wired": 82,
     "gap": 0,
     "allowListed": 2,
@@ -15573,7 +15573,7 @@
       "file": "s3-directory-bucket-provider.ts",
       "className": "S3DirectoryBucketProvider",
       "bucket": "wired",
-      "declaredCount": 3,
+      "declaredCount": 4,
       "properties": [
         {
           "name": "BucketName",
@@ -15612,6 +15612,20 @@
           ],
           "seededBy": [
             "create"
+          ]
+        },
+        {
+          "name": "Tags",
+          "status": "wired",
+          "types": [
+            "AWS::S3Express::DirectoryBucket"
+          ],
+          "evidence": [
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "update"
           ]
         }
       ],

@@ -864,7 +864,6 @@ describe('real-repo coverage floors', () => {
       'GlueSecurityConfigurationProvider',
       'LambdaLayerVersionProvider',
       'NestedStackProvider',
-      'S3DirectoryBucketProvider',
       'WaitConditionHandleProvider',
     ]);
   });

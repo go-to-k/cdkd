@@ -3,6 +3,17 @@ import { HeadBucketCommand } from '@aws-sdk/client-s3';
 
 const mockS3Send = vi.fn();
 const mockStsSend = vi.fn();
+const mockControlSend = vi.hoisted(() => vi.fn());
+
+vi.mock('@aws-sdk/client-s3-control', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@aws-sdk/client-s3-control')>();
+  return {
+    ...actual,
+    S3ControlClient: vi.fn().mockImplementation(() => ({
+      send: mockControlSend,
+    })),
+  };
+});
 
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
@@ -40,8 +51,10 @@ describe('S3DirectoryBucketProvider.readCurrentState', () => {
     provider = new S3DirectoryBucketProvider();
   });
 
-  it('returns BucketName + DataRedundancy (happy path)', async () => {
-    mockS3Send.mockResolvedValueOnce({});
+  it('returns BucketName + DataRedundancy + Tags (happy path)', async () => {
+    mockS3Send.mockResolvedValueOnce({}); // HeadBucket
+    mockStsSend.mockResolvedValueOnce({ Account: '123456789012' }); // account for the tag ARN
+    mockControlSend.mockResolvedValueOnce({ Tags: [] }); // ListTagsForResource (untagged)
 
     const result = await provider.readCurrentState(
       'my-bucket--use1-az1--x-s3',
@@ -53,6 +66,7 @@ describe('S3DirectoryBucketProvider.readCurrentState', () => {
     expect(result).toEqual({
       BucketName: 'my-bucket--use1-az1--x-s3',
       DataRedundancy: 'SingleAvailabilityZone',
+      Tags: [],
     });
   });
 
