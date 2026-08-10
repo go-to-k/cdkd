@@ -26,6 +26,12 @@ import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
  *     members, so the tuning silently never reached AWS while the target
  *     itself (matched by `Path`) survived. CDKD_TEST_UPDATE flips both values
  *     so the update path is covered too.
+ *  6. Glue Table `StorageDescriptor.SkewedInfo` (issue #1505). The provider's
+ *     `buildStorageDescriptor` was an explicit allow-list that dropped this
+ *     member outright, and the #1479 live-merge made a DECLARED one worse than
+ *     a plain drop (declaring it suppressed the carry-forward while the builder
+ *     sent nothing). CDKD_TEST_UPDATE flips the skewed value so the update path
+ *     is covered too.
  *
  * All resources are idle (no schedule, ON_DEMAND trigger), so deploy + destroy
  * is fast and clean — no quota, no running jobs.
@@ -133,6 +139,54 @@ export class GlueUpdateHardeningStack extends cdk.Stack {
       },
     });
 
+    // Glue Database + Table — `StorageDescriptor.SkewedInfo` (issue #1505).
+    //
+    // `buildStorageDescriptor` was an explicit allow-list of 11 members, so
+    // `SkewedInfo` (and its sibling `SchemaReference`) never reached AWS. The
+    // #1479 merge made a DECLARED one worse than a plain drop: its key sets
+    // come from the RAW template, so declaring the member suppressed the live
+    // carry-forward while the builder produced nothing — erasing it outright.
+    //
+    // `SkewedColumnValueLocationMaps` is deliberately populated: CFn types it
+    // as a free-form object while the SDK member is Record<string,string>, so
+    // it also covers the value coercion. CDKD_TEST_UPDATE flips the skewed
+    // value so the update path is exercised with a second distinct payload.
+    const tableDb = new glue.CfnDatabase(this, 'TableDatabase', {
+      catalogId: this.account,
+      databaseInput: { name: `${this.stackName}-table-db`.toLowerCase() },
+    });
+
+    const skewedValue = isUpdate ? 'CA' : 'US';
+    const skewedTable = new glue.CfnTable(this, 'SkewedTable', {
+      catalogId: this.account,
+      databaseName: `${this.stackName}-table-db`.toLowerCase(),
+      tableInput: {
+        name: `${this.stackName}-skewed-table`.toLowerCase(),
+        tableType: 'EXTERNAL_TABLE',
+        storageDescriptor: {
+          location: `s3://${scriptBucket.bucketName}/skewed/`,
+          inputFormat: 'org.apache.hadoop.mapred.TextInputFormat',
+          outputFormat: 'org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat',
+          columns: [
+            { name: 'id', type: 'bigint' },
+            { name: 'country', type: 'string' },
+          ],
+          serdeInfo: {
+            serializationLibrary: 'org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe',
+            parameters: { 'field.delim': ',' },
+          },
+          skewedInfo: {
+            skewedColumnNames: ['country'],
+            skewedColumnValues: [skewedValue],
+            skewedColumnValueLocationMaps: {
+              [skewedValue]: `s3://${scriptBucket.bucketName}/skewed/${skewedValue}/`,
+            },
+          },
+        },
+      },
+    });
+    skewedTable.addDependency(tableDb);
+
     // Glue Trigger — ON_DEMAND (idle, will not auto-fire) running the Job.
     const trigger = new glue.CfnTrigger(this, 'EtlTrigger', {
       name: `${this.stackName}-trigger`.toLowerCase(),
@@ -147,5 +201,11 @@ export class GlueUpdateHardeningStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'CrawlerName', { value: `${this.stackName}-crawler`.toLowerCase() });
     new cdk.CfnOutput(this, 'CrawlerTableName', { value: crawlerTable.tableName });
     new cdk.CfnOutput(this, 'TriggerName', { value: `${this.stackName}-trigger`.toLowerCase() });
+    new cdk.CfnOutput(this, 'SkewedTableDbName', {
+      value: `${this.stackName}-table-db`.toLowerCase(),
+    });
+    new cdk.CfnOutput(this, 'SkewedTableName', {
+      value: `${this.stackName}-skewed-table`.toLowerCase(),
+    });
   }
 }

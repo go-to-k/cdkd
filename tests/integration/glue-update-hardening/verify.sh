@@ -18,6 +18,11 @@
 #      drops unknown members, so the scan tuning silently never reached AWS
 #      while the target itself (matched by `Path`) survived. Asserted via
 #      `aws glue get-crawler` on BOTH the base deploy and the UPDATE re-deploy.
+#   6. Table `StorageDescriptor.SkewedInfo` reaching AWS (issue #1505).
+#      `buildStorageDescriptor` was an explicit 11-member allow-list that
+#      dropped it, and the #1479 live-merge made a DECLARED one worse than a
+#      plain drop. Asserted via `aws glue get-table` on BOTH phases; the update
+#      phase flips the skewed value so a stale carry-forward cannot pass.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -145,6 +150,10 @@ if [ -z "${CRAWLER_TABLE_NAME}" ]; then
   echo "FAIL: state has no CrawlerTableName output after deploy" >&2
   exit 1
 fi
+SKEWED_DB_NAME=$(echo "${STATE}" | jq -r '.outputs.SkewedTableDbName // empty')
+[ -z "${SKEWED_DB_NAME}" ] && SKEWED_DB_NAME="${LOWER}-table-db"
+SKEWED_TABLE_NAME=$(echo "${STATE}" | jq -r '.outputs.SkewedTableName // empty')
+[ -z "${SKEWED_TABLE_NAME}" ] && SKEWED_TABLE_NAME="${LOWER}-skewed-table"
 
 echo "    Using job '${JOB_NAME}', workflow '${WORKFLOW_NAME}', crawler '${CRAWLER_NAME}', trigger '${TRIGGER_NAME}', crawler table '${CRAWLER_TABLE_NAME}'"
 
@@ -252,6 +261,44 @@ fi
 echo "    OK: DynamoDBTargets[0].Path == ${CRAWLER_TABLE_NAME}"
 assert_ddb_scan_tuning "${CRAWLER_JSON}" 'false' '0.9' 'create'
 
+# --- Assertion: Table StorageDescriptor.SkewedInfo reached AWS (issue #1505) --
+# `buildStorageDescriptor` was an explicit 11-member allow-list, so SkewedInfo
+# was dropped outright. There is no AWS-side default that can satisfy this:
+# an unset SkewedInfo reads back absent (or with empty member lists), so any
+# non-empty skewed column name proves the member was delivered.
+# `SkewedColumnValueLocationMaps` additionally proves the CFn free-form-object
+# -> SDK Record<string,string> coercion.
+assert_skewed_info() { # usage: assert_skewed_info <want skewed value> <phase label>
+  local want="$1" phase="$2" table_json sd got_names got_values got_map
+  # `|| return 1` on every capture (#1120): errexit is CLEARED inside `$( )`, so
+  # without it a failed probe would fall through to the comparisons below and
+  # report a misleading "SkewedInfo never reached AWS" instead of the real error.
+  table_json=$(aws glue get-table --database-name "${SKEWED_DB_NAME}" --name "${SKEWED_TABLE_NAME}" \
+    --region "${REGION}" --output json) || return 1
+  sd=$(printf '%s' "${table_json}" | jq -c '.Table.StorageDescriptor // {}') || return 1
+  # sort() both sides: AWS does not guarantee list order on readback.
+  got_names=$(printf '%s' "${sd}" | jq -r '(.SkewedInfo.SkewedColumnNames // []) | sort | join(",")') || return 1
+  if [ "${got_names}" != "country" ]; then
+    echo "FAIL: ${phase}: StorageDescriptor.SkewedInfo.SkewedColumnNames is '${got_names}', expected 'country' — SkewedInfo never reached AWS (issue #1505)" >&2
+    exit 1
+  fi
+  got_values=$(printf '%s' "${sd}" | jq -r '(.SkewedInfo.SkewedColumnValues // []) | sort | join(",")') || return 1
+  if [ "${got_values}" != "${want}" ]; then
+    echo "FAIL: ${phase}: SkewedInfo.SkewedColumnValues is '${got_values}', expected '${want}'" >&2
+    exit 1
+  fi
+  got_map=$(printf '%s' "${sd}" | jq -r --arg k "${want}" '.SkewedInfo.SkewedColumnValueLocationMaps[$k] // "<absent>"') || return 1
+  case "${got_map}" in
+    s3://*"/skewed/${want}/") ;;
+    *)
+      echo "FAIL: ${phase}: SkewedColumnValueLocationMaps['${want}'] is '${got_map}', expected an s3://.../skewed/${want}/ URI" >&2
+      exit 1
+      ;;
+  esac
+  echo "    OK: ${phase}: SkewedInfo reached AWS (names=${got_names} values=${got_values} map[${want}]=${got_map})"
+}
+assert_skewed_info 'US' 'create'
+
 # --- Sanity: trigger exists -------------------------------------------
 if aws glue get-trigger --name "${TRIGGER_NAME}" --region "${REGION}" >/dev/null 2>&1; then
   echo "    OK: trigger ${TRIGGER_NAME} exists"
@@ -289,6 +336,13 @@ CRAWLER_JSON=$(aws glue get-crawler --name "${CRAWLER_NAME}" --region "${REGION}
 # phase asserts the drop-proof pair, false/0.9, and fails first anyway.)
 assert_ddb_scan_tuning "${CRAWLER_JSON}" 'true' '1.2' 'update'
 
+# The UPDATE path is where the #1479 interaction bites: the merge's key sets
+# come from the RAW template, so DECLARING SkewedInfo suppresses the live
+# carry-forward — and before #1505 the builder sent nothing, so UpdateTable's
+# full replace ERASED the member. The flipped value ('CA') is what discriminates:
+# a carry-forward of the create-phase value would still read 'US'.
+assert_skewed_info 'CA' 'update'
+
 # --- Phase 3: destroy -------------------------------------------------
 echo "==> Phase 3: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \
@@ -300,7 +354,9 @@ for chk in \
   "get-job --job-name ${JOB_NAME}" \
   "get-crawler --name ${CRAWLER_NAME}" \
   "get-trigger --name ${TRIGGER_NAME}" \
-  "get-workflow --name ${WORKFLOW_NAME}"; do
+  "get-workflow --name ${WORKFLOW_NAME}" \
+  "get-table --database-name ${SKEWED_DB_NAME} --name ${SKEWED_TABLE_NAME}" \
+  "get-database --name ${SKEWED_DB_NAME}"; do
   # Route through gone_probe (issue #1097 pattern 2): Glue get-* not-found is
   # EntityNotFoundException, which matches the canonical signature; any other
   # probe failure (throttle, auth) hard-FAILs instead of reading as "gone".
@@ -336,4 +392,4 @@ assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after des
 echo "    OK: state file is gone"
 
 echo ""
-echo "==> glue-update-hardening test passed (numeric coercion + MAP tags + DynamoDB scan tuning + clean destroy)"
+echo "==> glue-update-hardening test passed (numeric coercion + MAP tags + DynamoDB scan tuning + Table SkewedInfo + clean destroy)"

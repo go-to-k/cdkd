@@ -1936,3 +1936,290 @@ describe('GlueProvider — out-of-band StorageDescriptor preservation (#1479)', 
     expect(sd.Location).toBe('s3://b/t/');
   });
 });
+
+// ─── #1505: the StorageDescriptor allow-list dropped declared members ───
+//
+// `buildStorageDescriptor` was an explicit allow-list of 11 members, so the
+// CFn `StorageDescriptor` members outside it were never sent. The live CFn
+// registry schema declares exactly 13 members with `additionalProperties:
+// false`, so the two missing ones are `SkewedInfo` and `SchemaReference`
+// (the issue also named `AdditionalLocations`, which the registry does NOT
+// declare — it exists only in the SDK model, so no template can carry it).
+//
+// The #1479 merge made the drop worse than a plain silent drop: its key sets
+// come from the RAW template, so a template DECLARING one of these suppressed
+// the live carry-forward (the member counts as user-authored) while the
+// builder never produced a value — erasing the live value with nothing
+// replacing it. That is the `erases the live value` case below.
+describe('GlueProvider — StorageDescriptor declared-member coverage (#1505)', () => {
+  let provider: GlueProvider;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    provider = new GlueProvider();
+  });
+
+  const SKEWED_INFO = {
+    SkewedColumnNames: ['country'],
+    SkewedColumnValues: ['US'],
+    SkewedColumnValueLocationMaps: { US: 's3://b/skew/us/' },
+  };
+
+  const SCHEMA_REFERENCE = {
+    SchemaId: { RegistryName: 'my-registry', SchemaName: 'my-schema' },
+    SchemaVersionNumber: 2,
+  };
+
+  const createdTableInput = (): Record<string, unknown> => {
+    const call = mockSend.mock.calls.find((c) => c[0] instanceof CreateTableCommand);
+    expect(call).toBeDefined();
+    return (call![0].input as { TableInput: Record<string, unknown> }).TableInput;
+  };
+
+  const sentTableInput = (): Record<string, unknown> => {
+    const call = mockSend.mock.calls.find((c) => c[0] instanceof UpdateTableCommand);
+    expect(call).toBeDefined();
+    return (call![0].input as { TableInput: Record<string, unknown> }).TableInput;
+  };
+
+  it('create() sends SkewedInfo and SchemaReference instead of dropping them', async () => {
+    mockSend.mockResolvedValueOnce({});
+
+    await provider.create('L', 'AWS::Glue::Table', {
+      DatabaseName: 'mydb',
+      TableInput: {
+        Name: 'mytbl',
+        StorageDescriptor: {
+          Location: 's3://b/t/',
+          SkewedInfo: SKEWED_INFO,
+          SchemaReference: SCHEMA_REFERENCE,
+        },
+      },
+    });
+
+    const sd = createdTableInput().StorageDescriptor as Record<string, unknown>;
+    // toStrictEqual, not toEqual: an `{ X: undefined }` forward would pass
+    // toEqual while the SDK v3 serializer treats undefined as absent — the
+    // silent-drop failure mode these assertions exist to fence.
+    expect(sd.SkewedInfo).toStrictEqual(SKEWED_INFO);
+    expect(sd.SchemaReference).toStrictEqual(SCHEMA_REFERENCE);
+  });
+
+  it('create() stringifies SkewedColumnValueLocationMaps values (CFn free-form object -> SDK Record<string,string>)', async () => {
+    mockSend.mockResolvedValueOnce({});
+
+    await provider.create('L', 'AWS::Glue::Table', {
+      DatabaseName: 'mydb',
+      TableInput: {
+        Name: 'mytbl',
+        StorageDescriptor: {
+          Location: 's3://b/t/',
+          SkewedInfo: {
+            SkewedColumnNames: ['n'],
+            SkewedColumnValueLocationMaps: { a: 1, b: true },
+          },
+        },
+      },
+    });
+
+    const sd = createdTableInput().StorageDescriptor as Record<string, unknown>;
+    expect(sd.SkewedInfo).toStrictEqual({
+      SkewedColumnNames: ['n'],
+      SkewedColumnValueLocationMaps: { a: '1', b: 'true' },
+    });
+  });
+
+  it('a DECLARED SkewedInfo no longer erases the live value (the #1479 interaction)', async () => {
+    // Live table carries a SkewedInfo; the template declares its own. Before
+    // the fix the declaration suppressed the carry-forward AND the builder
+    // sent nothing, so UpdateTable's full replace wiped the member entirely.
+    mockSend.mockResolvedValueOnce({
+      Table: {
+        Name: 'mytbl',
+        VersionId: '3',
+        StorageDescriptor: {
+          Location: 's3://b/t/',
+          SkewedInfo: { SkewedColumnNames: ['stale'] },
+        },
+      },
+    });
+    mockSend.mockResolvedValueOnce({});
+
+    const side = (names: string[]) => ({
+      DatabaseName: 'mydb',
+      TableInput: {
+        Name: 'mytbl',
+        StorageDescriptor: {
+          Location: 's3://b/t/',
+          SkewedInfo: { SkewedColumnNames: names },
+        },
+      },
+    });
+
+    await provider.update(
+      'L',
+      TABLE_PHYSICAL_ID,
+      'AWS::Glue::Table',
+      side(['country']),
+      side(['region'])
+    );
+
+    const sd = sentTableInput().StorageDescriptor as Record<string, unknown>;
+    expect(sd.SkewedInfo).toStrictEqual({ SkewedColumnNames: ['country'] });
+  });
+
+  it('an UNDECLARED SkewedInfo is still carried forward by the #1479 merge', async () => {
+    mockSend.mockResolvedValueOnce({
+      Table: {
+        Name: 'mytbl',
+        VersionId: '3',
+        StorageDescriptor: { Location: 's3://b/t/', SkewedInfo: SKEWED_INFO },
+      },
+    });
+    mockSend.mockResolvedValueOnce({});
+
+    const side = (description: string) => ({
+      DatabaseName: 'mydb',
+      TableInput: {
+        Name: 'mytbl',
+        Description: description,
+        StorageDescriptor: { Location: 's3://b/t/' },
+      },
+    });
+
+    await provider.update('L', TABLE_PHYSICAL_ID, 'AWS::Glue::Table', side('v2'), side('v1'));
+
+    const sd = sentTableInput().StorageDescriptor as Record<string, unknown>;
+    expect(sd.SkewedInfo).toStrictEqual(SKEWED_INFO);
+  });
+
+  it('SerdeInfo.Parameters stringification copies rather than mutating the caller template', async () => {
+    mockSend.mockResolvedValueOnce({});
+
+    const serdeInfo = {
+      SerializationLibrary: 'org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe',
+      Parameters: { 'skip.header.line.count': 1 },
+    };
+    const properties = {
+      DatabaseName: 'mydb',
+      TableInput: {
+        Name: 'mytbl',
+        StorageDescriptor: { Location: 's3://b/t/', SerdeInfo: serdeInfo },
+      },
+    };
+
+    await provider.create('L', 'AWS::Glue::Table', properties);
+
+    const sd = createdTableInput().StorageDescriptor as Record<string, unknown>;
+    expect(sd.SerdeInfo).toStrictEqual({
+      SerializationLibrary: 'org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe',
+      Parameters: { 'skip.header.line.count': '1' },
+    });
+    // The caller's object is untouched — the #1479 merge re-reads the RAW
+    // template for its key sets, so mutating it in place would leak the
+    // builder's coercion into that walk.
+    expect(serdeInfo.Parameters).toStrictEqual({ 'skip.header.line.count': 1 });
+  });
+});
+
+// ─── #1505 review: the same silent-drop class one level up + shape guards ────
+//
+// Diffing the WHOLE `TableInput` blob (not just the reported StorageDescriptor)
+// against the live CFn registry schema found two more dropped members. That is
+// WORSE than the StorageDescriptor case: the #1479 read-merge-write only covers
+// the `StorageDescriptor` subtree and `Parameters`, so nothing carries these
+// forward and UpdateTable's full replace erased a live value unconditionally.
+describe('GlueProvider — TableInput member coverage + shape guards (#1505 review)', () => {
+  let provider: GlueProvider;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    provider = new GlueProvider();
+  });
+
+  const createdTableInput = (): Record<string, unknown> => {
+    const call = mockSend.mock.calls.find((c) => c[0] instanceof CreateTableCommand);
+    expect(call).toBeDefined();
+    return (call![0].input as { TableInput: Record<string, unknown> }).TableInput;
+  };
+
+  const createWith = async (tableInput: Record<string, unknown>): Promise<void> => {
+    mockSend.mockResolvedValueOnce({});
+    await provider.create('L', 'AWS::Glue::Table', {
+      DatabaseName: 'mydb',
+      TableInput: { Name: 'mytbl', ...tableInput },
+    });
+  };
+
+  it('create() sends TargetTable (resource-link table) instead of dropping it', async () => {
+    const targetTable = {
+      CatalogId: '111122223333',
+      DatabaseName: 'shared-db',
+      Name: 'shared-table',
+      Region: 'us-west-2',
+    };
+    await createWith({ TargetTable: targetTable });
+    expect(createdTableInput().TargetTable).toStrictEqual(targetTable);
+  });
+
+  it('create() sends ViewDefinition instead of dropping it', async () => {
+    const viewDefinition = {
+      IsProtected: true,
+      Definer: 'arn:aws:iam::111122223333:role/definer',
+      SubObjects: ['arn:aws:glue:us-east-1:111122223333:table/mydb/base'],
+      Representations: [
+        {
+          Dialect: 'ATHENA',
+          DialectVersion: '3',
+          ViewOriginalText: 'SELECT 1',
+          ViewExpandedText: 'SELECT 1',
+          ValidationConnection: 'my-conn',
+        },
+      ],
+    };
+    await createWith({ ViewDefinition: viewDefinition });
+    expect(createdTableInput().ViewDefinition).toStrictEqual(viewDefinition);
+  });
+
+  it('coerces a stringly-typed SchemaReference.SchemaVersionNumber to a number', async () => {
+    // CFn types it as an integer, but a hand-authored template (or a Ref to a
+    // Number parameter) can deliver "2", which the SDK number field rejects.
+    await createWith({
+      StorageDescriptor: {
+        Location: 's3://b/t/',
+        SchemaReference: { SchemaVersionId: 'abc', SchemaVersionNumber: '2' },
+      },
+    });
+    const sd = createdTableInput().StorageDescriptor as Record<string, unknown>;
+    expect(sd.SchemaReference).toStrictEqual({ SchemaVersionId: 'abc', SchemaVersionNumber: 2 });
+  });
+
+  it('a malformed SkewedColumnValueLocationMaps contributes NO keys instead of index garbage', async () => {
+    // `Object.entries('s3://x')` yields {'0':'s','1':'3',...}; before the guard
+    // that index garbage was written to AWS as a real location map.
+    await createWith({
+      StorageDescriptor: {
+        Location: 's3://b/t/',
+        SkewedInfo: { SkewedColumnNames: ['c'], SkewedColumnValueLocationMaps: 's3://b/x/' },
+      },
+    });
+    const sd = createdTableInput().StorageDescriptor as Record<string, unknown>;
+    expect(sd.SkewedInfo).toStrictEqual({
+      SkewedColumnNames: ['c'],
+      SkewedColumnValueLocationMaps: {},
+    });
+  });
+
+  it('a malformed Parameters block contributes NO keys (same guard, shared helper)', async () => {
+    await createWith({ Parameters: 'not-an-object' });
+    expect(createdTableInput().Parameters).toStrictEqual({});
+  });
+
+  it('a null SkewedInfo does not throw a raw TypeError', async () => {
+    await expect(
+      createWith({ StorageDescriptor: { Location: 's3://b/t/', SkewedInfo: null } })
+    ).resolves.not.toThrow();
+    const sd = createdTableInput().StorageDescriptor as Record<string, unknown>;
+    expect(sd.SkewedInfo).toStrictEqual({});
+  });
+});
