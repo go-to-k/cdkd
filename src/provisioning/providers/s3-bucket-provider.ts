@@ -8,6 +8,8 @@ import {
   PutBucketTaggingCommand,
   DeleteBucketTaggingCommand,
   PutBucketOwnershipControlsCommand,
+  DeleteBucketOwnershipControlsCommand,
+  GetBucketOwnershipControlsCommand,
   PutBucketNotificationConfigurationCommand,
   PutBucketCorsCommand,
   DeleteBucketCorsCommand,
@@ -15,6 +17,7 @@ import {
   DeleteBucketLifecycleCommand,
   PutPublicAccessBlockCommand,
   PutBucketEncryptionCommand,
+  DeleteBucketEncryptionCommand,
   PutBucketLoggingCommand,
   PutBucketWebsiteCommand,
   DeleteBucketWebsiteCommand,
@@ -1295,18 +1298,28 @@ export class S3BucketProvider implements ResourceProvider {
   }
 
   /**
-   * Apply additional bucket configuration after creation
+   * Apply additional bucket configuration after creation.
+   *
+   * `options.skipDiffManaged` is passed by `update()` for the three
+   * sub-configs that moved onto the diff path (`VersioningConfiguration` /
+   * `OwnershipControls` / `BucketEncryption`, issue #1466). They stay here for
+   * CREATE — where there is no previous side to diff against — but on UPDATE
+   * they must go through `applySubConfigDiffs` so a REMOVED property is reset
+   * to the CloudFormation default instead of silently surviving. Applying them
+   * in both places would double-PUT.
    */
   private async applyConfiguration(
     bucketName: string,
     properties: Record<string, unknown>,
-    skipTags = false
+    options: { skipTags?: boolean; skipDiffManaged?: boolean } = {}
   ): Promise<void> {
+    const { skipTags = false, skipDiffManaged = false } = options;
+
     // Versioning
     const versioningConfig = properties['VersioningConfiguration'] as
       | Record<string, unknown>
       | undefined;
-    if (versioningConfig) {
+    if (!skipDiffManaged && versioningConfig) {
       await this.applyVersioning(bucketName, versioningConfig);
     }
 
@@ -1322,18 +1335,8 @@ export class S3BucketProvider implements ResourceProvider {
     const ownershipControls = properties['OwnershipControls'] as
       | { Rules: Array<{ ObjectOwnership: string }> }
       | undefined;
-    if (ownershipControls?.Rules) {
-      await this.s3Client.send(
-        new PutBucketOwnershipControlsCommand({
-          Bucket: bucketName,
-          OwnershipControls: {
-            Rules: ownershipControls.Rules.map((r) => ({
-              ObjectOwnership: r.ObjectOwnership as ObjectOwnership,
-            })),
-          },
-        })
-      );
-      this.logger.debug(`Applied ownership controls to bucket ${bucketName}`);
+    if (!skipDiffManaged && ownershipControls?.Rules) {
+      await this.applyOwnershipControls(bucketName, ownershipControls);
     }
 
     // Public Access Block Configuration
@@ -1355,12 +1358,56 @@ export class S3BucketProvider implements ResourceProvider {
       | { ServerSideEncryptionConfiguration: Array<Record<string, unknown>> }
       | undefined;
     if (
+      !skipDiffManaged &&
       bucketEncryption?.ServerSideEncryptionConfiguration &&
       Array.isArray(bucketEncryption.ServerSideEncryptionConfiguration) &&
       bucketEncryption.ServerSideEncryptionConfiguration.length > 0
     ) {
       await this.applyBucketEncryption(bucketName, bucketEncryption);
     }
+  }
+
+  /**
+   * CFn property: OwnershipControls
+   * SDK: PutBucketOwnershipControls
+   */
+  private async applyOwnershipControls(
+    bucketName: string,
+    ownershipControls: { Rules: Array<{ ObjectOwnership: string }> }
+  ): Promise<void> {
+    await this.s3Client.send(
+      new PutBucketOwnershipControlsCommand({
+        Bucket: bucketName,
+        OwnershipControls: {
+          Rules: ownershipControls.Rules.map((r) => ({
+            ObjectOwnership: r.ObjectOwnership as ObjectOwnership,
+          })),
+        },
+      })
+    );
+    this.logger.debug(`Applied ownership controls to bucket ${bucketName}`);
+  }
+
+  /**
+   * Normalize an "empty container" sub-config value to `undefined` so the diff
+   * path cannot mistake a placeholder for a real value.
+   *
+   * `readCurrentState` always-emits placeholder shapes for un-configured
+   * features (`BucketEncryption: { ServerSideEncryptionConfiguration: [] }`,
+   * and the `OwnershipControls: { Rules: [] }` added with issue #1466). On a
+   * `cdkd drift --revert` round-trip those placeholders come back in as the
+   * DESIRED side; without this normalization an empty placeholder would look
+   * like a change and trigger either a Put that AWS rejects (both APIs require
+   * a non-empty list) or a spurious Delete.
+   */
+  private static emptyListConfigToUndefined<T extends Record<string, unknown>>(
+    config: T | undefined,
+    listKey: string
+  ): T | undefined {
+    if (!config) return undefined;
+    const list = config[listKey];
+    if (!Array.isArray(list) || list.length === 0) return undefined;
+    return config;
   }
 
   /**
@@ -1435,17 +1482,79 @@ export class S3BucketProvider implements ResourceProvider {
    * Apply the diff between previous and new sub-configs, issuing Put / Delete
    * SDK calls only for differing keys. Called from `update()`.
    *
-   * Versioning / PublicAccessBlock / Tags / OwnershipControls / BucketEncryption
-   * stay on `applyConfiguration` (the unconditional always-PUT path) because
-   * their AWS APIs don't have a clean "delete" counterpart and they
-   * round-trip safely as no-ops when state == AWS-current. The 12 sub-configs
-   * below DO have proper Put/Delete pairs so the diff path is preferable.
+   * PublicAccessBlockConfiguration and Tags stay on `applyConfiguration` /
+   * `applyTagDiff`. `PublicAccessBlockConfiguration` is deliberately NOT on the
+   * diff path: a live CloudFormation A/B (issue #1466) confirmed CFn ALSO
+   * leaves the block in place when the property is removed, so cdkd is at
+   * parity and adding an `onRemove` here would CREATE a divergence.
+   *
+   * VersioningConfiguration / OwnershipControls / BucketEncryption used to sit
+   * on that always-PUT path too, on the assumption that their APIs had no clean
+   * "delete" counterpart. That was wrong in all three cases and made removal a
+   * silent no-op (issue #1466): the same A/B showed CFn suspends versioning,
+   * deletes ownership controls, and resets encryption to the SSE-S3 default.
+   * They are now diffed here like every other Put/Delete pair.
    */
   private async applySubConfigDiffs(
     bucketName: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>
   ): Promise<void> {
+    // Versioning — no DeleteBucketVersioning API; CFn's reset for a removed
+    // property is PutBucketVersioning with Status='Suspended'.
+    await this.diffSubConfig(
+      bucketName,
+      previousProperties['VersioningConfiguration'] as Record<string, unknown> | undefined,
+      properties['VersioningConfiguration'] as Record<string, unknown> | undefined,
+      async (cfg) => this.applyVersioning(bucketName, cfg),
+      async () => this.applyVersioning(bucketName, { Status: 'Suspended' })
+    );
+
+    // Ownership controls (per-id-free single config; empty Rules == absent)
+    await this.diffSubConfig(
+      bucketName,
+      S3BucketProvider.emptyListConfigToUndefined(
+        previousProperties['OwnershipControls'] as
+          | { Rules: Array<{ ObjectOwnership: string }> }
+          | undefined,
+        'Rules'
+      ),
+      S3BucketProvider.emptyListConfigToUndefined(
+        properties['OwnershipControls'] as
+          | { Rules: Array<{ ObjectOwnership: string }> }
+          | undefined,
+        'Rules'
+      ),
+      async (cfg) => this.applyOwnershipControls(bucketName, cfg),
+      async () => {
+        await this.s3Client.send(new DeleteBucketOwnershipControlsCommand({ Bucket: bucketName }));
+        this.logger.debug(`Deleted ownership controls on bucket ${bucketName}`);
+      }
+    );
+
+    // Bucket encryption (empty ServerSideEncryptionConfiguration == absent;
+    // DeleteBucketEncryption reverts the bucket to the SSE-S3 / AES256 default)
+    await this.diffSubConfig(
+      bucketName,
+      S3BucketProvider.emptyListConfigToUndefined(
+        previousProperties['BucketEncryption'] as
+          | { ServerSideEncryptionConfiguration: Array<Record<string, unknown>> }
+          | undefined,
+        'ServerSideEncryptionConfiguration'
+      ),
+      S3BucketProvider.emptyListConfigToUndefined(
+        properties['BucketEncryption'] as
+          | { ServerSideEncryptionConfiguration: Array<Record<string, unknown>> }
+          | undefined,
+        'ServerSideEncryptionConfiguration'
+      ),
+      async (cfg) => this.applyBucketEncryption(bucketName, cfg),
+      async () => {
+        await this.s3Client.send(new DeleteBucketEncryptionCommand({ Bucket: bucketName }));
+        this.logger.debug(`Deleted bucket encryption on bucket ${bucketName}`);
+      }
+    );
+
     // Lifecycle
     await this.diffSubConfig(
       bucketName,
@@ -1867,13 +1976,20 @@ export class S3BucketProvider implements ResourceProvider {
     }
 
     try {
-      // Apply configuration changes (skip Tags - applyConfiguration only adds,
-      // doesn't remove; we handle tags below to support removal too).
-      // applyConfiguration is the always-PUT path for sub-configs that
-      // don't have a clean Delete API counterpart (Versioning / PAB / SSE).
-      await this.applyConfiguration(physicalId, properties, /* skipTags */ true);
+      // Apply configuration changes. Tags are skipped because
+      // `applyConfiguration` only adds and never removes (handled by
+      // `applyTagDiff` below), and the three diff-managed sub-configs
+      // (Versioning / OwnershipControls / BucketEncryption) are skipped
+      // because `applySubConfigDiffs` owns them on the UPDATE path so that
+      // REMOVING one resets it like CloudFormation does (issue #1466).
+      // What is left on the always-PUT path here is
+      // `PublicAccessBlockConfiguration`, which is at CFn parity.
+      await this.applyConfiguration(physicalId, properties, {
+        skipTags: true,
+        skipDiffManaged: true,
+      });
 
-      // Apply diff-aware Put/Delete for the 12 sub-configs that have proper
+      // Apply diff-aware Put/Delete for the sub-configs that have proper
       // Put/Delete API pairs.
       await this.applySubConfigDiffs(physicalId, properties, previousProperties);
 
@@ -1972,7 +2088,8 @@ export class S3BucketProvider implements ResourceProvider {
    * returns `undefined`.
    *
    * Coverage: `BucketName`, `VersioningConfiguration`, `BucketEncryption`,
-   * `PublicAccessBlockConfiguration`, `Tags`, plus all 12 sub-configs:
+   * `OwnershipControls`, `PublicAccessBlockConfiguration`, `Tags`, plus all 12
+   * sub-configs:
    * `LifecycleConfiguration`, `CorsConfiguration`, `WebsiteConfiguration`,
    * `LoggingConfiguration`, `NotificationConfiguration`,
    * `ReplicationConfiguration`, `ObjectLockConfiguration`,
@@ -2001,11 +2118,12 @@ export class S3BucketProvider implements ResourceProvider {
       throw err;
     }
 
-    // Fire all 15 GET / List calls in parallel. Each helper handles its own
+    // Fire all 16 GET / List calls in parallel. Each helper handles its own
     // "feature not configured" → placeholder fallback.
     const [
       versioning,
       encryption,
+      ownership,
       pab,
       tags,
       lifecycle,
@@ -2023,6 +2141,7 @@ export class S3BucketProvider implements ResourceProvider {
     ] = await Promise.all([
       this.readVersioning(physicalId),
       this.readEncryption(physicalId),
+      this.readOwnershipControls(physicalId),
       this.readPublicAccessBlock(physicalId),
       this.readTags(physicalId),
       this.readLifecycle(physicalId),
@@ -2043,6 +2162,7 @@ export class S3BucketProvider implements ResourceProvider {
       BucketName: physicalId,
       VersioningConfiguration: versioning,
       BucketEncryption: encryption,
+      OwnershipControls: ownership,
       PublicAccessBlockConfiguration: pab,
       Tags: tags,
       LifecycleConfiguration: lifecycle,
@@ -2072,6 +2192,33 @@ export class S3BucketProvider implements ResourceProvider {
     // 'Suspended' is the semantic "off" value in CFn.
     const resp = await this.s3Client.send(new GetBucketVersioningCommand({ Bucket: bucket }));
     return { Status: resp.Status ?? 'Suspended' };
+  }
+
+  /**
+   * OwnershipControls { Rules: [{ ObjectOwnership }] }. Always emit a
+   * placeholder (empty `Rules`) so a console-side change on a bucket that
+   * declares the property surfaces as drift. Added with issue #1466 — without
+   * a read here, `cdkd drift` could not see ownership controls at all, which
+   * is why the removal bug that issue fixes produced no signal from ANY
+   * command.
+   */
+  private async readOwnershipControls(bucket: string): Promise<Record<string, unknown>> {
+    try {
+      const resp = await this.s3Client.send(
+        new GetBucketOwnershipControlsCommand({ Bucket: bucket })
+      );
+      return {
+        Rules: (resp.OwnershipControls?.Rules ?? []).map((r) => ({
+          ObjectOwnership: r.ObjectOwnership,
+        })),
+      };
+    } catch (err) {
+      const e = err as { name?: string };
+      if (e.name === 'OwnershipControlsNotFoundError') {
+        return { Rules: [] };
+      }
+      throw err;
+    }
   }
 
   private async readEncryption(bucket: string): Promise<Record<string, unknown>> {

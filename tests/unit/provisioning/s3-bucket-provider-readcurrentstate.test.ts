@@ -3,6 +3,7 @@ import {
   HeadBucketCommand,
   GetBucketVersioningCommand,
   GetBucketEncryptionCommand,
+  GetBucketOwnershipControlsCommand,
   GetPublicAccessBlockCommand,
   GetBucketTaggingCommand,
   GetBucketReplicationCommand,
@@ -77,6 +78,10 @@ describe('S3BucketProvider.readCurrentState', () => {
         ],
       },
     });
+    // GetBucketOwnershipControls
+    mockSend.mockResolvedValueOnce({
+      OwnershipControls: { Rules: [{ ObjectOwnership: 'BucketOwnerEnforced' }] },
+    });
     // GetPublicAccessBlock
     mockSend.mockResolvedValueOnce({
       PublicAccessBlockConfiguration: {
@@ -99,8 +104,10 @@ describe('S3BucketProvider.readCurrentState', () => {
     expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(HeadBucketCommand);
     expect(mockSend.mock.calls[1]?.[0]).toBeInstanceOf(GetBucketVersioningCommand);
     expect(mockSend.mock.calls[2]?.[0]).toBeInstanceOf(GetBucketEncryptionCommand);
-    expect(mockSend.mock.calls[3]?.[0]).toBeInstanceOf(GetPublicAccessBlockCommand);
-    expect(mockSend.mock.calls[4]?.[0]).toBeInstanceOf(GetBucketTaggingCommand);
+    // issue #1466 inserted the ownership-controls read here, shifting PAB/Tags.
+    expect(mockSend.mock.calls[3]?.[0]).toBeInstanceOf(GetBucketOwnershipControlsCommand);
+    expect(mockSend.mock.calls[4]?.[0]).toBeInstanceOf(GetPublicAccessBlockCommand);
+    expect(mockSend.mock.calls[5]?.[0]).toBeInstanceOf(GetBucketTaggingCommand);
 
     expect(result).toMatchObject({
       BucketName: 'my-bucket',
@@ -116,6 +123,7 @@ describe('S3BucketProvider.readCurrentState', () => {
           },
         ],
       },
+      OwnershipControls: { Rules: [{ ObjectOwnership: 'BucketOwnerEnforced' }] },
       PublicAccessBlockConfiguration: {
         BlockPublicAcls: true,
         BlockPublicPolicy: true,
@@ -141,6 +149,8 @@ describe('S3BucketProvider.readCurrentState', () => {
     mockSend.mockResolvedValueOnce({});
     // GetBucketEncryption — feature absent
     mockSend.mockRejectedValueOnce(notConfigured('ServerSideEncryptionConfigurationNotFoundError'));
+    // GetBucketOwnershipControls — feature absent
+    mockSend.mockRejectedValueOnce(notConfigured('OwnershipControlsNotFoundError'));
     // GetPublicAccessBlock — feature absent
     mockSend.mockRejectedValueOnce(notConfigured('NoSuchPublicAccessBlockConfiguration'));
     // GetBucketTagging — no tags
@@ -152,6 +162,9 @@ describe('S3BucketProvider.readCurrentState', () => {
       BucketName: 'my-bucket',
       VersioningConfiguration: { Status: 'Suspended' },
       BucketEncryption: { ServerSideEncryptionConfiguration: [] },
+      // issue #1466: ownership controls are read back so `cdkd drift` can see
+      // them; an un-configured bucket emits the empty-Rules placeholder.
+      OwnershipControls: { Rules: [] },
       PublicAccessBlockConfiguration: {
         BlockPublicAcls: false,
         BlockPublicPolicy: false,
@@ -181,6 +194,8 @@ describe('S3BucketProvider.readCurrentState', () => {
     mockSend.mockResolvedValueOnce({});
     // GetBucketEncryption — feature absent
     mockSend.mockRejectedValueOnce(notConfigured('ServerSideEncryptionConfigurationNotFoundError'));
+    // GetBucketOwnershipControls — feature absent
+    mockSend.mockRejectedValueOnce(notConfigured('OwnershipControlsNotFoundError'));
     // GetPublicAccessBlock — feature absent
     mockSend.mockRejectedValueOnce(notConfigured('NoSuchPublicAccessBlockConfiguration'));
     // GetBucketTagging — no tag set
@@ -202,6 +217,7 @@ describe('S3BucketProvider.readCurrentState', () => {
         'MetricsConfigurations',
         'NotificationConfiguration',
         'ObjectLockConfiguration',
+        'OwnershipControls',
         'PublicAccessBlockConfiguration',
         'ReplicationConfiguration',
         'Tags',
