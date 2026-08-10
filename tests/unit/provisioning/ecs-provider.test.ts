@@ -337,6 +337,39 @@ describe('ECSProvider', () => {
         ).rejects.toThrow('Failed to create ECS task definition MyTask');
       });
 
+      it('forwards PortMappings[].ContainerPortRange onto RegisterTaskDefinition (issue #1472)', async () => {
+        mockSend.mockResolvedValueOnce({
+          taskDefinition: {
+            taskDefinitionArn: 'arn:aws:ecs:us-east-1:123456789012:task-definition/my-task:1',
+          },
+        });
+
+        await provider.create('MyTask', 'AWS::ECS::TaskDefinition', {
+          Family: 'my-task',
+          NetworkMode: 'bridge',
+          ContainerDefinitions: [
+            {
+              Name: 'web',
+              Image: 'nginx:latest',
+              PortMappings: [{ ContainerPortRange: '8080-8090', Protocol: 'tcp', Name: 'range' }],
+            },
+          ],
+        });
+
+        const registerCall = mockSend.mock.calls[0][0];
+        expect(registerCall.constructor.name).toBe('RegisterTaskDefinitionCommand');
+        expect(registerCall.input.containerDefinitions[0].portMappings).toEqual([
+          {
+            containerPort: undefined,
+            containerPortRange: '8080-8090',
+            hostPort: undefined,
+            protocol: 'tcp',
+            appProtocol: undefined,
+            name: 'range',
+          },
+        ]);
+      });
+
       it('should convert RuntimePlatform / EphemeralStorage / ProxyConfiguration PascalCase -> camelCase (issue #1165)', async () => {
         mockSend.mockResolvedValueOnce({
           taskDefinition: {
@@ -1325,6 +1358,92 @@ describe('ECSProvider', () => {
             loadBalancerName: undefined,
           },
         ]);
+      });
+
+      it('forwards LoadBalancers[].AdvancedConfiguration (blue/green) onto CreateService (issue #1473)', async () => {
+        mockSend.mockResolvedValueOnce({
+          service: {
+            serviceArn: 'arn:aws:ecs:us-east-1:123456789012:service/my-cluster/my-service',
+            serviceName: 'my-service',
+          },
+        });
+
+        await provider.create('MyService', 'AWS::ECS::Service', {
+          Cluster: 'my-cluster',
+          ServiceName: 'my-service',
+          TaskDefinition: 'arn:aws:ecs:us-east-1:123456789012:task-definition/my-task:1',
+          LoadBalancers: [
+            {
+              TargetGroupArn:
+                'arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/blue/abc',
+              ContainerName: 'web',
+              ContainerPort: 8080,
+              AdvancedConfiguration: {
+                AlternateTargetGroupArn:
+                  'arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/green/def',
+                ProductionListenerRule:
+                  'arn:aws:elasticloadbalancing:us-east-1:123456789012:listener-rule/app/lb/1/2/3',
+                TestListenerRule:
+                  'arn:aws:elasticloadbalancing:us-east-1:123456789012:listener-rule/app/lb/1/2/4',
+                RoleArn: 'arn:aws:iam::123456789012:role/ecs-bluegreen',
+              },
+            },
+          ],
+        });
+
+        const createCall = mockSend.mock.calls[0][0];
+        expect(createCall.constructor.name).toBe('CreateServiceCommand');
+        expect(createCall.input.loadBalancers[0].advancedConfiguration).toEqual({
+          alternateTargetGroupArn:
+            'arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/green/def',
+          productionListenerRule:
+            'arn:aws:elasticloadbalancing:us-east-1:123456789012:listener-rule/app/lb/1/2/3',
+          testListenerRule:
+            'arn:aws:elasticloadbalancing:us-east-1:123456789012:listener-rule/app/lb/1/2/4',
+          roleArn: 'arn:aws:iam::123456789012:role/ecs-bluegreen',
+        });
+      });
+
+      it('forwards LoadBalancers[].AdvancedConfiguration onto UpdateService when LoadBalancers changed (issue #1473)', async () => {
+        mockSend.mockResolvedValueOnce({
+          service: {
+            serviceArn: 'arn:aws:ecs:us-east-1:123456789012:service/my-cluster/my-service',
+            serviceName: 'my-service',
+          },
+        });
+
+        await provider.update(
+          'MyService',
+          'arn:aws:ecs:us-east-1:123456789012:service/my-cluster/my-service',
+          'AWS::ECS::Service',
+          {
+            Cluster: 'my-cluster',
+            ServiceName: 'my-service',
+            LoadBalancers: [
+              {
+                TargetGroupArn:
+                  'arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/blue/abc',
+                ContainerName: 'web',
+                ContainerPort: 8080,
+                AdvancedConfiguration: {
+                  AlternateTargetGroupArn:
+                    'arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/green/def',
+                },
+              },
+            ],
+          },
+          {
+            Cluster: 'my-cluster',
+            ServiceName: 'my-service',
+          }
+        );
+
+        const updateCall = mockSend.mock.calls[0][0];
+        expect(updateCall.constructor.name).toBe('UpdateServiceCommand');
+        expect(updateCall.input.loadBalancers[0].advancedConfiguration).toEqual({
+          alternateTargetGroupArn:
+            'arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/green/def',
+        });
       });
 
       it('should send empty LoadBalancers list on removal for the ECS controller (issue #975)', async () => {

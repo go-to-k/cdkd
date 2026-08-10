@@ -206,6 +206,23 @@ if [ "${ACTUAL}" != "true" ]; then
 fi
 echo "    OK: taskDefinition.enableFaultInjection == true on AWS (silent-drop CLOSED by #609)"
 
+# --- Assertion: PortMappings[].ContainerPortRange reached AWS (issue #1472) ---
+# The fixture injects a second port mapping `{ ContainerPortRange:
+# '8080-8090', Protocol: 'tcp' }` via addPropertyOverride. Before the
+# #1472 fix, convertPortMappings never wrote the SDK's containerPortRange
+# member, so the range was silently dropped from the registered revision.
+PORT_RANGE=$(aws ecs describe-task-definition \
+  --task-definition "${TD_ARN}" --region "${REGION}" \
+  --query 'taskDefinition.containerDefinitions[0].portMappings[?containerPortRange!=`null`] | [0].containerPortRange' \
+  --output text 2>/dev/null)
+
+if [ "${PORT_RANGE}" != "8080-8090" ]; then
+  echo "FAIL: no port mapping with containerPortRange '8080-8090' on the registered task definition (got '${PORT_RANGE}') — #1472 silent-drop NOT closed" >&2
+  aws ecs describe-task-definition --task-definition "${TD_ARN}" --region "${REGION}" --query 'taskDefinition.containerDefinitions[0].portMappings' | jq .
+  exit 1
+fi
+echo "    OK: taskDefinition port mapping containerPortRange == '8080-8090' on AWS (#1472 silent-drop CLOSED)"
+
 # --- Assertion: Volumes[].ConfiguredAtLaunch reached AWS (issue #806) --
 # The fixture's ServiceManagedVolume synthesizes
 # `Volumes: [{ Name: 'ebs-data', ConfiguredAtLaunch: true }]` on the task

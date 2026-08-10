@@ -204,28 +204,29 @@
  *   AWS::ApiGatewayV2::Authorizer       2 /  2   0 /  2  OPTED IN (#1445)
  *   AWS::ApiGatewayV2::Integration      0 /  0   0 /  0  OPTED IN (#1445)
  *   AWS::ApiGatewayV2::Route            0 /  0   0 /  0  OPTED IN (#1445)
- *   AWS::ECS::TaskDefinition           25 / 115  1 / 115 out — see (A)
- *   AWS::ECS::Service                  44 /  54  5 /  54 out — see (A)
+ *   AWS::ECS::TaskDefinition           25 / 115  0 / 115 OPTED IN (#1472)
+ *   AWS::ECS::Service                  44 /  54  0 /  54 OPTED IN (#1473)
  *   AWS::CloudWatch::AnomalyDetector   29 /  29  3 /  29 out — see (B)
  *   AWS::S3::Bucket                   106 / 125 104 / 125 out — see (B)/(C)
  *   AWS::CloudFront::Distribution     110 / 112 110 / 112 out — see (D)
  *                                     -------   -------
- *                                        327      223
+ *                                        327      217
  *
- * The four RECORDED, MEASURED reasons the remaining targets cannot opt in — none
+ * The RECORDED, MEASURED reasons the remaining targets cannot opt in — none
  * of them "add an allow-list entry", which is what the issue forbids:
  *
- * (A) ECS's six residuals are REAL SILENT DROPS, not blind spots, and were found
- *     BY this walk. `ContainerDefinitions.ContainerPortRange` (SDK
+ * (A) [RESOLVED by issues #1472 / #1473] ECS's six residuals were REAL SILENT
+ *     DROPS found BY this walk: `ContainerDefinitions.ContainerPortRange` (SDK
  *     `PortMapping.containerPortRange`, which `convertPortMappings` never
- *     writes) and `LoadBalancers.{AdvancedConfiguration, AlternateTargetGroupArn,
+ *     wrote) and `LoadBalancers.{AdvancedConfiguration, AlternateTargetGroupArn,
  *     ProductionListenerRule, RoleArn, TestListenerRule}` (SDK
- *     `LoadBalancer.advancedConfiguration` and its members, which
- *     `convertLoadBalancers` never writes — the blue/green deployment block).
- *     Opting the two ECS targets in is blocked on FIXING the provider, tracked
- *     in issues #1472 / #1473; an allow-list entry would silence a genuine bug.
- *     This is the pass working: on `AWS::ECS::Service` 44 unmeasurable paths
- *     collapsed to 5 real ones, and on `AWS::ECS::TaskDefinition` 25 to 1.
+ *     `LoadBalancer.advancedConfiguration` and its members — the blue/green
+ *     deployment block `convertLoadBalancers` never converted). Both are now
+ *     written by the provider (the port range explicitly, the blue/green block
+ *     via the shared `pascalToCamelCaseKeys` hand-off), so both ECS targets
+ *     measure 0 and are opted in. The pre-fix counts stay in the table as the
+ *     record that the walk, not a hand audit, surfaced them (44 unmeasurable
+ *     paths collapsed to 5 real ones on Service, 25 to 1 on TaskDefinition).
  *
  * (B) The BUILDER IDIOM (`const out: any = {}; out.Foo = …; return out;`) is a
  *     per-member write the SCOPE index cannot see: `resolveLiterals` resolves
@@ -694,18 +695,36 @@ export const NESTED_KEY_TARGETS: readonly NestedKeyTarget[] = [
     ...API_GATEWAY_V2_WRITE_FLOORS,
   },
   {
+    // Opted in by issues #1472 / #1473: the two REAL silent drops the #1445
+    // hand-off walk uncovered (PortMappings[].ContainerPortRange and the
+    // LoadBalancers[].AdvancedConfiguration blue/green block) are fixed in
+    // the provider, so both ECS targets measure 0 no-write-evidence — see
+    // the header table.
     resourceType: 'AWS::ECS::Service',
     providerFile: 'ecs-provider.ts',
     sdkClientPackage: '@aws-sdk/client-ecs',
     keyStyle: 'lower-first',
     minNestedKeys: 45,
+    freshObjectMapper: true,
+    // Measured on opt-in (#1472/#1473): written 233, non-empty scopes 34,
+    // expanding hand-off points 21 (the LinuxParameters-family generic
+    // conversions both ECS targets clear through).
+    minWrittenMembers: 120,
+    minWriteScopes: 25,
+    minHandoffPoints: 10,
   },
   {
+    // Opted in by issue #1472 alongside AWS::ECS::Service above (same
+    // provider file, same measured yields).
     resourceType: 'AWS::ECS::TaskDefinition',
     providerFile: 'ecs-provider.ts',
     sdkClientPackage: '@aws-sdk/client-ecs',
     keyStyle: 'lower-first',
     minNestedKeys: 105,
+    freshObjectMapper: true,
+    minWrittenMembers: 120,
+    minWriteScopes: 25,
+    minHandoffPoints: 10,
   },
   {
     // Added by issue #1386. The provider rebuilds Source / Environment / Cache /
