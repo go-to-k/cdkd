@@ -1,3 +1,10 @@
+## [0.278.32](https://github.com/go-to-k/cdkd/compare/v0.278.31...v0.278.32) (2026-08-10)
+
+
+### Bug Fixes
+
+* **dynamodb:** wire the GlobalTable read ceiling, merge explicit throughput blocks, reverse-map GSIs for drift, and cover the GSI billing flip on real AWS ([#1503](https://github.com/go-to-k/cdkd/issues/1503)) ([0357e86](https://github.com/go-to-k/cdkd/commit/0357e86f01719b809368852991d93fc5764edd71))
+
 ## [0.278.31](https://github.com/go-to-k/cdkd/compare/v0.278.30...v0.278.31) (2026-08-10)
 
 
