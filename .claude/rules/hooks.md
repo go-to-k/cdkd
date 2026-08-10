@@ -102,22 +102,45 @@ The seven markgate-backed gate hooks (`check-gate.sh`, `verify-pr-gate.sh`, `int
 
 Smoke tests at `.claude/hooks/<gate>.test.sh` cover the cwd-aware resolution against fixture git worktrees (markgate is mocked via a PATH shim with a $CWD_TRACE_FILE so the tests assert the hook cd'd to the correct target dir before consulting markgate). Every gate test file also carries 2 quoted-body false-positive cases per cdkd#563 (`gh issue create --body "...<trigger>..."` / `echo "...<trigger>..."` shapes), which must keep passing: they are what proves the matcher does not fire when the trigger keyword sits inside an argument body of an unrelated command.
 
-**Two layers decide whether a gate fires, and both had to change (issue #1455).**
+**The `if:` layer is GONE (issue #1455, reopened): project-settings hooks carrying `if:` never fired at all.**
 
-1. The `if:` condition in `.claude/settings.json` decides whether the hook is
+The gate family briefly ran as two layers:
+
+1. The `if:` condition in `.claude/settings.json` decided whether the hook is
    INVOKED at all.
-2. The hook's own matcher then decides whether the command is really the one it
+2. The hook's own matcher then decided whether the command is really the one it
    guards.
 
-The `if:` patterns were prefix globs (`Bash(gh pr merge*)`), which is why
-several hooks had hand-enumerated chained variants (`Bash(cd * && gh pr merge*)`).
-They are now CONTAINS patterns (`Bash(*gh pr merge*)`), and the enumerated
-`cd * && ` variants are gone because a contains pattern subsumes them. The
-`-C` forms stay as separate alternatives, since `git -C <path> commit` does not
-contain the literal `git commit`.
+The verification pass filed as issue #1476 measured that in a real session,
+EVERY hook in the Bash PreToolUse entry that carried an `if:` field was never
+invoked — `git commit` / `gh pr merge` shapes ran with no gate consulted —
+while the no-`if:` entries in the SAME file (main-tree-edit-gate,
+worktree-owner-gate, the PostToolUse detectors) fired normally, and the same
+`if:` strings DID work when registered through the `settings.local.json`
+hot-reload path (which is where the original #1455 measurement was made — the
+measurement environment differed from the runtime environment in exactly the
+dimension that mattered). The poisoning variable inside the project-settings
+load path was never pinned (permission-classifier limits stopped the bisection);
+see the #1476 close-out comment for the full evidence chain.
 
-Measured rather than assumed, with temporary probe hooks in a gitignored
-`settings.local.json` (hook config hot-reloads, so this is testable without a
+Consequence: the `if:` fields were REMOVED from all 29 hooks in the Bash entry.
+Every hook is now invoked on every Bash call and the in-script matcher
+(`lib/command-match.sh`, below) is the SOLE filter. All 29 scripts were
+verified to exit 0 fast on non-matching commands, so the cost is ~29 quick
+spawns per Bash call, not spurious blocks. Do NOT reintroduce `if:` (on any
+hook in project settings) without the restart-verified protocol: change the
+setting → start a FRESH session → run the #1476 probe shapes → only then trust
+it. A hot-reload measurement via `settings.local.json` does NOT transfer to
+project settings.
+
+Historical context for the (now-removed) `if:` patterns: they were prefix globs
+(`Bash(gh pr merge*)`), which is why several hooks had hand-enumerated chained
+variants (`Bash(cd * && gh pr merge*)`); #1455's first pass widened them to
+CONTAINS patterns (`Bash(*gh pr merge*)`) with separate `-C` alternatives,
+since `git -C <path> commit` does not contain the literal `git commit`.
+
+That first pass was measured with temporary probe hooks in a gitignored
+`settings.local.json` (hook config hot-reloads, so this was testable without a
 restart):
 
 | probe `if:` | fired on `true && echo "... gh pr merge 999 ..."` |
@@ -125,13 +148,12 @@ restart):
 | `Bash(*gh pr merge*)` | **yes** |
 | `Bash(gh pr merge*)` | no |
 
-The same run established that matching there is purely TEXTUAL and quote-blind:
-a contains pattern fired on an occurrence that existed only inside a quoted
-`echo` string. That is exactly why the two layers must change together —
-widening `if:` alone would invoke hooks on prose, and the hook's matcher becomes
-the sole precision filter. Widening it BEFORE the matcher fix would have been
-pointless (the anchored matcher rejects chained invocations anyway); doing it
-after is what makes the pair correct.
+The same run established that `if:` matching was purely TEXTUAL and
+quote-blind: a contains pattern fired on an occurrence that existed only inside
+a quoted `echo` string. Both findings still matter after the removal of `if:`:
+they document the hot-reload path's semantics (should `if:` ever be
+re-evaluated under the restart-verified protocol above), and they are why the
+in-script matcher was made the precision filter — a role it now plays alone.
 
 **Command-position matching (issue #1455 — supersedes the line-start anchoring).** Those false-positive cases were originally handled by anchoring the matcher at LINE START, tolerating exactly one chained shape (an optional leading `cd <path> &&`). That dodged the false positive by POSITION, and the cost was a false NEGATIVE of the same shape: any other command in front — `git push && gh pr create`, `echo done; gh pr merge` — and the gate never fired at all. That is not a hypothetical: PR #1451's own `gh pr create` slipped past `verify-pr-gate` exactly that way, and the same hole existed in all six merge-time gates, which is strictly worse (they are what stand between an unverified destroy path and `main`).
 
