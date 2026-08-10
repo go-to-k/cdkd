@@ -2513,7 +2513,8 @@ export class ECSProvider implements ResourceProvider {
     // too so the read side is consistently PascalCase (issue #1167). Both are
     // pure first-letter flips (`awsvpcConfiguration.{subnets,securityGroups,
     // assignPublicIp}`, `{targetGroupArn,containerName,containerPort,
-    // loadBalancerName}`).
+    // loadBalancerName,advancedConfiguration.{alternateTargetGroupArn,
+    // productionListenerRule,testListenerRule,roleArn}}` — issue #1473).
     if (s.networkConfiguration) {
       result['NetworkConfiguration'] = camelToPascalCaseKeys(s.networkConfiguration);
     }
