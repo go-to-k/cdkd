@@ -10,6 +10,7 @@ import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import { readConfigString } from '../config-shape.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -53,7 +54,12 @@ export class CloudFrontOAIProvider implements ResourceProvider {
     const config = properties['CloudFrontOriginAccessIdentityConfig'] as
       | Record<string, unknown>
       | undefined;
-    const comment = (config?.['Comment'] as string | undefined) ?? '';
+    const comment = readConfigString(
+      config,
+      'Comment',
+      '',
+      'AWS::CloudFront::CloudFrontOriginAccessIdentity CloudFrontOriginAccessIdentityConfig'
+    );
 
     try {
       const response = await this.cloudFrontClient.send(
@@ -115,7 +121,12 @@ export class CloudFrontOAIProvider implements ResourceProvider {
     const config = properties['CloudFrontOriginAccessIdentityConfig'] as
       | Record<string, unknown>
       | undefined;
-    const comment = (config?.['Comment'] as string | undefined) ?? '';
+    const comment = readConfigString(
+      config,
+      'Comment',
+      '',
+      'AWS::CloudFront::CloudFrontOriginAccessIdentity CloudFrontOriginAccessIdentityConfig'
+    );
 
     try {
       const getResponse = await this.cloudFrontClient.send(

@@ -88,6 +88,7 @@ import type {
   ResourceImportResult,
 } from '../../types/resource.js';
 import { clearOnUpdateRemoval } from '../update-removal.js';
+import { readConfigString } from '../config-shape.js';
 import { resolvedResourceTimeoutMs } from '../resource-timeout-registry.js';
 
 /**
@@ -989,10 +990,12 @@ export class ECSProvider implements ResourceProvider {
     // deployment controller defaults to ECS when unspecified. enableECSManagedTags
     // / propagateTags are accepted under ALL three controllers, so they are
     // mapped unconditionally.
-    const deploymentControllerType =
-      ((properties['DeploymentController'] as Record<string, unknown> | undefined)?.['Type'] as
-        | string
-        | undefined) ?? 'ECS';
+    const deploymentControllerType = readConfigString(
+      properties['DeploymentController'],
+      'Type',
+      'ECS',
+      'AWS::ECS::Service DeploymentController'
+    );
     const isEcsController = deploymentControllerType === 'ECS';
 
     // Only send loadBalancers / serviceRegistries when they actually changed, so

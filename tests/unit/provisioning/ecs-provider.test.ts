@@ -1910,4 +1910,72 @@ describe('ECSProvider', () => {
       ).rejects.toThrow('Unsupported resource type: AWS::ECS::Unknown');
     });
   });
+  // The `??`-shaped sibling of the #1471 / #1490 `||` defaulting class
+  // (issue #1493). `DeploymentController` is INDEXED, so a string container
+  // yielded `undefined` and the fallback claimed the ECS rolling-update
+  // controller — under which cdkd then sends deployment parameters AWS
+  // rejects for a CODE_DEPLOY / EXTERNAL service.
+  describe('malformed DeploymentController (issue #1493)', () => {
+    it('refuses a string container instead of assuming the ECS controller', async () => {
+      await expect(
+        provider.update(
+          'MyService',
+          'arn:aws:ecs:us-east-1:123456789012:service/my-cluster/my-service',
+          'AWS::ECS::Service',
+          {
+            Cluster: 'my-cluster',
+            ServiceName: 'my-service',
+            DesiredCount: 2,
+            DeploymentController: 'CODE_DEPLOY',
+          },
+          { Cluster: 'my-cluster', ServiceName: 'my-service', DesiredCount: 1 }
+        )
+      ).rejects.toThrow(
+        /AWS::ECS::Service DeploymentController must be an object \(got a string\)/
+      );
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('still defaults to ECS when the container is ABSENT', async () => {
+      mockSend.mockResolvedValueOnce({
+        service: {
+          serviceArn: 'arn:aws:ecs:us-east-1:123456789012:service/my-cluster/my-service',
+          serviceName: 'my-service',
+        },
+      });
+
+      await provider.update(
+        'MyService',
+        'arn:aws:ecs:us-east-1:123456789012:service/my-cluster/my-service',
+        'AWS::ECS::Service',
+        { Cluster: 'my-cluster', ServiceName: 'my-service', DesiredCount: 2 },
+        { Cluster: 'my-cluster', ServiceName: 'my-service', DesiredCount: 1 }
+      );
+
+      const updateCall = mockSend.mock.calls[0][0];
+      expect(updateCall.constructor.name).toBe('UpdateServiceCommand');
+      expect(updateCall.input.desiredCount).toBe(2);
+    });
+
+    it('reads a well-formed CODE_DEPLOY controller as non-ECS', async () => {
+      // The consequence the wrong default carries: under CODE_DEPLOY a
+      // LoadBalancers change must be refused (CodeDeploy applies it via a new
+      // deployment), while the ECS default would have silently sent it.
+      await expect(
+        provider.update(
+          'MyService',
+          'arn:aws:ecs:us-east-1:123456789012:service/my-cluster/my-service',
+          'AWS::ECS::Service',
+          {
+            Cluster: 'my-cluster',
+            ServiceName: 'my-service',
+            DeploymentController: { Type: 'CODE_DEPLOY' },
+            LoadBalancers: [{ ContainerName: 'web', ContainerPort: 80 }],
+          },
+          { Cluster: 'my-cluster', ServiceName: 'my-service', LoadBalancers: [] }
+        )
+      ).rejects.toThrow(/'CODE_DEPLOY' deployment controller/);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+  });
 });

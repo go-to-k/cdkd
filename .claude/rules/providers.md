@@ -158,6 +158,18 @@ with no error anywhere. `VersioningConfiguration: 'Enabled'` on an
 `AWS::S3::Bucket` turned versioning OFF on a live bucket (issue #1471); the shape
 was measured at 16 sites across 5 providers.
 
+**The `??` spelling is the same bug** (issue #1493) and its grep is different:
+the cast sits INSIDE the parens, so `\] \?\? '` misses every real site and
+`as [A-Za-z]+\) \?\? '` is the one that finds them. Measure BOTH spellings, and
+do not trust a cast-specific pattern — `(properties['AuthType'] as
+FunctionUrlAuthType) || 'NONE'` survived the #1471 sweep for exactly that reason
+and kept defaulting a blank AuthType to a PUBLIC Lambda function URL. Roll the
+guard onto the sites that INDEX A NESTED CONTAINER; a top-level
+`properties['X'] ?? 'default'` read cannot hit rule 2 at all (the bag is always
+an object) and refusing a non-string there is a separate, riskier decision —
+issue #1513 carries it, and `config-shape.ts`'s header records the full
+rolled / not-rolled split.
+
 Use `src/provisioning/config-shape.ts` instead of hand-writing the guard:
 
 ```ts

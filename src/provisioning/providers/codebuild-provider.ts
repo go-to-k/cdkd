@@ -24,6 +24,7 @@ import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
+import { readConfigString } from '../config-shape.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -92,7 +93,10 @@ export class CodeBuildProvider implements ResourceProvider {
    * object literal returned against a declared type IS excess-property checked,
    * which turns each member name into a compile-time fact (issue #1386).
    */
-  private mapSource(source: Record<string, unknown> | undefined): ProjectSource {
+  private mapSource(
+    source: Record<string, unknown> | undefined,
+    containerPath: string
+  ): ProjectSource {
     if (!source) {
       return { type: 'NO_SOURCE' as SourceType };
     }
@@ -113,7 +117,7 @@ export class CodeBuildProvider implements ResourceProvider {
     const cfnBuildStatus = source['BuildStatusConfig'] as Record<string, unknown> | undefined;
 
     return {
-      type: ((source['Type'] as string) ?? 'NO_SOURCE') as SourceType,
+      type: readConfigString(source, 'Type', 'NO_SOURCE', containerPath) as SourceType,
       buildspec,
       location: source['Location'] as string | undefined,
       gitCloneDepth: source['GitCloneDepth'] as number | undefined,
@@ -141,13 +145,13 @@ export class CodeBuildProvider implements ResourceProvider {
     };
   }
 
-  private mapArtifacts(artifacts: Record<string, unknown> | undefined) {
+  private mapArtifacts(artifacts: Record<string, unknown> | undefined, containerPath: string) {
     if (!artifacts) {
       return { type: 'NO_ARTIFACTS' as ArtifactsType };
     }
 
     return {
-      type: ((artifacts['Type'] as string) ?? 'NO_ARTIFACTS') as ArtifactsType,
+      type: readConfigString(artifacts, 'Type', 'NO_ARTIFACTS', containerPath) as ArtifactsType,
       location: artifacts['Location'] as string | undefined,
       path: artifacts['Path'] as string | undefined,
       name: artifacts['Name'] as string | undefined,
@@ -255,7 +259,9 @@ export class CodeBuildProvider implements ResourceProvider {
       | Array<Record<string, unknown>>
       | undefined;
     const secondarySources = cfnSecondarySources
-      ? cfnSecondarySources.map((s) => this.mapSource(s))
+      ? cfnSecondarySources.map((s) =>
+          this.mapSource(s, 'AWS::CodeBuild::Project SecondarySources[]')
+        )
       : undefined;
 
     // Map SecondaryArtifacts
@@ -263,7 +269,9 @@ export class CodeBuildProvider implements ResourceProvider {
       | Array<Record<string, unknown>>
       | undefined;
     const secondaryArtifacts = cfnSecondaryArtifacts
-      ? cfnSecondaryArtifacts.map((a) => this.mapArtifacts(a))
+      ? cfnSecondaryArtifacts.map((a) =>
+          this.mapArtifacts(a, 'AWS::CodeBuild::Project SecondaryArtifacts[]')
+        )
       : undefined;
 
     // Map SecondarySourceVersions
@@ -320,11 +328,20 @@ export class CodeBuildProvider implements ResourceProvider {
 
     return {
       name,
-      source: this.mapSource(source),
+      source: this.mapSource(source, 'AWS::CodeBuild::Project Source'),
       environment: {
-        type: ((environment?.['Type'] as string) ?? 'LINUX_CONTAINER') as EnvironmentType,
-        computeType: ((environment?.['ComputeType'] as string) ??
-          'BUILD_GENERAL1_SMALL') as ComputeType,
+        type: readConfigString(
+          environment,
+          'Type',
+          'LINUX_CONTAINER',
+          'AWS::CodeBuild::Project Environment'
+        ) as EnvironmentType,
+        computeType: readConfigString(
+          environment,
+          'ComputeType',
+          'BUILD_GENERAL1_SMALL',
+          'AWS::CodeBuild::Project Environment'
+        ) as ComputeType,
         image: environment?.['Image'] as string | undefined,
         environmentVariables: envVars
           ? envVars.map((v) => ({
@@ -357,7 +374,7 @@ export class CodeBuildProvider implements ResourceProvider {
           : undefined,
       },
       serviceRole,
-      artifacts: this.mapArtifacts(artifacts),
+      artifacts: this.mapArtifacts(artifacts, 'AWS::CodeBuild::Project Artifacts'),
       tags: tags ? tags.map((t) => ({ key: t.Key, value: t.Value })) : undefined,
       description: properties['Description'] as string | undefined,
       timeoutInMinutes: properties['TimeoutInMinutes'] as number | undefined,

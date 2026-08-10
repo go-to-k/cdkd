@@ -185,4 +185,42 @@ describe('LambdaUrlProvider', () => {
       expect((caught as Error).cause).toBeUndefined();
     });
   });
+  // The `||`-shaped residual the #1490 sweep missed (issue #1493): its grep
+  // keyed on the `as string` cast, and this site casts to
+  // `FunctionUrlAuthType`. A blank / null AuthType defaulted to 'NONE', i.e.
+  // a PUBLIC function URL the template never asked for.
+  describe('malformed AuthType (issue #1493)', () => {
+    it('refuses a blank AuthType instead of creating a PUBLIC url', async () => {
+      await expect(
+        provider.create('MyUrl', 'AWS::Lambda::Url', {
+          TargetFunctionArn: 'my-fn',
+          AuthType: '',
+        })
+      ).rejects.toThrow(/AWS::Lambda::Url AuthType must be a non-empty string/);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('refuses a null AuthType on update instead of opening the url up', async () => {
+      await expect(
+        provider.update(
+          'MyUrl',
+          'my-fn',
+          'AWS::Lambda::Url',
+          { TargetFunctionArn: 'my-fn', AuthType: null },
+          { TargetFunctionArn: 'my-fn', AuthType: 'AWS_IAM' }
+        )
+      ).rejects.toThrow(/AWS::Lambda::Url AuthType must be a non-empty string/);
+    });
+
+    it('still defaults to NONE when AuthType is ABSENT, as CloudFormation does', async () => {
+      mockSend.mockResolvedValueOnce({
+        FunctionUrl: 'https://abc.lambda-url.us-east-1.on.aws/',
+        FunctionArn: 'arn:aws:lambda:us-east-1:123456789012:function:my-fn',
+      });
+
+      await provider.create('MyUrl', 'AWS::Lambda::Url', { TargetFunctionArn: 'my-fn' });
+
+      expect(mockSend.mock.calls[0][0].input.AuthType).toBe('NONE');
+    });
+  });
 });

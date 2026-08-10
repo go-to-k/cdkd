@@ -13,6 +13,7 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { clearOnUpdateRemoval } from '../update-removal.js';
+import { requireConfigString } from '../config-shape.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -62,7 +63,14 @@ export class LambdaUrlProvider implements ResourceProvider {
       );
     }
 
-    const authType = (properties['AuthType'] as FunctionUrlAuthType) || 'NONE';
+    // `|| 'NONE'` turned a blank / null AuthType into a PUBLIC function URL
+    // (issue #1493). The #1490 sweep of this idiom keyed on the `as string`
+    // cast and so missed this typed-cast spelling.
+    const authType = requireConfigString(
+      properties['AuthType'],
+      'NONE',
+      'AWS::Lambda::Url AuthType'
+    ) as FunctionUrlAuthType;
 
     try {
       const cors = properties['Cors'] as Record<string, unknown> | undefined;
@@ -142,7 +150,14 @@ export class LambdaUrlProvider implements ResourceProvider {
       };
     }
 
-    const authType = (properties['AuthType'] as FunctionUrlAuthType) || 'NONE';
+    // `|| 'NONE'` turned a blank / null AuthType into a PUBLIC function URL
+    // (issue #1493). The #1490 sweep of this idiom keyed on the `as string`
+    // cast and so missed this typed-cast spelling.
+    const authType = requireConfigString(
+      properties['AuthType'],
+      'NONE',
+      'AWS::Lambda::Url AuthType'
+    ) as FunctionUrlAuthType;
 
     const updateParams: import('@aws-sdk/client-lambda').UpdateFunctionUrlConfigCommandInput = {
       FunctionName: physicalId,

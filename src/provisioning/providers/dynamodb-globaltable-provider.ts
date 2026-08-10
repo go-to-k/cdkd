@@ -49,6 +49,7 @@ import { ProvisioningError } from '../../utils/error-handler.js';
 import { generateResourceName } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
+import { readConfigString } from '../config-shape.js';
 import { withRetry } from '../../deployment/retry.js';
 import { isThrottlingError } from '../../deployment/retryable-errors.js';
 import type {
@@ -346,7 +347,12 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     if (streamSpecInput) {
       createParams.StreamSpecification = {
         StreamEnabled: true,
-        StreamViewType: (streamSpecInput['StreamViewType'] as string) ?? 'NEW_AND_OLD_IMAGES',
+        StreamViewType: readConfigString(
+          streamSpecInput,
+          'StreamViewType',
+          'NEW_AND_OLD_IMAGES',
+          'AWS::DynamoDB::GlobalTable StreamSpecification'
+        ),
       } as StreamSpecification;
     } else if (needsStream) {
       this.logger.info(

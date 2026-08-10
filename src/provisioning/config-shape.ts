@@ -43,6 +43,36 @@
  * is why `KinesisProvider`'s read of `previousProperties.StreamModeDetails`
  * is deliberately left unguarded.
  *
+ * **The `??` spelling has the same failure mode (issue #1493).** The #1471
+ * sweep measured the `||` form; `(cfg['K'] as string) ?? 'default'` defaults on
+ * exactly the same `undefined` a malformed container indexes to. The measured
+ * `??` set is 24 sites; the ones ROLLED onto this module are the 9 that INDEX A
+ * NESTED CONTAINER (CodeBuild `Source` / `SecondarySources[]` / `Artifacts` /
+ * `Environment` x2, DynamoDB GlobalTable `StreamSpecification`, Route 53
+ * `HostedZoneConfig` x2, CloudFront OAI config x2, ECS `DeploymentController`),
+ * plus the two `AWS::Lambda::Url` `AuthType` sites the #1471 sweep's
+ * cast-specific grep missed (`as FunctionUrlAuthType`, not `as string`) — where
+ * the default is a PUBLIC function URL. Deliberately NOT rolled, so the
+ * decision is challengeable rather than invisible:
+ *
+ * - **TOP-LEVEL `properties['X'] ?? 'default'` reads** (EC2 `IpProtocol` /
+ *   `InstanceType` / `Domain`, API Gateway `AuthorizationType`, IAM access-key
+ *   `Status`, Lambda event-invoke `Qualifier`, RDS DB-proxy `TargetGroupName`,
+ *   GlobalTable `BillingMode`). The container is the provider's own property
+ *   bag, so rule 2 cannot fire; only rules 3/4 would apply, and refusing a
+ *   present-but-non-string value there is a stricter-value decision with its own
+ *   regression surface (an unquoted YAML `IpProtocol: -1` is a number today and
+ *   works). Tracked as issue #1513 rather than folded in here.
+ * - **`EC2Provider`'s two `VpcId ?? ''` reads** — they populate the returned
+ *   ATTRIBUTE cache only, and `CreateSecurityGroup` already forwards the same
+ *   value, so AWS rejects a malformed one first; a guard there would throw
+ *   AFTER a successful create and orphan the security group.
+ * - **Reads off the PREVIOUS / state side** (GlobalTable `previousProperties`
+ *   `BillingMode`, RDS DB-proxy `delete()` / `readCurrentState`) — the
+ *   desired-side-only rule above.
+ * - **`S3BucketProvider`'s three `rule['Id'] ?? '<unnamed>'`** — a label inside
+ *   a warning message, not a value sent to AWS.
+ *
  * This is a provider-layer guard rather than a pre-flight template check
  * because **rule 4** is only decidable AFTER intrinsic resolution: at pre-flight
  * time a legitimate `Fn::If`-valued block is an object whose `Status` key does
