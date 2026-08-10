@@ -176,6 +176,76 @@ if [ "${OUTPUT_HZ}" != "${HOSTED_ZONE_ID}" ]; then
 fi
 echo "    OK: HostedZoneId attribute surfaced through Fn::GetAtt -> stack output"
 
+# --- Assertion: baseline descriptions reached AWS ---------------------
+HTTP_DESC_P1=$(aws servicediscovery get-namespace --id "${HTTP_NS_ID}" \
+  --region "${REGION}" --query 'Namespace.Description' --output text)
+if [ "${HTTP_DESC_P1}" != "cdkd integ HTTP namespace" ]; then
+  echo "FAIL: baseline HttpNamespace Description is '${HTTP_DESC_P1}'" >&2
+  exit 1
+fi
+PUB_DESC_P1=$(aws servicediscovery get-namespace --id "${PUBLIC_NS_ID}" \
+  --region "${REGION}" --query 'Namespace.Description' --output text)
+if [ "${PUB_DESC_P1}" != "cdkd integ public DNS namespace" ]; then
+  echo "FAIL: baseline PublicDnsNamespace Description is '${PUB_DESC_P1}'" >&2
+  exit 1
+fi
+echo "    OK: baseline Descriptions reached AWS"
+
+# --- Phase 1b: removal redeploy (issue #1160 servicediscovery batch) --
+# The removal template drops both Descriptions and the public namespace's
+# SOA TTL. The Update*Namespace change objects MERGE (absent = "no change"),
+# so pre-fix the live values silently survived; post-fix the provider
+# resets them — Description cleared via the '' sentinel, TTL back to the
+# Cloud Map default 60 (live CFn A/B 2026-08-11: removed Description ->
+# cleared, removed SOA TTL 300 -> 60).
+echo "==> Phase 1b: re-deploy dropping Descriptions + SOA TTL (removal reset)"
+CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes
+
+# The provider polls each update operation to SUCCESS before returning, but
+# GetNamespace can lag slightly — bounded retry so it cannot flake the run.
+HTTP_DESC_P2="pending"
+PUB_DESC_P2="pending"
+SOA_TTL_P2=""
+for _i in 1 2 3 4 5 6; do
+  HTTP_DESC_P2=$(aws servicediscovery get-namespace --id "${HTTP_NS_ID}" \
+    --region "${REGION}" --query 'Namespace.Description' --output text)
+  PUB_DESC_P2=$(aws servicediscovery get-namespace --id "${PUBLIC_NS_ID}" \
+    --region "${REGION}" --query 'Namespace.Description' --output text)
+  SOA_TTL_P2=$(aws servicediscovery get-namespace --id "${PUBLIC_NS_ID}" \
+    --region "${REGION}" --query 'Namespace.Properties.DnsProperties.SOA.TTL' --output text)
+  if [ "${HTTP_DESC_P2}" = "None" ] && [ "${PUB_DESC_P2}" = "None" ] \
+    && [ "${SOA_TTL_P2}" = "60" ]; then
+    break
+  fi
+  sleep 10
+done
+# A cleared Description disappears from GetNamespace — `--output text`
+# renders the absent field as "None". An empty string would also be
+# acceptable evidence of the clear, but the observed live shape is absence.
+if [ "${HTTP_DESC_P2}" != "None" ] && [ -n "${HTTP_DESC_P2}" ]; then
+  echo "FAIL: HttpNamespace Description survived the removal redeploy: '${HTTP_DESC_P2}' (removal silent-drop NOT closed)" >&2
+  exit 1
+fi
+if [ "${PUB_DESC_P2}" != "None" ] && [ -n "${PUB_DESC_P2}" ]; then
+  echo "FAIL: PublicDnsNamespace Description survived the removal redeploy: '${PUB_DESC_P2}' (removal silent-drop NOT closed)" >&2
+  exit 1
+fi
+if [ "${SOA_TTL_P2}" != "60" ]; then
+  echo "FAIL: SOA TTL is '${SOA_TTL_P2}' after removal, expected the CFn-parity reset '60'" >&2
+  exit 1
+fi
+# Replacement guard: both namespaces must survive in place.
+HTTP_NS_ID_P2=$(lookup_ns_id "${HTTP_NS_NAME}")
+PUBLIC_NS_ID_P2=$(lookup_ns_id "${PUBLIC_NS_NAME}")
+if [ "${HTTP_NS_ID_P2}" != "${HTTP_NS_ID}" ] || [ "${PUBLIC_NS_ID_P2}" != "${PUBLIC_NS_ID}" ]; then
+  echo "FAIL: a namespace was REPLACED by the removal redeploy (http ${HTTP_NS_ID} -> ${HTTP_NS_ID_P2}, public ${PUBLIC_NS_ID} -> ${PUBLIC_NS_ID_P2})" >&2
+  exit 1
+fi
+echo "    OK: Descriptions cleared + SOA TTL reset to 60 in place (removal silent-drop closed)"
+
 # --- Phase 2: destroy -------------------------------------------------
 echo "==> Phase 2: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \
