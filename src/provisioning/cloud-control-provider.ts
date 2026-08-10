@@ -155,6 +155,46 @@ export function isNotFoundMessage(message: string): boolean {
   );
 }
 
+/**
+ * When a Cloud Control operation FAILS with an authorization error whose
+ * Java-SDK trailer names a service OTHER than Cloud Control itself
+ * ("... (Service: SesV2, Status Code: 403, Request ID: ...)"), the rejection
+ * happened inside the AWS-managed resource handler's own downstream call —
+ * cdkd's credentials already authenticated to Cloud Control to start the
+ * operation, so the caller's local credential setup is not the culprit. The
+ * raw StatusMessage reads like a local credential problem and sends users off
+ * to debug their own keys (issue #1468: the AWS::SES::EmailIdentity UPDATE
+ * handler's SesV2 call 403'd reproducibly while the exact same SesV2
+ * operations succeeded when invoked directly with the same credentials).
+ * Returns a re-framing hint to append to the failure message, or '' when the
+ * shape does not match.
+ *
+ * Wording constraint: the hint is appended to an error message that
+ * downstream matchers test against (isNotFoundMessage above, the
+ * retryable-error message table in src/deployment/retryable-errors.ts), so it
+ * must not introduce a "not found" / "does not exist" / "no such" match nor
+ * any retryable-pattern substring. Pinned by a unit test.
+ */
+export function handlerAuthFailureHint(statusMessage: string): string {
+  const match = /\(Service:\s*([A-Za-z0-9._-]+)[,;]\s*Status Code:\s*403[,;)]/i.exec(statusMessage);
+  if (!match) {
+    return '';
+  }
+  const service = match[1] ?? '';
+  // A 403 from Cloud Control itself IS a caller-credential problem — only a
+  // downstream service's refusal gets re-framed.
+  if (/cloudcontrol/i.test(service)) {
+    return '';
+  }
+  return (
+    ` [hint: this 403 was returned by ${service} to the AWS-managed resource handler running the ` +
+    `operation, not to cdkd directly — these credentials already passed Cloud Control's own auth ` +
+    `to start it. If the equivalent ${service} API call succeeds with the same credentials, the ` +
+    `resource handler itself is failing (an upstream AWS issue worth retrying later), not your ` +
+    `local credential setup.]`
+  );
+}
+
 export class CloudControlProvider implements ResourceProvider {
   private cloudControlClient: CloudControlClient;
   private logger = getLogger().child('CloudControlProvider');
@@ -784,15 +824,17 @@ export class CloudControlProvider implements ResourceProvider {
         case 'SUCCESS':
           return progressEvent;
 
-        case 'FAILED':
+        case 'FAILED': {
+          const failureMessage = progressEvent.StatusMessage || 'Unknown error';
           throw new CloudControlOperationFailedError(
-            `${operation} failed for ${logicalId}: ${progressEvent.StatusMessage || 'Unknown error'}`,
+            `${operation} failed for ${logicalId}: ${failureMessage}${handlerAuthFailureHint(failureMessage)}`,
             progressEvent.TypeName || 'Unknown',
             logicalId,
             progressEvent.Identifier,
             progressEvent.ErrorCode,
             operation
           );
+        }
 
         case 'CANCEL_COMPLETE':
           // NOTE: a CREATE cancelled after materialization (external

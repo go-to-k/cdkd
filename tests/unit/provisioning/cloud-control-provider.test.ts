@@ -102,6 +102,7 @@ import {
   CloudControlProvider,
   CloudControlOperationFailedError,
   isNotFoundMessage,
+  handlerAuthFailureHint,
 } from '../../../src/provisioning/cloud-control-provider.js';
 import { clearWriteOnlyPropertiesCache } from '../../../src/provisioning/write-only-properties.js';
 import { isRetryableTransientError } from '../../../src/deployment/retryable-errors.js';
@@ -259,6 +260,105 @@ describe('isNotFoundMessage (issue #1252)', () => {
     'no permission to delete; resource found in another account',
   ])('does not match %s', (message) => {
     expect(isNotFoundMessage(message)).toBe(false);
+  });
+});
+
+describe('handlerAuthFailureHint (issue #1468)', () => {
+  // The exact wire shape observed on the AWS::SES::EmailIdentity UPDATE
+  // regression: the handler's own SesV2 call 403s while the caller's
+  // credentials are fine.
+  const SES_403 =
+    'The security token included in the request is invalid ' +
+    '(Service: SesV2, Status Code: 403, Request ID: af4fdbec-78b3-4700-ae43-00b28e51c5ae)';
+
+  it('re-frames a downstream-service 403 naming the service', () => {
+    const hint = handlerAuthFailureHint(SES_403);
+    expect(hint).toContain('SesV2');
+    expect(hint).toContain('AWS-managed resource handler');
+    expect(hint).toContain('upstream AWS issue');
+  });
+
+  it('is silent for a non-403 status in the trailer', () => {
+    expect(
+      handlerAuthFailureHint('No Deployment Group found for name: x (Service: CodeDeploy, Status Code: 400)')
+    ).toBe('');
+  });
+
+  it('is silent for a 403 from Cloud Control itself (a real caller-credential problem)', () => {
+    expect(
+      handlerAuthFailureHint(
+        'User is not authorized (Service: CloudControlApi, Status Code: 403, Request ID: abc)'
+      )
+    ).toBe('');
+  });
+
+  it('is silent for a message with no Java-SDK service trailer (JS-SDK local credential failure)', () => {
+    expect(handlerAuthFailureHint('The security token included in the request is invalid.')).toBe(
+      ''
+    );
+  });
+
+  it('the appended hint does not trip the isNotFoundMessage matcher', () => {
+    const full = `UPDATE failed for Identity2D60E2CC: ${SES_403}${handlerAuthFailureHint(SES_403)}`;
+    expect(isNotFoundMessage(full)).toBe(false);
+  });
+
+  it('the appended hint does not make the message retryable when the base message was not', () => {
+    // The SES wire shape lacks the period before "(Service:" that the IAM
+    // propagation pattern anchors on, so it is not retryable — and the hint
+    // must not change that.
+    const baseMessage = `UPDATE failed for Id: ${SES_403}`;
+    const hintedMessage = `${baseMessage}${handlerAuthFailureHint(SES_403)}`;
+    expect(isRetryableTransientError(new Error(hintedMessage), hintedMessage)).toBe(
+      isRetryableTransientError(new Error(baseMessage), baseMessage)
+    );
+  });
+});
+
+describe('CloudControlProvider UPDATE FAILED with a downstream 403 (issue #1468)', () => {
+  let provider: CloudControlProvider;
+
+  beforeEach(() => {
+    mockCloudControlSend.mockReset();
+    mockCloudFormationSend.mockReset();
+    mockCloudControlConfigRegion.mockReset();
+    mockCloudControlConfigRegion.mockResolvedValue('us-east-1');
+    clearWriteOnlyPropertiesCache();
+    // DescribeType unavailable -> write-only resolution degrades to empty set.
+    mockCloudFormationSend.mockRejectedValue(new Error('AccessDenied'));
+    provider = new CloudControlProvider();
+  });
+
+  it('appends the handler-origin hint to the thrown failure message', async () => {
+    mockCloudControlSend.mockImplementation((cmd: { constructor: { name: string } }) => {
+      const name = cmd.constructor.name;
+      if (name === 'UpdateResourceCommand') {
+        return Promise.resolve({ ProgressEvent: { RequestToken: 'tok-upd' } });
+      }
+      if (name === 'GetResourceRequestStatusCommand') {
+        return Promise.resolve({
+          ProgressEvent: {
+            OperationStatus: 'FAILED',
+            TypeName: 'AWS::SES::EmailIdentity',
+            ErrorCode: 'AccessDenied',
+            StatusMessage:
+              'The security token included in the request is invalid ' +
+              '(Service: SesV2, Status Code: 403, Request ID: af4fdbec)',
+          },
+        });
+      }
+      return Promise.resolve({});
+    });
+
+    await expect(
+      provider.update(
+        'Identity2D60E2CC',
+        'cdkd-ses.example.com',
+        'AWS::SES::EmailIdentity',
+        { EmailIdentity: 'cdkd-ses.example.com', MailFromAttributes: { MailFromDomain: 'mail.x' } },
+        { EmailIdentity: 'cdkd-ses.example.com' }
+      )
+    ).rejects.toThrow(/AWS-managed resource handler.*SesV2|SesV2.*AWS-managed resource handler/s);
   });
 });
 
