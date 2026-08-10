@@ -32,6 +32,18 @@ import type {
 } from '../../types/resource.js';
 
 /**
+ * True when Route 53 refused a zone mutation because the zone's
+ * AcceleratedRecoveryStatus is mid-transition — the
+ * "HostedZone <id> is marked disabled for mutation" rejection (issue #1467).
+ * Exported for the delete-path retry in this provider and for tests; the
+ * same substring is also in `RETRYABLE_ERROR_MESSAGE_PATTERNS` so the
+ * generic retry net covers the create/update paths.
+ */
+export function isZoneDisabledForMutationError(error: unknown): boolean {
+  return error instanceof Error && error.message.includes('is marked disabled for mutation');
+}
+
+/**
  * AWS Route 53 Provider
  *
  * Implements resource provisioning for Route 53 resources:
@@ -785,7 +797,8 @@ export class Route53Provider implements ResourceProvider {
       );
     }
 
-    const [hostedZoneId] = parts;
+    // Safe: the length-3 check above guarantees all three segments exist.
+    const [hostedZoneId] = parts as [string, string, string];
 
     // We need the full record details for DELETE action
     if (!properties) {
@@ -800,19 +813,41 @@ export class Route53Provider implements ResourceProvider {
     try {
       const resourceRecordSet = this.buildResourceRecordSet(properties);
 
-      await this.getClient().send(
-        new ChangeResourceRecordSetsCommand({
-          HostedZoneId: hostedZoneId,
-          ChangeBatch: {
-            Changes: [
-              {
-                Action: 'DELETE',
-                ResourceRecordSet: resourceRecordSet,
-              },
-            ],
-          },
-        })
-      );
+      const sendDelete = () =>
+        this.getClient().send(
+          new ChangeResourceRecordSetsCommand({
+            HostedZoneId: hostedZoneId,
+            ChangeBatch: {
+              Changes: [
+                {
+                  Action: 'DELETE',
+                  ResourceRecordSet: resourceRecordSet,
+                },
+              ],
+            },
+          })
+        );
+
+      try {
+        await sendDelete();
+      } catch (error) {
+        // While the zone's AcceleratedRecoveryStatus is transitioning
+        // (ENABLING / DISABLING / *_HOSTED_ZONE_LOCKED), Route 53 refuses
+        // EVERY mutation with "HostedZone <id> is marked disabled for
+        // mutation" (issue #1467). Record sets are deleted BEFORE the zone
+        // in the destroy DAG, so the zone-side pre-delete guard
+        // (`ensureAcceleratedRecoveryDisabledForDelete`) never runs first.
+        // Wait for the transition to settle (ENABLED is fine — mutations
+        // are allowed again; deliberately NOT disabling the feature here,
+        // since a record-only delete must not flip a zone-level setting),
+        // then retry the change once.
+        if (!isZoneDisabledForMutationError(error)) throw error;
+        this.logger.info(
+          `Hosted zone ${hostedZoneId} is mid AcceleratedRecovery transition (marked disabled for mutation); waiting for it to settle before retrying delete of record set ${logicalId}`
+        );
+        await this.waitForAcceleratedRecoveryMutable(hostedZoneId, logicalId, resourceType);
+        await sendDelete();
+      }
 
       this.logger.debug(`Successfully deleted record set ${logicalId}`);
     } catch (error) {
@@ -847,6 +882,77 @@ export class Route53Provider implements ResourceProvider {
         cause
       );
     }
+  }
+
+  /**
+   * Wait until the hosted zone's AcceleratedRecoveryStatus reaches a state
+   * that ALLOWS mutations again (issue #1467).
+   *
+   * While the feature is transitioning (ENABLING / DISABLING /
+   * *_HOSTED_ZONE_LOCKED) Route 53 marks the zone "disabled for mutation" and
+   * refuses `ChangeResourceRecordSets`. Unlike the zone-delete guard
+   * (`ensureAcceleratedRecoveryDisabledForDelete`) this helper does NOT
+   * disable the feature — a record-set mutation is legal on an ENABLED zone,
+   * and flipping a zone-level setting from a record delete would be a side
+   * effect the template never asked for. It only polls until the status is
+   * terminal-stable (ENABLED / DISABLED / zone gone), throwing on the
+   * `*_FAILED` operator-recovery states and on timeout. Same env-overridable
+   * poll knobs as the zone guard.
+   */
+  private async waitForAcceleratedRecoveryMutable(
+    zoneId: string,
+    logicalId: string,
+    resourceType: string
+  ): Promise<void> {
+    const client = this.getClient();
+    const pollIntervalMs = Number.parseInt(
+      process.env['CDKD_R53_ACCEL_RECOVERY_POLL_INTERVAL_MS'] ?? '15000',
+      10
+    );
+    const timeoutMs = Number.parseInt(
+      process.env['CDKD_R53_ACCEL_RECOVERY_POLL_TIMEOUT_MS'] ?? '600000',
+      10
+    );
+    const deadline = Date.now() + timeoutMs;
+    const TERMINAL_FAILED = new Set<string>(['ENABLE_FAILED', 'DISABLE_FAILED']);
+    const MUTABLE = new Set<string>(['ENABLED', 'DISABLED']);
+
+    while (Date.now() < deadline) {
+      let status: string | undefined;
+      try {
+        const resp = await client.send(new GetHostedZoneCommand({ Id: zoneId }));
+        status = resp.HostedZone?.Features?.AcceleratedRecoveryStatus;
+      } catch (err) {
+        if (err instanceof Error && err.name === 'NoSuchHostedZone') return;
+        throw err;
+      }
+      if (status === undefined || MUTABLE.has(status)) return;
+      if (TERMINAL_FAILED.has(status)) {
+        throw new ProvisioningError(
+          `Cannot mutate hosted zone ${zoneId}: AcceleratedRecoveryStatus is '${status}' — operator must resolve before the record set ${logicalId} can be deleted`,
+          resourceType,
+          logicalId,
+          zoneId
+        );
+      }
+      this.logger.debug(
+        `Polling AcceleratedRecoveryStatus for ${zoneId}: ${status} (waiting for a mutable state, will re-poll in ~${pollIntervalMs}ms)`
+      );
+      // Sleep in 1s slices to stay SIGINT-responsive (same shape as the
+      // zone-delete guard's poll loop).
+      const sliceEnd = Math.min(Date.now() + pollIntervalMs, deadline);
+      while (Date.now() < sliceEnd) {
+        const tick = Math.min(1000, sliceEnd - Date.now());
+        if (tick <= 0) break;
+        await new Promise<void>((resolve) => setTimeout(resolve, tick));
+      }
+    }
+    throw new ProvisioningError(
+      `Timed out after ${timeoutMs}ms waiting for AcceleratedRecoveryStatus to reach a mutable state on hosted zone ${zoneId} (record set ${logicalId}); re-run the destroy once the transition settles`,
+      resourceType,
+      logicalId,
+      zoneId
+    );
   }
 
   // ─── Helpers ───────────────────────────────────────────────────────

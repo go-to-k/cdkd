@@ -624,3 +624,15 @@ describe('Redshift post-snapshot busy state (#1353)', () => {
     expect(isRetryableTransientError(new Error(msg), msg)).toBe(false);
   });
 });
+
+describe('Route 53 AcceleratedRecovery mutation lock (#1467)', () => {
+  it('classifies "is marked disabled for mutation" as retryable', () => {
+    const msg =
+      'Failed to delete record set CidrRecord: HostedZone Z08017982576KEDFB5RGZ is marked disabled for mutation';
+    expect(isRetryableTransientError(new Error(msg), msg)).toBe(true);
+  });
+
+  it('keeps the pattern out of the dense IAM-propagation cadence', () => {
+    expect(isIamPropagationError('HostedZone Z1 is marked disabled for mutation')).toBe(false);
+  });
+});
