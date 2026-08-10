@@ -570,6 +570,54 @@ See the "DeletionPolicy: Snapshot" section in
 
 ---
 
+### Issue: "OpenTableFormatInput.IcebergInput.IcebergTableInput cannot be deployed" on a Glue table
+
+**Symptoms:**
+
+```text
+AWS::Glue::Table IcebergTable: OpenTableFormatInput.IcebergInput.IcebergTableInput
+cannot be deployed by AWS in any shape, so cdkd refuses it before calling Glue
+(issue #1454). ...
+```
+
+**Cause:**
+
+cdkd refuses this property at pre-flight, before any AWS call. It is a
+deliberate parity divergence — CloudFormation forwards the property instead of
+validating it, but a live probe (issue
+[#1408](https://github.com/go-to-k/cdkd/issues/1408)) showed the spec is
+undeployable either way: the raw `glue:CreateTable` API cdkd calls rejects every
+shape of it, and CloudFormation rolls the same template back. The handler asks
+for `IcebergTableInputProperties`, a name that exists in neither the CFn
+registry schema nor `@aws-sdk/client-glue` — an AWS-side contract bug. Failing
+fast with the working shape spelled out beats a late, cryptic AWS error.
+
+**Solutions:**
+
+Move the table metadata into `TableInput` and leave `IcebergInput` carrying only
+the create-time directive:
+
+```yaml
+TableInput:
+  Name: events_iceberg
+  TableType: EXTERNAL_TABLE          # required for Iceberg
+  StorageDescriptor:
+    Location: s3://your-bucket/iceberg/events/
+    Columns:
+      - Name: event_id
+        Type: string
+OpenTableFormatInput:
+  IcebergInput:
+    MetadataOperation: CREATE        # Version: '2' is also accepted
+```
+
+Glue writes the Iceberg metadata itself — the created table comes back with
+`Parameters.table_type = ICEBERG` and a populated `Parameters.metadata_location`.
+See [Glue table Iceberg support](supported-resources.md#glue-table-iceberg-support-icebergtableinput-is-refused)
+for the full probe transcript and rationale.
+
+---
+
 ## Asset Publishing Issues
 
 ### Issue: "Asset publishing failed"

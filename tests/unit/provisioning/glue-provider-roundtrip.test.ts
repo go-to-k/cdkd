@@ -39,6 +39,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { GlueProvider } from '../../../src/provisioning/providers/glue-provider.js';
+import { ProvisioningError } from '../../../src/utils/error-handler.js';
 
 const TABLE_PHYSICAL_ID = 'mydb|mytbl';
 
@@ -293,64 +294,194 @@ describe('GlueProvider read-update round-trip', () => {
     expect(input.TableInput.Name).toBe('events_iceberg');
   });
 
-  it('AWS::Glue::Table — create() renames IcebergInput.IcebergTableInput to the SDK CreateIcebergTableInput (#1390)', async () => {
-    // CFn spells the nested table spec `IcebergTableInput`; the SDK's
-    // `IcebergInput` member is `CreateIcebergTableInput`. The SDK serializer
-    // drops unknown members, so without the rename the whole Iceberg table
-    // spec vanished while CreateTable still reported success.
+  // ─── #1454: IcebergTableInput pre-flight refusal ────────────────────
+  //
+  // The live probe on #1408 (2026-08-09, us-east-1) proved the Iceberg table
+  // spec is undeployable on BOTH the raw `glue:CreateTable` path cdkd takes and
+  // the CloudFormation path, in every shape. cdkd therefore refuses it BEFORE
+  // the AWS call instead of forwarding it (a deliberate parity divergence —
+  // see `assertIcebergTableInputAbsent` in the provider). The #1390 rename to
+  // the SDK's `CreateIcebergTableInput` became unreachable and was removed.
+
+  const ICEBERG_TABLE_SPEC = {
+    Location: 's3://b/iceberg/events/',
+    Schema: {
+      Fields: [{ Id: 1, Name: 'event_id', Type: 'string', Required: true }],
+      IdentifierFieldIds: [1],
+    },
+    PartitionSpec: {
+      Fields: [{ SourceId: 1, Transform: 'identity', Name: 'event_id' }],
+    },
+    Properties: { 'write.format.default': 'parquet' },
+  };
+
+  /** Await a call expected to reject, returning the thrown error for inspection. */
+  const captureRejection = async (call: Promise<unknown>): Promise<ProvisioningError> => {
+    try {
+      await call;
+    } catch (error) {
+      return error as ProvisioningError;
+    }
+    throw new Error('expected the call to reject, but it resolved');
+  };
+
+  /** Assertions every #1454 refusal message must satisfy, on any code path. */
+  const expectIcebergRefusalMessage = (message: string, offendingKey: string): void => {
+    // Names the offending property PATH, not just the resource.
+    expect(message).toContain(`OpenTableFormatInput.IcebergInput.${offendingKey}`);
+    // Explains that AWS — CloudFormation included — rejects every shape.
+    expect(message).toContain('cannot be deployed by AWS in any shape');
+    expect(message).toContain('CloudFormation');
+    expect(message).toContain(
+      'Table metadata is expected only via TableInput or via IcebergTableInputProperties'
+    );
+    // Names the WORKING shape concretely enough to copy.
+    expect(message).toContain("TableType: 'EXTERNAL_TABLE'");
+    expect(message).toContain('StorageDescriptor');
+    expect(message).toContain("MetadataOperation: 'CREATE'");
+    // Cites the decision + the probe transcript.
+    expect(message).toContain('#1454');
+    expect(message).toContain('#1408');
+  };
+
+  it('AWS::Glue::Table — create() refuses IcebergInput.IcebergTableInput pre-flight, before any AWS call (#1454)', async () => {
+    await expect(
+      provider.create('L', 'AWS::Glue::Table', {
+        DatabaseName: 'mydb',
+        OpenTableFormatInput: {
+          IcebergInput: {
+            MetadataOperation: 'CREATE',
+            Version: '2',
+            IcebergTableInput: ICEBERG_TABLE_SPEC,
+          },
+        },
+        TableInput: { Name: 'events_iceberg', TableType: 'EXTERNAL_TABLE' },
+      })
+    ).rejects.toThrow(ProvisioningError);
+
+    // PRE-flight: the refusal must happen before CreateTable is ever sent.
+    expect(mockSend).not.toHaveBeenCalled();
+
+    const error = await captureRejection(
+      provider.create('L', 'AWS::Glue::Table', {
+        DatabaseName: 'mydb',
+        OpenTableFormatInput: {
+          IcebergInput: { MetadataOperation: 'CREATE', IcebergTableInput: ICEBERG_TABLE_SPEC },
+        },
+        TableInput: { Name: 'events_iceberg', TableType: 'EXTERNAL_TABLE' },
+      })
+    );
+    expectIcebergRefusalMessage(error.message, 'IcebergTableInput');
+    expect(error.resourceType).toBe('AWS::Glue::Table');
+    expect(error.logicalId).toBe('L');
+  });
+
+  it('AWS::Glue::Table — update() refuses IcebergInput.IcebergTableInput pre-flight too (#1454)', async () => {
+    // UpdateTableCommandInput has no OpenTableFormatInput member at all, so an
+    // unguarded update would SILENTLY accept a template create can never take.
+    const error = await captureRejection(
+      provider.update(
+        'L',
+        TABLE_PHYSICAL_ID,
+        'AWS::Glue::Table',
+        {
+          DatabaseName: 'mydb',
+          OpenTableFormatInput: {
+            IcebergInput: { MetadataOperation: 'CREATE', IcebergTableInput: ICEBERG_TABLE_SPEC },
+          },
+          TableInput: { Name: 'mytbl', TableType: 'EXTERNAL_TABLE' },
+        },
+        {}
+      )
+    );
+
+    expect(error).toBeInstanceOf(ProvisioningError);
+    expectIcebergRefusalMessage(error.message, 'IcebergTableInput');
+    expect(error.physicalId).toBe(TABLE_PHYSICAL_ID);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('AWS::Glue::Table — the refusal also covers the SDK spelling CreateIcebergTableInput (#1454)', async () => {
+    // A hand-written template can carry either spelling; neither deploys.
+    const error = await captureRejection(
+      provider.create('L', 'AWS::Glue::Table', {
+        DatabaseName: 'mydb',
+        OpenTableFormatInput: {
+          IcebergInput: {
+            MetadataOperation: 'CREATE',
+            CreateIcebergTableInput: ICEBERG_TABLE_SPEC,
+          },
+        },
+        TableInput: { Name: 'events_iceberg', TableType: 'EXTERNAL_TABLE' },
+      })
+    );
+
+    expect(error).toBeInstanceOf(ProvisioningError);
+    expectIcebergRefusalMessage(error.message, 'CreateIcebergTableInput');
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('AWS::Glue::Table — the WORKING shape (IcebergInput.MetadataOperation only) still deploys and reaches the SDK (#1454)', async () => {
+    // The P9/P10 shape from the #1408 probe: table metadata in TableInput,
+    // IcebergInput carrying only the create-time directive. Must NOT throw, and
+    // MetadataOperation must still be forwarded verbatim.
     mockSend.mockResolvedValueOnce({});
 
-    const icebergTableInput = {
-      Location: 's3://b/iceberg/events/',
-      Schema: {
-        Fields: [{ Id: 1, Name: 'event_id', Type: 'string', Required: true }],
-        IdentifierFieldIds: [1],
-      },
-      PartitionSpec: {
-        Fields: [{ SourceId: 1, Transform: 'identity', Name: 'event_id' }],
-      },
-      Properties: { 'write.format.default': 'parquet' },
-    };
-
-    await provider.create('L', 'AWS::Glue::Table', {
+    const result = await provider.create('L', 'AWS::Glue::Table', {
       DatabaseName: 'mydb',
-      OpenTableFormatInput: {
-        IcebergInput: {
-          MetadataOperation: 'CREATE',
-          Version: '2',
-          IcebergTableInput: icebergTableInput,
+      OpenTableFormatInput: { IcebergInput: { MetadataOperation: 'CREATE', Version: '2' } },
+      TableInput: {
+        Name: 'events_iceberg',
+        TableType: 'EXTERNAL_TABLE',
+        StorageDescriptor: {
+          Location: 's3://b/iceberg/',
+          Columns: [{ Name: 'event_id', Type: 'string' }],
         },
       },
-      TableInput: { Name: 'events_iceberg', TableType: 'EXTERNAL_TABLE' },
     });
+    expect(result.physicalId).toBe('mydb|events_iceberg');
 
     const createCall = mockSend.mock.calls.find((c) => c[0] instanceof CreateTableCommand);
     const input = createCall![0].input as { OpenTableFormatInput: Record<string, unknown> };
     expect(input.OpenTableFormatInput).toEqual({
-      IcebergInput: {
-        MetadataOperation: 'CREATE',
-        Version: '2',
-        // Renamed key; the nested members match CFn 1:1 and stay untouched.
-        CreateIcebergTableInput: icebergTableInput,
-      },
+      IcebergInput: { MetadataOperation: 'CREATE', Version: '2' },
     });
-    expect('IcebergTableInput' in (input.OpenTableFormatInput['IcebergInput'] as object)).toBe(
-      false
-    );
   });
 
-  it('AWS::Glue::Table — create() leaves an IcebergInput without IcebergTableInput untouched', async () => {
+  it('AWS::Glue::Table — update() accepts the WORKING shape unchanged (#1454)', async () => {
+    mockSend.mockResolvedValueOnce({});
+
+    await provider.update(
+      'L',
+      TABLE_PHYSICAL_ID,
+      'AWS::Glue::Table',
+      {
+        DatabaseName: 'mydb',
+        OpenTableFormatInput: { IcebergInput: { MetadataOperation: 'CREATE' } },
+        TableInput: { Name: 'mytbl', TableType: 'EXTERNAL_TABLE' },
+      },
+      {}
+    );
+
+    // UpdateTableCommandInput has no OpenTableFormatInput member — the working
+    // shape is accepted and simply not forwarded (pre-existing behavior).
+    const updateCall = mockSend.mock.calls.find((c) => c[0] instanceof UpdateTableCommand);
+    expect(updateCall).toBeDefined();
+    expect('OpenTableFormatInput' in (updateCall![0].input as object)).toBe(false);
+  });
+
+  it('AWS::Glue::Table — an unresolved-intrinsic OpenTableFormatInput is left to AWS, not refused (#1454)', async () => {
+    // A non-object shape means cdkd cannot tell what is inside; surfacing AWS's
+    // real validation error beats a misleading Iceberg-specific refusal.
     mockSend.mockResolvedValueOnce({});
 
     await provider.create('L', 'AWS::Glue::Table', {
       DatabaseName: 'mydb',
-      OpenTableFormatInput: { IcebergInput: { MetadataOperation: 'CREATE' } },
+      OpenTableFormatInput: 'unresolved',
       TableInput: { Name: 'events_iceberg' },
     });
 
-    const createCall = mockSend.mock.calls.find((c) => c[0] instanceof CreateTableCommand);
-    const input = createCall![0].input as { OpenTableFormatInput: Record<string, unknown> };
-    expect(input.OpenTableFormatInput).toEqual({ IcebergInput: { MetadataOperation: 'CREATE' } });
+    expect(mockSend.mock.calls.find((c) => c[0] instanceof CreateTableCommand)).toBeDefined();
   });
 
   it('AWS::Glue::Table — create() omits OpenTableFormatInput when absent (omit-when-absent)', async () => {
