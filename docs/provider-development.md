@@ -1267,6 +1267,28 @@ One semantic divergence from `getDriftUnknownPaths()`, required for this pass to
 
 **Do NOT sort inside the reverse-mapper instead.** It looks like a one-liner, but it breaks the `properties` fallback baseline: `runDriftForStack` uses `observedProperties` as the baseline only when present and falls back to the template `properties` otherwise, so for a resource deployed before observed-capture the baseline would be the user's TEMPLATE order while the read side is sorted — manufacturing drift instead of removing it. The normalizer runs on both comparison sides, which is exactly the property needed.
 
+#### When there is NO observed baseline at all
+
+The paragraph above describes the round-trip when `observedProperties` exists.
+When it does NOT — a resource deployed before observed-capture shipped —
+`--revert` falls back to the raw TEMPLATE as its desired side while the
+previous side is still the AWS-current snapshot. Because the revert overlays a
+drifted top-level subtree wholesale, every AWS-authored key inside that subtree
+which the template does not declare is DROPPED (issue #1478). Glue
+`Table.Parameters` is the discovered case — `table_type` / `metadata_location`
+are written by AWS, not by the template, so a `--revert` de-Icebergs the table —
+but the exposure is general to any resource where AWS writes into a bag the
+template does not fully declare.
+
+The chosen semantic is **warn and proceed**: `cdkd drift --revert` lists the
+paths it will drop as part of the plan (before the confirmation prompt, and
+under `--dry-run`) and then reverts. This is a `drift` concern, NOT a provider
+one — the baseline choice affects every provider that implements
+`readCurrentState`, so fixing it inside one provider would make that provider
+diverge from its siblings. Nothing is required of a provider here; the note
+exists so that reading only the round-trip paragraph above does not leave you
+believing the desired side is always an observed snapshot.
+
 #### Two failure modes when an always-emit placeholder round-trips through `update()`
 
 `cdkd drift --revert` round-trips `observedProperties` (the snapshot `readCurrentState` produced) back through `provider.update`. That code path is what surfaces every shape-mismatch bug between the read side (`readCurrentState` output) and the write side (AWS create/update API input). Two failure classes have been observed; both must be designed around BEFORE adding a new `readCurrentState`.

@@ -726,6 +726,101 @@ async function runAccept(
  * parent path — so `path.split('.', 1)` is always safe to extract the
  * top-level key.
  */
+/**
+ * The AWS-authored property paths a `--revert` is about to DROP, for a
+ * resource whose state predates observed-capture (issue #1478).
+ *
+ * The mechanism, and why this is not a Glue fix: `runRevert` picks the revert
+ * baseline as `observedProperties ?? properties`. When `observedProperties` is
+ * absent, the desired side is the raw TEMPLATE while the previous side is the
+ * AWS-CURRENT snapshot — so {@link buildRevertNewProperties}, which overwrites
+ * each drifted top-level key with the desired sub-shape wholesale, replaces
+ * every AWS-authored key inside that subtree with the template's version. For
+ * a Glue Iceberg table that silently wipes `table_type` /
+ * `metadata_location`, the same outcome as issue #1461 reached by a different
+ * trigger. The exposure is general: ANY resource where AWS writes into a bag
+ * the template does not fully declare, on state written before
+ * observed-capture.
+ *
+ * The user DID ask to push state over AWS, so this is not silent-wrong the way
+ * #1461 was — but it is almost certainly not what they meant, and nothing told
+ * them. So the chosen semantic is **warn and proceed**: it is the cheapest
+ * honest step, preserves today's behavior, and does not foreclose the stricter
+ * options (refuse outright, or treat "no observedProperties" as "previous is
+ * unknown" so the merge preserves).
+ *
+ * Scoped deliberately:
+ *
+ * - **Only drifted top-level keys.** Non-drifted keys keep their AWS-current
+ *   value in `buildRevertNewProperties`, so nothing under them is dropped.
+ * - **Only when `observedProperties` is absent.** With it present the desired
+ *   side is the deploy-time AWS snapshot, which already carries AWS-authored
+ *   fields — dropping one there is a legitimate revert of a real console
+ *   change, and warning about it would be noise on every run.
+ * - **Only keys that vanish.** A key present on both sides with a different
+ *   VALUE is the drift the user asked to revert, not a silent loss.
+ *
+ * @returns dotted paths, sorted, e.g. `['Parameters.metadata_location']`.
+ */
+export function findRevertDroppedAwsKeys(
+  drifts: readonly PropertyDrift[],
+  desiredProperties: Record<string, unknown>,
+  awsProperties: Record<string, unknown>
+): string[] {
+  const dropped = new Set<string>();
+  const driftedTopLevelKeys = new Set<string>();
+  for (const d of drifts) {
+    const topLevelKey = d.path.split('.', 1)[0];
+    if (topLevelKey) driftedTopLevelKeys.add(topLevelKey);
+  }
+
+  for (const key of driftedTopLevelKeys) {
+    // `buildRevertNewProperties` only overwrites a key the desired side
+    // actually has; otherwise the AWS-current value survives untouched.
+    if (!(key in desiredProperties)) continue;
+    collectMissingPaths(awsProperties[key], desiredProperties[key], key, dropped);
+  }
+
+  return [...dropped].sort();
+}
+
+/**
+ * Walk the AWS-side value against the desired-side value, recording every path
+ * present on the AWS side and absent on the desired side.
+ *
+ * Only plain objects are descended into. An ARRAY is compared wholesale — the
+ * drift comparator itself treats arrays as single values (its paths never
+ * carry an index), so an element-wise walk here would report positions the
+ * rest of the revert path cannot reason about.
+ */
+function collectMissingPaths(
+  awsValue: unknown,
+  desiredValue: unknown,
+  path: string,
+  out: Set<string>
+): void {
+  if (!isPlainRecord(awsValue)) return;
+  if (!isPlainRecord(desiredValue)) {
+    // The desired side is a scalar / array / absent where AWS has an object:
+    // the whole AWS subtree goes. Report the containing path rather than
+    // enumerating leaves the user cannot act on individually.
+    if (desiredValue === undefined) out.add(path);
+    return;
+  }
+  for (const [key, value] of Object.entries(awsValue)) {
+    const childPath = `${path}.${key}`;
+    if (!(key in desiredValue)) {
+      out.add(childPath);
+      continue;
+    }
+    collectMissingPaths(value, desiredValue[key], childPath, out);
+  }
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 export function buildRevertNewProperties(
   drifts: readonly PropertyDrift[],
   desiredProperties: Record<string, unknown>,
@@ -966,6 +1061,32 @@ function printRevertPlan(reports: StackDriftReport[]): void {
         process.stdout.write(
           `    ${change.path}: ${formatScalar(change.awsValue)} -> ${formatScalar(change.stateValue)}\n`
         );
+      }
+      // Issue #1478. Printed as part of the PLAN, not at update time, so it
+      // is visible before the confirmation prompt AND under `--dry-run` —
+      // a warning the user only sees after the writes have happened is not
+      // a warning.
+      const stateResource = report.state.resources[o.logicalId];
+      if (stateResource && stateResource.observedProperties === undefined) {
+        const dropped = findRevertDroppedAwsKeys(
+          o.changes,
+          stateResource.properties ?? {},
+          o.awsProperties
+        );
+        if (dropped.length > 0) {
+          const word = dropped.length === 1 ? 'value' : 'values';
+          process.stdout.write(
+            `    ! this resource has no observed-capture baseline, so the revert ` +
+              `pushes the raw TEMPLATE and will DROP ${dropped.length} AWS-authored ${word}:\n`
+          );
+          for (const path of dropped) {
+            process.stdout.write(`        ${path}\n`);
+          }
+          process.stdout.write(
+            `      Re-deploy the stack first to populate observedProperties if you want ` +
+              `these preserved.\n`
+          );
+        }
       }
     }
   }
