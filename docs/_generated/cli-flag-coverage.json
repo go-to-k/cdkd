@@ -475,6 +475,7 @@
         "route53",
         "s3-asset-deploy",
         "s3-cloudfront",
+        "s3-directory-bucket",
         "s3-event-notification",
         "s3-lifecycle",
         "s3-object-lock",
