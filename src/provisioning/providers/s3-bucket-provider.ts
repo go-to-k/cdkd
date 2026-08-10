@@ -8,6 +8,8 @@ import {
   PutBucketTaggingCommand,
   DeleteBucketTaggingCommand,
   PutBucketOwnershipControlsCommand,
+  DeleteBucketOwnershipControlsCommand,
+  GetBucketOwnershipControlsCommand,
   PutBucketNotificationConfigurationCommand,
   PutBucketCorsCommand,
   DeleteBucketCorsCommand,
@@ -15,6 +17,7 @@ import {
   DeleteBucketLifecycleCommand,
   PutPublicAccessBlockCommand,
   PutBucketEncryptionCommand,
+  DeleteBucketEncryptionCommand,
   PutBucketLoggingCommand,
   PutBucketWebsiteCommand,
   DeleteBucketWebsiteCommand,
@@ -671,6 +674,21 @@ export class S3BucketProvider implements ResourceProvider {
     bucketName: string,
     encryptionConfig: { ServerSideEncryptionConfiguration: Array<Record<string, unknown>> }
   ): Promise<void> {
+    // See applyOwnershipControls: malformed values reach here deliberately, so
+    // fail by name rather than with a bare `.map` TypeError.
+    if (!Array.isArray(encryptionConfig?.ServerSideEncryptionConfiguration)) {
+      // Plain Error on purpose: create()/update() wrap every throw into a
+      // ProvisioningError carrying the real logicalId (which this private
+      // helper does not have), so raising one here would only be re-labelled.
+      throw new Error(
+        `BucketEncryption.ServerSideEncryptionConfiguration must be an array (got ` +
+          `${
+            encryptionConfig?.ServerSideEncryptionConfiguration === undefined
+              ? 'undefined'
+              : typeof encryptionConfig.ServerSideEncryptionConfiguration
+          }) — check for an unresolved intrinsic or a mis-nested template value`
+      );
+    }
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const rules = encryptionConfig.ServerSideEncryptionConfiguration.map((rule): any => {
       const byDefault = rule['ServerSideEncryptionByDefault'] as
@@ -1295,18 +1313,28 @@ export class S3BucketProvider implements ResourceProvider {
   }
 
   /**
-   * Apply additional bucket configuration after creation
+   * Apply additional bucket configuration after creation.
+   *
+   * `options.skipDiffManaged` is passed by `update()` for the three
+   * sub-configs that moved onto the diff path (`VersioningConfiguration` /
+   * `OwnershipControls` / `BucketEncryption`, issue #1466). They stay here for
+   * CREATE — where there is no previous side to diff against — but on UPDATE
+   * they must go through `applySubConfigDiffs` so a REMOVED property is reset
+   * to the CloudFormation default instead of silently surviving. Applying them
+   * in both places would double-PUT.
    */
   private async applyConfiguration(
     bucketName: string,
     properties: Record<string, unknown>,
-    skipTags = false
+    options: { skipTags?: boolean; skipDiffManaged?: boolean } = {}
   ): Promise<void> {
+    const { skipTags = false, skipDiffManaged = false } = options;
+
     // Versioning
     const versioningConfig = properties['VersioningConfiguration'] as
       | Record<string, unknown>
       | undefined;
-    if (versioningConfig) {
+    if (!skipDiffManaged && versioningConfig) {
       await this.applyVersioning(bucketName, versioningConfig);
     }
 
@@ -1322,18 +1350,18 @@ export class S3BucketProvider implements ResourceProvider {
     const ownershipControls = properties['OwnershipControls'] as
       | { Rules: Array<{ ObjectOwnership: string }> }
       | undefined;
-    if (ownershipControls?.Rules) {
-      await this.s3Client.send(
-        new PutBucketOwnershipControlsCommand({
-          Bucket: bucketName,
-          OwnershipControls: {
-            Rules: ownershipControls.Rules.map((r) => ({
-              ObjectOwnership: r.ObjectOwnership as ObjectOwnership,
-            })),
-          },
-        })
-      );
-      this.logger.debug(`Applied ownership controls to bucket ${bucketName}`);
+    // Normalized so an empty `Rules: []` (the readCurrentState placeholder, or
+    // a condition-pruned template) is treated as not-declared instead of
+    // firing a Put that AWS 400s — mirroring the encryption branch below.
+    const normalizedOwnership = S3BucketProvider.emptyListConfigToUndefined(
+      ownershipControls,
+      'Rules'
+    );
+    // `!== undefined`, not truthiness: a falsy non-object ('' / 0 / false) is
+    // MALFORMED and must reach the apply call so create fails the same way
+    // update does. A truthy check would silently skip it on create only.
+    if (!skipDiffManaged && normalizedOwnership !== undefined) {
+      await this.applyOwnershipControls(bucketName, normalizedOwnership);
     }
 
     // Public Access Block Configuration
@@ -1351,22 +1379,117 @@ export class S3BucketProvider implements ResourceProvider {
     // `BucketEncryption: { ServerSideEncryptionConfiguration: [] }` for
     // buckets without explicit SSE — that placeholder must NOT be pushed
     // back through `update()` on a `cdkd drift --revert` round-trip.
-    const bucketEncryption = properties['BucketEncryption'] as
-      | { ServerSideEncryptionConfiguration: Array<Record<string, unknown>> }
-      | undefined;
-    if (
-      bucketEncryption?.ServerSideEncryptionConfiguration &&
-      Array.isArray(bucketEncryption.ServerSideEncryptionConfiguration) &&
-      bucketEncryption.ServerSideEncryptionConfiguration.length > 0
-    ) {
-      await this.applyBucketEncryption(bucketName, bucketEncryption);
+    //
+    // Routed through the SAME normalizer the update path uses, so create and
+    // update agree on what "empty" means. The previous inline
+    // `Array.isArray(...) && length > 0` guard silently SKIPPED a malformed
+    // value on create (leaving the bucket unencrypted-by-declaration with no
+    // error and nothing for drift to see) while update failed loudly on it.
+    const normalizedEncryption = S3BucketProvider.emptyListConfigToUndefined(
+      properties['BucketEncryption'] as
+        | { ServerSideEncryptionConfiguration: Array<Record<string, unknown>> }
+        | undefined,
+      'ServerSideEncryptionConfiguration'
+    );
+    if (!skipDiffManaged && normalizedEncryption !== undefined) {
+      await this.applyBucketEncryption(bucketName, normalizedEncryption);
     }
+  }
+
+  /**
+   * CFn property: OwnershipControls
+   * SDK: PutBucketOwnershipControls
+   */
+  private async applyOwnershipControls(
+    bucketName: string,
+    ownershipControls: { Rules: Array<{ ObjectOwnership: string }> }
+  ): Promise<void> {
+    // A malformed value reaches here by design (the normalizer passes it
+    // through rather than reading it as a removal). Name the property instead
+    // of letting `.map` throw a bare "Cannot read properties of undefined".
+    if (!Array.isArray(ownershipControls?.Rules)) {
+      throw new Error(
+        `OwnershipControls.Rules must be an array (got ` +
+          `${ownershipControls?.Rules === undefined ? 'undefined' : typeof ownershipControls.Rules}` +
+          `) — check for an unresolved intrinsic or a mis-nested template value`
+      );
+    }
+    await this.s3Client.send(
+      new PutBucketOwnershipControlsCommand({
+        Bucket: bucketName,
+        OwnershipControls: {
+          Rules: ownershipControls.Rules.map((r) => ({
+            ObjectOwnership: r.ObjectOwnership as ObjectOwnership,
+          })),
+        },
+      })
+    );
+    this.logger.debug(`Applied ownership controls to bucket ${bucketName}`);
+  }
+
+  /**
+   * Normalize an "empty container" sub-config value to `undefined` so the diff
+   * path cannot mistake a placeholder for a real value.
+   *
+   * `readCurrentState` always-emits placeholder shapes for un-configured
+   * features (`BucketEncryption: { ServerSideEncryptionConfiguration: [] }`,
+   * and the `OwnershipControls: { Rules: [] }` added with issue #1466), and a
+   * `cdkd drift --revert` round-trip feeds those back through `update()`.
+   *
+   * The rule is "empty container == not declared", applied to BOTH sides. Per
+   * pairing that means:
+   *   empty desired  + absent previous -> no call (without this, a Put with an
+   *                                      empty list, which both APIs reject)
+   *   absent desired + empty previous  -> no call (without this, a Delete
+   *                                      against a bucket that never had it)
+   *   empty desired  + REAL previous   -> Delete. This one is NOT suppressed
+   *                                      and must not be: it is a genuine
+   *                                      declared -> not-declared transition,
+   *                                      which is exactly what CloudFormation
+   *                                      removes.
+   *
+   * "Empty" is deliberately NARROW. Only two shapes fold to `undefined`:
+   * a block with NO keys at all (`{}`), and a block whose list key holds an
+   * empty array. Everything else — a non-object, an array where the object
+   * belongs (wrong nesting), a block whose list key is absent but which
+   * carries OTHER keys, or a non-array list (an unresolved intrinsic) — is
+   * MALFORMED, not empty, and passes through so the apply call refuses it by
+   * name. Folding any of those to `undefined` would emit a Delete and
+   * silently downgrade a live bucket (KMS -> AES256) while the template still
+   * declares the config.
+   *
+   * NOTE this helper does NOT cover `VersioningConfiguration` (it has no list
+   * key), and that property is NOT malformed-shape-refused anywhere: a
+   * malformed value there still resolves to 'Suspended', matching `main`.
+   * That pre-existing gap is tracked in issue #1471 — see the note in
+   * `applySubConfigDiffs` for why guarding it is not as simple as it looks.
+   */
+  private static emptyListConfigToUndefined<T extends Record<string, unknown>>(
+    config: T | undefined,
+    listKey: string
+  ): T | undefined {
+    if (config === undefined || config === null) return undefined;
+    // A non-object (or an array where an object belongs -- the wrong-nesting
+    // shape a hand-written L1 template produces) is MALFORMED, not empty.
+    if (typeof config !== 'object' || Array.isArray(config)) return config;
+
+    const list = config[listKey];
+    if (list === undefined || list === null) {
+      // The list key is absent. That is "not declared" ONLY when the block
+      // carries nothing else; a block with OTHER keys is malformed or
+      // partially pruned and must NOT be read as a removal.
+      return Object.keys(config).length === 0 ? undefined : config;
+    }
+    // Genuinely empty list == not declared (the readCurrentState placeholder).
+    if (Array.isArray(list) && list.length === 0) return undefined;
+    // Non-array list (an unresolved intrinsic) is malformed -- pass through.
+    return config;
   }
 
   /**
    * Diff CFn-shape sub-config values between previous and new state.
    *
-   * Three transitions:
+   * Four transitions:
    * - undefined -> defined  (value differs from previous, OR previous undefined): Put
    * - defined -> undefined: Delete
    * - defined -> defined (different): Put
@@ -1435,17 +1558,113 @@ export class S3BucketProvider implements ResourceProvider {
    * Apply the diff between previous and new sub-configs, issuing Put / Delete
    * SDK calls only for differing keys. Called from `update()`.
    *
-   * Versioning / PublicAccessBlock / Tags / OwnershipControls / BucketEncryption
-   * stay on `applyConfiguration` (the unconditional always-PUT path) because
-   * their AWS APIs don't have a clean "delete" counterpart and they
-   * round-trip safely as no-ops when state == AWS-current. The 12 sub-configs
-   * below DO have proper Put/Delete pairs so the diff path is preferable.
+   * PublicAccessBlockConfiguration and Tags stay on `applyConfiguration` /
+   * `applyTagDiff`. `PublicAccessBlockConfiguration` is deliberately NOT on the
+   * diff path: a live CloudFormation A/B (issue #1466) confirmed CFn ALSO
+   * leaves the block in place when the property is removed, so cdkd is at
+   * parity and adding an `onRemove` here would CREATE a divergence.
+   *
+   * VersioningConfiguration / OwnershipControls / BucketEncryption used to sit
+   * on that always-PUT path too, on the assumption that their APIs had no clean
+   * "delete" counterpart. That was wrong in all three cases and made removal a
+   * silent no-op (issue #1466): the same A/B showed CFn suspends versioning,
+   * deletes ownership controls, and resets encryption to the SSE-S3 default.
+   * They are now diffed here like every other Put/Delete pair.
    */
   private async applySubConfigDiffs(
     bucketName: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>
   ): Promise<void> {
+    // Versioning is split by RESULTING STATUS, not by transition kind.
+    //
+    // S3 rejects PutBucketVersioning(Suspended) while a replication
+    // configuration is still active, so EVERY path that lands on 'Suspended'
+    // must run after the replication diff below -- both the removal
+    // (property dropped => CFn resets to Suspended) AND an explicit
+    // `{ Status: 'Suspended' }` in the template. Deferring only the removal
+    // would leave the explicit form on the early path and hit exactly the S3
+    // rejection this split exists to avoid; `cdkd drift --revert` reaches that
+    // form routinely, because `readCurrentState` always emits
+    // `{ Status: 'Suspended' }` for an un-versioned bucket.
+    //
+    // The ENABLE direction stays early: an ADDED replication configuration
+    // requires versioning to already be on.
+    const previousVersioning = previousProperties['VersioningConfiguration'] as
+      | Record<string, unknown>
+      | undefined;
+    const nextVersioning = properties['VersioningConfiguration'] as
+      | Record<string, unknown>
+      | undefined;
+    // NOTE a MALFORMED VersioningConfiguration (a string / array / unresolved
+    // intrinsic) still resolves to 'Suspended' below, because `applyVersioning`
+    // defaults a missing Status that way. That silent-suspend predates this
+    // change (`main` had the identical default) and is NOT part of issue
+    // #1466's removal semantics, so it is tracked separately rather than
+    // guarded here: an earlier attempt to refuse it also rejected the PREVIOUS
+    // side, which comes from cdkd STATE rather than the user's template — a
+    // stack whose state already held a malformed value could then never deploy
+    // again, and editing the template would not help. See issue #1471.
+    // Nullish (not strict-undefined) to match `diffSubConfig`'s own semantics;
+    // a desired `null` is a removal there, so it must be one here too.
+    const versioningChanged =
+      JSON.stringify(previousVersioning ?? null) !== JSON.stringify(nextVersioning ?? null);
+    // `applyVersioning` defaults a missing Status to 'Suspended', so the
+    // effective desired status is what decides which side of the split runs.
+    const desiredVersioningStatus =
+      nextVersioning == null ? 'Suspended' : (nextVersioning['Status'] as string) || 'Suspended';
+
+    // `nextVersioning != null` is implied by the status check (a null value
+    // resolves to 'Suspended'); it is kept for TypeScript's narrowing.
+    if (versioningChanged && nextVersioning != null && desiredVersioningStatus !== 'Suspended') {
+      await this.applyVersioning(bucketName, nextVersioning);
+    }
+
+    // Ownership controls (per-id-free single config; empty Rules == absent)
+    await this.diffSubConfig(
+      bucketName,
+      S3BucketProvider.emptyListConfigToUndefined(
+        previousProperties['OwnershipControls'] as
+          | { Rules: Array<{ ObjectOwnership: string }> }
+          | undefined,
+        'Rules'
+      ),
+      S3BucketProvider.emptyListConfigToUndefined(
+        properties['OwnershipControls'] as
+          | { Rules: Array<{ ObjectOwnership: string }> }
+          | undefined,
+        'Rules'
+      ),
+      async (cfg) => this.applyOwnershipControls(bucketName, cfg),
+      async () => {
+        await this.s3Client.send(new DeleteBucketOwnershipControlsCommand({ Bucket: bucketName }));
+        this.logger.debug(`Deleted ownership controls on bucket ${bucketName}`);
+      }
+    );
+
+    // Bucket encryption (empty ServerSideEncryptionConfiguration == absent;
+    // DeleteBucketEncryption reverts the bucket to the SSE-S3 / AES256 default)
+    await this.diffSubConfig(
+      bucketName,
+      S3BucketProvider.emptyListConfigToUndefined(
+        previousProperties['BucketEncryption'] as
+          | { ServerSideEncryptionConfiguration: Array<Record<string, unknown>> }
+          | undefined,
+        'ServerSideEncryptionConfiguration'
+      ),
+      S3BucketProvider.emptyListConfigToUndefined(
+        properties['BucketEncryption'] as
+          | { ServerSideEncryptionConfiguration: Array<Record<string, unknown>> }
+          | undefined,
+        'ServerSideEncryptionConfiguration'
+      ),
+      async (cfg) => this.applyBucketEncryption(bucketName, cfg),
+      async () => {
+        await this.s3Client.send(new DeleteBucketEncryptionCommand({ Bucket: bucketName }));
+        this.logger.debug(`Deleted bucket encryption on bucket ${bucketName}`);
+      }
+    );
+
     // Lifecycle
     await this.diffSubConfig(
       bucketName,
@@ -1620,6 +1839,42 @@ export class S3BucketProvider implements ResourceProvider {
         this.logger.debug(`Deleted inventory configuration ${id} on bucket ${bucketName}`);
       }
     );
+
+    // Versioning SUSPEND — deferred to LAST on purpose (issue #1466); see the
+    // split rationale at the top of this method.
+    if (versioningChanged && desiredVersioningStatus === 'Suspended') {
+      // Object Lock structurally forbids suspending versioning
+      // (`InvalidBucketState`), so this is un-actionable rather than a
+      // divergence — warn instead of failing the deploy, which is what an
+      // unconditional suspend would newly do here.
+      //
+      // BOTH sides are consulted: `ObjectLockEnabled` is not classified as a
+      // replacement-forcing property for AWS::S3::Bucket, so a template that
+      // drops `ObjectLockEnabled` and `VersioningConfiguration` together takes
+      // the in-place UPDATE path. Reading only the desired side would see no
+      // Object Lock and issue the suspend the live bucket still refuses.
+      // Test the MEANINGFUL field, never mere presence of the block.
+      // `readObjectLock` always-emits `ObjectLockConfiguration` and returns
+      // `{}` for a bucket with no object lock, and `cdkd drift --revert` feeds
+      // that snapshot in as BOTH sides — so a presence check
+      // (`!== undefined`) is true for EVERY bucket on the revert path and
+      // would suppress every legitimate suspend, leaving the drift
+      // unfixable and warning about object lock the bucket does not have.
+      const hasObjectLock = (p: Record<string, unknown>): boolean => {
+        if (p['ObjectLockEnabled'] === true || p['ObjectLockEnabled'] === 'true') return true;
+        const cfg = p['ObjectLockConfiguration'] as Record<string, unknown> | undefined;
+        return cfg?.['ObjectLockEnabled'] === 'Enabled';
+      };
+      if (hasObjectLock(properties) || hasObjectLock(previousProperties)) {
+        this.logger.warn(
+          `Bucket ${bucketName}: versioning would be suspended (VersioningConfiguration removed ` +
+            `or set to Suspended), but the bucket has Object Lock enabled and S3 does not allow ` +
+            `suspending versioning on it. Leaving versioning enabled.`
+        );
+      } else {
+        await this.applyVersioning(bucketName, { Status: 'Suspended' });
+      }
+    }
   }
 
   /**
@@ -1867,13 +2122,20 @@ export class S3BucketProvider implements ResourceProvider {
     }
 
     try {
-      // Apply configuration changes (skip Tags - applyConfiguration only adds,
-      // doesn't remove; we handle tags below to support removal too).
-      // applyConfiguration is the always-PUT path for sub-configs that
-      // don't have a clean Delete API counterpart (Versioning / PAB / SSE).
-      await this.applyConfiguration(physicalId, properties, /* skipTags */ true);
+      // Apply configuration changes. Tags are skipped because
+      // `applyConfiguration` only adds and never removes (handled by
+      // `applyTagDiff` below), and the three diff-managed sub-configs
+      // (Versioning / OwnershipControls / BucketEncryption) are skipped
+      // because `applySubConfigDiffs` owns them on the UPDATE path so that
+      // REMOVING one resets it like CloudFormation does (issue #1466).
+      // What is left on the always-PUT path here is
+      // `PublicAccessBlockConfiguration`, which is at CFn parity.
+      await this.applyConfiguration(physicalId, properties, {
+        skipTags: true,
+        skipDiffManaged: true,
+      });
 
-      // Apply diff-aware Put/Delete for the 12 sub-configs that have proper
+      // Apply diff-aware Put/Delete for the sub-configs that have proper
       // Put/Delete API pairs.
       await this.applySubConfigDiffs(physicalId, properties, previousProperties);
 
@@ -1972,7 +2234,8 @@ export class S3BucketProvider implements ResourceProvider {
    * returns `undefined`.
    *
    * Coverage: `BucketName`, `VersioningConfiguration`, `BucketEncryption`,
-   * `PublicAccessBlockConfiguration`, `Tags`, plus all 12 sub-configs:
+   * `OwnershipControls`, `PublicAccessBlockConfiguration`, `Tags`, plus all 12
+   * sub-configs:
    * `LifecycleConfiguration`, `CorsConfiguration`, `WebsiteConfiguration`,
    * `LoggingConfiguration`, `NotificationConfiguration`,
    * `ReplicationConfiguration`, `ObjectLockConfiguration`,
@@ -2001,11 +2264,12 @@ export class S3BucketProvider implements ResourceProvider {
       throw err;
     }
 
-    // Fire all 15 GET / List calls in parallel. Each helper handles its own
+    // Fire all 16 GET / List calls in parallel. Each helper handles its own
     // "feature not configured" → placeholder fallback.
     const [
       versioning,
       encryption,
+      ownership,
       pab,
       tags,
       lifecycle,
@@ -2023,6 +2287,7 @@ export class S3BucketProvider implements ResourceProvider {
     ] = await Promise.all([
       this.readVersioning(physicalId),
       this.readEncryption(physicalId),
+      this.readOwnershipControls(physicalId),
       this.readPublicAccessBlock(physicalId),
       this.readTags(physicalId),
       this.readLifecycle(physicalId),
@@ -2043,6 +2308,7 @@ export class S3BucketProvider implements ResourceProvider {
       BucketName: physicalId,
       VersioningConfiguration: versioning,
       BucketEncryption: encryption,
+      OwnershipControls: ownership,
       PublicAccessBlockConfiguration: pab,
       Tags: tags,
       LifecycleConfiguration: lifecycle,
@@ -2072,6 +2338,33 @@ export class S3BucketProvider implements ResourceProvider {
     // 'Suspended' is the semantic "off" value in CFn.
     const resp = await this.s3Client.send(new GetBucketVersioningCommand({ Bucket: bucket }));
     return { Status: resp.Status ?? 'Suspended' };
+  }
+
+  /**
+   * OwnershipControls { Rules: [{ ObjectOwnership }] }. Always emit a
+   * placeholder (empty `Rules`) so a console-side change on a bucket that
+   * declares the property surfaces as drift. Added with issue #1466 — without
+   * a read here, `cdkd drift` could not see ownership controls at all, which
+   * is why the removal bug that issue fixes produced no signal from ANY
+   * command.
+   */
+  private async readOwnershipControls(bucket: string): Promise<Record<string, unknown>> {
+    try {
+      const resp = await this.s3Client.send(
+        new GetBucketOwnershipControlsCommand({ Bucket: bucket })
+      );
+      return {
+        Rules: (resp.OwnershipControls?.Rules ?? []).map((r) => ({
+          ObjectOwnership: r.ObjectOwnership,
+        })),
+      };
+    } catch (err) {
+      const e = err as { name?: string };
+      if (e.name === 'OwnershipControlsNotFoundError') {
+        return { Rules: [] };
+      }
+      throw err;
+    }
   }
 
   private async readEncryption(bucket: string): Promise<Record<string, unknown>> {

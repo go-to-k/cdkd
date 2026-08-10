@@ -6,6 +6,10 @@ import {
   DeleteBucketCorsCommand,
   PutBucketLifecycleConfigurationCommand,
   DeleteBucketLifecycleCommand,
+  DeleteBucketEncryptionCommand,
+  PutBucketOwnershipControlsCommand,
+  DeleteBucketOwnershipControlsCommand,
+  PutPublicAccessBlockCommand,
   PutBucketVersioningCommand,
   PutBucketTaggingCommand,
   DeleteBucketTaggingCommand,
@@ -55,6 +59,10 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { S3BucketProvider } from '../../../src/provisioning/providers/s3-bucket-provider.js';
+import { getLogger } from '../../../src/utils/logger.js';
+
+/** The single mocked child logger every provider instance resolves to. */
+const childLogger = (getLogger() as unknown as { child: () => { warn: ReturnType<typeof vi.fn> } }).child();
 
 const BUCKET_NAME = 'my-bucket';
 
@@ -97,6 +105,8 @@ describe('S3BucketProvider read-update round-trip', () => {
     mockSend.mockResolvedValueOnce({});
     // GetBucketEncryption — absent
     mockSend.mockRejectedValueOnce(notConfigured('ServerSideEncryptionConfigurationNotFoundError'));
+    // GetBucketOwnershipControls — absent
+    mockSend.mockRejectedValueOnce(notConfigured('OwnershipControlsNotFoundError'));
     // GetPublicAccessBlock — absent
     mockSend.mockRejectedValueOnce(notConfigured('NoSuchPublicAccessBlockConfiguration'));
     // GetBucketTagging — NoSuchTagSet (bucket has zero user tags)
@@ -121,6 +131,8 @@ describe('S3BucketProvider read-update round-trip', () => {
     mockSend.mockResolvedValueOnce({});
     // GetBucketEncryption — absent
     mockSend.mockRejectedValueOnce(notConfigured('ServerSideEncryptionConfigurationNotFoundError'));
+    // GetBucketOwnershipControls — absent
+    mockSend.mockRejectedValueOnce(notConfigured('OwnershipControlsNotFoundError'));
     // GetPublicAccessBlock — absent
     mockSend.mockRejectedValueOnce(notConfigured('NoSuchPublicAccessBlockConfiguration'));
     // GetBucketTagging — only aws:* tag (filtered out)
@@ -135,9 +147,11 @@ describe('S3BucketProvider read-update round-trip', () => {
 
   // -------------------------------------------------------------------
   // No-drift round-trip — state == AWS implies zero mutating SDK calls
-  // for the tag path (the diff-aware applyTagDiff). The unconditional
-  // applyConfiguration paths (Versioning / PAB) DO re-PUT but only with
-  // the same observed shape, which AWS accepts as a no-op.
+  // for the tag path (the diff-aware applyTagDiff). Since issue #1466
+  // Versioning / OwnershipControls / BucketEncryption are diff-managed too, so
+  // they issue no call either when unchanged; PublicAccessBlockConfiguration
+  // is the one remaining always-PUT path and DOES re-PUT, but only with the
+  // same observed shape, which AWS accepts as a no-op.
   // -------------------------------------------------------------------
 
   it('round-trip on no-drift snapshot does not issue PutBucketTagging or DeleteBucketTagging', async () => {
@@ -145,6 +159,9 @@ describe('S3BucketProvider read-update round-trip', () => {
       BucketName: BUCKET_NAME,
       VersioningConfiguration: { Status: 'Suspended' },
       BucketEncryption: { ServerSideEncryptionConfiguration: [] },
+      // readCurrentState always-emits this too (issue #1466); keep the
+      // observed snapshot faithful so the no-drift claim stays real.
+      OwnershipControls: { Rules: [] },
       PublicAccessBlockConfiguration: {
         BlockPublicAcls: false,
         BlockPublicPolicy: false,
@@ -187,6 +204,9 @@ describe('S3BucketProvider read-update round-trip', () => {
       BucketName: BUCKET_NAME,
       VersioningConfiguration: { Status: 'Suspended' },
       BucketEncryption: { ServerSideEncryptionConfiguration: [] },
+      // readCurrentState always-emits this too (issue #1466); keep the
+      // observed snapshot faithful so the no-drift claim stays real.
+      OwnershipControls: { Rules: [] },
       PublicAccessBlockConfiguration: {
         BlockPublicAcls: false,
         BlockPublicPolicy: false,
@@ -270,11 +290,11 @@ describe('S3BucketProvider read-update round-trip', () => {
     expect(deleteCalls.length).toBeGreaterThan(0);
   });
 
-  it('versioning placeholder round-trips safely (Suspended -> Suspended is an AWS-accepted no-op)', async () => {
-    // PutBucketVersioning with Status=Suspended on a bucket that's
-    // never been versioned is documented as safe by AWS. The unguarded
-    // re-PUT on round-trip is intentional — Suspended placeholder must
-    // be safely round-trippable so console-side Enable surfaces.
+  it('versioning placeholder round-trips as a NO-OP when it did not change', async () => {
+    // Since issue #1466 VersioningConfiguration is on the diff path, so an
+    // unchanged Suspended placeholder issues no call at all (it used to
+    // always-PUT). Pinning the negative direction alone would be vacuous —
+    // the positive direction is pinned by the test below.
     const observed = {
       BucketName: BUCKET_NAME,
       VersioningConfiguration: { Status: 'Suspended' },
@@ -285,12 +305,28 @@ describe('S3BucketProvider read-update round-trip', () => {
 
     await provider.update('L', BUCKET_NAME, 'AWS::S3::Bucket', observed, observed);
 
+    expect(
+      mockSend.mock.calls.filter((c) => c[0] instanceof PutBucketVersioningCommand)
+    ).toHaveLength(0);
+  });
+
+  it('versioning revert (drifted Enabled -> desired Suspended) fires a shape-valid Put', async () => {
+    // The `cdkd drift --revert` direction: desired side is cdkd state, previous
+    // side is the AWS-observed value. The Put must still carry the AWS-accepted
+    // `Status: 'Suspended'` shape, not an AWS-rejection shape.
+    mockSend.mockResolvedValue({});
+
+    await provider.update(
+      'L',
+      BUCKET_NAME,
+      'AWS::S3::Bucket',
+      { BucketName: BUCKET_NAME, VersioningConfiguration: { Status: 'Suspended' } },
+      { BucketName: BUCKET_NAME, VersioningConfiguration: { Status: 'Enabled' } }
+    );
+
     const versioningCalls = mockSend.mock.calls.filter(
       (c) => c[0] instanceof PutBucketVersioningCommand
     );
-    // The provider unconditionally fires when VersioningConfiguration
-    // is present. The point of the test is: when it does, the input is
-    // shape-valid (Status: 'Suspended'), not an AWS-rejection shape.
     expect(versioningCalls).toHaveLength(1);
     const input = versioningCalls[0]?.[0].input as {
       VersioningConfiguration: { Status: string };
@@ -307,6 +343,7 @@ describe('S3BucketProvider read-update round-trip', () => {
     mockSend.mockResolvedValueOnce({}); // HeadBucket
     mockSend.mockResolvedValueOnce({ Status: 'Enabled' }); // Versioning
     mockSend.mockRejectedValueOnce(notConfigured('ServerSideEncryptionConfigurationNotFoundError'));
+    mockSend.mockRejectedValueOnce(notConfigured('OwnershipControlsNotFoundError'));
     mockSend.mockRejectedValueOnce(notConfigured('NoSuchPublicAccessBlockConfiguration'));
     // GetBucketTagging — real user tag present
     mockSend.mockResolvedValueOnce({
@@ -315,7 +352,9 @@ describe('S3BucketProvider read-update round-trip', () => {
 
     const result = await provider.readCurrentState(BUCKET_NAME, 'L', 'AWS::S3::Bucket');
 
-    expect(mockSend.mock.calls[4]?.[0]).toBeInstanceOf(GetBucketTaggingCommand);
+    // Index 5, not 4: readOwnershipControls was inserted ahead of the PAB /
+    // Tags reads by issue #1466.
+    expect(mockSend.mock.calls[5]?.[0]).toBeInstanceOf(GetBucketTaggingCommand);
     expect(result?.Tags).toEqual([{ Key: 'Owner', Value: 'platform' }]);
   });
 });
@@ -324,7 +363,9 @@ describe('S3BucketProvider read-update round-trip', () => {
 // PR #215 sub-config update / delete round-trips
 // =====================================================================
 //
-// applySubConfigDiffs() walks each of the 12 sub-configs and issues:
+// applySubConfigDiffs() walks each of the 15 sub-configs (the original 12 plus
+// VersioningConfiguration / OwnershipControls / BucketEncryption, moved onto
+// the diff path by issue #1466) and issues:
 //   - undefined -> defined: Put*Command
 //   - defined -> undefined: Delete*Command (or Put-with-cleared-body for
 //     APIs that have no Delete counterpart — Logging / Notification /
@@ -1776,5 +1817,688 @@ describe('S3BucketProvider import', () => {
 
     expect(result).toBeNull();
     expect(mockSend).not.toHaveBeenCalled();
+  });
+});
+
+// =====================================================================
+// Issue #1466 — removing VersioningConfiguration / OwnershipControls /
+// BucketEncryption must reset the bucket the way CloudFormation does,
+// instead of silently leaving the old value on the real bucket.
+//
+// The verdicts below are NOT inferred from the source; each was pinned by a
+// live CloudFormation A/B on the same template pair (see the issue):
+//   VersioningConfiguration  -> CFn suspends           => Put(Suspended)
+//   OwnershipControls        -> CFn deletes            => DeleteBucketOwnershipControls
+//   BucketEncryption         -> CFn resets to AES256   => DeleteBucketEncryption
+//   PublicAccessBlockConfiguration -> CFn KEEPS it     => no call (parity)
+// The PublicAccessBlock case is covered by a NEGATIVE test on purpose: it
+// looks identical to the other three in the source, so without a test pinning
+// "issues no call", a later consistency-minded refactor would turn cdkd's
+// correct behavior into a divergence.
+// =====================================================================
+
+describe('S3BucketProvider removal semantics (issue #1466)', () => {
+  let provider: S3BucketProvider;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    provider = new S3BucketProvider();
+    mockSend.mockResolvedValue({});
+  });
+
+  function callsOf(cmdClass: new (...args: never[]) => unknown): { input: unknown }[] {
+    return mockSend.mock.calls
+      .filter((c) => c[0] instanceof cmdClass)
+      .map((c) => c[0] as { input: unknown });
+  }
+
+  const base = { BucketName: BUCKET_NAME };
+  const update = (next: Record<string, unknown>, prev: Record<string, unknown>) =>
+    provider.update('L', BUCKET_NAME, 'AWS::S3::Bucket', next, prev);
+
+  // ---------------- VersioningConfiguration ----------------
+
+  it('VersioningConfiguration: present -> absent suspends versioning', async () => {
+    await update(base, { ...base, VersioningConfiguration: { Status: 'Enabled' } });
+    const calls = callsOf(PutBucketVersioningCommand);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.input).toMatchObject({
+      Bucket: BUCKET_NAME,
+      VersioningConfiguration: { Status: 'Suspended' },
+    });
+  });
+
+  it('VersioningConfiguration: absent -> absent issues no call', async () => {
+    await update(base, base);
+    expect(callsOf(PutBucketVersioningCommand)).toHaveLength(0);
+  });
+
+  it('VersioningConfiguration: unchanged issues no call (no double-PUT)', async () => {
+    const cfg = { Status: 'Enabled' };
+    await update(
+      { ...base, VersioningConfiguration: cfg },
+      { ...base, VersioningConfiguration: cfg }
+    );
+    expect(callsOf(PutBucketVersioningCommand)).toHaveLength(0);
+  });
+
+  it('VersioningConfiguration: absent -> present enables exactly once', async () => {
+    await update({ ...base, VersioningConfiguration: { Status: 'Enabled' } }, base);
+    const calls = callsOf(PutBucketVersioningCommand);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.input).toMatchObject({
+      VersioningConfiguration: { Status: 'Enabled' },
+    });
+  });
+
+  // ---------------- OwnershipControls ----------------
+
+  it('OwnershipControls: present -> absent fires DeleteBucketOwnershipControls', async () => {
+    await update(base, {
+      ...base,
+      OwnershipControls: { Rules: [{ ObjectOwnership: 'BucketOwnerPreferred' }] },
+    });
+    expect(callsOf(DeleteBucketOwnershipControlsCommand)).toHaveLength(1);
+    expect(callsOf(PutBucketOwnershipControlsCommand)).toHaveLength(0);
+  });
+
+  it('OwnershipControls: absent -> present fires Put exactly once', async () => {
+    await update(
+      { ...base, OwnershipControls: { Rules: [{ ObjectOwnership: 'BucketOwnerEnforced' }] } },
+      base
+    );
+    const calls = callsOf(PutBucketOwnershipControlsCommand);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.input).toMatchObject({
+      OwnershipControls: { Rules: [{ ObjectOwnership: 'BucketOwnerEnforced' }] },
+    });
+    expect(callsOf(DeleteBucketOwnershipControlsCommand)).toHaveLength(0);
+  });
+
+  it('OwnershipControls: unchanged issues no call (no double-PUT)', async () => {
+    const cfg = { Rules: [{ ObjectOwnership: 'BucketOwnerEnforced' }] };
+    await update({ ...base, OwnershipControls: cfg }, { ...base, OwnershipControls: cfg });
+    expect(callsOf(PutBucketOwnershipControlsCommand)).toHaveLength(0);
+    expect(callsOf(DeleteBucketOwnershipControlsCommand)).toHaveLength(0);
+  });
+
+  it('OwnershipControls: empty-Rules placeholder on either side is treated as absent', async () => {
+    // readCurrentState emits `{ Rules: [] }` for an un-configured bucket; on a
+    // `cdkd drift --revert` round-trip that must not look like a change.
+    await update({ ...base, OwnershipControls: { Rules: [] } }, base);
+    expect(callsOf(PutBucketOwnershipControlsCommand)).toHaveLength(0);
+    expect(callsOf(DeleteBucketOwnershipControlsCommand)).toHaveLength(0);
+
+    vi.clearAllMocks();
+    mockSend.mockResolvedValue({});
+    await update(base, { ...base, OwnershipControls: { Rules: [] } });
+    expect(callsOf(DeleteBucketOwnershipControlsCommand)).toHaveLength(0);
+  });
+
+  // ---------------- BucketEncryption ----------------
+
+  const sseKms = {
+    ServerSideEncryptionConfiguration: [
+      {
+        ServerSideEncryptionByDefault: { SSEAlgorithm: 'aws:kms', KMSMasterKeyID: 'alias/aws/s3' },
+        BucketKeyEnabled: true,
+      },
+    ],
+  };
+
+  it('BucketEncryption: present -> absent fires DeleteBucketEncryption', async () => {
+    await update(base, { ...base, BucketEncryption: sseKms });
+    expect(callsOf(DeleteBucketEncryptionCommand)).toHaveLength(1);
+    expect(callsOf(PutBucketEncryptionCommand)).toHaveLength(0);
+  });
+
+  it('BucketEncryption: absent -> present fires Put exactly once', async () => {
+    await update({ ...base, BucketEncryption: sseKms }, base);
+    expect(callsOf(PutBucketEncryptionCommand)).toHaveLength(1);
+    expect(callsOf(DeleteBucketEncryptionCommand)).toHaveLength(0);
+  });
+
+  it('BucketEncryption: unchanged issues no call (no double-PUT)', async () => {
+    await update({ ...base, BucketEncryption: sseKms }, { ...base, BucketEncryption: sseKms });
+    expect(callsOf(PutBucketEncryptionCommand)).toHaveLength(0);
+    expect(callsOf(DeleteBucketEncryptionCommand)).toHaveLength(0);
+  });
+
+  it('BucketEncryption: empty-rules placeholder on either side is treated as absent', async () => {
+    const placeholder = { ServerSideEncryptionConfiguration: [] };
+    await update({ ...base, BucketEncryption: placeholder }, base);
+    expect(callsOf(PutBucketEncryptionCommand)).toHaveLength(0);
+    expect(callsOf(DeleteBucketEncryptionCommand)).toHaveLength(0);
+
+    vi.clearAllMocks();
+    mockSend.mockResolvedValue({});
+    await update(base, { ...base, BucketEncryption: placeholder });
+    expect(callsOf(DeleteBucketEncryptionCommand)).toHaveLength(0);
+  });
+
+  // ---------------- PublicAccessBlockConfiguration (VERIFIED PARITY) ----------------
+
+  it('PublicAccessBlockConfiguration: present -> absent issues NO call at all (CFn parity)', async () => {
+    // Live CFn A/B (issue #1466): CloudFormation leaves the public access
+    // block in place when the property is removed. cdkd matches. Adding an
+    // onRemove here would be a REGRESSION, not a fix.
+    //
+    // Asserted by COMMAND-NAME MATCH, not `callsOf(PutPublicAccessBlockCommand)`:
+    // the refactor this test exists to block would add an onRemove issuing
+    // `DeletePublicAccessBlockCommand`, which a Put-only assertion passes
+    // unchanged -- i.e. it would be vacuous against its own stated threat.
+    await update(base, {
+      ...base,
+      PublicAccessBlockConfiguration: {
+        BlockPublicAcls: true,
+        BlockPublicPolicy: true,
+        IgnorePublicAcls: true,
+        RestrictPublicBuckets: true,
+      },
+    });
+    const pabCommands = mockSend.mock.calls
+      .map((c) => (c[0] as { constructor: { name: string } }).constructor.name)
+      .filter((n) => /PublicAccessBlock/.test(n));
+    expect(pabCommands).toEqual([]);
+    // Nothing else should fire either for a pure PAB removal.
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('PublicAccessBlockConfiguration: still applied when present', async () => {
+    await update({ ...base, PublicAccessBlockConfiguration: { BlockPublicAcls: true } }, base);
+    expect(callsOf(PutPublicAccessBlockCommand)).toHaveLength(1);
+  });
+
+  // ---------------- CREATE still applies all three ----------------
+
+  it('create() still applies all three diff-managed sub-configs exactly once', async () => {
+    // `skipDiffManaged` defaults to false so CREATE keeps applying these on the
+    // always-PUT path (there is no previous side to diff against). If that
+    // default ever flipped -- or if create() started passing the flag -- a
+    // bucket would be created with NO encryption and NO ownership controls,
+    // silently. Nothing else in the suite covers the create() side of the flag.
+    await provider.create('L', 'AWS::S3::Bucket', {
+      BucketName: BUCKET_NAME,
+      VersioningConfiguration: { Status: 'Enabled' },
+      OwnershipControls: { Rules: [{ ObjectOwnership: 'BucketOwnerEnforced' }] },
+      BucketEncryption: sseKms,
+      PublicAccessBlockConfiguration: { BlockPublicAcls: true },
+    });
+
+    expect(callsOf(PutBucketVersioningCommand)).toHaveLength(1);
+    expect(callsOf(PutBucketOwnershipControlsCommand)).toHaveLength(1);
+    expect(callsOf(PutBucketEncryptionCommand)).toHaveLength(1);
+    expect(callsOf(PutPublicAccessBlockCommand)).toHaveLength(1);
+    // and no removal call leaks into the create path
+    expect(callsOf(DeleteBucketOwnershipControlsCommand)).toHaveLength(0);
+    expect(callsOf(DeleteBucketEncryptionCommand)).toHaveLength(0);
+  });
+
+  // ---------------- changed-value direction ----------------
+
+  it('OwnershipControls: present -> present (different) fires a single Put', async () => {
+    await update(
+      { ...base, OwnershipControls: { Rules: [{ ObjectOwnership: 'BucketOwnerEnforced' }] } },
+      { ...base, OwnershipControls: { Rules: [{ ObjectOwnership: 'BucketOwnerPreferred' }] } }
+    );
+    const calls = callsOf(PutBucketOwnershipControlsCommand);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.input).toMatchObject({
+      OwnershipControls: { Rules: [{ ObjectOwnership: 'BucketOwnerEnforced' }] },
+    });
+    expect(callsOf(DeleteBucketOwnershipControlsCommand)).toHaveLength(0);
+  });
+
+  it('BucketEncryption: present -> present (different) fires a single Put', async () => {
+    const sseS3 = {
+      ServerSideEncryptionConfiguration: [
+        { ServerSideEncryptionByDefault: { SSEAlgorithm: 'AES256' } },
+      ],
+    };
+    await update({ ...base, BucketEncryption: sseS3 }, { ...base, BucketEncryption: sseKms });
+    expect(callsOf(PutBucketEncryptionCommand)).toHaveLength(1);
+    expect(callsOf(DeleteBucketEncryptionCommand)).toHaveLength(0);
+  });
+
+  // ---------------- empty placeholder as the DESIRED side, real previous ----
+
+  it('empty placeholder desired + real previous REMOVES (empty == not declared)', async () => {
+    // The normalizer maps an empty container to `undefined` on BOTH sides, so
+    // this is a genuine `declared -> not declared` transition and must remove,
+    // matching CloudFormation. Pinned because the pairing is easy to misread as
+    // "the normalizer suppresses everything".
+    await update(
+      { ...base, OwnershipControls: { Rules: [] } },
+      { ...base, OwnershipControls: { Rules: [{ ObjectOwnership: 'BucketOwnerPreferred' }] } }
+    );
+    expect(callsOf(DeleteBucketOwnershipControlsCommand)).toHaveLength(1);
+    expect(callsOf(PutBucketOwnershipControlsCommand)).toHaveLength(0);
+
+    vi.clearAllMocks();
+    mockSend.mockResolvedValue({});
+    await update(
+      { ...base, BucketEncryption: { ServerSideEncryptionConfiguration: [] } },
+      { ...base, BucketEncryption: sseKms }
+    );
+    expect(callsOf(DeleteBucketEncryptionCommand)).toHaveLength(1);
+    expect(callsOf(PutBucketEncryptionCommand)).toHaveLength(0);
+  });
+  // ---------------- review-found regressions (must stay closed) ----------
+
+  it('MALFORMED (non-array) encryption config is NOT treated as a removal', async () => {
+    // `emptyListConfigToUndefined` must fold only absent / genuinely-empty
+    // lists. An unresolved intrinsic or a wrong-shaped L1 value is MALFORMED:
+    // folding it to `undefined` would fire DeleteBucketEncryption and silently
+    // downgrade a live bucket from KMS to AES256 while the template still
+    // DECLARES encryption. It must pass through and FAIL LOUDLY instead --
+    // in practice a local TypeError from the `.map` in applyBucketEncryption,
+    // before any send(); the point is loud-not-silent, not where it throws.
+    await expect(
+      update(
+        {
+          ...base,
+          BucketEncryption: {
+            ServerSideEncryptionConfiguration: { 'Fn::If': ['C', 'a', 'b'] } as never,
+          },
+        },
+        { ...base, BucketEncryption: sseKms }
+      )
+    ).rejects.toThrow();
+    // The load-bearing assertion: it took the Put path and FAILED LOUDLY
+    // rather than quietly deleting the bucket's encryption.
+    expect(callsOf(DeleteBucketEncryptionCommand)).toHaveLength(0);
+  });
+
+  it('versioning SUSPEND runs after the replication removal, not before', async () => {
+    // S3 rejects PutBucketVersioning(Suspended) while a replication config is
+    // still active, so a template dropping BOTH in one update must delete the
+    // replication first. Ordering is asserted on the real call sequence.
+    await update(base, {
+      ...base,
+      VersioningConfiguration: { Status: 'Enabled' },
+      ReplicationConfiguration: {
+        Role: 'arn:aws:iam::123456789012:role/r',
+        Rules: [{ Destination: { Bucket: 'arn:aws:s3:::dest' }, Status: 'Enabled' }],
+      },
+    });
+    const names = mockSend.mock.calls.map(
+      (c) => (c[0] as { constructor: { name: string } }).constructor.name
+    );
+    const replIdx = names.indexOf('DeleteBucketReplicationCommand');
+    const verIdx = names.indexOf('PutBucketVersioningCommand');
+    expect(replIdx).toBeGreaterThanOrEqual(0);
+    expect(verIdx).toBeGreaterThanOrEqual(0);
+    expect(replIdx).toBeLessThan(verIdx);
+  });
+
+  it('versioning SUSPEND is skipped WITH A WARNING on an Object-Lock bucket', async () => {
+    // S3 refuses to suspend versioning on an Object-Lock bucket
+    // (InvalidBucketState). Before the deferral this would have newly FAILED a
+    // deploy that used to be a silent no-op.
+    //
+    // The warn is asserted, not just the absence of the Put: skipping SILENTLY
+    // would satisfy a call-count-only check while leaving the user with no
+    // signal that a property they removed was not applied.
+    await update(
+      { ...base, ObjectLockEnabled: true },
+      { ...base, ObjectLockEnabled: true, VersioningConfiguration: { Status: 'Enabled' } }
+    );
+    expect(callsOf(PutBucketVersioningCommand)).toHaveLength(0);
+    expect(childLogger.warn).toHaveBeenCalledWith(expect.stringContaining('Object Lock'));
+  });
+
+  it('create() with an empty OwnershipControls.Rules issues no Put', async () => {
+    await provider.create('L', 'AWS::S3::Bucket', {
+      BucketName: BUCKET_NAME,
+      OwnershipControls: { Rules: [] },
+    });
+    expect(callsOf(PutBucketOwnershipControlsCommand)).toHaveLength(0);
+  });
+  it('EXPLICIT Suspended also defers past the replication removal (G1)', async () => {
+    // The deferral is keyed on the RESULTING STATUS, not on "was the property
+    // removed". An explicit `{Status:'Suspended'}` must take the late path too,
+    // or dropping replication in the same update hits the very S3 rejection the
+    // split exists to avoid. `drift --revert` reaches this form routinely,
+    // because readCurrentState always emits Suspended for un-versioned buckets.
+    await update(
+      { ...base, VersioningConfiguration: { Status: 'Suspended' } },
+      {
+        ...base,
+        VersioningConfiguration: { Status: 'Enabled' },
+        ReplicationConfiguration: {
+          Role: 'arn:aws:iam::123456789012:role/r',
+          Rules: [{ Destination: { Bucket: 'arn:aws:s3:::dest' }, Status: 'Enabled' }],
+        },
+      }
+    );
+    const names = mockSend.mock.calls.map(
+      (c) => (c[0] as { constructor: { name: string } }).constructor.name
+    );
+    const replIdx = names.indexOf('DeleteBucketReplicationCommand');
+    const verIdx = names.indexOf('PutBucketVersioningCommand');
+    expect(replIdx).toBeGreaterThanOrEqual(0);
+    expect(verIdx).toBeGreaterThanOrEqual(0);
+    expect(replIdx).toBeLessThan(verIdx);
+  });
+
+  it('ENABLE stays BEFORE an added replication config (G3)', async () => {
+    // The mirror constraint: S3 requires versioning ON before a replication
+    // config can be added, so the enable half must NOT drift to the tail.
+    await update(
+      {
+        ...base,
+        VersioningConfiguration: { Status: 'Enabled' },
+        ReplicationConfiguration: {
+          Role: 'arn:aws:iam::123456789012:role/r',
+          Rules: [{ Destination: { Bucket: 'arn:aws:s3:::dest' }, Status: 'Enabled' }],
+        },
+      },
+      base
+    );
+    const names = mockSend.mock.calls.map(
+      (c) => (c[0] as { constructor: { name: string } }).constructor.name
+    );
+    const verIdx = names.indexOf('PutBucketVersioningCommand');
+    const replIdx = names.indexOf('PutBucketReplicationCommand');
+    expect(verIdx).toBeGreaterThanOrEqual(0);
+    expect(replIdx).toBeGreaterThanOrEqual(0);
+    expect(verIdx).toBeLessThan(replIdx);
+  });
+
+  it('null desired VersioningConfiguration is a removal, not a no-op', async () => {
+    // `diffSubConfig` treats null as absent; the deferred suspend must use the
+    // same nullish semantics or the removal is silently dropped.
+    await update(
+      { ...base, VersioningConfiguration: null as never },
+      { ...base, VersioningConfiguration: { Status: 'Enabled' } }
+    );
+    const calls = callsOf(PutBucketVersioningCommand);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.input).toMatchObject({ VersioningConfiguration: { Status: 'Suspended' } });
+  });
+
+  it('Object-Lock guard consults the PREVIOUS side too', async () => {
+    // ObjectLockEnabled is not replacement-forcing for AWS::S3::Bucket, so
+    // dropping it together with VersioningConfiguration takes the in-place
+    // UPDATE path. Reading only the desired side would issue a suspend the
+    // live bucket still refuses.
+    await update(base, {
+      ...base,
+      ObjectLockEnabled: true,
+      VersioningConfiguration: { Status: 'Enabled' },
+    });
+    expect(callsOf(PutBucketVersioningCommand)).toHaveLength(0);
+  });
+
+  it("Object-Lock guard accepts the 'true' STRING form of ObjectLockEnabled", async () => {
+    // The configuration-block form is covered by 'a REAL ObjectLockConfiguration
+    // (Enabled) still suppresses the suspend'; only the string form is new here.
+    await update(
+      { ...base, ObjectLockEnabled: 'true' },
+      { ...base, ObjectLockEnabled: 'true', VersioningConfiguration: { Status: 'Enabled' } }
+    );
+    expect(callsOf(PutBucketVersioningCommand)).toHaveLength(0);
+  });
+
+  it('malformed shapes never become a removal (G4: {}, wrong nesting, non-array Rules)', async () => {
+    // Every shape below previously normalized to `undefined` -> Delete.
+    // `{}` alone IS "not declared" and legitimately removes; the others are
+    // malformed and must not.
+    // Each case scopes previous+desired to the ONE property under test, so the
+    // assertion measures only that property's delete (a sibling property
+    // absent from `desired` would be a legitimate removal and pollute a
+    // summed counter).
+    const realOwnership = { Rules: [{ ObjectOwnership: 'BucketOwnerPreferred' }] };
+    const cases: Array<{
+      label: string;
+      key: 'BucketEncryption' | 'OwnershipControls';
+      malformed: unknown;
+      real: unknown;
+    }> = [
+      {
+        label: 'encryption: list key absent but other keys present',
+        key: 'BucketEncryption',
+        malformed: { Bogus: 1 },
+        real: sseKms,
+      },
+      {
+        label: 'encryption: wrong nesting (array where object belongs)',
+        key: 'BucketEncryption',
+        malformed: [],
+        real: sseKms,
+      },
+      {
+        label: 'ownership: non-array Rules (unresolved intrinsic)',
+        key: 'OwnershipControls',
+        malformed: { Rules: { 'Fn::If': [] } },
+        real: realOwnership,
+      },
+      {
+        label: 'ownership: null Rules with other keys present',
+        key: 'OwnershipControls',
+        malformed: { Rules: null, X: 1 },
+        real: realOwnership,
+      },
+    ];
+    for (const { label, key, malformed, real } of cases) {
+      vi.clearAllMocks();
+      mockSend.mockResolvedValue({});
+      // Assert the LOUD path explicitly rather than swallowing. "No delete"
+      // alone is too weak: silently SKIPPING a malformed value -- the sibling
+      // failure mode that existed on the CREATE path until this PR -- also
+      // produces zero deletes and zero throws, and would pass a
+      // swallow-and-count-deletes check.
+      await expect(
+        update({ ...base, [key]: malformed as never }, { ...base, [key]: real as never }),
+        `${label} must fail loudly`
+      ).rejects.toThrow();
+      const deletes =
+        key === 'BucketEncryption'
+          ? callsOf(DeleteBucketEncryptionCommand)
+          : callsOf(DeleteBucketOwnershipControlsCommand);
+      expect(deletes, `${label} must not delete`).toHaveLength(0);
+    }
+  });
+
+  it('a bare empty block IS a removal ({} == not declared)', async () => {
+    // The counterpart to the case above: `{}` carries nothing, so it is
+    // genuinely "not declared" and must still remove, matching CloudFormation.
+    await update({ ...base, BucketEncryption: {} as never }, { ...base, BucketEncryption: sseKms });
+    expect(callsOf(DeleteBucketEncryptionCommand)).toHaveLength(1);
+  });
+  it('CREATE rejects a malformed encryption block instead of silently skipping it', async () => {
+    // Round-2 routed CREATE through the same normalizer as UPDATE. That is a
+    // deliberate BEHAVIOR CHANGE: the old inline guard skipped a malformed
+    // value, leaving a bucket unencrypted-by-declaration with no error and
+    // nothing for drift to see. It now fails loudly (and the provider's
+    // partial-create cleanup drops the just-created bucket).
+    await expect(
+      provider.create('L', 'AWS::S3::Bucket', {
+        BucketName: BUCKET_NAME,
+        BucketEncryption: { Bogus: 1 } as never,
+      })
+    ).rejects.toThrow();
+    expect(callsOf(PutBucketEncryptionCommand)).toHaveLength(0);
+  });
+
+  it('CREATE skips the empty-list encryption placeholder without a Put', async () => {
+    await provider.create('L', 'AWS::S3::Bucket', {
+      BucketName: BUCKET_NAME,
+      BucketEncryption: { ServerSideEncryptionConfiguration: [] },
+    });
+    expect(callsOf(PutBucketEncryptionCommand)).toHaveLength(0);
+  });
+
+  it('a scalar config value is malformed, not a removal', async () => {
+    await expect(
+      update({ ...base, BucketEncryption: 'unresolved' as never }, {
+        ...base,
+        BucketEncryption: sseKms,
+      })
+    ).rejects.toThrow();
+    expect(callsOf(DeleteBucketEncryptionCommand)).toHaveLength(0);
+  });
+
+  it('{Rules: null} as the SOLE key is malformed; {} is a removal', async () => {
+    // Deliberate asymmetry: `{}` carries nothing and is "not declared", but a
+    // block that names the list key with a null value is a partially-pruned /
+    // malformed shape and must not be read as a removal.
+    await expect(
+      update({ ...base, OwnershipControls: { Rules: null } as never }, {
+        ...base,
+        OwnershipControls: { Rules: [{ ObjectOwnership: 'BucketOwnerPreferred' }] },
+      })
+    ).rejects.toThrow();
+    expect(callsOf(DeleteBucketOwnershipControlsCommand)).toHaveLength(0);
+
+    vi.clearAllMocks();
+    mockSend.mockResolvedValue({});
+    await update({ ...base, OwnershipControls: {} as never }, {
+      ...base,
+      OwnershipControls: { Rules: [{ ObjectOwnership: 'BucketOwnerPreferred' }] },
+    });
+    expect(callsOf(DeleteBucketOwnershipControlsCommand)).toHaveLength(1);
+  });
+
+  it('Object-Lock guard: previous-side string and configuration-block forms', async () => {
+    // The previous-side coverage that matters -- these are the shapes reachable
+    // when the template DROPS object lock and versioning in the same update.
+    await update(base, {
+      ...base,
+      ObjectLockEnabled: 'true',
+      VersioningConfiguration: { Status: 'Enabled' },
+    });
+    expect(callsOf(PutBucketVersioningCommand)).toHaveLength(0);
+
+    vi.clearAllMocks();
+    mockSend.mockResolvedValue({});
+    await update(base, {
+      ...base,
+      ObjectLockConfiguration: { ObjectLockEnabled: 'Enabled' },
+      VersioningConfiguration: { Status: 'Enabled' },
+    });
+    expect(callsOf(PutBucketVersioningCommand)).toHaveLength(0);
+  });
+
+  it('re-ENABLE alongside an ADDED replication config stays EARLY', async () => {
+    // The drift-revert re-enable shape: previously Suspended, now Enabled, with
+    // replication added in the same update. Versioning must precede the
+    // replication Put or S3 rejects the replication config.
+    await update(
+      {
+        ...base,
+        VersioningConfiguration: { Status: 'Enabled' },
+        ReplicationConfiguration: {
+          Role: 'arn:aws:iam::123456789012:role/r',
+          Rules: [{ Destination: { Bucket: 'arn:aws:s3:::dest' }, Status: 'Enabled' }],
+        },
+      },
+      { ...base, VersioningConfiguration: { Status: 'Suspended' } }
+    );
+    const names = mockSend.mock.calls.map(
+      (c) => (c[0] as { constructor: { name: string } }).constructor.name
+    );
+    const verIdx = names.indexOf('PutBucketVersioningCommand');
+    const replIdx = names.indexOf('PutBucketReplicationCommand');
+    expect(verIdx).toBeGreaterThanOrEqual(0);
+    expect(replIdx).toBeGreaterThanOrEqual(0);
+    expect(verIdx).toBeLessThan(replIdx);
+  });
+
+  it('an empty VersioningConfiguration block means Suspended', async () => {
+    await update(
+      { ...base, VersioningConfiguration: {} },
+      { ...base, VersioningConfiguration: { Status: 'Enabled' } }
+    );
+    const calls = callsOf(PutBucketVersioningCommand);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.input).toMatchObject({ VersioningConfiguration: { Status: 'Suspended' } });
+  });
+  it('BLOCKER regression: an EMPTY ObjectLockConfiguration must not suppress the suspend', async () => {
+    // `readObjectLock` always-emits `ObjectLockConfiguration` and returns `{}`
+    // for a bucket with NO object lock, and `cdkd drift --revert` feeds that
+    // snapshot in as both sides. A presence-only guard (`!== undefined`) is
+    // therefore true for EVERY bucket on the revert path and would suppress
+    // every legitimate suspend, leaving the drift permanently unfixable while
+    // warning about object lock the bucket does not have.
+    await update(
+      { ...base, ObjectLockConfiguration: {} },
+      {
+        ...base,
+        ObjectLockConfiguration: {},
+        VersioningConfiguration: { Status: 'Enabled' },
+      }
+    );
+    const calls = callsOf(PutBucketVersioningCommand);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.input).toMatchObject({ VersioningConfiguration: { Status: 'Suspended' } });
+  });
+
+  it('a REAL ObjectLockConfiguration (Enabled) still suppresses the suspend', async () => {
+    await update(
+      { ...base, ObjectLockConfiguration: { ObjectLockEnabled: 'Enabled' } },
+      {
+        ...base,
+        ObjectLockConfiguration: { ObjectLockEnabled: 'Enabled' },
+        VersioningConfiguration: { Status: 'Enabled' },
+      }
+    );
+    expect(callsOf(PutBucketVersioningCommand)).toHaveLength(0);
+  });
+
+  it('a malformed VersioningConfiguration resolves to Suspended (known gap, issue #1471)', async () => {
+    // Documents the PRE-EXISTING behavior rather than asserting a fix: `main`
+    // defaults a missing Status to 'Suspended' the same way, so this is not a
+    // regression from #1466 and is tracked in #1471. Pinned so the follow-up
+    // has a starting point and so a future change here is a conscious one.
+    await update({ ...base, VersioningConfiguration: 'Enabled' as never }, {
+      ...base,
+      VersioningConfiguration: { Status: 'Enabled' },
+    });
+    const calls = callsOf(PutBucketVersioningCommand);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.input).toMatchObject({ VersioningConfiguration: { Status: 'Suspended' } });
+  });
+
+  it('malformed list configs fail by NAME, not with a bare TypeError', async () => {
+    await expect(
+      update({ ...base, OwnershipControls: { Rules: 'nope' } as never }, {
+        ...base,
+        OwnershipControls: { Rules: [{ ObjectOwnership: 'BucketOwnerPreferred' }] },
+      })
+    ).rejects.toThrow(/OwnershipControls\.Rules must be an array/);
+  });
+  it('an ObjectLockConfiguration WITHOUT ObjectLockEnabled must not suppress the suspend', async () => {
+    // Strengthens the blocker test above: a shape heuristic ("the block has
+    // keys, so it must be object lock") would pass that test while still being
+    // wrong. Only reading the MEANINGFUL field distinguishes this from real
+    // object lock, and this shape must still suspend.
+    await update(
+      { ...base, ObjectLockConfiguration: { Rule: { DefaultRetention: { Days: 1 } } } },
+      {
+        ...base,
+        ObjectLockConfiguration: { Rule: { DefaultRetention: { Days: 1 } } },
+        VersioningConfiguration: { Status: 'Enabled' },
+      }
+    );
+    expect(callsOf(PutBucketVersioningCommand)).toHaveLength(1);
+  });
+
+  it('CREATE and UPDATE agree on a FALSY non-object config value', async () => {
+    // The `!== undefined` (not truthiness) check on the create path. With a
+    // truthy check, create SILENTLY SKIPS `BucketEncryption: ''` while update
+    // throws — the asymmetry this PR set out to remove. Both must fail.
+    await expect(
+      provider.create('L', 'AWS::S3::Bucket', {
+        BucketName: BUCKET_NAME,
+        BucketEncryption: '' as never,
+      })
+    ).rejects.toThrow(/ServerSideEncryptionConfiguration must be an array/);
+
+    vi.clearAllMocks();
+    mockSend.mockResolvedValue({});
+    await expect(
+      update({ ...base, BucketEncryption: '' as never }, { ...base, BucketEncryption: sseKms })
+    ).rejects.toThrow(/ServerSideEncryptionConfiguration must be an array/);
   });
 });

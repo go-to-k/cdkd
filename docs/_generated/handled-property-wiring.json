@@ -15288,6 +15288,7 @@
           ],
           "seededBy": [
             "applyConfiguration",
+            "applySubConfigDiffs",
             "create",
             "update"
           ]
@@ -15467,6 +15468,7 @@
           ],
           "seededBy": [
             "applyConfiguration",
+            "applySubConfigDiffs",
             "create",
             "update"
           ]
@@ -15532,6 +15534,7 @@
           ],
           "seededBy": [
             "applyConfiguration",
+            "applySubConfigDiffs",
             "create",
             "update"
           ]
@@ -15556,7 +15559,8 @@
       ],
       "gaps": [],
       "blindSpots": [
-        "hasCdkAutoDeleteTag(...) in delete()"
+        "hasCdkAutoDeleteTag(...) in delete()",
+        "hasObjectLock(...) in applySubConfigDiffs()"
       ]
     },
     {

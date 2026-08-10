@@ -4518,6 +4518,7 @@
         "s3-lifecycle",
         "s3-object-lock",
         "s3-replication-and-filter",
+        "s3-subconfig-removal",
         "state-destroy",
         "synthetics-canary",
         "tags-propagation",
@@ -4650,6 +4651,10 @@
           "literal"
         ],
         "s3-replication-and-filter": [
+          "l1",
+          "literal"
+        ],
+        "s3-subconfig-removal": [
           "l1",
           "literal"
         ],

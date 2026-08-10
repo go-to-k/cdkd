@@ -233,6 +233,7 @@ s3-event-notification	2026-07-21T05:28:05Z	PASS	79	verify.sh	rc ok, orph clean
 s3-lifecycle	2026-08-09T16:51:31Z	PASS	81	verify.sh	#1430 EventBridge pair asserted both phases with the booleans SWAPPED (real UPDATE path); destroy 0 err, 0 orph
 s3-object-lock	2026-07-21T14:42:20Z	PASS	53	verify.sh	rc ok, orph clean
 s3-replication-and-filter	2026-07-21T14:43:45Z	PASS	63	verify.sh	rc ok, orph clean
+s3-subconfig-removal	2026-08-10T07:17:25Z	PASS	63	verify.sh	issue #1466 final; 4 removal verdicts + drift-detect; rc ok, 0 orph
 s3-tables	2026-07-27T16:53:47Z	PASS	45	verify.sh	issue #1270/#1272 post-review re-run; 5 del 0 err, 0 orphans
 s3-vectors	2026-08-09T03:50:21Z	PASS	230	verify.sh	#1385 CMK encryption asserted; destroy 0 errors, 0 orphans
 scheduled-task	2026-07-26T18:04:53Z	PASS	44	standard	0727b sweep-b1 staleness re-run (rc=0); account clean

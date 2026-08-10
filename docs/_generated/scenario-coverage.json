@@ -1690,6 +1690,11 @@
       "scenarios": []
     },
     {
+      "name": "s3-subconfig-removal",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
       "name": "s3-tables",
       "annotated": true,
       "scenarios": []
