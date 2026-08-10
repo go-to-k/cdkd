@@ -4746,13 +4746,17 @@
       "resourceType": "AWS::S3::BucketPolicy",
       "integs": [
         "migrate-from-cfn",
-        "propagation-races-2"
+        "propagation-races-2",
+        "s3-replication-and-filter"
       ],
       "signals": {
         "migrate-from-cfn": [
           "literal"
         ],
         "propagation-races-2": [
+          "l1"
+        ],
+        "s3-replication-and-filter": [
           "l1"
         ]
       }

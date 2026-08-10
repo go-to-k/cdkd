@@ -382,7 +382,10 @@ export class S3BucketProvider implements ResourceProvider {
    */
   private async applyLifecycleConfiguration(
     bucketName: string,
-    lifecycleConfig: { Rules: Array<Record<string, unknown>> }
+    lifecycleConfig: {
+      Rules: Array<Record<string, unknown>>;
+      TransitionDefaultMinimumObjectSize?: unknown;
+    }
   ): Promise<void> {
     // Gather a rule's full location scope from EVERY source CFn can express it:
     // an explicit `Filter` object (Prefix / TagFilters / ObjectSizeGreaterThan /
@@ -642,6 +645,15 @@ export class S3BucketProvider implements ResourceProvider {
       new PutBucketLifecycleConfigurationCommand({
         Bucket: bucketName,
         LifecycleConfiguration: { Rules: rules },
+        // TransitionDefaultMinimumObjectSize (issue #1495): the account-level
+        // default that decides whether objects under 128 KB are eligible for
+        // transition. It sits on the REQUEST rather than inside
+        // `LifecycleConfiguration`, which is why the rules-only mapper never
+        // reached it — a bucket declaring `all_storage_classes_128K` silently
+        // kept the `varies_by_storage_class` default.
+        TransitionDefaultMinimumObjectSize: lifecycleConfig[
+          'TransitionDefaultMinimumObjectSize'
+        ] as import('@aws-sdk/client-s3').TransitionDefaultMinimumObjectSize | undefined,
       })
     );
     this.logger.debug(`Applied lifecycle configuration to bucket ${bucketName}`);
@@ -706,6 +718,11 @@ export class S3BucketProvider implements ResourceProvider {
       const byDefault = rule['ServerSideEncryptionByDefault'] as
         | Record<string, unknown>
         | undefined;
+      // BlockedEncryptionTypes (issue #1495): the per-rule opt-out of an
+      // encryption type (today only SSE-C). Never built before, so a bucket
+      // declaring the block silently kept accepting the type it wanted to
+      // refuse — a security-relevant drop, not just a lost setting.
+      const blocked = rule['BlockedEncryptionTypes'] as Record<string, unknown> | undefined;
       return {
         ApplyServerSideEncryptionByDefault: byDefault
           ? {
@@ -714,6 +731,10 @@ export class S3BucketProvider implements ResourceProvider {
             }
           : undefined,
         BucketKeyEnabled: rule['BucketKeyEnabled'] as boolean | undefined,
+        BlockedEncryptionTypes:
+          blocked != null && blocked['EncryptionType'] !== undefined
+            ? { EncryptionType: blocked['EncryptionType'] as string[] }
+            : undefined,
       };
     });
     await this.s3Client.send(
@@ -767,20 +788,46 @@ export class S3BucketProvider implements ResourceProvider {
       this.logger.debug(`Cleared logging configuration on bucket ${bucketName}`);
       return;
     }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const loggingEnabled: any = {
+      TargetBucket: destinationBucket,
+      TargetPrefix: readConfigString(
+        loggingConfig,
+        'LogFilePrefix',
+        '',
+        'AWS::S3::Bucket LoggingConfiguration'
+      ),
+    };
+
+    // TargetObjectKeyFormat (issue #1495): the partitioned server-access-log
+    // key format. Never built before, so a bucket declaring it silently got
+    // the default FLAT format. CFn and the SDK spell the whole block
+    // identically, but it is assembled member by member rather than forwarded
+    // so a future CFn-only member cannot ride through unnoticed.
+    const keyFormat = (loggingConfig as Record<string, unknown>)['TargetObjectKeyFormat'] as
+      | Record<string, unknown>
+      | undefined;
+    if (keyFormat != null) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const sdkKeyFormat: any = {};
+      // `SimplePrefix: {}` is the CFn opt-in for the default format: the value
+      // is an EMPTY object whose PRESENCE is the signal, so it must survive.
+      if (keyFormat['SimplePrefix'] !== undefined) sdkKeyFormat.SimplePrefix = {};
+      const partitioned = keyFormat['PartitionedPrefix'] as Record<string, unknown> | undefined;
+      if (partitioned != null && partitioned['PartitionDateSource'] !== undefined) {
+        sdkKeyFormat.PartitionedPrefix = {
+          PartitionDateSource: partitioned['PartitionDateSource'] as string,
+        };
+      }
+      if (Object.keys(sdkKeyFormat).length > 0) {
+        loggingEnabled.TargetObjectKeyFormat = sdkKeyFormat;
+      }
+    }
+
     await this.s3Client.send(
       new PutBucketLoggingCommand({
         Bucket: bucketName,
-        BucketLoggingStatus: {
-          LoggingEnabled: {
-            TargetBucket: destinationBucket,
-            TargetPrefix: readConfigString(
-              loggingConfig,
-              'LogFilePrefix',
-              '',
-              'AWS::S3::Bucket LoggingConfiguration'
-            ),
-          },
-        },
+        BucketLoggingStatus: { LoggingEnabled: loggingEnabled },
       })
     );
     this.logger.debug(`Applied logging configuration to bucket ${bucketName}`);
@@ -1257,6 +1304,83 @@ export class S3BucketProvider implements ResourceProvider {
    *   - Rules[] (replication rules)
    * SDK: PutBucketReplication with ReplicationConfiguration
    */
+  /**
+   * Build the SDK `Destination` for one replication rule.
+   *
+   * Before issue #1495 this was an inline literal carrying `Bucket` / `Account`
+   * / `StorageClass` only, so FOUR whole sub-blocks the CFn schema declares
+   * were accepted from the template and never sent — each one silently:
+   *
+   * - `AccessControlTranslation` — cross-account replication with owner
+   *   override; without it the replicas keep the SOURCE account's ownership.
+   * - `EncryptionConfiguration.ReplicaKmsKeyID` — the replica-side SSE-KMS key;
+   *   dropped, the replicas are not encrypted with the declared key. CDK's
+   *   `aws-s3` L2 emits this for a `replicationRules` entry with a KMS key.
+   * - `ReplicationTime` + `Metrics` — S3 Replication Time Control. RTC is a
+   *   billed SLA feature and both blocks are required to enable it, so a
+   *   template asking for RTC got plain asynchronous replication.
+   *
+   * CFn and the SDK spell every member identically here (verified against
+   * `@aws-sdk/client-s3`'s `Destination`), but the block is assembled member by
+   * member rather than forwarded so a CFn-only member cannot ride through.
+   */
+  private buildReplicationDestination(dest: Record<string, unknown>): Record<string, unknown> {
+    const sdkDest: Record<string, unknown> = {
+      Bucket: dest['Bucket'] as string,
+      Account: dest['Account'] as string | undefined,
+      StorageClass: dest['StorageClass'] as string | undefined,
+    };
+
+    // Every gate below is `!= null`, not truthiness: a FALSY malformed value
+    // (`''`, `0`) must not be silently skipped — that is the #1493 gate bug one
+    // level down, and `.claude/rules/providers.md` requires the `!= null` form.
+    // Each block is also assembled into a local and only attached when it
+    // carries at least one member, so a template's `AccessControlTranslation: {}`
+    // does not become `{Owner: undefined}` on the wire (AWS rejects that, where
+    // the pre-fix code sent nothing at all).
+    // Each block is written as a NAMED assignment rather than through a helper
+    // taking a string-literal key: `gen-nested-key-coverage`'s write-evidence
+    // pass recognises `sdkDest['X'] = { … }`, and routing these through a
+    // generic attach() made all 12 members invisible to it (measured: the S3
+    // residual went 93 instead of 81). The empty-block guard is therefore
+    // inlined per block.
+    const acl = dest['AccessControlTranslation'] as Record<string, unknown> | undefined;
+    if (acl != null && acl['Owner'] !== undefined) {
+      sdkDest['AccessControlTranslation'] = { Owner: acl['Owner'] as string };
+    }
+
+    const encryption = dest['EncryptionConfiguration'] as Record<string, unknown> | undefined;
+    if (encryption != null && encryption['ReplicaKmsKeyID'] !== undefined) {
+      sdkDest['EncryptionConfiguration'] = {
+        ReplicaKmsKeyID: encryption['ReplicaKmsKeyID'] as string,
+      };
+    }
+
+    const replicationTime = dest['ReplicationTime'] as Record<string, unknown> | undefined;
+    if (replicationTime != null) {
+      const time = replicationTime['Time'] as Record<string, unknown> | undefined;
+      const rt: Record<string, unknown> = {};
+      if (replicationTime['Status'] !== undefined) rt['Status'] = replicationTime['Status'];
+      if (time != null && time['Minutes'] !== undefined) {
+        rt['Time'] = { Minutes: time['Minutes'] as number };
+      }
+      if (Object.keys(rt).length > 0) sdkDest['ReplicationTime'] = rt;
+    }
+
+    const metrics = dest['Metrics'] as Record<string, unknown> | undefined;
+    if (metrics != null) {
+      const threshold = metrics['EventThreshold'] as Record<string, unknown> | undefined;
+      const m: Record<string, unknown> = {};
+      if (metrics['Status'] !== undefined) m['Status'] = metrics['Status'];
+      if (threshold != null && threshold['Minutes'] !== undefined) {
+        m['EventThreshold'] = { Minutes: threshold['Minutes'] as number };
+      }
+      if (Object.keys(m).length > 0) sdkDest['Metrics'] = m;
+    }
+
+    return sdkDest;
+  }
+
   private async applyReplicationConfiguration(
     bucketName: string,
     replConfig: Record<string, unknown>
@@ -1279,12 +1403,37 @@ export class S3BucketProvider implements ResourceProvider {
                 'AWS::S3::Bucket ReplicationConfiguration.Rules[]'
               ),
               Priority: rule['Priority'] as number | undefined,
-              Destination: {
-                Bucket: dest['Bucket'] as string,
-                Account: dest['Account'] as string | undefined,
-                StorageClass: dest['StorageClass'] as string | undefined,
-              },
+              Destination: this.buildReplicationDestination(dest),
             };
+
+            // SourceSelectionCriteria (issue #1495): which source objects are
+            // eligible for replication. Never built before, so a rule opting
+            // into replica-modification or SSE-KMS-object replication was
+            // accepted from the template and never sent — silently replicating
+            // a different set of objects than declared.
+            const criteria = rule['SourceSelectionCriteria'] as Record<string, unknown> | undefined;
+            if (criteria != null) {
+              const sdkCriteria: Record<string, unknown> = {};
+              const replicaMods = criteria['ReplicaModifications'] as
+                | Record<string, unknown>
+                | undefined;
+              if (replicaMods != null && replicaMods['Status'] !== undefined) {
+                sdkCriteria['ReplicaModifications'] = {
+                  Status: replicaMods['Status'] as string,
+                };
+              }
+              const sseKms = criteria['SseKmsEncryptedObjects'] as
+                | Record<string, unknown>
+                | undefined;
+              if (sseKms != null && sseKms['Status'] !== undefined) {
+                sdkCriteria['SseKmsEncryptedObjects'] = {
+                  Status: sseKms['Status'] as string,
+                };
+              }
+              if (Object.keys(sdkCriteria).length > 0) {
+                sdkRule['SourceSelectionCriteria'] = sdkCriteria;
+              }
+            }
 
             // Filter (V2). An empty `Filter: {}` is the valid CFn "replicate every
             // object" form and MUST be preserved — S3's V2 replication schema
@@ -2478,6 +2627,12 @@ export class S3BucketProvider implements ResourceProvider {
             out['ServerSideEncryptionByDefault'] = sseOut;
           }
           if (rule.BucketKeyEnabled !== undefined) out['BucketKeyEnabled'] = rule.BucketKeyEnabled;
+          // Issue #1495: read back the block the write side now sends.
+          if (rule.BlockedEncryptionTypes?.EncryptionType !== undefined) {
+            out['BlockedEncryptionTypes'] = {
+              EncryptionType: rule.BlockedEncryptionTypes.EncryptionType,
+            };
+          }
           return out;
         }),
       };
@@ -2531,7 +2686,32 @@ export class S3BucketProvider implements ResourceProvider {
         new GetBucketLifecycleConfigurationCommand({ Bucket: bucket })
       );
       const rules = resp.Rules ?? [];
+      const lifecycleOut: Record<string, unknown> = {};
+      // Issue #1495: emit whatever AWS returns, unconditionally.
+      //
+      // The first cut filtered out `varies_by_storage_class` as "the account
+      // default". That polarity is WRONG — AWS defaults new buckets (created
+      // after September 2024) to `all_storage_classes_128K`, so the filter
+      // suppressed the one value a template meaningfully declares and emitted
+      // the real default for every bucket. A template declaring
+      // `varies_by_storage_class` would then never read back, i.e. permanent
+      // phantom drift on the `properties`-fallback baseline — exactly the
+      // asymmetry this issue set out to remove.
+      //
+      // Emitting it even when the template never declared it is deliberate and
+      // NOT free: `drift.ts` passes `unionWalkObjects` on the observed-baseline
+      // path, so a new sub-key under the state-present `LifecycleConfiguration`
+      // IS compared. The effect is the same one-time stale-observed-baseline
+      // drift the `EventBridgeConfiguration` block below already documents, and
+      // it clears on the next deploy — strictly better than the alternative,
+      // where a template that DOES declare the value never reads it back and
+      // drifts forever.
+      if (resp.TransitionDefaultMinimumObjectSize !== undefined) {
+        lifecycleOut['TransitionDefaultMinimumObjectSize'] =
+          resp.TransitionDefaultMinimumObjectSize;
+      }
       return {
+        ...lifecycleOut,
         Rules: rules.map((r) => {
           const out: Record<string, unknown> = {};
           if (r.ID !== undefined) out['Id'] = r.ID;
@@ -2716,6 +2896,21 @@ export class S3BucketProvider implements ResourceProvider {
       out['DestinationBucketName'] = resp.LoggingEnabled.TargetBucket;
     if (resp.LoggingEnabled.TargetPrefix !== undefined)
       out['LogFilePrefix'] = resp.LoggingEnabled.TargetPrefix;
+    // Issue #1495: read back the key format the write side now sends, or a
+    // bucket that declares it would report permanent phantom drift.
+    const keyFormat = resp.LoggingEnabled.TargetObjectKeyFormat;
+    if (keyFormat) {
+      const cfnKeyFormat: Record<string, unknown> = {};
+      if (keyFormat.SimplePrefix !== undefined) cfnKeyFormat['SimplePrefix'] = {};
+      if (keyFormat.PartitionedPrefix) {
+        const partitioned: Record<string, unknown> = {};
+        if (keyFormat.PartitionedPrefix.PartitionDateSource !== undefined) {
+          partitioned['PartitionDateSource'] = keyFormat.PartitionedPrefix.PartitionDateSource;
+        }
+        cfnKeyFormat['PartitionedPrefix'] = partitioned;
+      }
+      if (Object.keys(cfnKeyFormat).length > 0) out['TargetObjectKeyFormat'] = cfnKeyFormat;
+    }
     return out;
   }
 
@@ -2813,7 +3008,50 @@ export class S3BucketProvider implements ResourceProvider {
             if (r.Destination.Account !== undefined) d['Account'] = r.Destination.Account;
             if (r.Destination.StorageClass !== undefined)
               d['StorageClass'] = r.Destination.StorageClass;
+            // Issue #1495: the four blocks the write side now sends. Without
+            // the read-back a bucket declaring any of them reports permanent
+            // phantom drift that `--revert` would then keep re-applying.
+            // Every member below is emitted ONLY when AWS actually returned it.
+            // `drift-calculator.ts` compares arrays wholesale, and state.json's
+            // JSON round-trip drops undefined keys — so echoing a member AWS
+            // omitted would turn the whole `Rules` array into permanent drift.
+            const acl = r.Destination.AccessControlTranslation;
+            if (acl?.Owner !== undefined) {
+              d['AccessControlTranslation'] = { Owner: acl.Owner };
+            }
+            const enc = r.Destination.EncryptionConfiguration;
+            if (enc?.ReplicaKmsKeyID !== undefined) {
+              d['EncryptionConfiguration'] = { ReplicaKmsKeyID: enc.ReplicaKmsKeyID };
+            }
+            const rtIn = r.Destination.ReplicationTime;
+            if (rtIn) {
+              const rt: Record<string, unknown> = {};
+              if (rtIn.Status !== undefined) rt['Status'] = rtIn.Status;
+              if (rtIn.Time?.Minutes !== undefined) rt['Time'] = { Minutes: rtIn.Time.Minutes };
+              if (Object.keys(rt).length > 0) d['ReplicationTime'] = rt;
+            }
+            const metricsIn = r.Destination.Metrics;
+            if (metricsIn) {
+              const m: Record<string, unknown> = {};
+              if (metricsIn.Status !== undefined) m['Status'] = metricsIn.Status;
+              if (metricsIn.EventThreshold?.Minutes !== undefined) {
+                m['EventThreshold'] = { Minutes: metricsIn.EventThreshold.Minutes };
+              }
+              if (Object.keys(m).length > 0) d['Metrics'] = m;
+            }
             ruleOut['Destination'] = d;
+          }
+          if (r.SourceSelectionCriteria) {
+            const criteria: Record<string, unknown> = {};
+            const replicaMods = r.SourceSelectionCriteria.ReplicaModifications;
+            if (replicaMods?.Status !== undefined) {
+              criteria['ReplicaModifications'] = { Status: replicaMods.Status };
+            }
+            const sseKms = r.SourceSelectionCriteria.SseKmsEncryptedObjects;
+            if (sseKms?.Status !== undefined) {
+              criteria['SseKmsEncryptedObjects'] = { Status: sseKms.Status };
+            }
+            if (Object.keys(criteria).length > 0) ruleOut['SourceSelectionCriteria'] = criteria;
           }
           if (r.Filter) {
             const f = r.Filter as Record<string, unknown>;
@@ -2839,7 +3077,7 @@ export class S3BucketProvider implements ResourceProvider {
             }
             if (Object.keys(cfnFilter).length > 0) ruleOut['Filter'] = cfnFilter;
           }
-          if (r.DeleteMarkerReplication) {
+          if (r.DeleteMarkerReplication?.Status !== undefined) {
             ruleOut['DeleteMarkerReplication'] = {
               Status: r.DeleteMarkerReplication.Status,
             };

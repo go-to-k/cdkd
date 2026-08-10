@@ -360,8 +360,9 @@ That is a far more common template shape than the base64 search string.
   compare) — but S3 is `exact`-style, where a CFn-spelled reverse write vouches
   for the forward mapper verbatim, so widening
   `REVERSE_MAP_FUNCTION_PREFIXES` to a suffix match belongs to the S3 opt-in
-  (issue #1495), where its effect on the LITERAL set can be measured on the
-  target it affects. A `readCurrentState*`-named helper nested in a builder's
+  (issue #1520 — the structural half split out of #1495, whose silent-drop half
+  is fixed), where its effect on the LITERAL set can be measured on the target
+  it affects. A `readCurrentState*`-named helper nested in a builder's
   scope IS skipped today, and that branch — the only builder refusal in the
   over-crediting direction — is pinned by a test with a non-reverse-named
   control.

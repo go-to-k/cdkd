@@ -321,10 +321,10 @@
  *   AWS::ECS::TaskDefinition           30 / 136   0 / 136    0 / 136    0 / 136  OPTED IN (#1472)   [25/115 -> 1/115]
  *   AWS::ECS::Service                  45 /  56   0 /  56    0 /  56    0 /  56  OPTED IN (#1473)   [44/54 -> 5/54]
  *   AWS::CloudWatch::AnomalyDetector   30 /  30   3 /  30    0 /  30    0 /  30  OPTED IN (#1474)   [29/29 -> 3/29]
- *   AWS::S3::Bucket                   130 / 152 125 / 152   98 / 152   98 / 152  out — see (C)      [106/125 -> 104/125]
+ *   AWS::S3::Bucket                   130 / 152 125 / 152   98 / 152   81 / 152  out — see (C)      [106/125 -> 104/125]
  *   AWS::CloudFront::Distribution     162 / 162 162 / 162  162 / 162    0 / 162  OPTED IN (#1475)   [110/112 -> 110/112]
  *                                     -------   -------    -------    -------
- *                                        410       290        260         98
+ *                                        410       290        260         81
  *
  * CloudFront's 162 -> 0 is 160 spread/scope-covered plus 2 allow-listed with
  * `passes: ['write']` (`Tags.Key` / `Tags.Value` — genuinely written by
@@ -371,31 +371,43 @@
  *     residual. The pre-fix counts stay in the table as the record that these
  *     were FALSE POSITIVES, not drops.
  *
- * (C) S3's remaining 98, MEASURED rather than predicted now that (B) no longer
- *     hides in it. Splitting the residual by "is the terminal member written
- *     ANYWHERE in the file?" gives:
- *       - 78 written SOMEWHERE but not at the audited chain. Two causes, both
- *         structural rather than missing-write: a CFn segment the SDK RENAMES
- *         (`WebsiteConfiguration.RoutingRules.RedirectRule` is the SDK's
- *         `Redirect`, `.RoutingRuleCondition` its `Condition`, CFn's
+ * (C) S3's residual, RE-MEASURED after issue #1495 closed the silent-drop half.
+ *     The split that mattered was "is the terminal member written ANYWHERE in
+ *     the file?", and as of #1474 it was 78 written-somewhere + **20 never
+ *     written at all** — CONFIRMED write-side silent drops, the shape this
+ *     whole pass exists to find. #1495 wired every one of the 20
+ *     (`LoggingConfiguration.TargetObjectKeyFormat`, the four
+ *     `ReplicationConfiguration.Rules.Destination` blocks
+ *     `AccessControlTranslation` / `EncryptionConfiguration` / `Metrics` /
+ *     `ReplicationTime`, `Rules.SourceSelectionCriteria`,
+ *     `LifecycleConfiguration.TransitionDefaultMinimumObjectSize`, and
+ *     `BucketEncryption…BlockedEncryptionTypes`), taking the residual
+ *     **98 -> 81 and the never-written count 20 -> 0**. The pinned test is
+ *     INVERTED accordingly: an empty never-written set is now the assertion,
+ *     so a re-drop fails by name.
+ *
+ *     Only 13 of the 20 cleared the BUCKET, which is the informative part: the
+ *     other 7 are written and still fail to resolve at the audited chain, for
+ *     the same three structural reasons the surviving 81 have —
+ *       - a CFn segment the SDK RENAMES (CFn `LoggingConfiguration` is the
+ *         SDK's `BucketLoggingStatus.LoggingEnabled`;
+ *         `WebsiteConfiguration.RoutingRules.RedirectRule` is `Redirect`,
+ *         `.RoutingRuleCondition` is `Condition`);
+ *       - an SDK-only WRAPPER segment (CFn's
  *         `BucketEncryption.ServerSideEncryptionConfiguration` LIST is the
- *         SDK's `ServerSideEncryptionConfiguration.Rules`), and a per-item PUT
- *         API whose SDK top-level is SINGULAR where CFn's is plural
- *         (`AnalyticsConfigurations` -> `AnalyticsConfiguration`, and the same
- *         for Inventory / Metrics / IntelligentTiering). Both are what
- *         {@link NestedKeyTarget.segmentRenames} exists for, and declaring ~10
- *         of them is the work S3's opt-in needs.
- *       - 20 never written anywhere in the file, i.e. CONFIRMED-LOOKING SILENT
- *         DROPS — the `LoggingConfiguration.TargetObjectKeyFormat` family, the
- *         four `ReplicationConfiguration.Rules.Destination` blocks
- *         (`AccessControlTranslation` / `EncryptionConfiguration` / `Metrics` /
- *         `ReplicationTime`), `Rules.SourceSelectionCriteria`,
- *         `LifecycleConfiguration.TransitionDefaultMinimumObjectSize` and
- *         `BucketEncryption…BlockedEncryptionTypes`. Filed as issue #1495 and
- *         pinned by name in this file's tests, so a provider fix forces this
- *         paragraph to be re-measured rather than left to rot.
- *     Opting S3 in needs BOTH halves, so it stays out; adding allow-list
- *     entries for either would make the bucket stop meaning anything.
+ *         SDK's `ServerSideEncryptionConfiguration.Rules`);
+ *       - a member CFn nests that the SDK HOISTS onto the request
+ *         (`TransitionDefaultMinimumObjectSize` sits on
+ *         `PutBucketLifecycleConfigurationRequest`, not inside
+ *         `LifecycleConfiguration`);
+ *       - a per-item PUT API whose SDK top-level is SINGULAR where CFn's is
+ *         plural (`AnalyticsConfigurations` -> `AnalyticsConfiguration`, same
+ *         for Inventory / Metrics / IntelligentTiering).
+ *     All four are what {@link NestedKeyTarget.segmentRenames} exists for, and
+ *     declaring them is the remaining work S3's opt-in needs (issue #1520).
+ *     S3 therefore stays out for now — but for a purely STRUCTURAL reason, with
+ *     no known silent drop left behind it. Adding allow-list entries instead
+ *     would make the bucket stop meaning anything.
  *
  * (D) [RESOLVED by issue #1475] `CloudFrontDistributionProvider.convertToSdkFormat`
  *     is a SPREAD-AND-PATCH forwarder: `const result = { ...config }` delivers
