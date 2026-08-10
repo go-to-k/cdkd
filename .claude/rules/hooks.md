@@ -74,6 +74,37 @@ The seven markgate-backed gate hooks (`check-gate.sh`, `verify-pr-gate.sh`, `int
 
 Smoke tests at `.claude/hooks/<gate>.test.sh` cover the cwd-aware resolution against fixture git worktrees (markgate is mocked via a PATH shim with a $CWD_TRACE_FILE so the tests assert the hook cd'd to the correct target dir before consulting markgate). Every gate test file also carries 2 quoted-body false-positive cases per cdkd#563 (`gh issue create --body "...<trigger>..."` / `echo "...<trigger>..."` shapes), which must keep passing: they are what proves the matcher does not fire when the trigger keyword sits inside an argument body of an unrelated command.
 
+**Two layers decide whether a gate fires, and both had to change (issue #1455).**
+
+1. The `if:` condition in `.claude/settings.json` decides whether the hook is
+   INVOKED at all.
+2. The hook's own matcher then decides whether the command is really the one it
+   guards.
+
+The `if:` patterns were prefix globs (`Bash(gh pr merge*)`), which is why
+several hooks had hand-enumerated chained variants (`Bash(cd * && gh pr merge*)`).
+They are now CONTAINS patterns (`Bash(*gh pr merge*)`), and the enumerated
+`cd * && ` variants are gone because a contains pattern subsumes them. The
+`-C` forms stay as separate alternatives, since `git -C <path> commit` does not
+contain the literal `git commit`.
+
+Measured rather than assumed, with temporary probe hooks in a gitignored
+`settings.local.json` (hook config hot-reloads, so this is testable without a
+restart):
+
+| probe `if:` | fired on `true && echo "... gh pr merge 999 ..."` |
+| --- | --- |
+| `Bash(*gh pr merge*)` | **yes** |
+| `Bash(gh pr merge*)` | no |
+
+The same run established that matching there is purely TEXTUAL and quote-blind:
+a contains pattern fired on an occurrence that existed only inside a quoted
+`echo` string. That is exactly why the two layers must change together —
+widening `if:` alone would invoke hooks on prose, and the hook's matcher becomes
+the sole precision filter. Widening it BEFORE the matcher fix would have been
+pointless (the anchored matcher rejects chained invocations anyway); doing it
+after is what makes the pair correct.
+
 **Command-position matching (issue #1455 — supersedes the line-start anchoring).** Those false-positive cases were originally handled by anchoring the matcher at LINE START, tolerating exactly one chained shape (an optional leading `cd <path> &&`). That dodged the false positive by POSITION, and the cost was a false NEGATIVE of the same shape: any other command in front — `git push && gh pr create`, `echo done; gh pr merge` — and the gate never fired at all. That is not a hypothetical: PR #1451's own `gh pr create` slipped past `verify-pr-gate` exactly that way, and the same hole existed in all six merge-time gates, which is strictly worse (they are what stand between an unverified destroy path and `main`).
 
 The fix separates the two concerns instead of trading them off. `.claude/hooks/lib/command-match.sh` provides `cmd_matches_verb <command> <verb-ere>`, which (1) NEUTRALISES the spans that are DATA rather than code — heredoc bodies, then quoted spans — removing the false-positive source directly rather than dodging it, then (2) matches the verb in COMMAND POSITION — line start OR immediately after a `&&` / `||` / `;` / `|` control operator. `main-tree-git-cwd-detector.sh` already used command-position anchoring; this brings the gate family in line with it.
