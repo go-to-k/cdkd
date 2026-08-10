@@ -1,3 +1,10 @@
+## [0.278.29](https://github.com/go-to-k/cdkd/compare/v0.278.28...v0.278.29) (2026-08-10)
+
+
+### Bug Fixes
+
+* **provisioning:** re-frame a Cloud Control FAILED 403 originating inside the AWS-managed resource handler ([#1500](https://github.com/go-to-k/cdkd/issues/1500)) ([cbcc98d](https://github.com/go-to-k/cdkd/commit/cbcc98df48ef383578e0a8281f4e282e41ef3a24))
+
 ## [0.278.28](https://github.com/go-to-k/cdkd/compare/v0.278.27...v0.278.28) (2026-08-10)
 
 
