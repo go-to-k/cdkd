@@ -1,3 +1,10 @@
+## [0.278.22](https://github.com/go-to-k/cdkd/compare/v0.278.21...v0.278.22) (2026-08-10)
+
+
+### Bug Fixes
+
+* **s3:** reset VersioningConfiguration / OwnershipControls / BucketEncryption on removal ([#1469](https://github.com/go-to-k/cdkd/issues/1469)) ([2203e27](https://github.com/go-to-k/cdkd/commit/2203e27040305b6a1a8207467439d803af0a7767))
+
 ## [0.278.21](https://github.com/go-to-k/cdkd/compare/v0.278.20...v0.278.21) (2026-08-10)
 
 
