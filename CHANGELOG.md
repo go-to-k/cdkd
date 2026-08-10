@@ -1,3 +1,10 @@
+## [0.278.45](https://github.com/go-to-k/cdkd/compare/v0.278.44...v0.278.45) (2026-08-10)
+
+
+### Bug Fixes
+
+* **sns:** fold the whole DeliveryStatusLogging HTTP family onto the one prefix AWS accepts ([#1536](https://github.com/go-to-k/cdkd/issues/1536)) ([9eef72f](https://github.com/go-to-k/cdkd/commit/9eef72f065f6df3bf85e549e3155fde9a3b6a97a))
+
 ## [0.278.44](https://github.com/go-to-k/cdkd/compare/v0.278.43...v0.278.44) (2026-08-10)
 
 
