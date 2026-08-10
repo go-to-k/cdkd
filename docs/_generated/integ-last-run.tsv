@@ -10,7 +10,7 @@ agentcore-tools	2026-08-01T09:36:05Z	PASS	58	verify.sh	0801 regression sweep; 3 
 alb	2026-08-10T17:41:32Z	PASS	420	verify.sh	1160 elbv2 batch post-rebase re-run: HealthCheckPort reset verified; destroy 16/0
 alb-advanced	2026-07-28T02:54:42Z	PASS	206	standard	ALB active wait 156s (#1274), destroy 17/0 errors
 api-cognito	2026-07-26T18:49:34Z	PASS	75	standard	0727b sweep-b6 staleness re-run (rc=0); account clean
-apigateway	2026-08-10T16:59:45Z	PASS	175	verify.sh	re-run after review fixes; 25 deleted 0 errors
+apigateway	2026-08-10T17:13:20Z	PASS	175	verify.sh	final re-run after re-review fixes; 25 deleted 0 errors
 apigatewayv2-update-removal	2026-08-10T05:50:57Z	PASS	81	verify.sh	0810 P2 sweep b10; 5-API removal reset, 0 err 0 orph
 apigw-gateway-response	2026-07-31T06:27:45Z	PASS	66	verify.sh	TTL-refresh sweep re-run; 3 phases clean, orph clean
 apigw-stage-throttling	2026-07-26T19:36:49Z	PASS	79	verify.sh	0727b sweep-b11 staleness re-run (rc=0); account clean
