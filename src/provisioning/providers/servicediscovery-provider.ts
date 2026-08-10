@@ -49,15 +49,23 @@ import type {
 } from '../../types/resource.js';
 
 /**
- * Reset target for a REMOVED `Properties.DnsProperties.SOA.TTL` (issue
- * #1160, servicediscovery batch). Live CFn A/B 2026-08-11: removing the SOA
- * block from an AWS::ServiceDiscovery::PublicDnsNamespace template reset the
- * live SOA TTL from the customized 300 back to 60 — the Cloud Map default —
- * and removing `Description` cleared it entirely. The Update*Namespace
- * change objects MERGE (an absent field keeps the live value), so the
- * provider must send both resets explicitly to mirror CloudFormation.
+ * Reset targets for a REMOVED `Properties.DnsProperties.SOA.TTL` (issue
+ * #1160, servicediscovery batch). The Update*Namespace change objects MERGE
+ * (an absent field keeps the live value), so the provider must send the
+ * reset explicitly to mirror CloudFormation — and the default TTL is
+ * PER KIND, not shared:
+ *  - PublicDnsNamespace: 60. Live CFn A/B 2026-08-11 (removing the SOA
+ *    block reset the customized 300 back to 60) + raw-SDK create-default
+ *    probe (a namespace created without Properties reports TTL 60).
+ *  - PrivateDnsNamespace: 15. Raw-SDK create-default probe 2026-08-11 (a
+ *    namespace created without Properties reports TTL 15 — matching the
+ *    PR #201-era live observation recorded on the create path below) +
+ *    live CFn A/B 2026-08-11 on the private kind itself.
+ * Removing `Description` clears it entirely on every kind (the `''`
+ * sentinel; live A/B'd on all three kinds).
  */
-const NAMESPACE_DEFAULT_SOA_TTL = 60;
+const PUBLIC_DNS_NAMESPACE_DEFAULT_SOA_TTL = 60;
+const PRIVATE_DNS_NAMESPACE_DEFAULT_SOA_TTL = 15;
 
 /**
  * AWS Service Discovery Provider
@@ -325,9 +333,8 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
    * Removal resets (issue #1160): the change object MERGES (absent = "no
    * change"), so a Description / SOA.TTL REMOVED from the template must be
    * reset explicitly — Description via the `''` clear sentinel, TTL to the
-   * Cloud Map default {@link NAMESPACE_DEFAULT_SOA_TTL} (both the CFn-parity
-   * shape, live A/B'd 2026-08-11 on the public-DNS sibling; the private kind
-   * shares the same change-object family).
+   * kind's Cloud Map default ({@link PRIVATE_DNS_NAMESPACE_DEFAULT_SOA_TTL}) —
+   * the CFn-parity shape, live A/B'd 2026-08-11 on the private kind itself.
    */
   private async updateNamespace(
     logicalId: string,
@@ -350,7 +357,11 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
       namespaceChange.Description = description;
     }
 
-    const soaProperties = this.resolveSoaTtlChange(properties, previousProperties);
+    const soaProperties = this.resolveSoaTtlChange(
+      properties,
+      previousProperties,
+      PRIVATE_DNS_NAMESPACE_DEFAULT_SOA_TTL
+    );
     if (soaProperties) {
       namespaceChange.Properties = soaProperties;
     }
@@ -666,8 +677,8 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
    * Removal resets (issue #1160): the change object MERGES (absent = "no
    * change"), so a Description / SOA.TTL REMOVED from the template must be
    * reset explicitly — Description via the `''` clear sentinel, TTL to the
-   * Cloud Map default {@link NAMESPACE_DEFAULT_SOA_TTL} (both the CFn-parity
-   * shape, live A/B'd 2026-08-11 on this exact kind).
+   * kind's Cloud Map default ({@link PUBLIC_DNS_NAMESPACE_DEFAULT_SOA_TTL}) —
+   * the CFn-parity shape, live A/B'd 2026-08-11 on this exact kind.
    */
   private async updatePublicDnsNamespace(
     logicalId: string,
@@ -690,7 +701,11 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
       namespaceChange.Description = description;
     }
 
-    const soaProperties = this.resolveSoaTtlChange(properties, previousProperties);
+    const soaProperties = this.resolveSoaTtlChange(
+      properties,
+      previousProperties,
+      PUBLIC_DNS_NAMESPACE_DEFAULT_SOA_TTL
+    );
     if (soaProperties) {
       namespaceChange.Properties = soaProperties;
     }
@@ -1029,19 +1044,20 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
    * including the REMOVAL reset (issue #1160): a TTL present in the desired
    * template passes through; a TTL absent from the desired template but
    * present in the previous one is reset to the Cloud Map default
-   * {@link NAMESPACE_DEFAULT_SOA_TTL} (the CFn-parity shape — the change
+   * the caller-supplied per-kind default (the CFn-parity shape — the change
    * object merges, so skipping it would silently keep the customized TTL).
    * Never-present stays absent (no change entry).
    */
   private resolveSoaTtlChange(
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    defaultTtl: number
   ): { DnsProperties: { SOA: { TTL: number } } } | undefined {
     const desired = this.extractSoaTtlProperties(properties);
     if (desired) return desired;
     const previous = this.extractSoaTtlProperties(previousProperties);
     if (previous) {
-      return { DnsProperties: { SOA: { TTL: NAMESPACE_DEFAULT_SOA_TTL } } };
+      return { DnsProperties: { SOA: { TTL: defaultTtl } } };
     }
     return undefined;
   }

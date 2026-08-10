@@ -98,7 +98,10 @@ describe('ServiceDiscoveryProvider namespace removal resets (#1160)', () => {
     expect(input.Namespace.Description).toBe('');
   });
 
-  it('PrivateDnsNamespace — removed SOA TTL resets to the Cloud Map default 60', async () => {
+  it('PrivateDnsNamespace — removed SOA TTL resets to the PRIVATE-kind default 15', async () => {
+    // The default TTL is per kind: the private kind's create default is 15
+    // (raw-SDK probed + CFn A/B'd 2026-08-11), NOT the public kind's 60 —
+    // a shared constant here was a real reviewer catch.
     mockUpdateAndOperationSuccess();
 
     await provider.update(
@@ -116,7 +119,7 @@ describe('ServiceDiscoveryProvider namespace removal resets (#1160)', () => {
     const call = findCall(UpdatePrivateDnsNamespaceCommand);
     expect(call).toBeDefined();
     const input = call![0].input as NamespaceChangeInput;
-    expect(input.Namespace.Properties?.DnsProperties?.SOA?.TTL).toBe(60);
+    expect(input.Namespace.Properties?.DnsProperties?.SOA?.TTL).toBe(15);
   });
 
   it('PrivateDnsNamespace — never-present Description/SOA stays absent (no update call)', async () => {
@@ -179,6 +182,48 @@ describe('ServiceDiscoveryProvider namespace removal resets (#1160)', () => {
     const input = call![0].input as NamespaceChangeInput;
     expect(input.Namespace.Description).toBe('');
     expect(input.Namespace.Properties?.DnsProperties?.SOA?.TTL).toBe(60);
+  });
+
+  it('PublicDnsNamespace — Description kept while SOA TTL removed: passthrough + reset coexist', async () => {
+    mockUpdateAndOperationSuccess();
+
+    await provider.update(
+      'L',
+      'ns-1',
+      'AWS::ServiceDiscovery::PublicDnsNamespace',
+      { Name: 'ns.example.test', Description: 'kept description' },
+      {
+        Name: 'ns.example.test',
+        Description: 'kept description',
+        Properties: { DnsProperties: { SOA: { TTL: 90 } } },
+      }
+    );
+
+    const input = findCall(UpdatePublicDnsNamespaceCommand)![0].input as NamespaceChangeInput;
+    // The two fields resolve independently: the kept Description passes
+    // through untouched while the removed TTL resets in the same change.
+    expect(input.Namespace.Description).toBe('kept description');
+    expect(input.Namespace.Properties?.DnsProperties?.SOA?.TTL).toBe(60);
+  });
+
+  it('PublicDnsNamespace — Description removed while SOA TTL kept: reset + passthrough coexist', async () => {
+    mockUpdateAndOperationSuccess();
+
+    await provider.update(
+      'L',
+      'ns-1',
+      'AWS::ServiceDiscovery::PublicDnsNamespace',
+      { Name: 'ns.example.test', Properties: { DnsProperties: { SOA: { TTL: 90 } } } },
+      {
+        Name: 'ns.example.test',
+        Description: 'old description',
+        Properties: { DnsProperties: { SOA: { TTL: 90 } } },
+      }
+    );
+
+    const input = findCall(UpdatePublicDnsNamespaceCommand)![0].input as NamespaceChangeInput;
+    expect(input.Namespace.Description).toBe('');
+    expect(input.Namespace.Properties?.DnsProperties?.SOA?.TTL).toBe(90);
   });
 
   it('PublicDnsNamespace — never-present Description/SOA stays absent (no update call)', async () => {
