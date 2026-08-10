@@ -880,15 +880,33 @@ property before the AWS call when **all** of the following hold:
 
 `GlueProvider`'s `assertIcebergTableInputAbsent` (issue
 [#1454](https://github.com/go-to-k/cdkd/issues/1454)) is the reference
-implementation. Note two details worth copying:
+implementation. Three details are worth copying:
 
 - The check runs **before** the `try` block, so the typed `ProvisioningError`
-  is not caught and re-labelled by the provider's own error wrapper.
-- It is applied on `create()` **and** `update()`. The update path mattered
-  more there: `UpdateTableCommandInput` has no such member at all, so an
-  unguarded update would have *silently accepted* a template `create` can never
-  take — a split verdict on the same template depending on which operation the
-  deploy engine happened to pick.
+  is not caught and re-labelled by the provider's own error wrapper. A test
+  that only asserts message CONTENT cannot catch this being moved inside the
+  `try`, because the wrapper EMBEDS the original message — assert the raw
+  message PREFIX and an absent `cause` instead.
+- **Refuse on `create()`; on `update()`, WARN.** This asymmetry is the rule,
+  not a Glue quirk. **`cdkd rollback` replays from cdkd STATE, not from the
+  template** — `rollback-executor.ts` calls
+  `provider.update(..., op.previousState.properties, ...)`. So a resource whose
+  state record already carries the offending value (written by an older cdkd
+  build, or by an import) becomes not just un-updatable but **UN-ROLLBACKABLE**,
+  and unlike the update case the user has no template-side remedy at all — only
+  hand-editing `state.json`. Before adding ANY refusal to an `update()`, ask
+  what happens when the rollback executor feeds it a historical state record.
+- Where update genuinely cannot forward the property anyway (Glue's
+  `UpdateTable` has no `OpenTableFormatInput` member), warning costs nothing:
+  no bad value can reach AWS from that path, and the user still gets the full
+  message. Share ONE message builder between the refusal and the warning so
+  they cannot drift.
+
+A pre-flight in a provider only covers the **SDK route**. A resource whose
+state records `provisionedBy: 'cc-api'` is sticky-routed to
+`CloudControlProvider` and bypasses it entirely. That is usually acceptable
+(the deploy still fails, just later and less helpfully) — but say so in the
+docs rather than letting a reader assume the refusal is total.
 
 If a property is merely *unimplemented* rather than undeployable, this is the
 wrong mechanism — move it to `unhandledByDesign`, which converts the silent
