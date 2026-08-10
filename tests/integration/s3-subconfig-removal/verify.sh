@@ -175,6 +175,32 @@ if [ "${PAB_P1}" != "True" ]; then
 fi
 echo "    baseline applied: versioning=Enabled ownership=BucketOwnerPreferred sse=aws:kms pab=True"
 
+# --- Phase 1b: drift must SURFACE a console-side ownership change ----------
+# This is the assertion that actually exercises the GetBucketOwnershipControls
+# read added by issue #1466. It has to run HERE, while state still declares
+# OwnershipControls: the drift comparator only descends into keys present in
+# state, so the same check after the Phase 2 removal would pass even with no
+# read wired at all (i.e. it would be vacuous). Pre-#1466 the provider had no
+# Get for this property, so drift could not see the change and exited 0.
+echo "==> Phase 1b: out-of-band ownership change must be detected as drift"
+aws s3api put-bucket-ownership-controls --bucket "${BUCKET_NAME}" --region "${REGION}" \
+  --ownership-controls 'Rules=[{ObjectOwnership=BucketOwnerEnforced}]'
+
+DRIFT_RC=0
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" \
+  --stack-region "${REGION}" || DRIFT_RC=$?
+if [ "${DRIFT_RC}" -ne 1 ]; then
+  echo "FAIL: expected drift exit 1 after an out-of-band OwnershipControls change, got ${DRIFT_RC}" >&2
+  exit 1
+fi
+echo "    drift detected the console-side ownership change (exit 1)"
+
+# Restore so Phase 2 starts from the declared baseline again.
+aws s3api put-bucket-ownership-controls --bucket "${BUCKET_NAME}" --region "${REGION}" \
+  --ownership-controls 'Rules=[{ObjectOwnership=BucketOwnerPreferred}]'
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --stack-region "${REGION}"
+echo "    restored; drift clean again"
+
 # --- Phase 2: remove every sub-config from the template --------------------
 # This is the phase the fix exists for. Against the pre-fix binary the first
 # three assertions FAIL (old values survive) while cdkd still reports success.

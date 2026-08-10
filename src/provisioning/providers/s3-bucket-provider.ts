@@ -1335,8 +1335,15 @@ export class S3BucketProvider implements ResourceProvider {
     const ownershipControls = properties['OwnershipControls'] as
       | { Rules: Array<{ ObjectOwnership: string }> }
       | undefined;
-    if (!skipDiffManaged && ownershipControls?.Rules) {
-      await this.applyOwnershipControls(bucketName, ownershipControls);
+    // Normalized so an empty `Rules: []` (the readCurrentState placeholder, or
+    // a condition-pruned template) is treated as not-declared instead of
+    // firing a Put that AWS 400s — mirroring the encryption branch below.
+    const normalizedOwnership = S3BucketProvider.emptyListConfigToUndefined(
+      ownershipControls,
+      'Rules'
+    );
+    if (!skipDiffManaged && normalizedOwnership) {
+      await this.applyOwnershipControls(bucketName, normalizedOwnership);
     }
 
     // Public Access Block Configuration
@@ -1394,11 +1401,20 @@ export class S3BucketProvider implements ResourceProvider {
    *
    * `readCurrentState` always-emits placeholder shapes for un-configured
    * features (`BucketEncryption: { ServerSideEncryptionConfiguration: [] }`,
-   * and the `OwnershipControls: { Rules: [] }` added with issue #1466). On a
-   * `cdkd drift --revert` round-trip those placeholders come back in as the
-   * DESIRED side; without this normalization an empty placeholder would look
-   * like a change and trigger either a Put that AWS rejects (both APIs require
-   * a non-empty list) or a spurious Delete.
+   * and the `OwnershipControls: { Rules: [] }` added with issue #1466), and a
+   * `cdkd drift --revert` round-trip feeds those back through `update()`.
+   *
+   * The rule is "empty container == not declared", applied to BOTH sides. Per
+   * pairing that means:
+   *   empty desired  + absent previous -> no call (without this, a Put with an
+   *                                      empty list, which both APIs reject)
+   *   absent desired + empty previous  -> no call (without this, a Delete
+   *                                      against a bucket that never had it)
+   *   empty desired  + REAL previous   -> Delete. This one is NOT suppressed
+   *                                      and must not be: it is a genuine
+   *                                      declared -> not-declared transition,
+   *                                      which is exactly what CloudFormation
+   *                                      removes.
    */
   private static emptyListConfigToUndefined<T extends Record<string, unknown>>(
     config: T | undefined,
@@ -1406,7 +1422,16 @@ export class S3BucketProvider implements ResourceProvider {
   ): T | undefined {
     if (!config) return undefined;
     const list = config[listKey];
-    if (!Array.isArray(list) || list.length === 0) return undefined;
+    // Absent list == not declared.
+    if (list === undefined || list === null) return undefined;
+    // Genuinely empty list == not declared.
+    if (Array.isArray(list) && list.length === 0) return undefined;
+    // A NON-ARRAY value (an unresolved intrinsic, a hand-written L1 template
+    // with the wrong nesting) is MALFORMED, not empty. It must pass through
+    // untouched so the Put reaches AWS and AWS surfaces the validation error.
+    // Folding it into `undefined` here would turn a template that DECLARES
+    // encryption into a DeleteBucketEncryption -- silently downgrading a live
+    // bucket from KMS to AES256 with no error anywhere.
     return config;
   }
 
@@ -1500,14 +1525,25 @@ export class S3BucketProvider implements ResourceProvider {
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>
   ): Promise<void> {
-    // Versioning — no DeleteBucketVersioning API; CFn's reset for a removed
-    // property is PutBucketVersioning with Status='Suspended'.
+    // Versioning ENABLE / CHANGE runs EARLY (an added ReplicationConfiguration
+    // below requires versioning to already be on). The SUSPEND half is
+    // deliberately deferred to the end of this method -- see the trailing
+    // block -- because S3 rejects PutBucketVersioning(Suspended) while a
+    // replication configuration is still active.
+    const previousVersioning = previousProperties['VersioningConfiguration'] as
+      | Record<string, unknown>
+      | undefined;
+    const nextVersioning = properties['VersioningConfiguration'] as
+      | Record<string, unknown>
+      | undefined;
     await this.diffSubConfig(
       bucketName,
-      previousProperties['VersioningConfiguration'] as Record<string, unknown> | undefined,
-      properties['VersioningConfiguration'] as Record<string, unknown> | undefined,
+      previousVersioning,
+      nextVersioning,
       async (cfg) => this.applyVersioning(bucketName, cfg),
-      async () => this.applyVersioning(bucketName, { Status: 'Suspended' })
+      async () => {
+        /* suspend deferred — see the end of applySubConfigDiffs */
+      }
     );
 
     // Ownership controls (per-id-free single config; empty Rules == absent)
@@ -1729,6 +1765,34 @@ export class S3BucketProvider implements ResourceProvider {
         this.logger.debug(`Deleted inventory configuration ${id} on bucket ${bucketName}`);
       }
     );
+
+    // Versioning SUSPEND — deferred to LAST on purpose (issue #1466).
+    //
+    // Ordering: S3 rejects PutBucketVersioning(Suspended) while the bucket
+    // still has an active ReplicationConfiguration, so a template that drops
+    // BOTH in one update must suspend only after the replication removal
+    // above. The enable/change half already ran at the top of this method,
+    // because an ADDED replication config requires versioning to be on first.
+    if (previousVersioning !== undefined && nextVersioning === undefined) {
+      // Object Lock structurally forbids suspending versioning
+      // (`InvalidBucketState`). Removing VersioningConfiguration from a
+      // locked bucket's template is therefore un-actionable rather than a
+      // divergence — warn instead of failing the deploy, which is what an
+      // unconditional suspend would newly do here.
+      const objectLockEnabled =
+        properties['ObjectLockEnabled'] === true ||
+        properties['ObjectLockEnabled'] === 'true' ||
+        properties['ObjectLockConfiguration'] !== undefined;
+      if (objectLockEnabled) {
+        this.logger.warn(
+          `Bucket ${bucketName}: VersioningConfiguration was removed from the template, but the ` +
+            `bucket has Object Lock enabled and S3 does not allow suspending versioning on it. ` +
+            `Leaving versioning enabled.`
+        );
+      } else {
+        await this.applyVersioning(bucketName, { Status: 'Suspended' });
+      }
+    }
   }
 
   /**

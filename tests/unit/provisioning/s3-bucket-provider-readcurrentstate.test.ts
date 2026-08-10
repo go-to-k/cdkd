@@ -326,4 +326,28 @@ describe('S3BucketProvider.readCurrentState', () => {
       TagFilter: { Key: 'replicate', Value: 'yes' },
     });
   });
+  it('readOwnershipControls: NotFound -> empty placeholder, other errors rethrow', async () => {
+    // Matches every sibling reader in this provider (readEncryption /
+    // readTags both rethrow anything that is not their own "not configured"
+    // signature). Pinned deliberately: this read ADDS a dependency on
+    // s3:GetBucketOwnershipControls, so the failure mode on a missing
+    // permission must be a loud error, not a silent wrong answer that would
+    // report phantom drift on every bucket.
+    const ownershipIsCall = (n: number) => n === 3; // Head, Versioning, Encryption, Ownership
+
+    // AccessDenied on the ownership read must propagate.
+    let i = -1;
+    mockSend.mockImplementation(() => {
+      i += 1;
+      if (ownershipIsCall(i)) {
+        const err = new Error('AccessDenied: not authorized');
+        err.name = 'AccessDenied';
+        return Promise.reject(err);
+      }
+      return Promise.resolve({});
+    });
+    await expect(provider.readCurrentState('b', 'L', 'AWS::S3::Bucket')).rejects.toThrow(
+      /AccessDenied/
+    );
+  });
 });
