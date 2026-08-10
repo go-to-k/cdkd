@@ -150,9 +150,12 @@
  * write elsewhere in the file. That is the honest measurement of the same blind
  * spot, not a new one.
  *
- * Those non-zero counts are NOT 327 silent drops. They are this pass's LARGEST
- * blind spot (not its only one — see the known-bounds section below): a GENERIC
- * key converter delivers a whole sub-blob without naming any member. `ECSProvider.convertLinuxParameters` is the clean demonstration —
+ * Those non-zero counts are UNMEASURABLE rather than vouched-for — not a list
+ * of 327 confirmed silent drops, and not a clean bill of health either. They
+ * are this pass's LARGEST blind spot (not its only one — see the known-bounds
+ * section below): a GENERIC key converter delivers a whole sub-blob without
+ * naming any member. `ECSProvider.convertLinuxParameters` is the clean
+ * demonstration —
  * `return pascalToCamelCaseKeys(config)` delivers `Capabilities`, `Devices`,
  * `Tmpfs`, `Swappiness` and the rest with zero writes to find. Enabling the
  * pass tree-wide would bury a real finding under dozens of false ones, and an
@@ -233,13 +236,28 @@
  *     would not help the positive test (a key is cleared if ANY site covers it,
  *     which is the union), so the honest fix is the same per-path capture as (1).
  *
- * (3) VALUE RESOLUTION IS BEST-EFFORT AND BARE-NAME. Same-file callables are
- *     indexed by name (`this.helper(…)` / `helper(…)`), identifier bindings are
- *     searched per enclosing scope OUTWARD and are not block-scope-aware (two
- *     disjoint `if` branches binding the same name are unioned), and a hop the
- *     walk cannot follow yields NO literals — which flags CORRECT code. That
- *     last direction is the dangerous one, which is why {@link unwrapExpression}
- *     peels `await` and the identifier search climbs to the module scope.
+ * (3) VALUE RESOLUTION IS BEST-EFFORT AND BARE-NAME. Same-file callables and
+ *     property initializers are indexed by NAME, so `this.mapSource(…)` and a
+ *     free `mapSource(…)` resolve to the same declaration (a `receiver.mapSource(…)`
+ *     on some OTHER object deliberately does not — that would be a false clear
+ *     on a CI-blocking bucket). Identifier bindings are searched in the nearest
+ *     function scope, which is descended FULLY — so two disjoint `if` branches
+ *     binding the same name are unioned — and then OUTWARD without descending
+ *     into sibling functions, with a PARAMETER of the nearest scope stopping the
+ *     climb entirely. And a hop the walk cannot follow yields NO literals, which
+ *     flags CORRECT code; that direction is the dangerous one, which is why
+ *     {@link unwrapExpression} peels `await` and the climb reaches module
+ *     scope at all.
+ *
+ * (4) THE REVERSE-MAP EXCLUSION IS PREFIX-ONLY. A reverse SDK->CFn helper named
+ *     by SUFFIX rather than prefix — `ecs-provider.ts`'s `volumesToCfn` /
+ *     `containerDefinitionsToCfn`, `s3-bucket-provider.ts`'s `metricsSdkToCfn`
+ *     — is NOT skipped by {@link REVERSE_MAP_FUNCTION_PREFIXES}, so its
+ *     CFn-spelled writes land in the evidence. No live impact: the only opted-in
+ *     target keeps its whole reverse map inside `readCurrentState`, and the
+ *     suffix providers are not opted in. Widening the match is deliberately NOT
+ *     done here — it would withdraw names from the LITERAL set too (the
+ *     `provider-handled` bucket) on targets nobody has measured for it.
  *
  * Each of (1) and (2) is pinned by a test, so the bound is a recorded fact
  * rather than a surprise for the next reader.
@@ -260,6 +278,12 @@
  * Usage:
  *   node --experimental-strip-types scripts/gen-nested-key-coverage.ts          # write the matrix
  *   node --experimental-strip-types scripts/gen-nested-key-coverage.ts --check  # fail on a divergence
+ *   node --experimental-strip-types scripts/gen-nested-key-coverage.ts --help   # usage
+ *
+ * Any unrecognized flag (and any positional argument) is REJECTED with usage on
+ * stderr and exit 1, the same guard `refresh-cfn-schemas.mjs` carries: without
+ * it a typo like `--chekc` falls through to the WRITER path, rewriting the
+ * committed matrix and exiting 0.
  *
  * `--providers-dir=<path>` is a TEST SEAM (issue #1448): it points the provider
  * walk at a scratch COPY of `src/provisioning/providers`, so the unit tests can
@@ -1229,13 +1253,19 @@ const RECEIVER_PRESERVING_METHODS: ReadonlySet<string> = new Set([
   'filter',
   'find',
   'slice',
-  'concat',
   'sort',
   'toSorted',
   'reverse',
   'toReversed',
   'at',
 ]);
+
+/**
+ * Array methods that deliver elements of the receiver AND of every argument.
+ * Resolving only the receiver would UNDER-credit `base.concat([{ extra: 1 }])`,
+ * which flags correct code.
+ */
+const RECEIVER_AND_ARGUMENT_METHODS: ReadonlySet<string> = new Set(['concat']);
 
 /**
  * Collect PATH-SCOPED write evidence, AST-level.
@@ -1379,6 +1409,16 @@ export function collectWriteEvidence(
   };
   indexVisit(sf);
 
+  /**
+   * Is `name` a PARAMETER of `scope`? A parameter shadows every outer binding,
+   * so the outward climb must not start — otherwise a parameter named `cfg`
+   * resolves to an unrelated method's `const cfg = { … }`.
+   */
+  const isBoundAsParameter = (scope: ts.Node, name: string): boolean => {
+    if (!ts.isFunctionLike(scope)) return false;
+    return scope.parameters.some((p) => ts.isIdentifier(p.name) && p.name.text === name);
+  };
+
   /** The nearest enclosing function body / source file — the binding scope. */
   const enclosingScope = (node: ts.Node): ts.Node => {
     for (let n: ts.Node | undefined = node.parent; n !== undefined; n = n.parent) {
@@ -1448,6 +1488,13 @@ export function collectWriteEvidence(
         if (RECEIVER_PRESERVING_METHODS.has(callee.name.text)) {
           return resolveLiterals(callee.expression, seen);
         }
+        // `xs.concat(ys)` delivers elements of BOTH.
+        if (RECEIVER_AND_ARGUMENT_METHODS.has(callee.name.text)) {
+          return [
+            ...resolveLiterals(callee.expression, seen),
+            ...e.arguments.flatMap((a) => resolveLiterals(a, seen)),
+          ];
+        }
       }
       // Same-file callable, resolved by NAME. Restricted to `this.helper(…)`
       // and a bare `helper(…)`: an earlier revision resolved ANY
@@ -1471,17 +1518,27 @@ export function collectWriteEvidence(
       );
     }
     if (ts.isIdentifier(e)) {
-      // Nearest enclosing function first, then outward to the module — an
-      // outer-scope `const DEFAULTS = { … }` used inside a method is a real
-      // shape, and not finding it flags CORRECT code. The search stops at the
-      // FIRST scope that yields a literal, which is the shadowing rule for the
-      // cases that matter. It is NOT block-scope-aware: two disjoint
-      // `if` branches each binding `cfg = { … }` are unioned, which
-      // over-credits in the false-NEGATIVE direction (see the module header's
-      // known-bounds section).
-      for (let scope: ts.Node | undefined = enclosingScope(e); scope; ) {
+      // Nearest enclosing function first, then outward — an outer-scope
+      // `const DEFAULTS = { … }` used inside a method is a real shape, and not
+      // finding it flags CORRECT code.
+      //
+      // Two limits keep the climb from reaching into unrelated code. A name
+      // bound as a PARAMETER of the nearest scope shadows everything outside
+      // it, so the climb never starts. And an OUTER scope is searched WITHOUT
+      // descending into its nested functions, so a `const cfg = { … }` in a
+      // sibling method cannot resolve another method's `cfg`; only bindings
+      // lexically visible from here do. The nearest scope itself IS descended
+      // fully, because `let buildBatchConfig` assigned inside an `if` block is
+      // the real shape this walk exists for — which also means two disjoint
+      // `if` branches binding the same name are unioned (false-NEGATIVE
+      // direction; see the module header's known-bounds section).
+      const nearest = enclosingScope(e);
+      if (isBoundAsParameter(nearest, e.text)) return [];
+      for (let scope: ts.Node | undefined = nearest; scope; ) {
+        const descendIntoFunctions = scope === nearest;
         const out: ts.ObjectLiteralExpression[] = [];
         const visit = (n: ts.Node): void => {
+          if (!descendIntoFunctions && n !== scope && ts.isFunctionLike(n)) return;
           if (
             ts.isVariableDeclaration(n) &&
             ts.isIdentifier(n.name) &&
@@ -2407,7 +2464,36 @@ export function loadReport(
   return buildReport(targets);
 }
 
+const USAGE =
+  'Usage: node scripts/gen-nested-key-coverage.ts [--check] [--providers-dir=<path>]\n' +
+  '  --check               fail on a divergence instead of writing the matrix\n' +
+  '  --providers-dir=<p>   TEST SEAM: audit a scratch copy of the providers tree\n' +
+  '                        (requires --check; the writer path must only ever\n' +
+  '                        render docs/_generated from src/)\n';
+
 function main(argv: readonly string[] = process.argv.slice(2)): void {
+  if (argv.includes('--help') || argv.includes('-h')) {
+    process.stdout.write(USAGE);
+    return;
+  }
+  // An unrecognized flag must NOT silently fall through to the WRITER path:
+  // `--chekc` would rewrite the committed matrix and exit 0, and the SPACE form
+  // `--providers-dir /tmp` would slip past the `--providers-dir=` prefix test
+  // below. Same guard shape (and same reason) as `refresh-cfn-schemas.mjs`.
+  const unknown = argv.filter(
+    (a) => a.startsWith('-') && a !== '--check' && !a.startsWith('--providers-dir=')
+  );
+  if (unknown.length > 0) {
+    process.stderr.write(`Unknown flag(s): ${unknown.join(', ')}\n${USAGE}`);
+    process.exit(1);
+  }
+  // Nothing else is positional either — a bare argument is almost certainly a
+  // mistyped flag or a path meant for `--providers-dir=`.
+  const stray = argv.filter((a) => !a.startsWith('-'));
+  if (stray.length > 0) {
+    process.stderr.write(`Unexpected argument(s): ${stray.join(', ')}\n${USAGE}`);
+    process.exit(1);
+  }
   const checkMode = argv.includes('--check');
   // Test seam: point the provider walk at a scratch copy of the tree so the
   // shipped exit path can be exercised against a REAL provider file carrying an

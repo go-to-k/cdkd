@@ -202,10 +202,21 @@ That is a far more common template shape than the base64 search string.
      `environment: { … }` literals in different methods share one `environment`
      scope, and a name that only ever appears nested still gets a scope a
      same-spelled TOP-LEVEL property would be checked against.
-  3. **Value resolution is best-effort and bare-name** (same-file callables by
-     name, identifier bindings not block-scope-aware). A hop it cannot follow
-     yields no literals and flags CORRECT code, which is why it peels `await`
-     and climbs to the module scope.
+  3. **Value resolution is best-effort and bare-name.** Same-file callables and
+     property initializers are indexed by NAME, so `this.mapSource(…)` and a
+     free `mapSource(…)` resolve to the same declaration while a
+     `receiver.mapSource(…)` on some other object deliberately does not.
+     Identifier bindings are searched in the nearest function scope (descended
+     FULLY, so two disjoint `if` branches binding the same name are unioned),
+     then OUTWARD without descending into sibling functions, with a PARAMETER of
+     the nearest scope stopping the climb. A hop it cannot follow yields no
+     literals and flags CORRECT code, which is why it peels `await` and climbs
+     to the module scope at all.
+  4. **The reverse-map exclusion is PREFIX-only**, so a suffix-named reverse
+     helper (`volumesToCfn`, `metricsSdkToCfn`) is not skipped. No live impact —
+     the only opted-in target keeps its reverse map inside `readCurrentState` —
+     but widening the match would also withdraw names from the LITERAL set on
+     targets nobody has measured for it, so it is deliberately not done.
   Both (1) and (2) are pinned by tests, and the full measured statement lives in
   the script's file header. What ALSO remains outside the fence is a blob handed
   WHOLE to a generic converter: the scope index cannot see inside it, so those

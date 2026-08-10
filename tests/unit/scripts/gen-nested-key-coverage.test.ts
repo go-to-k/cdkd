@@ -298,6 +298,72 @@ describe('collectWriteEvidence (synthetic)', () => {
     expect(scopes.get('buildBatchConfig')?.has('computeTypesAllowed')).toBe(true);
   });
 
+  it('peels `await` off a resolved value', () => {
+    // FALSE-POSITIVE direction: un-peeled, `await this.build()` resolves to no
+    // literals and every path under `source` flags with the misleading "the
+    // provider never writes it". No opted-in provider awaits a mapper today, so
+    // this synthetic case IS the fence.
+    const { scopes } = collectWriteEvidence(`
+      class P {
+        async build() { return { type: 1, location: 2 }; }
+        async map() { return { source: await this.build() }; }
+      }
+    `);
+    expect([...(scopes.get('source') ?? [])].sort()).toEqual(['location', 'type']);
+  });
+
+  it('climbs OUT to an enclosing scope for a binding, but not into sibling functions', () => {
+    // A module-level `const DEFAULTS = { … }` used inside a method is a real
+    // shape; not finding it flags CORRECT code. The climb must NOT reach a
+    // same-named binding in an unrelated method, and a PARAMETER of the nearest
+    // scope stops it entirely.
+    const { scopes } = collectWriteEvidence(`
+      const DEFAULTS = { alpha: 1 };
+      class P {
+        other() { const cfg = { fromSibling: 1 }; return cfg; }
+        map(cfg) { return { environment: DEFAULTS, cache: cfg }; }
+      }
+    `);
+    expect([...(scopes.get('environment') ?? [])].sort()).toEqual(['alpha']);
+    // `cfg` is a PARAMETER here — the sibling method's `const cfg` must not
+    // resolve it, or an unrelated literal would vouch for a CI-blocking bucket.
+    expect([...(scopes.get('cache') ?? [])]).toEqual([]);
+  });
+
+  it('does NOT resolve a same-named method on an UNRELATED receiver', () => {
+    // `client.mapSource(x)` is not the provider's own mapper. Crediting it was
+    // a false CLEAR on a CI-blocking bucket, so only `this.helper(…)` and a
+    // bare `helper(…)` resolve.
+    const source = `
+      class P {
+        mapSource(s) { return { type: 1, location: 2 }; }
+        own() { return { source: this.mapSource(s) }; }
+        foreign() { return { artifacts: client.mapSource(s) }; }
+      }
+    `;
+    const { scopes } = collectWriteEvidence(source);
+    expect([...(scopes.get('source') ?? [])].sort()).toEqual(['location', 'type']);
+    expect([...(scopes.get('artifacts') ?? [])]).toEqual([]);
+  });
+
+  it('resolves filter / find / concat through the RECEIVER, not the predicate', () => {
+    // `filter` / `find` were briefly treated as callback-returning, which
+    // resolves a PREDICATE and yields nothing; the delivered value comes from
+    // the array. `concat` delivers the receiver AND its arguments.
+    const { scopes } = collectWriteEvidence(`
+      const pool = [{ alpha: 1 }];
+      const extra = [{ beta: 2 }];
+      const sdk = {
+        picked: pool.find((x) => x.alpha === 1),
+        kept: pool.filter((x) => Boolean(x)),
+        joined: pool.concat(extra),
+      };
+    `);
+    expect([...(scopes.get('picked') ?? [])].sort()).toEqual(['alpha']);
+    expect([...(scopes.get('kept') ?? [])].sort()).toEqual(['alpha']);
+    expect([...(scopes.get('joined') ?? [])].sort()).toEqual(['alpha', 'beta']);
+  });
+
   it('counts compound assignment operators as writes (#1448 comment item 1)', () => {
     // `??=` / `||=` / `+=` are writes. Treating them as non-writes would fail CI
     // with the MISLEADING "the provider never writes it" after a refactor.
@@ -1871,19 +1937,17 @@ describe('real-code regression probes (per the repo checker rules)', () => {
     // shorthand property: `buildBatchConfig,` in mapProperties\' return literal
     expect(cbSource).toMatch(/^\s{6}buildBatchConfig,$/m);
     expect(evidence.written.has('buildBatchConfig'), 'shorthand property').toBe(true);
-    // element-access assignment with a literal key, on the FORWARD path.
-    // The name has to be reachable through THAT SHAPE ALONE: an earlier
-    // revision asserted `written.size > 100` on `ecs-provider.ts`, which stays
-    // at 158 with the element-access branch entirely dead — a vacuous floor.
-    // `out['DockerVolumeConfiguration'] = docker` is the only site that writes
-    // this name, and it is an element access.
-    const ecsSource = readFileSync(
-      resolve(repoRoot, 'src/provisioning/providers/ecs-provider.ts'),
-      'utf8'
-    );
-    const ecsEvidence = collectWriteEvidence(ecsSource, 'ecs-provider.ts');
-    expect(ecsSource).toContain("out['DockerVolumeConfiguration'] = docker");
-    expect(ecsEvidence.written.has('DockerVolumeConfiguration'), 'element access').toBe(true);
+    // element-access assignment with a literal key, on a genuine FORWARD path:
+    // `CloudFrontDistributionProvider.completeRequiredUpdateFields` fills the
+    // members UpdateDistribution requires. The name has to be reachable through
+    // THAT SHAPE ALONE — an earlier revision asserted `written.size > 100` on
+    // `ecs-provider.ts`, which stays at 158 with the element-access branch
+    // entirely dead (a vacuous floor), and its `out['DockerVolumeConfiguration']`
+    // site is a REVERSE `volumesToCfn` map besides.
+    // `c['OriginKeepaliveTimeout'] = 5` is the only write of this name.
+    const cfEvidence = collectWriteEvidence(cfSource, 'cloudfront-distribution-provider.ts');
+    expect(cfSource).toContain("c['OriginKeepaliveTimeout'] = 5");
+    expect(cfEvidence.written.has('OriginKeepaliveTimeout'), 'element access').toBe(true);
     // property-access assignment: `this.client = new CodeBuildClient(…)` is the
     // only write of `client` in the file, and it is a property access. The
     // earlier revision only regex-matched the SOURCE here and asserted nothing
@@ -2126,6 +2190,33 @@ describe('the shipped --check command', () => {
     expect(status).toBe(1);
     expect(stderr).toContain('stale NESTED_KEY_ALLOW_LIST');
     expect(stderr).toContain('AWS::CodeBuild::Project#HostKernel');
+  });
+
+  it('rejects an unrecognized flag instead of falling through to WRITER mode', () => {
+    // `--chekc` used to REWRITE the committed matrix and exit 0 — the same
+    // silent-full-run trap `refresh-cfn-schemas.mjs --help` had before its
+    // guard (#1378 rider). The SPACE form of the seam is caught here too: it
+    // does not match the `--providers-dir=` prefix, so without this guard it
+    // would slip into the writer path.
+    for (const flag of ['--chekc', '-c', '--providers-dir']) {
+      const run = spawnSync(process.execPath, [SCRIPT, flag, '/tmp'], {
+        cwd: repoRoot,
+        encoding: 'utf8',
+      });
+      expect(run.status, flag).toBe(1);
+      expect(run.stderr, flag).toContain('Usage:');
+      expect(run.stdout, flag).not.toContain('wrote nested-key-coverage');
+    }
+  });
+
+  it('--help prints usage and exits 0 without writing anything', () => {
+    const run = spawnSync(process.execPath, [SCRIPT, '--help'], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+    });
+    expect(run.status).toBe(0);
+    expect(run.stdout).toContain('Usage:');
+    expect(run.stderr).not.toContain('wrote nested-key-coverage');
   });
 
   it('refuses --providers-dir= in WRITER mode instead of rewriting the matrix', () => {
