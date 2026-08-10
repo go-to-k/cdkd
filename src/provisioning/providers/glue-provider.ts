@@ -548,6 +548,12 @@ export class GlueProvider implements ResourceProvider {
         (previousProperties?.['TableInput'] as Record<string, unknown> | undefined)?.['Parameters'],
         live.parameters
       );
+      this.preserveAwsManagedStorageDescriptor(
+        builtTableInput,
+        tableInput,
+        previousProperties?.['TableInput'],
+        live.storageDescriptor
+      );
 
       await this.getClient().send(
         new UpdateTableCommand({
@@ -586,9 +592,10 @@ export class GlueProvider implements ResourceProvider {
         message +=
           live.versionId !== undefined
             ? ` cdkd sent the version it read (${live.versionId}) as a precondition and AWS ` +
-              `rejected the write, rather than let it put back the AWS-managed Parameters read ` +
-              `a moment earlier — which for an Apache Iceberg table would have pinned it to an ` +
-              `older metadata_location (an effective snapshot rollback).`
+              `rejected the write, rather than let it put back the AWS-managed Parameters and ` +
+              `StorageDescriptor members read a moment earlier — which for an Apache Iceberg ` +
+              `table would have pinned it to an older metadata_location (an effective snapshot ` +
+              `rollback).`
             : ` AWS returned no VersionId on the pre-update read, so cdkd could not attach a ` +
               `precondition; AWS rejected the write on its own.`;
         message += ` Re-run the deploy to pick up the current values.`;
@@ -717,8 +724,147 @@ export class GlueProvider implements ResourceProvider {
   }
 
   /**
-   * The live table state {@link preserveAwsManagedParameters} needs: its
-   * current `Parameters` plus the `VersionId` that pins them.
+   * Read-merge-write for out-of-band-authored `TableInput.StorageDescriptor`
+   * members (issue #1479) — the subtree sibling of
+   * {@link preserveAwsManagedParameters}, applied per SD MEMBER, with the two
+   * nested bags (`StorageDescriptor.Parameters`, `SerdeInfo.Parameters`)
+   * getting the same per-KEY rule one level down.
+   *
+   * Live probes (2026-08-10, us-east-1 — recorded on issue #1479) established
+   * WHO authors what, which is why this is per-member rather than a blanket
+   * merge:
+   *
+   * - A USER-authored `EXTERNAL_TABLE`: re-sending the template verbatim
+   *   reads back identical — the service itself authors only scalar defaults
+   *   (`Compressed: false`, `NumberOfBuckets: 0`, ...). Full-replace is
+   *   CORRECT for template-declared members, and `drift --revert` depends on
+   *   it to clear console-side edits.
+   * - A CRAWLER-populated table: the crawler authors `Columns`,
+   *   `InputFormat` / `OutputFormat`, `SerdeInfo` (incl. its `Parameters`
+   *   bag), and `StorageDescriptor.Parameters`; an UpdateTable restating only
+   *   a minimal template wiped ALL of them (`Columns` -> `[]`, `SerdeInfo`
+   *   gone) while reporting success.
+   * - An ICEBERG table: an UpdateTable omitting `Columns` was ACCEPTED and
+   *   wiped the catalog schema to `[]` (Glue re-derives Iceberg columns from
+   *   table metadata, so the catalog copy is metadata-authored between
+   *   engine commits).
+   *
+   * The preservation key is the SAME "present in NEITHER template side" test
+   * as {@link preserveAwsManagedParameters}, per member:
+   *
+   * | member in desired | member in previous | outcome                            |
+   * | ----------------- | ------------------ | ---------------------------------- |
+   * | yes               | (either)           | template wins                      |
+   * | no                | yes                | the USER REMOVED it -> stays removed |
+   * | no                | no                 | out-of-band authored -> carried forward from live |
+   *
+   * A template that never declared `StorageDescriptor` on EITHER side (a
+   * crawler-managed table adopted into a minimal template) carries the whole
+   * live block forward. Deliberately scoped to the `StorageDescriptor`
+   * subtree per issue #1479 — the crawler also authors `PartitionKeys` /
+   * `Owner`, but widening beyond the issue's member set is a separate
+   * decision (recorded there).
+   *
+   * TOCTOU: the write rides the same unconditional `VersionId` precondition
+   * as the Parameters merge (see {@link readLiveTableState}), so a concurrent
+   * out-of-band write fails the update loudly instead of being clobbered.
+   */
+  private preserveAwsManagedStorageDescriptor(
+    built: TableInput,
+    desiredTableInput: Record<string, unknown>,
+    previousTableInput: unknown,
+    liveSd: StorageDescriptor | undefined
+  ): void {
+    if (!liveSd || Object.keys(liveSd).length === 0) return;
+
+    const desiredSdRaw = desiredTableInput['StorageDescriptor'];
+    const previousSdRaw = asRecord(previousTableInput)?.['StorageDescriptor'];
+
+    // Neither template side ever declared the block -> it is entirely
+    // out-of-band authored (crawler / Iceberg metadata); carry it forward
+    // whole. `undefined` (not key-set emptiness) is the declaration test, so
+    // a declared-but-empty `StorageDescriptor: {}` takes the per-member path.
+    if (desiredSdRaw === undefined && previousSdRaw === undefined) {
+      built.StorageDescriptor = liveSd;
+      return;
+    }
+
+    const desiredKeys = parameterKeySet(desiredSdRaw);
+    const previousKeys = parameterKeySet(previousSdRaw);
+    const sdOut: Record<string, unknown> = {
+      ...((built.StorageDescriptor as Record<string, unknown> | undefined) ?? {}),
+    };
+
+    for (const [member, liveValue] of Object.entries(liveSd as Record<string, unknown>)) {
+      if (liveValue === undefined) continue;
+      if (desiredKeys.has(member) || previousKeys.has(member)) continue;
+      sdOut[member] = liveValue;
+    }
+
+    // The two nested BAGS get the per-KEY rule whenever EITHER template side
+    // declares the containing member — when neither does, the member loop
+    // above already carried the whole bag forward. Gating on the desired side
+    // alone would make removing the whole bag wipe its AWS-authored keys, the
+    // exact action the top-level #1461 helper handles per key (desired absent
+    // + previous declared -> user keys removed, AWS-authored keys survive);
+    // the OR keeps the two levels on one semantic. SerdeInfo is deliberately
+    // different — see its gate below.
+    const desiredSd = asRecord(desiredSdRaw);
+    const previousSd = asRecord(previousSdRaw);
+    if (desiredKeys.has('Parameters') || previousKeys.has('Parameters')) {
+      this.preserveAwsManagedParameters(
+        sdOut as { Parameters?: Record<string, string> | undefined },
+        desiredSd?.['Parameters'],
+        previousSd?.['Parameters'],
+        liveSd.Parameters
+      );
+    }
+    // SerdeInfo is STRUCTURAL, not a bag: its members (SerializationLibrary,
+    // Name) are user-authored in every template shape, so removing the whole
+    // block from the template is a whole-member removal the member loop above
+    // honors — resurrecting a partial SerdeInfo carrying only the crawler's
+    // Parameters would leave an incoherent serde. Hence the desired-only gate
+    // here, unlike the Parameters bags.
+    if (desiredKeys.has('SerdeInfo') && liveSd.SerdeInfo) {
+      const desiredSerde = asRecord(desiredSd?.['SerdeInfo']);
+      const previousSerde = asRecord(previousSd?.['SerdeInfo']);
+      const desiredSerdeKeys = parameterKeySet(desiredSerde);
+      const previousSerdeKeys = parameterKeySet(previousSerde);
+      const serdeOut: Record<string, unknown> = {
+        ...((sdOut['SerdeInfo'] as Record<string, unknown> | undefined) ?? {}),
+      };
+      for (const [member, liveValue] of Object.entries(
+        liveSd.SerdeInfo as Record<string, unknown>
+      )) {
+        if (liveValue === undefined) continue;
+        if (desiredSerdeKeys.has(member) || previousSerdeKeys.has(member)) continue;
+        serdeOut[member] = liveValue;
+      }
+      // Same OR gate as StorageDescriptor.Parameters — the inner bag keeps
+      // per-key semantics even when the user removes the whole bag.
+      if (desiredSerdeKeys.has('Parameters') || previousSerdeKeys.has('Parameters')) {
+        this.preserveAwsManagedParameters(
+          serdeOut as { Parameters?: Record<string, string> | undefined },
+          desiredSerde?.['Parameters'],
+          previousSerde?.['Parameters'],
+          liveSd.SerdeInfo.Parameters
+        );
+      }
+      if (Object.keys(serdeOut).length > 0) {
+        sdOut['SerdeInfo'] = serdeOut;
+      }
+    }
+
+    if (Object.keys(sdOut).length > 0) {
+      built.StorageDescriptor = sdOut as StorageDescriptor;
+    }
+  }
+
+  /**
+   * The live table state the two merges need: its current `Parameters` (for
+   * {@link preserveAwsManagedParameters}), its `StorageDescriptor` (for
+   * {@link preserveAwsManagedStorageDescriptor}, issue #1479), plus the
+   * `VersionId` that pins both.
    *
    * A missing table returns empty rather than throwing: `UpdateTable` is about
    * to surface the real, more actionable error. Any OTHER failure is fatal by
@@ -765,7 +911,11 @@ export class GlueProvider implements ResourceProvider {
     databaseName: string,
     tableName: string,
     catalogId: string | undefined
-  ): Promise<{ parameters: Record<string, string> | undefined; versionId: string | undefined }> {
+  ): Promise<{
+    parameters: Record<string, string> | undefined;
+    storageDescriptor: StorageDescriptor | undefined;
+    versionId: string | undefined;
+  }> {
     try {
       const resp = await this.getClient().send(
         new GetTableCommand({
@@ -774,10 +924,14 @@ export class GlueProvider implements ResourceProvider {
           Name: tableName,
         })
       );
-      return { parameters: resp.Table?.Parameters, versionId: resp.Table?.VersionId };
+      return {
+        parameters: resp.Table?.Parameters,
+        storageDescriptor: resp.Table?.StorageDescriptor,
+        versionId: resp.Table?.VersionId,
+      };
     } catch (error) {
       if (error instanceof EntityNotFoundException) {
-        return { parameters: undefined, versionId: undefined };
+        return { parameters: undefined, storageDescriptor: undefined, versionId: undefined };
       }
       throw new ProvisioningError(
         preUpdateReadFailureMessage('Table', 'glue:GetTable', logicalId, error),
@@ -2520,6 +2674,22 @@ function parameterKeySet(value: unknown): Set<string> {
     return new Set<string>();
   }
   return new Set(Object.keys(value as Record<string, unknown>));
+}
+
+/**
+ * Narrow an unknown template / state value to a plain object, or `undefined`.
+ * A malformed side (string / array / null) yields `undefined` and therefore
+ * an empty key set — the tolerant treatment `parameterKeySet` already gives
+ * bags, extended to the StorageDescriptor merge's containers. (An unresolved
+ * intrinsic is itself a plain object, so it passes through and contributes
+ * its `Fn::*`/`Ref` key — harmless here, since providers only ever see
+ * resolved values.)
+ */
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return undefined;
+  }
+  return value as Record<string, unknown>;
 }
 
 /**

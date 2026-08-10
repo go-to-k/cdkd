@@ -29,6 +29,13 @@
 # template DROPPED is still removed -- the mirror-image regression a naive
 # "restore anything absent from the desired side" merge would introduce.
 #
+# Since issue #1479 it ALSO covers the StorageDescriptor subtree one level
+# down: out-of-band SD members (a crawler's `StorageDescriptor.Parameters`
+# bag, a `SerdeInfo.Parameters` entry -- injected via a raw UpdateTable, which
+# is indistinguishable to cdkd from a crawler write) must survive the same
+# unrelated Phase-2 update, while template-declared SD members (SerdeInfo's
+# SerializationLibrary, Columns) stay template-authored.
+#
 # Also asserts the destroy path cleans up.
 #
 # Required env vars:
@@ -288,6 +295,36 @@ if [ "$(db_query 'Database.Parameters.out_of_band_marker')" != "must-survive" ];
 fi
 echo "    OK: out_of_band_marker injected"
 
+# --- Simulate crawler-authored StorageDescriptor members (#1479) -------
+# A Glue crawler writes `StorageDescriptor.Parameters` (sizeKey / recordCount
+# / UPDATED_BY_CRAWLER ...) and `SerdeInfo.Parameters` entries the template
+# never declares. Injecting them via a raw UpdateTable is indistinguishable to
+# cdkd from a crawler write: present in NEITHER the desired nor the previous
+# template side, which is the exact merge branch #1479 adds for the SD
+# subtree. Same jq keep-everything rebuild as the database injection above --
+# whitelisting members would itself cause the wholesale-replace data loss
+# under test.
+echo "==> Injecting out-of-band (crawler-equivalent) StorageDescriptor members onto '${EVENTS_TABLE_NAME}' (#1479)"
+EVENTS_LIVE_JSON="$(aws glue get-table --database-name "${DB_NAME}" --name "${EVENTS_TABLE_NAME}" --region "${REGION}" --query 'Table' --output json)"
+EVENTS_INJECT_INPUT="$(printf '%s' "${EVENTS_LIVE_JSON}" | jq -c '
+  del(.DatabaseName, .CreateTime, .UpdateTime, .LastAccessTime, .CreatedBy,
+      .IsRegisteredWithLakeFormation, .CatalogId, .VersionId,
+      .IsMultiDialectView, .IsMaterializedView)
+  | .StorageDescriptor.Parameters = ((.StorageDescriptor.Parameters // {}) + {"UPDATED_BY_CRAWLER": "cdkd-1479-sim"})
+  | .StorageDescriptor.SerdeInfo.Parameters = ((.StorageDescriptor.SerdeInfo.Parameters // {}) + {"crawler.added": "yes"})
+  | with_entries(select(.value != null))')"
+aws glue update-table --database-name "${DB_NAME}" --region "${REGION}" \
+  --table-input "${EVENTS_INJECT_INPUT}" >/dev/null
+if [ "$(table_query "${EVENTS_TABLE_NAME}" 'Table.StorageDescriptor.Parameters.UPDATED_BY_CRAWLER')" != "cdkd-1479-sim" ]; then
+  echo "FAIL: the out-of-band StorageDescriptor.Parameters injection did not take" >&2
+  exit 1
+fi
+if [ "$(table_query "${EVENTS_TABLE_NAME}" 'Table.StorageDescriptor.SerdeInfo.Parameters."crawler.added"')" != "yes" ]; then
+  echo "FAIL: the out-of-band SerdeInfo.Parameters injection did not take" >&2
+  exit 1
+fi
+echo "    OK: crawler-equivalent SD members injected"
+
 # --- Capture the pre-update identity of the Iceberg table -------------
 # Asserted unchanged after phase 2. Without it the phase-2 assertions would
 # also pass on a REPLACEMENT (delete + create), which would legitimately carry
@@ -350,6 +387,34 @@ if [ "${EVENTS_CLASSIFICATION}" != "json" ]; then
   exit 1
 fi
 echo "    OK: user-removed events parameter is gone, kept one passed through"
+
+# --- The #1479 assertions: SD-subtree out-of-band members survived ------
+# Phase 2 restated the events table's template SD (Location / Columns /
+# formats / SerdeInfo.SerializationLibrary) with NO mention of the injected
+# members. Pre-#1479, UpdateTable's wholesale TableInput replace erased both.
+SD_CRAWLER_MARKER="$(table_query "${EVENTS_TABLE_NAME}" 'Table.StorageDescriptor.Parameters.UPDATED_BY_CRAWLER')"
+if [ "${SD_CRAWLER_MARKER}" != "cdkd-1479-sim" ]; then
+  echo "FAIL: after UPDATE: StorageDescriptor.Parameters.UPDATED_BY_CRAWLER is '${SD_CRAWLER_MARKER}', expected 'cdkd-1479-sim' (the #1479 SD-subtree merge is NOT closed)" >&2
+  exit 1
+fi
+SERDE_CRAWLER_MARKER="$(table_query "${EVENTS_TABLE_NAME}" 'Table.StorageDescriptor.SerdeInfo.Parameters."crawler.added"')"
+if [ "${SERDE_CRAWLER_MARKER}" != "yes" ]; then
+  echo "FAIL: after UPDATE: SerdeInfo.Parameters.\"crawler.added\" is '${SERDE_CRAWLER_MARKER}', expected 'yes' (the #1479 SerdeInfo bag merge is NOT closed)" >&2
+  exit 1
+fi
+# Template-declared SD members must stay TEMPLATE-authored -- the merge is
+# per-member, not a blanket restore (drift --revert depends on this).
+EVENTS_SERDE_LIB="$(table_query "${EVENTS_TABLE_NAME}" 'Table.StorageDescriptor.SerdeInfo.SerializationLibrary')"
+if [ "${EVENTS_SERDE_LIB}" != "org.openx.data.jsonserde.JsonSerDe" ]; then
+  echo "FAIL: after UPDATE: SerdeInfo.SerializationLibrary is '${EVENTS_SERDE_LIB}', expected the template value (the merge must not clobber template-declared members)" >&2
+  exit 1
+fi
+EVENTS_COLUMN_COUNT="$(table_query "${EVENTS_TABLE_NAME}" 'length(Table.StorageDescriptor.Columns)')"
+if [ "${EVENTS_COLUMN_COUNT}" != "3" ]; then
+  echo "FAIL: after UPDATE: events Columns count is '${EVENTS_COLUMN_COUNT}', expected 3 (template-declared Columns must round-trip)" >&2
+  exit 1
+fi
+echo "    OK: crawler-equivalent SD members survived the unrelated update; template-declared SD members intact (#1479)"
 
 # --- The DATABASE half of #1461 (UpdateDatabase, same full-replace bag) ---
 DB_MARKER="$(db_query 'Database.Parameters.out_of_band_marker')"
@@ -468,4 +533,4 @@ assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after des
 echo "    OK: state file is gone"
 
 echo ""
-echo "==> data-analytics test passed (Iceberg backfill #609 + AWS-managed Parameters survive UPDATE #1461 + clean destroy)"
+echo "==> data-analytics test passed (Iceberg backfill #609 + AWS-managed Parameters survive UPDATE #1461 + out-of-band SD members survive UPDATE #1479 + clean destroy)"

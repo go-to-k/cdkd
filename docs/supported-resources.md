@@ -357,9 +357,28 @@ external table pointing at Iceberg data files, with the deploy reporting
 success. The same exposure covered a crawler's `classification`, `EXTERNAL`,
 `comment`, and Lake Formation markers.
 
+Since issue [#1479](https://github.com/go-to-k/cdkd/issues/1479) the same
+exposure is closed one level down, for the `StorageDescriptor` subtree: a Glue
+crawler authors `Columns`, `InputFormat` / `OutputFormat`, `SerdeInfo` (and
+its `Parameters` bag) and `StorageDescriptor.Parameters`, and Glue re-derives
+an Iceberg table's catalog `Columns` from table metadata — all of which an
+unrelated update used to wipe (`Columns` -> `[]`, `SerdeInfo` gone; probed
+live 2026-08-10, recorded on the issue). The preservation rule is the same
+"present in neither template side" test, applied per SD *member* (with the
+two nested `Parameters` bags merged per key — including when a whole bag is
+removed from the template, which keeps the top-level #1461 semantics: your
+keys are removed, AWS-authored keys survive). `SerdeInfo` is structural, not
+a bag: removing the whole block from the template removes it on AWS, since a
+partial serde carrying only crawler-authored entries would be incoherent. A
+template that never declared `StorageDescriptor` at all carries the whole
+live block forward. Scope is
+deliberately the `StorageDescriptor` subtree only — the crawler also authors
+`PartitionKeys` / `Owner`, which remain template-authoritative for now.
+
 cdkd now reads the live table / database (`glue:GetTable` /
 `glue:GetDatabase`) immediately before the update and merges those
-AWS-authored entries back into the payload. Four consequences worth knowing:
+AWS-authored entries back into the payload. Four consequences worth knowing
+(they apply to the `StorageDescriptor` members the same way):
 
 - **Your removals still work.** A parameter you delete from your template is
   still deleted on AWS. The merge only restores keys present in *neither* the
@@ -404,7 +423,11 @@ fixture's UPDATE phase re-asserts both Iceberg markers after an unrelated
 `Description` edit (having first pinned that the update was in-place, via an
 unchanged `Table.CreateTime`), asserts a user-removed parameter on the sibling
 plain table is still gone, and runs the same removal-plus-preservation pair
-against the database. It also pins the concurrency guard's *premise*: AWS
+against the database. For the #1479 subtree it injects crawler-equivalent
+out-of-band members (`StorageDescriptor.Parameters` and
+`SerdeInfo.Parameters` entries) via a raw `UpdateTable`, asserts they survive
+the unrelated Phase-2 deploy, and that template-declared SD members
+(`SerializationLibrary`, `Columns`) stay template-authored. It also pins the concurrency guard's *premise*: AWS
 documents `VersionId` only as "the version ID at which to update the table
 contents", so the fixture advances a table's version out of band and requires
 AWS to refuse a replay of the stale one. If AWS ever starts ignoring it, that
