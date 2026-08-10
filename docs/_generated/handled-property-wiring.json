@@ -4877,7 +4877,8 @@
           ],
           "evidence": [
             "delegated",
-            "element-read"
+            "element-read",
+            "table-loop"
           ],
           "seededBy": [
             "create",
@@ -4891,6 +4892,7 @@
             "AWS::DynamoDB::GlobalTable"
           ],
           "evidence": [
+            "delegated",
             "element-read"
           ],
           "seededBy": [
@@ -4905,7 +4907,9 @@
             "AWS::DynamoDB::GlobalTable"
           ],
           "evidence": [
-            "element-read"
+            "delegated",
+            "element-read",
+            "table-loop"
           ],
           "seededBy": [
             "create",
