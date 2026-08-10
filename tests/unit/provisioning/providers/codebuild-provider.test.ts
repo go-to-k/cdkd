@@ -692,6 +692,43 @@ describe('CodeBuildProvider', () => {
       ).rejects.toThrow(/AWS::CodeBuild::Project Environment.Type must be a non-empty string/);
     });
 
+    // The truthiness gate the guard sits behind used to let a FALSY malformed
+    // container through: `Source: ''` skipped `readConfigString` entirely and
+    // built a NO_SOURCE project. `.claude/rules/providers.md` requires `!= null`
+    // for exactly this ("cover the CREATE path").
+    it('refuses a BLANK-STRING Source, which a truthiness gate would have skipped', async () => {
+      await expect(
+        provider.create('MyProject', 'AWS::CodeBuild::Project', { ...base, Source: '' })
+      ).rejects.toThrow(/AWS::CodeBuild::Project Source must be an object \(got a blank string\)/);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('refuses a BLANK-STRING Artifacts for the same reason', async () => {
+      await expect(
+        provider.create('MyProject', 'AWS::CodeBuild::Project', { ...base, Artifacts: '' })
+      ).rejects.toThrow(/AWS::CodeBuild::Project Artifacts must be an object/);
+    });
+
+    it('names the SecondaryArtifacts path, so an array-site refusal points at the right block', async () => {
+      await expect(
+        provider.create('MyProject', 'AWS::CodeBuild::Project', {
+          ...base,
+          SecondaryArtifacts: ['NO_ARTIFACTS'],
+        })
+      ).rejects.toThrow(/AWS::CodeBuild::Project SecondaryArtifacts\[\] must be an object/);
+    });
+
+    it('refuses a blank Environment.ComputeType, not just Type', async () => {
+      await expect(
+        provider.create('MyProject', 'AWS::CodeBuild::Project', {
+          ...base,
+          Environment: { Type: 'LINUX_CONTAINER', ComputeType: '' },
+        })
+      ).rejects.toThrow(
+        /AWS::CodeBuild::Project Environment.ComputeType must be a non-empty string/
+      );
+    });
+
     it('still defaults for an ABSENT container and an ABSENT key', async () => {
       mockSend.mockResolvedValue({
         project: { name: 'my-project', arn: 'arn:aws:codebuild:us-east-1:123456789012:project/p' },

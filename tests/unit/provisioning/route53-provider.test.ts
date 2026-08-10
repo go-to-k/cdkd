@@ -278,6 +278,37 @@ describe('Route53Provider', () => {
         });
       });
 
+      // The rewrite swapped a truthiness gate (`cfg && cfg['Comment']`) for
+      // `createComment !== ''`. These are the two inputs where the two forms
+      // must agree, and neither was covered.
+      it('still omits HostedZoneConfig for an EMPTY container object', async () => {
+        mockSend.mockResolvedValueOnce({
+          HostedZone: { Id: '/hostedzone/Z1234567890', Name: 'example.com.' },
+          DelegationSet: { NameServers: ['ns-1.example.com'] },
+        });
+
+        await provider.create('MyZone', 'AWS::Route53::HostedZone', {
+          Name: 'example.com',
+          HostedZoneConfig: {},
+        });
+
+        expect(mockSend.mock.calls[0][0].input.HostedZoneConfig).toBeUndefined();
+      });
+
+      it('still omits HostedZoneConfig for a BLANK Comment', async () => {
+        mockSend.mockResolvedValueOnce({
+          HostedZone: { Id: '/hostedzone/Z1234567890', Name: 'example.com.' },
+          DelegationSet: { NameServers: ['ns-1.example.com'] },
+        });
+
+        await provider.create('MyZone', 'AWS::Route53::HostedZone', {
+          Name: 'example.com',
+          HostedZoneConfig: { Comment: '' },
+        });
+
+        expect(mockSend.mock.calls[0][0].input.HostedZoneConfig).toBeUndefined();
+      });
+
       it('still omits HostedZoneConfig entirely when the container is absent', async () => {
         mockSend.mockResolvedValueOnce({
           HostedZone: { Id: '/hostedzone/Z1234567890', Name: 'example.com.' },

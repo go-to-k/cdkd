@@ -97,7 +97,11 @@ export class CodeBuildProvider implements ResourceProvider {
     source: Record<string, unknown> | undefined,
     containerPath: string
   ): ProjectSource {
-    if (!source) {
+    // `!= null` rather than a truthiness gate: `Source: ''` is exactly the
+    // malformed shape `readConfigString` exists to refuse, and a falsy gate
+    // would skip the guard and silently build a NO_SOURCE project
+    // (.claude/rules/providers.md, "cover the CREATE path").
+    if (source == null) {
       return { type: 'NO_SOURCE' as SourceType };
     }
 
@@ -146,7 +150,8 @@ export class CodeBuildProvider implements ResourceProvider {
   }
 
   private mapArtifacts(artifacts: Record<string, unknown> | undefined, containerPath: string) {
-    if (!artifacts) {
+    // `!= null` for the same reason as `mapSource` above.
+    if (artifacts == null) {
       return { type: 'NO_ARTIFACTS' as ArtifactsType };
     }
 

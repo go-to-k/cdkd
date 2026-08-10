@@ -34,6 +34,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { ECSProvider } from '../../../src/provisioning/providers/ecs-provider.js';
+import { ProvisioningError } from '../../../src/utils/error-handler.js';
 
 describe('ECSProvider', () => {
   let provider: ECSProvider;
@@ -1944,17 +1945,44 @@ describe('ECSProvider', () => {
         },
       });
 
+      // Asserted on `loadBalancers`, NOT `desiredCount`: only loadBalancers /
+      // serviceRegistries are gated on `isEcsController`, so desiredCount would
+      // be sent even if the default resolved to something else — an assertion
+      // that cannot tell the two apart.
       await provider.update(
         'MyService',
         'arn:aws:ecs:us-east-1:123456789012:service/my-cluster/my-service',
         'AWS::ECS::Service',
-        { Cluster: 'my-cluster', ServiceName: 'my-service', DesiredCount: 2 },
-        { Cluster: 'my-cluster', ServiceName: 'my-service', DesiredCount: 1 }
+        {
+          Cluster: 'my-cluster',
+          ServiceName: 'my-service',
+          LoadBalancers: [{ ContainerName: 'web', ContainerPort: 80 }],
+        },
+        { Cluster: 'my-cluster', ServiceName: 'my-service', LoadBalancers: [] }
       );
 
       const updateCall = mockSend.mock.calls[0][0];
       expect(updateCall.constructor.name).toBe('UpdateServiceCommand');
-      expect(updateCall.input.desiredCount).toBe(2);
+      expect(updateCall.input.loadBalancers).toEqual([
+        { containerName: 'web', containerPort: 80 },
+      ]);
+    });
+
+    it('surfaces the refusal as a ProvisioningError, not a bare Error', async () => {
+      // This point in `updateService` has no enclosing catch, so an unwrapped
+      // throw would escape untyped into the deploy engine's retry loop.
+      const err = await provider
+        .update(
+          'MyService',
+          'arn:aws:ecs:us-east-1:123456789012:service/my-cluster/my-service',
+          'AWS::ECS::Service',
+          { Cluster: 'my-cluster', ServiceName: 'my-service', DeploymentController: 'CODE_DEPLOY' },
+          { Cluster: 'my-cluster', ServiceName: 'my-service' }
+        )
+        .catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(ProvisioningError);
+      expect(err).toMatchObject({ resourceType: 'AWS::ECS::Service', logicalId: 'MyService' });
     });
 
     it('reads a well-formed CODE_DEPLOY controller as non-ECS', async () => {

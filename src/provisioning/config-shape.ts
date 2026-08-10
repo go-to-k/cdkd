@@ -43,35 +43,53 @@
  * is why `KinesisProvider`'s read of `previousProperties.StreamModeDetails`
  * is deliberately left unguarded.
  *
- * **The `??` spelling has the same failure mode (issue #1493).** The #1471
- * sweep measured the `||` form; `(cfg['K'] as string) ?? 'default'` defaults on
- * exactly the same `undefined` a malformed container indexes to. The measured
- * `??` set is 24 sites; the ones ROLLED onto this module are the 9 that INDEX A
- * NESTED CONTAINER (CodeBuild `Source` / `SecondarySources[]` / `Artifacts` /
- * `Environment` x2, DynamoDB GlobalTable `StreamSpecification`, Route 53
- * `HostedZoneConfig` x2, CloudFront OAI config x2, ECS `DeploymentController`),
- * plus the two `AWS::Lambda::Url` `AuthType` sites the #1471 sweep's
- * cast-specific grep missed (`as FunctionUrlAuthType`, not `as string`) — where
- * the default is a PUBLIC function URL. Deliberately NOT rolled, so the
- * decision is challengeable rather than invisible:
+ * **The `??` spelling has the same failure mode (issue #1493), and it defaults
+ * on MORE than `||` did.** The #1471 sweep measured the `||` form;
+ * `(cfg['K'] as string) ?? 'default'` substitutes on the same `undefined` a
+ * malformed container indexes to, and ALSO on an explicit `null` — so a
+ * `{ Comment: null }` that used to default now refuses, per rule 4.
  *
- * - **TOP-LEVEL `properties['X'] ?? 'default'` reads** (EC2 `IpProtocol` /
- *   `InstanceType` / `Domain`, API Gateway `AuthorizationType`, IAM access-key
- *   `Status`, Lambda event-invoke `Qualifier`, RDS DB-proxy `TargetGroupName`,
- *   GlobalTable `BillingMode`). The container is the provider's own property
- *   bag, so rule 2 cannot fire; only rules 3/4 would apply, and refusing a
- *   present-but-non-string value there is a stricter-value decision with its own
- *   regression surface (an unquoted YAML `IpProtocol: -1` is a number today and
- *   works). Tracked as issue #1513 rather than folded in here.
+ * Measuring it is the part worth copying, because the obvious grep is wrong.
+ * `\] \?\? '` finds NONE of the real sites (the cast sits inside the parens) and
+ * the cast-word form `as [A-Za-z]+\) \?\? '` misses every `as string | undefined`
+ * / quoted-union / line-wrapped site — including four this change rolls. The
+ * class-covering pattern is `as [A-Za-z<>,| ]+\) \?\? '` (20 sites in
+ * `providers/` on the pre-fix tree), plus a hand pass for the wrapped ones.
+ *
+ * ROLLED here: the 9 sites that INDEX A NESTED CONTAINER — CodeBuild
+ * `Source` / `SecondarySources[]` / `Artifacts` / `SecondaryArtifacts[]` and
+ * `Environment.{Type,ComputeType}`, DynamoDB GlobalTable
+ * `StreamSpecification`, Route 53 `HostedZoneConfig` (create + update),
+ * CloudFront OAI config (create + update), ECS `DeploymentController` — plus
+ * the two `AWS::Lambda::Url` `AuthType` sites the #1471 sweep's
+ * cast-specific grep missed (`as FunctionUrlAuthType`, not `as string`),
+ * where the default is a PUBLIC function URL.
+ *
+ * Deliberately NOT rolled, so the decision is challengeable rather than
+ * invisible:
+ *
+ * - **TOP-LEVEL `properties['X'] ?? 'default'` reads** (EC2 `InstanceType` /
+ *   `Domain`, API Gateway `AuthorizationType`, IAM access-key `Status`, Lambda
+ *   event-invoke `Qualifier`, RDS DB-proxy `TargetGroupName`, GlobalTable
+ *   `BillingMode` on create and on the desired side of update). The container
+ *   is the provider's own property bag, so rule 2 cannot fire; only rules 3/4
+ *   would apply, and refusing a present-but-non-string value there is a
+ *   stricter-value decision with its own regression surface (an unquoted YAML
+ *   `IpProtocol: -1` is a NUMBER today and deploys fine). Tracked as issue #1513.
+ * - **Nested reads whose value is an identity key or a label, never sent to
+ *   AWS**: EC2's `rule['IpProtocol'] ?? '-1'` (composes a physical id and is
+ *   read from BOTH the previous and next rule), `agentcore-evaluator`'s
+ *   `(tag as Record<string, unknown>)['Value'] ?? ''`, and S3's three
+ *   `rule['Id'] ?? '<unnamed>'` warning labels. These ARE nested containers —
+ *   rule 2 could fire — but a refusal would buy nothing.
  * - **`EC2Provider`'s two `VpcId ?? ''` reads** — they populate the returned
  *   ATTRIBUTE cache only, and `CreateSecurityGroup` already forwards the same
- *   value, so AWS rejects a malformed one first; a guard there would throw
- *   AFTER a successful create and orphan the security group.
+ *   value, so AWS rejects a malformed one first. On the create site a guard
+ *   would additionally throw AFTER a successful create and orphan the security
+ *   group.
  * - **Reads off the PREVIOUS / state side** (GlobalTable `previousProperties`
  *   `BillingMode`, RDS DB-proxy `delete()` / `readCurrentState`) — the
  *   desired-side-only rule above.
- * - **`S3BucketProvider`'s three `rule['Id'] ?? '<unnamed>'`** — a label inside
- *   a warning message, not a value sent to AWS.
  *
  * This is a provider-layer guard rather than a pre-flight template check
  * because **rule 4** is only decidable AFTER intrinsic resolution: at pre-flight

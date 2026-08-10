@@ -30,6 +30,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { CloudFrontOAIProvider } from '../../../src/provisioning/providers/cloudfront-oai-provider.js';
+import { ProvisioningError } from '../../../src/utils/error-handler.js';
 
 describe('CloudFrontOAIProvider', () => {
   let provider: CloudFrontOAIProvider;
@@ -363,6 +364,16 @@ describe('CloudFrontOAIProvider', () => {
         )
       ).rejects.toThrow(/CloudFrontOriginAccessIdentityConfig must be an object/);
       expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('surfaces the refusal as a ProvisioningError, not a bare Error', async () => {
+      const err = await provider
+        .create('MyOai', 'AWS::CloudFront::CloudFrontOriginAccessIdentity', {
+          CloudFrontOriginAccessIdentityConfig: 'my comment',
+        })
+        .catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(ProvisioningError);
     });
 
     it('still defaults to a blank comment when the container is absent', async () => {

@@ -990,12 +990,26 @@ export class ECSProvider implements ResourceProvider {
     // deployment controller defaults to ECS when unspecified. enableECSManagedTags
     // / propagateTags are accepted under ALL three controllers, so they are
     // mapped unconditionally.
-    const deploymentControllerType = readConfigString(
-      properties['DeploymentController'],
-      'Type',
-      'ECS',
-      'AWS::ECS::Service DeploymentController'
-    );
+    // Wrapped: this point in `updateService` has no enclosing catch, so the
+    // helper's plain Error would otherwise escape untyped into the deploy
+    // engine's retry loop instead of surfacing as a ProvisioningError.
+    let deploymentControllerType: string;
+    try {
+      deploymentControllerType = readConfigString(
+        properties['DeploymentController'],
+        'Type',
+        'ECS',
+        'AWS::ECS::Service DeploymentController'
+      );
+    } catch (error) {
+      throw new ProvisioningError(
+        error instanceof Error ? error.message : String(error),
+        resourceType,
+        logicalId,
+        physicalId,
+        error instanceof Error ? error : undefined
+      );
+    }
     const isEcsController = deploymentControllerType === 'ECS';
 
     // Only send loadBalancers / serviceRegistries when they actually changed, so
