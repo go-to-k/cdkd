@@ -1,3 +1,10 @@
+## [0.278.36](https://github.com/go-to-k/cdkd/compare/v0.278.35...v0.278.36) (2026-08-10)
+
+
+### Bug Fixes
+
+* **s3express:** handle DirectoryBucket Tags end to end, and port the bounded empty-retry to the opted-in auto-empty delete ([#1528](https://github.com/go-to-k/cdkd/issues/1528)) ([99b60e2](https://github.com/go-to-k/cdkd/commit/99b60e268486e53bf0bdd3696ac5e4bde56fe083))
+
 ## [0.278.35](https://github.com/go-to-k/cdkd/compare/v0.278.34...v0.278.35) (2026-08-10)
 
 
