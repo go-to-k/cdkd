@@ -220,6 +220,21 @@ export const IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS: readonly string[] = [
   // full "Failed to authorize instance profile" phrasing so a genuinely
   // mis-scoped profile only burns the bounded retries before surfacing.
   'Failed to authorize instance profile',
+  // SNS CreateTopic / SetTopicAttributes with a per-protocol
+  // DeliveryStatusLogging feedback role: cdkd's fast SDK path creates the
+  // AWS::IAM::Role only ~1s before the topic references it as
+  // `<Protocol>SuccessFeedbackRoleArn` / `<Protocol>FailureFeedbackRoleArn`,
+  // and SNS rejects the not-yet-propagated role with `Invalid parameter:
+  // LambdaSuccessFeedbackRoleArn: <arn> is not a valid role to allow SNS to
+  // write to Cloudwatch Logs`. The wording is about permissions, but the
+  // check passes for the SAME policy-less role a few seconds later
+  // (live-probed 2026-08-10: a fresh sns.amazonaws.com-trusted role with NO
+  // permission policy is accepted ~8s after creation), so this is the
+  // propagation class, not a genuine permission error. Anchored on the SNS
+  // sentence so a genuinely wrong ARN only burns the bounded retries before
+  // surfacing. Surfaced by tests/integration/sns-sqs-event (fresh feedback
+  // role + delivery-status topic in one stack, issue #1160 sns batch).
+  'is not a valid role to allow SNS',
 ];
 
 /**
