@@ -1,3 +1,10 @@
+## [0.278.43](https://github.com/go-to-k/cdkd/compare/v0.278.42...v0.278.43) (2026-08-10)
+
+
+### Bug Fixes
+
+* **efs:** reset a removed provisioned throughput config to bursting ([#1160](https://github.com/go-to-k/cdkd/issues/1160) efs batch) ([#1535](https://github.com/go-to-k/cdkd/issues/1535)) ([8c8e259](https://github.com/go-to-k/cdkd/commit/8c8e25950d6db635d533fd2276453db8f6ee11c7))
+
 ## [0.278.42](https://github.com/go-to-k/cdkd/compare/v0.278.41...v0.278.42) (2026-08-10)
 
 
