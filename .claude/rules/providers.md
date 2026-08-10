@@ -294,16 +294,49 @@ That is a far more common template shape than the base64 search string.
   depth (`out.Rule.DefaultRetention = { Mode }` opens the intermediate scopes
   rather than flattening). Three things keep it from being a rubber stamp:
   the literal initializer (so the object's identity is this file's — a
-  `const out = makeThing()` or a `let out;` seeded later is refused);
-  DECLARATION IDENTITY rather than the bare name (a same-named `out` in a
-  sibling method vouches for nothing); and the credit bounded to the BUILDER,
-  never the enclosing scope — the `ContainerPortRange` trap one recognizer
-  over. Delivery stays the caller's question: the builder walk only runs from a
-  write site, which the `feedsOnlyComparison` rule has already filtered, so a
-  builder that is never handed to a write, or handed only to a diff, is never
-  credited. Recognizing the shape is MONOTONE (it only adds scoped members), so
-  no target gained a finding; the tree's residual fell 290 -> 260 and
-  `AWS::S3::Bucket`'s 125 -> 98.
+  `const out = makeThing()`, a `let out;` seeded later, and a binding
+  REASSIGNED as a whole are all refused); DECLARATION IDENTITY rather than the
+  bare name; and the credit bounded to the BUILDER, never the enclosing
+  scope — the `ContainerPortRange` trap one recognizer over. Delivery stays the
+  caller's question: the builder walk only runs from a write site, which the
+  `feedsOnlyComparison` rule has already filtered, so a builder that is never
+  handed to a write, or handed only to a diff, is never credited. Recognizing
+  the shape is MONOTONE (it only adds scoped members), so no target gained a
+  finding; the tree's residual fell 290 -> 260 and `AWS::S3::Bucket`'s
+  125 -> 98.
+  **"Declaration identity" required fixing `declarationOf` itself**, and the
+  gap was live in this recognizer before the #1474 review caught it: that
+  helper searched the nearest FUNCTION scope and descended fully into nested
+  functions, returning the FIRST textual match, so the bare-name weakness of
+  known bound (3) reached INSIDE a single function. Two same-named `const cfg`
+  builders in different `if` arms collapsed onto one declaration and MERGED
+  their member sets (each vouching for the other's blob — false CLEAR), and a
+  `const cfg` inside a nested arrow declared textually first captured the
+  enclosing function's own `cfg` (outer member falsely flagged, inner falsely
+  cleared). `const` / `let` are BLOCK-scoped, so `declarationOf` now resolves
+  outward through BLOCK scopes, which is both the accurate model and the fix;
+  it cannot under-resolve a valid binding either, since a reference outside the
+  declaring block is a compile error. Both shapes are pinned by tests. The
+  sibling-METHOD case worked from the start — it is the intra-function one that
+  did not, which is why "we already have a test for same-named bindings" was
+  not evidence.
+  **The recognizer WIDENS known bound (4)** (prefix-only reverse-map
+  exclusion), measured: a reverse SDK->CFn helper that is NOT named
+  `readCurrentState*` and uses the builder idiom previously contributed only
+  its empty seed and now contributes a populated SCOPE —
+  `s3-bucket-provider.ts`'s `readLifecycle` (`const out = {}` filled with
+  CFn-spelled `out['Id']` / `out['Status']`) and `ecs-provider.ts`'s
+  `volumesToCfn` are exactly that, and S3's non-empty scope count jumped
+  85 -> 144 partly on their strength. No effect on today's verdicts (S3 is not
+  opted in; ECS is `lower-first`, so a CFn-spelled terminal misses the exact
+  compare) — but S3 is `exact`-style, where a CFn-spelled reverse write vouches
+  for the forward mapper verbatim, so widening
+  `REVERSE_MAP_FUNCTION_PREFIXES` to a suffix match belongs to the S3 opt-in
+  (issue #1495), where its effect on the LITERAL set can be measured on the
+  target it affects. A `readCurrentState*`-named helper nested in a builder's
+  scope IS skipped today, and that branch — the only builder refusal in the
+  over-crediting direction — is pinned by a test with a non-reverse-named
+  control.
 - **Write evidence is PATH-SCOPED (issue #1448), and the bound it replaced is
   worth knowing.** As shipped in #1432 the evidence was a flat per-FILE set of
   member names and the audited unit was a key NAME, so a member written

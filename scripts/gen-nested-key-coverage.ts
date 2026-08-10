@@ -491,6 +491,22 @@
  *     done here — it would withdraw names from the LITERAL set too (the
  *     `provider-handled` bucket) on targets nobody has measured for it.
  *
+ *     THE BUILDER RECOGNIZER WIDENS THIS BOUND, measured (#1474 review). A
+ *     suffix-named reverse helper that uses the BUILDER idiom previously
+ *     contributed only its EMPTY SEED and now contributes a fully populated
+ *     SCOPE: `s3-bucket-provider.ts`'s `readLifecycle` builds `const out = {}`
+ *     and fills it with CFn-spelled `out['Id']` / `out['Status']`, and
+ *     `ecs-provider.ts`'s `volumesToCfn` is the same shape — S3's non-empty
+ *     scope count jumped 85 -> 144 on the strength of that. Still no live
+ *     impact today (S3 is not opted in; ECS is `lower-first`, so a CFn-spelled
+ *     terminal misses the exact compare) — but S3 is an `exact`-style target,
+ *     where a CFn-spelled reverse write vouches for the forward mapper
+ *     verbatim, so this is precisely the direction that will bite the moment
+ *     issue #1495 unblocks the S3 opt-in. Widening
+ *     {@link REVERSE_MAP_FUNCTION_PREFIXES} to a suffix match is the fix and
+ *     belongs to that change, where its effect on the LITERAL set can be
+ *     measured on the target it affects.
+ *
  * (5) THE GENERICITY TEST IS "NAMES NO MEMBER", NOT "PRESERVES EVERY KEY"
  *     (issue #1445). It is TRANSITIVE through resolvable callees, which closes
  *     the delegating guard described above — but three shapes name nothing and
@@ -546,23 +562,33 @@
  *     through its own recursion.
  *
  * (8) THE BUILDER RECOGNIZER IS SEED-LITERAL-ONLY AND FLOW-INSENSITIVE
- *     (issue #1474). Three shapes it deliberately refuses, all in the
+ *     (issue #1474). Four shapes it deliberately refuses, all in the
  *     UNDER-crediting (flags correct code, loud) direction:
  *       - `const out = makeThing(); out.Foo = …` — a non-literal initializer.
  *         The object's identity is unknown, so a write onto it is not
  *         attributable to this file. `let out; out = {}; out.Foo = …` is
  *         refused for the same reason (the DECLARATION carries no literal),
  *         even though {@link resolveLiterals} does resolve that binding.
+ *       - `let out = {}; out.Foo = 1; out = opaque(props);` — a binding
+ *         REASSIGNED as a whole. Refused outright rather than ordered, because
+ *         crediting the seed's members for a value that is no longer the seed
+ *         is the false-CLEAR direction ({@link builderDeclarationOf}).
  *       - `out[k] = v` — a computed key names a VARIABLE, the same strictness
  *         {@link elementAccessName} applies everywhere else.
  *       - `Object.defineProperty(out, 'Foo', …)` onto a builder. The top-level
  *         walk records it as a root write; it is NOT credited under the
  *         builder's path. No provider does this today.
  *     And one in the OVER-crediting direction, shared with bound (1): the walk
- *     is FLOW-INSENSITIVE, so an assignment textually AFTER the delivery
- *     (`send({ Cfg: out }); out.Foo = 1;`) still credits `Cfg.Foo`. That is the
- *     same union-across-sites residue (1) describes, at statement granularity;
- *     no provider in the tree writes a builder after handing it off.
+ *     is FLOW-INSENSITIVE. It collects every assignment onto the binding
+ *     anywhere in the binding's scope and never orders them against the
+ *     delivery or against each other, so an assignment textually AFTER the
+ *     delivery (`send({ Cfg: out }); out.Foo = 1;`) still credits `Cfg.Foo`,
+ *     a member written on only ONE of two `if` arms counts for both, and a
+ *     member `delete out.Foo`d before delivery counts as written. That is the
+ *     same union residue (1) describes, at statement granularity; no provider
+ *     in the tree writes to — or deletes from — a builder after handing it off.
+ *     Ordering the walk would need a control-flow model, which is a materially
+ *     bigger analysis than this one and buys nothing measurable today.
  *
  * Each of (1), (2) and (8) is pinned by a test, so the bound is a recorded fact
  * rather than a surprise for the next reader — and the two bounds #1464 CLOSED
@@ -714,9 +740,13 @@ export interface NestedKeyTarget {
    * scope counts on the real tree span two orders of magnitude
    * (`s3-bucket-provider.ts` 144, `ecs-provider.ts` 70, `codebuild-provider.ts`
    * 32, `cloudfront-distribution-provider.ts` 51,
-   * `cloudwatch-anomaly-detector-provider.ts` 4, `apigatewayv2-provider.ts` 1
-   * — the first five re-measured after #1474's BUILDER recognizer opened the
-   * scopes a mutated binding populates),
+   * `cloudwatch-anomaly-detector-provider.ts` 4, `apigatewayv2-provider.ts` 1).
+   * FOUR of those moved with #1474's BUILDER recognizer, which opens the scopes
+   * a mutated binding populates: S3 85 -> 144, ECS 58 -> 70, CloudFront
+   * 23 -> 51, CloudWatch 2 -> 4. CodeBuild's 32 and API Gateway v2's 1 are
+   * unchanged by it — CodeBuild measures 32 with the recognizer and 32 without,
+   * its 23 -> 32 having come from #1464's path keys.
+   * The spread is what forces the per-target declaration,
    * because a provider that forwards blobs through a generic converter builds
    * almost no scoped literals. Any shared floor high enough to fence CodeBuild
    * would throw "parser regression?" on a perfectly correct parse the moment
@@ -864,6 +894,28 @@ export const NESTED_KEY_TARGETS: readonly NestedKeyTarget[] = [
     // recognizer: `Configuration` and `Configuration.ExcludedTimeRanges` were
     // both empty), 4 expanding hand-off points.
     minWrittenMembers: 12,
+    // 2, and NOT the 3 the #1474 review proposed — the proposal was to make
+    // this floor able to detect the BUILDER recognizer collapsing, and it
+    // MEASURES as unable to, for a reason no floor value fixes. All three
+    // states were counted on this provider:
+    //     recognizer working, real provider          4 non-empty scopes
+    //     recognizer COLLAPSED, real provider        2
+    //     recognizer working, one real write deleted 2
+    // The collapse and the genuine provider regression are the SAME number,
+    // because the recognizer's entire contribution here is the single
+    // `mapped.ExcludedTimeRanges = …` assignment (it opens `Configuration`
+    // and `Configuration.ExcludedTimeRanges`). So a floor of 3 fires on BOTH:
+    // it would turn "the provider stopped writing ExcludedTimeRanges" into
+    // "parser regression?", which is exactly the miscalibration
+    // {@link NestedKeyTarget.minHandoffPoints} records for API Gateway v2 —
+    // a floor at the measurement makes every legitimate provider-side change
+    // abort instead of reporting the divergence it really causes.
+    // A recognizer collapse is NOT silent at 2: it re-surfaces the three
+    // `Configuration.*` paths as `no-write-evidence`, so the shipped `--check`
+    // fails CI naming them, the `reproduces the measured opt-in table` test
+    // fails, and both real-code probes fail. Those are the instruments that
+    // actually fence the recognizer; this floor fences the SCOPE-INDEX
+    // collapse it was built for, which yields 0.
     minWriteScopes: 2,
     // Walk-dependent: with the hand-off points stripped, 27 of the 30
     // same-spelling paths flip to `no-write-evidence` (the whole
@@ -2343,30 +2395,74 @@ export function collectWriteEvidence(
   // share the name `config` in different methods, so a name-keyed taint set
   // would credit the delete path's `GetDistributionConfig` echo.
 
-  /** The declaration a plain identifier resolves to, searched lexically. */
+  /**
+   * A scope boundary for a `const` / `let` binding. FUNCTION scope is not
+   * enough: `const` is BLOCK-scoped, and treating a whole function as one
+   * namespace is what let two same-named builders in different `if` arms
+   * collapse onto one declaration (issue #1474 review).
+   */
+  const isBindingScope = (n: ts.Node): boolean =>
+    ts.isSourceFile(n) ||
+    ts.isBlock(n) ||
+    ts.isModuleBlock(n) ||
+    ts.isCaseBlock(n) ||
+    ts.isForStatement(n) ||
+    ts.isForInStatement(n) ||
+    ts.isForOfStatement(n) ||
+    ts.isCatchClause(n) ||
+    ts.isFunctionLike(n);
+
+  /**
+   * A variable of this name declared DIRECTLY in `scope` — never one owned by
+   * a nested block or function, which has its own namespace.
+   */
+  const declaredDirectlyIn = (scope: ts.Node, name: string): ts.VariableDeclaration | undefined => {
+    let found: ts.VariableDeclaration | undefined;
+    const visit = (n: ts.Node): void => {
+      if (found !== undefined) return;
+      if (isBindingScope(n)) return;
+      if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.name.text === name) {
+        found = n;
+        return;
+      }
+      ts.forEachChild(n, visit);
+    };
+    ts.forEachChild(scope, visit);
+    return found;
+  };
+
+  /**
+   * The declaration a plain identifier resolves to, searched lexically OUTWARD
+   * from the reference through its enclosing BINDING scopes.
+   *
+   * Through #1474 this searched the nearest FUNCTION scope and descended fully
+   * into nested functions, taking the first textual match — which meant the
+   * bare-name weakness of known bound (3) reached inside a single function in
+   * two measurable ways (found by the #1474 review, neither live in the tree
+   * but both one edit away):
+   *   - two `const cfg = {}` builders in different `if` arms collapsed onto the
+   *     first declaration, so their member sets MERGED and each vouched for the
+   *     other's blob — the false-CLEAR direction on a CI-blocking bucket;
+   *   - a `const cfg` inside a nested arrow declared textually FIRST captured
+   *     the enclosing function's own `cfg`, inverting both verdicts (the outer
+   *     member falsely flagged, the inner one falsely cleared).
+   * Walking outward block by block is the accurate lexical model and closes
+   * both; the shapes are pinned by tests. It cannot under-resolve a valid
+   * `const` / `let` either, since a reference outside the declaring block is a
+   * compile error — the only thing the old full descent additionally reached
+   * was a `var`, which no provider in the tree uses.
+   */
   function declarationOf(id: ts.Identifier): ts.Node | undefined {
-    const nearest = enclosingScope(id);
-    for (let scope: ts.Node | undefined = nearest; scope; ) {
+    for (let scope: ts.Node | undefined = id.parent; scope !== undefined; scope = scope.parent) {
+      if (!isBindingScope(scope)) continue;
+      const declared = declaredDirectlyIn(scope, id.text);
+      if (declared !== undefined) return declared;
       if (ts.isFunctionLike(scope)) {
         const parameter = scope.parameters.find(
           (p) => ts.isIdentifier(p.name) && p.name.text === id.text
         );
         if (parameter !== undefined) return parameter;
       }
-      const descendIntoFunctions = scope === nearest;
-      let found: ts.Node | undefined;
-      const visit = (n: ts.Node): void => {
-        if (found !== undefined) return;
-        if (!descendIntoFunctions && n !== scope && ts.isFunctionLike(n)) return;
-        if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.name.text === id.text) {
-          found = n;
-          return;
-        }
-        ts.forEachChild(n, visit);
-      };
-      visit(scope);
-      if (found !== undefined) return found;
-      scope = ts.isSourceFile(scope) ? undefined : enclosingScope(scope);
     }
     return undefined;
   }
@@ -2756,13 +2852,47 @@ export function collectWriteEvidence(
    * the object may be someone else's, and crediting members written onto it
    * would be crediting a write we cannot attribute. Under-crediting flags
    * correct code (loud); over-crediting silences a real drop (silent).
+   *
+   * A binding REASSIGNED as a whole (`let out = {}; out.Foo = 1;
+   * out = opaque(props);`) is refused for the same reason and was NOT until
+   * the #1474 review caught it: only the initializer was inspected, so the
+   * seed's members were credited even though the value actually delivered is
+   * the opaque one. That is the false-CLEAR direction, so the whole binding is
+   * dropped rather than the walk trying to order the two.
    */
+  const reassignedBindings = new Map<ts.VariableDeclaration, boolean>();
+  const isWhollyReassigned = (declaration: ts.VariableDeclaration): boolean => {
+    const cached = reassignedBindings.get(declaration);
+    if (cached !== undefined) return cached;
+    if (!ts.isIdentifier(declaration.name)) return false;
+    const name = declaration.name.text;
+    let found = false;
+    const visit = (n: ts.Node): void => {
+      if (found) return;
+      if (
+        ts.isBinaryExpression(n) &&
+        isWriteAssignment(n.operatorToken.kind) &&
+        ts.isIdentifier(n.left) &&
+        n.left.text === name &&
+        declarationOf(n.left) === declaration
+      ) {
+        found = true;
+        return;
+      }
+      ts.forEachChild(n, visit);
+    };
+    visit(enclosingScope(declaration));
+    reassignedBindings.set(declaration, found);
+    return found;
+  };
+
   const builderDeclarationOf = (id: ts.Identifier): ts.VariableDeclaration | undefined => {
     const declaration = declarationOf(id);
     if (declaration === undefined || !ts.isVariableDeclaration(declaration)) return undefined;
     if (declaration.initializer === undefined) return undefined;
     const seed = unwrapExpression(declaration.initializer);
-    return ts.isObjectLiteralExpression(seed) ? declaration : undefined;
+    if (!ts.isObjectLiteralExpression(seed)) return undefined;
+    return isWhollyReassigned(declaration) ? undefined : declaration;
   };
 
   /**
