@@ -183,8 +183,11 @@ echo "    SourceSelectionCriteria.ReplicaModifications reached AWS (issue #1495)
 
 MIN_SIZE="$(aws s3api get-bucket-lifecycle-configuration --bucket "${SRC_BUCKET}" --region "${REGION}" \
   --query "TransitionDefaultMinimumObjectSize" --output text)"
-if [ "${MIN_SIZE}" != "all_storage_classes_128K" ]; then
-  echo "FAIL: expected TransitionDefaultMinimumObjectSize=all_storage_classes_128K, got ${MIN_SIZE}" >&2
+# The NON-default value on purpose: AWS defaults new buckets to
+# `all_storage_classes_128K`, so asserting that would pass with the write
+# removed. `varies_by_storage_class` can only be there because cdkd sent it.
+if [ "${MIN_SIZE}" != "varies_by_storage_class" ]; then
+  echo "FAIL: expected TransitionDefaultMinimumObjectSize=varies_by_storage_class, got ${MIN_SIZE}" >&2
   echo "      (pre-fix bug #1495: it lives on the PUT REQUEST, not inside LifecycleConfiguration, so the rules-only mapper never sent it)" >&2
   exit 1
 fi

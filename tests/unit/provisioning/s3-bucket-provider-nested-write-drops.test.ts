@@ -330,43 +330,47 @@ describe('LifecycleConfiguration.TransitionDefaultMinimumObjectSize (issue #1495
     expect(cmd.input.TransitionDefaultMinimumObjectSize).toBeUndefined();
   });
 
-  it('reads back only the NON-default value', async () => {
-    // AWS returns the account default on every read, so echoing it
-    // unconditionally would churn the observed snapshot of every bucket —
-    // including the ones whose template never mentioned the field.
+  it('reads back whatever AWS returns, BOTH values', async () => {
+    // The first cut filtered out `varies_by_storage_class` as "the account
+    // default". That polarity is wrong — AWS defaults buckets created after
+    // September 2024 to `all_storage_classes_128K` — so the filter suppressed
+    // the one value a template meaningfully declares and a bucket declaring it
+    // reported permanent phantom drift. Unconditional emission is also simply
+    // safe: the drift comparator only descends into keys present in cdkd state.
+    for (const value of ['varies_by_storage_class', 'all_storage_classes_128K']) {
+      mockSend.mockImplementation((cmd: { constructor: { name: string } }) => {
+        if (cmd.constructor.name === 'GetBucketLifecycleConfigurationCommand') {
+          return Promise.resolve({
+            Rules: [{ ID: 'r', Status: 'Enabled' }],
+            TransitionDefaultMinimumObjectSize: value,
+          });
+        }
+        return Promise.resolve({});
+      });
+
+      const current = await provider.readCurrentState(BUCKET, 'B', RESOURCE_TYPE);
+      expect(
+        (current?.['LifecycleConfiguration'] as Record<string, unknown>)[
+          'TransitionDefaultMinimumObjectSize'
+        ]
+      ).toBe(value);
+    }
+  });
+
+  it('omits it when AWS returns nothing for it', async () => {
     mockSend.mockImplementation((cmd: { constructor: { name: string } }) => {
       if (cmd.constructor.name === 'GetBucketLifecycleConfigurationCommand') {
-        return Promise.resolve({
-          Rules: [{ ID: 'r', Status: 'Enabled' }],
-          TransitionDefaultMinimumObjectSize: 'varies_by_storage_class',
-        });
+        return Promise.resolve({ Rules: [{ ID: 'r', Status: 'Enabled' }] });
       }
       return Promise.resolve({});
     });
 
-    const defaulted = await provider.readCurrentState(BUCKET, 'B', RESOURCE_TYPE);
+    const current = await provider.readCurrentState(BUCKET, 'B', RESOURCE_TYPE);
     expect(
-      (defaulted?.['LifecycleConfiguration'] as Record<string, unknown>)[
+      (current?.['LifecycleConfiguration'] as Record<string, unknown>)[
         'TransitionDefaultMinimumObjectSize'
       ]
     ).toBeUndefined();
-
-    mockSend.mockImplementation((cmd: { constructor: { name: string } }) => {
-      if (cmd.constructor.name === 'GetBucketLifecycleConfigurationCommand') {
-        return Promise.resolve({
-          Rules: [{ ID: 'r', Status: 'Enabled' }],
-          TransitionDefaultMinimumObjectSize: 'all_storage_classes_128K',
-        });
-      }
-      return Promise.resolve({});
-    });
-
-    const custom = await provider.readCurrentState(BUCKET, 'B', RESOURCE_TYPE);
-    expect(
-      (custom?.['LifecycleConfiguration'] as Record<string, unknown>)[
-        'TransitionDefaultMinimumObjectSize'
-      ]
-    ).toBe('all_storage_classes_128K');
   });
 });
 

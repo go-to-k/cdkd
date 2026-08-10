@@ -731,9 +731,10 @@ export class S3BucketProvider implements ResourceProvider {
             }
           : undefined,
         BucketKeyEnabled: rule['BucketKeyEnabled'] as boolean | undefined,
-        BlockedEncryptionTypes: blocked
-          ? { EncryptionType: blocked['EncryptionType'] as string[] | undefined }
-          : undefined,
+        BlockedEncryptionTypes:
+          blocked != null
+            ? { EncryptionType: blocked['EncryptionType'] as string[] | undefined }
+            : undefined,
       };
     });
     await this.s3Client.send(
@@ -806,14 +807,14 @@ export class S3BucketProvider implements ResourceProvider {
     const keyFormat = (loggingConfig as Record<string, unknown>)['TargetObjectKeyFormat'] as
       | Record<string, unknown>
       | undefined;
-    if (keyFormat) {
+    if (keyFormat != null) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const sdkKeyFormat: any = {};
       // `SimplePrefix: {}` is the CFn opt-in for the default format: the value
       // is an EMPTY object whose PRESENCE is the signal, so it must survive.
       if (keyFormat['SimplePrefix'] !== undefined) sdkKeyFormat.SimplePrefix = {};
       const partitioned = keyFormat['PartitionedPrefix'] as Record<string, unknown> | undefined;
-      if (partitioned) {
+      if (partitioned != null) {
         sdkKeyFormat.PartitionedPrefix = {
           PartitionDateSource: partitioned['PartitionDateSource'] as string | undefined,
         };
@@ -1330,36 +1331,51 @@ export class S3BucketProvider implements ResourceProvider {
       StorageClass: dest['StorageClass'] as string | undefined,
     };
 
+    // Every gate below is `!= null`, not truthiness: a FALSY malformed value
+    // (`''`, `0`) must not be silently skipped — that is the #1493 gate bug one
+    // level down, and `.claude/rules/providers.md` requires the `!= null` form.
+    // Each block is also assembled into a local and only attached when it
+    // carries at least one member, so a template's `AccessControlTranslation: {}`
+    // does not become `{Owner: undefined}` on the wire (AWS rejects that, where
+    // the pre-fix code sent nothing at all).
+    // Each block is written as a NAMED assignment rather than through a helper
+    // taking a string-literal key: `gen-nested-key-coverage`'s write-evidence
+    // pass recognises `sdkDest['X'] = { … }`, and routing these through a
+    // generic attach() made all 12 members invisible to it (measured: the S3
+    // residual went 93 instead of 81). The empty-block guard is therefore
+    // inlined per block.
     const acl = dest['AccessControlTranslation'] as Record<string, unknown> | undefined;
-    if (acl) {
-      sdkDest['AccessControlTranslation'] = { Owner: acl['Owner'] as string | undefined };
+    if (acl != null && acl['Owner'] !== undefined) {
+      sdkDest['AccessControlTranslation'] = { Owner: acl['Owner'] as string };
     }
 
     const encryption = dest['EncryptionConfiguration'] as Record<string, unknown> | undefined;
-    if (encryption) {
+    if (encryption != null && encryption['ReplicaKmsKeyID'] !== undefined) {
       sdkDest['EncryptionConfiguration'] = {
-        ReplicaKmsKeyID: encryption['ReplicaKmsKeyID'] as string | undefined,
+        ReplicaKmsKeyID: encryption['ReplicaKmsKeyID'] as string,
       };
     }
 
     const replicationTime = dest['ReplicationTime'] as Record<string, unknown> | undefined;
-    if (replicationTime) {
+    if (replicationTime != null) {
       const time = replicationTime['Time'] as Record<string, unknown> | undefined;
-      sdkDest['ReplicationTime'] = {
-        Status: replicationTime['Status'] as string | undefined,
-        Time: time ? { Minutes: time['Minutes'] as number | undefined } : undefined,
-      };
+      const rt: Record<string, unknown> = {};
+      if (replicationTime['Status'] !== undefined) rt['Status'] = replicationTime['Status'];
+      if (time != null && time['Minutes'] !== undefined) {
+        rt['Time'] = { Minutes: time['Minutes'] as number };
+      }
+      if (Object.keys(rt).length > 0) sdkDest['ReplicationTime'] = rt;
     }
 
     const metrics = dest['Metrics'] as Record<string, unknown> | undefined;
-    if (metrics) {
+    if (metrics != null) {
       const threshold = metrics['EventThreshold'] as Record<string, unknown> | undefined;
-      sdkDest['Metrics'] = {
-        Status: metrics['Status'] as string | undefined,
-        EventThreshold: threshold
-          ? { Minutes: threshold['Minutes'] as number | undefined }
-          : undefined,
-      };
+      const m: Record<string, unknown> = {};
+      if (metrics['Status'] !== undefined) m['Status'] = metrics['Status'];
+      if (threshold != null && threshold['Minutes'] !== undefined) {
+        m['EventThreshold'] = { Minutes: threshold['Minutes'] as number };
+      }
+      if (Object.keys(m).length > 0) sdkDest['Metrics'] = m;
     }
 
     return sdkDest;
@@ -1396,12 +1412,12 @@ export class S3BucketProvider implements ResourceProvider {
             // accepted from the template and never sent — silently replicating
             // a different set of objects than declared.
             const criteria = rule['SourceSelectionCriteria'] as Record<string, unknown> | undefined;
-            if (criteria) {
+            if (criteria != null) {
               const sdkCriteria: Record<string, unknown> = {};
               const replicaMods = criteria['ReplicaModifications'] as
                 | Record<string, unknown>
                 | undefined;
-              if (replicaMods) {
+              if (replicaMods != null) {
                 sdkCriteria['ReplicaModifications'] = {
                   Status: replicaMods['Status'] as string | undefined,
                 };
@@ -1409,7 +1425,7 @@ export class S3BucketProvider implements ResourceProvider {
               const sseKms = criteria['SseKmsEncryptedObjects'] as
                 | Record<string, unknown>
                 | undefined;
-              if (sseKms) {
+              if (sseKms != null) {
                 sdkCriteria['SseKmsEncryptedObjects'] = {
                   Status: sseKms['Status'] as string | undefined,
                 };
@@ -2612,7 +2628,7 @@ export class S3BucketProvider implements ResourceProvider {
           }
           if (rule.BucketKeyEnabled !== undefined) out['BucketKeyEnabled'] = rule.BucketKeyEnabled;
           // Issue #1495: read back the block the write side now sends.
-          if (rule.BlockedEncryptionTypes) {
+          if (rule.BlockedEncryptionTypes?.EncryptionType !== undefined) {
             out['BlockedEncryptionTypes'] = {
               EncryptionType: rule.BlockedEncryptionTypes.EncryptionType,
             };
@@ -2671,15 +2687,22 @@ export class S3BucketProvider implements ResourceProvider {
       );
       const rules = resp.Rules ?? [];
       const lifecycleOut: Record<string, unknown> = {};
-      // Issue #1495: `GetBucketLifecycleConfiguration` returns the account
-      // default even when the template never declared it, so it is emitted
-      // only when AWS reports the NON-default value — the drift comparator
-      // descends into state-present keys only, and an always-emitted default
-      // would still churn the observed snapshot for every bucket.
-      if (
-        resp.TransitionDefaultMinimumObjectSize !== undefined &&
-        resp.TransitionDefaultMinimumObjectSize !== 'varies_by_storage_class'
-      ) {
+      // Issue #1495: emit whatever AWS returns, unconditionally.
+      //
+      // The first cut filtered out `varies_by_storage_class` as "the account
+      // default". That polarity is WRONG — AWS defaults new buckets (created
+      // after September 2024) to `all_storage_classes_128K`, so the filter
+      // suppressed the one value a template meaningfully declares and emitted
+      // the real default for every bucket. A template declaring
+      // `varies_by_storage_class` would then never read back, i.e. permanent
+      // phantom drift on the `properties`-fallback baseline — exactly the
+      // asymmetry this issue set out to remove.
+      //
+      // Unconditional is also simply correct: `drift-calculator.ts` only
+      // descends into keys present in cdkd STATE, so a key the template never
+      // declared cannot surface as drift no matter what the observed side
+      // carries.
+      if (resp.TransitionDefaultMinimumObjectSize !== undefined) {
         lifecycleOut['TransitionDefaultMinimumObjectSize'] =
           resp.TransitionDefaultMinimumObjectSize;
       }
@@ -2984,43 +3007,45 @@ export class S3BucketProvider implements ResourceProvider {
             // Issue #1495: the four blocks the write side now sends. Without
             // the read-back a bucket declaring any of them reports permanent
             // phantom drift that `--revert` would then keep re-applying.
-            if (r.Destination.AccessControlTranslation) {
-              d['AccessControlTranslation'] = {
-                Owner: r.Destination.AccessControlTranslation.Owner,
-              };
+            // Every member below is emitted ONLY when AWS actually returned it.
+            // `drift-calculator.ts` compares arrays wholesale, and state.json's
+            // JSON round-trip drops undefined keys — so echoing a member AWS
+            // omitted would turn the whole `Rules` array into permanent drift.
+            const acl = r.Destination.AccessControlTranslation;
+            if (acl?.Owner !== undefined) {
+              d['AccessControlTranslation'] = { Owner: acl.Owner };
             }
-            if (r.Destination.EncryptionConfiguration) {
-              d['EncryptionConfiguration'] = {
-                ReplicaKmsKeyID: r.Destination.EncryptionConfiguration.ReplicaKmsKeyID,
-              };
+            const enc = r.Destination.EncryptionConfiguration;
+            if (enc?.ReplicaKmsKeyID !== undefined) {
+              d['EncryptionConfiguration'] = { ReplicaKmsKeyID: enc.ReplicaKmsKeyID };
             }
-            if (r.Destination.ReplicationTime) {
-              const rt: Record<string, unknown> = { Status: r.Destination.ReplicationTime.Status };
-              if (r.Destination.ReplicationTime.Time) {
-                rt['Time'] = { Minutes: r.Destination.ReplicationTime.Time.Minutes };
+            const rtIn = r.Destination.ReplicationTime;
+            if (rtIn) {
+              const rt: Record<string, unknown> = {};
+              if (rtIn.Status !== undefined) rt['Status'] = rtIn.Status;
+              if (rtIn.Time?.Minutes !== undefined) rt['Time'] = { Minutes: rtIn.Time.Minutes };
+              if (Object.keys(rt).length > 0) d['ReplicationTime'] = rt;
+            }
+            const metricsIn = r.Destination.Metrics;
+            if (metricsIn) {
+              const m: Record<string, unknown> = {};
+              if (metricsIn.Status !== undefined) m['Status'] = metricsIn.Status;
+              if (metricsIn.EventThreshold?.Minutes !== undefined) {
+                m['EventThreshold'] = { Minutes: metricsIn.EventThreshold.Minutes };
               }
-              d['ReplicationTime'] = rt;
-            }
-            if (r.Destination.Metrics) {
-              const m: Record<string, unknown> = { Status: r.Destination.Metrics.Status };
-              if (r.Destination.Metrics.EventThreshold) {
-                m['EventThreshold'] = { Minutes: r.Destination.Metrics.EventThreshold.Minutes };
-              }
-              d['Metrics'] = m;
+              if (Object.keys(m).length > 0) d['Metrics'] = m;
             }
             ruleOut['Destination'] = d;
           }
           if (r.SourceSelectionCriteria) {
             const criteria: Record<string, unknown> = {};
-            if (r.SourceSelectionCriteria.ReplicaModifications) {
-              criteria['ReplicaModifications'] = {
-                Status: r.SourceSelectionCriteria.ReplicaModifications.Status,
-              };
+            const replicaMods = r.SourceSelectionCriteria.ReplicaModifications;
+            if (replicaMods?.Status !== undefined) {
+              criteria['ReplicaModifications'] = { Status: replicaMods.Status };
             }
-            if (r.SourceSelectionCriteria.SseKmsEncryptedObjects) {
-              criteria['SseKmsEncryptedObjects'] = {
-                Status: r.SourceSelectionCriteria.SseKmsEncryptedObjects.Status,
-              };
+            const sseKms = r.SourceSelectionCriteria.SseKmsEncryptedObjects;
+            if (sseKms?.Status !== undefined) {
+              criteria['SseKmsEncryptedObjects'] = { Status: sseKms.Status };
             }
             if (Object.keys(criteria).length > 0) ruleOut['SourceSelectionCriteria'] = criteria;
           }

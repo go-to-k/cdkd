@@ -114,9 +114,14 @@ export class S3ReplicationAndFilterStack extends cdk.Stack {
       // Issue #1495: `TransitionDefaultMinimumObjectSize` sits on the
       // PutBucketLifecycleConfiguration REQUEST rather than inside
       // `LifecycleConfiguration`, which is exactly why the rules-only mapper
-      // never reached it — the default (`varies_by_storage_class`) silently won.
+      // never reached it.
+      //
+      // The value is deliberately the NON-default one. AWS defaults buckets
+      // created after September 2024 to `all_storage_classes_128K`, so
+      // asserting THAT would pass even with the write removed — a vacuous
+      // read-back, which is the trap this fixture exists to avoid.
       lifecycleConfiguration: {
-        transitionDefaultMinimumObjectSize: 'all_storage_classes_128K',
+        transitionDefaultMinimumObjectSize: 'varies_by_storage_class',
         rules: [{ id: 'expire-noncurrent', status: 'Enabled', expirationInDays: 30 }],
       },
       replicationConfiguration: {

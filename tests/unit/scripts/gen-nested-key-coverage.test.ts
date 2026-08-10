@@ -3469,6 +3469,21 @@ describe('whole-blob hand-off walk (real repo, issue #1445)', () => {
     });
   });
 
+  // MEASURED LIMITATION of the two tests below, found by review rather than
+  // assumed away: an empty never-written set is NOT on its own a re-drop fence.
+  // `REVERSE_MAP_FUNCTION_PREFIXES` is prefix-only (`readCurrentState`), so the
+  // CFn-spelled writes #1495 added inside `readEncryption` / `readLifecycle` /
+  // `readLogging` / `readReplication` land in `evidence.written` and vouch for
+  // the forward mapper. A variant with the entire WRITE half reverted (read side
+  // kept) was measured at `no-write-evidence` 98 with `neverWritten` EMPTY and
+  // all 17 members reported written — i.e. both assertions below pass on it.
+  //
+  // What actually fails on that variant is the COUNT pin above (98 vs 81), so
+  // that is the fence; it just fails as an opaque number rather than by member
+  // name. Widening the exclusion to a suffix match is the mechanism fix and
+  // belongs to the S3 opt-in (issue #1520) — the script header has said so since
+  // #1474, and this is the change that made it bite. Recorded here rather than
+  // left for the next reader to rediscover.
   it('keeps S3 reason (C) CLOSED: NOTHING is never-written any more (#1495)', () => {
     // Reason (C) in the header, RESOLVED. This test used to pin the 20 paths
     // whose terminal member appeared NOWHERE in `s3-bucket-provider.ts` — the
@@ -3500,11 +3515,12 @@ describe('whole-blob hand-off walk (real repo, issue #1445)', () => {
     expect(neverWritten).toEqual([]);
   });
 
-  it('pins the #1495 members as WRITTEN, so a silent re-drop fails by name', () => {
-    // The inverted fence above proves the SET is empty; this proves the twenty
-    // specific members are the reason. Asserting the name set directly means a
-    // walk change that stops SEEING these writes cannot pass by shrinking the
-    // audited universe instead of by the provider still writing them.
+  it('pins the #1495 members as present in the write-evidence name set', () => {
+    // Companion to the fence above, with the SAME measured limitation: this
+    // passes on a write-half-reverted variant too, because the read-side
+    // helpers contribute these CFn spellings. It fences a WALK regression that
+    // stops seeing the names at all, not a provider re-drop — the count pin
+    // does that. Titled for what it actually proves.
     const evidence = collectWriteEvidence(
       readFileSync(join(PROVIDERS_DIR, 's3-bucket-provider.ts'), 'utf8'),
       's3-bucket-provider.ts'
