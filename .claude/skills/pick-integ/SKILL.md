@@ -24,6 +24,12 @@ the orchestrator runs the chosen tests via `/run-integ` (which records each run 
    - **Stale**: `last_run_iso` older than the integ-gate TTL window (**14 days** — past that, the gate
      markers themselves expire, so a clean result no longer proves today's AWS behavior). Bias the
      threshold down (treat as stale sooner) for AWS-coupled paths.
+   - **Expiring soon**: age **12-14d** — not stale yet, but inside the cliff window. The ledger
+     accumulates in sweep-shaped cohorts (one sweep stamps 100+ rows with a single timestamp), so ages
+     cluster into spikes rather than spreading out. A strict `>14d` boolean over a clustered
+     distribution answers either "nothing" or "everything" and cannot express the genuinely actionable
+     state — a large cohort about to expire *simultaneously*. Always report this tier: "zero stale" is
+     technically true and practically misleading when 105 tests cross the TTL tomorrow (issue #1508).
    - **Failing**: `result == FAIL` — always a candidate (re-run after a fix, or to confirm still-broken).
    - **Never-run**: a directory under `tests/integration/` with NO ledger row — highest staleness.
 
@@ -48,13 +54,28 @@ the orchestrator runs the chosen tests via `/run-integ` (which records each run 
    comm -23 \
      <(ls -d tests/integration/*/ | sed 's#tests/integration/##;s#/##' | sort) \
      <(awk -F'\t' '{print $1}' "$DEDUPED" | sort)
-   # stale (>14d) or failing, from the ledger:
+   # resolve each row's age ONCE (the date subprocess is the expensive part), then
+   # slice that table for the histogram / stale / expiring-soon views below.
+   AGES="$(mktemp)"
    awk -F'\t' -v now="$now" '{
      cmd="date -u -j -f %Y-%m-%dT%H:%M:%SZ \""$2"\" +%s 2>/dev/null || date -u -d \""$2"\" +%s 2>/dev/null";
      cmd | getline t; close(cmd);
-     age=int((now-t)/86400);
-     if ($3=="FAIL" || age>14) printf "%s\tage=%sd\tresult=%s\t%s\n",$1,age,$3,$6
-   }' "$DEDUPED"
+     printf "%s\t%d\t%s\t%s\n",$1,int((now-t)/86400),$3,$6
+   }' "$DEDUPED" > "$AGES"
+
+   # age histogram — makes a clustered cohort visible even when NOTHING is >14d
+   awk -F'\t' '{print $2}' "$AGES" | sort -n | uniq -c |
+     awk '{printf "%6d tests at age %sd%s\n",$1,$2,($2>14?"   <-- STALE":($2>=12?"   <-- crosses the TTL in "(15-$2)"d":""))}'
+
+   # stale (>14d) or failing, from the ledger:
+   awk -F'\t' '$3=="FAIL" || $2>14 {printf "%s\tage=%sd\tresult=%s\t%s\n",$1,$2,$3,$4}' "$AGES"
+
+   # expiring soon (12-14d, not already failing) — the cliff cohort:
+   awk -F'\t' '$2>=12 && $2<=14 && $3!="FAIL" {printf "%s\tage=%sd\texpires in %dd\n",$1,$2,15-$2}' "$AGES"
+
+   # one-line cliff summary for the step 4 header:
+   awk -F'\t' '$2>=12 && $2<=14 {n[15-$2]++} END{for (d in n) printf "%d\t%d tests expire in %dd\n",d,n[d],d}' "$AGES" |
+     sort -n | cut -f2-
    ```
    (The `date` line handles both BSD/macOS `-j -f` and GNU `-d`.)
 
@@ -72,26 +93,39 @@ the orchestrator runs the chosen tests via `/run-integ` (which records each run 
    | `src/synthesis/macro-*` | `macro-expansion` |
    | `package.json` (cdk-local bump) | `local-*` cluster (the bump's blast radius) |
 
-3. **Rank** the union of {changed-area tests} ∪ {failing tests} ∪ {stale >14d} ∪ {never-run}:
+3. **Rank** the union of {changed-area tests} ∪ {failing tests} ∪ {stale >14d} ∪ {expiring soon 12-14d} ∪ {never-run}:
    - **P0**: changed-area AND (stale OR failing OR never-run) — the change touches code whose proof is also old/broken.
    - **P1**: changed-area but recently-green — verify the change didn't regress it.
-   - **P2**: not changed-area but stale >14d / failing / never-run — coverage hygiene (cap to a sensible number; prefer the BROAD set + a spread of providers, and `log()` what you dropped).
+   - **P2**: not changed-area but stale >14d / failing / never-run / **expiring soon** — coverage hygiene
+     (cap to a sensible number; prefer the BROAD set + a spread of providers, and `log()` what you dropped).
+     Rank an expiring-soon test BELOW an already-stale one but ABOVE a recently-green one; within the
+     tier, oldest first. When a single cohort is large, say so — draining 105 tests the day they expire
+     is not feasible, so start the drain a few days early and spread it across sessions (see the relay
+     section below).
    Bias up for the AWS-coupled, deletion-sensitive, multi-resource paths; bias down for pure docs/test/skill changes (often need NO integ).
 
 4. **Render the plan**:
    ```
    Recommendation: run N integ tests (P0: ..., P1: ..., P2: ...)
    Base: <base-ref> (<changed-file-count> files changed)
+   Ledger: <count> stale (>14d), <count> failing, <count> never-run,
+           <count> expiring soon (12-14d) — <N> tests expire in <M>d
+   Age histogram:
+     <the uniq -c output from step 1, cliff rows annotated>
 
    P0 (changed + stale/failing/never-run):
      /run-integ <name>    # <why: which changed path + age/result>
    P1 (changed, recently green):
      /run-integ <name>    # verify no regression in <area>
    P2 (coverage hygiene, capped):
-     /run-integ <name>    # stale <age>d / never-run
+     /run-integ <name>    # stale <age>d / expires in <M>d / never-run
 
    Skipped (recently green + untouched): <count> tests — list a few + note the cap.
    ```
+   **Never render "zero stale" on its own.** If nothing is >14d but a cohort sits at 12-14d, the
+   headline is the cliff (`"0 stale, but 105 tests expire in 1d"`), not the clean stale count — the
+   whole point of the tier is that the boolean threshold hides the cohort until the morning it is
+   already too late to drain.
 
 ## Running a large plan across sessions
 
