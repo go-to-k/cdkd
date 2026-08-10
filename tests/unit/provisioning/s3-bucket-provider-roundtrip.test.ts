@@ -2565,6 +2565,44 @@ describe('S3BucketProvider removal semantics (issue #1466)', () => {
     ).rejects.toThrow(/VersioningConfiguration must be an object \(got a string\)/);
   });
 
+  it('refuses a malformed LoggingConfiguration instead of CLEARING logging (issue #1471)', async () => {
+    // The clearing branch reads `loggingConfig['DestinationBucketName']`, so a
+    // malformed container indexed to `undefined`, took the clear path, and
+    // turned logging OFF on a bucket whose template declares it — the same
+    // declaring-the-feature-disables-it shape as the versioning case, and NOT
+    // reachable by guarding the LogFilePrefix read (control never gets there).
+    await expect(
+      provider.create('L', 'AWS::S3::Bucket', {
+        BucketName: BUCKET_NAME,
+        LoggingConfiguration: 'my-log-bucket' as never,
+      })
+    ).rejects.toThrow(/LoggingConfiguration must be an object \(got a string\)/);
+  });
+
+  it('keeps an EMPTY LogFilePrefix, which legitimately means "no prefix" (issue #1471)', async () => {
+    // The blank-fallback relaxation, proven at the provider rather than only
+    // in the helper: '' is a meaningful value here, not a malformed one.
+    await provider.create('L', 'AWS::S3::Bucket', {
+      BucketName: BUCKET_NAME,
+      LoggingConfiguration: { DestinationBucketName: 'logs-bucket', LogFilePrefix: '' },
+    });
+    const calls = callsOf(PutBucketLoggingCommand);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.input).toMatchObject({
+      BucketLoggingStatus: {
+        LoggingEnabled: { TargetBucket: 'logs-bucket', TargetPrefix: '' },
+      },
+    });
+  });
+
+  it('still CLEARS logging when the config is absent (the legitimate removal path)', async () => {
+    // The guard must not turn the removal path into a refusal.
+    await update({ ...base }, { ...base, LoggingConfiguration: { DestinationBucketName: 'b' } });
+    const calls = callsOf(PutBucketLoggingCommand);
+    expect(calls.length).toBeGreaterThanOrEqual(1);
+    expect(calls[calls.length - 1]!.input).toMatchObject({ BucketLoggingStatus: {} });
+  });
+
   it('CREATE still applies a well-formed VersioningConfiguration', async () => {
     // The guard must not turn into a blanket refusal — the normal path has to
     // keep working, including the `{}`-means-Suspended shape.

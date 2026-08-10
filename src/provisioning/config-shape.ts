@@ -44,10 +44,22 @@
  * is deliberately left unguarded.
  *
  * This is a provider-layer guard rather than a pre-flight template check
- * because rules 3 and 4 are only decidable AFTER intrinsic resolution: at
- * pre-flight time a legitimate `Fn::If`-valued block is an object whose
- * `Status` key does not exist yet, so a pre-flight field check would reject
- * valid templates.
+ * because **rule 4** is only decidable AFTER intrinsic resolution: at pre-flight
+ * time a legitimate `Fn::If`-valued block is an object whose `Status` key does
+ * not exist yet, so a pre-flight field check would reject valid templates.
+ * (Rule 3 is permissive and so cannot false-positive at any layer — it simply
+ * could never be STRENGTHENED at pre-flight, since an absent key there is
+ * indistinguishable from one an intrinsic will supply. Rule 2 alone genuinely
+ * IS pre-flight-able; splitting one guard across two layers for it was judged
+ * not worth the divergence.)
+ *
+ * The trade-off that choice accepts, recorded rather than left implicit: the
+ * issue's pre-flight proposal would have failed BEFORE any AWS mutation,
+ * whereas a provider-layer guard can throw after `CreateBucket` has already
+ * succeeded. `create()` self-heals by deleting the partially-created bucket,
+ * but a downstream refusal can still leave earlier sub-config PUTs applied —
+ * the same exposure the pre-existing `applyOwnershipControls` throw has, and
+ * still strictly better than a silent wrong-direction PUT.
  */
 
 /**
@@ -118,7 +130,8 @@ export function requireConfigString(value: unknown, fallback: string, path: stri
     throw new Error(
       `${path} must be a non-empty string (got ${describe(value)}) — check for an ` +
         `unresolved intrinsic or a mis-nested template value. Omit the field ` +
-        `entirely to use the default (${fallback})`
+        `entirely to use the default` +
+        (fallback === '' ? '' : ` (${fallback})`)
     );
   }
 
@@ -140,5 +153,5 @@ function describe(value: unknown): string {
   if (value === null) return 'null';
   if (Array.isArray(value)) return 'an array';
   if (typeof value === 'string') return value.trim() === '' ? 'a blank string' : 'a string';
-  return `a ${typeof value}`;
+  return typeof value === 'object' ? 'an object' : `a ${typeof value}`;
 }

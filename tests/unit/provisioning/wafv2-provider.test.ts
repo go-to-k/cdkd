@@ -79,6 +79,43 @@ describe('WAFv2WebACLProvider', () => {
       expect(createCall.input.Scope).toBe('REGIONAL');
     });
 
+    it('refuses a malformed Scope instead of silently defaulting to REGIONAL (issue #1471)', async () => {
+      // Scope is create-only and binary: REGIONAL vs CLOUDFRONT are different
+      // endpoints, so a silent default is not a cosmetic wrong answer — it
+      // builds the ACL in the wrong place, and it cannot be updated afterward.
+      await expect(
+        provider.create('MyWebACL', 'AWS::WAFv2::WebACL', {
+          Name: 'my-acl',
+          Scope: { Ref: 'ScopeParam' } as never,
+          DefaultAction: { Allow: {} },
+          VisibilityConfig: {
+            CloudWatchMetricsEnabled: true,
+            MetricName: 'my-acl-metric',
+            SampledRequestsEnabled: true,
+          },
+        })
+      ).rejects.toThrow(/AWS::WAFv2::WebACL Scope must be a non-empty string \(got an object\)/);
+
+      // Load-bearing: refused BEFORE the ACL is created in the wrong scope.
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('still applies the REGIONAL default when Scope is absent (issue #1471)', async () => {
+      mockSend.mockResolvedValueOnce({ Summary: { ARN: TEST_ARN, Id: TEST_ID } });
+
+      await provider.create('MyWebACL', 'AWS::WAFv2::WebACL', {
+        Name: 'my-acl',
+        DefaultAction: { Allow: {} },
+        VisibilityConfig: {
+          CloudWatchMetricsEnabled: true,
+          MetricName: 'my-acl-metric',
+          SampledRequestsEnabled: true,
+        },
+      });
+
+      expect(mockSend.mock.calls[0][0].input.Scope).toBe('REGIONAL');
+    });
+
     it('should throw ProvisioningError on failure', async () => {
       mockSend.mockRejectedValueOnce(new Error('Access Denied'));
 

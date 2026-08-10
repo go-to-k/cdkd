@@ -62,7 +62,7 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { S3_AUTO_DELETE_OBJECTS_TAG, hasCdkAutoDeleteTag } from '../data-delete-intent.js';
-import { readConfigString } from '../config-shape.js';
+import { readConfigString, requireConfigString } from '../config-shape.js';
 import { generateResourceName } from '../resource-name.js';
 import type {
   ResourceProvider,
@@ -735,12 +735,29 @@ export class S3BucketProvider implements ResourceProvider {
    */
   private async applyLoggingConfiguration(
     bucketName: string,
-    loggingConfig: Record<string, unknown> | undefined
+    loggingConfig: unknown
   ): Promise<void> {
+    // Shape-check the CONTAINER before the clearing branch below (issue
+    // #1471). That branch reads `loggingConfig['DestinationBucketName']`, so a
+    // malformed value (`LoggingConfiguration: 'my-log-bucket'`) indexes to
+    // `undefined`, takes the clear path, and turns logging OFF on a bucket
+    // whose template declares it — the same declaring-the-feature-disables-it
+    // shape this issue exists to remove. Guarding only the `LogFilePrefix`
+    // read below would leave it live, because control never reaches it.
+    //
+    // An ABSENT config still resolves to the fallback and clears, which is the
+    // legitimate removal path.
+    const destinationBucket = readConfigString(
+      loggingConfig,
+      'DestinationBucketName',
+      '',
+      'AWS::S3::Bucket LoggingConfiguration'
+    );
+
     // S3 supports clearing logging by sending an empty BucketLoggingStatus
     // (no LoggingEnabled field). When loggingConfig is undefined or has no
     // DestinationBucketName, we issue the clearing call.
-    if (!loggingConfig || !loggingConfig['DestinationBucketName']) {
+    if (!loggingConfig || destinationBucket === '') {
       await this.s3Client.send(
         new PutBucketLoggingCommand({
           Bucket: bucketName,
@@ -755,7 +772,7 @@ export class S3BucketProvider implements ResourceProvider {
         Bucket: bucketName,
         BucketLoggingStatus: {
           LoggingEnabled: {
-            TargetBucket: loggingConfig['DestinationBucketName'] as string,
+            TargetBucket: destinationBucket,
             TargetPrefix: readConfigString(
               loggingConfig,
               'LogFilePrefix',
@@ -1183,9 +1200,22 @@ export class S3BucketProvider implements ResourceProvider {
           'AWS::S3::Bucket InventoryConfigurations[]'
         ),
         Schedule: {
-          Frequency: (config['ScheduleFrequency'] ??
-            (config['Schedule'] as Record<string, unknown> | undefined)?.['Frequency'] ??
-            'Weekly') as string,
+          // Same class as the guarded siblings above (issue #1471): a
+          // malformed `Schedule` used to index to `undefined` and silently
+          // default to Weekly. The two-source precedence is preserved.
+          Frequency:
+            config['ScheduleFrequency'] !== undefined
+              ? requireConfigString(
+                  config['ScheduleFrequency'],
+                  'Weekly',
+                  'AWS::S3::Bucket InventoryConfigurations[].ScheduleFrequency'
+                )
+              : readConfigString(
+                  config['Schedule'],
+                  'Frequency',
+                  'Weekly',
+                  'AWS::S3::Bucket InventoryConfigurations[].Schedule'
+                ),
         },
         Destination: {
           S3BucketDestination: s3Dest
@@ -1973,8 +2003,20 @@ export class S3BucketProvider implements ResourceProvider {
     }
 
     // Logging
-    const loggingConfig = properties['LoggingConfiguration'] as Record<string, unknown> | undefined;
-    if (loggingConfig?.['DestinationBucketName']) {
+    const loggingConfig = properties['LoggingConfiguration'];
+    // Shape-check the container BEFORE the has-a-destination gate (issue
+    // #1471): the old `loggingConfig?.['DestinationBucketName']` test indexed a
+    // malformed value to `undefined` and silently skipped the whole block, so
+    // a bucket whose template declares logging came up with none. Absent /
+    // `{}` still resolve to '' and skip, which is the legitimate no-logging
+    // path — this adds a refusal, not an extra API call.
+    const loggingDestination = readConfigString(
+      loggingConfig,
+      'DestinationBucketName',
+      '',
+      'AWS::S3::Bucket LoggingConfiguration'
+    );
+    if (loggingDestination !== '') {
       await this.applyLoggingConfiguration(bucketName, loggingConfig);
     }
 

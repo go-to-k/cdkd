@@ -84,7 +84,7 @@ describe('readConfigString', () => {
     it('refuses an unresolved intrinsic left as an object', () => {
       expect(() =>
         readConfigString({ Status: { Ref: 'SomeParam' } }, 'Status', 'Suspended', PATH)
-      ).toThrow(/Status must be a non-empty string \(got a object\)/);
+      ).toThrow(/Status must be a non-empty string \(got an object\)/);
     });
 
     it('names the fallback so the user knows how to opt into the default', () => {
@@ -135,7 +135,7 @@ describe('requireConfigString', () => {
       /Scope must be a non-empty string \(got null\)/
     );
     expect(() => requireConfigString('  ', 'REGIONAL', PATH)).toThrow(/got a blank string/);
-    expect(() => requireConfigString({ Ref: 'P' }, 'REGIONAL', PATH)).toThrow(/got a object/);
+    expect(() => requireConfigString({ Ref: 'P' }, 'REGIONAL', PATH)).toThrow(/got an object/);
   });
 
   it('agrees with readConfigString on the field rules', () => {
