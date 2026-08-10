@@ -183,8 +183,28 @@ reviewer caught it. Roll the
 guard onto the sites that INDEX A NESTED CONTAINER; a top-level
 `properties['X'] ?? 'default'` read cannot hit rule 2 at all (the bag is always
 an object) and refusing a non-string there is a separate, riskier decision —
-issue #1513 carries it, and `config-shape.ts`'s header records the full
-rolled / not-rolled split.
+issue #1513 settled it PER SITE, and `config-shape.ts`'s header records the
+full split.
+
+**A top-level site takes three questions, not one** (issue #1513):
+
+- **Can the field legitimately arrive as a NUMBER?** CFn coerces scalars and
+  cdkd does not, so an unquoted YAML `IpProtocol: -1` / `Qualifier: 1` deploys
+  fine today and a refusal would break a working template. Those sites pass
+  `{ coerceNumber: true }`; an enum-valued field (`InstanceType`,
+  `AuthorizationType`, `Status`, `Domain`) does NOT — a number there is a bug.
+- **Is the site on the UPDATE path?** Then WARN, do not throw
+  (`{ onUnusable: (m) => this.logger.warn(m) }`). `rollback-executor.ts` replays
+  a rollback via `provider.update(..., previousState.properties, ...)`, so the
+  desired bag can be a historical STATE record — a refusal there makes the
+  resource UN-ROLLBACKABLE with no template-side remedy. Throw on CREATE, where
+  the value is always template-borne. (Same rule as
+  `update-refusal-breaks-rollback-replay`.)
+- **Is the read in a helper the DELETE / diff paths also reach?** Then leave it
+  unguarded and guard the create CALL SITE instead. `EC2Provider`'s
+  `buildIpPermission` is textually a top-level read but is also reached from
+  `deleteSecurityGroupIngress` and from the REVOKE half of the inline-rule diff,
+  both carrying state-borne rules — a guard inside it would break destroy.
 
 Use `src/provisioning/config-shape.ts` instead of hand-writing the guard:
 

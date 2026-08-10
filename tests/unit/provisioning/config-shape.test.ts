@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vite-plus/test';
+import { describe, it, expect, vi } from 'vite-plus/test';
 import { readConfigString, requireConfigString } from '../../../src/provisioning/config-shape.js';
 
 const PATH = 'AWS::S3::Bucket VersioningConfiguration';
@@ -182,5 +182,91 @@ describe('a blank value is legitimate when the fallback is itself blank', () => 
     expect(() => requireConfigString('', 'Suspended', 'AWS::S3::Bucket VersioningConfiguration.Status')).toThrow(
       /must be a non-empty string/
     );
+  });
+});
+
+describe('coerceNumber (issue #1513)', () => {
+  // CloudFormation coerces scalars and cdkd does not, so an unquoted YAML
+  // `IpProtocol: -1` arrives as a NUMBER and deploys fine today. Refusing it
+  // would break a working template, so the numeric-looking sites coerce.
+  const PATH = 'AWS::EC2::SecurityGroupIngress IpProtocol';
+
+  it('stringifies a finite number', () => {
+    expect(requireConfigString(-1, '-1', PATH, { coerceNumber: true })).toBe('-1');
+    expect(requireConfigString(6, '-1', PATH, { coerceNumber: true })).toBe('6');
+    expect(requireConfigString(0, '-1', PATH, { coerceNumber: true })).toBe('0');
+  });
+
+  it('refuses a NON-finite number — stringifying it would send "NaN" to AWS', () => {
+    expect(() => requireConfigString(Number.NaN, '-1', PATH, { coerceNumber: true })).toThrow(
+      /got a number/
+    );
+    expect(() =>
+      requireConfigString(Number.POSITIVE_INFINITY, '-1', PATH, { coerceNumber: true })
+    ).toThrow(/got a number/);
+  });
+
+  it('relaxes ONLY the number case — null, blanks, objects and booleans still refuse', () => {
+    expect(() => requireConfigString(null, '-1', PATH, { coerceNumber: true })).toThrow(/got null/);
+    expect(() => requireConfigString('  ', '-1', PATH, { coerceNumber: true })).toThrow(
+      /got a blank string/
+    );
+    expect(() => requireConfigString({ Ref: 'P' }, '-1', PATH, { coerceNumber: true })).toThrow(
+      /got an object/
+    );
+    expect(() => requireConfigString(true, '-1', PATH, { coerceNumber: true })).toThrow(
+      /got a boolean/
+    );
+  });
+
+  it('is opt-in: a number is still refused at an enum site', () => {
+    expect(() => requireConfigString(5, 't3.micro', 'AWS::EC2::Instance InstanceType')).toThrow(
+      /got a number/
+    );
+  });
+
+  it('does not disturb the absent case', () => {
+    expect(requireConfigString(undefined, '-1', PATH, { coerceNumber: true })).toBe('-1');
+  });
+});
+
+describe('onUnusable (issue #1513)', () => {
+  // The UPDATE-path form. `rollback-executor.ts` replays a rollback by calling
+  // update() with a HISTORICAL cdkd state record as the desired bag, so a hard
+  // refusal there can leave a resource un-rollbackable with no template-side
+  // remedy — the state record cannot be fixed by editing the template.
+  const PATH = 'AWS::IAM::AccessKey Status';
+
+  it('warns and returns the fallback instead of throwing', () => {
+    const warn = vi.fn();
+    expect(requireConfigString(null, 'Active', PATH, { onUnusable: warn })).toBe('Active');
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('says the value is ignored HERE and refused on create, so the split reads as a decision', () => {
+    const warn = vi.fn();
+    requireConfigString({ Ref: 'P' }, 'Active', PATH, { onUnusable: warn });
+    const message = warn.mock.calls[0][0] as string;
+    expect(message).toMatch(/AWS::IAM::AccessKey Status must be a non-empty string \(got an object\)/);
+    expect(message).toMatch(/Ignoring it and using the default \(Active\) for this update/);
+    expect(message).toMatch(/REFUSED on create/);
+  });
+
+  it('stays silent for a well-formed value and for an absent one', () => {
+    const warn = vi.fn();
+    expect(requireConfigString('Inactive', 'Active', PATH, { onUnusable: warn })).toBe('Inactive');
+    expect(requireConfigString(undefined, 'Active', PATH, { onUnusable: warn })).toBe('Active');
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('composes with coerceNumber: a coercible value never reaches the warn', () => {
+    const warn = vi.fn();
+    expect(
+      requireConfigString(1, '$LATEST', 'AWS::Lambda::EventInvokeConfig Qualifier', {
+        coerceNumber: true,
+        onUnusable: warn,
+      })
+    ).toBe('1');
+    expect(warn).not.toHaveBeenCalled();
   });
 });

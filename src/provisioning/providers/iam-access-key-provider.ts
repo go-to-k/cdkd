@@ -12,6 +12,7 @@ import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import { requireConfigString } from '../config-shape.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -100,7 +101,11 @@ export class IAMAccessKeyProvider implements ResourceProvider {
         logicalId
       );
     }
-    const status = (properties['Status'] as string | undefined) ?? 'Active';
+    const status = requireConfigString(
+      properties['Status'],
+      'Active',
+      'AWS::IAM::AccessKey Status'
+    );
 
     try {
       const response = await this.iamClient.send(
@@ -196,7 +201,17 @@ export class IAMAccessKeyProvider implements ResourceProvider {
     this.logger.debug(`Updating IAM access key ${logicalId}: ${physicalId}`);
 
     const userName = properties['UserName'] as string | undefined;
-    const status = ((properties['Status'] as string | undefined) ?? 'Active') as StatusType;
+    // WARN, not throw: a rollback replays through `update()` with a historical
+    // cdkd STATE record as the desired bag, so refusing here could leave a
+    // resource un-rollbackable with no template-side remedy (issue #1513).
+    const status = requireConfigString(
+      properties['Status'],
+      'Active',
+      'AWS::IAM::AccessKey Status',
+      {
+        onUnusable: (message) => this.logger.warn(message),
+      }
+    ) as StatusType;
 
     try {
       await this.iamClient.send(

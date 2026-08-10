@@ -85,6 +85,7 @@ import {
   ResourceUpdateNotSupportedError,
 } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import { requireConfigString } from '../config-shape.js';
 import {
   disableInstanceApiTermination,
   isTerminationProtectionPropagationError,
@@ -1341,7 +1342,9 @@ export class EC2Provider implements ResourceProvider {
     try {
       const response = await this.ec2Client.send(
         new AllocateAddressCommand({
-          Domain: (properties['Domain'] as 'vpc' | 'standard' | undefined) ?? 'vpc',
+          Domain: requireConfigString(properties['Domain'], 'vpc', 'AWS::EC2::EIP Domain') as
+            | 'vpc'
+            | 'standard',
           NetworkBorderGroup: properties['NetworkBorderGroup'] as string | undefined,
           PublicIpv4Pool: properties['PublicIpv4Pool'] as string | undefined,
         })
@@ -2645,7 +2648,19 @@ export class EC2Provider implements ResourceProvider {
       );
     }
 
-    const ipProtocol = (properties['IpProtocol'] as string) ?? '-1';
+    // Guarded HERE rather than in `buildIpPermission` (which re-reads the same
+    // bag on this path): that helper is also reached from
+    // `deleteSecurityGroupIngress` and from the REVOKE half of the inline-rule
+    // update diff, both carrying STATE-borne rules, where a refusal would break
+    // destroy and rollback. Refusing on the create path stops a malformed value
+    // before the helper is ever reached. `coerceNumber` because an unquoted
+    // YAML `IpProtocol: -1` is a NUMBER today and deploys fine (issue #1513).
+    const ipProtocol = requireConfigString(
+      properties['IpProtocol'],
+      '-1',
+      'AWS::EC2::SecurityGroupIngress IpProtocol',
+      { coerceNumber: true }
+    );
     const fromPort = properties['FromPort'] as number | undefined;
     const toPort = properties['ToPort'] as number | undefined;
 
@@ -2817,7 +2832,13 @@ export class EC2Provider implements ResourceProvider {
       );
     }
 
-    const instanceType = (properties['InstanceType'] as string) ?? 't3.micro';
+    // No `coerceNumber`: an instance type is never a bare scalar, so a number
+    // here is a template bug rather than YAML's scalar coercion (issue #1513).
+    const instanceType = requireConfigString(
+      properties['InstanceType'],
+      't3.micro',
+      'AWS::EC2::Instance InstanceType'
+    );
 
     try {
       const securityGroupIds = properties['SecurityGroupIds'] as string[] | undefined;

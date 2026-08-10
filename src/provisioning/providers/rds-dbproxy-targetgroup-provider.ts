@@ -12,6 +12,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import { requireConfigString } from '../config-shape.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -97,7 +98,11 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
         logicalId
       );
     }
-    const targetGroupName = (properties['TargetGroupName'] as string | undefined) ?? 'default';
+    const targetGroupName = requireConfigString(
+      properties['TargetGroupName'],
+      'default',
+      'AWS::RDS::DBProxyTargetGroup TargetGroupName'
+    );
     const dbClusterIdentifiers = properties['DBClusterIdentifiers'] as string[] | undefined;
     const dbInstanceIdentifiers = properties['DBInstanceIdentifiers'] as string[] | undefined;
     const connectionPoolConfig = properties['ConnectionPoolConfigurationInfo'] as
@@ -204,7 +209,17 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
         physicalId
       );
     }
-    const targetGroupName = (properties['TargetGroupName'] as string | undefined) ?? 'default';
+    // WARN, not throw: a rollback replays through `update()` with a historical
+    // cdkd STATE record as the desired bag, so refusing here could leave a
+    // resource un-rollbackable with no template-side remedy (issue #1513). The
+    // `delete()` / `readCurrentState` reads below stay unguarded for the same
+    // reason — both are state-side, never template-borne.
+    const targetGroupName = requireConfigString(
+      properties['TargetGroupName'],
+      'default',
+      'AWS::RDS::DBProxyTargetGroup TargetGroupName',
+      { onUnusable: (message) => this.logger.warn(message) }
+    );
 
     // Defensive: reject diffs in immutable identity fields. Replacement-rules.ts
     // SHOULD have routed those to a CREATE+DELETE replacement upstream; we

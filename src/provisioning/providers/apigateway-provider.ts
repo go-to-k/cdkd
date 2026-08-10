@@ -32,6 +32,7 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { stringifyValue } from '../../utils/stringify.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import { requireConfigString } from '../config-shape.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -1387,7 +1388,13 @@ export class ApiGatewayProvider implements ResourceProvider {
     const restApiId = properties['RestApiId'] as string;
     const resourceId = properties['ResourceId'] as string;
     const httpMethod = properties['HttpMethod'] as string;
-    const authorizationType = (properties['AuthorizationType'] as string) ?? 'NONE';
+    // The highest-value site of issue #1513: the default is NO AUTHORIZATION,
+    // so a null / mis-nested value used to silently publish a PUBLIC method.
+    const authorizationType = requireConfigString(
+      properties['AuthorizationType'],
+      'NONE',
+      'AWS::ApiGateway::Method AuthorizationType'
+    );
     const authorizerId = properties['AuthorizerId'] as string | undefined;
     const apiKeyRequired = properties['ApiKeyRequired'] as boolean | undefined;
     const operationName = properties['OperationName'] as string | undefined;
