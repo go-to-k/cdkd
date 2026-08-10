@@ -205,28 +205,74 @@
  * {@link reachableSdkMemberNames} now serves only
  * {@link countExpandingHandoffPoints}, the parser-regression floor.
  *
+ * THE BUILDER IDIOM (issue #1474)
+ * -------------------------------
+ * The third recognizer, and the narrowest. A provider that assembles a sub-blob
+ * by MUTATION —
+ *
+ *     const mapped: AnomalyDetectorConfiguration = {};
+ *     if (configuration['MetricTimeZone'] !== undefined) mapped.MetricTimezone = …;
+ *     if (ranges !== undefined) mapped.ExcludedTimeRanges = ranges.map(…);
+ *     params.Configuration = mapped;
+ *
+ * — names every member it delivers, per member, on the forward path. The
+ * evidence the pass wants EXISTS; only its AST location differs from a
+ * literal's. {@link resolveLiterals} resolves `mapped` to the EMPTY literal it
+ * was declared with and stops, so `Configuration` scoped to nothing and all
+ * three of its children landed in `no-write-evidence`. That is a FALSE
+ * POSITIVE, and it is why `AWS::CloudWatch::AnomalyDetector` could not opt in.
+ *
+ * A BUILDER is recognized as: a local binding whose initializer is an OBJECT
+ * LITERAL (empty or partial), populated afterwards by property / element-access
+ * assignments onto THAT BINDING, and reaching a write. The three halves are
+ * each load-bearing:
+ *   - The LITERAL initializer is what makes the object's identity known. A
+ *     `const out = makeThing()` or a `let out;` seeded later is refused: the
+ *     object may be someone else's, and a write onto it is not attributable.
+ *   - DECLARATION IDENTITY, never the bare name ({@link builderAssignmentChain}).
+ *     An unrelated `out` in a sibling method resolves to its own declaration
+ *     and vouches for nothing — the bare-name weakness recorded as known bound
+ *     (3) is deliberately not inherited here.
+ *   - The credit is bounded to the BUILDER, not to the enclosing scope. That
+ *     bound is the same one #1445's review proved load-bearing: a whole-scope
+ *     credit would have hidden `ContainerPortRange`, and a sibling object
+ *     mutated in the same function is exactly that trap one recognizer over.
+ * Delivery is the CALLER's question and stays there: {@link walkBuilderAt} runs
+ * only from {@link recordAt}, which runs only where a WRITE takes the value, and
+ * the write sites are already filtered by {@link feedsOnlyComparison} /
+ * {@link isComparisonOnlyLiteral}. A builder that is never handed to a write —
+ * or handed only to a diff — is therefore never reached at all.
+ *
+ * The credit lands at the SAME path a literal would have got, at full depth: an
+ * assignment chain `out.Rule.DefaultRetention = { Mode }` opens the intermediate
+ * scopes on the way down rather than flattening onto the builder's path.
+ *
+ * Recognizing the shape is MONOTONE — it only ever adds scoped members — so no
+ * target gained a finding; measured, the tree's total residual fell 290 -> 260.
+ *
  * WHY THE PASS IS OPT-IN PER TARGET, AND WHICH TARGETS ARE IN
  * -----------------------------------------------------------
  * Measured against the real tree. Counts are would-be `same-spelling` key PATHS
- * with no scoped write evidence, BEFORE the hand-off walk and AFTER it. RE-MEASURED
+ * with no scoped write evidence, at the three recognizer stages: BEFORE the
+ * hand-off walk, after it, and after the BUILDER recognizer (#1474). RE-MEASURED
  * for #1464 — the audited unit is now the FULL chain, so both the denominators and
  * the residuals moved, and the #1448/#1445 numbers are kept in brackets so the
  * shift is visible rather than asserted:
  *
- *   target                             before      after      status
- *   AWS::CodeBuild::Project             0 /  95     0 /  95   opted in (#1432)   [0/90 -> 0/90]
- *   AWS::ApiGatewayV2::Api              6 /   6     0 /   6   OPTED IN (#1445)   [6/6 -> 0/6]
- *   AWS::ApiGatewayV2::Stage            5 /   5     0 /   5   OPTED IN (#1445)   [5/5 -> 0/5]
- *   AWS::ApiGatewayV2::Authorizer       2 /   2     0 /   2   OPTED IN (#1445)   [2/2 -> 0/2]
- *   AWS::ApiGatewayV2::Integration      0 /   0     0 /   0   OPTED IN (#1445)   [0/0 -> 0/0]
- *   AWS::ApiGatewayV2::Route            0 /   0     0 /   0   OPTED IN (#1445)   [0/0 -> 0/0]
- *   AWS::ECS::TaskDefinition           30 / 136     0 / 136   OPTED IN (#1472)   [25/115 -> 1/115]
- *   AWS::ECS::Service                  45 /  56     0 /  56   OPTED IN (#1473)   [44/54 -> 5/54]
- *   AWS::CloudWatch::AnomalyDetector   30 /  30     3 /  30   out — see (B)      [29/29 -> 3/29]
- *   AWS::S3::Bucket                   130 / 152   125 / 152   out — see (B)/(C)  [106/125 -> 104/125]
- *   AWS::CloudFront::Distribution     162 / 162   162 / 162   out — see (D)      [110/112 -> 110/112]
- *                                     -------     -------
- *                                        410         290
+ *   target                             before      walk     +builder   status
+ *   AWS::CodeBuild::Project             0 /  95   0 /  95    0 /  95   opted in (#1432)   [0/90 -> 0/90]
+ *   AWS::ApiGatewayV2::Api              6 /   6   0 /   6    0 /   6   OPTED IN (#1445)   [6/6 -> 0/6]
+ *   AWS::ApiGatewayV2::Stage            5 /   5   0 /   5    0 /   5   OPTED IN (#1445)   [5/5 -> 0/5]
+ *   AWS::ApiGatewayV2::Authorizer       2 /   2   0 /   2    0 /   2   OPTED IN (#1445)   [2/2 -> 0/2]
+ *   AWS::ApiGatewayV2::Integration      0 /   0   0 /   0    0 /   0   OPTED IN (#1445)   [0/0 -> 0/0]
+ *   AWS::ApiGatewayV2::Route            0 /   0   0 /   0    0 /   0   OPTED IN (#1445)   [0/0 -> 0/0]
+ *   AWS::ECS::TaskDefinition           30 / 136   0 / 136    0 / 136   OPTED IN (#1472)   [25/115 -> 1/115]
+ *   AWS::ECS::Service                  45 /  56   0 /  56    0 /  56   OPTED IN (#1473)   [44/54 -> 5/54]
+ *   AWS::CloudWatch::AnomalyDetector   30 /  30   3 /  30    0 /  30   OPTED IN (#1474)   [29/29 -> 3/29]
+ *   AWS::S3::Bucket                   130 / 152 125 / 152   98 / 152   out — see (C)      [106/125 -> 104/125]
+ *   AWS::CloudFront::Distribution     162 / 162 162 / 162  162 / 162   out — see (D)      [110/112 -> 110/112]
+ *                                     -------   -------    -------
+ *                                        410       290        260
  *
  * The RECORDED, MEASURED reasons the remaining targets cannot opt in — none
  * of them "add an allow-list entry", which is what the issue forbids:
@@ -255,24 +301,43 @@
  *     an inert exception. Allow-listing it was refused: the entry would have
  *     silenced a CI-blocking bucket for a reason unrelated to delivery.
  *
- * (B) The BUILDER IDIOM (`const out: any = {}; out.Foo = …; return out;`) is a
- *     per-member write the SCOPE index cannot see: `resolveLiterals` resolves
- *     the identifier to the EMPTY literal it was declared with, and the later
- *     `out.Foo = …` assignments are property-access writes no literal walk
- *     visits. `CloudWatchAnomalyDetectorProvider.buildPutParams` builds
- *     `Configuration` exactly that way, which is all three of its residuals
- *     (`ExcludedTimeRanges` / `StartTime` / `EndTime` ARE written, just not
- *     where the scope index looks), and `S3BucketProvider` uses it in
- *     `applyWebsiteConfiguration` / `applyObjectLockConfiguration` /
- *     `applyReplicationConfiguration`. This is a DIFFERENT mechanism from the
- *     hand-off — per-member writes in the wrong place, not a blob with no writes
- *     at all — so it is tracked separately in issue #1474 rather than folded in
- *     here.
+ * (B) [RESOLVED by issue #1474] The BUILDER IDIOM
+ *     (`const out: any = {}; out.Foo = …; return out;`) was a per-member write
+ *     the SCOPE index could not see. `CloudWatchAnomalyDetectorProvider.
+ *     buildPutParams` builds `Configuration` exactly that way, which was all
+ *     three of its residuals (`ExcludedTimeRanges` / `StartTime` / `EndTime`
+ *     were written all along, just not where the scope index looked), so that
+ *     target measures 0 and is opted in. `S3BucketProvider` uses the same idiom
+ *     in `applyWebsiteConfiguration` / `applyObjectLockConfiguration` /
+ *     `applyReplicationConfiguration`, which is the 125 -> 98 half of its
+ *     residual. The pre-fix counts stay in the table as the record that these
+ *     were FALSE POSITIVES, not drops.
  *
- * (C) S3's remainder past (B) is genuine per-member re-shaping across a dozen
- *     `apply*Configuration` helpers, each of which names members and therefore
- *     has to keep proving them. It is not measurable as "N confirmed drops"
- *     until (B) lands and the residual is re-measured.
+ * (C) S3's remaining 98, MEASURED rather than predicted now that (B) no longer
+ *     hides in it. Splitting the residual by "is the terminal member written
+ *     ANYWHERE in the file?" gives:
+ *       - 78 written SOMEWHERE but not at the audited chain. Two causes, both
+ *         structural rather than missing-write: a CFn segment the SDK RENAMES
+ *         (`WebsiteConfiguration.RoutingRules.RedirectRule` is the SDK's
+ *         `Redirect`, `.RoutingRuleCondition` its `Condition`, CFn's
+ *         `BucketEncryption.ServerSideEncryptionConfiguration` LIST is the
+ *         SDK's `ServerSideEncryptionConfiguration.Rules`), and a per-item PUT
+ *         API whose SDK top-level is SINGULAR where CFn's is plural
+ *         (`AnalyticsConfigurations` -> `AnalyticsConfiguration`, and the same
+ *         for Inventory / Metrics / IntelligentTiering). Both are what
+ *         {@link NestedKeyTarget.segmentRenames} exists for, and declaring ~10
+ *         of them is the work S3's opt-in needs.
+ *       - 20 never written anywhere in the file, i.e. CONFIRMED-LOOKING SILENT
+ *         DROPS — the `LoggingConfiguration.TargetObjectKeyFormat` family, the
+ *         four `ReplicationConfiguration.Rules.Destination` blocks
+ *         (`AccessControlTranslation` / `EncryptionConfiguration` / `Metrics` /
+ *         `ReplicationTime`), `Rules.SourceSelectionCriteria`,
+ *         `LifecycleConfiguration.TransitionDefaultMinimumObjectSize` and
+ *         `BucketEncryption…BlockedEncryptionTypes`. Filed as issue #1495 and
+ *         pinned by name in this file's tests, so a provider fix forces this
+ *         paragraph to be re-measured rather than left to rot.
+ *     Opting S3 in needs BOTH halves, so it stays out; adding allow-list
+ *     entries for either would make the bucket stop meaning anything.
  *
  * (D) `CloudFrontDistributionProvider.convertToSdkFormat` is a SPREAD-AND-PATCH
  *     forwarder: `const result = { ...config }` delivers every member, then ~30
@@ -360,14 +425,13 @@
  * was ECS's `minWriteScopes` (34 -> 58 non-empty scopes: path keys split one
  * flattened scope into one per depth).
  *
- * WHAT PATH-SCOPING AND THE HAND-OFF WALK DO **NOT** CLOSE — MEASURED, NOT PREDICTED
+ * WHAT THE THREE RECOGNIZERS DO **NOT** CLOSE — MEASURED, NOT PREDICTED
  * -----------------------------------------------------------------------------------
  * All of the bounds below are RECORDED, not tracked — the two that were tracked
  * (issue #1464's per-PATH capture) are closed above, and what is left of them is
- * restated as (1) and (2) at their new, much smaller scope. The provider-shape
- * blind spots the hand-off walk does NOT recognize (builder idiom,
- * spread-and-patch) are separate and are recorded with their counts in the
- * opt-in section above, under (B) and (D).
+ * restated as (1) and (2) at their new, much smaller scope. The one provider
+ * shape still unrecognized (spread-and-patch) is separate and is recorded with
+ * its count in the opt-in section above, under (D).
  *
  * Depth-scoping NARROWS the duplicate-name class further; it does not make it
  * vanish. Read this before writing "membership makes X non-regressing"
@@ -427,6 +491,22 @@
  *     done here — it would withdraw names from the LITERAL set too (the
  *     `provider-handled` bucket) on targets nobody has measured for it.
  *
+ *     THE BUILDER RECOGNIZER WIDENS THIS BOUND, measured (#1474 review). A
+ *     suffix-named reverse helper that uses the BUILDER idiom previously
+ *     contributed only its EMPTY SEED and now contributes a fully populated
+ *     SCOPE: `s3-bucket-provider.ts`'s `readLifecycle` builds `const out = {}`
+ *     and fills it with CFn-spelled `out['Id']` / `out['Status']`, and
+ *     `ecs-provider.ts`'s `volumesToCfn` is the same shape — S3's non-empty
+ *     scope count jumped 85 -> 144 on the strength of that. Still no live
+ *     impact today (S3 is not opted in; ECS is `lower-first`, so a CFn-spelled
+ *     terminal misses the exact compare) — but S3 is an `exact`-style target,
+ *     where a CFn-spelled reverse write vouches for the forward mapper
+ *     verbatim, so this is precisely the direction that will bite the moment
+ *     issue #1495 unblocks the S3 opt-in. Widening
+ *     {@link REVERSE_MAP_FUNCTION_PREFIXES} to a suffix match is the fix and
+ *     belongs to that change, where its effect on the LITERAL set can be
+ *     measured on the target it affects.
+ *
  * (5) THE GENERICITY TEST IS "NAMES NO MEMBER", NOT "PRESERVES EVERY KEY"
  *     (issue #1445). It is TRANSITIVE through resolvable callees, which closes
  *     the delegating guard described above — but three shapes name nothing and
@@ -481,7 +561,36 @@
  *     returns the parameter outright and insufficient for one that only returns
  *     through its own recursion.
  *
- * Each of (1) and (2) is pinned by a test, so the bound is a recorded fact
+ * (8) THE BUILDER RECOGNIZER IS SEED-LITERAL-ONLY AND FLOW-INSENSITIVE
+ *     (issue #1474). Four shapes it deliberately refuses, all in the
+ *     UNDER-crediting (flags correct code, loud) direction:
+ *       - `const out = makeThing(); out.Foo = …` — a non-literal initializer.
+ *         The object's identity is unknown, so a write onto it is not
+ *         attributable to this file. `let out; out = {}; out.Foo = …` is
+ *         refused for the same reason (the DECLARATION carries no literal),
+ *         even though {@link resolveLiterals} does resolve that binding.
+ *       - `let out = {}; out.Foo = 1; out = opaque(props);` — a binding
+ *         REASSIGNED as a whole. Refused outright rather than ordered, because
+ *         crediting the seed's members for a value that is no longer the seed
+ *         is the false-CLEAR direction ({@link builderDeclarationOf}).
+ *       - `out[k] = v` — a computed key names a VARIABLE, the same strictness
+ *         {@link elementAccessName} applies everywhere else.
+ *       - `Object.defineProperty(out, 'Foo', …)` onto a builder. The top-level
+ *         walk records it as a root write; it is NOT credited under the
+ *         builder's path. No provider does this today.
+ *     And one in the OVER-crediting direction, shared with bound (1): the walk
+ *     is FLOW-INSENSITIVE. It collects every assignment onto the binding
+ *     anywhere in the binding's scope and never orders them against the
+ *     delivery or against each other, so an assignment textually AFTER the
+ *     delivery (`send({ Cfg: out }); out.Foo = 1;`) still credits `Cfg.Foo`,
+ *     a member written on only ONE of two `if` arms counts for both, and a
+ *     member `delete out.Foo`d before delivery counts as written. That is the
+ *     same union residue (1) describes, at statement granularity; no provider
+ *     in the tree writes to — or deletes from — a builder after handing it off.
+ *     Ordering the walk would need a control-flow model, which is a materially
+ *     bigger analysis than this one and buys nothing measurable today.
+ *
+ * Each of (1), (2) and (8) is pinned by a test, so the bound is a recorded fact
  * rather than a surprise for the next reader — and the two bounds #1464 CLOSED
  * are pinned by their inverted twins (the same probes, now asserting the
  * divergence), so the closure cannot silently regress either.
@@ -554,10 +663,11 @@ export const MIN_SDK_MEMBERS_PER_CLIENT = 50;
  * current one.
  *
  * Measured yields after the reverse-map exclusion:
- * `ecs-provider.ts` 231, `s3-bucket-provider.ts` 160, `codebuild-provider.ts`
- * 82 (the only opted-in target today), `apigatewayv2-provider.ts` 46,
- * `cloudfront-distribution-provider.ts` 64,
- * `cloudwatch-anomaly-detector-provider.ts` **17**. That last one is why the
+ * `ecs-provider.ts` 233, `s3-bucket-provider.ts` 160, `codebuild-provider.ts`
+ * 82, `apigatewayv2-provider.ts` 46, `cloudfront-distribution-provider.ts` 64,
+ * `cloudwatch-anomaly-detector-provider.ts` **17**. (The BUILDER recognizer
+ * moved none of them: an `out.Foo = …` assignment was always in the NAME set —
+ * it was the SCOPE index that could not see it.) That last one is why the
  * DEFAULT is 10 rather than a value tuned to CodeBuild: a floor of 30 would
  * throw "parser regression?" on a perfectly correct parse the moment the
  * smallest provider opts in (#1445). Each opted-in target then tightens it with
@@ -628,9 +738,15 @@ export interface NestedKeyTarget {
    *
    * Deliberately per-target with NO module-wide default: measured non-empty
    * scope counts on the real tree span two orders of magnitude
-   * (`s3-bucket-provider.ts` 51, `ecs-provider.ts` 34, `codebuild-provider.ts`
-   * 23, `cloudfront-distribution-provider.ts` 21,
-   * `cloudwatch-anomaly-detector-provider.ts` 2, `apigatewayv2-provider.ts` 1),
+   * (`s3-bucket-provider.ts` 144, `ecs-provider.ts` 70, `codebuild-provider.ts`
+   * 32, `cloudfront-distribution-provider.ts` 51,
+   * `cloudwatch-anomaly-detector-provider.ts` 4, `apigatewayv2-provider.ts` 1).
+   * FOUR of those moved with #1474's BUILDER recognizer, which opens the scopes
+   * a mutated binding populates: S3 85 -> 144, ECS 58 -> 70, CloudFront
+   * 23 -> 51, CloudWatch 2 -> 4. CodeBuild's 32 and API Gateway v2's 1 are
+   * unchanged by it — CodeBuild measures 32 with the recognizer and 32 without,
+   * its 23 -> 32 having come from #1464's path keys.
+   * The spread is what forces the per-target declaration,
    * because a provider that forwards blobs through a generic converter builds
    * almost no scoped literals. Any shared floor high enough to fence CodeBuild
    * would throw "parser regression?" on a perfectly correct parse the moment
@@ -759,11 +875,58 @@ export const NESTED_KEY_TARGETS: readonly NestedKeyTarget[] = [
     minNestedKeys: 155,
   },
   {
+    // Opted into the WRITE-EVIDENCE pass by issue #1474, once the BUILDER
+    // recognizer landed. `buildPutParams` assembles `Configuration` as
+    // `const mapped: AnomalyDetectorConfiguration = {}` populated by
+    // `mapped.MetricTimezone = …` / `mapped.ExcludedTimeRanges = …`, so its
+    // three residual paths (`Configuration.ExcludedTimeRanges` and that
+    // array's `StartTime` / `EndTime`) were written all along and simply
+    // invisible to a literal walk. Measured at 0 findings with the recognizer.
     resourceType: 'AWS::CloudWatch::AnomalyDetector',
     providerFile: 'cloudwatch-anomaly-detector-provider.ts',
     sdkClientPackage: '@aws-sdk/client-cloudwatch',
     keyStyle: 'exact',
     minNestedKeys: 27,
+    freshObjectMapper: true,
+    // Measured at opt-in: 17 written member names (unchanged by the
+    // recognizer — a builder assignment was always in the NAME set, it was the
+    // SCOPE that could not see it), 4 non-empty write scopes (2 before the
+    // recognizer: `Configuration` and `Configuration.ExcludedTimeRanges` were
+    // both empty), 4 expanding hand-off points.
+    minWrittenMembers: 12,
+    // 2, and NOT the 3 the #1474 review proposed — the proposal was to make
+    // this floor able to detect the BUILDER recognizer collapsing, and it
+    // MEASURES as unable to, for a reason no floor value fixes. All three
+    // states were counted on this provider:
+    //     recognizer working, real provider          4 non-empty scopes
+    //     recognizer COLLAPSED, real provider        2
+    //     recognizer working, one real write deleted 2
+    // The collapse and the genuine provider regression are the SAME number,
+    // because the recognizer's entire contribution here is the single
+    // `mapped.ExcludedTimeRanges = …` assignment (it opens `Configuration`
+    // and `Configuration.ExcludedTimeRanges`). So a floor of 3 fires on BOTH:
+    // it would turn "the provider stopped writing ExcludedTimeRanges" into
+    // "parser regression?", which is exactly the miscalibration
+    // {@link NestedKeyTarget.minHandoffPoints} records for API Gateway v2 —
+    // a floor at the measurement makes every legitimate provider-side change
+    // abort instead of reporting the divergence it really causes.
+    // A recognizer collapse is NOT silent at 2: it re-surfaces the three
+    // `Configuration.*` paths as `no-write-evidence`, so the shipped `--check`
+    // fails CI naming them, the `reproduces the measured opt-in table` test
+    // fails, and both real-code probes fail. Those are the instruments that
+    // actually fence the recognizer; this floor fences the SCOPE-INDEX
+    // collapse it was built for, which yields 0.
+    minWriteScopes: 2,
+    // Walk-dependent: with the hand-off points stripped, 27 of the 30
+    // same-spelling paths flip to `no-write-evidence` (the whole
+    // `SingleMetricAnomalyDetector` / `MetricMathAnomalyDetector` /
+    // `MetricCharacteristics` / `Dimensions` forward), so the walk's own floor
+    // is required. Deliberately 1 against a measured 4, for the reason spelled
+    // out on {@link API_GATEWAY_V2_WRITE_FLOORS}: the four points are one per
+    // audited blob top-level, a floor AT the measurement turns any legitimate
+    // provider change into "parser regression?", and the collapse mode this
+    // floor exists for yields 0.
+    minHandoffPoints: 1,
   },
   // The five API Gateway v2 targets opted into the WRITE-EVIDENCE pass with
   // issue #1445, once the whole-blob hand-off walk landed. `ApiGatewayV2Provider`
@@ -1851,6 +2014,13 @@ const ARRAY_ELEMENT_CALLBACK_METHODS: ReadonlySet<string> = new Set([
  * Bodies of {@link REVERSE_MAP_FUNCTION_PREFIXES} are skipped
  * entirely, and a literal that {@link feedsOnlyComparison} contributes nothing.
  *
+ * A write whose value is a BUILDER (issue #1474) — a local binding seeded with
+ * an object literal and populated afterwards by `out.Foo = …` /
+ * `out['Foo'] = …` assignments — has its assigned members credited at the same
+ * path a literal's own members get, via {@link resolveBuilders} and
+ * {@link walkBuilderAt}. The identity of the binding is what bounds the credit;
+ * see the module header's BUILDER section and bound (8).
+ *
  * A write whose value is a WHOLE-BLOB HAND-OFF into a generic key converter
  * (issue #1445) has no per-member literal to walk, so it is recorded separately
  * as a hand-off PATH — see {@link ProviderWriteEvidence.handoffScopes} and
@@ -2225,30 +2395,74 @@ export function collectWriteEvidence(
   // share the name `config` in different methods, so a name-keyed taint set
   // would credit the delete path's `GetDistributionConfig` echo.
 
-  /** The declaration a plain identifier resolves to, searched lexically. */
+  /**
+   * A scope boundary for a `const` / `let` binding. FUNCTION scope is not
+   * enough: `const` is BLOCK-scoped, and treating a whole function as one
+   * namespace is what let two same-named builders in different `if` arms
+   * collapse onto one declaration (issue #1474 review).
+   */
+  const isBindingScope = (n: ts.Node): boolean =>
+    ts.isSourceFile(n) ||
+    ts.isBlock(n) ||
+    ts.isModuleBlock(n) ||
+    ts.isCaseBlock(n) ||
+    ts.isForStatement(n) ||
+    ts.isForInStatement(n) ||
+    ts.isForOfStatement(n) ||
+    ts.isCatchClause(n) ||
+    ts.isFunctionLike(n);
+
+  /**
+   * A variable of this name declared DIRECTLY in `scope` — never one owned by
+   * a nested block or function, which has its own namespace.
+   */
+  const declaredDirectlyIn = (scope: ts.Node, name: string): ts.VariableDeclaration | undefined => {
+    let found: ts.VariableDeclaration | undefined;
+    const visit = (n: ts.Node): void => {
+      if (found !== undefined) return;
+      if (isBindingScope(n)) return;
+      if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.name.text === name) {
+        found = n;
+        return;
+      }
+      ts.forEachChild(n, visit);
+    };
+    ts.forEachChild(scope, visit);
+    return found;
+  };
+
+  /**
+   * The declaration a plain identifier resolves to, searched lexically OUTWARD
+   * from the reference through its enclosing BINDING scopes.
+   *
+   * Through #1474 this searched the nearest FUNCTION scope and descended fully
+   * into nested functions, taking the first textual match — which meant the
+   * bare-name weakness of known bound (3) reached inside a single function in
+   * two measurable ways (found by the #1474 review, neither live in the tree
+   * but both one edit away):
+   *   - two `const cfg = {}` builders in different `if` arms collapsed onto the
+   *     first declaration, so their member sets MERGED and each vouched for the
+   *     other's blob — the false-CLEAR direction on a CI-blocking bucket;
+   *   - a `const cfg` inside a nested arrow declared textually FIRST captured
+   *     the enclosing function's own `cfg`, inverting both verdicts (the outer
+   *     member falsely flagged, the inner one falsely cleared).
+   * Walking outward block by block is the accurate lexical model and closes
+   * both; the shapes are pinned by tests. It cannot under-resolve a valid
+   * `const` / `let` either, since a reference outside the declaring block is a
+   * compile error — the only thing the old full descent additionally reached
+   * was a `var`, which no provider in the tree uses.
+   */
   function declarationOf(id: ts.Identifier): ts.Node | undefined {
-    const nearest = enclosingScope(id);
-    for (let scope: ts.Node | undefined = nearest; scope; ) {
+    for (let scope: ts.Node | undefined = id.parent; scope !== undefined; scope = scope.parent) {
+      if (!isBindingScope(scope)) continue;
+      const declared = declaredDirectlyIn(scope, id.text);
+      if (declared !== undefined) return declared;
       if (ts.isFunctionLike(scope)) {
         const parameter = scope.parameters.find(
           (p) => ts.isIdentifier(p.name) && p.name.text === id.text
         );
         if (parameter !== undefined) return parameter;
       }
-      const descendIntoFunctions = scope === nearest;
-      let found: ts.Node | undefined;
-      const visit = (n: ts.Node): void => {
-        if (found !== undefined) return;
-        if (!descendIntoFunctions && n !== scope && ts.isFunctionLike(n)) return;
-        if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.name.text === id.text) {
-          found = n;
-          return;
-        }
-        ts.forEachChild(n, visit);
-      };
-      visit(scope);
-      if (found !== undefined) return found;
-      scope = ts.isSourceFile(scope) ? undefined : enclosingScope(scope);
     }
     return undefined;
   }
@@ -2619,6 +2833,216 @@ export function collectWriteEvidence(
     return [];
   }
 
+  // ---- THE BUILDER IDIOM (issue #1474). A local binding seeded with a FRESH
+  // object literal and then populated by property assignments is a per-member
+  // write the literal walk cannot see: `resolveLiterals` resolves the
+  // identifier to the (empty or partial) seed and stops, while the members are
+  // written onto the binding afterwards. The three helpers below recognize the
+  // shape; `walkBuilderAt` credits it at the SAME path the literal case gets.
+
+  /**
+   * The declaration `id` resolves to, when that declaration is a BUILDER SEED:
+   * a variable initialized with an OBJECT LITERAL.
+   *
+   * The literal initializer is what makes the object's identity KNOWN — the
+   * binding holds an object this file created, so an assignment onto the
+   * binding is a write of a member this file delivers. Every other
+   * initializer shape (`const out = makeThing()`, `let out;` assigned later,
+   * a PARAMETER — which {@link declarationOf} can also return) is refused:
+   * the object may be someone else's, and crediting members written onto it
+   * would be crediting a write we cannot attribute. Under-crediting flags
+   * correct code (loud); over-crediting silences a real drop (silent).
+   *
+   * A binding REASSIGNED as a whole (`let out = {}; out.Foo = 1;
+   * out = opaque(props);`) is refused for the same reason and was NOT until
+   * the #1474 review caught it: only the initializer was inspected, so the
+   * seed's members were credited even though the value actually delivered is
+   * the opaque one. That is the false-CLEAR direction, so the whole binding is
+   * dropped rather than the walk trying to order the two.
+   */
+  const reassignedBindings = new Map<ts.VariableDeclaration, boolean>();
+  const isWhollyReassigned = (declaration: ts.VariableDeclaration): boolean => {
+    const cached = reassignedBindings.get(declaration);
+    if (cached !== undefined) return cached;
+    if (!ts.isIdentifier(declaration.name)) return false;
+    const name = declaration.name.text;
+    let found = false;
+    const visit = (n: ts.Node): void => {
+      if (found) return;
+      if (
+        ts.isBinaryExpression(n) &&
+        isWriteAssignment(n.operatorToken.kind) &&
+        ts.isIdentifier(n.left) &&
+        n.left.text === name &&
+        declarationOf(n.left) === declaration
+      ) {
+        found = true;
+        return;
+      }
+      ts.forEachChild(n, visit);
+    };
+    visit(enclosingScope(declaration));
+    reassignedBindings.set(declaration, found);
+    return found;
+  };
+
+  const builderDeclarationOf = (id: ts.Identifier): ts.VariableDeclaration | undefined => {
+    const declaration = declarationOf(id);
+    if (declaration === undefined || !ts.isVariableDeclaration(declaration)) return undefined;
+    if (declaration.initializer === undefined) return undefined;
+    const seed = unwrapExpression(declaration.initializer);
+    if (!ts.isObjectLiteralExpression(seed)) return undefined;
+    return isWhollyReassigned(declaration) ? undefined : declaration;
+  };
+
+  /**
+   * The member CHAIN an assignment target walks from a builder binding
+   * (`out.Foo = v` -> `['Foo']`, `out['A'].B = v` -> `['A', 'B']`), or
+   * `undefined` when the target is not rooted at `declaration`.
+   *
+   * The root test is DECLARATION IDENTITY, never the bare name: an unrelated
+   * local also called `out` in a sibling method resolves to its OWN
+   * declaration and contributes nothing here. That is the bare-name weakness
+   * recorded as known bound (3) in the module header, deliberately not
+   * inherited by this recognizer.
+   *
+   * A computed key that is not a literal (`out[k] = v`) yields nothing, the
+   * same strictness {@link elementAccessName} applies everywhere else: `k`
+   * names a VARIABLE, not a member.
+   */
+  const builderAssignmentChain = (
+    lhs: ts.Node,
+    declaration: ts.VariableDeclaration
+  ): string[] | undefined => {
+    const segments: string[] = [];
+    let current: ts.Node = lhs;
+    for (;;) {
+      const e = unwrapExpression(current);
+      if (ts.isPropertyAccessExpression(e)) {
+        segments.unshift(e.name.text);
+        current = e.expression;
+        continue;
+      }
+      if (ts.isElementAccessExpression(e)) {
+        const name = elementAccessName(unwrapExpression(e.argumentExpression));
+        if (name === undefined) return undefined;
+        segments.unshift(name);
+        current = e.expression;
+        continue;
+      }
+      if (!ts.isIdentifier(e) || segments.length === 0) return undefined;
+      return declarationOf(e) === declaration ? segments : undefined;
+    }
+  };
+
+  const builderMemberCache = new Map<
+    ts.VariableDeclaration,
+    Array<{ chain: string[]; value: ts.Node }>
+  >();
+  /**
+   * Every member assigned onto a builder binding, searched in the binding's
+   * OWN declaration scope and descended fully — an `if` arm, a loop body and a
+   * callback are all legitimate places to populate a builder, and the identity
+   * test above is what keeps the full descent safe.
+   *
+   * Bodies of {@link REVERSE_MAP_FUNCTION_PREFIXES} are skipped here too: a
+   * reverse SDK->CFn helper nested inside the builder's scope must not vouch
+   * for the forward direction, exactly as in the main walk.
+   */
+  const builderMembers = (
+    declaration: ts.VariableDeclaration
+  ): Array<{ chain: string[]; value: ts.Node }> => {
+    const cached = builderMemberCache.get(declaration);
+    if (cached !== undefined) return cached;
+    const members: Array<{ chain: string[]; value: ts.Node }> = [];
+    // Registered BEFORE the walk so a self-referential builder cannot re-enter.
+    builderMemberCache.set(declaration, members);
+    const visitScope = (n: ts.Node, excluded: boolean): void => {
+      let inExcluded = excluded;
+      if (!inExcluded) {
+        const name = declaredFunctionName(n);
+        if (name !== undefined && isExcludedName(name)) inExcluded = true;
+      }
+      if (!inExcluded && ts.isBinaryExpression(n) && isWriteAssignment(n.operatorToken.kind)) {
+        const chain = builderAssignmentChain(n.left, declaration);
+        if (chain !== undefined) members.push({ chain, value: n.right });
+      }
+      ts.forEachChild(n, (child) => visitScope(child, inExcluded));
+    };
+    visitScope(enclosingScope(declaration), false);
+    return members;
+  };
+
+  /**
+   * The BUILDERS a value expression can evaluate to — the builder twin of
+   * {@link resolveLiterals}, following the same hops for the same reasons
+   * (`?:` / `??` arms, array elements, `.map(cb)` callbacks, and a same-file
+   * callee's returns, which is how `Configuration: buildPutParams(props)`
+   * reaches a builder declared inside `buildPutParams`).
+   *
+   * Kept SEPARATE from {@link resolveLiterals} rather than folded into it: that
+   * function's identifier branch resolves by BARE NAME across enclosing scopes,
+   * and the builder credit must not inherit that looseness.
+   *
+   * An OBJECT LITERAL deliberately yields nothing here — `{ ...out }` is
+   * handled by {@link walkLiteralAt}'s spread branch, which merges the
+   * builder's members at the literal's own path, so a `return { ...out, Extra: 1 }`
+   * credits both halves at one level.
+   */
+  const resolveBuilders = (expr: ts.Node, seen: Set<ts.Node>): ts.VariableDeclaration[] => {
+    const e = unwrapExpression(expr);
+    if (seen.has(e)) return [];
+    seen.add(e);
+    if (ts.isIdentifier(e)) {
+      const declaration = builderDeclarationOf(e);
+      return declaration === undefined ? [] : [declaration];
+    }
+    if (ts.isConditionalExpression(e)) {
+      return [...resolveBuilders(e.whenTrue, seen), ...resolveBuilders(e.whenFalse, seen)];
+    }
+    if (ts.isBinaryExpression(e)) {
+      const k = e.operatorToken.kind;
+      if (
+        k === ts.SyntaxKind.QuestionQuestionToken ||
+        k === ts.SyntaxKind.BarBarToken ||
+        k === ts.SyntaxKind.AmpersandAmpersandToken
+      ) {
+        return [...resolveBuilders(e.left, seen), ...resolveBuilders(e.right, seen)];
+      }
+      return [];
+    }
+    if (ts.isArrayLiteralExpression(e)) {
+      return e.elements.flatMap((el) => resolveBuilders(el, seen));
+    }
+    if (ts.isSpreadElement(e)) return resolveBuilders(e.expression, seen);
+    if (ts.isArrowFunction(e) || ts.isFunctionExpression(e)) {
+      return returnedExpressions(e).flatMap((r) => resolveBuilders(r, seen));
+    }
+    if (ts.isCallExpression(e)) {
+      const callee = unwrapExpression(e.expression);
+      if (ts.isPropertyAccessExpression(callee)) {
+        if (CALLBACK_RETURNING_METHODS.has(callee.name.text)) {
+          return e.arguments.flatMap((a) => resolveBuilders(a, seen));
+        }
+        if (RECEIVER_PRESERVING_METHODS.has(callee.name.text)) {
+          return resolveBuilders(callee.expression, seen);
+        }
+        if (RECEIVER_AND_ARGUMENT_METHODS.has(callee.name.text)) {
+          return [
+            ...resolveBuilders(callee.expression, seen),
+            ...e.arguments.flatMap((a) => resolveBuilders(a, seen)),
+          ];
+        }
+      }
+      const name = resolvableCalleeName(e);
+      if (name === undefined) return [];
+      return (callables.get(name) ?? []).flatMap((fn) =>
+        returnedExpressions(fn).flatMap((r) => resolveBuilders(r, seen))
+      );
+    }
+    return [];
+  };
+
   /**
    * Is this expression a WHOLE-BLOB HAND-OFF worth recording (issue #1445)?
    * `feedsOnlyComparison` is re-applied here for the same reason the literal
@@ -2712,7 +3136,46 @@ export function collectWriteEvidence(
       registerSeedKeyHandoffs(path, handoff.seedKeys);
     }
     for (const literal of resolveLiterals(value, new Set())) walkLiteralAt(path, literal);
+    // The BUILDER twin (issue #1474): the value can also be a binding the file
+    // populated by assignment after seeding it with a literal, in which case
+    // the seed walked just above carries none of the members.
+    for (const builder of resolveBuilders(value, new Set())) walkBuilderAt(path, builder);
   };
+
+  /**
+   * Every member ASSIGNED onto a builder binding is written at `path` — the
+   * same crediting {@link walkLiteralAt} gives a literal's own members, at the
+   * same path, so `Configuration: mapped` scopes exactly what
+   * `Configuration: { … }` would have (issue #1474).
+   *
+   * A chain longer than one segment (`out.A.B = v`) opens the intermediate
+   * scopes on the way down, so the credit lands at `path.A.B` rather than
+   * being flattened onto `path` — the depth-scoping #1464 established.
+   *
+   * DELIVERY is the caller's question, not this function's: `recordAt` runs
+   * only where a WRITE takes the value, and the write sites are already
+   * filtered by {@link feedsOnlyComparison} / {@link isComparisonOnlyLiteral}.
+   * A builder that is never handed to a write — or handed only to a diff — is
+   * therefore never reached, which is the "not a rubber stamp" half of the
+   * recognizer and is pinned by its own tests.
+   */
+  function walkBuilderAt(path: string, declaration: ts.VariableDeclaration): void {
+    const guard = `${path}#builder${literalId(declaration)}`;
+    if (walkedAtPath.has(guard)) return;
+    walkedAtPath.add(guard);
+    if (path.split('.').length >= MAX_WRITE_PATH_SEGMENTS) return;
+    for (const { chain, value } of builderMembers(declaration)) {
+      let parent = path;
+      for (const segment of chain.slice(0, -1)) {
+        addScopeMember(parent, segment);
+        parent = `${parent}.${segment}`;
+        if (!scopes.has(parent)) scopes.set(parent, new Set<string>());
+      }
+      const terminal = chain[chain.length - 1]!;
+      addScopeMember(parent, terminal);
+      recordAt(`${parent}.${terminal}`, terminal, value);
+    }
+  }
 
   /** Every member of `lit` is written directly at `path`. */
   function walkLiteralAt(path: string, lit: ts.ObjectLiteralExpression): void {
@@ -2730,8 +3193,12 @@ export function collectWriteEvidence(
         addScopeMember(path, p.name.text);
         recordAt(`${path}.${p.name.text}`, p.name.text, p.name);
       } else if (ts.isSpreadAssignment(p)) {
-        // A spread merges the source's members AT THIS LEVEL.
+        // A spread merges the source's members AT THIS LEVEL — including a
+        // BUILDER's (`return { ...out, Extra: 1 }`), issue #1474.
         for (const child of resolveLiterals(p.expression, new Set())) walkLiteralAt(path, child);
+        for (const builder of resolveBuilders(p.expression, new Set())) {
+          walkBuilderAt(path, builder);
+        }
       }
     }
   }

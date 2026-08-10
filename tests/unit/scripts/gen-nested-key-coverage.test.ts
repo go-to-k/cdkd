@@ -1,4 +1,4 @@
-import { afterAll, describe, it, expect } from 'vite-plus/test';
+import { afterAll, describe, it, expect, vi } from 'vite-plus/test';
 import { spawnSync } from 'node:child_process';
 import {
   cpSync,
@@ -10,6 +10,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+
 import {
   MIN_WRITTEN_MEMBERS_PER_PROVIDER,
   NESTED_KEY_ALLOW_LIST,
@@ -47,6 +48,19 @@ import {
   extractNestedPropertyPaths,
 } from '../../../scripts/refresh-cfn-schemas.mjs';
 import { parseProviderSource } from '../../../scripts/gen-property-coverage.ts';
+
+// Vitest's 5s default does not fit this file. 26 of its tests parse the WHOLE
+// real `src/provisioning/providers` tree through the TypeScript compiler API,
+// or spawn the shipped `--check` against a scratch copy of it — inherently
+// 1-2s each locally and ~3x that on CI. Two of them (the opt-in-table and S3
+// reason-(C) fences, 1.6s / 2.2s locally) timed out on CI at 5s while passing
+// locally three runs in a row, which is exactly the boundary this raises off.
+//
+// Set once per FILE rather than per test on purpose: the failure that prompted
+// it was a heavyweight test added WITHOUT a timeout argument, and the repo's
+// per-test convention (`}, 15_000)`) guarantees that recurs every time this
+// file grows. Slowness here is a property of the file, not of individual tests.
+vi.setConfig({ testTimeout: 15_000 });
 
 const repoRoot = process.cwd();
 const SCRIPT = resolve(repoRoot, 'scripts/gen-nested-key-coverage.ts');
@@ -515,6 +529,407 @@ describe('collectWriteEvidence (synthetic)', () => {
       `const req = { body: JSON.stringify({ batchReportMode: 1 }) };`
     ).written;
     expect(written.has('batchReportMode')).toBe(true);
+  });
+});
+
+describe('the BUILDER idiom (synthetic, issue #1474)', () => {
+  /** The members the write at `path` is scoped to, sorted. */
+  const scopeAt = (source: string, path: string): string[] =>
+    [...(collectWriteEvidence(source).scopes.get(path) ?? [])].sort();
+
+  it('credits an EMPTY-literal seed populated by property assignment', () => {
+    // `CloudWatchAnomalyDetectorProvider.buildPutParams` in miniature: the
+    // members ARE written, per member, on the forward path — only their AST
+    // location differs from a literal's, which is what made all three of that
+    // target's residuals FALSE POSITIVES.
+    const source = `
+      class P {
+        build(configuration) {
+          const mapped = {};
+          mapped.MetricTimezone = configuration['MetricTimeZone'];
+          mapped.ExcludedTimeRanges = ranges.map((r) => ({
+            StartTime: toDate(r['StartTime']),
+            EndTime: toDate(r['EndTime']),
+          }));
+          return mapped;
+        }
+        put(p) { return { Configuration: this.build(p) }; }
+      }
+    `;
+    expect(scopeAt(source, 'Configuration')).toEqual([
+      'ExcludedTimeRanges',
+      'MetricTimezone',
+    ]);
+    expect(scopeAt(source, 'Configuration.ExcludedTimeRanges')).toEqual([
+      'EndTime',
+      'StartTime',
+    ]);
+  });
+
+  it('credits a PARTIAL-literal seed alongside an element-access assignment', () => {
+    // `S3BucketProvider.applyWebsiteConfiguration`'s shape: the seed carries
+    // some members and `sdkConfig['X'] = …` adds the rest. Both halves land at
+    // the same path.
+    const source = `
+      class P {
+        apply(cfg) {
+          const sdkConfig = { RedirectAllRequestsTo: { HostName: cfg['HostName'] } };
+          sdkConfig['IndexDocument'] = { Suffix: cfg['IndexDocument'] };
+          return send({ WebsiteConfiguration: sdkConfig });
+        }
+      }
+    `;
+    expect(scopeAt(source, 'WebsiteConfiguration')).toEqual([
+      'IndexDocument',
+      'RedirectAllRequestsTo',
+    ]);
+    expect(scopeAt(source, 'WebsiteConfiguration.IndexDocument')).toEqual(['Suffix']);
+    expect(scopeAt(source, 'WebsiteConfiguration.RedirectAllRequestsTo')).toEqual(['HostName']);
+  });
+
+  it('credits a builder SPREAD into the returned object, alongside the literal half', () => {
+    const source = `
+      class P {
+        build() {
+          const partial = {};
+          partial.Alpha = 1;
+          return { ...partial, Beta: 2 };
+        }
+        put() { return { Configuration: this.build() }; }
+      }
+    `;
+    expect(scopeAt(source, 'Configuration')).toEqual(['Alpha', 'Beta']);
+  });
+
+  it('follows a builder through EARLY-RETURN arms and through a `?:`', () => {
+    // The delivery test is existential, exactly as it is for a literal: the
+    // `return undefined` guard arm carries nothing and must not disqualify the
+    // arm that carries the builder.
+    expect(
+      scopeAt(
+        `
+      class P {
+        build(cfg) {
+          const out = {};
+          if (!cfg) return undefined;
+          out.Alpha = cfg['Alpha'];
+          return out;
+        }
+        put(cfg) { return { Configuration: this.build(cfg) }; }
+      }
+    `,
+        'Configuration'
+      )
+    ).toEqual(['Alpha']);
+    expect(
+      scopeAt(
+        `
+      class P {
+        put(flag) {
+          const a = {};
+          a.Alpha = 1;
+          const b = {};
+          b.Beta = 2;
+          return { Configuration: flag ? a : b };
+        }
+      }
+    `,
+        'Configuration'
+      )
+    ).toEqual(['Alpha', 'Beta']);
+  });
+
+  it('an assignment CHAIN lands at its own depth, not flattened onto the builder', () => {
+    // The depth-scoping #1464 established has to hold for a builder too:
+    // `out.Rule.DefaultRetention = { Mode }` is three facts, not one.
+    const source = `
+      class P {
+        build(cfg) {
+          const out = {};
+          out.Rule = {};
+          out.Rule.DefaultRetention = { Mode: cfg['Mode'] };
+          return out;
+        }
+        put(cfg) { return { ObjectLockConfiguration: this.build(cfg) }; }
+      }
+    `;
+    expect(scopeAt(source, 'ObjectLockConfiguration')).toEqual(['Rule']);
+    expect(scopeAt(source, 'ObjectLockConfiguration.Rule')).toEqual(['DefaultRetention']);
+    expect(scopeAt(source, 'ObjectLockConfiguration.Rule.DefaultRetention')).toEqual(['Mode']);
+  });
+
+  // ---- NOT A RUBBER STAMP: the shapes the recognizer must REFUSE.
+
+  it('a builder that is never DELIVERED credits nothing at the write path', () => {
+    // Written, but never handed to a write.
+    const source = `
+      class P {
+        build(cfg) {
+          const unused = {};
+          unused.Alpha = 1;
+          return { Beta: 2 };
+        }
+        put(cfg) { return { Configuration: this.build(cfg) }; }
+      }
+    `;
+    const { scopes } = collectWriteEvidence(source);
+    expect([...(scopes.get('Configuration') ?? [])]).toEqual(['Beta']);
+    // The ROOT scope `unused.Alpha = 1` opens is the pre-existing bound (2)
+    // residue: the assignment IS recorded, at depth 1, and the recognizer did
+    // not remove that. Asserting it positively is what keeps this test from
+    // passing on a harness that simply produced nothing.
+    expect(scopes.has('Alpha')).toBe(true);
+    expect(scopes.has('Configuration.Alpha')).toBe(false);
+  });
+
+  it('a builder whose only consumer is a DIFF is not delivery', () => {
+    // The write-site `feedsOnlyComparison` rule reaches the builder for free,
+    // because `walkBuilderAt` only ever runs from a write the rule already
+    // filtered. Nothing opens a `Configuration` scope at all.
+    const { scopes } = collectWriteEvidence(`
+      class P {
+        unchanged(prev) {
+          const probe = {};
+          probe.Alpha = 1;
+          return JSON.stringify({ Configuration: probe }) === JSON.stringify(prev);
+        }
+      }
+    `);
+    expect(scopes.has('Configuration')).toBe(false);
+  });
+
+  it('an assignment onto a SAME-NAMED binding in another METHOD does not vouch', () => {
+    // Declaration IDENTITY, not the bare name — the bare-name weakness of
+    // known bound (3), deliberately not inherited by this recognizer.
+    const source = `
+      class P {
+        other() { const out = {}; out.Foreign = 1; return out; }
+        build() { const out = {}; out.Own = 2; return out; }
+        put() { return { Configuration: this.build() }; }
+      }
+    `;
+    expect(scopeAt(source, 'Configuration')).toEqual(['Own']);
+  });
+
+  it('two same-named builders in ONE function do not cross-credit (#1474 review)', () => {
+    // The sibling-METHOD case above passed from the start; the intra-FUNCTION
+    // case did NOT. `declarationOf` searched the nearest FUNCTION scope and
+    // descended fully, taking the first textual match, so both `cfg` bindings
+    // collapsed onto one declaration and their member sets MERGED — `BlobA`
+    // measured `{Alpha, Beta}` and `BlobB` the same. That is the false-CLEAR
+    // direction on a CI-blocking bucket, and it directly contradicted the
+    // header's "never the bare name" claim. Fixed by resolving through BLOCK
+    // scopes, which is what `const` actually obeys.
+    const source = `
+      class P {
+        build(props) {
+          const params = {};
+          if (props['A']) { const cfg = {}; cfg.Alpha = 1; params.BlobA = cfg; }
+          else { const cfg = {}; cfg.Beta = 2; params.BlobB = cfg; }
+          return params;
+        }
+        put(props) { return { Root: this.build(props) }; }
+      }
+    `;
+    expect(scopeAt(source, 'Root.BlobA')).toEqual(['Alpha']);
+    expect(scopeAt(source, 'Root.BlobB')).toEqual(['Beta']);
+  });
+
+  it('a nested arrow declaring the same name does not capture the outer builder', () => {
+    // The worse half of the same defect: with the ARROW's `cfg` declared
+    // textually first, the outer `cfg` resolved to it, so `Cfg` measured
+    // `{Inner}` — the outer member falsely FLAGGED and the inner one falsely
+    // CLEARED, both at once.
+    const source = `
+      class P {
+        build(props) {
+          const inner = props['Xs'].map(() => { const cfg = {}; cfg.Inner = 1; return cfg; });
+          const cfg = {};
+          cfg.Outer = 2;
+          return { Cfg: cfg, Inner: inner };
+        }
+        put(props) { return { Root: this.build(props) }; }
+      }
+    `;
+    // `['Outer']` exactly — the outer member is credited AND `Inner` is not
+    // borrowed from the arrow's same-named binding, which is both halves of
+    // the inversion.
+    expect(scopeAt(source, 'Root.Cfg')).toEqual(['Outer']);
+    // `Root.Inner` is empty for an UNRELATED reason, noted so the assertion
+    // above is not misread as covering it: `inner` binds to a `.map(…)` call,
+    // not to an object literal, so it is not a builder seed — the
+    // seed-literal-only half of bound (8), in its under-crediting direction.
+    expect(scopeAt(source, 'Root.Inner')).toEqual([]);
+  });
+
+  it('skips a REVERSE-MAP helper nested inside the builder scope', () => {
+    // The only builder refusal in the OVER-crediting direction, and it had no
+    // test (#1474 review). `builderMembers` re-applies the
+    // REVERSE_MAP_FUNCTION_PREFIXES skip, so a `readCurrentState*` helper that
+    // writes CFn spellings onto the forward builder contributes nothing. The
+    // control below — the identical helper under a non-reverse name — is what
+    // proves the branch is load-bearing rather than inert.
+    const withReverseMap = `
+      class P {
+        build(cfg) {
+          const out = {};
+          out.Forward = 1;
+          function readCurrentStateInner() { out.Reverse = 2; }
+          return out;
+        }
+        put(cfg) { return { Configuration: this.build(cfg) }; }
+      }
+    `;
+    const withPlainHelper = withReverseMap.replace(
+      'readCurrentStateInner',
+      'patchInner'
+    );
+    expect(scopeAt(withReverseMap, 'Configuration')).toEqual(['Forward']);
+    expect(scopeAt(withPlainHelper, 'Configuration')).toEqual(['Forward', 'Reverse']);
+  });
+
+  it('credits ONLY the builder, never its enclosing scope', () => {
+    // The #1445 review's `ContainerPortRange` trap, one recognizer over: a
+    // sibling object mutated in the same function must not ride along, or a
+    // real silent drop is silenced.
+    const source = `
+      class P {
+        build(cfg) {
+          const out = {};
+          const sibling = {};
+          out.Delivered = 1;
+          sibling.NotDelivered = 2;
+          send(sibling);
+          return out;
+        }
+        put(cfg) { return { Configuration: this.build(cfg) }; }
+      }
+    `;
+    expect(scopeAt(source, 'Configuration')).toEqual(['Delivered']);
+  });
+
+  it('a COMPUTED key on a builder names a VARIABLE, not a member', () => {
+    const source = `
+      class P {
+        build(k) {
+          const out = {};
+          out[k] = 1;
+          out['Literal'] = 2;
+          return out;
+        }
+        put(k) { return { Configuration: this.build(k) }; }
+      }
+    `;
+    expect(scopeAt(source, 'Configuration')).toEqual(['Literal']);
+  });
+
+  // ---- BOUND (8): shapes the recognizer refuses on purpose, pinned so the
+  // refusal cannot silently widen into a rubber stamp.
+
+  /**
+   * The bound probes below all assert an EMPTY credit, which a totally broken
+   * harness also produces. Each pairs its refusal with the identical source in
+   * its ACCEPTED spelling, so the pair proves the refusal is the thing being
+   * measured rather than the walk having stopped working (#1474 review).
+   */
+  const refusedVsAccepted = (refused: string, accepted: string): void => {
+    const { scopes } = collectWriteEvidence(refused);
+    expect(scopes.has('Configuration'), 'the write itself must still be seen').toBe(true);
+    expect([...(scopes.get('Configuration') ?? [])]).toEqual([]);
+    expect(scopeAt(accepted, 'Configuration'), 'the accepted twin must credit').toEqual(['Alpha']);
+  };
+
+  it('BOUND: a binding whose initializer is NOT an object literal is not a builder', () => {
+    refusedVsAccepted(
+      `
+      class P {
+        build() { const out = makeThing(); out.Alpha = 1; return out; }
+        put() { return { Configuration: this.build() }; }
+      }
+    `,
+      `
+      class P {
+        build() { const out = {}; out.Alpha = 1; return out; }
+        put() { return { Configuration: this.build() }; }
+      }
+    `
+    );
+  });
+
+  it('BOUND: a `let` seeded by a LATER assignment is not a builder', () => {
+    // `resolveLiterals` DOES resolve this binding to the `{}` (its identifier
+    // branch reads assignments too), so the scope EXISTS and is empty — which
+    // `refusedVsAccepted` asserts positively. The builder credit is what is
+    // withheld, because the DECLARATION carries no literal and the object's
+    // identity is therefore not established there.
+    refusedVsAccepted(
+      `
+      class P {
+        build() { let out; out = {}; out.Alpha = 1; return out; }
+        put() { return { Configuration: this.build() }; }
+      }
+    `,
+      `
+      class P {
+        build() { let out = {}; out.Alpha = 1; return out; }
+        put() { return { Configuration: this.build() }; }
+      }
+    `
+    );
+  });
+
+  it('BOUND: a binding REASSIGNED as a whole is not a builder', () => {
+    // Only the initializer was inspected until the #1474 review: the seed's
+    // members were credited even though the value actually delivered is the
+    // opaque one. False-CLEAR direction, so the whole binding is dropped.
+    refusedVsAccepted(
+      `
+      class P {
+        build(props) { let out = {}; out.Alpha = 1; out = opaque(props); return out; }
+        put(props) { return { Configuration: this.build(props) }; }
+      }
+    `,
+      `
+      class P {
+        build(props) { let out = {}; out.Alpha = 1; return out; }
+        put(props) { return { Configuration: this.build(props) }; }
+      }
+    `
+    );
+  });
+
+  it('BOUND: Object.defineProperty onto a builder is not credited under it', () => {
+    // Recorded as a ROOT write by the top-level walk (so the name is in the
+    // set), but not scoped to the builder. No provider does this today.
+    const source = `
+      class P {
+        build() {
+          const out = {};
+          Object.defineProperty(out, 'Alpha', { value: 1 });
+          out.Beta = 2;
+          return out;
+        }
+        put() { return { Configuration: this.build() }; }
+      }
+    `;
+    expect(collectWriteEvidence(source).written.has('Alpha')).toBe(true);
+    expect(scopeAt(source, 'Configuration')).toEqual(['Beta']);
+  });
+
+  it('BOUND: the walk is FLOW-INSENSITIVE — a post-delivery assignment still counts', () => {
+    // The union-across-sites residue of bound (1), at statement granularity.
+    // Over-crediting direction, so it is pinned rather than left implicit; no
+    // provider in the tree writes a builder after handing it off.
+    const source = `
+      class P {
+        put(cfg) {
+          const out = {};
+          send({ Configuration: out });
+          out.Late = 1;
+        }
+      }
+    `;
+    expect(scopeAt(source, 'Configuration')).toEqual(['Late']);
   });
 });
 
@@ -2519,11 +2934,55 @@ describe('whole-blob hand-off walk (real repo, issue #1445)', () => {
       'AWS::ApiGatewayV2::Stage': 0,
       'AWS::CodeBuild::Project': 0,
       'AWS::CloudFront::Distribution': 162,
-      'AWS::CloudWatch::AnomalyDetector': 3,
+      'AWS::CloudWatch::AnomalyDetector': 0,
       'AWS::ECS::Service': 0,
       'AWS::ECS::TaskDefinition': 0,
-      'AWS::S3::Bucket': 125,
+      'AWS::S3::Bucket': 98,
     });
+  });
+
+  it('pins S3 reason (C): 20 of the 98 are never written ANYWHERE (#1495)', () => {
+    // The header's reason (C) is a MEASURED split, not a hand-wave, and this is
+    // what keeps it one. `AWS::S3::Bucket` is not opted in, so these are
+    // recorded rather than fenced — but the moment the provider starts writing
+    // one, this test fails by name and the header has to be re-measured.
+    //
+    // The other 78 of the 98 ARE written somewhere in the file and fail only to
+    // resolve at the audited chain (CFn->SDK segment renames, plural-vs-
+    // singular per-item PUT APIs); those are `segmentRenames` work, not drops.
+    const forced = NESTED_KEY_TARGETS.map((t) => ({ ...t, freshObjectMapper: true }));
+    const s3 = loadReport(forced).targets.find((t) => t.resourceType === 'AWS::S3::Bucket')!;
+    const evidence = collectWriteEvidence(
+      readFileSync(join(PROVIDERS_DIR, 's3-bucket-provider.ts'), 'utf8'),
+      's3-bucket-provider.ts'
+    );
+    const neverWritten = s3.entries
+      .filter((e) => e.bucket === 'no-write-evidence')
+      .filter((e) => !evidence.written.has(e.nestedKey.split('.').pop()!))
+      .map((e) => e.nestedKey)
+      .sort();
+    expect(neverWritten).toEqual([
+      'BucketEncryption.ServerSideEncryptionConfiguration.BlockedEncryptionTypes',
+      'BucketEncryption.ServerSideEncryptionConfiguration.BlockedEncryptionTypes.EncryptionType',
+      'LifecycleConfiguration.TransitionDefaultMinimumObjectSize',
+      'LoggingConfiguration.TargetObjectKeyFormat',
+      'LoggingConfiguration.TargetObjectKeyFormat.PartitionedPrefix',
+      'LoggingConfiguration.TargetObjectKeyFormat.PartitionedPrefix.PartitionDateSource',
+      'LoggingConfiguration.TargetObjectKeyFormat.SimplePrefix',
+      'ReplicationConfiguration.Rules.Destination.AccessControlTranslation',
+      'ReplicationConfiguration.Rules.Destination.AccessControlTranslation.Owner',
+      'ReplicationConfiguration.Rules.Destination.EncryptionConfiguration',
+      'ReplicationConfiguration.Rules.Destination.EncryptionConfiguration.ReplicaKmsKeyID',
+      'ReplicationConfiguration.Rules.Destination.Metrics',
+      'ReplicationConfiguration.Rules.Destination.Metrics.EventThreshold',
+      'ReplicationConfiguration.Rules.Destination.Metrics.EventThreshold.Minutes',
+      'ReplicationConfiguration.Rules.Destination.ReplicationTime',
+      'ReplicationConfiguration.Rules.Destination.ReplicationTime.Time',
+      'ReplicationConfiguration.Rules.Destination.ReplicationTime.Time.Minutes',
+      'ReplicationConfiguration.Rules.SourceSelectionCriteria',
+      'ReplicationConfiguration.Rules.SourceSelectionCriteria.ReplicaModifications',
+      'ReplicationConfiguration.Rules.SourceSelectionCriteria.SseKmsEncryptedObjects',
+    ]);
   });
 
   it('keeps the six #1472/#1473 ECS silent drops CLOSED (fixed, both targets opted in)', () => {
@@ -2601,6 +3060,70 @@ describe('whole-blob hand-off walk (real repo, issue #1445)', () => {
         'LoadBalancers.AdvancedConfiguration.RoleArn',
         'LoadBalancers.AdvancedConfiguration.TestListenerRule',
       ]);
+    });
+  });
+
+  it('keeps the CloudWatch AnomalyDetector opt-in at ZERO findings (#1474)', () => {
+    // The positive half of the builder recognizer against REAL code: the three
+    // paths reason (B) recorded as unmeasurable were never drops, and the
+    // shipped target now carries the opt-in rather than a forced override.
+    const target = NESTED_KEY_TARGETS.find(
+      (t) => t.resourceType === 'AWS::CloudWatch::AnomalyDetector'
+    )!;
+    expect(target.freshObjectMapper).toBe(true);
+    expect(
+      loadReport([target]).targets[0]!.entries.filter((e) => e.bucket === 'no-write-evidence')
+    ).toEqual([]);
+  });
+
+  describe('re-flags the builder-delivered writes when they are deleted (real-code probes)', () => {
+    // Checker rules again, now for the BUILDER recognizer: a fence that only
+    // ever CLEARS is a rubber stamp, so both directions are exercised against a
+    // scratch COPY of the REAL providers tree — the assignment ONTO the builder,
+    // and a hand-named member inside the value that assignment carries.
+    const scratch = mkdtempSync(join(tmpdir(), 'cdkd-nkc-builder-'));
+    afterAll(() => rmSync(scratch, { recursive: true, force: true }));
+
+    const regressed = (name: string, edit: (source: string) => string): string[] => {
+      const dir = join(scratch, name);
+      cpSync(PROVIDERS_DIR, dir, { recursive: true });
+      const path = join(dir, 'cloudwatch-anomaly-detector-provider.ts');
+      const before = readFileSync(path, 'utf8');
+      const after = edit(before);
+      expect(after, `the ${name} probe changed nothing — anchor drifted?`).not.toBe(before);
+      writeFileSync(path, after);
+      const target = NESTED_KEY_TARGETS.find(
+        (t) => t.resourceType === 'AWS::CloudWatch::AnomalyDetector'
+      )!;
+      return loadReport([target], undefined, dir)
+        .targets[0]!.entries.filter((e) => e.bucket === 'no-write-evidence')
+        .map((e) => e.nestedKey)
+        .sort();
+    };
+
+    it('deleting the `mapped.ExcludedTimeRanges = …` assignment re-flags all three', () => {
+      expect(
+        regressed('excludedranges', (source) =>
+          source.replace(
+            /^\s*if \(ranges !== undefined\) \{\n\s*mapped\.ExcludedTimeRanges = ranges\.map\(\(r\) => \(\{\n(?:.*\n)*?\s*\}\)\);\n\s*\}\n/m,
+            ''
+          )
+        )
+      ).toEqual([
+        'Configuration.ExcludedTimeRanges',
+        'Configuration.ExcludedTimeRanges.EndTime',
+        'Configuration.ExcludedTimeRanges.StartTime',
+      ]);
+    });
+
+    it('deleting one HAND-NAMED member inside the builder value re-flags only it', () => {
+      // The precision half: the builder credit must not blanket the value it
+      // carries. `StartTime` stays clean while `EndTime` flags.
+      expect(
+        regressed('endtime', (source) =>
+          source.replace("        EndTime: toDate(r['EndTime']),\n", '')
+        )
+      ).toEqual(['Configuration.ExcludedTimeRanges.EndTime']);
     });
   });
 });
@@ -3428,7 +3951,7 @@ describe('the shipped --check command', { timeout: 30_000 }, () => {
     // a target silently dropping out of the table cannot satisfy this probe.
     expect(stderr).toContain('nested-key-coverage: OK');
     expect(stderr).toContain('0 divergences');
-    expect(stderr).toContain('8 fresh-object target(s)');
+    expect(stderr).toContain('9 fresh-object target(s)');
   });
 
   it('exits 1 naming ONLY the members a partial hand-mapping leaves out', () => {
@@ -3579,6 +4102,43 @@ describe('the shipped --check command', { timeout: 30_000 }, () => {
       expect(stderr).toContain(bucket);
     });
   }
+
+  it('exits 1 when a BUILDER-delivered write is deleted (#1474)', () => {
+    // The library-level twin of this probe asserts the FINDING SET; this one
+    // asserts the shipped process EXIT CODE, which is what CI acts on.
+    // CloudWatch AnomalyDetector is the write-evidence pass's first
+    // builder-dependent opt-in, so "a CloudWatch finding actually exits 1" has
+    // to be proven, not inferred from the sibling ECS probes (#1474 review).
+    const dir = regressedTree(
+      'providers-builder-assignment',
+      'cloudwatch-anomaly-detector-provider.ts',
+      (source) =>
+        source.replace(
+          /^\s*if \(ranges !== undefined\) \{\n\s*mapped\.ExcludedTimeRanges = ranges\.map\(\(r\) => \(\{\n(?:.*\n)*?\s*\}\)\);\n\s*\}\n/m,
+          ''
+        )
+    );
+    const { status, stderr } = runCheck(dir);
+    expect(status).toBe(1);
+    expect(stderr).toContain('nested-key-coverage: FAIL');
+    expect(stderr).toContain('AWS::CloudWatch::AnomalyDetector');
+    expect(stderr).toContain('Configuration.ExcludedTimeRanges');
+    expect(stderr).toContain('no-write-evidence');
+  });
+
+  it('exits 1 naming ONLY the hand-named member deleted inside a builder value (#1474)', () => {
+    // The precision half at the exit-code level: the builder credit must not
+    // blanket the value it carries, so `StartTime` must stay out of the report.
+    const dir = regressedTree(
+      'providers-builder-member',
+      'cloudwatch-anomaly-detector-provider.ts',
+      (source) => source.replace("        EndTime: toDate(r['EndTime']),\n", '')
+    );
+    const { status, stderr } = runCheck(dir);
+    expect(status).toBe(1);
+    expect(stderr).toContain('Configuration.ExcludedTimeRanges.EndTime');
+    expect(stderr).not.toContain('Configuration.ExcludedTimeRanges.StartTime');
+  });
 
   it('exits 1 naming a STALE segmentRenames entry (#1464)', () => {
     // The other staleness fence, proven RED against real code. Renaming the SDK
