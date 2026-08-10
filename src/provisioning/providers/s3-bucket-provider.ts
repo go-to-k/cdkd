@@ -1594,24 +1594,15 @@ export class S3BucketProvider implements ResourceProvider {
     const nextVersioning = properties['VersioningConfiguration'] as
       | Record<string, unknown>
       | undefined;
-    // A MALFORMED value must not silently become a suspend. `applyVersioning`
-    // defaults a missing Status to 'Suspended', so a string / array /
-    // unresolved intrinsic here would quietly turn versioning OFF -- the same
-    // silent-downgrade class `emptyListConfigToUndefined` closes for the list
-    // configs, which do not cover this property. Refuse it by name instead.
-    for (const [side, value] of [
-      ['previous', previousVersioning],
-      ['desired', nextVersioning],
-    ] as const) {
-      if (value != null && (typeof value !== 'object' || Array.isArray(value))) {
-        throw new Error(
-          `${side} VersioningConfiguration is ` +
-            `${Array.isArray(value) ? 'an array' : `a ${typeof value}`}, not an object — ` +
-            `refusing to infer a status from a malformed value, which would silently ` +
-            `suspend versioning`
-        );
-      }
-    }
+    // NOTE a MALFORMED VersioningConfiguration (a string / array / unresolved
+    // intrinsic) still resolves to 'Suspended' below, because `applyVersioning`
+    // defaults a missing Status that way. That silent-suspend predates this
+    // change (`main` had the identical default) and is NOT part of issue
+    // #1466's removal semantics, so it is tracked separately rather than
+    // guarded here: an earlier attempt to refuse it also rejected the PREVIOUS
+    // side, which comes from cdkd STATE rather than the user's template — a
+    // stack whose state already held a malformed value could then never deploy
+    // again, and editing the template would not help. See issue #1471.
     // Nullish (not strict-undefined) to match `diffSubConfig`'s own semantics;
     // a desired `null` is a removal there, so it must be one here too.
     const versioningChanged =

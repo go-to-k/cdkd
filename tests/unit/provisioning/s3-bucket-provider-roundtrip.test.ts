@@ -2447,21 +2447,18 @@ describe('S3BucketProvider removal semantics (issue #1466)', () => {
     expect(callsOf(PutBucketVersioningCommand)).toHaveLength(0);
   });
 
-  it('a malformed VersioningConfiguration is refused, never silently suspended', async () => {
-    // `applyVersioning` defaults a missing Status to 'Suspended', so a string
-    // or unresolved intrinsic would quietly turn versioning OFF. The list-config
-    // normalizer does not cover this property, so it refuses by name instead.
-    for (const malformed of ['Enabled', ['Enabled'], 42]) {
-      vi.clearAllMocks();
-      mockSend.mockResolvedValue({});
-      await expect(
-        update({ ...base, VersioningConfiguration: malformed as never }, {
-          ...base,
-          VersioningConfiguration: { Status: 'Enabled' },
-        })
-      ).rejects.toThrow(/VersioningConfiguration/);
-      expect(callsOf(PutBucketVersioningCommand)).toHaveLength(0);
-    }
+  it('a malformed VersioningConfiguration resolves to Suspended (known gap, issue #1471)', async () => {
+    // Documents the PRE-EXISTING behavior rather than asserting a fix: `main`
+    // defaults a missing Status to 'Suspended' the same way, so this is not a
+    // regression from #1466 and is tracked in #1471. Pinned so the follow-up
+    // has a starting point and so a future change here is a conscious one.
+    await update({ ...base, VersioningConfiguration: 'Enabled' as never }, {
+      ...base,
+      VersioningConfiguration: { Status: 'Enabled' },
+    });
+    const calls = callsOf(PutBucketVersioningCommand);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.input).toMatchObject({ VersioningConfiguration: { Status: 'Suspended' } });
   });
 
   it('malformed list configs fail by NAME, not with a bare TypeError', async () => {
@@ -2471,5 +2468,38 @@ describe('S3BucketProvider removal semantics (issue #1466)', () => {
         OwnershipControls: { Rules: [{ ObjectOwnership: 'BucketOwnerPreferred' }] },
       })
     ).rejects.toThrow(/OwnershipControls\.Rules must be an array/);
+  });
+  it('an ObjectLockConfiguration WITHOUT ObjectLockEnabled must not suppress the suspend', async () => {
+    // Strengthens the blocker test above: a shape heuristic ("the block has
+    // keys, so it must be object lock") would pass that test while still being
+    // wrong. Only reading the MEANINGFUL field distinguishes this from real
+    // object lock, and this shape must still suspend.
+    await update(
+      { ...base, ObjectLockConfiguration: { Rule: { DefaultRetention: { Days: 1 } } } },
+      {
+        ...base,
+        ObjectLockConfiguration: { Rule: { DefaultRetention: { Days: 1 } } },
+        VersioningConfiguration: { Status: 'Enabled' },
+      }
+    );
+    expect(callsOf(PutBucketVersioningCommand)).toHaveLength(1);
+  });
+
+  it('CREATE and UPDATE agree on a FALSY non-object config value', async () => {
+    // The `!== undefined` (not truthiness) check on the create path. With a
+    // truthy check, create SILENTLY SKIPS `BucketEncryption: ''` while update
+    // throws — the asymmetry this PR set out to remove. Both must fail.
+    await expect(
+      provider.create('L', 'AWS::S3::Bucket', {
+        BucketName: BUCKET_NAME,
+        BucketEncryption: '' as never,
+      })
+    ).rejects.toThrow(/ServerSideEncryptionConfiguration must be an array/);
+
+    vi.clearAllMocks();
+    mockSend.mockResolvedValue({});
+    await expect(
+      update({ ...base, BucketEncryption: '' as never }, { ...base, BucketEncryption: sseKms })
+    ).rejects.toThrow(/ServerSideEncryptionConfiguration must be an array/);
   });
 });
