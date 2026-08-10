@@ -163,11 +163,43 @@ That is a far more common template shape than the base64 search string.
   `readCurrentState`'s reverse map is excluded, and a literal built only to be
   DIFFED (`JSON.stringify({ … }) !== JSON.stringify(prev)`) is not delivery —
   so the evidence is scoped to the CFn->SDK direction.
-  Measure before setting it: a provider that hands a whole sub-blob to a
-  GENERIC key converter (`pascalToCamelCaseKeys(config)`) delivers every key
-  under it with no write to find, and the pass cannot see that yet (issue
-  #1445). That is why only `AWS::CodeBuild::Project` opts in today — the
-  measured counts for every target are in the script's file header.
+  Measure before setting it. The opt-in set is decided by measurement, never
+  by prediction, and the full before/after table lives in the script's file
+  header. Today `AWS::CodeBuild::Project` and the five `AWS::ApiGatewayV2::*`
+  targets are in; ECS / CloudWatch / S3 / CloudFront each carry a recorded,
+  measured reason they are not.
+- **A whole sub-blob handed to a GENERIC key converter is credited (issue
+  #1445).** `ECSProvider.convertLinuxParameters` is
+  `return pascalToCamelCaseKeys(config)` — one call delivers `Capabilities` /
+  `Devices` / `Tmpfs` / `Swappiness` and everything beneath them, correctly
+  wired and with no per-member write to find. `collectWriteEvidence` follows
+  that hand-off: a value read off the DESIRED property bag
+  (`HANDOFF_BAG_PARAM_NAMES`, declaration-scoped taint) that reaches a WRITE
+  without any member of it being named — through `?:` / `??` arms, `const`
+  bindings, spread-only literals, and `this.f(…)` / free-function /
+  sibling-module calls — is a hand-off POINT, and
+  `expandGenericHandoffScopes` credits exactly the members the SDK model
+  declares beneath it.
+  Two halves of that are what keep it from becoming a rubber stamp, and both
+  are worth knowing before you rely on it:
+  - A callee counts as GENERIC only when it names NO member — anywhere in its
+    body OR in any callee it can reach. `convertLoadBalancers` names four, so
+    every member of the blob it builds still has to prove itself, which is how
+    the pass found that `LoadBalancers[].AdvancedConfiguration` is silently
+    dropped. The TRANSITIVE part is what refuses a DELEGATING GUARD
+    (`convertLog(cfg) { if (!cfg) return cfg; return this.buildLog(cfg); }`),
+    which a body-local test would accept.
+    Read the rule as exactly "names no member", NOT as "can only emit keys it
+    read": a converter that FILTERS, RENAMES via a map, or PICKs a key list
+    names nothing and is still credited — recorded as known bound (5).
+  - The credit is bounded to the BLOB, not to the enclosing scope.
+    `ContainerDefinitions` carries the `LinuxParameters` hand-off AND
+    `convertPortMappings`; crediting the whole scope would have hidden the
+    missing `containerPortRange`.
+  A blob read back off an AWS response and re-sent (CloudFront's
+  disable-then-delete path) is NOT a hand-off — that is what the property-bag
+  taint root is for, and without it 108 of CloudFront's 110 findings cleared
+  falsely.
 - **Write evidence is PATH-SCOPED (issue #1448), and the bound it replaced is
   worth knowing.** As shipped in #1432 the evidence was a flat per-FILE set of
   member names and the audited unit was a key NAME, so a member written
@@ -202,6 +234,10 @@ That is a far more common template shape than the base64 search string.
      `environment: { … }` literals in different methods share one `environment`
      scope, and a name that only ever appears nested still gets a scope a
      same-spelled TOP-LEVEL property would be checked against.
+     Hand-off POINTS are unioned the same way, and it is measurable:
+     `ApiGatewayV2Provider` forwards `DefaultRouteSettings` whole at two sites
+     (create + update), and deleting only ONE of them leaves `--check` at exit
+     0. A provider that stops forwarding on one path is not fenced.
   3. **Value resolution is best-effort and bare-name.** Same-file callables and
      property initializers are indexed by NAME, so `this.mapSource(…)` and a
      free `mapSource(…)` resolve to the same declaration while a
@@ -212,18 +248,40 @@ That is a far more common template shape than the base64 search string.
      the nearest scope stopping the climb. A hop it cannot follow yields no
      literals and flags CORRECT code, which is why it peels `await` and climbs
      to the module scope at all.
+     The #1445 SDK-side expansion is bare-name the same way: a hand-off point is
+     looked up as a member name across EVERY interface in the client model and
+     the reference targets are UNIONED, which can be enormous — `Items` reaches
+     217 members in the CloudFront model. What keeps that from clearing anything
+     is not the expansion, it is `classifyTarget` looking a scope up ONLY by the
+     audited path's CFn TOP-LEVEL property name, so an over-broad expansion
+     hung off some other name is never consulted.
   4. **The reverse-map exclusion is PREFIX-only**, so a suffix-named reverse
      helper (`volumesToCfn`, `metricsSdkToCfn`) is not skipped. No live impact —
      the only opted-in target keeps its reverse map inside `readCurrentState` —
      but widening the match would also withdraw names from the LITERAL set on
      targets nobody has measured for it, so it is deliberately not done.
+  5. **The genericity test means "names no member", not "preserves every
+     key".** It is transitive through resolvable callees, which closes the
+     delegating guard — but a FILTERING (`if (DROP.has(k)) continue`),
+     RENAME-MAP (`out[MAP[k] ?? k] = v`) or PICK (`for (const k of KEEP)`)
+     converter names nothing and is credited anyway. No such shape is a
+     hand-off callee today, but `glue-provider.ts`'s `renameRecordKeys` is
+     exactly the rename-map shape and would be credited the moment a Glue
+     target opted in. Closing it needs the walk to model the converter's KEY
+     SET, not just its member names.
+  6. **Two provider SHAPES the #1445 walk still does not recognize**, both
+     measured on the real tree and both tracked: the BUILDER idiom
+     (`const out: any = {}; out.Foo = …; return out;` — the members ARE written,
+     just not where the scope index looks; CloudWatch AnomalyDetector 3, most of
+     S3's 104 — issue
+     [#1474](https://github.com/go-to-k/cdkd/issues/1474)) and the
+     SPREAD-AND-PATCH forwarder (`const result = { ...config }` plus ~30 named
+     patches, which the genericity test rejects on those names; CloudFront 110 —
+     issue [#1475](https://github.com/go-to-k/cdkd/issues/1475)).
   Both (1) and (2) are pinned by tests, and the full measured statement lives in
-  the script's file header. What ALSO remains outside the fence is a blob handed
-  WHOLE to a generic converter: the scope index cannot see inside it, so those
-  keys are unmeasurable rather than vouched-for, and that is what keeps the other
-  targets from opting in (issue #1445). For all of the above, a hand diff of the
-  WHOLE blob (the first bullet in this section) is still the thing that catches a
-  dropped sub-key.
+  the script's file header. For all of the above, a hand diff of the WHOLE blob
+  (the first bullet in this section) is still the thing that catches a dropped
+  sub-key.
 - **Allow-listing a nested key does NOT silence the write pass by default.**
   `NESTED_KEY_ALLOW_LIST` entries silence the key and shape passes (the
   deliberate #1378 cross-pass sharing); an entry must say

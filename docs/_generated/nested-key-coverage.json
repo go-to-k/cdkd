@@ -8,7 +8,7 @@
     "caseDivergence": 0,
     "noSdkMember": 0,
     "noWriteEvidence": 0,
-    "freshObjectTargets": 1,
+    "freshObjectTargets": 6,
     "shapeClean": 87,
     "shapeHandled": 31,
     "shapeAllowListed": 7,
@@ -22,7 +22,7 @@
       "providerFile": "apigatewayv2-provider.ts",
       "sdkClientPackage": "@aws-sdk/client-apigatewayv2",
       "keyStyle": "exact",
-      "freshObjectMapper": false,
+      "freshObjectMapper": true,
       "nestedKeyCount": 6,
       "entries": [
         {
@@ -79,7 +79,7 @@
       "providerFile": "apigatewayv2-provider.ts",
       "sdkClientPackage": "@aws-sdk/client-apigatewayv2",
       "keyStyle": "exact",
-      "freshObjectMapper": false,
+      "freshObjectMapper": true,
       "nestedKeyCount": 2,
       "entries": [
         {
@@ -106,7 +106,7 @@
       "providerFile": "apigatewayv2-provider.ts",
       "sdkClientPackage": "@aws-sdk/client-apigatewayv2",
       "keyStyle": "exact",
-      "freshObjectMapper": false,
+      "freshObjectMapper": true,
       "nestedKeyCount": 0,
       "entries": [],
       "shapeEntries": [
@@ -130,7 +130,7 @@
       "providerFile": "apigatewayv2-provider.ts",
       "sdkClientPackage": "@aws-sdk/client-apigatewayv2",
       "keyStyle": "exact",
-      "freshObjectMapper": false,
+      "freshObjectMapper": true,
       "nestedKeyCount": 0,
       "entries": [],
       "shapeEntries": [],
@@ -142,7 +142,7 @@
       "providerFile": "apigatewayv2-provider.ts",
       "sdkClientPackage": "@aws-sdk/client-apigatewayv2",
       "keyStyle": "exact",
-      "freshObjectMapper": false,
+      "freshObjectMapper": true,
       "nestedKeyCount": 5,
       "entries": [
         {
