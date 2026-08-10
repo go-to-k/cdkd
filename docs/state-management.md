@@ -290,6 +290,14 @@ in the AWS console, an inline policy attached out-of-band, etc.) surface
 as drift instead of being silently ignored. Resources with
 `observedProperties: undefined` (older state, or providers without
 `readCurrentState`) fall back to comparing against `properties`.
+One carve-out: a top-level key the template never declared whose
+captured value was EMPTY (`[]` / `{}` / `null`) is skipped by the
+comparator — such keys are typically populated AFTER the capture by a
+sibling resource in the same stack (capacity-provider associations,
+standalone lifecycle hooks / security-group rules) or by AWS itself,
+and comparing them produced permanent phantom drift that
+`drift --revert` then destructively "fixed" (issue #1498). An
+undeclared key captured with a real value is still compared.
 
 **v2 → v3 upgrade is automatic on the next `cdkd deploy`.** When the
 deploy engine loads state and finds resources without

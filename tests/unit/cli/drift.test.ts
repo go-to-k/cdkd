@@ -230,6 +230,69 @@ describe('cdkd drift', () => {
     expect(exitSpy).not.toHaveBeenCalled();
   });
 
+  it('does not report drift on a template-undeclared key captured empty and later sibling-populated (issue #1498)', async () => {
+    // Live repro shape: ECS Cluster's observed snapshot was captured BEFORE
+    // the sibling ClusterCapacityProviderAssociations resource ran, so
+    // CapacityProviders landed in observedProperties as [] although the
+    // template never declares it. The later drift read sees the sibling's
+    // attach — which must NOT be drift (CFn only compares declared props).
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Cluster1: makeResource({
+          physicalId: 'my-cluster',
+          resourceType: 'AWS::ECS::Cluster',
+          properties: { ClusterName: 'my-cluster' },
+          observedProperties: { ClusterName: 'my-cluster', CapacityProviders: [] },
+        }),
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({
+        ClusterName: 'my-cluster',
+        CapacityProviders: ['MyCapacityProvider'],
+      }),
+    });
+
+    const { output, error } = await runDrift(['TestStack']);
+
+    expect(error).toBeUndefined();
+    expect(output).toContain('no drift detected');
+    expect(exitSpy).not.toHaveBeenCalled();
+  });
+
+  it('still reports drift on an undeclared key captured with a REAL value that later changed', async () => {
+    // The observed baseline's extra power over CFn drift stays: an AWS-side
+    // default captured with a real value at deploy time IS compared, so a
+    // console-side change to it surfaces.
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Cluster1: makeResource({
+          physicalId: 'my-cluster',
+          resourceType: 'AWS::ECS::Cluster',
+          properties: { ClusterName: 'my-cluster' },
+          observedProperties: {
+            ClusterName: 'my-cluster',
+            ClusterSettings: [{ Name: 'containerInsights', Value: 'disabled' }],
+          },
+        }),
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({
+        ClusterName: 'my-cluster',
+        ClusterSettings: [{ Name: 'containerInsights', Value: 'enabled' }],
+      }),
+    });
+
+    const { output } = await runDrift(['TestStack']);
+
+    expect(output).toContain('drift detected');
+    expect(output).toContain('ClusterSettings');
+    expect(exitSpy).toHaveBeenCalledWith(1);
+  });
+
   it('reports drifted properties with +/- diff lines and exits 1', async () => {
     mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
     mockGetState.mockResolvedValueOnce(
@@ -261,8 +324,12 @@ describe('cdkd drift', () => {
     // Simulates a v3 state record: deploy captured AWS-current
     // properties into observedProperties, including a `Tags` key the
     // user did not set in their CDK template. A console-side change
-    // adding a tag must surface as drift even though `properties` has
-    // no Tags key.
+    // to that key must surface as drift even though `properties` has
+    // no Tags key. NOTE (issue #1498): the captured value must be
+    // NON-empty for the key to stay comparable — an undeclared key
+    // captured EMPTY is treated as sibling-/AWS-managed and skipped
+    // (see the dedicated #1498 tests above), matching CFn's
+    // declared-properties-only comparison for that class.
     mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
     mockGetState.mockResolvedValueOnce(
       makeState({
@@ -270,7 +337,7 @@ describe('cdkd drift', () => {
           physicalId: 'b',
           resourceType: 'AWS::S3::Bucket',
           properties: { BucketName: 'b' },
-          observedProperties: { BucketName: 'b', Tags: [] },
+          observedProperties: { BucketName: 'b', Tags: [{ Key: 'env', Value: 'dev' }] },
         }),
       })
     );

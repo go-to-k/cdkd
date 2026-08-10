@@ -19,7 +19,11 @@ import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { resolveStateBucketWithDefault } from '../config-loader.js';
 import { ProviderRegistry } from '../../provisioning/provider-registry.js';
 import { registerAllProviders } from '../../provisioning/register-providers.js';
-import { calculateResourceDrift, type PropertyDrift } from '../../analyzer/drift-calculator.js';
+import {
+  calculateResourceDrift,
+  undeclaredEmptyObservedKeys,
+  type PropertyDrift,
+} from '../../analyzer/drift-calculator.js';
 import { CC_API_FALLBACK_DENY_LIST } from '../../analyzer/drift-cc-api-deny-list.js';
 import { stripCcApiAwsManagedFields } from '../../analyzer/cc-api-strip.js';
 import { CloudControlProvider } from '../../provisioning/cloud-control-provider.js';
@@ -498,8 +502,25 @@ async function runDriftForStack(
       // template don't fire false positives on every run.
       const useObserved = resource.observedProperties !== undefined;
       const baseline = useObserved ? resource.observedProperties! : (resource.properties ?? {});
+      // Observed-baseline blind spot (issue #1498): the snapshot is captured
+      // per-resource BEFORE dependent sibling resources run, so a parent key
+      // that a sibling resource type materializes later (ECS
+      // ClusterCapacityProviderAssociations -> Cluster.CapacityProviders,
+      // AutoScaling::LifecycleHook -> the ASG's hook list, standalone SG
+      // ingress/egress rules) is captured empty and later populated —
+      // permanent phantom drift that `--revert` would then destructively
+      // strip from AWS. Skip top-level keys the template never declared
+      // whose captured value was empty; CFn drift only compares
+      // template-declared properties, so this restores parity for exactly
+      // that class while keeping detection on undeclared keys captured with
+      // a real value (AWS-side defaults a console edit could change).
+      const observedIgnorePaths = useObserved
+        ? undeclaredEmptyObservedKeys(resource.observedProperties!, resource.properties ?? {})
+        : [];
       const changes = calculateResourceDrift(baseline, aws, {
-        ignorePaths,
+        ignorePaths: observedIgnorePaths.length
+          ? [...ignorePaths, ...observedIgnorePaths]
+          : ignorePaths,
         unionWalkObjects: useObserved,
         unorderedPaths,
       });

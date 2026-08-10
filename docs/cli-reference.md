@@ -1558,6 +1558,20 @@ those, the comparator falls back to the user-templated `properties`
 field (the pre-v3 behavior). The observed-baseline path is what makes
 console-side changes to keys the user did not template surface as
 drift; the fallback only catches changes to keys the user did template.
+One carve-out on the observed-baseline path: a top-level key the
+template never declared whose captured value was EMPTY (`[]` / `{}` /
+`null`) is skipped entirely. Such keys are typically materialized AFTER
+the capture by a sibling resource in the same stack
+(`AWS::ECS::ClusterCapacityProviderAssociations` populating the
+cluster's `CapacityProviders`, a standalone
+`AWS::AutoScaling::LifecycleHook` populating the ASG's hook list,
+standalone security-group ingress/egress rules) or by AWS itself, so
+comparing them reported permanent phantom drift on a freshly deployed
+stack — and `--revert` then stripped that sibling-managed configuration
+from AWS (issue #1498). CloudFormation's drift detection only compares
+template-declared properties, so this matches its behavior for that
+class; an undeclared key captured with a real value (an AWS-side
+default) is still compared.
 See [docs/state-management.md](state-management.md) for the schema
 details.
 
