@@ -77,7 +77,7 @@ drift-revert-arrays	2026-08-01T09:36:05Z	PASS	110	verify.sh	0801 regression swee
 drift-revert-vpc	2026-08-10T11:50:46Z	PASS	310	verify.sh	0810 P0/P1 sweep b5 BROAD; 21 del/0 err incl EFS+PrivateDnsNamespace
 dsql	2026-07-30T18:11:24Z	PASS	540	verify.sh	4-phase incl. destroy --remove-protection CC flip (#1312); orph clean
 dynamodb-autoscaling	2026-08-10T05:13:55Z	PASS	65	verify.sh	0810 sweep b5; table autoscaling re-verify post-#1451 GlobalTable work, 0 err 0 orph
-dynamodb-globaltable	2026-08-10T16:40:24Z	PASS	620	verify.sh	post-review re-run: tightened 1511 grep, 1521 wait split; 5 del/0 err, 0 orphans
+dynamodb-globaltable	2026-08-10T18:51:36Z	PASS	780	verify.sh	#1513 BillingMode guard: create PAY_PER_REQUEST + flip to PROVISIONED and back both clean; destroy 5/0, 0 orphans
 dynamodb-gsi-update	2026-08-10T05:13:55Z	PASS	1056	verify.sh	0810 sweep b5; GSI add is in-place UPDATE (no replacement), 3 phases, 1 del 0 err 0 orph
 dynamodb-ondemand	2026-08-01T10:07:21Z	PASS	81	verify.sh	0801 regression sweep; ondemand+policy+kinesis backfills ok, 0 orphans
 dynamodb-sse	2026-08-01T10:07:21Z	PASS	40	verify.sh	0801 regression sweep; SSE mapping ok, 0 orphans
