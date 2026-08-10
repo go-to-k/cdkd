@@ -254,7 +254,9 @@ describe('buildDeliveryStatusAttributeMap', () => {
     const map = buildDeliveryStatusAttributeMap(
       [
         {
-          Protocol: 'https',
+          // The canonical CFn / CDK L2 spelling of the HTTP family. It maps
+          // to the `HTTP` prefix — the only one AWS accepts (issue #1529).
+          Protocol: 'http/s',
           SuccessFeedbackRoleArn: ROLE_A,
           SuccessFeedbackSampleRate: 50,
           FailureFeedbackRoleArn: ROLE_B,
@@ -264,9 +266,9 @@ describe('buildDeliveryStatusAttributeMap', () => {
       'throw'
     );
     expect([...map.entries()]).toEqual([
-      ['HTTPSSuccessFeedbackRoleArn', ROLE_A],
-      ['HTTPSSuccessFeedbackSampleRate', '50'],
-      ['HTTPSFailureFeedbackRoleArn', ROLE_B],
+      ['HTTPSuccessFeedbackRoleArn', ROLE_A],
+      ['HTTPSuccessFeedbackSampleRate', '50'],
+      ['HTTPFailureFeedbackRoleArn', ROLE_B],
     ]);
   });
 

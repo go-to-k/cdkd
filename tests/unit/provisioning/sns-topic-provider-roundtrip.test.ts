@@ -149,17 +149,19 @@ describe('SNSTopicProvider read-update round-trip', () => {
     expect(setAttrCalls).not.toContain('lambdaSuccessFeedbackRoleArn');
   });
 
-  it('create() normalizes mixed-case protocols (sqs / https / http) to canonical PascalCase prefixes', async () => {
+  it('create() normalizes mixed-case protocols (sqs / http/s) to canonical PascalCase prefixes', async () => {
     mockSend.mockResolvedValueOnce({ TopicArn: STANDARD_TOPIC_ARN }).mockResolvedValue({});
 
     const provider = new SNSTopicProvider();
     await provider.create('L', 'AWS::SNS::Topic', {
       TopicName: 'standard-topic',
       DeliveryStatusLogging: [
-        // SQS / HTTP / HTTPS are full uppercase; firehose / application are PascalCase.
+        // SQS / HTTP are full uppercase; firehose / application are PascalCase.
         { Protocol: 'sqs', SuccessFeedbackRoleArn: 'arn:aws:iam::1:role/sqs' },
-        { Protocol: 'https', FailureFeedbackRoleArn: 'arn:aws:iam::1:role/https' },
-        { Protocol: 'http', SuccessFeedbackSampleRate: '50' },
+        // The canonical CDK L2 / CFn-schema spelling of the HTTP family
+        // (issue #1529). It maps to the `HTTP` prefix — the only
+        // HTTP-family prefix AWS accepts.
+        { Protocol: 'http/s', FailureFeedbackRoleArn: 'arn:aws:iam::1:role/https' },
         { Protocol: 'firehose', SuccessFeedbackRoleArn: 'arn:aws:iam::1:role/firehose' },
         { Protocol: 'application', FailureFeedbackRoleArn: 'arn:aws:iam::1:role/app' },
       ],
@@ -171,11 +173,58 @@ describe('SNSTopicProvider read-update round-trip', () => {
 
     expect(setAttrCalls).toEqual([
       'SQSSuccessFeedbackRoleArn',
-      'HTTPSFailureFeedbackRoleArn',
-      'HTTPSuccessFeedbackSampleRate',
+      'HTTPFailureFeedbackRoleArn',
       'FirehoseSuccessFeedbackRoleArn',
       'ApplicationFailureFeedbackRoleArn',
     ]);
+  });
+
+  it('create() sends every HTTP-family spelling to the HTTP prefix, never the nonexistent HTTPS one (issue #1529)', async () => {
+    // Live-verified 2026-08-11: a CFn template carrying `Protocol: http/s`
+    // produces HTTPSuccessFeedbackRoleArn on the live topic, and
+    // SetTopicAttributes rejects HTTPSSuccessFeedbackRoleArn outright with
+    // `InvalidParameter: Invalid parameter: AttributeName`. Before this fix
+    // `http/s` THREW at create time and `https` emitted the rejected
+    // HTTPS* names, so the whole HTTP family was unusable.
+    for (const spelling of ['http/s', 'HTTP/S', 'http', 'https', 'HTTPS']) {
+      mockSend.mockReset();
+      mockSend.mockResolvedValueOnce({ TopicArn: STANDARD_TOPIC_ARN }).mockResolvedValue({});
+
+      const provider = new SNSTopicProvider();
+      await provider.create('L', 'AWS::SNS::Topic', {
+        TopicName: 'standard-topic',
+        DeliveryStatusLogging: [
+          {
+            Protocol: spelling,
+            SuccessFeedbackRoleArn: 'arn:aws:iam::1:role/s',
+            SuccessFeedbackSampleRate: '50',
+            FailureFeedbackRoleArn: 'arn:aws:iam::1:role/f',
+          },
+        ],
+      });
+
+      const setAttrCalls = mockSend.mock.calls
+        .filter((c) => c[0] instanceof SetTopicAttributesCommand)
+        .map((c) => (c[0] as SetTopicAttributesCommand).input.AttributeName);
+
+      expect(setAttrCalls, `spelling ${spelling}`).toEqual([
+        'HTTPSuccessFeedbackRoleArn',
+        'HTTPSuccessFeedbackSampleRate',
+        'HTTPFailureFeedbackRoleArn',
+      ]);
+      // The three names AWS rejects must never be emitted, for any
+      // spelling. They are listed exactly rather than matched by a
+      // `startsWith('HTTPS')` prefix test, because `HTTPSuccessFeedbackRoleArn`
+      // (HTTP + SuccessFeedbackRoleArn) also starts with those five
+      // characters — that collision is precisely what made this bug subtle.
+      for (const rejected of [
+        'HTTPSSuccessFeedbackRoleArn',
+        'HTTPSSuccessFeedbackSampleRate',
+        'HTTPSFailureFeedbackRoleArn',
+      ]) {
+        expect(setAttrCalls, `spelling ${spelling}`).not.toContain(rejected);
+      }
+    }
   });
 
   it('create() rejects unknown DeliveryStatusLogging Protocol with a clear error', async () => {

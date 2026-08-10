@@ -44,6 +44,20 @@ export class SnsSqsEventStack extends cdk.Stack {
                 successFeedbackSampleRate: '25',
                 failureFeedbackRoleArn: feedbackRole.roleArn,
               },
+              // issue #1529: `http/s` is the canonical CFn / CDK L2 spelling
+              // (`sns.LoggingProtocol.HTTP`) of the HTTP-family protocol, and
+              // it maps to the `HTTP` attribute prefix — the only HTTP-family
+              // prefix AWS accepts. Pre-fix, cdkd THREW
+              // `unsupported DeliveryStatusLogging protocol "http/s"` on this
+              // exact block, and the `https` spelling it did accept produced
+              // `HTTPS*` attribute names SetTopicAttributes rejects. The
+              // fixture had only the Lambda protocol, so neither reached AWS.
+              {
+                protocol: 'http/s',
+                successFeedbackRoleArn: feedbackRole.roleArn,
+                successFeedbackSampleRate: '35',
+                failureFeedbackRoleArn: feedbackRole.roleArn,
+              },
             ],
           }),
     });

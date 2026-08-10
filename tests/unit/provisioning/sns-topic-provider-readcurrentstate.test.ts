@@ -165,8 +165,9 @@ describe('SNSTopicProvider.readCurrentState', () => {
         SQSSuccessFeedbackRoleArn: 'arn:aws:iam::1:role/sqs-success',
         SQSSuccessFeedbackSampleRate: '50',
         SQSFailureFeedbackRoleArn: 'arn:aws:iam::1:role/sqs-failure',
-        // HTTPS: failure only.
-        HTTPSFailureFeedbackRoleArn: 'arn:aws:iam::1:role/https-failure',
+        // HTTP: failure only. `HTTP` is the only HTTP-family prefix AWS
+        // emits (issue #1529) — there is no HTTPS* attribute.
+        HTTPFailureFeedbackRoleArn: 'arn:aws:iam::1:role/http-failure',
       },
     });
     mockSend.mockResolvedValueOnce({ Tags: [] });
@@ -174,11 +175,11 @@ describe('SNSTopicProvider.readCurrentState', () => {
     const result = await provider.readCurrentState(TOPIC_ARN, 'Logical', 'AWS::SNS::Topic');
 
     // Entries sorted alphabetically by Protocol for stable positional
-    // compare (HTTPS before Lambda before SQS).
+    // compare (HTTP before Lambda before SQS).
     expect(result?.['DeliveryStatusLogging']).toEqual([
       {
-        Protocol: 'HTTPS',
-        FailureFeedbackRoleArn: 'arn:aws:iam::1:role/https-failure',
+        Protocol: 'HTTP',
+        FailureFeedbackRoleArn: 'arn:aws:iam::1:role/http-failure',
       },
       {
         Protocol: 'Lambda',
@@ -221,6 +222,33 @@ describe('SNSTopicProvider.readCurrentState', () => {
       { Protocol: 'lambda', SuccessFeedbackRoleArn: 'arn:aws:iam::1:role/lambda-success' },
       { Protocol: 'sqs', SuccessFeedbackRoleArn: 'arn:aws:iam::1:role/sqs-success' },
     ]);
+  });
+
+  it('reads the HTTP family back under the state-recorded http/s spelling (issue #1529)', async () => {
+    // AWS emits only the `HTTP` prefix (no HTTPS* attribute exists), while
+    // a canonical CDK / CFn template records `Protocol: 'http/s'`. Without
+    // the spelling preserved through `stateProtocolCaseMap` the comparator
+    // would report permanent phantom drift `http/s` -> `HTTP` on a topic
+    // that matches its template exactly.
+    mockSend.mockResolvedValueOnce({
+      Attributes: {
+        TopicArn: TOPIC_ARN,
+        HTTPSuccessFeedbackRoleArn: 'arn:aws:iam::1:role/http-success',
+        HTTPSuccessFeedbackSampleRate: '50',
+      },
+    });
+    mockSend.mockResolvedValueOnce({ Tags: [] });
+
+    const recorded = {
+      Protocol: 'http/s',
+      SuccessFeedbackRoleArn: 'arn:aws:iam::1:role/http-success',
+      SuccessFeedbackSampleRate: '50',
+    };
+    const result = await provider.readCurrentState(TOPIC_ARN, 'Logical', 'AWS::SNS::Topic', {
+      DeliveryStatusLogging: [recorded],
+    });
+
+    expect(result?.['DeliveryStatusLogging']).toEqual([recorded]);
   });
 
   it('preserves state-recorded PascalCase Protocol when state holds the canonical case', async () => {
