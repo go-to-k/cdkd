@@ -1,3 +1,10 @@
+## [0.278.31](https://github.com/go-to-k/cdkd/compare/v0.278.30...v0.278.31) (2026-08-10)
+
+
+### Bug Fixes
+
+* **glue:** preserve out-of-band-authored StorageDescriptor members across unrelated table updates ([#1506](https://github.com/go-to-k/cdkd/issues/1506)) ([4397970](https://github.com/go-to-k/cdkd/commit/43979705ddd8a143c0fd37df55f2431d9f629b68))
+
 ## [0.278.30](https://github.com/go-to-k/cdkd/compare/v0.278.29...v0.278.30) (2026-08-10)
 
 
