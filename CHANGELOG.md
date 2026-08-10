@@ -1,3 +1,10 @@
+## [0.278.42](https://github.com/go-to-k/cdkd/compare/v0.278.41...v0.278.42) (2026-08-10)
+
+
+### Bug Fixes
+
+* **provisioning:** guard the top-level config-defaulting sites per site, coercing scalars and warning on the update path ([#1524](https://github.com/go-to-k/cdkd/issues/1524)) ([0268b5e](https://github.com/go-to-k/cdkd/commit/0268b5e7f14ebb2a513171c07c30189fe07ac1a1))
+
 ## [0.278.41](https://github.com/go-to-k/cdkd/compare/v0.278.40...v0.278.41) (2026-08-10)
 
 
