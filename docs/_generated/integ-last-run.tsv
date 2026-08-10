@@ -72,7 +72,7 @@ diff-intrinsic-target-change	2026-08-10T06:18:10Z	PASS	46	verify.sh	0810 P2 swee
 dlm-lifecycle-policy	2026-07-27T09:43:47Z	PASS	140	verify.sh	1160 removal phase 2b final-tree run, destroy 3/0, 0 orphans
 docdb-neptune	2026-07-27T06:16:35Z	PASS	1560	verify.sh	#1160 neptune+docdb removal steps 3b-3d verified; destroy w/o remove-protection 14/0 errors, 0 orphans
 docker-image-asset	2026-08-10T04:23:28Z	PASS	81	verify.sh	0810 sweep b2; post-#1406 ECR mutability filters, 2 del 0 err, 0 orph
-drift-revert	2026-08-10T13:07:38Z	PASS	236	verify.sh	PR 1501 service-tag safeguard; no drift after revert, destroy 13/0, 0 orphans (runs 2-3 hit the unrelated BucketPolicy AROA flake, filed #1515)
+drift-revert	2026-08-10T14:41:05Z	PASS	600	verify.sh	issue 1515 steps 6b/6c added: bogus uid=drift, real uid=clean; 13 del/0 err
 drift-revert-arrays	2026-08-01T09:36:05Z	PASS	110	verify.sh	0801 regression sweep; 16 del/0 err, 0 orphans
 drift-revert-vpc	2026-08-10T11:50:46Z	PASS	310	verify.sh	0810 P0/P1 sweep b5 BROAD; 21 del/0 err incl EFS+PrivateDnsNamespace
 dsql	2026-07-30T18:11:24Z	PASS	540	verify.sh	4-phase incl. destroy --remove-protection CC flip (#1312); orph clean
