@@ -29,8 +29,15 @@ NOTHING else — it says nothing about the properties' content, is not a
 dry-run signal, and must not relax data-safety guards or the validation that
 protects the AWS call itself. Absent / `false` = an ordinary template-path
 create (`cdkd deploy`, the replacement / `--replace` / `--recreate-via-*`
-creates), where the refusal stands. `GlueProvider`'s
-`enforceIcebergTableInputAbsent` is the only consumer today; the full contract
+creates), where the refusal stands. Consumers today come in two shapes:
+`GlueProvider`'s hand-written `enforceIcebergTableInputAbsent`, and the shared
+`replayWarn(logger, context)` helper in `config-shape.ts`, which every
+create-path `requireConfigString` guard spreads into its options bag (API
+Gateway `AuthorizationType`, EC2 `InstanceType` / `Domain` / the
+SecurityGroupIngress-create `IpProtocol`, IAM access-key `Status`, Lambda
+event-invoke `Qualifier`, RDS DB-proxy `TargetGroupName`, DynamoDB GlobalTable
+`BillingMode`). Prefer the helper — it is what keeps the downgrade from being
+re-derived, slightly differently, per site. The full contract
 is on `CreateContext` in `src/types/resource.ts` (NOT in `region-check.ts`
 where `DeleteContext` lives — that type belongs there because its
 `expectedRegion` feeds `assertRegionMatch`; a one-line pointer sits next to
@@ -192,7 +199,8 @@ full split.
   cdkd does not, so an unquoted YAML `IpProtocol: -1` / `Qualifier: 1` deploys
   fine today and a refusal would break a working template. Those sites pass
   `{ coerceNumber: true }`; an enum-valued field (`InstanceType`,
-  `AuthorizationType`, `Status`, `Domain`) does NOT — a number there is a bug.
+  `AuthorizationType`, `Status`, `Domain`, `BillingMode`) does NOT — a number
+  there is a bug.
 - **Is the site on the UPDATE path?** Then WARN, do not throw
   (`{ onUnusable: (m) => this.logger.warn(m) }`). `rollback-executor.ts` replays
   a rollback via `provider.update(..., previousState.properties, ...)`, so the
