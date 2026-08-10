@@ -1,3 +1,10 @@
+## [0.278.30](https://github.com/go-to-k/cdkd/compare/v0.278.29...v0.278.30) (2026-08-10)
+
+
+### Bug Fixes
+
+* **drift:** skip template-undeclared keys captured empty in the observed baseline (sibling-populated phantom + destructive revert) ([#1502](https://github.com/go-to-k/cdkd/issues/1502)) ([3e08357](https://github.com/go-to-k/cdkd/commit/3e08357ea3925d9ce1289263bb67431516cbc286))
+
 ## [0.278.29](https://github.com/go-to-k/cdkd/compare/v0.278.28...v0.278.29) (2026-08-10)
 
 
