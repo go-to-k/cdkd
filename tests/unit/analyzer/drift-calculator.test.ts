@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vite-plus/test';
-import { calculateResourceDrift } from '../../../src/analyzer/drift-calculator.js';
+import {
+  calculateResourceDrift,
+  undeclaredEmptyObservedKeys,
+} from '../../../src/analyzer/drift-calculator.js';
 
 describe('calculateResourceDrift', () => {
   it('returns no drift when state matches AWS exactly', () => {
@@ -329,5 +332,81 @@ describe('calculateResourceDrift', () => {
       const aws = { WindowsConfiguration: { Aliases: ['b.example.com', 'a.example.com'] } };
       expect(calculateResourceDrift(state, aws)).toHaveLength(1);
     });
+  });
+});
+
+describe('undeclaredEmptyObservedKeys (issue #1498)', () => {
+  it('returns undeclared keys whose observed value is an empty container', () => {
+    // The live #1498 shape: ECS Cluster observed at create time, BEFORE the
+    // sibling ClusterCapacityProviderAssociations resource ran.
+    const observed = {
+      ClusterName: 'MyCluster',
+      CapacityProviders: [],
+      ClusterSettings: [],
+      DefaultCapacityProviderStrategy: [],
+      Tags: [],
+    };
+    const declared = { ClusterName: 'MyCluster' };
+    expect(undeclaredEmptyObservedKeys(observed, declared).sort()).toEqual([
+      'CapacityProviders',
+      'ClusterSettings',
+      'DefaultCapacityProviderStrategy',
+      'Tags',
+    ]);
+  });
+
+  it('returns undeclared keys captured as null / undefined / {}', () => {
+    const observed = { A: null, B: undefined, C: {}, Name: 'n' };
+    expect(undeclaredEmptyObservedKeys(observed, { Name: 'n' }).sort()).toEqual(['A', 'B', 'C']);
+  });
+
+  it('keeps undeclared keys captured with a REAL value (AWS-side defaults stay comparable)', () => {
+    const observed = {
+      ClusterSettings: [{ Name: 'containerInsights', Value: 'disabled' }],
+      HealthCheckType: 'EC2',
+    };
+    expect(undeclaredEmptyObservedKeys(observed, {})).toEqual([]);
+  });
+
+  it('keeps DECLARED keys even when captured empty (template intent is compared, CFn parity)', () => {
+    // A template that explicitly declares CapacityProviders: [] means "no
+    // capacity providers" — an out-of-band attach IS drift there.
+    const observed = { CapacityProviders: [] };
+    const declared = { CapacityProviders: [] };
+    expect(undeclaredEmptyObservedKeys(observed, declared)).toEqual([]);
+  });
+
+  it('does not treat empty strings or zero as empty containers', () => {
+    const observed = { Description: '', Count: 0, Flag: false };
+    expect(undeclaredEmptyObservedKeys(observed, {})).toEqual([]);
+  });
+
+  it('feeds ignorePaths so the #1498 phantom produces no drift end-to-end', () => {
+    // ASG shape from the live repro: LifecycleHookSpecificationList captured
+    // [] (the sibling AWS::AutoScaling::LifecycleHook had not run yet) and
+    // later populated by the sibling + ECS's managed draining hook.
+    const observed = {
+      AutoScalingGroupName: 'asg',
+      DesiredCapacity: '0',
+      LifecycleHookSpecificationList: [],
+    };
+    const declared = { DesiredCapacity: '0' };
+    const aws = {
+      AutoScalingGroupName: 'asg',
+      DesiredCapacity: '0',
+      LifecycleHookSpecificationList: [
+        { LifecycleHookName: 'ecs-managed-draining-termination-hook' },
+        { LifecycleHookName: 'the-stacks-own-lifecycle-hook-resource' },
+      ],
+    };
+    const ignorePaths = undeclaredEmptyObservedKeys(observed, declared);
+    expect(
+      calculateResourceDrift(observed, aws, { ignorePaths, unionWalkObjects: true })
+    ).toEqual([]);
+    // Without the fix's ignorePaths the same comparison DOES report the
+    // phantom — pins that the helper is load-bearing, not vacuous.
+    expect(
+      calculateResourceDrift(observed, aws, { unionWalkObjects: true })
+    ).toHaveLength(1);
   });
 });

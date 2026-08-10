@@ -122,6 +122,55 @@ export function calculateResourceDrift(
 }
 
 /**
+ * Top-level keys of an `observedProperties` drift baseline that must NOT be
+ * compared: keys the user never declared in the template (`declared` is the
+ * state record's `properties` — the template intent) whose captured value was
+ * EMPTY (absent container / `null` / `[]` / `{}`) at deploy time.
+ *
+ * WHY (issue #1498): the observed snapshot is captured per-resource right
+ * after THAT resource settles, which is structurally BEFORE dependent sibling
+ * resources run. A parent property that a separate resource type materializes
+ * later — `AWS::ECS::ClusterCapacityProviderAssociations` populating
+ * `Cluster.CapacityProviders`, `AWS::AutoScaling::LifecycleHook` populating
+ * the ASG's `LifecycleHookSpecificationList`, standalone
+ * `AWS::EC2::SecurityGroupIngress` rules populating the group's ingress list —
+ * is therefore captured empty and later populated, producing PERMANENT
+ * phantom drift on a fresh, untouched stack. Worse, `drift --revert` then
+ * strips that sibling-managed configuration from AWS. AWS services author the
+ * same shape asynchronously (ECS attaches the `AmazonECSManaged` tag + its
+ * managed draining hook when a capacity provider binds an ASG).
+ *
+ * CloudFormation's drift detection only compares property values explicitly
+ * set in the template, so none of this class fires there. Skipping exactly
+ * the "undeclared AND captured-empty" keys restores that parity for the
+ * phantom class while keeping the observed baseline's extra power: an
+ * undeclared key captured with a REAL value (an AWS-side default such as a
+ * cluster setting) is still compared, so a console-side change to it still
+ * surfaces as drift.
+ *
+ * Returned keys are fed into `calculateResourceDrift`'s `ignorePaths`, so
+ * they are excluded as whole subtrees from detection — and therefore from
+ * `--revert` / `--accept`, which operate on the detected changes.
+ */
+export function undeclaredEmptyObservedKeys(
+  observed: Record<string, unknown>,
+  declared: Record<string, unknown>
+): string[] {
+  const keys: string[] = [];
+  for (const key of Object.keys(observed)) {
+    if (key in declared) continue;
+    const value = observed[key];
+    const isEmptyContainer =
+      value === null ||
+      value === undefined ||
+      (Array.isArray(value) && value.length === 0) ||
+      (isPlainObject(value) && Object.keys(value).length === 0);
+    if (isEmptyContainer) keys.push(key);
+  }
+  return keys;
+}
+
+/**
  * Thin alias over the shared {@link matchesPathPrefix} rule, kept as a named
  * function because "ignored" is what the path list means at these call sites.
  * Sharing the implementation with `getDriftUnorderedPaths` is deliberate: both
