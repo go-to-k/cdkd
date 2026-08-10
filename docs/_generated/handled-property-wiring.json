@@ -15288,6 +15288,7 @@
           ],
           "seededBy": [
             "applyConfiguration",
+            "applySubConfigDiffs",
             "create",
             "update"
           ]
@@ -15449,10 +15450,13 @@
             "AWS::S3::Bucket"
           ],
           "evidence": [
+            "delegated",
             "element-read"
           ],
           "seededBy": [
-            "create"
+            "applySubConfigDiffs",
+            "create",
+            "update"
           ]
         },
         {
@@ -15467,6 +15471,7 @@
           ],
           "seededBy": [
             "applyConfiguration",
+            "applySubConfigDiffs",
             "create",
             "update"
           ]
@@ -15532,6 +15537,7 @@
           ],
           "seededBy": [
             "applyConfiguration",
+            "applySubConfigDiffs",
             "create",
             "update"
           ]
