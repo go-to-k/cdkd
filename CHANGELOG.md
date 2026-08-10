@@ -1,3 +1,10 @@
+## [0.278.27](https://github.com/go-to-k/cdkd/compare/v0.278.26...v0.278.27) (2026-08-10)
+
+
+### Bug Fixes
+
+* **provisioning:** add an optional CreateContext so a provider pre-flight can tell a rollback state replay from a template provision ([#1492](https://github.com/go-to-k/cdkd/issues/1492)) ([2653377](https://github.com/go-to-k/cdkd/commit/2653377e27aa3b228b2e30cb24be7e9917c1ab95))
+
 ## [0.278.26](https://github.com/go-to-k/cdkd/compare/v0.278.25...v0.278.26) (2026-08-10)
 
 
