@@ -1,3 +1,10 @@
+## [0.278.39](https://github.com/go-to-k/cdkd/compare/v0.278.38...v0.278.39) (2026-08-10)
+
+
+### Bug Fixes
+
+* **sns:** reset removed DeliveryStatusLogging feedback attributes on update ([#1160](https://github.com/go-to-k/cdkd/issues/1160) sns batch) ([#1531](https://github.com/go-to-k/cdkd/issues/1531)) ([9b6fd0b](https://github.com/go-to-k/cdkd/commit/9b6fd0b258321349b9fcc6397e15a5d358478ba0))
+
 ## [0.278.38](https://github.com/go-to-k/cdkd/compare/v0.278.37...v0.278.38) (2026-08-10)
 
 
