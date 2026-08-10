@@ -1937,9 +1937,31 @@ describe('whole-blob hand-off walk (real repo, issue #1445)', () => {
       expect(rawScope.has(member), `${member} must be invisible before the fold`).toBe(false);
       expect(expanded.has(member), `${member} must be credited after the fold`).toBe(true);
     }
+    // Since #1472 `containerPortRange` is DIRECTLY written by
+    // convertPortMappings, so it sits in the raw scope before any fold.
+    expect(rawScope.has('containerPortRange')).toBe(true);
     // The rubber-stamp guard: a SIBLING of the handed-off blob that the
-    // provider re-shapes per member is NOT credited by it.
-    expect(expanded.has('containerPortRange')).toBe(false);
+    // provider re-shapes per member is NOT credited by the FOLD. With the
+    // direct write present the raw/expanded sets can no longer distinguish
+    // fold-credit from write-credit, so the guard is asserted on evidence
+    // with the #1472 write stripped: the fold alone must not resurrect it.
+    const strippedSource = providerSource('ecs-provider.ts').replace(
+      /^\s*containerPortRange: m\['ContainerPortRange'\] as string \| undefined,\n/m,
+      ''
+    );
+    expect(strippedSource).not.toBe(providerSource('ecs-provider.ts'));
+    const stripped = collectWriteEvidence(
+      strippedSource,
+      'ecs-provider.ts',
+      ['readCurrentState'],
+      resolveCaseConvert
+    );
+    expect(stripped.scopes.get('containerDefinitions')!.has('containerPortRange')).toBe(false);
+    expect(
+      expandGenericHandoffScopes(stripped, ecsInterfaces)
+        .scopes.get('containerDefinitions')!
+        .has('containerPortRange')
+    ).toBe(false);
   });
 
   it('records the real ECS / API Gateway v2 hand-off points and skips the naming converters', () => {
@@ -2023,36 +2045,88 @@ describe('whole-blob hand-off walk (real repo, issue #1445)', () => {
       'AWS::CodeBuild::Project': 0,
       'AWS::CloudFront::Distribution': 110,
       'AWS::CloudWatch::AnomalyDetector': 3,
-      'AWS::ECS::Service': 5,
-      'AWS::ECS::TaskDefinition': 1,
+      'AWS::ECS::Service': 0,
+      'AWS::ECS::TaskDefinition': 0,
       'AWS::S3::Bucket': 104,
     });
   });
 
-  it('names the six REAL ECS silent drops the walk uncovered (#1472 / #1473)', () => {
-    // Reason (A) in the header: these are not blind spots, they are bugs, and
-    // pinning them by NAME is what makes the two ECS targets' opt-in blocked on
-    // a provider fix rather than on an allow-list entry.
-    const forced = NESTED_KEY_TARGETS.filter((t) => t.providerFile === 'ecs-provider.ts').map(
-      (t) => ({ ...t, freshObjectMapper: true })
+  it('keeps the six #1472/#1473 ECS silent drops CLOSED (fixed, both targets opted in)', () => {
+    // Reason (A) in the header, RESOLVED: the six paths this test used to pin
+    // as no-write-evidence are now written by the provider (the port range
+    // explicitly, the blue/green block via the pascalToCamelCaseKeys
+    // hand-off), which is exactly what unblocked the ECS opt-in. Pinning the
+    // shipped targets at ZERO findings — by the same flagged() extraction the
+    // pre-fix pin used — is what turns each of the six from "known bug" into
+    // "non-regressing": dropping any one write re-fails this test by name.
+    const report = loadReport(
+      NESTED_KEY_TARGETS.filter((t) => t.providerFile === 'ecs-provider.ts')
     );
-    const report = loadReport(forced);
     const flagged = (type: string): string[] =>
       report
         .targets.find((t) => t.resourceType === type)!
         .entries.filter((e) => e.bucket === 'no-write-evidence')
         .map((e) => e.nestedKey)
         .sort();
-    expect(flagged('AWS::ECS::TaskDefinition')).toEqual([
-      'ContainerDefinitions.ContainerPortRange',
-    ]);
-    expect(flagged('AWS::ECS::Service')).toEqual([
-      'LoadBalancers.AdvancedConfiguration',
-      'LoadBalancers.AlternateTargetGroupArn',
-      'LoadBalancers.ProductionListenerRule',
-      'LoadBalancers.RoleArn',
-      'LoadBalancers.TestListenerRule',
-    ]);
+    expect(flagged('AWS::ECS::TaskDefinition')).toEqual([]);
+    expect(flagged('AWS::ECS::Service')).toEqual([]);
+    // The shipped table entries carry the opt-in (not a forced override).
+    for (const t of NESTED_KEY_TARGETS.filter((x) => x.providerFile === 'ecs-provider.ts')) {
+      expect(t.freshObjectMapper, t.resourceType).toBe(true);
+    }
+  });
+
+  describe('re-flags the #1472/#1473 drops when their writes are deleted (real-code probes)', () => {
+    // Checker rules: a fence must be proven to FAIL. Strip each fix from a
+    // scratch COPY of the REAL providers tree (loadReport's providersDir
+    // seam) and the shipped opted-in targets must re-surface the exact
+    // pre-fix findings by name.
+    const scratch = mkdtempSync(join(tmpdir(), 'cdkd-nkc-ecs-'));
+    afterAll(() => rmSync(scratch, { recursive: true, force: true }));
+
+    const regressedProviders = (name: string, edit: (source: string) => string): string => {
+      const dir = join(scratch, name);
+      cpSync(PROVIDERS_DIR, dir, { recursive: true });
+      const path = join(dir, 'ecs-provider.ts');
+      const before = readFileSync(path, 'utf8');
+      const after = edit(before);
+      expect(after, `the ${name} probe changed nothing — anchor drifted?`).not.toBe(before);
+      writeFileSync(path, after);
+      return dir;
+    };
+
+    const flaggedFrom = (dir: string, type: string): string[] => {
+      const target = NESTED_KEY_TARGETS.find((t) => t.resourceType === type)!;
+      return loadReport([target], undefined, dir)
+        .targets[0]!.entries.filter((e) => e.bucket === 'no-write-evidence')
+        .map((e) => e.nestedKey)
+        .sort();
+    };
+
+    it('ContainerDefinitions.ContainerPortRange (#1472)', () => {
+      const dir = regressedProviders('portrange', (source) =>
+        source.replace(/^\s*containerPortRange: m\['ContainerPortRange'\] as string \| undefined,\n/m, '')
+      );
+      expect(flaggedFrom(dir, 'AWS::ECS::TaskDefinition')).toEqual([
+        'ContainerDefinitions.ContainerPortRange',
+      ]);
+    });
+
+    it('the LoadBalancers blue/green block (#1473)', () => {
+      const dir = regressedProviders('bluegreen', (source) =>
+        source.replace(
+          /^\s*advancedConfiguration: lb\['AdvancedConfiguration'\]\n\s*\? \(pascalToCamelCaseKeys\(lb\['AdvancedConfiguration'\]\) as AdvancedConfiguration\)\n\s*: undefined,\n/m,
+          ''
+        )
+      );
+      expect(flaggedFrom(dir, 'AWS::ECS::Service')).toEqual([
+        'LoadBalancers.AdvancedConfiguration',
+        'LoadBalancers.AlternateTargetGroupArn',
+        'LoadBalancers.ProductionListenerRule',
+        'LoadBalancers.RoleArn',
+        'LoadBalancers.TestListenerRule',
+      ]);
+    });
   });
 });
 
@@ -2673,7 +2747,7 @@ describe('refresh-cfn-schemas CLI guard (#1378 rider)', () => {
 // write-collector floors) are unreachable any other way: `loadReport`'s
 // handledProperties throw precedes them unless the providers tree itself is
 // swapped. Pattern copied from `gen-handled-property-wiring.test.ts` (#1448).
-describe('the shipped --check command', () => {
+describe('the shipped --check command', { timeout: 30_000 }, () => {
   const scratch = mkdtempSync(join(tmpdir(), 'cdkd-nkc-cli-'));
   afterAll(() => rmSync(scratch, { recursive: true, force: true }));
 
@@ -2784,7 +2858,7 @@ describe('the shipped --check command', () => {
     // a target silently dropping out of the table cannot satisfy this probe.
     expect(stderr).toContain('nested-key-coverage: OK');
     expect(stderr).toContain('0 divergences');
-    expect(stderr).toContain('6 fresh-object target(s)');
+    expect(stderr).toContain('8 fresh-object target(s)');
   });
 
   it('exits 1 naming ONLY the members a partial hand-mapping leaves out', () => {
@@ -2990,7 +3064,7 @@ describe('the shipped --check command', () => {
   });
 });
 
-describe('target-table hygiene', () => {
+describe('target-table hygiene', { timeout: 30_000 }, () => {
   it('every freshObjectMapper target declares BOTH write floors (#1448)', () => {
     // `minWrittenMembers` falls back to MIN_WRITTEN_MEMBERS_PER_PROVIDER, but
     // `minWriteScopes` is skipped entirely when undefined — deliberately, since

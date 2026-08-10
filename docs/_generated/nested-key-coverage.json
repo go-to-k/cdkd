@@ -8,7 +8,7 @@
     "caseDivergence": 0,
     "noSdkMember": 0,
     "noWriteEvidence": 0,
-    "freshObjectTargets": 6,
+    "freshObjectTargets": 8,
     "shapeClean": 87,
     "shapeHandled": 31,
     "shapeAllowListed": 7,
@@ -2103,7 +2103,7 @@
       "providerFile": "ecs-provider.ts",
       "sdkClientPackage": "@aws-sdk/client-ecs",
       "keyStyle": "lower-first",
-      "freshObjectMapper": false,
+      "freshObjectMapper": true,
       "nestedKeyCount": 54,
       "entries": [
         {
@@ -2499,7 +2499,7 @@
       "providerFile": "ecs-provider.ts",
       "sdkClientPackage": "@aws-sdk/client-ecs",
       "keyStyle": "lower-first",
-      "freshObjectMapper": false,
+      "freshObjectMapper": true,
       "nestedKeyCount": 121,
       "entries": [
         {
