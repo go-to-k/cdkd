@@ -30,7 +30,10 @@ vi.mock('../../../src/utils/logger.js', () => {
   };
 });
 
-import { Route53Provider } from '../../../src/provisioning/providers/route53-provider.js';
+import {
+  Route53Provider,
+  isZoneDisabledForMutationError,
+} from '../../../src/provisioning/providers/route53-provider.js';
 
 describe('Route53Provider', () => {
   let provider: Route53Provider;
@@ -893,10 +896,90 @@ describe('Route53Provider', () => {
               HostedZone: { Features: { AcceleratedRecoveryStatus: 'ENABLE_FAILED' } },
             });
 
-          await expect(deleteRecord()).rejects.toThrow(
-            "AcceleratedRecoveryStatus is 'ENABLE_FAILED'"
+          const err: Error = await deleteRecord().then(
+            () => {
+              throw new Error('expected rejection');
+            },
+            (e: Error) => e
           );
+          expect(err.message).toContain("AcceleratedRecoveryStatus is 'ENABLE_FAILED'");
+          // The wait helper's ProvisioningError must surface as-is — the
+          // outer catch's re-throw guard prevents the generic
+          // "Failed to delete record set" double-wrap that would bury the
+          // operator-recovery text in the cause chain.
+          expect(err.message).not.toContain('Failed to delete record set');
         }));
+
+      it('surfaces the settle timeout as an operator-actionable error (issue #1467)', async () => {
+        process.env['CDKD_R53_ACCEL_RECOVERY_POLL_INTERVAL_MS'] = '1';
+        process.env['CDKD_R53_ACCEL_RECOVERY_POLL_TIMEOUT_MS'] = '30';
+        try {
+          mockSend.mockReset();
+          mockSend.mockRejectedValueOnce(disabledForMutation()).mockResolvedValue({
+            HostedZone: { Features: { AcceleratedRecoveryStatus: 'ENABLING' } },
+          });
+
+          const err: Error = await deleteRecord().then(
+            () => {
+              throw new Error('expected rejection');
+            },
+            (e: Error) => e
+          );
+          expect(err.message).toContain('Timed out after 30ms');
+          expect(err.message).not.toContain('Failed to delete record set');
+        } finally {
+          delete process.env['CDKD_R53_ACCEL_RECOVERY_POLL_INTERVAL_MS'];
+          delete process.env['CDKD_R53_ACCEL_RECOVERY_POLL_TIMEOUT_MS'];
+        }
+      });
+
+      it('treats a zone deleted during the settle wait as idempotent success (issue #1467)', async () =>
+        withFastPoll(async () => {
+          mockSend.mockReset();
+          const gone = new Error('No hosted zone found with ID: Z1234567890');
+          gone.name = 'NoSuchHostedZone';
+          mockSend
+            .mockRejectedValueOnce(disabledForMutation())
+            // GetHostedZone during the wait: zone is gone → helper returns,
+            // the retried ChangeResourceRecordSets then also sees the zone
+            // gone → outer NoSuchHostedZone idempotency path.
+            .mockRejectedValueOnce(gone)
+            .mockRejectedValueOnce(gone);
+
+          await expect(deleteRecord()).resolves.toBeUndefined();
+          expect(mockSend).toHaveBeenCalledTimes(3);
+        }));
+
+      it('routes a not-found failure of the RETRY through the idempotency path (issue #1467)', async () =>
+        withFastPoll(async () => {
+          mockSend.mockReset();
+          const notFound = new Error(
+            'Tried to delete resource record set but it was not found'
+          );
+          notFound.name = 'InvalidChangeBatch';
+          mockSend
+            .mockRejectedValueOnce(disabledForMutation())
+            .mockResolvedValueOnce({
+              HostedZone: { Features: { AcceleratedRecoveryStatus: 'ENABLED' } },
+            })
+            // The retry finds the record already gone (deleted out-of-band
+            // while we waited) → must land in the InvalidChangeBatch
+            // idempotency path, not surface as a failure.
+            .mockRejectedValueOnce(notFound);
+
+          await expect(deleteRecord()).resolves.toBeUndefined();
+          expect(mockSend).toHaveBeenCalledTimes(3);
+        }));
+
+      it('isZoneDisabledForMutationError matches the AWS wording and nothing else', () => {
+        expect(
+          isZoneDisabledForMutationError(
+            new Error('HostedZone Z08017982576KEDFB5RGZ is marked disabled for mutation')
+          )
+        ).toBe(true);
+        expect(isZoneDisabledForMutationError(new Error('Access Denied'))).toBe(false);
+        expect(isZoneDisabledForMutationError('not-an-error')).toBe(false);
+      });
 
       it('does not enter the settle-wait for unrelated mutation errors', async () => {
         mockSend.mockReset();

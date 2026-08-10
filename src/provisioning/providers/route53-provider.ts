@@ -873,6 +873,14 @@ export class Route53Provider implements ResourceProvider {
         );
         return;
       }
+      // Preserve actionable ProvisioningError messages thrown by
+      // `waitForAcceleratedRecoveryMutable` (the `*_FAILED`
+      // operator-recovery prompt and the settle timeout) — re-wrapping them
+      // with the generic "Failed to delete record set" prefix would bury the
+      // actionable text in the `cause` chain and swap the error's physicalId
+      // from the zone id to the composite record id. Mirrors the same guard
+      // in `deleteHostedZone`.
+      if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
         `Failed to delete record set ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
@@ -905,14 +913,20 @@ export class Route53Provider implements ResourceProvider {
     resourceType: string
   ): Promise<void> {
     const client = this.getClient();
-    const pollIntervalMs = Number.parseInt(
+    // Number.isFinite guards: a garbage env value would otherwise make the
+    // deadline NaN (loop runs zero times and reports "Timed out after
+    // NaNms") or interval 0 a busy-poll.
+    const parsedInterval = Number.parseInt(
       process.env['CDKD_R53_ACCEL_RECOVERY_POLL_INTERVAL_MS'] ?? '15000',
       10
     );
-    const timeoutMs = Number.parseInt(
+    const pollIntervalMs =
+      Number.isFinite(parsedInterval) && parsedInterval > 0 ? parsedInterval : 15000;
+    const parsedTimeout = Number.parseInt(
       process.env['CDKD_R53_ACCEL_RECOVERY_POLL_TIMEOUT_MS'] ?? '600000',
       10
     );
+    const timeoutMs = Number.isFinite(parsedTimeout) && parsedTimeout > 0 ? parsedTimeout : 600000;
     const deadline = Date.now() + timeoutMs;
     const TERMINAL_FAILED = new Set<string>(['ENABLE_FAILED', 'DISABLE_FAILED']);
     const MUTABLE = new Set<string>(['ENABLED', 'DISABLED']);
