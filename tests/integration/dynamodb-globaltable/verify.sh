@@ -277,6 +277,20 @@ if [ "${FLIP_BILLING_BEFORE}" != "PAY_PER_REQUEST" ] || [ "${FLIP_IDX_BEFORE}" !
 fi
 echo "[verify] step 4d ok: ${GSI_FLIP_TABLE} is PAY_PER_REQUEST with indexes ${FLIP_IDX_BEFORE}"
 
+echo "[verify] step 4e (Issue #1420): assert cdkd drift reports NO drift on the freshly-deployed GSI tables"
+# The whole point of the #1420 fix: readCurrentState used to store the raw SDK
+# GlobalSecondaryIndexDescription[] into the CFn-shaped state key, so a clean,
+# unmodified GlobalTable with a GSI reported PERMANENT phantom drift. This step
+# is the end-to-end proof the reverse map round-trips against real AWS — it
+# also pins the single-region `DescribeTable` shape (no `Replicas` member) the
+# reverse map synthesizes a local entry for.
+if ${CLI} drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}"; then
+  echo "[verify] step 4e ok: zero drift on the freshly-deployed stack (issue #1420 closed)"
+else
+  echo "[verify] FAIL (issue #1420): cdkd drift reported drift on a freshly-deployed stack — the GSI reverse map does not round-trip" >&2
+  exit 1
+fi
+
 echo "[verify] step 4c (Issue #1419): assert the per-INDEX auto-scaling target + policy exist on AWS"
 # The bug: cdkd registered application-autoscaling targets only for
 # `dynamodb:table:*`. A per-GSI `writeCapacity: Capacity.autoscaled(...)`
@@ -631,10 +645,21 @@ if [ "${FLIP_BILLING_AFTER}" != "PROVISIONED" ]; then
   exit 1
 fi
 # Sorted on both sides: AWS does not preserve submitted list order on readback.
-FLIP_IDX_AFTER="$(aws dynamodb describe-table --table-name "${GSI_FLIP_TABLE}" --region "${REGION}" \
-  --query "join(' ', sort(Table.GlobalSecondaryIndexes[].IndexName || \`[]\`))" --output text)"
+# BOUNDED POLL, not a single read: the removed-GSI loop only waits for the
+# TABLE to flip ACTIVE, and a table is ACTIVE while an index is still
+# DELETING — so an immediate describe can transiently list flipDrop (the
+# async-delete gone-probe convention, one level down).
+FLIP_IDX_AFTER=""
+for _ in $(seq 1 36); do
+  FLIP_IDX_AFTER="$(aws dynamodb describe-table --table-name "${GSI_FLIP_TABLE}" --region "${REGION}" \
+    --query "join(' ', sort(Table.GlobalSecondaryIndexes[].IndexName || \`[]\`))" --output text)"
+  if [ "${FLIP_IDX_AFTER}" = "flipKeep" ]; then
+    break
+  fi
+  sleep 5
+done
 if [ "${FLIP_IDX_AFTER}" != "flipKeep" ]; then
-  echo "FAIL: issue #1421 — expected only 'flipKeep' to survive the flip, got '${FLIP_IDX_AFTER}'" >&2
+  echo "FAIL: issue #1421 — expected only 'flipKeep' to survive the flip (waited 180s), got '${FLIP_IDX_AFTER}'" >&2
   exit 1
 fi
 FLIP_KEEP_READ="$(gsi_field "${GSI_FLIP_TABLE}" flipKeep ProvisionedThroughput.ReadCapacityUnits)"

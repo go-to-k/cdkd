@@ -1106,10 +1106,26 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       const nextMaxWrite = resolveCeiling(desiredCeilings.write, awsOnDemand?.MaxWriteRequestUnits);
       if (nextMaxRead !== undefined) onDemandPayload.MaxReadRequestUnits = nextMaxRead;
       if (nextMaxWrite !== undefined) onDemandPayload.MaxWriteRequestUnits = nextMaxWrite;
-      // Never sent on a PROVISIONED table: AWS rejects an on-demand ceiling
-      // there, and a template that carries one while moving to PROVISIONED is
-      // a stale leftover, not a request (issue #1428 defect 3, one level up).
-      if (newBilling !== 'PROVISIONED' && Object.keys(onDemandPayload).length > 0) {
+      // Never sent while EITHER side is PROVISIONED. The new side is obvious
+      // (AWS rejects an on-demand ceiling on a provisioned table; a template
+      // carrying one while moving to PROVISIONED is a stale leftover, not a
+      // request — issue #1428 defect 3, one level up). The OLD side matters
+      // because step 3 runs BEFORE step 4's flip: on a PROVISIONED ->
+      // PAY_PER_REQUEST flip the live table is still provisioned here, so a
+      // ceiling the new template declares must wait for the flip to land —
+      // sending it now would 400 and, since state is only saved on success,
+      // make the flip template repeatedly undeployable. The per-GSI path has
+      // the same shape for free (its on-demand limits are applied by step 6,
+      // which runs after the flip); this deferral is the table-level twin.
+      const deferCeilingsPastFlip =
+        oldBilling === 'PROVISIONED' &&
+        newBilling === 'PAY_PER_REQUEST' &&
+        Object.keys(onDemandPayload).length > 0;
+      if (
+        newBilling !== 'PROVISIONED' &&
+        !deferCeilingsPastFlip &&
+        Object.keys(onDemandPayload).length > 0
+      ) {
         flatUpdate.OnDemandThroughput = onDemandPayload;
         flatChanged = true;
       }
@@ -1225,6 +1241,19 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           }
         }
         await this.dynamoDBClient.send(new UpdateTableCommand(billingUpdate));
+        await this.waitForTableActiveAfterUpdate(physicalId, logicalId);
+      }
+
+      // 4a. The table-level on-demand ceilings a PROVISIONED ->
+      // PAY_PER_REQUEST flip deferred (see step 3's `deferCeilingsPastFlip`):
+      // now that the table IS on-demand, the declared ceilings are a plain
+      // ceiling-set. Sent as its own UpdateTable — AWS's state-machine rule
+      // wants the flip call to carry the flip, and the well-probed payload
+      // shape here is the same one step 3 sends on a non-flip deploy.
+      if (deferCeilingsPastFlip) {
+        await this.dynamoDBClient.send(
+          new UpdateTableCommand({ TableName: physicalId, OnDemandThroughput: onDemandPayload })
+        );
         await this.waitForTableActiveAfterUpdate(physicalId, logicalId);
       }
 
@@ -2864,8 +2893,23 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // LOCAL-only limitation).
       const currentRegion = (await this.dynamoDBClient.config.region()) ?? '';
       const tableNameForSubs = table.TableName ?? physicalId;
+      // `DescribeTable` only carries `Replicas` once a table actually HAS
+      // replicas — a single-region GlobalTable (the common case: every
+      // `TableV2` without `replicas`) returns none. But the CFn schema
+      // REQUIRES `Replicas` to include the deploy region, so the state
+      // baseline always has a local entry; emitting `[]` here made drift
+      // compare `[{Region: <local>, …}]` against `[]` and, worse, left the
+      // local-replica-homed members this provider reverse-maps
+      // (`ReadOnDemandThroughputSettings`, the per-GSI read halves — issue
+      // #1436 / #1420) with nowhere to land, so their drift detection was
+      // silently dead for exactly the single-region case. Synthesize the
+      // local entry; the sub-spec / Tags reads below work on it unchanged.
+      const sdkReplicas =
+        table.Replicas && table.Replicas.length > 0
+          ? table.Replicas
+          : [{ RegionName: currentRegion }];
       const replicas = await Promise.all(
-        (table.Replicas ?? []).map(async (r) => {
+        sdkReplicas.map(async (r) => {
           const entry: Record<string, unknown> = { Region: r.RegionName };
           if (r.KMSMasterKeyId !== undefined) entry['KMSMasterKeyId'] = r.KMSMasterKeyId;
           if (!r.RegionName) return entry;
@@ -4452,6 +4496,12 @@ export function collectRawOnDemandDeclarations(
     // A block that is ITSELF an unresolved intrinsic counts as declared: the
     // member test cannot see into it, and reporting "not declared" would fire
     // the destructive reset on a ceiling the template was trying to set.
+    // That applies to the EXPLICIT SDK-shaped block too — an
+    // `OnDemandThroughput: {"Fn::If": …}` has no member keys, so without this
+    // arm it reported "not declared" for BOTH members and the reset cleared a
+    // ceiling a hand-authored template was setting (review catch on this PR;
+    // the same class as #1440, one spelling over).
+    const explicitIsIntrinsic = isUnresolvedIntrinsicBlock(gsi['OnDemandThroughput']);
     const readBlocks = [
       localEntry?.['ReadOnDemandThroughputSettings'],
       gsi['ReadOnDemandThroughputSettings'],
@@ -4465,6 +4515,7 @@ export function collectRawOnDemandDeclarations(
       // never report not-declared for a member the translation did resolve).
       readDeclared:
         explicitOnDemand?.['MaxReadRequestUnits'] !== undefined ||
+        explicitIsIntrinsic ||
         readBlocks.some(
           (block) =>
             asRecord(block)?.['MaxReadRequestUnits'] !== undefined ||
@@ -4472,6 +4523,7 @@ export function collectRawOnDemandDeclarations(
         ),
       writeDeclared:
         explicitOnDemand?.['MaxWriteRequestUnits'] !== undefined ||
+        explicitIsIntrinsic ||
         asRecord(writeBlock)?.['MaxWriteRequestUnits'] !== undefined ||
         isUnresolvedIntrinsicBlock(writeBlock),
     });

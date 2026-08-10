@@ -545,12 +545,30 @@ describe('DynamoDB GlobalTable throughput cluster', () => {
     });
 
     it('de-duplicates so one malformed block is not reported twice', async () => {
+      // TWO non-local replicas carrying the SAME malformed table-level
+      // override: each pass through `toSdkReplicaThroughputOverrides` in the
+      // pre-flight scan yields an identical diagnostic line (the table-level
+      // context has no index name), so without the `seen` Set the user gets
+      // the same sentence twice. A single-diagnostic fixture would pass with
+      // the Set deleted and pin nothing.
+      const twoReplicas = clone(OD_PROPS);
+      (twoReplicas['Replicas'] as Record<string, unknown>[]).push(
+        {
+          Region: 'eu-west-1',
+          ReadOnDemandThroughputSettings: { MaxReadRequestUnits: { Ref: 'Nope' } },
+        },
+        {
+          Region: 'eu-central-1',
+          ReadOnDemandThroughputSettings: { MaxReadRequestUnits: { Ref: 'Nope' } },
+        }
+      );
+
       await provider.update(
         'OnDemand',
         'od-table',
         RESOURCE_TYPE,
-        withGsi({ WriteOnDemandThroughputSettings: { MaxWriteRequestUnits: { Ref: 'Nope' } } }),
-        withGsi({ WriteOnDemandThroughputSettings: { MaxWriteRequestUnits: 60 } })
+        clone(twoReplicas),
+        clone(twoReplicas)
       );
 
       const hits = warnings().filter((m) => m.includes('did not resolve to a number'));
@@ -718,11 +736,250 @@ describe('DynamoDB GlobalTable throughput cluster', () => {
       });
     });
 
+    it('emits the READ-side auto-scaling shape onto the replica index entry', async () => {
+      // The read dimension's reverse map — a separate branch from the write
+      // one, homed on the REPLICA entry rather than the top-level GSI.
+      mockAutoScalingSend.mockImplementation((cmd: { input?: Record<string, unknown> }) => {
+        if (cmd.input?.['ScalableDimension'] !== 'dynamodb:index:ReadCapacityUnits') {
+          return Promise.resolve({ ScalableTargets: [], ScalingPolicies: [] });
+        }
+        return Promise.resolve({
+          ScalableTargets: [{ MinCapacity: 7, MaxCapacity: 70 }],
+          ScalingPolicies: [
+            {
+              PolicyType: 'TargetTrackingScaling',
+              TargetTrackingScalingPolicyConfiguration: { TargetValue: 65 },
+            },
+          ],
+        });
+      });
+      describeWith({
+        ...onDemandTable,
+        BillingModeSummary: { BillingMode: 'PROVISIONED' },
+        GlobalSecondaryIndexes: [
+          {
+            IndexName: 'gsi1',
+            KeySchema: [{ AttributeName: 'g1pk', KeyType: 'HASH' }],
+            Projection: { ProjectionType: 'ALL' },
+            ProvisionedThroughput: { ReadCapacityUnits: 7, WriteCapacityUnits: 2 },
+          },
+        ],
+      });
+
+      const state = await provider.readCurrentState('od-table', 'OnDemand', RESOURCE_TYPE);
+
+      const localReplica = (state?.['Replicas'] as Record<string, unknown>[]).find(
+        (r) => r['Region'] === REGION
+      )!;
+      expect((localReplica['GlobalSecondaryIndexes'] as Record<string, unknown>[])[0]).toEqual({
+        IndexName: 'gsi1',
+        ReadProvisionedThroughputSettings: {
+          ReadCapacityAutoScalingSettings: {
+            MinCapacity: 7,
+            MaxCapacity: 70,
+            TargetTrackingScalingPolicyConfiguration: { TargetValue: 65 },
+          },
+        },
+      });
+    });
+
+    it('synthesizes the local replica entry when DescribeTable omits Replicas', async () => {
+      // A single-region GlobalTable — every TableV2 without `replicas` — has
+      // NO `Replicas` member in DescribeTable, but the CFn schema requires
+      // the local entry, so the state baseline always has one. Without the
+      // synthesis the read-half members this provider reverse-maps had
+      // nowhere to land and their drift detection was silently dead for
+      // exactly the common case.
+      const { Replicas: _omitted, ...tableWithoutReplicas } = onDemandTable;
+      describeWith(tableWithoutReplicas);
+
+      const state = await provider.readCurrentState('od-table', 'OnDemand', RESOURCE_TYPE);
+
+      const replicas = state?.['Replicas'] as Record<string, unknown>[];
+      expect(replicas).toHaveLength(1);
+      const local = replicas[0]!;
+      expect(local['Region']).toBe(REGION);
+      expect(local['ReadOnDemandThroughputSettings']).toEqual({ MaxReadRequestUnits: 100 });
+      expect((local['GlobalSecondaryIndexes'] as Record<string, unknown>[])[0]).toEqual({
+        IndexName: 'gsi1',
+        ReadOnDemandThroughputSettings: { MaxReadRequestUnits: 50 },
+      });
+    });
+
     it('keeps getDriftUnknownPaths EMPTY rather than switching drift off for the subtree', () => {
       // #1420's option 2 (declare `GlobalSecondaryIndexes` here) was the
       // honest stopgap, not the fix: it trades phantom drift for NO drift
       // detection on any GSI.
       expect(provider.getDriftUnknownPaths(RESOURCE_TYPE)).toEqual([]);
+    });
+  });
+
+  /**
+   * Review-driven coverage (this PR's 3-axis review): paths the first cut of
+   * the suite could not fail on.
+   */
+  describe('review-closed gaps', () => {
+    it('defers declared ceilings past a PROVISIONED -> PAY_PER_REQUEST flip', async () => {
+      // Step 3 runs BEFORE step 4's flip, so on this direction the live table
+      // is still PROVISIONED when the flat call goes out — sending the
+      // template's new on-demand ceilings there would 400 and, since state is
+      // only saved on success, make the flip template repeatedly
+      // undeployable. The ceilings must ride a SEPARATE UpdateTable AFTER the
+      // flip (the per-GSI path already had this shape for free via step 6).
+      const previous: Record<string, unknown> = {
+        ...clone(OD_PROPS),
+        BillingMode: 'PROVISIONED',
+        Replicas: [{ Region: REGION }],
+      };
+      delete previous['WriteOnDemandThroughputSettings'];
+      const next = clone(OD_PROPS); // PAY_PER_REQUEST with read 100 / write 200
+
+      // A live PROVISIONED table carries NO OnDemandThroughput — the blanket
+      // beforeEach mock does, which would make the desired 100/200 read as
+      // "unchanged" and hide the deferral entirely.
+      mockSend.mockResolvedValue({
+        Table: {
+          TableName: 'od-table',
+          TableArn: TABLE_ARN,
+          TableStatus: 'ACTIVE',
+          Replicas: [{ RegionName: REGION, ReplicaStatus: 'ACTIVE' }],
+        },
+      });
+
+      await provider.update('OnDemand', 'od-table', RESOURCE_TYPE, next, previous);
+
+      const updates = mockSend.mock.calls
+        .map((c) => c[0])
+        .filter((c): c is UpdateTableCommand => c instanceof UpdateTableCommand);
+      const flipIndex = updates.findIndex((c) => c.input.BillingMode === 'PAY_PER_REQUEST');
+      const ceilingIndex = updates.findIndex((c) => c.input.OnDemandThroughput !== undefined);
+      expect(flipIndex).toBeGreaterThanOrEqual(0);
+      expect(ceilingIndex).toBeGreaterThan(flipIndex);
+      // The flip call itself carries no ceiling, and the post-flip send
+      // carries BOTH halves.
+      expect(updates[flipIndex]!.input.OnDemandThroughput).toBeUndefined();
+      expect(updates[ceilingIndex]!.input.OnDemandThroughput).toEqual({
+        MaxReadRequestUnits: 100,
+        MaxWriteRequestUnits: 200,
+      });
+    });
+
+    it('never sends a table-level on-demand ceiling while the table stays PROVISIONED', async () => {
+      // The send-gate itself: PROVISIONED on both sides with a stale leftover
+      // ceiling block that changed. Deleting the gate is exactly the deploy
+      // that 400s in the field.
+      const previous: Record<string, unknown> = {
+        ...clone(OD_PROPS),
+        BillingMode: 'PROVISIONED',
+      };
+      const next = clone(previous);
+      next['WriteOnDemandThroughputSettings'] = { MaxWriteRequestUnits: 999 };
+
+      await provider.update('OnDemand', 'od-table', RESOURCE_TYPE, next, previous);
+
+      const withCeiling = mockSend.mock.calls
+        .map((c) => c[0])
+        .filter(
+          (c): c is UpdateTableCommand =>
+            c instanceof UpdateTableCommand && c.input.OnDemandThroughput !== undefined
+        );
+      expect(withCeiling).toHaveLength(0);
+    });
+
+    it('carries a CHANGED non-local replica override on the Update action', async () => {
+      // The modified-replica loop's override wiring plus the `hasUpdateField`
+      // extension: an override-ONLY edit used to be classified "Tags-style"
+      // and skipped entirely.
+      withActiveCrossRegionReplica();
+      const previous = clone(OD_PROPS);
+      (previous['Replicas'] as Record<string, unknown>[]).push({
+        Region: 'eu-west-1',
+        ReadOnDemandThroughputSettings: { MaxReadRequestUnits: 75 },
+      });
+      const next = clone(previous);
+      (next['Replicas'] as Record<string, unknown>[])[1]!['ReadOnDemandThroughputSettings'] = {
+        MaxReadRequestUnits: 90,
+      };
+
+      await provider.update('OnDemand', 'od-table', RESOURCE_TYPE, next, previous);
+
+      expect(replicaUpdate('eu-west-1')?.['OnDemandThroughputOverride']).toEqual({
+        MaxReadRequestUnits: 90,
+      });
+    });
+
+    it('suppresses the dropped-override warning while the billing mode flips', async () => {
+      // A flip re-shapes both sides by construction — "the old override is
+      // gone" there is the translation, not a template edit, so warning would
+      // cry wolf on every flip.
+      withActiveCrossRegionReplica();
+      const previous = clone(OD_PROPS);
+      (previous['Replicas'] as Record<string, unknown>[]).push({
+        Region: 'eu-west-1',
+        ReadOnDemandThroughputSettings: { MaxReadRequestUnits: 75 },
+      });
+      const next: Record<string, unknown> = { ...clone(previous), BillingMode: 'PROVISIONED' };
+      delete (next['Replicas'] as Record<string, unknown>[])[1]!['ReadOnDemandThroughputSettings'];
+      // Give the flipped replica a real edit so it still classifies modified.
+      (next['Replicas'] as Record<string, unknown>[])[1]!['TableClassOverride'] =
+        'STANDARD_INFREQUENT_ACCESS';
+
+      await provider.update('OnDemand', 'od-table', RESOURCE_TYPE, next, previous);
+
+      expect(warnings().some((m) => m.includes('STILL IN'))).toBe(false);
+    });
+
+    it('reports a replica-level explicit block on the wrong billing mode', () => {
+      const diagnostics: ThroughputDiagnostic[] = [];
+      toSdkReplicaGlobalSecondaryIndexes(
+        [
+          {
+            IndexName: 'gsi1',
+            ProvisionedThroughputOverride: { ReadCapacityUnits: 7 },
+          },
+        ],
+        'PAY_PER_REQUEST',
+        diagnostics
+      );
+      expect(diagnostics).toContainEqual(
+        expect.objectContaining({
+          kind: 'billing-mode-mismatch',
+          indexName: 'gsi1',
+          member: 'ProvisionedThroughputOverride',
+        })
+      );
+    });
+
+    it('counts a table-level ceiling block that is ITSELF an intrinsic as declared', () => {
+      const props = clone(OD_PROPS);
+      props['WriteOnDemandThroughputSettings'] = {
+        'Fn::If': ['Cond', { MaxWriteRequestUnits: 5 }, { Ref: 'AWS::NoValue' }],
+      };
+      expect(collectTableOnDemandCeilings(props, REGION).write).toEqual({
+        declared: true,
+        value: undefined,
+      });
+    });
+
+    it('counts an explicit SDK-shaped block that is ITSELF an intrinsic as declared', () => {
+      // `OnDemandThroughput: {"Fn::If": …}` has no member keys, so the member
+      // test alone reported "not declared" for BOTH members and the -1 reset
+      // cleared a ceiling a hand-authored template was setting — #1440 one
+      // spelling over.
+      const props: Record<string, unknown> = {
+        GlobalSecondaryIndexes: [
+          {
+            IndexName: 'gsi1',
+            OnDemandThroughput: {
+              'Fn::If': ['Cond', { MaxWriteRequestUnits: 5 }, { Ref: 'AWS::NoValue' }],
+            },
+          },
+        ],
+      };
+      expect(collectRawOnDemandDeclarations(props, REGION).get('gsi1')).toEqual({
+        readDeclared: true,
+        writeDeclared: true,
+      });
     });
   });
 });
