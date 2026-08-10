@@ -90,6 +90,7 @@ ec2-instance-fanout	2026-07-30T06:24:02Z	PASS	150	verify.sh	new fixture (#1292):
 ec2-vpc	2026-07-26T17:21:15Z	PASS	35	standard	issue 1241 fix verified: explicit DESTROY FlowLog LogGroup; 20 deleted 0 retained 0 orphans
 ecr	2026-07-26T18:36:31Z	PASS	85	standard	0727b sweep-b4 staleness re-run (rc=0); account clean
 ecr-scanning	2026-08-09T06:01:13Z	PASS	55	verify.sh	#1392 exclusion-filter create + filters-only update + filterType asserts; 2 del/0 err, 0 orphans
+ecs-bluegreen	2026-08-10T11:33:25Z	PASS	232	verify.sh	re-run after review fixes (blue-TG/test-rule/task-role probes + pre-run cleanup)
 ecs-fargate	2026-08-10T08:41:28Z	PASS	393	verify.sh	clean destroy 23/23 x2; #1472 pinned live; rebased tree
 ecs-schedule-targets	2026-08-08T19:04:46Z	PASS	60	verify.sh	re-run with drift assert after review fixes; clean
 ecs-service-update-props	2026-08-10T04:52:34Z	PASS	73	verify.sh	0810 sweep b4; ecs-provider re-verify, drift clean, 0 err 0 orph

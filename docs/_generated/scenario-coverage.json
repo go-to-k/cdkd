@@ -833,6 +833,11 @@
       "scenarios": []
     },
     {
+      "name": "ecs-bluegreen",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
       "name": "ecs-fargate",
       "annotated": true,
       "scenarios": []
