@@ -15,7 +15,12 @@ surfaced as a stack output to exercise the `Fn::GetAtt` path.
 
 `verify.sh` deploys, asserts both namespaces exist (and the HTTP one has
 `Type: HTTP`), asserts the hosted zone exists and the SOA TTL reached AWS,
-asserts the `HostedZoneId` output resolved, then destroys and confirms both
+asserts the `HostedZoneId` output resolved, then re-deploys with
+`CDKD_TEST_REMOVAL=true` (issue #1160 servicediscovery batch) — dropping
+both `Description`s and the public namespace's SOA TTL — and asserts the
+provider mirrors CloudFormation's removal resets (Descriptions cleared via
+the `''` sentinel, TTL back to the Cloud Map default 60; live CFn A/B
+2026-08-11), in place (no replacement). Finally destroys and confirms both
 namespaces AND the hosted zone are gone (zero orphans) plus a clean state
 file removal.
 

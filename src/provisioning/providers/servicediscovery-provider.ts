@@ -39,6 +39,7 @@ import { withRetry } from '../../deployment/retry.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
+import { clearOnUpdateRemoval } from '../update-removal.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -46,6 +47,17 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
+
+/**
+ * Reset target for a REMOVED `Properties.DnsProperties.SOA.TTL` (issue
+ * #1160, servicediscovery batch). Live CFn A/B 2026-08-11: removing the SOA
+ * block from an AWS::ServiceDiscovery::PublicDnsNamespace template reset the
+ * live SOA TTL from the customized 300 back to 60 — the Cloud Map default —
+ * and removing `Description` cleared it entirely. The Update*Namespace
+ * change objects MERGE (an absent field keeps the live value), so the
+ * provider must send both resets explicitly to mirror CloudFormation.
+ */
+const NAMESPACE_DEFAULT_SOA_TTL = 60;
 
 /**
  * AWS Service Discovery Provider
@@ -309,6 +321,13 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
    *
    * Empty-string Description is intentionally allowed through (`!== undefined`
    * gate, not truthy) so `cdkd drift --revert` can clear a console-side ADD.
+   *
+   * Removal resets (issue #1160): the change object MERGES (absent = "no
+   * change"), so a Description / SOA.TTL REMOVED from the template must be
+   * reset explicitly — Description via the `''` clear sentinel, TTL to the
+   * Cloud Map default {@link NAMESPACE_DEFAULT_SOA_TTL} (both the CFn-parity
+   * shape, live A/B'd 2026-08-11 on the public-DNS sibling; the private kind
+   * shares the same change-object family).
    */
   private async updateNamespace(
     logicalId: string,
@@ -322,11 +341,16 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
 
     const namespaceChange: PrivateDnsNamespaceChange = {};
 
-    if (properties['Description'] !== undefined) {
-      namespaceChange.Description = properties['Description'] as string;
+    const description = clearOnUpdateRemoval(
+      properties['Description'] as string | undefined,
+      previousProperties['Description'] as string | undefined,
+      ''
+    );
+    if (description !== undefined) {
+      namespaceChange.Description = description;
     }
 
-    const soaProperties = this.extractSoaTtlProperties(properties);
+    const soaProperties = this.resolveSoaTtlChange(properties, previousProperties);
     if (soaProperties) {
       namespaceChange.Properties = soaProperties;
     }
@@ -487,6 +511,11 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
    * Empty-string Description is intentionally allowed through
    * (`!== undefined` gate, not truthy) so `cdkd drift --revert` can clear a
    * console-side ADD.
+   *
+   * Removal reset (issue #1160): `HttpNamespaceChange` MERGES conceptually
+   * (skipping the call keeps the live value), so a Description REMOVED from
+   * the template must be cleared explicitly via the `''` sentinel — the
+   * CFn-parity shape, live A/B'd 2026-08-11 on this exact kind.
    */
   private async updateHttpNamespace(
     logicalId: string,
@@ -498,10 +527,16 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     this.logger.debug(`Updating HTTP namespace ${logicalId}: ${physicalId}`);
     const client = this.getClient();
 
+    const description = clearOnUpdateRemoval(
+      properties['Description'] as string | undefined,
+      previousProperties['Description'] as string | undefined,
+      ''
+    );
+
     try {
-      if (properties['Description'] !== undefined) {
+      if (description !== undefined) {
         const namespaceChange: HttpNamespaceChange = {
-          Description: properties['Description'] as string,
+          Description: description,
         };
         const response = await client.send(
           new UpdateHttpNamespaceCommand({
@@ -627,6 +662,12 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
    * `Properties.DnsProperties.SOA.TTL`. `Name` is createOnly — replacement
    * is routed through DELETE+CREATE upstream. Tags ride on the separate
    * `TagResource` / `UntagResource` APIs (see {@link syncNamespaceTags}).
+   *
+   * Removal resets (issue #1160): the change object MERGES (absent = "no
+   * change"), so a Description / SOA.TTL REMOVED from the template must be
+   * reset explicitly — Description via the `''` clear sentinel, TTL to the
+   * Cloud Map default {@link NAMESPACE_DEFAULT_SOA_TTL} (both the CFn-parity
+   * shape, live A/B'd 2026-08-11 on this exact kind).
    */
   private async updatePublicDnsNamespace(
     logicalId: string,
@@ -640,11 +681,16 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
 
     const namespaceChange: PublicDnsNamespaceChange = {};
 
-    if (properties['Description'] !== undefined) {
-      namespaceChange.Description = properties['Description'] as string;
+    const description = clearOnUpdateRemoval(
+      properties['Description'] as string | undefined,
+      previousProperties['Description'] as string | undefined,
+      ''
+    );
+    if (description !== undefined) {
+      namespaceChange.Description = description;
     }
 
-    const soaProperties = this.extractSoaTtlProperties(properties);
+    const soaProperties = this.resolveSoaTtlChange(properties, previousProperties);
     if (soaProperties) {
       namespaceChange.Properties = soaProperties;
     }
@@ -976,6 +1022,28 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     return soa?.TTL !== undefined
       ? { DnsProperties: { SOA: { TTL: Number(soa.TTL) } } }
       : undefined;
+  }
+
+  /**
+   * Resolve the SOA-TTL entry for an Update*Namespace change object,
+   * including the REMOVAL reset (issue #1160): a TTL present in the desired
+   * template passes through; a TTL absent from the desired template but
+   * present in the previous one is reset to the Cloud Map default
+   * {@link NAMESPACE_DEFAULT_SOA_TTL} (the CFn-parity shape — the change
+   * object merges, so skipping it would silently keep the customized TTL).
+   * Never-present stays absent (no change entry).
+   */
+  private resolveSoaTtlChange(
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
+  ): { DnsProperties: { SOA: { TTL: number } } } | undefined {
+    const desired = this.extractSoaTtlProperties(properties);
+    if (desired) return desired;
+    const previous = this.extractSoaTtlProperties(previousProperties);
+    if (previous) {
+      return { DnsProperties: { SOA: { TTL: NAMESPACE_DEFAULT_SOA_TTL } } };
+    }
+    return undefined;
   }
 
   /**

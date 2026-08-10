@@ -27,9 +27,18 @@ export class ServiceDiscoveryNamespacesStack extends cdk.Stack {
     cdk.Tags.of(this).add('Project', 'cdkd');
     cdk.Tags.of(this).add('Example', 'servicediscovery-namespaces');
 
+    // CDKD_TEST_REMOVAL (issue #1160, servicediscovery batch): the baseline
+    // template sets a Description on both namespaces and an SOA TTL on the
+    // public one; the removal phase drops all three. The Update*Namespace
+    // change objects MERGE (absent = "no change"), so pre-fix the live
+    // values silently survived the removal; the provider must reset them
+    // (Description cleared via '', TTL back to the Cloud Map default 60 —
+    // the CFn-parity shape, live A/B'd 2026-08-11).
+    const removal = process.env.CDKD_TEST_REMOVAL === 'true';
+
     const httpNamespace = new servicediscovery.CfnHttpNamespace(this, 'HttpNamespace', {
       name: 'cdkd-integ-http-ns',
-      description: 'cdkd integ HTTP namespace',
+      ...(removal ? {} : { description: 'cdkd integ HTTP namespace' }),
       tags: [{ key: 'env', value: 'integ' }],
     });
 
@@ -40,12 +49,16 @@ export class ServiceDiscoveryNamespacesStack extends cdk.Stack {
         // NOTE: not *.example.com — Route 53 rejects hosted-zone creation
         // for AWS-reserved domains ("is reserved by AWS!", InvalidDomainName).
         name: 'cdkd-integ-ns.cdkd-integ-test.com',
-        description: 'cdkd integ public DNS namespace',
-        properties: {
-          dnsProperties: {
-            soa: { ttl: 90 },
-          },
-        },
+        ...(removal
+          ? {}
+          : {
+              description: 'cdkd integ public DNS namespace',
+              properties: {
+                dnsProperties: {
+                  soa: { ttl: 90 },
+                },
+              },
+            }),
         tags: [{ key: 'env', value: 'integ' }],
       }
     );
