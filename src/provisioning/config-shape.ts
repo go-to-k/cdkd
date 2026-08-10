@@ -96,9 +96,17 @@
  *   The enum-valued sites — EC2 `InstanceType` / `Domain`, API Gateway
  *   `AuthorizationType`, IAM access-key `Status`, RDS DB-proxy
  *   `TargetGroupName` — do not: a number there is a template bug.
- * - **Throw on CREATE, warn on UPDATE** (`onUnusable`). A rollback replays via
- *   `provider.update(..., previousState.properties, ...)`, so an update-path
- *   refusal can strand a historical state record with no template-side remedy.
+ * - **Throw on CREATE, warn on any STATE-REPLAY path** (`onUnusable`). A rollback
+ *   replays via `provider.update(..., previousState.properties, ...)`, so an
+ *   update-path refusal can strand a historical state record with no
+ *   template-side remedy. "Create is always template-borne" is FALSE and was
+ *   corrected in review: the reverse-replacement arm also calls
+ *   `provider.create(..., previousState.properties, REPLAYING_STATE_CREATE_CONTEXT)`,
+ *   so a create guard downgrades too — see {@link replayWarn}. A create reached
+ *   as the re-create half of a delete-then-create UPDATE
+ *   (`EC2Provider.updateSecurityGroupIngress`) is the third such path, and the
+ *   worst: the revoke has already committed, so a refusal leaves the rule
+ *   deleted from AWS.
  * - **Left unguarded: `EC2Provider.buildIpPermission`'s `IpProtocol` read.**
  *   Textually a top-level read, but the helper is also reached from
  *   `deleteSecurityGroupIngress` and from the REVOKE half of the inline-rule
@@ -264,6 +272,31 @@ export function requireConfigString(
   }
 
   return value;
+}
+
+/**
+ * The CREATE-path counterpart of {@link ConfigStringOptions.onUnusable}.
+ *
+ * `create()` is NOT always template-borne, which is the correction that made
+ * this helper necessary: `rollback-executor.ts`'s reverse-replacement arm
+ * revives the OLD resource by calling `provider.create(..., previousState.properties,
+ * REPLAYING_STATE_CREATE_CONTEXT)`. A resource written by an older binary with a
+ * value this guard now refuses would otherwise become un-rollbackable, with only
+ * a hand-edit of `state.json` as a remedy — the same failure the update-path
+ * warn exists to prevent, and what `.claude/rules/providers.md` requires a
+ * create-side pre-flight refusal to downgrade for.
+ *
+ * Spread into the options bag so a site can combine it with `coerceNumber`:
+ * `{ coerceNumber: true, ...replayWarn(this.logger, context) }`.
+ *
+ * @returns `{ onUnusable }` when the caller declared a state replay, else `{}`
+ *   (an ordinary template-path create, where the refusal stands).
+ */
+export function replayWarn(
+  logger: { warn: (message: string) => void },
+  context?: { replayingState?: boolean }
+): ConfigStringOptions {
+  return context?.replayingState === true ? { onUnusable: (message) => logger.warn(message) } : {};
 }
 
 /**

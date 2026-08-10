@@ -162,6 +162,92 @@ describe('AWS::EC2::SecurityGroupIngress IpProtocol (create)', () => {
   });
 });
 
+describe('the CREATE guard on a REPLAY path (reviewer finding, issue #1513)', () => {
+  // The first cut of this PR asserted that create() is "always template-borne".
+  // It is not: `rollback-executor.ts`'s reverse-replacement arm revives the OLD
+  // resource with `provider.create(..., previousState.properties,
+  // REPLAYING_STATE_CREATE_CONTEXT)` — a STATE record. Refusing there would make
+  // such a resource un-rollbackable, which is what `.claude/rules/providers.md`
+  // requires a create-side pre-flight refusal to downgrade for.
+  it('WARNS instead of throwing when the caller declares a state replay', async () => {
+    mockSend.mockResolvedValue({ AccessKey: { AccessKeyId: 'AKIA1', SecretAccessKey: 's' } });
+    const provider = new IAMAccessKeyProvider();
+
+    const result = await provider.create(
+      'Key',
+      'AWS::IAM::AccessKey',
+      { UserName: 'alice', Status: null },
+      { replayingState: true }
+    );
+
+    expect(result.physicalId).toBe('AKIA1');
+    expect(logWarn).toHaveBeenCalledWith(
+      expect.stringMatching(/AWS::IAM::AccessKey Status must be a non-empty string/)
+    );
+  });
+
+  it('still THROWS on an ordinary template-path create (no context)', async () => {
+    const provider = new IAMAccessKeyProvider();
+
+    await expect(
+      provider.create('Key', 'AWS::IAM::AccessKey', { UserName: 'alice', Status: null })
+    ).rejects.toThrow(/AWS::IAM::AccessKey Status must be a non-empty string/);
+  });
+
+  it('still THROWS when the context exists but does not declare a replay', async () => {
+    const provider = new IAMAccessKeyProvider();
+
+    await expect(
+      provider.create(
+        'Key',
+        'AWS::IAM::AccessKey',
+        { UserName: 'alice', Status: null },
+        { replayingState: false }
+      )
+    ).rejects.toThrow(/must be a non-empty string/);
+  });
+});
+
+describe('SecurityGroupIngress UPDATE re-creates, so its guard must WARN', () => {
+  // Reviewer blocker: `updateSecurityGroupIngress` is delete-then-create, so the
+  // CREATE guard sits on the UPDATE path — and by the time it runs,
+  // RevokeSecurityGroupIngress has ALREADY committed. Throwing there would leave
+  // the rule deleted from AWS with the op failed and no template-side remedy
+  // (on a rollback replay the value comes from a STATE record).
+  it('warns and re-authorizes rather than stranding the revoked rule', async () => {
+    mockSend.mockResolvedValue({});
+    const provider = new EC2Provider();
+
+    const result = await provider.update(
+      'Ingress',
+      'sg-123|-1|-1|-1',
+      'AWS::EC2::SecurityGroupIngress',
+      { GroupId: 'sg-123', IpProtocol: null, CidrIp: '10.0.0.0/8' },
+      { GroupId: 'sg-123', IpProtocol: 'tcp', CidrIp: '0.0.0.0/0' }
+    );
+
+    expect(logWarn).toHaveBeenCalledWith(
+      expect.stringMatching(/AWS::EC2::SecurityGroupIngress IpProtocol must be a non-empty string/)
+    );
+    // Revoke THEN authorize — the rule must not be left deleted.
+    const commands = mockSend.mock.calls.map((c) => c[0].constructor.name);
+    expect(commands).toContain('RevokeSecurityGroupIngressCommand');
+    expect(commands).toContain('AuthorizeSecurityGroupIngressCommand');
+    expect(result.physicalId).toBe('sg-123|-1|-1|-1');
+  });
+
+  it('keeps THROWING on the plain CREATE dispatch, where nothing was revoked', async () => {
+    const provider = new EC2Provider();
+
+    await expect(
+      provider.create('Ingress', 'AWS::EC2::SecurityGroupIngress', {
+        GroupId: 'sg-123',
+        IpProtocol: null,
+      })
+    ).rejects.toThrow(/AWS::EC2::SecurityGroupIngress IpProtocol must be a non-empty string/);
+  });
+});
+
 describe('AWS::EC2::Instance InstanceType / AWS::EC2::EIP Domain (create)', () => {
   it('refuses a numeric InstanceType — an enum site does NOT coerce', async () => {
     const provider = new EC2Provider();

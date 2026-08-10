@@ -32,8 +32,9 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { stringifyValue } from '../../utils/stringify.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { requireConfigString } from '../config-shape.js';
+import { replayWarn, requireConfigString } from '../config-shape.js';
 import type {
+  CreateContext,
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
@@ -146,7 +147,8 @@ export class ApiGatewayProvider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     switch (resourceType) {
       case 'AWS::ApiGateway::Account':
@@ -160,7 +162,7 @@ export class ApiGatewayProvider implements ResourceProvider {
       case 'AWS::ApiGateway::Stage':
         return this.createStage(logicalId, resourceType, properties);
       case 'AWS::ApiGateway::Method':
-        return this.createMethod(logicalId, resourceType, properties);
+        return this.createMethod(logicalId, resourceType, properties, context);
       default:
         throw new ProvisioningError(
           `Unsupported resource type: ${resourceType}`,
@@ -1381,7 +1383,8 @@ export class ApiGatewayProvider implements ResourceProvider {
   private async createMethod(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating API Gateway Method ${logicalId}`);
 
@@ -1393,7 +1396,8 @@ export class ApiGatewayProvider implements ResourceProvider {
     const authorizationType = requireConfigString(
       properties['AuthorizationType'],
       'NONE',
-      'AWS::ApiGateway::Method AuthorizationType'
+      'AWS::ApiGateway::Method AuthorizationType',
+      replayWarn(this.logger, context)
     );
     const authorizerId = properties['AuthorizerId'] as string | undefined;
     const apiKeyRequired = properties['ApiKeyRequired'] as boolean | undefined;

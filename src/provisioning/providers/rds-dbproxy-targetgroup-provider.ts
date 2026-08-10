@@ -12,7 +12,8 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { requireConfigString } from '../config-shape.js';
+import { replayWarn, requireConfigString } from '../config-shape.js';
+import type { CreateContext } from '../../types/resource.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -88,7 +89,8 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     const dbProxyName = properties['DBProxyName'] as string | undefined;
     if (!dbProxyName) {
@@ -101,7 +103,8 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
     const targetGroupName = requireConfigString(
       properties['TargetGroupName'],
       'default',
-      'AWS::RDS::DBProxyTargetGroup TargetGroupName'
+      'AWS::RDS::DBProxyTargetGroup TargetGroupName',
+      replayWarn(this.logger, context)
     );
     const dbClusterIdentifiers = properties['DBClusterIdentifiers'] as string[] | undefined;
     const dbInstanceIdentifiers = properties['DBInstanceIdentifiers'] as string[] | undefined;

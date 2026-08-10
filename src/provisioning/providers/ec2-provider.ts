@@ -85,7 +85,7 @@ import {
   ResourceUpdateNotSupportedError,
 } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { requireConfigString } from '../config-shape.js';
+import { replayWarn, requireConfigString } from '../config-shape.js';
 import {
   disableInstanceApiTermination,
   isTerminationProtectionPropagationError,
@@ -93,6 +93,7 @@ import {
 } from '../ec2-termination-protection.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import type {
+  CreateContext,
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
@@ -330,7 +331,8 @@ export class EC2Provider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     switch (resourceType) {
       case 'AWS::EC2::VPC':
@@ -340,7 +342,7 @@ export class EC2Provider implements ResourceProvider {
       case 'AWS::EC2::InternetGateway':
         return this.createInternetGateway(logicalId, resourceType, properties);
       case 'AWS::EC2::EIP':
-        return this.createEip(logicalId, resourceType, properties);
+        return this.createEip(logicalId, resourceType, properties, context);
       case 'AWS::EC2::VPCGatewayAttachment':
         return this.createVpcGatewayAttachment(logicalId, resourceType, properties);
       case 'AWS::EC2::NatGateway':
@@ -356,7 +358,7 @@ export class EC2Provider implements ResourceProvider {
       case 'AWS::EC2::SecurityGroupIngress':
         return this.createSecurityGroupIngress(logicalId, resourceType, properties);
       case 'AWS::EC2::Instance':
-        return this.createInstance(logicalId, resourceType, properties);
+        return this.createInstance(logicalId, resourceType, properties, context);
       case 'AWS::EC2::NetworkAcl':
         return this.createNetworkAcl(logicalId, resourceType, properties);
       case 'AWS::EC2::NetworkAclEntry':
@@ -1335,16 +1337,20 @@ export class EC2Provider implements ResourceProvider {
   private async createEip(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating EIP ${logicalId}`);
 
     try {
       const response = await this.ec2Client.send(
         new AllocateAddressCommand({
-          Domain: requireConfigString(properties['Domain'], 'vpc', 'AWS::EC2::EIP Domain') as
-            | 'vpc'
-            | 'standard',
+          Domain: requireConfigString(
+            properties['Domain'],
+            'vpc',
+            'AWS::EC2::EIP Domain',
+            replayWarn(this.logger, context)
+          ) as 'vpc' | 'standard',
           NetworkBorderGroup: properties['NetworkBorderGroup'] as string | undefined,
           PublicIpv4Pool: properties['PublicIpv4Pool'] as string | undefined,
         })
@@ -2632,10 +2638,20 @@ export class EC2Provider implements ResourceProvider {
 
   // ─── AWS::EC2::SecurityGroupIngress ───────────────────────────────
 
+  /**
+   * @param onUnusableProtocol When supplied, a malformed `IpProtocol` WARNS and
+   *   defaults instead of throwing. Passed by `updateSecurityGroupIngress`,
+   *   which reaches this method as the re-create half of a delete-then-create
+   *   replacement: by then `RevokeSecurityGroupIngress` has already committed,
+   *   so a refusal would leave the rule deleted from AWS with the op failed —
+   *   and on a rollback replay the value comes from a STATE record, which no
+   *   template edit can fix. Absent (the plain CREATE dispatch) it throws.
+   */
   private async createSecurityGroupIngress(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    onUnusableProtocol?: (message: string) => void
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating SecurityGroupIngress ${logicalId}`);
 
@@ -2659,7 +2675,7 @@ export class EC2Provider implements ResourceProvider {
       properties['IpProtocol'],
       '-1',
       'AWS::EC2::SecurityGroupIngress IpProtocol',
-      { coerceNumber: true }
+      { coerceNumber: true, ...(onUnusableProtocol && { onUnusable: onUnusableProtocol }) }
     );
     const fromPort = properties['FromPort'] as number | undefined;
     const toPort = properties['ToPort'] as number | undefined;
@@ -2724,7 +2740,11 @@ export class EC2Provider implements ResourceProvider {
       const createResult = await this.createSecurityGroupIngress(
         logicalId,
         resourceType,
-        properties
+        properties,
+        // The revoke above has already committed, and on a rollback replay
+        // `properties` is a STATE record — so warn and default rather than
+        // strand the rule deleted with no template-side remedy.
+        (message) => this.logger.warn(message)
       );
       return {
         physicalId: createResult.physicalId,
@@ -2819,7 +2839,8 @@ export class EC2Provider implements ResourceProvider {
   private async createInstance(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating EC2 Instance ${logicalId}`);
 
@@ -2837,7 +2858,8 @@ export class EC2Provider implements ResourceProvider {
     const instanceType = requireConfigString(
       properties['InstanceType'],
       't3.micro',
-      'AWS::EC2::Instance InstanceType'
+      'AWS::EC2::Instance InstanceType',
+      replayWarn(this.logger, context)
     );
 
     try {

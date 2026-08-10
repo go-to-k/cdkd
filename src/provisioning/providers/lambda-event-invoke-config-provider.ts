@@ -10,7 +10,8 @@ import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { requireConfigString } from '../config-shape.js';
+import { replayWarn, requireConfigString } from '../config-shape.js';
+import type { CreateContext } from '../../types/resource.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -150,7 +151,8 @@ export class LambdaEventInvokeConfigProvider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating Lambda EventInvokeConfig ${logicalId}`);
 
@@ -166,7 +168,7 @@ export class LambdaEventInvokeConfigProvider implements ResourceProvider {
       properties['Qualifier'],
       '$LATEST',
       'AWS::Lambda::EventInvokeConfig Qualifier',
-      { coerceNumber: true }
+      { coerceNumber: true, ...replayWarn(this.logger, context) }
     );
 
     try {

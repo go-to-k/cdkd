@@ -12,7 +12,8 @@ import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { requireConfigString } from '../config-shape.js';
+import { replayWarn, requireConfigString } from '../config-shape.js';
+import type { CreateContext } from '../../types/resource.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -89,7 +90,8 @@ export class IAMAccessKeyProvider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating IAM access key ${logicalId}`);
 
@@ -104,7 +106,8 @@ export class IAMAccessKeyProvider implements ResourceProvider {
     const status = requireConfigString(
       properties['Status'],
       'Active',
-      'AWS::IAM::AccessKey Status'
+      'AWS::IAM::AccessKey Status',
+      replayWarn(this.logger, context)
     );
 
     try {
