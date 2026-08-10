@@ -901,6 +901,74 @@ describe('cdkd drift', () => {
       expect(output).toContain('Plan (--revert)');
     });
 
+    it('--revert WARNS about AWS-authored values it will drop when state has no observedProperties (issue #1478)', async () => {
+      // End-to-end wiring, not just the pure helper: the warning has to reach
+      // the PLAN, which is what the user sees before confirming and what
+      // --dry-run prints.
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValueOnce(
+        makeState({
+          Table1: makeResource({
+            physicalId: 't',
+            resourceType: 'AWS::Glue::Table',
+            // No observedProperties -> the baseline is the raw template.
+            properties: { Parameters: { classification: 'parquet' } },
+          }),
+        })
+      );
+      mockRegistryGetProvider.mockReturnValue({
+        readCurrentState: async () => ({
+          Parameters: {
+            classification: 'json',
+            table_type: 'ICEBERG',
+            metadata_location: 's3://b/metadata/00000.json',
+          },
+        }),
+        update: vi.fn(),
+      });
+
+      const { output, error } = await runDrift(['TestStack', '--revert', '--dry-run', '--yes']);
+
+      expect(error).toBeUndefined();
+      expect(output).toContain('DROP 2 AWS-authored values');
+      expect(output).toContain('Parameters.table_type');
+      expect(output).toContain('Parameters.metadata_location');
+      expect(output).toContain('Re-deploy the stack first');
+    });
+
+    it('--revert does NOT warn when state HAS observedProperties (issue #1478)', async () => {
+      // The negative half, matching the shape the regression would take: with
+      // an observed baseline the desired side already carries AWS-authored
+      // fields, so dropping one is a legitimate revert of a real console
+      // change. Warning there would fire on essentially every revert and
+      // train the user to ignore it.
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValueOnce(
+        makeState({
+          Table1: makeResource({
+            physicalId: 't',
+            resourceType: 'AWS::Glue::Table',
+            properties: { Parameters: { classification: 'parquet' } },
+            observedProperties: {
+              Parameters: { classification: 'parquet', table_type: 'ICEBERG' },
+            },
+          }),
+        })
+      );
+      mockRegistryGetProvider.mockReturnValue({
+        readCurrentState: async () => ({
+          Parameters: { classification: 'json', table_type: 'ICEBERG' },
+        }),
+        update: vi.fn(),
+      });
+
+      const { output, error } = await runDrift(['TestStack', '--revert', '--dry-run', '--yes']);
+
+      expect(error).toBeUndefined();
+      expect(output).toContain('Plan (--revert)');
+      expect(output).not.toContain('AWS-authored');
+    });
+
     it('--revert on a clean stack is a no-op', async () => {
       mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
       mockGetState.mockResolvedValueOnce(
@@ -1294,5 +1362,116 @@ describe('cdkd drift --revert (placeholder isolation regression)', () => {
       KmsMasterKeyId: 'alias/aws/sns',
       ContentBasedDeduplication: false,
     });
+  });
+});
+
+describe('findRevertDroppedAwsKeys (pure helper, issue #1478)', () => {
+  const load = async () =>
+    (await import('../../../src/cli/commands/drift.js')).findRevertDroppedAwsKeys;
+
+  it('reports an AWS-authored sub-key the raw template does not declare', async () => {
+    const findRevertDroppedAwsKeys = await load();
+    // The motivating case: a Glue Iceberg table. AWS writes `table_type` /
+    // `metadata_location` into Parameters; the template declares neither, so
+    // reverting the drifted `Parameters` subtree wholesale wipes them.
+    const desired = { Parameters: { classification: 'parquet' } };
+    const aws = {
+      Parameters: {
+        classification: 'json',
+        table_type: 'ICEBERG',
+        metadata_location: 's3://bucket/metadata/00000.json',
+      },
+    };
+    const drifts = [
+      { path: 'Parameters.classification', stateValue: 'parquet', awsValue: 'json' },
+    ];
+    expect(findRevertDroppedAwsKeys(drifts, desired, aws)).toEqual([
+      'Parameters.metadata_location',
+      'Parameters.table_type',
+    ]);
+  });
+
+  it('does NOT report a key present on both sides with a different value', async () => {
+    const findRevertDroppedAwsKeys = await load();
+    // That is the drift the user explicitly asked to revert, not a silent
+    // loss — warning about it would make the warning meaningless.
+    const desired = { Parameters: { classification: 'parquet' } };
+    const aws = { Parameters: { classification: 'json' } };
+    const drifts = [
+      { path: 'Parameters.classification', stateValue: 'parquet', awsValue: 'json' },
+    ];
+    expect(findRevertDroppedAwsKeys(drifts, desired, aws)).toEqual([]);
+  });
+
+  it('ignores AWS-authored keys under a NON-drifted top-level key', async () => {
+    const findRevertDroppedAwsKeys = await load();
+    // `buildRevertNewProperties` only overwrites drifted top-level keys, so
+    // nothing under an undrifted one is at risk. Reporting it would be a
+    // false alarm on essentially every revert.
+    const desired = { Parameters: { classification: 'parquet' }, Description: 'd' };
+    const aws = {
+      Parameters: { classification: 'json' },
+      Description: 'd',
+      StorageDescriptor: { SerdeInfo: { aws_authored: 'x' } },
+    };
+    const drifts = [
+      { path: 'Parameters.classification', stateValue: 'parquet', awsValue: 'json' },
+    ];
+    expect(findRevertDroppedAwsKeys(drifts, desired, aws)).toEqual([]);
+  });
+
+  it('ignores a drifted top-level key the desired side does not declare at all', async () => {
+    const findRevertDroppedAwsKeys = await load();
+    // `buildRevertNewProperties` leaves the AWS-current value in place when
+    // the key is absent from desired, so nothing is dropped.
+    const desired = { Description: 'd' };
+    const aws = { Description: 'd', Parameters: { table_type: 'ICEBERG' } };
+    const drifts = [{ path: 'Parameters', stateValue: undefined, awsValue: {} }];
+    expect(findRevertDroppedAwsKeys(drifts, desired, aws)).toEqual([]);
+  });
+
+  it('recurses through nested objects', async () => {
+    const findRevertDroppedAwsKeys = await load();
+    const desired = { StorageDescriptor: { SerdeInfo: { Name: 'n' } } };
+    const aws = {
+      StorageDescriptor: {
+        SerdeInfo: { Name: 'n2', SerializationLibrary: 'org.apache.iceberg' },
+        Compressed: false,
+      },
+    };
+    const drifts = [
+      { path: 'StorageDescriptor.SerdeInfo.Name', stateValue: 'n', awsValue: 'n2' },
+    ];
+    expect(findRevertDroppedAwsKeys(drifts, desired, aws)).toEqual([
+      'StorageDescriptor.Compressed',
+      'StorageDescriptor.SerdeInfo.SerializationLibrary',
+    ]);
+  });
+
+  it('reports the containing path when desired has no object where AWS does', async () => {
+    const findRevertDroppedAwsKeys = await load();
+    const desired = { Parameters: { nested: undefined } } as Record<string, unknown>;
+    const aws = { Parameters: { nested: { table_type: 'ICEBERG' } } };
+    const drifts = [{ path: 'Parameters.nested', stateValue: undefined, awsValue: {} }];
+    expect(findRevertDroppedAwsKeys(drifts, desired, aws)).toEqual(['Parameters.nested']);
+  });
+
+  it('compares arrays wholesale, never element-wise', async () => {
+    const findRevertDroppedAwsKeys = await load();
+    // The drift comparator's paths never carry an array index, so an
+    // element-wise walk here would report positions the rest of the revert
+    // path cannot reason about.
+    const desired = { Tags: [{ Key: 'a', Value: '1' }] };
+    const aws = { Tags: [{ Key: 'a', Value: '1' }, { Key: 'aws:authored', Value: 'x' }] };
+    const drifts = [{ path: 'Tags', stateValue: [], awsValue: [] }];
+    expect(findRevertDroppedAwsKeys(drifts, desired, aws)).toEqual([]);
+  });
+
+  it('returns nothing when AWS authored nothing extra', async () => {
+    const findRevertDroppedAwsKeys = await load();
+    const desired = { Parameters: { a: '1', b: '2' } };
+    const aws = { Parameters: { a: '9', b: '2' } };
+    const drifts = [{ path: 'Parameters.a', stateValue: '1', awsValue: '9' }];
+    expect(findRevertDroppedAwsKeys(drifts, desired, aws)).toEqual([]);
   });
 });

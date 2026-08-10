@@ -1832,6 +1832,26 @@ matches the intent:
   `--revert` — once `provider.update` succeeds, AWS values match state
   by definition, so a subsequent `cdkd drift` reports `clean`.
 
+  **Resources with no observed-capture baseline.** The revert baseline is
+  `observedProperties ?? properties`. A resource deployed BEFORE
+  observed-capture shipped has no `observedProperties`, so the desired side
+  is the raw **template** while the previous side is the AWS-current
+  snapshot — and because a drifted top-level subtree is overlaid wholesale,
+  every AWS-authored key inside it that the template does not declare is
+  DROPPED. For a Glue Iceberg table that means `table_type` /
+  `metadata_location` are wiped by a `--revert`.
+
+  This is not silent: the plan prints, per affected resource, a
+  `! this resource has no observed-capture baseline ... will DROP N
+  AWS-authored values` line listing each path, before the confirmation
+  prompt and under `--dry-run`. The revert then proceeds — you did ask to
+  push state over AWS, and refusing outright would strand legacy state with
+  no path forward. **Re-deploy the stack first** if you want those values
+  preserved; the deploy records `observedProperties`, after which the
+  revert's desired side already carries the AWS-authored fields and the
+  warning stops firing. Only DRIFTED top-level keys are ever at risk —
+  non-drifted keys keep their AWS-current values.
+
   **Update-not-supported resources.** Some resource types are immutable
   in AWS (e.g. `AWS::Lambda::LayerVersion`, sub-resource attachments
   like `AWS::Lambda::Permission`, `AWS::ApiGateway::Deployment`) or do
