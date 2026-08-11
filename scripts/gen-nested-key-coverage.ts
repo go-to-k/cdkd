@@ -326,8 +326,16 @@
  *   AWS::CloudWatch::AnomalyDetector   30 /  30   3 /  30    0 /  30    0 /  30  OPTED IN (#1474)   [29/29 -> 3/29]
  *   AWS::S3::Bucket                   130 / 152 125 / 152   98 / 152   81 / 152  OPTED IN (#1540)   [#1520 renames: 81 -> 50; #1540 hops + scoped/terminal renames: 50 -> 0]
  *   AWS::CloudFront::Distribution     162 / 162 162 / 162  162 / 162    0 / 162  OPTED IN (#1475)   [110/112 -> 110/112]
+ *   AWS::AppSync::GraphQLApi            0 /  33   0 /  33    0 /  33    0 /  33  OPTED IN (#609)
  *                                     -------   -------    -------    -------
  *                                        410       290        260         81
+ *
+ * AppSync joined AFTER the four recognizer stages (its 13 config properties
+ * were wired by the #609 backfill), so its row is flat 0 by construction and
+ * is excluded from the stage totals above: 31 of its 33 paths are
+ * same-spelling WITH scoped write evidence, and the 2 `Tags.*` paths are
+ * allow-listed because AppSync models tags as a flat Record<string, string>
+ * rather than CFn's [{Key, Value}] list.
  *
  * CloudFront's 162 -> 0 is 160 spread/scope-covered plus 2 allow-listed with
  * `passes: ['write']` (`Tags.Key` / `Tags.Value` — genuinely written by
@@ -1284,6 +1292,32 @@ export const NESTED_KEY_TARGETS: readonly NestedKeyTarget[] = [
     ...API_GATEWAY_V2_WRITE_FLOORS,
   },
   {
+    // Opted in by the issue #609 backfill that wired the type's 13 remaining
+    // silent-drop properties. Five of them are nested config blobs
+    // (`UserPoolConfig` / `OpenIDConnectConfig` / `LambdaAuthorizerConfig` /
+    // `AdditionalAuthenticationProviders` / `EnhancedMetricsConfig`), and the
+    // provider builds FRESH SDK objects naming each member — the exact shape
+    // `same-spelling` is silent for, hence `freshObjectMapper: true`. The
+    // service also carries two irregular members the mechanical first-letter
+    // flip gets WRONG (`IatTTL`/`AuthTTL` -> `iatTTL`/`authTTL`, not `iatTtl`),
+    // which is precisely what this target fences. Measured at opt-in: 33
+    // audited paths, 31 same-spelling with write evidence, 2 allow-listed
+    // (`Tags.Key` / `Tags.Value` — CFn's tag LIST is an SDK `Record<string,
+    // string>`, so neither member exists on the SDK side at all); 134 written
+    // member names (77 under the per-target floor's own scoping), 15 non-empty
+    // write scopes. No `minHandoffPoints`: the
+    // provider hands off no blob generically, so the walk is not load-bearing
+    // here.
+    resourceType: 'AWS::AppSync::GraphQLApi',
+    providerFile: 'appsync-provider.ts',
+    sdkClientPackage: '@aws-sdk/client-appsync',
+    keyStyle: 'lower-first',
+    minNestedKeys: 28,
+    freshObjectMapper: true,
+    minWrittenMembers: 70,
+    minWriteScopes: 8,
+  },
+  {
     // Opted in by issues #1472 / #1473: the two REAL silent drops the #1445
     // hand-off walk uncovered (PortMappings[].ContainerPortRange and the
     // LoadBalancers[].AdvancedConfiguration blue/green block) are fixed in
@@ -1499,6 +1533,28 @@ export const NESTED_KEY_ALLOW_LIST: ReadonlyMap<string, AllowListEntry> = new Ma
         'Same wrapper-level insertion as Tags.Key: written by toSdkTags beneath the ' +
         'SDK { Items: Tag[] } wrapper (scope Tags.Items), one level below the CFn chain.',
       passes: ['write'],
+    },
+  ],
+  [
+    allowKey('AWS::AppSync::GraphQLApi', 'Tags.Key'),
+    {
+      rationale:
+        "AppSync models tags as a flat Record<string, string> (`tags`), not as CFn's " +
+        '[{Key, Value}] list — the provider folds the list into that map on create ' +
+        '(`tagMap[tag.Key] = tag.Value`) and diffs it via TagResource / UntagResource ' +
+        'on update. There is therefore no `Key` member anywhere in the SDK model to ' +
+        'spell-match or to write, which is a SHAPE difference the key and write passes ' +
+        'cannot express, not a dropped key.',
+      passes: ['key', 'shape', 'write'],
+    },
+  ],
+  [
+    allowKey('AWS::AppSync::GraphQLApi', 'Tags.Value'),
+    {
+      rationale:
+        'Same list-to-map fold as Tags.Key: the CFn tag list becomes the SDK `tags` ' +
+        'Record<string, string>, so no `Value` member exists on the SDK side.',
+      passes: ['key', 'shape', 'write'],
     },
   ],
   [

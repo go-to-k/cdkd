@@ -564,6 +564,36 @@ export class ReplacementRulesRegistry {
       ]),
     });
 
+    // AppSync GraphQLApi — `ApiType` and `Visibility` are fixed at creation
+    // (AWS documents both as "cannot be changed once the API has been
+    // created", and `UpdateGraphqlApi` has no member for either). The
+    // create-only FALLBACK in `create-only-properties.ts` cannot cover this:
+    // the registry schema for this type ships an EMPTY `createOnlyProperties`
+    // list, so an unclassified change would be routed to an in-place UPDATE
+    // that silently drops the new value. `Name` keeps the provider's own
+    // `ResourceUpdateNotSupportedError` and is deliberately NOT listed —
+    // classifying it here would change existing behavior beyond this fix.
+    this.rules.set('AWS::AppSync::GraphQLApi', {
+      replacementProperties: new Set(['ApiType', 'Visibility']),
+      updateableProperties: new Set([
+        'AuthenticationType',
+        'LogConfig',
+        'XrayEnabled',
+        'Tags',
+        'UserPoolConfig',
+        'OpenIDConnectConfig',
+        'LambdaAuthorizerConfig',
+        'AdditionalAuthenticationProviders',
+        'EnhancedMetricsConfig',
+        'EnvironmentVariables',
+        'IntrospectionConfig',
+        'QueryDepthLimit',
+        'ResolverCountLimit',
+        'OwnerContact',
+        'MergedApiExecutionRoleArn',
+      ]),
+    });
+
     // RDS DBProxy — EngineFamily + VpcSubnetIds + DBProxyName are immutable on
     // AWS. ModifyDBProxy only accepts Auth / RequireTLS / IdleClientTimeout /
     // DebugLogging / RoleArn / SecurityGroups (+ NewDBProxyName rename, which

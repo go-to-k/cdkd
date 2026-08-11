@@ -762,6 +762,7 @@
       "resourceType": "AWS::Cognito::UserPool",
       "integs": [
         "api-cognito",
+        "appsync",
         "cognito",
         "cognito-custom-attribute-add",
         "cognito-identity-pool",
@@ -774,6 +775,9 @@
       "signals": {
         "api-cognito": [
           "l2"
+        ],
+        "appsync": [
+          "l1"
         ],
         "cognito": [
           "l1",
@@ -3446,6 +3450,7 @@
           "l2"
         ],
         "appsync": [
+          "l1",
           "l2"
         ],
         "batch": [
@@ -3848,6 +3853,7 @@
         "apigateway",
         "apigatewayv2-update-removal",
         "apigw-stage-throttling",
+        "appsync",
         "asset-auto-create",
         "asset-bootstrap",
         "asset-migration",
@@ -3959,6 +3965,9 @@
         "apigw-stage-throttling": [
           "l2",
           "literal"
+        ],
+        "appsync": [
+          "l1"
         ],
         "asset-auto-create": [
           "l2"
@@ -4297,6 +4306,7 @@
       "resourceType": "AWS::Lambda::Permission",
       "integs": [
         "apigw-stage-throttling",
+        "appsync",
         "cloudfront-function-url",
         "cognito-lambda-triggers",
         "export",
@@ -4311,6 +4321,9 @@
       "signals": {
         "apigw-stage-throttling": [
           "literal"
+        ],
+        "appsync": [
+          "l1"
         ],
         "cloudfront-function-url": [
           "l1",

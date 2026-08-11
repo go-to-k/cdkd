@@ -16,7 +16,7 @@ Gap severity depends on the tier. A gap on an **SDK-backed** type (`sdk-fallback
 - No computed attribute (Ref == physicalId is correct): **15**
 - **Pure-CC latent gaps (unenriched-computed, blocks CI): 0**
 - SDK-fallback gaps (informational, #614 path only): **105**
-- Types with allow-listed (not-a-gap) attributes: **24**
+- Types with allow-listed (not-a-gap) attributes: **25**
 
 ## Pure-CC latent gaps
 
@@ -35,7 +35,7 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::ApiGatewayV2::Api` | `ApiEndpoint` |
 | `AWS::AppSync::ApiKey` | `ApiKey`, `ApiKeyId`, `Arn` |
 | `AWS::AppSync::DataSource` | `DataSourceArn` |
-| `AWS::AppSync::GraphQLApi` | `ApiId`, `Arn`, `GraphQLDns`, `GraphQLEndpointArn`, `GraphQLUrl`, `RealtimeDns`, `RealtimeUrl` |
+| `AWS::AppSync::GraphQLApi` | `Arn`, `GraphQLDns`, `GraphQLEndpointArn`, `GraphQLUrl`, `RealtimeDns`, `RealtimeUrl` |
 | `AWS::AppSync::GraphQLSchema` | `Id` |
 | `AWS::AppSync::Resolver` | `ResolverArn` |
 | `AWS::AutoScaling::AutoScalingGroup` | `AutoScalingGroupARN` |
@@ -151,7 +151,7 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::ApiGatewayV2::Stage` | yes | no-computed-attr | _(none)_ |
 | `AWS::AppSync::ApiKey` | yes | sdk-fallback-gap | `ApiKey` (GAP), `ApiKeyId` (GAP), `Arn` (GAP) |
 | `AWS::AppSync::DataSource` | yes | sdk-fallback-gap | `DataSourceArn` (GAP) |
-| `AWS::AppSync::GraphQLApi` | yes | sdk-fallback-gap | `ApiId` (GAP), `Arn` (GAP), `GraphQLDns` (GAP), `GraphQLEndpointArn` (GAP), `GraphQLUrl` (GAP), `RealtimeDns` (GAP), `RealtimeUrl` (GAP) |
+| `AWS::AppSync::GraphQLApi` | yes | sdk-fallback-gap | `ApiId` (allow), `Arn` (GAP), `GraphQLDns` (GAP), `GraphQLEndpointArn` (GAP), `GraphQLUrl` (GAP), `RealtimeDns` (GAP), `RealtimeUrl` (GAP) |
 | `AWS::AppSync::GraphQLSchema` | yes | sdk-fallback-gap | `Id` (GAP) |
 | `AWS::AppSync::Resolver` | yes | sdk-fallback-gap | `ResolverArn` (GAP) |
 | `AWS::AutoScaling::AutoScalingGroup` | yes | sdk-fallback-gap | `AutoScalingGroupARN` (GAP) |

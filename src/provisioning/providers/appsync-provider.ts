@@ -10,6 +10,8 @@ import {
   DeleteApiKeyCommand,
   StartSchemaCreationCommand,
   GetGraphqlApiCommand,
+  GetGraphqlApiEnvironmentVariablesCommand,
+  PutGraphqlApiEnvironmentVariablesCommand,
   GetDataSourceCommand,
   GetIntrospectionSchemaCommand,
   GetResolverCommand,
@@ -21,8 +23,18 @@ import {
   UpdateApiKeyCommand,
   TagResourceCommand,
   UntagResourceCommand,
+  type AdditionalAuthenticationProvider,
   type AuthenticationType,
+  type CognitoUserPoolConfig,
   type DataSourceType,
+  type DefaultAction,
+  type EnhancedMetricsConfig,
+  type GraphQLApiIntrospectionConfig,
+  type GraphQLApiType,
+  type GraphQLApiVisibility,
+  type LambdaAuthorizerConfig,
+  type OpenIDConnectConfig,
+  type UserPoolConfig,
   type CreateGraphqlApiCommandInput,
   type CreateDataSourceCommandInput,
   type CreateResolverCommandInput,
@@ -37,13 +49,55 @@ import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
+import { requireConfigArray } from '../config-shape.js';
 import type {
+  CreateContext,
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
+
+/**
+ * `AWS::AppSync::GraphQLApi` properties that map to a member of
+ * `UpdateGraphqlApi` (so a diff on any of them must fire the call).
+ *
+ * `ApiType` / `Visibility` are excluded on purpose — AWS fixes both at
+ * creation and the SDK's update input has no member for either, so a change
+ * is a REPLACEMENT (see `src/analyzer/replacement-rules.ts`).
+ * `EnvironmentVariables` is excluded because it has its own API pair.
+ */
+// The five sentinel-less members stay in this list on purpose: their REMOVAL
+// has no wire-level effect, but it must still reach `applyGraphQLApiConfig` so
+// the user gets the "cannot clear X" warning instead of silence. The cost is
+// one no-op UpdateGraphqlApi on a removal-only redeploy.
+/**
+ * Options for the nested-container shape guards.
+ *
+ * `onUnusable` is the DOWNGRADE seam: when the properties come from a cdkd
+ * STATE record rather than the user's template (a rollback replay), a refusal
+ * would leave the resource unrestorable with no template-side remedy, so the
+ * caller passes a warn callback instead. Mirrors `config-shape.ts`'s
+ * `ConfigStringOptions.onUnusable`.
+ */
+interface ShapeGuardOptions {
+  readonly logicalId?: string;
+  readonly onUnusable?: (message: string) => void;
+}
+
+const MUTABLE_GRAPHQL_API_CONFIG_PROPERTIES = [
+  'UserPoolConfig',
+  'OpenIDConnectConfig',
+  'LambdaAuthorizerConfig',
+  'AdditionalAuthenticationProviders',
+  'EnhancedMetricsConfig',
+  'IntrospectionConfig',
+  'QueryDepthLimit',
+  'ResolverCountLimit',
+  'OwnerContact',
+  'MergedApiExecutionRoleArn',
+] as const;
 
 /**
  * SDK Provider for AWS AppSync resources
@@ -80,7 +134,26 @@ export class AppSyncProvider implements ResourceProvider {
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
       'AWS::AppSync::GraphQLApi',
-      new Set(['Name', 'AuthenticationType', 'XrayEnabled', 'LogConfig', 'Tags']),
+      new Set([
+        'Name',
+        'AuthenticationType',
+        'XrayEnabled',
+        'LogConfig',
+        'Tags',
+        'AdditionalAuthenticationProviders',
+        'ApiType',
+        'EnhancedMetricsConfig',
+        'EnvironmentVariables',
+        'IntrospectionConfig',
+        'LambdaAuthorizerConfig',
+        'MergedApiExecutionRoleArn',
+        'OpenIDConnectConfig',
+        'OwnerContact',
+        'QueryDepthLimit',
+        'ResolverCountLimit',
+        'UserPoolConfig',
+        'Visibility',
+      ]),
     ],
     ['AWS::AppSync::GraphQLSchema', new Set(['ApiId', 'Definition', 'DefinitionS3Location'])],
     [
@@ -138,11 +211,12 @@ export class AppSyncProvider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     switch (resourceType) {
       case 'AWS::AppSync::GraphQLApi':
-        return this.createGraphQLApi(logicalId, resourceType, properties);
+        return this.createGraphQLApi(logicalId, resourceType, properties, context);
       case 'AWS::AppSync::GraphQLSchema':
         return this.createGraphQLSchema(logicalId, resourceType, properties);
       case 'AWS::AppSync::DataSource':
@@ -280,6 +354,24 @@ export class AppSyncProvider implements ResourceProvider {
       );
     }
 
+    // `ApiType` / `Visibility` have NO member on `UpdateGraphqlApi` — AWS
+    // fixes both at creation. `src/analyzer/replacement-rules.ts` classifies
+    // them as replacement properties so the engine routes the change through
+    // CREATE+DELETE; this is defense-in-depth for the direct-update path.
+    for (const immutable of ['ApiType', 'Visibility']) {
+      if (
+        properties[immutable] !== undefined &&
+        previousProperties[immutable] !== undefined &&
+        properties[immutable] !== previousProperties[immutable]
+      ) {
+        throw new ResourceUpdateNotSupportedError(
+          resourceType,
+          logicalId,
+          `AWS AppSync GraphqlApi.${immutable} is immutable — destroy + redeploy to change it`
+        );
+      }
+    }
+
     // Build UpdateGraphqlApi input only when a mutable field diffs. `Name`
     // is REQUIRED by the SDK input shape even on no-op updates, so we
     // include it whenever we issue the call.
@@ -307,7 +399,16 @@ export class AppSyncProvider implements ResourceProvider {
     const hasLogDiff =
       ('LogConfig' in properties || 'LogConfig' in previousProperties) &&
       !this.deepEqual(newLog, oldLog);
-    const wantUpdate = hasAuthDiff || hasXrayDiff || hasLogDiff;
+    // The remaining mutable members of UpdateGraphqlApi. Same
+    // present-on-either-side-AND-differs semantics as the three above, so a
+    // REMOVAL still fires the call and reaches the reset sentinels in
+    // `applyGraphQLApiConfig`.
+    const hasConfigDiff = MUTABLE_GRAPHQL_API_CONFIG_PROPERTIES.some(
+      (key) =>
+        (key in properties || key in previousProperties) &&
+        !this.deepEqual(properties[key], previousProperties[key])
+    );
+    const wantUpdate = hasAuthDiff || hasXrayDiff || hasLogDiff || hasConfigDiff;
 
     if (wantUpdate) {
       const input: UpdateGraphqlApiCommandInput = {
@@ -358,12 +459,35 @@ export class AppSyncProvider implements ResourceProvider {
           );
         }
       }
+      this.applyGraphQLApiConfig(input, properties, {
+        forUpdate: true,
+        previousProperties,
+        logicalId,
+        // An UPDATE's desired bag is a STATE record whenever the rollback
+        // executor or `drift --revert` replays it, so a malformed nested block
+        // warns rather than making the resource un-rollbackable.
+        shapeGuard: {
+          logicalId,
+          onUnusable: (message: string) =>
+            this.logger.warn(`${message} (leaving the live value untouched)`),
+        },
+      });
       try {
         await this.getClient().send(new UpdateGraphqlApiCommand(input));
       } catch (error) {
         throw this.wrapUpdateError(error, resourceType, logicalId, physicalId, 'GraphqlApi');
       }
     }
+
+    // Separate API pair — diffs itself, so it runs whether or not the
+    // UpdateGraphqlApi call above fired.
+    await this.applyEnvironmentVariables(
+      physicalId,
+      resourceType,
+      logicalId,
+      properties,
+      previousProperties
+    );
 
     // Tags diff via TagResource / UntagResource. The API key is the
     // GraphqlApi ARN — recover it from a GetGraphqlApi call.
@@ -375,10 +499,16 @@ export class AppSyncProvider implements ResourceProvider {
       properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined
     );
 
+    // `attributes` is deliberately OMITTED, not `{}`: the deploy engine
+    // treats a PRESENT attributes object as authoritative
+    // (`result.attributes ?? currentResource.attributes`), so returning an
+    // empty one WIPES the create-time ApiId / Arn / GraphQLUrl and every
+    // later `Fn::GetAtt` degrades to the physical-id fallback — observed
+    // live: the stack's GraphQLApiUrl output broke on the first in-place
+    // update of the API.
     return {
       physicalId,
       wasReplaced: false,
-      attributes: {},
     };
   }
 
@@ -398,7 +528,7 @@ export class AppSyncProvider implements ResourceProvider {
     const oldDef = previousProperties['Definition'] as string | undefined;
 
     if (newDef === undefined || newDef === oldDef) {
-      return { physicalId, wasReplaced: false, attributes: {} };
+      return { physicalId, wasReplaced: false };
     }
 
     const apiId = (properties['ApiId'] ?? physicalId) as string;
@@ -412,7 +542,7 @@ export class AppSyncProvider implements ResourceProvider {
     } catch (error) {
       throw this.wrapUpdateError(error, resourceType, logicalId, physicalId, 'GraphqlSchema');
     }
-    return { physicalId, wasReplaced: false, attributes: {} };
+    return { physicalId, wasReplaced: false };
   }
 
   private async updateDataSource(
@@ -469,7 +599,7 @@ export class AppSyncProvider implements ResourceProvider {
       !this.deepEqual(newHttp, oldHttp);
 
     if (!wantUpdate) {
-      return { physicalId, wasReplaced: false, attributes: {} };
+      return { physicalId, wasReplaced: false };
     }
 
     const input: UpdateDataSourceCommandInput = {
@@ -503,7 +633,7 @@ export class AppSyncProvider implements ResourceProvider {
       throw this.wrapUpdateError(error, resourceType, logicalId, physicalId, 'DataSource');
     }
 
-    return { physicalId, wasReplaced: false, attributes: {} };
+    return { physicalId, wasReplaced: false };
   }
 
   private async updateResolver(
@@ -552,7 +682,7 @@ export class AppSyncProvider implements ResourceProvider {
     );
 
     if (!wantUpdate) {
-      return { physicalId, wasReplaced: false, attributes: {} };
+      return { physicalId, wasReplaced: false };
     }
 
     const input: UpdateResolverCommandInput = {
@@ -611,7 +741,7 @@ export class AppSyncProvider implements ResourceProvider {
       throw this.wrapUpdateError(error, resourceType, logicalId, physicalId, 'Resolver');
     }
 
-    return { physicalId, wasReplaced: false, attributes: {} };
+    return { physicalId, wasReplaced: false };
   }
 
   private async updateApiKey(
@@ -650,7 +780,7 @@ export class AppSyncProvider implements ResourceProvider {
     const oldExp = previousProperties['Expires'] as number | undefined;
 
     if (newDesc === oldDesc && newExp === oldExp) {
-      return { physicalId, wasReplaced: false, attributes: {} };
+      return { physicalId, wasReplaced: false };
     }
 
     const input: UpdateApiKeyCommandInput = {
@@ -666,7 +796,7 @@ export class AppSyncProvider implements ResourceProvider {
       throw this.wrapUpdateError(error, resourceType, logicalId, physicalId, 'ApiKey');
     }
 
-    return { physicalId, wasReplaced: false, attributes: {} };
+    return { physicalId, wasReplaced: false };
   }
 
   /**
@@ -821,12 +951,419 @@ export class AppSyncProvider implements ResourceProvider {
     return [];
   }
 
+  // ─── AWS::AppSync::GraphQLApi config-block converters ──────────────
+  //
+  // Every block below is hand-mapped member-by-member rather than
+  // machine-cased: the AppSync SDK model is camelCase but carries
+  // irregular members the mechanical first-letter flip would miss
+  // (`openIDConnectConfig`, `iatTTL`, `authTTL`), and the AWS SDK v3
+  // serializer silently DROPS unknown members — so a near-miss spelling
+  // is a silent config drop, not an error (the #1370 class).
+
+  /**
+   * Read a nested config container.
+   *
+   * A present-but-NOT-an-object value (an unresolved intrinsic, a mis-nested
+   * L1, a string where the template meant a block) must never fall through as
+   * "absent" — that reintroduces the very silent-drop class this batch closes
+   * (see `src/provisioning/config-shape.ts`'s "Never infer a default from a
+   * possibly-malformed value"). An ABSENT container keeps returning
+   * `undefined`, which is a legitimate "not configured".
+   */
+  private asObject(
+    value: unknown,
+    path: string,
+    options?: ShapeGuardOptions
+  ): Record<string, unknown> | undefined {
+    if (value == null) return undefined;
+    if (typeof value === 'object' && !Array.isArray(value)) {
+      return value as Record<string, unknown>;
+    }
+    const message =
+      `AWS::AppSync::GraphQLApi ${path} must be an object, got ` +
+      `${Array.isArray(value) ? 'array' : typeof value} — cdkd refuses to drop it silently`;
+    // A STATE replay (the rollback executor's reverse-replacement arm) has no
+    // template-side remedy, so the refusal downgrades to a warning there —
+    // otherwise the old resource becomes unrestorable. Same contract as
+    // `replayWarn` in config-shape.ts; see .claude/rules/providers.md.
+    if (options?.onUnusable) {
+      options.onUnusable(message);
+      return undefined;
+    }
+    throw new ProvisioningError(message, 'AWS::AppSync::GraphQLApi', options?.logicalId ?? '');
+  }
+
+  /**
+   * NOTE: `awsRegion` / `defaultAction` are passed through VERBATIM, including
+   * when the template omits them. cdkd deliberately does NOT substitute a
+   * default: `DefaultAction` decides whether an unauthenticated request is
+   * ALLOWed or DENYed, so inventing one would be a security decision made on
+   * the user's behalf, and what CloudFormation itself defaults here has not
+   * been A/B-verified. An omitted required member reaches AWS as a LOUD
+   * validation error naming the field — not a silent drop.
+   */
+  private toSdkUserPoolConfig(
+    value: unknown,
+    path = 'UserPoolConfig',
+    options?: ShapeGuardOptions
+  ): UserPoolConfig | undefined {
+    const cfn = this.asObject(value, path, options);
+    if (!cfn) return undefined;
+    return {
+      userPoolId: cfn['UserPoolId'] as string,
+      awsRegion: cfn['AwsRegion'] as string,
+      defaultAction: cfn['DefaultAction'] as DefaultAction,
+      ...(cfn['AppIdClientRegex'] !== undefined
+        ? { appIdClientRegex: cfn['AppIdClientRegex'] as string }
+        : {}),
+    };
+  }
+
+  /**
+   * The `UserPoolConfig` nested under an ADDITIONAL auth provider is a
+   * DIFFERENT shape from the top-level one — AWS models it as
+   * `CognitoUserPoolConfig`, which has no `defaultAction` member.
+   */
+  private toSdkCognitoUserPoolConfig(
+    value: unknown,
+    path = 'UserPoolConfig',
+    options?: ShapeGuardOptions
+  ): CognitoUserPoolConfig | undefined {
+    const cfn = this.asObject(value, path, options);
+    if (!cfn) return undefined;
+    return {
+      userPoolId: cfn['UserPoolId'] as string,
+      awsRegion: cfn['AwsRegion'] as string,
+      ...(cfn['AppIdClientRegex'] !== undefined
+        ? { appIdClientRegex: cfn['AppIdClientRegex'] as string }
+        : {}),
+    };
+  }
+
+  private toSdkOpenIDConnectConfig(
+    value: unknown,
+    path = 'OpenIDConnectConfig',
+    options?: ShapeGuardOptions
+  ): OpenIDConnectConfig | undefined {
+    const cfn = this.asObject(value, path, options);
+    if (!cfn) return undefined;
+    return {
+      issuer: cfn['Issuer'] as string,
+      ...(cfn['ClientId'] !== undefined ? { clientId: cfn['ClientId'] as string } : {}),
+      // `IatTTL` / `AuthTTL` are `iatTTL` / `authTTL` on the SDK — an
+      // all-caps tail the mechanical case flip would spell `iatTtl`.
+      ...(cfn['IatTTL'] !== undefined ? { iatTTL: cfn['IatTTL'] as number } : {}),
+      ...(cfn['AuthTTL'] !== undefined ? { authTTL: cfn['AuthTTL'] as number } : {}),
+    };
+  }
+
+  private toSdkLambdaAuthorizerConfig(
+    value: unknown,
+    path = 'LambdaAuthorizerConfig',
+    options?: ShapeGuardOptions
+  ): LambdaAuthorizerConfig | undefined {
+    const cfn = this.asObject(value, path, options);
+    if (!cfn) return undefined;
+    return {
+      authorizerUri: cfn['AuthorizerUri'] as string,
+      ...(cfn['AuthorizerResultTtlInSeconds'] !== undefined
+        ? { authorizerResultTtlInSeconds: cfn['AuthorizerResultTtlInSeconds'] as number }
+        : {}),
+      ...(cfn['IdentityValidationExpression'] !== undefined
+        ? { identityValidationExpression: cfn['IdentityValidationExpression'] as string }
+        : {}),
+    };
+  }
+
+  private toSdkAdditionalAuthProviders(
+    value: unknown,
+    options?: ShapeGuardOptions
+  ): AdditionalAuthenticationProvider[] | undefined {
+    if (value == null) return undefined;
+    let entries: Array<Record<string, unknown>>;
+    try {
+      entries = requireConfigArray(
+        value,
+        'AWS::AppSync::GraphQLApi AdditionalAuthenticationProviders'
+      );
+    } catch (error) {
+      // `requireConfigArray` throws a plain Error; convert it so it cannot
+      // escape untyped into the deploy engine's retry loop.
+      const message = error instanceof Error ? error.message : String(error);
+      if (options?.onUnusable) {
+        options.onUnusable(message);
+        return undefined;
+      }
+      throw new ProvisioningError(
+        message,
+        'AWS::AppSync::GraphQLApi',
+        options?.logicalId ?? '',
+        undefined,
+        error instanceof Error ? error : undefined
+      );
+    }
+    return entries.map((entry, index) => {
+      const at = `AdditionalAuthenticationProviders[${index}]`;
+      // `requireConfigArray` validates the CONTAINER, not its ELEMENTS — a
+      // list of strings would index to `undefined` on every key and send an
+      // empty provider object to AWS: the same silent drop one level down.
+      const cfn = this.asObject(entry, at, options) ?? {};
+      const provider: AdditionalAuthenticationProvider = {};
+      if (cfn['AuthenticationType'] !== undefined) {
+        provider.authenticationType = cfn['AuthenticationType'] as AuthenticationType;
+      }
+      const oidc = this.toSdkOpenIDConnectConfig(
+        cfn['OpenIDConnectConfig'],
+        `${at}.OpenIDConnectConfig`,
+        options
+      );
+      if (oidc) provider.openIDConnectConfig = oidc;
+      // The additional-provider variant is AWS's CognitoUserPoolConfig, which
+      // has NO defaultAction member — a different shape from the top-level one.
+      const pool = this.toSdkCognitoUserPoolConfig(cfn['UserPoolConfig'], `${at}.UserPoolConfig`);
+      if (pool) provider.userPoolConfig = pool;
+      const lambda = this.toSdkLambdaAuthorizerConfig(
+        cfn['LambdaAuthorizerConfig'],
+        `${at}.LambdaAuthorizerConfig`,
+        options
+      );
+      if (lambda) provider.lambdaAuthorizerConfig = lambda;
+      return provider;
+    });
+  }
+
+  private toSdkEnhancedMetricsConfig(
+    value: unknown,
+    options?: ShapeGuardOptions
+  ): EnhancedMetricsConfig | undefined {
+    const cfn = this.asObject(value, 'EnhancedMetricsConfig', options);
+    if (!cfn) return undefined;
+    return {
+      resolverLevelMetricsBehavior: cfn[
+        'ResolverLevelMetricsBehavior'
+      ] as EnhancedMetricsConfig['resolverLevelMetricsBehavior'],
+      dataSourceLevelMetricsBehavior: cfn[
+        'DataSourceLevelMetricsBehavior'
+      ] as EnhancedMetricsConfig['dataSourceLevelMetricsBehavior'],
+      operationLevelMetricsConfig: cfn[
+        'OperationLevelMetricsConfig'
+      ] as EnhancedMetricsConfig['operationLevelMetricsConfig'],
+    };
+  }
+
+  /**
+   * Fill the config members shared by `CreateGraphqlApi` and
+   * `UpdateGraphqlApi` from the CFn property bag.
+   *
+   * `ApiType` / `Visibility` are deliberately NOT here: the SDK's update
+   * input has no member for either (they are create-only on AWS), so
+   * `updateGraphQLApi` refuses the change and the replacement rule in
+   * `src/analyzer/replacement-rules.ts` routes it through CREATE+DELETE.
+   *
+   * `forUpdate` turns on the removal sentinels: on UPDATE a property the
+   * user DELETED from the template must be actively reset, because
+   * AppSync treats an omitted member as "no change" (the same semantic
+   * `LogConfig`'s clearing branch documents below). Only the members AWS
+   * gives a sentinel for can be reset that way — `MergedApiExecutionRoleArn`
+   * and the three auth-config blocks have none, so their removal is
+   * reported to the user instead of silently no-op'ing.
+   */
+  private applyGraphQLApiConfig(
+    input: CreateGraphqlApiCommandInput | UpdateGraphqlApiCommandInput,
+    properties: Record<string, unknown>,
+    options?: {
+      forUpdate?: boolean;
+      previousProperties?: Record<string, unknown>;
+      logicalId?: string;
+      shapeGuard?: ShapeGuardOptions;
+    }
+  ): void {
+    const forUpdate = options?.forUpdate === true;
+    const previous = options?.previousProperties ?? {};
+    const guard: ShapeGuardOptions =
+      options?.shapeGuard ??
+      (options?.logicalId !== undefined ? { logicalId: options.logicalId } : {});
+    const removed = (key: string): boolean =>
+      forUpdate && properties[key] === undefined && previous[key] !== undefined;
+
+    const userPool = this.toSdkUserPoolConfig(
+      properties['UserPoolConfig'],
+      'UserPoolConfig',
+      guard
+    );
+    if (userPool) input.userPoolConfig = userPool;
+    const oidc = this.toSdkOpenIDConnectConfig(
+      properties['OpenIDConnectConfig'],
+      'OpenIDConnectConfig',
+      guard
+    );
+    if (oidc) input.openIDConnectConfig = oidc;
+    const lambdaAuth = this.toSdkLambdaAuthorizerConfig(
+      properties['LambdaAuthorizerConfig'],
+      'LambdaAuthorizerConfig',
+      guard
+    );
+    if (lambdaAuth) input.lambdaAuthorizerConfig = lambdaAuth;
+
+    const additional = this.toSdkAdditionalAuthProviders(
+      properties['AdditionalAuthenticationProviders'],
+      guard
+    );
+    if (additional) {
+      input.additionalAuthenticationProviders = additional;
+    } else if (removed('AdditionalAuthenticationProviders')) {
+      // The empty list IS the clearing sentinel for this member.
+      input.additionalAuthenticationProviders = [];
+    }
+
+    const metrics = this.toSdkEnhancedMetricsConfig(properties['EnhancedMetricsConfig'], guard);
+    if (metrics) input.enhancedMetricsConfig = metrics;
+
+    if (properties['IntrospectionConfig'] !== undefined) {
+      input.introspectionConfig = properties[
+        'IntrospectionConfig'
+      ] as GraphQLApiIntrospectionConfig;
+    } else if (removed('IntrospectionConfig')) {
+      // AWS's documented default when the field is unset.
+      input.introspectionConfig = 'ENABLED';
+    }
+
+    if (properties['QueryDepthLimit'] !== undefined) {
+      input.queryDepthLimit = properties['QueryDepthLimit'] as number;
+    } else if (removed('QueryDepthLimit')) {
+      input.queryDepthLimit = 0; // 0 = no depth limit (AWS's unset default)
+    }
+
+    if (properties['ResolverCountLimit'] !== undefined) {
+      input.resolverCountLimit = properties['ResolverCountLimit'] as number;
+    } else if (removed('ResolverCountLimit')) {
+      input.resolverCountLimit = 0; // 0 = no resolver-count limit
+    }
+
+    if (properties['OwnerContact'] !== undefined) {
+      input.ownerContact = properties['OwnerContact'] as string;
+    } else if (removed('OwnerContact')) {
+      input.ownerContact = ''; // AppSync accepts a 0-length owner contact
+    }
+
+    if (properties['MergedApiExecutionRoleArn'] !== undefined) {
+      input.mergedApiExecutionRoleArn = properties['MergedApiExecutionRoleArn'] as string;
+    }
+
+    if (forUpdate) {
+      for (const key of [
+        'MergedApiExecutionRoleArn',
+        'UserPoolConfig',
+        'OpenIDConnectConfig',
+        'LambdaAuthorizerConfig',
+        'EnhancedMetricsConfig',
+      ]) {
+        if (removed(key)) {
+          this.logger.warn(
+            `AppSync GraphqlApi ${options?.logicalId ?? ''}: cannot clear ${key} on update — ` +
+              'AppSync has no reset sentinel for it and treats an omitted member as "no change". ' +
+              'Destroy + redeploy the API to drop it.'
+          );
+        }
+      }
+    }
+  }
+
+  /**
+   * `EnvironmentVariables` lives on its OWN API pair
+   * (`PutGraphqlApiEnvironmentVariables` / `Get...`), not on
+   * Create/UpdateGraphqlApi. The PUT is whole-map replace, so a removed
+   * key is cleared by re-putting the remaining map (and `{}` clears all).
+   */
+  private async applyEnvironmentVariables(
+    apiId: string,
+    resourceType: string,
+    logicalId: string,
+    properties: Record<string, unknown>,
+    previousProperties?: Record<string, unknown>,
+    replayingState = false
+  ): Promise<void> {
+    const isUpdate = previousProperties !== undefined;
+    let desired: Record<string, unknown> | undefined;
+    try {
+      desired = this.asObject(properties['EnvironmentVariables'], 'EnvironmentVariables', {
+        logicalId,
+      });
+    } catch (error) {
+      // The PUT is a WHOLE-MAP replace, so treating a malformed desired value
+      // as "absent" would clear every live variable. On a template-path CREATE
+      // refusing is right; on UPDATE — or on a create that REPLAYS a cdkd state
+      // record — the user has no template-side remedy, so warn and leave AWS
+      // untouched.
+      if (!isUpdate && !replayingState) throw error;
+      this.logger.warn(
+        `AppSync GraphqlApi ${logicalId}: ${
+          error instanceof Error ? error.message : String(error)
+        } — leaving the live environment variables untouched`
+      );
+      return;
+    }
+    // The PREVIOUS side comes from cdkd state, never from the user's template:
+    // a malformed value recorded there must not make the stack undeployable,
+    // so it reads as absent rather than refusing.
+    let previous: Record<string, unknown> | undefined;
+    if (previousProperties) {
+      const raw = previousProperties['EnvironmentVariables'];
+      previous =
+        raw != null && typeof raw === 'object' && !Array.isArray(raw)
+          ? (raw as Record<string, unknown>)
+          : undefined;
+    }
+    if (desired === undefined && previous === undefined) return;
+    if (isUpdate && this.deepEqual(desired, previous)) return;
+
+    const environmentVariables: Record<string, string> = {};
+    for (const [key, value] of Object.entries(desired ?? {})) {
+      // CloudFormation coerces scalars into its Map<String,String>, so an
+      // unquoted YAML `RETRIES: 3` deploys under CFn and must keep working
+      // here (same rationale as `coerceNumber` in config-shape.ts). An OBJECT
+      // or array is a template bug — `String({})` would send the literal
+      // "[object Object]" to AWS.
+      if (typeof value === 'string') {
+        environmentVariables[key] = value;
+      } else if (
+        (typeof value === 'number' && Number.isFinite(value)) ||
+        typeof value === 'boolean'
+      ) {
+        environmentVariables[key] = String(value);
+      } else {
+        throw new ProvisioningError(
+          `AWS::AppSync::GraphQLApi EnvironmentVariables.${key} must be a string, got ${
+            Array.isArray(value) ? 'array' : value === null ? 'null' : typeof value
+          }`,
+          resourceType,
+          logicalId,
+          apiId
+        );
+      }
+    }
+    try {
+      await this.getClient().send(
+        new PutGraphqlApiEnvironmentVariablesCommand({ apiId, environmentVariables })
+      );
+    } catch (error) {
+      throw this.wrapUpdateError(
+        error,
+        resourceType,
+        logicalId,
+        apiId,
+        isUpdate ? 'GraphqlApi (env vars)' : 'GraphqlApi (env vars, post-create)'
+      );
+    }
+  }
+
   // ─── AWS::AppSync::GraphQLApi ──────────────────────────────────────
 
   private async createGraphQLApi(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating GraphQL API ${logicalId}`);
 
@@ -840,6 +1377,28 @@ export class AppSyncProvider implements ResourceProvider {
     }
 
     const authenticationType = properties['AuthenticationType'] as AuthenticationType | undefined;
+
+    // Atomicity: `EnvironmentVariables` rides a SEPARATE API that can only run
+    // after CreateGraphqlApi succeeds, so a failure there would throw before
+    // create() returns the physicalId — the deploy engine never learns the API
+    // exists and it orphans (and the next attempt collides on the name).
+    // Mirrors the CognitoUserPoolProvider / DynamoDBTableProvider post-create
+    // rollback pattern.
+    let createdApiId: string | undefined;
+
+    // A rollback replay hands `create()` a cdkd STATE record, which the user
+    // cannot edit — so every pre-flight refusal below downgrades to a warning
+    // there (.claude/rules/providers.md). An ordinary template-path create
+    // keeps the refusal.
+    const shapeGuard: ShapeGuardOptions = {
+      logicalId,
+      ...(context?.replayingState === true
+        ? {
+            onUnusable: (message: string) =>
+              this.logger.warn(`${message} (state replay — proceeding without it)`),
+          }
+        : {}),
+    };
 
     try {
       const input: CreateGraphqlApiCommandInput = {
@@ -873,11 +1432,37 @@ export class AppSyncProvider implements ResourceProvider {
         input.tags = tagMap;
       }
 
+      this.applyGraphQLApiConfig(input, properties, { logicalId, shapeGuard });
+
+      // Create-only members — no `UpdateGraphqlApi` counterpart exists,
+      // which is why both are replacement properties in
+      // `src/analyzer/replacement-rules.ts`.
+      if (properties['ApiType'] !== undefined) {
+        input.apiType = properties['ApiType'] as GraphQLApiType;
+      }
+      if (properties['Visibility'] !== undefined) {
+        input.visibility = properties['Visibility'] as GraphQLApiVisibility;
+      }
+
       const response = await this.getClient().send(new CreateGraphqlApiCommand(input));
+      // Recorded BEFORE any other dereference: if `graphqlApi` came back
+      // malformed the API may still exist, and the rollback below is the only
+      // thing that keeps it from orphaning.
+      createdApiId = response.graphqlApi?.apiId;
 
       const apiId = response.graphqlApi!.apiId!;
       const arn = response.graphqlApi!.arn!;
       const graphQLUrl = response.graphqlApi!.uris?.['GRAPHQL'] ?? '';
+
+      // Separate API — must run AFTER the API exists.
+      await this.applyEnvironmentVariables(
+        apiId,
+        resourceType,
+        logicalId,
+        properties,
+        undefined,
+        context?.replayingState === true
+      );
 
       this.logger.debug(`Successfully created GraphQL API ${logicalId}: ${apiId}`);
 
@@ -890,6 +1475,18 @@ export class AppSyncProvider implements ResourceProvider {
         },
       };
     } catch (error) {
+      if (createdApiId) {
+        try {
+          await this.getClient().send(new DeleteGraphqlApiCommand({ apiId: createdApiId }));
+          this.logger.debug(`Rolled back partially-created GraphQL API ${createdApiId}`);
+        } catch (rollbackError) {
+          this.logger.warn(
+            `Failed to roll back partially-created GraphQL API ${createdApiId}: ${
+              rollbackError instanceof Error ? rollbackError.message : String(rollbackError)
+            }`
+          );
+        }
+      }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
         `Failed to create GraphQL API ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
@@ -1501,7 +2098,129 @@ export class AppSyncProvider implements ResourceProvider {
     }
     const tags = normalizeAwsTagsToCfn(api.tags);
     result['Tags'] = tags;
+
+    // Reverse map for the config members wired in issue #609. Each is
+    // emitted ONLY when AWS returned it, so a property the template never
+    // set stays absent from both sides of the drift comparison.
+    if (api.userPoolConfig) {
+      result['UserPoolConfig'] = this.userPoolConfigToCfn(api.userPoolConfig);
+    }
+    if (api.openIDConnectConfig) {
+      result['OpenIDConnectConfig'] = this.openIDConnectConfigToCfn(api.openIDConnectConfig);
+    }
+    if (api.lambdaAuthorizerConfig) {
+      result['LambdaAuthorizerConfig'] = this.lambdaAuthorizerConfigToCfn(
+        api.lambdaAuthorizerConfig
+      );
+    }
+    if (api.additionalAuthenticationProviders) {
+      result['AdditionalAuthenticationProviders'] = api.additionalAuthenticationProviders.map(
+        (provider) => {
+          const entry: Record<string, unknown> = {};
+          if (provider.authenticationType !== undefined) {
+            entry['AuthenticationType'] = provider.authenticationType;
+          }
+          if (provider.openIDConnectConfig) {
+            entry['OpenIDConnectConfig'] = this.openIDConnectConfigToCfn(
+              provider.openIDConnectConfig
+            );
+          }
+          if (provider.userPoolConfig) {
+            entry['UserPoolConfig'] = this.userPoolConfigToCfn(provider.userPoolConfig);
+          }
+          if (provider.lambdaAuthorizerConfig) {
+            entry['LambdaAuthorizerConfig'] = this.lambdaAuthorizerConfigToCfn(
+              provider.lambdaAuthorizerConfig
+            );
+          }
+          return entry;
+        }
+      );
+    }
+    if (api.enhancedMetricsConfig) {
+      const metrics: Record<string, unknown> = {};
+      if (api.enhancedMetricsConfig.resolverLevelMetricsBehavior !== undefined) {
+        metrics['ResolverLevelMetricsBehavior'] =
+          api.enhancedMetricsConfig.resolverLevelMetricsBehavior;
+      }
+      if (api.enhancedMetricsConfig.dataSourceLevelMetricsBehavior !== undefined) {
+        metrics['DataSourceLevelMetricsBehavior'] =
+          api.enhancedMetricsConfig.dataSourceLevelMetricsBehavior;
+      }
+      if (api.enhancedMetricsConfig.operationLevelMetricsConfig !== undefined) {
+        metrics['OperationLevelMetricsConfig'] =
+          api.enhancedMetricsConfig.operationLevelMetricsConfig;
+      }
+      result['EnhancedMetricsConfig'] = metrics;
+    }
+    if (api.apiType !== undefined) result['ApiType'] = api.apiType;
+    if (api.visibility !== undefined) result['Visibility'] = api.visibility;
+    if (api.introspectionConfig !== undefined) {
+      result['IntrospectionConfig'] = api.introspectionConfig;
+    }
+    if (api.queryDepthLimit !== undefined) result['QueryDepthLimit'] = api.queryDepthLimit;
+    if (api.resolverCountLimit !== undefined) result['ResolverCountLimit'] = api.resolverCountLimit;
+    if (api.ownerContact !== undefined) result['OwnerContact'] = api.ownerContact;
+    if (api.mergedApiExecutionRoleArn !== undefined) {
+      result['MergedApiExecutionRoleArn'] = api.mergedApiExecutionRoleArn;
+    }
+
+    // Environment variables live on their own read API. Best-effort: a
+    // failure here must not fail the whole drift read.
+    try {
+      const envResp = await this.getClient().send(
+        new GetGraphqlApiEnvironmentVariablesCommand({ apiId: physicalId })
+      );
+      if (envResp.environmentVariables !== undefined) {
+        result['EnvironmentVariables'] = envResp.environmentVariables;
+      }
+    } catch (err) {
+      // WARN, not debug: dropping the key here makes this read asymmetric with
+      // the recorded baseline, which surfaces as a phantom "EnvironmentVariables
+      // removed" drift that `--revert` would then act on.
+      this.logger.warn(
+        `Could not read AppSync GraphqlApi ${physicalId} environment variables ` +
+          `(drift on that property will not be reported): ${
+            err instanceof Error ? err.message : String(err)
+          }`
+      );
+    }
+
     return result;
+  }
+
+  private userPoolConfigToCfn(
+    config: UserPoolConfig | CognitoUserPoolConfig
+  ): Record<string, unknown> {
+    const out: Record<string, unknown> = {};
+    if (config.userPoolId !== undefined) out['UserPoolId'] = config.userPoolId;
+    if (config.awsRegion !== undefined) out['AwsRegion'] = config.awsRegion;
+    if ('defaultAction' in config && config.defaultAction !== undefined) {
+      out['DefaultAction'] = config.defaultAction;
+    }
+    if (config.appIdClientRegex !== undefined) out['AppIdClientRegex'] = config.appIdClientRegex;
+    return out;
+  }
+
+  private openIDConnectConfigToCfn(config: OpenIDConnectConfig): Record<string, unknown> {
+    const out: Record<string, unknown> = {};
+    if (config.issuer !== undefined) out['Issuer'] = config.issuer;
+    if (config.clientId !== undefined) out['ClientId'] = config.clientId;
+    if (config.iatTTL !== undefined) out['IatTTL'] = config.iatTTL;
+    if (config.authTTL !== undefined) out['AuthTTL'] = config.authTTL;
+    return out;
+  }
+
+  private lambdaAuthorizerConfigToCfn(config: LambdaAuthorizerConfig): Record<string, unknown> {
+    const out: Record<string, unknown> = {};
+    if (config.authorizerUri !== undefined) out['AuthorizerUri'] = config.authorizerUri;
+    if (config.authorizerResultTtlInSeconds !== undefined) {
+      out['AuthorizerResultTtlInSeconds'] = config.authorizerResultTtlInSeconds;
+    }
+    if (config.identityValidationExpression !== undefined) {
+      out['IdentityValidationExpression'] = config.identityValidationExpression;
+    }
+    return out;
   }
 
   private async readDataSource(physicalId: string): Promise<Record<string, unknown> | undefined> {
