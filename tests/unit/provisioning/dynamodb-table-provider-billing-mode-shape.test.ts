@@ -266,9 +266,10 @@ describe('DynamoDBTableProvider malformed BillingMode (issue #1545)', () => {
   it('handles an unusable desired value with NO previous mode on record', async () => {
     activeTable();
 
-    // prevBillingMode === undefined + unusable desired: the fallback is
-    // undefined, the comparison reads "unchanged", and the warn renders
-    // without the parenthesized mode.
+    // An ABSENT recorded previous normalizes to the CFn type default
+    // PROVISIONED (issue #1553), so the unusable desired value falls back to
+    // PROVISIONED, the comparison still reads "unchanged", and the warn now
+    // NAMES the mode instead of rendering a bare sentence.
     await expect(
       provider.update(
         'MyTable',
@@ -281,7 +282,7 @@ describe('DynamoDBTableProvider malformed BillingMode (issue #1545)', () => {
 
     expect(billingUpdateCalls()).toHaveLength(0);
     expect(childLogger.warn).toHaveBeenCalledWith(
-      expect.stringContaining("The table's current billing mode is kept")
+      expect.stringContaining("The table's current billing mode (PROVISIONED) is kept")
     );
   });
 
@@ -378,12 +379,12 @@ describe('DynamoDBTableProvider malformed BillingMode (issue #1545)', () => {
   it('an ABSENT desired value is not treated as unusable', async () => {
     activeTable();
 
-    // Absence means "no flip requested" in this provider (no BillingMode
-    // FIELD is sent — the removal itself still emits an UpdateTable carrying
-    // no mutable field, the pre-existing #1160-class behavior this suite
-    // deliberately does not change; tracked in issue #1553), and it must
-    // keep meaning that — the suppression is scoped to present-but-unusable
-    // ONLY.
+    // Absence normalizes to the CFn type default PROVISIONED (issue #1553),
+    // which here EQUALS the recorded previous mode — so there is no change and
+    // no call. What matters for THIS suite is that the absent value does not
+    // take the present-but-unusable path: no shape warning is emitted. The
+    // removal semantics themselves are pinned in
+    // `dynamodb-table-provider-billing-mode-removal.test.ts`.
     await provider.update(
       'MyTable',
       TABLE_NAME,

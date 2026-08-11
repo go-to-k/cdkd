@@ -301,6 +301,44 @@ fi
 assert_provisioned_capacity "${PROV_UPDATED_READ}" "${PROV_UPDATED_WRITE}" "Phase 1.5"
 echo "    OK: ProvisionedThroughput in-place UPDATE reached AWS (silent-drop CLOSED)"
 
+# --- Phase 1.6: BillingMode REMOVAL resets to PROVISIONED (issue #1553) ----
+# The same CDKD_TEST_UPDATE=true deploy REMOVES `BillingMode` from a
+# PAY_PER_REQUEST table (and declares ProvisionedThroughput 3/4 instead).
+# Pre-fix, the removal produced an `UpdateTable` carrying no mutable field and
+# DynamoDB rejected it, so the deploy above would not even have reached here.
+# The reset TARGET is not inferred from the type default — it was measured
+# against real CloudFormation (us-east-1, 2026-08-11): CFn flips the table to
+# PROVISIONED with the declared capacity, and fails the stack outright when no
+# capacity is declared.
+BILLING_REMOVAL_TABLE="cdkd-ondemand-test-billing-removal-table"
+REMOVAL_OK=""
+for _ in $(seq 1 24); do
+  # No error swallowing: the table was created by phase 1, so a DescribeTable
+  # failure here is a real finding, not an expected not-found.
+  REMOVAL_MODE=$(aws dynamodb describe-table --table-name "${BILLING_REMOVAL_TABLE}" --region "${REGION}" \
+    --query 'Table.BillingModeSummary.BillingMode' --output text)
+  REMOVAL_STATUS=$(aws dynamodb describe-table --table-name "${BILLING_REMOVAL_TABLE}" --region "${REGION}" \
+    --query 'Table.TableStatus' --output text)
+  if [ "${REMOVAL_STATUS}" = "ACTIVE" ] && [ "${REMOVAL_MODE}" = "PROVISIONED" ]; then
+    REMOVAL_OK=1
+    break
+  fi
+  sleep 5
+done
+if [ -z "${REMOVAL_OK}" ]; then
+  echo "FAIL (issue #1553): removing BillingMode did not reset the table to PROVISIONED within ~2min (mode='${REMOVAL_MODE}', status='${REMOVAL_STATUS}')" >&2
+  exit 1
+fi
+REMOVAL_READ=$(aws dynamodb describe-table --table-name "${BILLING_REMOVAL_TABLE}" --region "${REGION}" \
+  --query 'Table.ProvisionedThroughput.ReadCapacityUnits' --output text)
+REMOVAL_WRITE=$(aws dynamodb describe-table --table-name "${BILLING_REMOVAL_TABLE}" --region "${REGION}" \
+  --query 'Table.ProvisionedThroughput.WriteCapacityUnits' --output text)
+if [ "${REMOVAL_READ}" != "3" ] || [ "${REMOVAL_WRITE}" != "4" ]; then
+  echo "FAIL (issue #1553): expected the declared 3/4 capacity after the BillingMode removal, got ${REMOVAL_READ}/${REMOVAL_WRITE}" >&2
+  exit 1
+fi
+echo "    OK: BillingMode removal reset the table to PROVISIONED at 3/4 (issue #1553 CLOSED)"
+
 # --- Phase 2: destroy -------------------------------------------------
 echo "==> Phase 2: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \

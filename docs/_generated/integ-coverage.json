@@ -938,6 +938,7 @@
           "l2"
         ],
         "dynamodb-ondemand": [
+          "l1",
           "l2"
         ],
         "dynamodb-sse": [

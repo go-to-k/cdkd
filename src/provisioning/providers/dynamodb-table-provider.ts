@@ -489,15 +489,34 @@ export class DynamoDBTableProvider implements ResourceProvider {
       // into a spurious change. `BillingModeSummary` is itself absent on a
       // table created without an explicit mode, which is PROVISIONED — the
       // same default `readCurrentState` assumes.
+      //
+      // An ABSENT value on EITHER side normalizes to the CFn type default
+      // PROVISIONED (issue #1553), which is also what `create()` above
+      // substitutes — so the two paths now agree on what "no BillingMode in
+      // the template" means. Before this the update path left it `undefined`,
+      // and a template that REMOVED the property produced a change ("undefined
+      // !== PAY_PER_REQUEST") that carried no mutable field: the
+      // `updateInput.BillingMode = ...` assignment was gated on the value
+      // being truthy, so `UpdateTable({TableName})` went out with nothing to
+      // update and DynamoDB rejected it.
+      //
+      // The reset semantic is MEASURED, not inferred from the type default
+      // (live CFn A/B, us-east-1, 2026-08-11): a table deployed with
+      // `BillingMode: PAY_PER_REQUEST` and then UPDATE'd with the property
+      // REMOVED is FLIPPED to PROVISIONED — and when the template declares no
+      // `ProvisionedThroughput` either, the CFn resource handler fails the
+      // stack with `Property ProvisionedThroughput cannot be empty` rather
+      // than retaining the old mode. So "removal retains" was the wrong
+      // reading; removal resets, exactly like `TableClass` below.
       const recordedPrevBillingMode = previousProperties['BillingMode'];
       const recordedPrevBillingModeUsable =
         recordedPrevBillingMode === undefined ||
         (typeof recordedPrevBillingMode === 'string' && recordedPrevBillingMode.trim() !== '');
       const prevBillingMode = (
         recordedPrevBillingModeUsable
-          ? recordedPrevBillingMode
+          ? ((recordedPrevBillingMode as string | undefined) ?? 'PROVISIONED')
           : (table?.BillingModeSummary?.BillingMode ?? 'PROVISIONED')
-      ) as 'PROVISIONED' | 'PAY_PER_REQUEST' | undefined;
+      ) as 'PROVISIONED' | 'PAY_PER_REQUEST';
       if (!recordedPrevBillingModeUsable) {
         this.logger.warn(
           `AWS::DynamoDB::Table ${logicalId}: the recorded previous BillingMode is ` +
@@ -507,9 +526,13 @@ export class DynamoDBTableProvider implements ResourceProvider {
         );
       }
       let billingModeUnusable = false;
+      // ABSENT resolves to the CFn type default (see the reset note above);
+      // present-but-unusable still falls back to the PREVIOUS mode, because
+      // there the template DID ask for something and defaulting a junk value
+      // would silently re-price a live table.
       const requestedBillingMode =
         properties['BillingMode'] === undefined
-          ? undefined
+          ? 'PROVISIONED'
           : requireConfigString(
               properties['BillingMode'],
               'PROVISIONED',
@@ -518,23 +541,25 @@ export class DynamoDBTableProvider implements ResourceProvider {
                 onUnusable: (message) => {
                   billingModeUnusable = true;
                   this.logger.warn(
-                    `${message} The table's current billing mode` +
-                      `${prevBillingMode ? ` (${prevBillingMode})` : ''} is kept for this ` +
-                      `update rather than flipped to the default.`
+                    `${message} The table's current billing mode (${prevBillingMode}) is kept ` +
+                      `for this update rather than flipped to the default.`
                   );
                 },
               }
             );
       const billingMode = billingModeUnusable
         ? prevBillingMode
-        : (requestedBillingMode as 'PROVISIONED' | 'PAY_PER_REQUEST' | undefined);
+        : (requestedBillingMode as 'PROVISIONED' | 'PAY_PER_REQUEST');
       const billingOrThroughputChanged =
-        JSON.stringify(billingMode) !== JSON.stringify(prevBillingMode) ||
+        billingMode !== prevBillingMode ||
         JSON.stringify(properties['ProvisionedThroughput']) !==
           JSON.stringify(previousProperties['ProvisionedThroughput']);
       if (billingOrThroughputChanged || tableClassChanged) {
         const updateInput: UpdateTableCommandInput = { TableName: physicalId };
-        if (billingOrThroughputChanged && billingMode) {
+        // Always defined now that both sides normalize, so the call can never
+        // again go out with only a `TableName` — the empty-UpdateTable shape
+        // issue #1553 is about.
+        if (billingOrThroughputChanged) {
           updateInput.BillingMode = billingMode;
         }
         if (tableClassChanged) {
@@ -543,12 +568,19 @@ export class DynamoDBTableProvider implements ResourceProvider {
           // type default rather than leaving the old value in place.
           updateInput.TableClass = normalizeTableClass(properties['TableClass']);
         }
-        // PAY_PER_REQUEST rejects ProvisionedThroughput. When BillingMode is
-        // PROVISIONED (or omitted, in which case the table is already
-        // PROVISIONED and only its capacity is changing) forward the caps.
+        // PAY_PER_REQUEST rejects ProvisionedThroughput; PROVISIONED requires
+        // it, so forward the caps whenever the resolved mode is PROVISIONED.
         // Gated on billingOrThroughputChanged so a TableClass-only change does
         // not re-assert the current throughput — AWS rejects an UpdateTable
         // whose requested throughput equals the table's current value.
+        //
+        // A flip to PROVISIONED with NO `ProvisionedThroughput` in the template
+        // is left to fail at AWS rather than pre-refused here: that is CFn
+        // parity (its handler fails the same shape with `Property
+        // ProvisionedThroughput cannot be empty`), DynamoDB's own error names
+        // the missing member, and a pre-flight throw on the UPDATE path would
+        // fire on a rollback / `drift --revert` replay of a state record the
+        // user cannot edit.
         if (
           billingOrThroughputChanged &&
           billingMode !== 'PAY_PER_REQUEST' &&
