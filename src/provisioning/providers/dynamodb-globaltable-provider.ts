@@ -5359,12 +5359,22 @@ export function collectAutoScaledGsiNames(
       localEntry?.['ReadProvisionedThroughputSettings'],
       gsi['ReadProvisionedThroughputSettings'],
     ];
+    // A block that is ITSELF an unresolved intrinsic counts as autoscaled for
+    // the same reason a present-but-unparseable member does: nothing can see
+    // inside it, and the two readings are not symmetric. Reporting
+    // "not autoscaled" makes the desired capacity fall through to cdkd's 5/5
+    // default (#1511), which the live baseline then reads as a real edit and
+    // WRITES — potentially a downgrade of a live table. Reporting "autoscaled"
+    // costs one deploy of capacity lag.
+    const writeBlock = gsi['WriteProvisionedThroughputSettings'];
     const autoScaled =
       readBlocks.some(
-        (block) => asRecord(block)?.['ReadCapacityAutoScalingSettings'] !== undefined
+        (block) =>
+          asRecord(block)?.['ReadCapacityAutoScalingSettings'] !== undefined ||
+          isUnresolvedIntrinsicBlock(block)
       ) ||
-      asRecord(gsi['WriteProvisionedThroughputSettings'])?.['WriteCapacityAutoScalingSettings'] !==
-        undefined;
+      asRecord(writeBlock)?.['WriteCapacityAutoScalingSettings'] !== undefined ||
+      isUnresolvedIntrinsicBlock(writeBlock);
     if (autoScaled) out.add(name);
   }
   return out;

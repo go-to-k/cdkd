@@ -161,6 +161,21 @@ describe('GlobalTable GSI live recovery baseline (issue #1571)', () => {
       expect([...names]).toEqual(['idx']);
     });
 
+    it('treats a whole settings BLOCK that is an unresolved intrinsic as autoscaled', () => {
+      // Nothing can see inside it, and the two readings are not symmetric:
+      // "not autoscaled" makes the desired capacity fall through to cdkd's 5/5
+      // default, which the live baseline then reads as an edit and WRITES.
+      const names = collectAutoScaledGsiNames(
+        {
+          GlobalSecondaryIndexes: [
+            { IndexName: 'idx', WriteProvisionedThroughputSettings: { 'Fn::If': ['C', {}, {}] } },
+          ],
+        },
+        'us-east-1'
+      );
+      expect([...names]).toEqual(['idx']);
+    });
+
     it('returns empty for a non-array GlobalSecondaryIndexes rather than throwing', () => {
       expect([...collectAutoScaledGsiNames({ GlobalSecondaryIndexes: 'bad' }, 'us-east-1')]).toEqual(
         []
