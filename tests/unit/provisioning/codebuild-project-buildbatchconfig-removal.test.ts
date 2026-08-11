@@ -176,13 +176,13 @@ describe('CodeBuildProvider BuildBatchConfig removal reset (issue #1160)', () =>
     await provider.update('P', PROJECT, TYPE, desired, previous);
 
     const input = updateProjectInput();
-    expect(input?.['description']).toBeUndefined();
-    expect(input?.['timeoutInMinutes']).toBeUndefined();
-    expect(input?.['queuedTimeoutInMinutes']).toBeUndefined();
-    expect(input?.['concurrentBuildLimit']).toBeUndefined();
-    expect(input?.['autoRetryLimit']).toBeUndefined();
-    expect(input?.['cache']).toBeUndefined();
-    expect(input?.['logsConfig']).toBeUndefined();
+    expect(input['description']).toBeUndefined();
+    expect(input['timeoutInMinutes']).toBeUndefined();
+    expect(input['queuedTimeoutInMinutes']).toBeUndefined();
+    expect(input['concurrentBuildLimit']).toBeUndefined();
+    expect(input['autoRetryLimit']).toBeUndefined();
+    expect(input['cache']).toBeUndefined();
+    expect(input['logsConfig']).toBeUndefined();
   });
 
   it('positive polarity: the seven retained fields DO map through when present', async () => {
@@ -229,8 +229,9 @@ describe('CodeBuildProvider BuildBatchConfig removal reset (issue #1160)', () =>
 
     await provider.update('P', PROJECT, TYPE, historical, attempted);
 
-    expect(updateProjectInput()['buildBatchConfig']).toBeDefined();
-    expect(updateProjectInput()['buildBatchConfig']).toMatchObject({});
+    // `toEqual({})` rather than `toMatchObject({})` — the latter matches ANY
+    // object and would assert nothing beyond the `toBeDefined()` above.
+    expect(updateProjectInput()['buildBatchConfig']).toEqual({});
   });
 
   it('the update still targets the existing project by physical id', async () => {

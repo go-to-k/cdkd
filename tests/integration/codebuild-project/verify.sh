@@ -87,12 +87,18 @@ cleanup() {
   # The project is the only stateful leftover a torn run can strand; the
   # execution role goes with the stack.
   aws codebuild delete-project --name "${PROJECT_NAME}" --region "${REGION}" >/dev/null 2>&1
-  # Only drop the raw state/lock keys once the destroy actually succeeded --
-  # the state file is the only pointer to resources a failed destroy left
-  # behind, so removing it on failure converts a recoverable partial teardown
-  # into untracked orphans.
-  if [ -n "${STATE_BUCKET:-}" ] && [ "${state_destroy_rc:-1}" -eq 0 ]; then
-    aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
+  if [ -n "${STATE_BUCKET:-}" ]; then
+    # state.json is gated on the destroy SUCCEEDING: it is the only pointer to
+    # resources a failed destroy left behind, so removing it on failure turns a
+    # recoverable partial teardown into untracked orphans.
+    if [ "${state_destroy_rc:-1}" -eq 0 ]; then
+      aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
+    fi
+    # lock.json is swept UNCONDITIONALLY. It points at nothing, and a lock
+    # stranded by a force-quit makes `state destroy` itself exit non-zero --
+    # so gating the lock sweep on that rc would suppress the very cleanup that
+    # unsticks the fixture, wedging the next run's deploy until the lock TTL
+    # expires.
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
   fi
   set -eu
