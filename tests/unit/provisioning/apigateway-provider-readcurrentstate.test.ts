@@ -239,6 +239,52 @@ describe('ApiGatewayProvider.readCurrentState', () => {
     });
   });
 
+  it('emits the six #609-backfilled Stage fields in CFn shape when GetStage returns them', async () => {
+    mockSend.mockResolvedValueOnce({
+      stageName: 'prod',
+      deploymentId: 'dep-1',
+      cacheClusterEnabled: true,
+      cacheClusterSize: '0.5',
+      clientCertificateId: 'cert-123',
+      documentationVersion: 'v1',
+      accessLogSettings: {
+        destinationArn: 'arn:aws:logs:us-east-1:123456789012:log-group:gw',
+        format: '$context.requestId',
+      },
+      canarySettings: {
+        percentTraffic: 25,
+        deploymentId: 'dep-canary',
+        stageVariableOverrides: { flag: 'canary' },
+        useStageCache: false,
+      },
+    });
+
+    const result = await provider.readCurrentState('prod', 'StageLogical', 'AWS::ApiGateway::Stage', {
+      RestApiId: 'api-1',
+    });
+
+    expect(result).toEqual({
+      RestApiId: 'api-1',
+      StageName: 'prod',
+      DeploymentId: 'dep-1',
+      Description: '',
+      CacheClusterEnabled: true,
+      CacheClusterSize: '0.5',
+      ClientCertificateId: 'cert-123',
+      DocumentationVersion: 'v1',
+      AccessLogSetting: {
+        DestinationArn: 'arn:aws:logs:us-east-1:123456789012:log-group:gw',
+        Format: '$context.requestId',
+      },
+      CanarySetting: {
+        PercentTraffic: 25,
+        DeploymentId: 'dep-canary',
+        StageVariableOverrides: { flag: 'canary' },
+        UseStageCache: false,
+      },
+    });
+  });
+
   it('rebuilds Stage MethodSettings from the get-stage map in state order, state-declared fields only (issue #966)', async () => {
     mockSend.mockResolvedValueOnce({
       stageName: 'prod',

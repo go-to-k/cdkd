@@ -10,7 +10,7 @@ A computed read `properties[k]` also counts when `k` iterates a literal name tab
 ## Summary
 
 - Provider classes classified: **84**
-- Declared properties: **1081** (**1079** with read evidence)
+- Declared properties: **1068** (**1066** with read evidence)
 - Fully wired classes: **82**
 - Allow-listed classes (visible, non-blocking): **2**
 - Classes with a whole-bag blind spot (recorded, never an excuse): **19**
@@ -37,7 +37,7 @@ Sites where a whole property bag left the evidence walk (a spread, an unresolvab
 | --- | --- |
 | `ACMCertificateProvider` (acm-certificate-provider.ts) | `computed key in update()` |
 | `ApiGatewayProvider` (apigateway-provider.ts) | `computed key in updateAuthorizer()`, `computed key in updateMethod()` |
-| `AppSyncProvider` (appsync-provider.ts) | `computed key in applyGraphQLApiConfig()`, `computed key in updateGraphQLApi()`, `computed key in updateResolver()` |
+| `AppSyncProvider` (appsync-provider.ts) | `computed key in updateResolver()` |
 | `DynamoDBGlobalTableProvider` (dynamodb-globaltable-provider.ts) | `extractLocalTags(...) in update()` |
 | `ECRProvider` (ecr-provider.ts) | `hasCdkAutoDeleteTag(...) in delete()` |
 | `EFSProvider` (efs-provider.ts) | `computed key in updateFileSystem()` |
@@ -64,9 +64,9 @@ Sites where a whole property bag left the evidence walk (a spread, an unresolvab
 | `AgentCoreCodeInterpreterProvider` | agentcore-code-interpreter-provider.ts | wired | 0 | 0 |
 | `AgentCoreEvaluatorProvider` | agentcore-evaluator-provider.ts | wired | 6 | 6 |
 | `AgentCoreRuntimeProvider` | agentcore-runtime-provider.ts | wired | 10 | 10 |
-| `ApiGatewayProvider` | apigateway-provider.ts | wired | 32 | 32 |
+| `ApiGatewayProvider` | apigateway-provider.ts | wired | 38 | 38 |
 | `ApiGatewayV2Provider` | apigatewayv2-provider.ts | wired | 36 | 36 |
-| `AppSyncProvider` | appsync-provider.ts | wired | 37 | 37 |
+| `AppSyncProvider` | appsync-provider.ts | wired | 24 | 24 |
 | `ASGProvider` | asg-provider.ts | wired | 33 | 33 |
 | `BudgetsBudgetProvider` | budgets-budget-provider.ts | wired | 3 | 3 |
 | `CloudFrontDistributionProvider` | cloudfront-distribution-provider.ts | wired | 2 | 2 |
@@ -82,7 +82,7 @@ Sites where a whole property bag left the evidence walk (a spread, an unresolvab
 | `DocDBProvider` | docdb-provider.ts | wired | 21 | 21 |
 | `DynamoDBGlobalTableProvider` | dynamodb-globaltable-provider.ts | wired | 14 | 14 |
 | `DynamoDBTableProvider` | dynamodb-table-provider.ts | wired | 19 | 19 |
-| `EC2Provider` | ec2-provider.ts | wired | 70 | 70 |
+| `EC2Provider` | ec2-provider.ts | wired | 64 | 64 |
 | `ECRProvider` | ecr-provider.ts | wired | 9 | 9 |
 | `ECSProvider` | ecs-provider.ts | wired | 40 | 40 |
 | `EFSProvider` | efs-provider.ts | wired | 18 | 18 |

@@ -649,6 +649,45 @@ describe('ApiGatewayProvider read-update round-trip', () => {
     expect(patches.some((p) => p.path === '/authType')).toBe(false);
   });
 
+  // ─── AWS::ApiGateway::Stage (#609 backfilled fields) ────────────────
+
+  it('Stage round-trip: state == AWS produces zero AWS-side mutations for the #609-backfilled fields', async () => {
+    // GetStage returns all six backfilled fields; feeding the CFn-shaped
+    // readback into update() as BOTH sides must emit no UpdateStage call —
+    // the `cdkd drift --revert` no-drift invariant.
+    mockSend.mockResolvedValueOnce({
+      stageName: 'prod',
+      deploymentId: 'dep-1',
+      cacheClusterEnabled: true,
+      cacheClusterSize: '0.5',
+      clientCertificateId: 'cert-123',
+      documentationVersion: 'v1',
+      accessLogSettings: { destinationArn: 'arn:log', format: '$context.requestId' },
+      canarySettings: {
+        percentTraffic: 25,
+        deploymentId: 'dep-canary',
+        stageVariableOverrides: { flag: 'canary' },
+        useStageCache: false,
+      },
+    });
+
+    const observed = await provider.readCurrentState('prod', 'S', 'AWS::ApiGateway::Stage', {
+      RestApiId: 'api-1',
+    });
+    expect(observed).toBeDefined();
+
+    await provider.update(
+      'S',
+      'prod',
+      'AWS::ApiGateway::Stage',
+      JSON.parse(JSON.stringify(observed)),
+      JSON.parse(JSON.stringify(observed))
+    );
+
+    // Only the GetStage read — no UpdateStage mutation.
+    expect(mockSend).toHaveBeenCalledTimes(1);
+  });
+
   // ─── Other immutable-update sub-resources (parity with Method) ──────
 
   it('Deployment update() throws ResourceUpdateNotSupportedError', async () => {

@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "summary": {
     "classifiedCount": 84,
-    "declaredProperties": 1081,
-    "wiredProperties": 1079,
+    "declaredProperties": 1068,
+    "wiredProperties": 1066,
     "wired": 82,
     "gap": 0,
     "allowListed": 2,
@@ -422,8 +422,25 @@
       "file": "apigateway-provider.ts",
       "className": "ApiGatewayProvider",
       "bucket": "wired",
-      "declaredCount": 32,
+      "declaredCount": 38,
       "properties": [
+        {
+          "name": "AccessLogSetting",
+          "status": "wired",
+          "types": [
+            "AWS::ApiGateway::Stage"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "createStage",
+            "update",
+            "updateStage"
+          ]
+        },
         {
           "name": "ApiKeyRequired",
           "status": "wired",
@@ -547,6 +564,74 @@
           ]
         },
         {
+          "name": "CacheClusterEnabled",
+          "status": "wired",
+          "types": [
+            "AWS::ApiGateway::Stage"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "createStage",
+            "update",
+            "updateStage"
+          ]
+        },
+        {
+          "name": "CacheClusterSize",
+          "status": "wired",
+          "types": [
+            "AWS::ApiGateway::Stage"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "createStage",
+            "update",
+            "updateStage"
+          ]
+        },
+        {
+          "name": "CanarySetting",
+          "status": "wired",
+          "types": [
+            "AWS::ApiGateway::Stage"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "createStage",
+            "update",
+            "updateStage"
+          ]
+        },
+        {
+          "name": "ClientCertificateId",
+          "status": "wired",
+          "types": [
+            "AWS::ApiGateway::Stage"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "createStage",
+            "update",
+            "updateStage"
+          ]
+        },
+        {
           "name": "CloudWatchRoleArn",
           "status": "wired",
           "types": [
@@ -594,6 +679,23 @@
           "seededBy": [
             "create",
             "createDeployment",
+            "createStage",
+            "update",
+            "updateStage"
+          ]
+        },
+        {
+          "name": "DocumentationVersion",
+          "status": "wired",
+          "types": [
+            "AWS::ApiGateway::Stage"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
             "createStage",
             "update",
             "updateStage"
@@ -1617,26 +1719,8 @@
       "file": "appsync-provider.ts",
       "className": "AppSyncProvider",
       "bucket": "wired",
-      "declaredCount": 37,
+      "declaredCount": 24,
       "properties": [
-        {
-          "name": "AdditionalAuthenticationProviders",
-          "status": "wired",
-          "types": [
-            "AWS::AppSync::GraphQLApi"
-          ],
-          "evidence": [
-            "delegated",
-            "element-read"
-          ],
-          "seededBy": [
-            "applyGraphQLApiConfig",
-            "create",
-            "createGraphQLApi",
-            "update",
-            "updateGraphQLApi"
-          ]
-        },
         {
           "name": "ApiId",
           "status": "wired",
@@ -1659,21 +1743,6 @@
             "update",
             "updateApiKey",
             "updateGraphQLSchema"
-          ]
-        },
-        {
-          "name": "ApiType",
-          "status": "wired",
-          "types": [
-            "AWS::AppSync::GraphQLApi"
-          ],
-          "evidence": [
-            "delegated",
-            "element-read"
-          ],
-          "seededBy": [
-            "create",
-            "createGraphQLApi"
           ]
         },
         {
@@ -1799,42 +1868,6 @@
           ]
         },
         {
-          "name": "EnhancedMetricsConfig",
-          "status": "wired",
-          "types": [
-            "AWS::AppSync::GraphQLApi"
-          ],
-          "evidence": [
-            "delegated",
-            "element-read"
-          ],
-          "seededBy": [
-            "applyGraphQLApiConfig",
-            "create",
-            "createGraphQLApi",
-            "update",
-            "updateGraphQLApi"
-          ]
-        },
-        {
-          "name": "EnvironmentVariables",
-          "status": "wired",
-          "types": [
-            "AWS::AppSync::GraphQLApi"
-          ],
-          "evidence": [
-            "delegated",
-            "element-read"
-          ],
-          "seededBy": [
-            "applyEnvironmentVariables",
-            "create",
-            "createGraphQLApi",
-            "update",
-            "updateGraphQLApi"
-          ]
-        },
-        {
           "name": "Expires",
           "status": "wired",
           "types": [
@@ -1884,24 +1917,6 @@
           ]
         },
         {
-          "name": "IntrospectionConfig",
-          "status": "wired",
-          "types": [
-            "AWS::AppSync::GraphQLApi"
-          ],
-          "evidence": [
-            "delegated",
-            "element-read"
-          ],
-          "seededBy": [
-            "applyGraphQLApiConfig",
-            "create",
-            "createGraphQLApi",
-            "update",
-            "updateGraphQLApi"
-          ]
-        },
-        {
           "name": "Kind",
           "status": "wired",
           "types": [
@@ -1916,24 +1931,6 @@
             "createResolver",
             "update",
             "updateResolver"
-          ]
-        },
-        {
-          "name": "LambdaAuthorizerConfig",
-          "status": "wired",
-          "types": [
-            "AWS::AppSync::GraphQLApi"
-          ],
-          "evidence": [
-            "delegated",
-            "element-read"
-          ],
-          "seededBy": [
-            "applyGraphQLApiConfig",
-            "create",
-            "createGraphQLApi",
-            "update",
-            "updateGraphQLApi"
           ]
         },
         {
@@ -1971,24 +1968,6 @@
           ]
         },
         {
-          "name": "MergedApiExecutionRoleArn",
-          "status": "wired",
-          "types": [
-            "AWS::AppSync::GraphQLApi"
-          ],
-          "evidence": [
-            "delegated",
-            "element-read"
-          ],
-          "seededBy": [
-            "applyGraphQLApiConfig",
-            "create",
-            "createGraphQLApi",
-            "update",
-            "updateGraphQLApi"
-          ]
-        },
-        {
           "name": "Name",
           "status": "wired",
           "types": [
@@ -2002,42 +1981,6 @@
           "seededBy": [
             "create",
             "createDataSource",
-            "createGraphQLApi",
-            "update",
-            "updateGraphQLApi"
-          ]
-        },
-        {
-          "name": "OpenIDConnectConfig",
-          "status": "wired",
-          "types": [
-            "AWS::AppSync::GraphQLApi"
-          ],
-          "evidence": [
-            "delegated",
-            "element-read"
-          ],
-          "seededBy": [
-            "applyGraphQLApiConfig",
-            "create",
-            "createGraphQLApi",
-            "update",
-            "updateGraphQLApi"
-          ]
-        },
-        {
-          "name": "OwnerContact",
-          "status": "wired",
-          "types": [
-            "AWS::AppSync::GraphQLApi"
-          ],
-          "evidence": [
-            "delegated",
-            "element-read"
-          ],
-          "seededBy": [
-            "applyGraphQLApiConfig",
-            "create",
             "createGraphQLApi",
             "update",
             "updateGraphQLApi"
@@ -2061,24 +2004,6 @@
           ]
         },
         {
-          "name": "QueryDepthLimit",
-          "status": "wired",
-          "types": [
-            "AWS::AppSync::GraphQLApi"
-          ],
-          "evidence": [
-            "delegated",
-            "element-read"
-          ],
-          "seededBy": [
-            "applyGraphQLApiConfig",
-            "create",
-            "createGraphQLApi",
-            "update",
-            "updateGraphQLApi"
-          ]
-        },
-        {
           "name": "RequestMappingTemplate",
           "status": "wired",
           "types": [
@@ -2093,24 +2018,6 @@
             "createResolver",
             "update",
             "updateResolver"
-          ]
-        },
-        {
-          "name": "ResolverCountLimit",
-          "status": "wired",
-          "types": [
-            "AWS::AppSync::GraphQLApi"
-          ],
-          "evidence": [
-            "delegated",
-            "element-read"
-          ],
-          "seededBy": [
-            "applyGraphQLApiConfig",
-            "create",
-            "createGraphQLApi",
-            "update",
-            "updateGraphQLApi"
           ]
         },
         {
@@ -2214,39 +2121,6 @@
           ]
         },
         {
-          "name": "UserPoolConfig",
-          "status": "wired",
-          "types": [
-            "AWS::AppSync::GraphQLApi"
-          ],
-          "evidence": [
-            "delegated",
-            "element-read"
-          ],
-          "seededBy": [
-            "applyGraphQLApiConfig",
-            "create",
-            "createGraphQLApi",
-            "update",
-            "updateGraphQLApi"
-          ]
-        },
-        {
-          "name": "Visibility",
-          "status": "wired",
-          "types": [
-            "AWS::AppSync::GraphQLApi"
-          ],
-          "evidence": [
-            "delegated",
-            "element-read"
-          ],
-          "seededBy": [
-            "create",
-            "createGraphQLApi"
-          ]
-        },
-        {
           "name": "XrayEnabled",
           "status": "wired",
           "types": [
@@ -2266,8 +2140,6 @@
       ],
       "gaps": [],
       "blindSpots": [
-        "computed key in applyGraphQLApiConfig()",
-        "computed key in updateGraphQLApi()",
         "computed key in updateResolver()"
       ]
     },
@@ -5543,7 +5415,7 @@
       "file": "ec2-provider.ts",
       "className": "EC2Provider",
       "bucket": "wired",
-      "declaredCount": 70,
+      "declaredCount": 64,
       "properties": [
         {
           "name": "AllocationId",
@@ -5592,24 +5464,6 @@
             "buildBlockDeviceMappings",
             "create",
             "createInstance"
-          ]
-        },
-        {
-          "name": "CarrierGatewayId",
-          "status": "wired",
-          "types": [
-            "AWS::EC2::Route"
-          ],
-          "evidence": [
-            "delegated",
-            "element-read"
-          ],
-          "seededBy": [
-            "applyUpdate",
-            "create",
-            "createRoute",
-            "update",
-            "updateRoute"
           ]
         },
         {
@@ -5696,24 +5550,6 @@
           ]
         },
         {
-          "name": "CoreNetworkArn",
-          "status": "wired",
-          "types": [
-            "AWS::EC2::Route"
-          ],
-          "evidence": [
-            "delegated",
-            "element-read"
-          ],
-          "seededBy": [
-            "applyUpdate",
-            "create",
-            "createRoute",
-            "update",
-            "updateRoute"
-          ]
-        },
-        {
           "name": "CreditSpecification",
           "status": "wired",
           "types": [
@@ -5790,31 +5626,6 @@
             "createRoute",
             "update",
             "updateRoute"
-          ]
-        },
-        {
-          "name": "DestinationPrefixListId",
-          "status": "wired",
-          "types": [
-            "AWS::EC2::Route"
-          ],
-          "evidence": [
-            "delegated",
-            "element-read"
-          ],
-          "seededBy": [
-            "applyUpdate",
-            "buildIpPermission",
-            "create",
-            "createRoute",
-            "createSecurityGroupIngress",
-            "delete",
-            "deleteSecurityGroupIngress",
-            "readCurrentState",
-            "readSecurityGroupIngressCurrentState",
-            "update",
-            "updateRoute",
-            "updateSecurityGroupIngress"
           ]
         },
         {
@@ -6186,24 +5997,6 @@
           "seededBy": [
             "create",
             "createInstance"
-          ]
-        },
-        {
-          "name": "LocalGatewayId",
-          "status": "wired",
-          "types": [
-            "AWS::EC2::Route"
-          ],
-          "evidence": [
-            "delegated",
-            "element-read"
-          ],
-          "seededBy": [
-            "applyUpdate",
-            "create",
-            "createRoute",
-            "update",
-            "updateRoute"
           ]
         },
         {
@@ -6726,24 +6519,6 @@
           ]
         },
         {
-          "name": "TransitGatewayId",
-          "status": "wired",
-          "types": [
-            "AWS::EC2::Route"
-          ],
-          "evidence": [
-            "delegated",
-            "element-read"
-          ],
-          "seededBy": [
-            "applyUpdate",
-            "create",
-            "createRoute",
-            "update",
-            "updateRoute"
-          ]
-        },
-        {
           "name": "UserData",
           "status": "wired",
           "types": [
@@ -6756,24 +6531,6 @@
           "seededBy": [
             "create",
             "createInstance"
-          ]
-        },
-        {
-          "name": "VpcEndpointId",
-          "status": "wired",
-          "types": [
-            "AWS::EC2::Route"
-          ],
-          "evidence": [
-            "delegated",
-            "element-read"
-          ],
-          "seededBy": [
-            "applyUpdate",
-            "create",
-            "createRoute",
-            "update",
-            "updateRoute"
           ]
         },
         {

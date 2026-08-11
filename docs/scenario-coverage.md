@@ -122,6 +122,7 @@ These integ fixtures have no `.scenarios.json` sidecar. They may or may not exer
 
 - [`acm-certificate`](../tests/integration/acm-certificate/)
 - [`apigatewayv2-update-removal`](../tests/integration/apigatewayv2-update-removal/)
+- [`apigw-stage-props`](../tests/integration/apigw-stage-props/)
 - [`apigw-stage-throttling`](../tests/integration/apigw-stage-throttling/)
 - [`apigw-usage-plan-key`](../tests/integration/apigw-usage-plan-key/)
 - [`appconfig`](../tests/integration/appconfig/)
