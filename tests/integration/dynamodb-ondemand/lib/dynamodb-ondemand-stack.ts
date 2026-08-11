@@ -131,6 +131,12 @@ export class DynamodbOndemandStack extends cdk.Stack {
     // when the template declares no capacity either. This phase reproduces the
     // supported half of that A/B end to end.
     //
+    // NO GlobalSecondaryIndex on purpose: `AWS::DynamoDB::Table`'s provider
+    // does not carry per-index `ProvisionedThroughput` into the flip call the
+    // way the GlobalTable provider does for issue #1421, so a GSI here would
+    // surface that separate, pre-existing gap rather than this issue's. Filed
+    // as issue #1588; the index-status half of the wait is unit-tested.
+    //
     // A hand-written L1 because `dynamodb.Table` always emits `billingMode` —
     // the property has to be genuinely ABSENT from the template. The table is
     // UNCONDITIONAL and only its properties are mode-keyed; a mode-gated

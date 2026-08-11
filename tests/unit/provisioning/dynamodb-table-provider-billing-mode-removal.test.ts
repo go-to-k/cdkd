@@ -120,42 +120,58 @@ describe('DynamoDBTableProvider BillingMode removal resets to PROVISIONED (issue
     expect(updateInputs()[0]).toEqual({ TableName: TABLE_NAME, BillingMode: 'PROVISIONED' });
   });
 
-  it('gives a BillingMode FLIP the long ACTIVE-wait budget, not the 60s default', async () => {
+  it('gives a BillingMode FLIP the long ACTIVE-wait budget, and waits on the INDEXES', async () => {
     // Found by the real-AWS re-run of this very fixture: a PAY_PER_REQUEST ->
     // PROVISIONED flip exceeded the 60s budget calibrated on capacity edits
     // and failed the deploy with `did not reach ACTIVE status within 60
     // seconds`, rolling the whole stack back. Invisible before this issue
     // because the removal never produced a valid UpdateTable to wait on.
-    let describeCalls = 0;
-    mockSend.mockImplementation((command: { constructor: { name: string } }) => {
-      if (command.constructor.name === 'DescribeTableCommand') {
-        describeCalls += 1;
-        return Promise.resolve({
-          Table: {
-            TableName: TABLE_NAME,
-            TableArn: TABLE_ARN,
-            // First DescribeTable is update()'s own read; the table then sits
-            // in UPDATING past the 60-poll default before settling.
-            TableStatus: describeCalls > 90 ? 'ACTIVE' : 'UPDATING',
-            BillingModeSummary: { BillingMode: 'PAY_PER_REQUEST' },
-          },
-        });
-      }
-      return Promise.resolve({});
-    });
+    //
+    // Fake timers, not real sleeps: a review measured the first version of
+    // this test adding ~90s of wall clock to the suite by driving 91 real
+    // 1s polls.
+    vi.useFakeTimers();
+    try {
+      let describeCalls = 0;
+      mockSend.mockImplementation((command: { constructor: { name: string } }) => {
+        if (command.constructor.name === 'DescribeTableCommand') {
+          describeCalls += 1;
+          return Promise.resolve({
+            Table: {
+              TableName: TABLE_NAME,
+              TableArn: TABLE_ARN,
+              // The first DescribeTable is update()'s own read; the table then
+              // sits in UPDATING past the 60-poll default before settling.
+              TableStatus: describeCalls > 90 ? 'ACTIVE' : 'UPDATING',
+              BillingModeSummary: { BillingMode: 'PAY_PER_REQUEST' },
+              // A flip re-provisions every index, and the table reports ACTIVE
+              // before they do — the wait must not return here.
+              GlobalSecondaryIndexes: [
+                { IndexName: 'gsi', IndexStatus: describeCalls > 95 ? 'ACTIVE' : 'UPDATING' },
+              ],
+            },
+          });
+        }
+        return Promise.resolve({});
+      });
 
-    await expect(
-      provider.update(
+      const pending = provider.update(
         'MyTable',
         TABLE_NAME,
         RESOURCE_TYPE,
         { ...baseProps, ProvisionedThroughput: { ReadCapacityUnits: 3, WriteCapacityUnits: 4 } },
         { ...baseProps, BillingMode: 'PAY_PER_REQUEST' }
-      )
-    ).resolves.toBeDefined();
+      );
+      await vi.advanceTimersByTimeAsync(200_000);
+      await expect(pending).resolves.toBeDefined();
 
-    expect(describeCalls).toBeGreaterThan(60);
-  }, 200_000);
+      // Past the 60-poll default AND past the table-ACTIVE-but-index-UPDATING
+      // window, so both halves of the fix are load-bearing.
+      expect(describeCalls).toBeGreaterThan(95);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 
   it('is a NO-OP when the previous side never recorded a BillingMode either', async () => {
     // Both sides normalize to PROVISIONED, so a table that never declared the
@@ -230,28 +246,50 @@ describe('DynamoDBTableProvider BillingMode removal resets to PROVISIONED (issue
     });
   });
 
-  it('does NOT send an on-demand ceiling once the resolved mode is PROVISIONED', async () => {
-    // Newly reachable via this issue (review catch): a template that removes
-    // BillingMode while KEEPING OnDemandThroughput would flip the table and
-    // then send an on-demand ceiling to a provisioned table, which AWS
-    // rejects — leaving the flip half-applied.
-    await provider.update(
-      'MyTable',
-      TABLE_NAME,
-      RESOURCE_TYPE,
-      {
-        ...baseProps,
-        ProvisionedThroughput: { ReadCapacityUnits: 3, WriteCapacityUnits: 4 },
-        OnDemandThroughput: { MaxReadRequestUnits: 50 },
-      },
-      { ...baseProps, BillingMode: 'PAY_PER_REQUEST' }
-    );
+  it('REFUSES a flip to PROVISIONED that still declares OnDemandThroughput, before any call', async () => {
+    // Newly reachable via this issue: the flip would be applied first and the
+    // on-demand ceiling then REJECTED by AWS, leaving the table half-changed.
+    //
+    // The first fix skipped the block with a warning, and a re-review showed
+    // that is WORSE: the engine records the desired properties as state after
+    // a successful update, so the un-sent ceiling would be recorded as applied
+    // and no later deploy would ever send it. Refusing before any call leaves
+    // both AWS and state untouched.
+    await expect(
+      provider.update(
+        'MyTable',
+        TABLE_NAME,
+        RESOURCE_TYPE,
+        {
+          ...baseProps,
+          ProvisionedThroughput: { ReadCapacityUnits: 3, WriteCapacityUnits: 4 },
+          OnDemandThroughput: { MaxReadRequestUnits: 50 },
+        },
+        { ...baseProps, BillingMode: 'PAY_PER_REQUEST' }
+      )
+    ).rejects.toThrow(/still declaring OnDemandThroughput/);
+
+    // NOTHING was applied — not even the flip that would otherwise go first.
+    expect(updateInputs()).toHaveLength(0);
+  });
+
+  it('leaves the pre-existing always-absent-BillingMode + OnDemandThroughput shape alone', async () => {
+    // The refusal is scoped to the FLIP. A template that never declared
+    // BillingMode while carrying OnDemandThroughput is a pre-existing
+    // (CFn-invalid) shape this provider has always forwarded; widening the
+    // refusal to it would change behavior well outside this issue.
+    await expect(
+      provider.update(
+        'MyTable',
+        TABLE_NAME,
+        RESOURCE_TYPE,
+        { ...baseProps, OnDemandThroughput: { MaxReadRequestUnits: 50 } },
+        { ...baseProps }
+      )
+    ).resolves.toBeDefined();
 
     expect(updateInputs()).toHaveLength(1);
-    expect(updateInputs()[0]?.['OnDemandThroughput']).toBeUndefined();
-    expect(childLogger.warn).toHaveBeenCalledWith(
-      expect.stringContaining('OnDemandThroughput is declared but the')
-    );
+    expect(updateInputs()[0]?.['OnDemandThroughput']).toEqual({ MaxReadRequestUnits: 50 });
   });
 
   it('does not re-assert throughput or BillingMode for a TableClass-only change', async () => {
