@@ -1038,9 +1038,10 @@ export function buildDeliveryStatusAttributeMap(
       warn(
         `SNS topic ${logicalId}: DeliveryStatusLogging must be an array of ` +
           `{Protocol, ...} objects, got ${JSON.stringify(logging)} — treating it ` +
-          `as empty for this update. The desired properties can come from a cdkd ` +
-          `state record (rollback replay / drift --revert), so this does not fail ` +
-          `the update; fix the state record or re-import to clear this warning.`
+          `as empty for this update, so previously set delivery-status attributes ` +
+          `are reset. The desired properties can come from a cdkd state record ` +
+          `(rollback replay / drift --revert), so this does not fail the update; ` +
+          `fix the template (or the state record on a replay) to clear this warning.`
       );
     }
     return map;
@@ -1056,7 +1057,9 @@ export function buildDeliveryStatusAttributeMap(
       if (onMalformed === 'warn') {
         warn(
           `SNS topic ${logicalId}: skipping DeliveryStatusLogging entry ` +
-            `${JSON.stringify(entry)} — entries must be {Protocol, ...} objects.`
+            `${JSON.stringify(entry)} — entries must be {Protocol, ...} objects. ` +
+            `Attributes previously set for the skipped entry's protocol are reset, ` +
+            `as if the entry had been removed.`
         );
       }
       continue;
@@ -1073,7 +1076,8 @@ export function buildDeliveryStatusAttributeMap(
             `SNS topic ${logicalId}: skipping DeliveryStatusLogging entry with ` +
               `unsupported protocol ${JSON.stringify(config['Protocol'])}. Expected ` +
               `one of ${SNS_DELIVERY_STATUS_PROTOCOL_SPELLINGS.join(', ')} ` +
-              `(case-insensitive).`
+              `(case-insensitive). Attributes previously set for the skipped ` +
+              `entry's protocol are reset, as if the entry had been removed.`
           );
         }
         continue;

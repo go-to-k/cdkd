@@ -258,3 +258,66 @@ describe('buildDeliveryStatusAttributeMap warn mode (issue #1538)', () => {
     ).not.toThrow();
   });
 });
+
+describe('per-entry skip interacting with the removal-reset arm (issue #1538 review)', () => {
+  let provider: SNSTopicProvider;
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    mockSend.mockResolvedValue({});
+    provider = new SNSTopicProvider();
+  });
+
+  it('an unsupported-protocol DESIRED entry resets the attributes its previous twin had set', async () => {
+    // The most realistic breakage: the previous side carries a valid lambda
+    // entry; the desired (state-derived) side carries a typo'd protocol for
+    // the same intent. The typo'd entry maps to no attribute names, so the
+    // removal-reset arm treats the lambda attributes as removed — pinned
+    // here as the intended, well-defined semantic (and the warn says so).
+    const previous = {
+      TopicName: 'topic',
+      DeliveryStatusLogging: [{ Protocol: 'lambda', SuccessFeedbackRoleArn: ROLE_A }],
+    };
+    const desired = {
+      TopicName: 'topic',
+      DeliveryStatusLogging: [{ Protocol: 'lamda', SuccessFeedbackRoleArn: ROLE_A }],
+    };
+
+    await provider.update('L', TOPIC_ARN, 'AWS::SNS::Topic', desired, previous);
+
+    expect(setAttributeCalls()).toEqual([
+      {
+        TopicArn: TOPIC_ARN,
+        AttributeName: 'LambdaSuccessFeedbackRoleArn',
+        AttributeValue: '',
+      },
+    ]);
+    expect(warn).toHaveBeenCalledTimes(1);
+    const message = warn.mock.calls[0]?.[0] as string;
+    expect(message).toContain('"lamda"');
+    expect(message).toMatch(/previously set for the skipped entry's protocol are reset/);
+  });
+});
+
+describe('duplicate-protocol collision gate polarity (issue #1538 review)', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("stays SILENT on a duplicate protocol in 'skip' mode (previous side)", () => {
+    // The gate flipped from `onMalformed === 'throw'` to `!== 'skip'`; pin
+    // the skip side so the previous-side walk never starts warning about
+    // entries the user cannot act on.
+    const map = buildDeliveryStatusAttributeMap(
+      [
+        { Protocol: 'lambda', SuccessFeedbackRoleArn: ROLE_A },
+        { Protocol: 'lambda', SuccessFeedbackRoleArn: ROLE_B },
+      ],
+      'MyTopic',
+      'skip'
+    );
+
+    expect([...map.entries()]).toEqual([['LambdaSuccessFeedbackRoleArn', ROLE_B]]);
+    expect(warn).not.toHaveBeenCalled();
+  });
+});
