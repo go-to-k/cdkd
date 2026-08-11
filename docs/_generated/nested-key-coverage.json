@@ -2,12 +2,12 @@
   "summary": {
     "targetCount": 11,
     "nestedKeyCount": 703,
-    "sameSpelling": 639,
+    "sameSpelling": 636,
     "providerHandled": 53,
     "allowListed": 11,
     "caseDivergence": 0,
     "noSdkMember": 0,
-    "noWriteEvidence": 0,
+    "noWriteEvidence": 3,
     "freshObjectTargets": 11,
     "shapeClean": 87,
     "shapeHandled": 32,
@@ -4025,7 +4025,8 @@
           "nestedKey": "AnalyticsConfigurations.StorageClassAnalysis.DataExport.Destination.BucketArn",
           "topLevelProperty": "AnalyticsConfigurations",
           "terminalKey": "BucketArn",
-          "bucket": "same-spelling"
+          "bucket": "no-write-evidence",
+          "sdkNearMiss": "BucketArn"
         },
         {
           "resourceType": "AWS::S3::Bucket",
@@ -4245,14 +4246,16 @@
           "nestedKey": "InventoryConfigurations.Destination.BucketAccountId",
           "topLevelProperty": "InventoryConfigurations",
           "terminalKey": "BucketAccountId",
-          "bucket": "same-spelling"
+          "bucket": "no-write-evidence",
+          "sdkNearMiss": "BucketAccountId"
         },
         {
           "resourceType": "AWS::S3::Bucket",
           "nestedKey": "InventoryConfigurations.Destination.BucketArn",
           "topLevelProperty": "InventoryConfigurations",
           "terminalKey": "BucketArn",
-          "bucket": "same-spelling"
+          "bucket": "no-write-evidence",
+          "sdkNearMiss": "BucketArn"
         },
         {
           "resourceType": "AWS::S3::Bucket",

@@ -88,6 +88,32 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  * exported from there because `resolveS3BucketDestination` is S3-specific
  * branch selection, not a shared shape guard — the two only share the wording.
  */
+/**
+ * The CFn path of the destination bag `resolveS3BucketDestination` will pick —
+ * issue #1493 item 3, which is a MESSAGE concern, not a value one.
+ *
+ * Kept separate from the resolver rather than returned alongside the bag:
+ * `gen-nested-key-coverage`'s write-evidence walk follows a plain
+ * `const x = this.helper(...)` binding to the members written beneath it, and
+ * a DESTRUCTURED `const { bag, path } = ...` is a shape it cannot follow — so
+ * pairing the two silently withdrew the write evidence for
+ * `Destination.BucketArn` / `.BucketAccountId` and turned an opted-in target
+ * red with no behavior change at all. Measured against the pre-change provider
+ * via the critic's `--providers-dir=` seam.
+ */
+function s3BucketDestinationPath(dest: unknown, destinationPath: string): string {
+  if (
+    isPlainObject(dest) &&
+    (dest['BucketArn'] !== undefined ||
+      dest['Bucket'] !== undefined ||
+      dest['BucketAccountId'] !== undefined ||
+      dest['Format'] !== undefined)
+  ) {
+    return destinationPath;
+  }
+  return `${destinationPath}.S3BucketDestination`;
+}
+
 function describeValue(value: unknown): string {
   if (value === null) return 'null';
   if (Array.isArray(value)) return 'an array';
@@ -1130,15 +1156,15 @@ export class S3BucketProvider implements ResourceProvider {
     dest: unknown,
     destinationPath: string,
     onUnusable?: (message: string) => void
-  ): { s3Dest: Record<string, unknown> | undefined; containerPath: string } {
+  ): Record<string, unknown> | undefined {
     const nestedPath = `${destinationPath}.S3BucketDestination`;
-    const drop = (message: string): { s3Dest: undefined; containerPath: string } => {
+    const drop = (message: string): undefined => {
       if (onUnusable) {
         onUnusable(
           `${message}. Ignoring the destination here; the same value is REFUSED on a ` +
             `template-path create`
         );
-        return { s3Dest: undefined, containerPath: nestedPath };
+        return undefined;
       }
       throw new Error(message);
     };
@@ -1146,7 +1172,7 @@ export class S3BucketProvider implements ResourceProvider {
     // An ABSENT block is the template's own omission, not a shape problem —
     // AWS reports the missing required destination itself. Unchanged.
     if (dest === undefined || dest === null) {
-      return { s3Dest: undefined, containerPath: nestedPath };
+      return undefined;
     }
 
     if (!isPlainObject(dest)) {
@@ -1167,7 +1193,7 @@ export class S3BucketProvider implements ResourceProvider {
       dest['BucketAccountId'] !== undefined ||
       dest['Format'] !== undefined
     ) {
-      return { s3Dest: dest, containerPath: destinationPath };
+      return dest;
     }
 
     // NESTED (SDK) form.
@@ -1180,7 +1206,7 @@ export class S3BucketProvider implements ResourceProvider {
             `otherwise be dropped from the request with no error`
         );
       }
-      return { s3Dest: nested, containerPath: nestedPath };
+      return nested;
     }
 
     return drop(
@@ -1229,11 +1255,14 @@ export class S3BucketProvider implements ResourceProvider {
       // StorageClassAnalysis.DataExport
       if (storageClassAnalysis?.['DataExport']) {
         const dataExport = storageClassAnalysis['DataExport'] as Record<string, unknown>;
-        const { s3Dest, containerPath: destPath } = this.resolveS3BucketDestination(
+        const analyticsDestPath =
+          'AWS::S3::Bucket AnalyticsConfigurations[].StorageClassAnalysis.DataExport.Destination';
+        const s3Dest = this.resolveS3BucketDestination(
           dataExport['Destination'],
-          'AWS::S3::Bucket AnalyticsConfigurations[].StorageClassAnalysis.DataExport.Destination',
+          analyticsDestPath,
           onUnusable
         );
+        const destPath = s3BucketDestinationPath(dataExport['Destination'], analyticsDestPath);
         analyticsConfig.StorageClassAnalysis = {
           DataExport: {
             OutputSchemaVersion: readConfigString(
@@ -1337,11 +1366,13 @@ export class S3BucketProvider implements ResourceProvider {
   ): Promise<void> {
     for (const config of configs) {
       const id = config['Id'] as string;
-      const { s3Dest, containerPath: destPath } = this.resolveS3BucketDestination(
+      const inventoryDestPath = 'AWS::S3::Bucket InventoryConfigurations[].Destination';
+      const s3Dest = this.resolveS3BucketDestination(
         config['Destination'],
-        'AWS::S3::Bucket InventoryConfigurations[].Destination',
+        inventoryDestPath,
         onUnusable
       );
+      const destPath = s3BucketDestinationPath(config['Destination'], inventoryDestPath);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const inventoryConfig: any = {
         Id: id,

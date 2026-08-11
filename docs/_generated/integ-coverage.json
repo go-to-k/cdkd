@@ -4601,6 +4601,7 @@
         "outputs-only-export",
         "propagation-races-2",
         "recreate-via-cc-api",
+        "s3-analytics-inventory",
         "s3-cloudfront",
         "s3-event-notification",
         "s3-lifecycle",
@@ -4726,6 +4727,9 @@
         "recreate-via-cc-api": [
           "l1"
         ],
+        "s3-analytics-inventory": [
+          "l1"
+        ],
         "s3-cloudfront": [
           "l2"
         ],
@@ -4773,6 +4777,7 @@
       "integs": [
         "migrate-from-cfn",
         "propagation-races-2",
+        "s3-analytics-inventory",
         "s3-replication-and-filter"
       ],
       "signals": {
@@ -4780,6 +4785,9 @@
           "literal"
         ],
         "propagation-races-2": [
+          "l1"
+        ],
+        "s3-analytics-inventory": [
           "l1"
         ],
         "s3-replication-and-filter": [
