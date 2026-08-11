@@ -23,6 +23,26 @@ import {
 export type IntrinsicResolveFn = (value: unknown) => Promise<unknown>;
 
 /**
+ * Per-type normalization of the RESOLVED desired properties, applied to the
+ * comparison side only (issue #1591).
+ *
+ * A provider that deliberately sends LESS than the template declares records
+ * the narrowed bag in state (`effectiveProperties`). Without the identical
+ * narrowing here the template's extra keys read as a user-made change on every
+ * later deploy — and for a create-only property that is a REPLACEMENT, i.e. a
+ * previously-green no-op deploy starts destroying and re-creating the resource
+ * (or failing outright, when the provider refuses the shape on the create
+ * path). Normalizing BOTH sides the same way is the rule `drift-normalize.ts`
+ * already follows for ordering; this is the same rule for narrowing.
+ *
+ * MUST be pure and synchronous — it runs inside the diff, before any AWS call.
+ */
+export type CanonicalizeDesiredFn = (
+  resourceType: string,
+  resolvedDesired: Record<string, unknown>
+) => Record<string, unknown>;
+
+/**
  * Per-type set of computed/derived read-only attributes whose value can change
  * as a side effect of an IN-PLACE update, even though the attribute NAME never
  * appears among the type's template properties (issue #985).
@@ -68,12 +88,23 @@ export class DiffCalculator {
    *                  buried inside intrinsics (e.g. `Fn::Join` literal args) are detected.
    *                  If resolution throws for a given property value, the unresolved
    *                  value is used (falling back to the original "assume equal" behavior).
+   * @param canonicalizeDesired Optional per-type normalization of the RESOLVED desired
+   *                  properties, applied to the comparison side only (issue #1591).
+   *                  It exists for the case where a provider deliberately sends less
+   *                  than the template declares: state then records the NARROWED bag,
+   *                  and without the same narrowing on this side the difference reads
+   *                  as a user-made change on every later deploy — for a create-only
+   *                  property, as a REPLACEMENT. Normalizing BOTH sides identically is
+   *                  the same rule `drift-normalize.ts` follows for ordering.
+   *                  Injected as a function rather than as a provider registry so the
+   *                  analyzer layer keeps no dependency on the provisioning layer.
    * @returns Map of logical ID to resource change
    */
   async calculateDiff(
     currentState: StackState,
     desiredTemplate: CloudFormationTemplate,
-    resolveFn?: IntrinsicResolveFn
+    resolveFn?: IntrinsicResolveFn,
+    canonicalizeDesired?: CanonicalizeDesiredFn
   ): Promise<Map<string, ResourceChange>> {
     const changes = new Map<string, ResourceChange>();
 
@@ -158,9 +189,17 @@ export class DiffCalculator {
         // a naive comparison would short-circuit on the intrinsic node and miss the
         // change. Resolving desired props against current state first avoids that.
         const rawDesiredProps = desiredResource.Properties || {};
-        const desiredPropsForCompare = resolveFn
+        const resolvedDesiredProps = resolveFn
           ? await this.resolveBestEffort(rawDesiredProps, resolveFn)
           : rawDesiredProps;
+        // Narrow the desired side the same way the provider narrows what it
+        // SENDS, so a deliberate narrowing recorded in state (issue #1591) is
+        // not re-read as a change the user made. Applied AFTER resolution: the
+        // provider decides on resolved values, so deciding on an unresolved
+        // intrinsic here would disagree with it.
+        const desiredPropsForCompare = canonicalizeDesired
+          ? canonicalizeDesired(desiredResource.Type, resolvedDesiredProps)
+          : resolvedDesiredProps;
 
         const propertyChanges = await this.compareProperties(
           desiredResource.Type,

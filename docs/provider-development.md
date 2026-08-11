@@ -131,6 +131,34 @@ Three conditions, or this becomes a way to hide losses rather than record them:
   patch. An absent field means "record the desired properties", so the engine
   gates on `??`, and an empty object is a legitimate answer.
 
+**Implement `canonicalizeDesiredProperties` alongside it — always.** The two
+are halves of one decision, and the first without the second is worse than
+neither. `effectiveProperties` makes state describe what AWS holds; the
+template still declares what it always did, so the next diff reads the dropped
+keys as a change the user made. For a create-only property that means a
+REPLACEMENT, and the engine's replacement create passes no context — so a
+provider that refuses the shape on the create path turns a previously-green
+no-op deploy into a hard failure. Without create-only knowledge (no
+`DescribeType`) it classifies in-place instead and the resource is
+delete-and-recreated on *every* deploy.
+
+```typescript
+canonicalizeDesiredProperties(
+  resourceType: string,
+  properties: Record<string, unknown>
+): Record<string, unknown> {
+  if (resourceType !== 'AWS::EC2::Route') return properties;
+  // The SAME helper the provisioning path uses — re-deriving the rule lets
+  // state and template narrow to different keys, which is the original bug
+  // wearing a new hat.
+  const { declared, narrowed } = narrowRouteDestinations(properties);
+  return declared.length > 1 ? narrowed : properties;
+}
+```
+
+It must be pure and synchronous (it runs inside the diff, before any AWS call),
+and it must return the input unchanged whenever nothing applies.
+
 ## Provider Implementation Examples
 
 ### 1. Simple Example: S3 Bucket Policy Provider

@@ -77,17 +77,25 @@ describe('EC2Provider AWS::EC2::Route effectiveProperties (#1591)', () => {
 
   // Every destination key AWS could hold, so the losing set is never empty and
   // the precedence winner is unambiguous.
-  const multiDestination = {
-    RouteTableId: ROUTE_TABLE,
-    DestinationCidrBlock: '10.0.0.0/16',
-    DestinationIpv6CidrBlock: '::/0',
-    DestinationPrefixListId: 'pl-1234',
-    GatewayId: 'igw-abc',
-  };
+  //
+  // FROZEN, and rebuilt per call rather than shared by reference: the
+  // "does not MUTATE the caller's bag" row below passed for the wrong reason
+  // when this was a single shared object — an earlier test had already narrowed
+  // it in place, so the assertion compared a narrowed bag against itself and
+  // held even with the provider mutating its input. Freezing makes an
+  // in-place `delete` throw instead of silently succeeding.
+  const multiDestination = () =>
+    Object.freeze({
+      RouteTableId: ROUTE_TABLE,
+      DestinationCidrBlock: '10.0.0.0/16',
+      DestinationIpv6CidrBlock: '::/0',
+      DestinationPrefixListId: 'pl-1234',
+      GatewayId: 'igw-abc',
+    }) as Record<string, unknown>;
 
   describe('the state-replay create arm', () => {
     it('returns the NARROWED bag, keeping only the precedence winner', async () => {
-      const result = await provider.create('R', RESOURCE_TYPE, multiDestination, {
+      const result = await provider.create('R', RESOURCE_TYPE, multiDestination(), {
         replayingState: true,
       });
 
@@ -108,7 +116,7 @@ describe('EC2Provider AWS::EC2::Route effectiveProperties (#1591)', () => {
       const result = await provider.create(
         'R',
         RESOURCE_TYPE,
-        { ...multiDestination, NatGatewayId: 'nat-1', VpcEndpointId: 'vpce-1' },
+        { ...multiDestination(), NatGatewayId: 'nat-1', VpcEndpointId: 'vpce-1' },
         { replayingState: true }
       );
 
@@ -122,15 +130,24 @@ describe('EC2Provider AWS::EC2::Route effectiveProperties (#1591)', () => {
 
     it('does not MUTATE the caller’s bag', async () => {
       // The engine holds `resolvedProps` and records it for every resource that
-      // does not narrow; mutating it in place would corrupt that.
-      const desired = { ...multiDestination };
+      // does not narrow; mutating it in place would corrupt that. Passed FROZEN
+      // so an in-place `delete` throws rather than quietly succeeding, and
+      // compared against a fresh copy so the assertion cannot be satisfied by
+      // the very mutation it is meant to catch.
+      const desired = multiDestination();
       await provider.create('R', RESOURCE_TYPE, desired, { replayingState: true });
 
-      expect(desired).toEqual(multiDestination);
+      expect(desired).toEqual({
+        RouteTableId: ROUTE_TABLE,
+        DestinationCidrBlock: '10.0.0.0/16',
+        DestinationIpv6CidrBlock: '::/0',
+        DestinationPrefixListId: 'pl-1234',
+        GatewayId: 'igw-abc',
+      });
     });
 
     it('still warns — recording the narrowing does not replace announcing it', async () => {
-      await provider.create('R', RESOURCE_TYPE, multiDestination, { replayingState: true });
+      await provider.create('R', RESOURCE_TYPE, multiDestination(), { replayingState: true });
 
       expect(childLogger.warn).toHaveBeenCalledWith(
         expect.stringContaining('Continuing with DestinationCidrBlock and ignoring the rest')
@@ -144,7 +161,7 @@ describe('EC2Provider AWS::EC2::Route effectiveProperties (#1591)', () => {
         'R',
         `${ROUTE_TABLE}|10.0.0.0/16`,
         RESOURCE_TYPE,
-        multiDestination,
+        multiDestination(),
         { RouteTableId: ROUTE_TABLE, DestinationCidrBlock: '10.0.0.0/16' }
       );
 
@@ -165,7 +182,7 @@ describe('EC2Provider AWS::EC2::Route effectiveProperties (#1591)', () => {
         'R',
         `${ROUTE_TABLE}|10.0.0.0/16`,
         RESOURCE_TYPE,
-        multiDestination,
+        multiDestination(),
         { RouteTableId: ROUTE_TABLE, DestinationCidrBlock: '10.0.0.0/16' }
       );
 
@@ -173,6 +190,29 @@ describe('EC2Provider AWS::EC2::Route effectiveProperties (#1591)', () => {
         k.startsWith('Destination')
       );
       expect(destinationKeys).toEqual(['DestinationCidrBlock']);
+    });
+
+    it('the RECORDED key is the one that reached CreateRouteCommand', async () => {
+      // Without this the suite only pins the returned object's shape, so
+      // swapping the wire-call precedence would leave every row above green
+      // while state recorded a key AWS does not hold — the original bug with a
+      // different key.
+      await provider.update(
+        'R',
+        `${ROUTE_TABLE}|10.0.0.0/16`,
+        RESOURCE_TYPE,
+        multiDestination(),
+        { RouteTableId: ROUTE_TABLE, DestinationCidrBlock: '10.0.0.0/16' }
+      );
+
+      const created = mockSend.mock.calls
+        .map((c) => c[0])
+        .find((c) => c?.constructor?.name === 'CreateRouteCommand');
+      expect(created).toBeDefined();
+      const sentDestinationKeys = Object.keys(created.input).filter(
+        (k) => k.startsWith('Destination') && created.input[k] !== undefined
+      );
+      expect(sentDestinationKeys).toEqual(['DestinationCidrBlock']);
     });
   });
 
@@ -234,7 +274,7 @@ describe('EC2Provider AWS::EC2::Route effectiveProperties (#1591)', () => {
       // The fence that keeps this change from being mistaken for a relaxation:
       // recording the narrowed bag is the replay/update answer, NOT a new
       // licence to accept the CFn-invalid shape from a template.
-      await expect(provider.create('R', RESOURCE_TYPE, multiDestination)).rejects.toThrow(
+      await expect(provider.create('R', RESOURCE_TYPE, multiDestination())).rejects.toThrow(
         /declares more than one destination/
       );
     });

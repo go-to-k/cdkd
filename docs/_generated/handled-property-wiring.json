@@ -7462,7 +7462,8 @@
       ],
       "gaps": [],
       "blindSpots": [
-        "object spread in createRoute()"
+        "computed key in narrowRouteDestinations()",
+        "object spread in narrowRouteDestinations()"
       ]
     },
     {

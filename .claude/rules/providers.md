@@ -181,6 +181,28 @@ Reach for it only when all three hold, or it becomes a way to hide losses:
   properties", which is why the engine gates on `??` and not on truthiness — an
   empty object is a legitimate answer.
 
+**`effectiveProperties` alone BREAKS the next deploy — implement
+`canonicalizeDesiredProperties` with it.** The two are halves of one decision
+and shipping the first without the second is worse than shipping neither.
+Recording the narrowed bag makes STATE describe what AWS holds; the template
+still declares what it always did, so the next diff reads the dropped keys as a
+user-made ADD. For a create-only property that is a REPLACEMENT — every
+`AWS::EC2::Route` destination key is create-only in the registry schema — and
+the engine's replacement create passes no context, so a provider that refuses
+the shape on the create path fails the deploy outright. A previously-green
+no-op deploy starts erroring. On the degraded path (no `DescribeType`, so no
+create-only knowledge) it is worse: the change classifies in-place and the
+resource is delete-and-recreated on EVERY deploy.
+
+So narrow the DESIRED side identically, via
+`ResourceProvider.canonicalizeDesiredProperties(resourceType, properties)` —
+pure, synchronous, applied by `DiffCalculator` to the resolved desired
+properties. Share ONE helper with the provisioning path
+(`narrowRouteDestinations` is the example) rather than re-deriving the rule, or
+state and template end up narrowed to different keys and the fix becomes the
+bug. This is the same "normalize BOTH comparison sides" rule
+`drift-normalize.ts` already records for ordering.
+
 REMOVALS are a separate decision and the conservative reading usually stands: a
 junk record cannot distinguish "cdkd created this and the template dropped it"
 from "somebody added it out of band". But say so ACCURATELY — "re-deploy once

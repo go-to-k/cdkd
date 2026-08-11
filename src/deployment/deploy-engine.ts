@@ -1199,7 +1199,9 @@ export class DeployEngine {
       const changes = await this.diffCalculator.calculateDiff(
         currentState,
         effectiveTemplate,
-        diffResolveFn
+        diffResolveFn,
+        (resourceType, resolvedDesired) =>
+          this.canonicalizeDesiredForDiff(resourceType, resolvedDesired)
       );
       const hasChanges = this.diffCalculator.hasChanges(changes);
 
@@ -3680,6 +3682,33 @@ export class DeployEngine {
       (dep) => !parameterNames.has(dep)
     );
     return deps.length > 0 ? deps : undefined;
+  }
+
+  /**
+   * Ask the resource's provider to narrow the RESOLVED desired properties the
+   * same way it narrows what it SENDS, for the diff's comparison side only
+   * (issue #1591) — the other half of `propertiesToRecord` below.
+   *
+   * Best-effort by construction: a type with no registered provider, or a
+   * provider that does not implement the hook, compares unchanged. A throwing
+   * hook must not take the deploy down over a comparison refinement, so it is
+   * caught and the un-narrowed properties are used — the pre-#1591 behavior.
+   */
+  private canonicalizeDesiredForDiff(
+    resourceType: string,
+    resolvedDesired: Record<string, unknown>
+  ): Record<string, unknown> {
+    try {
+      const provider = this.providerRegistry.getProvider(resourceType);
+      return (
+        provider?.canonicalizeDesiredProperties?.(resourceType, resolvedDesired) ?? resolvedDesired
+      );
+    } catch (error) {
+      this.logger.debug(
+        `canonicalizeDesiredProperties failed for ${resourceType}: ${error instanceof Error ? error.message : String(error)}`
+      );
+      return resolvedDesired;
+    }
   }
 
   /**

@@ -116,6 +116,50 @@ import type {
  * - AWS::EC2::SecurityGroupIngress
  * - AWS::EC2::Instance
  */
+
+/**
+ * The `AWS::EC2::Route` destination keys, in CloudFormation's own precedence
+ * order — which is also the order `createRoute`'s
+ * `DestinationCidrBlock || DestinationIpv6CidrBlock || DestinationPrefixListId`
+ * chain resolves them.
+ */
+const ROUTE_DESTINATION_KEYS = [
+  'DestinationCidrBlock',
+  'DestinationIpv6CidrBlock',
+  'DestinationPrefixListId',
+] as const;
+
+/**
+ * Split a Route property bag into the destination keys it DECLARES and the bag
+ * carrying only the one that would actually be sent (issue #1591).
+ *
+ * ONE source for a decision two very different call sites have to agree on: the
+ * provisioning path (`createRoute`, which narrows and warns) and the DIFF path
+ * (the engine's canonicalizer, which must not report the losers as a change).
+ * If those two disagreed the fix would be worse than the bug — state and
+ * template would each be narrowed to a different key.
+ *
+ * The winner is simply `declared[0]`. That is not a shortcut: the list is built
+ * in the same order and with the same truthiness predicate as the `||` chain,
+ * so the first declared key IS what the chain resolves to. The predicate is
+ * `Boolean`, not a hand-listed `undefined | null | ''` set, because the bag is
+ * `unknown`-valued at runtime — an unquoted YAML `0` must be skipped by the
+ * narrowing exactly as the chain skips it, or the two disagree on which key
+ * was sent.
+ *
+ * `narrowed` is always a fresh object: the caller's bag is the engine's
+ * `resolvedProps`, which it records for every resource that does NOT narrow.
+ */
+export function narrowRouteDestinations(properties: Record<string, unknown>): {
+  declared: string[];
+  narrowed: Record<string, unknown>;
+} {
+  const declared = ROUTE_DESTINATION_KEYS.filter((key) => Boolean(properties[key]));
+  const narrowed = { ...properties };
+  for (const losingKey of declared.slice(1)) delete narrowed[losingKey];
+  return { declared: [...declared], narrowed };
+}
+
 export class EC2Provider implements ResourceProvider {
   private ec2Client: EC2Client;
   private logger = getLogger().child('EC2Provider');
@@ -2037,15 +2081,8 @@ export class EC2Provider implements ResourceProvider {
     // `unknown`-valued at runtime, so a numeric `0` from an unquoted YAML
     // scalar is reachable — and under a narrower predicate the guard would
     // count a destination the chain skips, producing a spurious refusal.
-    const declaredDestinations = (
-      [
-        ['DestinationCidrBlock', destinationCidrBlock],
-        ['DestinationIpv6CidrBlock', destinationIpv6CidrBlock],
-        ['DestinationPrefixListId', destinationPrefixListId],
-      ] as const
-    )
-      .filter(([, value]) => Boolean(value))
-      .map(([key]) => key);
+    const { declared: declaredDestinations, narrowed: narrowedProperties } =
+      narrowRouteDestinations(properties);
 
     // Set ONLY by the warn arm below, and only to the bag this method actually
     // sends — see the note there (issue #1591).
@@ -2066,17 +2103,11 @@ export class EC2Provider implements ResourceProvider {
         // just-deleted route (false on the replay create) — each caller's own
         // comment carries the rationale instead.
         //
-        // `usedKey` is read off the resolved `destination`, so it always names
-        // the key the wire call below actually sends. The third arm is
-        // defensive: inside this block at least two keys are truthy, so a
-        // prefix-list winner implies both CIDR keys are falsy, which would
-        // have made the count 1 and skipped the block.
-        const usedKey =
-          destination === destinationCidrBlock
-            ? 'DestinationCidrBlock'
-            : destination === destinationIpv6CidrBlock
-              ? 'DestinationIpv6CidrBlock'
-              : 'DestinationPrefixListId';
+        // `usedKey` comes from the SAME helper that resolves the wire call's
+        // destination, so it always names the key actually sent — see
+        // `narrowRouteDestinations` for why the winner is simply the first
+        // declared key.
+        const usedKey = declaredDestinations[0]!;
         // Hand the engine the bag we actually SEND, so state matches AWS
         // (issue #1591 — the residue #1590 knowingly left behind). Without
         // this the engine records every declared destination key while
@@ -2090,10 +2121,7 @@ export class EC2Provider implements ResourceProvider {
         // the bag was sent verbatim. The narrowing is already announced by the
         // warning below, so recording it makes state agree with the message
         // rather than hiding a loss the user was never told about.
-        effectiveProperties = { ...properties };
-        for (const losingKey of declaredDestinations) {
-          if (losingKey !== usedKey) delete effectiveProperties[losingKey];
-        }
+        effectiveProperties = narrowedProperties;
         onMultipleDestinations(`${message} Continuing with ${usedKey} and ignoring the rest.`);
       } else {
         throw new ProvisioningError(message, resourceType, logicalId);
@@ -4784,6 +4812,32 @@ export class EC2Provider implements ResourceProvider {
    * v1 drift scope — `AWS::EC2::Subnet`'s `updateableProperties:
    * Tags` entry serves only the template-update path today.
    */
+  /**
+   * The diff-side half of the Route multi-destination narrowing (issue #1591).
+   *
+   * `createRoute` sends exactly one destination key and reports the narrowed
+   * bag via `effectiveProperties`, so state carries one key. Without the same
+   * narrowing here the template's extra keys read as an ADDED property on the
+   * next deploy — and every destination key is create-only in the registry
+   * schema, so the diff would classify a REPLACEMENT and the engine's
+   * replacement create (which passes no context, and so gets no
+   * `onMultipleDestinations` downgrade) would hit the #1566 refusal. A
+   * previously-green no-op deploy would start failing.
+   *
+   * Shares `narrowRouteDestinations` with the provisioning path so the two
+   * cannot disagree about which key survives.
+   */
+  canonicalizeDesiredProperties(
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): Record<string, unknown> {
+    if (resourceType !== 'AWS::EC2::Route') return properties;
+    const { declared, narrowed } = narrowRouteDestinations(properties);
+    // Untouched unless the CFn-invalid multi-destination shape is present, so
+    // an ordinary single-destination route compares byte-for-byte as before.
+    return declared.length > 1 ? narrowed : properties;
+  }
+
   getDriftUnknownPaths(resourceType: string): string[] {
     switch (resourceType) {
       // NetworkInterfaces cannot be read back faithfully: the drift

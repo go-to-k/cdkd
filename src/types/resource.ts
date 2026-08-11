@@ -556,6 +556,33 @@ export interface ResourceProvider {
   getDriftUnknownPaths?(resourceType: string, properties?: Record<string, unknown>): string[];
 
   /**
+   * Narrow the RESOLVED desired properties the same way this provider narrows
+   * what it actually SENDS (issue #1591). The deploy diff applies it to the
+   * desired side before comparing against state.
+   *
+   * Implement it if — and only if — the provider returns
+   * {@link EffectivePropertiesResult.effectiveProperties}: the two are halves
+   * of one decision. `effectiveProperties` makes STATE describe what AWS holds;
+   * this makes the TEMPLATE side describe the same thing, so the narrowing does
+   * not read back as a change the user made. With only the first half, the
+   * template's extra keys resurface as a diff on every later deploy — and for a
+   * create-only property that is a REPLACEMENT, turning a green no-op deploy
+   * into a destroy-and-recreate (or an outright failure, where the provider
+   * refuses that shape on the create path).
+   *
+   * MUST be pure, synchronous, and free of AWS calls — it runs inside the diff.
+   * MUST agree with the provisioning-path narrowing key-for-key; share one
+   * helper rather than re-deriving the rule, or state and template end up
+   * narrowed differently.
+   *
+   * Return the input unchanged when nothing applies (the common case).
+   */
+  canonicalizeDesiredProperties?(
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): Record<string, unknown>;
+
+  /**
    * State property paths holding a plain-string array that is semantically an
    * UNORDERED set. The drift comparator sorts the array at these paths on BOTH
    * comparison sides before comparing, so an AWS-side reorder does not surface

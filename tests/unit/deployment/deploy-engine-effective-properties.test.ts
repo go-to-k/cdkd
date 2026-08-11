@@ -252,6 +252,79 @@ describe('DeployEngine - effectiveProperties overrides what is recorded in state
     });
   });
 
+  describe('the OTHER two engine write sites — both were uncovered', () => {
+    // The test review found that reverting either of these to `resolvedProps`
+    // left the ENTIRE unit suite green, including the one the PR's own comment
+    // calls load-bearing. A wired site with no test is indistinguishable from
+    // an unwired one.
+    it('property-driven REPLACEMENT inside UPDATE records the narrowed bag', async () => {
+      mockStateBackend.getState.mockResolvedValue({ state: priorState(), etag: 'etag-old' });
+      mockProvider.create.mockResolvedValue({
+        // A DISTINCT id: a create returning the CURRENT physical id trips the
+        // name-idempotent replacement guard (#1207) before any state write.
+        physicalId: 'rtb-1|10.0.0.0/24',
+        attributes: {},
+        effectiveProperties: NARROWED,
+      });
+      mockDiffCalculator.calculateDiff.mockResolvedValue(
+        new Map<string, ResourceChange>([
+          [
+            'MyRoute',
+            {
+              logicalId: 'MyRoute',
+              changeType: 'UPDATE',
+              resourceType: RESOURCE_TYPE,
+              desiredProperties: DESIRED,
+              // A create-only destination key changed -> replacement, which is
+              // exactly what this PR's own narrowing provokes on the next
+              // deploy of a still-invalid template.
+              propertyChanges: [
+                {
+                  propertyPath: 'DestinationIpv6CidrBlock',
+                  changeType: 'ADD',
+                  requiresReplacement: true,
+                },
+              ],
+            } as unknown as ResourceChange,
+          ],
+        ])
+      );
+
+      await makeEngine().deploy(stackName, template);
+
+      expect(mockProvider.create).toHaveBeenCalled();
+      expect(savedRecord().properties).toEqual(NARROWED);
+    });
+
+    it('the update-failure REPLACEMENT FALLBACK records the narrowed bag', async () => {
+      // `provider.update` failing with the Cloud Control "does not support
+      // UPDATE" signal makes the engine fall back to delete+create, rebuilding
+      // the update result in a fresh literal — which drops
+      // `effectiveProperties` unless it is carried explicitly.
+      //
+      // The CC signal rather than the typed `ResourceUpdateNotSupportedError`:
+      // the typed one is gated on the user passing `--replace`, so using it
+      // here would couple this test to that policy instead of to the literal
+      // under test.
+      mockStateBackend.getState.mockResolvedValue({ state: priorState(), etag: 'etag-old' });
+      mockProvider.update.mockRejectedValue(
+        new Error('UnsupportedActionException: resource does not support UPDATE')
+      );
+      mockProvider.create.mockResolvedValue({
+        physicalId: 'rtb-1|10.0.0.0/24',
+        attributes: {},
+        effectiveProperties: NARROWED,
+      });
+      mockDiffCalculator.calculateDiff.mockResolvedValue(changeMap('UPDATE'));
+
+      await makeEngine().deploy(stackName, template);
+
+      expect(mockProvider.create).toHaveBeenCalled();
+      expect(savedRecord().properties).toEqual(NARROWED);
+      expect(savedRecord().properties).not.toHaveProperty('DestinationIpv6CidrBlock');
+    });
+  });
+
   describe('the field REPLACES rather than merges', () => {
     it('a key present in the desired bag but absent from effectiveProperties is dropped', async () => {
       // A merge implementation would silently pass every assertion above (the
