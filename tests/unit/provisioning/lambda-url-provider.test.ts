@@ -200,16 +200,31 @@ describe('LambdaUrlProvider', () => {
       expect(mockSend).not.toHaveBeenCalled();
     });
 
-    it('refuses a null AuthType on update instead of opening the url up', async () => {
-      await expect(
-        provider.update(
-          'MyUrl',
-          'my-fn',
-          'AWS::Lambda::Url',
-          { TargetFunctionArn: 'my-fn', AuthType: null },
-          { TargetFunctionArn: 'my-fn', AuthType: 'AWS_IAM' }
-        )
-      ).rejects.toThrow(/AWS::Lambda::Url AuthType must be a non-empty string/);
+    it('keeps the PREVIOUS AuthType on update instead of opening the url up', async () => {
+      // The refusal became a WARN in issue #1551 (the update path is a replay
+      // path: `rollback-executor.ts` / `drift --revert` feed a cdkd STATE
+      // record in as the desired bag). What the original assertion actually
+      // protects — the url must not become PUBLIC — is unchanged and now
+      // pinned on the value sent: the previous AWS_IAM, never the 'NONE'
+      // default. The full matrix lives in
+      // `lambda-url-provider-authtype-replay.test.ts`.
+      mockSend.mockResolvedValue({
+        FunctionUrl: 'https://abc.lambda-url.us-east-1.on.aws/',
+        FunctionArn: 'arn:aws:lambda:us-east-1:123456789012:function:my-fn',
+      });
+
+      await provider.update(
+        'MyUrl',
+        'my-fn',
+        'AWS::Lambda::Url',
+        { TargetFunctionArn: 'my-fn', AuthType: null, InvokeMode: 'RESPONSE_STREAM' },
+        { TargetFunctionArn: 'my-fn', AuthType: 'AWS_IAM', InvokeMode: 'BUFFERED' }
+      );
+
+      const updateCall = mockSend.mock.calls.find(
+        (c) => c[0].constructor.name === 'UpdateFunctionUrlConfigCommand'
+      );
+      expect(updateCall?.[0].input.AuthType).toBe('AWS_IAM');
     });
 
     it('still defaults to NONE when AuthType is ABSENT, as CloudFormation does', async () => {

@@ -29,6 +29,7 @@ import type {
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
+  CreateContext,
 } from '../../types/resource.js';
 
 /**
@@ -70,11 +71,23 @@ export class SNSTopicProvider implements ResourceProvider {
 
   /**
    * Create an SNS topic
+   *
+   * `context.replayingState` (issue #1551) downgrades this method's
+   * template-shape refusals to warnings. The rollback executor's
+   * reverse-replacement arm revives the OLD topic with
+   * `create(..., previousState.properties, REPLAYING_STATE_CREATE_CONTEXT)`,
+   * so the properties bag can be a historical cdkd STATE record carrying a
+   * shape this provider now refuses — and the user has no template-side
+   * remedy for a state record. The parameter was previously absent, so that
+   * 4th argument was silently ignored and `buildDeliveryStatusAttributeMap`'s
+   * `'throw'` mode stranded the replay; issue #1538 fixed the update side
+   * only.
    */
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating SNS topic ${logicalId}`);
 
@@ -192,10 +205,14 @@ export class SNSTopicProvider implements ResourceProvider {
         // normalizes every entry's protocol; an unknown / unsupported
         // protocol throws a clear error rather than letting AWS produce
         // the cryptic generic rejection.
+        // `'warn'` on a STATE REPLAY (issue #1551): the desired bag is then a
+        // cdkd state record, not a template, so a refusal would leave the old
+        // topic unrestorable with only a hand-edit of `state.json` as a
+        // remedy. A template-path create keeps `'throw'`.
         const deliveryStatusAttributes = buildDeliveryStatusAttributeMap(
           properties['DeliveryStatusLogging'],
           logicalId,
-          'throw'
+          context?.replayingState === true ? 'warn' : 'throw'
         );
         for (const [attributeName, attributeValue] of deliveryStatusAttributes) {
           await this.snsClient.send(

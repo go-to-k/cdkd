@@ -147,20 +147,24 @@ describe('DynamoDBGlobalTableProvider malformed StreamSpecification (issue #1493
 
   // Create refused a malformed container while update sent
   // `StreamViewType: undefined` for the identical template — the create/update
-  // asymmetry the "cover the CREATE path" rule exists to prevent.
-  it('refuses a malformed container on UPDATE too, so create and update agree', async () => {
+  // asymmetry the "cover the CREATE path" rule exists to prevent. The UPDATE
+  // half became a WARN + SKIP in issue #1551 (the update path is a replay
+  // path), which keeps the two in agreement on what they REFUSE TO SEND: the
+  // malformed container never reaches AWS from either side.
+  it('never sends a malformed container on UPDATE, so create and update agree', async () => {
     mockSend.mockResolvedValue({
       Table: { TableName: 'my-test-table-xxx', TableStatus: 'ACTIVE' },
     });
 
-    await expect(
-      provider.update('MyTable', 'my-test-table-xxx', RESOURCE_TYPE, {
-        ...baseProps,
-        StreamSpecification: 'NEW_IMAGE',
-      }, { ...baseProps })
-    ).rejects.toThrow(
-      /AWS::DynamoDB::GlobalTable StreamSpecification must be an object \(got a string\)/
+    await provider.update('MyTable', 'my-test-table-xxx', RESOURCE_TYPE, {
+      ...baseProps,
+      StreamSpecification: 'NEW_IMAGE',
+    }, { ...baseProps });
+
+    const streamCall = mockSend.mock.calls.find(
+      (c) => c[0].constructor.name === 'UpdateTableCommand' && c[0].input.StreamSpecification
     );
+    expect(streamCall).toBeUndefined();
   });
 
   it('still sends a well-formed view type on UPDATE', async () => {

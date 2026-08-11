@@ -265,3 +265,157 @@ describe('DynamoDBGlobalTableProvider nested guards on a state replay (issue #15
     expect(createCall()).toBeUndefined();
   });
 });
+
+/**
+ * The UPDATE-path half of the same two guards (issue #1551).
+ *
+ * #1544 wired the downgrade at the `create()` call site only and recorded the
+ * update sites as "left strict, deliberately" — but `update()` is replayed
+ * too (`rollback-executor.ts`'s revert arm and `cdkd drift --revert` both call
+ * `update(..., previousState.properties, ...)`), so a state record carrying
+ * either malformed shape strands the replay there as well.
+ *
+ * The per-site semantics DIFFER from the create side, which is why #1551 asks
+ * for a decision per site rather than a blanket downgrade:
+ *
+ * - StreamSpecification: SKIP the block (leave the live stream alone) rather
+ *   than send the NEW_AND_OLD_IMAGES default, which would re-point a live
+ *   stream the template never asked to change.
+ * - GlobalSecondaryIndexes: SUPPRESS the diff. The create side's "omit" means
+ *   a fresh table with no indexes; on update an empty desired list means
+ *   "delete every live index", so applying it would be destructive.
+ */
+describe('DynamoDBGlobalTableProvider nested guards on the UPDATE path (issue #1551)', () => {
+  let provider: DynamoDBGlobalTableProvider;
+
+  beforeEach(() => {
+    mockSend.mockReset();
+    childLogger.warn.mockReset();
+    mockSend.mockResolvedValue({
+      Table: {
+        TableName: TABLE_NAME,
+        TableStatus: 'ACTIVE',
+        TableArn: `arn:aws:dynamodb:us-east-1:0:table/${TABLE_NAME}`,
+        BillingModeSummary: { BillingMode: 'PAY_PER_REQUEST' },
+        Replicas: [{ RegionName: 'us-east-1', ReplicaStatus: 'ACTIVE' }],
+      },
+    });
+    provider = new DynamoDBGlobalTableProvider();
+  });
+
+  const baseProps = {
+    TableName: TABLE_NAME,
+    KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
+    AttributeDefinitions: [
+      { AttributeName: 'pk', AttributeType: 'S' },
+      { AttributeName: 'gsiPk', AttributeType: 'S' },
+    ],
+    BillingMode: 'PAY_PER_REQUEST',
+    Replicas: [{ Region: 'us-east-1' }],
+  };
+
+  const liveIndex = {
+    IndexName: 'my-index',
+    KeySchema: [{ AttributeName: 'gsiPk', KeyType: 'HASH' }],
+    Projection: { ProjectionType: 'ALL' },
+  };
+
+  /** Every UpdateTable input this update issued. */
+  const updateInputs = (): Array<Record<string, unknown>> =>
+    mockSend.mock.calls
+      .filter((c) => c[0].constructor.name === 'UpdateTableCommand')
+      .map((c) => c[0].input as Record<string, unknown>);
+
+  const gsiActions = (): unknown[] =>
+    updateInputs().flatMap((i) => (i['GlobalSecondaryIndexUpdates'] as unknown[]) ?? []);
+
+  // ─── StreamSpecification ───────────────────────────────────────────────
+
+  it('WARNS on a malformed StreamSpecification and leaves the live stream untouched', async () => {
+    await provider.update(
+      'MyTable',
+      TABLE_NAME,
+      RESOURCE_TYPE,
+      { ...baseProps, StreamSpecification: '' },
+      { ...baseProps, StreamSpecification: { StreamViewType: 'KEYS_ONLY' } }
+    );
+
+    // SKIPPED, never defaulted: no UpdateTable carries a StreamSpecification.
+    expect(updateInputs().some((i) => 'StreamSpecification' in i)).toBe(false);
+    expect(childLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('AWS::DynamoDB::GlobalTable StreamSpecification')
+    );
+    expect(childLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('left untouched for this update')
+    );
+  });
+
+  it('still applies a VALID StreamSpecification change', async () => {
+    await provider.update(
+      'MyTable',
+      TABLE_NAME,
+      RESOURCE_TYPE,
+      { ...baseProps, StreamSpecification: { StreamViewType: 'NEW_IMAGE' } },
+      { ...baseProps, StreamSpecification: { StreamViewType: 'KEYS_ONLY' } }
+    );
+
+    const streamUpdate = updateInputs().find((i) => 'StreamSpecification' in i);
+    expect(streamUpdate?.['StreamSpecification']).toEqual({
+      StreamEnabled: true,
+      StreamViewType: 'NEW_IMAGE',
+    });
+  });
+
+  // ─── GlobalSecondaryIndexes ────────────────────────────────────────────
+
+  it('WARNS on a malformed DESIRED GSI blob and emits NO GSI action', async () => {
+    await provider.update(
+      'MyTable',
+      TABLE_NAME,
+      RESOURCE_TYPE,
+      { ...baseProps, GlobalSecondaryIndexes: 'bad' },
+      { ...baseProps, GlobalSecondaryIndexes: [liveIndex] }
+    );
+
+    // The destructive reading — "the template declares no indexes, so delete
+    // the live one" — must NOT happen.
+    expect(gsiActions()).toEqual([]);
+    expect(childLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('AWS::DynamoDB::GlobalTable GlobalSecondaryIndexes must be an array')
+    );
+    expect(childLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('existing indexes are left untouched')
+    );
+  });
+
+  it('WARNS on a malformed PREVIOUS (state-recorded) GSI blob and emits NO GSI action', async () => {
+    // The previous side comes from cdkd state, never from the template, so a
+    // refusal there is unrecoverable by editing the CDK code. Before #1551
+    // this call site had no hook at all and threw.
+    await provider.update(
+      'MyTable',
+      TABLE_NAME,
+      RESOURCE_TYPE,
+      { ...baseProps, GlobalSecondaryIndexes: [liveIndex] },
+      { ...baseProps, GlobalSecondaryIndexes: 'bad' }
+    );
+
+    expect(gsiActions()).toEqual([]);
+    expect(childLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('recorded in cdkd state, not in the template')
+    );
+  });
+
+  it('still emits the GSI diff when both sides are well-formed', async () => {
+    await provider.update(
+      'MyTable',
+      TABLE_NAME,
+      RESOURCE_TYPE,
+      { ...baseProps, GlobalSecondaryIndexes: [liveIndex] },
+      { ...baseProps }
+    );
+
+    expect(gsiActions()).toHaveLength(1);
+    expect(gsiActions()[0]).toMatchObject({ Create: { IndexName: 'my-index' } });
+  });
+});

@@ -450,13 +450,19 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // `GlobalSecondaryIndexes` recorded in state warns and the block is
       // OMITTED (zero indexes) instead of stranding the rollback; on a
       // template-path create the hook is `undefined` and the refusal stands.
+      const onUnusableCreateIndexes = replayWarn(this.logger, context).onUnusable;
       sdkIndexes = toSdkGlobalSecondaryIndexes(
         properties,
         currentRegion,
         billingMode,
         'min',
         diagnostics,
-        replayWarn(this.logger, context).onUnusable
+        onUnusableCreateIndexes &&
+          ((message) =>
+            onUnusableCreateIndexes(
+              `${message} Omitting the malformed block, so this create carries NO ` +
+                `indexes; the same value is REFUSED on a template-path create`
+            ))
       );
     } catch (error) {
       throw new ProvisioningError(
@@ -1010,8 +1016,34 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // same reason one level down — `rollback-executor.ts` replays a rollback
       // via `update(..., previousState.properties, ...)`, so this bag can
       // itself be a historical state record.
-      const oldBilling =
-        (previousProperties['BillingMode'] as string | undefined) ?? 'PAY_PER_REQUEST';
+      // A state-recorded previous that is itself UNUSABLE is replaced by the
+      // table's ACTUAL billing mode (issue #1552). The warn path below records
+      // the junk desired value as the new state, so the previous side of the
+      // NEXT update can be `null` / `''` while the table really runs
+      // PAY_PER_REQUEST — and `?? 'PAY_PER_REQUEST'` only rescues `null` /
+      // `undefined`, so a `''` stayed junk. Comparing a corrected template
+      // against that junk previous reads as a real flip and sends a same-mode
+      // `UpdateTable`, which DynamoDB rejects when no capacity change rides
+      // along: the deploy fails, state stays unchanged, and the rejection
+      // repeats on every deploy. `DescribeTable` was already issued above, so
+      // this costs no extra call. An ABSENT previous keeps defaulting to
+      // PAY_PER_REQUEST (the create-path default) — only the
+      // present-but-unusable case consults AWS.
+      const recordedOldBilling = previousProperties['BillingMode'];
+      const recordedOldBillingUsable =
+        recordedOldBilling === undefined ||
+        (typeof recordedOldBilling === 'string' && recordedOldBilling.trim() !== '');
+      const oldBilling = recordedOldBillingUsable
+        ? ((recordedOldBilling as string | undefined) ?? 'PAY_PER_REQUEST')
+        : (describeResp.Table?.BillingModeSummary?.BillingMode ?? 'PAY_PER_REQUEST');
+      if (!recordedOldBillingUsable) {
+        this.logger.warn(
+          `AWS::DynamoDB::GlobalTable ${logicalId}: the recorded previous BillingMode ` +
+            `is unusable (${JSON.stringify(recordedOldBilling)}) — using the table's ` +
+            `actual billing mode (${oldBilling}) as the comparison baseline for this ` +
+            `update so a corrected template does not issue a same-mode UpdateTable.`
+        );
+      }
       // An UNUSABLE desired value must fall back to the PREVIOUS billing mode,
       // NOT to the create-path default. Warning and then defaulting to
       // PAY_PER_REQUEST would be strictly worse than the bug this guards:
@@ -1089,15 +1121,42 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // above avoids (issue #1435's precedence, one level down). Firing itself
       // is source-independent — `pickAutoScalingCapacity` falls back both ways
       // — so this only ever changes WHICH member the sentence names.
+      //
+      // The GSI shape refusal is DOWNGRADED to a warning on this path (issue
+      // #1551): the desired bag can be a cdkd STATE record on a rollback
+      // replay / `drift --revert`, and a throw would strand it. The
+      // downgrade's own semantics differ from the create site's, though, and
+      // that difference is the whole point of deciding this per site — the
+      // create site OMITS the block (a fresh table with zero indexes), while
+      // here an empty desired list means "the template declares no GSIs", so
+      // step 6's diff would DELETE every live index. `gsiBlockUnusable`
+      // therefore suppresses the GSI diff entirely: the indexes are left
+      // exactly as they are (keep-previous), never dropped.
+      let gsiBlockUnusable = false;
+      const onUnusableGsiBlock = (message: string): void => {
+        gsiBlockUnusable = true;
+        this.logger.warn(
+          `${message} No GlobalSecondaryIndexes change is applied by this update; ` +
+            `the table's existing indexes are left untouched.`
+        );
+      };
       const desiredSdkIndexes = toSdkGlobalSecondaryIndexes(
         properties,
         currentRegion,
         newBilling,
         'min',
-        flippingToProvisioned ? undefined : diagnostics
+        flippingToProvisioned ? undefined : diagnostics,
+        onUnusableGsiBlock
       );
       if (flippingToProvisioned) {
-        toSdkGlobalSecondaryIndexes(properties, currentRegion, newBilling, 'seed', diagnostics);
+        toSdkGlobalSecondaryIndexes(
+          properties,
+          currentRegion,
+          newBilling,
+          'seed',
+          diagnostics,
+          onUnusableGsiBlock
+        );
       }
       for (const replica of (properties['Replicas'] ?? []) as Array<Record<string, unknown>>) {
         const replicaRegion = asRecord(replica)?.['Region'];
@@ -1198,16 +1257,39 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         // Guarded like the create path, so the two cannot disagree: without
         // it a malformed container here sent `StreamViewType: undefined`
         // while create refused the identical template (issue #1493 review).
-        flatUpdate.StreamSpecification = {
-          StreamEnabled: true,
-          StreamViewType: readConfigString(
-            properties['StreamSpecification'],
-            'StreamViewType',
-            'NEW_AND_OLD_IMAGES',
-            'AWS::DynamoDB::GlobalTable StreamSpecification'
-          ),
-        } as StreamSpecification;
-        flatChanged = true;
+        //
+        // The refusal is DOWNGRADED to a warning (issue #1551) because a
+        // rollback replay / `drift --revert` feeds a cdkd STATE record in as
+        // the desired bag, which the user cannot edit — a throw here would
+        // strand the replay. The downgrade SKIPS the block entirely rather
+        // than sending the `NEW_AND_OLD_IMAGES` default: defaulting would
+        // silently re-point a live stream's view type (and enable a stream
+        // the template never asked to enable), which is the destructive
+        // half of the guard, not the safe one. Skipping leaves the live
+        // stream exactly as it is.
+        let streamSpecUnusable = false;
+        const streamViewType = readConfigString(
+          properties['StreamSpecification'],
+          'StreamViewType',
+          'NEW_AND_OLD_IMAGES',
+          'AWS::DynamoDB::GlobalTable StreamSpecification',
+          {
+            onUnusable: (message) => {
+              streamSpecUnusable = true;
+              this.logger.warn(
+                `${message} The table's existing stream configuration is left ` +
+                  `untouched for this update rather than re-pointed at the default.`
+              );
+            },
+          }
+        );
+        if (!streamSpecUnusable) {
+          flatUpdate.StreamSpecification = {
+            StreamEnabled: true,
+            StreamViewType: streamViewType,
+          } as StreamSpecification;
+          flatChanged = true;
+        }
       }
       // Table-level on-demand ceilings, BOTH halves. The write half lives at
       // top-level `WriteOnDemandThroughputSettings`; the read half lives on
@@ -1738,15 +1820,41 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // and an auto-scaling-only template edit — `MaxCapacity` 20 -> 30,
       // invisible to DynamoDB's own API — no longer produces a bare
       // `Update: { IndexName }` that AWS rejects as an empty update.
+      // The PREVIOUS side gets the downgrade unconditionally (issue #1551):
+      // it comes from cdkd STATE, never from the template, so a refusal here
+      // is the guard-the-desired-side-only rule violated outright — a
+      // malformed block an older binary recorded would make the table
+      // permanently un-updatable with no template-side remedy. Same
+      // suppression as the desired side: with no trustworthy baseline the
+      // diff cannot tell an ADD from a no-op, so no GSI action is emitted.
       const previousSdkIndexes = toSdkGlobalSecondaryIndexes(
         previousProperties,
         currentRegion,
-        oldBilling
+        oldBilling,
+        'min',
+        undefined,
+        (message) => {
+          gsiBlockUnusable = true;
+          this.logger.warn(
+            `${message} (recorded in cdkd state, not in the template) — no ` +
+              `GlobalSecondaryIndexes change is applied by this update; the ` +
+              `table's existing indexes are left untouched.`
+          );
+        }
       );
       // `desiredSdkIndexes` was translated once at the top of update() — the
       // same call, reused rather than repeated, so the diagnostics reported
       // there provably describe the indexes actually being applied here.
-      const gsiDiff = diffGlobalSecondaryIndexes(previousSdkIndexes, desiredSdkIndexes);
+      // `gsiBlockUnusable` (issue #1551): one side's `GlobalSecondaryIndexes`
+      // was present-but-malformed and was downgraded to an EMPTY list above.
+      // Feeding that into the diff would read as "the template declares no
+      // indexes" (delete every live GSI) or as "none existed" (re-create every
+      // GSI), both destructive on a value nobody can act on from a template.
+      // Emit no GSI action at all instead; the warning already told the user
+      // why nothing moved.
+      const gsiDiff: ReturnType<typeof diffGlobalSecondaryIndexes> = gsiBlockUnusable
+        ? { added: [], removed: [], modified: [] }
+        : diffGlobalSecondaryIndexes(previousSdkIndexes, desiredSdkIndexes);
       // RAW per-index on-demand key presence for the DESIRED side, so the
       // `modified` loop can tell "the template dropped this member" from "the
       // template set it to something that did not coerce" (issue #1440).
@@ -4669,22 +4777,24 @@ export function toSdkGlobalSecondaryIndexes(
   // is an error, and naming it here beats AWS's opaque 400. Matches the
   // per-ENTRY policy below, which also refuses to swallow a bad entry.
   //
-  // `onUnusableIndexes` (issue #1544) is the create-path STATE-REPLAY
-  // downgrade, wired from `replayWarn` at the `create()` call site only: on
-  // the rollback executor's reverse-replacement replay the properties are a
-  // cdkd state record the user cannot edit, so the refusal would leave the
-  // old table unrestorable. The downgrade warns and OMITS the malformed
-  // block (zero indexes) — a well-defined skip, never a fabricated value.
-  // Every other call site leaves the hook undefined and keeps the refusal.
+  // `onUnusableIndexes` (issue #1544) is the STATE-REPLAY downgrade, wired
+  // from `replayWarn` at the `create()` call site and — since issue #1551 —
+  // from `update()` too: on the rollback executor's reverse-replacement
+  // replay (create) and on a rollback / `drift --revert` replay (update) the
+  // properties are a cdkd state record the user cannot edit, so the refusal
+  // would leave the old table unrestorable / un-rollbackable. This helper
+  // always returns the well-defined EMPTY list on the downgrade — never a
+  // fabricated value — and the CALLER states the consequence in its warning,
+  // because the two differ: on create an empty list means "a table with no
+  // indexes", while on update it would mean "delete every live index", which
+  // is why `update()` suppresses its GSI diff instead of applying the result.
+  // Any call site that leaves the hook undefined keeps the refusal.
   if (rawIndexes !== undefined && !Array.isArray(rawIndexes)) {
     const shapeDetail =
       `AWS::DynamoDB::GlobalTable GlobalSecondaryIndexes must be an array, got ` +
       `${typeof rawIndexes} (${JSON.stringify(rawIndexes)?.slice(0, 200)}).`;
     if (onUnusableIndexes) {
-      onUnusableIndexes(
-        `${shapeDetail} Omitting the malformed block, so this create carries NO ` +
-          `indexes; the same value is REFUSED on a template-path create`
-      );
+      onUnusableIndexes(shapeDetail);
       return [];
     }
     // A plain Error on purpose: this is a module-level pure helper with no

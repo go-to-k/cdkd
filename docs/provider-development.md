@@ -971,7 +971,19 @@ implementation. Three details are worth copying:
 
   - **`update()` — always warn.** `rollback-executor.ts` calls
     `provider.update(..., op.previousState.properties, ...)`, so `update()` is
-    a replay path unconditionally and there is no signal to test.
+    a replay path unconditionally and there is no signal to test. **Then pick
+    the FALLBACK per site** (issue
+    [#1551](https://github.com/go-to-k/cdkd/issues/1551)): warning and then
+    applying the CREATE DEFAULT is frequently worse than the refusal was,
+    because the default lands on a LIVE resource — it flipped an IAM-guarded
+    Lambda function URL to PUBLIC, re-pointed a live DynamoDB stream, and read
+    a malformed GSI block as "delete every index". Keep the PREVIOUS value
+    where one exists (omitting the field entirely when the API has merge
+    semantics), otherwise SKIP the block or SUPPRESS that part of the diff.
+    Whichever you choose, remember the warn path now records the unusable
+    value as the new state, so seed the next comparison from AWS's live value
+    where the provider already holds it (issue
+    [#1552](https://github.com/go-to-k/cdkd/issues/1552)).
   - **`create()` — refuse, unless `CreateContext.replayingState` is set.**
     `create()` is a replay path only through the rollback executor's
     reverse-replacement arm, which revives the OLD resource from

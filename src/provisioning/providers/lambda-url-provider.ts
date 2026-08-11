@@ -161,15 +161,48 @@ export class LambdaUrlProvider implements ResourceProvider {
     // `|| 'NONE'` turned a blank / null AuthType into a PUBLIC function URL
     // (issue #1493). The #1490 sweep of this idiom keyed on the `as string`
     // cast and so missed this typed-cast spelling.
-    const authType = requireConfigString(
+    //
+    // The refusal is DOWNGRADED to a warning here (issue #1551), unlike the
+    // create-path site: `rollback-executor.ts` replays a rollback via
+    // `update(..., previousState.properties, ...)` and `cdkd drift --revert`
+    // does the same, so this desired bag can be a historical cdkd STATE
+    // record the user cannot edit from the template. A hard refusal would
+    // make such a URL un-rollbackable.
+    //
+    // The fallback is the PREVIOUS value, never the create default: warning
+    // and then defaulting to `'NONE'` would silently flip a live IAM-guarded
+    // function URL to PUBLIC — strictly worse than the pre-guard behavior,
+    // where AWS rejected the junk value loudly and the auth stayed put. When
+    // the previous side is unusable too (or absent), `AuthType` is OMITTED
+    // from the update: `UpdateFunctionUrlConfig` has merge semantics (the
+    // same live-probed behavior the `InvokeMode` / `Cors` handling below
+    // relies on), so the live auth type is retained rather than reset.
+    let authTypeUnusable = false;
+    const requestedAuthType = requireConfigString(
       properties['AuthType'],
       'NONE',
-      'AWS::Lambda::Url AuthType'
+      'AWS::Lambda::Url AuthType',
+      {
+        onUnusable: (message) => {
+          authTypeUnusable = true;
+          this.logger.warn(
+            `${message} The function URL's existing auth type is kept for this ` +
+              `update rather than reset to the default (NONE), which would make ` +
+              `the URL public.`
+          );
+        },
+      }
     ) as FunctionUrlAuthType;
+    const previousAuthType = previousProperties['AuthType'];
+    const authType = authTypeUnusable
+      ? typeof previousAuthType === 'string' && previousAuthType.trim() !== ''
+        ? (previousAuthType as FunctionUrlAuthType)
+        : undefined
+      : requestedAuthType;
 
     const updateParams: import('@aws-sdk/client-lambda').UpdateFunctionUrlConfigCommandInput = {
       FunctionName: physicalId,
-      AuthType: authType,
+      ...(authType !== undefined && { AuthType: authType }),
     };
     // issue #1160: UpdateFunctionUrlConfig uses merge semantics (live-probed
     // 2026-07-27: an update omitting InvokeMode / Cors retains the live
