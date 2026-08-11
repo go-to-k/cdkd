@@ -2,6 +2,9 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { UpdateTrailCommand } from '@aws-sdk/client-cloudtrail';
 
 const mockSend = vi.fn();
+// Hoisted with the logger factory: it builds its child logger EAGERLY, so an
+// outer `const` would hit the TDZ.
+const { warnSpy } = vi.hoisted(() => ({ warnSpy: vi.fn() }));
 
 vi.mock('@aws-sdk/client-cloudtrail', async () => {
   const actual = await vi.importActual('@aws-sdk/client-cloudtrail');
@@ -18,7 +21,7 @@ vi.mock('../../../src/utils/logger.js', () => {
   const childLogger = {
     debug: vi.fn(),
     info: vi.fn(),
-    warn: vi.fn(),
+    warn: warnSpy,
     error: vi.fn(),
     child: vi.fn().mockReturnThis(),
   };
@@ -316,6 +319,226 @@ describe('CloudTrailProvider removal resets (issue #1160)', () => {
       IsMultiRegionTrail: false,
       EnableLogFileValidation: false,
       IncludeGlobalServiceEvents: false,
+    });
+  });
+
+  // ─── EventSelectors: its own API call, its own reset shape (#1549) ────
+  //
+  // `EventSelectors` does not ride `UpdateTrail` — it has a dedicated
+  // `PutEventSelectors`, which is why the #1160 batch's UpdateTrail-shaped
+  // sweep never covered it and the branch kept SKIPPING the call on removal
+  // (the live trail silently retained its custom selectors).
+  //
+  // Both halves below are measured, not analogized (live CFn A/B + live API
+  // probe, us-east-1, 2026-08-11): CFn RESETS to the default selector, and
+  // the empty array the adjacent `InsightSelectors` branch uses is REJECTED
+  // here (`InvalidEventSelectorsException`).
+  describe('EventSelectors (issue #1549)', () => {
+    const CUSTOM = [{ ReadWriteType: 'WriteOnly', IncludeManagementEvents: true }];
+    const DEFAULT = [{ ReadWriteType: 'All', IncludeManagementEvents: true }];
+
+    const putEventSelectorsInputs = (): Array<Record<string, unknown>> =>
+      mockSend.mock.calls
+        .filter((c) => c[0].constructor.name === 'PutEventSelectorsCommand')
+        .map((c) => c[0].input as Record<string, unknown>);
+
+    it('removed: RESETS to the AWS default selector', async () => {
+      await provider.update('T', TRAIL_ARN, TYPE, BASE, { ...BASE, EventSelectors: CUSTOM });
+
+      expect(putEventSelectorsInputs()).toEqual([
+        { TrailName: TRAIL_ARN, EventSelectors: DEFAULT },
+      ]);
+    });
+
+    it('removed: never sends the EMPTY array (AWS rejects 0 selectors)', async () => {
+      await provider.update('T', TRAIL_ARN, TYPE, BASE, { ...BASE, EventSelectors: CUSTOM });
+
+      // The length assertion is what stops this passing vacuously: without it
+      // `[0]?.[...]` is `undefined` on a provider that never calls the API at
+      // all — which is exactly the pre-fix behavior.
+      expect(putEventSelectorsInputs()).toHaveLength(1);
+      // The InsightSelectors removal shape one branch over would 400 here.
+      expect(putEventSelectorsInputs()[0]?.['EventSelectors']).not.toEqual([]);
+    });
+
+    it('emptied to []: takes the same reset path as a removal', async () => {
+      await provider.update('T', TRAIL_ARN, TYPE, { ...BASE, EventSelectors: [] }, {
+        ...BASE,
+        EventSelectors: CUSTOM,
+      });
+
+      expect(putEventSelectorsInputs()).toEqual([
+        { TrailName: TRAIL_ARN, EventSelectors: DEFAULT },
+      ]);
+    });
+
+    it('never-present: issues NO PutEventSelectors call', async () => {
+      await provider.update('T', TRAIL_ARN, TYPE, BASE, BASE);
+      expect(putEventSelectorsInputs()).toEqual([]);
+    });
+
+    it('unchanged: issues NO PutEventSelectors call', async () => {
+      await provider.update('T', TRAIL_ARN, TYPE, { ...BASE, EventSelectors: CUSTOM }, {
+        ...BASE,
+        EventSelectors: CUSTOM,
+      });
+      expect(putEventSelectorsInputs()).toEqual([]);
+    });
+
+    it('kept: a desired value passes through verbatim', async () => {
+      await provider.update('T', TRAIL_ARN, TYPE, { ...BASE, EventSelectors: CUSTOM }, BASE);
+
+      expect(putEventSelectorsInputs()).toEqual([{ TrailName: TRAIL_ARN, EventSelectors: CUSTOM }]);
+    });
+
+    // A malformed value must NOT read as a removal. The reset is destructive
+    // by design (it clears live selectors), so falsiness or a missing
+    // `.length` as the gate would let an unresolved `Fn::If` wipe a live
+    // trail's configuration — turning the pre-fix silent no-op into damage.
+    it.each([
+      ['an object (unresolved Fn::If)', { 'Fn::If': ['C', [], []] }],
+      ['a string', 'WriteOnly'],
+      ['a number', 5],
+    ])(
+      'leaves the live selectors alone on %s instead of resetting to the default',
+      async (_label, value) => {
+        // WARN, not throw: `update()` is a replay path (rollback /
+        // `drift --revert` feed a cdkd STATE record in as the desired bag), so
+        // a refusal here would strand it with no template-side remedy — the
+        // rule `.claude/rules/providers.md` states for every update-path guard.
+        // The fallback is "leave the trail alone", never the reset.
+        await expect(
+          provider.update('T', TRAIL_ARN, TYPE, { ...BASE, EventSelectors: value }, {
+            ...BASE,
+            EventSelectors: CUSTOM,
+          })
+        ).resolves.toBeDefined();
+
+        expect(putEventSelectorsInputs()).toEqual([]);
+        expect(warnSpy).toHaveBeenCalledWith(
+          expect.stringContaining('AWS::CloudTrail::Trail EventSelectors must be an array')
+        );
+      }
+    );
+
+    it('treats an explicit null as ABSENT (a genuine removal), not as malformed', async () => {
+      // `null` is what a template that never set the property resolves to on
+      // some paths; CFn treats it as absent, and absent IS the measured reset.
+      await provider.update('T', TRAIL_ARN, TYPE, { ...BASE, EventSelectors: null }, {
+        ...BASE,
+        EventSelectors: CUSTOM,
+      });
+
+      expect(putEventSelectorsInputs()).toEqual([
+        { TrailName: TRAIL_ARN, EventSelectors: DEFAULT },
+      ]);
+    });
+
+    it('tolerates the AdvancedEventSelectors rejection on the RESET path only', async () => {
+      // A trail switched to AdvancedEventSelectors out of band still has the
+      // basic selectors in cdkd state, so the diff fires and AWS rejects the
+      // Put. There is nothing to clear, so the reset warns and continues
+      // rather than failing the whole deploy on an unmeasured combination.
+      //
+      // The rejection text is AWS's OWN wording — "advanced event selectors",
+      // spaced and lowercase, as spelled in `@aws-sdk/client-cloudtrail`'s
+      // `InvalidEventSelectorsException` doc — NOT the CFn / SDK type spelling
+      // `AdvancedEventSelectors`. A fixture using the type spelling kept a
+      // production-dead matcher green, which is what review caught.
+      mockSend.mockImplementation((cmd) =>
+        cmd.constructor.name === 'PutEventSelectorsCommand'
+          ? Promise.reject(
+              Object.assign(
+                new Error(
+                  'This trail uses advanced event selectors, which are managed ' +
+                    'through a separate API'
+                ),
+                { name: 'InvalidEventSelectorsException' }
+              )
+            )
+          : Promise.resolve({})
+      );
+
+      await expect(
+        provider.update('T', TRAIL_ARN, TYPE, BASE, { ...BASE, EventSelectors: CUSTOM })
+      ).resolves.toBeDefined();
+
+      // The Put was ATTEMPTED (a provider that skips it entirely — the pre-fix
+      // behavior — would also resolve), and the tolerance is announced.
+      expect(putEventSelectorsInputs()).toHaveLength(1);
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('skipping the EventSelectors reset')
+      );
+    });
+
+    it('still FAILS when the reset is rejected for an UNRELATED reason', async () => {
+      // The tolerance is scoped to the advanced-selector case: a throttle or an
+      // AccessDenied on the reset must still fail the deploy.
+      mockSend.mockImplementation((cmd) =>
+        cmd.constructor.name === 'PutEventSelectorsCommand'
+          ? Promise.reject(new Error('ThrottlingException: Rate exceeded'))
+          : Promise.resolve({})
+      );
+
+      await expect(
+        provider.update('T', TRAIL_ARN, TYPE, BASE, { ...BASE, EventSelectors: CUSTOM })
+      ).rejects.toThrow(/Rate exceeded/);
+    });
+
+    it('still FAILS when an explicit desired value is rejected the same way', async () => {
+      // The tolerance is scoped to the reset: an explicit template value that
+      // AWS cannot deliver on this trail must surface, not be swallowed.
+      mockSend.mockImplementation((cmd) =>
+        cmd.constructor.name === 'PutEventSelectorsCommand'
+          ? Promise.reject(
+              new Error(
+                'InvalidEventSelectorsException: This trail uses AdvancedEventSelectors'
+              )
+            )
+          : Promise.resolve({})
+      );
+
+      await expect(
+        provider.update('T', TRAIL_ARN, TYPE, { ...BASE, EventSelectors: CUSTOM }, BASE)
+      ).rejects.toThrow(/AdvancedEventSelectors/);
+    });
+  });
+
+  // ─── IsLogging: an ABSENT desired value is not a start request (#1549) ─
+  describe('IsLogging', () => {
+    const loggingCommands = (): string[] =>
+      mockSend.mock.calls
+        .map((c) => c[0].constructor.name)
+        .filter((n) => n === 'StartLoggingCommand' || n === 'StopLoggingCommand');
+
+    it('removed against a previous FALSE: issues NEITHER Start nor Stop', async () => {
+      // Unreachable from a valid template (`IsLogging` is CFn-required) but
+      // reachable from a rollback / drift-revert replay of a partial state
+      // record. Pre-#1549 this compared as a change and took the `else` arm,
+      // silently STARTING logging.
+      await provider.update('T', TRAIL_ARN, TYPE, BASE, { ...BASE, IsLogging: false });
+      expect(loggingCommands()).toEqual([]);
+    });
+
+    it('removed against a previous TRUE: issues NEITHER Start nor Stop', async () => {
+      await provider.update('T', TRAIL_ARN, TYPE, BASE, { ...BASE, IsLogging: true });
+      expect(loggingCommands()).toEqual([]);
+    });
+
+    it('an explicit desired TRUE against a previous FALSE still starts logging', async () => {
+      await provider.update('T', TRAIL_ARN, TYPE, { ...BASE, IsLogging: true }, {
+        ...BASE,
+        IsLogging: false,
+      });
+      expect(loggingCommands()).toEqual(['StartLoggingCommand']);
+    });
+
+    it('an explicit desired FALSE against a previous TRUE still stops logging', async () => {
+      await provider.update('T', TRAIL_ARN, TYPE, { ...BASE, IsLogging: false }, {
+        ...BASE,
+        IsLogging: true,
+      });
+      expect(loggingCommands()).toEqual(['StopLoggingCommand']);
     });
   });
 });

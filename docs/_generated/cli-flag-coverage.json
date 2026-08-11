@@ -1516,6 +1516,7 @@
     "--template-body",
     "--timeout",
     "--topic-arn",
+    "--trail-name",
     "--tree",
     "--type-name",
     "--usage-plan-id",
