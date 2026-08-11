@@ -1175,6 +1175,11 @@
       "scenarios": []
     },
     {
+      "name": "lambda-durable-replacement",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
       "name": "lambda-env-removal",
       "annotated": false,
       "scenarios": []

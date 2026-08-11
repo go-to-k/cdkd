@@ -480,9 +480,21 @@ export function isIamPropagationError(message: string): boolean {
  * and the rollback executor's reverse-replacement) — everywhere else it is a
  * genuine conflict that must fail fast. Shared by those sites' collision
  * detection + retry filters so a signature extension lands in one place.
+ *
+ * The optional `s` is load-bearing, not defensive spelling (issue #1625):
+ * Lambda's `CreateFunction` raises `ResourceConflictException: Function
+ * already exist: <name>` — SINGULAR — so the `already exists` form missed it
+ * entirely and NO Lambda function could take the collision path. The
+ * consequence was not a cosmetic message: a property-driven replacement of a
+ * Lambda (dropping `DurableConfig`, changing `TenancyConfig`) create-firsts
+ * into its own still-live name, the raw `ResourceConflictException` escaped
+ * instead of the actionable `NAMED_REPLACEMENT_COLLISION` error, and
+ * `cdkd deploy --replace`'s delete-first fallback never fired — so the
+ * replacement was unperformable by any flag. Verified against real AWS
+ * (us-east-1, 2026-08-12) by creating one function name twice.
  */
 export function isNameCollisionError(message: string): boolean {
-  return /already exists/i.test(message) || message.includes('AlreadyExists');
+  return /already exists?\b/i.test(message) || message.includes('AlreadyExists');
 }
 
 /**

@@ -441,6 +441,7 @@
         "lambda-arch-switch",
         "lambda-config-field-removal",
         "lambda-destinations",
+        "lambda-durable-replacement",
         "lambda-env-removal",
         "lambda-esm-self-managed-kafka",
         "lambda-event-invoke-config-update",
@@ -667,6 +668,7 @@
         "lambda-arch-switch",
         "lambda-config-field-removal",
         "lambda-destinations",
+        "lambda-durable-replacement",
         "lambda-env-removal",
         "lambda-esm-self-managed-kafka",
         "lambda-event-invoke-config-update",
@@ -770,6 +772,7 @@
       "integs": [
         "eventbridge-pipes",
         "glue-securityconfig-replace",
+        "lambda-durable-replacement",
         "lambda-layer-version-update",
         "loggroup-class-guard"
       ]
@@ -932,6 +935,7 @@
         "lambda-arch-switch",
         "lambda-config-field-removal",
         "lambda-destinations",
+        "lambda-durable-replacement",
         "lambda-env-removal",
         "lambda-esm-self-managed-kafka",
         "lambda-event-invoke-config-update",
@@ -1181,6 +1185,7 @@
         "lambda-arch-switch",
         "lambda-config-field-removal",
         "lambda-destinations",
+        "lambda-durable-replacement",
         "lambda-env-removal",
         "lambda-esm-self-managed-kafka",
         "lambda-event-invoke-config-update",

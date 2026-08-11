@@ -479,6 +479,18 @@ describe('isNameCollisionError', () => {
     ['ParameterAlreadyExists', 'SSM parameter'],
     // Provider-wrapped message (cdkd wraps the SDK error text)
     ['Failed to create S3 bucket MyBucket: BucketAlreadyExists', 'provider-wrapped'],
+    // Lambda spells it SINGULAR (issue #1625). Verified verbatim against real
+    // AWS (us-east-1, 2026-08-12) by calling CreateFunction twice with one
+    // name: `ResourceConflictException: Function already exist: <name>`.
+    // Until this case matched, no Lambda function could take the collision
+    // path at all — the create-first replacement raised the raw
+    // ResourceConflictException instead of cdkd's actionable error, and
+    // `--replace`'s delete-first fallback never fired.
+    ['Function already exist: cdkd-probe-1625-collision', 'Lambda singular spelling'],
+    [
+      'Failed to create Lambda function MyFn: ResourceConflictException: Function already exist: MyStack-MyFn',
+      'Lambda singular, provider-wrapped',
+    ],
   ])('matches %j (%s)', (message) => {
     expect(isNameCollisionError(message)).toBe(true);
   });
@@ -490,6 +502,11 @@ describe('isNameCollisionError', () => {
     ['The specified bucket does not exist', 'not-found'],
     // Lowercase run-on ("alreadyexists") is not an AWS shape; stay strict
     ['resource alreadyexists', 'run-on lowercase'],
+    // The singular arm is bounded to the WORD: widening it to a bare prefix
+    // would swallow unrelated participles ("already existed as a draft" is
+    // not a create-time name collision, and crediting it at a create-first
+    // site would trigger the destructive delete-first fallback).
+    ['the record already existed as a draft', 'participle, not a collision'],
   ])('does not match %j (%s)', (message) => {
     expect(isNameCollisionError(message)).toBe(false);
   });
