@@ -76,12 +76,8 @@ dlm-lifecycle-policy	2026-07-27T09:43:47Z	PASS	140	verify.sh	1160 removal phase 
 docdb-neptune	2026-07-27T06:16:35Z	PASS	1560	verify.sh	#1160 neptune+docdb removal steps 3b-3d verified; destroy w/o remove-protection 14/0 errors, 0 orphans
 docker-image-asset	2026-08-10T04:23:28Z	PASS	81	verify.sh	0810 sweep b2; post-#1406 ECR mutability filters, 2 del 0 err, 0 orph
 drift-revert	2026-08-11T14:33:06Z	PASS	285	verify.sh	#1626 keyed-list revert-plan walk: revert path regression-clean, destroy 13/0, orphans clean
-drift-revert-arrays	2026-08-01T09:36:05Z	PASS	110	verify.sh	0801 regression sweep; 16 del/0 err, 0 orphans
-drift-revert-vpc	2026-08-11T15:53:33Z	PASS	314	verify.sh	#1591 final: both-sides canonicalizer + cdkd diff wiring; 21 del/0 err, 0 orph
-drift-revert-arrays	2026-08-11T15:24:02Z	PASS	300	verify.sh	#1620 object-array unordered pass + TargetGroup.Targets readback; rc ok, orph clean
-drift-revert-arrays	2026-08-11T15:38:07Z	PASS	300	verify.sh	#1620 re-run after per-resource Targets scoping fix; rc ok, orph clean
 drift-revert-arrays	2026-08-11T16:02:11Z	PASS	300	verify.sh	#1620 final: post-review Port/AZ normalization + binding Targets grep; rc ok, orph clean
-drift-revert-vpc	2026-08-10T11:50:46Z	PASS	310	verify.sh	0810 P0/P1 sweep b5 BROAD; 21 del/0 err incl EFS+PrivateDnsNamespace
+drift-revert-vpc	2026-08-11T15:53:33Z	PASS	314	verify.sh	#1591 final: both-sides canonicalizer + cdkd diff wiring; 21 del/0 err, 0 orph
 dsql	2026-07-30T18:11:24Z	PASS	540	verify.sh	4-phase incl. destroy --remove-protection CC flip (#1312); orph clean
 dynamodb-autoscaling	2026-08-10T05:13:55Z	PASS	65	verify.sh	0810 sweep b5; table autoscaling re-verify post-#1451 GlobalTable work, 0 err 0 orph
 dynamodb-globaltable	2026-08-11T09:22:58Z	PASS	549	verify.sh	issue #1585 autoscaled-exclusion + live-only coverage; 0 errors 0 orphans
