@@ -947,6 +947,11 @@
       "scenarios": []
     },
     {
+      "name": "eventbus-policy",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "eventsourcemapping-race",
       "annotated": true,
       "scenarios": [
@@ -2630,6 +2635,7 @@
     "eventbridge-input-transformer",
     "eventbridge-pipes",
     "eventbridge-scheduler",
+    "eventbus-policy",
     "export-nested-stack",
     "fifo-sqs-event-source",
     "getatt-fallback-guard",
