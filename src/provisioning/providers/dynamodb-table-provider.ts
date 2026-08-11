@@ -643,7 +643,19 @@ export class DynamoDBTableProvider implements ResourceProvider {
       // `OnDemandThroughput` UpdateTable rejected against a now-provisioned
       // table: a half-applied deploy. Refusing on either side keeps the
       // pre-flight ahead of the mutation.
+      // `billingOrThroughputChanged &&` leads (PR review round 2): without it
+      // the widened live-mode arm OVER-refuses. When the recorded previous and
+      // the desired side both omit `BillingMode`, both normalize to the type
+      // default PROVISIONED, so no flip is sent at all — yet a live on-demand
+      // table declaring `OnDemandThroughput` would hard-error on a deploy that
+      // used to succeed. That shape DOES reach state (it succeeded before), so
+      // it would also break the justification below and make a rollback /
+      // `drift --revert` replay throw on a record the user cannot edit — the
+      // exact class this file exists to avoid. The conjunct cannot weaken the
+      // original arm: `prevBillingMode === 'PAY_PER_REQUEST'` with a desired
+      // PROVISIONED is a mode change, so the flag is already true there.
       if (
+        billingOrThroughputChanged &&
         billingMode === 'PROVISIONED' &&
         (prevBillingMode === 'PAY_PER_REQUEST' || liveBillingMode === 'PAY_PER_REQUEST') &&
         properties['OnDemandThroughput'] !== undefined

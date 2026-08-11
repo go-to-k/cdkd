@@ -416,6 +416,93 @@ describe('capacity is never invented (PR review)', () => {
   });
 });
 
+describe('the widened OnDemandThroughput refusal does not over-refuse (PR review round 2)', () => {
+  it('does NOT refuse when no flip is sent at all, even against a live on-demand table', async () => {
+    // The refusal was widened to the LIVE mode so a flip that now SUCCEEDS
+    // cannot half-apply. Without `billingOrThroughputChanged` leading it, this
+    // shape hard-errors a deploy that used to work: neither side declares
+    // BillingMode, so both normalize to the type default PROVISIONED and no
+    // flip is issued — while the live table is on-demand and legitimately
+    // takes an OnDemandThroughput ceiling update. That shape also REACHES
+    // state (it used to succeed), so refusing it would make a rollback /
+    // `drift --revert` replay throw on a record the user cannot edit.
+    primeDescribeTable('PAY_PER_REQUEST', []);
+    mockSend.mockResolvedValueOnce({}); // the OnDemandThroughput UpdateTable
+    primeWaitActive();
+
+    await provider.update(
+      'L',
+      TABLE_NAME,
+      RESOURCE_TYPE,
+      { OnDemandThroughput: { MaxReadRequestUnits: 10, MaxWriteRequestUnits: 5 } },
+      { OnDemandThroughput: { MaxReadRequestUnits: 8, MaxWriteRequestUnits: 4 } }
+    );
+
+    const sent = findCalls(UpdateTableCommand);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.input.OnDemandThroughput).toEqual({
+      MaxReadRequestUnits: 10,
+      MaxWriteRequestUnits: 5,
+    });
+  });
+
+  it('refuses when the RECORD disagrees with LIVE — the case the widening exists for', async () => {
+    // The intended catch, and the one the pre-existing suites cannot express:
+    // their DescribeTable fixtures omit `BillingModeSummary` entirely, so
+    // `liveBillingMode` silently defaults to PROVISIONED and this arm stays
+    // dormant. A real on-demand table always reports it.
+    //
+    // Shape: state says PROVISIONED (a `cdkd import`, or an out-of-band console
+    // flip to on-demand), AWS is on-demand, and a capacity change makes
+    // `billingOrThroughputChanged` true — so a real flip WOULD be sent. Before
+    // the widening the refusal keyed only on the recorded previous, missed it,
+    // and the flip (now that it succeeds for indexed tables) would leave the
+    // following OnDemandThroughput call to fail against a provisioned table.
+    primeDescribeTable('PAY_PER_REQUEST', []);
+
+    await expect(
+      provider.update(
+        'L',
+        TABLE_NAME,
+        RESOURCE_TYPE,
+        {
+          BillingMode: 'PROVISIONED',
+          ProvisionedThroughput: { ReadCapacityUnits: 10, WriteCapacityUnits: 10 },
+          OnDemandThroughput: { MaxReadRequestUnits: 10 },
+        },
+        {
+          BillingMode: 'PROVISIONED',
+          ProvisionedThroughput: { ReadCapacityUnits: 5, WriteCapacityUnits: 5 },
+        }
+      )
+    ).rejects.toThrow(/OnDemandThroughput/);
+    // Refused BEFORE any mutation — that is the whole point of moving it ahead
+    // of the flip rather than letting AWS reject the second call.
+    expect(findCalls(UpdateTableCommand)).toHaveLength(0);
+  });
+
+  it('STILL refuses a real flip that carries OnDemandThroughput', async () => {
+    // The widening must keep its point: a genuine flip to PROVISIONED while the
+    // template still declares on-demand ceilings is refused before any mutation.
+    primeDescribeTable('PAY_PER_REQUEST', []);
+
+    await expect(
+      provider.update(
+        'L',
+        TABLE_NAME,
+        RESOURCE_TYPE,
+        {
+          BillingMode: 'PROVISIONED',
+          ProvisionedThroughput: { ReadCapacityUnits: 5, WriteCapacityUnits: 5 },
+          OnDemandThroughput: { MaxReadRequestUnits: 10 },
+        },
+        { BillingMode: 'PAY_PER_REQUEST' }
+      )
+    ).rejects.toThrow(/OnDemandThroughput/);
+    expect(findCalls(UpdateTableCommand)).toHaveLength(0);
+  });
+});
+
 describe('scope: only the flip, and only when indexes exist', () => {
   it('does NOT send index updates on a capacity bump of an already-PROVISIONED table', async () => {
     // AWS rejects an UpdateTable that re-asserts an index's current capacity,
