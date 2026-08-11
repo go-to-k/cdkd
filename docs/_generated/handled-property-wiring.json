@@ -7,7 +7,7 @@
     "wired": 82,
     "gap": 0,
     "allowListed": 2,
-    "classesWithBlindSpots": 20
+    "classesWithBlindSpots": 19
   },
   "classes": [
     {
@@ -3383,7 +3383,8 @@
           ],
           "seededBy": [
             "create",
-            "mapProperties"
+            "mapProperties",
+            "update"
           ]
         },
         {
@@ -3398,7 +3399,8 @@
           ],
           "seededBy": [
             "create",
-            "mapProperties"
+            "mapProperties",
+            "update"
           ]
         },
         {
@@ -3413,7 +3415,8 @@
           ],
           "seededBy": [
             "create",
-            "mapProperties"
+            "mapProperties",
+            "update"
           ]
         },
         {
@@ -3444,7 +3447,8 @@
           ],
           "seededBy": [
             "create",
-            "mapProperties"
+            "mapProperties",
+            "update"
           ]
         },
         {
@@ -3459,7 +3463,8 @@
           ],
           "seededBy": [
             "create",
-            "mapProperties"
+            "mapProperties",
+            "update"
           ]
         },
         {
@@ -3474,7 +3479,8 @@
           ],
           "seededBy": [
             "create",
-            "mapProperties"
+            "mapProperties",
+            "update"
           ]
         },
         {
@@ -3489,7 +3495,8 @@
           ],
           "seededBy": [
             "create",
-            "mapProperties"
+            "mapProperties",
+            "update"
           ]
         },
         {
@@ -3504,7 +3511,8 @@
           ],
           "seededBy": [
             "create",
-            "mapProperties"
+            "mapProperties",
+            "update"
           ]
         },
         {
@@ -3519,7 +3527,8 @@
           ],
           "seededBy": [
             "create",
-            "mapProperties"
+            "mapProperties",
+            "update"
           ]
         },
         {
@@ -3534,7 +3543,8 @@
           ],
           "seededBy": [
             "create",
-            "mapProperties"
+            "mapProperties",
+            "update"
           ]
         },
         {
@@ -3549,7 +3559,8 @@
           ],
           "seededBy": [
             "create",
-            "mapProperties"
+            "mapProperties",
+            "update"
           ]
         },
         {
@@ -3564,7 +3575,8 @@
           ],
           "seededBy": [
             "create",
-            "mapProperties"
+            "mapProperties",
+            "update"
           ]
         },
         {
@@ -3579,7 +3591,8 @@
           ],
           "seededBy": [
             "create",
-            "mapProperties"
+            "mapProperties",
+            "update"
           ]
         },
         {
@@ -3594,7 +3607,8 @@
           ],
           "seededBy": [
             "create",
-            "mapProperties"
+            "mapProperties",
+            "update"
           ]
         },
         {
@@ -3609,7 +3623,8 @@
           ],
           "seededBy": [
             "create",
-            "mapProperties"
+            "mapProperties",
+            "update"
           ]
         },
         {
@@ -3624,7 +3639,8 @@
           ],
           "seededBy": [
             "create",
-            "mapProperties"
+            "mapProperties",
+            "update"
           ]
         },
         {
@@ -3639,7 +3655,8 @@
           ],
           "seededBy": [
             "create",
-            "mapProperties"
+            "mapProperties",
+            "update"
           ]
         },
         {
@@ -3654,7 +3671,8 @@
           ],
           "seededBy": [
             "create",
-            "mapProperties"
+            "mapProperties",
+            "update"
           ]
         },
         {
@@ -3669,7 +3687,8 @@
           ],
           "seededBy": [
             "create",
-            "mapProperties"
+            "mapProperties",
+            "update"
           ]
         },
         {
@@ -3684,7 +3703,8 @@
           ],
           "seededBy": [
             "create",
-            "mapProperties"
+            "mapProperties",
+            "update"
           ]
         },
         {
@@ -3699,14 +3719,13 @@
           ],
           "seededBy": [
             "create",
-            "mapProperties"
+            "mapProperties",
+            "update"
           ]
         }
       ],
       "gaps": [],
-      "blindSpots": [
-        "object spread in update()"
-      ]
+      "blindSpots": []
     },
     {
       "file": "codecommit-repository-provider.ts",

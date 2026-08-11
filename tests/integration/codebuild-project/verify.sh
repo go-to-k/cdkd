@@ -73,13 +73,25 @@ cleanup() {
   # cleanup on the first `"${STATE_BUCKET}"` expansion -- best-effort cleanup
   # should run as much as it can with the env it has.
   set +eu
+  state_destroy_rc=1
   if [ -x "${LOCAL_DIST}" ]; then
-    node "${LOCAL_DIST}" state destroy "${STACK}" --region "${REGION}" --yes >/dev/null 2>&1
+    # `--state-bucket` is REQUIRED here: without it the command resolves
+    # cdk.json's placeholder `cdkd-state-test` (the harness exports
+    # STATE_BUCKET, not CDKD_STATE_BUCKET), silently targets a nonexistent
+    # bucket, and a torn run leaks every resource the raw sweep below does
+    # not name.
+    node "${LOCAL_DIST}" state destroy "${STACK}" --region "${REGION}" \
+      --state-bucket "${STATE_BUCKET:-}" --yes >/dev/null 2>&1
+    state_destroy_rc=$?
   fi
   # The project is the only stateful leftover a torn run can strand; the
   # execution role goes with the stack.
   aws codebuild delete-project --name "${PROJECT_NAME}" --region "${REGION}" >/dev/null 2>&1
-  if [ -n "${STATE_BUCKET:-}" ]; then
+  # Only drop the raw state/lock keys once the destroy actually succeeded --
+  # the state file is the only pointer to resources a failed destroy left
+  # behind, so removing it on failure converts a recoverable partial teardown
+  # into untracked orphans.
+  if [ -n "${STATE_BUCKET:-}" ] && [ "${state_destroy_rc:-1}" -eq 0 ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
   fi

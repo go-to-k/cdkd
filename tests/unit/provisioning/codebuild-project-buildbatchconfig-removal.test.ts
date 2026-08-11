@@ -56,10 +56,19 @@ const BATCH_CONFIG = {
   CombineArtifacts: true,
 };
 
-/** The single UpdateProject input of the update, or undefined. */
-function updateProjectInput(): Record<string, unknown> | undefined {
-  const call = mockSend.mock.calls.find((c) => c[0] instanceof UpdateProjectCommand);
-  return call?.[0].input as Record<string, unknown> | undefined;
+/**
+ * The single UpdateProject input of the update.
+ *
+ * Asserts exactly ONE was sent: a `.find` would silently hide a second
+ * UpdateProject, and returning `undefined` when none was sent would make
+ * every `toBeUndefined()` assertion below — including the CFn-parity
+ * retention pins — pass vacuously against an implementation that stops
+ * issuing the call at all.
+ */
+function updateProjectInput(): Record<string, unknown> {
+  const calls = mockSend.mock.calls.filter((c) => c[0] instanceof UpdateProjectCommand);
+  expect(calls).toHaveLength(1);
+  return calls[0]![0].input as Record<string, unknown>;
 }
 
 /** The single CreateProject input of the create, or undefined. */
@@ -91,7 +100,7 @@ describe('CodeBuildProvider BuildBatchConfig removal reset (issue #1160)', () =>
     // reporting `buildBatchConfig: null`, and `--build-batch-config '{}'`
     // is what reproduced that. An OMITTED field is the merge-semantics
     // no-op this issue tracks, so `{}` — not `undefined` — is required.
-    const batch = updateProjectInput()?.['buildBatchConfig'] as Record<string, unknown> | undefined;
+    const batch = updateProjectInput()['buildBatchConfig'] as Record<string, unknown> | undefined;
     expect(batch).toBeDefined();
     // Every member undefined => the SDK serializes the empty object AWS
     // needs; asserting the members individually pins that nothing from the
@@ -108,23 +117,23 @@ describe('CodeBuildProvider BuildBatchConfig removal reset (issue #1160)', () =>
 
     await provider.update('P', PROJECT, TYPE, props, props);
 
-    expect(updateProjectInput()?.['buildBatchConfig']).toBeUndefined();
+    expect(updateProjectInput()['buildBatchConfig']).toBeUndefined();
   });
 
   it('kept: a desired BuildBatchConfig passes through with its members mapped', async () => {
     const previous = { ...BASE, BuildBatchConfig: BATCH_CONFIG };
     const desired = {
       ...BASE,
-      BuildBatchConfig: { ...BATCH_CONFIG, TimeoutInMins: 240, BatchReportMode: 'REPORT_individual' },
+      BuildBatchConfig: { ...BATCH_CONFIG, TimeoutInMins: 240, BatchReportMode: 'REPORT_INDIVIDUAL_BUILDS' },
     };
 
     await provider.update('P', PROJECT, TYPE, desired, previous);
 
-    expect(updateProjectInput()?.['buildBatchConfig']).toMatchObject({
+    expect(updateProjectInput()['buildBatchConfig']).toMatchObject({
       serviceRole: 'arn:aws:iam::0:role/batch',
       timeoutInMins: 240,
       combineArtifacts: true,
-      batchReportMode: 'REPORT_individual',
+      batchReportMode: 'REPORT_INDIVIDUAL_BUILDS',
     });
   });
 
@@ -176,11 +185,59 @@ describe('CodeBuildProvider BuildBatchConfig removal reset (issue #1160)', () =>
     expect(input?.['logsConfig']).toBeUndefined();
   });
 
+  it('positive polarity: the seven retained fields DO map through when present', async () => {
+    // The retention pins above are negative-only assertions on string keys,
+    // so a rename or typo in the SDK member name would vacuate them while
+    // still "passing". This asserts the same seven keys carry their values
+    // on the normal update path, which is what makes those pins meaningful.
+    const previous = { ...BASE };
+    const desired = {
+      ...BASE,
+      Description: 'a description',
+      TimeoutInMinutes: 25,
+      QueuedTimeoutInMinutes: 100,
+      ConcurrentBuildLimit: 2,
+      AutoRetryLimit: 3,
+      Cache: { Type: 'LOCAL', Modes: ['LOCAL_CUSTOM_CACHE'] },
+      LogsConfig: { CloudWatchLogs: { Status: 'DISABLED' } },
+      BuildBatchConfig: { ...BATCH_CONFIG, Restrictions: { MaximumBuildsAllowed: 7 } },
+    };
+
+    await provider.update('P', PROJECT, TYPE, desired, previous);
+
+    const input = updateProjectInput();
+    expect(input['description']).toBe('a description');
+    expect(input['timeoutInMinutes']).toBe(25);
+    expect(input['queuedTimeoutInMinutes']).toBe(100);
+    expect(input['concurrentBuildLimit']).toBe(2);
+    expect(input['autoRetryLimit']).toBe(3);
+    expect(input['cache']).toMatchObject({ type: 'LOCAL', modes: ['LOCAL_CUSTOM_CACHE'] });
+    expect(input['logsConfig']).toMatchObject({ cloudWatchLogs: { status: 'DISABLED' } });
+    // `restrictions` has no other positive write-side test in the repo, so
+    // the removal suite's reference to it would otherwise assert nothing.
+    expect(input['buildBatchConfig']).toMatchObject({
+      restrictions: { maximumBuildsAllowed: 7 },
+    });
+  });
+
+  it('rollback replay: reverting to a state without the block clears it', async () => {
+    // `rollback-executor.ts` replays with the HISTORICAL bag as the desired
+    // side. A failed deploy that ADDED a batch config must have it cleared
+    // on the way back, not silently kept.
+    const historical = { ...BASE };
+    const attempted = { ...BASE, BuildBatchConfig: BATCH_CONFIG };
+
+    await provider.update('P', PROJECT, TYPE, historical, attempted);
+
+    expect(updateProjectInput()['buildBatchConfig']).toBeDefined();
+    expect(updateProjectInput()['buildBatchConfig']).toMatchObject({});
+  });
+
   it('the update still targets the existing project by physical id', async () => {
     const previous = { ...BASE, BuildBatchConfig: BATCH_CONFIG };
 
     await provider.update('P', PROJECT, TYPE, { ...BASE }, previous);
 
-    expect(updateProjectInput()?.['name']).toBe(PROJECT);
+    expect(updateProjectInput()['name']).toBe(PROJECT);
   });
 });
