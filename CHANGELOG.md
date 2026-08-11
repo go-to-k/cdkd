@@ -1,3 +1,10 @@
+## [0.280.23](https://github.com/go-to-k/cdkd/compare/v0.280.22...v0.280.23) (2026-08-11)
+
+
+### Bug Fixes
+
+* **s3:** downgrade the remaining FIELD-level reads on the state-replay paths ([#1631](https://github.com/go-to-k/cdkd/issues/1631)) ([6647e29](https://github.com/go-to-k/cdkd/commit/6647e29087313916fbd309906e09d1bcc3b792bf))
+
 ## [0.280.22](https://github.com/go-to-k/cdkd/compare/v0.280.21...v0.280.22) (2026-08-11)
 
 
