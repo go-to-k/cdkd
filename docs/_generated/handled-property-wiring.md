@@ -10,7 +10,7 @@ A computed read `properties[k]` also counts when `k` iterates a literal name tab
 ## Summary
 
 - Provider classes classified: **84**
-- Declared properties: **1075** (**1073** with read evidence)
+- Declared properties: **1081** (**1079** with read evidence)
 - Fully wired classes: **82**
 - Allow-listed classes (visible, non-blocking): **2**
 - Classes with a whole-bag blind spot (recorded, never an excuse): **19**
@@ -82,7 +82,7 @@ Sites where a whole property bag left the evidence walk (a spread, an unresolvab
 | `DocDBProvider` | docdb-provider.ts | wired | 21 | 21 |
 | `DynamoDBGlobalTableProvider` | dynamodb-globaltable-provider.ts | wired | 14 | 14 |
 | `DynamoDBTableProvider` | dynamodb-table-provider.ts | wired | 19 | 19 |
-| `EC2Provider` | ec2-provider.ts | wired | 64 | 64 |
+| `EC2Provider` | ec2-provider.ts | wired | 70 | 70 |
 | `ECRProvider` | ecr-provider.ts | wired | 9 | 9 |
 | `ECSProvider` | ecs-provider.ts | wired | 40 | 40 |
 | `EFSProvider` | efs-provider.ts | wired | 18 | 18 |

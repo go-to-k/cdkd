@@ -155,11 +155,17 @@ export class EC2Provider implements ResourceProvider {
         'RouteTableId',
         'DestinationCidrBlock',
         'DestinationIpv6CidrBlock',
+        'DestinationPrefixListId',
+        'CarrierGatewayId',
+        'CoreNetworkArn',
         'GatewayId',
+        'LocalGatewayId',
         'NatGatewayId',
         'EgressOnlyInternetGatewayId',
         'InstanceId',
         'NetworkInterfaceId',
+        'TransitGatewayId',
+        'VpcEndpointId',
         'VpcPeeringConnectionId',
       ]),
     ],
@@ -1995,36 +2001,45 @@ export class EC2Provider implements ResourceProvider {
     const routeTableId = properties['RouteTableId'] as string;
     const destinationCidrBlock = properties['DestinationCidrBlock'] as string | undefined;
     const destinationIpv6CidrBlock = properties['DestinationIpv6CidrBlock'] as string | undefined;
-    const cidr = destinationCidrBlock || destinationIpv6CidrBlock;
+    const destinationPrefixListId = properties['DestinationPrefixListId'] as string | undefined;
+    // The destination key doubles as the physicalId's second segment
+    // (`<routeTableId>|<destination>`); deleteRoute / readRouteCurrentState
+    // discriminate the three forms by shape (':' = IPv6, 'pl-' = prefix list).
+    const destination = destinationCidrBlock || destinationIpv6CidrBlock || destinationPrefixListId;
 
-    if (!routeTableId || !cidr) {
+    if (!routeTableId || !destination) {
       throw new ProvisioningError(
-        `RouteTableId and DestinationCidrBlock/DestinationIpv6CidrBlock are required for Route ${logicalId}`,
+        `RouteTableId and one of DestinationCidrBlock/DestinationIpv6CidrBlock/DestinationPrefixListId are required for Route ${logicalId}`,
         resourceType,
         logicalId
       );
     }
 
-    const isIpv6 = !destinationCidrBlock && !!destinationIpv6CidrBlock;
-
     try {
       await this.ec2Client.send(
         new CreateRouteCommand({
           RouteTableId: routeTableId,
-          ...(isIpv6
-            ? { DestinationIpv6CidrBlock: destinationIpv6CidrBlock }
-            : { DestinationCidrBlock: destinationCidrBlock }),
+          ...(destinationCidrBlock
+            ? { DestinationCidrBlock: destinationCidrBlock }
+            : destinationIpv6CidrBlock
+              ? { DestinationIpv6CidrBlock: destinationIpv6CidrBlock }
+              : { DestinationPrefixListId: destinationPrefixListId }),
+          CarrierGatewayId: (properties['CarrierGatewayId'] as string) ?? undefined,
+          CoreNetworkArn: (properties['CoreNetworkArn'] as string) ?? undefined,
           GatewayId: (properties['GatewayId'] as string) ?? undefined,
+          LocalGatewayId: (properties['LocalGatewayId'] as string) ?? undefined,
           NatGatewayId: (properties['NatGatewayId'] as string) ?? undefined,
           EgressOnlyInternetGatewayId:
             (properties['EgressOnlyInternetGatewayId'] as string) ?? undefined,
           InstanceId: (properties['InstanceId'] as string) ?? undefined,
           NetworkInterfaceId: (properties['NetworkInterfaceId'] as string) ?? undefined,
+          TransitGatewayId: (properties['TransitGatewayId'] as string) ?? undefined,
+          VpcEndpointId: (properties['VpcEndpointId'] as string) ?? undefined,
           VpcPeeringConnectionId: (properties['VpcPeeringConnectionId'] as string) ?? undefined,
         })
       );
 
-      const physicalId = `${routeTableId}|${cidr}`;
+      const physicalId = `${routeTableId}|${destination}`;
       this.logger.debug(`Successfully created Route ${logicalId}: ${physicalId}`);
 
       return {
@@ -2101,24 +2116,27 @@ export class EC2Provider implements ResourceProvider {
     const parts = physicalId.split('|');
     if (parts.length !== 2) {
       throw new ProvisioningError(
-        `Invalid physicalId format for Route ${logicalId}: expected "RouteTableId|DestinationCidrBlock", got "${physicalId}"`,
+        `Invalid physicalId format for Route ${logicalId}: expected "RouteTableId|Destination", got "${physicalId}"`,
         resourceType,
         logicalId,
         physicalId
       );
     }
 
-    const [routeTableId, destinationCidrBlock] = parts;
+    const [routeTableId, destination] = parts;
 
     try {
-      // IPv6 CIDRs (containing ':') must use DestinationIpv6CidrBlock
-      const isIpv6 = destinationCidrBlock?.includes(':');
+      // The destination segment discriminates by shape: ':' = IPv6 CIDR,
+      // 'pl-' = managed prefix list, anything else = IPv4 CIDR.
+      const destinationParam = destination?.includes(':')
+        ? { DestinationIpv6CidrBlock: destination }
+        : destination?.startsWith('pl-')
+          ? { DestinationPrefixListId: destination }
+          : { DestinationCidrBlock: destination };
       await this.ec2Client.send(
         new DeleteRouteCommand({
           RouteTableId: routeTableId,
-          ...(isIpv6
-            ? { DestinationIpv6CidrBlock: destinationCidrBlock }
-            : { DestinationCidrBlock: destinationCidrBlock }),
+          ...destinationParam,
         })
       );
       this.logger.debug(`Successfully deleted Route ${logicalId}`);
@@ -5118,22 +5136,23 @@ export class EC2Provider implements ResourceProvider {
   /**
    * AWS::EC2::Route readCurrentState.
    *
-   * physicalId format: `<routeTableId>|<cidr>` where cidr is either v4 or v6.
+   * physicalId format: `<routeTableId>|<destination>` where destination is a
+   * v4 CIDR, a v6 CIDR, or a managed prefix list id (`pl-...`).
    * AWS API: `DescribeRouteTables(routeTableId)` → walk `Routes[]` for the
-   * entry whose `DestinationCidrBlock` or `DestinationIpv6CidrBlock` matches
-   * the cidr. Returns `undefined` when the route table is gone or the route
-   * has been removed.
+   * entry whose `DestinationCidrBlock`, `DestinationIpv6CidrBlock`, or
+   * `DestinationPrefixListId` matches the destination. Returns `undefined`
+   * when the route table is gone or the route has been removed.
    *
    * Surfaces the target field (`GatewayId` / `NatGatewayId` / `InstanceId` /
    * `NetworkInterfaceId` / `VpcPeeringConnectionId` / `EgressOnlyInternetGatewayId` /
-   * `TransitGatewayId` / `VpcEndpointId`) AWS reports for that route. Drift
-   * signal: route target changed.
+   * `TransitGatewayId` / `LocalGatewayId` / `CarrierGatewayId` / `CoreNetworkArn` /
+   * `VpcEndpointId`) AWS reports for that route. Drift signal: route target changed.
    */
   private async readRouteCurrentState(
     physicalId: string
   ): Promise<Record<string, unknown> | undefined> {
-    const [rtbId, cidr] = physicalId.split('|');
-    if (!rtbId || !cidr) return undefined;
+    const [rtbId, destination] = physicalId.split('|');
+    if (!rtbId || !destination) return undefined;
 
     const resp = await this.ec2Client.send(
       new DescribeRouteTablesCommand({ RouteTableIds: [rtbId] })
@@ -5141,7 +5160,10 @@ export class EC2Provider implements ResourceProvider {
     const rtb = resp.RouteTables?.[0];
     if (!rtb) return undefined;
     const route = rtb.Routes?.find(
-      (r) => r.DestinationCidrBlock === cidr || r.DestinationIpv6CidrBlock === cidr
+      (r) =>
+        r.DestinationCidrBlock === destination ||
+        r.DestinationIpv6CidrBlock === destination ||
+        r.DestinationPrefixListId === destination
     );
     if (!route) return undefined;
 
@@ -5150,11 +5172,25 @@ export class EC2Provider implements ResourceProvider {
       result['DestinationCidrBlock'] = route.DestinationCidrBlock;
     } else if (route.DestinationIpv6CidrBlock !== undefined) {
       result['DestinationIpv6CidrBlock'] = route.DestinationIpv6CidrBlock;
+    } else if (route.DestinationPrefixListId !== undefined) {
+      result['DestinationPrefixListId'] = route.DestinationPrefixListId;
     }
     // Target fields: only one is set on a given route. Surface whichever
     // AWS reports so a console-side target swap (NAT GW → IGW etc.)
     // shows as drift.
-    if (route.GatewayId !== undefined) result['GatewayId'] = route.GatewayId;
+    if (route.GatewayId !== undefined) {
+      // DescribeRouteTables has no VpcEndpointId output member: a route
+      // created with VpcEndpointId (Gateway Load Balancer endpoint) is
+      // reported back as `GatewayId: vpce-...`. CFn's GatewayId is only ever
+      // an igw-/vgw- id, so a vpce- value here is unambiguously the
+      // VpcEndpointId route target — map it back to the CFn key so the
+      // drift baseline (which recorded VpcEndpointId) compares clean.
+      if (route.GatewayId.startsWith('vpce-')) {
+        result['VpcEndpointId'] = route.GatewayId;
+      } else {
+        result['GatewayId'] = route.GatewayId;
+      }
+    }
     if (route.NatGatewayId !== undefined) result['NatGatewayId'] = route.NatGatewayId;
     if (route.InstanceId !== undefined) result['InstanceId'] = route.InstanceId;
     if (route.NetworkInterfaceId !== undefined) {

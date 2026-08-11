@@ -1044,6 +1044,7 @@
         "drift-revert-vpc",
         "ec2-instance",
         "ec2-instance-fanout",
+        "ec2-route-targets",
         "ec2-vpc",
         "ecs-bluegreen",
         "ecs-fargate",
@@ -1114,6 +1115,9 @@
         ],
         "ec2-instance-fanout": [
           "l2"
+        ],
+        "ec2-route-targets": [
+          "l1"
         ],
         "ec2-vpc": [
           "l2"
@@ -1427,6 +1431,7 @@
         "drift-revert-vpc",
         "ec2-instance",
         "ec2-instance-fanout",
+        "ec2-route-targets",
         "ec2-vpc",
         "ecs-bluegreen",
         "ecs-fargate",
@@ -1497,6 +1502,10 @@
         ],
         "ec2-instance-fanout": [
           "l2"
+        ],
+        "ec2-route-targets": [
+          "l1",
+          "literal"
         ],
         "ec2-vpc": [
           "l2"
@@ -1607,6 +1616,7 @@
         "drift-revert-vpc",
         "ec2-instance",
         "ec2-instance-fanout",
+        "ec2-route-targets",
         "ec2-vpc",
         "ecs-bluegreen",
         "ecs-fargate",
@@ -1677,6 +1687,9 @@
         ],
         "ec2-instance-fanout": [
           "l2"
+        ],
+        "ec2-route-targets": [
+          "l1"
         ],
         "ec2-vpc": [
           "l2"
@@ -1943,6 +1956,7 @@
         "drift-revert-vpc",
         "ec2-instance",
         "ec2-instance-fanout",
+        "ec2-route-targets",
         "ec2-vpc",
         "ecs-bluegreen",
         "ecs-fargate",
@@ -2013,6 +2027,9 @@
         ],
         "ec2-instance-fanout": [
           "l2"
+        ],
+        "ec2-route-targets": [
+          "l1"
         ],
         "ec2-vpc": [
           "l2"
@@ -2314,6 +2331,7 @@
         "drift-revert-vpc",
         "ec2-instance",
         "ec2-instance-fanout",
+        "ec2-route-targets",
         "ec2-vpc",
         "ecs-bluegreen",
         "ecs-fargate",
@@ -2385,6 +2403,9 @@
         ],
         "ec2-instance-fanout": [
           "l2"
+        ],
+        "ec2-route-targets": [
+          "l1"
         ],
         "ec2-vpc": [
           "l2"
@@ -2506,6 +2527,7 @@
         "drift-revert-vpc",
         "ec2-instance",
         "ec2-instance-fanout",
+        "ec2-route-targets",
         "ec2-vpc",
         "ecs-bluegreen",
         "ecs-fargate",
@@ -2576,6 +2598,9 @@
         ],
         "ec2-instance-fanout": [
           "l2"
+        ],
+        "ec2-route-targets": [
+          "l1"
         ],
         "ec2-vpc": [
           "l2"
@@ -5702,7 +5727,10 @@
     "AWS::Cognito::UserPoolUserToGroupAttachment",
     "AWS::DSQL::Cluster",
     "AWS::DocDB::GlobalCluster",
+    "AWS::EC2::PrefixList",
     "AWS::EC2::SecurityGroupEgress",
+    "AWS::EC2::TransitGateway",
+    "AWS::EC2::TransitGatewayAttachment",
     "AWS::EC2::Volume",
     "AWS::EKS::Cluster",
     "AWS::ELBv2::LoadBalancer",

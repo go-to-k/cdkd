@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "summary": {
     "classifiedCount": 84,
-    "declaredProperties": 1075,
-    "wiredProperties": 1073,
+    "declaredProperties": 1081,
+    "wiredProperties": 1079,
     "wired": 82,
     "gap": 0,
     "allowListed": 2,
@@ -5543,7 +5543,7 @@
       "file": "ec2-provider.ts",
       "className": "EC2Provider",
       "bucket": "wired",
-      "declaredCount": 64,
+      "declaredCount": 70,
       "properties": [
         {
           "name": "AllocationId",
@@ -5592,6 +5592,24 @@
             "buildBlockDeviceMappings",
             "create",
             "createInstance"
+          ]
+        },
+        {
+          "name": "CarrierGatewayId",
+          "status": "wired",
+          "types": [
+            "AWS::EC2::Route"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "applyUpdate",
+            "create",
+            "createRoute",
+            "update",
+            "updateRoute"
           ]
         },
         {
@@ -5678,6 +5696,24 @@
           ]
         },
         {
+          "name": "CoreNetworkArn",
+          "status": "wired",
+          "types": [
+            "AWS::EC2::Route"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "applyUpdate",
+            "create",
+            "createRoute",
+            "update",
+            "updateRoute"
+          ]
+        },
+        {
           "name": "CreditSpecification",
           "status": "wired",
           "types": [
@@ -5754,6 +5790,31 @@
             "createRoute",
             "update",
             "updateRoute"
+          ]
+        },
+        {
+          "name": "DestinationPrefixListId",
+          "status": "wired",
+          "types": [
+            "AWS::EC2::Route"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "applyUpdate",
+            "buildIpPermission",
+            "create",
+            "createRoute",
+            "createSecurityGroupIngress",
+            "delete",
+            "deleteSecurityGroupIngress",
+            "readCurrentState",
+            "readSecurityGroupIngressCurrentState",
+            "update",
+            "updateRoute",
+            "updateSecurityGroupIngress"
           ]
         },
         {
@@ -6125,6 +6186,24 @@
           "seededBy": [
             "create",
             "createInstance"
+          ]
+        },
+        {
+          "name": "LocalGatewayId",
+          "status": "wired",
+          "types": [
+            "AWS::EC2::Route"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "applyUpdate",
+            "create",
+            "createRoute",
+            "update",
+            "updateRoute"
           ]
         },
         {
@@ -6647,6 +6726,24 @@
           ]
         },
         {
+          "name": "TransitGatewayId",
+          "status": "wired",
+          "types": [
+            "AWS::EC2::Route"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "applyUpdate",
+            "create",
+            "createRoute",
+            "update",
+            "updateRoute"
+          ]
+        },
+        {
           "name": "UserData",
           "status": "wired",
           "types": [
@@ -6659,6 +6756,24 @@
           "seededBy": [
             "create",
             "createInstance"
+          ]
+        },
+        {
+          "name": "VpcEndpointId",
+          "status": "wired",
+          "types": [
+            "AWS::EC2::Route"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "applyUpdate",
+            "create",
+            "createRoute",
+            "update",
+            "updateRoute"
           ]
         },
         {
