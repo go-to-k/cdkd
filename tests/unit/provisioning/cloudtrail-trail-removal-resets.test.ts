@@ -302,6 +302,48 @@ describe('CloudTrailProvider removal resets (issue #1160)', () => {
     expect(updateTrailInput()['CloudWatchLogsRoleArn']).toBe('');
   });
 
+  it.each([
+    ['null', null],
+    ['an unresolved intrinsic', { 'Fn::If': ['C', 'a', 'b'] }],
+    ['a number', 5],
+  ])(
+    'leaves the live wiring alone on %s instead of reading it as a clear',
+    async (_label, value) => {
+      // The destructive direction of the presence rule: `null` survives a JSON
+      // state round-trip, and coercing it to `''` would DISABLE a live trail's
+      // CloudWatch Logs delivery on a value nobody wrote as a clear — the
+      // `malformed-value-must-not-read-as-removal` class this file already
+      // guards for EventSelectors.
+      await provider.update('T', TRAIL_ARN, TYPE, {
+        ...BASE,
+        CloudWatchLogsLogGroupArn: value,
+        CloudWatchLogsRoleArn: value,
+      }, {
+        ...BASE,
+        CloudWatchLogsLogGroupArn: 'arn:aws:logs:us-east-1:0:log-group:/g:*',
+        CloudWatchLogsRoleArn: 'arn:aws:iam::0:role/r',
+      });
+
+      expect(updateTrailInput()['CloudWatchLogsLogGroupArn']).toBeUndefined();
+      expect(updateTrailInput()['CloudWatchLogsRoleArn']).toBeUndefined();
+    }
+  );
+
+  it('refuses a HALF-populated pair rather than sending the shape AWS rejects', async () => {
+    // Reachable from a snapshot: `readCurrentState` always-emits both keys, so
+    // a trail AWS reports with only one half yields `{group: arn, role: ''}`,
+    // and a --revert / rollback replay hands that straight to update().
+    // Sending it would pair a real ARN with an empty one.
+    await provider.update('T', TRAIL_ARN, TYPE, {
+      ...BASE,
+      CloudWatchLogsLogGroupArn: 'arn:aws:logs:us-east-1:0:log-group:/g:*',
+      CloudWatchLogsRoleArn: '',
+    }, { ...BASE });
+
+    expect(updateTrailInput()['CloudWatchLogsLogGroupArn']).toBeUndefined();
+    expect(updateTrailInput()['CloudWatchLogsRoleArn']).toBeUndefined();
+  });
+
   it('sends the pair TOGETHER when only one half changes', async () => {
     // AWS holds the two all-or-nothing, so a request carrying one without the
     // other is a shape it rejects. The resolver decides them jointly.

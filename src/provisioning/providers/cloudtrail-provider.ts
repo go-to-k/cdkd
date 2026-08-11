@@ -52,30 +52,6 @@ const DEFAULT_EVENT_SELECTORS: readonly EventSelector[] = Object.freeze([
 ]) as readonly EventSelector[];
 
 /**
- * Resolve the `CloudWatchLogsLogGroupArn` / `CloudWatchLogsRoleArn` pair for an
- * `UpdateTrail`, distinguishing an ABSENT desired side from an explicit `''`.
- *
- * The pair is all-or-nothing on AWS, so the two fields are decided TOGETHER: a
- * change on either side sends both desired values, which is how the caller can
- * never build the half-configured request AWS rejects.
- *
- * - ABSENT on the desired side -> `undefined` for both: the template never
- *   declared them, and the live CFn A/B (2026-08-10) measured a template
- *   removal as RETAINED. Sending nothing is the parity behavior.
- * - PRESENT (including `''`) -> both forwarded verbatim. `''` is the clear,
- *   which is what makes a `drift --revert` of a console-side enable actually
- *   revert (issue #1565). On an already-unwired trail that re-asserts a null
- *   field, which AWS accepts as the no-op it is — and it rides an
- *   `UpdateTrail` this method issues anyway, so it costs no extra call.
- *   Deliberately NOT gated on "differs from the previous side": that gate
- *   would also stop forwarding an UNCHANGED populated pair, which
- *   `cloudtrail-provider-roundtrip.test.ts` pins as a wire-layer round-trip
- *   guarantee.
- *
- * Only the DESIRED side decides, which keeps the guard-the-desired-side-only
- * rule intact.
- */
-/**
  * `undefined` for an absent / null / EMPTY optional string field.
  *
  * Module-scoped since issue #1565 so `create()` can use it too: an always-emit
@@ -95,17 +71,78 @@ function emptyToUndefined(v: unknown): string | undefined {
   return v as string;
 }
 
+/**
+ * Resolve the `CloudWatchLogsLogGroupArn` / `CloudWatchLogsRoleArn` pair for an
+ * `UpdateTrail`, distinguishing an ABSENT desired side from an explicit `''`.
+ *
+ * The pair is all-or-nothing on AWS, so the two fields are decided TOGETHER —
+ * the caller cannot build the half-configured request AWS rejects.
+ *
+ * - ABSENT (`undefined` / `null`) on BOTH sides -> send neither. The template
+ *   never declared them, and the live CFn A/B (2026-08-10) measured a template
+ *   removal as RETAINED, so sending nothing IS the parity behavior. `null`
+ *   counts as absent because a JSON state round-trip can produce one where the
+ *   template had nothing.
+ * - BOTH `''` -> send both. `''` is the clear, which is what makes a
+ *   `drift --revert` of a console-side enable actually revert (issue #1565).
+ *   On an already-unwired trail that re-asserts a null field, which AWS accepts
+ *   as the no-op it is, and it rides an `UpdateTrail` this method issues
+ *   anyway. Deliberately NOT gated on "differs from the previous side": that
+ *   gate would also stop forwarding an UNCHANGED populated pair, which
+ *   `cloudtrail-provider-roundtrip.test.ts` pins as a wire-layer guarantee.
+ * - BOTH populated -> send both verbatim.
+ * - Anything else — a non-string value, or exactly ONE half populated -> send
+ *   NEITHER, and report it. Both shapes are unusable rather than meaningful:
+ *   coercing them would send `''` next to a real ARN (the request AWS rejects)
+ *   or, worse, read a malformed `null` as a CLEAR and silently disable a live
+ *   trail's CloudWatch Logs delivery — the
+ *   `malformed-value-must-not-read-as-removal` class this same file already
+ *   guards for `EventSelectors`. Leaving the pair alone is the non-destructive
+ *   reading, and the caller warns so the divergence is loud.
+ *
+ * Only the DESIRED side decides, which keeps the guard-the-desired-side-only
+ * rule intact.
+ */
 export function resolveCloudWatchLogsPair(properties: Record<string, unknown>): {
   logGroupArn: string | undefined;
   roleArn: string | undefined;
+  unusable?: string;
 } {
   const desiredGroup = properties['CloudWatchLogsLogGroupArn'];
   const desiredRole = properties['CloudWatchLogsRoleArn'];
-  if (desiredGroup === undefined && desiredRole === undefined) {
-    return { logGroupArn: undefined, roleArn: undefined };
+  const groupAbsent = desiredGroup == null;
+  const roleAbsent = desiredRole == null;
+  if (groupAbsent && roleAbsent) return { logGroupArn: undefined, roleArn: undefined };
+
+  if (typeof desiredGroup !== 'string' || typeof desiredRole !== 'string') {
+    return {
+      logGroupArn: undefined,
+      roleArn: undefined,
+      unusable:
+        `CloudWatchLogsLogGroupArn / CloudWatchLogsRoleArn must both be strings ` +
+        `(got ${describeValue(desiredGroup)} / ${describeValue(desiredRole)}) — check for ` +
+        `an unresolved intrinsic or a half-written state record`,
+    };
   }
-  const asString = (v: unknown): string => (typeof v === 'string' ? v : '');
-  return { logGroupArn: asString(desiredGroup), roleArn: asString(desiredRole) };
+  if ((desiredGroup === '') !== (desiredRole === '')) {
+    return {
+      logGroupArn: undefined,
+      roleArn: undefined,
+      unusable:
+        `CloudWatchLogsLogGroupArn / CloudWatchLogsRoleArn are all-or-nothing on AWS, ` +
+        `but only one of them carries a value — sending the pair would be rejected`,
+    };
+  }
+  return { logGroupArn: desiredGroup, roleArn: desiredRole };
+}
+
+/** Human-readable type for a warning, without echoing user data. */
+function describeValue(value: unknown): string {
+  if (value === null) return 'null';
+  if (value === undefined) return 'nothing';
+  if (Array.isArray(value)) return 'an array';
+  if (typeof value === 'string') return value === '' ? "''" : 'a string';
+  return `a ${typeof value}`;
 }
 
 /**
@@ -384,6 +421,12 @@ export class CloudTrailProvider implements ResourceProvider {
     // Decided as a PAIR, so the request can never carry one half without the
     // other — the shape AWS holds all-or-nothing.
     const cwPair = resolveCloudWatchLogsPair(properties);
+    if (cwPair.unusable !== undefined) {
+      this.logger.warn(
+        `CloudTrail Trail ${logicalId}: ${cwPair.unusable}. The trail's existing ` +
+          `CloudWatch Logs wiring is left untouched for this update.`
+      );
+    }
     const cloudWatchLogsLogGroupArn = cwPair.logGroupArn;
     const cloudWatchLogsRoleArn = cwPair.roleArn;
     const kmsKeyId = emptyToUndefined(properties['KMSKeyId']);
@@ -766,10 +809,12 @@ export class CloudTrailProvider implements ResourceProvider {
     //
     // The all-or-nothing discriminator is preserved where it actually
     // matters — the WRITE side — rather than by withholding the read: the
-    // update path runs both through `emptyToUndefined`, so a `''` pair is
-    // dropped from `UpdateTrail` and an unconfigured trail round-trips as a
-    // no-op. The pair is emitted TOGETHER, so the snapshot never describes
-    // the half-configured state AWS cannot hold.
+    // update path decides both fields TOGETHER
+    // (`resolveCloudWatchLogsPair`), forwarding them on PRESENCE so an
+    // explicit `''` CLEARS and an ABSENT pair is retained, and refusing any
+    // half-populated or non-string shape. The pair is emitted TOGETHER here
+    // too, so the snapshot never describes the half-configured state AWS
+    // cannot hold.
     //
     // This is deliberately NOT the
     // `feedback_always_emit_check_type_discriminator.md` pattern, and the

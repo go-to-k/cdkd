@@ -59,8 +59,10 @@ describe('CloudTrailProvider read-update round-trip', () => {
     // never sees the rejection-shape input
     // (`CloudWatchLogsLogGroupArn is not in valid ARN format`).
     // NOTE: that rejection claim was DISPROVEN by the issue #1160 probe
-    // (2026-08-10) — `''` IS accepted for this field. The all-or-nothing
-    // pair discriminator is the surviving rationale for the guard.
+    // (2026-08-10) — `''` IS accepted for this field, and issue #1565 then
+    // removed the read-side guard entirely. What this case now pins is the
+    // OTHER half: an ABSENT desired pair must not reach AWS, because a
+    // template removal is RETAINED per the live CFn A/B.
     const observed = {
       TrailName: 'mytrail',
       S3BucketName: 'mybucket',
@@ -75,7 +77,7 @@ describe('CloudTrailProvider read-update round-trip', () => {
       EventSelectors: [],
       Tags: [] as Array<{ Key: string; Value: string }>,
       // CloudWatchLogsLogGroupArn / CloudWatchLogsRoleArn intentionally
-      // absent — Class 1 guard kicks in at readCurrentState.
+      // absent: this is the template-removal shape, which must be RETAINED.
     };
 
     // SDK sends: UpdateTrail (no CW logs change → no PutEventSelectors,
@@ -129,6 +131,28 @@ describe('CloudTrailProvider read-update round-trip', () => {
     for (const key of ['KmsKeyId', 'SnsTopicName']) {
       expect(input[key]).not.toBe('');
     }
+  });
+
+  it('a no-drift snapshot round-trip does not call PutEventSelectors with an empty list', async () => {
+    // Restored pin (it was overwritten while splitting the Class 2 test for
+    // issue #1565): AWS REJECTS `PutEventSelectors` with zero selectors
+    // (`InvalidEventSelectorsException: Specify a valid number of selectors
+    // (1 to 5)`), so an unchanged `[]`/`[]` snapshot must not reach it. The
+    // #1549 reset path only fires when the diff fires, which is what keeps
+    // this true.
+    const observed = {
+      TrailName: 'mytrail',
+      S3BucketName: 'mybucket',
+      EventSelectors: [] as Array<Record<string, unknown>>,
+      Tags: [] as Array<{ Key: string; Value: string }>,
+    };
+
+    mockSend.mockResolvedValueOnce({});
+
+    await provider.update('L', TRAIL_ARN, RESOURCE_TYPE, observed, observed);
+
+    const putCall = mockSend.mock.calls.find((c) => c[0] instanceof PutEventSelectorsCommand);
+    expect(putCall).toBeUndefined();
   });
 
   it("the CloudWatch Logs pair's '' placeholders are FORWARDED, not sanitized (issue #1565)", async () => {
