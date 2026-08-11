@@ -2473,7 +2473,12 @@ export class ECSProvider implements ResourceProvider {
       previous != null && typeof previous === 'object' && !Array.isArray(previous)
         ? (previous as Record<string, unknown>)['ForceNewDeploymentNonce']
         : undefined;
-    const nonceChanged = nonce !== undefined && nonce !== previousNonce;
+    // Value comparison, not identity: a non-string nonce (a number, or an
+    // unresolved-intrinsic object surviving to this layer) is a fresh object
+    // reference on every deploy, and an identity compare would read it as
+    // "changed" and force a spurious rollout on EVERY update (review catch).
+    const nonceChanged =
+      nonce !== undefined && JSON.stringify(nonce) !== JSON.stringify(previousNonce);
     return enable === true || nonceChanged ? true : undefined;
   }
 
@@ -2630,23 +2635,6 @@ export class ECSProvider implements ResourceProvider {
   }
 
   /**
-   * Read the AWS-current ECS resource configuration in CFn-property shape.
-   *
-   * Dispatches by resource type:
-   *   - `AWS::ECS::Cluster` → `DescribeClusters`
-   *   - `AWS::ECS::Service` → `DescribeServices`. Service physicalIds come in
-   *     two forms — the service ARN (what `createService` stores) and the
-   *     composite `<clusterArn>|<serviceName>` — and both are accepted (#1170).
-   *   - `AWS::ECS::TaskDefinition` → `DescribeTaskDefinition`
-   *
-   * Each branch surfaces only the keys cdkd's `create()` accepts, mapping
-   * the SDK's camelCase to CFn PascalCase. Tags are surfaced via
-   * `DescribeClusters/Services(include=[TAGS])` for cluster / service, and
-   * via `DescribeTaskDefinition(include=[TAGS])` for task definitions —
-   * with CDK's `aws:*` auto-tags filtered out. Tag-result keys are omitted
-   * when AWS reports no user tags.
-   */
-  /**
    * State property paths `readCurrentState` deliberately cannot read back
    * from AWS (issue #609) — fed into the drift comparator's `ignorePaths` so
    * a template that sets them does not phantom-drift as "removed" on every
@@ -2678,6 +2666,23 @@ export class ECSProvider implements ResourceProvider {
     return [];
   }
 
+  /**
+   * Read the AWS-current ECS resource configuration in CFn-property shape.
+   *
+   * Dispatches by resource type:
+   *   - `AWS::ECS::Cluster` → `DescribeClusters`
+   *   - `AWS::ECS::Service` → `DescribeServices`. Service physicalIds come in
+   *     two forms — the service ARN (what `createService` stores) and the
+   *     composite `<clusterArn>|<serviceName>` — and both are accepted (#1170).
+   *   - `AWS::ECS::TaskDefinition` → `DescribeTaskDefinition`
+   *
+   * Each branch surfaces only the keys cdkd's `create()` accepts, mapping
+   * the SDK's camelCase to CFn PascalCase. Tags are surfaced via
+   * `DescribeClusters/Services(include=[TAGS])` for cluster / service, and
+   * via `DescribeTaskDefinition(include=[TAGS])` for task definitions —
+   * with CDK's `aws:*` auto-tags filtered out. Tag-result keys are omitted
+   * when AWS reports no user tags.
+   */
   async readCurrentState(
     physicalId: string,
     _logicalId: string,

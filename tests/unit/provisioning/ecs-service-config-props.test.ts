@@ -519,6 +519,42 @@ describe('ECS Service config properties (#609)', () => {
       expect(findCommand(UpdateServiceCommand).input.forceNewDeployment).toBeUndefined();
       expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('ForceNewDeployment'));
     });
+
+    it('a malformed ARRAY block warns and skips (the Array.isArray half of the guard)', async () => {
+      await update({ ...baseProps(), ForceNewDeployment: ['n-1'] }, baseProps());
+      expect(findCommand(UpdateServiceCommand).input.forceNewDeployment).toBeUndefined();
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('array'));
+    });
+
+    it('removing the block (present before, absent now) does NOT force a rollout', async () => {
+      await update(
+        { ...baseProps(), DesiredCount: 1 },
+        { ...baseProps(), ForceNewDeployment: { EnableForceNewDeployment: true, ForceNewDeploymentNonce: 'n-1' } }
+      );
+      expect(findCommand(UpdateServiceCommand).input.forceNewDeployment).toBeUndefined();
+    });
+
+    it("EnableForceNewDeployment: 'true' (CFn string boolean) forces a rollout via coerceBool", async () => {
+      await update(
+        { ...baseProps(), ForceNewDeployment: { EnableForceNewDeployment: 'true' } },
+        baseProps()
+      );
+      expect(findCommand(UpdateServiceCommand).input.forceNewDeployment).toBe(true);
+    });
+
+    it('a value-equal non-primitive nonce does NOT force (value compare, not identity)', async () => {
+      // Regression pin for the review catch: an identity compare read a
+      // fresh-but-equal object nonce as "changed" on every deploy.
+      await update(
+        {
+          ...baseProps(),
+          DesiredCount: 1,
+          ForceNewDeployment: { ForceNewDeploymentNonce: { Rev: 1 } },
+        },
+        { ...baseProps(), ForceNewDeployment: { ForceNewDeploymentNonce: { Rev: 1 } } }
+      );
+      expect(findCommand(UpdateServiceCommand).input.forceNewDeployment).toBeUndefined();
+    });
   });
 
   describe('DeploymentController delivery keeps the LoadBalancers/ServiceRegistries gate intact', () => {
