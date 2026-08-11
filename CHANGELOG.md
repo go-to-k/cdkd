@@ -1,3 +1,10 @@
+## [0.280.18](https://github.com/go-to-k/cdkd/compare/v0.280.17...v0.280.18) (2026-08-11)
+
+
+### Bug Fixes
+
+* **appsync:** backfill the Resolver + DataSource silent-drop properties ([#609](https://github.com/go-to-k/cdkd/issues/609)) ([#1601](https://github.com/go-to-k/cdkd/issues/1601)) ([74d68c8](https://github.com/go-to-k/cdkd/commit/74d68c8e167097c4984fbe4c293fe93c270945e9))
+
 ## [0.280.17](https://github.com/go-to-k/cdkd/compare/v0.280.16...v0.280.17) (2026-08-11)
 
 
