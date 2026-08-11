@@ -1,8 +1,8 @@
 {
   "summary": {
     "targetCount": 12,
-    "nestedKeyCount": 736,
-    "sameSpelling": 670,
+    "nestedKeyCount": 739,
+    "sameSpelling": 673,
     "providerHandled": 50,
     "allowListed": 16,
     "caseDivergence": 0,
@@ -137,8 +137,16 @@
       "sdkClientPackage": "@aws-sdk/client-apigatewayv2",
       "keyStyle": "exact",
       "freshObjectMapper": true,
-      "nestedKeyCount": 0,
-      "entries": [],
+      "nestedKeyCount": 1,
+      "entries": [
+        {
+          "resourceType": "AWS::ApiGatewayV2::Route",
+          "nestedKey": "RequestParameters.Required",
+          "topLevelProperty": "RequestParameters",
+          "terminalKey": "Required",
+          "bucket": "same-spelling"
+        }
+      ],
       "shapeEntries": [],
       "shapeCleanCount": 1,
       "unmatchedDefinitions": [],
@@ -151,8 +159,22 @@
       "sdkClientPackage": "@aws-sdk/client-apigatewayv2",
       "keyStyle": "exact",
       "freshObjectMapper": true,
-      "nestedKeyCount": 5,
+      "nestedKeyCount": 7,
       "entries": [
+        {
+          "resourceType": "AWS::ApiGatewayV2::Stage",
+          "nestedKey": "AccessLogSettings.DestinationArn",
+          "topLevelProperty": "AccessLogSettings",
+          "terminalKey": "DestinationArn",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ApiGatewayV2::Stage",
+          "nestedKey": "AccessLogSettings.Format",
+          "topLevelProperty": "AccessLogSettings",
+          "terminalKey": "Format",
+          "bucket": "same-spelling"
+        },
         {
           "resourceType": "AWS::ApiGatewayV2::Stage",
           "nestedKey": "DefaultRouteSettings.DataTraceEnabled",

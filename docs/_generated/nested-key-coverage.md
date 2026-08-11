@@ -8,8 +8,8 @@ For every SDK provider that forwards a nested CFn config blob, diffs the blob's 
 ## Summary
 
 - Audited targets: **12**
-- Nested CFn key paths audited: **736**
-- Same spelling in SDK model: **670**
+- Nested CFn key paths audited: **739**
+- Same spelling in SDK model: **673**
 - Explicitly handled in provider: **50**
 - Allow-listed pass-throughs (does NOT block CI): **16**
 - **Case divergences (blocks CI): 0**
@@ -165,8 +165,8 @@ CFn members whose SHAPE diverges from the same-spelled SDK member (bare array vs
 | `AWS::ApiGatewayV2::Api` | `apigatewayv2-provider.ts` | `@aws-sdk/client-apigatewayv2` | exact | yes | 6 | 1 |
 | `AWS::ApiGatewayV2::Authorizer` | `apigatewayv2-provider.ts` | `@aws-sdk/client-apigatewayv2` | exact | yes | 2 | 0 |
 | `AWS::ApiGatewayV2::Integration` | `apigatewayv2-provider.ts` | `@aws-sdk/client-apigatewayv2` | exact | yes | 0 | 3 |
-| `AWS::ApiGatewayV2::Route` | `apigatewayv2-provider.ts` | `@aws-sdk/client-apigatewayv2` | exact | yes | 0 | 0 |
-| `AWS::ApiGatewayV2::Stage` | `apigatewayv2-provider.ts` | `@aws-sdk/client-apigatewayv2` | exact | yes | 5 | 0 |
+| `AWS::ApiGatewayV2::Route` | `apigatewayv2-provider.ts` | `@aws-sdk/client-apigatewayv2` | exact | yes | 1 | 0 |
+| `AWS::ApiGatewayV2::Stage` | `apigatewayv2-provider.ts` | `@aws-sdk/client-apigatewayv2` | exact | yes | 7 | 0 |
 | `AWS::AppSync::GraphQLApi` | `appsync-provider.ts` | `@aws-sdk/client-appsync` | lower-first | yes | 33 | 1 |
 | `AWS::CloudFront::Distribution` | `cloudfront-distribution-provider.ts` | `@aws-sdk/client-cloudfront` | exact | yes | 173 | 4 |
 | `AWS::CloudWatch::AnomalyDetector` | `cloudwatch-anomaly-detector-provider.ts` | `@aws-sdk/client-cloudwatch` | exact | yes | 31 | 1 |
