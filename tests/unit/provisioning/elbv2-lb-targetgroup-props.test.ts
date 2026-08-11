@@ -540,6 +540,80 @@ describe('ELBv2 LoadBalancer + TargetGroup silent-drop props (#609)', () => {
       ]);
     });
 
+    it('does NOT mass-reset when the previous side is a full readCurrentState snapshot (drift --revert)', async () => {
+      // `cdkd drift --revert` calls update(..., newProperties,
+      // outcome.awsProperties) — the previous side is the FULL AWS snapshot,
+      // not a template. Against a state record with no observedProperties the
+      // desired side is the template's one key, so every untemplated key looks
+      // REMOVED. Writing documented defaults there would silently disable
+      // deletion protection / logs / HTTP/2 / WAF fail-open on a live LB.
+      // Before the defaults table existed this was accidentally safe ('' fails
+      // validation, so the whole revert aborted), so the table MUST NOT turn
+      // that loud refusal into a silent destructive write.
+      await provider.update('MyLb', LB_ARN, LB_TYPE, {
+        LoadBalancerAttributes: [{ Key: 'idle_timeout.timeout_seconds', Value: '120' }],
+      }, {
+        LoadBalancerAttributes: [
+          { Key: 'idle_timeout.timeout_seconds', Value: '60' },
+          // Everything below is AWS-reported and sitting at its default —
+          // i.e. exactly what an untemplated key looks like.
+          { Key: 'deletion_protection.enabled', Value: 'false' },
+          { Key: 'access_logs.s3.enabled', Value: 'false' },
+          { Key: 'connection_logs.s3.enabled', Value: 'false' },
+          { Key: 'routing.http2.enabled', Value: 'true' },
+          { Key: 'waf.fail_open.enabled', Value: 'false' },
+          { Key: 'zonal_shift.config.enabled', Value: 'false' },
+          { Key: 'routing.http.desync_mitigation_mode', Value: 'defensive' },
+          { Key: 'routing.http.xff_header_processing.mode', Value: 'append' },
+        ],
+      });
+
+      // ONLY the genuinely changed key is submitted. No default is written
+      // back for any of the eight untemplated keys.
+      const [call] = callsOf('ModifyLoadBalancerAttributesCommand');
+      expect(call[0].input.Attributes).toEqual([
+        { Key: 'idle_timeout.timeout_seconds', Value: '120' },
+      ]);
+    });
+
+    it('still resets an untemplated key that AWS reports at a NON-default value', async () => {
+      // The skip is exact, not blanket: a key sitting away from its default
+      // was genuinely changed, so the reset must still fire.
+      await provider.update(
+        'MyLb',
+        LB_ARN,
+        LB_TYPE,
+        {},
+        { LoadBalancerAttributes: [{ Key: 'routing.http2.enabled', Value: 'false' }] }
+      );
+
+      const [call] = callsOf('ModifyLoadBalancerAttributesCommand');
+      expect(call[0].input.Attributes).toEqual([{ Key: 'routing.http2.enabled', Value: 'true' }]);
+    });
+
+    it('does not walk the prototype chain for a key named __proto__ / constructor', async () => {
+      await provider.update(
+        'MyLb',
+        LB_ARN,
+        LB_TYPE,
+        {},
+        {
+          LoadBalancerAttributes: [
+            { Key: '__proto__', Value: 'x' },
+            { Key: 'constructor', Value: 'y' },
+            { Key: 'toString', Value: 'z' },
+          ],
+        }
+      );
+
+      const [call] = callsOf('ModifyLoadBalancerAttributesCommand');
+      expect(call[0].input.Attributes).toEqual([
+        { Key: '__proto__', Value: '' },
+        { Key: 'constructor', Value: '' },
+        { Key: 'toString', Value: '' },
+      ]);
+    });
+
     it('skips ModifyLoadBalancerAttributes when the attribute set is unchanged', async () => {
       await provider.update(
         'MyLb',

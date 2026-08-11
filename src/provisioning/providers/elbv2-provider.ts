@@ -134,9 +134,12 @@ const TARGET_GROUP_ATTRIBUTE_DEFAULTS: Record<string, string> = {
  * of keys, so falling back to it preserves working behaviour instead of
  * silently retaining a value the template asked to drop.
  *
- * A key is listed ONLY when the SDK model documents ONE unconditional default
- * for it. Two exclusion classes matter, and both are the difference between
- * failing loudly and writing a wrong value silently:
+ * A key is listed ONLY when ONE unconditional default is established for it —
+ * documented in the SDK model, or (for
+ * `routing.http.response.server.enabled`, which the model leaves unstated)
+ * proven by the `alb` integ's live removal readback. Two exclusion classes
+ * matter, and both are the difference between failing loudly and writing a
+ * wrong value silently:
  *
  * - **Default depends on the LOAD BALANCER** — `load_balancing.cross_zone.enabled`
  *   is always-on and unconfigurable for an ALB but defaults to false on an
@@ -663,7 +666,7 @@ export class ELBv2Provider implements ResourceProvider {
     const submittedAttrs = this.diffAttributes(
       this.normalizeAttributes(properties['LoadBalancerAttributes']),
       this.normalizeAttributes(previousProperties['LoadBalancerAttributes']),
-      (key) => LOAD_BALANCER_ATTRIBUTE_DEFAULTS[key] ?? ''
+      this.attributeRemovalResolver(LOAD_BALANCER_ATTRIBUTE_DEFAULTS)
     );
     if (submittedAttrs.length > 0) {
       await this.getClient().send(
@@ -1197,14 +1200,23 @@ export class ELBv2Provider implements ResourceProvider {
       const tgAttrDiff = this.diffAttributes(
         this.normalizeAttributes(properties['TargetGroupAttributes']),
         this.normalizeAttributes(previousProperties['TargetGroupAttributes']),
-        (key) => {
-          const fallback = TARGET_GROUP_ATTRIBUTE_DEFAULTS[key];
+        (key, currentValue) => {
+          // Object.hasOwn, not a bare index: `__proto__` / `constructor` /
+          // `toString` would otherwise resolve up the prototype chain to a
+          // non-string and be submitted as a garbage Value.
+          const fallback = Object.hasOwn(TARGET_GROUP_ATTRIBUTE_DEFAULTS, key)
+            ? TARGET_GROUP_ATTRIBUTE_DEFAULTS[key]
+            : undefined;
           if (fallback === undefined) {
             this.logger.warn(
               `TargetGroup attribute ${key} was removed from the template but has no documented default cdkd can reset it to — the live value is retained. Set the attribute explicitly to change it.`
             );
+            return undefined;
           }
-          return fallback;
+          // Already at the default — nothing to reset. Same safety property as
+          // the LB / Listener arms: see attributeRemovalResolver's docstring
+          // for why the previous side is not always a template.
+          return currentValue === fallback ? undefined : fallback;
         }
       );
       if (tgAttrDiff.length > 0) {
@@ -1483,7 +1495,7 @@ export class ELBv2Provider implements ResourceProvider {
       const submittedAttrs = this.diffAttributes(
         this.normalizeAttributes(properties['ListenerAttributes']),
         this.normalizeAttributes(previousProperties['ListenerAttributes']),
-        (key) => LISTENER_ATTRIBUTE_DEFAULTS[key] ?? ''
+        this.attributeRemovalResolver(LISTENER_ATTRIBUTE_DEFAULTS)
       );
       if (submittedAttrs.length > 0) {
         await withRetry(
@@ -1645,7 +1657,7 @@ export class ELBv2Provider implements ResourceProvider {
   private diffAttributes(
     newAttrs: Array<{ Key: string; Value: string }>,
     oldAttrs: Array<{ Key: string; Value: string }>,
-    removalValue: (key: string) => string | undefined
+    removalValue: (key: string, currentValue: string) => string | undefined
   ): Array<{ Key: string; Value: string }> {
     const newAttrMap = new Map(newAttrs.map((a) => [a.Key, a.Value]));
     const oldAttrMap = new Map(oldAttrs.map((a) => [a.Key, a.Value]));
@@ -1653,13 +1665,53 @@ export class ELBv2Provider implements ResourceProvider {
     for (const [k, v] of newAttrMap) {
       if (oldAttrMap.get(k) !== v) submitted.push({ Key: k, Value: v });
     }
-    for (const [k] of oldAttrMap) {
+    for (const [k, currentValue] of oldAttrMap) {
       if (!newAttrMap.has(k)) {
-        const value = removalValue(k);
+        const value = removalValue(k, currentValue);
         if (value !== undefined) submitted.push({ Key: k, Value: value });
       }
     }
     return submitted;
+  }
+
+  /**
+   * Build the `removalValue` resolver for the LoadBalancer / Listener attribute
+   * arms: reset a removed key to its documented default, or to `''` (which
+   * those two APIs accept as "clear the override") when no default is known.
+   *
+   * **A key already AT its default is SKIPPED, and that is a safety property,
+   * not an optimization.** The previous side is not always a template: `cdkd
+   * drift --revert` calls `update(..., newProperties, outcome.awsProperties)`
+   * (`src/cli/commands/drift.ts`), so `oldAttrs` can be the FULL
+   * `readCurrentState` snapshot — every attribute AWS reports, including the
+   * ~18 the user never templated. Against a state record with no
+   * `observedProperties` the desired side is the template's one or two keys,
+   * so every untemplated key looks REMOVED and would be "reset".
+   *
+   * Writing a documented default there would silently disable deletion
+   * protection, access / connection logs, HTTP/2, WAF fail-open and zonal
+   * shift on a live load balancer. Before the defaults table existed this was
+   * accidentally safe — `''` fails validation, so the whole revert aborted and
+   * changed nothing — so introducing the table without this guard would have
+   * converted a loud refusal into a silent destructive write.
+   *
+   * The skip is exact rather than heuristic: a key the user never templated is
+   * BY DEFINITION sitting at its default, so it is skipped; a key the template
+   * really did set is set to a NON-default value (otherwise templating it
+   * would be a no-op), so its reset still fires. A template that set a key to
+   * exactly its default and then dropped it is skipped too — correctly, since
+   * there is nothing to change.
+   */
+  private attributeRemovalResolver(
+    defaults: Record<string, string>
+  ): (key: string, currentValue: string) => string | undefined {
+    return (key, currentValue) => {
+      // Object.hasOwn, not a bare index: `__proto__` / `constructor` /
+      // `toString` would otherwise resolve up the prototype chain to a
+      // non-string and emit a garbage Value.
+      const fallback = Object.hasOwn(defaults, key) ? defaults[key] : '';
+      return currentValue === fallback ? undefined : fallback;
+    };
   }
 
   /**

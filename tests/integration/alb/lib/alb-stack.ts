@@ -47,34 +47,30 @@ export class AlbStack extends cdk.Stack {
     });
 
     // LoadBalancerAttributes (issue #1609 item 1). The LB and Listener
-    // attribute diff arms have pushed a removed key back as `Value: ''`
-    // since they were written, and NO integ had ever exercised either
-    // removal — while the sibling ModifyTargetGroupAttributes arm was
-    // live-proven (2026-08-11) to REJECT the empty string outright.
-    // Live A/B 2026-08-11 settled it per VALUE KIND: the empty string is
-    // accepted for the NUMERIC idle_timeout but REJECTED for the BOOLEAN
-    // deletion_protection.enabled ("must be 'true' or 'false', but was ''"),
-    // on this API and on ModifyListenerAttributes alike.
+    // attribute arms pushed every removed key back as `Value: ''` since they
+    // were written, and NO integ had ever exercised either removal. This
+    // fixture is the A/B that settled it, PER VALUE KIND: the empty string is
+    // accepted for the NUMERIC idle_timeout but REJECTED for a BOOLEAN key
+    // ("must be 'true' or 'false', but was ''") on this API and on
+    // ModifyListenerAttributes alike — and a rejection fails the whole call,
+    // so the removal deploy AND its rollback both died. The provider now
+    // sends documented defaults for the validated keys.
     //
-    // `deletion_protection.enabled` is listed in EVERY phase on purpose, and
-    // it is doing two jobs. It is the RETAINED SIBLING the removal-testing
-    // convention wants for a collection-valued property (without one, a reset
-    // that wiped the whole list would also pass). And it pins the CDK-L2
-    // trap this fixture hit on its first run: the L2 ApplicationLoadBalancer
-    // emits its own `deletion_protection.enabled` entry, so a removal phase
-    // that merely DROPPED the override let the L2 default reappear — making
-    // the phase a value CHANGE plus an unintended removal of that key, not
-    // the clean single-key removal it reads as. Restating it keeps
-    // idle_timeout the ONLY key the removal phase drops.
-    // `routing.http2.enabled: 'false'` is the ASSERTABLE retained sibling.
-    // deletion_protection.enabled alone could not do that job: it is templated
-    // to 'false', which IS AWS's default, so a bug that reset EVERY attribute
-    // would produce a byte-identical readback and the removal phase could not
-    // tell an over-broad reset from a correct one — which is the whole point
-    // of keeping a sibling. HTTP/2 defaults to 'true', so templating 'false'
-    // and asserting it survives the removal deploy detects that class. (It is
-    // also safe to leave off: unlike deletion protection, it cannot block the
-    // destroy phase.)
+    // The two keys restated in EVERY phase each do a different job:
+    //
+    // - `routing.http2.enabled: 'false'` is the ASSERTABLE retained sibling.
+    //   AWS defaults it to 'true', so asserting it is still 'false' after the
+    //   removal deploy distinguishes "reset the removed key" from "wiped the
+    //   whole list". A sibling whose templated value EQUALS its default
+    //   cannot do that — the readback is identical either way.
+    // - `deletion_protection.enabled: 'false'` pins the CDK-L2 trap this
+    //   fixture hit on its first run. The L2 ApplicationLoadBalancer emits
+    //   its own entry for this key and a property override replaces the whole
+    //   array, so a removal phase that merely DROPPED the override let the L2
+    //   default reappear — a value CHANGE plus an unintended re-add, not the
+    //   clean single-key removal it read as. Restating it keeps idle_timeout
+    //   the ONLY key the removal phase drops.
+    //   (It is deliberately 'false': 'true' would block the destroy phase.)
     const cfnAlb = alb.node.defaultChild as elbv2.CfnLoadBalancer;
     cfnAlb.addPropertyOverride('LoadBalancerAttributes', [
       { Key: 'deletion_protection.enabled', Value: 'false' },
@@ -111,7 +107,9 @@ export class AlbStack extends cdk.Stack {
     cfnTargetGroup.addPropertyOverride('IpAddressType', 'ipv4');
     // TargetGroupAttributes: baseline 45s -> update 60s (ModifyTargetGroupAttributes
     // diff); the removal phase drops the whole list, which must reset the
-    // attribute to AWS's default 300 via the Value:'' push-back.
+    // attribute to AWS's default 300. That API rejects an empty Value for
+    // EVERY key, so the reset is the documented default from
+    // TARGET_GROUP_ATTRIBUTE_DEFAULTS.
     if (!removal) {
       cfnTargetGroup.addPropertyOverride('TargetGroupAttributes', [
         { Key: 'deregistration_delay.timeout_seconds', Value: update ? '60' : '45' },
@@ -154,11 +152,13 @@ export class AlbStack extends cdk.Stack {
     // on an Application listener). cdkd applies it via a post-create
     // ModifyListenerAttributes call.
     //
-    // The REMOVAL phase drops the list entirely (issue #1609 item 1): the
-    // ModifyListenerAttributes removal arm pushes the dropped key back as
-    // `Value: ''` and had never been exercised against real AWS, so this is
-    // the A/B that proves the API accepts it. AWS's documented default for
-    // this key is `true`, so the post-removal readback must flip back.
+    // The REMOVAL phase drops the list entirely (issue #1609 item 1). The
+    // ModifyListenerAttributes removal arm pushed the dropped key back as
+    // `Value: ''` and had never been exercised against real AWS; this A/B is
+    // what proved the API REJECTS that for a boolean key, failing the whole
+    // deploy. The provider now sends the key's default of `true` instead —
+    // established by this fixture's own readback, since the SDK model leaves
+    // it unstated — so the post-removal readback must flip back to true.
     const cfnListener = listener.node.defaultChild as elbv2.CfnListener;
     if (!removal) {
       cfnListener.listenerAttributes = [

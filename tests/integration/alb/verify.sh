@@ -16,11 +16,14 @@
 # Issue #1609 item 1 extends the removal phase to the two attribute arms it
 # never covered: the fixture now also templates a LoadBalancerAttributes entry
 # (idle_timeout 120 -> 180 -> dropped) and drops the Listener's
-# ListenerAttributes. Both arms push a removed key back as `Value: ''` while
-# their ModifyTargetGroupAttributes sibling REJECTS that exact payload, so
-# these assertions are the live A/B that arm had never had — the removal
-# readbacks must show AWS's documented defaults (idle_timeout 60,
-# routing.http.response.server.enabled true).
+# ListenerAttributes. Both arms USED to push a removed key back as `Value: ''`;
+# the live A/B those assertions performed proved AWS REJECTS that for a
+# BOOLEAN key on both APIs, so the provider now sends the documented default
+# for those and keeps '' only for numeric / free-form keys. The removal
+# readbacks assert the resulting defaults (idle_timeout 60,
+# routing.http.response.server.enabled true) plus the RETENTION of
+# routing.http2.enabled, which is what distinguishes a per-key reset from a
+# list-wide wipe.
 # MinimumLoadBalancerCapacity is unit-only: the integ account lacks the LCU
 # capacity-reservation entitlement (see the note in lib/alb-stack.ts).
 #
@@ -264,12 +267,13 @@ echo "    deregistration_delay reset to 300 (✓)"
 
 echo ""
 echo "==> Assert LB + Listener attribute removal arms (issue #1609 item 1)"
-# THE A/B THIS FIXTURE EXTENSION EXISTS FOR. Both arms push a removed key
-# back as `Value: ''`; neither had ever run against real AWS, and the TG
-# sibling rejects that exact payload. A non-default readback here means the
-# empty string was accepted-but-ignored (silent no-op); a hard failure on the
-# removal deploy above means it was rejected like the TG arm and the same
-# documented-defaults treatment is needed.
+# THE A/B THIS FIXTURE EXTENSION EXISTS FOR. Both arms originally pushed a
+# removed key back as `Value: ''` and neither had ever run against real AWS.
+# The first run of these assertions is what proved the empty string is
+# REJECTED for a boolean key on both APIs (it failed the removal deploy AND
+# its rollback), which is why the provider now sends documented defaults for
+# those keys. A non-default readback here would mean the reset never
+# reached AWS.
 IDLE_P3=$(aws elbv2 describe-load-balancer-attributes --load-balancer-arn "${LB_ARN}" --region "${AWS_REGION}" \
   --query "Attributes[?Key=='idle_timeout.timeout_seconds'].Value | [0]" --output text)
 if [[ "${IDLE_P3}" != "60" ]]; then
