@@ -364,6 +364,38 @@ if [ "${REMOVAL_ID_AFTER}" != "${REMOVAL_BASE_ID}" ]; then
 fi
 echo "    OK: BillingMode removal reset the table to PROVISIONED at 3/4 (issue #1553 CLOSED)"
 
+# issue #1588: the flip above is only reachable at all because the SAME
+# UpdateTable carried per-index ProvisionedThroughput. Without it AWS rejects
+# the call outright ("ProvisionedThroughput must be specified for index: ..."),
+# so a regression fails phase 1.6 above rather than here — this assertion is
+# what proves the index CAPACITY actually landed rather than the flip merely
+# being accepted. The index is waited to ACTIVE first: DynamoDB reports the
+# TABLE active while an index is still UPDATING, so reading capacity without
+# the wait races the update (the index-status half of the #1553 wait).
+REMOVAL_GSI_OK=""
+for _ in $(seq 1 36); do
+  REMOVAL_GSI_STATUS=$(aws dynamodb describe-table --table-name "${BILLING_REMOVAL_TABLE}" --region "${REGION}" \
+    --query "Table.GlobalSecondaryIndexes[?IndexName=='billing-removal-gsi'].IndexStatus | [0]" --output text)
+  if [ "${REMOVAL_GSI_STATUS}" = "ACTIVE" ]; then
+    REMOVAL_GSI_OK=1
+    break
+  fi
+  sleep 5
+done
+if [ -z "${REMOVAL_GSI_OK}" ]; then
+  echo "FAIL (issue #1588): the GSI did not reach ACTIVE within ~3min after the flip (status='${REMOVAL_GSI_STATUS}')" >&2
+  exit 1
+fi
+REMOVAL_GSI_READ=$(aws dynamodb describe-table --table-name "${BILLING_REMOVAL_TABLE}" --region "${REGION}" \
+  --query "Table.GlobalSecondaryIndexes[?IndexName=='billing-removal-gsi'].ProvisionedThroughput.ReadCapacityUnits | [0]" --output text)
+REMOVAL_GSI_WRITE=$(aws dynamodb describe-table --table-name "${BILLING_REMOVAL_TABLE}" --region "${REGION}" \
+  --query "Table.GlobalSecondaryIndexes[?IndexName=='billing-removal-gsi'].ProvisionedThroughput.WriteCapacityUnits | [0]" --output text)
+if [ "${REMOVAL_GSI_READ}" != "2" ] || [ "${REMOVAL_GSI_WRITE}" != "2" ]; then
+  echo "FAIL (issue #1588): expected the declared 2/2 per-index capacity after the flip, got ${REMOVAL_GSI_READ}/${REMOVAL_GSI_WRITE}" >&2
+  exit 1
+fi
+echo "    OK: the flip carried per-GSI ProvisionedThroughput at 2/2 (issue #1588 CLOSED)"
+
 # --- Phase 2: destroy -------------------------------------------------
 echo "==> Phase 2: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \
