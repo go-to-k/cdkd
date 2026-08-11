@@ -13,6 +13,12 @@ This example demonstrates deploying an AppSync GraphQL API with a DynamoDB data 
 - **AWS::AppSync::DataSource** (second): EventBridge data source —
   `EventBridgeConfig` + `MetricsConfig` (#609), backed by an
   **AWS::Events::EventBus** and an IAM role with `events:PutEvents`
+- **AWS::AppSync::DataSource** (third): IAM-signed HTTP data source —
+  `HttpConfig.AuthorizationConfig` (#1597), pointed at a real AWS service
+  endpoint with an IAM role
+- **AWS::AppSync::DataSource** (fourth): versioned DynamoDB data source —
+  `DynamoDBConfig.Versioned` + `.DeltaSyncConfig` (#1597), backed by a second
+  **AWS::DynamoDB::Table** as the delta-sync store
 - **AWS::AppSync::Resolver**: Resolver for the getItem query with VTL mapping
   templates + `MetricsConfig` (#609)
 - **AWS::AppSync::Resolver** (second): getItemV2 resolver whose mapping
@@ -57,6 +63,24 @@ The same three phases also exercise the Resolver/DataSource batch:
 - **DataSource `EventBridgeConfig` + `MetricsConfig`** — live via the
   EventBridge data source (`AMAZON_EVENTBRIDGE` + a real `AWS::Events::EventBus`).
 
+## Issue #1597 DataSource NESTED-config coverage
+
+The nested-key critic opt-in for `AWS::AppSync::DataSource` exposed two silent
+drops one level BELOW a handled top-level property, so nothing in the #609
+coverage above could see them. Both are now live across the same three phases:
+
+- **`HttpConfig.AuthorizationConfig`** (+ `AuthorizationType` /
+  `AwsIamConfig.SigningRegion` / `.SigningServiceName`) — an unsigned data
+  source deploys perfectly happily, so the create assertions read the signing
+  config straight back off `GetDataSource`. The update phase moves
+  `SigningRegion` (a member two levels deep) and the removal phase drops the
+  whole block while `HttpConfig.Endpoint` stays put as the retained sibling.
+- **`DynamoDBConfig.DeltaSyncConfig` + `.Versioned`** — the delta-sync TTLs are
+  the one CFn->SDK TYPE divergence in the batch (CFn declares them as STRINGS,
+  the SDK models them as longs), so the assertions pin the converted numeric
+  values AWS echoes back. `Versioned` is the retained sibling of the
+  `DeltaSyncConfig` removal.
+
 **Not exercised live**, and covered by unit tests instead:
 
 - top-level `UserPoolConfig` — requires `AuthenticationType:
@@ -67,7 +91,9 @@ The same three phases also exercise the Resolver/DataSource batch:
 - `Visibility: PRIVATE` — needs a VPC endpoint
 - Resolver `CachingConfig` — needs a provisioned AppSync ApiCache
   (`AWS::AppSync::ApiCache`, hourly-billed cache instance)
-- Resolver `SyncConfig` — needs a VERSIONED delta-sync DynamoDB setup
+- Resolver `SyncConfig` — the fixture now carries a VERSIONED delta-sync data
+  source (#1597), but a `SyncConfig` resolver additionally needs the versioned
+  store to back the resolver's own type, which this schema does not model
 - Resolver `MaxBatchSize` — only meaningful on a Lambda direct /
   `BATCH_INVOKE` resolver, which needs a Lambda data-source arrangement this
   fixture does not carry

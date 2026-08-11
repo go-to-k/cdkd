@@ -1,16 +1,16 @@
 {
   "summary": {
-    "targetCount": 12,
-    "nestedKeyCount": 801,
-    "sameSpelling": 731,
+    "targetCount": 14,
+    "nestedKeyCount": 837,
+    "sameSpelling": 767,
     "providerHandled": 50,
     "allowListed": 20,
     "caseDivergence": 0,
     "noSdkMember": 0,
     "noWriteEvidence": 0,
-    "freshObjectTargets": 12,
-    "shapeClean": 88,
-    "shapeHandled": 34,
+    "freshObjectTargets": 14,
+    "shapeClean": 90,
+    "shapeHandled": 35,
     "shapeAllowListed": 7,
     "arrayVsWrapper": 0,
     "definitionMemberMissing": 0,
@@ -247,6 +247,226 @@
       "shapeEntries": [],
       "shapeCleanCount": 0,
       "unmatchedDefinitions": [],
+      "usedSegmentRenames": [],
+      "usedTerminalRenames": []
+    },
+    {
+      "resourceType": "AWS::AppSync::DataSource",
+      "providerFile": "appsync-provider.ts",
+      "sdkClientPackage": "@aws-sdk/client-appsync",
+      "keyStyle": "lower-first",
+      "freshObjectMapper": true,
+      "nestedKeyCount": 27,
+      "entries": [
+        {
+          "resourceType": "AWS::AppSync::DataSource",
+          "nestedKey": "DynamoDBConfig.AwsRegion",
+          "topLevelProperty": "DynamoDBConfig",
+          "terminalKey": "AwsRegion",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::AppSync::DataSource",
+          "nestedKey": "DynamoDBConfig.DeltaSyncConfig",
+          "topLevelProperty": "DynamoDBConfig",
+          "terminalKey": "DeltaSyncConfig",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::AppSync::DataSource",
+          "nestedKey": "DynamoDBConfig.DeltaSyncConfig.BaseTableTTL",
+          "topLevelProperty": "DynamoDBConfig",
+          "terminalKey": "BaseTableTTL",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::AppSync::DataSource",
+          "nestedKey": "DynamoDBConfig.DeltaSyncConfig.DeltaSyncTableName",
+          "topLevelProperty": "DynamoDBConfig",
+          "terminalKey": "DeltaSyncTableName",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::AppSync::DataSource",
+          "nestedKey": "DynamoDBConfig.DeltaSyncConfig.DeltaSyncTableTTL",
+          "topLevelProperty": "DynamoDBConfig",
+          "terminalKey": "DeltaSyncTableTTL",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::AppSync::DataSource",
+          "nestedKey": "DynamoDBConfig.TableName",
+          "topLevelProperty": "DynamoDBConfig",
+          "terminalKey": "TableName",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::AppSync::DataSource",
+          "nestedKey": "DynamoDBConfig.UseCallerCredentials",
+          "topLevelProperty": "DynamoDBConfig",
+          "terminalKey": "UseCallerCredentials",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::AppSync::DataSource",
+          "nestedKey": "DynamoDBConfig.Versioned",
+          "topLevelProperty": "DynamoDBConfig",
+          "terminalKey": "Versioned",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::AppSync::DataSource",
+          "nestedKey": "ElasticsearchConfig.AwsRegion",
+          "topLevelProperty": "ElasticsearchConfig",
+          "terminalKey": "AwsRegion",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::AppSync::DataSource",
+          "nestedKey": "ElasticsearchConfig.Endpoint",
+          "topLevelProperty": "ElasticsearchConfig",
+          "terminalKey": "Endpoint",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::AppSync::DataSource",
+          "nestedKey": "EventBridgeConfig.EventBusArn",
+          "topLevelProperty": "EventBridgeConfig",
+          "terminalKey": "EventBusArn",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::AppSync::DataSource",
+          "nestedKey": "HttpConfig.AuthorizationConfig",
+          "topLevelProperty": "HttpConfig",
+          "terminalKey": "AuthorizationConfig",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::AppSync::DataSource",
+          "nestedKey": "HttpConfig.AuthorizationConfig.AuthorizationType",
+          "topLevelProperty": "HttpConfig",
+          "terminalKey": "AuthorizationType",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::AppSync::DataSource",
+          "nestedKey": "HttpConfig.AuthorizationConfig.AwsIamConfig",
+          "topLevelProperty": "HttpConfig",
+          "terminalKey": "AwsIamConfig",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::AppSync::DataSource",
+          "nestedKey": "HttpConfig.AuthorizationConfig.AwsIamConfig.SigningRegion",
+          "topLevelProperty": "HttpConfig",
+          "terminalKey": "SigningRegion",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::AppSync::DataSource",
+          "nestedKey": "HttpConfig.AuthorizationConfig.AwsIamConfig.SigningServiceName",
+          "topLevelProperty": "HttpConfig",
+          "terminalKey": "SigningServiceName",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::AppSync::DataSource",
+          "nestedKey": "HttpConfig.Endpoint",
+          "topLevelProperty": "HttpConfig",
+          "terminalKey": "Endpoint",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::AppSync::DataSource",
+          "nestedKey": "LambdaConfig.LambdaFunctionArn",
+          "topLevelProperty": "LambdaConfig",
+          "terminalKey": "LambdaFunctionArn",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::AppSync::DataSource",
+          "nestedKey": "OpenSearchServiceConfig.AwsRegion",
+          "topLevelProperty": "OpenSearchServiceConfig",
+          "terminalKey": "AwsRegion",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::AppSync::DataSource",
+          "nestedKey": "OpenSearchServiceConfig.Endpoint",
+          "topLevelProperty": "OpenSearchServiceConfig",
+          "terminalKey": "Endpoint",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::AppSync::DataSource",
+          "nestedKey": "RelationalDatabaseConfig.RdsHttpEndpointConfig",
+          "topLevelProperty": "RelationalDatabaseConfig",
+          "terminalKey": "RdsHttpEndpointConfig",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::AppSync::DataSource",
+          "nestedKey": "RelationalDatabaseConfig.RdsHttpEndpointConfig.AwsRegion",
+          "topLevelProperty": "RelationalDatabaseConfig",
+          "terminalKey": "AwsRegion",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::AppSync::DataSource",
+          "nestedKey": "RelationalDatabaseConfig.RdsHttpEndpointConfig.AwsSecretStoreArn",
+          "topLevelProperty": "RelationalDatabaseConfig",
+          "terminalKey": "AwsSecretStoreArn",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::AppSync::DataSource",
+          "nestedKey": "RelationalDatabaseConfig.RdsHttpEndpointConfig.DatabaseName",
+          "topLevelProperty": "RelationalDatabaseConfig",
+          "terminalKey": "DatabaseName",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::AppSync::DataSource",
+          "nestedKey": "RelationalDatabaseConfig.RdsHttpEndpointConfig.DbClusterIdentifier",
+          "topLevelProperty": "RelationalDatabaseConfig",
+          "terminalKey": "DbClusterIdentifier",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::AppSync::DataSource",
+          "nestedKey": "RelationalDatabaseConfig.RdsHttpEndpointConfig.Schema",
+          "topLevelProperty": "RelationalDatabaseConfig",
+          "terminalKey": "Schema",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::AppSync::DataSource",
+          "nestedKey": "RelationalDatabaseConfig.RelationalDatabaseSourceType",
+          "topLevelProperty": "RelationalDatabaseConfig",
+          "terminalKey": "RelationalDatabaseSourceType",
+          "bucket": "same-spelling"
+        }
+      ],
+      "shapeEntries": [
+        {
+          "resourceType": "AWS::AppSync::DataSource",
+          "nestedKey": "LambdaFunctionArn",
+          "definition": "LambdaConfig",
+          "pass": "definition",
+          "bucket": "provider-handled",
+          "sdkDetail": "SDK interface `LambdaConfig` has no `lambdaFunctionArn` member"
+        }
+      ],
+      "shapeCleanCount": 0,
+      "unmatchedDefinitions": [
+        "DynamoDBConfig",
+        "ElasticsearchConfig",
+        "EventBridgeConfig",
+        "HttpConfig",
+        "OpenSearchServiceConfig",
+        "RelationalDatabaseConfig"
+      ],
       "usedSegmentRenames": [],
       "usedTerminalRenames": []
     },
@@ -508,6 +728,84 @@
       "unmatchedDefinitions": [
         "Tag"
       ],
+      "usedSegmentRenames": [],
+      "usedTerminalRenames": []
+    },
+    {
+      "resourceType": "AWS::AppSync::Resolver",
+      "providerFile": "appsync-provider.ts",
+      "sdkClientPackage": "@aws-sdk/client-appsync",
+      "keyStyle": "lower-first",
+      "freshObjectMapper": true,
+      "nestedKeyCount": 9,
+      "entries": [
+        {
+          "resourceType": "AWS::AppSync::Resolver",
+          "nestedKey": "CachingConfig.CachingKeys",
+          "topLevelProperty": "CachingConfig",
+          "terminalKey": "CachingKeys",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::AppSync::Resolver",
+          "nestedKey": "CachingConfig.Ttl",
+          "topLevelProperty": "CachingConfig",
+          "terminalKey": "Ttl",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::AppSync::Resolver",
+          "nestedKey": "PipelineConfig.Functions",
+          "topLevelProperty": "PipelineConfig",
+          "terminalKey": "Functions",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::AppSync::Resolver",
+          "nestedKey": "Runtime.Name",
+          "topLevelProperty": "Runtime",
+          "terminalKey": "Name",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::AppSync::Resolver",
+          "nestedKey": "Runtime.RuntimeVersion",
+          "topLevelProperty": "Runtime",
+          "terminalKey": "RuntimeVersion",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::AppSync::Resolver",
+          "nestedKey": "SyncConfig.ConflictDetection",
+          "topLevelProperty": "SyncConfig",
+          "terminalKey": "ConflictDetection",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::AppSync::Resolver",
+          "nestedKey": "SyncConfig.ConflictHandler",
+          "topLevelProperty": "SyncConfig",
+          "terminalKey": "ConflictHandler",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::AppSync::Resolver",
+          "nestedKey": "SyncConfig.LambdaConflictHandlerConfig",
+          "topLevelProperty": "SyncConfig",
+          "terminalKey": "LambdaConflictHandlerConfig",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::AppSync::Resolver",
+          "nestedKey": "SyncConfig.LambdaConflictHandlerConfig.LambdaConflictHandlerArn",
+          "topLevelProperty": "SyncConfig",
+          "terminalKey": "LambdaConflictHandlerArn",
+          "bucket": "same-spelling"
+        }
+      ],
+      "shapeEntries": [],
+      "shapeCleanCount": 2,
+      "unmatchedDefinitions": [],
       "usedSegmentRenames": [],
       "usedTerminalRenames": []
     },

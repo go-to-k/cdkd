@@ -342,6 +342,8 @@
  *   AWS::S3::Bucket                   130 / 152 125 / 152   98 / 152   81 / 152  OPTED IN (#1540)   [#1520 renames: 81 -> 50; #1540 hops + scoped/terminal renames: 50 -> 0]
  *   AWS::CloudFront::Distribution     162 / 162 162 / 162  162 / 162    0 / 162  OPTED IN (#1475)   [110/112 -> 110/112]
  *   AWS::AppSync::GraphQLApi            0 /  33   0 /  33    0 /  33    0 /  33  OPTED IN (#609)
+ *   AWS::AppSync::DataSource           10 /  27  10 /  27   10 /  27   10 /  27  OPTED IN (#1597) [all 10 FIXED in the provider, now 0/27]
+ *   AWS::AppSync::Resolver              0 /   9   0 /   9    0 /   9    0 /   9  OPTED IN (#1597)
  *                                     -------   -------    -------    -------
  *                                        410       290        260         81
  *
@@ -1039,6 +1041,31 @@ const API_GATEWAY_V2_WRITE_FLOORS = {
 } as const;
 
 /**
+ * Shared by the THREE AppSync targets, because both collector outputs are
+ * per-FILE, not per-type: `GraphQLApi` / `DataSource` / `Resolver` are all
+ * served by `appsync-provider.ts`, so a per-target floor would be three
+ * spellings of the same measurement drifting apart on every backfill.
+ *
+ * Measured when issue #1597 opted the two remaining types in: 115 written
+ * member names, 33 non-empty write scopes under the generator's own
+ * reverse-map-excluding scoping (204 / 64 under the calibration test's
+ * `['readCurrentState']`-only exclusion) — up from the 105 / 26 the
+ * `GraphQLApi` entry recorded at ITS opt-in, because the DeltaSync /
+ * AuthorizationConfig mappers this batch added write into the same file.
+ *
+ * `minWrittenMembers` is 105 rather than the `GraphQLApi` entry's old 100
+ * because the hygiene band (>= half the calibration-scoped yield) now floors
+ * it at 102 — the old value had drifted under the band as the file grew, and
+ * a floor below the band fences nothing. No `minHandoffPoints`: the provider
+ * hands off no blob generically, so the walk is not load-bearing for any of
+ * the three.
+ */
+const APPSYNC_WRITE_FLOORS = {
+  minWrittenMembers: 105,
+  minWriteScopes: 24,
+} as const;
+
+/**
  * The one intermediate-segment RENAME in the tree (issue #1464 review).
  *
  * `ECSProvider.convertProxyConfiguration` maps the CFn key
@@ -1443,15 +1470,61 @@ export const NESTED_KEY_TARGETS: readonly NestedKeyTarget[] = [
     // .AuthorizationConfig nested drop the blocked opt-in would catch). No
     // `minHandoffPoints`: the
     // provider hands off no blob generically, so the walk is not load-bearing
-    // here.
+    // here. The two remaining AppSync types are now targets of their own
+    // (issue #1597 re-captured their fixtures); the write floors moved to
+    // {@link APPSYNC_WRITE_FLOORS} because all three share one provider file.
     resourceType: 'AWS::AppSync::GraphQLApi',
     providerFile: 'appsync-provider.ts',
     sdkClientPackage: '@aws-sdk/client-appsync',
     keyStyle: 'lower-first',
     minNestedKeys: 28,
     freshObjectMapper: true,
-    minWrittenMembers: 100,
-    minWriteScopes: 24,
+    ...APPSYNC_WRITE_FLOORS,
+  },
+  {
+    // Opted in by issue #1597, once `scripts/refresh-cfn-schemas.mjs`
+    // re-captured this type's fixture with the `definitionShapes` /
+    // `nestedPropertyPaths` sections the generator requires (the old capture
+    // pre-dated both, which is what BLOCKED the opt-in in the #609 backfill).
+    //
+    // The opt-in immediately found TWO nested silent-drop families, both
+    // invisible to top-level property coverage because their containers
+    // (`HttpConfig` / `DynamoDBConfig`) are handled properties:
+    //   - `HttpConfig.AuthorizationConfig` (+ `.AuthorizationType` /
+    //     `.AwsIamConfig.SigningRegion` / `.SigningServiceName`) — the drop
+    //     the issue named; an IAM-signed HTTP data source reached AWS
+    //     UNSIGNED.
+    //   - `DynamoDBConfig.DeltaSyncConfig` (+ `.BaseTableTTL` /
+    //     `.DeltaSyncTableName` / `.DeltaSyncTableTTL`) and
+    //     `DynamoDBConfig.Versioned` — NOT in the issue; found by the critic
+    //     itself, which is the point of the opt-in.
+    // Both are fixed in `applyDataSourceConfig` / `readDataSource`, so this
+    // target measures 0 findings across 27 audited paths.
+    resourceType: 'AWS::AppSync::DataSource',
+    providerFile: 'appsync-provider.ts',
+    sdkClientPackage: '@aws-sdk/client-appsync',
+    keyStyle: 'lower-first',
+    minNestedKeys: 24,
+    freshObjectMapper: true,
+    ...APPSYNC_WRITE_FLOORS,
+  },
+  {
+    // Opted in by issue #1597 alongside `DataSource`, same fixture re-capture.
+    // Measured CLEAN on the first run — 9 audited paths (`CachingConfig` /
+    // `PipelineConfig` / `Runtime` / `SyncConfig` incl.
+    // `LambdaConflictHandlerConfig.LambdaConflictHandlerArn`), 0 findings —
+    // because the #609 Resolver backfill wired every member through
+    // `toSdkCachingConfig` / `toSdkSyncConfig` / `applyResolverConfig`. The
+    // target still earns its place: it is what keeps the NEXT Resolver
+    // property from being added as a top-level forward with its nested
+    // members dropped.
+    resourceType: 'AWS::AppSync::Resolver',
+    providerFile: 'appsync-provider.ts',
+    sdkClientPackage: '@aws-sdk/client-appsync',
+    keyStyle: 'lower-first',
+    minNestedKeys: 8,
+    freshObjectMapper: true,
+    ...APPSYNC_WRITE_FLOORS,
   },
   {
     // Opted in by issues #1472 / #1473: the two REAL silent drops the #1445

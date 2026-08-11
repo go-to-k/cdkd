@@ -47,7 +47,7 @@ Registered without an integ fixture, with an explicit `// allow-no-integ: <ratio
 | `AWS::ApiGatewayV2::Route` | [`apigatewayv2-update-removal`](../tests/integration/apigatewayv2-update-removal/) (l1)<br>[`export`](../tests/integration/export/) (l2)<br>[`local-start-api`](../tests/integration/local-start-api/) (l1,l2)<br>[`local-start-api-container`](../tests/integration/local-start-api-container/) (l2)<br>[`local-start-api-websocket`](../tests/integration/local-start-api-websocket/) (l1,literal)<br>[`migrate-from-cfn`](../tests/integration/migrate-from-cfn/) (l2)<br>[`serverless-api`](../tests/integration/serverless-api/) (l1) |
 | `AWS::ApiGatewayV2::Stage` | [`apigatewayv2-update-removal`](../tests/integration/apigatewayv2-update-removal/) (l1)<br>[`drift-revert`](../tests/integration/drift-revert/) (l1)<br>[`export`](../tests/integration/export/) (l2,literal)<br>[`local-start-api`](../tests/integration/local-start-api/) (l2)<br>[`local-start-api-container`](../tests/integration/local-start-api-container/) (l2)<br>[`local-start-api-websocket`](../tests/integration/local-start-api-websocket/) (l1,literal)<br>[`migrate-from-cfn`](../tests/integration/migrate-from-cfn/) (l2)<br>[`serverless-api`](../tests/integration/serverless-api/) (l1) |
 | `AWS::AppSync::ApiKey` | [`appsync`](../tests/integration/appsync/) (l1) |
-| `AWS::AppSync::DataSource` | [`appsync`](../tests/integration/appsync/) (l1) |
+| `AWS::AppSync::DataSource` | [`appsync`](../tests/integration/appsync/) (l1,literal) |
 | `AWS::AppSync::GraphQLApi` | [`appsync`](../tests/integration/appsync/) (l1) |
 | `AWS::AppSync::GraphQLSchema` | [`appsync`](../tests/integration/appsync/) (l1) |
 | `AWS::AppSync::Resolver` | [`appsync`](../tests/integration/appsync/) (l1) |

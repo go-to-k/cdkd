@@ -7,17 +7,17 @@ For every SDK provider that forwards a nested CFn config blob, diffs the blob's 
 
 ## Summary
 
-- Audited targets: **12**
-- Nested CFn key paths audited: **801**
-- Same spelling in SDK model: **731**
+- Audited targets: **14**
+- Nested CFn key paths audited: **837**
+- Same spelling in SDK model: **767**
 - Explicitly handled in provider: **50**
 - Allow-listed pass-throughs (does NOT block CI): **20**
 - **Case divergences (blocks CI): 0**
 - **No SDK member (blocks CI): 0**
-- Write-evidence pass — fresh-object targets audited: **12**
+- Write-evidence pass — fresh-object targets audited: **14**
 - **No write evidence (blocks CI): 0**
-- Shape pass — bare-array pairs clean: **88**
-- Shape pass — explicitly handled in provider: **34**
+- Shape pass — bare-array pairs clean: **90**
+- Shape pass — explicitly handled in provider: **35**
 - Shape pass — allow-listed (does NOT block CI): **7**
 - **Array-vs-wrapper divergences (blocks CI): 0**
 - **Definition-member-missing divergences (blocks CI): 0**
@@ -123,6 +123,7 @@ CFn members whose SHAPE diverges from the same-spelled SDK member (bare array vs
 | Resource type | CFn definition | Member | Pass | SDK detail |
 | --- | --- | --- | --- | --- |
 | `AWS::ApiGatewayV2::Integration` | `ResponseParameterMap` | `ResponseParameters` | wrapper | — |
+| `AWS::AppSync::DataSource` | `LambdaConfig` | `LambdaFunctionArn` | definition | SDK interface `LambdaConfig` has no `lambdaFunctionArn` member |
 | `AWS::AppSync::GraphQLApi` | `#top` | `Tags` | wrapper | — |
 | `AWS::CloudFront::Distribution` | `#top` | `Tags` | wrapper | — |
 | `AWS::CloudFront::Distribution` | `CacheBehavior` | `AllowedMethods` | wrapper | SDK wraps it as `AllowedMethods` ({ Quantity, Items }) |
@@ -166,7 +167,9 @@ CFn members whose SHAPE diverges from the same-spelled SDK member (bare array vs
 | `AWS::ApiGatewayV2::Integration` | `apigatewayv2-provider.ts` | `@aws-sdk/client-apigatewayv2` | exact | yes | 4 | 3 |
 | `AWS::ApiGatewayV2::Route` | `apigatewayv2-provider.ts` | `@aws-sdk/client-apigatewayv2` | exact | yes | 1 | 0 |
 | `AWS::ApiGatewayV2::Stage` | `apigatewayv2-provider.ts` | `@aws-sdk/client-apigatewayv2` | exact | yes | 7 | 0 |
+| `AWS::AppSync::DataSource` | `appsync-provider.ts` | `@aws-sdk/client-appsync` | lower-first | yes | 27 | 6 |
 | `AWS::AppSync::GraphQLApi` | `appsync-provider.ts` | `@aws-sdk/client-appsync` | lower-first | yes | 33 | 1 |
+| `AWS::AppSync::Resolver` | `appsync-provider.ts` | `@aws-sdk/client-appsync` | lower-first | yes | 9 | 0 |
 | `AWS::CloudFront::Distribution` | `cloudfront-distribution-provider.ts` | `@aws-sdk/client-cloudfront` | exact | yes | 173 | 4 |
 | `AWS::CloudWatch::AnomalyDetector` | `cloudwatch-anomaly-detector-provider.ts` | `@aws-sdk/client-cloudwatch` | exact | yes | 31 | 1 |
 | `AWS::CodeBuild::Project` | `codebuild-provider.ts` | `@aws-sdk/client-codebuild` | lower-first | yes | 98 | 4 |

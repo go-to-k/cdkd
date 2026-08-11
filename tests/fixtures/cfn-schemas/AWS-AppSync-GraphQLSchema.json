@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::AppSync::GraphQLSchema",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-11",
   "properties": [
     "ApiId",
     "Definition",
@@ -12,5 +12,16 @@
   ],
   "createOnlyProperties": [
     "ApiId"
-  ]
+  ],
+  "primaryIdentifier": [
+    "Id"
+  ],
+  "definitionShapes": {
+    "#top": {
+      "Id": "scalar",
+      "Definition": "scalar",
+      "DefinitionS3Location": "scalar",
+      "ApiId": "scalar"
+    }
+  }
 }

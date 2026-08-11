@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::AppSync::ApiKey",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-11",
   "properties": [
     "ApiId",
     "ApiKey",
@@ -16,5 +16,18 @@
   ],
   "createOnlyProperties": [
     "ApiId"
-  ]
+  ],
+  "primaryIdentifier": [
+    "ApiKeyId"
+  ],
+  "definitionShapes": {
+    "#top": {
+      "ApiKey": "scalar",
+      "Description": "scalar",
+      "ApiKeyId": "scalar",
+      "Expires": "scalar",
+      "Arn": "scalar",
+      "ApiId": "scalar"
+    }
+  }
 }

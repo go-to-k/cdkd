@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::AppSync::Resolver",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-11",
   "properties": [
     "ApiId",
     "CachingConfig",
@@ -28,5 +28,87 @@
     "ApiId",
     "FieldName",
     "TypeName"
-  ]
+  ],
+  "primaryIdentifier": [
+    "ResolverArn"
+  ],
+  "nestedProperties": {
+    "CachingConfig": [
+      "CachingKeys",
+      "Ttl"
+    ],
+    "PipelineConfig": [
+      "Functions"
+    ],
+    "Runtime": [
+      "Name",
+      "RuntimeVersion"
+    ],
+    "SyncConfig": [
+      "ConflictDetection",
+      "ConflictHandler",
+      "LambdaConflictHandlerArn",
+      "LambdaConflictHandlerConfig"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "CachingConfig": [
+      "CachingKeys",
+      "Ttl"
+    ],
+    "PipelineConfig": [
+      "Functions"
+    ],
+    "Runtime": [
+      "Name",
+      "RuntimeVersion"
+    ],
+    "SyncConfig": [
+      "ConflictDetection",
+      "ConflictHandler",
+      "LambdaConflictHandlerConfig",
+      "LambdaConflictHandlerConfig.LambdaConflictHandlerArn"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "ApiId": "scalar",
+      "CachingConfig": "object",
+      "Code": "scalar",
+      "CodeS3Location": "scalar",
+      "DataSourceName": "scalar",
+      "FieldName": "scalar",
+      "Kind": "scalar",
+      "MaxBatchSize": "scalar",
+      "PipelineConfig": "object",
+      "RequestMappingTemplate": "scalar",
+      "RequestMappingTemplateS3Location": "scalar",
+      "ResolverArn": "scalar",
+      "ResponseMappingTemplate": "scalar",
+      "ResponseMappingTemplateS3Location": "scalar",
+      "Runtime": "object",
+      "SyncConfig": "object",
+      "TypeName": "scalar",
+      "MetricsConfig": "scalar"
+    },
+    "AppSyncRuntime": {
+      "RuntimeVersion": "scalar",
+      "Name": "scalar"
+    },
+    "PipelineConfig": {
+      "Functions": "array"
+    },
+    "CachingConfig": {
+      "CachingKeys": "array",
+      "Ttl": "scalar"
+    },
+    "SyncConfig": {
+      "ConflictHandler": "scalar",
+      "ConflictDetection": "scalar",
+      "LambdaConflictHandlerConfig": "object"
+    },
+    "LambdaConflictHandlerConfig": {
+      "LambdaConflictHandlerArn": "scalar"
+    }
+  }
 }

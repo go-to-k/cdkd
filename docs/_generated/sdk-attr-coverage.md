@@ -8,8 +8,8 @@ For every SDK-backed resource type (whose CFn schema is cached under `tests/fixt
 ## Summary
 
 - SDK-backed types classified: **134**
-- Covered (every Arn/Url readOnly resolvable): **53**
-- No Arn/Url readOnly attribute: **81**
+- Covered (every Arn/Url readOnly resolvable): **51**
+- No Arn/Url readOnly attribute: **83**
 - **Latent gaps (blocks CI): 0**
 
 ## Latent gaps
@@ -21,9 +21,7 @@ None. Every `Arn`/`Url` read-only attribute on a cached SDK-backed type is cache
 | Resource type | Bucket | Arn/Url attributes (status) |
 | --- | --- | --- |
 | `AWS::AppSync::ApiKey` | covered | `Arn` (cached) |
-| `AWS::AppSync::DataSource` | covered | `DataSourceArn` (cached) |
 | `AWS::AppSync::GraphQLApi` | covered | `Arn` (cached), `GraphQLEndpointArn` (ctor), `GraphQLUrl` (cached), `RealtimeUrl` (ctor) |
-| `AWS::AppSync::Resolver` | covered | `ResolverArn` (cached) |
 | `AWS::BedrockAgentCore::Runtime` | covered | `AgentRuntimeArn` (cached) |
 | `AWS::CloudTrail::Trail` | covered | `Arn` (cached), `SnsTopicArn` (ctor) |
 | `AWS::CloudWatch::Alarm` | covered | `Arn` (cached) |

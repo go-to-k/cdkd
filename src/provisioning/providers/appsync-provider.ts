@@ -25,6 +25,8 @@ import {
   UntagResourceCommand,
   type AdditionalAuthenticationProvider,
   type AuthenticationType,
+  type AuthorizationConfig,
+  type AuthorizationType,
   type CachingConfig,
   type CognitoUserPoolConfig,
   type ConflictDetectionType,
@@ -32,12 +34,15 @@ import {
   type DataSourceLevelMetricsConfig,
   type DataSourceType,
   type DefaultAction,
+  type DeltaSyncConfig,
+  type DynamodbDataSourceConfig,
   type ElasticsearchDataSourceConfig,
   type EnhancedMetricsConfig,
   type EventBridgeDataSourceConfig,
   type GraphQLApiIntrospectionConfig,
   type GraphQLApiType,
   type GraphQLApiVisibility,
+  type HttpDataSourceConfig,
   type LambdaAuthorizerConfig,
   type OpenIDConnectConfig,
   type OpenSearchServiceDataSourceConfig,
@@ -1057,6 +1062,35 @@ export class AppSyncProvider implements ResourceProvider {
   }
 
   /**
+   * CFn declares `DeltaSyncConfig.BaseTableTTL` / `.DeltaSyncTableTTL` as
+   * STRINGS (CDK's L1 types them `string` too) while the SDK models both as
+   * longs, so the value needs a real conversion rather than a cast — a string
+   * handed to the number member is dropped by the serializer, which is the
+   * silent-drop shape this batch closes.
+   *
+   * A non-numeric value is refused LOUDLY: `Number('abc')` is `NaN`, and NaN
+   * would serialize to `null` and reach AWS as a confusing type error far from
+   * the template line that caused it.
+   */
+  private toDeltaSyncTtl(
+    value: unknown,
+    path: string,
+    logicalId: string,
+    resourceType: string
+  ): number {
+    const parsed = typeof value === 'number' ? value : Number(value);
+    if (!Number.isFinite(parsed)) {
+      throw new ProvisioningError(
+        `${resourceType} ${path} must be a number of minutes (CFn types it as a ` +
+          `string), got ${JSON.stringify(value)} — cdkd refuses to drop it silently`,
+        resourceType,
+        logicalId
+      );
+    }
+    return parsed;
+  }
+
+  /**
    * NOTE: `awsRegion` / `defaultAction` are passed through VERBATIM, including
    * when the template omits them. cdkd deliberately does NOT substitute a
    * default: `DefaultAction` decides whether an unauthenticated request is
@@ -1755,13 +1789,52 @@ export class AppSyncProvider implements ResourceProvider {
       resourceType
     );
     if (dynamo) {
-      input.dynamodbConfig = {
+      const ddbConfig: DynamodbDataSourceConfig = {
         tableName: dynamo['TableName'] as string,
         awsRegion: dynamo['AwsRegion'] as string,
         ...(dynamo['UseCallerCredentials'] !== undefined
           ? { useCallerCredentials: dynamo['UseCallerCredentials'] as boolean }
           : {}),
+        // Conflict-detection toggle for a versioned data source. Nested
+        // silent drop until issue #1597 — invisible to top-level property
+        // coverage because `DynamoDBConfig` itself is a handled property.
+        ...(dynamo['Versioned'] !== undefined ? { versioned: dynamo['Versioned'] as boolean } : {}),
       };
+      const delta = this.asObject(
+        dynamo['DeltaSyncConfig'],
+        'DynamoDBConfig.DeltaSyncConfig',
+        { logicalId },
+        resourceType
+      );
+      if (delta) {
+        const deltaConfig: DeltaSyncConfig = {};
+        // CFn types BOTH TTLs as STRING (minutes) while the SDK members are
+        // longs — the one CFn->SDK divergence in this block that a verbatim
+        // forward would lose (the serializer drops a string where the model
+        // wants a number). `toDeltaSyncTtl` refuses a non-numeric value
+        // loudly rather than sending NaN.
+        if (delta['BaseTableTTL'] !== undefined) {
+          deltaConfig.baseTableTTL = this.toDeltaSyncTtl(
+            delta['BaseTableTTL'],
+            'DynamoDBConfig.DeltaSyncConfig.BaseTableTTL',
+            logicalId,
+            resourceType
+          );
+        }
+        if (delta['DeltaSyncTableName'] !== undefined) {
+          deltaConfig.deltaSyncTableName = delta['DeltaSyncTableName'] as string;
+        }
+        if (delta['DeltaSyncTableTTL'] !== undefined) {
+          deltaConfig.deltaSyncTableTTL = this.toDeltaSyncTtl(
+            delta['DeltaSyncTableTTL'],
+            'DynamoDBConfig.DeltaSyncConfig.DeltaSyncTableTTL',
+            logicalId,
+            resourceType
+          );
+        }
+        ddbConfig.deltaSyncConfig = deltaConfig;
+      }
+      input.dynamodbConfig = ddbConfig;
     }
     const lambda = this.asObject(
       properties['LambdaConfig'],
@@ -1776,9 +1849,46 @@ export class AppSyncProvider implements ResourceProvider {
     }
     const http = this.asObject(properties['HttpConfig'], 'HttpConfig', { logicalId }, resourceType);
     if (http) {
-      input.httpConfig = {
+      const httpConfig: HttpDataSourceConfig = {
         endpoint: http['Endpoint'] as string,
       };
+      // IAM-signed HTTP data sources (`AuthorizationType: AWS_IAM` +
+      // `AwsIamConfig`). Nested silent drop until issue #1597: without this
+      // the data source reaches AWS UNSIGNED, so every request to the
+      // endpoint goes out without SigV4 — a security-relevant drop, not a
+      // cosmetic one.
+      const auth = this.asObject(
+        http['AuthorizationConfig'],
+        'HttpConfig.AuthorizationConfig',
+        { logicalId },
+        resourceType
+      );
+      if (auth) {
+        const authConfig: AuthorizationConfig = {
+          // Required by both CFn and the SDK; forwarded verbatim so an
+          // omission reaches AWS as a loud validation error naming the field
+          // (same contract as `CachingConfig.Ttl`).
+          authorizationType: auth['AuthorizationType'] as AuthorizationType,
+        };
+        const iam = this.asObject(
+          auth['AwsIamConfig'],
+          'HttpConfig.AuthorizationConfig.AwsIamConfig',
+          { logicalId },
+          resourceType
+        );
+        if (iam) {
+          authConfig.awsIamConfig = {
+            ...(iam['SigningRegion'] !== undefined
+              ? { signingRegion: iam['SigningRegion'] as string }
+              : {}),
+            ...(iam['SigningServiceName'] !== undefined
+              ? { signingServiceName: iam['SigningServiceName'] as string }
+              : {}),
+          };
+        }
+        httpConfig.authorizationConfig = authConfig;
+      }
+      input.httpConfig = httpConfig;
     }
     // Legacy Elasticsearch alias (Type: AMAZON_ELASTICSEARCH) — deprecated by
     // AWS in favor of OpenSearch but still a live SDK member.
@@ -2748,13 +2858,51 @@ export class AppSyncProvider implements ResourceProvider {
       if (ds.dynamodbConfig.useCallerCredentials !== undefined) {
         dynamo['UseCallerCredentials'] = ds.dynamodbConfig.useCallerCredentials;
       }
+      if (ds.dynamodbConfig.versioned !== undefined) {
+        dynamo['Versioned'] = ds.dynamodbConfig.versioned;
+      }
+      const delta = ds.dynamodbConfig.deltaSyncConfig;
+      if (delta) {
+        const deltaOut: Record<string, unknown> = {};
+        // Back to STRINGS — the CFn declared type, and therefore the shape the
+        // template baseline carries. Emitting the SDK's number would show up
+        // as permanent phantom drift (`"3600"` vs `3600` under the
+        // stringify-based comparator) on every run.
+        if (delta.baseTableTTL !== undefined) deltaOut['BaseTableTTL'] = String(delta.baseTableTTL);
+        if (delta.deltaSyncTableName !== undefined) {
+          deltaOut['DeltaSyncTableName'] = delta.deltaSyncTableName;
+        }
+        if (delta.deltaSyncTableTTL !== undefined) {
+          deltaOut['DeltaSyncTableTTL'] = String(delta.deltaSyncTableTTL);
+        }
+        if (Object.keys(deltaOut).length > 0) dynamo['DeltaSyncConfig'] = deltaOut;
+      }
       if (Object.keys(dynamo).length > 0) result['DynamoDBConfig'] = dynamo;
     }
     if (ds.lambdaConfig?.lambdaFunctionArn !== undefined) {
       result['LambdaConfig'] = { LambdaFunctionArn: ds.lambdaConfig.lambdaFunctionArn };
     }
-    if (ds.httpConfig?.endpoint !== undefined) {
-      result['HttpConfig'] = { Endpoint: ds.httpConfig.endpoint };
+    if (ds.httpConfig) {
+      const httpOut: Record<string, unknown> = {};
+      if (ds.httpConfig.endpoint !== undefined) httpOut['Endpoint'] = ds.httpConfig.endpoint;
+      const authRead = ds.httpConfig.authorizationConfig;
+      if (authRead) {
+        const authOut: Record<string, unknown> = {};
+        if (authRead.authorizationType !== undefined) {
+          authOut['AuthorizationType'] = authRead.authorizationType;
+        }
+        const iamRead = authRead.awsIamConfig;
+        if (iamRead) {
+          const iamOut: Record<string, unknown> = {};
+          if (iamRead.signingRegion !== undefined) iamOut['SigningRegion'] = iamRead.signingRegion;
+          if (iamRead.signingServiceName !== undefined) {
+            iamOut['SigningServiceName'] = iamRead.signingServiceName;
+          }
+          if (Object.keys(iamOut).length > 0) authOut['AwsIamConfig'] = iamOut;
+        }
+        if (Object.keys(authOut).length > 0) httpOut['AuthorizationConfig'] = authOut;
+      }
+      if (Object.keys(httpOut).length > 0) result['HttpConfig'] = httpOut;
     }
     // Reverse maps for the configs wired in issue #609. Each block is
     // emitted ONLY when AWS returned it, which is the response-side form of

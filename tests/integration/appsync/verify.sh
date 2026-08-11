@@ -293,6 +293,38 @@ assert_eq "getItemV2 responseMappingTemplate (S3-fetched)" \
   "$(cat lib/templates/get-item-response.vtl)" \
   "$(resolver_template getItemV2 responseMappingTemplate)"
 
+# --- Phase 1d: DataSource NESTED config blobs (#1597) ------------------------
+# The two nested silent drops the nested-key critic opt-in exposed. Both sit
+# INSIDE a config block top-level property coverage already counted as
+# handled, so a drop here is invisible to every other assertion in this
+# fixture: the data source is created successfully, just unsigned /
+# unversioned.
+echo "==> Phase 1d: DataSource nested config blobs (#1597) reached AWS"
+assert_eq "HTTP DS authorizationType" "AWS_IAM" \
+  "$(datasource_query HttpDataSource 'dataSource.httpConfig.authorizationConfig.authorizationType')"
+assert_eq "HTTP DS awsIamConfig.signingRegion" "${REGION}" \
+  "$(datasource_query HttpDataSource 'dataSource.httpConfig.authorizationConfig.awsIamConfig.signingRegion')"
+assert_eq "HTTP DS awsIamConfig.signingServiceName" "states" \
+  "$(datasource_query HttpDataSource 'dataSource.httpConfig.authorizationConfig.awsIamConfig.signingServiceName')"
+assert_eq "versioned DS versioned" "True" \
+  "$(datasource_query VersionedItemsDataSource 'dataSource.dynamodbConfig.versioned')"
+# The CFn->SDK TYPE divergence: CFn declares both TTLs as STRINGS, the SDK as
+# longs. AWS echoes them back as numbers, so `--output text` renders the
+# converted value — a verbatim string forward would have been dropped by the
+# serializer and these would read empty.
+assert_eq "versioned DS deltaSyncConfig.baseTableTTL" "43200" \
+  "$(datasource_query VersionedItemsDataSource 'dataSource.dynamodbConfig.deltaSyncConfig.baseTableTTL')"
+assert_eq "versioned DS deltaSyncConfig.deltaSyncTableTTL" "1440" \
+  "$(datasource_query VersionedItemsDataSource 'dataSource.dynamodbConfig.deltaSyncConfig.deltaSyncTableTTL')"
+DELTA_TABLE="$(datasource_query VersionedItemsDataSource 'dataSource.dynamodbConfig.deltaSyncConfig.deltaSyncTableName')"
+case "${DELTA_TABLE}" in
+  *AppSyncDeltaSyncTable*)
+    echo "    OK: deltaSyncConfig.deltaSyncTableName = ${DELTA_TABLE}" ;;
+  *)
+    echo "FAIL: deltaSyncConfig.deltaSyncTableName unexpected: '${DELTA_TABLE}'" >&2
+    exit 1 ;;
+esac
+
 # --- Phase 2: UPDATE --------------------------------------------------------
 echo "==> Phase 2: UPDATE (every mutable property changed)"
 UPDATE_OUT="$(CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
@@ -341,6 +373,16 @@ assert_eq "EventBridge DS metricsConfig survives the update" "ENABLED" \
 assert_eq "resolver metricsConfig survives the update" "ENABLED" \
   "$(resolver_query getItem 'resolver.metricsConfig')"
 
+# #1597 update-phase: the nested blobs change through the SAME mapper the
+# create path uses, so an update-only regression (a mapper wired on create and
+# forgotten on update) is caught here rather than by the create assertions.
+assert_eq "updated HTTP DS awsIamConfig.signingRegion" "us-west-2" \
+  "$(datasource_query HttpDataSource 'dataSource.httpConfig.authorizationConfig.awsIamConfig.signingRegion')"
+assert_eq "updated versioned DS deltaSyncConfig.baseTableTTL" "86400" \
+  "$(datasource_query VersionedItemsDataSource 'dataSource.dynamodbConfig.deltaSyncConfig.baseTableTTL')"
+assert_eq "updated versioned DS deltaSyncConfig.deltaSyncTableTTL" "2880" \
+  "$(datasource_query VersionedItemsDataSource 'dataSource.dynamodbConfig.deltaSyncConfig.deltaSyncTableTTL')"
+
 # --- Phase 3: REMOVAL -------------------------------------------------------
 # AppSync treats an OMITTED UpdateGraphqlApi member as "no change", so a
 # removal that merely leaves the member off the input silently keeps the old
@@ -384,6 +426,23 @@ assert_eq "removed resolver metricsConfig cleared" "DISABLED" "${RESOLVER_METRIC
 # ...and the retained DataSource sibling: a blanket metrics wipe cannot pass.
 assert_eq "retained EventBridge DS metricsConfig" "ENABLED" \
   "$(datasource_query EventBridgeDataSource 'dataSource.metricsConfig')"
+
+# #1597 removal: UpdateDataSource is a full-replace write, so dropping a
+# nested blob from the template clears it server-side with no reset sentinel.
+# Each removal is paired with a RETAINED sibling INSIDE the same config block,
+# so a reset that wiped the whole block cannot pass: `HttpConfig.Endpoint`
+# survives the AuthorizationConfig removal, and `DynamoDBConfig.Versioned`
+# survives the DeltaSyncConfig removal.
+HTTP_AUTH="$(aws appsync get-data-source --api-id "${API_ID}" --name HttpDataSource \
+  --region "${REGION}" --query 'dataSource.httpConfig.authorizationConfig' --output json | jq -r '. // "NONE"')"
+assert_eq "removed HTTP DS authorizationConfig cleared" "NONE" "${HTTP_AUTH}"
+assert_eq "retained HTTP DS endpoint" "https://states.${REGION}.amazonaws.com" \
+  "$(datasource_query HttpDataSource 'dataSource.httpConfig.endpoint')"
+DELTA_CFG="$(aws appsync get-data-source --api-id "${API_ID}" --name VersionedItemsDataSource \
+  --region "${REGION}" --query 'dataSource.dynamodbConfig.deltaSyncConfig' --output json | jq -r '. // "NONE"')"
+assert_eq "removed versioned DS deltaSyncConfig cleared" "NONE" "${DELTA_CFG}"
+assert_eq "retained versioned DS versioned" "True" \
+  "$(datasource_query VersionedItemsDataSource 'dataSource.dynamodbConfig.versioned')"
 
 # --- Phase 4: destroy -------------------------------------------------------
 echo "==> Phase 4: destroy"
