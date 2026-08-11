@@ -2618,12 +2618,14 @@ export class ApiGatewayV2Provider implements ResourceProvider {
    * baseline carries the CFn list-of-pairs, and every `cdkd drift` run would
    * report permanent phantom drift on a resource nobody touched.
    *
-   * The pairs are sorted by `Destination` because this turns an UNORDERED SDK
-   * map into an ARRAY, and `calculateResourceDrift` compares arrays
-   * POSITIONALLY — AWS does not guarantee map readback order, so an unsorted
-   * rebuild would trade the shape-mismatch phantom drift for an ordering one
-   * (and `--revert` would re-push an identical value forever). Same reasoning
-   * as `src/analyzer/drift-normalize.ts`, applied at the source instead.
+   * Order matters because this turns an UNORDERED SDK map into an ARRAY, and
+   * `calculateResourceDrift` compares arrays POSITIONALLY — AWS does not
+   * guarantee map readback order, so an arbitrary rebuild would trade the
+   * shape-mismatch phantom drift for an ordering one (and `--revert` would
+   * re-push an identical value forever). Declared destinations therefore keep
+   * their DECLARED position and anything else is sorted; both are stable
+   * across reads. Same reasoning as `src/analyzer/drift-normalize.ts`,
+   * applied at the source instead.
    *
    * `declared` (the state-recorded desired `ResponseParameters` block, when
    * the caller has it) makes the inverse MIRROR the template's spelling per
@@ -2665,11 +2667,12 @@ export class ApiGatewayV2Provider implements ResourceProvider {
     for (const [statusCode, flat] of Object.entries(value)) {
       if (flat == null || typeof flat !== 'object' || Array.isArray(flat)) continue;
       const declaredBlock = declaredBlocks?.[statusCode];
-      const declaredEntries =
-        declaredBlock != null && typeof declaredBlock === 'object' && !Array.isArray(declaredBlock)
-          ? (declaredBlock as Record<string, unknown>)['ResponseParameters']
-          : undefined;
-      if (declaredBlock != null && !Array.isArray(declaredEntries)) {
+      const declaredIsBlock =
+        declaredBlock != null && typeof declaredBlock === 'object' && !Array.isArray(declaredBlock);
+      const declaredEntries = declaredIsBlock
+        ? (declaredBlock as Record<string, unknown>)['ResponseParameters']
+        : undefined;
+      if (declaredIsBlock && !Array.isArray(declaredEntries)) {
         // Declared in the flat SDK spelling (the pass-through branch of
         // `toSdkResponseParameters`) — keep the read-back flat so the two
         // sides compare equal.
@@ -2714,10 +2717,12 @@ export class ApiGatewayV2Provider implements ResourceProvider {
         });
       }
     }
-    // Anything AWS returned that the template did not declare (or that the
-    // declaration no longer matches) is appended in a stable order — AWS does
-    // not guarantee map readback order, so an unsorted tail would trade the
-    // shape mismatch for an ordering one.
+    // Anything AWS returned that the template did not declare is appended in
+    // a stable order — AWS does not guarantee map readback order, so an
+    // unsorted tail would trade the shape mismatch for an ordering one. (A
+    // declared destination whose VALUE no longer matches is not here: it kept
+    // its declared position above and carries AWS's value, which is the drift
+    // the user wants to see.)
     for (const [destination, source] of [...remaining.entries()].sort(([a], [b]) =>
       a < b ? -1 : a > b ? 1 : 0
     )) {

@@ -153,8 +153,10 @@ stage_field() { # stage_field <API_ID> <JMESPath>
 # string.
 STRIP_OBSERVED_LOGICAL_IDS="FlatIntegration Integration"
 strip_observed_for_drift() {
-  local tmp_in="${TMPDIR:-/tmp}/cdkd-1602-state-in.json"
-  local tmp_out="${TMPDIR:-/tmp}/cdkd-1602-state-out.json"
+  # PID-suffixed so two concurrent runs of this fixture cannot share a scratch
+  # file, and removed on the guard's exit path as well as the happy one.
+  local tmp_in="${TMPDIR:-/tmp}/cdkd-1602-state-in.$$.json"
+  local tmp_out="${TMPDIR:-/tmp}/cdkd-1602-state-out.$$.json"
   local lid
   aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${tmp_in}" --region "${REGION}" >/dev/null
   # Fail loudly if a key we are about to strip is not there: a silent no-op
@@ -163,6 +165,7 @@ strip_observed_for_drift() {
   for lid in ${STRIP_OBSERVED_LOGICAL_IDS}; do
     if [ "$(jq -r --arg l "${lid}" '.resources[$l].observedProperties | type' "${tmp_in}")" != "object" ]; then
       echo "FAIL: ${lid} has no observedProperties to strip — the drift assertion would be vacuous" >&2
+      rm -f "${tmp_in}" "${tmp_out}"
       exit 1
     fi
   done
@@ -399,7 +402,7 @@ echo "    all Phase 1 fields live"
 
 # --- Phase 1b (issue #1602): drift must be CLEAN right after a deploy ----
 # Run against the `properties` baseline for the #1602 resources (see
-# strip_flat_observed): that is the ONLY baseline on which the two phantom
+# strip_observed_for_drift): that is the ONLY baseline on which these phantom
 # drifts fire, so with the observed snapshot in place this assertion would
 # pass even with the fix reverted.
 assert_no_drift() { # assert_no_drift "<phase label>"
@@ -435,9 +438,11 @@ assert_no_drift() { # assert_no_drift "<phase label>"
   # readCurrentState for every type in this stack, so a non-zero unsupported
   # count means the comparison silently stopped covering the resources under
   # test. Match the COUNT, not the word: the clean summary line itself reads
-  # `(17 resources checked, 0 unsupported)`.
+  # `(17 resources checked, 0 unsupported)`. The pattern is ANCHORED on the
+  # whole trailer because a bare `0 unsupported` also matches `10 unsupported`
+  # / `20 unsupported`, which would wave a real regression through.
   case "${out}" in
-    *"0 unsupported"*) ;;
+    *"checked, 0 unsupported)"*) ;;
     *unsupported*)
       echo "FAIL: ${label}: cdkd drift reported unsupported resource(s) — the #1602 resources may not have been compared at all:" >&2
       printf '%s\n' "${out}" >&2

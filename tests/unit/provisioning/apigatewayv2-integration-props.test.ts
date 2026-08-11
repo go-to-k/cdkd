@@ -856,6 +856,30 @@ describe('ApiGatewayV2 Integration TlsConfig visibility + flat ResponseParameter
       expect(state?.['ResponseParameters']).toEqual(cfnListResponseParameters);
     });
 
+    it.each([
+      ['a string', 'not-a-block'],
+      ['an array', [{ Destination: 'd', Source: 's' }]],
+    ])(
+      'rebuilds the CFn list shape when the declared block for a status code is %s',
+      async (_label, declaredBlock) => {
+        // Only a plain OBJECT can be "declared in the flat spelling"; a
+        // malformed block must not be labelled as one. Drift is reported
+        // either way, but the branch has to mean what it says.
+        mockSend.mockResolvedValueOnce({
+          IntegrationType: 'HTTP_PROXY',
+          IntegrationUri: 'https://example.com',
+          ResponseParameters: flatResponseParameters,
+        });
+
+        const state = await provider.readCurrentState!(INTEGRATION_ID, 'L', INTEGRATION_TYPE, {
+          ApiId: API_ID,
+          ResponseParameters: { '404': declaredBlock },
+        });
+
+        expect(state?.['ResponseParameters']).toEqual(cfnListResponseParameters);
+      }
+    );
+
     it('rebuilds the CFn list shape when the state bag has no declared block', async () => {
       mockSend.mockResolvedValueOnce({
         IntegrationType: 'HTTP_PROXY',

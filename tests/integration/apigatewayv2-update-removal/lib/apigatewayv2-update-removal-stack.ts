@@ -87,12 +87,14 @@ export class ApiGatewayV2UpdateRemovalStack extends cdk.Stack {
       // its own live CFn A/B first.
       //
       // TlsConfig is deliberately NOT set on THIS integration — it lives on
-      // the issue #1602 integration below, whose ResponseParameters are all
-      // strings. This one declares an unquoted numeric `Source` (see the
-      // comment below), which does not round-trip through the
-      // properties-fallback drift baseline (AWS returns it as a string), so a
-      // drift assertion against this resource could not be clean for a reason
-      // unrelated to #1602.
+      // the issue #1602 integration below, so one resource carries both of
+      // that issue's shapes. This one contributes the OTHER half of the #1602
+      // fix: its unquoted numeric `Source` (see the comment below) is what
+      // binds the CFn-arm mirror, since AWS returns the value as a string and
+      // a read side that re-emitted AWS's string would report permanent
+      // phantom drift against the properties-fallback baseline. verify.sh
+      // strips this resource's observedProperties too and asserts drift is
+      // clean.
       //
       // ResponseParameters is the one property whose CFn shape (a per-status
       // list of {Destination, Source}) differs from the SDK's (a flat map), so
