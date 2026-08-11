@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "summary": {
     "classifiedCount": 84,
-    "declaredProperties": 1087,
-    "wiredProperties": 1085,
+    "declaredProperties": 1095,
+    "wiredProperties": 1093,
     "wired": 82,
     "gap": 0,
     "allowListed": 2,
@@ -1071,8 +1071,25 @@
       "file": "apigatewayv2-provider.ts",
       "className": "ApiGatewayV2Provider",
       "bucket": "wired",
-      "declaredCount": 36,
+      "declaredCount": 44,
       "properties": [
+        {
+          "name": "AccessLogSettings",
+          "status": "wired",
+          "types": [
+            "AWS::ApiGatewayV2::Stage"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "createStage",
+            "update",
+            "updateStage"
+          ]
+        },
         {
           "name": "ApiId",
           "status": "wired",
@@ -1107,6 +1124,23 @@
             "updateIntegration",
             "updateRoute",
             "updateStage"
+          ]
+        },
+        {
+          "name": "ApiKeyRequired",
+          "status": "wired",
+          "types": [
+            "AWS::ApiGatewayV2::Route"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "createRoute",
+            "update",
+            "updateRoute"
           ]
         },
         {
@@ -1280,6 +1314,23 @@
           ]
         },
         {
+          "name": "ClientCertificateId",
+          "status": "wired",
+          "types": [
+            "AWS::ApiGatewayV2::Stage"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "createStage",
+            "update",
+            "updateStage"
+          ]
+        },
+        {
           "name": "CorsConfiguration",
           "status": "wired",
           "types": [
@@ -1309,6 +1360,25 @@
           "seededBy": [
             "create",
             "createStage",
+            "update",
+            "updateStage"
+          ]
+        },
+        {
+          "name": "DeploymentId",
+          "status": "wired",
+          "types": [
+            "AWS::ApiGatewayV2::Stage"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "createStage",
+            "readCurrentState",
+            "readStage",
             "update",
             "updateStage"
           ]
@@ -1490,6 +1560,23 @@
           ]
         },
         {
+          "name": "ModelSelectionExpression",
+          "status": "wired",
+          "types": [
+            "AWS::ApiGatewayV2::Route"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "createRoute",
+            "update",
+            "updateRoute"
+          ]
+        },
+        {
           "name": "Name",
           "status": "wired",
           "types": [
@@ -1561,10 +1648,28 @@
           ]
         },
         {
+          "name": "RequestModels",
+          "status": "wired",
+          "types": [
+            "AWS::ApiGatewayV2::Route"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "createRoute",
+            "update",
+            "updateRoute"
+          ]
+        },
+        {
           "name": "RequestParameters",
           "status": "wired",
           "types": [
-            "AWS::ApiGatewayV2::Integration"
+            "AWS::ApiGatewayV2::Integration",
+            "AWS::ApiGatewayV2::Route"
           ],
           "evidence": [
             "delegated",
@@ -1573,12 +1678,31 @@
           "seededBy": [
             "create",
             "createIntegration",
+            "createRoute",
             "update",
-            "updateIntegration"
+            "updateIntegration",
+            "updateRoute"
           ]
         },
         {
           "name": "RouteKey",
+          "status": "wired",
+          "types": [
+            "AWS::ApiGatewayV2::Route"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "createRoute",
+            "update",
+            "updateRoute"
+          ]
+        },
+        {
+          "name": "RouteResponseSelectionExpression",
           "status": "wired",
           "types": [
             "AWS::ApiGatewayV2::Route"
@@ -1609,6 +1733,23 @@
             "createApi",
             "update",
             "updateApi"
+          ]
+        },
+        {
+          "name": "RouteSettings",
+          "status": "wired",
+          "types": [
+            "AWS::ApiGatewayV2::Stage"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "createStage",
+            "update",
+            "updateStage"
           ]
         },
         {

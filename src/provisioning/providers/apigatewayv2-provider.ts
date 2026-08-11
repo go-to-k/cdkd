@@ -18,6 +18,9 @@ import {
   UpdateRouteCommand,
   CreateAuthorizerCommand,
   DeleteAuthorizerCommand,
+  DeleteAccessLogSettingsCommand,
+  DeleteRouteSettingsCommand,
+  DeleteRouteRequestParameterCommand,
   GetAuthorizerCommand,
   UpdateAuthorizerCommand,
   GetApiCommand,
@@ -27,6 +30,8 @@ import {
   type IntegrationType,
   type AuthorizationType,
   type AuthorizerType,
+  type AccessLogSettings,
+  type ParameterConstraints,
   type RouteSettings,
   type UpdateApiCommandInput,
   type UpdateStageCommandInput,
@@ -88,6 +93,10 @@ export class ApiGatewayV2Provider implements ResourceProvider {
         'Tags',
         'StageVariables',
         'DefaultRouteSettings',
+        'AccessLogSettings',
+        'ClientCertificateId',
+        'DeploymentId',
+        'RouteSettings',
       ]),
     ],
     [
@@ -113,6 +122,11 @@ export class ApiGatewayV2Provider implements ResourceProvider {
         'AuthorizerId',
         'AuthorizationScopes',
         'OperationName',
+        'ApiKeyRequired',
+        'ModelSelectionExpression',
+        'RequestModels',
+        'RequestParameters',
+        'RouteResponseSelectionExpression',
       ]),
     ],
     [
@@ -465,6 +479,10 @@ export class ApiGatewayV2Provider implements ResourceProvider {
           Description: properties['Description'] as string | undefined,
           StageVariables: properties['StageVariables'] as Record<string, string> | undefined,
           DefaultRouteSettings: properties['DefaultRouteSettings'] as RouteSettings | undefined,
+          AccessLogSettings: properties['AccessLogSettings'] as AccessLogSettings | undefined,
+          ClientCertificateId: properties['ClientCertificateId'] as string | undefined,
+          DeploymentId: properties['DeploymentId'] as string | undefined,
+          RouteSettings: properties['RouteSettings'] as Record<string, RouteSettings> | undefined,
           Tags: this.cfnTagsToRecord(properties['Tags']),
         })
       );
@@ -682,6 +700,15 @@ export class ApiGatewayV2Provider implements ResourceProvider {
           AuthorizerId: properties['AuthorizerId'] as string | undefined,
           AuthorizationScopes: properties['AuthorizationScopes'] as string[] | undefined,
           OperationName: properties['OperationName'] as string | undefined,
+          ApiKeyRequired: properties['ApiKeyRequired'] as boolean | undefined,
+          ModelSelectionExpression: properties['ModelSelectionExpression'] as string | undefined,
+          RequestModels: properties['RequestModels'] as Record<string, string> | undefined,
+          RequestParameters: properties['RequestParameters'] as
+            | Record<string, ParameterConstraints>
+            | undefined,
+          RouteResponseSelectionExpression: properties['RouteResponseSelectionExpression'] as
+            | string
+            | undefined,
         })
       );
 
@@ -998,6 +1025,26 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       if (resp.DefaultRouteSettings !== undefined) {
         result['DefaultRouteSettings'] = resp.DefaultRouteSettings;
       }
+      // Issue #609 backfill. Same emit-when-present convention: the drift
+      // comparator only descends into keys present in the recorded baseline,
+      // so a stage that never set one of these cannot drift on it.
+      if (resp.AccessLogSettings !== undefined) {
+        result['AccessLogSettings'] = resp.AccessLogSettings;
+      }
+      if (resp.ClientCertificateId !== undefined) {
+        result['ClientCertificateId'] = resp.ClientCertificateId;
+      }
+      // DeploymentId is emitted ONLY when the template declared it. Under
+      // `AutoDeploy: true` AWS mints a NEW deployment id on every route /
+      // integration change, so capturing it into the observed-properties drift
+      // baseline reports permanent phantom drift on an untouched stack — and
+      // `--revert` then pushes the stale id back through UpdateStage, rolling
+      // the live stage back to an old deployment. The value is a non-empty
+      // string, so `undeclaredEmptyObservedKeys` cannot skip it.
+      if (properties?.['DeploymentId'] !== undefined && resp.DeploymentId !== undefined) {
+        result['DeploymentId'] = resp.DeploymentId;
+      }
+      if (resp.RouteSettings !== undefined) result['RouteSettings'] = resp.RouteSettings;
       return result;
     } catch (err) {
       if (err instanceof NotFoundException) return undefined;
@@ -1088,6 +1135,21 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       // of AuthorizationType. Emit-when-present so a route that never set
       // it does not grow a phantom-drift key.
       if (resp.OperationName !== undefined) result['OperationName'] = resp.OperationName;
+      // Issue #609 backfill, same emit-when-present convention as above.
+      // `ApiKeyRequired` gets its AWS default (false) rather than being
+      // omitted: unlike the others it is a boolean cdkd now actively RESETS on
+      // removal, so the read side has to be able to show the reset landed.
+      result['ApiKeyRequired'] = resp.ApiKeyRequired ?? false;
+      if (resp.ModelSelectionExpression !== undefined) {
+        result['ModelSelectionExpression'] = resp.ModelSelectionExpression;
+      }
+      if (resp.RequestModels !== undefined) result['RequestModels'] = resp.RequestModels;
+      if (resp.RequestParameters !== undefined) {
+        result['RequestParameters'] = resp.RequestParameters;
+      }
+      if (resp.RouteResponseSelectionExpression !== undefined) {
+        result['RouteResponseSelectionExpression'] = resp.RouteResponseSelectionExpression;
+      }
       return result;
     } catch (err) {
       if (err instanceof NotFoundException) return undefined;
@@ -1354,8 +1416,11 @@ export class ApiGatewayV2Provider implements ResourceProvider {
    * `UpdateStage` keys on `(ApiId, StageName)` — `StageName` is the
    * physicalId and immutable. Mutable fields cdkd manages:
    * `AutoDeploy` / `Description` / `StageVariables` /
-   * `DefaultRouteSettings`. `ApiId` is also immutable (a stage cannot be
-   * moved between APIs).
+   * `DefaultRouteSettings` / `AccessLogSettings` / `ClientCertificateId` /
+   * `DeploymentId` / `RouteSettings`. `ApiId` is also immutable (a stage
+   * cannot be moved between APIs). `AccessLogSettings` and per-key
+   * `RouteSettings` can only be CLEARED through their dedicated delete APIs —
+   * see {@link applyStageRemovals}.
    */
   private async updateStage(
     logicalId: string,
@@ -1447,8 +1512,82 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       input.DefaultRouteSettings = properties['DefaultRouteSettings'] as RouteSettings;
       changed = true;
     }
+    // AccessLogSettings / RouteSettings are OBJECT-valued blocks UpdateStage
+    // MERGES, so an omitted member is a no-op — live-probed 2026-08-11: a
+    // stage keeps its AccessLogSettings verbatim through an UpdateStage that
+    // omits it. Both therefore have DEDICATED delete APIs, handled out-of-band
+    // below exactly like CorsConfiguration on ::Api.
+    if (
+      properties['AccessLogSettings'] !== undefined &&
+      !this.deepEqual(properties['AccessLogSettings'], previousProperties['AccessLogSettings'])
+    ) {
+      input.AccessLogSettings = properties['AccessLogSettings'] as AccessLogSettings;
+      changed = true;
+    }
+    const accessLogRemoved =
+      properties['AccessLogSettings'] === undefined &&
+      previousProperties['AccessLogSettings'] !== undefined;
+    if (
+      properties['RouteSettings'] !== undefined &&
+      !this.deepEqual(properties['RouteSettings'], previousProperties['RouteSettings'])
+    ) {
+      input.RouteSettings = properties['RouteSettings'] as Record<string, RouteSettings>;
+      changed = true;
+    }
+    // Per-ROUTE-KEY removal: the map merges, so a key dropped from the
+    // template (or the whole block removed) survives unless it is deleted by
+    // name. Live-probed 2026-08-11: DeleteRouteSettings clears exactly one key.
+    const droppedRouteSettingKeys = this.droppedKeys(
+      properties['RouteSettings'],
+      previousProperties['RouteSettings']
+    );
+    // ClientCertificateId clears on '' (detaches the certificate) when removed,
+    // mirroring the AuthorizerId treatment on Route.
+    {
+      const r = this.clearableUpdate(
+        properties['ClientCertificateId'] as string | undefined,
+        previousProperties['ClientCertificateId'] as string | undefined,
+        ''
+      );
+      if (r.changed) {
+        input.ClientCertificateId = r.value;
+        changed = true;
+      }
+    }
+    // DeploymentId points at a specific Deployment resource; it is only
+    // meaningful while AutoDeploy is off, and there is no "no deployment"
+    // sentinel — pass through on change only.
+    if (
+      properties['DeploymentId'] !== undefined &&
+      properties['DeploymentId'] !== previousProperties['DeploymentId']
+    ) {
+      input.DeploymentId = properties['DeploymentId'] as string;
+      changed = true;
+    }
 
     if (!changed) {
+      // The out-of-band removals are their own API calls, so a template whose
+      // ONLY change is dropping one of them still has work to do here.
+      if (accessLogRemoved || droppedRouteSettingKeys.length > 0) {
+        try {
+          await this.applyStageRemovals(
+            apiId,
+            physicalId,
+            accessLogRemoved,
+            droppedRouteSettingKeys
+          );
+        } catch (error) {
+          const cause = error instanceof Error ? error : undefined;
+          throw new ProvisioningError(
+            `Failed to update API Gateway V2 Stage ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          );
+        }
+        return { physicalId, wasReplaced: false };
+      }
       this.logger.debug(`No mutable Stage fields changed for ${logicalId}; skipping UpdateStage`);
       return { physicalId, wasReplaced: false };
     }
@@ -1457,6 +1596,7 @@ export class ApiGatewayV2Provider implements ResourceProvider {
 
     try {
       await this.getClient().send(new UpdateStageCommand(input));
+      await this.applyStageRemovals(apiId, physicalId, accessLogRemoved, droppedRouteSettingKeys);
       return { physicalId, wasReplaced: false };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
@@ -1601,7 +1741,9 @@ export class ApiGatewayV2Provider implements ResourceProvider {
   /**
    * `UpdateRoute` keys on `(ApiId, RouteId)`. Mutable fields cdkd
    * manages: `RouteKey` / `Target` / `AuthorizationType` /
-   * `AuthorizerId` / `AuthorizationScopes` / `OperationName`.
+   * `AuthorizerId` / `AuthorizationScopes` / `OperationName` /
+   * `ApiKeyRequired` / `RequestModels` / `RequestParameters` /
+   * `ModelSelectionExpression` / `RouteResponseSelectionExpression`.
    */
   private async updateRoute(
     logicalId: string,
@@ -1700,8 +1842,91 @@ export class ApiGatewayV2Provider implements ResourceProvider {
         changed = true;
       }
     }
+    // ApiKeyRequired resets to false (CFn default) on removal (#1160).
+    {
+      const r = this.clearableUpdate(
+        properties['ApiKeyRequired'] as boolean | undefined,
+        previousProperties['ApiKeyRequired'] as boolean | undefined,
+        false
+      );
+      if (r.changed) {
+        input.ApiKeyRequired = r.value;
+        changed = true;
+      }
+    }
+    // RequestModels merges on the AWS side exactly like the Integration
+    // RequestParameters map, so a dropped key is cleared by sending it with an
+    // empty-string value (see mapWithRemovals).
+    {
+      const merged = this.mapWithRemovals(
+        properties['RequestModels'],
+        previousProperties['RequestModels']
+      );
+      if (merged !== undefined) {
+        input.RequestModels = merged;
+        changed = true;
+      }
+    }
+    // RequestParameters here is Record<string, ParameterConstraints> — an
+    // OBJECT-valued map that UpdateRoute MERGES, so the empty-string per-key
+    // clear the string maps use does not apply and a dropped key survives.
+    // AWS ships a dedicated per-key delete for exactly this (live-probed
+    // 2026-08-11: DeleteRouteRequestParameter clears one parameter), applied
+    // out-of-band below.
+    if (
+      properties['RequestParameters'] !== undefined &&
+      !this.deepEqual(properties['RequestParameters'], previousProperties['RequestParameters'])
+    ) {
+      input.RequestParameters = properties[
+        'RequestParameters'
+      ] as UpdateRouteCommandInput['RequestParameters'];
+      changed = true;
+    }
+    const droppedRequestParameterKeys = this.droppedKeys(
+      properties['RequestParameters'],
+      previousProperties['RequestParameters']
+    );
+    // ModelSelectionExpression / RouteResponseSelectionExpression are
+    // WebSocket-only selection expressions. Pass-through on change only, same
+    // treatment as the API-level RouteSelectionExpression above: removal is not
+    // a valid transition for a WebSocket route and no reset sentinel is
+    // documented.
+    if (
+      properties['ModelSelectionExpression'] !== undefined &&
+      properties['ModelSelectionExpression'] !== previousProperties['ModelSelectionExpression']
+    ) {
+      input.ModelSelectionExpression = properties['ModelSelectionExpression'] as string;
+      changed = true;
+    }
+    if (
+      properties['RouteResponseSelectionExpression'] !== undefined &&
+      properties['RouteResponseSelectionExpression'] !==
+        previousProperties['RouteResponseSelectionExpression']
+    ) {
+      input.RouteResponseSelectionExpression = properties[
+        'RouteResponseSelectionExpression'
+      ] as string;
+      changed = true;
+    }
 
     if (!changed) {
+      // The per-key parameter deletes are their own API calls, so a template
+      // whose ONLY change is dropping one still has work to do here.
+      if (droppedRequestParameterKeys.length > 0) {
+        try {
+          await this.deleteRouteRequestParameters(apiId, physicalId, droppedRequestParameterKeys);
+        } catch (error) {
+          const cause = error instanceof Error ? error : undefined;
+          throw new ProvisioningError(
+            `Failed to update API Gateway V2 Route ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          );
+        }
+        return { physicalId, wasReplaced: false };
+      }
       this.logger.debug(`No mutable Route fields changed for ${logicalId}; skipping UpdateRoute`);
       return { physicalId, wasReplaced: false };
     }
@@ -1710,6 +1935,7 @@ export class ApiGatewayV2Provider implements ResourceProvider {
 
     try {
       await this.getClient().send(new UpdateRouteCommand(input));
+      await this.deleteRouteRequestParameters(apiId, physicalId, droppedRequestParameterKeys);
       return { physicalId, wasReplaced: false };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
@@ -1934,16 +2160,116 @@ export class ApiGatewayV2Provider implements ResourceProvider {
   }
 
   /**
-   * Resolve a `Record<string, string>` update field (`StageVariables`,
-   * Integration `RequestParameters`) with per-key removal awareness.
+   * Keys present in `previous` but absent from `next` — the set a
+   * merge-semantics map silently keeps unless each is deleted BY NAME. A
+   * whole-block removal (`next` undefined) therefore yields every previous key.
+   */
+  private droppedKeys(next: unknown, previous: unknown): string[] {
+    if (previous == null || typeof previous !== 'object' || Array.isArray(previous)) return [];
+    const prevMap = previous as Record<string, unknown>;
+    const nextMap =
+      next != null && typeof next === 'object' && !Array.isArray(next)
+        ? (next as Record<string, unknown>)
+        : {};
+    // `hasOwnProperty`, not `in`: a key named `constructor` / `toString` would
+    // otherwise resolve on the prototype chain and never report as dropped.
+    return Object.keys(prevMap).filter(
+      (key) => !Object.prototype.hasOwnProperty.call(nextMap, key)
+    );
+  }
+
+  /**
+   * Send a delete that is idempotent by intent.
+   *
+   * These removal deletes run AFTER the merge-Update in the same update, so a
+   * partial failure (throttle on the second of two) leaves state unsaved and
+   * the next deploy recomputes the SAME dropped-key set and re-issues an
+   * already-applied delete. A console-side removal produces the same shape.
+   * Treating NotFound as success is what keeps that from becoming a permanent
+   * failure loop.
+   */
+  private async sendTolerantOfNotFound(send: () => Promise<unknown>): Promise<void> {
+    try {
+      await send();
+    } catch (error) {
+      if (error instanceof NotFoundException) return;
+      throw error;
+    }
+  }
+
+  /**
+   * The two Stage members `UpdateStage` cannot clear.
+   *
+   * Both MERGE server-side — live-probed 2026-08-11: a stage keeps its
+   * `AccessLogSettings` verbatim through an `UpdateStage` that omits the
+   * member — so a removal that only omits the field is the silent no-op issue
+   * #1160 tracks (access logging, and its billing, keep running). AWS ships
+   * dedicated delete APIs for both; this mirrors the `DeleteCorsConfiguration`
+   * path on `::Api`.
+   *
+   * KNOWN BOUND: `DeleteRouteSettings` removes a whole ROUTE KEY, so dropping
+   * one member INSIDE a kept entry (`LoggingLevel` while `ThrottlingRateLimit`
+   * stays) still merges and survives — the #1225 sub-field class, one level
+   * below what this closes. Same for a partial `AccessLogSettings`.
+   */
+  private async applyStageRemovals(
+    apiId: string,
+    stageName: string,
+    accessLogRemoved: boolean,
+    droppedRouteSettingKeys: readonly string[]
+  ): Promise<void> {
+    if (accessLogRemoved) {
+      await this.sendTolerantOfNotFound(() =>
+        this.getClient().send(
+          new DeleteAccessLogSettingsCommand({ ApiId: apiId, StageName: stageName })
+        )
+      );
+    }
+    for (const routeKey of droppedRouteSettingKeys) {
+      await this.sendTolerantOfNotFound(() =>
+        this.getClient().send(
+          new DeleteRouteSettingsCommand({ ApiId: apiId, StageName: stageName, RouteKey: routeKey })
+        )
+      );
+    }
+  }
+
+  /**
+   * `RequestParameters` on a Route is an OBJECT-valued merge map, so a dropped
+   * key needs the per-key delete API (live-probed 2026-08-11:
+   * `DeleteRouteRequestParameter` clears exactly one parameter).
+   */
+  private async deleteRouteRequestParameters(
+    apiId: string,
+    routeId: string,
+    droppedKeys: readonly string[]
+  ): Promise<void> {
+    for (const key of droppedKeys) {
+      await this.sendTolerantOfNotFound(() =>
+        this.getClient().send(
+          new DeleteRouteRequestParameterCommand({
+            ApiId: apiId,
+            RouteId: routeId,
+            RequestParameterKey: key,
+          })
+        )
+      );
+    }
+  }
+
+  /**
+   * Resolve a `Record<string, string>` update field (`StageVariables`, Route
+   * `RequestModels`, Integration `RequestParameters`) with per-key removal
+   * awareness.
    *
    * These maps also merge on the AWS side: sending `{}` (or a map missing
    * a previously-present key) does NOT delete the dropped key — it is kept
-   * live. Live-probed 2026-07-22: a key is cleared only by sending it with
-   * an empty-string value. So the resolved map is `next` plus every key
-   * present in `previous` but absent from `next`, set to `''`. Whole-block
-   * removal (next `undefined`, previous populated) therefore sends every
-   * old key as `''`. Returns `undefined` when nothing changed.
+   * live. Live-probed 2026-07-22 (and again 2026-08-11 for `RequestModels`):
+   * a key is cleared only by sending it with an empty-string value. So the
+   * resolved map is `next` plus every key present in `previous` but absent
+   * from `next`, set to `''`. Whole-block removal (next `undefined`, previous
+   * populated) therefore sends every old key as `''`. Returns `undefined` when
+   * nothing changed.
    */
   private mapWithRemovals(next: unknown, previous: unknown): Record<string, string> | undefined {
     if (this.deepEqual(next, previous)) return undefined;

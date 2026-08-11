@@ -67,6 +67,7 @@ STACK="CdkdApiGatewayV2UpdateRemovalExample"
 REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 API_NAME="${STACK}-api"
+WS_API_NAME="${STACK}-ws"
 AUTH_FN="${STACK}-authfn"
 
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
@@ -95,6 +96,14 @@ auth_field() { # auth_field <API_ID> <AUTH_ID> <JMESPath>
   aws apigatewayv2 get-authorizer --api-id "$1" --authorizer-id "$2" --region "${REGION}" \
     --query "$3" --output text 2>/dev/null
 }
+ws_api_id() {
+  aws apigatewayv2 get-apis --region "${REGION}" \
+    --query "Items[?Name=='${WS_API_NAME}'].ApiId | [0]" --output text 2>/dev/null
+}
+ws_stage_field() { # ws_stage_field <API_ID> <JMESPath>
+  aws apigatewayv2 get-stage --api-id "$1" --stage-name 'ws' --region "${REGION}" \
+    --query "$2" --output text 2>/dev/null
+}
 stage_field() { # stage_field <API_ID> <JMESPath>
   aws apigatewayv2 get-stage --api-id "$1" --stage-name '$default' --region "${REGION}" \
     --query "$2" --output text 2>/dev/null
@@ -111,6 +120,13 @@ cleanup() {
   if [ -n "${aid}" ] && [ "${aid}" != "None" ]; then
     aws apigatewayv2 delete-api --api-id "${aid}" --region "${REGION}" >/dev/null 2>&1
   fi
+  local wsaid
+  wsaid="$(ws_api_id)"
+  if [ -n "${wsaid}" ] && [ "${wsaid}" != "None" ]; then
+    aws apigatewayv2 delete-api --api-id "${wsaid}" --region "${REGION}" >/dev/null 2>&1
+  fi
+  aws logs delete-log-group --log-group-name "/aws/apigatewayv2/${WS_API_NAME}" \
+    --region "${REGION}" >/dev/null 2>&1
   aws lambda delete-function --function-name "${AUTH_FN}" --region "${REGION}" >/dev/null 2>&1
   aws logs delete-log-group --log-group-name "/aws/lambda/${AUTH_FN}" --region "${REGION}" >/dev/null 2>&1
   if [ -n "${STATE_BUCKET:-}" ]; then
@@ -174,6 +190,61 @@ if [ "$(stage_field "${AID}" 'StageVariables.foo')" != "bar" ]; then
   echo "FAIL: Phase 1 Stage StageVariables.foo not set (got '$(stage_field "${AID}" 'StageVariables.foo')')" >&2
   exit 1
 fi
+
+# --- Phase 1 (issue #609): the WebSocket Route / Stage properties ------
+# All four Route properties below are documented WebSocket-only, which is why
+# they ride a second API rather than the HTTP one above.
+WS_AID="$(ws_api_id)"
+if [ -z "${WS_AID}" ] || [ "${WS_AID}" = "None" ]; then
+  echo "FAIL: could not resolve ApiId for ${WS_API_NAME}" >&2; exit 1
+fi
+ws_route_id() { # ws_route_id <ROUTE_KEY>
+  aws apigatewayv2 get-routes --api-id "${WS_AID}" --region "${REGION}" \
+    --query "Items[?RouteKey=='$1'].RouteId | [0]" --output text 2>/dev/null
+}
+WS_CONNECT_ID="$(ws_route_id '$connect')"
+WS_DEFAULT_ID="$(ws_route_id '$default')"
+if [ -z "${WS_CONNECT_ID}" ] || [ "${WS_CONNECT_ID}" = "None" ] \
+  || [ -z "${WS_DEFAULT_ID}" ] || [ "${WS_DEFAULT_ID}" = "None" ]; then
+  echo "FAIL: could not resolve both WebSocket route ids (connect='${WS_CONNECT_ID}' default='${WS_DEFAULT_ID}')" >&2
+  exit 1
+fi
+
+if [ "$(route_field "${WS_AID}" "${WS_CONNECT_ID}" 'ApiKeyRequired')" != "True" ]; then
+  echo "FAIL: Phase 1 WS \$connect ApiKeyRequired not true (got '$(route_field "${WS_AID}" "${WS_CONNECT_ID}" ApiKeyRequired)')" >&2
+  exit 1
+fi
+if [ "$(route_field "${WS_AID}" "${WS_CONNECT_ID}" 'RequestParameters."route.request.header.X-Cdkd".Required')" != "True" ]; then
+  echo "FAIL: Phase 1 WS \$connect RequestParameters not set (got '$(route_field "${WS_AID}" "${WS_CONNECT_ID}" 'RequestParameters."route.request.header.X-Cdkd".Required')')" >&2
+  exit 1
+fi
+if [ "$(route_field "${WS_AID}" "${WS_DEFAULT_ID}" 'ModelSelectionExpression')" != '$request.body.action' ]; then
+  echo "FAIL: Phase 1 WS \$default ModelSelectionExpression not set (got '$(route_field "${WS_AID}" "${WS_DEFAULT_ID}" ModelSelectionExpression)')" >&2
+  exit 1
+fi
+if [ "$(route_field "${WS_AID}" "${WS_DEFAULT_ID}" 'RouteResponseSelectionExpression')" != '$default' ]; then
+  echo "FAIL: Phase 1 WS \$default RouteResponseSelectionExpression not set (got '$(route_field "${WS_AID}" "${WS_DEFAULT_ID}" RouteResponseSelectionExpression)')" >&2
+  exit 1
+fi
+if [ "$(ws_stage_field "${WS_AID}" 'AccessLogSettings.Format')" != '$context.requestId $context.status' ]; then
+  echo "FAIL: Phase 1 WS Stage AccessLogSettings.Format not set (got '$(ws_stage_field "${WS_AID}" 'AccessLogSettings.Format')')" >&2
+  exit 1
+fi
+# The RouteSettings members are PascalCase in the template on purpose (the L1
+# passes the map through verbatim) — a camelCase key would be dropped by the
+# SDK serializer and this readback is what proves it was not.
+if [ "$(ws_stage_field "${WS_AID}" 'RouteSettings."$default".ThrottlingRateLimit')" != "5.0" ] \
+  && [ "$(ws_stage_field "${WS_AID}" 'RouteSettings."$default".ThrottlingRateLimit')" != "5" ]; then
+  echo "FAIL: Phase 1 WS Stage RouteSettings throttle not 5 (got '$(ws_stage_field "${WS_AID}" 'RouteSettings."$default".ThrottlingRateLimit')')" >&2
+  exit 1
+fi
+# The $connect entry is the one phase 3 drops; $default is its retained sibling.
+if [ "$(ws_stage_field "${WS_AID}" 'RouteSettings."$connect".ThrottlingRateLimit')" != "2.0" ] \
+  && [ "$(ws_stage_field "${WS_AID}" 'RouteSettings."$connect".ThrottlingRateLimit')" != "2" ]; then
+  echo "FAIL: Phase 1 WS Stage RouteSettings \$connect entry not live (got '$(ws_stage_field "${WS_AID}" 'RouteSettings."$connect".ThrottlingRateLimit')')" >&2
+  exit 1
+fi
+
 echo "    all Phase 1 fields live"
 
 # --- Phase 2: remove the fields ----------------------------------------
@@ -202,12 +273,69 @@ if [ "${RP}" != "None" ]; then echo "FAIL: Integration RequestParameters not cle
 TTL="$(auth_field "${AID}" "${AUTH_ID}" 'AuthorizerResultTtlInSeconds')"
 if [ "${TTL}" != "0" ]; then echo "FAIL: Authorizer TTL not reset to 0 (got '${TTL}')" >&2; exit 1; fi
 
+# Issue #609: ApiKeyRequired is REMOVED in phase 2 and must reset to the CFn
+# default; the three expressions / the parameter map CHANGE value, and the two
+# Stage blocks change too (UpdateStage merges them and AWS documents no
+# whole-block reset, so cdkd passes them through — asserted, not assumed).
+if [ "$(route_field "${WS_AID}" "${WS_CONNECT_ID}" 'ApiKeyRequired')" != "False" ]; then
+  echo "FAIL: WS \$connect ApiKeyRequired not reset to false (got '$(route_field "${WS_AID}" "${WS_CONNECT_ID}" ApiKeyRequired)')" >&2
+  exit 1
+fi
+if [ "$(route_field "${WS_AID}" "${WS_CONNECT_ID}" 'RequestParameters."route.request.header.X-Cdkd".Required')" != "False" ]; then
+  echo "FAIL: WS \$connect RequestParameters not updated (got '$(route_field "${WS_AID}" "${WS_CONNECT_ID}" 'RequestParameters."route.request.header.X-Cdkd".Required')')" >&2
+  exit 1
+fi
+if [ "$(route_field "${WS_AID}" "${WS_DEFAULT_ID}" 'ModelSelectionExpression')" != '$request.body.updatedAction' ]; then
+  echo "FAIL: WS \$default ModelSelectionExpression not updated (got '$(route_field "${WS_AID}" "${WS_DEFAULT_ID}" ModelSelectionExpression)')" >&2
+  exit 1
+fi
+if [ "$(ws_stage_field "${WS_AID}" 'AccessLogSettings.Format')" != '$context.requestId $context.status $context.routeKey' ]; then
+  echo "FAIL: WS Stage AccessLogSettings.Format not updated (got '$(ws_stage_field "${WS_AID}" 'AccessLogSettings.Format')')" >&2
+  exit 1
+fi
+if [ "$(ws_stage_field "${WS_AID}" 'RouteSettings."$default".ThrottlingRateLimit')" != "15.0" ] \
+  && [ "$(ws_stage_field "${WS_AID}" 'RouteSettings."$default".ThrottlingRateLimit')" != "15" ]; then
+  echo "FAIL: WS Stage RouteSettings throttle not updated to 15 (got '$(ws_stage_field "${WS_AID}" 'RouteSettings."$default".ThrottlingRateLimit')')" >&2
+  exit 1
+fi
+
 ON="$(route_field "${AID}" "${ROUTE_ID}" 'OperationName')"
 if [ "${ON}" != "None" ]; then echo "FAIL: Route OperationName not cleared (got '${ON}'; empty = probe error)" >&2; exit 1; fi
 
 SV="$(stage_field "${AID}" 'StageVariables.foo')"
 if [ "${SV}" != "None" ]; then echo "FAIL: Stage StageVariables.foo not cleared (got '${SV}'; empty = probe error)" >&2; exit 1; fi
 echo "    all fields reset to CFn defaults (Cors cleared via DeleteCorsConfiguration)"
+
+# --- Phase 2b: REMOVAL (issue #609) -------------------------------------
+# UpdateStage / UpdateRoute MERGE, so these three members can only be cleared
+# through their dedicated Delete* APIs (live-probed 2026-08-11). Omitting them
+# from the input is the silent no-op the #1160 umbrella tracks.
+echo "==> Phase 2b: re-deploy with the delete-API-only members removed"
+CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+
+ALS="$(ws_stage_field "${WS_AID}" 'AccessLogSettings.Format')"
+if [ "${ALS}" != "None" ]; then
+  echo "FAIL: WS Stage AccessLogSettings not cleared (got '${ALS}'; access logging would keep billing)" >&2
+  exit 1
+fi
+DROPPED_RS="$(ws_stage_field "${WS_AID}" 'RouteSettings."$connect".ThrottlingRateLimit')"
+if [ "${DROPPED_RS}" != "None" ]; then
+  echo "FAIL: WS Stage RouteSettings \$connect entry not deleted (got '${DROPPED_RS}')" >&2
+  exit 1
+fi
+# ...and the RETAINED sibling proves the removal deleted one key, not the block.
+KEPT_RS="$(ws_stage_field "${WS_AID}" 'RouteSettings."$default".ThrottlingRateLimit')"
+if [ "${KEPT_RS}" != "15.0" ] && [ "${KEPT_RS}" != "15" ]; then
+  echo "FAIL: WS Stage RouteSettings \$default sibling did not survive the removal (got '${KEPT_RS}')" >&2
+  exit 1
+fi
+RP="$(route_field "${WS_AID}" "${WS_CONNECT_ID}" 'RequestParameters."route.request.header.X-Cdkd".Required')"
+if [ "${RP}" != "None" ]; then
+  echo "FAIL: WS \$connect RequestParameters not deleted (got '${RP}')" >&2
+  exit 1
+fi
+echo "    Phase 2b: all delete-API-only removals landed, retained sibling intact"
 
 # --- Phase 3: destroy --------------------------------------------------
 echo "==> Phase 3: destroy"
@@ -216,6 +344,14 @@ node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --regio
 assert_gone "API ${AID} still exists after destroy" aws apigatewayv2 get-api --api-id "${AID}" --region "${REGION}"
 echo "    API deleted"
 
+assert_gone "WebSocket API ${WS_AID} still exists after destroy" aws apigatewayv2 get-api --api-id "${WS_AID}" --region "${REGION}"
+echo "    WebSocket API deleted"
+# The access-log group is STACK-OWNED (unlike the AWS-created Lambda one), so a
+# destroy leak has to fail here. `describe-log-streams` 404s on a missing group,
+# which is what gone_probe needs; `describe-log-groups` would return an empty
+# list and read as "still there".
+assert_gone "WS access log group /aws/apigatewayv2/${WS_API_NAME} still exists after destroy" \
+  aws logs describe-log-streams --log-group-name "/aws/apigatewayv2/${WS_API_NAME}" --region "${REGION}"
 assert_gone "authorizer Lambda ${AUTH_FN} still exists after destroy" aws lambda get-function --function-name "${AUTH_FN}" --region "${REGION}"
 echo "    authorizer Lambda deleted"
 

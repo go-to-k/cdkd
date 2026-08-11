@@ -4422,6 +4422,7 @@
     {
       "resourceType": "AWS::Logs::LogGroup",
       "integs": [
+        "apigatewayv2-update-removal",
         "apigw-stage-props",
         "apigw-stage-throttling",
         "cloudtrail-trail",
@@ -4444,6 +4445,9 @@
         "tags-propagation"
       ],
       "signals": {
+        "apigatewayv2-update-removal": [
+          "l2"
+        ],
         "apigw-stage-props": [
           "l1",
           "literal"

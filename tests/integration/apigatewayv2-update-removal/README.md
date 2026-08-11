@@ -27,3 +27,38 @@ Run: `/run-integ apigatewayv2-update-removal` (deploy -> UPDATE -> destroy +
 orphan check). AutoDeploy-removal and the Authorizer string-field resets are
 covered by the unit tests in
 `tests/unit/provisioning/apigatewayv2-provider-roundtrip.test.ts`.
+
+## Issue #609 coverage (Stage / Route config properties)
+
+The fixture also carries a **WebSocket** API, because all five backfilled
+`AWS::ApiGatewayV2::Route` properties are documented WebSocket-only — an HTTP
+API cannot exercise them. Two WS routes are needed, not one: AWS rejects
+`RequestParameters` anywhere but `$connect`, while the selection expressions
+belong on a body-carrying route.
+
+| Property | Where it is exercised |
+| --- | --- |
+| `Route.ApiKeyRequired` | WS `$connect`; removed in phase 2, must reset to `false` |
+| `Route.RequestParameters` | WS `$connect`; value change in phase 2, REMOVED in phase 2b (needs `DeleteRouteRequestParameter`) |
+| `Route.ModelSelectionExpression` | WS `$default`; value change |
+| `Route.RouteResponseSelectionExpression` | WS `$default` |
+| `Stage.AccessLogSettings` | WS stage, against a real log group; format changes in phase 2, REMOVED in phase 2b (needs `DeleteAccessLogSettings`) |
+| `Stage.RouteSettings` | WS stage; throttle values change in phase 2, the `$connect` key is dropped in phase 2b while `$default` is retained |
+
+Phase 2b (`CDKD_TEST_REMOVAL=true`) exists because `UpdateStage` / `UpdateRoute`
+MERGE: live-probed 2026-08-11, a stage keeps its `AccessLogSettings` through an
+update that omits the member, so only the dedicated `Delete*` APIs clear these.
+It builds on the update phase rather than reverting to the baseline, so the only
+delta it introduces is the removal itself.
+
+`RouteSettings` members are written in **PascalCase** in the stack on purpose:
+`CfnStage.routeSettings` is typed `any`, so CDK passes the map through
+verbatim and a camelCase key would be dropped by the SDK serializer with a
+perfectly green deploy.
+
+**Not exercised live**, covered by unit tests instead:
+
+- `Stage.ClientCertificateId` — needs a WebSocket client certificate resource
+- `Stage.DeploymentId` — meaningful only with `AutoDeploy` off, and
+  `AWS::ApiGatewayV2::Deployment` is not a registered cdkd type
+- `Route.RequestModels` — needs `AWS::ApiGatewayV2::Model`, also unregistered

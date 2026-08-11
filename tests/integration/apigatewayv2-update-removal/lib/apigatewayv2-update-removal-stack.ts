@@ -2,6 +2,7 @@ import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
+import * as logs from 'aws-cdk-lib/aws-logs';
 
 /**
  * ApiGatewayV2 update-field removal reset (issue #1160, apigatewayv2 batch).
@@ -25,7 +26,14 @@ export class ApiGatewayV2UpdateRemovalStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
-    const update = process.env.CDKD_TEST_UPDATE === 'true';
+    // Phase 2b (issue #609): the members whose removal needs a dedicated
+    // Delete* API rather than an omitted UpdateStage / UpdateRoute member.
+    const removal = process.env.CDKD_TEST_REMOVAL === 'true';
+    // Removal BUILDS ON the update phase rather than reverting to the
+    // baseline: phase 2b must keep everything phase 2 already removed removed,
+    // and keep its updated values, so the only delta it introduces is the
+    // delete-API-only members below.
+    const update = process.env.CDKD_TEST_UPDATE === 'true' || removal;
 
     // Backing Lambda for the REQUEST authorizer's AuthorizerUri. It is never
     // invoked by this test (we only exercise the authorizer's create/update/
@@ -98,6 +106,90 @@ export class ApiGatewayV2UpdateRemovalStack extends cdk.Stack {
       ...(update ? {} : { operationName: 'probeOp' }),
     });
 
+    // ── WebSocket API: the only place the issue #609 Route properties are
+    //    usable ─────────────────────────────────────────────────────────
+    // `ApiKeyRequired` / `ModelSelectionExpression` / `RequestParameters` /
+    // `RouteResponseSelectionExpression` are all documented WebSocket-only, so
+    // an HTTP API cannot exercise them. The route deliberately carries no
+    // Target: this fixture tests the CONFIG path, and a MOCK integration would
+    // need `RequestTemplates` / `TemplateSelectionExpression`, which are still
+    // silent-drop on ::Integration and would be rejected by the pre-flight.
+    const wsApi = new apigwv2.CfnApi(this, 'WsApi', {
+      name: `${this.stackName}-ws`,
+      protocolType: 'WEBSOCKET',
+      routeSelectionExpression: '$request.body.action',
+    });
+
+    // TWO routes, because AWS scopes the properties differently: it rejects
+    // RequestParameters anywhere but `$connect` ("Request parameters are only
+    // supported for the $connect route in WEBSOCKET APIs" — hit live on the
+    // first run of this fixture), while the selection expressions belong on a
+    // body-carrying route.
+    new apigwv2.CfnRoute(this, 'WsConnectRoute', {
+      apiId: wsApi.ref,
+      routeKey: '$connect',
+      // Issue #609: ApiKeyRequired is REMOVED on update and must reset to the
+      // CFn default; RequestParameters changes value (UpdateRoute merges the
+      // map and AWS documents no whole-block reset).
+      ...(removal
+        ? {}
+        : update
+          ? { requestParameters: { 'route.request.header.X-Cdkd': { Required: false } } }
+          : {
+              apiKeyRequired: true,
+              requestParameters: { 'route.request.header.X-Cdkd': { Required: true } },
+            }),
+    });
+
+    new apigwv2.CfnRoute(this, 'WsDefaultRoute', {
+      apiId: wsApi.ref,
+      routeKey: '$default',
+      // Issue #609: both expressions change value on update.
+      modelSelectionExpression: update ? '$request.body.updatedAction' : '$request.body.action',
+      routeResponseSelectionExpression: '$default',
+    });
+
+    // Access logs for the WebSocket stage's AccessLogSettings.
+    const wsAccessLogs = new logs.LogGroup(this, 'WsAccessLogs', {
+      logGroupName: `/aws/apigatewayv2/${this.stackName}-ws`,
+      retention: logs.RetentionDays.ONE_DAY,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
+    new apigwv2.CfnStage(this, 'WsStage', {
+      apiId: wsApi.ref,
+      stageName: 'ws',
+      // Issue #609: AccessLogSettings + RouteSettings CHANGE on update and are
+      // REMOVED in phase 2b. UpdateStage merges both, so only their dedicated
+      // Delete* APIs can clear them (live-probed 2026-08-11) — omitting the
+      // member is the silent no-op the #1160 umbrella tracks.
+      ...(removal
+        ? {}
+        : {
+            accessLogSettings: {
+              destinationArn: wsAccessLogs.logGroupArn,
+              format: update
+                ? '$context.requestId $context.status $context.routeKey'
+                : '$context.requestId $context.status',
+            },
+          }),
+      // PascalCase on purpose: `CfnStage.routeSettings` is typed `any`, so CDK
+      // passes this object through VERBATIM rather than converting it. CFn (and
+      // the SDK) spell the members `ThrottlingBurstLimit` etc., so camelCase
+      // keys here would be dropped by the serializer with a green deploy — the
+      // silent-drop class this backfill closes, one level down.
+      // Phase 2b drops ONLY the `$connect` key: the `$default` sibling must
+      // survive, so a blanket wipe cannot pass the removal assertions.
+      routeSettings: {
+        $default: {
+          ThrottlingBurstLimit: update ? 20 : 10,
+          ThrottlingRateLimit: update ? 15 : 5,
+          DetailedMetricsEnabled: true,
+        },
+        ...(removal ? {} : { $connect: { ThrottlingBurstLimit: 4, ThrottlingRateLimit: 2 } }),
+      },
+    });
+
     // ── Stage ───────────────────────────────────────────────────────
     // AutoDeploy stays true across both phases ($default auto-deploy is
     // finicky to flip); the removal path exercised here is StageVariables
@@ -111,6 +203,7 @@ export class ApiGatewayV2UpdateRemovalStack extends cdk.Stack {
     });
 
     new cdk.CfnOutput(this, 'ApiId', { value: api.ref });
+    new cdk.CfnOutput(this, 'WsApiId', { value: wsApi.ref });
     new cdk.CfnOutput(this, 'AuthorizerId', { value: authorizer.ref });
   }
 }
