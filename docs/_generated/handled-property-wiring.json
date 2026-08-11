@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "summary": {
     "classifiedCount": 84,
-    "declaredProperties": 1098,
-    "wiredProperties": 1096,
+    "declaredProperties": 1128,
+    "wiredProperties": 1126,
     "wired": 82,
     "gap": 0,
     "allowListed": 2,
@@ -1071,8 +1071,25 @@
       "file": "apigatewayv2-provider.ts",
       "className": "ApiGatewayV2Provider",
       "bucket": "wired",
-      "declaredCount": 36,
+      "declaredCount": 54,
       "properties": [
+        {
+          "name": "AccessLogSettings",
+          "status": "wired",
+          "types": [
+            "AWS::ApiGatewayV2::Stage"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "createStage",
+            "update",
+            "updateStage"
+          ]
+        },
         {
           "name": "ApiId",
           "status": "wired",
@@ -1107,6 +1124,23 @@
             "updateIntegration",
             "updateRoute",
             "updateStage"
+          ]
+        },
+        {
+          "name": "ApiKeyRequired",
+          "status": "wired",
+          "types": [
+            "AWS::ApiGatewayV2::Route"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "createRoute",
+            "update",
+            "updateRoute"
           ]
         },
         {
@@ -1280,6 +1314,74 @@
           ]
         },
         {
+          "name": "ClientCertificateId",
+          "status": "wired",
+          "types": [
+            "AWS::ApiGatewayV2::Stage"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "createStage",
+            "update",
+            "updateStage"
+          ]
+        },
+        {
+          "name": "ConnectionId",
+          "status": "wired",
+          "types": [
+            "AWS::ApiGatewayV2::Integration"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "createIntegration",
+            "update",
+            "updateIntegration"
+          ]
+        },
+        {
+          "name": "ConnectionType",
+          "status": "wired",
+          "types": [
+            "AWS::ApiGatewayV2::Integration"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "createIntegration",
+            "update",
+            "updateIntegration"
+          ]
+        },
+        {
+          "name": "ContentHandlingStrategy",
+          "status": "wired",
+          "types": [
+            "AWS::ApiGatewayV2::Integration"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "createIntegration",
+            "update",
+            "updateIntegration"
+          ]
+        },
+        {
           "name": "CorsConfiguration",
           "status": "wired",
           "types": [
@@ -1297,6 +1399,23 @@
           ]
         },
         {
+          "name": "CredentialsArn",
+          "status": "wired",
+          "types": [
+            "AWS::ApiGatewayV2::Integration"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "createIntegration",
+            "update",
+            "updateIntegration"
+          ]
+        },
+        {
           "name": "DefaultRouteSettings",
           "status": "wired",
           "types": [
@@ -1309,6 +1428,25 @@
           "seededBy": [
             "create",
             "createStage",
+            "update",
+            "updateStage"
+          ]
+        },
+        {
+          "name": "DeploymentId",
+          "status": "wired",
+          "types": [
+            "AWS::ApiGatewayV2::Stage"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "createStage",
+            "readCurrentState",
+            "readStage",
             "update",
             "updateStage"
           ]
@@ -1422,6 +1560,23 @@
           ]
         },
         {
+          "name": "IntegrationSubtype",
+          "status": "wired",
+          "types": [
+            "AWS::ApiGatewayV2::Integration"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "createIntegration",
+            "update",
+            "updateIntegration"
+          ]
+        },
+        {
           "name": "IntegrationType",
           "status": "wired",
           "types": [
@@ -1490,6 +1645,23 @@
           ]
         },
         {
+          "name": "ModelSelectionExpression",
+          "status": "wired",
+          "types": [
+            "AWS::ApiGatewayV2::Route"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "createRoute",
+            "update",
+            "updateRoute"
+          ]
+        },
+        {
           "name": "Name",
           "status": "wired",
           "types": [
@@ -1527,6 +1699,23 @@
           ]
         },
         {
+          "name": "PassthroughBehavior",
+          "status": "wired",
+          "types": [
+            "AWS::ApiGatewayV2::Integration"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "createIntegration",
+            "update",
+            "updateIntegration"
+          ]
+        },
+        {
           "name": "PayloadFormatVersion",
           "status": "wired",
           "types": [
@@ -1561,7 +1750,61 @@
           ]
         },
         {
+          "name": "RequestModels",
+          "status": "wired",
+          "types": [
+            "AWS::ApiGatewayV2::Route"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "createRoute",
+            "update",
+            "updateRoute"
+          ]
+        },
+        {
           "name": "RequestParameters",
+          "status": "wired",
+          "types": [
+            "AWS::ApiGatewayV2::Integration",
+            "AWS::ApiGatewayV2::Route"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "createIntegration",
+            "createRoute",
+            "update",
+            "updateIntegration",
+            "updateRoute"
+          ]
+        },
+        {
+          "name": "RequestTemplates",
+          "status": "wired",
+          "types": [
+            "AWS::ApiGatewayV2::Integration"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "createIntegration",
+            "update",
+            "updateIntegration"
+          ]
+        },
+        {
+          "name": "ResponseParameters",
           "status": "wired",
           "types": [
             "AWS::ApiGatewayV2::Integration"
@@ -1595,6 +1838,23 @@
           ]
         },
         {
+          "name": "RouteResponseSelectionExpression",
+          "status": "wired",
+          "types": [
+            "AWS::ApiGatewayV2::Route"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "createRoute",
+            "update",
+            "updateRoute"
+          ]
+        },
+        {
           "name": "RouteSelectionExpression",
           "status": "wired",
           "types": [
@@ -1609,6 +1869,23 @@
             "createApi",
             "update",
             "updateApi"
+          ]
+        },
+        {
+          "name": "RouteSettings",
+          "status": "wired",
+          "types": [
+            "AWS::ApiGatewayV2::Stage"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "createStage",
+            "update",
+            "updateStage"
           ]
         },
         {
@@ -1680,7 +1957,41 @@
           ]
         },
         {
+          "name": "TemplateSelectionExpression",
+          "status": "wired",
+          "types": [
+            "AWS::ApiGatewayV2::Integration"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "createIntegration",
+            "update",
+            "updateIntegration"
+          ]
+        },
+        {
           "name": "TimeoutInMillis",
+          "status": "wired",
+          "types": [
+            "AWS::ApiGatewayV2::Integration"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "createIntegration",
+            "update",
+            "updateIntegration"
+          ]
+        },
+        {
+          "name": "TlsConfig",
           "status": "wired",
           "types": [
             "AWS::ApiGatewayV2::Integration"
@@ -8683,7 +8994,7 @@
       "file": "elbv2-provider.ts",
       "className": "ELBv2Provider",
       "bucket": "wired",
-      "declaredCount": 30,
+      "declaredCount": 38,
       "properties": [
         {
           "name": "AlpnPolicy",
@@ -8737,6 +9048,60 @@
             "createListener",
             "update",
             "updateListener"
+          ]
+        },
+        {
+          "name": "EnableCapacityReservationProvisionStabilize",
+          "status": "wired",
+          "types": [
+            "AWS::ElasticLoadBalancingV2::LoadBalancer"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "applyUpdate",
+            "create",
+            "createLoadBalancer",
+            "update",
+            "updateLoadBalancer"
+          ]
+        },
+        {
+          "name": "EnablePrefixForIpv6SourceNat",
+          "status": "wired",
+          "types": [
+            "AWS::ElasticLoadBalancingV2::LoadBalancer"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "applyUpdate",
+            "create",
+            "createLoadBalancer",
+            "update",
+            "updateLoadBalancer"
+          ]
+        },
+        {
+          "name": "EnforceSecurityGroupInboundRulesOnPrivateLinkTraffic",
+          "status": "wired",
+          "types": [
+            "AWS::ElasticLoadBalancingV2::LoadBalancer"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "applyUpdate",
+            "create",
+            "createLoadBalancer",
+            "update",
+            "updateLoadBalancer"
           ]
         },
         {
@@ -8869,6 +9234,26 @@
           "name": "IpAddressType",
           "status": "wired",
           "types": [
+            "AWS::ElasticLoadBalancingV2::LoadBalancer",
+            "AWS::ElasticLoadBalancingV2::TargetGroup"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "applyUpdate",
+            "create",
+            "createLoadBalancer",
+            "createTargetGroup",
+            "update",
+            "updateLoadBalancer"
+          ]
+        },
+        {
+          "name": "Ipv4IpamPoolId",
+          "status": "wired",
+          "types": [
             "AWS::ElasticLoadBalancingV2::LoadBalancer"
           ],
           "evidence": [
@@ -8950,6 +9335,24 @@
             "createTargetGroup",
             "update",
             "updateTargetGroup"
+          ]
+        },
+        {
+          "name": "MinimumLoadBalancerCapacity",
+          "status": "wired",
+          "types": [
+            "AWS::ElasticLoadBalancingV2::LoadBalancer"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "applyUpdate",
+            "create",
+            "createLoadBalancer",
+            "update",
+            "updateLoadBalancer"
           ]
         },
         {
@@ -9155,6 +9558,57 @@
           ]
         },
         {
+          "name": "TargetControlPort",
+          "status": "wired",
+          "types": [
+            "AWS::ElasticLoadBalancingV2::TargetGroup"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "createTargetGroup"
+          ]
+        },
+        {
+          "name": "TargetGroupAttributes",
+          "status": "wired",
+          "types": [
+            "AWS::ElasticLoadBalancingV2::TargetGroup"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "applyUpdate",
+            "create",
+            "createTargetGroup",
+            "update",
+            "updateTargetGroup"
+          ]
+        },
+        {
+          "name": "Targets",
+          "status": "wired",
+          "types": [
+            "AWS::ElasticLoadBalancingV2::TargetGroup"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "applyUpdate",
+            "create",
+            "createTargetGroup",
+            "update",
+            "updateTargetGroup"
+          ]
+        },
+        {
           "name": "TargetType",
           "status": "wired",
           "types": [
@@ -9220,6 +9674,7 @@
       ],
       "gaps": [],
       "blindSpots": [
+        "computed key in updateTargetGroup()",
         "stripHandled(...) in updateLoadBalancer()"
       ]
     },
@@ -13155,7 +13610,7 @@
       "file": "lambda-function-provider.ts",
       "className": "LambdaFunctionProvider",
       "bucket": "wired",
-      "declaredCount": 24,
+      "declaredCount": 28,
       "properties": [
         {
           "name": "Architectures",
@@ -13186,6 +13641,20 @@
           ]
         },
         {
+          "name": "CodeSigningConfigArn",
+          "status": "wired",
+          "types": [
+            "AWS::Lambda::Function"
+          ],
+          "evidence": [
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "update"
+          ]
+        },
+        {
           "name": "DeadLetterConfig",
           "status": "wired",
           "types": [
@@ -13201,6 +13670,20 @@
         },
         {
           "name": "Description",
+          "status": "wired",
+          "types": [
+            "AWS::Lambda::Function"
+          ],
+          "evidence": [
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "update"
+          ]
+        },
+        {
+          "name": "DurableConfig",
           "status": "wired",
           "types": [
             "AWS::Lambda::Function"
@@ -13422,6 +13905,20 @@
           ]
         },
         {
+          "name": "RuntimeManagementConfig",
+          "status": "wired",
+          "types": [
+            "AWS::Lambda::Function"
+          ],
+          "evidence": [
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "update"
+          ]
+        },
+        {
           "name": "SnapStart",
           "status": "wired",
           "types": [
@@ -13447,6 +13944,19 @@
           "seededBy": [
             "create",
             "update"
+          ]
+        },
+        {
+          "name": "TenancyConfig",
+          "status": "wired",
+          "types": [
+            "AWS::Lambda::Function"
+          ],
+          "evidence": [
+            "element-read"
+          ],
+          "seededBy": [
+            "create"
           ]
         },
         {

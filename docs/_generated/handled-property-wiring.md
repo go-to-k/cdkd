@@ -10,7 +10,7 @@ A computed read `properties[k]` also counts when `k` iterates a literal name tab
 ## Summary
 
 - Provider classes classified: **84**
-- Declared properties: **1098** (**1096** with read evidence)
+- Declared properties: **1128** (**1126** with read evidence)
 - Fully wired classes: **82**
 - Allow-listed classes (visible, non-blocking): **2**
 - Classes with a whole-bag blind spot (recorded, never an excuse): **19**
@@ -41,7 +41,7 @@ Sites where a whole property bag left the evidence walk (a spread, an unresolvab
 | `DynamoDBGlobalTableProvider` (dynamodb-globaltable-provider.ts) | `extractLocalTags(...) in update()` |
 | `ECRProvider` (ecr-provider.ts) | `hasCdkAutoDeleteTag(...) in delete()` |
 | `EFSProvider` (efs-provider.ts) | `computed key in updateFileSystem()` |
-| `ELBv2Provider` (elbv2-provider.ts) | `stripHandled(...) in updateLoadBalancer()` |
+| `ELBv2Provider` (elbv2-provider.ts) | `computed key in updateTargetGroup()`, `stripHandled(...) in updateLoadBalancer()` |
 | `EMRClusterProvider` (emr-cluster-provider.ts) | `computed key in update()`, `object spread in update()` |
 | `EMRInstanceFleetConfigProvider` (emr-instance-fleet-config-provider.ts) | `computed key in update()`, `object spread in update()` |
 | `EMRInstanceGroupConfigProvider` (emr-instance-group-config-provider.ts) | `computed key in update()`, `object spread in update()` |
@@ -65,7 +65,7 @@ Sites where a whole property bag left the evidence walk (a spread, an unresolvab
 | `AgentCoreEvaluatorProvider` | agentcore-evaluator-provider.ts | wired | 6 | 6 |
 | `AgentCoreRuntimeProvider` | agentcore-runtime-provider.ts | wired | 10 | 10 |
 | `ApiGatewayProvider` | apigateway-provider.ts | wired | 38 | 38 |
-| `ApiGatewayV2Provider` | apigatewayv2-provider.ts | wired | 36 | 36 |
+| `ApiGatewayV2Provider` | apigatewayv2-provider.ts | wired | 54 | 54 |
 | `AppSyncProvider` | appsync-provider.ts | wired | 48 | 48 |
 | `ASGProvider` | asg-provider.ts | wired | 33 | 33 |
 | `BudgetsBudgetProvider` | budgets-budget-provider.ts | wired | 3 | 3 |
@@ -87,7 +87,7 @@ Sites where a whole property bag left the evidence walk (a spread, an unresolvab
 | `ECSProvider` | ecs-provider.ts | wired | 40 | 40 |
 | `EFSProvider` | efs-provider.ts | wired | 18 | 18 |
 | `ElastiCacheProvider` | elasticache-provider.ts | wired | 26 | 26 |
-| `ELBv2Provider` | elbv2-provider.ts | wired | 30 | 30 |
+| `ELBv2Provider` | elbv2-provider.ts | wired | 38 | 38 |
 | `EMRClusterProvider` | emr-cluster-provider.ts | wired | 27 | 27 |
 | `EMRInstanceFleetConfigProvider` | emr-instance-fleet-config-provider.ts | wired | 8 | 8 |
 | `EMRInstanceGroupConfigProvider` | emr-instance-group-config-provider.ts | wired | 11 | 11 |
@@ -113,7 +113,7 @@ Sites where a whole property bag left the evidence walk (a spread, an unresolvab
 | `KMSProvider` | kms-provider.ts | wired | 14 | 14 |
 | `LambdaEventInvokeConfigProvider` | lambda-event-invoke-config-provider.ts | wired | 5 | 5 |
 | `LambdaEventSourceMappingProvider` | lambda-eventsource-provider.ts | wired | 28 | 28 |
-| `LambdaFunctionProvider` | lambda-function-provider.ts | wired | 24 | 24 |
+| `LambdaFunctionProvider` | lambda-function-provider.ts | wired | 28 | 28 |
 | `LambdaLayerVersionProvider` | lambda-layer-provider.ts | wired | 6 | 6 |
 | `LambdaMicrovmImageProvider` | lambda-microvm-image-provider.ts | wired | 14 | 14 |
 | `LambdaPermissionProvider` | lambda-permission-provider.ts | wired | 9 | 9 |
