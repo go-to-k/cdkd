@@ -727,6 +727,95 @@ describe('a GSI removed in the same deploy is deleted BEFORE the flip (issue #16
     );
   });
 
+  it('refuses the removal when a DECLARED table capacity member is below 1', async () => {
+    // `hasUsableTableCapacity` mirrors the flip's GATE (truthiness) as well as
+    // its arithmetic (PR review round 2). A declared `''` coerces to 0 — finite,
+    // so an arithmetic-only check accepted it — while AWS rejects a capacity
+    // below 1, which is exactly the deterministic rejection a delete must not
+    // run ahead of.
+    primeDescribeTable('PAY_PER_REQUEST', [LIVE_GSI('keep'), LIVE_GSI('dropme')]);
+    for (let i = 0; i < 3; i++) {
+      mockSend.mockResolvedValueOnce({});
+      primeWaitActive();
+    }
+
+    await provider.update(
+      'L',
+      TABLE_NAME,
+      RESOURCE_TYPE,
+      {
+        BillingMode: 'PROVISIONED',
+        ProvisionedThroughput: { ReadCapacityUnits: '', WriteCapacityUnits: 5 },
+        GlobalSecondaryIndexes: [cfnGsi('keep', 2, 2)],
+      },
+      {
+        BillingMode: 'PAY_PER_REQUEST',
+        GlobalSecondaryIndexes: [cfnGsiNoCapacity('keep'), cfnGsiNoCapacity('dropme')],
+      }
+    );
+
+    expect(findCalls(UpdateTableCommand)[0]!.input.BillingMode).toBe('PROVISIONED');
+    expect(childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
+      'no usable table-level ProvisionedThroughput'
+    );
+  });
+
+  it('still removes when the table capacity is a truthy NON-OBJECT the flip accepts', async () => {
+    // The other half of mirroring the gate: the flip's test is truthiness, so a
+    // non-object value sends the defaulted {5, 5} and SUCCEEDS. Refusing it
+    // would skip a removal that was never in danger.
+    primeDescribeTable('PAY_PER_REQUEST', [LIVE_GSI('keep'), LIVE_GSI('dropme')]);
+    mockSend.mockResolvedValueOnce({});
+    primeWaitActive();
+    mockSend.mockResolvedValueOnce({});
+    primeWaitActive();
+
+    await provider.update(
+      'L',
+      TABLE_NAME,
+      RESOURCE_TYPE,
+      {
+        BillingMode: 'PROVISIONED',
+        ProvisionedThroughput: 5 as never,
+        GlobalSecondaryIndexes: [cfnGsi('keep', 2, 2)],
+      },
+      {
+        BillingMode: 'PAY_PER_REQUEST',
+        GlobalSecondaryIndexes: [cfnGsiNoCapacity('keep'), cfnGsiNoCapacity('dropme')],
+      }
+    );
+
+    const calls = findCalls(UpdateTableCommand);
+    expect(calls[0]!.input.GlobalSecondaryIndexUpdates).toEqual([
+      { Delete: { IndexName: 'dropme' } },
+    ]);
+    expect(calls[1]!.input.BillingMode).toBe('PROVISIONED');
+  });
+
+  it('names BOTH doomed-flip reasons when both fire', async () => {
+    // A single reason sends the user round the loop twice (PR review nit).
+    primeDescribeTable('PAY_PER_REQUEST', [LIVE_GSI('keep'), LIVE_GSI('dropme')]);
+    for (let i = 0; i < 3; i++) {
+      mockSend.mockResolvedValueOnce({});
+      primeWaitActive();
+    }
+
+    await provider.update(
+      'L',
+      TABLE_NAME,
+      RESOURCE_TYPE,
+      { BillingMode: 'PROVISIONED', GlobalSecondaryIndexes: [cfnGsiNoCapacity('keep')] },
+      {
+        BillingMode: 'PAY_PER_REQUEST',
+        GlobalSecondaryIndexes: [cfnGsiNoCapacity('keep'), cfnGsiNoCapacity('dropme')],
+      }
+    );
+
+    const warned = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(warned).toContain('index(es) keep stay live');
+    expect(warned).toContain('no usable table-level ProvisionedThroughput');
+  });
+
   it('does NOT delete every live index when the desired GSI list is MALFORMED', async () => {
     // A present-but-non-array desired value (an unresolved intrinsic) reads as
     // an empty desired set, which would classify every previously-recorded
@@ -752,7 +841,10 @@ describe('a GSI removed in the same deploy is deleted BEFORE the flip (issue #16
           GlobalSecondaryIndexes: [cfnGsiNoCapacity('keep'), cfnGsiNoCapacity('dropme')],
         }
       )
-    ).rejects.toThrow();
+      // Pinned to the provider's wrapped error rather than a bare
+      // `toThrow()`, which would also be satisfied by a future change that
+      // fails for an unrelated reason (PR review nit).
+    ).rejects.toThrow(/Failed to update DynamoDB table/);
 
     // The load-bearing half: it failed WITHOUT having deleted anything. A
     // regression here is silent data loss, not a louder error.

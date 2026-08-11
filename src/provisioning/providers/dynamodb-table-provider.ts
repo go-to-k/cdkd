@@ -142,21 +142,35 @@ function hasUsableDeclaredCapacity(entry: Record<string, unknown> | undefined): 
  * Whether the desired TABLE-level `ProvisionedThroughput` is one the flip can
  * actually send (issue #1617 PR review).
  *
- * Deliberately mirrors the flip block's own arithmetic rather than reusing
- * {@link hasUsableDeclaredCapacity}: that block defaults each member to 5 when
- * absent (`Number(pt['ReadCapacityUnits'] ?? 5)`), so a half-declared table
- * capacity IS sendable while a half-declared per-index one is not. What it
- * cannot survive is an absent / non-object block (nothing is sent, and AWS
- * rejects `BillingMode: PROVISIONED` with no throughput) or a member that
- * coerces to `NaN`.
+ * Deliberately NOT {@link hasUsableDeclaredCapacity}: the flip defaults each
+ * member to 5 when absent (`Number(pt['ReadCapacityUnits'] ?? 5)`), so a
+ * half-declared TABLE capacity is sendable while a half-declared per-INDEX one
+ * is not.
+ *
+ * It mirrors the flip's GATE as well as its arithmetic, which the first version
+ * did not and a second review round caught — both halves of that miss are real:
+ *
+ * - the gate is plain TRUTHINESS (`properties['ProvisionedThroughput']`), so a
+ *   non-object truthy value sends `{5, 5}` and SUCCEEDS. Requiring a plain
+ *   object refused it and skipped a removal that would have been fine.
+ * - a DECLARED member that coerces to `0` (`''`, `false`, `[]`) is finite, so
+ *   an arithmetic-only check accepted it — while AWS rejects a capacity below
+ *   1, which is precisely the deterministic rejection this predicate exists to
+ *   keep a delete from running ahead of.
  */
 function hasUsableTableCapacity(value: unknown): boolean {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  // Falsy: the flip sends no throughput at all and AWS rejects the mode change.
+  if (!value) return false;
+  if (typeof value !== 'object' || Array.isArray(value)) return true;
   const pt = value as Record<string, unknown>;
-  return (
-    Number.isFinite(Number(pt['ReadCapacityUnits'] ?? 5)) &&
-    Number.isFinite(Number(pt['WriteCapacityUnits'] ?? 5))
-  );
+  // Each member the template DECLARES has to be a capacity AWS accepts; an
+  // absent one takes the flip's own `?? 5` default and is fine.
+  for (const member of ['ReadCapacityUnits', 'WriteCapacityUnits']) {
+    if (pt[member] === undefined) continue;
+    const n = Number(pt[member]);
+    if (!Number.isFinite(n) || n < 1) return false;
+  }
+  return true;
 }
 
 /**
@@ -804,17 +818,25 @@ export class DynamoDBTableProvider implements ResourceProvider {
           removable.length > 0 &&
           (remainingWithoutCapacity.length > 0 || tableCapacityUnusable)
         ) {
-          const reason =
-            remainingWithoutCapacity.length > 0
-              ? `index(es) ${remainingWithoutCapacity.join(', ')} stay live and declare no usable ` +
-                `ProvisionedThroughput`
-              : `the template declares no usable table-level ProvisionedThroughput`;
+          // BOTH reasons are reported when both fire (PR review): naming only
+          // one sends the user round the loop again — they fix it, re-deploy,
+          // and meet the second warning.
+          const reasons: string[] = [];
+          if (remainingWithoutCapacity.length > 0) {
+            reasons.push(
+              `index(es) ${remainingWithoutCapacity.join(', ')} stay live and declare no usable ` +
+                `per-index ProvisionedThroughput (both ReadCapacityUnits and WriteCapacityUnits ` +
+                `are required there)`
+            );
+          }
+          if (tableCapacityUnusable) {
+            reasons.push(`the template declares no usable table-level ProvisionedThroughput`);
+          }
           this.logger.warn(
             `AWS::DynamoDB::Table ${logicalId}: this deploy removes global secondary index(es) ` +
               `${removable.join(', ')} and flips BillingMode to PROVISIONED. The removal would ` +
-              `normally be applied BEFORE the flip, but ${reason}, so AWS rejects the flip either ` +
-              `way. Nothing was removed. Declare ProvisionedThroughput (both ReadCapacityUnits ` +
-              `and WriteCapacityUnits) for the table and for each index that remains.`
+              `normally be applied BEFORE the flip, but ${reasons.join(' and ')}, so AWS rejects ` +
+              `the flip either way. Nothing was removed.`
           );
         } else if (removable.length > 0) {
           this.logger.debug(
@@ -1201,8 +1223,9 @@ export class DynamoDBTableProvider implements ResourceProvider {
       // call — the full desired AttributeDefinitions array is forwarded.
       //
       // A removal may ALREADY have been applied above, ahead of a BillingMode
-      // flip to PROVISIONED (issue #1617); `preFlipDeletedIndexNames` carries
-      // those names so they are not deleted twice.
+      // flip to PROVISIONED (issue #1617); `currentLiveIndexNames` is the
+      // post-removal live set, so the Delete arm skips both those names and any
+      // index the record still lists that AWS no longer has.
       if (
         JSON.stringify(properties['GlobalSecondaryIndexes']) !==
         JSON.stringify(previousProperties['GlobalSecondaryIndexes'])
