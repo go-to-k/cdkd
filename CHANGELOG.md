@@ -1,3 +1,10 @@
+## [0.280.5](https://github.com/go-to-k/cdkd/compare/v0.280.4...v0.280.5) (2026-08-11)
+
+
+### Bug Fixes
+
+* **dynamodb:** carry safe LIVE values in the GlobalTable GSI recovery baseline ([#1571](https://github.com/go-to-k/cdkd/issues/1571)) ([#1582](https://github.com/go-to-k/cdkd/issues/1582)) ([efe057d](https://github.com/go-to-k/cdkd/commit/efe057d91982d89e30afd123b8b1265a21a2fa36))
+
 ## [0.280.4](https://github.com/go-to-k/cdkd/compare/v0.280.3...v0.280.4) (2026-08-11)
 
 
