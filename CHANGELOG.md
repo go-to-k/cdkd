@@ -1,3 +1,10 @@
+## [0.280.26](https://github.com/go-to-k/cdkd/compare/v0.280.25...v0.280.26) (2026-08-11)
+
+
+### Bug Fixes
+
+* **drift:** unordered comparison for object arrays, and make TargetGroup.Targets visible to cdkd drift ([#1609](https://github.com/go-to-k/cdkd/issues/1609) item 6) ([#1635](https://github.com/go-to-k/cdkd/issues/1635)) ([bca0395](https://github.com/go-to-k/cdkd/commit/bca039591aa8f45c15c6723a2872ccfe66edc1fe))
+
 ## [0.280.25](https://github.com/go-to-k/cdkd/compare/v0.280.24...v0.280.25) (2026-08-11)
 
 
