@@ -1,3 +1,10 @@
+# [0.279.0](https://github.com/go-to-k/cdkd/compare/v0.278.55...v0.279.0) (2026-08-11)
+
+
+### Features
+
+* **provisioning:** backfill AWS::EC2::Route 6 silent-drop target properties ([#609](https://github.com/go-to-k/cdkd/issues/609)) ([#1568](https://github.com/go-to-k/cdkd/issues/1568)) ([4a71ae2](https://github.com/go-to-k/cdkd/commit/4a71ae269a4789655158075d8d427a2f5da5a0f3))
+
 ## [0.278.55](https://github.com/go-to-k/cdkd/compare/v0.278.54...v0.278.55) (2026-08-11)
 
 
