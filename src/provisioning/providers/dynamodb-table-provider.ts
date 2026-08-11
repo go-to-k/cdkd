@@ -121,6 +121,21 @@ function readCapacityNumber(block: unknown, member: string): number | undefined 
 }
 
 /**
+ * Whether a desired `GlobalSecondaryIndexes[]` entry declares BOTH capacity
+ * members usably — the same test the BillingMode flip's per-index block applies
+ * before it forwards the index, expressed as a predicate for the pre-flip
+ * removal's look-ahead (issue #1617). An absent entry is not usable either: an
+ * index the template no longer declares has no capacity to send.
+ */
+function hasUsableDeclaredCapacity(entry: Record<string, unknown> | undefined): boolean {
+  const declared = entry?.['ProvisionedThroughput'];
+  return (
+    readCapacityNumber(declared, 'ReadCapacityUnits') !== undefined &&
+    readCapacityNumber(declared, 'WriteCapacityUnits') !== undefined
+  );
+}
+
+/**
  * `DescribeTable` poll budget (seconds, 1 poll/s) after an ordinary
  * `UpdateTable` — capacity, TTL, tags, table class. Calibrated on those and
  * sufficient for them.
@@ -673,6 +688,110 @@ export class DynamoDBTableProvider implements ResourceProvider {
           resourceType
         );
       }
+      // The LIVE index list and the DESIRED index map, hoisted out of the flip
+      // block because the pre-flip REMOVAL below needs both before the flip is
+      // built, and the flip's per-index capacity block then needs the live list
+      // MINUS whatever the removal deleted.
+      const liveIndexes = table?.GlobalSecondaryIndexes ?? [];
+      const desiredIndexByName = new Map<string, Record<string, unknown>>();
+      for (const entry of Array.isArray(properties['GlobalSecondaryIndexes'])
+        ? (properties['GlobalSecondaryIndexes'] as Array<Record<string, unknown>>)
+        : []) {
+        const name = entry?.['IndexName'];
+        if (typeof name === 'string') desiredIndexByName.set(name, entry);
+      }
+
+      // Removing a GSI in the SAME deploy as a flip to PROVISIONED (issue
+      // #1617). AWS demands per-index `ProvisionedThroughput` for every index
+      // that is LIVE at flip time, and the template no longer declares the
+      // removed one, so there is no capacity to send: the flip is rejected
+      // (`ProvisionedThroughput must be specified for index: <name>`, measured
+      // 2026-08-11) on every deploy, and `applyGsiUpdates` — which owns the
+      // Delete op — runs AFTER the flip and is therefore never reached. The
+      // deploy could not converge by any template-side edit.
+      //
+      // So issue the Delete FIRST, which is what CloudFormation does (it
+      // succeeds on this shape). Only the removal moves: creates and capacity
+      // updates stay after the flip, where the index they describe exists.
+      //
+      // Scoped to the flip-to-PROVISIONED shape because that is the only one
+      // that enumerates live indexes — a flip to PAY_PER_REQUEST needs no
+      // per-index capacity, and reordering its removals would be a behavior
+      // change with no defect behind it.
+      const preFlipDeletedIndexNames = new Set<string>();
+      if (
+        billingOrThroughputChanged &&
+        billingMode === 'PROVISIONED' &&
+        liveBillingMode === 'PAY_PER_REQUEST' &&
+        liveIndexes.length > 0
+      ) {
+        // Only an index cdkd's PREVIOUS side knows about is removable here. A
+        // live index in neither side was created out of band, and deleting it
+        // is not something this deploy asked for — it stays live, lands in the
+        // `unspecified` warning below, and AWS rejects the flip by name, which
+        // is the same outcome as before this change.
+        const previousIndexNames = new Set(
+          (Array.isArray(previousProperties['GlobalSecondaryIndexes'])
+            ? (previousProperties['GlobalSecondaryIndexes'] as Array<Record<string, unknown>>)
+            : []
+          )
+            .map((entry) => entry?.['IndexName'])
+            .filter((name): name is string => typeof name === 'string')
+        );
+        const removable: string[] = [];
+        const remainingWithoutCapacity: string[] = [];
+        for (const live of liveIndexes) {
+          const indexName = live.IndexName;
+          if (typeof indexName !== 'string') continue;
+          if (!desiredIndexByName.has(indexName)) {
+            if (previousIndexNames.has(indexName)) removable.push(indexName);
+            else remainingWithoutCapacity.push(indexName);
+            continue;
+          }
+          if (!hasUsableDeclaredCapacity(desiredIndexByName.get(indexName))) {
+            remainingWithoutCapacity.push(indexName);
+          }
+        }
+        if (removable.length > 0 && remainingWithoutCapacity.length > 0) {
+          // PRE-VALIDATE, because a Delete is not undoable. If an index that
+          // will still be live at flip time carries no usable declared
+          // capacity, AWS rejects the flip whether or not the removal ran
+          // first — so deleting would buy nothing and leave a PARTIALLY
+          // applied deploy (index gone, mode unchanged). Refusing to delete
+          // keeps this shape at "nothing applied".
+          this.logger.warn(
+            `AWS::DynamoDB::Table ${logicalId}: this deploy removes global secondary index(es) ` +
+              `${removable.join(', ')} and flips BillingMode to PROVISIONED. The removal would ` +
+              `normally be applied BEFORE the flip, but index(es) ` +
+              `${remainingWithoutCapacity.join(', ')} stay live and declare no usable ` +
+              `ProvisionedThroughput, so AWS rejects the flip either way. Nothing was removed. ` +
+              `Declare GlobalSecondaryIndexes[].ProvisionedThroughput (both ReadCapacityUnits ` +
+              `and WriteCapacityUnits) for each index that remains.`
+          );
+        } else if (removable.length > 0) {
+          this.logger.debug(
+            `Deleting GSI(s) ${removable.join(', ')} on DynamoDB table ${physicalId} before the ` +
+              `BillingMode flip to PROVISIONED`
+          );
+          // One op per UpdateTable with a full table+indexes ACTIVE wait
+          // between each — AWS's one-GSI-op-per-call budget, and the wait is
+          // what returns the table to a state that accepts the flip (the same
+          // index-status race issue #1553 handles).
+          await this.runGsiOps(
+            physicalId,
+            removable.map((name) => ({ Delete: { IndexName: name } })),
+            undefined
+          );
+          for (const name of removable) preFlipDeletedIndexNames.add(name);
+          // A failure BETWEEN the deletes and the flip leaves the index gone
+          // and the mode unchanged. That is accepted rather than guarded
+          // further: it is a partial application, but a recoverable one (the
+          // next deploy retries the flip and the GSI diff is already
+          // satisfied), and the alternative — a deploy that can never
+          // converge — is worse.
+        }
+      }
+
       // Index names whose capacity the BillingMode flip below already delivered.
       // `applyGsiUpdates` must NOT re-assert them: real AWS rejects a no-op
       // capacity change outright (`The provisioned throughput for the index X
@@ -755,24 +874,23 @@ export class DynamoDBTableProvider implements ResourceProvider {
         // An index with no usable declared capacity is left out so AWS's own
         // error names it, matching the CFn handler rather than inventing a
         // capacity the user never asked for.
-        const liveIndexes = table?.GlobalSecondaryIndexes ?? [];
+        // The `DescribeTable` snapshot predates the pre-flip removal above, so
+        // drop whatever it deleted: AWS enumerates the indexes that are live
+        // NOW, and naming a just-deleted one would re-introduce the very
+        // rejection the removal exists to avoid (issue #1617).
+        const flipLiveIndexes = liveIndexes.filter(
+          (live) =>
+            typeof live.IndexName !== 'string' || !preFlipDeletedIndexNames.has(live.IndexName)
+        );
         if (
           billingOrThroughputChanged &&
           billingMode === 'PROVISIONED' &&
           liveBillingMode === 'PAY_PER_REQUEST' &&
-          liveIndexes.length > 0
+          flipLiveIndexes.length > 0
         ) {
-          const desiredIndexes = Array.isArray(properties['GlobalSecondaryIndexes'])
-            ? (properties['GlobalSecondaryIndexes'] as Array<Record<string, unknown>>)
-            : [];
-          const desiredByName = new Map<string, Record<string, unknown>>();
-          for (const entry of desiredIndexes) {
-            const name = entry?.['IndexName'];
-            if (typeof name === 'string') desiredByName.set(name, entry);
-          }
           const indexUpdates: GlobalSecondaryIndexUpdate[] = [];
           const unspecified: string[] = [];
-          for (const live of liveIndexes) {
+          for (const live of flipLiveIndexes) {
             const indexName = live.IndexName;
             if (typeof indexName !== 'string') continue;
             // BOTH members must be present, numeric and finite. A `?? 5`
@@ -783,7 +901,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
             // user had declared it. A half-declared or non-numeric entry is
             // treated exactly like an absent one: omitted, named in the
             // warning, and left for AWS to reject by name (PR review).
-            const declared = desiredByName.get(indexName)?.['ProvisionedThroughput'];
+            const declared = desiredIndexByName.get(indexName)?.['ProvisionedThroughput'];
             const read = readCapacityNumber(declared, 'ReadCapacityUnits');
             const write = readCapacityNumber(declared, 'WriteCapacityUnits');
             if (read === undefined || write === undefined) {
@@ -812,9 +930,11 @@ export class DynamoDBTableProvider implements ResourceProvider {
                 `${unspecified.join(', ')}. AWS requires per-index capacity in the same ` +
                 `UpdateTable and will reject the flip naming them. Declare ` +
                 `GlobalSecondaryIndexes[].ProvisionedThroughput (both ReadCapacityUnits and ` +
-                `WriteCapacityUnits) for each. If an index is listed here because this deploy ` +
-                `REMOVES it, drop it in a separate deploy BEFORE the flip — AWS demands capacity ` +
-                `for every index still live at flip time, so the two cannot be combined.`
+                `WriteCapacityUnits) for each. An index this deploy REMOVES is deleted BEFORE ` +
+                `the flip automatically (issue #1617), so a name here is one the template still ` +
+                `keeps, one that exists in AWS but in neither the template nor cdkd state ` +
+                `(created out of band), or one whose pre-flip removal was skipped for the reason ` +
+                `warned above.`
             );
           }
         }
@@ -1002,6 +1122,10 @@ export class DynamoDBTableProvider implements ResourceProvider {
       // serializes the operations and waits for ACTIVE between each. A GSI
       // create must carry the new index's key AttributeDefinitions in the same
       // call — the full desired AttributeDefinitions array is forwarded.
+      //
+      // A removal may ALREADY have been applied above, ahead of a BillingMode
+      // flip to PROVISIONED (issue #1617); `preFlipDeletedIndexNames` carries
+      // those names so they are not deleted twice.
       if (
         JSON.stringify(properties['GlobalSecondaryIndexes']) !==
         JSON.stringify(previousProperties['GlobalSecondaryIndexes'])
@@ -1013,7 +1137,8 @@ export class DynamoDBTableProvider implements ResourceProvider {
           previousProperties['GlobalSecondaryIndexes'] as GlobalSecondaryIndex[] | undefined,
           properties['GlobalSecondaryIndexes'] as GlobalSecondaryIndex[] | undefined,
           properties['AttributeDefinitions'] as AttributeDefinition[] | undefined,
-          gsiHandledByBillingFlip
+          gsiHandledByBillingFlip,
+          preFlipDeletedIndexNames
         );
       }
 
@@ -1855,7 +1980,13 @@ export class DynamoDBTableProvider implements ResourceProvider {
     // capacity change that equals the current value, so re-asserting it fails
     // the deploy outright. Only the throughput arm is suppressed: an index that
     // was ADDED or REMOVED in the same deploy still needs its own op.
-    handledByBillingFlip: ReadonlySet<string> = new Set<string>()
+    handledByBillingFlip: ReadonlySet<string> = new Set<string>(),
+    // Names the pre-flip removal already deleted (issue #1617). Their Delete op
+    // MUST be skipped here — the index is gone, and a second Delete fails the
+    // deploy with `ResourceNotFoundException`. Only the Delete arm is
+    // suppressed; a name in this set is absent from the desired side by
+    // construction, so it can reach no other arm.
+    alreadyDeleted: ReadonlySet<string> = new Set<string>()
   ): Promise<void> {
     const prev = previousGsis ?? [];
     const desired = desiredGsis ?? [];
@@ -1868,7 +1999,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
     const ops: GlobalSecondaryIndexUpdate[] = [];
 
     for (const name of prevByName.keys()) {
-      if (!desiredByName.has(name)) {
+      if (!desiredByName.has(name) && !alreadyDeleted.has(name)) {
         ops.push({ Delete: { IndexName: name } });
       }
     }
@@ -1932,6 +2063,23 @@ export class DynamoDBTableProvider implements ResourceProvider {
       }
     }
 
+    await this.runGsiOps(physicalId, ops, desiredAttributeDefinitions);
+  }
+
+  /**
+   * Issue a list of `GlobalSecondaryIndexUpdates` ops, one per `UpdateTable`,
+   * waiting for the table AND every index to return to ACTIVE between each.
+   *
+   * Extracted from {@link applyGsiUpdates} so the pre-flip GSI removal (issue
+   * #1617) drives the identical call + wait sequence rather than a second copy
+   * of it — the wait is what makes the next op (there, the BillingMode flip)
+   * legal.
+   */
+  private async runGsiOps(
+    physicalId: string,
+    ops: GlobalSecondaryIndexUpdate[],
+    desiredAttributeDefinitions: AttributeDefinition[] | undefined
+  ): Promise<void> {
     for (const op of ops) {
       const input: UpdateTableCommandInput = {
         TableName: physicalId,

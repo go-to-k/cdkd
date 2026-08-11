@@ -376,21 +376,61 @@ describe('capacity is never invented (PR review)', () => {
     expect(childLogger.warn).not.toHaveBeenCalled();
   });
 
-  it('names an index the deploy REMOVES, and points at the two-deploy remedy', async () => {
-    // The reviewers' highest-ranked gap: an index being dropped in the SAME
-    // deploy as the flip is still live at flip time, so AWS demands capacity the
-    // template no longer declares — unconvergeable in one deploy. cdkd cannot
-    // rescue it (its Delete op runs after the flip), so the contract is that the
-    // warning NAMES it and states the remedy.
-    primeDescribeTable('PAY_PER_REQUEST', [LIVE_GSI('keep'), LIVE_GSI('dropme')]);
+  it('names a live index the deploy does NOT declare and cannot remove', async () => {
+    // The residual case after issue #1617 moved the REMOVAL ahead of the flip:
+    // an index live in AWS but in NEITHER the template nor cdkd's previous
+    // record was created out of band, so this deploy never asked for its
+    // deletion and cdkd will not invent one. It is still live at flip time and
+    // still has no declared capacity, so AWS rejects the flip by name — the
+    // contract is that cdkd names it first.
+    primeDescribeTable('PAY_PER_REQUEST', [LIVE_GSI('keep'), LIVE_GSI('outofband')]);
     mockSend.mockResolvedValueOnce({}); // the flip UpdateTable
     primeWaitActive();
-    // `dropme` leaves the desired set, so `applyGsiUpdates` also issues its
-    // Delete op (after the flip) — primed so this test fails on its assertions
-    // rather than on a mock underrun. Against real AWS the flip would have been
-    // rejected before reaching it, which is exactly why the contract here is
-    // "warn with the remedy", not "cdkd fixes it".
-    mockSend.mockResolvedValueOnce({}); // the Delete UpdateTable
+
+    await provider.update(
+      'L',
+      TABLE_NAME,
+      RESOURCE_TYPE,
+      {
+        BillingMode: 'PROVISIONED',
+        ProvisionedThroughput: { ReadCapacityUnits: 5, WriteCapacityUnits: 5 },
+        GlobalSecondaryIndexes: [cfnGsi('keep', 2, 2)],
+      },
+      { BillingMode: 'PAY_PER_REQUEST', GlobalSecondaryIndexes: [cfnGsiNoCapacity('keep')] }
+    );
+
+    const calls = findCalls(UpdateTableCommand);
+    // Exactly the flip: no Delete was invented for the out-of-band index.
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.input.BillingMode).toBe('PROVISIONED');
+    expect(
+      (calls[0]!.input.GlobalSecondaryIndexUpdates ?? []).map((u) => u.Update?.IndexName)
+    ).toEqual(['keep']);
+    const warned = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(warned).toContain('outofband');
+    expect(warned).not.toContain('keep,');
+  });
+});
+
+/**
+ * Issue #1617: removing a GSI in the SAME deploy as a flip to PROVISIONED.
+ *
+ * The shape #1588 left unconvergeable. The removed index is still LIVE when the
+ * flip runs, so AWS demands per-index `ProvisionedThroughput` for it
+ * (`ProvisionedThroughput must be specified for index: <name>`, measured
+ * 2026-08-11) while the template no longer declares any — and cdkd's Delete op
+ * lived in `applyGsiUpdates`, which runs AFTER the flip and was therefore never
+ * reached. Every deploy failed identically with no template-side remedy.
+ *
+ * The fix issues the Delete FIRST (what CloudFormation does on this shape).
+ * Only the removal moves; creates and capacity updates stay after the flip.
+ */
+describe('a GSI removed in the same deploy is deleted BEFORE the flip (issue #1617)', () => {
+  it('deletes the removed index first, then flips without naming it', async () => {
+    primeDescribeTable('PAY_PER_REQUEST', [LIVE_GSI('keep'), LIVE_GSI('dropme')]);
+    mockSend.mockResolvedValueOnce({}); // the pre-flip Delete UpdateTable
+    primeWaitActive();
+    mockSend.mockResolvedValueOnce({}); // the flip UpdateTable
     primeWaitActive();
 
     await provider.update(
@@ -408,11 +448,191 @@ describe('capacity is never invented (PR review)', () => {
       }
     );
 
-    const updates = findCalls(UpdateTableCommand)[0]!.input.GlobalSecondaryIndexUpdates ?? [];
-    expect(updates.map((u) => u.Update?.IndexName)).toEqual(['keep']);
+    const calls = findCalls(UpdateTableCommand);
+    // TWO calls, in this ORDER — the whole fix. A reversed order is the bug.
+    expect(calls).toHaveLength(2);
+    expect(calls[0]!.input.BillingMode).toBeUndefined();
+    expect(calls[0]!.input.GlobalSecondaryIndexUpdates).toEqual([
+      { Delete: { IndexName: 'dropme' } },
+    ]);
+    expect(calls[1]!.input.BillingMode).toBe('PROVISIONED');
+    // The flip's per-index list is built from the LIVE indexes MINUS the ones
+    // just deleted: naming `dropme` here would re-introduce the rejection.
+    expect(
+      (calls[1]!.input.GlobalSecondaryIndexUpdates ?? []).map((u) => u.Update?.IndexName)
+    ).toEqual(['keep']);
+    expect(childLogger.warn).not.toHaveBeenCalled();
+  });
+
+  it('does not delete the index a SECOND time from the post-flip GSI path', async () => {
+    // `applyGsiUpdates` still sees `dropme` in the previous side and absent
+    // from the desired one, so without the already-deleted set it would issue a
+    // duplicate Delete and fail the deploy with ResourceNotFoundException.
+    primeDescribeTable('PAY_PER_REQUEST', [LIVE_GSI('keep'), LIVE_GSI('dropme')]);
+    mockSend.mockResolvedValueOnce({});
+    primeWaitActive();
+    mockSend.mockResolvedValueOnce({});
+    primeWaitActive();
+
+    await provider.update(
+      'L',
+      TABLE_NAME,
+      RESOURCE_TYPE,
+      {
+        BillingMode: 'PROVISIONED',
+        ProvisionedThroughput: { ReadCapacityUnits: 5, WriteCapacityUnits: 5 },
+        GlobalSecondaryIndexes: [cfnGsi('keep', 2, 2)],
+      },
+      {
+        BillingMode: 'PAY_PER_REQUEST',
+        GlobalSecondaryIndexes: [cfnGsiNoCapacity('keep'), cfnGsiNoCapacity('dropme')],
+      }
+    );
+
+    const deletes = findCalls(UpdateTableCommand).flatMap((c) =>
+      (c.input.GlobalSecondaryIndexUpdates ?? []).filter((u) => u.Delete)
+    );
+    expect(deletes).toHaveLength(1);
+  });
+
+  it('removes EVERY dropped index, one UpdateTable each', async () => {
+    // AWS allows one GSI create/delete per UpdateTable, so two removals are two
+    // calls with a table+indexes ACTIVE wait between them.
+    primeDescribeTable('PAY_PER_REQUEST', [LIVE_GSI('keep'), LIVE_GSI('d1'), LIVE_GSI('d2')]);
+    mockSend.mockResolvedValueOnce({});
+    primeWaitActive();
+    mockSend.mockResolvedValueOnce({});
+    primeWaitActive();
+    mockSend.mockResolvedValueOnce({});
+    primeWaitActive();
+
+    await provider.update(
+      'L',
+      TABLE_NAME,
+      RESOURCE_TYPE,
+      {
+        BillingMode: 'PROVISIONED',
+        ProvisionedThroughput: { ReadCapacityUnits: 5, WriteCapacityUnits: 5 },
+        GlobalSecondaryIndexes: [cfnGsi('keep', 2, 2)],
+      },
+      {
+        BillingMode: 'PAY_PER_REQUEST',
+        GlobalSecondaryIndexes: [
+          cfnGsiNoCapacity('keep'),
+          cfnGsiNoCapacity('d1'),
+          cfnGsiNoCapacity('d2'),
+        ],
+      }
+    );
+
+    const calls = findCalls(UpdateTableCommand);
+    expect(calls).toHaveLength(3);
+    expect(calls.slice(0, 2).map((c) => c.input.GlobalSecondaryIndexUpdates)).toEqual([
+      [{ Delete: { IndexName: 'd1' } }],
+      [{ Delete: { IndexName: 'd2' } }],
+    ]);
+    expect(calls[2]!.input.BillingMode).toBe('PROVISIONED');
+  });
+
+  it('deletes NOTHING when an index that REMAINS declares no usable capacity', async () => {
+    // The pre-validation. A Delete is not undoable, and the flip fails at AWS
+    // either way here — so deleting first would buy nothing and leave a
+    // partially-applied deploy (index gone, mode unchanged). Keep the shape at
+    // "nothing applied" and say why.
+    primeDescribeTable('PAY_PER_REQUEST', [LIVE_GSI('keep'), LIVE_GSI('dropme')]);
+    mockSend.mockResolvedValueOnce({}); // the flip UpdateTable (AWS would reject it live)
+    primeWaitActive();
+    mockSend.mockResolvedValueOnce({}); // the post-flip Delete, still owned by applyGsiUpdates
+    primeWaitActive();
+
+    await provider.update(
+      'L',
+      TABLE_NAME,
+      RESOURCE_TYPE,
+      {
+        BillingMode: 'PROVISIONED',
+        ProvisionedThroughput: { ReadCapacityUnits: 5, WriteCapacityUnits: 5 },
+        GlobalSecondaryIndexes: [cfnGsiNoCapacity('keep')],
+      },
+      {
+        BillingMode: 'PAY_PER_REQUEST',
+        GlobalSecondaryIndexes: [cfnGsiNoCapacity('keep'), cfnGsiNoCapacity('dropme')],
+      }
+    );
+
+    const calls = findCalls(UpdateTableCommand);
+    // The FIRST call is the flip, not a Delete — nothing was removed ahead of it.
+    expect(calls[0]!.input.BillingMode).toBe('PROVISIONED');
+    expect(calls[0]!.input.GlobalSecondaryIndexUpdates).toBeUndefined();
     const warned = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(warned).toContain('Nothing was removed');
     expect(warned).toContain('dropme');
-    expect(warned).toContain('separate deploy');
+    expect(warned).toContain('keep');
+  });
+
+  it('does NOT reorder the removal on a flip to PAY_PER_REQUEST', async () => {
+    // Scope. The other direction needs no per-index capacity, so the removal
+    // has no reason to move and stays where it always was — after the flip.
+    primeDescribeTable('PROVISIONED', [LIVE_GSI('keep'), LIVE_GSI('dropme')]);
+    mockSend.mockResolvedValueOnce({}); // the flip UpdateTable
+    primeWaitActive();
+    mockSend.mockResolvedValueOnce({}); // the Delete UpdateTable
+    primeWaitActive();
+
+    await provider.update(
+      'L',
+      TABLE_NAME,
+      RESOURCE_TYPE,
+      { BillingMode: 'PAY_PER_REQUEST', GlobalSecondaryIndexes: [cfnGsiNoCapacity('keep')] },
+      {
+        BillingMode: 'PROVISIONED',
+        ProvisionedThroughput: { ReadCapacityUnits: 5, WriteCapacityUnits: 5 },
+        GlobalSecondaryIndexes: [cfnGsi('keep', 2, 2), cfnGsi('dropme', 2, 2)],
+      }
+    );
+
+    const calls = findCalls(UpdateTableCommand);
+    expect(calls).toHaveLength(2);
+    expect(calls[0]!.input.BillingMode).toBe('PAY_PER_REQUEST');
+    expect(calls[1]!.input.GlobalSecondaryIndexUpdates).toEqual([
+      { Delete: { IndexName: 'dropme' } },
+    ]);
+  });
+
+  it('does NOT reorder the removal on a capacity bump with no flip', async () => {
+    // Same scope check on the other axis: an already-PROVISIONED table never
+    // enumerates live indexes, so its removal is untouched.
+    primeDescribeTable('PROVISIONED', [LIVE_GSI('keep'), LIVE_GSI('dropme')]);
+    mockSend.mockResolvedValueOnce({}); // the capacity-bump UpdateTable
+    primeWaitActive();
+    mockSend.mockResolvedValueOnce({}); // the Delete UpdateTable
+    primeWaitActive();
+
+    await provider.update(
+      'L',
+      TABLE_NAME,
+      RESOURCE_TYPE,
+      {
+        BillingMode: 'PROVISIONED',
+        ProvisionedThroughput: { ReadCapacityUnits: 9, WriteCapacityUnits: 9 },
+        GlobalSecondaryIndexes: [cfnGsi('keep', 2, 2)],
+      },
+      {
+        BillingMode: 'PROVISIONED',
+        ProvisionedThroughput: { ReadCapacityUnits: 5, WriteCapacityUnits: 5 },
+        GlobalSecondaryIndexes: [cfnGsi('keep', 2, 2), cfnGsi('dropme', 2, 2)],
+      }
+    );
+
+    const calls = findCalls(UpdateTableCommand);
+    expect(calls).toHaveLength(2);
+    expect(calls[0]!.input.ProvisionedThroughput).toEqual({
+      ReadCapacityUnits: 9,
+      WriteCapacityUnits: 9,
+    });
+    expect(calls[1]!.input.GlobalSecondaryIndexUpdates).toEqual([
+      { Delete: { IndexName: 'dropme' } },
+    ]);
   });
 });
 
