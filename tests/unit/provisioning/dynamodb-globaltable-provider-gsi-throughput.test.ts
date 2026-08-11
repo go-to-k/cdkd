@@ -1107,30 +1107,31 @@ describe('DynamoDBGlobalTable GSI throughput translation (issue #1387)', () => {
       ]);
     });
 
-    it('does not die with a bare TypeError on a non-array previous GlobalSecondaryIndexes during a flip', async () => {
+    it('refuses the flip with a NAMED error on a non-array previous GlobalSecondaryIndexes', async () => {
       // The existing-index scan in the flip once ran BEFORE the translation, so
       // an unguarded `.map` on a plain object died with `.map is not a
       // function` — an opaque failure that names nothing.
       //
-      // The named REFUSAL that replaced it was itself superseded by issue
-      // #1551: this value comes from cdkd STATE, so failing the update on it
-      // leaves the table un-updatable with no template-side remedy. The
-      // provider now warns and falls back to the LIVE indexes as the baseline,
-      // so the update completes. What this test still protects is that the
-      // malformed value is NAMED rather than reaching `.map`.
+      // Issue #1551 kept a refusal HERE while downgrading the same value
+      // everywhere else, and the reason is specific to the flip: AWS needs
+      // per-index capacity for every live index in the flip call, the junk
+      // record is the only place it could come from, and `DescribeTable`
+      // reports `{0, 0}` while the table is still on-demand. Warning and
+      // skipping the flip instead would SUCCEED and record `PROVISIONED` as
+      // state against an on-demand table — a permanent silent divergence. The
+      // step-6 GSI diff still recovers via the live index names; only the flip
+      // refuses.
       const previous = structuredClone(PROVISIONED_TABLE_PROPS) as Record<string, unknown>;
       previous['BillingMode'] = 'PAY_PER_REQUEST';
       previous['GlobalSecondaryIndexes'] = { 'Fn::If': ['UseGsi', [], []] };
 
       await expect(
         provider.update('Prov', 'prov-table', RESOURCE_TYPE, PROVISIONED_TABLE_PROPS, previous)
-      ).resolves.toBeDefined();
+      ).rejects.toThrow(/Cannot flip .* to PROVISIONED while its GlobalSecondaryIndexes/);
 
+      // The malformed value is still NAMED, not swallowed into `.map`.
       expect(warnSpy).toHaveBeenCalledWith(
         expect.stringMatching(/GlobalSecondaryIndexes must be an array/)
-      );
-      expect(warnSpy).toHaveBeenCalledWith(
-        expect.stringContaining('recorded in cdkd state, not in the template')
       );
     });
 

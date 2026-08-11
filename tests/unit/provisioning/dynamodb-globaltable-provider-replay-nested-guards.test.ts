@@ -495,67 +495,45 @@ describe('DynamoDBGlobalTableProvider nested guards on the UPDATE path (issue #1
     const billingFlipInputs = (): Array<Record<string, unknown>> =>
       updateInputs().filter((i) => i['BillingMode'] !== undefined);
 
-    it('SUPPRESSES the flip to PROVISIONED when the DESIRED block is unusable', async () => {
-      await provider.update(
-        'MyTable',
-        TABLE_NAME,
-        RESOURCE_TYPE,
-        { ...provisionedDesired, GlobalSecondaryIndexes: 'bad' },
-        { ...baseProps, BillingMode: 'PAY_PER_REQUEST', GlobalSecondaryIndexes: [liveIndex] }
-      );
+    it('REFUSES the flip to PROVISIONED when the DESIRED block is unusable', async () => {
+      // Not a warn-and-skip: a skipped flip still SUCCEEDS, so the engine
+      // records `BillingMode: PROVISIONED` as state while the table stays
+      // on-demand, and the next deploy compares state against state and never
+      // recomputes the flip — a permanent, silent divergence. Refusing leaves
+      // the table untouched and names the remedy.
+      await expect(
+        provider.update(
+          'MyTable',
+          TABLE_NAME,
+          RESOURCE_TYPE,
+          { ...provisionedDesired, GlobalSecondaryIndexes: 'bad' },
+          { ...baseProps, BillingMode: 'PAY_PER_REQUEST', GlobalSecondaryIndexes: [liveIndex] }
+        )
+      ).rejects.toThrow(/Cannot flip .* to PROVISIONED while its GlobalSecondaryIndexes/);
 
       expect(billingFlipInputs()).toEqual([]);
       expect(gsiActions()).toEqual([]);
-      expect(childLogger.warn).toHaveBeenCalledWith(
-        expect.stringContaining('skipping the PAY_PER_REQUEST -> PROVISIONED BillingMode flip')
-      );
     });
 
-    it('still APPLIES the flip when only the PREVIOUS (state-recorded) block is unusable', async () => {
-      // The previous side is only translated inside the flip branch and again
-      // in step 6, so before the fix this threw AFTER step 3 had already sent
-      // its UpdateTable — a half-applied update on a value the user cannot
-      // edit from the template.
-      //
-      // It is NOT suppressed, unlike the desired-side case: the previous side
-      // is recoverable from the live table, so the flip has a trustworthy
-      // source for the per-index capacity AWS requires in this call — and the
-      // desired side (the user's template) is fine.
-      mockSend.mockResolvedValue({
-        Table: {
-          TableName: TABLE_NAME,
-          TableStatus: 'ACTIVE',
-          TableArn: `arn:aws:dynamodb:us-east-1:0:table/${TABLE_NAME}`,
-          BillingModeSummary: { BillingMode: 'PAY_PER_REQUEST' },
-          Replicas: [{ RegionName: 'us-east-1', ReplicaStatus: 'ACTIVE' }],
-          GlobalSecondaryIndexes: [
-            {
-              IndexName: 'my-index',
-              KeySchema: [{ AttributeName: 'gsiPk', KeyType: 'HASH' }],
-              Projection: { ProjectionType: 'ALL' },
-            },
-          ],
-        },
-      });
+    it('REFUSES the flip to PROVISIONED when only the PREVIOUS block is unusable', async () => {
+      // Same refusal, and for a reason the desired-side case does not have:
+      // AWS needs capacity for every index that is live at flip time,
+      // including one the template REMOVES, and that value could only come
+      // from the junk record. `DescribeTable` cannot substitute — it reports
+      // `{0, 0}` for every index while the table is still on-demand, which AWS
+      // rejects. The step-6 diff still recovers via the live index NAMES; it
+      // is only the capacity the flip needs that is unrecoverable.
+      await expect(
+        provider.update(
+          'MyTable',
+          TABLE_NAME,
+          RESOURCE_TYPE,
+          { ...provisionedDesired, GlobalSecondaryIndexes: [liveIndex] },
+          { ...baseProps, BillingMode: 'PAY_PER_REQUEST', GlobalSecondaryIndexes: 'bad' }
+        )
+      ).rejects.toThrow(/Cannot flip .* to PROVISIONED while its GlobalSecondaryIndexes/);
 
-      await provider.update(
-        'MyTable',
-        TABLE_NAME,
-        RESOURCE_TYPE,
-        { ...provisionedDesired, GlobalSecondaryIndexes: [liveIndex] },
-        { ...baseProps, BillingMode: 'PAY_PER_REQUEST', GlobalSecondaryIndexes: 'bad' }
-      );
-
-      expect(billingFlipInputs()).toHaveLength(1);
-      expect(billingFlipInputs()[0]).toMatchObject({ BillingMode: 'PROVISIONED' });
-      // The live index still gets capacity in the SAME call — an empty
-      // baseline would have omitted it and AWS would reject the flip.
-      expect(billingFlipInputs()[0]?.['GlobalSecondaryIndexUpdates']).toEqual([
-        expect.objectContaining({ Update: expect.objectContaining({ IndexName: 'my-index' }) }),
-      ]);
-      expect(childLogger.warn).toHaveBeenCalledWith(
-        expect.stringContaining('recorded in cdkd state, not in the template')
-      );
+      expect(billingFlipInputs()).toEqual([]);
     });
 
     it('still APPLIES a well-formed flip to PROVISIONED (the fence)', async () => {
