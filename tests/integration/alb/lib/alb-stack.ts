@@ -4,6 +4,7 @@ import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as elbv2 from 'aws-cdk-lib/aws-elasticloadbalancingv2';
 
 /**
+ * covers: AWS::ElasticLoadBalancingV2::LoadBalancer
  * covers: AWS::ElasticLoadBalancingV2::Listener
  * covers: AWS::ElasticLoadBalancingV2::TargetGroup
  * covers: AWS::EC2::SecurityGroupIngress
@@ -50,6 +51,7 @@ export class AlbStack extends cdk.Stack {
     // health-check field CloudFormation resets on removal; the others are
     // retained by CFn itself and stay pass-through).
     const removal = process.env.CDKD_TEST_REMOVAL === 'true';
+    const update = process.env.CDKD_TEST_UPDATE === 'true';
     const targetGroup = new elbv2.ApplicationTargetGroup(this, 'TargetGroup', {
       vpc,
       port: 80,
@@ -61,6 +63,36 @@ export class AlbStack extends cdk.Stack {
         ...(removal ? {} : { port: '8080' }),
       },
     });
+
+    // #609 LoadBalancer + TargetGroup silent-drop batch coverage. Raw
+    // property overrides (not L2 props) so the fixture does not depend on the
+    // pinned aws-cdk-lib having codegen'd the newest CFn properties.
+    const cfnTargetGroup = targetGroup.node.defaultChild as elbv2.CfnTargetGroup;
+    // IpAddressType is createOnly — exercises the CreateTargetGroup wiring.
+    cfnTargetGroup.addPropertyOverride('IpAddressType', 'ipv4');
+    // TargetGroupAttributes: baseline 45s -> update 60s (ModifyTargetGroupAttributes
+    // diff); the removal phase drops the whole list, which must reset the
+    // attribute to AWS's default 300 via the Value:'' push-back.
+    if (!removal) {
+      cfnTargetGroup.addPropertyOverride('TargetGroupAttributes', [
+        { Key: 'deregistration_delay.timeout_seconds', Value: update ? '60' : '45' },
+      ]);
+    }
+    // Targets (IP targets inside the VPC CIDR; nothing listens on them —
+    // registration is what is under test, not health). The update phase swaps
+    // the IP, exercising RegisterTargets + DeregisterTargets on update.
+    cfnTargetGroup.addPropertyOverride('Targets', [
+      { Id: update ? '10.0.0.101' : '10.0.0.100', Port: 80 },
+    ]);
+
+    // MinimumLoadBalancerCapacity is deliberately NOT exercised here: the
+    // integ account lacks the LCU capacity-reservation entitlement —
+    // ModifyCapacityReservation is rejected with "This AWS account does not
+    // support configuring minimum load balancer capacity reservation"
+    // (live-verified 2026-08-11; the request shape reached the API and was
+    // refused on the account, not the payload). The capacity /
+    // stabilize-wait paths are covered by unit tests
+    // (tests/unit/provisioning/elbv2-lb-targetgroup-props.test.ts).
 
     // Listener
     const listener = alb.addListener('Listener', {

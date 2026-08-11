@@ -13,6 +13,13 @@ import {
   DeleteTargetGroupCommand,
   ModifyTargetGroupCommand,
   DescribeTargetGroupsCommand,
+  ModifyTargetGroupAttributesCommand,
+  DescribeTargetGroupAttributesCommand,
+  RegisterTargetsCommand,
+  DeregisterTargetsCommand,
+  ModifyCapacityReservationCommand,
+  DescribeCapacityReservationCommand,
+  ModifyIpPoolsCommand,
   DescribeTagsCommand,
   AddTagsCommand,
   RemoveTagsCommand,
@@ -32,6 +39,10 @@ import {
   type ProtocolEnum,
   type TargetTypeEnum,
   type MutualAuthenticationAttributes,
+  type EnablePrefixForIpv6SourceNatEnum,
+  type EnforceSecurityGroupInboundRulesOnPrivateLinkTrafficEnum,
+  type TargetGroupIpAddressTypeEnum,
+  type TargetDescription,
 } from '@aws-sdk/client-elastic-load-balancing-v2';
 import { getLogger } from '../../utils/logger.js';
 import { withRetry } from '../../deployment/retry.js';
@@ -41,6 +52,7 @@ import {
   ResourceUpdateNotSupportedError,
 } from '../../utils/error-handler.js';
 import { generateResourceNameWithFallback } from '../resource-name.js';
+import { isTruthyCfnBoolean } from '../data-delete-intent.js';
 import { clearOnUpdateRemoval } from '../update-removal.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
@@ -51,6 +63,47 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
+
+/**
+ * Test seam for the capacity-reservation stabilize poll (mirrors
+ * `finalSnapshotDelays` in ../final-snapshot.ts). Unit tests stub `sleep`
+ * so the poll runs without wall-clock delay.
+ */
+export const capacityReservationDelays = {
+  sleep: (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+};
+
+/** CFn shape of an `AWS::ElasticLoadBalancingV2::TargetGroup.Targets` entry. */
+interface CfnTargetDescription {
+  Id?: string;
+  Port?: number | string;
+  AvailabilityZone?: string;
+}
+
+/**
+ * Documented AWS defaults for TargetGroup attributes, used to reset a
+ * removed `TargetGroupAttributes` entry. Unlike ModifyLoadBalancerAttributes
+ * / ModifyListenerAttributes, ModifyTargetGroupAttributes REJECTS an empty
+ * `Value` ("A target group attribute value must be specified" — live-verified
+ * 2026-08-11), so clearing an override requires sending the documented
+ * default explicitly. Keys whose default is target-type-dependent or
+ * undocumented are deliberately absent — a removal of those warns and
+ * retains the live value instead of guessing.
+ * Source: ELBv2 API reference, TargetGroupAttribute key table.
+ */
+const TARGET_GROUP_ATTRIBUTE_DEFAULTS: Record<string, string> = {
+  'deregistration_delay.timeout_seconds': '300',
+  'deregistration_delay.connection_termination.enabled': 'false',
+  'stickiness.enabled': 'false',
+  'stickiness.lb_cookie.duration_seconds': '86400',
+  'stickiness.app_cookie.duration_seconds': '86400',
+  'load_balancing.algorithm.type': 'round_robin',
+  'load_balancing.algorithm.anomaly_mitigation': 'off',
+  'load_balancing.cross_zone.enabled': 'use_load_balancer_configuration',
+  'slow_start.duration_seconds': '0',
+  'lambda.multi_value_headers.enabled': 'false',
+  'proxy_protocol_v2.enabled': 'false',
+};
 
 /**
  * AWS ELBv2 Provider
@@ -89,6 +142,11 @@ export class ELBv2Provider implements ResourceProvider {
         'IpAddressType',
         'LoadBalancerAttributes',
         'Tags',
+        'EnablePrefixForIpv6SourceNat',
+        'EnforceSecurityGroupInboundRulesOnPrivateLinkTraffic',
+        'Ipv4IpamPoolId',
+        'MinimumLoadBalancerCapacity',
+        'EnableCapacityReservationProvisionStabilize',
       ]),
     ],
     [
@@ -110,6 +168,10 @@ export class ELBv2Provider implements ResourceProvider {
         'Matcher',
         'Name',
         'Tags',
+        'IpAddressType',
+        'TargetControlPort',
+        'TargetGroupAttributes',
+        'Targets',
       ]),
     ],
     [
@@ -275,6 +337,7 @@ export class ELBv2Provider implements ResourceProvider {
         { maxLength: 32 }
       );
 
+      const ipv4IpamPoolId = properties['Ipv4IpamPoolId'] as string | undefined;
       const response = await this.getClient().send(
         new CreateLoadBalancerCommand({
           Name: lbName,
@@ -286,6 +349,12 @@ export class ELBv2Provider implements ResourceProvider {
           Scheme: properties['Scheme'] as LoadBalancerSchemeEnum | undefined,
           Type: properties['Type'] as LoadBalancerTypeEnum | undefined,
           IpAddressType: properties['IpAddressType'] as IpAddressType | undefined,
+          EnablePrefixForIpv6SourceNat: properties['EnablePrefixForIpv6SourceNat'] as
+            | EnablePrefixForIpv6SourceNatEnum
+            | undefined,
+          // CFn flattens the SDK's `IpamPools` wrapper to a single
+          // `Ipv4IpamPoolId` string (ipv4 is the only pool kind today).
+          ...(ipv4IpamPoolId !== undefined && { IpamPools: { Ipv4IpamPoolId: ipv4IpamPoolId } }),
           ...(tags.length > 0 && { Tags: tags }),
         })
       );
@@ -353,23 +422,69 @@ export class ELBv2Provider implements ResourceProvider {
           );
         }
 
-        // Apply LoadBalancerAttributes if specified
-        const lbAttributes = properties['LoadBalancerAttributes'] as
-          | Array<{ Key: string; Value: string }>
-          | undefined;
-        if (lbAttributes && lbAttributes.length > 0) {
+        // Apply LoadBalancerAttributes if specified (normalized so an
+        // unquoted-YAML numeric/boolean Value goes on the wire as a string,
+        // matching the TG / Listener create paths).
+        const lbAttributes = this.normalizeAttributes(properties['LoadBalancerAttributes']);
+        if (lbAttributes.length > 0) {
           await this.getClient().send(
             new ModifyLoadBalancerAttributesCommand({
               LoadBalancerArn: lbArn,
-              Attributes: lbAttributes.map((attr) => ({
-                Key: attr.Key,
-                Value: attr.Value,
-              })),
+              Attributes: lbAttributes,
             })
           );
           this.logger.debug(
             `Applied ${lbAttributes.length} LoadBalancer attributes for ${logicalId}`
           );
+        }
+
+        // EnforceSecurityGroupInboundRulesOnPrivateLinkTraffic has no
+        // CreateLoadBalancer member — the only write path is SetSecurityGroups,
+        // so re-issue the create-time security groups with the flag when the
+        // template carries it (NLB + security-groups only; AWS rejects it
+        // elsewhere and the error surfaces through the cleanup catch).
+        const enforcePrivateLink = properties[
+          'EnforceSecurityGroupInboundRulesOnPrivateLinkTraffic'
+        ] as EnforceSecurityGroupInboundRulesOnPrivateLinkTrafficEnum | undefined;
+        if (enforcePrivateLink !== undefined) {
+          await this.getClient().send(
+            new SetSecurityGroupsCommand({
+              LoadBalancerArn: lbArn,
+              SecurityGroups: (properties['SecurityGroups'] as string[] | undefined) ?? [],
+              EnforceSecurityGroupInboundRulesOnPrivateLinkTraffic: enforcePrivateLink,
+            })
+          );
+          this.logger.debug(
+            `Applied EnforceSecurityGroupInboundRulesOnPrivateLinkTraffic=${enforcePrivateLink} for ${logicalId}`
+          );
+        }
+
+        // MinimumLoadBalancerCapacity rides on the separate
+        // ModifyCapacityReservation control-plane call (no CreateLoadBalancer
+        // member). EnableCapacityReservationProvisionStabilize is a CFn-only
+        // orchestration flag with NO SDK member: it opts the deploy into
+        // waiting for the reservation to reach `provisioned` before success.
+        const minCapacity = properties['MinimumLoadBalancerCapacity'] as
+          | { CapacityUnits?: number | string }
+          | undefined;
+        if (minCapacity?.CapacityUnits !== undefined) {
+          await this.getClient().send(
+            new ModifyCapacityReservationCommand({
+              LoadBalancerArn: lbArn,
+              MinimumLoadBalancerCapacity: {
+                CapacityUnits: Number(minCapacity.CapacityUnits),
+              },
+            })
+          );
+          this.logger.debug(
+            `Requested capacity reservation of ${minCapacity.CapacityUnits} LCU for ${logicalId}`
+          );
+          if (
+            isTruthyCfnBoolean(properties['EnableCapacityReservationProvisionStabilize']) &&
+            process.env['CDKD_NO_WAIT'] !== 'true'
+          ) {
+            await this.waitForCapacityReservationProvisioned(lbArn, logicalId);
+          }
         }
       } catch (innerError) {
         try {
@@ -419,9 +534,15 @@ export class ELBv2Provider implements ResourceProvider {
     // detection and replaces the resource. The remaining surface is
     // mutable in-place via separate Set*/Modify* calls:
     //   - LoadBalancerAttributes → ModifyLoadBalancerAttributes (key diff)
-    //   - Subnets / SubnetMappings → SetSubnets (full replace)
-    //   - SecurityGroups → SetSecurityGroups (full replace)
+    //   - Subnets / SubnetMappings / EnablePrefixForIpv6SourceNat → SetSubnets
+    //   - SecurityGroups / EnforceSecurityGroupInboundRulesOnPrivateLinkTraffic
+    //     → SetSecurityGroups (full replace)
     //   - IpAddressType → SetIpAddressType
+    //   - Ipv4IpamPoolId → ModifyIpPools (removal → RemoveIpamPools)
+    //   - MinimumLoadBalancerCapacity → ModifyCapacityReservation
+    //     (removal → ResetCapacityReservation; the
+    //     EnableCapacityReservationProvisionStabilize flag gates a
+    //     provisioned-state wait, not an API field)
     //   - Tags → AddTags / RemoveTags (key diff)
     // Any other diff (Name / Type / Scheme) rejects with
     // ResourceUpdateNotSupportedError so `cdkd drift --revert` surfaces
@@ -433,6 +554,11 @@ export class ELBv2Provider implements ResourceProvider {
       'SecurityGroups',
       'IpAddressType',
       'Tags',
+      'EnablePrefixForIpv6SourceNat',
+      'EnforceSecurityGroupInboundRulesOnPrivateLinkTraffic',
+      'Ipv4IpamPoolId',
+      'MinimumLoadBalancerCapacity',
+      'EnableCapacityReservationProvisionStabilize',
     ]);
     const stripHandled = (p: Record<string, unknown>): Record<string, unknown> => {
       const out: Record<string, unknown> = {};
@@ -458,22 +584,10 @@ export class ELBv2Provider implements ResourceProvider {
     // pushed back to AWS's documented default (the empty string),
     // which clears the override. Skip the call entirely when nothing
     // changed so the no-drift round-trip is a clean no-op.
-    const newAttrs =
-      (properties['LoadBalancerAttributes'] as Array<{ Key: string; Value: string }> | undefined) ??
-      [];
-    const oldAttrs =
-      (previousProperties['LoadBalancerAttributes'] as
-        | Array<{ Key: string; Value: string }>
-        | undefined) ?? [];
-    const newAttrMap = new Map(newAttrs.map((a) => [a.Key, a.Value]));
-    const oldAttrMap = new Map(oldAttrs.map((a) => [a.Key, a.Value]));
-    const submittedAttrs: Array<{ Key: string; Value: string }> = [];
-    for (const [k, v] of newAttrMap) {
-      if (oldAttrMap.get(k) !== v) submittedAttrs.push({ Key: k, Value: v });
-    }
-    for (const [k] of oldAttrMap) {
-      if (!newAttrMap.has(k)) submittedAttrs.push({ Key: k, Value: '' });
-    }
+    const submittedAttrs = this.diffAttributes(
+      this.normalizeAttributes(properties['LoadBalancerAttributes']),
+      this.normalizeAttributes(previousProperties['LoadBalancerAttributes'])
+    );
     if (submittedAttrs.length > 0) {
       await this.getClient().send(
         new ModifyLoadBalancerAttributesCommand({
@@ -496,15 +610,32 @@ export class ELBv2Provider implements ResourceProvider {
     const oldSubnets = previousProperties['Subnets'] as string[] | undefined;
     const newMappings = properties['SubnetMappings'] as SubnetMapping[] | undefined;
     const oldMappings = previousProperties['SubnetMappings'] as SubnetMapping[] | undefined;
+    const newIpv6SourceNat = properties['EnablePrefixForIpv6SourceNat'] as
+      | EnablePrefixForIpv6SourceNatEnum
+      | undefined;
+    const oldIpv6SourceNat = previousProperties['EnablePrefixForIpv6SourceNat'] as
+      | EnablePrefixForIpv6SourceNatEnum
+      | undefined;
     const subnetsChanged = JSON.stringify(newSubnets) !== JSON.stringify(oldSubnets);
     const mappingsChanged = JSON.stringify(newMappings) !== JSON.stringify(oldMappings);
-    if (subnetsChanged || mappingsChanged) {
+    // EnablePrefixForIpv6SourceNat rides on SetSubnets: a change re-issues the
+    // current subnet set with the new flag. A REMOVED flag on its own is
+    // retained (no call) — CFn retains most removed fields. Caveat: when the
+    // flag is removed in the SAME deploy that changes Subnets, the Set call
+    // omits the member and AWS's omission semantics (retain vs default) have
+    // not been A/B-verified for that combination.
+    const ipv6SourceNatChanged =
+      newIpv6SourceNat !== undefined && newIpv6SourceNat !== oldIpv6SourceNat;
+    if (subnetsChanged || mappingsChanged || ipv6SourceNatChanged) {
       await this.getClient().send(
         new SetSubnetsCommand({
           LoadBalancerArn: physicalId,
           ...(newMappings && newMappings.length > 0
             ? { SubnetMappings: newMappings }
             : { Subnets: newSubnets }),
+          ...(newIpv6SourceNat !== undefined && {
+            EnablePrefixForIpv6SourceNat: newIpv6SourceNat,
+          }),
         })
       );
       this.logger.debug(`Updated Subnets / SubnetMappings for ${logicalId}`);
@@ -518,11 +649,25 @@ export class ELBv2Provider implements ResourceProvider {
     // surface the AWS error if it fires.
     const newSGs = properties['SecurityGroups'] as string[] | undefined;
     const oldSGs = previousProperties['SecurityGroups'] as string[] | undefined;
-    if (JSON.stringify(newSGs) !== JSON.stringify(oldSGs)) {
+    const newEnforce = properties['EnforceSecurityGroupInboundRulesOnPrivateLinkTraffic'] as
+      | EnforceSecurityGroupInboundRulesOnPrivateLinkTrafficEnum
+      | undefined;
+    const oldEnforce = previousProperties[
+      'EnforceSecurityGroupInboundRulesOnPrivateLinkTraffic'
+    ] as EnforceSecurityGroupInboundRulesOnPrivateLinkTrafficEnum | undefined;
+    // EnforceSecurityGroupInboundRulesOnPrivateLinkTraffic rides on
+    // SetSecurityGroups: a change re-issues the current security-group set
+    // with the new flag. A REMOVED flag is retained (no-op) — same rationale
+    // as EnablePrefixForIpv6SourceNat above.
+    const enforceChanged = newEnforce !== undefined && newEnforce !== oldEnforce;
+    if (JSON.stringify(newSGs) !== JSON.stringify(oldSGs) || enforceChanged) {
       await this.getClient().send(
         new SetSecurityGroupsCommand({
           LoadBalancerArn: physicalId,
           SecurityGroups: newSGs ?? [],
+          ...(newEnforce !== undefined && {
+            EnforceSecurityGroupInboundRulesOnPrivateLinkTraffic: newEnforce,
+          }),
         })
       );
       this.logger.debug(`Updated SecurityGroups for ${logicalId}`);
@@ -541,6 +686,66 @@ export class ELBv2Provider implements ResourceProvider {
       this.logger.debug(`Updated IpAddressType for ${logicalId}`);
     }
 
+    // ─── Ipv4IpamPoolId ──────────────────────────────────────────────
+    // ModifyIpPools sets / removes the IPAM pool association. Removal has a
+    // dedicated API spelling (RemoveIpamPools: ['ipv4']), so — unlike the two
+    // Set* flags above — dropping the property from the template detaches
+    // the pool instead of silently retaining it.
+    const newIpamPool = properties['Ipv4IpamPoolId'] as string | undefined;
+    const oldIpamPool = previousProperties['Ipv4IpamPoolId'] as string | undefined;
+    if (newIpamPool !== oldIpamPool) {
+      await this.getClient().send(
+        new ModifyIpPoolsCommand({
+          LoadBalancerArn: physicalId,
+          ...(newIpamPool !== undefined
+            ? { IpamPools: { Ipv4IpamPoolId: newIpamPool } }
+            : { RemoveIpamPools: ['ipv4'] }),
+        })
+      );
+      this.logger.debug(
+        newIpamPool !== undefined
+          ? `Updated Ipv4IpamPoolId for ${logicalId}`
+          : `Removed IPAM pool association for ${logicalId}`
+      );
+    }
+
+    // ─── MinimumLoadBalancerCapacity ─────────────────────────────────
+    // ModifyCapacityReservation sets the reservation; removal resets it via
+    // the dedicated ResetCapacityReservation flag (a capacity reservation is
+    // billable, so retaining a removed one would silently keep charging).
+    const newCapacity = properties['MinimumLoadBalancerCapacity'] as
+      | { CapacityUnits?: number | string }
+      | undefined;
+    const oldCapacity = previousProperties['MinimumLoadBalancerCapacity'] as
+      | { CapacityUnits?: number | string }
+      | undefined;
+    const newCapacityUnits =
+      newCapacity?.CapacityUnits !== undefined ? Number(newCapacity.CapacityUnits) : undefined;
+    const oldCapacityUnits =
+      oldCapacity?.CapacityUnits !== undefined ? Number(oldCapacity.CapacityUnits) : undefined;
+    if (newCapacityUnits !== oldCapacityUnits) {
+      await this.getClient().send(
+        new ModifyCapacityReservationCommand({
+          LoadBalancerArn: physicalId,
+          ...(newCapacityUnits !== undefined
+            ? { MinimumLoadBalancerCapacity: { CapacityUnits: newCapacityUnits } }
+            : { ResetCapacityReservation: true }),
+        })
+      );
+      this.logger.debug(
+        newCapacityUnits !== undefined
+          ? `Requested capacity reservation of ${newCapacityUnits} LCU for ${logicalId}`
+          : `Reset capacity reservation for ${logicalId}`
+      );
+      if (
+        newCapacityUnits !== undefined &&
+        isTruthyCfnBoolean(properties['EnableCapacityReservationProvisionStabilize']) &&
+        process.env['CDKD_NO_WAIT'] !== 'true'
+      ) {
+        await this.waitForCapacityReservationProvisioned(physicalId, logicalId);
+      }
+    }
+
     // ─── Tags ────────────────────────────────────────────────────────
     await this.applyTagDiff(
       physicalId,
@@ -549,6 +754,59 @@ export class ELBv2Provider implements ResourceProvider {
     );
 
     return { physicalId, wasReplaced: false };
+  }
+
+  /**
+   * Poll DescribeCapacityReservation until every zonal state reports
+   * `provisioned` — the semantics of the CFn-only
+   * `EnableCapacityReservationProvisionStabilize` flag (no SDK member; it
+   * opts the deploy into waiting for the reservation instead of returning
+   * while zones are still `pending`). Bounded at ~10 min / 15s interval;
+   * a timeout WARNS and continues (the reservation keeps provisioning
+   * asynchronously and the ModifyCapacityReservation was accepted), while a
+   * `failed` zonal state throws — that reservation will never provision.
+   */
+  private async waitForCapacityReservationProvisioned(
+    lbArn: string,
+    logicalId: string
+  ): Promise<void> {
+    const maxAttempts = 40;
+    const intervalMs = 15_000;
+    this.logger.debug(`Waiting for capacity reservation of ${logicalId} to provision...`);
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      // A transient Describe failure (throttle, network blip) is treated as
+      // still-pending rather than thrown: on the create path an escaped error
+      // lands in the partial-create cleanup and would DELETE a healthy LB
+      // whose reservation was merely pending. Only a `failed` zonal state —
+      // a definitive answer from AWS — aborts the wait.
+      let zones;
+      try {
+        const resp = await this.getClient().send(
+          new DescribeCapacityReservationCommand({ LoadBalancerArn: lbArn })
+        );
+        zones = resp.CapacityReservationState ?? [];
+      } catch (probeError) {
+        this.logger.debug(
+          `DescribeCapacityReservation for ${logicalId} failed transiently (attempt ${attempt + 1}/${maxAttempts}): ${probeError instanceof Error ? probeError.message : String(probeError)}`
+        );
+        await capacityReservationDelays.sleep(intervalMs);
+        continue;
+      }
+      const failed = zones.find((z) => z.State?.Code === 'failed');
+      if (failed) {
+        throw new Error(
+          `Capacity reservation for ${logicalId} failed in ${failed.AvailabilityZone ?? 'an availability zone'}: ${failed.State?.Reason ?? 'no reason reported'}`
+        );
+      }
+      if (zones.length === 0 || zones.every((z) => z.State?.Code === 'provisioned')) {
+        this.logger.debug(`Capacity reservation for ${logicalId} is provisioned`);
+        return;
+      }
+      await capacityReservationDelays.sleep(intervalMs);
+    }
+    this.logger.warn(
+      `Capacity reservation for ${logicalId} did not reach 'provisioned' within ${(maxAttempts * intervalMs) / 60000} minutes; continuing (provisioning completes asynchronously)`
+    );
   }
 
   private async deleteLoadBalancer(
@@ -660,6 +918,11 @@ export class ELBv2Provider implements ResourceProvider {
             properties['UnhealthyThresholdCount'] !== undefined
               ? Number(properties['UnhealthyThresholdCount'])
               : undefined,
+          IpAddressType: properties['IpAddressType'] as TargetGroupIpAddressTypeEnum | undefined,
+          TargetControlPort:
+            properties['TargetControlPort'] !== undefined
+              ? Number(properties['TargetControlPort'])
+              : undefined,
           ...(matcher && { Matcher: matcher }),
           ...(tags.length > 0 && { Tags: tags }),
         })
@@ -669,14 +932,56 @@ export class ELBv2Provider implements ResourceProvider {
       if (!tg || !tg.TargetGroupArn) {
         throw new Error('CreateTargetGroup did not return TargetGroup ARN');
       }
+      const tgArn = tg.TargetGroupArn;
 
-      this.logger.debug(`Successfully created TargetGroup ${logicalId}: ${tg.TargetGroupArn}`);
+      this.logger.debug(`Successfully created TargetGroup ${logicalId}: ${tgArn}`);
+
+      // TargetGroupAttributes and Targets ride on separate post-create calls
+      // (ModifyTargetGroupAttributes / RegisterTargets). CreateTargetGroup has
+      // already committed the TG, so a failure here would strand it outside
+      // cdkd state and the next deploy's CREATE would collide on the unique TG
+      // name — wrap in the same best-effort-delete-then-rethrow pattern as the
+      // LoadBalancer create path above.
+      try {
+        const tgAttributes = this.normalizeAttributes(properties['TargetGroupAttributes']);
+        if (tgAttributes.length > 0) {
+          await this.getClient().send(
+            new ModifyTargetGroupAttributesCommand({
+              TargetGroupArn: tgArn,
+              Attributes: tgAttributes,
+            })
+          );
+          this.logger.debug(
+            `Applied ${tgAttributes.length} TargetGroup attribute(s) for ${logicalId}`
+          );
+        }
+
+        const targets = this.convertTargets(properties['Targets']);
+        if (targets.length > 0) {
+          await this.getClient().send(
+            new RegisterTargetsCommand({ TargetGroupArn: tgArn, Targets: targets })
+          );
+          this.logger.debug(`Registered ${targets.length} target(s) for ${logicalId}`);
+        }
+      } catch (innerError) {
+        try {
+          await this.getClient().send(new DeleteTargetGroupCommand({ TargetGroupArn: tgArn }));
+          this.logger.debug(
+            `Cleaned up partially-created TargetGroup ${logicalId} (${tgArn}) after wiring failure`
+          );
+        } catch (cleanupError) {
+          this.logger.warn(
+            `Failed to clean up partially-created TargetGroup ${logicalId} (${tgArn}): ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}. Manual deletion may be required before the next deploy: aws elbv2 delete-target-group --target-group-arn ${tgArn}`
+          );
+        }
+        throw innerError;
+      }
 
       return {
-        physicalId: tg.TargetGroupArn,
+        physicalId: tgArn,
         attributes: {
-          TargetGroupArn: tg.TargetGroupArn,
-          TargetGroupFullName: tg.TargetGroupArn?.split(':').pop()?.replace('targetgroup/', ''),
+          TargetGroupArn: tgArn,
+          TargetGroupFullName: tgArn.split(':').pop()?.replace('targetgroup/', ''),
           TargetGroupName: tg.TargetGroupName,
         },
       };
@@ -700,6 +1005,37 @@ export class ELBv2Provider implements ResourceProvider {
     previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating TargetGroup ${logicalId}: ${physicalId}`);
+
+    // IpAddressType is createOnly in the CFn schema (the registry fallback
+    // already classifies its change as replacement); TargetControlPort has
+    // NO modify API at all AND is missing from the schema's
+    // createOnlyProperties, so without this guard a change would be silently
+    // dropped. Reject both with ResourceUpdateNotSupportedError — the deploy
+    // engine matches it by class and falls back to replacement.
+    // TargetControlPort is compared numerically ("8080" vs 8080 is a template
+    // quoting difference, not a change); IpAddressType compares as a string.
+    const immutableChanged = (key: string, coerce: boolean): boolean => {
+      const next = properties[key];
+      const prev = previousProperties[key];
+      if (coerce) {
+        const nextNum = next !== undefined ? Number(next) : undefined;
+        const prevNum = prev !== undefined ? Number(prev) : undefined;
+        return nextNum !== prevNum;
+      }
+      return JSON.stringify(next) !== JSON.stringify(prev);
+    };
+    for (const [immutableKey, coerce] of [
+      ['IpAddressType', false],
+      ['TargetControlPort', true],
+    ] as Array<[string, boolean]>) {
+      if (immutableChanged(immutableKey, coerce)) {
+        throw new ResourceUpdateNotSupportedError(
+          resourceType,
+          logicalId,
+          `ELBv2 TargetGroup ${immutableKey} is immutable on AWS — no Modify* API accepts it; it is fixed at creation. Re-deploy with cdkd deploy --replace, or destroy + redeploy the stack.`
+        );
+      }
+    }
 
     try {
       // Class 2 sanitize at the wire layer: `readCurrentState` always-emits
@@ -772,6 +1108,68 @@ export class ELBv2Provider implements ResourceProvider {
           ...(matcher && { Matcher: matcher }),
         })
       );
+
+      // ─── TargetGroupAttributes ───────────────────────────────────────
+      // ModifyTargetGroupAttributes replaces ONLY the listed attrs — same
+      // key-diff semantics as LoadBalancerAttributes, EXCEPT the removal
+      // arm: this API rejects an empty Value ("A target group attribute
+      // value must be specified", live-verified 2026-08-11), so a removed
+      // key is reset by sending its documented default from
+      // TARGET_GROUP_ATTRIBUTE_DEFAULTS; a key with no known default warns
+      // and retains the live value. Skip the call when nothing changed.
+      const tgAttrDiff = this.diffAttributes(
+        this.normalizeAttributes(properties['TargetGroupAttributes']),
+        this.normalizeAttributes(previousProperties['TargetGroupAttributes']),
+        (key) => {
+          const fallback = TARGET_GROUP_ATTRIBUTE_DEFAULTS[key];
+          if (fallback === undefined) {
+            this.logger.warn(
+              `TargetGroup attribute ${key} was removed from the template but has no documented default cdkd can reset it to — the live value is retained. Set the attribute explicitly to change it.`
+            );
+          }
+          return fallback;
+        }
+      );
+      if (tgAttrDiff.length > 0) {
+        await this.getClient().send(
+          new ModifyTargetGroupAttributesCommand({
+            TargetGroupArn: physicalId,
+            Attributes: tgAttrDiff,
+          })
+        );
+        this.logger.debug(
+          `Applied ${tgAttrDiff.length} TargetGroupAttributes change(s) for ${logicalId}`
+        );
+      }
+
+      // ─── Targets ─────────────────────────────────────────────────────
+      // RegisterTargets / DeregisterTargets diff keyed on the full
+      // (Id, Port, AvailabilityZone) tuple — a changed Port registers the new
+      // tuple and deregisters the old one. Register first so a target whose
+      // spelling changed never has a window with zero registrations.
+      const newTargets = this.convertTargets(properties['Targets']);
+      const oldTargets = this.convertTargets(previousProperties['Targets']);
+      const targetKey = (t: TargetDescription) =>
+        JSON.stringify([t.Id, t.Port ?? null, t.AvailabilityZone ?? null]);
+      const oldTargetKeys = new Set(oldTargets.map(targetKey));
+      const newTargetKeys = new Set(newTargets.map(targetKey));
+      const targetsToRegister = newTargets.filter((t) => !oldTargetKeys.has(targetKey(t)));
+      const targetsToDeregister = oldTargets.filter((t) => !newTargetKeys.has(targetKey(t)));
+      if (targetsToRegister.length > 0) {
+        await this.getClient().send(
+          new RegisterTargetsCommand({ TargetGroupArn: physicalId, Targets: targetsToRegister })
+        );
+        this.logger.debug(`Registered ${targetsToRegister.length} target(s) for ${logicalId}`);
+      }
+      if (targetsToDeregister.length > 0) {
+        await this.getClient().send(
+          new DeregisterTargetsCommand({
+            TargetGroupArn: physicalId,
+            Targets: targetsToDeregister,
+          })
+        );
+        this.logger.debug(`Deregistered ${targetsToDeregister.length} target(s) for ${logicalId}`);
+      }
 
       // Describe to get current attributes
       const describeResponse = await this.getClient().send(
@@ -1000,17 +1398,10 @@ export class ELBv2Provider implements ResourceProvider {
       // no-drift round-trip is a clean no-op. A failure here THROWS (caught
       // by the outer try/catch and re-wrapped as a ProvisioningError) so
       // cdkd state is not written as-if-applied — the next deploy retries.
-      const newAttrs = this.normalizeAttributes(properties['ListenerAttributes']);
-      const oldAttrs = this.normalizeAttributes(previousProperties['ListenerAttributes']);
-      const newAttrMap = new Map(newAttrs.map((a) => [a.Key, a.Value]));
-      const oldAttrMap = new Map(oldAttrs.map((a) => [a.Key, a.Value]));
-      const submittedAttrs: Array<{ Key: string; Value: string }> = [];
-      for (const [k, v] of newAttrMap) {
-        if (oldAttrMap.get(k) !== v) submittedAttrs.push({ Key: k, Value: v });
-      }
-      for (const [k] of oldAttrMap) {
-        if (!newAttrMap.has(k)) submittedAttrs.push({ Key: k, Value: '' });
-      }
+      const submittedAttrs = this.diffAttributes(
+        this.normalizeAttributes(properties['ListenerAttributes']),
+        this.normalizeAttributes(previousProperties['ListenerAttributes'])
+      );
       if (submittedAttrs.length > 0) {
         await withRetry(
           () =>
@@ -1145,6 +1536,69 @@ export class ELBv2Provider implements ResourceProvider {
   }
 
   /**
+   * Key-diff two normalized `{Key, Value}` attribute lists into the payload
+   * for a Modify*Attributes call: changed values from `newAttrs` win, and
+   * keys present only in `oldAttrs` are pushed back through `removalValue` —
+   * by default the empty string, which ModifyLoadBalancerAttributes /
+   * ModifyListenerAttributes accept as "clear the override". A resolver
+   * returning `undefined` SKIPS the entry (the resolver owns any warn).
+   * An empty return means nothing changed and the call should be skipped.
+   * Shared by the LoadBalancer / TargetGroup / Listener update paths.
+   */
+  private diffAttributes(
+    newAttrs: Array<{ Key: string; Value: string }>,
+    oldAttrs: Array<{ Key: string; Value: string }>,
+    removalValue: (key: string) => string | undefined = () => ''
+  ): Array<{ Key: string; Value: string }> {
+    const newAttrMap = new Map(newAttrs.map((a) => [a.Key, a.Value]));
+    const oldAttrMap = new Map(oldAttrs.map((a) => [a.Key, a.Value]));
+    const submitted: Array<{ Key: string; Value: string }> = [];
+    for (const [k, v] of newAttrMap) {
+      if (oldAttrMap.get(k) !== v) submitted.push({ Key: k, Value: v });
+    }
+    for (const [k] of oldAttrMap) {
+      if (!newAttrMap.has(k)) {
+        const value = removalValue(k);
+        if (value !== undefined) submitted.push({ Key: k, Value: value });
+      }
+    }
+    return submitted;
+  }
+
+  /**
+   * Normalize a CFn `Targets` value (an array of `{ Id, Port?,
+   * AvailabilityZone? }` objects) into the SDK's `TargetDescription[]` shape.
+   * Entries missing an `Id` are dropped (Id is the only required member);
+   * `Port` is numeric-coerced (CFn templates may carry it as a string).
+   * Returns `[]` for an absent / non-array value so callers can branch on
+   * `.length`.
+   */
+  private convertTargets(raw: unknown): TargetDescription[] {
+    if (!Array.isArray(raw)) return [];
+    const out: TargetDescription[] = [];
+    for (const entry of raw) {
+      if (
+        entry === null ||
+        typeof entry !== 'object' ||
+        typeof (entry as CfnTargetDescription).Id !== 'string' ||
+        ((entry as CfnTargetDescription).Id as string).length === 0
+      ) {
+        this.logger.warn(
+          `Dropping malformed TargetGroup Targets entry (missing string Id): ${JSON.stringify(entry)}`
+        );
+        continue;
+      }
+      const e = entry as CfnTargetDescription;
+      out.push({
+        Id: e.Id as string,
+        ...(e.Port !== undefined && { Port: Number(e.Port) }),
+        ...(e.AvailabilityZone !== undefined && { AvailabilityZone: e.AvailabilityZone }),
+      });
+    }
+    return out;
+  }
+
+  /**
    * Apply a diff between old and new CFn-shape Tags arrays via ELBv2's
    * `AddTags` / `RemoveTags` APIs. Both accept `ResourceArns: [arn]`
    * (single ARN), `Tags: [{Key, Value}]` for AddTags, and
@@ -1273,6 +1727,35 @@ export class ELBv2Provider implements ResourceProvider {
     if (lb.Scheme !== undefined) result['Scheme'] = lb.Scheme;
     if (lb.Type !== undefined) result['Type'] = lb.Type;
     if (lb.IpAddressType !== undefined) result['IpAddressType'] = lb.IpAddressType;
+    if (lb.EnablePrefixForIpv6SourceNat !== undefined) {
+      result['EnablePrefixForIpv6SourceNat'] = lb.EnablePrefixForIpv6SourceNat;
+    }
+    if (lb.EnforceSecurityGroupInboundRulesOnPrivateLinkTraffic !== undefined) {
+      result['EnforceSecurityGroupInboundRulesOnPrivateLinkTraffic'] =
+        lb.EnforceSecurityGroupInboundRulesOnPrivateLinkTraffic;
+    }
+    // Flatten the SDK's IpamPools wrapper back to the CFn spelling.
+    if (lb.IpamPools?.Ipv4IpamPoolId !== undefined) {
+      result['Ipv4IpamPoolId'] = lb.IpamPools.Ipv4IpamPoolId;
+    }
+
+    // MinimumLoadBalancerCapacity via DescribeCapacityReservation —
+    // best-effort like the attribute reads below; emitted only when a
+    // reservation is actually set (CapacityUnits > 0) so LBs without one
+    // don't grow a phantom key.
+    try {
+      const capResp = await this.getClient().send(
+        new DescribeCapacityReservationCommand({ LoadBalancerArn: physicalId })
+      );
+      const units = capResp.MinimumLoadBalancerCapacity?.CapacityUnits;
+      if (units !== undefined && units > 0) {
+        result['MinimumLoadBalancerCapacity'] = { CapacityUnits: units };
+      }
+    } catch (err) {
+      if (this.isNotFoundError(err)) return undefined;
+      // Permission errors etc — leave key absent rather than firing
+      // false drift on every run.
+    }
 
     // LoadBalancerAttributes via DescribeLoadBalancerAttributes. AWS
     // returns the FULL attribute set (every key valid for this LB type,
@@ -1344,12 +1827,58 @@ export class ELBv2Provider implements ResourceProvider {
     if (tg.UnhealthyThresholdCount !== undefined) {
       result['UnhealthyThresholdCount'] = tg.UnhealthyThresholdCount;
     }
+    if (tg.IpAddressType !== undefined) result['IpAddressType'] = tg.IpAddressType;
+    if (tg.TargetControlPort !== undefined) result['TargetControlPort'] = tg.TargetControlPort;
     const matcher: Record<string, unknown> = {};
     if (tg.Matcher?.HttpCode !== undefined) matcher['HttpCode'] = tg.Matcher.HttpCode;
     if (tg.Matcher?.GrpcCode !== undefined) matcher['GrpcCode'] = tg.Matcher.GrpcCode;
     result['Matcher'] = matcher;
+
+    // TargetGroupAttributes via DescribeTargetGroupAttributes — the FULL
+    // attribute set sorted by Key, same model as LoadBalancerAttributes /
+    // ListenerAttributes. Targets are deliberately NOT read back — see
+    // getDriftUnknownPaths.
+    try {
+      const attrsResp = await this.getClient().send(
+        new DescribeTargetGroupAttributesCommand({ TargetGroupArn: physicalId })
+      );
+      const attrs = (attrsResp.Attributes ?? [])
+        .filter(
+          (a): a is { Key: string; Value: string } =>
+            typeof a.Key === 'string' && typeof a.Value === 'string'
+        )
+        .map((a) => ({ Key: a.Key, Value: a.Value }))
+        .sort((a, b) => a.Key.localeCompare(b.Key));
+      result['TargetGroupAttributes'] = attrs;
+    } catch (err) {
+      if (this.isNotFoundError(err)) return undefined;
+      // Permission errors etc — leave key absent rather than firing
+      // false drift on every run.
+    }
+
     await this.attachTags(result, physicalId);
     return result;
+  }
+
+  getDriftUnknownPaths(resourceType: string): string[] {
+    switch (resourceType) {
+      case 'AWS::ElasticLoadBalancingV2::LoadBalancer':
+        // EnableCapacityReservationProvisionStabilize is a CFn-only
+        // orchestration flag (wait-for-provisioned opt-in) with no AWS-side
+        // readback — it is not a resource property on the wire.
+        return ['EnableCapacityReservationProvisionStabilize'];
+      case 'AWS::ElasticLoadBalancingV2::TargetGroup':
+        // Targets ARE readable via DescribeTargetHealth, but the readback is
+        // an unordered object list (the drift comparator is positional and
+        // drift-normalize only canonicalizes tag lists / plain-string id
+        // arrays) and deregistration is asynchronous (a just-removed target
+        // reports `draining` for minutes) — both would fire phantom drift on
+        // every template whose order differs from AWS's. Declared unknown
+        // until object-array unordered comparison exists.
+        return ['Targets'];
+      default:
+        return [];
+    }
   }
 
   private async readListener(physicalId: string): Promise<Record<string, unknown> | undefined> {

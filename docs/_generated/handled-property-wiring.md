@@ -10,7 +10,7 @@ A computed read `properties[k]` also counts when `k` iterates a literal name tab
 ## Summary
 
 - Provider classes classified: **84**
-- Declared properties: **1105** (**1103** with read evidence)
+- Declared properties: **1113** (**1111** with read evidence)
 - Fully wired classes: **82**
 - Allow-listed classes (visible, non-blocking): **2**
 - Classes with a whole-bag blind spot (recorded, never an excuse): **19**
@@ -41,7 +41,7 @@ Sites where a whole property bag left the evidence walk (a spread, an unresolvab
 | `DynamoDBGlobalTableProvider` (dynamodb-globaltable-provider.ts) | `extractLocalTags(...) in update()` |
 | `ECRProvider` (ecr-provider.ts) | `hasCdkAutoDeleteTag(...) in delete()` |
 | `EFSProvider` (efs-provider.ts) | `computed key in updateFileSystem()` |
-| `ELBv2Provider` (elbv2-provider.ts) | `stripHandled(...) in updateLoadBalancer()` |
+| `ELBv2Provider` (elbv2-provider.ts) | `computed key in updateTargetGroup()`, `stripHandled(...) in updateLoadBalancer()` |
 | `EMRClusterProvider` (emr-cluster-provider.ts) | `computed key in update()`, `object spread in update()` |
 | `EMRInstanceFleetConfigProvider` (emr-instance-fleet-config-provider.ts) | `computed key in update()`, `object spread in update()` |
 | `EMRInstanceGroupConfigProvider` (emr-instance-group-config-provider.ts) | `computed key in update()`, `object spread in update()` |
@@ -87,7 +87,7 @@ Sites where a whole property bag left the evidence walk (a spread, an unresolvab
 | `ECSProvider` | ecs-provider.ts | wired | 40 | 40 |
 | `EFSProvider` | efs-provider.ts | wired | 18 | 18 |
 | `ElastiCacheProvider` | elasticache-provider.ts | wired | 26 | 26 |
-| `ELBv2Provider` | elbv2-provider.ts | wired | 30 | 30 |
+| `ELBv2Provider` | elbv2-provider.ts | wired | 38 | 38 |
 | `EMRClusterProvider` | emr-cluster-provider.ts | wired | 27 | 27 |
 | `EMRInstanceFleetConfigProvider` | emr-instance-fleet-config-provider.ts | wired | 8 | 8 |
 | `EMRInstanceGroupConfigProvider` | emr-instance-group-config-provider.ts | wired | 11 | 11 |
