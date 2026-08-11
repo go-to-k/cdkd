@@ -665,9 +665,14 @@
     {
       "resourceType": "AWS::CloudTrail::Trail",
       "integs": [
+        "cloudtrail-trail",
         "infra-security"
       ],
       "signals": {
+        "cloudtrail-trail": [
+          "l1",
+          "literal"
+        ],
         "infra-security": [
           "l2",
           "literal"
@@ -3376,6 +3381,7 @@
         "cc-getatt-readback",
         "cc-protection-flip-eks",
         "ci-cd",
+        "cloudtrail-trail",
         "composite-stack",
         "deep-getatt-chains",
         "destroy-interrupt",
@@ -3458,6 +3464,9 @@
           "l2"
         ],
         "ci-cd": [
+          "l2"
+        ],
+        "cloudtrail-trail": [
           "l2"
         ],
         "composite-stack": [
@@ -4352,6 +4361,7 @@
       "resourceType": "AWS::Logs::LogGroup",
       "integs": [
         "apigw-stage-throttling",
+        "cloudtrail-trail",
         "cloudwatch",
         "composite-stack",
         "drift-revert",
@@ -4374,6 +4384,9 @@
         "apigw-stage-throttling": [
           "l2",
           "literal"
+        ],
+        "cloudtrail-trail": [
+          "l2"
         ],
         "cloudwatch": [
           "l2"
@@ -4558,6 +4571,7 @@
         "bucket-deployment",
         "cc-getatt-readback",
         "ci-cd",
+        "cloudtrail-trail",
         "composite-stack",
         "conditions",
         "context-test",
@@ -4615,6 +4629,9 @@
         "ci-cd": [
           "l2",
           "literal"
+        ],
+        "cloudtrail-trail": [
+          "l2"
         ],
         "composite-stack": [
           "l2",
@@ -4858,6 +4875,7 @@
       "resourceType": "AWS::SNS::Topic",
       "integs": [
         "bench-sdk",
+        "cloudtrail-trail",
         "cloudwatch",
         "codecommit",
         "composite-stack",
@@ -4892,6 +4910,9 @@
       ],
       "signals": {
         "bench-sdk": [
+          "l2"
+        ],
+        "cloudtrail-trail": [
           "l2"
         ],
         "cloudwatch": [
