@@ -14,6 +14,22 @@
 # the structural counterpart of the CLAUDE.md "always destroy bug-hunt
 # resources" rule: the rule says it, the hook enforces it.
 #
+# SCOPE OF THE BLOCK DECISION (issue #1615):
+#   * `gh pr create` / `gh pr merge` AGGREGATE across ALL owners (plus the
+#     legacy flat sentinel): merging publishes a shared artifact, so the repo
+#     must not advance while ANY hunt still has live resources.
+#   * `git commit` is scoped to the CALLER'S OWNER only. A commit creates no
+#     AWS resources and changes nothing about another owner's orphans, and the
+#     destructive release (`bughunt-track.sh clear`) is per-owner BY DESIGN —
+#     so blocking a third party hands them a remediation they must not follow
+#     (destroying stacks they do not own is exactly the cross-session trespass
+#     the worktree-owner rules forbid). When a commit is allowed while OTHER
+#     owners still have pending stacks, a NON-blocking notice is printed to
+#     stderr so the information is not lost.
+#   * The legacy flat sentinel `.markgate-bughunt-pending` carries no owner
+#     attribution, so it stays conservative and blocks `git commit` for every
+#     caller too.
+#
 # The sentinel is resolved at the SHARED main-tree root (via --git-common-dir)
 # so a fix committed from a feature worktree still sees a sentinel armed from
 # the main tree.
@@ -57,8 +73,14 @@ hook_cwd=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null || echo "")
 git_commit_re='git([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+commit([[:space:]]|$)'
 gh_pr_re='gh([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+pr[[:space:]]+(create|merge)([[:space:]]|$|[|;&`)])'
 
-if ! cmd_matches_verb "$cmd" "$git_commit_re" \
-  && ! cmd_matches_verb "$cmd" "$gh_pr_re"; then
+# Record WHICH guarded verb matched — the block decision is verb-scoped
+# (issue #1615). A command containing BOTH (e.g. `git commit && gh pr create`)
+# takes the pr path, i.e. the stricter repo-wide aggregation.
+is_commit=0
+is_pr=0
+cmd_matches_verb "$cmd" "$git_commit_re" && is_commit=1
+cmd_matches_verb "$cmd" "$gh_pr_re" && is_pr=1
+if [ "$is_commit" -eq 0 ] && [ "$is_pr" -eq 0 ]; then
   exit 0
 fi
 
@@ -81,11 +103,11 @@ else
   main_root="$(git -C "$target_dir" rev-parse --show-toplevel 2>/dev/null || echo "$target_dir")"
 fi
 # Per-owner sentinel files live under this directory (one file per concurrent
-# bug-hunt owner — see bughunt-track.sh's PARALLEL-SAFE DESIGN). The gate
-# AGGREGATES across all owners on purpose: a shared repo must not accept a
-# commit / PR while ANY hunt still has live resources. Only the destructive
-# `clear` side is per-owner (so one agent can never release another's gate);
-# the read-only block decision here is deliberately repo-wide.
+# bug-hunt owner — see bughunt-track.sh's PARALLEL-SAFE DESIGN). Only the
+# destructive `clear` side is per-owner everywhere (so one agent can never
+# release another's gate); the read-only block decision here is repo-wide for
+# `gh pr create` / `gh pr merge` and owner-scoped for `git commit` — see the
+# header comment (issue #1615).
 pending_dir="${main_root}/.markgate-bughunt-pending.d"
 # Legacy single-file sentinel (pre per-owner) is still honored so an in-flight
 # upgrade or an older bughunt-track.sh writer is not silently un-gated.
@@ -103,10 +125,66 @@ fi
 # No sentinel sources → no pending bug-hunt resources → pass.
 [ "${#sources[@]}" -gt 0 ] || exit 0
 
-# Count non-blank stack lines across all sources. cat is guarded by the
-# non-empty `sources` check above so it never reads stdin.
-pending=$(cat "${sources[@]}" 2>/dev/null | grep -cvE '^[[:space:]]*$' || echo 0)
-[ "$pending" -gt 0 ] || exit 0
+# Split the sources into the set that BLOCKS this command and the set that is
+# merely informational (foreign owners, git-commit path only).
+block_sources=()
+other_sources=()
+if [ "$is_pr" -eq 1 ]; then
+  # pr create / merge: repo-wide aggregation across all owners — unchanged.
+  block_sources=("${sources[@]}")
+else
+  # git commit: owner-scoped. Derive the caller's owner key EXACTLY the way
+  # bughunt-track.sh does (explicit $CDKD_BUGHUNT_OWNER override wins, else
+  # the target worktree's toplevel), sanitized identically, so the gate and
+  # the tracker agree on the key.
+  owner_raw="${CDKD_BUGHUNT_OWNER:-}"
+  if [ -z "$owner_raw" ]; then
+    owner_raw="$(git -C "$target_dir" rev-parse --show-toplevel 2>/dev/null || echo "$target_dir")"
+  fi
+  owner_key="$(printf '%s' "$owner_raw" | sed 's#[^A-Za-z0-9._-]#_#g')"
+  for f in "${sources[@]}"; do
+    if [ "$f" = "${pending_dir}/${owner_key}" ]; then
+      block_sources+=("$f")
+    elif [ "$f" = "$legacy" ]; then
+      # The legacy flat sentinel carries no owner attribution — it may well be
+      # this caller's own pre-upgrade hunt. Stay conservative: block.
+      block_sources+=("$f")
+    else
+      other_sources+=("$f")
+    fi
+  done
+fi
+
+# Count non-blank stack lines across the blocking sources. cat is guarded by
+# the non-empty check so it never reads stdin.
+pending=0
+if [ "${#block_sources[@]}" -gt 0 ]; then
+  pending=$(cat "${block_sources[@]}" 2>/dev/null | grep -cvE '^[[:space:]]*$' || echo 0)
+fi
+
+if [ "$pending" -eq 0 ]; then
+  # Allowed. On the git-commit path, if OTHER owners still have pending
+  # stacks, surface them as a NON-blocking informational notice (exit 0) so
+  # the information is not lost — but hand out NO remediation: destroying or
+  # clearing another owner's stacks is exactly what the caller must not do.
+  if [ "${#other_sources[@]}" -gt 0 ]; then
+    other_pending=$(cat "${other_sources[@]}" 2>/dev/null | grep -cvE '^[[:space:]]*$' || echo 0)
+    if [ "$other_pending" -gt 0 ]; then
+      {
+        echo "[bughunt-clean-gate notice] informational only — this commit is ALLOWED."
+        echo "Other bug-hunt owner(s) still have ${other_pending} un-destroyed stack(s):"
+        for f in "${other_sources[@]}"; do
+          ob="$(basename "$f")"
+          grep -vE '^[[:space:]]*$' "$f" 2>/dev/null | sed "s|^|  - |;s|\$| (owner file: ${ob})|"
+        done
+        echo "These are NOT yours to act on: only the owning session (or a human) may"
+        echo "destroy those stacks and run bughunt-track.sh clear. gh pr create/merge"
+        echo "will remain blocked repo-wide until every owner is clean."
+      } >&2
+    fi
+  fi
+  exit 0
+fi
 
 {
   echo "Blocked by bughunt-clean-gate: a /hunt-bugs session still has"
@@ -114,7 +192,7 @@ pending=$(cat "${sources[@]}" 2>/dev/null | grep -cvE '^[[:space:]]*$' || echo 0
   echo "  ${pending_dir}/"
   echo
   echo "Pending stacks:"
-  cat "${sources[@]}" 2>/dev/null | grep -vE '^[[:space:]]*$' | sed 's/^/  - /'
+  cat "${block_sources[@]}" 2>/dev/null | grep -vE '^[[:space:]]*$' | sed 's/^/  - /'
   echo
   echo "Required action — destroy every tracked stack, verify zero orphans,"
   echo "then release the gate (run clear from the SAME worktree you armed from,"
