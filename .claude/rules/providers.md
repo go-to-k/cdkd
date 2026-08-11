@@ -44,7 +44,14 @@ helper exists to stop:
   its `onUnusable`-only subset (`ConfigArrayOptions`) for LIST blocks — under
   the callback it warns and returns `undefined` so the caller decides the skip
   unit, and the S3 `TagFilters` guards skip the whole configuration item /
-  whole lifecycle Put rather than applying a widened scope (issue #1579); and
+  whole lifecycle Put rather than applying a widened scope (issue #1579);
+  `requireConfigObject` is the OBJECT-block twin of that guard
+  (`ConfigObjectOptions`, same overloads, same caller-owned ABSENT case) for a
+  container whose members are probed for PRESENCE rather than read as a
+  string — where `readConfigString`'s rule 2 is unreachable and a malformed
+  value reads as an EMPTY block, so the S3 lifecycle `Filter` / analytics
+  `StorageClassAnalysis` / `.DataExport` guards skip with the same units
+  (issue #1581); and
   `toSdkGlobalSecondaryIndexes` takes the callback as `onUnusableIndexes` —
   wired from `create()` AND, since issue #1551, from both of `update()`'s
   call sites (desired and previous). Prefer this.

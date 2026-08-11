@@ -892,6 +892,33 @@ An absent container and an absent key still take the default (`{}` legitimately
 means "defaulted"); a container that is present but not an object, and a key
 that is present but not a non-blank string, are refused by name.
 
+**A container you never read a string out of needs its own guard.** The two
+above can only fire while reading a FIELD, so a block whose members you merely
+probe for PRESENCE — or hand to `.map` — slips past both, and a malformed value
+there reads as an EMPTY block rather than as an error:
+
+```typescript
+import { requireConfigArray, requireConfigObject } from '../config-shape.js';
+
+// LIST block: a truthy non-array reaches `.map` and dies with a raw TypeError,
+// a falsy one is silently dropped by the truthiness gate in front of it.
+const tagFilters = requireConfigArray(raw, 'AWS::S3::Bucket …TagFilters');
+
+// OBJECT block: every probe of a malformed container indexes to `undefined`,
+// so the block reads as empty and the caller proceeds WITHOUT it — an S3
+// lifecycle rule losing its whole location scope and applying bucket-wide.
+const filter = requireConfigObject(raw, 'AWS::S3::Bucket …Rules[].Filter');
+```
+
+Both leave the ABSENT case to you (`raw != null && …`), because an omitted
+block legitimately means "no entries" / "defaulted". Both also take the
+`onUnusable` downgrade below, and when you pass it they return `undefined`
+instead of throwing — **you** then decide the skip UNIT, and that decision is
+the whole point: skipping must never be the misbehavior you were refusing.
+S3's per-item Puts skip the single configuration item, while its lifecycle Put
+skips the WHOLE configuration, because that call replaces every rule and
+applying the valid siblings alone would DELETE the malformed one from AWS.
+
 Pass the **desired** side only. `previousProperties` comes from cdkd state
 rather than the user's template, so refusing a malformed value recorded there
 by an older binary would make the stack undeployable with no way out short of

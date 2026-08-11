@@ -66,6 +66,7 @@ import {
   readConfigString,
   replayWarn,
   requireConfigArray,
+  requireConfigObject,
   requireConfigString,
 } from '../config-shape.js';
 import { generateResourceName } from '../resource-name.js';
@@ -456,7 +457,26 @@ export class S3BucketProvider implements ResourceProvider {
     // WHOLE live lifecycle configuration alone — the Put replaces every rule,
     // so skipping only the malformed rule would silently DELETE it from AWS.
     for (const rule of lifecycleConfig.Rules) {
-      const filter = rule['Filter'] as Record<string, unknown> | undefined;
+      // ...and the `Filter` CONTAINER those TagFilters live in, one level up
+      // (issue #1581). A present-but-non-OBJECT `Filter` (`Filter: 'logs/'`,
+      // an array, an unresolved intrinsic) indexes EVERY member probe in
+      // `gatherScope` — Prefix / TagFilters / ObjectSizeGreaterThan /
+      // ObjectSizeLessThan — to `undefined`, so the rule kept NO scope at all
+      // and fell through to the empty-prefix V2 `Filter` below, applying to
+      // the WHOLE bucket. For an expiration rule that deletes objects the rule
+      // was never meant to touch: the same #1388 widened-scope hazard as the
+      // TagFilters guard, reached through the parent container instead. Same
+      // refusal split, and the same whole-Put skip unit for the same reason.
+      const rawFilter = rule['Filter'];
+      if (
+        rawFilter != null &&
+        requireConfigObject(rawFilter, 'AWS::S3::Bucket LifecycleConfiguration.Rules[].Filter', {
+          ...(onUnusable ? { onUnusable } : {}),
+        }) === undefined
+      ) {
+        return;
+      }
+      const filter = rawFilter as Record<string, unknown> | undefined;
       const rawTagFilters = filter?.['TagFilters'] ?? rule['TagFilters'];
       if (rawTagFilters != null) {
         const validated = requireConfigArray(
@@ -515,7 +535,13 @@ export class S3BucketProvider implements ResourceProvider {
     // emit EVERY rule in V2 Filter form (a bare top-level `Prefix` becomes
     // `Filter: { Prefix }`).
     const isPlainPrefixOnly = (rule: Record<string, unknown>): boolean => {
-      if (rule['Filter'] !== undefined) return false;
+      // `!= null`, not `!== undefined`: the container guard above treats an
+      // explicit `Filter: null` as ABSENT (nothing to refuse), so the strict
+      // compare read the same value as PRESENT here and forced every rule in
+      // the configuration into V2 Filter form. Aligning the two makes `null`
+      // mean "block omitted" throughout the function, matching what the
+      // sibling `TagFilters` reads already do.
+      if (rule['Filter'] != null) return false;
       const s = gatherScope(rule);
       return (
         s.prefix !== undefined &&
@@ -1130,6 +1156,18 @@ export class S3BucketProvider implements ResourceProvider {
     configs: Array<Record<string, unknown>>,
     onUnusable?: (message: string) => void
   ): Promise<void> {
+    // The per-ITEM `config` container is deliberately NOT guarded here, and
+    // the audit that settled it belongs next to the decision (issue #1581).
+    // Of the five per-item appliers, three already refuse a non-object item
+    // through an existing `readConfigString(config | rule, …)` — intelligent
+    // tiering (`Status`), inventory (`IncludedObjectVersions`) and the
+    // lifecycle rules (`Status`). Metrics and analytics read only `Id` off the
+    // item, so a malformed one reaches AWS — but `id` is a REQUIRED query
+    // parameter of `PutBucket{Metrics,Analytics}Configuration`, so the request
+    // is rejected outright. That is a LOUD failure, not the silent
+    // scope-widening / silent-drop hazard the container guards exist for, so
+    // adding a refusal here would buy a nicer error message at the cost of a
+    // behavior change on the replay path (skip instead of surface).
     for (const config of configs) {
       const id = config['Id'] as string;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1311,9 +1349,27 @@ export class S3BucketProvider implements ResourceProvider {
   ): Promise<void> {
     for (const config of configs) {
       const id = config['Id'] as string;
-      const storageClassAnalysis = config['StorageClassAnalysis'] as
-        | Record<string, unknown>
-        | undefined;
+      // The `StorageClassAnalysis` CONTAINER (issue #1581) — the analytics
+      // sibling of the lifecycle `Filter` guard. A present-but-non-OBJECT
+      // value indexes the `DataExport` probe below to `undefined`, so the
+      // whole data-export block was dropped and the configuration deployed as
+      // `StorageClassAnalysis: {}` — which S3 ACCEPTS as "no export", so
+      // nothing surfaced anywhere. Refuse on a template-path create; on the
+      // state-replay paths warn and skip THIS configuration item (the Put is
+      // per-Id, so the siblings are unaffected — unlike the lifecycle Put,
+      // which replaces every rule at once).
+      const rawStorageClassAnalysis = config['StorageClassAnalysis'];
+      if (
+        rawStorageClassAnalysis != null &&
+        requireConfigObject(
+          rawStorageClassAnalysis,
+          'AWS::S3::Bucket AnalyticsConfigurations[].StorageClassAnalysis',
+          { ...(onUnusable ? { onUnusable } : {}) }
+        ) === undefined
+      ) {
+        continue;
+      }
+      const storageClassAnalysis = rawStorageClassAnalysis as Record<string, unknown> | undefined;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const analyticsConfig: any = {
         Id: id,
@@ -1355,7 +1411,25 @@ export class S3BucketProvider implements ResourceProvider {
       // `.claude/rules/providers.md` names #1493 as having shipped exactly that
       // gate bug once already.
       if (storageClassAnalysis?.['DataExport'] != null) {
-        const dataExport = storageClassAnalysis['DataExport'] as Record<string, unknown>;
+        const rawDataExport = storageClassAnalysis['DataExport'];
+        // The `DataExport` container itself (issue #1581). It WAS refused
+        // before this change, but only INDIRECTLY and only in one direction:
+        // the `readConfigString(dataExport, 'OutputSchemaVersion', …)` below
+        // carries no `onUnusable`, so a malformed block hard-threw on the
+        // state-replay paths too — the un-rollbackable refusal every sibling
+        // guard in this file exists to avoid. Guarding it explicitly moves the
+        // replay path onto the same warn-and-skip contract as its siblings and
+        // leaves the create-path refusal exactly where it was.
+        if (
+          requireConfigObject(
+            rawDataExport,
+            'AWS::S3::Bucket AnalyticsConfigurations[].StorageClassAnalysis.DataExport',
+            { ...(onUnusable ? { onUnusable } : {}) }
+          ) === undefined
+        ) {
+          continue;
+        }
+        const dataExport = rawDataExport as Record<string, unknown>;
         const analyticsDestPath =
           'AWS::S3::Bucket AnalyticsConfigurations[].StorageClassAnalysis.DataExport.Destination';
         const rawDest = dataExport['Destination'];
