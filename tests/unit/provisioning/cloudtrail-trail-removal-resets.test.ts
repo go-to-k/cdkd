@@ -39,10 +39,19 @@ const TRAIL_ARN = 'arn:aws:cloudtrail:us-east-1:0:trail/my-trail';
 const TYPE = 'AWS::CloudTrail::Trail';
 const BASE = { S3BucketName: 'my-bucket' };
 
-/** The single UpdateTrail input of the update, or undefined. */
-function updateTrailInput(): Record<string, unknown> | undefined {
-  const call = mockSend.mock.calls.find((c) => c[0] instanceof UpdateTrailCommand);
-  return call?.[0].input as Record<string, unknown> | undefined;
+/**
+ * The single UpdateTrail input of the update.
+ *
+ * Asserts the command was actually SENT before returning. Without that, every
+ * `toBeUndefined()` assertion below — including the CFn-parity retention pins,
+ * whose ONLY assertions are of that shape — would pass vacuously against an
+ * implementation that stops issuing `UpdateTrail` at all (e.g. a future
+ * "skip the call when nothing changed" optimization).
+ */
+function updateTrailInput(): Record<string, unknown> {
+  const calls = mockSend.mock.calls.filter((c) => c[0] instanceof UpdateTrailCommand);
+  expect(calls).toHaveLength(1);
+  return calls[0]![0].input as Record<string, unknown>;
 }
 
 describe('CloudTrailProvider removal resets (issue #1160)', () => {
@@ -68,12 +77,12 @@ describe('CloudTrailProvider removal resets (issue #1160)', () => {
   describe('S3KeyPrefix', () => {
     it('removed: resets to the empty string', async () => {
       await provider.update('T', TRAIL_ARN, TYPE, BASE, { ...BASE, S3KeyPrefix: 'logs' });
-      expect(updateTrailInput()?.['S3KeyPrefix']).toBe('');
+      expect(updateTrailInput()['S3KeyPrefix']).toBe('');
     });
 
     it('never-present: sends undefined (no reset)', async () => {
       await provider.update('T', TRAIL_ARN, TYPE, BASE, BASE);
-      expect(updateTrailInput()?.['S3KeyPrefix']).toBeUndefined();
+      expect(updateTrailInput()['S3KeyPrefix']).toBeUndefined();
     });
 
     it('kept: a desired value passes through', async () => {
@@ -81,7 +90,7 @@ describe('CloudTrailProvider removal resets (issue #1160)', () => {
         ...BASE,
         S3KeyPrefix: 'logs',
       });
-      expect(updateTrailInput()?.['S3KeyPrefix']).toBe('new');
+      expect(updateTrailInput()['S3KeyPrefix']).toBe('new');
     });
 
     it("a previous-side '' placeholder is NOT a removal (readCurrentState always-emits it)", async () => {
@@ -89,19 +98,19 @@ describe('CloudTrailProvider removal resets (issue #1160)', () => {
       // had a prefix. Treating that as "was present" would send a pointless
       // clear on every no-op update of an unconfigured trail.
       await provider.update('T', TRAIL_ARN, TYPE, BASE, { ...BASE, S3KeyPrefix: '' });
-      expect(updateTrailInput()?.['S3KeyPrefix']).toBeUndefined();
+      expect(updateTrailInput()['S3KeyPrefix']).toBeUndefined();
     });
   });
 
   describe('SnsTopicName', () => {
     it('removed: resets to the empty string', async () => {
       await provider.update('T', TRAIL_ARN, TYPE, BASE, { ...BASE, SnsTopicName: 'my-topic' });
-      expect(updateTrailInput()?.['SnsTopicName']).toBe('');
+      expect(updateTrailInput()['SnsTopicName']).toBe('');
     });
 
     it('never-present: sends undefined (no reset)', async () => {
       await provider.update('T', TRAIL_ARN, TYPE, BASE, BASE);
-      expect(updateTrailInput()?.['SnsTopicName']).toBeUndefined();
+      expect(updateTrailInput()['SnsTopicName']).toBeUndefined();
     });
 
     it('kept: a desired value passes through', async () => {
@@ -109,24 +118,37 @@ describe('CloudTrailProvider removal resets (issue #1160)', () => {
         ...BASE,
         SnsTopicName: 'my-topic',
       });
-      expect(updateTrailInput()?.['SnsTopicName']).toBe('other');
+      expect(updateTrailInput()['SnsTopicName']).toBe('other');
     });
 
     it("a previous-side '' placeholder is NOT a removal", async () => {
       await provider.update('T', TRAIL_ARN, TYPE, BASE, { ...BASE, SnsTopicName: '' });
-      expect(updateTrailInput()?.['SnsTopicName']).toBeUndefined();
+      expect(updateTrailInput()['SnsTopicName']).toBeUndefined();
+    });
+
+    it("a DESIRED-side '' against a configured topic clears it", async () => {
+      // Reachable via `cdkd drift --revert`, which merges the AWS-current
+      // snapshot into the desired side — and `readCurrentState` always-emits
+      // the `''` placeholder. Sanitizing the desired side to `undefined`
+      // makes it a removal, which is the correct outcome: the baseline had
+      // no topic.
+      await provider.update('T', TRAIL_ARN, TYPE, { ...BASE, SnsTopicName: '' }, {
+        ...BASE,
+        SnsTopicName: 'my-topic',
+      });
+      expect(updateTrailInput()['SnsTopicName']).toBe('');
     });
   });
 
   describe('IsMultiRegionTrail', () => {
     it('removed: resets to false', async () => {
       await provider.update('T', TRAIL_ARN, TYPE, BASE, { ...BASE, IsMultiRegionTrail: true });
-      expect(updateTrailInput()?.['IsMultiRegionTrail']).toBe(false);
+      expect(updateTrailInput()['IsMultiRegionTrail']).toBe(false);
     });
 
     it('never-present: sends undefined (no reset)', async () => {
       await provider.update('T', TRAIL_ARN, TYPE, BASE, BASE);
-      expect(updateTrailInput()?.['IsMultiRegionTrail']).toBeUndefined();
+      expect(updateTrailInput()['IsMultiRegionTrail']).toBeUndefined();
     });
 
     it('kept: a desired value passes through', async () => {
@@ -134,19 +156,29 @@ describe('CloudTrailProvider removal resets (issue #1160)', () => {
         ...BASE,
         IsMultiRegionTrail: true,
       });
-      expect(updateTrailInput()?.['IsMultiRegionTrail']).toBe(true);
+      expect(updateTrailInput()['IsMultiRegionTrail']).toBe(true);
+    });
+
+    it('an explicit desired FALSE is forwarded, not swallowed as falsy', async () => {
+      // The `kept` case above passes `true`/`true`, which an implementation
+      // that simply returned `previousValue` would also satisfy. A desired
+      // `false` against a never-present previous is the shape that
+      // discriminates: a truthiness-based `newValue || clearValue` yields
+      // `undefined` here and drops the user's explicit false.
+      await provider.update('T', TRAIL_ARN, TYPE, { ...BASE, IsMultiRegionTrail: false }, BASE);
+      expect(updateTrailInput()['IsMultiRegionTrail']).toBe(false);
     });
   });
 
   describe('EnableLogFileValidation', () => {
     it('removed: resets to false', async () => {
       await provider.update('T', TRAIL_ARN, TYPE, BASE, { ...BASE, EnableLogFileValidation: true });
-      expect(updateTrailInput()?.['EnableLogFileValidation']).toBe(false);
+      expect(updateTrailInput()['EnableLogFileValidation']).toBe(false);
     });
 
     it('never-present: sends undefined (no reset)', async () => {
       await provider.update('T', TRAIL_ARN, TYPE, BASE, BASE);
-      expect(updateTrailInput()?.['EnableLogFileValidation']).toBeUndefined();
+      expect(updateTrailInput()['EnableLogFileValidation']).toBeUndefined();
     });
 
     it('kept: a desired value passes through', async () => {
@@ -154,22 +186,27 @@ describe('CloudTrailProvider removal resets (issue #1160)', () => {
         ...BASE,
         EnableLogFileValidation: false,
       });
-      expect(updateTrailInput()?.['EnableLogFileValidation']).toBe(true);
+      expect(updateTrailInput()['EnableLogFileValidation']).toBe(true);
     });
   });
 
   describe('IncludeGlobalServiceEvents', () => {
     it('removed on a single-region trail: resets to false', async () => {
+      // `IsMultiRegionTrail: false` must be DECLARED for the reset to apply —
+      // `readCurrentState` always-emits it (`?? false`), so this is the shape
+      // a real previous side carries. Without it the trail's region scope is
+      // unknown and the reset is deliberately skipped (see below).
       await provider.update('T', TRAIL_ARN, TYPE, BASE, {
         ...BASE,
+        IsMultiRegionTrail: false,
         IncludeGlobalServiceEvents: true,
       });
-      expect(updateTrailInput()?.['IncludeGlobalServiceEvents']).toBe(false);
+      expect(updateTrailInput()['IncludeGlobalServiceEvents']).toBe(false);
     });
 
     it('never-present: sends undefined (no reset)', async () => {
       await provider.update('T', TRAIL_ARN, TYPE, BASE, BASE);
-      expect(updateTrailInput()?.['IncludeGlobalServiceEvents']).toBeUndefined();
+      expect(updateTrailInput()['IncludeGlobalServiceEvents']).toBeUndefined();
     });
 
     it('kept: a desired value passes through', async () => {
@@ -177,7 +214,7 @@ describe('CloudTrailProvider removal resets (issue #1160)', () => {
         ...BASE,
         IncludeGlobalServiceEvents: false,
       });
-      expect(updateTrailInput()?.['IncludeGlobalServiceEvents']).toBe(true);
+      expect(updateTrailInput()['IncludeGlobalServiceEvents']).toBe(true);
     });
 
     it('the reset is SKIPPED while the trail stays multi-region', async () => {
@@ -191,8 +228,21 @@ describe('CloudTrailProvider removal resets (issue #1160)', () => {
 
       await provider.update('T', TRAIL_ARN, TYPE, desired, previous);
 
-      expect(updateTrailInput()?.['IsMultiRegionTrail']).toBe(true);
-      expect(updateTrailInput()?.['IncludeGlobalServiceEvents']).toBeUndefined();
+      expect(updateTrailInput()['IsMultiRegionTrail']).toBe(true);
+      expect(updateTrailInput()['IncludeGlobalServiceEvents']).toBeUndefined();
+    });
+
+    it('the reset is SKIPPED when multi-region is UNKNOWN (absent on both sides)', async () => {
+      // Neither side declares IsMultiRegionTrail, so the live value cannot be
+      // derived — it may be `true` on a console-changed or imported trail,
+      // and sending globalEvents=false alone would then be REJECTED by AWS.
+      // Pass-through (the old no-op) is the safe fallback.
+      await provider.update('T', TRAIL_ARN, TYPE, BASE, {
+        ...BASE,
+        IncludeGlobalServiceEvents: true,
+      });
+      expect(updateTrailInput()['IsMultiRegionTrail']).toBeUndefined();
+      expect(updateTrailInput()['IncludeGlobalServiceEvents']).toBeUndefined();
     });
 
     it('the reset APPLIES when multi-region is itself being reset away', async () => {
@@ -205,8 +255,8 @@ describe('CloudTrailProvider removal resets (issue #1160)', () => {
 
       await provider.update('T', TRAIL_ARN, TYPE, BASE, previous);
 
-      expect(updateTrailInput()?.['IsMultiRegionTrail']).toBe(false);
-      expect(updateTrailInput()?.['IncludeGlobalServiceEvents']).toBe(false);
+      expect(updateTrailInput()['IsMultiRegionTrail']).toBe(false);
+      expect(updateTrailInput()['IncludeGlobalServiceEvents']).toBe(false);
     });
   });
 
@@ -224,8 +274,8 @@ describe('CloudTrailProvider removal resets (issue #1160)', () => {
 
     await provider.update('T', TRAIL_ARN, TYPE, BASE, previous);
 
-    expect(updateTrailInput()?.['CloudWatchLogsLogGroupArn']).toBeUndefined();
-    expect(updateTrailInput()?.['CloudWatchLogsRoleArn']).toBeUndefined();
+    expect(updateTrailInput()['CloudWatchLogsLogGroupArn']).toBeUndefined();
+    expect(updateTrailInput()['CloudWatchLogsRoleArn']).toBeUndefined();
   });
 
   it('unmeasured: KMSKeyId and IsOrganizationTrail are NOT reset (issue #1533)', async () => {
@@ -241,8 +291,8 @@ describe('CloudTrailProvider removal resets (issue #1160)', () => {
 
     await provider.update('T', TRAIL_ARN, TYPE, BASE, previous);
 
-    expect(updateTrailInput()?.['KmsKeyId']).toBeUndefined();
-    expect(updateTrailInput()?.['IsOrganizationTrail']).toBeUndefined();
+    expect(updateTrailInput()['KmsKeyId']).toBeUndefined();
+    expect(updateTrailInput()['IsOrganizationTrail']).toBeUndefined();
   });
 
   it('a full removal sends every reset in ONE UpdateTrail call', async () => {

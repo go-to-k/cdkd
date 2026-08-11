@@ -209,6 +209,21 @@ describe('isRetryableTransientError', () => {
       expect(isRetryableTransientError(new Error(message), message)).toBe(false);
     });
 
+    it('does not retry a plain CloudTrail authorization denial (#1160 anchor fence)', () => {
+      // The CloudTrail IAM-propagation pattern is anchored on the full
+      // "Verify in IAM that the role has adequate trust relationships"
+      // sentence, NOT the bare "Access denied" prefix. This pins that
+      // choice: broadening the anchor would make every CloudTrail
+      // authorization failure burn the ~48s dense-retry budget before
+      // surfacing, and no other test would notice.
+      // Deliberately NOT the "not authorized to perform" phrasing — that
+      // matches a pre-existing, broader propagation pattern, so it would
+      // pass this fence for the wrong reason.
+      const message = 'Access denied. Check the S3 bucket policy for the trail destination.';
+      expect(isRetryableTransientError(new Error(message), message)).toBe(false);
+      expect(isIamPropagationError(message)).toBe(false);
+    });
+
     it('does not retry on cdkd OWN expired credentials (no service-wrapped trailer)', () => {
       // The load-bearing guard for the assumed-session-token pattern: the JS
       // SDK reports the developer's own expired SSO session with the SAME

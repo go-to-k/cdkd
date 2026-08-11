@@ -23,6 +23,8 @@
 #   STATE_BUCKET - cdkd state bucket (e.g. cdkd-state-{accountId})
 #   AWS_REGION   - defaults to us-east-1
 
+set -euo pipefail
+
 # --- issue #1097 pattern 2: strict gone-probe helpers -----------------------
 # A destroy/leak assertion must distinguish "not found" from any other probe
 # failure (throttle, auth, network); a blind `if aws ...; then` reads ANY
@@ -78,8 +80,16 @@ cleanup() {
   # cleanup on the first `"${STATE_BUCKET}"` expansion -- best-effort cleanup
   # should run as much as it can with the env it has.
   set +eu
+  state_destroy_rc=1
   if [ -x "${LOCAL_DIST}" ]; then
-    node "${LOCAL_DIST}" state destroy "${STACK}" --region "${REGION}" --yes >/dev/null 2>&1
+    # `--state-bucket` is REQUIRED here: without it the command resolves
+    # cdk.json's placeholder `cdkd-state-test` (the harness exports
+    # STATE_BUCKET, not CDKD_STATE_BUCKET), silently targets a nonexistent
+    # bucket, and a torn run leaks every resource the raw sweep below does
+    # not name.
+    node "${LOCAL_DIST}" state destroy "${STACK}" --region "${REGION}" \
+      --state-bucket "${STATE_BUCKET:-}" --yes >/dev/null 2>&1
+    state_destroy_rc=$?
   fi
   # Belt-and-braces for a torn run: each of these is a billing / name-collision
   # hazard the next run would trip over.
@@ -88,7 +98,11 @@ cleanup() {
   aws s3api delete-bucket --bucket "${BUCKET_NAME}" --region "${REGION}" >/dev/null 2>&1
   aws sns delete-topic --topic-arn "arn:aws:sns:${REGION}:${ACCOUNT_ID}:${TOPIC_NAME}" >/dev/null 2>&1
   aws logs delete-log-group --log-group-name "${LOG_GROUP}" --region "${REGION}" >/dev/null 2>&1
-  if [ -n "${STATE_BUCKET:-}" ]; then
+  # Only drop the raw state/lock keys once the destroy actually succeeded --
+  # the state file is the only pointer to resources a failed destroy left
+  # behind, so removing it on failure converts a recoverable partial teardown
+  # into untracked orphans.
+  if [ -n "${STATE_BUCKET:-}" ] && [ "${state_destroy_rc:-1}" -eq 0 ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
   fi
@@ -151,7 +165,11 @@ assert_field "LogFileValidationEnabled"   '.LogFileValidationEnabled'   'true'
 assert_field "IncludeGlobalServiceEvents" '.IncludeGlobalServiceEvents' 'true'
 CW_GROUP_P1="$(trail_field '.CloudWatchLogsLogGroupArn')"
 CW_ROLE_P1="$(trail_field '.CloudWatchLogsRoleArn')"
-if [ "${CW_GROUP_P1}" = "null" ] || [ "${CW_ROLE_P1}" = "null" ]; then
+# Reject EMPTY as well as "null": an empty capture would sail through the
+# guard and then compare "" == "" in phase 2, making the CFn-parity retention
+# pin pass vacuously.
+if [ -z "${CW_GROUP_P1}" ] || [ -z "${CW_ROLE_P1}" ] ||
+   [ "${CW_GROUP_P1}" = "null" ] || [ "${CW_ROLE_P1}" = "null" ]; then
   echo "FAIL: phase 1 did not configure the CloudWatch Logs pair (group=${CW_GROUP_P1} role=${CW_ROLE_P1})" >&2
   exit 1
 fi

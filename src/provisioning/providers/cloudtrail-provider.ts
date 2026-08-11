@@ -204,7 +204,7 @@ export class CloudTrailProvider implements ResourceProvider {
     // which is exactly why `''` is now the removal-reset sentinel below.
     // `KMSKeyId` was NOT probed (see the reset comment / issue #1533), so
     // it keeps the conservative drop.
-    const sanitizeArn = (v: unknown): string | undefined => {
+    const emptyToUndefined = (v: unknown): string | undefined => {
       if (v === undefined || v === null || v === '') return undefined;
       return v as string;
     };
@@ -232,15 +232,18 @@ export class CloudTrailProvider implements ResourceProvider {
     //   Organizations management account), so they are recorded as
     //   unmeasured rather than guessed. Tracked in issue #1533.
     //
-    // The previous side is normalized through `sanitizeArn` for presence
+    // The previous side is normalized through `emptyToUndefined` for presence
     // detection: `readCurrentState` always-emits `''` placeholders for
     // S3KeyPrefix / SnsTopicName, and a placeholder means "was not set" —
     // without this a never-configured field would look like a removal and
-    // send a pointless clear.
+    // send a pointless clear. The three BOOLEANS are always-emitted too, but
+    // need no equivalent: their emitted value is the real live value (or the
+    // CFn default), so "present in the previous side" is already the right
+    // presence answer for them.
     const s3BucketName = properties['S3BucketName'] as string | undefined;
     const s3KeyPrefix = clearOnUpdateRemoval(
-      sanitizeArn(properties['S3KeyPrefix']),
-      sanitizeArn(previousProperties['S3KeyPrefix']),
+      emptyToUndefined(properties['S3KeyPrefix']),
+      emptyToUndefined(previousProperties['S3KeyPrefix']),
       ''
     );
     const isMultiRegionTrail = clearOnUpdateRemoval(
@@ -255,26 +258,34 @@ export class CloudTrailProvider implements ResourceProvider {
     // call, which is why the combination never came up; resetting it under
     // a retained `IsMultiRegionTrail: true` would manufacture a hard AWS
     // failure on a combination that was never measured.
+    // The reset applies ONLY when the trail is known-single-region. An
+    // `undefined` here means neither side declared `IsMultiRegionTrail`, so
+    // the live value is unknown — it can be `true` on a console-changed or
+    // imported trail, and sending `IncludeGlobalServiceEvents: false` alone
+    // would then be REJECTED by AWS. Turning a silent no-op into a hard
+    // deploy failure on an unmeasured combination is strictly worse than
+    // leaving the (already CFn-divergent) no-op in place, so unknown falls
+    // back to pass-through.
     const includeGlobalServiceEvents =
-      isMultiRegionTrail === true
-        ? (properties['IncludeGlobalServiceEvents'] as boolean | undefined)
-        : clearOnUpdateRemoval(
+      isMultiRegionTrail === false
+        ? clearOnUpdateRemoval(
             properties['IncludeGlobalServiceEvents'] as boolean | undefined,
             previousProperties['IncludeGlobalServiceEvents'] as boolean | undefined,
             false
-          );
+          )
+        : (properties['IncludeGlobalServiceEvents'] as boolean | undefined);
     const enableLogFileValidation = clearOnUpdateRemoval(
       properties['EnableLogFileValidation'] as boolean | undefined,
       previousProperties['EnableLogFileValidation'] as boolean | undefined,
       false
     );
     const isLogging = properties['IsLogging'] as boolean | undefined;
-    const cloudWatchLogsLogGroupArn = sanitizeArn(properties['CloudWatchLogsLogGroupArn']);
-    const cloudWatchLogsRoleArn = sanitizeArn(properties['CloudWatchLogsRoleArn']);
-    const kmsKeyId = sanitizeArn(properties['KMSKeyId']);
+    const cloudWatchLogsLogGroupArn = emptyToUndefined(properties['CloudWatchLogsLogGroupArn']);
+    const cloudWatchLogsRoleArn = emptyToUndefined(properties['CloudWatchLogsRoleArn']);
+    const kmsKeyId = emptyToUndefined(properties['KMSKeyId']);
     const snsTopicName = clearOnUpdateRemoval(
-      sanitizeArn(properties['SnsTopicName']),
-      sanitizeArn(previousProperties['SnsTopicName']),
+      emptyToUndefined(properties['SnsTopicName']),
+      emptyToUndefined(previousProperties['SnsTopicName']),
       ''
     );
     const isOrganizationTrail = properties['IsOrganizationTrail'] as boolean | undefined;
@@ -531,10 +542,15 @@ export class CloudTrailProvider implements ResourceProvider {
 
     // Class 1 — CloudWatchLogsLogGroupArn / CloudWatchLogsRoleArn are a
     // type-discriminated pair: both required when CW logs are enabled,
-    // neither when disabled. Emitting `''` placeholders on a CW-logs-
-    // disabled trail would round-trip through `update()` and AWS would
-    // reject `Property validation failure: CloudWatchLogsLogGroupArn is
-    // not in valid ARN format`. Only emit both keys when AWS reports
+    // neither when disabled.
+    //
+    // NOTE the original rationale here — that AWS rejects a `''` round-trip
+    // with `CloudWatchLogsLogGroupArn is not in valid ARN format` — was
+    // DISPROVEN by the issue #1160 probe (2026-08-10): `''` is accepted for
+    // this field and nulls it out. The guard stands on its own remaining
+    // rationale, which is the discriminator, not the rejection: the pair is
+    // all-or-nothing, so emitting one placeholder without the other would
+    // describe a state AWS cannot hold. Only emit both keys when AWS reports
     // both present (the discriminator is "both fields populated").
     // Drift is not lost: the disabled state cannot legally have either
     // field on AWS, so a console-side enable shows up as both fields
