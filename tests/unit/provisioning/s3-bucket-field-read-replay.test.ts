@@ -105,15 +105,19 @@ describe('S3 FIELD-level reads downgrade on a state replay (issue #1605)', () =>
   // ---------------- VersioningConfiguration.Status ----------------
 
   describe('versioning Status', () => {
-    it('a REPLAY create warns and leaves live versioning alone instead of throwing', async () => {
+    it('a REPLAY create warns and issues no PutBucketVersioning instead of throwing', async () => {
       // The reverse-replacement create revives the OLD bucket from its state
       // record. Before this change a record carrying a malformed
       // VersioningConfiguration made that bucket unrestorable, with a hand-edit
       // of state.json as the only remedy.
+      //
+      // The warning is asserted on its CREATE-path half: there is no live
+      // bucket here, so the consequence is an unversioned restored bucket
+      // rather than an unchanged live one (PR review).
       await replayCreate({ VersioningConfiguration: 'Enabled' as never });
       expect(callsOf(PutBucketVersioningCommand)).toHaveLength(0);
       expect(warnings()).toMatch(/VersioningConfiguration must be an object/);
-      expect(warnings()).toMatch(/Leaving the bucket's LIVE versioning state unchanged/);
+      expect(warnings()).toMatch(/replayed create it means the bucket is left unversioned/);
     });
 
     it('names the Suspended default as the thing it is REFUSING to apply', async () => {
@@ -192,7 +196,7 @@ describe('S3 FIELD-level reads downgrade on a state replay (issue #1605)', () =>
         { ...base, LoggingConfiguration: { DestinationBucketName: 'logs' } }
       );
       expect(callsOf(PutBucketLoggingCommand)).toHaveLength(0);
-      expect(warnings()).toMatch(/rather than clearing it/);
+      expect(warnings()).toMatch(/rather than clearing access logging/);
     });
 
     it('refuses a malformed LogFilePrefix too, not only the destination', async () => {
@@ -226,6 +230,33 @@ describe('S3 FIELD-level reads downgrade on a state replay (issue #1605)', () =>
     it('a TEMPLATE create still REFUSES', async () => {
       await expect(templateCreate({ LoggingConfiguration: 'my-log-bucket' as never })).rejects
         .toThrow(/LoggingConfiguration must be an object/);
+    });
+
+    it('a REPLAY create refuses a malformed LogFilePrefix INSIDE the applier', async () => {
+      // The create-path GATE probes only `DestinationBucketName`, so this shape
+      // passes it and must be caught by the applier's own probe. Without the
+      // `onUnusable` argument threaded to that call the replay create throws
+      // again — and no other test notices, because every other logging case is
+      // stopped by the gate or runs through `update()` (PR review gap 2).
+      await replayCreate({
+        LoggingConfiguration: { DestinationBucketName: 'logs', LogFilePrefix: 7 } as never,
+      });
+      expect(callsOf(PutBucketLoggingCommand)).toHaveLength(0);
+      expect(warnings()).toMatch(/LogFilePrefix must be a non-empty string/);
+    });
+
+    it('a REPLAY create with a WELL-FORMED config still issues its Put', async () => {
+      // The fence for the gate's `if (refusal) … else { … }` restructure: a
+      // regression that dropped the apply on the replay branch would otherwise
+      // only be caught by the template-create path (PR review gap 3).
+      await replayCreate({
+        LoggingConfiguration: { DestinationBucketName: 'logs', LogFilePrefix: 'access/' },
+      });
+      const calls = callsOf(PutBucketLoggingCommand);
+      expect(calls).toHaveLength(1);
+      expect(calls[0]!.input).toMatchObject({
+        BucketLoggingStatus: { LoggingEnabled: { TargetBucket: 'logs', TargetPrefix: 'access/' } },
+      });
     });
 
     it('an ABSENT config still CLEARS — the legitimate removal is untouched', async () => {
@@ -265,6 +296,25 @@ describe('S3 FIELD-level reads downgrade on a state replay (issue #1605)', () =>
         InventoryConfiguration: { Schedule: { Frequency: 'Daily' } },
       });
       expect(warnings()).toMatch(/Falling back to Schedule\.Frequency/);
+    });
+
+    it('SKIPS the item when the second source is ABSENT — the shape real records have', async () => {
+      // The PR-review blocker, and the case that decides whether this downgrade
+      // does anything at all: `ScheduleFrequency` is the ONLY spelling the CFn
+      // schema declares (tests/fixtures/cfn-schemas/AWS-S3-Bucket.json has no
+      // `Schedule` member), so a record with a broken `ScheduleFrequency`
+      // almost never carries a `Schedule` to fall through to. Treating the
+      // absent container as "usable" let the fall-through land on
+      // `readConfigString`'s own Weekly default and silently re-cadence a live
+      // inventory report — the substitution the guard exists to refuse.
+      await update(
+        { ...base, InventoryConfigurations: [inventoryItem({ ScheduleFrequency: {} })] },
+        base
+      );
+      expect(callsOf(PutBucketInventoryConfigurationCommand)).toHaveLength(0);
+      expect(warnings()).toMatch(/no Schedule\.Frequency to fall back to/);
+      // And it must NOT claim a fall-through that did not happen.
+      expect(warnings()).not.toMatch(/Falling back to Schedule\.Frequency/);
     });
 
     it('SKIPS the item when BOTH sources are unusable, rather than inventing Weekly', async () => {
