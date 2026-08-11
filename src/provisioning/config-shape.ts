@@ -325,6 +325,14 @@ export function replayWarn(
 }
 
 /**
+ * The array-guard subset of {@link ConfigStringOptions}: only the state-replay
+ * downgrade applies to a LIST block (`coerceNumber` is meaningless there), so
+ * {@link requireConfigArray} takes this narrower bag while still accepting a
+ * spread `replayWarn(...)` result structurally.
+ */
+export type ConfigArrayOptions = Pick<ConfigStringOptions, 'onUnusable'>;
+
+/**
  * Refuse a present-but-non-ARRAY value where a CFn LIST block belongs.
  *
  * The list-shaped sibling of {@link readConfigString}, for the container one
@@ -338,14 +346,41 @@ export function replayWarn(
  * an absent list block legitimately means "no entries" and the caller's own
  * `undefined` is what the SDK expects.
  *
- * @throws Error when the value is not an array.
+ * @param options Per-site relaxation (issue #1579, same shape as the #1556
+ *   downgrade on {@link readConfigString}): under `onUnusable` a non-array
+ *   value warns and returns `undefined` instead of throwing, for the
+ *   state-replay paths where the desired bag can be a historical cdkd state
+ *   record with no template-side remedy. The caller decides what `undefined`
+ *   means at its site — the S3 filter builders skip the whole configuration
+ *   item rather than applying it with a widened scope.
+ * @throws Error when the value is not an array, unless `onUnusable` is
+ *   supplied.
  */
-export function requireConfigArray(value: unknown, path: string): Array<Record<string, unknown>> {
+export function requireConfigArray(value: unknown, path: string): Array<Record<string, unknown>>;
+export function requireConfigArray(
+  value: unknown,
+  path: string,
+  options: ConfigArrayOptions
+): Array<Record<string, unknown>> | undefined;
+export function requireConfigArray(
+  value: unknown,
+  path: string,
+  options?: ConfigArrayOptions
+): Array<Record<string, unknown>> | undefined {
   if (!Array.isArray(value)) {
-    throw new Error(
-      `${path} must be an array (got ${describe(value)}) — check for an ` +
-        `unresolved intrinsic or a mis-nested template value`
-    );
+    const detail =
+      `(got ${describe(value)}) — check for an unresolved intrinsic or a ` +
+      `mis-nested template value`;
+
+    if (options?.onUnusable) {
+      options.onUnusable(
+        `${path} must be an array ${detail}. Leaving this configuration ` +
+          `unapplied here; the same value is REFUSED on a template-path create`
+      );
+      return undefined;
+    }
+
+    throw new Error(`${path} must be an array ${detail}`);
   }
   return value as Array<Record<string, unknown>>;
 }

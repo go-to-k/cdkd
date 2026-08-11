@@ -1,5 +1,9 @@
 import { describe, it, expect, vi } from 'vite-plus/test';
-import { readConfigString, requireConfigString } from '../../../src/provisioning/config-shape.js';
+import {
+  readConfigString,
+  requireConfigArray,
+  requireConfigString,
+} from '../../../src/provisioning/config-shape.js';
 
 const PATH = 'AWS::S3::Bucket VersioningConfiguration';
 
@@ -312,5 +316,32 @@ describe('readConfigString container downgrade under onUnusable (issue #1544)', 
     ).toBe('NEW_AND_OLD_IMAGES');
     expect(warn).toHaveBeenCalledTimes(1);
     expect(warn.mock.calls[0][0] as string).toMatch(/StreamSpecification\.StreamViewType/);
+  });
+});
+
+describe('requireConfigArray', () => {
+  const LIST_PATH = 'AWS::S3::Bucket MetricsConfigurations[].TagFilters';
+
+  it('passes an array through unchanged, with and without options', () => {
+    const list = [{ Key: 'team', Value: 'alpha' }];
+    expect(requireConfigArray(list, LIST_PATH)).toBe(list);
+    expect(requireConfigArray(list, LIST_PATH, { onUnusable: vi.fn() })).toBe(list);
+  });
+
+  it('throws on a non-array when no onUnusable is supplied', () => {
+    expect(() => requireConfigArray({ Key: 'k', Value: 'v' }, LIST_PATH)).toThrow(
+      /must be an array \(got an object\)/
+    );
+    expect(() => requireConfigArray('team=alpha', LIST_PATH, {})).toThrow(/must be an array/);
+  });
+
+  it('warns and returns undefined under onUnusable (issue #1579 state-replay downgrade)', () => {
+    const warn = vi.fn();
+    expect(requireConfigArray('team=alpha', LIST_PATH, { onUnusable: warn })).toBeUndefined();
+    expect(warn).toHaveBeenCalledTimes(1);
+    const message = warn.mock.calls[0][0] as string;
+    expect(message).toMatch(/must be an array/);
+    expect(message).toMatch(/Leaving this configuration unapplied/);
+    expect(message).toMatch(/REFUSED on a template-path create/);
   });
 });

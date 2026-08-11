@@ -62,7 +62,12 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { S3_AUTO_DELETE_OBJECTS_TAG, hasCdkAutoDeleteTag } from '../data-delete-intent.js';
-import { readConfigString, replayWarn, requireConfigString } from '../config-shape.js';
+import {
+  readConfigString,
+  replayWarn,
+  requireConfigArray,
+  requireConfigString,
+} from '../config-shape.js';
 import { generateResourceName } from '../resource-name.js';
 import type {
   ResourceProvider,
@@ -438,8 +443,30 @@ export class S3BucketProvider implements ResourceProvider {
     lifecycleConfig: {
       Rules: Array<Record<string, unknown>>;
       TransitionDefaultMinimumObjectSize?: unknown;
-    }
+    },
+    onUnusable?: (message: string) => void
   ): Promise<void> {
+    // Validate every rule's `TagFilters` container up front (issue #1579): a
+    // present-but-non-array value used to fall through `gatherScope`'s blind
+    // cast, read as "no tags" via the `.length` gates below, and the rule
+    // applied WITHOUT its tag scope — for an expiration rule, to the WHOLE
+    // bucket (the #1388 widened-scope hazard, this time from a malformed
+    // container instead of a mis-placed key). Refuse on a template-path
+    // create; on the state-replay paths (`onUnusable`) warn and leave the
+    // WHOLE live lifecycle configuration alone — the Put replaces every rule,
+    // so skipping only the malformed rule would silently DELETE it from AWS.
+    for (const rule of lifecycleConfig.Rules) {
+      const filter = rule['Filter'] as Record<string, unknown> | undefined;
+      const rawTagFilters = filter?.['TagFilters'] ?? rule['TagFilters'];
+      if (rawTagFilters != null) {
+        const validated = requireConfigArray(
+          rawTagFilters,
+          'AWS::S3::Bucket LifecycleConfiguration.Rules[].TagFilters',
+          { ...(onUnusable ? { onUnusable } : {}) }
+        );
+        if (validated === undefined) return;
+      }
+    }
     // Gather a rule's full location scope from EVERY source CFn can express it:
     // an explicit `Filter` object (Prefix / TagFilters / ObjectSizeGreaterThan /
     // ObjectSizeLessThan), a top-level `Prefix` (the deprecated V1 form), AND the
@@ -492,7 +519,11 @@ export class S3BucketProvider implements ResourceProvider {
       const s = gatherScope(rule);
       return (
         s.prefix !== undefined &&
-        (s.tagFilters === undefined || s.tagFilters.length === 0) &&
+        // `== null`, not `=== undefined`: an explicit `TagFilters: null` is
+        // "no entries" per the list-block contract (`requireConfigArray`'s
+        // callers keep the absent case as `== null`), and the strict compare
+        // sent `null` into `.length` — a raw TypeError (PR #1580 review).
+        (s.tagFilters == null || s.tagFilters.length === 0) &&
         s.sizeGt === undefined &&
         s.sizeLt === undefined
       );
@@ -652,7 +683,9 @@ export class S3BucketProvider implements ResourceProvider {
       // S3 requires either a top-level Prefix (V1) or a Filter (V2) on each rule;
       // a rule with no scope at all gets the empty-prefix Filter (matches all).
       const { prefix, tagFilters, sizeGt, sizeLt } = gatherScope(rule);
-      const hasTags = tagFilters !== undefined && tagFilters.length > 0;
+      // `!= null` for the same reason as `isPlainPrefixOnly` above: an
+      // explicit `TagFilters: null` means "no entries", not a `.length` crash.
+      const hasTags = tagFilters != null && tagFilters.length > 0;
       const componentCount =
         (hasTags ? 1 : 0) +
         (prefix !== undefined ? 1 : 0) +
@@ -1094,7 +1127,8 @@ export class S3BucketProvider implements ResourceProvider {
    */
   private async applyMetricsConfigurations(
     bucketName: string,
-    configs: Array<Record<string, unknown>>
+    configs: Array<Record<string, unknown>>,
+    onUnusable?: (message: string) => void
   ): Promise<void> {
     for (const config of configs) {
       const id = config['Id'] as string;
@@ -1104,7 +1138,28 @@ export class S3BucketProvider implements ResourceProvider {
       };
       const prefix = config['Prefix'] as string | undefined;
       const accessPointArn = config['AccessPointArn'] as string | undefined;
+      // A present-but-non-array `TagFilters` (issue #1579) used to read as
+      // ZERO predicates through the `?.length` below, so the Filter block was
+      // silently omitted and the configuration deployed with a WIDER scope
+      // (all objects) than the template declared — the #1493
+      // malformed-container class. Refuse on a template-path create; on the
+      // state-replay paths (`onUnusable`) warn and skip this configuration
+      // item, since applying it WITHOUT its tag predicate would widen the
+      // monitored scope, the very misbehavior being refused.
+      // `tagFilters` stays bound to the bag read directly (not to the guard's
+      // return value): the nested-key critic's write-evidence walk follows the
+      // bag-read binding into the `And.Tags` write, and routing the value
+      // through the helper call would sever that hand-off and false-flag
+      // `TagFilters.Key` / `.Value` as never written.
       const tagFilters = config['TagFilters'] as Array<{ Key: string; Value: string }> | undefined;
+      if (
+        tagFilters != null &&
+        requireConfigArray(tagFilters, 'AWS::S3::Bucket MetricsConfigurations[].TagFilters', {
+          ...(onUnusable ? { onUnusable } : {}),
+        }) === undefined
+      ) {
+        continue;
+      }
       const tagCount = tagFilters?.length ?? 0;
       // The single-predicate shapes (Prefix / Tag / AccessPointArn) carry
       // exactly ONE condition; every combination — and 2+ tags on their own —
@@ -1272,7 +1327,17 @@ export class S3BucketProvider implements ResourceProvider {
       // every tag after the first. And-with-only-Tags is accepted by the API
       // and reads back unchanged (live-probed 2026-08-11).
       const prefix = config['Prefix'] as string | undefined;
+      // Non-array `TagFilters` guard (issue #1579) — see the metrics sibling,
+      // including why the binding must stay a direct bag read.
       const tagFilters = config['TagFilters'] as Array<{ Key: string; Value: string }> | undefined;
+      if (
+        tagFilters != null &&
+        requireConfigArray(tagFilters, 'AWS::S3::Bucket AnalyticsConfigurations[].TagFilters', {
+          ...(onUnusable ? { onUnusable } : {}),
+        }) === undefined
+      ) {
+        continue;
+      }
       const tagCount = tagFilters?.length ?? 0;
       if ((prefix ? 1 : 0) + tagCount > 1) {
         analyticsConfig.Filter = { And: { Prefix: prefix, Tags: tagFilters } };
@@ -1353,7 +1418,8 @@ export class S3BucketProvider implements ResourceProvider {
    */
   private async applyIntelligentTieringConfigurations(
     bucketName: string,
-    configs: Array<Record<string, unknown>>
+    configs: Array<Record<string, unknown>>,
+    onUnusable?: (message: string) => void
   ): Promise<void> {
     for (const config of configs) {
       const id = config['Id'] as string;
@@ -1378,7 +1444,19 @@ export class S3BucketProvider implements ResourceProvider {
       // Prefix was absent (issue #1573; And-with-only-Tags live-probed
       // 2026-08-11).
       const prefix = config['Prefix'] as string | undefined;
+      // Non-array `TagFilters` guard (issue #1579) — see the metrics sibling,
+      // including why the binding must stay a direct bag read.
       const tagFilters = config['TagFilters'] as Array<{ Key: string; Value: string }> | undefined;
+      if (
+        tagFilters != null &&
+        requireConfigArray(
+          tagFilters,
+          'AWS::S3::Bucket IntelligentTieringConfigurations[].TagFilters',
+          { ...(onUnusable ? { onUnusable } : {}) }
+        ) === undefined
+      ) {
+        continue;
+      }
       const tagCount = tagFilters?.length ?? 0;
       if ((prefix ? 1 : 0) + tagCount > 1) {
         itConfig.Filter = { And: { Prefix: prefix, Tags: tagFilters } };
@@ -2091,7 +2169,9 @@ export class S3BucketProvider implements ResourceProvider {
       async (cfg) => {
         // Skip empty-rules placeholder (Class 2)
         if (!cfg.Rules || !Array.isArray(cfg.Rules) || cfg.Rules.length === 0) return;
-        await this.applyLifecycleConfiguration(bucketName, cfg);
+        // WARN, never throw, on the update path (issue #1579) — same
+        // rationale as the analytics sibling below.
+        await this.applyLifecycleConfiguration(bucketName, cfg, (m) => this.logger.warn(m));
       },
       async () => {
         await this.s3Client.send(new DeleteBucketLifecycleCommand({ Bucket: bucketName }));
@@ -2198,7 +2278,10 @@ export class S3BucketProvider implements ResourceProvider {
       bucketName,
       previousProperties['MetricsConfigurations'] as Array<Record<string, unknown>> | undefined,
       properties['MetricsConfigurations'] as Array<Record<string, unknown>> | undefined,
-      async (_id, cfg) => this.applyMetricsConfigurations(bucketName, [cfg]),
+      // WARN, never throw, on the update path (issue #1579) — same rationale
+      // as the analytics sibling below.
+      async (_id, cfg) =>
+        this.applyMetricsConfigurations(bucketName, [cfg], (m) => this.logger.warn(m)),
       async (id) => {
         await this.s3Client.send(
           new DeleteBucketMetricsConfigurationCommand({ Bucket: bucketName, Id: id })
@@ -2233,7 +2316,10 @@ export class S3BucketProvider implements ResourceProvider {
         | Array<Record<string, unknown>>
         | undefined,
       properties['IntelligentTieringConfigurations'] as Array<Record<string, unknown>> | undefined,
-      async (_id, cfg) => this.applyIntelligentTieringConfigurations(bucketName, [cfg]),
+      // WARN, never throw, on the update path (issue #1579) — same rationale
+      // as the analytics sibling above.
+      async (_id, cfg) =>
+        this.applyIntelligentTieringConfigurations(bucketName, [cfg], (m) => this.logger.warn(m)),
       async (id) => {
         await this.s3Client.send(
           new DeleteBucketIntelligentTieringConfigurationCommand({
@@ -2347,7 +2433,7 @@ export class S3BucketProvider implements ResourceProvider {
       Array.isArray(lifecycleConfig.Rules) &&
       lifecycleConfig.Rules.length > 0
     ) {
-      await this.applyLifecycleConfiguration(bucketName, lifecycleConfig);
+      await this.applyLifecycleConfiguration(bucketName, lifecycleConfig, replayOnUnusable);
     }
 
     // Logging
@@ -2387,7 +2473,7 @@ export class S3BucketProvider implements ResourceProvider {
       | Array<Record<string, unknown>>
       | undefined;
     if (metricsConfigs && Array.isArray(metricsConfigs) && metricsConfigs.length > 0) {
-      await this.applyMetricsConfigurations(bucketName, metricsConfigs);
+      await this.applyMetricsConfigurations(bucketName, metricsConfigs, replayOnUnusable);
     }
 
     // Analytics Configurations
@@ -2403,7 +2489,7 @@ export class S3BucketProvider implements ResourceProvider {
       | Array<Record<string, unknown>>
       | undefined;
     if (itConfigs && Array.isArray(itConfigs) && itConfigs.length > 0) {
-      await this.applyIntelligentTieringConfigurations(bucketName, itConfigs);
+      await this.applyIntelligentTieringConfigurations(bucketName, itConfigs, replayOnUnusable);
     }
 
     // Inventory Configurations
