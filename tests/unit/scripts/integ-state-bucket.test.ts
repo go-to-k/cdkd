@@ -16,6 +16,23 @@ import {
 const INTEG_ROOT = join(import.meta.dirname, '../../../tests/integration');
 const CLI = 'node "${LOCAL_DIST}"';
 
+/**
+ * A deliberately CRUDE, independent prose stripper for the completeness audit
+ * below — comment lines and `echo` lines only.
+ *
+ * It must NOT reuse the classifier's own normalizer: if that over-stripped,
+ * both sides would agree and the audit would pass vacuously. Being cruder than
+ * the classifier is the safe direction — it leaves MORE text in, so the audit
+ * errs toward reporting a fixture rather than excusing one.
+ */
+function stripProseForAudit(script: string): string {
+  return script
+    .split('\n')
+    .filter((l) => !/^\s*#/.test(l) && !/^\s*echo\b/.test(l))
+    .map((l) => l.replace(/\s#.*$/, ''))
+    .join('\n');
+}
+
 function readFixtures() {
   return readdirSync(INTEG_ROOT, { withFileTypes: true })
     .filter((e) => e.isDirectory() && existsSync(join(INTEG_ROOT, e.name, 'verify.sh')))
@@ -26,9 +43,12 @@ function readFixtures() {
     }));
 }
 
+/** Synthetic-shape helper: the parsed invocations only. */
+const parse = (script: string) => collectStateDestroyInvocations(script).invocations;
+
 describe('collectStateDestroyInvocations', () => {
   it('accepts the canonical form', () => {
-    const inv = collectStateDestroyInvocations(
+    const inv = parse(
       `${CLI} state destroy "\${STACK}" --state-bucket "\${STATE_BUCKET:-}" --region "\${REGION}" --yes\n`,
     );
     expect(inv).toHaveLength(1);
@@ -36,7 +56,7 @@ describe('collectStateDestroyInvocations', () => {
   });
 
   it('flags an invocation that omits the flag', () => {
-    const inv = collectStateDestroyInvocations(
+    const inv = parse(
       `${CLI} state destroy "\${STACK}" --region "\${REGION}" --yes\n`,
     );
     expect(inv).toHaveLength(1);
@@ -58,7 +78,7 @@ describe('collectStateDestroyInvocations', () => {
     ],
     ['indented in a function', `cleanup() {\n  ${CLI} state destroy "\${S}" --region "\${R}" --yes\n}`],
   ])('sees the %s shape', (_label, script) => {
-    const inv = collectStateDestroyInvocations(`${script}\n`);
+    const inv = parse(`${script}\n`);
     expect(inv).toHaveLength(1);
     expect(inv[0]!.passesStateBucket).toBe(false);
   });
@@ -66,14 +86,14 @@ describe('collectStateDestroyInvocations', () => {
   it('credits the flag when it lands on a continuation line', () => {
     // The 23 fixtures already on the reference multi-line shape carry the flag
     // on the SECOND physical line; a line-oriented scan would report them all.
-    const inv = collectStateDestroyInvocations(
+    const inv = parse(
       `${CLI} state destroy "\${STACK}" --state-bucket "\${STATE_BUCKET:-}" \\\n  --region "\${R}" --yes\n`,
     );
     expect(inv[0]!.passesStateBucket).toBe(true);
   });
 
   it('accepts the --state-bucket=value spelling', () => {
-    const inv = collectStateDestroyInvocations(
+    const inv = parse(
       `${CLI} state destroy "\${STACK}" --state-bucket="\${STATE_BUCKET:-}" --yes\n`,
     );
     expect(inv[0]!.passesStateBucket).toBe(true);
@@ -88,26 +108,26 @@ describe('collectStateDestroyInvocations', () => {
     ['a heredoc body', `cat <<'EOF'\n${CLI} state destroy "\${S}" --yes\nEOF`],
     ['prose naming the command', `echo "destroying stack via cdkd state destroy"`],
   ])('ignores %s', (_label, script) => {
-    expect(collectStateDestroyInvocations(`${script}\n`)).toEqual([]);
+    expect(parse(`${script}\n`)).toEqual([]);
   });
 
   it('does not match a different subcommand', () => {
     expect(
-      collectStateDestroyInvocations(`${CLI} state show "\${STACK}" --yes\n`),
+      parse(`${CLI} state show "\${STACK}" --yes\n`),
     ).toEqual([]);
     // `destroy` is a DIFFERENT command from `state destroy` and already passes
-    // the flag at all 227 call sites; matching it here would be a false report.
-    expect(collectStateDestroyInvocations(`${CLI} destroy "\${STACK}" --yes\n`)).toEqual([]);
+    // the flag at all 228 call sites; matching it here would be a false report.
+    expect(parse(`${CLI} destroy "\${STACK}" --yes\n`)).toEqual([]);
   });
 
   it('does not match a non-cdkd binary', () => {
     expect(
-      collectStateDestroyInvocations(`terraform state destroy "\${STACK}" --yes\n`),
+      parse(`terraform state destroy "\${STACK}" --yes\n`),
     ).toEqual([]);
   });
 
   it('finds both invocations when a line runs two', () => {
-    const inv = collectStateDestroyInvocations(
+    const inv = parse(
       `${CLI} state destroy "\${A}" --yes; ${CLI} state destroy "\${B}" --state-bucket "\${SB}" --yes\n`,
     );
     expect(inv.map((i) => i.passesStateBucket)).toEqual([false, true]);
@@ -130,14 +150,32 @@ describe('integ fixture state-bucket convention (#1567)', () => {
     expect(fixtures.filter((f) => f.invocations.length > 0).length).toBeGreaterThanOrEqual(160);
   });
 
-  it('still parses each shape it claims to handle', () => {
-    // An aggregate floor hides a dead shape: `plain` is 169 of 171, so the
-    // env-prefixed and guarded parsers could both regress to zero and the
-    // total above would barely move. Real-tree counts 2026-08-11: 169/1/1.
-    const perShape = (shape: string) => all.filter((i) => i.shape === shape).length;
-    expect(perShape('plain')).toBeGreaterThanOrEqual(160);
-    expect(perShape('env-prefixed')).toBeGreaterThanOrEqual(1);
-    expect(perShape('guarded')).toBeGreaterThanOrEqual(1);
+  // This is the real completeness net, and it is stronger than a per-shape
+  // floor: it needs no calibration, it cannot be satisfied vacuously, and it
+  // catches an invocation SHAPE the parser has never seen rather than only a
+  // regression in one it has. A per-shape floor was tried first and was both
+  // brittle (`env-prefixed` and `guarded` ride on ONE fixture each, so an
+  // unrelated edit reds the suite and invites deleting the floor) and blind to
+  // exactly the case that matters — a NEW binary spelling, which produces zero
+  // invocations in every shape at once.
+  it('parses a state destroy out of every fixture whose code contains one', () => {
+    const missed = fixtures
+      .filter((f) => {
+        // Same normalization the classifier uses, so prose does not count.
+        const code = stripProseForAudit(readFileSync(f.path, 'utf8'));
+        return code.includes('state destroy') && f.invocations.length === 0;
+      })
+      .map((f) => f.name);
+    expect(missed).toEqual([]);
+  });
+
+  it('recognizes the binary in every state destroy it finds', () => {
+    // An unknown spelling (`${CDKD}`, a literal `node dist/cli.js`, ...) would
+    // otherwise exempt the fixture silently — the #1097 lint's failure mode.
+    const unrecognized = fixtures
+      .filter((f) => f.unrecognized.length > 0)
+      .map((f) => `${f.name}: ${f.unrecognized[0]!.slice(0, 90)}`);
+    expect(unrecognized).toEqual([]);
   });
 
   it('every state destroy passes --state-bucket explicitly', () => {
@@ -153,9 +191,31 @@ describe('integ fixture state-bucket convention (#1567)', () => {
     // unguarded `"${STATE_BUCKET}"` would abort teardown mid-sweep under set -u.
     const bad = fixtures
       .flatMap((f) => f.invocations.map((i) => ({ name: f.name, ...i })))
-      .filter((i) => /--state-bucket[= ]"?\$\{STATE_BUCKET\}/.test(i.command))
+      .filter((i) => isUnguardedStateBucket(i.command))
       .map((i) => i.name);
     expect(bad).toEqual([]);
+  });
+});
+
+// This predicate is a second CI-blocking verdict whose pattern currently
+// matches NOTHING in the tree, so a typo in it would be permanently green.
+// These cases are what keep it honest.
+function isUnguardedStateBucket(command: string): boolean {
+  return /--state-bucket[= ]"?\$(?:\{STATE_BUCKET\}|STATE_BUCKET\b)/.test(command);
+}
+
+describe('isUnguardedStateBucket', () => {
+  it.each([
+    ['braced unguarded', '--state-bucket "${STATE_BUCKET}" --yes', true],
+    ['unbraced unguarded', '--state-bucket "$STATE_BUCKET" --yes', true],
+    ['unquoted unguarded', '--state-bucket ${STATE_BUCKET} --yes', true],
+    ['equals form unguarded', '--state-bucket="${STATE_BUCKET}" --yes', true],
+    ['guarded', '--state-bucket "${STATE_BUCKET:-}" --yes', false],
+    ['guarded equals form', '--state-bucket="${STATE_BUCKET:-}" --yes', false],
+    ['guarded with default', '--state-bucket "${STATE_BUCKET:-fallback}" --yes', false],
+    ['a different variable', '--state-bucket "${OTHER_BUCKET}" --yes', false],
+  ])('%s', (_label, command, expected) => {
+    expect(isUnguardedStateBucket(command)).toBe(expected);
   });
 });
 
@@ -178,9 +238,37 @@ describe('real-code fail probe', () => {
     expect(checkFixture(original).offenders).toEqual([]);
   });
 
-  it('leaves the real fixture untouched', () => {
-    expect(readFileSync(join(INTEG_ROOT, 'apigateway/verify.sh'), 'utf8')).toContain(
-      '--state-bucket "${STATE_BUCKET:-}"',
-    );
+  it('reports a real fixture whose binary spelling is unrecognized', () => {
+    // The other half of the net: an unknown binary must be REPORTED, never
+    // silently dropped. Swapping in a spelling the whitelist lacks must not
+    // reduce the fixture to "0 invocations, all clean".
+    const original = readFileSync(join(INTEG_ROOT, 'apigateway/verify.sh'), 'utf8');
+    const regressed = original.replaceAll('node "${LOCAL_DIST}"', 'node dist/cli.js');
+
+    const verdict = checkFixture(regressed);
+    expect(verdict.invocations).toEqual([]);
+    expect(verdict.unrecognized.length).toBeGreaterThanOrEqual(1);
+    expect(verdict.unrecognized[0]).toContain('state destroy');
+  });
+});
+
+describe('the premise that makes the ${STATE_BUCKET:-} form safe', () => {
+  // All 171 swept sites can pass an EMPTY value when the variable is unset.
+  // That is only acceptable because the resolver treats '' as "not supplied"
+  // and falls back exactly as omitting the flag does. Pin it here: if this
+  // ever changes, the whole sweep silently starts targeting the wrong bucket.
+  it('treats an empty --state-bucket as not-supplied', async () => {
+    const { resolveStateBucketWithSource } = await import('../../../src/cli/config-loader.js');
+    const saved = process.env['CDKD_STATE_BUCKET'];
+    process.env['CDKD_STATE_BUCKET'] = 'env-bucket';
+    try {
+      // A real value wins; an empty string must fall through to the env var.
+      expect(resolveStateBucketWithSource('real-bucket')?.bucket).toBe('real-bucket');
+      expect(resolveStateBucketWithSource('')?.bucket).toBe('env-bucket');
+      expect(resolveStateBucketWithSource(undefined)?.bucket).toBe('env-bucket');
+    } finally {
+      if (saved === undefined) delete process.env['CDKD_STATE_BUCKET'];
+      else process.env['CDKD_STATE_BUCKET'] = saved;
+    }
   });
 });

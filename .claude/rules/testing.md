@@ -282,11 +282,21 @@ an install/prepend/guard signal is ever read out of an `echo` argument, a
 
 The harness exports `STATE_BUCKET`; the CLI's env fallback is
 `CDKD_STATE_BUCKET` — a DIFFERENT name. A cleanup sweep that omits
-`--state-bucket` therefore never reads the harness bucket at all: it falls
-through to the STS-derived default `cdkd-state-{accountId}` and only appears to
-work because that default is usually the same bucket. Against a non-default
-`STATE_BUCKET` the state sweep silently no-ops — destroys nothing, reports
-success, leaves a state record that wedges the fixture's next run.
+`--state-bucket` therefore never reads the harness bucket at all. Resolution is
+CLI flag > `CDKD_STATE_BUCKET` > `cdk.json` `context.cdkd.stateBucket` > STS
+default (`resolveStateBucketWithSource`), so the omission lands in one of two
+wrong places:
+
+- **109 fixture `cdk.json` files declare `context.cdkd.stateBucket`** and
+  `verify.sh` runs the CLI from the fixture directory, so the sweep resolved
+  that name (`your-cdkd-state-bucket` / `cdkd-state-test`) and died with
+  `StateError: State bucket '...' does not exist` — swallowed by the call's own
+  `>/dev/null 2>&1`. Those cleanups had been failing on EVERY run, invisibly.
+- **The rest** fell through to the STS default `cdkd-state-{accountId}`, which
+  IS the harness bucket on a default setup — working by coincidence, and
+  silently no-opping the moment `STATE_BUCKET` points anywhere else.
+
+Either way the state record survives and wedges the fixture's next run.
 
 ```bash
 node "${LOCAL_DIST}" state destroy "${STACK}" \
@@ -307,7 +317,7 @@ bucket. Do not "normalize" the deploy sites to `:-`.
 
 The measured asymmetry is what made this a lint rather than a one-time sweep
 (issue [#1567](https://github.com/go-to-k/cdkd/issues/1567), 2026-08-11):
-`deploy` passed the flag at all 335 call sites and `destroy` at all 227, while
+`deploy` passed the flag at all 335 call sites and `destroy` at all 228, while
 `state destroy` had drifted at **96 of 171** call sites across 94 fixtures —
 because nothing enforced it. Enforced by
 `tests/unit/scripts/integ-state-bucket.test.ts` (classifier:

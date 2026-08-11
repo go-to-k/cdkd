@@ -867,13 +867,24 @@ environment fallback is `CDKD_STATE_BUCKET` — a **different** name. So a
 node "${LOCAL_DIST}" state destroy "${STACK}" --region "${REGION}" --yes
 ```
 
-never reads the harness's bucket at all. It falls through to the STS-derived
-default `cdkd-state-{accountId}` and only appears to work because that default
-is usually the same bucket. Point `STATE_BUCKET` anywhere else — a per-run
-isolated bucket, a second-account run, the legacy region-suffixed bucket — and
-the state sweep silently no-ops: it destroys nothing, reports success, and only
-the fixture's own tag-based AWS sweeps clean up. The leaked state record then
-wedges the next run of that fixture.
+never reads the harness's bucket at all. Resolution is CLI flag >
+`CDKD_STATE_BUCKET` > `cdk.json` `context.cdkd.stateBucket` > STS-derived
+default, so the omission lands in one of two wrong places:
+
+- **109 fixture `cdk.json` files declare `context.cdkd.stateBucket`**, and
+  `verify.sh` runs the CLI from the fixture directory — so the sweep resolved
+  that name (`your-cdkd-state-bucket`, `cdkd-state-test`) and died with
+  `StateError: State bucket '...' does not exist`, swallowed by the call's own
+  `>/dev/null 2>&1`. Those cleanups had been failing on **every run**,
+  invisibly.
+- **The rest** fell through to the STS default `cdkd-state-{accountId}`, which
+  is the harness bucket on a default setup — so they worked by coincidence.
+  Point `STATE_BUCKET` anywhere else (a per-run isolated bucket, a
+  second-account run, the legacy region-suffixed bucket) and the sweep silently
+  no-ops: destroys nothing, reports success, and only the fixture's own
+  tag-based AWS sweeps clean up.
+
+Either way the state record survives and wedges the next run of that fixture.
 
 Pass the bucket explicitly, in the `set -u`-safe form:
 
@@ -891,7 +902,7 @@ supplied" and falls back exactly as omitting the flag does, so the guarded form
 is never worse than the status quo.
 
 Note the asymmetry this convention corrects: `deploy` (335 call sites) and
-`destroy` (227) already passed the flag everywhere; only `state destroy` had
+`destroy` (228) already passed the flag everywhere; only `state destroy` had
 drifted, at 96 of 171 call sites across 94 fixtures. `deploy` deliberately keeps
 the strict `"${STATE_BUCKET}"` form — there an unset bucket is a harness
 misconfiguration that should fail loudly rather than silently target the default.
