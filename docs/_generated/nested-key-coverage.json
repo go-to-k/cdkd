@@ -1,10 +1,10 @@
 {
   "summary": {
     "targetCount": 12,
-    "nestedKeyCount": 743,
-    "sameSpelling": 675,
+    "nestedKeyCount": 801,
+    "sameSpelling": 731,
     "providerHandled": 50,
-    "allowListed": 18,
+    "allowListed": 20,
     "caseDivergence": 0,
     "noSdkMember": 0,
     "noWriteEvidence": 0,
@@ -2860,7 +2860,7 @@
       "sdkClientPackage": "@aws-sdk/client-ecs",
       "keyStyle": "lower-first",
       "freshObjectMapper": true,
-      "nestedKeyCount": 56,
+      "nestedKeyCount": 114,
       "entries": [
         {
           "resourceType": "AWS::ECS::Service",
@@ -3095,6 +3095,31 @@
         },
         {
           "resourceType": "AWS::ECS::Service",
+          "nestedKey": "DeploymentController.Type",
+          "topLevelProperty": "DeploymentController",
+          "terminalKey": "Type",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "ForceNewDeployment.EnableForceNewDeployment",
+          "topLevelProperty": "ForceNewDeployment",
+          "terminalKey": "EnableForceNewDeployment",
+          "bucket": "allow-listed",
+          "rationale": "CFn-only rollout-trigger member with NO per-member SDK counterpart: the ECS SDK models the whole ForceNewDeployment block as the single top-level boolean `forceNewDeployment` on UpdateService. ECSProvider.resolveForceNewDeployment translates {EnableForceNewDeployment: true} OR a ForceNewDeploymentNonce change into `forceNewDeployment: true` (issue #609) — a shape collapse neither the key pass (no same-spelled member exists) nor the write pass (the write is a different, top-level member) can express.",
+          "allowMatchKey": "AWS::ECS::Service#ForceNewDeployment.EnableForceNewDeployment"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "ForceNewDeployment.ForceNewDeploymentNonce",
+          "topLevelProperty": "ForceNewDeployment",
+          "terminalKey": "ForceNewDeploymentNonce",
+          "bucket": "allow-listed",
+          "rationale": "Same single-boolean collapse as ForceNewDeployment.EnableForceNewDeployment: the nonce has no SDK member of its own — a nonce CHANGE is what resolveForceNewDeployment turns into `forceNewDeployment: true` (issue #609).",
+          "allowMatchKey": "AWS::ECS::Service#ForceNewDeployment.ForceNewDeploymentNonce"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
           "nestedKey": "LoadBalancers.AdvancedConfiguration",
           "topLevelProperty": "LoadBalancers",
           "terminalKey": "AdvancedConfiguration",
@@ -3158,6 +3183,27 @@
         },
         {
           "resourceType": "AWS::ECS::Service",
+          "nestedKey": "Monitoring.MetricConfigurations",
+          "topLevelProperty": "Monitoring",
+          "terminalKey": "MetricConfigurations",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "Monitoring.MetricConfigurations.MetricNames",
+          "topLevelProperty": "Monitoring",
+          "terminalKey": "MetricNames",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "Monitoring.MetricConfigurations.ResolutionSeconds",
+          "topLevelProperty": "Monitoring",
+          "terminalKey": "ResolutionSeconds",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
           "nestedKey": "NetworkConfiguration.AwsvpcConfiguration",
           "topLevelProperty": "NetworkConfiguration",
           "terminalKey": "AwsvpcConfiguration",
@@ -3214,6 +3260,223 @@
         },
         {
           "resourceType": "AWS::ECS::Service",
+          "nestedKey": "ServiceConnectConfiguration.AccessLogConfiguration",
+          "topLevelProperty": "ServiceConnectConfiguration",
+          "terminalKey": "AccessLogConfiguration",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "ServiceConnectConfiguration.AccessLogConfiguration.Format",
+          "topLevelProperty": "ServiceConnectConfiguration",
+          "terminalKey": "Format",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "ServiceConnectConfiguration.AccessLogConfiguration.IncludeQueryParameters",
+          "topLevelProperty": "ServiceConnectConfiguration",
+          "terminalKey": "IncludeQueryParameters",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "ServiceConnectConfiguration.Enabled",
+          "topLevelProperty": "ServiceConnectConfiguration",
+          "terminalKey": "Enabled",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "ServiceConnectConfiguration.LogConfiguration",
+          "topLevelProperty": "ServiceConnectConfiguration",
+          "terminalKey": "LogConfiguration",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "ServiceConnectConfiguration.LogConfiguration.LogDriver",
+          "topLevelProperty": "ServiceConnectConfiguration",
+          "terminalKey": "LogDriver",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "ServiceConnectConfiguration.LogConfiguration.Options",
+          "topLevelProperty": "ServiceConnectConfiguration",
+          "terminalKey": "Options",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "ServiceConnectConfiguration.LogConfiguration.SecretOptions",
+          "topLevelProperty": "ServiceConnectConfiguration",
+          "terminalKey": "SecretOptions",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "ServiceConnectConfiguration.LogConfiguration.SecretOptions.Name",
+          "topLevelProperty": "ServiceConnectConfiguration",
+          "terminalKey": "Name",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "ServiceConnectConfiguration.LogConfiguration.SecretOptions.ValueFrom",
+          "topLevelProperty": "ServiceConnectConfiguration",
+          "terminalKey": "ValueFrom",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "ServiceConnectConfiguration.Namespace",
+          "topLevelProperty": "ServiceConnectConfiguration",
+          "terminalKey": "Namespace",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "ServiceConnectConfiguration.Services",
+          "topLevelProperty": "ServiceConnectConfiguration",
+          "terminalKey": "Services",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "ServiceConnectConfiguration.Services.ClientAliases",
+          "topLevelProperty": "ServiceConnectConfiguration",
+          "terminalKey": "ClientAliases",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "ServiceConnectConfiguration.Services.ClientAliases.DnsName",
+          "topLevelProperty": "ServiceConnectConfiguration",
+          "terminalKey": "DnsName",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "ServiceConnectConfiguration.Services.ClientAliases.Port",
+          "topLevelProperty": "ServiceConnectConfiguration",
+          "terminalKey": "Port",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "ServiceConnectConfiguration.Services.ClientAliases.TestTrafficRules",
+          "topLevelProperty": "ServiceConnectConfiguration",
+          "terminalKey": "TestTrafficRules",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "ServiceConnectConfiguration.Services.ClientAliases.TestTrafficRules.Header",
+          "topLevelProperty": "ServiceConnectConfiguration",
+          "terminalKey": "Header",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "ServiceConnectConfiguration.Services.ClientAliases.TestTrafficRules.Header.Name",
+          "topLevelProperty": "ServiceConnectConfiguration",
+          "terminalKey": "Name",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "ServiceConnectConfiguration.Services.ClientAliases.TestTrafficRules.Header.Value",
+          "topLevelProperty": "ServiceConnectConfiguration",
+          "terminalKey": "Value",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "ServiceConnectConfiguration.Services.ClientAliases.TestTrafficRules.Header.Value.Exact",
+          "topLevelProperty": "ServiceConnectConfiguration",
+          "terminalKey": "Exact",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "ServiceConnectConfiguration.Services.DiscoveryName",
+          "topLevelProperty": "ServiceConnectConfiguration",
+          "terminalKey": "DiscoveryName",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "ServiceConnectConfiguration.Services.IngressPortOverride",
+          "topLevelProperty": "ServiceConnectConfiguration",
+          "terminalKey": "IngressPortOverride",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "ServiceConnectConfiguration.Services.PortName",
+          "topLevelProperty": "ServiceConnectConfiguration",
+          "terminalKey": "PortName",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "ServiceConnectConfiguration.Services.Timeout",
+          "topLevelProperty": "ServiceConnectConfiguration",
+          "terminalKey": "Timeout",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "ServiceConnectConfiguration.Services.Timeout.IdleTimeoutSeconds",
+          "topLevelProperty": "ServiceConnectConfiguration",
+          "terminalKey": "IdleTimeoutSeconds",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "ServiceConnectConfiguration.Services.Timeout.PerRequestTimeoutSeconds",
+          "topLevelProperty": "ServiceConnectConfiguration",
+          "terminalKey": "PerRequestTimeoutSeconds",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "ServiceConnectConfiguration.Services.Tls",
+          "topLevelProperty": "ServiceConnectConfiguration",
+          "terminalKey": "Tls",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "ServiceConnectConfiguration.Services.Tls.IssuerCertificateAuthority",
+          "topLevelProperty": "ServiceConnectConfiguration",
+          "terminalKey": "IssuerCertificateAuthority",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "ServiceConnectConfiguration.Services.Tls.IssuerCertificateAuthority.AwsPcaAuthorityArn",
+          "topLevelProperty": "ServiceConnectConfiguration",
+          "terminalKey": "AwsPcaAuthorityArn",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "ServiceConnectConfiguration.Services.Tls.KmsKey",
+          "topLevelProperty": "ServiceConnectConfiguration",
+          "terminalKey": "KmsKey",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "ServiceConnectConfiguration.Services.Tls.RoleArn",
+          "topLevelProperty": "ServiceConnectConfiguration",
+          "terminalKey": "RoleArn",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
           "nestedKey": "ServiceRegistries.ContainerName",
           "topLevelProperty": "ServiceRegistries",
           "terminalKey": "ContainerName",
@@ -3252,6 +3515,153 @@
           "nestedKey": "Tags.Value",
           "topLevelProperty": "Tags",
           "terminalKey": "Value",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "VolumeConfigurations.ManagedEBSVolume",
+          "topLevelProperty": "VolumeConfigurations",
+          "terminalKey": "ManagedEBSVolume",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "VolumeConfigurations.ManagedEBSVolume.Encrypted",
+          "topLevelProperty": "VolumeConfigurations",
+          "terminalKey": "Encrypted",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "VolumeConfigurations.ManagedEBSVolume.FilesystemType",
+          "topLevelProperty": "VolumeConfigurations",
+          "terminalKey": "FilesystemType",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "VolumeConfigurations.ManagedEBSVolume.Iops",
+          "topLevelProperty": "VolumeConfigurations",
+          "terminalKey": "Iops",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "VolumeConfigurations.ManagedEBSVolume.KmsKeyId",
+          "topLevelProperty": "VolumeConfigurations",
+          "terminalKey": "KmsKeyId",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "VolumeConfigurations.ManagedEBSVolume.RoleArn",
+          "topLevelProperty": "VolumeConfigurations",
+          "terminalKey": "RoleArn",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "VolumeConfigurations.ManagedEBSVolume.SizeInGiB",
+          "topLevelProperty": "VolumeConfigurations",
+          "terminalKey": "SizeInGiB",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "VolumeConfigurations.ManagedEBSVolume.SnapshotId",
+          "topLevelProperty": "VolumeConfigurations",
+          "terminalKey": "SnapshotId",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "VolumeConfigurations.ManagedEBSVolume.TagSpecifications",
+          "topLevelProperty": "VolumeConfigurations",
+          "terminalKey": "TagSpecifications",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "VolumeConfigurations.ManagedEBSVolume.TagSpecifications.PropagateTags",
+          "topLevelProperty": "VolumeConfigurations",
+          "terminalKey": "PropagateTags",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "VolumeConfigurations.ManagedEBSVolume.TagSpecifications.ResourceType",
+          "topLevelProperty": "VolumeConfigurations",
+          "terminalKey": "ResourceType",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "VolumeConfigurations.ManagedEBSVolume.TagSpecifications.Tags",
+          "topLevelProperty": "VolumeConfigurations",
+          "terminalKey": "Tags",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "VolumeConfigurations.ManagedEBSVolume.TagSpecifications.Tags.Key",
+          "topLevelProperty": "VolumeConfigurations",
+          "terminalKey": "Key",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "VolumeConfigurations.ManagedEBSVolume.TagSpecifications.Tags.Value",
+          "topLevelProperty": "VolumeConfigurations",
+          "terminalKey": "Value",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "VolumeConfigurations.ManagedEBSVolume.Throughput",
+          "topLevelProperty": "VolumeConfigurations",
+          "terminalKey": "Throughput",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "VolumeConfigurations.ManagedEBSVolume.VolumeInitializationRate",
+          "topLevelProperty": "VolumeConfigurations",
+          "terminalKey": "VolumeInitializationRate",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "VolumeConfigurations.ManagedEBSVolume.VolumeType",
+          "topLevelProperty": "VolumeConfigurations",
+          "terminalKey": "VolumeType",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "VolumeConfigurations.Name",
+          "topLevelProperty": "VolumeConfigurations",
+          "terminalKey": "Name",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "VpcLatticeConfigurations.PortName",
+          "topLevelProperty": "VpcLatticeConfigurations",
+          "terminalKey": "PortName",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "VpcLatticeConfigurations.RoleArn",
+          "topLevelProperty": "VpcLatticeConfigurations",
+          "terminalKey": "RoleArn",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "VpcLatticeConfigurations.TargetGroupArn",
+          "topLevelProperty": "VpcLatticeConfigurations",
+          "terminalKey": "TargetGroupArn",
           "bucket": "same-spelling"
         }
       ],
