@@ -229,7 +229,7 @@ rollback-deletion-policy-snapshot	2026-08-08T16:34:46Z	PASS	107	verify.sh	P0 fir
 rollback-failure-injection	2026-08-08T17:42:23Z	PASS	389	verify.sh	issue #1375 re-run (background, dodging the 600s clamp); all 8 phases, 17 del/0 err, 0 orphans incl NAT/EIP/ENI
 rollback-sqs-cooldown	2026-08-10T04:45:42Z	PASS	152	verify.sh	0810 sweep b3; post-#1361 rollback-executor re-verify, destroy clean
 route53	2026-08-11T02:45:10Z	PASS	405	verify.sh	#1160 route53 batch on the post-rebase MERGE PRODUCT (main incl. #1542 + this branch); both removal resets live-verified, destroy clean, 0 orphans
-s3-analytics-inventory	2026-08-11T04:00:18Z	PASS	155	verify.sh	re-run after the resolver restructure (#1493 items 2/3); 3 del 0 err, 0 orph
+s3-analytics-inventory	2026-08-11T06:16:10Z	PASS	150	verify.sh	issue 1573 filter predicate-count fix; 3 del 0 err, 0 orph
 s3-asset-deploy	2026-07-26T19:45:58Z	PASS	58	verify.sh	0727b sweep-b12 staleness re-run (rc=0); account clean
 s3-cloudfront	2026-08-08T17:42:05Z	PASS	228	verify.sh	1373 OriginCustomHeaders create+update-survive asserts green; destroy 0 errors 0 orphans
 s3-directory-bucket	2026-08-10T16:45:07Z	PASS	300	verify.sh	final post-rebase+review-fix run: tags create+update live, auto-empty, 0 orphans (#609)
