@@ -183,10 +183,14 @@ RTB_ID="$(aws ec2 describe-route-tables --region "${REGION}" \
   --query 'RouteTables[0].RouteTableId' --output text)"
 # State filter pins the FRESH prefix list — a leaked prior-run PL that the
 # pre-run cleanup just async-deleted still lists as delete-in-progress under
-# the same name and would otherwise win the [0] slot.
+# the same name and would otherwise win the [0] slot. The API's --filters
+# does NOT accept a 'state' key (InvalidFilter), so filter client-side.
+# contains() instead of a JMESPath '||' — the probe lint reads '||' inside
+# a capture as a shell swallow tail.
 PL_ID="$(aws ec2 describe-managed-prefix-lists --region "${REGION}" \
-  --filters "Name=prefix-list-name,Values=${PL_NAME}" "Name=state,Values=create-complete,modify-complete" \
-  --query 'PrefixLists[0].PrefixListId' --output text)"
+  --filters "Name=prefix-list-name,Values=${PL_NAME}" \
+  --query 'PrefixLists[?contains(`["create-complete","modify-complete"]`, State)] | [0].PrefixListId' \
+  --output text)"
 TGW_ID="$(aws ec2 describe-transit-gateways --region "${REGION}" \
   --filters "Name=tag:Name,Values=${TGW_TAG}" "Name=state,Values=available" \
   --query 'TransitGateways[0].TransitGatewayId' --output text)"
