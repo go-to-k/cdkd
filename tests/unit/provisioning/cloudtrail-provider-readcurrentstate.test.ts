@@ -270,6 +270,35 @@ describe('CloudTrailProvider.readCurrentState', () => {
     expect(result?.['CloudWatchLogsRoleArn']).toBe('');
   });
 
+  it('create() omits an always-emitted \'\' pair rather than sending an empty ARN', async () => {
+    // The snapshot can reach create(): `drift --accept` falls back to mutating
+    // `properties` when observedProperties is absent, and the rollback
+    // executor replays `previousState.properties` through `create()` on a
+    // reverse replacement. `CreateTrail` with an empty ARN is an UNPROBED
+    // shape, and on create `''` and absent both mean "not configured".
+    mockSend.mockResolvedValueOnce({
+      TrailARN: 'arn:aws:cloudtrail:us-east-1:1:trail/mytrail',
+    });
+
+    await provider.create('L', 'AWS::CloudTrail::Trail', {
+      S3BucketName: 'mybucket',
+      TrailName: 'mytrail',
+      CloudWatchLogsLogGroupArn: '',
+      CloudWatchLogsRoleArn: '',
+      KMSKeyId: '',
+      SnsTopicName: '',
+      S3KeyPrefix: '',
+      IsLogging: false,
+    });
+
+    const input = mockSend.mock.calls[0]?.[0].input as Record<string, unknown>;
+    expect(input['CloudWatchLogsLogGroupArn']).toBeUndefined();
+    expect(input['CloudWatchLogsRoleArn']).toBeUndefined();
+    expect(input['KmsKeyId']).toBeUndefined();
+    expect(input['SnsTopicName']).toBeUndefined();
+    expect(input['S3KeyPrefix']).toBeUndefined();
+  });
+
   it('emits empty Tags array when ListTags returns no user tags', async () => {
     mockSend
       .mockResolvedValueOnce({

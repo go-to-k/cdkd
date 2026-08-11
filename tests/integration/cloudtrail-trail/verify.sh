@@ -298,6 +298,26 @@ if [ "${DRIFT_RC}" -ne 1 ]; then
 fi
 echo "    ok: console-side CloudWatch Logs enable reported as drift"
 
+echo "==> Phase 2b: drift --revert MUST actually undo the enable"
+# Detection alone is half the feature: the update path used to drop the
+# baseline's `''` pair as "absent", so --revert issued an UpdateTrail without
+# the fields, AWS's merge semantics kept the console wiring, and cdkd still
+# printed the resource as reverted -- a silent no-op with a success message.
+CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" drift "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --revert --yes
+assert_field "CloudWatchLogsLogGroupArn re-cleared by --revert" '.CloudWatchLogsLogGroupArn' 'null'
+assert_field "CloudWatchLogsRoleArn re-cleared by --revert" '.CloudWatchLogsRoleArn' 'null'
+
+echo "==> Phase 2b: drift must be clean after the revert"
+# The convergence half: a revert that leaves the same difference behind would
+# report drift again forever.
+CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" drift "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}"
+echo "    ok: drift clean after --revert"
+
 # --- Phase 3: destroy -------------------------------------------------
 echo "==> Phase 3: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \

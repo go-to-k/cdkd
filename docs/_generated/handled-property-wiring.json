@@ -3000,6 +3000,7 @@
             "AWS::CloudTrail::Trail"
           ],
           "evidence": [
+            "delegated",
             "element-read"
           ],
           "seededBy": [
@@ -3014,6 +3015,7 @@
             "AWS::CloudTrail::Trail"
           ],
           "evidence": [
+            "delegated",
             "element-read"
           ],
           "seededBy": [

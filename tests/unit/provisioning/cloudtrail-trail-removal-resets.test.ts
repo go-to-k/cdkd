@@ -265,35 +265,60 @@ describe('CloudTrailProvider removal resets (issue #1160)', () => {
 
   // ─── CFn-parity / unmeasured retention pins ─────────────────────────
 
-  // The write-side half of issue #1565's always-emit: `readCurrentState` now
+  // The write-side half of issue #1565's always-emit. `readCurrentState` now
   // reports `''` for both fields on an UNWIRED trail, and that snapshot
   // round-trips through `update()` on every `drift --revert` / rollback
-  // replay. It must reach AWS as "nothing to change", or the always-emit
-  // would have traded an invisible drift for a spurious call on every
-  // unconfigured trail.
-  it("the always-emitted '' pair round-trips as a no-op, sending neither field", async () => {
+  // replay — so the update path has to tell an ABSENT desired side (a
+  // template removal, which CFn RETAINS) from an explicit `''` (a clear).
+  // Conflating them, as `emptyToUndefined` did, made a `--revert` of a
+  // console-side enable a NO-OP that still printed success.
+  it("the always-emitted '' pair round-trips as a semantic no-op on an unwired trail", async () => {
     await provider.update('T', TRAIL_ARN, TYPE, { ...BASE, CloudWatchLogsLogGroupArn: '', CloudWatchLogsRoleArn: '' }, {
       ...BASE,
       CloudWatchLogsLogGroupArn: '',
       CloudWatchLogsRoleArn: '',
     });
 
-    expect(updateTrailInput()['CloudWatchLogsLogGroupArn']).toBeUndefined();
-    expect(updateTrailInput()['CloudWatchLogsRoleArn']).toBeUndefined();
+    // `''` re-asserts a field that is already null — accepted by AWS, and it
+    // rides an UpdateTrail this update issues anyway. It is deliberately NOT
+    // suppressed on "unchanged": that gate would also stop forwarding an
+    // unchanged POPULATED pair, which the round-trip suite pins.
+    expect(updateTrailInput()['CloudWatchLogsLogGroupArn']).toBe('');
+    expect(updateTrailInput()['CloudWatchLogsRoleArn']).toBe('');
   });
 
-  it("an '' pair against a CONFIGURED previous is still not a removal (CFn parity)", async () => {
-    // The live CFn A/B (2026-08-10) measured the pair as RETAINED on removal,
-    // so the placeholder must not become a clear — that is the pin below,
-    // asserted here for the placeholder shape specifically.
+  it("an explicit '' pair against a CONFIGURED previous CLEARS it (the --revert path)", async () => {
+    // This is the shape `cdkd drift --revert` builds after a console-side
+    // enable: desired = the recorded baseline (`''` / `''`), previous = what
+    // AWS reports now. Dropping the `''` here left the console wiring in
+    // place while cdkd reported the resource reverted.
     await provider.update('T', TRAIL_ARN, TYPE, { ...BASE, CloudWatchLogsLogGroupArn: '', CloudWatchLogsRoleArn: '' }, {
       ...BASE,
       CloudWatchLogsLogGroupArn: 'arn:aws:logs:us-east-1:0:log-group:/g:*',
       CloudWatchLogsRoleArn: 'arn:aws:iam::0:role/r',
     });
 
-    expect(updateTrailInput()['CloudWatchLogsLogGroupArn']).toBeUndefined();
-    expect(updateTrailInput()['CloudWatchLogsRoleArn']).toBeUndefined();
+    expect(updateTrailInput()['CloudWatchLogsLogGroupArn']).toBe('');
+    expect(updateTrailInput()['CloudWatchLogsRoleArn']).toBe('');
+  });
+
+  it('sends the pair TOGETHER when only one half changes', async () => {
+    // AWS holds the two all-or-nothing, so a request carrying one without the
+    // other is a shape it rejects. The resolver decides them jointly.
+    await provider.update('T', TRAIL_ARN, TYPE, {
+      ...BASE,
+      CloudWatchLogsLogGroupArn: 'arn:aws:logs:us-east-1:0:log-group:/new:*',
+      CloudWatchLogsRoleArn: 'arn:aws:iam::0:role/r',
+    }, {
+      ...BASE,
+      CloudWatchLogsLogGroupArn: 'arn:aws:logs:us-east-1:0:log-group:/old:*',
+      CloudWatchLogsRoleArn: 'arn:aws:iam::0:role/r',
+    });
+
+    expect(updateTrailInput()['CloudWatchLogsLogGroupArn']).toBe(
+      'arn:aws:logs:us-east-1:0:log-group:/new:*'
+    );
+    expect(updateTrailInput()['CloudWatchLogsRoleArn']).toBe('arn:aws:iam::0:role/r');
   });
 
   it('parity: CloudWatchLogs pair is RETAINED on removal (CFn keeps it — live A/B)', async () => {
