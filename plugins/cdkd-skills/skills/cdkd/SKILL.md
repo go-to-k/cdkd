@@ -34,19 +34,6 @@ cdkd --version
 
 Do not silently upgrade an existing installation during an unrelated deployment.
 
-## Run workloads locally (no AWS needed)
-
-`cdkd local *` runs Lambda functions, API Gateway APIs, ECS tasks and services, ALBs, CloudFront distributions, and Bedrock AgentCore runtimes on the developer's machine via Docker — no AWS deploy and no AWS credentials involved, so the deployment-boundary steps below do not apply to these commands:
-
-```bash
-cdkd local invoke <function>       # one-shot Lambda invoke
-cdkd local start-api               # long-running local API Gateway
-cdkd local run-task <task>         # one-shot ECS task
-cdkd local start-service <service> # long-running ECS service emulator
-```
-
-Most `cdkd local` commands require Docker, and the first run pulls base images (up to ~600 MB). See the [local execution guide](https://github.com/go-to-k/cdkd/blob/main/docs/local-emulation.md) for the full subcommand list (ALB, CloudFront, AgentCore) and flags.
-
 ## Establish the deployment boundary
 
 Before any AWS-changing command:
@@ -187,6 +174,19 @@ Before `destroy`, `state destroy`, `orphan`, `import`, `export`, `drift --accept
 4. Obtain explicit user confirmation immediately before execution.
 
 Do not use `--force`, `--yes`, `--purge-events`, or other confirmation-bypassing flags unless the user approved that exact destructive scope.
+
+## Run workloads locally (no AWS needed)
+
+`cdkd local *` runs Lambda functions, API Gateway APIs, ECS tasks and services, ALBs, CloudFront distributions, and Bedrock AgentCore runtimes on the developer's machine via Docker — no AWS deploy and no AWS credentials involved, so the deployment-boundary steps above do not apply to these commands:
+
+```bash
+cdkd local invoke <function>       # one-shot Lambda invoke
+cdkd local start-api               # long-running local API Gateway
+cdkd local run-task <task>         # one-shot ECS task
+cdkd local start-service <service> # long-running ECS service emulator
+```
+
+Most `cdkd local` commands require Docker, and the first run pulls base images (up to ~600 MB). See the [local execution guide](https://github.com/go-to-k/cdkd/blob/main/docs/local-emulation.md) for the full subcommand list (ALB, CloudFront, AgentCore) and flags.
 
 ## Command reference
 
