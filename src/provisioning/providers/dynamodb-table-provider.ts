@@ -628,6 +628,16 @@ export class DynamoDBTableProvider implements ResourceProvider {
           resourceType
         );
       }
+      // Index names whose capacity the BillingMode flip below already delivered.
+      // `applyGsiUpdates` must NOT re-assert them: real AWS rejects a no-op
+      // capacity change outright (`The provisioned throughput for the index X
+      // will not change. The requested value equals the current value.`), so
+      // the second UpdateTable fails the whole deploy. Found by the
+      // `dynamodb-ondemand` integ on the first run of this change — the unit
+      // tests could not see it, because each mocks ONE call and the defect is
+      // an interaction BETWEEN two of them (issue #1588). Same mechanism as
+      // `gsiHandledByBillingFlip` in `dynamodb-globaltable-provider.ts`.
+      const gsiHandledByBillingFlip = new Set<string>();
       if (billingOrThroughputChanged || tableClassChanged) {
         const updateInput: UpdateTableCommandInput = { TableName: physicalId };
         // Always defined now that both sides normalize, so the call can never
@@ -727,6 +737,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
                 },
               },
             });
+            gsiHandledByBillingFlip.add(indexName);
           }
           if (indexUpdates.length > 0) {
             updateInput.GlobalSecondaryIndexUpdates = indexUpdates;
@@ -938,7 +949,8 @@ export class DynamoDBTableProvider implements ResourceProvider {
           logicalId,
           previousProperties['GlobalSecondaryIndexes'] as GlobalSecondaryIndex[] | undefined,
           properties['GlobalSecondaryIndexes'] as GlobalSecondaryIndex[] | undefined,
-          properties['AttributeDefinitions'] as AttributeDefinition[] | undefined
+          properties['AttributeDefinitions'] as AttributeDefinition[] | undefined,
+          gsiHandledByBillingFlip
         );
       }
 
@@ -1774,7 +1786,13 @@ export class DynamoDBTableProvider implements ResourceProvider {
     logicalId: string,
     previousGsis: GlobalSecondaryIndex[] | undefined,
     desiredGsis: GlobalSecondaryIndex[] | undefined,
-    desiredAttributeDefinitions: AttributeDefinition[] | undefined
+    desiredAttributeDefinitions: AttributeDefinition[] | undefined,
+    // Names whose capacity the BillingMode flip already delivered in its own
+    // UpdateTable. Their throughput Update MUST be skipped here — AWS rejects a
+    // capacity change that equals the current value, so re-asserting it fails
+    // the deploy outright. Only the throughput arm is suppressed: an index that
+    // was ADDED or REMOVED in the same deploy still needs its own op.
+    handledByBillingFlip: ReadonlySet<string> = new Set<string>()
   ): Promise<void> {
     const prev = previousGsis ?? [];
     const desired = desiredGsis ?? [];
@@ -1841,6 +1859,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
         // BillingMode switch (handled above), not here.
         if (
           gsi.ProvisionedThroughput &&
+          !handledByBillingFlip.has(name) &&
           JSON.stringify(before.ProvisionedThroughput) !== JSON.stringify(gsi.ProvisionedThroughput)
         ) {
           ops.push({

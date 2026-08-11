@@ -71,15 +71,29 @@ const LIVE_GSI = (name: string) => ({
 });
 
 const cfnGsi = (name: string, read: unknown, write: unknown) => ({
+  ...cfnGsiNoCapacity(name),
+  ProvisionedThroughput: { ReadCapacityUnits: read, WriteCapacityUnits: write },
+});
+
+// The on-demand shape: same KeySchema / Projection, no capacity. Sharing the
+// key schema matters — a differing one trips the separate immutable-KeySchema
+// refusal and the test would fail for a reason it is not about.
+const cfnGsiNoCapacity = (name: string) => ({
   IndexName: name,
   KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
   Projection: { ProjectionType: 'ALL' },
-  ProvisionedThroughput: { ReadCapacityUnits: read, WriteCapacityUnits: write },
 });
 
 let provider: DynamoDBTableProvider;
 
 beforeEach(() => {
+  // `mockReset`, not just `clearAllMocks`: the latter clears call RECORDS but
+  // leaves the `mockResolvedValueOnce` QUEUE intact, so a test that primes more
+  // responses than its update() consumes shifts every later test's queue by one
+  // and they silently read the wrong DescribeTable. That is not hypothetical —
+  // it made the last test in this file see a table with no indexes and skip the
+  // branch it exists to pin, while still passing its other assertion.
+  mockSend.mockReset();
   vi.clearAllMocks();
   childLogger.child.mockReturnValue(childLogger);
   provider = new DynamoDBTableProvider();
@@ -225,6 +239,83 @@ describe('flip to PROVISIONED carries per-GSI ProvisionedThroughput (issue #1588
   });
 });
 
+describe('the flip-handled index is not re-asserted by the per-index path', () => {
+  it('issues exactly ONE UpdateTable carrying the index, not a second no-op one', async () => {
+    // Found by the real-AWS `dynamodb-ondemand` integ on this change's FIRST
+    // run, not by a unit test — and the reason is structural: every other test
+    // here mocks a single call, while this defect is an INTERACTION between
+    // two. The flip delivered the capacity, then `applyGsiUpdates` saw the
+    // template's 2/2 against a previous side with none and issued a SECOND
+    // UpdateTable, which AWS rejects outright:
+    //   "The provisioned throughput for the index billing-removal-gsi will not
+    //    change. The requested value equals the current value."
+    // That failed the whole deploy, so the fix without this suppression was
+    // strictly worse than the bug it replaced.
+    primeDescribeTable('PAY_PER_REQUEST', [LIVE_GSI('gsi1')]);
+    mockSend.mockResolvedValueOnce({}); // the flip UpdateTable
+    primeWaitActive();
+    // Deliberately primed so a SECOND UpdateTable would succeed if one were
+    // sent — the assertion has to catch the extra call, not a mock underrun.
+    mockSend.mockResolvedValueOnce({});
+    primeWaitActive();
+
+    await provider.update(
+      'L',
+      TABLE_NAME,
+      RESOURCE_TYPE,
+      {
+        BillingMode: 'PROVISIONED',
+        ProvisionedThroughput: { ReadCapacityUnits: 3, WriteCapacityUnits: 4 },
+        GlobalSecondaryIndexes: [cfnGsi('gsi1', 2, 2)],
+      },
+      // The integ's exact shape: the baseline is on-demand, so the recorded
+      // index carries NO capacity and the desired one does — which is what made
+      // `applyGsiUpdates` think it had work to do.
+      {
+        BillingMode: 'PAY_PER_REQUEST',
+        GlobalSecondaryIndexes: [cfnGsiNoCapacity('gsi1')],
+      }
+    );
+
+    const calls = findCalls(UpdateTableCommand);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.input.GlobalSecondaryIndexUpdates?.[0]?.Update?.ProvisionedThroughput).toEqual(
+      { ReadCapacityUnits: 2, WriteCapacityUnits: 2 }
+    );
+  });
+
+  it('still applies a per-index capacity change when there is NO flip', async () => {
+    // The suppression must be scoped to indexes the flip handled; an ordinary
+    // capacity edit on an already-PROVISIONED table still needs its own op.
+    primeDescribeTable('PROVISIONED', [LIVE_GSI('gsi1')]);
+    mockSend.mockResolvedValueOnce({}); // the per-index UpdateTable
+    primeWaitActive();
+
+    await provider.update(
+      'L',
+      TABLE_NAME,
+      RESOURCE_TYPE,
+      {
+        BillingMode: 'PROVISIONED',
+        ProvisionedThroughput: { ReadCapacityUnits: 5, WriteCapacityUnits: 5 },
+        GlobalSecondaryIndexes: [cfnGsi('gsi1', 9, 9)],
+      },
+      {
+        BillingMode: 'PROVISIONED',
+        ProvisionedThroughput: { ReadCapacityUnits: 5, WriteCapacityUnits: 5 },
+        GlobalSecondaryIndexes: [cfnGsi('gsi1', 2, 2)],
+      }
+    );
+
+    const calls = findCalls(UpdateTableCommand);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.input.GlobalSecondaryIndexUpdates?.[0]?.Update).toMatchObject({
+      IndexName: 'gsi1',
+      ProvisionedThroughput: { ReadCapacityUnits: 9, WriteCapacityUnits: 9 },
+    });
+  });
+});
+
 describe('scope: only the flip, and only when indexes exist', () => {
   it('does NOT send index updates on a capacity bump of an already-PROVISIONED table', async () => {
     // AWS rejects an UpdateTable that re-asserts an index's current capacity,
@@ -314,15 +405,11 @@ describe('scope: only the flip, and only when indexes exist', () => {
       {
         BillingMode: 'PROVISIONED',
         ProvisionedThroughput: { ReadCapacityUnits: 5, WriteCapacityUnits: 5 },
-        GlobalSecondaryIndexes: [
-          { IndexName: 'gsi1', KeySchema: [], Projection: { ProjectionType: 'ALL' } },
-        ],
+        GlobalSecondaryIndexes: [cfnGsiNoCapacity('gsi1')],
       },
       {
         BillingMode: 'PAY_PER_REQUEST',
-        GlobalSecondaryIndexes: [
-          { IndexName: 'gsi1', KeySchema: [], Projection: { ProjectionType: 'ALL' } },
-        ],
+        GlobalSecondaryIndexes: [cfnGsiNoCapacity('gsi1')],
       }
     );
 
