@@ -194,14 +194,17 @@ no-op deploy starts erroring. On the degraded path (no `DescribeType`, so no
 create-only knowledge) it is worse: the change classifies in-place and the
 resource is delete-and-recreated on EVERY deploy.
 
-So narrow the DESIRED side identically, via
+So narrow BOTH comparison sides identically, via
 `ResourceProvider.canonicalizeDesiredProperties(resourceType, properties)` —
-pure, synchronous, applied by `DiffCalculator` to the resolved desired
-properties. Share ONE helper with the provisioning path
+pure, synchronous, applied by `DiffCalculator` to BOTH comparison sides. Share ONE helper with the provisioning path
 (`narrowRouteDestinations` is the example) rather than re-deriving the rule, or
 state and template end up narrowed to different keys and the fix becomes the
 bug. This is the same "normalize BOTH comparison sides" rule
 `drift-normalize.ts` already records for ordering.
+
+Two things that are easy to get wrong and were both caught by review:
+**normalize BOTH comparison sides**, not just the desired one — a record written BEFORE the provider started narrowing still carries every key, so a one-sided pass flips the same difference to a REMOVAL and breaks exactly the population the narrowing exists for; and **wire `cdkd diff` too**, since a preview that narrows differently from the apply forecasts a change the deploy will never make. `makeCanonicalizePropertiesFn` in `src/provisioning/canonicalize-properties.ts` is the one builder both commands use, so they cannot drift.
+
 
 REMOVALS are a separate decision and the conservative reading usually stands: a
 junk record cannot distinguish "cdkd created this and the template dropped it"

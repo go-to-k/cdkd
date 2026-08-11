@@ -159,6 +159,10 @@ canonicalizeDesiredProperties(
 It must be pure and synchronous (it runs inside the diff, before any AWS call),
 and it must return the input unchanged whenever nothing applies.
 
+Two things that are easy to get wrong and were both caught by review:
+**normalize BOTH comparison sides**, not just the desired one — a record written BEFORE the provider started narrowing still carries every key, so a one-sided pass flips the same difference to a REMOVAL and breaks exactly the population the narrowing exists for; and **wire `cdkd diff` too**, since a preview that narrows differently from the apply forecasts a change the deploy will never make. `makeCanonicalizePropertiesFn` in `src/provisioning/canonicalize-properties.ts` is the one builder both commands use, so they cannot drift.
+
+
 ## Provider Implementation Examples
 
 ### 1. Simple Example: S3 Bucket Policy Provider

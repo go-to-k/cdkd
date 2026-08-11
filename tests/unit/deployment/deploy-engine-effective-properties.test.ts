@@ -325,6 +325,56 @@ describe('DeployEngine - effectiveProperties overrides what is recorded in state
     });
   });
 
+  describe('the engine WIRES the canonicalizer into the diff', () => {
+    it('passes a canonicalizer as calculateDiff\'s 4th argument', async () => {
+      // The integration point of the whole second half. Without this, both the
+      // provider hook and the DiffCalculator seam can be perfect and fully
+      // tested while the engine simply never connects them — the failure mode
+      // a review specifically asked about. Asserted on the CALL rather than on
+      // an outcome because the mocked DiffCalculator is what the other rows
+      // drive, so no observable diff behavior exists here to assert on.
+      mockStateBackend.getState.mockResolvedValue({ state: priorState(), etag: 'etag-old' });
+      mockProvider.update.mockResolvedValue({
+        physicalId: 'rtb-1|10.0.0.0/16',
+        wasReplaced: false,
+        attributes: {},
+      });
+      mockDiffCalculator.calculateDiff.mockResolvedValue(changeMap('UPDATE'));
+
+      await makeEngine().deploy(stackName, template);
+
+      const call = mockDiffCalculator.calculateDiff.mock.calls.at(-1)!;
+      expect(typeof call[3]).toBe('function');
+    });
+
+    it('the canonicalizer it passes actually consults the provider hook', async () => {
+      // A function that ignores the provider would satisfy the row above, so
+      // pin the delegation: the engine's registry returns a provider whose
+      // hook narrows, and the function handed to the diff must reflect that.
+      const hook = vi.fn().mockReturnValue({ narrowed: true });
+      mockProviderRegistry.getProvider.mockReturnValue({
+        ...mockProvider,
+        canonicalizeDesiredProperties: hook,
+      });
+      mockStateBackend.getState.mockResolvedValue({ state: priorState(), etag: 'etag-old' });
+      mockProvider.update.mockResolvedValue({
+        physicalId: 'rtb-1|10.0.0.0/16',
+        wasReplaced: false,
+        attributes: {},
+      });
+      mockDiffCalculator.calculateDiff.mockResolvedValue(changeMap('UPDATE'));
+
+      await makeEngine().deploy(stackName, template);
+
+      const canonicalize = mockDiffCalculator.calculateDiff.mock.calls.at(-1)![3] as (
+        t: string,
+        p: Record<string, unknown>
+      ) => Record<string, unknown>;
+      expect(canonicalize(RESOURCE_TYPE, DESIRED)).toEqual({ narrowed: true });
+      expect(hook).toHaveBeenCalledWith(RESOURCE_TYPE, DESIRED);
+    });
+  });
+
   describe('the field REPLACES rather than merges', () => {
     it('a key present in the desired bag but absent from effectiveProperties is dropped', async () => {
       // A merge implementation would silently pass every assertion above (the

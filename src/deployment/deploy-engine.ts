@@ -42,6 +42,7 @@ import type { DagBuilder } from '../analyzer/dag-builder.js';
 import type { DiffCalculator } from '../analyzer/diff-calculator.js';
 import { ProviderRegistry } from '../provisioning/provider-registry.js';
 import { slowCcOperationTimeoutMs } from '../provisioning/slow-cc-operation-timeouts.js';
+import { makeCanonicalizePropertiesFn } from '../provisioning/canonicalize-properties.js';
 import {
   ATOMIC_FINAL_SNAPSHOT_TYPES,
   PRE_DELETE_SNAPSHOT_TYPES,
@@ -1200,8 +1201,10 @@ export class DeployEngine {
         currentState,
         effectiveTemplate,
         diffResolveFn,
-        (resourceType, resolvedDesired) =>
-          this.canonicalizeDesiredForDiff(resourceType, resolvedDesired)
+        // Shared with `cdkd diff` (issue #1591): a preview that narrows
+        // differently from the apply forecasts a change the deploy will never
+        // make, which is this issue's own bug class moved one command over.
+        makeCanonicalizePropertiesFn(this.providerRegistry)
       );
       const hasChanges = this.diffCalculator.hasChanges(changes);
 
@@ -3682,33 +3685,6 @@ export class DeployEngine {
       (dep) => !parameterNames.has(dep)
     );
     return deps.length > 0 ? deps : undefined;
-  }
-
-  /**
-   * Ask the resource's provider to narrow the RESOLVED desired properties the
-   * same way it narrows what it SENDS, for the diff's comparison side only
-   * (issue #1591) — the other half of `propertiesToRecord` below.
-   *
-   * Best-effort by construction: a type with no registered provider, or a
-   * provider that does not implement the hook, compares unchanged. A throwing
-   * hook must not take the deploy down over a comparison refinement, so it is
-   * caught and the un-narrowed properties are used — the pre-#1591 behavior.
-   */
-  private canonicalizeDesiredForDiff(
-    resourceType: string,
-    resolvedDesired: Record<string, unknown>
-  ): Record<string, unknown> {
-    try {
-      const provider = this.providerRegistry.getProvider(resourceType);
-      return (
-        provider?.canonicalizeDesiredProperties?.(resourceType, resolvedDesired) ?? resolvedDesired
-      );
-    } catch (error) {
-      this.logger.debug(
-        `canonicalizeDesiredProperties failed for ${resourceType}: ${error instanceof Error ? error.message : String(error)}`
-      );
-      return resolvedDesired;
-    }
   }
 
   /**

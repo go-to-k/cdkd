@@ -1,8 +1,15 @@
 import { describe, it, expect, vi } from 'vite-plus/test';
 import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
-import { narrowRouteDestinations } from '../../../src/provisioning/providers/ec2-provider.js';
+import { EC2Provider } from '../../../src/provisioning/providers/ec2-provider.js';
+import { makeCanonicalizePropertiesFn } from '../../../src/provisioning/canonicalize-properties.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { StackState } from '../../../src/types/state.js';
+
+vi.mock('../../../src/utils/aws-clients.js', () => ({
+  getAwsClients: () => ({
+    ec2: { send: vi.fn(), config: { region: () => Promise.resolve('us-east-1') } },
+  }),
+}));
 
 vi.mock('../../../src/utils/logger.js', () => ({
   getLogger: () => ({
@@ -69,13 +76,14 @@ describe('DiffCalculator canonicalizeDesired (#1591)', () => {
     },
   };
 
-  // The REAL provider helper, not a stand-in: if the two sides ever narrow
-  // differently the bug returns, so the test must exercise the shared rule.
-  const canonicalize = (resourceType: string, properties: Record<string, unknown>) => {
-    if (resourceType !== RESOURCE_TYPE) return properties;
-    const { declared, narrowed } = narrowRouteDestinations(properties);
-    return declared.length > 1 ? narrowed : properties;
-  };
+  // The REAL provider method through the REAL builder — NOT a local
+  // re-implementation of the gate. A stand-in closure passes every row below
+  // while `EC2Provider.canonicalizeDesiredProperties` is gutted to
+  // `return properties`, which is exactly the false green a review found here.
+  const provider = new EC2Provider();
+  const canonicalize = makeCanonicalizePropertiesFn({
+    getProvider: (t: string) => (t === RESOURCE_TYPE ? provider : undefined),
+  });
 
   it('WITHOUT the canonicalizer the narrowing reads back as a change (the bug)', async () => {
     // Pinned deliberately: this is the regression the second half exists to
@@ -102,6 +110,91 @@ describe('DiffCalculator canonicalizeDesired (#1591)', () => {
     // pass for a resource the diff never looked at.
     expect(changes.get('MyRoute')?.changeType).toBe('NO_CHANGE');
     expect(changes.get('MyRoute')?.propertyChanges ?? []).toEqual([]);
+  });
+
+  it('LEGACY state carrying the full bag is narrowed too — BOTH sides', async () => {
+    // The population this issue names: a record written by a pre-#1590 binary
+    // that still carries every destination key. Narrowing only the DESIRED
+    // side flips the difference to a REMOVAL, which for a create-only property
+    // is a REPLACEMENT whose create the engine issues with no context — the
+    // provider's create-path refusal then fails a deploy that was green the
+    // day before. Found by review; this row is the fence.
+    const legacyState = {
+      version: 3,
+      region: 'us-east-1',
+      stackName: 'route-stack',
+      resources: {
+        MyRoute: {
+          physicalId: 'rtb-1|10.0.0.0/16',
+          resourceType: RESOURCE_TYPE,
+          properties: {
+            RouteTableId: 'rtb-1',
+            DestinationCidrBlock: '10.0.0.0/16',
+            DestinationIpv6CidrBlock: '::/0',
+            GatewayId: 'igw-1',
+          },
+          attributes: {},
+        },
+      },
+      outputs: {},
+      lastModified: 0,
+    } as unknown as StackState;
+
+    const changes = await new DiffCalculator().calculateDiff(
+      legacyState,
+      invalidTemplate,
+      undefined,
+      canonicalize
+    );
+
+    expect(changes.get('MyRoute')?.changeType).toBe('NO_CHANGE');
+  });
+
+  it('LEGACY state + a CORRECTED template still reports nothing to do', async () => {
+    // The user fixed their template down to the single winning key. AWS already
+    // holds exactly that route, so there is genuinely nothing to deploy; the
+    // stale extra key in state is the (#1612) already-junk class, not a change.
+    const legacyState = {
+      version: 3,
+      region: 'us-east-1',
+      stackName: 'route-stack',
+      resources: {
+        MyRoute: {
+          physicalId: 'rtb-1|10.0.0.0/16',
+          resourceType: RESOURCE_TYPE,
+          properties: {
+            RouteTableId: 'rtb-1',
+            DestinationCidrBlock: '10.0.0.0/16',
+            DestinationIpv6CidrBlock: '::/0',
+            GatewayId: 'igw-1',
+          },
+          attributes: {},
+        },
+      },
+      outputs: {},
+      lastModified: 0,
+    } as unknown as StackState;
+    const corrected: CloudFormationTemplate = {
+      Resources: {
+        MyRoute: {
+          Type: RESOURCE_TYPE,
+          Properties: {
+            RouteTableId: 'rtb-1',
+            DestinationCidrBlock: '10.0.0.0/16',
+            GatewayId: 'igw-1',
+          },
+        },
+      },
+    };
+
+    const changes = await new DiffCalculator().calculateDiff(
+      legacyState,
+      corrected,
+      undefined,
+      canonicalize
+    );
+
+    expect(changes.get('MyRoute')?.changeType).toBe('NO_CHANGE');
   });
 
   it('a REAL destination change is still reported', async () => {
@@ -158,6 +251,42 @@ describe('DiffCalculator canonicalizeDesired (#1591)', () => {
     expect(
       changes.get('MyRoute')?.propertyChanges?.map((pc) => pc.path)
     ).toContain('GatewayId');
+  });
+
+  it('runs AFTER intrinsic resolution, not before', async () => {
+    // The ordering the seam's JSDoc claims. The provider decides on RESOLVED
+    // values, so canonicalizing an unresolved intrinsic would disagree with
+    // it. Here the losing key arrives as an intrinsic that only becomes
+    // truthy once resolved: canonicalize-then-resolve would see a non-string
+    // it does not recognise and leave both keys in, reporting a change.
+    const template: CloudFormationTemplate = {
+      Resources: {
+        MyRoute: {
+          Type: RESOURCE_TYPE,
+          Properties: {
+            RouteTableId: 'rtb-1',
+            DestinationCidrBlock: '10.0.0.0/16',
+            DestinationIpv6CidrBlock: { __resolveTo: '::/0' },
+            GatewayId: 'igw-1',
+          },
+        },
+      },
+    };
+    const resolveFn = (value: unknown) =>
+      Promise.resolve(
+        value && typeof value === 'object' && '__resolveTo' in (value as Record<string, unknown>)
+          ? (value as Record<string, unknown>)['__resolveTo']
+          : value
+      );
+
+    const changes = await new DiffCalculator().calculateDiff(
+      narrowedState(),
+      template,
+      resolveFn,
+      canonicalize
+    );
+
+    expect(changes.get('MyRoute')?.changeType).toBe('NO_CHANGE');
   });
 
   it('leaves an unrelated resource type untouched', async () => {

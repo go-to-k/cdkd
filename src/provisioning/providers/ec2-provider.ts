@@ -102,22 +102,6 @@ import type {
 } from '../../types/resource.js';
 
 /**
- * AWS EC2 Networking Provider
- *
- * Implements resource provisioning for EC2 networking resources:
- * - AWS::EC2::VPC
- * - AWS::EC2::Subnet
- * - AWS::EC2::InternetGateway
- * - AWS::EC2::VPCGatewayAttachment
- * - AWS::EC2::RouteTable
- * - AWS::EC2::Route
- * - AWS::EC2::SubnetRouteTableAssociation
- * - AWS::EC2::SecurityGroup
- * - AWS::EC2::SecurityGroupIngress
- * - AWS::EC2::Instance
- */
-
-/**
  * The `AWS::EC2::Route` destination keys, in CloudFormation's own precedence
  * order — which is also the order `createRoute`'s
  * `DestinationCidrBlock || DestinationIpv6CidrBlock || DestinationPrefixListId`
@@ -157,9 +141,24 @@ export function narrowRouteDestinations(properties: Record<string, unknown>): {
   const declared = ROUTE_DESTINATION_KEYS.filter((key) => Boolean(properties[key]));
   const narrowed = { ...properties };
   for (const losingKey of declared.slice(1)) delete narrowed[losingKey];
-  return { declared: [...declared], narrowed };
+  return { declared, narrowed };
 }
 
+/**
+ * AWS EC2 Networking Provider
+ *
+ * Implements resource provisioning for EC2 networking resources:
+ * - AWS::EC2::VPC
+ * - AWS::EC2::Subnet
+ * - AWS::EC2::InternetGateway
+ * - AWS::EC2::VPCGatewayAttachment
+ * - AWS::EC2::RouteTable
+ * - AWS::EC2::Route
+ * - AWS::EC2::SubnetRouteTableAssociation
+ * - AWS::EC2::SecurityGroup
+ * - AWS::EC2::SecurityGroupIngress
+ * - AWS::EC2::Instance
+ */
 export class EC2Provider implements ResourceProvider {
   private ec2Client: EC2Client;
   private logger = getLogger().child('EC2Provider');

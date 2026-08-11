@@ -23,23 +23,27 @@ import {
 export type IntrinsicResolveFn = (value: unknown) => Promise<unknown>;
 
 /**
- * Per-type normalization of the RESOLVED desired properties, applied to the
- * comparison side only (issue #1591).
+ * Per-type normalization applied to BOTH comparison sides (issue #1591).
  *
  * A provider that deliberately sends LESS than the template declares records
  * the narrowed bag in state (`effectiveProperties`). Without the identical
  * narrowing here the template's extra keys read as a user-made change on every
- * later deploy — and for a create-only property that is a REPLACEMENT, i.e. a
- * previously-green no-op deploy starts destroying and re-creating the resource
- * (or failing outright, when the provider refuses the shape on the create
- * path). Normalizing BOTH sides the same way is the rule `drift-normalize.ts`
- * already follows for ordering; this is the same rule for narrowing.
+ * later deploy — and for a create-only property that is a REPLACEMENT, so a
+ * previously-green no-op deploy starts destroying and re-creating the resource,
+ * or failing outright where the provider refuses the shape on the create path.
+ *
+ * BOTH sides, not just the desired one: a record written BEFORE the provider
+ * started narrowing still carries every key, so a desired-only normalization
+ * flips the same difference to a REMOVAL and breaks exactly the population the
+ * narrowing exists for. State can only carry the wider bag when it is junk, so
+ * normalizing it is safe and the next write self-heals the record.
+ * `drift-normalize.ts` records the same both-sides rule for ordering.
  *
  * MUST be pure and synchronous — it runs inside the diff, before any AWS call.
  */
-export type CanonicalizeDesiredFn = (
+export type CanonicalizePropertiesFn = (
   resourceType: string,
-  resolvedDesired: Record<string, unknown>
+  properties: Record<string, unknown>
 ) => Record<string, unknown>;
 
 /**
@@ -88,23 +92,19 @@ export class DiffCalculator {
    *                  buried inside intrinsics (e.g. `Fn::Join` literal args) are detected.
    *                  If resolution throws for a given property value, the unresolved
    *                  value is used (falling back to the original "assume equal" behavior).
-   * @param canonicalizeDesired Optional per-type normalization of the RESOLVED desired
-   *                  properties, applied to the comparison side only (issue #1591).
-   *                  It exists for the case where a provider deliberately sends less
-   *                  than the template declares: state then records the NARROWED bag,
-   *                  and without the same narrowing on this side the difference reads
-   *                  as a user-made change on every later deploy — for a create-only
-   *                  property, as a REPLACEMENT. Normalizing BOTH sides identically is
-   *                  the same rule `drift-normalize.ts` follows for ordering.
-   *                  Injected as a function rather than as a provider registry so the
-   *                  analyzer layer keeps no dependency on the provisioning layer.
+   * @param canonicalizeProperties Optional per-type normalization applied to BOTH
+   *                  comparison sides (issue #1591) — see {@link CanonicalizePropertiesFn}
+   *                  for why one-sided normalization breaks the very population it is
+   *                  meant to fix. Injected as a function rather than as a provider
+   *                  registry so the analyzer layer keeps no dependency on the
+   *                  provisioning layer.
    * @returns Map of logical ID to resource change
    */
   async calculateDiff(
     currentState: StackState,
     desiredTemplate: CloudFormationTemplate,
     resolveFn?: IntrinsicResolveFn,
-    canonicalizeDesired?: CanonicalizeDesiredFn
+    canonicalizeProperties?: CanonicalizePropertiesFn
   ): Promise<Map<string, ResourceChange>> {
     const changes = new Map<string, ResourceChange>();
 
@@ -192,18 +192,33 @@ export class DiffCalculator {
         const resolvedDesiredProps = resolveFn
           ? await this.resolveBestEffort(rawDesiredProps, resolveFn)
           : rawDesiredProps;
-        // Narrow the desired side the same way the provider narrows what it
-        // SENDS, so a deliberate narrowing recorded in state (issue #1591) is
-        // not re-read as a change the user made. Applied AFTER resolution: the
-        // provider decides on resolved values, so deciding on an unresolved
-        // intrinsic here would disagree with it.
-        const desiredPropsForCompare = canonicalizeDesired
-          ? canonicalizeDesired(desiredResource.Type, resolvedDesiredProps)
+        // Narrow the same way the provider narrows what it SENDS, so a
+        // deliberate narrowing (issue #1591) is not re-read as a change the
+        // user made. Applied AFTER resolution: the provider decides on
+        // resolved values, so deciding on an unresolved intrinsic here would
+        // disagree with it.
+        //
+        // BOTH SIDES, which is the whole rule and not a symmetry nicety.
+        // Narrowing only the desired side fixes the freshly-written record and
+        // BREAKS the population this exists for: a state record written before
+        // the provider started narrowing still carries every key, so the loser
+        // reads as REMOVED, and for a create-only property that is a
+        // REPLACEMENT whose create the engine issues with no context — landing
+        // on the provider's create-path refusal and failing a deploy that was
+        // green the day before. State can only carry the wider bag when it is
+        // junk, so narrowing it here is safe, and the next write persists the
+        // narrowed form — the record self-heals instead of wedging.
+        // `drift-normalize.ts` records the same rule for ordering.
+        const desiredPropsForCompare = canonicalizeProperties
+          ? canonicalizeProperties(desiredResource.Type, resolvedDesiredProps)
           : resolvedDesiredProps;
+        const currentPropsForCompare = canonicalizeProperties
+          ? canonicalizeProperties(desiredResource.Type, currentResource.properties)
+          : currentResource.properties;
 
         const propertyChanges = await this.compareProperties(
           desiredResource.Type,
-          currentResource.properties,
+          currentPropsForCompare,
           desiredPropsForCompare
         );
 
