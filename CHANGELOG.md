@@ -1,3 +1,10 @@
+## [0.278.54](https://github.com/go-to-k/cdkd/compare/v0.278.53...v0.278.54) (2026-08-11)
+
+
+### Bug Fixes
+
+* **provisioning:** downgrade the residual state-replay refusals per site, and stop the warn path wedging recovery ([#1562](https://github.com/go-to-k/cdkd/issues/1562)) ([eb57eeb](https://github.com/go-to-k/cdkd/commit/eb57eeb3c1a950a1276622ca4b984d43f86ad018))
+
 ## [0.278.53](https://github.com/go-to-k/cdkd/compare/v0.278.52...v0.278.53) (2026-08-11)
 
 
