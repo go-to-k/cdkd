@@ -458,6 +458,11 @@ describe('configStringRefusal (issue #1595)', () => {
       {},
       { nested: true },
     ];
+    // `JSON.stringify`, NOT `String`: `String([])` and `String('')` are both
+    // `''`, and `String(['Enabled'])` equals `String('Enabled')`, so a real
+    // divergence on those rows would print two identical strings and read as
+    // an assertion bug rather than as the predicate drift it is.
+    const label = (v: unknown) => (v === undefined ? 'undefined' : JSON.stringify(v));
     for (const fallback of ['Enabled', '']) {
       for (const options of [undefined, { coerceNumber: true }]) {
         for (const value of values) {
@@ -468,9 +473,8 @@ describe('configStringRefusal (issue #1595)', () => {
           } catch {
             threw = true;
           }
-          expect(
-            [String(value), fallback, JSON.stringify(options), refused !== undefined].join(' | ')
-          ).toBe([String(value), fallback, JSON.stringify(options), threw].join(' | '));
+          const where = `value=${label(value)} fallback=${label(fallback)} opts=${label(options)}`;
+          expect(`${where} refused=${refused !== undefined}`).toBe(`${where} refused=${threw}`);
         }
       }
       // ...and the CONTAINER half, which the loop above cannot reach.
@@ -482,9 +486,8 @@ describe('configStringRefusal (issue #1595)', () => {
         } catch {
           threw = true;
         }
-        expect([String(container), fallback, refused !== undefined].join(' | ')).toBe(
-          [String(container), fallback, threw].join(' | ')
-        );
+        const where = `container=${label(container)} fallback=${label(fallback)}`;
+        expect(`${where} refused=${refused !== undefined}`).toBe(`${where} refused=${threw}`);
       }
     }
   });

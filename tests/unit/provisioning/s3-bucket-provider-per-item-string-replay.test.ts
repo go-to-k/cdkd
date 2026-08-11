@@ -27,9 +27,24 @@ import {
  * So the downgrade is the SKIP the sibling container guards perform, with the
  * SAME per-applier unit: the whole Put where the Put replaces every rule
  * (lifecycle / replication), the single configuration item where the Put is
- * per-Id (intelligent tiering / inventory). Those two unit assertions are the
- * load-bearing ones here — a downgrade with the wrong unit is a different bug,
- * not a partial fix.
+ * per-Id (intelligent tiering / inventory).
+ *
+ * Three things here are load-bearing and each exists because a review mutation
+ * proved the obvious version of the test did NOT catch its bug:
+ *
+ * 1. **The skip-unit rows put the malformed item FIRST.** With `['good','bad']`
+ *    an early `return` still emits the `good` Put, so `sent[0].Id === 'good'`
+ *    holds either way and flipping `continue` -> `return` on the per-Id
+ *    appliers left the whole suite green — the exact per-site decision the
+ *    issue asked for, unfenced.
+ * 2. **The replay / update rows are parametrized over every malformed shape.**
+ *    With a single shape per site, mutating the probe's `fallback` argument
+ *    from `'Enabled'` to `''` left the suite green while re-introducing the
+ *    #1595 hard-throw for a blank `Status` — because a blank value is only
+ *    refused when the fallback is NON-blank.
+ * 3. **The skip CLAUSE is asserted per applier.** Swapping lifecycle's clause
+ *    for the intelligent-tiering one left the suite green, i.e. a log claiming
+ *    an item skip where the whole Put was actually left alone.
  *
  * The create-path rows are a REGRESSION FENCE, not proof of the new guard:
  * they pass on the unfixed tree too (the same read threw there, with a
@@ -72,11 +87,6 @@ import { S3BucketProvider } from '../../../src/provisioning/providers/s3-bucket-
 const RESOURCE_TYPE = 'AWS::S3::Bucket';
 const BUCKET = 'per-item-string-bucket';
 
-const LIFECYCLE_STATUS_PATH = 'AWS::S3::Bucket LifecycleConfiguration.Rules[].Status';
-const IT_STATUS_PATH = 'AWS::S3::Bucket IntelligentTieringConfigurations[].Status';
-const INVENTORY_IOV_PATH = 'AWS::S3::Bucket InventoryConfigurations[].IncludedObjectVersions';
-const REPLICATION_STATUS_PATH = 'AWS::S3::Bucket ReplicationConfiguration.Rules[].Status';
-
 let provider: S3BucketProvider;
 
 beforeEach(() => {
@@ -97,14 +107,50 @@ function sentCommands<T>(
 // for a field the template meant to be a string. The BLANK string and the
 // explicit NULL are the rows a hand-written `typeof value !== 'string'` twin
 // would disagree with `readConfigString` on — which is why the probe shares
-// that helper's predicate instead of re-deriving one.
+// that helper's predicate instead of re-deriving one. The unresolved-intrinsic
+// row uses the real CFn spelling (`Fn::If`), not a synthetic stand-in.
 const malformedValues: Array<[string, unknown]> = [
   ['an array (an unresolved intrinsic collapsed to a list)', ['Enabled']],
-  ['an object', { Fn__If: 'unresolved' }],
+  ['an unresolved intrinsic left as an object', { 'Fn::If': ['C', 'Enabled', 'Disabled'] }],
   ['a number', 1],
-  ['a blank string', '   '],
+  ['a whitespace-only string', '   '],
   ['an explicit null', null],
 ];
+
+const validInventoryFields = {
+  Destination: { BucketArn: 'arn:aws:s3:::inv-dest', Format: 'CSV' },
+  ScheduleFrequency: 'Daily',
+};
+const validReplicationFields = {
+  Destination: { Bucket: 'arn:aws:s3:::repl-dest' },
+};
+
+interface Site {
+  readonly name: string;
+  /** CFn path the refusal must name. */
+  readonly path: string;
+  /** The exact clause the warning must carry — asserted per applier (gap 3). */
+  readonly skipClause: string;
+  /**
+   * `whole-put` = the API replaces every rule, so ONE malformed item must
+   * leave the entire live configuration alone; `per-id` = the Put is keyed by
+   * Id, so only the malformed item is skipped.
+   */
+  readonly unit: 'whole-put' | 'per-id';
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  readonly command: new (...args: any[]) => { input: Record<string, any> };
+  /** A single malformed item. */
+  readonly one: (value: unknown) => Record<string, unknown>;
+  /** The malformed item FIRST, a valid `good` item second (gap 1). */
+  readonly badThenGood: (value: unknown) => Record<string, unknown>;
+  /** A valid `good` item first, the malformed one second. */
+  readonly goodThenBad: (value: unknown) => Record<string, unknown>;
+  /** A well-formed item whose value is NOT the fallback. */
+  readonly validNonDefault: Record<string, unknown>;
+  /** Reads the value back off a sent command, for the no-false-refusal rows. */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  readonly readValue: (input: Record<string, any>) => unknown;
+}
 
 const lifecycleProps = (rules: Array<Record<string, unknown>>) => ({
   BucketName: BUCKET,
@@ -123,200 +169,173 @@ const replicationProps = (rules: Array<Record<string, unknown>>) => ({
   ReplicationConfiguration: { Role: 'arn:aws:iam::123456789012:role/repl', Rules: rules },
 });
 
-const validInventoryFields = {
-  Destination: { BucketArn: 'arn:aws:s3:::inv-dest', Format: 'CSV' },
-  ScheduleFrequency: 'Daily',
-};
-const validReplicationFields = {
-  Destination: { Bucket: 'arn:aws:s3:::repl-dest' },
-};
+const TIERINGS = [{ AccessTier: 'ARCHIVE_ACCESS', Days: 90 }];
+
+const SITES: Site[] = [
+  {
+    name: 'lifecycle',
+    path: 'AWS::S3::Bucket LifecycleConfiguration.Rules[].Status',
+    skipClause: 'Leaving the whole lifecycle configuration unapplied here',
+    unit: 'whole-put',
+    command: PutBucketLifecycleConfigurationCommand,
+    one: (v) => lifecycleProps([{ Id: 'bad', Status: v, ExpirationInDays: 30 }]),
+    badThenGood: (v) =>
+      lifecycleProps([
+        { Id: 'bad', Status: v, ExpirationInDays: 30, Filter: { Prefix: 'b/' } },
+        { Id: 'good', Status: 'Enabled', ExpirationInDays: 10, Filter: { Prefix: 'a/' } },
+      ]),
+    goodThenBad: (v) =>
+      lifecycleProps([
+        { Id: 'good', Status: 'Enabled', ExpirationInDays: 10, Filter: { Prefix: 'a/' } },
+        { Id: 'bad', Status: v, ExpirationInDays: 30, Filter: { Prefix: 'b/' } },
+      ]),
+    validNonDefault: lifecycleProps([{ Id: 'probe', Status: 'Disabled', ExpirationInDays: 30 }]),
+    readValue: (input) => (input['LifecycleConfiguration']?.Rules ?? [])[0]?.Status,
+  },
+  {
+    name: 'replication',
+    path: 'AWS::S3::Bucket ReplicationConfiguration.Rules[].Status',
+    skipClause: 'Leaving the whole replication configuration unapplied here',
+    unit: 'whole-put',
+    command: PutBucketReplicationCommand,
+    one: (v) => replicationProps([{ Id: 'bad', Status: v, ...validReplicationFields }]),
+    badThenGood: (v) =>
+      replicationProps([
+        { Id: 'bad', Status: v, ...validReplicationFields },
+        { Id: 'good', Status: 'Enabled', ...validReplicationFields },
+      ]),
+    goodThenBad: (v) =>
+      replicationProps([
+        { Id: 'good', Status: 'Enabled', ...validReplicationFields },
+        { Id: 'bad', Status: v, ...validReplicationFields },
+      ]),
+    validNonDefault: replicationProps([
+      { Id: 'probe', Status: 'Disabled', ...validReplicationFields },
+    ]),
+    readValue: (input) => (input['ReplicationConfiguration']?.Rules ?? [])[0]?.Status,
+  },
+  {
+    name: 'intelligent tiering',
+    path: 'AWS::S3::Bucket IntelligentTieringConfigurations[].Status',
+    skipClause: 'Skipping this intelligent tiering configuration',
+    unit: 'per-id',
+    command: PutBucketIntelligentTieringConfigurationCommand,
+    one: (v) => itProps([{ Id: 'bad', Status: v, Tierings: TIERINGS }]),
+    badThenGood: (v) =>
+      itProps([
+        { Id: 'bad', Status: v, Tierings: TIERINGS },
+        { Id: 'good', Status: 'Enabled', Tierings: TIERINGS },
+      ]),
+    goodThenBad: (v) =>
+      itProps([
+        { Id: 'good', Status: 'Enabled', Tierings: TIERINGS },
+        { Id: 'bad', Status: v, Tierings: TIERINGS },
+      ]),
+    validNonDefault: itProps([{ Id: 'probe', Status: 'Disabled', Tierings: TIERINGS }]),
+    readValue: (input) => input['IntelligentTieringConfiguration']?.Status,
+  },
+  {
+    name: 'inventory',
+    path: 'AWS::S3::Bucket InventoryConfigurations[].IncludedObjectVersions',
+    skipClause: 'Skipping this inventory configuration',
+    unit: 'per-id',
+    command: PutBucketInventoryConfigurationCommand,
+    one: (v) => inventoryProps([{ Id: 'bad', IncludedObjectVersions: v, ...validInventoryFields }]),
+    badThenGood: (v) =>
+      inventoryProps([
+        { Id: 'bad', IncludedObjectVersions: v, ...validInventoryFields },
+        { Id: 'good', IncludedObjectVersions: 'Current', ...validInventoryFields },
+      ]),
+    goodThenBad: (v) =>
+      inventoryProps([
+        { Id: 'good', IncludedObjectVersions: 'Current', ...validInventoryFields },
+        { Id: 'bad', IncludedObjectVersions: v, ...validInventoryFields },
+      ]),
+    validNonDefault: inventoryProps([
+      { Id: 'probe', IncludedObjectVersions: 'Current', ...validInventoryFields },
+    ]),
+    readValue: (input) => input['InventoryConfiguration']?.IncludedObjectVersions,
+  },
+];
+
+const REFUSAL = (site: Site) => `${site.path} must be a non-empty string`;
 
 describe('create path: the refusal still stands (regression fence, NOT the new behavior)', () => {
-  for (const [label, value] of malformedValues) {
-    it(`lifecycle: refuses a rule Status that is ${label}`, async () => {
-      await expect(
-        provider.create(
-          'B',
-          RESOURCE_TYPE,
-          lifecycleProps([{ Id: 'probe', Status: value, ExpirationInDays: 30 }])
-        )
-      ).rejects.toThrow(`${LIFECYCLE_STATUS_PATH} must be a non-empty string`);
-      expect(sentCommands(PutBucketLifecycleConfigurationCommand)).toHaveLength(0);
-    });
-
-    it(`intelligent tiering: refuses a Status that is ${label}`, async () => {
-      await expect(
-        provider.create(
-          'B',
-          RESOURCE_TYPE,
-          itProps([
-            { Id: 'probe', Status: value, Tierings: [{ AccessTier: 'ARCHIVE_ACCESS', Days: 90 }] },
-          ])
-        )
-      ).rejects.toThrow(`${IT_STATUS_PATH} must be a non-empty string`);
-      expect(sentCommands(PutBucketIntelligentTieringConfigurationCommand)).toHaveLength(0);
-    });
-
-    it(`inventory: refuses an IncludedObjectVersions that is ${label}`, async () => {
-      await expect(
-        provider.create(
-          'B',
-          RESOURCE_TYPE,
-          inventoryProps([{ Id: 'probe', IncludedObjectVersions: value, ...validInventoryFields }])
-        )
-      ).rejects.toThrow(`${INVENTORY_IOV_PATH} must be a non-empty string`);
-      expect(sentCommands(PutBucketInventoryConfigurationCommand)).toHaveLength(0);
-    });
-
-    it(`replication: refuses a rule Status that is ${label}`, async () => {
-      await expect(
-        provider.create(
-          'B',
-          RESOURCE_TYPE,
-          replicationProps([{ Id: 'probe', Status: value, ...validReplicationFields }])
-        )
-      ).rejects.toThrow(`${REPLICATION_STATUS_PATH} must be a non-empty string`);
-      expect(sentCommands(PutBucketReplicationCommand)).toHaveLength(0);
-    });
+  for (const site of SITES) {
+    for (const [label, value] of malformedValues) {
+      it(`${site.name}: refuses a value that is ${label}, and sends NO Put`, async () => {
+        await expect(provider.create('B', RESOURCE_TYPE, site.one(value))).rejects.toThrow(
+          REFUSAL(site)
+        );
+        expect(sentCommands(site.command)).toHaveLength(0);
+      });
+    }
   }
 });
 
 describe('replay path (create with replayingState): warn and SKIP, never default', () => {
-  it('lifecycle: warns and sends NO Put — the default would ENABLE the rule', async () => {
-    await provider.create(
-      'B',
-      RESOURCE_TYPE,
-      lifecycleProps([{ Id: 'probe', Status: ['Disabled'], ExpirationInDays: 30 }]),
-      { replayingState: true }
-    );
-    expect(childLogger.warn).toHaveBeenCalledWith(
-      expect.stringContaining(`${LIFECYCLE_STATUS_PATH} must be a non-empty string`)
-    );
-    // The whole point: `readConfigString`'s own downgrade would have sent a
-    // Put with `Status: 'Enabled'`, i.e. started deleting objects for a rule
-    // the template had DISABLED.
-    expect(sentCommands(PutBucketLifecycleConfigurationCommand)).toHaveLength(0);
-  });
+  for (const site of SITES) {
+    // Parametrized over EVERY malformed shape (gap 2): with one shape per site,
+    // mutating the probe's `fallback` argument to `''` kept the suite green
+    // while re-admitting the hard-throw for a blank value.
+    for (const [label, value] of malformedValues) {
+      it(`${site.name}: warns and sends NO Put for a value that is ${label}`, async () => {
+        await provider.create('B', RESOURCE_TYPE, site.one(value), { replayingState: true });
+        expect(childLogger.warn).toHaveBeenCalledWith(expect.stringContaining(REFUSAL(site)));
+        // The whole point: readConfigString's own downgrade would have sent a
+        // Put carrying the ENABLING default.
+        expect(sentCommands(site.command)).toHaveLength(0);
+      });
+    }
 
-  it('intelligent tiering: warns and sends NO Put for the malformed item', async () => {
-    await provider.create(
-      'B',
-      RESOURCE_TYPE,
-      itProps([
-        { Id: 'probe', Status: 1, Tierings: [{ AccessTier: 'ARCHIVE_ACCESS', Days: 90 }] },
-      ]),
-      { replayingState: true }
-    );
-    expect(childLogger.warn).toHaveBeenCalledWith(
-      expect.stringContaining(`${IT_STATUS_PATH} must be a non-empty string`)
-    );
-    expect(sentCommands(PutBucketIntelligentTieringConfigurationCommand)).toHaveLength(0);
-  });
-
-  it('inventory: warns and sends NO Put for the malformed item', async () => {
-    await provider.create(
-      'B',
-      RESOURCE_TYPE,
-      inventoryProps([{ Id: 'probe', IncludedObjectVersions: {}, ...validInventoryFields }]),
-      { replayingState: true }
-    );
-    expect(childLogger.warn).toHaveBeenCalledWith(
-      expect.stringContaining(`${INVENTORY_IOV_PATH} must be a non-empty string`)
-    );
-    expect(sentCommands(PutBucketInventoryConfigurationCommand)).toHaveLength(0);
-  });
-
-  it('replication: warns and sends NO Put — the default would START replicating', async () => {
-    await provider.create(
-      'B',
-      RESOURCE_TYPE,
-      replicationProps([{ Id: 'probe', Status: '', ...validReplicationFields }]),
-      { replayingState: true }
-    );
-    expect(childLogger.warn).toHaveBeenCalledWith(
-      expect.stringContaining(`${REPLICATION_STATUS_PATH} must be a non-empty string`)
-    );
-    expect(sentCommands(PutBucketReplicationCommand)).toHaveLength(0);
-  });
-
-  it('the warning names the SKIP that actually happened, not a default it did not take', async () => {
-    // A message inherited verbatim from `readConfigString`'s downgrade would
-    // say "using the default (Enabled) here" — a claim this path never makes
-    // good on. Getting that wrong turns a correct fix into a misleading log.
-    await provider.create(
-      'B',
-      RESOURCE_TYPE,
-      replicationProps([{ Id: 'probe', Status: 1, ...validReplicationFields }]),
-      { replayingState: true }
-    );
-    const message = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
-    expect(message).toContain('Leaving the whole live replication configuration unchanged');
-    expect(message).not.toContain('using the default');
-  });
+    it(`${site.name}: the warning names THIS applier's skip, not a sibling's`, async () => {
+      // Gap 3: without the per-applier assertion, swapping the whole-Put clause
+      // for the per-item one logged an item skip where the entire live
+      // configuration had been left alone.
+      await provider.create('B', RESOURCE_TYPE, site.one(1), { replayingState: true });
+      const message = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(message).toContain(site.skipClause);
+      // And never the inherited "using the default" claim this path does not
+      // make good on.
+      expect(message).not.toContain('using the default');
+    });
+  }
 });
 
 describe('the SKIP UNIT matches the API, which is the per-site decision', () => {
-  it('lifecycle: one malformed rule leaves the WHOLE live configuration alone', async () => {
-    // `PutBucketLifecycleConfiguration` replaces every rule, so applying the
-    // valid sibling alone would DELETE the malformed rule from AWS.
-    await provider.create(
-      'B',
-      RESOURCE_TYPE,
-      lifecycleProps([
-        { Id: 'good', Status: 'Enabled', ExpirationInDays: 10, Filter: { Prefix: 'a/' } },
-        { Id: 'bad', Status: ['Disabled'], ExpirationInDays: 30, Filter: { Prefix: 'b/' } },
-      ]),
-      { replayingState: true }
-    );
-    expect(sentCommands(PutBucketLifecycleConfigurationCommand)).toHaveLength(0);
-  });
+  for (const site of SITES) {
+    if (site.unit === 'whole-put') {
+      // The Put replaces every rule, so applying the valid sibling ALONE would
+      // DELETE the malformed one from AWS — a destructive "partial success".
+      it(`${site.name}: a malformed FIRST rule leaves the whole configuration alone`, async () => {
+        await provider.create('B', RESOURCE_TYPE, site.badThenGood(1), { replayingState: true });
+        expect(sentCommands(site.command)).toHaveLength(0);
+      });
 
-  it('replication: one malformed rule leaves the WHOLE live configuration alone', async () => {
-    await provider.create(
-      'B',
-      RESOURCE_TYPE,
-      replicationProps([
-        { Id: 'good', Status: 'Enabled', ...validReplicationFields },
-        { Id: 'bad', Status: 1, ...validReplicationFields },
-      ]),
-      { replayingState: true }
-    );
-    expect(sentCommands(PutBucketReplicationCommand)).toHaveLength(0);
-  });
+      it(`${site.name}: a malformed LAST rule leaves the whole configuration alone`, async () => {
+        await provider.create('B', RESOURCE_TYPE, site.goodThenBad(1), { replayingState: true });
+        expect(sentCommands(site.command)).toHaveLength(0);
+      });
+    } else {
+      // The Put is per-Id, so the siblings are unaffected. Malformed item FIRST
+      // (gap 1): with `['good','bad']` an early `return` still emits the good
+      // Put, so this assertion held for BOTH skip units and the mutation that
+      // swapped them was invisible.
+      it(`${site.name}: a malformed FIRST item still applies the valid sibling`, async () => {
+        await provider.create('B', RESOURCE_TYPE, site.badThenGood(1), { replayingState: true });
+        const sent = sentCommands(site.command);
+        expect(sent).toHaveLength(1);
+        expect(sent[0]!.input['Id']).toBe('good');
+      });
 
-  it('intelligent tiering: the Put is per-Id, so the valid sibling STILL applies', async () => {
-    await provider.create(
-      'B',
-      RESOURCE_TYPE,
-      itProps([
-        {
-          Id: 'good',
-          Status: 'Enabled',
-          Tierings: [{ AccessTier: 'ARCHIVE_ACCESS', Days: 90 }],
-        },
-        { Id: 'bad', Status: 1, Tierings: [{ AccessTier: 'ARCHIVE_ACCESS', Days: 90 }] },
-      ]),
-      { replayingState: true }
-    );
-    const sent = sentCommands(PutBucketIntelligentTieringConfigurationCommand);
-    expect(sent).toHaveLength(1);
-    expect(sent[0]!.input.Id).toBe('good');
-  });
-
-  it('inventory: the Put is per-Id, so the valid sibling STILL applies', async () => {
-    await provider.create(
-      'B',
-      RESOURCE_TYPE,
-      inventoryProps([
-        { Id: 'good', IncludedObjectVersions: 'Current', ...validInventoryFields },
-        { Id: 'bad', IncludedObjectVersions: {}, ...validInventoryFields },
-      ]),
-      { replayingState: true }
-    );
-    const sent = sentCommands(PutBucketInventoryConfigurationCommand);
-    expect(sent).toHaveLength(1);
-    expect(sent[0]!.input.Id).toBe('good');
-  });
+      it(`${site.name}: a malformed LAST item still applies the valid sibling`, async () => {
+        await provider.create('B', RESOURCE_TYPE, site.goodThenBad(1), { replayingState: true });
+        const sent = sentCommands(site.command);
+        expect(sent).toHaveLength(1);
+        expect(sent[0]!.input['Id']).toBe('good');
+      });
+    }
+  }
 });
 
 describe('update path: the wiring nothing else covers', () => {
@@ -325,64 +344,34 @@ describe('update path: the wiring nothing else covers', () => {
   // path is a state record too. Without these, dropping the third argument at
   // an update call site leaves the suite green while the malformed record
   // hard-throws on every rollback.
-  it('lifecycle: warns and skips', async () => {
-    await provider.update(
-      'B',
-      BUCKET,
-      RESOURCE_TYPE,
-      lifecycleProps([{ Id: 'probe', Status: ['Disabled'], ExpirationInDays: 30 }]),
-      { BucketName: BUCKET }
-    );
-    expect(childLogger.warn).toHaveBeenCalledWith(
-      expect.stringContaining(`${LIFECYCLE_STATUS_PATH} must be a non-empty string`)
-    );
-    expect(sentCommands(PutBucketLifecycleConfigurationCommand)).toHaveLength(0);
-  });
-
-  it('intelligent tiering: warns and skips', async () => {
-    await provider.update(
-      'B',
-      BUCKET,
-      RESOURCE_TYPE,
-      itProps([{ Id: 'probe', Status: 1, Tierings: [{ AccessTier: 'ARCHIVE_ACCESS', Days: 90 }] }]),
-      { BucketName: BUCKET }
-    );
-    expect(childLogger.warn).toHaveBeenCalledWith(
-      expect.stringContaining(`${IT_STATUS_PATH} must be a non-empty string`)
-    );
-    expect(sentCommands(PutBucketIntelligentTieringConfigurationCommand)).toHaveLength(0);
-  });
-
-  it('inventory: warns and skips', async () => {
-    await provider.update(
-      'B',
-      BUCKET,
-      RESOURCE_TYPE,
-      inventoryProps([{ Id: 'probe', IncludedObjectVersions: {}, ...validInventoryFields }]),
-      { BucketName: BUCKET }
-    );
-    expect(childLogger.warn).toHaveBeenCalledWith(
-      expect.stringContaining(`${INVENTORY_IOV_PATH} must be a non-empty string`)
-    );
-    expect(sentCommands(PutBucketInventoryConfigurationCommand)).toHaveLength(0);
-  });
-
-  it('replication: warns and skips', async () => {
-    await provider.update(
-      'B',
-      BUCKET,
-      RESOURCE_TYPE,
-      replicationProps([{ Id: 'probe', Status: 1, ...validReplicationFields }]),
-      { BucketName: BUCKET }
-    );
-    expect(childLogger.warn).toHaveBeenCalledWith(
-      expect.stringContaining(`${REPLICATION_STATUS_PATH} must be a non-empty string`)
-    );
-    expect(sentCommands(PutBucketReplicationCommand)).toHaveLength(0);
-  });
+  for (const site of SITES) {
+    for (const [label, value] of malformedValues) {
+      it(`${site.name}: warns and skips for a value that is ${label}`, async () => {
+        await provider.update('B', BUCKET, RESOURCE_TYPE, site.one(value), {
+          BucketName: BUCKET,
+        });
+        expect(childLogger.warn).toHaveBeenCalledWith(expect.stringContaining(REFUSAL(site)));
+        expect(sentCommands(site.command)).toHaveLength(0);
+      });
+    }
+  }
 });
 
 describe('no false refusal: valid and ABSENT values keep working', () => {
+  for (const site of SITES) {
+    it(`${site.name}: a well-formed NON-default value is applied verbatim on a replay`, async () => {
+      await provider.create('B', RESOURCE_TYPE, site.validNonDefault, { replayingState: true });
+      const sent = sentCommands(site.command);
+      expect(sent).toHaveLength(1);
+      // Not the fallback — a guard that skipped or defaulted a VALID value
+      // would be the regression this change could most easily introduce.
+      expect(site.readValue(sent[0]!.input)).toBe(
+        site.name === 'inventory' ? 'Current' : 'Disabled'
+      );
+      expect(childLogger.warn).not.toHaveBeenCalled();
+    });
+  }
+
   it('lifecycle: an ABSENT Status still defaults to Enabled, with no warning', async () => {
     // The ABSENT case belongs to the caller, not the guard: an omitted field
     // legitimately means "defaulted", and refusing it would break every
@@ -402,63 +391,37 @@ describe('no false refusal: valid and ABSENT values keep working', () => {
     expect(childLogger.warn).not.toHaveBeenCalled();
   });
 
-  it('lifecycle: a DISABLED rule is applied verbatim, on the replay path too', async () => {
+  it('inventory: an ABSENT IncludedObjectVersions still defaults to All', async () => {
     await provider.create(
       'B',
       RESOURCE_TYPE,
-      lifecycleProps([{ Id: 'probe', Status: 'Disabled', ExpirationInDays: 30 }]),
-      { replayingState: true }
-    );
-    const sent = sentCommands(PutBucketLifecycleConfigurationCommand);
-    expect(sent).toHaveLength(1);
-    const rule = (sent[0]!.input.LifecycleConfiguration?.Rules ?? [])[0] as unknown as Record<
-      string,
-      unknown
-    >;
-    expect(rule['Status']).toBe('Disabled');
-    expect(childLogger.warn).not.toHaveBeenCalled();
-  });
-
-  it('replication: a DISABLED rule is applied verbatim, on the replay path too', async () => {
-    await provider.create(
-      'B',
-      RESOURCE_TYPE,
-      replicationProps([{ Id: 'probe', Status: 'Disabled', ...validReplicationFields }]),
-      { replayingState: true }
-    );
-    const sent = sentCommands(PutBucketReplicationCommand);
-    expect(sent).toHaveLength(1);
-    const rule = (sent[0]!.input.ReplicationConfiguration?.Rules ?? [])[0] as unknown as Record<
-      string,
-      unknown
-    >;
-    expect(rule['Status']).toBe('Disabled');
-    expect(childLogger.warn).not.toHaveBeenCalled();
-  });
-
-  it('intelligent tiering: a valid item applies with no warning', async () => {
-    await provider.create(
-      'B',
-      RESOURCE_TYPE,
-      itProps([
-        { Id: 'probe', Status: 'Disabled', Tierings: [{ AccessTier: 'ARCHIVE_ACCESS', Days: 90 }] },
-      ])
-    );
-    const sent = sentCommands(PutBucketIntelligentTieringConfigurationCommand);
-    expect(sent).toHaveLength(1);
-    expect(sent[0]!.input.IntelligentTieringConfiguration?.Status).toBe('Disabled');
-    expect(childLogger.warn).not.toHaveBeenCalled();
-  });
-
-  it('inventory: a valid item applies with no warning', async () => {
-    await provider.create(
-      'B',
-      RESOURCE_TYPE,
-      inventoryProps([{ Id: 'probe', IncludedObjectVersions: 'Current', ...validInventoryFields }])
+      inventoryProps([{ Id: 'probe', ...validInventoryFields }])
     );
     const sent = sentCommands(PutBucketInventoryConfigurationCommand);
     expect(sent).toHaveLength(1);
-    expect(sent[0]!.input.InventoryConfiguration?.IncludedObjectVersions).toBe('Current');
+    expect(sent[0]!.input.InventoryConfiguration?.IncludedObjectVersions).toBe('All');
     expect(childLogger.warn).not.toHaveBeenCalled();
+  });
+});
+
+describe('the CONTAINER half of the probe is reachable from the provider too', () => {
+  // The probe guards a container AND a field; only the field half is exercised
+  // above, and the container half was unit-tested only. A per-rule / per-item
+  // value that is not an object at all reaches the same guard.
+  it('lifecycle: a non-object RULE is refused on create and skipped on a replay', async () => {
+    await expect(
+      provider.create('B', RESOURCE_TYPE, lifecycleProps(['not-a-rule' as never]))
+    ).rejects.toThrow(/must be an object/);
+    expect(sentCommands(PutBucketLifecycleConfigurationCommand)).toHaveLength(0);
+
+    vi.clearAllMocks();
+    childLogger.child.mockReturnValue(childLogger);
+    mockSend.mockResolvedValue({});
+
+    await provider.create('B', RESOURCE_TYPE, lifecycleProps(['not-a-rule' as never]), {
+      replayingState: true,
+    });
+    expect(childLogger.warn).toHaveBeenCalledWith(expect.stringContaining('must be an object'));
+    expect(sentCommands(PutBucketLifecycleConfigurationCommand)).toHaveLength(0);
   });
 });

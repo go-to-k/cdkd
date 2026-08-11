@@ -173,7 +173,7 @@ export function readConfigString(
   if (container === undefined || container === null) return fallback;
 
   if (!isPlainObject(container)) {
-    const detail = malformedContainerDetail(container);
+    const detail = malformedShapeDetail(container);
 
     if (options?.onUnusable) {
       const named = fallback === '' ? '' : ` (${fallback})`;
@@ -352,9 +352,7 @@ export function requireConfigArray(
   options?: ConfigArrayOptions
 ): Array<Record<string, unknown>> | undefined {
   if (!Array.isArray(value)) {
-    const detail =
-      `(got ${describe(value)}) — check for an unresolved intrinsic or a ` +
-      `mis-nested template value`;
+    const detail = malformedShapeDetail(value);
 
     if (options?.onUnusable) {
       options.onUnusable(
@@ -419,9 +417,7 @@ export function requireConfigObject(
   options?: ConfigObjectOptions
 ): Record<string, unknown> | undefined {
   if (!isPlainObject(value)) {
-    const detail =
-      `(got ${describe(value)}) — check for an unresolved intrinsic or a ` +
-      `mis-nested template value`;
+    const detail = malformedShapeDetail(value);
 
     if (options?.onUnusable) {
       options.onUnusable(
@@ -464,7 +460,7 @@ export function configStringRefusal(
 ): string | undefined {
   if (container === undefined || container === null) return undefined;
   if (!isPlainObject(container)) {
-    return `${containerPath} must be an object ${malformedContainerDetail(container)}`;
+    return `${containerPath} must be an object ${malformedShapeDetail(container)}`;
   }
   return configValueRefusal(container[key], fallback, `${containerPath}.${key}`, options);
 }
@@ -492,10 +488,16 @@ function configValueRefusal(
   return undefined;
 }
 
-/** Shared detail clause for a container that is present but not a plain object. */
-function malformedContainerDetail(container: unknown): string {
+/**
+ * The shared detail clause every refusal in this module ends with.
+ *
+ * One source rather than five: the sentence is identical at each guard, and a
+ * copy that drifts changes the wording of a user-facing error for one shape
+ * only, which is invisible in review.
+ */
+function malformedShapeDetail(value: unknown): string {
   return (
-    `(got ${describe(container)}) — check for an unresolved intrinsic or a ` +
+    `(got ${describe(value)}) — check for an unresolved intrinsic or a ` +
     `mis-nested template value`
   );
 }

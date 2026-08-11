@@ -936,7 +936,10 @@ import { configStringRefusal } from '../config-shape.js';
 // SENTENCE, with no action clause — you supply the one that is true here.
 const refusal = configStringRefusal(rule, 'Status', 'Enabled', '…Rules[]');
 if (onUnusable && refusal !== undefined) {
-  onUnusable(`${refusal}. Leaving the live configuration unchanged; …`);
+  // Keep the clause PATH-NEUTRAL. The replay-CREATE arm reaches this too
+  // (a reverse-replacement revives the resource), so a message asserting a
+  // "live" configuration would be false there.
+  onUnusable(`${refusal}. Leaving the whole configuration unapplied here; …`);
   return; // ...or `continue`, per the skip UNIT this API implies
 }
 ```

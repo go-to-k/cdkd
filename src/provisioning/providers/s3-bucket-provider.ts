@@ -430,17 +430,6 @@ export class S3BucketProvider implements ResourceProvider {
   }
 
   /**
-   * Apply lifecycle configuration
-   *
-   * CFn property: LifecycleConfiguration.Rules[]
-   * SDK: PutBucketLifecycleConfiguration with LifecycleConfiguration.Rules[]
-   *
-   * CFn and SDK use the same structure with minor differences:
-   * - CFn uses TagFilters, SDK uses Tag/Tags in Filter
-   * - CFn Transition.TransitionInDays -> SDK Transition.Days
-   * - CFn Transition.TransitionDate -> SDK Transition.Date
-   */
-  /**
    * The per-item / per-rule STRING guard, with the applier's own SKIP as the
    * replay downgrade (issue #1595).
    *
@@ -459,6 +448,13 @@ export class S3BucketProvider implements ResourceProvider {
    * Returns `true` when the caller must skip. On the CREATE path (`onUnusable`
    * absent) it always returns `false` and the original read below still
    * throws, so template-borne behavior is unchanged.
+   *
+   * No `ConfigStringOptions` passthrough, and that is a decision rather than an
+   * omission: a probe whose relaxations disagree with the read it fronts would
+   * refuse exactly where the read accepts. All four sites are ENUM-valued
+   * (`Status` / `IncludedObjectVersions`), so `coerceNumber` is wrong for them
+   * by the rule in `config-shape.ts`'s header — a number where an enum belongs
+   * is a bug. A site that ever needs an option must thread the SAME bag here.
    */
   private skipOnUnusableConfigString(
     container: unknown,
@@ -475,6 +471,17 @@ export class S3BucketProvider implements ResourceProvider {
     return true;
   }
 
+  /**
+   * Apply lifecycle configuration
+   *
+   * CFn property: LifecycleConfiguration.Rules[]
+   * SDK: PutBucketLifecycleConfiguration with LifecycleConfiguration.Rules[]
+   *
+   * CFn and SDK use the same structure with minor differences:
+   * - CFn uses TagFilters, SDK uses Tag/Tags in Filter
+   * - CFn Transition.TransitionInDays -> SDK Transition.Days
+   * - CFn Transition.TransitionDate -> SDK Transition.Date
+   */
   private async applyLifecycleConfiguration(
     bucketName: string,
     lifecycleConfig: {
@@ -537,7 +544,11 @@ export class S3BucketProvider implements ResourceProvider {
           'Status',
           'Enabled',
           'AWS::S3::Bucket LifecycleConfiguration.Rules[]',
-          'Leaving the whole live lifecycle configuration unchanged',
+          // Path-NEUTRAL wording, like the sibling container guards: the
+          // replay-CREATE arm reaches this too (a reverse-replacement revives
+          // the bucket, so there is no "live" configuration to leave alone),
+          // and a message that asserts one would be false there.
+          'Leaving the whole lifecycle configuration unapplied here',
           onUnusable
         )
       ) {
@@ -1219,7 +1230,8 @@ export class S3BucketProvider implements ResourceProvider {
     // (the set this decision is about — a reader enumerating every per-item
     // `.map` in this file also finds cors / encryption / website /
     // notification, which are not replay-callback sites), four already refuse a
-    // non-object item
+    // non-object item on the CREATE path (issue #1595 split the paths: on a
+    // state replay those four now warn and SKIP instead of throwing)
     // through an existing `readConfigString(config | rule, …)` — intelligent
     // tiering (`Status`), inventory (`IncludedObjectVersions`), the lifecycle
     // rules (`Status`) and replication's rules (`Status`, in the same applier
@@ -1666,8 +1678,11 @@ export class S3BucketProvider implements ResourceProvider {
       // the intelligent-tiering sibling. Defaulting to `All` here is not
       // destructive, but it silently changes what the live inventory report
       // contains, and the destination guard immediately below already skips
-      // the item on an unusable value; taking the SAME unit keeps one
-      // contract per applier rather than two.
+      // the item on an unusable value — so the SKIP unit is taken from the
+      // guard right next to it rather than invented. This applier is NOT
+      // uniform overall and the comment used to claim it was: `Format` still
+      // warns-and-defaults, and the `ScheduleFrequency` / `Schedule.Frequency`
+      // pair still hard-throws (both out of scope, see #1605).
       if (
         this.skipOnUnusableConfigString(
           config,
@@ -1876,7 +1891,8 @@ export class S3BucketProvider implements ResourceProvider {
           'Status',
           'Enabled',
           'AWS::S3::Bucket ReplicationConfiguration.Rules[]',
-          'Leaving the whole live replication configuration unchanged',
+          // Path-neutral, for the same reason as the lifecycle sibling.
+          'Leaving the whole replication configuration unapplied here',
           onUnusable
         )
       ) {
