@@ -4677,14 +4677,13 @@ export function toSdkGlobalSecondaryIndexes(
   // block (zero indexes) — a well-defined skip, never a fabricated value.
   // Every other call site leaves the hook undefined and keeps the refusal.
   if (rawIndexes !== undefined && !Array.isArray(rawIndexes)) {
-    const message =
+    const shapeDetail =
       `AWS::DynamoDB::GlobalTable GlobalSecondaryIndexes must be an array, got ` +
-      `${typeof rawIndexes} (${JSON.stringify(rawIndexes)?.slice(0, 200)}). ` +
-      `An unresolved intrinsic here would otherwise deploy a table with no indexes.`;
+      `${typeof rawIndexes} (${JSON.stringify(rawIndexes)?.slice(0, 200)}).`;
     if (onUnusableIndexes) {
       onUnusableIndexes(
-        `${message} Ignoring the block and proceeding with NO indexes here; the ` +
-          `same value is REFUSED on a template-path create`
+        `${shapeDetail} Omitting the malformed block, so this create carries NO ` +
+          `indexes; the same value is REFUSED on a template-path create`
       );
       return [];
     }
@@ -4693,7 +4692,9 @@ export function toSdkGlobalSecondaryIndexes(
     // wrapping catch that converts it; `create()` does NOT, so its call site
     // converts it explicitly. Both paths therefore surface a ProvisioningError
     // carrying the resource context.
-    throw new Error(message);
+    throw new Error(
+      `${shapeDetail} An unresolved intrinsic here would otherwise deploy a table with no indexes.`
+    );
   }
   const cfnIndexes = (rawIndexes ?? []) as unknown[];
   if (cfnIndexes.length === 0) return [];

@@ -250,4 +250,18 @@ describe('DynamoDBGlobalTableProvider nested guards on a state replay (issue #15
     expect(err).toMatchObject({ resourceType: RESOURCE_TYPE, logicalId: 'MyTable' });
     expect(createCall()).toBeUndefined();
   });
+
+  it('keeps the GSI refusal under replayingState: false', async () => {
+    activeTable();
+
+    await expect(
+      provider.create(
+        'MyTable',
+        RESOURCE_TYPE,
+        { ...baseProps, GlobalSecondaryIndexes: 'bad' },
+        { replayingState: false }
+      )
+    ).rejects.toThrow(/GlobalSecondaryIndexes must be an array/);
+    expect(createCall()).toBeUndefined();
+  });
 });
