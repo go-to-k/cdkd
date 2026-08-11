@@ -1,3 +1,10 @@
+## [0.280.9](https://github.com/go-to-k/cdkd/compare/v0.280.8...v0.280.9) (2026-08-11)
+
+
+### Bug Fixes
+
+* **lambda:** record the measured ImageConfig kept-partial replace semantics ([#1225](https://github.com/go-to-k/cdkd/issues/1225)) ([#1600](https://github.com/go-to-k/cdkd/issues/1600)) ([748cf9a](https://github.com/go-to-k/cdkd/commit/748cf9acde5ec9acd270599e19adb8b5f44f2f61))
+
 ## [0.280.8](https://github.com/go-to-k/cdkd/compare/v0.280.7...v0.280.8) (2026-08-11)
 
 
