@@ -41,6 +41,7 @@ vi.mock('../../../src/utils/logger.js', () => {
   };
 });
 
+import { NotFoundException } from '@aws-sdk/client-apigatewayv2';
 import { ApiGatewayV2Provider } from '../../../src/provisioning/providers/apigatewayv2-provider.js';
 import { PROPERTY_COVERAGE_BY_TYPE } from '../../../src/provisioning/property-coverage.generated.js';
 
@@ -453,6 +454,7 @@ describe('ApiGatewayV2 Stage / Route config properties (#609)', () => {
 
       const state = (await provider.readCurrentState!('test', 'L', STAGE_TYPE, {
         ApiId: API_ID,
+        DeploymentId: 'dep-0',
       })) as Record<string, unknown>;
 
       expect(state).toMatchObject({
@@ -461,6 +463,26 @@ describe('ApiGatewayV2 Stage / Route config properties (#609)', () => {
         DeploymentId: 'dep-1',
         RouteSettings: routeSettings,
       });
+    });
+
+    it('omits DeploymentId when the template never declared it', async () => {
+      // Under `AutoDeploy: true` AWS mints a NEW deployment id on every route /
+      // integration change. Capturing it into the observed-properties baseline
+      // reports permanent phantom drift on an untouched stack, and `--revert`
+      // then pushes the stale id back through UpdateStage. The value is a
+      // non-empty string, so `undeclaredEmptyObservedKeys` cannot skip it —
+      // the read side has to.
+      mockSend.mockResolvedValueOnce({
+        StageName: 'test',
+        AutoDeploy: true,
+        DeploymentId: 'dep-minted-by-aws',
+      });
+
+      const state = (await provider.readCurrentState!('test', 'L', STAGE_TYPE, {
+        ApiId: API_ID,
+      })) as Record<string, unknown>;
+
+      expect(state).not.toHaveProperty('DeploymentId');
     });
 
     it('maps the Route properties back', async () => {
@@ -496,6 +518,66 @@ describe('ApiGatewayV2 Stage / Route config properties (#609)', () => {
       for (const key of ['AccessLogSettings', 'ClientCertificateId', 'DeploymentId', 'RouteSettings']) {
         expect(state, `${key} must stay absent`).not.toHaveProperty(key);
       }
+    });
+  });
+
+  describe('removal deletes are idempotent', () => {
+    // The deletes run AFTER the merge-Update in the same update, so a partial
+    // failure leaves state unsaved and the next deploy recomputes the SAME
+    // dropped-key set. Without NotFound tolerance that is a permanent failure
+    // loop; a console-side removal produces the same shape.
+    it('treats a NotFound on the Stage removals as already-applied', async () => {
+      mockSend.mockImplementation(() =>
+        Promise.reject(
+          new NotFoundException({ message: 'not found', $metadata: {} })
+        )
+      );
+
+      await expect(
+        provider.update(
+          'L',
+          'test',
+          STAGE_TYPE,
+          { ApiId: API_ID, StageName: 'test' },
+          { ApiId: API_ID, StageName: 'test', AccessLogSettings: accessLogSettings }
+        )
+      ).resolves.toMatchObject({ physicalId: 'test' });
+    });
+
+    it('treats a NotFound on the Route parameter delete as already-applied', async () => {
+      mockSend.mockImplementation(() =>
+        Promise.reject(
+          new NotFoundException({ message: 'not found', $metadata: {} })
+        )
+      );
+
+      await expect(
+        provider.update(
+          'L',
+          'r-1',
+          ROUTE_TYPE,
+          { ApiId: API_ID, RouteKey: '$connect' },
+          {
+            ApiId: API_ID,
+            RouteKey: '$connect',
+            RequestParameters: { 'route.request.header.X-Api': { Required: true } },
+          }
+        )
+      ).resolves.toMatchObject({ physicalId: 'r-1' });
+    });
+
+    it('still surfaces a NON-NotFound delete failure', async () => {
+      mockSend.mockImplementation(() => Promise.reject(new Error('ThrottlingException')));
+
+      await expect(
+        provider.update(
+          'L',
+          'test',
+          STAGE_TYPE,
+          { ApiId: API_ID, StageName: 'test' },
+          { ApiId: API_ID, StageName: 'test', AccessLogSettings: accessLogSettings }
+        )
+      ).rejects.toThrow(/Throttling/);
     });
   });
 

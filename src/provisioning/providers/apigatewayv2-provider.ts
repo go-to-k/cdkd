@@ -1034,7 +1034,16 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       if (resp.ClientCertificateId !== undefined) {
         result['ClientCertificateId'] = resp.ClientCertificateId;
       }
-      if (resp.DeploymentId !== undefined) result['DeploymentId'] = resp.DeploymentId;
+      // DeploymentId is emitted ONLY when the template declared it. Under
+      // `AutoDeploy: true` AWS mints a NEW deployment id on every route /
+      // integration change, so capturing it into the observed-properties drift
+      // baseline reports permanent phantom drift on an untouched stack — and
+      // `--revert` then pushes the stale id back through UpdateStage, rolling
+      // the live stage back to an old deployment. The value is a non-empty
+      // string, so `undeclaredEmptyObservedKeys` cannot skip it.
+      if (properties?.['DeploymentId'] !== undefined && resp.DeploymentId !== undefined) {
+        result['DeploymentId'] = resp.DeploymentId;
+      }
       if (resp.RouteSettings !== undefined) result['RouteSettings'] = resp.RouteSettings;
       return result;
     } catch (err) {
@@ -1407,8 +1416,11 @@ export class ApiGatewayV2Provider implements ResourceProvider {
    * `UpdateStage` keys on `(ApiId, StageName)` — `StageName` is the
    * physicalId and immutable. Mutable fields cdkd manages:
    * `AutoDeploy` / `Description` / `StageVariables` /
-   * `DefaultRouteSettings`. `ApiId` is also immutable (a stage cannot be
-   * moved between APIs).
+   * `DefaultRouteSettings` / `AccessLogSettings` / `ClientCertificateId` /
+   * `DeploymentId` / `RouteSettings`. `ApiId` is also immutable (a stage
+   * cannot be moved between APIs). `AccessLogSettings` and per-key
+   * `RouteSettings` can only be CLEARED through their dedicated delete APIs —
+   * see {@link applyStageRemovals}.
    */
   private async updateStage(
     logicalId: string,
@@ -2148,18 +2160,6 @@ export class ApiGatewayV2Provider implements ResourceProvider {
   }
 
   /**
-   * Resolve a `Record<string, string>` update field (`StageVariables`,
-   * Integration `RequestParameters`) with per-key removal awareness.
-   *
-   * These maps also merge on the AWS side: sending `{}` (or a map missing
-   * a previously-present key) does NOT delete the dropped key — it is kept
-   * live. Live-probed 2026-07-22: a key is cleared only by sending it with
-   * an empty-string value. So the resolved map is `next` plus every key
-   * present in `previous` but absent from `next`, set to `''`. Whole-block
-   * removal (next `undefined`, previous populated) therefore sends every
-   * old key as `''`. Returns `undefined` when nothing changed.
-   */
-  /**
    * Keys present in `previous` but absent from `next` — the set a
    * merge-semantics map silently keeps unless each is deleted BY NAME. A
    * whole-block removal (`next` undefined) therefore yields every previous key.
@@ -2171,7 +2171,30 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       next != null && typeof next === 'object' && !Array.isArray(next)
         ? (next as Record<string, unknown>)
         : {};
-    return Object.keys(prevMap).filter((key) => !(key in nextMap));
+    // `hasOwnProperty`, not `in`: a key named `constructor` / `toString` would
+    // otherwise resolve on the prototype chain and never report as dropped.
+    return Object.keys(prevMap).filter(
+      (key) => !Object.prototype.hasOwnProperty.call(nextMap, key)
+    );
+  }
+
+  /**
+   * Send a delete that is idempotent by intent.
+   *
+   * These removal deletes run AFTER the merge-Update in the same update, so a
+   * partial failure (throttle on the second of two) leaves state unsaved and
+   * the next deploy recomputes the SAME dropped-key set and re-issues an
+   * already-applied delete. A console-side removal produces the same shape.
+   * Treating NotFound as success is what keeps that from becoming a permanent
+   * failure loop.
+   */
+  private async sendTolerantOfNotFound(send: () => Promise<unknown>): Promise<void> {
+    try {
+      await send();
+    } catch (error) {
+      if (error instanceof NotFoundException) return;
+      throw error;
+    }
   }
 
   /**
@@ -2183,6 +2206,11 @@ export class ApiGatewayV2Provider implements ResourceProvider {
    * #1160 tracks (access logging, and its billing, keep running). AWS ships
    * dedicated delete APIs for both; this mirrors the `DeleteCorsConfiguration`
    * path on `::Api`.
+   *
+   * KNOWN BOUND: `DeleteRouteSettings` removes a whole ROUTE KEY, so dropping
+   * one member INSIDE a kept entry (`LoggingLevel` while `ThrottlingRateLimit`
+   * stays) still merges and survives — the #1225 sub-field class, one level
+   * below what this closes. Same for a partial `AccessLogSettings`.
    */
   private async applyStageRemovals(
     apiId: string,
@@ -2191,13 +2219,17 @@ export class ApiGatewayV2Provider implements ResourceProvider {
     droppedRouteSettingKeys: readonly string[]
   ): Promise<void> {
     if (accessLogRemoved) {
-      await this.getClient().send(
-        new DeleteAccessLogSettingsCommand({ ApiId: apiId, StageName: stageName })
+      await this.sendTolerantOfNotFound(() =>
+        this.getClient().send(
+          new DeleteAccessLogSettingsCommand({ ApiId: apiId, StageName: stageName })
+        )
       );
     }
     for (const routeKey of droppedRouteSettingKeys) {
-      await this.getClient().send(
-        new DeleteRouteSettingsCommand({ ApiId: apiId, StageName: stageName, RouteKey: routeKey })
+      await this.sendTolerantOfNotFound(() =>
+        this.getClient().send(
+          new DeleteRouteSettingsCommand({ ApiId: apiId, StageName: stageName, RouteKey: routeKey })
+        )
       );
     }
   }
@@ -2213,16 +2245,32 @@ export class ApiGatewayV2Provider implements ResourceProvider {
     droppedKeys: readonly string[]
   ): Promise<void> {
     for (const key of droppedKeys) {
-      await this.getClient().send(
-        new DeleteRouteRequestParameterCommand({
-          ApiId: apiId,
-          RouteId: routeId,
-          RequestParameterKey: key,
-        })
+      await this.sendTolerantOfNotFound(() =>
+        this.getClient().send(
+          new DeleteRouteRequestParameterCommand({
+            ApiId: apiId,
+            RouteId: routeId,
+            RequestParameterKey: key,
+          })
+        )
       );
     }
   }
 
+  /**
+   * Resolve a `Record<string, string>` update field (`StageVariables`, Route
+   * `RequestModels`, Integration `RequestParameters`) with per-key removal
+   * awareness.
+   *
+   * These maps also merge on the AWS side: sending `{}` (or a map missing
+   * a previously-present key) does NOT delete the dropped key — it is kept
+   * live. Live-probed 2026-07-22 (and again 2026-08-11 for `RequestModels`):
+   * a key is cleared only by sending it with an empty-string value. So the
+   * resolved map is `next` plus every key present in `previous` but absent
+   * from `next`, set to `''`. Whole-block removal (next `undefined`, previous
+   * populated) therefore sends every old key as `''`. Returns `undefined` when
+   * nothing changed.
+   */
   private mapWithRemovals(next: unknown, previous: unknown): Record<string, string> | undefined {
     if (this.deepEqual(next, previous)) return undefined;
     const nextMap = (next ?? {}) as Record<string, string>;
