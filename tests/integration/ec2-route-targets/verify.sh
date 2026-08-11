@@ -74,8 +74,9 @@ LOCAL_DIST="${PWD}/../../../dist/cli.js"
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
-  if [ -x "${LOCAL_DIST}" ] || [ -f "${LOCAL_DIST}" ]; then
-    node "${LOCAL_DIST}" state destroy "${STACK}" --region "${REGION}" --yes >/dev/null 2>&1
+  if { [ -x "${LOCAL_DIST}" ] || [ -f "${LOCAL_DIST}" ]; } && [ -n "${STATE_BUCKET:-}" ]; then
+    node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET}" \
+      --region "${REGION}" --yes >/dev/null 2>&1
   fi
 
   # Best-effort direct sweeps by deterministic tag/name, for the case where
@@ -106,14 +107,6 @@ cleanup() {
     aws ec2 delete-transit-gateway --region "${REGION}" --transit-gateway-id "${tgw_id}" >/dev/null 2>&1
   fi
 
-  local pl_id
-  pl_id="$(aws ec2 describe-managed-prefix-lists --region "${REGION}" \
-    --filters "Name=prefix-list-name,Values=${PL_NAME}" \
-    --query 'PrefixLists[0].PrefixListId' --output text 2>/dev/null)"
-  if [ -n "${pl_id}" ] && [ "${pl_id}" != "None" ]; then
-    aws ec2 delete-managed-prefix-list --region "${REGION}" --prefix-list-id "${pl_id}" >/dev/null 2>&1
-  fi
-
   local vpc_id
   vpc_id="$(aws ec2 describe-vpcs --region "${REGION}" \
     --filters "Name=tag:Name,Values=${VPC_TAG}" \
@@ -138,6 +131,17 @@ cleanup() {
       aws ec2 delete-subnet --region "${REGION}" --subnet-id "${subnet_id}" >/dev/null 2>&1
     done
     aws ec2 delete-vpc --region "${REGION}" --vpc-id "${vpc_id}" >/dev/null 2>&1
+  fi
+
+  # Prefix list LAST: a leftover pl- route in the route table above holds a
+  # DependencyViolation on the prefix list, so it only frees up once the
+  # route table / VPC family is gone.
+  local pl_id
+  pl_id="$(aws ec2 describe-managed-prefix-lists --region "${REGION}" \
+    --filters "Name=prefix-list-name,Values=${PL_NAME}" \
+    --query 'PrefixLists[0].PrefixListId' --output text 2>/dev/null)"
+  if [ -n "${pl_id}" ] && [ "${pl_id}" != "None" ]; then
+    aws ec2 delete-managed-prefix-list --region "${REGION}" --prefix-list-id "${pl_id}" >/dev/null 2>&1
   fi
 
   if [ -n "${STATE_BUCKET:-}" ]; then
@@ -177,8 +181,11 @@ env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
 RTB_ID="$(aws ec2 describe-route-tables --region "${REGION}" \
   --filters "Name=tag:Name,Values=cdkd-route-targets-rtb" \
   --query 'RouteTables[0].RouteTableId' --output text)"
+# State filter pins the FRESH prefix list — a leaked prior-run PL that the
+# pre-run cleanup just async-deleted still lists as delete-in-progress under
+# the same name and would otherwise win the [0] slot.
 PL_ID="$(aws ec2 describe-managed-prefix-lists --region "${REGION}" \
-  --filters "Name=prefix-list-name,Values=${PL_NAME}" \
+  --filters "Name=prefix-list-name,Values=${PL_NAME}" "Name=state,Values=create-complete,modify-complete" \
   --query 'PrefixLists[0].PrefixListId' --output text)"
 TGW_ID="$(aws ec2 describe-transit-gateways --region "${REGION}" \
   --filters "Name=tag:Name,Values=${TGW_TAG}" "Name=state,Values=available" \

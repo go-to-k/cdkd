@@ -124,7 +124,7 @@ describe('EC2Provider AWS::EC2::Route extra target types (#609)', () => {
       expect(result.physicalId).toBe('rtb-111|pl-0123456789abcdef0');
     });
 
-    it('a v4 CIDR still wins the destination slot when both are absent-vs-present', async () => {
+    it('a v4 CIDR keys the destination slot and the physicalId', async () => {
       mockSend.mockResolvedValueOnce({});
       const result = await provider.create('Route', 'AWS::EC2::Route', {
         RouteTableId: 'rtb-111',
@@ -133,6 +133,34 @@ describe('EC2Provider AWS::EC2::Route extra target types (#609)', () => {
       });
       expect(createInput()['DestinationCidrBlock']).toBe('10.2.0.0/16');
       expect(result.physicalId).toBe('rtb-111|10.2.0.0/16');
+    });
+
+    it('a v4 CIDR wins over a prefix list when a template carries both (precedence pin)', async () => {
+      mockSend.mockResolvedValueOnce({});
+      const result = await provider.create('Route', 'AWS::EC2::Route', {
+        RouteTableId: 'rtb-111',
+        DestinationCidrBlock: '10.3.0.0/16',
+        DestinationPrefixListId: 'pl-0123456789abcdef0',
+        GatewayId: 'igw-222',
+      });
+      const input = createInput();
+      expect(input['DestinationCidrBlock']).toBe('10.3.0.0/16');
+      expect(input['DestinationPrefixListId']).toBeUndefined();
+      expect(result.physicalId).toBe('rtb-111|10.3.0.0/16');
+    });
+
+    it('an IPv6 CIDR destination reaches the wire as DestinationIpv6CidrBlock (create path)', async () => {
+      mockSend.mockResolvedValueOnce({});
+      const result = await provider.create('Route', 'AWS::EC2::Route', {
+        RouteTableId: 'rtb-111',
+        DestinationIpv6CidrBlock: '2001:db8::/32',
+        EgressOnlyInternetGatewayId: 'eigw-333',
+      });
+      const input = createInput();
+      expect(input['DestinationIpv6CidrBlock']).toBe('2001:db8::/32');
+      expect(input['DestinationCidrBlock']).toBeUndefined();
+      expect(input['DestinationPrefixListId']).toBeUndefined();
+      expect(result.physicalId).toBe('rtb-111|2001:db8::/32');
     });
 
     it('rejects a route with no destination at all, naming all three forms', async () => {
@@ -192,6 +220,28 @@ describe('EC2Provider AWS::EC2::Route extra target types (#609)', () => {
       expect(deleteInput()['DestinationCidrBlock']).toBe('10.1.0.0/16');
       expect(createInput()['TransitGatewayId']).toBe('tgw-333');
       expect(result.wasReplaced).toBe(true);
+      expect(result.physicalId).toBe('rtb-111|10.1.0.0/16');
+    });
+
+    it('a destination change re-keys the physicalId on the re-created route', async () => {
+      mockSend.mockResolvedValue({});
+      const result = await provider.update(
+        'Route',
+        'rtb-111|10.1.0.0/16',
+        'AWS::EC2::Route',
+        {
+          RouteTableId: 'rtb-111',
+          DestinationPrefixListId: 'pl-0123456789abcdef0',
+          TransitGatewayId: 'tgw-333',
+        },
+        {
+          RouteTableId: 'rtb-111',
+          DestinationCidrBlock: '10.1.0.0/16',
+          TransitGatewayId: 'tgw-333',
+        }
+      );
+      expect(result.wasReplaced).toBe(true);
+      expect(result.physicalId).toBe('rtb-111|pl-0123456789abcdef0');
     });
   });
 
@@ -245,6 +295,30 @@ describe('EC2Provider AWS::EC2::Route extra target types (#609)', () => {
         RouteTableId: 'rtb-111',
         DestinationCidrBlock: '10.1.0.0/16',
         VpcEndpointId: 'vpce-0123456789abcdef0',
+      });
+    });
+
+    it.each([
+      ['LocalGatewayId', 'lgw-0123456789abcdef0'],
+      ['CarrierGatewayId', 'cagw-0123456789abcdef0'],
+      ['CoreNetworkArn', 'arn:aws:networkmanager::123456789012:core-network/core-network-abc'],
+    ])('surfaces %s from the route read-back', async (key, value) => {
+      mockSend.mockResolvedValueOnce({
+        RouteTables: [
+          {
+            Routes: [{ DestinationCidrBlock: '10.1.0.0/16', [key]: value }],
+          },
+        ],
+      });
+      const result = await provider.readCurrentState(
+        'rtb-111|10.1.0.0/16',
+        'Route',
+        'AWS::EC2::Route'
+      );
+      expect(result).toEqual({
+        RouteTableId: 'rtb-111',
+        DestinationCidrBlock: '10.1.0.0/16',
+        [key]: value,
       });
     });
 
