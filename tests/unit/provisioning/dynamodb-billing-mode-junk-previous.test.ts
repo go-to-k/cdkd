@@ -168,7 +168,12 @@ describe('DynamoDBTableProvider junk previous BillingMode (issue #1552)', () => 
   });
 
   it('keeps the live mode when the DESIRED value is unusable and the previous is junk too', async () => {
-    liveTable('PAY_PER_REQUEST');
+    // The live mode is PROVISIONED, deliberately NOT the create-path default:
+    // pre-fix the desired `null` fell back to the junk previous (`''`) and
+    // "nothing sent" was true for the WRONG reason (`'' === ''`), so an
+    // assertion on the calls alone passed either way. Asserting the #1552 warn
+    // AND the live mode pins that the baseline actually came from AWS.
+    liveTable('PROVISIONED');
 
     await provider.update(
       'MyTable',
@@ -181,6 +186,10 @@ describe('DynamoDBTableProvider junk previous BillingMode (issue #1552)', () => 
     // Both sides junk: the baseline is AWS's mode and the desired falls back
     // to it, so nothing is sent — the table is not re-priced.
     expect(updateTableInputs()).toEqual([]);
+    expect(childLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('recorded previous BillingMode is unusable')
+    );
+    expect(childLogger.warn).toHaveBeenCalledWith(expect.stringContaining('(PROVISIONED)'));
   });
 });
 

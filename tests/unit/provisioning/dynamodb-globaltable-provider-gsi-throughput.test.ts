@@ -1107,18 +1107,31 @@ describe('DynamoDBGlobalTable GSI throughput translation (issue #1387)', () => {
       ]);
     });
 
-    it('reports the named error, not a bare TypeError, for a non-array previous GlobalSecondaryIndexes during a flip', async () => {
-      // The existing-index scan in the flip runs BEFORE the translation, so an
-      // unguarded `.map` on a plain object died with `.map is not a function`
-      // — an opaque failure that names nothing. The scan is guarded, so the
-      // translator's own named error is what surfaces.
+    it('does not die with a bare TypeError on a non-array previous GlobalSecondaryIndexes during a flip', async () => {
+      // The existing-index scan in the flip once ran BEFORE the translation, so
+      // an unguarded `.map` on a plain object died with `.map is not a
+      // function` — an opaque failure that names nothing.
+      //
+      // The named REFUSAL that replaced it was itself superseded by issue
+      // #1551: this value comes from cdkd STATE, so failing the update on it
+      // leaves the table un-updatable with no template-side remedy. The
+      // provider now warns and falls back to the LIVE indexes as the baseline,
+      // so the update completes. What this test still protects is that the
+      // malformed value is NAMED rather than reaching `.map`.
       const previous = structuredClone(PROVISIONED_TABLE_PROPS) as Record<string, unknown>;
       previous['BillingMode'] = 'PAY_PER_REQUEST';
       previous['GlobalSecondaryIndexes'] = { 'Fn::If': ['UseGsi', [], []] };
 
       await expect(
         provider.update('Prov', 'prov-table', RESOURCE_TYPE, PROVISIONED_TABLE_PROPS, previous)
-      ).rejects.toThrow(/GlobalSecondaryIndexes must be an array/);
+      ).resolves.toBeDefined();
+
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringMatching(/GlobalSecondaryIndexes must be an array/)
+      );
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('recorded in cdkd state, not in the template')
+      );
     });
 
     it('carries a changed WarmThroughput in the PAY_PER_REQUEST -> PROVISIONED flip call', async () => {

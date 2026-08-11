@@ -1035,7 +1035,15 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         (typeof recordedOldBilling === 'string' && recordedOldBilling.trim() !== '');
       const oldBilling = recordedOldBillingUsable
         ? ((recordedOldBilling as string | undefined) ?? 'PAY_PER_REQUEST')
-        : (describeResp.Table?.BillingModeSummary?.BillingMode ?? 'PAY_PER_REQUEST');
+        : // NOT this provider's create-path default: the two arms answer
+          // different questions. An ABSENT recorded previous means "the
+          // template declared no BillingMode", where PAY_PER_REQUEST is
+          // GlobalTable's own default; an ABSENT `BillingModeSummary` is
+          // AWS saying the table was created without an explicit mode, which
+          // IS PROVISIONED (the same reading `AWS::DynamoDB::Table`'s
+          // `readCurrentState` takes). Using the template default here would
+          // read a live PROVISIONED table as on-demand and mask a real flip.
+          (describeResp.Table?.BillingModeSummary?.BillingMode ?? 'PROVISIONED');
       if (!recordedOldBillingUsable) {
         this.logger.warn(
           `AWS::DynamoDB::GlobalTable ${logicalId}: the recorded previous BillingMode ` +
@@ -1129,17 +1137,70 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // that difference is the whole point of deciding this per site — the
       // create site OMITS the block (a fresh table with zero indexes), while
       // here an empty desired list means "the template declares no GSIs", so
-      // step 6's diff would DELETE every live index. `gsiBlockUnusable`
+      // step 6's diff would DELETE every live index. `desiredGsiUnusable`
       // therefore suppresses the GSI diff entirely: the indexes are left
       // exactly as they are (keep-previous), never dropped.
-      let gsiBlockUnusable = false;
+      // The two sides get DIFFERENT treatment, because only one of them can be
+      // recovered from AWS.
+      let desiredGsiUnusable = false;
       const onUnusableGsiBlock = (message: string): void => {
-        gsiBlockUnusable = true;
+        desiredGsiUnusable = true;
         this.logger.warn(
           `${message} No GlobalSecondaryIndexes change is applied by this update; ` +
             `the table's existing indexes are left untouched.`
         );
       };
+      // The PREVIOUS side's translation gets the downgrade UNCONDITIONALLY (it
+      // is reached from step 4's flip and again from step 6's diff): that bag
+      // comes from cdkd STATE, never from the template, so a refusal there is
+      // the guard-the-desired-side-only rule violated outright — a malformed
+      // block an older binary (or this provider's own warn path) recorded would
+      // make the table permanently un-updatable with no template-side remedy.
+      //
+      // Suppressing the diff is NOT the right answer on this side, and that is
+      // the #1552 class one property over: the warn path records the junk
+      // desired block as the new state, so the NEXT deploy — the one carrying
+      // the user's CORRECTED template — would hit this suppression, silently
+      // drop the GSI add, and record the corrected block as state. The deploy
+      // after that sees previous == desired and never applies it either: the
+      // index is lost permanently, with a success exit code. So the baseline is
+      // seeded from the LIVE table instead (`liveSdkIndexes` below), exactly as
+      // the BillingMode guard seeds from `BillingModeSummary`.
+      let previousGsiUnusable = false;
+      const onUnusablePreviousGsiBlock = (message: string): void => {
+        previousGsiUnusable = true;
+        this.logger.warn(
+          `${message} (recorded in cdkd state, not in the template) — using the ` +
+            `table's LIVE indexes as the comparison baseline for this update, so a ` +
+            `corrected template still applies.`
+        );
+      };
+      // AWS's own view of the indexes, mapped into the shape
+      // `diffGlobalSecondaryIndexes` compares. `DescribeTable` was already
+      // issued above, so this costs no extra call. Only the members the diff
+      // reads are carried over — the description's bookkeeping fields
+      // (`IndexStatus`, `NumberOfDecreasesToday`, `ItemCount`, ...) would
+      // otherwise register as differences against a template-derived side.
+      const liveSdkIndexes: GlobalSecondaryIndex[] = (
+        describeResp.Table?.GlobalSecondaryIndexes ?? []
+      ).map((live) => ({
+        IndexName: live.IndexName,
+        KeySchema: live.KeySchema,
+        Projection: live.Projection,
+        ...(live.ProvisionedThroughput && {
+          ProvisionedThroughput: {
+            ReadCapacityUnits: live.ProvisionedThroughput.ReadCapacityUnits,
+            WriteCapacityUnits: live.ProvisionedThroughput.WriteCapacityUnits,
+          },
+        }),
+        ...(live.OnDemandThroughput && { OnDemandThroughput: live.OnDemandThroughput }),
+        ...(live.WarmThroughput && {
+          WarmThroughput: {
+            ReadUnitsPerSecond: live.WarmThroughput.ReadUnitsPerSecond,
+            WriteUnitsPerSecond: live.WarmThroughput.WriteUnitsPerSecond,
+          },
+        }),
+      }));
       const desiredSdkIndexes = toSdkGlobalSecondaryIndexes(
         properties,
         currentRegion,
@@ -1415,36 +1476,55 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
             properties,
             currentRegion,
             newBilling,
-            'seed'
+            'seed',
+            undefined,
+            onUnusableGsiBlock
           );
           // Only indexes that ALREADY exist on AWS can take an `Update`
           // action; a GSI introduced by this same deploy is created (with
           // its throughput) by step 6's `added` loop.
-          // `Array.isArray` rather than a bare cast: this scan runs BEFORE the
-          // translation below, so a non-array value (an unresolved intrinsic)
-          // would hit `.map` on a plain object and die with a bare TypeError
-          // instead of the named error the translator raises a few lines down.
-          const previousCfnIndexes = previousProperties['GlobalSecondaryIndexes'];
-          const existingIndexNames = new Set(
-            (Array.isArray(previousCfnIndexes) ? (previousCfnIndexes as unknown[]) : [])
-              .map((entry) => (entry as Record<string, unknown> | null)?.['IndexName'])
-              .filter((name): name is string => typeof name === 'string')
-          );
+          // `Array.isArray` rather than a bare cast: a non-array value would
+          // otherwise hit `.map` on a plain object and die with a bare
+          // TypeError. That arm is now only reached for a shape the translator
+          // above accepted; a state-recorded block it REFUSED reads as ZERO
+          // existing indexes, which would omit capacity for every live index
+          // and get the flip rejected — so the live table's own names are used
+          // instead (issue #1551).
           // EVERY index live on AWS needs throughput in this call, including
           // one this deploy REMOVES: its `Delete` is issued by step 6, which
           // runs AFTER the flip, so at flip time it is still a live index on
           // a table becoming PROVISIONED and AWS rejects the call if it has
           // no capacity. Its throughput therefore has to come from the
           // PREVIOUS template — the new one no longer mentions it.
+          //
+          // Translated BEFORE the name scan below (issue #1551): this is the
+          // first previous-side translation on the flip path, so it is what
+          // discovers a malformed state-recorded block, and the scan needs
+          // that answer to pick its source.
           const previousByIndexName = new Map<string, GlobalSecondaryIndex>();
-          for (const gsi of toSdkGlobalSecondaryIndexes(
+          const previousFlipIndexes = toSdkGlobalSecondaryIndexes(
             previousProperties,
             currentRegion,
             newBilling,
-            'seed'
-          )) {
+            'seed',
+            undefined,
+            onUnusablePreviousGsiBlock
+          );
+          for (const gsi of previousGsiUnusable ? liveSdkIndexes : previousFlipIndexes) {
             if (gsi.IndexName) previousByIndexName.set(gsi.IndexName, gsi);
           }
+          const previousCfnIndexes = previousProperties['GlobalSecondaryIndexes'];
+          const existingIndexNames = previousGsiUnusable
+            ? new Set(
+                liveSdkIndexes
+                  .map((gsi) => gsi.IndexName)
+                  .filter((name): name is string => typeof name === 'string')
+              )
+            : new Set(
+                (Array.isArray(previousCfnIndexes) ? (previousCfnIndexes as unknown[]) : [])
+                  .map((entry) => (entry as Record<string, unknown> | null)?.['IndexName'])
+                  .filter((name): name is string => typeof name === 'string')
+              );
           const byIndexName = new Map(previousByIndexName);
           const survivingIndexNames = new Set<string>();
           for (const gsi of provisionedIndexes) {
@@ -1480,8 +1560,33 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
             billingUpdate.GlobalSecondaryIndexUpdates = indexUpdates;
           }
         }
-        await this.dynamoDBClient.send(new UpdateTableCommand(billingUpdate));
-        await this.waitForTableActiveAfterUpdate(physicalId, logicalId);
+        // A flip TO PROVISIONED is SUPPRESSED when either side's GSI block was
+        // unusable (issue #1551). AWS requires per-GSI `ProvisionedThroughput`
+        // for EVERY live index in this very call, and that capacity can only
+        // come from the block this update already refused to trust — so the
+        // call would be rejected anyway, and the replay this downgrade exists
+        // to rescue would still be stranded, just with a 400 instead of a
+        // throw. Suppressing keeps the table at its current billing mode: the
+        // same keep-previous choice every other guard in this update makes.
+        // A flip to PAY_PER_REQUEST needs no per-index capacity, so it is
+        // unaffected. Note this can only be decided HERE, not at the `if`
+        // above: the previous-side translation a few lines up is what
+        // discovers a malformed state-recorded block.
+        if (desiredGsiUnusable && newBilling === 'PROVISIONED') {
+          this.logger.warn(
+            `AWS::DynamoDB::GlobalTable ${logicalId}: skipping the ` +
+              `${oldBilling} -> ${newBilling} BillingMode flip because the ` +
+              `GlobalSecondaryIndexes block is unusable — AWS requires per-index ` +
+              `provisioned capacity in the same call and it cannot be derived. ` +
+              `The table stays ${oldBilling}; fix the GlobalSecondaryIndexes value ` +
+              `(or the cdkd state record on a replay) and re-deploy to apply the flip.`
+          );
+          // Nothing was applied, so step 6 must NOT treat these as handled.
+          gsiHandledByBillingFlip.clear();
+        } else {
+          await this.dynamoDBClient.send(new UpdateTableCommand(billingUpdate));
+          await this.waitForTableActiveAfterUpdate(physicalId, logicalId);
+        }
       }
 
       // 4a. The table-level on-demand ceilings a PROVISIONED ->
@@ -1820,39 +1925,34 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // and an auto-scaling-only template edit — `MaxCapacity` 20 -> 30,
       // invisible to DynamoDB's own API — no longer produces a bare
       // `Update: { IndexName }` that AWS rejects as an empty update.
-      // The PREVIOUS side gets the downgrade unconditionally (issue #1551):
-      // it comes from cdkd STATE, never from the template, so a refusal here
-      // is the guard-the-desired-side-only rule violated outright — a
-      // malformed block an older binary recorded would make the table
-      // permanently un-updatable with no template-side remedy. Same
-      // suppression as the desired side: with no trustworthy baseline the
-      // diff cannot tell an ADD from a no-op, so no GSI action is emitted.
-      const previousSdkIndexes = toSdkGlobalSecondaryIndexes(
+      // The PREVIOUS side takes the same unconditional downgrade as step 4's
+      // translation of it (issue #1551) — see `onUnusablePreviousGsiBlock` —
+      // and the same LIVE-table baseline, so a corrected template still
+      // applies rather than being silently dropped forever.
+      // Translated FIRST, then substituted: on an update with no billing flip
+      // this call is the first one to touch the previous side, so the flag is
+      // still false when the expression is evaluated — reading it before the
+      // call would leave the empty downgrade result in place.
+      const previousTranslatedIndexes = toSdkGlobalSecondaryIndexes(
         previousProperties,
         currentRegion,
         oldBilling,
         'min',
         undefined,
-        (message) => {
-          gsiBlockUnusable = true;
-          this.logger.warn(
-            `${message} (recorded in cdkd state, not in the template) — no ` +
-              `GlobalSecondaryIndexes change is applied by this update; the ` +
-              `table's existing indexes are left untouched.`
-          );
-        }
+        onUnusablePreviousGsiBlock
       );
+      const previousSdkIndexes = previousGsiUnusable ? liveSdkIndexes : previousTranslatedIndexes;
       // `desiredSdkIndexes` was translated once at the top of update() — the
       // same call, reused rather than repeated, so the diagnostics reported
       // there provably describe the indexes actually being applied here.
-      // `gsiBlockUnusable` (issue #1551): one side's `GlobalSecondaryIndexes`
+      // `desiredGsiUnusable` (issue #1551): the DESIRED `GlobalSecondaryIndexes`
       // was present-but-malformed and was downgraded to an EMPTY list above.
       // Feeding that into the diff would read as "the template declares no
       // indexes" (delete every live GSI) or as "none existed" (re-create every
       // GSI), both destructive on a value nobody can act on from a template.
       // Emit no GSI action at all instead; the warning already told the user
       // why nothing moved.
-      const gsiDiff: ReturnType<typeof diffGlobalSecondaryIndexes> = gsiBlockUnusable
+      const gsiDiff: ReturnType<typeof diffGlobalSecondaryIndexes> = desiredGsiUnusable
         ? { added: [], removed: [], modified: [] }
         : diffGlobalSecondaryIndexes(previousSdkIndexes, desiredSdkIndexes);
       // RAW per-index on-demand key presence for the DESIRED side, so the
@@ -2087,8 +2187,27 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // PROVISIONED, and a flip TO `PAY_PER_REQUEST` forces a full teardown
       // regardless of what the template still says, because AWS rejects
       // scalable targets on an on-demand table.
+      //
+      // `desiredGsiUnusable` suppresses this too (issue #1551). The per-INDEX
+      // targets are derived from the same `GlobalSecondaryIndexes` block the
+      // guards above refused to trust, and `collectAutoScalingTargets` reads a
+      // non-array as "no per-index specs" — so reconciling against it would
+      // DEREGISTER every live index's scalable target and delete its policies,
+      // the destructive outcome the GSI-diff suppression exists to prevent,
+      // reached by a different route. Suppressing the whole reconcile (rather
+      // than only its index dimension) also keeps the table-level and
+      // cross-region targets from being re-derived from a bag that is known
+      // bad; steps 4b / 5 already applied their own diff-gated changes.
       const autoScalingMeaningfulForIndexes =
-        newBilling === 'PROVISIONED' || oldBilling === 'PROVISIONED';
+        (newBilling === 'PROVISIONED' || oldBilling === 'PROVISIONED') && !desiredGsiUnusable;
+      if (desiredGsiUnusable && (newBilling === 'PROVISIONED' || oldBilling === 'PROVISIONED')) {
+        this.logger.warn(
+          `AWS::DynamoDB::GlobalTable ${logicalId}: skipping the auto-scaling target ` +
+            `reconcile because the GlobalSecondaryIndexes block is unusable — the ` +
+            `per-index targets are derived from it, so reconciling would deregister ` +
+            `the live indexes' scalable targets. Existing targets are left untouched.`
+        );
+      }
       if (autoScalingMeaningfulForIndexes) {
         // A GSI created by step 6 above leaves the TABLE ACTIVE while the
         // index itself is still `CREATING`, and application-autoscaling

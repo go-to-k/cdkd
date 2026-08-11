@@ -388,10 +388,70 @@ describe('DynamoDBGlobalTableProvider nested guards on the UPDATE path (issue #1
     );
   });
 
-  it('WARNS on a malformed PREVIOUS (state-recorded) GSI blob and emits NO GSI action', async () => {
+  it('a malformed PREVIOUS (state-recorded) blob falls back to the LIVE indexes as baseline', async () => {
     // The previous side comes from cdkd state, never from the template, so a
     // refusal there is unrecoverable by editing the CDK code. Before #1551
     // this call site had no hook at all and threw.
+    //
+    // Suppressing the diff here would be the #1552 class one property over:
+    // the warn path records the junk block as state, so THIS deploy is the one
+    // carrying the user's corrected template. Dropping its GSI add would lose
+    // the index permanently — the next deploy sees previous == desired. So the
+    // baseline comes from the live table, and the add still goes out.
+    mockSend.mockResolvedValue({
+      Table: {
+        TableName: TABLE_NAME,
+        TableStatus: 'ACTIVE',
+        TableArn: `arn:aws:dynamodb:us-east-1:0:table/${TABLE_NAME}`,
+        BillingModeSummary: { BillingMode: 'PAY_PER_REQUEST' },
+        Replicas: [{ RegionName: 'us-east-1', ReplicaStatus: 'ACTIVE' }],
+        // No live indexes: the corrected template's index is a genuine ADD.
+        GlobalSecondaryIndexes: [],
+      },
+    });
+
+    await provider.update(
+      'MyTable',
+      TABLE_NAME,
+      RESOURCE_TYPE,
+      { ...baseProps, GlobalSecondaryIndexes: [liveIndex] },
+      { ...baseProps, GlobalSecondaryIndexes: 'bad' }
+    );
+
+    expect(gsiActions()).toHaveLength(1);
+    expect(gsiActions()[0]).toMatchObject({ Create: { IndexName: 'my-index' } });
+    expect(childLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('recorded in cdkd state, not in the template')
+    );
+    expect(childLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("using the table's LIVE indexes as the comparison baseline")
+    );
+  });
+
+  it('the LIVE baseline suppresses a re-create of an index that already exists', async () => {
+    // The other direction of the same fallback: with the index already live,
+    // the corrected template is a no-op — an empty baseline would have tried
+    // to CreateGlobalSecondaryIndex on an existing index and failed.
+    mockSend.mockResolvedValue({
+      Table: {
+        TableName: TABLE_NAME,
+        TableStatus: 'ACTIVE',
+        TableArn: `arn:aws:dynamodb:us-east-1:0:table/${TABLE_NAME}`,
+        BillingModeSummary: { BillingMode: 'PAY_PER_REQUEST' },
+        Replicas: [{ RegionName: 'us-east-1', ReplicaStatus: 'ACTIVE' }],
+        GlobalSecondaryIndexes: [
+          {
+            IndexName: 'my-index',
+            KeySchema: [{ AttributeName: 'gsiPk', KeyType: 'HASH' }],
+            Projection: { ProjectionType: 'ALL' },
+            // Bookkeeping fields the mapping must NOT carry into the diff.
+            IndexStatus: 'ACTIVE',
+            ItemCount: 42,
+          },
+        ],
+      },
+    });
+
     await provider.update(
       'MyTable',
       TABLE_NAME,
@@ -401,9 +461,6 @@ describe('DynamoDBGlobalTableProvider nested guards on the UPDATE path (issue #1
     );
 
     expect(gsiActions()).toEqual([]);
-    expect(childLogger.warn).toHaveBeenCalledWith(
-      expect.stringContaining('recorded in cdkd state, not in the template')
-    );
   });
 
   it('still emits the GSI diff when both sides are well-formed', async () => {
@@ -417,5 +474,119 @@ describe('DynamoDBGlobalTableProvider nested guards on the UPDATE path (issue #1
 
     expect(gsiActions()).toHaveLength(1);
     expect(gsiActions()[0]).toMatchObject({ Create: { IndexName: 'my-index' } });
+  });
+
+  // ─── The BillingMode-flip branch reaches the helper twice more ─────────
+  //
+  // Step 4's PAY_PER_REQUEST -> PROVISIONED flip translates BOTH bags again
+  // (AWS requires per-index capacity in the same UpdateTable), so those two
+  // call sites need the downgrade as much as the step-2 / step-6 ones — a
+  // spec review caught them unwired, several hundred lines from the guard
+  // that had already warned. With the block untrustworthy the per-index
+  // capacity cannot be derived, so the flip itself is SUPPRESSED rather than
+  // sent for AWS to reject.
+  describe('BillingMode flip with an unusable GSI block', () => {
+    const provisionedDesired = {
+      ...baseProps,
+      BillingMode: 'PROVISIONED',
+      WriteProvisionedThroughputSettings: { WriteCapacityUnits: 5 },
+    };
+
+    const billingFlipInputs = (): Array<Record<string, unknown>> =>
+      updateInputs().filter((i) => i['BillingMode'] !== undefined);
+
+    it('SUPPRESSES the flip to PROVISIONED when the DESIRED block is unusable', async () => {
+      await provider.update(
+        'MyTable',
+        TABLE_NAME,
+        RESOURCE_TYPE,
+        { ...provisionedDesired, GlobalSecondaryIndexes: 'bad' },
+        { ...baseProps, BillingMode: 'PAY_PER_REQUEST', GlobalSecondaryIndexes: [liveIndex] }
+      );
+
+      expect(billingFlipInputs()).toEqual([]);
+      expect(gsiActions()).toEqual([]);
+      expect(childLogger.warn).toHaveBeenCalledWith(
+        expect.stringContaining('skipping the PAY_PER_REQUEST -> PROVISIONED BillingMode flip')
+      );
+    });
+
+    it('still APPLIES the flip when only the PREVIOUS (state-recorded) block is unusable', async () => {
+      // The previous side is only translated inside the flip branch and again
+      // in step 6, so before the fix this threw AFTER step 3 had already sent
+      // its UpdateTable — a half-applied update on a value the user cannot
+      // edit from the template.
+      //
+      // It is NOT suppressed, unlike the desired-side case: the previous side
+      // is recoverable from the live table, so the flip has a trustworthy
+      // source for the per-index capacity AWS requires in this call — and the
+      // desired side (the user's template) is fine.
+      mockSend.mockResolvedValue({
+        Table: {
+          TableName: TABLE_NAME,
+          TableStatus: 'ACTIVE',
+          TableArn: `arn:aws:dynamodb:us-east-1:0:table/${TABLE_NAME}`,
+          BillingModeSummary: { BillingMode: 'PAY_PER_REQUEST' },
+          Replicas: [{ RegionName: 'us-east-1', ReplicaStatus: 'ACTIVE' }],
+          GlobalSecondaryIndexes: [
+            {
+              IndexName: 'my-index',
+              KeySchema: [{ AttributeName: 'gsiPk', KeyType: 'HASH' }],
+              Projection: { ProjectionType: 'ALL' },
+            },
+          ],
+        },
+      });
+
+      await provider.update(
+        'MyTable',
+        TABLE_NAME,
+        RESOURCE_TYPE,
+        { ...provisionedDesired, GlobalSecondaryIndexes: [liveIndex] },
+        { ...baseProps, BillingMode: 'PAY_PER_REQUEST', GlobalSecondaryIndexes: 'bad' }
+      );
+
+      expect(billingFlipInputs()).toHaveLength(1);
+      expect(billingFlipInputs()[0]).toMatchObject({ BillingMode: 'PROVISIONED' });
+      // The live index still gets capacity in the SAME call — an empty
+      // baseline would have omitted it and AWS would reject the flip.
+      expect(billingFlipInputs()[0]?.['GlobalSecondaryIndexUpdates']).toEqual([
+        expect.objectContaining({ Update: expect.objectContaining({ IndexName: 'my-index' }) }),
+      ]);
+      expect(childLogger.warn).toHaveBeenCalledWith(
+        expect.stringContaining('recorded in cdkd state, not in the template')
+      );
+    });
+
+    it('still APPLIES a well-formed flip to PROVISIONED (the fence)', async () => {
+      await provider.update(
+        'MyTable',
+        TABLE_NAME,
+        RESOURCE_TYPE,
+        { ...provisionedDesired, GlobalSecondaryIndexes: [liveIndex] },
+        { ...baseProps, BillingMode: 'PAY_PER_REQUEST', GlobalSecondaryIndexes: [liveIndex] }
+      );
+
+      expect(billingFlipInputs()).toHaveLength(1);
+      expect(billingFlipInputs()[0]).toMatchObject({ BillingMode: 'PROVISIONED' });
+      expect(childLogger.warn).not.toHaveBeenCalledWith(
+        expect.stringContaining('skipping the')
+      );
+    });
+
+    it('does NOT suppress a flip to PAY_PER_REQUEST (no per-index capacity needed)', async () => {
+      await provider.update(
+        'MyTable',
+        TABLE_NAME,
+        RESOURCE_TYPE,
+        { ...baseProps, BillingMode: 'PAY_PER_REQUEST', GlobalSecondaryIndexes: 'bad' },
+        { ...baseProps, BillingMode: 'PROVISIONED', GlobalSecondaryIndexes: [liveIndex] }
+      );
+
+      expect(billingFlipInputs()).toHaveLength(1);
+      expect(billingFlipInputs()[0]).toMatchObject({ BillingMode: 'PAY_PER_REQUEST' });
+      // The GSI diff is still suppressed — only the flip is unaffected.
+      expect(gsiActions()).toEqual([]);
+    });
   });
 });
