@@ -1,3 +1,10 @@
+## [0.280.10](https://github.com/go-to-k/cdkd/compare/v0.280.9...v0.280.10) (2026-08-11)
+
+
+### Bug Fixes
+
+* **s3:** refuse a malformed non-object lifecycle / replication / analytics container instead of silently emptying the block ([#1596](https://github.com/go-to-k/cdkd/issues/1596)) ([4780a89](https://github.com/go-to-k/cdkd/commit/4780a89e915189bb0ee9305eaa252529b70828bf))
+
 ## [0.280.9](https://github.com/go-to-k/cdkd/compare/v0.280.8...v0.280.9) (2026-08-11)
 
 
