@@ -1,3 +1,10 @@
+## [0.280.6](https://github.com/go-to-k/cdkd/compare/v0.280.5...v0.280.6) (2026-08-11)
+
+
+### Bug Fixes
+
+* **dynamodb:** reset BillingMode to PROVISIONED on removal instead of emitting an empty UpdateTable ([#1553](https://github.com/go-to-k/cdkd/issues/1553)) ([#1586](https://github.com/go-to-k/cdkd/issues/1586)) ([4bed64d](https://github.com/go-to-k/cdkd/commit/4bed64dc65f9fd907277a09dc2e8042fdeb706fb))
+
 ## [0.280.5](https://github.com/go-to-k/cdkd/compare/v0.280.4...v0.280.5) (2026-08-11)
 
 
