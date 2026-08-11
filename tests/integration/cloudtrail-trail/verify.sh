@@ -235,17 +235,19 @@ echo "==> Phase 2: the CloudWatch Logs pair CFn RETAINS must be unchanged"
 assert_field "CloudWatchLogsLogGroupArn retained" '.CloudWatchLogsLogGroupArn' "${CW_GROUP_P1}"
 assert_field "CloudWatchLogsRoleArn retained"     '.CloudWatchLogsRoleArn'     "${CW_ROLE_P1}"
 
-echo "==> Phase 2: a re-run of the same removal template must be a NO-OP"
-# The phantom-drift guard the #1549 review asked for. The removal phase writes
-# `''` placeholders and now a reset selector; if any of those round-trips back
-# through the diff as a change, `cdkd diff --fail` exits 1 here — which is the
-# only cheap way to catch a reset that cannot converge (the class #1096 /
-# #1498 fixed elsewhere).
-CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" diff "${STACK}" \
+echo "==> Phase 2: the post-removal state must not report DRIFT"
+# The phantom-drift guard the #1549 review asked for -- as a DRIFT check, not a
+# diff one. `cdkd diff` compares the synth template against
+# `state.resources[].properties`, and the deploy wrote that side FROM the same
+# template, so no reset payload appears on either side and the assertion could
+# not fail (it passed against the pre-fix binary too -- caught by a review of
+# this fixture). `cdkd drift` is the check that actually exercises the class:
+# it compares the deploy-time snapshot against what AWS reports NOW, which is
+# where a reset that cannot converge shows up. Exit 0 = no drift.
+CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" drift "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
-  --region "${REGION}" \
-  --fail
-echo "    ok: post-removal diff is a no-op"
+  --region "${REGION}"
+echo "    ok: post-removal drift is clean"
 
 # --- Phase 3: destroy -------------------------------------------------
 echo "==> Phase 3: destroy"

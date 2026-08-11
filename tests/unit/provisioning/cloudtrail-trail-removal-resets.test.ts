@@ -2,6 +2,9 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { UpdateTrailCommand } from '@aws-sdk/client-cloudtrail';
 
 const mockSend = vi.fn();
+// Hoisted with the logger factory: it builds its child logger EAGERLY, so an
+// outer `const` would hit the TDZ.
+const { warnSpy } = vi.hoisted(() => ({ warnSpy: vi.fn() }));
 
 vi.mock('@aws-sdk/client-cloudtrail', async () => {
   const actual = await vi.importActual('@aws-sdk/client-cloudtrail');
@@ -18,7 +21,7 @@ vi.mock('../../../src/utils/logger.js', () => {
   const childLogger = {
     debug: vi.fn(),
     info: vi.fn(),
-    warn: vi.fn(),
+    warn: warnSpy,
     error: vi.fn(),
     child: vi.fn().mockReturnThis(),
   };
@@ -350,6 +353,10 @@ describe('CloudTrailProvider removal resets (issue #1160)', () => {
     it('removed: never sends the EMPTY array (AWS rejects 0 selectors)', async () => {
       await provider.update('T', TRAIL_ARN, TYPE, BASE, { ...BASE, EventSelectors: CUSTOM });
 
+      // The length assertion is what stops this passing vacuously: without it
+      // `[0]?.[...]` is `undefined` on a provider that never calls the API at
+      // all — which is exactly the pre-fix behavior.
+      expect(putEventSelectorsInputs()).toHaveLength(1);
       // The InsightSelectors removal shape one branch over would 400 here.
       expect(putEventSelectorsInputs()[0]?.['EventSelectors']).not.toEqual([]);
     });
@@ -392,16 +399,27 @@ describe('CloudTrailProvider removal resets (issue #1160)', () => {
       ['an object (unresolved Fn::If)', { 'Fn::If': ['C', [], []] }],
       ['a string', 'WriteOnly'],
       ['a number', 5],
-    ])('REFUSES %s instead of resetting to the default', async (_label, value) => {
-      await expect(
-        provider.update('T', TRAIL_ARN, TYPE, { ...BASE, EventSelectors: value }, {
-          ...BASE,
-          EventSelectors: CUSTOM,
-        })
-      ).rejects.toThrow(/AWS::CloudTrail::Trail EventSelectors must be an array/);
+    ])(
+      'leaves the live selectors alone on %s instead of resetting to the default',
+      async (_label, value) => {
+        // WARN, not throw: `update()` is a replay path (rollback /
+        // `drift --revert` feed a cdkd STATE record in as the desired bag), so
+        // a refusal here would strand it with no template-side remedy — the
+        // rule `.claude/rules/providers.md` states for every update-path guard.
+        // The fallback is "leave the trail alone", never the reset.
+        await expect(
+          provider.update('T', TRAIL_ARN, TYPE, { ...BASE, EventSelectors: value }, {
+            ...BASE,
+            EventSelectors: CUSTOM,
+          })
+        ).resolves.toBeDefined();
 
-      expect(putEventSelectorsInputs()).toEqual([]);
-    });
+        expect(putEventSelectorsInputs()).toEqual([]);
+        expect(warnSpy).toHaveBeenCalledWith(
+          expect.stringContaining('AWS::CloudTrail::Trail EventSelectors must be an array')
+        );
+      }
+    );
 
     it('treats an explicit null as ABSENT (a genuine removal), not as malformed', async () => {
       // `null` is what a template that never set the property resolves to on
@@ -421,11 +439,21 @@ describe('CloudTrailProvider removal resets (issue #1160)', () => {
       // basic selectors in cdkd state, so the diff fires and AWS rejects the
       // Put. There is nothing to clear, so the reset warns and continues
       // rather than failing the whole deploy on an unmeasured combination.
+      //
+      // The rejection text is AWS's OWN wording — "advanced event selectors",
+      // spaced and lowercase, as spelled in `@aws-sdk/client-cloudtrail`'s
+      // `InvalidEventSelectorsException` doc — NOT the CFn / SDK type spelling
+      // `AdvancedEventSelectors`. A fixture using the type spelling kept a
+      // production-dead matcher green, which is what review caught.
       mockSend.mockImplementation((cmd) =>
         cmd.constructor.name === 'PutEventSelectorsCommand'
           ? Promise.reject(
-              new Error(
-                'InvalidEventSelectorsException: This trail uses AdvancedEventSelectors'
+              Object.assign(
+                new Error(
+                  'This trail uses advanced event selectors, which are managed ' +
+                    'through a separate API'
+                ),
+                { name: 'InvalidEventSelectorsException' }
               )
             )
           : Promise.resolve({})
@@ -434,6 +462,27 @@ describe('CloudTrailProvider removal resets (issue #1160)', () => {
       await expect(
         provider.update('T', TRAIL_ARN, TYPE, BASE, { ...BASE, EventSelectors: CUSTOM })
       ).resolves.toBeDefined();
+
+      // The Put was ATTEMPTED (a provider that skips it entirely — the pre-fix
+      // behavior — would also resolve), and the tolerance is announced.
+      expect(putEventSelectorsInputs()).toHaveLength(1);
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('skipping the EventSelectors reset')
+      );
+    });
+
+    it('still FAILS when the reset is rejected for an UNRELATED reason', async () => {
+      // The tolerance is scoped to the advanced-selector case: a throttle or an
+      // AccessDenied on the reset must still fail the deploy.
+      mockSend.mockImplementation((cmd) =>
+        cmd.constructor.name === 'PutEventSelectorsCommand'
+          ? Promise.reject(new Error('ThrottlingException: Rate exceeded'))
+          : Promise.resolve({})
+      );
+
+      await expect(
+        provider.update('T', TRAIL_ARN, TYPE, BASE, { ...BASE, EventSelectors: CUSTOM })
+      ).rejects.toThrow(/Rate exceeded/);
     });
 
     it('still FAILS when an explicit desired value is rejected the same way', async () => {

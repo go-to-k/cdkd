@@ -364,20 +364,45 @@ export class CloudTrailProvider implements ResourceProvider {
       // removal, turning a pre-fix silent no-op into destruction. That is the
       // `malformed-value-must-not-read-as-removal` class, and
       // `requireConfigArray` is the repo's guard for exactly this shape
-      // (issue #1493): a present-but-non-array value is REFUSED before any
-      // AWS call rather than defaulted away.
+      // (issue #1493): a present-but-non-array value is refused rather than
+      // defaulted away.
+      //
+      // WARN rather than throw, and skip the whole branch (issue #1551, the
+      // rule `.claude/rules/providers.md` states for every UPDATE-path
+      // refusal): `rollback-executor.ts` and `cdkd drift --revert` both call
+      // `update(..., previousState.properties, ...)`, so this desired bag can
+      // be a historical cdkd STATE record with no template-side remedy. The
+      // fallback is to leave the live selectors ALONE — not to reset them,
+      // which is the destructive direction, and not to send the malformed
+      // value, which is what the guard exists to stop.
       const rawEventSelectors = properties['EventSelectors'];
-      const newEventSelectors =
-        rawEventSelectors == null
-          ? undefined
-          : (requireConfigArray(
-              rawEventSelectors,
-              'AWS::CloudTrail::Trail EventSelectors'
-            ) as EventSelector[]);
+      let eventSelectorsUnusable = false;
+      let newEventSelectors: EventSelector[] | undefined;
+      if (rawEventSelectors != null) {
+        try {
+          newEventSelectors = requireConfigArray(
+            rawEventSelectors,
+            'AWS::CloudTrail::Trail EventSelectors'
+          ) as EventSelector[];
+        } catch (error) {
+          eventSelectorsUnusable = true;
+          this.logger.warn(
+            `${error instanceof Error ? error.message : String(error)} The trail's ` +
+              `existing event selectors are left untouched for this update rather ` +
+              `than reset to the AWS default.`
+          );
+        }
+      }
       const oldEventSelectors = previousProperties['EventSelectors'] as EventSelector[] | undefined;
-      if (JSON.stringify(newEventSelectors) !== JSON.stringify(oldEventSelectors)) {
+      if (
+        !eventSelectorsUnusable &&
+        JSON.stringify(newEventSelectors) !== JSON.stringify(oldEventSelectors)
+      ) {
         const isRemoval = newEventSelectors === undefined || newEventSelectors.length === 0;
-        const eventSelectorsToSend = isRemoval ? DEFAULT_EVENT_SELECTORS : newEventSelectors;
+        const eventSelectorsToSend: readonly EventSelector[] =
+          newEventSelectors === undefined || newEventSelectors.length === 0
+            ? DEFAULT_EVENT_SELECTORS
+            : newEventSelectors;
         this.logger.debug(
           isRemoval
             ? `Resetting event selectors to the AWS default for CloudTrail Trail ${logicalId}`
@@ -399,8 +424,16 @@ export class CloudTrailProvider implements ResourceProvider {
           // an explicit template value still fails loudly, because the user
           // asked for something AWS cannot deliver on this trail. Mirrors the
           // `IncludeGlobalServiceEvents` reset's rule a few dozen lines up.
+          // The message match is deliberately SPACE / CASE tolerant: AWS's own
+          // model spells it "advanced event selectors" (spaced, lowercase),
+          // so the obvious `/AdvancedEventSelectors/` — the CFn / SDK type
+          // spelling — would never match a real rejection and this arm would
+          // be DEAD in production while a hand-written fixture kept it green.
+          // Caught by review; the wording was read out of
+          // `@aws-sdk/client-cloudtrail`'s `InvalidEventSelectorsException`
+          // doc rather than guessed.
           const message = error instanceof Error ? error.message : String(error);
-          if (!isRemoval || !/AdvancedEventSelector/i.test(message)) throw error;
+          if (!isRemoval || !/advanced[\s-]*event[\s-]*selector/i.test(message)) throw error;
           this.logger.warn(
             `CloudTrail Trail ${logicalId}: skipping the EventSelectors reset — the ` +
               `trail is using AdvancedEventSelectors, which AWS manages through a ` +
