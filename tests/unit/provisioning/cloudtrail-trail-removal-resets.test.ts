@@ -143,6 +143,54 @@ describe('CloudTrailProvider removal resets (issue #1160)', () => {
     });
   });
 
+  // KMSKeyId joined the RESET set on 2026-08-11 (issue #1533), from its own
+  // live CFn A/B plus a separate wire-shape probe. The two are different
+  // measurements and both were taken: CFn's removal UPDATE read back
+  // `KmsKeyId: null` (so CFn RESETS), `UpdateTrail` with the field ABSENT
+  // left the live key attached (so pass-through was the divergence), and
+  // `KmsKeyId: ''` was ACCEPTED and cleared it (so `''` is the payload).
+  //
+  // Note the CFn spelling is `KMSKeyId` and the SDK's is `KmsKeyId`, so the
+  // desired/previous bags below and the asserted input key differ on purpose.
+  describe('KMSKeyId', () => {
+    const KEY = 'arn:aws:kms:us-east-1:0:key/abc';
+
+    it('removed: resets to the empty string', async () => {
+      await provider.update('T', TRAIL_ARN, TYPE, BASE, { ...BASE, KMSKeyId: KEY });
+      expect(updateTrailInput()['KmsKeyId']).toBe('');
+    });
+
+    it('never-present: sends undefined (no reset)', async () => {
+      await provider.update('T', TRAIL_ARN, TYPE, BASE, BASE);
+      expect(updateTrailInput()['KmsKeyId']).toBeUndefined();
+    });
+
+    it('kept: a desired value passes through', async () => {
+      const other = 'arn:aws:kms:us-east-1:0:key/def';
+      await provider.update('T', TRAIL_ARN, TYPE, { ...BASE, KMSKeyId: other }, {
+        ...BASE,
+        KMSKeyId: KEY,
+      });
+      expect(updateTrailInput()['KmsKeyId']).toBe(other);
+    });
+
+    it("a previous-side '' placeholder is NOT a removal", async () => {
+      // `readCurrentState` always-emits `KMSKeyId: ''` for an unencrypted
+      // trail, so without this a never-encrypted trail would send a pointless
+      // clear on every update.
+      await provider.update('T', TRAIL_ARN, TYPE, BASE, { ...BASE, KMSKeyId: '' });
+      expect(updateTrailInput()['KmsKeyId']).toBeUndefined();
+    });
+
+    it("a DESIRED-side '' against a configured key clears it", async () => {
+      await provider.update('T', TRAIL_ARN, TYPE, { ...BASE, KMSKeyId: '' }, {
+        ...BASE,
+        KMSKeyId: KEY,
+      });
+      expect(updateTrailInput()['KmsKeyId']).toBe('');
+    });
+  });
+
   describe('IsMultiRegionTrail', () => {
     it('removed: resets to false', async () => {
       await provider.update('T', TRAIL_ARN, TYPE, BASE, { ...BASE, IsMultiRegionTrail: true });
@@ -379,20 +427,18 @@ describe('CloudTrailProvider removal resets (issue #1160)', () => {
     expect(updateTrailInput()['CloudWatchLogsRoleArn']).toBeUndefined();
   });
 
-  it('unmeasured: KMSKeyId and IsOrganizationTrail are NOT reset (issue #1533)', async () => {
-    // Neither could be A/B'd — a customer-managed KMS key's 7-day minimum
-    // deletion window would orphan a PendingDeletion key, and an org trail
-    // needs an Organizations management account. Recorded as unmeasured
-    // rather than guessed; #1533 carries the follow-up.
-    const previous = {
-      ...BASE,
-      KMSKeyId: 'arn:aws:kms:us-east-1:0:key/abc',
-      IsOrganizationTrail: true,
-    };
+  it('unmeasured: IsOrganizationTrail is NOT reset (issue #1533)', async () => {
+    // The one field of the #1160 SUSPECT row that is still unmeasured, and
+    // it is unmeasurable HERE rather than merely unmeasured: flipping it
+    // needs an Organizations management (or delegated administrator)
+    // account, and the integ account is not in an organization at all
+    // (`AWSOrganizationsNotInUseException`, probed 2026-08-11). Pinned as
+    // pass-through so a future "reset it too" change requires a real A/B on
+    // an account that can host an organization trail.
+    const previous = { ...BASE, IsOrganizationTrail: true };
 
     await provider.update('T', TRAIL_ARN, TYPE, BASE, previous);
 
-    expect(updateTrailInput()['KmsKeyId']).toBeUndefined();
     expect(updateTrailInput()['IsOrganizationTrail']).toBeUndefined();
   });
 
@@ -401,6 +447,7 @@ describe('CloudTrailProvider removal resets (issue #1160)', () => {
       ...BASE,
       S3KeyPrefix: 'logs',
       SnsTopicName: 'my-topic',
+      KMSKeyId: 'arn:aws:kms:us-east-1:0:key/abc',
       IsMultiRegionTrail: true,
       EnableLogFileValidation: true,
       IncludeGlobalServiceEvents: true,
@@ -414,6 +461,7 @@ describe('CloudTrailProvider removal resets (issue #1160)', () => {
       Name: TRAIL_ARN,
       S3KeyPrefix: '',
       SnsTopicName: '',
+      KmsKeyId: '',
       IsMultiRegionTrail: false,
       EnableLogFileValidation: false,
       IncludeGlobalServiceEvents: false,

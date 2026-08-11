@@ -40,7 +40,7 @@ cc-protection-flip	2026-07-31T03:56:21Z	PASS	1250	verify.sh	5 CC types incl. RDS
 cc-protection-flip-eks	2026-07-31T04:30:02Z	PASS	2300	verify.sh	EKS blocked-destroy + --remove-protection flip (#1315); orph clean
 ci-cd	2026-08-09T14:25:56Z	PASS	57	verify.sh	issue #1386 nested sub-keys asserted live; rc ok, orph clean
 cloudfront-function-url	2026-07-31T06:11:38Z	PASS	209	verify.sh	regression run post-#1311/#1318; fire-and-forget create + delete-wait path clean; 7 del/0 err, 0 orphans
-cloudtrail-trail	2026-08-11T07:23:16Z	PASS	295	verify.sh	1565 post-nit: CW enable reported + reverted + drift clean; 10 del 0 err 0 orph
+cloudtrail-trail	2026-08-11T07:51:38Z	PASS	300	verify.sh	post-rebase onto #1575: KMSKeyId reset + CW-pair drift/revert both verified in one run; 11 del 0 err 0 orph
 cloudwatch	2026-07-26T20:00:52Z	PASS	55	standard	0727b sweep-b13 staleness re-run (rc=0); account clean
 cloudwatch-anomaly-detector	2026-07-30T16:41:15Z	PASS	35	verify.sh	final run post review fixes: GetAtt Id + phys-id stability asserted; clean
 codebuild-project	2026-08-11T03:08:37Z	PASS	63	verify.sh	#1160 codebuild batch final: reset + 7 CFn retentions live-verified; destroy 3/0
@@ -238,7 +238,7 @@ s3-directory-bucket	2026-08-10T16:45:07Z	PASS	300	verify.sh	final post-rebase+re
 s3-event-notification	2026-08-10T04:16:05Z	PASS	73	verify.sh	0810 staleness sweep b1; #1437 EventBridgeEnabled/NESTED_KEY_TARGETS live-verified, 14 del 0 err, 0 orph
 s3-lifecycle	2026-08-09T16:51:31Z	PASS	81	verify.sh	#1430 EventBridge pair asserted both phases with the booleans SWAPPED (real UPDATE path); destroy 0 err, 0 orph
 s3-object-lock	2026-08-10T04:16:05Z	PASS	44	verify.sh	0810 staleness sweep b1; s3-bucket-provider re-verify, 0 err, 0 orph
-s3-replication-and-filter	2026-08-10T18:11:48Z	PASS	110	verify.sh	issue #1530 drift-clean asserts added; rc ok, orph clean
+s3-replication-and-filter	2026-08-11T06:59:43Z	PASS	86	verify.sh	#1523: ReplicaKmsKeyID + SseKmsEncryptedObjects live-verified, drift clean both phases; 7 del 0 err 0 orph
 s3-subconfig-removal	2026-08-10T07:17:25Z	PASS	63	verify.sh	issue #1466 final; 4 removal verdicts + drift-detect; rc ok, 0 orph
 s3-tables	2026-07-27T16:53:47Z	PASS	45	verify.sh	issue #1270/#1272 post-review re-run; 5 del 0 err, 0 orphans
 s3-vectors	2026-08-09T03:50:21Z	PASS	230	verify.sh	#1385 CMK encryption asserted; destroy 0 errors, 0 orphans

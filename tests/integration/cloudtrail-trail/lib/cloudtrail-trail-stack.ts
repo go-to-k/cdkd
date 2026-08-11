@@ -4,6 +4,7 @@ import * as sns from 'aws-cdk-lib/aws-sns';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as cloudtrail from 'aws-cdk-lib/aws-cloudtrail';
+import * as kms from 'aws-cdk-lib/aws-kms';
 import type { Construct } from 'constructs';
 
 /**
@@ -11,10 +12,20 @@ import type { Construct } from 'constructs';
  * (issue #1160 cloudtrail batch).
  *
  * Phase 1 (default) deploys a trail with every optional UpdateTrail field set.
- * Phase 2 (`CDKD_TEST_REMOVAL=true`) drops all seven and asserts the split a
- * live CFn A/B (2026-08-10) measured: five RESET, and the CloudWatch Logs pair
- * is RETAINED. Asserting the retention is what stops an over-eager provider
- * that cleared everything from passing.
+ * Phase 2 (`CDKD_TEST_REMOVAL=true`) drops them all and asserts the split two
+ * live CFn A/Bs measured: six RESET, and the CloudWatch Logs pair is RETAINED.
+ * Asserting the retention is what stops an over-eager provider that cleared
+ * everything from passing.
+ *
+ * `KMSKeyId` joined the RESET set in issue #1533, from its own live CFn A/B
+ * (2026-08-11). The A/B had previously been skipped on the belief that the
+ * customer-managed key it needs would leave a pending-deletion orphan behind;
+ * it does not, and this fixture asserts the same post-destroy `PendingDeletion`
+ * outcome the `loggroup-kms-associate` / `propagation-races-2` / `s3-vectors`
+ * fixtures already treat as the AWS-mandated terminal state of a deleted key.
+ * `IsOrganizationTrail` is the one field of the #1160 SUSPECT row still
+ * unmeasured, and unmeasurable HERE: it needs an Organizations management
+ * account and the integ account is not in an organization.
  *
  * `EventSelectors` joins the removal phase in issue #1549. It does NOT ride
  * `UpdateTrail` — it has a dedicated `PutEventSelectors` — which is why the
@@ -97,6 +108,38 @@ export class CloudTrailTrailStack extends cdk.Stack {
       },
     });
 
+    // Issue #1533: the SSE-KMS key whose removal the phase-2 assertion reads
+    // back. `pendingWindow` is the AWS minimum so the post-destroy key bills
+    // for 7 days rather than the 30-day default.
+    const trailKey = new kms.Key(this, 'TrailKey', {
+      description: 'cdkd cloudtrail KMSKeyId removal-reset integ (#1533)',
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      pendingWindow: cdk.Duration.days(7),
+    });
+    // CloudTrail encrypts each log file with a data key it asks for under an
+    // encryption context naming the trail, and reads the key's metadata first.
+    trailKey.addToResourcePolicy(
+      new iam.PolicyStatement({
+        sid: 'AWSCloudTrailEncrypt',
+        principals: [new iam.ServicePrincipal('cloudtrail.amazonaws.com')],
+        actions: ['kms:GenerateDataKey*'],
+        resources: ['*'],
+        conditions: {
+          StringLike: {
+            'kms:EncryptionContext:aws:cloudtrail:arn': `arn:${cdk.Aws.PARTITION}:cloudtrail:*:${suffix}:trail/*`,
+          },
+        },
+      })
+    );
+    trailKey.addToResourcePolicy(
+      new iam.PolicyStatement({
+        sid: 'AWSCloudTrailDescribeKey',
+        principals: [new iam.ServicePrincipal('cloudtrail.amazonaws.com')],
+        actions: ['kms:DescribeKey'],
+        resources: ['*'],
+      })
+    );
+
     // The L1 is used directly: the L2 `cloudtrail.Trail` owns its own bucket
     // and does not expose the removal-relevant fields independently.
     const trail = new cloudtrail.CfnTrail(this, 'Trail', {
@@ -108,6 +151,10 @@ export class CloudTrailTrailStack extends cdk.Stack {
         : {
             s3KeyPrefix: 'integprefix',
             snsTopicName: trailTopic.topicName,
+            // Issue #1533. The key resource itself exists in BOTH phases —
+            // only the trail's reference to it is dropped — so phase 2 is a
+            // property removal on a live trail, not a key deletion.
+            kmsKeyId: trailKey.keyArn,
             // Already ':*'-suffixed by CDK; appending another one yields
             // '...:*:*', which CloudTrail rejects outright.
             cloudWatchLogsLogGroupArn: trailLogGroup.logGroupArn,
@@ -134,5 +181,6 @@ export class CloudTrailTrailStack extends cdk.Stack {
     );
 
     new cdk.CfnOutput(this, 'TrailName', { value: `cdkd-integ-ct-${suffix}` });
+    new cdk.CfnOutput(this, 'TrailKeyArn', { value: trailKey.keyArn });
   }
 }

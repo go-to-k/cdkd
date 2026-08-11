@@ -3,14 +3,20 @@
 # cloudtrail batch).
 #
 # Deploys a trail with every optional UpdateTrail field set, then re-deploys
-# with CDKD_TEST_REMOVAL=true (all seven dropped from the template) and asserts
-# the split a live CFn A/B measured:
+# with CDKD_TEST_REMOVAL=true (every one of them dropped from the template) and
+# asserts the split the live CFn A/Bs measured:
 #
 #   RESET by CloudFormation -> cdkd must send the clear sentinel:
-#     S3KeyPrefix -> '', SnsTopicName -> '', IsMultiRegionTrail -> false,
-#     EnableLogFileValidation -> false, IncludeGlobalServiceEvents -> false
+#     S3KeyPrefix -> '', SnsTopicName -> '', KMSKeyId -> '',
+#     IsMultiRegionTrail -> false, EnableLogFileValidation -> false,
+#     IncludeGlobalServiceEvents -> false
 #   RETAINED by CloudFormation -> cdkd must pass through (parity):
 #     CloudWatchLogsLogGroupArn / CloudWatchLogsRoleArn
+#
+# KMSKeyId joined the RESET set in issue #1533 (live CFn A/B 2026-08-11). Its
+# customer-managed key lands in PendingDeletion after the destroy, which is the
+# AWS-mandated terminal state of a deleted key rather than an orphan -- the same
+# outcome loggroup-kms-associate / propagation-races-2 / s3-vectors assert.
 #
 # Asserting the retentions is deliberate: a fixture that only checked the
 # resets would pass just as happily against an over-eager provider that
@@ -190,6 +196,17 @@ assert_event_selector() { # usage: assert_event_selector <description> <jq-path>
 assert_event_selector "EventSelectors count" '(.EventSelectors | length)' '1'
 assert_event_selector "EventSelectors ReadWriteType" '.EventSelectors[0].ReadWriteType' 'WriteOnly'
 
+# Issue #1533. Captured rather than asserted against a literal: the key ARN is
+# account- and run-specific. The emptiness guard below is what makes the
+# phase-2 reset assertion non-vacuous -- "KmsKeyId is null afterwards" is also
+# true of a trail that never got a key at all.
+KMS_KEY_P1="$(trail_field '.KmsKeyId')"
+if [ -z "${KMS_KEY_P1}" ] || [ "${KMS_KEY_P1}" = "null" ]; then
+  echo "FAIL: phase 1 did not configure KMSKeyId (got '${KMS_KEY_P1}')" >&2
+  exit 1
+fi
+echo "    ok: KMSKeyId configured = ${KMS_KEY_P1}"
+
 CW_GROUP_P1="$(trail_field '.CloudWatchLogsLogGroupArn')"
 CW_ROLE_P1="$(trail_field '.CloudWatchLogsRoleArn')"
 # Reject EMPTY as well as "null": an empty capture would sail through the
@@ -203,22 +220,43 @@ fi
 echo "    ok: CloudWatch Logs pair configured"
 
 # --- Phase 2: removal redeploy ---------------------------------------
-echo "==> Phase 2: redeploy with CDKD_TEST_REMOVAL=true (drops all seven)"
+echo "==> Phase 2: redeploy with CDKD_TEST_REMOVAL=true (drops every optional field)"
 CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --yes
 
-echo "==> Phase 2: the five fields CFn RESETS must be cleared"
+echo "==> Phase 2: the six UpdateTrail fields CFn RESETS must be cleared"
 # Pre-fix these were absent -> undefined -> UpdateTrail merge no-op, so the
 # live trail silently kept every value while cdkd reported success and the
 # next `cdkd diff` said "No changes". Post-fix each carries its measured
 # clear sentinel ('' for the two strings, false for the three booleans).
 assert_field "S3KeyPrefix reset"                '.S3KeyPrefix'                'null'
 assert_field "SnsTopicName reset"               '.SnsTopicName'               'null'
+# Issue #1533. Two separate live measurements sit behind this one line: CFn's
+# removal UPDATE read back `KmsKeyId: null`, and `UpdateTrail` with the field
+# ABSENT left the live key attached -- so the pre-fix pass-through is the
+# divergence, and `''` is the payload that clears it.
+assert_field "KMSKeyId reset"                   '.KmsKeyId'                   'null'
 assert_field "IsMultiRegionTrail reset"         '.IsMultiRegionTrail'         'false'
 assert_field "LogFileValidationEnabled reset"   '.LogFileValidationEnabled'   'false'
 assert_field "IncludeGlobalServiceEvents reset" '.IncludeGlobalServiceEvents' 'false'
+
+# Issue #1533. The KEY itself must still be alive here — only the trail's
+# REFERENCE to it was dropped from the template. Without this, a fixture that
+# accidentally mode-gated the key resource (rather than just the reference)
+# would delete the key at phase 2, and every assertion would still pass: the
+# `KmsKeyId reset` check above reads `null` either way, and the phase-3 probe
+# accepts `PendingDeletion`. That is the vacuous shape
+# `.claude/rules/testing.md` warns about — assert presence at the point the
+# resource must still exist, not only after the destroy.
+KEY_STATE_P2="$(aws kms describe-key --key-id "${KMS_KEY_P1}" --region "${REGION}" \
+  --query 'KeyMetadata.KeyState' --output text)"
+if [ "${KEY_STATE_P2}" != "Enabled" ]; then
+  echo "FAIL: the trail KMS key must still be Enabled after the removal redeploy (only the trail's reference is dropped), got '${KEY_STATE_P2}'" >&2
+  exit 1
+fi
+echo "    ok: trail KMS key still Enabled — phase 2 removed the reference, not the key"
 
 echo "==> Phase 2: EventSelectors must be RESET to the AWS default"
 # Live CFn A/B (2026-08-11, issue #1549): a real CloudFormation removal of
@@ -340,6 +378,26 @@ if [ "${LOG_GROUPS_LEFT}" != "0" ]; then
   exit 1
 fi
 echo "    ok: log group gone"
+
+# Issue #1533. A customer-managed key cannot be deleted synchronously -- the
+# minimum pending window is 7 days -- so PendingDeletion IS the terminal state
+# of a deleted key, not an orphan. The stderr capture distinguishes a genuine
+# NotFound (an already-elapsed window from an earlier run) from a probe failure
+# that must abort rather than masquerade as a deleted key.
+KEY_STATE="$(aws kms describe-key --key-id "${KMS_KEY_P1}" --region "${REGION}" \
+  --query 'KeyMetadata.KeyState' --output text 2>&1)" || {
+  if echo "${KEY_STATE}" | grep -q "NotFoundException"; then
+    KEY_STATE="GONE"
+  else
+    echo "FAIL: describe-key failed unexpectedly: ${KEY_STATE}" >&2
+    exit 1
+  fi
+}
+if [ "${KEY_STATE}" != "PendingDeletion" ] && [ "${KEY_STATE}" != "GONE" ]; then
+  echo "FAIL: expected the trail KMS key to be PendingDeletion after destroy, got '${KEY_STATE}'" >&2
+  exit 1
+fi
+echo "    ok: trail KMS key state = ${KEY_STATE} (7-day pending window is AWS-mandated, not an orphan)"
 
 echo "==> Phase 3: assert state was removed"
 assert_gone "state file ${STATE_KEY} still exists after destroy" \

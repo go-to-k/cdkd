@@ -3753,6 +3753,7 @@
     {
       "resourceType": "AWS::KMS::Key",
       "integs": [
+        "cloudtrail-trail",
         "composite-stack",
         "drift-revert",
         "dynamodb-streams",
@@ -3761,9 +3762,13 @@
         "kms-encryption",
         "loggroup-kms-associate",
         "propagation-races-2",
+        "s3-replication-and-filter",
         "s3-vectors"
       ],
       "signals": {
+        "cloudtrail-trail": [
+          "l2"
+        ],
         "composite-stack": [
           "literal"
         ],
@@ -3788,6 +3793,10 @@
         ],
         "propagation-races-2": [
           "l1"
+        ],
+        "s3-replication-and-filter": [
+          "l2",
+          "literal"
         ],
         "s3-vectors": [
           "l2"

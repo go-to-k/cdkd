@@ -334,13 +334,14 @@ export class CloudTrailProvider implements ResourceProvider {
     // instead.
     //
     // The helper's ORIGINAL rationale — that `UpdateTrail` rejects an
-    // empty string outright — is only half true, and the surviving half
-    // is unverified. A live probe (2026-08-10, issue #1160) sent `''`
-    // ALONE for `SnsTopicName` and for `CloudWatchLogsLogGroupArn`
-    // against a real trail: both were ACCEPTED and nulled the field out,
-    // which is exactly why `''` is now the removal-reset sentinel below.
-    // `KMSKeyId` was NOT probed (see the reset comment / issue #1533), so
-    // it keeps the conservative drop.
+    // empty string outright — is simply WRONG, and every field it named
+    // has now been measured. A live probe (2026-08-10, issue #1160) sent
+    // `''` ALONE for `SnsTopicName` and for `CloudWatchLogsLogGroupArn`
+    // against a real trail; a second (2026-08-11, issue #1533) sent `''`
+    // ALONE for `KmsKeyId`. All three were ACCEPTED and nulled the field
+    // out, which is why `''` is the removal-reset sentinel below. The
+    // claimed `KmsKeyId is not in valid ARN format` rejection never
+    // reproduced.
 
     // Removal semantics (issue #1160, live CFn A/B 2026-08-10 on a real
     // trail with every optional field set, then removed from the template).
@@ -350,26 +351,45 @@ export class CloudTrailProvider implements ResourceProvider {
     // umbrella's SUSPECT row in two:
     //
     //   RESET by CFn (mirrored below): S3KeyPrefix -> '', SnsTopicName ->
-    //   '', IsMultiRegionTrail -> false, EnableLogFileValidation -> false,
-    //   IncludeGlobalServiceEvents -> false. Each clear sentinel was probed
-    //   ALONE against the live trail; the empty string is accepted for both
-    //   string fields and nulls them out.
+    //   '', KMSKeyId -> '', IsMultiRegionTrail -> false,
+    //   EnableLogFileValidation -> false, IncludeGlobalServiceEvents ->
+    //   false. Each clear sentinel was probed ALONE against the live trail;
+    //   the empty string is accepted for all three string fields and nulls
+    //   them out.
+    //
+    //   `KMSKeyId` joined that list on 2026-08-11 (issue #1533), from its
+    //   own CFn A/B: a trail deployed through real CloudFormation with
+    //   `KMSKeyId: !GetAtt Key.Arn`, then UPDATE'd with the property
+    //   REMOVED, read back as `KmsKeyId: null`. The same run pinned the two
+    //   halves separately, because "CFn resets it" does not tell you the
+    //   wire shape: `UpdateTrail` with `KmsKeyId` ABSENT left the live key
+    //   attached (merge semantics — the divergence), and `KmsKeyId: ''`
+    //   was ACCEPTED and cleared it (the reset payload).
+    //
+    //   The A/B was previously blocked on the belief that a
+    //   customer-managed KMS key's pending-deletion window would leave an
+    //   orphan behind. It does not: a `PendingDeletion` key is the
+    //   AWS-mandated terminal state of a deleted key, which the integ
+    //   fixtures `loggroup-kms-associate` / `propagation-races-2` /
+    //   `s3-vectors` already assert as the expected post-destroy outcome.
     //
     //   RETAINED by CFn (left as pass-through, pinned by tests):
     //   CloudWatchLogsLogGroupArn / CloudWatchLogsRoleArn kept their live
     //   values through the removal update, so the pass-through is already
-    //   CFn parity. `KMSKeyId` and `IsOrganizationTrail` are NOT reset
-    //   either, but for a different reason — neither could be A/B'd
-    //   (a customer-managed KMS key's 7-day minimum deletion window would
-    //   leave a pending-deletion orphan, and an organization trail needs an
-    //   Organizations management account), so they are recorded as
-    //   unmeasured rather than guessed. Tracked in issue #1533.
+    //   CFn parity. `IsOrganizationTrail` is NOT reset either, but for a
+    //   different reason — it is the one field that remains UNMEASURABLE
+    //   here: flipping it needs an Organizations management (or delegated
+    //   administrator) account, and the integ account is not in an
+    //   organization at all (`AWSOrganizationsNotInUseException`, probed
+    //   2026-08-11). It is recorded as permanently unmeasured on this
+    //   account rather than guessed; re-measuring needs a different
+    //   account, not a different fixture.
     //
     // The previous side is normalized through `emptyToUndefined` for presence
     // detection: `readCurrentState` always-emits `''` placeholders for
-    // S3KeyPrefix / SnsTopicName, and a placeholder means "was not set" —
-    // without this a never-configured field would look like a removal and
-    // send a pointless clear. The three BOOLEANS are always-emitted too, but
+    // S3KeyPrefix / SnsTopicName / KMSKeyId, and a placeholder means "was not
+    // set" — without this a never-configured field would look like a removal
+    // and send a pointless clear. The three BOOLEANS are always-emitted too, but
     // need no equivalent: their emitted value is the real live value (or the
     // CFn default), so "present in the previous side" is already the right
     // presence answer for them.
@@ -442,7 +462,11 @@ export class CloudTrailProvider implements ResourceProvider {
     }
     const cloudWatchLogsLogGroupArn = cwPair.logGroupArn;
     const cloudWatchLogsRoleArn = cwPair.roleArn;
-    const kmsKeyId = emptyToUndefined(properties['KMSKeyId']);
+    const kmsKeyId = clearOnUpdateRemoval(
+      emptyToUndefined(properties['KMSKeyId']),
+      emptyToUndefined(previousProperties['KMSKeyId']),
+      ''
+    );
     const snsTopicName = clearOnUpdateRemoval(
       emptyToUndefined(properties['SnsTopicName']),
       emptyToUndefined(previousProperties['SnsTopicName']),
