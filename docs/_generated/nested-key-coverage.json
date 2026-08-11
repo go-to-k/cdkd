@@ -1,16 +1,16 @@
 {
   "summary": {
-    "targetCount": 11,
-    "nestedKeyCount": 703,
-    "sameSpelling": 639,
+    "targetCount": 12,
+    "nestedKeyCount": 736,
+    "sameSpelling": 670,
     "providerHandled": 53,
-    "allowListed": 11,
+    "allowListed": 13,
     "caseDivergence": 0,
     "noSdkMember": 0,
     "noWriteEvidence": 0,
-    "freshObjectTargets": 11,
-    "shapeClean": 87,
-    "shapeHandled": 32,
+    "freshObjectTargets": 12,
+    "shapeClean": 88,
+    "shapeHandled": 33,
     "shapeAllowListed": 7,
     "arrayVsWrapper": 0,
     "definitionMemberMissing": 0,
@@ -192,6 +192,267 @@
       "shapeEntries": [],
       "shapeCleanCount": 0,
       "unmatchedDefinitions": [],
+      "usedSegmentRenames": [],
+      "usedTerminalRenames": []
+    },
+    {
+      "resourceType": "AWS::AppSync::GraphQLApi",
+      "providerFile": "appsync-provider.ts",
+      "sdkClientPackage": "@aws-sdk/client-appsync",
+      "keyStyle": "lower-first",
+      "freshObjectMapper": true,
+      "nestedKeyCount": 33,
+      "entries": [
+        {
+          "resourceType": "AWS::AppSync::GraphQLApi",
+          "nestedKey": "AdditionalAuthenticationProviders.AuthenticationType",
+          "topLevelProperty": "AdditionalAuthenticationProviders",
+          "terminalKey": "AuthenticationType",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::AppSync::GraphQLApi",
+          "nestedKey": "AdditionalAuthenticationProviders.LambdaAuthorizerConfig",
+          "topLevelProperty": "AdditionalAuthenticationProviders",
+          "terminalKey": "LambdaAuthorizerConfig",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::AppSync::GraphQLApi",
+          "nestedKey": "AdditionalAuthenticationProviders.LambdaAuthorizerConfig.AuthorizerResultTtlInSeconds",
+          "topLevelProperty": "AdditionalAuthenticationProviders",
+          "terminalKey": "AuthorizerResultTtlInSeconds",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::AppSync::GraphQLApi",
+          "nestedKey": "AdditionalAuthenticationProviders.LambdaAuthorizerConfig.AuthorizerUri",
+          "topLevelProperty": "AdditionalAuthenticationProviders",
+          "terminalKey": "AuthorizerUri",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::AppSync::GraphQLApi",
+          "nestedKey": "AdditionalAuthenticationProviders.LambdaAuthorizerConfig.IdentityValidationExpression",
+          "topLevelProperty": "AdditionalAuthenticationProviders",
+          "terminalKey": "IdentityValidationExpression",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::AppSync::GraphQLApi",
+          "nestedKey": "AdditionalAuthenticationProviders.OpenIDConnectConfig",
+          "topLevelProperty": "AdditionalAuthenticationProviders",
+          "terminalKey": "OpenIDConnectConfig",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::AppSync::GraphQLApi",
+          "nestedKey": "AdditionalAuthenticationProviders.OpenIDConnectConfig.AuthTTL",
+          "topLevelProperty": "AdditionalAuthenticationProviders",
+          "terminalKey": "AuthTTL",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::AppSync::GraphQLApi",
+          "nestedKey": "AdditionalAuthenticationProviders.OpenIDConnectConfig.ClientId",
+          "topLevelProperty": "AdditionalAuthenticationProviders",
+          "terminalKey": "ClientId",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::AppSync::GraphQLApi",
+          "nestedKey": "AdditionalAuthenticationProviders.OpenIDConnectConfig.IatTTL",
+          "topLevelProperty": "AdditionalAuthenticationProviders",
+          "terminalKey": "IatTTL",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::AppSync::GraphQLApi",
+          "nestedKey": "AdditionalAuthenticationProviders.OpenIDConnectConfig.Issuer",
+          "topLevelProperty": "AdditionalAuthenticationProviders",
+          "terminalKey": "Issuer",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::AppSync::GraphQLApi",
+          "nestedKey": "AdditionalAuthenticationProviders.UserPoolConfig",
+          "topLevelProperty": "AdditionalAuthenticationProviders",
+          "terminalKey": "UserPoolConfig",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::AppSync::GraphQLApi",
+          "nestedKey": "AdditionalAuthenticationProviders.UserPoolConfig.AppIdClientRegex",
+          "topLevelProperty": "AdditionalAuthenticationProviders",
+          "terminalKey": "AppIdClientRegex",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::AppSync::GraphQLApi",
+          "nestedKey": "AdditionalAuthenticationProviders.UserPoolConfig.AwsRegion",
+          "topLevelProperty": "AdditionalAuthenticationProviders",
+          "terminalKey": "AwsRegion",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::AppSync::GraphQLApi",
+          "nestedKey": "AdditionalAuthenticationProviders.UserPoolConfig.UserPoolId",
+          "topLevelProperty": "AdditionalAuthenticationProviders",
+          "terminalKey": "UserPoolId",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::AppSync::GraphQLApi",
+          "nestedKey": "EnhancedMetricsConfig.DataSourceLevelMetricsBehavior",
+          "topLevelProperty": "EnhancedMetricsConfig",
+          "terminalKey": "DataSourceLevelMetricsBehavior",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::AppSync::GraphQLApi",
+          "nestedKey": "EnhancedMetricsConfig.OperationLevelMetricsConfig",
+          "topLevelProperty": "EnhancedMetricsConfig",
+          "terminalKey": "OperationLevelMetricsConfig",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::AppSync::GraphQLApi",
+          "nestedKey": "EnhancedMetricsConfig.ResolverLevelMetricsBehavior",
+          "topLevelProperty": "EnhancedMetricsConfig",
+          "terminalKey": "ResolverLevelMetricsBehavior",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::AppSync::GraphQLApi",
+          "nestedKey": "LambdaAuthorizerConfig.AuthorizerResultTtlInSeconds",
+          "topLevelProperty": "LambdaAuthorizerConfig",
+          "terminalKey": "AuthorizerResultTtlInSeconds",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::AppSync::GraphQLApi",
+          "nestedKey": "LambdaAuthorizerConfig.AuthorizerUri",
+          "topLevelProperty": "LambdaAuthorizerConfig",
+          "terminalKey": "AuthorizerUri",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::AppSync::GraphQLApi",
+          "nestedKey": "LambdaAuthorizerConfig.IdentityValidationExpression",
+          "topLevelProperty": "LambdaAuthorizerConfig",
+          "terminalKey": "IdentityValidationExpression",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::AppSync::GraphQLApi",
+          "nestedKey": "LogConfig.CloudWatchLogsRoleArn",
+          "topLevelProperty": "LogConfig",
+          "terminalKey": "CloudWatchLogsRoleArn",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::AppSync::GraphQLApi",
+          "nestedKey": "LogConfig.ExcludeVerboseContent",
+          "topLevelProperty": "LogConfig",
+          "terminalKey": "ExcludeVerboseContent",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::AppSync::GraphQLApi",
+          "nestedKey": "LogConfig.FieldLogLevel",
+          "topLevelProperty": "LogConfig",
+          "terminalKey": "FieldLogLevel",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::AppSync::GraphQLApi",
+          "nestedKey": "OpenIDConnectConfig.AuthTTL",
+          "topLevelProperty": "OpenIDConnectConfig",
+          "terminalKey": "AuthTTL",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::AppSync::GraphQLApi",
+          "nestedKey": "OpenIDConnectConfig.ClientId",
+          "topLevelProperty": "OpenIDConnectConfig",
+          "terminalKey": "ClientId",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::AppSync::GraphQLApi",
+          "nestedKey": "OpenIDConnectConfig.IatTTL",
+          "topLevelProperty": "OpenIDConnectConfig",
+          "terminalKey": "IatTTL",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::AppSync::GraphQLApi",
+          "nestedKey": "OpenIDConnectConfig.Issuer",
+          "topLevelProperty": "OpenIDConnectConfig",
+          "terminalKey": "Issuer",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::AppSync::GraphQLApi",
+          "nestedKey": "Tags.Key",
+          "topLevelProperty": "Tags",
+          "terminalKey": "Key",
+          "bucket": "allow-listed",
+          "rationale": "AppSync models tags as a flat Record<string, string> (`tags`), not as CFn's [{Key, Value}] list — the provider folds the list into that map on create (`tagMap[tag.Key] = tag.Value`) and diffs it via TagResource / UntagResource on update. There is therefore no `Key` member anywhere in the SDK model to spell-match or to write, which is a SHAPE difference the key and write passes cannot express, not a dropped key.",
+          "allowMatchKey": "AWS::AppSync::GraphQLApi#Tags.Key"
+        },
+        {
+          "resourceType": "AWS::AppSync::GraphQLApi",
+          "nestedKey": "Tags.Value",
+          "topLevelProperty": "Tags",
+          "terminalKey": "Value",
+          "bucket": "allow-listed",
+          "sdkNearMiss": "value",
+          "rationale": "Same list-to-map fold as Tags.Key: the CFn tag list becomes the SDK `tags` Record<string, string>, so no `Value` member exists on the SDK side.",
+          "allowMatchKey": "AWS::AppSync::GraphQLApi#Tags.Value"
+        },
+        {
+          "resourceType": "AWS::AppSync::GraphQLApi",
+          "nestedKey": "UserPoolConfig.AppIdClientRegex",
+          "topLevelProperty": "UserPoolConfig",
+          "terminalKey": "AppIdClientRegex",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::AppSync::GraphQLApi",
+          "nestedKey": "UserPoolConfig.AwsRegion",
+          "topLevelProperty": "UserPoolConfig",
+          "terminalKey": "AwsRegion",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::AppSync::GraphQLApi",
+          "nestedKey": "UserPoolConfig.DefaultAction",
+          "topLevelProperty": "UserPoolConfig",
+          "terminalKey": "DefaultAction",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::AppSync::GraphQLApi",
+          "nestedKey": "UserPoolConfig.UserPoolId",
+          "topLevelProperty": "UserPoolConfig",
+          "terminalKey": "UserPoolId",
+          "bucket": "same-spelling"
+        }
+      ],
+      "shapeEntries": [
+        {
+          "resourceType": "AWS::AppSync::GraphQLApi",
+          "nestedKey": "Tags",
+          "definition": "#top",
+          "pass": "wrapper",
+          "bucket": "provider-handled"
+        }
+      ],
+      "shapeCleanCount": 1,
+      "unmatchedDefinitions": [
+        "Tag"
+      ],
       "usedSegmentRenames": [],
       "usedTerminalRenames": []
     },

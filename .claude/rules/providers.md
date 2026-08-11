@@ -341,9 +341,10 @@ That is a far more common template shape than the base64 search string.
   Measure before setting it. The opt-in set is decided by measurement, never
   by prediction, and the full before/after table lives in the script's file
   header. Today `AWS::CodeBuild::Project`, the five `AWS::ApiGatewayV2::*`
-  targets, both `AWS::ECS::*` targets, `AWS::CloudWatch::AnomalyDetector` and
+  targets, both `AWS::ECS::*` targets, `AWS::CloudWatch::AnomalyDetector`,
   `AWS::CloudFront::Distribution` (issue #1475, via the spread-and-patch
-  recognizer) are in; `AWS::S3::Bucket` carries a recorded, measured reason it
+  recognizer) and `AWS::AppSync::GraphQLApi` (issue #609, opted in at 0 with
+  the type's config blobs) are in; `AWS::S3::Bucket` carries a recorded, measured reason it
   is not.
 - **A whole sub-blob handed to a GENERIC key converter is credited (issue
   #1445).** `ECSProvider.convertLinuxParameters` is

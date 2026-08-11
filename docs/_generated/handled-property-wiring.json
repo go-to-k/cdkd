@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "summary": {
     "classifiedCount": 84,
-    "declaredProperties": 1062,
-    "wiredProperties": 1060,
+    "declaredProperties": 1075,
+    "wiredProperties": 1073,
     "wired": 82,
     "gap": 0,
     "allowListed": 2,
@@ -1617,8 +1617,26 @@
       "file": "appsync-provider.ts",
       "className": "AppSyncProvider",
       "bucket": "wired",
-      "declaredCount": 24,
+      "declaredCount": 37,
       "properties": [
+        {
+          "name": "AdditionalAuthenticationProviders",
+          "status": "wired",
+          "types": [
+            "AWS::AppSync::GraphQLApi"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "applyGraphQLApiConfig",
+            "create",
+            "createGraphQLApi",
+            "update",
+            "updateGraphQLApi"
+          ]
+        },
         {
           "name": "ApiId",
           "status": "wired",
@@ -1641,6 +1659,21 @@
             "update",
             "updateApiKey",
             "updateGraphQLSchema"
+          ]
+        },
+        {
+          "name": "ApiType",
+          "status": "wired",
+          "types": [
+            "AWS::AppSync::GraphQLApi"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "createGraphQLApi"
           ]
         },
         {
@@ -1766,6 +1799,42 @@
           ]
         },
         {
+          "name": "EnhancedMetricsConfig",
+          "status": "wired",
+          "types": [
+            "AWS::AppSync::GraphQLApi"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "applyGraphQLApiConfig",
+            "create",
+            "createGraphQLApi",
+            "update",
+            "updateGraphQLApi"
+          ]
+        },
+        {
+          "name": "EnvironmentVariables",
+          "status": "wired",
+          "types": [
+            "AWS::AppSync::GraphQLApi"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "applyEnvironmentVariables",
+            "create",
+            "createGraphQLApi",
+            "update",
+            "updateGraphQLApi"
+          ]
+        },
+        {
           "name": "Expires",
           "status": "wired",
           "types": [
@@ -1815,6 +1884,24 @@
           ]
         },
         {
+          "name": "IntrospectionConfig",
+          "status": "wired",
+          "types": [
+            "AWS::AppSync::GraphQLApi"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "applyGraphQLApiConfig",
+            "create",
+            "createGraphQLApi",
+            "update",
+            "updateGraphQLApi"
+          ]
+        },
+        {
           "name": "Kind",
           "status": "wired",
           "types": [
@@ -1829,6 +1916,24 @@
             "createResolver",
             "update",
             "updateResolver"
+          ]
+        },
+        {
+          "name": "LambdaAuthorizerConfig",
+          "status": "wired",
+          "types": [
+            "AWS::AppSync::GraphQLApi"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "applyGraphQLApiConfig",
+            "create",
+            "createGraphQLApi",
+            "update",
+            "updateGraphQLApi"
           ]
         },
         {
@@ -1866,6 +1971,24 @@
           ]
         },
         {
+          "name": "MergedApiExecutionRoleArn",
+          "status": "wired",
+          "types": [
+            "AWS::AppSync::GraphQLApi"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "applyGraphQLApiConfig",
+            "create",
+            "createGraphQLApi",
+            "update",
+            "updateGraphQLApi"
+          ]
+        },
+        {
           "name": "Name",
           "status": "wired",
           "types": [
@@ -1879,6 +2002,42 @@
           "seededBy": [
             "create",
             "createDataSource",
+            "createGraphQLApi",
+            "update",
+            "updateGraphQLApi"
+          ]
+        },
+        {
+          "name": "OpenIDConnectConfig",
+          "status": "wired",
+          "types": [
+            "AWS::AppSync::GraphQLApi"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "applyGraphQLApiConfig",
+            "create",
+            "createGraphQLApi",
+            "update",
+            "updateGraphQLApi"
+          ]
+        },
+        {
+          "name": "OwnerContact",
+          "status": "wired",
+          "types": [
+            "AWS::AppSync::GraphQLApi"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "applyGraphQLApiConfig",
+            "create",
             "createGraphQLApi",
             "update",
             "updateGraphQLApi"
@@ -1902,6 +2061,24 @@
           ]
         },
         {
+          "name": "QueryDepthLimit",
+          "status": "wired",
+          "types": [
+            "AWS::AppSync::GraphQLApi"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "applyGraphQLApiConfig",
+            "create",
+            "createGraphQLApi",
+            "update",
+            "updateGraphQLApi"
+          ]
+        },
+        {
           "name": "RequestMappingTemplate",
           "status": "wired",
           "types": [
@@ -1916,6 +2093,24 @@
             "createResolver",
             "update",
             "updateResolver"
+          ]
+        },
+        {
+          "name": "ResolverCountLimit",
+          "status": "wired",
+          "types": [
+            "AWS::AppSync::GraphQLApi"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "applyGraphQLApiConfig",
+            "create",
+            "createGraphQLApi",
+            "update",
+            "updateGraphQLApi"
           ]
         },
         {
@@ -2019,6 +2214,39 @@
           ]
         },
         {
+          "name": "UserPoolConfig",
+          "status": "wired",
+          "types": [
+            "AWS::AppSync::GraphQLApi"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "applyGraphQLApiConfig",
+            "create",
+            "createGraphQLApi",
+            "update",
+            "updateGraphQLApi"
+          ]
+        },
+        {
+          "name": "Visibility",
+          "status": "wired",
+          "types": [
+            "AWS::AppSync::GraphQLApi"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "createGraphQLApi"
+          ]
+        },
+        {
           "name": "XrayEnabled",
           "status": "wired",
           "types": [
@@ -2038,6 +2266,8 @@
       ],
       "gaps": [],
       "blindSpots": [
+        "computed key in applyGraphQLApiConfig()",
+        "computed key in updateGraphQLApi()",
         "computed key in updateResolver()"
       ]
     },

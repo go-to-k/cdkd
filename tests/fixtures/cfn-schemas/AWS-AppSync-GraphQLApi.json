@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::AppSync::GraphQLApi",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-11",
   "properties": [
     "AdditionalAuthenticationProviders",
     "ApiId",
@@ -37,5 +37,177 @@
     "RealtimeDns",
     "RealtimeUrl"
   ],
-  "createOnlyProperties": []
+  "createOnlyProperties": [],
+  "primaryIdentifier": [
+    "ApiId"
+  ],
+  "nestedProperties": {
+    "AdditionalAuthenticationProviders": [
+      "AppIdClientRegex",
+      "AuthTTL",
+      "AuthenticationType",
+      "AuthorizerResultTtlInSeconds",
+      "AuthorizerUri",
+      "AwsRegion",
+      "ClientId",
+      "IatTTL",
+      "IdentityValidationExpression",
+      "Issuer",
+      "LambdaAuthorizerConfig",
+      "OpenIDConnectConfig",
+      "UserPoolConfig",
+      "UserPoolId"
+    ],
+    "EnhancedMetricsConfig": [
+      "DataSourceLevelMetricsBehavior",
+      "OperationLevelMetricsConfig",
+      "ResolverLevelMetricsBehavior"
+    ],
+    "LambdaAuthorizerConfig": [
+      "AuthorizerResultTtlInSeconds",
+      "AuthorizerUri",
+      "IdentityValidationExpression"
+    ],
+    "LogConfig": [
+      "CloudWatchLogsRoleArn",
+      "ExcludeVerboseContent",
+      "FieldLogLevel"
+    ],
+    "OpenIDConnectConfig": [
+      "AuthTTL",
+      "ClientId",
+      "IatTTL",
+      "Issuer"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ],
+    "UserPoolConfig": [
+      "AppIdClientRegex",
+      "AwsRegion",
+      "DefaultAction",
+      "UserPoolId"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "AdditionalAuthenticationProviders": [
+      "AuthenticationType",
+      "LambdaAuthorizerConfig",
+      "LambdaAuthorizerConfig.AuthorizerResultTtlInSeconds",
+      "LambdaAuthorizerConfig.AuthorizerUri",
+      "LambdaAuthorizerConfig.IdentityValidationExpression",
+      "OpenIDConnectConfig",
+      "OpenIDConnectConfig.AuthTTL",
+      "OpenIDConnectConfig.ClientId",
+      "OpenIDConnectConfig.IatTTL",
+      "OpenIDConnectConfig.Issuer",
+      "UserPoolConfig",
+      "UserPoolConfig.AppIdClientRegex",
+      "UserPoolConfig.AwsRegion",
+      "UserPoolConfig.UserPoolId"
+    ],
+    "EnhancedMetricsConfig": [
+      "DataSourceLevelMetricsBehavior",
+      "OperationLevelMetricsConfig",
+      "ResolverLevelMetricsBehavior"
+    ],
+    "LambdaAuthorizerConfig": [
+      "AuthorizerResultTtlInSeconds",
+      "AuthorizerUri",
+      "IdentityValidationExpression"
+    ],
+    "LogConfig": [
+      "CloudWatchLogsRoleArn",
+      "ExcludeVerboseContent",
+      "FieldLogLevel"
+    ],
+    "OpenIDConnectConfig": [
+      "AuthTTL",
+      "ClientId",
+      "IatTTL",
+      "Issuer"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ],
+    "UserPoolConfig": [
+      "AppIdClientRegex",
+      "AwsRegion",
+      "DefaultAction",
+      "UserPoolId"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "AdditionalAuthenticationProviders": "array",
+      "ApiId": "scalar",
+      "ApiType": "scalar",
+      "Arn": "scalar",
+      "AuthenticationType": "scalar",
+      "EnhancedMetricsConfig": "object",
+      "EnvironmentVariables": "object",
+      "GraphQLDns": "scalar",
+      "GraphQLEndpointArn": "scalar",
+      "GraphQLUrl": "scalar",
+      "IntrospectionConfig": "scalar",
+      "LambdaAuthorizerConfig": "object",
+      "LogConfig": "object",
+      "MergedApiExecutionRoleArn": "scalar",
+      "Name": "scalar",
+      "OpenIDConnectConfig": "object",
+      "OwnerContact": "scalar",
+      "QueryDepthLimit": "scalar",
+      "RealtimeDns": "scalar",
+      "RealtimeUrl": "scalar",
+      "ResolverCountLimit": "scalar",
+      "Tags": "array",
+      "UserPoolConfig": "object",
+      "Visibility": "scalar",
+      "XrayEnabled": "scalar"
+    },
+    "OpenIDConnectConfig": {
+      "ClientId": "scalar",
+      "AuthTTL": "scalar",
+      "Issuer": "scalar",
+      "IatTTL": "scalar"
+    },
+    "EnhancedMetricsConfig": {
+      "OperationLevelMetricsConfig": "scalar",
+      "ResolverLevelMetricsBehavior": "scalar",
+      "DataSourceLevelMetricsBehavior": "scalar"
+    },
+    "CognitoUserPoolConfig": {
+      "AppIdClientRegex": "scalar",
+      "UserPoolId": "scalar",
+      "AwsRegion": "scalar"
+    },
+    "LambdaAuthorizerConfig": {
+      "IdentityValidationExpression": "scalar",
+      "AuthorizerUri": "scalar",
+      "AuthorizerResultTtlInSeconds": "scalar"
+    },
+    "Tag": {
+      "Value": "scalar",
+      "Key": "scalar"
+    },
+    "UserPoolConfig": {
+      "AppIdClientRegex": "scalar",
+      "UserPoolId": "scalar",
+      "AwsRegion": "scalar",
+      "DefaultAction": "scalar"
+    },
+    "AdditionalAuthenticationProvider": {
+      "LambdaAuthorizerConfig": "object",
+      "OpenIDConnectConfig": "object",
+      "UserPoolConfig": "object",
+      "AuthenticationType": "scalar"
+    },
+    "LogConfig": {
+      "ExcludeVerboseContent": "scalar",
+      "FieldLogLevel": "scalar",
+      "CloudWatchLogsRoleArn": "scalar"
+    }
+  }
 }

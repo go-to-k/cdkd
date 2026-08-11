@@ -1,0 +1,478 @@
+import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+
+// `vi.hoisted` because both spies are referenced from the `vi.mock` factories
+// below, which are hoisted above ordinary top-level declarations.
+const { mockSend, warnSpy } = vi.hoisted(() => ({ mockSend: vi.fn(), warnSpy: vi.fn() }));
+
+vi.mock('@aws-sdk/client-appsync', async () => {
+  const actual = await vi.importActual<typeof import('@aws-sdk/client-appsync')>(
+    '@aws-sdk/client-appsync'
+  );
+  return {
+    ...actual,
+    AppSyncClient: vi.fn().mockImplementation(() => ({
+      send: mockSend,
+      config: { region: () => Promise.resolve('us-east-1') },
+    })),
+  };
+});
+
+vi.mock('../../../src/utils/logger.js', () => {
+  const childLogger = {
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: warnSpy,
+    error: vi.fn(),
+    child: vi.fn().mockReturnThis(),
+  };
+  return {
+    getLogger: () => ({
+      child: () => childLogger,
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: warnSpy,
+      error: vi.fn(),
+    }),
+  };
+});
+
+import {
+  CreateGraphqlApiCommand,
+  UpdateGraphqlApiCommand,
+  PutGraphqlApiEnvironmentVariablesCommand,
+} from '@aws-sdk/client-appsync';
+import { AppSyncProvider } from '../../../src/provisioning/providers/appsync-provider.js';
+import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handler.js';
+import { PROPERTY_COVERAGE_BY_TYPE } from '../../../src/provisioning/property-coverage.generated.js';
+import { ReplacementRulesRegistry } from '../../../src/analyzer/replacement-rules.js';
+
+const TYPE = 'AWS::AppSync::GraphQLApi';
+
+/**
+ * Issue #609 backfill: the 13 `AWS::AppSync::GraphQLApi` properties cdkd used
+ * to silently drop on write.
+ *
+ * The failure these tests exist for is NOT a crash — the AWS SDK v3
+ * serializer drops members it does not know, so a near-miss spelling
+ * (`iatTtl` for `iatTTL`, `openIdConnectConfig` for `openIDConnectConfig`)
+ * deploys "successfully" with the config missing. Every assertion below
+ * therefore pins the EXACT SDK member name rather than "some auth config was
+ * sent".
+ */
+describe('AppSync GraphQLApi config properties (#609)', () => {
+  let provider: AppSyncProvider;
+
+  const createResponse = {
+    graphqlApi: {
+      apiId: 'api-1',
+      arn: 'arn:aws:appsync:us-east-1:1:apis/api-1',
+      uris: { GRAPHQL: 'https://x.appsync-api.us-east-1.amazonaws.com/graphql' },
+    },
+  };
+
+  beforeEach(() => {
+    mockSend.mockReset();
+    warnSpy.mockReset();
+    provider = new AppSyncProvider();
+  });
+
+  describe('create', () => {
+    it('wires every config block onto CreateGraphqlApi with the exact SDK spellings', async () => {
+      mockSend.mockResolvedValueOnce(createResponse);
+
+      await provider.create('L', TYPE, {
+        Name: 'MyApi',
+        AuthenticationType: 'AMAZON_COGNITO_USER_POOLS',
+        UserPoolConfig: {
+          UserPoolId: 'us-east-1_abc',
+          AwsRegion: 'us-east-1',
+          DefaultAction: 'ALLOW',
+          AppIdClientRegex: '^client',
+        },
+        OpenIDConnectConfig: {
+          Issuer: 'https://issuer.example.com',
+          ClientId: 'client-1',
+          IatTTL: 60000,
+          AuthTTL: 120000,
+        },
+        LambdaAuthorizerConfig: {
+          AuthorizerUri: 'arn:aws:lambda:us-east-1:1:function:auth',
+          AuthorizerResultTtlInSeconds: 300,
+          IdentityValidationExpression: '^Bearer',
+        },
+        EnhancedMetricsConfig: {
+          ResolverLevelMetricsBehavior: 'PER_RESOLVER_METRICS',
+          DataSourceLevelMetricsBehavior: 'PER_DATA_SOURCE_METRICS',
+          OperationLevelMetricsConfig: 'ENABLED',
+        },
+        ApiType: 'GRAPHQL',
+        Visibility: 'GLOBAL',
+        IntrospectionConfig: 'DISABLED',
+        QueryDepthLimit: 5,
+        ResolverCountLimit: 100,
+        OwnerContact: 'team@example.com',
+        MergedApiExecutionRoleArn: 'arn:aws:iam::1:role/Merged',
+      });
+
+      const cmd = mockSend.mock.calls[0]?.[0];
+      expect(cmd).toBeInstanceOf(CreateGraphqlApiCommand);
+      expect(cmd.input).toMatchObject({
+        name: 'MyApi',
+        authenticationType: 'AMAZON_COGNITO_USER_POOLS',
+        userPoolConfig: {
+          userPoolId: 'us-east-1_abc',
+          awsRegion: 'us-east-1',
+          defaultAction: 'ALLOW',
+          appIdClientRegex: '^client',
+        },
+        // `openIDConnectConfig` / `iatTTL` / `authTTL` are the irregular
+        // spellings a mechanical first-letter flip gets wrong
+        // (`openIdConnectConfig` / `iatTtl` / `authTtl`) — and the serializer
+        // would drop all three silently.
+        openIDConnectConfig: {
+          issuer: 'https://issuer.example.com',
+          clientId: 'client-1',
+          iatTTL: 60000,
+          authTTL: 120000,
+        },
+        lambdaAuthorizerConfig: {
+          authorizerUri: 'arn:aws:lambda:us-east-1:1:function:auth',
+          authorizerResultTtlInSeconds: 300,
+          identityValidationExpression: '^Bearer',
+        },
+        enhancedMetricsConfig: {
+          resolverLevelMetricsBehavior: 'PER_RESOLVER_METRICS',
+          dataSourceLevelMetricsBehavior: 'PER_DATA_SOURCE_METRICS',
+          operationLevelMetricsConfig: 'ENABLED',
+        },
+        apiType: 'GRAPHQL',
+        visibility: 'GLOBAL',
+        introspectionConfig: 'DISABLED',
+        queryDepthLimit: 5,
+        resolverCountLimit: 100,
+        ownerContact: 'team@example.com',
+        mergedApiExecutionRoleArn: 'arn:aws:iam::1:role/Merged',
+      });
+      // The exact camelCase keys must be present — `toMatchObject` above would
+      // pass on a PascalCase sibling key sitting next to a missing one.
+      expect(Object.keys(cmd.input)).toEqual(
+        expect.arrayContaining([
+          'openIDConnectConfig',
+          'userPoolConfig',
+          'lambdaAuthorizerConfig',
+          'enhancedMetricsConfig',
+        ])
+      );
+    });
+
+    it('maps an additional auth provider to the CognitoUserPoolConfig shape (no defaultAction)', async () => {
+      mockSend.mockResolvedValueOnce(createResponse);
+
+      await provider.create('L', TYPE, {
+        Name: 'MyApi',
+        AuthenticationType: 'API_KEY',
+        AdditionalAuthenticationProviders: [
+          {
+            AuthenticationType: 'AMAZON_COGNITO_USER_POOLS',
+            // CFn allows DefaultAction here, AWS's CognitoUserPoolConfig has
+            // no such member — forwarding it would be dropped by the
+            // serializer anyway, so the mapper must not emit it.
+            UserPoolConfig: { UserPoolId: 'us-east-1_abc', AwsRegion: 'us-east-1' },
+          },
+          {
+            AuthenticationType: 'OPENID_CONNECT',
+            OpenIDConnectConfig: { Issuer: 'https://issuer.example.com', IatTTL: 30 },
+          },
+        ],
+      });
+
+      const cmd = mockSend.mock.calls[0]?.[0];
+      expect(cmd.input.additionalAuthenticationProviders).toEqual([
+        {
+          authenticationType: 'AMAZON_COGNITO_USER_POOLS',
+          userPoolConfig: { userPoolId: 'us-east-1_abc', awsRegion: 'us-east-1' },
+        },
+        {
+          authenticationType: 'OPENID_CONNECT',
+          openIDConnectConfig: { issuer: 'https://issuer.example.com', iatTTL: 30 },
+        },
+      ]);
+    });
+
+    it('puts EnvironmentVariables through its own API after the API exists', async () => {
+      mockSend.mockResolvedValueOnce(createResponse).mockResolvedValueOnce({});
+
+      await provider.create('L', TYPE, {
+        Name: 'MyApi',
+        AuthenticationType: 'API_KEY',
+        EnvironmentVariables: { STAGE: 'prod', REGION: 'us-east-1' },
+      });
+
+      expect(mockSend).toHaveBeenCalledTimes(2);
+      const put = mockSend.mock.calls[1]?.[0];
+      expect(put).toBeInstanceOf(PutGraphqlApiEnvironmentVariablesCommand);
+      expect(put.input).toEqual({
+        apiId: 'api-1',
+        environmentVariables: { STAGE: 'prod', REGION: 'us-east-1' },
+      });
+    });
+
+    it('issues no environment-variable call when the template declares none', async () => {
+      mockSend.mockResolvedValueOnce(createResponse);
+      await provider.create('L', TYPE, { Name: 'MyApi', AuthenticationType: 'API_KEY' });
+      expect(mockSend).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('update', () => {
+    const base = { Name: 'MyApi', AuthenticationType: 'API_KEY' };
+
+    it('fires UpdateGraphqlApi when only a config block diffs', async () => {
+      mockSend.mockResolvedValueOnce({});
+
+      await provider.update(
+        'L',
+        'api-1',
+        TYPE,
+        { ...base, QueryDepthLimit: 10 },
+        { ...base, QueryDepthLimit: 5 }
+      );
+
+      const cmd = mockSend.mock.calls[0]?.[0];
+      expect(cmd).toBeInstanceOf(UpdateGraphqlApiCommand);
+      expect(cmd.input).toMatchObject({ apiId: 'api-1', queryDepthLimit: 10 });
+    });
+
+    it('resets the removable members to their AWS defaults when dropped from the template', async () => {
+      mockSend.mockResolvedValueOnce({});
+
+      await provider.update('L', 'api-1', TYPE, base, {
+        ...base,
+        IntrospectionConfig: 'DISABLED',
+        QueryDepthLimit: 5,
+        ResolverCountLimit: 100,
+        OwnerContact: 'team@example.com',
+        AdditionalAuthenticationProviders: [{ AuthenticationType: 'AWS_IAM' }],
+      });
+
+      const cmd = mockSend.mock.calls[0]?.[0];
+      // AppSync treats an OMITTED member as "no change", so a removal that
+      // merely leaves the member off the input silently keeps the old value —
+      // the #1160 absent-field class. Each of these has a documented reset
+      // sentinel and must carry it.
+      expect(cmd.input).toMatchObject({
+        introspectionConfig: 'ENABLED',
+        queryDepthLimit: 0,
+        resolverCountLimit: 0,
+        ownerContact: '',
+        additionalAuthenticationProviders: [],
+      });
+    });
+
+    it('warns instead of silently no-op-ing for the members AWS gives no reset sentinel', async () => {
+      mockSend.mockResolvedValueOnce({});
+
+      await provider.update('L', 'api-1', TYPE, base, {
+        ...base,
+        UserPoolConfig: { UserPoolId: 'us-east-1_abc', AwsRegion: 'us-east-1' },
+        MergedApiExecutionRoleArn: 'arn:aws:iam::1:role/Merged',
+      });
+
+      const warned = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(warned).toContain('cannot clear UserPoolConfig');
+      expect(warned).toContain('cannot clear MergedApiExecutionRoleArn');
+      // ...and the input must not carry a half-built block for them.
+      const cmd = mockSend.mock.calls[0]?.[0];
+      expect(cmd.input.userPoolConfig).toBeUndefined();
+      expect(cmd.input.mergedApiExecutionRoleArn).toBeUndefined();
+    });
+
+    it('skips UpdateGraphqlApi entirely when no config member diffs', async () => {
+      const props = { ...base, QueryDepthLimit: 5, OwnerContact: 'team@example.com' };
+      await provider.update('L', 'api-1', TYPE, props, { ...props });
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it.each(['ApiType', 'Visibility'])(
+      'refuses an in-place %s change (create-only on AWS)',
+      async (property) => {
+        await expect(
+          provider.update(
+            'L',
+            'api-1',
+            TYPE,
+            { ...base, [property]: 'B' },
+            { ...base, [property]: 'A' }
+          )
+        ).rejects.toBeInstanceOf(ResourceUpdateNotSupportedError);
+        expect(mockSend).not.toHaveBeenCalled();
+      }
+    );
+
+    it('leaves attributes ABSENT so the create-time ApiId / Arn / GraphQLUrl survive', async () => {
+      // The deploy engine resolves `result.attributes ?? currentResource
+      // .attributes`, so a PRESENT-but-empty object is authoritative and
+      // wipes the create-time attributes — every later Fn::GetAtt then
+      // degrades to the physical-id fallback. This asserts the shape the
+      // REGRESSION would emit (`attributes: {}`), not merely that the update
+      // succeeded.
+      mockSend.mockResolvedValueOnce({});
+      const result = await provider.update(
+        'L',
+        'api-1',
+        TYPE,
+        { ...base, QueryDepthLimit: 10 },
+        { ...base, QueryDepthLimit: 5 }
+      );
+      expect(result.attributes).toBeUndefined();
+      expect(Object.hasOwn(result, 'attributes')).toBe(false);
+    });
+
+    it('re-puts the whole environment-variable map on a diff and skips it on a match', async () => {
+      mockSend.mockResolvedValueOnce({});
+      await provider.update(
+        'L',
+        'api-1',
+        TYPE,
+        { ...base, EnvironmentVariables: { STAGE: 'prod' } },
+        { ...base, EnvironmentVariables: { STAGE: 'dev', OLD: 'x' } }
+      );
+      const put = mockSend.mock.calls[0]?.[0];
+      expect(put).toBeInstanceOf(PutGraphqlApiEnvironmentVariablesCommand);
+      // Whole-map replace: the dropped `OLD` key is cleared by omission.
+      expect(put.input.environmentVariables).toEqual({ STAGE: 'prod' });
+
+      mockSend.mockReset();
+      const same = { ...base, EnvironmentVariables: { STAGE: 'prod' } };
+      await provider.update('L', 'api-1', TYPE, same, { ...same });
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('clears every environment variable when the property is removed', async () => {
+      mockSend.mockResolvedValueOnce({});
+      await provider.update('L', 'api-1', TYPE, base, {
+        ...base,
+        EnvironmentVariables: { STAGE: 'prod' },
+      });
+      const put = mockSend.mock.calls[0]?.[0];
+      expect(put).toBeInstanceOf(PutGraphqlApiEnvironmentVariablesCommand);
+      expect(put.input.environmentVariables).toEqual({});
+    });
+  });
+
+  describe('readCurrentState', () => {
+    it('maps the config blocks back to their CFn spellings', async () => {
+      mockSend
+        .mockResolvedValueOnce({
+          graphqlApi: {
+            name: 'MyApi',
+            authenticationType: 'AMAZON_COGNITO_USER_POOLS',
+            xrayEnabled: false,
+            userPoolConfig: {
+              userPoolId: 'us-east-1_abc',
+              awsRegion: 'us-east-1',
+              defaultAction: 'ALLOW',
+            },
+            openIDConnectConfig: { issuer: 'https://issuer.example.com', iatTTL: 60 },
+            lambdaAuthorizerConfig: { authorizerUri: 'arn:aws:lambda:us-east-1:1:function:auth' },
+            additionalAuthenticationProviders: [
+              {
+                authenticationType: 'AWS_IAM',
+              },
+            ],
+            enhancedMetricsConfig: { resolverLevelMetricsBehavior: 'FULL_REQUEST_RESOLVER_METRICS' },
+            apiType: 'GRAPHQL',
+            visibility: 'GLOBAL',
+            introspectionConfig: 'ENABLED',
+            queryDepthLimit: 5,
+            resolverCountLimit: 100,
+            ownerContact: 'team@example.com',
+          },
+        })
+        .mockResolvedValueOnce({ environmentVariables: { STAGE: 'prod' } });
+
+      const state = await provider.readCurrentState!('api-1', 'L', TYPE);
+
+      expect(state).toMatchObject({
+        UserPoolConfig: {
+          UserPoolId: 'us-east-1_abc',
+          AwsRegion: 'us-east-1',
+          DefaultAction: 'ALLOW',
+        },
+        OpenIDConnectConfig: { Issuer: 'https://issuer.example.com', IatTTL: 60 },
+        LambdaAuthorizerConfig: { AuthorizerUri: 'arn:aws:lambda:us-east-1:1:function:auth' },
+        AdditionalAuthenticationProviders: [{ AuthenticationType: 'AWS_IAM' }],
+        EnhancedMetricsConfig: { ResolverLevelMetricsBehavior: 'FULL_REQUEST_RESOLVER_METRICS' },
+        ApiType: 'GRAPHQL',
+        Visibility: 'GLOBAL',
+        IntrospectionConfig: 'ENABLED',
+        QueryDepthLimit: 5,
+        ResolverCountLimit: 100,
+        OwnerContact: 'team@example.com',
+        EnvironmentVariables: { STAGE: 'prod' },
+      });
+    });
+
+    it('omits a config block AWS did not return, so an unset property cannot drift', async () => {
+      mockSend
+        .mockResolvedValueOnce({
+          graphqlApi: { name: 'MyApi', authenticationType: 'API_KEY', xrayEnabled: false },
+        })
+        .mockResolvedValueOnce({});
+
+      const state = (await provider.readCurrentState!('api-1', 'L', TYPE)) as Record<string, unknown>;
+
+      for (const key of [
+        'UserPoolConfig',
+        'OpenIDConnectConfig',
+        'LambdaAuthorizerConfig',
+        'AdditionalAuthenticationProviders',
+        'EnhancedMetricsConfig',
+        'QueryDepthLimit',
+        'OwnerContact',
+        'EnvironmentVariables',
+      ]) {
+        expect(state).not.toHaveProperty(key);
+      }
+    });
+  });
+
+  describe('declarations', () => {
+    it('reports no silent-drop property left for the type', () => {
+      const coverage = PROPERTY_COVERAGE_BY_TYPE.get(TYPE);
+      expect([...(coverage?.silentDrop.keys() ?? [])]).toEqual([]);
+      for (const property of [
+        'AdditionalAuthenticationProviders',
+        'ApiType',
+        'EnhancedMetricsConfig',
+        'EnvironmentVariables',
+        'IntrospectionConfig',
+        'LambdaAuthorizerConfig',
+        'MergedApiExecutionRoleArn',
+        'OpenIDConnectConfig',
+        'OwnerContact',
+        'QueryDepthLimit',
+        'ResolverCountLimit',
+        'UserPoolConfig',
+        'Visibility',
+      ]) {
+        expect(coverage?.handled.has(property), property).toBe(true);
+      }
+    });
+
+    it('classifies ApiType / Visibility as replacement despite the empty createOnly schema', () => {
+      // The registry schema for this type ships `createOnlyProperties: []`, so
+      // the `create-only-properties.ts` fallback classifies NOTHING — without
+      // a hand-authored rule the change would be routed to an in-place UPDATE
+      // that cannot carry either member.
+      const registry = new ReplacementRulesRegistry();
+      expect(registry.requiresReplacement(TYPE, 'ApiType', 'GRAPHQL', 'MERGED')).toBe(true);
+      expect(registry.requiresReplacement(TYPE, 'Visibility', 'GLOBAL', 'PRIVATE')).toBe(true);
+      expect(registry.requiresReplacement(TYPE, 'QueryDepthLimit', 5, 10)).toBe(false);
+      expect(registry.requiresReplacement(TYPE, 'UserPoolConfig', {}, {})).toBe(false);
+      // …and CLASSIFIED, so `create-only-properties.ts` never overrides it.
+      expect(registry.isClassified(TYPE, 'ApiType')).toBe(true);
+      expect(registry.isClassified(TYPE, 'QueryDepthLimit')).toBe(true);
+    });
+  });
+});

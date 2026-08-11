@@ -7,17 +7,17 @@ For every SDK provider that forwards a nested CFn config blob, diffs the blob's 
 
 ## Summary
 
-- Audited targets: **11**
-- Nested CFn key paths audited: **703**
-- Same spelling in SDK model: **639**
+- Audited targets: **12**
+- Nested CFn key paths audited: **736**
+- Same spelling in SDK model: **670**
 - Explicitly handled in provider: **53**
-- Allow-listed pass-throughs (does NOT block CI): **11**
+- Allow-listed pass-throughs (does NOT block CI): **13**
 - **Case divergences (blocks CI): 0**
 - **No SDK member (blocks CI): 0**
-- Write-evidence pass — fresh-object targets audited: **11**
+- Write-evidence pass — fresh-object targets audited: **12**
 - **No write evidence (blocks CI): 0**
-- Shape pass — bare-array pairs clean: **87**
-- Shape pass — explicitly handled in provider: **32**
+- Shape pass — bare-array pairs clean: **88**
+- Shape pass — explicitly handled in provider: **33**
 - Shape pass — allow-listed (does NOT block CI): **7**
 - **Array-vs-wrapper divergences (blocks CI): 0**
 - **Definition-member-missing divergences (blocks CI): 0**
@@ -31,6 +31,8 @@ None. Every audited nested CFn key either matches an SDK member spelling or is e
 
 | Resource type | CFn nested key / path | Rationale |
 | --- | --- | --- |
+| `AWS::AppSync::GraphQLApi` | `Tags.Key` | AppSync models tags as a flat Record<string, string> (`tags`), not as CFn's [{Key, Value}] list — the provider folds the list into that map on create (`tagMap[tag.Key] = tag.Value`) and diffs it via TagResource / UntagResource on update. There is therefore no `Key` member anywhere in the SDK model to spell-match or to write, which is a SHAPE difference the key and write passes cannot express, not a dropped key. |
+| `AWS::AppSync::GraphQLApi` | `Tags.Value` | Same list-to-map fold as Tags.Key: the CFn tag list becomes the SDK `tags` Record<string, string>, so no `Value` member exists on the SDK side. |
 | `AWS::CloudFront::Distribution` | `DistributionConfig.CNAMEs` | Legacy pre-2012 DistributionConfig member (alias of Aliases); the modern CreateDistribution/UpdateDistribution API has no equivalent member and CDK never synthesizes it. |
 | `AWS::CloudFront::Distribution` | `DistributionConfig.CustomOrigin` | Legacy pre-2012 single-origin form (LegacyCustomOrigin definition); superseded by Origins[] and absent from the modern API. CDK never synthesizes it. |
 | `AWS::CloudFront::Distribution` | `DistributionConfig.CustomOrigin.DNSName` | Member of the legacy CustomOrigin / S3Origin blocks only (LegacyCustomOrigin / LegacyS3Origin definitions); unreachable from a modern template. |
@@ -116,6 +118,7 @@ CFn members whose SHAPE diverges from the same-spelled SDK member (bare array vs
 
 | Resource type | CFn definition | Member | Pass | SDK detail |
 | --- | --- | --- | --- | --- |
+| `AWS::AppSync::GraphQLApi` | `#top` | `Tags` | wrapper | — |
 | `AWS::CloudFront::Distribution` | `#top` | `Tags` | wrapper | — |
 | `AWS::CloudFront::Distribution` | `CacheBehavior` | `AllowedMethods` | wrapper | SDK wraps it as `AllowedMethods` ({ Quantity, Items }) |
 | `AWS::CloudFront::Distribution` | `CacheBehavior` | `CachedMethods` | wrapper | SDK wraps it as `CachedMethods` ({ Quantity, Items }) |
@@ -164,6 +167,7 @@ CFn members whose SHAPE diverges from the same-spelled SDK member (bare array vs
 | `AWS::ApiGatewayV2::Integration` | `apigatewayv2-provider.ts` | `@aws-sdk/client-apigatewayv2` | exact | yes | 0 | 3 |
 | `AWS::ApiGatewayV2::Route` | `apigatewayv2-provider.ts` | `@aws-sdk/client-apigatewayv2` | exact | yes | 0 | 0 |
 | `AWS::ApiGatewayV2::Stage` | `apigatewayv2-provider.ts` | `@aws-sdk/client-apigatewayv2` | exact | yes | 5 | 0 |
+| `AWS::AppSync::GraphQLApi` | `appsync-provider.ts` | `@aws-sdk/client-appsync` | lower-first | yes | 33 | 1 |
 | `AWS::CloudFront::Distribution` | `cloudfront-distribution-provider.ts` | `@aws-sdk/client-cloudfront` | exact | yes | 173 | 4 |
 | `AWS::CloudWatch::AnomalyDetector` | `cloudwatch-anomaly-detector-provider.ts` | `@aws-sdk/client-cloudwatch` | exact | yes | 31 | 1 |
 | `AWS::CodeBuild::Project` | `codebuild-provider.ts` | `@aws-sdk/client-codebuild` | lower-first | yes | 98 | 4 |

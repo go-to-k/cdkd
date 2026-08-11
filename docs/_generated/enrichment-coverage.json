@@ -6,7 +6,7 @@
     "noComputedAttr": 15,
     "unenrichedGap": 0,
     "sdkFallbackGap": 105,
-    "allowListedTypes": 24
+    "allowListedTypes": 25
   },
   "types": [
     {
@@ -248,7 +248,8 @@
       "attributes": [
         {
           "name": "ApiId",
-          "status": "gap"
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         },
         {
           "name": "Arn",
@@ -276,7 +277,6 @@
         }
       ],
       "gaps": [
-        "ApiId",
         "Arn",
         "GraphQLDns",
         "GraphQLEndpointArn",

@@ -3689,6 +3689,10 @@ describe('whole-blob hand-off walk (real repo, issue #1445)', () => {
       ])
     );
     expect(Object.fromEntries(counts)).toEqual({
+      // 0 at opt-in (the issue #609 GraphQLApi backfill): every nested member
+      // of the five config blobs is named on the forward path, and the two
+      // `Tags.*` paths are allow-listed for the list-to-map fold.
+      'AWS::AppSync::GraphQLApi': 0,
       'AWS::ApiGatewayV2::Api': 0,
       'AWS::ApiGatewayV2::Authorizer': 0,
       'AWS::ApiGatewayV2::Integration': 0,
@@ -4899,7 +4903,7 @@ describe('the shipped --check command', { timeout: 30_000 }, () => {
     // a target silently dropping out of the table cannot satisfy this probe.
     expect(stderr).toContain('nested-key-coverage: OK');
     expect(stderr).toContain('0 divergences');
-    expect(stderr).toContain('11 fresh-object target(s)');
+    expect(stderr).toContain('12 fresh-object target(s)');
   });
 
   it('exits 1 naming ONLY the members a partial hand-mapping leaves out', () => {
