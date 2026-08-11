@@ -271,7 +271,11 @@ describe('AppSync Resolver + DataSource properties (#609)', () => {
       expect(mockSend).not.toHaveBeenCalled();
     });
 
-    it('Kind discriminator, both polarities: UNIT forwards dataSourceName, PIPELINE drops it', async () => {
+    it('Kind polarities on CREATE: both members forward regardless of Kind (AWS validates crossed shapes)', async () => {
+      // CREATE does not gate on the Kind discriminator — gating would
+      // silently drop a crossed member (the class this batch closes) where
+      // CFn parity is AWS's own loud rejection. The update-path gate is
+      // pinned separately in the review-gap describe below.
       mockSend.mockResolvedValueOnce({});
       await provider.create('L', RESOLVER_TYPE, {
         ApiId: 'api-1',
@@ -288,11 +292,11 @@ describe('AppSync Resolver + DataSource properties (#609)', () => {
         TypeName: 'Query',
         FieldName: 'pipeThing',
         Kind: 'PIPELINE',
-        DataSourceName: 'ds1', // AWS rejects this on a PIPELINE resolver
+        DataSourceName: 'ds1', // forwarded verbatim — AWS rejects it loudly
         PipelineConfig: { Functions: ['fn-1'] },
       });
       const pipeline = mockSend.mock.calls[1]?.[0];
-      expect(pipeline.input).not.toHaveProperty('dataSourceName');
+      expect(pipeline.input.dataSourceName).toBe('ds1');
       expect(pipeline.input.pipelineConfig).toEqual({ functions: ['fn-1'] });
     });
   });
@@ -690,6 +694,150 @@ describe('AppSync Resolver + DataSource properties (#609)', () => {
       ]) {
         expect(dataSource?.handled.has(prop), `DataSource.${prop} handled`).toBe(true);
       }
+    });
+  });
+
+  // Pins added from the PR's 3-axis review — each closes a gap a green
+  // pre-review suite would have left silently regressable.
+  describe('review-gap pins', () => {
+    it('wraps an S3 GetObject failure into a ProvisioningError naming the property + URL', async () => {
+      mockS3Send.mockRejectedValueOnce(new Error('Access Denied'));
+
+      await expect(
+        provider.create('L', RESOLVER_TYPE, {
+          ApiId: 'api-1',
+          TypeName: 'Query',
+          FieldName: 'getThing',
+          DataSourceName: 'ds1',
+          RequestMappingTemplateS3Location: 's3://bucket/req.vtl',
+        })
+      ).rejects.toThrow(/RequestMappingTemplateS3Location.*s3:\/\/bucket\/req\.vtl/s);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('forwards a Type-mismatched DataSource config block instead of gating it (AWS rejects loudly)', async () => {
+      // The write side deliberately does NOT gate on the Type discriminator:
+      // gating would itself silently drop the block — the class this batch
+      // closes. AWS validates crossed shapes loudly (CFn parity).
+      mockSend.mockResolvedValueOnce({});
+
+      await provider.create('L', DATASOURCE_TYPE, {
+        ApiId: 'api-1',
+        Name: 'crossedDs',
+        Type: 'AMAZON_DYNAMODB',
+        DynamoDBConfig: { TableName: 't', AwsRegion: 'us-east-1' },
+        EventBridgeConfig: { EventBusArn: 'arn:aws:events:us-east-1:1:event-bus/bus' },
+      });
+
+      const cmd = mockSend.mock.calls[0]?.[0];
+      expect(cmd.input.dynamodbConfig).toEqual({ tableName: 't', awsRegion: 'us-east-1' });
+      expect(cmd.input.eventBridgeConfig).toEqual({
+        eventBusArn: 'arn:aws:events:us-east-1:1:event-bus/bus',
+      });
+    });
+
+    it('removal: a BLOB member (CachingConfig) dropped from the template fires the update and OMITS cachingConfig', async () => {
+      mockSend.mockResolvedValueOnce({});
+
+      await provider.update(
+        'L',
+        'api-1|Query|getThing',
+        RESOLVER_TYPE,
+        {
+          ApiId: 'api-1',
+          TypeName: 'Query',
+          FieldName: 'getThing',
+          DataSourceName: 'ds1',
+          RequestMappingTemplate: '$ctx',
+        },
+        {
+          ApiId: 'api-1',
+          TypeName: 'Query',
+          FieldName: 'getThing',
+          DataSourceName: 'ds1',
+          RequestMappingTemplate: '$ctx',
+          CachingConfig: { Ttl: 120 },
+        }
+      );
+
+      const cmd = mockSend.mock.calls[0]?.[0];
+      expect(cmd).toBeInstanceOf(UpdateResolverCommand);
+      expect(cmd.input).not.toHaveProperty('cachingConfig');
+      // The sibling members still ride (full-replace re-send).
+      expect(cmd.input.requestMappingTemplate).toBe('$ctx');
+    });
+
+    it('threads DynamoDBConfig.UseCallerCredentials: false (the falsy polarity survives the !== undefined gate)', async () => {
+      mockSend.mockResolvedValueOnce({});
+
+      await provider.create('L', DATASOURCE_TYPE, {
+        ApiId: 'api-1',
+        Name: 'ddbDs',
+        Type: 'AMAZON_DYNAMODB',
+        DynamoDBConfig: {
+          TableName: 't',
+          AwsRegion: 'us-east-1',
+          UseCallerCredentials: false,
+        },
+      });
+
+      expect(mockSend.mock.calls[0]?.[0].input.dynamodbConfig).toEqual({
+        tableName: 't',
+        awsRegion: 'us-east-1',
+        useCallerCredentials: false,
+      });
+    });
+
+    it('CREATE forwards PipelineConfig even without Kind (no silent drop; AWS rejects a crossed shape loudly)', async () => {
+      mockSend.mockResolvedValueOnce({});
+
+      await provider.create('L', RESOLVER_TYPE, {
+        ApiId: 'api-1',
+        TypeName: 'Query',
+        FieldName: 'getThing',
+        // Kind absent (AWS default UNIT) but PipelineConfig present — the
+        // pre-review mapper gated this on effectiveKind and silently dropped
+        // the block on create; it must forward so AWS validates it.
+        PipelineConfig: { Functions: ['fn-1', 'fn-2'] },
+        DataSourceName: 'ds1',
+      });
+
+      const cmd = mockSend.mock.calls[0]?.[0];
+      expect(cmd).toBeInstanceOf(CreateResolverCommand);
+      expect(cmd.input.pipelineConfig).toEqual({ functions: ['fn-1', 'fn-2'] });
+      expect(cmd.input.dataSourceName).toBe('ds1');
+    });
+
+    it('UPDATE keeps the Kind gate: dataSourceName is not re-sent on a PIPELINE resolver', async () => {
+      mockSend.mockResolvedValueOnce({});
+
+      await provider.update(
+        'L',
+        'api-1|Query|getThing',
+        RESOLVER_TYPE,
+        {
+          ApiId: 'api-1',
+          TypeName: 'Query',
+          FieldName: 'getThing',
+          Kind: 'PIPELINE',
+          PipelineConfig: { Functions: ['fn-1'] },
+          // A leftover DataSourceName must NOT be forwarded on update — AWS
+          // rejects it on a live PIPELINE resolver.
+          DataSourceName: 'ds1',
+        },
+        {
+          ApiId: 'api-1',
+          TypeName: 'Query',
+          FieldName: 'getThing',
+          Kind: 'PIPELINE',
+          PipelineConfig: { Functions: ['fn-0'] },
+        }
+      );
+
+      const cmd = mockSend.mock.calls[0]?.[0];
+      expect(cmd).toBeInstanceOf(UpdateResolverCommand);
+      expect(cmd.input.pipelineConfig).toEqual({ functions: ['fn-1'] });
+      expect(cmd.input).not.toHaveProperty('dataSourceName');
     });
   });
 });

@@ -1439,7 +1439,9 @@ export const NESTED_KEY_TARGETS: readonly NestedKeyTarget[] = [
     // provider file the collector parses, so both yields grew; the two types
     // themselves are NOT targets yet — their schema fixtures pre-date the
     // definitionShapes / nestedPropertyPaths captures and need a re-capture
-    // first. No `minHandoffPoints`: the
+    // first (tracked in issue #1597, together with the HttpConfig
+    // .AuthorizationConfig nested drop the blocked opt-in would catch). No
+    // `minHandoffPoints`: the
     // provider hands off no blob generically, so the walk is not load-bearing
     // here.
     resourceType: 'AWS::AppSync::GraphQLApi',

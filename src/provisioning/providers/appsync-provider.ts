@@ -579,6 +579,13 @@ export class AppSyncProvider implements ResourceProvider {
 
     let definition: string | undefined;
     if (newDef !== undefined) {
+      if (newLoc !== undefined) {
+        // Same both-set warning the create path emits — inline wins.
+        this.logger.warn(
+          `${resourceType} ${logicalId}: both Definition and DefinitionS3Location are set — ` +
+            'using the inline Definition and ignoring DefinitionS3Location (CFn treats them as alternatives)'
+        );
+      }
       if (newDef === oldDef) {
         return { physicalId, wasReplaced: false };
       }
@@ -768,7 +775,14 @@ export class AppSyncProvider implements ResourceProvider {
     // previous `Kind` as the fallback. Same shape as readCurrentState's
     // discriminator handling per memory rule
     // feedback_always_emit_check_type_discriminator.
-    await this.applyResolverConfig(input, resourceType, logicalId, properties, previousProperties);
+    await this.applyResolverConfig(
+      input,
+      resourceType,
+      logicalId,
+      properties,
+      previousProperties,
+      true
+    );
 
     try {
       await this.getClient().send(new UpdateResolverCommand(input));
@@ -1601,33 +1615,47 @@ export class AppSyncProvider implements ResourceProvider {
    * That semantic is pinned live by the integ fixture's REMOVAL phase
    * (tests/integration/appsync/verify.sh drops the resolver's MetricsConfig
    * and asserts AWS reset it while a sibling DataSource keeps its own).
+   * MetricsConfig is the one member A/B'd against real AWS; the other
+   * members rest on the same UpdateResolver full-replace API contract, not
+   * on a per-member live probe (the #1160 doctrine's per-member A/B was
+   * deliberately not paid here — recorded in the PR body).
    *
-   * Resolver shape is type-discriminator-gated on `Kind`:
+   * Resolver shape is `Kind`-discriminated:
    *   - Kind=UNIT     -> DataSourceName applies, PipelineConfig is N/A.
    *   - Kind=PIPELINE -> PipelineConfig applies, DataSourceName is N/A
    *                      (AWS rejects the call if it's set).
-   * On update the effective Kind falls back to the state-recorded previous
-   * value and finally AWS's default 'UNIT'.
+   * The gate applies ONLY on update (`forUpdate`), where the effective Kind
+   * falls back to the state-recorded previous value and finally AWS's
+   * default 'UNIT' — an update must not re-send the other kind's member on a
+   * live resolver. On CREATE both members forward UNCONDITIONALLY when
+   * present: gating there would silently drop a crossed shape (the very
+   * silent-drop class this batch closes) where CFn parity is AWS's own loud
+   * rejection — the same forward-don't-gate doctrine as
+   * `applyDataSourceConfig`'s per-type sub-configs.
    */
   private async applyResolverConfig(
     input: CreateResolverCommandInput | UpdateResolverCommandInput,
     resourceType: string,
     logicalId: string,
     properties: Record<string, unknown>,
-    previousProperties?: Record<string, unknown>
+    previousProperties?: Record<string, unknown>,
+    forUpdate = false
   ): Promise<void> {
     const effectiveKind =
       (properties['Kind'] as 'UNIT' | 'PIPELINE' | undefined) ??
       (previousProperties?.['Kind'] as 'UNIT' | 'PIPELINE' | undefined) ??
       'UNIT';
 
-    if (effectiveKind === 'UNIT' && properties['DataSourceName'] !== undefined) {
+    if ((!forUpdate || effectiveKind === 'UNIT') && properties['DataSourceName'] !== undefined) {
       input.dataSourceName = properties['DataSourceName'] as string;
     }
     if (properties['Kind'] !== undefined) {
       input.kind = properties['Kind'] as 'UNIT' | 'PIPELINE';
     }
-    if (effectiveKind === 'PIPELINE' && properties['PipelineConfig'] !== undefined) {
+    if (
+      (!forUpdate || effectiveKind === 'PIPELINE') &&
+      properties['PipelineConfig'] !== undefined
+    ) {
       const pipelineConfig = properties['PipelineConfig'] as Record<string, unknown>;
       input.pipelineConfig = {
         functions: pipelineConfig['Functions'] as string[] | undefined,
