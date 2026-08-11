@@ -5787,6 +5787,7 @@
     "AWS::Events::EventBusPolicy",
     "AWS::KMS::Grant",
     "AWS::Lambda::Alias",
+    "AWS::Lambda::CodeSigningConfig",
     "AWS::Lambda::Version",
     "AWS::Logs::LogStream",
     "AWS::Logs::MetricFilter",
@@ -5807,6 +5808,7 @@
     "AWS::SSM::Document",
     "AWS::SecretsManager::RotationSchedule",
     "AWS::Serverless::Function",
+    "AWS::Signer::SigningProfile",
     "AWS::VerifiedPermissions::PolicyStore",
     "AWS::WAFv2::IPSet",
     "AWS::WAFv2::WebACLAssociation"

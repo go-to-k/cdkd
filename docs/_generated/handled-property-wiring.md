@@ -10,7 +10,7 @@ A computed read `properties[k]` also counts when `k` iterates a literal name tab
 ## Summary
 
 - Provider classes classified: **84**
-- Declared properties: **1113** (**1111** with read evidence)
+- Declared properties: **1117** (**1115** with read evidence)
 - Fully wired classes: **82**
 - Allow-listed classes (visible, non-blocking): **2**
 - Classes with a whole-bag blind spot (recorded, never an excuse): **19**
@@ -113,7 +113,7 @@ Sites where a whole property bag left the evidence walk (a spread, an unresolvab
 | `KMSProvider` | kms-provider.ts | wired | 14 | 14 |
 | `LambdaEventInvokeConfigProvider` | lambda-event-invoke-config-provider.ts | wired | 5 | 5 |
 | `LambdaEventSourceMappingProvider` | lambda-eventsource-provider.ts | wired | 28 | 28 |
-| `LambdaFunctionProvider` | lambda-function-provider.ts | wired | 24 | 24 |
+| `LambdaFunctionProvider` | lambda-function-provider.ts | wired | 28 | 28 |
 | `LambdaLayerVersionProvider` | lambda-layer-provider.ts | wired | 6 | 6 |
 | `LambdaMicrovmImageProvider` | lambda-microvm-image-provider.ts | wired | 14 | 14 |
 | `LambdaPermissionProvider` | lambda-permission-provider.ts | wired | 9 | 9 |

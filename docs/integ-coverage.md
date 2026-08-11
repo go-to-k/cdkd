@@ -166,7 +166,7 @@ Registered without an integ fixture, with an explicit `// allow-no-integ: <ratio
 | `AWS::StepFunctions::StateMachine` | [`iam-propagation-stress`](../tests/integration/iam-propagation-stress/) (l2)<br>[`replacement-immutable-name`](../tests/integration/replacement-immutable-name/) (l2,literal)<br>[`stepfunctions`](../tests/integration/stepfunctions/) (l2)<br>[`stepfunctions-logging`](../tests/integration/stepfunctions-logging/) (l2)<br>[`stepfunctions-s3-definition`](../tests/integration/stepfunctions-s3-definition/) (l1) |
 | `AWS::WAFv2::WebACL` | [`wafv2`](../tests/integration/wafv2/) (l1,literal) |
 
-## Resource types referenced in integs without an SDK Provider (70)
+## Resource types referenced in integs without an SDK Provider (72)
 
 These resource types appear in integ fixtures but no SDK Provider is registered for them — they fall through to the Cloud Control API fallback. Listed here for visibility; not actionable on its own.
 
@@ -217,6 +217,7 @@ These resource types appear in integ fixtures but no SDK Provider is registered 
 - `AWS::Events::EventBusPolicy`
 - `AWS::KMS::Grant`
 - `AWS::Lambda::Alias`
+- `AWS::Lambda::CodeSigningConfig`
 - `AWS::Lambda::Version`
 - `AWS::Logs::LogStream`
 - `AWS::Logs::MetricFilter`
@@ -237,6 +238,7 @@ These resource types appear in integ fixtures but no SDK Provider is registered 
 - `AWS::SSM::Document`
 - `AWS::SecretsManager::RotationSchedule`
 - `AWS::Serverless::Function`
+- `AWS::Signer::SigningProfile`
 - `AWS::VerifiedPermissions::PolicyStore`
 - `AWS::WAFv2::IPSet`
 - `AWS::WAFv2::WebACLAssociation`

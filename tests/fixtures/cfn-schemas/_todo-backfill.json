@@ -260,12 +260,7 @@
     ],
     "AWS::Lambda::Function": [
       "CapacityProviderConfig",
-      "CodeSigningConfigArn",
-      "DurableConfig",
-      "FunctionScalingConfig",
-      "PublishToLatestPublished",
-      "RuntimeManagementConfig",
-      "TenancyConfig"
+      "FunctionScalingConfig"
     ],
     "AWS::Neptune::DBCluster": [
       "AssociatedRoles",

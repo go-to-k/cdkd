@@ -148,7 +148,7 @@ describe('validateRecreateTargets (#615)', () => {
             Type: 'AWS::Lambda::Function',
             Properties: {
               FunctionName: 'foo',
-              RuntimeManagementConfig: { UpdateRuntimeOn: 'FunctionUpdate' }, // silent-drop property
+              FunctionScalingConfig: { MinExecutionEnvironments: 1, MaxExecutionEnvironments: 2 }, // silent-drop property
             },
           },
         },
@@ -158,15 +158,15 @@ describe('validateRecreateTargets (#615)', () => {
         template,
         state,
         recreateViaCcApi: ['MyLambda'],
-        allowUnsupportedProperties: new Set(['AWS::Lambda::Function:RuntimeManagementConfig']),
+        allowUnsupportedProperties: new Set(['AWS::Lambda::Function:FunctionScalingConfig']),
         forceStatefulRecreation: false,
       });
       expect(v.ambiguousIntent).toEqual([
-        { logicalId: 'MyLambda', resourceType: 'AWS::Lambda::Function', property: 'RuntimeManagementConfig' },
+        { logicalId: 'MyLambda', resourceType: 'AWS::Lambda::Function', property: 'FunctionScalingConfig' },
       ]);
       const error = renderRecreateTargetsErrors(v);
       expect(error).toContain('Ambiguous intent');
-      expect(error).toContain('RuntimeManagementConfig');
+      expect(error).toContain('FunctionScalingConfig');
       expect(error).toMatch(/pick ONE strategy per resource/);
     });
 
@@ -175,13 +175,13 @@ describe('validateRecreateTargets (#615)', () => {
         Resources: {
           MyLambda: {
             Type: 'AWS::Lambda::Function',
-            Properties: { FunctionName: 'foo', RuntimeManagementConfig: { UpdateRuntimeOn: 'FunctionUpdate' } },
+            Properties: { FunctionName: 'foo', FunctionScalingConfig: { MinExecutionEnvironments: 1, MaxExecutionEnvironments: 2 } },
           },
         },
       };
       const state = st('S', { MyLambda: res('AWS::Lambda::Function') });
-      // Allow-set covers SnapStart, not RuntimeManagementConfig — the template's
-      // actual silent-drop property is RuntimeManagementConfig, so no overlap fires.
+      // Allow-set covers SnapStart, not FunctionScalingConfig — the template's
+      // actual silent-drop property is FunctionScalingConfig, so no overlap fires.
       const v = validateRecreateTargets({
         template,
         state,
@@ -197,7 +197,7 @@ describe('validateRecreateTargets (#615)', () => {
         Resources: {
           PlainLambda: {
             Type: 'AWS::Lambda::Function',
-            Properties: { FunctionName: 'foo' /* no RuntimeManagementConfig */ },
+            Properties: { FunctionName: 'foo' /* no FunctionScalingConfig */ },
           },
         },
       };
@@ -206,7 +206,7 @@ describe('validateRecreateTargets (#615)', () => {
         template,
         state,
         recreateViaCcApi: ['PlainLambda'],
-        allowUnsupportedProperties: new Set(['AWS::Lambda::Function:RuntimeManagementConfig']),
+        allowUnsupportedProperties: new Set(['AWS::Lambda::Function:FunctionScalingConfig']),
         forceStatefulRecreation: false,
       });
       expect(v.ambiguousIntent).toEqual([]);
@@ -361,7 +361,7 @@ describe('validateRecreateTargets (#615)', () => {
         MyDB: { Type: 'AWS::RDS::DBInstance', Properties: {} },
         MyLambda: {
           Type: 'AWS::Lambda::Function',
-          Properties: { RuntimeManagementConfig: { UpdateRuntimeOn: 'FunctionUpdate' } },
+          Properties: { FunctionScalingConfig: { MinExecutionEnvironments: 1, MaxExecutionEnvironments: 2 } },
         },
         // Declared but never deployed → missingFromState
         FreshResource: { Type: 'AWS::Lambda::Function', Properties: {} },
@@ -377,7 +377,7 @@ describe('validateRecreateTargets (#615)', () => {
       template,
       state,
       recreateViaCcApi: ['MyDB', 'MyLambda', 'NotInTemplate', 'FreshResource', 'MyGlobalTable'],
-      allowUnsupportedProperties: new Set(['AWS::Lambda::Function:RuntimeManagementConfig']),
+      allowUnsupportedProperties: new Set(['AWS::Lambda::Function:FunctionScalingConfig']),
       forceStatefulRecreation: false,
     });
     expect(v.unknownLogicalIds).toEqual(['NotInTemplate']);
@@ -486,7 +486,7 @@ describe('validateRecreateTargets — #651 reverse direction (--recreate-via-sdk
       Resources: {
         MyLambda: {
           Type: 'AWS::Lambda::Function',
-          Properties: { RuntimeManagementConfig: { UpdateRuntimeOn: 'FunctionUpdate' } },
+          Properties: { FunctionScalingConfig: { MinExecutionEnvironments: 1, MaxExecutionEnvironments: 2 } },
         },
       },
     };
@@ -498,7 +498,7 @@ describe('validateRecreateTargets — #651 reverse direction (--recreate-via-sdk
       state,
       recreateViaCcApi: [],
       recreateViaSdkProvider: ['MyLambda'],
-      // RuntimeManagementConfig NOT in --allow-unsupported-properties → next deploy
+      // FunctionScalingConfig NOT in --allow-unsupported-properties → next deploy
       // would auto-route the recreated SDK resource back to CC.
       allowUnsupportedProperties: new Set(),
       forceStatefulRecreation: false,
@@ -507,7 +507,7 @@ describe('validateRecreateTargets — #651 reverse direction (--recreate-via-sdk
     expect(v.ambiguousIntentSdk.map((a) => a.logicalId)).toEqual(['MyLambda']);
     const error = renderRecreateTargetsErrors(v);
     expect(error).toContain('IMMEDIATELY be re-routed back to Cloud Control');
-    expect(error).toContain('RuntimeManagementConfig');
+    expect(error).toContain('FunctionScalingConfig');
   });
 
   it('inverse ambiguous-intent: PASSES when the silent-drop property IS in --allow-unsupported-properties', () => {
@@ -515,7 +515,7 @@ describe('validateRecreateTargets — #651 reverse direction (--recreate-via-sdk
       Resources: {
         MyLambda: {
           Type: 'AWS::Lambda::Function',
-          Properties: { RuntimeManagementConfig: { UpdateRuntimeOn: 'FunctionUpdate' } },
+          Properties: { FunctionScalingConfig: { MinExecutionEnvironments: 1, MaxExecutionEnvironments: 2 } },
         },
       },
     };
@@ -527,7 +527,7 @@ describe('validateRecreateTargets — #651 reverse direction (--recreate-via-sdk
       state,
       recreateViaCcApi: [],
       recreateViaSdkProvider: ['MyLambda'],
-      allowUnsupportedProperties: new Set(['AWS::Lambda::Function:RuntimeManagementConfig']),
+      allowUnsupportedProperties: new Set(['AWS::Lambda::Function:FunctionScalingConfig']),
       forceStatefulRecreation: false,
       hasSdkProvider: () => true,
     });
