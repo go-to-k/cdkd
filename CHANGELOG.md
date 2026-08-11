@@ -1,3 +1,10 @@
+## [0.280.20](https://github.com/go-to-k/cdkd/compare/v0.280.19...v0.280.20) (2026-08-11)
+
+
+### Bug Fixes
+
+* **ecs:** backfill the AWS::ECS::Service silent-drop properties and close the type ([#609](https://github.com/go-to-k/cdkd/issues/609)) ([#1606](https://github.com/go-to-k/cdkd/issues/1606)) ([59e7dac](https://github.com/go-to-k/cdkd/commit/59e7dacd48bffe27c48d660cc81aa0c447f3e069))
+
 ## [0.280.19](https://github.com/go-to-k/cdkd/compare/v0.280.18...v0.280.19) (2026-08-11)
 
 
