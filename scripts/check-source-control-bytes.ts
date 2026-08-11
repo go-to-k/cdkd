@@ -87,9 +87,15 @@ export interface ControlByteFinding {
 }
 
 export function isBinaryPath(path: string): boolean {
-  const dot = path.lastIndexOf('.');
-  if (dot < 0) return false;
-  return BINARY_EXTENSIONS.has(path.slice(dot).toLowerCase());
+  // Extension is taken from the BASENAME, not the whole path: `foo.gif/baz`
+  // would otherwise yield `.gif/baz`. That happens to fail safe (it matches no
+  // entry, so nothing is falsely exempted), but only by accident — scoping to
+  // the basename makes it a property. A dotfile such as `.gitignore` yields
+  // `.gitignore`, which is likewise not an entry, so it stays checked.
+  const basename = path.slice(path.lastIndexOf('/') + 1);
+  const dot = basename.lastIndexOf('.');
+  if (dot <= 0) return false;
+  return BINARY_EXTENSIONS.has(basename.slice(dot).toLowerCase());
 }
 
 /**
@@ -116,17 +122,38 @@ export function findControlBytes(content: Uint8Array): ControlByteFinding[] {
   return findings;
 }
 
-/** A one-line, actionable report naming the file, the position and the fix. */
+/**
+ * A one-line, actionable report naming the file, the position and the fix.
+ *
+ * The remedy is per-BYTE, not one blanket sentence: only a NUL (or invalid
+ * encoding) makes grep/rg treat the file as binary, and telling someone with a
+ * CRLF file to write a CR escape is actively wrong advice.
+ */
 export function describeFinding(path: string, finding: ControlByteFinding): string {
   const hex = `0x${finding.byte.toString(16).padStart(2, '0')}`;
-  const escape = finding.byte === 0
-    ? '\\0'
-    : `\\u${finding.byte.toString(16).padStart(4, '0')}`;
+  const where = `${path}:${finding.line}: raw control byte ${hex} at offset ${finding.offset}.`;
+
+  if (finding.byte === 0x00) {
+    return (
+      `${where} grep and rg treat the whole file as BINARY and silently skip it, so every ` +
+      `grep-based audit stops seeing this file. Write it as the escape '\\0' instead ` +
+      `(identical at runtime), or add the extension to BINARY_EXTENSIONS if the file is ` +
+      `genuinely binary.`
+    );
+  }
+
+  if (finding.byte === 0x0d) {
+    return (
+      `${where} This repo's text files are LF-only; a CR means the file has CRLF line ` +
+      `endings. Convert it to LF (e.g. \`dos2unix\`, or check your git core.autocrlf) — ` +
+      `do NOT write it as an escape.`
+    );
+  }
+
+  const escape = `\\u${finding.byte.toString(16).padStart(4, '0')}`;
   return (
-    `${path}:${finding.line}: raw control byte ${hex} at offset ${finding.offset}. ` +
-    `grep and rg treat the whole file as BINARY and silently skip it, so every ` +
-    `grep-based audit stops seeing this file. Write it as the escape '${escape}' instead ` +
-    `(identical at runtime), or add the extension to BINARY_EXTENSIONS if the file is ` +
-    `genuinely binary.`
+    `${where} Raw control characters are not valid in this repo's text files. Write it as ` +
+    `the escape '${escape}' instead (identical at runtime), or add the extension to ` +
+    `BINARY_EXTENSIONS if the file is genuinely binary.`
   );
 }

@@ -81,6 +81,26 @@ describe('describeFinding', () => {
   it('renders a non-NUL byte as a \\u escape', () => {
     expect(describeFinding('src/x.ts', { byte: 0x1b, offset: 5, line: 1 })).toContain("'\\u001b'");
   });
+
+  it('does NOT claim grep-blindness for a byte that does not cause it', () => {
+    // Only a NUL makes grep/rg treat the file as binary. Asserting the
+    // rationale for ESC/CR would be a false statement in a CI failure message.
+    const esc = describeFinding('src/x.ts', { byte: 0x1b, offset: 5, line: 1 });
+    // Match the CLAIM, not the bare word — "BINARY_EXTENSIONS" appears in the
+    // remedy of every branch and is not the false statement being guarded.
+    expect(esc).not.toContain('treat the whole file as BINARY');
+    expect(esc).toContain('not valid');
+    // ...while the NUL branch, where the claim is true, must still make it.
+    expect(describeFinding('src/x.ts', { byte: 0, offset: 5, line: 1 })).toContain(
+      'treat the whole file as BINARY'
+    );
+  });
+
+  it('tells a CR to convert line endings rather than to use an escape', () => {
+    const cr = describeFinding('src/x.ts', { byte: 0x0d, offset: 5, line: 1 });
+    expect(cr).toContain('LF');
+    expect(cr).not.toContain("'\\u000d'");
+  });
 });
 
 describe('the committed tree', () => {
@@ -99,8 +119,16 @@ describe('the committed tree', () => {
       }
       if (!stat.isFile()) continue;
 
-      for (const finding of findControlBytes(readFileSync(full))) {
+      // Cap per file. An unlisted GENUINELY binary file (someone commits a
+      // .jar / .bin) is the designed "fails loudly" path — but uncapped it
+      // yields ~1 finding per byte, so a 10 MB asset would build millions of
+      // strings for vitest to diff. That is an OOM, not a loud message.
+      const findings = findControlBytes(readFileSync(full));
+      for (const finding of findings.slice(0, 5)) {
         offenders.push(describeFinding(path, finding));
+      }
+      if (findings.length > 5) {
+        offenders.push(`${path}: ...and ${findings.length - 5} more control bytes`);
       }
     }
 
@@ -109,7 +137,20 @@ describe('the committed tree', () => {
 
   it('scans a realistic number of files, so a broken sweep cannot pass vacuously', () => {
     const scanned = trackedFiles().filter((p) => !isBinaryPath(p));
-    expect(scanned.length).toBeGreaterThan(500);
+    // Banded against the ~3341 actually scanned. A loose `> 500` floor was NOT
+    // enough: adding `.ts` + `.md` to BINARY_EXTENSIONS neuters the check over
+    // 1648 files and still leaves ~1695, which would clear it. The per-extension
+    // floors below are what make that specific neuter fail.
+    expect(scanned.length).toBeGreaterThan(2500);
+  });
+
+  it.each([
+    ['.ts', 1000],
+    ['.md', 100],
+    ['.sh', 50],
+  ])('still scans the %s files (floor %i), so exempting them by extension fails', (ext, floor) => {
+    const scanned = trackedFiles().filter((p) => !isBinaryPath(p) && p.endsWith(ext));
+    expect(scanned.length).toBeGreaterThan(floor);
   });
 
   it('keeps the efs-provider creationToken separator as the escape, not a raw NUL', () => {
