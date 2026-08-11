@@ -82,7 +82,7 @@ dsql	2026-07-30T18:11:24Z	PASS	540	verify.sh	4-phase incl. destroy --remove-prot
 dynamodb-autoscaling	2026-08-10T05:13:55Z	PASS	65	verify.sh	0810 sweep b5; table autoscaling re-verify post-#1451 GlobalTable work, 0 err 0 orph
 dynamodb-globaltable	2026-08-11T09:22:58Z	PASS	549	verify.sh	issue #1585 autoscaled-exclusion + live-only coverage; 0 errors 0 orphans
 dynamodb-gsi-update	2026-08-10T05:13:55Z	PASS	1056	verify.sh	0810 sweep b5; GSI add is in-place UPDATE (no replacement), 3 phases, 1 del 0 err 0 orph
-dynamodb-ondemand	2026-08-11T08:58:09Z	PASS	430	verify.sh	issue #1553 final merge-ready run; 0 errors 0 orphans
+dynamodb-ondemand	2026-08-11T10:47:34Z	PASS		verify.sh	1588 per-GSI flip throughput; 4 del/0 err, 0 orph
 dynamodb-sse	2026-08-01T10:07:21Z	PASS	40	verify.sh	0801 regression sweep; SSE mapping ok, 0 orphans
 dynamodb-stream-filter	2026-08-10T05:13:55Z	PASS	57	verify.sh	0810 sweep b5; stream filter criteria, 0 err 0 orph
 dynamodb-streams	2026-08-10T05:13:55Z	PASS	81	verify.sh	0810 sweep b5; streams+ESM+StreamSpec UPDATE, 0 err 0 orph
