@@ -1,6 +1,6 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-plugin.json",
-  "name": "cdkd",
+  "name": "cdkd-skills",
   "version": "0.1.0",
   "description": "Deploy AWS CDK apps safely with cdkd (CDK Direct). Guides AI coding agents through installing cdkd and bootstrapping, previewing, deploying, verifying, and destroying dev/test stacks with explicit safety boundaries.",
   "author": {

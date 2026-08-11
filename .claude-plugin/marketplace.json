@@ -11,8 +11,8 @@
   },
   "plugins": [
     {
-      "name": "cdkd",
-      "source": "./plugins/cdkd",
+      "name": "cdkd-skills",
+      "source": "./plugins/cdkd-skills",
       "description": "Deploy AWS CDK apps safely with cdkd: install, bootstrap, preview, deploy, verify, and destroy dev/test stacks with explicit safety boundaries.",
       "version": "0.1.0",
       "author": {

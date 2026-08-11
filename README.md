@@ -57,7 +57,7 @@ cdkd destroy
 
 ## Use with AI Coding Agents
 
-This repository ships a [`cdkd` skill](plugins/cdkd/skills/cdkd/SKILL.md)
+This repository ships a [`cdkd` skill](plugins/cdkd-skills/skills/cdkd/SKILL.md)
 that teaches AI coding agents to use cdkd safely: install, AWS preflight
 checks, preview and deployment, wait modes, verification, CloudFormation
 migration boundaries, and destructive-operation safety.
@@ -69,7 +69,7 @@ running these inside a Claude Code session:
 
 ```text
 /plugin marketplace add go-to-k/cdkd
-/plugin install cdkd@cdkd
+/plugin install cdkd-skills@cdkd
 ```
 
 Then ask Claude to deploy a dev/test CDK stack with cdkd — the skill

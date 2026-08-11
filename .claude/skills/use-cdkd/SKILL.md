@@ -6,16 +6,17 @@ description: Build the current cdkd checkout and use it from another CDK project
 <!--
   This file is the REPO-INTERNAL contributor skill: it covers building and
   linking the current checkout. The end-user deployment guidance lives in the
-  DISTRIBUTED skill at plugins/cdkd/skills/cdkd/SKILL.md (installed by users
-  via `/plugin install cdkd@cdkd`, `gh skill`, or `npx skills`). The two files
-  ship together: when cdkd CLI behavior changes, update the distributed file
-  AND bump the `version` fields in plugins/cdkd/.claude-plugin/plugin.json and
+  DISTRIBUTED skill at plugins/cdkd-skills/skills/cdkd/SKILL.md (installed by
+  users via `/plugin install cdkd-skills@cdkd`, `gh skill`, or `npx skills`).
+  The two files ship together: when cdkd CLI behavior changes, update the
+  distributed file AND bump the `version` fields in
+  plugins/cdkd-skills/.claude-plugin/plugin.json and
   .claude-plugin/marketplace.json in the same PR.
 -->
 
 # Use the Current cdkd Checkout
 
-Build the current checkout and use it from another CDK project for testing. For everything that happens AFTER the binary is chosen — deployment boundary, preview, wait modes, verification, destructive-operation guards — read and follow [plugins/cdkd/skills/cdkd/SKILL.md](../../../plugins/cdkd/skills/cdkd/SKILL.md); it applies identically whether the binary is a built checkout or a published release.
+Build the current checkout and use it from another CDK project for testing. For everything that happens AFTER the binary is chosen — deployment boundary, preview, wait modes, verification, destructive-operation guards — read and follow [plugins/cdkd-skills/skills/cdkd/SKILL.md](../../../plugins/cdkd-skills/skills/cdkd/SKILL.md); it applies identically whether the binary is a built checkout or a published release.
 
 ## Build the checkout
 

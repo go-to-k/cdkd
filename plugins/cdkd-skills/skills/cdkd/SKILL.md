@@ -5,11 +5,11 @@ description: Install cdkd and use it safely from an AWS CDK project. Use when bo
 
 <!--
   This file is the DISTRIBUTED end-user skill, installed via the Claude Code
-  plugin marketplace (`/plugin install cdkd@cdkd`), `gh skill`, or `npx skills`.
-  It ships together with the repo-internal contributor skill at
+  plugin marketplace (`/plugin install cdkd-skills@cdkd`), `gh skill`, or
+  `npx skills`. It ships together with the repo-internal contributor skill at
   .claude/skills/use-cdkd/SKILL.md, which defers to this file for the
   safe-usage flow. When cdkd CLI behavior changes, update this file AND bump
-  the `version` fields in plugins/cdkd/.claude-plugin/plugin.json and
+  the `version` fields in plugins/cdkd-skills/.claude-plugin/plugin.json and
   .claude-plugin/marketplace.json in the same PR.
 -->
 
