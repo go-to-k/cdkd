@@ -1648,7 +1648,31 @@ Flags:
   `LoadBalancerAttributes` — and it applies even when the recorded
   baseline list is EMPTY, since a declared-but-empty `Tags` still has an
   AWS side worth diffing. A tag list NESTED inside another property (an
-  EC2 launch template's `TagSpecifications`) still reverts wholesale. Requires a stack lock. Mutually exclusive with
+  EC2 launch template's `TagSpecifications`) still reverts wholesale.
+
+  The plan also **warns about AWS-authored values the revert would drop**
+  (issue [#1478](https://github.com/go-to-k/cdkd/issues/1478)). A revert
+  overwrites each drifted top-level subtree from
+  `observedProperties ?? properties`, so when a resource has NO
+  `observedProperties` (older state, or a deploy-time capture that failed)
+  the desired side is the raw template — and anything AWS wrote into that
+  subtree but the template never declared is about to be erased. cdkd lists
+  those paths before the confirmation prompt rather than refusing, since the
+  user did ask to push state over AWS. Both shapes are covered: nested object
+  keys report dotted (`Parameters.table_type`), and a KEYED
+  `[{Key, Value}]` list reports its missing entries in bracket form
+  (`LoadBalancerAttributes[deletion_protection.enabled]`) — the bracket
+  distinguishes a list entry from a nested path, since attribute keys contain
+  dots of their own. That keyed-list half was added by issue
+  [#1626](https://github.com/go-to-k/cdkd/issues/1626): the walk previously
+  skipped every array, which is exactly the shape with the most to drop, so
+  a revert against an ELBv2 resource could touch ~18 untemplated attributes
+  while the plan warned about none. A service-authored tag is NOT listed —
+  the carve-out above preserves it, so it is not dropped. A POSITIONAL array
+  is still compared wholesale, because its elements have positions rather
+  than identities.
+
+  Requires a stack lock. Mutually exclusive with
   `--accept`. See "Resolving drift" below.
 - `--dry-run` — for `--accept` / `--revert`: print the planned mutations
   and exit without acquiring a lock or hitting AWS / S3.

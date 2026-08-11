@@ -1039,7 +1039,17 @@ export function findRevertDroppedAwsKeys(
     // `buildRevertNewProperties` only overwrites a key the desired side
     // actually has; otherwise the AWS-current value survives untouched.
     if (!(key in desiredProperties)) continue;
-    collectMissingPaths(awsProperties[key], desiredProperties[key], key, dropped);
+    // A top-level TAG LIST is reverted through `mergeTagListForRevert`, which
+    // PRESERVES service-authored entries (issue #1501) — so those are not
+    // dropped and must not be reported here, while an ordinary console-added
+    // tag still is stripped and still counts.
+    collectMissingPaths(
+      awsProperties[key],
+      desiredProperties[key],
+      key,
+      dropped,
+      isTagListKey(key) ? isServiceManagedTagKey : undefined
+    );
   }
 
   return [...dropped].sort();
@@ -1049,17 +1059,53 @@ export function findRevertDroppedAwsKeys(
  * Walk the AWS-side value against the desired-side value, recording every path
  * present on the AWS side and absent on the desired side.
  *
- * Only plain objects are descended into. An ARRAY is compared wholesale — the
- * drift comparator itself treats arrays as single values (its paths never
+ * Plain objects are descended into. A POSITIONAL array is compared wholesale —
+ * the drift comparator itself treats arrays as single values (its paths never
  * carry an index), so an element-wise walk here would report positions the
  * rest of the revert path cannot reason about.
+ *
+ * A KEYED list is the exception, and it is the shape with the most to drop
+ * (issue [#1626](https://github.com/go-to-k/cdkd/issues/1626)). An
+ * `[{Key, Value}]` list is semantically a MAP that CFn spells as an array —
+ * ELBv2 `LoadBalancerAttributes`, `ListenerAttributes`, `TargetGroupAttributes`
+ * and every `Tags` list are this shape — so its entries have stable identities,
+ * not positions, and `Key` is exactly what the user would act on. Skipping it
+ * left the pass blind precisely where `readCurrentState` returns AWS's FULL
+ * attribute set (~20 entries) against a template that declares one or two: the
+ * plan warned about nothing while the revert was about to touch eighteen keys.
+ *
+ * Keyed-list entries are reported in BRACKET form (`LoadBalancerAttributes
+ * [deletion_protection.enabled]`) rather than dotted, because attribute keys
+ * contain dots themselves and a dotted path would be ambiguous with a nested
+ * object.
+ *
+ * `isPreservedKey` exempts entries the revert does NOT actually drop — the
+ * caller passes {@link isServiceManagedTagKey} for a top-level TAG LIST, whose
+ * revert goes through {@link mergeTagListForRevert} and keeps `aws:`-prefixed /
+ * `AmazonECSManaged` entries (issue #1501). Reporting those would be a warning
+ * about a loss that cannot happen.
  */
 function collectMissingPaths(
   awsValue: unknown,
   desiredValue: unknown,
   path: string,
-  out: Set<string>
+  out: Set<string>,
+  isPreservedKey?: (key: string) => boolean
 ): void {
+  if (isKeyedList(awsValue)) {
+    if (!isKeyedList(desiredValue)) {
+      // A scalar / object / absent desired side replaces the whole list.
+      if (desiredValue === undefined) out.add(path);
+      return;
+    }
+    const desiredKeys = new Set(desiredValue.map((e) => e.Key));
+    for (const entry of awsValue) {
+      if (desiredKeys.has(entry.Key)) continue;
+      if (isPreservedKey?.(entry.Key)) continue;
+      out.add(`${path}[${entry.Key}]`);
+    }
+    return;
+  }
   if (!isPlainRecord(awsValue)) return;
   if (!isPlainRecord(desiredValue)) {
     // The desired side is a scalar / array / absent where AWS has an object:
@@ -1076,6 +1122,24 @@ function collectMissingPaths(
     }
     collectMissingPaths(value, desiredValue[key], childPath, out);
   }
+}
+
+/**
+ * A NON-EMPTY array whose every element is an object carrying a string `Key`.
+ *
+ * Emptiness is deliberately excluded: `[]` carries no identities, so treating
+ * it as keyed would report nothing on the AWS side and — as the DESIRED side —
+ * would claim every AWS entry is dropped, which is already what the
+ * whole-list arm reports more legibly.
+ */
+function isKeyedList(value: unknown): value is Array<{ Key: string }> {
+  return (
+    Array.isArray(value) &&
+    value.length > 0 &&
+    value.every(
+      (e) => typeof e === 'object' && e !== null && typeof (e as { Key?: unknown }).Key === 'string'
+    )
+  );
 }
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
