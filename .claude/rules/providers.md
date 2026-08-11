@@ -583,6 +583,15 @@ That is a far more common template shape than the base64 search string.
   PATH-first, terminal-name-second, so `…#BuildBatchConfig.ServiceRole` scopes a
   decision to one path while `…#ServiceRole` covers the key wherever it is
   reachable.
+- **Naming a CFn key's literal is no longer enough to clear the key pass on a
+  write-evidence target (issue #1393 item 2).** A key with no same-spelled SDK
+  member needs the literal PLUS scoped delivery proof: a genuine SDK member
+  written at the resolved parent chain whose case-folded name equals the key,
+  or a `terminalRenames` entry that resolves on the write side. When a
+  conversion is real but invisible to the write walk (a computed-key rename
+  loop, a destructured helper return), declare a `passes: ['key']` allow-list
+  entry with the write site named in the rationale — do NOT scatter decoy
+  literals to appease the critic.
 
 ## Adding a New SDK Provider
 

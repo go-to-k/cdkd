@@ -46,12 +46,27 @@
  *      so comments do not count), excluding the reverse map's body
  *      ({@link REVERSE_MAP_FUNCTION_PREFIXES}). A key the provider names
  *      explicitly on the FORWARD path is evidence it converts / special-cases
- *      that key somewhere.
+ *      that key somewhere — but for a write-evidence target the literal is
+ *      trusted only WITH scoped delivery proof (issue #1393 item 2, below).
  *
  * A CFn nested key is a FLAGGED divergence when its spelling (after the
  * target's declared key style — `exact` for PascalCase SDK models like
  * CloudFront / CloudWatch / API GW v2, `lower-first` for camelCase models
- * like ECS) matches NO SDK member AND the provider source never names it.
+ * like ECS) matches NO SDK member AND the provider does not demonstrably
+ * convert it. Through issue #1393 the conversion evidence was the FILE-GLOBAL
+ * literal alone, and that heuristic was measured rescuing broken write paths
+ * (a key named legitimately by a reverse map or an unrelated top-level
+ * vouched for every same-spelled occurrence anywhere in the file — the
+ * pre-#1426 S3 lifecycle defects sat exactly there) and masking
+ * case-divergences. For a {@link NestedKeyTarget.freshObjectMapper} target
+ * the literal now also needs one of (see the branch in
+ * {@link classifyTarget} for the full reasoning):
+ *   - a genuine SDK member, written at the RESOLVED parent scope, whose
+ *     case-folded name equals the audited key; or
+ *   - a declared {@link NestedKeyTarget.terminalRenames} entry that resolves
+ *     on the write side (`ExposedHeaders` -> `ExposeHeaders`); conversions
+ *     real but invisible to the write walk carry `passes: ['key']`
+ *     allow-list entries instead.
  * Two flagged buckets, both CI-blocking:
  *   - case-divergence — a case-insensitive SDK match exists (`AcmCertificateArn`
  *     vs `ACMCertificateArn`). The highest-signal bucket: it would have caught
@@ -1042,6 +1057,38 @@ const ECS_TASK_DEFINITION_SEGMENT_RENAMES = {
 } as const;
 
 /**
+ * ECS TaskDefinition TERMINAL renames (issue #1393 item 2). The segment
+ * rename above bridges `ProxyConfigurationProperties` when it is an
+ * INTERMEDIATE segment (`….ProxyConfigurationProperties.Name`); when the
+ * blob itself is the audited terminal the correspondence must be declared
+ * here — `convertProxyConfiguration` writes the SDK's `properties`.
+ */
+const ECS_TASK_DEFINITION_TERMINAL_RENAMES = {
+  'ProxyConfiguration.ProxyConfigurationProperties': 'properties',
+} as const;
+
+/**
+ * CloudFront Distribution TERMINAL renames (issue #1393 item 2) — the
+ * acronym-casing conversions `convertToSdkFormat` / `convertOrigin` perform.
+ * The top-level / ViewerCertificate members are renamed by COMPUTED-KEY
+ * loops over `TOP_LEVEL_CFN_TO_SDK` / `VIEWER_CERTIFICATE_CFN_TO_SDK`
+ * (`result[sdkKey] = result[cfnKey]`), so the write walk sees no literal
+ * member name; the declared entries resolve through the spread-and-patch
+ * hand-off (issue #1475) whose exclusion sets the recognizer takes from
+ * those same rename maps. The two origin-level entries are literal
+ * element-access writes (`result['CustomHeaders'] = …`) and resolve
+ * against the write index directly.
+ */
+const CLOUDFRONT_DISTRIBUTION_TERMINAL_RENAMES = {
+  'DistributionConfig.IPV6Enabled': 'IsIPV6Enabled',
+  'DistributionConfig.ViewerCertificate.AcmCertificateArn': 'ACMCertificateArn',
+  'DistributionConfig.ViewerCertificate.IamCertificateId': 'IAMCertificateId',
+  'DistributionConfig.ViewerCertificate.SslSupportMethod': 'SSLSupportMethod',
+  'DistributionConfig.Origins.OriginCustomHeaders': 'CustomHeaders',
+  'DistributionConfig.Origins.CustomOriginConfig.OriginSSLProtocols': 'OriginSslProtocols',
+} as const;
+
+/**
  * The S3 structural renames (issue #1520) — the four causes reason (C)
  * recorded, each one a CFn segment whose SDK counterpart the per-level case
  * fold cannot absorb:
@@ -1152,6 +1199,76 @@ const S3_BUCKET_TERMINAL_RENAMES = {
   'NotificationConfiguration.LambdaConfigurations.Filter.S3Key.Rules': 'FilterRules',
   'NotificationConfiguration.QueueConfigurations.Filter.S3Key.Rules': 'FilterRules',
   'NotificationConfiguration.TopicConfigurations.Filter.S3Key.Rules': 'FilterRules',
+  // --- issue #1393 item 2: the SAME correspondences the segment-rename map
+  // already declares for INTERMEDIATE positions, now needed at TERMINAL
+  // position too — the scoped literal rule no longer lets a file-global
+  // literal vouch for these. Every value is verified against the provider's
+  // actual write site (applyXxx / normalizeLifecycleRules /
+  // applyNotificationConfiguration / applyWebsiteConfiguration). ---
+  // PutBucketAccelerateConfiguration: `Status: config['AccelerationStatus']`.
+  'AccelerateConfiguration.AccelerationStatus': 'Status',
+  // PutBucketEncryption: `ApplyServerSideEncryptionByDefault: byDefault …`.
+  'BucketEncryption.ServerSideEncryptionConfiguration.ServerSideEncryptionByDefault':
+    'ApplyServerSideEncryptionByDefault',
+  // PutBucketCors: `ExposeHeaders: rule['ExposedHeaders']`,
+  // `MaxAgeSeconds: rule['MaxAge']`.
+  'CorsConfiguration.CorsRules.ExposedHeaders': 'ExposeHeaders',
+  'CorsConfiguration.CorsRules.MaxAge': 'MaxAgeSeconds',
+  // PutBucketInventoryConfiguration: `Schedule: { Frequency:
+  // config['ScheduleFrequency'] … }` (an SDK-only wrapper level).
+  'InventoryConfigurations.ScheduleFrequency': 'Schedule.Frequency',
+  // Lifecycle rule-level date/day members the SDK nests one level down
+  // (`sdkRule.Expiration = { Days | Date }`,
+  // `sdkRule.NoncurrentVersionExpiration = { NoncurrentDays }`), the legacy
+  // SINGULAR blobs written through the plural members
+  // (`mergeLegacySingular`), and the per-transition member renames
+  // (`toSdkTransition` / `toSdkNvt`).
+  'LifecycleConfiguration.Rules.ExpirationDate': 'Expiration.Date',
+  'LifecycleConfiguration.Rules.ExpirationInDays': 'Expiration.Days',
+  'LifecycleConfiguration.Rules.NoncurrentVersionExpirationInDays':
+    'NoncurrentVersionExpiration.NoncurrentDays',
+  'LifecycleConfiguration.Rules.NoncurrentVersionTransition': 'NoncurrentVersionTransitions',
+  'LifecycleConfiguration.Rules.NoncurrentVersionTransition.TransitionInDays': 'NoncurrentDays',
+  'LifecycleConfiguration.Rules.NoncurrentVersionTransitions.TransitionInDays': 'NoncurrentDays',
+  'LifecycleConfiguration.Rules.Transition': 'Transitions',
+  'LifecycleConfiguration.Rules.Transition.TransitionDate': 'Date',
+  'LifecycleConfiguration.Rules.Transition.TransitionInDays': 'Days',
+  'LifecycleConfiguration.Rules.Transitions.TransitionDate': 'Date',
+  'LifecycleConfiguration.Rules.Transitions.TransitionInDays': 'Days',
+  // PutBucketLogging: `TargetBucket: destinationBucket`, `TargetPrefix: …`
+  // (the parent chain already renames onto BucketLoggingStatus.LoggingEnabled).
+  'LoggingConfiguration.DestinationBucketName': 'TargetBucket',
+  'LoggingConfiguration.LogFilePrefix': 'TargetPrefix',
+  // PutBucketNotificationConfiguration: the config-array member itself
+  // (`cfg.LambdaFunctionConfigurations = lambdas.map(…)`), the per-config
+  // legacy singular `Event` written through `Events: [t['Event']]`, the
+  // `Filter.S3Key` -> `Key` wrapper, and the ARN member renames.
+  'NotificationConfiguration.LambdaConfigurations': 'LambdaFunctionConfigurations',
+  'NotificationConfiguration.LambdaConfigurations.Event': 'Events',
+  'NotificationConfiguration.LambdaConfigurations.Filter.S3Key': 'Key',
+  'NotificationConfiguration.LambdaConfigurations.Function': 'LambdaFunctionArn',
+  'NotificationConfiguration.QueueConfigurations.Event': 'Events',
+  'NotificationConfiguration.QueueConfigurations.Filter.S3Key': 'Key',
+  'NotificationConfiguration.QueueConfigurations.Queue': 'QueueArn',
+  'NotificationConfiguration.TopicConfigurations.Event': 'Events',
+  'NotificationConfiguration.TopicConfigurations.Filter.S3Key': 'Key',
+  'NotificationConfiguration.TopicConfigurations.Topic': 'TopicArn',
+  // PutBucketReplication: CFn `TagFilter` (single) is the SDK's `Tag`;
+  // `And.TagFilters` is the SDK's `Tags`.
+  'ReplicationConfiguration.Rules.Filter.TagFilter': 'Tag',
+  'ReplicationConfiguration.Rules.Filter.And.TagFilters': 'Tags',
+  // Per-item config families: the `TagFilters` ARRAY itself, forwarded
+  // verbatim under the SDK's `Filter.And.Tags` (the members beneath are
+  // covered by the scoped segment renames above; lifecycle's array is the
+  // destructured-gatherScope shape and carries an allow-list entry instead).
+  'AnalyticsConfigurations.TagFilters': 'Filter.And.Tags',
+  'IntelligentTieringConfigurations.TagFilters': 'Filter.And.Tags',
+  'MetricsConfigurations.TagFilters': 'Filter.And.Tags',
+  // PutBucketWebsite: the per-routing-rule blobs are written as the SDK's
+  // `Redirect` / `Condition` (same correspondence the segment-rename map
+  // declares for their interiors).
+  'WebsiteConfiguration.RoutingRules.RedirectRule': 'Redirect',
+  'WebsiteConfiguration.RoutingRules.RoutingRuleCondition': 'Condition',
 } as const;
 
 /**
@@ -1184,6 +1301,7 @@ export const NESTED_KEY_TARGETS: readonly NestedKeyTarget[] = [
     minWrittenMembers: 40,
     minWriteScopes: 25,
     minHandoffPoints: 1,
+    terminalRenames: CLOUDFRONT_DISTRIBUTION_TERMINAL_RENAMES,
   },
   {
     // Opted into the WRITE-EVIDENCE pass by issue #1474, once the BUILDER
@@ -1350,6 +1468,7 @@ export const NESTED_KEY_TARGETS: readonly NestedKeyTarget[] = [
     minWriteScopes: 40,
     minHandoffPoints: 10,
     segmentRenames: ECS_TASK_DEFINITION_SEGMENT_RENAMES,
+    terminalRenames: ECS_TASK_DEFINITION_TERMINAL_RENAMES,
   },
   {
     // Added by issue #1386. The provider rebuilds Source / Environment / Cache /
@@ -1395,12 +1514,14 @@ export const NESTED_KEY_TARGETS: readonly NestedKeyTarget[] = [
     // Issue #1430 predicted a different three, and it was wrong on all of
     // them. `TagFilters` (16 literal occurrences pre-#1426) and
     // `TransitionInDays` (2) were already named elsewhere in the file — by
-    // `readCurrentState`'s reverse map — so the file-global literal heuristic
-    // classifies both `provider-handled` no matter how broken the WRITE path
-    // is. That is exactly the blind spot tracked as item 2 of #1393, and it is
-    // why the strip-probes in the unit test use only single-occurrence keys: a
-    // probe that deletes EVERY occurrence of a 16-site literal tests a
-    // regression shape that cannot occur. Rule-level `ExpiredObjectDeleteMarker`
+    // `readCurrentState`'s reverse map — so the then-file-global literal
+    // heuristic classified both `provider-handled` no matter how broken the
+    // WRITE path was. Item 2 of #1393 closed that: the literal now needs
+    // scoped write evidence (or a resolving terminal rename), so the
+    // per-family `TagFilters` / `TransitionInDays` paths are write-verified
+    // and their strip-probes exist in the unit test; only the lifecycle
+    // `TagFilters` array (destructured-gatherScope, walker-invisible) stays
+    // allow-list-gated. Rule-level `ExpiredObjectDeleteMarker`
     // is not reachable either — the shape pass matches CFn definitions to
     // same-named SDK interfaces, and `@aws-sdk/client-s3` spells it
     // `LifecycleRule`, so CFn's `Rule` sits in `unmatchedDefinitions` and the
@@ -1583,6 +1704,17 @@ export const NESTED_KEY_ALLOW_LIST: ReadonlyMap<string, AllowListEntry> = new Ma
     },
   ],
   [
+    allowKey('AWS::CloudFront::Distribution', 'DistributionConfig.CustomOrigin.OriginSSLProtocols'),
+    {
+      rationale:
+        'Member of the legacy pre-2012 CustomOrigin block (LegacyCustomOrigin definition), ' +
+        'unreachable from a modern template — same family as the CustomOrigin / DNSName ' +
+        'entries. Path-scoped so it can never leak onto the MODERN ' +
+        'Origins.CustomOriginConfig.OriginSSLProtocols, which carries a verified terminal ' +
+        'rename instead (issue #1393).',
+    },
+  ],
+  [
     allowKey('AWS::CloudFront::Distribution', 'S3Origin'),
     {
       rationale:
@@ -1684,6 +1816,31 @@ export const NESTED_KEY_ALLOW_LIST: ReadonlyMap<string, AllowListEntry> = new Ma
         'Same destructured-gatherScope forward as the sibling ' +
         '`LifecycleConfiguration.Rules.TagFilters.Key` entry (issue #1540).',
       passes: ['write'],
+    },
+  ],
+  [
+    allowKey('AWS::S3::Bucket', 'NotificationConfiguration.EventBridgeConfiguration.EventBridgeEnabled'),
+    {
+      rationale:
+        'Presence-encoded: the SDK EventBridgeConfiguration is an EMPTY struct, so the CFn ' +
+        'boolean has no member to map onto — applyNotificationConfiguration writes ' +
+        '`EventBridgeConfiguration: {}` when the flag is truthy and omits the block when it ' +
+        'is not. There is no write the terminal-rename mechanism could redirect to ' +
+        '(issue #1393).',
+      passes: ['key'],
+    },
+  ],
+  [
+    allowKey('AWS::S3::Bucket', 'LifecycleConfiguration.Rules.TagFilters'),
+    {
+      rationale:
+        'Forwarded verbatim into `Filter{,.And}.Tags` by applyLifecycleConfiguration through ' +
+        'the destructured-gatherScope shape the hand-off taint walk deliberately does not ' +
+        'cross — same class as the `LifecycleConfiguration.Rules.TagFilters.Key` / `.Value` ' +
+        'write-pass entries, here for the ARRAY itself on the key pass (issue #1393). The ' +
+        'per-item config families (Analytics / Metrics / IntelligentTiering) resolve via ' +
+        'declared terminal renames and need no entry.',
+      passes: ['key'],
     },
   ],
   [
@@ -4612,6 +4769,68 @@ export function classifyTarget(
     let sdkNearMiss: string | undefined;
     let rationale: string | undefined;
     let allowMatchKey: string | undefined;
+    // Chain machinery shared by BOTH branches below (hoisted by issue #1393
+    // item 2 — the no-SDK-member branch now consults the same write index).
+    // Non-terminal segments carry the target's declared RENAMES; the terminal
+    // never does (it IS the audited key — see `segmentRenames`; a DECLARED
+    // terminal correspondence is `terminalRenames`' separate, path-keyed
+    // job). A rename value may be DOTTED (`LoggingConfiguration` ->
+    // `BucketLoggingStatus.LoggingEnabled` — an SDK-only wrapper level the
+    // CFn shape flattens), so the chain is flattened one write-index level
+    // per dotted part (issue #1520). A key may be SCOPED by the segment's
+    // immediate CFn parent (`'S3Key.Rules': 'FilterRules'`, issue #1540) —
+    // matched on the ORIGINAL CFn spellings, winning over a bare-name entry
+    // — so one rename can never leak onto a same-named segment elsewhere
+    // (`LifecycleConfiguration.Rules` stays untouched by the notification
+    // entry above).
+    const renameKeyAt = (i: number): string | undefined => {
+      if (i > 0 && renames[`${segments[i - 1]}.${segments[i]}`] !== undefined) {
+        return `${segments[i - 1]}.${segments[i]}`;
+      }
+      return renames[segments[i]!] !== undefined ? segments[i]! : undefined;
+    };
+    const parentChain = segments.slice(0, -1).flatMap((seg, i) => {
+      const renameKey = renameKeyAt(i);
+      return (renameKey === undefined ? styled(seg) : renames[renameKey]!).split('.');
+    });
+    const parentPaths = resolveWritePaths(parentChain);
+    const terminalEntry = (target.terminalRenames ?? {})[path];
+    // TERMINAL rename / relocation (issue #1540): redirect the judgment to
+    // the declared SDK spelling — still verbatim, still scope-checked, at
+    // the parent chain extended by the entry's scope-insertion parts.
+    const resolveRenamedTerminal = (): boolean => {
+      if (terminalEntry === undefined) return false;
+      const parts = terminalEntry.split('.');
+      const renamedTerminal = parts[parts.length - 1]!;
+      const extendedChain = [...parentChain, ...parts.slice(0, -1)];
+      return (
+        resolveWritePaths(extendedChain).some(
+          (p) => writeEvidence.scopes.get(p)?.has(renamedTerminal) ?? false
+        ) ||
+        isHandoffCovered(
+          writeEvidence.handoffScopes,
+          extendedChain.join('.'),
+          renamedTerminal,
+          writeEvidence.handoffExclusions
+        )
+      );
+    };
+    // Record which segment renames still EARN their place. The test is stated
+    // as its negation so it cannot MASK a real finding: an entry goes unused
+    // only when the UN-RENAMED chain resolves — i.e. the SDK (or the provider)
+    // renamed the member back and the map is now redundant. When NEITHER
+    // chain resolves the provider is simply not writing the member; the
+    // entry is still the right bridge, and the run must report that
+    // divergence rather than a stale-map error on top of it.
+    const recordUsedSegmentRenames = (): void => {
+      if (usedSegmentRenames === undefined) return;
+      for (let i = 0; i < segments.length - 1; i++) {
+        const renameKey = renameKeyAt(i);
+        if (renameKey === undefined) continue;
+        const plain = segments.slice(0, i + 1).map((seg) => styled(seg));
+        if (!chainResolves(plain)) usedSegmentRenames.add(renameKey);
+      }
+    };
     if (sdkMembers.has(expected)) {
       // WRITE-EVIDENCE pass (issues #1432 / #1448 / #1464). A matching SDK
       // spelling only proves delivery for a provider that FORWARDS the blob; a
@@ -4620,29 +4839,6 @@ export function classifyTarget(
       // Deliberately NOT rescued by `providerLiterals`: the CFn spelling
       // appearing somewhere in the file is the loose heuristic this pass exists
       // to stop trusting.
-      // Non-terminal segments carry the target's declared RENAMES; the terminal
-      // never does (it IS the audited key — see `segmentRenames`; a DECLARED
-      // terminal correspondence is `terminalRenames`' separate, path-keyed
-      // job). A rename value may be DOTTED (`LoggingConfiguration` ->
-      // `BucketLoggingStatus.LoggingEnabled` — an SDK-only wrapper level the
-      // CFn shape flattens), so the chain is flattened one write-index level
-      // per dotted part (issue #1520). A key may be SCOPED by the segment's
-      // immediate CFn parent (`'S3Key.Rules': 'FilterRules'`, issue #1540) —
-      // matched on the ORIGINAL CFn spellings, winning over a bare-name entry
-      // — so one rename can never leak onto a same-named segment elsewhere
-      // (`LifecycleConfiguration.Rules` stays untouched by the notification
-      // entry above).
-      const renameKeyAt = (i: number): string | undefined => {
-        if (i > 0 && renames[`${segments[i - 1]}.${segments[i]}`] !== undefined) {
-          return `${segments[i - 1]}.${segments[i]}`;
-        }
-        return renames[segments[i]!] !== undefined ? segments[i]! : undefined;
-      };
-      const parentChain = segments.slice(0, -1).flatMap((seg, i) => {
-        const renameKey = renameKeyAt(i);
-        return (renameKey === undefined ? styled(seg) : renames[renameKey]!).split('.');
-      });
-      const parentPaths = resolveWritePaths(parentChain);
       const coveredPlain =
         parentPaths.some((p) => writeEvidence.scopes.get(p)?.has(expected) ?? false) ||
         isHandoffCovered(
@@ -4651,42 +4847,9 @@ export function classifyTarget(
           expected,
           writeEvidence.handoffExclusions
         );
-      // TERMINAL rename / relocation (issue #1540): redirect the judgment to
-      // the declared SDK spelling — still verbatim, still scope-checked, at
-      // the parent chain extended by the entry's scope-insertion parts.
-      const terminalEntry = (target.terminalRenames ?? {})[path];
-      let coveredRenamed = false;
-      if (terminalEntry !== undefined && !coveredPlain) {
-        const parts = terminalEntry.split('.');
-        const renamedTerminal = parts[parts.length - 1]!;
-        const extendedChain = [...parentChain, ...parts.slice(0, -1)];
-        coveredRenamed =
-          resolveWritePaths(extendedChain).some(
-            (p) => writeEvidence.scopes.get(p)?.has(renamedTerminal) ?? false
-          ) ||
-          isHandoffCovered(
-            writeEvidence.handoffScopes,
-            extendedChain.join('.'),
-            renamedTerminal,
-            writeEvidence.handoffExclusions
-          );
-      }
+      const coveredRenamed = coveredPlain ? false : resolveRenamedTerminal();
       const covered = coveredPlain || coveredRenamed;
-      // Record which renames still EARN their place. The test is stated as its
-      // negation so it cannot MASK a real finding: an entry goes unused only
-      // when the UN-RENAMED chain resolves — i.e. the SDK (or the provider)
-      // renamed the member back and the map is now redundant. When NEITHER
-      // chain resolves the provider is simply not writing the member; the
-      // entry is still the right bridge, and the run must report that
-      // divergence rather than a stale-map error on top of it.
-      if (usedSegmentRenames !== undefined) {
-        for (let i = 0; i < segments.length - 1; i++) {
-          const renameKey = renameKeyAt(i);
-          if (renameKey === undefined) continue;
-          const plain = segments.slice(0, i + 1).map((seg) => styled(seg));
-          if (!chainResolves(plain)) usedSegmentRenames.add(renameKey);
-        }
-      }
+      recordUsedSegmentRenames();
       // Same negation for terminal entries: unused only when the PLAIN
       // terminal already resolves (the map is redundant); a still-unresolved
       // renamed terminal keeps both the entry and the reported divergence.
@@ -4706,12 +4869,66 @@ export function classifyTarget(
       } else {
         bucket = 'same-spelling';
       }
-    } else if (providerLiterals.has(key)) {
-      bucket = 'provider-handled';
     } else {
+      // No SDK member at the styled spelling: the provider must CONVERT the
+      // key, and a string literal somewhere in the file used to be the whole
+      // proof it does. That heuristic is FILE-GLOBAL, and issue #1393 (item 2)
+      // measured it rescuing broken write paths: a key named legitimately at
+      // one place (a reverse map, an unrelated top-level) vouched for every
+      // same-spelled occurrence anywhere in the file — the pre-#1426
+      // s3-bucket-provider lifecycle defects sat exactly there, and the
+      // rescue ALSO masked case-divergences (item 1: a literal outranked the
+      // near-miss check below).
+      //
+      // For a write-evidence target the literal is therefore only trusted
+      // WITH scoped delivery proof, either of:
+      //   - a genuine SDK member, written at the RESOLVED parent scope, whose
+      //     case-folded name equals the audited key (the case-fold class:
+      //     CFn `EFSVolumeConfiguration` written as SDK
+      //     `efsVolumeConfiguration`). The member check is load-bearing — a
+      //     provider writing a case-mangled NON-member at the right scope is
+      //     the bug itself, not evidence;
+      //   - a declared {@link NestedKeyTarget.terminalRenames} entry that
+      //     resolves (the non-case renames: `ExposedHeaders` ->
+      //     `ExposeHeaders`), judged by the same write-side test the
+      //     same-spelling branch applies.
+      // A whole-blob HAND-OFF is deliberately NOT accepted here: a verbatim
+      // forward delivers the CFn spelling, which by this branch's premise
+      // matches no SDK member, so the serializer drops it on the wire — the
+      // hand-off can vouch for a same-spelling interior, never for a
+      // divergent one. Conversions real but invisible to the write walk
+      // (computed-key rename loops, destructured helper returns) carry
+      // `passes: ['key']` allow-list entries instead, per the
+      // `CorsConfiguration.CorsRules` precedent.
+      //
+      // A target WITHOUT the write-evidence opt-in keeps the file-global
+      // rescue: there is no scope index to check against, and inventing one
+      // from nothing would flag every key of a legitimately blob-forwarding
+      // provider. All current targets have opted in, so the loose path is
+      // future-target fallback only.
       const near = sdkLower.get(key.toLowerCase());
       const allowed = lookupAllowEntry(allowList, target.resourceType, path, key, 'key');
-      if (allowed) {
+      let literalRescued: boolean;
+      if (target.freshObjectMapper === true) {
+        const ciWrittenSdkMember = parentPaths.some((p) =>
+          [...(writeEvidence.scopes.get(p) ?? [])].some(
+            (m) => m.toLowerCase() === key.toLowerCase() && sdkMembers.has(m)
+          )
+        );
+        // Same stale-fence negation as the same-spelling branch: a terminal
+        // entry is unused only when the UN-renamed evidence already suffices.
+        if (usedTerminalRenames !== undefined && terminalEntry !== undefined && !ciWrittenSdkMember) {
+          usedTerminalRenames.add(path);
+        }
+        recordUsedSegmentRenames();
+        literalRescued =
+          providerLiterals.has(key) && (ciWrittenSdkMember || resolveRenamedTerminal());
+      } else {
+        literalRescued = providerLiterals.has(key);
+      }
+      if (literalRescued) {
+        bucket = 'provider-handled';
+      } else if (allowed) {
         bucket = 'allow-listed';
         rationale = allowed.entry.rationale;
         allowMatchKey = allowed.key;
