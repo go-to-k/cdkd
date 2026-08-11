@@ -1156,6 +1156,15 @@ Checklist when writing or reviewing an `update()`:
   are replaced wholesale (Lambda's `LoggingConfig`: sending
   `{LogFormat: 'Text'}` alone resets an unspecified custom `LogGroup` to the
   default — also live-verified), so verify per API, not by analogy.
+  Lambda's `ImageConfig` is the same whole-replace shape (issue #1225, live
+  A/B 2026-08-11): `UpdateFunctionConfiguration` with `{EntryPoint}` alone
+  CLEARED the previously-set `Command` / `WorkingDirectory`, and dropping
+  those two from a kept CFn `ImageConfig` block reached the same end state —
+  so the provider passes the kept-partial block through verbatim and
+  synthesizing per-sub-field clears there would DIVERGE from CloudFormation.
+  Measure both halves: "does CFn reset it" and "what does the API do with a
+  partial object" are two different questions, and only the second one tells
+  you whether pass-through is already correct.
 - Unit-test **three** shapes: removed → exact reset value; never-present →
   stays absent; mixed kept/removed → kept fields pass through unchanged.
 - A per-key removal test (one key dropped from a still-present map) does NOT
