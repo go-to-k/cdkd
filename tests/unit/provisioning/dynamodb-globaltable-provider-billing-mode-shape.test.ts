@@ -194,6 +194,36 @@ describe('DynamoDBGlobalTableProvider malformed BillingMode (issue #1513)', () =
     );
   });
 
+  it('keeps the refusal when the context is present but carries no replay flag', async () => {
+    activeTable();
+
+    // `replayWarn` tests `=== true`, so an empty context bag is an ordinary
+    // create. Pinned so a future `!== false` refactor cannot silently turn
+    // every context-carrying create into a warn.
+    await expect(
+      provider.create('MyTable', RESOURCE_TYPE, { ...baseProps, BillingMode: null }, {})
+    ).rejects.toThrow(/AWS::DynamoDB::GlobalTable BillingMode must be a non-empty string/);
+  });
+
+  it('passes a non-canonical enum spelling through, by design', async () => {
+    activeTable();
+
+    // The guard is a SHAPE guard, not an enum validator: `requireConfigString`
+    // only requires a non-blank string and does not trim. So 'provisioned'
+    // reaches AWS verbatim and AWS rejects it — which is the intended division
+    // of labour, but worth pinning because every comment here calls the field
+    // "enum-valued" and a reader could assume membership is checked.
+    await provider.create('MyTable', RESOURCE_TYPE, {
+      ...baseProps,
+      BillingMode: 'provisioned',
+    });
+
+    const createCall = mockSend.mock.calls.find(
+      (c) => c[0].constructor.name === 'CreateTableCommand'
+    );
+    expect(createCall?.[0].input.BillingMode).toBe('provisioned');
+  });
+
   it('keeps the refusal on an ordinary template-path create that passes a context', async () => {
     activeTable();
 
@@ -254,6 +284,52 @@ describe('DynamoDBGlobalTableProvider malformed BillingMode (issue #1513)', () =
     expect(childLogger.warn).not.toHaveBeenCalledWith(
       expect.stringContaining('AWS::DynamoDB::GlobalTable BillingMode')
     );
+  });
+
+  it('an UNUSABLE desired value must NOT flip a live PROVISIONED table to on-demand', async () => {
+    activeTable();
+
+    // The consequential arm, and the one the first version of this suite
+    // missed: with `previous === desired` there is no flip to observe at all,
+    // so a wrong fallback was invisible. Before the guard existed the junk
+    // value reached `UpdateTable` and AWS REJECTED it — billing unchanged.
+    // Defaulting to PAY_PER_REQUEST would instead make the flip REAL, tearing
+    // down the write scalable target and every per-GSI capacity setting on a
+    // production table with only a warn.
+    await provider.update(
+      'MyTable',
+      TABLE_NAME,
+      RESOURCE_TYPE,
+      { ...baseProps, BillingMode: null },
+      { ...baseProps, BillingMode: 'PROVISIONED' }
+    );
+
+    const billingUpdates = mockSend.mock.calls
+      .filter((c) => c[0].constructor.name === 'UpdateTableCommand')
+      .filter((c) => c[0].input.BillingMode !== undefined);
+    expect(billingUpdates).toHaveLength(0);
+
+    expect(childLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("The table's current billing mode (PROVISIONED) is kept")
+    );
+  });
+
+  it('an ABSENT desired value still flips to the PAY_PER_REQUEST default', async () => {
+    activeTable();
+
+    // The suppression above is scoped to present-but-unusable ONLY. A genuinely
+    // absent property IS a template-declared flip and must keep working, or the
+    // fix would break the ordinary remove-the-property deploy.
+    await provider.update('MyTable', TABLE_NAME, RESOURCE_TYPE, { ...baseProps }, {
+      ...baseProps,
+      BillingMode: 'PROVISIONED',
+    });
+
+    const billingUpdates = mockSend.mock.calls
+      .filter((c) => c[0].constructor.name === 'UpdateTableCommand')
+      .filter((c) => c[0].input.BillingMode !== undefined);
+    expect(billingUpdates).toHaveLength(1);
+    expect(billingUpdates[0][0].input.BillingMode).toBe('PAY_PER_REQUEST');
   });
 
   it('does not warn on a well-formed update', async () => {

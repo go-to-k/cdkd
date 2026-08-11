@@ -998,12 +998,36 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // itself be a historical state record.
       const oldBilling =
         (previousProperties['BillingMode'] as string | undefined) ?? 'PAY_PER_REQUEST';
-      const newBilling = requireConfigString(
+      // An UNUSABLE desired value must fall back to the PREVIOUS billing mode,
+      // NOT to the create-path default. Warning and then defaulting to
+      // PAY_PER_REQUEST would be strictly worse than the bug this guards:
+      // before the guard existed a junk value flowed into `UpdateTable` and AWS
+      // REJECTED it (loud, billing unchanged), whereas defaulting makes
+      // `oldBilling !== newBilling` true against a live PROVISIONED table and
+      // silently FLIPS it to on-demand — which also tears down the write
+      // scalable target via `billingFlippedToOnDemand` and every per-GSI
+      // capacity setting. A malformed template would silently re-price and
+      // de-autoscale a production table with only a `warn` to show for it.
+      //
+      // An ABSENT value keeps defaulting to PAY_PER_REQUEST, because that IS a
+      // genuine template-declared flip. Only the present-but-unusable case
+      // suppresses it.
+      let billingUnusable = false;
+      const requestedBilling = requireConfigString(
         properties['BillingMode'],
         'PAY_PER_REQUEST',
         'AWS::DynamoDB::GlobalTable BillingMode',
-        { onUnusable: (message) => this.logger.warn(message) }
+        {
+          onUnusable: (message) => {
+            billingUnusable = true;
+            this.logger.warn(
+              `${message} The table's current billing mode (${oldBilling}) is kept for this ` +
+                `update rather than flipped to the default.`
+            );
+          },
+        }
       );
+      const newBilling = billingUnusable ? oldBilling : requestedBilling;
       // The table-level on-demand ceiling is only a live, resettable setting
       // when the table is on-demand on BOTH sides of this deploy.
       //
@@ -1254,7 +1278,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       }
 
       // 4. BillingMode flip (own UpdateTable per AWS state-machine rule).
-      // Defaults must match `create()` (line 183: `PAY_PER_REQUEST`) so
+      // Defaults must match the `billingMode` read in `create()`
+      // (`PAY_PER_REQUEST`) so
       // a template with no explicit `BillingMode` doesn't false-fire
       // a PROVISIONED → PAY_PER_REQUEST diff on every update of a
       // PAY_PER_REQUEST table. Both are resolved just above step 3, which
