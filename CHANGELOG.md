@@ -1,3 +1,10 @@
+## [0.280.7](https://github.com/go-to-k/cdkd/compare/v0.280.6...v0.280.7) (2026-08-11)
+
+
+### Bug Fixes
+
+* **efs:** replace the committed raw NUL that hid efs-provider.ts from grep ([#1587](https://github.com/go-to-k/cdkd/issues/1587)) ([#1589](https://github.com/go-to-k/cdkd/issues/1589)) ([f3b060b](https://github.com/go-to-k/cdkd/commit/f3b060bc8b86b393ec1612a5d338fd3ca8f334c1))
+
 ## [0.280.6](https://github.com/go-to-k/cdkd/compare/v0.280.5...v0.280.6) (2026-08-11)
 
 
