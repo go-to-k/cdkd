@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "summary": {
     "classifiedCount": 84,
-    "declaredProperties": 1128,
-    "wiredProperties": 1126,
+    "declaredProperties": 1136,
+    "wiredProperties": 1134,
     "wired": 82,
     "gap": 0,
     "allowListed": 2,
@@ -7602,8 +7602,25 @@
       "file": "ecs-provider.ts",
       "className": "ECSProvider",
       "bucket": "wired",
-      "declaredCount": 40,
+      "declaredCount": 48,
       "properties": [
+        {
+          "name": "AvailabilityZoneRebalancing",
+          "status": "wired",
+          "types": [
+            "AWS::ECS::Service"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "createService",
+            "update",
+            "updateService"
+          ]
+        },
         {
           "name": "CapacityProviders",
           "status": "wired",
@@ -7771,6 +7788,23 @@
           ]
         },
         {
+          "name": "DeploymentController",
+          "status": "wired",
+          "types": [
+            "AWS::ECS::Service"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "createService",
+            "update",
+            "updateService"
+          ]
+        },
+        {
           "name": "DesiredCount",
           "status": "wired",
           "types": [
@@ -7882,6 +7916,22 @@
           ]
         },
         {
+          "name": "ForceNewDeployment",
+          "status": "wired",
+          "types": [
+            "AWS::ECS::Service"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "resolveForceNewDeployment",
+            "update",
+            "updateService"
+          ]
+        },
+        {
           "name": "HealthCheckGracePeriodSeconds",
           "status": "wired",
           "types": [
@@ -7958,6 +8008,23 @@
           "seededBy": [
             "create",
             "createTaskDefinition"
+          ]
+        },
+        {
+          "name": "Monitoring",
+          "status": "wired",
+          "types": [
+            "AWS::ECS::Service"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "createService",
+            "update",
+            "updateService"
           ]
         },
         {
@@ -8108,6 +8175,21 @@
           ]
         },
         {
+          "name": "Role",
+          "status": "wired",
+          "types": [
+            "AWS::ECS::Service"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "createService"
+          ]
+        },
+        {
           "name": "RuntimePlatform",
           "status": "wired",
           "types": [
@@ -8135,6 +8217,23 @@
           "seededBy": [
             "create",
             "createService"
+          ]
+        },
+        {
+          "name": "ServiceConnectConfiguration",
+          "status": "wired",
+          "types": [
+            "AWS::ECS::Service"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "createService",
+            "update",
+            "updateService"
           ]
         },
         {
@@ -8243,6 +8342,23 @@
           ]
         },
         {
+          "name": "VolumeConfigurations",
+          "status": "wired",
+          "types": [
+            "AWS::ECS::Service"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "createService",
+            "update",
+            "updateService"
+          ]
+        },
+        {
           "name": "Volumes",
           "status": "wired",
           "types": [
@@ -8255,6 +8371,23 @@
           "seededBy": [
             "create",
             "createTaskDefinition"
+          ]
+        },
+        {
+          "name": "VpcLatticeConfigurations",
+          "status": "wired",
+          "types": [
+            "AWS::ECS::Service"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "createService",
+            "update",
+            "updateService"
           ]
         }
       ],
