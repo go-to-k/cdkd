@@ -1,3 +1,10 @@
+## [0.278.46](https://github.com/go-to-k/cdkd/compare/v0.278.45...v0.278.46) (2026-08-11)
+
+
+### Bug Fixes
+
+* **provisioning:** guard the GlobalTable BillingMode defaulting site, the one [#1513](https://github.com/go-to-k/cdkd/issues/1513) left open ([#1542](https://github.com/go-to-k/cdkd/issues/1542)) ([358c4fa](https://github.com/go-to-k/cdkd/commit/358c4faec070ab8321dada7e95c54e6987ea7ad2))
+
 ## [0.278.45](https://github.com/go-to-k/cdkd/compare/v0.278.44...v0.278.45) (2026-08-10)
 
 
