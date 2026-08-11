@@ -72,8 +72,9 @@ export class SNSTopicProvider implements ResourceProvider {
   /**
    * Create an SNS topic
    *
-   * `context.replayingState` (issue #1551) downgrades this method's
-   * template-shape refusals to warnings. The rollback executor's
+   * `context.replayingState` (issue #1551) downgrades this method's one
+   * template-shape refusal — `buildDeliveryStatusAttributeMap`'s `'throw'`
+   * mode — to a warning. The rollback executor's
    * reverse-replacement arm revives the OLD topic with
    * `create(..., previousState.properties, REPLAYING_STATE_CREATE_CONTEXT)`,
    * so the properties bag can be a historical cdkd STATE record carrying a
@@ -995,9 +996,15 @@ const SNS_DELIVERY_STATUS_ATTRIBUTE_SUFFIXES = [
  * / unknown protocol, and encodes the create-vs-update distinction
  * (issue #1538):
  *
- * - `'throw'` — the CREATE desired side, which is always template-borne:
- *   a template error must fail fast, naming the offending value.
- * - `'warn'` — the UPDATE desired side, which is NOT always template-borne:
+ * - `'throw'` — a TEMPLATE-borne desired side: an ordinary `create()`, where a
+ *   template error must fail fast, naming the offending value.
+ * - `'warn'` — a desired side that is NOT template-borne. That is every
+ *   `update()`, and — since issue #1551 — a `create()` whose
+ *   `CreateContext.replayingState` is set (the rollback executor's
+ *   reverse-replacement arm, which revives the old topic from a state record).
+ *   The wording below is therefore operation-neutral: on a create there is no
+ *   previously-set attribute to reset, only one that is never applied. Same
+ *   reason as before:
  *   the rollback executor's revert arm and `cdkd drift --revert` both call
  *   `update()` with a state-derived bag as the DESIRED properties, so a
  *   state record carrying an unsupported protocol / malformed shape (a
@@ -1030,8 +1037,9 @@ const SNS_DELIVERY_STATUS_ATTRIBUTE_SUFFIXES = [
  * protocol, non-array container, non-object entry) used to throw on that
  * side too, which made such a state record permanently unreplayable —
  * fixed by issue #1538, which moved `update()`'s desired side to `'warn'`
- * while `create()` keeps `'throw'` (a template create must still fail
- * fast; #1529 / #1536 deliberately left that contract unchanged).
+ * while `create()` kept `'throw'`; issue #1551 then extended the downgrade to
+ * a create that DECLARES a state replay, leaving the template-path create
+ * strict (#1529 / #1536 deliberately left that contract unchanged).
  */
 export function buildDeliveryStatusAttributeMap(
   logging: unknown,
@@ -1055,10 +1063,11 @@ export function buildDeliveryStatusAttributeMap(
       warn(
         `SNS topic ${logicalId}: DeliveryStatusLogging must be an array of ` +
           `{Protocol, ...} objects, got ${JSON.stringify(logging)} — treating it ` +
-          `as empty for this update, so previously set delivery-status attributes ` +
-          `are reset. The desired properties can come from a cdkd state record ` +
-          `(rollback replay / drift --revert), so this does not fail the update; ` +
-          `fix the template (or the state record on a replay) to clear this warning.`
+          `as empty, so no delivery-status attribute is applied (on an update, any ` +
+          `previously set one is reset). The desired properties can come from a cdkd ` +
+          `state record (rollback replay / drift --revert), so this does not fail the ` +
+          `operation; fix the template (or the state record on a replay) to clear ` +
+          `this warning.`
       );
     }
     return map;
