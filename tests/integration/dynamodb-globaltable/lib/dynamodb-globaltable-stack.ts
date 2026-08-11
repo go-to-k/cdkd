@@ -201,12 +201,30 @@ export class DynamoDBGlobalTableStack extends cdk.Stack {
     // `addReplica` — the UpdateTable `ReplicaUpdates[].Create` path taken
     // when a new region appears on an EXISTING table.
     //
-    // The three modes below never REMOVE a replica. Removing one from a
-    // still-live table is what arms DynamoDB's 24h source-region delete lock
-    // (a probe wedged a table in UPDATING for 90+ minutes that way); teardown
-    // is left to `cdkd destroy`, which deletes the GlobalTable as ONE
-    // resource with all replicas together and never issues a standalone
-    // replica-delete.
+    // This table must NEVER have its replica removed by an update. Removing
+    // one from a still-live table is what arms DynamoDB's 24h source-region
+    // delete lock (a probe wedged a table in UPDATING for 90+ minutes that
+    // way); teardown is left to `cdkd destroy`, which deletes the GlobalTable
+    // as ONE resource with all replicas together and never issues a
+    // standalone replica-delete.
+    //
+    // Presence is keyed on the TOKEN, and verify.sh is what makes that safe:
+    // once step 12g adds the replica, its `OD_MODE_SUFFIX` appends
+    // `cross-region-ondemand-dropped` to EVERY later deploy, so the token —
+    // and therefore the replica — is monotonic for the rest of the run.
+    //
+    // Both halves of that are load-bearing, and each was got wrong once:
+    //  - Without the suffix, the plain mode gating drops the replica in the
+    //    first later step whose mode list omits the token (`ttl,tags`, ...),
+    //    and cdkd correctly issues a replica-delete ON A STILL-LIVE TABLE —
+    //    the operation that arms DynamoDB's 24h source-region delete lock.
+    //  - Keying presence on the ENV VAR instead fixes that but breaks the
+    //    test: the replica is then declared from step 1, so it is created
+    //    WITH the table and step 12g becomes a replica-MODIFY. The code under
+    //    test is `addReplica` (the UpdateTable `ReplicaUpdates[].Create`
+    //    path), which is only reached when a new region appears on an
+    //    EXISTING table — verified in the 2026-08-11 run, where the log
+    //    showed `Creating DynamoDB GlobalTable` at step 1 instead.
     const onDemandReplicaMode = updateMode.includes('cross-region-ondemand-dropped')
       ? 'dropped'
       : updateMode.includes('cross-region-ondemand-changed')
@@ -216,14 +234,20 @@ export class DynamoDBGlobalTableStack extends cdk.Stack {
           : 'none';
 
     // 20 -> 40 so the CHANGE round moves the value, and neither number is a
-    // DynamoDB default that could pass by accident.
+    // DynamoDB default that could pass by accident. `none` (every deploy
+    // before 12g and after 12i) declares the replica with NO ceiling, which
+    // is the same shape as `dropped` — correct, because once the ceiling has
+    // been dropped it must STAY dropped from the template's point of view
+    // while remaining live on AWS.
     const onDemandCeiling = onDemandReplicaMode === 'changed' ? 40 : 20;
+    const declaresCeiling = onDemandReplicaMode === 'initial' || onDemandReplicaMode === 'changed';
+    const wantsOnDemandReplica = onDemandReplicaMode !== 'none';
 
     const onDemandReplicaTable = new ddb.TableV2(this, 'OnDemandReplicaTable', {
       partitionKey: { name: 'pk', type: ddb.AttributeType.STRING },
       billing: ddb.Billing.onDemand(),
       removalPolicy: cdk.RemovalPolicy.DESTROY,
-      ...(onDemandReplicaMode !== 'none' && {
+      ...(wantsOnDemandReplica && {
         replicas: [
           {
             region: 'eu-west-1',
@@ -232,9 +256,7 @@ export class DynamoDBGlobalTableStack extends cdk.Stack {
             // stores literally; an empty block wedges the table — both
             // live-probed on issue #1436), so cdkd must leave the old value
             // in effect and WARN rather than corrupt the table.
-            ...(onDemandReplicaMode !== 'dropped' && {
-              maxReadRequestUnits: onDemandCeiling,
-            }),
+            ...(declaresCeiling && { maxReadRequestUnits: onDemandCeiling }),
           },
         ],
       }),

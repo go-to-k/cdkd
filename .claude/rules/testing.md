@@ -309,6 +309,59 @@ judgment call a lint cannot make, so this one stays a read-it-and-follow-it
 rule by design. User-facing writeup in
 [docs/testing.md](../../docs/testing.md).
 
+### A mode-gated fixture resource DISAPPEARS in every later step that omits the token (mandatory)
+
+Multi-step fixtures drive each phase with
+`CDKD_TEST_UPDATE=<comma,separated,modes>` and the stack reads
+`updateMode.includes('x')`. The natural way to add a scenario is to gate the new
+resource on a new token — and that is **wrong whenever a later deploy in the
+same `verify.sh` uses a mode list without it**. The resource vanishes from the
+template and cdkd correctly issues a DELETE for it. A per-step conditional in a
+long fixture is really a *step function over the whole run*, not a flag for your
+step.
+
+Caught during issue #1512, before the run reached it. The new
+`OnDemandReplicaTable` gated its `eu-west-1` replica on `cross-region-ondemand*`
+(steps 12g/h/i). The fixture then keeps deploying — `deletion-protection,
+autoscaling,ttl,tags` and five more `ttl,tags,...` rounds — none of which carry
+the token, so step 12f would have removed the replica **from a still-live
+table**. That is exactly the operation that arms DynamoDB's 24h source-region
+delete lock (a probe wedged a table in `UPDATING` for 90+ minutes that way,
+#1442), and the fixture's own comments, the commit message and the issue comment
+had all already claimed the design "only ever ADDs".
+
+**Separate PRESENCE from CONFIGURATION.** Presence goes on something constant
+for the whole run; only the configuration varies per step:
+
+```ts
+// PRESENCE: constant for the whole verify.sh run.
+const wantsReplica = process.env.CDKD_INTEG_MULTI_REGION === '1';
+// CONFIGURATION: per-step.
+const declaresCeiling = mode === 'initial' || mode === 'changed';
+```
+
+Then no step can drop the resource and only `cdkd destroy` removes it — which
+for a GlobalTable deletes every replica as ONE resource and never issues a
+standalone replica-delete.
+
+**Before adding a mode-gated resource to a multi-step fixture:**
+
+- Enumerate every deploy (`grep -n 'CLI} deploy' verify.sh`) and read the mode
+  list of each one that runs AFTER your steps. Any that omits your token deletes
+  your resource there.
+- Ask what that deletion COSTS. For a plain queue, nothing. For anything whose
+  removal is slow, locked, or destructive (DynamoDB replicas, RDS, stateful
+  storage) it is the whole point.
+- Verify by synthesizing the LATER modes, not your own: the check that catches
+  this is `cdk synth` under `ttl,tags` showing the resource still intact — not
+  `cdk synth` under your own mode showing it created.
+
+NOT yet mechanically enforced — issue
+[#1543](https://github.com/go-to-k/cdkd/issues/1543) tracks the lint (the
+ordered mode lists and the token-gated declarations are both statically
+extractable, so unlike the order-insensitivity rule above this one is a
+checker, not a judgment call).
+
 ### Fixture stateful L2s need an explicit removalPolicy (mandatory)
 
 Stateful CDK L2 constructs (`kinesis.Stream`, `dynamodb.Table`/`TableV2`,

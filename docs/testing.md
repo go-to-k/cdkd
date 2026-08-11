@@ -620,6 +620,57 @@ version (e.g. a public cross-account layer ARN pinned by its owner), append
 coverage floors and was verified to fail against real injected regressions
 before landing, per the checker rules above.
 
+### Fixture convention: a mode-gated resource must survive the later steps
+
+Multi-step fixtures drive each phase with
+`CDKD_TEST_UPDATE=<comma,separated,modes>`, and the fixture stack branches on
+`updateMode.includes('x')`. Adding a scenario by gating a **new resource** on a
+**new token** is the natural spelling, and it is wrong whenever a later deploy
+in the same `verify.sh` uses a mode list that omits the token: the resource
+leaves the synthesized template and cdkd correctly issues a DELETE for it. A
+per-step conditional in a long fixture is really a *step function over the whole
+run*, not a flag scoped to your step.
+
+The originating case (issue #1512), caught by review before the run reached it:
+the new `OnDemandReplicaTable` gated its `eu-west-1` replica on
+`cross-region-ondemand*`, used by steps 12g/h/i. The fixture then deploys six
+more times (`deletion-protection,autoscaling,ttl,tags`, then five `ttl,tags,...`
+rounds), none carrying the token — so step 12f would have removed the replica
+**from a still-live table**. That is precisely the operation that arms
+DynamoDB's 24-hour source-region delete lock; an earlier probe wedged a table in
+`UPDATING` for over 90 minutes that way (#1442). The fixture's own comments, the
+commit message and the issue comment had already claimed the design "only ever
+ADDs" — nothing would have contradicted them.
+
+Separate **presence** from **configuration**: put presence on something constant
+for the whole run, and let only the configuration vary per step.
+
+```ts
+// PRESENCE: constant for the whole verify.sh run.
+const wantsReplica = process.env.CDKD_INTEG_MULTI_REGION === '1';
+// CONFIGURATION: per-step.
+const declaresCeiling = mode === 'initial' || mode === 'changed';
+```
+
+No step can then drop the resource, and only `cdkd destroy` removes it — which
+for a GlobalTable deletes every replica as one resource and never issues a
+standalone replica-delete.
+
+Before adding a mode-gated resource, enumerate every deploy
+(`grep -n 'CLI} deploy' verify.sh`) and read the mode list of each one that runs
+**after** your steps; any that omits your token deletes your resource there.
+Then weigh what that deletion costs — free for a plain queue, the whole problem
+for a DynamoDB replica, RDS instance or stateful store. Verify by synthesizing
+the **later** modes: the check that catches this is `cdk synth` under `ttl,tags`
+showing the resource still intact, not `cdk synth` under your own mode showing
+it created.
+
+Not yet mechanically enforced; issue
+[#1543](https://github.com/go-to-k/cdkd/issues/1543) tracks the lint. Unlike the
+order-insensitivity convention above, this one is a genuine checker rather than
+a judgment call — the ordered mode lists and the token-gated declarations are
+both statically extractable.
+
 ### Fixture convention: stateful L2 constructs need an explicit removalPolicy
 
 Stateful CDK L2 constructs — `kinesis.Stream`, `dynamodb.Table` / `TableV2`,
