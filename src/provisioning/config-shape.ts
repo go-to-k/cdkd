@@ -150,25 +150,47 @@
  * @param containerPath CFn path of the CONTAINER, used to build both error
  *   messages, e.g. `AWS::S3::Bucket VersioningConfiguration` (the field is
  *   reported as `<containerPath>.<key>`).
+ * @param options Per-site relaxations — see {@link ConfigStringOptions}. They
+ *   apply to BOTH refusals this helper can raise: a malformed CONTAINER under
+ *   `onUnusable` warns and behaves as `{}` (field absent, so the fallback is
+ *   returned — the same thing an empty block already means), and the FIELD
+ *   half threads the options into {@link requireConfigString} unchanged. The
+ *   downgrade exists for the same state-replay reason as
+ *   {@link replayWarn}: a nested block recorded malformed by an older binary
+ *   (`StreamSpecification: ''`) would otherwise make a reverse-replacement
+ *   create un-rollbackable (issue #1544).
  * @throws Error when the container is present but not a plain object, or the
- *   key is present but not a non-blank string.
+ *   key is present but not a non-blank string, unless `onUnusable` is
+ *   supplied.
  */
 export function readConfigString(
   container: unknown,
   key: string,
   fallback: string,
-  containerPath: string
+  containerPath: string,
+  options?: ConfigStringOptions
 ): string {
   if (container === undefined || container === null) return fallback;
 
   if (!isPlainObject(container)) {
-    throw new Error(
-      `${containerPath} must be an object (got ${describe(container)}) — check for ` +
-        `an unresolved intrinsic or a mis-nested template value`
-    );
+    const detail =
+      `(got ${describe(container)}) — check for an unresolved intrinsic or a ` +
+      `mis-nested template value`;
+
+    if (options?.onUnusable) {
+      const named = fallback === '' ? '' : ` (${fallback})`;
+      options.onUnusable(
+        `${containerPath} must be an object ${detail}. Treating the block as empty, ` +
+          `so ${containerPath}.${key} takes its default${named} here; the same ` +
+          `value is REFUSED on a template-path create`
+      );
+      return fallback;
+    }
+
+    throw new Error(`${containerPath} must be an object ${detail}`);
   }
 
-  return requireConfigString(container[key], fallback, `${containerPath}.${key}`);
+  return requireConfigString(container[key], fallback, `${containerPath}.${key}`, options);
 }
 
 /**

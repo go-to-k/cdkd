@@ -271,3 +271,46 @@ describe('onUnusable (issue #1513)', () => {
     expect(warn).not.toHaveBeenCalled();
   });
 });
+
+describe('readConfigString container downgrade under onUnusable (issue #1544)', () => {
+  // The nested-container form of the same replay downgrade: a malformed
+  // CONTAINER (`StreamSpecification: ''`) under onUnusable warns and behaves
+  // as `{}` — the key is then absent, so the fallback is returned, which is
+  // exactly what an empty block already means.
+  const PATH = 'AWS::DynamoDB::GlobalTable StreamSpecification';
+
+  it('warns and returns the fallback for a malformed container', () => {
+    const warn = vi.fn();
+    expect(readConfigString('', 'StreamViewType', 'NEW_AND_OLD_IMAGES', PATH, { onUnusable: warn })).toBe(
+      'NEW_AND_OLD_IMAGES'
+    );
+    expect(warn).toHaveBeenCalledTimes(1);
+    const message = warn.mock.calls[0][0] as string;
+    expect(message).toMatch(/must be an object/);
+    expect(message).toMatch(/Treating the block as empty/);
+    expect(message).toMatch(/default \(NEW_AND_OLD_IMAGES\)/);
+    expect(message).toMatch(/REFUSED on a template-path create/);
+  });
+
+  it('omits the parenthesized default when the fallback is the empty string', () => {
+    const warn = vi.fn();
+    expect(readConfigString(42, 'LogFilePrefix', '', 'AWS::S3::Bucket LoggingConfiguration', { onUnusable: warn })).toBe('');
+    const message = warn.mock.calls[0][0] as string;
+    expect(message).toMatch(/takes its default here/);
+    expect(message).not.toMatch(/default \(\)/);
+  });
+
+  it('still throws on a malformed container when no onUnusable is supplied', () => {
+    expect(() => readConfigString('', 'StreamViewType', 'NEW_AND_OLD_IMAGES', PATH)).toThrow(/must be an object/);
+    expect(() => readConfigString('', 'StreamViewType', 'NEW_AND_OLD_IMAGES', PATH, {})).toThrow(/must be an object/);
+  });
+
+  it('threads the options into the FIELD half unchanged', () => {
+    const warn = vi.fn();
+    expect(
+      readConfigString({ StreamViewType: null }, 'StreamViewType', 'NEW_AND_OLD_IMAGES', PATH, { onUnusable: warn })
+    ).toBe('NEW_AND_OLD_IMAGES');
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0] as string).toMatch(/StreamSpecification\.StreamViewType/);
+  });
+});

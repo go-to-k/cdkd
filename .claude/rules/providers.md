@@ -37,18 +37,22 @@ helper exists to stop:
   spread into a create-path `requireConfigString` options bag — API Gateway
   `AuthorizationType`, EC2 `InstanceType` / `Domain`, IAM access-key `Status`,
   Lambda event-invoke `Qualifier`, RDS DB-proxy `TargetGroupName`, DynamoDB
-  GlobalTable `BillingMode`. Prefer this.
+  GlobalTable `BillingMode`, WAFv2 `Scope`, Lambda URL create-path `AuthType`,
+  S3 directory-bucket `DataRedundancy`, DynamoDB Table `BillingMode` (issues
+  #1544 / #1545). `readConfigString` accepts the same options bag for nested
+  containers (GlobalTable `StreamSpecification`), and
+  `toSdkGlobalSecondaryIndexes` takes the callback as `onUnusableIndexes`
+  wired from its `create()` call site only. Prefer this.
 - **A hand-threaded callback** — `EC2Provider.buildIpPermission` takes an
   `onUnusableProtocol` parameter and forwards it as `onUnusable`, because the
   helper is shared with state-borne callers that must NOT downgrade.
 - **A hand-written refusal** — `GlueProvider`'s
   `enforceIcebergTableInputAbsent`.
 
-Note the gap this list makes visible: `wafv2-provider.ts`,
-`lambda-url-provider.ts` and `s3-directory-bucket-provider.ts` call
-`requireConfigString` on a create path with NO options bag and no `context`
-parameter, so they still hard-throw on a state replay. That is pre-existing,
-not licensed. The full contract
+Update-path refusals that stay strict on purpose (a downgrade there needs a
+keep-the-previous-value design, not the create default — issue #1551):
+Lambda URL update-path `AuthType`, GlobalTable update-path nested guards.
+The full contract
 is on `CreateContext` in `src/types/resource.ts` (NOT in `region-check.ts`
 where `DeleteContext` lives — that type belongs there because its
 `expectedRegion` feeds `assertRegionMatch`; a one-line pointer sits next to

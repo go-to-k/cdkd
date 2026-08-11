@@ -19,7 +19,7 @@ import {
   type AssociationConfig,
 } from '@aws-sdk/client-wafv2';
 import { getLogger } from '../../utils/logger.js';
-import { requireConfigString } from '../config-shape.js';
+import { replayWarn, requireConfigString } from '../config-shape.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
@@ -30,6 +30,7 @@ import type {
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
+  CreateContext,
 } from '../../types/resource.js';
 
 /**
@@ -516,17 +517,23 @@ export class WAFv2WebACLProvider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating WAFv2 WebACL ${logicalId}`);
 
     const name =
       (properties['Name'] as string | undefined) ||
       generateResourceName(logicalId, { maxLength: 128 });
+    // `replayWarn`: the rollback executor's reverse-replacement arm revives
+    // the OLD resource from `previousState.properties`, which the user cannot
+    // edit from the template — a hard refusal there would leave the resource
+    // unrestorable (issue #1544). Template-path creates keep the refusal.
     const scope = requireConfigString(
       properties['Scope'],
       'REGIONAL',
-      'AWS::WAFv2::WebACL Scope'
+      'AWS::WAFv2::WebACL Scope',
+      replayWarn(this.logger, context)
     ) as Scope;
 
     this.warnOnSdkUnsupportedRuleKeys(logicalId, properties['Rules']);
