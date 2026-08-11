@@ -519,7 +519,11 @@ export class S3BucketProvider implements ResourceProvider {
       const s = gatherScope(rule);
       return (
         s.prefix !== undefined &&
-        (s.tagFilters === undefined || s.tagFilters.length === 0) &&
+        // `== null`, not `=== undefined`: an explicit `TagFilters: null` is
+        // "no entries" per the list-block contract (`requireConfigArray`'s
+        // callers keep the absent case as `== null`), and the strict compare
+        // sent `null` into `.length` — a raw TypeError (PR #1580 review).
+        (s.tagFilters == null || s.tagFilters.length === 0) &&
         s.sizeGt === undefined &&
         s.sizeLt === undefined
       );
@@ -679,7 +683,9 @@ export class S3BucketProvider implements ResourceProvider {
       // S3 requires either a top-level Prefix (V1) or a Filter (V2) on each rule;
       // a rule with no scope at all gets the empty-prefix Filter (matches all).
       const { prefix, tagFilters, sizeGt, sizeLt } = gatherScope(rule);
-      const hasTags = tagFilters !== undefined && tagFilters.length > 0;
+      // `!= null` for the same reason as `isPlainPrefixOnly` above: an
+      // explicit `TagFilters: null` means "no entries", not a `.length` crash.
+      const hasTags = tagFilters != null && tagFilters.length > 0;
       const componentCount =
         (hasTags ? 1 : 0) +
         (prefix !== undefined ? 1 : 0) +

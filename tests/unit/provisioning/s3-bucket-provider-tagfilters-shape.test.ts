@@ -167,6 +167,32 @@ describe('create path: a non-array TagFilters is REFUSED, not silently omitted',
     expect(sent).toHaveLength(1);
     expect(sent[0]!.input.MetricsConfiguration?.Filter).toEqual({ Prefix: 'logs/' });
   });
+
+  it('an explicit NULL TagFilters means "no entries" per the list-block contract', async () => {
+    await provider.create('B', RESOURCE_TYPE, metricsProps({ Prefix: 'logs/', TagFilters: null }));
+    const sent = sentCommands(PutBucketMetricsConfigurationCommand);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.input.MetricsConfiguration?.Filter).toEqual({ Prefix: 'logs/' });
+  });
+
+  it('lifecycle: Prefix + an explicit NULL TagFilters applies without crashing (PR #1580 review)', async () => {
+    // Before the review fix the strict `=== undefined` compares sent `null`
+    // into `.length` — a raw TypeError instead of either a refusal or a Put.
+    await provider.create(
+      'B',
+      RESOURCE_TYPE,
+      lifecycleProps({ ExpirationInDays: 30, Prefix: 'logs/', TagFilters: null })
+    );
+    const sent = sentCommands(PutBucketLifecycleConfigurationCommand);
+    expect(sent).toHaveLength(1);
+    const rule = (sent[0]!.input.LifecycleConfiguration?.Rules ?? [])[0] as unknown as Record<
+      string,
+      unknown
+    >;
+    // Single-Prefix rule with no tag scope: the V1 top-level Prefix form.
+    expect(rule['Prefix']).toBe('logs/');
+    expect(rule['Filter']).toBeUndefined();
+  });
 });
 
 describe('replay create (`replayingState`): warn and skip instead of stranding the rollback', () => {
