@@ -179,17 +179,28 @@ describe('SNSTopicProvider DeliveryStatusLogging removal resets (issue #1160)', 
     expect(setAttributeCalls()).toHaveLength(0);
   });
 
-  it('malformed DESIRED container (string) throws a clear error instead of silently resetting', async () => {
+  it('malformed DESIRED container (string) warns and is treated as empty — the update proceeds (issue #1538)', async () => {
+    // Pre-#1538 this threw. The desired bag on update is not always
+    // template-borne (rollback replay / drift --revert put a state-derived
+    // bag here), so a malformed container warns and yields an EMPTY desired
+    // map; the previously-set attributes are then reset like a removal.
+    // The warn-content assertions live in
+    // sns-topic-provider-delivery-status-replay.test.ts.
     const previous = {
       TopicName: 'topic',
       DeliveryStatusLogging: [{ Protocol: 'lambda', SuccessFeedbackRoleArn: ROLE_A }],
     };
     const desired = { TopicName: 'topic', DeliveryStatusLogging: 'enabled' };
 
-    await expect(
-      provider.update('L', TOPIC_ARN, 'AWS::SNS::Topic', desired, previous)
-    ).rejects.toThrow(/DeliveryStatusLogging must be an array/);
-    expect(setAttributeCalls()).toHaveLength(0);
+    await provider.update('L', TOPIC_ARN, 'AWS::SNS::Topic', desired, previous);
+
+    expect(setAttributeCalls()).toEqual([
+      {
+        TopicArn: TOPIC_ARN,
+        AttributeName: 'LambdaSuccessFeedbackRoleArn',
+        AttributeValue: '',
+      },
+    ]);
   });
 
   it('malformed PREVIOUS side (state record) is tolerated: treated as no previous attributes', async () => {
