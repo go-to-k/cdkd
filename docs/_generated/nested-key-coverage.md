@@ -9,13 +9,13 @@ For every SDK provider that forwards a nested CFn config blob, diffs the blob's 
 
 - Audited targets: **11**
 - Nested CFn key paths audited: **703**
-- Same spelling in SDK model: **636**
+- Same spelling in SDK model: **639**
 - Explicitly handled in provider: **53**
 - Allow-listed pass-throughs (does NOT block CI): **11**
 - **Case divergences (blocks CI): 0**
 - **No SDK member (blocks CI): 0**
 - Write-evidence pass — fresh-object targets audited: **11**
-- **No write evidence (blocks CI): 3**
+- **No write evidence (blocks CI): 0**
 - Shape pass — bare-array pairs clean: **87**
 - Shape pass — explicitly handled in provider: **32**
 - Shape pass — allow-listed (does NOT block CI): **7**
@@ -23,15 +23,9 @@ For every SDK provider that forwards a nested CFn config blob, diffs the blob's 
 - **Definition-member-missing divergences (blocks CI): 0**
 - Shape pass — ambiguous (visible, non-blocking): **1**
 
-## Divergences — BLOCKS CI
+## Divergences
 
-Each key below is templated by CFn but never reaches AWS: either it maps to no SDK member at all, or (for a fresh-object target) the SDK member exists and the provider never writes it. Add the CFn->SDK conversion to the provider (naming the CFn spelling, and WRITING the SDK member), or add a `NESTED_KEY_ALLOW_LIST` entry with a rationale in scripts/gen-nested-key-coverage.ts.
-
-| Resource type | CFn nested key / path | Bucket | SDK detail |
-| --- | --- | --- | --- |
-| `AWS::S3::Bucket` | `AnalyticsConfigurations.StorageClassAnalysis.DataExport.Destination.BucketArn` | no-write-evidence | SDK has `BucketArn`, but the provider never writes it |
-| `AWS::S3::Bucket` | `InventoryConfigurations.Destination.BucketAccountId` | no-write-evidence | SDK has `BucketAccountId`, but the provider never writes it |
-| `AWS::S3::Bucket` | `InventoryConfigurations.Destination.BucketArn` | no-write-evidence | SDK has `BucketArn`, but the provider never writes it |
+None. Every audited nested CFn key either matches an SDK member spelling or is explicitly named by its provider — and on a fresh-object target, its SDK member is also WRITTEN somewhere in the provider.
 
 ## Allow-listed pass-throughs
 
