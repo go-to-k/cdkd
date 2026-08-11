@@ -1,3 +1,10 @@
+## [0.278.47](https://github.com/go-to-k/cdkd/compare/v0.278.46...v0.278.47) (2026-08-11)
+
+
+### Bug Fixes
+
+* **route53:** reset removed HostedZoneTags and QueryLoggingConfig on update ([#1160](https://github.com/go-to-k/cdkd/issues/1160) route53 batch) ([#1541](https://github.com/go-to-k/cdkd/issues/1541)) ([6620d6a](https://github.com/go-to-k/cdkd/commit/6620d6afd238f31dfa67d8d828a733e345fcd488))
+
 ## [0.278.46](https://github.com/go-to-k/cdkd/compare/v0.278.45...v0.278.46) (2026-08-11)
 
 
