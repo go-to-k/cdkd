@@ -432,7 +432,7 @@ export class EFSProvider implements ResourceProvider {
           properties['PerformanceMode'],
         ]
           .map((v) => JSON.stringify(v ?? null))
-          .join(' ')
+          .join('\0')
       )
       .digest('hex')
       .slice(0, 12);
