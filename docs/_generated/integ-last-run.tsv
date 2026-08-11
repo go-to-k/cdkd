@@ -271,5 +271,5 @@ vpc-lambda	2026-08-10T11:50:46Z	PASS	317	standard	0810 P0/P1 sweep b1; 16 del/0 
 vpc-lambda-cr-race	2026-08-10T06:18:10Z	PASS	302	standard	0810 P2 sweep b12; 0 err 0 orph incl hyperplane ENI
 vpc-lookup	2026-08-10T06:01:30Z	PASS	20	standard	0810 P2 sweep b11; context-provider loop ok, 0 err 0 orph
 vpc-nat-gateway	2026-08-09T14:30:04Z	PASS	254	verify.sh	issues #1411/#1412 CC routing asserted live; rc ok, orph clean
-wafv2	2026-08-09T08:37:03Z	PASS	115	standard	#1403 drift reverse map (post-review): deploy + cdkd drift = no drift; 7 del/0 retained/0 err
+wafv2	2026-08-11T03:29:45Z	PASS	240	standard	1544 lane: Scope guard replay-downgrade wiring; destroy 0 err 0 orph
 wait-condition-handle	2026-07-31T06:19:56Z	PASS	44	verify.sh	TTL-refresh sweep re-run; rc ok, orph clean
