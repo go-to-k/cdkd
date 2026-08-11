@@ -337,7 +337,20 @@ describe('DynamoDBTableProvider malformed BillingMode (issue #1545)', () => {
   });
 
   it('leaves the PREVIOUS side unguarded, so a malformed state record still deploys', async () => {
-    activeTable();
+    // Live mode PAY_PER_REQUEST, so the PROVISIONED desired below is a REAL
+    // flip. Since issue #1552 an unusable previous is replaced by the table's
+    // ACTUAL mode as the comparison baseline (never refused — the previous
+    // side still cannot fail a deploy), so the live mode now decides whether
+    // there is a flip at all; the same-mode case is covered by
+    // `dynamodb-billing-mode-junk-previous.test.ts`.
+    mockSend.mockResolvedValue({
+      Table: {
+        TableName: TABLE_NAME,
+        TableArn: TABLE_ARN,
+        TableStatus: 'ACTIVE',
+        BillingModeSummary: { BillingMode: 'PAY_PER_REQUEST' },
+      },
+    });
 
     // The previous side comes from cdkd STATE, never from the template.
     // Guarding it would make a stack whose state an older binary wrote

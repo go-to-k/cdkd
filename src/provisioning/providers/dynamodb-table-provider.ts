@@ -473,10 +473,39 @@ export class DynamoDBTableProvider implements ResourceProvider {
       // side stays unguarded on purpose: it comes from cdkd STATE, so
       // refusing a malformed value an older binary recorded would make the
       // stack permanently un-updatable.
-      const prevBillingMode = previousProperties['BillingMode'] as
-        | 'PROVISIONED'
-        | 'PAY_PER_REQUEST'
-        | undefined;
+      //
+      // A state-recorded previous that is itself UNUSABLE is replaced by the
+      // table's ACTUAL billing mode (issue #1552). The warn path above keeps
+      // the deploy SUCCEEDING, so the engine records the junk desired value
+      // as the new state and the NEXT update sees it as the previous side.
+      // Comparing a corrected template against that junk previous
+      // (`null !== 'PAY_PER_REQUEST'`) reads as a real flip and sends a
+      // same-mode `UpdateTable`, which DynamoDB rejects when no capacity
+      // change rides along — the deploy fails, state stays unchanged, and the
+      // rejection repeats on every deploy. The `DescribeTable` at the top of
+      // this method already holds the live mode, so this costs no extra call.
+      // An ABSENT previous is NOT unusable: it legitimately means "no billing
+      // mode recorded", and seeding it from AWS would turn a no-op update
+      // into a spurious change. `BillingModeSummary` is itself absent on a
+      // table created without an explicit mode, which is PROVISIONED — the
+      // same default `readCurrentState` assumes.
+      const recordedPrevBillingMode = previousProperties['BillingMode'];
+      const recordedPrevBillingModeUsable =
+        recordedPrevBillingMode === undefined ||
+        (typeof recordedPrevBillingMode === 'string' && recordedPrevBillingMode.trim() !== '');
+      const prevBillingMode = (
+        recordedPrevBillingModeUsable
+          ? recordedPrevBillingMode
+          : (table?.BillingModeSummary?.BillingMode ?? 'PROVISIONED')
+      ) as 'PROVISIONED' | 'PAY_PER_REQUEST' | undefined;
+      if (!recordedPrevBillingModeUsable) {
+        this.logger.warn(
+          `AWS::DynamoDB::Table ${logicalId}: the recorded previous BillingMode is ` +
+            `unusable (${JSON.stringify(recordedPrevBillingMode)}) — using the table's ` +
+            `actual billing mode (${prevBillingMode}) as the comparison baseline for ` +
+            `this update so a corrected template does not issue a same-mode UpdateTable.`
+        );
+      }
       let billingModeUnusable = false;
       const requestedBillingMode =
         properties['BillingMode'] === undefined

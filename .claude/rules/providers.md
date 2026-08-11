@@ -41,17 +41,50 @@ helper exists to stop:
   S3 directory-bucket `DataRedundancy`, DynamoDB Table `BillingMode` (issues
   #1544 / #1545). `readConfigString` accepts the same options bag for nested
   containers (GlobalTable `StreamSpecification`), and
-  `toSdkGlobalSecondaryIndexes` takes the callback as `onUnusableIndexes`
-  wired from its `create()` call site only. Prefer this.
+  `toSdkGlobalSecondaryIndexes` takes the callback as `onUnusableIndexes` —
+  wired from `create()` AND, since issue #1551, from both of `update()`'s
+  call sites (desired and previous). Prefer this.
+- **A `context` parameter threaded into a provider-local mode switch** —
+  `SNSTopicProvider.create` passes `'warn'` instead of `'throw'` to
+  `buildDeliveryStatusAttributeMap` when the replay flag is set (issue #1551).
+  It previously declared no `context` parameter at all, so the 4th argument
+  the rollback executor passes was silently ignored — worth knowing as the
+  failure mode a missing parameter produces: no type error, no warning, just
+  a refusal that still fires on a replay.
 - **A hand-threaded callback** — `EC2Provider.buildIpPermission` takes an
   `onUnusableProtocol` parameter and forwards it as `onUnusable`, because the
   helper is shared with state-borne callers that must NOT downgrade.
 - **A hand-written refusal** — `GlueProvider`'s
   `enforceIcebergTableInputAbsent`.
 
-Update-path refusals that stay strict on purpose (a downgrade there needs a
-keep-the-previous-value design, not the create default — issue #1551):
-Lambda URL update-path `AuthType`, GlobalTable update-path nested guards.
+**An UPDATE-path refusal is a replay refusal too**, and its downgrade is NOT
+the create one. `rollback-executor.ts`'s revert arm and `cdkd drift --revert`
+both call `update(..., previousState.properties, ...)`, so the desired bag can
+be a cdkd STATE record — but falling back to the CREATE DEFAULT there is
+frequently worse than the refusal, because the default is applied to a LIVE
+resource. Decide per site (issue #1551 settled the three that were left
+strict, each differently):
+
+- **keep the PREVIOUS value** — Lambda URL `AuthType` (defaulting would flip a
+  live IAM-guarded function URL to PUBLIC; when the previous side is unusable
+  too the field is OMITTED, and `UpdateFunctionUrlConfig`'s merge semantics
+  retain the live value), DynamoDB Table / GlobalTable `BillingMode`.
+- **SKIP the block** — GlobalTable `StreamSpecification` (defaulting would
+  re-point a live stream's view type the template never asked to change).
+- **SUPPRESS the diff** — GlobalTable `GlobalSecondaryIndexes`, where the
+  create side's "omit" would read as "delete every live index". The PREVIOUS
+  side's translation takes the downgrade UNCONDITIONALLY: it is state-borne,
+  so a refusal there is the guard-the-desired-side-only rule violated outright.
+
+**A warn-and-continue update path becomes a producer of junk state** (issue
+#1552): the deploy SUCCEEDS, so the engine records the unusable desired value,
+and the NEXT update reads it as the previous side. Where the provider already
+holds AWS's live value (a `DescribeTable` at the top of `update()`), seed the
+comparison baseline from it whenever the state-recorded previous is
+present-but-unusable — otherwise the corrected template compares against junk,
+reads as a change, and issues a call AWS rejects on every deploy. An ABSENT
+previous is NOT unusable: seeding it turns a no-op into a spurious change.
+
 The full contract
 is on `CreateContext` in `src/types/resource.ts` (NOT in `region-check.ts`
 where `DeleteContext` lives — that type belongs there because its
