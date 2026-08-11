@@ -3,8 +3,8 @@
     "targetCount": 12,
     "nestedKeyCount": 736,
     "sameSpelling": 670,
-    "providerHandled": 53,
-    "allowListed": 13,
+    "providerHandled": 50,
+    "allowListed": 16,
     "caseDivergence": 0,
     "noSdkMember": 0,
     "noWriteEvidence": 0,
@@ -853,7 +853,10 @@
           "nestedKey": "DistributionConfig.CustomOrigin.OriginSSLProtocols",
           "topLevelProperty": "DistributionConfig",
           "terminalKey": "OriginSSLProtocols",
-          "bucket": "provider-handled"
+          "bucket": "allow-listed",
+          "sdkNearMiss": "OriginSslProtocols",
+          "rationale": "Member of the legacy pre-2012 CustomOrigin block (LegacyCustomOrigin definition), unreachable from a modern template — same family as the CustomOrigin / DNSName entries. Path-scoped so it can never leak onto the MODERN Origins.CustomOriginConfig.OriginSSLProtocols, which carries a verified terminal rename instead (issue #1393).",
+          "allowMatchKey": "AWS::CloudFront::Distribution#DistributionConfig.CustomOrigin.OriginSSLProtocols"
         },
         {
           "resourceType": "AWS::CloudFront::Distribution",
@@ -1845,7 +1848,14 @@
         "Logging"
       ],
       "usedSegmentRenames": [],
-      "usedTerminalRenames": []
+      "usedTerminalRenames": [
+        "DistributionConfig.IPV6Enabled",
+        "DistributionConfig.Origins.CustomOriginConfig.OriginSSLProtocols",
+        "DistributionConfig.Origins.OriginCustomHeaders",
+        "DistributionConfig.ViewerCertificate.AcmCertificateArn",
+        "DistributionConfig.ViewerCertificate.IamCertificateId",
+        "DistributionConfig.ViewerCertificate.SslSupportMethod"
+      ]
     },
     {
       "resourceType": "AWS::CloudWatch::AnomalyDetector",
@@ -4222,7 +4232,9 @@
       "usedSegmentRenames": [
         "ProxyConfigurationProperties"
       ],
-      "usedTerminalRenames": []
+      "usedTerminalRenames": [
+        "ProxyConfiguration.ProxyConfigurationProperties"
+      ]
     },
     {
       "resourceType": "AWS::S3::Bucket",
@@ -4737,7 +4749,9 @@
           "nestedKey": "LifecycleConfiguration.Rules.TagFilters",
           "topLevelProperty": "LifecycleConfiguration",
           "terminalKey": "TagFilters",
-          "bucket": "provider-handled"
+          "bucket": "allow-listed",
+          "rationale": "Forwarded verbatim into `Filter{,.And}.Tags` by applyLifecycleConfiguration through the destructured-gatherScope shape the hand-off taint walk deliberately does not cross — same class as the `LifecycleConfiguration.Rules.TagFilters.Key` / `.Value` write-pass entries, here for the ARRAY itself on the key pass (issue #1393). The per-item config families (Analytics / Metrics / IntelligentTiering) resolve via declared terminal renames and need no entry.",
+          "allowMatchKey": "AWS::S3::Bucket#LifecycleConfiguration.Rules.TagFilters"
         },
         {
           "resourceType": "AWS::S3::Bucket",
@@ -4921,7 +4935,9 @@
           "nestedKey": "NotificationConfiguration.EventBridgeConfiguration.EventBridgeEnabled",
           "topLevelProperty": "NotificationConfiguration",
           "terminalKey": "EventBridgeEnabled",
-          "bucket": "provider-handled"
+          "bucket": "allow-listed",
+          "rationale": "Presence-encoded: the SDK EventBridgeConfiguration is an EMPTY struct, so the CFn boolean has no member to map onto — applyNotificationConfiguration writes `EventBridgeConfiguration: {}` when the flag is truthy and omits the block when it is not. There is no write the terminal-rename mechanism could redirect to (issue #1393).",
+          "allowMatchKey": "AWS::S3::Bucket#NotificationConfiguration.EventBridgeConfiguration.EventBridgeEnabled"
         },
         {
           "resourceType": "AWS::S3::Bucket",
@@ -5790,19 +5806,54 @@
         "ServerSideEncryptionConfiguration"
       ],
       "usedTerminalRenames": [
+        "AccelerateConfiguration.AccelerationStatus",
         "AnalyticsConfigurations.Prefix",
+        "AnalyticsConfigurations.TagFilters",
         "BucketEncryption.ServerSideEncryptionConfiguration",
+        "BucketEncryption.ServerSideEncryptionConfiguration.ServerSideEncryptionByDefault",
+        "CorsConfiguration.CorsRules.ExposedHeaders",
+        "CorsConfiguration.CorsRules.MaxAge",
         "IntelligentTieringConfigurations.Prefix",
+        "IntelligentTieringConfigurations.TagFilters",
         "InventoryConfigurations.Enabled",
         "InventoryConfigurations.Prefix",
+        "InventoryConfigurations.ScheduleFrequency",
+        "LifecycleConfiguration.Rules.ExpirationDate",
+        "LifecycleConfiguration.Rules.ExpirationInDays",
         "LifecycleConfiguration.Rules.ExpiredObjectDeleteMarker",
+        "LifecycleConfiguration.Rules.NoncurrentVersionExpirationInDays",
+        "LifecycleConfiguration.Rules.NoncurrentVersionTransition",
+        "LifecycleConfiguration.Rules.NoncurrentVersionTransition.TransitionInDays",
+        "LifecycleConfiguration.Rules.NoncurrentVersionTransitions.TransitionInDays",
         "LifecycleConfiguration.Rules.ObjectSizeGreaterThan",
         "LifecycleConfiguration.Rules.ObjectSizeLessThan",
+        "LifecycleConfiguration.Rules.Transition",
+        "LifecycleConfiguration.Rules.Transition.TransitionDate",
+        "LifecycleConfiguration.Rules.Transition.TransitionInDays",
+        "LifecycleConfiguration.Rules.Transitions.TransitionDate",
+        "LifecycleConfiguration.Rules.Transitions.TransitionInDays",
+        "LoggingConfiguration.DestinationBucketName",
+        "LoggingConfiguration.LogFilePrefix",
         "MetricsConfigurations.AccessPointArn",
         "MetricsConfigurations.Prefix",
+        "MetricsConfigurations.TagFilters",
+        "NotificationConfiguration.LambdaConfigurations",
+        "NotificationConfiguration.LambdaConfigurations.Event",
+        "NotificationConfiguration.LambdaConfigurations.Filter.S3Key",
         "NotificationConfiguration.LambdaConfigurations.Filter.S3Key.Rules",
+        "NotificationConfiguration.LambdaConfigurations.Function",
+        "NotificationConfiguration.QueueConfigurations.Event",
+        "NotificationConfiguration.QueueConfigurations.Filter.S3Key",
         "NotificationConfiguration.QueueConfigurations.Filter.S3Key.Rules",
-        "NotificationConfiguration.TopicConfigurations.Filter.S3Key.Rules"
+        "NotificationConfiguration.QueueConfigurations.Queue",
+        "NotificationConfiguration.TopicConfigurations.Event",
+        "NotificationConfiguration.TopicConfigurations.Filter.S3Key",
+        "NotificationConfiguration.TopicConfigurations.Filter.S3Key.Rules",
+        "NotificationConfiguration.TopicConfigurations.Topic",
+        "ReplicationConfiguration.Rules.Filter.And.TagFilters",
+        "ReplicationConfiguration.Rules.Filter.TagFilter",
+        "WebsiteConfiguration.RoutingRules.RedirectRule",
+        "WebsiteConfiguration.RoutingRules.RoutingRuleCondition"
       ]
     }
   ]

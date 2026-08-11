@@ -10,8 +10,8 @@ For every SDK provider that forwards a nested CFn config blob, diffs the blob's 
 - Audited targets: **12**
 - Nested CFn key paths audited: **736**
 - Same spelling in SDK model: **670**
-- Explicitly handled in provider: **53**
-- Allow-listed pass-throughs (does NOT block CI): **13**
+- Explicitly handled in provider: **50**
+- Allow-listed pass-throughs (does NOT block CI): **16**
 - **Case divergences (blocks CI): 0**
 - **No SDK member (blocks CI): 0**
 - Write-evidence pass — fresh-object targets audited: **12**
@@ -36,14 +36,17 @@ None. Every audited nested CFn key either matches an SDK member spelling or is e
 | `AWS::CloudFront::Distribution` | `DistributionConfig.CNAMEs` | Legacy pre-2012 DistributionConfig member (alias of Aliases); the modern CreateDistribution/UpdateDistribution API has no equivalent member and CDK never synthesizes it. |
 | `AWS::CloudFront::Distribution` | `DistributionConfig.CustomOrigin` | Legacy pre-2012 single-origin form (LegacyCustomOrigin definition); superseded by Origins[] and absent from the modern API. CDK never synthesizes it. |
 | `AWS::CloudFront::Distribution` | `DistributionConfig.CustomOrigin.DNSName` | Member of the legacy CustomOrigin / S3Origin blocks only (LegacyCustomOrigin / LegacyS3Origin definitions); unreachable from a modern template. |
+| `AWS::CloudFront::Distribution` | `DistributionConfig.CustomOrigin.OriginSSLProtocols` | Member of the legacy pre-2012 CustomOrigin block (LegacyCustomOrigin definition), unreachable from a modern template — same family as the CustomOrigin / DNSName entries. Path-scoped so it can never leak onto the MODERN Origins.CustomOriginConfig.OriginSSLProtocols, which carries a verified terminal rename instead (issue #1393). |
 | `AWS::CloudFront::Distribution` | `DistributionConfig.S3Origin.DNSName` | Member of the legacy CustomOrigin / S3Origin blocks only (LegacyCustomOrigin / LegacyS3Origin definitions); unreachable from a modern template. |
 | `AWS::CloudFront::Distribution` | `Tags.Key` | Written by toSdkTags on the forward path (`.map(([Key, Value]) => ({ Key, Value }))`), but one wrapper level below the audited chain: the SDK Tags shape is the { Items: Tag[] } wrapper, so the write scope is Tags.Items while the CFn transparent-array chain is Tags.Key. A wrapper-level insertion is neither a case fold nor a segmentRename, so the write pass cannot see it. |
 | `AWS::CloudFront::Distribution` | `Tags.Value` | Same wrapper-level insertion as Tags.Key: written by toSdkTags beneath the SDK { Items: Tag[] } wrapper (scope Tags.Items), one level below the CFn chain. |
 | `AWS::CodeBuild::Project` | `Environment.HostKernel` | Declared in the CFn registry schema but has NO member anywhere in the installed @aws-sdk/client-codebuild dist-types tree, so there is nothing to map it onto until an SDK bump adds one (issue #1386). Naming it in the provider would be a false claim of support. Remove this entry once the SDK ships the member, at which point the key becomes genuinely mappable. |
 | `AWS::S3::Bucket` | `CorsConfiguration.CorsRules` | Delivered by applyCorsConfiguration, which reads the CFn key via typed property access (`corsConfig.CorsRules.map(...)`) and writes the SDK spelling `CORSRules` — the literal walk deliberately counts neither a property ACCESS nor a type-literal member, and the only literal mention of the CFn spelling is `readCors`, excluded as a reverse map by the #1520 widening. Key pass only; the members BENEATH it need no entry — the per-level case fold resolves `CorsConfiguration.CorsRules` onto the written `CORSConfiguration.CORSRules` scope, so they stay write-audited (issue #1520). |
+| `AWS::S3::Bucket` | `LifecycleConfiguration.Rules.TagFilters` | Forwarded verbatim into `Filter{,.And}.Tags` by applyLifecycleConfiguration through the destructured-gatherScope shape the hand-off taint walk deliberately does not cross — same class as the `LifecycleConfiguration.Rules.TagFilters.Key` / `.Value` write-pass entries, here for the ARRAY itself on the key pass (issue #1393). The per-item config families (Analytics / Metrics / IntelligentTiering) resolve via declared terminal renames and need no entry. |
 | `AWS::S3::Bucket` | `LifecycleConfiguration.Rules.TagFilters.Key` | Forwarded verbatim into `Filter{,.And}.Tags` by applyLifecycleConfiguration, but through a chain the hand-off taint walk deliberately does not cross: the array reaches the write as a DESTRUCTURED member of the in-method `gatherScope` helper's returned literal, and member-level taint through a returned literal is a materially bigger analysis (issue #1540; same wrapper-level class as the CloudFront `Tags.Key` / `Tags.Value` entries). The equivalent per-item-config forwards (Analytics / Metrics / IntelligentTiering) ARE wildcard-credited via the for-of taint hop. |
 | `AWS::S3::Bucket` | `LifecycleConfiguration.Rules.TagFilters.Value` | Same destructured-gatherScope forward as the sibling `LifecycleConfiguration.Rules.TagFilters.Key` entry (issue #1540). |
 | `AWS::S3::Bucket` | `LifecycleConfiguration.TransitionDefaultMinimumObjectSize` | Written by applyLifecycleConfiguration DIRECTLY on the PutBucketLifecycleConfigurationRequest (the SDK hoists it out of `LifecycleConfiguration`, where CFn nests it), so the audited chain can never resolve: a terminal rename redirects WITHIN the config object and cannot express a request-level hoist. Delivery is proven by the s3-replication-and-filter integ read-back (issue #1495) and the write is pinned by name in the #1495 write-evidence unit test (issues #1520 / #1540). |
+| `AWS::S3::Bucket` | `NotificationConfiguration.EventBridgeConfiguration.EventBridgeEnabled` | Presence-encoded: the SDK EventBridgeConfiguration is an EMPTY struct, so the CFn boolean has no member to map onto — applyNotificationConfiguration writes `EventBridgeConfiguration: {}` when the flag is truthy and omits the block when it is not. There is no write the terminal-rename mechanism could redirect to (issue #1393). |
 | `AWS::CloudFront::Distribution` | `S3Origin` | Legacy pre-2012 single-origin form (LegacyS3Origin definition), sibling of CustomOrigin; superseded by Origins[]. Invisible to the KEY pass because the StreamingDistribution API still has a same-spelled S3Origin member — the definition pass (issue #1378) is what catches it. |
 | `AWS::S3::Bucket` | `TableNamespace` | Member of the S3TablesDestination definition, reachable only from the MetadataTableConfiguration top-level the provider declares as silent-drop (Cloud-Control-routed), so no SDK forwarding path exists to drop it (issue #1430). |
 | `AWS::S3::Bucket` | `TableArn` | Member of the S3TablesDestination / JournalTableConfiguration / InventoryTableConfiguration definitions, reachable only from the MetadataConfiguration / MetadataTableConfiguration top-levels the provider declares as silent-drop (Cloud-Control-routed), so no SDK forwarding path exists to drop it (issue #1430). |
@@ -58,7 +61,6 @@ Keys with no same-spelling SDK member that the provider explicitly names (conver
 
 | Resource type | CFn nested key path |
 | --- | --- |
-| `AWS::CloudFront::Distribution` | `DistributionConfig.CustomOrigin.OriginSSLProtocols` |
 | `AWS::CloudFront::Distribution` | `DistributionConfig.IPV6Enabled` |
 | `AWS::CloudFront::Distribution` | `DistributionConfig.Origins.CustomOriginConfig.OriginSSLProtocols` |
 | `AWS::CloudFront::Distribution` | `DistributionConfig.Origins.OriginCustomHeaders` |
@@ -87,7 +89,6 @@ Keys with no same-spelling SDK member that the provider explicitly names (conver
 | `AWS::S3::Bucket` | `LifecycleConfiguration.Rules.NoncurrentVersionTransition` |
 | `AWS::S3::Bucket` | `LifecycleConfiguration.Rules.NoncurrentVersionTransition.TransitionInDays` |
 | `AWS::S3::Bucket` | `LifecycleConfiguration.Rules.NoncurrentVersionTransitions.TransitionInDays` |
-| `AWS::S3::Bucket` | `LifecycleConfiguration.Rules.TagFilters` |
 | `AWS::S3::Bucket` | `LifecycleConfiguration.Rules.Transition` |
 | `AWS::S3::Bucket` | `LifecycleConfiguration.Rules.Transition.TransitionDate` |
 | `AWS::S3::Bucket` | `LifecycleConfiguration.Rules.Transition.TransitionInDays` |
@@ -96,7 +97,6 @@ Keys with no same-spelling SDK member that the provider explicitly names (conver
 | `AWS::S3::Bucket` | `LoggingConfiguration.DestinationBucketName` |
 | `AWS::S3::Bucket` | `LoggingConfiguration.LogFilePrefix` |
 | `AWS::S3::Bucket` | `MetricsConfigurations.TagFilters` |
-| `AWS::S3::Bucket` | `NotificationConfiguration.EventBridgeConfiguration.EventBridgeEnabled` |
 | `AWS::S3::Bucket` | `NotificationConfiguration.LambdaConfigurations` |
 | `AWS::S3::Bucket` | `NotificationConfiguration.LambdaConfigurations.Event` |
 | `AWS::S3::Bucket` | `NotificationConfiguration.LambdaConfigurations.Filter.S3Key` |

@@ -15,6 +15,7 @@ import {
   MIN_WRITTEN_MEMBERS_PER_PROVIDER,
   NESTED_KEY_ALLOW_LIST,
   NESTED_KEY_TARGETS,
+  REVERSE_MAP_FUNCTION_PREFIXES,
   allowKey,
   buildReport,
   classifyTarget,
@@ -37,6 +38,7 @@ import {
   nestedKeyPathsForTarget,
   reachableSdkMemberNames,
   wrapperInterfaceNames,
+  type AllowListEntry,
   type NestedKeyClassification,
   type NestedKeyPath,
   type NestedKeyTarget,
@@ -2545,6 +2547,8 @@ describe('classifyTarget (synthetic)', () => {
   });
 
   it('classifies a provider-named key as provider-handled', () => {
+    // A target WITHOUT the write-evidence opt-in keeps the file-global
+    // literal rescue — there is no scope index to check against (#1393).
     const [e] = classifyTarget(
       exactTarget,
       keyPaths('Top', 'AcmCertificateArn'),
@@ -2553,6 +2557,97 @@ describe('classifyTarget (synthetic)', () => {
       new Map()
     );
     expect(e?.bucket).toBe('provider-handled');
+  });
+
+  it('a fresh-object target rejects a file-global literal alone (#1393 item 2)', () => {
+    // The same call as above but on the opted-in target: the literal used to
+    // rescue this to `provider-handled`; without scoped delivery evidence the
+    // masked near-miss now surfaces (#1393 item 1).
+    const [e] = classifyTarget(
+      freshTarget,
+      keyPaths('Top', 'AcmCertificateArn'),
+      sdkMembers,
+      new Set(['AcmCertificateArn']),
+      new Map()
+    );
+    expect(e?.bucket).toBe('case-divergence');
+    expect(e?.sdkNearMiss).toBe('ACMCertificateArn');
+  });
+
+  it('a fresh-object target accepts the literal with a ci-matching SDK member written at the resolved scope (#1393 item 2)', () => {
+    const [e] = classifyTarget(
+      freshTarget,
+      keyPaths('Top', 'AcmCertificateArn'),
+      sdkMembers,
+      new Set(['AcmCertificateArn']),
+      new Map(),
+      writeEvidence({ Top: ['ACMCertificateArn'] })
+    );
+    expect(e?.bucket).toBe('provider-handled');
+  });
+
+  it('a ci-matching write that is NOT an SDK member does not rescue (#1393 item 2)', () => {
+    // A provider writing a case-mangled non-member at the right scope is the
+    // bug itself, not evidence — the member check is load-bearing.
+    const [e] = classifyTarget(
+      freshTarget,
+      keyPaths('Top', 'AcmCertificateArn'),
+      sdkMembers,
+      new Set(['AcmCertificateArn']),
+      new Map(),
+      writeEvidence({ Top: ['acmCERTIFICATEArn'] })
+    );
+    expect(e?.bucket).toBe('case-divergence');
+  });
+
+  it('a whole-blob hand-off does not vouch for a divergent key (#1393 item 2)', () => {
+    // A verbatim forward delivers the CFn spelling, which by this branch's
+    // premise matches no SDK member — the serializer drops it on the wire.
+    const [e] = classifyTarget(
+      freshTarget,
+      keyPaths('Top', 'AcmCertificateArn'),
+      sdkMembers,
+      new Set(['AcmCertificateArn']),
+      new Map(),
+      writeEvidence({ Top: [] }, ['Top'])
+    );
+    expect(e?.bucket).toBe('case-divergence');
+  });
+
+  it('a declared terminal rename resolves a divergent key and is recorded as used (#1393 item 2)', () => {
+    const target: NestedKeyTarget = {
+      ...freshTarget,
+      terminalRenames: { 'Top.IPV6Enabled': 'IsIPV6Enabled' },
+    };
+    const usedTerminals = new Set<string>();
+    const [e] = classifyTarget(
+      target,
+      keyPaths('Top', 'IPV6Enabled'),
+      sdkMembers,
+      new Set(['IPV6Enabled']),
+      new Map(),
+      writeEvidence({ Top: ['IsIPV6Enabled'] }),
+      undefined,
+      usedTerminals
+    );
+    expect(e?.bucket).toBe('provider-handled');
+    expect([...usedTerminals]).toEqual(['Top.IPV6Enabled']);
+  });
+
+  it('a declared terminal rename that does not resolve keeps the divergence reported (#1393 item 2)', () => {
+    const target: NestedKeyTarget = {
+      ...freshTarget,
+      terminalRenames: { 'Top.IPV6Enabled': 'IsIPV6Enabled' },
+    };
+    const [e] = classifyTarget(
+      target,
+      keyPaths('Top', 'IPV6Enabled'),
+      sdkMembers,
+      new Set(['IPV6Enabled']),
+      new Map(),
+      writeEvidence({ Top: [] })
+    );
+    expect(e?.bucket).toBe('no-sdk-member');
   });
 
   it('flags a case-insensitive near-miss as case-divergence with the SDK member named', () => {
@@ -3451,11 +3546,19 @@ describe('real-repo audit (regression floors)', () => {
       'SslSupportMethod',
       'IamCertificateId',
       'IPV6Enabled',
-      'OriginSSLProtocols',
       'OriginCustomHeaders',
     ]) {
       expect(bucketOf(cf.entries, key), key).toBe('provider-handled');
     }
+    // `OriginSSLProtocols` exists at TWO paths since the scoped literal rule
+    // (#1393 item 2) split their verdicts: the MODERN path resolves through
+    // its declared terminal rename, the legacy pre-2012 CustomOrigin path is
+    // a path-scoped allow-list entry.
+    const byPath = new Map(cf.entries.map((e) => [e.nestedKey, e.bucket]));
+    expect(byPath.get('DistributionConfig.Origins.CustomOriginConfig.OriginSSLProtocols')).toBe(
+      'provider-handled'
+    );
+    expect(byPath.get('DistributionConfig.CustomOrigin.OriginSSLProtocols')).toBe('allow-listed');
   });
 
   it('fences the #1373-fixed ECS S3FilesVolumeConfiguration as provider-handled', () => {
@@ -3470,26 +3573,25 @@ describe('real-repo audit (regression floors)', () => {
   });
 
   it('fences the S3 keys the critic can actually discriminate as provider-handled (#1430)', () => {
-    // These four are the ONLY S3 keys whose bucket depends on the provider
-    // still converting them: each has exactly ONE literal occurrence, so
-    // removing that site flips it to `no-sdk-member`. Measured, not assumed —
-    // running the critic against the real pre-#1426 provider flags exactly
-    // these (minus EventBridgeEnabled, which #1430 itself introduced).
-    //
-    // `TagFilters` / `TransitionInDays` are deliberately NOT here: both are
-    // named by `readCurrentState`'s reverse map too, so the file-global
-    // literal heuristic reports `provider-handled` even with the write-side
-    // conversion gone. Fencing them would pin a value that cannot change
-    // (#1393 item 2).
+    // The legacy-singular lifecycle keys' buckets depend on the provider
+    // still converting them (literal + resolving terminal rename). Since the
+    // scoped literal rule (#1393 item 2) the discrimination goes FURTHER than
+    // the literal: `TagFilters` / `TransitionInDays` — which the old
+    // file-global heuristic could never discriminate (named by the reverse
+    // map too) — are now write-verified per family through their terminal
+    // renames, and the strip probes below prove the write-side direction.
     const s3 = report.targets.find((t) => t.resourceType === 'AWS::S3::Bucket')!;
     for (const key of [
       'Transition',
       'NoncurrentVersionTransition',
       'NoncurrentVersionExpirationInDays',
-      'EventBridgeEnabled',
     ]) {
       expect(bucketOf(s3.entries, key), key).toBe('provider-handled');
     }
+    // EventBridgeEnabled is presence-encoded (the SDK block is an empty
+    // struct), so no write evidence can exist — it carries a reviewed
+    // allow-list entry since #1393 item 2.
+    expect(bucketOf(s3.entries, 'EventBridgeEnabled')).toBe('allow-listed');
   });
 
   it('fences the #1304-fixed AnomalyDetector MetricTimeZone as provider-handled', () => {
@@ -4063,10 +4165,24 @@ describe('real-code regression probes (per the repo checker rules)', () => {
   );
   const cfNestedKeys = nestedKeyPathsForTarget(cfFixture, new Set(['DistributionConfig', 'Tags']));
 
+  // The scoped literal rule (#1393 item 2) judges these keys through the
+  // write index + declared terminal renames, so every probe classifies with
+  // the evidence collected from the SAME source it classifies (regressed
+  // probes collect from the regressed source — differing from the unregressed
+  // run ONLY by the strip).
+  const cfClassify = (source: string) =>
+    classifyTarget(
+      cfTarget,
+      cfNestedKeys,
+      cfSdkMembers,
+      collectStringLiterals(source),
+      undefined,
+      collectWriteEvidence(source, cfTarget.providerFile, REVERSE_MAP_FUNCTION_PREFIXES)
+    );
+
   it('flags the real provider with the AcmCertificateArn conversion removed (the #1370 rename)', () => {
     const regressed = cfSource.replaceAll('AcmCertificateArn', 'XcmCertificateArn');
-    const literals = collectStringLiterals(regressed);
-    const entries = classifyTarget(cfTarget, cfNestedKeys, cfSdkMembers, literals);
+    const entries = cfClassify(regressed);
     const [hit] = entriesFor(entries, 'AcmCertificateArn');
     expect(hit?.bucket).toBe('case-divergence');
     // The FULL chain since #1464 — the member lives under `ViewerCertificate`,
@@ -4077,14 +4193,11 @@ describe('real-code regression probes (per the repo checker rules)', () => {
 
   it('flags the real provider with the OriginCustomHeaders rename removed (the #1373 catch)', () => {
     const regressed = cfSource.replaceAll('OriginCustomHeaders', 'RemovedCustomHeaders');
-    const literals = collectStringLiterals(regressed);
-    const entries = classifyTarget(cfTarget, cfNestedKeys, cfSdkMembers, literals);
-    expect(bucketOf(entries, 'OriginCustomHeaders')).toBe('no-sdk-member');
+    expect(bucketOf(cfClassify(regressed), 'OriginCustomHeaders')).toBe('no-sdk-member');
   });
 
   it('the unregressed real provider classifies both keys as provider-handled', () => {
-    const literals = collectStringLiterals(cfSource);
-    const entries = classifyTarget(cfTarget, cfNestedKeys, cfSdkMembers, literals);
+    const entries = cfClassify(cfSource);
     expect(bucketOf(entries, 'AcmCertificateArn')).toBe('provider-handled');
     expect(bucketOf(entries, 'OriginCustomHeaders')).toBe('provider-handled');
   });
@@ -4204,12 +4317,26 @@ describe('real-code regression probes (per the repo checker rules)', () => {
 
   // Each of these has exactly ONE literal site in the real provider, so
   // removing it is the regression a careless refactor actually produces.
+  // `EventBridgeEnabled` left this list with #1393 item 2: it is
+  // presence-encoded (no write to verify), so it is allow-list-gated now and
+  // probed separately below.
   const S3_DISCRIMINATING_KEYS = [
     'Transition',
     'NoncurrentVersionTransition',
     'NoncurrentVersionExpirationInDays',
-    'EventBridgeEnabled',
   ];
+
+  // Classify with the evidence collected from the SAME source (see the
+  // CloudFront probes above for why).
+  const s3Classify = (source: string, allowList?: Map<string, AllowListEntry>) =>
+    classifyTarget(
+      s3Target,
+      s3NestedKeys,
+      s3SdkMembers,
+      collectStringLiterals(source),
+      allowList,
+      collectWriteEvidence(source, s3Target.providerFile, REVERSE_MAP_FUNCTION_PREFIXES)
+    );
 
   /**
    * Strip every EVIDENCE-bearing spelling of a key from the source. The
@@ -4248,41 +4375,64 @@ describe('real-code regression probes (per the repo checker rules)', () => {
 
   for (const key of S3_DISCRIMINATING_KEYS) {
     it(`flags the real S3 provider with the ${key} conversion removed`, () => {
-      const entries = classifyTarget(
-        s3Target,
-        s3NestedKeys,
-        s3SdkMembers,
-        collectStringLiterals(stripKeyEvidence(s3Source, key))
-      );
+      const entries = s3Classify(stripKeyEvidence(s3Source, key));
       expect(bucketOf(entries, key), key).toBe('no-sdk-member');
     });
   }
 
-  it('does NOT flag TagFilters when only its write-side conversion is removed', () => {
-    // The honest statement of the critic's limit, pinned so nobody re-adds the
-    // false "TagFilters would have been caught" claim. `readCurrentState`
-    // still names the key, and the evidence set is file-global, so the write
-    // path can be entirely broken while the bucket stays `provider-handled`.
-    // Tracked as item 2 of #1393; when that lands, this expectation flips.
-    const writeSite = "(filter?.['TagFilters'] ?? rule['TagFilters'])";
+  it('flags AnalyticsConfigurations.TagFilters when its write-side conversion is removed (#1393 item 2)', () => {
+    // The expectation this test carried before #1393 item 2 was the honest
+    // statement of the OLD limit: `readCurrentState` still names the key and
+    // the evidence set was FILE-GLOBAL, so a broken write path kept the bucket
+    // `provider-handled`. The scoped rule closes exactly that: the analytics
+    // family's `TagFilters` is judged by its OWN terminal rename
+    // (`Filter.And.Tags`) resolving against the write index, so stripping the
+    // analytics And-branch write flips the path to `no-sdk-member` even though
+    // every `TagFilters` literal in the file survives the strip untouched.
+    const writeSite = 'analyticsConfig.Filter = { And: { Prefix: prefix, Tags: tagFilters } };';
     expect(s3Source, 'write-site anchor still present').toContain(writeSite);
-    const regressed = s3Source.replace(writeSite, '(undefined)');
-    const entries = classifyTarget(
-      s3Target,
-      s3NestedKeys,
-      s3SdkMembers,
-      collectStringLiterals(regressed)
+    const regressed = s3Source.replace(
+      writeSite,
+      'analyticsConfig.Filter = { And: { Prefix: prefix } };'
     );
-    expect(bucketOf(entries, 'TagFilters')).toBe('provider-handled');
+    const byPath = new Map(s3Classify(regressed).map((e) => [e.nestedKey, e.bucket]));
+    expect(byPath.get('AnalyticsConfigurations.TagFilters')).toBe('no-sdk-member');
+    // The sibling families are untouched by the strip — path-scoped renames
+    // cannot leak a neighbour's regression onto them.
+    expect(byPath.get('MetricsConfigurations.TagFilters')).toBe('provider-handled');
+    expect(byPath.get('IntelligentTieringConfigurations.TagFilters')).toBe('provider-handled');
+  });
+
+  it('lifecycle TagFilters stays allow-list-gated (the destructured-gatherScope residue)', () => {
+    // The one TagFilters family the write walk still cannot see: the array
+    // reaches the write as a destructured member of gatherScope's returned
+    // literal (same class as its `.Key` / `.Value` write-pass entries). The
+    // allow entry is load-bearing: without it the UNREGRESSED provider flags,
+    // proving the key is reviewed rather than silently green.
+    const byPath = new Map(s3Classify(s3Source).map((e) => [e.nestedKey, e.bucket]));
+    expect(byPath.get('LifecycleConfiguration.Rules.TagFilters')).toBe('allow-listed');
+    const withoutEntry = new Map(NESTED_KEY_ALLOW_LIST);
+    withoutEntry.delete(allowKey('AWS::S3::Bucket', 'LifecycleConfiguration.Rules.TagFilters'));
+    const stripped = new Map(s3Classify(s3Source, withoutEntry).map((e) => [e.nestedKey, e.bucket]));
+    expect(stripped.get('LifecycleConfiguration.Rules.TagFilters')).toBe('no-sdk-member');
+  });
+
+  it('EventBridgeEnabled is allow-list-gated (presence-encoded, no write to verify)', () => {
+    // Same load-bearing proof for the presence-encoded boolean: the SDK
+    // EventBridgeConfiguration is an EMPTY struct, so no write evidence can
+    // exist and the scoped rule cannot rescue it — the reviewed allow entry
+    // is the fence, and removing it flags the key rather than passing green.
+    const byPath = new Map(s3Classify(s3Source).map((e) => [e.nestedKey, e.bucket]));
+    const path = 'NotificationConfiguration.EventBridgeConfiguration.EventBridgeEnabled';
+    expect(byPath.get(path)).toBe('allow-listed');
+    const withoutEntry = new Map(NESTED_KEY_ALLOW_LIST);
+    withoutEntry.delete(allowKey('AWS::S3::Bucket', path));
+    const stripped = new Map(s3Classify(s3Source, withoutEntry).map((e) => [e.nestedKey, e.bucket]));
+    expect(stripped.get(path)).toBe('no-sdk-member');
   });
 
   it('the unregressed real S3 provider classifies every probed key as provider-handled', () => {
-    const entries = classifyTarget(
-      s3Target,
-      s3NestedKeys,
-      s3SdkMembers,
-      collectStringLiterals(s3Source)
-    );
+    const entries = s3Classify(s3Source);
     for (const key of S3_DISCRIMINATING_KEYS) {
       expect(bucketOf(entries, key), key).toBe('provider-handled');
     }
@@ -5235,19 +5385,27 @@ describe('the shipped --check command', { timeout: 30_000 }, () => {
   });
 
   it('exits 1 naming a STALE allow-list entry', () => {
-    // `AWS::CodeBuild::Project#HostKernel` is allow-listed because no SDK member
-    // exists. Naming the key in the provider flips it to `provider-handled`, so
-    // the entry stops matching and must be reported rather than silently kept.
-    const dir = regressedTree('providers-stale', 'codebuild-provider.ts', (source) =>
+    // The stale-entry fence, red-proven through the scoped literal rule
+    // (#1393 item 2). A floating literal can no longer flip a key to
+    // `provider-handled` (that rubber stamp is exactly what the rule
+    // removed — the HostKernel form this probe used pre-#1393 now
+    // correctly changes nothing), so the probe targets an entry whose
+    // SCOPED evidence already exists: `CorsConfiguration.CorsRules` is
+    // allow-listed only because the provider reads the CFn key via typed
+    // property access — the write index already carries the ci-matching
+    // SDK member `CORSRules` at the resolved parent scope. Naming the
+    // literal makes the key `provider-handled`, the entry stops matching,
+    // and `--check` must report it rather than silently keep it.
+    const dir = regressedTree('providers-stale', 's3-bucket-provider.ts', (source) =>
       source.replace(
-        'export class CodeBuildProvider',
-        "const NAMES_THE_KEY = ['HostKernel'];\nvoid NAMES_THE_KEY;\nexport class CodeBuildProvider"
+        'export class S3BucketProvider',
+        "const NAMES_THE_KEY = ['CorsRules'];\nvoid NAMES_THE_KEY;\nexport class S3BucketProvider"
       )
     );
     const { status, stderr } = runCheck(dir);
     expect(status).toBe(1);
     expect(stderr).toContain('stale NESTED_KEY_ALLOW_LIST');
-    expect(stderr).toContain('AWS::CodeBuild::Project#HostKernel');
+    expect(stderr).toContain('AWS::S3::Bucket#CorsConfiguration.CorsRules');
   });
 
   it('rejects an unrecognized flag instead of falling through to WRITER mode', () => {
