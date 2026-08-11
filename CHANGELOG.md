@@ -1,3 +1,10 @@
+## [0.280.27](https://github.com/go-to-k/cdkd/compare/v0.280.26...v0.280.27) (2026-08-11)
+
+
+### Bug Fixes
+
+* **deployment:** match AWS's singular "already exist" so a Lambda replacement is performable ([#1625](https://github.com/go-to-k/cdkd/issues/1625)) ([#1637](https://github.com/go-to-k/cdkd/issues/1637)) ([ca4e82e](https://github.com/go-to-k/cdkd/commit/ca4e82e75fece35f163be1520e3a14f75f7f886e))
+
 ## [0.280.26](https://github.com/go-to-k/cdkd/compare/v0.280.25...v0.280.26) (2026-08-11)
 
 
