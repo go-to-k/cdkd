@@ -1,3 +1,10 @@
+## [0.280.1](https://github.com/go-to-k/cdkd/compare/v0.280.0...v0.280.1) (2026-08-11)
+
+
+### Bug Fixes
+
+* **cloudtrail:** always-emit the CloudWatch Logs pair so a console-side enable is visible to drift ([#1575](https://github.com/go-to-k/cdkd/issues/1575)) ([86ead69](https://github.com/go-to-k/cdkd/commit/86ead699ee45a7335c49f746dcdbf953f3208f77))
+
 # [0.280.0](https://github.com/go-to-k/cdkd/compare/v0.279.0...v0.280.0) (2026-08-11)
 
 
