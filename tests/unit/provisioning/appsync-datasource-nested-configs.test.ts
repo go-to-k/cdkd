@@ -318,7 +318,7 @@ describe('AppSync DataSource nested config blobs (#1597)', () => {
       [true, 'boolean true'],
       [false, 'boolean false'],
       [{}, 'object'],
-    ])('refuses a %j TTL (%s) instead of coercing it to a number', async (ttl) => {
+    ])('refuses a %j TTL (%s) instead of coercing it to a number', async (ttl, _label) => {
       await expect(
         provider.create('L', DATASOURCE_TYPE, {
           ApiId: 'api-1',
