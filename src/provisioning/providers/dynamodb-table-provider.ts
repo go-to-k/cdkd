@@ -97,6 +97,21 @@ export function mapSSESpecification(
   return out;
 }
 
+/**
+ * `DescribeTable` poll budget (seconds, 1 poll/s) after an ordinary
+ * `UpdateTable` — capacity, TTL, tags, table class. Calibrated on those and
+ * sufficient for them.
+ */
+const TABLE_ACTIVE_WAIT_ATTEMPTS = 60;
+
+/**
+ * The same budget for a BillingMode FLIP, which DynamoDB settles on a
+ * different order of magnitude (measured 2026-08-11: a PAY_PER_REQUEST ->
+ * PROVISIONED flip exceeded 60s and failed the deploy). Kept SEPARATE so a
+ * genuinely wedged capacity edit still fails in a minute rather than ten.
+ */
+const BILLING_FLIP_ACTIVE_WAIT_ATTEMPTS = 600;
+
 export class DynamoDBTableProvider implements ResourceProvider {
   private dynamoDBClient: DynamoDBClient;
   private logger = getLogger().child('DynamoDBTableProvider');
@@ -514,7 +529,23 @@ export class DynamoDBTableProvider implements ResourceProvider {
         (typeof recordedPrevBillingMode === 'string' && recordedPrevBillingMode.trim() !== '');
       const prevBillingMode = (
         recordedPrevBillingModeUsable
-          ? ((recordedPrevBillingMode as string | undefined) ?? 'PROVISIONED')
+          ? ((recordedPrevBillingMode as string | undefined) ??
+            // An ABSENT recorded previous resolves differently depending on
+            // what the DESIRED side asks for, and the asymmetry is deliberate
+            // (review catch):
+            //   - desired ALSO absent -> the type default. Both sides
+            //     normalize to PROVISIONED and the update is a no-op, which is
+            //     what a table that never declared the property should do on
+            //     every deploy.
+            //   - desired EXPLICIT -> the table's LIVE mode. Taking the type
+            //     default here would compare PROVISIONED against an explicit
+            //     `BillingMode: PROVISIONED` and SUPPRESS the flip entirely,
+            //     leaving a live PAY_PER_REQUEST table on-demand forever while
+            //     state records PROVISIONED. Reachable via `cdkd import`,
+            //     whose state properties come from the template, not from AWS.
+            (properties['BillingMode'] !== undefined
+              ? (table?.BillingModeSummary?.BillingMode ?? 'PROVISIONED')
+              : 'PROVISIONED'))
           : (table?.BillingModeSummary?.BillingMode ?? 'PROVISIONED')
       ) as 'PROVISIONED' | 'PAY_PER_REQUEST';
       if (!recordedPrevBillingModeUsable) {
@@ -595,8 +626,14 @@ export class DynamoDBTableProvider implements ResourceProvider {
         await this.dynamoDBClient.send(new UpdateTableCommand(updateInput));
         // UpdateTable is async; wait for ACTIVE so later branches (and any
         // subsequent UpdateTable for OnDemand/Warm throughput) don't race a
-        // still-UPDATING table.
-        await this.waitForTableActiveAfterUpdate(physicalId);
+        // still-UPDATING table. A BillingMode FLIP needs the long budget —
+        // see `waitForTableActiveAfterUpdate`.
+        await this.waitForTableActiveAfterUpdate(
+          physicalId,
+          billingMode !== prevBillingMode
+            ? BILLING_FLIP_ACTIVE_WAIT_ATTEMPTS
+            : TABLE_ACTIVE_WAIT_ATTEMPTS
+        );
         this.logger.debug(
           `Updated BillingMode/ProvisionedThroughput/TableClass on DynamoDB table ${physicalId}`
         );
@@ -606,9 +643,37 @@ export class DynamoDBTableProvider implements ResourceProvider {
       // plane API like PITR / TTL). Fire only when the value changed so a
       // no-op update doesn't issue a redundant UpdateTable; AWS validates
       // the PAY_PER_REQUEST-only constraint.
+      //
+      // ...but not when the RESOLVED billing mode is PROVISIONED, which issue
+      // #1553 made newly reachable (review catch): a template that removes
+      // `BillingMode` while keeping `OnDemandThroughput` now flips the table
+      // to PROVISIONED in the call above and would then send an on-demand
+      // ceiling to a provisioned table. AWS rejects that — and by then the
+      // flip has ALREADY been applied, so the failure leaves the table
+      // half-changed. Warn and skip instead: the block is inapplicable to the
+      // mode the template asked for, and saying so beats a partial apply.
+      // Scoped to the FLIP this issue newly enables, not to "the resolved mode
+      // is PROVISIONED" in general: a template that has always omitted
+      // `BillingMode` while declaring `OnDemandThroughput` is a pre-existing
+      // (CFn-invalid) shape this provider has always forwarded, and widening
+      // the gate to cover it would change behavior well outside #1553.
+      const onDemandInapplicable =
+        billingMode === 'PROVISIONED' &&
+        prevBillingMode === 'PAY_PER_REQUEST' &&
+        properties['OnDemandThroughput'] !== undefined;
+      if (onDemandInapplicable) {
+        this.logger.warn(
+          `AWS::DynamoDB::Table ${logicalId}: OnDemandThroughput is declared but the ` +
+            `table's resolved BillingMode is PROVISIONED (BillingMode is absent from the ` +
+            `template, which CloudFormation resets to PROVISIONED). AWS rejects an ` +
+            `on-demand ceiling on a provisioned table, so the block is not applied. ` +
+            `Set BillingMode: PAY_PER_REQUEST, or remove OnDemandThroughput.`
+        );
+      }
       if (
+        !onDemandInapplicable &&
         JSON.stringify(properties['OnDemandThroughput']) !==
-        JSON.stringify(previousProperties['OnDemandThroughput'])
+          JSON.stringify(previousProperties['OnDemandThroughput'])
       ) {
         if (properties['OnDemandThroughput']) {
           await this.dynamoDBClient.send(
@@ -1518,7 +1583,28 @@ export class DynamoDBTableProvider implements ResourceProvider {
    * mismatch should not throw — just keep polling — and the call may
    * also return immediately ACTIVE on the no-op path (already disabled).
    */
-  private async waitForTableActiveAfterUpdate(tableName: string, maxAttempts = 60): Promise<void> {
+  /**
+   * Poll `DescribeTable` until the table leaves `UPDATING`.
+   *
+   * The 60-attempt (60s) default was calibrated on capacity / TTL / tag edits,
+   * which settle in seconds. A **BillingMode flip does not** — measured
+   * 2026-08-11 on the `dynamodb-ondemand` fixture, a PAY_PER_REQUEST ->
+   * PROVISIONED flip exceeded 60s and failed the deploy with
+   * `did not reach ACTIVE status within 60 seconds`, rolling the whole stack
+   * back. It was invisible before issue #1553 because the removal that
+   * triggers the flip never produced a valid `UpdateTable` at all; making the
+   * call correct is what put a real flip on this path.
+   *
+   * So the timeout is per-OPERATION rather than global: a flip gets 600s (the
+   * same order as the GlobalTable provider's own settle waits), everything
+   * else keeps the 60s that has been sufficient for two years of integs. A
+   * blanket raise would turn every genuinely wedged capacity edit into a
+   * 10-minute hang.
+   */
+  private async waitForTableActiveAfterUpdate(
+    tableName: string,
+    maxAttempts = TABLE_ACTIVE_WAIT_ATTEMPTS
+  ): Promise<void> {
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       const response = await this.dynamoDBClient.send(
         new DescribeTableCommand({ TableName: tableName })

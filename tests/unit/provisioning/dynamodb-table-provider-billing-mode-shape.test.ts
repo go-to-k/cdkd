@@ -92,6 +92,15 @@ describe('DynamoDBTableProvider malformed BillingMode (issue #1545)', () => {
       .filter((c) => c[0].constructor.name === 'UpdateTableCommand')
       .filter((c) => c[0].input.BillingMode !== undefined);
 
+  /**
+   * EVERY UpdateTable, unfiltered. `billingUpdateCalls` drops a call that
+   * carries no `BillingMode` — which is exactly the empty-`UpdateTable` shape
+   * of issue #1553, so this suite's "0 calls" assertions could not see it.
+   * Assert against this one whenever the claim is "no call at all".
+   */
+  const allUpdateCalls = () =>
+    mockSend.mock.calls.filter((c) => c[0].constructor.name === 'UpdateTableCommand');
+
   // ─── CREATE: refuse ────────────────────────────────────────────────────
 
   it.each([
@@ -281,6 +290,9 @@ describe('DynamoDBTableProvider malformed BillingMode (issue #1545)', () => {
     ).resolves.toBeDefined();
 
     expect(billingUpdateCalls()).toHaveLength(0);
+    // Unfiltered: an empty `UpdateTable` would be invisible to the filtered
+    // helper, which is how issue #1553 hid in this suite.
+    expect(allUpdateCalls()).toHaveLength(0);
     expect(childLogger.warn).toHaveBeenCalledWith(
       expect.stringContaining("The table's current billing mode (PROVISIONED) is kept")
     );
@@ -394,6 +406,7 @@ describe('DynamoDBTableProvider malformed BillingMode (issue #1545)', () => {
     );
 
     expect(billingUpdateCalls()).toHaveLength(0);
+    expect(allUpdateCalls()).toHaveLength(0);
     expect(childLogger.warn).not.toHaveBeenCalledWith(
       expect.stringContaining('AWS::DynamoDB::Table BillingMode')
     );
