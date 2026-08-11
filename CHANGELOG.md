@@ -1,3 +1,10 @@
+## [0.278.51](https://github.com/go-to-k/cdkd/compare/v0.278.50...v0.278.51) (2026-08-11)
+
+
+### Bug Fixes
+
+* **provisioning:** refuse a malformed analytics/inventory Destination instead of dropping it ([#1560](https://github.com/go-to-k/cdkd/issues/1560)) ([927d10d](https://github.com/go-to-k/cdkd/commit/927d10d5cdeb73b00c9876332fcfba9bf8a78950))
+
 ## [0.278.50](https://github.com/go-to-k/cdkd/compare/v0.278.49...v0.278.50) (2026-08-11)
 
 
