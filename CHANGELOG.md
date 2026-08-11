@@ -1,3 +1,10 @@
+## [0.280.4](https://github.com/go-to-k/cdkd/compare/v0.280.3...v0.280.4) (2026-08-11)
+
+
+### Bug Fixes
+
+* **apigatewayv2:** wire the remaining Stage and Route silent-drop properties ([#609](https://github.com/go-to-k/cdkd/issues/609)) ([#1577](https://github.com/go-to-k/cdkd/issues/1577)) ([6f20bfa](https://github.com/go-to-k/cdkd/commit/6f20bfa4272fa07e357154592b17084d0afefc03))
+
 ## [0.280.3](https://github.com/go-to-k/cdkd/compare/v0.280.2...v0.280.3) (2026-08-11)
 
 
