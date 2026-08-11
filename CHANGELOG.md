@@ -1,3 +1,10 @@
+## [0.280.22](https://github.com/go-to-k/cdkd/compare/v0.280.21...v0.280.22) (2026-08-11)
+
+
+### Bug Fixes
+
+* **dynamodb:** delete a removed GSI before the BillingMode flip so the deploy converges ([#1628](https://github.com/go-to-k/cdkd/issues/1628)) ([231fded](https://github.com/go-to-k/cdkd/commit/231fded91853594e4922a326fb5734da676663b4))
+
 ## [0.280.21](https://github.com/go-to-k/cdkd/compare/v0.280.20...v0.280.21) (2026-08-11)
 
 
