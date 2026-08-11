@@ -40,7 +40,11 @@ helper exists to stop:
   GlobalTable `BillingMode`, WAFv2 `Scope`, Lambda URL create-path `AuthType`,
   S3 directory-bucket `DataRedundancy`, DynamoDB Table `BillingMode` (issues
   #1544 / #1545). `readConfigString` accepts the same options bag for nested
-  containers (GlobalTable `StreamSpecification`), and
+  containers (GlobalTable `StreamSpecification`); `requireConfigArray` accepts
+  its `onUnusable`-only subset (`ConfigArrayOptions`) for LIST blocks — under
+  the callback it warns and returns `undefined` so the caller decides the skip
+  unit, and the S3 `TagFilters` guards skip the whole configuration item /
+  whole lifecycle Put rather than applying a widened scope (issue #1579); and
   `toSdkGlobalSecondaryIndexes` takes the callback as `onUnusableIndexes` —
   wired from `create()` AND, since issue #1551, from both of `update()`'s
   call sites (desired and previous). Prefer this.
