@@ -63,6 +63,7 @@ import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { S3_AUTO_DELETE_OBJECTS_TAG, hasCdkAutoDeleteTag } from '../data-delete-intent.js';
 import {
+  configStringRefusal,
   readConfigString,
   replayWarn,
   requireConfigArray,
@@ -429,6 +430,48 @@ export class S3BucketProvider implements ResourceProvider {
   }
 
   /**
+   * The per-item / per-rule STRING guard, with the applier's own SKIP as the
+   * replay downgrade (issue #1595).
+   *
+   * Four per-item reads in this file refuse a malformed configuration ITEM
+   * through a `readConfigString` that carries no `onUnusable`, so they threw on
+   * the state-replay paths too — the un-rollbackable refusal every container
+   * guard beside them exists to avoid. What they must NOT do instead is take
+   * `readConfigString`'s own downgrade: its fallback is applied to a LIVE
+   * resource, and each of these defaults ENABLES something (a lifecycle
+   * expiration rule, an intelligent-tiering transition, a replication rule),
+   * so warn-and-default is worse than the refusal it replaces. The correct
+   * downgrade is the SKIP the sibling container guards already perform, with
+   * the same per-applier unit — whole Put where the Put replaces every rule,
+   * the single configuration item where the Put is per-Id.
+   *
+   * Returns `true` when the caller must skip. On the CREATE path (`onUnusable`
+   * absent) it always returns `false` and the original read below still
+   * throws, so template-borne behavior is unchanged.
+   *
+   * No `ConfigStringOptions` passthrough, and that is a decision rather than an
+   * omission: a probe whose relaxations disagree with the read it fronts would
+   * refuse exactly where the read accepts. All four sites are ENUM-valued
+   * (`Status` / `IncludedObjectVersions`), so `coerceNumber` is wrong for them
+   * by the rule in `config-shape.ts`'s header — a number where an enum belongs
+   * is a bug. A site that ever needs an option must thread the SAME bag here.
+   */
+  private skipOnUnusableConfigString(
+    container: unknown,
+    key: string,
+    fallback: string,
+    containerPath: string,
+    skipClause: string,
+    onUnusable?: (message: string) => void
+  ): boolean {
+    if (!onUnusable) return false;
+    const refusal = configStringRefusal(container, key, fallback, containerPath);
+    if (refusal === undefined) return false;
+    onUnusable(`${refusal}. ${skipClause}; the same value is REFUSED on a template-path create`);
+    return true;
+  }
+
+  /**
    * Apply lifecycle configuration
    *
    * CFn property: LifecycleConfiguration.Rules[]
@@ -487,6 +530,29 @@ export class S3BucketProvider implements ResourceProvider {
           { ...(onUnusable ? { onUnusable } : {}) }
         );
         if (validated === undefined) return;
+      }
+      // ...and the per-rule `Status` (issue #1595). The read that refuses it
+      // sits in the `.map` below and carries no `onUnusable`, so a state
+      // record with a malformed `Status` was un-rollbackable. Defaulting is
+      // NOT the downgrade here: the fallback is `Enabled`, so a replayed
+      // expiration rule the template had DISABLED would start deleting
+      // objects. Skip unit is the whole Put, exactly as for the two container
+      // guards above and for the same reason.
+      if (
+        this.skipOnUnusableConfigString(
+          rule,
+          'Status',
+          'Enabled',
+          'AWS::S3::Bucket LifecycleConfiguration.Rules[]',
+          // Path-NEUTRAL wording, like the sibling container guards: the
+          // replay-CREATE arm reaches this too (a reverse-replacement revives
+          // the bucket, so there is no "live" configuration to leave alone),
+          // and a message that asserts one would be false there.
+          'Leaving the whole lifecycle configuration unapplied here',
+          onUnusable
+        )
+      ) {
+        return;
       }
     }
     // Gather a rule's full location scope from EVERY source CFn can express it:
@@ -1164,7 +1230,8 @@ export class S3BucketProvider implements ResourceProvider {
     // (the set this decision is about — a reader enumerating every per-item
     // `.map` in this file also finds cors / encryption / website /
     // notification, which are not replay-callback sites), four already refuse a
-    // non-object item
+    // non-object item on the CREATE path (issue #1595 split the paths: on a
+    // state replay those four now warn and SKIP instead of throwing)
     // through an existing `readConfigString(config | rule, …)` — intelligent
     // tiering (`Status`), inventory (`IncludedObjectVersions`), the lifecycle
     // rules (`Status`) and replication's rules (`Status`, in the same applier
@@ -1520,6 +1587,24 @@ export class S3BucketProvider implements ResourceProvider {
   ): Promise<void> {
     for (const config of configs) {
       const id = config['Id'] as string;
+      // Per-item `Status` (issue #1595) — the read below carries no
+      // `onUnusable`, so a state replay hard-threw. The fallback `Enabled`
+      // would switch a live intelligent-tiering configuration ON and start
+      // moving objects into archive tiers, so the downgrade is a SKIP. The
+      // Put is per-Id, so the unit is this configuration item — matching the
+      // `TagFilters` guard a few lines below.
+      if (
+        this.skipOnUnusableConfigString(
+          config,
+          'Status',
+          'Enabled',
+          'AWS::S3::Bucket IntelligentTieringConfigurations[]',
+          'Skipping this intelligent tiering configuration',
+          onUnusable
+        )
+      ) {
+        continue;
+      }
       const tierings = config['Tierings'] as Array<Record<string, unknown>> | undefined;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const itConfig: any = {
@@ -1589,6 +1674,27 @@ export class S3BucketProvider implements ResourceProvider {
   ): Promise<void> {
     for (const config of configs) {
       const id = config['Id'] as string;
+      // Per-item `IncludedObjectVersions` (issue #1595) — same replay split as
+      // the intelligent-tiering sibling. Defaulting to `All` here is not
+      // destructive, but it silently changes what the live inventory report
+      // contains, and the destination guard immediately below already skips
+      // the item on an unusable value — so the SKIP unit is taken from the
+      // guard right next to it rather than invented. This applier is NOT
+      // uniform overall and the comment used to claim it was: `Format` still
+      // warns-and-defaults, and the `ScheduleFrequency` / `Schedule.Frequency`
+      // pair still hard-throws (both out of scope, see #1605).
+      if (
+        this.skipOnUnusableConfigString(
+          config,
+          'IncludedObjectVersions',
+          'All',
+          'AWS::S3::Bucket InventoryConfigurations[]',
+          'Skipping this inventory configuration',
+          onUnusable
+        )
+      ) {
+        continue;
+      }
       const inventoryDestPath = 'AWS::S3::Bucket InventoryConfigurations[].Destination';
       const rawDest = config['Destination'];
       const s3Dest = this.resolveS3BucketDestination(rawDest, inventoryDestPath, onUnusable);
@@ -1767,6 +1873,28 @@ export class S3BucketProvider implements ResourceProvider {
         requireConfigObject(rawFilter, 'AWS::S3::Bucket ReplicationConfiguration.Rules[].Filter', {
           ...(onUnusable ? { onUnusable } : {}),
         }) === undefined
+      ) {
+        return;
+      }
+      // The per-rule `Status` in the same loop (issue #1595) — the fourth
+      // per-item refusal of this class and the one most likely to be mistaken
+      // for already-handled, since it sits in the applier whose `Filter`
+      // container is guarded directly above. Its read is in the `.map` below
+      // and carries no `onUnusable`. The fallback `Enabled` would START
+      // replicating for a rule the template had disabled — objects leaving the
+      // bucket, at cross-region transfer cost — so the downgrade is a SKIP,
+      // and `PutBucketReplication` replaces every rule at once, so the unit is
+      // the whole Put.
+      if (
+        this.skipOnUnusableConfigString(
+          rule,
+          'Status',
+          'Enabled',
+          'AWS::S3::Bucket ReplicationConfiguration.Rules[]',
+          // Path-neutral, for the same reason as the lifecycle sibling.
+          'Leaving the whole replication configuration unapplied here',
+          onUnusable
+        )
       ) {
         return;
       }

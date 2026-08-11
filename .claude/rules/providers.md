@@ -56,7 +56,23 @@ helper exists to stop:
   CFn form meaning "replicate EVERY object" — so the malformed container did
   not merely drop a predicate, it replicated the whole bucket. When auditing
   this class, ask what the EMPTY block MEANS at the site before deciding the
-  severity; and
+  severity.
+  **A per-item STRING read is the same replay question with a DIFFERENT
+  answer** (issue #1595): `readConfigString`'s own `onUnusable` downgrade is
+  warn-and-DEFAULT, and at a per-item site the default lands on a LIVE
+  resource — the four S3 per-item reads left strict by #1581 all default to
+  `Enabled` / `All`, so defaulting would START an expiration rule, an
+  intelligent-tiering transition, or a replication rule the template had
+  disabled. Those sites take `configStringRefusal(container, key, fallback,
+  containerPath, options?)` instead: it returns the refusal SENTENCE (or
+  `undefined`) without taking the fallback, so the caller performs the SKIP its
+  sibling container guards already use, with the same per-applier unit — whole
+  Put where the Put replaces every rule, single item where the Put is per-Id.
+  It shares `requireConfigString`'s predicate rather than re-deriving one, and
+  a test enumerates both against every value to keep them from drifting; a
+  hand-written `typeof` twin disagrees on exactly the blank string, the
+  explicit `null` and the coerced number. On the CREATE path the caller does
+  not probe at all, so the original read still throws unchanged; and
   `toSdkGlobalSecondaryIndexes` takes the callback as `onUnusableIndexes` —
   wired from `create()` AND, since issue #1551, from both of `update()`'s
   call sites (desired and previous). Prefer this.
