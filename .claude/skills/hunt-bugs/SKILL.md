@@ -158,10 +158,14 @@ is enforced structurally rather than by discipline:
 - `bughunt-track.sh add <stacks...>` records the deployed stack names in the
   gitignored sentinel under `.markgate-bughunt-pending.d/` (one file per owner).
 - The `bughunt-clean` markgate gate (PreToolUse hook
-  `.claude/hooks/bughunt-clean-gate.sh`) **blocks `git commit`, `gh pr create`,
-  and `gh pr merge` while any tracked stack remains** — so you physically
-  cannot land the fix PR (or any commit) until the bug-hunt resources are
-  destroyed and verified gone.
+  `.claude/hooks/bughunt-clean-gate.sh`) **blocks `gh pr create` and
+  `gh pr merge` while ANY owner's tracked stack remains, and blocks
+  `git commit` while YOUR OWN does** (issue #1615) — so you physically cannot
+  land the fix PR, or even commit, until your bug-hunt resources are destroyed
+  and verified gone. A commit from a session that owns no pending stacks is
+  allowed with a non-blocking notice, because it has no lever to pull: `clear`
+  is per-owner by design and destroying another session's stacks is exactly the
+  cross-session trespass the worktree rules forbid.
 - `bughunt-track.sh verify` confirms each tracked stack's `state.json` is gone
   from S3; `bughunt-track.sh clear` removes your stacks (releasing the gate once
   no owner has pending stacks) and is meant to be run ONLY after orphan-zero is
