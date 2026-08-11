@@ -1153,8 +1153,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       const onUnusableGsiBlock = (message: string): void => {
         desiredGsiUnusable = true;
         this.logger.warn(
-          `${message} No GlobalSecondaryIndexes change is applied by this update; ` +
-            `the table's existing indexes are left untouched.`
+          `AWS::DynamoDB::GlobalTable ${logicalId}: ${message} No GlobalSecondaryIndexes ` +
+            `change is applied by this update; the table's existing indexes are left untouched.`
         );
       };
       // The PREVIOUS side's translation gets the downgrade UNCONDITIONALLY (it
@@ -1178,9 +1178,9 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       const onUnusablePreviousGsiBlock = (message: string): void => {
         previousGsiUnusable = true;
         this.logger.warn(
-          `${message} (recorded in cdkd state, not in the template) — using the ` +
-            `table's LIVE indexes as the comparison baseline for this update, so a ` +
-            `corrected template still applies.`
+          `AWS::DynamoDB::GlobalTable ${logicalId}: ${message} (recorded in cdkd state, ` +
+            `not in the template) — using the table's LIVE indexes as the comparison ` +
+            `baseline for this update, so a corrected template still applies.`
         );
       };
       // AWS's own view of WHICH indexes exist — names only, deliberately.
@@ -1197,10 +1197,13 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // fights auto-scaling (live 10 vs the template's min 1 reads as a
       // scale-down nobody asked for).
       //
-      // Existence is the ONLY thing the live table can tell us that the junk
-      // state record cannot, and it is the only thing needed to stop the
-      // permanent loss — so it is the only thing taken. See
-      // `previousSdkIndexes` for how the baseline is then built.
+      // Existence is what stops the PERMANENT LOSS, and for a while it was the
+      // only thing taken. Issue #1571 then closed the residual that left: the
+      // baseline also carries the live VALUES that are safe to compare, with
+      // each of the three failure modes above turned into an explicit
+      // exclusion rather than a blanket refusal. This set is still used on its
+      // own for the live-ONLY report below. See `buildLiveRecoveryGsiBaseline`
+      // for which values are carried and why.
       const liveIndexNames = new Set(
         (describeResp.Table?.GlobalSecondaryIndexes ?? [])
           .map((live) => live.IndexName)
@@ -1969,7 +1972,10 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
               // user's edit.
               carryLiveValues: oldBilling === newBilling && liveBillingMode === newBilling,
               liveBillingMode,
-              autoScaledIndexNames: collectAutoScaledGsiNames(properties, currentRegion),
+              uncomparableCapacityIndexNames: collectUncomparableCapacityGsiNames(
+                properties,
+                currentRegion
+              ),
             }
           )
         : previousTranslatedIndexes;
@@ -1984,17 +1990,24 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           // Be precise about the remedy: a later deploy does NOT clear these.
           // Once this deploy records a valid block, the live-only index is in
           // neither the previous nor the desired side of EVERY subsequent
-          // diff, so it survives indefinitely — the earlier wording promised a
-          // convergence that cannot happen. `cdkd drift --accept` records the
-          // AWS-current indexes into state, which puts the index back on the
-          // previous side and lets the next deploy delete it.
+          // diff, so it survives indefinitely.
+          //
+          // `cdkd drift --accept` is NOT the remedy either, and claiming it
+          // was is the same false-convergence bug one layer over (review
+          // catch). Two independent reasons: `--accept` writes into
+          // `observedProperties` whenever that field exists, while the deploy
+          // diff's previous side is `properties`; and this provider's
+          // `readCurrentState` already reverse-maps the LIVE index list, so
+          // the drift report is empty and there is nothing to accept. The
+          // only thing that actually clears the index is deleting it in AWS.
           this.logger.warn(
             `AWS::DynamoDB::GlobalTable ${logicalId}: ${liveOnly.join(', ')} exist(s) on the ` +
               `table but not in the template. No Delete is issued while the recorded ` +
               `GlobalSecondaryIndexes are unusable — a junk state record cannot prove cdkd ` +
-              `created them, and an index delete is irreversible. This does NOT self-heal: ` +
-              `run \`cdkd drift --accept\` to record the table's live indexes into state, then ` +
-              `re-deploy to remove them — or delete the index directly in AWS.`
+              `created them, and an index delete is irreversible. This does NOT self-heal, ` +
+              `and no later cdkd deploy will remove them: delete the index directly, e.g. ` +
+              `aws dynamodb update-table --table-name ${physicalId} ` +
+              `--global-secondary-index-updates '[{"Delete":{"IndexName":"<name>"}}]'.`
           );
         }
       }
@@ -5303,18 +5316,21 @@ export function collectRawOnDemandDeclarations(
 }
 
 /**
- * Names of the GSIs whose template declares APPLICATION AUTO SCALING on either
- * capacity dimension (issue #1571).
+ * Names of the GSIs whose PROVISIONED capacity must NOT be compared against
+ * the live table (issue #1571). Two disjoint reasons, and both are about the
+ * DESIRED side being a number the template did not actually choose:
  *
- * Used by {@link buildLiveRecoveryGsiBaseline} to decide which indexes must
- * keep an identity-only capacity baseline. For an autoscaled index the live
- * number is owned by Application Auto Scaling, not by the template: the
- * translation takes `MinCapacity` (see {@link CapacitySource}), so comparing a
- * live 10 against a template min of 1 reads as a scale-down NOBODY ASKED FOR
- * and cdkd would issue it. That was one of the three measured failure modes of
- * the first value-carrying baseline (#1551), and it is the only one that
- * cannot be resolved by reading the live side more carefully — the two numbers
- * are BOTH correct, they just answer different questions.
+ * - **auto-scaled** — the live number is owned by Application Auto Scaling
+ *   while the translation takes `MinCapacity` (see {@link CapacitySource}), so
+ *   a live 10 against a template min of 1 reads as a scale-down NOBODY ASKED
+ *   FOR. This was one of the three measured failure modes of the first
+ *   value-carrying baseline (#1551), and the only one that cannot be resolved
+ *   by reading the live side more carefully — both numbers are correct, they
+ *   answer different questions.
+ * - **not template-determined** — no capacity resolves to a finite number, so
+ *   `toSdkGlobalSecondaryIndexes` substitutes `DEFAULT_CAPACITY_UNITS` (5/5,
+ *   the issue #1511 class). Comparing that invented default against the live
+ *   value turns it into a WRITE. Found by review, not by the first cut.
  *
  * Walks the same two sources as {@link toSdkGlobalSecondaryIndexes} and
  * {@link collectRawOnDemandDeclarations} — the LOCAL replica's index entry
@@ -5322,13 +5338,25 @@ export function collectRawOnDemandDeclarations(
  * hand-authored fallback for read, the top-level GSI for write. A divergence
  * between the three is what would re-open the bug, so they are kept adjacent.
  *
- * PRESENCE of the `*CapacityAutoScalingSettings` key is the test, not whether
- * its members coerce: a block that is itself an unresolved intrinsic still
- * means "this index is autoscaled", and the safe reading of "might be" is
- * "is" — the consequence of a false positive is one deploy of capacity lag,
- * the consequence of a false negative is an unrequested scale-down.
+ * The auto-scaling arm tests PRESENCE of the `*CapacityAutoScalingSettings`
+ * key, not whether its members coerce: a block that is itself an unresolved
+ * intrinsic still means "this index is autoscaled", and "might be" must read
+ * as "is" — a false negative issues an unrequested scale-down.
+ *
+ * KNOWN BOUND: detection is TEMPLATE-side only. An index autoscaled OUT OF
+ * BAND (no `*CapacityAutoScalingSettings` in the template) has a
+ * template-determined capacity, so its live value IS compared and the recovery
+ * deploy re-asserts the template's number — which is what a clean previous
+ * side would also have done, so this matches ordinary cdkd semantics rather
+ * than being a recovery-path defect.
+ *
+ * And the cost of a false positive is a PERMANENT divergence, not "one deploy
+ * of lag": the deploy records the template value as state, so the next diff
+ * sees previous == desired and never revisits it. That is the same self-heal
+ * fallacy this PR corrects in the live-only warning; it is accepted here
+ * because the alternative is writing a number the user never asked for.
  */
-export function collectAutoScaledGsiNames(
+export function collectUncomparableCapacityGsiNames(
   properties: Record<string, unknown>,
   region: string
 ): Set<string> {
@@ -5359,13 +5387,8 @@ export function collectAutoScaledGsiNames(
       localEntry?.['ReadProvisionedThroughputSettings'],
       gsi['ReadProvisionedThroughputSettings'],
     ];
-    // A block that is ITSELF an unresolved intrinsic counts as autoscaled for
-    // the same reason a present-but-unparseable member does: nothing can see
-    // inside it, and the two readings are not symmetric. Reporting
-    // "not autoscaled" makes the desired capacity fall through to cdkd's 5/5
-    // default (#1511), which the live baseline then reads as a real edit and
-    // WRITES — potentially a downgrade of a live table. Reporting "autoscaled"
-    // costs one deploy of capacity lag.
+    // (a) AUTO-SCALED. A block that is ITSELF an unresolved intrinsic counts
+    // too: nothing can see inside it, and the two readings are not symmetric.
     const writeBlock = gsi['WriteProvisionedThroughputSettings'];
     const autoScaled =
       readBlocks.some(
@@ -5375,7 +5398,31 @@ export function collectAutoScaledGsiNames(
       ) ||
       asRecord(writeBlock)?.['WriteCapacityAutoScalingSettings'] !== undefined ||
       isUnresolvedIntrinsicBlock(writeBlock);
-    if (autoScaled) out.add(name);
+    if (autoScaled) {
+      out.add(name);
+      continue;
+    }
+    // (b) NOT TEMPLATE-DETERMINED. This is the arm a review caught, and it is
+    // the destructive one: `toSdkGlobalSecondaryIndexes` runs every capacity
+    // through `toFiniteNumber` and falls through to `DEFAULT_CAPACITY_UNITS`
+    // (5/5) when nothing resolves — the issue #1511 class. Outside this
+    // recovery path both sides derive the same 5/5, so the invented default
+    // never reaches AWS. With a live baseline it becomes a WRITE: live 25/25
+    // versus a desired 5/5 reads as an edit and cdkd scales the table DOWN to
+    // a number the template never contained. So the test is not "did the
+    // template mention auto-scaling" but "did the template DETERMINE both
+    // numbers" — mirroring `deriveRead/WriteCapacityUnits` returning
+    // `undefined`, with the explicit SDK-shaped block counted because the
+    // translation merges it over the derived side.
+    const explicitProvisioned = asRecord(gsi['ProvisionedThroughput']);
+    const derivedRead =
+      toFiniteNumber(explicitProvisioned?.['ReadCapacityUnits']) ??
+      deriveReadCapacityUnits(asRecord(readBlocks[0])) ??
+      deriveReadCapacityUnits(asRecord(readBlocks[1]));
+    const derivedWrite =
+      toFiniteNumber(explicitProvisioned?.['WriteCapacityUnits']) ??
+      deriveWriteCapacityUnits(asRecord(writeBlock));
+    if (derivedRead === undefined || derivedWrite === undefined) out.add(name);
   }
   return out;
 }
@@ -5393,8 +5440,14 @@ export interface LiveRecoveryBaselineOptions {
   readonly carryLiveValues: boolean;
   /** The table's LIVE billing mode (`BillingModeSummary`, absent = PROVISIONED). */
   readonly liveBillingMode: string;
-  /** Result of {@link collectAutoScaledGsiNames} for the DESIRED template. */
-  readonly autoScaledIndexNames: ReadonlySet<string>;
+  /**
+   * Result of {@link collectUncomparableCapacityGsiNames} for the DESIRED
+   * template. Scoped to PROVISIONED capacity ONLY — an on-demand ceiling is
+   * a literal the template either carries or does not, so auto-scaling has no
+   * bearing on it and suppressing the whole entry would take the issue #1160
+   * `-1` reset down with it (review catch).
+   */
+  readonly uncomparableCapacityIndexNames: ReadonlySet<string>;
 }
 
 /**
@@ -5465,11 +5518,19 @@ export function buildLiveRecoveryGsiBaseline(
     // desired side lacks is appended, and in that case the two genuinely
     // differ anyway.
     const entry: GlobalSecondaryIndex = { ...desired };
-    if (!options.carryLiveValues || options.autoScaledIndexNames.has(desired.IndexName)) {
+    if (!options.carryLiveValues) {
       baseline.push(entry);
       continue;
     }
     if (options.liveBillingMode === 'PROVISIONED') {
+      // The capacity exclusion lives HERE, not above the mode branch: it is
+      // about PROVISIONED capacity only, and short-circuiting the whole entry
+      // suppressed the on-demand `-1` reset for an on-demand table whose
+      // template still carried a leftover auto-scaling block.
+      if (options.uncomparableCapacityIndexNames.has(desired.IndexName)) {
+        baseline.push(entry);
+        continue;
+      }
       // Introduce the member only when the desired side HAS it. A baseline
       // carrying a block the desired side lacks reads as "the template removed
       // provisioned capacity", which on a provisioned table is not a thing the

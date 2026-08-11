@@ -1008,6 +1008,9 @@ RECOVERY_LOG="$(mktemp)"
 CDKD_TEST_UPDATE="${GSI_RECOVERY_MODES},gsi-state-recovery" \
   ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose 2>&1 | tee "${RECOVERY_LOG}"
 
+# The autoscaled / not-template-determined exclusion and the live-only removes
+# path are unit-tested only; real-AWS coverage for both is issue (#1585).
+
 if ! grep -q "using the table's LIVE indexes as the comparison baseline" "${RECOVERY_LOG}"; then
   echo "FAIL: issue #1571 phase 2 — the recovery path did not run (no LIVE-baseline warning)" >&2
   exit 1
