@@ -68,6 +68,23 @@
  * is mandatory — a bare marker is rejected — so the decision is recorded
  * rather than merely silenced.
  *
+ * KNOWN BOUNDS, measured rather than predicted (a 3-axis review found each):
+ *
+ *   1. A gate whose condition is mode-derived but not reducible to a token set
+ *      (`onDemandReplicaMode !== 'none'`) reports `inconclusive-gate`, not a
+ *      verdict. That is deliberate — the alternative was dropping it silently,
+ *      which is what the first version did to the one declaration this lint was
+ *      written for. Widening the reducer (comparisons, `Set.has`, non-`split`
+ *      mode bindings) would convert those notes into real verdicts.
+ *   2. `resource-list` is a SHAPE test (an array of object literals), so a
+ *      gated `tags: [{ key, value }]` classifies as one and would BLOCK if a
+ *      later step dropped its token. No fixture does that today; the escape
+ *      hatch is the remedy if one ever does.
+ *   3. An `allow-mode-gated-drop:` marker attached to a STATEMENT silences
+ *      every gate inside that statement, not just the nearest one.
+ *   4. A deploy inside a shell FUNCTION is counted at the definition site; its
+ *      call sites are invisible.
+ *
  * This module is separate from the test so the classifier can be table-tested
  * against synthetic shapes rather than only against today's tree.
  */
@@ -93,7 +110,7 @@ export const MODE_ENV = 'CDKD_TEST_UPDATE';
  * match the marker at all, so instead of being rejected as unreasoned it read
  * as "no marker present" — the annotation silently did nothing.
  */
-const ALLOW_MARKER = /allow-mode-gated-drop\s*:(.*)$/m;
+const ALLOW_MARKER = /^\s*(?:\/\/|\/\*|\*)?\s*allow-mode-gated-drop\s*:(.*?)(?:\*\/)?\s*$/m;
 
 // ---------------------------------------------------------------------------
 // verify.sh side: the ORDERED mode list per deploy
@@ -109,6 +126,29 @@ export interface DeployStep {
    */
   modes: string[] | null;
   raw: string;
+}
+
+/**
+ * Drop heredoc BODIES before parsing. A body is data: a
+ * `CDKD_TEST_UPDATE=... deploy` line inside `<<EOF` sets nothing and deploys
+ * nothing, but read as live script it would set the ambient mode list for the
+ * whole rest of the file. Mirrors `check-integ-cdk-cli-pins.ts`'s private
+ * `stripHeredocs` (kept local rather than widening that module's export
+ * surface for one caller).
+ */
+function stripHeredocBodies(script: string): string {
+  const out: string[] = [];
+  const lines = script.split('\n');
+  for (let i = 0; i < lines.length; i += 1) {
+    out.push(lines[i]!);
+    const m = /<<-?\s*['"]?([A-Za-z_][A-Za-z0-9_]*)['"]?/.exec(lines[i]!);
+    if (!m) continue;
+    const endRe = new RegExp(`^\\s*${m[1]!}\\s*$`);
+    i += 1;
+    while (i < lines.length && !endRe.test(lines[i]!)) i += 1;
+    if (i < lines.length) out.push(lines[i]!); // keep the terminator
+  }
+  return out.join('\n');
 }
 
 /** Strip one layer of matching quotes from a shell RHS. */
@@ -150,7 +190,13 @@ function expandVars(value: string, vars: Map<string, string>): string | null {
     return known;
   });
 
-  return unresolved ? null : expanded;
+  // Any surviving `$` means a form this expander does not model — `${VAR:-def}`,
+  // `${VAR#pat}`, `$1`. Returning the literal text would leave it glued to a
+  // token (`alpha${SUF:-}`), so the token reads ABSENT and a correct fixture
+  // gets a false `dropped-mid-run`. `${VAR:-}` is one keystroke from the
+  // monotonic-suffix idiom this expander exists for, so it is not hypothetical.
+  if (unresolved || expanded.includes('$')) return null;
+  return expanded;
 }
 
 function parseModeValue(rhs: string, vars: Map<string, string>): string[] | null {
@@ -191,21 +237,28 @@ export function parseDeploySteps(content: string): DeployStep[] {
   // idiom resolves. A non-literal RHS REMOVES the name from the table rather
   // than being ignored, so a later expansion reports unresolvable instead of
   // silently reusing a stale value.
+  // The RHS alternation carries an explicit `$( … )` / backtick arm so a
+  // command substitution (`SUF=$(echo ,beta)`, which contains SPACES) still
+  // MATCHES and therefore invalidates the name. A space-free-only RHS never
+  // matched it, so the variable silently kept its previous value and the step
+  // read a stale mode list instead of reporting unresolvable. The end-of-line
+  // anchor is what keeps this from swallowing an inline env PREFIX
+  // (`CDKD_TEST_UPDATE=a ${CLI} deploy …` is a command, not an assignment).
   const otherAssignment =
-    /^\s*(?:export\s+|readonly\s+|local\s+)?([A-Za-z_][A-Za-z0-9_]*)=("[^"]*"|'[^']*'|\S*)\s*(?:#.*)?$/;
-  // The leading `\s*` is load-bearing, not tidiness: every deploy inside a
-  // shell `if` block is INDENTED, and an anchor that demanded column 0 read
-  // those invocations as unmoded. That silently emptied the mode list of
-  // exactly the opt-in `CDKD_INTEG_MULTI_REGION=1` block where the cross-region
-  // replica lives — i.e. it muted the one real finding this lint exists for,
-  // while still reporting the harmless property gates. Caught by measuring the
-  // classifier against the real fixture rather than only synthetic shapes.
-  const inlinePrefix = new RegExp(
-    String.raw`(?:^\s*|[;&|(]\s*|&&\s*|\|\|\s*)${MODE_ENV}=(".*?"|'.*?'|\S+)\s`,
-  );
+    /^\s*(?:export\s+|readonly\s+|local\s+)?([A-Za-z_][A-Za-z0-9_]*)=("[^"]*"|'[^']*'|\$\([^)]*\)|`[^`]*`|\S*)\s*(?:#.*)?$/;
+  // Scan EVERY assignment in the invocation's env prefix, not just one anchored
+  // at the start of the segment. Two shapes that already exist in the tree read
+  // as UNMODED under an anchored match — `CDKD_TEST_REMOVAL=true
+  // CDKD_TEST_UPDATE=alpha ${CLI} deploy` and `env -u OTHER
+  // CDKD_TEST_UPDATE=alpha ${CLI} deploy` — and an unmoded read is a CI-BLOCKING
+  // false positive on a correct fixture, not a miss. (The leading `\s*` is
+  // equally load-bearing: every deploy inside a shell `if` block is INDENTED,
+  // and demanding column 0 muted the one real finding this lint exists for
+  // while still reporting the harmless property gates.)
+  const inlinePrefix = new RegExp(String.raw`(?:^|[\s;&|(])${MODE_ENV}=(".*?"|'.*?'|\S*)`, 'g');
   const deployCall = new RegExp(String.raw`(?:${cliRef})[^;&|]*?\bdeploy\b`);
 
-  for (const { text, line } of joinContinuedLines(content)) {
+  for (const { text, line } of joinContinuedLines(stripHeredocBodies(content))) {
     const stripped = stripTrailingComment(text);
 
     if (new RegExp(String.raw`^\s*unset\s+${MODE_ENV}\b`).test(stripped)) {
@@ -227,7 +280,12 @@ export function parseDeploySteps(content: string): DeployStep[] {
 
     for (const segment of splitShellCommands(stripped)) {
       if (!deployCall.test(segment)) continue;
-      const inline = inlinePrefix.exec(segment);
+      // Last assignment wins, matching the shell.
+      inlinePrefix.lastIndex = 0;
+      let inline: RegExpExecArray | null = null;
+      for (let m = inlinePrefix.exec(segment); m !== null; m = inlinePrefix.exec(segment)) {
+        inline = m;
+      }
       steps.push({
         line,
         modes: inline ? parseModeValue(inline[1]!, vars) : ambient,
@@ -362,6 +420,19 @@ export function collectModeGates(sourceText: string, fileName = 'stack.ts'): Mod
   const listBindings = new Set<string>();
   /** Names bound to a condition over the mode list. */
   const condBindings = new Map<string, Cond>();
+  /**
+   * Names whose VALUE derives from the mode list without being a condition this
+   * classifier can reduce — `const mode = updateMode.includes('x') ? 'a' : 'b'`.
+   *
+   * Without this the real #1512 declaration was invisible: its gate is
+   * `wantsOnDemandReplica = onDemandReplicaMode !== 'none'`, a `!==` over such a
+   * string, which `toCond` reduced to `null` — so `record` returned early and
+   * the `replicas: [...]` gate left the analysis ENTIRELY, with no
+   * `inconclusive-gate` either. That is the exact silent skip the
+   * `unknown-token` leaf exists to prevent, on the one declaration this lint
+   * was written for.
+   */
+  const modeDerivedNames = new Set<string>();
 
   const isModeEnvRead = (node: ts.Node): boolean =>
     /process\s*\.\s*env\s*(\.|\[['"])/.test(node.getText()) && node.getText().includes(MODE_ENV);
@@ -379,9 +450,30 @@ export function collectModeGates(sourceText: string, fileName = 'stack.ts'): Mod
       } else {
         const cond = toCond(init);
         if (cond && isModeDerived(cond)) condBindings.set(name, cond);
+        else if (readsModeList(init)) modeDerivedNames.add(name);
       }
     }
     ts.forEachChild(node, collectBindings);
+  };
+
+  /**
+   * Does this expression read the mode list, directly or through a name already
+   * known to derive from it? Deliberately SYNTACTIC and permissive — it only
+   * decides whether an unreducible gate is reported `inconclusive-gate` or
+   * dropped, and dropping is the failure mode that matters.
+   */
+  const readsModeList = (node: ts.Node): boolean => {
+    let found = false;
+    const walk = (n: ts.Node): void => {
+      if (found) return;
+      if (ts.isIdentifier(n) && (listBindings.has(n.text) || modeDerivedNames.has(n.text) || condBindings.has(n.text))) {
+        found = true;
+        return;
+      }
+      ts.forEachChild(n, walk);
+    };
+    walk(node);
+    return found;
   };
 
   /** `<listBinding>.includes('literal')` */
@@ -404,6 +496,9 @@ export function collectModeGates(sourceText: string, fileName = 'stack.ts'): Mod
       const e = toCond(node.operand);
       return e ? { t: 'not', e } : null;
     }
+    if (ts.isIdentifier(node) && modeDerivedNames.has(node.text)) {
+      return { t: 'unknown-token' };
+    }
     if (ts.isBinaryExpression(node)) {
       const op = node.operatorToken.kind;
       if (op === ts.SyntaxKind.AmpersandAmpersandToken || op === ts.SyntaxKind.BarBarToken) {
@@ -418,7 +513,12 @@ export function collectModeGates(sourceText: string, fileName = 'stack.ts'): Mod
           r: r ?? { t: 'unknown' },
         };
       }
+      // Any OTHER binary operator over a mode-derived value — `!==`, `===`,
+      // `>` — is not reducible to a token set, but the gate is still
+      // mode-derived and must stay VISIBLE as inconclusive.
+      if (readsModeList(node)) return { t: 'unknown-token' };
     }
+    if (readsModeList(node)) return { t: 'unknown-token' };
     return null;
   }
 
@@ -462,12 +562,25 @@ export function collectModeGates(sourceText: string, fileName = 'stack.ts'): Mod
     return null;
   };
 
-  /** `{}` / `[]` / an empty block — a gate that brings nothing into the template. */
-  const isEmptyValue = (node: ts.Node): boolean => {
+  /**
+   * A gate that DECLARES nothing: an empty `{}` / `[]` / block (the `drop-*`
+   * idiom's truthy arm), or a bare primitive (`cond ? 'dropped' : 'none'`,
+   * `cond ? 40 : 20`). A primitive arm chooses a VALUE that some declaration
+   * elsewhere consumes — the declaration itself is not gated, so reporting it
+   * as dropped is noise that trains readers to ignore the lint.
+   */
+  const isNonDeclarationValue = (node: ts.Node): boolean => {
     if (ts.isObjectLiteralExpression(node)) return node.properties.length === 0;
     if (ts.isArrayLiteralExpression(node)) return node.elements.length === 0;
     if (ts.isBlock(node)) return node.statements.length === 0;
-    return false;
+    return (
+      ts.isStringLiteralLike(node) ||
+      ts.isNumericLiteral(node) ||
+      node.kind === ts.SyntaxKind.TrueKeyword ||
+      node.kind === ts.SyntaxKind.FalseKeyword ||
+      node.kind === ts.SyntaxKind.NullKeyword ||
+      ts.isIdentifier(node)
+    );
   };
 
   const kindOf = (node: ts.Node): GateKind => {
@@ -498,7 +611,7 @@ export function collectModeGates(sourceText: string, fileName = 'stack.ts'): Mod
     // removal test by construction — recording it would flag every `drop-*`
     // fixture and demand a rationale comment for the thing the token is named
     // after. An empty gated value gates nothing.
-    if (isEmptyValue(gated)) return;
+    if (isNonDeclarationValue(gated)) return;
     gates.push({
       line: lineOf(anchor),
       cond,
@@ -580,6 +693,7 @@ export function lintFixture(
   file: string,
   stackSource: string,
   verifySource: string,
+  reportUnresolvable = true,
 ): Violation[] {
   const gates = collectModeGates(stackSource, file);
   if (gates.length === 0) return [];
@@ -588,7 +702,7 @@ export function lintFixture(
   const violations: Violation[] = [];
 
   for (const gate of gates) {
-    if (gate.allowReason !== null && gate.allowReason === '') {
+    if (gate.allowReason === '') {
       violations.push({
         fixture,
         file,
@@ -604,7 +718,10 @@ export function lintFixture(
   // An unresolvable mode list makes EVERY gate's timeline unreliable, so it is
   // reported once per fixture rather than swallowed. Reporting nothing here is
   // the vacuous pass the repo's checker rules exist to forbid.
-  const unresolvable = steps.filter((s) => s.modes === null);
+  // Reported against the FIRST stack file only: the mode timeline is a
+  // property of verify.sh, so emitting it per stack file produced duplicate
+  // rows for a multi-file fixture.
+  const unresolvable = reportUnresolvable ? steps.filter((s) => s.modes === null) : [];
   for (const step of unresolvable) {
     violations.push({
       fixture,
@@ -696,7 +813,13 @@ export function lintFixtureTree(integRoot: string): Violation[] {
 
     for (const rel of fixtureStackFiles(dir)) {
       violations.push(
-        ...lintFixture(entry.name, rel, readFileSync(join(dir, rel), 'utf8'), verifySource),
+        ...lintFixture(
+          entry.name,
+          rel,
+          readFileSync(join(dir, rel), 'utf8'),
+          verifySource,
+          rel === fixtureStackFiles(dir)[0],
+        ),
       );
     }
   }

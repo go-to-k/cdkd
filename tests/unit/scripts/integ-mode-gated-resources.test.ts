@@ -70,6 +70,58 @@ describe('parseDeploySteps', () => {
     expect(steps[0]?.modes).toBeNull();
   });
 
+  it('resolves the monotonic-suffix idiom in source order', () => {
+    // The idiom `.claude/rules/testing.md` prescribes: seeded empty, set once
+    // the resource exists, appended to every later mode list.
+    const steps = parseDeploySteps(
+      `${CLI_HEADER}SUF=""\n` +
+        `CDKD_TEST_UPDATE=ttl,tags\${SUF} \${CLI} deploy S\n` +
+        `SUF=",extra"\n` +
+        `CDKD_TEST_UPDATE=ttl,tags\${SUF} \${CLI} deploy S\n`,
+    );
+    expect(steps.map((x) => x.modes)).toEqual([
+      ['ttl', 'tags'],
+      ['ttl', 'tags', 'extra'],
+    ]);
+  });
+
+  it('reports a `${VAR:-default}` form as unresolvable, not as a literal token', () => {
+    // Leaving `alpha${SUF:-}` in the string makes token `alpha` read ABSENT and
+    // produces a FALSE blocking finding on a correct fixture — and `:-` is one
+    // keystroke from the prescribed suffix idiom.
+    expect(
+      parseDeploySteps(`${CLI_HEADER}CDKD_TEST_UPDATE=alpha\${SUF:-} \${CLI} deploy S\n`)[0]?.modes,
+    ).toBeNull();
+  });
+
+  it('invalidates a variable assigned from a command substitution', () => {
+    const steps = parseDeploySteps(
+      `${CLI_HEADER}SUF=",a"\nSUF=$(echo ,beta)\nCDKD_TEST_UPDATE=ttl\${SUF} \${CLI} deploy S\n`,
+    );
+    expect(steps[0]?.modes, 'a stale value must not survive an unresolvable RHS').toBeNull();
+  });
+
+  it('reads the mode list when it is NOT the first env assignment', () => {
+    // Both shapes already exist in the tree. An anchored match read them as
+    // unmoded, which is a CI-BLOCKING false positive, not a miss.
+    expect(
+      parseDeploySteps(
+        `${CLI_HEADER}CDKD_TEST_REMOVAL=true CDKD_TEST_UPDATE=alpha \${CLI} deploy S\n`,
+      )[0]?.modes,
+    ).toEqual(['alpha']);
+    expect(
+      parseDeploySteps(`${CLI_HEADER}env -u OTHER CDKD_TEST_UPDATE=alpha \${CLI} deploy S\n`)[0]
+        ?.modes,
+    ).toEqual(['alpha']);
+  });
+
+  it('ignores a mode assignment inside a heredoc body', () => {
+    const steps = parseDeploySteps(
+      `${CLI_HEADER}cat <<EOF\nCDKD_TEST_UPDATE=ghost\nEOF\n\${CLI} deploy S\n`,
+    );
+    expect(steps.map((x) => x.modes)).toEqual([[]]);
+  });
+
   it('ignores non-deploy invocations', () => {
     const steps = parseDeploySteps(
       `${CLI_HEADER}CDKD_TEST_UPDATE=a \${CLI} destroy S --force\nCDKD_TEST_UPDATE=b \${CLI} deploy S\n`,
@@ -386,6 +438,48 @@ describe('the real fixture tree', () => {
     expect(withGates.flat().length).toBeGreaterThanOrEqual(8);
   });
 
+  it('resolves a real, non-trivial number of mode lists — per SHAPE, not just a total', () => {
+    // The aggregate step count is NOT a floor for this: the column-0 anchor bug
+    // left all 353 steps parsed and only emptied their mode lists, so the total
+    // stayed green while the one real finding vanished. What has to be fenced
+    // is the number of steps whose mode list actually RESOLVED to something.
+    const resolved = readdirSync(INTEG_ROOT, { withFileTypes: true })
+      .filter((e) => e.isDirectory() && existsSync(join(INTEG_ROOT, e.name, 'verify.sh')))
+      .flatMap((e) => parseDeploySteps(readFileSync(join(INTEG_ROOT, e.name, 'verify.sh'), 'utf8')));
+    const nonEmpty = resolved.filter((s) => s.modes !== null && s.modes.length > 0);
+    expect(nonEmpty.length, 'no deploy carries a resolved mode list — parser regression?')
+      .toBeGreaterThanOrEqual(60);
+    // And at least one must come from the monotonic-suffix idiom, the shape a
+    // `$`-give-up parser silently turns into `unresolvable`.
+    expect(nonEmpty.some((s) => s.modes!.includes('cross-region-ondemand-dropped'))).toBe(true);
+  });
+
+  it('collects every gate KIND the classifier claims to produce', () => {
+    const kinds = new Set(
+      readdirSync(INTEG_ROOT, { withFileTypes: true })
+        .filter((e) => e.isDirectory() && existsSync(join(INTEG_ROOT, e.name, 'verify.sh')))
+        .flatMap((e) =>
+          fixtureStackFiles(join(INTEG_ROOT, e.name)).flatMap((rel) =>
+            collectModeGates(readFileSync(join(INTEG_ROOT, e.name, rel), 'utf8'), rel),
+          ),
+        )
+        .map((g) => g.kind),
+    );
+    // An aggregate `>= 8` survives losing a whole shape; this does not.
+    expect([...kinds].sort()).toEqual(['construct', 'property', 'resource-list']);
+  });
+
+  it('pins the NON-blocking findings so the visibility-only bucket cannot rot', () => {
+    // Nothing prints these today, so without a pin they are unobservable — and
+    // an inconclusive gate silently becoming zero would look like progress.
+    const notes = violations.filter((v) => !v.blocking);
+    expect(notes.length).toBeGreaterThanOrEqual(5);
+    expect(
+      notes.some((v) => v.kind === 'inconclusive-gate' && v.gateKind === 'resource-list'),
+      'the #1512 replica gate must stay VISIBLE as inconclusive, never silently dropped',
+    ).toBe(true);
+  });
+
   it('parses a plausible number of deploy steps across the tree', () => {
     const total = readdirSync(INTEG_ROOT, { withFileTypes: true })
       .filter((e) => e.isDirectory() && existsSync(join(INTEG_ROOT, e.name, 'verify.sh')))
@@ -446,6 +540,37 @@ describe('real-code probes against the dynamodb-globaltable fixture', () => {
       `${verify}\nunset CDKD_TEST_UPDATE\n\${CLI} deploy "\${STACK}"\n`,
     );
     expect(v.some((x) => x.message.includes('ttl'))).toBe(true);
+  });
+});
+
+describe('real-code probes for the remaining blocking verdicts', () => {
+  const FIXTURE2 = join(INTEG_ROOT, 'dynamodb-globaltable');
+  const STACK_REL2 = 'lib/dynamodb-globaltable-stack.ts';
+  const stack2 = readFileSync(join(FIXTURE2, STACK_REL2), 'utf8');
+  const verify2 = readFileSync(join(FIXTURE2, 'verify.sh'), 'utf8');
+
+  it('unreasoned-allow: blanking the REAL annotation reason blocks', () => {
+    const blanked = stack2.replace(/allow-mode-gated-drop:.*$/m, 'allow-mode-gated-drop:');
+    expect(blanked).not.toBe(stack2);
+    const v = lintFixture('dynamodb-globaltable', STACK_REL2, blanked, verify2);
+    const found = v.find((x) => x.kind === 'unreasoned-allow');
+    expect(found, 'a reasonless marker must be refused').toBeDefined();
+    expect(found!.blocking).toBe(true);
+  });
+
+  it('unresolvable-mode-list: a command substitution in the REAL verify.sh blocks', () => {
+    // The LATER assignment, not the empty seed: the seed is re-set to a
+    // literal further down, so wrecking it leaves every USE resolvable and the
+    // probe proves nothing.
+    const wrecked = verify2.replace(
+      /OD_MODE_SUFFIX=",cross-region-ondemand-dropped"/,
+      'OD_MODE_SUFFIX=$(echo ,cross-region-ondemand-dropped)',
+    );
+    expect(wrecked).not.toBe(verify2);
+    const v = lintFixture('dynamodb-globaltable', STACK_REL2, stack2, wrecked);
+    const found = v.find((x) => x.kind === 'unresolvable-mode-list');
+    expect(found, 'an unresolvable mode list must fail loudly').toBeDefined();
+    expect(found!.blocking).toBe(true);
   });
 });
 
