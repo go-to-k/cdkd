@@ -620,6 +620,75 @@ version (e.g. a public cross-account layer ARN pinned by its owner), append
 coverage floors and was verified to fail against real injected regressions
 before landing, per the checker rules above.
 
+### Fixture convention: a mode-gated resource must survive the later steps
+
+Multi-step fixtures drive each phase with
+`CDKD_TEST_UPDATE=<comma,separated,modes>`, and the fixture stack branches on
+`updateMode.includes('x')`. Adding a scenario by gating a **new resource** on a
+**new token** is the natural spelling, and it is wrong whenever a later deploy
+in the same `verify.sh` uses a mode list that omits the token: the resource
+leaves the synthesized template and cdkd correctly issues a DELETE for it. A
+per-step conditional in a long fixture is really a *step function over the whole
+run*, not a flag scoped to your step.
+
+The originating case (issue #1512), caught by review before the run reached it:
+the new `OnDemandReplicaTable` gated its `eu-west-1` replica on
+`cross-region-ondemand*`, used by steps 12g/h/i. The fixture then deploys six
+more times (`deletion-protection,autoscaling,ttl,tags`, then five `ttl,tags,...`
+rounds), none carrying the token — so step 12f would have removed the replica
+**from a still-live table**. That is precisely the operation that arms
+DynamoDB's 24-hour source-region delete lock; an earlier probe wedged a table in
+`UPDATING` for over 90 minutes that way (#1442). The fixture's own comments, the
+commit message and the issue comment had already claimed the design "only ever
+ADDs" — nothing would have contradicted them.
+
+Make the token **monotonic** by carrying it forward in a shell suffix: set the
+variable once the resource exists, and append it to the mode list of every later
+deploy.
+
+```bash
+OD_MODE_SUFFIX=""                               # seeded with the other run vars
+...
+OD_MODE_SUFFIX=",cross-region-ondemand-dropped" # set right after the rounds
+...
+CDKD_TEST_UPDATE=ttl,tags${OD_MODE_SUFFIX} ${CLI} deploy ...
+```
+
+The suffix stays empty when the scenario is not gated on, so the default flow is
+byte-for-byte unchanged. Only `cdkd destroy` then removes the resource — which
+for a GlobalTable deletes every replica as one resource and never issues a
+standalone replica-delete.
+
+Do **not** instead key presence on a run-scoped environment variable. It is the
+tempting one-line fix and it stops the deletion, but it silently changes what
+the test tests: the resource is then declared from step 1, so it is created
+*with* its parent and the step you meant to exercise becomes an UPDATE. That is
+how this very fixture briefly stopped covering `addReplica` while its assertion
+still passed — the assertion only checks the resulting value. Reserve the
+env-var form for presence that no step needs to transition.
+
+Before adding a mode-gated resource, enumerate every deploy and read the mode
+list of each one that runs **after** your steps; any that omits your token
+deletes your resource there. Grep for the invocation rather than for a
+single-line pattern — fixtures wrap long mode lists with a trailing `\`, so the
+env prefix and `${CLI} deploy` land on different lines and a one-line
+`grep 'CDKD_TEST_UPDATE=.*deploy'` misses them. That gap is what let a run
+report PASS while still performing the live replica-delete.
+
+Then weigh what the deletion costs — free for a plain queue, the whole problem
+for a DynamoDB replica, RDS instance or stateful store. Verify by synthesizing
+the **later** modes: the check that catches this is `cdk synth` under `ttl,tags`
+showing the resource still intact, not `cdk synth` under your own mode showing
+it created. Finally, make sure some assertion would *notice* a drop — a
+post-destroy "it is gone" check passes vacuously when the resource was deleted
+mid-run, so it is not a guard.
+
+Not yet mechanically enforced; issue
+[#1543](https://github.com/go-to-k/cdkd/issues/1543) tracks the lint. Unlike the
+order-insensitivity convention above, this one is a genuine checker rather than
+a judgment call — the ordered mode lists and the token-gated declarations are
+both statically extractable.
+
 ### Fixture convention: stateful L2 constructs need an explicit removalPolicy
 
 Stateful CDK L2 constructs — `kinesis.Stream`, `dynamodb.Table` / `TableV2`,
