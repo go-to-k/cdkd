@@ -509,8 +509,16 @@ describe('cdkd drift', () => {
         }),
       })
     );
+    // Mirrors the REAL provider's contract, including the "no usable bag ->
+    // compare" default. That default is what makes the `no drift detected`
+    // assertion below revert-sensitive too: drop the argument in drift.ts and
+    // this fake returns [], so TlsConfig is compared and drift IS reported.
     const getDriftUnknownPaths = vi.fn((_type: string, properties?: Record<string, unknown>) =>
-      properties?.['ConnectionType'] !== 'VPC_LINK' ? ['TlsConfig'] : []
+      properties !== undefined &&
+      Object.keys(properties).length > 0 &&
+      properties['ConnectionType'] !== 'VPC_LINK'
+        ? ['TlsConfig']
+        : []
     );
     mockRegistryGetProvider.mockReturnValue({
       // AWS never returns TlsConfig for a public integration.

@@ -966,15 +966,20 @@ export class ApiGatewayV2Provider implements ResourceProvider {
    * discards on every run (issue #1602). The path is scoped by the
    * resource's own `ConnectionType` via the optional `properties` bag: a
    * VPC_LINK integration keeps full `TlsConfig` drift coverage (AWS
-   * returns the field there). Without a properties bag the answer stays
-   * empty — comparing is the safe default, since hiding a private
-   * integration's real `TlsConfig` drift is worse than a false positive
-   * on a caller that could not supply the bag.
+   * returns the field there). Without a USABLE properties bag the answer
+   * stays empty — comparing is the safe default, since hiding a private
+   * integration's real `TlsConfig` drift is worse than a false positive on
+   * a caller that could not supply the bag. An EMPTY bag counts as unusable
+   * for the same reason: the caller passes `resource.properties ?? {}`, so
+   * `{}` means "nothing recorded", not "ConnectionType is absent, therefore
+   * public" (an empty bag also has no `TlsConfig` key for the comparator to
+   * walk, so refusing to declare costs nothing).
    */
   getDriftUnknownPaths(resourceType: string, properties?: Record<string, unknown>): string[] {
     if (
       resourceType === 'AWS::ApiGatewayV2::Integration' &&
       properties !== undefined &&
+      Object.keys(properties).length > 0 &&
       properties['ConnectionType'] !== 'VPC_LINK'
     ) {
       return ['TlsConfig'];
@@ -2634,6 +2639,18 @@ export class ApiGatewayV2Provider implements ResourceProvider {
    * other status code (declared CFn shape, declared absent, no `declared` at
    * all) keeps the CFn list shape. Object comparison is key-based, so the
    * flat map round-trips without the sort the list shape needs.
+   *
+   * The CFn arm mirrors the declared block too, in the two ways the
+   * `properties`-fallback baseline is compared on: ENTRY ORDER (the
+   * comparator walks arrays positionally, and the template's order is
+   * whatever the author wrote — sorting only the read side is the mistake
+   * `drift-normalize.ts`'s header records) and SCALAR TYPE (CFn types
+   * `Source` as free-form and cdkd coerces a number to a string on the way
+   * out, so re-emitting AWS's string against a numeric declaration is
+   * permanent phantom drift). Declared destinations keep their declared
+   * position and their declared scalar whenever the value still agrees with
+   * AWS; a destination AWS returns that the template never declared is
+   * appended in sorted order, so the result stays deterministic across reads.
    */
   private toCfnResponseParameters(
     value: Record<string, Record<string, string>> | undefined,
@@ -2648,25 +2665,65 @@ export class ApiGatewayV2Provider implements ResourceProvider {
     for (const [statusCode, flat] of Object.entries(value)) {
       if (flat == null || typeof flat !== 'object' || Array.isArray(flat)) continue;
       const declaredBlock = declaredBlocks?.[statusCode];
-      const declaredFlat =
-        declaredBlock != null &&
-        typeof declaredBlock === 'object' &&
-        !Array.isArray(declaredBlock) &&
-        !Array.isArray((declaredBlock as Record<string, unknown>)['ResponseParameters']);
-      if (declaredFlat) {
+      const declaredEntries =
+        declaredBlock != null && typeof declaredBlock === 'object' && !Array.isArray(declaredBlock)
+          ? (declaredBlock as Record<string, unknown>)['ResponseParameters']
+          : undefined;
+      if (declaredBlock != null && !Array.isArray(declaredEntries)) {
+        // Declared in the flat SDK spelling (the pass-through branch of
+        // `toSdkResponseParameters`) — keep the read-back flat so the two
+        // sides compare equal.
         out[statusCode] = flat;
         continue;
       }
       out[statusCode] = {
-        ResponseParameters: Object.entries(flat)
-          .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-          .map(([destination, source]) => ({
-            Destination: destination,
-            Source: source,
-          })),
+        ResponseParameters: this.mirrorDeclaredResponsePairs(flat, declaredEntries),
       };
     }
     return out;
+  }
+
+  /**
+   * Rebuild one status code's CFn list-of-pairs from AWS's flat map, keeping
+   * the DECLARED entries' order and scalar types where they still agree with
+   * AWS. See {@link toCfnResponseParameters} for why both matter.
+   */
+  private mirrorDeclaredResponsePairs(
+    flat: Record<string, string>,
+    declaredEntries: unknown
+  ): Array<{ Destination: string; Source: unknown }> {
+    const remaining = new Map(Object.entries(flat));
+    const pairs: Array<{ Destination: string; Source: unknown }> = [];
+    if (Array.isArray(declaredEntries)) {
+      for (const entry of declaredEntries) {
+        if (entry == null || typeof entry !== 'object' || Array.isArray(entry)) continue;
+        const destination = (entry as Record<string, unknown>)['Destination'];
+        if (typeof destination !== 'string' || !remaining.has(destination)) continue;
+        const awsSource = remaining.get(destination)!;
+        remaining.delete(destination);
+        // Re-emit the DECLARED scalar when it denotes the same value AWS
+        // returned (`Source: 404` vs `'404'`); a genuinely changed value
+        // takes AWS's string, which is the drift the user wants to see.
+        const declaredSource = (entry as Record<string, unknown>)['Source'];
+        const declaredDenotesSame =
+          (typeof declaredSource === 'number' || typeof declaredSource === 'boolean') &&
+          String(declaredSource) === awsSource;
+        pairs.push({
+          Destination: destination,
+          Source: declaredDenotesSame ? declaredSource : awsSource,
+        });
+      }
+    }
+    // Anything AWS returned that the template did not declare (or that the
+    // declaration no longer matches) is appended in a stable order — AWS does
+    // not guarantee map readback order, so an unsorted tail would trade the
+    // shape mismatch for an ordering one.
+    for (const [destination, source] of [...remaining.entries()].sort(([a], [b]) =>
+      a < b ? -1 : a > b ? 1 : 0
+    )) {
+      pairs.push({ Destination: destination, Source: source });
+    }
+    return pairs;
   }
 
   /**
