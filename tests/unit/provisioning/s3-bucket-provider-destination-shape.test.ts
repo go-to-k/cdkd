@@ -151,29 +151,91 @@ describe('item 2: a malformed Destination is REFUSED on the create path', () => 
   it('leaves an ABSENT Destination to AWS — an omitted block is not a shape error', async () => {
     // The template's own omission, not a malformed value: AWS reports the
     // missing required destination, and cdkd must not turn that into a
-    // different, cdkd-flavored error.
+    // different, cdkd-flavored error. Asserting the Put was still SENT (with
+    // only Destination omitted) is the point — `resolves` alone would also
+    // pass if the whole configuration had been skipped.
     await expect(
       provider.create('B', RESOURCE_TYPE, inventoryProps(undefined))
     ).resolves.toBeDefined();
+    const put = sentCommand(PutBucketInventoryConfigurationCommand);
+    expect(put).toBeDefined();
+    expect(put?.input.InventoryConfiguration?.Id).toBe('daily');
+    expect(put?.input.InventoryConfiguration?.Destination?.S3BucketDestination).toBeUndefined();
+  });
+
+  it('treats a null Destination as absent, not as a shape error', async () => {
+    await expect(
+      provider.create('B', RESOURCE_TYPE, inventoryProps(null))
+    ).resolves.toBeDefined();
+    expect(sentCommand(PutBucketInventoryConfigurationCommand)).toBeDefined();
+  });
+
+  it('refuses a bag carrying no destination bucket, in either shape', async () => {
+    // `{ Format }` alone and `{ S3BucketDestination: {} }` both used to reach
+    // the SDK as `Bucket: undefined`. The bucket is the one member neither
+    // branch can default, so it is checked on the PICKED bag.
+    await expect(
+      provider.create('B', RESOURCE_TYPE, inventoryProps({ Format: 'CSV' }))
+    ).rejects.toThrow('has no destination bucket');
+    await expect(
+      provider.create('B', RESOURCE_TYPE, inventoryProps({ S3BucketDestination: {} }))
+    ).rejects.toThrow(`${INVENTORY_PATH}.S3BucketDestination has no destination bucket`);
+  });
+
+  it('downgrades to a warning when create() is replaying a STATE record', async () => {
+    // `rollback-executor.ts`'s reverse-replacement arm revives the OLD resource
+    // through create() with `replayingState: true`. A refusal there would leave
+    // a bucket recorded by a pre-fix binary unrestorable, with only a hand-edit
+    // of state.json as a remedy.
+    await expect(
+      provider.create('B', RESOURCE_TYPE, inventoryProps('arn:aws:s3:::reports'), {
+        replayingState: true,
+      })
+    ).resolves.toBeDefined();
+    expect(
+      childLogger.warn.mock.calls
+        .map((c) => String(c[0]))
+        .some((m) => m.includes(`${INVENTORY_PATH} must be an object`))
+    ).toBe(true);
+    expect(sentCommand(PutBucketInventoryConfigurationCommand)).toBeUndefined();
+  });
+
+  it('keeps a falsy-but-defined flat key on the NESTED branch (no regression)', async () => {
+    // `{ BucketAccountId: '', S3BucketDestination: {...} }` worked before this
+    // change by falling to the nested branch. A presence-based probe would
+    // re-route it to the flat bag and send `Bucket: undefined`.
+    await update(
+      inventoryProps({
+        BucketAccountId: '',
+        S3BucketDestination: { Bucket: 'arn:aws:s3:::reports', Format: 'CSV' },
+      })
+    );
+    expect(
+      sentCommand(PutBucketInventoryConfigurationCommand)?.input.InventoryConfiguration?.Destination
+        ?.S3BucketDestination?.Bucket
+    ).toBe('arn:aws:s3:::reports');
   });
 });
 
 describe('item 2: the same value only WARNS on the update path', () => {
-  it('analytics: warns, drops the destination, and still sends the Put', async () => {
+  it('analytics: warns and leaves the live configuration untouched', async () => {
     await expect(update(analyticsProps('arn:aws:s3:::reports'))).resolves.toBeUndefined();
 
-    const warning = childLogger.warn.mock.calls.map((c) => String(c[0])).find((m) =>
-      m.includes(`${ANALYTICS_PATH} must be an object`)
-    );
+    const warning = childLogger.warn.mock.calls
+      .map((c) => String(c[0]))
+      .find((m) => m.includes(`${ANALYTICS_PATH} must be an object`));
     expect(warning, 'no warning named the malformed destination').toBeDefined();
     expect(warning).toContain('REFUSED on a template-path create');
 
-    const put = sentCommand(PutBucketAnalyticsConfigurationCommand);
-    expect(put).toBeDefined();
-    expect(put?.input.AnalyticsConfiguration?.StorageClassAnalysis?.DataExport?.Destination).toBeUndefined();
+    // NOT "sends the Put with Destination omitted": `Destination` is a REQUIRED
+    // SDK member, so that request is rejected by S3 and the replay this warn
+    // exists to unblock would be stranded anyway — just with an opaque AWS
+    // error instead of cdkd's actionable one. Skipping the per-id Put is what
+    // actually leaves the live configuration alone.
+    expect(sentCommand(PutBucketAnalyticsConfigurationCommand)).toBeUndefined();
   });
 
-  it('inventory: warns, drops the destination, and still sends the Put', async () => {
+  it('inventory: warns and leaves the live configuration untouched', async () => {
     await expect(update(inventoryProps(['not', 'an', 'object']))).resolves.toBeUndefined();
 
     expect(
@@ -181,10 +243,24 @@ describe('item 2: the same value only WARNS on the update path', () => {
         .map((c) => String(c[0]))
         .some((m) => m.includes(`${INVENTORY_PATH} must be an object`))
     ).toBe(true);
+    expect(sentCommand(PutBucketInventoryConfigurationCommand)).toBeUndefined();
+  });
 
-    const put = sentCommand(PutBucketInventoryConfigurationCommand);
-    expect(put).toBeDefined();
-    expect(put?.input.InventoryConfiguration?.Destination?.S3BucketDestination).toBeUndefined();
+  it('warns instead of throwing on a malformed Format during an update', async () => {
+    // The destination guard one line up deliberately warns on the update path;
+    // a malformed `Format` must not hard-fail underneath it, or the
+    // replay-safety invariant is only half true.
+    await expect(
+      update(inventoryProps({ BucketArn: 'arn:aws:s3:::reports', Format: 42 }))
+    ).resolves.toBeUndefined();
+
+    expect(
+      childLogger.warn.mock.calls.map((c) => String(c[0])).some((m) => m.includes('Format'))
+    ).toBe(true);
+    expect(
+      sentCommand(PutBucketInventoryConfigurationCommand)?.input.InventoryConfiguration?.Destination
+        ?.S3BucketDestination?.Format
+    ).toBe('CSV');
   });
 });
 
