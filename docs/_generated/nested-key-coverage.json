@@ -2,13 +2,13 @@
   "summary": {
     "targetCount": 11,
     "nestedKeyCount": 703,
-    "sameSpelling": 642,
+    "sameSpelling": 639,
     "providerHandled": 53,
-    "allowListed": 8,
+    "allowListed": 11,
     "caseDivergence": 0,
     "noSdkMember": 0,
     "noWriteEvidence": 0,
-    "freshObjectTargets": 10,
+    "freshObjectTargets": 11,
     "shapeClean": 87,
     "shapeHandled": 32,
     "shapeAllowListed": 7,
@@ -73,7 +73,8 @@
       "unmatchedDefinitions": [
         "BodyS3Location"
       ],
-      "usedSegmentRenames": []
+      "usedSegmentRenames": [],
+      "usedTerminalRenames": []
     },
     {
       "resourceType": "AWS::ApiGatewayV2::Authorizer",
@@ -101,7 +102,8 @@
       "shapeEntries": [],
       "shapeCleanCount": 2,
       "unmatchedDefinitions": [],
-      "usedSegmentRenames": []
+      "usedSegmentRenames": [],
+      "usedTerminalRenames": []
     },
     {
       "resourceType": "AWS::ApiGatewayV2::Integration",
@@ -126,7 +128,8 @@
         "ResponseParameterMap",
         "Tag"
       ],
-      "usedSegmentRenames": []
+      "usedSegmentRenames": [],
+      "usedTerminalRenames": []
     },
     {
       "resourceType": "AWS::ApiGatewayV2::Route",
@@ -139,7 +142,8 @@
       "shapeEntries": [],
       "shapeCleanCount": 1,
       "unmatchedDefinitions": [],
-      "usedSegmentRenames": []
+      "usedSegmentRenames": [],
+      "usedTerminalRenames": []
     },
     {
       "resourceType": "AWS::ApiGatewayV2::Stage",
@@ -188,7 +192,8 @@
       "shapeEntries": [],
       "shapeCleanCount": 0,
       "unmatchedDefinitions": [],
-      "usedSegmentRenames": []
+      "usedSegmentRenames": [],
+      "usedTerminalRenames": []
     },
     {
       "resourceType": "AWS::CloudFront::Distribution",
@@ -1578,7 +1583,8 @@
         "LegacyS3Origin",
         "Logging"
       ],
-      "usedSegmentRenames": []
+      "usedSegmentRenames": [],
+      "usedTerminalRenames": []
     },
     {
       "resourceType": "AWS::CloudWatch::AnomalyDetector",
@@ -1811,7 +1817,8 @@
       "unmatchedDefinitions": [
         "Configuration"
       ],
-      "usedSegmentRenames": []
+      "usedSegmentRenames": [],
+      "usedTerminalRenames": []
     },
     {
       "resourceType": "AWS::CodeBuild::Project",
@@ -2518,7 +2525,8 @@
         "ProjectTriggers",
         "Source"
       ],
-      "usedSegmentRenames": []
+      "usedSegmentRenames": [],
+      "usedTerminalRenames": []
     },
     {
       "resourceType": "AWS::ECS::Service",
@@ -2937,7 +2945,8 @@
         "ServiceConnectTestTrafficRulesHeader",
         "ServiceConnectTestTrafficRulesHeaderValue"
       ],
-      "usedSegmentRenames": []
+      "usedSegmentRenames": [],
+      "usedTerminalRenames": []
     },
     {
       "resourceType": "AWS::ECS::TaskDefinition",
@@ -3951,14 +3960,15 @@
       ],
       "usedSegmentRenames": [
         "ProxyConfigurationProperties"
-      ]
+      ],
+      "usedTerminalRenames": []
     },
     {
       "resourceType": "AWS::S3::Bucket",
       "providerFile": "s3-bucket-provider.ts",
       "sdkClientPackage": "@aws-sdk/client-s3",
       "keyStyle": "exact",
-      "freshObjectMapper": false,
+      "freshObjectMapper": true,
       "nestedKeyCount": 190,
       "entries": [
         {
@@ -4473,14 +4483,20 @@
           "nestedKey": "LifecycleConfiguration.Rules.TagFilters.Key",
           "topLevelProperty": "LifecycleConfiguration",
           "terminalKey": "Key",
-          "bucket": "same-spelling"
+          "bucket": "allow-listed",
+          "sdkNearMiss": "Key",
+          "rationale": "Forwarded verbatim into `Filter{,.And}.Tags` by applyLifecycleConfiguration, but through a chain the hand-off taint walk deliberately does not cross: the array reaches the write as a DESTRUCTURED member of the in-method `gatherScope` helper's returned literal, and member-level taint through a returned literal is a materially bigger analysis (issue #1540; same wrapper-level class as the CloudFront `Tags.Key` / `Tags.Value` entries). The equivalent per-item-config forwards (Analytics / Metrics / IntelligentTiering) ARE wildcard-credited via the for-of taint hop.",
+          "allowMatchKey": "AWS::S3::Bucket#LifecycleConfiguration.Rules.TagFilters.Key"
         },
         {
           "resourceType": "AWS::S3::Bucket",
           "nestedKey": "LifecycleConfiguration.Rules.TagFilters.Value",
           "topLevelProperty": "LifecycleConfiguration",
           "terminalKey": "Value",
-          "bucket": "same-spelling"
+          "bucket": "allow-listed",
+          "sdkNearMiss": "Value",
+          "rationale": "Same destructured-gatherScope forward as the sibling `LifecycleConfiguration.Rules.TagFilters.Key` entry (issue #1540).",
+          "allowMatchKey": "AWS::S3::Bucket#LifecycleConfiguration.Rules.TagFilters.Value"
         },
         {
           "resourceType": "AWS::S3::Bucket",
@@ -4543,7 +4559,10 @@
           "nestedKey": "LifecycleConfiguration.TransitionDefaultMinimumObjectSize",
           "topLevelProperty": "LifecycleConfiguration",
           "terminalKey": "TransitionDefaultMinimumObjectSize",
-          "bucket": "same-spelling"
+          "bucket": "allow-listed",
+          "sdkNearMiss": "TransitionDefaultMinimumObjectSize",
+          "rationale": "Written by applyLifecycleConfiguration DIRECTLY on the PutBucketLifecycleConfigurationRequest (the SDK hoists it out of `LifecycleConfiguration`, where CFn nests it), so the audited chain can never resolve: a terminal rename redirects WITHIN the config object and cannot express a request-level hoist. Delivery is proven by the s3-replication-and-filter integ read-back (issue #1495) and the write is pinned by name in the #1495 write-evidence unit test (issues #1520 / #1540).",
+          "allowMatchKey": "AWS::S3::Bucket#LifecycleConfiguration.TransitionDefaultMinimumObjectSize"
         },
         {
           "resourceType": "AWS::S3::Bucket",
@@ -5488,15 +5507,41 @@
       ],
       "usedSegmentRenames": [
         "AnalyticsConfigurations",
+        "AnalyticsConfigurations.TagFilters",
         "BucketEncryption",
+        "DataExport.Destination",
         "IntelligentTieringConfigurations",
+        "IntelligentTieringConfigurations.TagFilters",
         "InventoryConfigurations",
+        "InventoryConfigurations.Destination",
+        "LambdaConfigurations",
         "LoggingConfiguration",
         "MetricsConfigurations",
+        "MetricsConfigurations.TagFilters",
         "RedirectRule",
         "RoutingRuleCondition",
+        "Rules.NoncurrentVersionTransition",
+        "Rules.TagFilters",
+        "Rules.Transition",
+        "S3Key",
+        "S3Key.Rules",
         "ServerSideEncryptionByDefault",
         "ServerSideEncryptionConfiguration"
+      ],
+      "usedTerminalRenames": [
+        "AnalyticsConfigurations.Prefix",
+        "BucketEncryption.ServerSideEncryptionConfiguration",
+        "IntelligentTieringConfigurations.Prefix",
+        "InventoryConfigurations.Enabled",
+        "InventoryConfigurations.Prefix",
+        "LifecycleConfiguration.Rules.ExpiredObjectDeleteMarker",
+        "LifecycleConfiguration.Rules.ObjectSizeGreaterThan",
+        "LifecycleConfiguration.Rules.ObjectSizeLessThan",
+        "MetricsConfigurations.AccessPointArn",
+        "MetricsConfigurations.Prefix",
+        "NotificationConfiguration.LambdaConfigurations.Filter.S3Key.Rules",
+        "NotificationConfiguration.QueueConfigurations.Filter.S3Key.Rules",
+        "NotificationConfiguration.TopicConfigurations.Filter.S3Key.Rules"
       ]
     }
   ]

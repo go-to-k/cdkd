@@ -49,7 +49,7 @@ import { ProvisioningError } from '../../utils/error-handler.js';
 import { generateResourceName } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
-import { readConfigString } from '../config-shape.js';
+import { readConfigString, replayWarn, requireConfigString } from '../config-shape.js';
 import { withRetry } from '../../deployment/retry.js';
 import { isThrottlingError } from '../../deployment/retryable-errors.js';
 import type {
@@ -58,6 +58,7 @@ import type {
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
+  CreateContext,
 } from '../../types/resource.js';
 
 /**
@@ -278,7 +279,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating DynamoDB GlobalTable ${logicalId}`);
 
@@ -306,7 +308,37 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     }
 
     // GlobalTable defaults to PAY_PER_REQUEST in CDK; respect explicit override.
-    const billingMode = (properties['BillingMode'] as string | undefined) ?? 'PAY_PER_REQUEST';
+    //
+    // Guarded per issue #1513 — the last top-level `?? 'default'` site that
+    // issue left open, because this file was owned by a parallel lane when the
+    // rest shipped. `BillingMode` is ENUM-valued, so it does NOT take
+    // `coerceNumber`: a number here is a template bug, not the unquoted-YAML
+    // scalar CFn coerces. And the default it silently substitutes is the
+    // consequential one — a `BillingMode: null` (or an intrinsic the resolver
+    // could not resolve) on a template that says PROVISIONED would create an
+    // ON-DEMAND table, with every `ProvisionedThroughput` block below dropped
+    // by the billing gate and only a diagnostic to show for it.
+    //
+    // Wrapped the same way the `StreamSpecification` guard below is: the read
+    // sits OUTSIDE `create()`'s try, so an unwrapped throw would escape untyped
+    // into the deploy engine's retry loop.
+    let billingMode: string;
+    try {
+      billingMode = requireConfigString(
+        properties['BillingMode'],
+        'PAY_PER_REQUEST',
+        'AWS::DynamoDB::GlobalTable BillingMode',
+        replayWarn(this.logger, context)
+      );
+    } catch (error) {
+      throw new ProvisioningError(
+        error instanceof Error ? error.message : String(error),
+        resourceType,
+        logicalId,
+        undefined,
+        error instanceof Error ? error : undefined
+      );
+    }
 
     const currentRegion = (await this.dynamoDBClient.config.region()) ?? '';
     const replicas = (properties['Replicas'] as Array<Record<string, unknown>> | undefined) ?? [];
@@ -957,9 +989,45 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // Resolved BEFORE the flat-field block below (step 4 re-reads them for
       // the flip itself). The on-demand reset in that block has to know the
       // billing mode on BOTH sides — see `onDemandCeilingLive` below.
+      // The PREVIOUS side stays unguarded on purpose (issue #1513): it comes
+      // from cdkd STATE, so refusing a malformed value an older binary already
+      // recorded would make the stack permanently un-updatable with no
+      // template-side remedy. The DESIRED side WARNS rather than throws for the
+      // same reason one level down — `rollback-executor.ts` replays a rollback
+      // via `update(..., previousState.properties, ...)`, so this bag can
+      // itself be a historical state record.
       const oldBilling =
         (previousProperties['BillingMode'] as string | undefined) ?? 'PAY_PER_REQUEST';
-      const newBilling = (properties['BillingMode'] as string | undefined) ?? 'PAY_PER_REQUEST';
+      // An UNUSABLE desired value must fall back to the PREVIOUS billing mode,
+      // NOT to the create-path default. Warning and then defaulting to
+      // PAY_PER_REQUEST would be strictly worse than the bug this guards:
+      // before the guard existed a junk value flowed into `UpdateTable` and AWS
+      // REJECTED it (loud, billing unchanged), whereas defaulting makes
+      // `oldBilling !== newBilling` true against a live PROVISIONED table and
+      // silently FLIPS it to on-demand — which also tears down the write
+      // scalable target via `billingFlippedToOnDemand` and every per-GSI
+      // capacity setting. A malformed template would silently re-price and
+      // de-autoscale a production table with only a `warn` to show for it.
+      //
+      // An ABSENT value keeps defaulting to PAY_PER_REQUEST, because that IS a
+      // genuine template-declared flip. Only the present-but-unusable case
+      // suppresses it.
+      let billingUnusable = false;
+      const requestedBilling = requireConfigString(
+        properties['BillingMode'],
+        'PAY_PER_REQUEST',
+        'AWS::DynamoDB::GlobalTable BillingMode',
+        {
+          onUnusable: (message) => {
+            billingUnusable = true;
+            this.logger.warn(
+              `${message} The table's current billing mode (${oldBilling}) is kept for this ` +
+                `update rather than flipped to the default.`
+            );
+          },
+        }
+      );
+      const newBilling = billingUnusable ? oldBilling : requestedBilling;
       // The table-level on-demand ceiling is only a live, resettable setting
       // when the table is on-demand on BOTH sides of this deploy.
       //
@@ -1210,7 +1278,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       }
 
       // 4. BillingMode flip (own UpdateTable per AWS state-machine rule).
-      // Defaults must match `create()` (line 183: `PAY_PER_REQUEST`) so
+      // Defaults must match the `billingMode` read in `create()`
+      // (`PAY_PER_REQUEST`) so
       // a template with no explicit `BillingMode` doesn't false-fire
       // a PROVISIONED → PAY_PER_REQUEST diff on every update of a
       // PAY_PER_REQUEST table. Both are resolved just above step 3, which

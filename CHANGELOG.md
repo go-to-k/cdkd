@@ -1,3 +1,31 @@
+## [0.278.49](https://github.com/go-to-k/cdkd/compare/v0.278.48...v0.278.49) (2026-08-11)
+
+
+### Bug Fixes
+
+* **cloudtrail:** reset removed Trail fields to their CFn targets ([#1160](https://github.com/go-to-k/cdkd/issues/1160) cloudtrail batch) ([#1547](https://github.com/go-to-k/cdkd/issues/1547)) ([5aa9f71](https://github.com/go-to-k/cdkd/commit/5aa9f713ff588237314830ef5fcf8913db28a3ea))
+
+## [0.278.48](https://github.com/go-to-k/cdkd/compare/v0.278.47...v0.278.48) (2026-08-11)
+
+
+### Bug Fixes
+
+* **codebuild:** reset a removed Project BuildBatchConfig instead of silently keeping it ([#1160](https://github.com/go-to-k/cdkd/issues/1160) codebuild batch) ([#1546](https://github.com/go-to-k/cdkd/issues/1546)) ([c00a086](https://github.com/go-to-k/cdkd/commit/c00a086172493043a05798b6e0d5614c62b55c58))
+
+## [0.278.47](https://github.com/go-to-k/cdkd/compare/v0.278.46...v0.278.47) (2026-08-11)
+
+
+### Bug Fixes
+
+* **route53:** reset removed HostedZoneTags and QueryLoggingConfig on update ([#1160](https://github.com/go-to-k/cdkd/issues/1160) route53 batch) ([#1541](https://github.com/go-to-k/cdkd/issues/1541)) ([6620d6a](https://github.com/go-to-k/cdkd/commit/6620d6afd238f31dfa67d8d828a733e345fcd488))
+
+## [0.278.46](https://github.com/go-to-k/cdkd/compare/v0.278.45...v0.278.46) (2026-08-11)
+
+
+### Bug Fixes
+
+* **provisioning:** guard the GlobalTable BillingMode defaulting site, the one [#1513](https://github.com/go-to-k/cdkd/issues/1513) left open ([#1542](https://github.com/go-to-k/cdkd/issues/1542)) ([358c4fa](https://github.com/go-to-k/cdkd/commit/358c4faec070ab8321dada7e95c54e6987ea7ad2))
+
 ## [0.278.45](https://github.com/go-to-k/cdkd/compare/v0.278.44...v0.278.45) (2026-08-10)
 
 

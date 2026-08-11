@@ -1,6 +1,7 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as route53 from 'aws-cdk-lib/aws-route53';
+import * as logs from 'aws-cdk-lib/aws-logs';
 
 /**
  * Route53 example stack
@@ -13,6 +14,15 @@ import * as route53 from 'aws-cdk-lib/aws-route53';
  * - AWS::Route53::CidrCollection (CC-API) + RecordSet with CidrRoutingConfig (#609 backfill)
  * - Resource dependencies (RecordSet depends on HostedZone)
  * - Fn::GetAtt for outputs (HostedZoneId, HealthCheckId)
+ * - HostedZoneTags + QueryLoggingConfig REMOVAL resets (#1160 route53 batch)
+ *
+ * The REMOVAL phase (gated on CDKD_TEST_REMOVAL, issue #1160 route53 batch)
+ * drops the `Dropped` hosted-zone tag and the whole `QueryLoggingConfig`
+ * block, so the redeploy exercises the two removal paths the provider could
+ * not previously express: `applyHostedZoneTags` only ever sent `AddTags`, and
+ * `applyQueryLoggingConfig` returned early on an absent block, leaving a live
+ * query-logging config writing to CloudWatch forever. Real CloudFormation
+ * removes both (live A/B, 2026-08-10).
  *
  * Note: Creates a real hosted zone ($0.50/month if left running).
  * Always destroy after testing.
@@ -21,10 +31,67 @@ export class Route53Stack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
+    const removal = process.env.CDKD_TEST_REMOVAL === 'true';
+
+    // Query logging requires a log group in us-east-1 whose name starts with
+    // `/aws/route53/`, plus an ACCOUNT-WIDE resource policy letting Route 53
+    // write to it. Both stay in the template across the removal phase — only
+    // the zone's reference to them is dropped, so the redeploy isolates the
+    // QueryLoggingConfig removal rather than confounding it with a log-group
+    // delete. `AWS::Logs::ResourcePolicy` has no SDK provider and routes via
+    // Cloud Control API.
+    const queryLogGroup = new logs.LogGroup(this, 'QueryLogGroup', {
+      logGroupName: `/aws/route53/cdkd-test-${this.account}.internal`,
+      retention: logs.RetentionDays.ONE_DAY,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
+    const queryLogPolicy = new logs.CfnResourcePolicy(this, 'QueryLogPolicy', {
+      policyName: `cdkd-test-route53-query-logging-${this.account}`,
+      policyDocument: JSON.stringify({
+        Version: '2012-10-17',
+        Statement: [
+          {
+            Sid: 'Route53QueryLogging',
+            Effect: 'Allow',
+            Principal: { Service: ['route53.amazonaws.com'] },
+            Action: ['logs:CreateLogStream', 'logs:PutLogEvents'],
+            Resource: `arn:aws:logs:${this.region}:${this.account}:log-group:/aws/route53/*`,
+          },
+        ],
+      }),
+    });
+
     // Create a hosted zone for testing
     const zone = new route53.HostedZone(this, 'TestZone', {
       zoneName: `cdkd-test-${this.account}.internal`,
     });
+
+    // #1160 route53 batch, entry 1: HostedZoneTags had no untag diff, so a tag
+    // dropped from the template stayed on the zone forever. `Keep` survives
+    // both phases; `Dropped` is the removal signal.
+    const zoneL1 = zone.node.defaultChild as route53.CfnHostedZone;
+    zoneL1.addPropertyOverride(
+      'HostedZoneTags',
+      removal
+        ? [{ Key: 'Keep', Value: 'yes' }]
+        : [
+            { Key: 'Keep', Value: 'yes' },
+            { Key: 'Dropped', Value: 'gone' },
+          ]
+    );
+
+    // #1160 route53 batch, entry 2: removing QueryLoggingConfig never deleted
+    // the live config. Present in the baseline, absent in the removal phase.
+    if (!removal) {
+      zoneL1.addPropertyOverride(
+        'QueryLoggingConfig.CloudWatchLogsLogGroupArn',
+        queryLogGroup.logGroupArn
+      );
+      // The account-wide policy must exist before Route 53 will accept the
+      // config; the log group reference alone does not order the policy.
+      zoneL1.addDependency(queryLogPolicy);
+    }
 
     // Exercise the #609 HostedZoneFeatures backfill: the AcceleratedRecovery
     // feature (free; targets a 60-minute RTO for DNS operations during
@@ -32,10 +99,7 @@ export class Route53Stack extends cdk.Stack {
     // UpdateHostedZoneFeatures control-plane call. CDK L2's `HostedZone`
     // does not expose the `hostedZoneFeatures` property, so reach the L1
     // via `addPropertyOverride`.
-    (zone.node.defaultChild as route53.CfnHostedZone).addPropertyOverride(
-      'HostedZoneFeatures.AcceleratedRecoveryStatus',
-      'ENABLED'
-    );
+    zoneL1.addPropertyOverride('HostedZoneFeatures.AcceleratedRecoveryStatus', 'ENABLED');
 
     // A Record
     new route53.ARecord(this, 'TestARecord', {

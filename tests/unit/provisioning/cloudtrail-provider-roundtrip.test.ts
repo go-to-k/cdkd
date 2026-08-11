@@ -58,6 +58,9 @@ describe('CloudTrailProvider read-update round-trip', () => {
     // through update() must therefore not include those keys, so AWS
     // never sees the rejection-shape input
     // (`CloudWatchLogsLogGroupArn is not in valid ARN format`).
+    // NOTE: that rejection claim was DISPROVEN by the issue #1160 probe
+    // (2026-08-10) — `''` IS accepted for this field. The all-or-nothing
+    // pair discriminator is the surviving rationale for the guard.
     const observed = {
       TrailName: 'mytrail',
       S3BucketName: 'mybucket',
@@ -100,7 +103,9 @@ describe('CloudTrailProvider read-update round-trip', () => {
     // Even if a caller (or a future readCurrentState bug) passes
     // explicit empty strings for the ARN-shaped fields, the wire-layer
     // sanitizer must convert them to undefined so AWS does not reject
-    // with "is not in valid ARN format".
+    // with "is not in valid ARN format" -- a claim the issue #1160 probe
+    // DISPROVED (2026-08-10); the pair discriminator is what the guard
+    // actually rests on.
     const observed = {
       TrailName: 'mytrail',
       S3BucketName: 'mybucket',

@@ -665,9 +665,14 @@
     {
       "resourceType": "AWS::CloudTrail::Trail",
       "integs": [
+        "cloudtrail-trail",
         "infra-security"
       ],
       "signals": {
+        "cloudtrail-trail": [
+          "l1",
+          "literal"
+        ],
         "infra-security": [
           "l2",
           "literal"
@@ -727,11 +732,16 @@
     {
       "resourceType": "AWS::CodeBuild::Project",
       "integs": [
-        "ci-cd"
+        "ci-cd",
+        "codebuild-project"
       ],
       "signals": {
         "ci-cd": [
           "l1",
+          "l2",
+          "literal"
+        ],
+        "codebuild-project": [
           "l2",
           "literal"
         ]
@@ -3371,6 +3381,7 @@
         "cc-getatt-readback",
         "cc-protection-flip-eks",
         "ci-cd",
+        "cloudtrail-trail",
         "composite-stack",
         "deep-getatt-chains",
         "destroy-interrupt",
@@ -3453,6 +3464,9 @@
           "l2"
         ],
         "ci-cd": [
+          "l2"
+        ],
+        "cloudtrail-trail": [
           "l2"
         ],
         "composite-stack": [
@@ -4347,6 +4361,7 @@
       "resourceType": "AWS::Logs::LogGroup",
       "integs": [
         "apigw-stage-throttling",
+        "cloudtrail-trail",
         "cloudwatch",
         "composite-stack",
         "drift-revert",
@@ -4360,6 +4375,7 @@
         "loggroup-kms-associate",
         "monitoring",
         "remove-protection",
+        "route53",
         "scheduled-task",
         "stepfunctions-logging",
         "tags-propagation"
@@ -4368,6 +4384,9 @@
         "apigw-stage-throttling": [
           "l2",
           "literal"
+        ],
+        "cloudtrail-trail": [
+          "l2"
         ],
         "cloudwatch": [
           "l2"
@@ -4411,6 +4430,9 @@
         "remove-protection": [
           "l1",
           "literal"
+        ],
+        "route53": [
+          "l2"
         ],
         "scheduled-task": [
           "l2"
@@ -4549,6 +4571,7 @@
         "bucket-deployment",
         "cc-getatt-readback",
         "ci-cd",
+        "cloudtrail-trail",
         "composite-stack",
         "conditions",
         "context-test",
@@ -4606,6 +4629,9 @@
         "ci-cd": [
           "l2",
           "literal"
+        ],
+        "cloudtrail-trail": [
+          "l2"
         ],
         "composite-stack": [
           "l2",
@@ -4849,6 +4875,7 @@
       "resourceType": "AWS::SNS::Topic",
       "integs": [
         "bench-sdk",
+        "cloudtrail-trail",
         "cloudwatch",
         "codecommit",
         "composite-stack",
@@ -4883,6 +4910,9 @@
       ],
       "signals": {
         "bench-sdk": [
+          "l2"
+        ],
+        "cloudtrail-trail": [
           "l2"
         ],
         "cloudwatch": [
@@ -5665,6 +5695,7 @@
     "AWS::Lambda::Version",
     "AWS::Logs::LogStream",
     "AWS::Logs::MetricFilter",
+    "AWS::Logs::ResourcePolicy",
     "AWS::Logs::SubscriptionFilter",
     "AWS::NeptuneGraph::Graph",
     "AWS::OpenSearchService::Domain",

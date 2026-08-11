@@ -620,6 +620,75 @@ version (e.g. a public cross-account layer ARN pinned by its owner), append
 coverage floors and was verified to fail against real injected regressions
 before landing, per the checker rules above.
 
+### Fixture convention: a mode-gated resource must survive the later steps
+
+Multi-step fixtures drive each phase with
+`CDKD_TEST_UPDATE=<comma,separated,modes>`, and the fixture stack branches on
+`updateMode.includes('x')`. Adding a scenario by gating a **new resource** on a
+**new token** is the natural spelling, and it is wrong whenever a later deploy
+in the same `verify.sh` uses a mode list that omits the token: the resource
+leaves the synthesized template and cdkd correctly issues a DELETE for it. A
+per-step conditional in a long fixture is really a *step function over the whole
+run*, not a flag scoped to your step.
+
+The originating case (issue #1512), caught by review before the run reached it:
+the new `OnDemandReplicaTable` gated its `eu-west-1` replica on
+`cross-region-ondemand*`, used by steps 12g/h/i. The fixture then deploys six
+more times (`deletion-protection,autoscaling,ttl,tags`, then five `ttl,tags,...`
+rounds), none carrying the token — so step 12f would have removed the replica
+**from a still-live table**. That is precisely the operation that arms
+DynamoDB's 24-hour source-region delete lock; an earlier probe wedged a table in
+`UPDATING` for over 90 minutes that way (#1442). The fixture's own comments, the
+commit message and the issue comment had already claimed the design "only ever
+ADDs" — nothing would have contradicted them.
+
+Make the token **monotonic** by carrying it forward in a shell suffix: set the
+variable once the resource exists, and append it to the mode list of every later
+deploy.
+
+```bash
+OD_MODE_SUFFIX=""                               # seeded with the other run vars
+...
+OD_MODE_SUFFIX=",cross-region-ondemand-dropped" # set right after the rounds
+...
+CDKD_TEST_UPDATE=ttl,tags${OD_MODE_SUFFIX} ${CLI} deploy ...
+```
+
+The suffix stays empty when the scenario is not gated on, so the default flow is
+byte-for-byte unchanged. Only `cdkd destroy` then removes the resource — which
+for a GlobalTable deletes every replica as one resource and never issues a
+standalone replica-delete.
+
+Do **not** instead key presence on a run-scoped environment variable. It is the
+tempting one-line fix and it stops the deletion, but it silently changes what
+the test tests: the resource is then declared from step 1, so it is created
+*with* its parent and the step you meant to exercise becomes an UPDATE. That is
+how this very fixture briefly stopped covering `addReplica` while its assertion
+still passed — the assertion only checks the resulting value. Reserve the
+env-var form for presence that no step needs to transition.
+
+Before adding a mode-gated resource, enumerate every deploy and read the mode
+list of each one that runs **after** your steps; any that omits your token
+deletes your resource there. Grep for the invocation rather than for a
+single-line pattern — fixtures wrap long mode lists with a trailing `\`, so the
+env prefix and `${CLI} deploy` land on different lines and a one-line
+`grep 'CDKD_TEST_UPDATE=.*deploy'` misses them. That gap is what let a run
+report PASS while still performing the live replica-delete.
+
+Then weigh what the deletion costs — free for a plain queue, the whole problem
+for a DynamoDB replica, RDS instance or stateful store. Verify by synthesizing
+the **later** modes: the check that catches this is `cdk synth` under `ttl,tags`
+showing the resource still intact, not `cdk synth` under your own mode showing
+it created. Finally, make sure some assertion would *notice* a drop — a
+post-destroy "it is gone" check passes vacuously when the resource was deleted
+mid-run, so it is not a guard.
+
+Not yet mechanically enforced; issue
+[#1543](https://github.com/go-to-k/cdkd/issues/1543) tracks the lint. Unlike the
+order-insensitivity convention above, this one is a genuine checker rather than
+a judgment call — the ordered mode lists and the token-gated declarations are
+both statically extractable.
+
 ### Fixture convention: stateful L2 constructs need an explicit removalPolicy
 
 Stateful CDK L2 constructs — `kinesis.Stream`, `dynamodb.Table` / `TableV2`,
@@ -843,6 +912,53 @@ CDKD_TEST_UPDATE=true node ../../../../dist/cli.js deploy CdkdBasicExample \
 ```
 
 The `CDKD_TEST_UPDATE=true` environment variable adds an additional tag to the S3 bucket without modifying the code. This allows testing UPDATE operations repeatedly.
+
+### Removal testing (CDKD_TEST_REMOVAL)
+
+`CDKD_TEST_REMOVAL=true` is the third env toggle a fixture stack can read, and
+it exists for a bug class `CDKD_TEST_UPDATE` structurally cannot reach: the
+**absent-field removal silent drop** (issue
+[#1160](https://github.com/go-to-k/cdkd/issues/1160)). CloudFormation resets a
+property REMOVED from the template to its default, while most AWS `Update*` /
+`Modify*` APIs read an absent input field as "no change" — so a provider that
+passes template properties straight through keeps the old live value, reports
+success, and drops the field from state, after which `cdkd diff` says "No
+changes" forever. Only a redeploy whose template genuinely LACKS the property
+exercises that path, which is what this toggle produces.
+
+The fixture branches on it when building the stack, and its `verify.sh`
+redeploys with the toggle set after the baseline phase:
+
+```bash
+CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes
+```
+
+Two conventions make the result meaningful rather than vacuous:
+
+- **Assert the baseline is live first.** A phase that only checks "the value is
+  gone" passes identically when the value never reached AWS at all, so the
+  baseline phase asserts the property IS set before the removal phase asserts
+  it is not.
+- **Keep a sibling that is NOT removed.** A reset that clears everything is as
+  wrong as one that clears nothing; the retained sibling is what distinguishes
+  them.
+
+The two conventions above are the ones worth copying, but they are NOT
+universal in the tree — `alb` and `cloudfront-function-url` deliberately remove
+the only value they set, so they satisfy the baseline-live convention without a
+retained sibling. Copy the retained sibling whenever the property is a
+COLLECTION (a tag list, an attribute map), where "cleared everything" and
+"cleared the right entry" are different outcomes.
+
+The current set of fixtures using the toggle changes as batches ship; find it
+with:
+
+```bash
+grep -rl CDKD_TEST_REMOVAL tests/integration/*/lib/*.ts tests/integration/*/verify.sh
+```
 
 ### Failure injection (CDKD_TEST_FAIL)
 

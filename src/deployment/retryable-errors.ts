@@ -78,6 +78,21 @@ export const IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS: readonly string[] = [
   'Trusted Entity',
   // IAM principal not yet propagated to S3 bucket policy
   'Invalid principal in policy',
+  // CloudTrail CreateTrail validates that the CloudTrail service can assume
+  // the CloudWatch Logs delivery role at create time. cdkd's fast SDK path
+  // issues the create ~1s after the role's own CREATE, before IAM propagates
+  // the trust policy to CloudTrail's assume layer, and AWS rejects it with
+  // "Access denied. Verify in IAM that the role has adequate trust
+  // relationships." CloudFormation never hits this — its deployment latency
+  // lets IAM settle, which is exactly why the live CFn A/B for issue #1160
+  // passed with this same trust policy while the cdkd fixture failed on the
+  // first try. Anchored on the CloudTrail-specific "Verify in IAM that the
+  // role has adequate trust relationships" sentence rather than the bare
+  // "Access denied" prefix, so an actually-misconfigured role only burns the
+  // bounded retries (~48s) before surfacing and no unrelated authorization
+  // failure false-positives into the retry loop. Surfaced by
+  // tests/integration/cloudtrail-trail.
+  'Verify in IAM that the role has adequate trust relationships',
   // IAM-to-IAM eventual consistency: CreateAccessKey (and sibling per-user
   // writes) issued ~1s after the same deploy's CreateUser can race IAM's own
   // propagation and reject with "NoSuchEntity: The user with name X cannot be

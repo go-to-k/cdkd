@@ -44,11 +44,28 @@ import * as ddb from 'aws-cdk-lib/aws-dynamodb';
  *                            throughput in the same UpdateTable as the
  *                            BillingMode change, and the index this deploy
  *                            REMOVES is still live at flip time).
- *   - `cross-region`:        add a second replica region (eu-west-1).
+ *   - `cross-region`:        add a second replica region (eu-west-1),
+ *                            carrying its own autoscaled `readCapacity` so
+ *                            the PROVISIONED replica-level
+ *                            `ProvisionedThroughputOverride` is exercised
+ *                            (issue #1512).
  *                            Gated behind `CDKD_INTEG_MULTI_REGION=1` in
  *                            verify.sh because the wall-clock is 15–25
  *                            min per round-trip — the default `bash
  *                            verify.sh` invocation stays under 8 min.
+ *   - `cross-region-ondemand`,
+ *     `cross-region-ondemand-changed`,
+ *     `cross-region-ondemand-dropped`:
+ *                            the ON-DEMAND half of issue #1512, on the
+ *                            separate PAY_PER_REQUEST `OnDemandReplicaTable`
+ *                            (the main table's cross-region step is
+ *                            PROVISIONED, so it structurally cannot reach
+ *                            the `OnDemandThroughputOverride` arm). Add the
+ *                            replica with a ceiling, CHANGE the ceiling,
+ *                            then DROP it — the last asserting the live
+ *                            value is UNCHANGED and cdkd warned, since AWS
+ *                            offers no way to clear the override. Same
+ *                            `CDKD_INTEG_MULTI_REGION=1` gate.
  *
  * The values can be combined comma-separated, e.g.
  * `CDKD_TEST_UPDATE=ttl,tags`. Unknown values are silently ignored so
@@ -122,7 +139,26 @@ export class DynamoDBGlobalTableStack extends cdk.Stack {
       ...(updateMode.includes('ttl') && { timeToLiveAttribute: 'expiresAt' }),
       ...(updateMode.includes('deletion-protection') && { deletionProtection: true }),
       ...(wantsCrossRegion && {
-        replicas: [{ region: 'eu-west-1' }],
+        // Issue #1512: the replica declares its OWN table-level read
+        // capacity, which synthesizes to
+        // `Replicas[eu-west-1].ReadProvisionedThroughputSettings` and must
+        // reach AWS as `ProvisionedThroughputOverride` on the
+        // `CreateReplicationGroupMemberAction`. PR (#1503) wired that and no
+        // real-AWS run ever asserted it. Autoscaled (not fixed) to match the
+        // source table's mode; cdkd derives the override's single concrete
+        // number from `MinCapacity` (the 'min' CapacitySource, issue #1435),
+        // so 7 is what should land on the replica — deliberately different
+        // from the source table's 5 so an inherited value cannot pass.
+        replicas: [
+          {
+            region: 'eu-west-1',
+            readCapacity: ddb.Capacity.autoscaled({
+              minCapacity: 7,
+              maxCapacity: 70,
+              targetUtilizationPercent: 70,
+            }),
+          },
+        ],
       }),
     };
 
@@ -145,6 +181,90 @@ export class DynamoDBGlobalTableStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'DeployRegion', {
       value: deployRegion,
       description: 'Deploy (primary) region',
+    });
+
+    // ─── Issue #1512: the ON-DEMAND replica throughput override ─────────
+    //
+    // `toSdkReplicaThroughputOverrides` branches on the table's BillingMode:
+    // PROVISIONED reads `ReadProvisionedThroughputSettings`, PAY_PER_REQUEST
+    // reads `ReadOnDemandThroughputSettings`. `historyTable`'s cross-region
+    // step is PROVISIONED (its mode list includes `autoscaling`), so it can
+    // only ever exercise the provisioned arm — the on-demand arm, and with it
+    // `OnDemandThroughputOverride` on the Create/Update
+    // ReplicationGroupMemberAction, needs its own PAY_PER_REQUEST table.
+    // That is the call shape (#1503) wired and (#1512) is about.
+    //
+    // This table is PRESENT IN EVERY DEPLOY (a bare PAY_PER_REQUEST table
+    // costs nothing at rest) and gains its replica only in the multi-region
+    // block. That ordering is load-bearing: declaring the replica at CREATE
+    // time would exercise `create()`, whereas the code under test is
+    // `addReplica` — the UpdateTable `ReplicaUpdates[].Create` path taken
+    // when a new region appears on an EXISTING table.
+    //
+    // This table must NEVER have its replica removed by an update. Removing
+    // one from a still-live table is what arms DynamoDB's 24h source-region
+    // delete lock (a probe wedged a table in UPDATING for 90+ minutes that
+    // way); teardown is left to `cdkd destroy`, which deletes the GlobalTable
+    // as ONE resource with all replicas together and never issues a
+    // standalone replica-delete.
+    //
+    // Presence is keyed on the TOKEN, and verify.sh is what makes that safe:
+    // once step 12e1 adds the replica, its `OD_MODE_SUFFIX` appends
+    // `cross-region-ondemand-dropped` to EVERY later deploy, so the token —
+    // and therefore the replica — is monotonic for the rest of the run.
+    //
+    // Both halves of that are load-bearing, and each was got wrong once:
+    //  - Without the suffix, the plain mode gating drops the replica in the
+    //    first later step whose mode list omits the token (`ttl,tags`, ...),
+    //    and cdkd correctly issues a replica-delete ON A STILL-LIVE TABLE —
+    //    the operation that arms DynamoDB's 24h source-region delete lock.
+    //  - Keying presence on the ENV VAR instead fixes that but breaks the
+    //    test: the replica is then declared from step 1, so it is created
+    //    WITH the table and step 12e1 becomes a replica-MODIFY. The code under
+    //    test is `addReplica` (the UpdateTable `ReplicaUpdates[].Create`
+    //    path), which is only reached when a new region appears on an
+    //    EXISTING table — verified in the 2026-08-11 run, where the log
+    //    showed `Creating DynamoDB GlobalTable` at step 1 instead.
+    const onDemandReplicaMode = updateMode.includes('cross-region-ondemand-dropped')
+      ? 'dropped'
+      : updateMode.includes('cross-region-ondemand-changed')
+        ? 'changed'
+        : updateMode.includes('cross-region-ondemand')
+          ? 'initial'
+          : 'none';
+
+    // 20 -> 40 so the CHANGE round moves the value, and neither number is a
+    // DynamoDB default that could pass by accident. `none` (every deploy
+    // before 12e1 and after 12e3) declares the replica with NO ceiling, which
+    // is the same shape as `dropped` — correct, because once the ceiling has
+    // been dropped it must STAY dropped from the template's point of view
+    // while remaining live on AWS.
+    const onDemandCeiling = onDemandReplicaMode === 'changed' ? 40 : 20;
+    const declaresCeiling = onDemandReplicaMode === 'initial' || onDemandReplicaMode === 'changed';
+    const wantsOnDemandReplica = onDemandReplicaMode !== 'none';
+
+    const onDemandReplicaTable = new ddb.TableV2(this, 'OnDemandReplicaTable', {
+      partitionKey: { name: 'pk', type: ddb.AttributeType.STRING },
+      billing: ddb.Billing.onDemand(),
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      ...(wantsOnDemandReplica && {
+        replicas: [
+          {
+            region: 'eu-west-1',
+            // The `dropped` round declares the replica with NO ceiling. AWS
+            // offers no way to CLEAR a replica-level override (a -1 sentinel
+            // stores literally; an empty block wedges the table — both
+            // live-probed on issue #1436), so cdkd must leave the old value
+            // in effect and WARN rather than corrupt the table.
+            ...(declaresCeiling && { maxReadRequestUnits: onDemandCeiling }),
+          },
+        ],
+      }),
+    });
+
+    new cdk.CfnOutput(this, 'OnDemandReplicaTableName', {
+      value: onDemandReplicaTable.tableName,
+      description: 'AWS-side physical name of the on-demand replica-override table',
     });
 
     // ─── Issue #1387: per-GSI throughput translation ────────────────────

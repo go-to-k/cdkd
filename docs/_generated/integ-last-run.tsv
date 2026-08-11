@@ -39,8 +39,10 @@ cc-protection-flip	2026-07-31T03:56:21Z	PASS	1250	verify.sh	5 CC types incl. RDS
 cc-protection-flip-eks	2026-07-31T04:30:02Z	PASS	2300	verify.sh	EKS blocked-destroy + --remove-protection flip (#1315); orph clean
 ci-cd	2026-08-09T14:25:56Z	PASS	57	verify.sh	issue #1386 nested sub-keys asserted live; rc ok, orph clean
 cloudfront-function-url	2026-07-31T06:11:38Z	PASS	209	verify.sh	regression run post-#1311/#1318; fire-and-forget create + delete-wait path clean; 7 del/0 err, 0 orphans
+cloudtrail-trail	2026-08-11T03:26:53Z	PASS	82	verify.sh	#1160 cloudtrail batch final: 5 resets + CW pair retention live-verified; destroy 10/0
 cloudwatch	2026-07-26T20:00:52Z	PASS	55	standard	0727b sweep-b13 staleness re-run (rc=0); account clean
 cloudwatch-anomaly-detector	2026-07-30T16:41:15Z	PASS	35	verify.sh	final run post review fixes: GetAtt Id + phys-id stability asserted; clean
+codebuild-project	2026-08-11T03:08:37Z	PASS	63	verify.sh	#1160 codebuild batch final: reset + 7 CFn retentions live-verified; destroy 3/0
 codecommit	2026-08-01T09:36:05Z	PASS	83	verify.sh	0801 regression sweep; 3 phases ok, 0 orphans
 codedeploy-lambda-deployment-group	2026-07-26T19:45:58Z	PASS	109	verify.sh	re-run after version-agnostic fixture fix; live-verified, account clean (remnant-warning follow-up: issue #1252)
 cognito	2026-08-08T18:49:35Z	PASS	63	verify.sh	SignInPolicy #1380 assertion added; clean destroy
@@ -77,7 +79,7 @@ drift-revert-arrays	2026-08-01T09:36:05Z	PASS	110	verify.sh	0801 regression swee
 drift-revert-vpc	2026-08-10T11:50:46Z	PASS	310	verify.sh	0810 P0/P1 sweep b5 BROAD; 21 del/0 err incl EFS+PrivateDnsNamespace
 dsql	2026-07-30T18:11:24Z	PASS	540	verify.sh	4-phase incl. destroy --remove-protection CC flip (#1312); orph clean
 dynamodb-autoscaling	2026-08-10T05:13:55Z	PASS	65	verify.sh	0810 sweep b5; table autoscaling re-verify post-#1451 GlobalTable work, 0 err 0 orph
-dynamodb-globaltable	2026-08-10T16:40:24Z	PASS	620	verify.sh	post-review re-run: tightened 1511 grep, 1521 wait split; 5 del/0 err, 0 orphans
+dynamodb-globaltable	2026-08-11T03:24:08Z	PASS	928	verify.sh	issue #1512 multi-region post-review: 13f keeps the replica (NO_CHANGE), 16a3 non-vacuous; 6 del/0 err/0 orph
 dynamodb-gsi-update	2026-08-10T05:13:55Z	PASS	1056	verify.sh	0810 sweep b5; GSI add is in-place UPDATE (no replacement), 3 phases, 1 del 0 err 0 orph
 dynamodb-ondemand	2026-08-01T10:07:21Z	PASS	81	verify.sh	0801 regression sweep; ondemand+policy+kinesis backfills ok, 0 orphans
 dynamodb-sse	2026-08-01T10:07:21Z	PASS	40	verify.sh	0801 regression sweep; SSE mapping ok, 0 orphans
@@ -226,7 +228,7 @@ rollback-command	2026-08-10T04:45:42Z	PASS	117	verify.sh	0810 sweep b3; post-#13
 rollback-deletion-policy-snapshot	2026-08-08T16:34:46Z	PASS	107	verify.sh	P0 first run post-#1361/#1365/#1367/#1369 rollback rework; rolled-back CREATE snapshot-then-deleted, state clean, 0 orphans
 rollback-failure-injection	2026-08-08T17:42:23Z	PASS	389	verify.sh	issue #1375 re-run (background, dodging the 600s clamp); all 8 phases, 17 del/0 err, 0 orphans incl NAT/EIP/ENI
 rollback-sqs-cooldown	2026-08-10T04:45:42Z	PASS	152	verify.sh	0810 sweep b3; post-#1361 rollback-executor re-verify, destroy clean
-route53	2026-08-10T13:14:47Z	PASS	336	verify.sh	PR 1493 config-shape guards on HostedZoneConfig create+update; destroy 6/0, zone+state gone, 0 orphans
+route53	2026-08-11T02:45:10Z	PASS	405	verify.sh	#1160 route53 batch on the post-rebase MERGE PRODUCT (main incl. #1542 + this branch); both removal resets live-verified, destroy clean, 0 orphans
 s3-asset-deploy	2026-07-26T19:45:58Z	PASS	58	verify.sh	0727b sweep-b12 staleness re-run (rc=0); account clean
 s3-cloudfront	2026-08-08T17:42:05Z	PASS	228	verify.sh	1373 OriginCustomHeaders create+update-survive asserts green; destroy 0 errors 0 orphans
 s3-directory-bucket	2026-08-10T16:45:07Z	PASS	300	verify.sh	final post-rebase+review-fix run: tags create+update live, auto-empty, 0 orphans (#609)

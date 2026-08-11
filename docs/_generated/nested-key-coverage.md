@@ -9,12 +9,12 @@ For every SDK provider that forwards a nested CFn config blob, diffs the blob's 
 
 - Audited targets: **11**
 - Nested CFn key paths audited: **703**
-- Same spelling in SDK model: **642**
+- Same spelling in SDK model: **639**
 - Explicitly handled in provider: **53**
-- Allow-listed pass-throughs (does NOT block CI): **8**
+- Allow-listed pass-throughs (does NOT block CI): **11**
 - **Case divergences (blocks CI): 0**
 - **No SDK member (blocks CI): 0**
-- Write-evidence pass — fresh-object targets audited: **10**
+- Write-evidence pass — fresh-object targets audited: **11**
 - **No write evidence (blocks CI): 0**
 - Shape pass — bare-array pairs clean: **87**
 - Shape pass — explicitly handled in provider: **32**
@@ -39,6 +39,9 @@ None. Every audited nested CFn key either matches an SDK member spelling or is e
 | `AWS::CloudFront::Distribution` | `Tags.Value` | Same wrapper-level insertion as Tags.Key: written by toSdkTags beneath the SDK { Items: Tag[] } wrapper (scope Tags.Items), one level below the CFn chain. |
 | `AWS::CodeBuild::Project` | `Environment.HostKernel` | Declared in the CFn registry schema but has NO member anywhere in the installed @aws-sdk/client-codebuild dist-types tree, so there is nothing to map it onto until an SDK bump adds one (issue #1386). Naming it in the provider would be a false claim of support. Remove this entry once the SDK ships the member, at which point the key becomes genuinely mappable. |
 | `AWS::S3::Bucket` | `CorsConfiguration.CorsRules` | Delivered by applyCorsConfiguration, which reads the CFn key via typed property access (`corsConfig.CorsRules.map(...)`) and writes the SDK spelling `CORSRules` — the literal walk deliberately counts neither a property ACCESS nor a type-literal member, and the only literal mention of the CFn spelling is `readCors`, excluded as a reverse map by the #1520 widening. Key pass only; the members BENEATH it need no entry — the per-level case fold resolves `CorsConfiguration.CorsRules` onto the written `CORSConfiguration.CORSRules` scope, so they stay write-audited (issue #1520). |
+| `AWS::S3::Bucket` | `LifecycleConfiguration.Rules.TagFilters.Key` | Forwarded verbatim into `Filter{,.And}.Tags` by applyLifecycleConfiguration, but through a chain the hand-off taint walk deliberately does not cross: the array reaches the write as a DESTRUCTURED member of the in-method `gatherScope` helper's returned literal, and member-level taint through a returned literal is a materially bigger analysis (issue #1540; same wrapper-level class as the CloudFront `Tags.Key` / `Tags.Value` entries). The equivalent per-item-config forwards (Analytics / Metrics / IntelligentTiering) ARE wildcard-credited via the for-of taint hop. |
+| `AWS::S3::Bucket` | `LifecycleConfiguration.Rules.TagFilters.Value` | Same destructured-gatherScope forward as the sibling `LifecycleConfiguration.Rules.TagFilters.Key` entry (issue #1540). |
+| `AWS::S3::Bucket` | `LifecycleConfiguration.TransitionDefaultMinimumObjectSize` | Written by applyLifecycleConfiguration DIRECTLY on the PutBucketLifecycleConfigurationRequest (the SDK hoists it out of `LifecycleConfiguration`, where CFn nests it), so the audited chain can never resolve: a terminal rename redirects WITHIN the config object and cannot express a request-level hoist. Delivery is proven by the s3-replication-and-filter integ read-back (issue #1495) and the write is pinned by name in the #1495 write-evidence unit test (issues #1520 / #1540). |
 | `AWS::CloudFront::Distribution` | `S3Origin` | Legacy pre-2012 single-origin form (LegacyS3Origin definition), sibling of CustomOrigin; superseded by Origins[]. Invisible to the KEY pass because the StreamingDistribution API still has a same-spelled S3Origin member — the definition pass (issue #1378) is what catches it. |
 | `AWS::S3::Bucket` | `TableNamespace` | Member of the S3TablesDestination definition, reachable only from the MetadataTableConfiguration top-level the provider declares as silent-drop (Cloud-Control-routed), so no SDK forwarding path exists to drop it (issue #1430). |
 | `AWS::S3::Bucket` | `TableArn` | Member of the S3TablesDestination / JournalTableConfiguration / InventoryTableConfiguration definitions, reachable only from the MetadataConfiguration / MetadataTableConfiguration top-levels the provider declares as silent-drop (Cloud-Control-routed), so no SDK forwarding path exists to drop it (issue #1430). |
@@ -166,5 +169,5 @@ CFn members whose SHAPE diverges from the same-spelled SDK member (bare array vs
 | `AWS::CodeBuild::Project` | `codebuild-provider.ts` | `@aws-sdk/client-codebuild` | lower-first | yes | 98 | 4 |
 | `AWS::ECS::Service` | `ecs-provider.ts` | `@aws-sdk/client-ecs` | lower-first | yes | 56 | 4 |
 | `AWS::ECS::TaskDefinition` | `ecs-provider.ts` | `@aws-sdk/client-ecs` | lower-first | yes | 142 | 3 |
-| `AWS::S3::Bucket` | `s3-bucket-provider.ts` | `@aws-sdk/client-s3` | exact | no | 190 | 15 |
+| `AWS::S3::Bucket` | `s3-bucket-provider.ts` | `@aws-sdk/client-s3` | exact | yes | 190 | 15 |
 
