@@ -34,6 +34,19 @@ cdkd --version
 
 Do not silently upgrade an existing installation during an unrelated deployment.
 
+## Run workloads locally (no AWS needed)
+
+`cdkd local *` runs Lambda functions, API Gateway APIs, ECS tasks and services, ALBs, CloudFront distributions, and Bedrock AgentCore runtimes on the developer's machine via Docker — no AWS deploy and no AWS credentials involved, so the deployment-boundary steps below do not apply to these commands:
+
+```bash
+cdkd local invoke <function>       # one-shot Lambda invoke
+cdkd local start-api               # long-running local API Gateway
+cdkd local run-task <task>         # one-shot ECS task
+cdkd local start-service <service> # long-running ECS service emulator
+```
+
+Most `cdkd local` commands require Docker, and the first run pulls base images (up to ~600 MB). See the [local execution guide](https://github.com/go-to-k/cdkd/blob/main/docs/local-emulation.md) for the full subcommand list (ALB, CloudFront, AgentCore) and flags.
+
 ## Establish the deployment boundary
 
 Before any AWS-changing command:
@@ -55,6 +68,8 @@ Keep these ownership rules:
 - Do not run `cdkd deploy` against an existing CloudFormation-managed stack as an implicit migration. Continue using `cdk deploy`, or plan an explicit `cdkd import --migrate-from-cloudformation` operation.
 - Treat `cdkd import`, `cdkd export`, `cdkd orphan`, and `cdkd state orphan` as changes to the system of record. Explain the ownership change and obtain explicit confirmation before running them.
 - Never edit the S3 state object by hand. Use cdkd state and recovery commands.
+
+To stop managing something WITHOUT deleting it from AWS, orphan it: `cdkd orphan <stack/ConstructPath>` drops one resource from cdkd state (the AWS resource stays), and `cdkd state orphan <stack>` removes the whole stack's state record (all AWS resources stay). Remove the corresponding construct from the CDK app in the same change — otherwise the next `cdkd deploy` re-creates what the template still declares.
 
 For a proposed CloudFormation migration, read the deployed CloudFormation template and compare its logical IDs with the current synthesized template so local changes do not accidentally leave retained resources unmanaged. Preview resource matching with the non-migrating form:
 
@@ -139,9 +154,32 @@ For an interrupted or failed deployment:
 4. Use `cdkd rollback <stack>` for a failed `--no-rollback` or interrupted deployment when rollback is appropriate.
 5. Use `cdkd force-unlock <stack>` only after proving no deployment is still running.
 
+## Detect and reconcile drift
+
+`cdkd drift <stack>` compares each managed resource's live AWS configuration against cdkd state (state-driven; no synth) and exits `1` when drift is detected. Reconcile in one of two explicit directions:
+
+```bash
+AWS_PROFILE=<profile> AWS_REGION=<region> cdkd drift <stack>            # detect only
+AWS_PROFILE=<profile> AWS_REGION=<region> cdkd drift <stack> --accept   # state <- AWS (keep the live change)
+AWS_PROFILE=<profile> AWS_REGION=<region> cdkd drift <stack> --revert   # AWS <- state (undo the live change)
+```
+
+`--accept` and `--revert` are mutually exclusive; both honor `--dry-run`. `--revert` changes live AWS resources — treat it as a destructive operation (see below).
+
+## Reclaim asset storage
+
+Content-addressed assets are deliberately kept on `cdkd destroy` (another stack or a future rollback may reference the same hash), so cdkd-owned asset storage grows over time. `cdkd gc` deletes only assets no state file references, one region per invocation, and never touches CDK's own bootstrap storage:
+
+```bash
+AWS_PROFILE=<profile> AWS_REGION=<region> cdkd gc --dry-run   # print the reclaim plan first
+AWS_PROFILE=<profile> AWS_REGION=<region> cdkd gc             # delete after reviewing the plan
+```
+
+Keep the default `--older-than 30d` age guard unless the user explicitly accepts a shorter window; it protects in-flight publishes and recent rollback targets.
+
 ## Guard destructive and migration commands
 
-Before `destroy`, `state destroy`, `orphan`, `import`, `export`, `drift --accept`, or `drift --revert`:
+Before `destroy`, `state destroy`, `orphan`, `import`, `export`, `drift --accept`, `drift --revert`, or `gc`:
 
 1. Re-resolve the AWS identity, region, stack name, and current owner.
 2. Show the exact command and explain which resources or state records change.
@@ -164,6 +202,8 @@ cdkd deploy <stack> --full-wait
 cdkd state info
 cdkd state show <stack> --stack-region <region>
 cdkd events <stack> --stack-region <region>
+cdkd drift <stack>
+cdkd gc --dry-run
 cdkd destroy <stack>
 ```
 
