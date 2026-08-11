@@ -1,3 +1,10 @@
+## [0.278.48](https://github.com/go-to-k/cdkd/compare/v0.278.47...v0.278.48) (2026-08-11)
+
+
+### Bug Fixes
+
+* **codebuild:** reset a removed Project BuildBatchConfig instead of silently keeping it ([#1160](https://github.com/go-to-k/cdkd/issues/1160) codebuild batch) ([#1546](https://github.com/go-to-k/cdkd/issues/1546)) ([c00a086](https://github.com/go-to-k/cdkd/commit/c00a086172493043a05798b6e0d5614c62b55c58))
+
 ## [0.278.47](https://github.com/go-to-k/cdkd/compare/v0.278.46...v0.278.47) (2026-08-11)
 
 
