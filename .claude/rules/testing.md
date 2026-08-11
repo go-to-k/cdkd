@@ -374,11 +374,26 @@ that no step needs to transition.
   check passes vacuously when the resource was deleted mid-run, so it is not a
   guard; assert presence at the point the resource must still exist.
 
-NOT yet mechanically enforced — issue
-[#1543](https://github.com/go-to-k/cdkd/issues/1543) tracks the lint (the
-ordered mode lists and the token-gated declarations are both statically
-extractable, so unlike the order-insensitivity rule above this one is a
-checker, not a judgment call).
+Mechanically enforced since issue
+[#1543](https://github.com/go-to-k/cdkd/issues/1543): both halves are statically
+extractable, so unlike the order-insensitivity rule above this one is a checker
+rather than a judgment call. `scripts/check-integ-mode-gated-resources.ts`
+reads the ORDERED per-deploy mode lists out of `verify.sh` (including the
+monotonic-suffix `${VAR}` idiom prescribed above, which it resolves in source
+order) and the CONDITION behind each gated declaration in the fixture stack,
+then reports a declaration that is present at one step and absent at a later
+one. Enforced by `tests/unit/scripts/integ-mode-gated-resources.test.ts`.
+
+Two things about its verdicts are worth knowing before you hit one:
+
+- Only CREATE-shaped gates BLOCK — a construct, or an entry in a resource list
+  such as `replicas: [...]`. A scalar property gate (`deletionProtection: true`)
+  is reported for visibility only, because flipping a property back off is an
+  ordinary in-place update test and this fixture does exactly that at its
+  structural-teardown step.
+- A deliberate removal takes `// allow-mode-gated-drop: <reason>` on the
+  declaration. The reason is mandatory; a bare marker is rejected. The step-12d
+  replica removal here carries one.
 
 ### Fixture stateful L2s need an explicit removalPolicy (mandatory)
 

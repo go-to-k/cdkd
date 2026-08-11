@@ -138,6 +138,11 @@ export class DynamoDBGlobalTableStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       ...(updateMode.includes('ttl') && { timeToLiveAttribute: 'expiresAt' }),
       ...(updateMode.includes('deletion-protection') && { deletionProtection: true }),
+      // allow-mode-gated-drop: step 12d removes this replica on purpose — the
+      // add-then-remove round-trip IS the test (verify.sh asserts the eu-west-1
+      // replica reaches ACTIVE, then that it is gone). The removal is safe here
+      // because it runs inside the opt-in CDKD_INTEG_MULTI_REGION block and is
+      // the last thing that touches this replica.
       ...(wantsCrossRegion && {
         // Issue #1512: the replica declares its OWN table-level read
         // capacity, which synthesizes to
