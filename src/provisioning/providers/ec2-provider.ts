@@ -2031,6 +2031,12 @@ export class EC2Provider implements ResourceProvider {
     // paths (rollback replay / the update path's delete-and-recreate), where a
     // refusal would leave the route unrestorable from a record the user cannot
     // edit; the pre-fix precedence then applies, so behavior there is unchanged.
+    // Counted with the SAME predicate the `||` chain above uses (plain
+    // truthiness), not a hand-listed `undefined | null | ''` set. The casts on
+    // the three reads promise `string | undefined`, but the property bag is
+    // `unknown`-valued at runtime, so a numeric `0` from an unquoted YAML
+    // scalar is reachable — and under a narrower predicate the guard would
+    // count a destination the chain skips, producing a spurious refusal.
     const declaredDestinations = (
       [
         ['DestinationCidrBlock', destinationCidrBlock],
@@ -2038,7 +2044,7 @@ export class EC2Provider implements ResourceProvider {
         ['DestinationPrefixListId', destinationPrefixListId],
       ] as const
     )
-      .filter(([, value]) => value !== undefined && value !== null && value !== '')
+      .filter(([, value]) => Boolean(value))
       .map(([key]) => key);
 
     if (declaredDestinations.length > 1) {
@@ -2048,8 +2054,28 @@ export class EC2Provider implements ResourceProvider {
         'DestinationCidrBlock/DestinationIpv6CidrBlock/DestinationPrefixListId; ' +
         'remove the extra keys from the template.';
       if (onMultipleDestinations) {
+        // Deliberately does NOT attribute the properties to cdkd state: the
+        // update path passes this callback unconditionally, so an ordinary
+        // template-borne `cdkd deploy` update reaches here too and a
+        // state-origin claim would be false (and would contradict the
+        // "remove the extra keys from the template" remedy above).
+        // The used key is derived from the resolved `destination` rather than
+        // from declaredDestinations[0], so the two can never disagree.
+        const usedKey =
+          destination === destinationCidrBlock
+            ? 'DestinationCidrBlock'
+            : destination === destinationIpv6CidrBlock
+              ? 'DestinationIpv6CidrBlock'
+              : 'DestinationPrefixListId';
+        // Known residue (issue #1591): the update SUCCEEDS, so the engine
+        // records the DESIRED bag — every declared destination key — while
+        // readRouteCurrentState can only ever return the one AWS holds, so the
+        // losing keys become permanent phantom drift. That is the #1552
+        // junk-state class; it is not made worse here (the pre-fix code
+        // recorded the same bag with no warning at all), and fixing it means
+        // persisting the narrowed bag, which this provider does not own.
         onMultipleDestinations(
-          `${message} Continuing with ${declaredDestinations[0]} because the properties come from cdkd state, not the template.`
+          `${message} Continuing with ${usedKey} and ignoring the rest, because refusing here would strand the route this update already deleted.`
         );
       } else {
         throw new ProvisioningError(message, resourceType, logicalId);
@@ -2124,6 +2150,13 @@ export class EC2Provider implements ResourceProvider {
         logicalId,
         resourceType,
         properties,
+        // NOTE: this downgrades ONLY the multi-destination guard. The
+        // required-field check at the top of createRoute is deliberately NOT
+        // downgraded and can still throw on this post-delete path (a bag
+        // missing RouteTableId or every destination has nothing to create
+        // from) — that is pre-existing behavior, not something this callback
+        // claims to cover.
+        //
         // `rollback-executor.ts`'s revert arm and `cdkd drift --revert` both
         // call update() with a cdkd STATE record as the desired bag, and this
         // method has no context parameter to tell that apart from a template

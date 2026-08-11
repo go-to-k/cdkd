@@ -108,6 +108,73 @@ describe('EC2Provider AWS::EC2::Route multi-destination (#1566)', () => {
         })
       ).rejects.toThrow(/DestinationCidrBlock, DestinationPrefixListId/);
     });
+
+    it('throws for the IPv6 + prefix-list pair, with no IPv4 key present', async () => {
+      // Every other refusal case carries DestinationCidrBlock, so without this
+      // one the reported key list could be hardcoded to the IPv4 spelling (or
+      // the IPv6 tuple dropped from the guard's array) and the suite would
+      // stay green.
+      await expect(
+        provider.create('MyRoute', 'AWS::EC2::Route', {
+          RouteTableId: 'rtb-123',
+          DestinationIpv6CidrBlock: '::/0',
+          DestinationPrefixListId: 'pl-123',
+          GatewayId: 'igw-1',
+        })
+      ).rejects.toThrow(/\(DestinationIpv6CidrBlock, DestinationPrefixListId\)/);
+    });
+
+    it('treats an explicit null sibling as absent, not as a second destination', async () => {
+      // A state record can carry an explicit null where the template had nothing.
+      mockSend.mockResolvedValue({});
+
+      const result = await provider.create('MyRoute', 'AWS::EC2::Route', {
+        RouteTableId: 'rtb-123',
+        DestinationCidrBlock: '0.0.0.0/0',
+        DestinationIpv6CidrBlock: null,
+        GatewayId: 'igw-1',
+      });
+
+      expect(result.physicalId).toBe('rtb-123|0.0.0.0/0');
+    });
+
+    it('counts destinations with the same predicate the precedence chain uses', async () => {
+      // The casts promise `string | undefined`, but the bag is unknown-valued
+      // at runtime and an unquoted YAML scalar arrives as a NUMBER. The chain
+      // (`a || b || c`) skips a falsy `0`, so the guard must too — otherwise it
+      // counts a destination the chain ignores and refuses a template that
+      // carries exactly one usable destination.
+      mockSend.mockResolvedValue({});
+
+      const result = await provider.create('MyRoute', 'AWS::EC2::Route', {
+        RouteTableId: 'rtb-123',
+        DestinationCidrBlock: 0,
+        DestinationIpv6CidrBlock: '::/0',
+        GatewayId: 'igw-1',
+      });
+
+      expect(result.physicalId).toBe('rtb-123|::/0');
+      expect(createInput()['DestinationIpv6CidrBlock']).toBe('::/0');
+    });
+
+    it('still refuses when a context is present but not a state replay', async () => {
+      // Pins `context?.replayingState === true` against being loosened to a
+      // bare `context !== undefined`.
+      await expect(
+        provider.create(
+          'MyRoute',
+          'AWS::EC2::Route',
+          {
+            RouteTableId: 'rtb-123',
+            DestinationCidrBlock: '0.0.0.0/0',
+            DestinationIpv6CidrBlock: '::/0',
+            GatewayId: 'igw-1',
+          },
+          { replayingState: false }
+        )
+      ).rejects.toThrow(ProvisioningError);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
   });
 
   describe('create (template path) still accepts every single-destination shape', () => {
@@ -172,6 +239,34 @@ describe('EC2Provider AWS::EC2::Route multi-destination (#1566)', () => {
 
       expect(warnings().some((m) => /declares more than one destination/.test(m))).toBe(true);
       expect(warnings().some((m) => /Continuing with DestinationCidrBlock/.test(m))).toBe(true);
+      // The warning must not claim a state origin: `updateRoute` passes the
+      // same callback on an ordinary template-borne deploy, where that would
+      // be false and would contradict "remove the extra keys from the template".
+      expect(warnings().some((m) => /come from cdkd state/.test(m))).toBe(false);
+    });
+
+    it('names the ACTUAL winning key when the winner is not the IPv4 one', async () => {
+      // Without an IPv4-free warn case, `usedKey` can be hardcoded to
+      // 'DestinationCidrBlock' and the whole suite stays green (verified by
+      // mutation). This is the warn-arm twin of the IPv6+prefix throw case.
+      mockSend.mockResolvedValue({});
+
+      const result = await provider.create(
+        'MyRoute',
+        'AWS::EC2::Route',
+        {
+          RouteTableId: 'rtb-123',
+          DestinationIpv6CidrBlock: '::/0',
+          DestinationPrefixListId: 'pl-123',
+          GatewayId: 'igw-1',
+        },
+        { replayingState: true }
+      );
+
+      expect(result.physicalId).toBe('rtb-123|::/0');
+      expect(createInput()['DestinationIpv6CidrBlock']).toBe('::/0');
+      expect(createInput()['DestinationPrefixListId']).toBeUndefined();
+      expect(warnings().some((m) => /Continuing with DestinationIpv6CidrBlock/.test(m))).toBe(true);
     });
 
     it('warns rather than stranding the route on the update delete-and-recreate', async () => {
@@ -196,8 +291,14 @@ describe('EC2Provider AWS::EC2::Route multi-destination (#1566)', () => {
       );
 
       expect(result.wasReplaced).toBe(true);
-      // update() deletes first — a throw after that would leave the route gone.
-      expect(mockSend.mock.calls.some((c) => c[0] instanceof DeleteRouteCommand)).toBe(true);
+      // update() deletes BEFORE re-creating, which is precisely why the guard
+      // cannot throw here — a refusal would leave the route deleted. Assert the
+      // ORDER, not mere presence: a presence check also passes if the calls
+      // were swapped, which would invalidate the reason for the downgrade.
+      const deleteAt = mockSend.mock.calls.findIndex((c) => c[0] instanceof DeleteRouteCommand);
+      const createAt = mockSend.mock.calls.findIndex((c) => c[0] instanceof CreateRouteCommand);
+      expect(deleteAt).toBeGreaterThanOrEqual(0);
+      expect(createAt).toBeGreaterThan(deleteAt);
       expect(createInput()['GatewayId']).toBe('igw-2');
       expect(warnings().some((m) => /declares more than one destination/.test(m))).toBe(true);
     });

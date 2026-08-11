@@ -150,8 +150,16 @@ forward ARE a state record during a rollback replay (`rollback-executor.ts`'s
 does `drift --revert`). So a provider that both refuses on create AND
 re-creates inside `update()` would fire that refusal on a replay with no way
 to detect it. None of the five does today (required-field validation only,
-which correctly stays a hard error), so this is a constraint on the next
-provider rather than a description of the current tree.
+which correctly stays a hard error).
+
+`EC2Provider.createRoute` IS such a provider since issue #1566 — it refuses a
+multi-destination template on create AND is re-created from `updateRoute` — and
+it shows the shape that satisfies the constraint: the refusal is behind a
+CALLBACK parameter that `updateRoute` passes UNCONDITIONALLY, so the re-create
+can never fire it. Note the callback covers only that guard; `createRoute`'s
+required-field check is still a hard error on the post-delete path, which is
+why the safe pattern is "downgrade the refusal", not "assume update() is
+throw-free".
 
 The `context.expectedRegion` parameter on `delete` is the region recorded
 in the stack state when the resource was created. Providers MUST verify
