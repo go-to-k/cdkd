@@ -1098,30 +1098,37 @@ export class S3BucketProvider implements ResourceProvider {
   ): Promise<void> {
     for (const config of configs) {
       const id = config['Id'] as string;
-      const filter = config['TagFilters'] || config['Prefix'] || config['AccessPointArn'];
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const metricsConfig: any = {
         Id: id,
       };
-      if (config['Prefix']) {
-        metricsConfig.Filter = { Prefix: config['Prefix'] as string };
-      } else if (config['TagFilters']) {
-        const tagFilters = config['TagFilters'] as Array<{ Key: string; Value: string }>;
-        if (tagFilters.length === 1 && !config['Prefix'] && !config['AccessPointArn']) {
-          metricsConfig.Filter = { Tag: tagFilters[0] };
-        } else {
-          metricsConfig.Filter = {
-            And: {
-              Prefix: config['Prefix'] as string | undefined,
-              Tags: tagFilters,
-              AccessPointArn: config['AccessPointArn'] as string | undefined,
-            },
-          };
-        }
-      } else if (config['AccessPointArn']) {
-        metricsConfig.Filter = { AccessPointArn: config['AccessPointArn'] as string };
-      } else if (filter === undefined) {
-        // No filter - applies to all objects
+      const prefix = config['Prefix'] as string | undefined;
+      const accessPointArn = config['AccessPointArn'] as string | undefined;
+      const tagFilters = config['TagFilters'] as Array<{ Key: string; Value: string }> | undefined;
+      const tagCount = tagFilters?.length ?? 0;
+      // The single-predicate shapes (Prefix / Tag / AccessPointArn) carry
+      // exactly ONE condition; every combination — and 2+ tags on their own —
+      // needs the And operator. Issue #1573: this used to branch on Prefix
+      // FIRST, so a Prefix combined with TagFilters or AccessPointArn
+      // silently dropped the other predicate(s). Counting PREDICATES (not
+      // predicate kinds — the sibling builders' variant of the same bug)
+      // routes every multi-condition filter through And; no filter at all
+      // means the configuration applies to every object.
+      const predicateCount = (prefix ? 1 : 0) + tagCount + (accessPointArn ? 1 : 0);
+      if (predicateCount > 1) {
+        metricsConfig.Filter = {
+          And: {
+            Prefix: prefix,
+            Tags: tagCount > 0 ? tagFilters : undefined,
+            AccessPointArn: accessPointArn,
+          },
+        };
+      } else if (prefix) {
+        metricsConfig.Filter = { Prefix: prefix };
+      } else if (tagFilters && tagFilters.length === 1) {
+        metricsConfig.Filter = { Tag: tagFilters[0] };
+      } else if (accessPointArn) {
+        metricsConfig.Filter = { AccessPointArn: accessPointArn };
       }
       await this.s3Client.send(
         new PutBucketMetricsConfigurationCommand({
@@ -1258,18 +1265,21 @@ export class S3BucketProvider implements ResourceProvider {
         StorageClassAnalysis: {},
       };
 
-      // Filter
+      // Filter. The single-predicate shapes carry exactly ONE condition; a
+      // combination — and 2+ tags on their own — needs the And operator.
+      // Issue #1573: the old guard counted predicate KINDS, so 2+ tags with
+      // no Prefix collapsed to the single-Tag shape and silently dropped
+      // every tag after the first. And-with-only-Tags is accepted by the API
+      // and reads back unchanged (live-probed 2026-08-11).
       const prefix = config['Prefix'] as string | undefined;
       const tagFilters = config['TagFilters'] as Array<{ Key: string; Value: string }> | undefined;
-      if (prefix || (tagFilters && tagFilters.length > 0)) {
-        const hasMultiple = (prefix ? 1 : 0) + (tagFilters && tagFilters.length > 0 ? 1 : 0) > 1;
-        if (hasMultiple) {
-          analyticsConfig.Filter = { And: { Prefix: prefix, Tags: tagFilters } };
-        } else if (prefix) {
-          analyticsConfig.Filter = { Prefix: prefix };
-        } else if (tagFilters && tagFilters.length > 0) {
-          analyticsConfig.Filter = { Tag: tagFilters[0] };
-        }
+      const tagCount = tagFilters?.length ?? 0;
+      if ((prefix ? 1 : 0) + tagCount > 1) {
+        analyticsConfig.Filter = { And: { Prefix: prefix, Tags: tagFilters } };
+      } else if (prefix) {
+        analyticsConfig.Filter = { Prefix: prefix };
+      } else if (tagFilters && tagFilters.length === 1) {
+        analyticsConfig.Filter = { Tag: tagFilters[0] };
       }
 
       // StorageClassAnalysis.DataExport
@@ -1363,18 +1373,19 @@ export class S3BucketProvider implements ResourceProvider {
         })),
       };
 
-      // Filter
+      // Filter. Same predicate-count rule as applyAnalyticsConfigurations —
+      // the old kind-count guard dropped every tag after the first when
+      // Prefix was absent (issue #1573; And-with-only-Tags live-probed
+      // 2026-08-11).
       const prefix = config['Prefix'] as string | undefined;
       const tagFilters = config['TagFilters'] as Array<{ Key: string; Value: string }> | undefined;
-      if (prefix || (tagFilters && tagFilters.length > 0)) {
-        const hasMultiple = (prefix ? 1 : 0) + (tagFilters && tagFilters.length > 0 ? 1 : 0) > 1;
-        if (hasMultiple) {
-          itConfig.Filter = { And: { Prefix: prefix, Tags: tagFilters } };
-        } else if (prefix) {
-          itConfig.Filter = { Prefix: prefix };
-        } else if (tagFilters && tagFilters.length > 0) {
-          itConfig.Filter = { Tag: tagFilters[0] };
-        }
+      const tagCount = tagFilters?.length ?? 0;
+      if ((prefix ? 1 : 0) + tagCount > 1) {
+        itConfig.Filter = { And: { Prefix: prefix, Tags: tagFilters } };
+      } else if (prefix) {
+        itConfig.Filter = { Prefix: prefix };
+      } else if (tagFilters && tagFilters.length === 1) {
+        itConfig.Filter = { Tag: tagFilters[0] };
       }
 
       await this.s3Client.send(
