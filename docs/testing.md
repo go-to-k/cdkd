@@ -1070,9 +1070,21 @@ entry" are different outcomes.
 into the other. Its Listener arm drops the only `ListenerAttributes` entry it
 sets (no sibling needed), while its `LoadBalancerAttributes` arm — added by
 issue [#1609](https://github.com/go-to-k/cdkd/issues/1609) item 1 — retains
-`deletion_protection.enabled` and drops only `idle_timeout.timeout_seconds`.
-That sibling is load-bearing twice over: it distinguishes "reset the removed
-key" from "wiped the list", AND it pins a CDK-L2 trap. The L2
+two keys and drops only `idle_timeout.timeout_seconds`.
+
+**A retained sibling only works when its templated value DIFFERS from AWS's
+default**, and getting that wrong is easy enough that this fixture shipped it
+in review. The first version retained `deletion_protection.enabled: 'false'` —
+but `false` IS the AWS default, so a bug that reset every attribute on the
+load balancer would produce a byte-identical readback and the assertion could
+not tell an over-broad reset from a correct one. The sibling that does the job
+is `routing.http2.enabled: 'false'` (AWS defaults it to `true`), asserted at
+baseline and again after the removal deploy. Ask of any retained sibling: *if
+the provider cleared EVERYTHING, would this assertion still pass?* If yes, it
+is decoration.
+
+`deletion_protection.enabled` stays in every phase for the other half of the
+job — it pins a CDK-L2 trap. The L2
 `ApplicationLoadBalancer` emits its own `deletion_protection.enabled` entry, so
 the first version of that fixture — which simply omitted the property override
 in the removal phase — let the L2 default reappear, turning the phase into a

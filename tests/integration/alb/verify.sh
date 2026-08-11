@@ -188,7 +188,13 @@ if [[ "${IDLE_P1}" != "120" ]]; then
   echo "FAIL: idle_timeout.timeout_seconds is '${IDLE_P1}', expected '120' (post-create ModifyLoadBalancerAttributes)"
   exit 1
 fi
-echo "    idle_timeout.timeout_seconds=120 reached AWS (✓)"
+HTTP2_P1=$(aws elbv2 describe-load-balancer-attributes --load-balancer-arn "${LB_ARN}" --region "${AWS_REGION}" \
+  --query "Attributes[?Key=='routing.http2.enabled'].Value | [0]" --output text)
+if [[ "${HTTP2_P1}" != "false" ]]; then
+  echo "FAIL: routing.http2.enabled is '${HTTP2_P1}', expected the templated 'false' (AWS default is 'true')"
+  exit 1
+fi
+echo "    idle_timeout.timeout_seconds=120, routing.http2.enabled=false reached AWS (✓)"
 
 echo ""
 echo "==> Update redeploy: attribute diff + target swap (#609)"
@@ -272,6 +278,20 @@ if [[ "${IDLE_P3}" != "60" ]]; then
   exit 1
 fi
 echo "    idle_timeout.timeout_seconds reset to 60 (✓)"
+
+# The RETAINED SIBLING. routing.http2.enabled is templated 'false' in every
+# phase while AWS's default is 'true', so this assertion is what distinguishes
+# "reset the removed key" from "wiped the whole attribute list" — a check the
+# earlier deletion_protection.enabled sibling could not perform, because its
+# templated value equalled its default and an over-broad reset read identically.
+HTTP2_P3=$(aws elbv2 describe-load-balancer-attributes --load-balancer-arn "${LB_ARN}" --region "${AWS_REGION}" \
+  --query "Attributes[?Key=='routing.http2.enabled'].Value | [0]" --output text)
+if [[ "${HTTP2_P3}" != "false" ]]; then
+  echo "FAIL: routing.http2.enabled is '${HTTP2_P3}' after removal, expected the templated 'false' to be RETAINED"
+  echo "    (a kept key was reset — the removal arm cleared more than the dropped key)"
+  exit 1
+fi
+echo "    routing.http2.enabled retained as false (✓)"
 
 LISTENER_ATTR_P3=$(aws elbv2 describe-listener-attributes --listener-arn "${LISTENER_ARN}" --region "${AWS_REGION}" \
   --query "Attributes[?Key=='${EXPECTED_ATTR_KEY}'].Value | [0]" --output text)

@@ -597,7 +597,9 @@ Practical rules:
   value the fixture sets — `cloudfront-function-url` is that shape and
   correctly has no sibling. `alb` WAS listed here too until issue #1609 item 1
   gave it a collection-valued removal (`LoadBalancerAttributes`), where it now
-  retains `deletion_protection.enabled` while dropping `idle_timeout`; its
+  retains `routing.http2.enabled` while dropping `idle_timeout` — the sibling
+  must be a key whose templated value DIFFERS from AWS's default, or a reset
+  that wiped everything reads identically and the sibling proves nothing; its
   Listener arm still empties the only value it sets, so the fixture carries
   both shapes at once
 - The fixture set grows as #1160 batches ship; enumerate it with

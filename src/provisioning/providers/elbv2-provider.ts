@@ -134,19 +134,34 @@ const TARGET_GROUP_ATTRIBUTE_DEFAULTS: Record<string, string> = {
  * of keys, so falling back to it preserves working behaviour instead of
  * silently retaining a value the template asked to drop.
  *
- * Keys whose default is LOAD-BALANCER-TYPE-dependent are deliberately absent
- * (`load_balancing.cross_zone.enabled` is always-on and unconfigurable for an
- * ALB but defaults to false on an NLB / GWLB, so cdkd cannot pick one without
- * knowing the type at diff time) — those keep the empty-string behaviour they
- * have always had.
- * Source: ELBv2 API reference, LoadBalancerAttribute / ListenerAttribute key
- * tables.
+ * A key is listed ONLY when the SDK model documents ONE unconditional default
+ * for it. Two exclusion classes matter, and both are the difference between
+ * failing loudly and writing a wrong value silently:
+ *
+ * - **Default depends on the LOAD BALANCER** — `load_balancing.cross_zone.enabled`
+ *   is always-on and unconfigurable for an ALB but defaults to false on an
+ *   NLB / GWLB, and `ipv6.deny_all_igw_traffic` is "false for internet-facing
+ *   load balancers and true for internal load balancers". cdkd knows neither
+ *   the type nor the scheme at diff time, so a hardcoded entry would send the
+ *   WRONG value for half of all load balancers — and since it is a valid
+ *   boolean, AWS accepts it. For `ipv6.deny_all_igw_traffic` that means
+ *   silently un-blocking internet-gateway access on an INTERNAL load balancer.
+ * - **No documented default at all** — `dns_record.client_routing_policy`
+ *   enumerates its possible values but states no default.
+ *
+ * Both classes keep the empty-string behaviour they have always had, so a
+ * removal there fails loudly (for a validated key) instead of guessing.
+ *
+ * Source: the `@aws-sdk/client-elastic-load-balancing-v2` model docs for
+ * `ModifyLoadBalancerAttributes` / `ModifyListenerAttributes`, checked per key;
+ * `routing.http.response.server.enabled`'s default is additionally LIVE-proven
+ * by the `alb` integ's removal readback rather than taken from the docs.
  */
 const LOAD_BALANCER_ATTRIBUTE_DEFAULTS: Record<string, string> = {
   'deletion_protection.enabled': 'false',
   'access_logs.s3.enabled': 'false',
   'connection_logs.s3.enabled': 'false',
-  'ipv6.deny_all_igw_traffic': 'false',
+  'health_check_logs.s3.enabled': 'false',
   'routing.http.desync_mitigation_mode': 'defensive',
   'routing.http.drop_invalid_header_fields.enabled': 'false',
   'routing.http.preserve_host_header.enabled': 'false',
@@ -156,7 +171,6 @@ const LOAD_BALANCER_ATTRIBUTE_DEFAULTS: Record<string, string> = {
   'routing.http2.enabled': 'true',
   'waf.fail_open.enabled': 'false',
   'zonal_shift.config.enabled': 'false',
-  'dns_record.client_routing_policy': 'any_availability_zone',
 };
 
 /** @see LOAD_BALANCER_ATTRIBUTE_DEFAULTS — same rule, Listener key table. */
@@ -1622,14 +1636,16 @@ export class ELBv2Provider implements ResourceProvider {
    *   documented default is the only reset and an unknown key warns and
    *   retains (`TARGET_GROUP_ATTRIBUTE_DEFAULTS`).
    *
-   * All three behaviours were live-verified 2026-08-11; the default
-   * parameter is retained only for callers that genuinely want the plain
-   * empty-string reset.
+   * All three behaviours were live-verified 2026-08-11. `removalValue` is
+   * REQUIRED rather than defaulted: there is no reset value that is correct
+   * for all three APIs, so a caller that forgets to pass one should fail to
+   * compile instead of silently inheriting the empty string that two of the
+   * three reject.
    */
   private diffAttributes(
     newAttrs: Array<{ Key: string; Value: string }>,
     oldAttrs: Array<{ Key: string; Value: string }>,
-    removalValue: (key: string) => string | undefined = () => ''
+    removalValue: (key: string) => string | undefined
   ): Array<{ Key: string; Value: string }> {
     const newAttrMap = new Map(newAttrs.map((a) => [a.Key, a.Value]));
     const oldAttrMap = new Map(oldAttrs.map((a) => [a.Key, a.Value]));

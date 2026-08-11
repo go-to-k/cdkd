@@ -66,9 +66,19 @@ export class AlbStack extends cdk.Stack {
     // the phase a value CHANGE plus an unintended removal of that key, not
     // the clean single-key removal it reads as. Restating it keeps
     // idle_timeout the ONLY key the removal phase drops.
+    // `routing.http2.enabled: 'false'` is the ASSERTABLE retained sibling.
+    // deletion_protection.enabled alone could not do that job: it is templated
+    // to 'false', which IS AWS's default, so a bug that reset EVERY attribute
+    // would produce a byte-identical readback and the removal phase could not
+    // tell an over-broad reset from a correct one — which is the whole point
+    // of keeping a sibling. HTTP/2 defaults to 'true', so templating 'false'
+    // and asserting it survives the removal deploy detects that class. (It is
+    // also safe to leave off: unlike deletion protection, it cannot block the
+    // destroy phase.)
     const cfnAlb = alb.node.defaultChild as elbv2.CfnLoadBalancer;
     cfnAlb.addPropertyOverride('LoadBalancerAttributes', [
       { Key: 'deletion_protection.enabled', Value: 'false' },
+      { Key: 'routing.http2.enabled', Value: 'false' },
       ...(removal ? [] : [{ Key: 'idle_timeout.timeout_seconds', Value: update ? '180' : '120' }]),
     ]);
 

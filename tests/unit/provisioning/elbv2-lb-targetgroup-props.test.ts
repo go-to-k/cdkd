@@ -472,6 +472,85 @@ describe('ELBv2 LoadBalancer + TargetGroup silent-drop props (#609)', () => {
       ]);
     });
 
+    it('resets a removed TRUE-defaulted LoadBalancerAttribute to true, not false', async () => {
+      // Every other assertion in this file uses a key whose default is
+      // 'false', so a table lookup replaced by `key.endsWith('.enabled') ?
+      // 'false' : ''` would keep them all green. routing.http2.enabled
+      // defaults to TRUE, so this is what forces a real table read — and the
+      // wrong answer here silently disables HTTP/2 on the live LB.
+      await provider.update(
+        'MyLb',
+        LB_ARN,
+        LB_TYPE,
+        {},
+        { LoadBalancerAttributes: [{ Key: 'routing.http2.enabled', Value: 'false' }] }
+      );
+
+      const [call] = callsOf('ModifyLoadBalancerAttributesCommand');
+      expect(call[0].input.Attributes).toEqual([{ Key: 'routing.http2.enabled', Value: 'true' }]);
+    });
+
+    it('resets a removed ENUM LoadBalancerAttribute to its documented default', async () => {
+      // The ENUM entries are the other shape a boolean-only heuristic misses.
+      await provider.update(
+        'MyLb',
+        LB_ARN,
+        LB_TYPE,
+        {},
+        {
+          LoadBalancerAttributes: [
+            { Key: 'routing.http.desync_mitigation_mode', Value: 'strictest' },
+            { Key: 'routing.http.xff_header_processing.mode', Value: 'preserve' },
+          ],
+        }
+      );
+
+      const [call] = callsOf('ModifyLoadBalancerAttributesCommand');
+      expect(call[0].input.Attributes).toEqual([
+        { Key: 'routing.http.desync_mitigation_mode', Value: 'defensive' },
+        { Key: 'routing.http.xff_header_processing.mode', Value: 'append' },
+      ]);
+    });
+
+    it('leaves a load-balancer-DEPENDENT default out of the table so it fails loudly', async () => {
+      // ipv6.deny_all_igw_traffic defaults to false for an internet-facing LB
+      // and TRUE for an internal one, and cdkd knows neither the type nor the
+      // scheme at diff time. A hardcoded entry would send the wrong value for
+      // half of all load balancers — and AWS ACCEPTS a valid boolean, so on an
+      // internal LB that silently un-blocks internet-gateway access. It must
+      // therefore fall through to '' (which AWS rejects) rather than guess.
+      // Same rationale as load_balancing.cross_zone.enabled.
+      await provider.update(
+        'MyLb',
+        LB_ARN,
+        LB_TYPE,
+        {},
+        {
+          LoadBalancerAttributes: [
+            { Key: 'ipv6.deny_all_igw_traffic', Value: 'true' },
+            { Key: 'load_balancing.cross_zone.enabled', Value: 'true' },
+          ],
+        }
+      );
+
+      const [call] = callsOf('ModifyLoadBalancerAttributesCommand');
+      expect(call[0].input.Attributes).toEqual([
+        { Key: 'ipv6.deny_all_igw_traffic', Value: '' },
+        { Key: 'load_balancing.cross_zone.enabled', Value: '' },
+      ]);
+    });
+
+    it('skips ModifyLoadBalancerAttributes when the attribute set is unchanged', async () => {
+      await provider.update(
+        'MyLb',
+        LB_ARN,
+        LB_TYPE,
+        { LoadBalancerAttributes: [{ Key: 'routing.http2.enabled', Value: 'false' }] },
+        { LoadBalancerAttributes: [{ Key: 'routing.http2.enabled', Value: 'false' }] }
+      );
+      expect(callsOf('ModifyLoadBalancerAttributesCommand')).toHaveLength(0);
+    });
+
     it('keeps the empty-string reset for a removed NUMERIC LoadBalancerAttribute', async () => {
       // The empty string IS accepted for these (live-verified on
       // idle_timeout.timeout_seconds), so the fix must not regress them into
