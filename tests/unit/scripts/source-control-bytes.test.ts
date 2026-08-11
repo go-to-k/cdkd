@@ -53,6 +53,15 @@ describe('findControlBytes', () => {
     expect(findControlBytes(enc('a\r\nb\n')).map((f) => f.byte)).toEqual([0x0d]);
   });
 
+  it('caps the ALLOCATION at `limit`, not just the display', () => {
+    // An unlisted genuinely-binary file yields ~1 finding per byte, so an
+    // uncapped walk over a large asset builds millions of objects before the
+    // caller can trim. The scan still completes; only the array is bounded.
+    const many = new Uint8Array(1000).fill(0x00);
+    expect(findControlBytes(many, 5)).toHaveLength(5);
+    expect(findControlBytes(many)).toHaveLength(64); // default
+  });
+
   it('reports EVERY occurrence rather than short-circuiting', () => {
     const findings = findControlBytes(new Uint8Array([0x00, 0x0a, 0x00, 0x0a, 0x00]));
     expect(findings.map((f) => f.line)).toEqual([1, 2, 3]);
@@ -66,6 +75,25 @@ describe('isBinaryPath', () => {
 
   it.each(['src/a.ts', 'docs/b.md', 'Makefile', 'scripts/c.mjs'])('does not exempt %s', (p) => {
     expect(isBinaryPath(p)).toBe(false);
+  });
+
+  // The two properties the implementation's JSDoc claims. Both currently fail
+  // SAFE (they under-exempt), which is exactly why nothing would notice a
+  // regression — so assert them rather than leaving them as prose.
+  it('scopes the extension to the BASENAME, not the whole path', () => {
+    // On the full path this yields '.gif/baz', which matches no entry only by
+    // accident. Basename scoping makes "never falsely exempt" a property.
+    expect(isBinaryPath('foo.gif/baz')).toBe(false);
+    expect(isBinaryPath('a.png/b/c.ts')).toBe(false);
+    // ...while a real asset nested under a dotted directory still exempts.
+    expect(isBinaryPath('foo.gif/bar.png')).toBe(true);
+  });
+
+  it('keeps dotfiles and extension-less files under check', () => {
+    expect(isBinaryPath('.gitignore')).toBe(false);
+    expect(isBinaryPath('.mise.toml')).toBe(false);
+    expect(isBinaryPath('LICENSE')).toBe(false);
+    expect(isBinaryPath('dir/.env')).toBe(false);
   });
 });
 
@@ -96,6 +124,15 @@ describe('describeFinding', () => {
     );
   });
 
+  it('qualifies the escape remedy by language instead of stating it flatly', () => {
+    // `.json` is the second-largest tracked extension and JSON has no `\0`
+    // escape at all, so an unqualified "write it as '\0'" produces an invalid
+    // file. Markdown / YAML / shell have no "runtime" either.
+    const nul = describeFinding('a/b.json', { byte: 0, offset: 1, line: 1 });
+    expect(nul).toContain('JS/TS string literal');
+    expect(nul).toMatch(/JSON|without string escapes/);
+  });
+
   it('tells a CR to convert line endings rather than to use an escape', () => {
     const cr = describeFinding('src/x.ts', { byte: 0x0d, offset: 5, line: 1 });
     expect(cr).toContain('LF');
@@ -103,54 +140,71 @@ describe('describeFinding', () => {
   });
 });
 
+/**
+ * The single sweep both the verdict AND the coverage floors read.
+ *
+ * The floors MUST be derived from files actually READ, not from the candidate
+ * list: an earlier version filtered `trackedFiles()` without touching the
+ * filesystem, so inverting the sweep's own `isFile()` guard (e.g.
+ * `if (!stat.isSymbolicLink()) continue;`) skipped every regular file, produced
+ * zero offenders, and left all four floors green — a fully vacuous pass. That
+ * is the repo's "a checker must prove it SEES its input" rule failing on this
+ * checker's own test.
+ */
+function sweepTree(): { offenders: string[]; read: string[] } {
+  const offenders: string[] = [];
+  const read: string[] = [];
+
+  for (const path of trackedFiles()) {
+    if (isBinaryPath(path)) continue;
+    const full = join(REPO_ROOT, path);
+    // `git ls-files` lists submodule gitlinks and files a checkout may omit.
+    let stat;
+    try {
+      stat = statSync(full);
+    } catch {
+      continue;
+    }
+    if (!stat.isFile()) continue;
+
+    // Cap per file. An unlisted GENUINELY binary file (someone commits a
+    // .jar / .bin) is the designed "fails loudly" path — but uncapped it
+    // yields ~1 finding per byte, so a 10 MB asset would build millions of
+    // strings for vitest to diff. That is an OOM, not a loud message.
+    const findings = findControlBytes(readFileSync(full));
+    read.push(path);
+    for (const finding of findings.slice(0, 5)) {
+      offenders.push(describeFinding(path, finding));
+    }
+    if (findings.length > 5) {
+      offenders.push(`${path}: ...and ${findings.length - 5} more control bytes`);
+    }
+  }
+
+  return { offenders, read };
+}
+
 describe('the committed tree', () => {
   it('has no stray control bytes in any tracked text file', () => {
-    const offenders: string[] = [];
-
-    for (const path of trackedFiles()) {
-      if (isBinaryPath(path)) continue;
-      const full = join(REPO_ROOT, path);
-      // `git ls-files` lists submodule gitlinks and files a checkout may omit.
-      let stat;
-      try {
-        stat = statSync(full);
-      } catch {
-        continue;
-      }
-      if (!stat.isFile()) continue;
-
-      // Cap per file. An unlisted GENUINELY binary file (someone commits a
-      // .jar / .bin) is the designed "fails loudly" path — but uncapped it
-      // yields ~1 finding per byte, so a 10 MB asset would build millions of
-      // strings for vitest to diff. That is an OOM, not a loud message.
-      const findings = findControlBytes(readFileSync(full));
-      for (const finding of findings.slice(0, 5)) {
-        offenders.push(describeFinding(path, finding));
-      }
-      if (findings.length > 5) {
-        offenders.push(`${path}: ...and ${findings.length - 5} more control bytes`);
-      }
-    }
-
-    expect(offenders).toEqual([]);
+    expect(sweepTree().offenders).toEqual([]);
   });
 
-  it('scans a realistic number of files, so a broken sweep cannot pass vacuously', () => {
-    const scanned = trackedFiles().filter((p) => !isBinaryPath(p));
-    // Banded against the ~3341 actually scanned. A loose `> 500` floor was NOT
+  it('actually READ a realistic number of files, so a broken sweep cannot pass vacuously', () => {
+    // Banded against the ~3344 actually read. A loose `> 500` floor was NOT
     // enough: adding `.ts` + `.md` to BINARY_EXTENSIONS neuters the check over
-    // 1648 files and still leaves ~1695, which would clear it. The per-extension
-    // floors below are what make that specific neuter fail.
-    expect(scanned.length).toBeGreaterThan(2500);
+    // 1648 files and still leaves ~1695, which would clear it. The
+    // per-extension floors below are what make that specific neuter fail.
+    expect(sweepTree().read.length).toBeGreaterThan(2500);
   });
 
   it.each([
     ['.ts', 1000],
+    ['.json', 800],
+    ['.sh', 200],
     ['.md', 100],
-    ['.sh', 50],
-  ])('still scans the %s files (floor %i), so exempting them by extension fails', (ext, floor) => {
-    const scanned = trackedFiles().filter((p) => !isBinaryPath(p) && p.endsWith(ext));
-    expect(scanned.length).toBeGreaterThan(floor);
+  ])('actually READ the %s files (floor %i), so exempting them by extension fails', (ext, floor) => {
+    const read = sweepTree().read.filter((p) => p.endsWith(ext));
+    expect(read.length).toBeGreaterThan(floor);
   });
 
   it('keeps the efs-provider creationToken separator as the escape, not a raw NUL', () => {
@@ -161,7 +215,10 @@ describe('the committed tree', () => {
       join(REPO_ROOT, 'src/provisioning/providers/efs-provider.ts'),
       'utf8',
     );
-    expect(source).toContain("join('\\0')");
+    // Tolerant of quote style / spacing so a benign reformat is not a false
+    // failure. The absence assertion below is the one that cannot be dodged —
+    // it catches a re-introduction in ANY spelling.
+    expect(source).toMatch(/join\(\s*['"]\\0['"]\s*\)/);
     expect(source.includes('\u0000')).toBe(false);
   });
 });

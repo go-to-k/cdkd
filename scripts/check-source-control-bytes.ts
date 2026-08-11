@@ -100,10 +100,16 @@ export function isBinaryPath(path: string): boolean {
 
 /**
  * Every C0 control byte (plus DEL) that is not TAB or LF, with its offset and
- * line. Returns them ALL rather than short-circuiting, so one run reports the
- * whole file instead of forcing a fix-and-rerun loop.
+ * line — up to `limit` of them.
+ *
+ * Reporting several rather than short-circuiting at the first lets one run fix
+ * a whole file instead of forcing a fix-and-rerun loop. The cap is on the
+ * ALLOCATION, not just the display: an unlisted genuinely-binary file yields
+ * roughly one finding per byte, so an uncapped walk over a 50 MB asset builds
+ * ~6.3M objects (~367 MB heap) before the caller can trim it. The scan itself
+ * still completes, so the file is still reported — just not object-per-byte.
  */
-export function findControlBytes(content: Uint8Array): ControlByteFinding[] {
+export function findControlBytes(content: Uint8Array, limit = 64): ControlByteFinding[] {
   const findings: ControlByteFinding[] = [];
   let line = 1;
 
@@ -115,7 +121,7 @@ export function findControlBytes(content: Uint8Array): ControlByteFinding[] {
     }
     if (ALLOWED_CONTROL_BYTES.has(byte)) continue;
     if (byte < 0x20 || byte === 0x7f) {
-      findings.push({ byte, offset, line });
+      if (findings.length < limit) findings.push({ byte, offset, line });
     }
   }
 
@@ -133,27 +139,34 @@ export function describeFinding(path: string, finding: ControlByteFinding): stri
   const hex = `0x${finding.byte.toString(16).padStart(2, '0')}`;
   const where = `${path}:${finding.line}: raw control byte ${hex} at offset ${finding.offset}.`;
 
+  // The escape remedy is only meaningful in a source file whose language HAS
+  // string escapes. `.json` is the second-largest tracked extension here and
+  // JSON has no `\0` escape at all, so "write it as '\0'" would produce an
+  // invalid file; for `.md` / `.sh` / `.yaml` there is no "runtime" either.
+  // Hence the advice is qualified rather than stated flatly.
+  const escapeAdvice = (escape: string) =>
+    `In a JS/TS string literal write it as the escape '${escape}' instead (identical at ` +
+    `runtime); in a format without string escapes (JSON, Markdown, YAML, shell) remove the ` +
+    `byte. If the file is genuinely binary, add its extension to BINARY_EXTENSIONS.`;
+
   if (finding.byte === 0x00) {
     return (
       `${where} grep and rg treat the whole file as BINARY and silently skip it, so every ` +
-      `grep-based audit stops seeing this file. Write it as the escape '\\0' instead ` +
-      `(identical at runtime), or add the extension to BINARY_EXTENSIONS if the file is ` +
-      `genuinely binary.`
+      `grep-based audit stops seeing this file. ${escapeAdvice('\\0')}`
     );
   }
 
   if (finding.byte === 0x0d) {
     return (
-      `${where} This repo's text files are LF-only; a CR means the file has CRLF line ` +
-      `endings. Convert it to LF (e.g. \`dos2unix\`, or check your git core.autocrlf) — ` +
-      `do NOT write it as an escape.`
+      `${where} This repo's text files are LF-only; a CR usually means the file has CRLF ` +
+      `line endings (a LONE CR is a classic-Mac ending or a deliberate raw CR). Convert the ` +
+      `file to LF (e.g. \`dos2unix\`, or check your git core.autocrlf) — do NOT write it as ` +
+      `an escape.`
     );
   }
 
-  const escape = `\\u${finding.byte.toString(16).padStart(4, '0')}`;
   return (
-    `${where} Raw control characters are not valid in this repo's text files. Write it as ` +
-    `the escape '${escape}' instead (identical at runtime), or add the extension to ` +
-    `BINARY_EXTENSIONS if the file is genuinely binary.`
+    `${where} Raw control characters are not valid in this repo's text files. ` +
+    `${escapeAdvice(`\\u${finding.byte.toString(16).padStart(4, '0')}`)}`
   );
 }
