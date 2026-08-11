@@ -307,6 +307,17 @@ if [ "${REMOVAL_BASE_GSI}" != "billing-removal-gsi" ]; then
 fi
 echo "    OK (Phase 1): the GSI exists before the flip, so the capacity assertion cannot pass vacuously"
 
+# issue #1617 BASELINE: the SECOND index — the one the flip deploy REMOVES —
+# must be live before that deploy, or the "it is gone afterwards" assertion
+# below passes vacuously against an index that never existed.
+REMOVAL_BASE_DROPPED_GSI="$(aws dynamodb describe-table --table-name "${BILLING_REMOVAL_TABLE}" --region "${REGION}" \
+  --query "Table.GlobalSecondaryIndexes[?IndexName=='billing-removal-dropped-gsi'].IndexName | [0]" --output text)"
+if [ "${REMOVAL_BASE_DROPPED_GSI}" != "billing-removal-dropped-gsi" ]; then
+  echo "FAIL (issue #1617): the to-be-dropped GSI must exist on the baseline table before the flip phase, got '${REMOVAL_BASE_DROPPED_GSI}'" >&2
+  exit 1
+fi
+echo "    OK (Phase 1): the to-be-dropped GSI exists before the flip"
+
 echo "==> Phase 1.5: re-deploy with CDKD_TEST_UPDATE=true (BillingMode/ProvisionedThroughput in-place update)"
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
@@ -408,6 +419,31 @@ if [ "${REMOVAL_GSI_READ}" != "2" ] || [ "${REMOVAL_GSI_WRITE}" != "2" ]; then
   exit 1
 fi
 echo "    OK: the flip carried per-GSI ProvisionedThroughput at 2/2 (issue #1588 CLOSED)"
+
+# issue #1617: the same deploy REMOVED `billing-removal-dropped-gsi` while
+# flipping the billing mode. Pre-fix that combination could not converge — the
+# index was still live when the flip ran, AWS demanded per-index capacity the
+# template no longer declared, and the Delete op that would have fixed it ran
+# only AFTER the flip. So a regression fails phase 1.6 above (the flip is
+# rejected outright); this assertion proves the removal itself landed rather
+# than being skipped. Poll: the delete is applied before the flip and waited to
+# ACTIVE by the provider, but DynamoDB can still report the index as DELETING
+# for a moment after the deploy returns.
+DROPPED_GSI_OK=""
+for _ in $(seq 1 36); do
+  DROPPED_GSI_NOW=$(aws dynamodb describe-table --table-name "${BILLING_REMOVAL_TABLE}" --region "${REGION}" \
+    --query "Table.GlobalSecondaryIndexes[?IndexName=='billing-removal-dropped-gsi'].IndexName | [0]" --output text)
+  if [ "${DROPPED_GSI_NOW}" = "None" ]; then
+    DROPPED_GSI_OK=1
+    break
+  fi
+  sleep 5
+done
+if [ -z "${DROPPED_GSI_OK}" ]; then
+  echo "FAIL (issue #1617): the GSI removed by the flip deploy is still present ~3min later (got '${DROPPED_GSI_NOW}')" >&2
+  exit 1
+fi
+echo "    OK: the GSI removed in the same deploy as the flip is gone (issue #1617 CLOSED)"
 
 # --- Phase 2: destroy -------------------------------------------------
 echo "==> Phase 2: destroy"

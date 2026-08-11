@@ -155,12 +155,38 @@ export class DynamodbOndemandStack extends cdk.Stack {
     // the property has to be genuinely ABSENT from the template. The table is
     // UNCONDITIONAL and only its properties are mode-keyed; a mode-gated
     // RESOURCE would be DELETED by any later deploy that clears the mode.
+    // A SECOND index, present on the baseline and REMOVED by the same deploy
+    // that flips the billing mode — issue #1617, the shape #1588 left
+    // unconvergeable. AWS demands per-index capacity for every index still
+    // LIVE at flip time, and this one is not in the update template at all, so
+    // there is no capacity to send; before the fix the flip was rejected by
+    // name on every deploy and cdkd's Delete op (which ran AFTER the flip) was
+    // never reached. The fix deletes it FIRST, so this phase asserts both that
+    // the flip succeeds and that the index is gone.
+    //
+    // allow-mode-gated-drop: the removal IS the scenario. Unlike the sibling
+    // index above, this one is deliberately mode-gated — Phase 1.5 is the last
+    // deploy in this fixture (destroy follows), so no later step re-drops it.
+    const droppedGsi = isUpdate
+      ? []
+      : [
+          {
+            indexName: 'billing-removal-dropped-gsi',
+            keySchema: [{ attributeName: 'droppedpk', keyType: 'HASH' }],
+            projection: { projectionType: 'KEYS_ONLY' },
+          },
+        ];
+
     const billingRemovalTable = new dynamodb.CfnTable(this, 'BillingRemovalTable', {
       tableName: 'cdkd-ondemand-test-billing-removal-table',
       keySchema: [{ attributeName: 'id', keyType: 'HASH' }],
       attributeDefinitions: [
         { attributeName: 'id', attributeType: 'S' },
         { attributeName: 'gsipk', attributeType: 'S' },
+        // Only while the index that uses it is declared: DynamoDB rejects a
+        // CreateTable whose AttributeDefinitions carry an attribute no key
+        // schema references.
+        ...(isUpdate ? [] : [{ attributeName: 'droppedpk', attributeType: 'S' }]),
       ],
       globalSecondaryIndexes: [
         {
@@ -171,6 +197,7 @@ export class DynamodbOndemandStack extends cdk.Stack {
             ? { provisionedThroughput: { readCapacityUnits: 2, writeCapacityUnits: 2 } }
             : {}),
         },
+        ...droppedGsi,
       ],
       // Baseline declares PAY_PER_REQUEST; the update REMOVES the property.
       ...(isUpdate

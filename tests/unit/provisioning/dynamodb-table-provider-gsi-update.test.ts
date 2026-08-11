@@ -108,7 +108,19 @@ describe('DynamoDBTableProvider GSI in-place update', () => {
   });
 
   it('removes a GSI via UpdateTable Delete', async () => {
-    mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN, TableStatus: 'ACTIVE' } });
+    // The opening DescribeTable MUST list the index as live (issue #1617): the
+    // Delete arm is idempotent against AWS's current index list, so a snapshot
+    // that omits an index the previous state records means "already gone" and
+    // the removal is correctly skipped. Real DynamoDB always returns a live
+    // index here — the omission was mock unrealism, and pinning it would have
+    // pinned the wrong contract.
+    mockSend.mockResolvedValueOnce({
+      Table: {
+        TableArn: TABLE_ARN,
+        TableStatus: 'ACTIVE',
+        GlobalSecondaryIndexes: [{ IndexName: 'gsi1', IndexStatus: 'ACTIVE' }],
+      },
+    });
     mockSend.mockResolvedValueOnce({});
     mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'ACTIVE', GlobalSecondaryIndexes: [] } });
 
@@ -190,7 +202,15 @@ describe('DynamoDBTableProvider GSI in-place update', () => {
       Projection: { ProjectionType: 'ALL' },
     };
     // DescribeTable(ARN) -> UpdateTable(delete) -> wait -> UpdateTable(create) -> wait
-    mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN, TableStatus: 'ACTIVE' } });
+    // The opening snapshot lists `gsi1` live, as real DynamoDB would: the
+    // Delete arm is idempotent against AWS's current index list (issue #1617).
+    mockSend.mockResolvedValueOnce({
+      Table: {
+        TableArn: TABLE_ARN,
+        TableStatus: 'ACTIVE',
+        GlobalSecondaryIndexes: [{ IndexName: 'gsi1', IndexStatus: 'ACTIVE' }],
+      },
+    });
     mockSend.mockResolvedValueOnce({});
     mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'ACTIVE', GlobalSecondaryIndexes: [] } });
     mockSend.mockResolvedValueOnce({});
