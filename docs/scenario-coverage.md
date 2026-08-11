@@ -146,6 +146,7 @@ These integ fixtures have no `.scenarios.json` sidecar. They may or may not exer
 - [`dynamodb-tableclass-switch`](../tests/integration/dynamodb-tableclass-switch/)
 - [`dynamodb-ttl-attr-change`](../tests/integration/dynamodb-ttl-attr-change/)
 - [`ec2-instance-fanout`](../tests/integration/ec2-instance-fanout/)
+- [`ec2-route-targets`](../tests/integration/ec2-route-targets/)
 - [`ecr-scanning`](../tests/integration/ecr-scanning/)
 - [`ecs-schedule-targets`](../tests/integration/ecs-schedule-targets/)
 - [`efs-immutable-replacement`](../tests/integration/efs-immutable-replacement/)

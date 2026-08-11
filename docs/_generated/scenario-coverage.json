@@ -828,6 +828,11 @@
       "scenarios": []
     },
     {
+      "name": "ec2-route-targets",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "ec2-vpc",
       "annotated": true,
       "scenarios": []
@@ -2611,6 +2616,7 @@
     "dynamodb-tableclass-switch",
     "dynamodb-ttl-attr-change",
     "ec2-instance-fanout",
+    "ec2-route-targets",
     "ecr-scanning",
     "ecs-schedule-targets",
     "efs-immutable-replacement",
