@@ -482,6 +482,21 @@ export class LambdaFunctionProvider implements ResourceProvider {
             []
           ),
           // Empty object resets container image overrides to the image defaults.
+          //
+          // Kept-but-partial (a sub-field dropped from a still-present
+          // ImageConfig) is WHOLE-OBJECT REPLACE, so passing the new block
+          // through verbatim IS CloudFormation parity and no sub-field
+          // normalization belongs here (issue #1225, live A/B 2026-08-11 on a
+          // container Lambda in us-east-1):
+          //   - SDK: UpdateFunctionConfiguration with
+          //     `ImageConfig: {EntryPoint}` after a create carrying
+          //     {EntryPoint, Command, WorkingDirectory} left ONLY EntryPoint
+          //     live — the two unspecified sub-fields were cleared, not merged.
+          //   - CFn: dropping `Command` + `WorkingDirectory` from a kept
+          //     `ImageConfig` block reached the same end state.
+          //   - The `{}` clear value below is verified too: the SDK call with
+          //     `ImageConfig: {}` and a CFn template dropping the whole block
+          //     both leave `ImageConfigResponse` absent.
           ImageConfig: clearOnUpdateRemoval(
             properties['ImageConfig'] as ImageConfig | undefined,
             previousProperties['ImageConfig'] as ImageConfig | undefined,

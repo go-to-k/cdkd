@@ -365,6 +365,46 @@ describe('LambdaFunctionProvider', () => {
       expect(cmd.input.LoggingConfig).toEqual({ LogFormat: 'Text' });
     });
 
+    it('passes a kept-but-partial ImageConfig through verbatim (issue #1225)', async () => {
+      // A sub-field dropped from a KEPT ImageConfig block is whole-object
+      // REPLACE on UpdateFunctionConfiguration, and CloudFormation reaches the
+      // same end state (live A/B 2026-08-11 — see the ImageConfig comment in
+      // lambda-function-provider.ts). So the provider must NOT synthesize
+      // per-sub-field clear values: the new block goes out as-is, and AWS
+      // clears whatever it omits.
+      mockLambdaSend
+        .mockResolvedValueOnce({})
+        .mockResolvedValueOnce({ Configuration: { LastUpdateStatus: 'Successful' } })
+        .mockResolvedValueOnce({
+          Configuration: {
+            FunctionName: 'fn-partial',
+            FunctionArn: 'arn:aws:lambda:us-east-1:123456789012:function:fn-partial',
+          },
+        });
+
+      await provider.update(
+        'PartialImageFn',
+        'fn-partial',
+        'AWS::Lambda::Function',
+        {
+          Role: 'arn:aws:iam::123456789012:role/exec',
+          ImageConfig: { EntryPoint: ['/lambda-entrypoint.sh'] },
+        },
+        {
+          Role: 'arn:aws:iam::123456789012:role/exec',
+          ImageConfig: {
+            EntryPoint: ['/lambda-entrypoint.sh'],
+            Command: ['app.handler'],
+            WorkingDirectory: '/var/task',
+          },
+        }
+      );
+
+      const cmd = mockLambdaSend.mock.calls[0][0];
+      expect(cmd).toBeInstanceOf(UpdateFunctionConfigurationCommand);
+      expect(cmd.input.ImageConfig).toEqual({ EntryPoint: ['/lambda-entrypoint.sh'] });
+    });
+
     it('omits the six fields entirely when neither previous nor new sets them', async () => {
       // No reset value should be synthesized when a field was never present —
       // sending an empty reset would be a spurious no-op (or, for ImageConfig
