@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
-# verify.sh — AppSync GraphQLApi config-property backfill (issue #609).
+# verify.sh — AppSync GraphQLApi + Resolver + DataSource config-property
+# backfill (issue #609).
 #
-# The 13 properties this fixture asserts used to be SILENTLY DROPPED: cdkd's
+# The properties this fixture asserts used to be SILENTLY DROPPED: cdkd's
 # pre-flight rejected them, and once wired, a near-miss SDK spelling would be
 # dropped by the AWS SDK v3 serializer with a perfectly green deploy. So every
 # assertion below reads the value back OFF AWS rather than trusting the deploy
-# summary.
+# summary. The Resolver/DataSource batch adds: resolver MetricsConfig
+# (incl. its full-replace removal), the S3-sourced mapping templates
+# (Request/ResponseMappingTemplateS3Location — cdkd fetches the S3 body and
+# inlines it, mirroring CFn), and an EventBridge data source
+# (EventBridgeConfig + MetricsConfig).
 #
 # Phases:
 #   1. baseline deploy  — every property present, each read back from AWS
@@ -133,6 +138,31 @@ assert_eq() { # usage: assert_eq "<what>" "<expected>" "<actual>"
   echo "    OK: $1 = $2"
 }
 
+resolver_query() { # usage: resolver_query <field-name> <jmespath>
+  local out
+  out="$(aws appsync get-resolver --api-id "${API_ID}" --type-name Query \
+    --field-name "$1" --region "${REGION}" --query "$2" --output text)" || return 1
+  printf '%s' "${out}"
+}
+
+datasource_query() { # usage: datasource_query <name> <jmespath>
+  local out
+  out="$(aws appsync get-data-source --api-id "${API_ID}" --name "$1" \
+    --region "${REGION}" --query "$2" --output text)" || return 1
+  printf '%s' "${out}"
+}
+
+# Read a resolver mapping template VERBATIM (no --output text munging). The
+# caller compares it against the local asset file; both sides go through
+# $(...), which strips the trailing newline consistently.
+resolver_template() { # usage: resolver_template <field-name> <requestMappingTemplate|responseMappingTemplate>
+  local out
+  out="$(aws appsync get-resolver --api-id "${API_ID}" --type-name Query \
+    --field-name "$1" --region "${REGION}" \
+    --query "resolver.$2" --output json | jq -r '.')" || return 1
+  printf '%s' "${out}"
+}
+
 # --- Phase 1: baseline deploy ----------------------------------------------
 echo "==> Phase 1: baseline deploy with the local binary"
 env -u CDKD_TEST_UPDATE -u CDKD_TEST_REMOVAL node "${LOCAL_DIST}" deploy "${STACK}" \
@@ -157,6 +187,13 @@ fi
 # handled by the SDK provider. A cc-api route would mean the pre-flight still
 # considers one of them unhandled and #614 silently redirected the resource.
 assert_eq "GraphQLApi provisionedBy" "sdk" "${API_ROUTE}"
+# Same guard for every Resolver / DataSource row (#609 Resolver+DataSource
+# batch): a property slipping back out of handledProperties would re-route
+# the row to Cloud Control.
+NON_SDK_ROWS=$(echo "${STATE}" | jq -r '[.resources[]
+  | select(.resourceType == "AWS::AppSync::Resolver" or .resourceType == "AWS::AppSync::DataSource")
+  | .provisionedBy // "sdk"] | map(select(. != "sdk")) | length')
+assert_eq "non-sdk Resolver/DataSource rows" "0" "${NON_SDK_ROWS}"
 echo "    Resolved AppSync API id: ${API_ID}"
 
 echo "==> Phase 1 assertions: every config property reached AWS"
@@ -221,6 +258,41 @@ assert_eq "Lambda authorizer TTL" "30" "$(echo "${LAMBDA_CFG}" | jq -r '.authori
 assert_eq "environmentVariables" '{"CdkdStage":"baseline"}' \
   "$(env_vars_json | jq -cS '.')"
 
+# --- Phase 1c: Resolver + DataSource #609 properties -------------------------
+# CachingConfig / SyncConfig / MaxBatchSize / OpenSearchServiceConfig /
+# ElasticsearchConfig / RelationalDatabaseConfig are unit-only (a real ApiCache
+# / VERSIONED delta-sync store / Lambda BATCH_INVOKE setup / OpenSearch domain
+# / Aurora cluster are out of this fixture's budget) — the create/update input
+# pinning for each lives in
+# tests/unit/provisioning/appsync-resolver-datasource-props.test.ts. What IS
+# live here: Resolver MetricsConfig (+ its removal), the two mapping-template
+# S3Locations (fetch-and-inline + URL-change re-fetch), and the EventBridge
+# data source (EventBridgeConfig + MetricsConfig + description update).
+echo "==> Phase 1c: Resolver + DataSource #609 properties reached AWS"
+assert_eq "resolver metricsConfig" "ENABLED" "$(resolver_query getItem 'resolver.metricsConfig')"
+assert_eq "EventBridge DS description" "cdkd-integ" \
+  "$(datasource_query EventBridgeDataSource 'dataSource.description')"
+assert_eq "EventBridge DS metricsConfig" "ENABLED" \
+  "$(datasource_query EventBridgeDataSource 'dataSource.metricsConfig')"
+EB_ARN="$(datasource_query EventBridgeDataSource 'dataSource.eventBridgeConfig.eventBusArn')"
+case "${EB_ARN}" in
+  *:event-bus/cdkd-appsync-example-bus)
+    echo "    OK: eventBridgeConfig.eventBusArn = ${EB_ARN}" ;;
+  *)
+    echo "FAIL: eventBridgeConfig.eventBusArn unexpected: '${EB_ARN}'" >&2
+    exit 1 ;;
+esac
+# S3-location fetch-and-inline: the live template must equal the local asset
+# file byte-for-byte (both sides ride $(...), which strips the trailing
+# newline consistently). This is the live proof that cdkd fetched the S3
+# object body and passed it as the inline member, mirroring CloudFormation.
+assert_eq "getItemV2 requestMappingTemplate (S3-fetched)" \
+  "$(cat lib/templates/get-item-request-v1.vtl)" \
+  "$(resolver_template getItemV2 requestMappingTemplate)"
+assert_eq "getItemV2 responseMappingTemplate (S3-fetched)" \
+  "$(cat lib/templates/get-item-response.vtl)" \
+  "$(resolver_template getItemV2 responseMappingTemplate)"
+
 # --- Phase 2: UPDATE --------------------------------------------------------
 echo "==> Phase 2: UPDATE (every mutable property changed)"
 UPDATE_OUT="$(CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
@@ -254,6 +326,21 @@ assert_eq "updated Lambda authorizer TTL" "60" \
 assert_eq "updated environmentVariables" '{"CdkdExtra":"added","CdkdStage":"updated"}' \
   "$(env_vars_json | jq -cS '.')"
 
+# Resolver + DataSource #609 update-phase assertions: the request template's
+# asset switched to v2 (a NEW S3 key), so cdkd must re-fetch and re-upload the
+# body; the EventBridge data source's description changed, and UpdateDataSource
+# is a full-replace write, so the unchanged EventBridgeConfig / MetricsConfig
+# must ride along un-clobbered.
+assert_eq "updated getItemV2 requestMappingTemplate (S3 URL change re-fetched)" \
+  "$(cat lib/templates/get-item-request-v2.vtl)" \
+  "$(resolver_template getItemV2 requestMappingTemplate)"
+assert_eq "updated EventBridge DS description" "cdkd-integ-updated" \
+  "$(datasource_query EventBridgeDataSource 'dataSource.description')"
+assert_eq "EventBridge DS metricsConfig survives the update" "ENABLED" \
+  "$(datasource_query EventBridgeDataSource 'dataSource.metricsConfig')"
+assert_eq "resolver metricsConfig survives the update" "ENABLED" \
+  "$(resolver_query getItem 'resolver.metricsConfig')"
+
 # --- Phase 3: REMOVAL -------------------------------------------------------
 # AppSync treats an OMITTED UpdateGraphqlApi member as "no change", so a
 # removal that merely leaves the member off the input silently keeps the old
@@ -283,6 +370,21 @@ assert_eq "reset environmentVariables key count" "0" "$(env_vars_json | jq -r '(
 assert_eq "retained enhancedMetricsConfig.resolverLevelMetricsBehavior" "PER_RESOLVER_METRICS" \
   "$(echo "${API_JSON}" | jq -r '.enhancedMetricsConfig.resolverLevelMetricsBehavior')"
 
+# Resolver #609 removal: the template dropped the resolver's MetricsConfig.
+# UNLIKE UpdateGraphqlApi, UpdateResolver is a FULL-REPLACE write — cdkd
+# omits the member and AppSync must clear it server-side (no reset sentinel).
+# This assertion is the LIVE pin of that removal story; the baseline phase
+# asserted ENABLED, so DISABLED here is a real clearing, not a vacuous pass.
+# AWS may render the cleared flag as DISABLED or omit the member; both read
+# as DISABLED.
+RESOLVER_METRICS="$(aws appsync get-resolver --api-id "${API_ID}" --type-name Query \
+  --field-name getItem --region "${REGION}" \
+  --query 'resolver.metricsConfig' --output json | jq -r '. // "DISABLED"')"
+assert_eq "removed resolver metricsConfig cleared" "DISABLED" "${RESOLVER_METRICS}"
+# ...and the retained DataSource sibling: a blanket metrics wipe cannot pass.
+assert_eq "retained EventBridge DS metricsConfig" "ENABLED" \
+  "$(datasource_query EventBridgeDataSource 'dataSource.metricsConfig')"
+
 # --- Phase 4: destroy -------------------------------------------------------
 echo "==> Phase 4: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \
@@ -293,6 +395,10 @@ node "${LOCAL_DIST}" destroy "${STACK}" \
 assert_gone "AppSync API ${API_ID} still exists after destroy" \
   aws appsync get-graphql-api --api-id "${API_ID}" --region "${REGION}"
 echo "    OK: AppSync API is gone"
+
+assert_gone "EventBus cdkd-appsync-example-bus still exists after destroy" \
+  aws events describe-event-bus --name cdkd-appsync-example-bus --region "${REGION}"
+echo "    OK: EventBridge bus is gone"
 
 REMAINING_APIS="$(aws appsync list-graphql-apis --region "${REGION}" \
   --query "length(graphqlApis[?name=='${API_NAME}'])" --output text)"
@@ -307,4 +413,4 @@ assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after des
 echo "    OK: state file is gone"
 
 echo ""
-echo "==> appsync test passed (#609 GraphQLApi config properties reach AWS on create / update / removal + clean destroy)"
+echo "==> appsync test passed (#609 GraphQLApi + Resolver + DataSource config properties reach AWS on create / update / removal + clean destroy)"

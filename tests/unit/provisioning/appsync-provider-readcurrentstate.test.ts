@@ -211,6 +211,95 @@ describe('AppSyncProvider.readCurrentState', () => {
 
       expect(result).not.toHaveProperty('ServiceRoleArn');
     });
+
+    it('reverse-maps eventBridgeConfig + metricsConfig (#609)', async () => {
+      mockSend.mockResolvedValueOnce({
+        dataSource: {
+          name: 'ds1',
+          type: 'AMAZON_EVENTBRIDGE',
+          eventBridgeConfig: { eventBusArn: 'arn:aws:events:us-east-1:1:event-bus/bus' },
+          metricsConfig: 'ENABLED',
+        },
+      });
+
+      const result = await provider.readCurrentState('api-1|ds1', 'L', 'AWS::AppSync::DataSource');
+
+      expect(result?.['EventBridgeConfig']).toEqual({
+        EventBusArn: 'arn:aws:events:us-east-1:1:event-bus/bus',
+      });
+      expect(result?.['MetricsConfig']).toBe('ENABLED');
+      // Class 1: the other per-type configs stay absent.
+      expect(result).not.toHaveProperty('DynamoDBConfig');
+      expect(result).not.toHaveProperty('OpenSearchServiceConfig');
+    });
+
+    it('reverse-maps openSearchServiceConfig / elasticsearchConfig (#609)', async () => {
+      mockSend.mockResolvedValueOnce({
+        dataSource: {
+          name: 'ds1',
+          type: 'AMAZON_OPENSEARCH_SERVICE',
+          openSearchServiceConfig: {
+            endpoint: 'https://os.example.com',
+            awsRegion: 'us-east-1',
+          },
+        },
+      });
+      const os = await provider.readCurrentState('api-1|ds1', 'L', 'AWS::AppSync::DataSource');
+      expect(os?.['OpenSearchServiceConfig']).toEqual({
+        Endpoint: 'https://os.example.com',
+        AwsRegion: 'us-east-1',
+      });
+      expect(os).not.toHaveProperty('ElasticsearchConfig');
+
+      mockSend.mockResolvedValueOnce({
+        dataSource: {
+          name: 'ds1',
+          type: 'AMAZON_ELASTICSEARCH',
+          elasticsearchConfig: {
+            endpoint: 'https://es.example.com',
+            awsRegion: 'us-east-1',
+          },
+        },
+      });
+      const es = await provider.readCurrentState('api-1|ds1', 'L', 'AWS::AppSync::DataSource');
+      expect(es?.['ElasticsearchConfig']).toEqual({
+        Endpoint: 'https://es.example.com',
+        AwsRegion: 'us-east-1',
+      });
+      expect(es).not.toHaveProperty('OpenSearchServiceConfig');
+    });
+
+    it('reverse-maps relationalDatabaseConfig with the CFn DbClusterIdentifier spelling (#609)', async () => {
+      mockSend.mockResolvedValueOnce({
+        dataSource: {
+          name: 'ds1',
+          type: 'RELATIONAL_DATABASE',
+          relationalDatabaseConfig: {
+            relationalDatabaseSourceType: 'RDS_HTTP_ENDPOINT',
+            rdsHttpEndpointConfig: {
+              awsRegion: 'us-east-1',
+              dbClusterIdentifier: 'arn:aws:rds:us-east-1:1:cluster:c1',
+              databaseName: 'db',
+              schema: 'public',
+              awsSecretStoreArn: 'arn:aws:secretsmanager:us-east-1:1:secret:s1',
+            },
+          },
+        },
+      });
+
+      const result = await provider.readCurrentState('api-1|ds1', 'L', 'AWS::AppSync::DataSource');
+
+      expect(result?.['RelationalDatabaseConfig']).toEqual({
+        RelationalDatabaseSourceType: 'RDS_HTTP_ENDPOINT',
+        RdsHttpEndpointConfig: {
+          AwsRegion: 'us-east-1',
+          DbClusterIdentifier: 'arn:aws:rds:us-east-1:1:cluster:c1',
+          DatabaseName: 'db',
+          Schema: 'public',
+          AwsSecretStoreArn: 'arn:aws:secretsmanager:us-east-1:1:secret:s1',
+        },
+      });
+    });
   });
 
   describe('AWS::AppSync::Resolver', () => {
@@ -306,6 +395,71 @@ describe('AppSyncProvider.readCurrentState', () => {
         Code: 'export function request() {}',
         Runtime: { Name: 'APPSYNC_JS', RuntimeVersion: '1.0.0' },
       });
+    });
+
+    it('reverse-maps CachingConfig / SyncConfig / MaxBatchSize / MetricsConfig (#609)', async () => {
+      mockSend.mockResolvedValueOnce({
+        resolver: {
+          typeName: 'Query',
+          fieldName: 'getThing',
+          dataSourceName: 'ds1',
+          kind: 'UNIT',
+          requestMappingTemplate: '$ctx',
+          responseMappingTemplate: '$result',
+          cachingConfig: { ttl: 120, cachingKeys: ['$context.identity.sub'] },
+          syncConfig: {
+            conflictDetection: 'VERSION',
+            conflictHandler: 'LAMBDA',
+            lambdaConflictHandlerConfig: {
+              lambdaConflictHandlerArn: 'arn:aws:lambda:us-east-1:1:function:conflict',
+            },
+          },
+          maxBatchSize: 10,
+          metricsConfig: 'ENABLED',
+        },
+      });
+
+      const result = await provider.readCurrentState(
+        'api-1|Query|getThing',
+        'L',
+        'AWS::AppSync::Resolver'
+      );
+
+      expect(result?.['CachingConfig']).toEqual({
+        Ttl: 120,
+        CachingKeys: ['$context.identity.sub'],
+      });
+      expect(result?.['SyncConfig']).toEqual({
+        ConflictDetection: 'VERSION',
+        ConflictHandler: 'LAMBDA',
+        LambdaConflictHandlerConfig: {
+          LambdaConflictHandlerArn: 'arn:aws:lambda:us-east-1:1:function:conflict',
+        },
+      });
+      expect(result?.['MaxBatchSize']).toBe(10);
+      expect(result?.['MetricsConfig']).toBe('ENABLED');
+    });
+
+    it('omits the #609 properties when AWS did not return them (no phantom drift)', async () => {
+      mockSend.mockResolvedValueOnce({
+        resolver: {
+          typeName: 'Query',
+          fieldName: 'getThing',
+          kind: 'UNIT',
+          dataSourceName: 'ds1',
+        },
+      });
+
+      const result = await provider.readCurrentState(
+        'api-1|Query|getThing',
+        'L',
+        'AWS::AppSync::Resolver'
+      );
+
+      expect(result).not.toHaveProperty('CachingConfig');
+      expect(result).not.toHaveProperty('SyncConfig');
+      expect(result).not.toHaveProperty('MaxBatchSize');
+      expect(result).not.toHaveProperty('MetricsConfig');
     });
   });
 
@@ -529,10 +683,17 @@ type Query {
       ]);
     });
 
+    it('declares the three *S3Location inputs for Resolver (#609 — AWS returns the resolved body, never the URL)', () => {
+      expect(provider.getDriftUnknownPaths('AWS::AppSync::Resolver')).toEqual([
+        'CodeS3Location',
+        'RequestMappingTemplateS3Location',
+        'ResponseMappingTemplateS3Location',
+      ]);
+    });
+
     it('returns empty for other AppSync types', () => {
       expect(provider.getDriftUnknownPaths('AWS::AppSync::GraphQLApi')).toEqual([]);
       expect(provider.getDriftUnknownPaths('AWS::AppSync::DataSource')).toEqual([]);
-      expect(provider.getDriftUnknownPaths('AWS::AppSync::Resolver')).toEqual([]);
       expect(provider.getDriftUnknownPaths('AWS::AppSync::ApiKey')).toEqual([]);
     });
   });

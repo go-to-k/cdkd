@@ -3145,11 +3145,15 @@
     {
       "resourceType": "AWS::Events::EventBus",
       "integs": [
+        "appsync",
         "eventbridge",
         "eventbridge-archive",
         "eventbus-policy"
       ],
       "signals": {
+        "appsync": [
+          "l1"
+        ],
         "eventbridge": [
           "l2"
         ],
