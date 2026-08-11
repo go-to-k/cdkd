@@ -1,3 +1,10 @@
+## [0.278.53](https://github.com/go-to-k/cdkd/compare/v0.278.52...v0.278.53) (2026-08-11)
+
+
+### Bug Fixes
+
+* **appsync:** wire the last 13 GraphQLApi silent-drop properties ([#609](https://github.com/go-to-k/cdkd/issues/609)) ([#1569](https://github.com/go-to-k/cdkd/issues/1569)) ([d38c831](https://github.com/go-to-k/cdkd/commit/d38c8313946307f82136ed63af17d0e67e03cc0f))
+
 ## [0.278.52](https://github.com/go-to-k/cdkd/compare/v0.278.51...v0.278.52) (2026-08-11)
 
 
