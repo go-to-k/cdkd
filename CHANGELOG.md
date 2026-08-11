@@ -1,3 +1,10 @@
+## [0.280.8](https://github.com/go-to-k/cdkd/compare/v0.280.7...v0.280.8) (2026-08-11)
+
+
+### Bug Fixes
+
+* **ec2:** refuse a Route template declaring more than one destination key ([#1566](https://github.com/go-to-k/cdkd/issues/1566)) ([#1590](https://github.com/go-to-k/cdkd/issues/1590)) ([f4fe7e2](https://github.com/go-to-k/cdkd/commit/f4fe7e2305a08887f34a6990ad7a0e69d0817b0d))
+
 ## [0.280.7](https://github.com/go-to-k/cdkd/compare/v0.280.6...v0.280.7) (2026-08-11)
 
 
