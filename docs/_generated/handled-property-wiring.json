@@ -9548,7 +9548,8 @@
             "createListener",
             "createTargetGroup",
             "update",
-            "updateListener"
+            "updateListener",
+            "updateTargetGroup"
           ]
         },
         {
@@ -9745,6 +9746,7 @@
             "applyUpdate",
             "create",
             "createTargetGroup",
+            "getDriftUnknownPaths",
             "update",
             "updateTargetGroup"
           ]
