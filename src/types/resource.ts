@@ -75,9 +75,45 @@ export interface TemplateOutput {
 }
 
 /**
+ * The properties a provider ACTUALLY delivered to AWS, when they differ from
+ * the desired bag it was handed (issue #1591).
+ *
+ * The deploy engine persists the DESIRED properties into cdkd state. That is
+ * right almost always — but a provider that deliberately NARROWS the bag makes
+ * the record describe something AWS never holds, and `readCurrentState` can
+ * only ever return what AWS does hold, so the difference becomes PERMANENT
+ * phantom drift: `cdkd drift` reports it on every run and `drift --revert`
+ * "fixes" it by calling `update()` again, which re-narrows and re-reports.
+ * That is the #1552 junk-state class, and it is the provider — not the
+ * engine — that knows what was dropped.
+ *
+ * Returning this field lets the provider hand back the bag it actually sent,
+ * which the engine records INSTEAD of the desired one. Absent (the normal
+ * case) means "record the desired properties", so no provider needs to change.
+ *
+ * Two things this is NOT:
+ *
+ * - It is not a place to report AWS-side defaults or computed values. Those
+ *   belong in `observedProperties` (captured by a real read-back); putting
+ *   them here would make the DESIRED baseline drift away from the template and
+ *   silently disable the #1160 absent-field removal derivation, which reads
+ *   the previous side.
+ * - It is not a licence to drop a value the provider merely failed to send.
+ *   Narrowing must already be a deliberate, ANNOUNCED decision (a warn arm),
+ *   or recording it hides the loss instead of surfacing it.
+ */
+export interface EffectivePropertiesResult {
+  /**
+   * The properties actually delivered. Recorded verbatim in place of the
+   * desired bag, so it must be a COMPLETE replacement, not a patch.
+   */
+  effectiveProperties?: Record<string, unknown>;
+}
+
+/**
  * Resource creation result
  */
-export interface ResourceCreateResult {
+export interface ResourceCreateResult extends EffectivePropertiesResult {
   /** Physical resource ID */
   physicalId: string;
   /** Resource attributes for Fn::GetAtt resolution */
@@ -87,7 +123,7 @@ export interface ResourceCreateResult {
 /**
  * Resource update result
  */
-export interface ResourceUpdateResult {
+export interface ResourceUpdateResult extends EffectivePropertiesResult {
   /** Physical resource ID (may be different if resource was replaced) */
   physicalId: string;
   /** Whether the resource was replaced (new physical ID) */

@@ -2047,6 +2047,10 @@ export class EC2Provider implements ResourceProvider {
       .filter(([, value]) => Boolean(value))
       .map(([key]) => key);
 
+    // Set ONLY by the warn arm below, and only to the bag this method actually
+    // sends — see the note there (issue #1591).
+    let effectiveProperties: Record<string, unknown> | undefined;
+
     if (declaredDestinations.length > 1) {
       const message =
         `Route ${logicalId} declares more than one destination (${declaredDestinations.join(', ')}). ` +
@@ -2073,13 +2077,23 @@ export class EC2Provider implements ResourceProvider {
             : destination === destinationIpv6CidrBlock
               ? 'DestinationIpv6CidrBlock'
               : 'DestinationPrefixListId';
-        // Known residue (issue #1591): the update SUCCEEDS, so the engine
-        // records the DESIRED bag — every declared destination key — while
-        // readRouteCurrentState can only ever return the one AWS holds, so the
-        // losing keys become permanent phantom drift. That is the #1552
-        // junk-state class; it is not made worse here (the pre-fix code
-        // recorded the same bag with no warning at all), and fixing it means
-        // persisting the narrowed bag, which this provider does not own.
+        // Hand the engine the bag we actually SEND, so state matches AWS
+        // (issue #1591 — the residue #1590 knowingly left behind). Without
+        // this the engine records every declared destination key while
+        // `readRouteCurrentState` can only ever return the one AWS holds, so
+        // the losers become PERMANENT phantom drift: reported by every
+        // `cdkd drift`, and "repaired" by `drift --revert` into another
+        // `update()` that delete-and-recreates the route and re-emits this
+        // same warning, forever.
+        //
+        // Only the losing DESTINATION keys are dropped — everything else in
+        // the bag was sent verbatim. The narrowing is already announced by the
+        // warning below, so recording it makes state agree with the message
+        // rather than hiding a loss the user was never told about.
+        effectiveProperties = { ...properties };
+        for (const losingKey of declaredDestinations) {
+          if (losingKey !== usedKey) delete effectiveProperties[losingKey];
+        }
         onMultipleDestinations(`${message} Continuing with ${usedKey} and ignoring the rest.`);
       } else {
         throw new ProvisioningError(message, resourceType, logicalId);
@@ -2116,6 +2130,7 @@ export class EC2Provider implements ResourceProvider {
       return {
         physicalId,
         attributes: {},
+        ...(effectiveProperties && { effectiveProperties }),
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
@@ -2173,6 +2188,13 @@ export class EC2Provider implements ResourceProvider {
         physicalId: createResult.physicalId,
         wasReplaced: true,
         ...(createResult.attributes && { attributes: createResult.attributes }),
+        // Forwarded, not re-derived: the re-create above is the call that
+        // narrowed, and this is the path the phantom drift actually reached
+        // users on — `update()` is the only entry a multi-destination bag can
+        // still get through, since create refuses it outright (issue #1591).
+        ...(createResult.effectiveProperties && {
+          effectiveProperties: createResult.effectiveProperties,
+        }),
       };
     } catch (error) {
       // Pass through cdkd-typed errors untouched (#1272): re-labelling an inner

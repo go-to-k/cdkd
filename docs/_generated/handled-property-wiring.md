@@ -13,7 +13,7 @@ A computed read `properties[k]` also counts when `k` iterates a literal name tab
 - Declared properties: **1136** (**1134** with read evidence)
 - Fully wired classes: **82**
 - Allow-listed classes (visible, non-blocking): **2**
-- Classes with a whole-bag blind spot (recorded, never an excuse): **19**
+- Classes with a whole-bag blind spot (recorded, never an excuse): **20**
 - **Wiring gaps (blocks CI): 0**
 
 ## Wiring gaps
@@ -39,6 +39,7 @@ Sites where a whole property bag left the evidence walk (a spread, an unresolvab
 | `ApiGatewayProvider` (apigateway-provider.ts) | `computed key in updateAuthorizer()`, `computed key in updateMethod()` |
 | `AppSyncProvider` (appsync-provider.ts) | `computed key in applyGraphQLApiConfig()`, `computed key in updateDataSource()`, `computed key in updateGraphQLApi()`, `computed key in updateResolver()` |
 | `DynamoDBGlobalTableProvider` (dynamodb-globaltable-provider.ts) | `extractLocalTags(...) in update()` |
+| `EC2Provider` (ec2-provider.ts) | `object spread in createRoute()` |
 | `ECRProvider` (ecr-provider.ts) | `hasCdkAutoDeleteTag(...) in delete()` |
 | `EFSProvider` (efs-provider.ts) | `computed key in updateFileSystem()` |
 | `ELBv2Provider` (elbv2-provider.ts) | `computed key in updateTargetGroup()`, `stripHandled(...) in updateLoadBalancer()` |
