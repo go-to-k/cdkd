@@ -773,6 +773,33 @@ describe('the BUILDER idiom (synthetic, issue #1474)', () => {
     expect(scopeAt(source, 'Root.Inner')).toEqual(['Inner']);
   });
 
+  it('the builder-behind-binding hop refuses a wholly-reassigned binding (#1540)', () => {
+    // The false-CLEAR guard on the new hop itself, asserted on the shape the
+    // REGRESSION would credit: the binding holds a builder-producing `.map()`
+    // at declaration, then is reassigned to an opaque value before delivery.
+    // Crediting the callback's builder MUTATIONS for a value that is no longer
+    // that value is exactly what `isWhollyReassigned` refuses — same reason
+    // `builderDeclarationOf` refuses it for a directly-held builder. The SEED
+    // member still appears via `resolveLiterals`, which resolves reassigned
+    // bindings by design (the recorded bound (8) note) — the hop's own
+    // contract is only that `Mutated` is not borrowed.
+    const source = `
+      class P {
+        build(props) {
+          let rules = props['Rules'].map(() => { const sdkRule = { Seed: 1 }; sdkRule.Mutated = 2; return sdkRule; });
+          rules = opaque(props);
+          return { Rules: rules };
+        }
+        put(props) { return { Cfg: this.build(props) }; }
+      }
+    `;
+    expect(scopeAt(source, 'Cfg.Rules')).toEqual(['Seed']);
+    // The control: without the reassignment the SAME source credits the
+    // mutation, proving the refusal above is the guard and not a dead branch.
+    const withoutReassignment = source.replace('rules = opaque(props);', '');
+    expect(scopeAt(withoutReassignment, 'Cfg.Rules').sort()).toEqual(['Mutated', 'Seed']);
+  });
+
   it('skips a REVERSE-MAP helper nested inside the builder scope', () => {
     // The only builder refusal in the OVER-crediting direction, and it had no
     // test (#1474 review). `builderMembers` re-applies the
@@ -2324,17 +2351,21 @@ describe('classifyTarget (synthetic)', () => {
     );
     expect(notif?.bucket).toBe('same-spelling');
     expect([...used]).toEqual(['S3Key.Rules']);
-    // The same-named `Rules` under a DIFFERENT parent is untouched: its plain
-    // chain resolves, so the entry neither applies nor reads as used there.
+    // The same-named `Rules` under a DIFFERENT parent is untouched: the
+    // scoped key does not match there, so the plain chain resolves and the
+    // used set stays empty.
+    const usedElsewhere = new Set<string>();
     const [lifecycle] = classifyTarget(
       target,
       keyPaths('Top', 'Lifecycle.Rules.Name'),
       new Set(['Name']),
       new Set(),
       new Map(),
-      evidence
+      evidence,
+      usedElsewhere
     );
     expect(lifecycle?.bucket).toBe('same-spelling');
+    expect([...usedElsewhere]).toEqual([]);
   });
 
   it('a SCOPED segmentRenames key WINS over a bare-name entry for the same segment (#1540)', () => {

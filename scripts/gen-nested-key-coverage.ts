@@ -332,8 +332,9 @@
  * CloudFront's 162 -> 0 is 160 spread/scope-covered plus 2 allow-listed with
  * `passes: ['write']` (`Tags.Key` / `Tags.Value` — genuinely written by
  * `toSdkTags`, but one SDK wrapper level below the CFn transparent-array
- * chain; see their entries). S3 is deliberately unmoved: its residual is
- * segment renames + never-written drops (#1495), not an unrecognized shape.
+ * chain; see their entries). S3's column values are the HISTORICAL stage
+ * measurements; its road from 81 to the #1540 opt-in at 0 is the bracket
+ * note and reason (C).
  *
  * The RECORDED, MEASURED reasons the remaining targets cannot opt in — none
  * of them "add an allow-list entry", which is what the issue forbids:
@@ -4582,8 +4583,8 @@ export function classifyTarget(
         return renames[segments[i]!] !== undefined ? segments[i]! : undefined;
       };
       const parentChain = segments.slice(0, -1).flatMap((seg, i) => {
-        const key = renameKeyAt(i);
-        return (key === undefined ? styled(seg) : renames[key]!).split('.');
+        const renameKey = renameKeyAt(i);
+        return (renameKey === undefined ? styled(seg) : renames[renameKey]!).split('.');
       });
       const parentPaths = resolveWritePaths(parentChain);
       const coveredPlain =
@@ -4624,10 +4625,10 @@ export function classifyTarget(
       // divergence rather than a stale-map error on top of it.
       if (usedSegmentRenames !== undefined) {
         for (let i = 0; i < segments.length - 1; i++) {
-          const key = renameKeyAt(i);
-          if (key === undefined) continue;
+          const renameKey = renameKeyAt(i);
+          if (renameKey === undefined) continue;
           const plain = segments.slice(0, i + 1).map((seg) => styled(seg));
-          if (!chainResolves(plain)) usedSegmentRenames.add(key);
+          if (!chainResolves(plain)) usedSegmentRenames.add(renameKey);
         }
       }
       // Same negation for terminal entries: unused only when the PLAIN
@@ -5524,8 +5525,8 @@ function main(argv: readonly string[] = process.argv.slice(2)): void {
   if (staleTerminals.length > 0) {
     process.stderr.write(
       'nested-key-coverage: FAIL — stale terminalRenames entr(ies): the un-renamed terminal ' +
-        'already resolves, so the entry is dead weight. Remove them from ' +
-        'scripts/gen-nested-key-coverage.ts:\n' +
+        'already resolves (or the path is no longer write-audited), so the entry is dead ' +
+        'weight. Remove them from scripts/gen-nested-key-coverage.ts:\n' +
         staleTerminals.map((k) => `  ${k}\n`).join('')
     );
     process.exit(1);
