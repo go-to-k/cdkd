@@ -423,6 +423,126 @@ describe('renderDiffTree', () => {
     expect(text).not.toContain('"keep"');
     expect(text).not.toContain('"ref"');
   });
+
+  // Issue #1608 — a pure key ADDITION must render symmetrically. The per-side
+  // strip pruned the new side to the added key while the old side (no changed
+  // keys of its own) fell back to the FULL object, which read as "everything
+  // else is being removed".
+  it('renders a pure key addition as old: {} / new: {AddedKey} (#1608)', () => {
+    const statement = {
+      Sid: 'stmt',
+      Effect: 'Allow',
+      Principal: { AWS: 'arn:aws:iam::123456789012:root' },
+      Action: 'events:PutEvents',
+    };
+    const root = leaf('P', 'P', [
+      {
+        logicalId: 'BusPolicy',
+        changeType: 'UPDATE',
+        resourceType: 'AWS::Events::EventBusPolicy',
+        propertyChanges: [
+          {
+            path: 'Statement',
+            oldValue: statement,
+            newValue: { ...statement, Condition: { StringEquals: { k: 'v' } } },
+            requiresReplacement: false,
+          },
+        ],
+      },
+    ]);
+    const lines: string[] = [];
+    renderDiffTree(root, true, (m) => lines.push(m));
+    const text = lines.join('\n');
+
+    expect(text).toContain('old: {}');
+    expect(text).toContain('"Condition"');
+    // The unchanged keys must appear on NEITHER side — before the fix the old
+    // side printed the full statement (Sid / Principal / Action included).
+    expect(text).not.toContain('"Sid"');
+    expect(text).not.toContain('"Principal"');
+    expect(text).not.toContain('"Action"');
+  });
+
+  it('renders a pure key removal as old: {RemovedKey} / new: {} (#1608)', () => {
+    const base = { Sid: 'stmt', Action: 'events:PutEvents' };
+    const root = leaf('P', 'P', [
+      {
+        logicalId: 'BusPolicy',
+        changeType: 'UPDATE',
+        resourceType: 'AWS::Events::EventBusPolicy',
+        propertyChanges: [
+          {
+            path: 'Statement',
+            oldValue: { ...base, Condition: { StringEquals: { k: 'v' } } },
+            newValue: base,
+            requiresReplacement: false,
+          },
+        ],
+      },
+    ]);
+    const lines: string[] = [];
+    renderDiffTree(root, true, (m) => lines.push(m));
+    const text = lines.join('\n');
+
+    expect(text).toContain('new: {}');
+    expect(text).toContain('"Condition"');
+    expect(text).not.toContain('"Sid"');
+    expect(text).not.toContain('"Action"');
+  });
+
+  it('renders a NESTED key addition symmetrically pruned to the changed subtree (#1608)', () => {
+    const root = leaf('P', 'P', [
+      {
+        logicalId: 'R',
+        changeType: 'UPDATE',
+        resourceType: 'AWS::S3::Bucket',
+        propertyChanges: [
+          {
+            path: 'Config',
+            oldValue: { Nested: { keep: 1 } },
+            newValue: { Nested: { keep: 1, added: 2 } },
+            requiresReplacement: false,
+          },
+        ],
+      },
+    ]);
+    const lines: string[] = [];
+    renderDiffTree(root, true, (m) => lines.push(m));
+    const text = lines.join('\n');
+
+    expect(text).toContain('old: {}');
+    expect(text).toContain('"added"');
+    expect(text).not.toContain('"keep"');
+  });
+
+  it('falls back to FULL values on BOTH sides when the only differences are intrinsic-valued keys (#1608)', () => {
+    const root = leaf('P', 'P', [
+      {
+        logicalId: 'R',
+        changeType: 'UPDATE',
+        resourceType: 'AWS::S3::Bucket',
+        propertyChanges: [
+          {
+            path: 'Config',
+            oldValue: { same: 'x', ref: { Ref: 'A' } },
+            newValue: { same: 'x', ref: { Ref: 'B' } },
+            requiresReplacement: false,
+          },
+        ],
+      },
+    ]);
+    const lines: string[] = [];
+    renderDiffTree(root, true, (m) => lines.push(m));
+    const text = lines.join('\n');
+
+    // Both results pruned to nothing -> the fallback shows the full value on
+    // BOTH sides (never one-sided).
+    const oldLines = lines.filter((l) => l.includes('old:'));
+    const newLines = lines.filter((l) => l.includes('new:'));
+    expect(oldLines.join('\n')).toContain('"same"');
+    expect(newLines.join('\n')).toContain('"same"');
+    expect(text).toContain('"ref"');
+  });
 });
 
 describe('computeStackDiff', () => {

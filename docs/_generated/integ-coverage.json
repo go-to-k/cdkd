@@ -3146,13 +3146,18 @@
       "resourceType": "AWS::Events::EventBus",
       "integs": [
         "eventbridge",
-        "eventbridge-archive"
+        "eventbridge-archive",
+        "eventbus-policy"
       ],
       "signals": {
         "eventbridge": [
           "l2"
         ],
         "eventbridge-archive": [
+          "l2",
+          "literal"
+        ],
+        "eventbus-policy": [
           "l2",
           "literal"
         ]
@@ -5775,6 +5780,7 @@
     "AWS::Events::ApiDestination",
     "AWS::Events::Archive",
     "AWS::Events::Connection",
+    "AWS::Events::EventBusPolicy",
     "AWS::KMS::Grant",
     "AWS::Lambda::Alias",
     "AWS::Lambda::Version",
