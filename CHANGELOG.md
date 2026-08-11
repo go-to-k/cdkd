@@ -1,3 +1,10 @@
+## [0.278.52](https://github.com/go-to-k/cdkd/compare/v0.278.51...v0.278.52) (2026-08-11)
+
+
+### Bug Fixes
+
+* **cloudtrail:** reset EventSelectors on removal instead of skipping the Put ([#1563](https://github.com/go-to-k/cdkd/issues/1563)) ([bf91d69](https://github.com/go-to-k/cdkd/commit/bf91d6908f5b2eb79fa3be2690ff93df00682838))
+
 ## [0.278.51](https://github.com/go-to-k/cdkd/compare/v0.278.50...v0.278.51) (2026-08-11)
 
 
