@@ -1,3 +1,10 @@
+## [0.280.24](https://github.com/go-to-k/cdkd/compare/v0.280.23...v0.280.24) (2026-08-11)
+
+
+### Bug Fixes
+
+* **ec2:** narrow the Route bag on both the state and the diff side so the multi-destination warn arm stops producing phantom drift ([#1629](https://github.com/go-to-k/cdkd/issues/1629)) ([1c1f7f9](https://github.com/go-to-k/cdkd/commit/1c1f7f91b36a6b63b706f147524c647af033f7cf))
+
 ## [0.280.23](https://github.com/go-to-k/cdkd/compare/v0.280.22...v0.280.23) (2026-08-11)
 
 
