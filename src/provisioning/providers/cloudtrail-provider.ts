@@ -103,7 +103,7 @@ function emptyToUndefined(v: unknown): string | undefined {
  * Only the DESIRED side decides, which keeps the guard-the-desired-side-only
  * rule intact.
  */
-export function resolveCloudWatchLogsPair(properties: Record<string, unknown>): {
+function resolveCloudWatchLogsPair(properties: Record<string, unknown>): {
   logGroupArn: string | undefined;
   roleArn: string | undefined;
   unusable?: string;
@@ -220,6 +220,13 @@ export class CloudTrailProvider implements ResourceProvider {
     // can feed an always-emit `''` placeholder in here, and `CreateTrail` with
     // an empty ARN is an unprobed shape. On create `''` and absent both mean
     // "not configured".
+    //
+    // `resolveCloudWatchLogsPair` is deliberately NOT used here: there is no
+    // previous value to clear on a create, so `''` has no second meaning. A
+    // HALF-populated pair replayed through a reverse replacement therefore
+    // sends one half and AWS errors — loud is the right direction on a path
+    // that is creating the trail from scratch, where silently dropping the
+    // wiring would hand back a trail that looks configured and is not.
     const cloudWatchLogsLogGroupArn = emptyToUndefined(properties['CloudWatchLogsLogGroupArn']);
     const cloudWatchLogsRoleArn = emptyToUndefined(properties['CloudWatchLogsRoleArn']);
     const kmsKeyId = emptyToUndefined(properties['KMSKeyId']);
@@ -319,6 +326,12 @@ export class CloudTrailProvider implements ResourceProvider {
     // and this helper drops the placeholder so the wire layer never sees
     // it. Mirrors the canonical Class 2 pattern in `sqs-queue-provider.ts`
     // (`serializeRedrivePolicy`).
+    //
+    // The CloudWatch Logs PAIR is the EXCEPTION and does not come through
+    // here — see `resolveCloudWatchLogsPair`. Dropping its placeholder made
+    // `drift --revert` of a console-side enable a silent no-op that still
+    // reported success (issue #1565), so that pair forwards `''` as a clear
+    // instead.
     //
     // The helper's ORIGINAL rationale — that `UpdateTrail` rejects an
     // empty string outright — is only half true, and the surviving half
