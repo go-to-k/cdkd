@@ -81,10 +81,36 @@ proceed; otherwise apply §0.
 ## 2. Map the collision landscape (parallel agents may already own files)
 
 ```bash
+git fetch origin -q                    # REQUIRED before the ref probe below
 git worktree list                      # other lanes in flight
 git branch -a                          # their branches
 gh pr list --state open --json number,title,headRefName   # their PRs
+
+# The probe the other three MISS — a lane between its first push and its
+# `gh pr create` has no PR, no local branch, and possibly no worktree:
+git for-each-ref --sort=-committerdate \
+  --format='%(committerdate:iso) %(refname:short)' refs/remotes/origin | head -10
 ```
+
+**Treat any `origin/*` branch pushed within roughly the last hour as a LIVE lane,
+whatever its PR state**, and read what it owns before picking anything:
+
+```bash
+git diff --stat origin/main...origin/<recent-branch>
+```
+
+This is not belt-and-braces. On 2026-08-11 all three of the first probes reported
+a clear field while two lanes were actively writing:
+`origin/fix/609-appsync-resolver-datasource-props` had been pushed **four minutes
+earlier** with no PR, no local branch and no worktree, and it owned both
+`appsync-provider.ts` and `scripts/gen-nested-key-coverage.ts` — the exact two
+files the newest open issue (#1597) asks you to edit. Only the ref-recency probe
+saw it. A worktree can also be removed while its branch lives on, so worktree
+absence proves nothing either.
+
+Corollary for §3: an issue FILED BY such a lane as its own deferral is the MOST
+likely to collide, not the least — it names the files that lane is still editing.
+#1597 was filed by the AppSync lane itself.
 
 For each active worktree, find what it ACTUALLY edits (not the stale-base noise):
 
@@ -317,6 +343,11 @@ anything non-obvious you learned in memory.
 - **Claiming is not winning.** Posting the comment does not end the race — read
   it back and yield to an earlier `createdAt` (§4). Claiming late, after the
   triage, is what makes the race winnable in the first place.
+- **A pushed branch with no PR is a live lane.** `gh pr list` / `git worktree list`
+  / issue comments all go blind during the window between a lane's first push and
+  its `gh pr create` — which is when it is writing hardest. `git for-each-ref
+  --sort=-committerdate refs/remotes/origin` after a `git fetch` is the only probe
+  that sees it (§2).
 - **One lane per cross-cutting file.** `deploy-engine.ts` / `intrinsic-function-resolver.ts`
   / `dag-builder.ts` / `register-providers.ts` absorb most non-trivial fixes; you
   cannot parallelize two issues that both land there. Per-provider fixes ARE
