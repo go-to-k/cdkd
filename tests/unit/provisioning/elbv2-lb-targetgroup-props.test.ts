@@ -450,6 +450,200 @@ describe('ELBv2 LoadBalancer + TargetGroup silent-drop props (#609)', () => {
       expect(callsOf('DescribeCapacityReservationCommand').length).toBeGreaterThan(0);
     });
 
+    // Issue #1609 item 1. Both of these fail against the pre-fix provider,
+    // which pushed EVERY removed key back as `Value: ''`. The live A/B
+    // (2026-08-11) proved AWS rejects that for a boolean-validated key —
+    // "The value of 'deletion_protection.enabled' must be 'true' or 'false',
+    // but was ''" — and a rejection fails the WHOLE Modify* call, so one
+    // removed boolean took the entire deploy (and its rollback) down.
+
+    it('resets a removed BOOLEAN LoadBalancerAttribute to its documented default, not the empty string', async () => {
+      await provider.update(
+        'MyLb',
+        LB_ARN,
+        LB_TYPE,
+        {},
+        { LoadBalancerAttributes: [{ Key: 'deletion_protection.enabled', Value: 'true' }] }
+      );
+
+      const [call] = callsOf('ModifyLoadBalancerAttributesCommand');
+      expect(call[0].input.Attributes).toEqual([
+        { Key: 'deletion_protection.enabled', Value: 'false' },
+      ]);
+    });
+
+    it('resets a removed TRUE-defaulted LoadBalancerAttribute to true, not false', async () => {
+      // Every other assertion in this file uses a key whose default is
+      // 'false', so a table lookup replaced by `key.endsWith('.enabled') ?
+      // 'false' : ''` would keep them all green. routing.http2.enabled
+      // defaults to TRUE, so this is what forces a real table read — and the
+      // wrong answer here silently disables HTTP/2 on the live LB.
+      await provider.update(
+        'MyLb',
+        LB_ARN,
+        LB_TYPE,
+        {},
+        { LoadBalancerAttributes: [{ Key: 'routing.http2.enabled', Value: 'false' }] }
+      );
+
+      const [call] = callsOf('ModifyLoadBalancerAttributesCommand');
+      expect(call[0].input.Attributes).toEqual([{ Key: 'routing.http2.enabled', Value: 'true' }]);
+    });
+
+    it('resets a removed ENUM LoadBalancerAttribute to its documented default', async () => {
+      // The ENUM entries are the other shape a boolean-only heuristic misses.
+      await provider.update(
+        'MyLb',
+        LB_ARN,
+        LB_TYPE,
+        {},
+        {
+          LoadBalancerAttributes: [
+            { Key: 'routing.http.desync_mitigation_mode', Value: 'strictest' },
+            { Key: 'routing.http.xff_header_processing.mode', Value: 'preserve' },
+          ],
+        }
+      );
+
+      const [call] = callsOf('ModifyLoadBalancerAttributesCommand');
+      expect(call[0].input.Attributes).toEqual([
+        { Key: 'routing.http.desync_mitigation_mode', Value: 'defensive' },
+        { Key: 'routing.http.xff_header_processing.mode', Value: 'append' },
+      ]);
+    });
+
+    it('leaves a load-balancer-DEPENDENT default out of the table so it fails loudly', async () => {
+      // ipv6.deny_all_igw_traffic defaults to false for an internet-facing LB
+      // and TRUE for an internal one, and cdkd knows neither the type nor the
+      // scheme at diff time. A hardcoded entry would send the wrong value for
+      // half of all load balancers — and AWS ACCEPTS a valid boolean, so on an
+      // internal LB that silently un-blocks internet-gateway access. It must
+      // therefore fall through to '' (which AWS rejects) rather than guess.
+      // Same rationale as load_balancing.cross_zone.enabled.
+      await provider.update(
+        'MyLb',
+        LB_ARN,
+        LB_TYPE,
+        {},
+        {
+          LoadBalancerAttributes: [
+            { Key: 'ipv6.deny_all_igw_traffic', Value: 'true' },
+            { Key: 'load_balancing.cross_zone.enabled', Value: 'true' },
+          ],
+        }
+      );
+
+      const [call] = callsOf('ModifyLoadBalancerAttributesCommand');
+      expect(call[0].input.Attributes).toEqual([
+        { Key: 'ipv6.deny_all_igw_traffic', Value: '' },
+        { Key: 'load_balancing.cross_zone.enabled', Value: '' },
+      ]);
+    });
+
+    it('does NOT mass-reset when the previous side is a full readCurrentState snapshot (drift --revert)', async () => {
+      // `cdkd drift --revert` calls update(..., newProperties,
+      // outcome.awsProperties) — the previous side is the FULL AWS snapshot,
+      // not a template. Against a state record with no observedProperties the
+      // desired side is the template's one key, so every untemplated key looks
+      // REMOVED. Writing documented defaults there would silently disable
+      // deletion protection / logs / HTTP/2 / WAF fail-open on a live LB.
+      // Before the defaults table existed this was accidentally safe ('' fails
+      // validation, so the whole revert aborted), so the table MUST NOT turn
+      // that loud refusal into a silent destructive write.
+      await provider.update('MyLb', LB_ARN, LB_TYPE, {
+        LoadBalancerAttributes: [{ Key: 'idle_timeout.timeout_seconds', Value: '120' }],
+      }, {
+        LoadBalancerAttributes: [
+          { Key: 'idle_timeout.timeout_seconds', Value: '60' },
+          // Everything below is AWS-reported and sitting at its default —
+          // i.e. exactly what an untemplated key looks like.
+          { Key: 'deletion_protection.enabled', Value: 'false' },
+          { Key: 'access_logs.s3.enabled', Value: 'false' },
+          { Key: 'connection_logs.s3.enabled', Value: 'false' },
+          { Key: 'routing.http2.enabled', Value: 'true' },
+          { Key: 'waf.fail_open.enabled', Value: 'false' },
+          { Key: 'zonal_shift.config.enabled', Value: 'false' },
+          { Key: 'routing.http.desync_mitigation_mode', Value: 'defensive' },
+          { Key: 'routing.http.xff_header_processing.mode', Value: 'append' },
+        ],
+      });
+
+      // ONLY the genuinely changed key is submitted. No default is written
+      // back for any of the eight untemplated keys.
+      const [call] = callsOf('ModifyLoadBalancerAttributesCommand');
+      expect(call[0].input.Attributes).toEqual([
+        { Key: 'idle_timeout.timeout_seconds', Value: '120' },
+      ]);
+    });
+
+    it('still resets an untemplated key that AWS reports at a NON-default value', async () => {
+      // The skip is exact, not blanket: a key sitting away from its default
+      // was genuinely changed, so the reset must still fire.
+      await provider.update(
+        'MyLb',
+        LB_ARN,
+        LB_TYPE,
+        {},
+        { LoadBalancerAttributes: [{ Key: 'routing.http2.enabled', Value: 'false' }] }
+      );
+
+      const [call] = callsOf('ModifyLoadBalancerAttributesCommand');
+      expect(call[0].input.Attributes).toEqual([{ Key: 'routing.http2.enabled', Value: 'true' }]);
+    });
+
+    it('does not walk the prototype chain for a key named __proto__ / constructor', async () => {
+      await provider.update(
+        'MyLb',
+        LB_ARN,
+        LB_TYPE,
+        {},
+        {
+          LoadBalancerAttributes: [
+            { Key: '__proto__', Value: 'x' },
+            { Key: 'constructor', Value: 'y' },
+            { Key: 'toString', Value: 'z' },
+          ],
+        }
+      );
+
+      const [call] = callsOf('ModifyLoadBalancerAttributesCommand');
+      expect(call[0].input.Attributes).toEqual([
+        { Key: '__proto__', Value: '' },
+        { Key: 'constructor', Value: '' },
+        { Key: 'toString', Value: '' },
+      ]);
+    });
+
+    it('skips ModifyLoadBalancerAttributes when the attribute set is unchanged', async () => {
+      await provider.update(
+        'MyLb',
+        LB_ARN,
+        LB_TYPE,
+        { LoadBalancerAttributes: [{ Key: 'routing.http2.enabled', Value: 'false' }] },
+        { LoadBalancerAttributes: [{ Key: 'routing.http2.enabled', Value: 'false' }] }
+      );
+      expect(callsOf('ModifyLoadBalancerAttributesCommand')).toHaveLength(0);
+    });
+
+    it('keeps the empty-string reset for a removed NUMERIC LoadBalancerAttribute', async () => {
+      // The empty string IS accepted for these (live-verified on
+      // idle_timeout.timeout_seconds), so the fix must not regress them into
+      // the defaults table — a key with no documented boolean/enum default
+      // still clears via ''.
+      await provider.update(
+        'MyLb',
+        LB_ARN,
+        LB_TYPE,
+        {},
+        { LoadBalancerAttributes: [{ Key: 'idle_timeout.timeout_seconds', Value: '180' }] }
+      );
+
+      const [call] = callsOf('ModifyLoadBalancerAttributesCommand');
+      expect(call[0].input.Attributes).toEqual([
+        { Key: 'idle_timeout.timeout_seconds', Value: '' },
+      ]);
+    });
+
     it('retains a REMOVED flag: no SetSubnets / SetSecurityGroups call fires', async () => {
       // Pin the no-op polarity of the retain-on-removal decision (the
       // documented design in the provider comments): flag present before,
@@ -689,6 +883,26 @@ describe('ELBv2 LoadBalancer + TargetGroup silent-drop props (#609)', () => {
       ]);
     });
 
+    it('registers BEFORE it deregisters so a re-spelled target never has zero registrations', async () => {
+      // Issue #1609 item 3. The payloads above are asserted but the ORDER was
+      // only a code comment — and the order IS the behavior: a target whose
+      // Port changed is the same backend under two spellings, so deregistering
+      // first would open a window with nothing registered. Pin the sequence,
+      // not just the contents.
+      await provider.update(
+        'MyTg',
+        TG_ARN,
+        TG_TYPE,
+        { Targets: [{ Id: '10.0.0.10', Port: 9090 }] },
+        { Targets: [{ Id: '10.0.0.10', Port: 8080 }] }
+      );
+
+      const order = mockSend.mock.calls
+        .map((c) => c[0].constructor.name)
+        .filter((n) => n === 'RegisterTargetsCommand' || n === 'DeregisterTargetsCommand');
+      expect(order).toEqual(['RegisterTargetsCommand', 'DeregisterTargetsCommand']);
+    });
+
     it('deregisters every target when Targets is removed entirely', async () => {
       await provider.update(
         'MyTg',
@@ -727,6 +941,69 @@ describe('ELBv2 LoadBalancer + TargetGroup silent-drop props (#609)', () => {
       );
       expect(callsOf('RegisterTargetsCommand')).toHaveLength(0);
       expect(callsOf('DeregisterTargetsCommand')).toHaveLength(0);
+    });
+  });
+
+  // ─── Listener update (issue #1609 item 1) ───────────────────────────
+
+  describe('Listener update', () => {
+    const LISTENER_TYPE = 'AWS::ElasticLoadBalancingV2::Listener';
+    const LISTENER_ARN =
+      'arn:aws:elasticloadbalancing:us-east-1:123456789012:listener/app/my-alb/abc/def';
+
+    it('resets a removed BOOLEAN ListenerAttribute to its documented default, not the empty string', async () => {
+      // The exact payload that failed the live removal deploy pre-fix:
+      // "The value of 'routing.http.response.server.enabled' must be 'true'
+      // or 'false', but was ''".
+      await provider.update(
+        'MyListener',
+        LISTENER_ARN,
+        LISTENER_TYPE,
+        { LoadBalancerArn: LB_ARN, DefaultActions: [], Port: 80, Protocol: 'HTTP' },
+        {
+          LoadBalancerArn: LB_ARN,
+          DefaultActions: [],
+          Port: 80,
+          Protocol: 'HTTP',
+          ListenerAttributes: [
+            { Key: 'routing.http.response.server.enabled', Value: 'false' },
+          ],
+        }
+      );
+
+      const [call] = callsOf('ModifyListenerAttributesCommand');
+      expect(call[0].input.Attributes).toEqual([
+        { Key: 'routing.http.response.server.enabled', Value: 'true' },
+      ]);
+    });
+
+    it('keeps the empty-string reset for a removed free-form ListenerAttribute', async () => {
+      await provider.update(
+        'MyListener',
+        LISTENER_ARN,
+        LISTENER_TYPE,
+        { LoadBalancerArn: LB_ARN, DefaultActions: [], Port: 80, Protocol: 'HTTP' },
+        {
+          LoadBalancerArn: LB_ARN,
+          DefaultActions: [],
+          Port: 80,
+          Protocol: 'HTTP',
+          ListenerAttributes: [
+            {
+              Key: 'routing.http.response.strict_transport_security.header_value',
+              Value: 'max-age=31536000',
+            },
+          ],
+        }
+      );
+
+      const [call] = callsOf('ModifyListenerAttributesCommand');
+      expect(call[0].input.Attributes).toEqual([
+        {
+          Key: 'routing.http.response.strict_transport_security.header_value',
+          Value: '',
+        },
+      ]);
     });
   });
 
@@ -830,6 +1107,110 @@ describe('ELBv2 LoadBalancer + TargetGroup silent-drop props (#609)', () => {
       });
       // Targets are deliberately NOT read back (getDriftUnknownPaths).
       expect(state).not.toHaveProperty('Targets');
+    });
+
+    // Issue #1609 item 4. The two reads the #609 batch added are best-effort
+    // and their catch arms are TWO different decisions the happy-path tests
+    // above cannot tell apart: a NotFound means the resource is gone and the
+    // whole read must return `undefined` (so drift reports a deletion, not a
+    // property diff), while any other failure — a missing IAM permission is
+    // the realistic one — must leave the key ABSENT and the rest of the state
+    // intact, because emitting a wrong value there fires false drift on every
+    // single run.
+
+    it('returns undefined when DescribeCapacityReservation reports the LB is gone', async () => {
+      mockSend.mockImplementation((cmd: { constructor: { name: string } }) => {
+        switch (cmd.constructor.name) {
+          case 'DescribeLoadBalancersCommand':
+            return Promise.resolve({ LoadBalancers: [{ LoadBalancerArn: LB_ARN }] });
+          case 'DescribeCapacityReservationCommand': {
+            const err = new Error('Load balancer not found');
+            err.name = 'LoadBalancerNotFoundException';
+            return Promise.reject(err);
+          }
+          default:
+            return Promise.resolve({});
+        }
+      });
+
+      expect(await provider.readCurrentState!(LB_ARN, 'MyNlb', LB_TYPE)).toBeUndefined();
+    });
+
+    it('leaves MinimumLoadBalancerCapacity absent when DescribeCapacityReservation is denied', async () => {
+      mockSend.mockImplementation((cmd: { constructor: { name: string } }) => {
+        switch (cmd.constructor.name) {
+          case 'DescribeLoadBalancersCommand':
+            return Promise.resolve({
+              LoadBalancers: [{ LoadBalancerArn: LB_ARN, LoadBalancerName: 'my-nlb' }],
+            });
+          case 'DescribeCapacityReservationCommand': {
+            const err = new Error('User is not authorized to perform: elasticloadbalancing:DescribeCapacityReservation');
+            err.name = 'AccessDeniedException';
+            return Promise.reject(err);
+          }
+          case 'DescribeLoadBalancerAttributesCommand':
+            return Promise.resolve({ Attributes: [{ Key: 'idle_timeout.timeout_seconds', Value: '60' }] });
+          case 'DescribeTagsCommand':
+            return Promise.resolve({ TagDescriptions: [{ Tags: [] }] });
+          default:
+            return Promise.resolve({});
+        }
+      });
+
+      const state = await provider.readCurrentState!(LB_ARN, 'MyNlb', LB_TYPE);
+      expect(state).toBeDefined();
+      expect(state).not.toHaveProperty('MinimumLoadBalancerCapacity');
+      // The read continues past the denied call — a permission gap on one
+      // attribute must not blank the whole snapshot.
+      expect(state).toMatchObject({
+        Name: 'my-nlb',
+        LoadBalancerAttributes: [{ Key: 'idle_timeout.timeout_seconds', Value: '60' }],
+      });
+    });
+
+    it('returns undefined when DescribeTargetGroupAttributes reports the TG is gone', async () => {
+      mockSend.mockImplementation((cmd: { constructor: { name: string } }) => {
+        switch (cmd.constructor.name) {
+          case 'DescribeTargetGroupsCommand':
+            return Promise.resolve({ TargetGroups: [{ TargetGroupArn: TG_ARN }] });
+          case 'DescribeTargetGroupAttributesCommand': {
+            const err = new Error('Target group does not exist');
+            err.name = 'TargetGroupNotFoundException';
+            return Promise.reject(err);
+          }
+          default:
+            return Promise.resolve({});
+        }
+      });
+
+      expect(await provider.readCurrentState!(TG_ARN, 'MyTg', TG_TYPE)).toBeUndefined();
+    });
+
+    it('leaves TargetGroupAttributes absent when DescribeTargetGroupAttributes is denied', async () => {
+      mockSend.mockImplementation((cmd: { constructor: { name: string } }) => {
+        switch (cmd.constructor.name) {
+          case 'DescribeTargetGroupsCommand':
+            return Promise.resolve({
+              TargetGroups: [
+                { TargetGroupArn: TG_ARN, TargetGroupName: 'my-tg', IpAddressType: 'ipv4' },
+              ],
+            });
+          case 'DescribeTargetGroupAttributesCommand': {
+            const err = new Error('User is not authorized to perform: elasticloadbalancing:DescribeTargetGroupAttributes');
+            err.name = 'AccessDeniedException';
+            return Promise.reject(err);
+          }
+          case 'DescribeTagsCommand':
+            return Promise.resolve({ TagDescriptions: [{ Tags: [] }] });
+          default:
+            return Promise.resolve({});
+        }
+      });
+
+      const state = await provider.readCurrentState!(TG_ARN, 'MyTg', TG_TYPE);
+      expect(state).toBeDefined();
+      expect(state).not.toHaveProperty('TargetGroupAttributes');
+      expect(state).toMatchObject({ Name: 'my-tg', IpAddressType: 'ipv4' });
     });
   });
 

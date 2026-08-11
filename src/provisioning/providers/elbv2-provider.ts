@@ -106,6 +106,82 @@ const TARGET_GROUP_ATTRIBUTE_DEFAULTS: Record<string, string> = {
 };
 
 /**
+ * Documented AWS defaults for the BOOLEAN / ENUM-valued LoadBalancer and
+ * Listener attributes, used to reset a removed `LoadBalancerAttributes` /
+ * `ListenerAttributes` entry.
+ *
+ * Unlike ModifyTargetGroupAttributes — which rejects an empty `Value` for
+ * EVERY key — these two APIs accept `Value: ''` for the numeric and
+ * free-form string attributes and REJECT it only where the value is
+ * validated against a fixed set. Live A/B 2026-08-11 (issue #1609 item 1),
+ * via the `alb` integ's removal phase:
+ *
+ *   idle_timeout.timeout_seconds  -> `Value: ''` ACCEPTED (numeric)
+ *   deletion_protection.enabled   -> "The value of 'deletion_protection.enabled'
+ *                                     must be 'true' or 'false', but was ''"
+ *   routing.http.response.server.enabled (Listener)
+ *                                 -> same rejection, same shape
+ *
+ * A rejection fails the whole Modify* call, so ONE removed boolean took the
+ * entire deploy down (and then the rollback with it). Hence: send the
+ * documented default for the validated keys, and keep the empty string for
+ * everything else — which is both these APIs' own "clear the override"
+ * signal and the behaviour every non-boolean key already relied on.
+ *
+ * That fallback is the deliberate DIVERGENCE from
+ * TARGET_GROUP_ATTRIBUTE_DEFAULTS, whose unknown-key arm warns and retains:
+ * there the empty string is never valid, here it is valid for the majority
+ * of keys, so falling back to it preserves working behaviour instead of
+ * silently retaining a value the template asked to drop.
+ *
+ * A key is listed ONLY when ONE unconditional default is established for it —
+ * documented in the SDK model, or (for
+ * `routing.http.response.server.enabled`, which the model leaves unstated)
+ * proven by the `alb` integ's live removal readback. Two exclusion classes
+ * matter, and both are the difference between failing loudly and writing a
+ * wrong value silently:
+ *
+ * - **Default depends on the LOAD BALANCER** — `load_balancing.cross_zone.enabled`
+ *   is always-on and unconfigurable for an ALB but defaults to false on an
+ *   NLB / GWLB, and `ipv6.deny_all_igw_traffic` is "false for internet-facing
+ *   load balancers and true for internal load balancers". cdkd knows neither
+ *   the type nor the scheme at diff time, so a hardcoded entry would send the
+ *   WRONG value for half of all load balancers — and since it is a valid
+ *   boolean, AWS accepts it. For `ipv6.deny_all_igw_traffic` that means
+ *   silently un-blocking internet-gateway access on an INTERNAL load balancer.
+ * - **No documented default at all** — `dns_record.client_routing_policy`
+ *   enumerates its possible values but states no default.
+ *
+ * Both classes keep the empty-string behaviour they have always had, so a
+ * removal there fails loudly (for a validated key) instead of guessing.
+ *
+ * Source: the `@aws-sdk/client-elastic-load-balancing-v2` model docs for
+ * `ModifyLoadBalancerAttributes` / `ModifyListenerAttributes`, checked per key;
+ * `routing.http.response.server.enabled`'s default is additionally LIVE-proven
+ * by the `alb` integ's removal readback rather than taken from the docs.
+ */
+const LOAD_BALANCER_ATTRIBUTE_DEFAULTS: Record<string, string> = {
+  'deletion_protection.enabled': 'false',
+  'access_logs.s3.enabled': 'false',
+  'connection_logs.s3.enabled': 'false',
+  'health_check_logs.s3.enabled': 'false',
+  'routing.http.desync_mitigation_mode': 'defensive',
+  'routing.http.drop_invalid_header_fields.enabled': 'false',
+  'routing.http.preserve_host_header.enabled': 'false',
+  'routing.http.x_amzn_tls_version_and_cipher_suite.enabled': 'false',
+  'routing.http.xff_client_port.enabled': 'false',
+  'routing.http.xff_header_processing.mode': 'append',
+  'routing.http2.enabled': 'true',
+  'waf.fail_open.enabled': 'false',
+  'zonal_shift.config.enabled': 'false',
+};
+
+/** @see LOAD_BALANCER_ATTRIBUTE_DEFAULTS — same rule, Listener key table. */
+const LISTENER_ATTRIBUTE_DEFAULTS: Record<string, string> = {
+  'routing.http.response.server.enabled': 'true',
+};
+
+/**
  * AWS ELBv2 Provider
  *
  * Implements resource provisioning for ELBv2 resources:
@@ -580,13 +656,17 @@ export class ELBv2Provider implements ResourceProvider {
     // ─── LoadBalancerAttributes ──────────────────────────────────────
     // ModifyLoadBalancerAttributes replaces ONLY the listed attrs — keys
     // not in the request are left untouched. Build the diff: changed
-    // values from newAttrs win; keys present only in oldAttrs are
-    // pushed back to AWS's documented default (the empty string),
-    // which clears the override. Skip the call entirely when nothing
-    // changed so the no-drift round-trip is a clean no-op.
+    // values from newAttrs win; keys present only in oldAttrs are reset.
+    // A removed BOOLEAN / ENUM key takes its documented default from
+    // LOAD_BALANCER_ATTRIBUTE_DEFAULTS because this API rejects an empty
+    // Value for those (live-verified 2026-08-11 — see that table); every
+    // other key keeps the empty string, which the API accepts as "clear the
+    // override". Skip the call entirely when nothing changed so the
+    // no-drift round-trip is a clean no-op.
     const submittedAttrs = this.diffAttributes(
       this.normalizeAttributes(properties['LoadBalancerAttributes']),
-      this.normalizeAttributes(previousProperties['LoadBalancerAttributes'])
+      this.normalizeAttributes(previousProperties['LoadBalancerAttributes']),
+      this.attributeRemovalResolver(LOAD_BALANCER_ATTRIBUTE_DEFAULTS)
     );
     if (submittedAttrs.length > 0) {
       await this.getClient().send(
@@ -1120,14 +1200,23 @@ export class ELBv2Provider implements ResourceProvider {
       const tgAttrDiff = this.diffAttributes(
         this.normalizeAttributes(properties['TargetGroupAttributes']),
         this.normalizeAttributes(previousProperties['TargetGroupAttributes']),
-        (key) => {
-          const fallback = TARGET_GROUP_ATTRIBUTE_DEFAULTS[key];
+        (key, currentValue) => {
+          // Object.hasOwn, not a bare index: `__proto__` / `constructor` /
+          // `toString` would otherwise resolve up the prototype chain to a
+          // non-string and be submitted as a garbage Value.
+          const fallback = Object.hasOwn(TARGET_GROUP_ATTRIBUTE_DEFAULTS, key)
+            ? TARGET_GROUP_ATTRIBUTE_DEFAULTS[key]
+            : undefined;
           if (fallback === undefined) {
             this.logger.warn(
               `TargetGroup attribute ${key} was removed from the template but has no documented default cdkd can reset it to — the live value is retained. Set the attribute explicitly to change it.`
             );
+            return undefined;
           }
-          return fallback;
+          // Already at the default — nothing to reset. Same safety property as
+          // the LB / Listener arms: see attributeRemovalResolver's docstring
+          // for why the previous side is not always a template.
+          return currentValue === fallback ? undefined : fallback;
         }
       );
       if (tgAttrDiff.length > 0) {
@@ -1392,15 +1481,21 @@ export class ELBv2Provider implements ResourceProvider {
       // ─── ListenerAttributes ──────────────────────────────────────────
       // ModifyListenerAttributes replaces ONLY the listed attrs — keys not
       // in the request are left untouched. Build the diff: changed values
-      // from newAttrs win; keys present only in oldAttrs are pushed back to
-      // AWS's documented default (the empty string), which clears the
-      // override. Skip the call entirely when nothing changed so the
-      // no-drift round-trip is a clean no-op. A failure here THROWS (caught
-      // by the outer try/catch and re-wrapped as a ProvisioningError) so
-      // cdkd state is not written as-if-applied — the next deploy retries.
+      // from newAttrs win; keys present only in oldAttrs are reset. A removed
+      // BOOLEAN / ENUM key takes its documented default from
+      // LISTENER_ATTRIBUTE_DEFAULTS because this API rejects an empty Value
+      // for those — dropping `routing.http.response.server.enabled` failed
+      // the whole deploy pre-fix (live-verified 2026-08-11, issue #1609
+      // item 1); every other key keeps the empty string, which the API
+      // accepts as "clear the override". Skip the call entirely when nothing
+      // changed so the no-drift round-trip is a clean no-op. A failure here
+      // THROWS (caught by the outer try/catch and re-wrapped as a
+      // ProvisioningError) so cdkd state is not written as-if-applied — the
+      // next deploy retries.
       const submittedAttrs = this.diffAttributes(
         this.normalizeAttributes(properties['ListenerAttributes']),
-        this.normalizeAttributes(previousProperties['ListenerAttributes'])
+        this.normalizeAttributes(previousProperties['ListenerAttributes']),
+        this.attributeRemovalResolver(LISTENER_ATTRIBUTE_DEFAULTS)
       );
       if (submittedAttrs.length > 0) {
         await withRetry(
@@ -1538,17 +1633,31 @@ export class ELBv2Provider implements ResourceProvider {
   /**
    * Key-diff two normalized `{Key, Value}` attribute lists into the payload
    * for a Modify*Attributes call: changed values from `newAttrs` win, and
-   * keys present only in `oldAttrs` are pushed back through `removalValue` —
-   * by default the empty string, which ModifyLoadBalancerAttributes /
-   * ModifyListenerAttributes accept as "clear the override". A resolver
-   * returning `undefined` SKIPS the entry (the resolver owns any warn).
-   * An empty return means nothing changed and the call should be skipped.
-   * Shared by the LoadBalancer / TargetGroup / Listener update paths.
+   * keys present only in `oldAttrs` are pushed back through `removalValue`.
+   * A resolver returning `undefined` SKIPS the entry (the resolver owns any
+   * warn). An empty return means nothing changed and the call should be
+   * skipped. Shared by the LoadBalancer / TargetGroup / Listener update
+   * paths — and all three pass their OWN resolver, because the three APIs
+   * disagree about what resets an attribute:
+   *
+   * - LoadBalancer / Listener: the empty string clears a numeric or
+   *   free-form-string override, but a BOOLEAN / ENUM key rejects it and
+   *   fails the whole call, so those take a documented default
+   *   (`LOAD_BALANCER_ATTRIBUTE_DEFAULTS` / `LISTENER_ATTRIBUTE_DEFAULTS`).
+   * - TargetGroup: the empty string is rejected for EVERY key, so the
+   *   documented default is the only reset and an unknown key warns and
+   *   retains (`TARGET_GROUP_ATTRIBUTE_DEFAULTS`).
+   *
+   * All three behaviours were live-verified 2026-08-11. `removalValue` is
+   * REQUIRED rather than defaulted: there is no reset value that is correct
+   * for all three APIs, so a caller that forgets to pass one should fail to
+   * compile instead of silently inheriting the empty string that two of the
+   * three reject.
    */
   private diffAttributes(
     newAttrs: Array<{ Key: string; Value: string }>,
     oldAttrs: Array<{ Key: string; Value: string }>,
-    removalValue: (key: string) => string | undefined = () => ''
+    removalValue: (key: string, currentValue: string) => string | undefined
   ): Array<{ Key: string; Value: string }> {
     const newAttrMap = new Map(newAttrs.map((a) => [a.Key, a.Value]));
     const oldAttrMap = new Map(oldAttrs.map((a) => [a.Key, a.Value]));
@@ -1556,13 +1665,53 @@ export class ELBv2Provider implements ResourceProvider {
     for (const [k, v] of newAttrMap) {
       if (oldAttrMap.get(k) !== v) submitted.push({ Key: k, Value: v });
     }
-    for (const [k] of oldAttrMap) {
+    for (const [k, currentValue] of oldAttrMap) {
       if (!newAttrMap.has(k)) {
-        const value = removalValue(k);
+        const value = removalValue(k, currentValue);
         if (value !== undefined) submitted.push({ Key: k, Value: value });
       }
     }
     return submitted;
+  }
+
+  /**
+   * Build the `removalValue` resolver for the LoadBalancer / Listener attribute
+   * arms: reset a removed key to its documented default, or to `''` (which
+   * those two APIs accept as "clear the override") when no default is known.
+   *
+   * **A key already AT its default is SKIPPED, and that is a safety property,
+   * not an optimization.** The previous side is not always a template: `cdkd
+   * drift --revert` calls `update(..., newProperties, outcome.awsProperties)`
+   * (`src/cli/commands/drift.ts`), so `oldAttrs` can be the FULL
+   * `readCurrentState` snapshot — every attribute AWS reports, including the
+   * ~18 the user never templated. Against a state record with no
+   * `observedProperties` the desired side is the template's one or two keys,
+   * so every untemplated key looks REMOVED and would be "reset".
+   *
+   * Writing a documented default there would silently disable deletion
+   * protection, access / connection logs, HTTP/2, WAF fail-open and zonal
+   * shift on a live load balancer. Before the defaults table existed this was
+   * accidentally safe — `''` fails validation, so the whole revert aborted and
+   * changed nothing — so introducing the table without this guard would have
+   * converted a loud refusal into a silent destructive write.
+   *
+   * The skip is exact rather than heuristic: a key the user never templated is
+   * BY DEFINITION sitting at its default, so it is skipped; a key the template
+   * really did set is set to a NON-default value (otherwise templating it
+   * would be a no-op), so its reset still fires. A template that set a key to
+   * exactly its default and then dropped it is skipped too — correctly, since
+   * there is nothing to change.
+   */
+  private attributeRemovalResolver(
+    defaults: Record<string, string>
+  ): (key: string, currentValue: string) => string | undefined {
+    return (key, currentValue) => {
+      // Object.hasOwn, not a bare index: `__proto__` / `constructor` /
+      // `toString` would otherwise resolve up the prototype chain to a
+      // non-string and emit a garbage Value.
+      const fallback = Object.hasOwn(defaults, key) ? defaults[key] : '';
+      return currentValue === fallback ? undefined : fallback;
+    };
   }
 
   /**

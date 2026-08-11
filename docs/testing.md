@@ -1060,11 +1060,39 @@ Two conventions make the result meaningful rather than vacuous:
   them.
 
 The two conventions above are the ones worth copying, but they are NOT
-universal in the tree — `alb` and `cloudfront-function-url` deliberately remove
-the only value they set, so they satisfy the baseline-live convention without a
-retained sibling. Copy the retained sibling whenever the property is a
-COLLECTION (a tag list, an attribute map), where "cleared everything" and
-"cleared the right entry" are different outcomes.
+universal in the tree — `cloudfront-function-url` deliberately removes the only
+value it sets, so it satisfies the baseline-live convention without a retained
+sibling. Copy the retained sibling whenever the property is a COLLECTION (a tag
+list, an attribute map), where "cleared everything" and "cleared the right
+entry" are different outcomes.
+
+`alb` is the fixture that shows both shapes side by side, and how one turns
+into the other. Its Listener arm drops the only `ListenerAttributes` entry it
+sets (no sibling needed), while its `LoadBalancerAttributes` arm — added by
+issue [#1609](https://github.com/go-to-k/cdkd/issues/1609) item 1 — retains
+two keys and drops only `idle_timeout.timeout_seconds`.
+
+**A retained sibling only works when its templated value DIFFERS from AWS's
+default**, and getting that wrong is easy enough that this fixture shipped it
+in review. The first version retained `deletion_protection.enabled: 'false'` —
+but `false` IS the AWS default, so a bug that reset every attribute on the
+load balancer would produce a byte-identical readback and the assertion could
+not tell an over-broad reset from a correct one. The sibling that does the job
+is `routing.http2.enabled: 'false'` (AWS defaults it to `true`), asserted at
+baseline and again after the removal deploy. Ask of any retained sibling: *if
+the provider cleared EVERYTHING, would this assertion still pass?* If yes, it
+is decoration.
+
+`deletion_protection.enabled` stays in every phase for the other half of the
+job — it pins a CDK-L2 trap. The L2
+`ApplicationLoadBalancer` emits its own `deletion_protection.enabled` entry, so
+the first version of that fixture — which simply omitted the property override
+in the removal phase — let the L2 default reappear, turning the phase into a
+value CHANGE plus an unintended second removal instead of the clean single-key
+removal it read as. Restating the sibling in EVERY phase is what keeps the
+removal single-key. Synthesize both phases and diff the rendered list before
+running; `cdk synth` exiting 0 in each phase proves nothing about the delta
+between them.
 
 The current set of fixtures using the toggle changes as batches ship; find it
 with:

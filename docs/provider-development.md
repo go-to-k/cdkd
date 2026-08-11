@@ -1207,6 +1207,38 @@ Checklist when writing or reviewing an `update()`:
   (`{ ApplyOn: 'None' }`, `{ Mode: 'PassThrough' }`).
 - Never synthesize a reset for a field that was **never** set — that turns
   every unrelated update into a spurious (and sometimes invalid) write.
+- **The reset SENTINEL can vary per API *and* per value KIND within one API,
+  so verify it per key rather than picking one for the whole call** (issue
+  [#1609](https://github.com/go-to-k/cdkd/issues/1609) item 1). ELBv2's three
+  attribute APIs take an identical `{Key, Value}` list and disagree three
+  ways: `ModifyTargetGroupAttributes` rejects an empty `Value` for EVERY key
+  ("A target group attribute value must be specified"), while
+  `ModifyLoadBalancerAttributes` / `ModifyListenerAttributes` accept `''` for
+  numeric and free-form-string keys but reject it for BOOLEAN / ENUM ones
+  ("The value of 'deletion_protection.enabled' must be 'true' or 'false', but
+  was ''"). So a single provider needs a per-key resolver — a documented
+  defaults table with a fallback — not one sentinel.
+  Three things make this worth its own bullet. **The blast radius is the whole
+  call, not the key**: these APIs validate the entire attribute list, so ONE
+  removed boolean fails the deploy — and it can fail the automatic ROLLBACK
+  too, leaving no template-side way out. (The rollback re-runs the same diff
+  with the sides SWAPPED. That turns a removal of key K into an ADDITION of K,
+  so it is not the same refusal mirrored — but any key the two template sides
+  do not share becomes a removal in the other direction, which is exactly how
+  the live run failed on a SECOND key the forward pass never touched.)
+  **The previous side is not always a template**, which decides what a safe
+  reset value even is: `cdkd drift --revert` hands the provider the full
+  `readCurrentState` snapshot as `previousProperties`, so every attribute AWS
+  reports but the template never set looks REMOVED. Writing a documented
+  default for each would silently reset a dozen live settings. Skip a key
+  whose CURRENT value already equals the default — an untemplated key is by
+  definition sitting at its default, while a genuinely templated one is not.
+  And **mocked unit tests cannot find any of it** — they agree with whatever
+  sentinel the provider chose. The
+  ELBv2 arms shipped with two tests literally named "AWS-documented clear" /
+  "empty-string default" that pinned a payload real AWS rejects; only an integ
+  whose removal phase actually drops the key surfaced it. If you add a
+  clear-on-removal arm, add the removal phase to a fixture in the same change.
 - Sub-structures can carry the same hazard one level down: an object that is
   present but missing its inner key (e.g. `Environment: {}` without
   `Variables`) may also read as "no change" — normalize it to the explicit
