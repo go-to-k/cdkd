@@ -318,4 +318,108 @@ describe('CloudTrailProvider removal resets (issue #1160)', () => {
       IncludeGlobalServiceEvents: false,
     });
   });
+
+  // ─── EventSelectors: its own API call, its own reset shape (#1549) ────
+  //
+  // `EventSelectors` does not ride `UpdateTrail` — it has a dedicated
+  // `PutEventSelectors`, which is why the #1160 batch's UpdateTrail-shaped
+  // sweep never covered it and the branch kept SKIPPING the call on removal
+  // (the live trail silently retained its custom selectors).
+  //
+  // Both halves below are measured, not analogized (live CFn A/B + live API
+  // probe, us-east-1, 2026-08-11): CFn RESETS to the default selector, and
+  // the empty array the adjacent `InsightSelectors` branch uses is REJECTED
+  // here (`InvalidEventSelectorsException`).
+  describe('EventSelectors (issue #1549)', () => {
+    const CUSTOM = [{ ReadWriteType: 'WriteOnly', IncludeManagementEvents: true }];
+    const DEFAULT = [{ ReadWriteType: 'All', IncludeManagementEvents: true }];
+
+    const putEventSelectorsInputs = (): Array<Record<string, unknown>> =>
+      mockSend.mock.calls
+        .filter((c) => c[0].constructor.name === 'PutEventSelectorsCommand')
+        .map((c) => c[0].input as Record<string, unknown>);
+
+    it('removed: RESETS to the AWS default selector', async () => {
+      await provider.update('T', TRAIL_ARN, TYPE, BASE, { ...BASE, EventSelectors: CUSTOM });
+
+      expect(putEventSelectorsInputs()).toEqual([
+        { TrailName: TRAIL_ARN, EventSelectors: DEFAULT },
+      ]);
+    });
+
+    it('removed: never sends the EMPTY array (AWS rejects 0 selectors)', async () => {
+      await provider.update('T', TRAIL_ARN, TYPE, BASE, { ...BASE, EventSelectors: CUSTOM });
+
+      // The InsightSelectors removal shape one branch over would 400 here.
+      expect(putEventSelectorsInputs()[0]?.['EventSelectors']).not.toEqual([]);
+    });
+
+    it('emptied to []: takes the same reset path as a removal', async () => {
+      await provider.update('T', TRAIL_ARN, TYPE, { ...BASE, EventSelectors: [] }, {
+        ...BASE,
+        EventSelectors: CUSTOM,
+      });
+
+      expect(putEventSelectorsInputs()).toEqual([
+        { TrailName: TRAIL_ARN, EventSelectors: DEFAULT },
+      ]);
+    });
+
+    it('never-present: issues NO PutEventSelectors call', async () => {
+      await provider.update('T', TRAIL_ARN, TYPE, BASE, BASE);
+      expect(putEventSelectorsInputs()).toEqual([]);
+    });
+
+    it('unchanged: issues NO PutEventSelectors call', async () => {
+      await provider.update('T', TRAIL_ARN, TYPE, { ...BASE, EventSelectors: CUSTOM }, {
+        ...BASE,
+        EventSelectors: CUSTOM,
+      });
+      expect(putEventSelectorsInputs()).toEqual([]);
+    });
+
+    it('kept: a desired value passes through verbatim', async () => {
+      await provider.update('T', TRAIL_ARN, TYPE, { ...BASE, EventSelectors: CUSTOM }, BASE);
+
+      expect(putEventSelectorsInputs()).toEqual([{ TrailName: TRAIL_ARN, EventSelectors: CUSTOM }]);
+    });
+  });
+
+  // ─── IsLogging: an ABSENT desired value is not a start request (#1549) ─
+  describe('IsLogging', () => {
+    const loggingCommands = (): string[] =>
+      mockSend.mock.calls
+        .map((c) => c[0].constructor.name)
+        .filter((n) => n === 'StartLoggingCommand' || n === 'StopLoggingCommand');
+
+    it('removed against a previous FALSE: issues NEITHER Start nor Stop', async () => {
+      // Unreachable from a valid template (`IsLogging` is CFn-required) but
+      // reachable from a rollback / drift-revert replay of a partial state
+      // record. Pre-#1549 this compared as a change and took the `else` arm,
+      // silently STARTING logging.
+      await provider.update('T', TRAIL_ARN, TYPE, BASE, { ...BASE, IsLogging: false });
+      expect(loggingCommands()).toEqual([]);
+    });
+
+    it('removed against a previous TRUE: issues NEITHER Start nor Stop', async () => {
+      await provider.update('T', TRAIL_ARN, TYPE, BASE, { ...BASE, IsLogging: true });
+      expect(loggingCommands()).toEqual([]);
+    });
+
+    it('an explicit desired TRUE against a previous FALSE still starts logging', async () => {
+      await provider.update('T', TRAIL_ARN, TYPE, { ...BASE, IsLogging: true }, {
+        ...BASE,
+        IsLogging: false,
+      });
+      expect(loggingCommands()).toEqual(['StartLoggingCommand']);
+    });
+
+    it('an explicit desired FALSE against a previous TRUE still stops logging', async () => {
+      await provider.update('T', TRAIL_ARN, TYPE, { ...BASE, IsLogging: false }, {
+        ...BASE,
+        IsLogging: true,
+      });
+      expect(loggingCommands()).toEqual(['StopLoggingCommand']);
+    });
+  });
 });

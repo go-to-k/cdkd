@@ -16,6 +16,13 @@ import type { Construct } from 'constructs';
  * is RETAINED. Asserting the retention is what stops an over-eager provider
  * that cleared everything from passing.
  *
+ * `EventSelectors` joins the removal phase in issue #1549. It does NOT ride
+ * `UpdateTrail` — it has a dedicated `PutEventSelectors` — which is why the
+ * #1160 batch's UpdateTrail-shaped sweep never reached it. A second live CFn
+ * A/B (2026-08-11) measured its removal as a RESET to AWS's default selector
+ * (`ReadWriteType: All`), not a retention of the custom `WriteOnly` one, and
+ * the empty-array shape the sibling `InsightSelectors` uses is rejected here.
+ *
  * The trail is created with `IsLogging: false` so it never delivers a log
  * file — the fixture exercises the control plane only, and the bucket stays
  * empty for a clean destroy.
@@ -110,6 +117,11 @@ export class CloudTrailTrailStack extends cdk.Stack {
             // AWS rejects a multi-region trail that excludes global service
             // events, so phase 1 sets both together.
             includeGlobalServiceEvents: true,
+            // Issue #1549. `WriteOnly` is deliberately NOT the AWS default
+            // (`All`), so the removal assertion can tell a RESET from a
+            // retention — and from "the Put never happened at all", which is
+            // exactly what the pre-fix provider did.
+            eventSelectors: [{ readWriteType: 'WriteOnly', includeManagementEvents: true }],
           }),
     });
     // CloudTrail validates its bucket AND topic permissions at create time,

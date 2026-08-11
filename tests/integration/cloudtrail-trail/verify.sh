@@ -4,7 +4,7 @@
 #
 # Deploys a trail with every optional UpdateTrail field set, then re-deploys
 # with CDKD_TEST_REMOVAL=true (all seven dropped from the template) and asserts
-# the split a live CFn A/B (2026-08-10) measured:
+# the split a live CFn A/B measured:
 #
 #   RESET by CloudFormation -> cdkd must send the clear sentinel:
 #     S3KeyPrefix -> '', SnsTopicName -> '', IsMultiRegionTrail -> false,
@@ -169,6 +169,27 @@ assert_field "SnsTopicName"               '.SnsTopicName'               "${TOPIC
 assert_field "IsMultiRegionTrail"         '.IsMultiRegionTrail'         'true'
 assert_field "LogFileValidationEnabled"   '.LogFileValidationEnabled'   'true'
 assert_field "IncludeGlobalServiceEvents" '.IncludeGlobalServiceEvents' 'true'
+
+# EventSelectors lives behind its own API (issue #1549), so it needs its own
+# reader. The baseline assertion is what stops the phase-2 reset check from
+# passing vacuously: without it, "the selector is `All` afterwards" is also
+# true of a trail that never received the custom `WriteOnly` selector at all.
+event_selector_field() { # usage: event_selector_field <jq-path>
+  aws cloudtrail get-event-selectors --trail-name "${TRAIL_NAME}" --region "${REGION}" \
+    --output json | jq -r "$1 | tostring"
+}
+assert_event_selector() { # usage: assert_event_selector <description> <jq-path> <expected>
+  local desc="$1" path="$2" want="$3" got
+  got="$(event_selector_field "${path}")"
+  if [ "${got}" != "${want}" ]; then
+    echo "FAIL: ${desc}: expected '${want}', got '${got}'" >&2
+    exit 1
+  fi
+  echo "    ok: ${desc} = ${got}"
+}
+assert_event_selector "EventSelectors count" '(.EventSelectors | length)' '1'
+assert_event_selector "EventSelectors ReadWriteType" '.EventSelectors[0].ReadWriteType' 'WriteOnly'
+
 CW_GROUP_P1="$(trail_field '.CloudWatchLogsLogGroupArn')"
 CW_ROLE_P1="$(trail_field '.CloudWatchLogsRoleArn')"
 # Reject EMPTY as well as "null": an empty capture would sail through the
@@ -199,11 +220,32 @@ assert_field "IsMultiRegionTrail reset"         '.IsMultiRegionTrail'         'f
 assert_field "LogFileValidationEnabled reset"   '.LogFileValidationEnabled'   'false'
 assert_field "IncludeGlobalServiceEvents reset" '.IncludeGlobalServiceEvents' 'false'
 
+echo "==> Phase 2: EventSelectors must be RESET to the AWS default"
+# Live CFn A/B (2026-08-11, issue #1549): a real CloudFormation removal of
+# EventSelectors leaves `ReadWriteType: All` — the default a selector-less
+# trail has — NOT the custom `WriteOnly` from phase 1. Pre-fix the provider
+# skipped `PutEventSelectors` entirely on removal, so the live trail kept
+# `WriteOnly` and this assertion fails against the pre-fix binary.
+assert_event_selector "EventSelectors count after removal" '(.EventSelectors | length)' '1'
+assert_event_selector "EventSelectors ReadWriteType reset" '.EventSelectors[0].ReadWriteType' 'All'
+
 echo "==> Phase 2: the CloudWatch Logs pair CFn RETAINS must be unchanged"
 # The CFn-parity pin. If a future change "fixes" these into resets, this block
 # fails and forces a fresh live CFn A/B rather than a guess.
 assert_field "CloudWatchLogsLogGroupArn retained" '.CloudWatchLogsLogGroupArn' "${CW_GROUP_P1}"
 assert_field "CloudWatchLogsRoleArn retained"     '.CloudWatchLogsRoleArn'     "${CW_ROLE_P1}"
+
+echo "==> Phase 2: a re-run of the same removal template must be a NO-OP"
+# The phantom-drift guard the #1549 review asked for. The removal phase writes
+# `''` placeholders and now a reset selector; if any of those round-trips back
+# through the diff as a change, `cdkd diff --fail` exits 1 here — which is the
+# only cheap way to catch a reset that cannot converge (the class #1096 /
+# #1498 fixed elsewhere).
+CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" diff "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --fail
+echo "    ok: post-removal diff is a no-op"
 
 # --- Phase 3: destroy -------------------------------------------------
 echo "==> Phase 3: destroy"

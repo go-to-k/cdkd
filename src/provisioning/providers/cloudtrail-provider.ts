@@ -32,6 +32,25 @@ import type {
 } from '../../types/resource.js';
 
 /**
+ * The selector set a trail carries when its template declares NO
+ * `EventSelectors`, and therefore the RESET payload for a removal.
+ *
+ * Live CFn A/B (issue #1549, us-east-1, 2026-08-11): removing `EventSelectors`
+ * from a deployed trail's template resets the live selectors to exactly this
+ * shape — AWS echoes it back as `{ReadWriteType: 'All', IncludeManagementEvents:
+ * true, DataResources: [], ExcludeManagementEventSources: []}`, the two empty
+ * lists being response-side defaults that do NOT need sending.
+ *
+ * It is a VALUE, not an empty array, because `PutEventSelectors` rejects `[]`
+ * with `InvalidEventSelectorsException: Specify a valid number of selectors
+ * (1 to 5) for your trail` — the divergence from the `InsightSelectors` sibling,
+ * where AWS documents `[]` as the removal shape.
+ */
+const DEFAULT_EVENT_SELECTORS: EventSelector[] = [
+  { ReadWriteType: 'All', IncludeManagementEvents: true },
+];
+
+/**
  * SDK Provider for AWS CloudTrail resources
  *
  * Supports:
@@ -308,19 +327,46 @@ export class CloudTrailProvider implements ResourceProvider {
         })
       );
 
-      // Update EventSelectors if changed
+      // Update EventSelectors if changed. Removing the property (or emptying
+      // the array) RESETS the trail to AWS's default selector rather than
+      // retaining the custom one — the #1160 absent-field class, measured
+      // rather than reasoned by analogy from the `InsightSelectors` sibling
+      // below (issue #1549).
+      //
+      // Live CFn A/B, us-east-1, 2026-08-11: a trail deployed with
+      // `EventSelectors: [{ReadWriteType: WriteOnly, IncludeManagementEvents:
+      // true}]`, then UPDATE'd through real CloudFormation with the property
+      // REMOVED, read back as
+      // `[{ReadWriteType: All, IncludeManagementEvents: true, DataResources: [],
+      // ExcludeManagementEventSources: []}]` — i.e. CFn CLEARS the custom
+      // selector back to the default a selector-less trail has.
+      //
+      // The wire shape for that reset is NOT the empty array the
+      // `InsightSelectors` branch uses. The same probe run:
+      // `PutEventSelectors` with `EventSelectors: []` is REJECTED with
+      // `InvalidEventSelectorsException: Specify a valid number of selectors
+      // (1 to 5) for your trail`, while sending the explicit default selector
+      // reproduces the post-removal read byte for byte. So the two branches
+      // legitimately differ in PAYLOAD while agreeing on POLICY: fire the Put
+      // whenever the diff fires, never skip on absence.
       const newEventSelectors = properties['EventSelectors'] as EventSelector[] | undefined;
       const oldEventSelectors = previousProperties['EventSelectors'] as EventSelector[] | undefined;
       if (JSON.stringify(newEventSelectors) !== JSON.stringify(oldEventSelectors)) {
-        if (newEventSelectors && newEventSelectors.length > 0) {
-          this.logger.debug(`Updating event selectors for CloudTrail Trail ${logicalId}`);
-          await this.getClient().send(
-            new PutEventSelectorsCommand({
-              TrailName: physicalId,
-              EventSelectors: newEventSelectors,
-            })
-          );
-        }
+        const eventSelectorsToSend =
+          newEventSelectors && newEventSelectors.length > 0
+            ? newEventSelectors
+            : DEFAULT_EVENT_SELECTORS;
+        this.logger.debug(
+          newEventSelectors && newEventSelectors.length > 0
+            ? `Updating event selectors for CloudTrail Trail ${logicalId}`
+            : `Resetting event selectors to the AWS default for CloudTrail Trail ${logicalId}`
+        );
+        await this.getClient().send(
+          new PutEventSelectorsCommand({
+            TrailName: physicalId,
+            EventSelectors: eventSelectorsToSend,
+          })
+        );
       }
 
       // Update InsightSelectors if changed. AWS-documented way to
@@ -342,9 +388,16 @@ export class CloudTrailProvider implements ResourceProvider {
         );
       }
 
-      // Handle IsLogging changes
+      // Handle IsLogging changes. An ABSENT desired value is NOT a request to
+      // start logging (issue #1549): `IsLogging` is CFn-required, so absence
+      // is unreachable from a valid template, but a rollback / `drift --revert`
+      // replay feeds a cdkd STATE record in as the desired bag and a partial
+      // record written by an older binary can lack the key. Before this guard
+      // a desired `undefined` against a previous `false` compared as a change
+      // and took the `else` arm, so the replay silently STARTED logging on a
+      // trail the record says was stopped.
       const oldIsLogging = previousProperties['IsLogging'] as boolean | undefined;
-      if (isLogging !== oldIsLogging) {
+      if (isLogging !== undefined && isLogging !== oldIsLogging) {
         if (isLogging === false) {
           this.logger.debug(`Stopping logging for CloudTrail Trail ${logicalId}`);
           await this.getClient().send(new StopLoggingCommand({ Name: physicalId }));
