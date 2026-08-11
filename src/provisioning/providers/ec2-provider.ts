@@ -356,7 +356,14 @@ export class EC2Provider implements ResourceProvider {
       case 'AWS::EC2::RouteTable':
         return this.createRouteTable(logicalId, resourceType, properties);
       case 'AWS::EC2::Route':
-        return this.createRoute(logicalId, resourceType, properties);
+        return this.createRoute(
+          logicalId,
+          resourceType,
+          properties,
+          // A reverse-replacement rollback creates from a STATE record, so the
+          // refusal downgrades here exactly as it does on the update path.
+          context?.replayingState === true ? (message) => this.logger.warn(message) : undefined
+        );
       case 'AWS::EC2::SubnetRouteTableAssociation':
         return this.createSubnetRouteTableAssociation(logicalId, resourceType, properties);
       case 'AWS::EC2::SecurityGroup':
@@ -1994,7 +2001,8 @@ export class EC2Provider implements ResourceProvider {
   private async createRoute(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    onMultipleDestinations?: (message: string) => void
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating Route ${logicalId}`);
 
@@ -2013,6 +2021,69 @@ export class EC2Provider implements ResourceProvider {
         resourceType,
         logicalId
       );
+    }
+
+    // A CFn-invalid template carrying MORE than one destination key would
+    // otherwise deploy with only the highest-precedence one and silently drop
+    // the rest, while CloudFormation / `CreateRoute` reject the combination
+    // (InvalidParameterCombination). Refuse instead of narrowing (issue #1566).
+    // `onMultipleDestinations` downgrades this to a warning on the STATE-borne
+    // paths (rollback replay / the update path's delete-and-recreate), where a
+    // refusal would leave the route unrestorable from a record the user cannot
+    // edit; the pre-fix precedence then applies, so behavior there is unchanged.
+    // Counted with the SAME predicate the `||` chain above uses (plain
+    // truthiness), not a hand-listed `undefined | null | ''` set. The casts on
+    // the three reads promise `string | undefined`, but the property bag is
+    // `unknown`-valued at runtime, so a numeric `0` from an unquoted YAML
+    // scalar is reachable — and under a narrower predicate the guard would
+    // count a destination the chain skips, producing a spurious refusal.
+    const declaredDestinations = (
+      [
+        ['DestinationCidrBlock', destinationCidrBlock],
+        ['DestinationIpv6CidrBlock', destinationIpv6CidrBlock],
+        ['DestinationPrefixListId', destinationPrefixListId],
+      ] as const
+    )
+      .filter(([, value]) => Boolean(value))
+      .map(([key]) => key);
+
+    if (declaredDestinations.length > 1) {
+      const message =
+        `Route ${logicalId} declares more than one destination (${declaredDestinations.join(', ')}). ` +
+        'CloudFormation and EC2 accept exactly one of ' +
+        'DestinationCidrBlock/DestinationIpv6CidrBlock/DestinationPrefixListId; ' +
+        'remove the extra keys from the template.';
+      if (onMultipleDestinations) {
+        // The message states WHAT happened and nothing about WHY, because the
+        // two callers reach it for different reasons: the create arm is a
+        // state replay (no prior delete), the update arm is a
+        // delete-and-recreate. An earlier draft asserted a cdkd-state origin
+        // (false on a template-borne update) and its replacement asserted a
+        // just-deleted route (false on the replay create) — each caller's own
+        // comment carries the rationale instead.
+        //
+        // `usedKey` is read off the resolved `destination`, so it always names
+        // the key the wire call below actually sends. The third arm is
+        // defensive: inside this block at least two keys are truthy, so a
+        // prefix-list winner implies both CIDR keys are falsy, which would
+        // have made the count 1 and skipped the block.
+        const usedKey =
+          destination === destinationCidrBlock
+            ? 'DestinationCidrBlock'
+            : destination === destinationIpv6CidrBlock
+              ? 'DestinationIpv6CidrBlock'
+              : 'DestinationPrefixListId';
+        // Known residue (issue #1591): the update SUCCEEDS, so the engine
+        // records the DESIRED bag — every declared destination key — while
+        // readRouteCurrentState can only ever return the one AWS holds, so the
+        // losing keys become permanent phantom drift. That is the #1552
+        // junk-state class; it is not made worse here (the pre-fix code
+        // recorded the same bag with no warning at all), and fixing it means
+        // persisting the narrowed bag, which this provider does not own.
+        onMultipleDestinations(`${message} Continuing with ${usedKey} and ignoring the rest.`);
+      } else {
+        throw new ProvisioningError(message, resourceType, logicalId);
+      }
     }
 
     try {
@@ -2079,7 +2150,25 @@ export class EC2Provider implements ResourceProvider {
     // For target changes, we delete and recreate
     try {
       await this.deleteRoute(logicalId, physicalId, resourceType);
-      const createResult = await this.createRoute(logicalId, resourceType, properties);
+      const createResult = await this.createRoute(
+        logicalId,
+        resourceType,
+        properties,
+        // NOTE: this downgrades ONLY the multi-destination guard. The
+        // required-field check at the top of createRoute is deliberately NOT
+        // downgraded and can still throw on this post-delete path (a bag
+        // missing RouteTableId or every destination has nothing to create
+        // from) — that is pre-existing behavior, not something this callback
+        // claims to cover.
+        //
+        // `rollback-executor.ts`'s revert arm and `cdkd drift --revert` both
+        // call update() with a cdkd STATE record as the desired bag, and this
+        // method has no context parameter to tell that apart from a template
+        // update — so the refusal downgrades to a warning on every update, per
+        // the "an UPDATE-path refusal is a replay refusal too" rule. The route
+        // was already deleted above; throwing here would strand it.
+        (message) => this.logger.warn(message)
+      );
       return {
         physicalId: createResult.physicalId,
         wasReplaced: true,

@@ -135,14 +135,24 @@ describe('EC2Provider AWS::EC2::Route extra target types (#609)', () => {
       expect(result.physicalId).toBe('rtb-111|10.2.0.0/16');
     });
 
-    it('a v4 CIDR wins over a prefix list when a template carries both (precedence pin)', async () => {
+    // This pin used to assert the silent narrowing on the TEMPLATE path. Issue
+    // #1566 (filed by this PR's own review) deliberately replaced that with a
+    // pre-flight refusal, so the precedence pin moves to the STATE-borne path,
+    // which is the only place the `||` chain still decides anything. The
+    // template-path refusal is covered by ec2-route-multi-destination.test.ts.
+    it('a v4 CIDR wins over a prefix list on a state replay (precedence pin)', async () => {
       mockSend.mockResolvedValueOnce({});
-      const result = await provider.create('Route', 'AWS::EC2::Route', {
-        RouteTableId: 'rtb-111',
-        DestinationCidrBlock: '10.3.0.0/16',
-        DestinationPrefixListId: 'pl-0123456789abcdef0',
-        GatewayId: 'igw-222',
-      });
+      const result = await provider.create(
+        'Route',
+        'AWS::EC2::Route',
+        {
+          RouteTableId: 'rtb-111',
+          DestinationCidrBlock: '10.3.0.0/16',
+          DestinationPrefixListId: 'pl-0123456789abcdef0',
+          GatewayId: 'igw-222',
+        },
+        { replayingState: true }
+      );
       const input = createInput();
       expect(input['DestinationCidrBlock']).toBe('10.3.0.0/16');
       expect(input['DestinationPrefixListId']).toBeUndefined();
