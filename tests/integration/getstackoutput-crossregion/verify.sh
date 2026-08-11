@@ -88,8 +88,8 @@ cleanup() {
   # doesn't strictly matter, but mirrors real-world recommended order.
   # Each stack is destroyed against its OWN region.
   if [ -x "${LOCAL_DIST}" ]; then
-    node "${LOCAL_DIST}" state destroy "${CONSUMER_STACK}" --state-bucket "${STATE_BUCKET}" --region "${CONSUMER_REGION}" --yes >/dev/null 2>&1
-    node "${LOCAL_DIST}" state destroy "${PRODUCER_STACK}" --state-bucket "${STATE_BUCKET}" --region "${PRODUCER_REGION}" --yes >/dev/null 2>&1
+    node "${LOCAL_DIST}" state destroy "${CONSUMER_STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${CONSUMER_REGION}" --yes >/dev/null 2>&1
+    node "${LOCAL_DIST}" state destroy "${PRODUCER_STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${PRODUCER_REGION}" --yes >/dev/null 2>&1
   fi
   # Direct API fallback so a half-deployed AWS resource doesn't leak —
   # delete the SSM parameter from the region it was created in.

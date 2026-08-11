@@ -70,7 +70,7 @@ sweep_canary_backend() {
 cleanup() {
   echo "==> Cleanup"
   set +eu
-  [ -x "${LOCAL_DIST}" ] && node "${LOCAL_DIST}" state destroy "${STACK}" --region "${REGION}" --yes >/dev/null 2>&1
+  [ -x "${LOCAL_DIST}" ] && node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   aws synthetics delete-canary --name "${CANARY}" --region "${REGION}" >/dev/null 2>&1 || true
   aws s3 rb "s3://${BUCKET}" --force >/dev/null 2>&1 || true
   sweep_canary_backend

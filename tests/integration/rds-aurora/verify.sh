@@ -98,7 +98,7 @@ cleanup() {
     # DeletionProtection=true live on the SecurityCluster (#1160 fixture
     # shape); idempotent when protection is already off.
     node "${LOCAL_DIST}" state destroy "${STACK}" \
-      --state-bucket "${STATE_BUCKET}" \
+      --state-bucket "${STATE_BUCKET:-}" \
       --region "${REGION}" \
       --remove-protection \
       --yes

@@ -53,7 +53,7 @@ LOCAL_DIST="${PWD}/../../../dist/cli.js"
 cleanup() {
   echo "==> Cleanup"
   set +eu
-  [ -x "${LOCAL_DIST}" ] && node "${LOCAL_DIST}" state destroy "${STACK}" --region "${REGION}" --yes >/dev/null 2>&1
+  [ -x "${LOCAL_DIST}" ] && node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   aws scheduler delete-schedule --name "${SCHED}" --group-name "${GROUP}" --region "${REGION}" >/dev/null 2>&1 || true
   aws scheduler delete-schedule-group --name "${GROUP}" --region "${REGION}" >/dev/null 2>&1 || true
   ACCT=$(aws sts get-caller-identity --query Account --output text 2>/dev/null || true)

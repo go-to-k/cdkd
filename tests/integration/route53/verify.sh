@@ -97,7 +97,7 @@ cleanup() {
     # exited 0 — a failed destroy must LEAVE state so AWS resources are
     # not orphaned (the next run / a human can retry against the state).
     node "${LOCAL_DIST}" state destroy "${STACK}" --yes \
-      --state-bucket "${STATE_BUCKET}" --region "${REGION}" >/dev/null 2>&1
+      --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" >/dev/null 2>&1
     destroy_rc=$?
   fi
   if [ -n "${STATE_BUCKET:-}" ] && [ "${destroy_rc}" -eq 0 ]; then

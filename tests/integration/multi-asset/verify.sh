@@ -163,7 +163,7 @@ fi
 echo "==> Pre-run cleanup"
 # Pre-run cleanup must not exit the script (it runs before deploy). Inline a
 # minimal state drop here; the EXIT trap handles the full teardown.
-node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET}" \
+node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" \
   --region "${REGION}" --yes >/dev/null 2>&1 || true
 
 # --- Phase 1: deploy (publishes 1 ECR image + 4 S3 assets concurrently) -----

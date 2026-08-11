@@ -80,7 +80,7 @@ cleanup() {
   set +eu
   if [ -x "${LOCAL_DIST}" ] && [ -n "${STATE_BUCKET:-}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" \
-      --state-bucket "${STATE_BUCKET}" \
+      --state-bucket "${STATE_BUCKET:-}" \
       --region "${REGION}" \
       --yes
   fi

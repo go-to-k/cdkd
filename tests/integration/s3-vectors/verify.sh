@@ -60,7 +60,7 @@ cleanup() {
   set +eu
   destroy_rc=0
   if [ -x "${LOCAL_DIST}" ] && [ -n "${STATE_BUCKET:-}" ]; then
-    node "${LOCAL_DIST}" state destroy "${STACK}" --yes --state-bucket "${STATE_BUCKET}" --region "${REGION}" >/dev/null 2>&1
+    node "${LOCAL_DIST}" state destroy "${STACK}" --yes --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" >/dev/null 2>&1
     destroy_rc=$?
   fi
   if [ -n "${STATE_BUCKET:-}" ] && [ "${destroy_rc}" = "0" ]; then

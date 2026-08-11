@@ -110,7 +110,7 @@ cleanup() {
     aws ec2 delete-volume --volume-id "${vol_id}" --region "${REGION}" >/dev/null 2>&1
   done
   if [ -x "${LOCAL_DIST}" ] && [ -n "${STATE_BUCKET:-}" ]; then
-    node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET}" \
+    node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" \
       --region "${REGION}" --skip-final-snapshot --yes >/dev/null 2>&1
   fi
   if [ -n "${STATE_BUCKET:-}" ]; then

@@ -70,7 +70,7 @@ cleanup() {
   ( set +eu
     if [ -x "${LOCAL_DIST}" ] && [ -n "${STATE_BUCKET:-}" ]; then
       node "${LOCAL_DIST}" state destroy "${STACK}" --region "${REGION}" \
-        --state-bucket "${STATE_BUCKET}" --yes >/dev/null 2>&1
+        --state-bucket "${STATE_BUCKET:-}" --yes >/dev/null 2>&1
     fi
     # Out-of-band sweep of the fixed-name ECS pieces so a crashed run cannot
     # poison the next one even if state destroy failed. Deliberately does NOT

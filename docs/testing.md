@@ -857,6 +857,50 @@ sides for the same reason. The same caveat applies too: a list whose order
 carries meaning (DNS resolver lists, preference orders) must NOT be sorted,
 because sorting would hide a real regression rather than reveal one.
 
+### Fixture convention: `state destroy` must pass `--state-bucket`
+
+The harness exports the state bucket as `STATE_BUCKET`, but the CLI's own
+environment fallback is `CDKD_STATE_BUCKET` — a **different** name. So a
+`cleanup()` sweep spelled
+
+```bash
+node "${LOCAL_DIST}" state destroy "${STACK}" --region "${REGION}" --yes
+```
+
+never reads the harness's bucket at all. It falls through to the STS-derived
+default `cdkd-state-{accountId}` and only appears to work because that default
+is usually the same bucket. Point `STATE_BUCKET` anywhere else — a per-run
+isolated bucket, a second-account run, the legacy region-suffixed bucket — and
+the state sweep silently no-ops: it destroys nothing, reports success, and only
+the fixture's own tag-based AWS sweeps clean up. The leaked state record then
+wedges the next run of that fixture.
+
+Pass the bucket explicitly, in the `set -u`-safe form:
+
+```bash
+node "${LOCAL_DIST}" state destroy "${STACK}" \
+  --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes
+```
+
+`"${STATE_BUCKET:-}"` rather than `"${STATE_BUCKET}"` is load-bearing: `cleanup`
+is trap-installed, so it can run **before** the script's own
+`if [ -z "${STATE_BUCKET:-}" ]` guard has rejected an unset variable, and a
+cleanup that only does `set +e` (not `set +eu`) would abort teardown mid-sweep
+on the unguarded form. An empty value is safe — the resolver treats `''` as "not
+supplied" and falls back exactly as omitting the flag does, so the guarded form
+is never worse than the status quo.
+
+Note the asymmetry this convention corrects: `deploy` (335 call sites) and
+`destroy` (227) already passed the flag everywhere; only `state destroy` had
+drifted, at 96 of 171 call sites across 94 fixtures. `deploy` deliberately keeps
+the strict `"${STATE_BUCKET}"` form — there an unset bucket is a harness
+misconfiguration that should fail loudly rather than silently target the default.
+
+Enforced by `tests/unit/scripts/integ-state-bucket.test.ts` (classifier:
+`scripts/check-integ-state-bucket.ts`), which evaluates code only — heredoc
+bodies, comments and `echo` arguments are stripped, so a remediation hint that
+prints the command is not treated as an invocation.
+
 ## 3. Deploy Using cdkd
 
 ```bash

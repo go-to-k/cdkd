@@ -71,7 +71,7 @@ cleanup() {
     # Do NOT silence stderr — a partial failure must be visible so we never
     # leak ten billing instances.
     node "${LOCAL_DIST}" state destroy "${STACK}" \
-      --state-bucket "${STATE_BUCKET}" \
+      --state-bucket "${STATE_BUCKET:-}" \
       --region "${REGION}" \
       --yes
   fi

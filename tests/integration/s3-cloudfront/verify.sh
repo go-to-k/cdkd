@@ -64,7 +64,7 @@ cleanup() {
   set +eu
   local state_destroy_ok=1
   if [ -x "${LOCAL_DIST}" ]; then
-    if node "${LOCAL_DIST}" state destroy "${STACK}" --region "${REGION}" --yes >/dev/null 2>&1; then
+    if node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1; then
       state_destroy_ok=0
     fi
   fi

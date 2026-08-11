@@ -132,10 +132,17 @@ for rel in $staged_files; do
     # comment is documenting the bug, not exercising it.
     [[ "$trimmed" == \#* ]] && continue
 
-    # Anchor on `state destroy` (cdkd subcommand) AND `--force`.
-    # Use grep with extended regex to be tolerant of varying whitespace.
+    # Anchor on `state destroy` (cdkd subcommand) and require the flag to
+    # come AFTER it — testing both halves against the WHOLE line matches a
+    # bash file test that merely precedes the invocation, e.g.
+    #   [ -f "${LOCAL_DIST}" ] && node ... state destroy ... --yes
+    # which is correct code (14 fixtures use the `-x` spelling of it). That
+    # false positive blocked the #1567 sweep the moment it touched such a
+    # line. The header comment already described the intended semantics as
+    # "`state destroy` FOLLOWED BY `--force`"; only the check lagged.
+    tail_after_destroy=$(printf '%s' "$line" | sed -E 's/^.*state[[:space:]]+destroy//')
     if printf '%s' "$line" | grep -qE 'state[[:space:]]+destroy\b' \
-       && printf '%s' "$line" | grep -qE '(\-\-force\b|[[:space:]]\-f\b)'; then
+       && printf '%s' "$tail_after_destroy" | grep -qE '(\-\-force\b|[[:space:]]\-f\b)'; then
       OFFENDERS+=("$rel: $trimmed")
       [[ "${#OFFENDERS[@]}" -ge "$MAX_REPORT" ]] && break 2
     fi

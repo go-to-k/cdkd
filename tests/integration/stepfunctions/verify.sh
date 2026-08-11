@@ -66,7 +66,7 @@ cleanup() {
   set +e
   if [ -x "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" destroy "${STACK}" --region "${REGION}" --state-bucket "${STATE_BUCKET}" --force >/dev/null 2>&1
-    node "${LOCAL_DIST}" state destroy "${STACK}" --region "${REGION}" --state-bucket "${STATE_BUCKET}" --yes >/dev/null 2>&1
+    node "${LOCAL_DIST}" state destroy "${STACK}" --region "${REGION}" --state-bucket "${STATE_BUCKET:-}" --yes >/dev/null 2>&1
   fi
   rm -f "${DEPLOY_LOG}" 2>/dev/null || true
   set -e

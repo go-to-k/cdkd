@@ -79,7 +79,7 @@ cleanup() {
   set +eu
   destroy_rc=0
   if [ -f "${LOCAL_DIST}" ]; then
-    node "${LOCAL_DIST}" state destroy "${STACK}" --region "${REGION}" --yes >/dev/null 2>&1
+    node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
     destroy_rc=$?
   fi
   # Only drop the state file when the destroy actually succeeded. A classic NAT

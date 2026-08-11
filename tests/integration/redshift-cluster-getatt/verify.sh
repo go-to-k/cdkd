@@ -64,7 +64,7 @@ cleanup() {
   echo "==> Cleanup (errors tolerated)"
   set +e
   if [ -x "${LOCAL_DIST}" ]; then
-    node "${LOCAL_DIST}" state destroy "${STACK}" --region "${REGION}" --state-bucket "${STATE_BUCKET}" --yes >/dev/null 2>&1
+    node "${LOCAL_DIST}" state destroy "${STACK}" --region "${REGION}" --state-bucket "${STATE_BUCKET:-}" --yes >/dev/null 2>&1
   fi
   aws ssm delete-parameter --name "${ADDR_PARAM}" --region "${REGION}" >/dev/null 2>&1 || true
   aws ssm delete-parameter --name "${PORT_PARAM}" --region "${REGION}" >/dev/null 2>&1 || true
