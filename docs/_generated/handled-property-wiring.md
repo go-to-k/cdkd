@@ -10,7 +10,7 @@ A computed read `properties[k]` also counts when `k` iterates a literal name tab
 ## Summary
 
 - Provider classes classified: **84**
-- Declared properties: **1068** (**1066** with read evidence)
+- Declared properties: **1081** (**1079** with read evidence)
 - Fully wired classes: **82**
 - Allow-listed classes (visible, non-blocking): **2**
 - Classes with a whole-bag blind spot (recorded, never an excuse): **19**
@@ -37,7 +37,7 @@ Sites where a whole property bag left the evidence walk (a spread, an unresolvab
 | --- | --- |
 | `ACMCertificateProvider` (acm-certificate-provider.ts) | `computed key in update()` |
 | `ApiGatewayProvider` (apigateway-provider.ts) | `computed key in updateAuthorizer()`, `computed key in updateMethod()` |
-| `AppSyncProvider` (appsync-provider.ts) | `computed key in updateResolver()` |
+| `AppSyncProvider` (appsync-provider.ts) | `computed key in applyGraphQLApiConfig()`, `computed key in updateGraphQLApi()`, `computed key in updateResolver()` |
 | `DynamoDBGlobalTableProvider` (dynamodb-globaltable-provider.ts) | `extractLocalTags(...) in update()` |
 | `ECRProvider` (ecr-provider.ts) | `hasCdkAutoDeleteTag(...) in delete()` |
 | `EFSProvider` (efs-provider.ts) | `computed key in updateFileSystem()` |
@@ -66,7 +66,7 @@ Sites where a whole property bag left the evidence walk (a spread, an unresolvab
 | `AgentCoreRuntimeProvider` | agentcore-runtime-provider.ts | wired | 10 | 10 |
 | `ApiGatewayProvider` | apigateway-provider.ts | wired | 32 | 32 |
 | `ApiGatewayV2Provider` | apigatewayv2-provider.ts | wired | 36 | 36 |
-| `AppSyncProvider` | appsync-provider.ts | wired | 24 | 24 |
+| `AppSyncProvider` | appsync-provider.ts | wired | 37 | 37 |
 | `ASGProvider` | asg-provider.ts | wired | 33 | 33 |
 | `BudgetsBudgetProvider` | budgets-budget-provider.ts | wired | 3 | 3 |
 | `CloudFrontDistributionProvider` | cloudfront-distribution-provider.ts | wired | 2 | 2 |
