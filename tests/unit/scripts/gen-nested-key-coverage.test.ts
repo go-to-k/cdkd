@@ -5459,6 +5459,15 @@ describe('target-table hygiene', { timeout: 30_000 }, () => {
     }
   });
 
+  // Explicit timeouts on the three hygiene probes below: each re-classifies
+  // EVERY opted-in target from source, so their cost grows with the audited
+  // path set rather than with the change under test. This one measured 7.3s
+  // locally and 31.8s on CI right after the #609 API Gateway v2 backfill added
+  // its nested paths — i.e. it blew the 30s default without anything being
+  // wrong. The values are ~4x the observed CI time so the next target to opt
+  // in does not re-break them.
+  const HYGIENE_PROBE_TIMEOUT_MS = 120_000;
+
   it('a WALK-DEPENDENT opt-in must declare minHandoffPoints (#1445)', () => {
     // "Walk-dependent" is derived, not judged: re-classify the target with its
     // hand-off points stripped and see whether anything flips to
@@ -5514,7 +5523,7 @@ describe('target-table hygiene', { timeout: 30_000 }, () => {
         ).toBeUndefined();
       }
     }
-  });
+  }, HYGIENE_PROBE_TIMEOUT_MS);
 
   it('the write floors are calibrated to their measured yields (#1445)', () => {
     // The `minNestedKeys` band below has kept that floor honest; the WRITE
@@ -5572,7 +5581,7 @@ describe('target-table hygiene', { timeout: 30_000 }, () => {
         expect(target.minHandoffPoints, `${label} minHandoffPoints`).toBeGreaterThanOrEqual(1);
       }
     }
-  });
+  }, HYGIENE_PROBE_TIMEOUT_MS);
 
   it('every minNestedKeys floor is calibrated to the PATH unit (#1448 / #1464)', () => {
     // The floors were name-era values until #1448 re-derived them, and
@@ -5600,7 +5609,7 @@ describe('target-table hygiene', { timeout: 30_000 }, () => {
         );
       }
     }
-  });
+  }, HYGIENE_PROBE_TIMEOUT_MS);
 
   it('every allow-list entry names a target resource type', () => {
     const targetTypes = new Set(NESTED_KEY_TARGETS.map((t) => t.resourceType));
