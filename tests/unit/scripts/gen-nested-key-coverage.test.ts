@@ -29,6 +29,7 @@ import {
   findDivergences,
   findStaleAllowListEntries,
   findStaleSegmentRenames,
+  findStaleTerminalRenames,
   isHandoffCovered,
   loadReport,
   lowerFirst,
@@ -763,11 +764,13 @@ describe('the BUILDER idiom (synthetic, issue #1474)', () => {
     // borrowed from the arrow's same-named binding, which is both halves of
     // the inversion.
     expect(scopeAt(source, 'Root.Cfg')).toEqual(['Outer']);
-    // `Root.Inner` is empty for an UNRELATED reason, noted so the assertion
-    // above is not misread as covering it: `inner` binds to a `.map(…)` call,
-    // not to an object literal, so it is not a builder seed — the
-    // seed-literal-only half of bound (8), in its under-crediting direction.
-    expect(scopeAt(source, 'Root.Inner')).toEqual([]);
+    // `Root.Inner` used to be empty because `inner` binds to a `.map(…)` call
+    // rather than a literal seed — the under-crediting gap issue #1540's
+    // BUILDER-BEHIND-BINDING hop closed: `resolveBuilders` now follows the
+    // plain binding's initializer (same declaration-identity strictness), so
+    // the callback's builder credits its members here. The assertion above
+    // still proves the arrow's same-named `cfg` did NOT leak into `Root.Cfg`.
+    expect(scopeAt(source, 'Root.Inner')).toEqual(['Inner']);
   });
 
   it('skips a REVERSE-MAP helper nested inside the builder scope', () => {
@@ -2287,9 +2290,196 @@ describe('classifyTarget (synthetic)', () => {
         shapeCleanCount: 0,
         unmatchedDefinitions: [],
         usedSegmentRenames: ['Middle'],
+        usedTerminalRenames: [],
       },
     ]);
     expect(findStaleSegmentRenames(report, [target])).toEqual(['AWS::Fake::Thing#Gone']);
+  });
+
+  it('a SCOPED segmentRenames key applies only under its declared parent (#1540)', () => {
+    // Two families share a segment NAME (`Rules`); only the one under `S3Key`
+    // is renamed. A bare-name entry would corrupt the lifecycle chain — the
+    // collision class that blocked the notification renames until scoping.
+    const target: NestedKeyTarget = {
+      ...exactTarget,
+      freshObjectMapper: true,
+      segmentRenames: { 'S3Key.Rules': 'FilterRules' },
+    };
+    const evidence = writeEvidence({
+      Top: ['S3Key', 'Lifecycle'],
+      'Top.S3Key': ['FilterRules'],
+      'Top.S3Key.FilterRules': ['Name'],
+      'Top.Lifecycle': ['Rules'],
+      'Top.Lifecycle.Rules': ['Name'],
+    });
+    const used = new Set<string>();
+    const [notif] = classifyTarget(
+      target,
+      keyPaths('Top', 'S3Key.Rules.Name'),
+      new Set(['Name']),
+      new Set(),
+      new Map(),
+      evidence,
+      used
+    );
+    expect(notif?.bucket).toBe('same-spelling');
+    expect([...used]).toEqual(['S3Key.Rules']);
+    // The same-named `Rules` under a DIFFERENT parent is untouched: its plain
+    // chain resolves, so the entry neither applies nor reads as used there.
+    const [lifecycle] = classifyTarget(
+      target,
+      keyPaths('Top', 'Lifecycle.Rules.Name'),
+      new Set(['Name']),
+      new Set(),
+      new Map(),
+      evidence
+    );
+    expect(lifecycle?.bucket).toBe('same-spelling');
+  });
+
+  it('a SCOPED segmentRenames key WINS over a bare-name entry for the same segment (#1540)', () => {
+    const target: NestedKeyTarget = {
+      ...exactTarget,
+      freshObjectMapper: true,
+      segmentRenames: { Middle: 'bareTarget', 'Top.Middle': 'scopedTarget' },
+    };
+    const used = new Set<string>();
+    const [entry] = classifyTarget(
+      target,
+      keyPaths('Top', 'Middle.Leaf'),
+      new Set(['Leaf']),
+      new Set(),
+      new Map(),
+      writeEvidence({ Top: ['scopedTarget'], 'Top.scopedTarget': ['Leaf'] }),
+      used
+    );
+    expect(entry?.bucket).toBe('same-spelling');
+    expect([...used]).toEqual(['Top.Middle']);
+  });
+
+  it('terminalRenames redirects the terminal judgment to the declared SDK spelling (#1540)', () => {
+    // Pure rename: CFn `Enabled` is the SDK's `IsEnabled`. The check stays
+    // strict — the RENAMED member must be scope-written verbatim.
+    const paths = keyPaths('Top', 'Enabled');
+    const evidence = writeEvidence({ Top: ['IsEnabled'] });
+    const [without] = classifyTarget(
+      { ...exactTarget, freshObjectMapper: true },
+      paths,
+      new Set(['Enabled']),
+      new Set(),
+      new Map(),
+      evidence
+    );
+    expect(without?.bucket).toBe('no-write-evidence');
+    const target: NestedKeyTarget = {
+      ...exactTarget,
+      freshObjectMapper: true,
+      terminalRenames: { 'Top.Enabled': 'IsEnabled' },
+    };
+    const usedTerminals = new Set<string>();
+    const [with_] = classifyTarget(
+      target,
+      paths,
+      new Set(['Enabled']),
+      new Set(),
+      new Map(),
+      evidence,
+      undefined,
+      usedTerminals
+    );
+    expect(with_?.bucket).toBe('same-spelling');
+    expect([...usedTerminals]).toEqual(['Top.Enabled']);
+  });
+
+  it('a DOTTED terminalRenames value relocates the terminal under an inserted scope (#1540)', () => {
+    // Relocation: CFn puts `Prefix` at the config level, the SDK nests it
+    // under `Filter` — the value's non-last parts extend the parent chain.
+    const target: NestedKeyTarget = {
+      ...exactTarget,
+      freshObjectMapper: true,
+      terminalRenames: { 'Top.Prefix': 'Filter.Prefix' },
+    };
+    const [entry] = classifyTarget(
+      target,
+      keyPaths('Top', 'Prefix'),
+      new Set(['Prefix']),
+      new Set(),
+      new Map(),
+      writeEvidence({ Top: ['Filter'], 'Top.Filter': ['Prefix'] })
+    );
+    expect(entry?.bucket).toBe('same-spelling');
+  });
+
+  it('a terminalRenames entry whose PLAIN terminal resolves is reported unused (#1540)', () => {
+    // The staleness fence's input, mirroring segmentRenames: a redundant
+    // entry must be removed, and this is what caught the three hand-authored
+    // `BucketArn` / `BucketAccountId` entries the seed-key hand-off aliases
+    // already covered.
+    const target: NestedKeyTarget = {
+      ...exactTarget,
+      freshObjectMapper: true,
+      terminalRenames: { 'Top.Leaf': 'RenamedLeaf' },
+    };
+    const usedTerminals = new Set<string>();
+    classifyTarget(
+      target,
+      keyPaths('Top', 'Leaf'),
+      new Set(['Leaf']),
+      new Set(),
+      new Map(),
+      writeEvidence({ Top: ['Leaf'] }),
+      undefined,
+      usedTerminals
+    );
+    expect([...usedTerminals]).toEqual([]);
+  });
+
+  it('a terminalRenames entry stays USED when neither spelling resolves (#1540)', () => {
+    // Same negation as segmentRenames: the entry is still the right bridge,
+    // and the divergence — not a stale-map error — is what must surface.
+    const target: NestedKeyTarget = {
+      ...exactTarget,
+      freshObjectMapper: true,
+      terminalRenames: { 'Top.Leaf': 'RenamedLeaf' },
+    };
+    const usedTerminals = new Set<string>();
+    const [entry] = classifyTarget(
+      target,
+      keyPaths('Top', 'Leaf'),
+      new Set(['Leaf']),
+      new Set(),
+      new Map(),
+      writeEvidence({ Top: [] }),
+      undefined,
+      usedTerminals
+    );
+    expect(entry?.bucket).toBe('no-write-evidence');
+    expect([...usedTerminals]).toEqual(['Top.Leaf']);
+  });
+
+  it('findStaleTerminalRenames reports the entry the classifier never needed (#1540)', () => {
+    const target: NestedKeyTarget = {
+      ...exactTarget,
+      resourceType: 'AWS::Fake::Thing',
+      terminalRenames: { 'Top.Used': 'X', 'Top.Gone': 'Y' },
+    };
+    const report = buildReport([
+      {
+        resourceType: target.resourceType,
+        providerFile: target.providerFile,
+        sdkClientPackage: target.sdkClientPackage,
+        keyStyle: target.keyStyle,
+        freshObjectMapper: true,
+        nestedKeyCount: 0,
+        entries: [],
+        shapeEntries: [],
+        shapeCleanCount: 0,
+        unmatchedDefinitions: [],
+        usedSegmentRenames: [],
+        usedTerminalRenames: ['Top.Used'],
+      },
+    ]);
+    expect(findStaleTerminalRenames(report, [target])).toEqual(['AWS::Fake::Thing#Top.Gone']);
   });
 
   it('a no-write-evidence key is a CI-blocking divergence', () => {
@@ -2307,6 +2497,7 @@ describe('classifyTarget (synthetic)', () => {
         shapeCleanCount: 0,
         unmatchedDefinitions: [],
         usedSegmentRenames: [],
+        usedTerminalRenames: [],
       },
     ]);
     expect(report.summary.noWriteEvidence).toBe(1);
@@ -2717,6 +2908,7 @@ describe('report plumbing (positive direction)', () => {
         shapeCleanCount: 0,
         unmatchedDefinitions: [],
         usedSegmentRenames: [],
+        usedTerminalRenames: [],
       },
     ]);
     const divergences = findDivergences(report);
@@ -2753,6 +2945,7 @@ describe('report plumbing (positive direction)', () => {
         shapeCleanCount: 0,
         unmatchedDefinitions: [],
         usedSegmentRenames: [],
+        usedTerminalRenames: [],
       },
     ]);
     expect(findStaleAllowListEntries(report, allow)).toEqual(['AWS::Fake::Thing#GoneKey']);
@@ -2785,6 +2978,7 @@ describe('report plumbing (positive direction)', () => {
         shapeCleanCount: 0,
         unmatchedDefinitions: [],
         usedSegmentRenames: [],
+        usedTerminalRenames: [],
       },
     ]);
     expect(findStaleAllowListEntries(report, allow)).toEqual([]);
@@ -2820,6 +3014,7 @@ describe('report plumbing (positive direction)', () => {
         shapeCleanCount: 0,
         unmatchedDefinitions: [],
         usedSegmentRenames: [],
+        usedTerminalRenames: [],
       },
     ]);
     expect(findDivergences(report).map((d) => [d.nestedKey, d.bucket])).toEqual([
@@ -3473,11 +3668,11 @@ describe('whole-blob hand-off walk (real repo, issue #1445)', () => {
       'AWS::CloudWatch::AnomalyDetector': 0,
       'AWS::ECS::Service': 0,
       'AWS::ECS::TaskDefinition': 0,
-      // 81 before issue #1520 declared the S3 segment renames and widened the
-      // reverse-map exclusion; the 50 that remain are the recorded structural
-      // bounds in header reason (C) (Filter relocation, terminal renames,
-      // rename-name collisions, builder flow bounds, the request-level hoist).
-      'AWS::S3::Bucket': 50,
+      // 81 before issue #1520 (segment renames + widened reverse-map
+      // exclusion, -> 50), 0 since issue #1540 (builder-behind-binding hop,
+      // for-of taint hop, scoped + terminal renames) opted the target in —
+      // the trajectory is recorded in header reason (C).
+      'AWS::S3::Bucket': 0,
     });
   });
 
@@ -3491,43 +3686,37 @@ describe('whole-blob hand-off walk (real repo, issue #1445)', () => {
   // `*ToCfn` reverse families, which makes the empty-never-written assertion a
   // REAL by-name re-drop fence; the RED-direction probe further below proves
   // that direction against the real provider source.
-  it('keeps S3 reason (C) CLOSED: only the recorded terminal renames are never-written (#1495/#1520)', () => {
-    // Reason (C) in the header, RESOLVED. This test used to pin the 20 paths
-    // whose terminal member appeared NOWHERE in `s3-bucket-provider.ts` — the
-    // confirmed write-side silent drops (the `TargetObjectKeyFormat` family,
-    // the four `Destination` blocks, `SourceSelectionCriteria`,
-    // `TransitionDefaultMinimumObjectSize`, `BlockedEncryptionTypes`). Issue
-    // #1495 wired every one of them, so the probe is INVERTED into a fence:
-    // an EMPTY never-written set is now the assertion, and a future provider
-    // change that drops a member back out fails here by name.
-    //
-    // The remaining `no-write-evidence` paths (50 after #1520's segment
-    // renames; 81 before) ARE written somewhere in the file and fail only to
-    // resolve at the audited CHAIN, for the recorded structural bounds in
-    // header reason (C) — shapes a segment rename cannot express, not drops.
-    const forced = NESTED_KEY_TARGETS.map((t) => ({ ...t, freshObjectMapper: true }));
-    const s3 = loadReport(forced).targets.find((t) => t.resourceType === 'AWS::S3::Bucket')!;
-    const evidence = collectWriteEvidence(
-      readFileSync(join(PROVIDERS_DIR, 's3-bucket-provider.ts'), 'utf8'),
-      's3-bucket-provider.ts'
-    );
-    const neverWritten = s3.entries
+  it('keeps S3 reason (C) CLOSED: the opted-in target audits at ZERO, with the once-never-written spellings covered by their declared bridges (#1495/#1520/#1540)', () => {
+    // Reason (C) in the header, RESOLVED in three steps this test's history
+    // mirrors: #1495 wired the 20 confirmed silent drops (the original pin),
+    // #1520 made the never-written set a real by-name fence (widened
+    // reverse-map exclusion), and #1540 closed the structural residual and
+    // opted the target in. The fence is now the OPT-IN itself — any provider
+    // re-drop or bridge regression surfaces as a `no-write-evidence` entry,
+    // which this asserts is empty on the REAL tree (and which `--check`
+    // blocks CI with, by member name).
+    const s3 = loadReport().targets.find((t) => t.resourceType === 'AWS::S3::Bucket')!;
+    expect(s3.freshObjectMapper).toBe(true);
+    const flagged = s3.entries
       .filter((e) => e.bucket === 'no-write-evidence')
-      .filter((e) => !evidence.written.has(e.nestedKey.split('.').pop()!))
       .map((e) => e.nestedKey)
       .sort();
-    // The three CFn spellings below are never written BY DESIGN, not drops:
-    // the provider delivers them under the SDK's TERMINAL RENAME —
-    // `Bucket: (s3Dest['BucketArn'] ?? …)` for both destination blocks and
-    // `IsEnabled: (config['Enabled'] …)` for inventory — and #1520's widened
-    // reverse-map exclusion withdrew the reverse-map mentions that used to
-    // mask them. Pinned EXACTLY so any NEW never-written member (a real
-    // re-drop of a #1495 write) still fails here by name.
-    expect(neverWritten).toEqual([
+    expect(flagged).toEqual([]);
+    // The three CFn spellings the #1520-era fence pinned as "never written by
+    // design" are now COVERED, each through its declared bridge rather than a
+    // loose literal: `Enabled` via the `IsEnabled` terminal rename, the two
+    // `BucketArn`s via the hand-off seed-key alias of the bag-derived
+    // `Bucket: (s3Dest['BucketArn'] ?? …)` forwards. Asserted as
+    // `same-spelling` (the covered verdict) so a bridge regression re-flags
+    // them by name here as well as in `--check`.
+    for (const path of [
       'AnalyticsConfigurations.StorageClassAnalysis.DataExport.Destination.BucketArn',
       'InventoryConfigurations.Destination.BucketArn',
       'InventoryConfigurations.Enabled',
-    ]);
+    ]) {
+      const entry = s3.entries.find((e) => e.nestedKey === path);
+      expect(entry?.bucket, `${path} must be covered`).toBe('same-spelling');
+    }
   });
 
   it('pins the #1495 members as present in the write-evidence name set', () => {
@@ -3599,6 +3788,60 @@ describe('whole-blob hand-off walk (real repo, issue #1445)', () => {
     // so this probe cannot pass vacuously.
     const clean = collectWriteEvidence(source, 's3-bucket-provider.ts');
     expect(clean.written.has('SseKmsEncryptedObjects')).toBe(true);
+  });
+
+  it('RED probe (#1540): dropping a lifecycle BUILDER mutation is caught at its scope', () => {
+    // Real-code proof of the builder-behind-binding hop: the lifecycle rules
+    // are built by mutating `sdkRule` inside a `.map()` callback held in a
+    // plain binding — the exact shape the hop credits. Stripping the
+    // `AbortIncompleteMultipartUpload` mutation must remove the member from
+    // the `LifecycleConfiguration.Rules` scope (which the opted-in write pass
+    // then flags by name), and the unregressed source must carry it — the
+    // credit comes from the real mutation write, not from anywhere looser.
+    const source = readFileSync(join(PROVIDERS_DIR, 's3-bucket-provider.ts'), 'utf8');
+    const regressed = source.replace(
+      /^\s*sdkRule\.AbortIncompleteMultipartUpload = \{\n[^}]*\};\n/m,
+      ''
+    );
+    expect(regressed).not.toBe(source);
+    const stripped = collectWriteEvidence(regressed, 's3-bucket-provider.ts');
+    expect(
+      stripped.scopes.get('LifecycleConfiguration.Rules')?.has('AbortIncompleteMultipartUpload')
+    ).toBe(false);
+    const clean = collectWriteEvidence(source, 's3-bucket-provider.ts');
+    expect(
+      clean.scopes.get('LifecycleConfiguration.Rules')?.has('AbortIncompleteMultipartUpload')
+    ).toBe(true);
+    expect(
+      clean.scopes.get('LifecycleConfiguration.Rules.AbortIncompleteMultipartUpload')?.has(
+        'DaysAfterInitiation'
+      )
+    ).toBe(true);
+  });
+
+  it('the for-of taint hop registers a verbatim forward inside a config loop as a hand-off (#1540)', () => {
+    // The statement-form twin of the `.map((element) => …)` callback hop: the
+    // element of a bag-derived array is bag data. Without it, every per-item
+    // S3 config loop broke the taint chain at the loop variable and the
+    // `Tags: tagFilters` forward never registered.
+    const src = `
+      class P {
+        apply(properties) {
+          const configs = properties['MetricsConfigurations'];
+          for (const config of configs) {
+            const tagFilters = config['TagFilters'];
+            this.client.send(
+              new Cmd({ MetricsConfiguration: { Filter: { And: { Tags: tagFilters } } } })
+            );
+          }
+        }
+      }
+    `;
+    const ev = collectWriteEvidence(src, 'p.ts');
+    expect(ev.handoffScopes.has('MetricsConfiguration.Filter.And.Tags')).toBe(true);
+    // The seed-key ALIAS carries the CFn spelling too, which is what the
+    // scoped `TagFilters` rename resolves against on the real tree.
+    expect(ev.handoffScopes.has('MetricsConfiguration.Filter.And.TagFilters')).toBe(true);
   });
 
   it('keeps the six #1472/#1473 ECS silent drops CLOSED (fixed, both targets opted in)', () => {
@@ -4091,6 +4334,7 @@ describe('real-code regression probes (per the repo checker rules)', () => {
         shapeCleanCount: 0,
         unmatchedDefinitions: [],
         usedSegmentRenames: [],
+        usedTerminalRenames: [],
       },
     ]))).toHaveLength(0);
   });
@@ -4624,7 +4868,7 @@ describe('the shipped --check command', { timeout: 30_000 }, () => {
     // a target silently dropping out of the table cannot satisfy this probe.
     expect(stderr).toContain('nested-key-coverage: OK');
     expect(stderr).toContain('0 divergences');
-    expect(stderr).toContain('10 fresh-object target(s)');
+    expect(stderr).toContain('11 fresh-object target(s)');
   });
 
   it('exits 1 naming ONLY the members a partial hand-mapping leaves out', () => {
