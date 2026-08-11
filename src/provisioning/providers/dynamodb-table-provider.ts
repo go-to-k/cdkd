@@ -97,6 +97,21 @@ export function mapSSESpecification(
   return out;
 }
 
+/**
+ * `DescribeTable` poll budget (seconds, 1 poll/s) after an ordinary
+ * `UpdateTable` — capacity, TTL, tags, table class. Calibrated on those and
+ * sufficient for them.
+ */
+const TABLE_ACTIVE_WAIT_ATTEMPTS = 60;
+
+/**
+ * The same budget for a BillingMode FLIP, which DynamoDB settles on a
+ * different order of magnitude (measured 2026-08-11: a PAY_PER_REQUEST ->
+ * PROVISIONED flip exceeded 60s and failed the deploy). Kept SEPARATE so a
+ * genuinely wedged capacity edit still fails in a minute rather than ten.
+ */
+const BILLING_FLIP_ACTIVE_WAIT_ATTEMPTS = 600;
+
 export class DynamoDBTableProvider implements ResourceProvider {
   private dynamoDBClient: DynamoDBClient;
   private logger = getLogger().child('DynamoDBTableProvider');
@@ -489,15 +504,54 @@ export class DynamoDBTableProvider implements ResourceProvider {
       // into a spurious change. `BillingModeSummary` is itself absent on a
       // table created without an explicit mode, which is PROVISIONED — the
       // same default `readCurrentState` assumes.
+      //
+      // An ABSENT value on EITHER side normalizes to the CFn type default
+      // PROVISIONED (issue #1553), which is also what `create()` above
+      // substitutes — so the two paths now agree on what "no BillingMode in
+      // the template" means. Before this the update path left it `undefined`,
+      // and a template that REMOVED the property produced a change ("undefined
+      // !== PAY_PER_REQUEST") that carried no mutable field: the
+      // `updateInput.BillingMode = ...` assignment was gated on the value
+      // being truthy, so `UpdateTable({TableName})` went out with nothing to
+      // update and DynamoDB rejected it.
+      //
+      // The reset semantic is MEASURED, not inferred from the type default
+      // (live CFn A/B, us-east-1, 2026-08-11): a table deployed with
+      // `BillingMode: PAY_PER_REQUEST` and then UPDATE'd with the property
+      // REMOVED is FLIPPED to PROVISIONED — and when the template declares no
+      // `ProvisionedThroughput` either, the CFn resource handler fails the
+      // stack with `Property ProvisionedThroughput cannot be empty` rather
+      // than retaining the old mode. So "removal retains" was the wrong
+      // reading; removal resets, exactly like `TableClass` below.
+      // AWS's own view, named once: the previous-side resolution, the flip
+      // detection and the ACTIVE-wait budget all have to agree on it.
+      const liveBillingMode = (table?.BillingModeSummary?.BillingMode ?? 'PROVISIONED') as
+        | 'PROVISIONED'
+        | 'PAY_PER_REQUEST';
       const recordedPrevBillingMode = previousProperties['BillingMode'];
       const recordedPrevBillingModeUsable =
         recordedPrevBillingMode === undefined ||
         (typeof recordedPrevBillingMode === 'string' && recordedPrevBillingMode.trim() !== '');
       const prevBillingMode = (
         recordedPrevBillingModeUsable
-          ? recordedPrevBillingMode
-          : (table?.BillingModeSummary?.BillingMode ?? 'PROVISIONED')
-      ) as 'PROVISIONED' | 'PAY_PER_REQUEST' | undefined;
+          ? ((recordedPrevBillingMode as string | undefined) ??
+            // An ABSENT recorded previous resolves differently depending on
+            // what the DESIRED side asks for, and the asymmetry is deliberate
+            // (review catch):
+            //   - desired ALSO absent -> the type default. Both sides
+            //     normalize to PROVISIONED, so BillingMode contributes no
+            //     change of its own — though a ProvisionedThroughput diff can
+            //     still carry the resolved mode along, which is what converges
+            //     a live on-demand table the template never declared.
+            //   - desired EXPLICIT -> the table's LIVE mode. Taking the type
+            //     default here would compare PROVISIONED against an explicit
+            //     `BillingMode: PROVISIONED` and SUPPRESS the flip entirely,
+            //     leaving a live PAY_PER_REQUEST table on-demand forever while
+            //     state records PROVISIONED. Reachable via `cdkd import`,
+            //     whose state properties come from the template, not from AWS.
+            (properties['BillingMode'] !== undefined ? liveBillingMode : 'PROVISIONED'))
+          : liveBillingMode
+      ) as 'PROVISIONED' | 'PAY_PER_REQUEST';
       if (!recordedPrevBillingModeUsable) {
         this.logger.warn(
           `AWS::DynamoDB::Table ${logicalId}: the recorded previous BillingMode is ` +
@@ -507,9 +561,13 @@ export class DynamoDBTableProvider implements ResourceProvider {
         );
       }
       let billingModeUnusable = false;
+      // ABSENT resolves to the CFn type default (see the reset note above);
+      // present-but-unusable still falls back to the PREVIOUS mode, because
+      // there the template DID ask for something and defaulting a junk value
+      // would silently re-price a live table.
       const requestedBillingMode =
         properties['BillingMode'] === undefined
-          ? undefined
+          ? 'PROVISIONED'
           : requireConfigString(
               properties['BillingMode'],
               'PROVISIONED',
@@ -518,23 +576,63 @@ export class DynamoDBTableProvider implements ResourceProvider {
                 onUnusable: (message) => {
                   billingModeUnusable = true;
                   this.logger.warn(
-                    `${message} The table's current billing mode` +
-                      `${prevBillingMode ? ` (${prevBillingMode})` : ''} is kept for this ` +
-                      `update rather than flipped to the default.`
+                    `${message} The table's current billing mode (${prevBillingMode}) is kept ` +
+                      `for this update rather than flipped to the default.`
                   );
                 },
               }
             );
       const billingMode = billingModeUnusable
         ? prevBillingMode
-        : (requestedBillingMode as 'PROVISIONED' | 'PAY_PER_REQUEST' | undefined);
+        : (requestedBillingMode as 'PROVISIONED' | 'PAY_PER_REQUEST');
       const billingOrThroughputChanged =
-        JSON.stringify(billingMode) !== JSON.stringify(prevBillingMode) ||
+        billingMode !== prevBillingMode ||
         JSON.stringify(properties['ProvisionedThroughput']) !==
           JSON.stringify(previousProperties['ProvisionedThroughput']);
+      // A flip INTO PROVISIONED while the template still declares
+      // `OnDemandThroughput` is self-contradictory, and issue #1553 made it
+      // newly reachable: the flip would be applied first and the on-demand
+      // ceiling would then be REJECTED by AWS, leaving the table half-changed.
+      //
+      // REFUSE BEFORE ANY CALL rather than skipping the block. Skipping was
+      // the first fix and a review showed it is the worse of the two: the
+      // engine records the DESIRED properties as state after a successful
+      // update, so the un-sent ceiling would be recorded as applied and the
+      // next deploy would compare the new value against itself and never send
+      // it — AWS stuck on the old ceiling permanently. That is the
+      // silent-drop class this file refuses everywhere else.
+      //
+      // A refusal on the update path is normally the thing to avoid (a
+      // rollback / `drift --revert` replays `update()` with a STATE record the
+      // user cannot edit), but this shape cannot occur in a valid record: no
+      // deploy that reaches state can carry it, and `readCurrentState` emits
+      // `BillingMode` whenever `BillingModeSummary` exists, which is always
+      // true for a live on-demand table. The value is template-borne in every
+      // reachable case, so the user can act on the error.
+      if (
+        billingMode === 'PROVISIONED' &&
+        prevBillingMode === 'PAY_PER_REQUEST' &&
+        properties['OnDemandThroughput'] !== undefined
+      ) {
+        const absentNote =
+          properties['BillingMode'] === undefined
+            ? ' (BillingMode is absent from the template, which CloudFormation resets to PROVISIONED)'
+            : '';
+        throw new ProvisioningError(
+          `AWS::DynamoDB::Table ${logicalId}: the template flips BillingMode to ` +
+            `PROVISIONED${absentNote} while still declaring OnDemandThroughput, which AWS ` +
+            `accepts only on a PAY_PER_REQUEST table. Nothing was applied. Remove ` +
+            `OnDemandThroughput, or keep BillingMode: PAY_PER_REQUEST.`,
+          logicalId,
+          resourceType
+        );
+      }
       if (billingOrThroughputChanged || tableClassChanged) {
         const updateInput: UpdateTableCommandInput = { TableName: physicalId };
-        if (billingOrThroughputChanged && billingMode) {
+        // Always defined now that both sides normalize, so the call can never
+        // again go out with only a `TableName` — the empty-UpdateTable shape
+        // issue #1553 is about.
+        if (billingOrThroughputChanged) {
           updateInput.BillingMode = billingMode;
         }
         if (tableClassChanged) {
@@ -543,12 +641,19 @@ export class DynamoDBTableProvider implements ResourceProvider {
           // type default rather than leaving the old value in place.
           updateInput.TableClass = normalizeTableClass(properties['TableClass']);
         }
-        // PAY_PER_REQUEST rejects ProvisionedThroughput. When BillingMode is
-        // PROVISIONED (or omitted, in which case the table is already
-        // PROVISIONED and only its capacity is changing) forward the caps.
+        // PAY_PER_REQUEST rejects ProvisionedThroughput; PROVISIONED requires
+        // it, so forward the caps whenever the resolved mode is PROVISIONED.
         // Gated on billingOrThroughputChanged so a TableClass-only change does
         // not re-assert the current throughput — AWS rejects an UpdateTable
         // whose requested throughput equals the table's current value.
+        //
+        // A flip to PROVISIONED with NO `ProvisionedThroughput` in the template
+        // is left to fail at AWS rather than pre-refused here: that is CFn
+        // parity (its handler fails the same shape with `Property
+        // ProvisionedThroughput cannot be empty`), DynamoDB's own error names
+        // the missing member, and a pre-flight throw on the UPDATE path would
+        // fire on a rollback / `drift --revert` replay of a state record the
+        // user cannot edit.
         if (
           billingOrThroughputChanged &&
           billingMode !== 'PAY_PER_REQUEST' &&
@@ -564,7 +669,23 @@ export class DynamoDBTableProvider implements ResourceProvider {
         // UpdateTable is async; wait for ACTIVE so later branches (and any
         // subsequent UpdateTable for OnDemand/Warm throughput) don't race a
         // still-UPDATING table.
-        await this.waitForTableActiveAfterUpdate(physicalId);
+        //
+        // The flip test is against the table's LIVE mode, not the RECORDED
+        // previous (review catch): when state and AWS disagree — an absent
+        // recorded previous against a live on-demand table, or the
+        // unusable-value arm under drift — `billingMode !== prevBillingMode`
+        // is false while AWS performs a real flip, which is exactly the case
+        // the long budget exists for.
+        //
+        // A flip also re-provisions every GSI, and `TableStatus` returns
+        // ACTIVE before the indexes do; the branches below issue further
+        // `UpdateTable`s that would race a still-UPDATING index and get
+        // `ResourceInUseException`. So a flip waits on the INDEXES too.
+        if (billingMode !== liveBillingMode) {
+          await this.waitForTableAndIndexesActive(physicalId, BILLING_FLIP_ACTIVE_WAIT_ATTEMPTS);
+        } else {
+          await this.waitForTableActiveAfterUpdate(physicalId, TABLE_ACTIVE_WAIT_ATTEMPTS);
+        }
         this.logger.debug(
           `Updated BillingMode/ProvisionedThroughput/TableClass on DynamoDB table ${physicalId}`
         );
@@ -1480,13 +1601,30 @@ export class DynamoDBTableProvider implements ResourceProvider {
   }
 
   /**
-   * Poll DescribeTable until the table reaches ACTIVE after an UpdateTable
-   * call. Distinct from `waitForTableActive` because `UpdateTable`
-   * transitions the table to `UPDATING` (not `CREATING`); a status
-   * mismatch should not throw — just keep polling — and the call may
-   * also return immediately ACTIVE on the no-op path (already disabled).
+   * Poll `DescribeTable` until the table leaves `UPDATING`. Distinct from
+   * `waitForTableActive` because `UpdateTable` transitions the table to
+   * `UPDATING` (not `CREATING`), so a status mismatch must keep polling
+   * rather than throw, and the call may return immediately ACTIVE.
+   *
+   * The 60-attempt (60s) default was calibrated on capacity / TTL / tag edits,
+   * which settle in seconds. A **BillingMode flip does not** — measured
+   * 2026-08-11 on the `dynamodb-ondemand` fixture, a PAY_PER_REQUEST ->
+   * PROVISIONED flip exceeded 60s and failed the deploy with
+   * `did not reach ACTIVE status within 60 seconds`, rolling the whole stack
+   * back. It was invisible before issue #1553 because the removal that
+   * triggers the flip never produced a valid `UpdateTable` at all; making the
+   * call correct is what put a real flip on this path.
+   *
+   * So the timeout is per-OPERATION rather than global: a flip gets 600s (the
+   * same order as the GlobalTable provider's own settle waits), everything
+   * else keeps the 60s that has been sufficient for two years of integs. A
+   * blanket raise would turn every genuinely wedged capacity edit into a
+   * 10-minute hang.
    */
-  private async waitForTableActiveAfterUpdate(tableName: string, maxAttempts = 60): Promise<void> {
+  private async waitForTableActiveAfterUpdate(
+    tableName: string,
+    maxAttempts = TABLE_ACTIVE_WAIT_ATTEMPTS
+  ): Promise<void> {
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       const response = await this.dynamoDBClient.send(
         new DescribeTableCommand({ TableName: tableName })

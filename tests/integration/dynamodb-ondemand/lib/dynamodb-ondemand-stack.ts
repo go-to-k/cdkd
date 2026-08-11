@@ -116,5 +116,46 @@ export class DynamodbOndemandStack extends cdk.Stack {
       writeCapacity: isUpdate ? 10 : 5,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
+
+    // A THIRD table for the `BillingMode` REMOVAL semantic (issue #1553).
+    //
+    // Removing the property from a PAY_PER_REQUEST table used to emit an
+    // `UpdateTable` carrying NO mutable field — the change was detected, but
+    // the BillingMode assignment was skipped because the resolved value was
+    // `undefined` — so DynamoDB rejected the call and the deploy failed with a
+    // confusing error on every attempt.
+    //
+    // What removal MEANS was measured against real CloudFormation before the
+    // fix (us-east-1, 2026-08-11): CFn RESETS to the type default PROVISIONED,
+    // and fails outright (`Property ProvisionedThroughput cannot be empty`)
+    // when the template declares no capacity either. This phase reproduces the
+    // supported half of that A/B end to end.
+    //
+    // NO GlobalSecondaryIndex on purpose: `AWS::DynamoDB::Table`'s provider
+    // does not carry per-index `ProvisionedThroughput` into the flip call the
+    // way the GlobalTable provider does for issue #1421, so a GSI here would
+    // surface that separate, pre-existing gap rather than this issue's. Filed
+    // as issue #1588; the index-status half of the wait is unit-tested.
+    //
+    // A hand-written L1 because `dynamodb.Table` always emits `billingMode` —
+    // the property has to be genuinely ABSENT from the template. The table is
+    // UNCONDITIONAL and only its properties are mode-keyed; a mode-gated
+    // RESOURCE would be DELETED by any later deploy that clears the mode.
+    const billingRemovalTable = new dynamodb.CfnTable(this, 'BillingRemovalTable', {
+      tableName: 'cdkd-ondemand-test-billing-removal-table',
+      keySchema: [{ attributeName: 'id', keyType: 'HASH' }],
+      attributeDefinitions: [{ attributeName: 'id', attributeType: 'S' }],
+      // Baseline declares PAY_PER_REQUEST; the update REMOVES the property.
+      ...(isUpdate
+        ? { provisionedThroughput: { readCapacityUnits: 3, writeCapacityUnits: 4 } }
+        : { billingMode: 'PAY_PER_REQUEST' }),
+    });
+    billingRemovalTable.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+
+    new cdk.CfnOutput(this, 'BillingRemovalTableName', {
+      value: billingRemovalTable.ref,
+      description:
+        'PAY_PER_REQUEST table whose BillingMode is REMOVED under CDKD_TEST_UPDATE=true (issue #1553)',
+    });
   }
 }

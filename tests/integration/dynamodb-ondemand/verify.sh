@@ -72,6 +72,8 @@ EXPECTED_CI_MODE="ACCESSED_AND_THROTTLED_KEYS"
 # Standalone PROVISIONED table exercising the BillingMode/ProvisionedThroughput
 # in-place UPDATE path (silent-drop fix).
 PROV_TABLE_NAME="cdkd-ondemand-test-provisioned-table"
+# issue #1553: the table whose BillingMode is REMOVED by the UPDATE phase.
+BILLING_REMOVAL_TABLE="cdkd-ondemand-test-billing-removal-table"
 PROV_INITIAL_READ=5
 PROV_INITIAL_WRITE=5
 PROV_UPDATED_READ=20
@@ -93,6 +95,7 @@ cleanup() {
   fi
   aws dynamodb delete-table --table-name "${TABLE_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
   aws dynamodb delete-table --table-name "${PROV_TABLE_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
+  aws dynamodb delete-table --table-name "${BILLING_REMOVAL_TABLE}" --region "${REGION}" >/dev/null 2>&1 || true
   aws kinesis delete-stream --stream-name "${STREAM_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
@@ -274,6 +277,23 @@ assert_provisioned_capacity "${PROV_INITIAL_READ}" "${PROV_INITIAL_WRITE}" "Phas
 # NO UpdateTable for ProvisionedThroughput, so the change was silently dropped
 # (state recorded the new value, AWS stayed at 5/5). This assertion is the
 # real-AWS proof the silent drop is closed: AWS must report the NEW capacity.
+# BASELINE for the issue #1553 removal (the REMOVAL-testing convention in
+# .claude/rules/testing.md): assert the property is LIVE before asserting it
+# was reset. Without this, a baseline whose PAY_PER_REQUEST was silently
+# dropped would still satisfy phase 1.6 — `create()` defaults an absent
+# BillingMode to PROVISIONED, which is exactly what 1.6 expects to see.
+REMOVAL_BASE_MODE="$(aws dynamodb describe-table --table-name "${BILLING_REMOVAL_TABLE}" --region "${REGION}" \
+  --query 'Table.BillingModeSummary.BillingMode' --output text)"
+if [ "${REMOVAL_BASE_MODE}" != "PAY_PER_REQUEST" ]; then
+  echo "FAIL (issue #1553): baseline table must be PAY_PER_REQUEST before the removal phase, got ${REMOVAL_BASE_MODE}" >&2
+  exit 1
+fi
+# Captured so phase 1.6 can prove the table was UPDATED IN PLACE rather than
+# replaced — a replacement would also read back PROVISIONED at 3/4.
+REMOVAL_BASE_ID="$(aws dynamodb describe-table --table-name "${BILLING_REMOVAL_TABLE}" --region "${REGION}" \
+  --query 'Table.TableId' --output text)"
+echo "    OK (Phase 1): BillingMode is PAY_PER_REQUEST on AWS before the removal"
+
 echo "==> Phase 1.5: re-deploy with CDKD_TEST_UPDATE=true (BillingMode/ProvisionedThroughput in-place update)"
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
@@ -300,6 +320,49 @@ if [ -z "${UPDATE_OK}" ]; then
 fi
 assert_provisioned_capacity "${PROV_UPDATED_READ}" "${PROV_UPDATED_WRITE}" "Phase 1.5"
 echo "    OK: ProvisionedThroughput in-place UPDATE reached AWS (silent-drop CLOSED)"
+
+# --- Phase 1.6: BillingMode REMOVAL resets to PROVISIONED (issue #1553) ----
+# The same CDKD_TEST_UPDATE=true deploy REMOVES `BillingMode` from a
+# PAY_PER_REQUEST table (and declares ProvisionedThroughput 3/4 instead).
+# Pre-fix, the removal produced an `UpdateTable` carrying no mutable field and
+# DynamoDB rejected it, so the deploy above would not even have reached here.
+# The reset TARGET is not inferred from the type default — it was measured
+# against real CloudFormation (us-east-1, 2026-08-11): CFn flips the table to
+# PROVISIONED with the declared capacity, and fails the stack outright when no
+# capacity is declared.
+REMOVAL_OK=""
+for _ in $(seq 1 24); do
+  # No error swallowing: the table was created by phase 1, so a DescribeTable
+  # failure here is a real finding, not an expected not-found.
+  REMOVAL_MODE=$(aws dynamodb describe-table --table-name "${BILLING_REMOVAL_TABLE}" --region "${REGION}" \
+    --query 'Table.BillingModeSummary.BillingMode' --output text)
+  REMOVAL_STATUS=$(aws dynamodb describe-table --table-name "${BILLING_REMOVAL_TABLE}" --region "${REGION}" \
+    --query 'Table.TableStatus' --output text)
+  if [ "${REMOVAL_STATUS}" = "ACTIVE" ] && [ "${REMOVAL_MODE}" = "PROVISIONED" ]; then
+    REMOVAL_OK=1
+    break
+  fi
+  sleep 5
+done
+if [ -z "${REMOVAL_OK}" ]; then
+  echo "FAIL (issue #1553): removing BillingMode did not reset the table to PROVISIONED within ~2min (mode='${REMOVAL_MODE}', status='${REMOVAL_STATUS}')" >&2
+  exit 1
+fi
+REMOVAL_READ=$(aws dynamodb describe-table --table-name "${BILLING_REMOVAL_TABLE}" --region "${REGION}" \
+  --query 'Table.ProvisionedThroughput.ReadCapacityUnits' --output text)
+REMOVAL_WRITE=$(aws dynamodb describe-table --table-name "${BILLING_REMOVAL_TABLE}" --region "${REGION}" \
+  --query 'Table.ProvisionedThroughput.WriteCapacityUnits' --output text)
+if [ "${REMOVAL_READ}" != "3" ] || [ "${REMOVAL_WRITE}" != "4" ]; then
+  echo "FAIL (issue #1553): expected the declared 3/4 capacity after the BillingMode removal, got ${REMOVAL_READ}/${REMOVAL_WRITE}" >&2
+  exit 1
+fi
+REMOVAL_ID_AFTER="$(aws dynamodb describe-table --table-name "${BILLING_REMOVAL_TABLE}" --region "${REGION}" \
+  --query 'Table.TableId' --output text)"
+if [ "${REMOVAL_ID_AFTER}" != "${REMOVAL_BASE_ID}" ]; then
+  echo "FAIL (issue #1553): the table was REPLACED (TableId ${REMOVAL_BASE_ID} -> ${REMOVAL_ID_AFTER}), not updated in place" >&2
+  exit 1
+fi
+echo "    OK: BillingMode removal reset the table to PROVISIONED at 3/4 (issue #1553 CLOSED)"
 
 # --- Phase 2: destroy -------------------------------------------------
 echo "==> Phase 2: destroy"
@@ -339,6 +402,21 @@ if [ -z "${PROV_TABLE_GONE}" ]; then
   exit 1
 fi
 echo "    OK: provisioned DynamoDB table is gone"
+
+# ...and so is the issue #1553 removal table.
+REMOVAL_TABLE_GONE=""
+for _ in $(seq 1 24); do
+  if gone_probe aws dynamodb describe-table --table-name "${BILLING_REMOVAL_TABLE}" --region "${REGION}"; then
+    REMOVAL_TABLE_GONE=1
+    break
+  fi
+  sleep 5
+done
+if [ -z "${REMOVAL_TABLE_GONE}" ]; then
+  echo "FAIL: DynamoDB table ${BILLING_REMOVAL_TABLE} still exists ~2min after destroy" >&2
+  exit 1
+fi
+echo "    OK: BillingMode-removal DynamoDB table is gone"
 
 # Kinesis DeleteStream is async too.
 STREAM_GONE=""
