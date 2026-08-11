@@ -383,6 +383,76 @@ describe('CloudTrailProvider removal resets (issue #1160)', () => {
 
       expect(putEventSelectorsInputs()).toEqual([{ TrailName: TRAIL_ARN, EventSelectors: CUSTOM }]);
     });
+
+    // A malformed value must NOT read as a removal. The reset is destructive
+    // by design (it clears live selectors), so falsiness or a missing
+    // `.length` as the gate would let an unresolved `Fn::If` wipe a live
+    // trail's configuration — turning the pre-fix silent no-op into damage.
+    it.each([
+      ['an object (unresolved Fn::If)', { 'Fn::If': ['C', [], []] }],
+      ['a string', 'WriteOnly'],
+      ['a number', 5],
+    ])('REFUSES %s instead of resetting to the default', async (_label, value) => {
+      await expect(
+        provider.update('T', TRAIL_ARN, TYPE, { ...BASE, EventSelectors: value }, {
+          ...BASE,
+          EventSelectors: CUSTOM,
+        })
+      ).rejects.toThrow(/AWS::CloudTrail::Trail EventSelectors must be an array/);
+
+      expect(putEventSelectorsInputs()).toEqual([]);
+    });
+
+    it('treats an explicit null as ABSENT (a genuine removal), not as malformed', async () => {
+      // `null` is what a template that never set the property resolves to on
+      // some paths; CFn treats it as absent, and absent IS the measured reset.
+      await provider.update('T', TRAIL_ARN, TYPE, { ...BASE, EventSelectors: null }, {
+        ...BASE,
+        EventSelectors: CUSTOM,
+      });
+
+      expect(putEventSelectorsInputs()).toEqual([
+        { TrailName: TRAIL_ARN, EventSelectors: DEFAULT },
+      ]);
+    });
+
+    it('tolerates the AdvancedEventSelectors rejection on the RESET path only', async () => {
+      // A trail switched to AdvancedEventSelectors out of band still has the
+      // basic selectors in cdkd state, so the diff fires and AWS rejects the
+      // Put. There is nothing to clear, so the reset warns and continues
+      // rather than failing the whole deploy on an unmeasured combination.
+      mockSend.mockImplementation((cmd) =>
+        cmd.constructor.name === 'PutEventSelectorsCommand'
+          ? Promise.reject(
+              new Error(
+                'InvalidEventSelectorsException: This trail uses AdvancedEventSelectors'
+              )
+            )
+          : Promise.resolve({})
+      );
+
+      await expect(
+        provider.update('T', TRAIL_ARN, TYPE, BASE, { ...BASE, EventSelectors: CUSTOM })
+      ).resolves.toBeDefined();
+    });
+
+    it('still FAILS when an explicit desired value is rejected the same way', async () => {
+      // The tolerance is scoped to the reset: an explicit template value that
+      // AWS cannot deliver on this trail must surface, not be swallowed.
+      mockSend.mockImplementation((cmd) =>
+        cmd.constructor.name === 'PutEventSelectorsCommand'
+          ? Promise.reject(
+              new Error(
+                'InvalidEventSelectorsException: This trail uses AdvancedEventSelectors'
+              )
+            )
+          : Promise.resolve({})
+      );
+
+      await expect(
+        provider.update('T', TRAIL_ARN, TYPE, { ...BASE, EventSelectors: CUSTOM }, BASE)
+      ).rejects.toThrow(/AdvancedEventSelectors/);
+    });
   });
 
   // ─── IsLogging: an ABSENT desired value is not a start request (#1549) ─
