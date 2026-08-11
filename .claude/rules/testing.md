@@ -278,6 +278,53 @@ an install/prepend/guard signal is ever read out of an `echo` argument, a
 `grep` pattern, or a trailing comment. User-facing writeup in
 [docs/testing.md](../../docs/testing.md).
 
+### `verify.sh` `state destroy` must pass `--state-bucket` (mandatory)
+
+The harness exports `STATE_BUCKET`; the CLI's env fallback is
+`CDKD_STATE_BUCKET` — a DIFFERENT name. A cleanup sweep that omits
+`--state-bucket` therefore never reads the harness bucket at all. Resolution is
+CLI flag > `CDKD_STATE_BUCKET` > `cdk.json` `context.cdkd.stateBucket` > STS
+default (`resolveStateBucketWithSource`), so the omission lands in one of two
+wrong places:
+
+- **109 fixture `cdk.json` files declare `context.cdkd.stateBucket`** and
+  `verify.sh` runs the CLI from the fixture directory, so the sweep resolved
+  that name (`your-cdkd-state-bucket` / `cdkd-state-test`) and died with
+  `StateError: State bucket '...' does not exist` — swallowed by the call's own
+  `>/dev/null 2>&1`. Those cleanups had been failing on EVERY run, invisibly.
+- **The rest** fell through to the STS default `cdkd-state-{accountId}`, which
+  IS the harness bucket on a default setup — working by coincidence, and
+  silently no-opping the moment `STATE_BUCKET` points anywhere else.
+
+Either way the state record survives and wedges the fixture's next run.
+
+```bash
+node "${LOCAL_DIST}" state destroy "${STACK}" \
+  --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes
+```
+
+`"${STATE_BUCKET:-}"` not `"${STATE_BUCKET}"`: `cleanup` is trap-installed and
+can run BEFORE the script's own `[ -z "${STATE_BUCKET:-}" ]` guard rejects an
+unset variable, and a cleanup that only does `set +e` (not `set +eu`) aborts
+teardown mid-sweep on the unguarded form. Empty is safe — `resolveStateBucket()`
+treats `''` as not-supplied and falls back exactly as omitting the flag does.
+
+**`deploy` / `destroy` deliberately keep the strict `"${STATE_BUCKET}"` form.**
+The two cases are not the same: in cleanup the guard prevents an abort that
+would skip teardown, whereas on a deploy an unset bucket is a harness
+misconfiguration that must fail loudly rather than silently target the default
+bucket. Do not "normalize" the deploy sites to `:-`.
+
+The measured asymmetry is what made this a lint rather than a one-time sweep
+(issue [#1567](https://github.com/go-to-k/cdkd/issues/1567), 2026-08-11):
+`deploy` passed the flag at all 335 call sites and `destroy` at all 228, while
+`state destroy` had drifted at **96 of 171** call sites across 94 fixtures —
+because nothing enforced it. Enforced by
+`tests/unit/scripts/integ-state-bucket.test.ts` (classifier:
+`scripts/check-integ-state-bucket.ts`), which strips heredocs, comments and
+`echo` arguments so a remediation hint that PRINTS the command is not read as an
+invocation. User-facing writeup in [docs/testing.md](../../docs/testing.md).
+
 ### `verify.sh` list readbacks must be order-insensitive (mandatory)
 
 AWS does not preserve the submitted order of list-valued members on readback.

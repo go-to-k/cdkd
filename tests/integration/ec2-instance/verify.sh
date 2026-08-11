@@ -88,7 +88,7 @@ cleanup() {
     # is still terminated. Do NOT silence stderr — a partial failure must be
     # visible so we never leak a billing instance.
     node "${LOCAL_DIST}" state destroy "${STACK}" \
-      --state-bucket "${STATE_BUCKET}" \
+      --state-bucket "${STATE_BUCKET:-}" \
       --region "${REGION}" \
       --remove-protection \
       --yes

@@ -59,7 +59,7 @@ api_id() {
 cleanup() {
   echo "==> Cleanup"
   set +eu
-  [ -x "${LOCAL_DIST}" ] && node "${LOCAL_DIST}" state destroy "${STACK}" --region "${REGION}" --yes >/dev/null 2>&1
+  [ -x "${LOCAL_DIST}" ] && node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   for pid in $(aws apigateway get-usage-plans --region "${REGION}" --query "items[?name=='${PLAN_NAME}'].id" --output text 2>/dev/null); do
     aws apigateway delete-usage-plan --usage-plan-id "${pid}" --region "${REGION}" >/dev/null 2>&1 || true
   done

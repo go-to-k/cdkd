@@ -73,7 +73,7 @@ cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
   if [ -x "${LOCAL_DIST}" ]; then
-    node "${LOCAL_DIST}" state destroy "${STACK}" --region "${REGION}" --yes >/dev/null 2>&1
+    node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   fi
   aws ssm delete-parameter --name "${BASE}" --region "${REGION}" >/dev/null 2>&1
   aws ssm delete-parameter --name "${DERIVED}" --region "${REGION}" >/dev/null 2>&1

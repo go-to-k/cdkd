@@ -132,10 +132,21 @@ for rel in $staged_files; do
     # comment is documenting the bug, not exercising it.
     [[ "$trimmed" == \#* ]] && continue
 
-    # Anchor on `state destroy` (cdkd subcommand) AND `--force`.
-    # Use grep with extended regex to be tolerant of varying whitespace.
-    if printf '%s' "$line" | grep -qE 'state[[:space:]]+destroy\b' \
-       && printf '%s' "$line" | grep -qE '(\-\-force\b|[[:space:]]\-f\b)'; then
+    # ONE regex, ordered: `state destroy` FOLLOWED BY the flag. Testing the
+    # two halves independently against the whole line matched a bash file
+    # test that merely PRECEDES the invocation, e.g.
+    #   [ -f "${LOCAL_DIST}" ] && node ... state destroy ... --yes
+    # which is correct code; that false positive blocked the #1567 sweep the
+    # moment it touched such a line. (Only the single `[ -f` site tripped it;
+    # the `-x` spelling its 14 siblings use never did.)
+    #
+    # Ordering must be expressed IN the regex, not by pre-slicing the line
+    # with `sed 's/^.*state destroy//'` — `.*` is greedy, so a line carrying
+    # TWO invocations would slice past the first and miss a `--force` on it.
+    # The header comment already described the intent as "`state destroy`
+    # FOLLOWED BY `--force`"; only the check lagged.
+    if printf '%s' "$line" \
+       | grep -qE 'state[[:space:]]+destroy\b.*(\-\-force\b|[[:space:]]\-f\b)'; then
       OFFENDERS+=("$rel: $trimmed")
       [[ "${#OFFENDERS[@]}" -ge "$MAX_REPORT" ]] && break 2
     fi

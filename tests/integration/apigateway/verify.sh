@@ -69,7 +69,7 @@ cleanup() {
   # should run as much as it can with the env it has.
   set +eu
   if [ -x "${LOCAL_DIST}" ]; then
-    node "${LOCAL_DIST}" state destroy "${STACK}" --region "${REGION}" --yes >/dev/null 2>&1
+    node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   fi
   # The {proxy+} ANY curl in Assertion 4 invokes the Lambda, which auto-creates a
   # /aws/lambda/${STACK}* log group that is not stack-managed (CFn leaves it too).

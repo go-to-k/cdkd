@@ -401,7 +401,7 @@ cleanup() {
   # every exit path (may be unset if we never reached Phase 2).
   rm -f "${AD_INPUT_FILE:-}"
   if [ -f "${LOCAL_DIST}" ] && [ -n "${STATE_BUCKET:-}" ]; then
-    node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET}" \
+    node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" \
       --stack-region "${REGION}" --yes >/dev/null 2>&1
   fi
   # Order matters: the file system leaves the domain first, then the

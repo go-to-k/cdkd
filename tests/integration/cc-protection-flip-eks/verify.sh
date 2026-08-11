@@ -74,7 +74,7 @@ cleanup() {
     # state destroy --remove-protection tears down the whole stack (cluster
     # flip included) when state still exists; the per-resource sweeps below
     # cover the no-state case.
-    node "${LOCAL_DIST}" state destroy "${STACK}" --region "${REGION}" --remove-protection --yes >/dev/null 2>&1
+    node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --remove-protection --yes >/dev/null 2>&1
   fi
   ( set +eu
     if aws eks describe-cluster --name "${CLUSTER_NAME}" --region "${REGION}" >/dev/null 2>&1; then

@@ -61,7 +61,7 @@ up_id() {
 cleanup() {
   echo "==> Cleanup"
   set +eu
-  [ -x "${LOCAL_DIST}" ] && node "${LOCAL_DIST}" state destroy "${STACK}" --region "${REGION}" --yes >/dev/null 2>&1
+  [ -x "${LOCAL_DIST}" ] && node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   local id; id=$(idp_id)
   [ -n "${id}" ] && [ "${id}" != "None" ] && aws cognito-identity delete-identity-pool --identity-pool-id "${id}" --region "${REGION}" >/dev/null 2>&1 || true
   local up; up=$(up_id)

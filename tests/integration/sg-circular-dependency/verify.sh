@@ -125,7 +125,7 @@ cleanup() {
     # state destroy first — exercises cdkd's own teardown ordering. Do NOT
     # silence stderr so a partial failure is visible.
     node "${LOCAL_DIST}" state destroy "${STACK}" \
-      --state-bucket "${STATE_BUCKET}" \
+      --state-bucket "${STATE_BUCKET:-}" \
       --region "${REGION}" \
       --yes
   fi

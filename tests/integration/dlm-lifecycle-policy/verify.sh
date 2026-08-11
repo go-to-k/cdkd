@@ -87,7 +87,7 @@ cleanup() {
   set +eu
   if [ -x "${LOCAL_DIST}" ] || [ -f "${LOCAL_DIST}" ]; then
     if [ -n "${STATE_BUCKET:-}" ]; then
-      node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --stack-region "${REGION}" --yes >/dev/null 2>&1
+      node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --stack-region "${REGION}" --yes >/dev/null 2>&1
     fi
   fi
   # Delete any leftover lifecycle policy carrying the fixture's constant tag

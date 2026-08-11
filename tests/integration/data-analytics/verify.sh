@@ -155,7 +155,7 @@ cleanup() {
     # `state destroy` rejects `--force`; the confirmation skip flag is `--yes`.
     node "${LOCAL_DIST}" state destroy "${STACK}" \
       --yes \
-      --state-bucket "${STATE_BUCKET}" \
+      --state-bucket "${STATE_BUCKET:-}" \
       --region "${REGION}" >/dev/null 2>&1
     destroy_rc=$?
   fi

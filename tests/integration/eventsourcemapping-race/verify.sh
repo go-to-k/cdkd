@@ -106,7 +106,7 @@ cleanup() {
     done
   fi
   if [ -x "${LOCAL_DIST}" ]; then
-    node "${LOCAL_DIST}" state destroy "${STACK}" --region "${REGION}" --yes >/dev/null 2>&1
+    node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   fi
   if [ -n "${QUEUE_URL}" ]; then
     aws sqs delete-queue --queue-url "${QUEUE_URL}" --region "${REGION}" >/dev/null 2>&1 || true
@@ -154,7 +154,7 @@ if [ -n "${PREFLIGHT_ESMS}" ]; then
   for uuid in ${PREFLIGHT_ESMS}; do
     echo "    aws lambda delete-event-source-mapping --uuid ${uuid} --region ${REGION}" >&2
   done
-  echo "    node ${LOCAL_DIST} state destroy ${STACK} --region ${REGION} --yes" >&2
+  echo "    node ${LOCAL_DIST} state destroy ${STACK} --state-bucket ${STATE_BUCKET} --region ${REGION} --yes" >&2
   exit 1
 fi
 echo "    OK: no orphan EventSourceMapping bound to '${STACK}'"

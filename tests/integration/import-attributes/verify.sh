@@ -151,7 +151,7 @@ cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
   if [ -f "${LOCAL_DIST}" ]; then
-    ${CLI} state destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --yes >/dev/null 2>&1
+    ${CLI} state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --yes >/dev/null 2>&1
   fi
   # Unconditional: covers the orphaned window and any state-teardown failure.
   aws iam delete-policy --policy-arn "${POLICY_ARN}" >/dev/null 2>&1

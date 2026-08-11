@@ -82,7 +82,7 @@ cleanup() {
     # Destroy under CDKD_TEST_UPDATE=true so the synthesized template matches
     # whatever phase the state was last written in (the stream-consumer subtree
     # only exists in the UPDATE phase).
-    CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" state destroy "${STACK}" --region "${REGION}" --yes >/dev/null 2>&1
+    CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   fi
   if [ -n "${TABLE_NAME}" ]; then
     aws dynamodb delete-table --table-name "${TABLE_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
