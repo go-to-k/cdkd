@@ -1069,6 +1069,22 @@ export class ApiGatewayProvider implements ResourceProvider {
       );
     }
 
+    // #1471/#1493 class: a present-but-malformed nested block (a string,
+    // array, or unresolved intrinsic) indexes every sub-field to undefined,
+    // which would silently create the stage WITHOUT the declared config.
+    // Create is template-borne, so refuse loudly (the update path warns and
+    // skips instead — see updateStage).
+    for (const key of ['AccessLogSetting', 'CanarySetting'] as const) {
+      const block = properties[key];
+      if (block != null && !isPlainObjectBlock(block)) {
+        throw new ProvisioningError(
+          `AWS::ApiGateway::Stage ${key} for ${logicalId} must be an object block; got ${Array.isArray(block) ? 'an array' : typeof block}. Fix the template value instead of letting cdkd drop the config.`,
+          resourceType,
+          logicalId
+        );
+      }
+    }
+
     try {
       // CFn declares CacheClusterSize as a string enum ('0.5' | '1.6' | ...)
       // and so does the SDK, but an unquoted YAML template legitimately
@@ -1314,11 +1330,29 @@ export class ApiGatewayProvider implements ResourceProvider {
     // CFn's absent-block behavior — instead of silently keeping the live
     // config. A sub-field dropped while the block remains is cleared with
     // an empty-string replace (the scalar-clear pattern above).
-    const accessLog = properties['AccessLogSetting'] as CfnStageAccessLogSetting | undefined;
+    // #1471/#1493 class guard (DESIRED side only — the previous side comes
+    // from cdkd state): a present-but-malformed block would index every
+    // sub-field to undefined and emit CLEAR patches, silently disabling a
+    // live config from a broken template. On the update path we WARN and
+    // SKIP the property (a rollback replays update() with a state record as
+    // the desired bag, so a refusal would make the stage un-rollbackable;
+    // emitting the remove op would be the very harm the guard exists for).
+    const rawAccessLog = properties['AccessLogSetting'];
+    const accessLogMalformed = rawAccessLog != null && !isPlainObjectBlock(rawAccessLog);
+    if (accessLogMalformed) {
+      this.logger.warn(
+        `AWS::ApiGateway::Stage AccessLogSetting for ${logicalId} is not an object block (got ${Array.isArray(rawAccessLog) ? 'an array' : typeof rawAccessLog}); leaving the live access-log config untouched.`
+      );
+    }
+    const accessLog = accessLogMalformed
+      ? undefined
+      : (rawAccessLog as CfnStageAccessLogSetting | undefined);
     const prevAccessLog = previousProperties['AccessLogSetting'] as
       | CfnStageAccessLogSetting
       | undefined;
-    if (accessLog == null) {
+    if (accessLogMalformed) {
+      // Skip both the patch and the removal arm for this property.
+    } else if (accessLog == null) {
       if (prevAccessLog != null) {
         patchOperations.push({ op: 'remove', path: '/accessLogSettings' });
       }
@@ -1349,9 +1383,20 @@ export class ApiGatewayProvider implements ResourceProvider {
     // canary diverting traffic. Sub-field changes patch the individual
     // /canarySettings/* paths; a scalar sub-field dropped while the block
     // remains reverts to its CFn/API default (0 / '' / false).
-    const canary = properties['CanarySetting'] as CfnStageCanarySetting | undefined;
+    // Same #1471/#1493 guard as AccessLogSetting above: warn and skip a
+    // present-but-malformed desired block instead of emitting clear patches.
+    const rawCanary = properties['CanarySetting'];
+    const canaryMalformed = rawCanary != null && !isPlainObjectBlock(rawCanary);
+    if (canaryMalformed) {
+      this.logger.warn(
+        `AWS::ApiGateway::Stage CanarySetting for ${logicalId} is not an object block (got ${Array.isArray(rawCanary) ? 'an array' : typeof rawCanary}); leaving the live canary config untouched.`
+      );
+    }
+    const canary = canaryMalformed ? undefined : (rawCanary as CfnStageCanarySetting | undefined);
     const prevCanary = previousProperties['CanarySetting'] as CfnStageCanarySetting | undefined;
-    if (canary == null) {
+    if (canaryMalformed) {
+      // Skip both the patch and the removal arm for this property.
+    } else if (canary == null) {
       if (prevCanary != null) {
         patchOperations.push({ op: 'remove', path: '/canarySettings' });
       }
@@ -2424,6 +2469,16 @@ interface CfnStageCanarySetting {
   DeploymentId?: string;
   StageVariableOverrides?: Record<string, string>;
   UseStageCache?: boolean;
+}
+
+/**
+ * A nested CFn config block must be a plain object; a string, array, or
+ * unresolved intrinsic that leaks through resolution indexes every sub-field
+ * to `undefined` (#1471/#1493 class). Create refuses such a block; update
+ * warns and skips the property.
+ */
+function isPlainObjectBlock(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 /**

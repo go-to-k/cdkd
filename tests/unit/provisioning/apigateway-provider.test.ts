@@ -1385,6 +1385,63 @@ describe('ApiGatewayProvider', () => {
         ]);
       });
 
+      it('clears a sub-field dropped while the AccessLogSetting block remains with an empty-string replace (not the string "undefined")', async () => {
+        mockSend.mockResolvedValueOnce({});
+        await provider.update('MyStage', 'prod', resourceType, {
+          ...base,
+          AccessLogSetting: { DestinationArn: 'arn:log' },
+        }, {
+          ...base,
+          AccessLogSetting: { DestinationArn: 'arn:log', Format: '$context.requestId' },
+        });
+        expect(mockSend.mock.calls[0][0].input.patchOperations).toEqual([
+          { op: 'replace', path: '/accessLogSettings/format', value: '' },
+        ]);
+      });
+
+      it('patches /cacheClusterSize when ADDED on update (no previous size)', async () => {
+        mockSend.mockResolvedValueOnce({});
+        await provider.update('MyStage', 'prod', resourceType, {
+          ...base,
+          CacheClusterSize: '0.5',
+        }, { ...base });
+        expect(mockSend.mock.calls[0][0].input.patchOperations).toEqual([
+          { op: 'replace', path: '/cacheClusterSize', value: '0.5' },
+        ]);
+      });
+
+      it('refuses a present-but-malformed AccessLogSetting / CanarySetting block on create (#1471 class)', async () => {
+        await expect(
+          provider.create('MyStage', resourceType, {
+            ...base,
+            AccessLogSetting: 'arn:aws:logs:us-east-1:123:log-group:gw',
+          })
+        ).rejects.toThrow(/AccessLogSetting for MyStage must be an object block/);
+        await expect(
+          provider.create('MyStage', resourceType, {
+            ...base,
+            CanarySetting: ['PercentTraffic', 10],
+          })
+        ).rejects.toThrow(/CanarySetting for MyStage must be an object block/);
+        expect(mockSend).not.toHaveBeenCalled();
+      });
+
+      it('warns and SKIPS a malformed AccessLogSetting / CanarySetting on update instead of emitting clear patches (#1471 class)', async () => {
+        const result = await provider.update('MyStage', 'prod', resourceType, {
+          ...base,
+          AccessLogSetting: 'not-an-object',
+          CanarySetting: 42,
+        }, {
+          ...base,
+          AccessLogSetting: { DestinationArn: 'arn:log', Format: '$context.requestId' },
+          CanarySetting: { PercentTraffic: 10 },
+        });
+        // Neither a remove op nor a clear replace may fire — the live config
+        // must be left untouched, so no UpdateStage call happens at all.
+        expect(result.physicalId).toBe('prod');
+        expect(mockSend).not.toHaveBeenCalled();
+      });
+
       it('patches /cacheClusterSize when present and changed; numeric vs string spellings of the same size are NOT a change', async () => {
         mockSend.mockResolvedValueOnce({});
         await provider.update('MyStage', 'prod', resourceType, {

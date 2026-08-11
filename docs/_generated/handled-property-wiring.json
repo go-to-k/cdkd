@@ -432,7 +432,8 @@
           ],
           "evidence": [
             "delegated",
-            "element-read"
+            "element-read",
+            "table-loop"
           ],
           "seededBy": [
             "create",
@@ -605,7 +606,8 @@
           ],
           "evidence": [
             "delegated",
-            "element-read"
+            "element-read",
+            "table-loop"
           ],
           "seededBy": [
             "create",
