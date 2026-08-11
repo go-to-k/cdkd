@@ -14997,6 +14997,7 @@
             "applyHostedZoneTags",
             "create",
             "createHostedZone",
+            "readHostedZoneTags",
             "update",
             "updateHostedZone"
           ]
@@ -15057,6 +15058,7 @@
             "applyQueryLoggingConfig",
             "create",
             "createHostedZone",
+            "readQueryLogGroupArn",
             "update",
             "updateHostedZone"
           ]

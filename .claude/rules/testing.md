@@ -411,6 +411,27 @@ Practical rules:
 - Allows testing UPDATE operations without modifying code
 - JSON Patch (RFC 6902) verified working for S3, Lambda, IAM resources
 
+## REMOVAL Testing (CDKD_TEST_REMOVAL)
+
+- Environment variable `CDKD_TEST_REMOVAL=true` makes a fixture synthesize a
+  template that genuinely LACKS a property, which is the only way to exercise
+  the #1160 absent-field removal class — `CDKD_TEST_UPDATE` changes a value,
+  and a changed value never takes the removal branch
+- Two conventions keep the assertion from being vacuous: the BASELINE phase
+  must assert the property is live before the removal phase asserts it is
+  gone (otherwise "gone" also passes when it never reached AWS), and a
+  sibling must be RETAINED (otherwise a reset that clears everything passes
+  too)
+- The retained sibling is REQUIRED for a collection-valued property (a tag
+  list, an attribute map) and does not apply when the removal empties the only
+  value the fixture sets — `alb` and `cloudfront-function-url` are that shape
+  and correctly have no sibling
+- The fixture set grows as #1160 batches ship; enumerate it with
+  `grep -rl CDKD_TEST_REMOVAL tests/integration/*/lib/*.ts tests/integration/*/verify.sh`
+  rather than trusting a list here. `tests/integration/route53/` is the
+  reference for the collection-valued shape
+- Full writeup in [docs/testing.md](../../docs/testing.md)
+
 ## Rollback Testing (failure injection)
 
 - Environment variable `CDKD_TEST_FAIL=true` injects a deliberately-failing

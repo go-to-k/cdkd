@@ -1148,6 +1148,42 @@ Checklist when writing or reviewing an `update()`:
   stays absent; mixed kept/removed → kept fields pass through unchanged.
 - A per-key removal test (one key dropped from a still-present map) does NOT
   cover whole-block removal (the map itself dropped) — test both.
+- **Not every removal is a VALUE on the same call.** `clearOnUpdateRemoval`
+  fits a property that maps to an input FIELD, so a reset is "send the default
+  instead of omitting". A property whose apply is a *separate API call* needs a
+  different call on removal, and there is no reset value to pass — the
+  `route53-provider.ts` pair (issue #1160) is both spellings: `HostedZoneTags`
+  applies via `ChangeTagsForResource` and its removal is the `RemoveTagKeys`
+  argument (a previous-minus-desired KEY DIFF, not a value), while
+  `QueryLoggingConfig` applies via `CreateQueryLoggingConfig` and its removal
+  is `DeleteQueryLoggingConfig` on a sub-resource. Both looked like no-ops
+  precisely because the apply helper took only the DESIRED bag and had nothing
+  to diff against; the fix is threading `previousProperties` into the helper,
+  keeping it optional so `create()` keeps its existing REMOVAL behavior (it has
+  no previous side, so nothing is ever removed — though a shape guard you add
+  along the way does change what create accepts, so do not claim it is
+  byte-identical). Gate the removal on the previous side actually having
+  carried the thing, rather than probing AWS on every update — a config cdkd
+  never created is drift, which `cdkd drift` owns, not a removal reset.
+  Two things bite specifically in this shape, both found by review on the
+  route53 batch after its first integ had already passed:
+  - **A malformed value must not read as a removal.** The desired side reaches
+    the helper through a tolerant reader, and anything the reader cannot use
+    collapses to the same emptiness a real removal produces — so an unresolved
+    intrinsic UNTAGS a live zone or DELETES a live config. Refuse a LOSSY read,
+    not merely a wrong container: `[{ Key: { Ref: 'X' } }]` is genuinely an
+    array, so a shape-only check lets the destructive case through one level
+    down. Compare the parsed length against the raw length. And check what your
+    own `readCurrentState` emits before calling a shape malformed — route53's
+    emits `QueryLoggingConfig: {}` for "no live config", which `cdkd drift
+    --revert` feeds straight back as the DESIRED side.
+  - **A failed removal is not self-healing, so it must not be swallowed.** A
+    failed ADD is retried by the next deploy because the template still declares
+    it. A failed REMOVAL is not: the update returns success, state is rewritten
+    WITHOUT the property, and the next deploy's previous side no longer carries
+    it — so the value survives on AWS forever with `cdkd diff` clean, which is
+    the #1160 failure mode the fix existed to close. Throw on the removal
+    branch even when the surrounding helper is warn-and-continue.
 
 ### 2b. Full-replace update APIs erase AWS-AUTHORED values (issue #1461)
 

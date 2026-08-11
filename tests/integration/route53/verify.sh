@@ -16,6 +16,15 @@
 # AWS::Route53::CidrCollection (provisioned via Cloud Control API, no SDK
 # provider) and CIDR routing requires a SetIdentifier.
 #
+# Phase 2 (CDKD_TEST_REMOVAL=true, issue #1160 route53 batch) then drops the
+# `Dropped` hosted-zone tag and the whole `QueryLoggingConfig` block, and
+# asserts BOTH are gone from AWS while the `Keep` tag survives. Pre-fix each
+# removal was a silent no-op: `applyHostedZoneTags` only ever sent `AddTags`
+# (no untag diff), and `applyQueryLoggingConfig` returned early on an absent
+# block, so a live query-logging config kept writing to CloudWatch — and kept
+# billing — with `cdkd diff` reporting no changes. Real CloudFormation removes
+# both (live A/B, 2026-08-10).
+#
 # Also asserts the destroy path cleans up (the hosted zone delete requires
 # every non-default record gone first; the cdkd destroy DAG handles order).
 #
@@ -61,6 +70,9 @@ cd "$(dirname "$0")"
 
 STACK="Route53Stack"
 REGION="${AWS_REGION:-us-east-1}"
+# The fixture names its zone / query-log group after the account, so the leak
+# probes below can be scoped to THIS account rather than an account-wide prefix.
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 EXPECTED_GEO_REGION="us-east-1"
 SET_IDENTIFIER="geo-use1"
@@ -219,8 +231,80 @@ case "${ACCEL_RECOVERY}" in
 esac
 echo "    OK: HostedZone.Features.AcceleratedRecoveryStatus == '${ACCEL_RECOVERY}' on AWS (silent-drop CLOSED by #609)"
 
-# --- Phase 2: destroy -------------------------------------------------
-echo "==> Phase 2: destroy"
+# --- Assertion: the baseline tags + query logging config are live -----
+# Both are the BASELINE half of the #1160 route53 removal checks below. Asserting
+# them here means a phase-3 "it's gone" result cannot be vacuously true because
+# the value never reached AWS in the first place.
+BASELINE_TAGS=$(aws route53 list-tags-for-resource \
+  --resource-type hostedzone --resource-id "${ZONE_ID}" --region "${REGION}" \
+  --query 'ResourceTagSet.Tags[].Key' --output json 2>/dev/null)
+
+for expected_key in Keep Dropped; do
+  if ! echo "${BASELINE_TAGS}" | jq -e --arg k "${expected_key}" 'index($k)' >/dev/null; then
+    echo "FAIL: baseline hosted-zone tag '${expected_key}' is not on AWS" >&2
+    echo "${BASELINE_TAGS}" | jq '.'
+    exit 1
+  fi
+done
+echo "    OK: baseline hosted-zone tags Keep + Dropped are live"
+
+BASELINE_QLC=$(aws route53 list-query-logging-configs \
+  --hosted-zone-id "${ZONE_ID}" --region "${REGION}" \
+  --query 'length(QueryLoggingConfigs)' --output text 2>/dev/null)
+if [ "${BASELINE_QLC}" != "1" ]; then
+  echo "FAIL: expected exactly 1 baseline query logging config, got '${BASELINE_QLC}'" >&2
+  aws route53 list-query-logging-configs --hosted-zone-id "${ZONE_ID}" --region "${REGION}" | jq '.'
+  exit 1
+fi
+echo "    OK: baseline query logging config is live"
+
+# --- Phase 2: REMOVAL redeploy (#1160 route53 batch) ------------------
+# Drops the `Dropped` hosted-zone tag and the whole QueryLoggingConfig block.
+# Pre-fix, BOTH survived the redeploy: applyHostedZoneTags only ever sent
+# AddTags (no untag diff), and applyQueryLoggingConfig returned early on an
+# absent block so the live config kept writing to CloudWatch — and kept
+# billing — with `cdkd diff` reporting no changes. Real CloudFormation removes
+# both (live A/B, 2026-08-10).
+echo "==> Phase 2: REMOVAL redeploy (drop the Dropped tag + QueryLoggingConfig)"
+CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes
+
+REMOVAL_TAGS=$(aws route53 list-tags-for-resource \
+  --resource-type hostedzone --resource-id "${ZONE_ID}" --region "${REGION}" \
+  --query 'ResourceTagSet.Tags[].Key' --output json 2>/dev/null)
+
+if echo "${REMOVAL_TAGS}" | jq -e 'index("Dropped")' >/dev/null; then
+  echo "FAIL: hosted-zone tag 'Dropped' survived its removal from the template (no untag diff)" >&2
+  echo "${REMOVAL_TAGS}" | jq '.'
+  exit 1
+fi
+# The kept tag must still be there — an untag diff that clears everything is
+# just as wrong as one that clears nothing. Assert its VALUE, not just its
+# presence: a reset that clobbers the value would pass a key-only check.
+KEPT_VALUE=$(aws route53 list-tags-for-resource \
+  --resource-type hostedzone --resource-id "${ZONE_ID}" --region "${REGION}" \
+  --query 'ResourceTagSet.Tags[?Key==`Keep`].Value | [0]' --output text)
+if [ "${KEPT_VALUE}" != "yes" ]; then
+  echo "FAIL: hosted-zone tag 'Keep' is '${KEPT_VALUE}', expected 'yes' (removed or clobbered)" >&2
+  echo "${REMOVAL_TAGS}" | jq '.'
+  exit 1
+fi
+echo "    OK: 'Dropped' untagged and 'Keep' retained (#1160 HostedZoneTags removal reset)"
+
+REMOVAL_QLC=$(aws route53 list-query-logging-configs \
+  --hosted-zone-id "${ZONE_ID}" --region "${REGION}" \
+  --query 'length(QueryLoggingConfigs)' --output text 2>/dev/null)
+if [ "${REMOVAL_QLC}" != "0" ]; then
+  echo "FAIL: query logging config survived its removal from the template (got ${REMOVAL_QLC}, expected 0)" >&2
+  aws route53 list-query-logging-configs --hosted-zone-id "${ZONE_ID}" --region "${REGION}" | jq '.'
+  exit 1
+fi
+echo "    OK: query logging config deleted (#1160 QueryLoggingConfig removal reset)"
+
+# --- Phase 3: destroy -------------------------------------------------
+echo "==> Phase 3: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
@@ -236,5 +320,21 @@ echo "    OK: hosted zone is gone"
 assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: state file is gone"
 
+# The query-logging log group is a template resource with RemovalPolicy.DESTROY,
+# so destroy must take it too — a surviving log group is an orphan the run
+# would otherwise leave behind (and it re-collides on the next run's create).
+# Scope the probe to THIS run's exact log-group name. The bare
+# `/aws/route53/cdkd-test-` prefix is account-wide, so a concurrent run in the
+# same account would false-fail this check.
+LEFTOVER_LG=$(aws logs describe-log-groups --region "${REGION}" \
+  --log-group-name-prefix "/aws/route53/cdkd-test-${ACCOUNT_ID}.internal" \
+  --query 'length(logGroups)' --output text 2>/dev/null)
+if [ "${LEFTOVER_LG}" != "0" ]; then
+  echo "FAIL: ${LEFTOVER_LG} query-logging log group(s) left behind after destroy" >&2
+  aws logs describe-log-groups --region "${REGION}" --log-group-name-prefix "/aws/route53/cdkd-test-${ACCOUNT_ID}.internal" | jq '.logGroups[].logGroupName'
+  exit 1
+fi
+echo "    OK: query-logging log group is gone"
+
 echo ""
-echo "==> route53 test passed (HostedZoneFeatures + GeoProximityLocation + CidrRoutingConfig backfills closed + clean destroy)"
+echo "==> route53 test passed (HostedZoneFeatures + GeoProximityLocation + CidrRoutingConfig backfills closed + #1160 HostedZoneTags / QueryLoggingConfig removal resets + clean destroy)"
