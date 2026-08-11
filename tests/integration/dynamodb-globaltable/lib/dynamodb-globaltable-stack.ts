@@ -581,6 +581,22 @@ export class DynamoDBGlobalTableStack extends cdk.Stack {
                 ? {}
                 : { writeOnDemandThroughputSettings: { maxWriteRequestUnits: 50 } }),
             },
+            // allow-mode-gated-drop: the recovery phase drops this index on
+            // purpose — the live-only / removes path (issue #1585) asserts the
+            // provider issues NO Delete for an index that exists live but not
+            // in the template while the state record is junk, and that the
+            // warning names it. verify.sh asserts the index is still live
+            // AFTER the recovery deploy; only `cdkd destroy` removes it (with
+            // the whole table).
+            ...(gsiStateRecovered
+              ? []
+              : [
+                  {
+                    indexName: 'liveOnlyIdx',
+                    keySchema: [{ attributeName: 'gsiPk', keyType: 'HASH' }],
+                    projection: { projectionType: 'KEYS_ONLY' },
+                  },
+                ]),
           ],
       replicas: [
         {
@@ -607,6 +623,84 @@ export class DynamoDBGlobalTableStack extends cdk.Stack {
       value: gsiRecoveryTable.ref,
       description:
         'On-demand GlobalTable used by the issue #1571 two-phase state-recovery sequence (gsi-state-junk then gsi-state-recovery)',
+    });
+
+    // Issue #1585: real-AWS coverage for the AUTOSCALED exclusion of
+    // `buildLiveRecoveryGsiBaseline`. The exclusion only exists on the
+    // PROVISIONED arm (`uncomparableCapacityIndexNames` is consulted iff the
+    // live billing mode is PROVISIONED), so the PAY_PER_REQUEST recovery table
+    // above structurally cannot exercise it — this sibling table is PROVISIONED
+    // with an AUTOSCALED index. The failure mode this proves absent is
+    // DESTRUCTIVE: with the exclusion broken, the live capacity (raised
+    // out-of-band by verify.sh between the junk and recovery phases) diffs
+    // against the desired side's derived MinCapacity and the recovery deploy
+    // scales a live index DOWN to a number the template never contained.
+    //
+    // Hand-written L1 for the same reason as the two tables above: the junk
+    // phase needs a `GlobalSecondaryIndexes` value that is present but not an
+    // array, which `TableV2` cannot express.
+    const gsiProvRecoveryTable = new ddb.CfnGlobalTable(this, 'GsiProvRecoveryTable', {
+      keySchema: [{ attributeName: 'pk', keyType: 'HASH' }],
+      attributeDefinitions: [
+        { attributeName: 'pk', attributeType: 'S' },
+        { attributeName: 'autoPk', attributeType: 'S' },
+      ],
+      billingMode: 'PROVISIONED',
+      writeProvisionedThroughputSettings: {
+        writeCapacityAutoScalingSettings: {
+          minCapacity: 1,
+          maxCapacity: 10,
+          targetTrackingScalingPolicyConfiguration: { targetValue: 70 },
+        },
+      },
+      globalSecondaryIndexes: gsiJunkState
+        ? // Same synth-survives / deploy-time-string trick as the recovery
+          // table above ('y' suffix so the two junk strings differ in logs).
+          (cdk.Token.asAny(
+            cdk.Fn.join('-', [cdk.Aws.REGION, 'y'])
+          ) as unknown as ddb.CfnGlobalTable.GlobalSecondaryIndexProperty[])
+        : [
+            {
+              indexName: 'autoProvIdx',
+              keySchema: [{ attributeName: 'autoPk', keyType: 'HASH' }],
+              projection: { projectionType: 'KEYS_ONLY' },
+              // The autoscaling block is what puts this index into
+              // `collectUncomparableCapacityGsiNames` (arm (a)) on the
+              // recovery deploy's DESIRED template.
+              writeProvisionedThroughputSettings: {
+                writeCapacityAutoScalingSettings: {
+                  minCapacity: 1,
+                  maxCapacity: 20,
+                  targetTrackingScalingPolicyConfiguration: { targetValue: 70 },
+                },
+              },
+            },
+          ],
+      replicas: [
+        {
+          region: this.region,
+          readProvisionedThroughputSettings: { readCapacityUnits: 2 },
+          globalSecondaryIndexes: gsiJunkState
+            ? undefined
+            : [
+                {
+                  indexName: 'autoProvIdx',
+                  // Fixed (not autoscaled) so only the WRITE dimension
+                  // registers a scalable target — the read half of a broken
+                  // exclusion still shows up as a scale-down from the raised
+                  // live 7 to this 2.
+                  readProvisionedThroughputSettings: { readCapacityUnits: 2 },
+                },
+              ],
+        },
+      ],
+    });
+    gsiProvRecoveryTable.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+
+    new cdk.CfnOutput(this, 'GsiProvRecoveryTableName', {
+      value: gsiProvRecoveryTable.ref,
+      description:
+        'PROVISIONED GlobalTable with an autoscaled GSI, used by the issue #1585 autoscaled-exclusion recovery sequence',
     });
 
     new cdk.CfnOutput(this, 'GsiFlipTableName', {
