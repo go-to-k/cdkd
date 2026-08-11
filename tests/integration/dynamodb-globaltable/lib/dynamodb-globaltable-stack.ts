@@ -530,6 +530,85 @@ export class DynamoDBGlobalTableStack extends cdk.Stack {
       });
     }
 
+    // Issue #1571: the RECOVERY path for a cdkd STATE record whose
+    // `GlobalSecondaryIndexes` is present-but-unusable. The provider's own
+    // warn path produces exactly such a record whenever a malformed desired
+    // block is deployed, and the NEXT update then has no usable previous side
+    // to diff against. #1562 seeded the baseline from the LIVE table's index
+    // NAMES, which stopped the index from being lost permanently but compared
+    // no VALUES at all — so a capacity edit and a #1160-class ceiling REMOVAL
+    // both silently lagged a deploy. Nothing about that two-deploy sequence is
+    // reachable from a mocked client: the junk record has to be written by a
+    // real deploy and read back by the next one.
+    //
+    // The table is UNCONDITIONAL and only its CONFIGURATION is mode-keyed. A
+    // mode-gated RESOURCE would be DELETED by every later deploy whose mode
+    // list omits the token, which is the opposite of what a two-phase
+    // sequence needs.
+    const gsiJunkState = updateMode.includes('gsi-state-junk');
+    const gsiStateRecovered = updateMode.includes('gsi-state-recovery');
+    // Hand-written L1, like the `unresolvable-capacity` table above and for
+    // the same reason: `TableV2` cannot express a `GlobalSecondaryIndexes`
+    // value that is not an array, and the whole point is to record one.
+    const gsiRecoveryTable = new ddb.CfnGlobalTable(this, 'GsiRecoveryTable', {
+      keySchema: [{ attributeName: 'pk', keyType: 'HASH' }],
+      attributeDefinitions: [
+        { attributeName: 'pk', attributeType: 'S' },
+        { attributeName: 'gsiPk', attributeType: 'S' },
+      ],
+      billingMode: 'PAY_PER_REQUEST',
+      globalSecondaryIndexes: gsiJunkState
+        ? // The value must survive SYNTH and only fail to resolve at DEPLOY
+          // time — the same constraint (and the same solution) as the
+          // `unresolvable-capacity` table: a pseudo-parameter keeps the
+          // `Fn::Join` UNFOLDED through synth, and cdkd resolves it to the
+          // string `us-east-1-x`, i.e. a present-but-non-array
+          // `GlobalSecondaryIndexes`. `Token.asAny` is what gets it past the
+          // generated L1 validator, which skips any resolvable value.
+          (cdk.Token.asAny(
+            cdk.Fn.join('-', [cdk.Aws.REGION, 'x'])
+          ) as unknown as ddb.CfnGlobalTable.GlobalSecondaryIndexProperty[])
+        : [
+            {
+              indexName: 'recoverIdx',
+              keySchema: [{ attributeName: 'gsiPk', keyType: 'HASH' }],
+              projection: { projectionType: 'ALL' },
+              // DROPPED by the recovery phase, so that phase also proves the
+              // #1160 ceiling reset reaches AWS from a recovered baseline —
+              // the reset is derived from the PREVIOUS side, which #1562's
+              // desired-copy baseline could never carry.
+              ...(gsiStateRecovered
+                ? {}
+                : { writeOnDemandThroughputSettings: { maxWriteRequestUnits: 50 } }),
+            },
+          ],
+      replicas: [
+        {
+          region: this.region,
+          // The read ceiling lives on the REPLICA's index entry (the canonical
+          // CDK spelling). CHANGED rather than dropped by the recovery phase,
+          // so the two members assert opposite directions in one readback.
+          globalSecondaryIndexes: gsiJunkState
+            ? undefined
+            : [
+                {
+                  indexName: 'recoverIdx',
+                  readOnDemandThroughputSettings: {
+                    maxReadRequestUnits: gsiStateRecovered ? 90 : 40,
+                  },
+                },
+              ],
+        },
+      ],
+    });
+    gsiRecoveryTable.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+
+    new cdk.CfnOutput(this, 'GsiRecoveryTableName', {
+      value: gsiRecoveryTable.ref,
+      description:
+        'On-demand GlobalTable used by the issue #1571 two-phase state-recovery sequence (gsi-state-junk then gsi-state-recovery)',
+    });
+
     new cdk.CfnOutput(this, 'GsiFlipTableName', {
       value: gsiFlipTable.tableName,
       description:

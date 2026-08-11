@@ -89,6 +89,39 @@ present-but-unusable — otherwise the corrected template compares against junk,
 reads as a change, and issues a call AWS rejects on every deploy. An ABSENT
 previous is NOT unusable: seeding it turns a no-op into a spurious change.
 
+**Take IDENTITY from the live read unconditionally, VALUES only where the live
+value answers the SAME question as the desired one** (issue #1571, refining the
+memory rule that said identity only). Existence is always safe and is what
+stops the permanent loss. A live VALUE is safe only when three things hold, and
+each was learned by shipping the version that did not check it:
+
+- the live value is not an AWS-side DEFAULT for a mode the resource is not in
+  (`DescribeTable` reports `ProvisionedThroughput: {0, 0}` for every index of a
+  PAY_PER_REQUEST table, so an ungated read modified every index and re-sent
+  `{0, 0}`, which AWS rejects) — gate on the live MODE, not on the value;
+- nothing else OWNS the number (an autoscaled capacity belongs to Application
+  Auto Scaling while the desired side is `MinCapacity`; both are correct, and
+  comparing them issues a scale-down nobody asked for) — detect the other owner
+  from the TEMPLATE, which is the side that declares it;
+- the comparator can actually tell them apart (`deepEqual` is
+  `JSON.stringify`, so an entry rebuilt member-by-member differs from its own
+  translated counterpart on key ORDER alone, and AWS does not guarantee list
+  readback order) — build the baseline by SPREADING the desired entry and
+  overriding only the members you vouch for, and leave anything whose readback
+  order is not guaranteed as the desired copy.
+
+Carrying the values matters beyond capacity: the #1160 absent-field RESET is
+derived from the PREVIOUS side, so an identity-only baseline silently disables
+every removal for as long as the record stays junk.
+
+REMOVALS are a separate decision and the conservative reading usually stands: a
+junk record cannot distinguish "cdkd created this and the template dropped it"
+from "somebody added it out of band". But say so ACCURATELY — "re-deploy once
+state is valid" was wrong, because once the corrected block is recorded the
+live-only member is in neither side of every later diff and survives
+indefinitely. Point at the remedy that works (`cdkd drift --accept`, then
+re-deploy).
+
 The full contract
 is on `CreateContext` in `src/types/resource.ts` (NOT in `region-check.ts`
 where `DeleteContext` lives — that type belongs there because its

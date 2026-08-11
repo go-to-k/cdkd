@@ -937,6 +937,103 @@ if [ "${UNRESOLVABLE_READ}" != "5" ] || [ "${UNRESOLVABLE_WRITE}" != "1" ]; then
 fi
 echo "    unresolvable capacity warned and defaulted to 5 while the valid sibling kept 1, issue #1511 closed"
 
+echo "[verify] step 13g: cdkd deploy with gsi-state-junk (issue #1571 phase 1 — RECORD an unusable GlobalSecondaryIndexes into cdkd state)"
+# The provider's warn path (issue #1551) records a malformed desired
+# `GlobalSecondaryIndexes` as the new state, and the NEXT update then has no
+# usable previous side. Nothing about that sequence is reachable from a mocked
+# client: the junk record has to be WRITTEN by a real deploy and READ BACK by
+# the next one, which is what these two steps do.
+#
+# The fixture renders `GlobalSecondaryIndexes` as an unfolded `Fn::Join` over
+# the region pseudo-parameter, so cdkd resolves it at deploy time to the STRING
+# `us-east-1-x` — present, and not an array.
+GSI_RECOVERY_MODES="ttl,tags,drop-gsi-ondemand-limits,drop-table-ondemand-limit,drop-table-ondemand-read-limit,gsi-billing-flip,unresolvable-capacity${OD_MODE_SUFFIX}"
+JUNK_LOG="$(mktemp)"
+CDKD_TEST_UPDATE="${GSI_RECOVERY_MODES},gsi-state-junk" \
+  ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose 2>&1 | tee "${JUNK_LOG}"
+
+if ! grep -q "GlobalSecondaryIndexes must be an array" "${JUNK_LOG}"; then
+  echo "FAIL: issue #1571 phase 1 — cdkd did not report the malformed desired GlobalSecondaryIndexes" >&2
+  exit 1
+fi
+rm -f "${JUNK_LOG}"
+
+GSI_RECOVERY_TABLE="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | python3 -c '
+import json, sys
+state = json.load(sys.stdin)
+for logical_id, resource in state.get("resources", {}).items():
+    if resource.get("resourceType") == "AWS::DynamoDB::GlobalTable" and logical_id.startswith("GsiRecoveryTable"):
+        print(resource["physicalId"])
+        break
+')"
+if [ -z "${GSI_RECOVERY_TABLE}" ]; then
+  echo "FAIL: issue #1571 — no GsiRecoveryTable in cdkd state" >&2
+  exit 1
+fi
+# The junk block must be RECORDED (that is what phase 2 recovers from) and the
+# live index must be UNTOUCHED — the destructive reading of "the template
+# declares no indexes" would have deleted it.
+JUNK_RECORDED="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | python3 -c '
+import json, sys
+state = json.load(sys.stdin)
+for logical_id, resource in state.get("resources", {}).items():
+    if logical_id.startswith("GsiRecoveryTable"):
+        print(json.dumps(resource.get("properties", {}).get("GlobalSecondaryIndexes")))
+        break
+')"
+case "${JUNK_RECORDED}" in
+  \[*)
+    echo "FAIL: issue #1571 phase 1 — state still records an ARRAY (${JUNK_RECORDED}); phase 2 would not exercise the recovery path" >&2
+    exit 1
+    ;;
+esac
+JUNK_READ="$(gsi_field "${GSI_RECOVERY_TABLE}" recoverIdx OnDemandThroughput.MaxReadRequestUnits)"
+JUNK_WRITE="$(gsi_field "${GSI_RECOVERY_TABLE}" recoverIdx OnDemandThroughput.MaxWriteRequestUnits)"
+if [ "${JUNK_READ}" != "40" ] || [ "${JUNK_WRITE}" != "50" ]; then
+  echo "FAIL: issue #1571 phase 1 — the malformed block must leave the live index untouched, got read=${JUNK_READ} / write=${JUNK_WRITE} (expected 40 / 50)" >&2
+  exit 1
+fi
+echo "    junk GlobalSecondaryIndexes recorded (${JUNK_RECORDED}), live index untouched"
+
+echo "[verify] step 13h: cdkd deploy with gsi-state-recovery (issue #1571 phase 2 — the corrected template must apply VALUES, not just ADDs)"
+# PR #1562 recovered by taking the live index NAMES only, so every carried
+# entry was a byte-copy of its desired counterpart and the diff could produce
+# nothing but ADDs. This phase changes one ceiling and DROPS the other, which
+# is exactly what that baseline could not express:
+#   - MaxReadRequestUnits 40 -> 90 (a value edit)
+#   - MaxWriteRequestUnits 50 -> dropped (the #1160 reset, derived from the
+#     PREVIOUS side, which a desired-copy baseline never carried)
+# Pre-fix both read back unchanged at 40 / 50.
+RECOVERY_LOG="$(mktemp)"
+CDKD_TEST_UPDATE="${GSI_RECOVERY_MODES},gsi-state-recovery" \
+  ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose 2>&1 | tee "${RECOVERY_LOG}"
+
+# The autoscaled / not-template-determined exclusion and the live-only removes
+# path are unit-tested only; real-AWS coverage for both is issue (#1585).
+
+if ! grep -q "using the table's LIVE indexes as the comparison baseline" "${RECOVERY_LOG}"; then
+  echo "FAIL: issue #1571 phase 2 — the recovery path did not run (no LIVE-baseline warning)" >&2
+  exit 1
+fi
+rm -f "${RECOVERY_LOG}"
+
+RECOVERED_READ="$(gsi_field "${GSI_RECOVERY_TABLE}" recoverIdx OnDemandThroughput.MaxReadRequestUnits)"
+RECOVERED_WRITE="$(gsi_field "${GSI_RECOVERY_TABLE}" recoverIdx OnDemandThroughput.MaxWriteRequestUnits)"
+if [ "${RECOVERED_READ}" != "90" ]; then
+  echo "FAIL: issue #1571 phase 2 — expected the read ceiling edit to apply on the recovery deploy (90), got ${RECOVERED_READ}" >&2
+  exit 1
+fi
+# A cleared on-demand ceiling reads back as ABSENCE, never as -1 (issue #1423).
+case "${RECOVERED_WRITE}" in
+  None|'')
+    ;;
+  *)
+    echo "FAIL: issue #1571 phase 2 — expected the dropped write ceiling to be RESET (absent), got ${RECOVERED_WRITE}" >&2
+    exit 1
+    ;;
+esac
+echo "    recovery deploy applied the value edit (read=90) and the removal (write cleared), issue #1571 closed"
+
 echo "[verify] step 14a: assert DeletionProtectionEnabled flipped back to false on AWS"
 DP_FINAL="$(aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" \
   --query 'Table.DeletionProtectionEnabled' --output text)"
