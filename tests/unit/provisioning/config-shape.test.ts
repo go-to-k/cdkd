@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vite-plus/test';
 import {
   readConfigString,
   requireConfigArray,
+  requireConfigObject,
   requireConfigString,
 } from '../../../src/provisioning/config-shape.js';
 
@@ -341,6 +342,54 @@ describe('requireConfigArray', () => {
     expect(warn).toHaveBeenCalledTimes(1);
     const message = warn.mock.calls[0][0] as string;
     expect(message).toMatch(/must be an array/);
+    expect(message).toMatch(/Leaving this configuration unapplied/);
+    expect(message).toMatch(/REFUSED on a template-path create/);
+  });
+});
+
+describe('requireConfigObject (issue #1581)', () => {
+  const CONTAINER_PATH = 'AWS::S3::Bucket LifecycleConfiguration.Rules[].Filter';
+
+  it('passes a plain object through unchanged, with and without options', () => {
+    const container = { Prefix: 'logs/' };
+    expect(requireConfigObject(container, CONTAINER_PATH)).toBe(container);
+    expect(requireConfigObject(container, CONTAINER_PATH, { onUnusable: vi.fn() })).toBe(container);
+  });
+
+  it('passes an EMPTY object through — `{}` is a legitimate container', () => {
+    const container = {};
+    expect(requireConfigObject(container, CONTAINER_PATH)).toBe(container);
+  });
+
+  it('throws on a non-object when no onUnusable is supplied', () => {
+    expect(() => requireConfigObject('logs/', CONTAINER_PATH)).toThrow(
+      /must be an object \(got a string\)/
+    );
+    expect(() => requireConfigObject(42, CONTAINER_PATH, {})).toThrow(
+      /must be an object \(got a number\)/
+    );
+  });
+
+  it('refuses an ARRAY — the shape a `typeof === object` check would wave through', () => {
+    expect(() => requireConfigObject([{ Prefix: 'logs/' }], CONTAINER_PATH)).toThrow(
+      /must be an object \(got an array\)/
+    );
+  });
+
+  it('refuses null / undefined — the ABSENT case belongs to the caller', () => {
+    // Unlike `readConfigString`, which owns rule 1, this guard is reached only
+    // behind the caller's own `!= null` test, so an absent value arriving here
+    // is a caller bug rather than an omitted template block.
+    expect(() => requireConfigObject(undefined, CONTAINER_PATH)).toThrow(/must be an object/);
+    expect(() => requireConfigObject(null, CONTAINER_PATH)).toThrow(/must be an object/);
+  });
+
+  it('warns and returns undefined under onUnusable (state-replay downgrade)', () => {
+    const warn = vi.fn();
+    expect(requireConfigObject('logs/', CONTAINER_PATH, { onUnusable: warn })).toBeUndefined();
+    expect(warn).toHaveBeenCalledTimes(1);
+    const message = warn.mock.calls[0][0] as string;
+    expect(message).toMatch(/must be an object/);
     expect(message).toMatch(/Leaving this configuration unapplied/);
     expect(message).toMatch(/REFUSED on a template-path create/);
   });

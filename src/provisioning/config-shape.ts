@@ -386,6 +386,73 @@ export function requireConfigArray(
 }
 
 /**
+ * The object-guard subset of {@link ConfigStringOptions}: only the state-replay
+ * downgrade applies to a CONTAINER block (`coerceNumber` is meaningless there),
+ * so {@link requireConfigObject} takes this narrower bag while still accepting a
+ * spread `replayWarn(...)` result structurally.
+ */
+export type ConfigObjectOptions = Pick<ConfigStringOptions, 'onUnusable'>;
+
+/**
+ * Refuse a present-but-non-OBJECT value where a CFn config CONTAINER belongs.
+ *
+ * The container half of {@link readConfigString} without the field half, for
+ * the case where the caller does not read a STRING out of the block and so
+ * cannot reach rule 2 through `readConfigString` at all — a container whose
+ * members are probed for PRESENCE (`filter?.['Prefix'] ?? rule['Prefix']`,
+ * `storageClassAnalysis?.['DataExport'] != null`) rather than read as a value.
+ * Every probe of a malformed container indexes to `undefined`, so the block
+ * reads as EMPTY and the caller silently proceeds without it: a lifecycle rule
+ * loses its whole location scope and applies BUCKET-WIDE, an analytics
+ * configuration loses its data export. That is the silent-DROP sibling of the
+ * defaulting class, one level up from {@link requireConfigArray}'s LIST block
+ * (issue #1581).
+ *
+ * Callers keep the ABSENT case themselves (`value != null && …`), because an
+ * absent container legitimately means "block omitted" and the caller's own
+ * defaults are the right answer — the same division of labour
+ * {@link requireConfigArray} uses.
+ *
+ * @param options Per-site relaxation, same shape and same reason as
+ *   {@link requireConfigArray}'s: under `onUnusable` a non-object value warns
+ *   and returns `undefined` instead of throwing, for the state-replay paths
+ *   where the desired bag can be a historical cdkd state record with no
+ *   template-side remedy. The caller decides what `undefined` means at its
+ *   site — the S3 appliers skip the configuration item, or the whole lifecycle
+ *   Put, rather than applying it with a widened scope.
+ * @throws Error when the value is not a plain object, unless `onUnusable` is
+ *   supplied.
+ */
+export function requireConfigObject(value: unknown, path: string): Record<string, unknown>;
+export function requireConfigObject(
+  value: unknown,
+  path: string,
+  options: ConfigObjectOptions
+): Record<string, unknown> | undefined;
+export function requireConfigObject(
+  value: unknown,
+  path: string,
+  options?: ConfigObjectOptions
+): Record<string, unknown> | undefined {
+  if (!isPlainObject(value)) {
+    const detail =
+      `(got ${describe(value)}) — check for an unresolved intrinsic or a ` +
+      `mis-nested template value`;
+
+    if (options?.onUnusable) {
+      options.onUnusable(
+        `${path} must be an object ${detail}. Leaving this configuration ` +
+          `unapplied here; the same value is REFUSED on a template-path create`
+      );
+      return undefined;
+    }
+
+    throw new Error(`${path} must be an object ${detail}`);
+  }
+  return value;
+}
+
+/**
  * A plain object, i.e. something a CFn config block can legitimately be.
  * Arrays are excluded on purpose: an array where an object belongs is one of
  * the malformed shapes this module exists to catch, and `typeof [] === 'object'`

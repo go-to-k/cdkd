@@ -44,7 +44,19 @@ helper exists to stop:
   its `onUnusable`-only subset (`ConfigArrayOptions`) for LIST blocks — under
   the callback it warns and returns `undefined` so the caller decides the skip
   unit, and the S3 `TagFilters` guards skip the whole configuration item /
-  whole lifecycle Put rather than applying a widened scope (issue #1579); and
+  whole lifecycle Put rather than applying a widened scope (issue #1579);
+  `requireConfigObject` is the OBJECT-block twin of that guard
+  (`ConfigObjectOptions`, same overloads, same caller-owned ABSENT case) for a
+  container whose members are probed for PRESENCE rather than read as a
+  string — where `readConfigString`'s rule 2 is unreachable and a malformed
+  value reads as an EMPTY block, so the S3 lifecycle `Filter` / analytics
+  `StorageClassAnalysis` / `.DataExport` / replication `Filter` guards skip
+  with the same units (issue #1581). The replication site is the one worth
+  remembering: an EMPTY block is not inert there — `Filter: {}` is the valid
+  CFn form meaning "replicate EVERY object" — so the malformed container did
+  not merely drop a predicate, it replicated the whole bucket. When auditing
+  this class, ask what the EMPTY block MEANS at the site before deciding the
+  severity; and
   `toSdkGlobalSecondaryIndexes` takes the callback as `onUnusableIndexes` —
   wired from `create()` AND, since issue #1551, from both of `update()`'s
   call sites (desired and previous). Prefer this.
