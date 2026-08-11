@@ -1160,7 +1160,11 @@ export class S3BucketProvider implements ResourceProvider {
   ): Promise<void> {
     // The per-ITEM `config` container is deliberately NOT guarded here, and
     // the audit that settled it belongs next to the decision (issue #1581).
-    // Of the SIX per-item appliers, four already refuse a non-object item
+    // Of the six per-item appliers that carry the `onUnusable` replay callback
+    // (the set this decision is about — a reader enumerating every per-item
+    // `.map` in this file also finds cors / encryption / website /
+    // notification, which are not replay-callback sites), four already refuse a
+    // non-object item
     // through an existing `readConfigString(config | rule, …)` — intelligent
     // tiering (`Status`), inventory (`IncludedObjectVersions`), the lifecycle
     // rules (`Status`) and replication's rules (`Status`, in the same applier
@@ -1822,6 +1826,14 @@ export class S3BucketProvider implements ResourceProvider {
             // produces an invalid PutBucketReplication payload (the same element-
             // wise-transform-drops-a-valid-shape class as the lifecycle V1/V2 bug).
             const filter = rule['Filter'] as Record<string, unknown> | undefined;
+            // `!= null` rather than the truthiness gate this used to be: after
+            // the pre-pass guard at the top of this method only `null` /
+            // `undefined` / a plain object can reach here, and every plain
+            // object is truthy — so the two spellings are now equivalent and NO
+            // test can distinguish them. Kept as defense-in-depth so the site
+            // stays correct if the pre-pass is ever narrowed or moved; issue
+            // #1581's hazard was precisely a falsy malformed value slipping
+            // through a truthiness gate here.
             if (filter != null) {
               // CFn's ReplicationRuleFilter shapes, faithfully translated to the
               // S3 SDK shape (which differs only in `TagFilter`->`Tag` and
