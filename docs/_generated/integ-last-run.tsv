@@ -95,7 +95,7 @@ ec2-vpc	2026-07-26T17:21:15Z	PASS	35	standard	issue 1241 fix verified: explicit 
 ecr	2026-08-10T11:50:46Z	PASS	35	standard	0810 P0/P1 sweep b2; 3 del/0 err, repo gone
 ecr-scanning	2026-08-09T06:01:13Z	PASS	55	verify.sh	#1392 exclusion-filter create + filters-only update + filterType asserts; 2 del/0 err, 0 orphans
 ecs-bluegreen	2026-08-10T11:33:25Z	PASS	232	verify.sh	re-run after review fixes (blue-TG/test-rule/task-role probes + pre-run cleanup)
-ecs-fargate	2026-08-11T10:00:27Z	FAIL	600	verify.sh	run4: full-wait update rollout IN_PROGRESS race (SDK-route gap) - settleService rollout poll added; runs2-3 transient AuthFailure fallout
+ecs-fargate	2026-08-11T10:07:46Z	PASS	600	verify.sh	609 route flip + ns retry + rollout poll all live-proven; destroy 23/23 clean run5
 ecs-schedule-targets	2026-08-08T19:04:46Z	PASS	60	verify.sh	re-run with drift assert after review fixes; clean
 ecs-service-update-props	2026-08-11T09:16:50Z	PASS	480	verify.sh	609 props live-verified; ForceNewDeployment rollout proven; destroy 15/15 clean
 efs-immutable-replacement	2026-08-01T09:51:12Z	PASS	63	verify.sh	0801 regression sweep; createOnly+stateful guard ok, 0 orphans
