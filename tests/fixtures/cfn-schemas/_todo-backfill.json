@@ -37,34 +37,6 @@
       "DocumentationVersion",
       "MethodSettings"
     ],
-    "AWS::ApiGatewayV2::Authorizer": [
-      "AuthorizerCredentialsArn"
-    ],
-    "AWS::ApiGatewayV2::Integration": [
-      "ConnectionId",
-      "ConnectionType",
-      "ContentHandlingStrategy",
-      "CredentialsArn",
-      "IntegrationSubtype",
-      "PassthroughBehavior",
-      "RequestTemplates",
-      "ResponseParameters",
-      "TemplateSelectionExpression",
-      "TlsConfig"
-    ],
-    "AWS::ApiGatewayV2::Route": [
-      "ApiKeyRequired",
-      "ModelSelectionExpression",
-      "RequestModels",
-      "RequestParameters",
-      "RouteResponseSelectionExpression"
-    ],
-    "AWS::ApiGatewayV2::Stage": [
-      "AccessLogSettings",
-      "ClientCertificateId",
-      "DeploymentId",
-      "RouteSettings"
-    ],
     "AWS::AppSync::DataSource": [
       "ElasticsearchConfig",
       "EventBridgeConfig",

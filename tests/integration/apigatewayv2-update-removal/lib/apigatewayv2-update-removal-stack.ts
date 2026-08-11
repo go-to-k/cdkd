@@ -1,6 +1,7 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2';
+import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as logs from 'aws-cdk-lib/aws-logs';
 
@@ -15,6 +16,12 @@ import * as logs from 'aws-cdk-lib/aws-logs';
  *
  *   covers: AWS::ApiGatewayV2::Api / ::Stage / ::Integration / ::Route /
  *           ::Authorizer (+ AWS::Lambda::Function for the REQUEST authorizer URI)
+ *
+ * Issue #609 also rides this fixture: the `::Integration` silent-drop backfill
+ * adds ten properties whose delivery is asserted here on CREATE and on UPDATE
+ * (they change VALUE across the phases rather than being removed — the
+ * backfill wires delivery, and absent-field removal for that group stays with
+ * the #1160 umbrella until each field has its own live CFn A/B).
  *
  * Phase 1 sets one-or-more removable fields on each of the five resources.
  * Phase 2 (CDKD_TEST_UPDATE=true) removes them and the verify script asserts
@@ -74,6 +81,36 @@ export class ApiGatewayV2UpdateRemovalStack extends cdk.Stack {
       integrationMethod: 'GET',
       integrationUri: 'https://example.com',
       payloadFormatVersion: '1.0',
+      // Issue #609: ResponseParameters CHANGES VALUE on update rather than
+      // being removed — the backfill wires delivery, and absent-field removal
+      // for this group is left to the #1160 umbrella because each field needs
+      // its own live CFn A/B first.
+      //
+      // TlsConfig is deliberately NOT set here. Direct A/B against the API
+      // (2026-08-11, us-east-1): AWS SILENTLY IGNORES TlsConfig on a public
+      // (ConnectionType INTERNET) integration — it is absent from both the
+      // CreateIntegration echo and the GetIntegration read-back — because the
+      // field is only meaningful for a PRIVATE integration, which needs a VPC
+      // Link. Asserting it here would fail against correct cdkd behavior.
+      //
+      // ResponseParameters is the one property whose CFn shape (a per-status
+      // list of {Destination, Source}) differs from the SDK's (a flat map), so
+      // this is the assertion that proves the fold reaches AWS — forwarding
+      // the CFn shape verbatim delivers an empty map with a green deploy.
+      responseParameters: {
+        '404': {
+          ResponseParameters: [
+            { Destination: 'append:header.x-cdkd-resp', Source: update ? 'updated' : 'before' },
+            // UNQUOTED on purpose: CFn types ResponseParameters as free-form
+            // `object` and coerces scalars, so a numeric Source is a legal
+            // template — and `overwrite:statuscode` is exactly the destination
+            // whose value an author writes as a number. cdkd must coerce it;
+            // the first draft skipped non-strings and would have dropped this
+            // pair with a green deploy.
+            { Destination: 'overwrite:statuscode', Source: update ? 403 : 404 },
+          ],
+        },
+      },
       // Removable on UPDATE: Description / RequestParameters.
       ...(update
         ? {}
@@ -81,6 +118,34 @@ export class ApiGatewayV2UpdateRemovalStack extends cdk.Stack {
             description: 'before removal',
             requestParameters: { 'append:header.x-cdkd': 'y' },
           }),
+    });
+
+    // ── Integration (AWS_PROXY service integration) ─────────────────
+    // The only shape that can carry IntegrationSubtype + CredentialsArn: an
+    // HTTP API service integration invoking EventBridge under an assumed role.
+    const eventsRole = new iam.Role(this, 'EventsRole', {
+      roleName: `${this.stackName}-events`,
+      assumedBy: new iam.ServicePrincipal('apigateway.amazonaws.com'),
+      inlinePolicies: {
+        putEvents: new iam.PolicyDocument({
+          statements: [
+            new iam.PolicyStatement({ actions: ['events:PutEvents'], resources: ['*'] }),
+          ],
+        }),
+      },
+    });
+    new apigwv2.CfnIntegration(this, 'EventsIntegration', {
+      apiId: api.ref,
+      integrationType: 'AWS_PROXY',
+      // Issue #609: IntegrationSubtype + CredentialsArn.
+      integrationSubtype: 'EventBridge-PutEvents',
+      credentialsArn: eventsRole.roleArn,
+      payloadFormatVersion: '1.0',
+      requestParameters: {
+        Source: 'cdkd.integ',
+        DetailType: update ? 'updated' : 'before',
+        Detail: '$request.body',
+      },
     });
 
     // ── Authorizer (REQUEST) ────────────────────────────────────────
@@ -118,6 +183,29 @@ export class ApiGatewayV2UpdateRemovalStack extends cdk.Stack {
       name: `${this.stackName}-ws`,
       protocolType: 'WEBSOCKET',
       routeSelectionExpression: '$request.body.action',
+    });
+
+    // ── WebSocket MOCK Integration ──────────────────────────────────
+    // Issue #609: RequestTemplates / TemplateSelectionExpression /
+    // PassthroughBehavior / ContentHandlingStrategy are all MOCK-integration
+    // properties, and a MOCK integration needs a WebSocket API — which is
+    // exactly why the WsRoute comment above said these were unreachable while
+    // they were still silent-drop. The integration carries no route: this
+    // fixture exercises the CONFIG path, and an unattached integration is a
+    // legal AWS resource.
+    //
+    // NOT covered here: ConnectionId, which requires a live VPC Link (VPC +
+    // subnets + SG, minutes per run) for a plain pass-through field. It is
+    // pinned by the unit tests instead.
+    new apigwv2.CfnIntegration(this, 'WsMockIntegration', {
+      apiId: wsApi.ref,
+      integrationType: 'MOCK',
+      requestTemplates: {
+        $default: update ? '{"statusCode":202}' : '{"statusCode":200}',
+      },
+      templateSelectionExpression: '\\$default',
+      passthroughBehavior: update ? 'NEVER' : 'WHEN_NO_MATCH',
+      contentHandlingStrategy: update ? 'CONVERT_TO_BINARY' : 'CONVERT_TO_TEXT',
     });
 
     // TWO routes, because AWS scopes the properties differently: it rejects

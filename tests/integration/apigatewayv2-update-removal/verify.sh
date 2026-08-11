@@ -69,6 +69,7 @@ STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 API_NAME="${STACK}-api"
 WS_API_NAME="${STACK}-ws"
 AUTH_FN="${STACK}-authfn"
+EVENTS_ROLE="${STACK}-events"
 
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
@@ -83,6 +84,22 @@ api_field() { # api_field <API_ID> <JMESPath>
 first_id() { # first_id <API_ID> <get-verb> <IdField>
   aws apigatewayv2 "$2" --api-id "$1" --region "${REGION}" \
     --query "Items[0].$3" --output text 2>/dev/null
+}
+int_id_by_type() { # int_id_by_type <API_ID> <IntegrationType> — issue #609:
+  # the HTTP API now carries TWO integrations (HTTP_PROXY + AWS_PROXY) and the
+  # WebSocket API one (MOCK), so an Items[0] pick would be order-dependent.
+  # The count guard keeps that true: the moment a second integration of the
+  # same type is added to either API, this fails loudly instead of silently
+  # asserting against whichever one AWS happened to list first.
+  local n
+  n="$(aws apigatewayv2 get-integrations --api-id "$1" --region "${REGION}" \
+    --query "length(Items[?IntegrationType=='$2'])" --output text)" || return 1
+  if [ "${n}" != "1" ]; then
+    echo "FAIL: expected exactly 1 '$2' integration on api $1, found '${n}'" >&2
+    return 1
+  fi
+  aws apigatewayv2 get-integrations --api-id "$1" --region "${REGION}" \
+    --query "Items[?IntegrationType=='$2'].IntegrationId | [0]" --output text
 }
 int_field() { # int_field <API_ID> <INT_ID> <JMESPath>
   aws apigatewayv2 get-integration --api-id "$1" --integration-id "$2" --region "${REGION}" \
@@ -129,6 +146,10 @@ cleanup() {
     --region "${REGION}" >/dev/null 2>&1
   aws lambda delete-function --function-name "${AUTH_FN}" --region "${REGION}" >/dev/null 2>&1
   aws logs delete-log-group --log-group-name "/aws/lambda/${AUTH_FN}" --region "${REGION}" >/dev/null 2>&1
+  # Issue #609: the AWS_PROXY service integration's invocation role. An inline
+  # policy blocks DeleteRole, so it has to come off first.
+  aws iam delete-role-policy --role-name "${EVENTS_ROLE}" --policy-name putEvents >/dev/null 2>&1
+  aws iam delete-role --role-name "${EVENTS_ROLE}" >/dev/null 2>&1
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
@@ -162,7 +183,8 @@ AID="$(api_id)"
 if [ -z "${AID}" ] || [ "${AID}" = "None" ]; then
   echo "FAIL: could not resolve ApiId for ${API_NAME}" >&2; exit 1
 fi
-INT_ID="$(first_id "${AID}" get-integrations IntegrationId)"
+INT_ID="$(int_id_by_type "${AID}" HTTP_PROXY)"
+EVENTS_INT_ID="$(int_id_by_type "${AID}" AWS_PROXY)"
 ROUTE_ID="$(first_id "${AID}" get-routes RouteId)"
 AUTH_ID="$(first_id "${AID}" get-authorizers AuthorizerId)"
 
@@ -176,6 +198,23 @@ fi
 if [ "$(int_field "${AID}" "${INT_ID}" 'Description')" != "before removal" ] \
   || [ "$(int_field "${AID}" "${INT_ID}" 'RequestParameters."append:header.x-cdkd"')" != "y" ]; then
   echo "FAIL: Phase 1 Integration fields not live: Desc='$(int_field "${AID}" "${INT_ID}" Description)' RP='$(int_field "${AID}" "${INT_ID}" 'RequestParameters."append:header.x-cdkd"')'" >&2
+  exit 1
+fi
+# Issue #609 (::Integration backfill), phase 1. Each of these is delivered on
+# CREATE only if the provider wires the member — the pre-fix binary dropped
+# them silently and the deploy still reported success, so an empty readback
+# here IS the bug.
+# The CFn list-of-pairs must arrive as the SDK's flat map: AWS reports the
+# Destination as the KEY. A verbatim forward of the CFn shape yields `{}`.
+if [ "$(int_field "${AID}" "${INT_ID}" 'ResponseParameters."404"."append:header.x-cdkd-resp"')" != "before" ] \
+  || [ "$(int_field "${AID}" "${INT_ID}" 'ResponseParameters."404"."overwrite:statuscode"')" != "404" ]; then
+  echo "FAIL: Phase 1 Integration ResponseParameters not folded to the SDK map (got '$(int_field "${AID}" "${INT_ID}" 'ResponseParameters."404"')')" >&2
+  exit 1
+fi
+if [ "$(int_field "${AID}" "${EVENTS_INT_ID}" 'IntegrationSubtype')" != "EventBridge-PutEvents" ] \
+  || [ "$(int_field "${AID}" "${EVENTS_INT_ID}" 'CredentialsArn')" = "None" ] \
+  || [ "$(int_field "${AID}" "${EVENTS_INT_ID}" 'RequestParameters.DetailType')" != "before" ]; then
+  echo "FAIL: Phase 1 service Integration fields not live: Subtype='$(int_field "${AID}" "${EVENTS_INT_ID}" IntegrationSubtype)' Creds='$(int_field "${AID}" "${EVENTS_INT_ID}" CredentialsArn)' DetailType='$(int_field "${AID}" "${EVENTS_INT_ID}" 'RequestParameters.DetailType')'" >&2
   exit 1
 fi
 if [ "$(auth_field "${AID}" "${AUTH_ID}" 'AuthorizerResultTtlInSeconds')" != "300" ]; then
@@ -207,6 +246,20 @@ WS_DEFAULT_ID="$(ws_route_id '$default')"
 if [ -z "${WS_CONNECT_ID}" ] || [ "${WS_CONNECT_ID}" = "None" ] \
   || [ -z "${WS_DEFAULT_ID}" ] || [ "${WS_DEFAULT_ID}" = "None" ]; then
   echo "FAIL: could not resolve both WebSocket route ids (connect='${WS_CONNECT_ID}' default='${WS_DEFAULT_ID}')" >&2
+  exit 1
+fi
+
+# Issue #609: the four MOCK-integration properties, which only a WebSocket API
+# can carry — the reason they were unreachable while still silent-drop.
+WS_MOCK_ID="$(int_id_by_type "${WS_AID}" MOCK)"
+if [ -z "${WS_MOCK_ID}" ] || [ "${WS_MOCK_ID}" = "None" ]; then
+  echo "FAIL: could not resolve the WebSocket MOCK integration id" >&2; exit 1
+fi
+if [ "$(int_field "${WS_AID}" "${WS_MOCK_ID}" 'RequestTemplates."$default"')" != '{"statusCode":200}' ] \
+  || [ "$(int_field "${WS_AID}" "${WS_MOCK_ID}" 'TemplateSelectionExpression')" != '\$default' ] \
+  || [ "$(int_field "${WS_AID}" "${WS_MOCK_ID}" 'PassthroughBehavior')" != "WHEN_NO_MATCH" ] \
+  || [ "$(int_field "${WS_AID}" "${WS_MOCK_ID}" 'ContentHandlingStrategy')" != "CONVERT_TO_TEXT" ]; then
+  echo "FAIL: Phase 1 WS MOCK Integration fields not live: RT='$(int_field "${WS_AID}" "${WS_MOCK_ID}" 'RequestTemplates."$default"')' TSE='$(int_field "${WS_AID}" "${WS_MOCK_ID}" TemplateSelectionExpression)' PB='$(int_field "${WS_AID}" "${WS_MOCK_ID}" PassthroughBehavior)' CHS='$(int_field "${WS_AID}" "${WS_MOCK_ID}" ContentHandlingStrategy)'" >&2
   exit 1
 fi
 
@@ -245,6 +298,23 @@ if [ "$(ws_stage_field "${WS_AID}" 'RouteSettings."$connect".ThrottlingRateLimit
   exit 1
 fi
 
+# Issue #609 routing guard: moving properties out of `silentDrop` and into
+# `handledProperties` is exactly what decides SDK-vs-Cloud-Control routing
+# (the #614 auto-route). A backfill that accidentally left one property
+# unhandled would route the whole type through Cloud Control, which forwards
+# the full property map and so would still deploy green — with none of the
+# provider code under test on the path. Pin the route.
+STATE_JSON="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}")"
+for LID in Integration EventsIntegration WsMockIntegration; do
+  ROUTE="$(printf '%s' "${STATE_JSON}" | jq -r --arg l "${LID}" \
+    '.resources[$l].provisionedBy // "sdk"')"
+  if [ "${ROUTE}" != "sdk" ]; then
+    echo "FAIL: ${LID} routed via '${ROUTE}', not the SDK provider this PR tests" >&2
+    exit 1
+  fi
+done
+echo "    all three integrations routed via the SDK provider"
+
 echo "    all Phase 1 fields live"
 
 # --- Phase 2: remove the fields ----------------------------------------
@@ -272,6 +342,41 @@ if [ "${RP}" != "None" ]; then echo "FAIL: Integration RequestParameters not cle
 
 TTL="$(auth_field "${AID}" "${AUTH_ID}" 'AuthorizerResultTtlInSeconds')"
 if [ "${TTL}" != "0" ]; then echo "FAIL: Authorizer TTL not reset to 0 (got '${TTL}')" >&2; exit 1; fi
+
+# Issue #609 (::Integration backfill), phase 2. These CHANGE VALUE rather than
+# being removed: the backfill wires delivery on create AND update, and the
+# absent-field removal decision is deferred to the #1160 umbrella (each field
+# needs its own live CFn A/B first), so a removal assertion here would be
+# asserting behavior this PR deliberately does not implement.
+RESP_H="$(int_field "${AID}" "${INT_ID}" 'ResponseParameters."404"."append:header.x-cdkd-resp"')"
+RESP_S="$(int_field "${AID}" "${INT_ID}" 'ResponseParameters."404"."overwrite:statuscode"')"
+if [ "${RESP_H}" != "updated" ] || [ "${RESP_S}" != "403" ]; then
+  echo "FAIL: Integration ResponseParameters not updated (header='${RESP_H}' status='${RESP_S}')" >&2; exit 1
+fi
+EV_DT="$(int_field "${AID}" "${EVENTS_INT_ID}" 'RequestParameters.DetailType')"
+EV_ST="$(int_field "${AID}" "${EVENTS_INT_ID}" 'IntegrationSubtype')"
+if [ "${EV_DT}" != "updated" ] || [ "${EV_ST}" != "EventBridge-PutEvents" ]; then
+  echo "FAIL: service Integration not updated (DetailType='${EV_DT}' Subtype='${EV_ST}')" >&2; exit 1
+fi
+# RETENTION, not removal: these two are unchanged by phase 2 and must survive
+# the partial UpdateIntegration. Without this the phase-2 assertion set is
+# narrower than phase 1's, and "cdkd wiped a field it did not touch" — the
+# failure mode the whole #1160 umbrella is about — would pass silently.
+EV_CRED="$(int_field "${AID}" "${EVENTS_INT_ID}" 'CredentialsArn')"
+if [ "${EV_CRED}" = "None" ]; then
+  echo "FAIL: service Integration CredentialsArn lost across the update (got '${EV_CRED}')" >&2; exit 1
+fi
+WS_TSE="$(int_field "${WS_AID}" "${WS_MOCK_ID}" 'TemplateSelectionExpression')"
+if [ "${WS_TSE}" != '\$default' ]; then
+  echo "FAIL: WS MOCK TemplateSelectionExpression lost across the update (got '${WS_TSE}')" >&2; exit 1
+fi
+WS_RT="$(int_field "${WS_AID}" "${WS_MOCK_ID}" 'RequestTemplates."$default"')"
+WS_PB="$(int_field "${WS_AID}" "${WS_MOCK_ID}" 'PassthroughBehavior')"
+WS_CH="$(int_field "${WS_AID}" "${WS_MOCK_ID}" 'ContentHandlingStrategy')"
+if [ "${WS_RT}" != '{"statusCode":202}' ] || [ "${WS_PB}" != "NEVER" ] \
+  || [ "${WS_CH}" != "CONVERT_TO_BINARY" ]; then
+  echo "FAIL: WS MOCK Integration not updated (RT='${WS_RT}' PB='${WS_PB}' CHS='${WS_CH}')" >&2; exit 1
+fi
 
 # Issue #609: ApiKeyRequired is REMOVED in phase 2 and must reset to the CFn
 # default; the three expressions / the parameter map CHANGE value, and the two
@@ -354,6 +459,8 @@ assert_gone "WS access log group /aws/apigatewayv2/${WS_API_NAME} still exists a
   aws logs describe-log-streams --log-group-name "/aws/apigatewayv2/${WS_API_NAME}" --region "${REGION}"
 assert_gone "authorizer Lambda ${AUTH_FN} still exists after destroy" aws lambda get-function --function-name "${AUTH_FN}" --region "${REGION}"
 echo "    authorizer Lambda deleted"
+assert_gone "service-integration role ${EVENTS_ROLE} still exists after destroy" aws iam get-role --role-name "${EVENTS_ROLE}"
+echo "    service-integration role deleted"
 
 assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    cdkd state removed"

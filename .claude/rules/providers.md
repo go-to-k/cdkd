@@ -611,9 +611,13 @@ That is a far more common template shape than the base64 search string.
      depth 1 as well as under the caller's path. Harmless unless a nested member
      name collides with an audited TOP-LEVEL property of the same type —
      measured today: on the API Gateway v2 targets every path cleared by a
-     hand-off wildcard is one of the 13 legitimate blob members (6
+     hand-off wildcard is one of the 18 legitimate blob members (6
      `CorsConfiguration.*` + 5 `DefaultRouteSettings.*` + 2
-     `JwtConfiguration.*`), none by a stray root. Suppression follows a
+     `JwtConfiguration.*` + 2 `AccessLogSettings.*` + 1 `RequestParameters.*`,
+     plus `TlsConfig.*` and `ResponseParameters.*` from the issue #609
+     `::Integration` backfill), none by a stray root. The count was 13 when
+     this was first measured and moved with each of the two #609 batches —
+     re-measure it rather than trusting the number. Suppression follows a
      `.map(v => ({ … }))` callback, because `resolveLiterals` does; it does NOT
      follow an opaque call such as `JSON.stringify({ … })`, because nothing
      resolves that in the other direction and suppressing there would LOSE the

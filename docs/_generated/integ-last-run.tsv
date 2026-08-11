@@ -11,7 +11,7 @@ alb	2026-08-10T17:41:32Z	PASS	420	verify.sh	1160 elbv2 batch post-rebase re-run:
 alb-advanced	2026-07-28T02:54:42Z	PASS	206	standard	ALB active wait 156s (#1274), destroy 17/0 errors
 api-cognito	2026-07-26T18:49:34Z	PASS	75	standard	0727b sweep-b6 staleness re-run (rc=0); account clean
 apigateway	2026-08-10T17:13:20Z	PASS	175	verify.sh	final re-run after re-review fixes; 25 deleted 0 errors
-apigatewayv2-update-removal	2026-08-11T08:19:38Z	PASS	104	verify.sh	#609 Stage/Route props + delete-API removals, post-rebase pre-merge run; clean destroy
+apigatewayv2-update-removal	2026-08-11T10:49:03Z	PASS	180	verify.sh	#609 Integration batch final; 15 deleted 0 errors 0 orphans
 apigw-gateway-response	2026-07-31T06:27:45Z	PASS	66	verify.sh	TTL-refresh sweep re-run; 3 phases clean, orph clean
 apigw-stage-props	2026-08-11T06:41:16Z	PASS	300	verify.sh	final post-rebase run (Route batch on main); 0 orphans
 apigw-stage-throttling	2026-08-11T04:51:55Z	PASS	420	verify.sh	SDK-routed Stage assertions updated (#609); :* ARN normalization fix live-verified

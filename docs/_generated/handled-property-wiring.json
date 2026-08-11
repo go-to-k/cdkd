@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "summary": {
     "classifiedCount": 84,
-    "declaredProperties": 1095,
-    "wiredProperties": 1093,
+    "declaredProperties": 1105,
+    "wiredProperties": 1103,
     "wired": 82,
     "gap": 0,
     "allowListed": 2,
@@ -1071,7 +1071,7 @@
       "file": "apigatewayv2-provider.ts",
       "className": "ApiGatewayV2Provider",
       "bucket": "wired",
-      "declaredCount": 44,
+      "declaredCount": 54,
       "properties": [
         {
           "name": "AccessLogSettings",
@@ -1331,6 +1331,57 @@
           ]
         },
         {
+          "name": "ConnectionId",
+          "status": "wired",
+          "types": [
+            "AWS::ApiGatewayV2::Integration"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "createIntegration",
+            "update",
+            "updateIntegration"
+          ]
+        },
+        {
+          "name": "ConnectionType",
+          "status": "wired",
+          "types": [
+            "AWS::ApiGatewayV2::Integration"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "createIntegration",
+            "update",
+            "updateIntegration"
+          ]
+        },
+        {
+          "name": "ContentHandlingStrategy",
+          "status": "wired",
+          "types": [
+            "AWS::ApiGatewayV2::Integration"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "createIntegration",
+            "update",
+            "updateIntegration"
+          ]
+        },
+        {
           "name": "CorsConfiguration",
           "status": "wired",
           "types": [
@@ -1345,6 +1396,23 @@
             "createApi",
             "update",
             "updateApi"
+          ]
+        },
+        {
+          "name": "CredentialsArn",
+          "status": "wired",
+          "types": [
+            "AWS::ApiGatewayV2::Integration"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "createIntegration",
+            "update",
+            "updateIntegration"
           ]
         },
         {
@@ -1492,6 +1560,23 @@
           ]
         },
         {
+          "name": "IntegrationSubtype",
+          "status": "wired",
+          "types": [
+            "AWS::ApiGatewayV2::Integration"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "createIntegration",
+            "update",
+            "updateIntegration"
+          ]
+        },
+        {
           "name": "IntegrationType",
           "status": "wired",
           "types": [
@@ -1614,6 +1699,23 @@
           ]
         },
         {
+          "name": "PassthroughBehavior",
+          "status": "wired",
+          "types": [
+            "AWS::ApiGatewayV2::Integration"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "createIntegration",
+            "update",
+            "updateIntegration"
+          ]
+        },
+        {
           "name": "PayloadFormatVersion",
           "status": "wired",
           "types": [
@@ -1682,6 +1784,40 @@
             "update",
             "updateIntegration",
             "updateRoute"
+          ]
+        },
+        {
+          "name": "RequestTemplates",
+          "status": "wired",
+          "types": [
+            "AWS::ApiGatewayV2::Integration"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "createIntegration",
+            "update",
+            "updateIntegration"
+          ]
+        },
+        {
+          "name": "ResponseParameters",
+          "status": "wired",
+          "types": [
+            "AWS::ApiGatewayV2::Integration"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "createIntegration",
+            "update",
+            "updateIntegration"
           ]
         },
         {
@@ -1821,7 +1957,41 @@
           ]
         },
         {
+          "name": "TemplateSelectionExpression",
+          "status": "wired",
+          "types": [
+            "AWS::ApiGatewayV2::Integration"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "createIntegration",
+            "update",
+            "updateIntegration"
+          ]
+        },
+        {
           "name": "TimeoutInMillis",
+          "status": "wired",
+          "types": [
+            "AWS::ApiGatewayV2::Integration"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "createIntegration",
+            "update",
+            "updateIntegration"
+          ]
+        },
+        {
+          "name": "TlsConfig",
           "status": "wired",
           "types": [
             "AWS::ApiGatewayV2::Integration"
