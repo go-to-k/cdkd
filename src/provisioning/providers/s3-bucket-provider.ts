@@ -459,14 +459,16 @@ export class S3BucketProvider implements ResourceProvider {
     for (const rule of lifecycleConfig.Rules) {
       // ...and the `Filter` CONTAINER those TagFilters live in, one level up
       // (issue #1581). A present-but-non-OBJECT `Filter` (`Filter: 'logs/'`,
-      // an array, an unresolved intrinsic) indexes EVERY member probe in
-      // `gatherScope` — Prefix / TagFilters / ObjectSizeGreaterThan /
-      // ObjectSizeLessThan — to `undefined`, so the rule kept NO scope at all
-      // and fell through to the empty-prefix V2 `Filter` below, applying to
-      // the WHOLE bucket. For an expiration rule that deletes objects the rule
-      // was never meant to touch: the same #1388 widened-scope hazard as the
-      // TagFilters guard, reached through the parent container instead. Same
-      // refusal split, and the same whole-Put skip unit for the same reason.
+      // an array, an unresolved intrinsic) indexes every `Filter`-side member
+      // probe in `gatherScope` — Prefix / TagFilters / ObjectSizeGreaterThan /
+      // ObjectSizeLessThan — to `undefined`, so the rule kept no scope beyond
+      // whatever the RULE-LEVEL fallbacks happened to supply, and nothing at
+      // all for a `Filter`-only rule: it then fell through to the empty-prefix
+      // V2 `Filter` below and applied to the WHOLE bucket. For an expiration
+      // rule that deletes objects the rule was never meant to touch — the same
+      // #1388 widened-scope hazard as the TagFilters guard, reached through the
+      // parent container instead. Same refusal split, and the same whole-Put
+      // skip unit for the same reason.
       const rawFilter = rule['Filter'];
       if (
         rawFilter != null &&
@@ -1445,11 +1447,18 @@ export class S3BucketProvider implements ResourceProvider {
         const destPath = s3BucketDestinationPath(rawDest, analyticsDestPath);
         analyticsConfig.StorageClassAnalysis = {
           DataExport: {
+            // Same update-path downgrade as the `Format` read below and as the
+            // container guard above: the FIELD half of this block was the last
+            // read here that still hard-threw on a state replay, so a
+            // historical record with a malformed `OutputSchemaVersion` was
+            // un-rollbackable for no better reason than that its sibling was
+            // guarded first (PR review, issue #1581).
             OutputSchemaVersion: readConfigString(
               dataExport,
               'OutputSchemaVersion',
               'V_1',
-              'AWS::S3::Bucket AnalyticsConfigurations[].StorageClassAnalysis.DataExport'
+              'AWS::S3::Bucket AnalyticsConfigurations[].StorageClassAnalysis.DataExport',
+              { ...(onUnusable ? { onUnusable } : {}) }
             ),
             Destination: s3Dest
               ? {
@@ -1718,9 +1727,36 @@ export class S3BucketProvider implements ResourceProvider {
 
   private async applyReplicationConfiguration(
     bucketName: string,
-    replConfig: Record<string, unknown>
+    replConfig: Record<string, unknown>,
+    onUnusable?: (message: string) => void
   ): Promise<void> {
     const rules = replConfig['Rules'] as Array<Record<string, unknown>> | undefined;
+    // Validate every rule's `Filter` CONTAINER up front (issue #1581) — the
+    // third instance of the class in this file, and the one with the widest
+    // blast radius. A present-but-non-OBJECT `Filter` indexes the `And` /
+    // `Prefix` / `TagFilter` probes below to `undefined` and falls through to
+    // the "empty / unrecognized filter object" arm, which emits `Filter: {}` —
+    // the valid CFn form meaning "replicate EVERY object". So a malformed
+    // container silently replicated the WHOLE bucket instead of the declared
+    // subset: data leaving its intended scope, at cross-region transfer cost.
+    // A FALSY malformed value (`Filter: ''`) additionally skipped the
+    // truthiness gate below and fell to the top-level-`Prefix` arm, which is
+    // the #1493 gate-bug shape — so the gate is `!= null` here too.
+    // Refuse on a template-path create; on the state-replay paths warn and
+    // leave the WHOLE live replication configuration alone, since
+    // `PutBucketReplication` replaces every rule at once — the same skip unit,
+    // and the same reason, as the lifecycle Put.
+    for (const rule of rules || []) {
+      const rawFilter = rule['Filter'];
+      if (
+        rawFilter != null &&
+        requireConfigObject(rawFilter, 'AWS::S3::Bucket ReplicationConfiguration.Rules[].Filter', {
+          ...(onUnusable ? { onUnusable } : {}),
+        }) === undefined
+      ) {
+        return;
+      }
+    }
     await this.s3Client.send(
       new PutBucketReplicationCommand({
         Bucket: bucketName,
@@ -1776,7 +1812,7 @@ export class S3BucketProvider implements ResourceProvider {
             // produces an invalid PutBucketReplication payload (the same element-
             // wise-transform-drops-a-valid-shape class as the lifecycle V1/V2 bug).
             const filter = rule['Filter'] as Record<string, unknown> | undefined;
-            if (filter) {
+            if (filter != null) {
               // CFn's ReplicationRuleFilter shapes, faithfully translated to the
               // S3 SDK shape (which differs only in `TagFilter`->`Tag` and
               // `And.TagFilters`->`And.Tags`):
@@ -2308,7 +2344,8 @@ export class S3BucketProvider implements ResourceProvider {
       bucketName,
       previousProperties['ReplicationConfiguration'] as Record<string, unknown> | undefined,
       properties['ReplicationConfiguration'] as Record<string, unknown> | undefined,
-      async (cfg) => this.applyReplicationConfiguration(bucketName, cfg),
+      async (cfg) =>
+        this.applyReplicationConfiguration(bucketName, cfg, (m) => this.logger.warn(m)),
       async () => {
         await this.s3Client.send(new DeleteBucketReplicationCommand({ Bucket: bucketName }));
         this.logger.debug(`Deleted replication configuration on bucket ${bucketName}`);
@@ -2579,7 +2616,7 @@ export class S3BucketProvider implements ResourceProvider {
       | Record<string, unknown>
       | undefined;
     if (replConfig) {
-      await this.applyReplicationConfiguration(bucketName, replConfig);
+      await this.applyReplicationConfiguration(bucketName, replConfig, replayOnUnusable);
     }
 
     // Object Lock Configuration (rule/retention, not the ObjectLockEnabled flag)

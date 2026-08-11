@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import {
   PutBucketAnalyticsConfigurationCommand,
   PutBucketLifecycleConfigurationCommand,
+  PutBucketReplicationCommand,
 } from '@aws-sdk/client-s3';
 
 /**
@@ -96,13 +97,20 @@ const analyticsProps = (config: Record<string, unknown>) => ({
   AnalyticsConfigurations: [{ Id: 'probe', ...config }],
 });
 
-// Each is truthy-or-falsy but NOT a plain object, i.e. every probe of it
-// indexes to `undefined`. The ARRAY is the one a bare `typeof === 'object'`
-// check would have waved through.
+// Each is NOT a plain object, i.e. every probe of it indexes to `undefined`.
+// The ARRAY is the one a bare `typeof === 'object'` check would have waved
+// through. The last two are FALSY on purpose and are the highest-value rows
+// here: every one of these guards sits behind a `!= null` gate, and issue
+// #1493 shipped exactly this class of bug by putting the gate at truthiness
+// instead — so a regression to `if (raw)` would keep every truthy row green
+// while re-landing the bucket-wide expiration / silently-empty block. Without
+// these rows the suite cannot tell the two gates apart.
 const malformedContainers: Array<[string, unknown]> = [
   ['a string (an unresolved intrinsic collapsed to text)', 'logs/'],
   ['an array', [{ Prefix: 'logs/' }]],
   ['a number', 42],
+  ['a blank string (FALSY — the #1493 truthiness-gate shape)', ''],
+  ['zero (FALSY — the #1493 truthiness-gate shape)', 0],
 ];
 
 describe('create path: a non-object container is REFUSED, not silently emptied', () => {
@@ -125,16 +133,6 @@ describe('create path: a non-object container is REFUSED, not silently emptied',
       expect(sentCommands(PutBucketAnalyticsConfigurationCommand)).toHaveLength(0);
     });
 
-    it(`analytics: refuses a DataExport that is ${label}`, async () => {
-      await expect(
-        provider.create(
-          'B',
-          RESOURCE_TYPE,
-          analyticsProps({ StorageClassAnalysis: { DataExport: value } })
-        )
-      ).rejects.toThrow(`${DATA_EXPORT_PATH} must be an object`);
-      expect(sentCommands(PutBucketAnalyticsConfigurationCommand)).toHaveLength(0);
-    });
   }
 
   it('the refusal fires BEFORE the widened-scope rule can reach S3', async () => {
@@ -167,6 +165,102 @@ describe('create path: a non-object container is REFUSED, not silently emptied',
       })
     ).rejects.toThrow(`${FILTER_PATH} must be an object`);
     expect(sentCommands(PutBucketLifecycleConfigurationCommand)).toHaveLength(0);
+  });
+});
+
+describe('create path: the PRE-EXISTING DataExport refusal is preserved, not new', () => {
+  // Deliberately its own block rather than a row in the table above, because
+  // these assertions would ALSO pass on the unfixed tree: before this change a
+  // non-object `DataExport` reached `readConfigString(dataExport,
+  // 'OutputSchemaVersion', …)`, whose refusal message is byte-identical and
+  // which also fired before any Put — so no matcher can tell the two apart on
+  // the create path. Claiming them as proof of the new guard would be a test
+  // that pins the author's intent rather than the behavior. They are kept as a
+  // REGRESSION fence (the explicit guard must not have relaxed the create-path
+  // refusal); the genuinely NEW DataExport behavior is the replay/update
+  // downgrade, pinned separately below.
+  for (const [label, value] of malformedContainers) {
+    it(`analytics: still refuses a DataExport that is ${label}`, async () => {
+      await expect(
+        provider.create(
+          'B',
+          RESOURCE_TYPE,
+          analyticsProps({ StorageClassAnalysis: { DataExport: value } })
+        )
+      ).rejects.toThrow(`${DATA_EXPORT_PATH} must be an object`);
+      expect(sentCommands(PutBucketAnalyticsConfigurationCommand)).toHaveLength(0);
+    });
+  }
+});
+
+describe('replication: the same container class, one applier over', () => {
+  const REPLICATION_PATH = 'AWS::S3::Bucket ReplicationConfiguration.Rules[].Filter';
+  const replicationProps = (rule: Record<string, unknown>) => ({
+    BucketName: BUCKET,
+    ReplicationConfiguration: {
+      Role: 'arn:aws:iam::123456789012:role/repl',
+      Rules: [
+        {
+          Id: 'probe',
+          Status: 'Enabled',
+          Destination: { Bucket: 'arn:aws:s3:::repl-dest' },
+          ...rule,
+        },
+      ],
+    },
+  });
+
+  for (const [label, value] of malformedContainers) {
+    it(`refuses a Filter that is ${label}`, async () => {
+      // The widest blast radius of the three: the malformed container used to
+      // fall through to the "empty / unrecognized filter object" arm, which
+      // emits `Filter: {}` — the valid CFn form meaning "replicate EVERY
+      // object". So the bucket replicated wholesale instead of the declared
+      // subset, at cross-region cost and outside the intended data scope.
+      await expect(
+        provider.create('B', RESOURCE_TYPE, replicationProps({ Filter: value }))
+      ).rejects.toThrow(`${REPLICATION_PATH} must be an object`);
+      expect(sentCommands(PutBucketReplicationCommand)).toHaveLength(0);
+    });
+  }
+
+  it('warns and leaves the WHOLE live configuration alone on a replay', async () => {
+    await provider.create('B', RESOURCE_TYPE, replicationProps({ Filter: 'logs/' }), {
+      replayingState: true,
+    });
+    expect(childLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining(`${REPLICATION_PATH} must be an object`)
+    );
+    expect(sentCommands(PutBucketReplicationCommand)).toHaveLength(0);
+  });
+
+  it('a valid Filter still replicates the declared subset', async () => {
+    await provider.create(
+      'B',
+      RESOURCE_TYPE,
+      replicationProps({ Filter: { Prefix: 'logs/' } })
+    );
+    const sent = sentCommands(PutBucketReplicationCommand);
+    expect(sent).toHaveLength(1);
+    const rule = (sent[0]!.input.ReplicationConfiguration?.Rules ?? [])[0] as unknown as Record<
+      string,
+      unknown
+    >;
+    expect(rule['Filter']).toEqual({ Prefix: 'logs/' });
+    expect(childLogger.warn).not.toHaveBeenCalled();
+  });
+
+  it('an EMPTY Filter object still means "replicate every object" (issue #936)', async () => {
+    // The guard must not disturb the one shape that legitimately produces the
+    // wide scope — otherwise the fix would break a valid template.
+    await provider.create('B', RESOURCE_TYPE, replicationProps({ Filter: {} }));
+    const sent = sentCommands(PutBucketReplicationCommand);
+    expect(sent).toHaveLength(1);
+    const rule = (sent[0]!.input.ReplicationConfiguration?.Rules ?? [])[0] as unknown as Record<
+      string,
+      unknown
+    >;
+    expect(rule['Filter']).toEqual({});
   });
 });
 
@@ -236,6 +330,28 @@ describe('no false refusal: well-formed and absent containers still apply', () =
     const sent = sentCommands(PutBucketAnalyticsConfigurationCommand);
     expect(sent).toHaveLength(1);
     expect(sent[0]!.input.AnalyticsConfiguration?.StorageClassAnalysis).toEqual({});
+  });
+
+  it('analytics: an EXPLICIT empty StorageClassAnalysis is legitimate, not a refusal', async () => {
+    await provider.create('B', RESOURCE_TYPE, analyticsProps({ StorageClassAnalysis: {} }));
+    const sent = sentCommands(PutBucketAnalyticsConfigurationCommand);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.input.AnalyticsConfiguration?.StorageClassAnalysis).toEqual({});
+    expect(childLogger.warn).not.toHaveBeenCalled();
+  });
+
+  it('lifecycle: a VALID Filter is not refused on the REPLAY path either', async () => {
+    // The downgrade must only change what happens to a MALFORMED value; a
+    // replay carrying a well-formed container has to apply exactly as a
+    // template-path create does.
+    await provider.create(
+      'B',
+      RESOURCE_TYPE,
+      lifecycleProps({ ExpirationInDays: 30, Filter: { Prefix: 'logs/' } }),
+      { replayingState: true }
+    );
+    expect(sentCommands(PutBucketLifecycleConfigurationCommand)).toHaveLength(1);
+    expect(childLogger.warn).not.toHaveBeenCalled();
   });
 });
 
@@ -318,6 +434,25 @@ describe('update path: warn and skip (the desired bag can be a historical state 
       expect.stringContaining(`${DATA_EXPORT_PATH} must be an object`)
     );
     expect(sentCommands(PutBucketAnalyticsConfigurationCommand)).toHaveLength(0);
+  });
+
+  it('analytics: the update-path skip unit is the ITEM, not the whole sync', async () => {
+    // The per-Id Put means a malformed sibling must not take the valid ones
+    // down with it — the opposite of the lifecycle contract, and the reason
+    // the two guards use different exits.
+    await update({
+      BucketName: BUCKET,
+      AnalyticsConfigurations: [
+        { Id: 'bad', StorageClassAnalysis: 'nope' },
+        { Id: 'good', StorageClassAnalysis: { DataExport: VALID_DATA_EXPORT } },
+      ],
+    });
+    expect(childLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining(`${SCA_PATH} must be an object`)
+    );
+    expect(sentCommands(PutBucketAnalyticsConfigurationCommand).map((c) => c.input.Id)).toEqual([
+      'good',
+    ]);
   });
 
   it('a VALID container still applies on the update path (the guard is shape-only)', async () => {
