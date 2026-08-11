@@ -1,3 +1,10 @@
+## [0.280.15](https://github.com/go-to-k/cdkd/compare/v0.280.14...v0.280.15) (2026-08-11)
+
+
+### Bug Fixes
+
+* **dynamodb:** carry per-GSI ProvisionedThroughput into the BillingMode flip so an indexed table can be flipped at all ([#1611](https://github.com/go-to-k/cdkd/issues/1611)) ([7aa8216](https://github.com/go-to-k/cdkd/commit/7aa8216f82d9cf5691afe578630f278faa522abb))
+
 ## [0.280.14](https://github.com/go-to-k/cdkd/compare/v0.280.13...v0.280.14) (2026-08-11)
 
 
