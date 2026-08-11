@@ -1,3 +1,10 @@
+# [0.280.0](https://github.com/go-to-k/cdkd/compare/v0.279.0...v0.280.0) (2026-08-11)
+
+
+### Features
+
+* **provisioning:** backfill AWS::ApiGateway::Stage 6 silent-drop properties ([#609](https://github.com/go-to-k/cdkd/issues/609)) ([#1570](https://github.com/go-to-k/cdkd/issues/1570)) ([f630269](https://github.com/go-to-k/cdkd/commit/f6302691cce295c604a4087c6d43ce7419323169))
+
 # [0.279.0](https://github.com/go-to-k/cdkd/compare/v0.278.55...v0.279.0) (2026-08-11)
 
 
