@@ -1,3 +1,10 @@
+## [0.278.55](https://github.com/go-to-k/cdkd/compare/v0.278.54...v0.278.55) (2026-08-11)
+
+
+### Bug Fixes
+
+* **s3:** count filter predicates, not predicate kinds, in analytics / intelligent-tiering / metrics builders ([#1576](https://github.com/go-to-k/cdkd/issues/1576)) ([5f8ada6](https://github.com/go-to-k/cdkd/commit/5f8ada6a33fcf20f8ea2226daf95084e9e129628))
+
 ## [0.278.54](https://github.com/go-to-k/cdkd/compare/v0.278.53...v0.278.54) (2026-08-11)
 
 
