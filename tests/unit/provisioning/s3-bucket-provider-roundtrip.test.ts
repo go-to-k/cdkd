@@ -1852,6 +1852,11 @@ describe('S3BucketProvider removal semantics (issue #1466)', () => {
       .map((c) => c[0] as { input: unknown });
   }
 
+  /** Every warning this provider instance emitted, joined for substring asserts. */
+  function warnings(): string {
+    return childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+  }
+
   const base = { BucketName: BUCKET_NAME };
   const update = (next: Record<string, unknown>, prev: Record<string, unknown>) =>
     provider.update('L', BUCKET_NAME, 'AWS::S3::Bucket', next, prev);
@@ -2446,18 +2451,26 @@ describe('S3BucketProvider removal semantics (issue #1466)', () => {
     expect(callsOf(PutBucketVersioningCommand)).toHaveLength(0);
   });
 
-  it('a malformed DESIRED VersioningConfiguration is refused, never silently suspended (issue #1471)', async () => {
+  it('a malformed DESIRED VersioningConfiguration is never silently suspended (issues #1471 / #1605)', async () => {
     // The headline case. `VersioningConfiguration: 'Enabled'` used to index to
     // `undefined`, default to 'Suspended', and turn versioning OFF on a live
-    // bucket with no error anywhere. It must now fail by name.
-    await expect(
-      update({ ...base, VersioningConfiguration: 'Enabled' as never }, {
-        ...base,
-        VersioningConfiguration: { Status: 'Enabled' },
-      })
-    ).rejects.toThrow(/VersioningConfiguration must be an object \(got a string\)/);
-    // The load-bearing half: no suspend was issued on the way to the throw.
+    // bucket with no error anywhere.
+    //
+    // #1471 closed that by THROWING here. #1605 downgraded the UPDATE path to
+    // warn-and-skip, because this path is replay-reachable
+    // (`rollback-executor.ts`'s revert arm and `cdkd drift --revert` both call
+    // `update(..., previousState.properties, ...)`), so a throw fires on a
+    // cdkd STATE record the user cannot edit. The LOAD-BEARING half is
+    // unchanged and is what both issues are actually about: no suspend is
+    // issued either way. See the create-path test below — that side still
+    // throws, and the two deliberately DISAGREE now.
+    await update({ ...base, VersioningConfiguration: 'Enabled' as never }, {
+      ...base,
+      VersioningConfiguration: { Status: 'Enabled' },
+    });
     expect(callsOf(PutBucketVersioningCommand)).toHaveLength(0);
+    expect(warnings()).toMatch(/VersioningConfiguration must be an object \(got a string\)/);
+    expect(warnings()).toMatch(/Leaving the bucket's LIVE versioning state unchanged/);
   });
 
   it('a malformed PREVIOUS VersioningConfiguration stays permissive (issue #1471)', async () => {
@@ -2479,12 +2492,14 @@ describe('S3BucketProvider removal semantics (issue #1466)', () => {
     // Validating the CONTAINER alone is not enough: `{ Status: '' }` and
     // `{ Status: null }` both pass a typeof-object check and still fall
     // through to the 'Suspended' default.
-    await expect(
-      update({ ...base, VersioningConfiguration: { Status: '' } }, {
-        ...base,
-        VersioningConfiguration: { Status: 'Enabled' },
-      })
-    ).rejects.toThrow(/VersioningConfiguration\.Status must be a non-empty string/);
+    // Warn-and-skip on the UPDATE path since #1605 (see the headline test
+    // above); the load-bearing half is still that no Put goes out.
+    await update({ ...base, VersioningConfiguration: { Status: '' } }, {
+      ...base,
+      VersioningConfiguration: { Status: 'Enabled' },
+    });
+    expect(callsOf(PutBucketVersioningCommand)).toHaveLength(0);
+    expect(warnings()).toMatch(/VersioningConfiguration\.Status must be a non-empty string/);
 
     // ... while an EMPTY block legitimately means Suspended and must keep
     // working — the rule is "absent key defaults", not "any object defaults".
@@ -2540,13 +2555,21 @@ describe('S3BucketProvider removal semantics (issue #1466)', () => {
     ).rejects.toThrow(/ServerSideEncryptionConfiguration must be an array/);
   });
 
-  it('CREATE and UPDATE agree on a malformed VersioningConfiguration (issue #1471)', async () => {
+  it('CREATE still REFUSES a malformed VersioningConfiguration (issues #1471 / #1605)', async () => {
     // The create path had the SAME asymmetry the encryption test above
     // describes, one property over: a truthy-but-malformed
     // `VersioningConfiguration: 'Enabled'` passed the truthiness gate, indexed
     // to `undefined`, and PUT Suspended — so a brand-new bucket came up
     // unversioned while the template declared Enabled, and the malformed value
     // was then recorded in state.
+    //
+    // This test used to assert that CREATE and UPDATE AGREE. Since #1605 they
+    // deliberately DISAGREE, and the asymmetry is the point rather than an
+    // oversight: on create the value is template-borne, so the user can act on
+    // the error; on update it can be a cdkd STATE record with no template-side
+    // remedy. What must not regress is this side — a template-path create is
+    // still a hard refusal, and it is only the REPLAY create that downgrades
+    // (pinned in the #1605 suite).
     await expect(
       provider.create('L', 'AWS::S3::Bucket', {
         BucketName: BUCKET_NAME,
@@ -2554,15 +2577,6 @@ describe('S3BucketProvider removal semantics (issue #1466)', () => {
       })
     ).rejects.toThrow(/VersioningConfiguration must be an object \(got a string\)/);
     expect(callsOf(PutBucketVersioningCommand)).toHaveLength(0);
-
-    vi.clearAllMocks();
-    mockSend.mockResolvedValue({});
-    await expect(
-      update({ ...base, VersioningConfiguration: 'Enabled' as never }, {
-        ...base,
-        VersioningConfiguration: { Status: 'Enabled' },
-      })
-    ).rejects.toThrow(/VersioningConfiguration must be an object \(got a string\)/);
   });
 
   it('refuses a malformed LoggingConfiguration instead of CLEARING logging (issue #1471)', async () => {

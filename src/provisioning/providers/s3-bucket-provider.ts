@@ -299,7 +299,44 @@ export class S3BucketProvider implements ResourceProvider {
   /**
    * Apply versioning configuration if specified
    */
-  private async applyVersioning(bucketName: string, versioningConfig: unknown): Promise<void> {
+  private async applyVersioning(
+    bucketName: string,
+    versioningConfig: unknown,
+    // The state-replay downgrade (issue #1605). Present only on a replay-
+    // reachable call — the reverse-replacement create and the update path.
+    onUnusable?: (message: string) => void
+  ): Promise<void> {
+    // The replay downgrade is a SKIP, and the reasoning is the inverse of the
+    // usual one: here the DEFAULT is the dangerous direction. There is no item
+    // to skip and no previous value to keep, so the only two answers are
+    // "leave live versioning alone" and "take the Suspended fallback" — and
+    // #1471 measured that exact fallback turning versioning OFF on a live
+    // bucket. Skipping is not free either (`PutBucketVersioning` is the only
+    // call that reverts a rollback of a versioning change, so a rollback whose
+    // recorded value is malformed leaves versioning where it is), but an
+    // un-reverted rollback is recoverable and a silently disabled object
+    // history is not. The skip is ANNOUNCED so it is not a silent drop.
+    if (onUnusable) {
+      const refusal = configStringRefusal(
+        versioningConfig,
+        'Status',
+        'Suspended',
+        'AWS::S3::Bucket VersioningConfiguration'
+      );
+      if (refusal !== undefined) {
+        // Deliberately NOT phrased as "leaving the LIVE state unchanged" (PR
+        // review): this applier is reached from the reverse-replacement CREATE
+        // too, where there is no live bucket and the real consequence is that
+        // the restored bucket comes up UNVERSIONED. The wording covers both.
+        onUnusable(
+          `${refusal}. No PutBucketVersioning is issued rather than applying the Suspended ` +
+            `default, which would turn object versioning OFF on an existing bucket (on a ` +
+            `replayed create it means the bucket is left unversioned); the same value is ` +
+            `REFUSED on a template-path create`
+        );
+        return;
+      }
+    }
     // `unknown`, not `Record<string, unknown>`: the CREATE path's truthiness
     // gate lets a malformed value (`VersioningConfiguration: 'Enabled'`) reach
     // here, and defaulting its missing `Status` to Suspended is exactly the
@@ -936,8 +973,51 @@ export class S3BucketProvider implements ResourceProvider {
    */
   private async applyLoggingConfiguration(
     bucketName: string,
-    loggingConfig: unknown
+    loggingConfig: unknown,
+    // The state-replay downgrade (issue #1605).
+    onUnusable?: (message: string) => void
   ): Promise<void> {
+    // The replay downgrade is a SKIP of the whole Put, which is this applier's
+    // natural unit — `PutBucketLogging` replaces the entire logging status, so
+    // there is no smaller thing to skip. Both reads are probed together for
+    // that reason: partially applying the block would send a destination with
+    // a defaulted prefix, or a prefix with no destination.
+    //
+    // Not the default: the destination's fallback is `''`, which the clearing
+    // branch below reads as "no logging" and TURNS ACCESS LOGGING OFF on a
+    // live bucket. Losing an audit trail silently is worse than leaving
+    // logging pointed where it already points, which is what the skip does —
+    // and the skip is announced. (`LogFilePrefix` has a blank fallback too, so
+    // per `configValueRefusal`'s blank-with-blank-default relaxation only a
+    // NON-string value refuses there; a blank prefix stays legitimate.)
+    if (onUnusable) {
+      const refusal =
+        configStringRefusal(
+          loggingConfig,
+          'DestinationBucketName',
+          '',
+          'AWS::S3::Bucket LoggingConfiguration'
+        ) ??
+        configStringRefusal(
+          loggingConfig,
+          'LogFilePrefix',
+          '',
+          'AWS::S3::Bucket LoggingConfiguration'
+        );
+      if (refusal !== undefined) {
+        // Same both-paths wording as the versioning applier: the create-path
+        // gate probes only `DestinationBucketName`, so a good destination with
+        // a malformed `LogFilePrefix` passes it and refuses HERE, on a create
+        // where there is no live configuration to preserve (PR review).
+        onUnusable(
+          `${refusal}. No PutBucketLogging is issued rather than clearing access logging, which ` +
+            `would turn it OFF on an existing bucket (on a replayed create it means the bucket ` +
+            `comes up with no access logging); the same value is REFUSED on a template-path ` +
+            `create`
+        );
+        return;
+      }
+    }
     // Shape-check the CONTAINER before the clearing branch below (issue
     // #1471). That branch reads `loggingConfig['DestinationBucketName']`, so a
     // malformed value (`LoggingConfiguration: 'my-log-bucket'`) indexes to
@@ -1682,7 +1762,8 @@ export class S3BucketProvider implements ResourceProvider {
       // guard right next to it rather than invented. This applier is NOT
       // uniform overall and the comment used to claim it was: `Format` still
       // warns-and-defaults, and the `ScheduleFrequency` / `Schedule.Frequency`
-      // pair still hard-throws (both out of scope, see #1605).
+      // pair takes a THIRD shape — fall through to the second source, then skip
+      // the item when that is unusable too (issue #1605, below).
       if (
         this.skipOnUnusableConfigString(
           config,
@@ -1702,6 +1783,76 @@ export class S3BucketProvider implements ResourceProvider {
       // configuration untouched instead of sending a request S3 rejects.
       if (s3Dest === undefined && rawDest != null) continue;
       const destPath = s3BucketDestinationPath(rawDest, inventoryDestPath);
+
+      // The schedule frequency is a TWO-SOURCE precedence read, so its replay
+      // downgrade is neither of the two shapes #1595 settled (issue #1605):
+      // for a malformed FIRST source the right answer is to FALL THROUGH to
+      // the second, which is a value the record also carries and the one a
+      // correct record would have used. When there is nothing to fall back to,
+      // the item is SKIPPED with the same unit its `IncludedObjectVersions`
+      // sibling above already uses (the Put is per-Id) — inventing a `Weekly`
+      // cadence for a LIVE report is the substitution this guard class refuses.
+      //
+      // "Nothing to fall back to" includes an ABSENT second source, and that
+      // is the case that matters rather than a corner (PR review blocker):
+      // `ScheduleFrequency` is the ONLY spelling the CFn schema declares —
+      // `tests/fixtures/cfn-schemas/AWS-S3-Bucket.json` has no `Schedule`
+      // member — so a record with a broken `ScheduleFrequency` almost never
+      // carries one. Treating an absent container as "usable" (which it is,
+      // for a guard whose job is to reject a MALFORMED value) let the fall-
+      // through land on `readConfigString`'s own `Weekly` default and made the
+      // whole downgrade inert for real input.
+      const scheduleFrequencyRefusal = onUnusable
+        ? configStringRefusal(
+            config,
+            'ScheduleFrequency',
+            'Weekly',
+            'AWS::S3::Bucket InventoryConfigurations[]'
+          )
+        : undefined;
+      if (scheduleFrequencyRefusal !== undefined && config['Schedule'] == null) {
+        onUnusable?.(
+          `${scheduleFrequencyRefusal}. Skipping this inventory configuration: there is no ` +
+            `Schedule.Frequency to fall back to, and defaulting to Weekly would silently ` +
+            `re-cadence a live inventory report; the same value is REFUSED on a template-path ` +
+            `create`
+        );
+        continue;
+      }
+      if (scheduleFrequencyRefusal !== undefined) {
+        onUnusable?.(
+          `${scheduleFrequencyRefusal}. Falling back to Schedule.Frequency; the same value is ` +
+            `REFUSED on a template-path create`
+        );
+      }
+      const useScheduleFrequency =
+        config['ScheduleFrequency'] !== undefined && scheduleFrequencyRefusal === undefined;
+      if (
+        !useScheduleFrequency &&
+        this.skipOnUnusableConfigString(
+          config['Schedule'],
+          'Frequency',
+          'Weekly',
+          'AWS::S3::Bucket InventoryConfigurations[].Schedule',
+          'Skipping this inventory configuration',
+          onUnusable
+        )
+      ) {
+        continue;
+      }
+      const frequency = useScheduleFrequency
+        ? requireConfigString(
+            config['ScheduleFrequency'],
+            'Weekly',
+            'AWS::S3::Bucket InventoryConfigurations[].ScheduleFrequency'
+          )
+        : readConfigString(
+            config['Schedule'],
+            'Frequency',
+            'Weekly',
+            'AWS::S3::Bucket InventoryConfigurations[].Schedule'
+          );
+
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const inventoryConfig: any = {
         Id: id,
@@ -1716,19 +1867,7 @@ export class S3BucketProvider implements ResourceProvider {
           // Same class as the guarded siblings above (issue #1471): a
           // malformed `Schedule` used to index to `undefined` and silently
           // default to Weekly. The two-source precedence is preserved.
-          Frequency:
-            config['ScheduleFrequency'] !== undefined
-              ? requireConfigString(
-                  config['ScheduleFrequency'],
-                  'Weekly',
-                  'AWS::S3::Bucket InventoryConfigurations[].ScheduleFrequency'
-                )
-              : readConfigString(
-                  config['Schedule'],
-                  'Frequency',
-                  'Weekly',
-                  'AWS::S3::Bucket InventoryConfigurations[].Schedule'
-                ),
+          Frequency: frequency,
         },
         Destination: {
           S3BucketDestination: s3Dest
@@ -2073,9 +2212,16 @@ export class S3BucketProvider implements ResourceProvider {
   private async applyConfiguration(
     bucketName: string,
     properties: Record<string, unknown>,
-    options: { skipTags?: boolean; skipDiffManaged?: boolean } = {}
+    options: { skipTags?: boolean; skipDiffManaged?: boolean; context?: CreateContext } = {}
   ): Promise<void> {
-    const { skipTags = false, skipDiffManaged = false } = options;
+    const { skipTags = false, skipDiffManaged = false, context } = options;
+    // Issue #1605: this method is reached by the reverse-replacement create as
+    // well as the template one, and its versioning read is a refusal. Its
+    // sibling `applyAllSubConfigsForCreate` already took the context for
+    // exactly this reason (#1463); this one did not, so a state record
+    // carrying a malformed `VersioningConfiguration` made the old bucket
+    // unrestorable.
+    const replayOnUnusable = replayWarn(this.logger, context).onUnusable;
 
     // Versioning
     const versioningConfig = properties['VersioningConfiguration'];
@@ -2087,7 +2233,7 @@ export class S3BucketProvider implements ResourceProvider {
     // OwnershipControls / BucketEncryption gates below; nullish rather than
     // strict-undefined to match `diffSubConfig`'s treatment of a desired null.
     if (!skipDiffManaged && versioningConfig != null) {
-      await this.applyVersioning(bucketName, versioningConfig);
+      await this.applyVersioning(bucketName, versioningConfig, replayOnUnusable);
     }
 
     // Tags. Only applied at create time here (`applyTags` is full-replace, no
@@ -2361,17 +2507,68 @@ export class S3BucketProvider implements ResourceProvider {
     // Computing this BEFORE `applyVersioning` is load-bearing — a malformed
     // desired value used to resolve to 'Suspended' here and take the SUSPEND
     // branch below, turning versioning off on a live bucket.
-    const desiredVersioningStatus = readConfigString(
+    //
+    // The refusal is probed rather than thrown (issue #1605). This read is on
+    // the UPDATE path, which `rollback-executor.ts`'s revert arm and
+    // `cdkd drift --revert` both drive with a cdkd STATE record as the DESIRED
+    // bag — so a throw here is un-actionable, the user cannot edit a state
+    // record from their template. The downgrade is UNCONDITIONAL, like
+    // `EC2Provider.updateRoute`'s: `update()` has no context parameter, so it
+    // cannot tell a template update from a replay. And it must be a SKIP of
+    // BOTH arms, not a default: taking the Suspended fallback here would route
+    // a malformed record straight into the suspend branch below and turn
+    // versioning off on a live bucket — the very thing computing this value
+    // before `applyVersioning` was introduced to prevent.
+    const versioningRefusal = configStringRefusal(
       nextVersioning,
       'Status',
       'Suspended',
       'AWS::S3::Bucket VersioningConfiguration'
     );
+    // Gated on `versioningChanged` (PR review nit): an unchanged-but-malformed
+    // recorded value is not a pending operation, and warning about it on every
+    // deploy would be noise about something this run was never going to do.
+    if (versioningRefusal !== undefined && versioningChanged) {
+      this.logger.warn(
+        `Bucket ${bucketName}: ${versioningRefusal}. Leaving the bucket's LIVE versioning state ` +
+          `unchanged — neither enabling nor suspending it; the same value is REFUSED on a ` +
+          `template-path create`
+      );
+    }
+    const desiredVersioningStatus =
+      versioningRefusal === undefined
+        ? readConfigString(
+            nextVersioning,
+            'Status',
+            'Suspended',
+            'AWS::S3::Bucket VersioningConfiguration'
+          )
+        : undefined;
 
     // `nextVersioning != null` is implied by the status check (a null value
     // resolves to 'Suspended'); it is kept for TypeScript's narrowing.
-    if (versioningChanged && nextVersioning != null && desiredVersioningStatus !== 'Suspended') {
-      await this.applyVersioning(bucketName, nextVersioning);
+    //
+    // `versioningRefusal === undefined` leads and is NOT redundant, though the
+    // reason is not the obvious one and a review round corrected it: on a
+    // refusal `desiredVersioningStatus` is `undefined`, which satisfies
+    // `!== 'Suspended'`, so control would reach `applyVersioning` — and since
+    // THAT call passes no `onUnusable`, its own read would THROW rather than
+    // reach the Put. The guard is what turns that throw into the intended
+    // skip. (The `onUnusable` argument below is defense-in-depth for the same
+    // shape: correctness must not rest on this probe and the applier's read
+    // being invoked with identical key / fallback / path.)
+    //
+    // The rest of the condition is unchanged — in particular it stays a
+    // `!== 'Suspended'` test rather than an `=== 'Enabled'` one, so an
+    // unrecognized status still reaches AWS and is rejected there by name
+    // instead of being silently skipped.
+    if (
+      versioningRefusal === undefined &&
+      versioningChanged &&
+      nextVersioning != null &&
+      desiredVersioningStatus !== 'Suspended'
+    ) {
+      await this.applyVersioning(bucketName, nextVersioning, (m) => this.logger.warn(m));
     }
 
     // Ownership controls (per-id-free single config; empty Rules == absent)
@@ -2475,7 +2672,12 @@ export class S3BucketProvider implements ResourceProvider {
       bucketName,
       previousProperties['LoggingConfiguration'] as Record<string, unknown> | undefined,
       properties['LoggingConfiguration'] as Record<string, unknown> | undefined,
-      async (cfg) => this.applyLoggingConfiguration(bucketName, cfg),
+      // Same unconditional update-path warn as the per-item appliers below:
+      // this arm is replay-reachable and `update()` cannot tell a replay from
+      // a template edit.
+      async (cfg) => this.applyLoggingConfiguration(bucketName, cfg, (m) => this.logger.warn(m)),
+      // The CLEAR arm passes `undefined`, which is the legitimate removal and
+      // can never refuse — so it needs no downgrade.
       async () => this.applyLoggingConfiguration(bucketName, undefined)
     );
 
@@ -2705,14 +2907,33 @@ export class S3BucketProvider implements ResourceProvider {
     // a bucket whose template declares logging came up with none. Absent /
     // `{}` still resolve to '' and skip, which is the legitimate no-logging
     // path — this adds a refusal, not an extra API call.
-    const loggingDestination = readConfigString(
-      loggingConfig,
-      'DestinationBucketName',
-      '',
-      'AWS::S3::Bucket LoggingConfiguration'
-    );
-    if (loggingDestination !== '') {
-      await this.applyLoggingConfiguration(bucketName, loggingConfig);
+    //
+    // The GATE has to take the replay downgrade too (issue #1605), not just
+    // the applier: it reads the same field to decide whether to call at all,
+    // so leaving it strict would throw before the applier's skip could run.
+    const loggingRefusal = replayOnUnusable
+      ? configStringRefusal(
+          loggingConfig,
+          'DestinationBucketName',
+          '',
+          'AWS::S3::Bucket LoggingConfiguration'
+        )
+      : undefined;
+    if (loggingRefusal !== undefined) {
+      replayOnUnusable?.(
+        `${loggingRefusal}. Skipping the logging configuration; the same value is REFUSED on a ` +
+          `template-path create`
+      );
+    } else {
+      const loggingDestination = readConfigString(
+        loggingConfig,
+        'DestinationBucketName',
+        '',
+        'AWS::S3::Bucket LoggingConfiguration'
+      );
+      if (loggingDestination !== '') {
+        await this.applyLoggingConfiguration(bucketName, loggingConfig, replayOnUnusable);
+      }
     }
 
     // Website
@@ -2850,7 +3071,9 @@ export class S3BucketProvider implements ResourceProvider {
       // is gated on `createdNewBucket` so we never delete a pre-existing
       // bucket. See Issue #376 for the cross-provider sweep.
       try {
-        await this.applyConfiguration(bucketName, properties);
+        await this.applyConfiguration(bucketName, properties, {
+          ...(context ? { context } : {}),
+        });
         await this.applyAllSubConfigsForCreate(bucketName, properties, context);
       } catch (innerError) {
         if (createdNewBucket) {
