@@ -1,3 +1,10 @@
+## [0.280.21](https://github.com/go-to-k/cdkd/compare/v0.280.20...v0.280.21) (2026-08-11)
+
+
+### Bug Fixes
+
+* **drift:** warn about KEYED-list entries a --revert would drop ([#1626](https://github.com/go-to-k/cdkd/issues/1626) item 1) ([#1627](https://github.com/go-to-k/cdkd/issues/1627)) ([a5a675c](https://github.com/go-to-k/cdkd/commit/a5a675c43d6e697fea4375db63fc165523cf560f))
+
 ## [0.280.20](https://github.com/go-to-k/cdkd/compare/v0.280.19...v0.280.20) (2026-08-11)
 
 
