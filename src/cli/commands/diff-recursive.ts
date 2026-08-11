@@ -716,7 +716,14 @@ function stripUnchangedValuePair(oldValue: unknown, newValue: unknown): [unknown
 
   const oldResult: Record<string, unknown> = {};
   const newResult: Record<string, unknown> = {};
-  const keys = [...Object.keys(oldValue), ...Object.keys(newValue).filter((k) => !(k in oldValue))];
+  // Object.hasOwn, not `in`: a user-controlled map key named after an
+  // Object.prototype member (`toString`, `constructor`, ...) is `in` every
+  // object via the prototype chain, so `in` would silently drop its
+  // addition/removal from the union and copy inherited members into a side.
+  const keys = [
+    ...Object.keys(oldValue),
+    ...Object.keys(newValue).filter((k) => !Object.hasOwn(oldValue, k)),
+  ];
 
   for (const key of keys) {
     const o = oldValue[key];
@@ -734,8 +741,8 @@ function stripUnchangedValuePair(oldValue: unknown, newValue: unknown): [unknown
       if (fo !== undefined && JSON.stringify(fo) !== '{}') oldResult[key] = fo;
       if (fn !== undefined && JSON.stringify(fn) !== '{}') newResult[key] = fn;
     } else {
-      if (key in oldValue) oldResult[key] = o;
-      if (key in newValue) newResult[key] = n;
+      if (Object.hasOwn(oldValue, key)) oldResult[key] = o;
+      if (Object.hasOwn(newValue, key)) newResult[key] = n;
     }
   }
 

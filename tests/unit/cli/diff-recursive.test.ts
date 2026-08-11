@@ -515,6 +515,33 @@ describe('renderDiffTree', () => {
     expect(text).not.toContain('"keep"');
   });
 
+  // PR #1614 review: `in` walks the prototype chain, so a user map key named
+  // after an Object.prototype member (legal in CFn env vars / tags parsed
+  // from JSON) would be silently dropped from the union of keys.
+  it('renders an added key named after an Object.prototype member (toString) (#1608)', () => {
+    const root = leaf('P', 'P', [
+      {
+        logicalId: 'R',
+        changeType: 'UPDATE',
+        resourceType: 'AWS::Lambda::Function',
+        propertyChanges: [
+          {
+            path: 'Environment',
+            oldValue: { A: '1' },
+            newValue: { A: '2', toString: 'x' },
+            requiresReplacement: false,
+          },
+        ],
+      },
+    ]);
+    const lines: string[] = [];
+    renderDiffTree(root, true, (m) => lines.push(m));
+    const text = lines.join('\n');
+
+    expect(text).toContain('"toString"');
+    expect(text).toContain('"A"');
+  });
+
   it('falls back to FULL values on BOTH sides when the only differences are intrinsic-valued keys (#1608)', () => {
     const root = leaf('P', 'P', [
       {
