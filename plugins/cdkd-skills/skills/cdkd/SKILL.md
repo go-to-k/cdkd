@@ -195,6 +195,8 @@ cdkd local invoke <function> --from-cfn-stack   # resolve env vars from the depl
 
 `--from-state` and `--from-cfn-stack` are mutually exclusive — pick the one matching how the stack was deployed. Both make read-only AWS calls, so they need credentials; a plain local run without them does not.
 
+With the environment source resolved, a local run is a hybrid: the handler executes on the developer's machine (edit and re-invoke — no deploy round-trip), while talking to the real deployed dev resources. That removes the usual local-testing overhead — no hand-maintained `.env` files mirroring resource names, and no local emulators to install and seed with test data, because the code reads and writes the actual dev-environment tables, queues, and buckets.
+
 Most `cdkd local` commands require Docker, and the first run pulls base images (up to ~600 MB). See the [local execution guide](https://github.com/go-to-k/cdkd/blob/main/docs/local-emulation.md) for the full subcommand list (ALB, CloudFront, AgentCore) and flags.
 
 ## Command reference
