@@ -395,11 +395,19 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     if (streamSpecInput != null) {
       let streamViewType: string;
       try {
+        // `replayWarn` (issue #1544): a state record written by an older
+        // binary can carry `StreamSpecification: ''`, and on the rollback
+        // executor's reverse-replacement replay the user cannot edit that
+        // record — a hard refusal would leave the old table unrestorable. The
+        // downgrade treats the malformed block as `{}` (stream enabled with
+        // the NEW_AND_OLD_IMAGES default, exactly what an empty block means),
+        // warns, and proceeds; template-path creates keep the refusal.
         streamViewType = readConfigString(
           streamSpecInput,
           'StreamViewType',
           'NEW_AND_OLD_IMAGES',
-          'AWS::DynamoDB::GlobalTable StreamSpecification'
+          'AWS::DynamoDB::GlobalTable StreamSpecification',
+          replayWarn(this.logger, context)
         );
       } catch (error) {
         throw new ProvisioningError(
@@ -437,12 +445,18 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     // untyped into the deploy engine's retry loop.
     let sdkIndexes: GlobalSecondaryIndex[];
     try {
+      // The trailing `onUnusableIndexes` hook is the GSI guard's replay
+      // downgrade (issue #1544): on a reverse-replacement replay a non-array
+      // `GlobalSecondaryIndexes` recorded in state warns and the block is
+      // OMITTED (zero indexes) instead of stranding the rollback; on a
+      // template-path create the hook is `undefined` and the refusal stands.
       sdkIndexes = toSdkGlobalSecondaryIndexes(
         properties,
         currentRegion,
         billingMode,
         'min',
-        diagnostics
+        diagnostics,
+        replayWarn(this.logger, context).onUnusable
       );
     } catch (error) {
       throw new ProvisioningError(
@@ -4644,7 +4658,8 @@ export function toSdkGlobalSecondaryIndexes(
   region: string,
   billingMode: string,
   source: CapacitySource = 'min',
-  diagnostics?: ThroughputDiagnostic[]
+  diagnostics?: ThroughputDiagnostic[],
+  onUnusableIndexes?: (message: string) => void
 ): GlobalSecondaryIndex[] {
   const rawIndexes = properties['GlobalSecondaryIndexes'];
   // A NON-ARRAY value (an unresolved `Fn::If`, a malformed template) must not
@@ -4653,17 +4668,32 @@ export function toSdkGlobalSecondaryIndexes(
   // to close, one level up. Absent is legitimately empty; present-but-wrong
   // is an error, and naming it here beats AWS's opaque 400. Matches the
   // per-ENTRY policy below, which also refuses to swallow a bad entry.
+  //
+  // `onUnusableIndexes` (issue #1544) is the create-path STATE-REPLAY
+  // downgrade, wired from `replayWarn` at the `create()` call site only: on
+  // the rollback executor's reverse-replacement replay the properties are a
+  // cdkd state record the user cannot edit, so the refusal would leave the
+  // old table unrestorable. The downgrade warns and OMITS the malformed
+  // block (zero indexes) — a well-defined skip, never a fabricated value.
+  // Every other call site leaves the hook undefined and keeps the refusal.
   if (rawIndexes !== undefined && !Array.isArray(rawIndexes)) {
+    const message =
+      `AWS::DynamoDB::GlobalTable GlobalSecondaryIndexes must be an array, got ` +
+      `${typeof rawIndexes} (${JSON.stringify(rawIndexes)?.slice(0, 200)}). ` +
+      `An unresolved intrinsic here would otherwise deploy a table with no indexes.`;
+    if (onUnusableIndexes) {
+      onUnusableIndexes(
+        `${message} Ignoring the block and proceeding with NO indexes here; the ` +
+          `same value is REFUSED on a template-path create`
+      );
+      return [];
+    }
     // A plain Error on purpose: this is a module-level pure helper with no
     // logicalId to build a ProvisioningError from. `update()` runs inside a
     // wrapping catch that converts it; `create()` does NOT, so its call site
     // converts it explicitly. Both paths therefore surface a ProvisioningError
     // carrying the resource context.
-    throw new Error(
-      `AWS::DynamoDB::GlobalTable GlobalSecondaryIndexes must be an array, got ` +
-        `${typeof rawIndexes} (${JSON.stringify(rawIndexes)?.slice(0, 200)}). ` +
-        `An unresolved intrinsic here would otherwise deploy a table with no indexes.`
-    );
+    throw new Error(message);
   }
   const cfnIndexes = (rawIndexes ?? []) as unknown[];
   if (cfnIndexes.length === 0) return [];

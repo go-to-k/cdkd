@@ -13,13 +13,14 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { clearOnUpdateRemoval } from '../update-removal.js';
-import { requireConfigString } from '../config-shape.js';
+import { replayWarn, requireConfigString } from '../config-shape.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
+  CreateContext,
 } from '../../types/resource.js';
 
 /**
@@ -50,7 +51,8 @@ export class LambdaUrlProvider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating Lambda URL ${logicalId}`);
 
@@ -66,10 +68,16 @@ export class LambdaUrlProvider implements ResourceProvider {
     // `|| 'NONE'` turned a blank / null AuthType into a PUBLIC function URL
     // (issue #1493). The #1490 sweep of this idiom keyed on the `as string`
     // cast and so missed this typed-cast spelling.
+    //
+    // `replayWarn`: on a rollback's reverse-replacement replay the properties
+    // are a cdkd STATE record the user cannot edit, so the refusal downgrades
+    // to a warning there (issue #1544) — the resource would otherwise be
+    // unrestorable. Template-path creates keep the refusal.
     const authType = requireConfigString(
       properties['AuthType'],
       'NONE',
-      'AWS::Lambda::Url AuthType'
+      'AWS::Lambda::Url AuthType',
+      replayWarn(this.logger, context)
     ) as FunctionUrlAuthType;
 
     try {

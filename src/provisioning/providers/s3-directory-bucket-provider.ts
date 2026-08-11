@@ -16,7 +16,7 @@ import {
 import { STSClient, GetCallerIdentityCommand } from '@aws-sdk/client-sts';
 import { EC2Client, DescribeAvailabilityZonesCommand } from '@aws-sdk/client-ec2';
 import { getLogger } from '../../utils/logger.js';
-import { requireConfigString } from '../config-shape.js';
+import { replayWarn, requireConfigString } from '../config-shape.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
@@ -29,6 +29,7 @@ import type {
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
+  CreateContext,
 } from '../../types/resource.js';
 
 /**
@@ -150,14 +151,20 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating S3 Express Directory Bucket ${logicalId}`);
 
+    // `replayWarn`: the rollback executor's reverse-replacement arm revives
+    // the OLD bucket from `previousState.properties`, which the user cannot
+    // edit from the template — a hard refusal there would leave the resource
+    // unrestorable (issue #1544). Template-path creates keep the refusal.
     const dataRedundancy = requireConfigString(
       properties['DataRedundancy'],
       'SingleAvailabilityZone',
-      'AWS::S3Express::DirectoryBucket DataRedundancy'
+      'AWS::S3Express::DirectoryBucket DataRedundancy',
+      replayWarn(this.logger, context)
     );
     // CFn LocationName: "us-east-1a--x-s3" → extract AZ name: "us-east-1a"
     const cfnLocationName = properties['LocationName'] as string | undefined;
