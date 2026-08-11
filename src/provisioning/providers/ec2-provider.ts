@@ -4811,6 +4811,30 @@ export class EC2Provider implements ResourceProvider {
    * v1 drift scope — `AWS::EC2::Subnet`'s `updateableProperties:
    * Tags` entry serves only the template-update path today.
    */
+  getDriftUnknownPaths(resourceType: string): string[] {
+    switch (resourceType) {
+      // NetworkInterfaces cannot be read back faithfully: the drift
+      // comparator compares arrays WHOLESALE (deepEqual), and
+      // `AssociatePublicIpAddress` is launch-time-only input that
+      // DescribeInstances never returns -- any reconstruction would fire
+      // phantom whole-array drift on every associatePublicIpAddress
+      // template (i.e. every template that has the property at all, since
+      // it is what routes CDK onto this shape). Declared unreadable, like
+      // Lambda's Code (issue #1281).
+      case 'AWS::EC2::Instance':
+        return ['NetworkInterfaces'];
+      case 'AWS::EC2::Route':
+      case 'AWS::EC2::VPCGatewayAttachment':
+      case 'AWS::EC2::SubnetRouteTableAssociation':
+      case 'AWS::EC2::SecurityGroupIngress':
+      case 'AWS::EC2::NetworkAclEntry':
+      case 'AWS::EC2::SubnetNetworkAclAssociation':
+        return ['Tags'];
+      default:
+        return [];
+    }
+  }
+
   /**
    * The diff-side half of the Route multi-destination narrowing (issue #1591).
    *
@@ -4835,30 +4859,6 @@ export class EC2Provider implements ResourceProvider {
     // Untouched unless the CFn-invalid multi-destination shape is present, so
     // an ordinary single-destination route compares byte-for-byte as before.
     return declared.length > 1 ? narrowed : properties;
-  }
-
-  getDriftUnknownPaths(resourceType: string): string[] {
-    switch (resourceType) {
-      // NetworkInterfaces cannot be read back faithfully: the drift
-      // comparator compares arrays WHOLESALE (deepEqual), and
-      // `AssociatePublicIpAddress` is launch-time-only input that
-      // DescribeInstances never returns -- any reconstruction would fire
-      // phantom whole-array drift on every associatePublicIpAddress
-      // template (i.e. every template that has the property at all, since
-      // it is what routes CDK onto this shape). Declared unreadable, like
-      // Lambda's Code (issue #1281).
-      case 'AWS::EC2::Instance':
-        return ['NetworkInterfaces'];
-      case 'AWS::EC2::Route':
-      case 'AWS::EC2::VPCGatewayAttachment':
-      case 'AWS::EC2::SubnetRouteTableAssociation':
-      case 'AWS::EC2::SecurityGroupIngress':
-      case 'AWS::EC2::NetworkAclEntry':
-      case 'AWS::EC2::SubnetNetworkAclAssociation':
-        return ['Tags'];
-      default:
-        return [];
-    }
   }
 
   private async readVpcCurrentState(

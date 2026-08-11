@@ -572,6 +572,118 @@ describe('renderDiffTree', () => {
   });
 });
 
+describe('computeStackDiff / buildDiffTree canonicalizer wiring (#1591)', () => {
+  // The round-2 blocker was that `cdkd diff` never received the property
+  // normalizer the deploy engine applies, so the PREVIEW forecast a
+  // REPLACEMENT the apply would never perform. The fix threads a function
+  // through three sites — computeStackDiff, buildDiffTree, and the nested
+  // recursion — and a review found all three unpinned: breaking every one of
+  // them left the whole suite green.
+  const ROUTE = 'AWS::EC2::Route';
+  const narrowedRoute = { RouteTableId: 'rtb-1', DestinationCidrBlock: '10.0.0.0/16' };
+  const invalidRouteProps = {
+    RouteTableId: 'rtb-1',
+    DestinationCidrBlock: '10.0.0.0/16',
+    DestinationIpv6CidrBlock: '::/0',
+  };
+  const routeTemplate: CloudFormationTemplate = {
+    Resources: { R: { Type: ROUTE, Properties: invalidRouteProps } },
+  };
+  // Narrows exactly like the provider does, without depending on it here.
+  const canonicalize = (resourceType: string, properties: Record<string, unknown>) => {
+    if (resourceType !== ROUTE) return properties;
+    const keys = ['DestinationCidrBlock', 'DestinationIpv6CidrBlock', 'DestinationPrefixListId'];
+    const declared = keys.filter((k) => Boolean(properties[k]));
+    if (declared.length <= 1) return properties;
+    const out = { ...properties };
+    for (const losing of declared.slice(1)) delete out[losing];
+    return out;
+  };
+
+  it('computeStackDiff forwards it — without it the preview disagrees with the apply', async () => {
+    const state = st('S', { R: res(ROUTE, narrowedRoute) });
+
+    const withFn = await computeStackDiff(
+      state,
+      routeTemplate,
+      'us-east-1',
+      'S',
+      fakeBackend({}),
+      new DiffCalculator(),
+      undefined,
+      canonicalize
+    );
+    expect(withFn.get('R')!.changeType).toBe('NO_CHANGE');
+
+    // The control: this is what `cdkd diff` printed before the fix, and what
+    // it would print again if the argument were dropped.
+    const withoutFn = await computeStackDiff(
+      state,
+      routeTemplate,
+      'us-east-1',
+      'S',
+      fakeBackend({}),
+      new DiffCalculator()
+    );
+    expect(withoutFn.get('R')!.changeType).toBe('UPDATE');
+  });
+
+  it('buildDiffTree forwards it to the ROOT stack', async () => {
+    const node = await buildDiffTree({
+      stackName: 'S',
+      displayName: 'S',
+      region: 'us-east-1',
+      template: routeTemplate,
+      nestedTemplates: {},
+      recursive: false,
+      stateBackend: fakeBackend({ S: st('S', { R: res(ROUTE, narrowedRoute) }) }),
+      diffCalculator: new DiffCalculator(),
+      canonicalizeProperties: canonicalize,
+    });
+
+    expect(node.changes.get('R')!.changeType).toBe('NO_CHANGE');
+  });
+
+  it('buildDiffTree forwards it into a NESTED child', async () => {
+    // The recursion is its own site: forwarding at the root while dropping it
+    // one level down leaves a nested route previewing a phantom replacement.
+    const dir = mkdtempSync(join(tmpdir(), 'cdkd-1591-'));
+    try {
+      const childPath = join(dir, 'child.json');
+      writeFileSync(
+        childPath,
+        JSON.stringify({ Resources: { R: { Type: ROUTE, Properties: invalidRouteProps } } })
+      );
+      const parentTemplate: CloudFormationTemplate = {
+        Resources: {
+          Child: { Type: NESTED, Metadata: { 'aws:asset:path': 'child.json' }, Properties: {} },
+        },
+      };
+
+      const node = await buildDiffTree({
+        stackName: 'S',
+        displayName: 'S',
+        region: 'us-east-1',
+        template: parentTemplate,
+        nestedTemplates: { Child: childPath },
+        recursive: true,
+        stateBackend: fakeBackend({
+          S: st('S', { Child: res(NESTED, {}) }),
+          'S~Child': st('S~Child', { R: res(ROUTE, narrowedRoute) }),
+        }),
+        diffCalculator: new DiffCalculator(),
+        canonicalizeProperties: canonicalize,
+      });
+
+      const child = node.children.find((c) => c.stackName === 'S~Child');
+      expect(child).toBeDefined();
+      expect(child!.changes.get('R')!.changeType).toBe('NO_CHANGE');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('computeStackDiff', () => {
   it('reports all CREATE against an empty state', async () => {
     const template: CloudFormationTemplate = {

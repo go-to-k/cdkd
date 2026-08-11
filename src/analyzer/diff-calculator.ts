@@ -206,15 +206,43 @@ export class DiffCalculator {
         // REPLACEMENT whose create the engine issues with no context — landing
         // on the provider's create-path refusal and failing a deploy that was
         // green the day before. State can only carry the wider bag when it is
-        // junk, so narrowing it here is safe, and the next write persists the
-        // narrowed form — the record self-heals instead of wedging.
+        // junk, so narrowing it here is safe.
         // `drift-normalize.ts` records the same rule for ordering.
+        //
+        // NOT self-healing, and the comment used to claim otherwise: an
+        // otherwise-unchanged template now diffs NO_CHANGE, so no write happens
+        // and the wide record survives. `cdkd drift --revert` is what clears
+        // it. That residue is the (#1612) already-junk class.
+        //
+        // The CURRENT side is left alone for a cc-api-routed resource:
+        // `CloudControlProvider` sends and records the FULL bag and reports no
+        // `effectiveProperties`, so its record is not a narrowing artifact and
+        // narrowing it here would hide a real difference.
         const desiredPropsForCompare = canonicalizeProperties
           ? canonicalizeProperties(desiredResource.Type, resolvedDesiredProps)
           : resolvedDesiredProps;
-        const currentPropsForCompare = canonicalizeProperties
-          ? canonicalizeProperties(desiredResource.Type, currentResource.properties)
-          : currentResource.properties;
+        const currentPropsForCompare =
+          canonicalizeProperties && currentResource.provisionedBy !== 'cc-api'
+            ? canonicalizeProperties(desiredResource.Type, currentResource.properties)
+            : currentResource.properties;
+
+        // ANNOUNCE the narrowing. The whole design rests on it being a
+        // deliberate, stated decision (`EffectivePropertiesResult`'s contract);
+        // on the provisioning path the provider's warn arm says so, but this
+        // path never calls the provider — so without this, a template edit to a
+        // LOSING key is discarded with zero output, and a user "fixing" the
+        // wrong destination key would see cdkd report nothing at all.
+        if (
+          canonicalizeProperties &&
+          !this.valuesEqual(desiredPropsForCompare, resolvedDesiredProps)
+        ) {
+          this.logger.warn(
+            `${logicalId} (${desiredResource.Type}): part of the declared properties cannot be ` +
+              `sent as declared and is ignored when comparing against deployed state — the ` +
+              `provider narrows them. Fix the template to declare only what the resource ` +
+              `supports; until then changes to the ignored keys have no effect.`
+          );
+        }
 
         const propertyChanges = await this.compareProperties(
           desiredResource.Type,

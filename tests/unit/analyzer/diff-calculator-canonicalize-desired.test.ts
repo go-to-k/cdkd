@@ -2,6 +2,8 @@ import { describe, it, expect, vi } from 'vite-plus/test';
 import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
 import { EC2Provider } from '../../../src/provisioning/providers/ec2-provider.js';
 import { makeCanonicalizePropertiesFn } from '../../../src/provisioning/canonicalize-properties.js';
+import { ProviderRegistry } from '../../../src/provisioning/provider-registry.js';
+import { registerAllProviders } from '../../../src/provisioning/register-providers.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { StackState } from '../../../src/types/state.js';
 
@@ -82,7 +84,8 @@ describe('DiffCalculator canonicalizeDesired (#1591)', () => {
   // `return properties`, which is exactly the false green a review found here.
   const provider = new EC2Provider();
   const canonicalize = makeCanonicalizePropertiesFn({
-    getProvider: (t: string) => (t === RESOURCE_TYPE ? provider : undefined),
+    hasProvider: (t: string) => t === RESOURCE_TYPE,
+    getProvider: () => provider,
   });
 
   it('WITHOUT the canonicalizer the narrowing reads back as a change (the bug)', async () => {
@@ -254,19 +257,25 @@ describe('DiffCalculator canonicalizeDesired (#1591)', () => {
   });
 
   it('runs AFTER intrinsic resolution, not before', async () => {
-    // The ordering the seam's JSDoc claims. The provider decides on RESOLVED
-    // values, so canonicalizing an unresolved intrinsic would disagree with
-    // it. Here the losing key arrives as an intrinsic that only becomes
-    // truthy once resolved: canonicalize-then-resolve would see a non-string
-    // it does not recognise and leave both keys in, reporting a change.
+    // The ordering the seam's JSDoc claims, pinned with the ONLY fixture that
+    // can tell the two apart. An unresolved intrinsic is an OBJECT, and the
+    // predicate is `Boolean`, so a truthy-resolving intrinsic picks the same
+    // winner either way — the first version of this row asserted the ordering
+    // and passed under both, which a review caught.
+    //
+    // Here the CIDR key resolves to a falsy `''`, so after resolution the IPv6
+    // key is the only declared destination and nothing is narrowed — the diff
+    // reports it as the new destination. Narrow-then-resolve would instead
+    // count the unresolved CIDR OBJECT as declared, see two destinations, drop
+    // IPv6 as the loser, and the diff would never mention it at all.
     const template: CloudFormationTemplate = {
       Resources: {
         MyRoute: {
           Type: RESOURCE_TYPE,
           Properties: {
             RouteTableId: 'rtb-1',
-            DestinationCidrBlock: '10.0.0.0/16',
-            DestinationIpv6CidrBlock: { __resolveTo: '::/0' },
+            DestinationCidrBlock: { __resolveTo: '' },
+            DestinationIpv6CidrBlock: '::/0',
             GatewayId: 'igw-1',
           },
         },
@@ -286,7 +295,168 @@ describe('DiffCalculator canonicalizeDesired (#1591)', () => {
       canonicalize
     );
 
+    const paths = changes.get('MyRoute')?.propertyChanges?.map((pc) => pc.path) ?? [];
+    // The IPv6 key SURVIVES into the diff — it is the only declared
+    // destination once resolved. Under the wrong order it is narrowed away
+    // before resolution and never reported.
+    expect(paths).toContain('DestinationIpv6CidrBlock');
+  });
+
+  it('ANNOUNCES the narrowing — a losing-key edit is not discarded in silence', async () => {
+    // The design rests on narrowing always being announced. On this path the
+    // provider is never called, so without an explicit warn a user "fixing"
+    // the wrong destination key would see cdkd report absolutely nothing.
+    const warn = vi.fn();
+    const calc = new DiffCalculator();
+    (calc as unknown as { logger: { warn: unknown } }).logger = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn,
+      error: vi.fn(),
+    } as never;
+
+    await calc.calculateDiff(narrowedState(), invalidTemplate, undefined, canonicalize);
+
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('MyRoute'));
+  });
+
+  it('does NOT warn when nothing was narrowed', async () => {
+    const warn = vi.fn();
+    const calc = new DiffCalculator();
+    (calc as unknown as { logger: { warn: unknown } }).logger = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn,
+      error: vi.fn(),
+    } as never;
+    const template: CloudFormationTemplate = {
+      Resources: {
+        MyRoute: {
+          Type: RESOURCE_TYPE,
+          Properties: {
+            RouteTableId: 'rtb-1',
+            DestinationCidrBlock: '10.0.0.0/16',
+            GatewayId: 'igw-1',
+          },
+        },
+      },
+    };
+
+    await calc.calculateDiff(narrowedState(), template, undefined, canonicalize);
+
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('leaves a cc-api-routed record un-narrowed on the CURRENT side', async () => {
+    // CloudControlProvider sends AND records the full bag and reports no
+    // effectiveProperties, so its record is not a narrowing artifact —
+    // narrowing it here would hide a real difference rather than reveal one.
+    const ccState = {
+      version: 3,
+      region: 'us-east-1',
+      stackName: 'route-stack',
+      resources: {
+        MyRoute: {
+          physicalId: 'rtb-1|10.0.0.0/16',
+          resourceType: RESOURCE_TYPE,
+          provisionedBy: 'cc-api',
+          properties: {
+            RouteTableId: 'rtb-1',
+            DestinationCidrBlock: '10.0.0.0/16',
+            DestinationIpv6CidrBlock: '::/0',
+            GatewayId: 'igw-1',
+          },
+          attributes: {},
+        },
+      },
+      outputs: {},
+      lastModified: 0,
+    } as unknown as StackState;
+
+    const changes = await new DiffCalculator().calculateDiff(
+      ccState,
+      invalidTemplate,
+      undefined,
+      canonicalize
+    );
+
+    // Desired narrows, current does not -> the difference is REPORTED.
+    expect(changes.get('MyRoute')?.changeType).toBe('UPDATE');
+  });
+
+  it('works through the REAL ProviderRegistry, not just a stub', async () => {
+    // Every other row hands the builder a hand-written `{hasProvider,
+    // getProvider}`. That hid a real break once already: adding `hasProvider`
+    // to the production lookup silently no-opped the engine test until its
+    // mock was updated by hand. This row goes through the actual registry, so
+    // a lookup-contract change or a routing change for AWS::EC2::Route fails
+    // here instead of passing green.
+    const registry = new ProviderRegistry();
+    registerAllProviders(registry);
+
+    const changes = await new DiffCalculator().calculateDiff(
+      narrowedState(),
+      invalidTemplate,
+      undefined,
+      makeCanonicalizePropertiesFn(registry)
+    );
+
     expect(changes.get('MyRoute')?.changeType).toBe('NO_CHANGE');
+  });
+
+  it('leaves an unrelated EC2 type untouched — the type guard, actually pinned', async () => {
+    // Through a lookup that hands EC2Provider to EVERY type, so deleting the
+    // `resourceType !== 'AWS::EC2::Route'` guard changes the outcome. The
+    // earlier version routed only Route to the provider, so the guard was
+    // never reached and could be deleted with the suite green.
+    const anyType = makeCanonicalizePropertiesFn({
+      hasProvider: () => true,
+      getProvider: () => provider,
+    });
+    const sgState = {
+      version: 3,
+      region: 'us-east-1',
+      stackName: 'route-stack',
+      resources: {
+        MySg: {
+          physicalId: 'sg-1',
+          resourceType: 'AWS::EC2::SecurityGroupIngress',
+          properties: {
+            DestinationCidrBlock: '10.0.0.0/16',
+            DestinationIpv6CidrBlock: '::/0',
+          },
+          attributes: {},
+        },
+      },
+      outputs: {},
+      lastModified: 0,
+    } as unknown as StackState;
+    const sgTemplate: CloudFormationTemplate = {
+      Resources: {
+        MySg: {
+          Type: 'AWS::EC2::SecurityGroupIngress',
+          Properties: {
+            DestinationCidrBlock: '10.0.0.0/16',
+            DestinationIpv6CidrBlock: '::/0',
+          },
+        },
+      },
+    };
+
+    const changes = await new DiffCalculator().calculateDiff(
+      sgState,
+      sgTemplate,
+      undefined,
+      anyType
+    );
+
+    // Untouched on both sides -> equal -> NO_CHANGE. If the guard were gone,
+    // both sides would still narrow equally, so the discriminating assertion
+    // is on the PROPERTIES the change carries, checked below.
+    expect(changes.get('MySg')?.changeType).toBe('NO_CHANGE');
+    expect(anyType('AWS::EC2::SecurityGroupIngress', sgTemplate.Resources['MySg']!.Properties!)).toEqual(
+      sgTemplate.Resources['MySg']!.Properties
+    );
   });
 
   it('leaves an unrelated resource type untouched', async () => {

@@ -556,14 +556,19 @@ export interface ResourceProvider {
   getDriftUnknownPaths?(resourceType: string, properties?: Record<string, unknown>): string[];
 
   /**
-   * Narrow the RESOLVED desired properties the same way this provider narrows
-   * what it actually SENDS (issue #1591). The deploy diff applies it to the
-   * desired side before comparing against state.
+   * Narrow a property bag the same way this provider narrows what it actually
+   * SENDS (issue #1591).
+   *
+   * Applied by `cdkd deploy` AND `cdkd diff` to **both** comparison sides — the
+   * resolved template properties and the state-recorded ones — so it receives a
+   * STATE-BORNE bag as often as a template-borne one. It must therefore be
+   * IDEMPOTENT (narrowing an already-narrowed bag returns it unchanged) and
+   * safe on a historical record it did not produce.
    *
    * Implement it if — and only if — the provider returns
    * {@link EffectivePropertiesResult.effectiveProperties}: the two are halves
    * of one decision. `effectiveProperties` makes STATE describe what AWS holds;
-   * this makes the TEMPLATE side describe the same thing, so the narrowing does
+   * this makes the comparison describe the same thing, so the narrowing does
    * not read back as a change the user made. With only the first half, the
    * template's extra keys resurface as a diff on every later deploy — and for a
    * create-only property that is a REPLACEMENT, turning a green no-op deploy
@@ -574,6 +579,10 @@ export interface ResourceProvider {
    * MUST agree with the provisioning-path narrowing key-for-key; share one
    * helper rather than re-deriving the rule, or state and template end up
    * narrowed differently.
+   *
+   * The diff WARNS whenever this actually changes the desired bag, so the
+   * narrowing stays announced even though the provider is never called on that
+   * path — do not rely on a provider-side warning to inform the user here.
    *
    * Return the input unchanged when nothing applies (the common case).
    */

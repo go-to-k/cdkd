@@ -79,6 +79,7 @@ describe('DeployEngine - effectiveProperties overrides what is recorded in state
     filterByType: ReturnType<typeof vi.fn>;
   };
   let mockProviderRegistry: {
+    hasProvider: ReturnType<typeof vi.fn>;
     getProvider: ReturnType<typeof vi.fn>;
     getProviderFor: ReturnType<typeof vi.fn>;
     getRegisteredTypes: ReturnType<typeof vi.fn>;
@@ -129,6 +130,7 @@ describe('DeployEngine - effectiveProperties overrides what is recorded in state
         ),
     };
     mockProviderRegistry = {
+      hasProvider: vi.fn().mockReturnValue(true),
       getProvider: vi.fn().mockReturnValue(mockProvider),
       getProviderFor: vi.fn().mockReturnValue({ provider: mockProvider, provisionedBy: 'sdk' }),
       getRegisteredTypes: vi.fn().mockReturnValue([]),
