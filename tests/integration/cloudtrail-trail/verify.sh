@@ -249,6 +249,55 @@ CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" drift "${STACK}" \
   --region "${REGION}"
 echo "    ok: post-removal drift is clean"
 
+# --- Phase 2b: a console-side CloudWatch Logs ENABLE must be VISIBLE ---
+# Issue #1565. `readCurrentState` used to emit the CloudWatchLogs pair only
+# when AWS reported BOTH fields, so on a trail with no CW wiring the keys were
+# absent from the captured snapshot -- and the drift comparator's top-level
+# walk is baseline-keys-only, which made a console-side enable invisible
+# FOREVER. The pair is now always-emitted (`''` when unwired), so the enable
+# has something to compare against.
+#
+# The sequence matters: phase 1 configured the pair and phase 2's removal
+# RETAINED it (CFn parity), so the live trail still has it. Clear it
+# out-of-band first, re-baseline from AWS, then re-enable out-of-band -- that
+# is the only shape where the pre-fix binary records a snapshot WITHOUT the
+# keys, which is what makes this assertion fail before the fix.
+echo "==> Phase 2b: clearing the CloudWatch Logs pair out-of-band"
+aws cloudtrail update-trail --name "${TRAIL_NAME}" --region "${REGION}" \
+  --cloud-watch-logs-log-group-arn '' --cloud-watch-logs-role-arn '' >/dev/null
+assert_field "CloudWatchLogsLogGroupArn cleared" '.CloudWatchLogsLogGroupArn' 'null'
+
+echo "==> Phase 2b: re-baselining state from AWS (drift --accept)"
+# --accept exits 0 whether or not it found something to accept, so it cannot
+# stand in for the assertion below; it is only how the baseline is captured
+# with the pair UNWIRED.
+CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" drift "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --accept --yes
+
+echo "==> Phase 2b: re-enabling the pair out-of-band (the console-side enable)"
+aws cloudtrail update-trail --name "${TRAIL_NAME}" --region "${REGION}" \
+  --cloud-watch-logs-log-group-arn "${CW_GROUP_P1}" \
+  --cloud-watch-logs-role-arn "${CW_ROLE_P1}" >/dev/null
+assert_field "CloudWatchLogsLogGroupArn re-enabled" '.CloudWatchLogsLogGroupArn' "${CW_GROUP_P1}"
+
+echo "==> Phase 2b: drift MUST report the enable"
+# Exit codes: 0 = no drift, 1 = drift detected, 2 = error. Require exactly 1 --
+# a 2 would otherwise read as "detected" and pass this assertion on a broken
+# command.
+set +e
+CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" drift "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}"
+DRIFT_RC=$?
+set -e
+if [ "${DRIFT_RC}" -ne 1 ]; then
+  echo "FAIL: a console-side CloudWatch Logs enable was not reported as drift (cdkd drift rc=${DRIFT_RC}, expected 1)" >&2
+  exit 1
+fi
+echo "    ok: console-side CloudWatch Logs enable reported as drift"
+
 # --- Phase 3: destroy -------------------------------------------------
 echo "==> Phase 3: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \

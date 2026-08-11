@@ -667,35 +667,35 @@ export class CloudTrailProvider implements ResourceProvider {
     result['IncludeGlobalServiceEvents'] = trail.IncludeGlobalServiceEvents ?? true;
     result['EnableLogFileValidation'] = trail.LogFileValidationEnabled ?? false;
 
-    // Class 1 — CloudWatchLogsLogGroupArn / CloudWatchLogsRoleArn are a
+    // CloudWatchLogsLogGroupArn / CloudWatchLogsRoleArn are a
     // type-discriminated pair: both required when CW logs are enabled,
-    // neither when disabled.
-    //
-    // NOTE the original rationale here — that AWS rejects a `''` round-trip
-    // with `CloudWatchLogsLogGroupArn is not in valid ARN format` — was
-    // DISPROVEN by the issue #1160 probe (2026-08-10): `''` is accepted for
-    // this field and nulls it out. The guard stands on its own remaining
-    // rationale, which is the discriminator, not the rejection: the pair is
-    // all-or-nothing, so emitting one placeholder without the other would
-    // describe a state AWS cannot hold. Only emit both keys when AWS reports
-    // both present (the discriminator is "both fields populated").
-    // KNOWN BOUND, corrected 2026-08-10 (issue #1160 review): the previous
-    // wording claimed "a console-side enable shows up as both fields
-    // appearing at once on the next read". That is FALSE — the drift
+    // neither when disabled. They are nonetheless emitted UNCONDITIONALLY
+    // (issue #1565), because the guard that used to withhold them made a
+    // console-side ENABLE permanently invisible to `cdkd drift`: the
     // comparator's top-level walk is baseline-keys-only, so a key absent
-    // from the captured snapshot is never compared and a console-side
-    // enable stays invisible. Emitting both as `''` would now be safe (the
-    // update path drops them via `emptyToUndefined`, and the #1160 probe
-    // disproved the rejection this guard was built on), so this is a
-    // deliberate not-yet rather than an impossibility. Tracked in #1565
-    // (split out of #1549, which closed with the EventSelectors reset — a
-    // WRITE-side fix that says nothing about this READ-side always-emit).
+    // from the captured snapshot is never compared at all.
+    //
+    // Both premises the guard rested on are now disproven, each by its own
+    // probe, which is why this can be an always-emit rather than a
+    // discriminator:
+    //
+    //  - "AWS rejects a `''` round-trip with `CloudWatchLogsLogGroupArn is
+    //    not in valid ARN format`" — DISPROVEN by the issue #1160 live probe
+    //    (2026-08-10): `''` is accepted for this field and nulls it out.
+    //  - "a console-side enable shows up as both fields appearing at once on
+    //    the next read" — FALSE for the reason above; that wording was
+    //    corrected in the #1160 review and is what issue #1565 was filed on.
+    //
+    // The all-or-nothing discriminator is preserved where it actually
+    // matters — the WRITE side — rather than by withholding the read: the
+    // update path runs both through `emptyToUndefined`, so a `''` pair is
+    // dropped from `UpdateTrail` and an unconfigured trail round-trips as a
+    // no-op. The pair is emitted TOGETHER, so the snapshot never describes
+    // the half-configured state AWS cannot hold.
     // Pattern documented in
     // `feedback_always_emit_check_type_discriminator.md`.
-    if (trail.CloudWatchLogsLogGroupArn && trail.CloudWatchLogsRoleArn) {
-      result['CloudWatchLogsLogGroupArn'] = trail.CloudWatchLogsLogGroupArn;
-      result['CloudWatchLogsRoleArn'] = trail.CloudWatchLogsRoleArn;
-    }
+    result['CloudWatchLogsLogGroupArn'] = trail.CloudWatchLogsLogGroupArn ?? '';
+    result['CloudWatchLogsRoleArn'] = trail.CloudWatchLogsRoleArn ?? '';
 
     result['KMSKeyId'] = trail.KmsKeyId ?? '';
     result['SnsTopicName'] = trail.SnsTopicName ?? '';

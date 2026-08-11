@@ -92,6 +92,9 @@ describe('CloudTrailProvider.readCurrentState', () => {
       KMSKeyId: 'arn:aws:kms:us-east-1:1:key/abc',
       SnsTopicName: '',
       IsOrganizationTrail: false,
+      // Always-emitted since issue #1565; this trail has no CW Logs wiring.
+      CloudWatchLogsLogGroupArn: '',
+      CloudWatchLogsRoleArn: '',
       IsLogging: true,
       EventSelectors: [{ ReadWriteType: 'All', IncludeManagementEvents: true }],
       InsightSelectors: [{ InsightType: 'ApiCallRateInsight' }],
@@ -148,6 +151,10 @@ describe('CloudTrailProvider.readCurrentState', () => {
       KMSKeyId: '',
       SnsTopicName: '',
       IsOrganizationTrail: false,
+      // Always-emitted since issue #1565, and unaffected by a secondary-call
+      // failure: the pair comes from GetTrail, which succeeded here.
+      CloudWatchLogsLogGroupArn: '',
+      CloudWatchLogsRoleArn: '',
       InsightSelectors: [],
       Tags: [],
     });
@@ -183,6 +190,84 @@ describe('CloudTrailProvider.readCurrentState', () => {
 
     const result = await provider.readCurrentState('mytrail', 'L', 'AWS::CloudTrail::Trail');
     expect(result?.Tags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
+  });
+
+  // ─── The CloudWatch Logs pair: always-emit (issue #1565) ──────────────
+  //
+  // The pair used to be emitted only when AWS reported BOTH fields, which
+  // made a console-side ENABLE permanently invisible: the drift comparator's
+  // top-level walk is baseline-keys-only, so a key absent from the captured
+  // snapshot is never compared at all.
+
+  it('emits the pair as empty placeholders when the trail has no CloudWatch Logs wiring', async () => {
+    mockSend
+      .mockResolvedValueOnce({
+        Trail: {
+          Name: 'mytrail',
+          S3BucketName: 'mybucket',
+          TrailARN: 'arn:aws:cloudtrail:us-east-1:1:trail/mytrail',
+        },
+      })
+      .mockResolvedValueOnce({ IsLogging: false })
+      .mockResolvedValueOnce({ EventSelectors: [] })
+      .mockResolvedValueOnce({ InsightSelectors: [] })
+      .mockResolvedValueOnce({ ResourceTagList: [] });
+
+    const result = await provider.readCurrentState('mytrail', 'L', 'AWS::CloudTrail::Trail');
+
+    // Present-and-empty, not absent: absent is what hid the console enable.
+    expect(result).toHaveProperty('CloudWatchLogsLogGroupArn', '');
+    expect(result).toHaveProperty('CloudWatchLogsRoleArn', '');
+  });
+
+  it('emits the real pair when AWS reports the trail IS wired to CloudWatch Logs', async () => {
+    const groupArn = 'arn:aws:logs:us-east-1:1:log-group:/aws/cloudtrail/mytrail:*';
+    const roleArn = 'arn:aws:iam::1:role/CloudTrail_CloudWatchLogs_Role';
+    mockSend
+      .mockResolvedValueOnce({
+        Trail: {
+          Name: 'mytrail',
+          S3BucketName: 'mybucket',
+          TrailARN: 'arn:aws:cloudtrail:us-east-1:1:trail/mytrail',
+          CloudWatchLogsLogGroupArn: groupArn,
+          CloudWatchLogsRoleArn: roleArn,
+        },
+      })
+      .mockResolvedValueOnce({ IsLogging: true })
+      .mockResolvedValueOnce({ EventSelectors: [] })
+      .mockResolvedValueOnce({ InsightSelectors: [] })
+      .mockResolvedValueOnce({ ResourceTagList: [] });
+
+    const result = await provider.readCurrentState('mytrail', 'L', 'AWS::CloudTrail::Trail');
+
+    expect(result?.['CloudWatchLogsLogGroupArn']).toBe(groupArn);
+    expect(result?.['CloudWatchLogsRoleArn']).toBe(roleArn);
+  });
+
+  it('emits the pair TOGETHER even when AWS reports only one half', async () => {
+    // The all-or-nothing discriminator is preserved in the SNAPSHOT: a
+    // half-emitted pair would describe a state AWS cannot hold, and the
+    // update path would then see one field present and one absent.
+    mockSend
+      .mockResolvedValueOnce({
+        Trail: {
+          Name: 'mytrail',
+          S3BucketName: 'mybucket',
+          TrailARN: 'arn:aws:cloudtrail:us-east-1:1:trail/mytrail',
+          CloudWatchLogsLogGroupArn: 'arn:aws:logs:us-east-1:1:log-group:/g:*',
+        },
+      })
+      .mockResolvedValueOnce({ IsLogging: true })
+      .mockResolvedValueOnce({ EventSelectors: [] })
+      .mockResolvedValueOnce({ InsightSelectors: [] })
+      .mockResolvedValueOnce({ ResourceTagList: [] });
+
+    const result = await provider.readCurrentState('mytrail', 'L', 'AWS::CloudTrail::Trail');
+
+    expect(Object.keys(result ?? {})).toEqual(
+      expect.arrayContaining(['CloudWatchLogsLogGroupArn', 'CloudWatchLogsRoleArn'])
+    );
+    expect(result?.['CloudWatchLogsRoleArn']).toBe('');
   });
 
   it('emits empty Tags array when ListTags returns no user tags', async () => {
