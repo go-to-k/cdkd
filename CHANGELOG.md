@@ -1,3 +1,10 @@
+## [0.280.16](https://github.com/go-to-k/cdkd/compare/v0.280.15...v0.280.16) (2026-08-11)
+
+
+### Bug Fixes
+
+* **lambda:** wire four AWS::Lambda::Function silent-drop properties ([#609](https://github.com/go-to-k/cdkd/issues/609)) ([#1621](https://github.com/go-to-k/cdkd/issues/1621)) ([c0b1b35](https://github.com/go-to-k/cdkd/commit/c0b1b35edb04e0dacdb84ace32a74b3094da4377))
+
 ## [0.280.15](https://github.com/go-to-k/cdkd/compare/v0.280.14...v0.280.15) (2026-08-11)
 
 
