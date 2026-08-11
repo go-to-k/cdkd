@@ -51,6 +51,7 @@ import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import { requireConfigArray } from '../config-shape.js';
 import type {
+  CreateContext,
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
@@ -71,6 +72,20 @@ import type {
 // has no wire-level effect, but it must still reach `applyGraphQLApiConfig` so
 // the user gets the "cannot clear X" warning instead of silence. The cost is
 // one no-op UpdateGraphqlApi on a removal-only redeploy.
+/**
+ * Options for the nested-container shape guards.
+ *
+ * `onUnusable` is the DOWNGRADE seam: when the properties come from a cdkd
+ * STATE record rather than the user's template (a rollback replay), a refusal
+ * would leave the resource unrestorable with no template-side remedy, so the
+ * caller passes a warn callback instead. Mirrors `config-shape.ts`'s
+ * `ConfigStringOptions.onUnusable`.
+ */
+interface ShapeGuardOptions {
+  readonly logicalId?: string;
+  readonly onUnusable?: (message: string) => void;
+}
+
 const MUTABLE_GRAPHQL_API_CONFIG_PROPERTIES = [
   'UserPoolConfig',
   'OpenIDConnectConfig',
@@ -196,11 +211,12 @@ export class AppSyncProvider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     switch (resourceType) {
       case 'AWS::AppSync::GraphQLApi':
-        return this.createGraphQLApi(logicalId, resourceType, properties);
+        return this.createGraphQLApi(logicalId, resourceType, properties, context);
       case 'AWS::AppSync::GraphQLSchema':
         return this.createGraphQLSchema(logicalId, resourceType, properties);
       case 'AWS::AppSync::DataSource':
@@ -447,6 +463,14 @@ export class AppSyncProvider implements ResourceProvider {
         forUpdate: true,
         previousProperties,
         logicalId,
+        // An UPDATE's desired bag is a STATE record whenever the rollback
+        // executor or `drift --revert` replays it, so a malformed nested block
+        // warns rather than making the resource un-rollbackable.
+        shapeGuard: {
+          logicalId,
+          onUnusable: (message: string) =>
+            this.logger.warn(`${message} (leaving the live value untouched)`),
+        },
       });
       try {
         await this.getClient().send(new UpdateGraphqlApiCommand(input));
@@ -949,18 +973,24 @@ export class AppSyncProvider implements ResourceProvider {
   private asObject(
     value: unknown,
     path: string,
-    logicalId = ''
+    options?: ShapeGuardOptions
   ): Record<string, unknown> | undefined {
     if (value == null) return undefined;
     if (typeof value === 'object' && !Array.isArray(value)) {
       return value as Record<string, unknown>;
     }
-    throw new ProvisioningError(
+    const message =
       `AWS::AppSync::GraphQLApi ${path} must be an object, got ` +
-        `${Array.isArray(value) ? 'array' : typeof value} — cdkd refuses to drop it silently`,
-      'AWS::AppSync::GraphQLApi',
-      logicalId
-    );
+      `${Array.isArray(value) ? 'array' : typeof value} — cdkd refuses to drop it silently`;
+    // A STATE replay (the rollback executor's reverse-replacement arm) has no
+    // template-side remedy, so the refusal downgrades to a warning there —
+    // otherwise the old resource becomes unrestorable. Same contract as
+    // `replayWarn` in config-shape.ts; see .claude/rules/providers.md.
+    if (options?.onUnusable) {
+      options.onUnusable(message);
+      return undefined;
+    }
+    throw new ProvisioningError(message, 'AWS::AppSync::GraphQLApi', options?.logicalId ?? '');
   }
 
   /**
@@ -972,8 +1002,12 @@ export class AppSyncProvider implements ResourceProvider {
    * been A/B-verified. An omitted required member reaches AWS as a LOUD
    * validation error naming the field — not a silent drop.
    */
-  private toSdkUserPoolConfig(value: unknown, path = 'UserPoolConfig'): UserPoolConfig | undefined {
-    const cfn = this.asObject(value, path);
+  private toSdkUserPoolConfig(
+    value: unknown,
+    path = 'UserPoolConfig',
+    options?: ShapeGuardOptions
+  ): UserPoolConfig | undefined {
+    const cfn = this.asObject(value, path, options);
     if (!cfn) return undefined;
     return {
       userPoolId: cfn['UserPoolId'] as string,
@@ -992,9 +1026,10 @@ export class AppSyncProvider implements ResourceProvider {
    */
   private toSdkCognitoUserPoolConfig(
     value: unknown,
-    path = 'UserPoolConfig'
+    path = 'UserPoolConfig',
+    options?: ShapeGuardOptions
   ): CognitoUserPoolConfig | undefined {
-    const cfn = this.asObject(value, path);
+    const cfn = this.asObject(value, path, options);
     if (!cfn) return undefined;
     return {
       userPoolId: cfn['UserPoolId'] as string,
@@ -1007,9 +1042,10 @@ export class AppSyncProvider implements ResourceProvider {
 
   private toSdkOpenIDConnectConfig(
     value: unknown,
-    path = 'OpenIDConnectConfig'
+    path = 'OpenIDConnectConfig',
+    options?: ShapeGuardOptions
   ): OpenIDConnectConfig | undefined {
-    const cfn = this.asObject(value, path);
+    const cfn = this.asObject(value, path, options);
     if (!cfn) return undefined;
     return {
       issuer: cfn['Issuer'] as string,
@@ -1023,9 +1059,10 @@ export class AppSyncProvider implements ResourceProvider {
 
   private toSdkLambdaAuthorizerConfig(
     value: unknown,
-    path = 'LambdaAuthorizerConfig'
+    path = 'LambdaAuthorizerConfig',
+    options?: ShapeGuardOptions
   ): LambdaAuthorizerConfig | undefined {
-    const cfn = this.asObject(value, path);
+    const cfn = this.asObject(value, path, options);
     if (!cfn) return undefined;
     return {
       authorizerUri: cfn['AuthorizerUri'] as string,
@@ -1039,22 +1076,46 @@ export class AppSyncProvider implements ResourceProvider {
   }
 
   private toSdkAdditionalAuthProviders(
-    value: unknown
+    value: unknown,
+    options?: ShapeGuardOptions
   ): AdditionalAuthenticationProvider[] | undefined {
     if (value == null) return undefined;
-    const entries = requireConfigArray(
-      value,
-      'AWS::AppSync::GraphQLApi AdditionalAuthenticationProviders'
-    );
-    return entries.map((cfn, index) => {
+    let entries: Array<Record<string, unknown>>;
+    try {
+      entries = requireConfigArray(
+        value,
+        'AWS::AppSync::GraphQLApi AdditionalAuthenticationProviders'
+      );
+    } catch (error) {
+      // `requireConfigArray` throws a plain Error; convert it so it cannot
+      // escape untyped into the deploy engine's retry loop.
+      const message = error instanceof Error ? error.message : String(error);
+      if (options?.onUnusable) {
+        options.onUnusable(message);
+        return undefined;
+      }
+      throw new ProvisioningError(
+        message,
+        'AWS::AppSync::GraphQLApi',
+        options?.logicalId ?? '',
+        undefined,
+        error instanceof Error ? error : undefined
+      );
+    }
+    return entries.map((entry, index) => {
       const at = `AdditionalAuthenticationProviders[${index}]`;
+      // `requireConfigArray` validates the CONTAINER, not its ELEMENTS — a
+      // list of strings would index to `undefined` on every key and send an
+      // empty provider object to AWS: the same silent drop one level down.
+      const cfn = this.asObject(entry, at, options) ?? {};
       const provider: AdditionalAuthenticationProvider = {};
       if (cfn['AuthenticationType'] !== undefined) {
         provider.authenticationType = cfn['AuthenticationType'] as AuthenticationType;
       }
       const oidc = this.toSdkOpenIDConnectConfig(
         cfn['OpenIDConnectConfig'],
-        `${at}.OpenIDConnectConfig`
+        `${at}.OpenIDConnectConfig`,
+        options
       );
       if (oidc) provider.openIDConnectConfig = oidc;
       // The additional-provider variant is AWS's CognitoUserPoolConfig, which
@@ -1063,15 +1124,19 @@ export class AppSyncProvider implements ResourceProvider {
       if (pool) provider.userPoolConfig = pool;
       const lambda = this.toSdkLambdaAuthorizerConfig(
         cfn['LambdaAuthorizerConfig'],
-        `${at}.LambdaAuthorizerConfig`
+        `${at}.LambdaAuthorizerConfig`,
+        options
       );
       if (lambda) provider.lambdaAuthorizerConfig = lambda;
       return provider;
     });
   }
 
-  private toSdkEnhancedMetricsConfig(value: unknown): EnhancedMetricsConfig | undefined {
-    const cfn = this.asObject(value, 'EnhancedMetricsConfig');
+  private toSdkEnhancedMetricsConfig(
+    value: unknown,
+    options?: ShapeGuardOptions
+  ): EnhancedMetricsConfig | undefined {
+    const cfn = this.asObject(value, 'EnhancedMetricsConfig', options);
     if (!cfn) return undefined;
     return {
       resolverLevelMetricsBehavior: cfn[
@@ -1110,22 +1175,39 @@ export class AppSyncProvider implements ResourceProvider {
       forUpdate?: boolean;
       previousProperties?: Record<string, unknown>;
       logicalId?: string;
+      shapeGuard?: ShapeGuardOptions;
     }
   ): void {
     const forUpdate = options?.forUpdate === true;
     const previous = options?.previousProperties ?? {};
+    const guard: ShapeGuardOptions =
+      options?.shapeGuard ??
+      (options?.logicalId !== undefined ? { logicalId: options.logicalId } : {});
     const removed = (key: string): boolean =>
       forUpdate && properties[key] === undefined && previous[key] !== undefined;
 
-    const userPool = this.toSdkUserPoolConfig(properties['UserPoolConfig']);
+    const userPool = this.toSdkUserPoolConfig(
+      properties['UserPoolConfig'],
+      'UserPoolConfig',
+      guard
+    );
     if (userPool) input.userPoolConfig = userPool;
-    const oidc = this.toSdkOpenIDConnectConfig(properties['OpenIDConnectConfig']);
+    const oidc = this.toSdkOpenIDConnectConfig(
+      properties['OpenIDConnectConfig'],
+      'OpenIDConnectConfig',
+      guard
+    );
     if (oidc) input.openIDConnectConfig = oidc;
-    const lambdaAuth = this.toSdkLambdaAuthorizerConfig(properties['LambdaAuthorizerConfig']);
+    const lambdaAuth = this.toSdkLambdaAuthorizerConfig(
+      properties['LambdaAuthorizerConfig'],
+      'LambdaAuthorizerConfig',
+      guard
+    );
     if (lambdaAuth) input.lambdaAuthorizerConfig = lambdaAuth;
 
     const additional = this.toSdkAdditionalAuthProviders(
-      properties['AdditionalAuthenticationProviders']
+      properties['AdditionalAuthenticationProviders'],
+      guard
     );
     if (additional) {
       input.additionalAuthenticationProviders = additional;
@@ -1134,7 +1216,7 @@ export class AppSyncProvider implements ResourceProvider {
       input.additionalAuthenticationProviders = [];
     }
 
-    const metrics = this.toSdkEnhancedMetricsConfig(properties['EnhancedMetricsConfig']);
+    const metrics = this.toSdkEnhancedMetricsConfig(properties['EnhancedMetricsConfig'], guard);
     if (metrics) input.enhancedMetricsConfig = metrics;
 
     if (properties['IntrospectionConfig'] !== undefined) {
@@ -1198,19 +1280,22 @@ export class AppSyncProvider implements ResourceProvider {
     resourceType: string,
     logicalId: string,
     properties: Record<string, unknown>,
-    previousProperties?: Record<string, unknown>
+    previousProperties?: Record<string, unknown>,
+    replayingState = false
   ): Promise<void> {
     const isUpdate = previousProperties !== undefined;
     let desired: Record<string, unknown> | undefined;
     try {
-      desired = this.asObject(properties['EnvironmentVariables'], 'EnvironmentVariables');
+      desired = this.asObject(properties['EnvironmentVariables'], 'EnvironmentVariables', {
+        logicalId,
+      });
     } catch (error) {
       // The PUT is a WHOLE-MAP replace, so treating a malformed desired value
-      // as "absent" would clear every live variable. On CREATE the value is
-      // template-borne and refusing is right; on UPDATE the desired bag can be
-      // a cdkd STATE record replayed by the rollback executor, where a refusal
-      // would leave the API un-rollbackable — so warn and leave AWS untouched.
-      if (!isUpdate) throw error;
+      // as "absent" would clear every live variable. On a template-path CREATE
+      // refusing is right; on UPDATE — or on a create that REPLAYS a cdkd state
+      // record — the user has no template-side remedy, so warn and leave AWS
+      // untouched.
+      if (!isUpdate && !replayingState) throw error;
       this.logger.warn(
         `AppSync GraphqlApi ${logicalId}: ${
           error instanceof Error ? error.message : String(error)
@@ -1234,18 +1319,28 @@ export class AppSyncProvider implements ResourceProvider {
 
     const environmentVariables: Record<string, string> = {};
     for (const [key, value] of Object.entries(desired ?? {})) {
-      if (typeof value !== 'string') {
-        // `String({})` would send the literal "[object Object]" to AWS.
+      // CloudFormation coerces scalars into its Map<String,String>, so an
+      // unquoted YAML `RETRIES: 3` deploys under CFn and must keep working
+      // here (same rationale as `coerceNumber` in config-shape.ts). An OBJECT
+      // or array is a template bug — `String({})` would send the literal
+      // "[object Object]" to AWS.
+      if (typeof value === 'string') {
+        environmentVariables[key] = value;
+      } else if (
+        (typeof value === 'number' && Number.isFinite(value)) ||
+        typeof value === 'boolean'
+      ) {
+        environmentVariables[key] = String(value);
+      } else {
         throw new ProvisioningError(
-          `EnvironmentVariables.${key} must be a string, got ${
-            Array.isArray(value) ? 'array' : typeof value
+          `AWS::AppSync::GraphQLApi EnvironmentVariables.${key} must be a string, got ${
+            Array.isArray(value) ? 'array' : value === null ? 'null' : typeof value
           }`,
           resourceType,
           logicalId,
           apiId
         );
       }
-      environmentVariables[key] = value;
     }
     try {
       await this.getClient().send(
@@ -1267,7 +1362,8 @@ export class AppSyncProvider implements ResourceProvider {
   private async createGraphQLApi(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating GraphQL API ${logicalId}`);
 
@@ -1289,6 +1385,20 @@ export class AppSyncProvider implements ResourceProvider {
     // Mirrors the CognitoUserPoolProvider / DynamoDBTableProvider post-create
     // rollback pattern.
     let createdApiId: string | undefined;
+
+    // A rollback replay hands `create()` a cdkd STATE record, which the user
+    // cannot edit — so every pre-flight refusal below downgrades to a warning
+    // there (.claude/rules/providers.md). An ordinary template-path create
+    // keeps the refusal.
+    const shapeGuard: ShapeGuardOptions = {
+      logicalId,
+      ...(context?.replayingState === true
+        ? {
+            onUnusable: (message: string) =>
+              this.logger.warn(`${message} (state replay — proceeding without it)`),
+          }
+        : {}),
+    };
 
     try {
       const input: CreateGraphqlApiCommandInput = {
@@ -1322,7 +1432,7 @@ export class AppSyncProvider implements ResourceProvider {
         input.tags = tagMap;
       }
 
-      this.applyGraphQLApiConfig(input, properties);
+      this.applyGraphQLApiConfig(input, properties, { logicalId, shapeGuard });
 
       // Create-only members — no `UpdateGraphqlApi` counterpart exists,
       // which is why both are replacement properties in
@@ -1335,14 +1445,24 @@ export class AppSyncProvider implements ResourceProvider {
       }
 
       const response = await this.getClient().send(new CreateGraphqlApiCommand(input));
+      // Recorded BEFORE any other dereference: if `graphqlApi` came back
+      // malformed the API may still exist, and the rollback below is the only
+      // thing that keeps it from orphaning.
+      createdApiId = response.graphqlApi?.apiId;
 
       const apiId = response.graphqlApi!.apiId!;
       const arn = response.graphqlApi!.arn!;
       const graphQLUrl = response.graphqlApi!.uris?.['GRAPHQL'] ?? '';
-      createdApiId = apiId;
 
       // Separate API — must run AFTER the API exists.
-      await this.applyEnvironmentVariables(apiId, resourceType, logicalId, properties);
+      await this.applyEnvironmentVariables(
+        apiId,
+        resourceType,
+        logicalId,
+        properties,
+        undefined,
+        context?.replayingState === true
+      );
 
       this.logger.debug(`Successfully created GraphQL API ${logicalId}: ${apiId}`);
 

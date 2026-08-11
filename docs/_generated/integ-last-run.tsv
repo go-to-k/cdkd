@@ -16,7 +16,7 @@ apigw-gateway-response	2026-07-31T06:27:45Z	PASS	66	verify.sh	TTL-refresh sweep 
 apigw-stage-throttling	2026-07-26T19:36:49Z	PASS	79	verify.sh	0727b sweep-b11 staleness re-run (rc=0); account clean
 apigw-usage-plan-key	2026-07-26T19:16:39Z	PASS	84	verify.sh	0727b sweep-b9 staleness re-run (rc=0); account clean
 appconfig	2026-08-10T05:29:23Z	PASS	69	verify.sh	0810 P2 sweep b8; rc ok, 0 orph
-appsync	2026-08-11T05:14:39Z	PASS	73	verify.sh	#609 GraphQLApi config props (post-review-fix run): create/update/removal readback + clean destroy
+appsync	2026-08-11T05:27:14Z	PASS	87	verify.sh	#609 GraphQLApi config props + no-op diff parity; clean destroy, 0 orphans
 asset-auto-create	2026-08-01T09:18:54Z	PASS	143	verify.sh	0801 regression sweep; ca-central-1 auto-create+opt-out ok, 0 orphans
 asset-bootstrap	2026-08-01T09:21:06Z	PASS	99	verify.sh	0801 regression sweep; us-east-2 (us-west-2 now carries a foreign marker); 4 phases ok, 0 orphans
 asset-migration	2026-08-01T09:26:36Z	PASS	292	verify.sh	0801 regression sweep; eu-west-1 (marker-free pick); nested+ECR legs ok, 0 orphans

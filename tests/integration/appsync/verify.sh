@@ -179,6 +179,18 @@ assert_eq "enhancedMetricsConfig.dataSourceLevelMetricsBehavior" "PER_DATA_SOURC
 assert_eq "enhancedMetricsConfig.operationLevelMetricsConfig" "DISABLED" \
   "$(api_query 'graphqlApi.enhancedMetricsConfig.operationLevelMetricsConfig')"
 
+# Drift-layer parity: the read side lags the write side on a freshly-wired
+# property (feedback_hunt_diff_layer_parity), and every property below is now
+# in readCurrentState's reverse map. A no-op `diff --fail` right after the
+# deploy is what proves the two agree — a mismatch here is the phantom drift
+# `cdkd drift --revert` would then act on.
+echo "==> Phase 1b: no-op diff must report no changes (read/write parity)"
+node "${LOCAL_DIST}" diff "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --fail
+echo "    OK: re-synth diff is clean (the new properties round-trip)"
+
 API_JSON="$(api_json)"
 # Sorted: AWS does not promise the submitted order of a list-valued member.
 AUTH_TYPES="$(echo "${API_JSON}" | jq -r '[.additionalAuthenticationProviders[].authenticationType] | sort | join(",")')"

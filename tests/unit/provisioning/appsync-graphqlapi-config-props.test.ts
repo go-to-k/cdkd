@@ -501,6 +501,74 @@ describe('AppSync GraphQLApi config properties (#609)', () => {
       ).rejects.toBeInstanceOf(ProvisioningError);
     });
 
+    it('refuses a non-object ELEMENT of AdditionalAuthenticationProviders', async () => {
+      // requireConfigArray validates the CONTAINER; a list of strings would
+      // index to undefined on every key and send an empty provider object.
+      mockSend.mockResolvedValue(createResponse);
+      await expect(
+        provider.create('L', TYPE, {
+          Name: 'MyApi',
+          AuthenticationType: 'API_KEY',
+          AdditionalAuthenticationProviders: ['AWS_IAM'],
+        })
+      ).rejects.toBeInstanceOf(ProvisioningError);
+    });
+
+    it.each([
+      ['number', 3, '3'],
+      ['boolean', true, 'true'],
+    ])(
+      'coerces a %s environment-variable value the way CloudFormation does',
+      async (_label, value, expected) => {
+        // CFn coerces scalars into its Map<String,String>, so an unquoted YAML
+        // `RETRIES: 3` deploys under CFn and must keep working here.
+        mockSend.mockResolvedValueOnce(createResponse).mockResolvedValueOnce({});
+        await provider.create('L', TYPE, {
+          Name: 'MyApi',
+          AuthenticationType: 'API_KEY',
+          EnvironmentVariables: { RETRIES: value },
+        });
+        const put = mockSend.mock.calls[1]?.[0];
+        expect(put.input.environmentVariables).toEqual({ RETRIES: expected });
+      }
+    );
+
+    it.each([
+      ['UserPoolConfig', 'oops'],
+      ['AdditionalAuthenticationProviders', 'oops'],
+      ['EnvironmentVariables', 'oops'],
+    ])(
+      'downgrades the %s refusal to a warning when create() replays a STATE record',
+      async (property, value) => {
+        // The rollback executor's reverse-replacement arm revives the OLD
+        // resource from previousState.properties, which the user cannot edit —
+        // a hard refusal there leaves it unrestorable (.claude/rules/providers.md).
+        mockSend.mockResolvedValue(createResponse);
+
+        const result = await provider.create(
+          'L',
+          TYPE,
+          { Name: 'MyApi', AuthenticationType: 'API_KEY', [property]: value },
+          { replayingState: true }
+        );
+
+        expect(result.physicalId).toBe('api-1');
+        expect(warnSpy.mock.calls.map((c) => String(c[0])).join('\n')).toContain(property);
+      }
+    );
+
+    it('still refuses on an ordinary template-path create (the replay downgrade is not blanket)', async () => {
+      mockSend.mockResolvedValue(createResponse);
+      await expect(
+        provider.create(
+          'L',
+          TYPE,
+          { Name: 'MyApi', AuthenticationType: 'API_KEY', UserPoolConfig: 'oops' },
+          { replayingState: false }
+        )
+      ).rejects.toBeInstanceOf(ProvisioningError);
+    });
+
     it('deletes the just-created API when the post-create env-var PUT fails', async () => {
       // Without the rollback the API exists but create() throws before
       // returning its physicalId — the deploy engine never learns about it, so
