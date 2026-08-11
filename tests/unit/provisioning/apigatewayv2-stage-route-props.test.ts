@@ -4,6 +4,9 @@ import {
   CreateRouteCommand,
   UpdateStageCommand,
   UpdateRouteCommand,
+  DeleteAccessLogSettingsCommand,
+  DeleteRouteSettingsCommand,
+  DeleteRouteRequestParameterCommand,
 } from '@aws-sdk/client-apigatewayv2';
 
 const mockSend = vi.fn();
@@ -137,21 +140,98 @@ describe('ApiGatewayV2 Stage / Route config properties (#609)', () => {
       expect(cmd.input.ClientCertificateId).toBe('');
     });
 
-    it.each(['AccessLogSettings', 'RouteSettings', 'DeploymentId'])(
-      'does not invent a reset for %s (merge-semantics member with no documented sentinel)',
-      async (property) => {
-        await provider.update(
-          'L',
-          'test',
-          STAGE_TYPE,
-          { ApiId: API_ID, StageName: 'test' },
-          { ApiId: API_ID, StageName: 'test', [property]: 'x' }
-        );
-        // No call at all: the removal is a documented pass-through, matching
-        // the DefaultRouteSettings / Description precedent in this provider.
-        expect(mockSend).not.toHaveBeenCalled();
-      }
-    );
+    it('clears AccessLogSettings through its dedicated delete API when removed', async () => {
+      mockSend.mockResolvedValue({});
+
+      await provider.update(
+        'L',
+        'test',
+        STAGE_TYPE,
+        { ApiId: API_ID, StageName: 'test' },
+        { ApiId: API_ID, StageName: 'test', AccessLogSettings: accessLogSettings }
+      );
+
+      // UpdateStage MERGES — live-probed 2026-08-11: a stage keeps its
+      // AccessLogSettings through an UpdateStage that omits the member, so
+      // omitting it is the silent no-op #1160 tracks and access logging (with
+      // its billing) keeps running.
+      const deleted = mockSend.mock.calls.find(
+        (c) => c[0] instanceof DeleteAccessLogSettingsCommand
+      );
+      expect(deleted, 'AccessLogSettings removal issued no delete').toBeDefined();
+      expect(deleted![0].input).toEqual({ ApiId: API_ID, StageName: 'test' });
+    });
+
+    it('deletes only the DROPPED RouteSettings keys, keeping the retained one', async () => {
+      mockSend.mockResolvedValue({});
+
+      await provider.update(
+        'L',
+        'test',
+        STAGE_TYPE,
+        { ApiId: API_ID, StageName: 'test', RouteSettings: { 'GET /kept': { ThrottlingRateLimit: 5 } } },
+        {
+          ApiId: API_ID,
+          StageName: 'test',
+          RouteSettings: {
+            'GET /kept': { ThrottlingRateLimit: 5 },
+            'GET /dropped': { ThrottlingRateLimit: 9 },
+          },
+        }
+      );
+
+      const deletes = mockSend.mock.calls
+        .filter((c) => c[0] instanceof DeleteRouteSettingsCommand)
+        .map((c) => c[0].input.RouteKey);
+      expect(deletes).toEqual(['GET /dropped']);
+    });
+
+    it('deletes every RouteSettings key when the whole block is removed', async () => {
+      mockSend.mockResolvedValue({});
+
+      await provider.update(
+        'L',
+        'test',
+        STAGE_TYPE,
+        { ApiId: API_ID, StageName: 'test' },
+        { ApiId: API_ID, StageName: 'test', RouteSettings: routeSettings }
+      );
+
+      const deletes = mockSend.mock.calls
+        .filter((c) => c[0] instanceof DeleteRouteSettingsCommand)
+        .map((c) => c[0].input.RouteKey);
+      expect(deletes).toEqual(['GET /items']);
+    });
+
+    it('issues the removal deletes even when no UpdateStage-able field changed', async () => {
+      mockSend.mockResolvedValue({});
+
+      await provider.update(
+        'L',
+        'test',
+        STAGE_TYPE,
+        { ApiId: API_ID, StageName: 'test' },
+        { ApiId: API_ID, StageName: 'test', AccessLogSettings: accessLogSettings }
+      );
+
+      // The delete is its own API call, so the `!changed` early return must
+      // not skip it.
+      expect(
+        mockSend.mock.calls.some((c) => c[0] instanceof DeleteAccessLogSettingsCommand)
+      ).toBe(true);
+      expect(mockSend.mock.calls.some((c) => c[0] instanceof UpdateStageCommand)).toBe(false);
+    });
+
+    it('does not invent a reset for DeploymentId (no delete API, no sentinel)', async () => {
+      await provider.update(
+        'L',
+        'test',
+        STAGE_TYPE,
+        { ApiId: API_ID, StageName: 'test' },
+        { ApiId: API_ID, StageName: 'test', DeploymentId: 'dep-1' }
+      );
+      expect(mockSend).not.toHaveBeenCalled();
+    });
 
     it('skips UpdateStage when nothing changed', async () => {
       const props = {
@@ -261,6 +341,92 @@ describe('ApiGatewayV2 Stage / Route config properties (#609)', () => {
         'text/plain': '',
       });
     });
+
+    it('deletes only the DROPPED RequestParameters keys, keeping the retained one', async () => {
+      mockSend.mockResolvedValue({});
+
+      await provider.update(
+        'L',
+        'r-1',
+        ROUTE_TYPE,
+        {
+          ApiId: API_ID,
+          RouteKey: '$connect',
+          RequestParameters: { 'route.request.header.Kept': { Required: true } },
+        },
+        {
+          ApiId: API_ID,
+          RouteKey: '$connect',
+          RequestParameters: {
+            'route.request.header.Kept': { Required: true },
+            'route.request.header.Dropped': { Required: true },
+          },
+        }
+      );
+
+      // The map MERGES and its values are objects, so the empty-string per-key
+      // clear does not apply — AWS ships a per-key delete instead
+      // (live-probed 2026-08-11).
+      const deletes = mockSend.mock.calls
+        .filter((c) => c[0] instanceof DeleteRouteRequestParameterCommand)
+        .map((c) => c[0].input.RequestParameterKey);
+      expect(deletes).toEqual(['route.request.header.Dropped']);
+    });
+
+    it('deletes every RequestParameters key when the whole block is removed', async () => {
+      mockSend.mockResolvedValue({});
+
+      await provider.update(
+        'L',
+        'r-1',
+        ROUTE_TYPE,
+        { ApiId: API_ID, RouteKey: '$connect' },
+        { ApiId: API_ID, RouteKey: '$connect', RequestParameters: requestParameters }
+      );
+
+      const deletes = mockSend.mock.calls
+        .filter((c) => c[0] instanceof DeleteRouteRequestParameterCommand)
+        .map((c) => c[0].input.RequestParameterKey);
+      expect(deletes).toEqual(['route.request.header.X-Api']);
+      // ...and it must happen even though no UpdateRoute-able field changed.
+      expect(mockSend.mock.calls.some((c) => c[0] instanceof UpdateRouteCommand)).toBe(false);
+    });
+
+    it('clears every RequestModels key when the whole block is removed', async () => {
+      mockSend.mockResolvedValueOnce({});
+
+      await provider.update(
+        'L',
+        'r-1',
+        ROUTE_TYPE,
+        { ApiId: API_ID, RouteKey: '$default' },
+        {
+          ApiId: API_ID,
+          RouteKey: '$default',
+          RequestModels: { 'application/json': 'A', 'text/plain': 'B' },
+        }
+      );
+
+      const cmd = mockSend.mock.calls[0]?.[0];
+      expect(cmd).toBeInstanceOf(UpdateRouteCommand);
+      // Live-probed 2026-08-11: UpdateRoute accepts an empty-string value and
+      // the model is cleared, so the string-map helper's sentinel holds here.
+      expect(cmd.input.RequestModels).toEqual({ 'application/json': '', 'text/plain': '' });
+    });
+
+    it.each(['ModelSelectionExpression', 'RouteResponseSelectionExpression'])(
+      'does not invent a reset for %s (no delete API, no documented sentinel)',
+      async (property) => {
+        await provider.update(
+          'L',
+          'r-1',
+          ROUTE_TYPE,
+          { ApiId: API_ID, RouteKey: '$default' },
+          { ApiId: API_ID, RouteKey: '$default', [property]: '$request.body.action' }
+        );
+        expect(mockSend).not.toHaveBeenCalled();
+      }
+    );
 
     it('skips UpdateRoute when nothing changed', async () => {
       const props = {

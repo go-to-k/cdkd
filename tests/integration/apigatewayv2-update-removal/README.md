@@ -39,11 +39,17 @@ belong on a body-carrying route.
 | Property | Where it is exercised |
 | --- | --- |
 | `Route.ApiKeyRequired` | WS `$connect`; removed in phase 2, must reset to `false` |
-| `Route.RequestParameters` | WS `$connect`; value change (no documented reset) |
+| `Route.RequestParameters` | WS `$connect`; value change in phase 2, REMOVED in phase 2b (needs `DeleteRouteRequestParameter`) |
 | `Route.ModelSelectionExpression` | WS `$default`; value change |
 | `Route.RouteResponseSelectionExpression` | WS `$default` |
-| `Stage.AccessLogSettings` | WS stage, against a real log group; format changes in phase 2 |
-| `Stage.RouteSettings` | WS stage; throttle values change in phase 2 |
+| `Stage.AccessLogSettings` | WS stage, against a real log group; format changes in phase 2, REMOVED in phase 2b (needs `DeleteAccessLogSettings`) |
+| `Stage.RouteSettings` | WS stage; throttle values change in phase 2, the `$connect` key is dropped in phase 2b while `$default` is retained |
+
+Phase 2b (`CDKD_TEST_REMOVAL=true`) exists because `UpdateStage` / `UpdateRoute`
+MERGE: live-probed 2026-08-11, a stage keeps its `AccessLogSettings` through an
+update that omits the member, so only the dedicated `Delete*` APIs clear these.
+It builds on the update phase rather than reverting to the baseline, so the only
+delta it introduces is the removal itself.
 
 `RouteSettings` members are written in **PascalCase** in the stack on purpose:
 `CfnStage.routeSettings` is typed `any`, so CDK passes the map through

@@ -26,7 +26,14 @@ export class ApiGatewayV2UpdateRemovalStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
-    const update = process.env.CDKD_TEST_UPDATE === 'true';
+    // Phase 2b (issue #609): the members whose removal needs a dedicated
+    // Delete* API rather than an omitted UpdateStage / UpdateRoute member.
+    const removal = process.env.CDKD_TEST_REMOVAL === 'true';
+    // Removal BUILDS ON the update phase rather than reverting to the
+    // baseline: phase 2b must keep everything phase 2 already removed removed,
+    // and keep its updated values, so the only delta it introduces is the
+    // delete-API-only members below.
+    const update = process.env.CDKD_TEST_UPDATE === 'true' || removal;
 
     // Backing Lambda for the REQUEST authorizer's AuthorizerUri. It is never
     // invoked by this test (we only exercise the authorizer's create/update/
@@ -124,12 +131,14 @@ export class ApiGatewayV2UpdateRemovalStack extends cdk.Stack {
       // Issue #609: ApiKeyRequired is REMOVED on update and must reset to the
       // CFn default; RequestParameters changes value (UpdateRoute merges the
       // map and AWS documents no whole-block reset).
-      ...(update
-        ? { requestParameters: { 'route.request.header.X-Cdkd': { Required: false } } }
-        : {
-            apiKeyRequired: true,
-            requestParameters: { 'route.request.header.X-Cdkd': { Required: true } },
-          }),
+      ...(removal
+        ? {}
+        : update
+          ? { requestParameters: { 'route.request.header.X-Cdkd': { Required: false } } }
+          : {
+              apiKeyRequired: true,
+              requestParameters: { 'route.request.header.X-Cdkd': { Required: true } },
+            }),
     });
 
     new apigwv2.CfnRoute(this, 'WsDefaultRoute', {
@@ -150,27 +159,34 @@ export class ApiGatewayV2UpdateRemovalStack extends cdk.Stack {
     new apigwv2.CfnStage(this, 'WsStage', {
       apiId: wsApi.ref,
       stageName: 'ws',
-      // Issue #609: AccessLogSettings + RouteSettings, both changed (not
-      // removed) on UPDATE — UpdateStage merges them and AWS documents no
-      // whole-block reset, which is exactly what the provider's pass-through
-      // records.
-      accessLogSettings: {
-        destinationArn: wsAccessLogs.logGroupArn,
-        format: update
-          ? '$context.requestId $context.status $context.routeKey'
-          : '$context.requestId $context.status',
-      },
+      // Issue #609: AccessLogSettings + RouteSettings CHANGE on update and are
+      // REMOVED in phase 2b. UpdateStage merges both, so only their dedicated
+      // Delete* APIs can clear them (live-probed 2026-08-11) — omitting the
+      // member is the silent no-op the #1160 umbrella tracks.
+      ...(removal
+        ? {}
+        : {
+            accessLogSettings: {
+              destinationArn: wsAccessLogs.logGroupArn,
+              format: update
+                ? '$context.requestId $context.status $context.routeKey'
+                : '$context.requestId $context.status',
+            },
+          }),
       // PascalCase on purpose: `CfnStage.routeSettings` is typed `any`, so CDK
       // passes this object through VERBATIM rather than converting it. CFn (and
       // the SDK) spell the members `ThrottlingBurstLimit` etc., so camelCase
       // keys here would be dropped by the serializer with a green deploy — the
       // silent-drop class this backfill closes, one level down.
+      // Phase 2b drops ONLY the `$connect` key: the `$default` sibling must
+      // survive, so a blanket wipe cannot pass the removal assertions.
       routeSettings: {
         $default: {
           ThrottlingBurstLimit: update ? 20 : 10,
           ThrottlingRateLimit: update ? 15 : 5,
           DetailedMetricsEnabled: true,
         },
+        ...(removal ? {} : { $connect: { ThrottlingBurstLimit: 4, ThrottlingRateLimit: 2 } }),
       },
     });
 

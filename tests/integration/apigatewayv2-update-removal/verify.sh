@@ -238,6 +238,12 @@ if [ "$(ws_stage_field "${WS_AID}" 'RouteSettings."$default".ThrottlingRateLimit
   echo "FAIL: Phase 1 WS Stage RouteSettings throttle not 5 (got '$(ws_stage_field "${WS_AID}" 'RouteSettings."$default".ThrottlingRateLimit')')" >&2
   exit 1
 fi
+# The $connect entry is the one phase 3 drops; $default is its retained sibling.
+if [ "$(ws_stage_field "${WS_AID}" 'RouteSettings."$connect".ThrottlingRateLimit')" != "2.0" ] \
+  && [ "$(ws_stage_field "${WS_AID}" 'RouteSettings."$connect".ThrottlingRateLimit')" != "2" ]; then
+  echo "FAIL: Phase 1 WS Stage RouteSettings \$connect entry not live (got '$(ws_stage_field "${WS_AID}" 'RouteSettings."$connect".ThrottlingRateLimit')')" >&2
+  exit 1
+fi
 
 echo "    all Phase 1 fields live"
 
@@ -300,6 +306,37 @@ SV="$(stage_field "${AID}" 'StageVariables.foo')"
 if [ "${SV}" != "None" ]; then echo "FAIL: Stage StageVariables.foo not cleared (got '${SV}'; empty = probe error)" >&2; exit 1; fi
 echo "    all fields reset to CFn defaults (Cors cleared via DeleteCorsConfiguration)"
 
+# --- Phase 2b: REMOVAL (issue #609) -------------------------------------
+# UpdateStage / UpdateRoute MERGE, so these three members can only be cleared
+# through their dedicated Delete* APIs (live-probed 2026-08-11). Omitting them
+# from the input is the silent no-op the #1160 umbrella tracks.
+echo "==> Phase 2b: re-deploy with the delete-API-only members removed"
+CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+
+ALS="$(ws_stage_field "${WS_AID}" 'AccessLogSettings.Format')"
+if [ "${ALS}" != "None" ]; then
+  echo "FAIL: WS Stage AccessLogSettings not cleared (got '${ALS}'; access logging would keep billing)" >&2
+  exit 1
+fi
+DROPPED_RS="$(ws_stage_field "${WS_AID}" 'RouteSettings."$connect".ThrottlingRateLimit')"
+if [ "${DROPPED_RS}" != "None" ]; then
+  echo "FAIL: WS Stage RouteSettings \$connect entry not deleted (got '${DROPPED_RS}')" >&2
+  exit 1
+fi
+# ...and the RETAINED sibling proves the removal deleted one key, not the block.
+KEPT_RS="$(ws_stage_field "${WS_AID}" 'RouteSettings."$default".ThrottlingRateLimit')"
+if [ "${KEPT_RS}" != "15.0" ] && [ "${KEPT_RS}" != "15" ]; then
+  echo "FAIL: WS Stage RouteSettings \$default sibling did not survive the removal (got '${KEPT_RS}')" >&2
+  exit 1
+fi
+RP="$(route_field "${WS_AID}" "${WS_CONNECT_ID}" 'RequestParameters."route.request.header.X-Cdkd".Required')"
+if [ "${RP}" != "None" ]; then
+  echo "FAIL: WS \$connect RequestParameters not deleted (got '${RP}')" >&2
+  exit 1
+fi
+echo "    Phase 2b: all delete-API-only removals landed, retained sibling intact"
+
 # --- Phase 3: destroy --------------------------------------------------
 echo "==> Phase 3: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
@@ -308,6 +345,13 @@ assert_gone "API ${AID} still exists after destroy" aws apigatewayv2 get-api --a
 echo "    API deleted"
 
 assert_gone "WebSocket API ${WS_AID} still exists after destroy" aws apigatewayv2 get-api --api-id "${WS_AID}" --region "${REGION}"
+echo "    WebSocket API deleted"
+# The access-log group is STACK-OWNED (unlike the AWS-created Lambda one), so a
+# destroy leak has to fail here. `describe-log-streams` 404s on a missing group,
+# which is what gone_probe needs; `describe-log-groups` would return an empty
+# list and read as "still there".
+assert_gone "WS access log group /aws/apigatewayv2/${WS_API_NAME} still exists after destroy" \
+  aws logs describe-log-streams --log-group-name "/aws/apigatewayv2/${WS_API_NAME}" --region "${REGION}"
 assert_gone "authorizer Lambda ${AUTH_FN} still exists after destroy" aws lambda get-function --function-name "${AUTH_FN}" --region "${REGION}"
 echo "    authorizer Lambda deleted"
 
