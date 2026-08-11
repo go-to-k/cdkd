@@ -1463,28 +1463,34 @@ export const NESTED_KEY_TARGETS: readonly NestedKeyTarget[] = [
     providerFile: 'ecs-provider.ts',
     sdkClientPackage: '@aws-sdk/client-ecs',
     keyStyle: 'lower-first',
-    minNestedKeys: 50,
+    minNestedKeys: 110,
     freshObjectMapper: true,
-    // Measured on opt-in (#1472/#1473) and re-measured after #1464 re-keyed
-    // the scope index by PATH: written 233, non-empty scopes 58, expanding
-    // hand-off points 21 (the LinuxParameters-family generic conversions both
-    // ECS targets clear through).
-    minWrittenMembers: 120,
-    minWriteScopes: 40,
-    minHandoffPoints: 10,
+    // Measured on opt-in (#1472/#1473), re-measured after #1464 re-keyed the
+    // scope index by PATH, and again after the #609 Service-property backfill
+    // (which added ~58 audited nested paths under ServiceConnectConfiguration
+    // / VolumeConfigurations / VpcLatticeConfigurations / Monitoring /
+    // DeploymentController / ForceNewDeployment plus 5 generic whole-blob
+    // hand-offs): nested keys 114, written 166, non-empty scopes 53,
+    // expanding hand-off points 26 (the LinuxParameters-family generic
+    // conversions both ECS targets clear through). Floors are set just below
+    // those measurements.
+    minWrittenMembers: 160,
+    minWriteScopes: 50,
+    minHandoffPoints: 24,
   },
   {
     // Opted in by issue #1472 alongside AWS::ECS::Service above (same
-    // provider file, same measured yields).
+    // provider file, same measured yields — so its write floors move in step
+    // with the Service target's; last re-measured with the #609 backfill).
     resourceType: 'AWS::ECS::TaskDefinition',
     providerFile: 'ecs-provider.ts',
     sdkClientPackage: '@aws-sdk/client-ecs',
     keyStyle: 'lower-first',
     minNestedKeys: 125,
     freshObjectMapper: true,
-    minWrittenMembers: 120,
-    minWriteScopes: 40,
-    minHandoffPoints: 10,
+    minWrittenMembers: 160,
+    minWriteScopes: 50,
+    minHandoffPoints: 24,
     segmentRenames: ECS_TASK_DEFINITION_SEGMENT_RENAMES,
     terminalRenames: ECS_TASK_DEFINITION_TERMINAL_RENAMES,
   },
@@ -1653,6 +1659,30 @@ export const NESTED_KEY_ALLOW_LIST: ReadonlyMap<string, AllowListEntry> = new Ma
   string,
   AllowListEntry
 >([
+  [
+    allowKey('AWS::ECS::Service', 'ForceNewDeployment.EnableForceNewDeployment'),
+    {
+      rationale:
+        'CFn-only rollout-trigger member with NO per-member SDK counterpart: the ECS SDK ' +
+        'models the whole ForceNewDeployment block as the single top-level boolean ' +
+        '`forceNewDeployment` on UpdateService. ECSProvider.resolveForceNewDeployment ' +
+        'translates {EnableForceNewDeployment: true} OR a ForceNewDeploymentNonce change ' +
+        'into `forceNewDeployment: true` (issue #609) — a shape collapse neither the key ' +
+        'pass (no same-spelled member exists) nor the write pass (the write is a ' +
+        'different, top-level member) can express.',
+      passes: ['key', 'shape', 'write'],
+    },
+  ],
+  [
+    allowKey('AWS::ECS::Service', 'ForceNewDeployment.ForceNewDeploymentNonce'),
+    {
+      rationale:
+        'Same single-boolean collapse as ForceNewDeployment.EnableForceNewDeployment: ' +
+        'the nonce has no SDK member of its own — a nonce CHANGE is what ' +
+        'resolveForceNewDeployment turns into `forceNewDeployment: true` (issue #609).',
+      passes: ['key', 'shape', 'write'],
+    },
+  ],
   [
     allowKey('AWS::CloudFront::Distribution', 'Tags.Key'),
     {

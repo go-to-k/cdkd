@@ -110,8 +110,48 @@ describe('ECSProvider.readCurrentState', () => {
       LoadBalancers: [],
       PlacementConstraints: [],
       ServiceRegistries: [],
+      // issue #609: DescribeServices omits `deploymentController` for the
+      // default ECS controller, so an absent field MEANS ECS — the reader
+      // emits the CFn shape either way so an explicit `{Type: ECS}` template
+      // does not phantom-drift.
+      DeploymentController: { Type: 'ECS' },
       Tags: [],
     });
+  });
+
+  it('reverse-maps the #609 Service additions (AvailabilityZoneRebalancing / DeploymentController) and never fabricates the unreadable members', async () => {
+    mockSend.mockResolvedValueOnce({
+      services: [
+        {
+          serviceName: 'my-svc',
+          clusterArn: 'arn:aws:ecs:us-east-1:123:cluster/my-cluster',
+          launchType: 'FARGATE',
+          availabilityZoneRebalancing: 'ENABLED',
+          deploymentController: { type: 'CODE_DEPLOY' },
+          // AWS reports the service-linked AWSServiceRoleForECS role ARN here
+          // for a template that never set Role — it must NOT surface as Role.
+          roleArn:
+            'arn:aws:iam::123:role/aws-service-role/ecs.amazonaws.com/AWSServiceRoleForECS',
+        },
+      ],
+    });
+
+    const result = (await provider.readCurrentState(
+      'arn:aws:ecs:us-east-1:123:cluster/my-cluster|my-svc',
+      'SvcLogical',
+      'AWS::ECS::Service'
+    )) as Record<string, unknown>;
+
+    expect(result['AvailabilityZoneRebalancing']).toBe('ENABLED');
+    expect(result['DeploymentController']).toEqual({ Type: 'CODE_DEPLOY' });
+    // Not readable from the top-level Service shape (declared in
+    // getDriftUnknownPaths instead) — never fabricated:
+    expect(result).not.toHaveProperty('Role');
+    expect(result).not.toHaveProperty('ServiceConnectConfiguration');
+    expect(result).not.toHaveProperty('VolumeConfigurations');
+    expect(result).not.toHaveProperty('VpcLatticeConfigurations');
+    expect(result).not.toHaveProperty('Monitoring');
+    expect(result).not.toHaveProperty('ForceNewDeployment');
   });
 
   it('accepts a bare service ARN physicalId and scopes DescribeServices to the ARN cluster (issue #1170)', async () => {

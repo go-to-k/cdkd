@@ -9,6 +9,15 @@
 # definition and that the paired Service carries the managed EBS volume
 # configuration (issue #806), and that the destroy path cleans up.
 #
+# ROUTE FLIP (#609 Service property backfill): this Service sets
+# ServiceConnectConfiguration + VolumeConfigurations, which used to be
+# silent-drops that flipped it to the #614 Cloud Control fallback route.
+# With the backfill the AWS::ECS::Service silent-drop set is EMPTY, so the
+# Service is SDK-routed — ECSProvider.createService() now delivers both
+# blobs itself. The provisionedBy assertion below pins the SDK route, and
+# the deployment-level serviceConnectConfiguration / volumeConfigurations
+# read-backs prove the SDK create carried them to AWS.
+#
 # Phase 0 + Phase 1 (issue #1275) cover the ECS Service wait semantics:
 # `--no-wait --full-wait` is rejected as a contradictory pair, and the
 # Phase 1 deploy passes `--full-wait` so the real `waitUntilServicesStable`
@@ -151,6 +160,21 @@ if [ -z "${STATE}" ]; then
   echo "FAIL: no state file at s3://${STATE_BUCKET}/${STATE_KEY} after deploy" >&2
   exit 1
 fi
+
+# --- Assertion: the Service is SDK-routed (#609 route flip) ---------------
+# Before the #609 Service-property backfill this Service routed via Cloud
+# Control (ServiceConnectConfiguration + VolumeConfigurations were
+# silent-drops -> #614 CC fallback). With the backfill it must be SDK-routed,
+# so this fixture actually exercises ECSProvider.createService() delivering
+# those blobs. `provisionedBy` absent means the SDK legacy default.
+SVC_ROUTING=$(echo "${STATE}" | jq -r '
+  [.resources[] | select(.resourceType == "AWS::ECS::Service") | (.provisionedBy // "sdk")] | first // "missing"')
+if [ "${SVC_ROUTING}" != "sdk" ]; then
+  echo "FAIL: ECS Service provisionedBy is '${SVC_ROUTING}', expected 'sdk' — the #609 backfill should have flipped the Service off the Cloud Control route (a silent-drop property is back, or the routing regressed)" >&2
+  echo "${STATE}" | jq '[.resources[] | select(.resourceType == "AWS::ECS::Service") | {physicalId, provisionedBy}]'
+  exit 1
+fi
+echo "    OK: ECS Service is SDK-routed (provisionedBy=sdk) — #609 route flip verified"
 
 # --- Assertion: --full-wait actually settled the Service (issue #1275) ---
 # cdkd's DEFAULT returns once CreateService is accepted (matching Terraform's
@@ -331,29 +355,57 @@ if [ "${SCALABLE_TARGET_RID}" != "${RESOURCE_ID}" ]; then
 fi
 echo "    OK: ScalableTarget registered for ${RESOURCE_ID} (Fn::GetAtt(Service, 'Name') round-trip CLOSED)"
 
-# --- Assertion: Service carries the managed EBS volume config (#806) ---
+# --- Assertion: Service carries the managed EBS volume config (#806/#609) ---
 # `service.addVolume(ebsVolume)` synthesizes
 # `AWS::ECS::Service.VolumeConfigurations` referencing the
 # ConfiguredAtLaunch volume above. DescribeServices surfaces it on the
 # deployment (deployments[].volumeConfigurations[].name) — seeing the
 # 'ebs-data' entry proves the Service create accepted the pairing that
-# issue #806 broke. The Service itself routes via Cloud Control (the
-# template sets ServiceConnectConfiguration + VolumeConfigurations, both
-# cdkd silent-drops on the SDK Service provider, which flips the resource
-# to the CC-API path per the #614 routing rule), but the matching
-# configuredAtLaunch volume MUST come from the SDK-registered task
-# definition — exactly the cross-resource wiring the fix restores.
+# issue #806 broke. Since the #609 backfill the Service is SDK-routed
+# (asserted above), so this read-back now proves ECSProvider.createService()
+# delivered the VolumeConfigurations blob itself — including the
+# ManagedEBSVolume -> managedEBSVolume / SizeInGiB -> sizeInGiB spellings —
+# and the matching configuredAtLaunch volume comes from the SDK-registered
+# task definition, exactly the cross-resource wiring the fixes restore.
 SERVICE_VOLUME_NAME=$(aws ecs describe-services \
   --cluster "${CLUSTER_NAME}" --services "${SERVICE_NAME}" --region "${REGION}" \
   --output json 2>/dev/null | jq -r \
   '[.services[0].deployments[]?.volumeConfigurations[]? | .name] | first // "missing"')
 
 if [ "${SERVICE_VOLUME_NAME}" != "ebs-data" ]; then
-  echo "FAIL: service deployment volumeConfigurations name is '${SERVICE_VOLUME_NAME}', expected 'ebs-data' (#806 Service/TaskDefinition volume pairing BROKEN)" >&2
+  echo "FAIL: service deployment volumeConfigurations name is '${SERVICE_VOLUME_NAME}', expected 'ebs-data' (#806/#609 Service VolumeConfigurations delivery BROKEN)" >&2
   aws ecs describe-services --cluster "${CLUSTER_NAME}" --services "${SERVICE_NAME}" --region "${REGION}" --output json | jq '.services[0].deployments'
   exit 1
 fi
-echo "    OK: service deployment carries volumeConfigurations['ebs-data'] (#806 pairing VERIFIED)"
+echo "    OK: service deployment carries volumeConfigurations['ebs-data'] (#806 pairing + #609 SDK-route delivery VERIFIED)"
+
+# --- Assertion: Service Connect config delivered by the SDK route (#609) ---
+# The Service sets serviceConnectConfiguration (Enabled + Services[{PortName:
+# 'http'}] + the cluster's Cloud Map namespace). DescribeServices surfaces it
+# per-deployment (deployments[].serviceConnectConfiguration) — asserting the
+# enabled flag + port name proves ECSProvider.createService() delivered the
+# blob with camelCase spellings AWS accepts (the serializer would silently
+# drop a mis-flipped member; a missing required `enabled` would fail the
+# deploy outright).
+SC_ENABLED=$(aws ecs describe-services \
+  --cluster "${CLUSTER_NAME}" --services "${SERVICE_NAME}" --region "${REGION}" \
+  --output json 2>/dev/null | jq -r \
+  '[.services[0].deployments[]?.serviceConnectConfiguration | select(. != null)] | first | if . == null then "missing" else (.enabled | tostring) end')
+SC_PORT_NAME=$(aws ecs describe-services \
+  --cluster "${CLUSTER_NAME}" --services "${SERVICE_NAME}" --region "${REGION}" \
+  --output json 2>/dev/null | jq -r \
+  '[.services[0].deployments[]?.serviceConnectConfiguration.services[]? | .portName] | first // "missing"')
+
+if [ "${SC_ENABLED}" != "true" ]; then
+  echo "FAIL: service deployment serviceConnectConfiguration.enabled is '${SC_ENABLED}', expected 'true' (#609 ServiceConnectConfiguration delivery on the SDK route BROKEN)" >&2
+  aws ecs describe-services --cluster "${CLUSTER_NAME}" --services "${SERVICE_NAME}" --region "${REGION}" --output json | jq '.services[0].deployments'
+  exit 1
+fi
+if [ "${SC_PORT_NAME}" != "http" ]; then
+  echo "FAIL: service deployment serviceConnectConfiguration.services[0].portName is '${SC_PORT_NAME}', expected 'http' (#609 nested Services[].PortName -> portName conversion BROKEN)" >&2
+  exit 1
+fi
+echo "    OK: service deployment carries serviceConnectConfiguration (enabled=true, portName=http) (#609 SDK-route delivery VERIFIED)"
 
 # --- Assertion: Cluster ServiceConnectDefaults reached AWS ------------
 # The fixture's `new ecs.Cluster({ defaultCloudMapNamespace: { ... } })`
@@ -470,4 +522,4 @@ assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after des
 echo "    OK: state file is gone"
 
 echo ""
-echo "==> ecs-fargate test passed (EnableFaultInjection backfill + ConfiguredAtLaunch volume pairing (#806) + #807 replacement propagation + clean destroy)"
+echo "==> ecs-fargate test passed (EnableFaultInjection backfill + ConfiguredAtLaunch volume pairing (#806) + SDK-routed ServiceConnectConfiguration/VolumeConfigurations delivery (#609 route flip) + #807 replacement propagation + clean destroy)"

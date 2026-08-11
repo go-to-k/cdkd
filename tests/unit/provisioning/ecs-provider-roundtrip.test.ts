@@ -611,4 +611,43 @@ describe('ECSProvider read-update round-trip', () => {
     );
     expect(describes).toHaveLength(0);
   });
+
+  it('Service no-drift round-trip with the #609 read-back additions: none of the new members re-sent', async () => {
+    // Shape of a readCurrentState snapshot after issue #609: the reader emits
+    // AvailabilityZoneRebalancing verbatim and DeploymentController always
+    // ({Type: 'ECS'} fallback when DescribeServices omits it for the default
+    // controller). Feeding it back as both sides must NOT send any of the
+    // change-gated new members — a spurious re-send of a
+    // deployment-triggering blob would start a rollout on a no-op update.
+    const observed = {
+      ServiceName: 'my-svc',
+      Cluster: CLUSTER_ARN,
+      TaskDefinition: TD_ARN,
+      DesiredCount: 1,
+      LaunchType: 'FARGATE',
+      AvailabilityZoneRebalancing: 'ENABLED',
+      DeploymentController: { Type: 'ECS' },
+      LoadBalancers: [],
+      PlacementConstraints: [],
+      ServiceRegistries: [],
+      Tags: [],
+    };
+
+    mockSend.mockResolvedValueOnce({
+      service: { serviceArn: SERVICE_ARN, serviceName: 'my-svc' },
+    });
+
+    await provider.update('L', SERVICE_PHYSICAL_ID, 'AWS::ECS::Service', observed, observed);
+
+    const updates = mockSend.mock.calls.filter((c) => c[0] instanceof UpdateServiceCommand);
+    expect(updates).toHaveLength(1);
+    const input = updates[0]![0].input as Record<string, unknown>;
+    expect(input['availabilityZoneRebalancing']).toBeUndefined();
+    expect(input['deploymentController']).toBeUndefined();
+    expect(input['serviceConnectConfiguration']).toBeUndefined();
+    expect(input['volumeConfigurations']).toBeUndefined();
+    expect(input['vpcLatticeConfigurations']).toBeUndefined();
+    expect(input['monitoring']).toBeUndefined();
+    expect(input['forceNewDeployment']).toBeUndefined();
+  });
 });

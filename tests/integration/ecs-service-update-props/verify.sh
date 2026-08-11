@@ -49,6 +49,19 @@
 #         dropped on RegisterTaskDefinition. Phase 1f sets RestartPolicy via the
 #         L1 escape hatch and asserts it (a) reached AWS and (b) round-tripped
 #         into observedProperties in CFn PascalCase.
+#   #609  (Service property backfill): AvailabilityZoneRebalancing /
+#         DeploymentController / Monitoring / ForceNewDeployment were
+#         silent-drops that flipped the Service to the CC-API route. Phase 1g
+#         asserts AvailabilityZoneRebalancing=ENABLED on AWS + the
+#         observedProperties read-back (incl. the DeploymentController
+#         {Type: ECS} fallback for the documented DescribeServices omission);
+#         Monitoring is acceptance-only (no DescribeServices read-back — a
+#         mis-flipped required member would fail the deploy; values pinned in
+#         tests/unit/provisioning/ecs-service-config-props.test.ts). Phase 2b
+#         bumps ONLY the ForceNewDeployment nonce and asserts a fresh rollout
+#         (deployments[0].id changed). NOT exercised live (unit-pinned; see
+#         README "Not exercised live"): PlacementStrategies (EC2 launch type),
+#         VpcLatticeConfigurations, DeploymentController CODE_DEPLOY, Role.
 #
 # The Service in this fixture is deliberately plain (no
 # ServiceConnectConfiguration / VolumeConfigurations) so it stays on cdkd's
@@ -261,6 +274,33 @@ if [ "${BASE_CB_ENABLE}" != "true" ]; then
 fi
 echo "    OK: base #1165 DeploymentConfiguration on AWS is maximumPercent=150, minimumHealthyPercent=50, circuitBreaker.enable=true"
 
+# Base assertion for issue #609: AvailabilityZoneRebalancing=ENABLED (set via
+# the L1 escape hatch) must have reached AWS — before the backfill the
+# property was a silent-drop that flipped the Service to the CC-API route.
+BASE_AZ_REBALANCING=$(aws ecs describe-services \
+  --cluster "${CLUSTER_NAME}" --services "${SERVICE_NAME}" --region "${REGION}" \
+  --query 'services[0].availabilityZoneRebalancing' --output text 2>/dev/null)
+if [ "${BASE_AZ_REBALANCING}" != "ENABLED" ]; then
+  echo "FAIL: base availabilityZoneRebalancing is '${BASE_AZ_REBALANCING}', expected 'ENABLED' (#609 AvailabilityZoneRebalancing silent-drop NOT closed)" >&2
+  exit 1
+fi
+# DeploymentController: the SDK API doc says DescribeServices may omit the
+# field for services on the default ECS controller, so 'ECS' and an absent
+# value ('None') are BOTH acceptable here — the strong assert is on the
+# deploy-time observedProperties in Phase 1g (the reader's {Type: ECS}
+# fallback). Anything else (e.g. CODE_DEPLOY) is a real failure.
+BASE_CONTROLLER=$(aws ecs describe-services \
+  --cluster "${CLUSTER_NAME}" --services "${SERVICE_NAME}" --region "${REGION}" \
+  --query 'services[0].deploymentController.type' --output text 2>/dev/null)
+case "${BASE_CONTROLLER}" in
+  ECS|None|"") ;;
+  *)
+    echo "FAIL: base deploymentController.type is '${BASE_CONTROLLER}', expected 'ECS' (or the documented DescribeServices omission)" >&2
+    exit 1
+    ;;
+esac
+echo "    OK: base #609 fields on AWS are availabilityZoneRebalancing=ENABLED, deploymentController.type=${BASE_CONTROLLER}"
+
 # Base assertion for issue #1165 on the TaskDefinition: RuntimePlatform
 # (ARM64 / Graviton) and EphemeralStorage (SizeInGiB) are nested CFn PascalCase
 # objects that were passed raw into RegisterTaskDefinition's camelCase slots and
@@ -423,7 +463,16 @@ if echo "${DRIFT_OUT}" | grep -q "ContainerDefinitions"; then
   echo "${DRIFT_OUT}" | grep -B2 -A8 "ContainerDefinitions" | head -40
   exit 1
 fi
-echo "    OK: 'cdkd drift' (rc=${DRIFT_RC}) reports NO ContainerDefinitions drift — reverse-map + normalization round-trip verified against real AWS (#1169)"
+# #609: the new Service members must not phantom-drift either — the readable
+# ones (AvailabilityZoneRebalancing / DeploymentController) via the reverse
+# map, the unreadable ones (Monitoring / ForceNewDeployment) via
+# getDriftUnknownPaths.
+if echo "${DRIFT_OUT}" | grep -qE "AvailabilityZoneRebalancing|DeploymentController|Monitoring|ForceNewDeployment"; then
+  echo "FAIL: 'cdkd drift' reported phantom drift on a #609 Service member (read-back / getDriftUnknownPaths NOT working against real AWS)" >&2
+  echo "${DRIFT_OUT}" | grep -B2 -A8 -E "AvailabilityZoneRebalancing|DeploymentController|Monitoring|ForceNewDeployment" | head -40
+  exit 1
+fi
+echo "    OK: 'cdkd drift' (rc=${DRIFT_RC}) reports NO ContainerDefinitions drift and NO phantom drift on the #609 Service members — reverse-map + normalization round-trip verified against real AWS (#1169 / #609)"
 
 # --- Phase 1f: RestartPolicy container sub-field write + read round-trip (#1173) --
 # #1173: convertContainerDefinitions never mapped RestartPolicy (and 11 other
@@ -449,6 +498,26 @@ if [ "${OBS_CD_RESTART}" != "true" ]; then
   exit 1
 fi
 echo "    OK: RestartPolicy registered on AWS (enabled=True) AND captured in observedProperties as CFn PascalCase RestartPolicy.Enabled=true (#1173 write + read round-trip verified against real AWS)"
+
+# --- Phase 1g: #609 Service read-back into observedProperties -------------
+# The reader must (a) surface AvailabilityZoneRebalancing verbatim from
+# DescribeServices and (b) emit DeploymentController {Type: ECS} EVEN IF
+# DescribeServices omits the field for the default ECS controller (the
+# documented omission) — otherwise a template that sets the explicit default
+# would phantom-drift as "removed" on every run.
+echo "==> Phase 1g: assert #609 Service members captured into observedProperties"
+OBS_SVC_AZ=$(echo "${OBS_STATE}" | jq -r '[.resources[] | select(.resourceType=="AWS::ECS::Service") | .observedProperties.AvailabilityZoneRebalancing] | first // "MISSING"')
+OBS_SVC_CONTROLLER=$(echo "${OBS_STATE}" | jq -r '[.resources[] | select(.resourceType=="AWS::ECS::Service") | .observedProperties.DeploymentController.Type] | first // "MISSING"')
+if [ "${OBS_SVC_AZ}" != "ENABLED" ]; then
+  echo "FAIL: Service observedProperties.AvailabilityZoneRebalancing is '${OBS_SVC_AZ}', expected 'ENABLED' (#609 read-back did NOT surface the member)" >&2
+  echo "${OBS_STATE}" | jq '[.resources[] | select(.resourceType=="AWS::ECS::Service") | .observedProperties] | first | keys'
+  exit 1
+fi
+if [ "${OBS_SVC_CONTROLLER}" != "ECS" ]; then
+  echo "FAIL: Service observedProperties.DeploymentController.Type is '${OBS_SVC_CONTROLLER}', expected 'ECS' (#609 read-back {Type: ECS} fallback for the documented DescribeServices omission NOT working)" >&2
+  exit 1
+fi
+echo "    OK: observedProperties captured AvailabilityZoneRebalancing=ENABLED + DeploymentController.Type=ECS (#609 read-back verified against real AWS)"
 
 # --- Phase 2: UPDATE pass (issue #975 add-on-update + #1160 reset-on-removal) --
 echo "==> Phase 2: redeploy with CDKD_TEST_UPDATE=true (flip EnableECSManagedTags + PropagateTags; DROP PlatformVersion / grace)"
@@ -526,6 +595,46 @@ if [ "${AFTER_CB_ROLLBACK}" != "false" ]; then
 fi
 echo "    OK: after update, AWS shows DeploymentConfiguration maximumPercent=175, minimumHealthyPercent=25, circuitBreaker.rollback=false (#1165 update-path silent-drop CLOSED)"
 
+# --- Phase 2b: ForceNewDeployment nonce bump forces a fresh rollout (#609) --
+# The phase-2b template is IDENTICAL to phase 2 except the
+# ForceNewDeployment.ForceNewDeploymentNonce (cdkd-nonce-1 -> cdkd-nonce-2),
+# so the only property change is the trigger object — cdkd's updateService
+# must translate it to `forceNewDeployment: true` and ECS must start a new
+# deployment (deployments[0].id changes; with desiredCount 0 the rollout
+# completes instantly). Attribution caveat: sibling properties re-sent
+# unchanged do not trigger rollouts per the UpdateService docs (the same
+# reason `aws ecs update-service` needs its explicit force-new-deployment
+# option to redeploy an unchanged service), so a changed deployment id is
+# attributable to the forceNewDeployment flag.
+echo "==> Phase 2b: redeploy with CDKD_TEST_UPDATE=true,force-nonce (bump ForceNewDeployment nonce only)"
+DEPLOY_ID_BEFORE=$(aws ecs describe-services \
+  --cluster "${CLUSTER_NAME}" --services "${SERVICE_NAME}" --region "${REGION}" \
+  --query 'services[0].deployments[0].id' --output text 2>/dev/null)
+if [ -z "${DEPLOY_ID_BEFORE}" ] || [ "${DEPLOY_ID_BEFORE}" = "None" ]; then
+  echo "FAIL: could not read the current deployment id before the force-nonce redeploy" >&2
+  exit 1
+fi
+
+CDKD_TEST_UPDATE=true,force-nonce node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes
+
+DEPLOY_ID_AFTER=$(aws ecs describe-services \
+  --cluster "${CLUSTER_NAME}" --services "${SERVICE_NAME}" --region "${REGION}" \
+  --query 'services[0].deployments[0].id' --output text 2>/dev/null)
+if [ -z "${DEPLOY_ID_AFTER}" ] || [ "${DEPLOY_ID_AFTER}" = "None" ]; then
+  echo "FAIL: could not read the deployment id after the force-nonce redeploy" >&2
+  exit 1
+fi
+if [ "${DEPLOY_ID_AFTER}" = "${DEPLOY_ID_BEFORE}" ]; then
+  echo "FAIL: deployments[0].id is still '${DEPLOY_ID_BEFORE}' after the ForceNewDeployment nonce bump — no new rollout started (#609 ForceNewDeployment object -> forceNewDeployment boolean translation NOT working)" >&2
+  aws ecs describe-services --cluster "${CLUSTER_NAME}" --services "${SERVICE_NAME}" --region "${REGION}" \
+    --query 'services[0].deployments' | jq .
+  exit 1
+fi
+echo "    OK: ForceNewDeployment nonce bump started a fresh rollout (${DEPLOY_ID_BEFORE} -> ${DEPLOY_ID_AFTER}) (#609 forced-rollout translation CLOSED)"
+
 # --- Phase 3: destroy -------------------------------------------------
 echo "==> Phase 3: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \
@@ -537,4 +646,4 @@ assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after des
 echo "    OK: state file is gone"
 
 echo ""
-echo "==> ecs-service-update-props test passed (EnableECSManagedTags + PropagateTags UpdateService mapping (#975); PlatformVersion + HealthCheckGracePeriodSeconds reset-on-removal (#1160); DeploymentConfiguration nested-object PascalCase->camelCase on create + update (#1165); clean destroy)"
+echo "==> ecs-service-update-props test passed (EnableECSManagedTags + PropagateTags UpdateService mapping (#975); PlatformVersion + HealthCheckGracePeriodSeconds reset-on-removal (#1160); DeploymentConfiguration nested-object PascalCase->camelCase on create + update (#1165); AvailabilityZoneRebalancing + DeploymentController + Monitoring acceptance + ForceNewDeployment forced-rollout (#609); clean destroy)"
