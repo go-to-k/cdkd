@@ -1,3 +1,10 @@
+## [0.280.2](https://github.com/go-to-k/cdkd/compare/v0.280.1...v0.280.2) (2026-08-11)
+
+
+### Bug Fixes
+
+* **cloudtrail:** mirror the measured CFn reset of KMSKeyId on removal, and live-cover the two S3 replication SSE-KMS members ([#1584](https://github.com/go-to-k/cdkd/issues/1584)) ([d900848](https://github.com/go-to-k/cdkd/commit/d90084827ed3273c9dad7d880e2d91569446de24))
+
 ## [0.280.1](https://github.com/go-to-k/cdkd/compare/v0.280.0...v0.280.1) (2026-08-11)
 
 
