@@ -4,6 +4,7 @@ import type { CloudFormationTemplate, TemplateResource } from '../../types/resou
 import type { ResourceChange, StackState } from '../../types/state.js';
 import { STATE_SCHEMA_VERSION_CURRENT } from '../../types/state.js';
 import { DiffCalculator } from '../../analyzer/diff-calculator.js';
+import type { CanonicalizePropertiesFn } from '../../analyzer/diff-calculator.js';
 import { TemplateParser } from '../../analyzer/template-parser.js';
 import { IntrinsicFunctionResolver } from '../../deployment/intrinsic-function-resolver.js';
 import { getLogger } from '../../utils/logger.js';
@@ -172,7 +173,13 @@ export async function computeStackDiff(
   stackName: string,
   stateBackend: S3StateBackend,
   diffCalculator: DiffCalculator,
-  parameters?: Record<string, unknown>
+  parameters?: Record<string, unknown>,
+  /**
+   * Same per-type normalization the deploy engine applies (issue #1591).
+   * Without it `cdkd diff` forecasts a change `cdkd deploy` will never make —
+   * the preview and the apply must narrow identically.
+   */
+  canonicalizeProperties?: CanonicalizePropertiesFn
 ): Promise<Map<string, ResourceChange>> {
   const intrinsicResolver = new IntrinsicFunctionResolver(region);
 
@@ -268,7 +275,12 @@ export async function computeStackDiff(
       // Evaluated conditions so `Fn::If` resolves in property values.
       ...(conditions && { conditions }),
     });
-  return diffCalculator.calculateDiff(currentState, effectiveTemplate, resolveFn);
+  return diffCalculator.calculateDiff(
+    currentState,
+    effectiveTemplate,
+    resolveFn,
+    canonicalizeProperties
+  );
 }
 
 /**
@@ -365,6 +377,12 @@ export async function buildDiffTree(args: {
    */
   parameters?: Record<string, unknown>;
   /**
+   * Per-type property normalization shared with the deploy engine (issue
+   * #1591). Threaded through the whole tree so a nested child's preview
+   * narrows exactly like its apply.
+   */
+  canonicalizeProperties?: CanonicalizePropertiesFn;
+  /**
    * Issue #1002 PR 2 — §6 asset-location mapping table, present when the
    * stack's region is in cdkd-assets mode. Every nested child template read
    * by this walker gets the §7 rewrite applied (nested templates bypass the
@@ -384,6 +402,7 @@ export async function buildDiffTree(args: {
     stateBackend,
     diffCalculator,
     parameters,
+    canonicalizeProperties,
     assetRedirect,
   } = args;
 
@@ -395,7 +414,8 @@ export async function buildDiffTree(args: {
     stackName,
     stateBackend,
     diffCalculator,
-    parameters
+    parameters,
+    canonicalizeProperties
   );
   const ccApiRoutes = collectCcApiRoutes(template, state);
   const node: DiffTreeNode = {
@@ -452,6 +472,7 @@ export async function buildDiffTree(args: {
         stateBackend,
         diffCalculator,
         parameters: childParameters,
+        ...(canonicalizeProperties && { canonicalizeProperties }),
         ...(assetRedirect && { assetRedirect }),
       })
     );

@@ -23,6 +23,30 @@ import {
 export type IntrinsicResolveFn = (value: unknown) => Promise<unknown>;
 
 /**
+ * Per-type normalization applied to BOTH comparison sides (issue #1591).
+ *
+ * A provider that deliberately sends LESS than the template declares records
+ * the narrowed bag in state (`effectiveProperties`). Without the identical
+ * narrowing here the template's extra keys read as a user-made change on every
+ * later deploy — and for a create-only property that is a REPLACEMENT, so a
+ * previously-green no-op deploy starts destroying and re-creating the resource,
+ * or failing outright where the provider refuses the shape on the create path.
+ *
+ * BOTH sides, not just the desired one: a record written BEFORE the provider
+ * started narrowing still carries every key, so a desired-only normalization
+ * flips the same difference to a REMOVAL and breaks exactly the population the
+ * narrowing exists for. State can only carry the wider bag when it is junk, so
+ * normalizing it is safe and the next write self-heals the record.
+ * `drift-normalize.ts` records the same both-sides rule for ordering.
+ *
+ * MUST be pure and synchronous — it runs inside the diff, before any AWS call.
+ */
+export type CanonicalizePropertiesFn = (
+  resourceType: string,
+  properties: Record<string, unknown>
+) => Record<string, unknown>;
+
+/**
  * Per-type set of computed/derived read-only attributes whose value can change
  * as a side effect of an IN-PLACE update, even though the attribute NAME never
  * appears among the type's template properties (issue #985).
@@ -68,12 +92,19 @@ export class DiffCalculator {
    *                  buried inside intrinsics (e.g. `Fn::Join` literal args) are detected.
    *                  If resolution throws for a given property value, the unresolved
    *                  value is used (falling back to the original "assume equal" behavior).
+   * @param canonicalizeProperties Optional per-type normalization applied to BOTH
+   *                  comparison sides (issue #1591) — see {@link CanonicalizePropertiesFn}
+   *                  for why one-sided normalization breaks the very population it is
+   *                  meant to fix. Injected as a function rather than as a provider
+   *                  registry so the analyzer layer keeps no dependency on the
+   *                  provisioning layer.
    * @returns Map of logical ID to resource change
    */
   async calculateDiff(
     currentState: StackState,
     desiredTemplate: CloudFormationTemplate,
-    resolveFn?: IntrinsicResolveFn
+    resolveFn?: IntrinsicResolveFn,
+    canonicalizeProperties?: CanonicalizePropertiesFn
   ): Promise<Map<string, ResourceChange>> {
     const changes = new Map<string, ResourceChange>();
 
@@ -158,13 +189,64 @@ export class DiffCalculator {
         // a naive comparison would short-circuit on the intrinsic node and miss the
         // change. Resolving desired props against current state first avoids that.
         const rawDesiredProps = desiredResource.Properties || {};
-        const desiredPropsForCompare = resolveFn
+        const resolvedDesiredProps = resolveFn
           ? await this.resolveBestEffort(rawDesiredProps, resolveFn)
           : rawDesiredProps;
+        // Narrow the same way the provider narrows what it SENDS, so a
+        // deliberate narrowing (issue #1591) is not re-read as a change the
+        // user made. Applied AFTER resolution: the provider decides on
+        // resolved values, so deciding on an unresolved intrinsic here would
+        // disagree with it.
+        //
+        // BOTH SIDES, which is the whole rule and not a symmetry nicety.
+        // Narrowing only the desired side fixes the freshly-written record and
+        // BREAKS the population this exists for: a state record written before
+        // the provider started narrowing still carries every key, so the loser
+        // reads as REMOVED, and for a create-only property that is a
+        // REPLACEMENT whose create the engine issues with no context — landing
+        // on the provider's create-path refusal and failing a deploy that was
+        // green the day before. State can only carry the wider bag when it is
+        // junk, so narrowing it here is safe.
+        // `drift-normalize.ts` records the same rule for ordering.
+        //
+        // NOT self-healing, and the comment used to claim otherwise: an
+        // otherwise-unchanged template now diffs NO_CHANGE, so no write happens
+        // and the wide record survives. `cdkd drift --revert` is what clears
+        // it. That residue is the (#1612) already-junk class.
+        //
+        // The CURRENT side is left alone for a cc-api-routed resource:
+        // `CloudControlProvider` sends and records the FULL bag and reports no
+        // `effectiveProperties`, so its record is not a narrowing artifact and
+        // narrowing it here would hide a real difference.
+        const desiredPropsForCompare = canonicalizeProperties
+          ? canonicalizeProperties(desiredResource.Type, resolvedDesiredProps)
+          : resolvedDesiredProps;
+        const currentPropsForCompare =
+          canonicalizeProperties && currentResource.provisionedBy !== 'cc-api'
+            ? canonicalizeProperties(desiredResource.Type, currentResource.properties)
+            : currentResource.properties;
+
+        // ANNOUNCE the narrowing. The whole design rests on it being a
+        // deliberate, stated decision (`EffectivePropertiesResult`'s contract);
+        // on the provisioning path the provider's warn arm says so, but this
+        // path never calls the provider — so without this, a template edit to a
+        // LOSING key is discarded with zero output, and a user "fixing" the
+        // wrong destination key would see cdkd report nothing at all.
+        if (
+          canonicalizeProperties &&
+          !this.valuesEqual(desiredPropsForCompare, resolvedDesiredProps)
+        ) {
+          this.logger.warn(
+            `${logicalId} (${desiredResource.Type}): part of the declared properties cannot be ` +
+              `sent as declared and is ignored when comparing against deployed state — the ` +
+              `provider narrows them. Fix the template to declare only what the resource ` +
+              `supports; until then changes to the ignored keys have no effect.`
+          );
+        }
 
         const propertyChanges = await this.compareProperties(
           desiredResource.Type,
-          currentResource.properties,
+          currentPropsForCompare,
           desiredPropsForCompare
         );
 

@@ -31,6 +31,9 @@ import {
   resolveUseCdkBootstrapAssets,
 } from '../config-loader.js';
 import { matchStacks, describeStack } from '../stack-matcher.js';
+import { registerAllProviders } from '../../provisioning/register-providers.js';
+import { ProviderRegistry } from '../../provisioning/provider-registry.js';
+import { makeCanonicalizePropertiesFn } from '../../provisioning/canonicalize-properties.js';
 import {
   buildDiffTree,
   diffTreeToJson,
@@ -191,6 +194,13 @@ async function diffCommand(
       ...(options.profile && { profile: options.profile }),
     });
     const diffCalculator = new DiffCalculator();
+    // Providers are registered here purely so the diff can consult the SAME
+    // per-type property normalization the deploy engine applies (issue #1591).
+    // `cdkd diff` otherwise needs no provider: it compares the template against
+    // cdkd state and never touches AWS.
+    const diffProviderRegistry = new ProviderRegistry();
+    registerAllProviders(diffProviderRegistry);
+    const canonicalizeProperties = makeCanonicalizePropertiesFn(diffProviderRegistry);
     const recursive = options.recursive ?? false;
 
     // Issue #1002 PR 2 — when a stack's region is in cdkd-assets mode, the
@@ -231,6 +241,9 @@ async function diffCommand(
           recursive,
           stateBackend,
           diffCalculator,
+          // Issue #1591: the preview must narrow exactly like the apply, or
+          // `cdkd diff` forecasts a change `cdkd deploy` will never make.
+          canonicalizeProperties,
           ...(assetRedirect && { assetRedirect }),
         })
       );

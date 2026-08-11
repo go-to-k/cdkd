@@ -27,7 +27,7 @@ basic	2026-08-01T10:00:06Z	PASS	81	standard	0801 regression sweep; 2 del/0 err, 
 batch	2026-07-26T18:43:33Z	PASS	89	standard	0727b sweep-b5 staleness re-run (rc=0); account clean
 bedrock-agentcore	2026-08-10T05:19:05Z	PASS	36	standard	0810 P2 sweep b6; 6 del 0 err, 0 orph
 bench-ccapi	2026-07-26T18:43:33Z	PASS	89	standard	0727b sweep-b5 staleness re-run (rc=0); account clean
-bench-cdk-sample	2026-08-10T11:50:46Z	PASS	424	standard	0810 P0/P1 sweep b4 BROAD; 37 del/2 retain/0 err, retained LGs swept, orph clean
+bench-cdk-sample	2026-08-11T15:53:33Z	PASS	394	standard	#1591 final broad: deploy+diff+destroy; diff reports No changes; 37 del/0 err, 0 orph
 bench-sdk	2026-07-26T18:43:33Z	PASS	33	standard	0727b sweep-b5 staleness re-run (rc=0); account clean
 bootstrap-free-region	2026-07-31T06:23:42Z	PASS	78	verify.sh	TTL-refresh sweep re-run in ca-central-1; marker+bucket swept, orph clean
 bucket-deployment	2026-08-08T16:22:35Z	PASS	123	verify.sh	P0 post-#1345 S3 auto-empty opt-in; autoDeleteObjects tag honored, 10 del/0 err, 0 orphans
@@ -77,7 +77,7 @@ docdb-neptune	2026-07-27T06:16:35Z	PASS	1560	verify.sh	#1160 neptune+docdb remov
 docker-image-asset	2026-08-10T04:23:28Z	PASS	81	verify.sh	0810 sweep b2; post-#1406 ECR mutability filters, 2 del 0 err, 0 orph
 drift-revert	2026-08-11T14:33:06Z	PASS	285	verify.sh	#1626 keyed-list revert-plan walk: revert path regression-clean, destroy 13/0, orphans clean
 drift-revert-arrays	2026-08-01T09:36:05Z	PASS	110	verify.sh	0801 regression sweep; 16 del/0 err, 0 orphans
-drift-revert-vpc	2026-08-10T11:50:46Z	PASS	310	verify.sh	0810 P0/P1 sweep b5 BROAD; 21 del/0 err incl EFS+PrivateDnsNamespace
+drift-revert-vpc	2026-08-11T15:53:33Z	PASS	314	verify.sh	#1591 final: both-sides canonicalizer + cdkd diff wiring; 21 del/0 err, 0 orph
 dsql	2026-07-30T18:11:24Z	PASS	540	verify.sh	4-phase incl. destroy --remove-protection CC flip (#1312); orph clean
 dynamodb-autoscaling	2026-08-10T05:13:55Z	PASS	65	verify.sh	0810 sweep b5; table autoscaling re-verify post-#1451 GlobalTable work, 0 err 0 orph
 dynamodb-globaltable	2026-08-11T09:22:58Z	PASS	549	verify.sh	issue #1585 autoscaled-exclusion + live-only coverage; 0 errors 0 orphans

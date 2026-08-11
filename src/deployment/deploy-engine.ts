@@ -15,7 +15,12 @@ import {
 import { withStackName, applyDefaultNameForFallback } from '../provisioning/resource-name.js';
 import { IntrinsicFunctionResolver } from './intrinsic-function-resolver.js';
 import { DagExecutor } from './dag-executor.js';
-import type { CloudFormationTemplate, ResourceProvider } from '../types/resource.js';
+import type {
+  CloudFormationTemplate,
+  EffectivePropertiesResult,
+  ResourceProvider,
+  ResourceUpdateResult,
+} from '../types/resource.js';
 import {
   STATE_SCHEMA_VERSION_CURRENT,
   shouldRetainResource,
@@ -37,6 +42,7 @@ import type { DagBuilder } from '../analyzer/dag-builder.js';
 import type { DiffCalculator } from '../analyzer/diff-calculator.js';
 import { ProviderRegistry } from '../provisioning/provider-registry.js';
 import { slowCcOperationTimeoutMs } from '../provisioning/slow-cc-operation-timeouts.js';
+import { makeCanonicalizePropertiesFn } from '../provisioning/canonicalize-properties.js';
 import {
   ATOMIC_FINAL_SNAPSHOT_TYPES,
   PRE_DELETE_SNAPSHOT_TYPES,
@@ -1194,7 +1200,11 @@ export class DeployEngine {
       const changes = await this.diffCalculator.calculateDiff(
         currentState,
         effectiveTemplate,
-        diffResolveFn
+        diffResolveFn,
+        // Shared with `cdkd diff` (issue #1591): a preview that narrows
+        // differently from the apply forecasts a change the deploy will never
+        // make, which is this issue's own bug class moved one command over.
+        makeCanonicalizePropertiesFn(this.providerRegistry)
       );
       const hasChanges = this.diffCalculator.hasChanges(changes);
 
@@ -2730,7 +2740,7 @@ export class DeployEngine {
         stateResources[logicalId] = {
           physicalId: result.physicalId,
           resourceType,
-          properties: resolvedProps,
+          properties: this.propertiesToRecord(resolvedProps, result),
           ...(result.attributes && { attributes: result.attributes }),
           ...(dependencies && dependencies.length > 0 && { dependencies }),
           ...templateAttrs,
@@ -3295,7 +3305,7 @@ export class DeployEngine {
           stateResources[logicalId] = {
             physicalId: createResult.physicalId,
             resourceType,
-            properties: resolvedProps,
+            properties: this.propertiesToRecord(resolvedProps, createResult),
             ...(createResult.attributes && { attributes: createResult.attributes }),
             ...(dependencies && dependencies.length > 0 && { dependencies }),
             ...this.extractTemplateAttributes(template, logicalId),
@@ -3463,11 +3473,27 @@ export class DeployEngine {
                 undefined,
                 replProvider
               );
-              result = {
+              // Annotated rather than inferred: `result` is an evolving `let`,
+              // and a conditional spread makes the literal's type a union that
+              // TS then checks against the wrong constituent.
+              const replacementResult: ResourceUpdateResult = {
                 physicalId: createResult.physicalId,
-                attributes: createResult.attributes,
                 wasReplaced: true,
+                // Spread rather than assigned: under `exactOptionalPropertyTypes`
+                // an explicit `undefined` is not assignable to an optional
+                // property. Behaviorally identical — the reader below is
+                // `result.attributes ?? ...`, which cannot tell absent from
+                // undefined.
+                ...(createResult.attributes && { attributes: createResult.attributes }),
               };
+              // Carried explicitly: this literal REPLACES the update result, so
+              // a narrowing the replacement create announced would be dropped
+              // on the floor and the desired bag recorded instead — silently
+              // re-introducing the phantom drift (#1591).
+              if (createResult.effectiveProperties) {
+                replacementResult.effectiveProperties = createResult.effectiveProperties;
+              }
+              result = replacementResult;
               resultProvisionedBy = replDecision.provisionedBy;
             } else {
               throw updateError;
@@ -3496,7 +3522,7 @@ export class DeployEngine {
           stateResources[logicalId] = {
             physicalId: result.physicalId,
             resourceType,
-            properties: resolvedProps,
+            properties: this.propertiesToRecord(resolvedProps, result),
             ...(carriedAttributes && { attributes: carriedAttributes }),
             ...(dependencies && dependencies.length > 0 && { dependencies }),
             ...this.extractTemplateAttributes(template, logicalId),
@@ -3659,6 +3685,29 @@ export class DeployEngine {
       (dep) => !parameterNames.has(dep)
     );
     return deps.length > 0 ? deps : undefined;
+  }
+
+  /**
+   * The properties to RECORD in cdkd state for a just-provisioned resource.
+   *
+   * Normally the DESIRED (resolved) bag: state is the record of what the user
+   * asked for, and the #1160 absent-field removal derivation reads it as the
+   * previous side on the next deploy, so it must stay template-shaped.
+   *
+   * A provider may override it by returning `effectiveProperties` when it
+   * deliberately NARROWED what it sent (issue #1591). Recording the desired
+   * bag there would describe something AWS does not hold, and since
+   * `readCurrentState` can only return what AWS does hold, the difference is
+   * PERMANENT phantom drift — reported by every `cdkd drift`, and "repaired"
+   * by `drift --revert` into another `update()` that narrows and re-reports.
+   * The provider is the only layer that knows what it dropped, so it says so
+   * and the engine records that instead.
+   */
+  private propertiesToRecord(
+    desiredProperties: Record<string, unknown>,
+    result: EffectivePropertiesResult
+  ): Record<string, unknown> {
+    return result.effectiveProperties ?? desiredProperties;
   }
 
   /**

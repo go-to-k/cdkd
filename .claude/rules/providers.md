@@ -119,6 +119,14 @@ strict, each differently):
   UNCONDITIONAL on that path and the pre-fix precedence still applies — the
   narrowing becomes ANNOUNCED rather than silent, while the refusal stands on
   the create path, where the value is always template-borne.
+  **A warn arm that NARROWS must also say what it sent** (issue #1591): the
+  same guard left the engine recording every declared destination key while
+  AWS holds exactly one, so `readCurrentState` could never match and the
+  difference was permanent phantom drift — re-reported by every `cdkd drift`
+  and re-triggered by `drift --revert`, which calls `update()` again. Return
+  `effectiveProperties` (on `ResourceCreateResult` / `ResourceUpdateResult`)
+  carrying the bag actually delivered; the engine records THAT in place of the
+  desired one. See the paragraph below for when this is and is not the answer.
 
 **A warn-and-continue update path becomes a producer of junk state** (issue
 #1552): the deploy SUCCEEDS, so the engine records the unusable desired value,
@@ -153,6 +161,50 @@ each was learned by shipping the version that did not check it:
 Carrying the values matters beyond capacity: the #1160 absent-field RESET is
 derived from the PREVIOUS side, so an identity-only baseline silently disables
 every removal for as long as the record stays junk.
+
+**`effectiveProperties` is the OTHER half of that remedy, and the two answer
+different questions** (issue #1591). Seeding the comparison baseline from the
+live read fixes the case where STATE is already junk; `effectiveProperties`
+stops the junk being written in the first place, for the narrower case where
+the provider KNOWS it dropped something because it dropped it deliberately.
+Reach for it only when all three hold, or it becomes a way to hide losses:
+
+- the narrowing is DELIBERATE and already ANNOUNCED (a warn arm) — recording a
+  value the provider merely failed to send converts a bug into a clean record;
+- what you return is what you SENT, not what AWS computed. AWS-side defaults
+  and computed values belong in `observedProperties`, which is captured by a
+  real read-back; putting them in `properties` makes the DESIRED baseline drift
+  from the template and silently disables the #1160 absent-field removal
+  derivation, which reads that side;
+- it REPLACES the desired bag wholesale rather than patching it, so it must be
+  complete. An absent field (the normal case) means "record the desired
+  properties", which is why the engine gates on `??` and not on truthiness — an
+  empty object is a legitimate answer.
+
+**`effectiveProperties` alone BREAKS the next deploy — implement
+`canonicalizeDesiredProperties` with it.** The two are halves of one decision
+and shipping the first without the second is worse than shipping neither.
+Recording the narrowed bag makes STATE describe what AWS holds; the template
+still declares what it always did, so the next diff reads the dropped keys as a
+user-made ADD. For a create-only property that is a REPLACEMENT — every
+`AWS::EC2::Route` destination key is create-only in the registry schema — and
+the engine's replacement create passes no context, so a provider that refuses
+the shape on the create path fails the deploy outright. A previously-green
+no-op deploy starts erroring. On the degraded path (no `DescribeType`, so no
+create-only knowledge) it is worse: the change classifies in-place and the
+resource is delete-and-recreated on EVERY deploy.
+
+So narrow BOTH comparison sides identically, via
+`ResourceProvider.canonicalizeDesiredProperties(resourceType, properties)` —
+pure, synchronous, applied by `DiffCalculator` to BOTH comparison sides. Share ONE helper with the provisioning path
+(`narrowRouteDestinations` is the example) rather than re-deriving the rule, or
+state and template end up narrowed to different keys and the fix becomes the
+bug. This is the same "normalize BOTH comparison sides" rule
+`drift-normalize.ts` already records for ordering.
+
+Two things that are easy to get wrong and were both caught by review:
+**normalize BOTH comparison sides**, not just the desired one — a record written BEFORE the provider started narrowing still carries every key, so a one-sided pass flips the same difference to a REMOVAL and breaks exactly the population the narrowing exists for; and **wire `cdkd diff` too**, since a preview that narrows differently from the apply forecasts a change the deploy will never make. `makeCanonicalizePropertiesFn` in `src/provisioning/canonicalize-properties.ts` is the one builder both commands use, so they cannot drift.
+
 
 REMOVALS are a separate decision and the conservative reading usually stands: a
 junk record cannot distinguish "cdkd created this and the template dropped it"

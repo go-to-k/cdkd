@@ -75,9 +75,45 @@ export interface TemplateOutput {
 }
 
 /**
+ * The properties a provider ACTUALLY delivered to AWS, when they differ from
+ * the desired bag it was handed (issue #1591).
+ *
+ * The deploy engine persists the DESIRED properties into cdkd state. That is
+ * right almost always — but a provider that deliberately NARROWS the bag makes
+ * the record describe something AWS never holds, and `readCurrentState` can
+ * only ever return what AWS does hold, so the difference becomes PERMANENT
+ * phantom drift: `cdkd drift` reports it on every run and `drift --revert`
+ * "fixes" it by calling `update()` again, which re-narrows and re-reports.
+ * That is the #1552 junk-state class, and it is the provider — not the
+ * engine — that knows what was dropped.
+ *
+ * Returning this field lets the provider hand back the bag it actually sent,
+ * which the engine records INSTEAD of the desired one. Absent (the normal
+ * case) means "record the desired properties", so no provider needs to change.
+ *
+ * Two things this is NOT:
+ *
+ * - It is not a place to report AWS-side defaults or computed values. Those
+ *   belong in `observedProperties` (captured by a real read-back); putting
+ *   them here would make the DESIRED baseline drift away from the template and
+ *   silently disable the #1160 absent-field removal derivation, which reads
+ *   the previous side.
+ * - It is not a licence to drop a value the provider merely failed to send.
+ *   Narrowing must already be a deliberate, ANNOUNCED decision (a warn arm),
+ *   or recording it hides the loss instead of surfacing it.
+ */
+export interface EffectivePropertiesResult {
+  /**
+   * The properties actually delivered. Recorded verbatim in place of the
+   * desired bag, so it must be a COMPLETE replacement, not a patch.
+   */
+  effectiveProperties?: Record<string, unknown>;
+}
+
+/**
  * Resource creation result
  */
-export interface ResourceCreateResult {
+export interface ResourceCreateResult extends EffectivePropertiesResult {
   /** Physical resource ID */
   physicalId: string;
   /** Resource attributes for Fn::GetAtt resolution */
@@ -87,7 +123,7 @@ export interface ResourceCreateResult {
 /**
  * Resource update result
  */
-export interface ResourceUpdateResult {
+export interface ResourceUpdateResult extends EffectivePropertiesResult {
   /** Physical resource ID (may be different if resource was replaced) */
   physicalId: string;
   /** Whether the resource was replaced (new physical ID) */
@@ -518,6 +554,42 @@ export interface ResourceProvider {
    *          empty when not implemented
    */
   getDriftUnknownPaths?(resourceType: string, properties?: Record<string, unknown>): string[];
+
+  /**
+   * Narrow a property bag the same way this provider narrows what it actually
+   * SENDS (issue #1591).
+   *
+   * Applied by `cdkd deploy` AND `cdkd diff` to **both** comparison sides — the
+   * resolved template properties and the state-recorded ones — so it receives a
+   * STATE-BORNE bag as often as a template-borne one. It must therefore be
+   * IDEMPOTENT (narrowing an already-narrowed bag returns it unchanged) and
+   * safe on a historical record it did not produce.
+   *
+   * Implement it if — and only if — the provider returns
+   * {@link EffectivePropertiesResult.effectiveProperties}: the two are halves
+   * of one decision. `effectiveProperties` makes STATE describe what AWS holds;
+   * this makes the comparison describe the same thing, so the narrowing does
+   * not read back as a change the user made. With only the first half, the
+   * template's extra keys resurface as a diff on every later deploy — and for a
+   * create-only property that is a REPLACEMENT, turning a green no-op deploy
+   * into a destroy-and-recreate (or an outright failure, where the provider
+   * refuses that shape on the create path).
+   *
+   * MUST be pure, synchronous, and free of AWS calls — it runs inside the diff.
+   * MUST agree with the provisioning-path narrowing key-for-key; share one
+   * helper rather than re-deriving the rule, or state and template end up
+   * narrowed differently.
+   *
+   * The diff WARNS whenever this actually changes the desired bag, so the
+   * narrowing stays announced even though the provider is never called on that
+   * path — do not rely on a provider-side warning to inform the user here.
+   *
+   * Return the input unchanged when nothing applies (the common case).
+   */
+  canonicalizeDesiredProperties?(
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): Record<string, unknown>;
 
   /**
    * State property paths holding a plain-string array that is semantically an

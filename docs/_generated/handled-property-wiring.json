@@ -7,7 +7,7 @@
     "wired": 82,
     "gap": 0,
     "allowListed": 2,
-    "classesWithBlindSpots": 19
+    "classesWithBlindSpots": 20
   },
   "classes": [
     {
@@ -7461,7 +7461,10 @@
         }
       ],
       "gaps": [],
-      "blindSpots": []
+      "blindSpots": [
+        "computed key in narrowRouteDestinations()",
+        "object spread in narrowRouteDestinations()"
+      ]
     },
     {
       "file": "ecr-provider.ts",

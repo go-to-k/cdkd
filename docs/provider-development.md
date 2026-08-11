@@ -92,14 +92,76 @@ export interface ResourceProvider {
 export interface ResourceCreateResult {
   physicalId: string                     // AWS physical ID
   attributes?: Record<string, unknown>   // Attributes for Fn::GetAtt
+  effectiveProperties?: Record<string, unknown>  // See below — rarely needed
 }
 
 export interface ResourceUpdateResult {
   physicalId: string                     // Physical ID after update
   wasReplaced: boolean                   // Whether resource was replaced
   attributes?: Record<string, unknown>   // Attributes after update
+  effectiveProperties?: Record<string, unknown>  // See below — rarely needed
 }
 ```
+
+**`effectiveProperties` — only when you deliberately NARROW what you send**
+(issue [#1591](https://github.com/go-to-k/cdkd/issues/1591)). The deploy engine
+records the DESIRED properties into cdkd state, which is right for almost every
+provider — leave the field absent and nothing changes. But a provider that
+knowingly drops part of the bag makes the record describe something AWS never
+held, and since `readCurrentState` can only return what AWS *does* hold, the
+difference becomes permanent phantom drift: reported by every `cdkd drift`, and
+"repaired" by `drift --revert` calling `update()` again, which narrows and
+re-reports. Returning the bag you actually sent makes the engine record that
+instead.
+
+`EC2Provider.createRoute` is the live case: a CFn-invalid template declaring two
+destination keys is REFUSED on the template path, but the refusal downgrades to
+a warning on the state-borne paths, where it keeps one key and returns the
+others stripped.
+
+Three conditions, or this becomes a way to hide losses rather than record them:
+
+- the narrowing is **deliberate and already announced** (a warn arm) — a value
+  you merely failed to send is a bug, and recording it launders the bug;
+- it is what you **sent**, not what AWS computed. AWS-side defaults and computed
+  values belong in `observedProperties` (captured by a real read-back); putting
+  them here makes the desired baseline drift from the template and silently
+  disables the absent-field removal derivation, which reads that side;
+- it **replaces** the desired bag wholesale, so it must be complete — not a
+  patch. An absent field means "record the desired properties", so the engine
+  gates on `??`, and an empty object is a legitimate answer.
+
+**Implement `canonicalizeDesiredProperties` alongside it — always.** The two
+are halves of one decision, and the first without the second is worse than
+neither. `effectiveProperties` makes state describe what AWS holds; the
+template still declares what it always did, so the next diff reads the dropped
+keys as a change the user made. For a create-only property that means a
+REPLACEMENT, and the engine's replacement create passes no context — so a
+provider that refuses the shape on the create path turns a previously-green
+no-op deploy into a hard failure. Without create-only knowledge (no
+`DescribeType`) it classifies in-place instead and the resource is
+delete-and-recreated on *every* deploy.
+
+```typescript
+canonicalizeDesiredProperties(
+  resourceType: string,
+  properties: Record<string, unknown>
+): Record<string, unknown> {
+  if (resourceType !== 'AWS::EC2::Route') return properties;
+  // The SAME helper the provisioning path uses — re-deriving the rule lets
+  // state and template narrow to different keys, which is the original bug
+  // wearing a new hat.
+  const { declared, narrowed } = narrowRouteDestinations(properties);
+  return declared.length > 1 ? narrowed : properties;
+}
+```
+
+It must be pure and synchronous (it runs inside the diff, before any AWS call),
+and it must return the input unchanged whenever nothing applies.
+
+Two things that are easy to get wrong and were both caught by review:
+**normalize BOTH comparison sides**, not just the desired one — a record written BEFORE the provider started narrowing still carries every key, so a one-sided pass flips the same difference to a REMOVAL and breaks exactly the population the narrowing exists for; and **wire `cdkd diff` too**, since a preview that narrows differently from the apply forecasts a change the deploy will never make. `makeCanonicalizePropertiesFn` in `src/provisioning/canonicalize-properties.ts` is the one builder both commands use, so they cannot drift.
+
 
 ## Provider Implementation Examples
 
