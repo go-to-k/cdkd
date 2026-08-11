@@ -489,6 +489,50 @@ describe('cdkd drift', () => {
     expect(output).not.toContain('Code');
   });
 
+  it('passes the resource properties to getDriftUnknownPaths so a provider can scope the path per resource (issue #1602)', async () => {
+    // The #1602 shape: API Gateway V2 `TlsConfig` is readable only on a
+    // VPC_LINK integration, so the provider needs the resource's own
+    // ConnectionType to decide. Deleting the `resource.properties` argument
+    // in src/cli/commands/drift.ts must fail this test.
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Int1: makeResource({
+          physicalId: 'int-1',
+          resourceType: 'AWS::ApiGatewayV2::Integration',
+          properties: {
+            ApiId: 'api',
+            IntegrationType: 'HTTP_PROXY',
+            ConnectionType: 'INTERNET',
+            TlsConfig: { ServerNameToVerify: 'backend.example.com' },
+          },
+        }),
+      })
+    );
+    const getDriftUnknownPaths = vi.fn((_type: string, properties?: Record<string, unknown>) =>
+      properties?.['ConnectionType'] !== 'VPC_LINK' ? ['TlsConfig'] : []
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      // AWS never returns TlsConfig for a public integration.
+      readCurrentState: async () => ({
+        ApiId: 'api',
+        IntegrationType: 'HTTP_PROXY',
+        ConnectionType: 'INTERNET',
+      }),
+      getDriftUnknownPaths,
+    });
+
+    const { output, error } = await runDrift(['TestStack']);
+
+    expect(error).toBeUndefined();
+    expect(getDriftUnknownPaths).toHaveBeenCalledWith(
+      'AWS::ApiGatewayV2::Integration',
+      expect.objectContaining({ ConnectionType: 'INTERNET' })
+    );
+    expect(output).toContain('no drift detected');
+    expect(output).not.toContain('TlsConfig');
+  });
+
   // Issue #1096 item 1. These drive the REAL command path (runDriftForStack ->
   // calculateResourceDrift), not calculateResourceDrift directly, so they
   // actually exercise the `provider.getDriftUnorderedPaths` call site and the

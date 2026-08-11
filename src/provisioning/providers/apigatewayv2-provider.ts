@@ -591,6 +591,8 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       );
     }
 
+    this.warnTlsConfigIgnoredIfPublic(logicalId, properties);
+
     try {
       const response = await this.getClient().send(
         new CreateIntegrationCommand({
@@ -953,6 +955,33 @@ export class ApiGatewayV2Provider implements ResourceProvider {
    *     each uses `properties.ApiId` (passed through PR G's signature
    *     extension) to issue the appropriate `Get*` call.
    */
+  /**
+   * `TlsConfig` is meaningful ONLY for a private (VPC-Link) integration.
+   * On a public one (`ConnectionType` absent or `INTERNET`) AWS SILENTLY
+   * IGNORES the field — it is absent from both the `CreateIntegration`
+   * echo and the `GetIntegration` read-back (direct A/B, 2026-08-11
+   * us-east-1) — so the provider can never read it back and a template
+   * that declares it would report permanent phantom drift on the
+   * `properties`-fallback baseline, with `--revert` re-sending a value AWS
+   * discards on every run (issue #1602). The path is scoped by the
+   * resource's own `ConnectionType` via the optional `properties` bag: a
+   * VPC_LINK integration keeps full `TlsConfig` drift coverage (AWS
+   * returns the field there). Without a properties bag the answer stays
+   * empty — comparing is the safe default, since hiding a private
+   * integration's real `TlsConfig` drift is worse than a false positive
+   * on a caller that could not supply the bag.
+   */
+  getDriftUnknownPaths(resourceType: string, properties?: Record<string, unknown>): string[] {
+    if (
+      resourceType === 'AWS::ApiGatewayV2::Integration' &&
+      properties !== undefined &&
+      properties['ConnectionType'] !== 'VPC_LINK'
+    ) {
+      return ['TlsConfig'];
+    }
+    return [];
+  }
+
   async readCurrentState(
     physicalId: string,
     _logicalId: string,
@@ -1141,7 +1170,10 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       }
       if (resp.RequestTemplates !== undefined) result['RequestTemplates'] = resp.RequestTemplates;
       if (resp.ResponseParameters !== undefined) {
-        result['ResponseParameters'] = this.toCfnResponseParameters(resp.ResponseParameters);
+        result['ResponseParameters'] = this.toCfnResponseParameters(
+          resp.ResponseParameters,
+          properties?.['ResponseParameters']
+        );
       }
       if (resp.TemplateSelectionExpression !== undefined) {
         result['TemplateSelectionExpression'] = resp.TemplateSelectionExpression;
@@ -1896,6 +1928,7 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       properties['TlsConfig'] != null &&
       !this.deepEqual(properties['TlsConfig'], previousProperties['TlsConfig'])
     ) {
+      this.warnTlsConfigIgnoredIfPublic(logicalId, properties);
       input.TlsConfig = properties['TlsConfig'] as TlsConfigInput;
       changed = true;
     }
@@ -2469,6 +2502,32 @@ export class ApiGatewayV2Provider implements ResourceProvider {
   }
 
   /**
+   * Announce a `TlsConfig` that AWS will silently discard (issue #1602):
+   * the field is only honored on a private (VPC-Link) integration, and on a
+   * public one (`ConnectionType` absent or `INTERNET`) AWS accepts the value
+   * and drops it — it never appears on the `GetIntegration` read-back
+   * (direct A/B, 2026-08-11 us-east-1). cdkd still sends the field (parity:
+   * CloudFormation forwards it too and AWS accepts it), but the never-silent
+   * policy requires saying so. The matching drift false positive is closed
+   * by {@link getDriftUnknownPaths}. A WARN on both create and update, never
+   * a throw — the update path can be a state-record replay
+   * (`rollback-executor.ts` / `drift --revert`) where a refusal would leave
+   * the resource un-revertable.
+   */
+  private warnTlsConfigIgnoredIfPublic(
+    logicalId: string,
+    properties: Record<string, unknown>
+  ): void {
+    if (properties['TlsConfig'] != null && properties['ConnectionType'] !== 'VPC_LINK') {
+      this.logger.warn(
+        `AWS::ApiGatewayV2::Integration ${logicalId}: TlsConfig is only honored on a ` +
+          `VPC_LINK (private) integration — AWS silently ignores it on a public one, and ` +
+          `the value will never be readable back from AWS (issue #1602).`
+      );
+    }
+  }
+
+  /**
    * `ResponseParameters` is the one `AWS::ApiGatewayV2::Integration` property
    * whose CFn shape does NOT match the SDK's, so forwarding it verbatim is not
    * an option (issue #609). CloudFormation models it as
@@ -2560,14 +2619,44 @@ export class ApiGatewayV2Provider implements ResourceProvider {
    * rebuild would trade the shape-mismatch phantom drift for an ordering one
    * (and `--revert` would re-push an identical value forever). Same reasoning
    * as `src/analyzer/drift-normalize.ts`, applied at the source instead.
+   *
+   * `declared` (the state-recorded desired `ResponseParameters` block, when
+   * the caller has it) makes the inverse MIRROR the template's spelling per
+   * status code (issue #1602): {@link toSdkResponseParameters} accepts an
+   * ALREADY-FLAT block (`{ "<status>": { "<Destination>": "<Source>" } }` —
+   * the SDK spelling a hand-written template may use) and passes it through,
+   * which made the pair non-injective — this method always rebuilt the CFn
+   * list shape, so a flat-spelled baseline could never compare equal to the
+   * read-back and reported permanent phantom drift. For a status code whose
+   * DECLARED block matches the flat-passthrough branch of
+   * {@link toSdkResponseParameters} (an object without an array
+   * `ResponseParameters` member), the read-back now stays flat too; every
+   * other status code (declared CFn shape, declared absent, no `declared` at
+   * all) keeps the CFn list shape. Object comparison is key-based, so the
+   * flat map round-trips without the sort the list shape needs.
    */
   private toCfnResponseParameters(
-    value: Record<string, Record<string, string>> | undefined
+    value: Record<string, Record<string, string>> | undefined,
+    declared?: unknown
   ): Record<string, unknown> | undefined {
     if (value == null) return undefined;
+    const declaredBlocks =
+      declared != null && typeof declared === 'object' && !Array.isArray(declared)
+        ? (declared as Record<string, unknown>)
+        : undefined;
     const out: Record<string, unknown> = {};
     for (const [statusCode, flat] of Object.entries(value)) {
       if (flat == null || typeof flat !== 'object' || Array.isArray(flat)) continue;
+      const declaredBlock = declaredBlocks?.[statusCode];
+      const declaredFlat =
+        declaredBlock != null &&
+        typeof declaredBlock === 'object' &&
+        !Array.isArray(declaredBlock) &&
+        !Array.isArray((declaredBlock as Record<string, unknown>)['ResponseParameters']);
+      if (declaredFlat) {
+        out[statusCode] = flat;
+        continue;
+      }
       out[statusCode] = {
         ResponseParameters: Object.entries(flat)
           .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))

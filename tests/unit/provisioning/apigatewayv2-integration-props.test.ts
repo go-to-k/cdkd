@@ -494,3 +494,200 @@ describe('ApiGatewayV2 Integration config properties (#609)', () => {
     }
   });
 });
+
+/**
+ * Issue #1602 — the two pre-existing shapes the #609 Integration backfill made
+ * reachable:
+ *
+ * 1. `TlsConfig` on a PUBLIC integration is silently discarded by AWS (absent
+ *    from both the create echo and the `GetIntegration` read-back — direct
+ *    A/B, 2026-08-11 us-east-1), so the provider scopes the drift-unknown
+ *    declaration by `ConnectionType` and announces the discard on write.
+ * 2. `toSdkResponseParameters` accepts the ALREADY-FLAT SDK spelling, which
+ *    made the pair non-injective: the inverse always rebuilt the CFn list
+ *    shape, so a flat-spelled baseline never compared equal to the read-back.
+ *    The inverse now mirrors the DECLARED spelling per status code.
+ */
+describe('ApiGatewayV2 Integration TlsConfig visibility + flat ResponseParameters round-trip (#1602)', () => {
+  let provider: ApiGatewayV2Provider;
+
+  const flatResponseParameters = {
+    '404': {
+      'append:header.header1': '$context.requestId',
+      'overwrite:statuscode': '200',
+    },
+  };
+  const cfnListResponseParameters = {
+    '404': {
+      ResponseParameters: [
+        { Destination: 'append:header.header1', Source: '$context.requestId' },
+        { Destination: 'overwrite:statuscode', Source: '200' },
+      ],
+    },
+  };
+
+  beforeEach(() => {
+    mockSend.mockReset();
+    warnings.length = 0;
+    provider = new ApiGatewayV2Provider();
+  });
+
+  describe('getDriftUnknownPaths', () => {
+    it('declares TlsConfig drift-unknown for an explicit INTERNET integration', () => {
+      expect(
+        provider.getDriftUnknownPaths(INTEGRATION_TYPE, { ConnectionType: 'INTERNET' })
+      ).toEqual(['TlsConfig']);
+    });
+
+    it('declares TlsConfig drift-unknown when ConnectionType is absent (INTERNET default)', () => {
+      expect(provider.getDriftUnknownPaths(INTEGRATION_TYPE, { ApiId: API_ID })).toEqual([
+        'TlsConfig',
+      ]);
+    });
+
+    it('keeps TlsConfig compared for a VPC_LINK integration', () => {
+      expect(
+        provider.getDriftUnknownPaths(INTEGRATION_TYPE, { ConnectionType: 'VPC_LINK' })
+      ).toEqual([]);
+    });
+
+    it('stays empty without a properties bag — never hide a private integration real drift', () => {
+      expect(provider.getDriftUnknownPaths(INTEGRATION_TYPE)).toEqual([]);
+    });
+
+    it('stays empty for the sibling ApiGatewayV2 types', () => {
+      expect(
+        provider.getDriftUnknownPaths('AWS::ApiGatewayV2::Stage', { ConnectionType: 'INTERNET' })
+      ).toEqual([]);
+    });
+  });
+
+  describe('TlsConfig-ignored warning', () => {
+    it('warns on create when TlsConfig is declared on a public integration', async () => {
+      mockSend.mockResolvedValueOnce({ IntegrationId: INTEGRATION_ID });
+
+      await provider.create('L', INTEGRATION_TYPE, {
+        ApiId: API_ID,
+        IntegrationType: 'HTTP_PROXY',
+        IntegrationUri: 'https://example.com',
+        TlsConfig: { ServerNameToVerify: 'backend.example.com' },
+      });
+
+      expect(warnings.some((w) => w.includes('TlsConfig'))).toBe(true);
+    });
+
+    it('does not warn on create for a VPC_LINK integration', async () => {
+      mockSend.mockResolvedValueOnce({ IntegrationId: INTEGRATION_ID });
+
+      await provider.create('L', INTEGRATION_TYPE, {
+        ApiId: API_ID,
+        IntegrationType: 'HTTP_PROXY',
+        IntegrationUri: 'https://example.com',
+        ConnectionId: 'vpclink-1',
+        ConnectionType: 'VPC_LINK',
+        TlsConfig: { ServerNameToVerify: 'backend.example.com' },
+      });
+
+      expect(warnings.filter((w) => w.includes('TlsConfig'))).toEqual([]);
+    });
+
+    it('warns on update when a changed TlsConfig is sent on a public integration', async () => {
+      mockSend.mockResolvedValueOnce({});
+
+      await provider.update(
+        'L',
+        INTEGRATION_ID,
+        INTEGRATION_TYPE,
+        {
+          ApiId: API_ID,
+          IntegrationType: 'HTTP_PROXY',
+          IntegrationUri: 'https://example.com',
+          TlsConfig: { ServerNameToVerify: 'changed.example.com' },
+        },
+        {
+          ApiId: API_ID,
+          IntegrationType: 'HTTP_PROXY',
+          IntegrationUri: 'https://example.com',
+        }
+      );
+
+      expect(warnings.some((w) => w.includes('TlsConfig'))).toBe(true);
+    });
+  });
+
+  describe('readCurrentState ResponseParameters spelling mirror', () => {
+    it('keeps the flat SDK spelling when the template declared it flat', async () => {
+      mockSend.mockResolvedValueOnce({
+        IntegrationType: 'HTTP_PROXY',
+        IntegrationUri: 'https://example.com',
+        ResponseParameters: flatResponseParameters,
+      });
+
+      const state = await provider.readCurrentState!(INTEGRATION_ID, 'L', INTEGRATION_TYPE, {
+        ApiId: API_ID,
+        ResponseParameters: flatResponseParameters,
+      });
+
+      // Baseline (flat) and read-back (flat) now compare equal — object
+      // comparison is key-based, so no sort is needed on this arm.
+      expect(state?.['ResponseParameters']).toEqual(flatResponseParameters);
+    });
+
+    it('rebuilds the CFn list shape when the template declared the CFn shape', async () => {
+      mockSend.mockResolvedValueOnce({
+        IntegrationType: 'HTTP_PROXY',
+        IntegrationUri: 'https://example.com',
+        ResponseParameters: flatResponseParameters,
+      });
+
+      const state = await provider.readCurrentState!(INTEGRATION_ID, 'L', INTEGRATION_TYPE, {
+        ApiId: API_ID,
+        ResponseParameters: cfnListResponseParameters,
+      });
+
+      expect(state?.['ResponseParameters']).toEqual(cfnListResponseParameters);
+    });
+
+    it('mirrors the spelling PER STATUS CODE for a mixed template', async () => {
+      mockSend.mockResolvedValueOnce({
+        IntegrationType: 'HTTP_PROXY',
+        IntegrationUri: 'https://example.com',
+        ResponseParameters: {
+          ...flatResponseParameters,
+          '500': { 'overwrite:statuscode': '502' },
+        },
+      });
+
+      const state = await provider.readCurrentState!(INTEGRATION_ID, 'L', INTEGRATION_TYPE, {
+        ApiId: API_ID,
+        ResponseParameters: {
+          '404': flatResponseParameters['404'],
+          '500': {
+            ResponseParameters: [{ Destination: 'overwrite:statuscode', Source: '502' }],
+          },
+        },
+      });
+
+      expect(state?.['ResponseParameters']).toEqual({
+        '404': flatResponseParameters['404'],
+        '500': {
+          ResponseParameters: [{ Destination: 'overwrite:statuscode', Source: '502' }],
+        },
+      });
+    });
+
+    it('rebuilds the CFn list shape when the state bag has no declared block', async () => {
+      mockSend.mockResolvedValueOnce({
+        IntegrationType: 'HTTP_PROXY',
+        IntegrationUri: 'https://example.com',
+        ResponseParameters: flatResponseParameters,
+      });
+
+      const state = await provider.readCurrentState!(INTEGRATION_ID, 'L', INTEGRATION_TYPE, {
+        ApiId: API_ID,
+      });
+
+      expect(state?.['ResponseParameters']).toEqual(cfnListResponseParameters);
+    });
+  });
+});

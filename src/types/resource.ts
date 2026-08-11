@@ -500,11 +500,22 @@ export interface ResourceProvider {
    *
    * Paths use dot-notation for nested keys (e.g. `'VpcConfig.SubnetIds'`).
    *
+   * Some paths are unknown only for a SUBSET of a type's resources, decided
+   * by the resource's own configuration — API Gateway V2 `TlsConfig` is
+   * returned by `GetIntegration` for a private (VPC-Link) integration but
+   * silently discarded by AWS for a public one (issue #1602). The optional
+   * `properties` argument (the resource's state-recorded desired properties)
+   * lets a provider make that call per resource; implementations MUST
+   * tolerate it being absent (callers other than `cdkd drift` may not have
+   * a properties bag) by falling back to the type-level answer.
+   *
    * @param resourceType e.g. `AWS::Lambda::Function`
+   * @param properties the resource's state-recorded properties, when the
+   *        caller has them (currently only `cdkd drift` passes this)
    * @returns paths to exclude from the drift comparison; defaults to
    *          empty when not implemented
    */
-  getDriftUnknownPaths?(resourceType: string): string[];
+  getDriftUnknownPaths?(resourceType: string, properties?: Record<string, unknown>): string[];
 
   /**
    * State property paths holding a plain-string array that is semantically an

@@ -111,11 +111,23 @@ report permanent phantom drift on an untouched integration.
 
 - `Integration.ConnectionId` — needs a live VPC Link (VPC + subnets + SG,
   minutes per run) for a plain pass-through string field
-- `Integration.TlsConfig` — same VPC Link requirement, but the reason is worth
-  recording because the fixture asserted it first and FAILED: direct A/B
-  against the API (2026-08-11, us-east-1) shows AWS **silently ignores**
-  `TlsConfig` on a public (`ConnectionType: INTERNET`) integration — it is
-  absent from both the `CreateIntegration` echo and the `GetIntegration`
-  read-back, with or without an explicit `ConnectionType`. The field is only
-  meaningful for a PRIVATE integration. Asserting it on a public one fails
-  against perfectly correct cdkd behavior
+
+## Issue #1602 coverage (TlsConfig visibility + flat ResponseParameters)
+
+Two pre-existing shapes that the #609 backfill made REACHABLE for the first
+time. Both surface as `cdkd drift`, so the fixture's assertion for both is a
+**clean `cdkd drift` run right after a deploy** (phase 1b) and again after the
+update — a pre-fix binary reports drift on a stack nobody touched, and
+`--revert` would then either re-push a value AWS discards or re-shape a block
+forever.
+
+| Shape | How it is exercised |
+| --- | --- |
+| `TlsConfig` on a PUBLIC integration | The HTTP_PROXY integration now DOES declare `TlsConfig`. `verify.sh` first asserts AWS read it back as absent (the issue's premise — if AWS ever starts honoring it, that assertion fails loudly and the scoping must be re-measured), then asserts drift stays clean. The provider declares the path drift-unknown only when `ConnectionType != VPC_LINK`, so a private integration keeps full coverage, and the discard is announced by a deploy-time warning rather than being silent. |
+| flat-spelled `ResponseParameters` | A third API (`-flat`) carries an integration whose `ResponseParameters` uses the ALREADY-FLAT SDK spelling a hand-written L1 may borrow. Delivery is asserted on create and on update; `readCurrentState` now mirrors the DECLARED spelling per status code, so the baseline and the read-back compare equal. |
+
+The flat API is separate because `int_id_by_type` requires exactly one
+integration per `(api, IntegrationType)` pair and the main API's `HTTP_PROXY`
+slot is taken. Its `Source` values stay strings on purpose — the flat branch is
+a verbatim pass-through, so it never exercises the CFn-side scalar coercion the
+main integration covers.
