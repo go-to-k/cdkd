@@ -492,9 +492,34 @@ export function isIamPropagationError(message: string): boolean {
  * `cdkd deploy --replace`'s delete-first fallback never fired — so the
  * replacement was unperformable by any flag. Verified against real AWS
  * (us-east-1, 2026-08-12) by creating one function name twice.
+ *
+ * Two fences keep the widened arm from crediting a NON-collision, which
+ * matters because the sites that consult it react DESTRUCTIVELY (the
+ * `--replace` delete-first fallback deletes the old resource):
+ *  - `\b` after `exists?` rejects a participle ("already existed as a draft");
+ *  - the lookbehind rejects a NEGATED or MODAL phrase — "the bucket does NOT
+ *    already exist", "the destination bucket MUST already exist" — which the
+ *    bare pattern matched. The modal form is the one that bites: a create
+ *    rejected for a missing PREREQUISITE would be reported to the user as a
+ *    name collision pointing at `--replace`, and following that advice
+ *    deletes the live old resource before the re-create fails again for the
+ *    same reason, leaving it absent from AWS with state still recording it.
+ * The error-CODE arm stays exact (`AlreadyExists`): the singular
+ * `AlreadyExist` is not an AWS code spelling, and loosening it would match
+ * inside unrelated identifiers.
+ *
+ * Classification stays MESSAGE-based rather than moving to the exception
+ * NAME, and that is load-bearing here rather than inherited: Lambda raises
+ * `ResourceConflictException` for a function in a PENDING state too (see
+ * `lambda-function-provider.ts`), so keying on the name would classify a
+ * transient state conflict as a collision and delete a live function under
+ * `--replace`.
  */
 export function isNameCollisionError(message: string): boolean {
-  return /already exists?\b/i.test(message) || message.includes('AlreadyExists');
+  return (
+    /(?<!\b(?:must|not|should|may|cannot)\s)already exists?\b/i.test(message) ||
+    message.includes('AlreadyExists')
+  );
 }
 
 /**

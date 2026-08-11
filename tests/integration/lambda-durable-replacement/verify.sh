@@ -112,6 +112,14 @@ cleanup() {
   if [ -x "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   fi
+  # DIRECT sweep in addition to `state destroy`, the same pairing
+  # `lambda-config-field-removal` carries: `state destroy` can fail (lock held,
+  # throttle, partial destroy) while the state.json delete below runs
+  # unconditionally — which would orphan the function with no state record and
+  # no tag to find it by. The name is deterministic, so it is known even when
+  # `FN` was never resolved (a failure before phase 1's state read).
+  aws lambda delete-function --function-name "${STACK}-DurableFn" --region "${REGION}" >/dev/null 2>&1
+  aws lambda delete-function --function-name "${FN:-}" --region "${REGION}" >/dev/null 2>&1
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1
@@ -212,13 +220,18 @@ if [ "${DEPLOY_RC}" -eq 0 ]; then
   exit 1
 fi
 echo "    OK: deploy refused (rc=${DEPLOY_RC})"
-if ! printf '%s' "${DEPLOY_OUT}" | grep -q 'requires replacement'; then
-  echo "FAIL: the refusal is not cdkd's replacement-collision error — the collision" >&2
+# Match the phrase UNIQUE to the create-first collision refusal, not the
+# generic 'requires replacement' — the idempotent-create and
+# stateful-replace-blocked arms print that too, so a generic grep could not
+# tell WHICH refusal fired. (`eventbridge-pipes/verify.sh` uses the same
+# collision-unique phrase.)
+if ! printf '%s' "${DEPLOY_OUT}" | grep -q 'custom-named resource requires replacing'; then
+  echo "FAIL: the refusal is not cdkd's create-first collision error — the collision" >&2
   echo "      signature was not recognized (issue #1625: AWS spells it 'already exist')" >&2
   printf '%s\n' "${DEPLOY_OUT}" >&2
   exit 1
 fi
-echo "    OK: refusal names the replacement collision"
+echo "    OK: refusal names the create-first collision"
 if ! printf '%s' "${DEPLOY_OUT}" | grep -q -- '--replace'; then
   echo "FAIL: the refusal does not point at the --replace escape hatch" >&2
   printf '%s\n' "${DEPLOY_OUT}" >&2
@@ -233,14 +246,31 @@ assert_eq "function survived the refused replacement (DurableConfig)" "3600" \
   "$(fncfg 'DurableConfig.ExecutionTimeout')"
 assert_eq "function survived the refused replacement (description)" \
   "cdkd-integ durable present" "$(fncfg 'Description')"
+# ...and STATE was not touched either: the refusal must leave the recorded
+# properties describing the resource AWS still has, or the next deploy would
+# diff against a record that never happened.
+STATE_AFTER_REFUSAL="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)"
+assert_eq "state still records the DurableConfig after the refusal" "3600" \
+  "$(echo "${STATE_AFTER_REFUSAL}" | jq -r '.resources | to_entries[] | select(.value.resourceType == "AWS::Lambda::Function") | .value.properties.DurableConfig.ExecutionTimeout')"
 
 # --- Phase 3: same template WITH --replace ----------------------------------
 echo "==> Phase 3: re-deploy with --replace (delete-first fallback executes)"
-CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
+REPLACE_OUT="$(CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --replace \
-  --yes
+  --yes 2>&1)"
+printf '%s\n' "${REPLACE_OUT}"
+
+# The end-state assertions below cannot tell WHICH path produced them, so pin
+# the fallback itself: a future re-route through some other destroy-then-create
+# path would still clear the durable config and silently pass otherwise.
+if ! printf '%s' "${REPLACE_OUT}" | grep -q 'deleting old'; then
+  echo "FAIL: the --replace deploy did not take the delete-first fallback" >&2
+  printf '%s\n' "${REPLACE_OUT}" >&2
+  exit 1
+fi
+echo "    OK: delete-first fallback ran"
 
 # The re-created function keeps the deterministic name, so re-read by the SAME
 # name — and assert the state row still points at it (a replacement that lost
