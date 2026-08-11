@@ -41,12 +41,14 @@ import { ProvisioningError } from '../../utils/error-handler.js';
 import { generateResourceName } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
+import { replayWarn, requireConfigString } from '../config-shape.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
+  CreateContext,
 } from '../../types/resource.js';
 
 /**
@@ -148,7 +150,8 @@ export class DynamoDBTableProvider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating DynamoDB table ${logicalId}`);
 
@@ -183,8 +186,25 @@ export class DynamoDBTableProvider implements ResourceProvider {
     let tableCreated = false;
 
     try {
-      // BillingMode (default: PROVISIONED)
-      const billingMode = (properties['BillingMode'] as string | undefined) || 'PROVISIONED';
+      // BillingMode (default: PROVISIONED). Guarded per issue #1545 — the
+      // `|| 'PROVISIONED'` spelling silently substituted the default for a
+      // present-but-unusable value (a `BillingMode: null`, an intrinsic the
+      // resolver could not resolve, a hand-authored L1 typo), so a template
+      // that says PAY_PER_REQUEST could create a continuously-billed
+      // PROVISIONED table with no error anywhere. `BillingMode` is
+      // ENUM-valued, so it does NOT take `coerceNumber`: a number here is a
+      // template bug, not the unquoted-YAML scalar CFn coerces. The refusal
+      // downgrades to a warning on a state replay (`replayWarn`) — the
+      // rollback executor's reverse-replacement arm revives the OLD resource
+      // from `previousState.properties`, which the user cannot edit from the
+      // template. The read sits inside `create()`'s try, so the catch below
+      // wraps the refusal into a ProvisioningError.
+      const billingMode = requireConfigString(
+        properties['BillingMode'],
+        'PROVISIONED',
+        'AWS::DynamoDB::Table BillingMode',
+        replayWarn(this.logger, context)
+      );
 
       const createParams: CreateTableCommandInput = {
         TableName: tableName,
@@ -439,16 +459,51 @@ export class DynamoDBTableProvider implements ResourceProvider {
       const tableClassChanged =
         normalizeTableClass(properties['TableClass']) !==
         normalizeTableClass(previousProperties['TableClass']);
+      // Shape-guard the DESIRED BillingMode before the change detection
+      // (issue #1545). WARN, never throw: `rollback-executor.ts` replays a
+      // rollback via `provider.update(..., previousState.properties, ...)`,
+      // so the desired bag here can itself be a historical state record — a
+      // hard refusal would make the table un-rollbackable with no
+      // template-side remedy. An UNUSABLE desired value falls back to the
+      // PREVIOUS billing mode, NOT the create-path default: defaulting would
+      // make the change detection see a real flip and silently re-price a
+      // live table, which is strictly worse than the pre-guard behavior (AWS
+      // rejecting the junk value loudly, billing unchanged). An ABSENT value
+      // keeps meaning "no flip requested" (no BillingMode sent). The PREVIOUS
+      // side stays unguarded on purpose: it comes from cdkd STATE, so
+      // refusing a malformed value an older binary recorded would make the
+      // stack permanently un-updatable.
+      const prevBillingMode = previousProperties['BillingMode'] as
+        | 'PROVISIONED'
+        | 'PAY_PER_REQUEST'
+        | undefined;
+      let billingModeUnusable = false;
+      const requestedBillingMode =
+        properties['BillingMode'] === undefined
+          ? undefined
+          : requireConfigString(
+              properties['BillingMode'],
+              'PROVISIONED',
+              'AWS::DynamoDB::Table BillingMode',
+              {
+                onUnusable: (message) => {
+                  billingModeUnusable = true;
+                  this.logger.warn(
+                    `${message} The table's current billing mode` +
+                      `${prevBillingMode ? ` (${prevBillingMode})` : ''} is kept for this ` +
+                      `update rather than flipped to the default.`
+                  );
+                },
+              }
+            );
+      const billingMode = billingModeUnusable
+        ? prevBillingMode
+        : (requestedBillingMode as 'PROVISIONED' | 'PAY_PER_REQUEST' | undefined);
       const billingOrThroughputChanged =
-        JSON.stringify(properties['BillingMode']) !==
-          JSON.stringify(previousProperties['BillingMode']) ||
+        JSON.stringify(billingMode) !== JSON.stringify(prevBillingMode) ||
         JSON.stringify(properties['ProvisionedThroughput']) !==
           JSON.stringify(previousProperties['ProvisionedThroughput']);
       if (billingOrThroughputChanged || tableClassChanged) {
-        const billingMode = properties['BillingMode'] as
-          | 'PROVISIONED'
-          | 'PAY_PER_REQUEST'
-          | undefined;
         const updateInput: UpdateTableCommandInput = { TableName: physicalId };
         if (billingOrThroughputChanged && billingMode) {
           updateInput.BillingMode = billingMode;
