@@ -263,6 +263,28 @@ describe('DynamoDBTableProvider malformed BillingMode (issue #1545)', () => {
     }
   );
 
+  it('handles an unusable desired value with NO previous mode on record', async () => {
+    activeTable();
+
+    // prevBillingMode === undefined + unusable desired: the fallback is
+    // undefined, the comparison reads "unchanged", and the warn renders
+    // without the parenthesized mode.
+    await expect(
+      provider.update(
+        'MyTable',
+        TABLE_NAME,
+        RESOURCE_TYPE,
+        { ...baseProps, BillingMode: '' },
+        { ...baseProps }
+      )
+    ).resolves.toBeDefined();
+
+    expect(billingUpdateCalls()).toHaveLength(0);
+    expect(childLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("The table's current billing mode is kept")
+    );
+  });
+
   it('keeps the PREVIOUS mode (not the default) when an unusable value rides a capacity change', async () => {
     activeTable();
 
@@ -343,9 +365,12 @@ describe('DynamoDBTableProvider malformed BillingMode (issue #1545)', () => {
   it('an ABSENT desired value is not treated as unusable', async () => {
     activeTable();
 
-    // Absence means "no flip requested" in this provider (no BillingMode is
-    // sent), and it must keep meaning that — the suppression is scoped to
-    // present-but-unusable ONLY.
+    // Absence means "no flip requested" in this provider (no BillingMode
+    // FIELD is sent — the removal itself still emits an UpdateTable carrying
+    // no mutable field, the pre-existing #1160-class behavior this suite
+    // deliberately does not change; tracked in issue #1553), and it must
+    // keep meaning that — the suppression is scoped to present-but-unusable
+    // ONLY.
     await provider.update(
       'MyTable',
       TABLE_NAME,
