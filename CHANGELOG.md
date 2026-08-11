@@ -1,3 +1,10 @@
+## [0.280.14](https://github.com/go-to-k/cdkd/compare/v0.280.13...v0.280.14) (2026-08-11)
+
+
+### Bug Fixes
+
+* **s3:** warn-and-skip the four per-item string refusals on a state replay instead of hard-throwing ([#1613](https://github.com/go-to-k/cdkd/issues/1613)) ([5233889](https://github.com/go-to-k/cdkd/commit/52338895d976caeaa7a3315c0c5b8bcee966350f))
+
 ## [0.280.13](https://github.com/go-to-k/cdkd/compare/v0.280.12...v0.280.13) (2026-08-11)
 
 
