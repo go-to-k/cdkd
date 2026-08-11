@@ -2064,19 +2064,56 @@ export class ELBv2Provider implements ResourceProvider {
         });
       }
       result['Targets'] = targets;
-    } catch {
+    } catch (err) {
       // Permission errors etc — leave the key absent rather than reporting
-      // every registered target as removed.
+      // every registered target as removed. Swallowed (not NotFound-mapped to
+      // `undefined` like the attributes read above) because the
+      // DescribeTargetGroups + DescribeTargetGroupAttributes calls that
+      // precede it already surface a deleted target group; this mirrors
+      // `attachTags`, the sibling best-effort enrichment.
+      this.logger.debug(
+        `ELBv2 DescribeTargetHealth(${targetGroupArn}) failed: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      );
     }
   }
 
-  getDriftUnknownPaths(resourceType: string): string[] {
+  /**
+   * `Targets` is scoped PER RESOURCE (issue
+   * [#1602](https://github.com/go-to-k/cdkd/issues/1602)'s seam), not switched
+   * off for the type: it is compared only for a target group whose TEMPLATE
+   * declares `Targets`.
+   *
+   * The reason is the issue [#1498](https://github.com/go-to-k/cdkd/issues/1498)
+   * class. A target group fronting an ECS service or an ASG declares NO
+   * `Targets` — the sibling resource registers them, and it keeps
+   * re-registering as it scales. Comparing an undeclared target list would
+   * therefore report drift on every scale event of an untouched stack, and
+   * `--revert` would DEREGISTER the tasks the service just placed. The
+   * `undeclaredEmptyObservedKeys` guard only covers the case where the capture
+   * happened to be EMPTY, which for a redeployed running service it is not.
+   *
+   * An absent properties bag falls back to COMPARING, per the method's
+   * contract — hiding real drift is the worse failure, and the only caller
+   * that omits the bag today is not `cdkd drift`.
+   */
+  getDriftUnknownPaths(resourceType: string, properties?: Record<string, unknown>): string[] {
     switch (resourceType) {
       case 'AWS::ElasticLoadBalancingV2::LoadBalancer':
         // EnableCapacityReservationProvisionStabilize is a CFn-only
         // orchestration flag (wait-for-provisioned opt-in) with no AWS-side
         // readback — it is not a resource property on the wire.
         return ['EnableCapacityReservationProvisionStabilize'];
+      case 'AWS::ElasticLoadBalancingV2::TargetGroup':
+        if (
+          properties !== undefined &&
+          Object.keys(properties).length > 0 &&
+          properties['Targets'] === undefined
+        ) {
+          return ['Targets'];
+        }
+        return [];
       default:
         return [];
     }

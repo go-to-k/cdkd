@@ -1226,10 +1226,50 @@ describe('ELBv2 LoadBalancer + TargetGroup silent-drop props (#609)', () => {
       expect(provider.getDriftUnknownPaths(LB_TYPE)).toEqual([
         'EnableCapacityReservationProvisionStabilize',
       ]);
-      // `Targets` moved OUT of this list in issue #1620 — it is read back via
-      // DescribeTargetHealth and declared UNORDERED instead.
+      // `Targets` moved OUT of the TYPE-level list in issue #1620 — it is read
+      // back via DescribeTargetHealth and declared UNORDERED instead. With no
+      // properties bag the contract is to fall back to COMPARING.
       expect(provider.getDriftUnknownPaths(TG_TYPE)).toEqual([]);
       expect(provider.getDriftUnknownPaths('AWS::ElasticLoadBalancingV2::Listener')).toEqual([]);
+    });
+  });
+
+  describe('getDriftUnknownPaths — per-resource Targets scoping (#1620 / #1602)', () => {
+    it('COMPARES Targets when the template declares them', () => {
+      expect(
+        provider.getDriftUnknownPaths(TG_TYPE, { Protocol: 'HTTP', Targets: [{ Id: '10.0.0.1' }] })
+      ).toEqual([]);
+    });
+
+    it('IGNORES Targets when the template declares none (ECS / ASG-managed target group)', () => {
+      // The #1498 class: a sibling resource registers the targets and keeps
+      // re-registering as it scales. Comparing would report drift on every
+      // scale event and `--revert` would deregister the live tasks.
+      expect(provider.getDriftUnknownPaths(TG_TYPE, { Protocol: 'HTTP', VpcId: 'vpc-1' })).toEqual([
+        'Targets',
+      ]);
+    });
+
+    it('COMPARES an explicitly EMPTY templated target list', () => {
+      // `Targets: []` is a real declaration — "this target group has no
+      // targets" — so a console-side registration IS drift the user wants.
+      expect(provider.getDriftUnknownPaths(TG_TYPE, { Protocol: 'HTTP', Targets: [] })).toEqual([]);
+    });
+
+    it('falls back to COMPARING on an absent or empty properties bag', () => {
+      // Contract from `ResourceProvider.getDriftUnknownPaths`: a provider must
+      // tolerate a missing bag, and hiding real drift is the worse failure.
+      expect(provider.getDriftUnknownPaths(TG_TYPE, undefined)).toEqual([]);
+      expect(provider.getDriftUnknownPaths(TG_TYPE, {})).toEqual([]);
+    });
+
+    it('does not leak the scoping onto the sibling ELBv2 types', () => {
+      expect(provider.getDriftUnknownPaths(LB_TYPE, { Name: 'lb' })).toEqual([
+        'EnableCapacityReservationProvisionStabilize',
+      ]);
+      expect(
+        provider.getDriftUnknownPaths('AWS::ElasticLoadBalancingV2::Listener', { Port: 443 })
+      ).toEqual([]);
     });
   });
 
