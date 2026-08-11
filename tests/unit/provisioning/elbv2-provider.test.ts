@@ -198,7 +198,7 @@ describe('ELBv2Provider', () => {
         });
       });
 
-      it('clears removed LoadBalancerAttributes by submitting empty Value (AWS-documented clear)', async () => {
+      it('resets a removed BOOLEAN LoadBalancerAttribute to its documented default', async () => {
         const { ModifyLoadBalancerAttributesCommand } = await import(
           '@aws-sdk/client-elastic-load-balancing-v2'
         );
@@ -226,10 +226,19 @@ describe('ELBv2Provider', () => {
         >;
         // Only the changed/removed key is submitted: idle_timeout was
         // 60 on both sides (no change → not resubmitted);
-        // access_logs.s3.enabled was removed → submitted with Value: ''
-        // (AWS-documented clear).
+        // access_logs.s3.enabled was removed.
+        //
+        // This assertion used to expect `Value: ''` and was named "AWS-
+        // documented clear" — the live A/B for issue #1609 item 1 disproved
+        // that for BOOLEAN keys: AWS answers "The value of
+        // 'deletion_protection.enabled' must be 'true' or 'false', but was
+        // ''" and fails the WHOLE Modify* call. access_logs.s3.enabled is
+        // boolean-validated the same way, so the reset is its documented
+        // default. The empty-string arm still applies to numeric / free-form
+        // keys and is pinned by its own test in
+        // elbv2-lb-targetgroup-props.test.ts.
         expect(cmd.input.Attributes).toEqual([
-          { Key: 'access_logs.s3.enabled', Value: '' },
+          { Key: 'access_logs.s3.enabled', Value: 'false' },
         ]);
       });
     });
@@ -650,7 +659,7 @@ describe('ELBv2Provider', () => {
         ]);
       });
 
-      it('should clear a removed ListenerAttribute by pushing the empty-string default', async () => {
+      it('should reset a removed BOOLEAN ListenerAttribute to its documented default', async () => {
         const listenerArn =
           'arn:aws:elasticloadbalancing:us-east-1:123456789012:listener/app/my-alb/1234567890abcdef/abcdef1234567890';
         mockSend.mockResolvedValueOnce({});
@@ -671,8 +680,13 @@ describe('ELBv2Provider', () => {
 
         expect(mockSend).toHaveBeenCalledTimes(2);
         const modifyAttrsCall = mockSend.mock.calls[1][0];
+        // Was `Value: ''` until the issue #1609 item 1 live A/B: dropping
+        // this exact key against real AWS failed the removal deploy with
+        // "The value of 'routing.http.response.server.enabled' must be
+        // 'true' or 'false', but was ''" — and took the automatic rollback
+        // down with it. The reset is the documented default.
         expect(modifyAttrsCall.input.Attributes).toEqual([
-          { Key: 'routing.http.response.server.enabled', Value: '' },
+          { Key: 'routing.http.response.server.enabled', Value: 'true' },
         ]);
       });
 

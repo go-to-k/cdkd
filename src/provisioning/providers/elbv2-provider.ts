@@ -106,6 +106,65 @@ const TARGET_GROUP_ATTRIBUTE_DEFAULTS: Record<string, string> = {
 };
 
 /**
+ * Documented AWS defaults for the BOOLEAN / ENUM-valued LoadBalancer and
+ * Listener attributes, used to reset a removed `LoadBalancerAttributes` /
+ * `ListenerAttributes` entry.
+ *
+ * Unlike ModifyTargetGroupAttributes — which rejects an empty `Value` for
+ * EVERY key — these two APIs accept `Value: ''` for the numeric and
+ * free-form string attributes and REJECT it only where the value is
+ * validated against a fixed set. Live A/B 2026-08-11 (issue #1609 item 1),
+ * via the `alb` integ's removal phase:
+ *
+ *   idle_timeout.timeout_seconds  -> `Value: ''` ACCEPTED (numeric)
+ *   deletion_protection.enabled   -> "The value of 'deletion_protection.enabled'
+ *                                     must be 'true' or 'false', but was ''"
+ *   routing.http.response.server.enabled (Listener)
+ *                                 -> same rejection, same shape
+ *
+ * A rejection fails the whole Modify* call, so ONE removed boolean took the
+ * entire deploy down (and then the rollback with it). Hence: send the
+ * documented default for the validated keys, and keep the empty string for
+ * everything else — which is both these APIs' own "clear the override"
+ * signal and the behaviour every non-boolean key already relied on.
+ *
+ * That fallback is the deliberate DIVERGENCE from
+ * TARGET_GROUP_ATTRIBUTE_DEFAULTS, whose unknown-key arm warns and retains:
+ * there the empty string is never valid, here it is valid for the majority
+ * of keys, so falling back to it preserves working behaviour instead of
+ * silently retaining a value the template asked to drop.
+ *
+ * Keys whose default is LOAD-BALANCER-TYPE-dependent are deliberately absent
+ * (`load_balancing.cross_zone.enabled` is always-on and unconfigurable for an
+ * ALB but defaults to false on an NLB / GWLB, so cdkd cannot pick one without
+ * knowing the type at diff time) — those keep the empty-string behaviour they
+ * have always had.
+ * Source: ELBv2 API reference, LoadBalancerAttribute / ListenerAttribute key
+ * tables.
+ */
+const LOAD_BALANCER_ATTRIBUTE_DEFAULTS: Record<string, string> = {
+  'deletion_protection.enabled': 'false',
+  'access_logs.s3.enabled': 'false',
+  'connection_logs.s3.enabled': 'false',
+  'ipv6.deny_all_igw_traffic': 'false',
+  'routing.http.desync_mitigation_mode': 'defensive',
+  'routing.http.drop_invalid_header_fields.enabled': 'false',
+  'routing.http.preserve_host_header.enabled': 'false',
+  'routing.http.x_amzn_tls_version_and_cipher_suite.enabled': 'false',
+  'routing.http.xff_client_port.enabled': 'false',
+  'routing.http.xff_header_processing.mode': 'append',
+  'routing.http2.enabled': 'true',
+  'waf.fail_open.enabled': 'false',
+  'zonal_shift.config.enabled': 'false',
+  'dns_record.client_routing_policy': 'any_availability_zone',
+};
+
+/** @see LOAD_BALANCER_ATTRIBUTE_DEFAULTS — same rule, Listener key table. */
+const LISTENER_ATTRIBUTE_DEFAULTS: Record<string, string> = {
+  'routing.http.response.server.enabled': 'true',
+};
+
+/**
  * AWS ELBv2 Provider
  *
  * Implements resource provisioning for ELBv2 resources:
@@ -580,13 +639,17 @@ export class ELBv2Provider implements ResourceProvider {
     // ─── LoadBalancerAttributes ──────────────────────────────────────
     // ModifyLoadBalancerAttributes replaces ONLY the listed attrs — keys
     // not in the request are left untouched. Build the diff: changed
-    // values from newAttrs win; keys present only in oldAttrs are
-    // pushed back to AWS's documented default (the empty string),
-    // which clears the override. Skip the call entirely when nothing
-    // changed so the no-drift round-trip is a clean no-op.
+    // values from newAttrs win; keys present only in oldAttrs are reset.
+    // A removed BOOLEAN / ENUM key takes its documented default from
+    // LOAD_BALANCER_ATTRIBUTE_DEFAULTS because this API rejects an empty
+    // Value for those (live-verified 2026-08-11 — see that table); every
+    // other key keeps the empty string, which the API accepts as "clear the
+    // override". Skip the call entirely when nothing changed so the
+    // no-drift round-trip is a clean no-op.
     const submittedAttrs = this.diffAttributes(
       this.normalizeAttributes(properties['LoadBalancerAttributes']),
-      this.normalizeAttributes(previousProperties['LoadBalancerAttributes'])
+      this.normalizeAttributes(previousProperties['LoadBalancerAttributes']),
+      (key) => LOAD_BALANCER_ATTRIBUTE_DEFAULTS[key] ?? ''
     );
     if (submittedAttrs.length > 0) {
       await this.getClient().send(
@@ -1392,15 +1455,21 @@ export class ELBv2Provider implements ResourceProvider {
       // ─── ListenerAttributes ──────────────────────────────────────────
       // ModifyListenerAttributes replaces ONLY the listed attrs — keys not
       // in the request are left untouched. Build the diff: changed values
-      // from newAttrs win; keys present only in oldAttrs are pushed back to
-      // AWS's documented default (the empty string), which clears the
-      // override. Skip the call entirely when nothing changed so the
-      // no-drift round-trip is a clean no-op. A failure here THROWS (caught
-      // by the outer try/catch and re-wrapped as a ProvisioningError) so
-      // cdkd state is not written as-if-applied — the next deploy retries.
+      // from newAttrs win; keys present only in oldAttrs are reset. A removed
+      // BOOLEAN / ENUM key takes its documented default from
+      // LISTENER_ATTRIBUTE_DEFAULTS because this API rejects an empty Value
+      // for those — dropping `routing.http.response.server.enabled` failed
+      // the whole deploy pre-fix (live-verified 2026-08-11, issue #1609
+      // item 1); every other key keeps the empty string, which the API
+      // accepts as "clear the override". Skip the call entirely when nothing
+      // changed so the no-drift round-trip is a clean no-op. A failure here
+      // THROWS (caught by the outer try/catch and re-wrapped as a
+      // ProvisioningError) so cdkd state is not written as-if-applied — the
+      // next deploy retries.
       const submittedAttrs = this.diffAttributes(
         this.normalizeAttributes(properties['ListenerAttributes']),
-        this.normalizeAttributes(previousProperties['ListenerAttributes'])
+        this.normalizeAttributes(previousProperties['ListenerAttributes']),
+        (key) => LISTENER_ATTRIBUTE_DEFAULTS[key] ?? ''
       );
       if (submittedAttrs.length > 0) {
         await withRetry(
@@ -1538,12 +1607,24 @@ export class ELBv2Provider implements ResourceProvider {
   /**
    * Key-diff two normalized `{Key, Value}` attribute lists into the payload
    * for a Modify*Attributes call: changed values from `newAttrs` win, and
-   * keys present only in `oldAttrs` are pushed back through `removalValue` —
-   * by default the empty string, which ModifyLoadBalancerAttributes /
-   * ModifyListenerAttributes accept as "clear the override". A resolver
-   * returning `undefined` SKIPS the entry (the resolver owns any warn).
-   * An empty return means nothing changed and the call should be skipped.
-   * Shared by the LoadBalancer / TargetGroup / Listener update paths.
+   * keys present only in `oldAttrs` are pushed back through `removalValue`.
+   * A resolver returning `undefined` SKIPS the entry (the resolver owns any
+   * warn). An empty return means nothing changed and the call should be
+   * skipped. Shared by the LoadBalancer / TargetGroup / Listener update
+   * paths — and all three pass their OWN resolver, because the three APIs
+   * disagree about what resets an attribute:
+   *
+   * - LoadBalancer / Listener: the empty string clears a numeric or
+   *   free-form-string override, but a BOOLEAN / ENUM key rejects it and
+   *   fails the whole call, so those take a documented default
+   *   (`LOAD_BALANCER_ATTRIBUTE_DEFAULTS` / `LISTENER_ATTRIBUTE_DEFAULTS`).
+   * - TargetGroup: the empty string is rejected for EVERY key, so the
+   *   documented default is the only reset and an unknown key warns and
+   *   retains (`TARGET_GROUP_ATTRIBUTE_DEFAULTS`).
+   *
+   * All three behaviours were live-verified 2026-08-11; the default
+   * parameter is retained only for callers that genuinely want the plain
+   * empty-string reset.
    */
   private diffAttributes(
     newAttrs: Array<{ Key: string; Value: string }>,

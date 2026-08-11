@@ -594,8 +594,12 @@ Practical rules:
   too)
 - The retained sibling is REQUIRED for a collection-valued property (a tag
   list, an attribute map) and does not apply when the removal empties the only
-  value the fixture sets — `alb` and `cloudfront-function-url` are that shape
-  and correctly have no sibling
+  value the fixture sets — `cloudfront-function-url` is that shape and
+  correctly has no sibling. `alb` WAS listed here too until issue #1609 item 1
+  gave it a collection-valued removal (`LoadBalancerAttributes`), where it now
+  retains `deletion_protection.enabled` while dropping `idle_timeout`; its
+  Listener arm still empties the only value it sets, so the fixture carries
+  both shapes at once
 - The fixture set grows as #1160 batches ship; enumerate it with
   `grep -rl CDKD_TEST_REMOVAL tests/integration/*/lib/*.ts tests/integration/*/verify.sh`
   rather than trusting a list here. `tests/integration/route53/` is the

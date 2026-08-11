@@ -1060,11 +1060,27 @@ Two conventions make the result meaningful rather than vacuous:
   them.
 
 The two conventions above are the ones worth copying, but they are NOT
-universal in the tree — `alb` and `cloudfront-function-url` deliberately remove
-the only value they set, so they satisfy the baseline-live convention without a
-retained sibling. Copy the retained sibling whenever the property is a
-COLLECTION (a tag list, an attribute map), where "cleared everything" and
-"cleared the right entry" are different outcomes.
+universal in the tree — `cloudfront-function-url` deliberately removes the only
+value it sets, so it satisfies the baseline-live convention without a retained
+sibling. Copy the retained sibling whenever the property is a COLLECTION (a tag
+list, an attribute map), where "cleared everything" and "cleared the right
+entry" are different outcomes.
+
+`alb` is the fixture that shows both shapes side by side, and how one turns
+into the other. Its Listener arm drops the only `ListenerAttributes` entry it
+sets (no sibling needed), while its `LoadBalancerAttributes` arm — added by
+issue [#1609](https://github.com/go-to-k/cdkd/issues/1609) item 1 — retains
+`deletion_protection.enabled` and drops only `idle_timeout.timeout_seconds`.
+That sibling is load-bearing twice over: it distinguishes "reset the removed
+key" from "wiped the list", AND it pins a CDK-L2 trap. The L2
+`ApplicationLoadBalancer` emits its own `deletion_protection.enabled` entry, so
+the first version of that fixture — which simply omitted the property override
+in the removal phase — let the L2 default reappear, turning the phase into a
+value CHANGE plus an unintended second removal instead of the clean single-key
+removal it read as. Restating the sibling in EVERY phase is what keeps the
+removal single-key. Synthesize both phases and diff the rendered list before
+running; `cdk synth` exiting 0 in each phase proves nothing about the delta
+between them.
 
 The current set of fixtures using the toggle changes as batches ship; find it
 with:

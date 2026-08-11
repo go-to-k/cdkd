@@ -1207,6 +1207,27 @@ Checklist when writing or reviewing an `update()`:
   (`{ ApplyOn: 'None' }`, `{ Mode: 'PassThrough' }`).
 - Never synthesize a reset for a field that was **never** set — that turns
   every unrelated update into a spurious (and sometimes invalid) write.
+- **The reset SENTINEL can vary per API *and* per value KIND within one API,
+  so verify it per key rather than picking one for the whole call** (issue
+  [#1609](https://github.com/go-to-k/cdkd/issues/1609) item 1). ELBv2's three
+  attribute APIs take an identical `{Key, Value}` list and disagree three
+  ways: `ModifyTargetGroupAttributes` rejects an empty `Value` for EVERY key
+  ("A target group attribute value must be specified"), while
+  `ModifyLoadBalancerAttributes` / `ModifyListenerAttributes` accept `''` for
+  numeric and free-form-string keys but reject it for BOOLEAN / ENUM ones
+  ("The value of 'deletion_protection.enabled' must be 'true' or 'false', but
+  was ''"). So a single provider needs a per-key resolver — a documented
+  defaults table with a fallback — not one sentinel.
+  Two things make this worth its own bullet. **The blast radius is the whole
+  call, not the key**: these APIs validate the entire attribute list, so ONE
+  removed boolean fails the deploy, and it then fails the automatic ROLLBACK
+  too (the rollback re-issues the mirrored diff and hits the same refusal from
+  the other side), leaving no template-side way out. And **mocked unit tests
+  cannot find it** — they agree with whatever sentinel the provider chose. The
+  ELBv2 arms shipped with two tests literally named "AWS-documented clear" /
+  "empty-string default" that pinned a payload real AWS rejects; only an integ
+  whose removal phase actually drops the key surfaced it. If you add a
+  clear-on-removal arm, add the removal phase to a fixture in the same change.
 - Sub-structures can carry the same hazard one level down: an object that is
   present but missing its inner key (e.g. `Environment: {}` without
   `Variables`) may also read as "no change" — normalize it to the explicit

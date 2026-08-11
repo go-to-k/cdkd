@@ -12,6 +12,15 @@
 # issue #1160 elbv2 batch — plus the TargetGroupAttributes list) and asserts
 # the live TG resets to the CFn-parity default `traffic-port` and the
 # attribute resets to 300, then destroys and verifies clean.
+#
+# Issue #1609 item 1 extends the removal phase to the two attribute arms it
+# never covered: the fixture now also templates a LoadBalancerAttributes entry
+# (idle_timeout 120 -> 180 -> dropped) and drops the Listener's
+# ListenerAttributes. Both arms push a removed key back as `Value: ''` while
+# their ModifyTargetGroupAttributes sibling REJECTS that exact payload, so
+# these assertions are the live A/B that arm had never had — the removal
+# readbacks must show AWS's documented defaults (idle_timeout 60,
+# routing.http.response.server.enabled true).
 # MinimumLoadBalancerCapacity is unit-only: the integ account lacks the LCU
 # capacity-reservation entitlement (see the note in lib/alb-stack.ts).
 #
@@ -156,6 +165,32 @@ fi
 echo "    IpAddressType=ipv4, deregistration_delay=45, target 10.0.0.100 registered (✓)"
 
 echo ""
+echo "==> Assert LoadBalancerAttributes baseline (issue #1609 item 1)"
+# The LB attribute diff arm (ModifyLoadBalancerAttributes) had never been
+# exercised by an integ removal phase, and its sibling
+# ModifyTargetGroupAttributes was live-proven to REJECT the Value:'' reset
+# both arms shipped with. Baseline must be live before the removal phase can
+# assert it is gone (the REMOVAL-testing convention).
+LB_ARN=$(echo "${STATE_BODY}" | python3 -c '
+import sys, json
+s = json.load(sys.stdin)
+for v in s["resources"].values():
+    if v["resourceType"] == "AWS::ElasticLoadBalancingV2::LoadBalancer":
+        print(v["physicalId"]); break
+')
+if [[ -z "${LB_ARN}" ]]; then
+  echo "FAIL: could not find LoadBalancer ARN in cdkd state"
+  exit 1
+fi
+IDLE_P1=$(aws elbv2 describe-load-balancer-attributes --load-balancer-arn "${LB_ARN}" --region "${AWS_REGION}" \
+  --query "Attributes[?Key=='idle_timeout.timeout_seconds'].Value | [0]" --output text)
+if [[ "${IDLE_P1}" != "120" ]]; then
+  echo "FAIL: idle_timeout.timeout_seconds is '${IDLE_P1}', expected '120' (post-create ModifyLoadBalancerAttributes)"
+  exit 1
+fi
+echo "    idle_timeout.timeout_seconds=120 reached AWS (✓)"
+
+echo ""
 echo "==> Update redeploy: attribute diff + target swap (#609)"
 CDKD_TEST_UPDATE=true ${CDKD} deploy ${STACK} --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}"
 
@@ -181,7 +216,13 @@ fi
 # MinimumLoadBalancerCapacity is NOT asserted here — the integ account lacks
 # the LCU capacity-reservation entitlement (ModifyCapacityReservation is
 # rejected account-wide; live-verified 2026-08-11). Unit-only coverage.
-echo "    deregistration_delay=60, target swapped to 10.0.0.101 (✓)"
+IDLE_P2=$(aws elbv2 describe-load-balancer-attributes --load-balancer-arn "${LB_ARN}" --region "${AWS_REGION}" \
+  --query "Attributes[?Key=='idle_timeout.timeout_seconds'].Value | [0]" --output text)
+if [[ "${IDLE_P2}" != "180" ]]; then
+  echo "FAIL: idle_timeout.timeout_seconds is '${IDLE_P2}' after update, expected '180' (ModifyLoadBalancerAttributes diff)"
+  exit 1
+fi
+echo "    deregistration_delay=60, idle_timeout=180, target swapped to 10.0.0.101 (✓)"
 
 echo ""
 echo "==> Removal redeploy: drop HealthCheckPort (issue #1160 elbv2 batch)"
@@ -202,15 +243,44 @@ echo "    HealthCheckPort reset to traffic-port on removal (✓)"
 
 echo ""
 echo "==> Assert #609 removal semantics (attribute reset)"
-# Dropping the TargetGroupAttributes list pushes the removed key back to AWS's
-# default via Value:'' — deregistration_delay resets to 300.
+# Dropping the TargetGroupAttributes list resets the removed key to AWS's
+# documented default. ModifyTargetGroupAttributes REJECTS an empty Value
+# ("A target group attribute value must be specified", live-verified
+# 2026-08-11), so the provider sends the default from
+# TARGET_GROUP_ATTRIBUTE_DEFAULTS explicitly — deregistration_delay -> 300.
 DEREG_P3=$(aws elbv2 describe-target-group-attributes --target-group-arn "${TG_ARN}" --region "${AWS_REGION}" \
   --query "Attributes[?Key=='deregistration_delay.timeout_seconds'].Value | [0]" --output text)
 if [[ "${DEREG_P3}" != "300" ]]; then
-  echo "FAIL: deregistration_delay is '${DEREG_P3}' after removal, expected the AWS default '300' (Value:'' reset)"
+  echo "FAIL: deregistration_delay is '${DEREG_P3}' after removal, expected the AWS default '300' (documented-default reset)"
   exit 1
 fi
 echo "    deregistration_delay reset to 300 (✓)"
+
+echo ""
+echo "==> Assert LB + Listener attribute removal arms (issue #1609 item 1)"
+# THE A/B THIS FIXTURE EXTENSION EXISTS FOR. Both arms push a removed key
+# back as `Value: ''`; neither had ever run against real AWS, and the TG
+# sibling rejects that exact payload. A non-default readback here means the
+# empty string was accepted-but-ignored (silent no-op); a hard failure on the
+# removal deploy above means it was rejected like the TG arm and the same
+# documented-defaults treatment is needed.
+IDLE_P3=$(aws elbv2 describe-load-balancer-attributes --load-balancer-arn "${LB_ARN}" --region "${AWS_REGION}" \
+  --query "Attributes[?Key=='idle_timeout.timeout_seconds'].Value | [0]" --output text)
+if [[ "${IDLE_P3}" != "60" ]]; then
+  echo "FAIL: idle_timeout.timeout_seconds is '${IDLE_P3}' after removal, expected the AWS default '60'"
+  echo "    (ModifyLoadBalancerAttributes removal arm — Value:'' did not clear the override)"
+  exit 1
+fi
+echo "    idle_timeout.timeout_seconds reset to 60 (✓)"
+
+LISTENER_ATTR_P3=$(aws elbv2 describe-listener-attributes --listener-arn "${LISTENER_ARN}" --region "${AWS_REGION}" \
+  --query "Attributes[?Key=='${EXPECTED_ATTR_KEY}'].Value | [0]" --output text)
+if [[ "${LISTENER_ATTR_P3}" != "true" ]]; then
+  echo "FAIL: listener attribute ${EXPECTED_ATTR_KEY} is '${LISTENER_ATTR_P3}' after removal, expected the AWS default 'true'"
+  echo "    (ModifyListenerAttributes removal arm — Value:'' did not clear the override)"
+  exit 1
+fi
+echo "    ${EXPECTED_ATTR_KEY} reset to true (✓)"
 
 echo ""
 echo "==> Destroy ${STACK}"
