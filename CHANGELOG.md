@@ -1,3 +1,10 @@
+## [0.280.25](https://github.com/go-to-k/cdkd/compare/v0.280.24...v0.280.25) (2026-08-11)
+
+
+### Bug Fixes
+
+* **appsync:** forward the DataSource nested config blobs the critic opt-in exposed ([#1597](https://github.com/go-to-k/cdkd/issues/1597)) ([#1632](https://github.com/go-to-k/cdkd/issues/1632)) ([6d69413](https://github.com/go-to-k/cdkd/commit/6d694136ffdceb3fcc8cdb51caa34f8a9c41d278))
+
 ## [0.280.24](https://github.com/go-to-k/cdkd/compare/v0.280.23...v0.280.24) (2026-08-11)
 
 
