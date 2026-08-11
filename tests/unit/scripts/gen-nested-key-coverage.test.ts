@@ -3795,6 +3795,14 @@ describe('whole-blob hand-off walk (real repo, issue #1445)', () => {
       // of the five config blobs is named on the forward path, and the two
       // `Tags.*` paths are allow-listed for the list-to-map fold.
       'AWS::AppSync::GraphQLApi': 0,
+      // 0 at opt-in (issue #1597), but only after the fix: the opt-in run
+      // itself reported 10 — `HttpConfig.AuthorizationConfig` (the drop the
+      // issue named) and the `DynamoDBConfig.DeltaSyncConfig` / `.Versioned`
+      // family the critic found on its own — all of which are now forwarded.
+      'AWS::AppSync::DataSource': 0,
+      // 0 on the FIRST run: the #609 Resolver backfill had already wired every
+      // member of `CachingConfig` / `PipelineConfig` / `Runtime` / `SyncConfig`.
+      'AWS::AppSync::Resolver': 0,
       'AWS::ApiGatewayV2::Api': 0,
       'AWS::ApiGatewayV2::Authorizer': 0,
       'AWS::ApiGatewayV2::Integration': 0,
@@ -5053,7 +5061,7 @@ describe('the shipped --check command', { timeout: 30_000 }, () => {
     // a target silently dropping out of the table cannot satisfy this probe.
     expect(stderr).toContain('nested-key-coverage: OK');
     expect(stderr).toContain('0 divergences');
-    expect(stderr).toContain('12 fresh-object target(s)');
+    expect(stderr).toContain('14 fresh-object target(s)');
   });
 
   it('exits 1 naming ONLY the members a partial hand-mapping leaves out', () => {

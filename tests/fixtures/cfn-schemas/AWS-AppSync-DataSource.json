@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::AppSync::DataSource",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-11",
   "properties": [
     "ApiId",
     "DataSourceArn",
@@ -23,5 +23,161 @@
   "createOnlyProperties": [
     "ApiId",
     "Name"
-  ]
+  ],
+  "primaryIdentifier": [
+    "DataSourceArn"
+  ],
+  "nestedProperties": {
+    "DynamoDBConfig": [
+      "AwsRegion",
+      "BaseTableTTL",
+      "DeltaSyncConfig",
+      "DeltaSyncTableName",
+      "DeltaSyncTableTTL",
+      "TableName",
+      "UseCallerCredentials",
+      "Versioned"
+    ],
+    "ElasticsearchConfig": [
+      "AwsRegion",
+      "Endpoint"
+    ],
+    "EventBridgeConfig": [
+      "EventBusArn"
+    ],
+    "HttpConfig": [
+      "AuthorizationConfig",
+      "AuthorizationType",
+      "AwsIamConfig",
+      "Endpoint",
+      "SigningRegion",
+      "SigningServiceName"
+    ],
+    "LambdaConfig": [
+      "LambdaFunctionArn"
+    ],
+    "OpenSearchServiceConfig": [
+      "AwsRegion",
+      "Endpoint"
+    ],
+    "RelationalDatabaseConfig": [
+      "AwsRegion",
+      "AwsSecretStoreArn",
+      "DatabaseName",
+      "DbClusterIdentifier",
+      "RdsHttpEndpointConfig",
+      "RelationalDatabaseSourceType",
+      "Schema"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "DynamoDBConfig": [
+      "AwsRegion",
+      "DeltaSyncConfig",
+      "DeltaSyncConfig.BaseTableTTL",
+      "DeltaSyncConfig.DeltaSyncTableName",
+      "DeltaSyncConfig.DeltaSyncTableTTL",
+      "TableName",
+      "UseCallerCredentials",
+      "Versioned"
+    ],
+    "ElasticsearchConfig": [
+      "AwsRegion",
+      "Endpoint"
+    ],
+    "EventBridgeConfig": [
+      "EventBusArn"
+    ],
+    "HttpConfig": [
+      "AuthorizationConfig",
+      "AuthorizationConfig.AuthorizationType",
+      "AuthorizationConfig.AwsIamConfig",
+      "AuthorizationConfig.AwsIamConfig.SigningRegion",
+      "AuthorizationConfig.AwsIamConfig.SigningServiceName",
+      "Endpoint"
+    ],
+    "LambdaConfig": [
+      "LambdaFunctionArn"
+    ],
+    "OpenSearchServiceConfig": [
+      "AwsRegion",
+      "Endpoint"
+    ],
+    "RelationalDatabaseConfig": [
+      "RdsHttpEndpointConfig",
+      "RdsHttpEndpointConfig.AwsRegion",
+      "RdsHttpEndpointConfig.AwsSecretStoreArn",
+      "RdsHttpEndpointConfig.DatabaseName",
+      "RdsHttpEndpointConfig.DbClusterIdentifier",
+      "RdsHttpEndpointConfig.Schema",
+      "RelationalDatabaseSourceType"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "ApiId": "scalar",
+      "Description": "scalar",
+      "DynamoDBConfig": "object",
+      "ElasticsearchConfig": "object",
+      "EventBridgeConfig": "object",
+      "HttpConfig": "object",
+      "LambdaConfig": "object",
+      "Name": "scalar",
+      "OpenSearchServiceConfig": "object",
+      "RelationalDatabaseConfig": "object",
+      "ServiceRoleArn": "scalar",
+      "Type": "scalar",
+      "DataSourceArn": "scalar",
+      "MetricsConfig": "scalar"
+    },
+    "RdsHttpEndpointConfig": {
+      "DatabaseName": "scalar",
+      "AwsRegion": "scalar",
+      "DbClusterIdentifier": "scalar",
+      "AwsSecretStoreArn": "scalar",
+      "Schema": "scalar"
+    },
+    "OpenSearchServiceConfig": {
+      "AwsRegion": "scalar",
+      "Endpoint": "scalar"
+    },
+    "AwsIamConfig": {
+      "SigningRegion": "scalar",
+      "SigningServiceName": "scalar"
+    },
+    "EventBridgeConfig": {
+      "EventBusArn": "scalar"
+    },
+    "AuthorizationConfig": {
+      "AuthorizationType": "scalar",
+      "AwsIamConfig": "object"
+    },
+    "DeltaSyncConfig": {
+      "BaseTableTTL": "scalar",
+      "DeltaSyncTableTTL": "scalar",
+      "DeltaSyncTableName": "scalar"
+    },
+    "RelationalDatabaseConfig": {
+      "RdsHttpEndpointConfig": "object",
+      "RelationalDatabaseSourceType": "scalar"
+    },
+    "HttpConfig": {
+      "Endpoint": "scalar",
+      "AuthorizationConfig": "object"
+    },
+    "LambdaConfig": {
+      "LambdaFunctionArn": "scalar"
+    },
+    "ElasticsearchConfig": {
+      "AwsRegion": "scalar",
+      "Endpoint": "scalar"
+    },
+    "DynamoDBConfig": {
+      "TableName": "scalar",
+      "DeltaSyncConfig": "object",
+      "UseCallerCredentials": "scalar",
+      "AwsRegion": "scalar",
+      "Versioned": "scalar"
+    }
+  }
 }

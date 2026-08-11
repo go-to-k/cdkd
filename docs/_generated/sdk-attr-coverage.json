@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "summary": {
     "classifiedCount": 134,
-    "covered": 53,
-    "noArnAttr": 81,
+    "covered": 51,
+    "noArnAttr": 83,
     "gap": 0
   },
   "types": [
@@ -86,13 +86,8 @@
     },
     {
       "resourceType": "AWS::AppSync::DataSource",
-      "bucket": "covered",
-      "arnAttributes": [
-        {
-          "name": "DataSourceArn",
-          "status": "cached"
-        }
-      ],
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
       "gaps": []
     },
     {
@@ -126,13 +121,8 @@
     },
     {
       "resourceType": "AWS::AppSync::Resolver",
-      "bucket": "covered",
-      "arnAttributes": [
-        {
-          "name": "ResolverArn",
-          "status": "cached"
-        }
-      ],
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
       "gaps": []
     },
     {

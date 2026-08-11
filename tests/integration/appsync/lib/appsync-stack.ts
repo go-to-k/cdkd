@@ -21,6 +21,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  * - DynamoDB table as data source (CfnDataSource)
  * - Resolver connecting query to DynamoDB (CfnResolver)
  * - EventBridge data source (EventBridgeConfig + MetricsConfig, #609)
+ * - IAM-signed HTTP data source (HttpConfig.AuthorizationConfig, #1597)
+ * - Versioned DynamoDB data source (DynamoDBConfig.Versioned +
+ *   .DeltaSyncConfig, #1597)
  * - Resolver with S3-sourced mapping templates
  *   (Request/ResponseMappingTemplateS3Location via aws-s3-assets, #609)
  * - IAM Role for AppSync to access DynamoDB
@@ -278,6 +281,103 @@ schema {
       serviceRoleArn: eventBridgeRole.roleArn,
       eventBridgeConfig: { eventBusArn: eventBus.attrArn },
       metricsConfig: 'ENABLED',
+    });
+
+    // #1597 DataSource NESTED-config batch: the two nested blobs the
+    // nested-key critic opt-in exposed. Both live INSIDE a config block that
+    // top-level property coverage already counted as handled, which is why
+    // neither was visible until `AWS::AppSync::DataSource` became a critic
+    // target.
+    //
+    // 1. `HttpConfig.AuthorizationConfig` — an IAM-signed HTTP data source.
+    //    Dropping it does not fail the deploy: the data source is created
+    //    UNSIGNED, so every request to the endpoint goes out without SigV4.
+    //    The endpoint is a real AWS service endpoint, which costs nothing to
+    //    point at and makes the signing config meaningful.
+    const httpRole = new iam.Role(this, 'AppSyncHttpRole', {
+      assumedBy: new iam.ServicePrincipal('appsync.amazonaws.com'),
+    });
+    httpRole.addToPolicy(
+      new iam.PolicyStatement({
+        actions: ['states:StartExecution'],
+        resources: ['*'],
+      })
+    );
+    new appsync.CfnDataSource(this, 'HttpDataSource', {
+      apiId: graphqlApi.attrApiId,
+      name: 'HttpDataSource',
+      type: 'HTTP',
+      serviceRoleArn: httpRole.roleArn,
+      httpConfig: {
+        // Endpoint is the RETAINED sibling of the removal phase below, so it
+        // is deliberately CONSTANT across all three phases: it proves the
+        // removal targets `AuthorizationConfig` rather than wiping the whole
+        // `HttpConfig` block.
+        endpoint: `https://states.${this.region}.amazonaws.com`,
+        ...(removalMode
+          ? {}
+          : {
+              authorizationConfig: {
+                authorizationType: 'AWS_IAM',
+                awsIamConfig: {
+                  // The UPDATE phase moves the signing region off the deploy
+                  // region — a real change to a member two levels deep, which
+                  // an update path wired only for the top-level block drops.
+                  // DERIVED from the deploy region rather than hardcoded: a
+                  // literal would equal the baseline value whenever the
+                  // harness runs in that region, silently making the update
+                  // assertion vacuous.
+                  signingRegion:
+                    updateMode === false
+                      ? this.region
+                      : this.region === 'us-west-2'
+                        ? 'us-east-2'
+                        : 'us-west-2',
+                  signingServiceName: 'states',
+                },
+              },
+            }),
+      },
+    });
+
+    // 2. `DynamoDBConfig.DeltaSyncConfig` + `.Versioned` — a versioned
+    //    (conflict-detection) DynamoDB data source. The two TTLs are the one
+    //    CFn->SDK TYPE divergence in the batch: CFn declares them as STRINGS
+    //    and the SDK models them as longs, so a verbatim forward is dropped
+    //    by the serializer and a number on readback would be phantom drift.
+    const deltaSyncTable = new dynamodb.Table(this, 'AppSyncDeltaSyncTable', {
+      partitionKey: { name: 'ds_pk', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'ds_sk', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+    const versionedRole = new iam.Role(this, 'AppSyncVersionedRole', {
+      assumedBy: new iam.ServicePrincipal('appsync.amazonaws.com'),
+    });
+    table.grantReadWriteData(versionedRole);
+    deltaSyncTable.grantReadWriteData(versionedRole);
+    new appsync.CfnDataSource(this, 'VersionedDynamoDBDataSource', {
+      apiId: graphqlApi.attrApiId,
+      name: 'VersionedItemsDataSource',
+      type: 'AMAZON_DYNAMODB',
+      serviceRoleArn: versionedRole.roleArn,
+      dynamoDbConfig: {
+        awsRegion: this.region,
+        tableName: table.tableName,
+        // `Versioned` is the RETAINED sibling of the removal phase: it stays
+        // true while `DeltaSyncConfig` is dropped, so a reset that cleared
+        // the whole DynamoDBConfig block cannot pass.
+        versioned: true,
+        ...(removalMode
+          ? {}
+          : {
+              deltaSyncConfig: {
+                baseTableTtl: updateMode ? '86400' : '43200',
+                deltaSyncTableName: deltaSyncTable.tableName,
+                deltaSyncTableTtl: updateMode ? '2880' : '1440',
+              },
+            }),
+      },
     });
 
     // Outputs

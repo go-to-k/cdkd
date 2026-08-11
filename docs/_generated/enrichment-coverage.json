@@ -2,11 +2,11 @@
   "schemaVersion": 1,
   "summary": {
     "classifiedCount": 134,
-    "enriched": 14,
+    "enriched": 17,
     "noComputedAttr": 15,
     "unenrichedGap": 0,
-    "sdkFallbackGap": 105,
-    "allowListedTypes": 25
+    "sdkFallbackGap": 102,
+    "allowListedTypes": 29
   },
   "types": [
     {
@@ -200,7 +200,8 @@
         },
         {
           "name": "ApiKeyId",
-          "status": "gap"
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         },
         {
           "name": "Arn",
@@ -209,13 +210,12 @@
       ],
       "gaps": [
         "ApiKey",
-        "ApiKeyId",
         "Arn"
       ]
     },
     {
       "resourceType": "AWS::AppSync::DataSource",
-      "bucket": "sdk-fallback-gap",
+      "bucket": "enriched",
       "sdkBacked": true,
       "readOnlyProperties": [
         "DataSourceArn"
@@ -224,12 +224,11 @@
       "attributes": [
         {
           "name": "DataSourceArn",
-          "status": "gap"
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         }
       ],
-      "gaps": [
-        "DataSourceArn"
-      ]
+      "gaps": []
     },
     {
       "resourceType": "AWS::AppSync::GraphQLApi",
@@ -287,7 +286,7 @@
     },
     {
       "resourceType": "AWS::AppSync::GraphQLSchema",
-      "bucket": "sdk-fallback-gap",
+      "bucket": "enriched",
       "sdkBacked": true,
       "readOnlyProperties": [
         "Id"
@@ -296,16 +295,15 @@
       "attributes": [
         {
           "name": "Id",
-          "status": "gap"
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         }
       ],
-      "gaps": [
-        "Id"
-      ]
+      "gaps": []
     },
     {
       "resourceType": "AWS::AppSync::Resolver",
-      "bucket": "sdk-fallback-gap",
+      "bucket": "enriched",
       "sdkBacked": true,
       "readOnlyProperties": [
         "ResolverArn"
@@ -314,12 +312,11 @@
       "attributes": [
         {
           "name": "ResolverArn",
-          "status": "gap"
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         }
       ],
-      "gaps": [
-        "ResolverArn"
-      ]
+      "gaps": []
     },
     {
       "resourceType": "AWS::AutoScaling::AutoScalingGroup",

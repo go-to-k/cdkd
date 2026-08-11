@@ -12,11 +12,11 @@ Gap severity depends on the tier. A gap on an **SDK-backed** type (`sdk-fallback
 ## Summary
 
 - Classified types (cached schema): **134**
-- Fully enriched: **14**
+- Fully enriched: **17**
 - No computed attribute (Ref == physicalId is correct): **15**
 - **Pure-CC latent gaps (unenriched-computed, blocks CI): 0**
-- SDK-fallback gaps (informational, #614 path only): **105**
-- Types with allow-listed (not-a-gap) attributes: **25**
+- SDK-fallback gaps (informational, #614 path only): **102**
+- Types with allow-listed (not-a-gap) attributes: **29**
 
 ## Pure-CC latent gaps
 
@@ -33,11 +33,8 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::ApiGateway::Deployment` | `DeploymentId` |
 | `AWS::ApiGateway::Resource` | `ResourceId` |
 | `AWS::ApiGatewayV2::Api` | `ApiEndpoint` |
-| `AWS::AppSync::ApiKey` | `ApiKey`, `ApiKeyId`, `Arn` |
-| `AWS::AppSync::DataSource` | `DataSourceArn` |
+| `AWS::AppSync::ApiKey` | `ApiKey`, `Arn` |
 | `AWS::AppSync::GraphQLApi` | `Arn`, `GraphQLDns`, `GraphQLEndpointArn`, `GraphQLUrl`, `RealtimeDns`, `RealtimeUrl` |
-| `AWS::AppSync::GraphQLSchema` | `Id` |
-| `AWS::AppSync::Resolver` | `ResolverArn` |
 | `AWS::AutoScaling::AutoScalingGroup` | `AutoScalingGroupARN` |
 | `AWS::BedrockAgentCore::Browser` | `BrowserId`, `Name`, `Status` |
 | `AWS::BedrockAgentCore::CodeInterpreter` | `CodeInterpreterId`, `Status` |
@@ -149,11 +146,11 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::ApiGatewayV2::Integration` | yes | enriched | `IntegrationId` (allow) |
 | `AWS::ApiGatewayV2::Route` | yes | enriched | `RouteId` (allow) |
 | `AWS::ApiGatewayV2::Stage` | yes | no-computed-attr | _(none)_ |
-| `AWS::AppSync::ApiKey` | yes | sdk-fallback-gap | `ApiKey` (GAP), `ApiKeyId` (GAP), `Arn` (GAP) |
-| `AWS::AppSync::DataSource` | yes | sdk-fallback-gap | `DataSourceArn` (GAP) |
+| `AWS::AppSync::ApiKey` | yes | sdk-fallback-gap | `ApiKey` (GAP), `ApiKeyId` (allow), `Arn` (GAP) |
+| `AWS::AppSync::DataSource` | yes | enriched | `DataSourceArn` (allow) |
 | `AWS::AppSync::GraphQLApi` | yes | sdk-fallback-gap | `ApiId` (allow), `Arn` (GAP), `GraphQLDns` (GAP), `GraphQLEndpointArn` (GAP), `GraphQLUrl` (GAP), `RealtimeDns` (GAP), `RealtimeUrl` (GAP) |
-| `AWS::AppSync::GraphQLSchema` | yes | sdk-fallback-gap | `Id` (GAP) |
-| `AWS::AppSync::Resolver` | yes | sdk-fallback-gap | `ResolverArn` (GAP) |
+| `AWS::AppSync::GraphQLSchema` | yes | enriched | `Id` (allow) |
+| `AWS::AppSync::Resolver` | yes | enriched | `ResolverArn` (allow) |
 | `AWS::AutoScaling::AutoScalingGroup` | yes | sdk-fallback-gap | `AutoScalingGroupARN` (GAP) |
 | `AWS::BedrockAgentCore::Browser` | yes | sdk-fallback-gap | `BrowserArn` (allow), `BrowserId` (GAP), `Name` (GAP), `Status` (GAP) |
 | `AWS::BedrockAgentCore::CodeInterpreter` | yes | sdk-fallback-gap | `CodeInterpreterArn` (allow), `CodeInterpreterId` (GAP), `Status` (GAP) |

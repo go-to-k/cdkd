@@ -513,9 +513,14 @@ That is a far more common template shape than the base64 search string.
   header. Today `AWS::CodeBuild::Project`, the five `AWS::ApiGatewayV2::*`
   targets, both `AWS::ECS::*` targets, `AWS::CloudWatch::AnomalyDetector`,
   `AWS::CloudFront::Distribution` (issue #1475, via the spread-and-patch
-  recognizer) and `AWS::AppSync::GraphQLApi` (issue #609, opted in at 0 with
-  the type's config blobs) are in; `AWS::S3::Bucket` carries a recorded, measured reason it
-  is not.
+  recognizer) and all three `AWS::AppSync::*` targets (`GraphQLApi` at issue
+  #609, opted in at 0 with the type's config blobs; `DataSource` + `Resolver`
+  at issue #1597, once their schema fixtures were re-captured with the
+  `definitionShapes` / `nestedPropertyPaths` sections the generator requires —
+  `Resolver` measured 0 on the first run, `DataSource` measured 10 and needed
+  the `HttpConfig.AuthorizationConfig` + `DynamoDBConfig.DeltaSyncConfig` /
+  `.Versioned` forwards the opt-in exposed) are in; `AWS::S3::Bucket` carries a
+  recorded, measured reason it is not.
 - **A whole sub-blob handed to a GENERIC key converter is credited (issue
   #1445).** `ECSProvider.convertLinuxParameters` is
   `return pascalToCamelCaseKeys(config)` — one call delivers `Capabilities` /
