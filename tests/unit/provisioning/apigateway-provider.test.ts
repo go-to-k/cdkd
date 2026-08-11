@@ -1078,6 +1078,582 @@ describe('ApiGatewayProvider', () => {
       });
     });
 
+    describe('silent-drop property backfill (issue #609)', () => {
+      const base = { RestApiId: 'api-id', StageName: 'prod', DeploymentId: 'deploy-123' };
+
+      it('creates a stage with all six properties: four ride CreateStage, AccessLogSetting + ClientCertificateId ride ONE merged post-create UpdateStage', async () => {
+        mockSend.mockResolvedValueOnce({}); // CreateStage
+        mockSend.mockResolvedValueOnce({}); // UpdateStage (merged post-create ops)
+
+        const result = await provider.create('MyStage', resourceType, {
+          ...base,
+          CacheClusterEnabled: true,
+          CacheClusterSize: '0.5',
+          DocumentationVersion: 'v1',
+          CanarySetting: {
+            PercentTraffic: 10,
+            DeploymentId: 'deploy-canary',
+            StageVariableOverrides: { flag: 'canary' },
+            UseStageCache: true,
+          },
+          AccessLogSetting: {
+            DestinationArn: 'arn:aws:logs:us-east-1:123456789012:log-group:gw',
+            Format: '$context.requestId',
+          },
+          ClientCertificateId: 'cert-123',
+          // MethodSettings included to prove EVERY post-create op merges into
+          // the same single UpdateStage call.
+          MethodSettings: [{ ResourcePath: '/*', HttpMethod: '*', ThrottlingRateLimit: 100 }],
+        });
+
+        expect(result.physicalId).toBe('prod');
+        expect(mockSend).toHaveBeenCalledTimes(2);
+
+        const create = mockSend.mock.calls[0][0];
+        expect(create.constructor.name).toBe('CreateStageCommand');
+        expect(create.input).toEqual({
+          restApiId: 'api-id',
+          stageName: 'prod',
+          deploymentId: 'deploy-123',
+          description: undefined,
+          tracingEnabled: undefined,
+          variables: undefined,
+          tags: undefined,
+          cacheClusterEnabled: true,
+          cacheClusterSize: '0.5',
+          documentationVersion: 'v1',
+          canarySettings: {
+            percentTraffic: 10,
+            deploymentId: 'deploy-canary',
+            stageVariableOverrides: { flag: 'canary' },
+            useStageCache: true,
+          },
+        });
+
+        const update = mockSend.mock.calls[1][0];
+        expect(update.constructor.name).toBe('UpdateStageCommand');
+        expect(update.input).toEqual({
+          restApiId: 'api-id',
+          stageName: 'prod',
+          patchOperations: [
+            { op: 'replace', path: '/*/*/throttling/rateLimit', value: '100' },
+            {
+              op: 'replace',
+              path: '/accessLogSettings/destinationArn',
+              value: 'arn:aws:logs:us-east-1:123456789012:log-group:gw',
+            },
+            { op: 'replace', path: '/accessLogSettings/format', value: '$context.requestId' },
+            { op: 'replace', path: '/clientCertificateId', value: 'cert-123' },
+          ],
+        });
+      });
+
+      it('strips the :* suffix off a CDK GetAtt log-group ARN on create (CFn parity — API Gateway rejects it)', async () => {
+        mockSend.mockResolvedValueOnce({}); // CreateStage
+        mockSend.mockResolvedValueOnce({}); // UpdateStage (post-create ops)
+
+        await provider.create('MyStage', resourceType, {
+          ...base,
+          AccessLogSetting: {
+            DestinationArn: 'arn:aws:logs:us-east-1:123456789012:log-group:/cdkd/gw:*',
+            Format: '$context.requestId',
+          },
+        });
+
+        const update = mockSend.mock.calls[1][0];
+        expect(update.input.patchOperations).toEqual(
+          expect.arrayContaining([
+            {
+              op: 'replace',
+              path: '/accessLogSettings/destinationArn',
+              value: 'arn:aws:logs:us-east-1:123456789012:log-group:/cdkd/gw',
+            },
+          ])
+        );
+      });
+
+      it('strips the :* suffix on the update path too, and leaves a bare ARN untouched', async () => {
+        mockSend.mockResolvedValueOnce({}); // UpdateStage
+
+        await provider.update('MyStage', 'prod', resourceType, {
+          ...base,
+          AccessLogSetting: {
+            DestinationArn: 'arn:aws:logs:us-east-1:123456789012:log-group:/cdkd/gw:*',
+            Format: '$context.requestId',
+          },
+        }, base);
+
+        const update1 = mockSend.mock.calls[0][0];
+        expect(update1.input.patchOperations).toEqual(
+          expect.arrayContaining([
+            {
+              op: 'replace',
+              path: '/accessLogSettings/destinationArn',
+              value: 'arn:aws:logs:us-east-1:123456789012:log-group:/cdkd/gw',
+            },
+          ])
+        );
+
+        vi.clearAllMocks();
+        mockSend.mockResolvedValueOnce({}); // UpdateStage
+
+        await provider.update('MyStage', 'prod', resourceType, {
+          ...base,
+          AccessLogSetting: {
+            DestinationArn: 'arn:aws:logs:us-east-1:123456789012:log-group:/cdkd/gw',
+            Format: '$context.requestId',
+          },
+        }, base);
+
+        const update2 = mockSend.mock.calls[0][0];
+        expect(update2.input.patchOperations).toEqual(
+          expect.arrayContaining([
+            {
+              op: 'replace',
+              path: '/accessLogSettings/destinationArn',
+              value: 'arn:aws:logs:us-east-1:123456789012:log-group:/cdkd/gw',
+            },
+          ])
+        );
+      });
+
+      it('coerces a numeric CacheClusterSize (unquoted YAML) to the SDK string enum on create', async () => {
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.create('MyStage', resourceType, {
+          ...base,
+          CacheClusterSize: 0.5,
+        });
+
+        const create = mockSend.mock.calls[0][0];
+        expect(create.input.cacheClusterSize).toBe('0.5');
+      });
+
+      it('pins the FALSE polarity of the create-path booleans', async () => {
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.create('MyStage', resourceType, {
+          ...base,
+          CacheClusterEnabled: false,
+          CanarySetting: { PercentTraffic: 0, UseStageCache: false },
+        });
+
+        const create = mockSend.mock.calls[0][0];
+        expect(create.input).toEqual(
+          expect.objectContaining({
+            cacheClusterEnabled: false,
+            canarySettings: {
+              percentTraffic: 0,
+              deploymentId: undefined,
+              stageVariableOverrides: undefined,
+              useStageCache: false,
+            },
+          })
+        );
+      });
+
+      it('omits the backfilled properties from CreateStage and emits no post-create patch when absent', async () => {
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.create('MyStage', resourceType, { ...base });
+
+        expect(mockSend).toHaveBeenCalledTimes(1);
+        const create = mockSend.mock.calls[0][0];
+        expect(create.input.cacheClusterEnabled).toBeUndefined();
+        expect(create.input.cacheClusterSize).toBeUndefined();
+        expect(create.input.documentationVersion).toBeUndefined();
+        expect(create.input.canarySettings).toBeUndefined();
+      });
+
+      it('best-effort deletes the stage and rethrows when the merged post-create patch fails, even with NO MethodSettings declared', async () => {
+        mockSend.mockResolvedValueOnce({}); // CreateStage succeeds
+        mockSend.mockRejectedValueOnce(new Error('BadRequestException: bad patch')); // UpdateStage fails
+        mockSend.mockResolvedValueOnce({}); // DeleteStage cleanup
+
+        await expect(
+          provider.create('MyStage', resourceType, {
+            ...base,
+            AccessLogSetting: { DestinationArn: 'arn:log', Format: '$context.requestId' },
+            ClientCertificateId: 'cert-123',
+          })
+        ).rejects.toThrow('Failed to create API Gateway Stage');
+
+        expect(mockSend).toHaveBeenCalledTimes(3);
+        const cleanup = mockSend.mock.calls[2][0];
+        expect(cleanup.constructor.name).toBe('DeleteStageCommand');
+        expect(cleanup.input).toEqual({ restApiId: 'api-id', stageName: 'prod' });
+      });
+
+      it('adds AccessLogSetting on update via field-level replace ops', async () => {
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.update(
+          'MyStage',
+          'prod',
+          resourceType,
+          {
+            ...base,
+            AccessLogSetting: { DestinationArn: 'arn:log', Format: '$context.requestId' },
+          },
+          { ...base }
+        );
+
+        const command = mockSend.mock.calls[0][0];
+        expect(command.input.patchOperations).toEqual([
+          { op: 'replace', path: '/accessLogSettings/destinationArn', value: 'arn:log' },
+          { op: 'replace', path: '/accessLogSettings/format', value: '$context.requestId' },
+        ]);
+      });
+
+      it('patches only the changed AccessLogSetting sub-field on update', async () => {
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.update(
+          'MyStage',
+          'prod',
+          resourceType,
+          {
+            ...base,
+            AccessLogSetting: { DestinationArn: 'arn:log', Format: '$context.requestId $context.status' },
+          },
+          {
+            ...base,
+            AccessLogSetting: { DestinationArn: 'arn:log', Format: '$context.requestId' },
+          }
+        );
+
+        const command = mockSend.mock.calls[0][0];
+        expect(command.input.patchOperations).toEqual([
+          {
+            op: 'replace',
+            path: '/accessLogSettings/format',
+            value: '$context.requestId $context.status',
+          },
+        ]);
+      });
+
+      it('removes the whole /accessLogSettings block when AccessLogSetting is dropped (#1160 clear-on-removal)', async () => {
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.update(
+          'MyStage',
+          'prod',
+          resourceType,
+          { ...base },
+          {
+            ...base,
+            AccessLogSetting: { DestinationArn: 'arn:log', Format: '$context.requestId' },
+          }
+        );
+
+        const command = mockSend.mock.calls[0][0];
+        expect(command.input.patchOperations).toEqual([
+          { op: 'remove', path: '/accessLogSettings' },
+        ]);
+      });
+
+      it('patches /cacheClusterEnabled with string booleans in BOTH polarities, and removal patches the CFn default false', async () => {
+        // add: absent -> true
+        mockSend.mockResolvedValueOnce({});
+        await provider.update('MyStage', 'prod', resourceType, {
+          ...base,
+          CacheClusterEnabled: true,
+        }, { ...base });
+        expect(mockSend.mock.calls[0][0].input.patchOperations).toEqual([
+          { op: 'replace', path: '/cacheClusterEnabled', value: 'true' },
+        ]);
+
+        // change: true -> false
+        mockSend.mockResolvedValueOnce({});
+        await provider.update('MyStage', 'prod', resourceType, {
+          ...base,
+          CacheClusterEnabled: false,
+        }, { ...base, CacheClusterEnabled: true });
+        expect(mockSend.mock.calls[1][0].input.patchOperations).toEqual([
+          { op: 'replace', path: '/cacheClusterEnabled', value: 'false' },
+        ]);
+
+        // removal: true -> absent patches 'false' (must NOT silently keep the
+        // live cache cluster)
+        mockSend.mockResolvedValueOnce({});
+        await provider.update('MyStage', 'prod', resourceType, { ...base }, {
+          ...base,
+          CacheClusterEnabled: true,
+        });
+        expect(mockSend.mock.calls[2][0].input.patchOperations).toEqual([
+          { op: 'replace', path: '/cacheClusterEnabled', value: 'false' },
+        ]);
+      });
+
+      it('clears a sub-field dropped while the AccessLogSetting block remains with an empty-string replace (not the string "undefined")', async () => {
+        mockSend.mockResolvedValueOnce({});
+        await provider.update('MyStage', 'prod', resourceType, {
+          ...base,
+          AccessLogSetting: { DestinationArn: 'arn:log' },
+        }, {
+          ...base,
+          AccessLogSetting: { DestinationArn: 'arn:log', Format: '$context.requestId' },
+        });
+        expect(mockSend.mock.calls[0][0].input.patchOperations).toEqual([
+          { op: 'replace', path: '/accessLogSettings/format', value: '' },
+        ]);
+      });
+
+      it('patches /cacheClusterSize when ADDED on update (no previous size)', async () => {
+        mockSend.mockResolvedValueOnce({});
+        await provider.update('MyStage', 'prod', resourceType, {
+          ...base,
+          CacheClusterSize: '0.5',
+        }, { ...base });
+        expect(mockSend.mock.calls[0][0].input.patchOperations).toEqual([
+          { op: 'replace', path: '/cacheClusterSize', value: '0.5' },
+        ]);
+      });
+
+      it('refuses a present-but-malformed AccessLogSetting / CanarySetting block on create (#1471 class)', async () => {
+        await expect(
+          provider.create('MyStage', resourceType, {
+            ...base,
+            AccessLogSetting: 'arn:aws:logs:us-east-1:123:log-group:gw',
+          })
+        ).rejects.toThrow(/AccessLogSetting for MyStage must be an object block/);
+        await expect(
+          provider.create('MyStage', resourceType, {
+            ...base,
+            CanarySetting: ['PercentTraffic', 10],
+          })
+        ).rejects.toThrow(/CanarySetting for MyStage must be an object block/);
+        expect(mockSend).not.toHaveBeenCalled();
+      });
+
+      it('warns and SKIPS a malformed AccessLogSetting / CanarySetting on update instead of emitting clear patches (#1471 class)', async () => {
+        const result = await provider.update('MyStage', 'prod', resourceType, {
+          ...base,
+          AccessLogSetting: 'not-an-object',
+          CanarySetting: 42,
+        }, {
+          ...base,
+          AccessLogSetting: { DestinationArn: 'arn:log', Format: '$context.requestId' },
+          CanarySetting: { PercentTraffic: 10 },
+        });
+        // Neither a remove op nor a clear replace may fire — the live config
+        // must be left untouched, so no UpdateStage call happens at all.
+        expect(result.physicalId).toBe('prod');
+        expect(mockSend).not.toHaveBeenCalled();
+      });
+
+      it('patches /cacheClusterSize when present and changed; numeric vs string spellings of the same size are NOT a change', async () => {
+        mockSend.mockResolvedValueOnce({});
+        await provider.update('MyStage', 'prod', resourceType, {
+          ...base,
+          CacheClusterSize: '1.6',
+        }, { ...base, CacheClusterSize: '0.5' });
+        expect(mockSend.mock.calls[0][0].input.patchOperations).toEqual([
+          { op: 'replace', path: '/cacheClusterSize', value: '1.6' },
+        ]);
+
+        // Unquoted-YAML number 0.5 vs recorded string '0.5' — same size, no op.
+        const result = await provider.update('MyStage', 'prod', resourceType, {
+          ...base,
+          CacheClusterSize: 0.5,
+        }, { ...base, CacheClusterSize: '0.5' });
+        expect(result.physicalId).toBe('prod');
+        expect(mockSend).toHaveBeenCalledTimes(1);
+      });
+
+      it('does NOT patch /cacheClusterSize when the property is dropped (size dies with the cluster, not via a patch)', async () => {
+        const result = await provider.update('MyStage', 'prod', resourceType, { ...base }, {
+          ...base,
+          CacheClusterSize: '0.5',
+        });
+
+        expect(result.physicalId).toBe('prod');
+        expect(mockSend).not.toHaveBeenCalled();
+      });
+
+      it('patches /clientCertificateId on add/change and clears it with an empty-string replace on removal (#1160)', async () => {
+        mockSend.mockResolvedValueOnce({});
+        await provider.update('MyStage', 'prod', resourceType, {
+          ...base,
+          ClientCertificateId: 'cert-456',
+        }, { ...base, ClientCertificateId: 'cert-123' });
+        expect(mockSend.mock.calls[0][0].input.patchOperations).toEqual([
+          { op: 'replace', path: '/clientCertificateId', value: 'cert-456' },
+        ]);
+
+        mockSend.mockResolvedValueOnce({});
+        await provider.update('MyStage', 'prod', resourceType, { ...base }, {
+          ...base,
+          ClientCertificateId: 'cert-123',
+        });
+        expect(mockSend.mock.calls[1][0].input.patchOperations).toEqual([
+          { op: 'replace', path: '/clientCertificateId', value: '' },
+        ]);
+      });
+
+      it('patches /documentationVersion on add/change and clears it with an empty-string replace on removal (#1160)', async () => {
+        mockSend.mockResolvedValueOnce({});
+        await provider.update('MyStage', 'prod', resourceType, {
+          ...base,
+          DocumentationVersion: 'v2',
+        }, { ...base, DocumentationVersion: 'v1' });
+        expect(mockSend.mock.calls[0][0].input.patchOperations).toEqual([
+          { op: 'replace', path: '/documentationVersion', value: 'v2' },
+        ]);
+
+        mockSend.mockResolvedValueOnce({});
+        await provider.update('MyStage', 'prod', resourceType, { ...base }, {
+          ...base,
+          DocumentationVersion: 'v1',
+        });
+        expect(mockSend.mock.calls[1][0].input.patchOperations).toEqual([
+          { op: 'replace', path: '/documentationVersion', value: '' },
+        ]);
+      });
+
+      it('adds CanarySetting on update via /canarySettings/* field ops, string-boolean TRUE polarity pinned', async () => {
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.update(
+          'MyStage',
+          'prod',
+          resourceType,
+          {
+            ...base,
+            CanarySetting: {
+              PercentTraffic: 25,
+              DeploymentId: 'deploy-canary',
+              StageVariableOverrides: { flag: 'canary' },
+              UseStageCache: true,
+            },
+          },
+          { ...base }
+        );
+
+        const command = mockSend.mock.calls[0][0];
+        expect(command.input.patchOperations).toEqual([
+          { op: 'replace', path: '/canarySettings/percentTraffic', value: '25' },
+          { op: 'replace', path: '/canarySettings/deploymentId', value: 'deploy-canary' },
+          { op: 'replace', path: '/canarySettings/useStageCache', value: 'true' },
+          { op: 'replace', path: '/canarySettings/stageVariableOverrides/flag', value: 'canary' },
+        ]);
+      });
+
+      it('patches changed CanarySetting sub-fields per-key, incl. override add/remove and the FALSE boolean polarity', async () => {
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.update(
+          'MyStage',
+          'prod',
+          resourceType,
+          {
+            ...base,
+            CanarySetting: {
+              PercentTraffic: 50,
+              DeploymentId: 'deploy-canary',
+              StageVariableOverrides: { flag: 'canary-v2', added: 'yes' },
+              UseStageCache: false,
+            },
+          },
+          {
+            ...base,
+            CanarySetting: {
+              PercentTraffic: 25,
+              DeploymentId: 'deploy-canary',
+              StageVariableOverrides: { flag: 'canary', stale: 'old' },
+              UseStageCache: true,
+            },
+          }
+        );
+
+        const command = mockSend.mock.calls[0][0];
+        expect(command.input.patchOperations).toEqual([
+          { op: 'replace', path: '/canarySettings/percentTraffic', value: '50' },
+          { op: 'replace', path: '/canarySettings/useStageCache', value: 'false' },
+          {
+            op: 'replace',
+            path: '/canarySettings/stageVariableOverrides/flag',
+            value: 'canary-v2',
+          },
+          { op: 'replace', path: '/canarySettings/stageVariableOverrides/added', value: 'yes' },
+          { op: 'remove', path: '/canarySettings/stageVariableOverrides/stale' },
+        ]);
+      });
+
+      it('reverts dropped CanarySetting scalar sub-fields to their CFn defaults while the block remains', async () => {
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.update(
+          'MyStage',
+          'prod',
+          resourceType,
+          { ...base, CanarySetting: { DeploymentId: 'deploy-canary' } },
+          {
+            ...base,
+            CanarySetting: {
+              PercentTraffic: 25,
+              DeploymentId: 'deploy-canary',
+              UseStageCache: true,
+            },
+          }
+        );
+
+        const command = mockSend.mock.calls[0][0];
+        expect(command.input.patchOperations).toEqual([
+          { op: 'replace', path: '/canarySettings/percentTraffic', value: '0' },
+          { op: 'replace', path: '/canarySettings/useStageCache', value: 'false' },
+        ]);
+      });
+
+      it('removes the whole /canarySettings block when CanarySetting is dropped (#1160 clear-on-removal)', async () => {
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.update(
+          'MyStage',
+          'prod',
+          resourceType,
+          { ...base },
+          {
+            ...base,
+            CanarySetting: { PercentTraffic: 25, DeploymentId: 'deploy-canary' },
+          }
+        );
+
+        const command = mockSend.mock.calls[0][0];
+        expect(command.input.patchOperations).toEqual([
+          { op: 'remove', path: '/canarySettings' },
+        ]);
+      });
+
+      it('emits no UpdateStage call when all six backfilled properties are unchanged', async () => {
+        const props = {
+          ...base,
+          CacheClusterEnabled: true,
+          CacheClusterSize: '0.5',
+          ClientCertificateId: 'cert-123',
+          DocumentationVersion: 'v1',
+          AccessLogSetting: { DestinationArn: 'arn:log', Format: '$context.requestId' },
+          CanarySetting: {
+            PercentTraffic: 25,
+            DeploymentId: 'deploy-canary',
+            StageVariableOverrides: { flag: 'canary' },
+            UseStageCache: true,
+          },
+        };
+
+        const result = await provider.update(
+          'MyStage',
+          'prod',
+          resourceType,
+          JSON.parse(JSON.stringify(props)),
+          JSON.parse(JSON.stringify(props))
+        );
+
+        expect(result.physicalId).toBe('prod');
+        expect(mockSend).not.toHaveBeenCalled();
+      });
+    });
+
     describe('delete', () => {
       it('should delete a stage', async () => {
         mockSend.mockResolvedValueOnce({});

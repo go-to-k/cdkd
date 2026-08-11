@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "summary": {
     "classifiedCount": 84,
-    "declaredProperties": 1081,
-    "wiredProperties": 1079,
+    "declaredProperties": 1087,
+    "wiredProperties": 1085,
     "wired": 82,
     "gap": 0,
     "allowListed": 2,
@@ -422,8 +422,26 @@
       "file": "apigateway-provider.ts",
       "className": "ApiGatewayProvider",
       "bucket": "wired",
-      "declaredCount": 32,
+      "declaredCount": 38,
       "properties": [
+        {
+          "name": "AccessLogSetting",
+          "status": "wired",
+          "types": [
+            "AWS::ApiGateway::Stage"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read",
+            "table-loop"
+          ],
+          "seededBy": [
+            "create",
+            "createStage",
+            "update",
+            "updateStage"
+          ]
+        },
         {
           "name": "ApiKeyRequired",
           "status": "wired",
@@ -547,6 +565,75 @@
           ]
         },
         {
+          "name": "CacheClusterEnabled",
+          "status": "wired",
+          "types": [
+            "AWS::ApiGateway::Stage"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "createStage",
+            "update",
+            "updateStage"
+          ]
+        },
+        {
+          "name": "CacheClusterSize",
+          "status": "wired",
+          "types": [
+            "AWS::ApiGateway::Stage"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "createStage",
+            "update",
+            "updateStage"
+          ]
+        },
+        {
+          "name": "CanarySetting",
+          "status": "wired",
+          "types": [
+            "AWS::ApiGateway::Stage"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read",
+            "table-loop"
+          ],
+          "seededBy": [
+            "create",
+            "createStage",
+            "update",
+            "updateStage"
+          ]
+        },
+        {
+          "name": "ClientCertificateId",
+          "status": "wired",
+          "types": [
+            "AWS::ApiGateway::Stage"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "createStage",
+            "update",
+            "updateStage"
+          ]
+        },
+        {
           "name": "CloudWatchRoleArn",
           "status": "wired",
           "types": [
@@ -594,6 +681,23 @@
           "seededBy": [
             "create",
             "createDeployment",
+            "createStage",
+            "update",
+            "updateStage"
+          ]
+        },
+        {
+          "name": "DocumentationVersion",
+          "status": "wired",
+          "types": [
+            "AWS::ApiGateway::Stage"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
             "createStage",
             "update",
             "updateStage"

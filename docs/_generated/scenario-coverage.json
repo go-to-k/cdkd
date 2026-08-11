@@ -385,6 +385,11 @@
       "scenarios": []
     },
     {
+      "name": "apigw-stage-props",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "apigw-stage-throttling",
       "annotated": false,
       "scenarios": []
@@ -2592,6 +2597,7 @@
   "unannotatedFixtures": [
     "acm-certificate",
     "apigatewayv2-update-removal",
+    "apigw-stage-props",
     "apigw-stage-throttling",
     "apigw-usage-plan-key",
     "appconfig",

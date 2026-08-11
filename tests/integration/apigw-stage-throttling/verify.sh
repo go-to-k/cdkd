@@ -1,22 +1,26 @@
 #!/usr/bin/env bash
-# verify.sh — CC-routed ApiGateway Stage compound-id Ref regression test
-# (issue #963).
+# verify.sh — ApiGateway Stage Ref + AccessLogSetting delivery test
+# (issues #963 / #609).
 #
-# The Stage carries AccessLogSetting (deployOptions.accessLogDestination),
-# which the SDK provider does not wire, so the #614 routing provisions the
-# Stage via Cloud Control and cdkd stores the compound
-# `<restApiId>|<stageName>` physical id. (The original #963 trigger was
-# MethodSettings; issue #966 wired that into the SDK provider, so the fixture
-# switched triggers to keep the CC route.)
-# Pre-fix, `Ref` on the Stage leaked that compound id into the CDK-generated
-# Lambda Permission SourceArn and the deployed API returned 500 on every
-# request. This test asserts:
-#   1. the Stage really took the CC route (provisionedBy == cc-api) — else the
-#      fixture is no longer exercising the #963 path and must be updated
+# HISTORY: this fixture used to pin the #963 CC-routed-Stage compound-id Ref
+# regression by carrying a Stage property the SDK provider did not wire
+# (MethodSettings until #966, then AccessLogSetting), which sent the Stage
+# through Cloud Control with the compound `<restApiId>|<stageName>` physical
+# id. The #609 Stage backfill wired ALL remaining Stage top-level properties
+# (AccessLogSetting included) into the SDK provider, so no template shape
+# routes a Stage via CC anymore; the #963 after-pipe Ref extraction is a
+# no-op for the pipe-free SDK physical id and stays pinned by
+# tests/unit/deployment/intrinsic-functions.test.ts. This fixture now asserts
+# the SDK-routed reality:
+#   1. the Stage took the SDK route (provisionedBy == sdk) with the bare
+#      stage name as its physical id (no pipe) — if this fails, the routing
+#      layer regressed a handled Stage template onto the CC route
 #   2. the Lambda resource policy SourceArn carries the bare stage name (no
-#      pipe) — the direct Ref-resolution assertion
+#      pipe) — the #963 symptom assertion, route-agnostic
 #   3. GET /hello actually returns the Lambda body (the functional check a
-#      green deploy summary cannot substitute for)
+#      green deploy summary cannot substitute for), and the Stage's
+#      accessLogSettings actually reached AWS (the #609 delivery assertion —
+#      pre-backfill this only worked because CC forwarded the full map)
 #   4. UPDATE: adding a route swaps in a new hash-suffixed Deployment; the new
 #      route must serve and the old Deployment must be deleted
 # Then destroys and confirms a clean teardown.
@@ -146,25 +150,22 @@ if [ -z "${STATE}" ]; then
   exit 1
 fi
 
-# --- Assertion 1: the Stage took the CC route -------------------------
+# --- Assertion 1: the Stage took the SDK route (#609 backfill) --------
 STAGE_ROW=$(echo "${STATE}" | jq -r '.resources | to_entries[] | select(.value.resourceType == "AWS::ApiGateway::Stage") | .value')
 STAGE_PROVISIONED_BY=$(echo "${STAGE_ROW}" | jq -r '.provisionedBy // "sdk"')
 STAGE_PHYSICAL_ID=$(echo "${STAGE_ROW}" | jq -r '.physicalId')
-if [ "${STAGE_PROVISIONED_BY}" != "cc-api" ]; then
-  echo "FAIL: Stage provisionedBy is '${STAGE_PROVISIONED_BY}', expected 'cc-api'." >&2
-  echo "      The fixture no longer exercises the #963 CC-routed-Stage path" >&2
-  echo "      (did the SDK provider gain AccessLogSetting support? — then swap" >&2
-  echo "      in another unwired Stage property to keep the CC route)." >&2
+if [ "${STAGE_PROVISIONED_BY}" != "sdk" ]; then
+  echo "FAIL: Stage provisionedBy is '${STAGE_PROVISIONED_BY}', expected 'sdk'." >&2
+  echo "      Since the #609 backfill every Stage top-level property is" >&2
+  echo "      SDK-wired, so a CC-routed Stage means the routing layer" >&2
+  echo "      regressed (or a new CFn Stage property landed unwired)." >&2
   exit 1
 fi
-case "${STAGE_PHYSICAL_ID}" in
-  *"|${STAGE_NAME}") : ;;
-  *)
-    echo "FAIL: Stage physicalId '${STAGE_PHYSICAL_ID}' is not the compound '<restApiId>|${STAGE_NAME}'" >&2
-    exit 1
-    ;;
-esac
-echo "    OK: Stage is CC-provisioned with compound physical id '${STAGE_PHYSICAL_ID}'"
+if [ "${STAGE_PHYSICAL_ID}" != "${STAGE_NAME}" ]; then
+  echo "FAIL: Stage physicalId '${STAGE_PHYSICAL_ID}' is not the bare stage name '${STAGE_NAME}'" >&2
+  exit 1
+fi
+echo "    OK: Stage is SDK-provisioned with the bare stage name '${STAGE_PHYSICAL_ID}'"
 
 # --- Resolve the REST API id ------------------------------------------
 API_ID=$(aws apigateway get-rest-apis --region "${REGION}" \
@@ -198,6 +199,24 @@ if ! echo "${HELLO_BODY}" | grep -q '"ok":true'; then
   exit 1
 fi
 echo "    OK: GET /hello returns the Lambda body (API functional, not just deployed)"
+
+# --- Assertion 3b: AccessLogSetting was actually delivered (#609) ------
+# Pre-backfill this only reached AWS because Cloud Control forwarded the
+# full property map; now the SDK provider must deliver it via the
+# post-create UpdateStage patch.
+ACCESS_LOG_ARN="$(aws apigateway get-stage --rest-api-id "${API_ID}" --stage-name "${STAGE_NAME}" \
+  --region "${REGION}" --query 'accessLogSettings.destinationArn' --output text)"
+ACCESS_LOG_FORMAT="$(aws apigateway get-stage --rest-api-id "${API_ID}" --stage-name "${STAGE_NAME}" \
+  --region "${REGION}" --query 'accessLogSettings.format' --output text)"
+if [ -z "${ACCESS_LOG_ARN}" ] || [ "${ACCESS_LOG_ARN}" = "None" ]; then
+  echo "FAIL: Stage accessLogSettings.destinationArn is empty — AccessLogSetting was dropped (#609 regression)" >&2
+  exit 1
+fi
+if [ -z "${ACCESS_LOG_FORMAT}" ] || [ "${ACCESS_LOG_FORMAT}" = "None" ]; then
+  echo "FAIL: Stage accessLogSettings.format is empty — AccessLogSetting was dropped (#609 regression)" >&2
+  exit 1
+fi
+echo "    OK: Stage accessLogSettings delivered (arn=${ACCESS_LOG_ARN})"
 
 # --- Assertion 4: throttling reached AWS -------------------------------
 THROTTLE_RATE=$(aws apigateway get-stage --rest-api-id "${API_ID}" \

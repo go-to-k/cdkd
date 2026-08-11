@@ -27,6 +27,7 @@ import {
   UntagResourceCommand,
   NotFoundException,
 } from '@aws-sdk/client-api-gateway';
+import type { CacheClusterSize, CanarySettings } from '@aws-sdk/client-api-gateway';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
@@ -93,6 +94,12 @@ export class ApiGatewayProvider implements ResourceProvider {
         'TracingEnabled',
         'Variables',
         'MethodSettings',
+        'AccessLogSetting',
+        'CacheClusterEnabled',
+        'CacheClusterSize',
+        'CanarySetting',
+        'ClientCertificateId',
+        'DocumentationVersion',
       ]),
     ],
     [
@@ -1062,7 +1069,28 @@ export class ApiGatewayProvider implements ResourceProvider {
       );
     }
 
+    // #1471/#1493 class: a present-but-malformed nested block (a string,
+    // array, or unresolved intrinsic) indexes every sub-field to undefined,
+    // which would silently create the stage WITHOUT the declared config.
+    // Create is template-borne, so refuse loudly (the update path warns and
+    // skips instead — see updateStage).
+    for (const key of ['AccessLogSetting', 'CanarySetting'] as const) {
+      const block = properties[key];
+      if (block != null && !isPlainObjectBlock(block)) {
+        throw new ProvisioningError(
+          `AWS::ApiGateway::Stage ${key} for ${logicalId} must be an object block; got ${Array.isArray(block) ? 'an array' : typeof block}. Fix the template value instead of letting cdkd drop the config.`,
+          resourceType,
+          logicalId
+        );
+      }
+    }
+
     try {
+      // CFn declares CacheClusterSize as a string enum ('0.5' | '1.6' | ...)
+      // and so does the SDK, but an unquoted YAML template legitimately
+      // carries the NUMBER 0.5 — stringify so both shapes reach AWS as the
+      // enum string instead of being rejected by the serializer.
+      const rawCacheClusterSize = properties['CacheClusterSize'] as string | number | undefined;
       await this.apiGatewayClient.send(
         new CreateStageCommand({
           restApiId,
@@ -1072,22 +1100,58 @@ export class ApiGatewayProvider implements ResourceProvider {
           tracingEnabled: properties['TracingEnabled'] as boolean | undefined,
           variables: properties['Variables'] as Record<string, string> | undefined,
           tags: this.cfnTagsToRecord(properties['Tags']),
+          cacheClusterEnabled: properties['CacheClusterEnabled'] as boolean | undefined,
+          cacheClusterSize:
+            rawCacheClusterSize != null
+              ? (String(rawCacheClusterSize) as CacheClusterSize)
+              : undefined,
+          documentationVersion: properties['DocumentationVersion'] as string | undefined,
+          canarySettings: toSdkCanarySettings(
+            properties['CanarySetting'] as CfnStageCanarySetting | undefined
+          ),
         })
       );
 
-      // MethodSettings (issue #966): CreateStage does not accept method
-      // settings — they are applied via UpdateStage patch operations
-      // (`/{method_setting_key}/throttling/rateLimit` etc.), so a stage
-      // declaring them needs one post-create UpdateStage call.
+      // MethodSettings (issue #966), AccessLogSetting and ClientCertificateId
+      // (#609 backfill): CreateStage does not accept any of these — they are
+      // applied via UpdateStage patch operations, merged into ONE post-create
+      // UpdateStage call so the create-failure cleanup below covers them all.
       const methodSettings = properties['MethodSettings'] as CfnStageMethodSetting[] | undefined;
-      const methodSettingsOps = buildMethodSettingsPatchOps(undefined, methodSettings);
-      if (methodSettingsOps.length > 0) {
+      const postCreateOps = buildMethodSettingsPatchOps(undefined, methodSettings);
+      const accessLogSetting = properties['AccessLogSetting'] as
+        | CfnStageAccessLogSetting
+        | undefined;
+      if (accessLogSetting != null) {
+        if (accessLogSetting.DestinationArn !== undefined) {
+          postCreateOps.push({
+            op: 'replace',
+            path: '/accessLogSettings/destinationArn',
+            value: normalizeAccessLogDestinationArn(String(accessLogSetting.DestinationArn)),
+          });
+        }
+        if (accessLogSetting.Format !== undefined) {
+          postCreateOps.push({
+            op: 'replace',
+            path: '/accessLogSettings/format',
+            value: String(accessLogSetting.Format),
+          });
+        }
+      }
+      const clientCertificateId = properties['ClientCertificateId'] as string | undefined;
+      if (clientCertificateId !== undefined) {
+        postCreateOps.push({
+          op: 'replace',
+          path: '/clientCertificateId',
+          value: clientCertificateId,
+        });
+      }
+      if (postCreateOps.length > 0) {
         try {
           await this.apiGatewayClient.send(
             new UpdateStageCommand({
               restApiId,
               stageName,
-              patchOperations: methodSettingsOps,
+              patchOperations: postCreateOps,
             })
           );
         } catch (patchError) {
@@ -1100,7 +1164,7 @@ export class ApiGatewayProvider implements ResourceProvider {
             await this.apiGatewayClient.send(new DeleteStageCommand({ restApiId, stageName }));
           } catch (cleanupError) {
             this.logger.warn(
-              `Failed to clean up stage ${stageName} after a MethodSettings patch failure: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`
+              `Failed to clean up stage ${stageName} after a post-create patch failure: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`
             );
           }
           throw patchError;
@@ -1184,6 +1248,204 @@ export class ApiGatewayProvider implements ResourceProvider {
         path: '/tracingEnabled',
         value: String(tracingEnabled ?? false),
       });
+    }
+
+    // CacheClusterEnabled — response cache cluster (#609 backfill). Boolean
+    // renders as a string 'true' / 'false' patch value (the /tracingEnabled
+    // pattern). Removal semantics (#1160 class): the field dropped from the
+    // template patches 'false' — the CFn default — instead of silently
+    // keeping the live cache cluster running (and billing).
+    const cacheClusterEnabled = properties['CacheClusterEnabled'] as boolean | undefined;
+    const prevCacheClusterEnabled = previousProperties['CacheClusterEnabled'] as
+      | boolean
+      | undefined;
+    if (cacheClusterEnabled !== prevCacheClusterEnabled) {
+      patchOperations.push({
+        op: 'replace',
+        path: '/cacheClusterEnabled',
+        value: String(cacheClusterEnabled ?? false),
+      });
+    }
+
+    // CacheClusterSize — only patched when PRESENT and changed (#609
+    // backfill). Removal semantics (#1160 class): deliberately NOT cleared
+    // on removal — the size is only meaningful while a cache cluster
+    // exists, `/cacheClusterSize` accepts only valid enum values (no empty
+    // clear), and dropping CacheClusterEnabled already tears the cluster
+    // down, taking the size with it. Stringified because an unquoted YAML
+    // template carries the NUMBER 0.5 for the CFn string enum '0.5'.
+    const rawCacheClusterSize = properties['CacheClusterSize'] as string | number | undefined;
+    const prevRawCacheClusterSize = previousProperties['CacheClusterSize'] as
+      | string
+      | number
+      | undefined;
+    if (
+      rawCacheClusterSize != null &&
+      (prevRawCacheClusterSize == null ||
+        String(rawCacheClusterSize) !== String(prevRawCacheClusterSize))
+    ) {
+      patchOperations.push({
+        op: 'replace',
+        path: '/cacheClusterSize',
+        value: String(rawCacheClusterSize),
+      });
+    }
+
+    // ClientCertificateId — scalar (#609 backfill). Removal semantics
+    // (#1160 class): the field dropped from the template patches '' —
+    // UpdateStage supports `remove` only for map keys / whole nested
+    // blocks, and API Gateway treats an empty-string replace as detaching
+    // the certificate (the same scalar-clear pattern Account uses for
+    // /cloudwatchRoleArn) — instead of silently keeping the live value.
+    const clientCertificateId = properties['ClientCertificateId'] as string | undefined;
+    const prevClientCertificateId = previousProperties['ClientCertificateId'] as string | undefined;
+    if (clientCertificateId !== prevClientCertificateId) {
+      patchOperations.push({
+        op: 'replace',
+        path: '/clientCertificateId',
+        value: clientCertificateId ?? '',
+      });
+    }
+
+    // DocumentationVersion — scalar (#609 backfill). Removal semantics
+    // (#1160 class): the field dropped from the template patches '' (the
+    // same scalar-clear-on-removal approach as ClientCertificateId above)
+    // instead of silently keeping the live documentation version.
+    const documentationVersion = properties['DocumentationVersion'] as string | undefined;
+    const prevDocumentationVersion = previousProperties['DocumentationVersion'] as
+      | string
+      | undefined;
+    if (documentationVersion !== prevDocumentationVersion) {
+      patchOperations.push({
+        op: 'replace',
+        path: '/documentationVersion',
+        value: documentationVersion ?? '',
+      });
+    }
+
+    // AccessLogSetting — nested {DestinationArn, Format} block applied via
+    // field-level replace ops (#609 backfill). Removal semantics (#1160
+    // class): the WHOLE block dropped from the template emits
+    // `remove /accessLogSettings` — access logging is disabled, matching
+    // CFn's absent-block behavior — instead of silently keeping the live
+    // config. A sub-field dropped while the block remains is cleared with
+    // an empty-string replace (the scalar-clear pattern above).
+    // #1471/#1493 class guard (DESIRED side only — the previous side comes
+    // from cdkd state): a present-but-malformed block would index every
+    // sub-field to undefined and emit CLEAR patches, silently disabling a
+    // live config from a broken template. On the update path we WARN and
+    // SKIP the property (a rollback replays update() with a state record as
+    // the desired bag, so a refusal would make the stage un-rollbackable;
+    // emitting the remove op would be the very harm the guard exists for).
+    const rawAccessLog = properties['AccessLogSetting'];
+    const accessLogMalformed = rawAccessLog != null && !isPlainObjectBlock(rawAccessLog);
+    if (accessLogMalformed) {
+      this.logger.warn(
+        `AWS::ApiGateway::Stage AccessLogSetting for ${logicalId} is not an object block (got ${Array.isArray(rawAccessLog) ? 'an array' : typeof rawAccessLog}); leaving the live access-log config untouched.`
+      );
+    }
+    const accessLog = accessLogMalformed
+      ? undefined
+      : (rawAccessLog as CfnStageAccessLogSetting | undefined);
+    const prevAccessLog = previousProperties['AccessLogSetting'] as
+      | CfnStageAccessLogSetting
+      | undefined;
+    if (accessLogMalformed) {
+      // Skip both the patch and the removal arm for this property.
+    } else if (accessLog == null) {
+      if (prevAccessLog != null) {
+        patchOperations.push({ op: 'remove', path: '/accessLogSettings' });
+      }
+    } else {
+      if (accessLog.DestinationArn !== prevAccessLog?.DestinationArn) {
+        patchOperations.push({
+          op: 'replace',
+          path: '/accessLogSettings/destinationArn',
+          value:
+            accessLog.DestinationArn !== undefined
+              ? normalizeAccessLogDestinationArn(String(accessLog.DestinationArn))
+              : '',
+        });
+      }
+      if (accessLog.Format !== prevAccessLog?.Format) {
+        patchOperations.push({
+          op: 'replace',
+          path: '/accessLogSettings/format',
+          value: accessLog.Format !== undefined ? String(accessLog.Format) : '',
+        });
+      }
+    }
+
+    // CanarySetting — nested canary release block (#609 backfill). Removal
+    // semantics (#1160 class): the WHOLE block dropped from the template
+    // emits `remove /canarySettings` — the canary is torn down, matching
+    // CFn's absent-block behavior — instead of silently leaving a live
+    // canary diverting traffic. Sub-field changes patch the individual
+    // /canarySettings/* paths; a scalar sub-field dropped while the block
+    // remains reverts to its CFn/API default (0 / '' / false).
+    // Same #1471/#1493 guard as AccessLogSetting above: warn and skip a
+    // present-but-malformed desired block instead of emitting clear patches.
+    const rawCanary = properties['CanarySetting'];
+    const canaryMalformed = rawCanary != null && !isPlainObjectBlock(rawCanary);
+    if (canaryMalformed) {
+      this.logger.warn(
+        `AWS::ApiGateway::Stage CanarySetting for ${logicalId} is not an object block (got ${Array.isArray(rawCanary) ? 'an array' : typeof rawCanary}); leaving the live canary config untouched.`
+      );
+    }
+    const canary = canaryMalformed ? undefined : (rawCanary as CfnStageCanarySetting | undefined);
+    const prevCanary = previousProperties['CanarySetting'] as CfnStageCanarySetting | undefined;
+    if (canaryMalformed) {
+      // Skip both the patch and the removal arm for this property.
+    } else if (canary == null) {
+      if (prevCanary != null) {
+        patchOperations.push({ op: 'remove', path: '/canarySettings' });
+      }
+    } else {
+      if (canary.PercentTraffic !== prevCanary?.PercentTraffic) {
+        patchOperations.push({
+          op: 'replace',
+          path: '/canarySettings/percentTraffic',
+          value: String(canary.PercentTraffic ?? 0),
+        });
+      }
+      if (canary.DeploymentId !== prevCanary?.DeploymentId) {
+        patchOperations.push({
+          op: 'replace',
+          path: '/canarySettings/deploymentId',
+          value: canary.DeploymentId ?? '',
+        });
+      }
+      if (canary.UseStageCache !== prevCanary?.UseStageCache) {
+        // Boolean renders as a string 'true' / 'false' patch value.
+        patchOperations.push({
+          op: 'replace',
+          path: '/canarySettings/useStageCache',
+          value: String(canary.UseStageCache ?? false),
+        });
+      }
+      // StageVariableOverrides — per-key replace / remove, mirroring the
+      // /variables/{key} pattern below. Removal semantics (#1160 class): a
+      // key dropped from the map emits
+      // `remove /canarySettings/stageVariableOverrides/{key}`.
+      const overrides = canary.StageVariableOverrides ?? {};
+      const prevOverrides = prevCanary?.StageVariableOverrides ?? {};
+      for (const [key, value] of Object.entries(overrides)) {
+        if (prevOverrides[key] !== value) {
+          patchOperations.push({
+            op: 'replace',
+            path: `/canarySettings/stageVariableOverrides/${key}`,
+            value,
+          });
+        }
+      }
+      for (const key of Object.keys(prevOverrides)) {
+        if (!(key in overrides)) {
+          patchOperations.push({
+            op: 'remove',
+            path: `/canarySettings/stageVariableOverrides/${key}`,
+          });
+        }
+      }
     }
 
     // Variables — stage variables map. UpdateStage takes one patch op per
@@ -2023,6 +2285,42 @@ export class ApiGatewayProvider implements ResourceProvider {
       // so a stage that never set these does not surface phantom drift).
       if (resp.tracingEnabled !== undefined) result['TracingEnabled'] = resp.tracingEnabled;
       if (resp.variables !== undefined) result['Variables'] = resp.variables;
+      if (resp.cacheClusterEnabled !== undefined) {
+        result['CacheClusterEnabled'] = resp.cacheClusterEnabled;
+      }
+      if (resp.cacheClusterSize !== undefined) result['CacheClusterSize'] = resp.cacheClusterSize;
+      if (resp.clientCertificateId !== undefined) {
+        result['ClientCertificateId'] = resp.clientCertificateId;
+      }
+      if (resp.documentationVersion !== undefined) {
+        result['DocumentationVersion'] = resp.documentationVersion;
+      }
+      if (resp.accessLogSettings !== undefined) {
+        const accessLog: Record<string, unknown> = {};
+        if (resp.accessLogSettings.destinationArn !== undefined) {
+          accessLog['DestinationArn'] = resp.accessLogSettings.destinationArn;
+        }
+        if (resp.accessLogSettings.format !== undefined) {
+          accessLog['Format'] = resp.accessLogSettings.format;
+        }
+        result['AccessLogSetting'] = accessLog;
+      }
+      if (resp.canarySettings !== undefined) {
+        const canary: Record<string, unknown> = {};
+        if (resp.canarySettings.percentTraffic !== undefined) {
+          canary['PercentTraffic'] = resp.canarySettings.percentTraffic;
+        }
+        if (resp.canarySettings.deploymentId !== undefined) {
+          canary['DeploymentId'] = resp.canarySettings.deploymentId;
+        }
+        if (resp.canarySettings.stageVariableOverrides !== undefined) {
+          canary['StageVariableOverrides'] = resp.canarySettings.stageVariableOverrides;
+        }
+        if (resp.canarySettings.useStageCache !== undefined) {
+          canary['UseStageCache'] = resp.canarySettings.useStageCache;
+        }
+        result['CanarySetting'] = canary;
+      }
       // MethodSettings (issue #966): rebuild the CFn list shape from the
       // get-stage `methodSettings` map, iterating the STATE's entries so the
       // list order matches the baseline (the drift comparator walks arrays
@@ -2151,6 +2449,70 @@ export class ApiGatewayProvider implements ResourceProvider {
  * all-resources wildcard CDK's `deployOptions` emits), so building the
  * UpdateStage patch path only needs the leading slash stripped.
  */
+/**
+ * CFn `AWS::ApiGateway::Stage.AccessLogSetting` block (template shape).
+ * NOT a CreateStage parameter — applied via UpdateStage patch operations
+ * (`replace /accessLogSettings/destinationArn` / `.../format`).
+ */
+interface CfnStageAccessLogSetting {
+  DestinationArn?: string;
+  Format?: string;
+}
+
+/**
+ * CFn `AWS::ApiGateway::Stage.CanarySetting` block (template shape). Maps
+ * onto the SDK's `CanarySettings` (camelCase) via {@link toSdkCanarySettings}
+ * on create; update rides field-level `/canarySettings/*` patch ops.
+ */
+interface CfnStageCanarySetting {
+  PercentTraffic?: number;
+  DeploymentId?: string;
+  StageVariableOverrides?: Record<string, string>;
+  UseStageCache?: boolean;
+}
+
+/**
+ * A nested CFn config block must be a plain object; a string, array, or
+ * unresolved intrinsic that leaks through resolution indexes every sub-field
+ * to `undefined` (#1471/#1493 class). Create refuses such a block; update
+ * warns and skips the property.
+ */
+function isPlainObjectBlock(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Strip the `:*` suffix off a CloudWatch Logs log-group ARN.
+ *
+ * CDK's canonical `LogGroupLogDestination` emits `Fn::GetAtt [LogGroup, Arn]`
+ * for `AccessLogSetting.DestinationArn`, and a log group's Arn attribute ends
+ * with `:*` — a shape API Gateway's UpdateStage REJECTS ("Access log
+ * destination must only contain characters a-z, ..."). CloudFormation's Stage
+ * handler normalizes the suffix and accepts the template (proven by the
+ * apigw-stage-throttling fixture's CC-routed history), so the SDK provider
+ * must match for parity or every CDK `deployOptions.accessLogDestination`
+ * app fails on deploy (caught live by that integ, 2026-08-11).
+ */
+function normalizeAccessLogDestinationArn(arn: string): string {
+  return arn.endsWith(':*') ? arn.slice(0, -2) : arn;
+}
+
+/**
+ * Map the CFn `CanarySetting` block to the SDK `CreateStageCommand`
+ * `canarySettings` shape (PascalCase -> camelCase member rename).
+ */
+function toSdkCanarySettings(
+  setting: CfnStageCanarySetting | undefined
+): CanarySettings | undefined {
+  if (setting == null) return undefined;
+  return {
+    percentTraffic: setting.PercentTraffic,
+    deploymentId: setting.DeploymentId,
+    stageVariableOverrides: setting.StageVariableOverrides,
+    useStageCache: setting.UseStageCache,
+  };
+}
+
 interface CfnStageMethodSetting {
   ResourcePath?: string;
   HttpMethod?: string;
