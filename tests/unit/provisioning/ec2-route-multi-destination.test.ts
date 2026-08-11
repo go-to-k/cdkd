@@ -237,12 +237,21 @@ describe('EC2Provider AWS::EC2::Route multi-destination (#1566)', () => {
       // ANNOUNCED rather than silent.
       expect(input['DestinationIpv6CidrBlock']).toBeUndefined();
 
-      expect(warnings().some((m) => /declares more than one destination/.test(m))).toBe(true);
-      expect(warnings().some((m) => /Continuing with DestinationCidrBlock/.test(m))).toBe(true);
-      // The warning must not claim a state origin: `updateRoute` passes the
-      // same callback on an ordinary template-borne deploy, where that would
-      // be false and would contradict "remove the extra keys from the template".
-      expect(warnings().some((m) => /come from cdkd state/.test(m))).toBe(false);
+      // Asserted as the WHOLE message rather than a few substrings. A
+      // substring set leaves the remedy sentence, the logical id and the
+      // trailing clause unpinned — all three were silently deletable while the
+      // suite stayed green. It also pins the absence of any WHY claim: the two
+      // callers reach this message for different reasons (a state replay with
+      // no prior delete vs. a delete-and-recreate), so any causal clause here
+      // is false for one of them. Two earlier drafts each shipped one.
+      expect(warnings()).toEqual([
+        'Route MyRoute declares more than one destination ' +
+          '(DestinationCidrBlock, DestinationIpv6CidrBlock). ' +
+          'CloudFormation and EC2 accept exactly one of ' +
+          'DestinationCidrBlock/DestinationIpv6CidrBlock/DestinationPrefixListId; ' +
+          'remove the extra keys from the template. ' +
+          'Continuing with DestinationCidrBlock and ignoring the rest.',
+      ]);
     });
 
     it('names the ACTUAL winning key when the winner is not the IPv4 one', async () => {

@@ -2054,13 +2054,19 @@ export class EC2Provider implements ResourceProvider {
         'DestinationCidrBlock/DestinationIpv6CidrBlock/DestinationPrefixListId; ' +
         'remove the extra keys from the template.';
       if (onMultipleDestinations) {
-        // Deliberately does NOT attribute the properties to cdkd state: the
-        // update path passes this callback unconditionally, so an ordinary
-        // template-borne `cdkd deploy` update reaches here too and a
-        // state-origin claim would be false (and would contradict the
-        // "remove the extra keys from the template" remedy above).
-        // The used key is derived from the resolved `destination` rather than
-        // from declaredDestinations[0], so the two can never disagree.
+        // The message states WHAT happened and nothing about WHY, because the
+        // two callers reach it for different reasons: the create arm is a
+        // state replay (no prior delete), the update arm is a
+        // delete-and-recreate. An earlier draft asserted a cdkd-state origin
+        // (false on a template-borne update) and its replacement asserted a
+        // just-deleted route (false on the replay create) — each caller's own
+        // comment carries the rationale instead.
+        //
+        // `usedKey` is read off the resolved `destination`, so it always names
+        // the key the wire call below actually sends. The third arm is
+        // defensive: inside this block at least two keys are truthy, so a
+        // prefix-list winner implies both CIDR keys are falsy, which would
+        // have made the count 1 and skipped the block.
         const usedKey =
           destination === destinationCidrBlock
             ? 'DestinationCidrBlock'
@@ -2074,9 +2080,7 @@ export class EC2Provider implements ResourceProvider {
         // junk-state class; it is not made worse here (the pre-fix code
         // recorded the same bag with no warning at all), and fixing it means
         // persisting the narrowed bag, which this provider does not own.
-        onMultipleDestinations(
-          `${message} Continuing with ${usedKey} and ignoring the rest, because refusing here would strand the route this update already deleted.`
-        );
+        onMultipleDestinations(`${message} Continuing with ${usedKey} and ignoring the rest.`);
       } else {
         throw new ProvisioningError(message, resourceType, logicalId);
       }

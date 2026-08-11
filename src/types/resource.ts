@@ -202,9 +202,18 @@ export interface CreateContext {
    * parameter to thread, and during a rollback replay the `properties` it
    * forwards ARE a state record. So a provider with a create-side pre-flight
    * refusal MUST NOT re-create inside `update()` — the refusal would fire on a
-   * replay with no way to detect it. None of today's self-recreating providers
-   * has such a refusal (they validate required fields only, which stays a hard
-   * error by the rule above), so there is no live gap.
+   * replay with no way to detect it. None of the five listed above has such a
+   * refusal (they validate required fields only, which stays a hard error by
+   * the rule above).
+   *
+   * `EC2Provider` DOES have both since issue #1566, via the private
+   * `createRoute` rather than `this.create`, and shows the shape that satisfies
+   * the constraint: the refusal sits behind a CALLBACK parameter which
+   * `updateRoute` passes UNCONDITIONALLY, so the re-create can never fire it.
+   * Note the callback covers only that one guard — `createRoute`'s
+   * required-field check is still a hard error on the post-delete path — so the
+   * safe pattern is "downgrade the refusal", never "assume `update()` is
+   * throw-free". See `.claude/rules/providers.md` for the full write-up.
    */
   replayingState?: boolean;
 }
