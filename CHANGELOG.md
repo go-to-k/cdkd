@@ -1,3 +1,12 @@
+## [0.278.50](https://github.com/go-to-k/cdkd/compare/v0.278.49...v0.278.50) (2026-08-11)
+
+
+### Bug Fixes
+
+* **dynamodb:** refuse a malformed Table BillingMode instead of defaulting it ([#1554](https://github.com/go-to-k/cdkd/issues/1554)) ([68d2225](https://github.com/go-to-k/cdkd/commit/68d2225d1d0f0b01aa8e22d68c9b96d374d606e6))
+* **provisioning:** downgrade create-path config-shape refusals on a state replay ([#1556](https://github.com/go-to-k/cdkd/issues/1556)) ([62ceed7](https://github.com/go-to-k/cdkd/commit/62ceed7b33a153cfa7f7083bf62c6dde2f34e0ac))
+* **sns:** warn-and-skip malformed DeliveryStatusLogging on update instead of throwing ([#1555](https://github.com/go-to-k/cdkd/issues/1555)) ([96a3fc5](https://github.com/go-to-k/cdkd/commit/96a3fc53655ead7fef4b47ccd7b06d9cc5678e00))
+
 ## [0.278.49](https://github.com/go-to-k/cdkd/compare/v0.278.48...v0.278.49) (2026-08-11)
 
 
