@@ -356,7 +356,14 @@ export class EC2Provider implements ResourceProvider {
       case 'AWS::EC2::RouteTable':
         return this.createRouteTable(logicalId, resourceType, properties);
       case 'AWS::EC2::Route':
-        return this.createRoute(logicalId, resourceType, properties);
+        return this.createRoute(
+          logicalId,
+          resourceType,
+          properties,
+          // A reverse-replacement rollback creates from a STATE record, so the
+          // refusal downgrades here exactly as it does on the update path.
+          context?.replayingState === true ? (message) => this.logger.warn(message) : undefined
+        );
       case 'AWS::EC2::SubnetRouteTableAssociation':
         return this.createSubnetRouteTableAssociation(logicalId, resourceType, properties);
       case 'AWS::EC2::SecurityGroup':
@@ -1994,7 +2001,8 @@ export class EC2Provider implements ResourceProvider {
   private async createRoute(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    onMultipleDestinations?: (message: string) => void
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating Route ${logicalId}`);
 
@@ -2013,6 +2021,39 @@ export class EC2Provider implements ResourceProvider {
         resourceType,
         logicalId
       );
+    }
+
+    // A CFn-invalid template carrying MORE than one destination key would
+    // otherwise deploy with only the highest-precedence one and silently drop
+    // the rest, while CloudFormation / `CreateRoute` reject the combination
+    // (InvalidParameterCombination). Refuse instead of narrowing (issue #1566).
+    // `onMultipleDestinations` downgrades this to a warning on the STATE-borne
+    // paths (rollback replay / the update path's delete-and-recreate), where a
+    // refusal would leave the route unrestorable from a record the user cannot
+    // edit; the pre-fix precedence then applies, so behavior there is unchanged.
+    const declaredDestinations = (
+      [
+        ['DestinationCidrBlock', destinationCidrBlock],
+        ['DestinationIpv6CidrBlock', destinationIpv6CidrBlock],
+        ['DestinationPrefixListId', destinationPrefixListId],
+      ] as const
+    )
+      .filter(([, value]) => value !== undefined && value !== null && value !== '')
+      .map(([key]) => key);
+
+    if (declaredDestinations.length > 1) {
+      const message =
+        `Route ${logicalId} declares more than one destination (${declaredDestinations.join(', ')}). ` +
+        'CloudFormation and EC2 accept exactly one of ' +
+        'DestinationCidrBlock/DestinationIpv6CidrBlock/DestinationPrefixListId; ' +
+        'remove the extra keys from the template.';
+      if (onMultipleDestinations) {
+        onMultipleDestinations(
+          `${message} Continuing with ${declaredDestinations[0]} because the properties come from cdkd state, not the template.`
+        );
+      } else {
+        throw new ProvisioningError(message, resourceType, logicalId);
+      }
     }
 
     try {
@@ -2079,7 +2120,18 @@ export class EC2Provider implements ResourceProvider {
     // For target changes, we delete and recreate
     try {
       await this.deleteRoute(logicalId, physicalId, resourceType);
-      const createResult = await this.createRoute(logicalId, resourceType, properties);
+      const createResult = await this.createRoute(
+        logicalId,
+        resourceType,
+        properties,
+        // `rollback-executor.ts`'s revert arm and `cdkd drift --revert` both
+        // call update() with a cdkd STATE record as the desired bag, and this
+        // method has no context parameter to tell that apart from a template
+        // update — so the refusal downgrades to a warning on every update, per
+        // the "an UPDATE-path refusal is a replay refusal too" rule. The route
+        // was already deleted above; throwing here would strand it.
+        (message) => this.logger.warn(message)
+      );
       return {
         physicalId: createResult.physicalId,
         wasReplaced: true,

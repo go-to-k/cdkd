@@ -58,6 +58,9 @@ helper exists to stop:
 - **A hand-threaded callback** — `EC2Provider.buildIpPermission` takes an
   `onUnusableProtocol` parameter and forwards it as `onUnusable`, because the
   helper is shared with state-borne callers that must NOT downgrade.
+  `EC2Provider.createRoute`'s `onMultipleDestinations` (issue #1566) is the
+  second: `create()` passes it only when `replayingState` is set, and
+  `updateRoute` passes it UNCONDITIONALLY — see the update-path bullet below.
 - **A hand-written refusal** — `GlueProvider`'s
   `enforceIcebergTableInputAbsent`.
 
@@ -79,6 +82,15 @@ strict, each differently):
   create side's "omit" would read as "delete every live index". The PREVIOUS
   side's translation takes the downgrade UNCONDITIONALLY: it is state-borne,
   so a refusal there is the guard-the-desired-side-only rule violated outright.
+- **WARN and keep the pre-refusal behavior** — `EC2Provider`'s Route
+  multi-destination guard (issue #1566). `updateRoute` DELETES the route before
+  re-creating it, so a throw on the re-create would strand a deleted route with
+  no template-side remedy; and because `update()` has no context parameter, it
+  cannot tell a template update from the state-borne replay that
+  `rollback-executor.ts` / `drift --revert` drive. So the downgrade is
+  UNCONDITIONAL on that path and the pre-fix precedence still applies — the
+  narrowing becomes ANNOUNCED rather than silent, while the refusal stands on
+  the create path, where the value is always template-borne.
 
 **A warn-and-continue update path becomes a producer of junk state** (issue
 #1552): the deploy SUCCEEDS, so the engine records the unusable desired value,
