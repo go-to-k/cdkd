@@ -1,3 +1,10 @@
+## [0.280.12](https://github.com/go-to-k/cdkd/compare/v0.280.11...v0.280.12) (2026-08-11)
+
+
+### Bug Fixes
+
+* **elbv2:** wire the 9 LoadBalancer + TargetGroup silent-drop properties ([#609](https://github.com/go-to-k/cdkd/issues/609)) ([#1610](https://github.com/go-to-k/cdkd/issues/1610)) ([c3edf48](https://github.com/go-to-k/cdkd/commit/c3edf486a3759c1ecdd10e0b81f11a9ea50fddb5))
+
 ## [0.280.11](https://github.com/go-to-k/cdkd/compare/v0.280.10...v0.280.11) (2026-08-11)
 
 
