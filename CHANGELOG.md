@@ -1,3 +1,10 @@
+## [0.278.49](https://github.com/go-to-k/cdkd/compare/v0.278.48...v0.278.49) (2026-08-11)
+
+
+### Bug Fixes
+
+* **cloudtrail:** reset removed Trail fields to their CFn targets ([#1160](https://github.com/go-to-k/cdkd/issues/1160) cloudtrail batch) ([#1547](https://github.com/go-to-k/cdkd/issues/1547)) ([5aa9f71](https://github.com/go-to-k/cdkd/commit/5aa9f713ff588237314830ef5fcf8913db28a3ea))
+
 ## [0.278.48](https://github.com/go-to-k/cdkd/compare/v0.278.47...v0.278.48) (2026-08-11)
 
 
