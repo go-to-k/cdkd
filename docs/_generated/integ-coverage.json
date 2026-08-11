@@ -3088,7 +3088,8 @@
       ],
       "signals": {
         "alb": [
-          "l2"
+          "l2",
+          "literal"
         ],
         "alb-advanced": [
           "l2"

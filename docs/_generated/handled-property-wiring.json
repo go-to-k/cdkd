@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "summary": {
     "classifiedCount": 84,
-    "declaredProperties": 1105,
-    "wiredProperties": 1103,
+    "declaredProperties": 1113,
+    "wiredProperties": 1111,
     "wired": 82,
     "gap": 0,
     "allowListed": 2,
@@ -8777,7 +8777,7 @@
       "file": "elbv2-provider.ts",
       "className": "ELBv2Provider",
       "bucket": "wired",
-      "declaredCount": 30,
+      "declaredCount": 38,
       "properties": [
         {
           "name": "AlpnPolicy",
@@ -8831,6 +8831,60 @@
             "createListener",
             "update",
             "updateListener"
+          ]
+        },
+        {
+          "name": "EnableCapacityReservationProvisionStabilize",
+          "status": "wired",
+          "types": [
+            "AWS::ElasticLoadBalancingV2::LoadBalancer"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "applyUpdate",
+            "create",
+            "createLoadBalancer",
+            "update",
+            "updateLoadBalancer"
+          ]
+        },
+        {
+          "name": "EnablePrefixForIpv6SourceNat",
+          "status": "wired",
+          "types": [
+            "AWS::ElasticLoadBalancingV2::LoadBalancer"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "applyUpdate",
+            "create",
+            "createLoadBalancer",
+            "update",
+            "updateLoadBalancer"
+          ]
+        },
+        {
+          "name": "EnforceSecurityGroupInboundRulesOnPrivateLinkTraffic",
+          "status": "wired",
+          "types": [
+            "AWS::ElasticLoadBalancingV2::LoadBalancer"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "applyUpdate",
+            "create",
+            "createLoadBalancer",
+            "update",
+            "updateLoadBalancer"
           ]
         },
         {
@@ -8963,6 +9017,26 @@
           "name": "IpAddressType",
           "status": "wired",
           "types": [
+            "AWS::ElasticLoadBalancingV2::LoadBalancer",
+            "AWS::ElasticLoadBalancingV2::TargetGroup"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "applyUpdate",
+            "create",
+            "createLoadBalancer",
+            "createTargetGroup",
+            "update",
+            "updateLoadBalancer"
+          ]
+        },
+        {
+          "name": "Ipv4IpamPoolId",
+          "status": "wired",
+          "types": [
             "AWS::ElasticLoadBalancingV2::LoadBalancer"
           ],
           "evidence": [
@@ -9044,6 +9118,24 @@
             "createTargetGroup",
             "update",
             "updateTargetGroup"
+          ]
+        },
+        {
+          "name": "MinimumLoadBalancerCapacity",
+          "status": "wired",
+          "types": [
+            "AWS::ElasticLoadBalancingV2::LoadBalancer"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "applyUpdate",
+            "create",
+            "createLoadBalancer",
+            "update",
+            "updateLoadBalancer"
           ]
         },
         {
@@ -9249,6 +9341,57 @@
           ]
         },
         {
+          "name": "TargetControlPort",
+          "status": "wired",
+          "types": [
+            "AWS::ElasticLoadBalancingV2::TargetGroup"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "createTargetGroup"
+          ]
+        },
+        {
+          "name": "TargetGroupAttributes",
+          "status": "wired",
+          "types": [
+            "AWS::ElasticLoadBalancingV2::TargetGroup"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "applyUpdate",
+            "create",
+            "createTargetGroup",
+            "update",
+            "updateTargetGroup"
+          ]
+        },
+        {
+          "name": "Targets",
+          "status": "wired",
+          "types": [
+            "AWS::ElasticLoadBalancingV2::TargetGroup"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "applyUpdate",
+            "create",
+            "createTargetGroup",
+            "update",
+            "updateTargetGroup"
+          ]
+        },
+        {
           "name": "TargetType",
           "status": "wired",
           "types": [
@@ -9314,6 +9457,7 @@
       ],
       "gaps": [],
       "blindSpots": [
+        "computed key in updateTargetGroup()",
         "stripHandled(...) in updateLoadBalancer()"
       ]
     },

@@ -4,10 +4,16 @@
 # Deploys the ALB stack (VPC + ALB + TargetGroup + Listener), asserts the
 # Listener's `routing.http.response.server.enabled` attribute the fixture sets
 # via the L1 escape hatch actually reached AWS (cdkd applies it through a
-# post-create ModifyListenerAttributes call), re-deploys with
+# post-create ModifyListenerAttributes call), asserts the #609 LB+TG
+# silent-drop batch baseline (TG IpAddressType, TargetGroupAttributes,
+# Targets registration), re-deploys with CDKD_TEST_UPDATE=true (attribute
+# diff + target swap via RegisterTargets+DeregisterTargets), re-deploys with
 # CDKD_TEST_REMOVAL=true (drops the TargetGroup's custom HealthCheckPort —
-# issue #1160 elbv2 batch) and asserts the live TG resets to the CFn-parity
-# default `traffic-port`, then destroys and verifies clean.
+# issue #1160 elbv2 batch — plus the TargetGroupAttributes list) and asserts
+# the live TG resets to the CFn-parity default `traffic-port` and the
+# attribute resets to 300, then destroys and verifies clean.
+# MinimumLoadBalancerCapacity is unit-only: the integ account lacks the LCU
+# capacity-reservation entitlement (see the note in lib/alb-stack.ts).
 #
 # Run via: /run-integ alb
 #         or: bash tests/integration/alb/verify.sh
@@ -128,6 +134,56 @@ fi
 echo "    baseline HealthCheckPort=8080 reached AWS (✓)"
 
 echo ""
+echo "==> Assert #609 LB+TG batch baseline (IpAddressType / TargetGroupAttributes / Targets)"
+TG_IP_TYPE=$(aws elbv2 describe-target-groups --target-group-arns "${TG_ARN}" --region "${AWS_REGION}" \
+  --query 'TargetGroups[0].IpAddressType' --output text)
+if [[ "${TG_IP_TYPE}" != "ipv4" ]]; then
+  echo "FAIL: TargetGroup IpAddressType is '${TG_IP_TYPE}', expected 'ipv4' (CreateTargetGroup wiring)"
+  exit 1
+fi
+DEREG_P1=$(aws elbv2 describe-target-group-attributes --target-group-arn "${TG_ARN}" --region "${AWS_REGION}" \
+  --query "Attributes[?Key=='deregistration_delay.timeout_seconds'].Value | [0]" --output text)
+if [[ "${DEREG_P1}" != "45" ]]; then
+  echo "FAIL: deregistration_delay is '${DEREG_P1}', expected '45' (post-create ModifyTargetGroupAttributes)"
+  exit 1
+fi
+BASE_TARGET=$(aws elbv2 describe-target-health --target-group-arn "${TG_ARN}" --region "${AWS_REGION}" \
+  --query "TargetHealthDescriptions[?Target.Id=='10.0.0.100'].Target.Id | [0]" --output text)
+if [[ "${BASE_TARGET}" != "10.0.0.100" ]]; then
+  echo "FAIL: target 10.0.0.100 not registered (post-create RegisterTargets)"
+  exit 1
+fi
+echo "    IpAddressType=ipv4, deregistration_delay=45, target 10.0.0.100 registered (✓)"
+
+echo ""
+echo "==> Update redeploy: attribute diff + target swap (#609)"
+CDKD_TEST_UPDATE=true ${CDKD} deploy ${STACK} --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}"
+
+DEREG_P2=$(aws elbv2 describe-target-group-attributes --target-group-arn "${TG_ARN}" --region "${AWS_REGION}" \
+  --query "Attributes[?Key=='deregistration_delay.timeout_seconds'].Value | [0]" --output text)
+if [[ "${DEREG_P2}" != "60" ]]; then
+  echo "FAIL: deregistration_delay is '${DEREG_P2}' after update, expected '60' (ModifyTargetGroupAttributes diff)"
+  exit 1
+fi
+NEW_TARGET=$(aws elbv2 describe-target-health --target-group-arn "${TG_ARN}" --region "${AWS_REGION}" \
+  --query "TargetHealthDescriptions[?Target.Id=='10.0.0.101'].Target.Id | [0]" --output text)
+if [[ "${NEW_TARGET}" != "10.0.0.101" ]]; then
+  echo "FAIL: target 10.0.0.101 not registered after update (RegisterTargets on update)"
+  exit 1
+fi
+# The swapped-out target must be gone or draining (deregistration is async).
+OLD_TARGET_STATE=$(aws elbv2 describe-target-health --target-group-arn "${TG_ARN}" --region "${AWS_REGION}" \
+  --query "TargetHealthDescriptions[?Target.Id=='10.0.0.100'].TargetHealth.State | [0]" --output text)
+if [[ "${OLD_TARGET_STATE}" != "None" && "${OLD_TARGET_STATE}" != "draining" && "${OLD_TARGET_STATE}" != "unused" ]]; then
+  echo "FAIL: target 10.0.0.100 is '${OLD_TARGET_STATE}' after update, expected gone/draining (DeregisterTargets on update)"
+  exit 1
+fi
+# MinimumLoadBalancerCapacity is NOT asserted here — the integ account lacks
+# the LCU capacity-reservation entitlement (ModifyCapacityReservation is
+# rejected account-wide; live-verified 2026-08-11). Unit-only coverage.
+echo "    deregistration_delay=60, target swapped to 10.0.0.101 (✓)"
+
+echo ""
 echo "==> Removal redeploy: drop HealthCheckPort (issue #1160 elbv2 batch)"
 CDKD_TEST_REMOVAL=true ${CDKD} deploy ${STACK} --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}"
 
@@ -143,6 +199,18 @@ if [[ "${HC_PORT_P2}" != "traffic-port" ]]; then
   exit 1
 fi
 echo "    HealthCheckPort reset to traffic-port on removal (✓)"
+
+echo ""
+echo "==> Assert #609 removal semantics (attribute reset)"
+# Dropping the TargetGroupAttributes list pushes the removed key back to AWS's
+# default via Value:'' — deregistration_delay resets to 300.
+DEREG_P3=$(aws elbv2 describe-target-group-attributes --target-group-arn "${TG_ARN}" --region "${AWS_REGION}" \
+  --query "Attributes[?Key=='deregistration_delay.timeout_seconds'].Value | [0]" --output text)
+if [[ "${DEREG_P3}" != "300" ]]; then
+  echo "FAIL: deregistration_delay is '${DEREG_P3}' after removal, expected the AWS default '300' (Value:'' reset)"
+  exit 1
+fi
+echo "    deregistration_delay reset to 300 (✓)"
 
 echo ""
 echo "==> Destroy ${STACK}"

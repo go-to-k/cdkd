@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import {
   DescribeLoadBalancersCommand,
   DescribeLoadBalancerAttributesCommand,
+  DescribeCapacityReservationCommand,
   DescribeTagsCommand,
   DescribeTargetGroupsCommand,
   DescribeListenersCommand,
@@ -68,6 +69,8 @@ describe('ELBv2Provider.readCurrentState', () => {
             },
           ],
         })
+        // DescribeCapacityReservation (#609) — no reservation set.
+        .mockResolvedValueOnce({})
         // DescribeLoadBalancerAttributes returns lex-unsorted; the
         // provider re-sorts.
         .mockResolvedValueOnce({
@@ -85,8 +88,9 @@ describe('ELBv2Provider.readCurrentState', () => {
       );
 
       expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(DescribeLoadBalancersCommand);
-      expect(mockSend.mock.calls[1]?.[0]).toBeInstanceOf(DescribeLoadBalancerAttributesCommand);
-      expect(mockSend.mock.calls[2]?.[0]).toBeInstanceOf(DescribeTagsCommand);
+      expect(mockSend.mock.calls[1]?.[0]).toBeInstanceOf(DescribeCapacityReservationCommand);
+      expect(mockSend.mock.calls[2]?.[0]).toBeInstanceOf(DescribeLoadBalancerAttributesCommand);
+      expect(mockSend.mock.calls[3]?.[0]).toBeInstanceOf(DescribeTagsCommand);
       expect(result).toEqual({
         Name: 'mylb',
         Scheme: 'internet-facing',
@@ -140,6 +144,10 @@ describe('ELBv2Provider.readCurrentState', () => {
             },
           ],
         })
+        // DescribeTargetGroupAttributes (#609) — full set, provider sorts.
+        .mockResolvedValueOnce({
+          Attributes: [{ Key: 'deregistration_delay.timeout_seconds', Value: '300' }],
+        })
         .mockResolvedValueOnce({ TagDescriptions: [{ ResourceArn: 'arn:tg', Tags: [] }] });
 
       const result = await provider.readCurrentState(
@@ -164,6 +172,7 @@ describe('ELBv2Provider.readCurrentState', () => {
         HealthyThresholdCount: 2,
         UnhealthyThresholdCount: 3,
         Matcher: { HttpCode: '200' },
+        TargetGroupAttributes: [{ Key: 'deregistration_delay.timeout_seconds', Value: '300' }],
         Tags: [],
       });
     });
@@ -327,6 +336,7 @@ describe('ELBv2Provider.readCurrentState', () => {
       .mockResolvedValueOnce({
         LoadBalancers: [{ LoadBalancerArn: 'arn:lb', LoadBalancerName: 'mylb' }],
       })
+      .mockResolvedValueOnce({}) // DescribeCapacityReservation (#609)
       .mockResolvedValueOnce({ Attributes: [] })
       .mockResolvedValueOnce({
         TagDescriptions: [
@@ -353,6 +363,7 @@ describe('ELBv2Provider.readCurrentState', () => {
       .mockResolvedValueOnce({
         LoadBalancers: [{ LoadBalancerArn: 'arn:lb', LoadBalancerName: 'mylb' }],
       })
+      .mockResolvedValueOnce({}) // DescribeCapacityReservation (#609)
       .mockResolvedValueOnce({ Attributes: [] })
       .mockResolvedValueOnce({
         TagDescriptions: [
@@ -376,6 +387,7 @@ describe('ELBv2Provider.readCurrentState', () => {
       .mockResolvedValueOnce({
         LoadBalancers: [{ LoadBalancerArn: 'arn:lb', LoadBalancerName: 'mylb' }],
       })
+      .mockResolvedValueOnce({}) // DescribeCapacityReservation (#609)
       .mockResolvedValueOnce({ Attributes: [] })
       .mockResolvedValueOnce({ TagDescriptions: [{ ResourceArn: 'arn:lb', Tags: [] }] });
 
