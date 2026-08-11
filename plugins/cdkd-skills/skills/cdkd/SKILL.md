@@ -66,14 +66,15 @@ AWS_PROFILE=<profile> AWS_REGION=<region> cdkd import <stack> --dry-run
 
 ## Check compatibility and bootstrap
 
-Run the project's normal CDK synthesis or tests first. Then have cdkd synthesize the same app:
+Have cdkd synthesize the app:
 
 ```bash
-cdk synth <stack>
 cdkd synth
 ```
 
 `cdkd synth` validates the synthesized app and does not accept a stack selector.
+
+If it fails, isolate the cause by running the project's normal synthesis (`cdk synth` or the project's own build/test scripts): if that also fails, fix the CDK app first; if it succeeds, the difference is a cdkd issue worth reporting upstream.
 
 Check [supported resources](https://github.com/go-to-k/cdkd/blob/main/docs/supported-resources.md) and any property-level preflight errors before deployment. Do not add `--allow-unsupported-properties` merely to bypass a security-relevant encryption, IAM, networking, or TLS warning.
 
