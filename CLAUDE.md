@@ -188,7 +188,7 @@ high.
 
   Surface findings out loud (in chat or todos) and fix them before invoking `/check`. The cost of one more pass is small compared to a follow-up PR or a missed regression.
 - **Before every commit**: Two markgate gates guard `git commit` via `.claude/hooks/check-gate.sh`. Both must be fresh:
-  - `check` — recorded by `/check` (typecheck, lint, build, tests). Scope: `src/**`, `tests/**`, build/test configs (see `.markgate.yml`). Only invalidated by changes in that scope.
+  - `check` — recorded by `/check` (typecheck, lint, build, tests). Scope: `src/**`, `tests/**`, `scripts/**` (the CI classifier / codegen logic — issue #1592), build/test configs (see `.markgate.yml`). Only invalidated by changes in that scope.
   - `docs` — recorded by `/check-docs` (README.md / CLAUDE.md / docs/ / .claude/rules/ consistency with src). Scope: `src/**`, `docs/**`, `README.md`, `CLAUDE.md`, `.claude/rules/**`. Only invalidated by changes in that scope.
 
   **Run the required skills proactively** before attempting the commit — look at `git status` / `git diff --cached --name-only` and match it against each gate's scope: a tests-only commit only needs `/check`; a docs-only commit only needs `/check-docs` (which now also includes `.claude/rules/**`); a src edit needs both; changes that fall outside both scopes (e.g. `.claude/hooks/**`, `.claude/skills/**`, `.markgate.yml`) need neither. The hook is a safety net, not the primary trigger — if you see "Blocked by check-gate", the message names exactly which skill to re-run, but getting there means you skipped the proactive step. `/verify-pr` refreshes both markers in one shot. Install `vp` and markgate via `mise install` at the repo root (see CONTRIBUTING.md).

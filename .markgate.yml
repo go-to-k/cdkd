@@ -80,6 +80,14 @@ gates:
     include:
       - "src/**"
       - "tests/**"
+      # scripts/** holds load-bearing CI logic: the codegen'd-critic family
+      # (gen-nested-key-coverage.ts, gen-handled-property-wiring.ts, ...)
+      # plus every check-*.ts classifier. Before issue #1592 the enforcement
+      # logic sat OUTSIDE the gate that guards it — weakening a classifier
+      # did not stale the marker while editing its test (tests/**) did, so
+      # a change that narrows what a critic rejects could be committed
+      # against a fresh-looking marker.
+      - "scripts/**"
       - "package.json"
       - "pnpm-lock.yaml"
       - "tsconfig*.json"
