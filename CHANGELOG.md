@@ -1,3 +1,10 @@
+## [0.280.3](https://github.com/go-to-k/cdkd/compare/v0.280.2...v0.280.3) (2026-08-11)
+
+
+### Bug Fixes
+
+* **s3:** refuse or warn-and-skip a malformed non-array TagFilters instead of silently omitting the filter ([#1580](https://github.com/go-to-k/cdkd/issues/1580)) ([04009de](https://github.com/go-to-k/cdkd/commit/04009de5d95098446a446fc1b7b2f4ddeea8e36b))
+
 ## [0.280.2](https://github.com/go-to-k/cdkd/compare/v0.280.1...v0.280.2) (2026-08-11)
 
 
