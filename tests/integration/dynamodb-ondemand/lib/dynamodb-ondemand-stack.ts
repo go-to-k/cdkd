@@ -131,11 +131,25 @@ export class DynamodbOndemandStack extends cdk.Stack {
     // when the template declares no capacity either. This phase reproduces the
     // supported half of that A/B end to end.
     //
-    // NO GlobalSecondaryIndex on purpose: `AWS::DynamoDB::Table`'s provider
-    // does not carry per-index `ProvisionedThroughput` into the flip call the
-    // way the GlobalTable provider does for issue #1421, so a GSI here would
-    // surface that separate, pre-existing gap rather than this issue's. Filed
-    // as issue #1588; the index-status half of the wait is unit-tested.
+    // It CARRIES a GlobalSecondaryIndex since issue #1588, which is the whole
+    // point of the index here. That issue's predecessor deliberately left the
+    // index out because the provider did not carry per-index
+    // `ProvisionedThroughput` into the flip call — and the consequence was not
+    // a degraded flip but an IMPOSSIBLE one. Measured against real AWS on
+    // 2026-08-11: the flip with only table-level capacity is rejected with
+    // `ValidationException: One or more parameter values were invalid:
+    // ProvisionedThroughput must be specified for index: <name>`, and the same
+    // call carrying `GlobalSecondaryIndexUpdates[].Update.ProvisionedThroughput`
+    // is accepted. So this index is what makes the phase exercise the flip a
+    // real template hits, rather than the index-free special case.
+    //
+    // The index is UNCONDITIONAL — only its capacity is mode-keyed — because a
+    // mode-gated INDEX would be dropped by any later deploy that clears the
+    // mode, and dropping a live GSI is a slow, destructive operation rather
+    // than the in-place update this phase is about. Its capacity is absent on
+    // the PAY_PER_REQUEST baseline (AWS rejects per-index capacity on an
+    // on-demand table) and declared on the update, which is exactly the shape
+    // the provider has to forward.
     //
     // A hand-written L1 because `dynamodb.Table` always emits `billingMode` —
     // the property has to be genuinely ABSENT from the template. The table is
@@ -144,7 +158,20 @@ export class DynamodbOndemandStack extends cdk.Stack {
     const billingRemovalTable = new dynamodb.CfnTable(this, 'BillingRemovalTable', {
       tableName: 'cdkd-ondemand-test-billing-removal-table',
       keySchema: [{ attributeName: 'id', keyType: 'HASH' }],
-      attributeDefinitions: [{ attributeName: 'id', attributeType: 'S' }],
+      attributeDefinitions: [
+        { attributeName: 'id', attributeType: 'S' },
+        { attributeName: 'gsipk', attributeType: 'S' },
+      ],
+      globalSecondaryIndexes: [
+        {
+          indexName: 'billing-removal-gsi',
+          keySchema: [{ attributeName: 'gsipk', keyType: 'HASH' }],
+          projection: { projectionType: 'ALL' },
+          ...(isUpdate
+            ? { provisionedThroughput: { readCapacityUnits: 2, writeCapacityUnits: 2 } }
+            : {}),
+        },
+      ],
       // Baseline declares PAY_PER_REQUEST; the update REMOVES the property.
       ...(isUpdate
         ? { provisionedThroughput: { readCapacityUnits: 3, writeCapacityUnits: 4 } }
