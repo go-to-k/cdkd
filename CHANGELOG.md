@@ -1,3 +1,10 @@
+## [0.280.19](https://github.com/go-to-k/cdkd/compare/v0.280.18...v0.280.19) (2026-08-11)
+
+
+### Bug Fixes
+
+* **elbv2:** reset a removed BOOLEAN LB/Listener attribute to its documented default ([#1609](https://github.com/go-to-k/cdkd/issues/1609)) ([#1624](https://github.com/go-to-k/cdkd/issues/1624)) ([a1f8e35](https://github.com/go-to-k/cdkd/commit/a1f8e35158c31c49e74eb2357b14eb2bf428bbec))
+
 ## [0.280.18](https://github.com/go-to-k/cdkd/compare/v0.280.17...v0.280.18) (2026-08-11)
 
 
