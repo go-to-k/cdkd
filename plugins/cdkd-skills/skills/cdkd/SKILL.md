@@ -177,7 +177,7 @@ Do not use `--force`, `--yes`, `--purge-events`, or other confirmation-bypassing
 
 ## Run workloads locally (no AWS needed)
 
-`cdkd local *` runs Lambda functions, API Gateway APIs, ECS tasks and services, ALBs, CloudFront distributions, and Bedrock AgentCore runtimes on the developer's machine via Docker — no AWS deploy and no AWS credentials involved, so the deployment-boundary steps above do not apply to these commands:
+`cdkd local *` runs Lambda functions, API Gateway APIs, ECS tasks and services, ALBs, CloudFront distributions, and Bedrock AgentCore runtimes on the developer's machine via Docker — no AWS deploy involved, so the deployment-boundary steps above do not apply to these commands:
 
 ```bash
 cdkd local invoke <function>       # one-shot Lambda invoke
@@ -185,6 +185,15 @@ cdkd local start-api               # long-running local API Gateway
 cdkd local run-task <task>         # one-shot ECS task
 cdkd local start-service <service> # long-running ECS service emulator
 ```
+
+The most important choice is the environment source. A workload whose environment variables reference other resources (`Ref` / `Fn::GetAtt` table names, queue URLs — the common case) runs with those variables dropped unless one of these options resolves them from deployed values:
+
+```bash
+cdkd local invoke <function> --from-state       # resolve env vars from cdkd's S3 state (stack was deployed with cdkd deploy)
+cdkd local invoke <function> --from-cfn-stack   # resolve env vars from the deployed CloudFormation stack (cdk deploy)
+```
+
+`--from-state` and `--from-cfn-stack` are mutually exclusive — pick the one matching how the stack was deployed. Both make read-only AWS calls, so they need credentials; a plain local run without them does not.
 
 Most `cdkd local` commands require Docker, and the first run pulls base images (up to ~600 MB). See the [local execution guide](https://github.com/go-to-k/cdkd/blob/main/docs/local-emulation.md) for the full subcommand list (ALB, CloudFront, AgentCore) and flags.
 
