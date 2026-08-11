@@ -186,11 +186,11 @@ cdkd local run-task <task>         # one-shot ECS task
 cdkd local start-service <service> # long-running ECS service emulator
 ```
 
-The most important choice is the environment source. A workload whose environment variables reference other resources (`Ref` / `Fn::GetAtt` table names, queue URLs — the common case) runs with those variables dropped unless one of these options resolves them from deployed values:
+The most important choice is the environment source: `--from-state` or `--from-cfn-stack`. A workload whose environment variables reference other resources (`Ref` / `Fn::GetAtt` table names, queue URLs — the common case) runs with those variables dropped unless one of the two fills them with the REAL values of the already-deployed resources — the physical IDs and attributes of the tables, queues, and buckets actually running in the AWS account:
 
 ```bash
-cdkd local invoke <function> --from-state       # resolve env vars from cdkd's S3 state (stack was deployed with cdkd deploy)
-cdkd local invoke <function> --from-cfn-stack   # resolve env vars from the deployed CloudFormation stack (cdk deploy)
+cdkd local invoke <function> --from-state       # env vars <- the deployed resources' real values, when the stack was deployed with cdkd deploy
+cdkd local invoke <function> --from-cfn-stack   # env vars <- the deployed resources' real values, when the stack was deployed with cdk deploy
 ```
 
 `--from-state` and `--from-cfn-stack` are mutually exclusive — pick the one matching how the stack was deployed. Both make read-only AWS calls, so they need credentials; a plain local run without them does not.
