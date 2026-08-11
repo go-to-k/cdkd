@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "summary": {
     "classifiedCount": 84,
-    "declaredProperties": 1113,
-    "wiredProperties": 1111,
+    "declaredProperties": 1117,
+    "wiredProperties": 1115,
     "wired": 82,
     "gap": 0,
     "allowListed": 2,
@@ -13393,7 +13393,7 @@
       "file": "lambda-function-provider.ts",
       "className": "LambdaFunctionProvider",
       "bucket": "wired",
-      "declaredCount": 24,
+      "declaredCount": 28,
       "properties": [
         {
           "name": "Architectures",
@@ -13424,6 +13424,20 @@
           ]
         },
         {
+          "name": "CodeSigningConfigArn",
+          "status": "wired",
+          "types": [
+            "AWS::Lambda::Function"
+          ],
+          "evidence": [
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "update"
+          ]
+        },
+        {
           "name": "DeadLetterConfig",
           "status": "wired",
           "types": [
@@ -13439,6 +13453,20 @@
         },
         {
           "name": "Description",
+          "status": "wired",
+          "types": [
+            "AWS::Lambda::Function"
+          ],
+          "evidence": [
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "update"
+          ]
+        },
+        {
+          "name": "DurableConfig",
           "status": "wired",
           "types": [
             "AWS::Lambda::Function"
@@ -13660,6 +13688,20 @@
           ]
         },
         {
+          "name": "RuntimeManagementConfig",
+          "status": "wired",
+          "types": [
+            "AWS::Lambda::Function"
+          ],
+          "evidence": [
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "update"
+          ]
+        },
+        {
           "name": "SnapStart",
           "status": "wired",
           "types": [
@@ -13685,6 +13727,19 @@
           "seededBy": [
             "create",
             "update"
+          ]
+        },
+        {
+          "name": "TenancyConfig",
+          "status": "wired",
+          "types": [
+            "AWS::Lambda::Function"
+          ],
+          "evidence": [
+            "element-read"
+          ],
+          "seededBy": [
+            "create"
           ]
         },
         {

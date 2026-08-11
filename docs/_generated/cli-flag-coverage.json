@@ -1316,6 +1316,7 @@
     "--cluster-ids",
     "--clusters",
     "--code-interpreter-id",
+    "--code-signing-config-arn",
     "--configuration-profile-id",
     "--configuration-set-name",
     "--container-host",

@@ -9,11 +9,17 @@ import {
   DeleteFunctionConcurrencyCommand,
   GetFunctionConcurrencyCommand,
   GetFunctionRecursionConfigCommand,
+  GetFunctionCodeSigningConfigCommand,
+  GetRuntimeManagementConfigCommand,
   PutFunctionConcurrencyCommand,
   PutFunctionRecursionConfigCommand,
+  PutFunctionCodeSigningConfigCommand,
+  PutRuntimeManagementConfigCommand,
+  DeleteFunctionCodeSigningConfigCommand,
   TagResourceCommand,
   UntagResourceCommand,
   ResourceNotFoundException,
+  waitUntilFunctionActiveV2,
   waitUntilFunctionUpdatedV2,
   type FunctionCode,
   type CreateFunctionCommandInput,
@@ -30,6 +36,9 @@ import {
   type SnapStart,
   type LoggingConfig,
   type RecursiveLoop,
+  type DurableConfig,
+  type TenancyConfig,
+  type UpdateRuntimeOn,
 } from '@aws-sdk/client-lambda';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import {
@@ -50,6 +59,14 @@ import type {
   ResourceImportResult,
 } from '../../types/resource.js';
 import { clearOnUpdateRemoval } from '../update-removal.js';
+
+/**
+ * Attempts the create path's atomicity cleanup makes when DeleteFunction is
+ * refused because the function is still settling. Three attempts with the
+ * linear backoff in `cleanupDeleteRetryDelayMs` covers the few seconds a
+ * `Pending` -> terminal transition takes without stalling a failed deploy.
+ */
+const LAMBDA_CLEANUP_DELETE_MAX_ATTEMPTS = 3;
 
 /**
  * Pick the inline-code filename for a Lambda runtime.
@@ -107,6 +124,44 @@ export class LambdaFunctionProvider implements ResourceProvider {
         'LoggingConfig',
         'RecursiveLoop',
         'ReservedConcurrentExecutions',
+        'CodeSigningConfigArn',
+        'RuntimeManagementConfig',
+        'DurableConfig',
+        'TenancyConfig',
+      ]),
+    ],
+  ]);
+
+  /**
+   * Properties the provider deliberately does NOT wire (issue #391 /
+   * see `ResourceProvider.unhandledByDesign`).
+   *
+   * `CapacityProviderConfig` / `FunctionScalingConfig` are deliberately NOT
+   * here — they stay in `silentDrop` (pre-flight rejection with the
+   * `--allow-unsupported-properties` escape hatch) rather than being declared
+   * un-wirable, because they ARE wirable once Lambda managed instances are
+   * supported. They are one coupled feature: `PutFunctionScalingConfig` fails
+   * with `AccessDeniedException: The function provided by the arn does not
+   * contain a capacity provider configuration` unless the function already
+   * carries a capacity provider (live-probed us-east-1, 2026-08-11). Tracked
+   * in issue #1616.
+   */
+  unhandledByDesign = new Map<string, ReadonlyMap<string, string>>([
+    [
+      'AWS::Lambda::Function',
+      new Map([
+        [
+          'PublishToLatestPublished',
+          // A CloudFormation-ORCHESTRATION directive, not a Lambda API field:
+          // it tells CFn whether to move the `$LATEST.PUBLISHED` pointer as
+          // part of the stack update. `@aws-sdk/client-lambda` 3.1018.0 has no
+          // corresponding member on ANY request shape (verified by grepping
+          // the whole dist-types tree: 0 hits, while the other six silent-drop
+          // properties of this type all resolve to real members), so there is
+          // nothing for an SDK provider to send. cdkd has no CFn-side
+          // version-publishing step to gate, so the flag is inert here.
+          'CloudFormation-only version-publishing directive with no AWS SDK equivalent',
+        ],
       ]),
     ],
   ]);
@@ -117,6 +172,12 @@ export class LambdaFunctionProvider implements ResourceProvider {
   // deletion has its own retry logic that handles a small remaining window.
   // Budget for waiting on UpdateFunctionConfiguration to fully apply
   // (LastUpdateStatus -> Successful) after pre-delete VPC detach.
+  // Cleanup-delete retry budget for `applyPostCreateConfig` (see there): a
+  // function that is still `Pending` rejects DeleteFunction, so the atomicity
+  // cleanup needs a few bounded attempts rather than one shot. Overridable in
+  // tests so the retry path costs no wall-clock.
+  private readonly cleanupDeleteRetryDelayMs: number = 2000;
+
   private readonly eniWaitTimeoutMs: number = 10 * 60 * 1000;
   private readonly eniWaitInitialDelayMs: number = 10_000;
   private readonly eniWaitMaxDelayMs: number = 10_000;
@@ -224,6 +285,25 @@ export class LambdaFunctionProvider implements ResourceProvider {
         ImageConfig: properties['ImageConfig'] as ImageConfig | undefined,
         SnapStart: properties['SnapStart'] as SnapStart | undefined,
         LoggingConfig: properties['LoggingConfig'] as LoggingConfig | undefined,
+        // Durable-execution retention / timeout. CREATE-ONLY IN PRACTICE
+        // even though UpdateFunctionConfiguration declares the member:
+        // AWS rejects adding one to a function created without it
+        // ("You cannot add a durable configuration to a function that was
+        // originally created with no durable configuration" —
+        // InvalidParameterValueException, live-probed us-east-1 2026-08-11),
+        // and omitting it on update KEEPS the live value rather than
+        // resetting it. Both transitions are therefore routed to REPLACEMENT
+        // by the conditional rule in `replacement-rules.ts`; a change with
+        // the block present on both sides IS applied in place.
+        DurableConfig: properties['DurableConfig'] as DurableConfig | undefined,
+        // Tenant isolation mode. Create-only per the CFn registry schema
+        // (`createOnlyProperties`) AND per the SDK — the member exists on
+        // CreateFunctionRequest and NOT on UpdateFunctionConfigurationRequest.
+        TenancyConfig: properties['TenancyConfig'] as TenancyConfig | undefined,
+        // Code-signing enforcement. Settable on create; on update it moves to
+        // the separate Put/DeleteFunctionCodeSigningConfig control-plane pair
+        // (there is no member on UpdateFunctionConfiguration).
+        CodeSigningConfigArn: properties['CodeSigningConfigArn'] as string | undefined,
         Tags: tags,
       };
 
@@ -247,32 +327,22 @@ export class LambdaFunctionProvider implements ResourceProvider {
       // failures surface to the user as the named ProvisioningError below.
       const recursiveLoop = properties['RecursiveLoop'] as RecursiveLoop | undefined;
       if (recursiveLoop !== undefined) {
-        try {
-          await this.lambdaClient.send(
-            new PutFunctionRecursionConfigCommand({
-              FunctionName: functionName,
-              RecursiveLoop: recursiveLoop,
-            })
-          );
-        } catch (rlError) {
-          this.logger.warn(
-            `PutFunctionRecursionConfig failed for ${logicalId}: ${rlError instanceof Error ? rlError.message : String(rlError)} — deleting partially-created function to maintain atomicity`
-          );
-          try {
-            await this.lambdaClient.send(new DeleteFunctionCommand({ FunctionName: functionName }));
-          } catch (deleteError) {
-            this.logger.error(
-              `Cleanup DeleteFunction failed for ${logicalId} after PutFunctionRecursionConfig failure — function may be orphaned: ${deleteError instanceof Error ? deleteError.message : String(deleteError)}`
-            );
-          }
-          throw new ProvisioningError(
-            `Failed to set RecursiveLoop on Lambda function ${logicalId} (function was deleted to maintain atomicity): ${rlError instanceof Error ? rlError.message : String(rlError)}`,
-            resourceType,
+        await this.applyPostCreateConfig(
+          () =>
+            this.lambdaClient.send(
+              new PutFunctionRecursionConfigCommand({
+                FunctionName: functionName,
+                RecursiveLoop: recursiveLoop,
+              })
+            ),
+          {
+            apiName: 'PutFunctionRecursionConfig',
+            propertyName: 'RecursiveLoop',
             logicalId,
+            resourceType,
             functionName,
-            rlError instanceof Error ? rlError : undefined
-          );
-        }
+          }
+        );
       }
 
       // ReservedConcurrentExecutions: post-create control-plane prop set
@@ -287,32 +357,70 @@ export class LambdaFunctionProvider implements ResourceProvider {
         | number
         | undefined;
       if (reservedConcurrentExecutions !== undefined) {
-        try {
-          await this.lambdaClient.send(
-            new PutFunctionConcurrencyCommand({
-              FunctionName: functionName,
-              ReservedConcurrentExecutions: reservedConcurrentExecutions,
-            })
-          );
-        } catch (pcError) {
-          this.logger.warn(
-            `PutFunctionConcurrency failed for ${logicalId}: ${pcError instanceof Error ? pcError.message : String(pcError)} — deleting partially-created function to maintain atomicity`
-          );
-          try {
-            await this.lambdaClient.send(new DeleteFunctionCommand({ FunctionName: functionName }));
-          } catch (deleteError) {
-            this.logger.error(
-              `Cleanup DeleteFunction failed for ${logicalId} after PutFunctionConcurrency failure — function may be orphaned: ${deleteError instanceof Error ? deleteError.message : String(deleteError)}`
-            );
-          }
-          throw new ProvisioningError(
-            `Failed to set ReservedConcurrentExecutions on Lambda function ${logicalId} (function was deleted to maintain atomicity): ${pcError instanceof Error ? pcError.message : String(pcError)}`,
-            resourceType,
+        await this.applyPostCreateConfig(
+          () =>
+            this.lambdaClient.send(
+              new PutFunctionConcurrencyCommand({
+                FunctionName: functionName,
+                ReservedConcurrentExecutions: reservedConcurrentExecutions,
+              })
+            ),
+          {
+            apiName: 'PutFunctionConcurrency',
+            propertyName: 'ReservedConcurrentExecutions',
             logicalId,
+            resourceType,
             functionName,
-            pcError instanceof Error ? pcError : undefined
-          );
-        }
+          }
+        );
+      }
+
+      // RuntimeManagementConfig: a third post-create control-plane prop, set
+      // via `PutRuntimeManagementConfig` (NOT on CreateFunction — the SDK
+      // declares no member for it on any create/update request shape). Same
+      // atomicity contract as the two above.
+      const runtimeManagementConfig = properties['RuntimeManagementConfig'] as
+        | Record<string, unknown>
+        | undefined;
+      if (runtimeManagementConfig !== undefined) {
+        await this.applyPostCreateConfig(
+          async () => {
+            // UNLIKE its two siblings, this API REJECTS a function that is
+            // still settling: `CreateFunction` returns while the function is
+            // `Pending`, and `PutRuntimeManagementConfig` answers "The
+            // operation cannot be performed at this time. The resource ... is
+            // currently in the following state: 'Pending'" (caught by the
+            // lambda-config-field-removal integ, 2026-08-11 — the unit tests
+            // mock the call and cannot see it). PutFunctionRecursionConfig and
+            // PutFunctionConcurrency both accept a Pending function, which is
+            // why neither needed this.
+            //
+            // The wait is deliberately INSIDE this `if`, not hoisted after
+            // CreateFunction: the provider's documented design is to NOT block
+            // the deploy DAG on every Lambda's Active transition (5-10 min for
+            // VPC-attached functions — see the comment further down). Scoping
+            // it to the opt-in property keeps that property's cost on the
+            // templates that ask for it and leaves every other Lambda's deploy
+            // time unchanged.
+            await waitUntilFunctionActiveV2(
+              {
+                client: this.lambdaClient,
+                maxWaitTime: this.functionUpdateMaxWaitSeconds,
+                minDelay: 1,
+                maxDelay: 5,
+              },
+              { FunctionName: functionName }
+            );
+            await this.putRuntimeManagementConfig(functionName, runtimeManagementConfig);
+          },
+          {
+            apiName: 'PutRuntimeManagementConfig',
+            propertyName: 'RuntimeManagementConfig',
+            logicalId,
+            resourceType,
+            functionName,
+          }
+        );
       }
 
       // We deliberately do NOT wait for State=Active here. CreateFunction
@@ -352,6 +460,111 @@ export class LambdaFunctionProvider implements ResourceProvider {
   }
 
   /**
+   * Run a post-create control-plane call under the create path's atomicity
+   * contract: on failure, DELETE the just-created function so the next deploy
+   * retry sees a fresh slate instead of an orphan that already exists.
+   *
+   * Extracted from the (previously duplicated) `RecursiveLoop` /
+   * `ReservedConcurrentExecutions` blocks when `RuntimeManagementConfig`
+   * became the third caller — the wording of all three log lines and of the
+   * thrown error is preserved verbatim, parameterized only by the API name
+   * and the CFn property name.
+   *
+   * VPC-attached Lambda caveat (unchanged): the cleanup uses a bare
+   * `DeleteFunction`, not the provider's own `delete()`, so hyperplane ENIs
+   * are NOT pre-detached / awaited. For a VPC-attached function whose call
+   * fails, the next deploy retry's downstream Subnet/SG creation can race the
+   * asynchronous ENI release until AWS finishes the detach. The "concurrent
+   * update operation" substring is preserved in the wrapped error message so
+   * the outer `withRetry` classifier still retries cleanly.
+   */
+  private async applyPostCreateConfig(
+    send: () => Promise<unknown>,
+    ctx: {
+      apiName: string;
+      propertyName: string;
+      logicalId: string;
+      resourceType: string;
+      functionName: string;
+    }
+  ): Promise<void> {
+    try {
+      await send();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn(
+        `${ctx.apiName} failed for ${ctx.logicalId}: ${message} — deleting partially-created function to maintain atomicity`
+      );
+      // The cleanup delete is RETRIED on a still-settling function. When the
+      // failure above was an Active-wait TIMEOUT, the function is by
+      // definition still `Pending`, and `DeleteFunction` answers
+      // `ResourceConflictException` for a Pending function — so a
+      // single-shot cleanup would fail and genuinely orphan it. (The
+      // non-timeout arms self-heal without this: the Pending message is in
+      // `retryable-errors.ts`, so the deploy engine's outer `withRetry`
+      // re-creates. A waiter-timeout message is NOT in that table, which is
+      // exactly the case that reaches here and must clean up after itself.)
+      let cleanupFailure: string | undefined;
+      for (let attempt = 0; attempt < LAMBDA_CLEANUP_DELETE_MAX_ATTEMPTS; attempt++) {
+        try {
+          await this.lambdaClient.send(
+            new DeleteFunctionCommand({ FunctionName: ctx.functionName })
+          );
+          cleanupFailure = undefined;
+          break;
+        } catch (deleteError) {
+          const deleteMessage =
+            deleteError instanceof Error ? deleteError.message : String(deleteError);
+          cleanupFailure = deleteMessage;
+          // Only a state conflict is worth waiting out; anything else
+          // (auth, already-deleted) will not change on a retry.
+          if (!/currently in the following state|ResourceConflict/i.test(deleteMessage)) break;
+          if (attempt < LAMBDA_CLEANUP_DELETE_MAX_ATTEMPTS - 1) {
+            await new Promise((resolve) =>
+              setTimeout(resolve, this.cleanupDeleteRetryDelayMs * (attempt + 1))
+            );
+          }
+        }
+      }
+      if (cleanupFailure !== undefined) {
+        this.logger.error(
+          `Cleanup DeleteFunction failed for ${ctx.logicalId} after ${ctx.apiName} failure — function may be orphaned: ${cleanupFailure}`
+        );
+      }
+      throw new ProvisioningError(
+        `Failed to set ${ctx.propertyName} on Lambda function ${ctx.logicalId} (function was deleted to maintain atomicity): ${message}`,
+        ctx.resourceType,
+        ctx.logicalId,
+        ctx.functionName,
+        error instanceof Error ? error : undefined
+      );
+    }
+  }
+
+  /**
+   * Send the CFn `RuntimeManagementConfig` block to `PutRuntimeManagementConfig`.
+   *
+   * CFn spells the block `{ UpdateRuntimeOn, RuntimeVersionArn }` and the SDK
+   * request carries the same two members flat on the request (plus the
+   * function name), so this is a straight lift rather than a re-shape.
+   * `UpdateRuntimeOn` is required by the API; a template that omits it is
+   * refused by AWS with its own validation error, which is the behavior we
+   * want to surface rather than paper over with a cdkd-invented default.
+   */
+  private async putRuntimeManagementConfig(
+    functionName: string,
+    config: Record<string, unknown>
+  ): Promise<void> {
+    await this.lambdaClient.send(
+      new PutRuntimeManagementConfigCommand({
+        FunctionName: functionName,
+        UpdateRuntimeOn: config['UpdateRuntimeOn'] as UpdateRuntimeOn,
+        RuntimeVersionArn: config['RuntimeVersionArn'] as string | undefined,
+      })
+    );
+  }
+
+  /**
    * Update a Lambda function
    */
   async update(
@@ -383,6 +596,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
         'ImageConfig',
         'SnapStart',
         'LoggingConfig',
+        'DurableConfig',
       ];
 
       let hasConfigChanges = false;
@@ -515,6 +729,21 @@ export class LambdaFunctionProvider implements ResourceProvider {
             previousProperties['LoggingConfig'] as LoggingConfig | undefined,
             { LogFormat: 'Text' }
           ),
+          // DELIBERATELY NOT clearOnUpdateRemoval — the only property in this
+          // block for which the reset-to-default idiom does not apply. Live
+          // probe (us-east-1, 2026-08-11) established both halves:
+          //   - ADD (previous absent -> desired present) is REJECTED by AWS
+          //     ("You cannot add a durable configuration to a function that
+          //     was originally created with no durable configuration").
+          //   - REMOVE (previous present -> desired absent) cannot be
+          //     expressed: omitting the member KEEPS the live value, and
+          //     there is no documented reset payload — an empty object is
+          //     rejected for the required `ExecutionTimeout`.
+          // So a presence TOGGLE in either direction is routed to replacement
+          // by `replacement-rules.ts`, and this pass-through only ever carries
+          // a block that is present on BOTH sides (a genuine in-place edit,
+          // which the API accepts and applies).
+          DurableConfig: properties['DurableConfig'] as DurableConfig | undefined,
         };
 
         await this.lambdaClient.send(new UpdateFunctionConfigurationCommand(configParams));
@@ -526,6 +755,28 @@ export class LambdaFunctionProvider implements ResourceProvider {
         // performed at this time. The function is currently in the
         // following state: Pending" / "...InProgress".
         await this.waitForFunctionUpdated(logicalId, resourceType, physicalId);
+      }
+
+      // CodeSigningConfigArn DETACH must precede the code update below.
+      // `UpdateFunctionCode` is validated against the config that is attached
+      // AT THE TIME OF THE CALL, so a template that drops an enforcing
+      // code-signing config AND ships an unsigned artifact in the same change
+      // would fail with `CodeVerificationFailedException` if the detach ran
+      // after the code update. The ATTACH arm deliberately stays below the
+      // code update for the mirror-image reason: enforcement should only be
+      // turned on once the newly-signed artifact is in place.
+      const newCodeSigningConfigArn = properties['CodeSigningConfigArn'] as string | undefined;
+      const prevCodeSigningConfigArn = previousProperties['CodeSigningConfigArn'] as
+        | string
+        | undefined;
+      const codeSigningChanged = newCodeSigningConfigArn !== prevCodeSigningConfigArn;
+      if (codeSigningChanged && newCodeSigningConfigArn === undefined) {
+        await this.lambdaClient.send(
+          new DeleteFunctionCodeSigningConfigCommand({ FunctionName: physicalId })
+        );
+        this.logger.debug(
+          `Detached CodeSigningConfigArn from Lambda function ${physicalId} (template removed the property)`
+        );
       }
 
       // Update function code if changed. Architectures rides on
@@ -629,6 +880,57 @@ export class LambdaFunctionProvider implements ResourceProvider {
             `Updated ReservedConcurrentExecutions for Lambda function ${physicalId} to ${newReservedConcurrentExecutions}`
           );
         }
+      }
+
+      // CodeSigningConfigArn ATTACH / CHANGE. Set via a SEPARATE
+      // `PutFunctionCodeSigningConfig` API (UpdateFunctionConfiguration does
+      // NOT accept this field). The DETACH half runs earlier, before the code
+      // update — see the comment there for why the two arms are split. Removal
+      // mapping to a real Delete call is the #1160 absent-field-removal class,
+      // which for a SECURITY control is the direction that matters.
+      if (codeSigningChanged && newCodeSigningConfigArn !== undefined) {
+        await this.lambdaClient.send(
+          new PutFunctionCodeSigningConfigCommand({
+            FunctionName: physicalId,
+            CodeSigningConfigArn: newCodeSigningConfigArn,
+          })
+        );
+        this.logger.debug(
+          `Updated CodeSigningConfigArn for Lambda function ${physicalId} to ${newCodeSigningConfigArn}`
+        );
+      }
+
+      // RuntimeManagementConfig: set via a SEPARATE
+      // `PutRuntimeManagementConfig` API. There is no delete counterpart, so
+      // REMOVAL is expressed by re-sending the AWS default (`UpdateRuntimeOn:
+      // 'Auto'`), which is what CFn resets the property to — the same
+      // reset-to-default idiom `clearOnUpdateRemoval` applies to the
+      // UpdateFunctionConfiguration fields above. `RuntimeVersionArn` is only
+      // meaningful under `Manual` and is dropped by the reset.
+      const newRuntimeManagementConfig = properties['RuntimeManagementConfig'] as
+        | Record<string, unknown>
+        | undefined;
+      const prevRuntimeManagementConfig = previousProperties['RuntimeManagementConfig'] as
+        | Record<string, unknown>
+        | undefined;
+      // Compared member-by-member, NOT via JSON.stringify: the block has
+      // exactly two members and a stringify compare is key-ORDER sensitive, so
+      // a template that merely reorders them would issue a redundant Put.
+      const runtimeManagementChanged =
+        newRuntimeManagementConfig?.['UpdateRuntimeOn'] !==
+          prevRuntimeManagementConfig?.['UpdateRuntimeOn'] ||
+        newRuntimeManagementConfig?.['RuntimeVersionArn'] !==
+          prevRuntimeManagementConfig?.['RuntimeVersionArn'];
+      if (runtimeManagementChanged) {
+        await this.putRuntimeManagementConfig(
+          physicalId,
+          newRuntimeManagementConfig ?? { UpdateRuntimeOn: 'Auto' }
+        );
+        this.logger.debug(
+          `Updated RuntimeManagementConfig for Lambda function ${physicalId} to ${JSON.stringify(
+            newRuntimeManagementConfig ?? { UpdateRuntimeOn: 'Auto' }
+          )}`
+        );
       }
 
       // Get updated function info for attributes (also gives us the ARN
@@ -1454,6 +1756,23 @@ export class LambdaFunctionProvider implements ResourceProvider {
         result['LoggingConfig'] = lc;
       }
 
+      // DurableConfig / TenancyConfig ride on the SAME GetFunction response
+      // (both are members of `FunctionConfiguration`), so they need no extra
+      // call — emit-when-present like the block above. Live readback shapes
+      // (us-east-1, 2026-08-11): `{RetentionPeriodInDays, ExecutionTimeout}`
+      // and `{TenantIsolationMode}`, i.e. the CFn spellings verbatim.
+      if (cfg.DurableConfig !== undefined) {
+        const dc: Record<string, unknown> = {};
+        if (cfg.DurableConfig.ExecutionTimeout !== undefined)
+          dc['ExecutionTimeout'] = cfg.DurableConfig.ExecutionTimeout;
+        if (cfg.DurableConfig.RetentionPeriodInDays !== undefined)
+          dc['RetentionPeriodInDays'] = cfg.DurableConfig.RetentionPeriodInDays;
+        if (Object.keys(dc).length > 0) result['DurableConfig'] = dc;
+      }
+      if (cfg.TenancyConfig?.TenantIsolationMode !== undefined) {
+        result['TenancyConfig'] = { TenantIsolationMode: cfg.TenancyConfig.TenantIsolationMode };
+      }
+
       // Tags: GetFunction returns a map keyed by tag name. Filter
       // CDK / aws:* auto-tags, re-shape to CFn's `[{Key, Value}]`, and
       // omit the key entirely when AWS reports no user tags (matches
@@ -1506,6 +1825,57 @@ export class LambdaFunctionProvider implements ResourceProvider {
         if (!(pcErr instanceof ResourceNotFoundException)) {
           this.logger.debug(
             `GetFunctionConcurrency failed for ${physicalId}: ${pcErr instanceof Error ? pcErr.message : String(pcErr)}`
+          );
+        }
+      }
+
+      // RuntimeManagementConfig: a SEPARATE control-plane read
+      // (GetRuntimeManagementConfig), emit-when-present. AWS returns the
+      // default `UpdateRuntimeOn: 'Auto'` for functions that never set it;
+      // the comparator's state-keys-only walk ignores the field unless state
+      // carries it, so the always-emit shape produces no phantom drift.
+      try {
+        const rmResp = await this.lambdaClient.send(
+          new GetRuntimeManagementConfigCommand({ FunctionName: physicalId })
+        );
+        if (rmResp.UpdateRuntimeOn !== undefined) {
+          const rm: Record<string, unknown> = { UpdateRuntimeOn: rmResp.UpdateRuntimeOn };
+          // Only meaningful under Manual; AWS omits it otherwise.
+          if (rmResp.RuntimeVersionArn !== undefined) {
+            rm['RuntimeVersionArn'] = rmResp.RuntimeVersionArn;
+          }
+          result['RuntimeManagementConfig'] = rm;
+        }
+      } catch (rmErr) {
+        if (!(rmErr instanceof ResourceNotFoundException)) {
+          // WARN, not debug: this read backs a drift-compared key, so a
+          // permission / throttle failure omits RuntimeManagementConfig from
+          // the snapshot and `cdkd drift` then reports it as a REMOVAL against
+          // state. The warning is what makes that false drift explainable.
+          this.logger.warn(
+            `GetRuntimeManagementConfig failed for ${physicalId} — RuntimeManagementConfig omitted from the drift snapshot (may surface as a false removal): ${rmErr instanceof Error ? rmErr.message : String(rmErr)}`
+          );
+        }
+      }
+
+      // CodeSigningConfigArn: a SEPARATE control-plane read
+      // (GetFunctionCodeSigningConfig), emit-when-present. AWS raises
+      // ResourceNotFoundException for a function with no code-signing config
+      // attached, which the shared catch below maps to omit-from-readback —
+      // no phantom drift on the typical function.
+      try {
+        const csResp = await this.lambdaClient.send(
+          new GetFunctionCodeSigningConfigCommand({ FunctionName: physicalId })
+        );
+        if (csResp.CodeSigningConfigArn !== undefined) {
+          result['CodeSigningConfigArn'] = csResp.CodeSigningConfigArn;
+        }
+      } catch (csErr) {
+        if (!(csErr instanceof ResourceNotFoundException)) {
+          // WARN for the same reason as the read above — an omitted
+          // CodeSigningConfigArn reads as a removed security control.
+          this.logger.warn(
+            `GetFunctionCodeSigningConfig failed for ${physicalId} — CodeSigningConfigArn omitted from the drift snapshot (may surface as a false removal): ${csErr instanceof Error ? csErr.message : String(csErr)}`
           );
         }
       }

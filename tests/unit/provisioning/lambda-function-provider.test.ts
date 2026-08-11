@@ -159,8 +159,13 @@ describe('LambdaFunctionProvider', () => {
   // UpdateFunctionConfiguration config fields cdkd previously silent-dropped.
   // Trigger lineage for the CC-API-fallback integ fixtures + coverage-derived
   // tests: LoggingConfig (backfilled) → RecursiveLoop (backfilled next) →
-  // RuntimeManagementConfig (current canonical silent-drop trigger), so each
-  // backfill no longer flips the example fixtures.
+  // RuntimeManagementConfig (backfilled next) → FunctionScalingConfig
+  // (current canonical silent-drop trigger), so each backfill no longer flips
+  // the example fixtures. FunctionScalingConfig is a deliberate pick for the
+  // NEXT trigger rather than an arbitrary one: it cannot be backfilled on its
+  // own, because AWS refuses PutFunctionScalingConfig unless the function
+  // already carries a CapacityProviderConfig (live-probed 2026-08-11), so it
+  // stays silent-drop until the Lambda managed-instances slice lands.
   describe('native config properties (issue #609)', () => {
     it('passes all six native config fields to CreateFunction (KmsKeyArn -> KMSKeyArn)', async () => {
       mockLambdaSend.mockResolvedValueOnce({

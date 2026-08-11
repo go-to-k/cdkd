@@ -31,6 +31,35 @@ interface ReplacementRule {
  * are in-place `UpdateTable` operations, matching CloudFormation's "No interruption"
  * update behavior for this property.
  */
+/**
+ * Conditional-replacement predicate for `AWS::Lambda::Function.DurableConfig`.
+ *
+ * Returns true only when the block's PRESENCE toggles — added to a function
+ * that had none, or dropped from one that had it. A change with the block
+ * present on both sides (e.g. `ExecutionTimeout` 3600 -> 7200) is an in-place
+ * `UpdateFunctionConfiguration`.
+ *
+ * Both toggle directions were established by live probe (us-east-1,
+ * 2026-08-11), and neither is expressible as an in-place update:
+ *
+ *  - ADD: AWS rejects it outright — "You cannot add a durable configuration to
+ *    a function that was originally created with no durable configuration"
+ *    (`InvalidParameterValueException`). Classifying this in-place would make
+ *    the deploy fail rather than converge.
+ *  - REMOVE: `UpdateFunctionConfiguration` treats the omitted member as "no
+ *    change" and KEEPS the live config, and there is no reset payload (the
+ *    required `ExecutionTimeout` rejects an empty object). Classifying this
+ *    in-place would report success while the function keeps a durable config
+ *    the template no longer declares — the #1160 silent-drop class.
+ *
+ * A non-object on either side (an unresolved intrinsic) is compared on
+ * presence alone, which is the conservative direction: it can over-report a
+ * replacement, never silently skip a required one.
+ */
+export function durableConfigPresenceToggled(oldValue: unknown, newValue: unknown): boolean {
+  return (oldValue == null) !== (newValue == null);
+}
+
 export function attributeTypeChangedForSharedAttribute(
   oldValue: unknown,
   newValue: unknown
@@ -193,6 +222,11 @@ export class ReplacementRulesRegistry {
     this.rules.set('AWS::Lambda::Function', {
       replacementProperties: new Set([
         'FunctionName', // Changing function name requires replacement
+        // Create-only in the CFn registry schema AND in the SDK: the member
+        // exists on CreateFunctionRequest and NOT on
+        // UpdateFunctionConfigurationRequest, so there is no in-place path
+        // (issue #609).
+        'TenancyConfig',
       ]),
       updateableProperties: new Set([
         'Code',
@@ -216,7 +250,14 @@ export class ReplacementRulesRegistry {
         // the intent is pinned and the classification is free of a network
         // round-trip.
         'Architectures',
+        // Both are mutable in place, each via its own control-plane API
+        // (PutFunctionCodeSigningConfig / DeleteFunctionCodeSigningConfig and
+        // PutRuntimeManagementConfig) rather than
+        // UpdateFunctionConfiguration — issue #609.
+        'CodeSigningConfigArn',
+        'RuntimeManagementConfig',
       ]),
+      conditionalReplacements: new Map([['DurableConfig', durableConfigPresenceToggled]]),
     });
 
     // Lambda LayerVersion — fully immutable on AWS. There is no

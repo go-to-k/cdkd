@@ -687,8 +687,8 @@ cdkd destroy MyStack --allow-unsupported-types AWS::AppMesh::Mesh,AWS::Budgets::
 ## `--allow-unsupported-properties` (deploy)
 
 When a CDK template uses a **top-level CFn property** that cdkd's SDK
-provider would silently drop on write (e.g. AWS adds `RecursiveLoop` to
-`AWS::Lambda::Function`, CDK adds support, you write it in your CDK code,
+provider would silently drop on write (e.g. AWS adds `CapacityProviderConfig`
+to `AWS::Lambda::Function`, CDK adds support, you write it in your CDK code,
 but `LambdaFunctionProvider.create()` does not read it yet), cdkd **auto-routes
 the resource through Cloud Control API** by default (issue #614). Cloud
 Control forwards the full property map to AWS verbatim, so the silent
@@ -713,9 +713,9 @@ When the auto-route fires, cdkd logs an info line per affected resource:
 
 ```text
 [info] MyLambda (AWS::Lambda::Function): routing via Cloud Control API
-       (cdkd's SDK Provider does not yet wire RecursiveLoop — CC API will
-        forward the full property map. Override via
-        --allow-unsupported-properties AWS::Lambda::Function:RecursiveLoop.)
+       (cdkd's SDK Provider does not yet wire CapacityProviderConfig — CC API
+        will forward the full property map. Override via
+        --allow-unsupported-properties AWS::Lambda::Function:CapacityProviderConfig.)
 ```
 
 ### `--allow-unsupported-properties <entries>` (override)
@@ -727,7 +727,7 @@ repeatable); the flag pins the resource to the SDK provider path and
 logged so the silent drop is auditable.
 
 ```bash
-cdkd deploy MyStack --allow-unsupported-properties AWS::Lambda::Function:RecursiveLoop,AWS::Lambda::Function:RuntimeManagementConfig
+cdkd deploy MyStack --allow-unsupported-properties AWS::Lambda::Function:CapacityProviderConfig,AWS::Lambda::Function:FunctionScalingConfig
 ```
 
 Per type+property pair (not blanket) so you explicitly acknowledge each
@@ -813,7 +813,7 @@ When to use it:
 
 - An existing resource is `provisionedBy: 'sdk'` in cdkd state, and you
   want to start using a top-level CFn property cdkd's SDK provider does
-  not yet wire (e.g. adding `RecursiveLoop` to an already-deployed
+  not yet wire (e.g. adding `CapacityProviderConfig` to an already-deployed
   Lambda). Adding the property on the next deploy alone won't reach AWS
   — the SDK update path drops it silently. The flag forces a destroy +
   recreate cycle so the new physical resource lands on CC and the
@@ -923,8 +923,8 @@ follow-up issue). Plan multi-stack recreates from leaf to root.
 ### Interaction with `--allow-unsupported-properties`
 
 `--recreate-via-cc-api MyLambda` combined with
-`--allow-unsupported-properties AWS::Lambda::Function:RecursiveLoop`
-on a resource whose template carries `RecursiveLoop` is **ambiguous
+`--allow-unsupported-properties AWS::Lambda::Function:CapacityProviderConfig`
+on a resource whose template carries `CapacityProviderConfig` is **ambiguous
 intent**:
 
 - Does the user want SDK + silent drop (override path)?
