@@ -29,8 +29,26 @@ NOTHING else — it says nothing about the properties' content, is not a
 dry-run signal, and must not relax data-safety guards or the validation that
 protects the AWS call itself. Absent / `false` = an ordinary template-path
 create (`cdkd deploy`, the replacement / `--replace` / `--recreate-via-*`
-creates), where the refusal stands. `GlueProvider`'s
-`enforceIcebergTableInputAbsent` is the only consumer today; the full contract
+creates), where the refusal stands. Consumers today come in THREE shapes, and
+the count is worth knowing because the spread is exactly the drift the shared
+helper exists to stop:
+
+- **The shared `replayWarn(logger, context)` helper** in `config-shape.ts`,
+  spread into a create-path `requireConfigString` options bag — API Gateway
+  `AuthorizationType`, EC2 `InstanceType` / `Domain`, IAM access-key `Status`,
+  Lambda event-invoke `Qualifier`, RDS DB-proxy `TargetGroupName`, DynamoDB
+  GlobalTable `BillingMode`. Prefer this.
+- **A hand-threaded callback** — `EC2Provider.buildIpPermission` takes an
+  `onUnusableProtocol` parameter and forwards it as `onUnusable`, because the
+  helper is shared with state-borne callers that must NOT downgrade.
+- **A hand-written refusal** — `GlueProvider`'s
+  `enforceIcebergTableInputAbsent`.
+
+Note the gap this list makes visible: `wafv2-provider.ts`,
+`lambda-url-provider.ts` and `s3-directory-bucket-provider.ts` call
+`requireConfigString` on a create path with NO options bag and no `context`
+parameter, so they still hard-throw on a state replay. That is pre-existing,
+not licensed. The full contract
 is on `CreateContext` in `src/types/resource.ts` (NOT in `region-check.ts`
 where `DeleteContext` lives — that type belongs there because its
 `expectedRegion` feeds `assertRegionMatch`; a one-line pointer sits next to
@@ -192,7 +210,8 @@ full split.
   cdkd does not, so an unquoted YAML `IpProtocol: -1` / `Qualifier: 1` deploys
   fine today and a refusal would break a working template. Those sites pass
   `{ coerceNumber: true }`; an enum-valued field (`InstanceType`,
-  `AuthorizationType`, `Status`, `Domain`) does NOT — a number there is a bug.
+  `AuthorizationType`, `Status`, `Domain`, `BillingMode`) does NOT — a number
+  there is a bug.
 - **Is the site on the UPDATE path?** Then WARN, do not throw
   (`{ onUnusable: (m) => this.logger.warn(m) }`). `rollback-executor.ts` replays
   a rollback via `provider.update(..., previousState.properties, ...)`, so the

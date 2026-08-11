@@ -114,8 +114,11 @@
  *   destroy and rollback. The create path is guarded at its own call site
  *   instead, which refuses before the helper is ever reached.
  *
- * The one site #1513 leaves open is GlobalTable `BillingMode`, whose file was
- * owned by a parallel lane at the time.
+ * GlobalTable `BillingMode` was the one site #1513 left open, its file being
+ * owned by a parallel lane at the time; it is now guarded on the same three
+ * axes — enum-valued so no `coerceNumber`, `replayWarn` on the create path,
+ * an unconditional warn on the update path, and the `previousProperties`
+ * sibling still unguarded.
  *
  * This is a provider-layer guard rather than a pre-flight template check
  * because **rule 4** is only decidable AFTER intrinsic resolution: at pre-flight
