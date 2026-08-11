@@ -353,10 +353,14 @@ export class SNSTopicProvider implements ResourceProvider {
     // Removal semantics (issue #1160): SetTopicAttributes is per-attribute
     // merge — an attribute we never send keeps its live value, so both a
     // whole `DeliveryStatusLogging` removal and a dropped sub-field /
-    // protocol entry must be reset EXPLICITLY. The desired side throws on
-    // a malformed container (template error, fail fast); the previous side
-    // comes from cdkd state, so it is walked in 'skip' mode — a state
-    // record an older binary wrote must never make the stack permanently
+    // protocol entry must be reset EXPLICITLY. The desired side is walked
+    // in 'warn' mode (issue #1538): it is NOT always template-borne — the
+    // rollback executor's revert arm and `cdkd drift --revert` both put a
+    // state-derived bag here, so a malformed value warns-and-skips instead
+    // of failing the update permanently (create() still throws, where the
+    // value is always template-borne). The previous side comes from cdkd
+    // state too, so it is walked in silent 'skip' mode — a state record an
+    // older binary wrote must never make the stack permanently
     // undeployable (guard-the-desired-side-only rule).
     if (
       JSON.stringify(properties['DeliveryStatusLogging']) !==
@@ -365,7 +369,7 @@ export class SNSTopicProvider implements ResourceProvider {
       const desiredAttributes = buildDeliveryStatusAttributeMap(
         properties['DeliveryStatusLogging'],
         logicalId,
-        'throw'
+        'warn'
       );
       const previousAttributes = buildDeliveryStatusAttributeMap(
         previousProperties['DeliveryStatusLogging'],
@@ -971,11 +975,24 @@ const SNS_DELIVERY_STATUS_ATTRIBUTE_SUFFIXES = [
  * rate on create and update alike).
  *
  * `onMalformed` picks the failure mode for a malformed container / entry
- * / unknown protocol: `'throw'` for the DESIRED side (a template error
- * must fail fast, naming the offending value), `'skip'` for the PREVIOUS
- * side (cdkd state — refusing a value an older binary recorded would make
- * the stack permanently undeployable, and an entry whose protocol cannot
- * be canonicalized maps to no attribute names anyway).
+ * / unknown protocol, and encodes the create-vs-update distinction
+ * (issue #1538):
+ *
+ * - `'throw'` — the CREATE desired side, which is always template-borne:
+ *   a template error must fail fast, naming the offending value.
+ * - `'warn'` — the UPDATE desired side, which is NOT always template-borne:
+ *   the rollback executor's revert arm and `cdkd drift --revert` both call
+ *   `update()` with a state-derived bag as the DESIRED properties, so a
+ *   state record carrying an unsupported protocol / malformed shape (a
+ *   hand-written imported template, or a record an older binary wrote)
+ *   must warn-and-skip rather than fail the update permanently — there is
+ *   no template-side remedy. Skip semantics are well-defined: an entry
+ *   whose protocol cannot be canonicalized maps to no attribute names, a
+ *   non-array container yields an empty map, and a non-object entry is
+ *   skipped. Each warning names the logicalId and the offending value.
+ * - `'skip'` — the PREVIOUS side (cdkd state): same tolerance, silently —
+ *   warning on every update about a value the user cannot act on from the
+ *   template would be pure noise (guard-the-desired-side-only rule).
  *
  * Two entries whose `Protocol` values canonicalize to the SAME prefix
  * (`http/s` + `https`, say) collapse onto one set of attribute names. The
@@ -989,38 +1006,63 @@ const SNS_DELIVERY_STATUS_ATTRIBUTE_SUFFIXES = [
  * produced `HTTPS*` names AWS rejected outright, so no such template ever
  * deployed.
  *
- * The collision WARNS rather than throws because this function's `'throw'`
- * side is also fed by the rollback executor's `update()` replay of a cdkd
- * STATE record, where the user has no template-side remedy. NOTE the three
- * pre-existing throws below (unsupported protocol, non-array container,
- * non-object entry) sit on that same side and are NOT covered by that
- * reasoning — a state record carrying one of those is permanently
- * unreplayable. That is a real but latent gap, tracked as issue #1538;
- * #1529 deliberately did not widen its scope to change the create path's
- * validation contract.
+ * The collision WARNS rather than throws for the same reason `'warn'` mode
+ * exists: the update desired side is also fed by the rollback executor's
+ * `update()` replay of a cdkd STATE record, where the user has no
+ * template-side remedy. The three malformed-value sites below (unsupported
+ * protocol, non-array container, non-object entry) used to throw on that
+ * side too, which made such a state record permanently unreplayable —
+ * fixed by issue #1538, which moved `update()`'s desired side to `'warn'`
+ * while `create()` keeps `'throw'` (a template create must still fail
+ * fast; #1529 / #1536 deliberately left that contract unchanged).
  */
 export function buildDeliveryStatusAttributeMap(
   logging: unknown,
   logicalId: string,
-  onMalformed: 'throw' | 'skip'
+  onMalformed: 'throw' | 'warn' | 'skip'
 ): Map<string, string> {
   const map = new Map<string, string>();
   if (logging == null) return map;
+  const warn = (message: string): void => {
+    getLogger().child('SNSTopicProvider').warn(message);
+  };
   const seenProtocols = new Set<SnsDeliveryStatusProtocol>();
   if (!Array.isArray(logging)) {
-    if (onMalformed === 'skip') return map;
-    throw new Error(
-      `SNS topic ${logicalId}: DeliveryStatusLogging must be an array of ` +
-        `{Protocol, ...} objects, got ${JSON.stringify(logging)}`
-    );
+    if (onMalformed === 'throw') {
+      throw new Error(
+        `SNS topic ${logicalId}: DeliveryStatusLogging must be an array of ` +
+          `{Protocol, ...} objects, got ${JSON.stringify(logging)}`
+      );
+    }
+    if (onMalformed === 'warn') {
+      warn(
+        `SNS topic ${logicalId}: DeliveryStatusLogging must be an array of ` +
+          `{Protocol, ...} objects, got ${JSON.stringify(logging)} — treating it ` +
+          `as empty for this update, so previously set delivery-status attributes ` +
+          `are reset. The desired properties can come from a cdkd state record ` +
+          `(rollback replay / drift --revert), so this does not fail the update; ` +
+          `fix the template (or the state record on a replay) to clear this warning.`
+      );
+    }
+    return map;
   }
   for (const entry of logging) {
     if (entry == null || typeof entry !== 'object' || Array.isArray(entry)) {
-      if (onMalformed === 'skip') continue;
-      throw new Error(
-        `SNS topic ${logicalId}: DeliveryStatusLogging entries must be ` +
-          `{Protocol, ...} objects, got ${JSON.stringify(entry)}`
-      );
+      if (onMalformed === 'throw') {
+        throw new Error(
+          `SNS topic ${logicalId}: DeliveryStatusLogging entries must be ` +
+            `{Protocol, ...} objects, got ${JSON.stringify(entry)}`
+        );
+      }
+      if (onMalformed === 'warn') {
+        warn(
+          `SNS topic ${logicalId}: skipping DeliveryStatusLogging entry ` +
+            `${JSON.stringify(entry)} — entries must be {Protocol, ...} objects. ` +
+            `Attributes previously set for the skipped entry's protocol are reset, ` +
+            `as if the entry had been removed.`
+        );
+      }
+      continue;
     }
     const config = entry as Record<string, unknown>;
     let protocol: SnsDeliveryStatusProtocol;
@@ -1028,23 +1070,33 @@ export function buildDeliveryStatusAttributeMap(
       protocol = normalizeDeliveryStatusProtocolOrThrow(config['Protocol'], logicalId);
     } else {
       const normalized = normalizeDeliveryStatusProtocol(config['Protocol']);
-      if (normalized === undefined) continue;
+      if (normalized === undefined) {
+        if (onMalformed === 'warn') {
+          warn(
+            `SNS topic ${logicalId}: skipping DeliveryStatusLogging entry with ` +
+              `unsupported protocol ${JSON.stringify(config['Protocol'])}. Expected ` +
+              `one of ${SNS_DELIVERY_STATUS_PROTOCOL_SPELLINGS.join(', ')} ` +
+              `(case-insensitive). Attributes previously set for the skipped ` +
+              `entry's protocol are reset, as if the entry had been removed.`
+          );
+        }
+        continue;
+      }
       protocol = normalized;
     }
-    // Desired side only, per this function's guard-the-desired-side rule:
-    // on the PREVIOUS side the entries come from a cdkd state record, where
-    // "declare a single entry per protocol" is advice the user cannot act on.
-    if (onMalformed === 'throw' && seenProtocols.has(protocol)) {
-      getLogger()
-        .child('SNSTopicProvider')
-        .warn(
-          `SNS topic ${logicalId}: DeliveryStatusLogging declares more than one entry ` +
-            `for the "${protocol}" attribute prefix (${JSON.stringify(config['Protocol'])} ` +
-            `canonicalizes to it). AWS has one attribute set per prefix, so these are ` +
-            `merged per field — a later entry overwrites only the sub-fields it ` +
-            `declares, and a field it omits keeps the earlier entry's value. ` +
-            `Declare a single entry per protocol.`
-        );
+    // Desired side only ('throw' = create, 'warn' = update), per this
+    // function's guard-the-desired-side rule: on the PREVIOUS side the
+    // entries come from a cdkd state record, where "declare a single entry
+    // per protocol" is advice the user cannot act on.
+    if (onMalformed !== 'skip' && seenProtocols.has(protocol)) {
+      warn(
+        `SNS topic ${logicalId}: DeliveryStatusLogging declares more than one entry ` +
+          `for the "${protocol}" attribute prefix (${JSON.stringify(config['Protocol'])} ` +
+          `canonicalizes to it). AWS has one attribute set per prefix, so these are ` +
+          `merged per field — a later entry overwrites only the sub-fields it ` +
+          `declares, and a field it omits keeps the earlier entry's value. ` +
+          `Declare a single entry per protocol.`
+      );
     }
     seenProtocols.add(protocol);
     for (const suffix of SNS_DELIVERY_STATUS_ATTRIBUTE_SUFFIXES) {
@@ -1133,10 +1185,13 @@ export function normalizeDeliveryStatusProtocol(
 }
 
 /**
- * Variant used by `create()` / `update()` to fail fast when a template
- * carries an unknown protocol. Throws a clear error naming the offending
- * value so the user sees what to fix instead of AWS's generic
- * `InvalidParameter` rejection.
+ * Variant used by `create()` (the `'throw'` mode of
+ * `buildDeliveryStatusAttributeMap`) to fail fast when a template carries
+ * an unknown protocol. Throws a clear error naming the offending value so
+ * the user sees what to fix instead of AWS's generic `InvalidParameter`
+ * rejection. `update()`'s desired side warns-and-skips instead (issue
+ * #1538) because its bag can be a cdkd state record on a rollback replay
+ * or `drift --revert`.
  */
 function normalizeDeliveryStatusProtocolOrThrow(
   input: unknown,
