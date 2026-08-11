@@ -188,7 +188,8 @@ export class CloudTrailProvider implements ResourceProvider {
     this.logger.debug(`Updating CloudTrail Trail ${logicalId}: ${physicalId}`);
 
     // `readCurrentState` always-emits empty-string `''` placeholders for
-    // optional ARN-shaped fields (KMSKeyId, SnsTopicName) so console-side
+    // several optional fields (S3KeyPrefix, KMSKeyId, SnsTopicName) so
+    // console-side
     // adds are detectable as drift (per docs/provider-development.md
     // § 3b "always emit user-controllable top-level keys"). `cdkd drift
     // --revert` round-trips the placeholder back through this `update()`,
@@ -552,9 +553,15 @@ export class CloudTrailProvider implements ResourceProvider {
     // all-or-nothing, so emitting one placeholder without the other would
     // describe a state AWS cannot hold. Only emit both keys when AWS reports
     // both present (the discriminator is "both fields populated").
-    // Drift is not lost: the disabled state cannot legally have either
-    // field on AWS, so a console-side enable shows up as both fields
-    // appearing at once on the next read. Pattern documented in
+    // KNOWN BOUND, corrected 2026-08-10 (issue #1160 review): the previous
+    // wording claimed "a console-side enable shows up as both fields
+    // appearing at once on the next read". That is FALSE — the drift
+    // comparator's top-level walk is baseline-keys-only, so a key absent
+    // from the captured snapshot is never compared and a console-side
+    // enable stays invisible. Emitting both as `''` would now be safe (the
+    // update path drops them via `emptyToUndefined`, and the #1160 probe
+    // disproved the rejection this guard was built on), so this is a
+    // deliberate not-yet rather than an impossibility. Tracked in #1549. Pattern documented in
     // `feedback_always_emit_check_type_discriminator.md`.
     if (trail.CloudWatchLogsLogGroupArn && trail.CloudWatchLogsRoleArn) {
       result['CloudWatchLogsLogGroupArn'] = trail.CloudWatchLogsLogGroupArn;

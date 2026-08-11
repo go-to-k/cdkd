@@ -104,7 +104,7 @@ describe('CloudTrailProvider read-update round-trip', () => {
     // explicit empty strings for the ARN-shaped fields, the wire-layer
     // sanitizer must convert them to undefined so AWS does not reject
     // with "is not in valid ARN format" -- a claim the issue #1160 probe
-    // DISPROVEN (2026-08-10); the pair discriminator is what the guard
+    // DISPROVED (2026-08-10); the pair discriminator is what the guard
     // actually rests on.
     const observed = {
       TrailName: 'mytrail',

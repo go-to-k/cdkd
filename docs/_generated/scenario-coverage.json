@@ -533,6 +533,11 @@
       ]
     },
     {
+      "name": "cloudtrail-trail",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "cloudwatch",
       "annotated": true,
       "scenarios": []
@@ -2586,6 +2591,7 @@
     "bucket-deployment",
     "cc-api-fallback",
     "cc-api-fallback-transitions",
+    "cloudtrail-trail",
     "codebuild-project",
     "codedeploy-lambda-deployment-group",
     "cognito-custom-attribute-add",
