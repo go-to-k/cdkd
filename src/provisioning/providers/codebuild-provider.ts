@@ -446,7 +446,7 @@ export class CodeBuildProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    _previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating CodeBuild Project ${logicalId}: ${physicalId}`);
 
@@ -454,6 +454,44 @@ export class CodeBuildProvider implements ResourceProvider {
       const input = this.mapProperties(logicalId, properties);
       // Ensure the update targets the existing project
       input.name = physicalId;
+
+      // Removal semantics (issue #1160, live CFn A/B 2026-08-10 on a
+      // NO_SOURCE project). `UpdateProject` is a merge-semantics API — a
+      // name-only update left every other live value untouched — so the
+      // umbrella flagged all eight optional fields this provider forwards.
+      // The A/B narrowed that to ONE: CloudFormation itself RETAINS
+      // `Description` / `TimeoutInMinutes` / `QueuedTimeoutInMinutes` /
+      // `ConcurrentBuildLimit` / `AutoRetryLimit` / `Cache` / `LogsConfig`
+      // when the template drops them (CFn's own handler omits them from
+      // `UpdateProject` and CodeBuild merges), so the pass-through above is
+      // ALREADY CFn parity for those seven and they are deliberately NOT
+      // reset — pinned by the retention tests rather than "fixed" into a
+      // divergence.
+      //
+      // `BuildBatchConfig` is the one field CFn resets: after the removal
+      // update the live project reported `buildBatchConfig: null`. The only
+      // shape that clears it is an EMPTY object — omitting the field is the
+      // no-op that produced the silent drop this issue tracks.
+      //
+      // This is `clearOnUpdateRemoval`'s semantic applied at the SDK layer
+      // rather than through the helper itself: the helper substitutes a
+      // clear value on the side it is given, and here the CFn side has no
+      // spelling for "cleared" — the empty object is an SDK-shape value. It
+      // is applied to the mapped input (instead of an adjusted property bag)
+      // so the whole-bag forward into `mapProperties` stays intact for the
+      // handled-property-wiring critic's taint walk.
+      // Sub-key granularity, per docs/provider-development.md §2a's
+      // "test both shapes": a key dropped from a still-present
+      // `BuildBatchConfig` needs no separate handling, because the block is
+      // sent WHOLESALE — the mapper rebuilds it from the desired side each
+      // time, so a dropped member arrives as an absent SDK member of a
+      // present structure. That the empty object clears the whole block is
+      // the same wholesale semantic, measured.
+      const buildBatchConfigRemoved =
+        properties['BuildBatchConfig'] == null && previousProperties['BuildBatchConfig'] != null;
+      if (buildBatchConfigRemoved) {
+        input.buildBatchConfig = {};
+      }
 
       await this.getClient().send(new UpdateProjectCommand(input));
 

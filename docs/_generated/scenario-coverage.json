@@ -543,6 +543,11 @@
       "scenarios": []
     },
     {
+      "name": "codebuild-project",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "codecommit",
       "annotated": true,
       "scenarios": []
@@ -2581,6 +2586,7 @@
     "bucket-deployment",
     "cc-api-fallback",
     "cc-api-fallback-transitions",
+    "codebuild-project",
     "codedeploy-lambda-deployment-group",
     "cognito-custom-attribute-add",
     "cognito-identity-pool",
