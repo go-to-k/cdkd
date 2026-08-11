@@ -1,3 +1,10 @@
+## [0.280.17](https://github.com/go-to-k/cdkd/compare/v0.280.16...v0.280.17) (2026-08-11)
+
+
+### Bug Fixes
+
+* **apigatewayv2:** stop Integration TlsConfig and flat ResponseParameters from reporting permanent phantom drift ([#1602](https://github.com/go-to-k/cdkd/issues/1602)) ([#1623](https://github.com/go-to-k/cdkd/issues/1623)) ([dbf3b18](https://github.com/go-to-k/cdkd/commit/dbf3b1868ef8efe7460fa79bcc56223f9a5dd9d6))
+
 ## [0.280.16](https://github.com/go-to-k/cdkd/compare/v0.280.15...v0.280.16) (2026-08-11)
 
 
