@@ -21,6 +21,7 @@ import {
   ListNamespacesCommand,
   ListTagsForResourceCommand,
   NamespaceNotFound,
+  ResourceInUse,
   ServiceNotFound,
   type DnsConfig,
   type DnsConfigChange,
@@ -416,12 +417,34 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     const client = this.getClient();
 
     try {
-      const response = await client.send(new DeleteNamespaceCommand({ Id: physicalId }));
+      // ECS Service Connect creates Cloud Map services inside a namespace and
+      // deletes them ASYNCHRONOUSLY after the owning ECS service is deleted,
+      // so a destroy that removes the ECS service and then this namespace in
+      // DAG order can hit `ResourceInUse: Namespace has associated services`
+      // while the ECS-managed cleanup is still draining (observed live on the
+      // ecs-fargate fixture once #609 flipped its Service to the SDK route:
+      // destroy failed 22/23, and the associated services were gone minutes
+      // later with no action taken). Retry the delete on that signal with a
+      // bounded ~5.5 min budget; any other error surfaces immediately.
+      await withRetry(
+        async () => {
+          const response = await client.send(new DeleteNamespaceCommand({ Id: physicalId }));
 
-      const operationId = response.OperationId;
-      if (operationId) {
-        await this.pollOperation(operationId, logicalId, resourceType);
-      }
+          const operationId = response.OperationId;
+          if (operationId) {
+            await this.pollOperation(operationId, logicalId, resourceType);
+          }
+        },
+        logicalId,
+        {
+          maxRetries: 24,
+          initialDelayMs: 3_000,
+          maxDelayMs: 15_000,
+          isRetryable: (message, error) =>
+            error instanceof ResourceInUse || /has associated services/i.test(message),
+          logger: this.logger,
+        }
+      );
 
       this.logger.debug(`Successfully deleted Cloud Map namespace ${logicalId}`);
     } catch (error) {

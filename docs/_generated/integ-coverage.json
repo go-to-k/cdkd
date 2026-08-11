@@ -2811,7 +2811,8 @@
           "literal"
         ],
         "ecs-service-update-props": [
-          "l2"
+          "l2",
+          "literal"
         ],
         "local-ecs-service-connect": [
           "l1",

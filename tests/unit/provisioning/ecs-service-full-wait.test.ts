@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
-import { DeleteServiceCommand, UpdateServiceCommand } from '@aws-sdk/client-ecs';
+import { DeleteServiceCommand, DescribeServicesCommand, UpdateServiceCommand } from '@aws-sdk/client-ecs';
 
 // Issue #1275: cdkd does NOT wait for ECS Service steady state by default.
 // CloudFormation waits, Terraform's `aws_ecs_service` does not
@@ -48,7 +48,7 @@ vi.mock('../../../src/utils/logger.js', () => {
   };
 });
 
-import { ECSProvider } from '../../../src/provisioning/providers/ecs-provider.js';
+import { ECSProvider, settleRolloutDelays } from '../../../src/provisioning/providers/ecs-provider.js';
 import {
   setResolvedResourceTimeouts,
   clearResolvedResourceTimeouts,
@@ -196,6 +196,63 @@ describe('ECS Service wait semantics (issue #1275)', () => {
       expect(config.minDelay).toBeLessThanOrEqual(5);
       expect(config.maxDelay).toBeLessThanOrEqual(10);
       expect(config.maxWaitTime).toBe(600);
+    });
+
+    // The stability waiter's condition (one deployment, running == desired) is
+    // satisfied a few seconds before ECS flips rolloutState to COMPLETED —
+    // --full-wait closes that race with a bounded post-stability poll (found
+    // live by the ecs-fargate fixture's update phase after the #609 SDK-route
+    // flip; the CC route's CFn handler had been absorbing the gap).
+    it('polls the PRIMARY rollout to COMPLETED after the stability waiter', async () => {
+      const originalSleep = settleRolloutDelays.sleep;
+      settleRolloutDelays.sleep = () => Promise.resolve();
+      try {
+        mockCreateOk();
+        // Post-waiter DescribeServices polls: IN_PROGRESS, then COMPLETED.
+        mockSend.mockResolvedValueOnce({
+          services: [{ deployments: [{ rolloutState: 'IN_PROGRESS' }] }],
+        });
+        mockSend.mockResolvedValueOnce({
+          services: [{ deployments: [{ rolloutState: 'COMPLETED' }] }],
+        });
+
+        await new ECSProvider().create('MySvc', 'AWS::ECS::Service', CREATE_PROPS);
+
+        const describeCalls = mockSend.mock.calls.filter(
+          ([cmd]) => cmd instanceof DescribeServicesCommand
+        );
+        expect(describeCalls).toHaveLength(2);
+      } finally {
+        settleRolloutDelays.sleep = originalSleep;
+      }
+    });
+
+    it('warns and continues when the rollout stays IN_PROGRESS past the grace window', async () => {
+      vi.useFakeTimers();
+      const originalSleep = settleRolloutDelays.sleep;
+      // Each "sleep" jumps system time past the 120s deadline so the loop
+      // exits on the next iteration instead of really waiting.
+      settleRolloutDelays.sleep = () => {
+        vi.setSystemTime(Date.now() + 130_000);
+        return Promise.resolve();
+      };
+      try {
+        mockCreateOk();
+        mockSend.mockResolvedValue({
+          services: [{ deployments: [{ rolloutState: 'IN_PROGRESS' }] }],
+        });
+
+        await new ECSProvider().create('MySvc', 'AWS::ECS::Service', CREATE_PROPS);
+
+        expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('rollout is still IN_PROGRESS'));
+      } finally {
+        settleRolloutDelays.sleep = originalSleep;
+        vi.useRealTimers();
+        // mockResolvedValue (non-Once) would leak the permanent IN_PROGRESS
+        // response into later tests — clearAllMocks does not drop
+        // implementations.
+        mockSend.mockReset();
+      }
     });
 
     // Issue #1280: `--resource-timeout` must lift the steady-state waiter's

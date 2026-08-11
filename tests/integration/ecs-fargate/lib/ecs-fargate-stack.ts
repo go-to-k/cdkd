@@ -173,8 +173,13 @@ export class EcsFargateStack extends cdk.Stack {
       },
     });
 
-    // Create Fargate Service with desiredCount: 0 and Service Connect
-    // This tests resource creation without actually running containers
+    // Create Fargate Service with desiredCount: 0 and Service Connect.
+    // This tests resource creation without actually running containers.
+    // Since the #609 Service-property backfill, ServiceConnectConfiguration
+    // and VolumeConfigurations are handled by ECSProvider, so this Service is
+    // SDK-routed (it used to flip to the #614 Cloud Control fallback because
+    // both properties were silent-drops) — verify.sh pins provisionedBy=sdk
+    // and asserts both blobs reach AWS via the deployment read-back.
     const service = new ecs.FargateService(this, 'Service', {
       cluster,
       taskDefinition,

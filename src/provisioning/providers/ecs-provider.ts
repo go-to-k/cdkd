@@ -73,6 +73,12 @@ import {
   type HostEntry,
   type ContainerRestartPolicy,
   type VersionConsistency,
+  type AvailabilityZoneRebalancing,
+  type DeploymentController,
+  type ServiceConnectConfiguration,
+  type ServiceVolumeConfiguration,
+  type VpcLatticeConfiguration,
+  type MonitoringConfiguration,
 } from '@aws-sdk/client-ecs';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
@@ -119,6 +125,16 @@ const DEPLOYMENT_CONFIG_PRESERVE_KEYS: ReadonlySet<string> = new Set(['HookDetai
 const DEPLOYMENT_CONFIG_PRESERVE_KEYS_CAMEL: ReadonlySet<string> = new Set(['hookDetails']);
 
 /**
+ * `ServiceConnectConfiguration.LogConfiguration.Options` is a free-form
+ * log-driver option map (e.g. `awslogs-group`) whose keys are user data, NOT
+ * CloudFormation property names — copy the value subtree verbatim while the
+ * `Options` key itself still flips to `options` (issue #609; same rule as
+ * `DEPLOYMENT_CONFIG_PRESERVE_KEYS` above and the container-level
+ * `LogConfiguration.Options` handling in `convertLogConfiguration`).
+ */
+const SERVICE_CONNECT_PRESERVE_KEYS: ReadonlySet<string> = new Set(['Options']);
+
+/**
  * Derive the cluster name from a long-format ECS Service ARN
  * (`arn:<partition>:ecs:<region>:<account>:service/<clusterName>/<serviceName>`)
  * so `DescribeServices` can be scoped to the right cluster (issue #1170).
@@ -149,6 +165,15 @@ function clusterNameFromServiceArn(arn: string): string | undefined {
  * The CC API adds unnecessary polling overhead for operations that
  * complete immediately. This SDK provider eliminates that polling.
  */
+/**
+ * Test seam for `settleService`'s post-stability rollout poll (the sibling of
+ * `finalSnapshotDelays` / `describeTypeRetryDelays`) — tests replace `sleep`
+ * to skip the real 3s waits.
+ */
+export const settleRolloutDelays = {
+  sleep: (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+};
+
 export class ECSProvider implements ResourceProvider {
   private ecsClient?: ECSClient;
   private readonly providerRegion = process.env['AWS_REGION'];
@@ -211,20 +236,20 @@ export class ECSProvider implements ResourceProvider {
         'EnableExecuteCommand',
         'ServiceRegistries',
         'Tags',
+        // issue #609 backfill — the previously silent-dropped Service members.
+        'AvailabilityZoneRebalancing',
+        'DeploymentController',
+        'ForceNewDeployment',
+        'Monitoring',
+        'Role',
+        'ServiceConnectConfiguration',
+        'VolumeConfigurations',
+        'VpcLatticeConfigurations',
       ]),
     ],
   ]);
 
   unhandledByDesign = new Map<string, ReadonlyMap<string, string>>([
-    [
-      'AWS::ECS::Service',
-      new Map<string, string>([
-        [
-          'Role',
-          'Legacy classic-ELB service-linked-role override; AWS uses the AWSServiceRoleForECS service-linked role automatically since 2017',
-        ],
-      ]),
-    ],
     [
       'AWS::ECS::TaskDefinition',
       new Map<string, string>([
@@ -797,6 +822,34 @@ export class ECSProvider implements ResourceProvider {
           tags: convertTags(
             properties['Tags'] as Array<{ Key: string; Value: string }> | undefined
           ),
+          // issue #609 backfill — previously silent-dropped Service members.
+          // `ForceNewDeployment` is deliberately NOT mapped here: it is a
+          // CFn-only rollout trigger with no CreateService counterpart (the
+          // SDK's `forceNewDeployment` boolean exists only on UpdateService),
+          // so it is a create-path no-op — see `resolveForceNewDeployment`.
+          availabilityZoneRebalancing: properties['AvailabilityZoneRebalancing'] as
+            | AvailabilityZoneRebalancing
+            | undefined,
+          deploymentController: this.convertDeploymentController(
+            properties['DeploymentController'] as Record<string, unknown> | undefined
+          ),
+          // `Role` is the legacy classic-ELB service role override — a real
+          // create-only CFn property (createOnlyProperties in the registry
+          // schema), passed through verbatim; a change classifies as
+          // replacement via the create-only fallback in the diff layer.
+          role: properties['Role'] as string | undefined,
+          serviceConnectConfiguration: this.convertServiceConnectConfiguration(
+            properties['ServiceConnectConfiguration'] as Record<string, unknown> | undefined
+          ),
+          volumeConfigurations: this.convertServiceVolumeConfigurations(
+            properties['VolumeConfigurations'] as Array<Record<string, unknown>> | undefined
+          ),
+          vpcLatticeConfigurations: this.convertVpcLatticeConfigurations(
+            properties['VpcLatticeConfigurations'] as Array<Record<string, unknown>> | undefined
+          ),
+          monitoring: this.convertMonitoringConfiguration(
+            properties['Monitoring'] as Record<string, unknown> | undefined
+          ),
         })
       );
 
@@ -942,6 +995,35 @@ export class ECSProvider implements ResourceProvider {
         { client: this.getClient(), maxWaitTime, minDelay: 5, maxDelay: 10 },
         { cluster, services: [serviceRef] }
       );
+      // waitUntilServicesStable's condition (a single deployment whose
+      // runningCount matches desiredCount) is satisfied a few seconds BEFORE
+      // ECS flips the PRIMARY deployment's rolloutState to COMPLETED — a race
+      // the ecs-fargate fixture lost on the update path the moment #609
+      // flipped its Service from the CC route (whose CFn handler waits for
+      // rollout completion) to this SDK route. --full-wait promises the
+      // CloudFormation-equivalent doneness, so close the gap with a short
+      // bounded poll; NONE (no rollout tracking, e.g. EXTERNAL controller)
+      // counts as settled.
+      const rolloutDeadline = Date.now() + 120_000;
+      for (;;) {
+        const settled = await this.getClient().send(
+          new DescribeServicesCommand({
+            cluster,
+            services: [serviceRef],
+          })
+        );
+        const deployments = settled?.services?.[0]?.deployments;
+        const rolloutState =
+          deployments && deployments.length === 1 ? deployments[0]?.rolloutState : undefined;
+        if (rolloutState === undefined || rolloutState === 'COMPLETED') break;
+        if (Date.now() >= rolloutDeadline) {
+          this.logger.warn(
+            `ECS service ${logicalId} is steady but its rollout is still ${rolloutState} after the post-stability grace window; continuing`
+          );
+          break;
+        }
+        await settleRolloutDelays.sleep(3_000);
+      }
       this.logger.debug(`ECS service ${logicalId} reached steady state`);
       return;
     }
@@ -1151,6 +1233,114 @@ export class ECSProvider implements ResourceProvider {
       false
     );
 
+    // issue #609 backfill — the previously silent-dropped Service members on
+    // the update path. All of the config blobs below are change-gated (like
+    // LoadBalancers / ServiceRegistries above) because the AWS docs mark them
+    // "this parameter triggers a new service deployment": re-sending an
+    // unchanged value on an unrelated update could start a spurious rollout.
+    //
+    // Removal (present before, absent now) semantics per member — the #1160
+    // doctrine wants live-probed reset sentinels; none of these have been
+    // live-probed yet, so each choice below is documented from the API docs
+    // and marked UNVERIFIED-LIVE where a probe is still owed:
+    //   - ServiceConnectConfiguration -> `{ enabled: false }`. The ECS
+    //     developer guide documents Service Connect as disabled by default
+    //     and `enabled: false` as the API's turn-off shape (`enabled` is the
+    //     only required member). UNVERIFIED-LIVE.
+    //   - VolumeConfigurations / VpcLatticeConfigurations -> `[]`, matching
+    //     the empty-list clear sentinel of the sibling list members
+    //     (LoadBalancers / ServiceRegistries / PlacementConstraints). Unlike
+    //     those, the UpdateService doc does not spell out "pass an empty list
+    //     to remove" for these two. UNVERIFIED-LIVE.
+    //   - AvailabilityZoneRebalancing -> DEFERRED (no reset sent). The SDK
+    //     doc is explicit that an absent value on UpdateService keeps the
+    //     existing setting, and the defaults genuinely diverge (CreateService
+    //     defaults ENABLED; a service that never had a value is treated as
+    //     DISABLED), so there is no single defensible CFn reset value without
+    //     a live probe — same deferral shape as DeploymentConfiguration above.
+    //   - Monitoring -> DEFERRED (no reset sent). Its removal reset would
+    //     need the sub-field merge semantics of MonitoringConfiguration
+    //     live-probed first (the DeploymentConfiguration precedent above).
+    //   - DeploymentController -> no reset by design: absent means the
+    //     default ECS controller, and sending nothing keeps AWS's current
+    //     controller (the property is only sent when present AND changed —
+    //     the SDK supports an explicit change for ECS<->CODE_DEPLOY
+    //     migration).
+    //   - Role -> create-only (registry schema createOnlyProperties); a
+    //     change is classified as replacement by the diff layer, so update()
+    //     never delivers it (UpdateService has no role member).
+    const availabilityZoneRebalancingChanged =
+      JSON.stringify(previousProperties['AvailabilityZoneRebalancing'] ?? null) !==
+      JSON.stringify(properties['AvailabilityZoneRebalancing'] ?? null);
+    const availabilityZoneRebalancingInput =
+      availabilityZoneRebalancingChanged && properties['AvailabilityZoneRebalancing'] !== undefined
+        ? (properties['AvailabilityZoneRebalancing'] as AvailabilityZoneRebalancing)
+        : undefined;
+
+    const deploymentControllerChanged =
+      JSON.stringify(previousProperties['DeploymentController'] ?? null) !==
+      JSON.stringify(properties['DeploymentController'] ?? null);
+    const deploymentControllerInput =
+      deploymentControllerChanged && properties['DeploymentController'] != null
+        ? this.convertDeploymentController(
+            properties['DeploymentController'] as Record<string, unknown>
+          )
+        : undefined;
+
+    const serviceConnectChanged =
+      JSON.stringify(previousProperties['ServiceConnectConfiguration'] ?? null) !==
+      JSON.stringify(properties['ServiceConnectConfiguration'] ?? null);
+    const serviceConnectConfigurationInput = serviceConnectChanged
+      ? clearOnUpdateRemoval(
+          this.convertServiceConnectConfiguration(
+            properties['ServiceConnectConfiguration'] as Record<string, unknown> | undefined
+          ),
+          previousProperties['ServiceConnectConfiguration'] as
+            | ServiceConnectConfiguration
+            | undefined,
+          { enabled: false }
+        )
+      : undefined;
+
+    const volumeConfigurationsChanged =
+      JSON.stringify(previousProperties['VolumeConfigurations'] ?? null) !==
+      JSON.stringify(properties['VolumeConfigurations'] ?? null);
+    const volumeConfigurationsInput = volumeConfigurationsChanged
+      ? clearOnUpdateRemoval(
+          this.convertServiceVolumeConfigurations(
+            properties['VolumeConfigurations'] as Array<Record<string, unknown>> | undefined
+          ),
+          previousProperties['VolumeConfigurations'] as ServiceVolumeConfiguration[] | undefined,
+          []
+        )
+      : undefined;
+
+    const vpcLatticeConfigurationsChanged =
+      JSON.stringify(previousProperties['VpcLatticeConfigurations'] ?? null) !==
+      JSON.stringify(properties['VpcLatticeConfigurations'] ?? null);
+    const vpcLatticeConfigurationsInput = vpcLatticeConfigurationsChanged
+      ? clearOnUpdateRemoval(
+          this.convertVpcLatticeConfigurations(
+            properties['VpcLatticeConfigurations'] as Array<Record<string, unknown>> | undefined
+          ),
+          previousProperties['VpcLatticeConfigurations'] as VpcLatticeConfiguration[] | undefined,
+          []
+        )
+      : undefined;
+
+    const monitoringChanged =
+      JSON.stringify(previousProperties['Monitoring'] ?? null) !==
+      JSON.stringify(properties['Monitoring'] ?? null);
+    const monitoringInput =
+      monitoringChanged && properties['Monitoring'] != null
+        ? this.convertMonitoringConfiguration(properties['Monitoring'] as Record<string, unknown>)
+        : undefined;
+
+    // CFn ForceNewDeployment `{EnableForceNewDeployment, ForceNewDeploymentNonce}`
+    // -> the SDK's plain `forceNewDeployment` boolean (only send `true`; the
+    // field is a one-shot trigger, never persisted state).
+    const forceNewDeploymentInput = this.resolveForceNewDeployment(properties, previousProperties);
+
     try {
       const response = await client.send(
         new UpdateServiceCommand({
@@ -1178,6 +1368,15 @@ export class ECSProvider implements ResourceProvider {
           enableExecuteCommand: enableExecuteCommandInput,
           loadBalancers: loadBalancersInput,
           serviceRegistries: serviceRegistriesInput,
+          // issue #609 backfill (change-gated; removal semantics documented
+          // in the block above the try).
+          availabilityZoneRebalancing: availabilityZoneRebalancingInput,
+          deploymentController: deploymentControllerInput,
+          serviceConnectConfiguration: serviceConnectConfigurationInput,
+          volumeConfigurations: volumeConfigurationsInput,
+          vpcLatticeConfigurations: vpcLatticeConfigurationsInput,
+          monitoring: monitoringInput,
+          forceNewDeployment: forceNewDeploymentInput,
         })
       );
 
@@ -2200,6 +2399,128 @@ export class ECSProvider implements ResourceProvider {
   }
 
   /**
+   * Convert the CFn PascalCase `DeploymentController` block (`{Type}`) to the
+   * ECS SDK camelCase input shape (`{type}`) — a pure first-letter flip
+   * (issue #609).
+   */
+  private convertDeploymentController(
+    config?: Record<string, unknown>
+  ): DeploymentController | undefined {
+    if (!config) return undefined;
+    return pascalToCamelCaseKeys(config) as DeploymentController;
+  }
+
+  /**
+   * Convert the CFn PascalCase `ServiceConnectConfiguration` block to the ECS
+   * SDK camelCase input shape (issue #609). Every key in the subtree is a pure
+   * first-letter flip (`Enabled` / `Namespace` / `Services[].{PortName,
+   * DiscoveryName, ClientAliases, IngressPortOverride, Timeout, Tls}` /
+   * `LogConfiguration` / `AccessLogConfiguration`), so the shared recursive
+   * converter delivers the whole subtree — EXCEPT
+   * `LogConfiguration.Options`, a free-form log-driver option map copied
+   * verbatim (see {@link SERVICE_CONNECT_PRESERVE_KEYS}).
+   */
+  private convertServiceConnectConfiguration(
+    config?: Record<string, unknown>
+  ): ServiceConnectConfiguration | undefined {
+    if (!config) return undefined;
+    return pascalToCamelCaseKeys(
+      config,
+      SERVICE_CONNECT_PRESERVE_KEYS
+    ) as ServiceConnectConfiguration;
+  }
+
+  /**
+   * Convert the CFn PascalCase `VolumeConfigurations` array to the ECS SDK
+   * camelCase input shape (issue #609). Every key is a pure first-letter flip
+   * — including the two spellings worth calling out: `ManagedEBSVolume` ->
+   * `managedEBSVolume` and `SizeInGiB` -> `sizeInGiB` (both verified against
+   * the SDK model; only the FIRST character flips, the interior case is
+   * identical), so the shared recursive converter delivers the whole subtree
+   * (`Encrypted` / `KmsKeyId` / `VolumeType` / `SnapshotId` /
+   * `VolumeInitializationRate` / `Iops` / `Throughput` / `TagSpecifications`
+   * / `RoleArn` / `FilesystemType`).
+   */
+  private convertServiceVolumeConfigurations(
+    items?: Array<Record<string, unknown>>
+  ): ServiceVolumeConfiguration[] | undefined {
+    if (!items) return undefined;
+    return pascalToCamelCaseKeys(items) as ServiceVolumeConfiguration[];
+  }
+
+  /**
+   * Convert the CFn PascalCase `VpcLatticeConfigurations` array to the ECS
+   * SDK camelCase input shape (issue #609). Each element `{RoleArn,
+   * TargetGroupArn, PortName}` is a pure first-letter flip.
+   */
+  private convertVpcLatticeConfigurations(
+    items?: Array<Record<string, unknown>>
+  ): VpcLatticeConfiguration[] | undefined {
+    if (!items) return undefined;
+    return pascalToCamelCaseKeys(items) as VpcLatticeConfiguration[];
+  }
+
+  /**
+   * Convert the CFn PascalCase `Monitoring` block to the ECS SDK camelCase
+   * `monitoring` input shape (issue #609). Every key is a pure first-letter
+   * flip (`MetricConfigurations[].{MetricNames, ResolutionSeconds}`).
+   */
+  private convertMonitoringConfiguration(
+    config?: Record<string, unknown>
+  ): MonitoringConfiguration | undefined {
+    if (!config) return undefined;
+    return pascalToCamelCaseKeys(config) as MonitoringConfiguration;
+  }
+
+  /**
+   * Translate the CFn-only `ForceNewDeployment` trigger object
+   * (`{EnableForceNewDeployment, ForceNewDeploymentNonce}`) into the SDK's
+   * plain `forceNewDeployment` boolean on UpdateService (issue #609).
+   *
+   * A forced rollout is requested when EITHER the template says
+   * `EnableForceNewDeployment: true` OR the nonce changed vs the previous
+   * deploy's recorded value (introducing a nonce counts as a change). On any
+   * other shape — block absent, malformed, enable false with an unchanged
+   * nonce — return `undefined` so the field is omitted (AWS's documented
+   * default: deployments are not forced).
+   *
+   * Create-path: deliberate no-op — CreateService has no such member, and the
+   * initial deployment IS a fresh rollout by definition.
+   *
+   * This is UPDATE-path code, so a malformed desired block WARNS and skips
+   * rather than throwing (the config-shape doctrine: a rollback replays
+   * `update()` with a historical state record as the desired bag).
+   */
+  private resolveForceNewDeployment(
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
+  ): boolean | undefined {
+    const desired = properties['ForceNewDeployment'];
+    if (desired == null) return undefined;
+    if (typeof desired !== 'object' || Array.isArray(desired)) {
+      this.logger.warn(
+        `AWS::ECS::Service ForceNewDeployment is not an object (got ${Array.isArray(desired) ? 'array' : typeof desired}); skipping the forced-rollout translation`
+      );
+      return undefined;
+    }
+    const block = desired as Record<string, unknown>;
+    const enable = this.coerceBool(block['EnableForceNewDeployment']);
+    const nonce = block['ForceNewDeploymentNonce'];
+    const previous = previousProperties['ForceNewDeployment'];
+    const previousNonce =
+      previous != null && typeof previous === 'object' && !Array.isArray(previous)
+        ? (previous as Record<string, unknown>)['ForceNewDeploymentNonce']
+        : undefined;
+    // Value comparison, not identity: a non-string nonce (a number, or an
+    // unresolved-intrinsic object surviving to this layer) is a fresh object
+    // reference on every deploy, and an identity compare would read it as
+    // "changed" and force a spurious rollout on EVERY update (review catch).
+    const nonceChanged =
+      nonce !== undefined && JSON.stringify(nonce) !== JSON.stringify(previousNonce);
+    return enable === true || nonceChanged ? true : undefined;
+  }
+
+  /**
    * Convert the CFn PascalCase `TaskDefinition.RuntimePlatform` to the ECS SDK
    * camelCase input shape (issue #1165). `{CpuArchitecture,
    * OperatingSystemFamily}` -> `{cpuArchitecture, operatingSystemFamily}`.
@@ -2352,6 +2673,38 @@ export class ECSProvider implements ResourceProvider {
   }
 
   /**
+   * State property paths `readCurrentState` deliberately cannot read back
+   * from AWS (issue #609) — fed into the drift comparator's `ignorePaths` so
+   * a template that sets them does not phantom-drift as "removed" on every
+   * run:
+   *   - `ServiceConnectConfiguration` / `VolumeConfigurations` /
+   *     `VpcLatticeConfigurations`: DescribeServices does not return them on
+   *     the top-level `Service` shape (they surface only per-deployment
+   *     under `deployments[]`, which is rollout metadata, not service
+   *     config). `VolumeConfigurations` is also registry-recorded write-only.
+   *   - `Monitoring`: not returned by DescribeServices at all.
+   *   - `ForceNewDeployment`: a write-only rollout trigger, not persisted
+   *     service state.
+   *   - `Role`: AWS reports `Service.roleArn` as the service-linked
+   *     AWSServiceRoleForECS ARN when the template omits Role, and always as
+   *     a full ARN when the template may carry a bare role name — a
+   *     mechanical reverse-map would manufacture drift in both directions.
+   */
+  getDriftUnknownPaths(resourceType: string): string[] {
+    if (resourceType === 'AWS::ECS::Service') {
+      return [
+        'ServiceConnectConfiguration',
+        'VolumeConfigurations',
+        'VpcLatticeConfigurations',
+        'Monitoring',
+        'ForceNewDeployment',
+        'Role',
+      ];
+    }
+    return [];
+  }
+
+  /**
    * Read the AWS-current ECS resource configuration in CFn-property shape.
    *
    * Dispatches by resource type:
@@ -2490,6 +2843,8 @@ export class ECSProvider implements ResourceProvider {
         placementConstraints?: PlacementConstraint[];
         placementStrategy?: PlacementStrategy[];
         serviceRegistries?: ServiceRegistry[];
+        availabilityZoneRebalancing?: string;
+        deploymentController?: DeploymentController;
         tags?: Array<{ key?: string; value?: string }>;
       }>;
     };
@@ -2584,6 +2939,31 @@ export class ECSProvider implements ResourceProvider {
       result['PlacementStrategies'] = strategy;
     }
     result['ServiceRegistries'] = camelToPascalCaseKeys(s.serviceRegistries ?? []);
+    // issue #609 read-back additions. Only what the top-level `Service` shape
+    // actually returns is surfaced: DescribeServices does NOT return
+    // `serviceConnectConfiguration` / `volumeConfigurations` /
+    // `vpcLatticeConfigurations` / `monitoring` on the Service itself (the
+    // first three only appear per-deployment under `deployments[]`), and
+    // `ForceNewDeployment` is a write-only rollout trigger — all five are
+    // declared in `getDriftUnknownPaths` instead of being fabricated here.
+    // `Role` is deliberately NOT reverse-mapped from `Service.roleArn`: for
+    // the typical template that omits Role, AWS reports the
+    // AWSServiceRoleForECS service-linked role ARN there, and a template that
+    // DOES set Role may carry a role NAME while AWS always reports the full
+    // ARN — either way a mechanical read-back would manufacture phantom
+    // drift, so Role is also covered by `getDriftUnknownPaths`.
+    if (s.availabilityZoneRebalancing !== undefined) {
+      result['AvailabilityZoneRebalancing'] = s.availabilityZoneRebalancing;
+    }
+    // DescribeServices omits `deploymentController` for services on the
+    // default ECS controller (the SDK API doc: "If a service is using the ECS
+    // deployment controller, the deploymentController ... parameters will not
+    // be returned"), so an absent field MEANS the ECS controller — emit the
+    // CFn shape either way so an explicit `DeploymentController: {Type: ECS}`
+    // template does not phantom-drift. UNVERIFIED-LIVE: whether current
+    // DescribeServices echoes the controller for ECS-controller services; the
+    // fallback makes both behaviors correct.
+    result['DeploymentController'] = { Type: s.deploymentController?.type ?? 'ECS' };
     const tags = normalizeAwsTagsToCfn(s.tags);
     result['Tags'] = tags;
     return result;

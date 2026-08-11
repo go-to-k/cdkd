@@ -164,17 +164,6 @@
     "AWS::EC2::VPCGatewayAttachment": [
       "VpnGatewayId"
     ],
-    "AWS::ECS::Service": [
-      "AvailabilityZoneRebalancing",
-      "DeploymentController",
-      "ForceNewDeployment",
-      "Monitoring",
-      "PlacementStrategies",
-      "Role",
-      "ServiceConnectConfiguration",
-      "VolumeConfigurations",
-      "VpcLatticeConfigurations"
-    ],
     "AWS::EFS::AccessPoint": [
       "ClientToken"
     ],
@@ -419,9 +408,6 @@
     },
     "AWS::EC2::NetworkAclEntry": {
       "IcmpTypeCode": "SDK input field name; CFn schema renamed to 'Icmp'. Provider keeps the SDK name to match its create() input; rename the safety-net entry separately."
-    },
-    "AWS::ECS::Service": {
-      "PlacementStrategy": "Likely typo for 'PlacementStrategies' (CFn schema name is plural). Real bug — fix in a follow-up PR after verifying no template-side fallout."
     },
     "AWS::ElastiCache::SubnetGroup": {
       "CacheSubnetGroupDescription": "SDK input field name; CFn schema names the same field 'Description'. Investigate whether to rename in a follow-up."

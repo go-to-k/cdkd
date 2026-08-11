@@ -26,11 +26,36 @@ empty array. (`DeploymentConfiguration` removal is deferred — its reset is
 entangled with a separate pre-existing CFn-PascalCase -> SDK-camelCase
 nested-object conversion gap.)
 
-This fixture is deliberately plain (no `ServiceConnectConfiguration` /
-`VolumeConfigurations`) so the Service stays on cdkd's **SDK** provider path.
-The sibling `ecs-fargate` fixture's Service routes via **Cloud Control**
-(those two properties are silent-drops that flip it to the #614 CC fallback),
-so it would NOT exercise the `updateService()` code path the #975 fix touches.
+The #609 Service-property backfill emptied the `AWS::ECS::Service`
+silent-drop set (AvailabilityZoneRebalancing / DeploymentController /
+ForceNewDeployment / Monitoring / Role / ServiceConnectConfiguration /
+VolumeConfigurations / VpcLatticeConfigurations are now handled by
+`ECSProvider`), so every Service is SDK-routed. This fixture live-covers the
+cheap members (see Phases below); the sibling `ecs-fargate` fixture covers
+the SDK-routed delivery of `ServiceConnectConfiguration` +
+`VolumeConfigurations`. The `provisionedBy != cc-api` guard remains so a
+future silent-drop regression can't flip the route back and make the test
+pass for the wrong reason.
+
+### Not exercised live (#609) — unit-pinned instead
+
+The following stay unit-only (exact SDK wire spellings + both update
+polarities pinned in
+`tests/unit/provisioning/ecs-service-config-props.test.ts`), because each
+needs expensive/out-of-scope infrastructure this fixture deliberately avoids:
+
+- **PlacementStrategies** — needs an EC2 launch type (container instances);
+  already wired pre-#609 (issue #613 alias handling).
+- **VpcLatticeConfigurations** — needs VPC Lattice target-group plumbing +
+  an infrastructure role.
+- **DeploymentController: CODE_DEPLOY** — needs CodeDeploy application /
+  deployment-group plumbing; the explicit `{Type: ECS}` form IS live-covered
+  here.
+- **Role** — needs a classic ELB setup (legacy service role); create-only
+  pass-through + replacement classification are unit-pinned.
+- **Monitoring read-back** — `DescribeServices` returns no `monitoring`
+  member, so only CreateService ACCEPTANCE is live-provable (done here: a
+  mis-flipped required member like `metricNames` would fail the deploy).
 
 ## Resources
 
@@ -44,14 +69,27 @@ so it would NOT exercise the `updateService()` code path the #975 fix touches.
 
 1. **Phase 1 (base)**: deploy with `EnableECSManagedTags: false`,
    `PropagateTags: NONE`, `PlatformVersion: 1.4.0`,
-   `HealthCheckGracePeriodSeconds: 30` (the last two via the L1 escape hatch);
-   assert `describe-services` shows them, and assert the Service is SDK-routed
-   (`provisionedBy != cc-api`) so the test can't pass for the wrong reason.
+   `HealthCheckGracePeriodSeconds: 30`, plus the #609 members
+   `AvailabilityZoneRebalancing: ENABLED`, `DeploymentController: {Type: ECS}`,
+   `Monitoring` (60s default resolution) and a `ForceNewDeployment` nonce
+   (all via the L1 escape hatch); assert `describe-services` shows them
+   (`availabilityZoneRebalancing=ENABLED`; the controller may legitimately be
+   omitted for the ECS default per the API docs), assert the deploy-time
+   `observedProperties` captured `AvailabilityZoneRebalancing` +
+   `DeploymentController.Type=ECS` (the reader's fallback), assert
+   `cdkd drift` reports no phantom drift on any #609 member, and assert the
+   Service is SDK-routed (`provisionedBy != cc-api`) so the test can't pass
+   for the wrong reason.
 2. **Phase 2 (update)**: redeploy with `CDKD_TEST_UPDATE=true` flipping to
    `enableECSManagedTags: true` / `propagateTags: TASK_DEFINITION` (#975) AND
    dropping `PlatformVersion` / `HealthCheckGracePeriodSeconds` (#1160); assert
    the #975 changes reach AWS AND the #1160 removals reset to `LATEST` / `0`.
-3. **Phase 3 (destroy)**: destroy and assert the state file is gone.
+3. **Phase 2b (force-nonce)**: redeploy with
+   `CDKD_TEST_UPDATE=true,force-nonce` — the template is identical to phase 2
+   except the `ForceNewDeployment.ForceNewDeploymentNonce` bump; assert a
+   fresh rollout appeared (`deployments[0].id` changed), proving the
+   object-to-`forceNewDeployment: true` translation (#609).
+4. **Phase 3 (destroy)**: destroy and assert the state file is gone.
 
 ## Run
 

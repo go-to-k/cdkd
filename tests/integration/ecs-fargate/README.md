@@ -14,6 +14,16 @@ This stack includes the following resources:
 - **Security Group**: Default security group for the service
 - **CloudWatch Log Group**: For container log streaming
 
+## Route note (#609)
+
+The Service sets `ServiceConnectConfiguration` + `VolumeConfigurations`.
+Before the #609 Service-property backfill both were cdkd silent-drops, which
+flipped the Service to the #614 Cloud Control fallback route; since the
+backfill the Service is **SDK-routed** and `ECSProvider.createService()`
+delivers both blobs itself. `verify.sh` pins `provisionedBy=sdk` and asserts
+the deployment-level `serviceConnectConfiguration` (enabled + portName) and
+`volumeConfigurations` (`ebs-data`) read-backs against real AWS.
+
 ## Features Tested in cdkd
 
 1. **VPC and Networking**: VPC, subnet, internet gateway, route table provisioning

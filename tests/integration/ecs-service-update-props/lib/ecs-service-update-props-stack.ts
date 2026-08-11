@@ -19,13 +19,32 @@ import * as logs from 'aws-cdk-lib/aws-logs';
  * silently dropped on create AND update.
  *
  * CRITICAL — this Service MUST stay on cdkd's SDK provider path (NOT Cloud
- * Control). The sibling `ecs-fargate` fixture's Service routes via CC-API
- * because it sets `ServiceConnectConfiguration` + `VolumeConfigurations`,
- * both cdkd silent-drops that flip the resource to the #614 CC-fallback
- * routing — CC forwards the full property map so it never exercises the SDK
- * updateService() code path the #975 fix touches. This fixture therefore
- * uses a plain Fargate Service with NONE of those silent-drop properties, so
- * it stays SDK-routed and the update actually goes through updateService().
+ * Control). Since the #609 Service-property backfill the `AWS::ECS::Service`
+ * silent-drop set is EMPTY, so every Service (including the sibling
+ * `ecs-fargate` fixture's, which sets ServiceConnectConfiguration +
+ * VolumeConfigurations) is SDK-routed; verify.sh still guards
+ * `provisionedBy != cc-api` so a future silent-drop regression can't flip the
+ * route back and make the test pass for the wrong reason.
+ *
+ * The #609 additions exercised live here (cheap, control-plane only):
+ * - AvailabilityZoneRebalancing: ENABLED — read back via describe-services.
+ * - DeploymentController: { Type: ECS } explicit — CreateService must accept
+ *   the member; describe-services may legitimately omit it for the default
+ *   ECS controller (SDK API doc), so the strong assert is on the deploy-time
+ *   observedProperties (the reader's {Type: ECS} fallback).
+ * - Monitoring: default 60s resolution — DescribeServices has no read-back
+ *   for it, so the live proof is ACCEPTANCE (a mis-flipped required member
+ *   like `metricNames` would fail CreateService); values are pinned by
+ *   tests/unit/provisioning/ecs-service-config-props.test.ts.
+ * - ForceNewDeployment: the nonce is bumped in the `force-nonce` phase (2b)
+ *   and verify.sh asserts a fresh rollout (deployments[0].id changed).
+ *
+ * NOT exercised live (unit-pinned in ecs-service-config-props.test.ts —
+ * see the README "Not exercised live" section for the recorded rationale):
+ * PlacementStrategies (needs EC2 launch type), VpcLatticeConfigurations
+ * (needs VPC Lattice plumbing), DeploymentController CODE_DEPLOY (needs
+ * CodeDeploy plumbing), Role (needs a classic ELB setup), Monitoring
+ * read-back (no DescribeServices member).
  *
  * Cost: desiredCount is 0 (no task ever launches; only control-plane
  * resources exist), so the fixture is cheap.
@@ -34,7 +53,13 @@ export class EcsServiceUpdatePropsStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
-    const isUpdate = process.env.CDKD_TEST_UPDATE === 'true';
+    // Mode list: '' (phase 1) | 'true' (phase 2) | 'true,force-nonce'
+    // (phase 2b — same template as phase 2 EXCEPT the ForceNewDeployment
+    // nonce). `includes('true')` keeps the phase-2 shape monotonic across
+    // the later mode list (the #1543 mode-gated-resource rule).
+    const updateMode = process.env.CDKD_TEST_UPDATE ?? '';
+    const isUpdate = updateMode.includes('true');
+    const isForceNonce = updateMode.includes('force-nonce');
 
     // Minimal VPC (1 AZ, no NAT gateway to minimize cost).
     const vpc = new ec2.Vpc(this, 'Vpc', {
@@ -136,6 +161,30 @@ export class EcsServiceUpdatePropsStack extends cdk.Stack {
     });
 
     const cfnService = service.node.defaultChild as ecs.CfnService;
+
+    // issue #609 backfill — present in EVERY phase (unchanged across the
+    // update deploys, so the change-gated update path must NOT re-send them;
+    // only the ForceNewDeployment nonce changes, in phase 2b):
+    //   - AvailabilityZoneRebalancing: readable via describe-services.
+    //   - DeploymentController {Type: ECS}: explicit default-controller form;
+    //     the strong assert is on observedProperties (see verify.sh).
+    //   - Monitoring: 60s = the AWS default resolution (no detailed-monitoring
+    //     cost); acceptance-only live proof (no DescribeServices read-back).
+    //   - ForceNewDeployment: nonce-only object; phase 2b bumps the nonce and
+    //     verify.sh asserts a fresh rollout appeared.
+    // All injected via addPropertyOverride so the wire shape is exactly what a
+    // hand-written template emits, independent of the installed aws-cdk-lib's
+    // L1 typings.
+    cfnService.addPropertyOverride('AvailabilityZoneRebalancing', 'ENABLED');
+    cfnService.addPropertyOverride('DeploymentController', { Type: 'ECS' });
+    cfnService.addPropertyOverride('Monitoring', {
+      MetricConfigurations: [
+        { MetricNames: ['CPUUtilization', 'MemoryUtilization'], ResolutionSeconds: 60 },
+      ],
+    });
+    cfnService.addPropertyOverride('ForceNewDeployment', {
+      ForceNewDeploymentNonce: isForceNonce ? 'cdkd-nonce-2' : 'cdkd-nonce-1',
+    });
 
     // issue #1165 (nested-object casing): a custom `DeploymentConfiguration`
     // (a CFn PascalCase nested object) must reach AWS. Before the fix

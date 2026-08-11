@@ -200,6 +200,16 @@ cap, never lowers it below the 600s floor, and the same value already
 governs the outer per-resource deadline, so the two cannot undercut
 each other.
 
+The `--full-wait` doneness is "stable AND rolled out": after the
+steady-state waiter (a single deployment whose running count matches the
+desired count), cdkd briefly polls the PRIMARY deployment's
+`rolloutState` to `COMPLETED` — ECS flips it a few seconds after the
+stability condition is met, and returning inside that window would leave
+`--full-wait` observably weaker than CloudFormation's handler. The poll
+is bounded (about two minutes); a rollout still in progress past it
+warns and continues rather than failing a service that is already
+stable.
+
 Under `--full-wait`, a service that never stabilizes fails the deploy. On
 create, cdkd best-effort deletes the service it just created before
 failing, so the next deploy does not collide on the service name. The
