@@ -588,6 +588,57 @@ describe('AppSyncProvider.update', () => {
 
   // ─── ApiKey ──────────────────────────────────────────────────────────
 
+  // Every update path in this provider returns WITHOUT an `attributes` field.
+  // The deploy engine resolves `result.attributes ?? currentResource
+  // .attributes`, so a PRESENT-but-empty object is authoritative and wipes the
+  // create-time attributes — after which every Fn::GetAtt on the resource
+  // degrades to the physical-id fallback (observed live on GraphQLApi's
+  // GraphQLUrl output). Asserts the shape the REGRESSION would emit.
+  describe('update never wipes create-time attributes', () => {
+    it.each([
+      [
+        'AWS::AppSync::GraphQLSchema',
+        'api-1',
+        { ApiId: 'api-1', Definition: 'type Query { a: String }' },
+        { ApiId: 'api-1', Definition: 'type Query { b: String }' },
+      ],
+      [
+        'AWS::AppSync::DataSource',
+        'api-1|ds',
+        { ApiId: 'api-1', Name: 'ds', Type: 'NONE', Description: 'new' },
+        { ApiId: 'api-1', Name: 'ds', Type: 'NONE', Description: 'old' },
+      ],
+      [
+        'AWS::AppSync::Resolver',
+        'api-1|Query|f',
+        {
+          ApiId: 'api-1',
+          TypeName: 'Query',
+          FieldName: 'f',
+          DataSourceName: 'ds',
+          RequestMappingTemplate: '{"version":"2018-05-29"}',
+        },
+        {
+          ApiId: 'api-1',
+          TypeName: 'Query',
+          FieldName: 'f',
+          DataSourceName: 'ds',
+          RequestMappingTemplate: '{"version":"2017-02-28"}',
+        },
+      ],
+      [
+        'AWS::AppSync::ApiKey',
+        'api-1|key-1',
+        { ApiId: 'api-1', Description: 'new' },
+        { ApiId: 'api-1', Description: 'old' },
+      ],
+    ])('omits attributes on %s', async (resourceType, physicalId, next, previous) => {
+      mockSend.mockResolvedValue({});
+      const result = await provider.update('L', physicalId, resourceType, next, previous);
+      expect(Object.hasOwn(result, 'attributes')).toBe(false);
+    });
+  });
+
   describe('ApiKey', () => {
     it('issues UpdateApiKey when Description or Expires diff', async () => {
       mockSend.mockResolvedValueOnce({});

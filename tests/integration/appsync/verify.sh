@@ -160,6 +160,12 @@ assert_eq "GraphQLApi provisionedBy" "sdk" "${API_ROUTE}"
 echo "    Resolved AppSync API id: ${API_ID}"
 
 echo "==> Phase 1 assertions: every config property reached AWS"
+# apiType / visibility are asserted at their AWS DEFAULTS: the non-default
+# values need infra this fixture cannot carry (MERGED needs a merged-API
+# source set, PRIVATE needs a VPC endpoint). They are therefore weak here by
+# construction — the create-input pinning for both lives in
+# tests/unit/provisioning/appsync-graphqlapi-config-props.test.ts, and their
+# create-only-ness is pinned by the ReplacementRulesRegistry test.
 assert_eq "apiType" "GRAPHQL" "$(api_query 'graphqlApi.apiType')"
 assert_eq "visibility" "GLOBAL" "$(api_query 'graphqlApi.visibility')"
 assert_eq "introspectionConfig" "DISABLED" "$(api_query 'graphqlApi.introspectionConfig')"

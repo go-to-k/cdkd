@@ -49,6 +49,7 @@ import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
+import { requireConfigArray } from '../config-shape.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -66,6 +67,10 @@ import type {
  * is a REPLACEMENT (see `src/analyzer/replacement-rules.ts`).
  * `EnvironmentVariables` is excluded because it has its own API pair.
  */
+// The five sentinel-less members stay in this list on purpose: their REMOVAL
+// has no wire-level effect, but it must still reach `applyGraphQLApiConfig` so
+// the user gets the "cannot clear X" warning instead of silence. The cost is
+// one no-op UpdateGraphqlApi on a removal-only redeploy.
 const MUTABLE_GRAPHQL_API_CONFIG_PROPERTIES = [
   'UserPoolConfig',
   'OpenIDConnectConfig',
@@ -931,14 +936,44 @@ export class AppSyncProvider implements ResourceProvider {
   // serializer silently DROPS unknown members — so a near-miss spelling
   // is a silent config drop, not an error (the #1370 class).
 
-  private asObject(value: unknown): Record<string, unknown> | undefined {
-    return value != null && typeof value === 'object' && !Array.isArray(value)
-      ? (value as Record<string, unknown>)
-      : undefined;
+  /**
+   * Read a nested config container.
+   *
+   * A present-but-NOT-an-object value (an unresolved intrinsic, a mis-nested
+   * L1, a string where the template meant a block) must never fall through as
+   * "absent" — that reintroduces the very silent-drop class this batch closes
+   * (see `src/provisioning/config-shape.ts`'s "Never infer a default from a
+   * possibly-malformed value"). An ABSENT container keeps returning
+   * `undefined`, which is a legitimate "not configured".
+   */
+  private asObject(
+    value: unknown,
+    path: string,
+    logicalId = ''
+  ): Record<string, unknown> | undefined {
+    if (value == null) return undefined;
+    if (typeof value === 'object' && !Array.isArray(value)) {
+      return value as Record<string, unknown>;
+    }
+    throw new ProvisioningError(
+      `AWS::AppSync::GraphQLApi ${path} must be an object, got ` +
+        `${Array.isArray(value) ? 'array' : typeof value} — cdkd refuses to drop it silently`,
+      'AWS::AppSync::GraphQLApi',
+      logicalId
+    );
   }
 
-  private toSdkUserPoolConfig(value: unknown): UserPoolConfig | undefined {
-    const cfn = this.asObject(value);
+  /**
+   * NOTE: `awsRegion` / `defaultAction` are passed through VERBATIM, including
+   * when the template omits them. cdkd deliberately does NOT substitute a
+   * default: `DefaultAction` decides whether an unauthenticated request is
+   * ALLOWed or DENYed, so inventing one would be a security decision made on
+   * the user's behalf, and what CloudFormation itself defaults here has not
+   * been A/B-verified. An omitted required member reaches AWS as a LOUD
+   * validation error naming the field — not a silent drop.
+   */
+  private toSdkUserPoolConfig(value: unknown, path = 'UserPoolConfig'): UserPoolConfig | undefined {
+    const cfn = this.asObject(value, path);
     if (!cfn) return undefined;
     return {
       userPoolId: cfn['UserPoolId'] as string,
@@ -955,8 +990,11 @@ export class AppSyncProvider implements ResourceProvider {
    * DIFFERENT shape from the top-level one — AWS models it as
    * `CognitoUserPoolConfig`, which has no `defaultAction` member.
    */
-  private toSdkCognitoUserPoolConfig(value: unknown): CognitoUserPoolConfig | undefined {
-    const cfn = this.asObject(value);
+  private toSdkCognitoUserPoolConfig(
+    value: unknown,
+    path = 'UserPoolConfig'
+  ): CognitoUserPoolConfig | undefined {
+    const cfn = this.asObject(value, path);
     if (!cfn) return undefined;
     return {
       userPoolId: cfn['UserPoolId'] as string,
@@ -967,8 +1005,11 @@ export class AppSyncProvider implements ResourceProvider {
     };
   }
 
-  private toSdkOpenIDConnectConfig(value: unknown): OpenIDConnectConfig | undefined {
-    const cfn = this.asObject(value);
+  private toSdkOpenIDConnectConfig(
+    value: unknown,
+    path = 'OpenIDConnectConfig'
+  ): OpenIDConnectConfig | undefined {
+    const cfn = this.asObject(value, path);
     if (!cfn) return undefined;
     return {
       issuer: cfn['Issuer'] as string,
@@ -980,8 +1021,11 @@ export class AppSyncProvider implements ResourceProvider {
     };
   }
 
-  private toSdkLambdaAuthorizerConfig(value: unknown): LambdaAuthorizerConfig | undefined {
-    const cfn = this.asObject(value);
+  private toSdkLambdaAuthorizerConfig(
+    value: unknown,
+    path = 'LambdaAuthorizerConfig'
+  ): LambdaAuthorizerConfig | undefined {
+    const cfn = this.asObject(value, path);
     if (!cfn) return undefined;
     return {
       authorizerUri: cfn['AuthorizerUri'] as string,
@@ -997,25 +1041,37 @@ export class AppSyncProvider implements ResourceProvider {
   private toSdkAdditionalAuthProviders(
     value: unknown
   ): AdditionalAuthenticationProvider[] | undefined {
-    if (!Array.isArray(value)) return undefined;
-    return value.map((entry) => {
-      const cfn = this.asObject(entry) ?? {};
+    if (value == null) return undefined;
+    const entries = requireConfigArray(
+      value,
+      'AWS::AppSync::GraphQLApi AdditionalAuthenticationProviders'
+    );
+    return entries.map((cfn, index) => {
+      const at = `AdditionalAuthenticationProviders[${index}]`;
       const provider: AdditionalAuthenticationProvider = {};
       if (cfn['AuthenticationType'] !== undefined) {
         provider.authenticationType = cfn['AuthenticationType'] as AuthenticationType;
       }
-      const oidc = this.toSdkOpenIDConnectConfig(cfn['OpenIDConnectConfig']);
+      const oidc = this.toSdkOpenIDConnectConfig(
+        cfn['OpenIDConnectConfig'],
+        `${at}.OpenIDConnectConfig`
+      );
       if (oidc) provider.openIDConnectConfig = oidc;
-      const pool = this.toSdkCognitoUserPoolConfig(cfn['UserPoolConfig']);
+      // The additional-provider variant is AWS's CognitoUserPoolConfig, which
+      // has NO defaultAction member — a different shape from the top-level one.
+      const pool = this.toSdkCognitoUserPoolConfig(cfn['UserPoolConfig'], `${at}.UserPoolConfig`);
       if (pool) provider.userPoolConfig = pool;
-      const lambda = this.toSdkLambdaAuthorizerConfig(cfn['LambdaAuthorizerConfig']);
+      const lambda = this.toSdkLambdaAuthorizerConfig(
+        cfn['LambdaAuthorizerConfig'],
+        `${at}.LambdaAuthorizerConfig`
+      );
       if (lambda) provider.lambdaAuthorizerConfig = lambda;
       return provider;
     });
   }
 
   private toSdkEnhancedMetricsConfig(value: unknown): EnhancedMetricsConfig | undefined {
-    const cfn = this.asObject(value);
+    const cfn = this.asObject(value, 'EnhancedMetricsConfig');
     if (!cfn) return undefined;
     return {
       resolverLevelMetricsBehavior: cfn[
@@ -1144,23 +1200,65 @@ export class AppSyncProvider implements ResourceProvider {
     properties: Record<string, unknown>,
     previousProperties?: Record<string, unknown>
   ): Promise<void> {
-    const desired = this.asObject(properties['EnvironmentVariables']);
-    const previous = previousProperties
-      ? this.asObject(previousProperties['EnvironmentVariables'])
-      : undefined;
+    const isUpdate = previousProperties !== undefined;
+    let desired: Record<string, unknown> | undefined;
+    try {
+      desired = this.asObject(properties['EnvironmentVariables'], 'EnvironmentVariables');
+    } catch (error) {
+      // The PUT is a WHOLE-MAP replace, so treating a malformed desired value
+      // as "absent" would clear every live variable. On CREATE the value is
+      // template-borne and refusing is right; on UPDATE the desired bag can be
+      // a cdkd STATE record replayed by the rollback executor, where a refusal
+      // would leave the API un-rollbackable — so warn and leave AWS untouched.
+      if (!isUpdate) throw error;
+      this.logger.warn(
+        `AppSync GraphqlApi ${logicalId}: ${
+          error instanceof Error ? error.message : String(error)
+        } — leaving the live environment variables untouched`
+      );
+      return;
+    }
+    // The PREVIOUS side comes from cdkd state, never from the user's template:
+    // a malformed value recorded there must not make the stack undeployable,
+    // so it reads as absent rather than refusing.
+    let previous: Record<string, unknown> | undefined;
+    if (previousProperties) {
+      const raw = previousProperties['EnvironmentVariables'];
+      previous =
+        raw != null && typeof raw === 'object' && !Array.isArray(raw)
+          ? (raw as Record<string, unknown>)
+          : undefined;
+    }
     if (desired === undefined && previous === undefined) return;
-    if (previousProperties !== undefined && this.deepEqual(desired, previous)) return;
+    if (isUpdate && this.deepEqual(desired, previous)) return;
 
     const environmentVariables: Record<string, string> = {};
     for (const [key, value] of Object.entries(desired ?? {})) {
-      environmentVariables[key] = String(value);
+      if (typeof value !== 'string') {
+        // `String({})` would send the literal "[object Object]" to AWS.
+        throw new ProvisioningError(
+          `EnvironmentVariables.${key} must be a string, got ${
+            Array.isArray(value) ? 'array' : typeof value
+          }`,
+          resourceType,
+          logicalId,
+          apiId
+        );
+      }
+      environmentVariables[key] = value;
     }
     try {
       await this.getClient().send(
         new PutGraphqlApiEnvironmentVariablesCommand({ apiId, environmentVariables })
       );
     } catch (error) {
-      throw this.wrapUpdateError(error, resourceType, logicalId, apiId, 'GraphqlApi (env vars)');
+      throw this.wrapUpdateError(
+        error,
+        resourceType,
+        logicalId,
+        apiId,
+        isUpdate ? 'GraphqlApi (env vars)' : 'GraphqlApi (env vars, post-create)'
+      );
     }
   }
 
@@ -1183,6 +1281,14 @@ export class AppSyncProvider implements ResourceProvider {
     }
 
     const authenticationType = properties['AuthenticationType'] as AuthenticationType | undefined;
+
+    // Atomicity: `EnvironmentVariables` rides a SEPARATE API that can only run
+    // after CreateGraphqlApi succeeds, so a failure there would throw before
+    // create() returns the physicalId — the deploy engine never learns the API
+    // exists and it orphans (and the next attempt collides on the name).
+    // Mirrors the CognitoUserPoolProvider / DynamoDBTableProvider post-create
+    // rollback pattern.
+    let createdApiId: string | undefined;
 
     try {
       const input: CreateGraphqlApiCommandInput = {
@@ -1233,6 +1339,7 @@ export class AppSyncProvider implements ResourceProvider {
       const apiId = response.graphqlApi!.apiId!;
       const arn = response.graphqlApi!.arn!;
       const graphQLUrl = response.graphqlApi!.uris?.['GRAPHQL'] ?? '';
+      createdApiId = apiId;
 
       // Separate API — must run AFTER the API exists.
       await this.applyEnvironmentVariables(apiId, resourceType, logicalId, properties);
@@ -1248,6 +1355,18 @@ export class AppSyncProvider implements ResourceProvider {
         },
       };
     } catch (error) {
+      if (createdApiId) {
+        try {
+          await this.getClient().send(new DeleteGraphqlApiCommand({ apiId: createdApiId }));
+          this.logger.debug(`Rolled back partially-created GraphQL API ${createdApiId}`);
+        } catch (rollbackError) {
+          this.logger.warn(
+            `Failed to roll back partially-created GraphQL API ${createdApiId}: ${
+              rollbackError instanceof Error ? rollbackError.message : String(rollbackError)
+            }`
+          );
+        }
+      }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
         `Failed to create GraphQL API ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
@@ -1936,10 +2055,14 @@ export class AppSyncProvider implements ResourceProvider {
         result['EnvironmentVariables'] = envResp.environmentVariables;
       }
     } catch (err) {
-      this.logger.debug(
-        `Could not read AppSync GraphqlApi ${physicalId} environment variables: ${
-          err instanceof Error ? err.message : String(err)
-        }`
+      // WARN, not debug: dropping the key here makes this read asymmetric with
+      // the recorded baseline, which surfaces as a phantom "EnvironmentVariables
+      // removed" drift that `--revert` would then act on.
+      this.logger.warn(
+        `Could not read AppSync GraphqlApi ${physicalId} environment variables ` +
+          `(drift on that property will not be reported): ${
+            err instanceof Error ? err.message : String(err)
+          }`
       );
     }
 
