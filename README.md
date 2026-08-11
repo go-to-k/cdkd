@@ -55,27 +55,47 @@ cdkd diff
 cdkd destroy
 ```
 
-## Use with Claude Code
+## Use with AI Coding Agents
 
-This repository includes a project-scoped Claude Code skill for building
-and using cdkd safely:
+This repository ships a [`cdkd` skill](plugins/cdkd/skills/cdkd/SKILL.md)
+that teaches AI coding agents to use cdkd safely: install, AWS preflight
+checks, preview and deployment, wait modes, verification, CloudFormation
+migration boundaries, and destructive-operation safety.
 
-- [`/use-cdkd`](.claude/skills/use-cdkd/SKILL.md)
+### Claude Code
 
-Start Claude Code from this repository and invoke `/use-cdkd`, or ask
-Claude to deploy a dev/test CDK stack with cdkd. Claude can also invoke
-the skill automatically when the request matches its description.
+Install it as a plugin (one-time setup, available in every session):
 
-To use the skill while working in another CDK project, clone this
-repository and add it to the Claude Code session:
+```bash
+/plugin marketplace add go-to-k/cdkd
+/plugin install cdkd@cdkd
+```
+
+Then ask Claude to deploy a dev/test CDK stack with cdkd — the skill
+triggers automatically — or invoke it directly with `/cdkd`.
+
+### Other agents (Codex, Cursor, and more)
+
+Any agent that supports the SKILL.md format can use the skill. Install it
+with the [GitHub CLI](https://github.blog/changelog/2026-04-16-manage-agent-skills-with-github-cli/)
+(v2.90+) or [`npx skills`](https://github.com/vercel-labs/agent-skills):
+
+```bash
+gh skill install go-to-k/cdkd cdkd
+# or
+npx skills add go-to-k/cdkd --skill cdkd
+```
+
+### Contributors
+
+To test the current checkout against another CDK project, clone this
+repository and add it to a Claude Code session — the project-scoped
+[`/use-cdkd`](.claude/skills/use-cdkd/SKILL.md) skill covers building and
+linking the checkout:
 
 ```bash
 claude --add-dir /path/to/cdkd
 ```
-
-The skill covers local-checkout builds, published releases, AWS
-preflight checks, preview and deployment, wait modes, verification,
-CloudFormation migration boundaries, and destructive-operation safety.
 
 ## Benchmark
 

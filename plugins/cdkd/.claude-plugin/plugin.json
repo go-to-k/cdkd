@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin.json",
+  "name": "cdkd",
+  "version": "0.1.0",
+  "description": "Deploy AWS CDK apps safely with cdkd (CDK Direct). Guides AI coding agents through installing cdkd and bootstrapping, previewing, deploying, verifying, and destroying dev/test stacks with explicit safety boundaries.",
+  "author": {
+    "name": "go-to-k",
+    "url": "https://github.com/go-to-k"
+  },
+  "homepage": "https://github.com/go-to-k/cdkd",
+  "repository": "https://github.com/go-to-k/cdkd",
+  "license": "Apache-2.0",
+  "keywords": [
+    "aws",
+    "cdk",
+    "cdkd",
+    "deploy",
+    "infrastructure"
+  ]
+}
