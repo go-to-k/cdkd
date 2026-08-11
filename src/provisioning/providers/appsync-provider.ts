@@ -1071,6 +1071,14 @@ export class AppSyncProvider implements ResourceProvider {
    * A non-numeric value is refused LOUDLY: `Number('abc')` is `NaN`, and NaN
    * would serialize to `null` and reach AWS as a confusing type error far from
    * the template line that caused it.
+   *
+   * `Number()` alone is NOT that refusal, which is the trap this guard exists
+   * for: it coerces `''` / `'  '` / `null` / `[]` / `false` to `0` and `true`
+   * to `1`, all of which are finite. An unresolved intrinsic or an empty CFn
+   * value would therefore have deployed a live data source with a ZERO-minute
+   * delta-sync TTL — the "validate the FIELD, not just the container" class in
+   * .claude/rules/providers.md. So the accepted shapes are enumerated instead:
+   * a finite NUMBER, or a NON-BLANK string that parses to one.
    */
   private toDeltaSyncTtl(
     value: unknown,
@@ -1078,7 +1086,9 @@ export class AppSyncProvider implements ResourceProvider {
     logicalId: string,
     resourceType: string
   ): number {
-    const parsed = typeof value === 'number' ? value : Number(value);
+    const numeric =
+      typeof value === 'number' ? value : typeof value === 'string' ? value.trim() : undefined;
+    const parsed = numeric === undefined || numeric === '' ? Number.NaN : Number(numeric);
     if (!Number.isFinite(parsed)) {
       throw new ProvisioningError(
         `${resourceType} ${path} must be a number of minutes (CFn types it as a ` +
@@ -2868,6 +2878,16 @@ export class AppSyncProvider implements ResourceProvider {
         // template baseline carries. Emitting the SDK's number would show up
         // as permanent phantom drift (`"3600"` vs `3600` under the
         // stringify-based comparator) on every run.
+        //
+        // Known bound: the write side ALSO accepts a numeric TTL (a template
+        // that already used a number), so on the `properties`-fallback drift
+        // baseline — a resource with no `observedProperties`, e.g. one
+        // deployed before observed-capture or whose capture failed — a
+        // numeric template value compares against this string and reports
+        // drift `--revert` cannot clear. Narrow (the observed baseline is
+        // symmetric) and NOT fixable by matching the input's type here: the
+        // read side has no access to the template value, and emitting the
+        // number would break the far more common CFn-typed string case.
         if (delta.baseTableTTL !== undefined) deltaOut['BaseTableTTL'] = String(delta.baseTableTTL);
         if (delta.deltaSyncTableName !== undefined) {
           deltaOut['DeltaSyncTableName'] = delta.deltaSyncTableName;

@@ -347,12 +347,16 @@
  *                                     -------   -------    -------    -------
  *                                        410       290        260         81
  *
- * AppSync joined AFTER the four recognizer stages (its 13 config properties
- * were wired by the #609 backfill), so its row is flat 0 by construction and
- * is excluded from the stage totals above: 31 of its 33 paths are
- * same-spelling WITH scoped write evidence, and the 2 `Tags.*` paths are
- * allow-listed because AppSync models tags as a flat Record<string, string>
- * rather than CFn's [{Key, Value}] list.
+ * The three AppSync rows joined AFTER the four recognizer stages, so their
+ * columns are flat (no stage moves them) and they are excluded from the stage
+ * totals above. Flat does NOT mean zero, and the split is the point:
+ * `GraphQLApi` and `Resolver` measured 0 on their first run because the #609
+ * backfill had already wired every member (31 of GraphQLApi's 33 paths are
+ * same-spelling WITH scoped write evidence; its 2 `Tags.*` paths are
+ * allow-listed, since AppSync models tags as a flat Record<string, string>
+ * rather than CFn's [{Key, Value}] list), while `DataSource` measured 10 —
+ * two nested silent-drop families the opt-in itself uncovered, fixed in the
+ * provider by #1597, so the type now measures 0/27.
  *
  * CloudFront's 162 -> 0 is 160 spread/scope-covered plus 2 allow-listed with
  * `passes: ['write']` (`Tags.Key` / `Tags.Value` — genuinely written by

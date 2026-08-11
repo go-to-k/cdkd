@@ -305,6 +305,93 @@ describe('AppSync DataSource nested config blobs (#1597)', () => {
       expect(mockSend).not.toHaveBeenCalled();
     });
 
+    // `Number('')` / `Number(null)` / `Number([])` are all 0 and `Number(true)`
+    // is 1 — every one of them FINITE, so a `Number.isFinite` guard alone
+    // accepts them and deploys a live data source with a ZERO-minute TTL. An
+    // unresolved intrinsic and an empty CFn value both land here, which is why
+    // the accepted shapes are enumerated rather than coerced.
+    it.each([
+      ['', 'empty string'],
+      ['   ', 'blank string'],
+      [null, 'null'],
+      [[], 'empty array'],
+      [true, 'boolean true'],
+      [false, 'boolean false'],
+      [{}, 'object'],
+    ])('refuses a %j TTL (%s) instead of coercing it to a number', async (ttl) => {
+      await expect(
+        provider.create('L', DATASOURCE_TYPE, {
+          ApiId: 'api-1',
+          Name: 'ddbDs',
+          Type: 'AMAZON_DYNAMODB',
+          DynamoDBConfig: {
+            TableName: 't',
+            AwsRegion: 'us-east-1',
+            DeltaSyncConfig: { BaseTableTTL: ttl, DeltaSyncTableName: 'tDelta' },
+          },
+        })
+      ).rejects.toThrow(
+        /DynamoDBConfig.DeltaSyncConfig.BaseTableTTL must be a number of minutes/
+      );
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    // The two call sites pass DIFFERENT `path` strings, so a copy-paste of the
+    // wrong one is only visible from the second site's own refusal.
+    it('refuses a non-numeric DeltaSyncTableTTL, naming ITS path', async () => {
+      await expect(
+        provider.create('L', DATASOURCE_TYPE, {
+          ApiId: 'api-1',
+          Name: 'ddbDs',
+          Type: 'AMAZON_DYNAMODB',
+          DynamoDBConfig: {
+            TableName: 't',
+            AwsRegion: 'us-east-1',
+            DeltaSyncConfig: { BaseTableTTL: '43200', DeltaSyncTableTTL: 'daily' },
+          },
+        })
+      ).rejects.toThrow(
+        /DynamoDBConfig.DeltaSyncConfig.DeltaSyncTableTTL must be a number of minutes/
+      );
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('forwards the DynamoDB block on UPDATE too (create and update share one mapper)', async () => {
+      mockSend.mockResolvedValueOnce({});
+
+      await provider.update(
+        'L',
+        'api-1|ddbDs',
+        DATASOURCE_TYPE,
+        {
+          ApiId: 'api-1',
+          Name: 'ddbDs',
+          Type: 'AMAZON_DYNAMODB',
+          DynamoDBConfig: {
+            TableName: 't',
+            AwsRegion: 'us-east-1',
+            Versioned: true,
+            DeltaSyncConfig: { BaseTableTTL: '86400', DeltaSyncTableName: 'tDelta' },
+          },
+        },
+        {
+          ApiId: 'api-1',
+          Name: 'ddbDs',
+          Type: 'AMAZON_DYNAMODB',
+          DynamoDBConfig: { TableName: 't', AwsRegion: 'us-east-1' },
+        }
+      );
+
+      const cmd = mockSend.mock.calls[0]?.[0];
+      expect(cmd).toBeInstanceOf(UpdateDataSourceCommand);
+      expect(cmd.input.dynamodbConfig).toEqual({
+        tableName: 't',
+        awsRegion: 'us-east-1',
+        versioned: true,
+        deltaSyncConfig: { baseTableTTL: 86400, deltaSyncTableName: 'tDelta' },
+      });
+    });
+
     it('refuses a malformed DeltaSyncConfig container instead of dropping it', async () => {
       await expect(
         provider.create('L', DATASOURCE_TYPE, {
@@ -420,6 +507,36 @@ describe('AppSync DataSource nested config blobs (#1597)', () => {
       const result = await provider.readCurrentState('api-1|ddbDs', 'L', DATASOURCE_TYPE);
 
       expect(result?.['DynamoDBConfig']).toEqual(template);
+    });
+
+    // The FALSY polarity of the read side, which the write side pins
+    // separately: with a truthiness gate instead of `!== undefined`, a
+    // conflict-detection-DISABLED data source would read back with `Versioned`
+    // absent, and the drift comparator would report the key as removed on
+    // every run. This is the shape AWS actually returns for a plain DynamoDB
+    // data source, so it is also the more common one.
+    it('reverse-maps versioned: false rather than dropping it', async () => {
+      mockSend.mockResolvedValueOnce({
+        dataSource: {
+          name: 'ddbDs',
+          type: 'AMAZON_DYNAMODB',
+          dynamodbConfig: {
+            tableName: 't',
+            awsRegion: 'us-east-1',
+            versioned: false,
+            useCallerCredentials: false,
+          },
+        },
+      });
+
+      const result = await provider.readCurrentState('api-1|ddbDs', 'L', DATASOURCE_TYPE);
+
+      expect(result?.['DynamoDBConfig']).toEqual({
+        TableName: 't',
+        AwsRegion: 'us-east-1',
+        Versioned: false,
+        UseCallerCredentials: false,
+      });
     });
 
     it('omits DynamoDBConfig sub-members AWS did not return', async () => {

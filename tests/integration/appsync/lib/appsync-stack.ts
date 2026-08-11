@@ -323,7 +323,16 @@ schema {
                   // The UPDATE phase moves the signing region off the deploy
                   // region — a real change to a member two levels deep, which
                   // an update path wired only for the top-level block drops.
-                  signingRegion: updateMode ? 'us-west-2' : this.region,
+                  // DERIVED from the deploy region rather than hardcoded: a
+                  // literal would equal the baseline value whenever the
+                  // harness runs in that region, silently making the update
+                  // assertion vacuous.
+                  signingRegion:
+                    updateMode === false
+                      ? this.region
+                      : this.region === 'us-west-2'
+                        ? 'us-east-2'
+                        : 'us-west-2',
                   signingServiceName: 'states',
                 },
               },
