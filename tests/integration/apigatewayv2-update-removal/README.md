@@ -111,11 +111,33 @@ report permanent phantom drift on an untouched integration.
 
 - `Integration.ConnectionId` — needs a live VPC Link (VPC + subnets + SG,
   minutes per run) for a plain pass-through string field
-- `Integration.TlsConfig` — same VPC Link requirement, but the reason is worth
-  recording because the fixture asserted it first and FAILED: direct A/B
-  against the API (2026-08-11, us-east-1) shows AWS **silently ignores**
-  `TlsConfig` on a public (`ConnectionType: INTERNET`) integration — it is
-  absent from both the `CreateIntegration` echo and the `GetIntegration`
-  read-back, with or without an explicit `ConnectionType`. The field is only
-  meaningful for a PRIVATE integration. Asserting it on a public one fails
-  against perfectly correct cdkd behavior
+
+## Issue #1602 coverage (TlsConfig visibility + ResponseParameters round-trip)
+
+Three phantom-drift shapes that the #609 backfill made REACHABLE for the first
+time. All of them surface as `cdkd drift`, so the fixture's assertion is a
+**clean `cdkd drift` run** right after the deploy (phase 1b) and again after
+the update (phase 2b-pre).
+
+| Shape | How it is exercised |
+| --- | --- |
+| `TlsConfig` on a PUBLIC integration | The dedicated `FlatIntegration` declares `TlsConfig`. `verify.sh` first asserts AWS read it back as ABSENT — the issue's premise, so if AWS ever starts honoring the field the run fails loudly instead of the scoping silently hiding a real value — then asserts drift stays clean. The provider declares the path drift-unknown only when `ConnectionType != VPC_LINK`, so a private integration keeps full coverage, and the discard is announced by a deploy-time warning rather than being silent. |
+| flat-spelled `ResponseParameters` | The same integration declares `ResponseParameters` in the ALREADY-FLAT SDK spelling a hand-written L1 may borrow. Delivery is asserted on create and on update; `readCurrentState` mirrors the DECLARED spelling per status code, so baseline and read-back compare equal. |
+| CFn-spelled `ResponseParameters` entry ORDER + numeric `Source` | The main `Integration` declares an unquoted numeric `Source` (see the #609 section) and the pre-fix read side both sorted the entries and re-emitted AWS's string. `readCurrentState` now keeps the declared order and re-emits the declared scalar when it still denotes AWS's value. |
+
+**The `observedProperties` strip is what makes those assertions BIND.** The
+deploy-time observed snapshot comes from the same `readCurrentState` the fix
+changes, so with it in place both comparison sides move together and a
+reverted fix still reports "no drift" — the assertion would be vacuous. All
+three shapes only fire on the `properties`-fallback baseline, which is the
+real user condition (state written before observed-capture existed,
+observed-capture turned off by flag or `cdk.json`, or a capture that
+failed). So `verify.sh` drops
+the `observedProperties` of exactly the two integrations under test before each
+drift run, and fails loudly if there was nothing to drop. Every other resource
+keeps its observed baseline, so the check cannot surface unrelated
+properties-baseline mismatches.
+
+The flat API is separate because `int_id_by_type` requires exactly one
+integration per `(api, IntegrationType)` pair and the main API's `HTTP_PROXY`
+slot is taken.

@@ -68,6 +68,7 @@ REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 API_NAME="${STACK}-api"
 WS_API_NAME="${STACK}-ws"
+FLAT_API_NAME="${STACK}-flat"
 AUTH_FN="${STACK}-authfn"
 EVENTS_ROLE="${STACK}-events"
 
@@ -117,6 +118,10 @@ ws_api_id() {
   aws apigatewayv2 get-apis --region "${REGION}" \
     --query "Items[?Name=='${WS_API_NAME}'].ApiId | [0]" --output text 2>/dev/null
 }
+flat_api_id() {
+  aws apigatewayv2 get-apis --region "${REGION}" \
+    --query "Items[?Name=='${FLAT_API_NAME}'].ApiId | [0]" --output text 2>/dev/null
+}
 ws_stage_field() { # ws_stage_field <API_ID> <JMESPath>
   aws apigatewayv2 get-stage --api-id "$1" --stage-name 'ws' --region "${REGION}" \
     --query "$2" --output text 2>/dev/null
@@ -124,6 +129,51 @@ ws_stage_field() { # ws_stage_field <API_ID> <JMESPath>
 stage_field() { # stage_field <API_ID> <JMESPath>
   aws apigatewayv2 get-stage --api-id "$1" --stage-name '$default' --region "${REGION}" \
     --query "$2" --output text 2>/dev/null
+}
+
+# Issue #1602: drop the `observedProperties` of the resources under test so the
+# drift run below compares them against the `properties` baseline — the ONLY
+# baseline on which these phantom-drift shapes fire.
+#
+# This is not a trick to make the test pass; it is what makes it BIND. The
+# deploy-time observed snapshot comes from the SAME `readCurrentState` the fix
+# changes, so with it present both sides move together and a reverted fix still
+# reports "no drift" (i.e. the assertion would be vacuous). The properties
+# baseline is the real user condition: state written before observed-capture
+# existed, observed-capture turned off by flag or cdk.json, or a capture that
+# failed. (The opt-out flag is deliberately NOT named here: the cli-flag
+# coverage matrix reads this file's text, and a mention in a comment would be
+# reported as integ coverage the fixture does not actually provide.)
+#
+# Scoped to the two integrations under test — every OTHER resource keeps its
+# observed baseline, so this cannot surface unrelated properties-baseline
+# mismatches. `Integration` is included because the CFn-arm mirror (declared
+# entry ORDER + declared SCALAR type) is only observable on this baseline too:
+# that resource declares an unquoted numeric `Source`, which AWS returns as a
+# string.
+STRIP_OBSERVED_LOGICAL_IDS="FlatIntegration Integration"
+strip_observed_for_drift() {
+  # PID-suffixed so two concurrent runs of this fixture cannot share a scratch
+  # file, and removed on the guard's exit path as well as the happy one.
+  local tmp_in="${TMPDIR:-/tmp}/cdkd-1602-state-in.$$.json"
+  local tmp_out="${TMPDIR:-/tmp}/cdkd-1602-state-out.$$.json"
+  local lid
+  aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${tmp_in}" --region "${REGION}" >/dev/null
+  # Fail loudly if a key we are about to strip is not there: a silent no-op
+  # would turn the drift assertion back into the vacuous check this exists to
+  # replace.
+  for lid in ${STRIP_OBSERVED_LOGICAL_IDS}; do
+    if [ "$(jq -r --arg l "${lid}" '.resources[$l].observedProperties | type' "${tmp_in}")" != "object" ]; then
+      echo "FAIL: ${lid} has no observedProperties to strip — the drift assertion would be vacuous" >&2
+      rm -f "${tmp_in}" "${tmp_out}"
+      exit 1
+    fi
+  done
+  jq --arg ids "${STRIP_OBSERVED_LOGICAL_IDS}" \
+    'reduce ($ids | split(" ")[]) as $l (.; del(.resources[$l].observedProperties))' \
+    "${tmp_in}" > "${tmp_out}"
+  aws s3 cp "${tmp_out}" "s3://${STATE_BUCKET}/${STATE_KEY}" --region "${REGION}" >/dev/null
+  rm -f "${tmp_in}" "${tmp_out}"
 }
 
 cleanup() {
@@ -141,6 +191,11 @@ cleanup() {
   wsaid="$(ws_api_id)"
   if [ -n "${wsaid}" ] && [ "${wsaid}" != "None" ]; then
     aws apigatewayv2 delete-api --api-id "${wsaid}" --region "${REGION}" >/dev/null 2>&1
+  fi
+  local flataid
+  flataid="$(flat_api_id)"
+  if [ -n "${flataid}" ] && [ "${flataid}" != "None" ]; then
+    aws apigatewayv2 delete-api --api-id "${flataid}" --region "${REGION}" >/dev/null 2>&1
   fi
   aws logs delete-log-group --log-group-name "/aws/apigatewayv2/${WS_API_NAME}" \
     --region "${REGION}" >/dev/null 2>&1
@@ -211,6 +266,34 @@ if [ "$(int_field "${AID}" "${INT_ID}" 'ResponseParameters."404"."append:header.
   echo "FAIL: Phase 1 Integration ResponseParameters not folded to the SDK map (got '$(int_field "${AID}" "${INT_ID}" 'ResponseParameters."404"')')" >&2
   exit 1
 fi
+# Issue #1602: TlsConfig and the flat ResponseParameters spelling both ride the
+# dedicated FlatIntegration, so the drift assertions below can name one
+# resource whose only comparable properties are the shapes under test.
+FLAT_AID="$(flat_api_id)"
+if [ -z "${FLAT_AID}" ] || [ "${FLAT_AID}" = "None" ]; then
+  echo "FAIL: could not resolve ApiId for ${FLAT_API_NAME}" >&2; exit 1
+fi
+FLAT_INT_ID="$(int_id_by_type "${FLAT_AID}" HTTP_PROXY)"
+
+# Part 1: TlsConfig on a PUBLIC integration. The template DOES declare it and
+# AWS silently discards it, so the read-back must be absent. This is the
+# issue's PREMISE — if AWS ever starts honoring the field, this fails loudly
+# instead of the drift scoping silently hiding a real value.
+TLS_SNI="$(int_field "${FLAT_AID}" "${FLAT_INT_ID}" 'TlsConfig.ServerNameToVerify')"
+if [ "${TLS_SNI}" != "None" ]; then
+  echo "FAIL: expected AWS to discard TlsConfig on a public integration, but it read back '${TLS_SNI}' — issue #1602's premise no longer holds, re-measure before trusting the drift scoping" >&2
+  exit 1
+fi
+echo "    TlsConfig confirmed discarded by AWS on the public integration (#1602 premise)"
+
+# Part 2: the flat SDK spelling of ResponseParameters must be delivered
+# verbatim (the pass-through branch of toSdkResponseParameters).
+if [ "$(int_field "${FLAT_AID}" "${FLAT_INT_ID}" 'ResponseParameters."404"."append:header.x-cdkd-flat"')" != "flat-before" ] \
+  || [ "$(int_field "${FLAT_AID}" "${FLAT_INT_ID}" 'ResponseParameters."404"."overwrite:statuscode"')" != "200" ]; then
+  echo "FAIL: Phase 1 flat-spelled ResponseParameters not delivered (got '$(int_field "${FLAT_AID}" "${FLAT_INT_ID}" 'ResponseParameters."404"')')" >&2
+  exit 1
+fi
+
 if [ "$(int_field "${AID}" "${EVENTS_INT_ID}" 'IntegrationSubtype')" != "EventBridge-PutEvents" ] \
   || [ "$(int_field "${AID}" "${EVENTS_INT_ID}" 'CredentialsArn')" = "None" ] \
   || [ "$(int_field "${AID}" "${EVENTS_INT_ID}" 'RequestParameters.DetailType')" != "before" ]; then
@@ -317,6 +400,61 @@ echo "    all three integrations routed via the SDK provider"
 
 echo "    all Phase 1 fields live"
 
+# --- Phase 1b (issue #1602): drift must be CLEAN right after a deploy ----
+# Run against the `properties` baseline for the #1602 resources (see
+# strip_observed_for_drift): that is the ONLY baseline on which these phantom
+# drifts fire, so with the observed snapshot in place this assertion would
+# pass even with the fix reverted.
+assert_no_drift() { # assert_no_drift "<phase label>"
+  local label="$1" out rc
+  strip_observed_for_drift
+  set +e
+  out="$(node "${LOCAL_DIST}" drift "${STACK}" \
+    --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1)"
+  rc=$?
+  set -e
+  if [ "${rc}" -eq 1 ]; then
+    echo "FAIL: ${label}: cdkd drift reported drift on an untouched stack (issue #1602):" >&2
+    printf '%s\n' "${out}" >&2
+    exit 1
+  fi
+  if [ "${rc}" -ne 0 ]; then
+    # exit 2 = command error (throttle / auth / state) — NOT a drift verdict.
+    echo "FAIL: ${label}: cdkd drift exited ${rc} (command error, not a drift verdict):" >&2
+    printf '%s\n' "${out}" >&2
+    exit 1
+  fi
+  case "${out}" in
+    *"no drift detected"*) ;;
+    *)
+      echo "FAIL: ${label}: cdkd drift exited 0 without reporting 'no drift detected':" >&2
+      printf '%s\n' "${out}" >&2
+      exit 1
+      ;;
+  esac
+  # A resource whose provider cannot read current state is reported as
+  # `unsupported` and compared against NOTHING, so a run that is entirely
+  # unsupported ALSO prints "no drift detected". ApiGatewayV2 implements
+  # readCurrentState for every type in this stack, so a non-zero unsupported
+  # count means the comparison silently stopped covering the resources under
+  # test. Match the COUNT, not the word: the clean summary line itself reads
+  # `(17 resources checked, 0 unsupported)`. The pattern is ANCHORED on the
+  # whole trailer because a bare `0 unsupported` also matches `10 unsupported`
+  # / `20 unsupported`, which would wave a real regression through.
+  case "${out}" in
+    *"checked, 0 unsupported)"*) ;;
+    *unsupported*)
+      echo "FAIL: ${label}: cdkd drift reported unsupported resource(s) — the #1602 resources may not have been compared at all:" >&2
+      printf '%s\n' "${out}" >&2
+      exit 1
+      ;;
+  esac
+}
+
+echo "==> Phase 1b: cdkd drift must report NO drift on the freshly-deployed stack"
+assert_no_drift "Phase 1b"
+echo "    drift clean (TlsConfig scoped drift-unknown, ResponseParameters round-trips both spellings)"
+
 # --- Phase 2: remove the fields ----------------------------------------
 echo "==> Phase 2: re-deploy with the fields removed (must reset to CFn defaults)"
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
@@ -352,6 +490,14 @@ RESP_H="$(int_field "${AID}" "${INT_ID}" 'ResponseParameters."404"."append:heade
 RESP_S="$(int_field "${AID}" "${INT_ID}" 'ResponseParameters."404"."overwrite:statuscode"')"
 if [ "${RESP_H}" != "updated" ] || [ "${RESP_S}" != "403" ]; then
   echo "FAIL: Integration ResponseParameters not updated (header='${RESP_H}' status='${RESP_S}')" >&2; exit 1
+fi
+# Issue #1602: the flat-spelled block must be UPDATED in place (same
+# pass-through branch on the update path), and the drift check after it proves
+# the updated baseline still round-trips.
+FLAT_H="$(int_field "${FLAT_AID}" "${FLAT_INT_ID}" 'ResponseParameters."404"."append:header.x-cdkd-flat"')"
+FLAT_S="$(int_field "${FLAT_AID}" "${FLAT_INT_ID}" 'ResponseParameters."404"."overwrite:statuscode"')"
+if [ "${FLAT_H}" != "flat-updated" ] || [ "${FLAT_S}" != "204" ]; then
+  echo "FAIL: flat-spelled ResponseParameters not updated (header='${FLAT_H}' status='${FLAT_S}')" >&2; exit 1
 fi
 EV_DT="$(int_field "${AID}" "${EVENTS_INT_ID}" 'RequestParameters.DetailType')"
 EV_ST="$(int_field "${AID}" "${EVENTS_INT_ID}" 'IntegrationSubtype')"
@@ -411,6 +557,15 @@ SV="$(stage_field "${AID}" 'StageVariables.foo')"
 if [ "${SV}" != "None" ]; then echo "FAIL: Stage StageVariables.foo not cleared (got '${SV}'; empty = probe error)" >&2; exit 1; fi
 echo "    all fields reset to CFn defaults (Cors cleared via DeleteCorsConfiguration)"
 
+# Issue #1602: drift must still be clean AFTER the update — the update path
+# re-records both baselines, so a read side that stopped mirroring the declared
+# spelling (or a drift-unknown scoping that only worked on the create-time
+# baseline) surfaces here rather than in the next user's stack. (`drift` is
+# state-driven and never synthesizes, so no CDKD_TEST_* env var is needed.)
+echo "==> Phase 2b-pre: cdkd drift must still report NO drift after the update"
+assert_no_drift "Phase 2b-pre"
+echo "    drift still clean after the update"
+
 # --- Phase 2b: REMOVAL (issue #609) -------------------------------------
 # UpdateStage / UpdateRoute MERGE, so these three members can only be cleared
 # through their dedicated Delete* APIs (live-probed 2026-08-11). Omitting them
@@ -451,6 +606,9 @@ echo "    API deleted"
 
 assert_gone "WebSocket API ${WS_AID} still exists after destroy" aws apigatewayv2 get-api --api-id "${WS_AID}" --region "${REGION}"
 echo "    WebSocket API deleted"
+
+assert_gone "flat-spelling API ${FLAT_AID} still exists after destroy" aws apigatewayv2 get-api --api-id "${FLAT_AID}" --region "${REGION}"
+echo "    flat-spelling API deleted"
 # The access-log group is STACK-OWNED (unlike the AWS-created Lambda one), so a
 # destroy leak has to fail here. `describe-log-streams` 404s on a missing group,
 # which is what gone_probe needs; `describe-log-groups` would return an empty

@@ -1360,8 +1360,10 @@
           "seededBy": [
             "create",
             "createIntegration",
+            "getDriftUnknownPaths",
             "update",
-            "updateIntegration"
+            "updateIntegration",
+            "warnTlsConfigIgnoredIfPublic"
           ]
         },
         {
@@ -1816,6 +1818,8 @@
           "seededBy": [
             "create",
             "createIntegration",
+            "readCurrentState",
+            "readIntegration",
             "update",
             "updateIntegration"
           ]
@@ -2004,7 +2008,8 @@
             "create",
             "createIntegration",
             "update",
-            "updateIntegration"
+            "updateIntegration",
+            "warnTlsConfigIgnoredIfPublic"
           ]
         },
         {

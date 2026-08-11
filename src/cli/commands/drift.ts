@@ -588,9 +588,12 @@ async function runDriftForStack(
       // Providers can declare state property paths they cannot read back
       // from AWS (e.g. Lambda `Code`, Secrets Manager `SecretString`). The
       // CC-API fallback has no provider-specific intuition here — only the
-      // SDK provider's getDriftUnknownPaths is consulted.
+      // SDK provider's getDriftUnknownPaths is consulted. The recorded
+      // properties are passed so a provider can scope a path to the subset
+      // of resources it is actually unreadable for (API Gateway V2
+      // `TlsConfig` on a non-private integration, issue #1602).
       const ignorePaths = provider.getDriftUnknownPaths
-        ? provider.getDriftUnknownPaths(resource.resourceType)
+        ? provider.getDriftUnknownPaths(resource.resourceType, resource.properties ?? {})
         : [];
       // Providers can also declare plain-string array paths that are
       // semantically UNORDERED sets (FSx `WindowsConfiguration.Aliases`, ...).

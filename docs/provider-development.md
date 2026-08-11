@@ -1476,6 +1476,28 @@ getDriftUnknownPaths(): string[] {
 
 The comparator does exact-match + `entry + '.'` prefix-match — listing `'Policies'` skips `Policies`, `Policies.Foo`, `Policies[0].PolicyDocument`, etc. Pair this with a docstring explaining why the field is unreadable so a future PR can lift the gap.
 
+**Scoping a path to a SUBSET of a type's resources.** Some fields are unreadable only for resources in a particular configuration, and declaring them unconditionally would switch drift detection off for the resources where AWS *does* return the value. The method therefore takes an optional second argument — the resource's state-recorded properties, which `cdkd drift` passes — so the answer can be per-resource:
+
+```typescript
+getDriftUnknownPaths(resourceType: string, properties?: Record<string, unknown>): string[] {
+  // AWS silently discards TlsConfig on a PUBLIC ApiGatewayV2 integration and
+  // never returns it; on a VPC_LINK (private) one it does, so keep comparing.
+  if (
+    resourceType === 'AWS::ApiGatewayV2::Integration' &&
+    properties !== undefined &&
+    properties['ConnectionType'] !== 'VPC_LINK'
+  ) {
+    return ['TlsConfig'];
+  }
+  return [];
+}
+```
+
+Two rules for this shape (issue [#1602](https://github.com/go-to-k/cdkd/issues/1602)):
+
+- **Tolerate an absent bag.** Other callers may have no properties to pass, so fall back to the type-level answer rather than assuming a shape. Default to COMPARING when you cannot tell — hiding real drift is the worse failure, exactly as for `getDriftUnorderedPaths()` below.
+- **Say so at write time.** A value AWS discards is still worth a `logger.warn` on create / update. Declaring the drift path only removes the false positive; without the warning the user never learns the field is inert. Warn, never throw — the update path can be a state-record replay (`rollback-executor.ts` / `drift --revert`), where a refusal would leave the resource un-revertable.
+
 #### `getDriftUnorderedPaths()` for plain-string sets
 
 The drift comparator compares arrays **positionally**, and AWS does not guarantee element ordering across reads. The shared normalizer ([src/analyzer/drift-normalize.ts](../src/analyzer/drift-normalize.ts)) already auto-canonicalizes two shapes for every type — `{Key,...}[]` tag lists and arrays whose every element is an AWS resource id (`subnet-…`, `rtb-…`) or ARN — but **plain-string arrays are deliberately left untouched**, because a scalar list can be order-significant.

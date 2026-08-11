@@ -86,12 +86,15 @@ export class ApiGatewayV2UpdateRemovalStack extends cdk.Stack {
       // for this group is left to the #1160 umbrella because each field needs
       // its own live CFn A/B first.
       //
-      // TlsConfig is deliberately NOT set here. Direct A/B against the API
-      // (2026-08-11, us-east-1): AWS SILENTLY IGNORES TlsConfig on a public
-      // (ConnectionType INTERNET) integration — it is absent from both the
-      // CreateIntegration echo and the GetIntegration read-back — because the
-      // field is only meaningful for a PRIVATE integration, which needs a VPC
-      // Link. Asserting it here would fail against correct cdkd behavior.
+      // TlsConfig is deliberately NOT set on THIS integration — it lives on
+      // the issue #1602 integration below, so one resource carries both of
+      // that issue's shapes. This one contributes the OTHER half of the #1602
+      // fix: its unquoted numeric `Source` (see the comment below) is what
+      // binds the CFn-arm mirror, since AWS returns the value as a string and
+      // a read side that re-emitted AWS's string would report permanent
+      // phantom drift against the properties-fallback baseline. verify.sh
+      // strips this resource's observedProperties too and asserts drift is
+      // clean.
       //
       // ResponseParameters is the one property whose CFn shape (a per-status
       // list of {Destination, Source}) differs from the SDK's (a flat map), so
@@ -145,6 +148,56 @@ export class ApiGatewayV2UpdateRemovalStack extends cdk.Stack {
         Source: 'cdkd.integ',
         DetailType: update ? 'updated' : 'before',
         Detail: '$request.body',
+      },
+    });
+
+    // ── The issue #1602 integration ─────────────────────────────────
+    // Carries BOTH shapes the issue is about, so ONE resource covers both:
+    //
+    // (a) `TlsConfig` on a PUBLIC integration. Direct A/B against the API
+    //     (2026-08-11, us-east-1): AWS SILENTLY IGNORES the field on a
+    //     ConnectionType-INTERNET integration — it is absent from both the
+    //     CreateIntegration echo and the GetIntegration read-back — because
+    //     it is only meaningful for a PRIVATE (VPC-Link) integration. The
+    //     template declares it ON PURPOSE so verify.sh can assert AWS has
+    //     nothing to read back, and that `cdkd drift` is clean anyway.
+    //
+    // (b) `ResponseParameters` in the ALREADY-FLAT SDK spelling
+    //     (`{"<status>": {"<Destination>": "<Source>"}}`) that a hand-written
+    //     L1 may borrow instead of the CFn list-of-pairs;
+    //     `toSdkResponseParameters` deliberately passes it through. Before
+    //     #1602 the read side always rebuilt the CFn list shape, so a
+    //     flat-spelled baseline could never compare equal to the read-back.
+    //
+    // Both phantom drifts fire on the `properties`-fallback drift baseline
+    // (state written before observed-capture, capture disabled, or a failed
+    // capture) — the observed baseline never carries them — so verify.sh
+    // drops THIS resource's `observedProperties` before each drift run. That
+    // is why the two shapes ride one dedicated resource rather than the main
+    // integration: they must be the ONLY thing that resource can drift on.
+    //
+    // Values stay STRINGS on purpose: a flat block passes through verbatim,
+    // so this arm never exercises the CFn-side scalar coercion the main
+    // integration covers. It rides its own API because `int_id_by_type`
+    // requires exactly one integration per (api, type) pair, and the main
+    // API's HTTP_PROXY slot is taken.
+    const flatApi = new apigwv2.CfnApi(this, 'FlatApi', {
+      name: `${this.stackName}-flat`,
+      protocolType: 'HTTP',
+    });
+    new apigwv2.CfnIntegration(this, 'FlatIntegration', {
+      apiId: flatApi.ref,
+      integrationType: 'HTTP_PROXY',
+      integrationMethod: 'GET',
+      integrationUri: 'https://example.com',
+      payloadFormatVersion: '1.0',
+      // Constant across phases: presence, not value, is what matters here.
+      tlsConfig: { serverNameToVerify: 'backend.example.com' },
+      responseParameters: {
+        '404': {
+          'append:header.x-cdkd-flat': update ? 'flat-updated' : 'flat-before',
+          'overwrite:statuscode': update ? '204' : '200',
+        },
       },
     });
 
