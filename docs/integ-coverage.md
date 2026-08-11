@@ -105,7 +105,7 @@ Registered without an integ fixture, with an explicit `// allow-no-integ: <ratio
 | `AWS::ElasticLoadBalancingV2::Listener` | [`alb`](../tests/integration/alb/) (literal)<br>[`deletion-ordering-complex`](../tests/integration/deletion-ordering-complex/) (literal)<br>[`local-start-alb`](../tests/integration/local-start-alb/) (l1,literal)<br>[`local-start-alb-from-state`](../tests/integration/local-start-alb-from-state/) (literal) |
 | `AWS::ElasticLoadBalancingV2::LoadBalancer` | [`alb`](../tests/integration/alb/) (l2,literal)<br>[`alb-advanced`](../tests/integration/alb-advanced/) (l2)<br>[`deletion-ordering-complex`](../tests/integration/deletion-ordering-complex/) (l2,literal)<br>[`drift-revert-vpc`](../tests/integration/drift-revert-vpc/) (l2,literal)<br>[`ecs-bluegreen`](../tests/integration/ecs-bluegreen/) (l2)<br>[`local-start-alb`](../tests/integration/local-start-alb/) (l1,literal)<br>[`local-start-alb-from-state`](../tests/integration/local-start-alb-from-state/) (l2,literal)<br>[`remove-protection`](../tests/integration/remove-protection/) (l2,literal) |
 | `AWS::ElasticLoadBalancingV2::TargetGroup` | [`alb`](../tests/integration/alb/) (literal)<br>[`deletion-ordering-complex`](../tests/integration/deletion-ordering-complex/) (literal)<br>[`local-start-alb`](../tests/integration/local-start-alb/) (l1,literal)<br>[`local-start-alb-from-state`](../tests/integration/local-start-alb-from-state/) (literal) |
-| `AWS::Events::EventBus` | [`eventbridge`](../tests/integration/eventbridge/) (l2)<br>[`eventbridge-archive`](../tests/integration/eventbridge-archive/) (l2,literal) |
+| `AWS::Events::EventBus` | [`eventbridge`](../tests/integration/eventbridge/) (l2)<br>[`eventbridge-archive`](../tests/integration/eventbridge-archive/) (l2,literal)<br>[`eventbus-policy`](../tests/integration/eventbus-policy/) (l2,literal) |
 | `AWS::Events::Rule` | [`ecs-schedule-targets`](../tests/integration/ecs-schedule-targets/) (l2,literal)<br>[`eventbridge`](../tests/integration/eventbridge/) (l2,literal)<br>[`eventbridge-api-destination`](../tests/integration/eventbridge-api-destination/) (l2)<br>[`eventbridge-input-transformer`](../tests/integration/eventbridge-input-transformer/) (l2,literal)<br>[`iam-propagation-stress`](../tests/integration/iam-propagation-stress/) (l2)<br>[`rename-refactor`](../tests/integration/rename-refactor/) (l2,literal)<br>[`replacement-immutable-name`](../tests/integration/replacement-immutable-name/) (l2,literal)<br>[`scheduled-task`](../tests/integration/scheduled-task/) (l2) |
 | `AWS::FSx::FileSystem` | [`fsx-lustre`](../tests/integration/fsx-lustre/) (literal)<br>[`fsx-ontap`](../tests/integration/fsx-ontap/) (literal)<br>[`fsx-openzfs`](../tests/integration/fsx-openzfs/) (literal)<br>[`fsx-windows`](../tests/integration/fsx-windows/) (literal) |
 | `AWS::Glue::Crawler` | [`glue-update-hardening`](../tests/integration/glue-update-hardening/) (l1) |
@@ -166,7 +166,7 @@ Registered without an integ fixture, with an explicit `// allow-no-integ: <ratio
 | `AWS::StepFunctions::StateMachine` | [`iam-propagation-stress`](../tests/integration/iam-propagation-stress/) (l2)<br>[`replacement-immutable-name`](../tests/integration/replacement-immutable-name/) (l2,literal)<br>[`stepfunctions`](../tests/integration/stepfunctions/) (l2)<br>[`stepfunctions-logging`](../tests/integration/stepfunctions-logging/) (l2)<br>[`stepfunctions-s3-definition`](../tests/integration/stepfunctions-s3-definition/) (l1) |
 | `AWS::WAFv2::WebACL` | [`wafv2`](../tests/integration/wafv2/) (l1,literal) |
 
-## Resource types referenced in integs without an SDK Provider (69)
+## Resource types referenced in integs without an SDK Provider (70)
 
 These resource types appear in integ fixtures but no SDK Provider is registered for them — they fall through to the Cloud Control API fallback. Listed here for visibility; not actionable on its own.
 
@@ -214,6 +214,7 @@ These resource types appear in integ fixtures but no SDK Provider is registered 
 - `AWS::Events::ApiDestination`
 - `AWS::Events::Archive`
 - `AWS::Events::Connection`
+- `AWS::Events::EventBusPolicy`
 - `AWS::KMS::Grant`
 - `AWS::Lambda::Alias`
 - `AWS::Lambda::Version`

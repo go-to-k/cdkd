@@ -668,11 +668,9 @@ function isIntrinsic(value: unknown): boolean {
 }
 
 /**
- * Strip unchanged and intrinsic-only values from a diff value.
- *
- * Recursively compares `value` against `other` and keeps only the keys whose
- * values actually differ (excluding intrinsic vs resolved mismatches). This
- * produces a minimal diff showing only real changes.
+ * Per-side rendering rule for a diff side that is NOT a plain object pair
+ * (primitives, arrays, intrinsics). The both-plain-objects case is handled
+ * jointly by {@link stripUnchangedValuePair}, which never delegates it here.
  */
 function stripUnchangedValues(value: unknown, other: unknown): unknown {
   // Primitives or nulls: return as-is (the caller already determined these differ)
@@ -684,36 +682,74 @@ function stripUnchangedValues(value: unknown, other: unknown): unknown {
   // If the other side is an intrinsic, the resolved value on this side is not a real change
   if (isIntrinsic(other)) return undefined;
 
-  if (other === null || other === undefined || typeof other !== 'object' || Array.isArray(other)) {
-    return value;
+  // The other side is a primitive / array / null here (object-vs-object goes
+  // through stripUnchangedValuePair), so this side renders in full.
+  return value;
+}
+
+function isPlainNonIntrinsicObject(value: unknown): value is Record<string, unknown> {
+  return (
+    typeof value === 'object' && value !== null && !Array.isArray(value) && !isIntrinsic(value)
+  );
+}
+
+/**
+ * Strip unchanged and intrinsic-only keys from BOTH sides of a property
+ * change in ONE walk, so the two rendered sides stay symmetric (issue #1608).
+ *
+ * {@link stripUnchangedValues} runs per side, so a PURE KEY ADDITION pruned
+ * the new side down to the added key while the old side — whose own keys are
+ * all unchanged — hit the empty-result fallback and printed the FULL object.
+ * That asymmetry reads as "the whole object is replaced by just the added
+ * key" (i.e. everything else removed), the opposite of what deploy does.
+ * Walking the UNION of keys once yields `old: {}` / `new: {AddedKey: ...}`
+ * for an addition (and the mirror for a removal); the full-value fallback —
+ * kept for sides differing only in key order or intrinsic-valued keys — now
+ * fires only when BOTH sides pruned to nothing, so it can never be one-sided.
+ * Non-object sides (primitives, arrays, intrinsics) keep the existing
+ * per-side semantics via {@link stripUnchangedValues}.
+ */
+function stripUnchangedValuePair(oldValue: unknown, newValue: unknown): [unknown, unknown] {
+  if (!isPlainNonIntrinsicObject(oldValue) || !isPlainNonIntrinsicObject(newValue)) {
+    return [stripUnchangedValues(oldValue, newValue), stripUnchangedValues(newValue, oldValue)];
   }
 
-  const valObj = value as Record<string, unknown>;
-  const otherObj = other as Record<string, unknown>;
-  const result: Record<string, unknown> = {};
+  const oldResult: Record<string, unknown> = {};
+  const newResult: Record<string, unknown> = {};
+  // Object.hasOwn, not `in`: a user-controlled map key named after an
+  // Object.prototype member (`toString`, `constructor`, ...) is `in` every
+  // object via the prototype chain, so `in` would silently drop its
+  // addition/removal from the union and copy inherited members into a side.
+  const keys = [
+    ...Object.keys(oldValue),
+    ...Object.keys(newValue).filter((k) => !Object.hasOwn(oldValue, k)),
+  ];
 
-  for (const key of Object.keys(valObj)) {
-    const v = valObj[key];
-    const o = otherObj[key];
+  for (const key of keys) {
+    const o = oldValue[key];
+    const n = newValue[key];
 
     // If either side is intrinsic for this key, skip (not a real change)
-    if (isIntrinsic(v) || isIntrinsic(o)) continue;
+    if (isIntrinsic(o) || isIntrinsic(n)) continue;
 
     // If values are deeply equal, skip
-    if (JSON.stringify(v) === JSON.stringify(o)) continue;
+    if (JSON.stringify(o) === JSON.stringify(n)) continue;
 
     // Recurse for nested objects
-    if (typeof v === 'object' && v !== null && typeof o === 'object' && o !== null) {
-      const filtered = stripUnchangedValues(v, o);
-      if (filtered !== undefined && JSON.stringify(filtered) !== '{}') {
-        result[key] = filtered;
-      }
+    if (isPlainNonIntrinsicObject(o) && isPlainNonIntrinsicObject(n)) {
+      const [fo, fn] = stripUnchangedValuePair(o, n);
+      if (fo !== undefined && JSON.stringify(fo) !== '{}') oldResult[key] = fo;
+      if (fn !== undefined && JSON.stringify(fn) !== '{}') newResult[key] = fn;
     } else {
-      result[key] = v;
+      if (Object.hasOwn(oldValue, key)) oldResult[key] = o;
+      if (Object.hasOwn(newValue, key)) newResult[key] = n;
     }
   }
 
-  return Object.keys(result).length > 0 ? result : value;
+  if (Object.keys(oldResult).length === 0 && Object.keys(newResult).length === 0) {
+    return [oldValue, newValue];
+  }
+  return [oldResult, newResult];
 }
 
 /**
@@ -723,15 +759,16 @@ function stripUnchangedValues(value: unknown, other: unknown): unknown {
  * against current state — most commonly a `Ref` / `Fn::GetAtt` to a resource
  * this same deploy will CREATE (the CDK logical-id-churn dance: an
  * `AWS::ApiGateway::Deployment` hash rotation, a `fn.currentVersion` Lambda
- * Version). Rendering that via {@link stripUnchangedValues} collapsed it to
+ * Version). Rendering that via the strip-unchanged pass collapsed it to
  * the literal string `undefined`, which reads as "this property is being
  * removed" (issue #1017). Instead, render the raw intrinsic compactly and —
  * on the NEW side — annotate that the value only exists after the deploy.
- * Everything else keeps the existing strip-unchanged rendering.
+ * Everything else renders the pre-filtered value computed jointly for both
+ * sides by {@link stripUnchangedValuePair}.
  */
 function renderDiffValue(
   own: unknown,
-  opposite: unknown,
+  filtered: unknown,
   indent: string,
   isNewSide: boolean
 ): string {
@@ -739,7 +776,6 @@ function renderDiffValue(
     const suffix = isNewSide ? ' (known after deploy)' : '';
     return `${JSON.stringify(own)}${suffix}`;
   }
-  const filtered = stripUnchangedValues(own, opposite);
   return (JSON.stringify(filtered, null, 2) ?? 'undefined').replace(/\n/g, `\n${indent}`);
 }
 
@@ -789,8 +825,12 @@ export function renderChangeLines(
             // literal value edit.
             const propagated = propChange.replacementPropagated ? ' [replacement propagated]' : '';
             const indent = '              ';
-            const oldStr = renderDiffValue(propChange.oldValue, propChange.newValue, indent, false);
-            const newStr = renderDiffValue(propChange.newValue, propChange.oldValue, indent, true);
+            const [oldFiltered, newFiltered] = stripUnchangedValuePair(
+              propChange.oldValue,
+              propChange.newValue
+            );
+            const oldStr = renderDiffValue(propChange.oldValue, oldFiltered, indent, false);
+            const newStr = renderDiffValue(propChange.newValue, newFiltered, indent, true);
             logFn(`      - ${propChange.path}:${requiresReplace}${propagated}`);
             logFn(`          old: ${oldStr}`);
             logFn(`          new: ${newStr}`);

@@ -112,6 +112,7 @@ eventbridge-archive	2026-07-31T06:21:38Z	PASS	54	verify.sh	TTL-refresh sweep re-
 eventbridge-input-transformer	2026-08-10T04:16:05Z	PASS	53	verify.sh	0810 staleness sweep b1; post-#1396 ECS target sub-shape, 0 err, 0 orph
 eventbridge-pipes	2026-08-10T11:50:46Z	PASS	179	verify.sh	0810 P0/P1 sweep b2; 6 del/0 err, pipe gone
 eventbridge-scheduler	2026-08-01T10:00:06Z	PASS	46	verify.sh	0801 regression sweep; ok, 0 orphans
+eventbus-policy	2026-08-11T10:54:05Z	PASS	56	verify.sh	new fixture (issue 1608): deploy/diff/update/destroy clean, 0 orphans
 eventsourcemapping-race	2026-07-27T11:04:52Z	PASS	80	verify.sh	issue #1267 Lambda ESM update wrap; 5 del 0 err; swept 1 auto-created log group
 export	2026-08-10T11:50:46Z	PASS	194	verify.sh	0810 P0/P1 sweep b5 BROAD; variant=default, post-export cdk diff no-replacement (#319 guard)
 export-nested-stack	2026-08-10T04:45:42Z	PASS	153	verify.sh	0810 sweep b3; export->CFn nested adopt + CFn delete clean, 0 orph
