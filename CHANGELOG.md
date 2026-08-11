@@ -1,3 +1,10 @@
+## [0.280.11](https://github.com/go-to-k/cdkd/compare/v0.280.10...v0.280.11) (2026-08-11)
+
+
+### Bug Fixes
+
+* **apigatewayv2:** wire the 10 remaining Integration silent-drop properties ([#609](https://github.com/go-to-k/cdkd/issues/609)) ([#1603](https://github.com/go-to-k/cdkd/issues/1603)) ([6ff2fb9](https://github.com/go-to-k/cdkd/commit/6ff2fb95f5ea154c4488a1dc530ea84f6045a9bd))
+
 ## [0.280.10](https://github.com/go-to-k/cdkd/compare/v0.280.9...v0.280.10) (2026-08-11)
 
 
