@@ -1,136 +1,200 @@
 ---
 name: use-cdkd
-description: Build cdkd and show ready-to-use commands for other CDK projects. Copy-paste the output into another project's terminal.
+description: Build or install cdkd and use it safely from an AWS CDK project. Use when testing this checkout in another project, bootstrapping, synthesizing, diffing, deploying, inspecting, rolling back, migrating, or destroying dev/test stacks with cdkd.
 ---
 
-# Use cdkd in Other Projects
+# Use cdkd Safely
 
-Build cdkd and output commands that can be pasted into another CDK project's terminal.
+Use cdkd for rapid iteration in development and test environments. It complements the AWS CDK CLI; it is not the default production deployment engine.
 
-## Steps
+## Choose the cdkd binary
 
-1. **Build cdkd**:
+First determine whether the user wants to test the current cdkd checkout or use a published release.
+
+### Test the current checkout
+
+From the cdkd repository root, build the CLI:
+
+```bash
+vp run build
+```
+
+If the checkout has not been set up, follow [CONTRIBUTING.md](../../../CONTRIBUTING.md) first: trust and install the pinned mise tools, run `vp env install`, and run `vp install`. Use the repository-pinned development runtime instead of replacing the build command.
+
+Resolve and report the absolute CLI path:
+
+```bash
+echo "$(pwd)/dist/cli.js"
+```
+
+Prefer direct invocation for one-off testing because it does not modify the user's shell or global packages:
+
+```bash
+node /absolute/path/to/cdkd/dist/cli.js --version
+```
+
+When the user explicitly wants `cdkd` available globally, offer the repository's pnpm link workflow:
+
+```bash
+pnpm setup
+# Open a new shell, or reload the shell configuration that pnpm updated.
+pnpm link --global
+cdkd --version
+```
+
+Run `pnpm setup` only when needed; it updates shell configuration. Rebuilding with `vp run build` updates the linked binary without re-linking. To remove the link, run `pnpm unlink --global @go-to-k/cdkd` or `pnpm rm --global @go-to-k/cdkd`.
+
+When giving commands for another CDK project, make them copy-pasteable and use either `cdkd` or the real absolute `node .../dist/cli.js` path consistently.
+
+### Use a published release
+
+Before installing or upgrading, verify the current release and runtime requirement from the npm registry:
+
+```bash
+npm view @go-to-k/cdkd version engines --json
+```
+
+cdkd requires Node.js 20 or later. If the user asks to install it, prefer an explicit version so the action is reproducible:
+
+```bash
+npm install --global @go-to-k/cdkd@<version>
+cdkd --version
+```
+
+Do not silently upgrade an existing installation during an unrelated deployment.
+
+## Establish the deployment boundary
+
+Before any AWS-changing command:
+
+1. Read the CDK project's `cdk.json`, package scripts, stack definitions, and local instructions.
+2. Identify the AWS profile, account ID, region, CDK app, named stack, and environment classification.
+3. Verify the active identity explicitly:
 
    ```bash
-   vp run build
+   AWS_PROFILE=<profile> AWS_REGION=<region> aws sts get-caller-identity
    ```
 
-2. **Get the absolute path to the CLI**:
+4. State the resolved account, region, stack, and intended operation before proceeding.
+5. Confirm that the credentials have direct permissions for every deployed resource. cdkd calls AWS service APIs directly; the CDK bootstrap deploy role alone is not sufficient.
 
-   ```bash
-   echo "$(pwd)/dist/cli.js"
-   ```
+Keep these ownership rules:
 
-3. **Output the commands** for the user to copy-paste. Use the absolute path.
+- Use cdkd by default only for development and test workloads. Upstream explicitly describes it as not yet production-ready. For production, keep the existing AWS CDK CLI or another established production workflow unless the user explicitly approves cdkd after that limitation and the workload-specific risks are explained.
+- Do not run `cdkd deploy` against an existing CloudFormation-managed stack as an implicit migration. Continue using `cdk deploy`, or plan an explicit `cdkd import --migrate-from-cloudformation` operation.
+- Treat `cdkd import`, `cdkd export`, `cdkd orphan`, and `cdkd state orphan` as changes to the system of record. Explain the ownership change and obtain explicit confirmation before running them.
+- Never edit the S3 state object by hand. Use cdkd state and recovery commands.
 
-   ### Option A: Global install via pnpm link (recommended — use `cdkd` as a global command)
+For a proposed CloudFormation migration, read the deployed CloudFormation template and compare its logical IDs with the current synthesized template so local changes do not accidentally leave retained resources unmanaged. Preview resource matching with the non-migrating form:
 
-   First-time setup (run once in the cdkd repo root):
+```bash
+AWS_PROFILE=<profile> AWS_REGION=<region> cdkd import <stack> --dry-run
+```
 
-   ```bash
-   # Configure pnpm global bin directory (first time only; adds PATH to shell rc)
-   pnpm setup
+`--migrate-from-cloudformation` itself is intentionally incompatible with `--dry-run`: it writes cdkd state, adds retain policies, and retires the CloudFormation stack record. Do not bootstrap, import, or migrate until the user approves that ownership-change plan.
 
-   # Reload shell so PNPM_HOME is on PATH
-   source ~/.zshrc   # or ~/.bashrc
+## Check compatibility and bootstrap
 
-   # Register cdkd globally (run from the cdkd repo root)
-   pnpm link --global
-   ```
+Run the project's normal CDK synthesis or tests first. Then have cdkd synthesize the same app:
 
-   After linking, `cdkd` is available as a global command from any directory.
+```bash
+cdk synth <stack>
+cdkd synth
+```
 
-   #### Default (auto-resolves bucket: `cdkd-state-{accountId}-{region}`)
+`cdkd synth` validates the synthesized app and does not accept a stack selector.
 
-   ```bash
-   # Bootstrap
-   cdkd bootstrap
+Check [supported resources](../../../docs/supported-resources.md) and any property-level preflight errors before deployment. Do not add `--allow-unsupported-properties` merely to bypass a security-relevant encryption, IAM, networking, or TLS warning.
 
-   # Synth / Diff / Deploy / Destroy
-   cdkd synth
-   cdkd diff
-   cdkd deploy
-   cdkd deploy -c KEY=VALUE
-   cdkd deploy --verbose
-   cdkd deploy --no-wait
-   cdkd destroy --force
-   ```
+For a new cdkd-managed stack, bootstrap cdkd once per target AWS account after the preflight checks:
 
-   #### Custom state bucket
+```bash
+AWS_PROFILE=<profile> AWS_REGION=<region> cdkd bootstrap
+```
 
-   ```bash
-   # Bootstrap
-   cdkd bootstrap --state-bucket my-custom-cdkd-state-bucket
+This creates cdkd's S3 state storage and cdkd-owned asset storage. It does not replace or remove the normal CDK bootstrap resources. The current default state bucket is account-scoped; older region-suffixed buckets are handled as a legacy layout. Use a custom `--state-bucket` or `CDKD_STATE_BUCKET` only when the project has an intentional isolation or naming requirement.
 
-   # Deploy (--state-bucket flag)
-   cdkd deploy --state-bucket my-custom-cdkd-state-bucket
+## Preview before deployment
 
-   # Deploy (CDKD_STATE_BUCKET env var)
-   CDKD_STATE_BUCKET=my-custom-cdkd-state-bucket cdkd deploy
+Use an explicit stack name when more than one stack exists or whenever ambiguity would be risky:
 
-   # Destroy
-   cdkd destroy --state-bucket my-custom-cdkd-state-bucket --force
-   ```
+```bash
+AWS_PROFILE=<profile> AWS_REGION=<region> cdkd diff <stack>
+AWS_PROFILE=<profile> AWS_REGION=<region> cdkd deploy <stack> --dry-run
+```
 
-   To unlink later: `pnpm unlink --global cdkd` (from anywhere) or `pnpm rm --global cdkd`.
+Review the complete plan for replacements, deletions, IAM changes, unsupported properties, retained resources, and state-bucket selection. Do not hide confirmation prompts with `--yes` or force flags by default.
 
-   Note: `pnpm link --global` points to the current `dist/cli.js`, so re-running `vp run build` in the cdkd repo picks up changes automatically — no re-link needed.
+## Deploy and choose what "done" means
 
-   ### Option B: Direct `node` invocation (no install needed)
+For an ordinary development deployment:
 
-   ### Default (auto-resolves bucket: `cdkd-state-{accountId}-{region}`)
+```bash
+AWS_PROFILE=<profile> AWS_REGION=<region> cdkd deploy <stack>
+```
 
-   ```
-   # Bootstrap
-   node /path/to/cdkd/dist/cli.js bootstrap
+Choose the wait mode from what happens after deployment:
 
-   # Synth
-   node /path/to/cdkd/dist/cli.js synth
+- Default: normal interactive development when no immediate consumer needs every asynchronous resource fully serving.
+- `--full-wait`: use before smoke tests, DNS cutovers, or follow-on jobs that require CloudFormation-like completion, including CloudFront `Deployed` and ECS service steady state.
+- `--no-wait`: use only when the user accepts background stabilization and nothing immediately depends on completion. Never combine it with `--full-wait`.
 
-   # Diff
-   node /path/to/cdkd/dist/cli.js diff
+For example, a deploy followed by a website smoke test should use:
 
-   # Deploy
-   node /path/to/cdkd/dist/cli.js deploy
+```bash
+AWS_PROFILE=<profile> AWS_REGION=<region> cdkd deploy <stack> --full-wait
+```
 
-   # Deploy (with context)
-   node /path/to/cdkd/dist/cli.js deploy -c KEY=VALUE
+Do not report success solely because resources appeared in AWS. Require a zero command exit status and complete the relevant verification.
 
-   # Deploy (verbose)
-   node /path/to/cdkd/dist/cli.js deploy --verbose
+## Verify and diagnose
 
-   # Deploy (no wait - don't wait for resource stabilization)
-   node /path/to/cdkd/dist/cli.js deploy --no-wait
+After deployment, inspect cdkd's state and recorded deployment events:
 
-   # Destroy
-   node /path/to/cdkd/dist/cli.js destroy --force
-   ```
+```bash
+AWS_PROFILE=<profile> AWS_REGION=<region> cdkd state info
+AWS_PROFILE=<profile> AWS_REGION=<region> cdkd state show <stack> --stack-region <region>
+AWS_PROFILE=<profile> AWS_REGION=<region> cdkd events <stack> --stack-region <region>
+```
 
-   ### Custom state bucket
+Also verify the stack outputs, the critical AWS resource state, and an application-level smoke test when applicable. Treat a non-zero exit as an unsuccessful command, but interpret it per command: exit `1` normally indicates failure, while `diff --fail` and `drift` also use it to report detected changes; exit `2` indicates partial failure for commands that support it. Inspect state and events, then follow the command-specific recovery guidance.
 
-   ```
-   # Bootstrap
-   node /path/to/cdkd/dist/cli.js bootstrap --state-bucket my-custom-cdkd-state-bucket
+For an interrupted or failed deployment:
 
-   # Deploy (--state-bucket flag)
-   node /path/to/cdkd/dist/cli.js deploy --state-bucket my-custom-cdkd-state-bucket
+1. Read the original error and `cdkd events <stack>`.
+2. Inspect `cdkd state show <stack>` before retrying.
+3. Re-run the same command when the failure is safely retryable.
+4. Use `cdkd rollback <stack>` for a failed `--no-rollback` or interrupted deployment when rollback is appropriate.
+5. Use `cdkd force-unlock <stack>` only after proving no deployment is still running.
 
-   # Deploy (CDKD_STATE_BUCKET env var)
-   CDKD_STATE_BUCKET=my-custom-cdkd-state-bucket node /path/to/cdkd/dist/cli.js deploy
+## Guard destructive and migration commands
 
-   # Destroy
-   node /path/to/cdkd/dist/cli.js destroy --state-bucket my-custom-cdkd-state-bucket --force
-   ```
+Before `destroy`, `state destroy`, `orphan`, `import`, `export`, `drift --accept`, or `drift --revert`:
 
-   (If globally linked via Option A, replace `node /path/to/cdkd/dist/cli.js` with `cdkd` in any of the above.)
+1. Re-resolve the AWS identity, region, stack name, and current owner.
+2. Show the exact command and explain which resources or state records change.
+3. Check retention, snapshots, backups, and downstream consumers.
+4. Obtain explicit user confirmation immediately before execution.
 
-4. **Remind the user**:
-   - `pnpm setup` + `pnpm link --global` is a one-time setup; after that just use `cdkd` anywhere
-   - `pnpm setup` writes `PNPM_HOME` to your shell rc — open a new shell or `source` the rc before `pnpm link --global`
-   - Re-building cdkd (`vp run build`) automatically updates the linked global binary
-   - `--region` is optional if `AWS_REGION` or `CDK_DEFAULT_REGION` is set
-   - `--state-bucket` auto-resolves to `cdkd-state-{accountId}-{region}` if omitted
-   - Custom bucket can be set via `--state-bucket` flag, `CDKD_STATE_BUCKET` env var, or `context.cdkd.stateBucket` in cdk.json (priority: CLI > env > cdk.json)
-   - Run `bootstrap` first to create the state bucket (use `--state-bucket` to use a custom name)
-   - `--app` falls back to `cdk.json`'s `app` field
-   - Add `--verbose` for detailed logs
+Do not use `--force`, `--yes`, `--purge-events`, or other confirmation-bypassing flags unless the user approved that exact destructive scope.
+
+## Command reference
+
+Use the same verified profile, region, state bucket, and binary form throughout a workflow:
+
+```bash
+cdkd bootstrap
+cdkd synth
+cdkd diff <stack>
+cdkd deploy <stack> --dry-run
+cdkd deploy <stack>
+cdkd deploy <stack> --full-wait
+cdkd state info
+cdkd state show <stack> --stack-region <region>
+cdkd events <stack> --stack-region <region>
+cdkd destroy <stack>
+```
+
+Options such as `--app`, `--state-bucket`, and context values may come from CLI flags, environment variables, or `cdk.json`. Inspect the project instead of assuming defaults.
+
+For current command behavior, consult [README.md](../../../README.md), [CLI reference](../../../docs/cli-reference.md), [state management](../../../docs/state-management.md), and [import guidance](../../../docs/import.md).
