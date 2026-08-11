@@ -180,6 +180,7 @@
         "api-cognito",
         "apigateway",
         "apigw-gateway-response",
+        "apigw-stage-props",
         "apigw-stage-throttling"
       ],
       "signals": {
@@ -190,6 +191,10 @@
           "literal"
         ],
         "apigw-gateway-response": [
+          "literal"
+        ],
+        "apigw-stage-props": [
+          "l1",
           "literal"
         ],
         "apigw-stage-throttling": [
@@ -203,6 +208,7 @@
         "api-cognito",
         "apigateway",
         "apigw-gateway-response",
+        "apigw-stage-props",
         "apigw-stage-throttling"
       ],
       "signals": {
@@ -213,6 +219,10 @@
           "literal"
         ],
         "apigw-gateway-response": [
+          "literal"
+        ],
+        "apigw-stage-props": [
+          "l1",
           "literal"
         ],
         "apigw-stage-throttling": [
@@ -245,6 +255,7 @@
         "api-cognito",
         "apigateway",
         "apigw-gateway-response",
+        "apigw-stage-props",
         "apigw-stage-throttling"
       ],
       "signals": {
@@ -255,6 +266,10 @@
           "literal"
         ],
         "apigw-gateway-response": [
+          "literal"
+        ],
+        "apigw-stage-props": [
+          "l1",
           "literal"
         ],
         "apigw-stage-throttling": [
@@ -3738,6 +3753,7 @@
     {
       "resourceType": "AWS::KMS::Key",
       "integs": [
+        "cloudtrail-trail",
         "composite-stack",
         "drift-revert",
         "dynamodb-streams",
@@ -3746,9 +3762,13 @@
         "kms-encryption",
         "loggroup-kms-associate",
         "propagation-races-2",
+        "s3-replication-and-filter",
         "s3-vectors"
       ],
       "signals": {
+        "cloudtrail-trail": [
+          "l2"
+        ],
         "composite-stack": [
           "literal"
         ],
@@ -3773,6 +3793,10 @@
         ],
         "propagation-races-2": [
           "l1"
+        ],
+        "s3-replication-and-filter": [
+          "l2",
+          "literal"
         ],
         "s3-vectors": [
           "l2"
@@ -4399,6 +4423,7 @@
       "resourceType": "AWS::Logs::LogGroup",
       "integs": [
         "apigatewayv2-update-removal",
+        "apigw-stage-props",
         "apigw-stage-throttling",
         "cloudtrail-trail",
         "cloudwatch",
@@ -4422,6 +4447,10 @@
       "signals": {
         "apigatewayv2-update-removal": [
           "l2"
+        ],
+        "apigw-stage-props": [
+          "l1",
+          "literal"
         ],
         "apigw-stage-throttling": [
           "l2",
@@ -5701,6 +5730,7 @@
   ],
   "unknownTypesInIntegs": [
     "AWS::ApiGateway::ApiKey",
+    "AWS::ApiGateway::ClientCertificate",
     "AWS::ApiGateway::GatewayResponse",
     "AWS::ApiGateway::Model",
     "AWS::ApiGateway::RequestValidator",
