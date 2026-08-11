@@ -592,6 +592,61 @@ describe('AppSync GraphQLApi config properties (#609)', () => {
     });
   });
 
+  describe('failure branches', () => {
+    it('surfaces the original error when the post-create rollback ALSO fails', async () => {
+      mockSend
+        .mockResolvedValueOnce(createResponse)
+        .mockRejectedValueOnce(new Error('BadRequestException: invalid key'))
+        .mockRejectedValueOnce(new Error('AccessDeniedException on delete'));
+
+      await expect(
+        provider.create('L', TYPE, {
+          Name: 'MyApi',
+          AuthenticationType: 'API_KEY',
+          EnvironmentVariables: { '9bad': 'x' },
+        })
+      ).rejects.toThrow(/invalid key/);
+      // The rollback failure is reported, not swallowed AND not masking.
+      expect(warnSpy.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
+        'Failed to roll back partially-created GraphQL API'
+      );
+    });
+
+    it('wraps an environment-variable PUT failure on the UPDATE path', async () => {
+      mockSend.mockRejectedValueOnce(new Error('ThrottlingException'));
+      await expect(
+        provider.update(
+          'L',
+          'api-1',
+          TYPE,
+          { Name: 'MyApi', AuthenticationType: 'API_KEY', EnvironmentVariables: { A: '1' } },
+          { Name: 'MyApi', AuthenticationType: 'API_KEY', EnvironmentVariables: { A: '2' } }
+        )
+      ).rejects.toBeInstanceOf(ProvisioningError);
+    });
+
+    it('warns rather than failing the drift read when the env-var read is denied', async () => {
+      mockSend
+        .mockResolvedValueOnce({
+          graphqlApi: { name: 'MyApi', authenticationType: 'API_KEY', xrayEnabled: false },
+        })
+        .mockRejectedValueOnce(new Error('AccessDeniedException'));
+
+      const state = (await provider.readCurrentState!('api-1', 'L', TYPE)) as Record<
+        string,
+        unknown
+      >;
+
+      expect(state['Name']).toBe('MyApi');
+      expect(state).not.toHaveProperty('EnvironmentVariables');
+      // WARN, not debug: a silenced failure makes this read asymmetric with the
+      // recorded baseline and manufactures a phantom removal.
+      expect(warnSpy.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
+        'environment variables'
+      );
+    });
+  });
+
   describe('readCurrentState', () => {
     it('maps the config blocks back to their CFn spellings', async () => {
       mockSend
