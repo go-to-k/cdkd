@@ -208,6 +208,33 @@ an object) and refusing a non-string there is a separate, riskier decision —
 issue #1513 settled it PER SITE, and `config-shape.ts`'s header records the
 full split.
 
+**A silent DROP is the sibling class, and `readConfigString` does not cover
+it** (issue #1493 item 2). Where the defaulting bug substitutes a value the
+template did not ask for, this one omits the block entirely: a provider that
+picks between two accepted shapes by PROBING member presence —
+`dest?.['BucketArn'] || dest?.['Format'] ? dest : dest?.['S3BucketDestination']`
+— indexes every probe of a malformed `dest` to `undefined`, falls through to an
+equally-`undefined` nested bag, and the caller's `s3Dest ? … : undefined` sends
+the request without the destination. Nothing is defaulted, so no guard in
+`config-shape.ts` fires. Two rules, both learned on the S3 analytics /
+inventory sites:
+
+- **Refuse on create, warn on update** — the same split as the update-path
+  question below, for the same reason (a rollback replays `update()` with a
+  historical STATE record as the desired bag). The appliers take an optional
+  `onUnusable` callback; the create-path caller omits it and the update-path
+  caller passes `this.logger.warn`.
+- **Probe every member the readers accept.** The S3 branch probe omitted
+  `Bucket` although the reader below it was `s3Dest['BucketArn'] ??
+  s3Dest['Bucket']`, so a `{ Bucket }`-only block took the nested branch, found
+  nothing, and dropped — the same silent drop one shape over. A probe narrower
+  than its reader is a bug by construction.
+
+Report the CFn path of the branch you PICKED, not a hardcoded one (item 3): the
+flattened branch's bag IS `dest`, so a refusal naming
+`…Destination.S3BucketDestination` points at a key the user's template does not
+contain.
+
 **A top-level site takes three questions, not one** (issue #1513):
 
 - **Can the field legitimately arrive as a NUMBER?** CFn coerces scalars and

@@ -1669,6 +1669,11 @@
       "scenarios": []
     },
     {
+      "name": "s3-analytics-inventory",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "s3-asset-deploy",
       "annotated": true,
       "scenarios": [
@@ -2652,6 +2657,7 @@
     "rename-refactor",
     "replacement-immutable-name",
     "rollback-command",
+    "s3-analytics-inventory",
     "s3-event-notification",
     "s3-lifecycle",
     "s3-object-lock",

@@ -62,7 +62,7 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { S3_AUTO_DELETE_OBJECTS_TAG, hasCdkAutoDeleteTag } from '../data-delete-intent.js';
-import { readConfigString, requireConfigString } from '../config-shape.js';
+import { readConfigString, replayWarn, requireConfigString } from '../config-shape.js';
 import { generateResourceName } from '../resource-name.js';
 import type {
   ResourceProvider,
@@ -70,6 +70,7 @@ import type {
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
+  CreateContext,
 } from '../../types/resource.js';
 
 /**
@@ -80,6 +81,58 @@ import type {
  */
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Is this `Destination` block written in the CFn FLATTENED form
+ * (`{ BucketArn, Format, ... }`) rather than the SDK NESTED one
+ * (`{ S3BucketDestination: { ... } }`)?
+ *
+ * ONE predicate, called from both `resolveS3BucketDestination` (which picks the
+ * bag) and `s3BucketDestinationPath` (which names it). They were written out
+ * twice and a reviewer rightly pointed out that two copies of a branch
+ * condition must be edited together or a refusal starts naming the wrong key.
+ *
+ * `Bucket` is probed alongside `BucketArn` because the readers accept it
+ * (`s3Dest['BucketArn'] ?? s3Dest['Bucket']`); omitting it made a
+ * `{ Bucket }`-only block take the nested branch, find nothing, and drop — the
+ * same silent drop one shape over.
+ */
+function isFlattenedDestination(dest: Record<string, unknown>): boolean {
+  return Boolean(dest['BucketArn'] || dest['Bucket'] || dest['BucketAccountId'] || dest['Format']);
+}
+
+/**
+ * The CFn path of the destination bag `resolveS3BucketDestination` will pick —
+ * issue #1493 item 3, which is a MESSAGE concern, not a value one.
+ *
+ * Kept separate from the resolver rather than returned alongside the bag:
+ * `gen-nested-key-coverage`'s write-evidence walk follows a plain
+ * `const x = this.helper(...)` binding to the members written beneath it, and
+ * a DESTRUCTURED `const { bag, path } = ...` is a shape it cannot follow — so
+ * pairing the two silently withdrew the write evidence for
+ * `Destination.BucketArn` / `.BucketAccountId` and turned an opted-in target
+ * red with no behavior change at all. Measured against the pre-change provider
+ * via the critic's `--providers-dir=` seam.
+ */
+function s3BucketDestinationPath(dest: unknown, destinationPath: string): string {
+  return isPlainObject(dest) && isFlattenedDestination(dest)
+    ? destinationPath
+    : `${destinationPath}.S3BucketDestination`;
+}
+
+/**
+ * Name a malformed value in a refusal message, the way `config-shape.ts`'s
+ * private `describe` does for the string-reading guards. Kept local rather than
+ * exported from there because `resolveS3BucketDestination` is S3-specific
+ * branch selection, not a shared shape guard — the two only share the wording.
+ */
+function describeValue(value: unknown): string {
+  if (value === null) return 'null';
+  if (Array.isArray(value)) return 'an array';
+  if (typeof value === 'string') return `a string ${JSON.stringify(value)}`;
+  if (isPlainObject(value)) return `an object with keys [${Object.keys(value).join(', ')}]`;
+  return `a ${typeof value} (${String(value)})`;
 }
 
 /**
@@ -1082,6 +1135,108 @@ export class S3BucketProvider implements ResourceProvider {
   }
 
   /**
+   * Pick the `S3BucketDestination` bag out of an analytics / inventory
+   * `Destination` block, refusing a shape that would otherwise be dropped.
+   *
+   * Two shapes are legitimate and both must keep working: the CFn FLATTENED
+   * form (`Destination: { BucketArn, Format, ... }`, what the schema declares)
+   * and the SDK NESTED form (`Destination: { S3BucketDestination: { ... } }`,
+   * accepted because state records and hand-written templates carry it).
+   *
+   * Issue #1493 item 2: the branch was picked by probing member presence
+   * (`dest?.['BucketAccountId'] || dest?.['BucketArn'] || dest?.['Format']`),
+   * so a `Destination` that is a STRING / array / unresolved intrinsic indexed
+   * every probe to `undefined`, fell through to an equally-`undefined`
+   * `S3BucketDestination`, and the caller's `s3Dest ? … : undefined` omitted
+   * the whole block from the Put — a configuration silently deployed without
+   * the destination it declared. Unlike the sibling defaulting class this is a
+   * DROP, not a substituted default, so `readConfigString` does not cover it:
+   * it needs its own decision, and per issue #1513's precedent that decision is
+   * REFUSE on the template-borne create path, WARN on the replay-reachable
+   * update path (`onUnusable`), where the desired bag can be a historical cdkd
+   * state record with no template-side remedy.
+   *
+   * Also returns the CFn path of the bag it picked (issue #1493 item 3): the
+   * callers used to hardcode `…Destination.S3BucketDestination` in the
+   * `containerPath` they pass to `readConfigString`, so a refusal on the
+   * FLATTENED branch — where the bag IS `dest` itself — named a key the user's
+   * template does not contain.
+   *
+   * @returns the picked bag, or `undefined` when the block was ABSENT or was
+   *   refused on a warn-only path. The caller distinguishes the two by testing
+   *   its own `Destination` value — see the `continue` at each call site.
+   */
+  private resolveS3BucketDestination(
+    dest: unknown,
+    destinationPath: string,
+    onUnusable?: (message: string) => void
+  ): Record<string, unknown> | undefined {
+    const nestedPath = `${destinationPath}.S3BucketDestination`;
+    const drop = (message: string): undefined => {
+      if (onUnusable) {
+        onUnusable(
+          `${message}. Leaving this configuration unchanged; the same value is REFUSED ` +
+            `on a template-path create`
+        );
+        return undefined;
+      }
+      throw new Error(message);
+    };
+
+    // An ABSENT block is the template's own omission, not a shape problem —
+    // AWS reports the missing required destination itself. Unchanged.
+    if (dest === undefined || dest === null) {
+      return undefined;
+    }
+
+    if (!isPlainObject(dest)) {
+      return drop(
+        `${destinationPath} must be an object (got ${describeValue(dest)}) — check for an ` +
+          `unresolved intrinsic or a mis-nested template value; the destination would ` +
+          `otherwise be dropped from the request with no error`
+      );
+    }
+
+    // Branch selection is TRUTHINESS-based, matching the pre-fix code exactly.
+    // A presence (`!== undefined`) test reads better but silently re-routes
+    // `{ BucketAccountId: '', S3BucketDestination: {...} }` from the nested
+    // branch — where it worked — to the flat one, where it sends
+    // `Bucket: undefined`. Turning a working template into a broken request is
+    // the opposite of this guard's purpose, so the probe stays truthy and the
+    // REFUSAL below is what the change actually adds.
+    const bag = isFlattenedDestination(dest) ? dest : (dest['S3BucketDestination'] as unknown);
+
+    if (bag === undefined || bag === null) {
+      return drop(
+        `${destinationPath} carries neither a bucket (BucketArn / Bucket) nor a nested ` +
+          `S3BucketDestination object (got ${describeValue(dest)}) — the destination would ` +
+          `otherwise be dropped from the request with no error`
+      );
+    }
+    if (!isPlainObject(bag)) {
+      return drop(
+        `${nestedPath} must be an object (got ${describeValue(bag)}) — check for an ` +
+          `unresolved intrinsic or a mis-nested template value; the destination would ` +
+          `otherwise be dropped from the request with no error`
+      );
+    }
+
+    // The bucket is REQUIRED by both APIs, and it is the one member neither
+    // branch can default. Checking it on the PICKED bag rather than only on the
+    // flat one closes the asymmetry a reviewer found: `{ S3BucketDestination: {} }`
+    // is truthy, so it used to sail through to a `Bucket: undefined` Put.
+    if (!bag['BucketArn'] && !bag['Bucket']) {
+      return drop(
+        `${bag === dest ? destinationPath : nestedPath} has no destination bucket ` +
+          `(BucketArn / Bucket) (got ${describeValue(bag)}) — the request would be ` +
+          `rejected by S3, or silently carry no destination`
+      );
+    }
+
+    return bag;
+  }
+
+  /**
    * Apply analytics configurations
    *
    * CFn property: AnalyticsConfigurations[] (array of configurations)
@@ -1089,7 +1244,8 @@ export class S3BucketProvider implements ResourceProvider {
    */
   private async applyAnalyticsConfigurations(
     bucketName: string,
-    configs: Array<Record<string, unknown>>
+    configs: Array<Record<string, unknown>>,
+    onUnusable?: (message: string) => void
   ): Promise<void> {
     for (const config of configs) {
       const id = config['Id'] as string;
@@ -1117,13 +1273,27 @@ export class S3BucketProvider implements ResourceProvider {
       }
 
       // StorageClassAnalysis.DataExport
-      if (storageClassAnalysis?.['DataExport']) {
+      //
+      // `!= null`, NOT a truthiness gate: a FALSY malformed `DataExport` ('' /
+      // 0) skips the whole block and sends `StorageClassAnalysis: {}` with no
+      // error — the same silent drop this change exists for, one gate up.
+      // `.claude/rules/providers.md` names #1493 as having shipped exactly that
+      // gate bug once already.
+      if (storageClassAnalysis?.['DataExport'] != null) {
         const dataExport = storageClassAnalysis['DataExport'] as Record<string, unknown>;
-        const dest = dataExport['Destination'] as Record<string, unknown> | undefined;
-        const s3Dest =
-          dest?.['BucketAccountId'] || dest?.['BucketArn'] || dest?.['Format']
-            ? dest
-            : (dest?.['S3BucketDestination'] as Record<string, unknown> | undefined);
+        const analyticsDestPath =
+          'AWS::S3::Bucket AnalyticsConfigurations[].StorageClassAnalysis.DataExport.Destination';
+        const rawDest = dataExport['Destination'];
+        const s3Dest = this.resolveS3BucketDestination(rawDest, analyticsDestPath, onUnusable);
+        // A PRESENT-but-unusable destination that only warned leaves the live
+        // configuration ALONE rather than sending a destination-less request.
+        // `Destination` is a REQUIRED SDK member, so emitting the Put without
+        // it is rejected by S3 — the replay would be stranded anyway, just with
+        // an opaque AWS error instead of cdkd's actionable one, which is the
+        // whole point of warning here. An ABSENT destination keeps the old
+        // behavior and lets AWS report the missing required field.
+        if (s3Dest === undefined && rawDest != null) continue;
+        const destPath = s3BucketDestinationPath(rawDest, analyticsDestPath);
         analyticsConfig.StorageClassAnalysis = {
           DataExport: {
             OutputSchemaVersion: readConfigString(
@@ -1137,12 +1307,13 @@ export class S3BucketProvider implements ResourceProvider {
                   S3BucketDestination: {
                     Bucket: (s3Dest['BucketArn'] ?? s3Dest['Bucket']) as string,
                     BucketAccountId: s3Dest['BucketAccountId'] as string | undefined,
-                    Format: readConfigString(
-                      s3Dest,
-                      'Format',
-                      'CSV',
-                      'AWS::S3::Bucket AnalyticsConfigurations[].StorageClassAnalysis.DataExport.Destination.S3BucketDestination'
-                    ),
+                    // Same downgrade as the destination guard above: a
+                    // rollback / `drift --revert` replays a STATE record here,
+                    // so a malformed `Format` must not hard-fail one line below
+                    // a guard that deliberately warns.
+                    Format: readConfigString(s3Dest, 'Format', 'CSV', destPath, {
+                      ...(onUnusable ? { onUnusable } : {}),
+                    }),
                     Prefix: s3Dest['Prefix'] as string | undefined,
                   },
                 }
@@ -1227,15 +1398,18 @@ export class S3BucketProvider implements ResourceProvider {
    */
   private async applyInventoryConfigurations(
     bucketName: string,
-    configs: Array<Record<string, unknown>>
+    configs: Array<Record<string, unknown>>,
+    onUnusable?: (message: string) => void
   ): Promise<void> {
     for (const config of configs) {
       const id = config['Id'] as string;
-      const dest = config['Destination'] as Record<string, unknown> | undefined;
-      const s3Dest =
-        dest?.['BucketArn'] || dest?.['Format']
-          ? dest
-          : (dest?.['S3BucketDestination'] as Record<string, unknown> | undefined);
+      const inventoryDestPath = 'AWS::S3::Bucket InventoryConfigurations[].Destination';
+      const rawDest = config['Destination'];
+      const s3Dest = this.resolveS3BucketDestination(rawDest, inventoryDestPath, onUnusable);
+      // See the analytics sibling: a warned-away destination leaves the live
+      // configuration untouched instead of sending a request S3 rejects.
+      if (s3Dest === undefined && rawDest != null) continue;
+      const destPath = s3BucketDestinationPath(rawDest, inventoryDestPath);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const inventoryConfig: any = {
         Id: id,
@@ -1269,12 +1443,10 @@ export class S3BucketProvider implements ResourceProvider {
             ? {
                 Bucket: (s3Dest['BucketArn'] ?? s3Dest['Bucket']) as string,
                 AccountId: s3Dest['BucketAccountId'] as string | undefined,
-                Format: readConfigString(
-                  s3Dest,
-                  'Format',
-                  'CSV',
-                  'AWS::S3::Bucket InventoryConfigurations[].Destination.S3BucketDestination'
-                ),
+                // Same update-path downgrade as the analytics sibling.
+                Format: readConfigString(s3Dest, 'Format', 'CSV', destPath, {
+                  ...(onUnusable ? { onUnusable } : {}),
+                }),
                 Prefix: s3Dest['Prefix'] as string | undefined,
               }
             : undefined,
@@ -2029,7 +2201,12 @@ export class S3BucketProvider implements ResourceProvider {
       bucketName,
       previousProperties['AnalyticsConfigurations'] as Array<Record<string, unknown>> | undefined,
       properties['AnalyticsConfigurations'] as Array<Record<string, unknown>> | undefined,
-      async (_id, cfg) => this.applyAnalyticsConfigurations(bucketName, [cfg]),
+      // WARN, never throw, on the update path: `rollback-executor.ts` and
+      // `drift --revert` replay `update()` with a historical cdkd STATE record
+      // as the desired bag, so a refusal here would strand the resource with no
+      // template-side remedy (issue #1493 item 2).
+      async (_id, cfg) =>
+        this.applyAnalyticsConfigurations(bucketName, [cfg], (m) => this.logger.warn(m)),
       async (id) => {
         await this.s3Client.send(
           new DeleteBucketAnalyticsConfigurationCommand({ Bucket: bucketName, Id: id })
@@ -2064,7 +2241,9 @@ export class S3BucketProvider implements ResourceProvider {
       bucketName,
       previousProperties['InventoryConfigurations'] as Array<Record<string, unknown>> | undefined,
       properties['InventoryConfigurations'] as Array<Record<string, unknown>> | undefined,
-      async (_id, cfg) => this.applyInventoryConfigurations(bucketName, [cfg]),
+      // Same update-path warn as the analytics sibling above.
+      async (_id, cfg) =>
+        this.applyInventoryConfigurations(bucketName, [cfg], (m) => this.logger.warn(m)),
       async (id) => {
         await this.s3Client.send(
           new DeleteBucketInventoryConfigurationCommand({ Bucket: bucketName, Id: id })
@@ -2116,8 +2295,17 @@ export class S3BucketProvider implements ResourceProvider {
    */
   private async applyAllSubConfigsForCreate(
     bucketName: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<void> {
+    // `create()` is NOT always template-borne: `rollback-executor.ts`'s
+    // reverse-replacement arm revives the OLD resource by calling
+    // `create(..., previousState.properties, REPLAYING_STATE_CREATE_CONTEXT)`.
+    // A bucket whose STATE record carries a malformed destination (written by
+    // a pre-fix binary) would otherwise be unrestorable, with only a hand-edit
+    // of state.json as a remedy — which is what `.claude/rules/providers.md`
+    // requires a create-side pre-flight refusal to downgrade for.
+    const replayOnUnusable = replayWarn(this.logger, context).onUnusable;
     // Notification (with EventBridge gate kept for backwards-compat with the
     // pre-existing single-EventBridge create path)
     const notifConfig = properties['NotificationConfiguration'] as
@@ -2196,7 +2384,7 @@ export class S3BucketProvider implements ResourceProvider {
       | Array<Record<string, unknown>>
       | undefined;
     if (analyticsConfigs && Array.isArray(analyticsConfigs) && analyticsConfigs.length > 0) {
-      await this.applyAnalyticsConfigurations(bucketName, analyticsConfigs);
+      await this.applyAnalyticsConfigurations(bucketName, analyticsConfigs, replayOnUnusable);
     }
 
     // Intelligent Tiering Configurations
@@ -2212,7 +2400,7 @@ export class S3BucketProvider implements ResourceProvider {
       | Array<Record<string, unknown>>
       | undefined;
     if (inventoryConfigs && Array.isArray(inventoryConfigs) && inventoryConfigs.length > 0) {
-      await this.applyInventoryConfigurations(bucketName, inventoryConfigs);
+      await this.applyInventoryConfigurations(bucketName, inventoryConfigs, replayOnUnusable);
     }
 
     // Replication Configuration
@@ -2238,7 +2426,8 @@ export class S3BucketProvider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating S3 bucket ${logicalId}`);
 
@@ -2304,7 +2493,7 @@ export class S3BucketProvider implements ResourceProvider {
       // bucket. See Issue #376 for the cross-provider sweep.
       try {
         await this.applyConfiguration(bucketName, properties);
-        await this.applyAllSubConfigsForCreate(bucketName, properties);
+        await this.applyAllSubConfigsForCreate(bucketName, properties, context);
       } catch (innerError) {
         if (createdNewBucket) {
           try {
