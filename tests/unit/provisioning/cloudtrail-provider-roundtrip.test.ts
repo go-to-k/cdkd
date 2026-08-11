@@ -59,8 +59,10 @@ describe('CloudTrailProvider read-update round-trip', () => {
     // never sees the rejection-shape input
     // (`CloudWatchLogsLogGroupArn is not in valid ARN format`).
     // NOTE: that rejection claim was DISPROVEN by the issue #1160 probe
-    // (2026-08-10) — `''` IS accepted for this field. The all-or-nothing
-    // pair discriminator is the surviving rationale for the guard.
+    // (2026-08-10) — `''` IS accepted for this field, and issue #1565 then
+    // removed the read-side guard entirely. What this case now pins is the
+    // OTHER half: an ABSENT desired pair must not reach AWS, because a
+    // template removal is RETAINED per the live CFn A/B.
     const observed = {
       TrailName: 'mytrail',
       S3BucketName: 'mybucket',
@@ -75,7 +77,7 @@ describe('CloudTrailProvider read-update round-trip', () => {
       EventSelectors: [],
       Tags: [] as Array<{ Key: string; Value: string }>,
       // CloudWatchLogsLogGroupArn / CloudWatchLogsRoleArn intentionally
-      // absent — Class 1 guard kicks in at readCurrentState.
+      // absent: this is the template-removal shape, which must be RETAINED.
     };
 
     // SDK sends: UpdateTrail (no CW logs change → no PutEventSelectors,
@@ -99,20 +101,22 @@ describe('CloudTrailProvider read-update round-trip', () => {
     expect(input.SnsTopicName).toBeUndefined();
   });
 
-  it('Class 2 — empty-string ARN placeholders are sanitized to undefined at the wire layer', async () => {
-    // Even if a caller (or a future readCurrentState bug) passes
-    // explicit empty strings for the ARN-shaped fields, the wire-layer
-    // sanitizer must convert them to undefined so AWS does not reject
-    // with "is not in valid ARN format" -- a claim the issue #1160 probe
-    // DISPROVED (2026-08-10); the pair discriminator is what the guard
-    // actually rests on.
+  it('Class 2 — empty-string KMS / SNS placeholders are sanitized to undefined at the wire layer', async () => {
+    // The wire-layer sanitizer converts an explicit `''` to undefined so AWS
+    // cannot reject with "is not in valid ARN format" -- a claim the issue
+    // #1160 probe DISPROVED (2026-08-10) for the fields it tested, but which
+    // stays the conservative default for the ones it did not.
+    //
+    // The CloudWatch Logs PAIR is deliberately NOT in this set since issue
+    // #1565: `readCurrentState` always-emits it as `''` on an unwired trail,
+    // so sanitizing there made `drift --revert` of a console-side enable a
+    // silent no-op that still reported success. It is asserted separately
+    // below.
     const observed = {
       TrailName: 'mytrail',
       S3BucketName: 'mybucket',
       KMSKeyId: '',
       SnsTopicName: '',
-      CloudWatchLogsLogGroupArn: '',
-      CloudWatchLogsRoleArn: '',
       Tags: [] as Array<{ Key: string; Value: string }>,
     };
 
@@ -124,35 +128,22 @@ describe('CloudTrailProvider read-update round-trip', () => {
     const input = updateCall![0].input as Record<string, unknown>;
     expect(input['KmsKeyId']).toBeUndefined();
     expect(input['SnsTopicName']).toBeUndefined();
-    expect(input['CloudWatchLogsLogGroupArn']).toBeUndefined();
-    expect(input['CloudWatchLogsRoleArn']).toBeUndefined();
-    // None of them reach AWS as ''.
-    for (const key of [
-      'KmsKeyId',
-      'SnsTopicName',
-      'CloudWatchLogsLogGroupArn',
-      'CloudWatchLogsRoleArn',
-    ]) {
+    for (const key of ['KmsKeyId', 'SnsTopicName']) {
       expect(input[key]).not.toBe('');
     }
   });
 
-  it('round-trip on no-drift snapshot does not call PutEventSelectors with empty list', async () => {
-    // EventSelectors: [] both old and new — the diff-based gate must
-    // NOT call PutEventSelectors at all (since the JSON.stringify
-    // comparison is equal for two empty arrays).
+  it('a no-drift snapshot round-trip does not call PutEventSelectors with an empty list', async () => {
+    // Restored pin (it was overwritten while splitting the Class 2 test for
+    // issue #1565): AWS REJECTS `PutEventSelectors` with zero selectors
+    // (`InvalidEventSelectorsException: Specify a valid number of selectors
+    // (1 to 5)`), so an unchanged `[]`/`[]` snapshot must not reach it. The
+    // #1549 reset path only fires when the diff fires, which is what keeps
+    // this true.
     const observed = {
       TrailName: 'mytrail',
       S3BucketName: 'mybucket',
-      S3KeyPrefix: '',
-      IsMultiRegionTrail: false,
-      IncludeGlobalServiceEvents: true,
-      EnableLogFileValidation: false,
-      KMSKeyId: '',
-      SnsTopicName: '',
-      IsOrganizationTrail: false,
-      IsLogging: true,
-      EventSelectors: [] as unknown[],
+      EventSelectors: [] as Array<Record<string, unknown>>,
       Tags: [] as Array<{ Key: string; Value: string }>,
     };
 
@@ -160,10 +151,32 @@ describe('CloudTrailProvider read-update round-trip', () => {
 
     await provider.update('L', TRAIL_ARN, RESOURCE_TYPE, observed, observed);
 
-    const putSelectorsCalls = mockSend.mock.calls.filter(
-      (c) => c[0] instanceof PutEventSelectorsCommand
-    );
-    expect(putSelectorsCalls).toHaveLength(0);
+    const putCall = mockSend.mock.calls.find((c) => c[0] instanceof PutEventSelectorsCommand);
+    expect(putCall).toBeUndefined();
+  });
+
+  it("the CloudWatch Logs pair's '' placeholders are FORWARDED, not sanitized (issue #1565)", async () => {
+    // The exception to the rule above, and the reason it is an exception: the
+    // pair is always-emitted, so `''` is the recorded baseline of an unwired
+    // trail and forwarding it is what lets a revert actually clear a
+    // console-side enable. Dropping it left the wiring in place while cdkd
+    // printed the resource as reverted.
+    const observed = {
+      TrailName: 'mytrail',
+      S3BucketName: 'mybucket',
+      CloudWatchLogsLogGroupArn: '',
+      CloudWatchLogsRoleArn: '',
+      Tags: [] as Array<{ Key: string; Value: string }>,
+    };
+
+    mockSend.mockResolvedValueOnce({});
+
+    await provider.update('L', TRAIL_ARN, RESOURCE_TYPE, observed, observed);
+
+    const updateCall = mockSend.mock.calls.find((c) => c[0] instanceof UpdateTrailCommand);
+    const input = updateCall![0].input as Record<string, unknown>;
+    expect(input['CloudWatchLogsLogGroupArn']).toBe('');
+    expect(input['CloudWatchLogsRoleArn']).toBe('');
   });
 
   it('FIFO-equivalent — populated ARN fields round-trip without sanitization to undefined', async () => {

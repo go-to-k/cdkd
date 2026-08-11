@@ -52,6 +52,100 @@ const DEFAULT_EVENT_SELECTORS: readonly EventSelector[] = Object.freeze([
 ]) as readonly EventSelector[];
 
 /**
+ * `undefined` for an absent / null / EMPTY optional string field.
+ *
+ * Module-scoped since issue #1565 so `create()` can use it too: an always-emit
+ * placeholder can reach `create()` — `drift --accept` falls back to mutating
+ * `properties` when `observedProperties` is absent, and the rollback executor
+ * replays `previousState.properties` through `create()` on a reverse
+ * replacement — and `CreateTrail` with `CloudWatchLogsLogGroupArn: ''` is an
+ * UNPROBED shape that may 400 on ARN format. `''` there means "not
+ * configured", which is exactly what omitting the field says.
+ *
+ * The update path is where the distinction between absent and `''` matters
+ * (see {@link resolveCloudWatchLogsPair}); on create there is no previous
+ * value to clear, so both collapse to "omit".
+ */
+function emptyToUndefined(v: unknown): string | undefined {
+  if (v === undefined || v === null || v === '') return undefined;
+  return v as string;
+}
+
+/**
+ * Resolve the `CloudWatchLogsLogGroupArn` / `CloudWatchLogsRoleArn` pair for an
+ * `UpdateTrail`, distinguishing an ABSENT desired side from an explicit `''`.
+ *
+ * The pair is all-or-nothing on AWS, so the two fields are decided TOGETHER —
+ * the caller cannot build the half-configured request AWS rejects.
+ *
+ * - ABSENT (`undefined` / `null`) on BOTH sides -> send neither. The template
+ *   never declared them, and the live CFn A/B (2026-08-10) measured a template
+ *   removal as RETAINED, so sending nothing IS the parity behavior. `null`
+ *   counts as absent because a JSON state round-trip can produce one where the
+ *   template had nothing.
+ * - BOTH `''` -> send both. `''` is the clear, which is what makes a
+ *   `drift --revert` of a console-side enable actually revert (issue #1565).
+ *   On an already-unwired trail that re-asserts a null field, which AWS accepts
+ *   as the no-op it is, and it rides an `UpdateTrail` this method issues
+ *   anyway. Deliberately NOT gated on "differs from the previous side": that
+ *   gate would also stop forwarding an UNCHANGED populated pair, which
+ *   `cloudtrail-provider-roundtrip.test.ts` pins as a wire-layer guarantee.
+ * - BOTH populated -> send both verbatim.
+ * - Anything else — a non-string value, or exactly ONE half populated -> send
+ *   NEITHER, and report it. Both shapes are unusable rather than meaningful:
+ *   coercing them would send `''` next to a real ARN (the request AWS rejects)
+ *   or, worse, read a malformed `null` as a CLEAR and silently disable a live
+ *   trail's CloudWatch Logs delivery — the
+ *   `malformed-value-must-not-read-as-removal` class this same file already
+ *   guards for `EventSelectors`. Leaving the pair alone is the non-destructive
+ *   reading, and the caller warns so the divergence is loud.
+ *
+ * Only the DESIRED side decides, which keeps the guard-the-desired-side-only
+ * rule intact.
+ */
+function resolveCloudWatchLogsPair(properties: Record<string, unknown>): {
+  logGroupArn: string | undefined;
+  roleArn: string | undefined;
+  unusable?: string;
+} {
+  const desiredGroup = properties['CloudWatchLogsLogGroupArn'];
+  const desiredRole = properties['CloudWatchLogsRoleArn'];
+  const groupAbsent = desiredGroup == null;
+  const roleAbsent = desiredRole == null;
+  if (groupAbsent && roleAbsent) return { logGroupArn: undefined, roleArn: undefined };
+
+  if (typeof desiredGroup !== 'string' || typeof desiredRole !== 'string') {
+    return {
+      logGroupArn: undefined,
+      roleArn: undefined,
+      unusable:
+        `CloudWatchLogsLogGroupArn / CloudWatchLogsRoleArn must both be strings ` +
+        `(got ${describeValue(desiredGroup)} / ${describeValue(desiredRole)}) — check for ` +
+        `an unresolved intrinsic or a half-written state record`,
+    };
+  }
+  if ((desiredGroup === '') !== (desiredRole === '')) {
+    return {
+      logGroupArn: undefined,
+      roleArn: undefined,
+      unusable:
+        `CloudWatchLogsLogGroupArn / CloudWatchLogsRoleArn are all-or-nothing on AWS, ` +
+        `but only one of them carries a value — sending the pair would be rejected`,
+    };
+  }
+  return { logGroupArn: desiredGroup, roleArn: desiredRole };
+}
+
+/** Human-readable type for a warning, without echoing user data. */
+function describeValue(value: unknown): string {
+  if (value === null) return 'null';
+  if (value === undefined) return 'nothing';
+  if (Array.isArray(value)) return 'an array';
+  if (typeof value === 'string') return value === '' ? "''" : 'a string';
+  return `a ${typeof value}`;
+}
+
+/**
  * SDK Provider for AWS CloudTrail resources
  *
  * Supports:
@@ -114,7 +208,7 @@ export class CloudTrailProvider implements ResourceProvider {
     }
 
     const trailName = properties['TrailName'] as string | undefined;
-    const s3KeyPrefix = properties['S3KeyPrefix'] as string | undefined;
+    const s3KeyPrefix = emptyToUndefined(properties['S3KeyPrefix']);
     const isMultiRegionTrail = properties['IsMultiRegionTrail'] as boolean | undefined;
     const includeGlobalServiceEvents = properties['IncludeGlobalServiceEvents'] as
       | boolean
@@ -122,10 +216,21 @@ export class CloudTrailProvider implements ResourceProvider {
     const enableLogFileValidation = properties['EnableLogFileValidation'] as boolean | undefined;
     const isLogging = properties['IsLogging'] as boolean | undefined;
     const tags = properties['Tags'] as Array<{ Key: string; Value: string }> | undefined;
-    const cloudWatchLogsLogGroupArn = properties['CloudWatchLogsLogGroupArn'] as string | undefined;
-    const cloudWatchLogsRoleArn = properties['CloudWatchLogsRoleArn'] as string | undefined;
-    const kmsKeyId = properties['KMSKeyId'] as string | undefined;
-    const snsTopicName = properties['SnsTopicName'] as string | undefined;
+    // `emptyToUndefined` on the create path too (issue #1565): a state replay
+    // can feed an always-emit `''` placeholder in here, and `CreateTrail` with
+    // an empty ARN is an unprobed shape. On create `''` and absent both mean
+    // "not configured".
+    //
+    // `resolveCloudWatchLogsPair` is deliberately NOT used here: there is no
+    // previous value to clear on a create, so `''` has no second meaning. A
+    // HALF-populated pair replayed through a reverse replacement therefore
+    // sends one half and AWS errors — loud is the right direction on a path
+    // that is creating the trail from scratch, where silently dropping the
+    // wiring would hand back a trail that looks configured and is not.
+    const cloudWatchLogsLogGroupArn = emptyToUndefined(properties['CloudWatchLogsLogGroupArn']);
+    const cloudWatchLogsRoleArn = emptyToUndefined(properties['CloudWatchLogsRoleArn']);
+    const kmsKeyId = emptyToUndefined(properties['KMSKeyId']);
+    const snsTopicName = emptyToUndefined(properties['SnsTopicName']);
     const isOrganizationTrail = properties['IsOrganizationTrail'] as boolean | undefined;
     const eventSelectors = properties['EventSelectors'] as EventSelector[] | undefined;
     const insightSelectors = properties['InsightSelectors'] as InsightSelector[] | undefined;
@@ -222,6 +327,12 @@ export class CloudTrailProvider implements ResourceProvider {
     // it. Mirrors the canonical Class 2 pattern in `sqs-queue-provider.ts`
     // (`serializeRedrivePolicy`).
     //
+    // The CloudWatch Logs PAIR is the EXCEPTION and does not come through
+    // here — see `resolveCloudWatchLogsPair`. Dropping its placeholder made
+    // `drift --revert` of a console-side enable a silent no-op that still
+    // reported success (issue #1565), so that pair forwards `''` as a clear
+    // instead.
+    //
     // The helper's ORIGINAL rationale — that `UpdateTrail` rejects an
     // empty string outright — is only half true, and the surviving half
     // is unverified. A live probe (2026-08-10, issue #1160) sent `''`
@@ -230,10 +341,6 @@ export class CloudTrailProvider implements ResourceProvider {
     // which is exactly why `''` is now the removal-reset sentinel below.
     // `KMSKeyId` was NOT probed (see the reset comment / issue #1533), so
     // it keeps the conservative drop.
-    const emptyToUndefined = (v: unknown): string | undefined => {
-      if (v === undefined || v === null || v === '') return undefined;
-      return v as string;
-    };
 
     // Removal semantics (issue #1160, live CFn A/B 2026-08-10 on a real
     // trail with every optional field set, then removed from the template).
@@ -306,8 +413,35 @@ export class CloudTrailProvider implements ResourceProvider {
       false
     );
     const isLogging = properties['IsLogging'] as boolean | undefined;
-    const cloudWatchLogsLogGroupArn = emptyToUndefined(properties['CloudWatchLogsLogGroupArn']);
-    const cloudWatchLogsRoleArn = emptyToUndefined(properties['CloudWatchLogsRoleArn']);
+    // The CloudWatch Logs pair keys on PRESENCE, not emptiness (issue #1565).
+    // `emptyToUndefined` conflates two different desired sides:
+    //
+    //   ABSENT  — the template never declared it. The live CFn A/B measured
+    //             this as RETAINED, so it must NOT be sent (parity pin).
+    //   `''`    — an explicit clear. Since #1565 `readCurrentState` emits the
+    //             pair as `''` on an unwired trail, so `cdkd drift --revert`
+    //             of a console-side ENABLE feeds exactly this shape as the
+    //             desired side. Dropping it made the revert a NO-OP that
+    //             still printed success: the wiring stayed, and the next
+    //             drift reported the same difference forever. Making the
+    //             drift visible without making it revertable is half a
+    //             feature and a new lie.
+    //
+    // The `''` clear is safe on the wire: the #1160 probe accepted it for
+    // `CloudWatchLogsLogGroupArn`, and this fixture's own phase 2b clears
+    // BOTH fields that way against a live trail on every run.
+    //
+    // Decided as a PAIR, so the request can never carry one half without the
+    // other — the shape AWS holds all-or-nothing.
+    const cwPair = resolveCloudWatchLogsPair(properties);
+    if (cwPair.unusable !== undefined) {
+      this.logger.warn(
+        `CloudTrail Trail ${logicalId}: ${cwPair.unusable}. The trail's existing ` +
+          `CloudWatch Logs wiring is left untouched for this update.`
+      );
+    }
+    const cloudWatchLogsLogGroupArn = cwPair.logGroupArn;
+    const cloudWatchLogsRoleArn = cwPair.roleArn;
     const kmsKeyId = emptyToUndefined(properties['KMSKeyId']);
     const snsTopicName = clearOnUpdateRemoval(
       emptyToUndefined(properties['SnsTopicName']),
@@ -667,35 +801,44 @@ export class CloudTrailProvider implements ResourceProvider {
     result['IncludeGlobalServiceEvents'] = trail.IncludeGlobalServiceEvents ?? true;
     result['EnableLogFileValidation'] = trail.LogFileValidationEnabled ?? false;
 
-    // Class 1 — CloudWatchLogsLogGroupArn / CloudWatchLogsRoleArn are a
-    // type-discriminated pair: both required when CW logs are enabled,
-    // neither when disabled.
-    //
-    // NOTE the original rationale here — that AWS rejects a `''` round-trip
-    // with `CloudWatchLogsLogGroupArn is not in valid ARN format` — was
-    // DISPROVEN by the issue #1160 probe (2026-08-10): `''` is accepted for
-    // this field and nulls it out. The guard stands on its own remaining
-    // rationale, which is the discriminator, not the rejection: the pair is
-    // all-or-nothing, so emitting one placeholder without the other would
-    // describe a state AWS cannot hold. Only emit both keys when AWS reports
-    // both present (the discriminator is "both fields populated").
-    // KNOWN BOUND, corrected 2026-08-10 (issue #1160 review): the previous
-    // wording claimed "a console-side enable shows up as both fields
-    // appearing at once on the next read". That is FALSE — the drift
+    // CloudWatchLogsLogGroupArn / CloudWatchLogsRoleArn are an all-or-nothing
+    // pair: both required when CW logs are enabled, neither when disabled.
+    // They are nonetheless emitted UNCONDITIONALLY
+    // (issue #1565), because the guard that used to withhold them made a
+    // console-side ENABLE permanently invisible to `cdkd drift`: the
     // comparator's top-level walk is baseline-keys-only, so a key absent
-    // from the captured snapshot is never compared and a console-side
-    // enable stays invisible. Emitting both as `''` would now be safe (the
-    // update path drops them via `emptyToUndefined`, and the #1160 probe
-    // disproved the rejection this guard was built on), so this is a
-    // deliberate not-yet rather than an impossibility. Tracked in #1565
-    // (split out of #1549, which closed with the EventSelectors reset — a
-    // WRITE-side fix that says nothing about this READ-side always-emit).
-    // Pattern documented in
-    // `feedback_always_emit_check_type_discriminator.md`.
-    if (trail.CloudWatchLogsLogGroupArn && trail.CloudWatchLogsRoleArn) {
-      result['CloudWatchLogsLogGroupArn'] = trail.CloudWatchLogsLogGroupArn;
-      result['CloudWatchLogsRoleArn'] = trail.CloudWatchLogsRoleArn;
-    }
+    // from the captured snapshot is never compared at all.
+    //
+    // Both premises the guard rested on are now disproven, each by its own
+    // probe, which is why this can be an always-emit rather than a
+    // discriminator:
+    //
+    //  - "AWS rejects a `''` round-trip with `CloudWatchLogsLogGroupArn is
+    //    not in valid ARN format`" — DISPROVEN by the issue #1160 live probe
+    //    (2026-08-10): `''` is accepted for this field and nulls it out.
+    //  - "a console-side enable shows up as both fields appearing at once on
+    //    the next read" — FALSE for the reason above; that wording was
+    //    corrected in the #1160 review and is what issue #1565 was filed on.
+    //
+    // The all-or-nothing discriminator is preserved where it actually
+    // matters — the WRITE side — rather than by withholding the read: the
+    // update path decides both fields TOGETHER
+    // (`resolveCloudWatchLogsPair`), forwarding them on PRESENCE so an
+    // explicit `''` CLEARS and an ABSENT pair is retained, and refusing any
+    // half-populated or non-string shape. The pair is emitted TOGETHER here
+    // too, so the snapshot never describes the half-configured state AWS
+    // cannot hold.
+    //
+    // This is deliberately NOT the
+    // `feedback_always_emit_check_type_discriminator.md` pattern, and the
+    // difference is worth naming: that pattern guards the emit on a SIBLING
+    // discriminator whose false value makes the field illegal on AWS, so a
+    // console-side add is impossible and nothing is lost by withholding it.
+    // Here the pair's own presence IS the switch, so withholding it hides the
+    // one change worth catching. See docs/provider-development.md ("Two
+    // failure modes when an always-emit placeholder round-trips").
+    result['CloudWatchLogsLogGroupArn'] = trail.CloudWatchLogsLogGroupArn ?? '';
+    result['CloudWatchLogsRoleArn'] = trail.CloudWatchLogsRoleArn ?? '';
 
     result['KMSKeyId'] = trail.KmsKeyId ?? '';
     result['SnsTopicName'] = trail.SnsTopicName ?? '';
