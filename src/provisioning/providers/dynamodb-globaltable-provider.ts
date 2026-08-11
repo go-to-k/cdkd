@@ -17,6 +17,7 @@ import {
   type KeySchemaElement,
   type AttributeDefinition,
   type GlobalSecondaryIndex,
+  type GlobalSecondaryIndexDescription,
   type GlobalSecondaryIndexUpdate,
   type LocalSecondaryIndex,
   type OnDemandThroughput,
@@ -1033,17 +1034,23 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       const recordedOldBillingUsable =
         recordedOldBilling === undefined ||
         (typeof recordedOldBilling === 'string' && recordedOldBilling.trim() !== '');
+      // NOT this provider's create-path default: the two answer different
+      // questions. An ABSENT recorded previous means "the template declared no
+      // BillingMode", where PAY_PER_REQUEST is GlobalTable's own default; an
+      // ABSENT `BillingModeSummary` is AWS saying the table was created
+      // without an explicit mode, which IS PROVISIONED (the same reading
+      // `AWS::DynamoDB::Table`'s `readCurrentState` takes). Using the template
+      // default here would read a live PROVISIONED table as on-demand and mask
+      // a real flip.
+      //
+      // Named rather than inlined because the GSI recovery baseline (issue
+      // #1571) needs the SAME answer: `DescribeTable` reports
+      // `ProvisionedThroughput: {0, 0}` for every index of an on-demand table,
+      // so which live members are safe to read is decided by this value.
+      const liveBillingMode = describeResp.Table?.BillingModeSummary?.BillingMode ?? 'PROVISIONED';
       const oldBilling = recordedOldBillingUsable
         ? ((recordedOldBilling as string | undefined) ?? 'PAY_PER_REQUEST')
-        : // NOT this provider's create-path default: the two arms answer
-          // different questions. An ABSENT recorded previous means "the
-          // template declared no BillingMode", where PAY_PER_REQUEST is
-          // GlobalTable's own default; an ABSENT `BillingModeSummary` is
-          // AWS saying the table was created without an explicit mode, which
-          // IS PROVISIONED (the same reading `AWS::DynamoDB::Table`'s
-          // `readCurrentState` takes). Using the template default here would
-          // read a live PROVISIONED table as on-demand and mask a real flip.
-          (describeResp.Table?.BillingModeSummary?.BillingMode ?? 'PROVISIONED');
+        : liveBillingMode;
       if (!recordedOldBillingUsable) {
         this.logger.warn(
           `AWS::DynamoDB::GlobalTable ${logicalId}: the recorded previous BillingMode ` +
@@ -1937,22 +1944,33 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         onUnusablePreviousGsiBlock
       );
       // With a junk state record the baseline is built from the DESIRED side
-      // filtered to the indexes that actually EXIST live. Three properties
-      // follow, and each closes one of the ways a value-carrying live baseline
-      // went wrong:
-      //   - a desired index that exists live appears IDENTICALLY on both sides,
-      //     so it is a no-op: no capacity, projection or key-order comparison
-      //     against AWS-shaped values ever happens;
+      // filtered to the indexes that actually EXIST live, carrying the live
+      // VALUES that are safe to compare (issue #1571 — see
+      // `buildLiveRecoveryGsiBaseline` for which are, which are not, and why).
+      // Three properties follow:
       //   - a desired index that does NOT exist live is ADDED, which is the
       //     permanent-loss case this whole fallback exists for;
+      //   - a desired index that exists live is compared on capacity /
+      //     on-demand ceilings only, so a capacity edit and a #1160-class
+      //     ceiling REMOVAL both apply on THIS deploy rather than lagging one;
       //   - an index live but absent from the template is in NEITHER side, so
       //     it is never DELETED. Deleting is irreversible and a junk state
       //     record cannot tell "cdkd used to manage this" from "somebody
       //     created it out of band", so the safe reading is to leave it and
       //     say so.
       const previousSdkIndexes = previousGsiUnusable
-        ? desiredSdkIndexes.filter(
-            (gsi) => typeof gsi.IndexName === 'string' && liveIndexNames.has(gsi.IndexName)
+        ? buildLiveRecoveryGsiBaseline(
+            desiredSdkIndexes,
+            describeResp.Table?.GlobalSecondaryIndexes,
+            {
+              // A flip re-shapes every index by construction, and step 4 applies
+              // the provisioned side atomically, so a value comparison across
+              // two billing modes would measure the translation rather than the
+              // user's edit.
+              carryLiveValues: oldBilling === newBilling && liveBillingMode === newBilling,
+              liveBillingMode,
+              autoScaledIndexNames: collectAutoScaledGsiNames(properties, currentRegion),
+            }
           )
         : previousTranslatedIndexes;
       if (previousGsiUnusable) {
@@ -1963,11 +1981,20 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         );
         const liveOnly = [...liveIndexNames].filter((name) => !desiredNames.has(name));
         if (liveOnly.length > 0) {
+          // Be precise about the remedy: a later deploy does NOT clear these.
+          // Once this deploy records a valid block, the live-only index is in
+          // neither the previous nor the desired side of EVERY subsequent
+          // diff, so it survives indefinitely — the earlier wording promised a
+          // convergence that cannot happen. `cdkd drift --accept` records the
+          // AWS-current indexes into state, which puts the index back on the
+          // previous side and lets the next deploy delete it.
           this.logger.warn(
             `AWS::DynamoDB::GlobalTable ${logicalId}: ${liveOnly.join(', ')} exist(s) on the ` +
               `table but not in the template. No Delete is issued while the recorded ` +
               `GlobalSecondaryIndexes are unusable — a junk state record cannot prove cdkd ` +
-              `created them. Re-deploy once state carries a valid block to remove them.`
+              `created them, and an index delete is irreversible. This does NOT self-heal: ` +
+              `run \`cdkd drift --accept\` to record the table's live indexes into state, then ` +
+              `re-deploy to remove them — or delete the index directly in AWS.`
           );
         }
       }
@@ -5273,6 +5300,198 @@ export function collectRawOnDemandDeclarations(
     });
   }
   return out;
+}
+
+/**
+ * Names of the GSIs whose template declares APPLICATION AUTO SCALING on either
+ * capacity dimension (issue #1571).
+ *
+ * Used by {@link buildLiveRecoveryGsiBaseline} to decide which indexes must
+ * keep an identity-only capacity baseline. For an autoscaled index the live
+ * number is owned by Application Auto Scaling, not by the template: the
+ * translation takes `MinCapacity` (see {@link CapacitySource}), so comparing a
+ * live 10 against a template min of 1 reads as a scale-down NOBODY ASKED FOR
+ * and cdkd would issue it. That was one of the three measured failure modes of
+ * the first value-carrying baseline (#1551), and it is the only one that
+ * cannot be resolved by reading the live side more carefully — the two numbers
+ * are BOTH correct, they just answer different questions.
+ *
+ * Walks the same two sources as {@link toSdkGlobalSecondaryIndexes} and
+ * {@link collectRawOnDemandDeclarations} — the LOCAL replica's index entry
+ * first (the canonical CDK spelling), the GSI-level block as the
+ * hand-authored fallback for read, the top-level GSI for write. A divergence
+ * between the three is what would re-open the bug, so they are kept adjacent.
+ *
+ * PRESENCE of the `*CapacityAutoScalingSettings` key is the test, not whether
+ * its members coerce: a block that is itself an unresolved intrinsic still
+ * means "this index is autoscaled", and the safe reading of "might be" is
+ * "is" — the consequence of a false positive is one deploy of capacity lag,
+ * the consequence of a false negative is an unrequested scale-down.
+ */
+export function collectAutoScaledGsiNames(
+  properties: Record<string, unknown>,
+  region: string
+): Set<string> {
+  const out = new Set<string>();
+  const rawIndexes = properties['GlobalSecondaryIndexes'];
+  if (!Array.isArray(rawIndexes)) return out;
+
+  const replicas = properties['Replicas'];
+  const localReplica = Array.isArray(replicas)
+    ? replicas.find((r) => asRecord(r)?.['Region'] === region)
+    : undefined;
+  const localReplicaIndexes = asRecord(localReplica)?.['GlobalSecondaryIndexes'];
+  const localByName = new Map<string, Record<string, unknown>>();
+  if (Array.isArray(localReplicaIndexes)) {
+    for (const entry of localReplicaIndexes) {
+      const record = asRecord(entry);
+      const name = record?.['IndexName'];
+      if (record && typeof name === 'string') localByName.set(name, record);
+    }
+  }
+
+  for (const entry of rawIndexes) {
+    const gsi = asRecord(entry);
+    const name = gsi?.['IndexName'];
+    if (!gsi || typeof name !== 'string') continue;
+    const localEntry = localByName.get(name);
+    const readBlocks = [
+      localEntry?.['ReadProvisionedThroughputSettings'],
+      gsi['ReadProvisionedThroughputSettings'],
+    ];
+    const autoScaled =
+      readBlocks.some(
+        (block) => asRecord(block)?.['ReadCapacityAutoScalingSettings'] !== undefined
+      ) ||
+      asRecord(gsi['WriteProvisionedThroughputSettings'])?.['WriteCapacityAutoScalingSettings'] !==
+        undefined;
+    if (autoScaled) out.add(name);
+  }
+  return out;
+}
+
+/** Inputs {@link buildLiveRecoveryGsiBaseline} needs beyond the two index lists. */
+export interface LiveRecoveryBaselineOptions {
+  /**
+   * `false` keeps the baseline IDENTITY-ONLY (every carried entry is a
+   * byte-copy of its desired counterpart, so only ADDs can come out of the
+   * diff). Set by the caller whenever a BillingMode flip is in play or the
+   * live mode disagrees with the desired one — across two billing modes every
+   * index differs BY CONSTRUCTION, so a value comparison there measures the
+   * translation, not the user's edit.
+   */
+  readonly carryLiveValues: boolean;
+  /** The table's LIVE billing mode (`BillingModeSummary`, absent = PROVISIONED). */
+  readonly liveBillingMode: string;
+  /** Result of {@link collectAutoScaledGsiNames} for the DESIRED template. */
+  readonly autoScaledIndexNames: ReadonlySet<string>;
+}
+
+/**
+ * Build the GSI diff baseline used when the cdkd STATE record's
+ * `GlobalSecondaryIndexes` is present-but-unusable (issue #1571, closing the
+ * residual #1551 / PR #1562 measured and deliberately left open).
+ *
+ * The entries are the DESIRED indexes filtered to the names that EXIST live —
+ * the live table is the only side that can answer "does this index exist",
+ * which is what stops the permanent index loss #1562 was about. What #1562
+ * could not settle was the VALUES: it copied the desired entry verbatim, so
+ * the diff could only ever produce ADDs and every capacity / ceiling edit
+ * silently lagged one deploy.
+ *
+ * This carries live VALUES, but only the ones that are safe to compare, and
+ * the exclusions are the three measured failure modes of the first attempt
+ * (recorded at the `liveIndexNames` call site) rather than a guess:
+ *
+ *  - **`ProvisionedThroughput` is gated on the LIVE billing mode.**
+ *    `DescribeTable` reports `{ReadCapacityUnits: 0, WriteCapacityUnits: 0}`
+ *    for every index of a PAY_PER_REQUEST table, so an ungated read produced a
+ *    "modified" on every index and re-sent `{0, 0}`, which AWS rejects.
+ *  - **An AUTOSCALED index keeps identity-only capacity.** The live number
+ *    belongs to Application Auto Scaling; the desired side is `MinCapacity`.
+ *    Comparing them reads as a scale-down the user never asked for.
+ *  - **`KeySchema` / `Projection` / `WarmThroughput` are always the desired
+ *    side.** All three are copied from `desired`, so they can never DIFFER —
+ *    deliberately. `KeySchema` and `Projection` are immutable on an existing
+ *    index (a difference produces only a "recreate the index" warning, and
+ *    AWS's `Projection.NonKeyAttributes` READBACK ORDER is not guaranteed, so
+ *    the comparison would be a coin flip); `WarmThroughput` reads back with a
+ *    `Status` member the translated shape does not carry, and DynamoDB warm
+ *    throughput is increase-only, so a manufactured difference is a real
+ *    AWS-side risk.
+ *
+ * `OnDemandThroughput` IS carried from live on an on-demand table, and that is
+ * the second thing this fixes: the `modified` loop derives the `-1` ceiling
+ * RESET (the #1160 absent-field-removal class) from the PREVIOUS side, so with
+ * a desired-copy baseline a template that dropped `MaxReadRequestUnits` left
+ * the old ceiling live in AWS forever while cdkd reported success.
+ *
+ * REMOVES are still not derivable here and are deliberately absent: an index
+ * live but not in the template is in NEITHER side, so no `Delete` is issued.
+ * A junk state record cannot distinguish "cdkd created this and the template
+ * dropped it" from "somebody added it out of band", the delete is irreversible
+ * and a re-create costs a full backfill. The caller names the live-only
+ * indexes and points at the remedy.
+ */
+export function buildLiveRecoveryGsiBaseline(
+  desiredSdkIndexes: readonly GlobalSecondaryIndex[],
+  liveIndexes: readonly GlobalSecondaryIndexDescription[] | undefined,
+  options: LiveRecoveryBaselineOptions
+): GlobalSecondaryIndex[] {
+  const liveByName = new Map<string, GlobalSecondaryIndexDescription>();
+  for (const live of liveIndexes ?? []) {
+    if (typeof live.IndexName === 'string') liveByName.set(live.IndexName, live);
+  }
+
+  const baseline: GlobalSecondaryIndex[] = [];
+  for (const desired of desiredSdkIndexes) {
+    if (typeof desired.IndexName !== 'string') continue;
+    const live = liveByName.get(desired.IndexName);
+    if (!live) continue;
+    // Spread FIRST so every member keeps the desired side's key order:
+    // `deepEqual` is `JSON.stringify`, so an entry rebuilt member-by-member
+    // would differ from its own translated counterpart on ordering alone.
+    // Overwriting an existing key preserves its position; only a key the
+    // desired side lacks is appended, and in that case the two genuinely
+    // differ anyway.
+    const entry: GlobalSecondaryIndex = { ...desired };
+    if (!options.carryLiveValues || options.autoScaledIndexNames.has(desired.IndexName)) {
+      baseline.push(entry);
+      continue;
+    }
+    if (options.liveBillingMode === 'PROVISIONED') {
+      // Introduce the member only when the desired side HAS it. A baseline
+      // carrying a block the desired side lacks reads as "the template removed
+      // provisioned capacity", which on a provisioned table is not a thing the
+      // user can express — the `modified` loop would then find no throughput
+      // field to send and print the misleading "recreate the index" warning.
+      const liveRead = toFiniteNumber(live.ProvisionedThroughput?.ReadCapacityUnits);
+      const liveWrite = toFiniteNumber(live.ProvisionedThroughput?.WriteCapacityUnits);
+      if (desired.ProvisionedThroughput && liveRead !== undefined && liveWrite !== undefined) {
+        entry.ProvisionedThroughput = {
+          ReadCapacityUnits: liveRead,
+          WriteCapacityUnits: liveWrite,
+        };
+      }
+    } else {
+      // On-demand: the live ceilings ARE the previous side, including their
+      // ABSENCE. Deleting the key when AWS reports no ceiling is load-bearing
+      // in the other direction — a desired-side ceiling then reads as a
+      // first-time SET and is applied, instead of being swallowed as "equal".
+      const liveRead = toFiniteNumber(live.OnDemandThroughput?.MaxReadRequestUnits);
+      const liveWrite = toFiniteNumber(live.OnDemandThroughput?.MaxWriteRequestUnits);
+      if (liveRead === undefined && liveWrite === undefined) {
+        delete entry.OnDemandThroughput;
+      } else {
+        entry.OnDemandThroughput = {
+          ...(liveRead !== undefined && { MaxReadRequestUnits: liveRead }),
+          ...(liveWrite !== undefined && { MaxWriteRequestUnits: liveWrite }),
+        };
+      }
+    }
+    baseline.push(entry);
+  }
+  return baseline;
 }
 
 /**
