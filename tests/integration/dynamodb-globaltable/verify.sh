@@ -952,8 +952,15 @@ JUNK_LOG="$(mktemp)"
 CDKD_TEST_UPDATE="${GSI_RECOVERY_MODES},gsi-state-junk" \
   ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose 2>&1 | tee "${JUNK_LOG}"
 
-if ! grep -q "GlobalSecondaryIndexes must be an array" "${JUNK_LOG}"; then
-  echo "FAIL: issue #1571 phase 1 — cdkd did not report the malformed desired GlobalSecondaryIndexes" >&2
+if ! grep -q "GlobalTable GsiRecoveryTable: .*GlobalSecondaryIndexes must be an array" "${JUNK_LOG}"; then
+  echo "FAIL: issue #1571 phase 1 — cdkd did not report the malformed desired GlobalSecondaryIndexes on GsiRecoveryTable" >&2
+  exit 1
+fi
+# Issue #1585: the PROVISIONED sibling table goes through the same junk phase,
+# so the autoscaled-exclusion recovery (step 13h) has a junk record to recover
+# from. The warning is per-table — assert it fired for this table too.
+if ! grep -q "GlobalTable GsiProvRecoveryTable: .*GlobalSecondaryIndexes must be an array" "${JUNK_LOG}"; then
+  echo "FAIL: issue #1585 — cdkd did not report the malformed desired GlobalSecondaryIndexes on GsiProvRecoveryTable" >&2
   exit 1
 fi
 rm -f "${JUNK_LOG}"
@@ -995,6 +1002,71 @@ if [ "${JUNK_READ}" != "40" ] || [ "${JUNK_WRITE}" != "50" ]; then
 fi
 echo "    junk GlobalSecondaryIndexes recorded (${JUNK_RECORDED}), live index untouched"
 
+# Issue #1585 preconditions. Assert liveOnlyIdx is LIVE at this point — the
+# step-13h "it survived" assertion is vacuous if the index never existed — and
+# that the PROVISIONED sibling's junk record + live autoscaled index are in
+# place for the exclusion sequence.
+LIVEONLY_STATUS="$(gsi_field "${GSI_RECOVERY_TABLE}" liveOnlyIdx IndexStatus)"
+if [ "${LIVEONLY_STATUS}" != "ACTIVE" ]; then
+  echo "FAIL: issue #1585 — liveOnlyIdx must be ACTIVE before the recovery phase, got '${LIVEONLY_STATUS}'" >&2
+  exit 1
+fi
+GSI_PROV_RECOVERY_TABLE="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | python3 -c '
+import json, sys
+state = json.load(sys.stdin)
+for logical_id, resource in state.get("resources", {}).items():
+    if resource.get("resourceType") == "AWS::DynamoDB::GlobalTable" and logical_id.startswith("GsiProvRecoveryTable"):
+        print(resource["physicalId"])
+        break
+')"
+if [ -z "${GSI_PROV_RECOVERY_TABLE}" ]; then
+  echo "FAIL: issue #1585 — no GsiProvRecoveryTable in cdkd state" >&2
+  exit 1
+fi
+PROV_JUNK_RECORDED="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | python3 -c '
+import json, sys
+state = json.load(sys.stdin)
+for logical_id, resource in state.get("resources", {}).items():
+    if logical_id.startswith("GsiProvRecoveryTable"):
+        print(json.dumps(resource.get("properties", {}).get("GlobalSecondaryIndexes")))
+        break
+')"
+case "${PROV_JUNK_RECORDED}" in
+  \[*)
+    echo "FAIL: issue #1585 — GsiProvRecoveryTable state still records an ARRAY (${PROV_JUNK_RECORDED}); step 13h would not exercise the recovery path" >&2
+    exit 1
+    ;;
+esac
+echo "    liveOnlyIdx ACTIVE, GsiProvRecoveryTable junk recorded (${PROV_JUNK_RECORDED})"
+
+echo "[verify] step 13g2: out-of-band capacity raise on the autoscaled index (issue #1585)"
+# Raise the autoscaled GSI's capacity ABOVE the template's MinCapacity (1) so
+# the recovery deploy has something to destructively scale DOWN if the
+# autoscaled exclusion is broken. This is the out-of-band write Application
+# Auto Scaling would normally perform; an explicit UpdateTable is deterministic
+# where waiting for AAS is not.
+aws dynamodb update-table \
+  --table-name "${GSI_PROV_RECOVERY_TABLE}" \
+  --global-secondary-index-updates \
+  '[{"Update":{"IndexName":"autoProvIdx","ProvisionedThroughput":{"ReadCapacityUnits":7,"WriteCapacityUnits":7}}}]' \
+  --region "${REGION}" >/dev/null
+RAISED=0
+for i in $(seq 1 60); do
+  RAISED_STATUS="$(gsi_field "${GSI_PROV_RECOVERY_TABLE}" autoProvIdx IndexStatus)"
+  RAISED_READ="$(gsi_field "${GSI_PROV_RECOVERY_TABLE}" autoProvIdx ProvisionedThroughput.ReadCapacityUnits)"
+  RAISED_WRITE="$(gsi_field "${GSI_PROV_RECOVERY_TABLE}" autoProvIdx ProvisionedThroughput.WriteCapacityUnits)"
+  if [ "${RAISED_STATUS}" = "ACTIVE" ] && [ "${RAISED_READ}" = "7" ] && [ "${RAISED_WRITE}" = "7" ]; then
+    RAISED=1
+    echo "    autoProvIdx raised to 7/7 and ACTIVE after ~$((i * 10))s"
+    break
+  fi
+  sleep 10
+done
+if [ "${RAISED}" != "1" ]; then
+  echo "FAIL: issue #1585 — autoProvIdx did not reach 7/7 ACTIVE after the out-of-band raise (status=${RAISED_STATUS}, read=${RAISED_READ}, write=${RAISED_WRITE})" >&2
+  exit 1
+fi
+
 echo "[verify] step 13h: cdkd deploy with gsi-state-recovery (issue #1571 phase 2 — the corrected template must apply VALUES, not just ADDs)"
 # PR #1562 recovered by taking the live index NAMES only, so every carried
 # entry was a byte-copy of its desired counterpart and the diff could produce
@@ -1008,11 +1080,22 @@ RECOVERY_LOG="$(mktemp)"
 CDKD_TEST_UPDATE="${GSI_RECOVERY_MODES},gsi-state-recovery" \
   ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose 2>&1 | tee "${RECOVERY_LOG}"
 
-# The autoscaled / not-template-determined exclusion and the live-only removes
-# path are unit-tested only; real-AWS coverage for both is issue (#1585).
-
-if ! grep -q "using the table's LIVE indexes as the comparison baseline" "${RECOVERY_LOG}"; then
-  echo "FAIL: issue #1571 phase 2 — the recovery path did not run (no LIVE-baseline warning)" >&2
+if ! grep -q "GlobalTable GsiRecoveryTable: .*using the table's LIVE indexes as the comparison baseline" "${RECOVERY_LOG}"; then
+  echo "FAIL: issue #1571 phase 2 — the recovery path did not run on GsiRecoveryTable (no LIVE-baseline warning)" >&2
+  exit 1
+fi
+# Issue #1585 (live-only / removes path): the recovery template dropped
+# liveOnlyIdx, and the provider must warn — naming the index — rather than
+# issue an irreversible Delete while the state record is junk.
+if ! grep -q "GlobalTable GsiRecoveryTable: liveOnlyIdx exist(s) on the table but not in the template" "${RECOVERY_LOG}"; then
+  echo "FAIL: issue #1585 — the live-only warning did not fire (or did not name liveOnlyIdx)" >&2
+  grep "exist(s) on the" "${RECOVERY_LOG}" >&2 || echo "  (no live-only warning at all)" >&2
+  exit 1
+fi
+# Issue #1585 (autoscaled exclusion): the PROVISIONED sibling also went through
+# the recovery path this deploy.
+if ! grep -q "GlobalTable GsiProvRecoveryTable: .*using the table's LIVE indexes as the comparison baseline" "${RECOVERY_LOG}"; then
+  echo "FAIL: issue #1585 — the recovery path did not run on GsiProvRecoveryTable (no LIVE-baseline warning)" >&2
   exit 1
 fi
 rm -f "${RECOVERY_LOG}"
@@ -1033,6 +1116,28 @@ case "${RECOVERED_WRITE}" in
     ;;
 esac
 echo "    recovery deploy applied the value edit (read=90) and the removal (write cleared), issue #1571 closed"
+
+echo "[verify] step 13i: issue #1585 — liveOnlyIdx survived, autoscaled capacity untouched"
+# The live-only index must SURVIVE the recovery deploy (no Delete issued).
+LIVEONLY_AFTER="$(gsi_field "${GSI_RECOVERY_TABLE}" liveOnlyIdx IndexStatus)"
+case "${LIVEONLY_AFTER}" in
+  ACTIVE|UPDATING)
+    ;;
+  *)
+    echo "FAIL: issue #1585 — liveOnlyIdx did not survive the recovery deploy (status='${LIVEONLY_AFTER}')" >&2
+    exit 1
+    ;;
+esac
+# The autoscaled index's out-of-band capacity must be UNCHANGED: the exclusion
+# keeps its baseline entry identity-only, so the recovery deploy must not
+# scale the live 7/7 down to the desired side's derived 2/1.
+EXCL_READ="$(gsi_field "${GSI_PROV_RECOVERY_TABLE}" autoProvIdx ProvisionedThroughput.ReadCapacityUnits)"
+EXCL_WRITE="$(gsi_field "${GSI_PROV_RECOVERY_TABLE}" autoProvIdx ProvisionedThroughput.WriteCapacityUnits)"
+if [ "${EXCL_READ}" != "7" ] || [ "${EXCL_WRITE}" != "7" ]; then
+  echo "FAIL: issue #1585 — the recovery deploy touched the autoscaled index's capacity: read=${EXCL_READ} / write=${EXCL_WRITE} (expected 7/7 — an unrequested scale-down is the destructive failure mode the exclusion exists to prevent)" >&2
+  exit 1
+fi
+echo "    liveOnlyIdx survived (${LIVEONLY_AFTER}), autoProvIdx capacity unchanged at 7/7 — issue #1585 covered"
 
 echo "[verify] step 14a: assert DeletionProtectionEnabled flipped back to false on AWS"
 DP_FINAL="$(aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" \
@@ -1082,7 +1187,9 @@ assert_gone "table '${TABLE_NAME}' still exists after destroy" aws dynamodb desc
 assert_gone "table '${GSI_PROV_TABLE}' still exists after destroy" aws dynamodb describe-table --table-name "${GSI_PROV_TABLE}" --region "${REGION}"
 assert_gone "table '${GSI_OD_TABLE}' still exists after destroy" aws dynamodb describe-table --table-name "${GSI_OD_TABLE}" --region "${REGION}"
 assert_gone "table '${OD_REPLICA_TABLE}' still exists after destroy" aws dynamodb describe-table --table-name "${OD_REPLICA_TABLE}" --region "${REGION}"
-echo "[verify] step 16a ok: all four tables deleted"
+assert_gone "table '${GSI_RECOVERY_TABLE}' still exists after destroy" aws dynamodb describe-table --table-name "${GSI_RECOVERY_TABLE}" --region "${REGION}"
+assert_gone "table '${GSI_PROV_RECOVERY_TABLE}' still exists after destroy" aws dynamodb describe-table --table-name "${GSI_PROV_RECOVERY_TABLE}" --region "${REGION}"
+echo "[verify] step 16a ok: all six tables deleted"
 
 # Issue #1512: the on-demand replica table is the one whose eu-west-1 replica
 # is never removed by an update — teardown relies entirely on `cdkd destroy`
@@ -1145,6 +1252,10 @@ assert_target_gone "table/${GSI_PROV_TABLE}/index/byStatus" dynamodb:index:Write
 assert_target_gone "table/${GSI_PROV_TABLE}/index/byStatus" dynamodb:index:ReadCapacityUnits
 assert_target_gone "table/${TABLE_NAME}" dynamodb:table:ReadCapacityUnits
 assert_target_gone "table/${TABLE_NAME}" dynamodb:table:WriteCapacityUnits
+# Issue #1585: the autoscaled-exclusion table registers write dimensions at
+# both the table and index level (read sides are fixed, never registered).
+assert_target_gone "table/${GSI_PROV_RECOVERY_TABLE}" dynamodb:table:WriteCapacityUnits
+assert_target_gone "table/${GSI_PROV_RECOVERY_TABLE}/index/autoProvIdx" dynamodb:index:WriteCapacityUnits
 
 echo "[verify] step 16b: assert cdkd state is empty"
 assert_gone "cdkd state file still exists at s3://${STATE_BUCKET}/${STATE_KEY}" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"

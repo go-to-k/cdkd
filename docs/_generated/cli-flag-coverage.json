@@ -1358,6 +1358,7 @@
     "--from-state",
     "--function-name",
     "--global-cluster-identifier",
+    "--global-secondary-index-updates",
     "--graph-identifier",
     "--group-id",
     "--group-ids",
