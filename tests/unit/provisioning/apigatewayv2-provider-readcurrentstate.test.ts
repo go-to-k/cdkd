@@ -157,6 +157,33 @@ describe('ApiGatewayV2Provider.readCurrentState', () => {
       AuthorizationType: 'JWT',
       AuthorizerId: 'auth-1',
       AuthorizationScopes: [],
+      // Issue #609: unlike the other backfilled Route properties (which are
+      // emit-when-present), ApiKeyRequired gets its AWS default because cdkd
+      // actively RESETS it on removal — the read side has to be able to show
+      // the reset landed. Same treatment as Stage's AutoDeploy.
+      ApiKeyRequired: false,
+    });
+  });
+
+  it('reads back a TRUE ApiKeyRequired rather than only its default', async () => {
+    // The assertion above pins the false DEFAULT; on its own it would also
+    // pass if the reverse map hardcoded false. This pins the other polarity.
+    mockSend.mockResolvedValueOnce({
+      RouteKey: '$default',
+      ApiKeyRequired: true,
+      ModelSelectionExpression: '$request.body.action',
+    });
+
+    const result = await provider.readCurrentState(
+      'route-2',
+      'RouteLogical',
+      'AWS::ApiGatewayV2::Route',
+      { ApiId: 'abcd1234' }
+    );
+
+    expect(result).toMatchObject({
+      ApiKeyRequired: true,
+      ModelSelectionExpression: '$request.body.action',
     });
   });
 

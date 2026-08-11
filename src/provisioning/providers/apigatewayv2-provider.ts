@@ -27,6 +27,8 @@ import {
   type IntegrationType,
   type AuthorizationType,
   type AuthorizerType,
+  type AccessLogSettings,
+  type ParameterConstraints,
   type RouteSettings,
   type UpdateApiCommandInput,
   type UpdateStageCommandInput,
@@ -88,6 +90,10 @@ export class ApiGatewayV2Provider implements ResourceProvider {
         'Tags',
         'StageVariables',
         'DefaultRouteSettings',
+        'AccessLogSettings',
+        'ClientCertificateId',
+        'DeploymentId',
+        'RouteSettings',
       ]),
     ],
     [
@@ -113,6 +119,11 @@ export class ApiGatewayV2Provider implements ResourceProvider {
         'AuthorizerId',
         'AuthorizationScopes',
         'OperationName',
+        'ApiKeyRequired',
+        'ModelSelectionExpression',
+        'RequestModels',
+        'RequestParameters',
+        'RouteResponseSelectionExpression',
       ]),
     ],
     [
@@ -465,6 +476,10 @@ export class ApiGatewayV2Provider implements ResourceProvider {
           Description: properties['Description'] as string | undefined,
           StageVariables: properties['StageVariables'] as Record<string, string> | undefined,
           DefaultRouteSettings: properties['DefaultRouteSettings'] as RouteSettings | undefined,
+          AccessLogSettings: properties['AccessLogSettings'] as AccessLogSettings | undefined,
+          ClientCertificateId: properties['ClientCertificateId'] as string | undefined,
+          DeploymentId: properties['DeploymentId'] as string | undefined,
+          RouteSettings: properties['RouteSettings'] as Record<string, RouteSettings> | undefined,
           Tags: this.cfnTagsToRecord(properties['Tags']),
         })
       );
@@ -682,6 +697,15 @@ export class ApiGatewayV2Provider implements ResourceProvider {
           AuthorizerId: properties['AuthorizerId'] as string | undefined,
           AuthorizationScopes: properties['AuthorizationScopes'] as string[] | undefined,
           OperationName: properties['OperationName'] as string | undefined,
+          ApiKeyRequired: properties['ApiKeyRequired'] as boolean | undefined,
+          ModelSelectionExpression: properties['ModelSelectionExpression'] as string | undefined,
+          RequestModels: properties['RequestModels'] as Record<string, string> | undefined,
+          RequestParameters: properties['RequestParameters'] as
+            | Record<string, ParameterConstraints>
+            | undefined,
+          RouteResponseSelectionExpression: properties['RouteResponseSelectionExpression'] as
+            | string
+            | undefined,
         })
       );
 
@@ -998,6 +1022,17 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       if (resp.DefaultRouteSettings !== undefined) {
         result['DefaultRouteSettings'] = resp.DefaultRouteSettings;
       }
+      // Issue #609 backfill. Same emit-when-present convention: the drift
+      // comparator only descends into keys present in the recorded baseline,
+      // so a stage that never set one of these cannot drift on it.
+      if (resp.AccessLogSettings !== undefined) {
+        result['AccessLogSettings'] = resp.AccessLogSettings;
+      }
+      if (resp.ClientCertificateId !== undefined) {
+        result['ClientCertificateId'] = resp.ClientCertificateId;
+      }
+      if (resp.DeploymentId !== undefined) result['DeploymentId'] = resp.DeploymentId;
+      if (resp.RouteSettings !== undefined) result['RouteSettings'] = resp.RouteSettings;
       return result;
     } catch (err) {
       if (err instanceof NotFoundException) return undefined;
@@ -1088,6 +1123,21 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       // of AuthorizationType. Emit-when-present so a route that never set
       // it does not grow a phantom-drift key.
       if (resp.OperationName !== undefined) result['OperationName'] = resp.OperationName;
+      // Issue #609 backfill, same emit-when-present convention as above.
+      // `ApiKeyRequired` gets its AWS default (false) rather than being
+      // omitted: unlike the others it is a boolean cdkd now actively RESETS on
+      // removal, so the read side has to be able to show the reset landed.
+      result['ApiKeyRequired'] = resp.ApiKeyRequired ?? false;
+      if (resp.ModelSelectionExpression !== undefined) {
+        result['ModelSelectionExpression'] = resp.ModelSelectionExpression;
+      }
+      if (resp.RequestModels !== undefined) result['RequestModels'] = resp.RequestModels;
+      if (resp.RequestParameters !== undefined) {
+        result['RequestParameters'] = resp.RequestParameters;
+      }
+      if (resp.RouteResponseSelectionExpression !== undefined) {
+        result['RouteResponseSelectionExpression'] = resp.RouteResponseSelectionExpression;
+      }
       return result;
     } catch (err) {
       if (err instanceof NotFoundException) return undefined;
@@ -1447,6 +1497,48 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       input.DefaultRouteSettings = properties['DefaultRouteSettings'] as RouteSettings;
       changed = true;
     }
+    // AccessLogSettings / RouteSettings are OBJECT-valued blocks that
+    // UpdateStage merges; neither has a documented whole-block reset sentinel,
+    // so they are passed through on change only. Removal is left un-reset for
+    // the same reason DefaultRouteSettings is, and recorded rather than
+    // guessed — the reset shape has not been live A/B'd against CloudFormation.
+    if (
+      properties['AccessLogSettings'] !== undefined &&
+      !this.deepEqual(properties['AccessLogSettings'], previousProperties['AccessLogSettings'])
+    ) {
+      input.AccessLogSettings = properties['AccessLogSettings'] as AccessLogSettings;
+      changed = true;
+    }
+    if (
+      properties['RouteSettings'] !== undefined &&
+      !this.deepEqual(properties['RouteSettings'], previousProperties['RouteSettings'])
+    ) {
+      input.RouteSettings = properties['RouteSettings'] as Record<string, RouteSettings>;
+      changed = true;
+    }
+    // ClientCertificateId clears on '' (detaches the certificate) when removed,
+    // mirroring the AuthorizerId treatment on Route.
+    {
+      const r = this.clearableUpdate(
+        properties['ClientCertificateId'] as string | undefined,
+        previousProperties['ClientCertificateId'] as string | undefined,
+        ''
+      );
+      if (r.changed) {
+        input.ClientCertificateId = r.value;
+        changed = true;
+      }
+    }
+    // DeploymentId points at a specific Deployment resource; it is only
+    // meaningful while AutoDeploy is off, and there is no "no deployment"
+    // sentinel — pass through on change only.
+    if (
+      properties['DeploymentId'] !== undefined &&
+      properties['DeploymentId'] !== previousProperties['DeploymentId']
+    ) {
+      input.DeploymentId = properties['DeploymentId'] as string;
+      changed = true;
+    }
 
     if (!changed) {
       this.logger.debug(`No mutable Stage fields changed for ${logicalId}; skipping UpdateStage`);
@@ -1601,7 +1693,9 @@ export class ApiGatewayV2Provider implements ResourceProvider {
   /**
    * `UpdateRoute` keys on `(ApiId, RouteId)`. Mutable fields cdkd
    * manages: `RouteKey` / `Target` / `AuthorizationType` /
-   * `AuthorizerId` / `AuthorizationScopes` / `OperationName`.
+   * `AuthorizerId` / `AuthorizationScopes` / `OperationName` /
+   * `ApiKeyRequired` / `RequestModels` / `RequestParameters` /
+   * `ModelSelectionExpression` / `RouteResponseSelectionExpression`.
    */
   private async updateRoute(
     logicalId: string,
@@ -1699,6 +1793,67 @@ export class ApiGatewayV2Provider implements ResourceProvider {
         input.OperationName = r.value;
         changed = true;
       }
+    }
+    // ApiKeyRequired resets to false (CFn default) on removal (#1160).
+    {
+      const r = this.clearableUpdate(
+        properties['ApiKeyRequired'] as boolean | undefined,
+        previousProperties['ApiKeyRequired'] as boolean | undefined,
+        false
+      );
+      if (r.changed) {
+        input.ApiKeyRequired = r.value;
+        changed = true;
+      }
+    }
+    // RequestModels merges on the AWS side exactly like the Integration
+    // RequestParameters map, so a dropped key is cleared by sending it with an
+    // empty-string value (see mapWithRemovals).
+    {
+      const merged = this.mapWithRemovals(
+        properties['RequestModels'],
+        previousProperties['RequestModels']
+      );
+      if (merged !== undefined) {
+        input.RequestModels = merged;
+        changed = true;
+      }
+    }
+    // RequestParameters here is Record<string, ParameterConstraints> — an
+    // OBJECT-valued map, so the empty-string per-key clear the string maps use
+    // does not apply. Passed through on change only; whole-block removal is
+    // NOT reset, and that is recorded rather than guessed: the reset shape has
+    // not been live A/B'd against CloudFormation.
+    if (
+      properties['RequestParameters'] !== undefined &&
+      !this.deepEqual(properties['RequestParameters'], previousProperties['RequestParameters'])
+    ) {
+      input.RequestParameters = properties[
+        'RequestParameters'
+      ] as UpdateRouteCommandInput['RequestParameters'];
+      changed = true;
+    }
+    // ModelSelectionExpression / RouteResponseSelectionExpression are
+    // WebSocket-only selection expressions. Pass-through on change only, same
+    // treatment as the API-level RouteSelectionExpression above: removal is not
+    // a valid transition for a WebSocket route and no reset sentinel is
+    // documented.
+    if (
+      properties['ModelSelectionExpression'] !== undefined &&
+      properties['ModelSelectionExpression'] !== previousProperties['ModelSelectionExpression']
+    ) {
+      input.ModelSelectionExpression = properties['ModelSelectionExpression'] as string;
+      changed = true;
+    }
+    if (
+      properties['RouteResponseSelectionExpression'] !== undefined &&
+      properties['RouteResponseSelectionExpression'] !==
+        previousProperties['RouteResponseSelectionExpression']
+    ) {
+      input.RouteResponseSelectionExpression = properties[
+        'RouteResponseSelectionExpression'
+      ] as string;
+      changed = true;
     }
 
     if (!changed) {
