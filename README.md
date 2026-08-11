@@ -64,9 +64,10 @@ migration boundaries, and destructive-operation safety.
 
 ### Claude Code
 
-Install it as a plugin (one-time setup, available in every session):
+Install it as a plugin (one-time setup, available in every session) by
+running these inside a Claude Code session:
 
-```bash
+```text
 /plugin marketplace add go-to-k/cdkd
 /plugin install cdkd@cdkd
 ```
