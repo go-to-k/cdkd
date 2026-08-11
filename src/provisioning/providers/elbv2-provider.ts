@@ -1237,8 +1237,11 @@ export class ELBv2Provider implements ResourceProvider {
       // (Id, Port, AvailabilityZone) tuple — a changed Port registers the new
       // tuple and deregisters the old one. Register first so a target whose
       // spelling changed never has a window with zero registrations.
-      const newTargets = this.convertTargets(properties['Targets']);
-      const oldTargets = this.convertTargets(previousProperties['Targets']);
+      // BOTH sides are normalized against the SAME group port so the keys are
+      // comparable — see convertTargets' note on why the omitted-Port case is
+      // a destructive diff rather than a cosmetic one.
+      const newTargets = this.convertTargets(properties['Targets'], properties['Port']);
+      const oldTargets = this.convertTargets(previousProperties['Targets'], properties['Port']);
       const targetKey = (t: TargetDescription) =>
         JSON.stringify([t.Id, t.Port ?? null, t.AvailabilityZone ?? null]);
       const oldTargetKeys = new Set(oldTargets.map(targetKey));
@@ -1722,8 +1725,24 @@ export class ELBv2Provider implements ResourceProvider {
    * `Port` is numeric-coerced (CFn templates may carry it as a string).
    * Returns `[]` for an absent / non-array value so callers can branch on
    * `.length`.
+   *
+   * `groupPort` defaults an OMITTED `Port` to the target group's own port,
+   * which is what AWS substitutes when a target is registered without one.
+   * This is load-bearing for the update diff, not cosmetic: `targetKey` below
+   * keys on `Port ?? null`, so without the default a template-shaped
+   * `[{Id}]` and an AWS-readback-shaped `[{Id, Port: 80}]` describe the SAME
+   * live target under two different keys — and the diff then registers the
+   * "new" one (a no-op, it lands on the group port) and DEREGISTERS the live
+   * one. `cdkd drift --revert` hits exactly that, since it hands `update()`
+   * the AWS snapshot as the previous side and a template-shaped desired side.
+   * Absent for a `lambda` target group (no port), where both sides stay
+   * undefined and therefore still key identically.
    */
-  private convertTargets(raw: unknown): TargetDescription[] {
+  private convertTargets(raw: unknown, groupPort?: unknown): TargetDescription[] {
+    const defaultPort =
+      groupPort === undefined || groupPort === null || Number.isNaN(Number(groupPort))
+        ? undefined
+        : Number(groupPort);
     if (!Array.isArray(raw)) return [];
     const out: TargetDescription[] = [];
     for (const entry of raw) {
@@ -1739,9 +1758,10 @@ export class ELBv2Provider implements ResourceProvider {
         continue;
       }
       const e = entry as CfnTargetDescription;
+      const port = e.Port !== undefined ? Number(e.Port) : defaultPort;
       out.push({
         Id: e.Id as string,
-        ...(e.Port !== undefined && { Port: Number(e.Port) }),
+        ...(port !== undefined && { Port: port }),
         ...(e.AvailabilityZone !== undefined && { AvailabilityZone: e.AvailabilityZone }),
       });
     }
@@ -2032,16 +2052,34 @@ export class ELBv2Provider implements ResourceProvider {
    *    `unhealthy`, `unavailable`) IS a registered target and is included —
    *    health is not registration.
    *
-   * `AvailabilityZone` is emitted only when AWS reports something other than
-   * the `all` default, which it substitutes for an `ip` target the template
-   * left unscoped; echoing it back would fire drift against a
-   * `properties`-fallback baseline (the user's template, which has no such
-   * key) on every run.
+   * Two AWS-SUBSTITUTED values are dropped, because echoing back a value the
+   * template never wrote is phantom drift against a `properties`-fallback
+   * baseline — and, worse, a DESTRUCTIVE one: `updateTargetGroup` keys its
+   * register / deregister diff on the whole `(Id, Port, AvailabilityZone)`
+   * tuple, so one extra member makes the SAME live target read as a different
+   * one and `--revert` deregisters it.
    *
-   * Errors are swallowed the same way the attributes read above is: the key is
-   * left ABSENT rather than emitted empty, so a missing
-   * `elasticloadbalancing:DescribeTargetHealth` permission reports nothing
-   * instead of reporting every target as removed.
+   *  - `Port` when it equals the target group's own port — what AWS
+   *    substitutes for a target registered without one. (`convertTargets`
+   *    closes the same gap from the other direction, so a template that DOES
+   *    spell the port out still keys identically.)
+   *  - `AvailabilityZone` unless the group is `ip`-typed and AWS reported
+   *    something other than its `all` default. CFn only accepts the member for
+   *    `ip` targets, and `DeregisterTargets` rejects it on an instance group.
+   *
+   * Known bound: if `DescribeTargetHealth` were to return an empty list in the
+   * window right after `RegisterTargets`, the deploy-time snapshot would
+   * freeze `Targets: []` against a template that declares some. Not observed —
+   * `RegisterTargets` is synchronous and the integ's post-deploy drift run
+   * sees all three fixture targets — and left unguarded deliberately, since
+   * treating an empty readback as unreadable would also blind a legitimately
+   * emptied target group.
+   *
+   * On error the key is left ABSENT rather than emitted empty. That is not
+   * silent: against an observed baseline that HOLDS targets, an absent key
+   * still reports them as drifted. It is the honest option available — the
+   * read failed, so the live set is unknown — and it keeps `--revert` from
+   * acting on a fabricated empty list.
    */
   private async attachRegisteredTargets(
     result: Record<string, unknown>,
@@ -2051,16 +2089,19 @@ export class ELBv2Provider implements ResourceProvider {
       const resp = await this.getClient().send(
         new DescribeTargetHealthCommand({ TargetGroupArn: targetGroupArn })
       );
+      const groupPort = typeof result['Port'] === 'number' ? result['Port'] : undefined;
+      const isIpTargetGroup = result['TargetType'] === 'ip';
       const targets: CfnTargetDescription[] = [];
       for (const desc of resp.TargetHealthDescriptions ?? []) {
         if (desc.TargetHealth?.State === 'draining') continue;
         const id = desc.Target?.Id;
         if (typeof id !== 'string' || id.length === 0) continue;
+        const port = desc.Target?.Port;
         const az = desc.Target?.AvailabilityZone;
         targets.push({
           Id: id,
-          ...(desc.Target?.Port !== undefined && { Port: desc.Target.Port }),
-          ...(az !== undefined && az !== 'all' && { AvailabilityZone: az }),
+          ...(port !== undefined && port !== groupPort && { Port: port }),
+          ...(isIpTargetGroup && az !== undefined && az !== 'all' && { AvailabilityZone: az }),
         });
       }
       result['Targets'] = targets;

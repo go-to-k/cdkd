@@ -54,7 +54,10 @@ fixture targets exactly those shapes.
    NEW SG ingress rule, and registers a fourth, untemplated IP target on
    the target group, all out of band. `cdkd drift` must report **exit 1**,
    and the fixture asserts the fourth target is genuinely live first — so
-   the revert assertion below cannot pass vacuously.
+   the revert assertion below cannot pass vacuously. The drift REPORT must
+   also name a `Targets` path: exit 1 on its own is satisfied by the S3 /
+   IAM / SG drifts, so without that grep the step would pass identically
+   with `Targets` back in `getDriftUnknownPaths` (never compared at all).
 6. `cdkd drift --revert -y` — assert exit **0** (revert succeeds), then a
    follow-up `cdkd drift` is clean (**exit 0**) and the target group is
    back to exactly its three templated targets (the untemplated one

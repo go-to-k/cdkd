@@ -50,6 +50,7 @@ STACK="CdkdDriftArraysExample"
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 TEST_DIR="${REPO_ROOT}/tests/integration/drift-revert-arrays"
 CLI="node ${REPO_ROOT}/dist/cli.js"
+DRIFT_OUT="$(mktemp -t cdkd-drift-arrays)"
 
 ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
 STATE_BUCKET="${STATE_BUCKET:-cdkd-state-${ACCOUNT_ID}}"
@@ -66,6 +67,7 @@ fi
 
 cleanup() {
   rc=$?
+  rm -f "${DRIFT_OUT}"
   if [ "${rc}" -ne 0 ]; then
     echo "[verify] FAIL (exit ${rc}) — attempting destroy to clean up"
     ${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force || true
@@ -143,11 +145,19 @@ echo "[verify] step 3b ok: benign reorder is NOT a false positive"
 echo "[verify] step 4: inject REAL drift, then cdkd drift (expect exit 1)"
 node inject-drift.ts drift
 set +e
-${CLI} drift "${STACK}" --state-bucket "${STATE_BUCKET}"
+${CLI} drift "${STACK}" --state-bucket "${STATE_BUCKET}" > "${DRIFT_OUT}" 2>&1
 rc=$?
 set -e
+cat "${DRIFT_OUT}"
 if [ "${rc}" -ne 1 ]; then
   echo "[verify] FAIL: expected real drift exit 1, got ${rc}"
+  exit 1
+fi
+# BINDING assertion for #1620: exit 1 alone is satisfied by the S3 / IAM / SG
+# drifts, so it would pass identically with `Targets` back in
+# getDriftUnknownPaths (never compared). The report must NAME the Targets path.
+if ! grep -q 'Targets' "${DRIFT_OUT}"; then
+  echo "[verify] FAIL: the drift report does not mention 'Targets' — the TargetGroup target list is not being compared at all (#1620 regressed to getDriftUnknownPaths?)"
   exit 1
 fi
 DRIFTED_TARGETS="$(registered_target_ips)"

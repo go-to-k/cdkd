@@ -18,8 +18,8 @@
  * Plain-string arrays and NON-tag object arrays are NOT canonicalized by the
  * two heuristic passes above, because either can be order-significant. But
  * several CFn inputs are semantically unordered sets of plain strings (FSx
- * `WindowsConfiguration.Aliases`, `...SelfManagedActiveDirectoryConfiguration.DnsIps`,
- * ...) or of objects (ELBv2 `TargetGroup.Targets`), so
+ * `WindowsConfiguration.Aliases`) or of objects (ELBv2
+ * `TargetGroup.Targets`), so
  * {@link canonicalizeUnorderedArraysAtPaths} sorts them at an explicit,
  * provider-declared path list only — an opt-in seam mirroring
  * `getDriftUnknownPaths` (see `ResourceProvider.getDriftUnorderedPaths`).
@@ -153,13 +153,22 @@ export function canonicalizeUnorderedArraysAtPaths(v: unknown, paths: readonly s
  * order they were built in. Used ONLY as a sort key — the returned string is
  * never compared for equality by the drift comparator, which keeps its own
  * `deepEqual`.
+ *
+ * Keys are emitted `JSON.stringify`-quoted so a key containing `:` or `,`
+ * cannot forge a different object's serialization, and `undefined`-valued
+ * keys are SKIPPED exactly as `JSON.stringify` drops them — one side of the
+ * comparison arrives via a raw SDK response (where an absent member is
+ * `undefined`) and the other via JSON round-tripped state (where it is simply
+ * gone), so without the skip the same target would key two different ways.
  */
 function canonicalJson(v: unknown): string {
   if (Array.isArray(v)) return `[${v.map(canonicalJson).join(',')}]`;
   if (v && typeof v === 'object') {
-    const entries = Object.keys(v as Record<string, unknown>)
+    const bag = v as Record<string, unknown>;
+    const entries = Object.keys(bag)
+      .filter((k) => bag[k] !== undefined)
       .sort()
-      .map((k) => `${JSON.stringify(k)}:${canonicalJson((v as Record<string, unknown>)[k])}`);
+      .map((k) => `${JSON.stringify(k)}:${canonicalJson(bag[k])}`);
     return `{${entries.join(',')}}`;
   }
   return JSON.stringify(v) ?? 'null';

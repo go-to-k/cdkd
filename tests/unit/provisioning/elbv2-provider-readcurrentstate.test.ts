@@ -149,10 +149,11 @@ describe('ELBv2Provider.readCurrentState', () => {
         .mockResolvedValueOnce({
           Attributes: [{ Key: 'deregistration_delay.timeout_seconds', Value: '300' }],
         })
-        // DescribeTargetHealth (#1620) — the registered target set.
+        // DescribeTargetHealth (#1620) — the registered target set. Port 8080
+        // differs from the group's own 80, so it survives the default-drop.
         .mockResolvedValueOnce({
           TargetHealthDescriptions: [
-            { Target: { Id: '10.0.1.10', Port: 80 }, TargetHealth: { State: 'healthy' } },
+            { Target: { Id: '10.0.1.10', Port: 8080 }, TargetHealth: { State: 'healthy' } },
           ],
         })
         .mockResolvedValueOnce({ TagDescriptions: [{ ResourceArn: 'arn:tg', Tags: [] }] });
@@ -181,7 +182,7 @@ describe('ELBv2Provider.readCurrentState', () => {
         UnhealthyThresholdCount: 3,
         Matcher: { HttpCode: '200' },
         TargetGroupAttributes: [{ Key: 'deregistration_delay.timeout_seconds', Value: '300' }],
-        Targets: [{ Id: '10.0.1.10', Port: 80 }],
+        Targets: [{ Id: '10.0.1.10', Port: 8080 }],
         Tags: [],
       });
     });
@@ -242,18 +243,84 @@ describe('ELBv2Provider.readCurrentState', () => {
         const result = await readTargets({
           TargetHealthDescriptions: [
             {
-              Target: { Id: '10.0.1.10', Port: 80, AvailabilityZone: 'all' },
+              Target: { Id: '10.0.1.10', Port: 8080, AvailabilityZone: 'all' },
               TargetHealth: { State: 'healthy' },
             },
             {
-              Target: { Id: '10.0.1.11', Port: 80, AvailabilityZone: 'us-east-1a' },
+              Target: { Id: '10.0.1.11', Port: 8080, AvailabilityZone: 'us-east-1a' },
               TargetHealth: { State: 'healthy' },
             },
           ],
         });
         expect(result?.['Targets']).toEqual([
-          { Id: '10.0.1.10', Port: 80 },
-          { Id: '10.0.1.11', Port: 80, AvailabilityZone: 'us-east-1a' },
+          { Id: '10.0.1.10', Port: 8080 },
+          { Id: '10.0.1.11', Port: 8080, AvailabilityZone: 'us-east-1a' },
+        ]);
+      });
+
+      it('drops the AvailabilityZone entirely on a non-ip target group', async () => {
+        // CFn only accepts the member for `ip` targets, and DeregisterTargets
+        // rejects it on an instance group — so echoing it back would make
+        // `--revert` fail on exactly the resources it is meant to repair.
+        mockSend
+          .mockResolvedValueOnce({
+            TargetGroups: [
+              {
+                TargetGroupArn: 'arn:tg',
+                TargetGroupName: 'mytg',
+                TargetType: 'instance',
+                Port: 80,
+              },
+            ],
+          })
+          .mockResolvedValueOnce({ Attributes: [] })
+          .mockResolvedValueOnce({
+            TargetHealthDescriptions: [
+              {
+                Target: { Id: 'i-0abc', Port: 8080, AvailabilityZone: 'us-east-1a' },
+                TargetHealth: { State: 'healthy' },
+              },
+            ],
+          })
+          .mockResolvedValueOnce({ TagDescriptions: [{ ResourceArn: 'arn:tg', Tags: [] }] });
+
+        const result = await provider.readCurrentState(
+          'arn:tg',
+          'L',
+          'AWS::ElasticLoadBalancingV2::TargetGroup'
+        );
+        expect(result?.['Targets']).toEqual([{ Id: 'i-0abc', Port: 8080 }]);
+      });
+
+      it('drops the Port AWS substitutes from the target group itself, keeps an override', async () => {
+        // The destructive case (#1635 review): a template `Targets: [{Id}]`
+        // reads back as `{Id, Port: <group port>}`, and `updateTargetGroup`
+        // keys its register/deregister diff on the whole tuple — so the extra
+        // member makes the SAME live target look like a different one and
+        // `drift --revert` deregisters it.
+        mockSend
+          .mockResolvedValueOnce({
+            TargetGroups: [
+              { TargetGroupArn: 'arn:tg', TargetGroupName: 'mytg', TargetType: 'ip', Port: 80 },
+            ],
+          })
+          .mockResolvedValueOnce({ Attributes: [] })
+          .mockResolvedValueOnce({
+            TargetHealthDescriptions: [
+              { Target: { Id: '10.0.1.10', Port: 80 }, TargetHealth: { State: 'healthy' } },
+              { Target: { Id: '10.0.1.11', Port: 9000 }, TargetHealth: { State: 'healthy' } },
+            ],
+          })
+          .mockResolvedValueOnce({ TagDescriptions: [{ ResourceArn: 'arn:tg', Tags: [] }] });
+
+        const result = await provider.readCurrentState(
+          'arn:tg',
+          'L',
+          'AWS::ElasticLoadBalancingV2::TargetGroup'
+        );
+        expect(result?.['Targets']).toEqual([
+          { Id: '10.0.1.10' },
+          { Id: '10.0.1.11', Port: 9000 },
         ]);
       });
 

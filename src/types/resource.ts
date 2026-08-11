@@ -592,20 +592,28 @@ export interface ResourceProvider {
   ): Record<string, unknown>;
 
   /**
-   * State property paths holding a plain-string array that is semantically an
-   * UNORDERED set. The drift comparator sorts the array at these paths on BOTH
-   * comparison sides before comparing, so an AWS-side reorder does not surface
-   * as phantom drift on a resource nobody touched.
+   * State property paths holding an array that is semantically an UNORDERED
+   * set — either of plain strings or of OBJECTS (issue
+   * [#1620](https://github.com/go-to-k/cdkd/issues/1620)). The drift comparator
+   * sorts the array at these paths on BOTH comparison sides before comparing,
+   * so an AWS-side reorder does not surface as phantom drift on a resource
+   * nobody touched. Object elements are ordered by a key-order-independent
+   * canonical serialization, so the sort cannot itself depend on the key order
+   * AWS happened to return.
    *
-   * Plain-string arrays are NOT order-normalized by default (a scalar list can
-   * be order-significant), unlike tag lists and AWS id / ARN arrays which the
+   * Neither shape is order-normalized by default (either can be
+   * order-significant), unlike tag lists and AWS id / ARN arrays which the
    * shared normalizer canonicalizes heuristically for every type. This is the
-   * per-provider opt-in for the cases that are genuinely unordered.
+   * per-provider opt-in for the cases that are genuinely unordered. Only a
+   * HOMOGENEOUS array is sorted — a mixed or array-valued element list at a
+   * declared path is left untouched.
    *
-   * Example: FSx's `WindowsConfiguration.Aliases` (DNS alias names) and
-   * `WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.DnsIps`
-   * (plain IPv4 strings) come back from `DescribeFileSystems` in an
-   * AWS-chosen order.
+   * Examples: FSx's `WindowsConfiguration.Aliases` (DNS alias names) comes
+   * back from `DescribeFileSystems` in an AWS-chosen order; ELBv2's
+   * `TargetGroup.Targets` is an object array `DescribeTargetHealth` documents
+   * no ordering guarantee for. Note FSx's
+   * `...SelfManagedActiveDirectoryConfiguration.DnsIps` is deliberately NOT
+   * declared — see the note on that provider's implementation.
    *
    * Declare it HERE rather than sorting inside the provider's `readCurrentState`
    * reverse-mapper: the normalizer runs on both sides, so it stays correct when
@@ -617,8 +625,8 @@ export interface ResourceProvider {
    * {@link getDriftUnknownPaths}: exactly equal, or an entry followed by `.`.
    *
    * @param resourceType e.g. `AWS::FSx::FileSystem`
-   * @returns paths whose plain-string array is unordered; defaults to empty
-   *          when not implemented
+   * @returns paths whose array (of plain strings or of objects) is unordered;
+   *          defaults to empty when not implemented
    */
   getDriftUnorderedPaths?(resourceType: string): string[];
 

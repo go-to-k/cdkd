@@ -333,6 +333,109 @@ describe('calculateResourceDrift', () => {
       expect(calculateResourceDrift(state, aws)).toHaveLength(1);
     });
   });
+
+  describe('unorderedPaths — OBJECT arrays (issue #1620)', () => {
+    // The real ELBv2 `TargetGroup.Targets` shape. The provider's own
+    // declaration is asserted in
+    // tests/unit/provisioning/elbv2-lb-targetgroup-props.test.ts; this block
+    // proves the mechanism end-to-end through the comparator, which the
+    // plain-string cases above cannot.
+    const TARGETS = ['Targets'];
+
+    it('reports NO drift on an AWS-side reorder of an object array', () => {
+      const state = {
+        Targets: [
+          { Id: '10.0.0.10', Port: 80 },
+          { Id: '10.0.0.11', Port: 80 },
+          { Id: '10.0.0.12', Port: 80 },
+        ],
+      };
+      const aws = {
+        Targets: [
+          { Id: '10.0.0.12', Port: 80 },
+          { Id: '10.0.0.10', Port: 80 },
+          { Id: '10.0.0.11', Port: 80 },
+        ],
+      };
+      expect(calculateResourceDrift(state, aws, { unorderedPaths: TARGETS })).toEqual([]);
+    });
+
+    it('still reports drift when a member is ADDED (the opposite polarity)', () => {
+      // Without this the test above is satisfied by a pass that absorbs
+      // everything, not just reorders.
+      const state = { Targets: [{ Id: '10.0.0.10', Port: 80 }] };
+      const aws = {
+        Targets: [
+          { Id: '10.0.0.99', Port: 80 },
+          { Id: '10.0.0.10', Port: 80 },
+        ],
+      };
+      const drifts = calculateResourceDrift(state, aws, { unorderedPaths: TARGETS });
+      expect(drifts).toHaveLength(1);
+      expect(drifts[0]?.path).toBe('Targets');
+    });
+
+    it('still reports drift when a member VALUE changes under a reorder', () => {
+      const state = {
+        Targets: [
+          { Id: '10.0.0.10', Port: 80 },
+          { Id: '10.0.0.11', Port: 80 },
+        ],
+      };
+      const aws = {
+        Targets: [
+          { Id: '10.0.0.11', Port: 8080 },
+          { Id: '10.0.0.10', Port: 80 },
+        ],
+      };
+      expect(calculateResourceDrift(state, aws, { unorderedPaths: TARGETS })).toHaveLength(1);
+    });
+
+    it('absorbs a reorder whose two sides also disagree on element KEY order', () => {
+      // The raw-JSON.stringify trap: same targets, but each side spells the
+      // members in its own order. Only a key-order-independent sort key
+      // canonicalizes both to the same sequence.
+      const state = {
+        Targets: [
+          { Port: 80, Id: '10.0.0.11' },
+          { Id: '10.0.0.10', Port: 80 },
+        ],
+      };
+      const aws = {
+        Targets: [
+          { Id: '10.0.0.10', Port: 80 },
+          { Id: '10.0.0.11', Port: 80 },
+        ],
+      };
+      expect(calculateResourceDrift(state, aws, { unorderedPaths: TARGETS })).toEqual([]);
+    });
+
+    it('is inert on an object array at an UNDECLARED path', () => {
+      const state = { Targets: [{ Id: 'a' }, { Id: 'b' }] };
+      const aws = { Targets: [{ Id: 'b' }, { Id: 'a' }] };
+      expect(calculateResourceDrift(state, aws, { unorderedPaths: ['Other'] })).toHaveLength(1);
+    });
+
+    it('an ignorePaths entry wins over an unorderedPaths one (the ECS/ASG-managed case)', () => {
+      // What the ELBv2 provider's per-resource `getDriftUnknownPaths` arm
+      // produces for a target group whose template declares no Targets: the
+      // sibling resource owns the list, so a scale event must not read as
+      // drift (and `--revert` must not deregister the live tasks).
+      const state = { Targets: [{ Id: '10.0.0.10', Port: 80 }] };
+      const aws = {
+        Targets: [
+          { Id: '10.0.0.10', Port: 80 },
+          { Id: '10.0.0.77', Port: 80 },
+        ],
+      };
+      expect(
+        calculateResourceDrift(state, aws, { unorderedPaths: TARGETS, ignorePaths: TARGETS })
+      ).toEqual([]);
+      // ...and without the ignore entry the same change IS drift, so the
+      // assertion above is not vacuous.
+      expect(calculateResourceDrift(state, aws, { unorderedPaths: TARGETS })).toHaveLength(1);
+    });
+  });
 });
 
 describe('undeclaredEmptyObservedKeys (issue #1498)', () => {
