@@ -1862,14 +1862,88 @@ describe('findRevertDroppedAwsKeys (pure helper, issue #1478)', () => {
     expect(findRevertDroppedAwsKeys(drifts, desired, aws)).toEqual(['Parameters.nested']);
   });
 
-  it('compares arrays wholesale, never element-wise', async () => {
+  it('compares a POSITIONAL array wholesale, never element-wise', async () => {
     const findRevertDroppedAwsKeys = await load();
     // The drift comparator's paths never carry an array index, so an
     // element-wise walk here would report positions the rest of the revert
-    // path cannot reason about.
+    // path cannot reason about. Only a KEYED list (below) is walked, because
+    // its entries have identities rather than positions.
+    const desired = { SubnetIds: ['subnet-a'] };
+    const aws = { SubnetIds: ['subnet-a', 'subnet-b'] };
+    const drifts = [{ path: 'SubnetIds', stateValue: [], awsValue: [] }];
+    expect(findRevertDroppedAwsKeys(drifts, desired, aws)).toEqual([]);
+  });
+
+  it('does NOT report a SERVICE-authored tag the revert preserves', async () => {
+    const findRevertDroppedAwsKeys = await load();
+    // `mergeTagListForRevert` (issue #1501) keeps `aws:`-prefixed /
+    // AmazonECSManaged entries, so they are not dropped and warning about
+    // them would be a false alarm. This case predates the keyed-list walk and
+    // must keep returning [] now that tag lists ARE walked.
     const desired = { Tags: [{ Key: 'a', Value: '1' }] };
-    const aws = { Tags: [{ Key: 'a', Value: '1' }, { Key: 'aws:authored', Value: 'x' }] };
+    const aws = {
+      Tags: [
+        { Key: 'a', Value: '1' },
+        { Key: 'aws:authored', Value: 'x' },
+        { Key: 'AmazonECSManaged', Value: 'true' },
+      ],
+    };
     const drifts = [{ path: 'Tags', stateValue: [], awsValue: [] }];
+    expect(findRevertDroppedAwsKeys(drifts, desired, aws)).toEqual([]);
+  });
+
+  it('DOES report an ordinary console-added tag, which the revert strips', async () => {
+    const findRevertDroppedAwsKeys = await load();
+    // The other half of #1501: a non-service tag IS stripped by the revert,
+    // so the plan should say so.
+    const desired = { Tags: [{ Key: 'a', Value: '1' }] };
+    const aws = { Tags: [{ Key: 'a', Value: '1' }, { Key: 'owner', Value: 'alice' }] };
+    const drifts = [{ path: 'Tags', stateValue: [], awsValue: [] }];
+    expect(findRevertDroppedAwsKeys(drifts, desired, aws)).toEqual(['Tags[owner]']);
+  });
+
+  it('reports every AWS-only entry of a KEYED attribute list (issue #1626)', async () => {
+    const findRevertDroppedAwsKeys = await load();
+    // The motivating case. `readCurrentState` returns ELBv2's FULL attribute
+    // set, so against a template declaring one key every other entry lands on
+    // the provider's removal path — and before this walk the plan warned about
+    // NONE of them, because the list is an array.
+    const desired = {
+      LoadBalancerAttributes: [{ Key: 'idle_timeout.timeout_seconds', Value: '120' }],
+    };
+    const aws = {
+      LoadBalancerAttributes: [
+        { Key: 'idle_timeout.timeout_seconds', Value: '60' },
+        { Key: 'deletion_protection.enabled', Value: 'false' },
+        { Key: 'routing.http2.enabled', Value: 'true' },
+      ],
+    };
+    const drifts = [
+      { path: 'LoadBalancerAttributes', stateValue: [], awsValue: [] },
+    ];
+    // Bracket form, because an attribute key contains dots of its own and a
+    // dotted path would be ambiguous with a nested object.
+    expect(findRevertDroppedAwsKeys(drifts, desired, aws)).toEqual([
+      'LoadBalancerAttributes[deletion_protection.enabled]',
+      'LoadBalancerAttributes[routing.http2.enabled]',
+    ]);
+  });
+
+  it('treats an EMPTY desired list as the whole-list case, not a keyed compare', async () => {
+    const findRevertDroppedAwsKeys = await load();
+    // `[]` carries no identities. Enumerating every AWS entry against it would
+    // be noisier than the existing whole-list report and says the same thing.
+    const desired = { LoadBalancerAttributes: [] };
+    const aws = { LoadBalancerAttributes: [{ Key: 'deletion_protection.enabled', Value: 'x' }] };
+    const drifts = [{ path: 'LoadBalancerAttributes', stateValue: [], awsValue: [] }];
+    expect(findRevertDroppedAwsKeys(drifts, desired, aws)).toEqual([]);
+  });
+
+  it('does not treat a list of plain objects without Key as keyed', async () => {
+    const findRevertDroppedAwsKeys = await load();
+    const desired = { Rules: [{ Name: 'a' }] };
+    const aws = { Rules: [{ Name: 'a' }, { Name: 'b' }] };
+    const drifts = [{ path: 'Rules', stateValue: [], awsValue: [] }];
     expect(findRevertDroppedAwsKeys(drifts, desired, aws)).toEqual([]);
   });
 
