@@ -77,10 +77,12 @@ export interface PropertyDrift {
  * `'VpcConfig.SubnetIds'` excludes only that leaf.
  *
  * `options.unorderedPaths` is supplied by the provider (via
- * `getDriftUnorderedPaths`) for plain-string arrays that are semantically
- * UNORDERED sets — e.g. FSx `WindowsConfiguration.Aliases`. Those are sorted on
- * BOTH sides before comparison so an AWS-side reorder is not phantom drift.
- * Path matching uses the same prefix rule as `ignorePaths`.
+ * `getDriftUnorderedPaths`) for arrays that are semantically UNORDERED sets —
+ * of plain strings (FSx `WindowsConfiguration.Aliases`) or of OBJECTS (ELBv2
+ * `TargetGroup.Targets`, issue #1620, ordered by a key-order-independent
+ * canonical serialization). Those are sorted on BOTH sides before comparison
+ * so an AWS-side reorder is not phantom drift. Path matching uses the same
+ * prefix rule as `ignorePaths`.
  */
 export function calculateResourceDrift(
   stateProperties: Record<string, unknown>,

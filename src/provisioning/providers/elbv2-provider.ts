@@ -15,6 +15,7 @@ import {
   DescribeTargetGroupsCommand,
   ModifyTargetGroupAttributesCommand,
   DescribeTargetGroupAttributesCommand,
+  DescribeTargetHealthCommand,
   RegisterTargetsCommand,
   DeregisterTargetsCommand,
   ModifyCapacityReservationCommand,
@@ -1236,8 +1237,11 @@ export class ELBv2Provider implements ResourceProvider {
       // (Id, Port, AvailabilityZone) tuple — a changed Port registers the new
       // tuple and deregisters the old one. Register first so a target whose
       // spelling changed never has a window with zero registrations.
-      const newTargets = this.convertTargets(properties['Targets']);
-      const oldTargets = this.convertTargets(previousProperties['Targets']);
+      // BOTH sides are normalized against the SAME group port so the keys are
+      // comparable — see convertTargets' note on why the omitted-Port case is
+      // a destructive diff rather than a cosmetic one.
+      const newTargets = this.convertTargets(properties['Targets'], properties['Port']);
+      const oldTargets = this.convertTargets(previousProperties['Targets'], properties['Port']);
       const targetKey = (t: TargetDescription) =>
         JSON.stringify([t.Id, t.Port ?? null, t.AvailabilityZone ?? null]);
       const oldTargetKeys = new Set(oldTargets.map(targetKey));
@@ -1721,8 +1725,24 @@ export class ELBv2Provider implements ResourceProvider {
    * `Port` is numeric-coerced (CFn templates may carry it as a string).
    * Returns `[]` for an absent / non-array value so callers can branch on
    * `.length`.
+   *
+   * `groupPort` defaults an OMITTED `Port` to the target group's own port,
+   * which is what AWS substitutes when a target is registered without one.
+   * This is load-bearing for the update diff, not cosmetic: `targetKey` below
+   * keys on `Port ?? null`, so without the default a template-shaped
+   * `[{Id}]` and an AWS-readback-shaped `[{Id, Port: 80}]` describe the SAME
+   * live target under two different keys — and the diff then registers the
+   * "new" one (a no-op, it lands on the group port) and DEREGISTERS the live
+   * one. `cdkd drift --revert` hits exactly that, since it hands `update()`
+   * the AWS snapshot as the previous side and a template-shaped desired side.
+   * Absent for a `lambda` target group (no port), where both sides stay
+   * undefined and therefore still key identically.
    */
-  private convertTargets(raw: unknown): TargetDescription[] {
+  private convertTargets(raw: unknown, groupPort?: unknown): TargetDescription[] {
+    const defaultPort =
+      groupPort === undefined || groupPort === null || Number.isNaN(Number(groupPort))
+        ? undefined
+        : Number(groupPort);
     if (!Array.isArray(raw)) return [];
     const out: TargetDescription[] = [];
     for (const entry of raw) {
@@ -1738,9 +1758,10 @@ export class ELBv2Provider implements ResourceProvider {
         continue;
       }
       const e = entry as CfnTargetDescription;
+      const port = e.Port !== undefined ? Number(e.Port) : defaultPort;
       out.push({
         Id: e.Id as string,
-        ...(e.Port !== undefined && { Port: Number(e.Port) }),
+        ...(port !== undefined && { Port: port }),
         ...(e.AvailabilityZone !== undefined && { AvailabilityZone: e.AvailabilityZone }),
       });
     }
@@ -1985,8 +2006,7 @@ export class ELBv2Provider implements ResourceProvider {
 
     // TargetGroupAttributes via DescribeTargetGroupAttributes — the FULL
     // attribute set sorted by Key, same model as LoadBalancerAttributes /
-    // ListenerAttributes. Targets are deliberately NOT read back — see
-    // getDriftUnknownPaths.
+    // ListenerAttributes.
     try {
       const attrsResp = await this.getClient().send(
         new DescribeTargetGroupAttributesCommand({ TargetGroupArn: physicalId })
@@ -2005,11 +2025,121 @@ export class ELBv2Provider implements ResourceProvider {
       // false drift on every run.
     }
 
+    await this.attachRegisteredTargets(result, physicalId);
     await this.attachTags(result, physicalId);
     return result;
   }
 
-  getDriftUnknownPaths(resourceType: string): string[] {
+  /**
+   * Read the target group's REGISTERED targets back in CFn `Targets` shape via
+   * `DescribeTargetHealth` (issue
+   * [#1620](https://github.com/go-to-k/cdkd/issues/1620)).
+   *
+   * Two things make this safe to compare, and both were the reason `Targets`
+   * sat in {@link getDriftUnknownPaths} until now:
+   *
+   *  - **Order.** AWS does not guarantee a readback order for the target list,
+   *    and the drift comparator compares arrays positionally. The type now
+   *    declares `Targets` in {@link getDriftUnorderedPaths}, which sorts the
+   *    list on BOTH comparison sides — so a reorder is not drift.
+   *  - **Draining.** Deregistration is asynchronous: a just-removed target
+   *    keeps reporting for minutes with `TargetHealth.State === 'draining'`.
+   *    Including one would freeze it into the deploy-time `observedProperties`
+   *    snapshot and produce PERMANENT phantom drift against every later read,
+   *    once it finally disappears. `draining` means "being removed", so the
+   *    registered set deliberately excludes it. Every other state (`initial`
+   *    right after `RegisterTargets`, `unused` for a target with no listener,
+   *    `unhealthy`, `unavailable`) IS a registered target and is included —
+   *    health is not registration.
+   *
+   * Two AWS-SUBSTITUTED values are dropped, because echoing back a value the
+   * template never wrote is phantom drift against a `properties`-fallback
+   * baseline — and, worse, a DESTRUCTIVE one: `updateTargetGroup` keys its
+   * register / deregister diff on the whole `(Id, Port, AvailabilityZone)`
+   * tuple, so one extra member makes the SAME live target read as a different
+   * one and `--revert` deregisters it.
+   *
+   *  - `Port` when it equals the target group's own port — what AWS
+   *    substitutes for a target registered without one. (`convertTargets`
+   *    closes the same gap from the other direction, so a template that DOES
+   *    spell the port out still keys identically.)
+   *  - `AvailabilityZone` unless the group is `ip`-typed and AWS reported
+   *    something other than its `all` default. CFn only accepts the member for
+   *    `ip` targets, and `DeregisterTargets` rejects it on an instance group.
+   *
+   * Known bound: if `DescribeTargetHealth` were to return an empty list in the
+   * window right after `RegisterTargets`, the deploy-time snapshot would
+   * freeze `Targets: []` against a template that declares some. Not observed —
+   * `RegisterTargets` is synchronous and the integ's post-deploy drift run
+   * sees all three fixture targets — and left unguarded deliberately, since
+   * treating an empty readback as unreadable would also blind a legitimately
+   * emptied target group.
+   *
+   * On error the key is left ABSENT rather than emitted empty. That is not
+   * silent: against an observed baseline that HOLDS targets, an absent key
+   * still reports them as drifted. It is the honest option available — the
+   * read failed, so the live set is unknown — and it keeps `--revert` from
+   * acting on a fabricated empty list.
+   */
+  private async attachRegisteredTargets(
+    result: Record<string, unknown>,
+    targetGroupArn: string
+  ): Promise<void> {
+    try {
+      const resp = await this.getClient().send(
+        new DescribeTargetHealthCommand({ TargetGroupArn: targetGroupArn })
+      );
+      const groupPort = typeof result['Port'] === 'number' ? result['Port'] : undefined;
+      const isIpTargetGroup = result['TargetType'] === 'ip';
+      const targets: CfnTargetDescription[] = [];
+      for (const desc of resp.TargetHealthDescriptions ?? []) {
+        if (desc.TargetHealth?.State === 'draining') continue;
+        const id = desc.Target?.Id;
+        if (typeof id !== 'string' || id.length === 0) continue;
+        const port = desc.Target?.Port;
+        const az = desc.Target?.AvailabilityZone;
+        targets.push({
+          Id: id,
+          ...(port !== undefined && port !== groupPort && { Port: port }),
+          ...(isIpTargetGroup && az !== undefined && az !== 'all' && { AvailabilityZone: az }),
+        });
+      }
+      result['Targets'] = targets;
+    } catch (err) {
+      // Permission errors etc — leave the key absent rather than reporting
+      // every registered target as removed. Swallowed (not NotFound-mapped to
+      // `undefined` like the attributes read above) because the
+      // DescribeTargetGroups + DescribeTargetGroupAttributes calls that
+      // precede it already surface a deleted target group; this mirrors
+      // `attachTags`, the sibling best-effort enrichment.
+      this.logger.debug(
+        `ELBv2 DescribeTargetHealth(${targetGroupArn}) failed: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      );
+    }
+  }
+
+  /**
+   * `Targets` is scoped PER RESOURCE (issue
+   * [#1602](https://github.com/go-to-k/cdkd/issues/1602)'s seam), not switched
+   * off for the type: it is compared only for a target group whose TEMPLATE
+   * declares `Targets`.
+   *
+   * The reason is the issue [#1498](https://github.com/go-to-k/cdkd/issues/1498)
+   * class. A target group fronting an ECS service or an ASG declares NO
+   * `Targets` — the sibling resource registers them, and it keeps
+   * re-registering as it scales. Comparing an undeclared target list would
+   * therefore report drift on every scale event of an untouched stack, and
+   * `--revert` would DEREGISTER the tasks the service just placed. The
+   * `undeclaredEmptyObservedKeys` guard only covers the case where the capture
+   * happened to be EMPTY, which for a redeployed running service it is not.
+   *
+   * An absent properties bag falls back to COMPARING, per the method's
+   * contract — hiding real drift is the worse failure, and the only caller
+   * that omits the bag today is not `cdkd drift`.
+   */
+  getDriftUnknownPaths(resourceType: string, properties?: Record<string, unknown>): string[] {
     switch (resourceType) {
       case 'AWS::ElasticLoadBalancingV2::LoadBalancer':
         // EnableCapacityReservationProvisionStabilize is a CFn-only
@@ -2017,17 +2147,35 @@ export class ELBv2Provider implements ResourceProvider {
         // readback — it is not a resource property on the wire.
         return ['EnableCapacityReservationProvisionStabilize'];
       case 'AWS::ElasticLoadBalancingV2::TargetGroup':
-        // Targets ARE readable via DescribeTargetHealth, but the readback is
-        // an unordered object list (the drift comparator is positional and
-        // drift-normalize only canonicalizes tag lists / plain-string id
-        // arrays) and deregistration is asynchronous (a just-removed target
-        // reports `draining` for minutes) — both would fire phantom drift on
-        // every template whose order differs from AWS's. Declared unknown
-        // until object-array unordered comparison exists.
-        return ['Targets'];
+        if (
+          properties !== undefined &&
+          Object.keys(properties).length > 0 &&
+          properties['Targets'] === undefined
+        ) {
+          return ['Targets'];
+        }
+        return [];
       default:
         return [];
     }
+  }
+
+  /**
+   * `Targets` is a semantically UNORDERED set: `RegisterTargets` /
+   * `DeregisterTargets` are set operations (the provider's own update path
+   * key-diffs them rather than comparing positions), and `DescribeTargetHealth`
+   * documents no ordering guarantee. Declared here rather than sorted inside
+   * {@link attachRegisteredTargets} so the sort applies to BOTH comparison
+   * sides — see {@link ResourceProvider.getDriftUnorderedPaths}, whose header
+   * records why one-sided sorting manufactures drift on the
+   * `properties`-fallback baseline.
+   *
+   * `TargetGroupAttributes` needs no declaration: it is a `{Key, Value}` list,
+   * which the shared tag-list canonicalizer already sorts on both sides.
+   */
+  getDriftUnorderedPaths(resourceType: string): string[] {
+    if (resourceType !== 'AWS::ElasticLoadBalancingV2::TargetGroup') return [];
+    return ['Targets'];
   }
 
   private async readListener(physicalId: string): Promise<Record<string, unknown> | undefined> {

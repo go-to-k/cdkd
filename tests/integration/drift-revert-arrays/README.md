@@ -14,7 +14,12 @@ guarantee element ordering across reads, so when a tag list
 (`{Key,Value}[]`) or a resource-id / ARN array comes back in a different
 order, the unchanged set surfaces as **phantom drift**. Issue #802 added
 two order-canonicalizers (`canonicalizeTagListsDeep`,
-`canonicalizeIdArraysDeep`) applied to both comparison sides.
+`canonicalizeIdArraysDeep`) applied to both comparison sides, and issue
+[#1620](https://github.com/go-to-k/cdkd/issues/1620) extended the
+provider-declared opt-in pass (`canonicalizeUnorderedArraysAtPaths`, via
+`getDriftUnorderedPaths`) from plain-string arrays to arrays of OBJECTS —
+which is what let `ElasticLoadBalancingV2::TargetGroup.Targets` move out of
+`getDriftUnknownPaths` and start being compared at all.
 
 The existing `drift-revert` / `drift-revert-vpc` fixtures exercise the
 per-provider `readCurrentState -> compare -> --revert` round-trip but none
@@ -26,21 +31,38 @@ fixture targets exactly those shapes.
 1. `cdkd deploy CdkdDriftArraysExample` — an S3 Bucket, SNS Topic, SQS
    Queue (each with six user tags), an IAM ManagedPolicy with a
    multi-statement document carrying multiple `Action[]` + multiple
-   `Resource[]` (ARN arrays) + six tags, and a VPC (no NAT) +
-   SecurityGroup with four CIDR ingress rules + six tags.
+   `Resource[]` (ARN arrays) + six tags, a VPC (no NAT) +
+   SecurityGroup with four CIDR ingress rules + six tags, and a standalone
+   ELBv2 TargetGroup (`targetType: 'ip'`, no load balancer) with three
+   registered IP targets.
 2. **No-false-positive on a clean deploy** — `cdkd drift` immediately
    after deploy must report **exit 0** even though AWS reorders the tag
-   lists / ARN arrays on readback.
-3. **No-false-positive on an induced reorder** — `inject-drift.ts reorder`
+   lists / ARN arrays / target lists on readback.
+3. **Repeated runs agree** — a SECOND back-to-back `cdkd drift` must also
+   report **exit 0**. Two consecutive runs disagreeing with no code change
+   in between is the signature the unordered-readback class produces
+   (issues [#1620](https://github.com/go-to-k/cdkd/issues/1620) /
+   [#1515](https://github.com/go-to-k/cdkd/issues/1515)), and one run
+   cannot detect it. The step also asserts the templated target set
+   directly, order-insensitively.
+4. **No-false-positive on an induced reorder** — `inject-drift.ts reorder`
    re-PUTs the S3 bucket's existing six tags in reversed order (same set,
    different order). `cdkd drift` must still report **exit 0**
    (`canonicalizeTagListsDeep` absorbs the reorder).
-4. **True drift detected** — `inject-drift.ts drift` changes a tag VALUE
-   (S3), adds an Action to a managed-policy statement, and authorizes a
-   NEW SG ingress rule out of band. `cdkd drift` must report **exit 1**.
-5. `cdkd drift --revert -y` — assert exit **0** (revert succeeds), then a
-   follow-up `cdkd drift` is clean (**exit 0**).
-6. `cdkd destroy --force` — clean up.
+5. **True drift detected** — `inject-drift.ts drift` changes a tag VALUE
+   (S3), adds an Action to a managed-policy statement, authorizes a
+   NEW SG ingress rule, and registers a fourth, untemplated IP target on
+   the target group, all out of band. `cdkd drift` must report **exit 1**,
+   and the fixture asserts the fourth target is genuinely live first — so
+   the revert assertion below cannot pass vacuously. The drift REPORT must
+   also name a `Targets` path: exit 1 on its own is satisfied by the S3 /
+   IAM / SG drifts, so without that grep the step would pass identically
+   with `Targets` back in `getDriftUnknownPaths` (never compared at all).
+6. `cdkd drift --revert -y` — assert exit **0** (revert succeeds), then a
+   follow-up `cdkd drift` is clean (**exit 0**) and the target group is
+   back to exactly its three templated targets (the untemplated one
+   deregistered, the other three RETAINED).
+7. `cdkd destroy --force` — clean up.
 
 ## Run
 

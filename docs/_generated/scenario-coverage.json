@@ -94,7 +94,7 @@
     },
     {
       "tag": "drift-revert-array-canonicalization",
-      "description": "cdkd drift no-false-positive on tag-list / resource-id / ARN array REORDER (issue #802 `drift-normalize.ts` canonicalization) while still detecting real value / Action / SG-rule drift."
+      "description": "cdkd drift no-false-positive on tag-list / resource-id / ARN array REORDER (issue #802 `drift-normalize.ts` canonicalization) and on an unordered OBJECT array at a provider-declared path (issue #1620 — ELBv2 `TargetGroup.Targets`, asserted by TWO consecutive clean drift runs, since one run cannot detect a reorder disagreement), while still detecting real value / Action / SG-rule / added-target drift."
     },
     {
       "tag": "drift-revert-roundtrip",
@@ -2130,7 +2130,7 @@
     },
     {
       "scenario": "drift-revert-array-canonicalization",
-      "description": "cdkd drift no-false-positive on tag-list / resource-id / ARN array REORDER (issue #802 `drift-normalize.ts` canonicalization) while still detecting real value / Action / SG-rule drift.",
+      "description": "cdkd drift no-false-positive on tag-list / resource-id / ARN array REORDER (issue #802 `drift-normalize.ts` canonicalization) and on an unordered OBJECT array at a provider-declared path (issue #1620 — ELBv2 `TargetGroup.Targets`, asserted by TWO consecutive clean drift runs, since one run cannot detect a reorder disagreement), while still detecting real value / Action / SG-rule / added-target drift.",
       "fixtures": [
         "drift-revert-arrays"
       ]

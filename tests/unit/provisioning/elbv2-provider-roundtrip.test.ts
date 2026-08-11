@@ -8,6 +8,8 @@ import {
   SetIpAddressTypeCommand,
   AddTagsCommand,
   RemoveTagsCommand,
+  RegisterTargetsCommand,
+  DeregisterTargetsCommand,
 } from '@aws-sdk/client-elastic-load-balancing-v2';
 import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handler.js';
 
@@ -293,6 +295,116 @@ describe('ELBv2Provider read-update round-trip', () => {
     const input = modifyCalls[0]?.[0].input as { Matcher?: unknown };
     // The fix: empty-object Matcher is dropped from API input.
     expect(input.Matcher).toBeUndefined();
+  });
+
+  it('does NOT deregister a live target when only the desired side omits Port (#1620 revert)', async () => {
+    // The destructive shape found by the #1635 review. `drift --revert` calls
+    // update() with a TEMPLATE-shaped desired side (`Targets: [{Id}]`) and the
+    // AWS SNAPSHOT as the previous side. `targetKey` keys on the whole
+    // (Id, Port, AvailabilityZone) tuple, so without normalizing the omitted
+    // Port to the group's own port the SAME live target reads as two
+    // different ones — and the diff deregisters the real one.
+    const desired = {
+      Name: 'mytg',
+      Protocol: 'HTTP',
+      Port: 80,
+      VpcId: 'vpc-1',
+      TargetType: 'ip',
+      Targets: [{ Id: '10.0.0.11' }],
+      Tags: [],
+    };
+    const awsSnapshot = { ...desired, Targets: [{ Id: '10.0.0.11', Port: 80 }] };
+
+    mockSend
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({ TargetGroups: [{ TargetGroupName: 'mytg' }] })
+      .mockResolvedValueOnce({ TagDescriptions: [{ ResourceArn: TG_ARN, Tags: [] }] });
+
+    await provider.update(
+      'L',
+      TG_ARN,
+      'AWS::ElasticLoadBalancingV2::TargetGroup',
+      desired,
+      awsSnapshot
+    );
+
+    expect(
+      mockSend.mock.calls.find((c) => c[0] instanceof DeregisterTargetsCommand)
+    ).toBeUndefined();
+    expect(mockSend.mock.calls.find((c) => c[0] instanceof RegisterTargetsCommand)).toBeUndefined();
+  });
+
+  it('does NOT deregister when only the PREVIOUS side omits Port (#1620, other call site)', async () => {
+    // The mirror of the test above, and it pins the OTHER convertTargets call
+    // site: here the template spells the port out and the AWS snapshot is the
+    // one that omits it (which is what `readCurrentState` now emits, since it
+    // drops the group-port default). Reverting either call site's default
+    // breaks one of these two tests, so neither is redundant.
+    const desired = {
+      Name: 'mytg',
+      Protocol: 'HTTP',
+      Port: 80,
+      VpcId: 'vpc-1',
+      TargetType: 'ip',
+      Targets: [{ Id: '10.0.0.11', Port: 80 }],
+      Tags: [],
+    };
+    const awsSnapshot = { ...desired, Targets: [{ Id: '10.0.0.11' }] };
+
+    mockSend
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({ TargetGroups: [{ TargetGroupName: 'mytg' }] })
+      .mockResolvedValueOnce({ TagDescriptions: [{ ResourceArn: TG_ARN, Tags: [] }] });
+
+    await provider.update(
+      'L',
+      TG_ARN,
+      'AWS::ElasticLoadBalancingV2::TargetGroup',
+      desired,
+      awsSnapshot
+    );
+
+    expect(
+      mockSend.mock.calls.find((c) => c[0] instanceof DeregisterTargetsCommand)
+    ).toBeUndefined();
+  });
+
+  it('STILL deregisters a target the desired side genuinely drops (#1620 opposite polarity)', async () => {
+    // Guards the fix above from becoming a blanket "never deregister": an
+    // untemplated target really removed from the desired side must still go.
+    const desired = {
+      Name: 'mytg',
+      Protocol: 'HTTP',
+      Port: 80,
+      VpcId: 'vpc-1',
+      TargetType: 'ip',
+      Targets: [{ Id: '10.0.0.11' }],
+      Tags: [],
+    };
+    const awsSnapshot = {
+      ...desired,
+      Targets: [{ Id: '10.0.0.11', Port: 80 }, { Id: '10.0.0.99' }],
+    };
+
+    mockSend
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({ TargetGroups: [{ TargetGroupName: 'mytg' }] })
+      .mockResolvedValueOnce({ TagDescriptions: [{ ResourceArn: TG_ARN, Tags: [] }] });
+
+    await provider.update(
+      'L',
+      TG_ARN,
+      'AWS::ElasticLoadBalancingV2::TargetGroup',
+      desired,
+      awsSnapshot
+    );
+
+    const deregister = mockSend.mock.calls.find((c) => c[0] instanceof DeregisterTargetsCommand);
+    expect(deregister?.[0].input).toEqual({
+      TargetGroupArn: TG_ARN,
+      Targets: [{ Id: '10.0.0.99', Port: 80 }],
+    });
   });
 
   it('TargetGroup HTTP with non-empty Matcher round-trip preserves Matcher in ModifyTargetGroup', async () => {
