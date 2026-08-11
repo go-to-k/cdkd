@@ -98,6 +98,29 @@ export function mapSSESpecification(
 }
 
 /**
+ * Read one capacity member out of a per-index `ProvisionedThroughput` block,
+ * returning `undefined` for anything that is not a usable number.
+ *
+ * Deliberately has NO default (issue #1588 review). The BillingMode-flip caller
+ * suppresses the per-index update path for every index it handles, so a
+ * defaulted capacity would never be corrected by a later call and would land in
+ * cdkd state as if the template had declared it. Returning `undefined` routes
+ * the index to the same warn-and-omit path an absent block takes, letting AWS
+ * name it — the CFn-handler outcome.
+ *
+ * CFn is stringly typed, so a numeric string is accepted and coerced; `NaN` /
+ * `Infinity` / objects / unresolved intrinsics are not.
+ */
+function readCapacityNumber(block: unknown, member: string): number | undefined {
+  if (typeof block !== 'object' || block === null || Array.isArray(block)) return undefined;
+  const raw = (block as Record<string, unknown>)[member];
+  if (raw === undefined || raw === null || raw === '') return undefined;
+  if (typeof raw !== 'number' && typeof raw !== 'string') return undefined;
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : undefined;
+}
+
+/**
  * `DescribeTable` poll budget (seconds, 1 poll/s) after an ordinary
  * `UpdateTable` — capacity, TTL, tags, table class. Calibrated on those and
  * sufficient for them.
@@ -610,9 +633,19 @@ export class DynamoDBTableProvider implements ResourceProvider {
       // `BillingMode` whenever `BillingModeSummary` exists, which is always
       // true for a live on-demand table. The value is template-borne in every
       // reachable case, so the user can act on the error.
+      // `|| liveBillingMode === 'PAY_PER_REQUEST'` (PR review): this refusal
+      // keys on the RECORDED previous while the flip itself keys on the LIVE
+      // mode, and the two disagree after a `cdkd import` or an out-of-band
+      // console flip. Before this change the mismatch was inert — the flip
+      // failed anyway for an indexed table — but now that the flip SUCCEEDS,
+      // a record saying PROVISIONED against a live on-demand table would slip
+      // past the refusal, flip the table, and only then have its
+      // `OnDemandThroughput` UpdateTable rejected against a now-provisioned
+      // table: a half-applied deploy. Refusing on either side keeps the
+      // pre-flight ahead of the mutation.
       if (
         billingMode === 'PROVISIONED' &&
-        prevBillingMode === 'PAY_PER_REQUEST' &&
+        (prevBillingMode === 'PAY_PER_REQUEST' || liveBillingMode === 'PAY_PER_REQUEST') &&
         properties['OnDemandThroughput'] !== undefined
       ) {
         const absentNote =
@@ -695,12 +728,21 @@ export class DynamoDBTableProvider implements ResourceProvider {
         // already-PROVISIONED table does not, and re-asserting an index's
         // current capacity is a call AWS rejects.
         //
-        // The live index list is authoritative because AWS names LIVE indexes
-        // in the refusal — a template-only list would miss an index that exists
-        // but is no longer declared, which is exactly the one AWS complains
-        // about. Capacity comes from the DESIRED template entry; an index with
-        // none declared is left out so AWS's own error names it, matching the
-        // CFn handler rather than inventing a capacity the user never asked for.
+        // The index list is the LIVE one, but be precise about what that buys
+        // (PR review corrected an overclaim here). Capacity still comes from
+        // the DESIRED template, so for an index that is live but no longer
+        // declared the flip is NOT rescued — the index is named in a warning
+        // and omitted, and AWS rejects the flip exactly as it would have with a
+        // template-only list. What the live list buys is DIAGNOSTICS: cdkd
+        // names the offending index up front instead of leaving the user to
+        // decode an AWS error about an index their template no longer mentions.
+        // (`dynamodb-globaltable-provider.ts` additionally falls back to the
+        // PREVIOUS side there; that rarely helps here, because the previous
+        // side of an on-demand table carries no per-index capacity either.)
+        //
+        // An index with no usable declared capacity is left out so AWS's own
+        // error names it, matching the CFn handler rather than inventing a
+        // capacity the user never asked for.
         const liveIndexes = table?.GlobalSecondaryIndexes ?? [];
         if (
           billingOrThroughputChanged &&
@@ -721,20 +763,25 @@ export class DynamoDBTableProvider implements ResourceProvider {
           for (const live of liveIndexes) {
             const indexName = live.IndexName;
             if (typeof indexName !== 'string') continue;
-            const declared = desiredByName.get(indexName)?.['ProvisionedThroughput'] as
-              | Record<string, unknown>
-              | undefined;
-            if (declared == null) {
+            // BOTH members must be present, numeric and finite. A `?? 5`
+            // default here would contradict this block's own rule two comments
+            // up — and worse than at create(), because the flip now SUPPRESSES
+            // the per-index path for this index, so an invented capacity is
+            // never corrected by a later call and lands in state as if the
+            // user had declared it. A half-declared or non-numeric entry is
+            // treated exactly like an absent one: omitted, named in the
+            // warning, and left for AWS to reject by name (PR review).
+            const declared = desiredByName.get(indexName)?.['ProvisionedThroughput'];
+            const read = readCapacityNumber(declared, 'ReadCapacityUnits');
+            const write = readCapacityNumber(declared, 'WriteCapacityUnits');
+            if (read === undefined || write === undefined) {
               unspecified.push(indexName);
               continue;
             }
             indexUpdates.push({
               Update: {
                 IndexName: indexName,
-                ProvisionedThroughput: {
-                  ReadCapacityUnits: Number(declared['ReadCapacityUnits'] ?? 5),
-                  WriteCapacityUnits: Number(declared['WriteCapacityUnits'] ?? 5),
-                },
+                ProvisionedThroughput: { ReadCapacityUnits: read, WriteCapacityUnits: write },
               },
             });
             gsiHandledByBillingFlip.add(indexName);
@@ -749,9 +796,13 @@ export class DynamoDBTableProvider implements ResourceProvider {
             // visible in cdkd's own output rather than only in the AWS error.
             this.logger.warn(
               `AWS::DynamoDB::Table ${logicalId}: flipping BillingMode to PROVISIONED, but the ` +
-                `template declares no ProvisionedThroughput for live index(es) ` +
+                `template declares no usable ProvisionedThroughput for live index(es) ` +
                 `${unspecified.join(', ')}. AWS requires per-index capacity in the same ` +
-                `UpdateTable and will reject the flip naming them.`
+                `UpdateTable and will reject the flip naming them. Declare ` +
+                `GlobalSecondaryIndexes[].ProvisionedThroughput (both ReadCapacityUnits and ` +
+                `WriteCapacityUnits) for each. If an index is listed here because this deploy ` +
+                `REMOVES it, drop it in a separate deploy BEFORE the flip — AWS demands capacity ` +
+                `for every index still live at flip time, so the two cannot be combined.`
             );
           }
         }

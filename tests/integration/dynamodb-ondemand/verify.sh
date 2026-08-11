@@ -293,6 +293,19 @@ fi
 REMOVAL_BASE_ID="$(aws dynamodb describe-table --table-name "${BILLING_REMOVAL_TABLE}" --region "${REGION}" \
   --query 'Table.TableId' --output text)"
 echo "    OK (Phase 1): BillingMode is PAY_PER_REQUEST on AWS before the removal"
+# issue #1588 BASELINE, same convention as the BillingMode one above: the index
+# must EXIST before the flip phase asserts its capacity. Without this the whole
+# #1588 assertion has a vacuous route — if the GSI were ever absent at baseline
+# the update deploy would CREATE it at 2/2 through the ordinary add path, the
+# capacity assertion would pass, and the flip-carry it exists to prove would
+# never have run.
+REMOVAL_BASE_GSI="$(aws dynamodb describe-table --table-name "${BILLING_REMOVAL_TABLE}" --region "${REGION}" \
+  --query "Table.GlobalSecondaryIndexes[?IndexName=='billing-removal-gsi'].IndexName | [0]" --output text)"
+if [ "${REMOVAL_BASE_GSI}" != "billing-removal-gsi" ]; then
+  echo "FAIL (issue #1588): the GSI must exist on the baseline table before the flip phase, got '${REMOVAL_BASE_GSI}'" >&2
+  exit 1
+fi
+echo "    OK (Phase 1): the GSI exists before the flip, so the capacity assertion cannot pass vacuously"
 
 echo "==> Phase 1.5: re-deploy with CDKD_TEST_UPDATE=true (BillingMode/ProvisionedThroughput in-place update)"
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \

@@ -316,6 +316,106 @@ describe('the flip-handled index is not re-asserted by the per-index path', () =
   });
 });
 
+describe('capacity is never invented (PR review)', () => {
+  // A default here would be worse than at create(): the flip SUPPRESSES the
+  // per-index path for every index it handles, so an invented capacity is never
+  // corrected by a later call and lands in state as if the user declared it.
+  const unusable: Array<[string, unknown]> = [
+    ['only ReadCapacityUnits declared', { ReadCapacityUnits: 2 }],
+    ['only WriteCapacityUnits declared', { WriteCapacityUnits: 2 }],
+    ['a non-object block (unresolved intrinsic)', 'two'],
+    ['a non-numeric capacity', { ReadCapacityUnits: 'abc', WriteCapacityUnits: 2 }],
+    ['an empty-string capacity', { ReadCapacityUnits: '', WriteCapacityUnits: 2 }],
+  ];
+
+  for (const [label, throughput] of unusable) {
+    it(`omits the index and warns for ${label}`, async () => {
+      primeDescribeTable('PAY_PER_REQUEST', [LIVE_GSI('gsi1')]);
+      mockSend.mockResolvedValueOnce({});
+      primeWaitActive();
+
+      const gsi = { ...cfnGsiNoCapacity('gsi1'), ProvisionedThroughput: throughput };
+      await provider.update(
+        'L',
+        TABLE_NAME,
+        RESOURCE_TYPE,
+        {
+          BillingMode: 'PROVISIONED',
+          ProvisionedThroughput: { ReadCapacityUnits: 5, WriteCapacityUnits: 5 },
+          GlobalSecondaryIndexes: [gsi],
+        },
+        { BillingMode: 'PAY_PER_REQUEST', GlobalSecondaryIndexes: [gsi] }
+      );
+
+      expect(findCalls(UpdateTableCommand)[0]!.input.GlobalSecondaryIndexUpdates).toBeUndefined();
+      expect(childLogger.warn).toHaveBeenCalledWith(expect.stringContaining('gsi1'));
+    });
+  }
+
+  it('accepts a numeric STRING pair, since CFn is stringly typed', async () => {
+    primeDescribeTable('PAY_PER_REQUEST', [LIVE_GSI('gsi1')]);
+    mockSend.mockResolvedValueOnce({});
+    primeWaitActive();
+
+    await provider.update(
+      'L',
+      TABLE_NAME,
+      RESOURCE_TYPE,
+      {
+        BillingMode: 'PROVISIONED',
+        ProvisionedThroughput: { ReadCapacityUnits: 5, WriteCapacityUnits: 5 },
+        GlobalSecondaryIndexes: [cfnGsi('gsi1', '6', '7')],
+      },
+      { BillingMode: 'PAY_PER_REQUEST', GlobalSecondaryIndexes: [cfnGsi('gsi1', '6', '7')] }
+    );
+
+    expect(
+      findCalls(UpdateTableCommand)[0]!.input.GlobalSecondaryIndexUpdates?.[0]?.Update
+        ?.ProvisionedThroughput
+    ).toEqual({ ReadCapacityUnits: 6, WriteCapacityUnits: 7 });
+    expect(childLogger.warn).not.toHaveBeenCalled();
+  });
+
+  it('names an index the deploy REMOVES, and points at the two-deploy remedy', async () => {
+    // The reviewers' highest-ranked gap: an index being dropped in the SAME
+    // deploy as the flip is still live at flip time, so AWS demands capacity the
+    // template no longer declares — unconvergeable in one deploy. cdkd cannot
+    // rescue it (its Delete op runs after the flip), so the contract is that the
+    // warning NAMES it and states the remedy.
+    primeDescribeTable('PAY_PER_REQUEST', [LIVE_GSI('keep'), LIVE_GSI('dropme')]);
+    mockSend.mockResolvedValueOnce({}); // the flip UpdateTable
+    primeWaitActive();
+    // `dropme` leaves the desired set, so `applyGsiUpdates` also issues its
+    // Delete op (after the flip) — primed so this test fails on its assertions
+    // rather than on a mock underrun. Against real AWS the flip would have been
+    // rejected before reaching it, which is exactly why the contract here is
+    // "warn with the remedy", not "cdkd fixes it".
+    mockSend.mockResolvedValueOnce({}); // the Delete UpdateTable
+    primeWaitActive();
+
+    await provider.update(
+      'L',
+      TABLE_NAME,
+      RESOURCE_TYPE,
+      {
+        BillingMode: 'PROVISIONED',
+        ProvisionedThroughput: { ReadCapacityUnits: 5, WriteCapacityUnits: 5 },
+        GlobalSecondaryIndexes: [cfnGsi('keep', 2, 2)],
+      },
+      {
+        BillingMode: 'PAY_PER_REQUEST',
+        GlobalSecondaryIndexes: [cfnGsiNoCapacity('keep'), cfnGsiNoCapacity('dropme')],
+      }
+    );
+
+    const updates = findCalls(UpdateTableCommand)[0]!.input.GlobalSecondaryIndexUpdates ?? [];
+    expect(updates.map((u) => u.Update?.IndexName)).toEqual(['keep']);
+    const warned = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(warned).toContain('dropme');
+    expect(warned).toContain('separate deploy');
+  });
+});
+
 describe('scope: only the flip, and only when indexes exist', () => {
   it('does NOT send index updates on a capacity bump of an already-PROVISIONED table', async () => {
     // AWS rejects an UpdateTable that re-asserts an index's current capacity,
