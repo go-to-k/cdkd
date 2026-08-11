@@ -2,6 +2,7 @@ import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as kms from 'aws-cdk-lib/aws-kms';
 
 /**
  * S3 cross-bucket replication whose rule uses a COMBINED filter (a prefix AND a
@@ -15,7 +16,7 @@ import * as iam from 'aws-cdk-lib/aws-iam';
  * prefix+tag subset (a silent scope-broadening divergence). This fixture proves
  * the And filter reaches AWS verbatim on CREATE and on an in-place UPDATE.
  *
- *   covers: AWS::S3::Bucket, AWS::IAM::Role
+ *   covers: AWS::S3::Bucket, AWS::IAM::Role, AWS::KMS::Key
  *
  * The source bucket uses an L1 CfnBucket so the combined `Filter.And` shape is
  * authored exactly as CFn emits it. Phase 1 deploys with `Prefix: 'logs/'`;
@@ -71,10 +72,36 @@ export class S3ReplicationAndFilterStack extends cdk.Stack {
     });
     dst.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
 
+    // Issue #1523: the customer-managed key behind the replica-side SSE-KMS
+    // members. `pendingWindow` is the AWS minimum so the post-destroy key
+    // bills for 7 days rather than the 30-day default.
+    //
+    // The key is used ONLY by the replication rule's `EncryptionConfiguration`
+    // — neither bucket's default encryption is switched to SSE-KMS. That is
+    // deliberate: `SseKmsEncryptedObjects` is a source-object FILTER, so it
+    // needs no bucket-level change, and adding `BucketEncryption` would widen
+    // the `cdkd drift` comparison surface (the drift calculator compares
+    // arrays WHOLESALE, so an AWS-defaulted `BucketKeyEnabled` member inside
+    // the rule would read as drift) for no extra coverage of the two members
+    // this fixture exists to prove.
+    const replicaKey = new kms.Key(this, 'ReplicaKey', {
+      description: 'cdkd s3 replication SSE-KMS integ (#1523)',
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      pendingWindow: cdk.Duration.days(7),
+    });
+
     // Replication role assumed by S3.
     const role = new iam.Role(this, 'ReplicationRole', {
       assumedBy: new iam.ServicePrincipal('s3.amazonaws.com'),
     });
+    // SSE-KMS replication needs the role to decrypt each source object and
+    // re-encrypt the replica under the destination key.
+    role.addToPolicy(
+      new iam.PolicyStatement({
+        actions: ['kms:Decrypt', 'kms:Encrypt', 'kms:ReEncrypt*', 'kms:GenerateDataKey*'],
+        resources: [replicaKey.keyArn],
+      })
+    );
     role.addToPolicy(
       new iam.PolicyStatement({
         actions: ['s3:GetReplicationConfiguration', 's3:ListBucket'],
@@ -146,10 +173,29 @@ export class S3ReplicationAndFilterStack extends cdk.Stack {
               bucket: dst.attrArn,
               replicationTime: { status: 'Enabled', time: { minutes: 15 } },
               metrics: { status: 'Enabled', eventThreshold: { minutes: 15 } },
+              // Issue #1523: the replica-side SSE-KMS key. It was left
+              // unit-only in #1495 on the belief that its customer-managed key
+              // would leave a pending-deletion ORPHAN behind; a PendingDeletion
+              // key is the AWS-mandated terminal state of a deleted key, which
+              // loggroup-kms-associate / propagation-races-2 / s3-vectors
+              // already assert as the expected post-destroy outcome.
+              encryptionConfiguration: { replicaKmsKeyId: replicaKey.keyArn },
             },
             // Issue #1495: which SOURCE objects are eligible. Dropped, so the
             // rule replicated a different set of objects than declared.
-            sourceSelectionCriteria: { replicaModifications: { status: 'Enabled' } },
+            //
+            // Issue #1523 adds `sseKmsEncryptedObjects`, the partner member of
+            // `EncryptionConfiguration` above — AWS requires the two together,
+            // which is why they were deferred as one pair rather than
+            // separately. Declaring it also retires this fixture's own
+            // phantom-drift hypothesis: `assert_drift_clean` was written
+            // around `SseKmsEncryptedObjects` as the canonical example of a
+            // sub-block AWS returns that the template never declared, and the
+            // template now declares it.
+            sourceSelectionCriteria: {
+              replicaModifications: { status: 'Enabled' },
+              sseKmsEncryptedObjects: { status: 'Enabled' },
+            },
           },
         ],
       },
@@ -160,5 +206,6 @@ export class S3ReplicationAndFilterStack extends cdk.Stack {
     src.node.addDependency(logPolicy);
 
     new cdk.CfnOutput(this, 'SourceBucketName', { value: srcName });
+    new cdk.CfnOutput(this, 'ReplicaKeyArn', { value: replicaKey.keyArn });
   }
 }

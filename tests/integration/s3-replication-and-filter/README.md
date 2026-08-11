@@ -21,6 +21,7 @@ bug-hunt sweep.
 
 - `AWS::S3::Bucket`
 - `AWS::IAM::Role`
+- `AWS::KMS::Key` (issue #1523 — the replica-side SSE-KMS key)
 
 ## Phases
 
@@ -31,7 +32,10 @@ bug-hunt sweep.
    (NOT an empty filter / replicate-all), plus the five issue #1495 read-backs
    (`TargetObjectKeyFormat`, `Destination.ReplicationTime` + `Metrics`,
    `SourceSelectionCriteria.ReplicaModifications`,
-   `TransitionDefaultMinimumObjectSize`), plus a `cdkd drift` clean assertion
+   `TransitionDefaultMinimumObjectSize`), plus the two SSE-KMS members issue
+   #1523 added (`Destination.EncryptionConfiguration.ReplicaKmsKeyID` and its
+   AWS-required partner `SourceSelectionCriteria.SseKmsEncryptedObjects`),
+   plus a `cdkd drift` clean assertion
    (issue #1530) — the READ side of those blocks must reassemble what AWS
    returns without phantom drift, and the source bucket must be reported
    **checked + clean** by name (exit 0 alone would also pass on a
@@ -41,7 +45,15 @@ bug-hunt sweep.
    in-place `PutBucketReplication` (the source bucket was **not** replaced — same
    `CreationDate`) and the tag filter is still present, then `cdkd drift` clean
    again on the updated state (issue #1530).
-3. **Destroy** — assert both buckets are gone and the cdkd state file is removed.
+3. **Destroy** — assert both buckets are gone, the replica KMS key is
+   `PendingDeletion` (a KMS key cannot be deleted synchronously, so that IS the
+   terminal state of a deleted key — not an orphan), and the cdkd state file is
+   removed.
+
+`Destination.AccessControlTranslation.Owner` stays unit-test-only and is not a
+follow-up: `Owner: Destination` is an ownership **override** that only means
+anything when the destination bucket is in a different account, so a
+same-account fixture could not assert anything real however it were written.
 
 ## Run
 

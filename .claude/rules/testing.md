@@ -470,6 +470,43 @@ Enforced by `tests/unit/scripts/integ-fixture-removal-policy.test.ts`
 in [docs/testing.md](../../docs/testing.md). L1 `Cfn*` constructs are out of
 scope (their template default is `Delete`).
 
+### A `PendingDeletion` KMS key is NOT an orphan
+
+A customer-managed KMS key cannot be deleted synchronously — 7 days is the
+AWS **minimum** pending window, and `RemovalPolicy.DESTROY` schedules the
+deletion rather than performing it. So `PendingDeletion` is the terminal state
+of a *successfully deleted* key, and a fixture that needs a CMK may simply
+create one per run, set `pendingWindow: cdk.Duration.days(7)` to avoid the
+30-day default, and assert `PendingDeletion` (or `GONE`, for a window that
+elapsed in an earlier run) after destroy. `loggroup-kms-associate`,
+`propagation-races-2` and `s3-vectors` have done exactly this since #958;
+`cloudtrail-trail` and `s3-replication-and-filter` joined them in #1533 /
+#1523.
+
+This is written down because the opposite belief cost two issues. #1523 and
+#1533 were BOTH filed asserting that such a key "directly conflicts with the
+repo's never-end-an-integ-run-with-orphan-resources rule, which is why it was
+not simply added", and both proposed sourcing a long-lived, alias-referenced
+key plus an account-bootstrap story as their preferred option — infrastructure
+that would make every affected fixture fail on a fresh account, to avoid a
+non-problem. Neither issue's premise survived one `grep` of the fixture tree.
+The measurements they were blocking on then took a single afternoon.
+
+Two things this rule does NOT say. The `/cleanup` skill's caution still
+stands for keys it did not create: only ever schedule deletion for
+`KeyManager == CUSTOMER` + `KeyState == Enabled` keys with a cdkd-shaped
+description, never one with live grants or aliases. And a key does keep
+BILLING through its pending window — that is a cost, not an orphan, and per
+`feedback_integ_is_not_a_cost` it is not a reason to skip coverage.
+
+The generalizable half: when an issue states a BLOCKER as settled fact, grep
+the tree for the blocker before building around it. An issue records what its
+author believed at filing time, and a sibling fixture may already have
+disproven it. See also `feedback_verify_issue_root_cause_before_building_tooling`
+and `feedback_umbrella_issue_row_can_be_already_fixed`.
+
+User-facing writeup in [docs/testing.md](../../docs/testing.md).
+
 ### A checker must prove it sees its input
 
 When writing a lint or codegen that SCANS files (verify.sh scripts, templates,

@@ -735,6 +735,54 @@ coverage floors per constructor-reference shape and per construct kind so a
 parser regression fails loudly rather than passing vacuously. Baseline
 2026-07-31: 523 fixture files scanned, 120 stateful-L2 instantiations.
 
+### Fixture convention: a `PendingDeletion` KMS key is not an orphan
+
+A customer-managed KMS key cannot be deleted synchronously. Seven days is the
+AWS **minimum** pending window, and `RemovalPolicy.DESTROY` schedules the
+deletion rather than performing it — so `PendingDeletion` is the terminal state
+of a *successfully deleted* key, not a leak.
+
+A fixture that needs a CMK may therefore just create one per run:
+
+```ts
+const key = new kms.Key(this, 'Key', {
+  description: 'cdkd <what this covers> integ',
+  removalPolicy: cdk.RemovalPolicy.DESTROY,
+  pendingWindow: cdk.Duration.days(7), // the minimum; the default is 30
+});
+```
+
+and assert the state after destroy, accepting `GONE` for a window that already
+elapsed in an earlier run:
+
+```bash
+KEY_STATE="$(aws kms describe-key --key-id "${KEY_ARN}" --region "${REGION}" \
+  --query 'KeyMetadata.KeyState' --output text 2>&1)" || {
+  if echo "${KEY_STATE}" | grep -q "NotFoundException"; then
+    KEY_STATE="GONE"
+  else
+    echo "FAIL: describe-key failed unexpectedly: ${KEY_STATE}" >&2
+    exit 1
+  fi
+}
+[ "${KEY_STATE}" = "PendingDeletion" ] || [ "${KEY_STATE}" = "GONE" ] || {
+  echo "FAIL: expected PendingDeletion after destroy, got '${KEY_STATE}'" >&2
+  exit 1
+}
+```
+
+`loggroup-kms-associate`, `propagation-races-2` and `s3-vectors` have done this
+since issue #958; `cloudtrail-trail` and `s3-replication-and-filter` joined them
+in issues #1533 / #1523. Do **not** build a long-lived, alias-referenced key and
+an account-bootstrap step to avoid the pending window — that makes every
+affected fixture fail on a fresh account in order to dodge a non-problem.
+
+Two caveats. The key does keep **billing** through its pending window; that is
+a cost, not an orphan, and is not a reason to skip coverage. And the `/cleanup`
+sweep's caution still applies to keys it did not create: only ever schedule
+deletion for `KeyManager == CUSTOMER` + `KeyState == Enabled` keys with a
+cdkd-shaped description, never one carrying live grants or aliases.
+
 ### Fixture convention: never call an `aws` verb the CLI does not have
 
 A `verify.sh` must not call an `aws <service> <verb>` that is not a real AWS

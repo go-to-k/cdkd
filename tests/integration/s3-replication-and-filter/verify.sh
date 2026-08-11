@@ -13,12 +13,23 @@
 # Metrics, SourceSelectionCriteria, TransitionDefaultMinimumObjectSize). Those
 # are write-side silent drops — nothing errored, the field just never left the
 # process — so reading them back off the live bucket is the ONLY proof of
-# delivery. Two of the twenty #1495 members are deliberately NOT covered here
-# and carry unit coverage instead: Destination.EncryptionConfiguration /
-# SourceSelectionCriteria.SseKmsEncryptedObjects would need a customer-managed
-# KMS key, whose 7-day minimum deletion window leaves a pending-deletion orphan
-# behind every run, and AccessControlTranslation is only meaningful across two
-# accounts. Tracked in issue #1523.
+# delivery.
+#
+# Issue #1523 added the two SSE-KMS members #1495 had deferred:
+# Destination.EncryptionConfiguration.ReplicaKmsKeyID and its required partner
+# SourceSelectionCriteria.SseKmsEncryptedObjects. They were deferred on the
+# belief that their customer-managed key would leave a pending-deletion ORPHAN
+# behind every run; that premise was wrong. A PendingDeletion key is the
+# AWS-mandated terminal state of a deleted key — a key cannot be deleted
+# synchronously at all — and loggroup-kms-associate / propagation-races-2 /
+# s3-vectors already assert exactly that as the expected post-destroy outcome.
+# Phase 3 asserts it here too.
+#
+# Destination.AccessControlTranslation.Owner stays unit-only and is NOT a
+# follow-up: `Owner: Destination` is an ownership OVERRIDE that is only
+# meaningful when the destination bucket is in a DIFFERENT account, so a
+# same-account fixture could assert nothing real no matter how it is written.
+# Closing it needs a second AWS account, not more fixture work.
 #
 # Phases:
 #   1. Deploy; assert GetBucketReplication returns the rule with
@@ -74,11 +85,13 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 # The #1495 read-backs prove the WRITE side delivered each nested block. This
 # proves the READ side: `readCurrentState` must reassemble the live config into
 # the same shape the deploy captured, so `cdkd drift` reports the stack clean
-# immediately after a deploy. The concrete phantom-drift candidate is a
-# sub-block AWS returns that the template never declared (e.g.
-# `SourceSelectionCriteria.SseKmsEncryptedObjects` next to the declared
-# `ReplicaModifications`): drift-calculator.ts compares arrays WHOLESALE, so
-# one extra observed member would flag the entire Rules array as drifted.
+# immediately after a deploy. The phantom-drift candidate is a sub-block AWS
+# returns that the template never declared: drift-calculator.ts compares arrays
+# WHOLESALE, so one extra observed member flags the entire Rules array as
+# drifted. This block was originally written around
+# `SourceSelectionCriteria.SseKmsEncryptedObjects` as that example; issue #1523
+# made the template DECLARE it, so the check now covers the opposite direction
+# too — a declared nested member the read side fails to reassemble.
 # Exit 0 alone is NOT sufficient — an unsupported/skipped SourceBucket also
 # exits 0 — so the by-name check asserts the bucket was CHECKED and clean.
 assert_drift_clean() { # usage: assert_drift_clean "<phase label>"
@@ -217,6 +230,37 @@ if [ "${SSC_STATUS}" != "Enabled" ]; then
 fi
 echo "    SourceSelectionCriteria.ReplicaModifications reached AWS (issue #1495)"
 
+# --- issue #1523: the two SSE-KMS members #1495 deferred ---------------------
+# AWS requires the pair together, so they are asserted together. The key ARN is
+# run-specific, so it is read out of cdkd state rather than compared against a
+# literal — and the state read doubles as the source for the phase-3
+# PendingDeletion probe.
+STATE_JSON="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)"
+REPLICA_KEY_ARN="$(printf '%s' "${STATE_JSON}" | jq -r '.outputs.ReplicaKeyArn // ""')"
+if [ -z "${REPLICA_KEY_ARN}" ] || [ "${REPLICA_KEY_ARN}" = "null" ]; then
+  echo "FAIL: cdkd state did not emit a ReplicaKeyArn output" >&2
+  printf '%s\n' "${STATE_JSON}" | jq .outputs >&2
+  exit 1
+fi
+
+REPLICA_KMS="$(aws s3api get-bucket-replication --bucket "${SRC_BUCKET}" --region "${REGION}" \
+  --query "ReplicationConfiguration.Rules[0].Destination.EncryptionConfiguration.ReplicaKmsKeyID" --output text)"
+if [ "${REPLICA_KMS}" != "${REPLICA_KEY_ARN}" ]; then
+  echo "FAIL: expected Destination.EncryptionConfiguration.ReplicaKmsKeyID=${REPLICA_KEY_ARN}, got ${REPLICA_KMS}" >&2
+  echo "      (pre-fix bug #1495: the block was never built -> replicas encrypted with the bucket default, not the declared key)" >&2
+  exit 1
+fi
+echo "    Destination.EncryptionConfiguration.ReplicaKmsKeyID reached AWS (issue #1523)"
+
+SSE_KMS_STATUS="$(aws s3api get-bucket-replication --bucket "${SRC_BUCKET}" --region "${REGION}" \
+  --query "ReplicationConfiguration.Rules[0].SourceSelectionCriteria.SseKmsEncryptedObjects.Status" --output text)"
+if [ "${SSE_KMS_STATUS}" != "Enabled" ]; then
+  echo "FAIL: expected SourceSelectionCriteria.SseKmsEncryptedObjects.Status=Enabled, got ${SSE_KMS_STATUS}" >&2
+  echo "      (pre-fix bug #1495: dropped -> SSE-KMS source objects silently excluded from replication)" >&2
+  exit 1
+fi
+echo "    SourceSelectionCriteria.SseKmsEncryptedObjects reached AWS (issue #1523)"
+
 MIN_SIZE="$(aws s3api get-bucket-lifecycle-configuration --bucket "${SRC_BUCKET}" --region "${REGION}" \
   --query "TransitionDefaultMinimumObjectSize" --output text)"
 # The NON-default value on purpose: AWS defaults new buckets to
@@ -268,6 +312,26 @@ for b in "${SRC_BUCKET}" "${DST_BUCKET}" "${LOG_BUCKET}"; do
   assert_gone "bucket ${b} still exists after destroy" aws s3api head-bucket --bucket "${b}" --region "${REGION}"
 done
 echo "    all three buckets deleted"
+
+# Issue #1523. A customer-managed key cannot be deleted synchronously — the
+# minimum pending window is 7 days — so PendingDeletion IS the terminal state
+# of a deleted key, not an orphan. The stderr capture distinguishes a genuine
+# NotFound (an already-elapsed window from an earlier run) from a probe failure
+# that must abort rather than masquerade as a deleted key.
+KEY_STATE="$(aws kms describe-key --key-id "${REPLICA_KEY_ARN}" --region "${REGION}" \
+  --query 'KeyMetadata.KeyState' --output text 2>&1)" || {
+  if echo "${KEY_STATE}" | grep -q "NotFoundException"; then
+    KEY_STATE="GONE"
+  else
+    echo "FAIL: describe-key failed unexpectedly: ${KEY_STATE}" >&2
+    exit 1
+  fi
+}
+if [ "${KEY_STATE}" != "PendingDeletion" ] && [ "${KEY_STATE}" != "GONE" ]; then
+  echo "FAIL: expected the replica KMS key to be PendingDeletion after destroy, got '${KEY_STATE}'" >&2
+  exit 1
+fi
+echo "    replica KMS key state: ${KEY_STATE} (7-day pending window is AWS-mandated, not an orphan)"
 
 assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    cdkd state removed"
