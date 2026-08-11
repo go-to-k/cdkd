@@ -126,7 +126,7 @@ export class CloudTrailTrailStack extends cdk.Stack {
         resources: ['*'],
         conditions: {
           StringLike: {
-            'kms:EncryptionContext:aws:cloudtrail:arn': `arn:aws:cloudtrail:*:${suffix}:trail/*`,
+            'kms:EncryptionContext:aws:cloudtrail:arn': `arn:${cdk.Aws.PARTITION}:cloudtrail:*:${suffix}:trail/*`,
           },
         },
       })

@@ -89,9 +89,13 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 # returns that the template never declared: drift-calculator.ts compares arrays
 # WHOLESALE, so one extra observed member flags the entire Rules array as
 # drifted. This block was originally written around
-# `SourceSelectionCriteria.SseKmsEncryptedObjects` as that example; issue #1523
-# made the template DECLARE it, so the check now covers the opposite direction
-# too — a declared nested member the read side fails to reassemble.
+# `SourceSelectionCriteria.SseKmsEncryptedObjects` as that example — and issue
+# #1523 made the template DECLARE it, so within the Rules array what this now
+# tests is the OTHER direction: a declared nested member the read side fails to
+# reassemble. That is a swap, not an addition. Whether any undeclared-observed
+# member survives elsewhere in this bucket (the other top-level blocks are
+# still compared) has NOT been measured, so do not read this block as covering
+# both directions at once.
 # Exit 0 alone is NOT sufficient — an unsupported/skipped SourceBucket also
 # exits 0 — so the by-name check asserts the bucket was CHECKED and clean.
 assert_drift_clean() { # usage: assert_drift_clean "<phase label>"

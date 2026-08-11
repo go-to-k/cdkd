@@ -242,6 +242,22 @@ assert_field "IsMultiRegionTrail reset"         '.IsMultiRegionTrail'         'f
 assert_field "LogFileValidationEnabled reset"   '.LogFileValidationEnabled'   'false'
 assert_field "IncludeGlobalServiceEvents reset" '.IncludeGlobalServiceEvents' 'false'
 
+# Issue #1533. The KEY itself must still be alive here — only the trail's
+# REFERENCE to it was dropped from the template. Without this, a fixture that
+# accidentally mode-gated the key resource (rather than just the reference)
+# would delete the key at phase 2, and every assertion would still pass: the
+# `KmsKeyId reset` check above reads `null` either way, and the phase-3 probe
+# accepts `PendingDeletion`. That is the vacuous shape
+# `.claude/rules/testing.md` warns about — assert presence at the point the
+# resource must still exist, not only after the destroy.
+KEY_STATE_P2="$(aws kms describe-key --key-id "${KMS_KEY_P1}" --region "${REGION}" \
+  --query 'KeyMetadata.KeyState' --output text)"
+if [ "${KEY_STATE_P2}" != "Enabled" ]; then
+  echo "FAIL: the trail KMS key must still be Enabled after the removal redeploy (only the trail's reference is dropped), got '${KEY_STATE_P2}'" >&2
+  exit 1
+fi
+echo "    ok: trail KMS key still Enabled — phase 2 removed the reference, not the key"
+
 echo "==> Phase 2: EventSelectors must be RESET to the AWS default"
 # Live CFn A/B (2026-08-11, issue #1549): a real CloudFormation removal of
 # EventSelectors leaves `ReadWriteType: All` — the default a selector-less

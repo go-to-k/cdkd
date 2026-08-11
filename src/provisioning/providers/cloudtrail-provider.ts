@@ -387,10 +387,9 @@ export class CloudTrailProvider implements ResourceProvider {
     //
     // The previous side is normalized through `emptyToUndefined` for presence
     // detection: `readCurrentState` always-emits `''` placeholders for
-    // S3KeyPrefix / SnsTopicName / KMSKeyId, and a placeholder means "was
-    // not set" —
-    // without this a never-configured field would look like a removal and
-    // send a pointless clear. The three BOOLEANS are always-emitted too, but
+    // S3KeyPrefix / SnsTopicName / KMSKeyId, and a placeholder means "was not
+    // set" — without this a never-configured field would look like a removal
+    // and send a pointless clear. The three BOOLEANS are always-emitted too, but
     // need no equivalent: their emitted value is the real live value (or the
     // CFn default), so "present in the previous side" is already the right
     // presence answer for them.
