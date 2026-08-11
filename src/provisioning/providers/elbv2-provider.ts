@@ -15,6 +15,7 @@ import {
   DescribeTargetGroupsCommand,
   ModifyTargetGroupAttributesCommand,
   DescribeTargetGroupAttributesCommand,
+  DescribeTargetHealthCommand,
   RegisterTargetsCommand,
   DeregisterTargetsCommand,
   ModifyCapacityReservationCommand,
@@ -1985,8 +1986,7 @@ export class ELBv2Provider implements ResourceProvider {
 
     // TargetGroupAttributes via DescribeTargetGroupAttributes — the FULL
     // attribute set sorted by Key, same model as LoadBalancerAttributes /
-    // ListenerAttributes. Targets are deliberately NOT read back — see
-    // getDriftUnknownPaths.
+    // ListenerAttributes.
     try {
       const attrsResp = await this.getClient().send(
         new DescribeTargetGroupAttributesCommand({ TargetGroupArn: physicalId })
@@ -2005,8 +2005,69 @@ export class ELBv2Provider implements ResourceProvider {
       // false drift on every run.
     }
 
+    await this.attachRegisteredTargets(result, physicalId);
     await this.attachTags(result, physicalId);
     return result;
+  }
+
+  /**
+   * Read the target group's REGISTERED targets back in CFn `Targets` shape via
+   * `DescribeTargetHealth` (issue
+   * [#1620](https://github.com/go-to-k/cdkd/issues/1620)).
+   *
+   * Two things make this safe to compare, and both were the reason `Targets`
+   * sat in {@link getDriftUnknownPaths} until now:
+   *
+   *  - **Order.** AWS does not guarantee a readback order for the target list,
+   *    and the drift comparator compares arrays positionally. The type now
+   *    declares `Targets` in {@link getDriftUnorderedPaths}, which sorts the
+   *    list on BOTH comparison sides — so a reorder is not drift.
+   *  - **Draining.** Deregistration is asynchronous: a just-removed target
+   *    keeps reporting for minutes with `TargetHealth.State === 'draining'`.
+   *    Including one would freeze it into the deploy-time `observedProperties`
+   *    snapshot and produce PERMANENT phantom drift against every later read,
+   *    once it finally disappears. `draining` means "being removed", so the
+   *    registered set deliberately excludes it. Every other state (`initial`
+   *    right after `RegisterTargets`, `unused` for a target with no listener,
+   *    `unhealthy`, `unavailable`) IS a registered target and is included —
+   *    health is not registration.
+   *
+   * `AvailabilityZone` is emitted only when AWS reports something other than
+   * the `all` default, which it substitutes for an `ip` target the template
+   * left unscoped; echoing it back would fire drift against a
+   * `properties`-fallback baseline (the user's template, which has no such
+   * key) on every run.
+   *
+   * Errors are swallowed the same way the attributes read above is: the key is
+   * left ABSENT rather than emitted empty, so a missing
+   * `elasticloadbalancing:DescribeTargetHealth` permission reports nothing
+   * instead of reporting every target as removed.
+   */
+  private async attachRegisteredTargets(
+    result: Record<string, unknown>,
+    targetGroupArn: string
+  ): Promise<void> {
+    try {
+      const resp = await this.getClient().send(
+        new DescribeTargetHealthCommand({ TargetGroupArn: targetGroupArn })
+      );
+      const targets: CfnTargetDescription[] = [];
+      for (const desc of resp.TargetHealthDescriptions ?? []) {
+        if (desc.TargetHealth?.State === 'draining') continue;
+        const id = desc.Target?.Id;
+        if (typeof id !== 'string' || id.length === 0) continue;
+        const az = desc.Target?.AvailabilityZone;
+        targets.push({
+          Id: id,
+          ...(desc.Target?.Port !== undefined && { Port: desc.Target.Port }),
+          ...(az !== undefined && az !== 'all' && { AvailabilityZone: az }),
+        });
+      }
+      result['Targets'] = targets;
+    } catch {
+      // Permission errors etc — leave the key absent rather than reporting
+      // every registered target as removed.
+    }
   }
 
   getDriftUnknownPaths(resourceType: string): string[] {
@@ -2016,18 +2077,27 @@ export class ELBv2Provider implements ResourceProvider {
         // orchestration flag (wait-for-provisioned opt-in) with no AWS-side
         // readback — it is not a resource property on the wire.
         return ['EnableCapacityReservationProvisionStabilize'];
-      case 'AWS::ElasticLoadBalancingV2::TargetGroup':
-        // Targets ARE readable via DescribeTargetHealth, but the readback is
-        // an unordered object list (the drift comparator is positional and
-        // drift-normalize only canonicalizes tag lists / plain-string id
-        // arrays) and deregistration is asynchronous (a just-removed target
-        // reports `draining` for minutes) — both would fire phantom drift on
-        // every template whose order differs from AWS's. Declared unknown
-        // until object-array unordered comparison exists.
-        return ['Targets'];
       default:
         return [];
     }
+  }
+
+  /**
+   * `Targets` is a semantically UNORDERED set: `RegisterTargets` /
+   * `DeregisterTargets` are set operations (the provider's own update path
+   * key-diffs them rather than comparing positions), and `DescribeTargetHealth`
+   * documents no ordering guarantee. Declared here rather than sorted inside
+   * {@link attachRegisteredTargets} so the sort applies to BOTH comparison
+   * sides — see {@link ResourceProvider.getDriftUnorderedPaths}, whose header
+   * records why one-sided sorting manufactures drift on the
+   * `properties`-fallback baseline.
+   *
+   * `TargetGroupAttributes` needs no declaration: it is a `{Key, Value}` list,
+   * which the shared tag-list canonicalizer already sorts on both sides.
+   */
+  getDriftUnorderedPaths(resourceType: string): string[] {
+    if (resourceType !== 'AWS::ElasticLoadBalancingV2::TargetGroup') return [];
+    return ['Targets'];
   }
 
   private async readListener(physicalId: string): Promise<Record<string, unknown> | undefined> {

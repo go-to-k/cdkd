@@ -1592,11 +1592,11 @@ Two rules for this shape (issue [#1602](https://github.com/go-to-k/cdkd/issues/1
 - **Tolerate an absent bag.** Other callers may have no properties to pass, so fall back to the type-level answer rather than assuming a shape. Default to COMPARING when you cannot tell — hiding real drift is the worse failure, exactly as for `getDriftUnorderedPaths()` below.
 - **Say so at write time.** A value AWS discards is still worth a `logger.warn` on create / update. Declaring the drift path only removes the false positive; without the warning the user never learns the field is inert. Warn, never throw — the update path can be a state-record replay (`rollback-executor.ts` / `drift --revert`), where a refusal would leave the resource un-revertable.
 
-#### `getDriftUnorderedPaths()` for plain-string sets
+#### `getDriftUnorderedPaths()` for unordered sets (strings AND objects)
 
-The drift comparator compares arrays **positionally**, and AWS does not guarantee element ordering across reads. The shared normalizer ([src/analyzer/drift-normalize.ts](../src/analyzer/drift-normalize.ts)) already auto-canonicalizes two shapes for every type — `{Key,...}[]` tag lists and arrays whose every element is an AWS resource id (`subnet-…`, `rtb-…`) or ARN — but **plain-string arrays are deliberately left untouched**, because a scalar list can be order-significant.
+The drift comparator compares arrays **positionally**, and AWS does not guarantee element ordering across reads. The shared normalizer ([src/analyzer/drift-normalize.ts](../src/analyzer/drift-normalize.ts)) already auto-canonicalizes two shapes for every type — `{Key,...}[]` tag lists and arrays whose every element is an AWS resource id (`subnet-…`, `rtb-…`) or ARN — but **plain-string arrays and non-tag object arrays are deliberately left untouched**, because either can be order-significant.
 
-When your `readCurrentState` emits a plain-string array that is semantically an unordered SET, declare its path so the comparator sorts it on both sides:
+When your `readCurrentState` emits such an array that is semantically an unordered SET, declare its path so the comparator sorts it on both sides:
 
 ```typescript
 getDriftUnorderedPaths(resourceType: string): string[] {
@@ -1605,7 +1605,11 @@ getDriftUnorderedPaths(resourceType: string): string[] {
 }
 ```
 
-Path matching uses the same shared `matchesPathPrefix` rule as `getDriftUnknownPaths()` (exact match, or entry followed by `.`). **Every entry is a subtree declaration** — `'WindowsConfiguration.Aliases'` covers that path *and everything beneath it*; there is no leaf-only form. Only arrays whose every element is a plain string are sorted, and a nested array inside a declared path is left alone, so a mis-declared path can never reorder object, mixed-type, or array-valued elements.
+Path matching uses the same shared `matchesPathPrefix` rule as `getDriftUnknownPaths()` (exact match, or entry followed by `.`). **Every entry is a subtree declaration** — `'WindowsConfiguration.Aliases'` covers that path *and everything beneath it*; there is no leaf-only form.
+
+Two element shapes are sorted, each only when the array is **homogeneous** in it: every element a plain string (sorted lexically), or every element a plain object (sorted by a key-order-independent canonical JSON — issue [#1620](https://github.com/go-to-k/cdkd/issues/1620)). Key order deliberately does not participate: AWS's readback order for an object's own keys is no more guaranteed than its order for the list, so sorting on a raw `JSON.stringify` would reintroduce the phantom drift the pass exists to remove. A MIXED array, and a nested array inside a declared path, are both left alone — so a mis-declared path can never reorder a heterogeneous or array-valued list.
+
+`ElasticLoadBalancingV2::TargetGroup.Targets` is the object-array case. It also shows the second thing a readback of an unordered set has to get right, which no amount of sorting fixes: `DescribeTargetHealth` keeps reporting a just-deregistered target as `draining` for minutes, so including one would freeze it into the deploy-time `observedProperties` snapshot and produce *permanent* phantom drift against every later read. The provider excludes exactly `draining` and includes every other state — `initial`, `unused`, `unhealthy`, `unavailable` are all REGISTERED targets, and health is not registration.
 
 One semantic divergence from `getDriftUnknownPaths()`, required for this pass to work: the comparator compares arrays wholesale and never descends into elements, so an ignore-path can never cross an array. This normalizer *does* descend into array elements, giving each the parent's path. A path like `'Items.Aliases'` is therefore meaningful for `getDriftUnorderedPaths()` (it reaches an `Aliases` array inside each `Items` element) while being inert as an ignore-path. The divergence is strictly more permissive.
 

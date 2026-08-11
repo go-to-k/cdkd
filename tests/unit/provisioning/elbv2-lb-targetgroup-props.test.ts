@@ -1089,6 +1089,12 @@ describe('ELBv2 LoadBalancer + TargetGroup silent-drop props (#609)', () => {
                 { Key: 'deregistration_delay.timeout_seconds', Value: '45' },
               ],
             });
+          case 'DescribeTargetHealthCommand':
+            return Promise.resolve({
+              TargetHealthDescriptions: [
+                { Target: { Id: '10.0.1.10', Port: 80 }, TargetHealth: { State: 'healthy' } },
+              ],
+            });
           case 'DescribeTagsCommand':
             return Promise.resolve({ TagDescriptions: [{ Tags: [] }] });
           default:
@@ -1104,9 +1110,10 @@ describe('ELBv2 LoadBalancer + TargetGroup silent-drop props (#609)', () => {
           { Key: 'deregistration_delay.timeout_seconds', Value: '45' },
           { Key: 'stickiness.enabled', Value: 'false' },
         ],
+        // Targets ARE read back since issue #1620 — see
+        // `attachRegisteredTargets` / `getDriftUnorderedPaths`.
+        Targets: [{ Id: '10.0.1.10', Port: 80 }],
       });
-      // Targets are deliberately NOT read back (getDriftUnknownPaths).
-      expect(state).not.toHaveProperty('Targets');
     });
 
     // Issue #1609 item 4. The two reads the #609 batch added are best-effort
@@ -1219,8 +1226,18 @@ describe('ELBv2 LoadBalancer + TargetGroup silent-drop props (#609)', () => {
       expect(provider.getDriftUnknownPaths(LB_TYPE)).toEqual([
         'EnableCapacityReservationProvisionStabilize',
       ]);
-      expect(provider.getDriftUnknownPaths(TG_TYPE)).toEqual(['Targets']);
+      // `Targets` moved OUT of this list in issue #1620 — it is read back via
+      // DescribeTargetHealth and declared UNORDERED instead.
+      expect(provider.getDriftUnknownPaths(TG_TYPE)).toEqual([]);
       expect(provider.getDriftUnknownPaths('AWS::ElasticLoadBalancingV2::Listener')).toEqual([]);
+    });
+  });
+
+  describe('getDriftUnorderedPaths (#1620)', () => {
+    it('declares TargetGroup.Targets unordered, and nothing on the sibling types', () => {
+      expect(provider.getDriftUnorderedPaths(TG_TYPE)).toEqual(['Targets']);
+      expect(provider.getDriftUnorderedPaths(LB_TYPE)).toEqual([]);
+      expect(provider.getDriftUnorderedPaths('AWS::ElasticLoadBalancingV2::Listener')).toEqual([]);
     });
   });
 });

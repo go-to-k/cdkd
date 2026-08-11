@@ -5,6 +5,7 @@ import * as sns from 'aws-cdk-lib/aws-sns';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
+import * as elbv2 from 'aws-cdk-lib/aws-elasticloadbalancingv2';
 
 /**
  * Drift-revert E2E test stack for TAG-heavy and ARRAY-heavy resource
@@ -57,6 +58,15 @@ import * as ec2 from 'aws-cdk-lib/aws-ec2';
  *    `SecurityGroupIngress` rule-list by the EC2 provider), and the SG
  *    tag list is reorder-prone. The TRUE-drift mutation authorizes a NEW
  *    ingress rule out of band so the comparator surfaces an added rule.
+ *
+ *  - A standalone ELBv2 TargetGroup (`targetType: 'ip'`, no load balancer)
+ *    with THREE registered IP targets. `Targets` is an array of OBJECTS,
+ *    the shape issue #1620 added to `canonicalizeUnorderedArraysAtPaths` —
+ *    `DescribeTargetHealth` documents no ordering guarantee, so without the
+ *    object-array pass a reorder between the deploy-time snapshot and a
+ *    later read is phantom drift. The TRUE-drift mutation REGISTERS a
+ *    fourth, untemplated IP out of band, so the comparator surfaces an
+ *    added member and `--revert` deregisters it.
  *
  * Every resource carries removalPolicy / autoDelete so destroy is clean.
  */
@@ -185,9 +195,40 @@ export class DriftRevertArraysStack extends cdk.Stack {
       value: managedPolicy.managedPolicyArn,
       description: 'ARN of the IAM managed policy targeted by inject-drift.ts',
     });
+    // ─── Standalone ELBv2 TargetGroup with an unordered OBJECT list ────
+    // `Targets` is an array of `{Id, Port?, AvailabilityZone?}` OBJECTS, the
+    // shape issue #1620 taught `canonicalizeUnorderedArraysAtPaths` to sort.
+    // No load balancer is attached (a target group is a standalone,
+    // no-cost resource), so the registered targets sit in `unused` health —
+    // which is exactly the state the provider's readback must still count as
+    // REGISTERED. The three IPs are declared out of lexical order on purpose,
+    // so the template order cannot coincide with AWS's readback order.
+    const targetGroup = new elbv2.CfnTargetGroup(this, 'ArraysTargetGroup', {
+      protocol: 'HTTP',
+      port: 80,
+      vpcId: vpc.vpcId,
+      targetType: 'ip',
+      // `HealthCheckEnabled: false` is REJECTED by AWS for target type 'ip'
+      // ("Health check enabled must be true for target groups with target
+      // type 'ip'", live-verified 2026-08-11), so the default stands. With no
+      // load balancer attached no health check actually runs and the targets
+      // sit in `unused` — which is precisely the state the readback must
+      // still count as REGISTERED.
+      targets: [{ id: '10.0.0.11' }, { id: '10.0.0.10' }, { id: '10.0.0.12' }],
+      tags: [
+        { key: 'Owner', value: 'cdkd-integ' },
+        { key: 'Component', value: 'drift-revert-arrays' },
+      ],
+    });
+    targetGroup.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+
     new cdk.CfnOutput(this, 'SecurityGroupId', {
       value: securityGroup.securityGroupId,
       description: 'Id of the SecurityGroup targeted by inject-drift.ts',
+    });
+    new cdk.CfnOutput(this, 'TargetGroupArn', {
+      value: targetGroup.ref,
+      description: 'ARN of the TargetGroup targeted by inject-drift.ts (#1620)',
     });
   }
 }

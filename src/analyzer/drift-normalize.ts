@@ -15,10 +15,11 @@
  * the sibling cdk-real-drift (cdkrd) tool, which hit the same false-positive
  * classes against the same kind of AWS-snapshot baseline.
  *
- * Plain-string arrays are NOT canonicalized by the two heuristic passes above,
- * because a scalar list can be order-significant. But several CFn inputs are
- * semantically unordered sets of plain strings (FSx `WindowsConfiguration.Aliases`,
- * `...SelfManagedActiveDirectoryConfiguration.DnsIps`, ...), so
+ * Plain-string arrays and NON-tag object arrays are NOT canonicalized by the
+ * two heuristic passes above, because either can be order-significant. But
+ * several CFn inputs are semantically unordered sets of plain strings (FSx
+ * `WindowsConfiguration.Aliases`, `...SelfManagedActiveDirectoryConfiguration.DnsIps`,
+ * ...) or of objects (ELBv2 `TargetGroup.Targets`), so
  * {@link canonicalizeUnorderedArraysAtPaths} sorts them at an explicit,
  * provider-declared path list only — an opt-in seam mirroring
  * `getDriftUnknownPaths` (see `ResourceProvider.getDriftUnorderedPaths`).
@@ -98,10 +99,11 @@ export function matchesPathPrefix(path: string, entries: readonly string[]): boo
 }
 
 /**
- * Sort plain-string arrays found at one of the provider-declared `paths`, and
- * ONLY there. Unlike the two heuristic passes above, this one is opt-in per
- * resource type via `ResourceProvider.getDriftUnorderedPaths` — a scalar list
- * is order-significant unless the provider says otherwise.
+ * Sort plain-string arrays AND object arrays found at one of the
+ * provider-declared `paths`, and ONLY there. Unlike the two heuristic passes
+ * above, this one is opt-in per resource type via
+ * `ResourceProvider.getDriftUnorderedPaths` — a list is order-significant
+ * unless the provider says otherwise.
  *
  * Paths use dot-notation for nested keys and are matched by the shared
  * {@link matchesPathPrefix} rule, the same one `getDriftUnknownPaths` uses. So
@@ -119,29 +121,67 @@ export function matchesPathPrefix(path: string, entries: readonly string[]): boo
  * is strictly more permissive; nothing that matches for ignore-paths fails to
  * match here.
  *
- * Only arrays whose every element is a plain string are sorted, so a
- * mis-declared path can never reorder object or mixed-type elements. Nested
- * arrays are also left alone: an array element that is itself an array is not
- * descended into, so `{P: [['b','a']]}` never has its INNER list sorted by a
- * `'P'` declaration (no CFn shape in tree is an array-of-arrays, and sorting
- * one would contradict the plain-string-elements-only rule).
+ * TWO element shapes are sorted, each only when the array is HOMOGENEOUS in it:
+ *
+ * 1. every element a plain string — sorted lexically;
+ * 2. every element a plain object — sorted by {@link canonicalJson}, a
+ *    key-order-independent serialization (issue
+ *    [#1620](https://github.com/go-to-k/cdkd/issues/1620)). Key order must not
+ *    participate: AWS's readback order for an object's own keys is no more
+ *    guaranteed than its order for the list, so sorting on raw
+ *    `JSON.stringify` would make the comparison depend on it and reintroduce
+ *    the phantom drift this pass exists to remove. `ElasticLoadBalancingV2::
+ *    TargetGroup.Targets` is the first consumer.
+ *
+ * A MIXED array (strings and objects, or anything else) is left untouched, so
+ * a mis-declared path can never reorder a heterogeneous list. Nested arrays are
+ * also left alone: an array element that is itself an array is not descended
+ * into, so `{P: [['b','a']]}` never has its INNER list sorted by a `'P'`
+ * declaration. That exclusion is a deliberate decision rather than an
+ * inherited accident — no CFn shape in tree is an array-of-arrays, and an
+ * inner list's own order-significance is a separate question from its
+ * container's, which the single declared path cannot express.
  */
 export function canonicalizeUnorderedArraysAtPaths(v: unknown, paths: readonly string[]): unknown {
   if (paths.length === 0) return v;
   return walkUnordered(v, '', paths);
 }
 
+/**
+ * Serialize a value with every object's keys emitted in sorted order, so two
+ * structurally equal objects produce the same string regardless of the key
+ * order they were built in. Used ONLY as a sort key — the returned string is
+ * never compared for equality by the drift comparator, which keeps its own
+ * `deepEqual`.
+ */
+function canonicalJson(v: unknown): string {
+  if (Array.isArray(v)) return `[${v.map(canonicalJson).join(',')}]`;
+  if (v && typeof v === 'object') {
+    const entries = Object.keys(v as Record<string, unknown>)
+      .sort()
+      .map((k) => `${JSON.stringify(k)}:${canonicalJson((v as Record<string, unknown>)[k])}`);
+    return `{${entries.join(',')}}`;
+  }
+  return JSON.stringify(v) ?? 'null';
+}
+
+const isPlainObjectElement = (el: unknown): boolean =>
+  el !== null && typeof el === 'object' && !Array.isArray(el);
+
 function walkUnordered(v: unknown, path: string, paths: readonly string[]): unknown {
   if (Array.isArray(v)) {
     // Array elements inherit the parent path (indices never appear in paths),
     // but a nested array is passed through untouched — see the docstring.
     const mapped = v.map((el) => (Array.isArray(el) ? el : walkUnordered(el, path, paths)));
-    if (
-      mapped.length > 1 &&
-      matchesPathPrefix(path, paths) &&
-      mapped.every((el) => typeof el === 'string')
-    )
-      return [...(mapped as string[])].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+    if (mapped.length > 1 && matchesPathPrefix(path, paths)) {
+      if (mapped.every((el) => typeof el === 'string'))
+        return [...(mapped as string[])].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+      if (mapped.every(isPlainObjectElement)) {
+        const keyed = mapped.map((el) => ({ el, key: canonicalJson(el) }));
+        keyed.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+        return keyed.map((k) => k.el);
+      }
+    }
     return mapped;
   }
   if (v && typeof v === 'object') {

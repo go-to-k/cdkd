@@ -141,14 +141,75 @@ describe('canonicalizeUnorderedArraysAtPaths', () => {
     });
   });
 
-  it('does not sort a non-string array at a declared path', () => {
+  it('sorts an object array at a declared path (issue #1620)', () => {
     const v = { P: [{ B: 2 }, { A: 1 }] };
-    expect(canonicalizeUnorderedArraysAtPaths(v, ['P'])).toEqual({ P: [{ B: 2 }, { A: 1 }] });
+    expect(canonicalizeUnorderedArraysAtPaths(v, ['P'])).toEqual({ P: [{ A: 1 }, { B: 2 }] });
+  });
+
+  it('sorts an object array independently of each element KEY order', () => {
+    // The two sides carry the same two targets with their own keys emitted in
+    // opposite orders. A raw JSON.stringify sort key would order them
+    // differently and reintroduce the phantom drift this pass removes.
+    const state = {
+      Targets: [
+        { Id: '10.0.0.2', Port: 80 },
+        { Port: 80, Id: '10.0.0.1' },
+      ],
+    };
+    const aws = {
+      Targets: [
+        { Port: 80, Id: '10.0.0.1' },
+        { Id: '10.0.0.2', Port: 80 },
+      ],
+    };
+    const a = canonicalizeUnorderedArraysAtPaths(state, ['Targets']) as {
+      Targets: Array<Record<string, unknown>>;
+    };
+    const b = canonicalizeUnorderedArraysAtPaths(aws, ['Targets']) as {
+      Targets: Array<Record<string, unknown>>;
+    };
+    expect(a.Targets.map((t) => t['Id'])).toEqual(['10.0.0.1', '10.0.0.2']);
+    expect(b.Targets.map((t) => t['Id'])).toEqual(['10.0.0.1', '10.0.0.2']);
+  });
+
+  it('sorts an object array at a declared path only, not at an undeclared one', () => {
+    const v = { P: [{ B: 2 }, { A: 1 }] };
+    expect(canonicalizeUnorderedArraysAtPaths(v, ['Other'])).toEqual({ P: [{ B: 2 }, { A: 1 }] });
+  });
+
+  it('does not sort an object array whose elements differ only in a NESTED key order', () => {
+    // Guards the recursion of the sort key: nested objects must canonicalize
+    // too, or two structurally equal elements compare unequal and the sort
+    // becomes input-order dependent.
+    const v = {
+      P: [
+        { Id: 'b', Meta: { Y: 2, X: 1 } },
+        { Id: 'a', Meta: { X: 1, Y: 2 } },
+      ],
+    };
+    const sorted = canonicalizeUnorderedArraysAtPaths(v, ['P']) as {
+      P: Array<Record<string, unknown>>;
+    };
+    expect(sorted.P.map((e) => e['Id'])).toEqual(['a', 'b']);
   });
 
   it('does not sort a mixed-type array at a declared path', () => {
     const v = { P: ['b', 1] };
     expect(canonicalizeUnorderedArraysAtPaths(v, ['P'])).toEqual({ P: ['b', 1] });
+  });
+
+  it('does not sort an array mixing strings and objects at a declared path', () => {
+    // Homogeneity is required for BOTH element shapes: a heterogeneous list has
+    // no meaningful canonical order and the pass must leave it alone.
+    const v = { P: ['b', { A: 1 }] };
+    expect(canonicalizeUnorderedArraysAtPaths(v, ['P'])).toEqual({ P: ['b', { A: 1 }] });
+  });
+
+  it('does not sort an array containing a null element at a declared path', () => {
+    // `typeof null === 'object'`, so an unguarded object test would sort here
+    // and throw or mis-order on the null.
+    const v = { P: [{ B: 2 }, null] };
+    expect(canonicalizeUnorderedArraysAtPaths(v, ['P'])).toEqual({ P: [{ B: 2 }, null] });
   });
 
   it('leaves an empty array at a declared path unchanged', () => {

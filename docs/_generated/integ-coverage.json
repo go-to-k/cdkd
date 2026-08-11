@@ -3124,6 +3124,7 @@
       "integs": [
         "alb",
         "deletion-ordering-complex",
+        "drift-revert-arrays",
         "local-start-alb",
         "local-start-alb-from-state"
       ],
@@ -3133,6 +3134,9 @@
         ],
         "deletion-ordering-complex": [
           "literal"
+        ],
+        "drift-revert-arrays": [
+          "l1"
         ],
         "local-start-alb": [
           "l1",

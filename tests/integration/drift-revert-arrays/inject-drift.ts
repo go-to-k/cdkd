@@ -25,6 +25,12 @@
  *              - EC2: AuthorizeSecurityGroupIngress adds a NEW ingress
  *                     rule (tcp/9000 from 10.0.9.0/24) that was not
  *                     templated — a real added array member.
+ *              - ELBv2: RegisterTargets adds a fourth, untemplated IP
+ *                     target (10.0.0.99:80) to the target group — a real
+ *                     added member of an unordered OBJECT array, the shape
+ *                     issue #1620 taught the canonicalizer to sort. It must
+ *                     surface as drift (not be absorbed as a reorder) and
+ *                     `--revert` must deregister it.
  *              (Used by verify.sh step 4.)
  *
  * Idempotent within each mode: re-running `drift` after a revert
@@ -55,6 +61,10 @@ import {
   EC2Client,
   AuthorizeSecurityGroupIngressCommand,
 } from '@aws-sdk/client-ec2';
+import {
+  ElasticLoadBalancingV2Client,
+  RegisterTargetsCommand,
+} from '@aws-sdk/client-elastic-load-balancing-v2';
 
 const STACK = 'CdkdDriftArraysExample';
 const REGION = process.env.AWS_REGION ?? 'us-east-1';
@@ -64,6 +74,8 @@ const DRIFTED_TAG_VALUE = 'DRIFTED';
 const ADDED_INGRESS_CIDR = '10.0.9.0/24';
 const ADDED_INGRESS_PORT = 9000;
 const ADDED_INGRESS_DESC = 'integ-DRIFTED-rule';
+/** Untemplated fourth target registered by `drift` mode (issue #1620). */
+export const ADDED_TARGET_IP = '10.0.0.99';
 
 interface StateShowOutput {
   state?: {
@@ -75,14 +87,21 @@ interface ResolvedIds {
   bucketName: string;
   managedPolicyArn: string;
   securityGroupId: string;
+  targetGroupArn: string;
 }
 
 function resolveResourceIds(): ResolvedIds {
   const envBucket = process.env.BUCKET_NAME;
   const envPolicy = process.env.MANAGED_POLICY_ARN;
   const envSg = process.env.SECURITY_GROUP_ID;
-  if (envBucket && envPolicy && envSg) {
-    return { bucketName: envBucket, managedPolicyArn: envPolicy, securityGroupId: envSg };
+  const envTg = process.env.TARGET_GROUP_ARN;
+  if (envBucket && envPolicy && envSg && envTg) {
+    return {
+      bucketName: envBucket,
+      managedPolicyArn: envPolicy,
+      securityGroupId: envSg,
+      targetGroupArn: envTg,
+    };
   }
 
   const repoRoot = execSync('git rev-parse --show-toplevel').toString().trim();
@@ -100,12 +119,13 @@ function resolveResourceIds(): ResolvedIds {
   const bucketName = outputs['BucketName'];
   const managedPolicyArn = outputs['ManagedPolicyArn'];
   const securityGroupId = outputs['SecurityGroupId'];
-  if (!bucketName || !managedPolicyArn || !securityGroupId) {
+  const targetGroupArn = outputs['TargetGroupArn'];
+  if (!bucketName || !managedPolicyArn || !securityGroupId || !targetGroupArn) {
     throw new Error(
       `Could not resolve all resource ids from state show JSON: ${JSON.stringify(outputs)}`
     );
   }
-  return { bucketName, managedPolicyArn, securityGroupId };
+  return { bucketName, managedPolicyArn, securityGroupId, targetGroupArn };
 }
 
 async function readBucketTags(
@@ -258,6 +278,26 @@ async function injectSgRuleDrift(securityGroupId: string): Promise<void> {
   }
 }
 
+/**
+ * Register an untemplated fourth IP target on the target group (issue #1620).
+ * `Targets` is an unordered OBJECT array, so this is the drift shape the new
+ * `canonicalizeUnorderedArraysAtPaths` object pass must let through as a real
+ * ADDED member rather than absorb as a reorder. `RegisterTargets` is
+ * idempotent, so re-running after a revert re-injects cleanly.
+ */
+async function injectTargetGroupDrift(targetGroupArn: string): Promise<void> {
+  const elbv2 = new ElasticLoadBalancingV2Client({ region: REGION });
+  await elbv2.send(
+    new RegisterTargetsCommand({
+      TargetGroupArn: targetGroupArn,
+      Targets: [{ Id: ADDED_TARGET_IP, Port: 80 }],
+    })
+  );
+  console.log(
+    `[inject:drift] elbv2: registered untemplated target ${ADDED_TARGET_IP}:80 on ${targetGroupArn}`
+  );
+}
+
 async function main(): Promise<void> {
   const mode = process.argv[2] ?? 'drift';
   const ids = resolveResourceIds();
@@ -272,6 +312,7 @@ async function main(): Promise<void> {
     await injectS3ValueDrift(ids.bucketName);
     await injectIamActionDrift(ids.managedPolicyArn);
     await injectSgRuleDrift(ids.securityGroupId);
+    await injectTargetGroupDrift(ids.targetGroupArn);
     console.log('[inject:drift] real drift injected — `cdkd drift` should now report exit 1');
     return;
   }
