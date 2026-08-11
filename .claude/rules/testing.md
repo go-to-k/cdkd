@@ -422,10 +422,14 @@ Practical rules:
   gone (otherwise "gone" also passes when it never reached AWS), and a
   sibling must be RETAINED (otherwise a reset that clears everything passes
   too)
-- Examples: `tests/integration/route53/` (hosted-zone tags + query logging
-  config), `alb`, `sns-sqs-event`, `secrets-dynamic-ref`,
-  `cloudfront-function-url`, `iam-role-prefixed-name-update` (combined with
-  `CDKD_TEST_UPDATE`)
+- The retained sibling is REQUIRED for a collection-valued property (a tag
+  list, an attribute map) and does not apply when the removal empties the only
+  value the fixture sets — `alb` and `cloudfront-function-url` are that shape
+  and correctly have no sibling
+- The fixture set grows as #1160 batches ship; enumerate it with
+  `grep -rl CDKD_TEST_REMOVAL tests/integration/*/lib/*.ts tests/integration/*/verify.sh`
+  rather than trusting a list here. `tests/integration/route53/` is the
+  reference for the collection-valued shape
 - Full writeup in [docs/testing.md](../../docs/testing.md)
 
 ## Rollback Testing (failure injection)

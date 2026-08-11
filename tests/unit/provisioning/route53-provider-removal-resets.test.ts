@@ -186,6 +186,118 @@ describe('Route53Provider HostedZone removal resets (#1160 route53 batch)', () =
       expect(callsOf('ChangeTagsForResourceCommand')).toHaveLength(0);
     });
 
+    it('a per-ENTRY malformed tag does NOT untag its live siblings', async () => {
+      // The container-level guard is not enough: `[{ Key: { Ref: 'X' } }]` IS
+      // genuinely an array, so a shape-only check waves it through, the entry
+      // is dropped by the reader, and its key falls out of `desiredKeys` — so
+      // the sibling that IS well-formed gets untagged on the strength of an
+      // unresolved intrinsic. A LOSSY read makes the whole list unusable.
+      await update(
+        {
+          Name: 'example.com',
+          HostedZoneTags: [
+            { Key: 'Keep', Value: 'yes' },
+            { Key: { Ref: 'Unresolved' }, Value: 'v' },
+          ],
+        },
+        {
+          Name: 'example.com',
+          HostedZoneTags: [
+            { Key: 'Keep', Value: 'yes' },
+            { Key: 'Resolved', Value: 'v' },
+          ],
+        }
+      );
+
+      expect(callsOf('ChangeTagsForResourceCommand')).toHaveLength(0);
+    });
+
+    it('a tag entry with a non-string Value is lossy too, so the call is skipped', async () => {
+      // Route 53 rejects a non-string value, and because Add and Remove ride
+      // the SAME request, letting it through would fail the whole call and take
+      // the REMOVALS down with it — silently defeating the fix.
+      await update(
+        { Name: 'example.com', HostedZoneTags: [{ Key: 'Env', Value: 42 }] },
+        { Name: 'example.com', HostedZoneTags: [{ Key: 'Old', Value: 'x' }] }
+      );
+
+      expect(callsOf('ChangeTagsForResourceCommand')).toHaveLength(0);
+    });
+
+    it('an explicit EMPTY list clears every tag', async () => {
+      await update(
+        { Name: 'example.com', HostedZoneTags: [] },
+        { Name: 'example.com', HostedZoneTags: [{ Key: 'Gone', Value: 'x' }] }
+      );
+
+      const calls = callsOf('ChangeTagsForResourceCommand');
+      expect(calls).toHaveLength(1);
+      expect(calls[0][0].input.RemoveTagKeys).toEqual(['Gone']);
+    });
+
+    it('a NULL desired value is a removal, not a malformed value', async () => {
+      // `HostedZoneTags:` with an empty YAML value parses to null, and CFn
+      // treats an explicitly-null property as removed. Pinned because the
+      // malformed guard deliberately lets `null` through to the removal path
+      // while refusing every other non-array — an asymmetry worth stating.
+      await update(
+        { Name: 'example.com', HostedZoneTags: null },
+        { Name: 'example.com', HostedZoneTags: [{ Key: 'A', Value: 'x' }] }
+      );
+
+      const calls = callsOf('ChangeTagsForResourceCommand');
+      expect(calls).toHaveLength(1);
+      expect(calls[0][0].input.RemoveTagKeys).toEqual(['A']);
+    });
+
+    it('a failed REMOVAL throws, because state will not record it for a retry', async () => {
+      mockSend.mockImplementation((command: { constructor: { name: string } }) => {
+        if (command.constructor.name === 'ChangeTagsForResourceCommand') {
+          return Promise.reject(new Error('AccessDenied'));
+        }
+        return Promise.resolve({ DelegationSet: { NameServers: [] } });
+      });
+
+      await expect(
+        update(
+          { Name: 'example.com' },
+          { Name: 'example.com', HostedZoneTags: [{ Key: 'Gone', Value: 'x' }] }
+        )
+      ).rejects.toThrow(/Failed to remove tag\(s\) Gone.*will NOT be retried/s);
+    });
+
+    it('a failed ADD-only call still only warns, since the next deploy retries it', async () => {
+      mockSend.mockImplementation((command: { constructor: { name: string } }) => {
+        if (command.constructor.name === 'ChangeTagsForResourceCommand') {
+          return Promise.reject(new Error('Throttling'));
+        }
+        return Promise.resolve({ DelegationSet: { NameServers: [] } });
+      });
+
+      await expect(
+        update(
+          { Name: 'example.com', HostedZoneTags: [{ Key: 'New', Value: 'x' }] },
+          { Name: 'example.com' }
+        )
+      ).resolves.toBeDefined();
+    });
+
+    it('de-duplicates removal keys from a repeated previous entry', async () => {
+      await update(
+        { Name: 'example.com' },
+        {
+          Name: 'example.com',
+          HostedZoneTags: [
+            { Key: 'Dup', Value: 'a' },
+            { Key: 'Dup', Value: 'b' },
+          ],
+        }
+      );
+
+      const calls = callsOf('ChangeTagsForResourceCommand');
+      expect(calls[0][0].input.RemoveTagKeys).toEqual(['Dup']);
+    });
+
     it('a malformed PREVIOUS list still lets a well-formed desired side apply', async () => {
       // Only the DESIRED side gates the removal computation; a state record an
       // older binary wrote must not block an ordinary update.
@@ -207,9 +319,18 @@ describe('Route53Provider HostedZone removal resets (#1160 route53 batch)', () =
 
   describe('QueryLoggingConfig', () => {
     it('REMOVED: deletes the live config, which used to survive forever', async () => {
+      // STATEFUL: the config exists until the Delete lands, then it is gone.
+      // The removal path re-lists afterwards to VERIFY the delete, so a mock
+      // that keeps returning the config forever would (correctly) trip the
+      // did-not-land guard.
+      let live = [{ Id: 'qlc-1' }];
       mockSend.mockImplementation((command: { constructor: { name: string } }) => {
         if (command.constructor.name === 'ListQueryLoggingConfigsCommand') {
-          return Promise.resolve({ QueryLoggingConfigs: [{ Id: 'qlc-1' }] });
+          return Promise.resolve({ QueryLoggingConfigs: live });
+        }
+        if (command.constructor.name === 'DeleteQueryLoggingConfigCommand') {
+          live = [];
+          return Promise.resolve({});
         }
         return Promise.resolve({ DelegationSet: { NameServers: [] } });
       });
@@ -222,7 +343,7 @@ describe('Route53Provider HostedZone removal resets (#1160 route53 batch)', () =
         }
       );
 
-      expect(callsOf('ListQueryLoggingConfigsCommand')).toHaveLength(1);
+      expect(callsOf('ListQueryLoggingConfigsCommand').length).toBeGreaterThanOrEqual(1);
       const deletes = callsOf('DeleteQueryLoggingConfigCommand');
       expect(deletes).toHaveLength(1);
       expect(deletes[0][0].input).toEqual({ Id: 'qlc-1' });
@@ -318,6 +439,11 @@ describe('Route53Provider HostedZone removal resets (#1160 route53 batch)', () =
     });
 
     it('a desired block with a BLANK arn is likewise not a delete', async () => {
+      // Asserting only the Delete count would pass VACUOUSLY: the default mock
+      // returns no QueryLoggingConfigs, so a Delete could never be emitted no
+      // matter what the provider did. Assert the List probe never happens —
+      // that is the call the removal path makes FIRST, so it is the one that
+      // actually discriminates.
       await update(
         { Name: 'example.com', QueryLoggingConfig: { CloudWatchLogsLogGroupArn: '' } },
         {
@@ -328,7 +454,64 @@ describe('Route53Provider HostedZone removal resets (#1160 route53 batch)', () =
         }
       );
 
+      expect(callsOf('ListQueryLoggingConfigsCommand')).toHaveLength(0);
       expect(callsOf('DeleteQueryLoggingConfigCommand')).toHaveLength(0);
+    });
+
+    it('an EMPTY object is a removal, because that is what readHostedZone emits', async () => {
+      // `readHostedZone` returns `QueryLoggingConfig: {}` as the canonical "no
+      // live config", and `cdkd drift --revert` feeds `observedProperties` back
+      // as the DESIRED side. Treating `{}` as malformed would warn on every
+      // hosted-zone revert and tell the user to omit a block they never wrote,
+      // so a key-less object is ABSENT rather than unusable.
+      mockSend.mockImplementation((command: { constructor: { name: string } }) => {
+        if (command.constructor.name === 'ListQueryLoggingConfigsCommand') {
+          return Promise.resolve({ QueryLoggingConfigs: [] });
+        }
+        return Promise.resolve({ DelegationSet: { NameServers: [] } });
+      });
+
+      await update(
+        { Name: 'example.com', QueryLoggingConfig: {} },
+        {
+          Name: 'example.com',
+          QueryLoggingConfig: {
+            CloudWatchLogsLogGroupArn: 'arn:aws:logs:us-east-1:1:log-group:/aws/route53/x',
+          },
+        }
+      );
+
+      // Two List calls: the delete helper's own, plus the post-delete
+      // verification the removal path adds.
+      expect(callsOf('ListQueryLoggingConfigsCommand')).toHaveLength(2);
+    });
+
+    it('a removal whose delete did not land THROWS, because it is never retried', async () => {
+      // The delete helper swallows its own failures, which is right on create /
+      // destroy. On removal it is not: state is rewritten without the property,
+      // so the next deploy's previous side no longer carries it and the config
+      // bills forever with `cdkd diff` clean.
+      mockSend.mockImplementation((command: { constructor: { name: string } }) => {
+        if (command.constructor.name === 'ListQueryLoggingConfigsCommand') {
+          return Promise.resolve({ QueryLoggingConfigs: [{ Id: 'qlc-stuck' }] });
+        }
+        if (command.constructor.name === 'DeleteQueryLoggingConfigCommand') {
+          return Promise.reject(new Error('AccessDenied'));
+        }
+        return Promise.resolve({ DelegationSet: { NameServers: [] } });
+      });
+
+      await expect(
+        update(
+          { Name: 'example.com' },
+          {
+            Name: 'example.com',
+            QueryLoggingConfig: {
+              CloudWatchLogsLogGroupArn: 'arn:aws:logs:us-east-1:1:log-group:/aws/route53/x',
+            },
+          }
+        )
+      ).rejects.toThrow(/is still present.*will NOT.*be retried/s);
     });
   });
 });

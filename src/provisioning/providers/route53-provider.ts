@@ -20,7 +20,7 @@ import {
   type VPCRegion,
 } from '@aws-sdk/client-route-53';
 import { getLogger } from '../../utils/logger.js';
-import { ProvisioningError } from '../../utils/error-handler.js';
+import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import { readConfigString } from '../config-shape.js';
@@ -445,6 +445,15 @@ export class Route53Provider implements ResourceProvider {
         },
       };
     } catch (error) {
+      // Pass a cdkd-typed error through instead of re-labelling it. The two
+      // removal paths above now raise their own `ProvisioningError` (a removal
+      // that did not land is never retried, so it has to be loud), and
+      // re-wrapping would bury that specific, actionable message under a
+      // generic "Failed to update hosted zone" — the #1268 defect the
+      // `update-wrap-coverage` critic exists to block.
+      if (error instanceof CdkdError) {
+        throw error;
+      }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
         `Failed to update hosted zone ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
@@ -1166,22 +1175,35 @@ export class Route53Provider implements ResourceProvider {
     logicalId: string,
     previousProperties?: Record<string, unknown>
   ): Promise<void> {
-    const tags = this.readHostedZoneTags(properties);
-
     // A present-but-MALFORMED desired list must not be read as "the user
-    // removed every tag". `readHostedZoneTags` collapses a malformed value to
-    // `[]`, which is indistinguishable from a real removal at the value level
-    // — and acting on it would UNTAG a live zone on the strength of an
-    // unresolved intrinsic. So removals are computed only when the desired
-    // side is genuinely absent or genuinely a list, matching the
-    // "never infer a default from a possibly-malformed value" rule
-    // (issues #1471 / #1493) in the one direction that is destructive here.
+    // removed every tag". `readHostedZoneTags` collapses anything it cannot
+    // use to a SHORTER list, which is indistinguishable from a real removal at
+    // the value level — and acting on it would UNTAG a live zone on the
+    // strength of an unresolved intrinsic. That is the destructive direction of
+    // the "never infer a default from a possibly-malformed value" rule
+    // (issues #1471 / #1493).
+    //
+    // The check is deliberately LOSSY-READ based, not just container-shaped: a
+    // per-ELEMENT malformation (`[{ Key: { Ref: 'X' } }]`) is still "genuinely
+    // an array", so a container-only guard would let exactly this destructive
+    // case through one level down. Any entry the reader had to drop makes the
+    // WHOLE list unusable.
     const desiredRaw = properties['HostedZoneTags'];
-    const desiredUsable = desiredRaw == null || Array.isArray(desiredRaw);
-    if (!desiredUsable) {
+    if (desiredRaw != null && !Array.isArray(desiredRaw)) {
       this.logger.warn(
         `AWS::Route53::HostedZone HostedZoneTags must be an array on ${logicalId}; ` +
           `ignoring it and leaving the live tags untouched (no tag is added or removed)`
+      );
+      return;
+    }
+
+    const tags = this.readHostedZoneTags(properties);
+    if (Array.isArray(desiredRaw) && tags.length !== desiredRaw.length) {
+      this.logger.warn(
+        `AWS::Route53::HostedZone HostedZoneTags on ${logicalId} carries ` +
+          `${desiredRaw.length - tags.length} entr(y|ies) with a non-string Key or Value ` +
+          `(check for an unresolved intrinsic); leaving the live tags untouched rather than ` +
+          `applying a partial set or removing the tags those entries name`
       );
       return;
     }
@@ -1193,10 +1215,15 @@ export class Route53Provider implements ResourceProvider {
     const desiredKeys = new Set(tags.map((t) => t.Key));
     // Removals are the previous side minus the desired side. Computing them
     // this way guarantees no key appears in BOTH lists, which the API would
-    // otherwise have to arbitrate.
-    const removeTagKeys = (previousTags ?? [])
-      .map((t) => t.Key)
-      .filter((key) => typeof key === 'string' && key.length > 0 && !desiredKeys.has(key));
+    // otherwise have to arbitrate. De-duplicated because the previous side is
+    // a STATE record and may legitimately carry a repeated key.
+    const removeTagKeys = [
+      ...new Set(
+        (previousTags ?? [])
+          .map((t) => t.Key)
+          .filter((key) => key.length > 0 && !desiredKeys.has(key))
+      ),
+    ];
 
     if (tags.length === 0 && removeTagKeys.length === 0) return;
 
@@ -1215,28 +1242,53 @@ export class Route53Provider implements ResourceProvider {
         `Applied ${tags.length} tag(s) and removed ${removeTagKeys.length} tag(s) on hosted zone ${logicalId}`
       );
     } catch (error) {
-      this.logger.warn(
-        `Failed to apply tags to hosted zone ${logicalId}: ${error instanceof Error ? error.message : String(error)}`
-      );
+      const detail = error instanceof Error ? error.message : String(error);
+      // A failed ADD is self-healing: the template still declares the tag, so
+      // the next deploy retries it. A failed REMOVAL is NOT — this update
+      // returns success, state is rewritten WITHOUT the tag, and the next
+      // deploy's previous side no longer carries it, so the removal is never
+      // attempted again and the tag survives on AWS forever with `cdkd diff`
+      // reporting clean. That is precisely the #1160 failure mode this fix
+      // exists to close, so a removal failure has to be loud.
+      if (removeTagKeys.length > 0) {
+        throw new ProvisioningError(
+          `Failed to remove tag(s) ${removeTagKeys.join(', ')} from hosted zone ${logicalId}: ` +
+            `${detail}. The removal will NOT be retried on the next deploy (state no longer ` +
+            `records the tag), so it is reported instead of ignored.`,
+          'AWS::Route53::HostedZone',
+          logicalId,
+          zoneId,
+          error instanceof Error ? error : undefined
+        );
+      }
+      this.logger.warn(`Failed to apply tags to hosted zone ${logicalId}: ${detail}`);
     }
   }
 
   /**
-   * Read `HostedZoneTags` off a property bag, tolerating the malformed shapes
-   * an unresolved intrinsic or a hand-authored L1 can produce. Returns `[]`
-   * rather than throwing: this is a best-effort tag apply whose failures are
-   * already warn-and-continue, and a hard refusal here would ALSO fire on the
-   * previous (state-borne) side, which a rollback replay cannot edit.
+   * Read `HostedZoneTags` off a property bag, dropping entries whose shape an
+   * unresolved intrinsic or a hand-authored L1 made unusable. Returns a
+   * possibly-SHORTER list rather than throwing — the caller compares the length
+   * against the raw input to decide whether the read was lossy, and only the
+   * DESIRED side treats a lossy read as a refusal. The previous (state-borne)
+   * side stays permissive: a record an older binary wrote must not block an
+   * ordinary update, which a rollback replay could not then edit its way out of.
+   *
+   * `Value` is validated as well as `Key`. Route 53 rejects a tag whose value
+   * is absent or non-string, and because Add and Remove ride the SAME
+   * `ChangeTagsForResource` call, one bad value would fail the whole request —
+   * silently taking the REMOVALS down with it.
    */
   private readHostedZoneTags(
     properties: Record<string, unknown>
   ): Array<{ Key: string; Value: string }> {
     const tags = properties['HostedZoneTags'];
     if (!Array.isArray(tags)) return [];
-    return tags.filter(
-      (t): t is { Key: string; Value: string } =>
-        typeof t === 'object' && t !== null && typeof (t as { Key?: unknown }).Key === 'string'
-    );
+    return tags.filter((t): t is { Key: string; Value: string } => {
+      if (typeof t !== 'object' || t === null) return false;
+      const entry = t as { Key?: unknown; Value?: unknown };
+      return typeof entry.Key === 'string' && typeof entry.Value === 'string';
+    });
   }
 
   /**
@@ -1254,12 +1306,29 @@ export class Route53Provider implements ResourceProvider {
 
     // A present-but-MALFORMED desired block must not be read as a REMOVAL —
     // deleting a live query-logging config on the strength of an unresolved
-    // intrinsic is the destructive direction of the #1471 / #1493 rule. Only
-    // a genuinely ABSENT block means "the user removed it"; anything present
-    // that this provider cannot use warns and leaves AWS alone, which is also
-    // the pre-#1160 behavior for that shape.
+    // intrinsic is the destructive direction of the #1471 / #1493 rule.
+    //
+    // "Malformed" here means a NON-OBJECT container, or an object whose
+    // `CloudWatchLogsLogGroupArn` is PRESENT but unusable (an unresolved
+    // intrinsic renders as `{ CloudWatchLogsLogGroupArn: { Ref: … } }`). An
+    // object that simply LACKS the key — `{}` — is treated as ABSENT, i.e. a
+    // genuine removal, because that is exactly what this provider's own
+    // `readHostedZone` emits as the canonical "no live config": `cdkd drift`
+    // hands `observedProperties` back as the desired side on `--revert`, so
+    // warning on `{}` would fire on every hosted-zone revert and tell the user
+    // to omit a block they never wrote.
     const desiredBlock = properties['QueryLoggingConfig'];
-    if (cloudWatchLogsLogGroupArn === undefined && desiredBlock != null) {
+    const desiredBlockIsObject =
+      typeof desiredBlock === 'object' && desiredBlock !== null && !Array.isArray(desiredBlock);
+    const desiredArnPresent =
+      desiredBlockIsObject &&
+      (desiredBlock as Record<string, unknown>)['CloudWatchLogsLogGroupArn'] !== undefined;
+    const desiredUnusable =
+      cloudWatchLogsLogGroupArn === undefined &&
+      desiredBlock != null &&
+      (!desiredBlockIsObject || desiredArnPresent);
+
+    if (desiredUnusable) {
       this.logger.warn(
         `AWS::Route53::HostedZone QueryLoggingConfig on ${logicalId} carries no usable ` +
           `CloudWatchLogsLogGroupArn; leaving the live query logging config untouched ` +
@@ -1286,7 +1355,26 @@ export class Route53Provider implements ResourceProvider {
         this.logger.debug(
           `QueryLoggingConfig removed from template for hosted zone ${logicalId}; deleting the live config`
         );
+        // `deleteQueryLoggingConfigForZone` swallows its own failures, which is
+        // right on the create + delete paths that call it. On the REMOVAL path
+        // it is not: this update returns success, state is rewritten without
+        // `QueryLoggingConfig`, and the next deploy's previous side no longer
+        // carries it — so a swallowed failure means the config keeps writing to
+        // CloudWatch, and billing, forever with `cdkd diff` clean. That is the
+        // exact #1160 failure mode, so verify the delete actually happened.
         await this.deleteQueryLoggingConfigForZone(zoneId, logicalId);
+        const remaining = await this.listQueryLoggingConfigIds(zoneId);
+        if (remaining.length > 0) {
+          throw new ProvisioningError(
+            `QueryLoggingConfig was removed from the template for hosted zone ${logicalId} but ` +
+              `the live config (${remaining.join(', ')}) is still present. The removal will NOT ` +
+              `be retried on the next deploy (state no longer records the property), so it is ` +
+              `reported instead of ignored.`,
+            'AWS::Route53::HostedZone',
+            logicalId,
+            zoneId
+          );
+        }
       }
       return;
     }
@@ -1326,6 +1414,34 @@ export class Route53Provider implements ResourceProvider {
     if (typeof config !== 'object' || config === null || Array.isArray(config)) return undefined;
     const arn = (config as Record<string, unknown>)['CloudWatchLogsLogGroupArn'];
     return typeof arn === 'string' && arn.length > 0 ? arn : undefined;
+  }
+
+  /**
+   * List the live query-logging config ids for a hosted zone.
+   *
+   * Used by the REMOVAL path to VERIFY the delete landed, because
+   * `deleteQueryLoggingConfigForZone` deliberately swallows its failures and a
+   * swallowed removal is permanent (see the call site). A zone that has gone
+   * away counts as "no config", so the NotFound shapes resolve to `[]` rather
+   * than failing the deploy on a resource that is already absent.
+   */
+  private async listQueryLoggingConfigIds(zoneId: string): Promise<string[]> {
+    try {
+      const response = await this.getClient().send(
+        new ListQueryLoggingConfigsCommand({ HostedZoneId: zoneId })
+      );
+      return (response.QueryLoggingConfigs ?? [])
+        .map((config) => config.Id)
+        .filter((id): id is string => typeof id === 'string');
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        (error.name === 'NoSuchHostedZone' || error.name === 'NoSuchQueryLoggingConfig')
+      ) {
+        return [];
+      }
+      throw error;
+    }
   }
 
   /**

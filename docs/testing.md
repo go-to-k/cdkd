@@ -877,9 +877,19 @@ Two conventions make the result meaningful rather than vacuous:
   wrong as one that clears nothing; the retained sibling is what distinguishes
   them.
 
-Fixtures using it today: `route53` (hosted-zone tags + query logging config),
-`alb`, `sns-sqs-event`, `secrets-dynamic-ref`, `cloudfront-function-url`, and
-`iam-role-prefixed-name-update` (which combines it with `CDKD_TEST_UPDATE`).
+The two conventions above are the ones worth copying, but they are NOT
+universal in the tree — `alb` and `cloudfront-function-url` deliberately remove
+the only value they set, so they satisfy the baseline-live convention without a
+retained sibling. Copy the retained sibling whenever the property is a
+COLLECTION (a tag list, an attribute map), where "cleared everything" and
+"cleared the right entry" are different outcomes.
+
+The current set of fixtures using the toggle changes as batches ship; find it
+with:
+
+```bash
+grep -rl CDKD_TEST_REMOVAL tests/integration/*/lib/*.ts tests/integration/*/verify.sh
+```
 
 ### Failure injection (CDKD_TEST_FAIL)
 

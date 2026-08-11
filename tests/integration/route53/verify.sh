@@ -70,6 +70,9 @@ cd "$(dirname "$0")"
 
 STACK="Route53Stack"
 REGION="${AWS_REGION:-us-east-1}"
+# The fixture names its zone / query-log group after the account, so the leak
+# probes below can be scoped to THIS account rather than an account-wide prefix.
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 EXPECTED_GEO_REGION="us-east-1"
 SET_IDENTIFIER="geo-use1"
@@ -278,9 +281,13 @@ if echo "${REMOVAL_TAGS}" | jq -e 'index("Dropped")' >/dev/null; then
   exit 1
 fi
 # The kept tag must still be there — an untag diff that clears everything is
-# just as wrong as one that clears nothing.
-if ! echo "${REMOVAL_TAGS}" | jq -e 'index("Keep")' >/dev/null; then
-  echo "FAIL: hosted-zone tag 'Keep' was removed although the template still declares it" >&2
+# just as wrong as one that clears nothing. Assert its VALUE, not just its
+# presence: a reset that clobbers the value would pass a key-only check.
+KEPT_VALUE=$(aws route53 list-tags-for-resource \
+  --resource-type hostedzone --resource-id "${ZONE_ID}" --region "${REGION}" \
+  --query 'ResourceTagSet.Tags[?Key==`Keep`].Value | [0]' --output text)
+if [ "${KEPT_VALUE}" != "yes" ]; then
+  echo "FAIL: hosted-zone tag 'Keep' is '${KEPT_VALUE}', expected 'yes' (removed or clobbered)" >&2
   echo "${REMOVAL_TAGS}" | jq '.'
   exit 1
 fi
@@ -316,12 +323,15 @@ echo "    OK: state file is gone"
 # The query-logging log group is a template resource with RemovalPolicy.DESTROY,
 # so destroy must take it too — a surviving log group is an orphan the run
 # would otherwise leave behind (and it re-collides on the next run's create).
+# Scope the probe to THIS run's exact log-group name. The bare
+# `/aws/route53/cdkd-test-` prefix is account-wide, so a concurrent run in the
+# same account would false-fail this check.
 LEFTOVER_LG=$(aws logs describe-log-groups --region "${REGION}" \
-  --log-group-name-prefix "/aws/route53/cdkd-test-" \
+  --log-group-name-prefix "/aws/route53/cdkd-test-${ACCOUNT_ID}.internal" \
   --query 'length(logGroups)' --output text 2>/dev/null)
 if [ "${LEFTOVER_LG}" != "0" ]; then
   echo "FAIL: ${LEFTOVER_LG} query-logging log group(s) left behind after destroy" >&2
-  aws logs describe-log-groups --region "${REGION}" --log-group-name-prefix "/aws/route53/cdkd-test-" | jq '.logGroups[].logGroupName'
+  aws logs describe-log-groups --region "${REGION}" --log-group-name-prefix "/aws/route53/cdkd-test-${ACCOUNT_ID}.internal" | jq '.logGroups[].logGroupName'
   exit 1
 fi
 echo "    OK: query-logging log group is gone"
