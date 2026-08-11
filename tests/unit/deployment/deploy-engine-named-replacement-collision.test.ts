@@ -72,6 +72,17 @@ describe('DeployEngine — custom-named replacement collision', () => {
   const queueDeletedRecently = () =>
     new Error('Failed to create SQS queue Pipe: AWS.SimpleQueueService.QueueDeletedRecently');
 
+  // The SINGULAR spelling, which is what AWS Lambda actually raises
+  // (`ResourceConflictException: Function already exist: <name>`, verified
+  // live 2026-08-12 — issue #1625). Every other case in this suite uses the
+  // PLURAL Pipes wording, so before the matcher was widened this shape
+  // reached NEITHER the actionable refusal NOR the delete-first fallback:
+  // the raw SDK error escaped and the replacement was unperformable by any
+  // flag. Kept at the CONSUMER level rather than only in the matcher's own
+  // unit test, because it is the consumer's behavior that regresses.
+  const alreadyExistSingular = () =>
+    new Error('Failed to create Lambda function Pipe: Function already exist: MyStack-Pipe');
+
   beforeEach(() => {
     callOrder = [];
     createFailures = [];
@@ -186,6 +197,32 @@ describe('DeployEngine — custom-named replacement collision', () => {
     expect(err!.cause?.message).toMatch(/cdkd deploy --replace/);
     // The safe create-first order left the old resource alive.
     expect(callOrder).toEqual(['create']);
+  });
+
+  // The SAME two behaviors over the SINGULAR spelling (#1625). Before the
+  // matcher was widened these two cases threw the RAW SDK error instead: the
+  // first without any of the actionable text, the second without ever
+  // deleting the old name holder.
+  it('fails with the actionable collision error for the SINGULAR spelling (#1625)', async () => {
+    createFailures = [alreadyExistSingular()];
+
+    const err = await invokeProvision(makeEngine()).then(
+      () => null,
+      (e) => e as Error & { cause?: { message?: string } }
+    );
+
+    expect(err).not.toBeNull();
+    expect(err!.cause?.message).toMatch(/custom-named resource requires replacing/);
+    expect(err!.cause?.message).toMatch(/cdkd deploy --replace/);
+    expect(callOrder).toEqual(['create']);
+  });
+
+  it('falls back to delete-first for the SINGULAR spelling under --replace (#1625)', async () => {
+    createFailures = [alreadyExistSingular()];
+
+    await invokeProvision(makeEngine({ replace: true }));
+
+    expect(callOrder).toEqual(['create', 'delete', 'create']);
   });
 
   it('falls back to delete-first under --replace and re-creates under the same name', async () => {

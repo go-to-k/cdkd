@@ -479,6 +479,25 @@ describe('isNameCollisionError', () => {
     ['ParameterAlreadyExists', 'SSM parameter'],
     // Provider-wrapped message (cdkd wraps the SDK error text)
     ['Failed to create S3 bucket MyBucket: BucketAlreadyExists', 'provider-wrapped'],
+    // Lambda spells it SINGULAR (issue #1625). Verified verbatim against real
+    // AWS (us-east-1, 2026-08-12) by calling CreateFunction twice with one
+    // name: `ResourceConflictException: Function already exist: <name>`.
+    // Until this case matched, no Lambda function could take the collision
+    // path at all — the create-first replacement raised the raw
+    // ResourceConflictException instead of cdkd's actionable error, and
+    // `--replace`'s delete-first fallback never fired.
+    ['Function already exist: cdkd-probe-1625-collision', 'Lambda singular spelling'],
+    [
+      'Failed to create Lambda function MyFn: ResourceConflictException: Function already exist: MyStack-MyFn',
+      'Lambda singular, provider-wrapped',
+    ],
+    // End-of-string, no trailing punctuation: a "tightening" to
+    // /already exists?[\s:]/ would pass every other case here and fail this.
+    ['Function already exist', 'singular at end of string'],
+    // The `\b` narrowed the PLURAL arm too (it was unbounded before), so pin a
+    // sentence-final plural — the exact shape the Pipes collision message and
+    // the deploy-engine consumer tests use.
+    ["with identifier 'my-pipe' already exists.", 'plural, sentence-final'],
   ])('matches %j (%s)', (message) => {
     expect(isNameCollisionError(message)).toBe(true);
   });
@@ -490,6 +509,27 @@ describe('isNameCollisionError', () => {
     ['The specified bucket does not exist', 'not-found'],
     // Lowercase run-on ("alreadyexists") is not an AWS shape; stay strict
     ['resource alreadyexists', 'run-on lowercase'],
+    // The singular arm is bounded to the WORD: widening it to a bare prefix
+    // would swallow unrelated participles ("already existed as a draft" is
+    // not a create-time name collision, and crediting it at a create-first
+    // site would trigger the destructive delete-first fallback).
+    ['the record already existed as a draft', 'participle, not a collision'],
+    // NEGATED phrase — the lookbehind's reason for existing. The bare pattern
+    // matched this, and a match at the create-first site credits a collision
+    // that under `--replace` DELETES the old resource.
+    ['the bucket does not already exist', 'negated, not a collision'],
+    // MODAL phrase — the sharper half of the same fence: a create rejected
+    // for a missing PREREQUISITE would otherwise be reported as a name
+    // collision, and the `--replace` advice that refusal prints would delete
+    // the live old resource before failing again for the same reason.
+    ['The destination bucket must already exist', 'modal "must", a missing prerequisite'],
+    ['the target should already exist', 'modal "should"'],
+    ['it may already exist', 'modal "may"'],
+    // Error-CODE asymmetry, pinned as a decision rather than left implicit:
+    // the singular `AlreadyExist` is not an AWS code spelling, so neither arm
+    // matches it (the message arm needs a word boundary after `exist`, and the
+    // code arm is an exact `AlreadyExists` substring test).
+    ['ResourceAlreadyExistException: function my-fn', 'singular error CODE'],
   ])('does not match %j (%s)', (message) => {
     expect(isNameCollisionError(message)).toBe(false);
   });
@@ -535,6 +575,16 @@ describe('isRecreateRetryableError', () => {
       )
     ).toBe(true);
     expect(isRecreateRetryableError('QueueDeletedRecently')).toBe(true);
+  });
+
+  // The delete-then-re-create sites (the `--replace` delete-first fallback,
+  // the recreate-via-* path, the rollback executor's delete-new-first) use
+  // THIS as their retry filter, so the #1625 widening changed their behavior
+  // too — a late name release after deleting a Lambda now retries instead of
+  // failing the deploy. Pinned separately from `isNameCollisionError` because
+  // the two are consumed at different sites.
+  it('accepts the Lambda SINGULAR collision spelling (#1625)', () => {
+    expect(isRecreateRetryableError('Function already exist: MyStack-MyFn')).toBe(true);
   });
 
   it('rejects unrelated failures', () => {
