@@ -188,7 +188,7 @@ OD_REPLICA_TABLE="$(table_name_for OnDemandReplicaTable)"
 # DELETE -- here that would be a replica removal on a still-live table, the
 # operation that arms DynamoDB's 24h source-region delete lock (#1442). So the
 # gating token is carried forward in this suffix, which is appended to every
-# deploy after the on-demand rounds. Empty until 12g sets it, and empty for the
+# deploy after the on-demand rounds. Empty until step 12e3 sets it, and empty for the
 # whole run when CDKD_INTEG_MULTI_REGION is unset -- so the default flow is
 # byte-for-byte unchanged.
 OD_MODE_SUFFIX=""
@@ -518,9 +518,17 @@ if [ "${CDKD_INTEG_MULTI_REGION:-0}" = "1" ]; then
   # asserted its replica is ACTIVE), so a probe failure is a real error and
   # `set -e` must surface it. A `|| echo MISSING` fallback would turn a
   # throttle into a plain assertion failure blaming the fix (#1120).
-  EU_PROV_OVERRIDE="$(aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" \
-    --query "Table.Replicas[?RegionName=='eu-west-1'].ProvisionedThroughputOverride.ReadCapacityUnits | [0]" \
-    --output text)"
+  # Polled, not single-shot: this is the same eventually-consistent readback
+  # the on-demand twin polls for. A one-shot read here would flake with a FAIL
+  # blaming (#1503) when the value simply had not propagated yet.
+  EU_PROV_OVERRIDE=""
+  for _ in $(seq 1 30); do
+    EU_PROV_OVERRIDE="$(aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" \
+      --query "Table.Replicas[?RegionName=='eu-west-1'].ProvisionedThroughputOverride.ReadCapacityUnits | [0]" \
+      --output text)"
+    [ "${EU_PROV_OVERRIDE}" = "7" ] && break
+    sleep 10
+  done
   if [ "${EU_PROV_OVERRIDE}" != "7" ]; then
     echo "[verify] FAIL: eu-west-1 ProvisionedThroughputOverride.ReadCapacityUnits is '${EU_PROV_OVERRIDE}', expected 7 (the replica's declared min capacity)"
     exit 1
@@ -609,9 +617,9 @@ if [ "${CDKD_INTEG_MULTI_REGION:-0}" = "1" ]; then
   OD_LAST_REP=""
   wait_od_override() { # $1 = expected value -> 0 when both sides agree
     for _ in $(seq 1 60); do
-      if OD_LAST_SRC="$(od_override_from_source 2>/dev/null)" &&
-        OD_LAST_REP="$(od_override_from_replica 2>/dev/null)" &&
-        [ "${OD_LAST_SRC}" = "$1" ] && [ "${OD_LAST_REP}" = "$1" ]; then
+      OD_LAST_SRC="$(od_override_from_source 2>/dev/null || true)"
+      OD_LAST_REP="$(od_override_from_replica 2>/dev/null || true)"
+      if [ "${OD_LAST_SRC}" = "$1" ] && [ "${OD_LAST_REP}" = "$1" ]; then
         return 0
       fi
       sleep 10
@@ -645,11 +653,14 @@ if [ "${CDKD_INTEG_MULTI_REGION:-0}" = "1" ]; then
   OD_DROP_LOG="$(mktemp)"
   CDKD_TEST_UPDATE=deletion-protection,autoscaling,cross-region-ondemand-dropped ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose 2>&1 | tee "${OD_DROP_LOG}"
   OD_AFTER_DROP="$(od_override_from_source)"
-  if [ "${OD_AFTER_DROP}" != "40" ]; then
-    echo "[verify] FAIL: dropping the ceiling changed the live override to '${OD_AFTER_DROP}', expected it to stay 40 (AWS cannot clear it; cdkd must not try)"
+  OD_AFTER_DROP_REP="$(od_override_from_replica)"
+  if [ "${OD_AFTER_DROP}" != "40" ] || [ "${OD_AFTER_DROP_REP}" != "40" ]; then
+    rm -f "${OD_DROP_LOG}"
+    echo "[verify] FAIL: dropping the ceiling changed the live override (source='${OD_AFTER_DROP}' replica='${OD_AFTER_DROP_REP}'), expected both to stay 40 (AWS cannot clear it; cdkd must not try)"
     exit 1
   fi
   if ! grep -q "STILL IN EFFECT" "${OD_DROP_LOG}"; then
+    rm -f "${OD_DROP_LOG}"
     echo "[verify] FAIL: dropping the ceiling did not emit the 'STILL IN EFFECT' warning — the user is not told the old override survives"
     exit 1
   fi
@@ -658,7 +669,7 @@ if [ "${CDKD_INTEG_MULTI_REGION:-0}" = "1" ]; then
 
   # Carry the replica declaration forward through every remaining deploy (see
   # the OD_MODE_SUFFIX comment above). `-dropped` is the right token: it keeps
-  # the replica but declares no ceiling, which is exactly the state 12i just
+  # the replica but declares no ceiling, which is exactly the state 12e3 just
   # established, so the remaining deploys produce NO further change to this
   # table rather than churning it.
   OD_MODE_SUFFIX=",cross-region-ondemand-dropped"
@@ -677,8 +688,12 @@ if [ "${CDKD_INTEG_MULTI_REGION:-0}" = "1" ]; then
       --region "${REGION}" --query 'Table.TableStatus' --output text)"
     OD_REP_STATUSES="$(aws dynamodb describe-table --table-name "${OD_REPLICA_TABLE}" \
       --region "${REGION}" --query "join(' ', Table.Replicas[].ReplicaStatus || \`[]\`)" --output text)"
+    # ACTIVE:ACTIVE only. An EMPTY replica list must NOT count as settled:
+    # by this point the replica is guaranteed present, so "no replicas" can
+    # only mean it was deleted — the exact failure OD_MODE_SUFFIX exists to
+    # prevent, and accepting it here would mask it.
     case "${OD_TBL_STATUS}:${OD_REP_STATUSES}" in
-      ACTIVE:ACTIVE | ACTIVE:)
+      ACTIVE:ACTIVE)
         OD_SETTLED=1
         echo "[verify] step 12e4: settled after ~$((i * 10))s (table=${OD_TBL_STATUS} replicas=${OD_REP_STATUSES:-none})"
         break
@@ -879,7 +894,7 @@ echo "[verify] step 13f: cdkd deploy with unresolvable-capacity (issue #1511 —
 # assertion is discriminating in both directions: read must land on cdkd's 5,
 # write on the template's 1.
 UNRESOLVABLE_LOG="$(mktemp)"
-CDKD_TEST_UPDATE=ttl,tags,drop-gsi-ondemand-limits,drop-table-ondemand-limit,drop-table-ondemand-read-limit,gsi-billing-flip,unresolvable-capacity \
+CDKD_TEST_UPDATE=ttl,tags,drop-gsi-ondemand-limits,drop-table-ondemand-limit,drop-table-ondemand-read-limit,gsi-billing-flip,unresolvable-capacity${OD_MODE_SUFFIX} \
   ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose 2>&1 | tee "${UNRESOLVABLE_LOG}"
 
 # ONE line-coupled grep, not three independent ones: `did not resolve to a

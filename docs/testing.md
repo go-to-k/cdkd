@@ -642,28 +642,46 @@ DynamoDB's 24-hour source-region delete lock; an earlier probe wedged a table in
 commit message and the issue comment had already claimed the design "only ever
 ADDs" — nothing would have contradicted them.
 
-Separate **presence** from **configuration**: put presence on something constant
-for the whole run, and let only the configuration vary per step.
+Make the token **monotonic** by carrying it forward in a shell suffix: set the
+variable once the resource exists, and append it to the mode list of every later
+deploy.
 
-```ts
-// PRESENCE: constant for the whole verify.sh run.
-const wantsReplica = process.env.CDKD_INTEG_MULTI_REGION === '1';
-// CONFIGURATION: per-step.
-const declaresCeiling = mode === 'initial' || mode === 'changed';
+```bash
+OD_MODE_SUFFIX=""                               # seeded with the other run vars
+...
+OD_MODE_SUFFIX=",cross-region-ondemand-dropped" # set right after the rounds
+...
+CDKD_TEST_UPDATE=ttl,tags${OD_MODE_SUFFIX} ${CLI} deploy ...
 ```
 
-No step can then drop the resource, and only `cdkd destroy` removes it — which
+The suffix stays empty when the scenario is not gated on, so the default flow is
+byte-for-byte unchanged. Only `cdkd destroy` then removes the resource — which
 for a GlobalTable deletes every replica as one resource and never issues a
 standalone replica-delete.
 
-Before adding a mode-gated resource, enumerate every deploy
-(`grep -n 'CLI} deploy' verify.sh`) and read the mode list of each one that runs
-**after** your steps; any that omits your token deletes your resource there.
-Then weigh what that deletion costs — free for a plain queue, the whole problem
+Do **not** instead key presence on a run-scoped environment variable. It is the
+tempting one-line fix and it stops the deletion, but it silently changes what
+the test tests: the resource is then declared from step 1, so it is created
+*with* its parent and the step you meant to exercise becomes an UPDATE. That is
+how this very fixture briefly stopped covering `addReplica` while its assertion
+still passed — the assertion only checks the resulting value. Reserve the
+env-var form for presence that no step needs to transition.
+
+Before adding a mode-gated resource, enumerate every deploy and read the mode
+list of each one that runs **after** your steps; any that omits your token
+deletes your resource there. Grep for the invocation rather than for a
+single-line pattern — fixtures wrap long mode lists with a trailing `\`, so the
+env prefix and `${CLI} deploy` land on different lines and a one-line
+`grep 'CDKD_TEST_UPDATE=.*deploy'` misses them. That gap is what let a run
+report PASS while still performing the live replica-delete.
+
+Then weigh what the deletion costs — free for a plain queue, the whole problem
 for a DynamoDB replica, RDS instance or stateful store. Verify by synthesizing
 the **later** modes: the check that catches this is `cdk synth` under `ttl,tags`
 showing the resource still intact, not `cdk synth` under your own mode showing
-it created.
+it created. Finally, make sure some assertion would *notice* a drop — a
+post-destroy "it is gone" check passes vacuously when the resource was deleted
+mid-run, so it is not a guard.
 
 Not yet mechanically enforced; issue
 [#1543](https://github.com/go-to-k/cdkd/issues/1543) tracks the lint. Unlike the

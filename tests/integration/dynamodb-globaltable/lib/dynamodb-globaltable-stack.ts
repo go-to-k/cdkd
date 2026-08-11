@@ -209,7 +209,7 @@ export class DynamoDBGlobalTableStack extends cdk.Stack {
     // standalone replica-delete.
     //
     // Presence is keyed on the TOKEN, and verify.sh is what makes that safe:
-    // once step 12g adds the replica, its `OD_MODE_SUFFIX` appends
+    // once step 12e1 adds the replica, its `OD_MODE_SUFFIX` appends
     // `cross-region-ondemand-dropped` to EVERY later deploy, so the token —
     // and therefore the replica — is monotonic for the rest of the run.
     //
@@ -220,7 +220,7 @@ export class DynamoDBGlobalTableStack extends cdk.Stack {
     //    the operation that arms DynamoDB's 24h source-region delete lock.
     //  - Keying presence on the ENV VAR instead fixes that but breaks the
     //    test: the replica is then declared from step 1, so it is created
-    //    WITH the table and step 12g becomes a replica-MODIFY. The code under
+    //    WITH the table and step 12e1 becomes a replica-MODIFY. The code under
     //    test is `addReplica` (the UpdateTable `ReplicaUpdates[].Create`
     //    path), which is only reached when a new region appears on an
     //    EXISTING table — verified in the 2026-08-11 run, where the log
@@ -235,7 +235,7 @@ export class DynamoDBGlobalTableStack extends cdk.Stack {
 
     // 20 -> 40 so the CHANGE round moves the value, and neither number is a
     // DynamoDB default that could pass by accident. `none` (every deploy
-    // before 12g and after 12i) declares the replica with NO ceiling, which
+    // before 12e1 and after 12e3) declares the replica with NO ceiling, which
     // is the same shape as `dropped` — correct, because once the ceiling has
     // been dropped it must STAY dropped from the template's point of view
     // while remaining live on AWS.

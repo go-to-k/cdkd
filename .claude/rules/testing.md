@@ -330,31 +330,49 @@ delete lock (a probe wedged a table in `UPDATING` for 90+ minutes that way,
 #1442), and the fixture's own comments, the commit message and the issue comment
 had all already claimed the design "only ever ADDs".
 
-**Separate PRESENCE from CONFIGURATION.** Presence goes on something constant
-for the whole run; only the configuration varies per step:
+**Make the token MONOTONIC — carry it forward in a shell suffix.** Set a
+variable once the resource exists and append it to the mode list of every later
+deploy:
 
-```ts
-// PRESENCE: constant for the whole verify.sh run.
-const wantsReplica = process.env.CDKD_INTEG_MULTI_REGION === '1';
-// CONFIGURATION: per-step.
-const declaresCeiling = mode === 'initial' || mode === 'changed';
+```bash
+OD_MODE_SUFFIX=""                              # seeded with the other run vars
+...
+OD_MODE_SUFFIX=",cross-region-ondemand-dropped" # set right after the rounds
+...
+CDKD_TEST_UPDATE=ttl,tags${OD_MODE_SUFFIX} ${CLI} deploy ...
 ```
 
-Then no step can drop the resource and only `cdkd destroy` removes it — which
+The suffix stays empty when the scenario is not gated on, so the default flow is
+byte-for-byte unchanged; only `cdkd destroy` then removes the resource — which
 for a GlobalTable deletes every replica as ONE resource and never issues a
 standalone replica-delete.
 
+**Do NOT instead key presence on a run-scoped env var**, which is the tempting
+one-line fix. It stops the deletion but silently changes what the test tests:
+the resource is then declared from step 1, so it is created WITH its parent and
+the step you meant to exercise becomes an UPDATE. That is how the #1512 fixture
+briefly stopped covering `addReplica` while its assertion still passed — the
+assertion only checked the resulting value. Use the env var only for presence
+that no step needs to transition.
+
 **Before adding a mode-gated resource to a multi-step fixture:**
 
-- Enumerate every deploy (`grep -n 'CLI} deploy' verify.sh`) and read the mode
-  list of each one that runs AFTER your steps. Any that omits your token deletes
-  your resource there.
+- Enumerate every deploy and read the mode list of each one that runs AFTER your
+  steps. Any that omits your token deletes your resource there. Grep for the
+  invocation, **not** for a single-line pattern: fixtures wrap long mode lists
+  with a trailing `\` so the env prefix and `${CLI} deploy` sit on DIFFERENT
+  lines, and a one-line `grep 'CDKD_TEST_UPDATE=.*deploy'` silently misses those.
+  That is exactly how #1512 shipped a run that still performed the live
+  replica-delete while reporting PASS.
 - Ask what that deletion COSTS. For a plain queue, nothing. For anything whose
   removal is slow, locked, or destructive (DynamoDB replicas, RDS, stateful
   storage) it is the whole point.
 - Verify by synthesizing the LATER modes, not your own: the check that catches
   this is `cdk synth` under `ttl,tags` showing the resource still intact — not
   `cdk synth` under your own mode showing it created.
+- Make sure some assertion would NOTICE the drop. A post-destroy "it is gone"
+  check passes vacuously when the resource was deleted mid-run, so it is not a
+  guard; assert presence at the point the resource must still exist.
 
 NOT yet mechanically enforced — issue
 [#1543](https://github.com/go-to-k/cdkd/issues/1543) tracks the lint (the
