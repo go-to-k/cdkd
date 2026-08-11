@@ -111,12 +111,52 @@ export interface DeployStep {
   raw: string;
 }
 
-function parseModeValue(rhs: string): string[] | null {
-  const unquoted = /^(["'])([\s\S]*)\1$/.exec(rhs);
-  const value = unquoted ? unquoted[2]! : rhs;
-  // A variable reference or a command substitution cannot be resolved here.
-  if (/[$`]/.test(value)) return null;
-  return value
+/** Strip one layer of matching quotes from a shell RHS. */
+function unquote(rhs: string): string {
+  const m = /^(["'])([\s\S]*)\1$/.exec(rhs);
+  return m ? m[2]! : rhs;
+}
+
+/**
+ * Expand `${VAR}` / `$VAR` against the literal variables in scope at this line.
+ *
+ * The MONOTONIC SUFFIX idiom is why this exists rather than being a nicety:
+ * `.claude/rules/testing.md` prescribes carrying a token forward with
+ * `CDKD_TEST_UPDATE=ttl,tags${OD_MODE_SUFFIX}`, where the suffix is seeded
+ * empty and set once the resource exists. That is the CORRECT fix for the bug
+ * this lint checks, so a parser that gave up on `$` would report
+ * `unresolvable-mode-list` on precisely the fixtures that did the right thing —
+ * turning the lint into a blocker against its own recommended pattern.
+ *
+ * Assignments are applied in SOURCE ORDER (last one before the invocation
+ * wins), which models a linear script exactly and a conditional assignment
+ * conservatively — the same "assume the branch is taken" stance
+ * {@link parseDeploySteps} takes for a deploy inside an `if`.
+ *
+ * @returns the expanded string, or `null` when a reference cannot be resolved.
+ */
+function expandVars(value: string, vars: Map<string, string>): string | null {
+  // A command substitution is never resolvable here.
+  if (/`|\$\(/.test(value)) return null;
+
+  let unresolved = false;
+  const expanded = value.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g, (_m, a, b) => {
+    const name = (a ?? b) as string;
+    const known = vars.get(name);
+    if (known === undefined) {
+      unresolved = true;
+      return '';
+    }
+    return known;
+  });
+
+  return unresolved ? null : expanded;
+}
+
+function parseModeValue(rhs: string, vars: Map<string, string>): string[] | null {
+  const expanded = expandVars(unquote(rhs), vars);
+  if (expanded === null) return null;
+  return expanded
     .split(',')
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
@@ -141,10 +181,18 @@ export function parseDeploySteps(content: string): DeployStep[] {
     .join('|');
   const steps: DeployStep[] = [];
   let ambient: string[] | null = [];
+  /** Literal shell variables in scope, updated in source order. */
+  const vars = new Map<string, string>();
 
   const assignment = new RegExp(
     String.raw`^\s*(?:export\s+)?${MODE_ENV}=(".*?"|'.*?'|\S*)\s*(?:#.*)?$`,
   );
+  // Any other simple `NAME=<literal>` assignment, so the monotonic-suffix
+  // idiom resolves. A non-literal RHS REMOVES the name from the table rather
+  // than being ignored, so a later expansion reports unresolvable instead of
+  // silently reusing a stale value.
+  const otherAssignment =
+    /^\s*(?:export\s+|readonly\s+|local\s+)?([A-Za-z_][A-Za-z0-9_]*)=("[^"]*"|'[^']*'|\S*)\s*(?:#.*)?$/;
   // The leading `\s*` is load-bearing, not tidiness: every deploy inside a
   // shell `if` block is INDENTED, and an anchor that demanded column 0 read
   // those invocations as unmoded. That silently emptied the mode list of
@@ -166,7 +214,14 @@ export function parseDeploySteps(content: string): DeployStep[] {
     }
     const bare = assignment.exec(stripped);
     if (bare) {
-      ambient = parseModeValue(bare[1]!);
+      ambient = parseModeValue(bare[1]!, vars);
+      continue;
+    }
+    const other = otherAssignment.exec(stripped);
+    if (other) {
+      const expanded = expandVars(unquote(other[2]!), vars);
+      if (expanded === null) vars.delete(other[1]!);
+      else vars.set(other[1]!, expanded);
       continue;
     }
 
@@ -175,7 +230,7 @@ export function parseDeploySteps(content: string): DeployStep[] {
       const inline = inlinePrefix.exec(segment);
       steps.push({
         line,
-        modes: inline ? parseModeValue(inline[1]!) : ambient,
+        modes: inline ? parseModeValue(inline[1]!, vars) : ambient,
         raw: segment.trim(),
       });
     }

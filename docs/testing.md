@@ -683,11 +683,21 @@ it created. Finally, make sure some assertion would *notice* a drop — a
 post-destroy "it is gone" check passes vacuously when the resource was deleted
 mid-run, so it is not a guard.
 
-Not yet mechanically enforced; issue
-[#1543](https://github.com/go-to-k/cdkd/issues/1543) tracks the lint. Unlike the
+Mechanically enforced since issue
+[#1543](https://github.com/go-to-k/cdkd/issues/1543). Unlike the
 order-insensitivity convention above, this one is a genuine checker rather than
 a judgment call — the ordered mode lists and the token-gated declarations are
 both statically extractable.
+
+`scripts/check-integ-mode-gated-resources.ts` reads the ordered per-deploy mode
+lists out of `verify.sh` (resolving the monotonic-suffix `${VAR}` idiom above in
+source order) plus the condition behind each gated declaration in the fixture
+stack, and reports any declaration that is present at one step and absent at a
+later one. Only create-shaped gates block — a construct, or an entry in a
+resource list such as `replicas: [...]`; a scalar property gate is reported for
+visibility only, since flipping a property back off is an ordinary update test.
+A deliberate removal is marked on the declaration with
+`// allow-mode-gated-drop: <reason>`; the reason is mandatory.
 
 ### Fixture convention: stateful L2 constructs need an explicit removalPolicy
 

@@ -22,22 +22,6 @@ import {
 
 const INTEG_ROOT = join(import.meta.dirname, '../../../tests/integration');
 
-/**
- * Fixtures whose stack / verify.sh is owned by an in-flight PR, so the sweep
- * does not demand the `allow-mode-gated-drop:` annotation there yet — adding
- * one would collide on rebase. Each entry is asserted BELOW to still be
- * violating, so the exception self-expires: once the owning PR lands and the
- * annotation goes in, this test fails and forces the entry's deletion rather
- * than letting it linger. Same mechanism as `PENDING_OTHER_PR` in
- * `integ-verify-signal-traps.test.ts`.
- */
-const PENDING_OTHER_PR: Record<string, string> = {
-  'dynamodb-globaltable':
-    'PR #1550 (issue #1512) owns both dynamodb-globaltable-stack.ts and verify.sh. ' +
-    'The finding is the step-12d replica removal, which IS deliberate — it needs an ' +
-    '`allow-mode-gated-drop:` comment on the `replicas` gate, added once #1550 lands.',
-};
-
 // ---------------------------------------------------------------------------
 // verify.sh parsing
 // ---------------------------------------------------------------------------
@@ -381,17 +365,8 @@ describe('the real fixture tree', () => {
   const violations = lintFixtureTree(INTEG_ROOT);
 
   it('has no un-annotated mode-gated resource drop', () => {
-    const blocking = violations.filter((v) => v.blocking && !(v.fixture in PENDING_OTHER_PR));
-    expect(blocking.map(formatViolation)).toEqual([]);
+    expect(violations.filter((v) => v.blocking).map(formatViolation)).toEqual([]);
   });
-
-  for (const [fixture, why] of Object.entries(PENDING_OTHER_PR)) {
-    it(`self-expiring exception: ${fixture} still violates (${why.slice(0, 40)}...)`, () => {
-      // When the owning PR lands and the annotation goes in, this fails and
-      // forces the entry's deletion — the exception cannot linger silently.
-      expect(violations.some((v) => v.fixture === fixture && v.blocking)).toBe(true);
-    });
-  }
 
   it('parses at least one fixture that actually uses the token-list form', () => {
     // A coverage floor, not decoration: every classifier half can regress to
@@ -437,22 +412,27 @@ describe('real-code probes against the dynamodb-globaltable fixture', () => {
   const stack = readFileSync(join(FIXTURE, STACK_REL), 'utf8');
   const verify = readFileSync(join(FIXTURE, 'verify.sh'), 'utf8');
 
-  it('flags the real cross-region replica gate against the real verify.sh', () => {
-    const v = lintFixture('dynamodb-globaltable', STACK_REL, stack, verify);
-    const replica = v.find((x) => x.blocking && x.gateKind === 'resource-list');
+  it('is CLEAN as shipped — the real replica gate carries its annotation', () => {
+    expect(
+      lintFixture('dynamodb-globaltable', STACK_REL, stack, verify).filter((x) => x.blocking)
+    ).toEqual([]);
+  });
+
+  it('flags the real cross-region replica gate once the annotation is REMOVED', () => {
+    // The inverse of the test above, and the one that actually proves the lint
+    // works: strip the `allow-mode-gated-drop` line from the REAL fixture and
+    // the real verify.sh must produce the blocking finding. Without this, an
+    // annotation that silences everything would look identical to a lint that
+    // detects nothing.
+    const stripped = stack.replace(/^.*allow-mode-gated-drop.*\n/m, '');
+    expect(stripped, 'the strip probe did not apply').not.toBe(stack);
+
+    const replica = lintFixture('dynamodb-globaltable', STACK_REL, stripped, verify).find(
+      (x) => x.blocking && x.gateKind === 'resource-list'
+    );
     expect(replica, 'the real replica drop was not detected').toBeDefined();
     expect(replica!.message).toContain('cross-region');
     expect(replica!.message).toContain('24h source-region delete lock');
-  });
-
-  it('goes quiet once the real gate carries the annotation', () => {
-    const annotated = stack.replace(
-      /(\n\s*)(\.\.\.\(wantsCrossRegion && \{)/,
-      '$1// allow-mode-gated-drop: step 12d removes the replica on purpose$1$2',
-    );
-    expect(annotated, 'the annotation probe did not apply').not.toBe(stack);
-    const v = lintFixture('dynamodb-globaltable', STACK_REL, annotated, verify);
-    expect(v.filter((x) => x.blocking)).toEqual([]);
   });
 
   it('flags the real ttl property gate once a later real step drops it', () => {
