@@ -165,6 +165,15 @@ function clusterNameFromServiceArn(arn: string): string | undefined {
  * The CC API adds unnecessary polling overhead for operations that
  * complete immediately. This SDK provider eliminates that polling.
  */
+/**
+ * Test seam for `settleService`'s post-stability rollout poll (the sibling of
+ * `finalSnapshotDelays` / `describeTypeRetryDelays`) — tests replace `sleep`
+ * to skip the real 3s waits.
+ */
+export const settleRolloutDelays = {
+  sleep: (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+};
+
 export class ECSProvider implements ResourceProvider {
   private ecsClient?: ECSClient;
   private readonly providerRegion = process.env['AWS_REGION'];
@@ -986,6 +995,35 @@ export class ECSProvider implements ResourceProvider {
         { client: this.getClient(), maxWaitTime, minDelay: 5, maxDelay: 10 },
         { cluster, services: [serviceRef] }
       );
+      // waitUntilServicesStable's condition (a single deployment whose
+      // runningCount matches desiredCount) is satisfied a few seconds BEFORE
+      // ECS flips the PRIMARY deployment's rolloutState to COMPLETED — a race
+      // the ecs-fargate fixture lost on the update path the moment #609
+      // flipped its Service from the CC route (whose CFn handler waits for
+      // rollout completion) to this SDK route. --full-wait promises the
+      // CloudFormation-equivalent doneness, so close the gap with a short
+      // bounded poll; NONE (no rollout tracking, e.g. EXTERNAL controller)
+      // counts as settled.
+      const rolloutDeadline = Date.now() + 120_000;
+      for (;;) {
+        const settled = await this.getClient().send(
+          new DescribeServicesCommand({
+            cluster,
+            services: [serviceRef],
+          })
+        );
+        const deployments = settled?.services?.[0]?.deployments;
+        const rolloutState =
+          deployments && deployments.length === 1 ? deployments[0]?.rolloutState : undefined;
+        if (rolloutState === undefined || rolloutState === 'COMPLETED') break;
+        if (Date.now() >= rolloutDeadline) {
+          this.logger.warn(
+            `ECS service ${logicalId} is steady but its rollout is still ${rolloutState} after the post-stability grace window; continuing`
+          );
+          break;
+        }
+        await settleRolloutDelays.sleep(3_000);
+      }
       this.logger.debug(`ECS service ${logicalId} reached steady state`);
       return;
     }
