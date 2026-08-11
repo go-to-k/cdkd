@@ -173,9 +173,7 @@ export function readConfigString(
   if (container === undefined || container === null) return fallback;
 
   if (!isPlainObject(container)) {
-    const detail =
-      `(got ${describe(container)}) — check for an unresolved intrinsic or a ` +
-      `mis-nested template value`;
+    const detail = malformedContainerDetail(container);
 
     if (options?.onUnusable) {
       const named = fallback === '' ? '' : ` (${fallback})`;
@@ -255,48 +253,34 @@ export function requireConfigString(
   path: string,
   options?: ConfigStringOptions
 ): string {
-  if (value === undefined) return fallback;
+  // ONE predicate, shared with the SKIP-unit probe {@link configStringRefusal}
+  // exports (issue #1595) — a second hand-written test would disagree with this
+  // one on exactly the interesting values.
+  const refusal = configValueRefusal(value, fallback, path, options);
 
-  // A BLANK string is only suspicious because it silently takes the default.
-  // When the default is itself blank there is no divergence to hide, and an
-  // empty value is a legitimate, meaningful template input at exactly those
-  // sites — `LoggingConfiguration.LogFilePrefix: ''` means "no prefix" and
-  // `GenerateSecretString.ExcludeCharacters: ''` means "exclude nothing".
-  // Refusing them would turn this guard into a regression for correct
-  // templates, which is the opposite of its purpose.
-  if (fallback === '' && typeof value === 'string') return value;
-
-  // CloudFormation coerces scalars; cdkd does not. An unquoted YAML
-  // `IpProtocol: -1` / `Qualifier: 1` is a NUMBER today and deploys fine, so
-  // at those sites a refusal would break a working template — stringify
-  // instead, which is what CFn does. Opt-in per call site, never blanket:
-  // a number where an enum belongs (`InstanceType: 5`) is still a refusal.
-  if (options?.coerceNumber === true && typeof value === 'number' && Number.isFinite(value)) {
-    return String(value);
+  if (refusal === undefined) {
+    // The accepted shapes, in the order the predicate cleared them: an ABSENT
+    // field takes the default; a finite NUMBER stringifies (`coerceNumber`
+    // sites only — CloudFormation coerces scalars and cdkd does not, so an
+    // unquoted YAML `IpProtocol: -1` deploys fine); anything else is already
+    // the string, INCLUDING the blank-value-with-blank-default case, where
+    // `LoggingConfiguration.LogFilePrefix: ''` legitimately means "no prefix".
+    if (value === undefined) return fallback;
+    if (typeof value === 'number') return String(value);
+    return value as string;
   }
 
-  if (typeof value !== 'string' || value.trim() === '') {
-    const detail =
-      `(got ${describe(value)}) — check for an unresolved intrinsic or a ` +
-      `mis-nested template value`;
-    const named = fallback === '' ? '' : ` (${fallback})`;
+  const named = fallback === '' ? '' : ` (${fallback})`;
 
-    if (options?.onUnusable) {
-      options.onUnusable(
-        `${path} must be a non-empty string ${detail}. Ignoring it and using the ` +
-          `default${named} here; the same value is REFUSED on a template-path create`
-      );
-      return fallback;
-    }
-
-    throw new Error(
-      `${path} must be a non-empty string ${detail}. Omit the field ` +
-        `entirely to use the default` +
-        named
+  if (options?.onUnusable) {
+    options.onUnusable(
+      `${refusal}. Ignoring it and using the ` +
+        `default${named} here; the same value is REFUSED on a template-path create`
     );
+    return fallback;
   }
 
-  return value;
+  throw new Error(`${refusal}. Omit the field entirely to use the default${named}`);
 }
 
 /**
@@ -450,6 +434,70 @@ export function requireConfigObject(
     throw new Error(`${path} must be an object ${detail}`);
   }
   return value;
+}
+
+/**
+ * The refusal SENTENCE `readConfigString` / {@link requireConfigString} raise,
+ * with no action clause attached — `undefined` when the read would succeed.
+ *
+ * This is the predicate {@link readConfigString} itself runs, exported so a
+ * caller whose replay downgrade is a SKIP rather than the helper's
+ * warn-and-DEFAULT can ask the question without taking the fallback (issue
+ * #1595). Both halves are covered, in the same order and by the same tests:
+ * the CONTAINER first, then the FIELD.
+ *
+ * Sharing the predicate is the point. A hand-written `typeof` twin would
+ * disagree with the read it fronts on exactly the values that matter — a blank
+ * string, an explicit `null`, a coerced number — which is the guard-mismatch
+ * shape this module already exists to stop.
+ *
+ * @returns The refusal sentence (`<path> must be …`), or `undefined` when the
+ *   value is usable — including the ABSENT container / ABSENT key cases, which
+ *   legitimately take the fallback.
+ */
+export function configStringRefusal(
+  container: unknown,
+  key: string,
+  fallback: string,
+  containerPath: string,
+  options?: ConfigStringOptions
+): string | undefined {
+  if (container === undefined || container === null) return undefined;
+  if (!isPlainObject(container)) {
+    return `${containerPath} must be an object ${malformedContainerDetail(container)}`;
+  }
+  return configValueRefusal(container[key], fallback, `${containerPath}.${key}`, options);
+}
+
+/** The FIELD half of {@link configStringRefusal}, shared with {@link requireConfigString}. */
+function configValueRefusal(
+  value: unknown,
+  fallback: string,
+  path: string,
+  options?: ConfigStringOptions
+): string | undefined {
+  if (value === undefined) return undefined;
+  // A BLANK string is only suspicious because it silently takes the default;
+  // with a blank default there is no divergence to hide.
+  if (fallback === '' && typeof value === 'string') return undefined;
+  if (options?.coerceNumber === true && typeof value === 'number' && Number.isFinite(value)) {
+    return undefined;
+  }
+  if (typeof value !== 'string' || value.trim() === '') {
+    return (
+      `${path} must be a non-empty string (got ${describe(value)}) — check for an ` +
+      `unresolved intrinsic or a mis-nested template value`
+    );
+  }
+  return undefined;
+}
+
+/** Shared detail clause for a container that is present but not a plain object. */
+function malformedContainerDetail(container: unknown): string {
+  return (
+    `(got ${describe(container)}) — check for an unresolved intrinsic or a ` +
+    `mis-nested template value`
+  );
 }
 
 /**

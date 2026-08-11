@@ -919,6 +919,34 @@ S3's per-item Puts skip the single configuration item, while its lifecycle Put
 skips the WHOLE configuration, because that call replaces every rule and
 applying the valid siblings alone would DELETE the malformed one from AWS.
 
+**A per-ITEM STRING read may need that same skip, not `readConfigString`'s
+default.** `readConfigString`'s `onUnusable` downgrade is warn-and-DEFAULT,
+which is right for a field whose default is inert — and wrong wherever the
+default is applied to a LIVE resource and turns something ON. All four of S3's
+per-item reads are that shape (issue
+[#1595](https://github.com/go-to-k/cdkd/issues/1595)): defaulting a replayed
+lifecycle / intelligent-tiering / replication `Status` to `Enabled` starts
+expiring, archiving or replicating objects for a rule the template had
+DISABLED. Ask the question without taking the answer:
+
+```typescript
+import { configStringRefusal } from '../config-shape.js';
+
+// `undefined` when the read would have succeeded; otherwise the refusal
+// SENTENCE, with no action clause — you supply the one that is true here.
+const refusal = configStringRefusal(rule, 'Status', 'Enabled', '…Rules[]');
+if (onUnusable && refusal !== undefined) {
+  onUnusable(`${refusal}. Leaving the live configuration unchanged; …`);
+  return; // ...or `continue`, per the skip UNIT this API implies
+}
+```
+
+On the create path you do not probe at all, so the original read still refuses
+exactly as before. Use this helper rather than a hand-written `typeof` check:
+it shares `requireConfigString`'s predicate, and a twin disagrees with the read
+it fronts on precisely the values that matter — a blank string, an explicit
+`null`, a coerced number.
+
 Pass the **desired** side only. `previousProperties` comes from cdkd state
 rather than the user's template, so refusing a malformed value recorded there
 by an older binary would make the stack undeployable with no way out short of

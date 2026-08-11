@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vite-plus/test';
 import {
+  configStringRefusal,
   readConfigString,
   requireConfigArray,
   requireConfigObject,
@@ -392,5 +393,99 @@ describe('requireConfigObject (issue #1581)', () => {
     expect(message).toMatch(/must be an object/);
     expect(message).toMatch(/Leaving this configuration unapplied/);
     expect(message).toMatch(/REFUSED on a template-path create/);
+  });
+});
+
+describe('configStringRefusal (issue #1595)', () => {
+  // The SKIP-unit probe: asks the question `readConfigString` asks, without
+  // taking its warn-and-DEFAULT answer, so a caller whose correct replay
+  // downgrade is a SKIP can front the read without re-deriving the predicate.
+  const P = 'AWS::S3::Bucket LifecycleConfiguration.Rules[]';
+
+  it('is undefined for an ABSENT container and an ABSENT key', () => {
+    // Both legitimately mean "defaulted" — the probe must not manufacture a
+    // skip where the read would have succeeded.
+    expect(configStringRefusal(undefined, 'Status', 'Enabled', P)).toBeUndefined();
+    expect(configStringRefusal(null, 'Status', 'Enabled', P)).toBeUndefined();
+    expect(configStringRefusal({}, 'Status', 'Enabled', P)).toBeUndefined();
+  });
+
+  it('is undefined for a usable value', () => {
+    expect(configStringRefusal({ Status: 'Disabled' }, 'Status', 'Enabled', P)).toBeUndefined();
+  });
+
+  it('reports the CONTAINER refusal, with no action clause attached', () => {
+    const refusal = configStringRefusal('logs/', 'Status', 'Enabled', P);
+    expect(refusal).toMatch(/^AWS::S3::Bucket LifecycleConfiguration\.Rules\[\] must be an object/);
+    // The caller supplies its own clause; inheriting the helper's would claim
+    // a default this path never takes.
+    expect(refusal).not.toMatch(/default/);
+  });
+
+  it('reports the FIELD refusal, naming the full key path', () => {
+    const refusal = configStringRefusal({ Status: 1 }, 'Status', 'Enabled', P);
+    expect(refusal).toMatch(
+      /^AWS::S3::Bucket LifecycleConfiguration\.Rules\[\]\.Status must be a non-empty string/
+    );
+    expect(refusal).not.toMatch(/default/);
+  });
+
+  it('honors the SAME per-site relaxations as the read it fronts', () => {
+    expect(configStringRefusal({ N: 1 }, 'N', 'x', P, { coerceNumber: true })).toBeUndefined();
+    expect(configStringRefusal({ N: 1 }, 'N', 'x', P)).toBeDefined();
+    // A blank value with a blank default is a legitimate template input.
+    expect(configStringRefusal({ Prefix: '' }, 'Prefix', '', P)).toBeUndefined();
+    expect(configStringRefusal({ Prefix: '' }, 'Prefix', 'logs/', P)).toBeDefined();
+  });
+
+  it('agrees with readConfigString on EVERY value — the anti-drift fence', () => {
+    // This is the whole reason the probe delegates instead of hand-rolling a
+    // `typeof` twin. A guard that disagrees with the chain it fronts refuses
+    // where the read would have succeeded (or waves through where it would
+    // have thrown) on exactly the interesting values — the blank string, the
+    // explicit null, the coerced number.
+    const values: unknown[] = [
+      undefined,
+      null,
+      'Enabled',
+      '',
+      '   ',
+      0,
+      1,
+      true,
+      [],
+      ['Enabled'],
+      {},
+      { nested: true },
+    ];
+    for (const fallback of ['Enabled', '']) {
+      for (const options of [undefined, { coerceNumber: true }]) {
+        for (const value of values) {
+          const refused = configStringRefusal({ Status: value }, 'Status', fallback, P, options);
+          let threw = false;
+          try {
+            readConfigString({ Status: value }, 'Status', fallback, P, options);
+          } catch {
+            threw = true;
+          }
+          expect(
+            [String(value), fallback, JSON.stringify(options), refused !== undefined].join(' | ')
+          ).toBe([String(value), fallback, JSON.stringify(options), threw].join(' | '));
+        }
+      }
+      // ...and the CONTAINER half, which the loop above cannot reach.
+      for (const container of [undefined, null, 'logs/', 42, [], {}]) {
+        const refused = configStringRefusal(container, 'Status', fallback, P);
+        let threw = false;
+        try {
+          readConfigString(container, 'Status', fallback, P);
+        } catch {
+          threw = true;
+        }
+        expect([String(container), fallback, refused !== undefined].join(' | ')).toBe(
+          [String(container), fallback, threw].join(' | ')
+        );
+      }
+    }
   });
 });
