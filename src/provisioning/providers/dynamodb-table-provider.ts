@@ -124,14 +124,38 @@ function readCapacityNumber(block: unknown, member: string): number | undefined 
  * Whether a desired `GlobalSecondaryIndexes[]` entry declares BOTH capacity
  * members usably — the same test the BillingMode flip's per-index block applies
  * before it forwards the index, expressed as a predicate for the pre-flip
- * removal's look-ahead (issue #1617). An absent entry is not usable either: an
- * index the template no longer declares has no capacity to send.
+ * removal's look-ahead (issue #1617).
+ *
+ * BOTH members are required, exactly as in the flip block: an entry declaring
+ * only one is treated like an absent one there, so accepting it here would let
+ * the pre-flip delete run ahead of a flip AWS still rejects.
  */
 function hasUsableDeclaredCapacity(entry: Record<string, unknown> | undefined): boolean {
   const declared = entry?.['ProvisionedThroughput'];
   return (
     readCapacityNumber(declared, 'ReadCapacityUnits') !== undefined &&
     readCapacityNumber(declared, 'WriteCapacityUnits') !== undefined
+  );
+}
+
+/**
+ * Whether the desired TABLE-level `ProvisionedThroughput` is one the flip can
+ * actually send (issue #1617 PR review).
+ *
+ * Deliberately mirrors the flip block's own arithmetic rather than reusing
+ * {@link hasUsableDeclaredCapacity}: that block defaults each member to 5 when
+ * absent (`Number(pt['ReadCapacityUnits'] ?? 5)`), so a half-declared table
+ * capacity IS sendable while a half-declared per-index one is not. What it
+ * cannot survive is an absent / non-object block (nothing is sent, and AWS
+ * rejects `BillingMode: PROVISIONED` with no throughput) or a member that
+ * coerces to `NaN`.
+ */
+function hasUsableTableCapacity(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const pt = value as Record<string, unknown>;
+  return (
+    Number.isFinite(Number(pt['ReadCapacityUnits'] ?? 5)) &&
+    Number.isFinite(Number(pt['WriteCapacityUnits'] ?? 5))
   );
 }
 
@@ -719,11 +743,22 @@ export class DynamoDBTableProvider implements ResourceProvider {
       // per-index capacity, and reordering its removals would be a behavior
       // change with no defect behind it.
       const preFlipDeletedIndexNames = new Set<string>();
+      // A present-but-NON-ARRAY desired value (an unresolved intrinsic, a
+      // mis-nested template value) reads as an empty desired set above, which
+      // would classify EVERY live index as removed and delete them all before
+      // the flip (PR review). That shape was non-destructive before this
+      // change — the flip block warned and omitted, and `applyGsiUpdates` then
+      // threw on `desired.filter` — so the removal is refused here rather than
+      // newly destroying data on a malformed template.
+      const desiredIndexesUnusable =
+        properties['GlobalSecondaryIndexes'] != null &&
+        !Array.isArray(properties['GlobalSecondaryIndexes']);
       if (
         billingOrThroughputChanged &&
         billingMode === 'PROVISIONED' &&
         liveBillingMode === 'PAY_PER_REQUEST' &&
-        liveIndexes.length > 0
+        liveIndexes.length > 0 &&
+        !desiredIndexesUnusable
       ) {
         // Only an index cdkd's PREVIOUS side knows about is removable here. A
         // live index in neither side was created out of band, and deleting it
@@ -752,21 +787,34 @@ export class DynamoDBTableProvider implements ResourceProvider {
             remainingWithoutCapacity.push(indexName);
           }
         }
-        if (removable.length > 0 && remainingWithoutCapacity.length > 0) {
-          // PRE-VALIDATE, because a Delete is not undoable. If an index that
-          // will still be live at flip time carries no usable declared
-          // capacity, AWS rejects the flip whether or not the removal ran
-          // first — so deleting would buy nothing and leave a PARTIALLY
-          // applied deploy (index gone, mode unchanged). Refusing to delete
-          // keeps this shape at "nothing applied".
+        // PRE-VALIDATE, because a Delete is not undoable. When the flip is
+        // DOOMED for a reason already visible here, deleting first buys
+        // nothing and leaves a PARTIALLY applied deploy (index gone, mode
+        // unchanged) — so the shape is kept at "nothing applied".
+        //
+        // Two causes are foreseeable, and BOTH must be checked (PR review
+        // found the second missing). AWS rejects the flip when an index that
+        // will STILL be live declares no usable per-index capacity, and
+        // equally when the TABLE-level `ProvisionedThroughput` is absent or
+        // unusable — the flip block below deliberately leaves that one to AWS
+        // (CFn parity), which is fine for the flip itself but is exactly the
+        // deterministic failure a pre-flip delete must not run ahead of.
+        const tableCapacityUnusable = !hasUsableTableCapacity(properties['ProvisionedThroughput']);
+        if (
+          removable.length > 0 &&
+          (remainingWithoutCapacity.length > 0 || tableCapacityUnusable)
+        ) {
+          const reason =
+            remainingWithoutCapacity.length > 0
+              ? `index(es) ${remainingWithoutCapacity.join(', ')} stay live and declare no usable ` +
+                `ProvisionedThroughput`
+              : `the template declares no usable table-level ProvisionedThroughput`;
           this.logger.warn(
             `AWS::DynamoDB::Table ${logicalId}: this deploy removes global secondary index(es) ` +
               `${removable.join(', ')} and flips BillingMode to PROVISIONED. The removal would ` +
-              `normally be applied BEFORE the flip, but index(es) ` +
-              `${remainingWithoutCapacity.join(', ')} stay live and declare no usable ` +
-              `ProvisionedThroughput, so AWS rejects the flip either way. Nothing was removed. ` +
-              `Declare GlobalSecondaryIndexes[].ProvisionedThroughput (both ReadCapacityUnits ` +
-              `and WriteCapacityUnits) for each index that remains.`
+              `normally be applied BEFORE the flip, but ${reason}, so AWS rejects the flip either ` +
+              `way. Nothing was removed. Declare ProvisionedThroughput (both ReadCapacityUnits ` +
+              `and WriteCapacityUnits) for the table and for each index that remains.`
           );
         } else if (removable.length > 0) {
           this.logger.debug(
@@ -784,13 +832,42 @@ export class DynamoDBTableProvider implements ResourceProvider {
           );
           for (const name of removable) preFlipDeletedIndexNames.add(name);
           // A failure BETWEEN the deletes and the flip leaves the index gone
-          // and the mode unchanged. That is accepted rather than guarded
-          // further: it is a partial application, but a recoverable one (the
-          // next deploy retries the flip and the GSI diff is already
-          // satisfied), and the alternative — a deploy that can never
-          // converge — is worse.
+          // and the mode unchanged. That partial application is accepted —
+          // but only because the NEXT deploy converges, and that is a
+          // property of the Delete arm below rather than something to assume.
+          //
+          // The first version of this comment claimed the next deploy is fine
+          // "because the GSI diff is already satisfied", and a PR review
+          // showed that was WRONG: cdkd writes state only after `update()`
+          // RETURNS, so a mid-update failure leaves the deleted index still
+          // recorded in the previous side, and the next deploy would emit a
+          // Delete for an index AWS no longer has — the
+          // `ResourceNotFoundException` that would fail every subsequent
+          // deploy forever, re-creating the very unconvergeable class this
+          // change exists to remove. `applyGsiUpdates` therefore skips a
+          // Delete for a name that is not LIVE, which makes the arm
+          // idempotent and is what actually makes this residual recoverable.
         }
       }
+
+      // The names that are LIVE in AWS right now — the DescribeTable snapshot
+      // minus whatever the pre-flip removal just deleted. `applyGsiUpdates`
+      // uses it to make its Delete arm IDEMPOTENT (issue #1617 PR review):
+      // without it, a state record naming an index AWS no longer has produces
+      // a `ResourceNotFoundException` on every deploy forever. That covers the
+      // pre-flip deletes AND the pre-existing case of a resource whose index
+      // was removed out of band or by an earlier interrupted run.
+      //
+      // `undefined` when there is no snapshot to reason from, which keeps the
+      // pre-change behavior rather than silently skipping every removal.
+      const currentLiveIndexNames = table
+        ? new Set(
+            liveIndexes
+              .map((live) => live.IndexName)
+              .filter((name): name is string => typeof name === 'string')
+              .filter((name) => !preFlipDeletedIndexNames.has(name))
+          )
+        : undefined;
 
       // Index names whose capacity the BillingMode flip below already delivered.
       // `applyGsiUpdates` must NOT re-assert them: real AWS rejects a no-op
@@ -1138,7 +1215,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
           properties['GlobalSecondaryIndexes'] as GlobalSecondaryIndex[] | undefined,
           properties['AttributeDefinitions'] as AttributeDefinition[] | undefined,
           gsiHandledByBillingFlip,
-          preFlipDeletedIndexNames
+          currentLiveIndexNames
         );
       }
 
@@ -1981,12 +2058,18 @@ export class DynamoDBTableProvider implements ResourceProvider {
     // the deploy outright. Only the throughput arm is suppressed: an index that
     // was ADDED or REMOVED in the same deploy still needs its own op.
     handledByBillingFlip: ReadonlySet<string> = new Set<string>(),
-    // Names the pre-flip removal already deleted (issue #1617). Their Delete op
-    // MUST be skipped here — the index is gone, and a second Delete fails the
-    // deploy with `ResourceNotFoundException`. Only the Delete arm is
-    // suppressed; a name in this set is absent from the desired side by
-    // construction, so it can reach no other arm.
-    alreadyDeleted: ReadonlySet<string> = new Set<string>()
+    // The index names AWS actually has right now (issue #1617). A Delete is
+    // emitted only for a name in this set, which makes the removal arm
+    // IDEMPOTENT — covering both the indexes the pre-flip removal just deleted
+    // (a second Delete would fail with `ResourceNotFoundException`) and the
+    // pre-existing case of a state record naming an index that is already gone
+    // in AWS, which otherwise fails every deploy forever because cdkd only
+    // writes state after a SUCCESSFUL update.
+    //
+    // `undefined` means "no live snapshot to reason from" and disables the
+    // filter, so a caller without a DescribeTable result keeps the original
+    // behavior rather than silently skipping every removal.
+    liveIndexNames?: ReadonlySet<string>
   ): Promise<void> {
     const prev = previousGsis ?? [];
     const desired = desiredGsis ?? [];
@@ -1999,9 +2082,15 @@ export class DynamoDBTableProvider implements ResourceProvider {
     const ops: GlobalSecondaryIndexUpdate[] = [];
 
     for (const name of prevByName.keys()) {
-      if (!desiredByName.has(name) && !alreadyDeleted.has(name)) {
-        ops.push({ Delete: { IndexName: name } });
+      if (desiredByName.has(name)) continue;
+      if (liveIndexNames !== undefined && !liveIndexNames.has(name)) {
+        this.logger.debug(
+          `GSI ${name} is recorded in cdkd state but not live on DynamoDB table ${physicalId}; ` +
+            `skipping its Delete (already removed)`
+        );
+        continue;
       }
+      ops.push({ Delete: { IndexName: name } });
     }
 
     for (const [name, gsi] of desiredByName) {
