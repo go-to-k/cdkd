@@ -28,6 +28,10 @@ import {
   type ProtocolType,
   type IpAddressType,
   type IntegrationType,
+  type ConnectionType,
+  type ContentHandlingStrategy,
+  type PassthroughBehavior,
+  type TlsConfigInput,
   type AuthorizationType,
   type AuthorizerType,
   type AccessLogSettings,
@@ -110,6 +114,16 @@ export class ApiGatewayV2Provider implements ResourceProvider {
         'TimeoutInMillis',
         'RequestParameters',
         'Description',
+        'ConnectionId',
+        'ConnectionType',
+        'ContentHandlingStrategy',
+        'CredentialsArn',
+        'IntegrationSubtype',
+        'PassthroughBehavior',
+        'RequestTemplates',
+        'ResponseParameters',
+        'TemplateSelectionExpression',
+        'TlsConfig',
       ]),
     ],
     [
@@ -588,6 +602,20 @@ export class ApiGatewayV2Provider implements ResourceProvider {
           TimeoutInMillis: properties['TimeoutInMillis'] as number | undefined,
           RequestParameters: properties['RequestParameters'] as Record<string, string> | undefined,
           Description: properties['Description'] as string | undefined,
+          ConnectionId: properties['ConnectionId'] as string | undefined,
+          ConnectionType: properties['ConnectionType'] as ConnectionType | undefined,
+          ContentHandlingStrategy: properties['ContentHandlingStrategy'] as
+            | ContentHandlingStrategy
+            | undefined,
+          CredentialsArn: properties['CredentialsArn'] as string | undefined,
+          IntegrationSubtype: properties['IntegrationSubtype'] as string | undefined,
+          PassthroughBehavior: properties['PassthroughBehavior'] as PassthroughBehavior | undefined,
+          RequestTemplates: properties['RequestTemplates'] as Record<string, string> | undefined,
+          ResponseParameters: this.toSdkResponseParameters(properties['ResponseParameters']),
+          TemplateSelectionExpression: properties['TemplateSelectionExpression'] as
+            | string
+            | undefined,
+          TlsConfig: properties['TlsConfig'] as TlsConfigInput | undefined,
         })
       );
 
@@ -1092,6 +1120,33 @@ export class ApiGatewayV2Provider implements ResourceProvider {
         result['RequestParameters'] = resp.RequestParameters;
       }
       if (resp.Description !== undefined) result['Description'] = resp.Description;
+
+      // Issue #609 backfill, same emit-when-present convention as above. These
+      // reads are not optional extras: the write side now delivers each of
+      // these properties, so a read side that stayed silent would leave every
+      // one of them permanently un-comparable — and `ResponseParameters` would
+      // additionally report phantom drift forever, because AWS returns the
+      // FLAT SDK map while the cdkd baseline holds the CFn list-of-pairs.
+      if (resp.ConnectionId !== undefined) result['ConnectionId'] = resp.ConnectionId;
+      if (resp.ConnectionType !== undefined) result['ConnectionType'] = resp.ConnectionType;
+      if (resp.ContentHandlingStrategy !== undefined) {
+        result['ContentHandlingStrategy'] = resp.ContentHandlingStrategy;
+      }
+      if (resp.CredentialsArn !== undefined) result['CredentialsArn'] = resp.CredentialsArn;
+      if (resp.IntegrationSubtype !== undefined) {
+        result['IntegrationSubtype'] = resp.IntegrationSubtype;
+      }
+      if (resp.PassthroughBehavior !== undefined) {
+        result['PassthroughBehavior'] = resp.PassthroughBehavior;
+      }
+      if (resp.RequestTemplates !== undefined) result['RequestTemplates'] = resp.RequestTemplates;
+      if (resp.ResponseParameters !== undefined) {
+        result['ResponseParameters'] = this.toCfnResponseParameters(resp.ResponseParameters);
+      }
+      if (resp.TemplateSelectionExpression !== undefined) {
+        result['TemplateSelectionExpression'] = resp.TemplateSelectionExpression;
+      }
+      if (resp.TlsConfig !== undefined) result['TlsConfig'] = resp.TlsConfig;
       return result;
     } catch (err) {
       if (err instanceof NotFoundException) return undefined;
@@ -1614,7 +1669,11 @@ export class ApiGatewayV2Provider implements ResourceProvider {
    * `UpdateIntegration` keys on `(ApiId, IntegrationId)`. Mutable
    * fields cdkd manages: `IntegrationType` / `IntegrationUri` /
    * `IntegrationMethod` / `PayloadFormatVersion` / `TimeoutInMillis` /
-   * `RequestParameters` / `Description`.
+   * `RequestParameters` / `Description`, plus the issue #609 backfill
+   * (`ConnectionId` / `ConnectionType` / `ContentHandlingStrategy` /
+   * `CredentialsArn` / `IntegrationSubtype` / `PassthroughBehavior` /
+   * `RequestTemplates` / `ResponseParameters` / `TemplateSelectionExpression`
+   * / `TlsConfig`).
    */
   private async updateIntegration(
     logicalId: string,
@@ -1712,6 +1771,133 @@ export class ApiGatewayV2Provider implements ResourceProvider {
         input.Description = r.value;
         changed = true;
       }
+    }
+
+    // Issue #609 backfill — the ten properties below were previously DECLARED
+    // nowhere and delivered nowhere, so a template using any of them lost it
+    // silently. They pass through ON CHANGE ONLY.
+    //
+    // Absent-field REMOVAL is deliberately NOT backfilled here. Each of these
+    // would need its own live CloudFormation A/B to establish whether CFn
+    // resets the field or retains it, and which sentinel the API accepts as
+    // "unset" (the ones already handled above — Description on '',
+    // RequestParameters per key — were each live-probed before being written
+    // that way, and the probes repeatedly contradicted the intuitive answer).
+    // Guessing a reset value here would turn a silent drop into a silent
+    // OVERWRITE of a live integration, which is strictly worse. Removal
+    // semantics for this group belong to the #1160 umbrella.
+    //
+    // That deferral covers PER-KEY removal too, which is NOT the same
+    // statement and is worth spelling out: `RequestTemplates` and
+    // `ResponseParameters` are maps, and the sibling `RequestParameters` above
+    // goes through `mapWithRemovals` precisely because UpdateIntegration
+    // MERGES a map (live-probed for that field — `{}` does not clear it). If
+    // these two merge the same way, then dropping ONE content type or ONE
+    // Destination while changing another is a CHANGE rather than a whole-field
+    // removal: the reduced map is sent, AWS keeps the old key, and cdkd reports
+    // success. The `''` sentinel `mapWithRemovals` relies on has NOT been
+    // probed for either field, and for `RequestTemplates` an empty string is a
+    // legitimate mapping-template body — so reusing it on a guess could delete
+    // a live template. Both stay whole-value pass-throughs until probed.
+    if (
+      properties['ConnectionId'] != null &&
+      properties['ConnectionId'] !== previousProperties['ConnectionId']
+    ) {
+      input.ConnectionId = properties['ConnectionId'] as string;
+      changed = true;
+    }
+    if (
+      properties['ConnectionType'] != null &&
+      properties['ConnectionType'] !== previousProperties['ConnectionType']
+    ) {
+      input.ConnectionType = properties['ConnectionType'] as ConnectionType;
+      changed = true;
+    }
+    if (
+      properties['ContentHandlingStrategy'] != null &&
+      properties['ContentHandlingStrategy'] !== previousProperties['ContentHandlingStrategy']
+    ) {
+      input.ContentHandlingStrategy = properties[
+        'ContentHandlingStrategy'
+      ] as ContentHandlingStrategy;
+      changed = true;
+    }
+    if (
+      properties['CredentialsArn'] != null &&
+      properties['CredentialsArn'] !== previousProperties['CredentialsArn']
+    ) {
+      input.CredentialsArn = properties['CredentialsArn'] as string;
+      changed = true;
+    }
+    if (
+      properties['IntegrationSubtype'] != null &&
+      properties['IntegrationSubtype'] !== previousProperties['IntegrationSubtype']
+    ) {
+      input.IntegrationSubtype = properties['IntegrationSubtype'] as string;
+      changed = true;
+    }
+    // ...and IntegrationSubtype is ALSO re-sent when it did NOT change, which
+    // is the one place this provider's send-only-what-differs rule does not
+    // hold. `IntegrationSubtype` is the DISCRIMINATOR that makes an AWS_PROXY
+    // integration a service integration rather than a URI-based one, and
+    // UpdateIntegration re-validates the whole shape against the patch: with
+    // the subtype absent AWS reads the integration as URI-based and rejects
+    // the call with `Invalid integration URI specified`.
+    //
+    // Live A/B, 2026-08-11 us-east-1, on an EventBridge-PutEvents integration
+    // (found by the apigatewayv2-update-removal integ, not by the unit tests —
+    // a mocked client agrees with either shape):
+    //   RequestParameters alone                  -> BadRequestException
+    //   RequestParameters + IntegrationSubtype   -> OK
+    //
+    // The PREVIOUS side is the fallback because the constraint is about the
+    // LIVE integration, which stays a service integration even when the
+    // desired template drops the subtype (removal being out of scope here) —
+    // sourcing this only from the desired bag would send a discriminator-less
+    // patch for exactly that template and fail the deploy.
+    if (input.IntegrationSubtype === undefined) {
+      const liveSubtype =
+        properties['IntegrationSubtype'] ?? previousProperties['IntegrationSubtype'];
+      if (liveSubtype !== undefined) input.IntegrationSubtype = liveSubtype as string;
+    }
+    if (
+      properties['PassthroughBehavior'] != null &&
+      properties['PassthroughBehavior'] !== previousProperties['PassthroughBehavior']
+    ) {
+      input.PassthroughBehavior = properties['PassthroughBehavior'] as PassthroughBehavior;
+      changed = true;
+    }
+    if (
+      properties['RequestTemplates'] != null &&
+      !this.deepEqual(properties['RequestTemplates'], previousProperties['RequestTemplates'])
+    ) {
+      input.RequestTemplates = properties['RequestTemplates'] as Record<string, string>;
+      changed = true;
+    }
+    // ResponseParameters is COMPARED on the CFn side (the shape both the
+    // template and cdkd state carry) and converted only on the way out, so a
+    // no-op deploy does not re-send it.
+    if (
+      properties['ResponseParameters'] != null &&
+      !this.deepEqual(properties['ResponseParameters'], previousProperties['ResponseParameters'])
+    ) {
+      input.ResponseParameters = this.toSdkResponseParameters(properties['ResponseParameters']);
+      changed = true;
+    }
+    if (
+      properties['TemplateSelectionExpression'] != null &&
+      properties['TemplateSelectionExpression'] !==
+        previousProperties['TemplateSelectionExpression']
+    ) {
+      input.TemplateSelectionExpression = properties['TemplateSelectionExpression'] as string;
+      changed = true;
+    }
+    if (
+      properties['TlsConfig'] != null &&
+      !this.deepEqual(properties['TlsConfig'], previousProperties['TlsConfig'])
+    ) {
+      input.TlsConfig = properties['TlsConfig'] as TlsConfigInput;
+      changed = true;
     }
 
     if (!changed) {
@@ -2280,6 +2466,118 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       if (!(key in nextMap)) merged[key] = '';
     }
     return merged;
+  }
+
+  /**
+   * `ResponseParameters` is the one `AWS::ApiGatewayV2::Integration` property
+   * whose CFn shape does NOT match the SDK's, so forwarding it verbatim is not
+   * an option (issue #609). CloudFormation models it as
+   * `{ "<statusCode>": { ResponseParameters: [{ Destination, Source }, ...] } }`
+   * while `CreateIntegration` / `UpdateIntegration` take the flattened
+   * `{ "<statusCode>": { "<Destination>": "<Source>" } }`. The AWS SDK v3
+   * serializer drops members it cannot model, so the un-converted CFn shape
+   * would deliver an EMPTY map per status code — the silent-drop class one
+   * level down.
+   *
+   * Anything that is not the expected object / array shape (an unresolved
+   * intrinsic, a malformed block) passes through untouched so AWS surfaces the
+   * real validation error instead of cdkd inventing one.
+   *
+   * `Source` is COERCED from a number / boolean rather than skipped. CFn types
+   * `ResponseParameters` as free-form `object` and coerces scalars, cdkd does
+   * not (the `coerceNumber` class in `.claude/rules/providers.md`), so an
+   * unquoted `Source: 403` under the canonical `overwrite:statuscode`
+   * destination is a perfectly legal template whose value arrives as a NUMBER.
+   * Skipping it would re-introduce the silent drop this method exists to close.
+   * A `Destination` is never coerced — it becomes an SDK map KEY, and a
+   * non-string there is a malformed template, not a scalar shorthand.
+   */
+  private toSdkResponseParameters(
+    value: unknown
+  ): Record<string, Record<string, string>> | undefined {
+    if (value == null) return undefined;
+    if (typeof value !== 'object' || Array.isArray(value)) {
+      return value as Record<string, Record<string, string>>;
+    }
+
+    const out: Record<string, Record<string, string>> = {};
+    for (const [statusCode, block] of Object.entries(value as Record<string, unknown>)) {
+      if (block == null || typeof block !== 'object' || Array.isArray(block)) {
+        out[statusCode] = block as Record<string, string>;
+        continue;
+      }
+      const entries = (block as Record<string, unknown>)['ResponseParameters'];
+      if (!Array.isArray(entries)) {
+        // Already flat (`{ "<Destination>": "<Source>" }`) — a hand-written
+        // template may use the SDK spelling directly; pass it through.
+        out[statusCode] = block as Record<string, string>;
+        continue;
+      }
+      const mapped: Record<string, string> = {};
+      for (const entry of entries) {
+        const destination =
+          entry != null && typeof entry === 'object' && !Array.isArray(entry)
+            ? (entry as Record<string, unknown>)['Destination']
+            : undefined;
+        const source =
+          entry != null && typeof entry === 'object' && !Array.isArray(entry)
+            ? (entry as Record<string, unknown>)['Source']
+            : undefined;
+        const coerced =
+          typeof source === 'string'
+            ? source
+            : typeof source === 'number' || typeof source === 'boolean'
+              ? String(source)
+              : undefined;
+        if (typeof destination !== 'string' || coerced === undefined) {
+          // Never silent: an entry cdkd cannot deliver is the same class of
+          // defect as the drop this whole method closes, so it is announced
+          // rather than skipped quietly.
+          this.logger.warn(
+            `AWS::ApiGatewayV2::Integration ResponseParameters['${statusCode}'] has an entry ` +
+              `cdkd cannot deliver (Destination must be a string and Source a string / number / ` +
+              `boolean; got ${JSON.stringify(destination)} / ${JSON.stringify(source)}); ` +
+              `skipping that entry.`
+          );
+          continue;
+        }
+        mapped[destination] = coerced;
+      }
+      out[statusCode] = mapped;
+    }
+    return out;
+  }
+
+  /**
+   * Inverse of {@link toSdkResponseParameters}, for `readCurrentState`. Without
+   * it the AWS-current side would carry the flat SDK map while the cdkd
+   * baseline carries the CFn list-of-pairs, and every `cdkd drift` run would
+   * report permanent phantom drift on a resource nobody touched.
+   *
+   * The pairs are sorted by `Destination` because this turns an UNORDERED SDK
+   * map into an ARRAY, and `calculateResourceDrift` compares arrays
+   * POSITIONALLY — AWS does not guarantee map readback order, so an unsorted
+   * rebuild would trade the shape-mismatch phantom drift for an ordering one
+   * (and `--revert` would re-push an identical value forever). Same reasoning
+   * as `src/analyzer/drift-normalize.ts`, applied at the source instead.
+   */
+  private toCfnResponseParameters(
+    value: Record<string, Record<string, string>> | undefined
+  ): Record<string, unknown> | undefined {
+    if (value == null) return undefined;
+    const out: Record<string, unknown> = {};
+    for (const [statusCode, flat] of Object.entries(value)) {
+      if (flat == null || typeof flat !== 'object' || Array.isArray(flat)) continue;
+      out[statusCode] = {
+        ResponseParameters: Object.entries(flat)
+          .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+          .map(([destination, source]) => ({
+            Destination: destination,
+            Source: source,
+          })),
+      };
+    }
+    return out;
   }
 
   /**

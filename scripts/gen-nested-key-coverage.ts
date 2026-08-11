@@ -1030,7 +1030,10 @@ export interface NestedKeyTarget {
  * walk still reported 32 inert scalar points.
  */
 const API_GATEWAY_V2_WRITE_FLOORS = {
-  minWrittenMembers: 30,
+  // 30 -> 40 with the issue #609 `::Integration` backfill: the ten wired
+  // properties raised the file's written-member yield from ~60 to 67, and the
+  // hygiene band requires the floor to stay at or above half the measurement.
+  minWrittenMembers: 40,
   minWriteScopes: 1,
   minHandoffPoints: 1,
 } as const;
@@ -1387,7 +1390,13 @@ export const NESTED_KEY_TARGETS: readonly NestedKeyTarget[] = [
     providerFile: 'apigatewayv2-provider.ts',
     sdkClientPackage: '@aws-sdk/client-apigatewayv2',
     keyStyle: 'exact',
-    minNestedKeys: 0,
+    // 0 -> 3 with the issue #609 silent-drop backfill, which added the type's
+    // only two nested blobs (`ResponseParameters` / `TlsConfig`) to
+    // handledProperties; before it, the target audited nothing. 3, not the
+    // measured 4: the hygiene band requires STRICT headroom so that AWS
+    // dropping one schema property reports the missing path instead of
+    // aborting as a fixture-capture regression.
+    minNestedKeys: 3,
     freshObjectMapper: true,
     ...API_GATEWAY_V2_WRITE_FLOORS,
   },
@@ -1654,6 +1663,31 @@ export const NESTED_KEY_ALLOW_LIST: ReadonlyMap<string, AllowListEntry> = new Ma
         'Same wrapper-level insertion as Tags.Key: written by toSdkTags beneath the ' +
         'SDK { Items: Tag[] } wrapper (scope Tags.Items), one level below the CFn chain.',
       passes: ['write'],
+    },
+  ],
+  [
+    allowKey('AWS::ApiGatewayV2::Integration', 'ResponseParameters.ResponseParameters.Destination'),
+    {
+      rationale:
+        "CFn models ResponseParameters as { '<statusCode>': { ResponseParameters: " +
+        "[{ Destination, Source }] } } while CreateIntegration / UpdateIntegration take the " +
+        "FLATTENED { '<statusCode>': { '<Destination>': '<Source>' } } — Destination becomes a " +
+        'MAP KEY, so no `Destination` member exists anywhere in the SDK model to spell-match or ' +
+        'to write. `toSdkResponseParameters` performs the fold (and `toCfnResponseParameters` ' +
+        'the inverse for readCurrentState); both are pinned by unit tests, because a computed ' +
+        'key is exactly what the write pass cannot credit. Same list-to-map shape difference as ' +
+        'the AppSync GraphQLApi Tags.Key entry below (issue #609).',
+      passes: ['key', 'shape', 'write'],
+    },
+  ],
+  [
+    allowKey('AWS::ApiGatewayV2::Integration', 'ResponseParameters.ResponseParameters.Source'),
+    {
+      rationale:
+        'Same list-to-map fold as the Destination sibling: the CFn [{ Destination, Source }] ' +
+        'list becomes the SDK\'s flat { "<Destination>": "<Source>" } map, so Source is a map ' +
+        'VALUE and has no SDK member of its own (issue #609).',
+      passes: ['key', 'shape', 'write'],
     },
   ],
   [

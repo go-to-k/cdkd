@@ -62,3 +62,60 @@ perfectly green deploy.
 - `Stage.DeploymentId` — meaningful only with `AutoDeploy` off, and
   `AWS::ApiGatewayV2::Deployment` is not a registered cdkd type
 - `Route.RequestModels` — needs `AWS::ApiGatewayV2::Model`, also unregistered
+
+## Issue #609 coverage (Integration config properties)
+
+The ten `AWS::ApiGatewayV2::Integration` properties are asserted on CREATE
+(phase 1) and on UPDATE (phase 2). They **change value** across the phases
+rather than being removed: the backfill wires delivery, and absent-field
+removal for this group stays with the #1160 umbrella until each field has its
+own live CloudFormation A/B — writing a guessed reset value over a live
+integration would be strictly worse than the silent drop it replaces.
+
+Three integrations are needed because the properties are scoped to different
+integration types, which is also why `verify.sh` resolves integration ids by
+`IntegrationType` instead of taking `Items[0]`.
+
+| Property | Where it is exercised |
+| --- | --- |
+| `ResponseParameters` | HTTP API `HTTP_PROXY` integration; **CFn/SDK shape divergence** — see below |
+| `IntegrationSubtype` | HTTP API `AWS_PROXY` service integration (`EventBridge-PutEvents`) |
+| `CredentialsArn` | same; the integration's invocation role |
+| `RequestTemplates` | WebSocket `MOCK` integration; template body changes in phase 2 |
+| `TemplateSelectionExpression` | same |
+| `PassthroughBehavior` | same; `WHEN_NO_MATCH` -> `NEVER` |
+| `ContentHandlingStrategy` | same; `CONVERT_TO_TEXT` -> `CONVERT_TO_BINARY` |
+
+The `overwrite:statuscode` `Source` is written **unquoted** (`404` / `403`) on
+purpose: CFn types `ResponseParameters` as free-form `object` and coerces
+scalars, so a numeric `Source` is a legal template — and this is the destination
+whose value an author naturally writes as a number. The first draft of the
+converter skipped non-strings and would have dropped the pair with a green
+deploy.
+
+`ConnectionType` is NOT in the table: the fixture never sets it (the API
+defaults it to `INTERNET`), so nothing here would notice if it stopped being
+delivered. It is pinned by the unit tests only.
+
+`ResponseParameters` is the one property that is not a pass-through:
+CloudFormation models it as `{"<status>": {ResponseParameters: [{Destination,
+Source}]}}` while `CreateIntegration` / `UpdateIntegration` take the flattened
+`{"<status>": {"<Destination>": "<Source>"}}`. Forwarding the CFn shape verbatim
+hands the SDK serializer members it cannot model, so every response parameter
+vanishes with a green deploy — the assertion reads the values back under their
+`Destination` **keys**, which only passes if the fold reached AWS. The inverse
+fold lives in `readCurrentState`, without which every `cdkd drift` run would
+report permanent phantom drift on an untouched integration.
+
+**Not exercised live**, covered by unit tests instead:
+
+- `Integration.ConnectionId` — needs a live VPC Link (VPC + subnets + SG,
+  minutes per run) for a plain pass-through string field
+- `Integration.TlsConfig` — same VPC Link requirement, but the reason is worth
+  recording because the fixture asserted it first and FAILED: direct A/B
+  against the API (2026-08-11, us-east-1) shows AWS **silently ignores**
+  `TlsConfig` on a public (`ConnectionType: INTERNET`) integration — it is
+  absent from both the `CreateIntegration` echo and the `GetIntegration`
+  read-back, with or without an explicit `ConnectionType`. The field is only
+  meaningful for a PRIVATE integration. Asserting it on a public one fails
+  against perfectly correct cdkd behavior

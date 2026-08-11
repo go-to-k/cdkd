@@ -8,20 +8,20 @@ For every SDK provider that forwards a nested CFn config blob, diffs the blob's 
 ## Summary
 
 - Audited targets: **12**
-- Nested CFn key paths audited: **739**
-- Same spelling in SDK model: **673**
+- Nested CFn key paths audited: **743**
+- Same spelling in SDK model: **675**
 - Explicitly handled in provider: **50**
-- Allow-listed pass-throughs (does NOT block CI): **16**
+- Allow-listed pass-throughs (does NOT block CI): **18**
 - **Case divergences (blocks CI): 0**
 - **No SDK member (blocks CI): 0**
 - Write-evidence pass — fresh-object targets audited: **12**
 - **No write evidence (blocks CI): 0**
 - Shape pass — bare-array pairs clean: **88**
-- Shape pass — explicitly handled in provider: **33**
+- Shape pass — explicitly handled in provider: **34**
 - Shape pass — allow-listed (does NOT block CI): **7**
 - **Array-vs-wrapper divergences (blocks CI): 0**
 - **Definition-member-missing divergences (blocks CI): 0**
-- Shape pass — ambiguous (visible, non-blocking): **1**
+- Shape pass — ambiguous (visible, non-blocking): **0**
 
 ## Divergences
 
@@ -31,6 +31,8 @@ None. Every audited nested CFn key either matches an SDK member spelling or is e
 
 | Resource type | CFn nested key / path | Rationale |
 | --- | --- | --- |
+| `AWS::ApiGatewayV2::Integration` | `ResponseParameters.ResponseParameters.Destination` | CFn models ResponseParameters as { '<statusCode>': { ResponseParameters: [{ Destination, Source }] } } while CreateIntegration / UpdateIntegration take the FLATTENED { '<statusCode>': { '<Destination>': '<Source>' } } — Destination becomes a MAP KEY, so no `Destination` member exists anywhere in the SDK model to spell-match or to write. `toSdkResponseParameters` performs the fold (and `toCfnResponseParameters` the inverse for readCurrentState); both are pinned by unit tests, because a computed key is exactly what the write pass cannot credit. Same list-to-map shape difference as the AppSync GraphQLApi Tags.Key entry below (issue #609). |
+| `AWS::ApiGatewayV2::Integration` | `ResponseParameters.ResponseParameters.Source` | Same list-to-map fold as the Destination sibling: the CFn [{ Destination, Source }] list becomes the SDK's flat { "<Destination>": "<Source>" } map, so Source is a map VALUE and has no SDK member of its own (issue #609). |
 | `AWS::AppSync::GraphQLApi` | `Tags.Key` | AppSync models tags as a flat Record<string, string> (`tags`), not as CFn's [{Key, Value}] list — the provider folds the list into that map on create (`tagMap[tag.Key] = tag.Value`) and diffs it via TagResource / UntagResource on update. There is therefore no `Key` member anywhere in the SDK model to spell-match or to write, which is a SHAPE difference the key and write passes cannot express, not a dropped key. |
 | `AWS::AppSync::GraphQLApi` | `Tags.Value` | Same list-to-map fold as Tags.Key: the CFn tag list becomes the SDK `tags` Record<string, string>, so no `Value` member exists on the SDK side. |
 | `AWS::CloudFront::Distribution` | `DistributionConfig.CNAMEs` | Legacy pre-2012 DistributionConfig member (alias of Aliases); the modern CreateDistribution/UpdateDistribution API has no equivalent member and CDK never synthesizes it. |
@@ -118,6 +120,7 @@ CFn members whose SHAPE diverges from the same-spelled SDK member (bare array vs
 
 | Resource type | CFn definition | Member | Pass | SDK detail |
 | --- | --- | --- | --- | --- |
+| `AWS::ApiGatewayV2::Integration` | `ResponseParameterMap` | `ResponseParameters` | wrapper | — |
 | `AWS::AppSync::GraphQLApi` | `#top` | `Tags` | wrapper | — |
 | `AWS::CloudFront::Distribution` | `#top` | `Tags` | wrapper | — |
 | `AWS::CloudFront::Distribution` | `CacheBehavior` | `AllowedMethods` | wrapper | SDK wraps it as `AllowedMethods` ({ Quantity, Items }) |
@@ -152,19 +155,13 @@ CFn members whose SHAPE diverges from the same-spelled SDK member (bare array vs
 | `AWS::S3::Bucket` | `ReplicationRule` | `Id` | definition | SDK interface `ReplicationRule` has no `Id` member |
 | `AWS::S3::Bucket` | `MetadataConfiguration` | `Destination` | definition | SDK interface `MetadataConfiguration` has no `Destination` member |
 
-## Shape pass — ambiguous (non-blocking)
-
-| Resource type | CFn definition | Member |
-| --- | --- | --- |
-| `AWS::ApiGatewayV2::Integration` | `ResponseParameterMap` | `ResponseParameters` |
-
 ## Audited targets
 
 | Resource type | Provider | SDK client | Key style | Fresh-object | Nested key paths | Unmatched definitions |
 | --- | --- | --- | --- | --- | --- | --- |
 | `AWS::ApiGatewayV2::Api` | `apigatewayv2-provider.ts` | `@aws-sdk/client-apigatewayv2` | exact | yes | 6 | 1 |
 | `AWS::ApiGatewayV2::Authorizer` | `apigatewayv2-provider.ts` | `@aws-sdk/client-apigatewayv2` | exact | yes | 2 | 0 |
-| `AWS::ApiGatewayV2::Integration` | `apigatewayv2-provider.ts` | `@aws-sdk/client-apigatewayv2` | exact | yes | 0 | 3 |
+| `AWS::ApiGatewayV2::Integration` | `apigatewayv2-provider.ts` | `@aws-sdk/client-apigatewayv2` | exact | yes | 4 | 3 |
 | `AWS::ApiGatewayV2::Route` | `apigatewayv2-provider.ts` | `@aws-sdk/client-apigatewayv2` | exact | yes | 1 | 0 |
 | `AWS::ApiGatewayV2::Stage` | `apigatewayv2-provider.ts` | `@aws-sdk/client-apigatewayv2` | exact | yes | 7 | 0 |
 | `AWS::AppSync::GraphQLApi` | `appsync-provider.ts` | `@aws-sdk/client-appsync` | lower-first | yes | 33 | 1 |

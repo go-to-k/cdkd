@@ -664,3 +664,30 @@ describe('Route 53 AcceleratedRecovery mutation lock (#1467)', () => {
     expect(isIamPropagationError('HostedZone Z1 is marked disabled for mutation')).toBe(false);
   });
 });
+
+describe('API Gateway v2 per-API mutation contention (#1607)', () => {
+  // Verbatim from two consecutive live runs (2026-08-11, us-east-1) of the
+  // apigatewayv2-update-removal fixture: the failure moved between resources
+  // across runs, which is the signature of contention rather than a bad
+  // request. API Gateway v2 serializes mutations per API while cdkd deploys
+  // siblings of one ApiId in parallel by design.
+  const routeMsg =
+    'Failed to create API Gateway V2 Route WsDefaultRoute: Unable to complete operation due to concurrent modification. Please try again later.';
+  const stageMsg =
+    'Failed to create API Gateway V2 Stage Stage: Unable to complete operation due to concurrent modification. Please try again later.';
+
+  it.each([routeMsg, stageMsg])('classifies the concurrent-modification 400 as retryable', (m) => {
+    expect(isRetryableTransientError(new Error(m), m)).toBe(true);
+  });
+
+  it('keeps the pattern out of the dense IAM-propagation cadence', () => {
+    // This is load-shaped contention: the service is asking for backoff, so
+    // the dense sub-second grid would make it worse.
+    expect(isIamPropagationError(routeMsg)).toBe(false);
+  });
+
+  it('does not classify an unrelated API Gateway 400 as retryable', () => {
+    const msg = 'Failed to create API Gateway V2 Route R: Invalid route key specified';
+    expect(isRetryableTransientError(new Error(msg), msg)).toBe(false);
+  });
+});

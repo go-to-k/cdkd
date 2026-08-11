@@ -3420,6 +3420,7 @@
       "resourceType": "AWS::IAM::Role",
       "integs": [
         "agentcore-tools",
+        "apigatewayv2-update-removal",
         "appsync",
         "batch",
         "cc-api-fallback",
@@ -3489,6 +3490,9 @@
       ],
       "signals": {
         "agentcore-tools": [
+          "l2"
+        ],
+        "apigatewayv2-update-removal": [
           "l2"
         ],
         "appsync": [

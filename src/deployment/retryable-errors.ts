@@ -346,6 +346,17 @@ const OTHER_TRANSIENT_ERROR_MESSAGE_PATTERNS: readonly string[] = [
   // 2026-08-03 on the deletion-policy-snapshot-heavy fixture, where the
   // snapshot succeeded and only the delete failed).
   'There is an operation running on the Cluster',
+  // API Gateway v2 serializes mutations per API, and cdkd deploys a DAG with
+  // `--concurrency` > 1 by design — so sibling Routes / Integrations / Stages
+  // of ONE ApiId are created in parallel and collide on the service side. The
+  // message asks for exactly this treatment ("Please try again later") and the
+  // contention is load-shaped, so it belongs on the exponential half rather
+  // than the dense IAM-propagation one. Observed live twice in a row
+  // (2026-08-11, us-east-1) on the `apigatewayv2-update-removal` fixture once
+  // it grew to three integrations across two APIs — the failure moved between
+  // resources on each run, which is the signature of contention rather than of
+  // a bad request. Issue #1607.
+  'Unable to complete operation due to concurrent modification',
 ];
 
 /**

@@ -1,20 +1,20 @@
 {
   "summary": {
     "targetCount": 12,
-    "nestedKeyCount": 739,
-    "sameSpelling": 673,
+    "nestedKeyCount": 743,
+    "sameSpelling": 675,
     "providerHandled": 50,
-    "allowListed": 16,
+    "allowListed": 18,
     "caseDivergence": 0,
     "noSdkMember": 0,
     "noWriteEvidence": 0,
     "freshObjectTargets": 12,
     "shapeClean": 88,
-    "shapeHandled": 33,
+    "shapeHandled": 34,
     "shapeAllowListed": 7,
     "arrayVsWrapper": 0,
     "definitionMemberMissing": 0,
-    "shapeAmbiguous": 1
+    "shapeAmbiguous": 0
   },
   "targets": [
     {
@@ -111,15 +111,48 @@
       "sdkClientPackage": "@aws-sdk/client-apigatewayv2",
       "keyStyle": "exact",
       "freshObjectMapper": true,
-      "nestedKeyCount": 0,
-      "entries": [],
+      "nestedKeyCount": 4,
+      "entries": [
+        {
+          "resourceType": "AWS::ApiGatewayV2::Integration",
+          "nestedKey": "ResponseParameters.ResponseParameters",
+          "topLevelProperty": "ResponseParameters",
+          "terminalKey": "ResponseParameters",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ApiGatewayV2::Integration",
+          "nestedKey": "ResponseParameters.ResponseParameters.Destination",
+          "topLevelProperty": "ResponseParameters",
+          "terminalKey": "Destination",
+          "bucket": "allow-listed",
+          "rationale": "CFn models ResponseParameters as { '<statusCode>': { ResponseParameters: [{ Destination, Source }] } } while CreateIntegration / UpdateIntegration take the FLATTENED { '<statusCode>': { '<Destination>': '<Source>' } } — Destination becomes a MAP KEY, so no `Destination` member exists anywhere in the SDK model to spell-match or to write. `toSdkResponseParameters` performs the fold (and `toCfnResponseParameters` the inverse for readCurrentState); both are pinned by unit tests, because a computed key is exactly what the write pass cannot credit. Same list-to-map shape difference as the AppSync GraphQLApi Tags.Key entry below (issue #609).",
+          "allowMatchKey": "AWS::ApiGatewayV2::Integration#ResponseParameters.ResponseParameters.Destination"
+        },
+        {
+          "resourceType": "AWS::ApiGatewayV2::Integration",
+          "nestedKey": "ResponseParameters.ResponseParameters.Source",
+          "topLevelProperty": "ResponseParameters",
+          "terminalKey": "Source",
+          "bucket": "allow-listed",
+          "rationale": "Same list-to-map fold as the Destination sibling: the CFn [{ Destination, Source }] list becomes the SDK's flat { \"<Destination>\": \"<Source>\" } map, so Source is a map VALUE and has no SDK member of its own (issue #609).",
+          "allowMatchKey": "AWS::ApiGatewayV2::Integration#ResponseParameters.ResponseParameters.Source"
+        },
+        {
+          "resourceType": "AWS::ApiGatewayV2::Integration",
+          "nestedKey": "TlsConfig.ServerNameToVerify",
+          "topLevelProperty": "TlsConfig",
+          "terminalKey": "ServerNameToVerify",
+          "bucket": "same-spelling"
+        }
+      ],
       "shapeEntries": [
         {
           "resourceType": "AWS::ApiGatewayV2::Integration",
           "nestedKey": "ResponseParameters",
           "definition": "ResponseParameterMap",
           "pass": "wrapper",
-          "bucket": "ambiguous"
+          "bucket": "provider-handled"
         }
       ],
       "shapeCleanCount": 0,
