@@ -175,7 +175,7 @@ Before `destroy`, `state destroy`, `orphan`, `import`, `export`, `drift --accept
 
 Do not use `--force`, `--yes`, `--purge-events`, or other confirmation-bypassing flags unless the user approved that exact destructive scope.
 
-## Run workloads locally (no AWS needed)
+## Run workloads locally
 
 `cdkd local *` runs Lambda functions, API Gateway APIs, ECS tasks and services, ALBs, CloudFront distributions, and Bedrock AgentCore runtimes on the developer's machine via Docker — no AWS deploy involved, so the deployment-boundary steps above do not apply to these commands:
 
