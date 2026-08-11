@@ -37,37 +37,6 @@
       "DocumentationVersion",
       "MethodSettings"
     ],
-    "AWS::AppSync::DataSource": [
-      "ElasticsearchConfig",
-      "EventBridgeConfig",
-      "MetricsConfig",
-      "OpenSearchServiceConfig",
-      "RelationalDatabaseConfig"
-    ],
-    "AWS::AppSync::GraphQLApi": [
-      "AdditionalAuthenticationProviders",
-      "ApiType",
-      "EnhancedMetricsConfig",
-      "EnvironmentVariables",
-      "IntrospectionConfig",
-      "LambdaAuthorizerConfig",
-      "MergedApiExecutionRoleArn",
-      "OpenIDConnectConfig",
-      "OwnerContact",
-      "QueryDepthLimit",
-      "ResolverCountLimit",
-      "UserPoolConfig",
-      "Visibility"
-    ],
-    "AWS::AppSync::Resolver": [
-      "CachingConfig",
-      "CodeS3Location",
-      "MaxBatchSize",
-      "MetricsConfig",
-      "RequestMappingTemplateS3Location",
-      "ResponseMappingTemplateS3Location",
-      "SyncConfig"
-    ],
     "AWS::AutoScaling::AutoScalingGroup": [
       "AvailabilityZoneIds",
       "InstanceId",

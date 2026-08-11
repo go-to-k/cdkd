@@ -25,15 +25,26 @@ import {
   UntagResourceCommand,
   type AdditionalAuthenticationProvider,
   type AuthenticationType,
+  type CachingConfig,
   type CognitoUserPoolConfig,
+  type ConflictDetectionType,
+  type ConflictHandlerType,
+  type DataSourceLevelMetricsConfig,
   type DataSourceType,
   type DefaultAction,
+  type ElasticsearchDataSourceConfig,
   type EnhancedMetricsConfig,
+  type EventBridgeDataSourceConfig,
   type GraphQLApiIntrospectionConfig,
   type GraphQLApiType,
   type GraphQLApiVisibility,
   type LambdaAuthorizerConfig,
   type OpenIDConnectConfig,
+  type OpenSearchServiceDataSourceConfig,
+  type RelationalDatabaseDataSourceConfig,
+  type RelationalDatabaseSourceType,
+  type ResolverLevelMetricsConfig,
+  type SyncConfig,
   type UserPoolConfig,
   type CreateGraphqlApiCommandInput,
   type CreateDataSourceCommandInput,
@@ -44,6 +55,7 @@ import {
   type UpdateResolverCommandInput,
   type UpdateApiKeyCommandInput,
 } from '@aws-sdk/client-appsync';
+import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
 import { parse as graphqlParse, print as graphqlPrint } from 'graphql';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
@@ -114,6 +126,7 @@ const MUTABLE_GRAPHQL_API_CONFIG_PROPERTIES = [
  */
 export class AppSyncProvider implements ResourceProvider {
   private client: AppSyncClient | undefined;
+  private s3Client: S3Client | undefined;
   private readonly providerRegion = process.env['AWS_REGION'];
   private logger = getLogger().child('AppSyncProvider');
   /**
@@ -167,6 +180,16 @@ export class AppSyncProvider implements ResourceProvider {
         'DynamoDBConfig',
         'LambdaConfig',
         'HttpConfig',
+        // Issue #609 backfill: the 5 remaining DataSource silent-drop
+        // properties. `ElasticsearchConfig` is the legacy alias for the
+        // AMAZON_ELASTICSEARCH data-source type — deprecated by AWS in favor
+        // of OpenSearch, but still a live SDK member templates can carry, so
+        // it is wired rather than declared unhandledByDesign.
+        'ElasticsearchConfig',
+        'EventBridgeConfig',
+        'MetricsConfig',
+        'OpenSearchServiceConfig',
+        'RelationalDatabaseConfig',
       ]),
     ],
     [
@@ -182,21 +205,20 @@ export class AppSyncProvider implements ResourceProvider {
         'PipelineConfig',
         'Runtime',
         'Code',
+        // Issue #609 backfill: the 7 remaining Resolver silent-drop
+        // properties. The three *S3Location members have NO SDK member —
+        // cdkd fetches the S3 object body and inlines it, mirroring
+        // CloudFormation (see resolveInlineOrS3Template).
+        'CachingConfig',
+        'CodeS3Location',
+        'MaxBatchSize',
+        'MetricsConfig',
+        'RequestMappingTemplateS3Location',
+        'ResponseMappingTemplateS3Location',
+        'SyncConfig',
       ]),
     ],
     ['AWS::AppSync::ApiKey', new Set(['ApiId', 'Description', 'Expires'])],
-  ]);
-
-  unhandledByDesign = new Map<string, ReadonlyMap<string, string>>([
-    [
-      'AWS::AppSync::DataSource',
-      new Map<string, string>([
-        [
-          'ElasticsearchConfig',
-          'Legacy Elasticsearch alias; use OpenSearchServiceConfig (AppSync deprecated the Elasticsearch DataSource type in favor of OpenSearch)',
-        ],
-      ]),
-    ],
   ]);
 
   private getClient(): AppSyncClient {
@@ -204,6 +226,22 @@ export class AppSyncProvider implements ResourceProvider {
       this.client = new AppSyncClient(this.providerRegion ? { region: this.providerRegion } : {});
     }
     return this.client;
+  }
+
+  /**
+   * Lazy S3 client for the `*S3Location` properties (Resolver
+   * `CodeS3Location` / `RequestMappingTemplateS3Location` /
+   * `ResponseMappingTemplateS3Location`, GraphQLSchema
+   * `DefinitionS3Location`) — CloudFormation reads the S3 object and inlines
+   * its body, and cdkd mirrors that. Same construction as
+   * `StepFunctionsProvider.getS3Client` (the sibling `DefinitionS3Location`
+   * implementation).
+   */
+  private getS3Client(): S3Client {
+    if (!this.s3Client) {
+      this.s3Client = new S3Client(this.providerRegion ? { region: this.providerRegion } : {});
+    }
+    return this.s3Client;
   }
 
   // ─── Dispatch ─────────────────────────────────────────────────────
@@ -242,11 +280,16 @@ export class AppSyncProvider implements ResourceProvider {
    *     `XrayEnabled` / `LogConfig`) + `TagResource` / `UntagResource`
    *     for `Tags` diff. `Name` is immutable on AWS.
    *   - `DataSource`   → `UpdateDataSourceCommand` (`Description` /
-   *     `ServiceRoleArn` / `DynamoDBConfig` / `LambdaConfig` / `HttpConfig`).
+   *     `ServiceRoleArn` / the per-type configs — `DynamoDBConfig` /
+   *     `LambdaConfig` / `HttpConfig` / `ElasticsearchConfig` /
+   *     `OpenSearchServiceConfig` / `EventBridgeConfig` /
+   *     `RelationalDatabaseConfig` — / `MetricsConfig`).
    *     `ApiId` / `Name` / `Type` are immutable identity fields.
    *   - `Resolver`     → `UpdateResolverCommand` (`DataSourceName` /
    *     `RequestMappingTemplate` / `ResponseMappingTemplate` / `Kind` /
-   *     `PipelineConfig` / `Runtime` / `Code`). `ApiId` / `TypeName` /
+   *     `PipelineConfig` / `Runtime` / `Code` / `CachingConfig` /
+   *     `SyncConfig` / `MaxBatchSize` / `MetricsConfig` + the three
+   *     `*S3Location` fetch-and-inline pairs). `ApiId` / `TypeName` /
    *     `FieldName` are immutable identity fields.
    *   - `ApiKey`       → `UpdateApiKeyCommand` (`Description` / `Expires`).
    *     `ApiId` is immutable; the AWS-generated key id is immutable.
@@ -520,14 +563,44 @@ export class AppSyncProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     // ApiId is immutable identity — physicalId tracks it. The mutable
-    // surface is `Definition` (the SDL body). `StartSchemaCreation`
-    // re-uploads the SDL; AWS rebuilds the schema asynchronously.
-    // `DefinitionS3Location` is write-only (see getDriftUnknownPaths)
-    // and not round-trippable.
+    // surface is `Definition` (the SDL body) or its S3-sourced sibling
+    // `DefinitionS3Location`. `StartSchemaCreation` re-uploads the SDL;
+    // AWS rebuilds the schema asynchronously. `DefinitionS3Location` is
+    // write-only (see getDriftUnknownPaths) and not round-trippable, so its
+    // diff is on the URL: a changed URL re-fetches and re-uploads, an
+    // unchanged URL is a no-op even if the S3 object content changed (CFn
+    // parity — the template did not change, and CDK assets bake the content
+    // hash into the key anyway). Inline `Definition` wins when both are set,
+    // matching the create path.
     const newDef = properties['Definition'] as string | undefined;
     const oldDef = previousProperties['Definition'] as string | undefined;
+    const newLoc = properties['DefinitionS3Location'];
+    const oldLoc = previousProperties['DefinitionS3Location'];
 
-    if (newDef === undefined || newDef === oldDef) {
+    let definition: string | undefined;
+    if (newDef !== undefined) {
+      if (newLoc !== undefined) {
+        // Same both-set warning the create path emits — inline wins.
+        this.logger.warn(
+          `${resourceType} ${logicalId}: both Definition and DefinitionS3Location are set — ` +
+            'using the inline Definition and ignoring DefinitionS3Location (CFn treats them as alternatives)'
+        );
+      }
+      if (newDef === oldDef) {
+        return { physicalId, wasReplaced: false };
+      }
+      definition = newDef;
+    } else if (newLoc !== undefined) {
+      if (this.deepEqual(newLoc, oldLoc)) {
+        return { physicalId, wasReplaced: false };
+      }
+      definition = await this.fetchS3LocationBody(
+        newLoc,
+        resourceType,
+        logicalId,
+        'DefinitionS3Location'
+      );
+    } else {
       return { physicalId, wasReplaced: false };
     }
 
@@ -536,7 +609,7 @@ export class AppSyncProvider implements ResourceProvider {
       await this.getClient().send(
         new StartSchemaCreationCommand({
           apiId,
-          definition: Buffer.from(newDef, 'utf-8'),
+          definition: Buffer.from(definition, 'utf-8'),
         })
       );
     } catch (error) {
@@ -580,23 +653,29 @@ export class AppSyncProvider implements ResourceProvider {
     // Type is immutable; use the state-recorded value.
     const type = (properties['Type'] ?? previousProperties['Type']) as DataSourceType;
 
-    const newDesc = properties['Description'] as string | undefined;
-    const oldDesc = previousProperties['Description'] as string | undefined;
-    const newRole = properties['ServiceRoleArn'] as string | undefined;
-    const oldRole = previousProperties['ServiceRoleArn'] as string | undefined;
-    const newDDB = properties['DynamoDBConfig'] as Record<string, unknown> | undefined;
-    const oldDDB = previousProperties['DynamoDBConfig'] as Record<string, unknown> | undefined;
-    const newLambda = properties['LambdaConfig'] as Record<string, unknown> | undefined;
-    const oldLambda = previousProperties['LambdaConfig'] as Record<string, unknown> | undefined;
-    const newHttp = properties['HttpConfig'] as Record<string, unknown> | undefined;
-    const oldHttp = previousProperties['HttpConfig'] as Record<string, unknown> | undefined;
+    // Present-on-either-side AND differs, so a REMOVAL (defined -> undefined)
+    // still fires the call. `UpdateDataSource` is a FULL-REPLACE write: the
+    // input below carries the whole desired config, and a member the
+    // template dropped is simply omitted — AppSync clears it server-side, so
+    // no reset sentinel is needed (see `applyDataSourceConfig`).
+    const mutableKeys = [
+      'Description',
+      'ServiceRoleArn',
+      'DynamoDBConfig',
+      'LambdaConfig',
+      'HttpConfig',
+      'ElasticsearchConfig',
+      'OpenSearchServiceConfig',
+      'EventBridgeConfig',
+      'RelationalDatabaseConfig',
+      'MetricsConfig',
+    ] as const;
 
-    const wantUpdate =
-      newDesc !== oldDesc ||
-      newRole !== oldRole ||
-      !this.deepEqual(newDDB, oldDDB) ||
-      !this.deepEqual(newLambda, oldLambda) ||
-      !this.deepEqual(newHttp, oldHttp);
+    const wantUpdate = mutableKeys.some(
+      (key) =>
+        (key in properties || key in previousProperties) &&
+        !this.deepEqual(properties[key], previousProperties[key])
+    );
 
     if (!wantUpdate) {
       return { physicalId, wasReplaced: false };
@@ -607,25 +686,8 @@ export class AppSyncProvider implements ResourceProvider {
       name,
       type,
     };
-    if (newDesc !== undefined) input.description = newDesc;
-    if (newRole !== undefined) input.serviceRoleArn = newRole;
-    if (newDDB !== undefined) {
-      input.dynamodbConfig = {
-        tableName: newDDB['TableName'] as string,
-        awsRegion: newDDB['AwsRegion'] as string,
-        useCallerCredentials: newDDB['UseCallerCredentials'] as boolean | undefined,
-      };
-    }
-    if (newLambda !== undefined) {
-      input.lambdaConfig = {
-        lambdaFunctionArn: newLambda['LambdaFunctionArn'] as string,
-      };
-    }
-    if (newHttp !== undefined) {
-      input.httpConfig = {
-        endpoint: newHttp['Endpoint'] as string,
-      };
-    }
+    // Shared with createDataSource so create and update cannot diverge.
+    this.applyDataSourceConfig(input, resourceType, logicalId, properties);
 
     try {
       await this.getClient().send(new UpdateDataSourceCommand(input));
@@ -667,6 +729,13 @@ export class AppSyncProvider implements ResourceProvider {
     }
     const [apiId, typeName, fieldName] = parts;
 
+    // Present-on-either-side AND differs, so a REMOVAL (defined -> undefined)
+    // still fires the call. `UpdateResolver` is a FULL-REPLACE write — an
+    // omitted member is cleared server-side — so no reset sentinels are
+    // needed (see `applyResolverConfig`). An `*S3Location` URL change fires
+    // an update too; an unchanged URL whose S3 OBJECT content changed is not
+    // detected (CFn parity: the template did not change, and CDK assets bake
+    // the content hash into the key anyway).
     const mutableKeys = [
       'DataSourceName',
       'RequestMappingTemplate',
@@ -675,10 +744,19 @@ export class AppSyncProvider implements ResourceProvider {
       'PipelineConfig',
       'Runtime',
       'Code',
+      'CachingConfig',
+      'SyncConfig',
+      'MaxBatchSize',
+      'MetricsConfig',
+      'CodeS3Location',
+      'RequestMappingTemplateS3Location',
+      'ResponseMappingTemplateS3Location',
     ] as const;
 
     const wantUpdate = mutableKeys.some(
-      (key) => !this.deepEqual(properties[key], previousProperties[key])
+      (key) =>
+        (key in properties || key in previousProperties) &&
+        !this.deepEqual(properties[key], previousProperties[key])
     );
 
     if (!wantUpdate) {
@@ -691,49 +769,20 @@ export class AppSyncProvider implements ResourceProvider {
       fieldName: fieldName as string,
     };
 
-    // Resolver shape is type-discriminator-gated on `Kind`:
-    //   - Kind=UNIT     → DataSourceName is required, PipelineConfig is N/A.
-    //   - Kind=PIPELINE → PipelineConfig.Functions is required, DataSourceName
-    //                     is N/A (AWS rejects the call if it's set).
-    // The effective Kind comes from `properties.Kind` (the new template
-    // intent) falling back to `previousProperties.Kind` (state-recorded)
-    // and finally to AWS's default 'UNIT' so we never forward
-    // `dataSourceName` on a PIPELINE resolver. Same shape as
-    // readCurrentState's discriminator handling per memory rule
+    // Shared with createResolver so create and update cannot diverge; the
+    // `Kind` discriminator gating (never forward `dataSourceName` on a
+    // PIPELINE resolver) lives inside the mapper, with the state-recorded
+    // previous `Kind` as the fallback. Same shape as readCurrentState's
+    // discriminator handling per memory rule
     // feedback_always_emit_check_type_discriminator.
-    const effectiveKind =
-      (properties['Kind'] as 'UNIT' | 'PIPELINE' | undefined) ??
-      (previousProperties['Kind'] as 'UNIT' | 'PIPELINE' | undefined) ??
-      'UNIT';
-
-    if (effectiveKind === 'UNIT' && properties['DataSourceName'] !== undefined) {
-      input.dataSourceName = properties['DataSourceName'] as string;
-    }
-    if (properties['RequestMappingTemplate'] !== undefined) {
-      input.requestMappingTemplate = properties['RequestMappingTemplate'] as string;
-    }
-    if (properties['ResponseMappingTemplate'] !== undefined) {
-      input.responseMappingTemplate = properties['ResponseMappingTemplate'] as string;
-    }
-    if (properties['Kind'] !== undefined) {
-      input.kind = properties['Kind'] as 'UNIT' | 'PIPELINE';
-    }
-    if (effectiveKind === 'PIPELINE' && properties['PipelineConfig'] !== undefined) {
-      const pipelineConfig = properties['PipelineConfig'] as Record<string, unknown>;
-      input.pipelineConfig = {
-        functions: pipelineConfig['Functions'] as string[] | undefined,
-      };
-    }
-    if (properties['Runtime'] !== undefined) {
-      const runtime = properties['Runtime'] as Record<string, unknown>;
-      input.runtime = {
-        name: runtime['Name'] as 'APPSYNC_JS',
-        runtimeVersion: runtime['RuntimeVersion'] as string,
-      };
-    }
-    if (properties['Code'] !== undefined) {
-      input.code = properties['Code'] as string;
-    }
+    await this.applyResolverConfig(
+      input,
+      resourceType,
+      logicalId,
+      properties,
+      previousProperties,
+      true
+    );
 
     try {
       await this.getClient().send(new UpdateResolverCommand(input));
@@ -948,6 +997,19 @@ export class AppSyncProvider implements ResourceProvider {
     if (resourceType === 'AWS::AppSync::GraphQLSchema') {
       return ['DefinitionS3Location'];
     }
+    // Same rationale as `DefinitionS3Location` above: at create time AppSync
+    // receives the RESOLVED body (cdkd fetches the S3 object and passes it as
+    // `code` / `requestMappingTemplate` / `responseMappingTemplate`), and
+    // `GetResolver` returns only that body — never the original S3 URL. A
+    // state template pinning any of the three would otherwise fire false
+    // drift on every run.
+    if (resourceType === 'AWS::AppSync::Resolver') {
+      return [
+        'CodeS3Location',
+        'RequestMappingTemplateS3Location',
+        'ResponseMappingTemplateS3Location',
+      ];
+    }
     return [];
   }
 
@@ -973,14 +1035,15 @@ export class AppSyncProvider implements ResourceProvider {
   private asObject(
     value: unknown,
     path: string,
-    options?: ShapeGuardOptions
+    options?: ShapeGuardOptions,
+    resourceType = 'AWS::AppSync::GraphQLApi'
   ): Record<string, unknown> | undefined {
     if (value == null) return undefined;
     if (typeof value === 'object' && !Array.isArray(value)) {
       return value as Record<string, unknown>;
     }
     const message =
-      `AWS::AppSync::GraphQLApi ${path} must be an object, got ` +
+      `${resourceType} ${path} must be an object, got ` +
       `${Array.isArray(value) ? 'array' : typeof value} — cdkd refuses to drop it silently`;
     // A STATE replay (the rollback executor's reverse-replacement arm) has no
     // template-side remedy, so the refusal downgrades to a warning there —
@@ -990,7 +1053,7 @@ export class AppSyncProvider implements ResourceProvider {
       options.onUnusable(message);
       return undefined;
     }
-    throw new ProvisioningError(message, 'AWS::AppSync::GraphQLApi', options?.logicalId ?? '');
+    throw new ProvisioningError(message, resourceType, options?.logicalId ?? '');
   }
 
   /**
@@ -1357,6 +1420,452 @@ export class AppSyncProvider implements ResourceProvider {
     }
   }
 
+  // ─── AWS::AppSync::Resolver / DataSource config converters (#609) ──
+  //
+  // Same doctrine as the GraphQLApi block above: every member is
+  // hand-mapped, never mechanically case-flipped, because the AWS SDK v3
+  // serializer silently DROPS unknown members. The casing traps this batch
+  // pins: `openSearchServiceConfig` (capital S twice), `dbClusterIdentifier`
+  // (CFn spells it `DbClusterIdentifier`), `awsSecretStoreArn`, and
+  // `lambdaConflictHandlerConfig.lambdaConflictHandlerArn`.
+
+  /** CFn `CachingConfig` (`Ttl` / `CachingKeys`) -> SDK `cachingConfig`. */
+  private toSdkCachingConfig(value: unknown, logicalId: string): CachingConfig | undefined {
+    const cfn = this.asObject(value, 'CachingConfig', { logicalId }, 'AWS::AppSync::Resolver');
+    if (!cfn) return undefined;
+    const out: CachingConfig = {
+      // `Ttl` is REQUIRED by both CFn and the SDK; forwarded verbatim so an
+      // omission reaches AWS as a loud validation error naming the field.
+      ttl: cfn['Ttl'] as number,
+    };
+    if (cfn['CachingKeys'] !== undefined) {
+      // `requireConfigArray` validates the CONTAINER (an unresolved intrinsic
+      // or a string where the template meant a list must not silently become
+      // "no caching keys"); the elements are plain strings forwarded as-is.
+      out.cachingKeys = requireConfigArray(
+        cfn['CachingKeys'],
+        'AWS::AppSync::Resolver CachingConfig.CachingKeys'
+      ) as unknown as string[];
+    }
+    return out;
+  }
+
+  /**
+   * CFn `SyncConfig` (`ConflictDetection` / `ConflictHandler` /
+   * `LambdaConflictHandlerConfig.LambdaConflictHandlerArn`) -> SDK
+   * `syncConfig`.
+   */
+  private toSdkSyncConfig(value: unknown, logicalId: string): SyncConfig | undefined {
+    const cfn = this.asObject(value, 'SyncConfig', { logicalId }, 'AWS::AppSync::Resolver');
+    if (!cfn) return undefined;
+    const out: SyncConfig = {};
+    if (cfn['ConflictDetection'] !== undefined) {
+      out.conflictDetection = cfn['ConflictDetection'] as ConflictDetectionType;
+    }
+    if (cfn['ConflictHandler'] !== undefined) {
+      out.conflictHandler = cfn['ConflictHandler'] as ConflictHandlerType;
+    }
+    const lambdaHandler = this.asObject(
+      cfn['LambdaConflictHandlerConfig'],
+      'SyncConfig.LambdaConflictHandlerConfig',
+      { logicalId },
+      'AWS::AppSync::Resolver'
+    );
+    if (lambdaHandler) {
+      out.lambdaConflictHandlerConfig = {
+        lambdaConflictHandlerArn: lambdaHandler['LambdaConflictHandlerArn'] as string,
+      };
+    }
+    return out;
+  }
+
+  /**
+   * Parse the `s3://bucket/key` URL the AppSync `*S3Location` string
+   * properties carry.
+   *
+   * CDK's asset bindings (`appsync.Code.fromAsset`, `aws-s3-assets` Asset
+   * `s3ObjectUrl`) emit exactly this form, and the CloudFormation examples
+   * for these properties use it too. Anything else (an `https://` object
+   * URL, a bare bucket, a non-string) is refused with a clear error naming
+   * the property — never silently dropped.
+   */
+  private parseS3LocationUrl(
+    location: unknown,
+    resourceType: string,
+    logicalId: string,
+    propertyPath: string
+  ): { bucket: string; key: string } {
+    if (typeof location !== 'string') {
+      throw new ProvisioningError(
+        `${resourceType} ${propertyPath} must be a string s3://bucket/key URL, got ` +
+          `${Array.isArray(location) ? 'array' : typeof location} — check for an unresolved intrinsic`,
+        resourceType,
+        logicalId
+      );
+    }
+    const match = /^s3:\/\/([^/]+)\/(.+)$/.exec(location);
+    if (!match || !match[1] || !match[2]) {
+      throw new ProvisioningError(
+        `${resourceType} ${propertyPath} must be an s3://bucket/key URL (got '${location}')`,
+        resourceType,
+        logicalId
+      );
+    }
+    return { bucket: match[1], key: match[2] };
+  }
+
+  /**
+   * Fetch an `*S3Location` object body as a UTF-8 string.
+   *
+   * CloudFormation's behavior for these properties is to download the S3
+   * object and pass its CONTENT as the corresponding inline member
+   * (`code` / `requestMappingTemplate` / `responseMappingTemplate` /
+   * `definition`); the URL itself never reaches AppSync. Mirrors
+   * `StepFunctionsProvider.fetchDefinitionFromS3`, including the
+   * empty-body refusal (AWS would reject '' with a generic validation
+   * error naming nothing).
+   */
+  private async fetchS3LocationBody(
+    location: unknown,
+    resourceType: string,
+    logicalId: string,
+    propertyPath: string
+  ): Promise<string> {
+    const { bucket, key } = this.parseS3LocationUrl(
+      location,
+      resourceType,
+      logicalId,
+      propertyPath
+    );
+    this.logger.debug(`Fetching ${propertyPath} for ${logicalId} from s3://${bucket}/${key}`);
+    let body: string;
+    try {
+      const resp = await this.getS3Client().send(
+        new GetObjectCommand({ Bucket: bucket, Key: key })
+      );
+      if (!resp.Body) {
+        throw new Error(`object returned no body`);
+      }
+      body = await resp.Body.transformToString();
+    } catch (error) {
+      if (error instanceof ProvisioningError) throw error;
+      throw new ProvisioningError(
+        `Failed to fetch ${propertyPath} s3://${bucket}/${key} for ${logicalId}: ` +
+          `${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        undefined,
+        error instanceof Error ? error : undefined
+      );
+    }
+    if (body.length === 0) {
+      throw new ProvisioningError(
+        `${propertyPath} object s3://${bucket}/${key} returned an empty body`,
+        resourceType,
+        logicalId
+      );
+    }
+    return body;
+  }
+
+  /**
+   * Resolve an inline-or-S3 property pair to the inline SDK value.
+   *
+   * Precedence: the INLINE property wins when both are present, matching
+   * the repo's established S3Location precedent (StepFunctions
+   * `DefinitionString` over `DefinitionS3Location`, AppSync GraphQLSchema
+   * `Definition` over `DefinitionS3Location`) — CFn treats the pair as
+   * alternatives and CDK's bindings only ever emit one, so both-present is
+   * a hand-authored template; it is honored inline-first with a loud
+   * warning rather than refused.
+   */
+  private async resolveInlineOrS3Template(
+    inline: unknown,
+    s3Location: unknown,
+    inlineKey: string,
+    s3Key: string,
+    resourceType: string,
+    logicalId: string
+  ): Promise<string | undefined> {
+    if (inline !== undefined) {
+      if (s3Location !== undefined) {
+        this.logger.warn(
+          `${resourceType} ${logicalId}: both ${inlineKey} and ${s3Key} are set — ` +
+            `using the inline ${inlineKey} and ignoring ${s3Key} (CFn treats them as alternatives)`
+        );
+      }
+      return inline as string;
+    }
+    if (s3Location !== undefined) {
+      return this.fetchS3LocationBody(s3Location, resourceType, logicalId, s3Key);
+    }
+    return undefined;
+  }
+
+  /**
+   * Fill the mutable members shared by `CreateResolver` and `UpdateResolver`
+   * from the CFn property bag — the single mapper both paths use so they
+   * cannot diverge (the `applyGraphQLApiConfig` pattern).
+   *
+   * REMOVAL semantics: unlike `UpdateGraphqlApi` (where an omitted member is
+   * "no change" and removal needs reset sentinels), `UpdateResolver` is a
+   * FULL-REPLACE write — the desired bag is mapped in its entirety and an
+   * omitted member is cleared server-side, so "absent in template => omitted
+   * from the update input => cleared by AppSync" and no sentinel is needed.
+   * That semantic is pinned live by the integ fixture's REMOVAL phase
+   * (tests/integration/appsync/verify.sh drops the resolver's MetricsConfig
+   * and asserts AWS reset it while a sibling DataSource keeps its own).
+   * MetricsConfig is the one member A/B'd against real AWS; the other
+   * members rest on the same UpdateResolver full-replace API contract, not
+   * on a per-member live probe (the #1160 doctrine's per-member A/B was
+   * deliberately not paid here — recorded in the PR body).
+   *
+   * Resolver shape is `Kind`-discriminated:
+   *   - Kind=UNIT     -> DataSourceName applies, PipelineConfig is N/A.
+   *   - Kind=PIPELINE -> PipelineConfig applies, DataSourceName is N/A
+   *                      (AWS rejects the call if it's set).
+   * The gate applies ONLY on update (`forUpdate`), where the effective Kind
+   * falls back to the state-recorded previous value and finally AWS's
+   * default 'UNIT' — an update must not re-send the other kind's member on a
+   * live resolver. On CREATE both members forward UNCONDITIONALLY when
+   * present: gating there would silently drop a crossed shape (the very
+   * silent-drop class this batch closes) where CFn parity is AWS's own loud
+   * rejection — the same forward-don't-gate doctrine as
+   * `applyDataSourceConfig`'s per-type sub-configs.
+   */
+  private async applyResolverConfig(
+    input: CreateResolverCommandInput | UpdateResolverCommandInput,
+    resourceType: string,
+    logicalId: string,
+    properties: Record<string, unknown>,
+    previousProperties?: Record<string, unknown>,
+    forUpdate = false
+  ): Promise<void> {
+    const effectiveKind =
+      (properties['Kind'] as 'UNIT' | 'PIPELINE' | undefined) ??
+      (previousProperties?.['Kind'] as 'UNIT' | 'PIPELINE' | undefined) ??
+      'UNIT';
+
+    if ((!forUpdate || effectiveKind === 'UNIT') && properties['DataSourceName'] !== undefined) {
+      input.dataSourceName = properties['DataSourceName'] as string;
+    }
+    if (properties['Kind'] !== undefined) {
+      input.kind = properties['Kind'] as 'UNIT' | 'PIPELINE';
+    }
+    if (
+      (!forUpdate || effectiveKind === 'PIPELINE') &&
+      properties['PipelineConfig'] !== undefined
+    ) {
+      const pipelineConfig = properties['PipelineConfig'] as Record<string, unknown>;
+      input.pipelineConfig = {
+        functions: pipelineConfig['Functions'] as string[] | undefined,
+      };
+    }
+    if (properties['Runtime'] !== undefined) {
+      const runtime = properties['Runtime'] as Record<string, unknown>;
+      input.runtime = {
+        name: runtime['Name'] as 'APPSYNC_JS',
+        runtimeVersion: runtime['RuntimeVersion'] as string,
+      };
+    }
+
+    // The three inline-or-S3 pairs. CFn's behavior for the *S3Location
+    // variants is to fetch the S3 object and pass its BODY as the inline
+    // member — there is no SDK member for the URL itself. The bag reads stay
+    // DIRECT at this call site (the helper takes values, not keys) so the
+    // handled-property-wiring critic can see each `properties['X']` read.
+    const requestTemplate = await this.resolveInlineOrS3Template(
+      properties['RequestMappingTemplate'],
+      properties['RequestMappingTemplateS3Location'],
+      'RequestMappingTemplate',
+      'RequestMappingTemplateS3Location',
+      resourceType,
+      logicalId
+    );
+    if (requestTemplate !== undefined) input.requestMappingTemplate = requestTemplate;
+    const responseTemplate = await this.resolveInlineOrS3Template(
+      properties['ResponseMappingTemplate'],
+      properties['ResponseMappingTemplateS3Location'],
+      'ResponseMappingTemplate',
+      'ResponseMappingTemplateS3Location',
+      resourceType,
+      logicalId
+    );
+    if (responseTemplate !== undefined) input.responseMappingTemplate = responseTemplate;
+    const code = await this.resolveInlineOrS3Template(
+      properties['Code'],
+      properties['CodeS3Location'],
+      'Code',
+      'CodeS3Location',
+      resourceType,
+      logicalId
+    );
+    if (code !== undefined) input.code = code;
+
+    const caching = this.toSdkCachingConfig(properties['CachingConfig'], logicalId);
+    if (caching) input.cachingConfig = caching;
+    const sync = this.toSdkSyncConfig(properties['SyncConfig'], logicalId);
+    if (sync) input.syncConfig = sync;
+    if (properties['MaxBatchSize'] !== undefined) {
+      input.maxBatchSize = properties['MaxBatchSize'] as number;
+    }
+    if (properties['MetricsConfig'] !== undefined) {
+      // Scalar enum (ENABLED / DISABLED), not a block.
+      input.metricsConfig = properties['MetricsConfig'] as ResolverLevelMetricsConfig;
+    }
+  }
+
+  /**
+   * Fill the mutable members shared by `CreateDataSource` and
+   * `UpdateDataSource` from the CFn property bag — single mapper for both
+   * paths (the `applyGraphQLApiConfig` pattern).
+   *
+   * REMOVAL semantics: `UpdateDataSource` is a FULL-REPLACE write like
+   * `UpdateResolver` — an omitted member is cleared server-side, so removal
+   * needs no reset sentinel (see `applyResolverConfig`'s note; pinned live
+   * by the integ fixture's REMOVAL phase).
+   *
+   * The per-type sub-configs (`DynamoDBConfig` / `LambdaConfig` /
+   * `HttpConfig` / `ElasticsearchConfig` / `OpenSearchServiceConfig` /
+   * `EventBridgeConfig` / `RelationalDatabaseConfig`) are mutually exclusive
+   * on the `Type` discriminator. The write side deliberately FORWARDS
+   * whichever block the template carries rather than gating on `Type`:
+   * gating would silently drop a mismatched block (the very silent-drop
+   * class this batch closes), while AWS rejects a crossed shape with a loud
+   * validation error. The read side (`readDataSource`) gates on the
+   * response's own discriminator instead.
+   */
+  private applyDataSourceConfig(
+    input: CreateDataSourceCommandInput | UpdateDataSourceCommandInput,
+    resourceType: string,
+    logicalId: string,
+    properties: Record<string, unknown>
+  ): void {
+    if (properties['Description'] !== undefined) {
+      input.description = properties['Description'] as string;
+    }
+    if (properties['ServiceRoleArn'] !== undefined) {
+      input.serviceRoleArn = properties['ServiceRoleArn'] as string;
+    }
+
+    const dynamo = this.asObject(
+      properties['DynamoDBConfig'],
+      'DynamoDBConfig',
+      { logicalId },
+      resourceType
+    );
+    if (dynamo) {
+      input.dynamodbConfig = {
+        tableName: dynamo['TableName'] as string,
+        awsRegion: dynamo['AwsRegion'] as string,
+        ...(dynamo['UseCallerCredentials'] !== undefined
+          ? { useCallerCredentials: dynamo['UseCallerCredentials'] as boolean }
+          : {}),
+      };
+    }
+    const lambda = this.asObject(
+      properties['LambdaConfig'],
+      'LambdaConfig',
+      { logicalId },
+      resourceType
+    );
+    if (lambda) {
+      input.lambdaConfig = {
+        lambdaFunctionArn: lambda['LambdaFunctionArn'] as string,
+      };
+    }
+    const http = this.asObject(properties['HttpConfig'], 'HttpConfig', { logicalId }, resourceType);
+    if (http) {
+      input.httpConfig = {
+        endpoint: http['Endpoint'] as string,
+      };
+    }
+    // Legacy Elasticsearch alias (Type: AMAZON_ELASTICSEARCH) — deprecated by
+    // AWS in favor of OpenSearch but still a live SDK member.
+    const es = this.asObject(
+      properties['ElasticsearchConfig'],
+      'ElasticsearchConfig',
+      { logicalId },
+      resourceType
+    );
+    if (es) {
+      const esConfig: ElasticsearchDataSourceConfig = {
+        endpoint: es['Endpoint'] as string,
+        awsRegion: es['AwsRegion'] as string,
+      };
+      input.elasticsearchConfig = esConfig;
+    }
+    const openSearch = this.asObject(
+      properties['OpenSearchServiceConfig'],
+      'OpenSearchServiceConfig',
+      { logicalId },
+      resourceType
+    );
+    if (openSearch) {
+      // `openSearchServiceConfig` — the interior capitals are pinned by the
+      // typed literal below; an `opensearchServiceConfig` /
+      // `openSearchserviceConfig` near-miss would be serializer-dropped.
+      const osConfig: OpenSearchServiceDataSourceConfig = {
+        endpoint: openSearch['Endpoint'] as string,
+        awsRegion: openSearch['AwsRegion'] as string,
+      };
+      input.openSearchServiceConfig = osConfig;
+    }
+    const eventBridge = this.asObject(
+      properties['EventBridgeConfig'],
+      'EventBridgeConfig',
+      { logicalId },
+      resourceType
+    );
+    if (eventBridge) {
+      const ebConfig: EventBridgeDataSourceConfig = {
+        eventBusArn: eventBridge['EventBusArn'] as string,
+      };
+      input.eventBridgeConfig = ebConfig;
+    }
+    const relational = this.asObject(
+      properties['RelationalDatabaseConfig'],
+      'RelationalDatabaseConfig',
+      { logicalId },
+      resourceType
+    );
+    if (relational) {
+      const rdsConfig: RelationalDatabaseDataSourceConfig = {
+        relationalDatabaseSourceType: relational[
+          'RelationalDatabaseSourceType'
+        ] as RelationalDatabaseSourceType,
+      };
+      const rdsEndpoint = this.asObject(
+        relational['RdsHttpEndpointConfig'],
+        'RelationalDatabaseConfig.RdsHttpEndpointConfig',
+        { logicalId },
+        resourceType
+      );
+      if (rdsEndpoint) {
+        rdsConfig.rdsHttpEndpointConfig = {
+          awsRegion: rdsEndpoint['AwsRegion'] as string,
+          // CFn spells it `DbClusterIdentifier` (capital D, lowercase b);
+          // the SDK member is `dbClusterIdentifier`.
+          dbClusterIdentifier: rdsEndpoint['DbClusterIdentifier'] as string,
+          ...(rdsEndpoint['DatabaseName'] !== undefined
+            ? { databaseName: rdsEndpoint['DatabaseName'] as string }
+            : {}),
+          ...(rdsEndpoint['Schema'] !== undefined
+            ? { schema: rdsEndpoint['Schema'] as string }
+            : {}),
+          ...(rdsEndpoint['AwsSecretStoreArn'] !== undefined
+            ? { awsSecretStoreArn: rdsEndpoint['AwsSecretStoreArn'] as string }
+            : {}),
+        };
+      }
+      input.relationalDatabaseConfig = rdsConfig;
+    }
+    if (properties['MetricsConfig'] !== undefined) {
+      // Scalar enum (ENABLED / DISABLED), not a block.
+      input.metricsConfig = properties['MetricsConfig'] as DataSourceLevelMetricsConfig;
+    }
+  }
+
   // ─── AWS::AppSync::GraphQLApi ──────────────────────────────────────
 
   private async createGraphQLApi(
@@ -1552,20 +2061,40 @@ export class AppSyncProvider implements ResourceProvider {
     }
 
     const definition = properties['Definition'] as string | undefined;
-    const definitionS3Location = properties['DefinitionS3Location'] as string | undefined;
+    const definitionS3Location = properties['DefinitionS3Location'];
 
     try {
       if (definition) {
+        // Inline wins when both are present — same precedence as the
+        // Resolver *S3Location pairs (see resolveInlineOrS3Template).
+        if (definitionS3Location !== undefined) {
+          this.logger.warn(
+            `${resourceType} ${logicalId}: both Definition and DefinitionS3Location are set — ` +
+              'using the inline Definition and ignoring DefinitionS3Location (CFn treats them as alternatives)'
+          );
+        }
         await this.getClient().send(
           new StartSchemaCreationCommand({
             apiId,
             definition: new TextEncoder().encode(definition),
           })
         );
-      } else if (definitionS3Location) {
-        // For S3-based schema, pass as definition bytes
-        // In practice, CDK usually inlines the schema
-        this.logger.warn(`S3-based schema definition for ${logicalId} - using inline only`);
+      } else if (definitionS3Location !== undefined) {
+        // CloudFormation fetches the S3 object and submits its BODY as the
+        // SDL — StartSchemaCreation has no S3-URL member. Same fetch helper
+        // as the Resolver *S3Location properties (#609).
+        const body = await this.fetchS3LocationBody(
+          definitionS3Location,
+          resourceType,
+          logicalId,
+          'DefinitionS3Location'
+        );
+        await this.getClient().send(
+          new StartSchemaCreationCommand({
+            apiId,
+            definition: new TextEncoder().encode(body),
+          })
+        );
       }
 
       this.logger.debug(`Successfully started schema creation for ${logicalId}`);
@@ -1615,32 +2144,8 @@ export class AppSyncProvider implements ResourceProvider {
         type,
       };
 
-      if (properties['Description']) {
-        input.description = properties['Description'] as string;
-      }
-      if (properties['ServiceRoleArn']) {
-        input.serviceRoleArn = properties['ServiceRoleArn'] as string;
-      }
-      if (properties['DynamoDBConfig']) {
-        const config = properties['DynamoDBConfig'] as Record<string, unknown>;
-        input.dynamodbConfig = {
-          tableName: config['TableName'] as string,
-          awsRegion: config['AwsRegion'] as string,
-          useCallerCredentials: config['UseCallerCredentials'] as boolean | undefined,
-        };
-      }
-      if (properties['LambdaConfig']) {
-        const config = properties['LambdaConfig'] as Record<string, unknown>;
-        input.lambdaConfig = {
-          lambdaFunctionArn: config['LambdaFunctionArn'] as string,
-        };
-      }
-      if (properties['HttpConfig']) {
-        const config = properties['HttpConfig'] as Record<string, unknown>;
-        input.httpConfig = {
-          endpoint: config['Endpoint'] as string,
-        };
-      }
+      // Shared with updateDataSource so create and update cannot diverge.
+      this.applyDataSourceConfig(input, resourceType, logicalId, properties);
 
       await this.getClient().send(new CreateDataSourceCommand(input));
 
@@ -1735,34 +2240,9 @@ export class AppSyncProvider implements ResourceProvider {
         fieldName,
       };
 
-      if (properties['DataSourceName']) {
-        input.dataSourceName = properties['DataSourceName'] as string;
-      }
-      if (properties['RequestMappingTemplate']) {
-        input.requestMappingTemplate = properties['RequestMappingTemplate'] as string;
-      }
-      if (properties['ResponseMappingTemplate']) {
-        input.responseMappingTemplate = properties['ResponseMappingTemplate'] as string;
-      }
-      if (properties['Kind']) {
-        input.kind = properties['Kind'] as 'UNIT' | 'PIPELINE';
-      }
-      if (properties['PipelineConfig']) {
-        const pipelineConfig = properties['PipelineConfig'] as Record<string, unknown>;
-        input.pipelineConfig = {
-          functions: pipelineConfig['Functions'] as string[] | undefined,
-        };
-      }
-      if (properties['Runtime']) {
-        const runtime = properties['Runtime'] as Record<string, unknown>;
-        input.runtime = {
-          name: runtime['Name'] as 'APPSYNC_JS',
-          runtimeVersion: runtime['RuntimeVersion'] as string,
-        };
-      }
-      if (properties['Code']) {
-        input.code = properties['Code'] as string;
-      }
+      // Shared with updateResolver so create and update cannot diverge
+      // (incl. the Kind discriminator gating and the *S3Location fetches).
+      await this.applyResolverConfig(input, resourceType, logicalId, properties);
 
       await this.getClient().send(new CreateResolverCommand(input));
 
@@ -1944,10 +2424,13 @@ export class AppSyncProvider implements ResourceProvider {
    *    CDK's `aws:*` auto-tags are filtered out and the result key is
    *    omitted when no user tags remain.
    *  - `DataSource` → `GetDataSource` (Name, Type, Description,
-   *    ServiceRoleArn, DynamoDBConfig, LambdaConfig, HttpConfig). The
+   *    ServiceRoleArn, the per-type configs — DynamoDBConfig, LambdaConfig,
+   *    HttpConfig, ElasticsearchConfig, OpenSearchServiceConfig,
+   *    EventBridgeConfig, RelationalDatabaseConfig — and MetricsConfig). The
    *    `ApiId` cdkd holds is recovered from the `apiId|name` physicalId.
    *  - `Resolver` → `GetResolver` (TypeName, FieldName, DataSourceName,
-   *    request/response templates, Kind, PipelineConfig, Runtime, Code).
+   *    request/response templates, Kind, PipelineConfig, Runtime, Code,
+   *    CachingConfig, SyncConfig, MaxBatchSize, MetricsConfig).
    *  - `ApiKey` → `ListApiKeys` filtered by id (no `GetApiKey` SDK call;
    *    AppSync only exposes list-based access). Surfaces Description and
    *    Expires.
@@ -2273,6 +2756,58 @@ export class AppSyncProvider implements ResourceProvider {
     if (ds.httpConfig?.endpoint !== undefined) {
       result['HttpConfig'] = { Endpoint: ds.httpConfig.endpoint };
     }
+    // Reverse maps for the configs wired in issue #609. Each block is
+    // emitted ONLY when AWS returned it, which is the response-side form of
+    // the Type discriminator gating (Class 1) — AWS returns exactly the
+    // config matching the data source's `type`.
+    if (ds.elasticsearchConfig) {
+      const es: Record<string, unknown> = {};
+      if (ds.elasticsearchConfig.endpoint !== undefined) {
+        es['Endpoint'] = ds.elasticsearchConfig.endpoint;
+      }
+      if (ds.elasticsearchConfig.awsRegion !== undefined) {
+        es['AwsRegion'] = ds.elasticsearchConfig.awsRegion;
+      }
+      if (Object.keys(es).length > 0) result['ElasticsearchConfig'] = es;
+    }
+    if (ds.openSearchServiceConfig) {
+      const os: Record<string, unknown> = {};
+      if (ds.openSearchServiceConfig.endpoint !== undefined) {
+        os['Endpoint'] = ds.openSearchServiceConfig.endpoint;
+      }
+      if (ds.openSearchServiceConfig.awsRegion !== undefined) {
+        os['AwsRegion'] = ds.openSearchServiceConfig.awsRegion;
+      }
+      if (Object.keys(os).length > 0) result['OpenSearchServiceConfig'] = os;
+    }
+    if (ds.eventBridgeConfig?.eventBusArn !== undefined) {
+      result['EventBridgeConfig'] = { EventBusArn: ds.eventBridgeConfig.eventBusArn };
+    }
+    if (ds.relationalDatabaseConfig) {
+      const rds: Record<string, unknown> = {};
+      if (ds.relationalDatabaseConfig.relationalDatabaseSourceType !== undefined) {
+        rds['RelationalDatabaseSourceType'] =
+          ds.relationalDatabaseConfig.relationalDatabaseSourceType;
+      }
+      const endpoint = ds.relationalDatabaseConfig.rdsHttpEndpointConfig;
+      if (endpoint) {
+        const ep: Record<string, unknown> = {};
+        if (endpoint.awsRegion !== undefined) ep['AwsRegion'] = endpoint.awsRegion;
+        if (endpoint.dbClusterIdentifier !== undefined) {
+          ep['DbClusterIdentifier'] = endpoint.dbClusterIdentifier;
+        }
+        if (endpoint.databaseName !== undefined) ep['DatabaseName'] = endpoint.databaseName;
+        if (endpoint.schema !== undefined) ep['Schema'] = endpoint.schema;
+        if (endpoint.awsSecretStoreArn !== undefined) {
+          ep['AwsSecretStoreArn'] = endpoint.awsSecretStoreArn;
+        }
+        if (Object.keys(ep).length > 0) rds['RdsHttpEndpointConfig'] = ep;
+      }
+      if (Object.keys(rds).length > 0) result['RelationalDatabaseConfig'] = rds;
+    }
+    if (ds.metricsConfig !== undefined) {
+      result['MetricsConfig'] = ds.metricsConfig;
+    }
     return result;
   }
 
@@ -2337,6 +2872,41 @@ export class AppSyncProvider implements ResourceProvider {
       // / Runtime (they'd be rejected as invalid for a VTL resolver).
       result['RequestMappingTemplate'] = resolver.requestMappingTemplate ?? '';
       result['ResponseMappingTemplate'] = resolver.responseMappingTemplate ?? '';
+    }
+
+    // Reverse maps for the properties wired in issue #609. Each is emitted
+    // ONLY when AWS returned it, so a property the template never set stays
+    // absent from both sides of the drift comparison. The three *S3Location
+    // properties have no readable AWS form (getDriftUnknownPaths).
+    if (resolver.cachingConfig) {
+      const caching: Record<string, unknown> = {};
+      if (resolver.cachingConfig.ttl !== undefined) caching['Ttl'] = resolver.cachingConfig.ttl;
+      if (resolver.cachingConfig.cachingKeys !== undefined) {
+        caching['CachingKeys'] = [...resolver.cachingConfig.cachingKeys];
+      }
+      if (Object.keys(caching).length > 0) result['CachingConfig'] = caching;
+    }
+    if (resolver.syncConfig) {
+      const sync: Record<string, unknown> = {};
+      if (resolver.syncConfig.conflictDetection !== undefined) {
+        sync['ConflictDetection'] = resolver.syncConfig.conflictDetection;
+      }
+      if (resolver.syncConfig.conflictHandler !== undefined) {
+        sync['ConflictHandler'] = resolver.syncConfig.conflictHandler;
+      }
+      if (resolver.syncConfig.lambdaConflictHandlerConfig?.lambdaConflictHandlerArn !== undefined) {
+        sync['LambdaConflictHandlerConfig'] = {
+          LambdaConflictHandlerArn:
+            resolver.syncConfig.lambdaConflictHandlerConfig.lambdaConflictHandlerArn,
+        };
+      }
+      if (Object.keys(sync).length > 0) result['SyncConfig'] = sync;
+    }
+    if (resolver.maxBatchSize !== undefined) {
+      result['MaxBatchSize'] = resolver.maxBatchSize;
+    }
+    if (resolver.metricsConfig !== undefined) {
+      result['MetricsConfig'] = resolver.metricsConfig;
     }
     return result;
   }

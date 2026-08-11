@@ -10,7 +10,14 @@ This example demonstrates deploying an AppSync GraphQL API with a DynamoDB data 
 - **AWS::DynamoDB::Table**: Items table as the backing data source
 - **AWS::IAM::Role**: Service role for AppSync to access DynamoDB
 - **AWS::AppSync::DataSource**: DynamoDB data source configuration
-- **AWS::AppSync::Resolver**: Resolver for the getItem query with VTL mapping templates
+- **AWS::AppSync::DataSource** (second): EventBridge data source —
+  `EventBridgeConfig` + `MetricsConfig` (#609), backed by an
+  **AWS::Events::EventBus** and an IAM role with `events:PutEvents`
+- **AWS::AppSync::Resolver**: Resolver for the getItem query with VTL mapping
+  templates + `MetricsConfig` (#609)
+- **AWS::AppSync::Resolver** (second): getItemV2 resolver whose mapping
+  templates come from S3 (`RequestMappingTemplateS3Location` /
+  `ResponseMappingTemplateS3Location` via `aws-s3-assets` Assets, #609)
 - **AWS::Cognito::UserPool** / **AWS::Lambda::Function** / **AWS::Lambda::Permission** /
   **AWS::IAM::Role**: backing resources for the additional authentication providers
   (Cognito + Lambda authorizer) the GraphQL API declares
@@ -25,11 +32,30 @@ member spelling is dropped by the serializer with a fully green deploy:
 | --- | --- | --- |
 | baseline | — | every config property reached AWS |
 | update | `CDKD_TEST_UPDATE=true` | every mutable property is re-sent on a change |
-| removal | `CDKD_TEST_REMOVAL=true` | the properties with an AWS reset sentinel are actively RESET (AppSync treats an omitted member as "no change"), while `EnhancedMetricsConfig` stays retained |
+| removal | `CDKD_TEST_REMOVAL=true` | the GraphQLApi properties with an AWS reset sentinel are actively RESET (AppSync treats an omitted `UpdateGraphqlApi` member as "no change"), while `EnhancedMetricsConfig` stays retained |
 
-The API also asserts `provisionedBy == sdk`, so a property slipping back out of
+The API also asserts `provisionedBy == sdk` (for the GraphQLApi row AND every
+Resolver / DataSource row), so a property slipping back out of
 `handledProperties` (which would silently re-route the resource to Cloud
 Control under #614) fails the run.
+
+## Issue #609 Resolver + DataSource coverage
+
+The same three phases also exercise the Resolver/DataSource batch:
+
+- **Resolver `MetricsConfig`** — live on the getItem resolver. The removal
+  phase drops it and asserts AWS cleared it to `DISABLED`: unlike
+  `UpdateGraphqlApi`, `UpdateResolver` / `UpdateDataSource` are FULL-REPLACE
+  writes (an omitted member is cleared server-side), so removal needs no reset
+  sentinel — this phase is the live pin of that semantic. The EventBridge data
+  source RETAINS its own `MetricsConfig` so a blanket wipe cannot pass.
+- **`RequestMappingTemplateS3Location` / `ResponseMappingTemplateS3Location`**
+  — live on the getItemV2 resolver via `aws-s3-assets` Assets; verify.sh
+  asserts the live template equals the local asset file (cdkd fetched the S3
+  body and inlined it, mirroring CFn). The update phase switches the request
+  template to a v2 asset (new S3 key) and asserts the re-fetched body.
+- **DataSource `EventBridgeConfig` + `MetricsConfig`** — live via the
+  EventBridge data source (`AMAZON_EVENTBRIDGE` + a real `AWS::Events::EventBus`).
 
 **Not exercised live**, and covered by unit tests instead:
 
@@ -39,6 +65,20 @@ Control under #614) fails the run.
   `CognitoUserPoolConfig` shape, which has no `DefaultAction`)
 - `MergedApiExecutionRoleArn` — only valid on `ApiType: MERGED`
 - `Visibility: PRIVATE` — needs a VPC endpoint
+- Resolver `CachingConfig` — needs a provisioned AppSync ApiCache
+  (`AWS::AppSync::ApiCache`, hourly-billed cache instance)
+- Resolver `SyncConfig` — needs a VERSIONED delta-sync DynamoDB setup
+- Resolver `MaxBatchSize` — only meaningful on a Lambda direct /
+  `BATCH_INVOKE` resolver, which needs a Lambda data-source arrangement this
+  fixture does not carry
+- Resolver `CodeS3Location` — unit-only; it rides the SAME fetch-and-inline
+  helper the mapping-template S3Locations prove live
+- DataSource `OpenSearchServiceConfig` / `ElasticsearchConfig` — need a real
+  OpenSearch domain (30+ min create, hourly cost)
+- DataSource `RelationalDatabaseConfig` — needs an Aurora Serverless cluster
+  with the Data API
+
+(unit coverage: `tests/unit/provisioning/appsync-resolver-datasource-props.test.ts`)
 
 ## Deploy
 

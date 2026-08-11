@@ -1430,9 +1430,18 @@ export const NESTED_KEY_TARGETS: readonly NestedKeyTarget[] = [
     // which is precisely what this target fences. Measured at opt-in: 33
     // audited paths, 31 same-spelling with write evidence, 2 allow-listed
     // (`Tags.Key` / `Tags.Value` — CFn's tag LIST is an SDK `Record<string,
-    // string>`, so neither member exists on the SDK side at all); 134 written
-    // member names (77 under the per-target floor's own scoping), 15 non-empty
-    // write scopes. No `minHandoffPoints`: the
+    // string>`, so neither member exists on the SDK side at all).
+    // Re-measured after the #609 Resolver/DataSource batch wired the same
+    // file's remaining 12 properties: 105 written member names / 26 non-empty
+    // write scopes under the generator's own reverse-map-excluding scoping
+    // (184 / 50 under the calibration test's `['readCurrentState']`-only
+    // exclusion) — the Resolver/DataSource mappers write into the same
+    // provider file the collector parses, so both yields grew; the two types
+    // themselves are NOT targets yet — their schema fixtures pre-date the
+    // definitionShapes / nestedPropertyPaths captures and need a re-capture
+    // first (tracked in issue #1597, together with the HttpConfig
+    // .AuthorizationConfig nested drop the blocked opt-in would catch). No
+    // `minHandoffPoints`: the
     // provider hands off no blob generically, so the walk is not load-bearing
     // here.
     resourceType: 'AWS::AppSync::GraphQLApi',
@@ -1441,8 +1450,8 @@ export const NESTED_KEY_TARGETS: readonly NestedKeyTarget[] = [
     keyStyle: 'lower-first',
     minNestedKeys: 28,
     freshObjectMapper: true,
-    minWrittenMembers: 70,
-    minWriteScopes: 8,
+    minWrittenMembers: 100,
+    minWriteScopes: 24,
   },
   {
     // Opted in by issues #1472 / #1473: the two REAL silent drops the #1445
