@@ -250,6 +250,21 @@ describe('replication: the same container class, one applier over', () => {
     expect(childLogger.warn).not.toHaveBeenCalled();
   });
 
+  it('warns and skips on the UPDATE path (the only wiring nothing else covers)', async () => {
+    // Without this, deleting the third argument at the update call site leaves
+    // the whole suite green while a malformed replication `Filter` HARD-THROWS
+    // on update / rollback replay — exactly the un-rollbackable failure the
+    // create/replay split exists to prevent. Lifecycle and analytics both have
+    // this test; replication did not until the PR review asked for it.
+    await provider.update('B', BUCKET, RESOURCE_TYPE, replicationProps({ Filter: 'logs/' }), {
+      BucketName: BUCKET,
+    });
+    expect(childLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining(`${REPLICATION_PATH} must be an object`)
+    );
+    expect(sentCommands(PutBucketReplicationCommand)).toHaveLength(0);
+  });
+
   it('an EMPTY Filter object still means "replicate every object" (issue #936)', async () => {
     // The guard must not disturb the one shape that legitimately produces the
     // wide scope — otherwise the fix would break a valid template.
@@ -453,6 +468,30 @@ describe('update path: warn and skip (the desired bag can be a historical state 
     expect(sentCommands(PutBucketAnalyticsConfigurationCommand).map((c) => c.input.Id)).toEqual([
       'good',
     ]);
+  });
+
+  it('analytics: a malformed OutputSchemaVersion warns and proceeds with V_1', async () => {
+    // The only user-visible BEHAVIOR change in the review delta: this field
+    // used to hard-throw on a replay, and now sends a Put it previously
+    // refused. The fallback is uniquely safe here because the SDK's
+    // `StorageClassAnalysisSchemaVersion` has exactly one member — but that
+    // makes it MORE important to pin, since nothing else would notice if the
+    // downgrade were dropped or if it started defaulting a real enum.
+    await update(
+      analyticsProps({
+        StorageClassAnalysis: {
+          DataExport: { ...VALID_DATA_EXPORT, OutputSchemaVersion: 42 },
+        },
+      })
+    );
+    expect(childLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining(`${DATA_EXPORT_PATH}.OutputSchemaVersion`)
+    );
+    const sent = sentCommands(PutBucketAnalyticsConfigurationCommand);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.input.AnalyticsConfiguration?.StorageClassAnalysis?.DataExport).toMatchObject({
+      OutputSchemaVersion: 'V_1',
+    });
   });
 
   it('a VALID container still applies on the update path (the guard is shape-only)', async () => {

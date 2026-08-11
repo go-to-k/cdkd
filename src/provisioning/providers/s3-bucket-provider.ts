@@ -1160,10 +1160,12 @@ export class S3BucketProvider implements ResourceProvider {
   ): Promise<void> {
     // The per-ITEM `config` container is deliberately NOT guarded here, and
     // the audit that settled it belongs next to the decision (issue #1581).
-    // Of the five per-item appliers, three already refuse a non-object item
+    // Of the SIX per-item appliers, four already refuse a non-object item
     // through an existing `readConfigString(config | rule, …)` — intelligent
-    // tiering (`Status`), inventory (`IncludedObjectVersions`) and the
-    // lifecycle rules (`Status`). Metrics and analytics read only `Id` off the
+    // tiering (`Status`), inventory (`IncludedObjectVersions`), the lifecycle
+    // rules (`Status`) and replication's rules (`Status`, in the same applier
+    // whose `Filter` container this change guards — the one most likely to be
+    // mistaken for already-handled). Metrics and analytics read only `Id` off the
     // item, so a malformed one reaches AWS — but `id` is a REQUIRED query
     // parameter of `PutBucket{Metrics,Analytics}Configuration`, so the request
     // is rejected outright. That is a LOUD failure, not the silent
@@ -1447,12 +1449,20 @@ export class S3BucketProvider implements ResourceProvider {
         const destPath = s3BucketDestinationPath(rawDest, analyticsDestPath);
         analyticsConfig.StorageClassAnalysis = {
           DataExport: {
-            // Same update-path downgrade as the `Format` read below and as the
-            // container guard above: the FIELD half of this block was the last
-            // read here that still hard-threw on a state replay, so a
-            // historical record with a malformed `OutputSchemaVersion` was
-            // un-rollbackable for no better reason than that its sibling was
-            // guarded first (PR review, issue #1581).
+            // Same update-path downgrade as the `Format` read below: the FIELD
+            // half of this block was the last read here that still hard-threw on
+            // a state replay, so a historical record with a malformed
+            // `OutputSchemaVersion` was un-rollbackable for no better reason
+            // than that its sibling was guarded first (PR review, issue #1581).
+            //
+            // Note this is a DIFFERENT replay contract from the container guard
+            // two blocks up — that one SKIPS the item, this one proceeds with
+            // the fallback — and the operative reason is not symmetry: the SDK's
+            // `StorageClassAnalysisSchemaVersion` has exactly ONE member, `V_1`,
+            // so the fallback here cannot write a wrong-direction value the way
+            // defaulting a real enum could. A destination that is present but
+            // unusable was already eaten by the `continue` above, so the only
+            // survivors are a valid `s3Dest` or an absent one.
             OutputSchemaVersion: readConfigString(
               dataExport,
               'OutputSchemaVersion',
