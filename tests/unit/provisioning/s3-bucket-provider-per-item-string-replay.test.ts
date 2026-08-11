@@ -147,6 +147,19 @@ interface Site {
   readonly goodThenBad: (value: unknown) => Record<string, unknown>;
   /** A well-formed item whose value is NOT the fallback. */
   readonly validNonDefault: Record<string, unknown>;
+  /**
+   * The guarded key OMITTED entirely, plus the fallback it must then take.
+   *
+   * Pins the READ's fallback, which the probe's own rows cannot: a probe-side
+   * fallback flip is caught by the parametrized replay rows, but flipping the
+   * `readConfigString` fallback at the SDK-call site is only observable here.
+   * Two of the four sites had no such row and the whole 10,531-test suite
+   * stayed green when their default was flipped `Enabled` -> `Disabled`.
+   */
+  readonly absent: Record<string, unknown>;
+  readonly absentDefault: string;
+  /** An item that is not an object at all — the CONTAINER half of the probe. */
+  readonly nonObjectItem: Record<string, unknown>;
   /** Reads the value back off a sent command, for the no-false-refusal rows. */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   readonly readValue: (input: Record<string, any>) => unknown;
@@ -190,6 +203,9 @@ const SITES: Site[] = [
         { Id: 'bad', Status: v, ExpirationInDays: 30, Filter: { Prefix: 'b/' } },
       ]),
     validNonDefault: lifecycleProps([{ Id: 'probe', Status: 'Disabled', ExpirationInDays: 30 }]),
+    absent: lifecycleProps([{ Id: 'probe', ExpirationInDays: 30 }]),
+    absentDefault: 'Enabled',
+    nonObjectItem: lifecycleProps(['not-a-rule' as never]),
     readValue: (input) => (input['LifecycleConfiguration']?.Rules ?? [])[0]?.Status,
   },
   {
@@ -212,6 +228,9 @@ const SITES: Site[] = [
     validNonDefault: replicationProps([
       { Id: 'probe', Status: 'Disabled', ...validReplicationFields },
     ]),
+    absent: replicationProps([{ Id: 'probe', ...validReplicationFields }]),
+    absentDefault: 'Enabled',
+    nonObjectItem: replicationProps(['not-a-rule' as never]),
     readValue: (input) => (input['ReplicationConfiguration']?.Rules ?? [])[0]?.Status,
   },
   {
@@ -232,6 +251,9 @@ const SITES: Site[] = [
         { Id: 'bad', Status: v, Tierings: TIERINGS },
       ]),
     validNonDefault: itProps([{ Id: 'probe', Status: 'Disabled', Tierings: TIERINGS }]),
+    absent: itProps([{ Id: 'probe', Tierings: TIERINGS }]),
+    absentDefault: 'Enabled',
+    nonObjectItem: itProps(['not-a-config' as never]),
     readValue: (input) => input['IntelligentTieringConfiguration']?.Status,
   },
   {
@@ -254,6 +276,9 @@ const SITES: Site[] = [
     validNonDefault: inventoryProps([
       { Id: 'probe', IncludedObjectVersions: 'Current', ...validInventoryFields },
     ]),
+    absent: inventoryProps([{ Id: 'probe', ...validInventoryFields }]),
+    absentDefault: 'All',
+    nonObjectItem: inventoryProps(['not-a-config' as never]),
     readValue: (input) => input['InventoryConfiguration']?.IncludedObjectVersions,
   },
 ];
@@ -372,56 +397,46 @@ describe('no false refusal: valid and ABSENT values keep working', () => {
     });
   }
 
-  it('lifecycle: an ABSENT Status still defaults to Enabled, with no warning', async () => {
-    // The ABSENT case belongs to the caller, not the guard: an omitted field
-    // legitimately means "defaulted", and refusing it would break every
-    // template that relies on the default.
-    await provider.create(
-      'B',
-      RESOURCE_TYPE,
-      lifecycleProps([{ Id: 'probe', ExpirationInDays: 30 }])
-    );
-    const sent = sentCommands(PutBucketLifecycleConfigurationCommand);
-    expect(sent).toHaveLength(1);
-    const rule = (sent[0]!.input.LifecycleConfiguration?.Rules ?? [])[0] as unknown as Record<
-      string,
-      unknown
-    >;
-    expect(rule['Status']).toBe('Enabled');
-    expect(childLogger.warn).not.toHaveBeenCalled();
-  });
-
-  it('inventory: an ABSENT IncludedObjectVersions still defaults to All', async () => {
-    await provider.create(
-      'B',
-      RESOURCE_TYPE,
-      inventoryProps([{ Id: 'probe', ...validInventoryFields }])
-    );
-    const sent = sentCommands(PutBucketInventoryConfigurationCommand);
-    expect(sent).toHaveLength(1);
-    expect(sent[0]!.input.InventoryConfiguration?.IncludedObjectVersions).toBe('All');
-    expect(childLogger.warn).not.toHaveBeenCalled();
-  });
+  for (const site of SITES) {
+    it(`${site.name}: an ABSENT value still takes the READ's default, with no warning`, async () => {
+      // The ABSENT case belongs to the caller, not the guard: an omitted field
+      // legitimately means "defaulted", and refusing it would break every
+      // template that relies on the default.
+      //
+      // This also pins the READ's fallback, which nothing else can: the probe's
+      // fallback is fenced by the parametrized replay rows, but flipping the
+      // `readConfigString` fallback at the SDK-call site is invisible without
+      // this row — two sites lacked it and the full suite stayed green when
+      // their default was flipped.
+      await provider.create('B', RESOURCE_TYPE, site.absent);
+      const sent = sentCommands(site.command);
+      expect(sent).toHaveLength(1);
+      expect(site.readValue(sent[0]!.input)).toBe(site.absentDefault);
+      expect(childLogger.warn).not.toHaveBeenCalled();
+    });
+  }
 });
 
 describe('the CONTAINER half of the probe is reachable from the provider too', () => {
-  // The probe guards a container AND a field; only the field half is exercised
-  // above, and the container half was unit-tested only. A per-rule / per-item
-  // value that is not an object at all reaches the same guard.
-  it('lifecycle: a non-object RULE is refused on create and skipped on a replay', async () => {
-    await expect(
-      provider.create('B', RESOURCE_TYPE, lifecycleProps(['not-a-rule' as never]))
-    ).rejects.toThrow(/must be an object/);
-    expect(sentCommands(PutBucketLifecycleConfigurationCommand)).toHaveLength(0);
+  // The probe guards a container AND a field; the rows above exercise only the
+  // FIELD half. A per-rule / per-item value that is not an object at all
+  // reaches the same guard, and every applier must handle it — not just the
+  // one that happened to get a test first.
+  for (const site of SITES) {
+    it(`${site.name}: a non-object item is refused on create and skipped on a replay`, async () => {
+      await expect(provider.create('B', RESOURCE_TYPE, site.nonObjectItem)).rejects.toThrow(
+        /must be an object/
+      );
+      expect(sentCommands(site.command)).toHaveLength(0);
 
-    vi.clearAllMocks();
-    childLogger.child.mockReturnValue(childLogger);
-    mockSend.mockResolvedValue({});
+      vi.clearAllMocks();
+      childLogger.child.mockReturnValue(childLogger);
+      mockSend.mockResolvedValue({});
 
-    await provider.create('B', RESOURCE_TYPE, lifecycleProps(['not-a-rule' as never]), {
-      replayingState: true,
+      await provider.create('B', RESOURCE_TYPE, site.nonObjectItem, { replayingState: true });
+      expect(childLogger.warn).toHaveBeenCalledWith(expect.stringContaining('must be an object'));
+      expect(childLogger.warn).toHaveBeenCalledWith(expect.stringContaining(site.skipClause));
+      expect(sentCommands(site.command)).toHaveLength(0);
     });
-    expect(childLogger.warn).toHaveBeenCalledWith(expect.stringContaining('must be an object'));
-    expect(sentCommands(PutBucketLifecycleConfigurationCommand)).toHaveLength(0);
-  });
+  }
 });

@@ -480,10 +480,7 @@ function configValueRefusal(
     return undefined;
   }
   if (typeof value !== 'string' || value.trim() === '') {
-    return (
-      `${path} must be a non-empty string (got ${describe(value)}) — check for an ` +
-      `unresolved intrinsic or a mis-nested template value`
-    );
+    return `${path} must be a non-empty string ${malformedShapeDetail(value)}`;
   }
   return undefined;
 }
