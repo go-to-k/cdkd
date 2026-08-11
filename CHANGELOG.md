@@ -1,3 +1,10 @@
+## [0.280.13](https://github.com/go-to-k/cdkd/compare/v0.280.12...v0.280.13) (2026-08-11)
+
+
+### Bug Fixes
+
+* **diff:** render a pure key addition symmetrically (old: {} / new: {AddedKey}) instead of full-object-vs-added-key ([#1614](https://github.com/go-to-k/cdkd/issues/1614)) ([c5f0674](https://github.com/go-to-k/cdkd/commit/c5f0674d594970b66a372570e26084a2b664bba3))
+
 ## [0.280.12](https://github.com/go-to-k/cdkd/compare/v0.280.11...v0.280.12) (2026-08-11)
 
 
