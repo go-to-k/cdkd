@@ -92,11 +92,12 @@ try {
     `${JSON.stringify(
       {
         $comment:
-          'Pre-existing `*Once` leaks grandfathered for the runtime detector (issue 1618); ' +
-          'fixing these files is tracked by issue 1655. Regenerate with ' +
-          '`vp run gen:once-leak-allowlist`. Removing a file from this list after fixing its ' +
-          'priming is the intended ratchet direction; adding one is not, and an empty list is ' +
-          'the goal state.',
+          '`*Once` leaks grandfathered for the runtime detector (issue 1618). The three ' +
+          'pre-existing real entries were fixed by issue 1655, so what remains is the ' +
+          'deliberately-leaking canary suite, which must stay listed (see .claude/rules/' +
+          'testing.md). Regenerate with `vp run gen:once-leak-allowlist`. Removing a file ' +
+          'from this list after fixing its priming is the intended ratchet direction; ' +
+          'adding one is not.',
         files,
       },
       null,

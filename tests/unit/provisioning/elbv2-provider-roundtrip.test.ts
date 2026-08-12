@@ -274,11 +274,13 @@ describe('ELBv2Provider read-update round-trip', () => {
       Tags: [],
     };
 
-    // ModifyTargetGroup → DescribeTargetGroups → DescribeTags (no tag diff)
+    // ModifyTargetGroup → DescribeTargetGroups. There is NO DescribeTags:
+    // update() derives the tag diff from the desired-vs-previous property
+    // bags and never reads AWS tags, so a third priming here would be left
+    // queued and consumed by the NEXT test in this file (issue #1655).
     mockSend
       .mockResolvedValueOnce({})
-      .mockResolvedValueOnce({ TargetGroups: [{ TargetGroupName: 'mytg' }] })
-      .mockResolvedValueOnce({ TagDescriptions: [{ ResourceArn: TG_ARN, Tags: [] }] });
+      .mockResolvedValueOnce({ TargetGroups: [{ TargetGroupName: 'mytg' }] });
 
     await provider.update(
       'L',
@@ -288,6 +290,9 @@ describe('ELBv2Provider read-update round-trip', () => {
       observed
     );
 
+    // Exactly the two primed responses are consumed here — a leftover
+    // would shift every later test in this file (issue #1655).
+    expect(mockSend).toHaveBeenCalledTimes(2);
     const modifyCalls = mockSend.mock.calls.filter(
       (c) => c[0] instanceof ModifyTargetGroupCommand
     );
@@ -317,8 +322,7 @@ describe('ELBv2Provider read-update round-trip', () => {
 
     mockSend
       .mockResolvedValueOnce({})
-      .mockResolvedValueOnce({ TargetGroups: [{ TargetGroupName: 'mytg' }] })
-      .mockResolvedValueOnce({ TagDescriptions: [{ ResourceArn: TG_ARN, Tags: [] }] });
+      .mockResolvedValueOnce({ TargetGroups: [{ TargetGroupName: 'mytg' }] });
 
     await provider.update(
       'L',
@@ -328,6 +332,9 @@ describe('ELBv2Provider read-update round-trip', () => {
       awsSnapshot
     );
 
+    // Exactly the primed responses are consumed here — a leftover would
+    // shift every later test in this file (issue #1655).
+    expect(mockSend).toHaveBeenCalledTimes(2);
     expect(
       mockSend.mock.calls.find((c) => c[0] instanceof DeregisterTargetsCommand)
     ).toBeUndefined();
@@ -353,8 +360,7 @@ describe('ELBv2Provider read-update round-trip', () => {
 
     mockSend
       .mockResolvedValueOnce({})
-      .mockResolvedValueOnce({ TargetGroups: [{ TargetGroupName: 'mytg' }] })
-      .mockResolvedValueOnce({ TagDescriptions: [{ ResourceArn: TG_ARN, Tags: [] }] });
+      .mockResolvedValueOnce({ TargetGroups: [{ TargetGroupName: 'mytg' }] });
 
     await provider.update(
       'L',
@@ -364,6 +370,9 @@ describe('ELBv2Provider read-update round-trip', () => {
       awsSnapshot
     );
 
+    // Exactly the primed responses are consumed here — a leftover would
+    // shift every later test in this file (issue #1655).
+    expect(mockSend).toHaveBeenCalledTimes(2);
     expect(
       mockSend.mock.calls.find((c) => c[0] instanceof DeregisterTargetsCommand)
     ).toBeUndefined();
@@ -389,8 +398,7 @@ describe('ELBv2Provider read-update round-trip', () => {
     mockSend
       .mockResolvedValueOnce({})
       .mockResolvedValueOnce({})
-      .mockResolvedValueOnce({ TargetGroups: [{ TargetGroupName: 'mytg' }] })
-      .mockResolvedValueOnce({ TagDescriptions: [{ ResourceArn: TG_ARN, Tags: [] }] });
+      .mockResolvedValueOnce({ TargetGroups: [{ TargetGroupName: 'mytg' }] });
 
     await provider.update(
       'L',
@@ -400,6 +408,9 @@ describe('ELBv2Provider read-update round-trip', () => {
       awsSnapshot
     );
 
+    // Exactly the primed responses are consumed here — a leftover would
+    // shift every later test in this file (issue #1655).
+    expect(mockSend).toHaveBeenCalledTimes(3);
     const deregister = mockSend.mock.calls.find((c) => c[0] instanceof DeregisterTargetsCommand);
     expect(deregister?.[0].input).toEqual({
       TargetGroupArn: TG_ARN,
@@ -426,8 +437,7 @@ describe('ELBv2Provider read-update round-trip', () => {
 
     mockSend
       .mockResolvedValueOnce({})
-      .mockResolvedValueOnce({ TargetGroups: [{ TargetGroupName: 'mytg' }] })
-      .mockResolvedValueOnce({ TagDescriptions: [{ ResourceArn: TG_ARN, Tags: [] }] });
+      .mockResolvedValueOnce({ TargetGroups: [{ TargetGroupName: 'mytg' }] });
 
     await provider.update(
       'L',
@@ -437,6 +447,9 @@ describe('ELBv2Provider read-update round-trip', () => {
       observed
     );
 
+    // Exactly the two primed responses are consumed here — a leftover
+    // would shift every later test in this file (issue #1655).
+    expect(mockSend).toHaveBeenCalledTimes(2);
     const modifyCalls = mockSend.mock.calls.filter(
       (c) => c[0] instanceof ModifyTargetGroupCommand
     );
@@ -466,8 +479,7 @@ describe('ELBv2Provider read-update round-trip', () => {
 
     mockSend
       .mockResolvedValueOnce({})
-      .mockResolvedValueOnce({ TargetGroups: [{ TargetGroupName: 'mytg-lambda' }] })
-      .mockResolvedValueOnce({ TagDescriptions: [{ ResourceArn: TG_ARN, Tags: [] }] });
+      .mockResolvedValueOnce({ TargetGroups: [{ TargetGroupName: 'mytg-lambda' }] });
 
     await provider.update(
       'L',
@@ -477,6 +489,9 @@ describe('ELBv2Provider read-update round-trip', () => {
       observed
     );
 
+    // Exactly the two primed responses are consumed here — a leftover
+    // would shift every later test in this file (issue #1655).
+    expect(mockSend).toHaveBeenCalledTimes(2);
     const modifyCalls = mockSend.mock.calls.filter(
       (c) => c[0] instanceof ModifyTargetGroupCommand
     );
@@ -682,11 +697,11 @@ describe('ELBv2Provider read-update round-trip', () => {
       ] as Array<Record<string, unknown>>,
     };
 
-    // TG: ModifyTargetGroup → DescribeTargetGroups → DescribeTags
+    // TG: ModifyTargetGroup → DescribeTargetGroups (no DescribeTags — see
+    // the note on the Class 2 test above; issue #1655).
     mockSend
       .mockResolvedValueOnce({})
-      .mockResolvedValueOnce({ TargetGroups: [{ TargetGroupName: 'mytg' }] })
-      .mockResolvedValueOnce({ TagDescriptions: [{ ResourceArn: TG_ARN, Tags: [] }] });
+      .mockResolvedValueOnce({ TargetGroups: [{ TargetGroupName: 'mytg' }] });
     await provider.update(
       'TG',
       TG_ARN,
@@ -694,6 +709,9 @@ describe('ELBv2Provider read-update round-trip', () => {
       tgObserved,
       tgObserved
     );
+
+    // Both TG responses consumed before the listener leg primes (issue #1655).
+    expect(mockSend).toHaveBeenCalledTimes(2);
 
     // Listener: ModifyListener
     mockSend.mockResolvedValueOnce({});

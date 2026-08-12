@@ -374,10 +374,11 @@ describe('IAMRoleProvider', () => {
       // truthy gate (`if (properties['Description'])`) silently
       // dropped empty strings and never sent them to AWS. The fix
       // gates on `!== undefined` so the empty string reaches AWS.
+      // Only TWO sends actually fire: the props carry no policies/tags, so
+      // the policy/tag helpers issue none. Priming the three no-op
+      // responses this test used to declare leaked them into the next
+      // tests in this file (issue #1655).
       mockSend.mockResolvedValueOnce({}); // UpdateRoleCommand
-      mockSend.mockResolvedValueOnce({}); // updateManagedPolicies (no-op)
-      mockSend.mockResolvedValueOnce({}); // updateInlinePolicies (no-op)
-      mockSend.mockResolvedValueOnce({}); // updateTags (no-op)
       mockSend.mockResolvedValueOnce({
         Role: {
           RoleName: 'my-role',
@@ -405,6 +406,9 @@ describe('IAMRoleProvider', () => {
         }
       );
 
+      // Every primed response must be consumed HERE — a leftover shifts
+      // every later test in this file (issue #1655).
+      expect(mockSend).toHaveBeenCalledTimes(2);
       const updateCall = mockSend.mock.calls.find((c) => c[0] instanceof UpdateRoleCommand);
       expect(updateCall).toBeDefined();
       const input = updateCall![0].input as {
@@ -447,6 +451,9 @@ describe('IAMRoleProvider', () => {
         AssumeRolePolicyDocument: { Version: '2012-10-17', Statement: [] },
       };
       const findUpdateInput = () => {
+        // Pins that mockUpdateFlow() primed exactly what the flow consumes
+        // — an over-priming leaks into the next test (issue #1655).
+        expect(mockSend).toHaveBeenCalledTimes(2);
         const updateCall = mockSend.mock.calls.find((c) => c[0] instanceof UpdateRoleCommand);
         expect(updateCall).toBeDefined();
         return updateCall![0].input as {
@@ -526,10 +533,9 @@ describe('IAMRoleProvider', () => {
       };
 
       // Round-trip: pass observed as both new (desired) and old.
+      // Two sends only — the empty ManagedPolicyArns / Tags produce no
+      // delta, so the policy/tag helpers issue none (issue #1655).
       mockSend.mockResolvedValueOnce({}); // UpdateRoleCommand
-      mockSend.mockResolvedValueOnce({}); // updateManagedPolicies (no-op)
-      mockSend.mockResolvedValueOnce({}); // updateInlinePolicies (no-op)
-      mockSend.mockResolvedValueOnce({}); // updateTags (no-op)
       mockSend.mockResolvedValueOnce({
         Role: {
           RoleName: 'my-role',
@@ -544,6 +550,7 @@ describe('IAMRoleProvider', () => {
       // Truthy-gate assertion: UpdateRole MUST receive the empty
       // Description so AWS clears it. The previous truthy gate would
       // have dropped this and the test would fail.
+      expect(mockSend).toHaveBeenCalledTimes(2);
       const updateCall = mockSend.mock.calls.find((c) => c[0] instanceof UpdateRoleCommand);
       expect(updateCall).toBeDefined();
       const input = updateCall![0].input as {

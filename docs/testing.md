@@ -1008,12 +1008,27 @@ leaks on purpose, and a CI step requires that running it with the allow-list
 ignored still FAILS. That is what stops a silently-broken detector from looking
 identical to a clean tree. Do not "fix" that suite's priming.
 
-Three pre-existing files leaked when the detector landed and are grandfathered in
-`tests/once-leak-allowlist.json`; fixing them is tracked by
-[issue #1655](https://github.com/go-to-k/cdkd/issues/1655). Fixing one and
-dropping it from that list is the intended direction — a list holding nothing but
-the canary is the goal state. Adding an entry is not, and a new test file that
-leaks fails CI. Regenerate the list with `vp run gen:once-leak-allowlist`.
+Three pre-existing files leaked when the detector landed and were grandfathered in
+`tests/once-leak-allowlist.json`. All three were fixed by
+[issue #1655](https://github.com/go-to-k/cdkd/issues/1655) and dropped from the
+list, so it now holds nothing but the canary — the goal state. Fixing a file and
+dropping its entry is the intended direction; adding an entry is not, and a new
+test file that leaks fails CI. Regenerate the list with
+`vp run gen:once-leak-allowlist`.
+
+Worth knowing before you fix one, from the #1655 pass: in all three files the
+over-priming described a call the code path never makes at all — a
+`ListTagsForResource` gated on a field the mocked response omitted, three
+policy/tag no-op responses for helpers that issue zero sends, and a
+`DescribeTags` that `update()` never calls because it derives the tag diff from
+the property bags. So the reliable fix is to MEASURE what the path consumes
+rather than to trust the priming's own comment, all three of which were wrong.
+Pinning the count with `expect(mockSend).toHaveBeenCalledTimes(N)` next to the
+existing assertions is worth adding, but know what it does: it catches the code
+path CHANGING how many calls it makes (the thing that silently invalidates a
+priming), NOT a surplus primer — an unconsumed response leaves the count
+unchanged. The detector is what catches the surplus, which is why dropping the
+file from the allow-list is the load-bearing half of the fix.
 
 Note what this deliberately does NOT do: it does not require `mockReset()` in
 every suite that uses a `*Once` primer. That was the original proposal, and
