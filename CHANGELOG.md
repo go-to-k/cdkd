@@ -1,3 +1,10 @@
+## [0.280.44](https://github.com/go-to-k/cdkd/compare/v0.280.43...v0.280.44) (2026-08-12)
+
+
+### Bug Fixes
+
+* **route53:** accept CloudFormation's record-name physicalId for AWS::Route53::RecordSet ([#1678](https://github.com/go-to-k/cdkd/issues/1678)) ([69cb1f5](https://github.com/go-to-k/cdkd/commit/69cb1f56e5609e24e6969da95b4e59f136945f92))
+
 ## [0.280.43](https://github.com/go-to-k/cdkd/compare/v0.280.42...v0.280.43) (2026-08-12)
 
 
