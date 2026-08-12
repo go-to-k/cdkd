@@ -2763,12 +2763,14 @@ export class S3BucketProvider implements ResourceProvider {
    *
    * **Scoped to the shape #1713 MEASURED — the list key PRESENT and EMPTY —
    * and no wider.** The tempting spelling is "present, and the fold erased it",
-   * i.e. delegate to {@link emptyListConfigToUndefined}. That is wrong here,
-   * and measurably so: the fold erases two further shapes, a bare `{}` and a
-   * block whose list key is `null` as its only key, and issue #1466 pinned BOTH
-   * of those as REMOVALS. #1713's live A/B exercised neither. Delegating would
-   * therefore have reversed two contracts on the strength of a measurement that
-   * does not cover them — caught when those two pinned rows failed.
+   * i.e. delegate to {@link emptyListConfigToUndefined}. That is wrong here:
+   * the fold ALSO erases a bare `{}`, which issue #1466 pinned as a REMOVAL and
+   * #1713's live A/B did not exercise, so delegating would have reversed that
+   * contract on evidence that does not cover it — caught when its pinned row
+   * failed. (`{listKey: null}` as the sole key is NOT folded — the block
+   * carries one key, so `emptyListConfigToUndefined` passes it through as
+   * MALFORMED; an earlier draft of this comment claimed it was, which the
+   * type's own `'{Rules: null} as the SOLE key is malformed'` test contradicts.)
    *
    * A MALFORMED block is out of scope for a different reason and needs no
    * clause here: the fold passes it through unchanged, so it never reaches the

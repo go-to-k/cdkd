@@ -626,13 +626,28 @@ always emits the empty placeholder, so `drift --revert` feeds it back through
 `update()` and both sides must keep normalizing for empty-vs-empty to compare
 EQUAL and issue no call at all. What was missing is that the fold COLLAPSES two
 different desired sides — declared-but-empty and ABSENT — into one `undefined`,
-and only the second is a removal. Split them with a predicate that asks
-"present, and the fold erased it" (`declaresEmptyCollection`) rather than
-re-deriving the empty shapes, so a MALFORMED block keeps passing through to be
-refused by name by the apply call instead of being swallowed into the skip. The
+and only the second is a removal. Split them with a predicate scoped to the shape that was
+MEASURED — the list key present and EMPTY (`declaresEmptyCollection`) — and
+NOT by asking "present, and the fold erased it": the fold also erases a bare
+`{}`, which #1466 pinned as a removal and the #1713 A/B never exercised, so
+delegating to it silently reverses a contract on evidence that does not cover
+it. A MALFORMED block needs no clause either way; the fold passes it through, so
+it never reaches the Delete arm and is refused by name by the apply call. The
 generalizable question: when a normalization maps several desired shapes onto
 one value, ask what each of them MEANT before letting the merged value pick an
 arm — especially when one arm deletes.
+
+**And ask who ELSE sends that shape, because the answer can invert per caller.**
+This split is NOT shippable as described above, and #1713's review is where that
+surfaced: `readCurrentState` emits the empty placeholder for an UNSET feature,
+so `cdkd drift --revert` hands `update()` a desired `{Rules: []}` meaning
+"restore the state where this was unset" — where the same bag from a template
+means "a collapsed array, do not touch the live value". The two callers need
+OPPOSITE arms and `update()` has no context to tell them apart, so skipping
+breaks revert (the out-of-band change survives) and, worse, `retainPrevious`
+then records the AWS-current value as the new baseline, laundering it clean.
+Before adding a skip on an update path, enumerate every caller that can produce
+the skipped shape and check that the skip is right for ALL of them.
 
 Two things that are easy to get wrong and were both caught by review:
 **normalize BOTH comparison sides**, not just the desired one — a record written BEFORE the provider started narrowing still carries every key, so a one-sided pass flips the same difference to a REMOVAL and breaks exactly the population the narrowing exists for; and **wire `cdkd diff` too**, since a preview that narrows differently from the apply forecasts a change the deploy will never make. `makeCanonicalizePropertiesFn` in `src/provisioning/canonicalize-properties.ts` is the one builder both commands use, so they cannot drift.
