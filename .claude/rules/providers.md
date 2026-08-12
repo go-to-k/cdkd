@@ -181,6 +181,21 @@ Reach for it only when all three hold, or it becomes a way to hide losses:
   properties", which is why the engine gates on `??` and not on truthiness — an
   empty object is a legitimate answer.
 
+**Every `update()` caller honours it, not just the deploy engine** (issue
+#1644). `cdkd drift --revert` and the rollback executor's two revert arms
+(`revert`, `revert-failed-update`) call `update()` too, and all three used to
+discard the return value — so a narrowing announced there was dropped, the
+record kept describing a value AWS does not hold, and the next `cdkd drift`
+reported the same difference while `--revert` re-issued the same call, forever.
+The bag each caller HANDS you is what your answer replaces, and that differs by
+caller: the rollback arms send `previousState.properties` verbatim (so the
+answer replaces the whole record's `properties`), while `--revert` sends a
+merged bag — AWS-CURRENT values for every non-drifted key — and therefore
+persists only the top-level keys where your answer differs from what it handed
+you, into `observedProperties ?? properties`. So the provider-side rule is
+unchanged (return the COMPLETE bag you sent); do not try to return a patch for
+one caller's benefit.
+
 **`effectiveProperties` alone BREAKS the next deploy — implement
 `canonicalizeDesiredProperties` with it.** The two are halves of one decision
 and shipping the first without the second is worse than shipping neither.

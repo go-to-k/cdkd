@@ -49,7 +49,7 @@
 import type { DeploymentEvent } from '../types/deployment-events.js';
 import { extractDeploymentEventError } from '../types/deployment-events.js';
 import type { ResourceState } from '../types/state.js';
-import type { CreateContext, ResourceProvider } from '../types/resource.js';
+import type { CreateContext, ResourceProvider, ResourceUpdateResult } from '../types/resource.js';
 import type { Logger } from '../types/config.js';
 import type { ProviderRegistry } from '../provisioning/provider-registry.js';
 import { STATEFUL_TYPES } from '../provisioning/stateful-types.js';
@@ -674,6 +674,12 @@ export async function replayRollback(
  *  - **Interrupt.** `replayRollback` polls interrupts only BETWEEN ops, so an
  *    un-threaded `isInterrupted` leaves Ctrl-C dead for the length of the
  *    backoff schedule (~47s) per op.
+ *
+ * Returns the provider's result so the caller can honour
+ * `effectiveProperties` (issue #1644) — both revert arms used to write the
+ * previous state record back verbatim, dropping a narrowing the provider had
+ * just announced and leaving the record describing something AWS does not
+ * hold.
  */
 async function updateWithRollbackRetry(
   provider: ResourceProvider,
@@ -681,20 +687,37 @@ async function updateWithRollbackRetry(
   logicalId: string,
   logger: RollbackExecutorContext['logger'],
   isInterrupted: (() => boolean) | undefined
-): Promise<void> {
+): Promise<ResourceUpdateResult> {
   if (provider.disableOuterRetry) {
     // Single-shot — the provider handles transient errors internally, and an
     // outer retry would invalidate its per-call invariant state.
-    await provider.update(...args);
-    return;
+    return await provider.update(...args);
   }
-  await withRetry(() => provider.update(...args), logicalId, {
+  return await withRetry(() => provider.update(...args), logicalId, {
     logger,
     ...(isInterrupted && {
       isInterrupted,
       onInterrupted: () => new Error('Rollback interrupted while retrying a resource update'),
     }),
   });
+}
+
+/**
+ * The state record to store after a rollback UPDATE arm (issue #1644).
+ *
+ * The bag handed to `update()` on both arms IS `restored.properties`, so a
+ * returned `effectiveProperties` is its complete replacement — no per-key
+ * delta is needed here (unlike `drift --revert`, which sends a merged bag).
+ * Everything else on the record — physical id, attributes, dependencies,
+ * policies — is the restored resource's and must survive untouched.
+ */
+function recordAfterRollbackUpdate(
+  restored: ResourceState,
+  result: ResourceUpdateResult
+): ResourceState {
+  return result.effectiveProperties
+    ? { ...restored, properties: result.effectiveProperties }
+    : restored;
 }
 
 async function replaySingle(
@@ -1199,7 +1222,7 @@ async function replaySingle(
         });
         // See {@link updateWithRollbackRetry} for why this is not a bare
         // `provider.update()` and not a bare `withRetry` either.
-        await updateWithRollbackRetry(
+        const revertResult = await updateWithRollbackRetry(
           provider,
           [
             op.logicalId,
@@ -1212,7 +1235,7 @@ async function replaySingle(
           logger,
           isInterrupted
         );
-        stateResources[op.logicalId] = previousState;
+        stateResources[op.logicalId] = recordAfterRollbackUpdate(previousState, revertResult);
         logger.info(`  Rollback: ${op.logicalId} restored successfully`);
         await afterOp?.(op.logicalId);
         ctx.recordEvent?.({
@@ -1454,7 +1477,7 @@ export async function replayFailedOperations(
           // properties when resolution never got that far.
           // See {@link updateWithRollbackRetry} — same three concerns as the
           // `revert` arm (retry / disableOuterRetry / interrupt).
-          await updateWithRollbackRetry(
+          const revertFailedResult = await updateWithRollbackRetry(
             provider,
             [
               op.logicalId,
@@ -1467,7 +1490,7 @@ export async function replayFailedOperations(
             logger,
             options.isInterrupted
           );
-          stateResources[op.logicalId] = prev;
+          stateResources[op.logicalId] = recordAfterRollbackUpdate(prev, revertFailedResult);
           logger.info(`  Rollback: ${op.logicalId} reverted successfully`);
           await options.afterOp?.(op.logicalId);
           ctx.recordEvent?.({

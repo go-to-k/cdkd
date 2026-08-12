@@ -989,7 +989,9 @@ describe('cdkd drift', () => {
       expect(newProps).toEqual({ VersioningConfiguration: { Status: 'Enabled' } });
       expect(previousProps).toEqual({ VersioningConfiguration: { Status: 'Suspended' } });
 
-      // State is NOT updated by --revert.
+      // State is NOT updated by --revert when the provider delivered exactly
+      // what it was handed (issue #1644 added the one exception: a provider
+      // that answers with `effectiveProperties`).
       expect(mockSaveState).not.toHaveBeenCalled();
 
       expect(mockAcquireLock).toHaveBeenCalledWith(
@@ -1159,6 +1161,211 @@ describe('cdkd drift', () => {
 
       // Both updates were attempted; the second succeeded.
       expect(updateMock).toHaveBeenCalledTimes(2);
+    });
+
+    /**
+     * Issue #1644: `--revert` discarded `provider.update()`'s return value, so
+     * a narrowing the provider announced never reached state — the next
+     * `cdkd drift` reported the same difference and `--revert` re-issued the
+     * same call forever.
+     */
+    describe('provider-reported narrowing (issue #1644)', () => {
+      it('records effectiveProperties into the observedProperties baseline the comparator reads', async () => {
+        mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+        mockGetState.mockResolvedValueOnce(
+          makeState({
+            Ingress1: makeResource({
+              physicalId: 'sgr-1',
+              resourceType: 'AWS::EC2::SecurityGroupIngress',
+              properties: { IpProtocol: 6, FromPort: 443 },
+              observedProperties: { IpProtocol: 6, FromPort: 443 },
+            }),
+          })
+        );
+        const updateMock = vi.fn(async () => ({
+          physicalId: 'sgr-1',
+          wasReplaced: false,
+          // What the provider ACTUALLY sent: the narrowed protocol.
+          effectiveProperties: { IpProtocol: 'tcp', FromPort: 443 },
+        }));
+        mockRegistryGetProvider.mockReturnValue({
+          readCurrentState: async () => ({ IpProtocol: 6, FromPort: 8080 }),
+          update: updateMock,
+        });
+
+        const { error } = await runDrift(['TestStack', '--revert', '--yes']);
+
+        expect(error).toBeUndefined();
+        expect(mockSaveState).toHaveBeenCalledTimes(1);
+        const [stackName, region, savedState, saveOptions] = mockSaveState.mock.calls[0]!;
+        expect(stackName).toBe('TestStack');
+        expect(region).toBe('us-east-1');
+        // Written to `observedProperties` (the comparator's baseline), and
+        // ONLY the key the provider narrowed.
+        expect(savedState.resources['Ingress1']!.observedProperties).toEqual({
+          IpProtocol: 'tcp',
+          FromPort: 443,
+        });
+        // The template intent is untouched — a narrowing is an AWS-side fact.
+        expect(savedState.resources['Ingress1']!.properties).toEqual({
+          IpProtocol: 6,
+          FromPort: 443,
+        });
+        // Optimistic locking is honoured, same as --accept.
+        expect(saveOptions?.expectedEtag).toBe('"etag-1"');
+        // The write happens while the stack lock is still held.
+        expect(mockReleaseLock).toHaveBeenCalledWith('TestStack', 'us-east-1');
+      });
+
+      it('falls back to `properties` when the resource has no observedProperties', async () => {
+        mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+        mockGetState.mockResolvedValueOnce(
+          makeState({
+            Ingress1: makeResource({
+              physicalId: 'sgr-1',
+              resourceType: 'AWS::EC2::SecurityGroupIngress',
+              properties: { IpProtocol: 6, FromPort: 443 },
+            }),
+          })
+        );
+        mockRegistryGetProvider.mockReturnValue({
+          readCurrentState: async () => ({ IpProtocol: 6, FromPort: 8080 }),
+          update: async () => ({
+            physicalId: 'sgr-1',
+            wasReplaced: false,
+            effectiveProperties: { IpProtocol: 'tcp', FromPort: 443 },
+          }),
+        });
+
+        const { error } = await runDrift(['TestStack', '--revert', '--yes']);
+
+        expect(error).toBeUndefined();
+        const [, , savedState] = mockSaveState.mock.calls[0]!;
+        expect(savedState.resources['Ingress1']!.properties).toEqual({
+          IpProtocol: 'tcp',
+          FromPort: 443,
+        });
+        expect(savedState.resources['Ingress1']!.observedProperties).toBeUndefined();
+      });
+
+      /**
+       * The bag handed to `update()` is `buildRevertNewProperties`'s output —
+       * AWS-current values for every NON-drifted key. Writing it back
+       * wholesale would import those AWS-authored values into state and turn
+       * `--revert` into `--accept`. Only the keys the PROVIDER changed may
+       * land. `FromPort` is drifted (443 in state, 8080 at AWS) and `Tags` is
+       * an AWS-only addition the baseline never declared: neither may move.
+       */
+      it('persists ONLY the keys the provider changed, not the AWS-current bag it was handed', async () => {
+        mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+        mockGetState.mockResolvedValueOnce(
+          makeState({
+            Ingress1: makeResource({
+              physicalId: 'sgr-1',
+              resourceType: 'AWS::EC2::SecurityGroupIngress',
+              properties: { IpProtocol: 6, FromPort: 443 },
+              observedProperties: { IpProtocol: 6, FromPort: 443 },
+            }),
+          })
+        );
+        const updateMock = vi.fn(
+          async (
+            _logicalId: string,
+            _physicalId: string,
+            _resourceType: string,
+            newProperties: Record<string, unknown>
+          ) => ({
+            physicalId: 'sgr-1',
+            wasReplaced: false,
+            // Echo the bag back with ONLY the protocol narrowed, exactly as a
+            // real provider does.
+            effectiveProperties: { ...newProperties, IpProtocol: 'tcp' },
+          })
+        );
+        mockRegistryGetProvider.mockReturnValue({
+          readCurrentState: async () => ({
+            IpProtocol: 6,
+            FromPort: 8080,
+            Tags: [{ Key: 'aws:created-by', Value: 'console' }],
+          }),
+          update: updateMock,
+        });
+
+        const { error } = await runDrift(['TestStack', '--revert', '--yes']);
+
+        expect(error).toBeUndefined();
+        const [, , savedState] = mockSaveState.mock.calls[0]!;
+        expect(savedState.resources['Ingress1']!.observedProperties).toEqual({
+          IpProtocol: 'tcp',
+          FromPort: 443,
+        });
+      });
+
+      it('drops a key the provider did not deliver at all', async () => {
+        mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+        mockGetState.mockResolvedValueOnce(
+          makeState({
+            Route1: makeResource({
+              physicalId: 'rtb-1|10.0.0.0/16',
+              resourceType: 'AWS::EC2::Route',
+              properties: { DestinationCidrBlock: '10.0.0.0/16', GatewayId: 'igw-1' },
+              observedProperties: { DestinationCidrBlock: '10.0.0.0/16', GatewayId: 'igw-1' },
+            }),
+          })
+        );
+        mockRegistryGetProvider.mockReturnValue({
+          readCurrentState: async () => ({
+            DestinationCidrBlock: '10.0.0.0/16',
+            GatewayId: 'igw-2',
+          }),
+          update: async () => ({
+            physicalId: 'rtb-1|10.0.0.0/16',
+            wasReplaced: false,
+            // The provider dropped `GatewayId` from what it sent.
+            effectiveProperties: { DestinationCidrBlock: '10.0.0.0/16' },
+          }),
+        });
+
+        const { error } = await runDrift(['TestStack', '--revert', '--yes']);
+
+        expect(error).toBeUndefined();
+        const [, , savedState] = mockSaveState.mock.calls[0]!;
+        const observed = savedState.resources['Route1']!.observedProperties!;
+        expect('GatewayId' in observed).toBe(false);
+        expect(observed).toEqual({ DestinationCidrBlock: '10.0.0.0/16' });
+      });
+
+      it('does NOT write state when effectiveProperties matches what was sent', async () => {
+        mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+        mockGetState.mockResolvedValueOnce(
+          makeState({
+            Bucket1: makeResource({
+              physicalId: 'phys-b',
+              resourceType: 'AWS::S3::Bucket',
+              properties: { VersioningConfiguration: { Status: 'Enabled' } },
+              observedProperties: { VersioningConfiguration: { Status: 'Enabled' } },
+            }),
+          })
+        );
+        mockRegistryGetProvider.mockReturnValue({
+          readCurrentState: async () => ({ VersioningConfiguration: { Status: 'Suspended' } }),
+          update: async (
+            _logicalId: string,
+            _physicalId: string,
+            _resourceType: string,
+            newProperties: Record<string, unknown>
+          ) => ({
+            physicalId: 'phys-b',
+            wasReplaced: false,
+            effectiveProperties: { ...newProperties },
+          }),
+        });
+
+        const { error } = await runDrift(['TestStack', '--revert', '--yes']);
+
+        expect(error).toBeUndefined();
+        expect(mockSaveState).not.toHaveBeenCalled();
+      });
     });
   });
 

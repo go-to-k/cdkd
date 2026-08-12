@@ -268,7 +268,7 @@ async function driftCommand(
     if (options.accept) {
       await runAccept(reports, stateBackend, stateConfig, awsClients, options);
     } else {
-      await runRevert(reports, providerRegistry, stateConfig, awsClients, options);
+      await runRevert(reports, providerRegistry, stateBackend, stateConfig, awsClients, options);
     }
   } finally {
     awsClients.destroy();
@@ -1374,6 +1374,46 @@ export function buildRevertNewProperties(
 }
 
 /**
+ * The top-level keys a provider NARROWED on the revert path (issue #1644).
+ *
+ * `provider.update()` may answer with `effectiveProperties` — the bag it
+ * ACTUALLY delivered, which is what AWS now holds. `DeployEngine` records that
+ * in place of the desired bag (`propertiesToRecord`), and `--revert` used to
+ * throw the return value away: state kept the un-narrowed value, so the very
+ * next `cdkd drift` reported the same difference and `--revert` re-issued the
+ * same call — the loop `effectiveProperties` exists to break, still live on
+ * this one command.
+ *
+ * Returns a per-key DELTA rather than the whole bag, and that is the load-
+ * bearing part. The bag handed to `update()` here is
+ * {@link buildRevertNewProperties}'s output — AWS-current values for every
+ * non-drifted key merged with the state baseline for the drifted ones — so
+ * writing it back wholesale would import AWS-authored values into state for
+ * keys nobody reverted, quietly turning `--revert` into `--accept`. Only the
+ * keys the PROVIDER changed between what it was handed and what it delivered
+ * belong in state.
+ *
+ * A key present in `sent` but absent from `effective` is a DROP: the provider
+ * did not deliver it, so AWS does not hold it, and the baseline must lose it
+ * too. That is represented by an explicit `undefined` value, which the caller
+ * turns into a `delete` — a plain `{...baseline, ...delta}` spread would leave
+ * an `undefined`-valued key in the JSON instead.
+ */
+export function collectNarrowedTopLevelKeys(
+  sent: Record<string, unknown>,
+  effective: Record<string, unknown>
+): Record<string, unknown> {
+  const delta: Record<string, unknown> = {};
+  for (const key of new Set([...Object.keys(sent), ...Object.keys(effective)])) {
+    const sentValue = sent[key];
+    const effectiveValue = effective[key];
+    if (JSON.stringify(sentValue ?? null) === JSON.stringify(effectiveValue ?? null)) continue;
+    delta[key] = key in effective ? effectiveValue : undefined;
+  }
+  return delta;
+}
+
+/**
  * `--revert`: AWS ← state.
  *
  * For each drifted resource, call `provider.update(logicalId, physicalId,
@@ -1389,8 +1429,10 @@ export function buildRevertNewProperties(
  *     truth, captured during the drift read so we don't re-issue it).
  *
  * Per-resource failures are collected and surface as `PartialFailureError`
- * (exit 2) at the end. State is NOT updated by `--revert` — once the
- * update succeeds, AWS values match state by definition.
+ * (exit 2) at the end. State is otherwise NOT updated by `--revert` — once the
+ * update succeeds, AWS values match state by definition. The ONE exception is
+ * a provider-reported NARROWING (issue #1644): see
+ * {@link collectNarrowedTopLevelKeys}.
  *
  * The per-stack lock is acquired before any update so a concurrent
  * `cdkd deploy` cannot race the in-flight property changes.
@@ -1398,6 +1440,7 @@ export function buildRevertNewProperties(
 async function runRevert(
   reports: StackDriftReport[],
   providerRegistry: ProviderRegistry,
+  stateBackend: S3StateBackend,
   stateConfig: { bucket: string; prefix: string },
   awsClients: AwsClients,
   options: { yes?: boolean; dryRun?: boolean; concurrency?: number }
@@ -1438,6 +1481,10 @@ async function runRevert(
     }
 
     await lockManager.acquireLock(report.stackName, report.region, owner, 'drift-revert');
+    // Provider-reported narrowings, keyed by logical id (issue #1644).
+    // Collected inside the concurrent tasks and applied to state ONCE, under
+    // the same lock, after they all settle.
+    const narrowedByLogicalId = new Map<string, Record<string, unknown>>();
     try {
       const tasks = driftedOutcomes.map((outcome) => async () => {
         const stateResource = report.state.resources[outcome.logicalId];
@@ -1488,7 +1535,7 @@ async function runRevert(
           { preserveUntemplated: stateResource.observedProperties === undefined }
         );
         try {
-          await withRetry(
+          const updateResult = await withRetry(
             () =>
               provider.update(
                 outcome.logicalId,
@@ -1500,6 +1547,17 @@ async function runRevert(
             outcome.logicalId,
             { logger: { debug: (msg) => logger.debug(msg) } }
           );
+          // Issue #1644: keep whatever the provider says it ACTUALLY delivered,
+          // so a narrowing does not re-surface as drift on the next run.
+          if (updateResult?.effectiveProperties) {
+            const delta = collectNarrowedTopLevelKeys(
+              newProperties,
+              updateResult.effectiveProperties
+            );
+            if (Object.keys(delta).length > 0) {
+              narrowedByLogicalId.set(outcome.logicalId, delta);
+            }
+          }
           totalSucceeded++;
           logger.info(
             `  ✓ ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): reverted.`
@@ -1524,6 +1582,52 @@ async function runRevert(
       });
 
       await runWithConcurrency(tasks, concurrency);
+
+      // Persist the provider-reported narrowings (issue #1644), still under
+      // the stack lock. Written to the SAME field the drift comparator uses as
+      // its baseline — `observedProperties` when the resource has one, else
+      // `properties` — exactly as `--accept` does, so the next `cdkd drift`
+      // compares AWS against what the provider said it delivered. `properties`
+      // is left alone when an observed capture exists: it is the user's
+      // last-deployed TEMPLATE intent, and a narrowing is an AWS-side fact,
+      // not a template edit.
+      if (narrowedByLogicalId.size > 0) {
+        const resources: Record<string, ResourceState> = { ...report.state.resources };
+        for (const [logicalId, delta] of narrowedByLogicalId) {
+          const existing = resources[logicalId];
+          if (!existing) continue;
+          const hasObserved = existing.observedProperties !== undefined;
+          const baselineSource = hasObserved ? existing.observedProperties : existing.properties;
+          const newBaseline = JSON.parse(JSON.stringify(baselineSource ?? {})) as Record<
+            string,
+            unknown
+          >;
+          for (const [key, value] of Object.entries(delta)) {
+            if (value === undefined) delete newBaseline[key];
+            else newBaseline[key] = value;
+          }
+          resources[logicalId] = hasObserved
+            ? { ...existing, observedProperties: newBaseline }
+            : { ...existing, properties: newBaseline };
+        }
+
+        const newState: StackState = {
+          ...report.state,
+          resources,
+          lastModified: Date.now(),
+        };
+        const saveOptions: { expectedEtag?: string; migrateLegacy?: boolean } = {
+          expectedEtag: report.etag,
+        };
+        if (report.migrationPending) {
+          saveOptions.migrateLegacy = true;
+        }
+        await stateBackend.saveState(report.stackName, report.region, newState, saveOptions);
+        logger.info(
+          `✓ State updated for ${report.stackName} (${report.region}): recorded the value the ` +
+            `provider actually applied on ${narrowedByLogicalId.size} resource(s).`
+        );
+      }
     } finally {
       await lockManager.releaseLock(report.stackName, report.region).catch((err) => {
         logger.warn(

@@ -1683,6 +1683,22 @@ Flags:
   compared wholesale, because its elements have positions rather than
   identities, so it is neither reported nor narrowed.
 
+  `--revert` normally leaves cdkd state alone — once the update succeeds,
+  AWS matches state by definition. The ONE exception (issue
+  [#1644](https://github.com/go-to-k/cdkd/issues/1644)) is a provider that
+  reports a **narrowing**: some providers answer `update()` with the bag
+  they ACTUALLY sent, because AWS only accepts a narrower form than the
+  template declares (`AWS::EC2::Route`'s single destination, an
+  `AWS::EC2::SecurityGroupIngress` `IpProtocol` coerced to a string). The
+  deploy path already records that narrowed value; `--revert` now does the
+  same, writing ONLY the keys the provider changed into the same field the
+  comparator uses as its baseline (`observedProperties` when the resource
+  has one, else `properties`). Without it the next `cdkd drift` reported
+  the identical difference and `--revert` re-issued the identical call,
+  forever. Only the provider-changed keys move — the AWS-current values
+  that rode along in the bag sent to `provider.update` are NOT imported
+  into state, so `--revert` never behaves like `--accept`.
+
   Requires a stack lock. Mutually exclusive with
   `--accept`. See "Resolving drift" below.
 - `--dry-run` — for `--accept` / `--revert`: print the planned mutations

@@ -114,6 +114,12 @@ difference becomes permanent phantom drift: reported by every `cdkd drift`, and
 re-reports. Returning the bag you actually sent makes the engine record that
 instead.
 
+Every `update()` caller honours the field, not only the deploy engine — since
+issue [#1644](https://github.com/go-to-k/cdkd/issues/1644), `drift --revert` and
+the rollback executor's two revert arms record it as well, so the loop closes on
+those commands too. Return the COMPLETE bag you sent regardless of caller; each
+one knows how to fold that into the record it maintains.
+
 `EC2Provider.createRoute` is the live case: a CFn-invalid template declaring two
 destination keys is REFUSED on the template path, but the refusal downgrades to
 a warning on the state-borne paths, where it keeps one key and returns the
