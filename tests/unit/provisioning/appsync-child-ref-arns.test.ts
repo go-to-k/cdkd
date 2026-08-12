@@ -464,16 +464,21 @@ describe('AppSyncProvider.import records the child ARN attributes (issue #1728)'
 
   // Adoption is worth more than the bookkeeping attribute: a failure must warn
   // and degrade, never fail the import.
-  it('import SUCCEEDS with an empty attribute map when the ARN build throws', async () => {
+  it('import SUCCEEDS, keeping the account-independent keys, when the ARN build throws', async () => {
     mockGetAccountInfo.mockRejectedValue(new Error('sts exploded'));
 
     const result = await provider.import(
       importInput('AWS::AppSync::DataSource', 'abcd1234|myDataSource')
     );
 
-    expect(result).toEqual({ physicalId: 'abcd1234|myDataSource', attributes: {} });
+    // `Name` is split out of the physical id and involves no account, so it
+    // survives a failure that only costs the ARN (review finding).
+    expect(result).toEqual({
+      physicalId: 'abcd1234|myDataSource',
+      attributes: { Name: 'myDataSource' },
+    });
     expect(childLogger.warn).toHaveBeenCalledWith(
-      expect.stringContaining('could not build its ARN attribute')
+      expect.stringContaining('its ARN attribute was NOT recorded')
     );
   });
 
@@ -497,9 +502,41 @@ describe('AppSyncProvider.import records the child ARN attributes (issue #1728)'
       importInput('AWS::AppSync::DataSource', 'abcd1234|myDataSource')
     );
 
-    expect(result).toEqual({ physicalId: 'abcd1234|myDataSource', attributes: {} });
+    // The ARN is refused; `Name` is not account-derived and is kept.
+    expect(result).toEqual({
+      physicalId: 'abcd1234|myDataSource',
+      attributes: { Name: 'myDataSource' },
+    });
     expect(childLogger.warn).toHaveBeenCalledWith(
-      expect.stringContaining('could not determine the AWS account')
+      expect.stringContaining('its ARN attribute was NOT recorded')
+    );
+  });
+
+  // The arm the refusal actually exists for. UPDATE rebuilds the ARN on every
+  // in-place update and its attribute map REPLACES the record's wholesale, so a
+  // fabricated account mid-deploy would overwrite a correct, create-time ARN —
+  // destroying a known-good value rather than failing to write a missing one.
+  // Reporting NO attributes makes the engine carry the existing ones forward.
+  it('update reports NO attributes when the account is fabricated', async () => {
+    mockSend.mockResolvedValue({});
+    mockGetAccountInfo.mockResolvedValue({
+      accountId: '123456789012',
+      region: 'us-east-1',
+      partition: 'aws',
+      fabricated: true,
+    });
+
+    const result = await provider.update(
+      'X',
+      'abcd1234|myDataSource',
+      'AWS::AppSync::DataSource',
+      { Name: 'myDataSource', Description: 'changed' },
+      {}
+    );
+
+    expect(result.attributes).toBeUndefined();
+    expect(childLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('could not rebuild its ARN attribute')
     );
   });
 

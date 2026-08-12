@@ -798,7 +798,17 @@ export async function getAccountInfo(overrideRegion?: string): Promise<AwsAccoun
     const region = overrideRegion || process.env['AWS_REGION'] || 'us-east-1';
     const partition = 'aws'; // Could be aws-cn, aws-us-gov, etc.
 
-    cachedAccountInfo = { accountId, region, partition };
+    // A SUCCESSFUL call that carries no `Account` lands on the same hardcoded
+    // id as the failure arm below, so it has to be flagged the same way (review
+    // finding) — reachable against an emulated / non-AWS STS endpoint. Flagging
+    // only the catch arm would leave the identical fabricated value unmarked on
+    // the path that looks like it worked.
+    cachedAccountInfo = {
+      accountId,
+      region,
+      partition,
+      ...(response.Account ? {} : { fabricated: true }),
+    };
     logger.debug(`Retrieved AWS account info: ${accountId}, ${region}, ${partition}`);
     // Return with override if different from cached
     if (overrideRegion && overrideRegion !== region) {

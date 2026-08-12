@@ -982,7 +982,13 @@ What the method RETURNS matters as much as how it resolves the id:
 > cover the credentials failure** — `getAccountInfo` CATCHES its own STS error
 > and returns the hardcoded `123456789012` (flagged `fabricated`), so nothing
 > throws and a confidently-wrong ARN gets PERSISTED, carrying no wildcard for any
-> downstream guard to catch. Check the flag and record nothing.
+> downstream guard to catch. Refuse inside the ARN BUILDER rather than at the
+> import call site: the UPDATE path rebuilds the same ARN on every in-place
+> update and its attribute map replaces the record's wholesale, so guarding only
+> import leaves the worse path — overwriting a correct recorded ARN — wide open.
+> Then let each caller pick its own degradation: create omits, update reports NO
+> attributes (so the engine carries the existing ones forward), and import keeps
+> the account-independent keys while dropping only the ARN.
 
 The method follows a single shape:
 
