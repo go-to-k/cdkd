@@ -103,47 +103,124 @@ function importableString(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
+/** The one pseudo parameter whose value IS the Glue API's `CatalogId` default. */
+const ACCOUNT_ID_PSEUDO_PARAMETER = 'AWS::AccountId';
+const ACCOUNT_ID_SUB_TEMPLATE = '${AWS::AccountId}';
+
 /**
- * Read the `CatalogId` a Glue DELETE call must target, out of the properties
- * bag `ResourceProvider.delete` receives (issue
+ * Is this unresolved intrinsic PROVABLY the caller's own account id?
+ *
+ * `@aws-cdk/aws-glue-alpha` sets `catalogId: Stack.of(this).account`, which
+ * renders as `{Ref: AWS::AccountId}` (or an `Fn::Sub` wrapper) for an
+ * environment-agnostic stack. A pseudo parameter is never in the import
+ * overrides map, so a `cdkd import`-written state record holds the intrinsic
+ * verbatim — but its resolved value is exactly what OMITTING `CatalogId` gives
+ * the Glue API, so dropping it is not a loss and a NotFound afterwards is
+ * ordinary idempotency, not the silent-leak shape.
+ *
+ * Kept deliberately narrow. An intrinsic object has exactly ONE key, and only
+ * the two account-id spellings qualify: `{Ref: SomeParam}`, `Fn::ImportValue`,
+ * an `Fn::Sub` of anything else, and every other shape stay UNUSABLE, because
+ * their resolved value could be any catalog at all.
+ */
+function isAccountIdPseudoParameter(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const keys = Object.keys(value as Record<string, unknown>);
+  if (keys.length !== 1) return false;
+  const bag = value as Record<string, unknown>;
+  if (keys[0] === 'Ref') return bag['Ref'] === ACCOUNT_ID_PSEUDO_PARAMETER;
+  if (keys[0] === 'Fn::Sub') {
+    const arg = bag['Fn::Sub'];
+    if (typeof arg === 'string') return arg === ACCOUNT_ID_SUB_TEMPLATE;
+    // 2-arg form `['${AWS::AccountId}', {vars}]`. CFn forbids shadowing a
+    // pseudo parameter in the variable map, so the template alone decides.
+    return Array.isArray(arg) && arg[0] === ACCOUNT_ID_SUB_TEMPLATE;
+  }
+  return false;
+}
+
+/**
+ * Coerce a template-borne `CatalogId` into the string the Glue API wants, or
+ * `undefined` when no usable value is present (issue
  * [#1675](https://github.com/go-to-k/cdkd/issues/1675)).
+ *
+ * This is {@link importableString} plus a NUMBER arm, and the number arm is
+ * load-bearing rather than defensive: `cdkd import --migrate-from-cloudformation`
+ * reads the stack's ORIGINAL template (`cfn-stack-prefetch.ts`), where an
+ * unquoted YAML `CatalogId: 123456789012` parses as a JSON number. Rejecting it
+ * as "not a string" would drop the field and silently retarget the call at the
+ * account's DEFAULT catalog — which on a DELETE can destroy a same-named
+ * resource that happens to live there. `Number.isFinite` keeps `NaN` /
+ * `Infinity` out (they fall through to the unusable arm, where they are
+ * reported); a non-integer is stringified and AWS rejects it loudly, which is
+ * the right failure.
+ *
+ * The coercion lives HERE rather than inside `importableString`: that helper is
+ * shared with `DatabaseName` / `TableInput.Name` reads, where a number is a
+ * malformed template rather than a YAML scalar to recover.
+ */
+function catalogIdForApi(value: unknown): string | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  return importableString(value);
+}
+
+/**
+ * The Data Catalog a Glue call must address, read out of a properties bag.
  *
  * `CatalogId` selects the Data Catalog; OMITTING it means the caller's own
  * account's DEFAULT catalog. So for a table / database / connection that lives
  * in a NON-default catalog (a cross-account Data Catalog, a Lake Formation
- * federated catalog) a delete that drops the field targets the wrong catalog,
- * AWS answers `EntityNotFoundException`, and the delete path's warn-and-continue
- * idempotency treats that as "already gone" — `cdkd destroy` reports SUCCESS
- * while the resource is still there. A silent LEAK, not a loud failure.
+ * federated catalog) a call that drops the field targets the wrong catalog. On
+ * a DELETE that is the issue-#1675 defect: AWS answers
+ * `EntityNotFoundException`, the delete path's warn-and-continue idempotency
+ * treats it as "already gone", and `cdkd destroy` reports SUCCESS while the
+ * resource is still there — a silent LEAK, not a loud failure.
  *
  * cdkd's physical ids for these types encode no catalog (`<db>|<table>` for a
  * table, the bare name for a database / connection), so the id cannot carry it
  * — but the properties bag can, and `CatalogId` is a declared property of all
  * three types.
  *
- * The value is read through {@link importableString} for the reason the import
- * path already documents: a state record written by `cdkd import` holds the RAW
- * template value, so `CatalogId: {Ref: AWS::AccountId}` (what
- * `@aws-cdk/aws-glue-alpha` renders for an environment-agnostic stack) survives
- * as an OBJECT. A bare `as string` cast would hand that object to the Glue API
- * as if it were a catalog id. Dropping it instead matches the API default (the
- * caller's own account), which is what the intrinsic would have resolved to.
+ * `declaredButUnusable` is what lets the DELETE's NotFound arm DISCRIMINATE: a
+ * NotFound after a correctly-targeted delete is legitimately idempotent, while
+ * a NotFound after cdkd knowingly fell back to the default catalog is not
+ * evidence of anything. It is deliberately FALSE for the account-id pseudo
+ * parameter (see {@link isAccountIdPseudoParameter}) — dropping that one is
+ * provably harmless, so warning about it would fire a leak alarm on every
+ * ordinary destroy of an environment-agnostic CDK stack.
  *
- * `declaredButUnusable` reports exactly that drop, and it is what lets the
- * NotFound arm DISCRIMINATE. A NotFound after a correctly-targeted delete is
- * legitimately idempotent; a NotFound after cdkd knowingly fell back to the
- * default catalog is not evidence of anything, so the caller warns instead of
- * logging at debug. It stays a WARNING rather than a throw: the delete path's
- * policy is warn-and-continue, and failing here would strand a `cdkd destroy`
- * on a resource that is very often genuinely gone.
+ * SCOPE — the guard is applied to every read whose bag can be a RAW template:
+ * the three deletes, the three `readCurrentState` readers, and the three
+ * `import()` probes. The CREATE / UPDATE reads deliberately keep their bare
+ * `as string | undefined` cast: the deploy engine resolves intrinsics before
+ * the provider sees them, so guarding there is the separate issue-#1513
+ * decision that #1651 already recorded. The one residual is a rollback replay
+ * (`rollback-executor.ts` calls `update(..., previousState.properties, ...)`),
+ * where an IMPORTED stack's raw bag does reach the update path — narrow enough
+ * to leave to #1513 rather than widen this change into the deploy path.
  */
-function deleteCatalogId(properties: Record<string, unknown> | undefined): {
+interface CatalogTarget {
+  /** The value to send, or `undefined` to let the API default to this account. */
   catalogId: string | undefined;
+  /** A catalog WAS declared, cdkd could not use it, and the drop is not provably safe. */
   declaredButUnusable: boolean;
-} {
+}
+
+function deleteCatalogId(properties: Record<string, unknown> | undefined): CatalogTarget {
   const raw = properties?.['CatalogId'];
-  const catalogId = importableString(raw);
-  return { catalogId, declaredButUnusable: catalogId === undefined && raw != null };
+  const catalogId = catalogIdForApi(raw);
+  return {
+    catalogId,
+    declaredButUnusable:
+      catalogId === undefined && raw != null && !isAccountIdPseudoParameter(raw),
+  };
+}
+
+/** Human-readable name for the catalog a call addressed, for log messages. */
+function describeCatalog(catalogId: string | undefined): string {
+  return catalogId === undefined
+    ? "this account's default Data Catalog"
+    : `Data Catalog ${catalogId}`;
 }
 
 /**
@@ -155,25 +232,31 @@ function deleteCatalogId(properties: Record<string, unknown> | undefined): {
  * a `CatalogId` that {@link deleteCatalogId} could not use, cdkd addressed the
  * DEFAULT catalog instead, so a NotFound is equally consistent with "the
  * resource is alive in the declared catalog" — that is the silent-leak shape,
- * and it gets a warning naming the remedy.
+ * and it gets a warning.
+ *
+ * BOTH arms name the catalog actually addressed. A LITERAL-but-wrong
+ * `CatalogId` (a typo, a stale account id) is otherwise indistinguishable from
+ * an already-deleted resource in the log, and it takes the debug arm.
  */
 function logCatalogScopedDeleteSkip(
   logger: { debug: (message: string) => void; warn: (message: string) => void },
-  declaredButUnusable: boolean,
+  target: CatalogTarget,
   kind: 'Database' | 'Table' | 'Connection',
   logicalId: string,
   physicalId: string
 ): void {
-  if (!declaredButUnusable) {
-    logger.debug(`Glue ${kind} ${physicalId} does not exist, skipping deletion`);
+  const where = describeCatalog(target.catalogId);
+  if (!target.declaredButUnusable) {
+    logger.debug(`Glue ${kind} ${physicalId} does not exist in ${where}, skipping deletion`);
     return;
   }
   logger.warn(
     `Glue ${kind} ${logicalId} (${physicalId}) was not found, so cdkd skipped its deletion — ` +
-      `but the recorded CatalogId is not a usable string (likely an unresolved intrinsic), so ` +
-      `the delete targeted this account's DEFAULT Data Catalog. If the resource lives in a ` +
-      `different Data Catalog it still exists. Record a literal CatalogId (or delete the ` +
-      `resource manually) and re-run.`
+      `but the recorded CatalogId is not a usable value (likely an unresolved intrinsic), so ` +
+      `the delete targeted ${where}. If the resource lives in a different Data Catalog it ` +
+      `still exists. cdkd cannot retry this delete: the state record is dropped once the ` +
+      `destroy completes, so check the intended catalog (aws glue get-${kind.toLowerCase()} ` +
+      `--catalog-id <id> ...) and delete the resource there by hand.`
   );
 }
 
@@ -541,11 +624,11 @@ export class GlueProvider implements ResourceProvider {
   ): Promise<void> {
     this.logger.debug(`Deleting Glue Database ${logicalId}: ${physicalId}`);
 
-    const { catalogId, declaredButUnusable } = deleteCatalogId(properties);
-    if (declaredButUnusable) {
+    const target = deleteCatalogId(properties);
+    if (target.declaredButUnusable) {
       this.logger.debug(
-        `Glue Database ${logicalId}: CatalogId is not a usable string (likely an unresolved ` +
-          `intrinsic), so DeleteDatabase targets the account's default Data Catalog.`
+        `Glue Database ${logicalId}: CatalogId is not a usable value (likely an unresolved ` +
+          `intrinsic), so DeleteDatabase targets ${describeCatalog(target.catalogId)}.`
       );
     }
 
@@ -553,7 +636,7 @@ export class GlueProvider implements ResourceProvider {
       await this.getClient().send(
         new DeleteDatabaseCommand({
           Name: physicalId,
-          ...(catalogId !== undefined && { CatalogId: catalogId }),
+          ...(target.catalogId !== undefined && { CatalogId: target.catalogId }),
         })
       );
       this.logger.debug(`Successfully deleted Glue Database ${logicalId}`);
@@ -567,13 +650,7 @@ export class GlueProvider implements ResourceProvider {
           logicalId,
           physicalId
         );
-        logCatalogScopedDeleteSkip(
-          this.logger,
-          declaredButUnusable,
-          'Database',
-          logicalId,
-          physicalId
-        );
+        logCatalogScopedDeleteSkip(this.logger, target, 'Database', logicalId, physicalId);
         return;
       }
       const cause = error instanceof Error ? error : undefined;
@@ -836,6 +913,16 @@ export class GlueProvider implements ResourceProvider {
   ): Promise<void> {
     this.logger.debug(`Deleting Glue Table ${logicalId}: ${physicalId}`);
 
+    // DECISION on issue #1675's "decide together with #1672" note: the
+    // `DatabaseName` this arm is missing IS reachable from the `properties` bag
+    // below, so this skip could be replaced by a bag-derived fallback. It is
+    // deliberately NOT done here. #1672 is about the id PACKING (an unescaped
+    // `|` making a legally-named table undestroyable), and its fix changes what
+    // a decodable id even is — a fallback added now would have to be reworked
+    // by it, and would meanwhile make an id cdkd cannot decode look survivable.
+    // Every id cdkd itself writes is a well-formed 2-segment composite
+    // (`createTable` and `importTable`'s round-trip fence both guarantee it), so
+    // this arm is only reachable from a hand-edited state record today.
     const [databaseName, tableName] = physicalId.split('|');
     if (!databaseName || !tableName) {
       this.logger.warn(`Invalid Glue Table physical ID format: ${physicalId}, skipping`);
@@ -846,18 +933,18 @@ export class GlueProvider implements ResourceProvider {
     // account's DEFAULT Data Catalog — see {@link deleteCatalogId} for the leak
     // this closes (issue #1675). `createTable` and `importTable` both forward
     // it; this call omitted it.
-    const { catalogId, declaredButUnusable } = deleteCatalogId(properties);
-    if (declaredButUnusable) {
+    const target = deleteCatalogId(properties);
+    if (target.declaredButUnusable) {
       this.logger.debug(
-        `Glue Table ${logicalId}: CatalogId is not a usable string (likely an unresolved ` +
-          `intrinsic), so DeleteTable targets the account's default Data Catalog.`
+        `Glue Table ${logicalId}: CatalogId is not a usable value (likely an unresolved ` +
+          `intrinsic), so DeleteTable targets ${describeCatalog(target.catalogId)}.`
       );
     }
 
     try {
       await this.getClient().send(
         new DeleteTableCommand({
-          ...(catalogId !== undefined && { CatalogId: catalogId }),
+          ...(target.catalogId !== undefined && { CatalogId: target.catalogId }),
           DatabaseName: databaseName,
           Name: tableName,
         })
@@ -873,7 +960,7 @@ export class GlueProvider implements ResourceProvider {
           logicalId,
           physicalId
         );
-        logCatalogScopedDeleteSkip(this.logger, declaredButUnusable, 'Table', logicalId, physicalId);
+        logCatalogScopedDeleteSkip(this.logger, target, 'Table', logicalId, physicalId);
         return;
       }
       const cause = error instanceof Error ? error : undefined;
@@ -1482,7 +1569,12 @@ export class GlueProvider implements ResourceProvider {
     // it (issue #1461). On a cross-account / non-default Data Catalog, a
     // `GetTable` without it reads the ACCOUNT-DEFAULT catalog — so drift
     // compares against the wrong table, or reports the resource gone.
-    const catalogId = properties?.['CatalogId'] as string | undefined;
+    //
+    // Read through the shared guard rather than a bare cast (issue #1675): the
+    // bag here is the STATE record, so for an imported stack it holds the raw
+    // template value — an unresolved intrinsic OBJECT (which the cast would
+    // hand to `GetTable` as if it were an id) or a YAML-numeric account id.
+    const catalogId = catalogIdForApi(properties?.['CatalogId']);
     switch (resourceType) {
       case 'AWS::Glue::Database':
         return this.readDatabase(physicalId, catalogId);
@@ -1619,7 +1711,7 @@ export class GlueProvider implements ResourceProvider {
       importableString(
         (input.properties['DatabaseInput'] as Record<string, unknown> | undefined)?.['Name']
       );
-    const catalogId = importableString(input.properties['CatalogId']);
+    const catalogId = catalogIdForApi(input.properties['CatalogId']);
 
     if (explicitName) {
       try {
@@ -1645,7 +1737,7 @@ export class GlueProvider implements ResourceProvider {
     const databaseName = importableString(input.properties['DatabaseName']);
     const tableInput = input.properties['TableInput'] as Record<string, unknown> | undefined;
     const templateTableName = importableString(tableInput?.['Name']);
-    const catalogId = importableString(input.properties['CatalogId']);
+    const catalogId = catalogIdForApi(input.properties['CatalogId']);
 
     const identity = resolveTableIdentity({
       knownPhysicalId: input.knownPhysicalId,
@@ -3753,18 +3845,18 @@ export class GlueConnectionProvider implements ResourceProvider {
     // {@link deleteCatalogId} (issue #1675). This call already forwarded
     // `CatalogId`, but through a bare cast that would have sent an unresolved
     // intrinsic OBJECT to the API.
-    const { catalogId, declaredButUnusable } = deleteCatalogId(properties);
-    if (declaredButUnusable) {
+    const target = deleteCatalogId(properties);
+    if (target.declaredButUnusable) {
       this.logger.debug(
-        `Glue Connection ${logicalId}: CatalogId is not a usable string (likely an unresolved ` +
-          `intrinsic), so DeleteConnection targets the account's default Data Catalog.`
+        `Glue Connection ${logicalId}: CatalogId is not a usable value (likely an unresolved ` +
+          `intrinsic), so DeleteConnection targets ${describeCatalog(target.catalogId)}.`
       );
     }
     try {
       await this.getClient().send(
         new DeleteConnectionCommand({
           ConnectionName: physicalId,
-          ...(catalogId !== undefined && { CatalogId: catalogId }),
+          ...(target.catalogId !== undefined && { CatalogId: target.catalogId }),
         })
       );
     } catch (error) {
@@ -3777,13 +3869,7 @@ export class GlueConnectionProvider implements ResourceProvider {
           logicalId,
           physicalId
         );
-        logCatalogScopedDeleteSkip(
-          this.logger,
-          declaredButUnusable,
-          'Connection',
-          logicalId,
-          physicalId
-        );
+        logCatalogScopedDeleteSkip(this.logger, target, 'Connection', logicalId, physicalId);
         return;
       }
       const cause = error instanceof Error ? error : undefined;
@@ -3815,11 +3901,16 @@ export class GlueConnectionProvider implements ResourceProvider {
     _resourceType: string,
     properties?: Record<string, unknown>
   ): Promise<Record<string, unknown> | undefined> {
-    const catalogId = properties?.['CatalogId'] as string | undefined;
+    // Shared guard, not a bare cast — same reasoning as the Database / Table
+    // `readCurrentState` above (issue #1675).
+    const catalogId = catalogIdForApi(properties?.['CatalogId']);
     let conn;
     try {
       const resp = await this.getClient().send(
-        new GetConnectionCommand({ Name: physicalId, ...(catalogId && { CatalogId: catalogId }) })
+        new GetConnectionCommand({
+          Name: physicalId,
+          ...(catalogId !== undefined && { CatalogId: catalogId }),
+        })
       );
       conn = resp.Connection;
     } catch (err) {
@@ -3851,12 +3942,15 @@ export class GlueConnectionProvider implements ResourceProvider {
         | string
         | undefined);
     if (!explicitName) return null;
-    const catalogId = input.properties['CatalogId'] as string | undefined;
+    // `import()` runs against the RAW template, so this is exactly the shape
+    // `importableString` exists for — the Table / Database import paths have
+    // used it since #1651 and this one was the straggler (issue #1675).
+    const catalogId = catalogIdForApi(input.properties['CatalogId']);
     try {
       await this.getClient().send(
         new GetConnectionCommand({
           Name: explicitName,
-          ...(catalogId && { CatalogId: catalogId }),
+          ...(catalogId !== undefined && { CatalogId: catalogId }),
         })
       );
       return { physicalId: explicitName, attributes: {} };
