@@ -299,13 +299,18 @@ export class S3BucketProvider implements ResourceProvider {
   /**
    * Apply versioning configuration if specified
    */
+  /**
+   * @returns `true` when `PutBucketVersioning` was issued, `false` when the
+   *   replay downgrade SKIPPED it. The caller records that skip in
+   *   `effectiveProperties` so state describes what AWS holds (issue #1612).
+   */
   private async applyVersioning(
     bucketName: string,
     versioningConfig: unknown,
     // The state-replay downgrade (issue #1605). Present only on a replay-
     // reachable call — the reverse-replacement create and the update path.
     onUnusable?: (message: string) => void
-  ): Promise<void> {
+  ): Promise<boolean> {
     // The replay downgrade is a SKIP, and the reasoning is the inverse of the
     // usual one: here the DEFAULT is the dangerous direction. There is no item
     // to skip and no previous value to keep, so the only two answers are
@@ -334,7 +339,7 @@ export class S3BucketProvider implements ResourceProvider {
             `replayed create it means the bucket is left unversioned); the same value is ` +
             `REFUSED on a template-path create`
         );
-        return;
+        return false;
       }
     }
     // `unknown`, not `Record<string, unknown>`: the CREATE path's truthiness
@@ -356,6 +361,7 @@ export class S3BucketProvider implements ResourceProvider {
       })
     );
     this.logger.debug(`Applied versioning (${status}) to bucket ${bucketName}`);
+    return true;
   }
 
   /**
@@ -518,6 +524,10 @@ export class S3BucketProvider implements ResourceProvider {
    * - CFn uses TagFilters, SDK uses Tag/Tags in Filter
    * - CFn Transition.TransitionInDays -> SDK Transition.Days
    * - CFn Transition.TransitionDate -> SDK Transition.Date
+   *
+   * @returns `true` when the Put was issued, `false` when a replay downgrade
+   *   SKIPPED the whole configuration (issue #1612 — the caller records that in
+   *   `effectiveProperties`).
    */
   private async applyLifecycleConfiguration(
     bucketName: string,
@@ -526,7 +536,7 @@ export class S3BucketProvider implements ResourceProvider {
       TransitionDefaultMinimumObjectSize?: unknown;
     },
     onUnusable?: (message: string) => void
-  ): Promise<void> {
+  ): Promise<boolean> {
     // Validate every rule's `TagFilters` container up front (issue #1579): a
     // present-but-non-array value used to fall through `gatherScope`'s blind
     // cast, read as "no tags" via the `.length` gates below, and the rule
@@ -556,7 +566,7 @@ export class S3BucketProvider implements ResourceProvider {
           ...(onUnusable ? { onUnusable } : {}),
         }) === undefined
       ) {
-        return;
+        return false;
       }
       const filter = rawFilter as Record<string, unknown> | undefined;
       const rawTagFilters = filter?.['TagFilters'] ?? rule['TagFilters'];
@@ -566,7 +576,7 @@ export class S3BucketProvider implements ResourceProvider {
           'AWS::S3::Bucket LifecycleConfiguration.Rules[].TagFilters',
           { ...(onUnusable ? { onUnusable } : {}) }
         );
-        if (validated === undefined) return;
+        if (validated === undefined) return false;
       }
       // ...and the per-rule `Status` (issue #1595). The read that refuses it
       // sits in the `.map` below and carries no `onUnusable`, so a state
@@ -589,7 +599,7 @@ export class S3BucketProvider implements ResourceProvider {
           onUnusable
         )
       ) {
-        return;
+        return false;
       }
     }
     // Gather a rule's full location scope from EVERY source CFn can express it:
@@ -874,6 +884,7 @@ export class S3BucketProvider implements ResourceProvider {
       })
     );
     this.logger.debug(`Applied lifecycle configuration to bucket ${bucketName}`);
+    return true;
   }
 
   /**
@@ -971,12 +982,16 @@ export class S3BucketProvider implements ResourceProvider {
    *   - LogFilePrefix -> SDK TargetPrefix
    * SDK: PutBucketLogging with BucketLoggingStatus.LoggingEnabled
    */
+  /**
+   * @returns `true` when a `PutBucketLogging` (set or clear) was issued,
+   *   `false` when the replay downgrade SKIPPED it (issue #1612).
+   */
   private async applyLoggingConfiguration(
     bucketName: string,
     loggingConfig: unknown,
     // The state-replay downgrade (issue #1605).
     onUnusable?: (message: string) => void
-  ): Promise<void> {
+  ): Promise<boolean> {
     // The replay downgrade is a SKIP of the whole Put, which is this applier's
     // natural unit — `PutBucketLogging` replaces the entire logging status, so
     // there is no smaller thing to skip. Both reads are probed together for
@@ -1015,7 +1030,7 @@ export class S3BucketProvider implements ResourceProvider {
             `comes up with no access logging); the same value is REFUSED on a template-path ` +
             `create`
         );
-        return;
+        return false;
       }
     }
     // Shape-check the CONTAINER before the clearing branch below (issue
@@ -1046,7 +1061,7 @@ export class S3BucketProvider implements ResourceProvider {
         })
       );
       this.logger.debug(`Cleared logging configuration on bucket ${bucketName}`);
-      return;
+      return true;
     }
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const loggingEnabled: any = {
@@ -1091,6 +1106,7 @@ export class S3BucketProvider implements ResourceProvider {
       })
     );
     this.logger.debug(`Applied logging configuration to bucket ${bucketName}`);
+    return true;
   }
 
   /**
@@ -1298,12 +1314,15 @@ export class S3BucketProvider implements ResourceProvider {
    *
    * CFn property: MetricsConfigurations[] (array of configurations)
    * SDK: PutBucketMetricsConfiguration (one per configuration, keyed by Id)
+   *
+   * @returns the indexes (into `configs`) of the items a replay downgrade
+   *   SKIPPED — the per-item unit of `effectiveProperties` (issue #1612).
    */
   private async applyMetricsConfigurations(
     bucketName: string,
     configs: Array<Record<string, unknown>>,
     onUnusable?: (message: string) => void
-  ): Promise<void> {
+  ): Promise<number[]> {
     // The per-ITEM `config` container is deliberately NOT guarded here, and
     // the audit that settled it belongs next to the decision (issue #1581).
     // Of the six per-item appliers that carry the `onUnusable` replay callback
@@ -1323,7 +1342,17 @@ export class S3BucketProvider implements ResourceProvider {
     // scope-widening / silent-drop hazard the container guards exist for, so
     // adding a refusal here would buy a nicer error message at the cost of a
     // behavior change on the replay path (skip instead of surface).
+    const skipped: number[] = [];
+    // A plain `for…of` over `configs` with a hand-kept index, NOT
+    // `configs.entries()`: the nested-key critic's write-evidence walk resolves
+    // `config` as a value read off the desired property BAG, and an
+    // array-destructuring pattern is not a binding shape it can follow — so the
+    // tidier spelling silently reports every member of this item's nested
+    // blocks as `no-write-evidence` (measured: 9 divergences across the four
+    // per-item appliers).
+    let index = -1;
     for (const config of configs) {
+      index += 1;
       const id = config['Id'] as string;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const metricsConfig: any = {
@@ -1351,6 +1380,7 @@ export class S3BucketProvider implements ResourceProvider {
           ...(onUnusable ? { onUnusable } : {}),
         }) === undefined
       ) {
+        skipped.push(index);
         continue;
       }
       const tagCount = tagFilters?.length ?? 0;
@@ -1386,7 +1416,10 @@ export class S3BucketProvider implements ResourceProvider {
         })
       );
     }
-    this.logger.debug(`Applied ${configs.length} metrics configuration(s) to bucket ${bucketName}`);
+    this.logger.debug(
+      `Applied ${configs.length - skipped.length} metrics configuration(s) to bucket ${bucketName}`
+    );
+    return skipped;
   }
 
   /**
@@ -1496,13 +1529,26 @@ export class S3BucketProvider implements ResourceProvider {
    *
    * CFn property: AnalyticsConfigurations[] (array of configurations)
    * SDK: PutBucketAnalyticsConfiguration (one per configuration, keyed by Id)
+   *
+   * @returns the indexes (into `configs`) of the items a replay downgrade
+   *   SKIPPED — the per-item unit of `effectiveProperties` (issue #1612).
    */
   private async applyAnalyticsConfigurations(
     bucketName: string,
     configs: Array<Record<string, unknown>>,
     onUnusable?: (message: string) => void
-  ): Promise<void> {
+  ): Promise<number[]> {
+    const skipped: number[] = [];
+    // A plain `for…of` over `configs` with a hand-kept index, NOT
+    // `configs.entries()`: the nested-key critic's write-evidence walk resolves
+    // `config` as a value read off the desired property BAG, and an
+    // array-destructuring pattern is not a binding shape it can follow — so the
+    // tidier spelling silently reports every member of this item's nested
+    // blocks as `no-write-evidence` (measured: 9 divergences across the four
+    // per-item appliers).
+    let index = -1;
     for (const config of configs) {
+      index += 1;
       const id = config['Id'] as string;
       // The `StorageClassAnalysis` CONTAINER (issue #1581) — the analytics
       // sibling of the lifecycle `Filter` guard. A present-but-non-OBJECT
@@ -1522,6 +1568,7 @@ export class S3BucketProvider implements ResourceProvider {
           { ...(onUnusable ? { onUnusable } : {}) }
         ) === undefined
       ) {
+        skipped.push(index);
         continue;
       }
       const storageClassAnalysis = rawStorageClassAnalysis as Record<string, unknown> | undefined;
@@ -1547,6 +1594,7 @@ export class S3BucketProvider implements ResourceProvider {
           ...(onUnusable ? { onUnusable } : {}),
         }) === undefined
       ) {
+        skipped.push(index);
         continue;
       }
       const tagCount = tagFilters?.length ?? 0;
@@ -1582,6 +1630,7 @@ export class S3BucketProvider implements ResourceProvider {
             { ...(onUnusable ? { onUnusable } : {}) }
           ) === undefined
         ) {
+          skipped.push(index);
           continue;
         }
         const dataExport = rawDataExport as Record<string, unknown>;
@@ -1596,7 +1645,10 @@ export class S3BucketProvider implements ResourceProvider {
         // an opaque AWS error instead of cdkd's actionable one, which is the
         // whole point of warning here. An ABSENT destination keeps the old
         // behavior and lets AWS report the missing required field.
-        if (s3Dest === undefined && rawDest != null) continue;
+        if (s3Dest === undefined && rawDest != null) {
+          skipped.push(index);
+          continue;
+        }
         const destPath = s3BucketDestinationPath(rawDest, analyticsDestPath);
         analyticsConfig.StorageClassAnalysis = {
           DataExport: {
@@ -1650,8 +1702,9 @@ export class S3BucketProvider implements ResourceProvider {
       );
     }
     this.logger.debug(
-      `Applied ${configs.length} analytics configuration(s) to bucket ${bucketName}`
+      `Applied ${configs.length - skipped.length} analytics configuration(s) to bucket ${bucketName}`
     );
+    return skipped;
   }
 
   /**
@@ -1659,13 +1712,26 @@ export class S3BucketProvider implements ResourceProvider {
    *
    * CFn property: IntelligentTieringConfigurations[]
    * SDK: PutBucketIntelligentTieringConfiguration (one per configuration, keyed by Id)
+   *
+   * @returns the indexes (into `configs`) of the items a replay downgrade
+   *   SKIPPED — the per-item unit of `effectiveProperties` (issue #1612).
    */
   private async applyIntelligentTieringConfigurations(
     bucketName: string,
     configs: Array<Record<string, unknown>>,
     onUnusable?: (message: string) => void
-  ): Promise<void> {
+  ): Promise<number[]> {
+    const skipped: number[] = [];
+    // A plain `for…of` over `configs` with a hand-kept index, NOT
+    // `configs.entries()`: the nested-key critic's write-evidence walk resolves
+    // `config` as a value read off the desired property BAG, and an
+    // array-destructuring pattern is not a binding shape it can follow — so the
+    // tidier spelling silently reports every member of this item's nested
+    // blocks as `no-write-evidence` (measured: 9 divergences across the four
+    // per-item appliers).
+    let index = -1;
     for (const config of configs) {
+      index += 1;
       const id = config['Id'] as string;
       // Per-item `Status` (issue #1595) — the read below carries no
       // `onUnusable`, so a state replay hard-threw. The fallback `Enabled`
@@ -1683,6 +1749,7 @@ export class S3BucketProvider implements ResourceProvider {
           onUnusable
         )
       ) {
+        skipped.push(index);
         continue;
       }
       const tierings = config['Tierings'] as Array<Record<string, unknown>> | undefined;
@@ -1717,6 +1784,7 @@ export class S3BucketProvider implements ResourceProvider {
           { ...(onUnusable ? { onUnusable } : {}) }
         ) === undefined
       ) {
+        skipped.push(index);
         continue;
       }
       const tagCount = tagFilters?.length ?? 0;
@@ -1737,8 +1805,10 @@ export class S3BucketProvider implements ResourceProvider {
       );
     }
     this.logger.debug(
-      `Applied ${configs.length} intelligent tiering configuration(s) to bucket ${bucketName}`
+      `Applied ${configs.length - skipped.length} intelligent tiering configuration(s) to bucket ` +
+        `${bucketName}`
     );
+    return skipped;
   }
 
   /**
@@ -1746,13 +1816,26 @@ export class S3BucketProvider implements ResourceProvider {
    *
    * CFn property: InventoryConfigurations[]
    * SDK: PutBucketInventoryConfiguration (one per configuration, keyed by Id)
+   *
+   * @returns the indexes (into `configs`) of the items a replay downgrade
+   *   SKIPPED — the per-item unit of `effectiveProperties` (issue #1612).
    */
   private async applyInventoryConfigurations(
     bucketName: string,
     configs: Array<Record<string, unknown>>,
     onUnusable?: (message: string) => void
-  ): Promise<void> {
+  ): Promise<number[]> {
+    const skipped: number[] = [];
+    // A plain `for…of` over `configs` with a hand-kept index, NOT
+    // `configs.entries()`: the nested-key critic's write-evidence walk resolves
+    // `config` as a value read off the desired property BAG, and an
+    // array-destructuring pattern is not a binding shape it can follow — so the
+    // tidier spelling silently reports every member of this item's nested
+    // blocks as `no-write-evidence` (measured: 9 divergences across the four
+    // per-item appliers).
+    let index = -1;
     for (const config of configs) {
+      index += 1;
       const id = config['Id'] as string;
       // Per-item `IncludedObjectVersions` (issue #1595) — same replay split as
       // the intelligent-tiering sibling. Defaulting to `All` here is not
@@ -1774,6 +1857,7 @@ export class S3BucketProvider implements ResourceProvider {
           onUnusable
         )
       ) {
+        skipped.push(index);
         continue;
       }
       const inventoryDestPath = 'AWS::S3::Bucket InventoryConfigurations[].Destination';
@@ -1781,7 +1865,10 @@ export class S3BucketProvider implements ResourceProvider {
       const s3Dest = this.resolveS3BucketDestination(rawDest, inventoryDestPath, onUnusable);
       // See the analytics sibling: a warned-away destination leaves the live
       // configuration untouched instead of sending a request S3 rejects.
-      if (s3Dest === undefined && rawDest != null) continue;
+      if (s3Dest === undefined && rawDest != null) {
+        skipped.push(index);
+        continue;
+      }
       const destPath = s3BucketDestinationPath(rawDest, inventoryDestPath);
 
       // The schedule frequency is a TWO-SOURCE precedence read, so its replay
@@ -1817,6 +1904,7 @@ export class S3BucketProvider implements ResourceProvider {
             `re-cadence a live inventory report; the same value is REFUSED on a template-path ` +
             `create`
         );
+        skipped.push(index);
         continue;
       }
       if (scheduleFrequencyRefusal !== undefined) {
@@ -1838,6 +1926,7 @@ export class S3BucketProvider implements ResourceProvider {
           onUnusable
         )
       ) {
+        skipped.push(index);
         continue;
       }
       const frequency = useScheduleFrequency
@@ -1895,8 +1984,9 @@ export class S3BucketProvider implements ResourceProvider {
       );
     }
     this.logger.debug(
-      `Applied ${configs.length} inventory configuration(s) to bucket ${bucketName}`
+      `Applied ${configs.length - skipped.length} inventory configuration(s) to bucket ${bucketName}`
     );
+    return skipped;
   }
 
   /**
@@ -1984,11 +2074,15 @@ export class S3BucketProvider implements ResourceProvider {
     return sdkDest;
   }
 
+  /**
+   * @returns `true` when the Put was issued, `false` when a replay downgrade
+   *   SKIPPED the whole configuration (issue #1612).
+   */
   private async applyReplicationConfiguration(
     bucketName: string,
     replConfig: Record<string, unknown>,
     onUnusable?: (message: string) => void
-  ): Promise<void> {
+  ): Promise<boolean> {
     const rules = replConfig['Rules'] as Array<Record<string, unknown>> | undefined;
     // Validate every rule's `Filter` CONTAINER up front (issue #1581) — the
     // third instance of the class in this file, and the one with the widest
@@ -2013,7 +2107,7 @@ export class S3BucketProvider implements ResourceProvider {
           ...(onUnusable ? { onUnusable } : {}),
         }) === undefined
       ) {
-        return;
+        return false;
       }
       // The per-rule `Status` in the same loop (issue #1595) — the fourth
       // per-item refusal of this class and the one most likely to be mistaken
@@ -2035,7 +2129,7 @@ export class S3BucketProvider implements ResourceProvider {
           onUnusable
         )
       ) {
-        return;
+        return false;
       }
     }
     await this.s3Client.send(
@@ -2155,6 +2249,7 @@ export class S3BucketProvider implements ResourceProvider {
       })
     );
     this.logger.debug(`Applied replication configuration to bucket ${bucketName}`);
+    return true;
   }
 
   /**
@@ -2213,8 +2308,14 @@ export class S3BucketProvider implements ResourceProvider {
     bucketName: string,
     properties: Record<string, unknown>,
     options: { skipTags?: boolean; skipDiffManaged?: boolean; context?: CreateContext } = {}
-  ): Promise<void> {
+  ): Promise<Map<string, unknown>> {
     const { skipTags = false, skipDiffManaged = false, context } = options;
+    // `effectiveProperties` overrides for anything a replay downgrade SKIPPED
+    // (issue #1612). This method only runs the versioning applier on the CREATE
+    // path — `update()` passes `skipDiffManaged` and lets `applySubConfigDiffs`
+    // own it — so an override recorded here always means a replayed create
+    // where NOTHING was applied and the key must be DROPPED, never retained.
+    const overrides = new Map<string, unknown>();
     // Issue #1605: this method is reached by the reverse-replacement create as
     // well as the template one, and its versioning read is a refusal. Its
     // sibling `applyAllSubConfigsForCreate` already took the context for
@@ -2233,7 +2334,8 @@ export class S3BucketProvider implements ResourceProvider {
     // OwnershipControls / BucketEncryption gates below; nullish rather than
     // strict-undefined to match `diffSubConfig`'s treatment of a desired null.
     if (!skipDiffManaged && versioningConfig != null) {
-      await this.applyVersioning(bucketName, versioningConfig, replayOnUnusable);
+      const applied = await this.applyVersioning(bucketName, versioningConfig, replayOnUnusable);
+      if (!applied) overrides.set('VersioningConfiguration', undefined);
     }
 
     // Tags. Only applied at create time here (`applyTags` is full-replace, no
@@ -2292,6 +2394,7 @@ export class S3BucketProvider implements ResourceProvider {
     if (!skipDiffManaged && normalizedEncryption !== undefined) {
       await this.applyBucketEncryption(bucketName, normalizedEncryption);
     }
+    return overrides;
   }
 
   /**
@@ -2385,6 +2488,85 @@ export class S3BucketProvider implements ResourceProvider {
   }
 
   /**
+   * Turn a set of skipped-property overrides into the `effectiveProperties`
+   * bag the deploy engine records in place of the desired one (issue #1612).
+   *
+   * A warn-and-skip arm makes the deploy SUCCEED while a declared
+   * configuration never reaches AWS, so recording the desired bag verbatim
+   * writes a value AWS does not hold: `readCurrentState` can never match it,
+   * every later `cdkd drift` re-reports the difference, and `drift --revert`
+   * re-issues the same skipped call — the permanent phantom drift
+   * `.claude/rules/providers.md` records for the EC2 Route warn arm (#1591),
+   * reached here through a skip instead of a narrowing.
+   *
+   * A `undefined` override value means the key is ABSENT from the effective
+   * bag, which is why this walks the map rather than spreading it: spreading
+   * would leave an explicit `undefined` that `JSON.stringify` drops on one
+   * side of the next diff but not the other.
+   *
+   * @returns the complete replacement bag, or `undefined` when nothing was
+   *   skipped — the engine then records the desired properties unchanged.
+   */
+  private static applyEffectiveOverrides(
+    properties: Record<string, unknown>,
+    overrides: Map<string, unknown>
+  ): Record<string, unknown> | undefined {
+    if (overrides.size === 0) return undefined;
+    const effective: Record<string, unknown> = { ...properties };
+    for (const [key, value] of overrides) {
+      if (value === undefined) delete effective[key];
+      else effective[key] = value;
+    }
+    return effective;
+  }
+
+  /**
+   * The effective value of a per-item array property some of whose items a
+   * replay downgrade SKIPPED (issue #1612).
+   *
+   * The Put for these four properties is per-`Id`, so the skip unit is one
+   * configuration ITEM and the array must be rebuilt member by member: a
+   * skipped CHANGE keeps the previously-applied item (that IS what AWS still
+   * holds), a skipped ADD is dropped (AWS holds nothing for that `Id`), and
+   * every unskipped item stays as declared.
+   *
+   * The DESIRED order is preserved deliberately — `DiffCalculator` compares
+   * arrays positionally, so an effective array that merely reorders the same
+   * items would manufacture a fresh phantom drift while removing the one this
+   * exists to fix.
+   *
+   * @param previous the previously-recorded array, or `undefined` on the
+   *   replay-CREATE path, where nothing was ever applied and there is no
+   *   previous item to substitute.
+   * @returns the effective array, or `undefined` when the key should be ABSENT
+   *   from the effective bag (nothing survived AND the previous side declared
+   *   nothing, so the property was never applied at all).
+   */
+  private static buildEffectiveItemArray(
+    desired: Array<Record<string, unknown>>,
+    previous: Array<Record<string, unknown>> | undefined,
+    isSkipped: (item: Record<string, unknown>, index: number) => boolean
+  ): Array<Record<string, unknown>> | undefined {
+    const previousById = new Map<string, Record<string, unknown>>();
+    for (const item of previous ?? []) {
+      const id = isPlainObject(item) ? item['Id'] : undefined;
+      if (typeof id === 'string') previousById.set(id, item);
+    }
+    const effective: Array<Record<string, unknown>> = [];
+    desired.forEach((item, index) => {
+      if (!isSkipped(item, index)) {
+        effective.push(item);
+        return;
+      }
+      const id = isPlainObject(item) ? item['Id'] : undefined;
+      const retained = typeof id === 'string' ? previousById.get(id) : undefined;
+      if (retained !== undefined) effective.push(retained);
+    });
+    if (effective.length === 0 && previous === undefined) return undefined;
+    return effective;
+  }
+
+  /**
    * Diff CFn-shape sub-config values between previous and new state.
    *
    * Four transitions:
@@ -2468,12 +2650,43 @@ export class S3BucketProvider implements ResourceProvider {
    * silent no-op (issue #1466): the same A/B showed CFn suspends versioning,
    * deletes ownership controls, and resets encryption to the SSE-S3 default.
    * They are now diffed here like every other Put/Delete pair.
+   *
+   * @returns the per-property overrides for `effectiveProperties` (issue
+   *   #1612): on THIS path a skipped Put means AWS still holds the
+   *   previously-applied configuration, so the override is the PREVIOUS value —
+   *   `undefined` when the previous side declared none, which removes the key.
+   *   Dropping the key unconditionally instead would be wrong in the other
+   *   direction: a later template that REMOVES the block would then derive no
+   *   removal and the live configuration would survive forever.
    */
   private async applySubConfigDiffs(
     bucketName: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>
-  ): Promise<void> {
+  ): Promise<Map<string, unknown>> {
+    const overrides = new Map<string, unknown>();
+    /** Record a WHOLE-BLOCK skip: the effective value is the previous one. */
+    const retainPrevious = (key: string): void => {
+      overrides.set(key, previousProperties[key]);
+    };
+    /** Record a PER-ITEM skip set against the desired / previous arrays. */
+    const retainPreviousItems = (key: string, skippedIds: ReadonlySet<string>): void => {
+      if (skippedIds.size === 0) return;
+      const desired = properties[key];
+      if (!Array.isArray(desired)) return;
+      const previous = previousProperties[key];
+      overrides.set(
+        key,
+        S3BucketProvider.buildEffectiveItemArray(
+          desired as Array<Record<string, unknown>>,
+          Array.isArray(previous) ? (previous as Array<Record<string, unknown>>) : undefined,
+          (item) => {
+            const id = isPlainObject(item) ? item['Id'] : undefined;
+            return typeof id === 'string' && skippedIds.has(id);
+          }
+        )
+      );
+    };
     // Versioning is split by RESULTING STATUS, not by transition kind.
     //
     // S3 rejects PutBucketVersioning(Suspended) while a replication
@@ -2534,6 +2747,13 @@ export class S3BucketProvider implements ResourceProvider {
           `unchanged — neither enabling nor suspending it; the same value is REFUSED on a ` +
           `template-path create`
       );
+      // Neither arm of the split below runs, so AWS keeps the previously
+      // applied versioning state and that is what state must describe.
+      // Gated on `versioningChanged` alongside the warning: an
+      // unchanged-but-malformed recorded value was not going to be applied by
+      // this run either way, and rewriting the record for it would churn state
+      // on every deploy.
+      retainPrevious('VersioningConfiguration');
     }
     const desiredVersioningStatus =
       versioningRefusal === undefined
@@ -2568,7 +2788,13 @@ export class S3BucketProvider implements ResourceProvider {
       nextVersioning != null &&
       desiredVersioningStatus !== 'Suspended'
     ) {
-      await this.applyVersioning(bucketName, nextVersioning, (m) => this.logger.warn(m));
+      // The applier re-probes (defense-in-depth against this probe and its own
+      // read drifting apart), so honour ITS answer rather than assuming the
+      // guard above already settled it.
+      const applied = await this.applyVersioning(bucketName, nextVersioning, (m) =>
+        this.logger.warn(m)
+      );
+      if (!applied) retainPrevious('VersioningConfiguration');
     }
 
     // Ownership controls (per-id-free single config; empty Rules == absent)
@@ -2628,7 +2854,10 @@ export class S3BucketProvider implements ResourceProvider {
         if (!cfg.Rules || !Array.isArray(cfg.Rules) || cfg.Rules.length === 0) return;
         // WARN, never throw, on the update path (issue #1579) — same
         // rationale as the analytics sibling below.
-        await this.applyLifecycleConfiguration(bucketName, cfg, (m) => this.logger.warn(m));
+        const applied = await this.applyLifecycleConfiguration(bucketName, cfg, (m) =>
+          this.logger.warn(m)
+        );
+        if (!applied) retainPrevious('LifecycleConfiguration');
       },
       async () => {
         await this.s3Client.send(new DeleteBucketLifecycleCommand({ Bucket: bucketName }));
@@ -2675,10 +2904,17 @@ export class S3BucketProvider implements ResourceProvider {
       // Same unconditional update-path warn as the per-item appliers below:
       // this arm is replay-reachable and `update()` cannot tell a replay from
       // a template edit.
-      async (cfg) => this.applyLoggingConfiguration(bucketName, cfg, (m) => this.logger.warn(m)),
+      async (cfg) => {
+        const applied = await this.applyLoggingConfiguration(bucketName, cfg, (m) =>
+          this.logger.warn(m)
+        );
+        if (!applied) retainPrevious('LoggingConfiguration');
+      },
       // The CLEAR arm passes `undefined`, which is the legitimate removal and
       // can never refuse — so it needs no downgrade.
-      async () => this.applyLoggingConfiguration(bucketName, undefined)
+      async () => {
+        await this.applyLoggingConfiguration(bucketName, undefined);
+      }
     );
 
     // Notification — no DeleteBucketNotification API; clearing is via
@@ -2696,8 +2932,12 @@ export class S3BucketProvider implements ResourceProvider {
       bucketName,
       previousProperties['ReplicationConfiguration'] as Record<string, unknown> | undefined,
       properties['ReplicationConfiguration'] as Record<string, unknown> | undefined,
-      async (cfg) =>
-        this.applyReplicationConfiguration(bucketName, cfg, (m) => this.logger.warn(m)),
+      async (cfg) => {
+        const applied = await this.applyReplicationConfiguration(bucketName, cfg, (m) =>
+          this.logger.warn(m)
+        );
+        if (!applied) retainPrevious('ReplicationConfiguration');
+      },
       async () => {
         await this.s3Client.send(new DeleteBucketReplicationCommand({ Bucket: bucketName }));
         this.logger.debug(`Deleted replication configuration on bucket ${bucketName}`);
@@ -2737,14 +2977,23 @@ export class S3BucketProvider implements ResourceProvider {
     );
 
     // Metrics (per-id diff)
+    //
+    // Each `onPut` applies exactly ONE item, so a non-empty skip list from the
+    // applier names THAT id — which is the per-item unit `retainPreviousItems`
+    // rebuilds the effective array from (issue #1612).
+    const skippedMetricsIds = new Set<string>();
     await this.diffArrayConfigById(
       bucketName,
       previousProperties['MetricsConfigurations'] as Array<Record<string, unknown>> | undefined,
       properties['MetricsConfigurations'] as Array<Record<string, unknown>> | undefined,
       // WARN, never throw, on the update path (issue #1579) — same rationale
       // as the analytics sibling below.
-      async (_id, cfg) =>
-        this.applyMetricsConfigurations(bucketName, [cfg], (m) => this.logger.warn(m)),
+      async (id, cfg) => {
+        const skipped = await this.applyMetricsConfigurations(bucketName, [cfg], (m) =>
+          this.logger.warn(m)
+        );
+        if (skipped.length > 0) skippedMetricsIds.add(id);
+      },
       async (id) => {
         await this.s3Client.send(
           new DeleteBucketMetricsConfigurationCommand({ Bucket: bucketName, Id: id })
@@ -2752,8 +3001,10 @@ export class S3BucketProvider implements ResourceProvider {
         this.logger.debug(`Deleted metrics configuration ${id} on bucket ${bucketName}`);
       }
     );
+    retainPreviousItems('MetricsConfigurations', skippedMetricsIds);
 
     // Analytics (per-id diff)
+    const skippedAnalyticsIds = new Set<string>();
     await this.diffArrayConfigById(
       bucketName,
       previousProperties['AnalyticsConfigurations'] as Array<Record<string, unknown>> | undefined,
@@ -2762,8 +3013,12 @@ export class S3BucketProvider implements ResourceProvider {
       // `drift --revert` replay `update()` with a historical cdkd STATE record
       // as the desired bag, so a refusal here would strand the resource with no
       // template-side remedy (issue #1493 item 2).
-      async (_id, cfg) =>
-        this.applyAnalyticsConfigurations(bucketName, [cfg], (m) => this.logger.warn(m)),
+      async (id, cfg) => {
+        const skipped = await this.applyAnalyticsConfigurations(bucketName, [cfg], (m) =>
+          this.logger.warn(m)
+        );
+        if (skipped.length > 0) skippedAnalyticsIds.add(id);
+      },
       async (id) => {
         await this.s3Client.send(
           new DeleteBucketAnalyticsConfigurationCommand({ Bucket: bucketName, Id: id })
@@ -2771,8 +3026,10 @@ export class S3BucketProvider implements ResourceProvider {
         this.logger.debug(`Deleted analytics configuration ${id} on bucket ${bucketName}`);
       }
     );
+    retainPreviousItems('AnalyticsConfigurations', skippedAnalyticsIds);
 
     // IntelligentTiering (per-id diff)
+    const skippedIntelligentTieringIds = new Set<string>();
     await this.diffArrayConfigById(
       bucketName,
       previousProperties['IntelligentTieringConfigurations'] as
@@ -2781,8 +3038,12 @@ export class S3BucketProvider implements ResourceProvider {
       properties['IntelligentTieringConfigurations'] as Array<Record<string, unknown>> | undefined,
       // WARN, never throw, on the update path (issue #1579) — same rationale
       // as the analytics sibling above.
-      async (_id, cfg) =>
-        this.applyIntelligentTieringConfigurations(bucketName, [cfg], (m) => this.logger.warn(m)),
+      async (id, cfg) => {
+        const skipped = await this.applyIntelligentTieringConfigurations(bucketName, [cfg], (m) =>
+          this.logger.warn(m)
+        );
+        if (skipped.length > 0) skippedIntelligentTieringIds.add(id);
+      },
       async (id) => {
         await this.s3Client.send(
           new DeleteBucketIntelligentTieringConfigurationCommand({
@@ -2795,15 +3056,21 @@ export class S3BucketProvider implements ResourceProvider {
         );
       }
     );
+    retainPreviousItems('IntelligentTieringConfigurations', skippedIntelligentTieringIds);
 
     // Inventory (per-id diff)
+    const skippedInventoryIds = new Set<string>();
     await this.diffArrayConfigById(
       bucketName,
       previousProperties['InventoryConfigurations'] as Array<Record<string, unknown>> | undefined,
       properties['InventoryConfigurations'] as Array<Record<string, unknown>> | undefined,
       // Same update-path warn as the analytics sibling above.
-      async (_id, cfg) =>
-        this.applyInventoryConfigurations(bucketName, [cfg], (m) => this.logger.warn(m)),
+      async (id, cfg) => {
+        const skipped = await this.applyInventoryConfigurations(bucketName, [cfg], (m) =>
+          this.logger.warn(m)
+        );
+        if (skipped.length > 0) skippedInventoryIds.add(id);
+      },
       async (id) => {
         await this.s3Client.send(
           new DeleteBucketInventoryConfigurationCommand({ Bucket: bucketName, Id: id })
@@ -2811,6 +3078,7 @@ export class S3BucketProvider implements ResourceProvider {
         this.logger.debug(`Deleted inventory configuration ${id} on bucket ${bucketName}`);
       }
     );
+    retainPreviousItems('InventoryConfigurations', skippedInventoryIds);
 
     // Versioning SUSPEND — deferred to LAST on purpose (issue #1466); see the
     // split rationale at the top of this method.
@@ -2843,21 +3111,51 @@ export class S3BucketProvider implements ResourceProvider {
             `or set to Suspended), but the bucket has Object Lock enabled and S3 does not allow ` +
             `suspending versioning on it. Leaving versioning enabled.`
         );
+        // Another warn-and-skip arm, reached by a structural AWS constraint
+        // rather than by a malformed value — but with the identical state
+        // consequence, so it takes the identical remedy (issue #1612): the
+        // suspend never ran, so recording the desired removal / `Suspended`
+        // would describe a bucket whose versioning is still Enabled.
+        retainPrevious('VersioningConfiguration');
       } else {
         await this.applyVersioning(bucketName, { Status: 'Suspended' });
       }
     }
+    return overrides;
   }
 
   /**
    * Apply ALL sub-configs unconditionally on initial create. Used by
    * `create()` so the bucket starts out matching the template.
+   *
+   * @returns the per-property overrides for `effectiveProperties` (issue
+   *   #1612). Every skip reachable here is on the REPLAY-create path (the
+   *   rollback executor's reverse-replacement arm), where the bucket is brand
+   *   new and nothing was applied — so the override DROPS the key rather than
+   *   retaining a previous value, because there is no previous value to keep.
+   *   The per-item arrays keep the items that DID apply.
    */
   private async applyAllSubConfigsForCreate(
     bucketName: string,
     properties: Record<string, unknown>,
     context?: CreateContext
-  ): Promise<void> {
+  ): Promise<Map<string, unknown>> {
+    const overrides = new Map<string, unknown>();
+    /** Record a per-ITEM skip set: nothing to substitute on a fresh bucket. */
+    const dropSkippedItems = (
+      key: string,
+      configs: Array<Record<string, unknown>>,
+      skippedIndexes: number[]
+    ): void => {
+      if (skippedIndexes.length === 0) return;
+      const skipped = new Set(skippedIndexes);
+      overrides.set(
+        key,
+        S3BucketProvider.buildEffectiveItemArray(configs, undefined, (_item, index) =>
+          skipped.has(index)
+        )
+      );
+    };
     // `create()` is NOT always template-borne: `rollback-executor.ts`'s
     // reverse-replacement arm revives the OLD resource by calling
     // `create(..., previousState.properties, REPLAYING_STATE_CREATE_CONTEXT)`.
@@ -2896,7 +3194,12 @@ export class S3BucketProvider implements ResourceProvider {
       Array.isArray(lifecycleConfig.Rules) &&
       lifecycleConfig.Rules.length > 0
     ) {
-      await this.applyLifecycleConfiguration(bucketName, lifecycleConfig, replayOnUnusable);
+      const applied = await this.applyLifecycleConfiguration(
+        bucketName,
+        lifecycleConfig,
+        replayOnUnusable
+      );
+      if (!applied) overrides.set('LifecycleConfiguration', undefined);
     }
 
     // Logging
@@ -2924,6 +3227,7 @@ export class S3BucketProvider implements ResourceProvider {
         `${loggingRefusal}. Skipping the logging configuration; the same value is REFUSED on a ` +
           `template-path create`
       );
+      overrides.set('LoggingConfiguration', undefined);
     } else {
       const loggingDestination = readConfigString(
         loggingConfig,
@@ -2932,7 +3236,12 @@ export class S3BucketProvider implements ResourceProvider {
         'AWS::S3::Bucket LoggingConfiguration'
       );
       if (loggingDestination !== '') {
-        await this.applyLoggingConfiguration(bucketName, loggingConfig, replayOnUnusable);
+        const applied = await this.applyLoggingConfiguration(
+          bucketName,
+          loggingConfig,
+          replayOnUnusable
+        );
+        if (!applied) overrides.set('LoggingConfiguration', undefined);
       }
     }
 
@@ -2955,7 +3264,11 @@ export class S3BucketProvider implements ResourceProvider {
       | Array<Record<string, unknown>>
       | undefined;
     if (metricsConfigs && Array.isArray(metricsConfigs) && metricsConfigs.length > 0) {
-      await this.applyMetricsConfigurations(bucketName, metricsConfigs, replayOnUnusable);
+      dropSkippedItems(
+        'MetricsConfigurations',
+        metricsConfigs,
+        await this.applyMetricsConfigurations(bucketName, metricsConfigs, replayOnUnusable)
+      );
     }
 
     // Analytics Configurations
@@ -2963,7 +3276,11 @@ export class S3BucketProvider implements ResourceProvider {
       | Array<Record<string, unknown>>
       | undefined;
     if (analyticsConfigs && Array.isArray(analyticsConfigs) && analyticsConfigs.length > 0) {
-      await this.applyAnalyticsConfigurations(bucketName, analyticsConfigs, replayOnUnusable);
+      dropSkippedItems(
+        'AnalyticsConfigurations',
+        analyticsConfigs,
+        await this.applyAnalyticsConfigurations(bucketName, analyticsConfigs, replayOnUnusable)
+      );
     }
 
     // Intelligent Tiering Configurations
@@ -2971,7 +3288,11 @@ export class S3BucketProvider implements ResourceProvider {
       | Array<Record<string, unknown>>
       | undefined;
     if (itConfigs && Array.isArray(itConfigs) && itConfigs.length > 0) {
-      await this.applyIntelligentTieringConfigurations(bucketName, itConfigs, replayOnUnusable);
+      dropSkippedItems(
+        'IntelligentTieringConfigurations',
+        itConfigs,
+        await this.applyIntelligentTieringConfigurations(bucketName, itConfigs, replayOnUnusable)
+      );
     }
 
     // Inventory Configurations
@@ -2979,7 +3300,11 @@ export class S3BucketProvider implements ResourceProvider {
       | Array<Record<string, unknown>>
       | undefined;
     if (inventoryConfigs && Array.isArray(inventoryConfigs) && inventoryConfigs.length > 0) {
-      await this.applyInventoryConfigurations(bucketName, inventoryConfigs, replayOnUnusable);
+      dropSkippedItems(
+        'InventoryConfigurations',
+        inventoryConfigs,
+        await this.applyInventoryConfigurations(bucketName, inventoryConfigs, replayOnUnusable)
+      );
     }
 
     // Replication Configuration
@@ -2987,7 +3312,12 @@ export class S3BucketProvider implements ResourceProvider {
       | Record<string, unknown>
       | undefined;
     if (replConfig) {
-      await this.applyReplicationConfiguration(bucketName, replConfig, replayOnUnusable);
+      const applied = await this.applyReplicationConfiguration(
+        bucketName,
+        replConfig,
+        replayOnUnusable
+      );
+      if (!applied) overrides.set('ReplicationConfiguration', undefined);
     }
 
     // Object Lock Configuration (rule/retention, not the ObjectLockEnabled flag)
@@ -2997,6 +3327,7 @@ export class S3BucketProvider implements ResourceProvider {
     if (objectLockConfig) {
       await this.applyObjectLockConfiguration(bucketName, objectLockConfig);
     }
+    return overrides;
   }
 
   /**
@@ -3070,11 +3401,18 @@ export class S3BucketProvider implements ResourceProvider {
       // bucket that AWS will reject on the next redeploy. The cleanup
       // is gated on `createdNewBucket` so we never delete a pre-existing
       // bucket. See Issue #376 for the cross-provider sweep.
+      let effectiveOverrides: Map<string, unknown>;
       try {
-        await this.applyConfiguration(bucketName, properties, {
+        effectiveOverrides = await this.applyConfiguration(bucketName, properties, {
           ...(context ? { context } : {}),
         });
-        await this.applyAllSubConfigsForCreate(bucketName, properties, context);
+        for (const [key, value] of await this.applyAllSubConfigsForCreate(
+          bucketName,
+          properties,
+          context
+        )) {
+          effectiveOverrides.set(key, value);
+        }
       } catch (innerError) {
         if (createdNewBucket) {
           try {
@@ -3095,9 +3433,18 @@ export class S3BucketProvider implements ResourceProvider {
 
       this.logger.debug(`Successfully created S3 bucket ${logicalId}: ${bucketName}`);
 
+      // Anything a replay downgrade SKIPPED is dropped from the recorded bag,
+      // so state describes the bucket AWS actually holds (issue #1612). Absent
+      // on every template-path create — no downgrade is reachable there.
+      const effectiveProperties = S3BucketProvider.applyEffectiveOverrides(
+        properties,
+        effectiveOverrides
+      );
+
       return {
         physicalId: bucketName,
         attributes,
+        ...(effectiveProperties ? { effectiveProperties } : {}),
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
@@ -3145,14 +3492,23 @@ export class S3BucketProvider implements ResourceProvider {
       // REMOVING one resets it like CloudFormation does (issue #1466).
       // What is left on the always-PUT path here is
       // `PublicAccessBlockConfiguration`, which is at CFn parity.
-      await this.applyConfiguration(physicalId, properties, {
+      // Empty in practice — `skipDiffManaged` withholds the only applier here
+      // that can skip — but merged rather than discarded so a future skip on
+      // the always-PUT path cannot go unrecorded (issue #1612).
+      const effectiveOverrides = await this.applyConfiguration(physicalId, properties, {
         skipTags: true,
         skipDiffManaged: true,
       });
 
       // Apply diff-aware Put/Delete for the sub-configs that have proper
       // Put/Delete API pairs.
-      await this.applySubConfigDiffs(physicalId, properties, previousProperties);
+      for (const [key, value] of await this.applySubConfigDiffs(
+        physicalId,
+        properties,
+        previousProperties
+      )) {
+        effectiveOverrides.set(key, value);
+      }
 
       // Apply tag diff. S3 uses PutBucketTagging (full-replace) and
       // DeleteBucketTagging when the new tag set is empty.
@@ -3166,10 +3522,20 @@ export class S3BucketProvider implements ResourceProvider {
 
       this.logger.debug(`Successfully updated S3 bucket ${logicalId}`);
 
+      // Any Put a warn-and-skip arm declined leaves the PREVIOUSLY applied
+      // configuration live, so state records that rather than the desired
+      // value AWS never received (issue #1612). Absent when nothing was
+      // skipped, which is every ordinary update.
+      const effectiveProperties = S3BucketProvider.applyEffectiveOverrides(
+        properties,
+        effectiveOverrides
+      );
+
       return {
         physicalId,
         wasReplaced: false,
         attributes,
+        ...(effectiveProperties ? { effectiveProperties } : {}),
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
