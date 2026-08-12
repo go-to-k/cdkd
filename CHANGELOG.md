@@ -1,3 +1,10 @@
+## [0.280.42](https://github.com/go-to-k/cdkd/compare/v0.280.41...v0.280.42) (2026-08-12)
+
+
+### Bug Fixes
+
+* **s3tables:** verify a supplied physicalId before adopting it on import ([#1679](https://github.com/go-to-k/cdkd/issues/1679)) ([fd83c96](https://github.com/go-to-k/cdkd/commit/fd83c9686a86eca603ca11e193560ea7b40dee46))
+
 ## [0.280.41](https://github.com/go-to-k/cdkd/compare/v0.280.40...v0.280.41) (2026-08-12)
 
 
