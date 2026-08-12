@@ -36,6 +36,14 @@ vi.mock('../../../src/utils/logger.js', () => {
   };
 });
 
+// `AppSyncProvider` reconstructs the child types' `Ref` ARNs through the shared
+// STS-backed resolver (issue #1681). Mocked so a unit test never reaches STS —
+// without this the suite's result depends on the machine's AWS credentials.
+vi.mock('../../../src/deployment/intrinsic-function-resolver.js', () => ({
+  getAccountInfo: () =>
+    Promise.resolve({ partition: 'aws', region: 'us-east-1', accountId: '123456789012' }),
+}));
+
 import {
   CreateGraphqlApiCommand,
   DeleteGraphqlApiCommand,

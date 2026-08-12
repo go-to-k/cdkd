@@ -68,6 +68,8 @@ import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import { requireConfigArray } from '../config-shape.js';
 import { packCompositeId } from '../composite-id.js';
+import { getAccountInfo } from '../../deployment/intrinsic-function-resolver.js';
+import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
 import type {
   CreateContext,
   ResourceProvider,
@@ -232,6 +234,140 @@ export class AppSyncProvider implements ResourceProvider {
       this.client = new AppSyncClient(this.providerRegion ? { region: this.providerRegion } : {});
     }
     return this.client;
+  }
+
+  /**
+   * Build a child-resource ARN from the deploy's REAL partition / region /
+   * account (issue #1681).
+   *
+   * The three child types record an ARN attribute because CloudFormation's
+   * `Ref` for each of them returns the resource ARN (docs-verified 2026-08-12)
+   * and `Fn::GetAtt` serves the same value from the same cached map — this
+   * provider's `getAttribute` always resolves `undefined`, so the recorded
+   * attribute is the ONLY source for both intrinsics.
+   *
+   * Until #1681 those attributes were string-built as
+   * `arn:aws:appsync:*:*:...`, i.e. with literal `*` in the region and account
+   * positions, so every consumer received an ARN AWS cannot resolve. Prefer the
+   * ARN the create response reports (`dataSourceArn` / `resolverArn`); this
+   * helper is for `AWS::AppSync::ApiKey`, whose `CreateApiKey` response carries
+   * no ARN field at all, and as the fallback for the other two when a response
+   * comes back without one.
+   *
+   * `getAccountInfo` is the same STS-backed, process-cached resolver
+   * `CloudControlProvider` uses for its own ARN reconstruction, so this costs
+   * at most one `GetCallerIdentity` per deploy.
+   */
+  private async buildAppSyncArn(suffix: string): Promise<string> {
+    const region = this.providerRegion ?? (await this.getClient().config.region());
+    const accountInfo = await getAccountInfo(region);
+    // The PARTITION comes from the region, NOT from `accountInfo.partition` —
+    // that field is hardcoded to `'aws'` (`intrinsic-function-resolver.ts`,
+    // with its own "Could be aws-cn, aws-us-gov, etc." admission). Using it
+    // would be inert on the create path (AWS reports the real ARN there) but
+    // actively WRONG on the update path, where `childRefAttributes` rebuilds
+    // the ARN on every in-place update: a correct `arn:aws-cn:` /
+    // `arn:aws-us-gov:` value recorded at create time would be overwritten
+    // with `arn:aws:`. `derivePartitionAndUrlSuffix` is the closed mapping the
+    // repo already uses for `${AWS::Partition}`.
+    const { partition } = derivePartitionAndUrlSuffix(accountInfo.region);
+    return `arn:${partition}:appsync:${accountInfo.region}:${accountInfo.accountId}:${suffix}`;
+  }
+
+  /**
+   * {@link buildAppSyncArn} for the POST-CREATE sites, where throwing is not an
+   * option (issue #1681 PR review).
+   *
+   * Moving the ARN build outside the create `try` stops a failure being
+   * re-labelled as a creation failure — but on its own it does NOT stop the
+   * resource being orphaned: `create()` still throws, the engine still journals
+   * no physicalId for a failed CREATE, and the resource still sits in AWS
+   * untracked (the issue #1710 class). Since the ARN is bookkeeping and the
+   * resource already exists, the honest answer is to never fail the create for
+   * it: warn, omit the attribute, and let `Ref` fall back to the compound id
+   * exactly as it does for an imported child. The resource's next update heals
+   * the record via `childRefAttributes`.
+   */
+  private async buildAppSyncArnOrWarn(
+    suffix: string,
+    logicalId: string,
+    physicalId: string
+  ): Promise<string | undefined> {
+    try {
+      return await this.buildAppSyncArn(suffix);
+    } catch (error) {
+      this.logger.warn(
+        `Created ${logicalId} (${physicalId}) but could not build its ARN attribute: ` +
+          `${error instanceof Error ? error.message : String(error)}. ` +
+          `Ref will resolve to the compound physical id until the next update.`
+      );
+      return undefined;
+    }
+  }
+
+  /**
+   * Rebuild a child type's COMPLETE attribute set from its compound physical id
+   * (issue #1681), for the update path to return.
+   *
+   * This is what heals a record written by a pre-#1681 binary. `update()`
+   * previously returned no attributes, and the deploy engine carries the
+   * existing ones forward when a provider reports none — so without this a
+   * resource created before the fix would keep its `arn:aws:appsync:*:*:...`
+   * placeholder for the rest of its life, since only a REPLACEMENT re-runs
+   * `create()`. `Fn::GetAtt` reads the same cached map, so the placeholder was
+   * breaking that intrinsic too, independently of the `Ref` defect #1681 is
+   * about.
+   *
+   * It must return EVERY key the create path records, not just the ARN: an
+   * `attributes` map returned from `update()` REPLACES the record's map
+   * wholesale rather than merging into it (`deploy-engine.ts`), so a partial
+   * answer would silently drop `Name` / `ApiKey`.
+   *
+   * Returns `undefined` for an id whose arity does not match the type — a
+   * record that malformed cannot be healed by guessing, and carrying the
+   * existing attributes forward is the safe answer.
+   */
+  private async childRefAttributes(
+    resourceType: string,
+    physicalId: string
+  ): Promise<Record<string, unknown> | undefined> {
+    const parts = physicalId.split('|');
+    if (resourceType === 'AWS::AppSync::DataSource' && parts.length === 2) {
+      const [apiId, name] = parts as [string, string];
+      return {
+        DataSourceArn: await this.buildAppSyncArn(`apis/${apiId}/datasources/${name}`),
+        Name: name,
+      };
+    }
+    if (resourceType === 'AWS::AppSync::Resolver' && parts.length === 3) {
+      const [apiId, typeName, fieldName] = parts as [string, string, string];
+      return {
+        ResolverArn: await this.buildAppSyncArn(
+          `apis/${apiId}/types/${typeName}/resolvers/${fieldName}`
+        ),
+      };
+    }
+    if (resourceType === 'AWS::AppSync::ApiKey' && parts.length === 2) {
+      const [apiId, apiKeyId] = parts as [string, string];
+      return {
+        ApiKey: apiKeyId,
+        Arn: await this.buildAppSyncArn(`apis/${apiId}/apikey/${apiKeyId}`),
+      };
+    }
+    return undefined;
+  }
+
+  /**
+   * The no-replacement update result for a child type, carrying the healed
+   * attribute set (issue #1681). Reporting none is still the correct answer for
+   * an unhealable id — the engine then carries the existing attributes forward.
+   */
+  private async childUpdateResult(
+    resourceType: string,
+    physicalId: string
+  ): Promise<ResourceUpdateResult> {
+    const attributes = await this.childRefAttributes(resourceType, physicalId);
+    return { physicalId, wasReplaced: false, ...(attributes && { attributes }) };
   }
 
   /**
@@ -684,7 +820,7 @@ export class AppSyncProvider implements ResourceProvider {
     );
 
     if (!wantUpdate) {
-      return { physicalId, wasReplaced: false };
+      return this.childUpdateResult(resourceType, physicalId);
     }
 
     const input: UpdateDataSourceCommandInput = {
@@ -701,7 +837,7 @@ export class AppSyncProvider implements ResourceProvider {
       throw this.wrapUpdateError(error, resourceType, logicalId, physicalId, 'DataSource');
     }
 
-    return { physicalId, wasReplaced: false };
+    return this.childUpdateResult(resourceType, physicalId);
   }
 
   private async updateResolver(
@@ -766,7 +902,7 @@ export class AppSyncProvider implements ResourceProvider {
     );
 
     if (!wantUpdate) {
-      return { physicalId, wasReplaced: false };
+      return this.childUpdateResult(resourceType, physicalId);
     }
 
     const input: UpdateResolverCommandInput = {
@@ -796,7 +932,7 @@ export class AppSyncProvider implements ResourceProvider {
       throw this.wrapUpdateError(error, resourceType, logicalId, physicalId, 'Resolver');
     }
 
-    return { physicalId, wasReplaced: false };
+    return this.childUpdateResult(resourceType, physicalId);
   }
 
   private async updateApiKey(
@@ -835,7 +971,7 @@ export class AppSyncProvider implements ResourceProvider {
     const oldExp = previousProperties['Expires'] as number | undefined;
 
     if (newDesc === oldDesc && newExp === oldExp) {
-      return { physicalId, wasReplaced: false };
+      return this.childUpdateResult(resourceType, physicalId);
     }
 
     const input: UpdateApiKeyCommandInput = {
@@ -851,7 +987,7 @@ export class AppSyncProvider implements ResourceProvider {
       throw this.wrapUpdateError(error, resourceType, logicalId, physicalId, 'ApiKey');
     }
 
-    return { physicalId, wasReplaced: false };
+    return this.childUpdateResult(resourceType, physicalId);
   }
 
   /**
@@ -2282,6 +2418,7 @@ export class AppSyncProvider implements ResourceProvider {
         : undefined
     );
 
+    let reportedArn: string | undefined;
     try {
       const input: CreateDataSourceCommandInput = {
         apiId,
@@ -2292,17 +2429,11 @@ export class AppSyncProvider implements ResourceProvider {
       // Shared with updateDataSource so create and update cannot diverge.
       this.applyDataSourceConfig(input, resourceType, logicalId, properties);
 
-      await this.getClient().send(new CreateDataSourceCommand(input));
+      const response = await this.getClient().send(new CreateDataSourceCommand(input));
+      // Recorded, not consumed, inside the try — see the return below.
+      reportedArn = response.dataSource?.dataSourceArn;
 
       this.logger.debug(`Successfully created DataSource ${logicalId}: ${physicalId}`);
-
-      return {
-        physicalId,
-        attributes: {
-          DataSourceArn: `arn:aws:appsync:*:*:apis/${apiId}/datasources/${name}`,
-          Name: name,
-        },
-      };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
@@ -2313,6 +2444,33 @@ export class AppSyncProvider implements ResourceProvider {
         cause
       );
     }
+
+    // OUTSIDE the try, and non-throwing: the data source EXISTS from here on.
+    // Placement alone only stops the failure being MIS-LABELLED as a creation
+    // failure — `create()` would still throw, and a failed CREATE journals no
+    // physicalId, so the rollback executor would skip it and leave the resource
+    // in AWS invisible to state (the issue #1710 class). `buildAppSyncArnOrWarn`
+    // is what actually closes that: the ARN is bookkeeping, the resource is
+    // already real, so a failure warns and omits rather than failing the create.
+    const dataSourceArn =
+      reportedArn ??
+      (await this.buildAppSyncArnOrWarn(
+        `apis/${apiId}/datasources/${name}`,
+        logicalId,
+        physicalId
+      ));
+    return {
+      physicalId,
+      attributes: {
+        // CFn's `Ref` AND `Fn::GetAtt DataSourceArn` both return the data
+        // source ARN `.../apis/<apiId>/datasources/<name>` (docs-verified
+        // 2026-08-12). `CreateDataSource` reports the real one, so take it
+        // verbatim rather than string-building; see `buildAppSyncArn` for why
+        // the fallback exists and what the pre-#1681 placeholder broke.
+        ...(dataSourceArn !== undefined && { DataSourceArn: dataSourceArn }),
+        Name: name,
+      },
+    };
   }
 
   private async deleteDataSource(
@@ -2400,6 +2558,7 @@ export class AppSyncProvider implements ResourceProvider {
         : undefined
     );
 
+    let reportedArn: string | undefined;
     try {
       const input: CreateResolverCommandInput = {
         apiId,
@@ -2411,16 +2570,11 @@ export class AppSyncProvider implements ResourceProvider {
       // (incl. the Kind discriminator gating and the *S3Location fetches).
       await this.applyResolverConfig(input, resourceType, logicalId, properties);
 
-      await this.getClient().send(new CreateResolverCommand(input));
+      const response = await this.getClient().send(new CreateResolverCommand(input));
+      // Recorded, not consumed, inside the try — see the return below.
+      reportedArn = response.resolver?.resolverArn;
 
       this.logger.debug(`Successfully created Resolver ${logicalId}: ${physicalId}`);
-
-      return {
-        physicalId,
-        attributes: {
-          ResolverArn: `arn:aws:appsync:*:*:apis/${apiId}/types/${typeName}/resolvers/${fieldName}`,
-        },
-      };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
@@ -2431,6 +2585,26 @@ export class AppSyncProvider implements ResourceProvider {
         cause
       );
     }
+
+    // OUTSIDE the try, and non-throwing — see `createDataSource` for the full
+    // reasoning (issue #1710: a throw after a successful create orphans the
+    // resource, and placement alone does not prevent that).
+    const resolverArn =
+      reportedArn ??
+      (await this.buildAppSyncArnOrWarn(
+        `apis/${apiId}/types/${typeName}/resolvers/${fieldName}`,
+        logicalId,
+        physicalId
+      ));
+    return {
+      physicalId,
+      attributes: {
+        // CFn's `Ref` AND `Fn::GetAtt ResolverArn` both return the resolver
+        // ARN `.../apis/<apiId>/types/<type>/resolvers/<field>`
+        // (docs-verified 2026-08-12); `CreateResolver` reports the real one.
+        ...(resolverArn !== undefined && { ResolverArn: resolverArn }),
+      },
+    };
   }
 
   private async deleteResolver(
@@ -2542,11 +2716,26 @@ export class AppSyncProvider implements ResourceProvider {
         : undefined
     );
 
+    // Always rebuilt — `CreateApiKey` reports no ARN at all — so this is the
+    // arm most exposed to the post-create throw described in `createDataSource`.
+    const apiKeyArn = await this.buildAppSyncArnOrWarn(
+      `apis/${apiId}/apikey/${apiKeyId}`,
+      logicalId,
+      physicalId
+    );
+
     return {
       physicalId,
       attributes: {
         ApiKey: apiKeyId,
-        Arn: `arn:aws:appsync:*:*:apis/${apiId}/apikeys/${apiKeyId}`,
+        // CFn's `Ref` for this type returns the API key ARN, documented as
+        // `arn:aws:appsync:us-east-1:123456789012:apis/graphqlapiid/apikey/apikeya1bzhi`
+        // (docs-verified 2026-08-12) — note the segment is SINGULAR `apikey`.
+        // Unlike its DataSource / Resolver siblings, `CreateApiKey` reports no
+        // ARN at all, so this one must be reconstructed. The pre-#1681 value
+        // was wrong twice over: a literal `*:*` for region / account, and the
+        // plural `apikeys`.
+        ...(apiKeyArn !== undefined && { Arn: apiKeyArn }),
       },
     };
   }

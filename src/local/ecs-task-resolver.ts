@@ -156,21 +156,14 @@ export interface ResolvedEcsVolume {
 export { EcsTaskResolutionError };
 
 /**
- * Derive the AWS partition / URL suffix for an AWS region. Same mapping
- * CloudFormation applies to `${AWS::Partition}` / `${AWS::URLSuffix}`.
- * Exported so the CLI can keep the STS hop minimal — caller passes the
- * region in once, this returns the matching partition + suffix.
+ * Derive the AWS partition / URL suffix for an AWS region.
+ *
+ * The IMPLEMENTATION moved to `src/utils/aws-partition.ts` (issue #1681 PR
+ * review): it gained a consumer in the provisioning layer, and a provider
+ * importing from `src/local/**` would invert the layering. Re-exported here so
+ * every existing `cdkd local *` call site is unchanged.
  */
-export function derivePartitionAndUrlSuffix(region: string): {
-  partition: string;
-  urlSuffix: string;
-} {
-  if (region.startsWith('cn-')) return { partition: 'aws-cn', urlSuffix: 'amazonaws.com.cn' };
-  if (region.startsWith('us-gov-')) return { partition: 'aws-us-gov', urlSuffix: 'amazonaws.com' };
-  if (region.startsWith('us-iso-')) return { partition: 'aws-iso', urlSuffix: 'c2s.ic.gov' };
-  if (region.startsWith('us-isob-')) return { partition: 'aws-iso-b', urlSuffix: 'sc2s.sgov.gov' };
-  return { partition: 'aws', urlSuffix: 'amazonaws.com' };
-}
+export { derivePartitionAndUrlSuffix } from '../utils/aws-partition.js';
 
 /**
  * Optional substitution data fed into `parseContainerImage`. Closes issue

@@ -3051,6 +3051,234 @@ describe('IntrinsicFunctionResolver - Ref to AWS::ApiGateway::Model', () => {
     expect(cfnRefValueFromPhysicalId('AWS::Glue::Table', 'mydb|my_table')).toBe('my_table');
   });
 
+  // Issue #1681, INTERIOR-segment mechanism. `Route53Provider` stores
+  // `<hostedZoneId>|<name>|<type>` while CFn's `Ref` returns "the name of the
+  // record" (docs-verified 2026-08-12) — the MIDDLE segment, which is why this
+  // type could not join either existing Set. The assertion is on the RESOLVED
+  // VALUE: the two pre-existing extractions BOTH return something plausible
+  // here (`A` after-last-pipe, the zone id before-first-pipe), so a membership
+  // check would not distinguish a correct entry from either wrong one.
+  it('Ref to AWS::Route53::RecordSet returns the record name, not the compound physical id', async () => {
+    const template: CloudFormationTemplate = {
+      Resources: { MyRecord: { Type: 'AWS::Route53::RecordSet', Properties: {} } },
+    };
+    const context: ResolverContext = {
+      template,
+      resources: {
+        MyRecord: {
+          physicalId: 'Z1D633PJN98FT9|www.example.com.|A',
+          resourceType: 'AWS::Route53::RecordSet',
+          properties: {},
+          attributes: {},
+          dependencies: [],
+        },
+      },
+    };
+
+    const result = await resolver.resolve({ Ref: 'MyRecord' }, context);
+    // CloudFormation's value carries the trailing dot form.
+    expect(result).toBe('www.example.com.');
+  });
+
+  // The shape a real consumer takes — `CfnOutput(value: record.ref)` or an
+  // alias target composed with Fn::Join. Pre-fix this emitted
+  // `https://Z1D633PJN98FT9|www.example.com.|A`, which is unusable.
+  it('Fn::Join over a Route53 RecordSet Ref composes the record name', async () => {
+    const template: CloudFormationTemplate = {
+      Resources: { MyRecord: { Type: 'AWS::Route53::RecordSet', Properties: {} } },
+    };
+    const context: ResolverContext = {
+      template,
+      resources: {
+        MyRecord: {
+          physicalId: 'Z1D633PJN98FT9|www.example.com.|A',
+          resourceType: 'AWS::Route53::RecordSet',
+          properties: {},
+          attributes: {},
+          dependencies: [],
+        },
+      },
+    };
+
+    const result = await resolver.resolve(
+      { 'Fn::Join': ['', ['https://', { Ref: 'MyRecord' }]] },
+      context
+    );
+    expect(result).toBe('https://www.example.com.');
+  });
+
+  // Negative polarity for the interior-segment entry: the extraction is
+  // EXACT-arity, so anything that is not a 3-part id passes through raw rather
+  // than confidently returning a wrong middle segment. Exercised through the
+  // pure function because `cdkd orphan`'s rewriter shares it with the resolver.
+  it.each([
+    // A mis-arity'd id (a record name containing `|`) — rejected everywhere
+    // else in cdkd, so returning `parts[1]` here would be a confident wrong
+    // answer rather than a recovery.
+    ['Z1D633PJN98FT9|a|b|A'],
+    // A pipe-free id: no compound to extract from.
+    ['www.example.com.'],
+    // Two segments: not the shape the provider writes.
+    ['Z1D633PJN98FT9|www.example.com.'],
+  ])('cfnRefValueFromPhysicalId passes a non-3-part RecordSet id (%s) through raw', (id) => {
+    expect(cfnRefValueFromPhysicalId('AWS::Route53::RecordSet', id)).toBe(id);
+  });
+
+  // PR-review finding: right ARITY, EMPTY middle segment. Returning `''` would
+  // hand a consumer a value cdkd itself refuses to decode —
+  // `parseRecordSetCompositeId` rejects an empty segment and treats such an id
+  // as the legacy scalar shape.
+  it('cfnRefValueFromPhysicalId passes a 3-part RecordSet id with an empty name through raw', () => {
+    expect(cfnRefValueFromPhysicalId('AWS::Route53::RecordSet', 'Z1D633PJN98FT9||A')).toBe(
+      'Z1D633PJN98FT9||A'
+    );
+  });
+
+  // Issue #1681, ARN-FROM-STATE mechanism. All three AppSync children pack a
+  // compound id while CFn's `Ref` returns the resource ARN (docs-verified
+  // 2026-08-12) — no segment of the id reconstructs it, so the value is
+  // recovered from the ARN attribute `AppSyncProvider` records at create time.
+  it.each([
+    [
+      'AWS::AppSync::DataSource',
+      'abcd1234|myDataSource',
+      { DataSourceArn: 'arn:aws:appsync:us-east-1:123456789012:apis/abcd1234/datasources/myDataSource' },
+      'arn:aws:appsync:us-east-1:123456789012:apis/abcd1234/datasources/myDataSource',
+    ],
+    [
+      'AWS::AppSync::Resolver',
+      'abcd1234|Query|getItem',
+      {
+        ResolverArn:
+          'arn:aws:appsync:us-east-1:123456789012:apis/abcd1234/types/Query/resolvers/getItem',
+      },
+      'arn:aws:appsync:us-east-1:123456789012:apis/abcd1234/types/Query/resolvers/getItem',
+    ],
+    [
+      // Note the SINGULAR `apikey` segment — the documented form.
+      'AWS::AppSync::ApiKey',
+      'abcd1234|da2-abcdefghij',
+      { Arn: 'arn:aws:appsync:us-east-1:123456789012:apis/abcd1234/apikey/da2-abcdefghij' },
+      'arn:aws:appsync:us-east-1:123456789012:apis/abcd1234/apikey/da2-abcdefghij',
+    ],
+  ])(
+    'Ref to %s returns the recorded ARN, not the compound physical id',
+    async (resourceType, physicalId, attributes, expected) => {
+      const template: CloudFormationTemplate = {
+        Resources: { R: { Type: resourceType, Properties: {} } },
+      };
+      const context: ResolverContext = {
+        template,
+        resources: {
+          R: {
+            physicalId,
+            resourceType,
+            properties: {},
+            attributes,
+            dependencies: [],
+          },
+        },
+      };
+
+      const result = await resolver.resolve({ Ref: 'R' }, context);
+      expect(result).toBe(expected);
+    }
+  );
+
+  // A record written before issue #1681 holds the placeholder
+  // `arn:aws:appsync:*:*:...`. The recovery must NOT hand that out: it is no
+  // more usable than the compound id it replaces and it LOOKS valid, so it
+  // fails further from the cause. Pre-#1681 behavior stands until the
+  // resource's next update heals the record.
+  it.each([
+    [
+      'AWS::AppSync::DataSource',
+      'abcd1234|myDataSource',
+      { DataSourceArn: 'arn:aws:appsync:*:*:apis/abcd1234/datasources/myDataSource' },
+    ],
+    [
+      'AWS::AppSync::Resolver',
+      'abcd1234|Query|getItem',
+      { ResolverArn: 'arn:aws:appsync:*:*:apis/abcd1234/types/Query/resolvers/getItem' },
+    ],
+    [
+      'AWS::AppSync::ApiKey',
+      'abcd1234|da2-abcdefghij',
+      // Note the plural `apikeys` the pre-fix provider wrote, alongside `*:*`.
+      { Arn: 'arn:aws:appsync:*:*:apis/abcd1234/apikeys/da2-abcdefghij' },
+    ],
+  ])(
+    'Ref to %s ignores a pre-#1681 placeholder ARN and returns the raw id',
+    async (resourceType, physicalId, attributes) => {
+      const template: CloudFormationTemplate = {
+        Resources: { R: { Type: resourceType, Properties: {} } },
+      };
+      const context: ResolverContext = {
+        template,
+        resources: {
+          R: { physicalId, resourceType, properties: {}, attributes, dependencies: [] },
+        },
+      };
+
+      const result = await resolver.resolve({ Ref: 'R' }, context);
+      expect(result).toBe(physicalId);
+    }
+  );
+
+  // The placeholder guard is POSITIONAL (region / account fields), not a
+  // substring match — an ARN whose RESOURCE segment legitimately contains `*`
+  // must still be accepted, or the guard would silently break real ARNs.
+  it('the placeholder guard accepts an ARN whose resource segment contains a wildcard', () => {
+    const arn = 'arn:aws:appsync:us-east-1:123456789012:apis/abcd1234/datasources/name*';
+    expect(
+      cfnRefValueFromPhysicalId('AWS::AppSync::DataSource', 'abcd1234|name*', (keys) =>
+        keys.includes('DataSourceArn') ? arn : undefined
+      )
+    ).toBe(arn);
+  });
+
+  // A TRUNCATED value has no region / account field to inspect, so the guard's
+  // `fields.length >= 5` arm declines to classify it as a placeholder and it is
+  // returned as-is. Pinned because the alternative reading — "anything short is
+  // suspect, fall back to the raw id" — is equally defensible, and silently
+  // flipping between them would change what a consumer receives.
+  it.each([
+    ['arn:aws:appsync', 'a truncated ARN with no region/account fields'],
+    ['not-an-arn-at-all', 'a non-ARN string'],
+  ])('the placeholder guard passes %s through (%s)', (recorded) => {
+    expect(
+      cfnRefValueFromPhysicalId('AWS::AppSync::DataSource', 'abcd1234|ds', (keys) =>
+        keys.includes('DataSourceArn') ? recorded : undefined
+      )
+    ).toBe(recorded);
+  });
+
+  // Deliberate degradation, matching the S3Tables / Backup / CodeCommit
+  // recoveries: an IMPORTED AppSync child records `attributes: {}`
+  // (`AppSyncProvider.import` returns the physical id only), so the lookup
+  // misses and the raw compound id is returned rather than a fabricated ARN.
+  it.each([
+    ['AWS::AppSync::DataSource', 'abcd1234|myDataSource'],
+    ['AWS::AppSync::Resolver', 'abcd1234|Query|getItem'],
+    ['AWS::AppSync::ApiKey', 'abcd1234|da2-abcdefghij'],
+  ])(
+    'Ref to an imported %s with no recorded ARN falls through to the raw id',
+    async (resourceType, physicalId) => {
+      const template: CloudFormationTemplate = {
+        Resources: { R: { Type: resourceType, Properties: {} } },
+      };
+      const context: ResolverContext = {
+        template,
+        resources: {
+          R: { physicalId, resourceType, properties: {}, attributes: {}, dependencies: [] },
+        },
+      };
+
+      const result = await resolver.resolve({ Ref: 'R' }, context);
+      expect(result).toBe(physicalId);
+    }
+  );
+
   // Reversed-order compounds (issue #963 family audit): Deployment and
   // DocumentationPart have primaryIdentifier `[<refId>, <restApiId>]` — the
   // `Ref` component comes FIRST, so the after-last-pipe extraction would

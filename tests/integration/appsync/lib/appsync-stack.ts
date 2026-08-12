@@ -400,5 +400,34 @@ schema {
       value: table.tableName,
       description: 'DynamoDB table name',
     });
+
+    // Issue #1681: `Ref` to any of the three AppSync CHILD types returns the
+    // resource ARN (all docs-verified), while cdkd stores a compound
+    // physicalId (`<apiId>|<name>`, `<apiId>|<typeName>|<fieldName>`,
+    // `<apiId>|<apiKeyId>`). The ARN is no SEGMENT of that id, so it cannot be
+    // extracted — the resolver recovers it from the ARN attribute the provider
+    // records at create time. Pre-fix these outputs resolved to the raw
+    // compound id.
+    //
+    // These also fence the SECOND half of #1681: the recorded attribute was
+    // string-built as `arn:aws:appsync:*:*:...`, with a literal `*` in the
+    // region AND account positions, so `Fn::GetAtt` on the same attribute was
+    // broken too. Asserting the output carries the real account / region is
+    // what distinguishes the fix from the bug — a placeholder ARN is produced
+    // by exactly the same code path.
+    new cdk.CfnOutput(this, 'DataSourceRef', {
+      value: dataSource.ref,
+      description: 'Ref of the DynamoDB DataSource — must be its real ARN',
+    });
+
+    new cdk.CfnOutput(this, 'ResolverRef', {
+      value: resolver.ref,
+      description: 'Ref of the GetItem Resolver — must be its real ARN',
+    });
+
+    new cdk.CfnOutput(this, 'ApiKeyRef', {
+      value: apiKey.ref,
+      description: 'Ref of the ApiKey — must be its real ARN (singular apikey segment)',
+    });
   }
 }

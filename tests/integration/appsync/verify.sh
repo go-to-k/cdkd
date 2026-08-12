@@ -196,6 +196,68 @@ NON_SDK_ROWS=$(echo "${STATE}" | jq -r '[.resources[]
 assert_eq "non-sdk Resolver/DataSource rows" "0" "${NON_SDK_ROWS}"
 echo "    Resolved AppSync API id: ${API_ID}"
 
+# --- Assertion: Ref to each CHILD type is its real ARN (issue #1681) ---
+# cdkd stores a compound physicalId for all three (`<apiId>|<name>`,
+# `<apiId>|<typeName>|<fieldName>`, `<apiId>|<apiKeyId>`), while
+# CloudFormation's `Ref` returns the resource ARN — which is no SEGMENT of
+# that id, so it is recovered from the ARN attribute the provider records at
+# create time. Pre-fix these outputs carried the raw compound id.
+#
+# The `:*:` check is the second half of the issue and is the part that would
+# silently pass a weaker assertion: the attribute used to be string-built as
+# `arn:aws:appsync:*:*:...`, so it WAS an `arn:`-prefixed value carrying the
+# right resource path — only the region and account positions were literal
+# `*`. Matching the real account id is what tells the fix from the bug.
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+assert_child_ref_arn() { # $1 = output name, $2 = expected ARN infix
+  local out_name="$1" expected_infix="$2" value
+  value=$(echo "${STATE}" | jq -r ".outputs.${out_name} // empty")
+  if [ -z "${value}" ]; then
+    echo "FAIL: no ${out_name} output in state" >&2
+    echo "${STATE}" | jq '.outputs' >&2
+    exit 1
+  fi
+  case "${value}" in
+    arn:*) ;;
+    *)
+      echo "FAIL: issue #1681 NOT closed — ${out_name} is not an ARN" >&2
+      echo "  got: ${value} (looks like cdkd's compound physicalId)" >&2
+      exit 1
+      ;;
+  esac
+  case "${value}" in
+    *":*:"*)
+      echo "FAIL: issue #1681 NOT closed — ${out_name} carries a wildcard region/account" >&2
+      echo "  got: ${value}" >&2
+      exit 1
+      ;;
+  esac
+  case "${value}" in
+    *":${ACCOUNT_ID}:"*) ;;
+    *)
+      echo "FAIL: ${out_name} does not carry this account id" >&2
+      echo "  got:      ${value}" >&2
+      echo "  expected: an ARN containing :${ACCOUNT_ID}:" >&2
+      exit 1
+      ;;
+  esac
+  case "${value}" in
+    *"${expected_infix}"*) ;;
+    *)
+      echo "FAIL: ${out_name} is not the expected resource ARN shape" >&2
+      echo "  got:      ${value}" >&2
+      echo "  expected: an ARN containing ${expected_infix}" >&2
+      exit 1
+      ;;
+  esac
+  echo "    OK: ${out_name} resolved to ${value}"
+}
+assert_child_ref_arn DataSourceRef "apis/${API_ID}/datasources/"
+assert_child_ref_arn ResolverRef "apis/${API_ID}/types/"
+# The segment is the SINGULAR `apikey` (docs-verified); cdkd wrote the plural
+# `apikeys` before #1681, so this also fences that half.
+assert_child_ref_arn ApiKeyRef "apis/${API_ID}/apikey/"
+
 echo "==> Phase 1 assertions: every config property reached AWS"
 # apiType / visibility are asserted at their AWS DEFAULTS: the non-default
 # values need infra this fixture cannot carry (MERGED needs a merged-API
