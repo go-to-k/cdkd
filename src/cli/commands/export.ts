@@ -263,9 +263,14 @@ const PRIMARY_IDENTIFIER_FALLBACK: Record<string, string> = {
  *   and MUST be complete (CFn rejects partial identifiers).
  * - `propertiesOverlay` (optional): subset of `resourceIdentifier` to write
  *   into the synth template's `Properties` block. Defaults to the full
- *   `resourceIdentifier` map (existing behavior for `AWS::ApiGateway::Method`
- *   and `AWS::EC2::VPCGatewayAttachment`, whose identifier fields ARE all
- *   writable Properties — `Method` has NO `readOnlyProperties` at all).
+ *   `resourceIdentifier` map — correct for `AWS::ApiGateway::Method`, which
+ *   has NO `readOnlyProperties` at all (live `DescribeType`, us-east-1,
+ *   2026-08-12). `AWS::EC2::VPCGatewayAttachment` was listed here too and is
+ *   NOT such a type: its identifier is `[AttachmentType, VpcId]` with
+ *   `AttachmentType` read-only, so its splitter neither produces the right
+ *   fields nor narrows the overlay — tracked as
+ *   https://github.com/go-to-k/cdkd/issues/1691 rather than fixed here, since
+ *   it is a different type's defect.
  *   Sub-resource types whose
  *   primaryIdentifier includes a generated-id field (`ResourceId` /
  *   `IntegrationId` / `RouteId` / Lambda::Permission's `Id`) MUST narrow to just the writable
@@ -316,9 +321,11 @@ const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
   // cdkd's SDK provider stores the BARE `resourceId` — `createResource`
   // returns `response.id` and every other method treats the physicalId as a
   // bare id, reading the parent `RestApiId` from the recorded properties. The
-  // LEGACY Cloud Control path produced `restApiId|resourceId` (CC joins a
-  // multi-part primaryIdentifier with `|`), so both shapes exist in state in
-  // the wild and BOTH are accepted here. Requiring the composite made
+  // The Cloud Control path produces `restApiId|resourceId` (CC joins a
+  // multi-part primaryIdentifier with `|`). That path is LIVE, not
+  // historical: the #614 silent-drop rule still auto-routes these types
+  // through Cloud Control, so both shapes exist in state in the wild and BOTH
+  // are accepted here. Requiring the composite made
   // `cdkd export` throw on every SDK-created Resource — on a value cdkd
   // itself wrote (issue #1663).
   //
@@ -335,7 +342,9 @@ const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
   // ResourceId — so the default overlay would have skipped it anyway. Narrow
   // it explicitly so the safety does not depend on that conditional.
   'AWS::ApiGateway::Resource': (physicalId, properties) => {
-    if (!physicalId) {
+    // `.trim()`, not truthiness: a blank id is as unusable as an empty one
+    // and would otherwise ship `ResourceId: ' '` into the changeset.
+    if (!physicalId.trim()) {
       throw new Error('empty physical id for AWS::ApiGateway::Resource (expected a resourceId)');
     }
     const parts = physicalId.split('|');

@@ -736,6 +736,13 @@ describe('splitCompositePhysicalId', () => {
     ).toThrow(/empty physical id/);
   });
 
+  it('throws on a BLANK ApiGateway::Resource physical id', () => {
+    // Truthiness alone lets ' ' through as `ResourceId: ' '`.
+    expect(() =>
+      splitCompositePhysicalId('AWS::ApiGateway::Resource', '   ', { RestApiId: 'api123' })
+    ).toThrow(/empty physical id/);
+  });
+
   it('throws on wrong part count for VPCGatewayAttachment', () => {
     expect(() =>
       splitCompositePhysicalId('AWS::EC2::VPCGatewayAttachment', 'three|parts|here')

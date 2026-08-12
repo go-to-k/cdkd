@@ -2430,4 +2430,58 @@ describe('ApiGatewayProvider', () => {
       expect(result).toBeUndefined();
     });
   });
+
+  describe('import() physicalId shape (issue #1663)', () => {
+    const baseInput = {
+      logicalId: 'HelloResource',
+      stackName: 'Stack',
+      region: 'us-east-1',
+      properties: {},
+    };
+
+    it('adopts a BARE resourceId for AWS::ApiGateway::Resource', async () => {
+      const result = await provider.import({
+        ...baseInput,
+        resourceType: 'AWS::ApiGateway::Resource',
+        knownPhysicalId: 'abc123',
+      });
+
+      expect(result).toEqual({ physicalId: 'abc123', attributes: {} });
+    });
+
+    it('REFUSES a composite for AWS::ApiGateway::Resource rather than orphaning it', async () => {
+      // Adopting it would send 'api123|abc123' to DeleteResource as a
+      // resource id, and deleteResource treats NotFoundException as an
+      // idempotent success -- so destroy would report the row deleted while
+      // the resource stayed live in AWS. Refuse where the user can still act.
+      const result = await provider.import({
+        ...baseInput,
+        resourceType: 'AWS::ApiGateway::Resource',
+        knownPhysicalId: 'api123|abc123',
+      });
+
+      expect(result).toBeNull();
+    });
+
+    it('still adopts the composite AWS::ApiGateway::Method genuinely stores', async () => {
+      // The other polarity: the refusal is scoped to the one type whose
+      // stored shape is unambiguously scalar. Method IS a composite.
+      const result = await provider.import({
+        ...baseInput,
+        resourceType: 'AWS::ApiGateway::Method',
+        knownPhysicalId: 'api123|abc123|GET',
+      });
+
+      expect(result).toEqual({ physicalId: 'api123|abc123|GET', attributes: {} });
+    });
+
+    it('declines without an override (explicit-override-only contract)', async () => {
+      const result = await provider.import({
+        ...baseInput,
+        resourceType: 'AWS::ApiGateway::Resource',
+      });
+
+      expect(result).toBeNull();
+    });
+  });
 });
