@@ -115,8 +115,19 @@ function at(value: unknown, ...path: Array<string | number>): unknown {
   return current;
 }
 
+/**
+ * `Enabled` is declared explicitly rather than left to the applier's
+ * `?? true` default, and that is deliberate: the Put always sends
+ * `IsEnabled` and `inventorySdkToCfn` always reads it back as `Enabled`, so an
+ * item that OMITS it records one fewer key than the readback produces. That
+ * gap is real but pre-existing and orthogonal to #1686 (it is the #1670
+ * defaulted-but-sent class, one property over — filed separately); declaring
+ * the value keeps the convergence row below measuring THIS fix rather than
+ * that one.
+ */
 const inventoryItem = (extra: Record<string, unknown>) => ({
   Id: 'i1',
+  Enabled: true,
   IncludedObjectVersions: 'All',
   Destination: { BucketArn: DEST_ARN, Format: 'CSV', Prefix: 'live/' },
   ...extra,
@@ -232,11 +243,17 @@ describe('#1686 UPDATE: inventory schedule is recorded in the CFn spelling', () 
     const desired = inventoryItem({ Schedule: { Frequency: 'Daily' } });
     const { result } = await updateInventory(desired);
 
+    // `Enabled` is load-bearing in this fixture: the Put always sends
+    // `IsEnabled: config['Enabled'] ?? true` and `inventorySdkToCfn` always
+    // reads it back as `Enabled`, so a snapshot omitting it has a different KEY
+    // COUNT and `deepEqual` reports drift — the row would then prove only
+    // "record == hand-shaped object" rather than "the readback matches".
     const awsCurrent = {
       BucketName: BUCKET,
       InventoryConfigurations: [
         {
           Id: 'i1',
+          Enabled: true,
           IncludedObjectVersions: 'All',
           Destination: { BucketArn: DEST_ARN, Format: 'CSV', Prefix: 'live/' },
           ScheduleFrequency: 'Daily',
@@ -301,7 +318,57 @@ describe('#1671 UPDATE: an empty rules collection skips the Put and records the 
     // template is a loud failure, so the user must not have to diff state.
     const warned = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
     expect(warned).toContain('LifecycleConfiguration.Rules');
-    expect(warned).toMatch(/empty array/i);
+    expect(warned).toMatch(/declares no rules/i);
+    expect(warned).toContain('recording the previously-applied value');
+  });
+
+  it('announces the CORS skip with its OWN joined path literal', async () => {
+    // Asserted separately from the lifecycle arm because the two pass DIFFERENT
+    // path literals, and the joined spelling is load-bearing: a bare
+    // `'CorsRules'` literal in this file retires the reviewed
+    // `AWS::S3::Bucket#CorsConfiguration.CorsRules` nested-key allow-list entry
+    // (measured). Without this row, swapping the CORS arm's path — or dropping
+    // its `emptyCollectionSkip` call for a bare `retainPrevious` — passes.
+    const properties = { BucketName: BUCKET, CorsConfiguration: { CorsRules: [] } };
+    await provider.update('B', BUCKET, RESOURCE_TYPE, properties, {
+      BucketName: BUCKET,
+      CorsConfiguration: LIVE_CORS,
+    });
+
+    const warned = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(warned).toContain('CorsConfiguration.CorsRules');
+    expect(warned).not.toContain('LifecycleConfiguration');
+  });
+
+  it('says nothing was applied before when the previous side declared none', async () => {
+    const properties = { BucketName: BUCKET, LifecycleConfiguration: { Rules: [] } };
+    await provider.update('B', BUCKET, RESOURCE_TYPE, properties, { BucketName: BUCKET });
+
+    // "recording the previously-applied value" would be a lie here — there is
+    // no previous value and the key is REMOVED from the record.
+    const warned = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(warned).toContain('nothing was applied before');
+    expect(warned).not.toContain('recording the previously-applied value');
+  });
+
+  it('also fires for an ABSENT / non-array collection, without claiming "empty array"', async () => {
+    // The guard is `!cfg.Rules || !Array.isArray(cfg.Rules) || length === 0`,
+    // so an unresolved intrinsic reaches it too. The wording must not assert a
+    // shape the value did not have.
+    const properties = {
+      BucketName: BUCKET,
+      LifecycleConfiguration: { Rules: { 'Fn::If': ['C', [], []] } } as unknown as {
+        Rules: Array<Record<string, unknown>>;
+      },
+    };
+    const result = await provider.update('B', BUCKET, RESOURCE_TYPE, properties, {
+      BucketName: BUCKET,
+      LifecycleConfiguration: LIVE_LIFECYCLE,
+    });
+
+    expect(sentCommands(PutBucketLifecycleConfigurationCommand)).toHaveLength(0);
+    expect(sentCommands(DeleteBucketLifecycleCommand)).toHaveLength(0);
+    expect(result.effectiveProperties?.['LifecycleConfiguration']).toEqual(LIVE_LIFECYCLE);
   });
 
   it('records the key as REMOVED when the previous side declared none', async () => {

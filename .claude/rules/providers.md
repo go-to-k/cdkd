@@ -432,7 +432,9 @@ details the skip path did not need:
 the effective array keeps the substituted item IN PLACE in its DECLARED branch
 shape (a CFn `Destination` block is accepted flattened AND nested, so writing
 back at a hardcoded branch leaves the malformed value alive at the other key
-and adds a stray one), and the recorder is handed the value the read RETURNED
+and adds a stray one) — but read that as scoped to a branch the READBACK can
+emit, because where it cannot (issue #1686) the declared spelling is exactly
+what must NOT be preserved, and the recorder is handed the value the read RETURNED
 rather than the fallback literal, so "what is recorded" and "what is sent"
 cannot drift apart. And weigh the #1643 bar first: both values here are literal
 SDK enum members the service stores verbatim, so a send-side record converges.
@@ -502,14 +504,40 @@ Three things generalize:
 Audit the whole type when fixing one of these, the way #1389 says to for the
 write side, and the audit is mechanical: diff every property name in the type's
 live registry schema against every key the provider reads off a desired-side
-bag. On `AWS::S3::Bucket` that is 158 names against four non-CFn reads, of which
-two (`IsEnabled`, `AccountId`) are legitimate SDK spellings read on the RESPONSE
-side and two are real — `Schedule` (fixed) and the analytics / inventory
-`Destination.S3BucketDestination` nested branch plus its `Bucket` / `BucketArn`
-alias, left as issue #1707 because it revisits #1670's write-back-at-the-
-declared-branch decision. No critic covers this direction today:
+bag. On `AWS::S3::Bucket` that is 158 schema names, and the class is WIDER than
+one property: besides `Schedule` (fixed) it covers the analytics / inventory
+`Destination.S3BucketDestination` nested branch with its `Bucket` / `BucketArn`
+alias, the notification `TopicArn` / `QueueArn` / `LambdaFunctionArn` reads
+(`readNotification` emits only `Topic` / `Queue` / `Function`), and the
+lifecycle `Date` alias (`readLifecycle` emits only `TransitionDate`) — all left
+as issue #1707. `IsEnabled` and `AccountId` look like members of the class and
+are NOT: they are legitimate SDK spellings read on the RESPONSE side.
+
+Two things about running that audit, both learned by getting them wrong. A
+plain bracket-read regex finds only the direct `config['X']` form and MISSES
+the `(a['X'] ?? a['Y'])` alias reads, which is most of the class — match the
+alias form explicitly. And a count is not a finding: the first pass reported
+"four non-CFn reads, two of them real" and the real number was larger, so state
+what you matched rather than a total. No critic covers this direction today:
 `gen-nested-key-coverage` audits CFn -> SDK spellings on the WRITE side, not SDK
 spellings TOLERATED on the desired side.
+
+**The recording fold needs its `canonicalizeDesiredProperties` twin, and the S3
+one is NOT shipped** (issue #1717). Re-ask the twin question at every such site
+rather than inheriting the #1670 "no twin" answer: that answer rests on finding
+3 (canonicalizing would CONCEAL a malformed value whose warning tells the user
+what to fix), and a never-emitted SPELLING has no fault to fix and emits no
+warning at all — so the twin's absence leaves a permanent `cdkd diff` line and a
+redundant Put with no explanation. Measured on the #1686 fold: an unchanged
+template redeploys as `1 to update` forever. It shipped anyway because the
+alternative is worse in the direction that MUTATES — without the fold, `cdkd
+drift` reports the key forever and `--revert` re-issues the call — and because
+the twin has a real obstacle worth knowing before you start: a
+`canonicalizeDesiredProperties` folding this key makes `gen-nested-key-coverage`
+report the still-correct plural->singular `segmentRenames` entry for
+`InventoryConfigurations` STALE, while removing that entry surfaces genuine
+`no-write-evidence` divergences. Each piece is inert alone; only the
+combination trips it.
 
 **An EMPTY COLLECTION is not a removal intent, and the skip that absorbs it must
 still record the previous value** (issue #1671, the ordinary-template half of

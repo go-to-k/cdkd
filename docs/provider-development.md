@@ -315,7 +315,19 @@ it `undefined` (`JSON.stringify` drops an `undefined` member but a cloned state
 record keeps it, so key-set walks disagree); and prefer normalizing over
 retracting the tolerance. Audit the whole type when you fix one — diff the
 type's live registry-schema property names against every key the provider reads
-off a desired-side bag.
+ off a desired-side bag. Match the `(a['X'] ?? a['Y'])` alias
+form explicitly — a plain bracket-read regex misses most of the class.
+
+Recording the folded spelling **needs its `canonicalizeDesiredProperties`
+twin**, and re-asking that question per site matters: the #1670 "no twin"
+answer rests on canonicalizing CONCEALING a malformed value whose warning tells
+the user what to fix, and a never-emitted spelling has no fault to fix and emits
+no warning. Without the twin the template keeps declaring the SDK spelling while
+state holds the CFn one, so `cdkd diff` reports the property forever and every
+deploy re-issues the Put (measured). cdkd's S3 case ships without it —
+deliberately, because the alternative is worse in the direction that MUTATES —
+and is tracked in issue
+[#1717](https://github.com/go-to-k/cdkd/issues/1717).
 
 **An EMPTY COLLECTION is not a removal intent** (issue
 [#1671](https://github.com/go-to-k/cdkd/issues/1671)). An applier that skips its

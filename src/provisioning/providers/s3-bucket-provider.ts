@@ -2130,6 +2130,33 @@ export class S3BucketProvider implements ResourceProvider {
       // fall-through, whose whole purpose is that a malformed
       // `ScheduleFrequency` lands on the value the record ALSO carries rather
       // than skipping a live inventory report.
+      // NO `canonicalizeDesiredProperties` twin, and unlike the #1670 sites next
+      // door that is a COST rather than a clean answer — recorded here because
+      // the rule requires the question to be re-asked per site, not inherited.
+      //
+      // Measured (us-east-1, 2026-08-12): with this fold and no twin, deploying
+      // an UNCHANGED template twice reports `0 to create, 1 to update, 0 to
+      // delete` on the second run, and `cdkd diff` shows `old: ScheduleFrequency`
+      // vs `new: Schedule.Frequency` forever, because state holds the folded
+      // spelling while the template still declares the SDK one.
+      //
+      // Shipped anyway, on the balance the rule's "worse than shipping neither"
+      // line is really about: WITHOUT the fold, state describes a key the
+      // readback can never emit, so `cdkd drift` reports it forever and
+      // `--revert` re-issues the call — a false positive on the command that
+      // MUTATES. WITH the fold, drift is clean (verified live) and the residue
+      // is a cosmetic `cdkd diff` line plus a redundant per-`Id` Put that is
+      // idempotent and cannot replace the bucket (`InventoryConfigurations` is
+      // neither create-only nor in the type's ReplacementRules entry). Trading a
+      // drift false-positive for a diff false-positive is a net improvement.
+      //
+      // The twin is deliberately NOT added here: it is a real change with a real
+      // obstacle — a `canonicalizeDesiredProperties` that folds this key makes
+      // `gen-nested-key-coverage` report the still-CORRECT plural->singular
+      // `segmentRenames` entry for `InventoryConfigurations` as stale, and
+      // removing that entry surfaces genuine `no-write-evidence` divergences on
+      // `Destination` / `Destination.BucketAccountId`. That interaction needs its
+      // own change; tracked separately.
       const declaresSdkSchedule = config['Schedule'] !== undefined;
       if (scheduleFrequencyRefusal !== undefined || declaresSdkSchedule) {
         recordSubstitution(['ScheduleFrequency'], frequency);
@@ -2908,13 +2935,21 @@ export class S3BucketProvider implements ResourceProvider {
   private emptyCollectionSkip(
     key: string,
     collectionPath: string,
+    previousProperties: Record<string, unknown>,
     retainPrevious: (key: string) => void
   ): void {
+    // The guard this fires from also covers an ABSENT / non-array collection (an
+    // unresolved intrinsic reaches it), so the wording says "declares no rules"
+    // rather than asserting an empty array the value may not have been.
+    const hadPrevious = previousProperties[key] !== undefined;
     this.logger.warn(
-      `AWS::S3::Bucket ${collectionPath} is an empty array, which CloudFormation rejects ` +
+      `AWS::S3::Bucket ${collectionPath} declares no rules, which CloudFormation rejects ` +
         `outright (the collection is a required property, and an empty one is not a removal ` +
-        `intent). Leaving the live ${key} untouched and recording the previously-applied ` +
-        `value; remove the whole ${key} property to delete the configuration.`
+        `intent). Leaving the live ${key} untouched and ` +
+        (hadPrevious
+          ? `recording the previously-applied value`
+          : `recording no ${key} (nothing was applied before)`) +
+        `; remove the whole ${key} property to delete the configuration.`
     );
     retainPrevious(key);
   }
@@ -3253,6 +3288,7 @@ export class S3BucketProvider implements ResourceProvider {
           this.emptyCollectionSkip(
             'LifecycleConfiguration',
             'LifecycleConfiguration.Rules',
+            previousProperties,
             retainPrevious
           );
           return;
@@ -3283,6 +3319,7 @@ export class S3BucketProvider implements ResourceProvider {
           this.emptyCollectionSkip(
             'CorsConfiguration',
             'CorsConfiguration.CorsRules',
+            previousProperties,
             retainPrevious
           );
           return;
