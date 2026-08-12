@@ -137,8 +137,25 @@ describe('Fn::Sub GetAtt refusal propagation (issue #1740)', () => {
     expect(subWarning).toBeDefined();
     expect(subWarning).toContain('could not be resolved');
     expect(subWarning).toContain('keeping placeholder');
-    // The reason is carried through rather than asserted as "not found".
-    expect(subWarning).toMatch(/\(.+\)/);
+    // The underlying reason is carried through rather than replaced with a
+    // blanket "not found" — pinned on the actual resolver text, not on the
+    // parens the format string always emits.
+    expect(subWarning).not.toContain('not found, keeping placeholder');
+    expect(subWarning).toMatch(/could not be resolved \(.*Ref.*\)/);
+  });
+
+  // The DOTTED branch takes a different `subPlaceholderWarning` call site than
+  // the no-dot one above; asserting only the return value left it unpinned.
+  it('the DOTTED not-found branch emits the same reason-carrying warning', async () => {
+    const context = mkContext('my-widget-name');
+    await resolver.resolve({ 'Fn::Sub': '${NoSuchResource.Attr}' }, context);
+    const messages = warnSpy.mock.calls.map((call) => String(call[0]));
+    const subWarning = messages.find((message) =>
+      message.includes('Fn::Sub variable NoSuchResource.Attr')
+    );
+    expect(subWarning).toBeDefined();
+    expect(subWarning).toContain('could not be resolved');
+    expect(subWarning).not.toContain('not found, keeping placeholder');
   });
 
   it('a literal-escaped ${!X} is untouched by the refusal path', async () => {

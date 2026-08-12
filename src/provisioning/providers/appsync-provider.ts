@@ -288,15 +288,15 @@ export class AppSyncProvider implements ResourceProvider {
           `account id is a placeholder), so an ARN for ${suffix} would be fabricated`
       );
     }
-    // The PARTITION comes from the region, NOT from `accountInfo.partition` —
-    // that field is hardcoded to `'aws'` (`intrinsic-function-resolver.ts`,
-    // with its own "Could be aws-cn, aws-us-gov, etc." admission). Using it
-    // would be inert on the create path (AWS reports the real ARN there) but
-    // actively WRONG on the update path, where `childRefAttributes` rebuilds
-    // the ARN on every in-place update: a correct `arn:aws-cn:` /
-    // `arn:aws-us-gov:` value recorded at create time would be overwritten
-    // with `arn:aws:`. `derivePartitionAndUrlSuffix` is the closed mapping the
-    // repo already uses for `${AWS::Partition}`.
+    // The PARTITION comes from the region via the closed mapping the repo
+    // already uses for `${AWS::Partition}`. This USED to be load-bearing
+    // because `accountInfo.partition` was hardcoded to `'aws'` — inert on the
+    // create path (AWS reports the real ARN there) but actively WRONG on the
+    // update path, where `childRefAttributes` rebuilds the ARN on every
+    // in-place update and would overwrite a correct `arn:aws-cn:` /
+    // `arn:aws-us-gov:` value with `arn:aws:`. Issue #1730 fixed that field to
+    // derive through this same helper, so the two now agree; deriving here is
+    // kept because it needs no STS hop and states the dependency locally.
     const { partition } = derivePartitionAndUrlSuffix(accountInfo.region);
     return `arn:${partition}:appsync:${accountInfo.region}:${accountInfo.accountId}:${suffix}`;
   }

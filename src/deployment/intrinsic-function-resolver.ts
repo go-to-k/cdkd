@@ -791,6 +791,24 @@ function withOverrideRegion(info: AwsAccountInfo, region: string): AwsAccountInf
 }
 
 /**
+ * How long a FABRICATED answer is reused before STS is retried (issue #1730,
+ * PR review). Deliberately not the success path's forever-cache — the whole
+ * point is that a transient blip must not poison the run — but not zero either:
+ * `getAccountInfo` is on the path of EVERY `Fn::GetAtt` and every
+ * `AWS::AccountId` / `AWS::Partition` / `AWS::StackId` pseudo-parameter, so an
+ * uncached failure re-issues `GetCallerIdentity` (with the SDK's own 3-attempt
+ * retry + backoff) dozens of times per stack and prints one warning each. This
+ * window collapses a burst into one call while still letting a later phase of
+ * the same deploy heal.
+ */
+const FABRICATED_ACCOUNT_INFO_TTL_MS = 10_000;
+
+/** Test seam for {@link FABRICATED_ACCOUNT_INFO_TTL_MS} expiry. */
+export const accountInfoClock = { now: (): number => Date.now() };
+
+let fabricatedAccountInfo: { info: AwsAccountInfo; expiresAt: number } | null = null;
+
+/**
  * Get AWS account information from STS
  */
 export async function getAccountInfo(overrideRegion?: string): Promise<AwsAccountInfo> {
@@ -800,6 +818,15 @@ export async function getAccountInfo(overrideRegion?: string): Promise<AwsAccoun
       return withOverrideRegion(cachedAccountInfo, overrideRegion);
     }
     return cachedAccountInfo;
+  }
+
+  // A fabricated answer inside its TTL is reused (see the constant above) —
+  // WITHOUT promoting it to `cachedAccountInfo`, so it still expires.
+  if (fabricatedAccountInfo && accountInfoClock.now() < fabricatedAccountInfo.expiresAt) {
+    const { info } = fabricatedAccountInfo;
+    return overrideRegion && overrideRegion !== info.region
+      ? withOverrideRegion(info, overrideRegion)
+      : info;
   }
 
   const logger = getLogger().child('IntrinsicFunctionResolver');
@@ -828,17 +855,27 @@ export async function getAccountInfo(overrideRegion?: string): Promise<AwsAccoun
       partition,
       ...(response.Account ? {} : { fabricated: true }),
     };
-    // Only a NON-fabricated answer is cached (issue #1730, mirroring
-    // `write-only-properties.ts`'s "only SUCCESSFUL lookups are cached"): a
-    // fabricated id poisons every later caller in the run, and the ARN-building
-    // consumers refuse on `fabricated`, so caching one turns a single bad STS
-    // answer into a whole deploy that records no ARNs.
-    if (!resolved.fabricated) cachedAccountInfo = resolved;
-    logger.debug(`Retrieved AWS account info: ${accountId}, ${region}, ${partition}`);
-    // Return with override if different from the resolved region
-    if (overrideRegion && overrideRegion !== region) {
-      return withOverrideRegion(resolved, overrideRegion);
+    // Only a NON-fabricated answer is cached for the process (issue #1730,
+    // mirroring `write-only-properties.ts`'s "only SUCCESSFUL lookups are
+    // cached"): a fabricated id poisons every later caller in the run, and the
+    // ARN-building consumers refuse on `fabricated`, so caching one turns a
+    // single bad STS answer into a whole deploy that records no ARNs. A
+    // fabricated one gets the short TTL above instead of nothing, so the retry
+    // is bounded rather than per-call.
+    if (resolved.fabricated) {
+      fabricatedAccountInfo = {
+        info: resolved,
+        expiresAt: accountInfoClock.now() + FABRICATED_ACCOUNT_INFO_TTL_MS,
+      };
+    } else {
+      cachedAccountInfo = resolved;
+      fabricatedAccountInfo = null;
     }
+    logger.debug(`Retrieved AWS account info: ${accountId}, ${region}, ${partition}`);
+    // NOTE no override re-derivation here: `region` above is already
+    // `overrideRegion || …`, so the two can never differ on this path. An
+    // earlier cut carried the cache path's `withOverrideRegion` call here too;
+    // PR review measured it as dead code.
     return resolved;
   } catch (error) {
     logger.warn(
@@ -857,8 +894,17 @@ export async function getAccountInfo(overrideRegion?: string): Promise<AwsAccoun
     };
     // A transient STS blip must not poison the rest of the run — see the
     // caching note on the success path. An operator-supplied `AWS_ACCOUNT_ID`
-    // IS a real answer and is cached as one.
-    if (!fallback.fabricated) cachedAccountInfo = fallback;
+    // IS a real answer and is cached as one; a fabricated id gets the bounded
+    // TTL so the retry does not fire on every single caller.
+    if (fallback.fabricated) {
+      fabricatedAccountInfo = {
+        info: fallback,
+        expiresAt: accountInfoClock.now() + FABRICATED_ACCOUNT_INFO_TTL_MS,
+      };
+    } else {
+      cachedAccountInfo = fallback;
+      fabricatedAccountInfo = null;
+    }
     return fallback;
   }
 }
@@ -868,6 +914,10 @@ export async function getAccountInfo(overrideRegion?: string): Promise<AwsAccoun
  */
 export function resetAccountInfoCache(): void {
   cachedAccountInfo = null;
+  // The bounded fabricated-answer window is part of the same cache and must
+  // clear with it, or a test (or a later phase) would keep reading a fabricated
+  // answer it just asked to forget.
+  fabricatedAccountInfo = null;
   // Also reset AZ cache
   for (const key of Object.keys(cachedAvailabilityZones)) {
     delete cachedAvailabilityZones[key];
@@ -1657,6 +1707,18 @@ export class IntrinsicFunctionResolver {
    * account id does not appear in — `DomainName`, `Endpoint`, `WebsiteURL` —
    * keeps resolving unchanged.
    *
+   * The match is a BARE substring rather than the colon-delimited `:<id>:` an
+   * ARN uses, because not every account embedding is an ARN field: PR review
+   * caught `AWS::ECR::Repository`'s `RepositoryUri`
+   * (`<accountId>.dkr.ecr.<region>.amazonaws.com/<repo>`), the one such site in
+   * this method, where a colon-delimited test served the fabricated URI and
+   * silently nullified the `CloudControlProvider` omission of the SAME
+   * attribute. The direction is deliberately fail-SAFE: refusing is the honest
+   * answer whenever cdkd cannot confirm the account, so a value that merely
+   * CONTAINS the placeholder digits (a physicalId recorded against the AWS
+   * documentation account) is refused rather than served — and only while STS
+   * is failing, when the deploy has bigger problems.
+   *
    * NOTE the naming: the per-type construction below KEEPS the name
    * `constructAttribute` and this guard takes a new one, rather than the other
    * way round. `scripts/gen-sdk-attr-coverage.ts` collects the set of resource
@@ -1682,7 +1744,7 @@ export class IntrinsicFunctionResolver {
     if (
       accountInfo.fabricated &&
       typeof value === 'string' &&
-      value.includes(`:${accountInfo.accountId}:`)
+      value.includes(accountInfo.accountId)
     ) {
       throw new IntrinsicResolutionRefusalError(
         `Cannot resolve Fn::GetAtt [${logicalId}, ${attributeName}] for ${resource.resourceType}: ` +
@@ -2577,7 +2639,12 @@ export class IntrinsicFunctionResolver {
               }
             } else {
               // Without a `.` there is no GetAtt interpretation to fall back
-              // to, so a refusal raised by `Ref` was the final answer here.
+              // to, so a refusal raised by `Ref` would be the final answer.
+              // DEFENSIVE today and known to be so (PR review): no site on the
+              // `resolveRef` path raises this class — every refusal lives on the
+              // GetAtt side. Kept so a future `Ref`-side refusal cannot be
+              // silently laundered the way the GetAtt ones were, which is the
+              // whole defect this change fixes.
               if (refError instanceof IntrinsicResolutionRefusalError) throw refError;
               this.logger.warn(this.subPlaceholderWarning(varNameStr, refError));
               replacement = match[0]; // Keep original placeholder
@@ -3665,13 +3732,21 @@ export class IntrinsicFunctionResolver {
         return context?.stackName ?? 'UnknownStack';
 
       case 'AWS::StackId': {
-        // cdkd doesn't use CloudFormation stacks, generate a synthetic ID
+        // cdkd doesn't use CloudFormation stacks, generate a synthetic ID.
+        // The partition is derived, not hardcoded (issue #1730 review) — this
+        // is the same defect class as `getAccountInfo`'s own field, one site
+        // over, and `arn:aws:` is wrong in every non-commercial partition.
         const info = await getAccountInfo(this.resolverRegion);
-        return `arn:aws:cloudformation:${info.region}:${info.accountId}:stack/${context?.stackName ?? 'UnknownStack'}/cdkd`;
+        return `arn:${info.partition}:cloudformation:${info.region}:${info.accountId}:stack/${context?.stackName ?? 'UnknownStack'}/cdkd`;
       }
 
-      case 'AWS::URLSuffix':
-        return 'amazonaws.com';
+      case 'AWS::URLSuffix': {
+        // Derived rather than hardcoded for the same reason (issue #1730
+        // review): `amazonaws.com.cn` in `aws-cn`, and CloudFormation resolves
+        // `${AWS::URLSuffix}` through exactly this mapping.
+        const info = await getAccountInfo(this.resolverRegion);
+        return derivePartitionAndUrlSuffix(info.region).urlSuffix;
+      }
 
       case 'AWS::NotificationARNs':
         // cdkd has no stack-notification-ARN concept — a cdkd deploy never

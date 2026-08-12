@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test'
 import {
   getAccountInfo,
   resetAccountInfoCache,
+  accountInfoClock,
   IntrinsicFunctionResolver,
   type ResolverContext,
 } from '../../../src/deployment/intrinsic-function-resolver.js';
@@ -43,6 +44,8 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
 describe('getAccountInfo partition + caching (issue #1730)', () => {
   const originalRegion = process.env['AWS_REGION'];
   const originalAccountId = process.env['AWS_ACCOUNT_ID'];
+  const realNow = accountInfoClock.now;
+  let now = 1_000_000;
 
   beforeEach(() => {
     resetAccountInfoCache();
@@ -50,10 +53,13 @@ describe('getAccountInfo partition + caching (issue #1730)', () => {
     warnSpy.mockClear();
     delete process.env['AWS_ACCOUNT_ID'];
     process.env['AWS_REGION'] = 'us-east-1';
+    now = 1_000_000;
+    accountInfoClock.now = () => now;
   });
 
   afterEach(() => {
     resetAccountInfoCache();
+    accountInfoClock.now = realNow;
     if (originalRegion === undefined) delete process.env['AWS_REGION'];
     else process.env['AWS_REGION'] = originalRegion;
     if (originalAccountId === undefined) delete process.env['AWS_ACCOUNT_ID'];
@@ -110,12 +116,14 @@ describe('getAccountInfo partition + caching (issue #1730)', () => {
     expect(info.fabricated).toBe(true);
   });
 
-  it('does NOT cache a fabricated fallback — a later call retries STS', async () => {
+  it('does NOT cache a fabricated fallback for the process — a later call heals', async () => {
     stsSend.mockRejectedValueOnce(new Error('transient STS blip'));
     const fabricated = await getAccountInfo();
     expect(fabricated.fabricated).toBe(true);
     expect(fabricated.accountId).toBe('123456789012');
 
+    // Past the bounded fabricated-answer window, STS is retried.
+    now += 60_000;
     stsSend.mockResolvedValue({ Account: '999988887777' });
     const healed = await getAccountInfo();
     expect(healed.fabricated).toBeUndefined();
@@ -128,10 +136,61 @@ describe('getAccountInfo partition + caching (issue #1730)', () => {
     const fabricated = await getAccountInfo();
     expect(fabricated.fabricated).toBe(true);
 
+    now += 60_000;
     stsSend.mockResolvedValue({ Account: '999988887777' });
     const healed = await getAccountInfo();
     expect(healed.accountId).toBe('999988887777');
     expect(stsSend).toHaveBeenCalledTimes(2);
+  });
+
+  /**
+   * PR review: without the bounded window, an unreachable STS made EVERY
+   * `Fn::GetAtt` and every `AWS::AccountId` / `AWS::Partition` / `AWS::StackId`
+   * pseudo-parameter re-issue GetCallerIdentity (each with the SDK's own
+   * 3-attempt retry) and print a warning — hundreds of calls on a large stack.
+   */
+  it('reuses a fabricated answer inside the TTL instead of hammering STS', async () => {
+    stsSend.mockRejectedValue(new Error('STS unreachable'));
+    for (let i = 0; i < 25; i++) await getAccountInfo();
+    expect(stsSend).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries once the fabricated window expires', async () => {
+    stsSend.mockRejectedValue(new Error('STS unreachable'));
+    await getAccountInfo();
+    expect(stsSend).toHaveBeenCalledTimes(1);
+
+    now += 10_001;
+    await getAccountInfo();
+    expect(stsSend).toHaveBeenCalledTimes(2);
+  });
+
+  it('re-derives the partition for an override served from the FABRICATED window', async () => {
+    stsSend.mockRejectedValue(new Error('STS unreachable'));
+    const first = await getAccountInfo();
+    expect(first.partition).toBe('aws');
+
+    const overridden = await getAccountInfo('cn-north-1');
+    expect(overridden.region).toBe('cn-north-1');
+    expect(overridden.partition).toBe('aws-cn');
+    expect(stsSend).toHaveBeenCalledTimes(1);
+  });
+
+  it('resetAccountInfoCache clears the fabricated window too', async () => {
+    stsSend.mockRejectedValue(new Error('STS unreachable'));
+    await getAccountInfo();
+    expect(stsSend).toHaveBeenCalledTimes(1);
+
+    resetAccountInfoCache();
+    await getAccountInfo();
+    expect(stsSend).toHaveBeenCalledTimes(2);
+  });
+
+  it('derives the partition from an OVERRIDE region on the STS-failure path', async () => {
+    stsSend.mockRejectedValue(new Error('STS unreachable'));
+    const info = await getAccountInfo('cn-northwest-1');
+    expect(info.region).toBe('cn-northwest-1');
+    expect(info.partition).toBe('aws-cn');
   });
 
   it('still caches a real answer (one STS round trip per run)', async () => {
@@ -203,6 +262,35 @@ describe('Fn::GetAtt refuses an ARN built from a fabricated account (issue #1730
     else process.env['AWS_ACCOUNT_ID'] = originalAccountId;
   });
 
+  /**
+   * PR-review BLOCKER: the guard originally matched the colon-delimited
+   * `:<accountId>:` an ARN uses, but `RepositoryUri` embeds the account with no
+   * colons (`<acct>.dkr.ecr.<region>.amazonaws.com/<repo>`) — the only such site
+   * in `constructAttribute`. `CloudControlProvider` omits that exact attribute
+   * when the account is fabricated, and the resolver then served it anyway,
+   * nullifying the omission.
+   */
+  it('refuses ECR RepositoryUri, whose account embedding has no colons', async () => {
+    stsSend.mockRejectedValue(new Error('STS unreachable'));
+    const resolver = new IntrinsicFunctionResolver();
+    await expect(
+      resolver.resolve(
+        { 'Fn::GetAtt': ['Thing', 'RepositoryUri'] },
+        mkContext('AWS::ECR::Repository', 'my-repo')
+      )
+    ).rejects.toThrow(IntrinsicResolutionRefusalError);
+  });
+
+  it('resolves ECR RepositoryUri normally for a REAL account (counter-case)', async () => {
+    stsSend.mockResolvedValue({ Account: '999988887777' });
+    const resolver = new IntrinsicFunctionResolver();
+    const result = await resolver.resolve(
+      { 'Fn::GetAtt': ['Thing', 'RepositoryUri'] },
+      mkContext('AWS::ECR::Repository', 'my-repo')
+    );
+    expect(result).toBe('999988887777.dkr.ecr.us-east-1.amazonaws.com/my-repo');
+  });
+
   it('refuses an account-bearing ARN when STS could not answer', async () => {
     stsSend.mockRejectedValue(new Error('STS unreachable'));
     const resolver = new IntrinsicFunctionResolver();
@@ -264,6 +352,42 @@ describe('Fn::GetAtt refuses an ARN built from a fabricated account (issue #1730
       mkContext('AWS::DynamoDB::Table', 'my-table')
     );
     expect(result).toBe('arn:aws:dynamodb:us-east-1:111122223333:table/my-table');
+  });
+
+  /**
+   * PR review: `AWS::StackId` and `AWS::URLSuffix` were the same hardcoded-
+   * partition defect one site over, with the derived values already in scope.
+   */
+  it('AWS::StackId carries the derived partition, not a hardcoded aws', async () => {
+    stsSend.mockResolvedValue({ Account: '999988887777' });
+    process.env['AWS_REGION'] = 'cn-north-1';
+    const resolver = new IntrinsicFunctionResolver('cn-north-1');
+    const result = await resolver.resolve(
+      { Ref: 'AWS::StackId' },
+      { ...mkContext('AWS::S3::Bucket', 'b'), stackName: 'MyStack' }
+    );
+    expect(result).toMatch(/^arn:aws-cn:cloudformation:cn-north-1:999988887777:stack\/MyStack\//);
+  });
+
+  it('AWS::URLSuffix follows the partition too', async () => {
+    stsSend.mockResolvedValue({ Account: '999988887777' });
+    process.env['AWS_REGION'] = 'cn-north-1';
+    const resolver = new IntrinsicFunctionResolver('cn-north-1');
+    const result = await resolver.resolve(
+      { Ref: 'AWS::URLSuffix' },
+      mkContext('AWS::S3::Bucket', 'b')
+    );
+    expect(result).toBe('amazonaws.com.cn');
+  });
+
+  it('AWS::URLSuffix stays amazonaws.com in a commercial region (counter-case)', async () => {
+    stsSend.mockResolvedValue({ Account: '999988887777' });
+    const resolver = new IntrinsicFunctionResolver('us-east-1');
+    const result = await resolver.resolve(
+      { Ref: 'AWS::URLSuffix' },
+      mkContext('AWS::S3::Bucket', 'b')
+    );
+    expect(result).toBe('amazonaws.com');
   });
 
   it('propagates out of an Fn::Sub too (the #1740 half, end to end)', async () => {

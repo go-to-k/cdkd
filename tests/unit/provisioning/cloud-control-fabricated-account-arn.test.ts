@@ -107,6 +107,20 @@ describe('CloudControlProvider ARN enrichment refuses a fabricated account (issu
     expect(enriched['RepositoryUri']).toBeUndefined();
   });
 
+  // Both ECR attributes are separate call sites, so assert each warns under its
+  // OWN name — otherwise collapsing them into one call still passes.
+  it('names BOTH ECR attributes in its warnings, not just Arn', async () => {
+    fabricate();
+    await enrich('AWS::ECR::Repository', 'my-repo');
+    const messages = mockLoggerWarn.mock.calls.map((call) => String(call[0]));
+    expect(messages).toContainEqual(
+      expect.stringContaining('Not enriching AWS::ECR::Repository Arn')
+    );
+    expect(messages).toContainEqual(
+      expect.stringContaining('Not enriching AWS::ECR::Repository RepositoryUri')
+    );
+  });
+
   it('omits the Kinesis Stream Arn', async () => {
     fabricate();
     const enriched = await enrich('AWS::Kinesis::Stream', 'my-stream');
