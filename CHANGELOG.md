@@ -1,3 +1,10 @@
+# [0.281.0](https://github.com/go-to-k/cdkd/compare/v0.280.47...v0.281.0) (2026-08-12)
+
+
+### Features
+
+* **deployment:** fall back to CloudFormation for cross-stack refs not in cdkd state ([#1705](https://github.com/go-to-k/cdkd/issues/1705)) ([26eba0d](https://github.com/go-to-k/cdkd/commit/26eba0db1154f06ad4855bfdaa98e1d5f1908189))
+
 ## [0.280.47](https://github.com/go-to-k/cdkd/compare/v0.280.46...v0.280.47) (2026-08-12)
 
 
