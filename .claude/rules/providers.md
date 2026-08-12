@@ -334,6 +334,61 @@ so a defaulted-but-APPLIED configuration would be recorded as skipped and the
 previous value retained — manufacturing exactly the phantom drift the change
 exists to remove.
 
+**A warn-and-SUBSTITUTE arm at the SAME sites reports what it SENT, and the
+twin question has to be RE-ASKED there rather than inherited from the paragraph
+above** (issue #1670, the sibling #1612 deliberately left alone). A
+substitution's effect IS a pure function of the desired value — malformed ->
+the default, the key still present, no removal derivable — so the skip
+carve-out does not cover it and the #1633 twin rule genuinely reaches it. The
+S3 analytics `StorageClassAnalysis.DataExport.OutputSchemaVersion` and the
+analytics / inventory destination `Format` still answered NO, on three findings
+worth reusing as the checklist:
+
+- **Which hazard does the twin actually avert here?** It exists because a
+  narrowed record makes the next diff read the difference as a user-made
+  change, and for a create-only property that is a REPLACEMENT. Neither
+  property is create-only in the registry schema (`AWS::S3::Bucket`'s
+  `createOnlyProperties` is `BucketName` / `BucketNamePrefix` /
+  `BucketNamespace`) nor named in either half of the type's
+  `ReplacementRulesRegistry` entry, so `isClassified` is false, the createOnly
+  fallback decides, and the un-canonicalized diff derives an in-place UPDATE
+  that re-issues the same idempotent per-`Id` Put. Check the classification
+  before assuming the hazard.
+- **What would sharing the twin with the provisioning path COST?** The rule
+  requires sharing, and it is worth being precise that this is a cost question
+  and not an impossibility one — a PATH-CONDITIONAL substitution is no obstacle
+  in itself, since `narrowIngressIpProtocol` throws without an `onUnusable` too
+  and `canonicalizeDesiredProperties` bridges it by passing a NO-OP callback
+  (`ec2-provider.ts`). What differs is the size of the shared helper: EC2 folds
+  ONE top-level scalar, whereas the effective value here is rebuilt per ITEM,
+  at the destination branch the template declared, inside a per-`Id` loop — so
+  the pure helper would re-implement the applier's item walk. That is the cost;
+  the next finding is what decides against paying it.
+- **What would the user LOSE?** Canonicalizing both sides makes the comparison
+  equal, so on a template whose only fault is this field the provider is never
+  called and the warning stops — the value silently normalized on UPDATE while
+  an identical fresh deploy hard-refuses. EC2 accepts exactly that concealment,
+  and the difference is what it BUYS there: `IpProtocol` is create-only, so the
+  fold prevents a REPLACEMENT of a rule AWS already holds. Here finding 1 says
+  there is no replacement to prevent, so the concealment buys only the
+  suppression of a repeated idempotent Put. Refusing the twin costs the mirror
+  image of the drift being fixed: `cdkd diff` keeps reporting the property
+  until the template is corrected, which is TRUE and ends with one edit.
+
+Record it per ITEM, like the skip — the S3 per-`Id` appliers therefore report
+`{skipped, substituted}` rather than the bare index list the paragraph above
+describes, because the two arms mean OPPOSITE things to the effective array (a
+skipped item's entry is what AWS still holds, a substituted item's is what was
+just sent) and must stay separable all the way to the recorder. Two further
+details the skip path did not need:
+the effective array keeps the substituted item IN PLACE in its DECLARED branch
+shape (a CFn `Destination` block is accepted flattened AND nested, so writing
+back at a hardcoded branch leaves the malformed value alive at the other key
+and adds a stray one), and the recorder is handed the value the read RETURNED
+rather than the fallback literal, so "what is recorded" and "what is sent"
+cannot drift apart. And weigh the #1643 bar first: both values here are literal
+SDK enum members the service stores verbatim, so a send-side record converges.
+
 Two things that are easy to get wrong and were both caught by review:
 **normalize BOTH comparison sides**, not just the desired one — a record written BEFORE the provider started narrowing still carries every key, so a one-sided pass flips the same difference to a REMOVAL and breaks exactly the population the narrowing exists for; and **wire `cdkd diff` too**, since a preview that narrows differently from the apply forecasts a change the deploy will never make. `makeCanonicalizePropertiesFn` in `src/provisioning/canonicalize-properties.ts` is the one builder both commands use, so they cannot drift.
 

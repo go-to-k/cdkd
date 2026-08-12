@@ -240,6 +240,29 @@ applier proceeds WITH a substituted default. A wrapper cannot tell them apart, s
 a defaulted-but-APPLIED configuration would be recorded as skipped and the
 previous value retained — manufacturing exactly the drift you set out to remove.
 
+**The warn-and-SUBSTITUTE arm beside it needs the same treatment, and its own
+answer** (issue [#1670](https://github.com/go-to-k/cdkd/issues/1670)). Those
+warn-and-DEFAULT reads are not the SKIP's sibling only in the negative sense:
+the applier proceeds, the deploy succeeds, and AWS ends up holding a value the
+record does not describe — the same permanent phantom drift, reached through a
+substitution. Record the value SENT, and mind three things the skip path did not
+need:
+
+- The item was APPLIED, so its effective entry is what was SENT — kept IN PLACE,
+  not dropped and not replaced by the previous item. Because the two arms mean
+  opposite things, report them separately: the four `S3BucketProvider` per-`Id`
+  appliers return `{ skipped, substituted }` rather than a bare index list.
+- Write the substituted value back at the key the TEMPLATE declared. Where a
+  block is accepted in more than one shape (the S3 analytics / inventory
+  `Destination` is valid flattened AND nested), a hardcoded branch leaves the
+  malformed value alive at the other key and adds a stray one.
+- Hand the recorder the value the read RETURNED, not the fallback literal, so
+  "recorded" and "sent" cannot drift apart.
+
+Whether such a site ALSO takes the `canonicalizeDesiredProperties` twin is a
+genuine per-site question — unlike a skip, a substitution IS a pure function of
+the desired value, so the twin rule reaches it. `.claude/rules/providers.md`
+carries the three-finding checklist and the worked S3 answer (no twin).
 
 ## Provider Implementation Examples
 
