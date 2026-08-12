@@ -144,6 +144,31 @@ function normalizeRecordName(name: string): string {
 }
 
 /**
+ * Read a hosted zone's PUBLIC-vs-PRIVATE visibility off its own template
+ * properties (issue #1702), for the `import()` name lookup's zone filter.
+ *
+ * CloudFormation has no `PrivateZone` property — visibility is implied by
+ * `VPCs`: a zone associated with at least one VPC is private, one with none is
+ * public. So:
+ *
+ * - `VPCs` ABSENT -> `false` (public). This is the CDK `PublicHostedZone`
+ *   shape and by far the common one.
+ * - `VPCs` a NON-EMPTY array -> `true` (private).
+ * - anything else -> `undefined` (do not narrow). An unresolved intrinsic is a
+ *   truthy OBJECT, so reading it as "private" would be a guess; an empty array
+ *   is equally undecidable (a private zone needs a VPC, but an empty list is
+ *   more likely a condition-collapsed value than a deliberate "public"). Under
+ *   `undefined` the caller's split-horizon ambiguity guard still applies, so
+ *   the uncertain case DECLINES rather than adopting the wrong zone.
+ */
+function templateZoneVisibility(properties: Record<string, unknown>): boolean | undefined {
+  const vpcs = properties['VPCs'];
+  if (vpcs == null) return false;
+  if (Array.isArray(vpcs)) return vpcs.length > 0 ? true : undefined;
+  return undefined;
+}
+
+/**
  * Canonicalize a name for the QUERY side of a Route 53 list call.
  *
  * `normalizeRecordName` above is the COMPARE-side canonicalizer, and the two
@@ -1703,13 +1728,23 @@ export class Route53Provider implements ResourceProvider {
    * Resolve HostedZoneId from properties.
    * If HostedZoneId is provided, use it directly.
    * If HostedZoneName is provided, resolve it to a HostedZoneId via ListHostedZonesByName.
+   *
+   * `options.requirePrivateZone` narrows the name match to PRIVATE (`true`) or
+   * PUBLIC (`false`) zones before the ambiguity decision below; leave it
+   * undefined to match either. Split-horizon DNS is exactly a public and a
+   * private zone sharing one name, so a caller that already knows which side
+   * it wants resolves cleanly where the ambiguity guard would otherwise
+   * refuse. `importHostedZone` is the one caller today, deriving the answer
+   * from the template's own `VPCs` (declared = private, absent = public);
+   * every RecordSet caller leaves it undefined, since a record set's template
+   * says nothing about the zone's visibility.
    */
   private async resolveHostedZoneId(
     properties: Record<string, unknown>,
     logicalId: string,
     resourceType: string,
     physicalId?: string,
-    options?: { requireUnambiguousZoneName?: boolean }
+    options?: { requireUnambiguousZoneName?: boolean; requirePrivateZone?: boolean | undefined }
   ): Promise<string> {
     // Guard the TYPE, not just presence: an unresolved intrinsic
     // (`Fn::ImportValue` / `Fn::GetAtt` / a Parameter `Ref`) is an OBJECT and
@@ -1733,7 +1768,11 @@ export class Route53Provider implements ResourceProvider {
       // conditional re-throw rather than a swallow, which un-protects the
       // `.send()` for the `update-wrap-coverage` critic (and would be a real
       // hazard if a later edit widened what the try covers).
-      let matched: { Id?: string | undefined; Name?: string | undefined }[] = [];
+      let matched: {
+        Id?: string | undefined;
+        Name?: string | undefined;
+        Config?: { PrivateZone?: boolean | undefined } | undefined;
+      }[] = [];
       // NOT "the lookup returned" — "an empty result PROVES the zone is gone".
       // Only this flag authorizes the delete path's already-deleted arm, which
       // drops a state row, so it stays false for every answer we cannot read
@@ -1762,6 +1801,19 @@ export class Route53Provider implements ResourceProvider {
         // special characters, the template may do neither.
         const normalizedName = normalizeRecordName(hostedZoneName);
         matched = zones.filter((z) => normalizeRecordName(z.Name ?? '') === normalizedName);
+        // Visibility narrowing, BEFORE the ambiguity decision below: a
+        // split-horizon pair is two zones of one name that differ only in
+        // `Config.PrivateZone`, so a caller that knows which side it wants
+        // gets a clean resolution instead of a refusal. Note this narrows
+        // `matched` only — `absenceIsSound` below is still derived from the
+        // unnarrowed page, so "a zone of this name exists but not on the side
+        // you asked for" is a SOUND negative (`HostedZoneNameNotFoundError`)
+        // rather than an inconclusive one.
+        if (options?.requirePrivateZone !== undefined) {
+          matched = matched.filter(
+            (z) => (z.Config?.PrivateZone ?? false) === options.requirePrivateZone
+          );
+        }
         // AWS starts the page AT the requested key, so same-named zones are
         // the first entries and a page that shows a LATER zone has already
         // proven ours is not there. An EMPTY truncated page proves nothing —
@@ -1797,9 +1849,17 @@ export class Route53Provider implements ResourceProvider {
       // materially different from "no zone was specified", and the delete path
       // treats it as already-gone rather than as a misconfiguration.
       if (absenceIsSound) {
+        // Name the SIDE when one was required: "matches no hosted zone" would
+        // be wrong for a template whose public twin is sitting right there.
+        const visibility =
+          options?.requirePrivateZone === undefined
+            ? ''
+            : options.requirePrivateZone
+              ? 'private '
+              : 'public ';
         throw new HostedZoneNameNotFoundError(
-          `HostedZoneName "${hostedZoneName}" matches no hosted zone in this account/region ` +
-            `for ${logicalId}`,
+          `HostedZoneName "${hostedZoneName}" matches no ${visibility}hosted zone ` +
+            `in this account/region for ${logicalId}`,
           resourceType,
           logicalId,
           physicalId
@@ -2134,8 +2194,10 @@ export class Route53Provider implements ResourceProvider {
   /**
    * Adopt an existing Route 53 resource into cdkd state.
    *
-   * Supported types: `AWS::Route53::HostedZone` (override-only);
-   * `AWS::Route53::RecordSet` (override-only too — the supplied id is
+   * Supported types: `AWS::Route53::HostedZone` (AUTO-RESOLVED from the
+   * template's `Name` since issue #1702, with an explicit `--resource`
+   * override still taking precedence);
+   * `AWS::Route53::RecordSet` (override-only — the supplied id is
    * CANONICALIZED rather than trusted, using the template's
    * `HostedZoneId` / `HostedZoneName` + `Name` + `Type` and verified
    * against AWS, but an import with no override still declines because
@@ -2242,6 +2304,27 @@ export class Route53Provider implements ResourceProvider {
     return { physicalId: compositeId, attributes: {} };
   }
 
+  /**
+   * Adopt an existing hosted zone (issue #1702).
+   *
+   * An explicit `--resource` id is ground truth and is only VERIFIED. With no
+   * override, the zone is resolved from the template's `Name` via
+   * `ListHostedZonesByName` — the physical-name route docs/import.md's
+   * Auto-resolved section documents, which this method declined to take until
+   * now, so a type the table listed as auto-resolved silently reported
+   * `skipped-not-found` and (under `--migrate-from-cloudformation`) was left
+   * out of state after the CloudFormation stack had already been retired.
+   *
+   * Three properties of the lookup matter and none of them is incidental:
+   * the query name is canonicalized to AWS's ordering key
+   * (`canonicalizeQueryName`) so a bounded page cannot skip past the zone; a
+   * name matching MORE than one zone is REFUSED rather than guessed at
+   * (split-horizon DNS), except that the template's own `VPCs` first narrows
+   * the match to the public or private side (`templateZoneVisibility`), which
+   * is what makes the ordinary split-horizon pair resolve cleanly; and every
+   * outcome except a verified single match DECLINES the row rather than
+   * failing the import.
+   */
   private async importHostedZone(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     if (input.knownPhysicalId) {
       try {
@@ -2255,9 +2338,44 @@ export class Route53Provider implements ResourceProvider {
 
     // No `aws:cdk:path` tag walk: AWS rejects `aws:`-prefixed tag writes, so
     // that tag never exists on a real resource and the walk could not match
-    // (issue #1134). Auto-mode import resolves ids from CloudFormation's
-    // `DescribeStackResources` or the template's physical-name property; a
-    // hosted zone reaching here needs an explicit `--resource` override.
-    return null;
+    // (issue #1134). What IS available is the template's own physical-name
+    // property — a hosted zone's `Name` — which is the FIRST of the two
+    // auto-resolution routes docs/import.md documents, and the route this
+    // provider declined to take until issue #1702.
+    const zoneName = input.properties['Name'];
+    if (typeof zoneName !== 'string' || !zoneName) return null;
+
+    try {
+      const zoneId = await this.resolveHostedZoneId(
+        { HostedZoneName: zoneName },
+        input.logicalId,
+        input.resourceType,
+        undefined,
+        {
+          requireUnambiguousZoneName: true,
+          requirePrivateZone: templateZoneVisibility(input.properties),
+        }
+      );
+      return { physicalId: zoneId, attributes: {} };
+    } catch (error) {
+      // A SOUND negative is an ordinary not-found: the import command reports
+      // `skipped-not-found` and the next deploy CREATEs the zone, which is
+      // exactly right for a template describing a zone that does not exist.
+      if (error instanceof HostedZoneNameNotFoundError) return null;
+
+      // Everything else — the split-horizon ambiguity refusal, a lookup the
+      // resolver could not complete — DECLINES rather than fails the row.
+      // `import.ts` aborts only when ZERO resources import, so throwing here
+      // would fail the whole run (and, under
+      // `--migrate-from-cloudformation`, after the CFn stack is already
+      // retired) over one zone the user can resolve with a flag. Warn loudly
+      // and name that flag instead.
+      this.logger.warn(
+        `Hosted zone ${input.logicalId}: could not resolve Name "${zoneName}" to a single zone ` +
+          `(${error instanceof Error ? error.message : String(error)}). ` +
+          `Pass --resource ${input.logicalId}=<hostedZoneId> to adopt it explicitly.`
+      );
+      return null;
+    }
   }
 }

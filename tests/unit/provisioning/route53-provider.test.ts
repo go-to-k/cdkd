@@ -1182,15 +1182,151 @@ describe('Route53Provider', () => {
       expect(call.input).toEqual({ Id: 'Z123' });
     });
 
-    it('returns null (HostedZone) without any AWS call when no override is given', async () => {
+    it('returns null (HostedZone) without any AWS call when the template carries no Name', async () => {
       // The `aws:cdk:path` tag walk is gone (issue #1134) -- AWS rejects
       // `aws:`-prefixed tag writes, so the tag never exists and the walk could
-      // not match. Without `--resource` there is nothing left to look up, and
-      // the provider must not burn a ListHostedZones page discovering that.
+      // not match. The remaining auto-resolution route is the template's own
+      // `Name` (issue #1702); with neither an override nor a Name there is
+      // nothing to look up, and the provider must not burn a
+      // ListHostedZonesByName page discovering that.
       const result = await provider.import(makeInput());
 
       expect(result).toBeNull();
       expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    // ─── issue #1702: auto-resolution from the template's Name ──────────
+
+    function zone(id: string, name: string, privateZone: boolean) {
+      return { Id: `/hostedzone/${id}`, Name: name, Config: { PrivateZone: privateZone } };
+    }
+
+    it('auto-resolves a HostedZone from the template Name with no --resource override', async () => {
+      mockSend.mockResolvedValueOnce({
+        HostedZones: [zone('Z1PUBLIC', 'example.com.', false)],
+        IsTruncated: false,
+      });
+
+      const result = await provider.import(makeInput({ properties: { Name: 'example.com' } }));
+
+      expect(result).toEqual({ physicalId: 'Z1PUBLIC', attributes: {} });
+      const call = mockSend.mock.calls[0][0];
+      expect(call.constructor.name).toBe('ListHostedZonesByNameCommand');
+      // Canonicalized to AWS's ordering key, not the template's spelling.
+      expect(call.input.DNSName).toBe('example.com.');
+    });
+
+    it('picks the PRIVATE zone of a split-horizon pair when the template declares VPCs', async () => {
+      mockSend.mockResolvedValueOnce({
+        HostedZones: [
+          zone('Z1PUBLIC', 'example.com.', false),
+          zone('Z2PRIVATE', 'example.com.', true),
+        ],
+        IsTruncated: false,
+      });
+
+      const result = await provider.import(
+        makeInput({
+          properties: {
+            Name: 'example.com',
+            VPCs: [{ VPCId: 'vpc-123', VPCRegion: 'us-east-1' }],
+          },
+        })
+      );
+
+      // Without the visibility narrowing this is TWO matches and the
+      // ambiguity guard declines the row.
+      expect(result).toEqual({ physicalId: 'Z2PRIVATE', attributes: {} });
+    });
+
+    it('picks the PUBLIC zone of a split-horizon pair when the template declares no VPCs', async () => {
+      mockSend.mockResolvedValueOnce({
+        HostedZones: [
+          zone('Z2PRIVATE', 'example.com.', true),
+          zone('Z1PUBLIC', 'example.com.', false),
+        ],
+        IsTruncated: false,
+      });
+
+      const result = await provider.import(makeInput({ properties: { Name: 'example.com' } }));
+
+      // Note the private zone is listed FIRST: a "take the first match" fix
+      // would return it, so this pins the filter rather than the ordering.
+      expect(result).toEqual({ physicalId: 'Z1PUBLIC', attributes: {} });
+    });
+
+    it('declines (does not guess) when the name is ambiguous and visibility is undecidable', async () => {
+      mockSend.mockResolvedValueOnce({
+        HostedZones: [
+          zone('Z1PUBLIC', 'example.com.', false),
+          zone('Z2PRIVATE', 'example.com.', true),
+        ],
+        IsTruncated: false,
+      });
+
+      const result = await provider.import(
+        makeInput({
+          // An unresolved intrinsic is a truthy OBJECT, so it says nothing
+          // about visibility -- the split-horizon refusal must stand.
+          properties: { Name: 'example.com', VPCs: { Ref: 'SomeParam' } },
+        })
+      );
+
+      expect(result).toBeNull();
+      // It DID try -- distinguishing this from the no-Name early return.
+      expect(mockSend).toHaveBeenCalledTimes(1);
+    });
+
+    it('declines when the template Name matches no hosted zone', async () => {
+      mockSend.mockResolvedValueOnce({
+        HostedZones: [zone('Z9OTHER', 'zzz-other.com.', false)],
+        IsTruncated: false,
+      });
+
+      const result = await provider.import(makeInput({ properties: { Name: 'example.com' } }));
+
+      expect(result).toBeNull();
+      expect(mockSend).toHaveBeenCalledTimes(1);
+    });
+
+    it('declines when a same-named zone exists only on the OTHER visibility side', async () => {
+      mockSend.mockResolvedValueOnce({
+        HostedZones: [zone('Z1PUBLIC', 'example.com.', false)],
+        IsTruncated: false,
+      });
+
+      const result = await provider.import(
+        makeInput({
+          properties: { Name: 'example.com', VPCs: [{ VPCId: 'vpc-123' }] },
+        })
+      );
+
+      expect(result).toBeNull();
+    });
+
+    it('declines instead of throwing when the lookup itself fails', async () => {
+      mockSend.mockRejectedValueOnce(new Error('Throttling'));
+
+      const result = await provider.import(makeInput({ properties: { Name: 'example.com' } }));
+
+      // `import.ts` aborts only when ZERO resources import, so a throw here
+      // would fail the whole run over one zone.
+      expect(result).toBeNull();
+      // Non-vacuous: the row is declined AFTER the lookup was attempted, not
+      // by the no-Name early return.
+      expect(mockSend).toHaveBeenCalledTimes(1);
+    });
+
+    it('prefers an explicit --resource override over the Name lookup', async () => {
+      mockSend.mockResolvedValueOnce({ HostedZone: { Id: '/hostedzone/ZOVERRIDE' } });
+
+      const result = await provider.import(
+        makeInput({ knownPhysicalId: 'ZOVERRIDE', properties: { Name: 'example.com' } })
+      );
+
+      expect(result).toEqual({ physicalId: 'ZOVERRIDE', attributes: {} });
+      expect(mockSend).toHaveBeenCalledTimes(1);
+      expect(mockSend.mock.calls[0][0].constructor.name).toBe('GetHostedZoneCommand');
     });
 
     it('RecordSet: explicit override returned as-is, no AWS calls', async () => {

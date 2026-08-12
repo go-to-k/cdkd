@@ -409,7 +409,7 @@ Types with an `import()` that auto-resolves via the above:
 - AWS::ECR::Repository
 - AWS::ElasticLoadBalancingV2::LoadBalancer
 - AWS::ElasticLoadBalancingV2::TargetGroup
-- AWS::Route53::HostedZone
+- AWS::Route53::HostedZone (resolved from the template's `Name` via `ListHostedZonesByName`; when a public and a private zone share that name — split-horizon DNS — the template's own `VPCs` picks the side, and a name that is still ambiguous is declined rather than guessed at, so pass `--resource <logicalId>=<hostedZoneId>` for it)
 - AWS::StepFunctions::StateMachine
 - AWS::Glue::Database
 - AWS::Glue::Table (stored and displayed as the composite `<databaseName>|<tableName>`; `--resource` also accepts CloudFormation's bare table name, paired with the template's `DatabaseName`)
