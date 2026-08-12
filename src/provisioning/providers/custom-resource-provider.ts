@@ -208,13 +208,35 @@ const CR_TRANSIENT_AUTHZ_LOG_SIGNALS: readonly string[] = [
 
 /**
  * Cap for the backing function's log tail when it is surfaced in an EPHEMERAL
- * warning (the `FunctionError` arm). Deliberately far larger than
- * `truncateReason`'s 200-char default — a crashed handler's real cause is often
- * several lines above the last one (a Python traceback) — but not unbounded:
- * this lands in CI logs and terminal scrollback. Lambda caps the tail at 4 KB
- * regardless, so this only trims the extreme case.
+ * warning — the `FunctionError` arm and the unexplained-FAILED arm. Deliberately
+ * far larger than `truncateReason`'s 200-char default — a crashed handler's real
+ * cause is often several lines above the last one (a Python traceback) — but not
+ * unbounded: this lands in CI logs and terminal scrollback. Lambda caps the tail
+ * at 4 KB regardless, so this only trims the extreme case.
  */
 const CR_LOG_TAIL_WARN_MAX_CHARS = 2000;
+
+/**
+ * Lines Lambda emits for EVERY invocation regardless of what the handler logged.
+ * A tail consisting only of these carries no diagnostic value, and it is the
+ * COMMON case — `LogResult` is never absent on a `LogType: 'Tail'` invoke, so a
+ * bare `!== undefined` check filters nothing and would dump boilerplate on every
+ * unexplained failure.
+ */
+const CR_LOG_TAIL_BOILERPLATE = /^(START|END|REPORT|XRAY) /;
+
+/**
+ * `true` when the tail contains at least one line the HANDLER produced.
+ *
+ * Deliberately a positive test for handler output rather than a length check:
+ * the boilerplate lines carry a RequestId and a duration, so a tail of nothing
+ * but boilerplate is several hundred characters and passes any size threshold.
+ */
+function hasHandlerLogOutput(logTail: string): boolean {
+  return logTail
+    .split('\n')
+    .some((line) => line.trim().length > 0 && !CR_LOG_TAIL_BOILERPLATE.test(line.trimStart()));
+}
 
 /**
  * Custom Resource Provider
@@ -782,10 +804,14 @@ export class CustomResourceProvider implements ResourceProvider {
       // Only scanned on FAILED — the happy path must not pay for it.
       const reasonIsAuthz =
         cfnResponse.Status === 'FAILED' && this.isTransientAuthzFailure(cfnResponse.Reason);
-      const logAuthzMatch =
+      // Decoded ONCE and only on the branch that can consume it: both the signal
+      // scan below and the unexplained-failure arm further down read this.
+      const logTail =
         cfnResponse.Status === 'FAILED' && !reasonIsAuthz
-          ? this.findTransientAuthzLogLine(decodeInvokeLogTail(logResult))
+          ? decodeInvokeLogTail(logResult)
           : undefined;
+      const logAuthzMatch =
+        logTail === undefined ? undefined : this.findTransientAuthzLogLine(logTail);
 
       if (
         cfnResponse.Status === 'FAILED' &&
@@ -854,15 +880,27 @@ export class CustomResourceProvider implements ResourceProvider {
       // the cause (that is the #756 path), so dumping the tail beside it is
       // noise on a failure that is already explained. The `logAuthzMatch` case
       // has returned above for the same reason.
-      if (cfnResponse.Status === 'FAILED' && !reasonIsAuthz) {
-        const logTail = decodeInvokeLogTail(logResult);
-        if (logTail !== undefined) {
-          this.logger.warn(
-            `Custom resource ${operation} for ${logicalId} failed. Its reason carries no ` +
-              `recognizable cause, so here is the backing function's invocation log tail:\n` +
-              this.truncateReason(logTail, CR_LOG_TAIL_WARN_MAX_CHARS)
-          );
-        }
+      //
+      // Two things the WORDING has to be honest about, because this arm asserts
+      // a causal link the signal arm does not:
+      //   - cdkd only knows the reason matched no authz signal. The reason may
+      //     be perfectly informative, so this does not claim it was useless.
+      //   - the tail belongs to the DISPATCH invoke. For a handler that works
+      //     inline that IS where the failure happened, but for the CDK Provider
+      //     framework's async pattern the FAILED arrives from `pollS3Response`
+      //     and was authored by a LATER Step-Functions-driven execution, whose
+      //     log this is not. On the signal path that mismatch costs only a
+      //     redundant retry; here it would present an unrelated log as THE
+      //     explanation, so the message names which invocation it came from and
+      //     lets the reader judge.
+      if (logTail !== undefined && hasHandlerLogOutput(logTail)) {
+        this.logger.warn(
+          `Custom resource ${operation} for ${logicalId} failed and cdkd could not classify ` +
+            `the reason. Log tail from the DISPATCH invocation (for the CDK Provider ` +
+            `framework's async pattern the failure may have occurred in a later execution, ` +
+            `whose log this is not):\n` +
+            this.truncateReason(logTail, CR_LOG_TAIL_WARN_MAX_CHARS)
+        );
       }
 
       return cfnResponse;

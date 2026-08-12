@@ -647,13 +647,56 @@ describe('CustomResourceProvider authz retry via the invocation log tail (issue 
       })
     );
 
-    expect(warnings()).toContain('here is the backing function');
+    expect(warnings()).toContain('could not classify the reason');
     expect(warnings()).toContain("KeyError: 'DestinationBucketName'");
     expect(counts.invokes()).toBe(1); // diagnostics only — still no retry
     expect(counts.updates()).toBe(0);
     // ...and the tail stays OUT of the persisted reason.
     expect(err.message).not.toContain('KeyError');
     expect(err.message).not.toContain('Traceback');
+  });
+
+  it('discloses that the tail is from the DISPATCH invoke, not necessarily the failing one', async () => {
+    // For the CDK Provider framework's async pattern the FAILED arrives from the
+    // S3 poll and was authored by a later Step-Functions-driven execution, whose
+    // log this is not. The message must not present it as THE explanation.
+    process.env['CDKD_CR_AUTHZ_MAX_RETRIES'] = '0';
+    wireFlow({
+      reason: BUCKET_DEPLOYMENT_REASON,
+      logTail: 'START RequestId: 1\n[ERROR] something\nEND RequestId: 1',
+      neverSucceeds: true,
+    });
+
+    await captureError(
+      makeProvider().create('Website', 'Custom::CDKBucketDeployment', {
+        ServiceToken: SERVICE_TOKEN,
+      })
+    );
+
+    expect(warnings()).toContain('DISPATCH invocation');
+    expect(warnings()).toContain('may have occurred in a later execution');
+  });
+
+  it('does NOT dump a tail that is only Lambda boilerplate', async () => {
+    // `LogResult` is never absent on a LogType:'Tail' invoke — Lambda always
+    // emits START / END / REPORT — so a bare presence check filters nothing and
+    // would dump zero-value boilerplate on every unexplained failure.
+    process.env['CDKD_CR_AUTHZ_MAX_RETRIES'] = '0';
+    const boilerplate = [
+      'START RequestId: 6d1f-4c2a Version: $LATEST',
+      'END RequestId: 6d1f-4c2a',
+      'REPORT RequestId: 6d1f-4c2a\tDuration: 12.34 ms\tBilled Duration: 13 ms\tMemory Size: 128 MB',
+      '',
+    ].join('\n');
+    wireFlow({ reason: BUCKET_DEPLOYMENT_REASON, logTail: boilerplate, neverSucceeds: true });
+
+    await captureError(
+      makeProvider().create('Website', 'Custom::CDKBucketDeployment', {
+        ServiceToken: SERVICE_TOKEN,
+      })
+    );
+
+    expect(warnings()).not.toContain('could not classify the reason');
   });
 
   it('caps the unexplained-failure tail as well', async () => {
@@ -668,7 +711,7 @@ describe('CustomResourceProvider authz retry via the invocation log tail (issue 
     );
 
     const w = warnings();
-    expect(w).toContain('here is the backing function');
+    expect(w).toContain('could not classify the reason');
     expect(w).not.toContain('TAIL_MARKER_PAST_CAP');
     expect(w.length).toBeLessThan(huge.length);
   });
@@ -684,7 +727,7 @@ describe('CustomResourceProvider authz retry via the invocation log tail (issue 
       })
     );
 
-    expect(warnings()).not.toContain('here is the backing function');
+    expect(warnings()).not.toContain('could not classify the reason');
   });
 
   it('does NOT dump the tail beside the signal annotation either', async () => {
@@ -701,7 +744,7 @@ describe('CustomResourceProvider authz retry via the invocation log tail (issue 
       })
     );
 
-    expect(warnings()).not.toContain('here is the backing function');
+    expect(warnings()).not.toContain('could not classify the reason');
   });
 
   it('does NOT dump a tail on SUCCESS', async () => {
@@ -737,7 +780,7 @@ describe('CustomResourceProvider authz retry via the invocation log tail (issue 
     });
 
     expect(result.physicalId).toBe('ok');
-    expect(warnings()).not.toContain('here is the backing function');
+    expect(warnings()).not.toContain('could not classify the reason');
   });
 
   it('leaves the SNS-backed path (no Lambda invoke, no log tail) working', async () => {
