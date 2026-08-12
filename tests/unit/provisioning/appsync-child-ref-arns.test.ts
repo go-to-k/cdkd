@@ -353,3 +353,116 @@ describe('AppSyncProvider records real ARNs for the child types (issue #1681)', 
     expect(mockGetAccountInfo).toHaveBeenCalledWith('us-east-1');
   });
 });
+
+/**
+ * Issue #1728 — the residual #1681 left: `import()` recorded `attributes: {}`
+ * for every child type, so an ADOPTED child had no ARN in state, the resolver's
+ * `REF_RETURNS_ARN_FROM_STATE` lookup missed, and `Ref` fell back to the raw
+ * compound id (the pre-#1681 behavior) until the resource's next update.
+ *
+ * Asserted on the RECORDED VALUE for the same reason the #1681 block above is:
+ * the call sequence is identical whether the attribute is recorded or not.
+ */
+describe('AppSyncProvider.import records the child ARN attributes (issue #1728)', () => {
+  let provider: AppSyncProvider;
+
+  const importInput = (resourceType: string, knownPhysicalId?: string) => ({
+    logicalId: 'X',
+    resourceType,
+    stackName: 'MyStack',
+    region: 'us-east-1',
+    properties: {},
+    ...(knownPhysicalId !== undefined && { knownPhysicalId }),
+  });
+
+  beforeEach(() => {
+    provider = new AppSyncProvider();
+    mockSend.mockReset();
+    mockGetAccountInfo.mockReset();
+    mockGetAccountInfo.mockResolvedValue({
+      partition: 'aws',
+      region: 'us-east-1',
+      accountId: '123456789012',
+    });
+  });
+
+  // The complete set, not just the ARN: `import` writes the record's attribute
+  // map outright, so a partial answer would leave `Name` / `ApiKey` unresolvable
+  // for an adopted resource exactly as the ARN was.
+  it.each([
+    [
+      'AWS::AppSync::DataSource',
+      'abcd1234|myDataSource',
+      {
+        DataSourceArn:
+          'arn:aws:appsync:us-east-1:123456789012:apis/abcd1234/datasources/myDataSource',
+        Name: 'myDataSource',
+      },
+    ],
+    [
+      'AWS::AppSync::Resolver',
+      'abcd1234|Query|getItem',
+      {
+        ResolverArn:
+          'arn:aws:appsync:us-east-1:123456789012:apis/abcd1234/types/Query/resolvers/getItem',
+      },
+    ],
+    [
+      'AWS::AppSync::ApiKey',
+      'abcd1234|da2-abcdefghij',
+      {
+        ApiKey: 'da2-abcdefghij',
+        Arn: 'arn:aws:appsync:us-east-1:123456789012:apis/abcd1234/apikey/da2-abcdefghij',
+      },
+    ],
+  ])('import of %s records the same attribute set create() does', async (type, id, expected) => {
+    const result = await provider.import(importInput(type, id));
+
+    expect(result).toEqual({ physicalId: id, attributes: expected });
+    // The reconstruction must cost no AppSync API call — that is the whole
+    // reason it is preferred over a readback per imported child.
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  // The recorded value must be usable, not merely present: the pre-#1681
+  // spelling would satisfy a "records an ARN" assertion while being exactly the
+  // value the resolver refuses.
+  it('records no wildcard-bearing ARN for an imported child', async () => {
+    const result = await provider.import(
+      importInput('AWS::AppSync::DataSource', 'abcd1234|myDataSource')
+    );
+
+    expect(String(result?.attributes?.['DataSourceArn'])).not.toContain(':*:');
+  });
+
+  // Degradation arms — each must keep the pre-#1728 answer rather than guess.
+  it.each([
+    // A mis-arity id: `childRefAttributes` answers `undefined`.
+    ['AWS::AppSync::Resolver', 'abcd1234|a|b|c'],
+    // A type with no ARN-`Ref` mapping at all.
+    ['AWS::AppSync::GraphQLSchema', 'abcd1234'],
+  ])('import of %s still adopts with an empty attribute map', async (type, id) => {
+    const result = await provider.import(importInput(type, id));
+
+    expect(result).toEqual({ physicalId: id, attributes: {} });
+  });
+
+  // Adoption is worth more than the bookkeeping attribute: an STS failure must
+  // warn and degrade, never fail the import. Same call the create path makes,
+  // so the same failure mode reaches it.
+  it('import SUCCEEDS with an empty attribute map when the ARN build fails', async () => {
+    mockGetAccountInfo.mockRejectedValue(new Error('sts exploded'));
+
+    const result = await provider.import(
+      importInput('AWS::AppSync::DataSource', 'abcd1234|myDataSource')
+    );
+
+    expect(result).toEqual({ physicalId: 'abcd1234|myDataSource', attributes: {} });
+  });
+
+  // Unchanged by #1728: with no caller-supplied id there is nothing to adopt,
+  // and the child types are explicit-override only.
+  it('import of a child with no known physical id still returns null', async () => {
+    expect(await provider.import(importInput('AWS::AppSync::DataSource'))).toBeNull();
+  });
+});

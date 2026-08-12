@@ -593,10 +593,20 @@ anything; the table is here because the difference is visible when you compare
 | `AWS::S3Tables::Namespace` / `::Table` | the namespace / table name (the segment after the last `\|`) |
 
 The three `AWS::AppSync::*` children are the case where the `Ref` value is not
-a segment at all: cdkd recovers the ARN from the attribute the provider records
-at create time. A child adopted with `cdkd import` records no such attribute,
-so its `Ref` falls back to the raw composite id — re-deploy it once to populate
-the attribute.
+a segment at all: cdkd recovers the ARN from the attribute the provider records.
+`cdkd import` records the same attribute a fresh deploy does — it reconstructs
+the ARN from the composite id you supply — so an adopted child's `Ref` and
+`Fn::GetAtt` resolve immediately.
+
+Two records can still lack the attribute, and both degrade the same way — `Ref`
+falls back to the raw composite id, and `Fn::GetAtt` on the ARN attribute
+FAILS rather than serving a value CloudFormation would not return:
+
+- one written by a cdkd older than the fix that started recording the real ARN;
+- one whose import could not build the ARN (a warning names it at import time).
+
+Re-deploy the stack once in either case: the resource's next in-place update
+records the corrected attribute.
 
 Two more types **accept** a composite id without producing one:
 

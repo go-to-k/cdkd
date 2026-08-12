@@ -371,6 +371,50 @@ export class AppSyncProvider implements ResourceProvider {
   }
 
   /**
+   * The child attribute set for an ADOPTED resource (issue #1728).
+   *
+   * `import()` used to record `attributes: {}` for every child type, so a child
+   * adopted via `cdkd import` had no ARN in state and the resolver's
+   * `REF_RETURNS_ARN_FROM_STATE` lookup missed — `Ref` fell back to the raw
+   * compound id, i.e. the pre-#1681 behavior, and `Fn::GetAtt DataSourceArn` /
+   * `ResolverArn` / `Arn` were equally unresolved. The record healed only on the
+   * resource's next UPDATE (#1727), so an imported-and-untouched child stayed
+   * broken indefinitely.
+   *
+   * RECONSTRUCTED rather than read back from AWS. Every segment is already in
+   * the physical id the import receives, `childRefAttributes` is the SAME
+   * mapping `create()` / `update()` use (so the three spellings cannot drift),
+   * and the reconstruction costs one process-cached STS call instead of one
+   * DescribeApi-family call per imported child. A readback would be
+   * authoritative but cannot be more correct for a well-formed id: `import`
+   * adopts a resource in the caller's own account and region, which is exactly
+   * the context `buildAppSyncArn` derives from. (The account context itself is
+   * only as good as `getAccountInfo`, whose STS-failure fallback is tracked in
+   * issue #1730 — that exposure is shared with the create path, not introduced
+   * here.)
+   *
+   * Never throws: an ARN build failure degrades to `{}`, which is the exact
+   * pre-#1728 behavior, and adopting the resource is worth more than its
+   * bookkeeping attribute. `childRefAttributes` already answers `undefined` for
+   * a mis-arity id, which degrades the same way rather than guessing.
+   */
+  private async childImportAttributes(
+    resourceType: string,
+    physicalId: string
+  ): Promise<Record<string, unknown>> {
+    try {
+      return (await this.childRefAttributes(resourceType, physicalId)) ?? {};
+    } catch (error) {
+      this.logger.warn(
+        `Imported ${resourceType} (${physicalId}) but could not build its ARN attribute: ` +
+          `${error instanceof Error ? error.message : String(error)}. ` +
+          `Ref will resolve to the compound physical id until the next update.`
+      );
+      return {};
+    }
+  }
+
+  /**
    * Lazy S3 client for the `*S3Location` properties (Resolver
    * `CodeS3Location` / `RequestMappingTemplateS3Location` /
    * `ResponseMappingTemplateS3Location`, GraphQLSchema
@@ -3377,12 +3421,18 @@ export class AppSyncProvider implements ResourceProvider {
    * real resource (issue #1134); auto-mode import resolves ids from
    * CloudFormation's `DescribeStackResources` instead. AppSync sub-resources
    * (`GraphQLSchema`, `DataSource`, `Resolver`, `ApiKey`) are scoped under a
-   * parent `apiId` — explicit-override only.
+   * parent `apiId` — explicit-override only. The three ARN-`Ref` children
+   * additionally record the same attribute set `create()` does, so an adopted
+   * child's `Ref` / `Fn::GetAtt` resolve immediately rather than only after its
+   * first update (issue #1728) — see {@link childImportAttributes}.
    */
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     if (input.resourceType !== 'AWS::AppSync::GraphQLApi') {
       if (input.knownPhysicalId) {
-        return { physicalId: input.knownPhysicalId, attributes: {} };
+        return {
+          physicalId: input.knownPhysicalId,
+          attributes: await this.childImportAttributes(input.resourceType, input.knownPhysicalId),
+        };
       }
       return null;
     }

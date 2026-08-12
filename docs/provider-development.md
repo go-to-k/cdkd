@@ -958,6 +958,23 @@ adopted via `--resource <id>=<physicalId>`.
 > deleted ([#1134](https://github.com/go-to-k/cdkd/issues/1134)); adding a new
 > one just adds more dead code.
 
+What the method RETURNS matters as much as how it resolves the id:
+
+> [!IMPORTANT]
+> **If any intrinsic resolves from a recorded ATTRIBUTE, `import` must record
+> it too** ([#1728](https://github.com/go-to-k/cdkd/issues/1728)). Returning
+> `attributes: {}` is only correct when the physical id alone answers every
+> `Ref` / `Fn::GetAtt` for the type. Where it does not — the three
+> `AWS::AppSync::*` children, whose `Ref` is an ARN the resolver recovers from
+> the attribute `create()` records — an adopted resource is silently stuck on
+> the degraded path until its next UPDATE happens to heal the record. Reuse the
+> SAME mapping `create()` / `update()` use rather than writing a third spelling,
+> and return the COMPLETE set: the import writes the record's attribute map
+> outright, so a partial answer drops the rest. Reconstructing from the supplied
+> physical id is preferred over a readback when every segment is already in the
+> id (it costs no per-resource API call), and the build must never fail the
+> import — warn and degrade to `{}`, which is exactly the pre-fix behavior.
+
 The method follows a single shape:
 
 ```typescript
