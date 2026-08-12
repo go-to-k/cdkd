@@ -320,6 +320,8 @@ describe('#1671 UPDATE: an empty rules collection skips the Put and records the 
     expect(warned).toContain('LifecycleConfiguration.Rules');
     expect(warned).toMatch(/declares no rules/i);
     expect(warned).toContain('recording the previously-applied value');
+    // The remedy clause is half the point of announcing at all.
+    expect(warned).toContain('remove the whole LifecycleConfiguration property');
   });
 
   it('announces the CORS skip with its OWN joined path literal', async () => {
@@ -351,6 +353,22 @@ describe('#1671 UPDATE: an empty rules collection skips the Put and records the 
     expect(warned).not.toContain('recording the previously-applied value');
   });
 
+  it('CORS: says nothing was applied before when ITS previous side declared none', async () => {
+    // The CORS twin of the lifecycle row above. Without it, hardcoding the
+    // lifecycle bag as the CORS call site's `previousProperties` argument — or
+    // passing `properties` there — changes only the wording clause and no row
+    // notices.
+    const properties = { BucketName: BUCKET, CorsConfiguration: { CorsRules: [] } };
+    const result = await provider.update('B', BUCKET, RESOURCE_TYPE, properties, {
+      BucketName: BUCKET,
+    });
+
+    const warned = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(warned).toContain('CorsConfiguration.CorsRules');
+    expect(warned).toContain('nothing was applied before');
+    expect(result.effectiveProperties?.['CorsConfiguration']).toBeUndefined();
+  });
+
   it('also fires for an ABSENT / non-array collection, without claiming "empty array"', async () => {
     // The guard is `!cfg.Rules || !Array.isArray(cfg.Rules) || length === 0`,
     // so an unresolved intrinsic reaches it too. The wording must not assert a
@@ -369,6 +387,11 @@ describe('#1671 UPDATE: an empty rules collection skips the Put and records the 
     expect(sentCommands(PutBucketLifecycleConfigurationCommand)).toHaveLength(0);
     expect(sentCommands(DeleteBucketLifecycleCommand)).toHaveLength(0);
     expect(result.effectiveProperties?.['LifecycleConfiguration']).toEqual(LIVE_LIFECYCLE);
+    // The wording is the point of this row — re-introducing "is an empty array"
+    // would be a false claim about a value that was an unresolved intrinsic.
+    const warned = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(warned).toMatch(/declares no rules/i);
+    expect(warned).not.toMatch(/empty array/i);
   });
 
   it('records the key as REMOVED when the previous side declared none', async () => {

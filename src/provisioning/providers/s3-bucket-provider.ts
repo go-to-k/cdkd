@@ -2145,10 +2145,14 @@ export class S3BucketProvider implements ResourceProvider {
       // readback can never emit, so `cdkd drift` reports it forever and
       // `--revert` re-issues the call — a false positive on the command that
       // MUTATES. WITH the fold, drift is clean (verified live) and the residue
-      // is a cosmetic `cdkd diff` line plus a redundant per-`Id` Put that is
-      // idempotent and cannot replace the bucket (`InventoryConfigurations` is
-      // neither create-only nor in the type's ReplacementRules entry). Trading a
-      // drift false-positive for a diff false-positive is a net improvement.
+      // is a permanent `cdkd diff` change line — so `cdkd diff --fail` exits 1
+      // for an affected template, which breaks a CI drift gate — plus a
+      // redundant per-`Id` Put on every deploy (a real API call, state write and
+      // deployment event). It cannot REPLACE the bucket:
+      // `InventoryConfigurations` is neither create-only nor in the type's
+      // ReplacementRules entry, so the change classifies in-place. Trading a
+      // drift false-positive for a diff false-positive is still the better side,
+      // because only the drift one is acted on by a MUTATING command.
       //
       // The twin is deliberately NOT added here: it is a real change with a real
       // obstacle — a `canonicalizeDesiredProperties` that folds this key makes
@@ -2868,6 +2872,10 @@ export class S3BucketProvider implements ResourceProvider {
    * `structuredClone`, so the two sides would disagree on key COUNT for any
    * consumer that walks `Object.keys` (the `unionWalkObjects` drift path does).
    */
+  // ORDERING INVARIANT: every caller passes a bag it already owns — the schedule
+  // site runs after `recordSubstitution` has produced a copy — so the identity
+  // return below can never alias the caller's DESIRED item into the effective
+  // array. Re-order those two and this must start copying unconditionally.
   private static withoutKey(
     container: Record<string, unknown>,
     key: string
