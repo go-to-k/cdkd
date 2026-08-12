@@ -598,9 +598,6 @@ if [ "${GTO_LIVE_INDEXES}" != "0" ]; then
   echo "      hiding indexes AWS actually holds." >&2
   exit 1
 fi
-# The capacity table's index, by contrast, must SURVIVE -- its GSI was never
-# malformed, and only the per-index CAPACITY members were unsendable. Without
-# this a strip that removed the whole array would pass everything above.
 
 # Sanity, NOT a discriminator: the template's own mode is PAY_PER_REQUEST too, so
 # this cannot tell the substitution from the template. It is here to catch a

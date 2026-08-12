@@ -695,12 +695,14 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // a single state record can carry more than one malformed value, and
       // this is the LAST of the three arms.
       //
-      // Only the TOP-LEVEL key is dropped, matching what was actually skipped.
-      // A `Replicas[].GlobalSecondaryIndexes` override block is a SEPARATE
-      // template key that this guard never read and never refused, and the
-      // per-replica override wiring runs on its own further down rather than
-      // off `sdkIndexes` — so dropping it here would withdraw a value on the
-      // strength of a different key being malformed.
+      // The top-level key is dropped, matching what was actually skipped. A
+      // CROSS-REGION `Replicas[].GlobalSecondaryIndexes` override is a SEPARATE
+      // template key that this guard never read and never refused, and its
+      // wiring runs on its own further down rather than off `sdkIndexes` — so
+      // dropping THOSE would withdraw a value on the strength of a different
+      // key being malformed. The LOCAL replica's block is different and IS
+      // dropped, for the reason given just below; do not read this paragraph as
+      // an argument against that.
       effectiveProperties = { ...(effectiveProperties ?? properties) };
       delete effectiveProperties['GlobalSecondaryIndexes'];
       // ...and the LOCAL replica's index block, which is not a separate send
@@ -5695,6 +5697,11 @@ export function stripProvisionedCapacityKeys(
 ): Record<string, unknown> {
   const result: Record<string, unknown> = { ...properties };
   delete result['WriteProvisionedThroughputSettings'];
+  // Note the deliberate asymmetry with the replica-index husk pruning below: a
+  // top-level array is left as-is (even when empty), while an ALREADY-empty
+  // `Replicas[].GlobalSecondaryIndexes` is removed along with the husks.
+  // `readCurrentState` never emits that key as `[]`, so removing it converges
+  // either way, and special-casing "empty on the way in" would buy nothing.
 
   const indexes = result['GlobalSecondaryIndexes'];
   if (Array.isArray(indexes)) {
