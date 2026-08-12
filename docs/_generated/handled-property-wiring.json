@@ -16288,7 +16288,12 @@
           "seededBy": [
             "create",
             "createRecordSet",
+            "delete",
+            "deleteRecordSet",
+            "readCurrentState",
+            "readRecordSet",
             "resolveHostedZoneId",
+            "resolveRecordSetIdentity",
             "update",
             "updateRecordSet"
           ]
@@ -16306,7 +16311,12 @@
           "seededBy": [
             "create",
             "createRecordSet",
+            "delete",
+            "deleteRecordSet",
+            "readCurrentState",
+            "readRecordSet",
             "resolveHostedZoneId",
+            "resolveRecordSetIdentity",
             "update",
             "updateRecordSet"
           ]
@@ -16368,6 +16378,9 @@
             "createRecordSet",
             "delete",
             "deleteRecordSet",
+            "readCurrentState",
+            "readRecordSet",
+            "resolveRecordSetIdentity",
             "update",
             "updateRecordSet"
           ]
@@ -16487,6 +16500,9 @@
             "createRecordSet",
             "delete",
             "deleteRecordSet",
+            "readCurrentState",
+            "readRecordSet",
+            "resolveRecordSetIdentity",
             "update",
             "updateRecordSet"
           ]

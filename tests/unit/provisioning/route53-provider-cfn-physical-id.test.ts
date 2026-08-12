@@ -166,7 +166,11 @@ describe('Route53 RecordSet physicalId: CloudFormation form vs cdkd composite (i
       expect(mockSend).not.toHaveBeenCalled();
     });
 
-    it('returns null (skipped-not-found) when the record does not exist in AWS', async () => {
+    // The import command aborts only when ZERO resources import, so a `null`
+    // here lets --migrate-from-cloudformation retire the CFn stack while the
+    // record is in NEITHER system. Adopting verbatim is safe because delete
+    // and drift both accept the scalar form.
+    it('adopts VERBATIM (never null) when the record cannot be found in AWS', async () => {
       mockSend.mockResolvedValueOnce({ ResourceRecordSets: [] });
 
       const result = await provider.import({
@@ -178,10 +182,10 @@ describe('Route53 RecordSet physicalId: CloudFormation form vs cdkd composite (i
         knownPhysicalId: 'record.example.com',
       });
 
-      expect(result).toBeNull();
+      expect(result).toEqual({ physicalId: 'record.example.com', attributes: {} });
     });
 
-    it('returns null when the zone cannot be resolved from the template', async () => {
+    it('adopts VERBATIM when the zone cannot be resolved from the template', async () => {
       const result = await provider.import({
         logicalId: 'WebsiteRecord',
         resourceType: 'AWS::Route53::RecordSet',
@@ -191,8 +195,62 @@ describe('Route53 RecordSet physicalId: CloudFormation form vs cdkd composite (i
         knownPhysicalId: 'record.example.com',
       });
 
-      expect(result).toBeNull();
+      expect(result).toEqual({ physicalId: 'record.example.com', attributes: {} });
       expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('adopts VERBATIM when HostedZoneId is still an unresolved intrinsic', async () => {
+      // `import.ts` substitutes only single-key {Ref}; Fn::ImportValue / GetAtt
+      // reach the provider as objects. An unguarded read would stringify this
+      // to '[object Object]' and send it to AWS as a zone id.
+      const result = await provider.import({
+        logicalId: 'WebsiteRecord',
+        resourceType: 'AWS::Route53::RecordSet',
+        stackName: 'MyStack',
+        region: 'us-east-1',
+        properties: {
+          ...RECORD_PROPS,
+          HostedZoneId: { 'Fn::ImportValue': 'SharedZoneId' },
+        },
+        knownPhysicalId: 'record.example.com',
+      });
+
+      expect(result).toEqual({ physicalId: 'record.example.com', attributes: {} });
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('adopts VERBATIM when verification throws (e.g. a throttle)', async () => {
+      mockSend.mockRejectedValueOnce(new Error('Throttling: Rate exceeded'));
+
+      const result = await provider.import({
+        logicalId: 'WebsiteRecord',
+        resourceType: 'AWS::Route53::RecordSet',
+        stackName: 'MyStack',
+        region: 'us-east-1',
+        properties: RECORD_PROPS,
+        knownPhysicalId: 'record.example.com',
+      });
+
+      expect(result).toEqual({ physicalId: 'record.example.com', attributes: {} });
+    });
+
+    it('adopts VERBATIM for a wildcard record AWS reports octal-escaped', async () => {
+      // Route 53 renders `*.example.com` as `\052.example.com.`, so the exact
+      // name match legitimately misses and must not drop the row.
+      mockSend.mockResolvedValueOnce({
+        ResourceRecordSets: [{ Name: '\\052.example.com.', Type: 'A', TTL: 300 }],
+      });
+
+      const result = await provider.import({
+        logicalId: 'WildcardRecord',
+        resourceType: 'AWS::Route53::RecordSet',
+        stackName: 'MyStack',
+        region: 'us-east-1',
+        properties: { ...RECORD_PROPS, Name: '*.example.com.' },
+        knownPhysicalId: '*.example.com',
+      });
+
+      expect(result).toEqual({ physicalId: '*.example.com', attributes: {} });
     });
   });
 
@@ -246,6 +304,53 @@ describe('Route53 RecordSet physicalId: CloudFormation form vs cdkd composite (i
       const del = mockSend.mock.calls[1]?.[0];
       expect(del).toBeInstanceOf(ChangeResourceRecordSetsCommand);
       expect(del.input.HostedZoneId).toBe('Z0123456789ABCDEFGHIJ');
+    });
+
+    it('refuses to guess between split-horizon zones of the same name', async () => {
+      // A public and a private zone can share one name. Deleting from the
+      // wrong one is unrecoverable, and this fallback is what newly routes
+      // delete through name resolution.
+      mockSend.mockResolvedValueOnce({
+        HostedZones: [
+          { Id: '/hostedzone/ZPUBLIC000000000000', Name: 'example.com.' },
+          { Id: '/hostedzone/ZPRIVATE00000000000', Name: 'example.com.' },
+        ],
+      });
+
+      await expect(
+        provider.delete('WebsiteRecord', 'record.example.com', 'AWS::Route53::RecordSet', {
+          ...RECORD_PROPS,
+          HostedZoneId: undefined,
+          HostedZoneName: 'example.com',
+        })
+      ).rejects.toThrow(/matches 2 hosted zones/);
+    });
+
+    it('deletes with a COMPOSITE id and no HostedZoneName lookup', async () => {
+      // Pins the reordered guard: the composite short-circuits zone
+      // resolution entirely, so no ListHostedZonesByName is issued.
+      mockSend.mockResolvedValueOnce({});
+
+      await provider.delete(
+        'WebsiteRecord',
+        'Z0123456789ABCDEFGHIJ|record.example.com.|A',
+        'AWS::Route53::RecordSet',
+        { ...RECORD_PROPS, HostedZoneId: undefined, HostedZoneName: 'example.com' }
+      );
+
+      expect(mockSend).toHaveBeenCalledTimes(1);
+      expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(ChangeResourceRecordSetsCommand);
+    });
+
+    it('rejects a composite id with no properties at all', async () => {
+      await expect(
+        provider.delete(
+          'WebsiteRecord',
+          'Z0123456789ABCDEFGHIJ|record.example.com.|A',
+          'AWS::Route53::RecordSet',
+          undefined
+        )
+      ).rejects.toThrow(/Properties required/);
     });
 
     it('still errors when neither the id nor the properties identify a zone', async () => {

@@ -864,7 +864,12 @@ export class Route53Provider implements ResourceProvider {
     const composite = parseRecordSetCompositeId(physicalId);
     const hostedZoneId =
       composite?.hostedZoneId ??
-      (await this.resolveHostedZoneId(properties, logicalId, resourceType, physicalId));
+      (await this.resolveHostedZoneId(properties, logicalId, resourceType, physicalId, {
+        // A DELETE resolved from a name must not guess between a public and a
+        // private zone of the same name — deleting from the wrong one is
+        // unrecoverable, and this fallback is what newly routes delete here.
+        requireUnambiguousZoneName: true,
+      }));
 
     try {
       const resourceRecordSet = this.buildResourceRecordSet(properties);
@@ -1581,31 +1586,60 @@ export class Route53Provider implements ResourceProvider {
     properties: Record<string, unknown>,
     logicalId: string,
     resourceType: string,
-    physicalId?: string
+    physicalId?: string,
+    options?: { requireUnambiguousZoneName?: boolean }
   ): Promise<string> {
-    const hostedZoneId = properties['HostedZoneId'] as string | undefined;
-    if (hostedZoneId) return hostedZoneId;
+    // Guard the TYPE, not just presence: an unresolved intrinsic
+    // (`Fn::ImportValue` / `Fn::GetAtt` / a Parameter `Ref`) is an OBJECT and
+    // therefore truthy, so an unguarded read stringifies it to
+    // `[object Object]` and sends that to AWS as a zone id.
+    const hostedZoneId = properties['HostedZoneId'];
+    if (typeof hostedZoneId === 'string' && hostedZoneId) return hostedZoneId;
 
-    const hostedZoneName = properties['HostedZoneName'] as string | undefined;
-    if (hostedZoneName) {
+    const hostedZoneName = properties['HostedZoneName'];
+    if (typeof hostedZoneName === 'string' && hostedZoneName) {
+      // The lookup keeps its ORIGINAL warn-and-continue catch — a transient
+      // failure here must still fall through to the "specify one of these"
+      // error below rather than surfacing raw. The ambiguity decision is made
+      // AFTER the try deliberately: raising inside it would make this catch a
+      // conditional re-throw rather than a swallow, which un-protects the
+      // `.send()` for the `update-wrap-coverage` critic (and would be a real
+      // hazard if a later edit widened what the try covers).
+      let matched: { Id?: string | undefined }[] = [];
       try {
         const response = await this.getClient().send(
           new ListHostedZonesByNameCommand({
             DNSName: hostedZoneName,
-            MaxItems: 1,
+            // Deliberately > 1: split-horizon DNS lets a public and a private
+            // zone share one name, and `MaxItems: 1` silently picks whichever
+            // AWS lists first. Callers that DELETE through this resolution ask
+            // for the ambiguity to be refused instead.
+            MaxItems: 5,
           })
         );
         const zones = response.HostedZones ?? [];
         // Match the zone name (Route53 returns names with trailing dot)
-        const normalizedName = hostedZoneName.endsWith('.') ? hostedZoneName : `${hostedZoneName}.`;
-        const matchedZone = zones.find((z) => z.Name === normalizedName);
-        if (matchedZone?.Id) {
-          return matchedZone.Id.replace('/hostedzone/', '');
-        }
+        const normalizedName = normalizeRecordName(hostedZoneName);
+        matched = zones.filter((z) => z.Name === normalizedName);
       } catch (error) {
         this.logger.warn(
           `Failed to resolve HostedZoneName "${hostedZoneName}" for ${logicalId}: ${error instanceof Error ? error.message : String(error)}`
         );
+      }
+
+      if (matched.length > 1 && options?.requireUnambiguousZoneName) {
+        throw new ProvisioningError(
+          `HostedZoneName "${hostedZoneName}" matches ${matched.length} hosted zones for ${logicalId} ` +
+            `(split-horizon public/private DNS). Refusing to guess which one this record belongs to — ` +
+            `set HostedZoneId explicitly, or pass the '<zoneId>|<name>|<type>' composite via --resource.`,
+          resourceType,
+          logicalId,
+          physicalId
+        );
+      }
+      const matchedZone = matched[0];
+      if (matchedZone?.Id) {
+        return matchedZone.Id.replace('/hostedzone/', '');
       }
     }
 
@@ -1649,7 +1683,14 @@ export class Route53Provider implements ResourceProvider {
         physicalId
       );
       return { hostedZoneId, name, type };
-    } catch {
+    } catch (err) {
+      // Both callers treat "cannot determine" as "nothing to report" rather
+      // than as a failure, but say WHY at debug level — a swallowed throttle
+      // or credential error is otherwise indistinguishable from a template
+      // that simply does not name a zone.
+      this.logger.debug(
+        `Cannot resolve record-set identity for '${physicalId}': ${err instanceof Error ? err.message : String(err)}`
+      );
       return undefined;
     }
   }
@@ -1946,9 +1987,24 @@ export class Route53Provider implements ResourceProvider {
    * So re-canonicalize instead, the way `AWS::EC2::EIP` already does: an
    * already-composite override passes through (the documented
    * `--resource 'Id=zone|name|type'` form), anything else is rebuilt from the
-   * template properties and VERIFIED against AWS before adoption. A record we
-   * cannot verify returns `null`, which the import command reports as
-   * `skipped-not-found` — loud, and it leaves state clean.
+   * template properties and VERIFIED against AWS.
+   *
+   * **Canonicalization is BEST-EFFORT and never drops the row.** When the
+   * identity cannot be resolved or verified, the supplied id is adopted
+   * VERBATIM with a warning rather than returning `null`. Returning `null`
+   * there would be strictly worse than the bug this fixes: `import.ts` only
+   * aborts when ZERO resources import, so under
+   * `--migrate-from-cloudformation` the run proceeds to `UpdateStack(Retain)`
+   * + `DeleteStack` and the record ends up in NEITHER CloudFormation nor cdkd
+   * state — after which the next deploy CREATEs over a live RRSet and fails.
+   * Adopting verbatim is safe now precisely because `deleteRecordSet` and
+   * `readRecordSet` both accept the scalar form (the other half of this fix).
+   *
+   * Two shapes make verification legitimately fail, and both are ordinary
+   * rather than exotic: a `HostedZoneId` still carrying an unresolved
+   * intrinsic (`import.ts` substitutes only single-key `{Ref}` before calling
+   * a provider), and a wildcard record, which AWS reports octal-escaped as
+   * `\\052.example.com.` so the exact-name match misses.
    *
    * This stays OVERRIDE-ONLY (see the "sub-resources without a standalone
    * identity" list in docs/import.md): the id is now derived from the template
@@ -1956,25 +2012,41 @@ export class Route53Provider implements ResourceProvider {
    * because a RecordSet has no standalone identity for auto mode to key on.
    */
   private async importRecordSet(input: ResourceImportInput): Promise<ResourceImportResult | null> {
-    if (!input.knownPhysicalId) return null;
-    if (parseRecordSetCompositeId(input.knownPhysicalId)) {
-      return { physicalId: input.knownPhysicalId, attributes: {} };
+    const known = input.knownPhysicalId;
+    if (!known) return null;
+    if (parseRecordSetCompositeId(known)) {
+      return { physicalId: known, attributes: {} };
     }
+
+    const adoptVerbatim = (reason: string): ResourceImportResult => {
+      this.logger.warn(
+        `Record set ${input.logicalId}: could not canonicalize physical id '${known}' (${reason}). ` +
+          `Adopting it as-is — delete and drift both accept this form, but a later deploy that ` +
+          `UPDATEs the record will rewrite it to cdkd's '<zoneId>|<name>|<type>' composite.`
+      );
+      return { physicalId: known, attributes: {} };
+    };
 
     // A non-composite override IS CloudFormation's physicalId, i.e. the record
     // name; the template properties carry the same name plus the zone, so they
     // are the authoritative source either way.
-    const identity = await this.resolveRecordSetIdentity(input.knownPhysicalId, input.properties);
+    const identity = await this.resolveRecordSetIdentity(known, input.properties);
     if (!identity) {
-      this.logger.warn(
-        `Cannot resolve the hosted zone / name / type of record set ${input.logicalId} from its template properties; skipping import.`
-      );
-      return null;
+      return adoptVerbatim('the template does not resolve to a hosted zone + Name + Type');
     }
 
     const compositeId = `${identity.hostedZoneId}|${identity.name}|${identity.type}`;
-    const observed = await this.readRecordSet(compositeId);
-    if (!observed) return null;
+    let observed: Record<string, unknown> | undefined;
+    try {
+      observed = await this.readRecordSet(compositeId);
+    } catch (err) {
+      return adoptVerbatim(
+        `verification failed: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+    if (!observed) {
+      return adoptVerbatim('the record was not found under the resolved hosted zone');
+    }
 
     return { physicalId: compositeId, attributes: {} };
   }
