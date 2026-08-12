@@ -116,8 +116,12 @@ strict, each differently):
   records the baseline the guards already resolved — which for a usable recorded
   previous IS that value (so an out-of-band re-price stays a `cdkd drift`
   finding rather than being reconciled away), and for a present-but-unusable one
-  is the live reading, which RESTORES a usable baseline. Do not "tidy" that last
-  case into a drop: a dropped key reads as ABSENT next time, and the absent
+  is the live reading, which RESTORES a usable baseline. That last case is the
+  one place this file's "a read-back value belongs in `observedProperties`" bar
+  is crossed, and the bar itself is what reconciles it rather than a carve-out:
+  NOTHING was sent, so the live mode IS what cdkd left AWS holding, and the only
+  other candidate baseline is junk. Do not "tidy" that case into a drop
+  regardless: a dropped key reads as ABSENT next time, and the absent
   branch does not consult AWS, so a corrected template can compare equal, issue
   no call, and silently lose a real flip. The create-side arm of the SAME
   property answers differently — it records the SUBSTITUTED mode — because there

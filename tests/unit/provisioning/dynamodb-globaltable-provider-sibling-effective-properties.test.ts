@@ -134,6 +134,14 @@ describe('DynamoDBGlobalTableProvider sibling effectiveProperties arms (issue #1
     // PAY_PER_REQUEST is what CreateTable actually carried.
     expect(createInput()['BillingMode']).toBe('PAY_PER_REQUEST');
     expect(result.effectiveProperties?.['BillingMode']).toBe('PAY_PER_REQUEST');
+    // The absence announcement must NOT fire here: the record DOES declare a
+    // mode, it is merely malformed, and that is what the refusal above already
+    // reports. Without this, dropping the `=== undefined` half of that gate
+    // leaves the whole suite green while every replay create claims the record
+    // declares nothing.
+    expect(childLogger.warn).not.toHaveBeenCalledWith(
+      expect.stringContaining('declares no BillingMode')
+    );
     // It REPLACES the desired bag wholesale, so it must be complete.
     expect(result.effectiveProperties).toEqual({ ...desired, BillingMode: 'PAY_PER_REQUEST' });
     // ...and the substitution is still ANNOUNCED.
@@ -344,10 +352,15 @@ describe('DynamoDBGlobalTableProvider sibling effectiveProperties arms (issue #1
     // a stack with several GlobalTables cannot tell which one warned, and the
     // integ's grep fence for this arm has nothing to anchor on. Removing the
     // prefix leaves the rest of this suite green, so it is fenced here.
+    // ...and the phrase the integ's grep fence anchors on. Without this a
+    // reword would only be caught by a 20-minute real-AWS run. Asserted on ONE
+    // call rather than as two independent `toHaveBeenCalledWith`s, which two
+    // different warns could satisfy between them.
     expect(childLogger.warn).toHaveBeenCalledWith(
-      expect.stringContaining('AWS::DynamoDB::GlobalTable MyTable: ')
+      expect.stringMatching(
+        /AWS::DynamoDB::GlobalTable MyTable: .*BillingMode.*is kept for this update/s
+      )
     );
-    expect(childLogger.warn).toHaveBeenCalledWith(expect.stringContaining('BillingMode'));
   });
 
   it('DROPS the key when the recorded previous is ABSENT', async () => {
@@ -371,24 +384,33 @@ describe('DynamoDBGlobalTableProvider sibling effectiveProperties arms (issue #1
     expect('BillingMode' in (result.effectiveProperties ?? {})).toBe(false);
   });
 
-  it('RESTORES the live mode when the recorded previous is present but UNUSABLE', async () => {
-    // Dropping here instead would be the tidier-looking regression review
-    // caught: a dropped key reads as ABSENT next time, and the absent branch
-    // does not consult AWS, so a corrected PAY_PER_REQUEST template would
-    // compare equal and silently lose the flip on this live PROVISIONED table.
-    mockSend.mockReset();
-    mockSend.mockResolvedValue(provisionedTableResponse());
+  it.each([
+    ['blank', ''],
+    // `null` is the shape an older binary most plausibly wrote, and it is the
+    // one an `== null` split would silently move to the DROP branch.
+    ['null', null],
+    ['an array', ['PROVISIONED']],
+  ])(
+    'RESTORES the live mode when the recorded previous is %s (present but UNUSABLE)',
+    async (_label, previousMode) => {
+      // Dropping here instead would be the tidier-looking regression review
+      // caught: a dropped key reads as ABSENT next time, and the absent branch
+      // does not consult AWS, so a corrected PAY_PER_REQUEST template would
+      // compare equal and silently lose the flip on this live PROVISIONED table.
+      mockSend.mockReset();
+      mockSend.mockResolvedValue(provisionedTableResponse());
 
-    const result = await provider.update(
-      'MyTable',
-      TABLE_NAME,
-      RESOURCE_TYPE,
-      { ...baseProps, BillingMode: '' },
-      { ...baseProps, BillingMode: '' }
-    );
+      const result = await provider.update(
+        'MyTable',
+        TABLE_NAME,
+        RESOURCE_TYPE,
+        { ...baseProps, BillingMode: '' },
+        { ...baseProps, BillingMode: previousMode }
+      );
 
-    expect(result.effectiveProperties?.['BillingMode']).toBe('PROVISIONED');
-  });
+      expect(result.effectiveProperties?.['BillingMode']).toBe('PROVISIONED');
+    }
+  );
 
   it('does NOT overwrite a recorded mode that AWS has drifted away from', async () => {
     // Fences the `liveBillingMode` answer specifically — NOT the `oldBilling`

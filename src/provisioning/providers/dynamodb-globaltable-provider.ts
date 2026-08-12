@@ -363,6 +363,14 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // same announcement for the same reason. A template-path create with a
       // legitimately absent `BillingMode` stays silent, since there the default
       // IS the declared intent.
+      //
+      // This is noisier than the Lambda URL precedent and that is accepted, not
+      // overlooked: there the silent default is a PUBLIC function URL, here it
+      // is `PAY_PER_REQUEST`, which is also CDK's own default — so most replays
+      // this fires on are benign. It stays a warn because the alternative is a
+      // drop nothing announces, and the one case it is NOT benign (a record
+      // that lost the key while AWS holds PROVISIONED — issue #1733) is
+      // invisible from here.
       if (billingReplayWarn && properties['BillingMode'] === undefined) {
         this.logger.warn(
           `AWS::DynamoDB::GlobalTable ${logicalId}: the state record declares no BillingMode, ` +
@@ -1261,10 +1269,14 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
             // are: a stack can carry several GlobalTables, and without it
             // neither the user nor an integ assertion can tell which one
             // warned.
+            // "compared against", not "the table's current mode": for an
+            // ABSENT recorded previous `oldBilling` is the create-path default
+            // and was never checked against AWS, so the stronger wording would
+            // assert a mode the table may not have.
             this.logger.warn(
-              `AWS::DynamoDB::GlobalTable ${logicalId}: ${message} The table's current ` +
-                `billing mode (${oldBilling}) is kept for this update rather than flipped ` +
-                `to the default.`
+              `AWS::DynamoDB::GlobalTable ${logicalId}: ${message} The mode this update ` +
+                `compared against (${oldBilling}) is kept for this update rather than ` +
+                `flipped to the default.`
             );
           },
         }
@@ -1687,17 +1699,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // re-derived on every deploy. Drift convergence is the payoff only for a
       // table whose mode AWS does report.
       //
-      // What is retained is the RECORDED previous, and deliberately NOT
-      // `oldBilling`, although `oldBilling` is the mode this update compared
-      // against. The two differ in exactly the cases that matter, both
-      // MEASURED by the review that caught this: with an ABSENT recorded
-      // previous `oldBilling` is the create-path default, so recording it
-      // INVENTS a `BillingMode` key on a table AWS may hold as PROVISIONED;
-      // and with a present-but-unusable one it is the live `DescribeTable`
-      // reading, which is a read-back value — `.claude/rules/providers.md`
-      // puts those in `observedProperties`, not in the `properties` baseline.
-      //
-      // So the split is on ABSENCE, not on usability, and `oldBilling` is the
+      // The split is on ABSENCE, not on usability, and `oldBilling` is the
       // right value for everything else — which is what the two guards above
       // already decided, per shape:
       //
@@ -1718,7 +1720,13 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       //    so recording it would INVENT a key the record never had on a table
       //    AWS may hold as PROVISIONED. Dropped instead — the same answer the
       //    GSI arm above and the Lambda URL `AuthType` arm (#1654) take, and
-      //    the record is left exactly as it was.
+      //    the record is left exactly as it was. That branch KEEPS one
+      //    exposure, named rather than papered over (issue #1733): an absent
+      //    previous resolves without consulting AWS, so a later corrected
+      //    PAY_PER_REQUEST template compares equal and issues no call. Fixing
+      //    it means widening #1552's live-read fallback to cover ABSENT too,
+      //    which is a decision about the whole update path and needs its own
+      //    real-AWS measurement.
       if (billingUnusable) {
         effectiveProperties = { ...(effectiveProperties ?? properties) };
         if (recordedOldBilling === undefined) {
