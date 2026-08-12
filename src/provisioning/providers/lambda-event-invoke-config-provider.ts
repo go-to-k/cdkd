@@ -11,6 +11,7 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { replayWarn, requireConfigString } from '../config-shape.js';
+import { packCompositeId, type CompositeIdOptions } from '../composite-id.js';
 import type { CreateContext } from '../../types/resource.js';
 import type {
   ResourceProvider,
@@ -68,8 +69,21 @@ export class LambdaEventInvokeConfigProvider implements ResourceProvider {
   /**
    * Compose the Cloud-Control-compatible compound physical id.
    */
-  private buildPhysicalId(functionName: string, qualifier: string): string {
-    return `${functionName}|${qualifier}`;
+  private buildPhysicalId(
+    logicalId: string,
+    functionName: string,
+    qualifier: string,
+    options?: CompositeIdOptions
+  ): string {
+    return packCompositeId(
+      'AWS::Lambda::EventInvokeConfig',
+      logicalId,
+      [
+        { name: 'functionName', value: functionName },
+        { name: 'qualifier', value: qualifier },
+      ],
+      options
+    );
   }
 
   /**
@@ -171,11 +185,29 @@ export class LambdaEventInvokeConfigProvider implements ResourceProvider {
       { coerceNumber: true, ...replayWarn(this.logger, context) }
     );
 
+    // Refuse a `|` in either segment BEFORE `PutFunctionEventInvokeConfig`
+    // runs (issue #1672). Neither is realistically pipe-capable — a Lambda
+    // function NAME is `[a-zA-Z0-9-_]+`, a function ARN carries no `|`, and a
+    // qualifier is a version number or an alias name — which is exactly the
+    // premise `parsePhysicalId` already documents for splitting on the FIRST
+    // separator. This makes that premise ENFORCED rather than assumed.
+    // Computed before the call so a refusal cannot leave a configuration AWS
+    // has already applied without a state record.
+    const physicalId = this.buildPhysicalId(
+      logicalId,
+      functionName,
+      qualifier,
+      // A reverse-replacement rollback creates from a STATE record, so the
+      // refusal downgrades to a warning, matching the `Qualifier` guard above.
+      context?.replayingState === true
+        ? { onRefusal: (message) => this.logger.warn(message) }
+        : undefined
+    );
+
     try {
       await this.lambdaClient.send(
         new PutFunctionEventInvokeConfigCommand(this.buildPutInput(properties))
       );
-      const physicalId = this.buildPhysicalId(functionName, qualifier);
       this.logger.debug(
         `Successfully created Lambda EventInvokeConfig ${logicalId}: ${physicalId}`
       );

@@ -76,6 +76,7 @@ import { STSClient, GetCallerIdentityCommand } from '@aws-sdk/client-sts';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import { packCompositeId } from '../composite-id.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import type {
   CreateContext,
@@ -735,6 +736,36 @@ export class GlueProvider implements ResourceProvider {
       | Record<string, unknown>
       | undefined;
 
+    // Refuse a `|` in either segment BEFORE `CreateTable` runs (issue #1672).
+    // This is the ONE site in the composite-id family with LIVE evidence that
+    // the hazard is real: `glue:CreateTable` with `TableInput.Name: 'a|b'`
+    // SUCCEEDS (probe, us-east-1 2026-08-12), so the recorded `<db>|a|b` would
+    // decode to a DIFFERENT table — which `deleteTable` would then delete, or
+    // warn-and-skip while reporting success. `DatabaseName` is guarded on the
+    // same footing but was NOT probed: both segments are user-chosen and the
+    // Athena / Data Catalog "lowercase alphanumerics and underscore" rule that
+    // would rule it out is a convention rather than an API constraint, so
+    // guarding it is the conservative reading, not a measured one. Computed
+    // here rather than after the call so the refusal cannot orphan a table AWS
+    // has already created. `import()` refuses the same shape via
+    // `resolveTableIdentity` (issue #1651), which is why the composite it
+    // builds needs no second guard.
+    const physicalId = packCompositeId(
+      resourceType,
+      logicalId,
+      [
+        { name: 'databaseName', value: databaseName },
+        { name: 'tableName', value: tableName },
+      ],
+      // A reverse-replacement rollback creates from a STATE record, so the
+      // refusal downgrades to a warning: the user cannot edit a state record
+      // from their template, and a table recorded by an older binary under the
+      // ambiguous id must still be restorable.
+      context?.replayingState === true
+        ? { onRefusal: (message) => this.logger.warn(message) }
+        : undefined
+    );
+
     try {
       await this.getClient().send(
         new CreateTableCommand({
@@ -747,7 +778,6 @@ export class GlueProvider implements ResourceProvider {
         })
       );
 
-      const physicalId = `${databaseName}|${tableName}`;
       this.logger.debug(`Successfully created Glue Table ${logicalId}: ${physicalId}`);
 
       return {

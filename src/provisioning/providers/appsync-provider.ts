@@ -67,6 +67,7 @@ import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import { requireConfigArray } from '../config-shape.js';
+import { packCompositeId } from '../composite-id.js';
 import type {
   CreateContext,
   ResourceProvider,
@@ -263,11 +264,11 @@ export class AppSyncProvider implements ResourceProvider {
       case 'AWS::AppSync::GraphQLSchema':
         return this.createGraphQLSchema(logicalId, resourceType, properties);
       case 'AWS::AppSync::DataSource':
-        return this.createDataSource(logicalId, resourceType, properties);
+        return this.createDataSource(logicalId, resourceType, properties, context);
       case 'AWS::AppSync::Resolver':
-        return this.createResolver(logicalId, resourceType, properties);
+        return this.createResolver(logicalId, resourceType, properties, context);
       case 'AWS::AppSync::ApiKey':
-        return this.createApiKey(logicalId, resourceType, properties);
+        return this.createApiKey(logicalId, resourceType, properties, context);
       default:
         throw new ProvisioningError(
           `Unsupported resource type: ${resourceType}`,
@@ -2241,7 +2242,8 @@ export class AppSyncProvider implements ResourceProvider {
   private async createDataSource(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating DataSource ${logicalId}`);
 
@@ -2257,6 +2259,29 @@ export class AppSyncProvider implements ResourceProvider {
       );
     }
 
+    // Refuse a `|` in either segment BEFORE `CreateDataSource` runs (issue
+    // #1672). `Name` is the only segment cdkd's own guards would let through as
+    // an arbitrary string — it is user-chosen, where `ApiId` is AWS-generated —
+    // but that is NOT the same as saying AWS accepts a `|` in it: AppSync
+    // documents the field as `[_A-Za-z][_0-9A-Za-z]*`, and unlike the Glue
+    // sibling this has NOT been probed live, so treat the guard as
+    // defense-in-depth rather than a measured hazard. Computed here so the
+    // refusal cannot orphan a data source AWS has already created.
+    const physicalId = packCompositeId(
+      resourceType,
+      logicalId,
+      [
+        { name: 'apiId', value: apiId },
+        { name: 'name', value: name },
+      ],
+      // A reverse-replacement rollback creates from a STATE record, so the
+      // refusal downgrades to a warning — no template edit can repair a value
+      // recorded by an older binary.
+      context?.replayingState === true
+        ? { onRefusal: (message) => this.logger.warn(message) }
+        : undefined
+    );
+
     try {
       const input: CreateDataSourceCommandInput = {
         apiId,
@@ -2269,7 +2294,6 @@ export class AppSyncProvider implements ResourceProvider {
 
       await this.getClient().send(new CreateDataSourceCommand(input));
 
-      const physicalId = `${apiId}|${name}`;
       this.logger.debug(`Successfully created DataSource ${logicalId}: ${physicalId}`);
 
       return {
@@ -2337,7 +2361,8 @@ export class AppSyncProvider implements ResourceProvider {
   private async createResolver(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating Resolver ${logicalId}`);
 
@@ -2353,6 +2378,28 @@ export class AppSyncProvider implements ResourceProvider {
       );
     }
 
+    // Refuse a `|` in any segment BEFORE `CreateResolver` runs (issue #1672).
+    // `TypeName` / `FieldName` are the user-chosen pair (`ApiId` is
+    // AWS-generated), but both are GraphQL identifiers — `[_A-Za-z][_0-9A-Za-z]*`
+    // by the spec — so a `|` should be rejected upstream of cdkd and this
+    // guard is unverified defense-in-depth, not a measured hazard like the Glue
+    // sibling. Computed here so the refusal cannot orphan a resolver AWS has
+    // already created.
+    const physicalId = packCompositeId(
+      resourceType,
+      logicalId,
+      [
+        { name: 'apiId', value: apiId },
+        { name: 'typeName', value: typeName },
+        { name: 'fieldName', value: fieldName },
+      ],
+      // A reverse-replacement rollback creates from a STATE record, so the
+      // refusal downgrades to a warning.
+      context?.replayingState === true
+        ? { onRefusal: (message) => this.logger.warn(message) }
+        : undefined
+    );
+
     try {
       const input: CreateResolverCommandInput = {
         apiId,
@@ -2366,7 +2413,6 @@ export class AppSyncProvider implements ResourceProvider {
 
       await this.getClient().send(new CreateResolverCommand(input));
 
-      const physicalId = `${apiId}|${typeName}|${fieldName}`;
       this.logger.debug(`Successfully created Resolver ${logicalId}: ${physicalId}`);
 
       return {
@@ -2434,7 +2480,8 @@ export class AppSyncProvider implements ResourceProvider {
   private async createApiKey(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating ApiKey ${logicalId}`);
 
@@ -2447,6 +2494,7 @@ export class AppSyncProvider implements ResourceProvider {
       );
     }
 
+    let apiKeyId: string;
     try {
       const input: CreateApiKeyCommandInput = { apiId };
 
@@ -2459,16 +2507,8 @@ export class AppSyncProvider implements ResourceProvider {
 
       const response = await this.getClient().send(new CreateApiKeyCommand(input));
 
-      const apiKeyId = response.apiKey!.id!;
+      apiKeyId = response.apiKey!.id!;
       this.logger.debug(`Successfully created ApiKey ${logicalId}: ${apiKeyId}`);
-
-      return {
-        physicalId: `${apiId}|${apiKeyId}`,
-        attributes: {
-          ApiKey: response.apiKey!.id!,
-          Arn: `arn:aws:appsync:*:*:apis/${apiId}/apikeys/${apiKeyId}`,
-        },
-      };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
@@ -2479,6 +2519,36 @@ export class AppSyncProvider implements ResourceProvider {
         cause
       );
     }
+
+    // One of only two sites in this change where the guard cannot run before
+    // the AWS call: `apiKeyId` is minted by `CreateApiKey`, so there is nothing
+    // to check until the key exists (issue #1672). It sits OUTSIDE the try on
+    // purpose — that `catch` re-wraps anything thrown as
+    // `ProvisioningError('Failed to create ApiKey …')`, so a refusal raised
+    // inside it would be reported as an AWS creation failure for a key AWS had
+    // in fact created. Acceptable here in the first place only because neither
+    // segment is pipe-capable — both are AWS-generated ids — so this is a fence
+    // against a future id-shape change, not a live refusal that could strand a
+    // created key.
+    const physicalId = packCompositeId(
+      resourceType,
+      logicalId,
+      [
+        { name: 'apiId', value: apiId },
+        { name: 'apiKeyId', value: apiKeyId },
+      ],
+      context?.replayingState === true
+        ? { onRefusal: (message) => this.logger.warn(message) }
+        : undefined
+    );
+
+    return {
+      physicalId,
+      attributes: {
+        ApiKey: apiKeyId,
+        Arn: `arn:aws:appsync:*:*:apis/${apiId}/apikeys/${apiKeyId}`,
+      },
+    };
   }
 
   private async deleteApiKey(

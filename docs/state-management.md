@@ -592,6 +592,16 @@ Two more types **accept** a composite id without producing one:
 > (`--resource-mapping` / `--resource-mapping-inline`) need no escaping —
 > `|` is an ordinary character in JSON.
 
+> [!IMPORTANT]
+> The separator is **not escaped**, so cdkd cannot manage a resource whose own
+> name contains a `|` even where AWS and CloudFormation can. A Glue table named
+> `a|b` in database `mydb` would be recorded as `mydb|a|b`, which decodes to
+> database `mydb`, table `a` — both halves non-empty, so nothing downstream can
+> tell it is wrong. Rather than record an id that names a different resource,
+> `cdkd deploy` **refuses at pre-flight** with a message naming the offending
+> segment. Rename the resource, or manage it with the CDK CLI. Tracked in
+> [#1672](https://github.com/go-to-k/cdkd/issues/1672).
+
 #### Purpose of attributes
 
 Stored to resolve attribute references via `Fn::GetAtt`.
