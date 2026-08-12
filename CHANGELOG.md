@@ -1,3 +1,10 @@
+## [0.281.2](https://github.com/go-to-k/cdkd/compare/v0.281.1...v0.281.2) (2026-08-12)
+
+
+### Bug Fixes
+
+* **kinesis:** back-fill DesiredShardLevelMetrics + MaxRecordSizeInKiB ([#1700](https://github.com/go-to-k/cdkd/issues/1700)) ([6bb298c](https://github.com/go-to-k/cdkd/commit/6bb298ccc29c4cfe5cacef198e7d17de4649d082))
+
 ## [0.281.1](https://github.com/go-to-k/cdkd/compare/v0.281.0...v0.281.1) (2026-08-12)
 
 
