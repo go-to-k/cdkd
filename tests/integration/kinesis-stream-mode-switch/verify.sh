@@ -204,6 +204,16 @@ assert_eq "state-recorded DesiredShardLevelMetrics (effectiveProperties)" \
   "${ALL_METRICS_SORTED}" "${RECORDED_METRICS}"
 echo "    state records the EXPANDED metric list (effectiveProperties applied)"
 
+# Routing guard (issue #609 per-PR rule): the assertions above only prove the
+# properties reached AWS, not WHICH layer put them there. A silent flip to the
+# Cloud Control route would still satisfy them while leaving the SDK provider's
+# wiring — the thing this PR adds — completely unexercised.
+PROVISIONED_BY="$(printf '%s' "${STATE_JSON}" \
+  | jq -r '[.resources[] | select(.resourceType == "AWS::Kinesis::Stream")
+            | .provisionedBy // "sdk"] | first')"
+assert_eq "AWS::Kinesis::Stream routing layer" "sdk" "${PROVISIONED_BY}"
+echo "    stream was provisioned by the SDK provider (provisionedBy=sdk)"
+
 # `canonicalizeDesiredProperties`: the paired half. With only the recording
 # half, the template still says `ALL` while state holds seven names, so the very
 # next diff reports a change the user never made. A clean diff here is what
@@ -212,11 +222,21 @@ echo "==> Phase 2b: cdkd diff must be clean (ALL vs expanded seven is NOT a chan
 DIFF_OUT="$(CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" diff "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1)"
 printf '%s\n' "${DIFF_OUT}" | sed 's/^/    | /'
-if printf '%s' "${DIFF_OUT}" | grep -q "DesiredShardLevelMetrics"; then
-  echo "FAIL: cdkd diff reports a DesiredShardLevelMetrics change on an untouched stream — canonicalizeDesiredProperties does not agree with the wire-path expansion" >&2
+# POSITIVE control first. A bare `grep -q DesiredShardLevelMetrics` negative is
+# satisfied by a diff that printed nothing at all (a crash, a wrong stack name,
+# an empty template), so it would pass for entirely the wrong reason. Requiring
+# the explicit no-changes line makes the negative below meaningful.
+if ! printf '%s' "${DIFF_OUT}" | grep -q "No changes detected"; then
+  echo "FAIL: cdkd diff did not report 'No changes detected' for ${STACK} — the cleanliness check below would pass vacuously" >&2
   exit 1
 fi
-echo "    diff is clean on DesiredShardLevelMetrics (both sides narrowed identically)"
+for PROP in DesiredShardLevelMetrics MaxRecordSizeInKiB; do
+  if printf '%s' "${DIFF_OUT}" | grep -q "${PROP}"; then
+    echo "FAIL: cdkd diff reports a ${PROP} change on an untouched stream — the desired and wire-path narrowing disagree" >&2
+    exit 1
+  fi
+done
+echo "    diff reports no changes; neither backfilled property appears (both sides narrowed identically)"
 
 # --- Phase 3: destroy --------------------------------------------------
 echo "==> Phase 3: destroy"

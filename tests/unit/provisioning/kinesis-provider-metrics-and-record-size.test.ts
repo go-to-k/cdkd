@@ -43,9 +43,13 @@ vi.mock('../../../src/utils/logger.js', () => {
 import { KinesisStreamProvider } from '../../../src/provisioning/providers/kinesis-provider.js';
 
 const ACTIVE = {
-  StreamDescription: { StreamName: 'mystream', StreamStatus: 'ACTIVE', StreamARN: 'arn:s' },
+  StreamDescription: { StreamName: 'mystream', StreamStatus: 'ACTIVE', StreamARN: 'arn:describe' },
 };
-const SUMMARY = { StreamDescriptionSummary: { StreamARN: 'arn:s', OpenShardCount: 1 } };
+// A DISTINCT ARN from the DescribeStream one on purpose: `UpdateMaxRecordSize`
+// must source its `StreamARN` from `resolveStreamArn` (DescribeStreamSummary).
+// With both fixtures carrying the same string, reading the wrong response field
+// would be undetectable.
+const SUMMARY = { StreamDescriptionSummary: { StreamARN: 'arn:summary', OpenShardCount: 1 } };
 
 /** The seven names AWS expands `ALL` into (measured us-east-1, 2026-08-12). */
 const ALL_SEVEN = [
@@ -89,19 +93,16 @@ describe('KinesisStreamProvider MaxRecordSizeInKiB (issue #609)', () => {
     await provider.create('L', 'AWS::Kinesis::Stream', { Name: 'mystream' });
 
     const create = commandsOfType(CreateStreamCommand)[0];
+    // Guard against the vacuous read: without this, the `not.toHaveProperty`
+    // below is satisfied by there being no CreateStreamCommand at all.
+    expect(create).toBeDefined();
     expect(create?.input).not.toHaveProperty('MaxRecordSizeInKiB');
   });
 
-  it('issues UpdateMaxRecordSize with the resolved StreamARN when the value changes', async () => {
+  it('issues UpdateMaxRecordSize with the SUMMARY-resolved StreamARN when the value changes', async () => {
     // UpdateMaxRecordSize has no StreamName member, so the ARN lookup is
     // load-bearing rather than incidental.
-    mockSend.mockImplementation((cmd: unknown) => {
-      if (cmd instanceof UpdateMaxRecordSizeCommand) return Promise.resolve({});
-      if ((cmd as { input?: unknown }) && 'StreamName' in ((cmd as never)['input'] ?? {})) {
-        return Promise.resolve({ ...ACTIVE, ...SUMMARY });
-      }
-      return Promise.resolve({ ...ACTIVE, ...SUMMARY });
-    });
+    mockSend.mockResolvedValue({ ...ACTIVE, ...SUMMARY });
 
     await provider.update(
       'L',
@@ -114,7 +115,49 @@ describe('KinesisStreamProvider MaxRecordSizeInKiB (issue #609)', () => {
     const cmds = commandsOfType(UpdateMaxRecordSizeCommand);
     expect(cmds).toHaveLength(1);
     expect(cmds[0]?.input.MaxRecordSizeInKiB).toBe(4096);
-    expect(cmds[0]?.input.StreamARN).toBe('arn:s');
+    expect(cmds[0]?.input.StreamARN).toBe('arn:summary');
+  });
+
+  it('coerces a string-valued MaxRecordSizeInKiB rather than sending a JSON string', async () => {
+    mockSend.mockResolvedValue(ACTIVE);
+
+    // CFn coerces scalars and cdkd does not, so an unquoted-YAML or
+    // parameter-sourced value legitimately arrives as a string.
+    await provider.create('L', 'AWS::Kinesis::Stream', {
+      Name: 'mystream',
+      MaxRecordSizeInKiB: '2048',
+    });
+
+    expect(commandsOfType(CreateStreamCommand)[0]?.input.MaxRecordSizeInKiB).toBe(2048);
+  });
+
+  it('treats a string previous side and a number desired side as UNCHANGED', async () => {
+    mockSend.mockResolvedValue({ ...ACTIVE, ...SUMMARY });
+
+    await provider.update(
+      'L',
+      'mystream',
+      'AWS::Kinesis::Stream',
+      { Name: 'mystream', MaxRecordSizeInKiB: 2048 },
+      { Name: 'mystream', MaxRecordSizeInKiB: '2048' }
+    );
+
+    // Without coercing BOTH sides this re-issues the call (and its ACTIVE wait)
+    // on every single deploy.
+    expect(commandsOfType(UpdateMaxRecordSizeCommand)).toHaveLength(0);
+  });
+
+  it('omits an unparseable MaxRecordSizeInKiB instead of sending NaN', async () => {
+    mockSend.mockResolvedValue(ACTIVE);
+
+    await provider.create('L', 'AWS::Kinesis::Stream', {
+      Name: 'mystream',
+      MaxRecordSizeInKiB: 'not-a-number',
+    });
+
+    const create = commandsOfType(CreateStreamCommand)[0];
+    expect(create).toBeDefined();
+    expect(create?.input).not.toHaveProperty('MaxRecordSizeInKiB');
   });
 
   it('does not issue UpdateMaxRecordSize when the value is unchanged', async () => {
@@ -288,15 +331,121 @@ describe('KinesisStreamProvider DesiredShardLevelMetrics (issue #609)', () => {
     ]);
   });
 
-  it('sends no metrics call for an unresolved-intrinsic value rather than inventing a list', async () => {
+  it('REFUSES an unresolved-intrinsic value on the template-path create', async () => {
     mockSend.mockResolvedValue(ACTIVE);
 
-    await provider.create('L', 'AWS::Kinesis::Stream', {
-      Name: 'mystream',
-      DesiredShardLevelMetrics: { Ref: 'SomeParam' },
-    });
+    await expect(
+      provider.create('L', 'AWS::Kinesis::Stream', {
+        Name: 'mystream',
+        DesiredShardLevelMetrics: { Ref: 'SomeParam' },
+      })
+    ).rejects.toThrow(/DesiredShardLevelMetrics must be an array of metric-name strings/);
 
     expect(commandsOfType(EnableEnhancedMonitoringCommand)).toHaveLength(0);
+  });
+
+  it('REFUSES a MIXED array rather than silently sending the string subset', async () => {
+    mockSend.mockResolvedValue(ACTIVE);
+
+    // Filtering the intrinsic away would put a list on the wire the template
+    // never declared while state recorded the declared one — phantom drift
+    // through the back door.
+    await expect(
+      provider.create('L', 'AWS::Kinesis::Stream', {
+        Name: 'mystream',
+        DesiredShardLevelMetrics: ['IncomingBytes', { Ref: 'SomeParam' }],
+      })
+    ).rejects.toThrow(/DesiredShardLevelMetrics must be an array of metric-name strings/);
+
+    expect(commandsOfType(EnableEnhancedMonitoringCommand)).toHaveLength(0);
+  });
+
+  it('DOWNGRADES the create refusal to a warning when replaying a state record', async () => {
+    mockSend.mockResolvedValue(ACTIVE);
+
+    // The user cannot edit a state record from their CDK code, so refusing here
+    // would leave the resource unrestorable (CreateContext.replayingState).
+    const result = await provider.create(
+      'L',
+      'AWS::Kinesis::Stream',
+      { Name: 'mystream', DesiredShardLevelMetrics: { Ref: 'SomeParam' } },
+      { replayingState: true }
+    );
+
+    expect(result.physicalId).toBe('mystream');
+    expect(commandsOfType(EnableEnhancedMonitoringCommand)).toHaveLength(0);
+  });
+
+  it('does NOT disable live metrics when the UPDATE desired side is unusable', async () => {
+    mockSend.mockResolvedValue({ ...ACTIVE, ...SUMMARY });
+
+    await provider.update(
+      'L',
+      'mystream',
+      'AWS::Kinesis::Stream',
+      { Name: 'mystream', DesiredShardLevelMetrics: { Ref: 'SomeParam' } },
+      { Name: 'mystream', DesiredShardLevelMetrics: ['IncomingBytes', 'OutgoingBytes'] }
+    );
+
+    // An UNUSABLE desired side must not collapse to the same empty list an
+    // ABSENT one does: absent is a removal, unusable is unreadable, and
+    // treating them alike destroys live monitoring on a value cdkd could not
+    // parse. The update path warns and skips rather than refusing, because
+    // rollback / drift --revert replay state records through update().
+    expect(commandsOfType(DisableEnhancedMonitoringCommand)).toHaveLength(0);
+    expect(commandsOfType(EnableEnhancedMonitoringCommand)).toHaveLength(0);
+  });
+
+  it('records the EXPANDED list as effectiveProperties on the UPDATE path too', async () => {
+    mockSend.mockResolvedValue({ ...ACTIVE, ...SUMMARY });
+
+    // The create-path assertion does not cover this: switching an EXISTING
+    // stream to `ALL` is exactly what the integ's Phase 2 does, and it is the
+    // arm where a missing effectiveProperties leaves state describing a value
+    // AWS does not hold.
+    const result = await provider.update(
+      'L',
+      'mystream',
+      'AWS::Kinesis::Stream',
+      { Name: 'mystream', DesiredShardLevelMetrics: ['ALL'] },
+      { Name: 'mystream', DesiredShardLevelMetrics: ['IncomingBytes'] }
+    );
+
+    const recorded = result.effectiveProperties?.['DesiredShardLevelMetrics'] as string[];
+    expect(recorded).toBeDefined();
+    expect(recorded).not.toContain('ALL');
+    expect([...recorded].sort()).toEqual([...ALL_SEVEN].sort());
+    expect(result.effectiveProperties?.['Name']).toBe('mystream');
+  });
+
+  it('omits effectiveProperties on the UPDATE path when no expansion happened', async () => {
+    mockSend.mockResolvedValue({ ...ACTIVE, ...SUMMARY });
+
+    const result = await provider.update(
+      'L',
+      'mystream',
+      'AWS::Kinesis::Stream',
+      { Name: 'mystream', DesiredShardLevelMetrics: ['IncomingBytes', 'OutgoingBytes'] },
+      { Name: 'mystream', DesiredShardLevelMetrics: ['IncomingBytes'] }
+    );
+
+    expect(result.effectiveProperties).toBeUndefined();
+  });
+
+  it('omits effectiveProperties when the UPDATE desired side was skipped as unusable', async () => {
+    mockSend.mockResolvedValue({ ...ACTIVE, ...SUMMARY });
+
+    const result = await provider.update(
+      'L',
+      'mystream',
+      'AWS::Kinesis::Stream',
+      { Name: 'mystream', DesiredShardLevelMetrics: 'IncomingBytes' as unknown as string[] },
+      { Name: 'mystream', DesiredShardLevelMetrics: ['IncomingBytes'] }
+    );
+
+    // Nothing was sent, so there is no "what we actually delivered" to record;
+    // the desired bag stays recorded verbatim and keeps re-warning until fixed.
+    expect(result.effectiveProperties).toBeUndefined();
   });
 });
 

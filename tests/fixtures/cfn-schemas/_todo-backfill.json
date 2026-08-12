@@ -205,8 +205,6 @@
       "Targets"
     ],
     "AWS::Kinesis::Stream": [
-      "DesiredShardLevelMetrics",
-      "MaxRecordSizeInKiB",
       "WarmThroughputMiBps"
     ],
     "AWS::KinesisFirehose::DeliveryStream": [

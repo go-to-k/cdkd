@@ -32,6 +32,7 @@ import type {
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
+  CreateContext,
 } from '../../types/resource.js';
 
 /**
@@ -75,6 +76,20 @@ const ALL_SHARD_LEVEL_METRICS: readonly string[] = [
 ];
 
 /**
+ * Whether a value is a usable shard-level-metrics list: an array whose every
+ * element is a string.
+ *
+ * A MIXED array (`['IncomingBytes', {Ref: 'X'}]`) is deliberately UNUSABLE
+ * rather than partially usable. Filtering the unresolved element away would put
+ * a list on the wire that the template never declared, while state recorded the
+ * declared one — the permanent phantom drift `effectiveProperties` exists to
+ * prevent, arrived at through the back door.
+ */
+function isUsableMetricsList(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((entry) => typeof entry === 'string');
+}
+
+/**
  * Expand the `ALL` shard-level-metrics shorthand into the seven metric names
  * AWS actually stores.
  *
@@ -87,15 +102,15 @@ const ALL_SHARD_LEVEL_METRICS: readonly string[] = [
  *
  * Idempotent: an already-expanded list is returned with its own values (deduped
  * and otherwise untouched), so a state-borne bag that has been through this
- * before is unchanged. A non-array, or an array carrying a non-string element
- * (an unresolved intrinsic), is returned as-is so AWS surfaces the real
- * validation error rather than cdkd inventing a metric list.
+ * before is unchanged. An UNUSABLE value is returned as-is — the callers that
+ * put bytes on the wire refuse it via {@link readShardLevelMetrics} rather than
+ * sending a partial list, and `canonicalizeDesiredProperties` must stay a total
+ * function because the diff runs on bags no provider validated.
  */
 function expandShardLevelMetrics(value: unknown): unknown {
-  if (!Array.isArray(value)) return value;
-  if (!value.every((entry) => typeof entry === 'string')) return value;
+  if (!isUsableMetricsList(value)) return value;
 
-  const names = value as string[];
+  const names = value;
   const expanded = names.includes('ALL')
     ? [...names.filter((n) => n !== 'ALL'), ...ALL_SHARD_LEVEL_METRICS]
     : names;
@@ -117,15 +132,71 @@ function expandShardLevelMetrics(value: unknown): unknown {
 }
 
 /**
- * Narrow an already-expanded metric list to the `MetricsName[]` the SDK takes.
+ * The three answers a caller needs about the declared metric list, kept
+ * DISTINCT because two of them look identical once flattened to an array and
+ * the difference is destructive.
  *
- * Non-array / non-string inputs yield an empty list so the caller SKIPS the
- * call rather than sending a malformed one — the metric list is additive, and
- * inventing a value here would enable metrics the template never asked for.
+ * `absent` means the template does not declare the property — on update that is
+ * a REMOVAL and every live metric should be disabled. `unusable` means the
+ * property IS declared but cannot be read; flattening that to an empty list
+ * would disable every live metric on the strength of a value cdkd could not
+ * parse. Same array, opposite intent.
  */
-function asMetricNames(value: unknown): MetricsName[] {
-  if (!Array.isArray(value)) return [];
-  return value.filter((entry): entry is string => typeof entry === 'string') as MetricsName[];
+type ShardLevelMetricsRead =
+  | { kind: 'absent' }
+  | { kind: 'usable'; metrics: MetricsName[]; expanded: unknown }
+  | { kind: 'unusable'; reason: string };
+
+/**
+ * Classify a declared `DesiredShardLevelMetrics` value, expanding `ALL` when it
+ * is usable.
+ *
+ * Callers own the ACTION per the update-path rules in
+ * `.claude/rules/providers.md`: a create refuses an unusable value (it is
+ * template-borne), an update WARNS and skips (it may be replaying a state
+ * record, where refusing would leave the resource un-rollbackable). The
+ * previous side is never routed through the refusal at all — see
+ * {@link previousMetricNames}.
+ */
+function readShardLevelMetrics(value: unknown): ShardLevelMetricsRead {
+  if (value == null) return { kind: 'absent' };
+  if (!isUsableMetricsList(value)) {
+    return {
+      kind: 'unusable',
+      reason:
+        `AWS::Kinesis::Stream DesiredShardLevelMetrics must be an array of metric-name ` +
+        `strings, got ${JSON.stringify(value)}`,
+    };
+  }
+  const expanded = expandShardLevelMetrics(value);
+  return { kind: 'usable', metrics: expanded as MetricsName[], expanded };
+}
+
+/**
+ * Read the PREVIOUS side leniently: it comes from cdkd state, not the user's
+ * template, so an unreadable value recorded by an older binary must never
+ * refuse the update (the #1471 desired-side-only rule). An unusable previous
+ * side simply contributes no metrics to disable.
+ */
+function previousMetricNames(value: unknown): MetricsName[] {
+  const expanded = expandShardLevelMetrics(value);
+  return isUsableMetricsList(expanded) ? (expanded as MetricsName[]) : [];
+}
+
+/**
+ * Coerce `MaxRecordSizeInKiB` to a number, mirroring the `Number(...)` the
+ * sibling `ShardCount` read already uses.
+ *
+ * CloudFormation coerces scalars and cdkd does not, so an unquoted YAML value
+ * or a `Ref`-to-parameter can legitimately arrive as a string; sending that
+ * verbatim fails with a SerializationException. An unparseable value yields
+ * `undefined` so the caller omits the field and AWS applies its own default,
+ * rather than cdkd sending `NaN`.
+ */
+function coerceRecordSize(value: unknown): number | undefined {
+  if (value == null) return undefined;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : undefined;
 }
 
 /**
@@ -170,7 +241,8 @@ export class KinesisStreamProvider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating Kinesis stream ${logicalId}`);
 
@@ -195,8 +267,11 @@ export class KinesisStreamProvider implements ResourceProvider {
         streamMode === 'PROVISIONED' ? Number(properties['ShardCount'] ?? 1) : undefined;
 
       // MaxRecordSizeInKiB is a member of CreateStreamInput, so it lands with
-      // the stream itself rather than needing a follow-up call.
-      const maxRecordSizeInKiB = properties['MaxRecordSizeInKiB'] as number | undefined;
+      // the stream itself rather than needing a follow-up call. Coerced like
+      // the sibling `ShardCount`: CFn coerces scalars and cdkd does not, so an
+      // unquoted-YAML or parameter-sourced string would otherwise reach the SDK
+      // as a JSON string and die with a SerializationException.
+      const maxRecordSizeInKiB = coerceRecordSize(properties['MaxRecordSizeInKiB']);
 
       await this.getClient().send(
         new CreateStreamCommand({
@@ -285,8 +360,24 @@ export class KinesisStreamProvider implements ResourceProvider {
 
       // Apply DesiredShardLevelMetrics. `EnableEnhancedMonitoring` takes the
       // stream to UPDATING (measured), so it must settle before create returns.
-      const desiredMetrics = expandShardLevelMetrics(properties['DesiredShardLevelMetrics']);
-      const metricsToEnable = asMetricNames(desiredMetrics);
+      //
+      // An unusable value is REFUSED here because it is template-borne — except
+      // on a state replay, where the user cannot edit the offending record from
+      // their CDK code and a refusal would leave the resource unrestorable
+      // (`CreateContext.replayingState`, `.claude/rules/providers.md`).
+      const desiredRead = readShardLevelMetrics(properties['DesiredShardLevelMetrics']);
+      if (desiredRead.kind === 'unusable') {
+        if (context?.replayingState === true) {
+          this.logger.warn(
+            `${desiredRead.reason}. Replaying a state record, so the shard-level metrics are ` +
+              `left unset on ${streamName} rather than refusing the restore`
+          );
+        } else {
+          throw new ProvisioningError(desiredRead.reason, resourceType, logicalId, streamName);
+        }
+      }
+      const desiredMetrics = desiredRead.kind === 'usable' ? desiredRead.expanded : undefined;
+      const metricsToEnable = desiredRead.kind === 'usable' ? desiredRead.metrics : [];
       if (metricsToEnable.length > 0) {
         this.logger.debug(
           `Enabling ${metricsToEnable.length} shard-level metric(s) on ${streamName}`
@@ -506,8 +597,11 @@ export class KinesisStreamProvider implements ResourceProvider {
       // Update MaxRecordSizeInKiB if changed. `UpdateMaxRecordSize` is one of
       // the Kinesis APIs that takes a StreamARN and has no StreamName member,
       // so it needs the same ARN resolution UpdateStreamMode does.
-      const newMaxRecordSize = properties['MaxRecordSizeInKiB'] as number | undefined;
-      const oldMaxRecordSize = previousProperties['MaxRecordSizeInKiB'] as number | undefined;
+      // Both sides coerced through the SAME helper, so a state record holding
+      // the number and a template holding the string do not read as a change
+      // and re-issue the call on every deploy.
+      const newMaxRecordSize = coerceRecordSize(properties['MaxRecordSizeInKiB']);
+      const oldMaxRecordSize = coerceRecordSize(previousProperties['MaxRecordSizeInKiB']);
       if (newMaxRecordSize !== undefined && newMaxRecordSize !== oldMaxRecordSize) {
         this.logger.debug(
           `Updating max record size for ${physicalId}: ${oldMaxRecordSize} -> ${newMaxRecordSize}`
@@ -526,34 +620,49 @@ export class KinesisStreamProvider implements ResourceProvider {
       // applied as a removal pass then an addition pass. Both sides are
       // expanded first so a template switching between `ALL` and the seven
       // explicit names is correctly a no-op rather than a full churn.
-      const desiredMetrics = expandShardLevelMetrics(properties['DesiredShardLevelMetrics']);
-      const desiredSet = asMetricNames(desiredMetrics);
-      // The previous side comes from cdkd state, not the template, so it is
-      // read defensively and never refused (the #1471 desired-side-only rule).
-      const previousSet = asMetricNames(
-        expandShardLevelMetrics(previousProperties['DesiredShardLevelMetrics'])
-      );
-      const toDisable = previousSet.filter((m) => !desiredSet.includes(m));
-      const toEnable = desiredSet.filter((m) => !previousSet.includes(m));
-      if (toDisable.length > 0) {
-        this.logger.debug(`Disabling ${toDisable.length} shard-level metric(s) on ${physicalId}`);
-        await this.getClient().send(
-          new DisableEnhancedMonitoringCommand({
-            StreamName: physicalId,
-            ShardLevelMetrics: toDisable,
-          })
+      //
+      // ABSENT and UNUSABLE must not collapse to the same empty list. Absent is
+      // a template REMOVAL and correctly disables every live metric; unusable
+      // would disable them on the strength of a value cdkd could not read, so
+      // it WARNS and skips the whole reconcile (the update path cannot refuse —
+      // `rollback-executor` and `drift --revert` replay state records through
+      // `update()`, where a throw has no template-side remedy).
+      const desiredRead = readShardLevelMetrics(properties['DesiredShardLevelMetrics']);
+      let desiredMetrics: unknown;
+      if (desiredRead.kind === 'unusable') {
+        this.logger.warn(
+          `${desiredRead.reason}. Leaving the shard-level metrics on ${physicalId} unchanged ` +
+            `rather than disabling the live ones; the same value is REFUSED on a ` +
+            `template-path create`
         );
-        await this.waitForStreamActive(physicalId);
-      }
-      if (toEnable.length > 0) {
-        this.logger.debug(`Enabling ${toEnable.length} shard-level metric(s) on ${physicalId}`);
-        await this.getClient().send(
-          new EnableEnhancedMonitoringCommand({
-            StreamName: physicalId,
-            ShardLevelMetrics: toEnable,
-          })
-        );
-        await this.waitForStreamActive(physicalId);
+      } else {
+        desiredMetrics = desiredRead.kind === 'usable' ? desiredRead.expanded : undefined;
+        const desiredSet = desiredRead.kind === 'usable' ? desiredRead.metrics : [];
+        // The previous side comes from cdkd state, not the template, so it is
+        // read leniently and never refused (the #1471 desired-side-only rule).
+        const previousSet = previousMetricNames(previousProperties['DesiredShardLevelMetrics']);
+        const toDisable = previousSet.filter((m) => !desiredSet.includes(m));
+        const toEnable = desiredSet.filter((m) => !previousSet.includes(m));
+        if (toDisable.length > 0) {
+          this.logger.debug(`Disabling ${toDisable.length} shard-level metric(s) on ${physicalId}`);
+          await this.getClient().send(
+            new DisableEnhancedMonitoringCommand({
+              StreamName: physicalId,
+              ShardLevelMetrics: toDisable,
+            })
+          );
+          await this.waitForStreamActive(physicalId);
+        }
+        if (toEnable.length > 0) {
+          this.logger.debug(`Enabling ${toEnable.length} shard-level metric(s) on ${physicalId}`);
+          await this.getClient().send(
+            new EnableEnhancedMonitoringCommand({
+              StreamName: physicalId,
+              ShardLevelMetrics: toEnable,
+            })
+          );
+          await this.waitForStreamActive(physicalId);
+        }
       }
 
       // Get current stream description for attributes
@@ -638,6 +747,11 @@ export class KinesisStreamProvider implements ResourceProvider {
     properties: Record<string, unknown>,
     expanded: unknown
   ): { effectiveProperties?: Record<string, unknown> } {
+    // `undefined` means the caller sent NOTHING for this property — an absent
+    // declaration, or a value it refused / skipped as unusable. There is no
+    // "what we actually delivered" to record, and writing `undefined` into the
+    // bag would erase the declared value from state rather than describe it.
+    if (expanded === undefined) return {};
     if (expanded === properties['DesiredShardLevelMetrics']) return {};
     return { effectiveProperties: { ...properties, DesiredShardLevelMetrics: expanded } };
   }
@@ -799,16 +913,25 @@ export class KinesisStreamProvider implements ResourceProvider {
 
     // Enhanced monitoring comes back as a list of `{ ShardLevelMetrics }`
     // groups; flatten to the flat CFn list shape. Always emitted (as `[]` when
-    // nothing is enabled) so a console-side enable is detectable — an
-    // undeclared key captured EMPTY is dropped from the comparison by
-    // `undeclaredEmptyObservedKeys`, so this cannot manufacture drift on a
-    // template that never mentions the property.
+    // nothing is enabled) so a console-side enable is detectable on a stream
+    // whose template DECLARES the property. It cannot manufacture drift on one
+    // that does not: an undeclared key captured EMPTY is dropped from the
+    // comparison by `undeclaredEmptyObservedKeys`, and the `properties`
+    // fallback baseline never holds the key. The flip side of that guard is
+    // that a console-side enable on an UNDECLARED property is not detectable.
     result['DesiredShardLevelMetrics'] = (stream.EnhancedMonitoring ?? []).flatMap(
       (entry) => entry.ShardLevelMetrics ?? []
     );
 
     // `MaxRecordSizeInKiB` is on the SUMMARY shape only — `DescribeStream`'s
     // `StreamDescription` does not carry it — so it needs its own call.
+    //
+    // A non-not-found failure RETHROWS, matching the `DescribeStream` arm
+    // above. Swallowing it would return a snapshot missing the key while state
+    // declares it, which `cdkd drift` reports as `2048 -> undefined` and
+    // `--accept` then erases from the baseline — a throttle turned into data
+    // loss. This read is the third Kinesis call per stream, so throttling is a
+    // realistic trigger rather than a theoretical one.
     try {
       const summaryResp = await this.getClient().send(
         new DescribeStreamSummaryCommand({ StreamName: physicalId })
@@ -817,9 +940,7 @@ export class KinesisStreamProvider implements ResourceProvider {
       if (maxRecordSize !== undefined) result['MaxRecordSizeInKiB'] = maxRecordSize;
     } catch (err) {
       if (err instanceof ResourceNotFoundException) return undefined;
-      this.logger.debug(
-        `Kinesis DescribeStreamSummary(${physicalId}) failed: ${err instanceof Error ? err.message : String(err)}`
-      );
+      throw err;
     }
 
     // Tags via ListTagsForStream.

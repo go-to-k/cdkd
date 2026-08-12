@@ -307,10 +307,25 @@ before the call": `6` -> `tcp` cannot be (the table is the service's and open to
 change), `ALL` -> the seven can be. When it can, prefer expanding on the wire —
 one shared helper feeding both halves — over a readback normalizer, because the
 readback fix leaves cdkd SENDING a value it cannot describe and needs a
-normalizer for every future consumer of the same field. Note the expansion also
-made the field's ORDER observable, so the type declares it in
-`getDriftUnorderedPaths` as well; a shorthand that expands to a SET usually needs
-both mechanisms, not one.
+normalizer for every future consumer of the same field. The type separately
+declares the path in `getDriftUnorderedPaths`, because AWS's readback order for
+this field is arbitrary whether the template used `ALL` or listed the metrics
+explicitly — a shorthand that expands to a SET usually needs both mechanisms,
+but they answer different questions and neither implies the other.
+
+**Expanding on the wire also means the guard has THREE answers, not two**
+(same issue). Once the provider refuses to send a value it could not parse, an
+ABSENT declaration and an UNUSABLE one must stop collapsing to the same empty
+list: absent is a template REMOVAL and correctly clears the live set, while
+unusable would clear it on the strength of a value cdkd could not read. That is
+the [[nonempty-shape-guard-falls-through-to-destructive-arm]] shape one level
+up, and it bites specifically on a SET-valued property where the empty list is
+itself a meaningful instruction. Classify the read (`absent` / `usable` /
+`unusable`) and let each caller pick the ACTION — refuse on create, warn-and-skip
+on update — rather than flattening early. And do not let a partial read leak
+past the refusal: filtering an unresolved intrinsic out of a MIXED array sends a
+list the template never declared while state records the declared one, which
+re-creates the phantom drift through the back door.
 
 **A warn-and-SKIP arm is the same class as a narrowing, and the
 `canonicalizeDesiredProperties` twin above does NOT apply to it** (issue
