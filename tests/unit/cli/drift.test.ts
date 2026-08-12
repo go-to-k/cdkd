@@ -462,6 +462,66 @@ describe('cdkd drift', () => {
     expect(output).toContain('no drift detected');
   });
 
+  // Issue #1643. These two pin the WIRING of `canonicalizeIpProtocols` into
+  // this command — the pure module's own suite cannot, and deleting the call
+  // in drift.ts left every other test green. The baseline is deliberately the
+  // `properties` fallback: a fresh deploy captures `observedProperties` from
+  // the same AWS read, so both sides already hold AWS's spelling and the pass
+  // is a no-op there. The population this fix is FOR is the one whose baseline
+  // is the user's template (state written before observed-capture, or a
+  // provider with no readCurrentState).
+  it('does not report drift when the template holds a numeric IpProtocol and AWS reports its name (#1643)', async () => {
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Sg1: makeResource({
+          physicalId: 'sg-1',
+          resourceType: 'AWS::EC2::SecurityGroup',
+          // Template spelling, no observedProperties -> properties fallback.
+          properties: {
+            SecurityGroupIngress: [{ IpProtocol: '6', FromPort: 443, ToPort: 443 }],
+          },
+        }),
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({
+        SecurityGroupIngress: [{ IpProtocol: 'tcp', FromPort: 443, ToPort: 443 }],
+      }),
+    });
+
+    const { output, error } = await runDrift(['TestStack']);
+
+    expect(error).toBeUndefined();
+    expect(output).toContain('no drift detected');
+  });
+
+  it('still reports a REAL protocol change on the same path (#1643 does not blanket-absorb)', async () => {
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Sg1: makeResource({
+          physicalId: 'sg-1',
+          resourceType: 'AWS::EC2::SecurityGroup',
+          properties: {
+            SecurityGroupIngress: [{ IpProtocol: '6', FromPort: 443, ToPort: 443 }],
+          },
+        }),
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      // udp is a genuinely different protocol, not another spelling of tcp.
+      readCurrentState: async () => ({
+        SecurityGroupIngress: [{ IpProtocol: 'udp', FromPort: 443, ToPort: 443 }],
+      }),
+    });
+
+    const { output, error } = await runDrift(['TestStack']);
+
+    expect(error).toBeDefined();
+    expect(output).toContain('SecurityGroupIngress');
+  });
+
   it('skips state property paths declared by getDriftUnknownPaths so they never fire false drift', async () => {
     // Mirrors Lambda's `Code` problem: state holds the asset key, but
     // `GetFunction` returns a pre-signed URL — so without ignore-paths the
@@ -1345,23 +1405,31 @@ describe('cdkd drift', () => {
        * regression against the pre-#1644 behavior of never writing at all.
        */
       it('warns instead of failing the run when the state write fails', async () => {
+        // The drift MUST come from a key other than IpProtocol (issue #1643):
+        // `6` and `tcp` are two spellings of ONE protocol — AWS renames the
+        // number on write — so `canonicalizeIpProtocols` collapses that pair
+        // and it is correctly no longer drift. Using it alone here made the
+        // revert never run, so `saveState` was never reached. FromPort carries
+        // the drift instead, exactly as the sibling test above does, which
+        // leaves this test about what it is actually for: a FAILED state write
+        // warns rather than failing the run.
         mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
         mockGetState.mockResolvedValueOnce(
           makeState({
             Ingress1: makeResource({
               physicalId: 'sgr-1',
               resourceType: 'AWS::EC2::SecurityGroupIngress',
-              properties: { IpProtocol: 6 },
-              observedProperties: { IpProtocol: 6 },
+              properties: { IpProtocol: 6, FromPort: 443 },
+              observedProperties: { IpProtocol: 6, FromPort: 443 },
             }),
           })
         );
         mockRegistryGetProvider.mockReturnValue({
-          readCurrentState: async () => ({ IpProtocol: 'tcp' }),
+          readCurrentState: async () => ({ IpProtocol: 6, FromPort: 8080 }),
           update: async () => ({
             physicalId: 'sgr-1',
             wasReplaced: false,
-            effectiveProperties: { IpProtocol: 'tcp' },
+            effectiveProperties: { IpProtocol: 'tcp', FromPort: 443 },
           }),
         });
         mockSaveState.mockRejectedValueOnce(new Error('PreconditionFailed'));

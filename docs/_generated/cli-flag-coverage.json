@@ -605,6 +605,7 @@
         "docdb-neptune",
         "docker-image-asset",
         "drift-revert",
+        "drift-revert-arrays",
         "dsql",
         "dynamodb-autoscaling",
         "dynamodb-globaltable",

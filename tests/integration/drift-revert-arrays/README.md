@@ -45,6 +45,26 @@ fixture targets exactly those shapes.
    [#1515](https://github.com/go-to-k/cdkd/issues/1515)), and one run
    cannot detect it. The step also asserts the templated target set
    directly, order-insensitively.
+   A VALUE-mapping sibling of that class is covered too
+   (issue [#1643](https://github.com/go-to-k/cdkd/issues/1643)): EC2 stores a
+   declared `IpProtocol: 6` as `tcp`, so the recorded and read-back values are
+   two spellings of ONE protocol. Both affected shapes are present because
+   they break at different layers. The STANDALONE `NumericProtocolIngress`
+   fails at rule IDENTITY: its physicalId carries the protocol cdkd SENT, so
+   the lookup matched no AWS rule at all and drift reported it as "drift
+   unknown" forever — and since the exit code keys only on `drifted`, that
+   bucket is invisible to it, so step 3a greps the report for the resource
+   name instead of relying on the exit status. The INLINE 5th rule on
+   `ArraysSecurityGroup` (injected at the L1, since the L2 `addIngressRule`
+   can only emit a name) is asserted separately by **step 6b**: on a fresh
+   deploy the `observedProperties` baseline already holds AWS's spelling, so
+   `src/analyzer/drift-protocol-normalize.ts` is a no-op there, and step 6b
+   strips `observedProperties` to reproduce the template-baseline population
+   the pass is actually for. The
+   standalone rule sits on its OWN security group on purpose — on the shared
+   one it would materialize a member into the parent's live `IpPermissions`
+   that the parent's template does not declare, which is real drift on the
+   parent (the #1498 sibling-materialization class).
 4. **No-false-positive on an induced reorder** — `inject-drift.ts reorder`
    re-PUTs the S3 bucket's existing six tags in reversed order (same set,
    different order). `cdkd drift` must still report **exit 0**

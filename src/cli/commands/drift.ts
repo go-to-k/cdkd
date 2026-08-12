@@ -30,6 +30,7 @@ import {
   parseIamPrincipalArn,
   type PrincipalUniqueIdResolver,
 } from '../../analyzer/drift-principal-normalize.js';
+import { canonicalizeIpProtocols } from '../../analyzer/drift-protocol-normalize.js';
 import { CC_API_FALLBACK_DENY_LIST } from '../../analyzer/drift-cc-api-deny-list.js';
 import { stripCcApiAwsManagedFields } from '../../analyzer/cc-api-strip.js';
 import { CloudControlProvider } from '../../provisioning/cloud-control-provider.js';
@@ -649,7 +650,22 @@ async function runDriftForStack(
         aws,
         resolvePrincipalUniqueId
       );
-      const changes = calculateResourceDrift(normalized.baseline, normalized.aws, {
+      // Issue #1643: EC2 owns the spelling of a security-group rule's
+      // `IpProtocol` — it renames the four protocol NUMBERS it has a name for
+      // (`1` -> `icmp`, `6` -> `tcp`, `17` -> `udp`, `58` -> `icmpv6`; measured
+      // us-east-1 2026-08-12, ingress AND egress) and lower-cases a name it is
+      // given. cdkd records what it SENT, so the baseline and this read are two
+      // spellings of ONE protocol — permanent phantom drift `--revert` cannot
+      // clear, since it revokes and re-authorizes into the same state. Pure and
+      // path-scoped to the security-group types (a blanket rewrite would turn an
+      // unrelated `'6'` into `'tcp'`), and applied to BOTH sides so the
+      // `properties`-fallback baseline (the user's raw template) normalizes too.
+      const protocolNormalized = canonicalizeIpProtocols(
+        normalized.baseline,
+        normalized.aws,
+        resource.resourceType
+      );
+      const changes = calculateResourceDrift(protocolNormalized.baseline, protocolNormalized.aws, {
         ignorePaths: observedIgnorePaths.length
           ? [...ignorePaths, ...observedIgnorePaths]
           : ignorePaths,

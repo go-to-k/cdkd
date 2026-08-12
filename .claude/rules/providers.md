@@ -251,6 +251,23 @@ warning to qualify. When auditing a provider for this class, read every arm
 that can put a value on the wire that differs from the declared one, not only
 the arms that log.
 
+**But "lossless" is the wrong bar to carry away — the bar is "matches what AWS
+HOLDS"** (issue #1643, the residual of #1633). Recording `'-1'` for a declared
+`-1` works because AWS reports `-1` back; the number-to-string coercion is
+incidental. It is NOT the rule. Measured us-east-1 2026-08-12: a declared
+`IpProtocol: 6` is stringified to `'6'` by exactly the same lossless coercion,
+and AWS stores and reports `tcp` — so `effectiveProperties` records a value the
+readback can never equal, and the phantom drift the mechanism exists to remove
+survives via a third route. The difference is that `-1` -> `'-1'` is a TYPE
+coercion cdkd performs, while `6` -> `tcp` is a VALUE mapping the SERVICE
+performs; only the first is knowable at send time. So a send-side record cannot
+close the second class, and the fix belongs on the readback instead
+(`src/analyzer/drift-protocol-normalize.ts`, canonicalizing BOTH comparison
+sides — plus `sgProtocolKey`, so the rule-identity lookup that runs one layer
+below the comparison agrees with it). When you reach for `effectiveProperties`,
+ask what the service will REPORT, not merely whether your own transformation
+lost information; when those differ, the readback side is the one to fix.
+
 Two things that are easy to get wrong and were both caught by review:
 **normalize BOTH comparison sides**, not just the desired one — a record written BEFORE the provider started narrowing still carries every key, so a one-sided pass flips the same difference to a REMOVAL and breaks exactly the population the narrowing exists for; and **wire `cdkd diff` too**, since a preview that narrows differently from the apply forecasts a change the deploy will never make. `makeCanonicalizePropertiesFn` in `src/provisioning/canonicalize-properties.ts` is the one builder both commands use, so they cannot drift.
 

@@ -92,6 +92,7 @@ import {
   TERMINATION_PROTECTION_MAX_ATTEMPTS,
 } from '../ec2-termination-protection.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
+import { canonicalizeIpProtocolValue } from '../../utils/ip-protocol.js';
 import type {
   CreateContext,
   ResourceProvider,
@@ -4107,7 +4108,13 @@ export class EC2Provider implements ResourceProvider {
           ? (rule['SourceSecurityGroupOwnerId'] as string | undefined)
           : undefined;
       return JSON.stringify({
-        p: rule['IpProtocol'] ?? '-1',
+        // Same canonicalization as `sgRuleKey` (issue #1643) — the two keys
+        // MUST agree, which is what this function's sibling JSDoc promises.
+        // Without it a `--revert` of a drifted inline rule set keys the
+        // previous side (AWS's `tcp`) differently from the desired side
+        // (state's `'6'`), so EVERY rule is revoked and re-authorized instead
+        // of only the drifted one — a window with no rules on a live group.
+        p: sgProtocolKey(rule['IpProtocol']),
         f: rule['FromPort'] ?? null,
         t: rule['ToPort'] ?? null,
         c4: rule['CidrIp'] ?? null,
@@ -4953,6 +4960,15 @@ export class EC2Provider implements ResourceProvider {
       // must not warn either — the provisioning path announces the identical
       // substitution, and `cdkd diff` / the deploy's own diff pass would
       // otherwise emit it a second time for a resource nothing is changing.
+      // NOTE (issue #1643 -> follow-up #1648): this folds the protocol's TYPE
+      // (#1633's stringification) but NOT the NAME substitutions AWS performs,
+      // which #1643 measured and which `src/utils/ip-protocol.ts` now
+      // canonicalizes for the readback side. So a template edit rewriting
+      // `IpProtocol: 6` to `'tcp'` still reads as a changed property, and since
+      // `IpProtocol` is create-only that classifies as a REPLACEMENT of a rule
+      // AWS already holds exactly. Deliberately NOT changed here: this is the
+      // DEPLOY path's replacement decision, which needs its own live
+      // verification rather than riding a drift-fixture PR.
       const { narrowed } = narrowIngressIpProtocol(properties, () => {});
       return narrowed;
     }
@@ -5546,9 +5562,20 @@ export class EC2Provider implements ResourceProvider {
     const sg = resp.SecurityGroups?.[0];
     if (!sg) return undefined;
 
+    // Issue #1643: the physicalId's protocol segment is what cdkd SENT (a
+    // template `IpProtocol: 6` is recorded as `'6'`, post-#1633), while AWS
+    // stores and reports the canonical NAME for the four protocols it has one
+    // for. A raw `===` therefore matched NOTHING for a numeric protocol, this
+    // method returned `undefined`, and `cdkd drift` reported the rule as
+    // "drift unknown" forever — one layer BELOW the phantom drift #1643 is
+    // about, and invisible to a comparison-side fix because no AWS-side bag is
+    // ever produced. Measured live 2026-08-12: `IpProtocol: '6'` -> physicalId
+    // `sg-…|6|9443|9443` vs an AWS `IpPermissions[].IpProtocol` of `tcp`.
+    // Canonicalizing BOTH sides is what makes the tuple comparable again.
+    const wantedProtocol = sgProtocolKey(protocol);
     const candidates = (sg.IpPermissions ?? []).filter(
       (p) =>
-        (p.IpProtocol ?? '-1') === protocol &&
+        sgProtocolKey(p.IpProtocol) === wantedProtocol &&
         (p.FromPort ?? undefined) === fromPort &&
         (p.ToPort ?? undefined) === toPort
     );
@@ -5849,8 +5876,18 @@ export function flattenIpPermissions(perms: IpPermission[], direction: SgDirecti
  * non-match honest instead of manufacturing a fake identity.
  */
 function sgProtocolKey(value: unknown): unknown {
-  if (typeof value === 'number') return String(value);
-  return value ?? '-1';
+  // Issue #1643 extends the #1633 normalization from the value's TYPE to its
+  // SPELLING, for the same reason and at the same place. AWS not only always
+  // reports the protocol as a string, it also substitutes the canonical NAME
+  // for the four numbers it has one for (`1`/`6`/`17`/`58` ->
+  // `icmp`/`tcp`/`udp`/`icmpv6`, measured us-east-1 2026-08-12) and lower-cases
+  // a name it is given. So a record holding `'6'` keyed as `{"p":"6"}` against
+  // AWS's `{"p":"tcp"}` and matched nothing — exactly the failure the comment
+  // below describes for the legacy numeric `-1`, one value-mapping deeper.
+  // Normalizing at the KEY heals the existing population with no migration
+  // here too, and keeps the standalone lookup and the inline-rule reconcile
+  // reading ONE definition of protocol identity.
+  return canonicalizeIpProtocolValue(value ?? '-1');
 }
 
 function sgRuleKey(rule: CfnSgRule, direction: SgDirection): string {

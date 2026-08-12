@@ -142,7 +142,16 @@ Three conditions, or this becomes a way to hide losses rather than record them:
   warn arm), and if you are unsure, that is the bar to hold yourself to. The
   exception is a transformation that loses NOTHING and therefore has nothing to
   announce: `IpProtocol: -1` and `'-1'` name the same protocol, so stringifying
-  it needs no warning and still belongs here;
+  it needs no warning and still belongs here. **Do not read that as "any
+  lossless coercion qualifies" — the real bar is "matches what AWS HOLDS"**
+  (issue #1643). `-1` works because AWS reports `-1` back. Measured us-east-1
+  2026-08-12: a declared `IpProtocol: 6` goes through the identical lossless
+  coercion to `'6'`, and AWS stores and reports `tcp` — so recording `'6'` here
+  pins a value the readback can never equal. A TYPE coercion cdkd performs is
+  knowable at send time; a VALUE mapping the SERVICE performs is not, so that
+  class is fixed on the readback side instead (see
+  `src/analyzer/drift-protocol-normalize.ts`). Ask what the service will
+  REPORT, not just whether your transformation lost information;
 - it is what you **sent**, not what AWS computed. AWS-side defaults and computed
   values belong in `observedProperties` (captured by a real read-back); putting
   them here makes the desired baseline drift from the template and silently

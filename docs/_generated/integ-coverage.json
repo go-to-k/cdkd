@@ -1946,11 +1946,15 @@
       "resourceType": "AWS::EC2::SecurityGroupIngress",
       "integs": [
         "alb",
+        "drift-revert-arrays",
         "sg-circular-dependency"
       ],
       "signals": {
         "alb": [
           "literal"
+        ],
+        "drift-revert-arrays": [
+          "l1"
         ],
         "sg-circular-dependency": [
           "literal"
