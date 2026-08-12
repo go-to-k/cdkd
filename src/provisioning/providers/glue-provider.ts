@@ -211,8 +211,7 @@ function deleteCatalogId(properties: Record<string, unknown> | undefined): Catal
   const catalogId = catalogIdForApi(raw);
   return {
     catalogId,
-    declaredButUnusable:
-      catalogId === undefined && raw != null && !isAccountIdPseudoParameter(raw),
+    declaredButUnusable: catalogId === undefined && raw != null && !isAccountIdPseudoParameter(raw),
   };
 }
 
