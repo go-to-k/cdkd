@@ -611,6 +611,59 @@ state to find out. It stays a warning rather than a throw so the
 `readCurrentState` round-trip the arm exists to absorb (`drift --revert` feeds
 an always-emitted empty-rules block back through `update()`) keeps working.
 
+**The sibling arms that NORMALIZE the empty collection away reach a DELETE, and
+that is the same defect one indirection further out** (issue #1713).
+`OwnershipControls` / `BucketEncryption` fold BOTH sides through
+`emptyListConfigToUndefined` before `diffSubConfig`, so a declared-but-empty
+desired side against a non-empty previous did not merely skip — it took the
+onDelete arm and issued `DeleteBucketEncryption`, dropping a declared `aws:kms`
+default to SSE-S3 on a template whose only fault is a collapsed array. Measured
+live on the same date and account as the #1671 A/B: CFn answers this template
+with `UPDATE_ROLLBACK_COMPLETE` and both configurations survive, so it is an
+INVALID template rather than a removal — the identical answer, so the identical
+skip. **The fold is not the bug and must not be removed**: `readCurrentState`
+always emits the empty placeholder, so `drift --revert` feeds it back through
+`update()` and both sides must keep normalizing for empty-vs-empty to compare
+EQUAL and issue no call at all. What was missing is that the fold COLLAPSES two
+different desired sides — declared-but-empty and ABSENT — into one `undefined`,
+and only the second is a removal. Split them with a predicate scoped to the shape that was
+MEASURED — the list key present and EMPTY (`declaresEmptyCollection`) — and
+NOT by asking "present, and the fold erased it": the fold also erases a bare
+`{}`, which #1466 pinned as a removal and the #1713 A/B never exercised, so
+delegating to it silently reverses a contract on evidence that does not cover
+it. A MALFORMED block needs no clause either way; the fold passes it through, so
+it never reaches the Delete arm and is refused by name by the apply call. The
+generalizable question: when a normalization maps several desired shapes onto
+one value, ask what each of them MEANT before letting the merged value pick an
+arm — especially when one arm deletes.
+
+**And ask who ELSE sends that shape, because the answer can invert per caller.**
+#1713's review is where that surfaced: `readCurrentState` emits the empty
+placeholder for an UNSET feature, so `cdkd drift --revert` hands `update()` a
+desired `{Rules: []}` meaning "restore the state where this was unset" — where
+the same bag from a template means "a collapsed array, do not touch the live
+value". The two callers need OPPOSITE arms. Skipping unconditionally breaks
+revert (the out-of-band change survives) and, worse, `retainPrevious` then
+records the AWS-current value as the new baseline, laundering it clean; deleting
+unconditionally is the #1713 data loss. Before adding a skip on an update path,
+enumerate every caller that can produce the skipped shape and check the skip is
+right for ALL of them.
+
+**That is what `UpdateContext` is for** (issue #1732) — the `update()` sibling of
+`CreateContext`, added because this class has no per-site workaround: the bags
+are byte-identical and only the CALLER knows which it is. It is optional, so
+none of the 77 providers implementing `update()` changed. Its one field today,
+`desiredFromAwsReadback`, is named for what it asserts rather than for
+"state-borne", and that distinction is load-bearing: the rollback executor's
+revert arms ARE state-borne, but their desired bag is
+`previousState.properties` — a TEMPLATE recorded earlier — so `{Rules: []}`
+there means what the template meant and the template answer (SKIP) is correct.
+Those arms deliberately pass NO context, and widening the flag to `stateBorne`
+would sweep them in and delete a live configuration during a rollback. Only
+`src/cli/commands/drift.ts`'s revert call passes it. When adding a field here,
+ask what the flag lets a provider CONCLUDE, not merely where the call came
+from.
+
 Two things that are easy to get wrong and were both caught by review:
 **normalize BOTH comparison sides**, not just the desired one — a record written BEFORE the provider started narrowing still carries every key, so a one-sided pass flips the same difference to a REMOVAL and breaks exactly the population the narrowing exists for; and **wire `cdkd diff` too**, since a preview that narrows differently from the apply forecasts a change the deploy will never make. `makeCanonicalizePropertiesFn` in `src/provisioning/canonicalize-properties.ts` is the one builder both commands use, so they cannot drift.
 

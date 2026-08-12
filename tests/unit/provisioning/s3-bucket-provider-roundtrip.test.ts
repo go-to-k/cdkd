@@ -2067,16 +2067,31 @@ describe('S3BucketProvider removal semantics (issue #1466)', () => {
 
   // ---------------- empty placeholder as the DESIRED side, real previous ----
 
-  it('empty placeholder desired + real previous REMOVES (empty == not declared)', async () => {
-    // The normalizer maps an empty container to `undefined` on BOTH sides, so
+  it('empty placeholder desired + real previous SKIPS (issue #1713 reverses #1466)', async () => {
+    // **This row asserted the OPPOSITE until issue #1713**, and the reversal is
+    // deliberate rather than a relaxation, so the old reasoning is kept here:
+    // "the normalizer maps an empty container to `undefined` on BOTH sides, so
     // this is a genuine `declared -> not declared` transition and must remove,
-    // matching CloudFormation. Pinned because the pairing is easy to misread as
-    // "the normalizer suppresses everything".
+    // matching CloudFormation."
+    //
+    // The premise was the CFn-parity claim, and it was asserted rather than
+    // measured. Measured (us-east-1, 2026-08-12): updating a deployed bucket to
+    // `ServerSideEncryptionConfiguration: []` / `Rules: []` drives the stack to
+    // UPDATE_ROLLBACK_COMPLETE with "The XML you provided was not well-formed
+    // or did not validate against our published schema", and BOTH live
+    // configurations survive the rollback unchanged. So CFn treats the empty
+    // collection as an INVALID TEMPLATE, not as a removal — the same answer the
+    // #1671 A/B produced for lifecycle / CORS on the same date and account,
+    // which is what made the two arms' disagreement a defect rather than a
+    // design.
+    //
+    // A removal is still expressible and still works: DROP the property, which
+    // the `control: REMOVING the property entirely` row below pins.
     await update(
       { ...base, OwnershipControls: { Rules: [] } },
       { ...base, OwnershipControls: { Rules: [{ ObjectOwnership: 'BucketOwnerPreferred' }] } }
     );
-    expect(callsOf(DeleteBucketOwnershipControlsCommand)).toHaveLength(1);
+    expect(callsOf(DeleteBucketOwnershipControlsCommand)).toHaveLength(0);
     expect(callsOf(PutBucketOwnershipControlsCommand)).toHaveLength(0);
 
     vi.clearAllMocks();
@@ -2085,8 +2100,25 @@ describe('S3BucketProvider removal semantics (issue #1466)', () => {
       { ...base, BucketEncryption: { ServerSideEncryptionConfiguration: [] } },
       { ...base, BucketEncryption: sseKms }
     );
-    expect(callsOf(DeleteBucketEncryptionCommand)).toHaveLength(1);
+    expect(callsOf(DeleteBucketEncryptionCommand)).toHaveLength(0);
     expect(callsOf(PutBucketEncryptionCommand)).toHaveLength(0);
+  });
+
+  it('ABSENT desired + real previous still REMOVES (the transition #1466 meant)', async () => {
+    // The half of #1466 that survives, and the discrimination #1713 rests on:
+    // before the fix, declared-but-empty and ABSENT were literally the same
+    // `undefined` after the fold, so this row and the one above could not
+    // disagree. Now they do.
+    await update({ ...base }, {
+      ...base,
+      OwnershipControls: { Rules: [{ ObjectOwnership: 'BucketOwnerPreferred' }] },
+    });
+    expect(callsOf(DeleteBucketOwnershipControlsCommand)).toHaveLength(1);
+
+    vi.clearAllMocks();
+    mockSend.mockResolvedValue({});
+    await update({ ...base }, { ...base, BucketEncryption: sseKms });
+    expect(callsOf(DeleteBucketEncryptionCommand)).toHaveLength(1);
   });
   // ---------------- review-found regressions (must stay closed) ----------
 

@@ -79,6 +79,7 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
   CreateContext,
+  UpdateContext,
 } from '../../types/resource.js';
 
 /**
@@ -2725,6 +2726,64 @@ export class S3BucketProvider implements ResourceProvider {
   }
 
   /**
+   * True when the DESIRED side DECLARES the property but its collection is
+   * empty — the shape {@link emptyListConfigToUndefined} folds to `undefined`
+   * and therefore cannot be told apart from an ABSENT property downstream
+   * (issue #1713).
+   *
+   * That collapse is the whole defect. `OwnershipControls` /
+   * `BucketEncryption` normalize BOTH sides through the fold before
+   * `diffSubConfig`, so a non-empty previous against a declared-but-empty
+   * desired took the **onDelete** arm and issued
+   * `DeleteBucketOwnershipControls` / `DeleteBucketEncryption` — where the
+   * lifecycle / CORS siblings SKIP the Put and leave the live configuration
+   * alone (issue #1671). Measured against live CloudFormation (us-east-1,
+   * 2026-08-12): updating a deployed bucket from an `aws:kms` default and a
+   * `BucketOwnerPreferred` rule to `ServerSideEncryptionConfiguration: []` /
+   * `Rules: []` drives the stack to `UPDATE_ROLLBACK_COMPLETE` with
+   * `The XML you provided was not well-formed or did not validate against our
+   * published schema`, and BOTH live configurations survive unchanged. So CFn
+   * treats the empty collection as an INVALID template, not as a removal —
+   * the same answer the #1671 A/B produced for lifecycle / CORS on the same
+   * date and account — and cdkd was DELETING instead. For `BucketEncryption`
+   * that silently drops a declared `aws:kms` default down to SSE-S3 / AES256
+   * on a template whose only fault is a condition-pruned or
+   * intrinsic-collapsed array.
+   *
+   * The fold itself is load-bearing and is NOT what changes here:
+   * `readCurrentState` ALWAYS emits
+   * `BucketEncryption: { ServerSideEncryptionConfiguration: [] }` and
+   * `OwnershipControls: { Rules: [] }` for a bucket with no explicit setting,
+   * so `cdkd drift --revert` feeds that placeholder back through `update()`
+   * and both sides must keep normalizing for empty-vs-empty to compare EQUAL
+   * and issue no call at all. This predicate rides alongside it and only
+   * splits the arm the fold reaches: **declared-but-empty SKIPS, absent
+   * DELETES**. A removal therefore still works — dropping the whole property
+   * from the template is what expresses it, which is exactly what
+   * `emptyCollectionSkip`'s warning tells the user.
+   *
+   * **Scoped to the shape #1713 MEASURED — the list key PRESENT and EMPTY —
+   * and no wider.** The tempting spelling is "present, and the fold erased it",
+   * i.e. delegate to {@link emptyListConfigToUndefined}. That is wrong here:
+   * the fold ALSO erases a bare `{}`, which issue #1466 pinned as a REMOVAL and
+   * #1713's live A/B did not exercise, so delegating would have reversed that
+   * contract on evidence that does not cover it — caught when its pinned row
+   * failed. (`{listKey: null}` as the sole key is NOT folded — the block
+   * carries one key, so `emptyListConfigToUndefined` passes it through as
+   * MALFORMED; an earlier draft of this comment claimed it was, which the
+   * type's own `'{Rules: null} as the SOLE key is malformed'` test contradicts.)
+   *
+   * A MALFORMED block is out of scope for a different reason and needs no
+   * clause here: the fold passes it through unchanged, so it never reaches the
+   * Delete arm at all and is refused by name by the apply call.
+   */
+  private static declaresEmptyCollection(config: unknown, listKey: string): boolean {
+    if (typeof config !== 'object' || config === null || Array.isArray(config)) return false;
+    const list = (config as Record<string, unknown>)[listKey];
+    return Array.isArray(list) && list.length === 0;
+  }
+
+  /**
    * Turn a set of per-property overrides into the `effectiveProperties` bag the
    * deploy engine records in place of the desired one (issues #1612 / #1670).
    *
@@ -3058,7 +3117,8 @@ export class S3BucketProvider implements ResourceProvider {
   private async applySubConfigDiffs(
     bucketName: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<Map<string, unknown>> {
     const overrides = new Map<string, unknown>();
     /** Record a WHOLE-BLOCK skip: the effective value is the previous one. */
@@ -3167,8 +3227,10 @@ export class S3BucketProvider implements ResourceProvider {
     // `cdkd drift --revert` both drive with a cdkd STATE record as the DESIRED
     // bag — so a throw here is un-actionable, the user cannot edit a state
     // record from their template. The downgrade is UNCONDITIONAL, like
-    // `EC2Provider.updateRoute`'s: `update()` has no context parameter, so it
-    // cannot tell a template update from a replay. And it must be a SKIP of
+    // `EC2Provider.updateRoute`'s. `update()` DOES take a context as of issue
+    // #1732, but it does not help here: `desiredFromAwsReadback` distinguishes
+    // a readback from everything else, not a REPLAY from a template, and this
+    // guard's question is the latter. And it must be a SKIP of
     // BOTH arms, not a default: taking the Suspended fallback here would route
     // a malformed record straight into the suspend branch below and turn
     // versioning off on a live bucket — the very thing computing this value
@@ -3239,6 +3301,10 @@ export class S3BucketProvider implements ResourceProvider {
     }
 
     // Ownership controls (per-id-free single config; empty Rules == absent)
+    const ownershipEmptyDesired = S3BucketProvider.declaresEmptyCollection(
+      properties['OwnershipControls'],
+      'Rules'
+    );
     await this.diffSubConfig(
       bucketName,
       S3BucketProvider.emptyListConfigToUndefined(
@@ -3255,6 +3321,24 @@ export class S3BucketProvider implements ResourceProvider {
       ),
       async (cfg) => this.applyOwnershipControls(bucketName, cfg),
       async () => {
+        // An empty DECLARED collection is not a removal intent (issue #1713) —
+        // see `declaresEmptyCollection`. Skip and keep the live configuration,
+        // exactly as the lifecycle / CORS arms do; only a genuinely ABSENT
+        // property reaches the Delete.
+        // An empty DECLARED collection is not a removal intent from a TEMPLATE
+        // (issue #1713) — but it IS one from `cdkd drift --revert`, whose
+        // desired bag is an AWS readback and whose `readCurrentState` spells
+        // "not set" as exactly this empty collection (issue #1732). Same bytes,
+        // opposite meanings, so the caller has to say which it is.
+        if (ownershipEmptyDesired && context?.desiredFromAwsReadback !== true) {
+          this.emptyCollectionSkip(
+            'OwnershipControls',
+            'OwnershipControls.Rules',
+            previousProperties,
+            retainPrevious
+          );
+          return;
+        }
         await this.s3Client.send(new DeleteBucketOwnershipControlsCommand({ Bucket: bucketName }));
         this.logger.debug(`Deleted ownership controls on bucket ${bucketName}`);
       }
@@ -3262,6 +3346,10 @@ export class S3BucketProvider implements ResourceProvider {
 
     // Bucket encryption (empty ServerSideEncryptionConfiguration == absent;
     // DeleteBucketEncryption reverts the bucket to the SSE-S3 / AES256 default)
+    const encryptionEmptyDesired = S3BucketProvider.declaresEmptyCollection(
+      properties['BucketEncryption'],
+      'ServerSideEncryptionConfiguration'
+    );
     await this.diffSubConfig(
       bucketName,
       S3BucketProvider.emptyListConfigToUndefined(
@@ -3278,6 +3366,24 @@ export class S3BucketProvider implements ResourceProvider {
       ),
       async (cfg) => this.applyBucketEncryption(bucketName, cfg),
       async () => {
+        // Same as OwnershipControls above, and this is the arm with teeth: a
+        // Delete here silently downgrades a declared `aws:kms` default to the
+        // SSE-S3 / AES256 one on a template whose only fault is a collapsed
+        // array (issue #1713).
+        // An empty DECLARED collection is not a removal intent from a TEMPLATE
+        // (issue #1713) — but it IS one from `cdkd drift --revert`, whose
+        // desired bag is an AWS readback and whose `readCurrentState` spells
+        // "not set" as exactly this empty collection (issue #1732). Same bytes,
+        // opposite meanings, so the caller has to say which it is.
+        if (encryptionEmptyDesired && context?.desiredFromAwsReadback !== true) {
+          this.emptyCollectionSkip(
+            'BucketEncryption',
+            'BucketEncryption.ServerSideEncryptionConfiguration',
+            previousProperties,
+            retainPrevious
+          );
+          return;
+        }
         await this.s3Client.send(new DeleteBucketEncryptionCommand({ Bucket: bucketName }));
         this.logger.debug(`Deleted bucket encryption on bucket ${bucketName}`);
       }
@@ -3291,8 +3397,24 @@ export class S3BucketProvider implements ResourceProvider {
         | undefined,
       properties['LifecycleConfiguration'] as { Rules: Array<Record<string, unknown>> } | undefined,
       async (cfg) => {
-        // Skip empty-rules placeholder (Class 2)
+        // Skip empty-rules placeholder (Class 2) — unless the desired bag is an
+        // AWS READBACK, where the same empty array is how `readLifecycle`
+        // spells "no lifecycle configuration" (it returns `{Rules: []}` on
+        // `NoSuchLifecycleConfiguration`), so `cdkd drift --revert` means
+        // REMOVE by it (issue #1732). Without this the revert reported success,
+        // changed nothing, and `retainPrevious` recorded the AWS-current rules
+        // as the new baseline — silently accepting the drift it was asked to
+        // undo. Same shape as the OwnershipControls / BucketEncryption arms
+        // above; found by review, which noted that leaving it would violate the
+        // enumerate-every-caller rule this change itself wrote.
         if (!cfg.Rules || !Array.isArray(cfg.Rules) || cfg.Rules.length === 0) {
+          if (context?.desiredFromAwsReadback === true) {
+            await this.s3Client.send(new DeleteBucketLifecycleCommand({ Bucket: bucketName }));
+            this.logger.debug(
+              `Deleted lifecycle configuration on bucket ${bucketName} (reverting to an unset baseline)`
+            );
+            return;
+          }
           this.emptyCollectionSkip(
             'LifecycleConfiguration',
             'LifecycleConfiguration.Rules',
@@ -3322,8 +3444,17 @@ export class S3BucketProvider implements ResourceProvider {
         | undefined,
       properties['CorsConfiguration'] as { CorsRules: Array<Record<string, unknown>> } | undefined,
       async (cfg) => {
-        // Skip empty-rules placeholder (Class 2)
+        // The CORS twin of the lifecycle arm above (issue #1732): `readCors`
+        // returns `{CorsRules: []}` on `NoSuchCORSConfiguration`, so on a
+        // readback-derived desired bag the empty array means REMOVE.
         if (!cfg.CorsRules || !Array.isArray(cfg.CorsRules) || cfg.CorsRules.length === 0) {
+          if (context?.desiredFromAwsReadback === true) {
+            await this.s3Client.send(new DeleteBucketCorsCommand({ Bucket: bucketName }));
+            this.logger.debug(
+              `Deleted CORS configuration on bucket ${bucketName} (reverting to an unset baseline)`
+            );
+            return;
+          }
           this.emptyCollectionSkip(
             'CorsConfiguration',
             'CorsConfiguration.CorsRules',
@@ -3936,7 +4067,8 @@ export class S3BucketProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating S3 bucket ${logicalId}: ${physicalId}`);
 
@@ -3976,7 +4108,8 @@ export class S3BucketProvider implements ResourceProvider {
       for (const [key, value] of await this.applySubConfigDiffs(
         physicalId,
         properties,
-        previousProperties
+        previousProperties,
+        context
       )) {
         effectiveOverrides.set(key, value);
       }

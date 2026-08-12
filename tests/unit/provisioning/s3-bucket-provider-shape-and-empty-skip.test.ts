@@ -5,6 +5,10 @@ import {
   DeleteBucketLifecycleCommand,
   PutBucketCorsCommand,
   DeleteBucketCorsCommand,
+  PutBucketEncryptionCommand,
+  DeleteBucketEncryptionCommand,
+  PutBucketOwnershipControlsCommand,
+  DeleteBucketOwnershipControlsCommand,
 } from '@aws-sdk/client-s3';
 
 /**
@@ -438,5 +442,186 @@ describe('#1671 UPDATE: an empty rules collection skips the Put and records the 
 
     expect(sentCommands(DeleteBucketLifecycleCommand)).toHaveLength(1);
     expect(sentCommands(PutBucketLifecycleConfigurationCommand)).toHaveLength(0);
+  });
+});
+
+describe('#1713 UPDATE: an empty BucketEncryption / OwnershipControls collection skips instead of DELETING', () => {
+  const LIVE_ENCRYPTION = {
+    ServerSideEncryptionConfiguration: [
+      {
+        ServerSideEncryptionByDefault: {
+          SSEAlgorithm: 'aws:kms',
+          KMSMasterKeyID: 'arn:aws:kms:us-east-1:123456789012:key/abc',
+        },
+      },
+    ],
+  };
+  const LIVE_OWNERSHIP = { Rules: [{ ObjectOwnership: 'BucketOwnerPreferred' }] };
+
+  it('encryption: no Put, NO DeleteBucketEncryption, and the PREVIOUS configuration is recorded', async () => {
+    // The arm with teeth. Before the fix `emptyListConfigToUndefined` folded
+    // the declared-but-empty desired side to `undefined`, `diffSubConfig` took
+    // its onDelete arm, and the declared `aws:kms` default was silently
+    // dropped to SSE-S3 / AES256 on a template whose only fault is a collapsed
+    // array. Measured live (us-east-1, 2026-08-12): CFn REJECTS this template
+    // (UPDATE_ROLLBACK_COMPLETE) and leaves the live configuration intact.
+    const properties = {
+      BucketName: BUCKET,
+      BucketEncryption: { ServerSideEncryptionConfiguration: [] },
+    };
+    const result = await provider.update('B', BUCKET, RESOURCE_TYPE, properties, {
+      BucketName: BUCKET,
+      BucketEncryption: LIVE_ENCRYPTION,
+    });
+
+    expect(sentCommands(DeleteBucketEncryptionCommand)).toHaveLength(0);
+    expect(sentCommands(PutBucketEncryptionCommand)).toHaveLength(0);
+    expect(result.effectiveProperties?.['BucketEncryption']).toEqual(LIVE_ENCRYPTION);
+  });
+
+  it('ownership: no Put, NO DeleteBucketOwnershipControls, and the PREVIOUS configuration is recorded', async () => {
+    const properties = { BucketName: BUCKET, OwnershipControls: { Rules: [] } };
+    const result = await provider.update('B', BUCKET, RESOURCE_TYPE, properties, {
+      BucketName: BUCKET,
+      OwnershipControls: LIVE_OWNERSHIP,
+    });
+
+    expect(sentCommands(DeleteBucketOwnershipControlsCommand)).toHaveLength(0);
+    expect(sentCommands(PutBucketOwnershipControlsCommand)).toHaveLength(0);
+    expect(result.effectiveProperties?.['OwnershipControls']).toEqual(LIVE_OWNERSHIP);
+  });
+
+  it('drift --revert: the SAME empty bag DELETES, because it is an AWS readback', async () => {
+    // The blocker a reviewer found (issue #1732), and the reason `update()`
+    // gained a context at all. `readCurrentState` spells "this feature is not
+    // set" as `{Rules: []}` / `{ServerSideEncryptionConfiguration: []}`, and
+    // `cdkd drift --revert` builds its desired bag from that readback — so the
+    // bytes are IDENTICAL to a template's condition-collapsed array while
+    // meaning the opposite. Without the flag this row and the two skip rows
+    // above cannot both pass.
+    mockSend.mockResolvedValue({});
+    const properties = {
+      BucketName: BUCKET,
+      BucketEncryption: { ServerSideEncryptionConfiguration: [] },
+      OwnershipControls: { Rules: [] },
+    };
+    const result = await provider.update(
+      'B',
+      BUCKET,
+      RESOURCE_TYPE,
+      properties,
+      {
+        BucketName: BUCKET,
+        BucketEncryption: LIVE_ENCRYPTION,
+        OwnershipControls: LIVE_OWNERSHIP,
+      },
+      { desiredFromAwsReadback: true }
+    );
+
+    expect(sentCommands(DeleteBucketEncryptionCommand)).toHaveLength(1);
+    expect(sentCommands(DeleteBucketOwnershipControlsCommand)).toHaveLength(1);
+    // ...and nothing is retained into the baseline, so the out-of-band value
+    // cannot be laundered clean by the revert that was supposed to remove it.
+    expect(result.effectiveProperties?.['BucketEncryption']).toBeUndefined();
+    expect(result.effectiveProperties?.['OwnershipControls']).toBeUndefined();
+  });
+
+  it('drift --revert also removes an out-of-band LIFECYCLE / CORS rule', async () => {
+    // The same laundering two arms below, found by the same review: `readLifecycle`
+    // returns `{Rules: []}` on NoSuchLifecycleConfiguration and `readCors` returns
+    // `{CorsRules: []}` on NoSuchCORSConfiguration, so those empty arrays are the
+    // unset-spelling too. They are NOT folded, so a revert bag reaches the onPut
+    // arm and hit the empty guard — skipping, and recording the AWS-current rules
+    // as the new baseline. Pre-existing (#1671) rather than a regression here, but
+    // the enumerate-every-caller rule this change wrote does not get to skip its
+    // own siblings.
+    mockSend.mockResolvedValue({});
+    const properties = {
+      BucketName: BUCKET,
+      LifecycleConfiguration: { Rules: [] },
+      CorsConfiguration: { CorsRules: [] },
+    };
+    const result = await provider.update(
+      'B',
+      BUCKET,
+      RESOURCE_TYPE,
+      properties,
+      {
+        BucketName: BUCKET,
+        LifecycleConfiguration: {
+          Rules: [{ Id: 'expire-30', Status: 'Enabled', Prefix: 'logs/', ExpirationInDays: 30 }],
+        },
+        CorsConfiguration: {
+          CorsRules: [{ Id: 'cors-a', AllowedMethods: ['GET'], AllowedOrigins: ['https://x.test'] }],
+        },
+      },
+      { desiredFromAwsReadback: true }
+    );
+
+    expect(sentCommands(DeleteBucketLifecycleCommand)).toHaveLength(1);
+    expect(sentCommands(DeleteBucketCorsCommand)).toHaveLength(1);
+    expect(sentCommands(PutBucketLifecycleConfigurationCommand)).toHaveLength(0);
+    expect(sentCommands(PutBucketCorsCommand)).toHaveLength(0);
+    // Nothing retained, so the out-of-band rules cannot be laundered clean.
+    expect(result.effectiveProperties?.['LifecycleConfiguration']).toBeUndefined();
+    expect(result.effectiveProperties?.['CorsConfiguration']).toBeUndefined();
+  });
+
+  it('control: REMOVING the property entirely still Deletes both configurations', async () => {
+    // The discrimination the whole fix rests on. `emptyListConfigToUndefined`
+    // collapsed declared-but-empty and ABSENT into one `undefined`, so this
+    // row and the two above were indistinguishable; a fix that simply stops
+    // folding would break THIS one, which is the template-side remedy the
+    // skip's warning tells the user to reach for.
+    const properties = { BucketName: BUCKET };
+    await provider.update('B', BUCKET, RESOURCE_TYPE, properties, {
+      BucketName: BUCKET,
+      BucketEncryption: LIVE_ENCRYPTION,
+      OwnershipControls: LIVE_OWNERSHIP,
+    });
+
+    expect(sentCommands(DeleteBucketEncryptionCommand)).toHaveLength(1);
+    expect(sentCommands(DeleteBucketOwnershipControlsCommand)).toHaveLength(1);
+  });
+
+  it('control: the readCurrentState placeholder round-trip still issues NO call', async () => {
+    // `readCurrentState` ALWAYS emits the empty placeholder for a bucket with
+    // no explicit setting, and `cdkd drift --revert` feeds it straight back
+    // through `update()`. Both sides fold to `undefined`, compare EQUAL, and
+    // reach neither arm — which is why the fold stays and only the Delete arm
+    // is split. A fix that stopped normalizing the desired side would send a
+    // Put with an empty configuration here.
+    const placeholder = {
+      BucketName: BUCKET,
+      BucketEncryption: { ServerSideEncryptionConfiguration: [] },
+      OwnershipControls: { Rules: [] },
+    };
+    const result = await provider.update('B', BUCKET, RESOURCE_TYPE, placeholder, placeholder);
+
+    expect(sentCommands(DeleteBucketEncryptionCommand)).toHaveLength(0);
+    expect(sentCommands(PutBucketEncryptionCommand)).toHaveLength(0);
+    expect(sentCommands(DeleteBucketOwnershipControlsCommand)).toHaveLength(0);
+    expect(sentCommands(PutBucketOwnershipControlsCommand)).toHaveLength(0);
+    // Nothing was skipped over a live value, so nothing is retained either.
+    expect(result.effectiveProperties?.['BucketEncryption']).toBeUndefined();
+  });
+
+  it('control: a MALFORMED block is not read as empty and still reaches the applier', async () => {
+    // `emptyListConfigToUndefined` passes a malformed block through unchanged,
+    // so it never reaches the Delete arm and the predicate must not claim it.
+    // The applier refuses it by name; what this row fences is that the guard
+    // did not swallow it into the skip.
+    const properties = {
+      BucketName: BUCKET,
+      BucketEncryption: { ServerSideEncryptionConfiguration: 'not-an-array' },
+    };
+    await expect(
+      provider.update('B', BUCKET, RESOURCE_TYPE, properties, {
+        BucketName: BUCKET,
+        BucketEncryption: LIVE_ENCRYPTION,
+      })
+    ).rejects.toThrow();
+
+    expect(sentCommands(DeleteBucketEncryptionCommand)).toHaveLength(0);
   });
 });
