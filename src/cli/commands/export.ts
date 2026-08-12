@@ -970,17 +970,20 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
               throw new Error(
                 `Refusing to export: ${crossRefs.length} cross-stack reference(s) to ` +
                   `${resolvedStackName} found in sibling stacks. After migration, those ` +
-                  `references will break (cdkd's Fn::GetStackOutput reads cdkd state; the ` +
-                  `migrated stack's outputs live in CFn). Migrate consumers first, or remove ` +
-                  `the references, or drop --strict-cross-stack to proceed with a warning:\n` +
+                  `references depend on the CloudFormation fallback (the migrated stack's ` +
+                  `outputs live in CFn; cdkd resolves them via DescribeStacks after the ` +
+                  `cdkd-state miss), and consumers deployed with --no-cfn-fallback break. ` +
+                  `Migrate consumers first, or remove the references, or drop ` +
+                  `--strict-cross-stack to proceed with a warning:\n` +
                   lines.join('\n')
               );
             }
             logger.warn(
               `${crossRefs.length} cross-stack reference(s) to '${resolvedStackName}' from ` +
-                `sibling stacks. These will break the next time those stacks deploy via cdkd ` +
-                `(cdkd's Fn::GetStackOutput resolver reads cdkd state; the migrated stack's ` +
-                `outputs are now in CFn). Plan multi-stack migrations from the leaves up.`
+                `sibling stacks. After the migration those consumers resolve this stack's ` +
+                `outputs via the CloudFormation fallback (weak reference; the outputs now ` +
+                `live in CFn) — they break only when deployed with --no-cfn-fallback. ` +
+                `Migrate consumers from the leaves up if you rely on cdkd-state-only resolution.`
             );
             for (const line of lines) logger.warn(line);
           }
@@ -1181,12 +1184,16 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
       reportDriftBaselineGaps(state, logger);
 
       // Cross-stack consumer scan. After this stack moves to CFn, its
-      // outputs live in CFn (not cdkd state), so cdkd's
-      // `Fn::GetStackOutput` resolver — which reads cdkd state — can no
-      // longer find them. Warn (or refuse with --strict-cross-stack) when
-      // any sibling stack in the same CDK app references this one. The
-      // scan only sees stacks in `allSynthStacks` — when the user passes
-      // --template, we skip the scan because we have no sibling templates.
+      // outputs live in CFn (not cdkd state). Since issue #1697 cdkd's
+      // `Fn::GetStackOutput` resolver falls back to CloudFormation
+      // `DescribeStacks` on a cdkd-state miss, so consumers keep
+      // resolving by default — but the reference becomes
+      // CFn-fallback-dependent, and consumers deployed with
+      // `--no-cfn-fallback` break. Warn (or refuse with
+      // --strict-cross-stack) when any sibling stack in the same CDK app
+      // references this one. The scan only sees stacks in
+      // `allSynthStacks` — when the user passes --template, we skip the
+      // scan because we have no sibling templates.
       if (allSynthStacks.length > 0) {
         const crossRefs = scanCrossStackReferences(allSynthStacks, resolvedStackName);
         if (crossRefs.length > 0) {
@@ -1198,17 +1205,20 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
             throw new Error(
               `Refusing to export: ${crossRefs.length} cross-stack reference(s) to ` +
                 `${resolvedStackName} found in sibling stacks. After migration, those ` +
-                `references will break (cdkd's Fn::GetStackOutput reads cdkd state; the ` +
-                `migrated stack's outputs live in CFn). Migrate consumers first, or remove ` +
-                `the references, or drop --strict-cross-stack to proceed with a warning:\n` +
+                `references depend on the CloudFormation fallback (the migrated stack's ` +
+                `outputs live in CFn; cdkd resolves them via DescribeStacks after the ` +
+                `cdkd-state miss), and consumers deployed with --no-cfn-fallback break. ` +
+                `Migrate consumers first, or remove the references, or drop ` +
+                `--strict-cross-stack to proceed with a warning:\n` +
                 lines.join('\n')
             );
           }
           logger.warn(
             `${crossRefs.length} cross-stack reference(s) to '${resolvedStackName}' from ` +
-              `sibling stacks. These will break the next time those stacks deploy via cdkd ` +
-              `(cdkd's Fn::GetStackOutput resolver reads cdkd state; the migrated stack's ` +
-              `outputs are now in CFn). Plan multi-stack migrations from the leaves up.`
+              `sibling stacks. After the migration those consumers resolve this stack's ` +
+              `outputs via the CloudFormation fallback (weak reference; the outputs now ` +
+              `live in CFn) — they break only when deployed with --no-cfn-fallback. ` +
+              `Migrate consumers from the leaves up if you rely on cdkd-state-only resolution.`
           );
           for (const line of lines) logger.warn(line);
         }
@@ -4639,8 +4649,9 @@ export function createExportCommand(): Command {
     .option(
       '--strict-cross-stack',
       'Refuse to export when sibling cdkd stacks in the same CDK app reference the ' +
-        'exporting stack via Fn::GetStackOutput. Without the flag, cdkd warns but ' +
-        'proceeds — the user is expected to migrate the consumer stacks in a follow-up.',
+        'exporting stack via Fn::GetStackOutput. Without the flag, cdkd warns and ' +
+        'proceeds — the consumers keep resolving via the CloudFormation fallback ' +
+        '(weak reference) unless they deploy with --no-cfn-fallback.',
       false
     )
     .option(

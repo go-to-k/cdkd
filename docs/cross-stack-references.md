@@ -193,6 +193,11 @@ resolveImportValue(exportName):
       recordImport(exportName, ref.stackName, ref.region)
       return value
 
+  if cfnFallback:                                      ← issue #1697 (default on)
+    export = await cloudformation.ListExports().find(exportName)
+    if export:
+      return export.value        ← WEAK reference: recordImport NOT called
+
   throw "export not found"
 ```
 
@@ -335,6 +340,58 @@ ListExports across accounts; no strong-reference protection).
   `Fn::ImportValue` is same-account only — so cdkd does not extend
   beyond that. Use `Fn::GetStackOutput` with `RoleArn` for cross-account
   reads.
+
+---
+
+## CloudFormation fallback (mixed cdkd / CloudFormation estates)
+
+Issue [#1697](https://github.com/go-to-k/cdkd/issues/1697). A
+cdkd-deployed consumer can reference a producer stack that is still
+managed by CloudFormation (`cdk deploy` / raw CFn) — the typical
+mixed-estate scenario where shared infrastructure stays on the CDK CLI
+while app stacks deploy via cdkd:
+
+- **`Fn::ImportValue`**: when the export is in NO cdkd state record,
+  the resolver falls back to CloudFormation `ListExports` (paginated) in
+  the consumer's region. CloudFormation's own semantic for
+  `Fn::ImportValue` IS `ListExports`, so this closes a template
+  compatibility gap.
+- **`Fn::GetStackOutput`** (same-account only): when the producer has no
+  cdkd state record at `cdkd/{StackName}/{Region}/state.json`, the
+  resolver falls back to CloudFormation `DescribeStacks` and reads the
+  stack's `Outputs` in the target region. The `RoleArn` (cross-account)
+  path never takes the fallback — it keeps reading the producer
+  account's cdkd state exclusively.
+
+Design points:
+
+- **cdkd-first precedence is inherent.** The fallback only runs after a
+  cdkd-state miss, so existing cdkd-to-cdkd references are untouched and
+  a name collision between a cdkd export and a CFn export resolves to
+  the cdkd one.
+- **CFn-sourced resolutions are WEAK references.** They are NOT recorded
+  into `state.imports` / `state.outputReads`: cdkd cannot protect a
+  producer it does not manage at destroy time, and CloudFormation's own
+  export-in-use protection cannot see cdkd consumers. Deleting the CFn
+  producer therefore breaks the consumer's NEXT resolve, not the
+  producer's delete. No state schema change is involved.
+- **Graceful degradation.** A fallback lookup failure (most commonly a
+  caller lacking `cloudformation:ListExports` /
+  `cloudformation:DescribeStacks`) logs a warning and surfaces the
+  original not-found error — without the fallback the deploy would have
+  failed with the same error anyway.
+- **Opt-out**: `--no-cfn-fallback` (on `deploy` and `diff`) disables the
+  fallback entirely for cdkd-state-only semantics — e.g. to keep IAM
+  minimal, or to keep an export-name typo failing fast instead of
+  accidentally matching an unrelated CloudFormation export in the
+  account. The diff resolvers honor the same flag so preview and apply
+  resolve identically.
+- **Mixed sources need no per-reference configuration.** Resolution is
+  per-reference, so one stack can consume some values from cdkd
+  producers and others from CFn producers with the same syntax.
+- This also relaxes the `cdkd export` leaf-first ordering constraint:
+  after a producer is exported to CloudFormation, remaining cdkd
+  consumers resolve its outputs via the fallback instead of failing.
 
 ---
 
@@ -530,6 +587,7 @@ path and is dominated by AWS-side resource deletion latency anyway.
 | Weak cross-stack reference alternative | ✗ | ✓ (`Fn::GetStackOutput`) |
 | Cross-region exports | ✗ (same region only) | ✓ (`Fn::GetStackOutput`) |
 | Cross-account exports | via shared bootstrap | ✓ (`Fn::GetStackOutput` with `RoleArn`) |
+| Reference a producer managed by the OTHER engine | ✗ (CFn cannot read cdkd state) | ✓ (CloudFormation fallback, weak — see above) |
 
 The departures from CFn (`Fn::GetStackOutput` weak-ref, cross-region)
 are cdkd-specific extensions. The strong-reference behavior is

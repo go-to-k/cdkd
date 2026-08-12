@@ -179,9 +179,17 @@ export async function computeStackDiff(
    * Without it `cdkd diff` forecasts a change `cdkd deploy` will never make —
    * the preview and the apply must narrow identically.
    */
-  canonicalizeProperties?: CanonicalizePropertiesFn
+  canonicalizeProperties?: CanonicalizePropertiesFn,
+  /**
+   * `--no-cfn-fallback` (issue #1697): false disables the resolver's
+   * CloudFormation fallback for cross-stack references, mirroring the
+   * deploy engine's option so preview and apply resolve identically.
+   */
+  cfnFallback?: boolean
 ): Promise<Map<string, ResourceChange>> {
-  const intrinsicResolver = new IntrinsicFunctionResolver(region);
+  const intrinsicResolver = new IntrinsicFunctionResolver(region, {
+    cfnFallback: cfnFallback ?? true,
+  });
 
   // Mirror the deploy engine's parameter/condition preprocessing (steps
   // 2.5-2.7, issue #1027) so the diff matches what deploy will actually do.
@@ -311,13 +319,14 @@ async function resolveChildStackParameters(
   region: string,
   parentStackName: string,
   stateBackend: S3StateBackend,
-  parentParameters: Record<string, unknown> | undefined
+  parentParameters: Record<string, unknown> | undefined,
+  cfnFallback?: boolean
 ): Promise<Record<string, unknown>> {
   const rawParams = parentStackRow.Properties?.['Parameters'];
   if (!rawParams || typeof rawParams !== 'object' || Array.isArray(rawParams)) {
     return {};
   }
-  const resolver = new IntrinsicFunctionResolver(region);
+  const resolver = new IntrinsicFunctionResolver(region, { cfnFallback: cfnFallback ?? true });
   const resolved: Record<string, unknown> = {};
   for (const [name, value] of Object.entries(rawParams as Record<string, unknown>)) {
     try {
@@ -391,6 +400,13 @@ export async function buildDiffTree(args: {
    * rewritten by the caller before this is invoked.
    */
   assetRedirect?: AssetRedirectMap;
+  /**
+   * `--no-cfn-fallback` (issue #1697): false disables the CloudFormation
+   * fallback for cross-stack references in every resolver this walker
+   * constructs (per-stack diff + child-parameter resolution), mirroring
+   * the deploy engine's option. Default (undefined) = fallback enabled.
+   */
+  cfnFallback?: boolean;
 }): Promise<DiffTreeNode> {
   const {
     stackName,
@@ -404,6 +420,7 @@ export async function buildDiffTree(args: {
     parameters,
     canonicalizeProperties,
     assetRedirect,
+    cfnFallback,
   } = args;
 
   const state = await loadStateOrEmpty(stackName, region, stateBackend);
@@ -415,7 +432,8 @@ export async function buildDiffTree(args: {
     stateBackend,
     diffCalculator,
     parameters,
-    canonicalizeProperties
+    canonicalizeProperties,
+    cfnFallback
   );
   const ccApiRoutes = collectCcApiRoutes(template, state);
   const node: DiffTreeNode = {
@@ -459,7 +477,8 @@ export async function buildDiffTree(args: {
       region,
       stackName,
       stateBackend,
-      parameters
+      parameters,
+      cfnFallback
     );
     node.children.push(
       await buildDiffTree({
@@ -474,6 +493,7 @@ export async function buildDiffTree(args: {
         parameters: childParameters,
         ...(canonicalizeProperties && { canonicalizeProperties }),
         ...(assetRedirect && { assetRedirect }),
+        ...(cfnFallback !== undefined && { cfnFallback }),
       })
     );
   }

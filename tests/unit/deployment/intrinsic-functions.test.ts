@@ -34,6 +34,28 @@ const mockEc2Send = vi.fn().mockResolvedValue({
   ],
 });
 
+// Mock CloudFormation client (for the issue #1697 cross-stack fallback).
+// Default: no exports, and DescribeStacks reports the stack as missing —
+// so pre-#1697 not-found tests keep their original outcome without any
+// real AWS call when the fallback path fires.
+const cfnMockSend = vi.hoisted(() => vi.fn());
+vi.mock('@aws-sdk/client-cloudformation', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@aws-sdk/client-cloudformation')>();
+  return {
+    ...actual,
+    CloudFormationClient: vi.fn().mockImplementation(() => ({ send: cfnMockSend })),
+  };
+});
+cfnMockSend.mockImplementation(async (cmd: { constructor: { name: string } }) => {
+  if (cmd.constructor.name === 'ListExportsCommand') return { Exports: [] };
+  if (cmd.constructor.name === 'DescribeStacksCommand') {
+    // The typed does-not-exist miss (name + message are both required by
+    // the resolver's classifier — issue #1697 review).
+    throw Object.assign(new Error('Stack does not exist'), { name: 'ValidationError' });
+  }
+  throw new Error(`unexpected CloudFormation command: ${cmd.constructor.name}`);
+});
+
 // Mock ServiceDiscovery client (for the namespace HostedZoneId live fetch,
 // reached via dynamic import in constructAttribute — vitest intercepts
 // dynamic imports through the same module mock).

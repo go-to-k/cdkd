@@ -49,6 +49,22 @@ vi.mock('@aws-sdk/client-s3', async () => {
   };
 });
 
+// Issue #1697: the CloudFormation fallback is same-account only — the
+// RoleArn (cross-account) path must NEVER construct a CloudFormation
+// client. The mock exists so a regression that drops the `!roleArn`
+// guard from the fallback surfaces as a failed `not.toHaveBeenCalled()`
+// assertion (below) instead of a live DescribeStacks attempt.
+const cfnMockSend = vi.fn();
+vi.mock('@aws-sdk/client-cloudformation', async () => {
+  const actual = await vi.importActual<typeof import('@aws-sdk/client-cloudformation')>(
+    '@aws-sdk/client-cloudformation',
+  );
+  return {
+    ...actual,
+    CloudFormationClient: vi.fn().mockImplementation(() => ({ send: cfnMockSend })),
+  };
+});
+
 vi.mock('../../../src/utils/logger.js', () => {
   const childLogger = {
     debug: vi.fn(),
@@ -415,7 +431,17 @@ describe('Fn::GetStackOutput cross-account RoleArn', () => {
         },
         buildContext(),
       ),
-    ).rejects.toThrow(/cross-account via arn:aws:iam::111122223333:role\/cdkd-state-reader/);
+    ).rejects.toThrow(
+      // Issue #1697: the CloudFormation fallback is same-account only, so
+      // the cross-account miss keeps the cdkd-only remediation text (a
+      // fallback would have said "Searched cdkd state and CloudFormation
+      // stacks" instead) — and never constructs a CloudFormation client.
+      /cross-account via arn:aws:iam::111122223333:role\/cdkd-state-reader.*deployed via cdkd/,
+    );
+    // The message regex alone would survive a regression that drops the
+    // `!roleArn` guard from the LOOKUP only (the message ternary is an
+    // independent condition) — pin the no-call contract directly.
+    expect(cfnMockSend).not.toHaveBeenCalled();
   });
 
   it('accepts aws-us-gov partition role ARN', async () => {

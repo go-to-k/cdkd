@@ -38,6 +38,29 @@ vi.mock('../../../src/utils/aws-clients.js', async (importOriginal) => {
   };
 });
 
+// CloudFormation client mock for the issue #1697 cross-stack fallback
+// threading pins below — the resolver constructs its fallback clients
+// directly (not via aws-clients), so without this a template carrying an
+// Fn::ImportValue miss would attempt a live ListExports from a unit test.
+// Default: one known export + a does-not-exist DescribeStacks.
+const cfnMockSend = vi.hoisted(() => vi.fn());
+vi.mock('@aws-sdk/client-cloudformation', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@aws-sdk/client-cloudformation')>();
+  return {
+    ...actual,
+    CloudFormationClient: vi.fn().mockImplementation(() => ({ send: cfnMockSend })),
+  };
+});
+cfnMockSend.mockImplementation(async (cmd: { constructor: { name: string } }) => {
+  if (cmd.constructor.name === 'ListExportsCommand') {
+    return { Exports: [{ Name: 'CfnSideExport', Value: 'from-cfn' }] };
+  }
+  if (cmd.constructor.name === 'DescribeStacksCommand') {
+    throw Object.assign(new Error('Stack does not exist'), { name: 'ValidationError' });
+  }
+  throw new Error(`unexpected CloudFormation command: ${cmd.constructor.name}`);
+});
+
 import {
   buildDiffTree,
   computeStackDiff,
@@ -678,6 +701,166 @@ describe('computeStackDiff / buildDiffTree canonicalizer wiring (#1591)', () => 
       const child = node.children.find((c) => c.stackName === 'S~Child');
       expect(child).toBeDefined();
       expect(child!.changes.get('R')!.changeType).toBe('NO_CHANGE');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('computeStackDiff / buildDiffTree cfnFallback threading (#1697)', () => {
+  // The diff's resolvers must honor `--no-cfn-fallback` exactly like the
+  // deploy engine ("preview and apply resolve identically"). Four resolver
+  // construction sites thread the flag: computeStackDiff, buildDiffTree's
+  // root call, the nested-child recursion, and resolveChildStackParameters.
+  // Both polarities are pinned behaviorally (memory rule
+  // `feedback_pin_both_polarities_of_threaded_flag`): default ON resolves
+  // the import via the mocked CFn exports (NO_CHANGE + a CFn call); OFF
+  // leaves the intrinsic unresolved (previewed change + ZERO CFn calls,
+  // which covers every site at once).
+  const SSM = 'AWS::SSM::Parameter';
+  const importTemplate: CloudFormationTemplate = {
+    Resources: {
+      P: { Type: SSM, Properties: { Value: { 'Fn::ImportValue': 'CfnSideExport' } } },
+    },
+  };
+  const resolvedState = () => st('S', { P: res(SSM, { Value: 'from-cfn' }) });
+  /** fakeBackend + the listStacks the ImportValue scan needs. */
+  function fbBackend(states: Record<string, StackState>): S3StateBackend {
+    return {
+      getState: async (stackName: string) => {
+        const state = states[stackName];
+        return state ? { state, etag: 'fake' } : null;
+      },
+      listStacks: async () =>
+        Object.values(states).map((s) => ({ stackName: s.stackName, region: s.region })),
+    } as unknown as S3StateBackend;
+  }
+
+  beforeEach(() => {
+    cfnMockSend.mockClear();
+  });
+
+  it('computeStackDiff default: the CFn fallback resolves the import (preview matches apply)', async () => {
+    const changes = await computeStackDiff(
+      resolvedState(),
+      importTemplate,
+      'us-east-1',
+      'S',
+      fbBackend({ S: resolvedState() }),
+      new DiffCalculator()
+    );
+    expect(changes.get('P')!.changeType).toBe('NO_CHANGE');
+    expect(cfnMockSend).toHaveBeenCalled();
+  });
+
+  it('computeStackDiff cfnFallback:false: no CFn call, the import stays unresolved (previewed change)', async () => {
+    const changes = await computeStackDiff(
+      resolvedState(),
+      importTemplate,
+      'us-east-1',
+      'S',
+      fbBackend({ S: resolvedState() }),
+      new DiffCalculator(),
+      undefined,
+      undefined,
+      false
+    );
+    expect(changes.get('P')!.changeType).toBe('UPDATE');
+    expect(cfnMockSend).not.toHaveBeenCalled();
+  });
+
+  it('buildDiffTree forwards the flag to the ROOT stack (both polarities)', async () => {
+    const on = await buildDiffTree({
+      stackName: 'S',
+      displayName: 'S',
+      region: 'us-east-1',
+      template: importTemplate,
+      nestedTemplates: {},
+      recursive: false,
+      stateBackend: fbBackend({ S: resolvedState() }),
+      diffCalculator: new DiffCalculator(),
+    });
+    expect(on.changes.get('P')!.changeType).toBe('NO_CHANGE');
+    expect(cfnMockSend).toHaveBeenCalled();
+
+    cfnMockSend.mockClear();
+    const off = await buildDiffTree({
+      stackName: 'S',
+      displayName: 'S',
+      region: 'us-east-1',
+      template: importTemplate,
+      nestedTemplates: {},
+      recursive: false,
+      stateBackend: fbBackend({ S: resolvedState() }),
+      diffCalculator: new DiffCalculator(),
+      cfnFallback: false,
+    });
+    expect(off.changes.get('P')!.changeType).toBe('UPDATE');
+    expect(cfnMockSend).not.toHaveBeenCalled();
+  });
+
+  it('buildDiffTree forwards the flag into a NESTED child + its input-parameter resolution', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cdkd-1697-'));
+    try {
+      const childPath = join(dir, 'child.json');
+      writeFileSync(
+        childPath,
+        JSON.stringify({
+          Parameters: { InP: { Type: 'String' } },
+          Resources: {
+            P: { Type: SSM, Properties: { Value: { 'Fn::ImportValue': 'CfnSideExport' } } },
+          },
+        })
+      );
+      const parentTemplate: CloudFormationTemplate = {
+        Resources: {
+          Child: {
+            Type: NESTED,
+            Metadata: { 'aws:asset:path': 'child.json' },
+            // The child-input Parameters block is what routes through
+            // resolveChildStackParameters — the fourth threading site.
+            Properties: { Parameters: { InP: { 'Fn::ImportValue': 'CfnSideExport' } } },
+          },
+        },
+      };
+      const states = () => ({
+        S: st('S', { Child: res(NESTED, {}) }),
+        'S~Child': st('S~Child', { P: res(SSM, { Value: 'from-cfn' }) }),
+      });
+
+      const on = await buildDiffTree({
+        stackName: 'S',
+        displayName: 'S',
+        region: 'us-east-1',
+        template: parentTemplate,
+        nestedTemplates: { Child: childPath },
+        recursive: true,
+        stateBackend: fbBackend(states()),
+        diffCalculator: new DiffCalculator(),
+      });
+      const onChild = on.children.find((c) => c.stackName === 'S~Child');
+      expect(onChild).toBeDefined();
+      expect(onChild!.changes.get('P')!.changeType).toBe('NO_CHANGE');
+      expect(cfnMockSend).toHaveBeenCalled();
+
+      cfnMockSend.mockClear();
+      const off = await buildDiffTree({
+        stackName: 'S',
+        displayName: 'S',
+        region: 'us-east-1',
+        template: parentTemplate,
+        nestedTemplates: { Child: childPath },
+        recursive: true,
+        stateBackend: fbBackend(states()),
+        diffCalculator: new DiffCalculator(),
+        cfnFallback: false,
+      });
+      const offChild = off.children.find((c) => c.stackName === 'S~Child');
+      expect(offChild).toBeDefined();
+      expect(offChild!.changes.get('P')!.changeType).toBe('UPDATE');
+      // ZERO CFn calls across root diff, child-parameter resolution, AND
+      // the child's own diff — covers every threading site at once.
+      expect(cfnMockSend).not.toHaveBeenCalled();
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

@@ -880,6 +880,28 @@ export const strictGetattOption = new Option(
 ).default(false);
 
 /**
+ * Issue #1697 — `--no-cfn-fallback` (deploy + diff). By default, a
+ * cross-stack reference (`Fn::ImportValue` / `Fn::GetStackOutput`) that is
+ * not found in cdkd state falls back to CloudFormation (`ListExports` /
+ * `DescribeStacks` outputs) so a cdkd-deployed consumer can reference a
+ * producer stack still managed by CloudFormation (`cdk deploy` / raw CFn).
+ * The fallback fires only after a cdkd-state miss (cdkd-first precedence),
+ * resolves as a WEAK reference (not recorded into `state.imports` /
+ * `state.outputReads`; no destroy-time protection on either side), and
+ * degrades gracefully when the caller lacks the CloudFormation read
+ * permissions (warning + the original not-found error). This flag disables
+ * the fallback entirely for users who want cdkd-state-only resolution —
+ * e.g. to keep IAM minimal or to keep an export-name typo failing fast
+ * instead of accidentally matching an unrelated CloudFormation export.
+ */
+export const noCfnFallbackOption = new Option(
+  '--no-cfn-fallback',
+  'Do not fall back to CloudFormation (ListExports / stack outputs) when an Fn::ImportValue / ' +
+    'Fn::GetStackOutput reference is not found in cdkd state (default: fall back, so producers ' +
+    'still managed by CloudFormation can be referenced)'
+);
+
+/**
  * CDK annotation-message behavior flags (issue #1230, CDK CLI parity).
  * Shared by `cdkd synth` and `cdkd deploy` — the two commands that fail on
  * `Annotations.addError` (issue #1228). `--strict` additionally fails when
@@ -972,6 +994,7 @@ export const deployOptions = [
   replaceOption,
   useCdkBootstrapAssetsOption,
   strictGetattOption,
+  noCfnFallbackOption,
   ...resourceTimeoutOptions,
 ];
 

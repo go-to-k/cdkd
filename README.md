@@ -165,6 +165,7 @@ The full benchmark suite lives in [docs/benchmarks.md](docs/benchmarks.md): the 
 - **VPC route DependsOn relaxation (on by default)**: Drop CDK-injected defensive `DependsOn` edges from VPC Lambdas onto private-subnet routes so `CloudFront::Distribution` and `Lambda::Url` start their ~3-min propagation in parallel with NAT Gateway stabilization (~50% faster on VPC + Lambda + CloudFront stacks). Pass `--no-aggressive-vpc-parallel` to opt out.
 - **Local execution** (`cdkd local invoke` / `start-api` / `run-task` / `start-service` / `start-alb` / `start-cloudfront` / `invoke-agentcore` / `start-agentcore`): run Lambdas, API Gateway routes, ECS tasks, long-running ECS services, CloudFront distributions, and Bedrock AgentCore Runtimes from your CDK code. All AWS Lambda runtimes, container Lambdas, REST v1 / HTTP v2 / Function URL routes, Service Connect / Cloud Map, AgentCore HTTP / MCP / A2A / AGUI / WebSocket protocols (one-shot `invoke-agentcore` and long-running warm serve via `start-agentcore`, which serves the native contract — `POST /invocations` + `GET /ping`, MCP `/mcp`, A2A `/` — plus the `/ws` bridge for HTTP / AGUI). The Docker-backed commands work for both `cdkd deploy`-managed (`--from-state`) AND `cdk deploy`-managed (`--from-cfn-stack`) stacks; `start-cloudfront` serves the viewer-request -> S3 / Lambda Function URL origin -> viewer-response pipeline (CloudFront-Functions + S3-only distributions run in-process with no Docker). See [Local execution](#local-execution).
 - **Bidirectional CloudFormation migration**: `cdkd import --migrate-from-cloudformation` adopts existing CFn stacks (including `cdk deploy`-managed) into cdkd state without re-creating resources; `cdkd export` hands a cdkd stack back to CloudFormation when production-ready. See [Importing](#importing-existing-resources) / [Exporting](#exporting-a-stack-back-to-cloudformation).
+- **Mixed cdkd / CloudFormation estates**: a cdkd-deployed stack can reference a producer stack still managed by `cdk deploy` — `Fn::ImportValue` / `Fn::GetStackOutput` fall back to CloudFormation (`ListExports` / stack outputs) when the reference is not in cdkd state, so shared infrastructure stays on the CDK CLI while app stacks iterate on cdkd. See [Reference CloudFormation-managed stacks](#reference-cloudformation-managed-stacks-mixed-estates).
 
 > **Note**: Resource types not covered by either SDK Providers or Cloud Control API cannot be deployed with cdkd. Deployment fails with a clear error message naming the type + a 1-click issue link.
 
@@ -566,6 +567,57 @@ See **[docs/import.md](docs/import.md)** for the full guide — Custom Resource
 per-child overrides, AWS's "Nest an existing stack" pattern), and the
 design rationale at [docs/design/464-nested-stacks-export-import.md](docs/design/464-nested-stacks-export-import.md).
 
+## Reference CloudFormation-managed stacks (mixed estates)
+
+You don't have to migrate a producer stack to reference it. When an
+`Fn::ImportValue` / `Fn::GetStackOutput` reference is not found in cdkd
+state, cdkd falls back to CloudFormation — `ListExports` for
+`Fn::ImportValue` (CFn's own semantic for the intrinsic), the stack's
+outputs via `DescribeStacks` for `Fn::GetStackOutput` — so a
+cdkd-deployed stack can consume values from a stack still managed by
+`cdk deploy` / raw CloudFormation, with zero changes on the producer
+side.
+
+This makes the recommended split work out of the box: shared
+infrastructure (VPC, domains, IAM) stays on the CDK CLI, while dev/test
+app stacks iterate via cdkd.
+
+```typescript
+// Producer: deployed with `cdk deploy` (stays CloudFormation-managed).
+new cdk.CfnOutput(this, 'SharedVpcId', {
+  value: vpc.vpcId,
+  exportName: 'SharedVpcId',
+});
+
+// Consumer: deployed with `cdkd deploy`. Resolution order is cdkd state
+// first, then CloudFormation — same syntax either way.
+const vpcId = cdk.Fn.importValue('SharedVpcId');
+```
+
+How it behaves:
+
+- **cdkd-first precedence.** The fallback fires only after cdkd state
+  misses, so cdkd-to-cdkd references are untouched and a name collision
+  resolves to the cdkd export.
+- **Weak reference.** A CFn-sourced value is not recorded into cdkd
+  state, and neither engine blocks deleting the CFn producer while cdkd
+  consumers reference it (CloudFormation's export-in-use protection
+  cannot see cdkd consumers). Check downstream consumers before deleting
+  a producer.
+- **IAM**: the deploying credentials need `cloudformation:ListExports` /
+  `cloudformation:DescribeStacks` for the fallback. Without them, cdkd
+  warns and fails with the ordinary not-found error.
+- **Opt-out**: `--no-cfn-fallback` (on `deploy` / `diff`) pins
+  cdkd-state-only resolution — minimal IAM, and an export-name typo
+  fails fast instead of matching an unrelated CloudFormation export.
+- This also works mid-migration: after `cdkd export` hands a producer
+  back to CloudFormation, remaining cdkd consumers keep resolving its
+  outputs through the fallback (no leaf-first ordering requirement).
+
+See **[docs/cross-stack-references.md](docs/cross-stack-references.md)**
+for the full design (resolution order, weak-vs-strong reference
+semantics, cross-region / cross-account forms).
+
 ## Drift detection
 
 `cdkd drift` (state-driven; no synth) compares each managed resource
@@ -695,7 +747,11 @@ for stack-selection rules and concurrency knobs.
 
 cdkd supports the standard CloudFormation surface — intrinsic functions,
 pseudo parameters, parameters / conditions, cross-stack / cross-region
-references, asset publishing, custom resources, and so on. See
+references, asset publishing, custom resources, and so on. Cross-stack
+references also work against producer stacks still managed by
+CloudFormation (see
+["Reference CloudFormation-managed stacks"](#reference-cloudformation-managed-stacks-mixed-estates)
+above). See
 **[docs/supported-features.md](docs/supported-features.md)** for the
 full reference. For per-resource-type provisioning support (SDK Providers
 vs Cloud Control API fallback), see

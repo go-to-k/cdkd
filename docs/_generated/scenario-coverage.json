@@ -41,6 +41,10 @@
       "description": "`cdkd gc` garbage-collection precision against real AWS: whole-bucket state-file reference scan keeps every referenced asset, an unreferenced seeded object is the only deletion candidate, `--dry-run` deletes nothing, `--older-than` age guard honored (issue #1012)."
     },
     {
+      "tag": "cfn-fallback-cross-stack",
+      "description": "CloudFormation fallback for cross-stack references (issue #1697): a cdkd-deployed consumer references a producer stack managed by CloudFormation ONLY (no cdkd state record) — `Fn::ImportValue` via the `ListExports` fallback AND `Fn::GetStackOutput` via the `DescribeStacks` outputs fallback — plus the weak-reference contract (no imports[]/outputReads[] recorded) and the `--no-cfn-fallback` opt-out failing at resolve time."
+    },
+    {
       "tag": "cfn-macro-expansion",
       "description": "CloudFormation macro / `Fn::Transform` expansion via transient CFn changeset round-trip (SAM, AWS::Include, AWS::LanguageExtensions, custom macros). See `docs/design/463-cfn-macros.md`."
     },
@@ -647,6 +651,13 @@
       "scenarios": [
         "exports-index-region-resolve",
         "state-bucket-region-resolve"
+      ]
+    },
+    {
+      "name": "cross-stack-cfn-fallback",
+      "annotated": true,
+      "scenarios": [
+        "cfn-fallback-cross-stack"
       ]
     },
     {
@@ -2056,6 +2067,13 @@
       "description": "`cdkd gc` garbage-collection precision against real AWS: whole-bucket state-file reference scan keeps every referenced asset, an unreferenced seeded object is the only deletion candidate, `--dry-run` deletes nothing, `--older-than` age guard honored (issue #1012).",
       "fixtures": [
         "gc-custom-asset-names"
+      ]
+    },
+    {
+      "scenario": "cfn-fallback-cross-stack",
+      "description": "CloudFormation fallback for cross-stack references (issue #1697): a cdkd-deployed consumer references a producer stack managed by CloudFormation ONLY (no cdkd state record) — `Fn::ImportValue` via the `ListExports` fallback AND `Fn::GetStackOutput` via the `DescribeStacks` outputs fallback — plus the weak-reference contract (no imports[]/outputReads[] recorded) and the `--no-cfn-fallback` opt-out failing at resolve time.",
+      "fixtures": [
+        "cross-stack-cfn-fallback"
       ]
     },
     {

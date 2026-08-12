@@ -16,6 +16,7 @@
     "--no-aggressive-vpc-parallel",
     "--no-auto-asset-storage",
     "--no-capture-observed-state",
+    "--no-cfn-fallback",
     "--no-rollback",
     "--no-wait",
     "--output",
@@ -115,6 +116,7 @@
         "cognito-userpool-user-ref",
         "conditions",
         "cross-region-state-bucket",
+        "cross-stack-cfn-fallback",
         "custom-resource-getatt-data",
         "data-analytics",
         "deep-getatt-chains",
@@ -303,6 +305,12 @@
       ]
     },
     {
+      "flag": "--no-cfn-fallback",
+      "integs": [
+        "cross-stack-cfn-fallback"
+      ]
+    },
+    {
       "flag": "--no-rollback",
       "integs": [
         "rollback-command",
@@ -362,6 +370,7 @@
         "conditions-and-if",
         "conditions-update-2",
         "cross-region-state-bucket",
+        "cross-stack-cfn-fallback",
         "custom-resource-getatt-data",
         "data-analytics",
         "deep-getatt-chains",
@@ -594,6 +603,7 @@
         "conditions-and-if",
         "conditions-update-2",
         "cross-region-state-bucket",
+        "cross-stack-cfn-fallback",
         "custom-resource-getatt-data",
         "data-analytics",
         "deep-getatt-chains",
@@ -860,6 +870,7 @@
         "conditions-and-if",
         "conditions-update-2",
         "cross-region-state-bucket",
+        "cross-stack-cfn-fallback",
         "custom-resource-getatt-data",
         "data-analytics",
         "deep-getatt-chains",
@@ -1123,6 +1134,7 @@
         "conditions",
         "conditions-and-if",
         "conditions-update-2",
+        "cross-stack-cfn-fallback",
         "custom-resource-getatt-data",
         "data-analytics",
         "deep-getatt-chains",
@@ -1467,6 +1479,7 @@
     "--ownership-controls",
     "--parameter",
     "--parameter-filters",
+    "--parameter-overrides",
     "--parameters",
     "--password",
     "--password-stdin",
@@ -1560,6 +1573,7 @@
     "--target-group-arns",
     "--task-definition",
     "--template-body",
+    "--template-file",
     "--timeout",
     "--topic-arn",
     "--trail-name",

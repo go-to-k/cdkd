@@ -320,6 +320,17 @@ export interface DeployEngineOptions {
   strictGetAtt?: boolean;
 
   /**
+   * `--no-cfn-fallback` (issue #1697) — when false, disables the
+   * CloudFormation fallback for cross-stack references
+   * (`Fn::ImportValue` -> `ListExports`, `Fn::GetStackOutput` ->
+   * `DescribeStacks` outputs) that otherwise fires after a cdkd-state
+   * miss. Default true. Threaded into the engine's
+   * `IntrinsicFunctionResolver` at construction; nested-stack child
+   * engines inherit it via the options spread in `NestedStackProvider`.
+   */
+  cfnFallback?: boolean;
+
+  /**
    * `--skip-final-snapshot` (issues #1352 / #1354) — delete
    * `DeletionPolicy: Snapshot` resources (and, on the replacement paths,
    * `UpdateReplacePolicy: Snapshot` old resources) WITHOUT the final snapshot
@@ -587,6 +598,7 @@ export class DeployEngine {
     this.exportIndexStore = exportIndexStore;
     this.resolver = new IntrinsicFunctionResolver(stackRegion, {
       strictGetAtt: options.strictGetAtt ?? false,
+      cfnFallback: options.cfnFallback ?? true,
     });
     this.options.concurrency = options.concurrency ?? 10;
     this.options.dryRun = options.dryRun ?? false;
