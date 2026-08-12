@@ -67,41 +67,30 @@ function readStringProperty(
 }
 
 /**
- * Rebuild a namespace's identity from the template.
+ * Rebuild a table's identity from what `GetTable` returned.
  *
- * `Namespace` is emitted as a plain string by CDK 2.x's `CfnNamespace` and as
- * a singleton array by the CFn docs / SDK shape, so accept both — the same
- * tolerance `createNamespace` already applies.
- */
-function namespaceIdentityFromProperties(
-  properties: Record<string, unknown> | undefined
-): { tableBucketARN: string; namespace: string } | undefined {
-  const tableBucketARN = readStringProperty(properties, 'TableBucketARN');
-  const raw = properties?.['Namespace'];
-  const namespace =
-    Array.isArray(raw) && typeof raw[0] === 'string' && raw[0].length > 0
-      ? raw[0]
-      : readStringProperty(properties, 'Namespace');
-  if (!tableBucketARN || !namespace) return undefined;
-  return { tableBucketARN, namespace };
-}
-
-/**
- * Rebuild a table's identity from the template.
+ * Deliberately NOT from the template: a CDK-synthesized `TableBucketARN` is an
+ * `Fn::GetAtt` object at import time (full intrinsic resolution runs after
+ * `provider.import()`), so a template-side read is `undefined` on exactly the
+ * `--migrate-from-cloudformation` path this exists to serve.
  *
- * The name is read as `TableName ?? Name`, mirroring `createTable` exactly —
- * if the two disagreed, a template using the legacy spelling would import
- * under an identity the create path would never produce.
+ * The bucket ARN is the table ARN's prefix — S3 Tables ARNs are
+ * `arn:<p>:s3tables:<region>:<acct>:bucket/<bucket>` and
+ * `…:bucket/<bucket>/table/<id>` — so it is recovered by trimming at the last
+ * `/table/` segment. `namespace` comes back as a single-element list.
  */
-function tableIdentityFromProperties(
-  properties: Record<string, unknown> | undefined
+function tableIdentityFromGetTable(
+  tableARN: string,
+  namespace: string[] | undefined,
+  name: string | undefined
 ): { tableBucketARN: string; namespace: string; name: string } | undefined {
-  const tableBucketARN = readStringProperty(properties, 'TableBucketARN');
-  const namespace = readStringProperty(properties, 'Namespace');
-  const name =
-    readStringProperty(properties, 'TableName') ?? readStringProperty(properties, 'Name');
-  if (!tableBucketARN || !namespace || !name) return undefined;
-  return { tableBucketARN, namespace, name };
+  const marker = '/table/';
+  const cut = tableARN.lastIndexOf(marker);
+  if (cut <= 0) return undefined;
+  const tableBucketARN = tableARN.slice(0, cut);
+  const ns = namespace?.[0];
+  if (!tableBucketARN || !ns || !name) return undefined;
+  return { tableBucketARN, namespace: ns, name };
 }
 
 /**
@@ -885,19 +874,26 @@ export class S3TablesProvider implements ResourceProvider {
    * after which every other method on this provider — which all split the
    * stored id on `|` — failed against a state row that looked adopted.
    *
-   * A malformed override is therefore rebuilt from the template properties and
-   * VERIFIED, and an unverifiable namespace returns `null`
-   * (`skipped-not-found`), which is loud and leaves state clean.
+   * A wrong-arity override is REFUSED rather than silently replaced with the
+   * template's identity: `knownPhysicalId` is documented as ground truth
+   * (`ResourceImportInput`), so quietly adopting a different resource than the
+   * one the user named would be worse than declining. An unverifiable
+   * namespace returns `null` (`skipped-not-found`), which is loud and leaves
+   * state clean.
+   *
+   * NOTE this now issues an AWS call where it previously made none, so
+   * `s3tables:GetNamespace` is newly required, and a path that could not fail
+   * before can now report `failed` on a non-`NotFound` error (throttle, IAM).
    */
   private async importNamespace(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     if (!input.knownPhysicalId) return null;
 
-    const identity =
-      parseNamespaceCompositeId(input.knownPhysicalId) ??
-      namespaceIdentityFromProperties(input.properties);
+    const identity = parseNamespaceCompositeId(input.knownPhysicalId);
     if (!identity) {
       this.logger.warn(
-        `S3 Tables Namespace ${input.logicalId}: physical id '${input.knownPhysicalId}' is not '<tableBucketARN>|<namespace>' and the template does not supply TableBucketARN + Namespace; skipping import.`
+        `S3 Tables Namespace ${input.logicalId}: physical id '${input.knownPhysicalId}' is not ` +
+          `'<tableBucketARN>|<namespace>'. CloudFormation uses the same two-field composite for ` +
+          `this type, so this id names no namespace cdkd can verify; skipping import.`
       );
       return null;
     }
@@ -932,14 +928,26 @@ export class S3TablesProvider implements ResourceProvider {
    * state verbatim and every later update / delete / read then failed to parse
    * it — the #1651 class on a second type.
    *
-   * The table ARN is not decomposable into its parts (see `createTable`: the
-   * real ARN format is not inferrable), so the composite is rebuilt from the
-   * TEMPLATE properties and confirmed with `GetTable`. When the override was
-   * an ARN, the ARN AWS returns must equal it — otherwise the template and
-   * the override name DIFFERENT tables and adopting either would be a guess.
+   * **The identity is resolved from AWS, not from the template.** An earlier
+   * draft rebuilt the composite out of `Properties.TableBucketARN` /
+   * `Namespace` / `TableName`, and that is INERT for the case this exists to
+   * fix: in a CDK-synthesized template `TableBucketARN` is
+   * `{"Fn::GetAtt": ["TableBucket", "TableBucketARN"]}`, `import.ts`
+   * pre-substitutes only single-key `{Ref}` before calling a provider, and
+   * full intrinsic resolution runs AFTER every `provider.import()`. So the
+   * template read yielded `undefined` on exactly the
+   * `--migrate-from-cloudformation` path that supplies the bare ARN, turning a
+   * corrupt adoption into a non-adoption instead of canonicalizing it.
+   *
+   * `GetTable` accepts `tableArn` directly and returns `name` + `namespace`,
+   * so the ARN resolves its own identity with no template involvement. The
+   * bucket ARN is the table ARN's prefix (`<bucketArn>/table/<id>`); when the
+   * template DOES carry a literal `TableBucketARN` it is cross-checked, and a
+   * disagreement is refused rather than guessed at.
    */
   private async importTable(input: ResourceImportInput): Promise<ResourceImportResult | null> {
-    if (!input.knownPhysicalId) {
+    const known = input.knownPhysicalId;
+    if (!known) {
       // No `aws:cdk:path` tag walk: AWS rejects `aws:`-prefixed tag writes, so
       // that tag never exists on a real resource and the walk could not match
       // (issue #1134). Auto-mode import resolves ids from CloudFormation's
@@ -948,41 +956,69 @@ export class S3TablesProvider implements ResourceProvider {
       return null;
     }
 
-    const identity =
-      parseTableCompositeId(input.knownPhysicalId) ?? tableIdentityFromProperties(input.properties);
-    if (!identity) {
+    const composite = parseTableCompositeId(known);
+    const request = composite
+      ? {
+          tableBucketARN: composite.tableBucketARN,
+          namespace: composite.namespace,
+          name: composite.name,
+        }
+      : // The `|`-free test is load-bearing: cdkd's own composite STARTS with
+        // the bucket ARN, so an `arn:` prefix alone would route a MALFORMED
+        // composite (`<bucketArn>|ns`) into the by-ARN lookup and adopt the
+        // wrong thing. A real table ARN never contains `|`.
+        !known.includes('|') && known.startsWith('arn:')
+        ? { tableArn: known }
+        : undefined;
+
+    if (!request) {
       this.logger.warn(
-        `S3 Tables Table ${input.logicalId}: physical id '${input.knownPhysicalId}' is not '<tableBucketARN>|<namespace>|<name>' and the template does not supply TableBucketARN + Namespace + TableName; skipping import.`
+        `S3 Tables Table ${input.logicalId}: physical id '${known}' is neither cdkd's ` +
+          `'<tableBucketARN>|<namespace>|<name>' composite nor a table ARN (CloudFormation's ` +
+          `physicalId for this type), so it names no table cdkd can verify; skipping import.`
       );
       return null;
     }
 
     let response;
     try {
-      response = await this.getClient().send(
-        new GetTableCommand({
-          tableBucketARN: identity.tableBucketARN,
-          namespace: identity.namespace,
-          name: identity.name,
-        })
-      );
+      response = await this.getClient().send(new GetTableCommand(request));
     } catch (err) {
       if (err instanceof NotFoundException) return null;
       throw err;
     }
 
-    // The override was CloudFormation's TableARN: confirm it names the same
-    // table the template describes before adopting, rather than assuming it.
-    // The `|`-free test is load-bearing — cdkd's own composite STARTS with the
-    // bucket ARN, so an `arn:` prefix alone would refuse every composite id.
-    if (
-      !input.knownPhysicalId.includes('|') &&
-      input.knownPhysicalId.startsWith('arn:') &&
-      response.tableARN !== undefined &&
-      response.tableARN !== input.knownPhysicalId
-    ) {
+    // Treat a response without an ARN as UNVERIFIABLE rather than adopting it:
+    // `createTable` hard-errors on exactly this condition, and the ARN is what
+    // the bucket-ARN derivation and the attribute cache both depend on.
+    const tableARN = response.tableARN;
+    if (!tableARN) {
       this.logger.warn(
-        `S3 Tables Table ${input.logicalId}: the supplied physical id '${input.knownPhysicalId}' does not match the ARN of the table the template describes ('${response.tableARN}'); skipping import.`
+        `S3 Tables Table ${input.logicalId}: GetTable returned no tableARN for '${known}', ` +
+          `so the table's identity cannot be confirmed; skipping import.`
+      );
+      return null;
+    }
+
+    const identity =
+      composite ?? tableIdentityFromGetTable(tableARN, response.namespace, response.name);
+    if (!identity) {
+      this.logger.warn(
+        `S3 Tables Table ${input.logicalId}: GetTable('${known}') did not return a usable ` +
+          `namespace / name / bucket-ARN prefix; skipping import.`
+      );
+      return null;
+    }
+
+    // When the template carries a LITERAL bucket ARN, it must agree with the
+    // one the ARN resolves to. (It is usually an unresolved intrinsic here, in
+    // which case there is nothing to cross-check — see the note above.)
+    const templateBucketArn = readStringProperty(input.properties, 'TableBucketARN');
+    if (templateBucketArn && templateBucketArn !== identity.tableBucketARN) {
+      this.logger.warn(
+        `S3 Tables Table ${input.logicalId}: the supplied physical id '${known}' resolves to table ` +
+          `bucket '${identity.tableBucketARN}', but the template declares '${templateBucketArn}'; ` +
+          `refusing to adopt a table from a different bucket.`
       );
       return null;
     }
@@ -991,7 +1027,7 @@ export class S3TablesProvider implements ResourceProvider {
       physicalId: `${identity.tableBucketARN}|${identity.namespace}|${identity.name}`,
       // Cache the real ARN the same way `createTable` does, so a
       // `Fn::GetAtt: [Table, TableARN]` resolves for an imported table too.
-      attributes: response.tableARN !== undefined ? { TableARN: response.tableARN } : {},
+      attributes: { TableARN: tableARN },
     };
   }
 

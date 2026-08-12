@@ -101,25 +101,16 @@ describe('S3Tables import: verify the composite before adopting (issue #1668)', 
       expect(call.input).toMatchObject({ tableBucketARN: BUCKET_ARN, namespace: 'ns' });
     });
 
-    it('rebuilds a wrong-arity override from the template instead of recording it verbatim', async () => {
-      mockSend.mockResolvedValueOnce({ namespace: ['ns'] });
-
+    it('REFUSES a wrong-arity override rather than recording it verbatim', async () => {
       // Pre-#1668 this bare id landed in state and broke every later op.
+      // CloudFormation uses the SAME two-field composite for this type, so a
+      // bare name names no namespace cdkd can verify — and silently
+      // substituting the template's identity would adopt a resource the user
+      // did not name (knownPhysicalId is documented ground truth).
       const result = await provider.import({ ...input, knownPhysicalId: 'ns' });
 
-      expect(result).toEqual({ physicalId: `${BUCKET_ARN}|ns`, attributes: {} });
-    });
-
-    it('accepts the CDK singleton-array Namespace shape', async () => {
-      mockSend.mockResolvedValueOnce({ namespace: ['ns'] });
-
-      const result = await provider.import({
-        ...input,
-        properties: { TableBucketARN: BUCKET_ARN, Namespace: ['ns'] },
-        knownPhysicalId: 'ns',
-      });
-
-      expect(result).toEqual({ physicalId: `${BUCKET_ARN}|ns`, attributes: {} });
+      expect(result).toBeNull();
+      expect(mockSend).not.toHaveBeenCalled();
     });
 
     it('returns null when the namespace does not exist', async () => {
@@ -133,15 +124,18 @@ describe('S3Tables import: verify the composite before adopting (issue #1668)', 
       expect(result).toBeNull();
     });
 
-    it('returns null when neither the id nor the template identifies a namespace', async () => {
+    it('adopts a composite id regardless of the template property shapes', async () => {
+      // The CDK shape: Namespace / TableBucketARN are unresolved intrinsics at
+      // import time. The composite alone must be sufficient.
+      mockSend.mockResolvedValueOnce({ namespace: ['ns'] });
+
       const result = await provider.import({
         ...input,
-        properties: {},
-        knownPhysicalId: 'ns',
+        properties: { TableBucketARN: { 'Fn::GetAtt': ['B', 'TableBucketARN'] } },
+        knownPhysicalId: `${BUCKET_ARN}|ns`,
       });
 
-      expect(result).toBeNull();
-      expect(mockSend).not.toHaveBeenCalled();
+      expect(result).toEqual({ physicalId: `${BUCKET_ARN}|ns`, attributes: {} });
     });
 
     it('declines with no override (override-only)', async () => {
@@ -160,8 +154,8 @@ describe('S3Tables import: verify the composite before adopting (issue #1668)', 
       properties: { TableBucketARN: BUCKET_ARN, Namespace: 'ns', TableName: 'tbl' },
     };
 
-    it("canonicalizes CloudFormation's TableARN physicalId into cdkd's composite", async () => {
-      mockSend.mockResolvedValueOnce({ tableARN: TABLE_ARN });
+    it("canonicalizes CloudFormation's TableARN by resolving identity from AWS (#1668)", async () => {
+      mockSend.mockResolvedValueOnce({ tableARN: TABLE_ARN, namespace: ['ns'], name: 'tbl' });
 
       // The registry declares a single-field primaryIdentifier of TableARN,
       // so this is what --migrate-from-cloudformation supplies.
@@ -173,23 +167,65 @@ describe('S3Tables import: verify the composite before adopting (issue #1668)', 
       });
       const call = mockSend.mock.calls[0]?.[0];
       expect(call).toBeInstanceOf(GetTableCommand);
-      expect(call.input).toMatchObject({
-        tableBucketARN: BUCKET_ARN,
-        namespace: 'ns',
-        name: 'tbl',
+      // Resolved BY ARN — not by template-derived parts.
+      expect(call.input).toEqual({ tableArn: TABLE_ARN });
+    });
+
+    it('canonicalizes the ARN when TableBucketARN is an unresolved Fn::GetAtt (the CDK shape)', async () => {
+      // The shape that actually occurs: import.ts substitutes only single-key
+      // {Ref}, and full intrinsic resolution runs AFTER provider.import().
+      // A template-derived fallback is `undefined` here, which is why the
+      // identity must come from AWS.
+      mockSend.mockResolvedValueOnce({ tableARN: TABLE_ARN, namespace: ['ns'], name: 'tbl' });
+
+      const result = await provider.import({
+        ...input,
+        properties: {
+          TableBucketARN: { 'Fn::GetAtt': ['TableBucket', 'TableBucketARN'] },
+          Namespace: { Ref: 'MyNamespace' },
+          TableName: 'tbl',
+        },
+        knownPhysicalId: TABLE_ARN,
+      });
+
+      expect(result).toEqual({
+        physicalId: `${BUCKET_ARN}|ns|tbl`,
+        attributes: { TableARN: TABLE_ARN },
       });
     });
 
-    it('refuses when the supplied ARN names a different table than the template', async () => {
-      mockSend.mockResolvedValueOnce({ tableARN: `${BUCKET_ARN}/table/other-999` });
+    it('refuses when the resolved bucket disagrees with a LITERAL template bucket ARN', async () => {
+      const otherBucket = 'arn:aws:s3tables:us-east-1:111122223333:bucket/other-bucket';
+      mockSend.mockResolvedValueOnce({
+        tableARN: `${otherBucket}/table/abc-123`,
+        namespace: ['ns'],
+        name: 'tbl',
+      });
 
       const result = await provider.import({ ...input, knownPhysicalId: TABLE_ARN });
 
       expect(result).toBeNull();
     });
 
+    it('refuses when GetTable returns no tableARN (unverifiable)', async () => {
+      mockSend.mockResolvedValueOnce({ namespace: ['ns'], name: 'tbl' });
+
+      const result = await provider.import({ ...input, knownPhysicalId: TABLE_ARN });
+
+      expect(result).toBeNull();
+    });
+
+    it('refuses an override that is neither a composite nor an ARN', async () => {
+      // knownPhysicalId is documented ground truth, so silently substituting
+      // the template's identity would adopt a resource the user did not name.
+      const result = await provider.import({ ...input, knownPhysicalId: 'just_a_name' });
+
+      expect(result).toBeNull();
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
     it('verifies and adopts a well-formed composite, caching the real ARN', async () => {
-      mockSend.mockResolvedValueOnce({ tableARN: TABLE_ARN });
+      mockSend.mockResolvedValueOnce({ tableARN: TABLE_ARN, namespace: ['ns'], name: 'tbl' });
 
       const result = await provider.import({
         ...input,
@@ -202,31 +238,16 @@ describe('S3Tables import: verify the composite before adopting (issue #1668)', 
       });
     });
 
-    it('rebuilds a wrong-arity override from the template instead of recording it verbatim', async () => {
-      mockSend.mockResolvedValueOnce({ tableARN: TABLE_ARN });
-
-      // Pre-#1668 a 2-segment id fell through to verbatim adoption.
+    it('refuses a wrong-arity override rather than recording it verbatim', async () => {
+      // Pre-#1668 a 2-segment id fell through to verbatim adoption. It is not
+      // a composite and not an ARN-only id, so it names nothing verifiable.
       const result = await provider.import({
         ...input,
         knownPhysicalId: `${BUCKET_ARN}|ns`,
       });
 
-      expect(result).toEqual({
-        physicalId: `${BUCKET_ARN}|ns|tbl`,
-        attributes: { TableARN: TABLE_ARN },
-      });
-    });
-
-    it("mirrors createTable's TableName ?? Name fallback", async () => {
-      mockSend.mockResolvedValueOnce({ tableARN: TABLE_ARN });
-
-      const result = await provider.import({
-        ...input,
-        properties: { TableBucketARN: BUCKET_ARN, Namespace: 'ns', Name: 'tbl' },
-        knownPhysicalId: TABLE_ARN,
-      });
-
-      expect(result).toMatchObject({ physicalId: `${BUCKET_ARN}|ns|tbl` });
+      expect(result).toBeNull();
+      expect(mockSend).not.toHaveBeenCalled();
     });
 
     it('returns null when the table does not exist', async () => {
@@ -237,15 +258,16 @@ describe('S3Tables import: verify the composite before adopting (issue #1668)', 
       expect(result).toBeNull();
     });
 
-    it('returns null when neither the id nor the template identifies a table', async () => {
+    it('adopts by ARN even when the template carries no usable properties', async () => {
+      mockSend.mockResolvedValueOnce({ tableARN: TABLE_ARN, namespace: ['ns'], name: 'tbl' });
+
       const result = await provider.import({
         ...input,
         properties: {},
         knownPhysicalId: TABLE_ARN,
       });
 
-      expect(result).toBeNull();
-      expect(mockSend).not.toHaveBeenCalled();
+      expect(result).toMatchObject({ physicalId: `${BUCKET_ARN}|ns|tbl` });
     });
 
     it('declines with no override (override-only)', async () => {

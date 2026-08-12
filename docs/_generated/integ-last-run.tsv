@@ -242,8 +242,6 @@ s3-lifecycle	2026-08-11T10:53:57Z	PASS	95	verify.sh	#1595 per-item Status replay
 s3-object-lock	2026-08-10T04:16:05Z	PASS	44	verify.sh	0810 staleness sweep b1; s3-bucket-provider re-verify, 0 err, 0 orph
 s3-replication-and-filter	2026-08-11T15:11:16Z	PASS	110	verify.sh	issue #1605 versioning+logging replay downgrade; 7 del/0 err, 0 orph
 s3-subconfig-removal	2026-08-12T06:25:37Z	PASS	70	verify.sh	issue #1612 final rebase; rc ok, orph clean
-s3-tables	2026-07-27T16:53:47Z	PASS	45	verify.sh	issue #1270/#1272 post-review re-run; 5 del 0 err, 0 orphans
-s3-subconfig-removal	2026-08-10T07:17:25Z	PASS	63	verify.sh	issue #1466 final; 4 removal verdicts + drift-detect; rc ok, 0 orph
 s3-tables	2026-08-12T07:15:00Z	PASS	420	verify.sh	#1668 S3Tables import verify-before-adopt; deploy + Tags backfill + destroy clean, 0 errors, 0 orphans (import path itself not covered by this fixture - see PR body)
 s3-vectors	2026-08-09T03:50:21Z	PASS	230	verify.sh	#1385 CMK encryption asserted; destroy 0 errors, 0 orphans
 scheduled-task	2026-07-26T18:04:53Z	PASS	44	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
