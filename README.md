@@ -524,6 +524,10 @@ cdkd import MyStack --yes
 # Adopt only specific resources (CDK CLI parity).
 cdkd import MyStack --resource MyBucket=my-bucket-name
 
+# Some types use a composite, `|`-delimited physical id — quote it.
+# Full per-type table: docs/state-management.md#composite-pipe-delimited-physicalids
+cdkd import MyStack --resource 'MyGlueTable=my_database|my_table'
+
 # Migrate off CloudFormation in one shot — adopt + retire the source CFn stack.
 cdkd import MyStack --migrate-from-cloudformation --yes
 ```
