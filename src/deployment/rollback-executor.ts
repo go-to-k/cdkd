@@ -49,7 +49,12 @@
 import type { DeploymentEvent } from '../types/deployment-events.js';
 import { extractDeploymentEventError } from '../types/deployment-events.js';
 import type { ResourceState } from '../types/state.js';
-import type { CreateContext, ResourceProvider, ResourceUpdateResult } from '../types/resource.js';
+import type {
+  CreateContext,
+  ResourceCreateResult,
+  ResourceProvider,
+  ResourceUpdateResult,
+} from '../types/resource.js';
 import type { Logger } from '../types/config.js';
 import type { ProviderRegistry } from '../provisioning/provider-registry.js';
 import { STATEFUL_TYPES } from '../provisioning/stateful-types.js';
@@ -724,6 +729,50 @@ function recordAfterRollbackUpdate(
     : restored;
 }
 
+/**
+ * The `properties` override to merge into the state record rebuilt after the
+ * reverse-replacement replay-CREATE (issue #1682) — the create-side twin of
+ * {@link recordAfterRollbackUpdate}.
+ *
+ * The bag handed to `create()` on both arms of that path IS `prev.properties`,
+ * so — exactly as on the UPDATE side — a returned `effectiveProperties` is its
+ * complete replacement and no per-key delta is needed. Without this the arm
+ * rebuilt the record from `prev.properties` unconditionally, so a provider that
+ * deliberately SUBSTITUTED a malformed block on a replay (the `replayWarn`
+ * downgrade of issue #1544) announced the substitution into a void and the
+ * phantom drift it exists to close survived the rollback.
+ *
+ * Falls back to the restored record's own `properties` when the provider
+ * reported nothing — the pre-#1682 behavior — rather than blanking the record.
+ * An empty object is a legitimate COMPLETE answer (a provider that sent
+ * nothing), so the gate is an explicit PRESENCE test rather than truthiness —
+ * matching the `??` the contract in `.claude/rules/providers.md` prescribes,
+ * and saying so at the one place a future reader would otherwise have to
+ * re-derive that `{}` must not fall back.
+ *
+ * Applied on the name-idempotent ADOPT path too (`adoptedLiveNewResource`).
+ * That arm's warning says state records "the pre-replacement properties", and
+ * it still does: a substitution repairs an unusable field of that same
+ * pre-replacement bag, it does not swap in the new generation's values.
+ */
+function recordedPropertiesAfterReplayCreate(
+  restored: Omit<ResourceState, 'observedProperties'>,
+  result: ResourceCreateResult
+): ResourceState['properties'] {
+  // The PROVIDER's bag is copied at the TOP LEVEL, so the record does not
+  // alias the object a provider is free to keep mutating after handing it
+  // back. Nested values stay shared — the same shallow-copy bound
+  // `recordAfterRollbackUpdate` has; deep-cloning here would diverge from it
+  // for a hazard neither has ever hit. The fallback deliberately passes
+  // `restored.properties` through BY REFERENCE — that is cdkd's own state
+  // object and is exactly what the pre-#1682 spread of `prevRecord` already
+  // put on the record, so copying it would be a behavior change smuggled in
+  // under a no-op.
+  return result.effectiveProperties === undefined
+    ? restored.properties
+    : { ...result.effectiveProperties };
+}
+
 async function replaySingle(
   op: CompletedOperation,
   stateResources: Record<string, ResourceState>,
@@ -1001,7 +1050,10 @@ async function replaySingle(
         // release the name late), mirroring the deploy engine's --replace
         // delete-first fallback.
         let deletedNewFirst = false;
-        let createResult: { physicalId: string; attributes?: Record<string, unknown> };
+        // Typed as the full provider contract (issue #1682): the narrower
+        // local shape this used to declare hid `effectiveProperties`, so the
+        // record rebuild below could not honour it even in principle.
+        let createResult: ResourceCreateResult;
         try {
           // The initial create-first attempt retries ONLY the SQS name
           // cooldown (issue #1206): the forward replacement deleted the OLD
@@ -1147,12 +1199,15 @@ async function replaySingle(
         // re-created resource has fresh identifiers (ARNs etc.), and stale
         // cached attributes would poison later Fn::GetAtt resolution and
         // drift comparison. Mirrors the deploy engine's replacement path,
-        // which constructs the record fresh from the create result.
+        // which constructs the record fresh from the create result — including
+        // the provider's `effectiveProperties` (issue #1682), which replaces
+        // the previous record's `properties` when it reported one.
         const { observedProperties: _staleObserved, ...prevRecord } = prev;
         stateResources[op.logicalId] = {
           ...prevRecord,
           physicalId: createResult.physicalId,
           attributes: createResult.attributes ?? {},
+          properties: recordedPropertiesAfterReplayCreate(prevRecord, createResult),
         };
         await afterOp?.(op.logicalId);
 

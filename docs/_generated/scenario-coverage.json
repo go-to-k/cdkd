@@ -293,6 +293,10 @@
       "description": "deploy-engine ROLLBACK path on a RICH multi-resource stack (VPC+SG+IAM Role+Lambda-in-VPC+SSM Parameter): a self-contained env-gated (`ROLLBACK_INTEG_FAIL`) failing SQS Queue (out-of-range messageRetentionPeriod) wired to depend on the fast siblings forces a deploy failure AFTER siblings complete; verify.sh asserts the completed siblings are rolled back (no orphan VPC/SG/ENI/Role/Lambda/SSM, state empty) and the #808 events captured RESOURCE_FAILED + ROLLBACK_* + RUN_FINISHED=FAILED."
     },
     {
+      "tag": "rollback-replay-effective-properties",
+      "description": "Reverse-replacement rollback records the replay-CREATE's `effectiveProperties` (issue #1682). Distinct from `rollback-failure-injection`, which rolls back CREATEs (a delete): here the resource is REPLACED before the failure, so rollback re-creates the OLD one from `previousState.properties` — a cdkd STATE record, which can carry a malformed block an older binary wrote and which the provider WARNS about and SUBSTITUTES (the #1544 replayWarn downgrade) rather than refusing. Pre-fix the engine typed that call's result as `{physicalId, attributes?}` and rebuilt the record from `prev.properties`, discarding the substitution. The vehicle is `AWS::EC2::Route` rather than the `AWS::S3::Bucket` #1682 names, because a bucket's reverse-replacement re-create must re-acquire a just-deleted GLOBALLY unique name whose release is not immediate (flaky for an unrelated reason), while a route's `<RouteTableId>|<Destination>` identity is stack-scoped and deterministic; `createRoute`'s multi-destination warn arm is gated on the same `CreateContext.replayingState` flag, so the engine path is identical. verify.sh deploys v1, injects a second destination key into the state record, flips the create-only destination with a failure wired AFTER the route (so rollback classifies reverse-replacement, asserted via the substitution warning), then asserts the post-rollback record restored the v1 destination and DROPPED the injected key, that two consecutive `cdkd drift` runs converge, and that destroy leaves 0 orphans."
+    },
+    {
       "tag": "rollback-reverse-replacement-name-cooldown",
       "description": "`cdkd rollback` reverse-replacement re-create through the SQS same-name ~60s deletion cooldown (issue #1206): a custom-named queue rename-replacement (create-only QueueName, --force-stateful-recreation) plus an injected failing resource under --no-rollback is reverted immediately — the reverse-replacement's initial re-create must hit `QueueDeletedRecently`, retry through the window (asserted via the --verbose retry lines), restore the old-named queue, delete the new one, and exit 0."
     },
@@ -1691,6 +1695,13 @@
       ]
     },
     {
+      "name": "rollback-replay-effective-props",
+      "annotated": true,
+      "scenarios": [
+        "rollback-replay-effective-properties"
+      ]
+    },
+    {
       "name": "rollback-sqs-cooldown",
       "annotated": true,
       "scenarios": [
@@ -2527,6 +2538,13 @@
       "description": "deploy-engine ROLLBACK path on a RICH multi-resource stack (VPC+SG+IAM Role+Lambda-in-VPC+SSM Parameter): a self-contained env-gated (`ROLLBACK_INTEG_FAIL`) failing SQS Queue (out-of-range messageRetentionPeriod) wired to depend on the fast siblings forces a deploy failure AFTER siblings complete; verify.sh asserts the completed siblings are rolled back (no orphan VPC/SG/ENI/Role/Lambda/SSM, state empty) and the #808 events captured RESOURCE_FAILED + ROLLBACK_* + RUN_FINISHED=FAILED.",
       "fixtures": [
         "rollback-failure-injection"
+      ]
+    },
+    {
+      "scenario": "rollback-replay-effective-properties",
+      "description": "Reverse-replacement rollback records the replay-CREATE's `effectiveProperties` (issue #1682). Distinct from `rollback-failure-injection`, which rolls back CREATEs (a delete): here the resource is REPLACED before the failure, so rollback re-creates the OLD one from `previousState.properties` — a cdkd STATE record, which can carry a malformed block an older binary wrote and which the provider WARNS about and SUBSTITUTES (the #1544 replayWarn downgrade) rather than refusing. Pre-fix the engine typed that call's result as `{physicalId, attributes?}` and rebuilt the record from `prev.properties`, discarding the substitution. The vehicle is `AWS::EC2::Route` rather than the `AWS::S3::Bucket` #1682 names, because a bucket's reverse-replacement re-create must re-acquire a just-deleted GLOBALLY unique name whose release is not immediate (flaky for an unrelated reason), while a route's `<RouteTableId>|<Destination>` identity is stack-scoped and deterministic; `createRoute`'s multi-destination warn arm is gated on the same `CreateContext.replayingState` flag, so the engine path is identical. verify.sh deploys v1, injects a second destination key into the state record, flips the create-only destination with a failure wired AFTER the route (so rollback classifies reverse-replacement, asserted via the substitution warning), then asserts the post-rollback record restored the v1 destination and DROPPED the injected key, that two consecutive `cdkd drift` runs converge, and that destroy leaves 0 orphans.",
+      "fixtures": [
+        "rollback-replay-effective-props"
       ]
     },
     {

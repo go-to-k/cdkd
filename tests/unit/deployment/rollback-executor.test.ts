@@ -1062,6 +1062,124 @@ describe('replayRollback', () => {
     expect(state.B!.physicalId).toBe('phys-old-2');
   });
 
+  it("reverse-replacement records the provider's effectiveProperties (issue #1682)", async () => {
+    // The replay-CREATE arm is the one caller that needs this most: the bag it
+    // hands `create()` is a STATE record, so it can carry a malformed block
+    // that the provider warns about and SUBSTITUTES (the #1544 replayWarn
+    // downgrade). Pre-fix the record was rebuilt from prev.properties
+    // unconditionally, so the substitution was announced into a void and the
+    // phantom drift it exists to close survived the rollback.
+    const effective = { a: 1, StreamSpecification: { StreamEnabled: true } };
+    const create = vi.fn().mockResolvedValue({
+      physicalId: 'phys-old-2',
+      attributes: { Arn: 'arn:old' },
+      effectiveProperties: effective,
+    });
+    const del = vi.fn().mockResolvedValue(undefined);
+    const { ctx } = makeCtx({ create, delete: del });
+    const prev = res({
+      physicalId: 'phys-old',
+      properties: { a: 1, StreamSpecification: 'not-an-object' },
+    });
+    const ops: CompletedOperation[] = [
+      { logicalId: 'B', changeType: 'UPDATE', resourceType: 'AWS::SQS::Queue', physicalId: 'phys-new', previousState: prev },
+    ];
+    const state: Record<string, ResourceState> = {
+      B: res({ physicalId: 'phys-new', properties: { a: 2 } }),
+    };
+    await replayRollback(ops, state, 'S', ctx);
+    // The bag the provider SENT, not the malformed one state carried.
+    expect(state.B!.properties).toEqual(effective);
+    // Copied, not aliased — the record outlives the call.
+    expect(state.B!.properties).not.toBe(effective);
+    // Everything else on the fresh record is unchanged by the wiring.
+    expect(state.B).toMatchObject({ physicalId: 'phys-old-2', attributes: { Arn: 'arn:old' } });
+  });
+
+  it('reverse-replacement keeps prev.properties when the provider reports NO effectiveProperties (issue #1682 default polarity)', async () => {
+    const create = vi.fn().mockResolvedValue({ physicalId: 'phys-old-2' });
+    const del = vi.fn().mockResolvedValue(undefined);
+    const { ctx } = makeCtx({ create, delete: del });
+    const prev = res({ physicalId: 'phys-old', properties: { a: 1, b: 'keep' } });
+    const ops: CompletedOperation[] = [
+      { logicalId: 'B', changeType: 'UPDATE', resourceType: 'AWS::SQS::Queue', physicalId: 'phys-new', previousState: prev },
+    ];
+    const state: Record<string, ResourceState> = {
+      B: res({ physicalId: 'phys-new', properties: { a: 2 } }),
+    };
+    await replayRollback(ops, state, 'S', ctx);
+    // The overwhelmingly common case: no report means "record the intended
+    // post-rollback bag", NOT a blanked record.
+    expect(state.B!.properties).toEqual({ a: 1, b: 'keep' });
+    // Pass-through BY REFERENCE, which the helper's comment calls load-bearing:
+    // it is what makes the fallback byte-identical to the pre-#1682 spread of
+    // `prevRecord`. A copy here would be a behavior change smuggled in under a
+    // no-op, and `toEqual` alone cannot tell the two apart.
+    expect(state.B!.properties).toBe(prev.properties);
+  });
+
+  it('reverse-replacement honours an EMPTY effectiveProperties as a complete answer (issue #1682)', async () => {
+    // `{}` is a legitimate "I sent nothing" answer and must not be confused
+    // with "reported nothing" — the gate is presence, not emptiness.
+    const create = vi
+      .fn()
+      .mockResolvedValue({ physicalId: 'phys-old-2', effectiveProperties: {} });
+    const del = vi.fn().mockResolvedValue(undefined);
+    const { ctx } = makeCtx({ create, delete: del });
+    const prev = res({ physicalId: 'phys-old', properties: { a: 1 } });
+    const ops: CompletedOperation[] = [
+      { logicalId: 'B', changeType: 'UPDATE', resourceType: 'AWS::SQS::Queue', physicalId: 'phys-new', previousState: prev },
+    ];
+    const state: Record<string, ResourceState> = {
+      B: res({ physicalId: 'phys-new', properties: { a: 2 } }),
+    };
+    await replayRollback(ops, state, 'S', ctx);
+    expect(state.B!.properties).toEqual({});
+  });
+
+  it('reverse-replacement delete-new-first retry records the retried create\'s effectiveProperties (issue #1682)', async () => {
+    // The collision fallback is the SECOND create attempt; it must honour the
+    // report too, or the arm that runs on a name collision keeps the void.
+    const create = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('Queue already exists'))
+      .mockResolvedValue({ physicalId: 'phys-old', effectiveProperties: { a: 1, fixed: true } });
+    const del = vi.fn().mockResolvedValue(undefined);
+    const { ctx } = makeCtx({ create, delete: del });
+    const prev = res({ physicalId: 'phys-old', properties: { a: 1, fixed: 'malformed' } });
+    const ops: CompletedOperation[] = [
+      { logicalId: 'B', changeType: 'UPDATE', resourceType: 'AWS::SQS::Queue', physicalId: 'phys-new', previousState: prev },
+    ];
+    const state: Record<string, ResourceState> = {
+      B: res({ physicalId: 'phys-new', properties: { a: 2 } }),
+    };
+    await replayRollback(ops, state, 'S', ctx);
+    expect(create).toHaveBeenCalledTimes(2);
+    expect(state.B!.properties).toEqual({ a: 1, fixed: true });
+  });
+
+  it('reverse-replacement same-id ADOPT path records effectiveProperties too (issue #1682 x #1247)', async () => {
+    // The adopt warning says state records "the pre-replacement properties" —
+    // and it still does: a substitution repairs an unusable field of that same
+    // bag, it does not swap in the new generation's values.
+    const create = vi
+      .fn()
+      .mockResolvedValue({ physicalId: 'phys-new', effectiveProperties: { a: 1, fixed: true } });
+    const del = vi.fn();
+    const { ctx } = makeCtx({ create, delete: del });
+    const prev = res({ physicalId: 'phys-old', properties: { a: 1, fixed: 'malformed' } });
+    const ops: CompletedOperation[] = [
+      { logicalId: 'B', changeType: 'UPDATE', resourceType: 'AWS::Some::NamedType', physicalId: 'phys-new', previousState: prev },
+    ];
+    const state: Record<string, ResourceState> = {
+      B: res({ physicalId: 'phys-new', properties: { a: 2 } }),
+    };
+    const result = await replayRollback(ops, state, 'S', ctx);
+    expect(del).not.toHaveBeenCalled();
+    expect(result.warnings).toBe(1);
+    expect(state.B).toMatchObject({ physicalId: 'phys-new', properties: { a: 1, fixed: true } });
+  });
+
   it('reverse-replacement same-id (issue #1247): name-idempotent create returns the LIVE new resource — no delete, warn-and-adopt', async () => {
     // The re-create silently returns the NEW resource's physicalId (the
     // Create API is name-idempotent and the new resource still holds the
