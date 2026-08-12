@@ -23,7 +23,7 @@ import {
 import { DescribeReplicationGroupsCommand, ElastiCacheClient } from '@aws-sdk/client-elasticache';
 import { DescribeClustersCommand, RedshiftClient } from '@aws-sdk/client-redshift';
 import { DescribeDomainCommand, OpenSearchClient } from '@aws-sdk/client-opensearch';
-import { getAccountInfo } from '../deployment/intrinsic-function-resolver.js';
+import { getAccountInfo, type AwsAccountInfo } from '../deployment/intrinsic-function-resolver.js';
 import { getAwsClients } from '../utils/aws-clients.js';
 import {
   disableInstanceApiTermination,
@@ -892,6 +892,41 @@ export class CloudControlProvider implements ResourceProvider {
   }
 
   /**
+   * Account info for an ARN / URI this provider SYNTHESIZES and records, or
+   * `undefined` when it must not be built (issue
+   * [#1730](https://github.com/go-to-k/cdkd/issues/1730)).
+   *
+   * `getAccountInfo` falls back to a hardcoded `123456789012` when STS cannot
+   * answer, and an ARN built from it is structurally valid with no wildcard in
+   * any field — so `isPlaceholderArn` (issue #1681) cannot catch it and every
+   * downstream consumer receives a confidently wrong value that is then
+   * RECORDED into state as the resource's `Fn::GetAtt` answer.
+   *
+   * Omitting the attribute is the honest answer and mirrors
+   * `AppSyncProvider.childImportAttributes`: the resolver's own
+   * `guardedPhysicalIdFallback` then hard-fails an `*Arn` read with a message
+   * naming the cause, instead of a green deploy shipping an ARN for someone
+   * else's account, and the record heals on the resource's next update.
+   */
+  private async accountInfoForSynthesizedArn(
+    resourceType: string,
+    attributeName: string,
+    physicalId: string
+  ): Promise<AwsAccountInfo | undefined> {
+    const accountInfo = await getAccountInfo();
+    if (accountInfo.fabricated) {
+      this.logger.warn(
+        `Not enriching ${resourceType} ${attributeName} for ${physicalId}: STS did not report ` +
+          `this deploy's account id, so the value would be built from a placeholder account and ` +
+          `would be indistinguishable from a real one. Fix the credentials (or set ` +
+          `AWS_ACCOUNT_ID) and deploy again — the record heals on the next update.`
+      );
+      return undefined;
+    }
+    return accountInfo;
+  }
+
+  /**
    * Enrich resource attributes with computed values
    *
    * CC API GetResource returns property names that match CloudFormation
@@ -1097,10 +1132,18 @@ export class CloudControlProvider implements ResourceProvider {
         // Physical ID is the KeyId (UUID), so construct the ARN.
         if (!enriched['Arn']) {
           try {
-            const kmsAccountInfo = await getAccountInfo();
-            enriched['Arn'] =
-              `arn:${kmsAccountInfo.partition}:kms:${kmsAccountInfo.region}:${kmsAccountInfo.accountId}:key/${physicalId}`;
-            this.logger.debug(`Enriched KMS Key Arn for ${physicalId}: ${String(enriched['Arn'])}`);
+            const kmsAccountInfo = await this.accountInfoForSynthesizedArn(
+              resourceType,
+              'Arn',
+              physicalId
+            );
+            if (kmsAccountInfo) {
+              enriched['Arn'] =
+                `arn:${kmsAccountInfo.partition}:kms:${kmsAccountInfo.region}:${kmsAccountInfo.accountId}:key/${physicalId}`;
+              this.logger.debug(
+                `Enriched KMS Key Arn for ${physicalId}: ${String(enriched['Arn'])}`
+              );
+            }
           } catch (error) {
             this.logger.debug(
               `Failed to construct KMS Key Arn for ${physicalId}: ${error instanceof Error ? error.message : String(error)}`
@@ -1126,12 +1169,18 @@ export class CloudControlProvider implements ResourceProvider {
         // CC API physicalId is the repository name, construct ARN
         if (!enriched['Arn']) {
           try {
-            const ecrAccountInfo = await getAccountInfo();
-            enriched['Arn'] =
-              `arn:${ecrAccountInfo.partition}:ecr:${ecrAccountInfo.region}:${ecrAccountInfo.accountId}:repository/${physicalId}`;
-            this.logger.debug(
-              `Enriched ECR Repository Arn for ${physicalId}: ${String(enriched['Arn'])}`
+            const ecrAccountInfo = await this.accountInfoForSynthesizedArn(
+              resourceType,
+              'Arn',
+              physicalId
             );
+            if (ecrAccountInfo) {
+              enriched['Arn'] =
+                `arn:${ecrAccountInfo.partition}:ecr:${ecrAccountInfo.region}:${ecrAccountInfo.accountId}:repository/${physicalId}`;
+              this.logger.debug(
+                `Enriched ECR Repository Arn for ${physicalId}: ${String(enriched['Arn'])}`
+              );
+            }
           } catch (error) {
             this.logger.debug(
               `Failed to construct ECR Repository Arn: ${error instanceof Error ? error.message : String(error)}`
@@ -1140,9 +1189,15 @@ export class CloudControlProvider implements ResourceProvider {
         }
         if (!enriched['RepositoryUri']) {
           try {
-            const ecrAccountInfo = await getAccountInfo();
-            enriched['RepositoryUri'] =
-              `${ecrAccountInfo.accountId}.dkr.ecr.${ecrAccountInfo.region}.amazonaws.com/${physicalId}`;
+            const ecrAccountInfo = await this.accountInfoForSynthesizedArn(
+              resourceType,
+              'RepositoryUri',
+              physicalId
+            );
+            if (ecrAccountInfo) {
+              enriched['RepositoryUri'] =
+                `${ecrAccountInfo.accountId}.dkr.ecr.${ecrAccountInfo.region}.amazonaws.com/${physicalId}`;
+            }
           } catch {
             /* best effort */
           }
@@ -1179,12 +1234,18 @@ export class CloudControlProvider implements ResourceProvider {
         // Fn::GetAtt [Stream, Arn] needs the full ARN.
         if (!enriched['Arn']) {
           try {
-            const kinesisAccountInfo = await getAccountInfo();
-            enriched['Arn'] =
-              `arn:${kinesisAccountInfo.partition}:kinesis:${kinesisAccountInfo.region}:${kinesisAccountInfo.accountId}:stream/${physicalId}`;
-            this.logger.debug(
-              `Enriched Kinesis Stream Arn for ${physicalId}: ${String(enriched['Arn'])}`
+            const kinesisAccountInfo = await this.accountInfoForSynthesizedArn(
+              resourceType,
+              'Arn',
+              physicalId
             );
+            if (kinesisAccountInfo) {
+              enriched['Arn'] =
+                `arn:${kinesisAccountInfo.partition}:kinesis:${kinesisAccountInfo.region}:${kinesisAccountInfo.accountId}:stream/${physicalId}`;
+              this.logger.debug(
+                `Enriched Kinesis Stream Arn for ${physicalId}: ${String(enriched['Arn'])}`
+              );
+            }
           } catch (error) {
             this.logger.debug(
               `Failed to construct Kinesis Stream Arn for ${physicalId}: ${error instanceof Error ? error.message : String(error)}`

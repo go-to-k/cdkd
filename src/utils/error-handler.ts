@@ -192,6 +192,34 @@ function formatDuration(ms: number): string {
 }
 
 /**
+ * A DELIBERATE refusal to resolve an intrinsic function, as opposed to a
+ * "the referenced thing does not exist" miss (issue
+ * [#1740](https://github.com/go-to-k/cdkd/issues/1740)).
+ *
+ * The distinction exists for exactly one consumer: `Fn::Sub`'s variable
+ * resolution, which speculatively tries `Ref` and then `Fn::GetAtt` and keeps
+ * the raw `${...}` placeholder when neither resolves. That warn-and-keep is the
+ * long-standing, deliberate behavior for a genuinely unknown variable — but a
+ * bare `catch` around it also swallowed every REFUSAL the resolver raises on
+ * purpose (`guardedPhysicalIdFallback`'s ARN / URL shape hard-fail, the
+ * `--strict-getatt` rejection, `rejectPlaceholderArnAttribute`), so a template
+ * that hard-fails when the reference sits in a resource property silently
+ * degraded to shipping a literal `${Resource.Attribute}` to AWS when the
+ * IDENTICAL reference was written inside an `Fn::Sub`.
+ *
+ * Throwing this class rather than a bare `Error` is what lets that catch
+ * re-raise a refusal (carrying its own message and remedy) while leaving the
+ * not-found path on warn-and-keep. Nothing else branches on it.
+ */
+export class IntrinsicResolutionRefusalError extends CdkdError {
+  constructor(message: string, cause?: Error) {
+    super(message, 'INTRINSIC_RESOLUTION_REFUSAL', cause);
+    this.name = 'IntrinsicResolutionRefusalError';
+    Object.setPrototypeOf(this, IntrinsicResolutionRefusalError.prototype);
+  }
+}
+
+/**
  * Dependency resolution errors
  */
 export class DependencyError extends CdkdError {

@@ -18,6 +18,8 @@ import { getAwsClients } from '../utils/aws-clients.js';
 import { stringifyValue, stringifyAttributeForLog } from '../utils/stringify.js';
 import { assumeRoleForCrossAccountStateRead, parseIamRoleArn } from '../utils/role-arn.js';
 import { resolveCrossAccountStateBucket } from '../utils/aws-region-resolver.js';
+import { derivePartitionAndUrlSuffix } from '../utils/aws-partition.js';
+import { IntrinsicResolutionRefusalError } from '../utils/error-handler.js';
 import type { CloudFormationTemplate } from '../types/resource.js';
 import type { ResourceState, StateImportEntry, StateOutputReadEntry } from '../types/state.js';
 import { S3StateBackend } from '../state/s3-state-backend.js';
@@ -735,7 +737,7 @@ export interface ResolverContext {
 /**
  * AWS Account information cache
  */
-interface AwsAccountInfo {
+export interface AwsAccountInfo {
   accountId: string;
   region: string;
   partition: string;
@@ -777,13 +779,25 @@ const cachedDynamicReferences: Record<string, string> = {};
 const cachedEc2InstanceAttributes: Record<string, string> = {};
 
 /**
+ * Re-derive the partition for a region the caller overrode (issue #1730).
+ *
+ * `partition` is a FUNCTION of `region`, so handing back a cached entry with a
+ * different region than the one its partition was derived from would produce
+ * `arn:aws:...:cn-north-1:...` for a `cn-` override. Every return path that
+ * swaps the region goes through here.
+ */
+function withOverrideRegion(info: AwsAccountInfo, region: string): AwsAccountInfo {
+  return { ...info, region, partition: derivePartitionAndUrlSuffix(region).partition };
+}
+
+/**
  * Get AWS account information from STS
  */
 export async function getAccountInfo(overrideRegion?: string): Promise<AwsAccountInfo> {
   if (cachedAccountInfo) {
     // If an override region is provided, return with that region
     if (overrideRegion && overrideRegion !== cachedAccountInfo.region) {
-      return { ...cachedAccountInfo, region: overrideRegion };
+      return withOverrideRegion(cachedAccountInfo, overrideRegion);
     }
     return cachedAccountInfo;
   }
@@ -796,40 +810,56 @@ export async function getAccountInfo(overrideRegion?: string): Promise<AwsAccoun
     const response = await stsClient.send(new GetCallerIdentityCommand({}));
     const accountId = response.Account || '123456789012';
     const region = overrideRegion || process.env['AWS_REGION'] || 'us-east-1';
-    const partition = 'aws'; // Could be aws-cn, aws-us-gov, etc.
+    // Derived from the region rather than hardcoded to `'aws'` (issue #1730):
+    // every ARN this module builds — plus the four `CloudControlProvider`
+    // enrichment sites that read this field — used to emit `arn:aws:` in
+    // `aws-cn` / `aws-us-gov` / `aws-iso*`, and an ARN with the wrong partition
+    // is structurally valid, so nothing downstream could catch it.
+    const partition = derivePartitionAndUrlSuffix(region).partition;
 
     // A SUCCESSFUL call that carries no `Account` lands on the same hardcoded
     // id as the failure arm below, so it has to be flagged the same way (review
     // finding) — reachable against an emulated / non-AWS STS endpoint. Flagging
     // only the catch arm would leave the identical fabricated value unmarked on
     // the path that looks like it worked.
-    cachedAccountInfo = {
+    const resolved: AwsAccountInfo = {
       accountId,
       region,
       partition,
       ...(response.Account ? {} : { fabricated: true }),
     };
+    // Only a NON-fabricated answer is cached (issue #1730, mirroring
+    // `write-only-properties.ts`'s "only SUCCESSFUL lookups are cached"): a
+    // fabricated id poisons every later caller in the run, and the ARN-building
+    // consumers refuse on `fabricated`, so caching one turns a single bad STS
+    // answer into a whole deploy that records no ARNs.
+    if (!resolved.fabricated) cachedAccountInfo = resolved;
     logger.debug(`Retrieved AWS account info: ${accountId}, ${region}, ${partition}`);
-    // Return with override if different from cached
+    // Return with override if different from the resolved region
     if (overrideRegion && overrideRegion !== region) {
-      return { ...cachedAccountInfo, region: overrideRegion };
+      return withOverrideRegion(resolved, overrideRegion);
     }
-    return cachedAccountInfo;
+    return resolved;
   } catch (error) {
     logger.warn(
       `Failed to get AWS account info from STS: ${error instanceof Error ? error.message : String(error)}, using defaults`
     );
     // Fallback to environment variables or defaults
-    cachedAccountInfo = {
+    const region = overrideRegion || process.env['AWS_REGION'] || 'us-east-1';
+    const fallback: AwsAccountInfo = {
       accountId: process.env['AWS_ACCOUNT_ID'] || '123456789012',
-      region: overrideRegion || process.env['AWS_REGION'] || 'us-east-1',
-      partition: 'aws',
+      region,
+      partition: derivePartitionAndUrlSuffix(region).partition,
       // Only when the id is the HARDCODED fallback. An `AWS_ACCOUNT_ID` the
       // operator supplied is a real answer to "which account", so flagging it
       // would make callers refuse a value that is fine.
       ...(process.env['AWS_ACCOUNT_ID'] ? {} : { fabricated: true }),
     };
-    return cachedAccountInfo;
+    // A transient STS blip must not poison the rest of the run — see the
+    // caching note on the success path. An operator-supplied `AWS_ACCOUNT_ID`
+    // IS a real answer and is cached as one.
+    if (!fallback.fabricated) cachedAccountInfo = fallback;
+    return fallback;
   }
 }
 
@@ -1552,7 +1582,7 @@ export class IntrinsicFunctionResolver {
     }
 
     // Construct attribute value based on resource type
-    const value = await this.constructAttribute(resource, attributeName, context, logicalId);
+    const value = await this.constructGuardedAttribute(resource, attributeName, context, logicalId);
     this.logger.debug(
       `Resolved Fn::GetAtt: ${logicalId}.${attributeName} -> ${stringifyAttributeForLog(attributeName, value)}`
     );
@@ -1597,7 +1627,7 @@ export class IntrinsicFunctionResolver {
     const arnAttributeKeys = REF_RETURNS_ARN_FROM_STATE.get(resource.resourceType);
     if (!arnAttributeKeys?.includes(attributeName)) return;
     if (typeof value !== 'string' || !isPlaceholderArn(value)) return;
-    throw new Error(
+    throw new IntrinsicResolutionRefusalError(
       `Cannot resolve Fn::GetAtt [${logicalId}, ${attributeName}] for ` +
         `${resource.resourceType}: the recorded value "${value}" is a placeholder ` +
         `written by a cdkd version older than issue #1681 — its region and account ` +
@@ -1608,19 +1638,81 @@ export class IntrinsicFunctionResolver {
   }
 
   /**
-   * Construct resource attribute value based on resource type
+   * Construct resource attribute value based on resource type, refusing to
+   * SERVE one built from a fabricated account id (issue #1730).
+   *
+   * Thin wrapper over {@link constructAttribute}. ~30 branches there
+   * build `arn:<partition>:<svc>:<region>:<accountId>:...`, and when the account
+   * id is the hardcoded `123456789012` fallback the result is an ARN naming
+   * SOMEONE ELSE'S account with no wildcard in it — so `isPlaceholderArn` cannot
+   * catch it and every consumer downstream, the state record included, receives
+   * a confidently wrong value. Refusing matches how
+   * {@link guardedPhysicalIdFallback} already treats a knowably-wrong `*Arn`
+   * (the #1103 class): a resource in this state has no correct value to serve.
+   *
+   * The test is on the CONSTRUCTED VALUE, not on the attribute NAME, and that
+   * precision is the whole point: `AWS::S3::Bucket`'s `Arn` is
+   * `arn:aws:s3:::<bucket>` with no account field, so a name-based `*Arn` guard
+   * would refuse a value the fabricated id cannot corrupt. Everything the
+   * account id does not appear in — `DomainName`, `Endpoint`, `WebsiteURL` —
+   * keeps resolving unchanged.
+   *
+   * NOTE the naming: the per-type construction below KEEPS the name
+   * `constructAttribute` and this guard takes a new one, rather than the other
+   * way round. `scripts/gen-sdk-attr-coverage.ts` collects the set of resource
+   * types `constructAttribute` references to decide which `*Arn` attributes the
+   * resolver can already answer, so renaming that method emptied its walk and
+   * the critic reported fresh `gap`s for CloudTrail Trail / RDS DBCluster /
+   * DBInstance (measured — the first cut of this change did exactly that).
+   */
+  private async constructGuardedAttribute(
+    resource: ResourceState,
+    attributeName: string,
+    context: ResolverContext,
+    logicalId: string
+  ): Promise<unknown> {
+    const accountInfo = await getAccountInfo(this.resolverRegion);
+    const value = await this.constructAttribute(
+      resource,
+      attributeName,
+      context,
+      logicalId,
+      accountInfo
+    );
+    if (
+      accountInfo.fabricated &&
+      typeof value === 'string' &&
+      value.includes(`:${accountInfo.accountId}:`)
+    ) {
+      throw new IntrinsicResolutionRefusalError(
+        `Cannot resolve Fn::GetAtt [${logicalId}, ${attributeName}] for ${resource.resourceType}: ` +
+          `STS did not report this deploy's account id, so cdkd would build the value from the ` +
+          `placeholder account ${accountInfo.accountId} — structurally valid, naming a different ` +
+          `account, and indistinguishable downstream from a real one. Fix the AWS credentials ` +
+          `(or set AWS_ACCOUNT_ID to this deploy's account) and deploy again.`
+      );
+    }
+    return value;
+  }
+
+  /**
+   * The per-resource-type attribute construction itself.
    *
    * Many CloudFormation attributes are not returned by Cloud Control API,
    * so we need to construct them manually.
+   *
+   * Reached only through {@link constructGuardedAttribute}, which vets the
+   * result. Keep this method's NAME — `scripts/gen-sdk-attr-coverage.ts` reads
+   * the resource types it references.
    */
   private async constructAttribute(
     resource: ResourceState,
     attributeName: string,
     _context: ResolverContext,
-    logicalId: string
+    logicalId: string,
+    accountInfo: AwsAccountInfo
   ): Promise<unknown> {
     const { resourceType, physicalId } = resource;
-    const accountInfo = await getAccountInfo(this.resolverRegion);
     const { region, accountId, partition } = accountInfo;
 
     // DynamoDB Table / GlobalTable (CDK TableV2 synthesizes as AWS::DynamoDB::GlobalTable; ARN format is identical)
@@ -2315,7 +2407,7 @@ export class IntrinsicFunctionResolver {
     const expectsUrlShape = attributeName.endsWith('Url') && !/^https?:\/\//.test(physicalId);
     if (expectsArnShape || expectsUrlShape) {
       const expectedShape = expectsArnShape ? 'an ARN (arn:...)' : 'a URL (http(s)://...)';
-      throw new Error(
+      throw new IntrinsicResolutionRefusalError(
         `Cannot resolve Fn::GetAtt [${logicalId}, ${attributeName}] for ${resourceType}: ` +
           `attributes are not enriched for this resource type, and the physical ID ` +
           `fallback "${physicalId}" is not ${expectedShape}. CloudFormation would return ` +
@@ -2326,7 +2418,7 @@ export class IntrinsicFunctionResolver {
       );
     }
     if (this.strictGetAtt) {
-      throw new Error(
+      throw new IntrinsicResolutionRefusalError(
         `Cannot resolve Fn::GetAtt [${logicalId}, ${attributeName}] for ${resourceType}: ` +
           `attributes are not enriched for this resource type, and --strict-getatt ` +
           `rejects the physical ID fallback "${physicalId}" (which may not be the value ` +
@@ -2384,6 +2476,19 @@ export class IntrinsicFunctionResolver {
     }
     this.logger.debug(`Resolved Fn::Join: ${result}`);
     return result;
+  }
+
+  /**
+   * The warning emitted when `Fn::Sub` keeps a `${...}` placeholder verbatim.
+   *
+   * It carries the underlying reason (issue #1740 item 2): the old text
+   * asserted `not found` for EVERY failure, which was the wrong cause whenever
+   * the variable WAS found and its resolution failed for some other reason.
+   * Deliberate refusals no longer reach this path at all — they re-throw.
+   */
+  private subPlaceholderWarning(varName: string, error: unknown): string {
+    const reason = error instanceof Error ? error.message : String(error);
+    return `Fn::Sub variable ${varName} could not be resolved (${reason}), keeping placeholder`;
   }
 
   /**
@@ -2455,18 +2560,26 @@ export class IntrinsicFunctionResolver {
           try {
             const value = await this.resolveRef(varNameStr, context);
             replacement = String(value);
-          } catch {
+          } catch (refError) {
             // If not found, try to resolve as GetAtt (e.g., "Resource.Attribute")
             if (varNameStr.includes('.')) {
               try {
                 const value = await this.resolveGetAtt(varNameStr, context);
                 replacement = String(value);
-              } catch {
-                this.logger.warn(`Fn::Sub variable ${varNameStr} not found, keeping placeholder`);
+              } catch (getAttError) {
+                // A DELIBERATE refusal is re-raised, never laundered into a
+                // literal `${...}` (issue #1740). Only a genuine miss — or an
+                // unexpected failure whose cause the warning now names — falls
+                // through to keeping the placeholder.
+                if (getAttError instanceof IntrinsicResolutionRefusalError) throw getAttError;
+                this.logger.warn(this.subPlaceholderWarning(varNameStr, getAttError));
                 replacement = match[0]; // Keep original placeholder
               }
             } else {
-              this.logger.warn(`Fn::Sub variable ${varNameStr} not found, keeping placeholder`);
+              // Without a `.` there is no GetAtt interpretation to fall back
+              // to, so a refusal raised by `Ref` was the final answer here.
+              if (refError instanceof IntrinsicResolutionRefusalError) throw refError;
+              this.logger.warn(this.subPlaceholderWarning(varNameStr, refError));
               replacement = match[0]; // Keep original placeholder
             }
           }

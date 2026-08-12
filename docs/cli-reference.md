@@ -1121,6 +1121,15 @@ falls back to the resource's **physical ID**:
   attribute X for resource type Y, returning physical ID`) — an alias or
   endpoint is shape-indistinguishable from a plain name, so a hard-fail
   there would risk failing correct deploys.
+- **The same refusals apply inside `Fn::Sub`** (issue #1740). A
+  `${LogicalId.Attribute}` placeholder resolves through the same code path,
+  so a reference that hard-fails as a resource property hard-fails there
+  too. Before that fix `Fn::Sub` downgraded EVERY resolution failure to a
+  warning and kept the raw `${...}` text, so the identical reference shipped
+  a literal `${MyResource.SomeArn}` to AWS on a green deploy. A variable
+  that genuinely does not exist still warns and keeps its placeholder — the
+  long-standing behavior — and the warning now names the actual reason
+  instead of always saying `not found`.
 - When at least one such fallback happened, the deploy summary prints a
   one-line count so the warns don't scroll away on green deploys:
 
