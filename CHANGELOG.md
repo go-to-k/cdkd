@@ -1,3 +1,10 @@
+## [0.280.43](https://github.com/go-to-k/cdkd/compare/v0.280.42...v0.280.43) (2026-08-12)
+
+
+### Bug Fixes
+
+* **cli:** describe import's real auto-resolution instead of the removed tag walk ([#1698](https://github.com/go-to-k/cdkd/issues/1698)) ([bd25a3e](https://github.com/go-to-k/cdkd/commit/bd25a3e863445366ac2a10dac640bc1130a71326))
+
 ## [0.280.42](https://github.com/go-to-k/cdkd/compare/v0.280.41...v0.280.42) (2026-08-12)
 
 
