@@ -2725,6 +2725,62 @@ export class S3BucketProvider implements ResourceProvider {
   }
 
   /**
+   * True when the DESIRED side DECLARES the property but its collection is
+   * empty — the shape {@link emptyListConfigToUndefined} folds to `undefined`
+   * and therefore cannot be told apart from an ABSENT property downstream
+   * (issue #1713).
+   *
+   * That collapse is the whole defect. `OwnershipControls` /
+   * `BucketEncryption` normalize BOTH sides through the fold before
+   * `diffSubConfig`, so a non-empty previous against a declared-but-empty
+   * desired took the **onDelete** arm and issued
+   * `DeleteBucketOwnershipControls` / `DeleteBucketEncryption` — where the
+   * lifecycle / CORS siblings SKIP the Put and leave the live configuration
+   * alone (issue #1671). Measured against live CloudFormation (us-east-1,
+   * 2026-08-12): updating a deployed bucket from an `aws:kms` default and a
+   * `BucketOwnerPreferred` rule to `ServerSideEncryptionConfiguration: []` /
+   * `Rules: []` drives the stack to `UPDATE_ROLLBACK_COMPLETE` with
+   * `The XML you provided was not well-formed or did not validate against our
+   * published schema`, and BOTH live configurations survive unchanged. So CFn
+   * treats the empty collection as an INVALID template, not as a removal —
+   * the same answer the #1671 A/B produced for lifecycle / CORS on the same
+   * date and account — and cdkd was DELETING instead. For `BucketEncryption`
+   * that silently drops a declared `aws:kms` default down to SSE-S3 / AES256
+   * on a template whose only fault is a condition-pruned or
+   * intrinsic-collapsed array.
+   *
+   * The fold itself is load-bearing and is NOT what changes here:
+   * `readCurrentState` ALWAYS emits
+   * `BucketEncryption: { ServerSideEncryptionConfiguration: [] }` and
+   * `OwnershipControls: { Rules: [] }` for a bucket with no explicit setting,
+   * so `cdkd drift --revert` feeds that placeholder back through `update()`
+   * and both sides must keep normalizing for empty-vs-empty to compare EQUAL
+   * and issue no call at all. This predicate rides alongside it and only
+   * splits the arm the fold reaches: **declared-but-empty SKIPS, absent
+   * DELETES**. A removal therefore still works — dropping the whole property
+   * from the template is what expresses it, which is exactly what
+   * `emptyCollectionSkip`'s warning tells the user.
+   *
+   * **Scoped to the shape #1713 MEASURED — the list key PRESENT and EMPTY —
+   * and no wider.** The tempting spelling is "present, and the fold erased it",
+   * i.e. delegate to {@link emptyListConfigToUndefined}. That is wrong here,
+   * and measurably so: the fold erases two further shapes, a bare `{}` and a
+   * block whose list key is `null` as its only key, and issue #1466 pinned BOTH
+   * of those as REMOVALS. #1713's live A/B exercised neither. Delegating would
+   * therefore have reversed two contracts on the strength of a measurement that
+   * does not cover them — caught when those two pinned rows failed.
+   *
+   * A MALFORMED block is out of scope for a different reason and needs no
+   * clause here: the fold passes it through unchanged, so it never reaches the
+   * Delete arm at all and is refused by name by the apply call.
+   */
+  private static declaresEmptyCollection(config: unknown, listKey: string): boolean {
+    if (typeof config !== 'object' || config === null || Array.isArray(config)) return false;
+    const list = (config as Record<string, unknown>)[listKey];
+    return Array.isArray(list) && list.length === 0;
+  }
+
+  /**
    * Turn a set of per-property overrides into the `effectiveProperties` bag the
    * deploy engine records in place of the desired one (issues #1612 / #1670).
    *
@@ -3239,6 +3295,10 @@ export class S3BucketProvider implements ResourceProvider {
     }
 
     // Ownership controls (per-id-free single config; empty Rules == absent)
+    const ownershipEmptyDesired = S3BucketProvider.declaresEmptyCollection(
+      properties['OwnershipControls'],
+      'Rules'
+    );
     await this.diffSubConfig(
       bucketName,
       S3BucketProvider.emptyListConfigToUndefined(
@@ -3255,6 +3315,19 @@ export class S3BucketProvider implements ResourceProvider {
       ),
       async (cfg) => this.applyOwnershipControls(bucketName, cfg),
       async () => {
+        // An empty DECLARED collection is not a removal intent (issue #1713) —
+        // see `declaresEmptyCollection`. Skip and keep the live configuration,
+        // exactly as the lifecycle / CORS arms do; only a genuinely ABSENT
+        // property reaches the Delete.
+        if (ownershipEmptyDesired) {
+          this.emptyCollectionSkip(
+            'OwnershipControls',
+            'OwnershipControls.Rules',
+            previousProperties,
+            retainPrevious
+          );
+          return;
+        }
         await this.s3Client.send(new DeleteBucketOwnershipControlsCommand({ Bucket: bucketName }));
         this.logger.debug(`Deleted ownership controls on bucket ${bucketName}`);
       }
@@ -3262,6 +3335,10 @@ export class S3BucketProvider implements ResourceProvider {
 
     // Bucket encryption (empty ServerSideEncryptionConfiguration == absent;
     // DeleteBucketEncryption reverts the bucket to the SSE-S3 / AES256 default)
+    const encryptionEmptyDesired = S3BucketProvider.declaresEmptyCollection(
+      properties['BucketEncryption'],
+      'ServerSideEncryptionConfiguration'
+    );
     await this.diffSubConfig(
       bucketName,
       S3BucketProvider.emptyListConfigToUndefined(
@@ -3278,6 +3355,19 @@ export class S3BucketProvider implements ResourceProvider {
       ),
       async (cfg) => this.applyBucketEncryption(bucketName, cfg),
       async () => {
+        // Same as OwnershipControls above, and this is the arm with teeth: a
+        // Delete here silently downgrades a declared `aws:kms` default to the
+        // SSE-S3 / AES256 one on a template whose only fault is a collapsed
+        // array (issue #1713).
+        if (encryptionEmptyDesired) {
+          this.emptyCollectionSkip(
+            'BucketEncryption',
+            'BucketEncryption.ServerSideEncryptionConfiguration',
+            previousProperties,
+            retainPrevious
+          );
+          return;
+        }
         await this.s3Client.send(new DeleteBucketEncryptionCommand({ Bucket: bucketName }));
         this.logger.debug(`Deleted bucket encryption on bucket ${bucketName}`);
       }

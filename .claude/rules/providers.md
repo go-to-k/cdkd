@@ -611,6 +611,29 @@ state to find out. It stays a warning rather than a throw so the
 `readCurrentState` round-trip the arm exists to absorb (`drift --revert` feeds
 an always-emitted empty-rules block back through `update()`) keeps working.
 
+**The sibling arms that NORMALIZE the empty collection away reach a DELETE, and
+that is the same defect one indirection further out** (issue #1713).
+`OwnershipControls` / `BucketEncryption` fold BOTH sides through
+`emptyListConfigToUndefined` before `diffSubConfig`, so a declared-but-empty
+desired side against a non-empty previous did not merely skip — it took the
+onDelete arm and issued `DeleteBucketEncryption`, dropping a declared `aws:kms`
+default to SSE-S3 on a template whose only fault is a collapsed array. Measured
+live on the same date and account as the #1671 A/B: CFn answers this template
+with `UPDATE_ROLLBACK_COMPLETE` and both configurations survive, so it is an
+INVALID template rather than a removal — the identical answer, so the identical
+skip. **The fold is not the bug and must not be removed**: `readCurrentState`
+always emits the empty placeholder, so `drift --revert` feeds it back through
+`update()` and both sides must keep normalizing for empty-vs-empty to compare
+EQUAL and issue no call at all. What was missing is that the fold COLLAPSES two
+different desired sides — declared-but-empty and ABSENT — into one `undefined`,
+and only the second is a removal. Split them with a predicate that asks
+"present, and the fold erased it" (`declaresEmptyCollection`) rather than
+re-deriving the empty shapes, so a MALFORMED block keeps passing through to be
+refused by name by the apply call instead of being swallowed into the skip. The
+generalizable question: when a normalization maps several desired shapes onto
+one value, ask what each of them MEANT before letting the merged value pick an
+arm — especially when one arm deletes.
+
 Two things that are easy to get wrong and were both caught by review:
 **normalize BOTH comparison sides**, not just the desired one — a record written BEFORE the provider started narrowing still carries every key, so a one-sided pass flips the same difference to a REMOVAL and breaks exactly the population the narrowing exists for; and **wire `cdkd diff` too**, since a preview that narrows differently from the apply forecasts a change the deploy will never make. `makeCanonicalizePropertiesFn` in `src/provisioning/canonicalize-properties.ts` is the one builder both commands use, so they cannot drift.
 
