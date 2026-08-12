@@ -32,6 +32,18 @@ const CDK_ASM_VERSION = '38.0.0';
 const CONTEXT_OVERFLOW_LIMIT = 32 * 1024;
 
 /**
+ * Remove one matched pair of surrounding quotes from a shell token, so a quoted
+ * entrypoint (`"bin/app.js"`) is recognized as a .js file and re-quoted cleanly.
+ */
+function stripSurroundingQuotes(token: string): string {
+  const quote = token[0];
+  if (token.length >= 2 && (quote === '"' || quote === "'") && token.endsWith(quote)) {
+    return token.slice(1, -1);
+  }
+  return token;
+}
+
+/**
  * Executes CDK app as subprocess to produce a cloud assembly
  */
 export class AppExecutor {
@@ -99,16 +111,25 @@ export class AppExecutor {
 
   /**
    * Determine how to execute the app command
-   * - If it's a .js file, prepend node
+   * - If the command's FIRST token is a bare .js file, prepend node
    * - Otherwise execute as shell command
    */
   private guessExecutable(app: string): string {
     const trimmed = app.trim();
+    const parts = trimmed.split(/\s+/);
+    const first = parts[0];
 
-    // If it ends with .js, prepend the current node executable
-    if (trimmed.endsWith('.js') || trimmed.split(/\s+/)[0]?.endsWith('.js')) {
-      const parts = trimmed.split(/\s+/);
-      parts[0] = `"${process.execPath}" "${parts[0]}"`;
+    if (first === undefined || first === '') {
+      return trimmed;
+    }
+
+    // Only the FIRST token decides whether an interpreter is needed. Testing the
+    // whole command instead (`trimmed.endsWith('.js')`) also matches a command that
+    // already names its runner -- `node bin/app.js` -- and the rewrite below then
+    // replaces the runner, producing `"node" "node" bin/app.js` (issue #1714).
+    const entrypoint = stripSurroundingQuotes(first);
+    if (entrypoint.endsWith('.js')) {
+      parts[0] = `"${process.execPath}" "${entrypoint}"`;
       return parts.join(' ');
     }
 
