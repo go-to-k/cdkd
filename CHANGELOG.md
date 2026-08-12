@@ -1,3 +1,10 @@
+## [0.281.8](https://github.com/go-to-k/cdkd/compare/v0.281.7...v0.281.8) (2026-08-12)
+
+
+### Bug Fixes
+
+* **route53:** guard the three RecordSet composite-id packers ([#1725](https://github.com/go-to-k/cdkd/issues/1725)) ([f5c4e56](https://github.com/go-to-k/cdkd/commit/f5c4e56d9ec347be85a7eb094ba33aea9fea20f1))
+
 ## [0.281.7](https://github.com/go-to-k/cdkd/compare/v0.281.6...v0.281.7) (2026-08-12)
 
 
