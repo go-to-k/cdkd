@@ -21,11 +21,16 @@ vi.mock('@aws-sdk/client-kinesis', async () => {
   };
 });
 
+// `vi.hoisted` so the spy exists before the hoisted `vi.mock` factory runs —
+// a plain `const warnSpy = vi.fn()` above the mock is still in the temporal
+// dead zone when the factory is invoked.
+const { warnSpy } = vi.hoisted(() => ({ warnSpy: vi.fn() }));
+
 vi.mock('../../../src/utils/logger.js', () => {
   const childLogger = {
     debug: vi.fn(),
     info: vi.fn(),
-    warn: vi.fn(),
+    warn: warnSpy,
     error: vi.fn(),
     child: vi.fn().mockReturnThis(),
   };
@@ -34,7 +39,7 @@ vi.mock('../../../src/utils/logger.js', () => {
       child: () => childLogger,
       debug: vi.fn(),
       info: vi.fn(),
-      warn: vi.fn(),
+      warn: warnSpy,
       error: vi.fn(),
     }),
   };
@@ -184,6 +189,25 @@ describe('KinesisStreamProvider MaxRecordSizeInKiB (issue #609)', () => {
     const create = commandsOfType(CreateStreamCommand)[0];
     expect(create).toBeDefined();
     expect(create?.input).not.toHaveProperty('MaxRecordSizeInKiB');
+  });
+
+  it('WARNS rather than silently skipping when the UPDATE desired size is unusable', async () => {
+    mockSend.mockResolvedValue({ ...ACTIVE, ...SUMMARY });
+
+    await provider.update(
+      'L',
+      'mystream',
+      'AWS::Kinesis::Stream',
+      { Name: 'mystream', MaxRecordSizeInKiB: 'abc' },
+      { Name: 'mystream', MaxRecordSizeInKiB: 2048 }
+    );
+
+    // Same junk value is a hard refusal on create; without the warn the update
+    // path gives the user no signal at all that the property was ignored.
+    expect(commandsOfType(UpdateMaxRecordSizeCommand)).toHaveLength(0);
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringMatching(/MaxRecordSizeInKiB must be a number/)
+    );
   });
 
   it('does not issue UpdateMaxRecordSize when the value is unchanged', async () => {
@@ -491,15 +515,26 @@ describe('KinesisStreamProvider create-path PRE-FLIGHT (issue #609)', () => {
   // generated name is a deterministic hash — the retry after the user fixes
   // the template collides with ResourceInUseException and wedges the stack.
   // See docs/provider-development.md §1a.
+  // Each row is bound to its OWN message: with a bare `.rejects.toThrow()`
+  // both rows pass when either branch throws the other property's error, so
+  // one of the two pre-flights could be deleted undetected.
   it.each([
-    ['DesiredShardLevelMetrics', { DesiredShardLevelMetrics: { Ref: 'P' } }],
-    ['MaxRecordSizeInKiB', { MaxRecordSizeInKiB: { Ref: 'P' } }],
-  ])('issues NO AWS call at all when %s is unusable', async (_label, bad) => {
+    [
+      'DesiredShardLevelMetrics',
+      { DesiredShardLevelMetrics: { Ref: 'P' } },
+      /DesiredShardLevelMetrics must be an array of metric-name strings/,
+    ],
+    [
+      'MaxRecordSizeInKiB',
+      { MaxRecordSizeInKiB: { Ref: 'P' } },
+      /MaxRecordSizeInKiB must be a number/,
+    ],
+  ])('issues NO AWS call at all when %s is unusable', async (_label, bad, expected) => {
     mockSend.mockResolvedValue(ACTIVE);
 
     await expect(
       provider.create('L', 'AWS::Kinesis::Stream', { Name: 'mystream', ...bad })
-    ).rejects.toThrow();
+    ).rejects.toThrow(expected);
 
     // Not "no CreateStreamCommand" — NO send whatsoever. A refusal that ran
     // after any mutating call would already have leaked something.

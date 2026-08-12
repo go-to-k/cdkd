@@ -651,6 +651,19 @@ export class KinesisStreamProvider implements ResourceProvider {
       // change and re-issue the call on every deploy. Neither side refuses
       // here: the update path is state-replay-reachable, so an unusable value
       // simply reads as "no declared size" and leaves the live one alone.
+      //
+      // But it must SAY so. The metrics sibling below warns on its skip, and
+      // without this the same junk value is a hard refusal on create and a
+      // silent no-op on update — same template, opposite feedback, and no
+      // signal at all on the update path (docs/provider-development.md 1a
+      // requires the warn-and-skip arm to announce itself).
+      const desiredSizeRead = readMaxRecordSize(properties['MaxRecordSizeInKiB']);
+      if (desiredSizeRead.kind === 'unusable') {
+        this.logger.warn(
+          `${desiredSizeRead.reason}. Leaving the maximum record size on ${physicalId} ` +
+            `unchanged; the same value is REFUSED on a template-path create`
+        );
+      }
       const newMaxRecordSize = comparableRecordSize(properties['MaxRecordSizeInKiB']);
       const oldMaxRecordSize = comparableRecordSize(previousProperties['MaxRecordSizeInKiB']);
       if (newMaxRecordSize !== undefined && newMaxRecordSize !== oldMaxRecordSize) {
