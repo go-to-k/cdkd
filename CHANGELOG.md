@@ -1,3 +1,10 @@
+## [0.281.14](https://github.com/go-to-k/cdkd/compare/v0.281.13...v0.281.14) (2026-08-12)
+
+
+### Bug Fixes
+
+* **deployment:** stop Fn::Sub laundering GetAtt refusals, and derive the account partition ([#1743](https://github.com/go-to-k/cdkd/issues/1743)) ([0cd012c](https://github.com/go-to-k/cdkd/commit/0cd012cdd685d908fc129bae9054412f33107665))
+
 ## [0.281.13](https://github.com/go-to-k/cdkd/compare/v0.281.12...v0.281.13) (2026-08-12)
 
 
