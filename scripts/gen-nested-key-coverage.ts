@@ -1682,7 +1682,7 @@ export const NESTED_KEY_TARGETS: readonly NestedKeyTarget[] = [
     // an ENUM value, so there is no `KafkaBootstrapServers` member to miss)
     // is structurally invisible to a critic that compares model member NAMES,
     // and opting in does not close that class. What the opt-in DOES fence is
-    // the provider's seven other forwarded blobs —
+    // the provider's eight other forwarded blobs —
     // `SelfManagedKafkaEventSourceConfig`, `AmazonManagedKafkaEventSourceConfig`,
     // `DocumentDBEventSourceConfig`, `ScalingConfig`, `DestinationConfig`,
     // `LoggingConfig`, `MetricsConfig`, `ProvisionedPollerConfig` — every one

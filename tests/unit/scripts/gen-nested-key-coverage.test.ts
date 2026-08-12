@@ -3600,12 +3600,17 @@ describe('real-repo audit (regression floors)', () => {
     );
     expect(esm).toBeDefined();
     // Read the floor off the target table rather than restating it, so a
-    // recalibration cannot leave this assertion pinning the old number.
+    // recalibration cannot leave this assertion pinning the old number, and
+    // assert HEADROOM rather than `>=`: `loadReport` already throws below the
+    // floor, so a `>=` here is satisfied by construction. Strict `>` is the
+    // part the generator does not already enforce — it fails if the yield ever
+    // collapses to exactly the floor, which is the shape a partial capture or
+    // a `handledProperties` parse regression would produce.
     const declared = NESTED_KEY_TARGETS.find(
       (t) => t.resourceType === 'AWS::Lambda::EventSourceMapping'
     )!;
-    expect(esm!.nestedKeyCount).toBeGreaterThanOrEqual(declared.minNestedKeys);
-    // The seven verbatim-forwarded blobs the opt-in exists to fence are all
+    expect(esm!.nestedKeyCount).toBeGreaterThan(declared.minNestedKeys);
+    // The eight verbatim-forwarded blobs the opt-in exists to fence are all
     // actually reached — a `handledProperties` parse that lost them would
     // leave this target vacuously clean rather than failing.
     const tops = new Set(esm!.entries.map((e) => e.topLevelProperty));
