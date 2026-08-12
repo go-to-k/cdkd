@@ -8,6 +8,7 @@ import { formatDockerLoginError, runDockerStreaming } from '../utils/docker-cmd.
 import { getLogger } from '../utils/logger.js';
 import { AssetError } from '../utils/error-handler.js';
 import { buildDockerImage } from './docker-build.js';
+import { derivePartitionAndUrlSuffix } from '../utils/aws-partition.js';
 
 /**
  * Registries this process has already logged in to, keyed by registry host
@@ -54,6 +55,19 @@ export function isDockerAuthFailure(errText: string): boolean {
  * - lazy ECR authentication (push first, log in only on an auth failure)
  * - docker tag + docker push
  */
+/**
+ * The ECR registry host suffix for a region (issue #1745).
+ *
+ * Every registry URI here was hardcoded to `amazonaws.com`, so outside the
+ * commercial partition cdkd built a hostname that does not resolve —
+ * `aws-cn` registries live under `amazonaws.com.cn`, and `us-iso*` under
+ * `c2s.ic.gov` / `sc2s.sgov.gov`. Commercial output is byte-identical, which is
+ * what makes the change safe to ship without a non-commercial account.
+ */
+function ecrUrlSuffix(region: string): string {
+  return derivePartitionAndUrlSuffix(region).urlSuffix;
+}
+
 export class DockerAssetPublisher {
   private logger = getLogger().child('DockerAssetPublisher');
 
@@ -74,7 +88,7 @@ export class DockerAssetPublisher {
         ? this.resolvePlaceholders(dest.region, accountId, region)
         : region;
 
-      const ecrUri = `${accountId}.dkr.ecr.${destRegion}.amazonaws.com/${repositoryName}:${imageTag}`;
+      const ecrUri = `${accountId}.dkr.ecr.${destRegion}.${ecrUrlSuffix(destRegion)}/${repositoryName}:${imageTag}`;
 
       this.logger.debug(`Publishing Docker image ${asset.displayName || assetHash} → ${ecrUri}`);
 
@@ -92,7 +106,7 @@ export class DockerAssetPublisher {
         await this.buildImage(asset, cdkOutputDir, localTag);
 
         // Tag and push (login lazily, only if the push hits an auth failure).
-        const fullUri = `${accountId}.dkr.ecr.${destRegion}.amazonaws.com/${repositoryName}:${imageTag}`;
+        const fullUri = `${accountId}.dkr.ecr.${destRegion}.${ecrUrlSuffix(destRegion)}/${repositoryName}:${imageTag}`;
         await this.tagAndPushWithLazyLogin(client, localTag, fullUri, accountId, destRegion);
 
         this.logger.debug(`✅ Published: ${ecrUri}`);
@@ -131,7 +145,7 @@ export class DockerAssetPublisher {
         ? this.resolvePlaceholders(dest.region, accountId, region)
         : region;
 
-      const ecrUri = `${accountId}.dkr.ecr.${destRegion}.amazonaws.com/${repositoryName}:${imageTag}`;
+      const ecrUri = `${accountId}.dkr.ecr.${destRegion}.${ecrUrlSuffix(destRegion)}/${repositoryName}:${imageTag}`;
 
       const client = new ECRClient({ region: destRegion });
 
@@ -141,7 +155,7 @@ export class DockerAssetPublisher {
           continue;
         }
 
-        const fullUri = `${accountId}.dkr.ecr.${destRegion}.amazonaws.com/${repositoryName}:${imageTag}`;
+        const fullUri = `${accountId}.dkr.ecr.${destRegion}.${ecrUrlSuffix(destRegion)}/${repositoryName}:${imageTag}`;
         await this.tagAndPushWithLazyLogin(client, localTag, fullUri, accountId, destRegion);
 
         this.logger.debug(`✅ Published: ${ecrUri}`);
@@ -283,7 +297,7 @@ export class DockerAssetPublisher {
     region: string,
     options: { force?: boolean } = {}
   ): Promise<void> {
-    const registryKey = `${accountId}.dkr.ecr.${region}.amazonaws.com`;
+    const registryKey = `${accountId}.dkr.ecr.${region}.${ecrUrlSuffix(region)}`;
     if (!options.force && loggedInRegistries.has(registryKey)) {
       this.logger.debug(`Reusing cached ECR login for ${registryKey}`);
       return;
@@ -304,7 +318,7 @@ export class DockerAssetPublisher {
       );
     }
     const endpoint =
-      authData.proxyEndpoint || `https://${accountId}.dkr.ecr.${region}.amazonaws.com`;
+      authData.proxyEndpoint || `https://${accountId}.dkr.ecr.${region}.${ecrUrlSuffix(region)}`;
 
     try {
       await runDockerStreaming(['login', '--username', username, '--password-stdin', endpoint], {

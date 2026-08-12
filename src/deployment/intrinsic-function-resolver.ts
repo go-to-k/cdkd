@@ -756,7 +756,26 @@ export interface AwsAccountInfo {
   fabricated?: boolean;
 }
 
-let cachedAccountInfo: AwsAccountInfo | null = null;
+/**
+ * The genuinely region-independent half of {@link AwsAccountInfo} — the ONLY
+ * part that may be cached across callers (issue #1746).
+ *
+ * `region` is the CALLER's, and `partition` is a function of it, so caching a
+ * whole `AwsAccountInfo` pinned the FIRST caller's region on every later
+ * no-override call. That was benign-ish while `partition` was hardcoded to
+ * `'aws'`; issue #1730 made the partition DERIVE from the region, so the stale
+ * region started dragging a stale partition with it — a first call from a
+ * `cn-north-1`-scoped resolver cached `{region: 'cn-north-1', partition:
+ * 'aws-cn'}` and a later no-override call from a us-east-1 context read
+ * `aws-cn`. Caching the ACCOUNT alone and deriving region + partition per call
+ * removes the failure mode rather than papering over it.
+ */
+interface CachedAccountIdentity {
+  accountId: string;
+  fabricated?: boolean;
+}
+
+let cachedAccountIdentity: CachedAccountIdentity | null = null;
 
 /**
  * Cache for availability zones per region
@@ -779,15 +798,32 @@ const cachedDynamicReferences: Record<string, string> = {};
 const cachedEc2InstanceAttributes: Record<string, string> = {};
 
 /**
- * Re-derive the partition for a region the caller overrode (issue #1730).
+ * The region this call answers for: the caller's override, else the ambient one.
  *
- * `partition` is a FUNCTION of `region`, so handing back a cached entry with a
- * different region than the one its partition was derived from would produce
- * `arn:aws:...:cn-north-1:...` for a `cn-` override. Every return path that
- * swaps the region goes through here.
+ * Kept as one helper so the cached and the freshly-resolved paths cannot pick
+ * different defaults (issue #1746).
  */
-function withOverrideRegion(info: AwsAccountInfo, region: string): AwsAccountInfo {
-  return { ...info, region, partition: derivePartitionAndUrlSuffix(region).partition };
+function effectiveAccountInfoRegion(overrideRegion?: string): string {
+  return overrideRegion || process.env['AWS_REGION'] || 'us-east-1';
+}
+
+/**
+ * Build the caller's full answer from the cached account identity (issue #1746).
+ *
+ * `partition` is a FUNCTION of `region`, so it is derived HERE — per call —
+ * rather than carried alongside the account. This is what makes the cache safe
+ * to share between callers with different regions: an `arn:aws:...:cn-north-1`
+ * (or the inverse `arn:aws-cn:...:us-east-1`) is structurally valid, so nothing
+ * downstream could catch it.
+ */
+function accountInfoFor(identity: CachedAccountIdentity, overrideRegion?: string): AwsAccountInfo {
+  const region = effectiveAccountInfoRegion(overrideRegion);
+  return {
+    accountId: identity.accountId,
+    region,
+    partition: derivePartitionAndUrlSuffix(region).partition,
+    ...(identity.fabricated ? { fabricated: true } : {}),
+  };
 }
 
 /**
@@ -806,7 +842,7 @@ const FABRICATED_ACCOUNT_INFO_TTL_MS = 10_000;
 /** Test seam for {@link FABRICATED_ACCOUNT_INFO_TTL_MS} expiry. */
 export const accountInfoClock = { now: (): number => Date.now() };
 
-let fabricatedAccountInfo: { info: AwsAccountInfo; expiresAt: number } | null = null;
+let fabricatedAccountIdentity: { identity: CachedAccountIdentity; expiresAt: number } | null = null;
 
 /**
  * The single in-flight lookup, so N concurrent callers share ONE round trip.
@@ -817,39 +853,36 @@ let fabricatedAccountInfo: { info: AwsAccountInfo; expiresAt: number } | null = 
  * each with the SDK's own 3-attempt retry — and ten identical warnings per
  * window. Cleared in a `finally` so a failure cannot wedge it.
  */
-let accountInfoInFlight: Promise<AwsAccountInfo> | null = null;
+let accountInfoInFlight: Promise<CachedAccountIdentity> | null = null;
 
 /**
  * Get AWS account information from STS
  */
 export async function getAccountInfo(overrideRegion?: string): Promise<AwsAccountInfo> {
-  const forRegion = (info: AwsAccountInfo): AwsAccountInfo =>
-    overrideRegion && overrideRegion !== info.region
-      ? withOverrideRegion(info, overrideRegion)
-      : info;
-
-  if (cachedAccountInfo) return forRegion(cachedAccountInfo);
+  if (cachedAccountIdentity) return accountInfoFor(cachedAccountIdentity, overrideRegion);
 
   // A fabricated answer inside its TTL is reused (see the constant above) —
-  // WITHOUT promoting it to `cachedAccountInfo`, so it still expires.
-  if (fabricatedAccountInfo && accountInfoClock.now() < fabricatedAccountInfo.expiresAt) {
-    return forRegion(fabricatedAccountInfo.info);
+  // WITHOUT promoting it to `cachedAccountIdentity`, so it still expires.
+  if (fabricatedAccountIdentity && accountInfoClock.now() < fabricatedAccountIdentity.expiresAt) {
+    return accountInfoFor(fabricatedAccountIdentity.identity, overrideRegion);
   }
 
-  if (accountInfoInFlight) return forRegion(await accountInfoInFlight);
+  if (accountInfoInFlight) return accountInfoFor(await accountInfoInFlight, overrideRegion);
 
   // NOTE the lookup is region-AGNOSTIC — it resolves the ACCOUNT, and every
-  // caller's region is applied by `forRegion` afterwards — so sharing one
+  // caller's region is applied by `accountInfoFor` afterwards — so sharing one
   // in-flight promise across callers with different `overrideRegion`s is safe.
-  accountInfoInFlight = resolveAccountInfo(overrideRegion);
+  // Since issue #1746 that is structural rather than a property to preserve:
+  // `resolveAccountIdentity` takes no region at all.
+  accountInfoInFlight = resolveAccountIdentity();
   try {
-    return forRegion(await accountInfoInFlight);
+    return accountInfoFor(await accountInfoInFlight, overrideRegion);
   } finally {
     accountInfoInFlight = null;
   }
 }
 
-async function resolveAccountInfo(overrideRegion?: string): Promise<AwsAccountInfo> {
+async function resolveAccountIdentity(): Promise<CachedAccountIdentity> {
   const logger = getLogger().child('IntrinsicFunctionResolver');
   const awsClients = getAwsClients();
   const stsClient = awsClients.sts;
@@ -857,23 +890,14 @@ async function resolveAccountInfo(overrideRegion?: string): Promise<AwsAccountIn
   try {
     const response = await stsClient.send(new GetCallerIdentityCommand({}));
     const accountId = response.Account || '123456789012';
-    const region = overrideRegion || process.env['AWS_REGION'] || 'us-east-1';
-    // Derived from the region rather than hardcoded to `'aws'` (issue #1730):
-    // every ARN this module builds — plus the four `CloudControlProvider`
-    // enrichment sites that read this field — used to emit `arn:aws:` in
-    // `aws-cn` / `aws-us-gov` / `aws-iso*`, and an ARN with the wrong partition
-    // is structurally valid, so nothing downstream could catch it.
-    const partition = derivePartitionAndUrlSuffix(region).partition;
 
     // A SUCCESSFUL call that carries no `Account` lands on the same hardcoded
     // id as the failure arm below, so it has to be flagged the same way (review
     // finding) — reachable against an emulated / non-AWS STS endpoint. Flagging
     // only the catch arm would leave the identical fabricated value unmarked on
     // the path that looks like it worked.
-    const resolved: AwsAccountInfo = {
+    const resolved: CachedAccountIdentity = {
       accountId,
-      region,
-      partition,
       ...(response.Account ? {} : { fabricated: true }),
     };
     // Only a NON-fabricated answer is cached for the process (issue #1730,
@@ -884,30 +908,23 @@ async function resolveAccountInfo(overrideRegion?: string): Promise<AwsAccountIn
     // fabricated one gets the short TTL above instead of nothing, so the retry
     // is bounded rather than per-call.
     if (resolved.fabricated) {
-      fabricatedAccountInfo = {
-        info: resolved,
+      fabricatedAccountIdentity = {
+        identity: resolved,
         expiresAt: accountInfoClock.now() + FABRICATED_ACCOUNT_INFO_TTL_MS,
       };
     } else {
-      cachedAccountInfo = resolved;
-      fabricatedAccountInfo = null;
+      cachedAccountIdentity = resolved;
+      fabricatedAccountIdentity = null;
     }
-    logger.debug(`Retrieved AWS account info: ${accountId}, ${region}, ${partition}`);
-    // NOTE no override re-derivation here: `region` above is already
-    // `overrideRegion || …`, so the two can never differ on this path. An
-    // earlier cut carried the cache path's `withOverrideRegion` call here too;
-    // PR review measured it as dead code.
+    logger.debug(`Retrieved AWS account info: ${accountId}`);
     return resolved;
   } catch (error) {
     logger.warn(
       `Failed to get AWS account info from STS: ${error instanceof Error ? error.message : String(error)}, using defaults`
     );
     // Fallback to environment variables or defaults
-    const region = overrideRegion || process.env['AWS_REGION'] || 'us-east-1';
-    const fallback: AwsAccountInfo = {
+    const fallback: CachedAccountIdentity = {
       accountId: process.env['AWS_ACCOUNT_ID'] || '123456789012',
-      region,
-      partition: derivePartitionAndUrlSuffix(region).partition,
       // Only when the id is the HARDCODED fallback. An `AWS_ACCOUNT_ID` the
       // operator supplied is a real answer to "which account", so flagging it
       // would make callers refuse a value that is fine.
@@ -918,19 +935,19 @@ async function resolveAccountInfo(overrideRegion?: string): Promise<AwsAccountIn
     // IS a real answer and is cached as one; a fabricated id gets the bounded
     // TTL so the retry does not fire on every single caller.
     if (fallback.fabricated) {
-      // Guarded on `!cachedAccountInfo` so a late failure arm cannot install a
-      // fabricated window over a real answer a concurrent call already cached
+      // Guarded on `!cachedAccountIdentity` so a late failure arm cannot install
+      // a fabricated window over a real answer a concurrent call already cached
       // (PR review). Benign either way — the cached branch is read first — but
       // the invariant should be enforced rather than accidental.
-      if (!cachedAccountInfo) {
-        fabricatedAccountInfo = {
-          info: fallback,
+      if (!cachedAccountIdentity) {
+        fabricatedAccountIdentity = {
+          identity: fallback,
           expiresAt: accountInfoClock.now() + FABRICATED_ACCOUNT_INFO_TTL_MS,
         };
       }
     } else {
-      cachedAccountInfo = fallback;
-      fabricatedAccountInfo = null;
+      cachedAccountIdentity = fallback;
+      fabricatedAccountIdentity = null;
     }
     return fallback;
   }
@@ -940,11 +957,11 @@ async function resolveAccountInfo(overrideRegion?: string): Promise<AwsAccountIn
  * Reset cached account info (useful for testing)
  */
 export function resetAccountInfoCache(): void {
-  cachedAccountInfo = null;
+  cachedAccountIdentity = null;
   // The bounded fabricated-answer window is part of the same cache and must
   // clear with it, or a test (or a later phase) would keep reading a fabricated
   // answer it just asked to forget.
-  fabricatedAccountInfo = null;
+  fabricatedAccountIdentity = null;
   // Also reset AZ cache
   for (const key of Object.keys(cachedAvailabilityZones)) {
     delete cachedAvailabilityZones[key];
@@ -957,6 +974,31 @@ export function resetAccountInfoCache(): void {
   for (const key of Object.keys(cachedEc2InstanceAttributes)) {
     delete cachedEc2InstanceAttributes[key];
   }
+}
+
+/**
+ * Does a constructed `Fn::GetAtt` answer embed the placeholder account id?
+ *
+ * The guard in `constructGuardedAttribute` used to test
+ * `typeof value === 'string'` directly (issue #1746). Every account-bearing
+ * branch of `constructAttribute` returns a string today — the only non-string
+ * returns are the EC2 IPv6 CIDR LISTS, which carry no account — so that was
+ * complete as written, but a future list-valued attribute embedding an account
+ * would have slipped past silently with no test failing. Walking string arrays
+ * (one level, which is the shape `constructAttribute` actually produces) closes
+ * it now rather than at the moment someone adds one. A non-string, non-array
+ * value is not account-bearing by construction and is left alone.
+ *
+ * EXPORTED for its own test: no `constructAttribute` branch returns an
+ * account-bearing array today, so the array arm is unreachable through the
+ * public resolver API and would ship unexercised otherwise.
+ */
+export function embedsAccountId(value: unknown, accountId: string): boolean {
+  if (typeof value === 'string') return value.includes(accountId);
+  if (Array.isArray(value)) {
+    return value.some((entry) => typeof entry === 'string' && entry.includes(accountId));
+  }
+  return false;
 }
 
 /**
@@ -1768,11 +1810,7 @@ export class IntrinsicFunctionResolver {
       logicalId,
       accountInfo
     );
-    if (
-      accountInfo.fabricated &&
-      typeof value === 'string' &&
-      value.includes(accountInfo.accountId)
-    ) {
+    if (accountInfo.fabricated && embedsAccountId(value, accountInfo.accountId)) {
       throw new IntrinsicResolutionRefusalError(
         `Cannot resolve Fn::GetAtt [${logicalId}, ${attributeName}] for ${resource.resourceType}: ` +
           `STS did not report this deploy's account id, so cdkd would build the value from the ` +

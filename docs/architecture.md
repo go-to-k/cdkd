@@ -195,7 +195,9 @@ Publishes file assets (Lambda code packages, etc.) to S3:
 Publishes Docker image assets to ECR:
 
 - Authenticates with ECR via `GetAuthorizationToken`, then `docker login`. The
-  login is cached per registry (`<accountId>.dkr.ecr.<region>.amazonaws.com`)
+  login is cached per registry (`<accountId>.dkr.ecr.<region>.<urlSuffix>`,
+  the suffix derived from the region so `aws-cn` / `us-iso*` registries resolve
+  — issue #1745)
   for the process lifetime, so a repeat publish to the same registry skips the
   `GetAuthorizationToken` call and the `docker login` subprocess (mirrors
   `cdk-assets`; ECR tokens are valid ~12h and a deploy process is short-lived).
@@ -492,10 +494,12 @@ interface ResolutionContext {
 
 - `AWS::AccountId`: Retrieved from STS `GetCallerIdentity`
 - `AWS::Region`: From CLI options
-- `AWS::Partition`: "aws" (fixed)
-- `AWS::StackId`: Generated unique identifier
+- `AWS::Partition`: Derived from the region (`aws` / `aws-cn` / `aws-us-gov` /
+  `aws-iso` / `aws-iso-b`) via `derivePartitionAndUrlSuffix` — issue #1730
+- `AWS::StackId`: Generated unique identifier (partition-aware)
 - `AWS::StackName`: From stack configuration
-- `AWS::URLSuffix`: "amazonaws.com"
+- `AWS::URLSuffix`: Derived from the region (`amazonaws.com` /
+  `amazonaws.com.cn` / `c2s.ic.gov` / `sc2s.sgov.gov`) — issue #1730
 - `AWS::NoValue`: For conditional property omission
 
 ### 7. Provisioning Layer (`src/provisioning/`)
