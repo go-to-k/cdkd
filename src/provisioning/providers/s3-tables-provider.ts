@@ -747,13 +747,54 @@ export class S3TablesProvider implements ResourceProvider {
     };
   }
 
+  /**
+   * Recover a table's `(bucketARN, namespace, name)` from EITHER id shape.
+   *
+   * cdkd's composite carries all three. CloudFormation's physicalId for this
+   * type is the bare `TableARN` (single-field `primaryIdentifier`), and that
+   * form reaches the SDK path in two ways worth tolerating rather than
+   * rejecting:
+   *
+   * - every state row written by `cdkd import` before issue #1668, which
+   *   stored the CFn id verbatim; and
+   * - a CC-ROUTED table imported by this version, which deliberately records
+   *   the ARN because Cloud Control's Identifier is the ARN — while
+   *   `destroy` / `drift` route on `provisionedBy` ALONE (no properties), and
+   *   `cdkd import` records `'sdk'`, so those paths land HERE with an ARN.
+   *
+   * Tolerating both is what makes the route-detection at import time
+   * imprecision-proof: whichever shape is stored, every SDK path works.
+   * `GetTable` accepts `tableArn` and returns the parts.
+   */
+  private async resolveTableParts(
+    physicalId: string
+  ): Promise<{ tableBucketARN: string; namespace: string; name: string } | undefined> {
+    const composite = parseTableCompositeId(physicalId);
+    if (composite) return composite;
+    // Legacy rows may carry MORE than 3 segments; keep accepting them.
+    const parts = physicalId.split('|');
+    if (parts.length > 3) {
+      const [tableBucketARN, namespace, name] = parts;
+      if (tableBucketARN && namespace && name) return { tableBucketARN, namespace, name };
+    }
+    if (physicalId.includes('|') || !physicalId.startsWith('arn:')) return undefined;
+
+    try {
+      const resp = await this.getClient().send(new GetTableCommand({ tableArn: physicalId }));
+      if (!resp.tableARN) return undefined;
+      return tableIdentityFromGetTable(resp.tableARN, resp.namespace, resp.name);
+    } catch (err) {
+      if (err instanceof NotFoundException) return undefined;
+      throw err;
+    }
+  }
+
   private async readTableCurrentState(
     physicalId: string
   ): Promise<Record<string, unknown> | undefined> {
-    const parts = physicalId.split('|');
-    if (parts.length < 3) return undefined;
-    const [tableBucketARN, namespace, name] = parts;
-    if (!tableBucketARN || !namespace || !name) return undefined;
+    const resolved = await this.resolveTableParts(physicalId);
+    if (!resolved) return undefined;
+    const { tableBucketARN, namespace, name } = resolved;
 
     let resp;
     try {
@@ -1082,19 +1123,21 @@ export class S3TablesProvider implements ResourceProvider {
   ): Promise<void> {
     this.logger.debug(`Deleting S3 Tables Table ${logicalId}: ${physicalId}`);
 
-    const parts = physicalId.split('|');
-    if (parts.length < 3) {
+    // Accepts cdkd's composite AND CloudFormation's bare TableARN — see
+    // `resolveTableParts`. Rejecting the ARN here is what made a migrated
+    // stack undestroyable (issue #1668).
+    const resolved = await this.resolveTableParts(physicalId);
+    if (!resolved) {
       throw new ProvisioningError(
-        `Invalid physical ID format for S3 Tables Table ${logicalId}: ${physicalId}`,
+        `Invalid physical ID format for S3 Tables Table ${logicalId}: ${physicalId} ` +
+          `(expected '<tableBucketARN>|<namespace>|<name>' or a table ARN)`,
         resourceType,
         logicalId,
         physicalId
       );
     }
 
-    const tableBucketARN = parts[0];
-    const namespace = parts[1];
-    const name = parts[2];
+    const { tableBucketARN, namespace, name } = resolved;
 
     try {
       await this.getClient().send(
@@ -1262,24 +1305,20 @@ export class S3TablesProvider implements ResourceProvider {
     // No tag delta → no work, no error.
     if (removedKeys.length === 0 && Object.keys(upserts).length === 0) return;
 
-    const parts = physicalId.split('|');
-    if (parts.length < 3) {
+    // Accepts cdkd's composite AND CloudFormation's bare TableARN, like the
+    // delete / read paths — an imported row can carry either.
+    const resolvedParts = await this.resolveTableParts(physicalId);
+    if (!resolvedParts) {
       throw new ProvisioningError(
-        `applyTableTagsDiff: cannot derive table ARN from physicalId '${physicalId}' (expected '<bucketArn>|<namespace>|<name>') — refusing to silently drop the tag update`,
+        `applyTableTagsDiff: cannot derive table ARN from physicalId '${physicalId}' ` +
+          `(expected '<bucketArn>|<namespace>|<name>' or a table ARN) — refusing to silently ` +
+          `drop the tag update`,
         resourceType,
         logicalId,
         physicalId
       );
     }
-    const [tableBucketARN, namespace, name] = parts;
-    if (!tableBucketARN || !namespace || !name) {
-      throw new ProvisioningError(
-        `applyTableTagsDiff: cannot derive table ARN from malformed physicalId '${physicalId}' (empty part after split) — refusing to silently drop the tag update`,
-        resourceType,
-        logicalId,
-        physicalId
-      );
-    }
+    const { tableBucketARN, namespace, name } = resolvedParts;
 
     // Tag APIs need the REAL table ARN (not cdkd's compound physical id
     // and not a guessed derivation from the parts — AWS rejects every

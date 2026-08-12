@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import {
+  DeleteTableCommand,
   GetNamespaceCommand,
   GetTableCommand,
   NotFoundException,
@@ -145,6 +146,53 @@ describe('S3Tables import: verify the composite before adopting (issue #1668)', 
     });
   });
 
+  // The route detection at import time is deliberately imprecise (the
+  // allow-set, unresolved `Fn::If` keys and coverage-table drift can all make
+  // it disagree with the deploy-time router). That is SAFE only because every
+  // SDK path accepts BOTH id shapes — these tests pin that tolerance, without
+  // which a CC-routed row would make `cdkd destroy` fail and orphan the table.
+  describe('SDK paths accept CloudFormation\'s bare TableARN', () => {
+    it('deletes a table recorded as a bare ARN', async () => {
+      mockSend
+        .mockResolvedValueOnce({ tableARN: TABLE_ARN, namespace: ['ns'], name: 'tbl' })
+        .mockResolvedValueOnce({});
+
+      await provider.delete('MyTable', TABLE_ARN, 'AWS::S3Tables::Table', {});
+
+      const del = mockSend.mock.calls[1]?.[0];
+      expect(del).toBeInstanceOf(DeleteTableCommand);
+      expect(del.input).toMatchObject({
+        tableBucketARN: BUCKET_ARN,
+        namespace: 'ns',
+        name: 'tbl',
+      });
+    });
+
+    it('reads drift for a table recorded as a bare ARN', async () => {
+      mockSend
+        .mockResolvedValueOnce({ tableARN: TABLE_ARN, namespace: ['ns'], name: 'tbl' })
+        .mockResolvedValueOnce({ tableARN: TABLE_ARN, name: 'tbl', namespace: ['ns'] })
+        .mockResolvedValueOnce({ tags: {} });
+
+      const result = await provider.readCurrentState(
+        TABLE_ARN,
+        'MyTable',
+        'AWS::S3Tables::Table'
+      );
+
+      expect(result).toBeDefined();
+    });
+
+    it('still deletes a table recorded as the composite (no extra lookup)', async () => {
+      mockSend.mockResolvedValueOnce({});
+
+      await provider.delete('MyTable', `${BUCKET_ARN}|ns|tbl`, 'AWS::S3Tables::Table', {});
+
+      expect(mockSend).toHaveBeenCalledTimes(1);
+      expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(DeleteTableCommand);
+    });
+  });
+
   describe('AWS::S3Tables::Table', () => {
     const input = {
       logicalId: 'MyTable',
@@ -278,6 +326,18 @@ describe('S3Tables import: verify the composite before adopting (issue #1668)', 
       await expect(
         provider.import({ ...input, knownPhysicalId: TABLE_ARN })
       ).rejects.toThrow(/AccessDenied/);
+    });
+
+    it('refuses when the ARN resolves to a different NAMESPACE than the template', async () => {
+      mockSend.mockResolvedValueOnce({
+        tableARN: TABLE_ARN,
+        namespace: ['a-different-namespace'],
+        name: 'tbl',
+      });
+
+      const result = await provider.import({ ...input, knownPhysicalId: TABLE_ARN });
+
+      expect(result).toBeNull();
     });
 
     it('refuses an override that is neither a composite nor an ARN', async () => {
