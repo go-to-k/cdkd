@@ -470,6 +470,73 @@ worse than the malformed value the drop replaced. The remedy is not to stop
 dropping; it is to make the reading path ANNOUNCE the defaulted absence on a
 replay. A drop is only honest while something still says so.
 
+**A never-emitted KEY is the same class reached through the SHAPE rather than
+the value, and it is not covered by asking what the service STORES** (issue
+#1686, the sibling #1670 left behind at the same sites). The #1643 bar — record
+what AWS will REPORT — is usually applied to a value; apply it to the key too.
+Where a provider accepts more than one spelling of a block on the DESIRED side
+but its `readCurrentState` reverse-mapper emits only one, a record written in
+the other spelling can never match the readback, so `cdkd drift` re-reports it
+forever and `--revert` re-issues the same call — with no warning anywhere to
+hint at it, because nothing was lost and nothing was substituted. The S3
+inventory applier accepts the CFn `ScheduleFrequency` and the SDK
+`Schedule: { Frequency }` (the #1605 fall-through) while `inventorySdkToCfn`
+emits only the former; it now records the CFn spelling and DROPS `Schedule`.
+Three things generalize:
+
+- **Key the normalization off the DECLARED shape, not off the refusal.** The
+  case that matters carries no malformed value at all — an item declaring only
+  the SDK spelling sends the right cadence and records the wrong key — so a
+  condition riding the existing substitution arm misses the main population.
+- **Remove the key rather than setting it to `undefined`.** `deepEqual` is
+  `JSON.stringify`, which drops an `undefined` member, but the state record is
+  written from the same object and a present-but-`undefined` key survives a
+  `structuredClone` — so any consumer that walks `Object.keys` (the
+  `unionWalkObjects` drift path) still sees two different key sets.
+- **Prefer normalizing over RETRACTING the tolerance.** Refusing the SDK
+  spelling outright is the other candidate answer and it costs more than it
+  buys: it would retract the #1605 fall-through, whose purpose is that a
+  malformed first source lands on a value the record ALSO carries instead of
+  skipping a live configuration.
+
+Audit the whole type when fixing one of these, the way #1389 says to for the
+write side, and the audit is mechanical: diff every property name in the type's
+live registry schema against every key the provider reads off a desired-side
+bag. On `AWS::S3::Bucket` that is 158 names against four non-CFn reads, of which
+two (`IsEnabled`, `AccountId`) are legitimate SDK spellings read on the RESPONSE
+side and two are real — `Schedule` (fixed) and the analytics / inventory
+`Destination.S3BucketDestination` nested branch plus its `Bucket` / `BucketArn`
+alias, left as issue #1707 because it revisits #1670's write-back-at-the-
+declared-branch decision. No critic covers this direction today:
+`gen-nested-key-coverage` audits CFn -> SDK spellings on the WRITE side, not SDK
+spellings TOLERATED on the desired side.
+
+**An EMPTY COLLECTION is not a removal intent, and the skip that absorbs it must
+still record the previous value** (issue #1671, the ordinary-template half of
+the #1612 skip class). The S3 lifecycle / CORS `onPut` arms skip the Put for an
+empty rules array, so AWS keeps the previously-applied configuration while the
+engine recorded `{Rules: []}` — a Put that never ran, written as though it had.
+Unlike the malformed-value skips, this arm is reachable from an ORDINARY
+template path rather than only a state replay: a condition-pruned or
+intrinsic-collapsed template synthesizes an empty array. Two things were settled
+by live A/B rather than by reading the schema (us-east-1, 2026-08-12):
+CloudFormation REFUSES an update to `LifecycleConfiguration: { Rules: [] }` /
+`CorsConfiguration: { CorsRules: [] }` — the stack reaches
+`UPDATE_ROLLBACK_COMPLETE` — and BOTH live configurations survive the rollback
+unchanged. So the empty collection is an INVALID template, not a removal, which
+rules out the opposite candidate answer: turning the arm into a Delete would
+both diverge from CFn and destroy a configuration the user still wants, on a
+template whose only fault is a collapsed array. The registry schema only says
+the shape is legal (`Rules` / `CorsRules` are required with no `minItems`, so
+`[]` parses and the SERVICE refuses it) — which is why the behavior had to be
+measured. The skip therefore stands, the PREVIOUS value is what state records
+(the #1612 UPDATE answer, now with CFn behavior behind it), and the skip is
+ANNOUNCED rather than silent, because CFn's own answer to this template is a
+loud failure and a user whose rules stop being applied should not have to diff
+state to find out. It stays a warning rather than a throw so the
+`readCurrentState` round-trip the arm exists to absorb (`drift --revert` feeds
+an always-emitted empty-rules block back through `update()`) keeps working.
+
 Two things that are easy to get wrong and were both caught by review:
 **normalize BOTH comparison sides**, not just the desired one — a record written BEFORE the provider started narrowing still carries every key, so a one-sided pass flips the same difference to a REMOVAL and breaks exactly the population the narrowing exists for; and **wire `cdkd diff` too**, since a preview that narrows differently from the apply forecasts a change the deploy will never make. `makeCanonicalizePropertiesFn` in `src/provisioning/canonicalize-properties.ts` is the one builder both commands use, so they cannot drift.
 
