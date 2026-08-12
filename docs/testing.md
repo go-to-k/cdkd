@@ -1003,6 +1003,11 @@ Two things it deliberately does NOT flag, because neither corrupts a result: an
 over-priming that no later test ever consumes, and a value primed in `beforeAll`
 (which has no owning test to cross a boundary from).
 
+The detector carries a canary — `tests/unit/scripts/once-leak-canary.test.ts`
+leaks on purpose, and a CI step requires that running it with the allow-list
+ignored still FAILS. That is what stops a silently-broken detector from looking
+identical to a clean tree. Do not "fix" that suite's priming.
+
 Three files leaked when the detector landed and are grandfathered in
 `tests/once-leak-allowlist.json`; fixing them is tracked by
 [issue #1655](https://github.com/go-to-k/cdkd/issues/1655). Fixing one and

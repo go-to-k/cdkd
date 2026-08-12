@@ -59,6 +59,15 @@ and are wrong; do not reintroduce them:
   182-file remediation batch. Checking the real defect implicated THREE files
   (tracked by issue #1655) and needed none.
 
+**The detector has its own canary**, because with the grandfather list honoured
+"the detector went dead" and "the tree is clean" produce the identical green
+result — the vacuous pass this file forbids elsewhere.
+`tests/unit/scripts/once-leak-canary.test.ts` leaks deliberately (and is
+therefore allow-listed, automatically, by the generator), and the CI step
+`detector canary` re-runs that file alone with
+`CDKD_ONCE_LEAK_IGNORE_ALLOWLIST=1` and requires a NON-ZERO exit. Do not "fix"
+that suite's priming; it is not a defect.
+
 Two more design points are decisions, not accidents:
 
 - **It is OFF unless `CDKD_ONCE_LEAK_DETECT=1`.** Nothing is wrapped and no

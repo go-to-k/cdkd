@@ -266,6 +266,18 @@ jobs:
       - run: vp install --frozen-lockfile
       - run: vp run test:once-leak
 
+      # Prove the detector still REJECTS, not just that it ran. With the
+      # grandfather list honoured, "the detector went dead" and "the tree is
+      # clean" produce the identical green result above — the vacuous pass
+      # .claude/rules/testing.md forbids for any checker. The canary suite
+      # leaks on purpose, so ignoring the allow-list MUST fail it.
+      - name: detector canary — a known leak must still be caught
+        run: |
+          if vp run test:once-leak-canary; then
+            echo "::error::the *Once-leak detector reported no leak in tests/unit/scripts/once-leak-canary.test.ts, which leaks deliberately — the detector has gone dead (check @vitest/spy internals and the vi.fn patch in tests/setup.ts)"
+            exit 1
+          fi
+
   runtime-compat:
     runs-on: ubuntu-latest
     needs: check-build-test

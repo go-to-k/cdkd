@@ -191,6 +191,15 @@ export default defineConfig({
         command: 'CDKD_ONCE_LEAK_DETECT=1 vp test run',
         cache: false,
       },
+      // Runs the deliberately-leaking canary suite with the grandfather list
+      // ignored. Expected to FAIL — CI inverts the exit code. See the
+      // `detector canary` step in .github/workflows/ci.yml.
+      'test:once-leak-canary': {
+        command:
+          'CDKD_ONCE_LEAK_DETECT=1 CDKD_ONCE_LEAK_IGNORE_ALLOWLIST=1 ' +
+          'vp test run tests/unit/scripts/once-leak-canary.test.ts',
+        cache: false,
+      },
       'gen:once-leak-allowlist': {
         command: 'node --experimental-strip-types scripts/gen-once-leak-allowlist.ts',
         cache: false,

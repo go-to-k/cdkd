@@ -61,6 +61,11 @@ import { afterEach, beforeEach, vi } from 'vite-plus/test';
  *                               primed value, unless its file is allow-listed
  *   CDKD_ONCE_LEAK_SNAPSHOT=dir record findings as JSON files in `dir` instead
  *                               of failing (used to regenerate the allow-list)
+ *   CDKD_ONCE_LEAK_IGNORE_ALLOWLIST=1
+ *                               ignore the grandfather list, so a known-leaking
+ *                               file MUST fail (the CI canary step — proves the
+ *                               detector still rejects rather than having gone
+ *                               silently dead)
  */
 
 export interface OnceLeak {
@@ -307,9 +312,14 @@ export const installOnceLeakDetector = (): void => {
       return;
     }
 
-    const allowed = await loadAllowList();
-    if (allowed.has(leaks[0].file)) {
-      return;
+    // The canary step sets this to prove the detector still REJECTS — with the
+    // grandfather list honoured, a dead detector and a clean tree produce the
+    // identical green result. See tests/unit/scripts/once-leak-canary.test.ts.
+    if (process.env.CDKD_ONCE_LEAK_IGNORE_ALLOWLIST !== '1') {
+      const allowed = await loadAllowList();
+      if (allowed.has(leaks[0].file)) {
+        return;
+      }
     }
 
     throw new Error(formatLeaks(leaks));
