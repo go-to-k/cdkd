@@ -20,14 +20,27 @@
 #     BOTH comparison sides. Two consecutive clean drift runs prove the
 #     canonicalization; an out-of-band RegisterTargets proves a real added
 #     member is still detected rather than absorbed.
-#   - AWS-RENAMED PROPERTY VALUES (issue #1643): the standalone
-#     `NumericProtocolIngress` rule declares `IpProtocol: '6'`, which EC2
-#     stores as `tcp` — so the recorded and read-back sides are two
-#     spellings of ONE protocol. `drift-protocol-normalize.ts` canonicalizes
-#     both sides; without it the clean-deploy drift runs (steps 3a / 3a2)
-#     report that rule forever and `--revert` cannot clear it, because it
-#     revokes and re-authorizes into the same state. This is the VALUE-
-#     mapping sibling of the ORDER canonicalization above.
+#   - AWS-RENAMED PROPERTY VALUES (issue #1643): EC2 stores `IpProtocol: 6`
+#     as `tcp`, so the recorded and read-back sides are two spellings of ONE
+#     protocol — the VALUE-mapping sibling of the ORDER canonicalization
+#     above. BOTH affected shapes are covered, because they break at
+#     DIFFERENT layers and one fix does not imply the other:
+#       * INLINE (`ArraysSecurityGroup`, 5th rule injected at the L1 since
+#         the L2 `addIngressRule` can only emit a name) — read back fine,
+#         but `'6'` vs `tcp` is phantom drift until
+#         `drift-protocol-normalize.ts` canonicalizes both comparison
+#         sides. `--revert` cannot clear it either: it revokes and
+#         re-authorizes into the same state.
+#       * STANDALONE (`NumericProtocolIngress`, on its OWN group) — breaks
+#         one layer LOWER. Its physicalId carries the protocol cdkd SENT
+#         (`sg-…|6|…`), so the rule lookup in
+#         `readSecurityGroupIngressCurrentState` matched no AWS rule at all
+#         and drift reported it as "drift unknown" forever; `sgProtocolKey`
+#         canonicalizes the identity so the AWS-side bag exists to compare.
+#     The standalone rule deliberately gets its own security group: on the
+#     shared one it would materialize a member into the parent's live
+#     `IpPermissions` that the parent's template does not declare, which is
+#     REAL drift on the parent (the #1498 sibling-materialization class).
 #
 # Steps:
 #   1. install + build cdkd (root) + install fixture deps

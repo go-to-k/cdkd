@@ -1124,6 +1124,82 @@ describe('EC2Provider.readCurrentState', () => {
       });
     });
 
+    // Issue #1643. The physicalId's protocol segment is what cdkd SENT, so a
+    // template `IpProtocol: 6` yields `sg-1|6|9443|9443` while AWS reports the
+    // rule as `tcp`. Before the fix BOTH the tuple pre-filter and the
+    // full-signature `sgRuleKey` compare missed, this method returned
+    // `undefined`, and `cdkd drift` reported the rule as "drift unknown"
+    // forever — measured live against real AWS on 2026-08-12.
+    it('matches a numeric-protocol physicalId against the NAME AWS substitutes (#1643)', async () => {
+      mockSend.mockResolvedValueOnce({
+        SecurityGroups: [
+          {
+            GroupId: 'sg-1',
+            IpPermissions: [
+              {
+                IpProtocol: 'tcp',
+                FromPort: 9443,
+                ToPort: 9443,
+                IpRanges: [{ CidrIp: '10.0.9.0/24', Description: 'numeric-protocol-6' }],
+              },
+            ],
+          },
+        ],
+      });
+
+      const result = await provider.readCurrentState(
+        'sg-1|6|9443|9443',
+        'Logical',
+        'AWS::EC2::SecurityGroupIngress',
+        {
+          GroupId: 'sg-1',
+          IpProtocol: '6',
+          FromPort: 9443,
+          ToPort: 9443,
+          CidrIp: '10.0.9.0/24',
+          Description: 'numeric-protocol-6',
+        }
+      );
+      // AWS's spelling is returned verbatim; collapsing it against the
+      // recorded '6' is the drift comparator's job (drift-protocol-normalize).
+      expect(result).toEqual({
+        GroupId: 'sg-1',
+        IpProtocol: 'tcp',
+        FromPort: 9443,
+        ToPort: 9443,
+        CidrIp: '10.0.9.0/24',
+        Description: 'numeric-protocol-6',
+      });
+    });
+
+    it('still returns undefined when a numeric protocol genuinely has no matching rule (#1643)', async () => {
+      // The canonicalization must not turn the lookup into a wildcard: udp (17)
+      // must not match the tcp rule.
+      mockSend.mockResolvedValueOnce({
+        SecurityGroups: [
+          {
+            GroupId: 'sg-1',
+            IpPermissions: [
+              {
+                IpProtocol: 'tcp',
+                FromPort: 9443,
+                ToPort: 9443,
+                IpRanges: [{ CidrIp: '10.0.9.0/24' }],
+              },
+            ],
+          },
+        ],
+      });
+
+      const result = await provider.readCurrentState(
+        'sg-1|17|9443|9443',
+        'Logical',
+        'AWS::EC2::SecurityGroupIngress',
+        { GroupId: 'sg-1', IpProtocol: '17', FromPort: 9443, ToPort: 9443, CidrIp: '10.0.9.0/24' }
+      );
+      expect(result).toBeUndefined();
+    });
+
     it('returns the first candidate when state passes no properties (best-effort, unique tuple)', async () => {
       mockSend.mockResolvedValueOnce({
         SecurityGroups: [

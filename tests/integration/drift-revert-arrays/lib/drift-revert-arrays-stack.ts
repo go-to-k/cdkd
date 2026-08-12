@@ -168,25 +168,57 @@ export class DriftRevertArraysStack extends cdk.Stack {
     securityGroup.addIngressRule(ec2.Peer.ipv4('10.0.1.0/24'), ec2.Port.tcp(8080), 'http-b');
     securityGroup.addIngressRule(ec2.Peer.ipv4('10.0.2.0/24'), ec2.Port.tcp(5432), 'pg-c');
     securityGroup.addIngressRule(ec2.Peer.ipv4('10.0.3.0/24'), ec2.Port.tcp(6379), 'redis-d');
-    // A STANDALONE ingress rule whose IpProtocol is a protocol NUMBER, not a
-    // name (issue #1643). The L2 `addIngressRule` above can only emit `tcp`,
-    // so this is the one shape that exercises AWS's own renaming: cdkd sends
-    // and records `'6'`, EC2 stores `tcp`, and `readSecurityGroupIngressCurrentState`
-    // reads `tcp` back. Without `drift-protocol-normalize.ts` canonicalizing
-    // BOTH sides, that is permanent phantom drift and step 3a below (a clean
-    // deploy must be drift-free) fails on every run.
-    new ec2.CfnSecurityGroupIngress(this, 'NumericProtocolIngress', {
-      groupId: securityGroup.securityGroupId,
-      ipProtocol: '6',
-      fromPort: 9443,
-      toPort: 9443,
-      cidrIp: '10.0.9.0/24',
-      description: 'numeric-protocol-6 (issue #1643)',
+    // ─── Numeric IpProtocol, INLINE-rule shape (issue #1643) ──────────
+    // AWS renames the four protocol numbers it has a name for, so a rule
+    // declaring `IpProtocol: '6'` is stored and read back as `tcp`. The L2
+    // `addIngressRule` above can only emit a name, so the numeric shape has to
+    // be injected at the L1. Without `drift-protocol-normalize.ts`
+    // canonicalizing BOTH comparison sides, the recorded `'6'` and the
+    // read-back `tcp` are two spellings of ONE protocol and step 3a below (a
+    // clean deploy must be drift-free) fails on every run.
+    const sgL1 = securityGroup.node.defaultChild as ec2.CfnSecurityGroup;
+    sgL1.addPropertyOverride('SecurityGroupIngress.4', {
+      IpProtocol: '6',
+      FromPort: 9443,
+      ToPort: 9443,
+      CidrIp: '10.0.9.0/24',
+      Description: 'numeric-protocol-6-inline (issue #1643)',
     });
 
     cdk.Tags.of(securityGroup).add('Zone', 'z1');
     cdk.Tags.of(securityGroup).add('Owner', 'cdkd-integ');
     cdk.Tags.of(securityGroup).add('Component', 'drift-revert-arrays');
+
+    // ─── Numeric IpProtocol, STANDALONE-rule shape (issue #1643) ──────
+    // The same renaming breaks the standalone type one layer LOWER: its
+    // physicalId is `<groupId>|<protocol>|<from>|<to>` built from the value
+    // cdkd SENT (`6`), while `readSecurityGroupIngressCurrentState` filters
+    // AWS's `IpPermissions[]` whose `IpProtocol` is `tcp` — so the lookup
+    // matched nothing, returned undefined, and `cdkd drift` reported the rule
+    // as "drift unknown" forever. That is invisible to a comparison-side fix
+    // (no AWS-side bag is ever produced), so the provider canonicalizes both
+    // sides of the tuple compare too.
+    //
+    // This rule gets its OWN security group, deliberately: attaching it to the
+    // group above would materialize a FIFTH member into that group's live
+    // `IpPermissions` while its template still declares four, which is real
+    // drift on the parent (the issue #1498 sibling-materialization class) and
+    // would fail this fixture for an unrelated reason. A group whose template
+    // declares NO ingress is exactly the shape `undeclaredEmptyObservedKeys`
+    // covers — the case its comment already names as "standalone SG rules".
+    const numericProtocolSg = new ec2.SecurityGroup(this, 'NumericProtocolSg', {
+      vpc,
+      description: 'drift-revert-arrays SG for the standalone numeric-protocol rule',
+      allowAllOutbound: true,
+    });
+    new ec2.CfnSecurityGroupIngress(this, 'NumericProtocolIngress', {
+      groupId: numericProtocolSg.securityGroupId,
+      ipProtocol: '6',
+      fromPort: 9444,
+      toPort: 9444,
+      cidrIp: '10.0.10.0/24',
+      description: 'numeric-protocol-6-standalone (issue #1643)',
+    });
     cdk.Tags.of(securityGroup).add('App', 'cdkd');
     cdk.Tags.of(securityGroup).add('Tier', 'test');
     cdk.Tags.of(securityGroup).add('Env', 'integ');
