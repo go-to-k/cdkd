@@ -100,6 +100,21 @@ describe('DynamoDBGlobalTableProvider sibling effectiveProperties arms (issue #1
     mockSend.mock.calls.find((c) => c[0].constructor.name === 'CreateTableCommand')?.[0]
       .input as Record<string, unknown>;
 
+  /**
+   * A live PROVISIONED table. The default mock reports PAY_PER_REQUEST, which
+   * equals the create-path fallback — so a case that must distinguish "the live
+   * reading" from "the default" cannot use it without passing vacuously.
+   */
+  const provisionedTableResponse = (): Record<string, unknown> => ({
+    Table: {
+      TableName: TABLE_NAME,
+      TableStatus: 'ACTIVE',
+      TableArn: `arn:aws:dynamodb:us-east-1:0:table/${TABLE_NAME}`,
+      BillingModeSummary: { BillingMode: 'PROVISIONED' },
+      Replicas: [{ RegionName: 'us-east-1', ReplicaStatus: 'ACTIVE' }],
+    },
+  });
+
   /** Every UpdateTable input this update issued. */
   const updateInputs = (): Array<Record<string, unknown>> =>
     mockSend.mock.calls
@@ -212,6 +227,26 @@ describe('DynamoDBGlobalTableProvider sibling effectiveProperties arms (issue #1
     expect(result.effectiveProperties).toBeUndefined();
   });
 
+  it('ANNOUNCES an ABSENT BillingMode on a replay create, but stays silent on a template create', async () => {
+    // The update arm DROPS the key when the record had none, so a replay can
+    // meet an absence nothing else reports — and an absence is not malformed,
+    // so neither the refusal nor replayWarn fires. A drop is only honest while
+    // something still says so.
+    const absent: Record<string, unknown> = { ...baseProps };
+    delete absent['BillingMode'];
+
+    await provider.create('MyTable', RESOURCE_TYPE, absent, { replayingState: true });
+    expect(childLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('declares no BillingMode')
+    );
+
+    childLogger.warn.mockReset();
+    await provider.create('MyTable', RESOURCE_TYPE, absent);
+    expect(childLogger.warn).not.toHaveBeenCalledWith(
+      expect.stringContaining('declares no BillingMode')
+    );
+  });
+
   it('KEEPS the PROVISIONED-only capacity blocks the substitution never sent (issue #1726)', async () => {
     // A DECISION, not an accident: substituting PAY_PER_REQUEST also skips the
     // provisioned-throughput call, so this block never reached AWS and is
@@ -305,34 +340,24 @@ describe('DynamoDBGlobalTableProvider sibling effectiveProperties arms (issue #1
     expect(updateInputs().some((i) => i['BillingMode'] === 'PAY_PER_REQUEST')).toBe(false);
     expect(result.effectiveProperties?.['BillingMode']).toBe('PROVISIONED');
     expect(result.effectiveProperties).toEqual({ ...desired, BillingMode: 'PROVISIONED' });
+    // The logicalId prefix is part of the assertion, not decoration: without it
+    // a stack with several GlobalTables cannot tell which one warned, and the
+    // integ's grep fence for this arm has nothing to anchor on. Removing the
+    // prefix leaves the rest of this suite green, so it is fenced here.
+    expect(childLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('AWS::DynamoDB::GlobalTable MyTable: ')
+    );
     expect(childLogger.warn).toHaveBeenCalledWith(expect.stringContaining('BillingMode'));
   });
 
-  it.each([
-    ['unusable', ''],
-    ['absent', undefined],
-  ])('DROPS the key when the recorded previous is %s', async (_label, previousMode) => {
-    // NOT `oldBilling`, which for these two shapes is the live DescribeTable
-    // reading and the create-path default respectively — one is a read-back
-    // value that belongs in observedProperties, the other invents a key the
-    // record never had. The mock reports PROVISIONED so neither could pass by
-    // coinciding with the `PAY_PER_REQUEST` fallback.
+  it('DROPS the key when the recorded previous is ABSENT', async () => {
+    // Recording anything here would INVENT a key the record never had — and
+    // `oldBilling` for this shape is the create-path default, on a table the
+    // mock reports as PROVISIONED, so the invented value would also be wrong.
     mockSend.mockReset();
-    mockSend.mockResolvedValue({
-      Table: {
-        TableName: TABLE_NAME,
-        TableStatus: 'ACTIVE',
-        TableArn: `arn:aws:dynamodb:us-east-1:0:table/${TABLE_NAME}`,
-        BillingModeSummary: { BillingMode: 'PROVISIONED' },
-        Replicas: [{ RegionName: 'us-east-1', ReplicaStatus: 'ACTIVE' }],
-      },
-    });
+    mockSend.mockResolvedValue(provisionedTableResponse());
     const previous: Record<string, unknown> = { ...baseProps };
-    if (previousMode === undefined) {
-      delete previous['BillingMode'];
-    } else {
-      previous['BillingMode'] = previousMode;
-    }
+    delete previous['BillingMode'];
 
     const result = await provider.update(
       'MyTable',
@@ -346,11 +371,32 @@ describe('DynamoDBGlobalTableProvider sibling effectiveProperties arms (issue #1
     expect('BillingMode' in (result.effectiveProperties ?? {})).toBe(false);
   });
 
+  it('RESTORES the live mode when the recorded previous is present but UNUSABLE', async () => {
+    // Dropping here instead would be the tidier-looking regression review
+    // caught: a dropped key reads as ABSENT next time, and the absent branch
+    // does not consult AWS, so a corrected PAY_PER_REQUEST template would
+    // compare equal and silently lose the flip on this live PROVISIONED table.
+    mockSend.mockReset();
+    mockSend.mockResolvedValue(provisionedTableResponse());
+
+    const result = await provider.update(
+      'MyTable',
+      TABLE_NAME,
+      RESOURCE_TYPE,
+      { ...baseProps, BillingMode: '' },
+      { ...baseProps, BillingMode: '' }
+    );
+
+    expect(result.effectiveProperties?.['BillingMode']).toBe('PROVISIONED');
+  });
+
   it('does NOT overwrite a recorded mode that AWS has drifted away from', async () => {
-    // Recording the LIVE mode here would silently reconcile an out-of-band
-    // re-price into the baseline — `cdkd drift`'s finding, not this arm's to
-    // erase. The mocked table reports PAY_PER_REQUEST against a recorded
-    // PROVISIONED.
+    // Fences the `liveBillingMode` answer specifically — NOT the `oldBilling`
+    // one, which for a USABLE recorded previous is that same recorded value.
+    // Recording the live mode would silently reconcile an out-of-band re-price
+    // into the baseline; that is `cdkd drift`'s finding, not this arm's to
+    // erase. The default mock reports PAY_PER_REQUEST against a recorded
+    // PROVISIONED, so the two answers differ here.
     const result = await provider.update(
       'MyTable',
       TABLE_NAME,

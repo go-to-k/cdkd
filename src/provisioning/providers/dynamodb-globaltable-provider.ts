@@ -354,6 +354,22 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
             }
           : {}
       );
+      // An ABSENT value is not malformed, so neither the refusal nor
+      // `replayWarn` fires and PAY_PER_REQUEST applies silently. On a REPLAY
+      // that absence can be one this provider's own update-path arm produced —
+      // it DROPS the key when the record had none rather than inventing one —
+      // so announce it, per `.claude/rules/providers.md`: a drop is only honest
+      // while something still says so. `LambdaUrlProvider.create` carries the
+      // same announcement for the same reason. A template-path create with a
+      // legitimately absent `BillingMode` stays silent, since there the default
+      // IS the declared intent.
+      if (billingReplayWarn && properties['BillingMode'] === undefined) {
+        this.logger.warn(
+          `AWS::DynamoDB::GlobalTable ${logicalId}: the state record declares no BillingMode, ` +
+            `so this replay creates the table PAY_PER_REQUEST. If it was PROVISIONED, set the ` +
+            `mode in the template and redeploy.`
+        );
+      }
     } catch (error) {
       throw new ProvisioningError(
         error instanceof Error ? error.message : String(error),
@@ -1681,23 +1697,37 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // reading, which is a read-back value — `.claude/rules/providers.md`
       // puts those in `observedProperties`, not in the `properties` baseline.
       //
-      // Recording the live mode would also MASK real drift: when a recorded
-      // PROVISIONED meets an out-of-band on-demand table, the difference is a
-      // finding for `cdkd drift` to report, not something this arm should
-      // quietly overwrite. So the SKIP's own rule applies unchanged — retain
-      // the PREVIOUS value — and when there is no usable previous the key is
-      // DROPPED rather than guessed, the same answer the GSI arm above and the
-      // Lambda URL `AuthType` arm (#1654) take.
+      // So the split is on ABSENCE, not on usability, and `oldBilling` is the
+      // right value for everything else — which is what the two guards above
+      // already decided, per shape:
+      //
+      //  - recorded previous PRESENT and usable: `oldBilling` IS that value, so
+      //    this retains it. It deliberately does not consult the live mode; an
+      //    out-of-band re-price is a finding for `cdkd drift` to report, not
+      //    something this arm should quietly reconcile away.
+      //  - recorded previous PRESENT but unusable: `oldBilling` is the live
+      //    `DescribeTable` reading the #1552 guard resolved for exactly this
+      //    shape, and recording it RESTORES a usable baseline. Dropping here
+      //    instead looks tidier and is a regression (caught in review): a
+      //    dropped key reads as ABSENT next time, and the absent branch does
+      //    NOT consult AWS — it defaults to PAY_PER_REQUEST — so a corrected
+      //    template asking for PAY_PER_REQUEST would compare equal, issue no
+      //    `UpdateTable`, and silently lose the flip on a live PROVISIONED
+      //    table that `readCurrentState` cannot even report.
+      //  - recorded previous ABSENT: `oldBilling` is the create-path default,
+      //    so recording it would INVENT a key the record never had on a table
+      //    AWS may hold as PROVISIONED. Dropped instead — the same answer the
+      //    GSI arm above and the Lambda URL `AuthType` arm (#1654) take, and
+      //    the record is left exactly as it was.
       if (billingUnusable) {
-        const recordedPreviousUsable =
-          typeof recordedOldBilling === 'string' && recordedOldBilling.trim() !== '';
         effectiveProperties = { ...(effectiveProperties ?? properties) };
-        if (recordedPreviousUsable) {
-          effectiveProperties['BillingMode'] = recordedOldBilling;
-        } else {
+        if (recordedOldBilling === undefined) {
           delete effectiveProperties['BillingMode'];
+        } else {
+          effectiveProperties['BillingMode'] = oldBilling;
         }
       }
+
       // Known residual, the update-side twin of issue #1726: with the flip
       // suppressed no provisioned-throughput or on-demand-ceiling call fires
       // either, yet the bag above still carries whatever capacity blocks the

@@ -1176,7 +1176,10 @@ fi
 # BillingMode override that stopped producing an unusable value would leave the
 # two assertions below passing for the wrong reason — state reads PROVISIONED
 # and the table IS PROVISIONED because nothing ever tried to change either.
-if ! grep -q "GlobalTable GsiProvRecoveryTable: .*BillingMode" "${JUNK_LOG}"; then
+# Anchored on the guard's OWN wording, not on the bare property name: the
+# #1552 baseline warning for an unusable RECORDED previous also names
+# BillingMode on this table, so a loose pattern could pass on the wrong warning.
+if ! grep -q "GlobalTable GsiProvRecoveryTable: .*is kept for this update" "${JUNK_LOG}"; then
   echo "FAIL: issue #1683 — cdkd did not report the malformed desired BillingMode on GsiProvRecoveryTable" >&2
   exit 1
 fi

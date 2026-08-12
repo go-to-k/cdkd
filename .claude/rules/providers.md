@@ -109,15 +109,20 @@ strict, each differently):
   record hands it to the NEXT deploy as its previous side (the #1552 class);
   where AWS reports a `BillingModeSummary` it also clears phantom drift, but a
   table created without an explicit mode returns none, so do not state that as
-  the whole payoff. What is retained is the RECORDED previous, NOT the mode the
-  update compared against: with an ABSENT recorded previous the latter is the
-  create-path default (recording it INVENTS a key on a possibly-PROVISIONED
-  table) and with an unusable one it is a live read-back, which belongs in
-  `observedProperties`. Recording the live mode would also MASK an out-of-band
-  re-price that `cdkd drift` should report. No usable previous therefore DROPS
-  the key rather than guessing. The create-side arm of the SAME property answers
-  differently — it records the SUBSTITUTED mode — because there the table really
-  was created on-demand.
+  the whole payoff. **The split is on ABSENCE, not on usability**, and getting
+  that wrong cost a review round in both directions. An ABSENT recorded previous
+  DROPS the key: the comparison baseline there is the create-path default, so
+  recording it would INVENT a key on a possibly-PROVISIONED table. Anything else
+  records the baseline the guards already resolved — which for a usable recorded
+  previous IS that value (so an out-of-band re-price stays a `cdkd drift`
+  finding rather than being reconciled away), and for a present-but-unusable one
+  is the live reading, which RESTORES a usable baseline. Do not "tidy" that last
+  case into a drop: a dropped key reads as ABSENT next time, and the absent
+  branch does not consult AWS, so a corrected template can compare equal, issue
+  no call, and silently lose a real flip. The create-side arm of the SAME
+  property answers differently — it records the SUBSTITUTED mode — because there
+  the table really was created on-demand; and because a DROP leaves an absence
+  nothing announces, that arm warns on a replay whose record declares no mode.
 - **SKIP the block** — GlobalTable `StreamSpecification` (defaulting would
   re-point a live stream's view type the template never asked to change).
 - **SUPPRESS the diff** — GlobalTable `GlobalSecondaryIndexes`, where the
