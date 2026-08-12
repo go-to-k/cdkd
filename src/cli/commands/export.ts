@@ -265,12 +265,8 @@ const PRIMARY_IDENTIFIER_FALLBACK: Record<string, string> = {
  *   into the synth template's `Properties` block. Defaults to the full
  *   `resourceIdentifier` map — correct for `AWS::ApiGateway::Method`, which
  *   has NO `readOnlyProperties` at all (live `DescribeType`, us-east-1,
- *   2026-08-12). `AWS::EC2::VPCGatewayAttachment` was listed here too and is
- *   NOT such a type: its identifier is `[AttachmentType, VpcId]` with
- *   `AttachmentType` read-only, so its splitter neither produces the right
- *   fields nor narrows the overlay — tracked as
- *   https://github.com/go-to-k/cdkd/issues/1691 rather than fixed here, since
- *   it is a different type's defect.
+ *   2026-08-12) — and for `AWS::ApiGateway::Stage` / `AWS::ApiGateway::Model`,
+ *   which likewise declare none.
  *   Sub-resource types whose
  *   primaryIdentifier includes a generated-id field (`ResourceId` /
  *   `IntegrationId` / `RouteId` / Lambda::Permission's `Id`) MUST narrow to just the writable
@@ -285,9 +281,11 @@ const PRIMARY_IDENTIFIER_FALLBACK: Record<string, string> = {
  * `src/provisioning/providers/*.ts` — most composites use `|` as the
  * separator; sub-resource types store only the secondary id). When the
  * per-type format does NOT match the order CFn expects (e.g.
- * `AWS::EC2::VPCGatewayAttachment` stores `IGW|VpcId` but CFn
- * primaryIdentifier is `[VpcId, InternetGatewayId]`), the splitter reorders
- * explicitly.
+ * `AWS::ApiGateway::Deployment` stores a bare `deploymentId` — or, on the
+ * Cloud Control route, `deploymentId|restApiId` — while CFn primaryIdentifier
+ * is `[DeploymentId, RestApiId]`), the splitter reorders explicitly. A field
+ * CFn declares but cdkd never stores (`AWS::EC2::VPCGatewayAttachment`'s
+ * read-only `AttachmentType`) is DERIVED from the recorded properties.
  *
  * Adding a new composite type: identify cdkd's physicalId format in the
  * matching `src/provisioning/providers/*.ts`, look up the CFn primary
@@ -369,17 +367,94 @@ const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
       propertiesOverlay: { RestApiId: restApiId },
     };
   },
-  // cdkd stores `IGW|VpcId` (ec2-provider.ts);
-  // CFn primary identifier is [VpcId, InternetGatewayId] — DIFFERENT order
-  // from cdkd. Splitter reorders explicitly. Both are writable Properties.
-  'AWS::EC2::VPCGatewayAttachment': (id) => {
-    const parts = id.split('|');
+  // cdkd's SDK provider stores `<gatewayId>|<vpcId>` (ec2-provider.ts's
+  // `createVpcGatewayAttachment`); the Cloud Control path — reached whenever
+  // the template trips the #614 silent-drop rule, e.g. by declaring
+  // `VpnGatewayId`, which the SDK provider does not handle — stores the CFn
+  // primaryIdentifier joined, i.e. `<AttachmentType>|<vpcId>`. Both shapes
+  // exist in state in the wild, so both are accepted.
+  //
+  // CFn primary identifier is [AttachmentType, VpcId] (live `DescribeType`,
+  // us-east-1, 2026-08-12) — NOT the [VpcId, InternetGatewayId] this entry
+  // claimed before issue #1691, which made `resolveCompositeId`'s field check
+  // throw and aborted `cdkd export` on every stack with a VPC + IGW.
+  // `AttachmentType` is `readOnlyProperties`, so the overlay narrows to
+  // `VpcId` — same narrowing, same reason, as the ApiGatewayV2::Integration
+  // splitter below.
+  'AWS::EC2::VPCGatewayAttachment': (physicalId, properties) => {
+    const parts = physicalId.split('|');
     if (parts.length !== 2) {
-      throw new Error(`expected 2 parts (IGW|VpcId), got ${parts.length}: '${id}'`);
+      throw new Error(
+        `expected 2 parts ('<gatewayId>|<vpcId>' or '<AttachmentType>|<vpcId>'), ` +
+          `got ${parts.length}: '${physicalId}'`
+      );
     }
-    const map = { VpcId: parts[1]!, InternetGatewayId: parts[0]! };
-    return { resourceIdentifier: map };
+    const [first, vpcId] = parts as [string, string];
+    if (!first || !vpcId) {
+      throw new Error(`empty part in composite physical id: '${physicalId}'`);
+    }
+    return {
+      resourceIdentifier: {
+        AttachmentType: resolveGatewayAttachmentType(first, properties),
+        VpcId: vpcId,
+      },
+      propertiesOverlay: { VpcId: vpcId },
+    };
   },
+  // cdkd's SDK provider stores the BARE `deploymentId` (apigateway-provider.ts's
+  // `createDeployment`); the Cloud Control path stores `deploymentId|restApiId`.
+  // CFn primary identifier is [DeploymentId, RestApiId] with `DeploymentId`
+  // read-only, so the overlay narrows to `RestApiId` (issue #1692).
+  'AWS::ApiGateway::Deployment': restApiChildSplitter({
+    resourceType: 'AWS::ApiGateway::Deployment',
+    childField: 'DeploymentId',
+    childFirstInCompositeId: true,
+    narrowOverlayToRestApiId: true,
+  }),
+  // cdkd's SDK provider stores the BARE `stageName` (apigateway-provider.ts's
+  // `createStage`); the Cloud Control path stores `restApiId|stageName`.
+  // CFn primary identifier is [RestApiId, StageName] and the type has NO
+  // read-only properties (live `DescribeType`, us-east-1, 2026-08-12), so the
+  // default whole-map overlay is correct — `StageName` is a writable Property
+  // the synth template already carries (issue #1692).
+  'AWS::ApiGateway::Stage': restApiChildSplitter({
+    resourceType: 'AWS::ApiGateway::Stage',
+    childField: 'StageName',
+    childFirstInCompositeId: false,
+    narrowOverlayToRestApiId: false,
+  }),
+  // cdkd's SDK provider stores the BARE `authorizerId` (apigateway-provider.ts's
+  // `createAuthorizer`); the Cloud Control path stores `restApiId|authorizerId`.
+  // CFn primary identifier is [RestApiId, AuthorizerId] with `AuthorizerId`
+  // read-only, so the overlay narrows to `RestApiId` (issue #1692).
+  'AWS::ApiGateway::Authorizer': restApiChildSplitter({
+    resourceType: 'AWS::ApiGateway::Authorizer',
+    childField: 'AuthorizerId',
+    childFirstInCompositeId: false,
+    narrowOverlayToRestApiId: true,
+  }),
+  // cdkd has no SDK provider for this type, so it always routes through Cloud
+  // Control, which stores `restApiId|name`. The bare form is still accepted so
+  // a future SDK provider needs no state migration. CFn primary identifier is
+  // [RestApiId, Name] and the type has NO read-only properties (live
+  // `DescribeType`, us-east-1, 2026-08-12), so the default overlay is correct
+  // — `Name` is a writable Property (issue #1692).
+  'AWS::ApiGateway::Model': restApiChildSplitter({
+    resourceType: 'AWS::ApiGateway::Model',
+    childField: 'Name',
+    childFirstInCompositeId: false,
+    narrowOverlayToRestApiId: false,
+  }),
+  // cdkd has no SDK provider for this type either, so it routes through Cloud
+  // Control, which stores `restApiId|requestValidatorId`. CFn primary
+  // identifier is [RestApiId, RequestValidatorId] with `RequestValidatorId`
+  // read-only, so the overlay narrows to `RestApiId` (issue #1692).
+  'AWS::ApiGateway::RequestValidator': restApiChildSplitter({
+    resourceType: 'AWS::ApiGateway::RequestValidator',
+    childField: 'RequestValidatorId',
+    childFirstInCompositeId: false,
+    narrowOverlayToRestApiId: true,
+  }),
   // cdkd stores just `IntegrationId` (apigatewayv2-provider.ts); the parent
   // `ApiId` lives in cdkd state's properties (`properties.ApiId`). CFn primary
   // identifier is [ApiId, IntegrationId]. ApiId IS a writable Property
@@ -438,6 +513,113 @@ const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
     };
   },
 };
+
+/**
+ * The two values CFn's `AWS::EC2::VPCGatewayAttachment.AttachmentType` takes.
+ * The field is `readOnlyProperties`, so cdkd never sends it — it only has to
+ * be reproduced for the IMPORT identifier map.
+ */
+const GATEWAY_ATTACHMENT_TYPES = ['InternetGateway', 'VPN'] as const;
+
+/**
+ * Resolve `AttachmentType` for an `AWS::EC2::VPCGatewayAttachment` from the
+ * first segment of cdkd's composite physicalId plus the recorded properties.
+ *
+ * The Cloud-Control-written shape already carries the attachment type verbatim
+ * (it is the CFn primaryIdentifier's first field). The SDK-written shape
+ * carries the gateway id instead, so the type is derived from WHICH gateway
+ * property cdkd recorded — never hardcoded to `InternetGateway`, which would
+ * ship a wrong identifier for a VPN attachment and make CFn's identifier-match
+ * reject the import.
+ */
+function resolveGatewayAttachmentType(
+  firstSegment: string,
+  properties: Record<string, unknown>
+): string {
+  if ((GATEWAY_ATTACHMENT_TYPES as readonly string[]).includes(firstSegment)) {
+    return firstSegment;
+  }
+  if (typeof properties['InternetGatewayId'] === 'string' && properties['InternetGatewayId']) {
+    return 'InternetGateway';
+  }
+  if (typeof properties['VpnGatewayId'] === 'string' && properties['VpnGatewayId']) {
+    return 'VPN';
+  }
+  // Last resort: the gateway id itself names the kind (`igw-…` / `vgw-…`).
+  if (firstSegment.startsWith('igw-')) {
+    return 'InternetGateway';
+  }
+  if (firstSegment.startsWith('vgw-')) {
+    return 'VPN';
+  }
+  throw new Error(
+    `cannot determine AttachmentType for AWS::EC2::VPCGatewayAttachment: cdkd state's ` +
+      `properties carry neither 'InternetGatewayId' nor 'VpnGatewayId', and the physical id ` +
+      `segment '${firstSegment}' is not a recognized gateway id. State entry may be corrupt ` +
+      `or written by an older cdkd binary; re-deploy the resource to refresh state.`
+  );
+}
+
+/**
+ * Build a splitter for an `AWS::ApiGateway::*` child type whose CFn primary
+ * identifier is the parent `RestApiId` plus one child field.
+ *
+ * Two stored shapes are accepted, because both exist in state in the wild:
+ * the SDK providers store the BARE child value and read the parent from the
+ * recorded properties, while a type routed through Cloud Control by the #614
+ * silent-drop rule stores CC's `|`-joined composite — in CFn
+ * primaryIdentifier order, which is why `childFirstInCompositeId` exists
+ * (`AWS::ApiGateway::Deployment` declares `[DeploymentId, RestApiId]`, every
+ * other member of the family declares `RestApiId` first).
+ *
+ * `narrowOverlayToRestApiId` is set for the types whose child field is
+ * `readOnlyProperties` — writing one into the synth template's `Properties`
+ * is rejected by CFn at changeset-create.
+ */
+function restApiChildSplitter(options: {
+  resourceType: string;
+  childField: string;
+  childFirstInCompositeId: boolean;
+  narrowOverlayToRestApiId: boolean;
+}): CompositeIdSplitter {
+  const { resourceType, childField, childFirstInCompositeId, narrowOverlayToRestApiId } = options;
+  const compositeShape = childFirstInCompositeId
+    ? `<${childField}>|<restApiId>`
+    : `<restApiId>|<${childField}>`;
+
+  return (physicalId, properties) => {
+    // `.trim()`, not truthiness: a blank id is as unusable as an empty one and
+    // would otherwise ship a whitespace identifier into the changeset.
+    if (!physicalId.trim()) {
+      throw new Error(`empty physical id for ${resourceType} (expected a ${childField})`);
+    }
+    const parts = physicalId.split('|');
+    if (parts.length > 2) {
+      throw new Error(
+        `expected a bare ${childField} or '${compositeShape}', got ${parts.length} parts: ` +
+          `'${physicalId}'`
+      );
+    }
+
+    let restApiId: string;
+    let childValue: string;
+    if (parts.length === 2) {
+      const [a, b] = parts as [string, string];
+      if (!a || !b) {
+        throw new Error(`empty part in '${compositeShape}': '${physicalId}'`);
+      }
+      [restApiId, childValue] = childFirstInCompositeId ? [b, a] : [a, b];
+    } else {
+      restApiId = readStringProperty(properties, 'RestApiId', resourceType);
+      childValue = physicalId;
+    }
+
+    const resourceIdentifier = { RestApiId: restApiId, [childField]: childValue };
+    return narrowOverlayToRestApiId
+      ? { resourceIdentifier, propertiesOverlay: { RestApiId: restApiId } }
+      : { resourceIdentifier };
+  };
+}
 
 function readStringProperty(
   properties: Record<string, unknown>,
