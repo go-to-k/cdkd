@@ -249,7 +249,7 @@ jobs:
   # wait on. It is also why the detector is env-gated OFF by default — the
   # normal `vp run test` is byte-for-byte unaffected by this landing.
   #
-  # The 15 files in tests/once-leak-allowlist.json are grandfathered. Fixing one
+  # The files in tests/once-leak-allowlist.json are grandfathered. Fixing one
   # and dropping it from the list is the intended ratchet direction; adding a
   # new entry is not, and a new test file that leaks fails this job.
   once-leak-detect:
@@ -273,8 +273,18 @@ jobs:
       # leaks on purpose, so ignoring the allow-list MUST fail it.
       - name: detector canary — a known leak must still be caught
         run: |
-          if vp run test:once-leak-canary; then
-            echo "::error::the *Once-leak detector reported no leak in tests/unit/scripts/once-leak-canary.test.ts, which leaks deliberately — the detector has gone dead (check @vitest/spy internals and the vi.fn patch in tests/setup.ts)"
+          set +e
+          vp run test:once-leak-canary > canary.log 2>&1
+          rc=$?
+          set -e
+          cat canary.log
+          # Assert on the detector's OWN message, not merely on a non-zero exit.
+          # A deleted or renamed canary file makes `vp test run <missing>` exit 1
+          # with "No test files found", and so does a syntax error or a failed
+          # install -- each of which would let this step pass while the detector
+          # is dead. That is the exact vacuous pass the step exists to close.
+          if [ "${rc}" -eq 0 ] || ! grep -q 'primed by an EARLIER test' canary.log; then
+            echo "::error::the *Once-leak detector did not report the deliberate leak in tests/unit/scripts/once-leak-canary.test.ts (exit ${rc}). Either the detector has gone dead (check @vitest/spy internals and the vi.fn patch in tests/setup.ts), or the canary file itself is missing / broken."
             exit 1
           fi
 

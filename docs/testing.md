@@ -1008,12 +1008,12 @@ leaks on purpose, and a CI step requires that running it with the allow-list
 ignored still FAILS. That is what stops a silently-broken detector from looking
 identical to a clean tree. Do not "fix" that suite's priming.
 
-Three files leaked when the detector landed and are grandfathered in
+Three pre-existing files leaked when the detector landed and are grandfathered in
 `tests/once-leak-allowlist.json`; fixing them is tracked by
 [issue #1655](https://github.com/go-to-k/cdkd/issues/1655). Fixing one and
-dropping it from that list is the intended direction — an empty list is the goal
-state. Adding an entry is not, and a new test file that leaks fails CI.
-Regenerate the list with `vp run gen:once-leak-allowlist`.
+dropping it from that list is the intended direction — a list holding nothing but
+the canary is the goal state. Adding an entry is not, and a new test file that
+leaks fails CI. Regenerate the list with `vp run gen:once-leak-allowlist`.
 
 Note what this deliberately does NOT do: it does not require `mockReset()` in
 every suite that uses a `*Once` primer. That was the original proposal, and

@@ -48,6 +48,16 @@ describe('once-leak allow-list', () => {
     expect(allowList.files).toEqual([...new Set(allowList.files)].sort());
   });
 
+  it('always contains the canary, which leaks by construction', () => {
+    // The floor that does NOT deadlock the bootstrap. `once-leak-canary.test.ts`
+    // leaks deliberately and permanently, so a regeneration that saw ANYTHING
+    // re-adds it. Its absence therefore means the last regeneration observed no
+    // leak at all — a dead detector — and this fails at unit level rather than
+    // waiting for the CI-only canary step. An empty `files` array would
+    // otherwise satisfy every other assertion in this file vacuously.
+    expect(allowList.files).toContain('tests/unit/scripts/once-leak-canary.test.ts');
+  });
+
   it('covers only a small minority of the suite', () => {
     // A cap, not a floor. A regeneration that somehow recorded every file would
     // produce a green CI job protecting nothing, so the size is bounded — but

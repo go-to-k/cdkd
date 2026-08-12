@@ -2,6 +2,8 @@
 
 import { afterEach, beforeEach, vi } from 'vite-plus/test';
 
+import { constructImplementation } from './constructable-implementation.js';
+
 /**
  * Runtime `*Once`-leak detector (issue #1618).
  *
@@ -49,6 +51,12 @@ import { afterEach, beforeEach, vi } from 'vite-plus/test';
  * A value primed outside any test — in `beforeAll` / `afterAll`, where there is
  * no owning test — is never flagged, because there is no cross-test boundary to
  * cross.
+ *
+ * One carve-out: ownership is a single module-global, which cannot represent
+ * the interleaving of `it.concurrent` / `describe.concurrent`. Those tests are
+ * opted OUT of tracking rather than reported wrongly, so the no-false-positive
+ * property holds at the cost of no coverage there. The repo has no concurrent
+ * tests today.
  *
  * ## Gating
  *
@@ -145,6 +153,17 @@ export const beginTest = (file: string, name: string): void => {
   findings = [];
 };
 
+/**
+ * Enter a window where nothing is attributed — used for concurrent tests, whose
+ * interleaving a single module-global owner cannot represent. A value primed or
+ * consumed while suspended has `owner === null` / `currentTest === null` and is
+ * therefore never reported.
+ */
+export const suspendTracking = (): void => {
+  currentTest = null;
+  findings = [];
+};
+
 /** Mark the end of a test and take whatever it accumulated. */
 export const endTest = (): OnceLeak[] => {
   const collected = findings;
@@ -179,11 +198,20 @@ export const instrumentMock = <T>(candidate: T): T => {
     stats.primings += 1;
     const owner = currentTest;
 
-    // `new.target` is forwarded through `Reflect.construct` rather than
-    // swallowed by an `.apply`, because the primers' own bodies branch on it
-    // (`mockResolvedValueOnce` throws when constructed) and constructor mocks
-    // rely on it. An arrow implementation stays non-constructable exactly as it
-    // was before this wrapper.
+    // `new.target` is forwarded rather than swallowed by a bare `.apply`,
+    // because the primers' own bodies branch on it (`mockResolvedValueOnce`
+    // throws when constructed) and constructor mocks rely on it.
+    //
+    // It goes through `constructImplementation`, NOT a bare `Reflect.construct`.
+    // This wrapper is a `function` declaration and therefore constructable, so
+    // setup.ts's `wrapConstructableImplementation` — which runs OUTSIDE this
+    // one — sees a constructable value and passes it straight through. The raw
+    // implementation underneath never gets that guard, and a non-constructable
+    // one (an arrow) then dies on `Reflect.construct` under the detector while
+    // working fine without it. That divergence between `vp run test` and
+    // `vp run test:once-leak` was a review blocker on the PR that added this;
+    // `constructImplementation` reapplies the guard the outer wrapper can no
+    // longer see.
     function consumeOnce(this: unknown, ...args: unknown[]) {
       stats.consumptions += 1;
 
@@ -202,7 +230,7 @@ export const instrumentMock = <T>(candidate: T): T => {
       }
 
       if (new.target) {
-        return Reflect.construct(implementation, args, new.target);
+        return constructImplementation(implementation, this, args, new.target);
       }
       return implementation.apply(this, args);
     }
@@ -211,6 +239,29 @@ export const instrumentMock = <T>(candidate: T): T => {
   }) as MockLike['mockImplementationOnce'];
 
   return candidate;
+};
+
+/**
+ * Patch a `vi`-shaped object's mock FACTORIES so every mock they hand out is
+ * instrumented.
+ *
+ * Split out of `installOnceLeakDetector` purely so it is unit-testable: that
+ * function also registers `beforeEach` / `afterEach`, which cannot be called
+ * from inside a running test. Without this seam the `spyOn` arm had no coverage
+ * at all — deleting it left every check green while the 13 real `tests/unit/**`
+ * files that combine `vi.spyOn` with a `*Once` primer silently lost protection.
+ * That is the "one dead shape hides under an aggregate floor" case in
+ * `.claude/rules/testing.md`.
+ */
+export const instrumentMockFactories = (target: {
+  fn: (...args: any[]) => unknown;
+  spyOn: (...args: any[]) => unknown;
+}): void => {
+  const originalFn = target.fn.bind(target);
+  target.fn = (...args: unknown[]) => instrumentMock(originalFn(...args));
+
+  const originalSpyOn = target.spyOn.bind(target);
+  target.spyOn = (...args: unknown[]) => instrumentMock(originalSpyOn(...args));
 };
 
 const formatLeaks = (leaks: readonly OnceLeak[]): string => {
@@ -282,12 +333,7 @@ export const installOnceLeakDetector = (): void => {
     return;
   }
 
-  const originalFn = vi.fn.bind(vi);
-  vi.fn = ((implementation?: never) => instrumentMock(originalFn(implementation))) as typeof vi.fn;
-
-  const originalSpyOn = vi.spyOn.bind(vi) as (...args: unknown[]) => unknown;
-  vi.spyOn = ((...args: unknown[]) =>
-    instrumentMock(originalSpyOn(...args))) as unknown as typeof vi.spyOn;
+  instrumentMockFactories(vi);
 
   // Registered from the setup file, so this `beforeEach` runs BEFORE any
   // suite-level one (outer-to-inner) and this `afterEach` runs AFTER any
@@ -296,6 +342,18 @@ export const installOnceLeakDetector = (): void => {
   // for, and a suite that tears down in `afterEach` has already done so before
   // the report is taken.
   beforeEach((context) => {
+    // A concurrent test interleaves with its siblings, so a single
+    // module-global "current test" cannot attribute a consumption correctly —
+    // a still-running test's own read would compare against a later sibling's
+    // token and report a phantom leak. Opt those out rather than emit nonsense.
+    // There are no `it.concurrent` / `describe.concurrent` tests in this repo
+    // today; this keeps the first one that appears from producing an
+    // unexplainable failure.
+    if (context.task.concurrent === true) {
+      suspendTracking();
+      return;
+    }
+
     beginTest(context.task.file?.filepath ?? '<unknown>', context.task.name);
   });
 

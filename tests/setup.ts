@@ -2,6 +2,11 @@
 
 import { vi } from 'vite-plus/test';
 
+import {
+  isConstructable,
+  wrapConstructableImplementation,
+  type MockableImplementation,
+} from './constructable-implementation.js';
 import { installOnceLeakDetector } from './once-leak-detector.js';
 
 /**
@@ -48,32 +53,6 @@ import { installOnceLeakDetector } from './once-leak-detector.js';
  */
 
 const originalViFn = vi.fn.bind(vi);
-type MockableImplementation =
-  | ((this: unknown, ...args: any[]) => any)
-  | (new (...args: any[]) => any);
-
-const isConstructable = (
-  fn: MockableImplementation
-): fn is new (...args: any[]) => any => {
-  try {
-    Reflect.construct(function () {}, [], fn);
-    return true;
-  } catch {
-    return false;
-  }
-};
-
-const wrapConstructableImplementation = (
-  implementation: MockableImplementation
-): MockableImplementation => {
-  if (isConstructable(implementation)) {
-    return implementation;
-  }
-
-  return function (this: unknown, ...args: unknown[]) {
-    return implementation.apply(this, args);
-  };
-};
 
 const wrapMockImplementationSetters = <T extends ReturnType<typeof originalViFn>>(mock: T): T => {
   const mockImplementation = mock.mockImplementation.bind(mock);

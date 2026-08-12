@@ -24,11 +24,12 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+/** Mirror of the `OnceLeak` shape emitted by `tests/once-leak-detector.ts`. */
 interface OnceLeakRecord {
   file: string;
   test: string;
+  primedBy: string;
   mock: string;
-  pending: number;
 }
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -38,6 +39,9 @@ const vpCommand = (): string => {
   const local = join(repoRoot, 'node_modules', '.bin', process.platform === 'win32' ? 'vp.cmd' : 'vp');
   return existsSync(local) ? local : 'vp';
 };
+
+/** Signals an expected abort whose message is already user-facing. */
+class GenerationAborted extends Error {}
 
 const snapshotDir = mkdtempSync(join(tmpdir(), 'cdkd-once-leak-'));
 
@@ -65,12 +69,16 @@ try {
   // A non-zero exit is tolerated only when it is NOT the detector talking:
   // snapshot mode never throws, so a failure here is a genuinely broken suite
   // and the resulting list would be partial.
+  //
+  // `process.exitCode` + `throw`, never `process.exit()`: an exit() here would
+  // skip the `finally` below and leak a `cdkd-once-leak-*` directory into the
+  // OS temp dir on every failed regeneration (confirmed on Node 24).
   if (result.status !== 0) {
-    console.error(
-      `\nvp test run exited with ${result.status ?? 'a signal'}. The allow-list was NOT written — ` +
+    process.exitCode = 1;
+    throw new GenerationAborted(
+      `vp test run exited with ${result.status ?? 'a signal'}. The allow-list was NOT written — ` +
         'fix the failing tests first, otherwise the snapshot only covers the files that ran.'
     );
-    process.exit(1);
   }
 
   const records = readdirSync(snapshotDir).flatMap(
@@ -100,6 +108,11 @@ try {
   console.log(
     `\nWrote ${allowListPath}\n  ${records.length} leak record(s) across ${files.length} file(s).`
   );
+} catch (error) {
+  if (!(error instanceof GenerationAborted)) {
+    throw error;
+  }
+  console.error(`\n${error.message}`);
 } finally {
   rmSync(snapshotDir, { force: true, recursive: true });
 }
