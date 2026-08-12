@@ -757,8 +757,12 @@ function recordedPropertiesAfterReplayCreate(
   restored: Omit<ResourceState, 'observedProperties'>,
   result: ResourceCreateResult
 ): ResourceState['properties'] {
-  // Copied, not aliased: the record outlives the call and a provider is free
-  // to keep mutating the object it handed back.
+  // The PROVIDER's bag is copied, not aliased: the record outlives the call
+  // and a provider is free to keep mutating the object it handed back. The
+  // fallback deliberately passes `restored.properties` through by reference —
+  // that is cdkd's own state object and is exactly what the pre-#1682 spread
+  // of `prevRecord` already put on the record, so copying it here would be a
+  // behavior change smuggled in under a no-op.
   return result.effectiveProperties ? { ...result.effectiveProperties } : restored.properties;
 }
 
