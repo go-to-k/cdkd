@@ -837,6 +837,34 @@ export class CustomResourceProvider implements ResourceProvider {
         };
       }
 
+      // Terminal FAILED that NOTHING explained (issue #1687): the reason carried
+      // no authz wording and the log matched no signal either, so this is the
+      // 404 / traceback / JSON-decode class. #1674 fixed the diagnostic only for
+      // the authz subset; for everything else cdkd had decoded the tail and then
+      // thrown it away, leaving the user with `returned non-zero exit status 1.`
+      // and a trip to CloudWatch — literally the second half of what #1674
+      // reported.
+      //
+      // EPHEMERAL and capped, never folded into the reason: a reason is
+      // persisted to `deployments/{runId}.jsonl`, which outlives `cdkd destroy`
+      // and is contractually free of anything that may carry secrets, and a log
+      // tail is arbitrary handler stdout. That is the same data-class split the
+      // `FunctionError` arm makes — this is its FAILED-path twin.
+      // `reasonIsAuthz` is excluded on purpose: there the reason ALREADY names
+      // the cause (that is the #756 path), so dumping the tail beside it is
+      // noise on a failure that is already explained. The `logAuthzMatch` case
+      // has returned above for the same reason.
+      if (cfnResponse.Status === 'FAILED' && !reasonIsAuthz) {
+        const logTail = decodeInvokeLogTail(logResult);
+        if (logTail !== undefined) {
+          this.logger.warn(
+            `Custom resource ${operation} for ${logicalId} failed. Its reason carries no ` +
+              `recognizable cause, so here is the backing function's invocation log tail:\n` +
+              this.truncateReason(logTail, CR_LOG_TAIL_WARN_MAX_CHARS)
+          );
+        }
+      }
+
       return cfnResponse;
     }
   }
