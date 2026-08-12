@@ -104,6 +104,80 @@ function importableString(value: unknown): string | undefined {
 }
 
 /**
+ * Read the `CatalogId` a Glue DELETE call must target, out of the properties
+ * bag `ResourceProvider.delete` receives (issue
+ * [#1675](https://github.com/go-to-k/cdkd/issues/1675)).
+ *
+ * `CatalogId` selects the Data Catalog; OMITTING it means the caller's own
+ * account's DEFAULT catalog. So for a table / database / connection that lives
+ * in a NON-default catalog (a cross-account Data Catalog, a Lake Formation
+ * federated catalog) a delete that drops the field targets the wrong catalog,
+ * AWS answers `EntityNotFoundException`, and the delete path's warn-and-continue
+ * idempotency treats that as "already gone" — `cdkd destroy` reports SUCCESS
+ * while the resource is still there. A silent LEAK, not a loud failure.
+ *
+ * cdkd's physical ids for these types encode no catalog (`<db>|<table>` for a
+ * table, the bare name for a database / connection), so the id cannot carry it
+ * — but the properties bag can, and `CatalogId` is a declared property of all
+ * three types.
+ *
+ * The value is read through {@link importableString} for the reason the import
+ * path already documents: a state record written by `cdkd import` holds the RAW
+ * template value, so `CatalogId: {Ref: AWS::AccountId}` (what
+ * `@aws-cdk/aws-glue-alpha` renders for an environment-agnostic stack) survives
+ * as an OBJECT. A bare `as string` cast would hand that object to the Glue API
+ * as if it were a catalog id. Dropping it instead matches the API default (the
+ * caller's own account), which is what the intrinsic would have resolved to.
+ *
+ * `declaredButUnusable` reports exactly that drop, and it is what lets the
+ * NotFound arm DISCRIMINATE. A NotFound after a correctly-targeted delete is
+ * legitimately idempotent; a NotFound after cdkd knowingly fell back to the
+ * default catalog is not evidence of anything, so the caller warns instead of
+ * logging at debug. It stays a WARNING rather than a throw: the delete path's
+ * policy is warn-and-continue, and failing here would strand a `cdkd destroy`
+ * on a resource that is very often genuinely gone.
+ */
+function deleteCatalogId(properties: Record<string, unknown> | undefined): {
+  catalogId: string | undefined;
+  declaredButUnusable: boolean;
+} {
+  const raw = properties?.['CatalogId'];
+  const catalogId = importableString(raw);
+  return { catalogId, declaredButUnusable: catalogId === undefined && raw != null };
+}
+
+/**
+ * Report the `EntityNotFoundException` arm of a Glue delete, at the severity
+ * the evidence supports (issue #1675).
+ *
+ * With a correctly-targeted delete a NotFound means the resource is already
+ * gone and the skip is ordinary idempotency — debug. When the template DECLARED
+ * a `CatalogId` that {@link deleteCatalogId} could not use, cdkd addressed the
+ * DEFAULT catalog instead, so a NotFound is equally consistent with "the
+ * resource is alive in the declared catalog" — that is the silent-leak shape,
+ * and it gets a warning naming the remedy.
+ */
+function logCatalogScopedDeleteSkip(
+  logger: { debug: (message: string) => void; warn: (message: string) => void },
+  declaredButUnusable: boolean,
+  kind: 'Database' | 'Table' | 'Connection',
+  logicalId: string,
+  physicalId: string
+): void {
+  if (!declaredButUnusable) {
+    logger.debug(`Glue ${kind} ${physicalId} does not exist, skipping deletion`);
+    return;
+  }
+  logger.warn(
+    `Glue ${kind} ${logicalId} (${physicalId}) was not found, so cdkd skipped its deletion — ` +
+      `but the recorded CatalogId is not a usable string (likely an unresolved intrinsic), so ` +
+      `the delete targeted this account's DEFAULT Data Catalog. If the resource lives in a ` +
+      `different Data Catalog it still exists. Record a literal CatalogId (or delete the ` +
+      `resource manually) and re-run.`
+  );
+}
+
+/**
  * Resolve the `(databaseName, tableName)` pair an `AWS::Glue::Table` import
  * should probe, from either physicalId shape (issue #1651).
  *
@@ -467,12 +541,19 @@ export class GlueProvider implements ResourceProvider {
   ): Promise<void> {
     this.logger.debug(`Deleting Glue Database ${logicalId}: ${physicalId}`);
 
+    const { catalogId, declaredButUnusable } = deleteCatalogId(properties);
+    if (declaredButUnusable) {
+      this.logger.debug(
+        `Glue Database ${logicalId}: CatalogId is not a usable string (likely an unresolved ` +
+          `intrinsic), so DeleteDatabase targets the account's default Data Catalog.`
+      );
+    }
+
     try {
-      const catalogId = properties?.['CatalogId'] as string | undefined;
       await this.getClient().send(
         new DeleteDatabaseCommand({
           Name: physicalId,
-          ...(catalogId && { CatalogId: catalogId }),
+          ...(catalogId !== undefined && { CatalogId: catalogId }),
         })
       );
       this.logger.debug(`Successfully deleted Glue Database ${logicalId}`);
@@ -486,7 +567,13 @@ export class GlueProvider implements ResourceProvider {
           logicalId,
           physicalId
         );
-        this.logger.debug(`Glue Database ${physicalId} does not exist, skipping deletion`);
+        logCatalogScopedDeleteSkip(
+          this.logger,
+          declaredButUnusable,
+          'Database',
+          logicalId,
+          physicalId
+        );
         return;
       }
       const cause = error instanceof Error ? error : undefined;
@@ -744,7 +831,7 @@ export class GlueProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    _properties?: Record<string, unknown>,
+    properties?: Record<string, unknown>,
     context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting Glue Table ${logicalId}: ${physicalId}`);
@@ -755,9 +842,22 @@ export class GlueProvider implements ResourceProvider {
       return;
     }
 
+    // `CatalogId` must be threaded here or the delete silently targets this
+    // account's DEFAULT Data Catalog — see {@link deleteCatalogId} for the leak
+    // this closes (issue #1675). `createTable` and `importTable` both forward
+    // it; this call omitted it.
+    const { catalogId, declaredButUnusable } = deleteCatalogId(properties);
+    if (declaredButUnusable) {
+      this.logger.debug(
+        `Glue Table ${logicalId}: CatalogId is not a usable string (likely an unresolved ` +
+          `intrinsic), so DeleteTable targets the account's default Data Catalog.`
+      );
+    }
+
     try {
       await this.getClient().send(
         new DeleteTableCommand({
+          ...(catalogId !== undefined && { CatalogId: catalogId }),
           DatabaseName: databaseName,
           Name: tableName,
         })
@@ -773,7 +873,7 @@ export class GlueProvider implements ResourceProvider {
           logicalId,
           physicalId
         );
-        this.logger.debug(`Glue Table ${physicalId} does not exist, skipping deletion`);
+        logCatalogScopedDeleteSkip(this.logger, declaredButUnusable, 'Table', logicalId, physicalId);
         return;
       }
       const cause = error instanceof Error ? error : undefined;
@@ -3649,12 +3749,22 @@ export class GlueConnectionProvider implements ResourceProvider {
     context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting Glue Connection ${logicalId}: ${physicalId}`);
-    const catalogId = properties?.['CatalogId'] as string | undefined;
+    // Same catalog-scoping rule as the Table / Database deletes — see
+    // {@link deleteCatalogId} (issue #1675). This call already forwarded
+    // `CatalogId`, but through a bare cast that would have sent an unresolved
+    // intrinsic OBJECT to the API.
+    const { catalogId, declaredButUnusable } = deleteCatalogId(properties);
+    if (declaredButUnusable) {
+      this.logger.debug(
+        `Glue Connection ${logicalId}: CatalogId is not a usable string (likely an unresolved ` +
+          `intrinsic), so DeleteConnection targets the account's default Data Catalog.`
+      );
+    }
     try {
       await this.getClient().send(
         new DeleteConnectionCommand({
           ConnectionName: physicalId,
-          ...(catalogId && { CatalogId: catalogId }),
+          ...(catalogId !== undefined && { CatalogId: catalogId }),
         })
       );
     } catch (error) {
@@ -3667,7 +3777,13 @@ export class GlueConnectionProvider implements ResourceProvider {
           logicalId,
           physicalId
         );
-        this.logger.debug(`Glue Connection ${physicalId} does not exist, skipping deletion`);
+        logCatalogScopedDeleteSkip(
+          this.logger,
+          declaredButUnusable,
+          'Connection',
+          logicalId,
+          physicalId
+        );
         return;
       }
       const cause = error instanceof Error ? error : undefined;
