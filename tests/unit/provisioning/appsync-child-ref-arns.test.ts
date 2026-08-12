@@ -17,9 +17,9 @@ vi.mock('@aws-sdk/client-appsync', async () => {
 
 // Same shape the CloudControlProvider suites use — the provider's ARN
 // reconstruction goes through the shared STS-backed resolver, and a unit test
-// must not reach STS. Hoisted so individual tests can make it REJECT (see the
-// issue #1710 placement test at the bottom); a `vi.mock` factory cannot close
-// over an ordinary outer binding.
+// must not reach STS. Hoisted so individual tests can make it REJECT (the
+// ARN-build-failure cases below) or return a different REGION (the partition
+// cases); a `vi.mock` factory cannot close over an ordinary outer binding.
 const { mockGetAccountInfo } = vi.hoisted(() => ({
   mockGetAccountInfo: vi.fn(),
 }));
@@ -202,52 +202,106 @@ describe('AppSyncProvider records real ARNs for the child types (issue #1681)', 
 
   // A record too malformed to rebuild from must report NO attributes, so the
   // engine carries the existing ones forward instead of a guessed set.
-  it('update of a mis-arity child id reports no attributes', async () => {
+  // All three types, not just Resolver: a 4-part id also clears
+  // `updateDataSource`'s and `updateApiKey`'s own truthiness guards, so each
+  // reaches the same `return undefined` arm by its own route.
+  it.each([
+    ['AWS::AppSync::Resolver', 'abcd1234|a|b|c', { DataSourceName: 'changed' }],
+    ['AWS::AppSync::DataSource', 'abcd1234|a|b|c', { Name: 'a', Description: 'changed' }],
+    ['AWS::AppSync::ApiKey', 'abcd1234|a|b|c', { Description: 'changed' }],
+  ])('update of a mis-arity %s id reports no attributes', async (resourceType, id, props) => {
     mockSend.mockResolvedValue({});
 
-    const result = await provider.update(
-      'X',
-      'abcd1234|a|b|c',
-      'AWS::AppSync::Resolver',
-      { DataSourceName: 'changed' },
-      {}
-    );
+    const result = await provider.update('X', id, resourceType, props, {});
 
     expect(result.attributes).toBeUndefined();
   });
 
-  // Issue #1710 class: `buildAppSyncArn` is async (it can reach STS), so it
-  // must run OUTSIDE the try that wraps the create call. A throw after a
-  // successful AWS mutation would be re-wrapped as
-  // `ProvisioningError('Failed to create …')` — and the deploy engine journals
-  // no physicalId for a FAILED create, so the rollback executor skips the op
-  // and the resource is left in AWS, invisible to state.
+  // Issue #1710 class, settled by the PR review. An earlier cut asserted only
+  // that the failure was not MIS-LABELLED as a create failure — but the review
+  // pointed out that placement alone does not stop the orphan: `create()` still
+  // threw, and a failed CREATE journals no physicalId, so the rollback executor
+  // skips it and the resource sits in AWS untracked. That assertion is therefore
+  // superseded by this stronger one: the create must SUCCEED.
   //
-  // Asserting on the error's SHAPE is what pins the placement: with the ARN
-  // build inside the try, the raw failure is swallowed and re-thrown with the
-  // create wrapper's message, which is the exact mislabel this guards.
+  // PR-review finding: moving the ARN build outside the create `try` stops the
+  // failure being MIS-LABELLED, but on its own it does not stop the orphan —
+  // `create()` still throws, and a failed CREATE journals no physicalId. The
+  // resource is already real, so the ARN (bookkeeping) must never fail the
+  // create: warn, omit, and let the next update heal it.
   it.each([
-    ['AWS::AppSync::DataSource', { ApiId: 'a', Name: 'ds', Type: 'NONE' }, {}, 'DataSource'],
+    [
+      'AWS::AppSync::DataSource',
+      { ApiId: 'a', Name: 'ds', Type: 'NONE' },
+      {},
+      'abcd1234|ds',
+      'DataSourceArn',
+      'Name',
+    ],
     [
       'AWS::AppSync::Resolver',
       { ApiId: 'a', TypeName: 'Query', FieldName: 'f' },
       {},
-      'Resolver',
+      'a|Query|f',
+      'ResolverArn',
+      undefined,
+    ],
+    [
+      'AWS::AppSync::ApiKey',
+      { ApiId: 'a' },
+      { apiKey: { id: 'da2-k' } },
+      'a|da2-k',
+      'Arn',
+      'ApiKey',
     ],
   ])(
-    'an ARN-build failure on %s is not mislabelled as a create failure',
-    async (resourceType, properties, response, label) => {
+    'create of %s SUCCEEDS with the ARN omitted when the ARN build fails',
+    async (resourceType, properties, response, _id, arnKey, survivingKey) => {
       mockSend.mockResolvedValue(response);
       mockGetAccountInfo.mockRejectedValue(new Error('sts exploded'));
 
-      await expect(provider.create('X', resourceType, properties)).rejects.toThrow('sts exploded');
-      // The create DID succeed — the failure must not claim otherwise.
-      await expect(provider.create('X', resourceType, properties)).rejects.not.toThrow(
-        `Failed to create ${label}`
-      );
-      expect(mockSend).toHaveBeenCalled();
+      const result = await provider.create('X', resourceType, properties);
+
+      // The create must NOT fail — that is the whole point.
+      expect(result.physicalId).toBeTruthy();
+      // ...and the unusable attribute is OMITTED, not recorded as undefined:
+      // a present-but-undefined key survives a structuredClone into state and
+      // would be read back as a declared-but-empty attribute.
+      expect(Object.hasOwn(result.attributes ?? {}, arnKey)).toBe(false);
+      if (survivingKey) {
+        expect(result.attributes?.[survivingKey]).toBeDefined();
+      }
     }
   );
+
+  // The PARTITION must come from the REGION, not from `getAccountInfo`'s
+  // hardcoded `'aws'`. This matters most on the UPDATE path, which rebuilds the
+  // ARN every time: without it a correct `arn:aws-cn:` recorded at create time
+  // would be overwritten with `arn:aws:` on the next in-place update.
+  it.each([
+    ['cn-north-1', 'aws-cn'],
+    ['us-gov-west-1', 'aws-us-gov'],
+    ['us-east-1', 'aws'],
+  ])('rebuilds the ARN with the partition implied by region %s', async (region, partition) => {
+    mockGetAccountInfo.mockResolvedValue({
+      partition: 'aws', // deliberately the hardcoded value — must NOT be used
+      region,
+      accountId: '123456789012',
+    });
+    mockSend.mockResolvedValue({});
+
+    const result = await provider.update(
+      'X',
+      'abcd1234|myDataSource',
+      'AWS::AppSync::DataSource',
+      { Name: 'myDataSource', Description: 'changed' },
+      {}
+    );
+
+    expect(result.attributes?.['DataSourceArn']).toBe(
+      `arn:${partition}:appsync:${region}:123456789012:apis/abcd1234/datasources/myDataSource`
+    );
+  });
 
   // Whole-class fence: no recorded attribute may carry the wildcard positions
   // again, whichever arm produced it.
@@ -272,11 +326,30 @@ describe('AppSyncProvider records real ARNs for the child types (issue #1681)', 
 
       const result = await provider.create('X', resourceType, properties);
 
-      for (const [key, value] of Object.entries(result.attributes ?? {})) {
-        if (typeof value === 'string' && value.startsWith('arn:')) {
-          expect(`${resourceType}.${key}=${value}`).not.toContain(':*:');
-        }
+      const arnValues = Object.entries(result.attributes ?? {}).filter(
+        ([, value]) => typeof value === 'string' && value.startsWith('arn:')
+      );
+      // FLOOR, so the fence cannot go dark: the wildcard check below lives
+      // inside a loop over ARN-valued attributes, so a regression that DROPPED
+      // or RENAMED the ARN attribute would run zero iterations and pass green —
+      // the fence would silently stop fencing exactly when it matters.
+      expect(arnValues.length).toBeGreaterThanOrEqual(1);
+      for (const [key, value] of arnValues) {
+        expect(`${resourceType}.${key}=${String(value)}`).not.toContain(':*:');
       }
     }
+  });
+
+  // The REGION must reach the ARN builder. `getAccountInfo(overrideRegion)`
+  // returns `overrideRegion || AWS_REGION || 'us-east-1'`, and the mock here
+  // answers `us-east-1` whatever it is passed — so without this assertion a
+  // regression that dropped the argument would record a us-east-1 ARN for a
+  // eu-west-1 deploy and every other test would still pass.
+  it('threads the provider region into the ARN builder', async () => {
+    mockSend.mockResolvedValue({ apiKey: { id: 'da2-abcdefghij' } });
+
+    await provider.create('K', 'AWS::AppSync::ApiKey', { ApiId: 'abcd1234' });
+
+    expect(mockGetAccountInfo).toHaveBeenCalledWith('us-east-1');
   });
 });

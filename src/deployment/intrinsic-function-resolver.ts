@@ -504,7 +504,14 @@ export function cfnRefValueFromPhysicalId(
     // the map's header for why a mis-arity'd id falls through instead.
     const parts = physicalId.split('|');
     if (parts.length === segmentSpec.arity) {
-      return parts[segmentSpec.index]!;
+      // Falsy segment falls through rather than returning `''`. `Z1||A` has the
+      // right ARITY but an empty name, and `parseRecordSetCompositeId` already
+      // rejects an empty segment (treating such an id as the legacy scalar
+      // shape) — so resolving `Ref` to the empty string would hand a consumer a
+      // value cdkd itself refuses to decode. Also makes the `[index]` read safe
+      // for a future entry whose `index` is out of range for its `arity`.
+      const segment = parts[segmentSpec.index];
+      if (segment) return segment;
     }
   }
   const arnAttributeKeys = REF_RETURNS_ARN_FROM_STATE.get(resourceType);

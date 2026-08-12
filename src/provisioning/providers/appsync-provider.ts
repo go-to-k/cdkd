@@ -69,6 +69,7 @@ import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-help
 import { requireConfigArray } from '../config-shape.js';
 import { packCompositeId } from '../composite-id.js';
 import { getAccountInfo } from '../../deployment/intrinsic-function-resolver.js';
+import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
 import type {
   CreateContext,
   ResourceProvider,
@@ -260,7 +261,48 @@ export class AppSyncProvider implements ResourceProvider {
   private async buildAppSyncArn(suffix: string): Promise<string> {
     const region = this.providerRegion ?? (await this.getClient().config.region());
     const accountInfo = await getAccountInfo(region);
-    return `arn:${accountInfo.partition}:appsync:${accountInfo.region}:${accountInfo.accountId}:${suffix}`;
+    // The PARTITION comes from the region, NOT from `accountInfo.partition` —
+    // that field is hardcoded to `'aws'` (`intrinsic-function-resolver.ts`,
+    // with its own "Could be aws-cn, aws-us-gov, etc." admission). Using it
+    // would be inert on the create path (AWS reports the real ARN there) but
+    // actively WRONG on the update path, where `childRefAttributes` rebuilds
+    // the ARN on every in-place update: a correct `arn:aws-cn:` /
+    // `arn:aws-us-gov:` value recorded at create time would be overwritten
+    // with `arn:aws:`. `derivePartitionAndUrlSuffix` is the closed mapping the
+    // repo already uses for `${AWS::Partition}`.
+    const { partition } = derivePartitionAndUrlSuffix(accountInfo.region);
+    return `arn:${partition}:appsync:${accountInfo.region}:${accountInfo.accountId}:${suffix}`;
+  }
+
+  /**
+   * {@link buildAppSyncArn} for the POST-CREATE sites, where throwing is not an
+   * option (issue #1681 PR review).
+   *
+   * Moving the ARN build outside the create `try` stops a failure being
+   * re-labelled as a creation failure — but on its own it does NOT stop the
+   * resource being orphaned: `create()` still throws, the engine still journals
+   * no physicalId for a failed CREATE, and the resource still sits in AWS
+   * untracked (the issue #1710 class). Since the ARN is bookkeeping and the
+   * resource already exists, the honest answer is to never fail the create for
+   * it: warn, omit the attribute, and let `Ref` fall back to the compound id
+   * exactly as it does for an imported child. The resource's next update heals
+   * the record via `childRefAttributes`.
+   */
+  private async buildAppSyncArnOrWarn(
+    suffix: string,
+    logicalId: string,
+    physicalId: string
+  ): Promise<string | undefined> {
+    try {
+      return await this.buildAppSyncArn(suffix);
+    } catch (error) {
+      this.logger.warn(
+        `Created ${logicalId} (${physicalId}) but could not build its ARN attribute: ` +
+          `${error instanceof Error ? error.message : String(error)}. ` +
+          `Ref will resolve to the compound physical id until the next update.`
+      );
+      return undefined;
+    }
   }
 
   /**
@@ -2403,13 +2445,20 @@ export class AppSyncProvider implements ResourceProvider {
       );
     }
 
-    // OUTSIDE the try, deliberately: the data source EXISTS from here on, so
-    // nothing below may be reported as a creation failure. `buildAppSyncArn` is
-    // async (it can reach STS), and a throw AFTER a successful create is the
-    // orphan class of issue #1710 — the failed CREATE journals no physicalId,
-    // so the rollback executor skips it and the resource is left in AWS,
-    // invisible to state. Same reasoning as the `packCompositeId` placement in
-    // `createApiKey`.
+    // OUTSIDE the try, and non-throwing: the data source EXISTS from here on.
+    // Placement alone only stops the failure being MIS-LABELLED as a creation
+    // failure — `create()` would still throw, and a failed CREATE journals no
+    // physicalId, so the rollback executor would skip it and leave the resource
+    // in AWS invisible to state (the issue #1710 class). `buildAppSyncArnOrWarn`
+    // is what actually closes that: the ARN is bookkeeping, the resource is
+    // already real, so a failure warns and omits rather than failing the create.
+    const dataSourceArn =
+      reportedArn ??
+      (await this.buildAppSyncArnOrWarn(
+        `apis/${apiId}/datasources/${name}`,
+        logicalId,
+        physicalId
+      ));
     return {
       physicalId,
       attributes: {
@@ -2418,8 +2467,7 @@ export class AppSyncProvider implements ResourceProvider {
         // 2026-08-12). `CreateDataSource` reports the real one, so take it
         // verbatim rather than string-building; see `buildAppSyncArn` for why
         // the fallback exists and what the pre-#1681 placeholder broke.
-        DataSourceArn:
-          reportedArn ?? (await this.buildAppSyncArn(`apis/${apiId}/datasources/${name}`)),
+        ...(dataSourceArn !== undefined && { DataSourceArn: dataSourceArn }),
         Name: name,
       },
     };
@@ -2538,17 +2586,23 @@ export class AppSyncProvider implements ResourceProvider {
       );
     }
 
-    // OUTSIDE the try — see `createDataSource` for the reasoning (issue #1710:
-    // a throw after a successful create orphans the resource).
+    // OUTSIDE the try, and non-throwing — see `createDataSource` for the full
+    // reasoning (issue #1710: a throw after a successful create orphans the
+    // resource, and placement alone does not prevent that).
+    const resolverArn =
+      reportedArn ??
+      (await this.buildAppSyncArnOrWarn(
+        `apis/${apiId}/types/${typeName}/resolvers/${fieldName}`,
+        logicalId,
+        physicalId
+      ));
     return {
       physicalId,
       attributes: {
         // CFn's `Ref` AND `Fn::GetAtt ResolverArn` both return the resolver
         // ARN `.../apis/<apiId>/types/<type>/resolvers/<field>`
         // (docs-verified 2026-08-12); `CreateResolver` reports the real one.
-        ResolverArn:
-          reportedArn ??
-          (await this.buildAppSyncArn(`apis/${apiId}/types/${typeName}/resolvers/${fieldName}`)),
+        ...(resolverArn !== undefined && { ResolverArn: resolverArn }),
       },
     };
   }
@@ -2662,6 +2716,14 @@ export class AppSyncProvider implements ResourceProvider {
         : undefined
     );
 
+    // Always rebuilt — `CreateApiKey` reports no ARN at all — so this is the
+    // arm most exposed to the post-create throw described in `createDataSource`.
+    const apiKeyArn = await this.buildAppSyncArnOrWarn(
+      `apis/${apiId}/apikey/${apiKeyId}`,
+      logicalId,
+      physicalId
+    );
+
     return {
       physicalId,
       attributes: {
@@ -2673,7 +2735,7 @@ export class AppSyncProvider implements ResourceProvider {
         // ARN at all, so this one must be reconstructed. The pre-#1681 value
         // was wrong twice over: a literal `*:*` for region / account, and the
         // plural `apikeys`.
-        Arn: await this.buildAppSyncArn(`apis/${apiId}/apikey/${apiKeyId}`),
+        ...(apiKeyArn !== undefined && { Arn: apiKeyArn }),
       },
     };
   }

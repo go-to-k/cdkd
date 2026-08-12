@@ -3124,6 +3124,16 @@ describe('IntrinsicFunctionResolver - Ref to AWS::ApiGateway::Model', () => {
     expect(cfnRefValueFromPhysicalId('AWS::Route53::RecordSet', id)).toBe(id);
   });
 
+  // PR-review finding: right ARITY, EMPTY middle segment. Returning `''` would
+  // hand a consumer a value cdkd itself refuses to decode —
+  // `parseRecordSetCompositeId` rejects an empty segment and treats such an id
+  // as the legacy scalar shape.
+  it('cfnRefValueFromPhysicalId passes a 3-part RecordSet id with an empty name through raw', () => {
+    expect(cfnRefValueFromPhysicalId('AWS::Route53::RecordSet', 'Z1D633PJN98FT9||A')).toBe(
+      'Z1D633PJN98FT9||A'
+    );
+  });
+
   // Issue #1681, ARN-FROM-STATE mechanism. All three AppSync children pack a
   // compound id while CFn's `Ref` returns the resource ARN (docs-verified
   // 2026-08-12) — no segment of the id reconstructs it, so the value is
@@ -3225,6 +3235,22 @@ describe('IntrinsicFunctionResolver - Ref to AWS::ApiGateway::Model', () => {
         keys.includes('DataSourceArn') ? arn : undefined
       )
     ).toBe(arn);
+  });
+
+  // A TRUNCATED value has no region / account field to inspect, so the guard's
+  // `fields.length >= 5` arm declines to classify it as a placeholder and it is
+  // returned as-is. Pinned because the alternative reading — "anything short is
+  // suspect, fall back to the raw id" — is equally defensible, and silently
+  // flipping between them would change what a consumer receives.
+  it.each([
+    ['arn:aws:appsync', 'a truncated ARN with no region/account fields'],
+    ['not-an-arn-at-all', 'a non-ARN string'],
+  ])('the placeholder guard passes %s through (%s)', (recorded) => {
+    expect(
+      cfnRefValueFromPhysicalId('AWS::AppSync::DataSource', 'abcd1234|ds', (keys) =>
+        keys.includes('DataSourceArn') ? recorded : undefined
+      )
+    ).toBe(recorded);
   });
 
   // Deliberate degradation, matching the S3Tables / Backup / CodeCommit
