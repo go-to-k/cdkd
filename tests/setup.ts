@@ -2,6 +2,13 @@
 
 import { vi } from 'vite-plus/test';
 
+import {
+  isConstructable,
+  wrapConstructableImplementation,
+  type MockableImplementation,
+} from './constructable-implementation.js';
+import { installOnceLeakDetector } from './once-leak-detector.js';
+
 /**
  * Global vitest setup — defenses against Node 24 + vitest 1.6.1 surfacing
  * stray unhandled rejections from `withErrorHandling`-wrapped CLI actions.
@@ -46,32 +53,6 @@ import { vi } from 'vite-plus/test';
  */
 
 const originalViFn = vi.fn.bind(vi);
-type MockableImplementation =
-  | ((this: unknown, ...args: any[]) => any)
-  | (new (...args: any[]) => any);
-
-const isConstructable = (
-  fn: MockableImplementation
-): fn is new (...args: any[]) => any => {
-  try {
-    Reflect.construct(function () {}, [], fn);
-    return true;
-  } catch {
-    return false;
-  }
-};
-
-const wrapConstructableImplementation = (
-  implementation: MockableImplementation
-): MockableImplementation => {
-  if (isConstructable(implementation)) {
-    return implementation;
-  }
-
-  return function (this: unknown, ...args: unknown[]) {
-    return implementation.apply(this, args);
-  };
-};
 
 const wrapMockImplementationSetters = <T extends ReturnType<typeof originalViFn>>(mock: T): T => {
   const mockImplementation = mock.mockImplementation.bind(mock);
@@ -100,6 +81,11 @@ vi.fn = ((implementation?: MockableImplementation) => {
 
   return wrapMockImplementationSetters(originalViFn(implementation as never));
 }) as typeof vi.fn;
+
+// Runtime `*Once`-leak detector (issue #1618). Installed AFTER the `vi.fn`
+// patch above so it composes over it rather than being overwritten by it, and
+// inert unless `CDKD_ONCE_LEAK_DETECT=1`.
+installOnceLeakDetector();
 
 const originalExit = process.exit;
 

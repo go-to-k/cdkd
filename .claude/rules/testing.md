@@ -18,6 +18,71 @@ paths:
   run, naming the offending file).
 - Mocking: Mock AWS SDK with vi.mock()
 
+### A `*Once` primer must be consumed by the test that primed it (mandatory)
+
+`vi.clearAllMocks()` clears call RECORDS but does NOT drain the queue seeded by
+`mockResolvedValueOnce` / `mockReturnValueOnce` / `mockRejectedValueOnce` /
+`mockThrowOnce` / `mockImplementationOnce` (`@vitest/spy`: `mockReset` sets
+`config.onceMockImplementations = []`, `mockClear` does not). A test that primes
+more responses than its code path consumes leaks the remainder into the NEXT
+test in its file, shifting every later call by the same offset.
+
+The leak is dangerous rather than merely untidy because the shifted test still
+PASSES: it takes a different branch and satisfies that branch's assertions,
+which are usually ABSENCE assertions (`toBeUndefined()`, `toHaveLength(0)`,
+`not.toHaveBeenCalled()`) — and an absence assertion is satisfied both by "the
+guard correctly declined" and by "the code never got there". In issue #1588 the
+only symptom was one `logger.warn` that was never called.
+
+Enforced at RUNTIME, not by a lint, by `tests/once-leak-detector.ts` + the
+`once-leak-detect` CI job (`vp run test:once-leak`). Every `*Once` spelling
+funnels through `mock.mockImplementationOnce`, so instrumenting that one method
+covers all five: each queued implementation is wrapped in a closure that
+remembers WHICH test primed it, and the wrapper fires when the queue is actually
+shifted (`@vitest/spy` dist line 303 shifts exactly once per invocation).
+
+**What is flagged is a primed value CONSUMED BY A DIFFERENT TEST than the one
+that primed it** — the defect itself. Three cheaper-looking proxies were tried
+and are wrong; do not reintroduce them:
+
+- **"the queue is non-empty when the test ends"** flags a suite that drains with
+  `mockReset()` in `beforeEach` — i.e. the very remediation prescribed above —
+  because a setup-file `afterEach` runs BEFORE the next test's `beforeEach`.
+  This was measured on a probe suite, not reasoned about; it fired on the first
+  try.
+- **`calls.length` delta accounting** is wrong whenever priming and consumption
+  interleave (prime 1, call 3x, prime 2 more leaks 2 but nets 0), and
+  `mockClear()` resets `calls` out from under it.
+- **a static lint requiring `mockReset()`** checks for the presence of a symbol,
+  not for over-priming. Measured: 182 of the 265 `*Once`-using files have no
+  reset and the mechanical swap breaks 1181 tests, so that lint needed a
+  182-file remediation batch. Checking the real defect implicated THREE files
+  (tracked by issue #1655) and needed none.
+
+**The detector has its own canary**, because with the grandfather list honoured
+"the detector went dead" and "the tree is clean" produce the identical green
+result — the vacuous pass this file forbids elsewhere.
+`tests/unit/scripts/once-leak-canary.test.ts` leaks deliberately (and is
+therefore allow-listed, automatically, by the generator), and the CI step
+`detector canary` re-runs that file alone with
+`CDKD_ONCE_LEAK_IGNORE_ALLOWLIST=1` and requires a NON-ZERO exit. Do not "fix"
+that suite's priming; it is not a defect.
+
+Two more design points are decisions, not accidents:
+
+- **It is OFF unless `CDKD_ONCE_LEAK_DETECT=1`.** Nothing is wrapped and no
+  hooks are registered when off, so the default run is byte-for-byte unchanged.
+  This is what let it land while other lanes were mid-flight; three earlier
+  attempts at this issue stood down waiting for a "quiet tree" that a default-ON
+  change would have required.
+- **The allow-list grandfathers whole FILES.** Per-test entries go stale on any
+  rewording. A grandfathered file gets no protection for its new tests either —
+  accepted, and the ratchet direction is to fix a file and DROP its entry
+  (`vp run gen:once-leak-allowlist`). `tests/unit/scripts/once-leak-allowlist.test.ts`
+  fails an entry that no longer names an existing file or one that no longer
+  primes anything, and caps the list so a runaway regeneration cannot exempt the
+  tree.
+
 ## Integration Tests
 
 - `tests/integration/**`
