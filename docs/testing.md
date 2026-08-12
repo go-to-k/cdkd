@@ -1172,6 +1172,31 @@ removal single-key. Synthesize both phases and diff the rendered list before
 running; `cdk synth` exiting 0 in each phase proves nothing about the delta
 between them.
 
+**The toggle also serves the INVERSE assertion, where retention is the correct
+outcome.** Everything above describes the #1160 class, in which a removed
+property must be RESET to its default and the removal phase asserts it is gone.
+`nlb-source-nat` (issue
+[#1619](https://github.com/go-to-k/cdkd/issues/1619)) uses the same toggle to
+assert the opposite, and it is not a violation of the convention: its two
+NLB flags have no API of their own and ride on `SetSubnets` /
+`SetSecurityGroups`, so what is under test is what **AWS** does when the Set*
+call omits the member. AWS retains, so cdkd correctly sends nothing and the
+removal phase asserts the live value SURVIVED.
+
+Two conventions carry over unchanged, and one is added:
+
+- baseline-live still applies, with a twist that matters more here — the
+  templated value must be AWS's NON-default (`on` for source-NAT; `off` for the
+  enforce flag, which AWS defaults to `on`), or "retained" and "reset to
+  default" produce an identical readback and the assertion proves nothing. This
+  is the same trap as the retained-sibling rule above, one level over.
+- a retained sibling is not applicable — each flag is scalar, not a collection.
+- **new: prove the Set\* call actually FIRED.** A retention assertion is
+  vacuous if no call was issued, since the value would be untouched either way.
+  So each flag is dropped in the SAME deploy that changes its companion
+  property (a third subnet / a second security group), and the phase asserts
+  that companion change landed before asserting the flag survived.
+
 The current set of fixtures using the toggle changes as batches ship; find it
 with:
 

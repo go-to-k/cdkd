@@ -693,6 +693,15 @@ Practical rules:
   that wiped everything reads identically and the sibling proves nothing; its
   Listener arm still empties the only value it sets, so the fixture carries
   both shapes at once
+- The toggle ALSO serves the inverse assertion, where RETENTION is correct —
+  `nlb-source-nat` (issue #1619) drops two NLB flags that ride on `SetSubnets` /
+  `SetSecurityGroups` and asserts AWS kept the live value, because what is under
+  test is the SERVICE's omission semantics, not cdkd's reset. Same
+  baseline-live rule (and the templated value must be AWS's NON-default, or
+  retained and reset read identically), no retained sibling (the flags are
+  scalar), plus one more: assert the Set* call actually FIRED by changing a
+  companion property in the same deploy — otherwise "the value is unchanged"
+  passes when no call was issued at all
 - The fixture set grows as #1160 batches ship; enumerate it with
   `grep -rl CDKD_TEST_REMOVAL tests/integration/*/lib/*.ts tests/integration/*/verify.sh`
   rather than trusting a list here. `tests/integration/route53/` is the

@@ -701,10 +701,15 @@ export class ELBv2Provider implements ResourceProvider {
     const mappingsChanged = JSON.stringify(newMappings) !== JSON.stringify(oldMappings);
     // EnablePrefixForIpv6SourceNat rides on SetSubnets: a change re-issues the
     // current subnet set with the new flag. A REMOVED flag on its own is
-    // retained (no call) — CFn retains most removed fields. Caveat: when the
-    // flag is removed in the SAME deploy that changes Subnets, the Set call
-    // omits the member and AWS's omission semantics (retain vs default) have
-    // not been A/B-verified for that combination.
+    // retained (no call) — CFn retains most removed fields. The COMBINED case
+    // (flag removed in the SAME deploy that changes Subnets, so the Set call is
+    // issued WITHOUT the member) is A/B-verified: AWS RETAINS the live value on
+    // omission — measured us-east-1 2026-08-12 against a dualstack NLB holding
+    // the non-default `on`, in BOTH request forms this code can emit (a plain
+    // `Subnets` list and a `SubnetMappings` list carrying no SourceNatIpv6Prefix
+    // members). Adding a third subnet with the member omitted left the flag `on`
+    // and auto-assigned a source-NAT prefix to the new subnet. So omitting is
+    // correct and re-sending the retained value would be redundant.
     const ipv6SourceNatChanged =
       newIpv6SourceNat !== undefined && newIpv6SourceNat !== oldIpv6SourceNat;
     if (subnetsChanged || mappingsChanged || ipv6SourceNatChanged) {
@@ -739,7 +744,14 @@ export class ELBv2Provider implements ResourceProvider {
     // EnforceSecurityGroupInboundRulesOnPrivateLinkTraffic rides on
     // SetSecurityGroups: a change re-issues the current security-group set
     // with the new flag. A REMOVED flag is retained (no-op) — same rationale
-    // as EnablePrefixForIpv6SourceNat above.
+    // as EnablePrefixForIpv6SourceNat above. The COMBINED case is A/B-verified
+    // the same way: AWS RETAINS on omission — measured us-east-1 2026-08-12
+    // against an NLB holding the non-default `off`, where adding a second
+    // security group with the member omitted left the flag `off`. (Note the
+    // SetSecurityGroups RESPONSE omits the field when the request did; the
+    // DescribeLoadBalancers readback is the authoritative check.) The flag is
+    // settable and readable on any SG-bearing NLB — no PrivateLink endpoint
+    // service has to exist for the value to persist.
     const enforceChanged = newEnforce !== undefined && newEnforce !== oldEnforce;
     if (JSON.stringify(newSGs) !== JSON.stringify(oldSGs) || enforceChanged) {
       await this.getClient().send(

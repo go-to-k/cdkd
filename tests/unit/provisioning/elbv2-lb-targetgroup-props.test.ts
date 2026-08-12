@@ -388,6 +388,51 @@ describe('ELBv2 LoadBalancer + TargetGroup silent-drop props (#609)', () => {
       });
     });
 
+    // Issue #1619: the flag is REMOVED in the same deploy that changes
+    // Subnets / SecurityGroups, so the Set* call is issued WITHOUT the member.
+    // A/B-verified against real AWS (us-east-1, 2026-08-12): omission RETAINS
+    // the live value, so omitting is correct and re-sending is unnecessary.
+    it('omits EnablePrefixForIpv6SourceNat when the flag is removed alongside a Subnets change', async () => {
+      await provider.update(
+        'MyNlb',
+        LB_ARN,
+        LB_TYPE,
+        { Subnets: ['subnet-111', 'subnet-222'] },
+        { Subnets: ['subnet-111'], EnablePrefixForIpv6SourceNat: 'on' }
+      );
+
+      const [subnetCall] = callsOf('SetSubnetsCommand');
+      expect(subnetCall).toBeDefined();
+      expect(subnetCall[0].input).toEqual({
+        LoadBalancerArn: LB_ARN,
+        Subnets: ['subnet-111', 'subnet-222'],
+      });
+      expect(subnetCall[0].input).not.toHaveProperty('EnablePrefixForIpv6SourceNat');
+    });
+
+    it('omits the enforce flag when it is removed alongside a SecurityGroups change', async () => {
+      await provider.update(
+        'MyNlb',
+        LB_ARN,
+        LB_TYPE,
+        { SecurityGroups: ['sg-123', 'sg-456'] },
+        {
+          SecurityGroups: ['sg-123'],
+          EnforceSecurityGroupInboundRulesOnPrivateLinkTraffic: 'off',
+        }
+      );
+
+      const [sgCall] = callsOf('SetSecurityGroupsCommand');
+      expect(sgCall).toBeDefined();
+      expect(sgCall[0].input).toEqual({
+        LoadBalancerArn: LB_ARN,
+        SecurityGroups: ['sg-123', 'sg-456'],
+      });
+      expect(sgCall[0].input).not.toHaveProperty(
+        'EnforceSecurityGroupInboundRulesOnPrivateLinkTraffic'
+      );
+    });
+
     it('sets the IPAM pool via ModifyIpPools and removes it via RemoveIpamPools', async () => {
       await provider.update('MyAlb', LB_ARN, LB_TYPE, { Ipv4IpamPoolId: 'ipam-pool-0abc' }, {});
       let [ipamCall] = callsOf('ModifyIpPoolsCommand');

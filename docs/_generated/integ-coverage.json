@@ -1081,6 +1081,7 @@
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
         "multi-stack-deps",
+        "nlb-source-nat",
         "propagation-races-2",
         "rds-aurora",
         "rds-dbinstance-backfill",
@@ -1194,6 +1195,9 @@
         "multi-stack-deps": [
           "l2"
         ],
+        "nlb-source-nat": [
+          "l2"
+        ],
         "propagation-races-2": [
           "l2"
         ],
@@ -1264,6 +1268,7 @@
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
         "multi-stack-deps",
+        "nlb-source-nat",
         "propagation-races-2",
         "rds-aurora",
         "rds-dbinstance-backfill",
@@ -1371,6 +1376,9 @@
           "l2"
         ],
         "multi-stack-deps": [
+          "l2"
+        ],
+        "nlb-source-nat": [
           "l2"
         ],
         "propagation-races-2": [
@@ -1468,6 +1476,7 @@
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
         "multi-stack-deps",
+        "nlb-source-nat",
         "propagation-races-2",
         "rds-aurora",
         "rds-dbinstance-backfill",
@@ -1582,6 +1591,9 @@
         "multi-stack-deps": [
           "l2"
         ],
+        "nlb-source-nat": [
+          "l2"
+        ],
         "propagation-races-2": [
           "l2"
         ],
@@ -1653,6 +1665,7 @@
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
         "multi-stack-deps",
+        "nlb-source-nat",
         "propagation-races-2",
         "rds-aurora",
         "rds-dbinstance-backfill",
@@ -1766,6 +1779,9 @@
         "multi-stack-deps": [
           "l2"
         ],
+        "nlb-source-nat": [
+          "l2"
+        ],
         "propagation-races-2": [
           "l2"
         ],
@@ -1825,6 +1841,7 @@
         "fsx-lustre",
         "local-start-alb-from-state",
         "multi-stack-deps",
+        "nlb-source-nat",
         "propagation-races-2",
         "rds-aurora",
         "rds-dbinstance-backfill",
@@ -1903,6 +1920,9 @@
           "literal"
         ],
         "multi-stack-deps": [
+          "l2"
+        ],
+        "nlb-source-nat": [
           "l2"
         ],
         "propagation-races-2": [
@@ -1997,6 +2017,7 @@
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
         "multi-stack-deps",
+        "nlb-source-nat",
         "propagation-races-2",
         "rds-aurora",
         "rds-dbinstance-backfill",
@@ -2110,6 +2131,9 @@
         "multi-stack-deps": [
           "l2"
         ],
+        "nlb-source-nat": [
+          "l2"
+        ],
         "propagation-races-2": [
           "l2"
         ],
@@ -2191,6 +2215,7 @@
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
         "multi-stack-deps",
+        "nlb-source-nat",
         "propagation-races-2",
         "rds-aurora",
         "rds-dbinstance-backfill",
@@ -2301,6 +2326,9 @@
         "multi-stack-deps": [
           "l2"
         ],
+        "nlb-source-nat": [
+          "l2"
+        ],
         "propagation-races-2": [
           "l2"
         ],
@@ -2372,6 +2400,7 @@
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
         "multi-stack-deps",
+        "nlb-source-nat",
         "propagation-races-2",
         "rds-aurora",
         "rds-dbinstance-backfill",
@@ -2494,6 +2523,9 @@
         "multi-stack-deps": [
           "l2"
         ],
+        "nlb-source-nat": [
+          "l2"
+        ],
         "propagation-races-2": [
           "l2"
         ],
@@ -2568,6 +2600,7 @@
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
         "multi-stack-deps",
+        "nlb-source-nat",
         "propagation-races-2",
         "rds-aurora",
         "rds-dbinstance-backfill",
@@ -2679,6 +2712,9 @@
           "literal"
         ],
         "multi-stack-deps": [
+          "l2"
+        ],
+        "nlb-source-nat": [
           "l2"
         ],
         "propagation-races-2": [
@@ -3089,6 +3125,7 @@
         "ecs-bluegreen",
         "local-start-alb",
         "local-start-alb-from-state",
+        "nlb-source-nat",
         "remove-protection"
       ],
       "signals": {
@@ -3116,6 +3153,10 @@
         ],
         "local-start-alb-from-state": [
           "l2",
+          "literal"
+        ],
+        "nlb-source-nat": [
+          "l1",
           "literal"
         ],
         "remove-protection": [
