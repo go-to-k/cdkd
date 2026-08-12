@@ -32,7 +32,7 @@ bench-ccapi	2026-07-26T18:43:33Z	PASS	89	standard	0727b sweep-b5 staleness re-ru
 bench-cdk-sample	2026-08-12T02:18:55Z	PASS	1180	standard	#1636 broad: deploy+destroy; 37 del/2 retained(DeletionPolicy)/0 err; retained log groups swept
 bench-sdk	2026-07-26T18:43:33Z	PASS	33	standard	0727b sweep-b5 staleness re-run (rc=0); account clean
 bootstrap-free-region	2026-07-31T06:23:42Z	PASS	78	verify.sh	TTL-refresh sweep re-run in ca-central-1; marker+bucket swept, orph clean
-bucket-deployment	2026-08-12T08:12:11Z	PASS	124	verify.sh	#1674 lane; the reported resource, 10 del/0 err, 0 orph
+bucket-deployment	2026-08-12T08:28:14Z	PASS	115	verify.sh	#1674 re-run vs committed src; the reported resource, 10 del/0 err, 0 orph
 budgets	2026-08-01T09:36:05Z	PASS	42	verify.sh	0801 regression sweep; create/update/destroy ok, 0 orphans
 cache-streaming	2026-08-10T04:52:34Z	PASS	527	verify.sh	0810 sweep b4; elasticache-provider re-verify, GetAtt redis endpoint, 0 orph
 cc-api-fallback	2026-08-10T11:50:46Z	PASS	71	verify.sh	0810 P0/P1 sweep b3; silent-drop closed by CC auto-route, clean destroy
@@ -62,7 +62,7 @@ context-test	2026-07-26T18:43:33Z	PASS	24	standard	0727b sweep-b5 staleness re-r
 cross-region-state-bucket	2026-08-01T09:42:37Z	PASS	29	verify.sh	0801 regression sweep; cross-region bucket round-trip ok, temp bucket removed
 cross-stack-references	2026-08-08T17:48:34Z	PASS	25	standard	marker re-flip after review coercion fix; deploy+destroy clean
 custom-resource-getatt-data	2026-08-12T08:12:11Z	PASS	63	verify.sh	#1674 lane; CR invoke path, 6 del/0 err, 0 orph
-custom-resource-provider	2026-08-12T08:12:11Z	PASS	253	standard	#1674 log-tail authz fallback; 17 del/0 err, 0 orph
+custom-resource-provider	2026-08-12T08:28:14Z	PASS	268	standard	#1674 re-run vs committed src; 17 del/0 err, 0 orph
 data-analytics	2026-08-10T11:31:18Z	PASS	87	verify.sh	#1479 SD-subtree merge re-verified after review fixes (OR-gate bag semantics)
 data-pipeline	2026-08-10T05:19:05Z	PASS	48	standard	0810 P2 sweep b6; 7 del 0 err, 0 orph
 deep-getatt-chains	2026-08-01T10:07:21Z	PASS	53	verify.sh	0801 regression sweep; SDK+CC chain ok, 0 orphans
