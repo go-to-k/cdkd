@@ -86,6 +86,25 @@ import type {
  * single transition entry makes S3 answer `MalformedXML` for the WHOLE
  * lifecycle configuration, so the legacy singular readers screen with this.
  */
+/**
+ * The `Id` of one per-item configuration, normalized to a string.
+ *
+ * `diffArrayConfigById` accepts an `Id` under a TRUTHINESS test, so an
+ * unquoted-YAML `Id: 1` is a NUMBER that reaches the Put and lands in the
+ * skipped-id set as a number. A `typeof id === 'string'` predicate on the other
+ * side then reads that item as NOT skipped and records the never-applied
+ * desired value — reviving, for exactly that shape, the phantom drift issue
+ * #1612 exists to remove. Both sides go through this helper so they cannot
+ * disagree about what an `Id` is.
+ */
+function configItemId(item: unknown): string | undefined {
+  if (!isPlainObject(item)) return undefined;
+  const id = item['Id'];
+  if (typeof id === 'string') return id;
+  if (typeof id === 'number' && Number.isFinite(id)) return String(id);
+  return undefined;
+}
+
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -2549,8 +2568,8 @@ export class S3BucketProvider implements ResourceProvider {
   ): Array<Record<string, unknown>> | undefined {
     const previousById = new Map<string, Record<string, unknown>>();
     for (const item of previous ?? []) {
-      const id = isPlainObject(item) ? item['Id'] : undefined;
-      if (typeof id === 'string') previousById.set(id, item);
+      const id = configItemId(item);
+      if (id !== undefined) previousById.set(id, item);
     }
     const effective: Array<Record<string, unknown>> = [];
     desired.forEach((item, index) => {
@@ -2558,8 +2577,13 @@ export class S3BucketProvider implements ResourceProvider {
         effective.push(item);
         return;
       }
-      const id = isPlainObject(item) ? item['Id'] : undefined;
-      const retained = typeof id === 'string' ? previousById.get(id) : undefined;
+      // A DUPLICATE `Id` in the desired array substitutes the same previous
+      // item at every matching position. `diffArrayConfigById` de-duplicates by
+      // `Id`, so only one of them was ever attempted — the shape is degenerate
+      // input AWS itself rejects, and mirroring the desired array's length is
+      // the least surprising answer for it.
+      const id = configItemId(item);
+      const retained = id !== undefined ? previousById.get(id) : undefined;
       if (retained !== undefined) effective.push(retained);
     });
     if (effective.length === 0 && previous === undefined) return undefined;
@@ -2673,7 +2697,17 @@ export class S3BucketProvider implements ResourceProvider {
     const retainPreviousItems = (key: string, skippedIds: ReadonlySet<string>): void => {
       if (skippedIds.size === 0) return;
       const desired = properties[key];
-      if (!Array.isArray(desired)) return;
+      if (!Array.isArray(desired)) {
+        // Unreachable: `diffArrayConfigById` iterates the desired value, so a
+        // non-array would have thrown before any item could be skipped. Logged
+        // rather than dropped silently, because reaching it means a skip went
+        // UNRECORDED and the phantom drift this method removes is back.
+        this.logger.debug(
+          `Bucket ${bucketName}: ${skippedIds.size} skipped ${key} item(s) could not be recorded ` +
+            `— the desired value is not an array`
+        );
+        return;
+      }
       const previous = previousProperties[key];
       overrides.set(
         key,
@@ -2681,8 +2715,8 @@ export class S3BucketProvider implements ResourceProvider {
           desired as Array<Record<string, unknown>>,
           Array.isArray(previous) ? (previous as Array<Record<string, unknown>>) : undefined,
           (item) => {
-            const id = isPlainObject(item) ? item['Id'] : undefined;
-            return typeof id === 'string' && skippedIds.has(id);
+            const id = configItemId(item);
+            return id !== undefined && skippedIds.has(id);
           }
         )
       );
@@ -2992,7 +3026,7 @@ export class S3BucketProvider implements ResourceProvider {
         const skipped = await this.applyMetricsConfigurations(bucketName, [cfg], (m) =>
           this.logger.warn(m)
         );
-        if (skipped.length > 0) skippedMetricsIds.add(id);
+        if (skipped.length > 0) skippedMetricsIds.add(String(id));
       },
       async (id) => {
         await this.s3Client.send(
@@ -3017,7 +3051,7 @@ export class S3BucketProvider implements ResourceProvider {
         const skipped = await this.applyAnalyticsConfigurations(bucketName, [cfg], (m) =>
           this.logger.warn(m)
         );
-        if (skipped.length > 0) skippedAnalyticsIds.add(id);
+        if (skipped.length > 0) skippedAnalyticsIds.add(String(id));
       },
       async (id) => {
         await this.s3Client.send(
@@ -3042,7 +3076,7 @@ export class S3BucketProvider implements ResourceProvider {
         const skipped = await this.applyIntelligentTieringConfigurations(bucketName, [cfg], (m) =>
           this.logger.warn(m)
         );
-        if (skipped.length > 0) skippedIntelligentTieringIds.add(id);
+        if (skipped.length > 0) skippedIntelligentTieringIds.add(String(id));
       },
       async (id) => {
         await this.s3Client.send(
@@ -3069,7 +3103,7 @@ export class S3BucketProvider implements ResourceProvider {
         const skipped = await this.applyInventoryConfigurations(bucketName, [cfg], (m) =>
           this.logger.warn(m)
         );
-        if (skipped.length > 0) skippedInventoryIds.add(id);
+        if (skipped.length > 0) skippedInventoryIds.add(String(id));
       },
       async (id) => {
         await this.s3Client.send(

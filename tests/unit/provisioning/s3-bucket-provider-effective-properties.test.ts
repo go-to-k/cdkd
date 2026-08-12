@@ -325,3 +325,211 @@ describe('nothing skipped: `effectiveProperties` stays ABSENT', () => {
     expect(result.effectiveProperties).toBeUndefined();
   });
 });
+
+/**
+ * The per-APPLIER wiring fence (test review on PR #1660, HIGH).
+ *
+ * The rows above exercise three appliers. The other five are wired by
+ * copy-paste — `retainPrevious('<Key>')` / `retainPreviousItems('<Key>',
+ * skipped<X>Ids)` — and that is the highest-probability defect in the change:
+ * a wrong key or a wrong skip-set pasted at any of the 22 wiring sites leaves
+ * every assertion above GREEN, while silently recording a value AWS never
+ * received (whole-Put case) or clobbering an unrelated property (wrong-key
+ * case).
+ *
+ * Each row therefore asserts BOTH halves, which is what makes a mis-paste
+ * visible: the target key must hold the PREVIOUS value, AND a sibling property
+ * that was NOT skipped must survive untouched. Asserting only the first would
+ * miss `retainPrevious` pointed at the wrong key; asserting only the second
+ * would miss the skip going unrecorded.
+ */
+interface WiringSite {
+  readonly name: string;
+  readonly key: string;
+  /** A valid, previously-applied value for `key`. */
+  readonly previous: unknown;
+  /** The same block with ONE field malformed, so the applier skips. */
+  readonly desired: unknown;
+  /** What the effective bag must carry — the previous value, or a rebuilt array. */
+  readonly expected: unknown;
+}
+
+const S3_DEST = { BucketArn: 'arn:aws:s3:::dest', Format: 'CSV' };
+
+const WIRING_SITES: WiringSite[] = [
+  {
+    name: 'logging (whole Put)',
+    key: 'LoggingConfiguration',
+    previous: { DestinationBucketName: 'live-logs', LogFilePrefix: 'p/' },
+    desired: { DestinationBucketName: 1 },
+    expected: { DestinationBucketName: 'live-logs', LogFilePrefix: 'p/' },
+  },
+  {
+    name: 'replication (whole Put)',
+    key: 'ReplicationConfiguration',
+    previous: {
+      Role: 'arn:aws:iam::123456789012:role/repl',
+      Rules: [{ Id: 'r', Status: 'Enabled', Destination: { Bucket: 'arn:aws:s3:::dest' } }],
+    },
+    desired: {
+      Role: 'arn:aws:iam::123456789012:role/repl',
+      Rules: [{ Id: 'r', Status: 1, Destination: { Bucket: 'arn:aws:s3:::dest' } }],
+    },
+    expected: {
+      Role: 'arn:aws:iam::123456789012:role/repl',
+      Rules: [{ Id: 'r', Status: 'Enabled', Destination: { Bucket: 'arn:aws:s3:::dest' } }],
+    },
+  },
+  {
+    name: 'metrics (per item, TagFilters container guard)',
+    key: 'MetricsConfigurations',
+    previous: [{ Id: 'm1', Prefix: 'live/' }],
+    desired: [{ Id: 'm1', TagFilters: 'not-an-array' }],
+    expected: [{ Id: 'm1', Prefix: 'live/' }],
+  },
+  {
+    name: 'analytics (per item, StorageClassAnalysis container guard)',
+    key: 'AnalyticsConfigurations',
+    previous: [{ Id: 'a1', StorageClassAnalysis: {} }],
+    desired: [{ Id: 'a1', StorageClassAnalysis: 'not-an-object' }],
+    expected: [{ Id: 'a1', StorageClassAnalysis: {} }],
+  },
+  {
+    name: 'analytics (per item, unusable DataExport destination)',
+    key: 'AnalyticsConfigurations',
+    previous: [{ Id: 'a1', StorageClassAnalysis: {} }],
+    desired: [
+      { Id: 'a1', StorageClassAnalysis: { DataExport: { Destination: 'not-an-object' } } },
+    ],
+    expected: [{ Id: 'a1', StorageClassAnalysis: {} }],
+  },
+  {
+    name: 'inventory (per item, IncludedObjectVersions guard)',
+    key: 'InventoryConfigurations',
+    previous: [
+      { Id: 'i1', IncludedObjectVersions: 'All', Destination: S3_DEST, ScheduleFrequency: 'Daily' },
+    ],
+    desired: [
+      { Id: 'i1', IncludedObjectVersions: 1, Destination: S3_DEST, ScheduleFrequency: 'Daily' },
+    ],
+    expected: [
+      { Id: 'i1', IncludedObjectVersions: 'All', Destination: S3_DEST, ScheduleFrequency: 'Daily' },
+    ],
+  },
+  {
+    name: 'inventory (per item, two-source ScheduleFrequency with no fallback)',
+    key: 'InventoryConfigurations',
+    previous: [
+      { Id: 'i1', IncludedObjectVersions: 'All', Destination: S3_DEST, ScheduleFrequency: 'Daily' },
+    ],
+    desired: [
+      { Id: 'i1', IncludedObjectVersions: 'All', Destination: S3_DEST, ScheduleFrequency: 1 },
+    ],
+    expected: [
+      { Id: 'i1', IncludedObjectVersions: 'All', Destination: S3_DEST, ScheduleFrequency: 'Daily' },
+    ],
+  },
+];
+
+// A sibling the run never skips. Its survival is what catches a `retainPrevious`
+// / `retainPreviousItems` call pointed at the WRONG key: a mis-paste overwrites
+// this with the previous bag's value instead of the target property.
+const UNSKIPPED_SIBLING = { Rules: [{ Id: 'keep', Status: 'Enabled', ExpirationInDays: 5 }] };
+
+describe('UPDATE: every applier records under ITS OWN key (wiring fence)', () => {
+  for (const site of WIRING_SITES) {
+    it(`${site.name}: retains the previous value and leaves the unskipped sibling alone`, async () => {
+      const properties = {
+        BucketName: BUCKET,
+        [site.key]: site.desired,
+        LifecycleConfiguration: UNSKIPPED_SIBLING,
+      };
+      const previousProperties = {
+        BucketName: BUCKET,
+        [site.key]: site.previous,
+        LifecycleConfiguration: UNSKIPPED_SIBLING,
+      };
+
+      const result = await provider.update('B', BUCKET, RESOURCE_TYPE, properties, {
+        ...previousProperties,
+      });
+
+      expect(result.effectiveProperties).toBeDefined();
+      expect(result.effectiveProperties?.[site.key]).toEqual(site.expected);
+      expect(result.effectiveProperties?.['LifecycleConfiguration']).toEqual(UNSKIPPED_SIBLING);
+      expect(result.effectiveProperties?.['BucketName']).toBe(BUCKET);
+    });
+  }
+});
+
+describe('replay-CREATE: every applier drops ITS OWN key (wiring fence)', () => {
+  for (const site of WIRING_SITES) {
+    it(`${site.name}: the skipped block is absent and the sibling survives`, async () => {
+      const properties = {
+        BucketName: BUCKET,
+        [site.key]: site.desired,
+        LifecycleConfiguration: UNSKIPPED_SIBLING,
+      };
+
+      const result = await provider.create('B', RESOURCE_TYPE, properties, {
+        replayingState: true,
+      });
+
+      expect(result.effectiveProperties).toBeDefined();
+      // Nothing was applied on a fresh bucket, so the key is DROPPED — or, for a
+      // per-item applier, reduced to the items that DID apply (none here).
+      expect(result.effectiveProperties?.[site.key]).toBeUndefined();
+      expect(result.effectiveProperties?.['LifecycleConfiguration']).toEqual(UNSKIPPED_SIBLING);
+    });
+  }
+});
+
+describe('the create-path logging GATE is its own arm', () => {
+  it('drops LoggingConfiguration when the GATE refuses, before the applier runs', async () => {
+    // Structurally distinct from every other create override: this one is set
+    // from a refusal in `applyAllSubConfigsForCreate` that never calls
+    // `applyLoggingConfiguration` at all. Deleting the `overrides.set` there
+    // leaves the else-branch unreachable, so no other row can see it.
+    const properties = {
+      BucketName: BUCKET,
+      LoggingConfiguration: { DestinationBucketName: 1 },
+    };
+
+    const result = await provider.create('B', RESOURCE_TYPE, properties, {
+      replayingState: true,
+    });
+
+    expect(childLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('Skipping the logging configuration')
+    );
+    expect(result.effectiveProperties).toBeDefined();
+    expect('LoggingConfiguration' in result.effectiveProperties!).toBe(false);
+  });
+});
+
+describe('a NUMERIC Id still records its skip (code review on PR #1660)', () => {
+  it('substitutes the previous item when the Id is an unquoted-YAML number', async () => {
+    // `diffArrayConfigById` accepts an `Id` under a TRUTHINESS test, so an
+    // unquoted-YAML `Id: 1` is a NUMBER that reaches the Put and lands in the
+    // skipped-id set as a number. A `typeof id === 'string'` predicate on the
+    // other side read that item as NOT skipped and recorded the never-applied
+    // desired value — the phantom drift this suite exists to fence, surviving
+    // for exactly this shape.
+    const previousItem = { Id: 1, Status: 'Disabled', Tierings: TIERINGS };
+    const properties = {
+      BucketName: BUCKET,
+      IntelligentTieringConfigurations: [{ Id: 1, Status: 1, Tierings: TIERINGS }],
+    };
+    const previousProperties = {
+      BucketName: BUCKET,
+      IntelligentTieringConfigurations: [previousItem],
+    };
+
+    const result = await provider.update('B', BUCKET, RESOURCE_TYPE, properties, {
+      ...previousProperties,
+    });
+
+    expect(sentCommands(PutBucketIntelligentTieringConfigurationCommand)).toHaveLength(0);
+    expect(result.effectiveProperties?.['IntelligentTieringConfigurations']).toEqual([previousItem]);
+  });
+});
