@@ -190,6 +190,47 @@ const SG_INGRESS_IP_PROTOCOL_PATH = 'AWS::EC2::SecurityGroupIngress IpProtocol';
  *   passes a no-op — a diff must never throw, and it must never warn either,
  *   since the provisioning path already announces the same substitution.
  */
+/**
+ * Fold a rule bag's `IpProtocol` to the spelling AWS will hold (issue #1648).
+ *
+ * DIFF-side only — see the call site in `canonicalizeDesiredProperties` for why
+ * this is not done inside `narrowIngressIpProtocol`, which also feeds the wire.
+ * Returns the original object when nothing changes, so an ordinary rule
+ * compares byte-for-byte as before.
+ */
+function canonicalizeSgRuleProtocol(rule: Record<string, unknown>): Record<string, unknown> {
+  if (!('IpProtocol' in rule)) return rule;
+  const next = canonicalizeIpProtocolValue(rule['IpProtocol']);
+  if (next === rule['IpProtocol']) return rule;
+  return { ...rule, IpProtocol: next };
+}
+
+/**
+ * The `AWS::EC2::SecurityGroup` inline-rule twin of
+ * {@link canonicalizeSgRuleProtocol}: fold every element of the two rule lists.
+ * Identity-returns when nothing changes, and leaves a non-array list or a
+ * non-object element alone so a malformed template still reaches AWS's own
+ * validation rather than being reshaped here.
+ */
+function canonicalizeSgInlineRuleProtocols(
+  properties: Record<string, unknown>
+): Record<string, unknown> {
+  let out = properties;
+  for (const key of ['SecurityGroupIngress', 'SecurityGroupEgress'] as const) {
+    const list = out[key];
+    if (!Array.isArray(list)) continue;
+    let changed = false;
+    const mapped = list.map((el) => {
+      if (el === null || typeof el !== 'object' || Array.isArray(el)) return el;
+      const next = canonicalizeSgRuleProtocol(el as Record<string, unknown>);
+      if (next !== el) changed = true;
+      return next;
+    });
+    if (changed) out = { ...out, [key]: mapped };
+  }
+  return out;
+}
+
 export function narrowIngressIpProtocol(
   properties: Record<string, unknown>,
   onUnusable?: (message: string) => void
@@ -4960,17 +5001,29 @@ export class EC2Provider implements ResourceProvider {
       // must not warn either — the provisioning path announces the identical
       // substitution, and `cdkd diff` / the deploy's own diff pass would
       // otherwise emit it a second time for a resource nothing is changing.
-      // NOTE (issue #1643 -> follow-up #1648): this folds the protocol's TYPE
-      // (#1633's stringification) but NOT the NAME substitutions AWS performs,
-      // which #1643 measured and which `src/utils/ip-protocol.ts` now
-      // canonicalizes for the readback side. So a template edit rewriting
-      // `IpProtocol: 6` to `'tcp'` still reads as a changed property, and since
-      // `IpProtocol` is create-only that classifies as a REPLACEMENT of a rule
-      // AWS already holds exactly. Deliberately NOT changed here: this is the
-      // DEPLOY path's replacement decision, which needs its own live
-      // verification rather than riding a drift-fixture PR.
+      // Issue #1648: #1633's narrowing folds the protocol's TYPE, and #1643
+      // measured that AWS ALSO substitutes a canonical NAME for four of the
+      // numbers. Both sides of the diff get the name fold here, so a template
+      // edit rewriting `IpProtocol: 6` to `'tcp'` compares equal instead of
+      // classifying as a change — which for this create-only property meant a
+      // REPLACEMENT, deleting and re-creating a rule AWS already holds exactly.
+      //
+      // The fold is applied HERE and not inside `narrowIngressIpProtocol`
+      // deliberately: that helper also feeds the CREATE path, so folding there
+      // would change what cdkd puts on the WIRE (and what `effectiveProperties`
+      // records) rather than only how the diff classifies it. The wire value is
+      // not the defect — AWS accepts either spelling and stores `tcp` for both.
       const { narrowed } = narrowIngressIpProtocol(properties, () => {});
-      return narrowed;
+      return canonicalizeSgRuleProtocol(narrowed);
+    }
+    // The INLINE shape (issue #1648). A SecurityGroup's own rule lists are not
+    // create-only, so the stakes are lower than the standalone type's — the
+    // diff would report a change and call `update()`, which since #1643 keys
+    // both spellings identically and issues no revoke/authorize. Canonicalizing
+    // here makes the diff report NO_CHANGE instead of a change that does
+    // nothing, so `cdkd diff` stops previewing an update that cannot happen.
+    if (resourceType === 'AWS::EC2::SecurityGroup') {
+      return canonicalizeSgInlineRuleProtocols(properties);
     }
     if (resourceType !== 'AWS::EC2::Route') return properties;
     const { declared, narrowed } = narrowRouteDestinations(properties);
@@ -5101,6 +5154,28 @@ export class EC2Provider implements ResourceProvider {
     if (sg.GroupName !== undefined) result['GroupName'] = sg.GroupName;
     if (sg.Description !== undefined) result['GroupDescription'] = sg.Description;
     if (sg.VpcId !== undefined) result['VpcId'] = sg.VpcId;
+
+    // Tags (issue #1649). Every SIBLING standalone type — SecurityGroupIngress,
+    // Route, VPCGatewayAttachment, SubnetRouteTableAssociation, NetworkAclEntry,
+    // SubnetNetworkAclAssociation — declares `Tags` in `getDriftUnknownPaths`
+    // because their reads cannot return them. `AWS::EC2::SecurityGroup` was
+    // never added to that list AND never read them, so a templated `Tags` block
+    // compared against `undefined` and reported permanent phantom drift on the
+    // `properties`-fallback baseline (state written before observed-capture, or
+    // any resource whose baseline is the raw template).
+    //
+    // Reading them is the strictly better of the two fixes, and it is available:
+    // `DescribeSecurityGroups` returns `Tags` in the CFn `[{Key,Value}]` shape
+    // verbatim (measured us-east-1, 2026-08-12), so a REAL tag change becomes
+    // detectable rather than being declared unreadable. `normalizeAwsTagsToCfn`
+    // strips the reserved `aws:`-prefixed entries AWS attaches on its own, which
+    // a template can never declare and which would otherwise be drift on every
+    // run; the comparator's `canonicalizeTagListsDeep` handles readback ORDER.
+    //
+    // Emitted only when AWS reports at least one tag: an untagged group has no
+    // `Tags` key, so a template that declares none is not compared against `[]`.
+    const tags = normalizeAwsTagsToCfn(sg.Tags);
+    if (tags.length > 0) result['Tags'] = tags;
 
     // Reverse-map AWS IpPermissions[] → CFn SecurityGroupIngress[].
     // Each AWS IpPermission can produce multiple CFn rules (one per
