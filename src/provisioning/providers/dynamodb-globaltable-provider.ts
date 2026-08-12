@@ -412,6 +412,15 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     let effectiveProperties: Record<string, unknown> | undefined;
 
     if (billingModeSubstituted) {
+      // The twin question, re-asked here because this arm SUBSTITUTES rather
+      // than skips and `.claude/rules/providers.md` requires it at every
+      // substitute site: no `canonicalizeDesiredProperties` is needed.
+      // `BillingMode` is not create-only, so the next deploy's diff sees a
+      // changed value, classifies an ordinary in-place UPDATE, and the update
+      // path's own guard answers it — no replacement is derived and nothing is
+      // removed. Canonicalizing the desired side would instead make cdkd agree
+      // with a malformed template forever.
+      //
       // Known residual, issue #1726: substituting PAY_PER_REQUEST also makes
       // this create skip every PROVISIONED-only capacity setting (the
       // top-level / per-replica throughput blocks and each index's), yet only
@@ -1232,9 +1241,14 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         {
           onUnusable: (message) => {
             billingUnusable = true;
+            // logicalId-prefixed for the same reason the GSI and stream arms
+            // are: a stack can carry several GlobalTables, and without it
+            // neither the user nor an integ assertion can tell which one
+            // warned.
             this.logger.warn(
-              `${message} The table's current billing mode (${oldBilling}) is kept for this ` +
-                `update rather than flipped to the default.`
+              `AWS::DynamoDB::GlobalTable ${logicalId}: ${message} The table's current ` +
+                `billing mode (${oldBilling}) is kept for this update rather than flipped ` +
+                `to the default.`
             );
           },
         }
@@ -1644,22 +1658,50 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // The third arm issue #1683 names, and the one its arm 1 places on BOTH
       // paths: an unusable desired `BillingMode` does NOT flip the table, it
       // keeps `oldBilling` (see the guard's own comment for why defaulting here
-      // would silently re-price a production table). So the mode cdkd leaves
-      // live is `oldBilling` while the engine records the malformed desired
-      // value — and `readCurrentState` DOES read `BillingMode` back, so that is
-      // the same permanent phantom drift the two arms above close.
+      // would silently re-price a production table). So AWS is left holding the
+      // mode it already had while the engine recorded the malformed desired
+      // value.
       //
-      // Recording `oldBilling` satisfies both rules at once here: it is what
-      // was SENT (nothing, i.e. the live mode is untouched) and it is the
-      // PREVIOUS value the SKIP shape calls for. There is no both-sides-unusable
-      // branch, because `oldBilling` is already resolved for exactly that case
-      // one guard up — an unusable RECORDED previous falls back to the mode
-      // `DescribeTable` reports, so the value retained here is always one AWS
-      // actually holds, never a second guess.
+      // Be precise about what that costs, because the obvious phrasing
+      // overstates it: `readCurrentState` emits `BillingMode` only when AWS
+      // returns a `BillingModeSummary`, and a table created without an explicit
+      // mode has none — the live run that verified this arm measured exactly
+      // that. So the payoff here is chiefly the DIFF's previous side, which the
+      // next deploy reads: a junk value recorded there is the #1552 class,
+      // re-derived on every deploy. Drift convergence is the payoff only for a
+      // table whose mode AWS does report.
+      //
+      // What is retained is the RECORDED previous, and deliberately NOT
+      // `oldBilling`, although `oldBilling` is the mode this update compared
+      // against. The two differ in exactly the cases that matter, both
+      // MEASURED by the review that caught this: with an ABSENT recorded
+      // previous `oldBilling` is the create-path default, so recording it
+      // INVENTS a `BillingMode` key on a table AWS may hold as PROVISIONED;
+      // and with a present-but-unusable one it is the live `DescribeTable`
+      // reading, which is a read-back value — `.claude/rules/providers.md`
+      // puts those in `observedProperties`, not in the `properties` baseline.
+      //
+      // Recording the live mode would also MASK real drift: when a recorded
+      // PROVISIONED meets an out-of-band on-demand table, the difference is a
+      // finding for `cdkd drift` to report, not something this arm should
+      // quietly overwrite. So the SKIP's own rule applies unchanged — retain
+      // the PREVIOUS value — and when there is no usable previous the key is
+      // DROPPED rather than guessed, the same answer the GSI arm above and the
+      // Lambda URL `AuthType` arm (#1654) take.
       if (billingUnusable) {
+        const recordedPreviousUsable =
+          typeof recordedOldBilling === 'string' && recordedOldBilling.trim() !== '';
         effectiveProperties = { ...(effectiveProperties ?? properties) };
-        effectiveProperties['BillingMode'] = oldBilling;
+        if (recordedPreviousUsable) {
+          effectiveProperties['BillingMode'] = recordedOldBilling;
+        } else {
+          delete effectiveProperties['BillingMode'];
+        }
       }
+      // Known residual, the update-side twin of issue #1726: with the flip
+      // suppressed no provisioned-throughput or on-demand-ceiling call fires
+      // either, yet the bag above still carries whatever capacity blocks the
+      // template declared. Same measurement question, tracked in that issue.
       // Table-level on-demand ceilings, BOTH halves. The write half lives at
       // top-level `WriteOnDemandThroughputSettings`; the read half lives on
       // the LOCAL replica as `ReadOnDemandThroughputSettings` and was never

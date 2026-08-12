@@ -212,6 +212,27 @@ describe('DynamoDBGlobalTableProvider sibling effectiveProperties arms (issue #1
     expect(result.effectiveProperties).toBeUndefined();
   });
 
+  it('KEEPS the PROVISIONED-only capacity blocks the substitution never sent (issue #1726)', async () => {
+    // A DECISION, not an accident: substituting PAY_PER_REQUEST also skips the
+    // provisioned-throughput call, so this block never reached AWS and is
+    // recorded anyway. Which members are safe to strip is the live-shape
+    // question issue #1726 opens; pinning it here means changing the answer
+    // has to change this test rather than happening silently.
+    const throughput = { WriteCapacityUnits: 5 };
+    const desired = {
+      ...baseProps,
+      BillingMode: '',
+      WriteProvisionedThroughputSettings: throughput,
+    };
+
+    const result = await provider.create('MyTable', RESOURCE_TYPE, desired, {
+      replayingState: true,
+    });
+
+    expect(createInput()['ProvisionedThroughput']).toBeUndefined();
+    expect(result.effectiveProperties?.['WriteProvisionedThroughputSettings']).toEqual(throughput);
+  });
+
   it('COMPOSES the two REPLAY-CREATE arms rather than letting one erase the other', async () => {
     // Unlike the update-path stream arm — whose `??` is inert because it runs
     // first — this composition is LIVE: `billingModeSubstituted` runs ahead of
@@ -287,18 +308,58 @@ describe('DynamoDBGlobalTableProvider sibling effectiveProperties arms (issue #1
     expect(childLogger.warn).toHaveBeenCalledWith(expect.stringContaining('BillingMode'));
   });
 
-  it('retains the mode AWS reports when the RECORDED previous is unusable too', async () => {
-    // `oldBilling` already falls back to `DescribeTable` for an unusable
-    // recorded previous, so this arm never records a second guess — the
-    // mocked table above reports PAY_PER_REQUEST.
-    const desired = { ...baseProps, BillingMode: '' };
-
-    const result = await provider.update('MyTable', TABLE_NAME, RESOURCE_TYPE, desired, {
-      ...baseProps,
-      BillingMode: '',
+  it.each([
+    ['unusable', ''],
+    ['absent', undefined],
+  ])('DROPS the key when the recorded previous is %s', async (_label, previousMode) => {
+    // NOT `oldBilling`, which for these two shapes is the live DescribeTable
+    // reading and the create-path default respectively — one is a read-back
+    // value that belongs in observedProperties, the other invents a key the
+    // record never had. The mock reports PROVISIONED so neither could pass by
+    // coinciding with the `PAY_PER_REQUEST` fallback.
+    mockSend.mockReset();
+    mockSend.mockResolvedValue({
+      Table: {
+        TableName: TABLE_NAME,
+        TableStatus: 'ACTIVE',
+        TableArn: `arn:aws:dynamodb:us-east-1:0:table/${TABLE_NAME}`,
+        BillingModeSummary: { BillingMode: 'PROVISIONED' },
+        Replicas: [{ RegionName: 'us-east-1', ReplicaStatus: 'ACTIVE' }],
+      },
     });
+    const previous: Record<string, unknown> = { ...baseProps };
+    if (previousMode === undefined) {
+      delete previous['BillingMode'];
+    } else {
+      previous['BillingMode'] = previousMode;
+    }
 
-    expect(result.effectiveProperties?.['BillingMode']).toBe('PAY_PER_REQUEST');
+    const result = await provider.update(
+      'MyTable',
+      TABLE_NAME,
+      RESOURCE_TYPE,
+      { ...baseProps, BillingMode: '' },
+      previous
+    );
+
+    expect(result.effectiveProperties).toBeDefined();
+    expect('BillingMode' in (result.effectiveProperties ?? {})).toBe(false);
+  });
+
+  it('does NOT overwrite a recorded mode that AWS has drifted away from', async () => {
+    // Recording the LIVE mode here would silently reconcile an out-of-band
+    // re-price into the baseline — `cdkd drift`'s finding, not this arm's to
+    // erase. The mocked table reports PAY_PER_REQUEST against a recorded
+    // PROVISIONED.
+    const result = await provider.update(
+      'MyTable',
+      TABLE_NAME,
+      RESOURCE_TYPE,
+      { ...baseProps, BillingMode: '' },
+      { ...baseProps, BillingMode: 'PROVISIONED' }
+    );
+
+    expect(result.effectiveProperties?.['BillingMode']).toBe('PROVISIONED');
   });
 
   it('answers with NO effectiveProperties for a VALID BillingMode on the update path', async () => {

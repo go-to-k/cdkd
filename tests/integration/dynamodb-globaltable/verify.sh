@@ -1171,6 +1171,15 @@ if ! grep -q "GlobalTable GsiProvRecoveryTable: .*GlobalSecondaryIndexes must be
   echo "FAIL: issue #1585 — cdkd did not report the malformed desired GlobalSecondaryIndexes on GsiProvRecoveryTable" >&2
   exit 1
 fi
+# The same deploy also hands that table a non-string BillingMode (issue #1683
+# arm 1, update side). Fence the GUARD as well as its effect: without this, a
+# BillingMode override that stopped producing an unusable value would leave the
+# two assertions below passing for the wrong reason — state reads PROVISIONED
+# and the table IS PROVISIONED because nothing ever tried to change either.
+if ! grep -q "GlobalTable GsiProvRecoveryTable: .*BillingMode" "${JUNK_LOG}"; then
+  echo "FAIL: issue #1683 — cdkd did not report the malformed desired BillingMode on GsiProvRecoveryTable" >&2
+  exit 1
+fi
 rm -f "${JUNK_LOG}"
 
 GSI_RECOVERY_TABLE="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | python3 -c '

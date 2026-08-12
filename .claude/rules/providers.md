@@ -105,12 +105,19 @@ strict, each differently):
   too the field is OMITTED, and `UpdateFunctionUrlConfig`'s merge semantics
   retain the live value), DynamoDB Table / GlobalTable `BillingMode`. Since
   issue #1683 the GlobalTable UPDATE arm also RECORDS the kept mode via
-  `effectiveProperties` — `readCurrentState` reads `BillingMode` back, so
-  recording the malformed desired value was permanent phantom drift. There is
-  no both-sides-unusable branch: the kept mode already falls back to what
-  `DescribeTable` reports, so the retained value is always one AWS holds. The
-  create-side arm of the SAME property answers differently (it records the
-  SUBSTITUTED mode) because there the table really was created on-demand.
+  `effectiveProperties`, because leaving the malformed desired value in the
+  record hands it to the NEXT deploy as its previous side (the #1552 class);
+  where AWS reports a `BillingModeSummary` it also clears phantom drift, but a
+  table created without an explicit mode returns none, so do not state that as
+  the whole payoff. What is retained is the RECORDED previous, NOT the mode the
+  update compared against: with an ABSENT recorded previous the latter is the
+  create-path default (recording it INVENTS a key on a possibly-PROVISIONED
+  table) and with an unusable one it is a live read-back, which belongs in
+  `observedProperties`. Recording the live mode would also MASK an out-of-band
+  re-price that `cdkd drift` should report. No usable previous therefore DROPS
+  the key rather than guessing. The create-side arm of the SAME property answers
+  differently — it records the SUBSTITUTED mode — because there the table really
+  was created on-demand.
 - **SKIP the block** — GlobalTable `StreamSpecification` (defaulting would
   re-point a live stream's view type the template never asked to change).
 - **SUPPRESS the diff** — GlobalTable `GlobalSecondaryIndexes`, where the
