@@ -47,6 +47,18 @@ export function parseNamespaceCompositeId(
   return { tableBucketARN, namespace };
 }
 
+/**
+ * What `resolveTableParts` could make of a stored physicalId.
+ *
+ * `'not-found'` and `'unparseable'` are deliberately DISTINCT: the first is a
+ * valid id whose table is gone (delete must no-op), the second is an id cdkd
+ * cannot interpret (delete must fail loudly).
+ */
+type TablePartsResolution =
+  | { tableBucketARN: string; namespace: string; name: string }
+  | 'not-found'
+  | 'unparseable';
+
 /** Parse cdkd's composite table physicalId `<tableBucketARN>|<namespace>|<name>`. */
 export function parseTableCompositeId(
   physicalId: string
@@ -766,9 +778,7 @@ export class S3TablesProvider implements ResourceProvider {
    * imprecision-proof: whichever shape is stored, every SDK path works.
    * `GetTable` accepts `tableArn` and returns the parts.
    */
-  private async resolveTableParts(
-    physicalId: string
-  ): Promise<{ tableBucketARN: string; namespace: string; name: string } | undefined> {
+  private async resolveTableParts(physicalId: string): Promise<TablePartsResolution> {
     const composite = parseTableCompositeId(physicalId);
     if (composite) return composite;
     // Legacy rows may carry MORE than 3 segments; keep accepting them.
@@ -777,14 +787,20 @@ export class S3TablesProvider implements ResourceProvider {
       const [tableBucketARN, namespace, name] = parts;
       if (tableBucketARN && namespace && name) return { tableBucketARN, namespace, name };
     }
-    if (physicalId.includes('|') || !physicalId.startsWith('arn:')) return undefined;
+    if (physicalId.includes('|') || !physicalId.startsWith('arn:')) return 'unparseable';
 
     try {
       const resp = await this.getClient().send(new GetTableCommand({ tableArn: physicalId }));
-      if (!resp.tableARN) return undefined;
-      return tableIdentityFromGetTable(resp.tableARN, resp.namespace, resp.name);
+      if (!resp.tableARN) return 'unparseable';
+      return tableIdentityFromGetTable(resp.tableARN, resp.namespace, resp.name) ?? 'unparseable';
     } catch (err) {
-      if (err instanceof NotFoundException) return undefined;
+      // 'not-found' is NOT the same answer as 'unparseable'. Collapsing them
+      // makes a delete of an already-gone ARN row report
+      // "Invalid physical ID format" for a perfectly valid id — which fails
+      // the destroy and leaves the stack un-destroyable, the same shape of
+      // breakage this PR exists to fix. Recovery paths must tolerate a stale
+      // read.
+      if (err instanceof NotFoundException) return 'not-found';
       throw err;
     }
   }
@@ -793,7 +809,7 @@ export class S3TablesProvider implements ResourceProvider {
     physicalId: string
   ): Promise<Record<string, unknown> | undefined> {
     const resolved = await this.resolveTableParts(physicalId);
-    if (!resolved) return undefined;
+    if (resolved === 'not-found' || resolved === 'unparseable') return undefined;
     const { tableBucketARN, namespace, name } = resolved;
 
     let resp;
@@ -1126,8 +1142,28 @@ export class S3TablesProvider implements ResourceProvider {
     // Accepts cdkd's composite AND CloudFormation's bare TableARN — see
     // `resolveTableParts`. Rejecting the ARN here is what made a migrated
     // stack undestroyable (issue #1668).
-    const resolved = await this.resolveTableParts(physicalId);
-    if (!resolved) {
+    let resolved: TablePartsResolution;
+    try {
+      resolved = await this.resolveTableParts(physicalId);
+    } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to resolve S3 Tables Table ${logicalId} (${physicalId}): ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        cause
+      );
+    }
+    if (resolved === 'not-found') {
+      // Already gone — delete is idempotent, same as the DeleteTable
+      // NotFoundException arm below.
+      const clientRegion = await this.getClient().config.region();
+      assertRegionMatch(clientRegion, context?.expectedRegion, resourceType, logicalId, physicalId);
+      this.logger.debug(`S3 Tables Table ${physicalId} does not exist, skipping deletion`);
+      return;
+    }
+    if (resolved === 'unparseable') {
       throw new ProvisioningError(
         `Invalid physical ID format for S3 Tables Table ${logicalId}: ${physicalId} ` +
           `(expected '<tableBucketARN>|<namespace>|<name>' or a table ARN)`,
@@ -1308,7 +1344,16 @@ export class S3TablesProvider implements ResourceProvider {
     // Accepts cdkd's composite AND CloudFormation's bare TableARN, like the
     // delete / read paths — an imported row can carry either.
     const resolvedParts = await this.resolveTableParts(physicalId);
-    if (!resolvedParts) {
+    if (resolvedParts === 'not-found') {
+      throw new ProvisioningError(
+        `applyTableTagsDiff: table '${physicalId}' no longer exists (state is out of sync) — ` +
+          `refusing to silently drop the tag update`,
+        resourceType,
+        logicalId,
+        physicalId
+      );
+    }
+    if (resolvedParts === 'unparseable') {
       throw new ProvisioningError(
         `applyTableTagsDiff: cannot derive table ARN from physicalId '${physicalId}' ` +
           `(expected '<bucketArn>|<namespace>|<name>' or a table ARN) — refusing to silently ` +
