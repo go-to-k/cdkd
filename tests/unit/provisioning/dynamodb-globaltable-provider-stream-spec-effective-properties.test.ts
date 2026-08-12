@@ -75,6 +75,12 @@ describe('DynamoDBGlobalTableProvider StreamSpecification effectiveProperties (i
     provider = new DynamoDBGlobalTableProvider();
   });
 
+  /** Every UpdateTable input this update issued. */
+  const updateInputs = (): Array<Record<string, unknown>> =>
+    mockSend.mock.calls
+      .filter((c) => c[0].constructor.name === 'UpdateTableCommand')
+      .map((c) => c[0].input as Record<string, unknown>);
+
   // ─── UPDATE: the SKIP arm retains the PREVIOUS value ────────────────────
 
   it('records the PREVIOUS StreamSpecification when the update SKIPS the block', async () => {
@@ -97,6 +103,100 @@ describe('DynamoDBGlobalTableProvider StreamSpecification effectiveProperties (i
       ...desired,
       StreamSpecification: previousSpec,
     });
+
+    // The WIRE half of the same claim: recording the previous value is only
+    // correct BECAUSE nothing was sent. A mutation that both sends the block
+    // and retains the previous value satisfies the assertions above.
+    expect(updateInputs().some((i) => 'StreamSpecification' in i)).toBe(false);
+    // ...and the skip is still ANNOUNCED. `effectiveProperties` records the
+    // narrowing; it does not replace warning about it.
+    expect(childLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('AWS::DynamoDB::GlobalTable StreamSpecification')
+    );
+  });
+
+  it('COPIES the previous value rather than aliasing the previous bag', async () => {
+    // `rollback-executor.ts` spreads the returned bag shallowly, so an alias
+    // would leave two state records sharing one mutable object.
+    const previousSpec = { StreamViewType: 'KEYS_ONLY' };
+
+    const result = await provider.update(
+      'MyTable',
+      TABLE_NAME,
+      RESOURCE_TYPE,
+      { ...baseProps, StreamSpecification: '' },
+      { ...baseProps, StreamSpecification: previousSpec }
+    );
+
+    expect(result.effectiveProperties?.['StreamSpecification']).toEqual(previousSpec);
+    expect(result.effectiveProperties?.['StreamSpecification']).not.toBe(previousSpec);
+  });
+
+  // ─── UPDATE: a MALFORMED previous side is not laundered into state ──────
+  //
+  // issue #1653 review (item A2). `previousProperties` is a cdkd STATE record,
+  // and a rollback replay whose record was written by an older binary is
+  // exactly the #1544 scenario — so the previous side can be junk too, and
+  // copying it in would re-create the phantom drift from the other direction.
+
+  // The desired side is `{ StreamViewType: 42 }` rather than `''` so it
+  // differs from every previous value under test: the guarded block is behind
+  // a `!deepEqual(desired, previous)` gate, so an IDENTICALLY malformed pair
+  // never reaches the skip at all (pinned separately below).
+  const malformedDesired = { ...baseProps, StreamSpecification: { StreamViewType: 42 } };
+
+  it.each([
+    ['null', null],
+    ['a blank string', ''],
+    ['a bare string container', 'NEW_IMAGE'],
+    ['an array container', []],
+    ['a malformed StreamViewType field', { StreamViewType: null }],
+    ['a blank StreamViewType field', { StreamViewType: '  ' }],
+  ])('DROPS the key when the previous StreamSpecification is %s', async (_label, previousSpec) => {
+    const result = await provider.update(
+      'MyTable',
+      TABLE_NAME,
+      RESOURCE_TYPE,
+      malformedDesired,
+      { ...baseProps, StreamSpecification: previousSpec }
+    );
+
+    expect(result.effectiveProperties).toBeDefined();
+    expect('StreamSpecification' in (result.effectiveProperties ?? {})).toBe(false);
+    expect(result.effectiveProperties).toEqual(baseProps);
+  });
+
+  it('answers with NO effectiveProperties when BOTH sides are identically malformed', async () => {
+    // The `!deepEqual` gate means the skip arm is never reached, so nothing
+    // was sent AND nothing was narrowed — the desired bag is already what
+    // state holds. Recording an answer here would be a no-op at best and, if
+    // it dropped the key, a silent rewrite of a record this update never
+    // touched.
+    const result = await provider.update(
+      'MyTable',
+      TABLE_NAME,
+      RESOURCE_TYPE,
+      { ...baseProps, StreamSpecification: '' },
+      { ...baseProps, StreamSpecification: '' }
+    );
+
+    expect(result.effectiveProperties).toBeUndefined();
+    expect(updateInputs().some((i) => 'StreamSpecification' in i)).toBe(false);
+  });
+
+  it('RETAINS a previous EMPTY block, which is a legitimate recorded value', async () => {
+    // `{}` is what a template declaring `StreamSpecification: {}` records, and
+    // the create path already treats it as "enabled with the default view
+    // type" — it is not malformed, so it must not be swept up by the guard.
+    const result = await provider.update(
+      'MyTable',
+      TABLE_NAME,
+      RESOURCE_TYPE,
+      { ...baseProps, StreamSpecification: '' },
+      { ...baseProps, StreamSpecification: {} }
+    );
+
+    expect(result.effectiveProperties?.['StreamSpecification']).toEqual({});
   });
 
   it('DROPS the key when the update skips and the previous side is ABSENT', async () => {

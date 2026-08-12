@@ -224,7 +224,12 @@ What to record differs per path, and neither answer generalizes:
   direction: a later template that REMOVES the block would derive no removal and
   the live configuration would survive forever.
 - **replay-CREATE** (the reverse-replacement arm) — DROP the key. The resource is
-  new and nothing was applied, so there is no previous value to keep.
+  new and nothing was applied, so there is no previous value to keep. Read that
+  as scoped to a SKIP ([#1653](https://github.com/go-to-k/cdkd/issues/1653)): a
+  create arm whose replay downgrade is a warn-and-DEFAULT DID apply the block,
+  so it records the SUBSTITUTED value instead — dropping there would record that
+  the provider sent nothing. Ask whether the call went out, not whether it was a
+  create.
 - **per-item appliers** (a Put keyed by `Id`) — the skip unit is one
   configuration ITEM, so the effective array substitutes the previous item of the
   same `Id` IN PLACE, or drops it when the skipped item was an ADD. Preserve the
@@ -263,6 +268,34 @@ Whether such a site ALSO takes the `canonicalizeDesiredProperties` twin is a
 genuine per-site question — unlike a skip, a substitution IS a pure function of
 the desired value, so the twin rule reaches it. `.claude/rules/providers.md`
 carries the three-finding checklist and the worked S3 answer (no twin).
+The one licensed exception is a SINGLE call site of KNOWN class
+([#1653](https://github.com/go-to-k/cdkd/issues/1653)): where you wrap one
+`readConfigString` you wrote yourself, you already know it is a
+warn-and-DEFAULT, and what you record is the default that WAS APPLIED rather
+than a retained previous value. Compose `replayWarn`'s own `onUnusable` instead
+of replacing it, and only when that callback exists — otherwise a template-path
+create silently gains a downgrade it never had — and say in-code that the
+exception is deliberate, or the next reviewer reads it as the violation.
+
+Two more rules the #1653 / #1654 reviews added:
+
+- **Validate the PREVIOUS value before retaining it.** An absent-vs-present test
+  is not enough — `previousProperties` is a cdkd STATE record, so on a replay it
+  can hold `null` / `''` / a bare string just as the desired side can, and
+  copying that in re-creates the drift from the other direction. Run the SAME
+  predicate the desired side runs (`configStringRefusal`, not a hand-written
+  `typeof` twin), DROP the key when both sides are unusable, and COPY the
+  retained value rather than aliasing the previous bag — the rollback executor
+  spreads your answer shallowly.
+- **Dropping a key can MOVE a hazard rather than remove it.** An absent key is
+  not malformed, so the next reader's guard does not fire and its default
+  applies silently. `AWS::Lambda::Url` is the live case
+  ([#1654](https://github.com/go-to-k/cdkd/issues/1654)): `update()` drops an
+  unvouchable `AuthType`, and the reverse-replacement `create()` then defaults
+  to `'NONE'` — a PUBLIC function URL, unannounced. The fix is not to stop
+  dropping but to make the READING path announce the defaulted absence on a
+  replay. Audit who reads the record next.
+
 
 ## Provider Implementation Examples
 

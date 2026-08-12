@@ -50,7 +50,12 @@ import { ProvisioningError } from '../../utils/error-handler.js';
 import { generateResourceName } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
-import { readConfigString, replayWarn, requireConfigString } from '../config-shape.js';
+import {
+  configStringRefusal,
+  readConfigString,
+  replayWarn,
+  requireConfigString,
+} from '../config-shape.js';
 import { withRetry } from '../../deployment/retry.js';
 import { isThrottlingError } from '../../deployment/retryable-errors.js';
 import type {
@@ -417,6 +422,18 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // aws-cdk-lib's `convertCfnGlobalTableStreamSpecificationPropertyToCloudFormation`),
       // so the effective bag is indistinguishable from what an ordinary
       // template-path create of the same table records.
+      //
+      // NOT REACHABLE YET — issue #1682, and this comment is here so the next
+      // reader is not misled into thinking it is. `streamSpecSubstituted` can
+      // only be set when `context.replayingState` is true, and the sole caller
+      // that sets that flag (`rollback-executor.ts`'s reverse-replacement arm)
+      // types the create result as `{physicalId, attributes?}` and rebuilds the
+      // record from `previousState.properties`, discarding
+      // `effectiveProperties`. So this arm is correct at the PROVIDER CONTRACT
+      // level and goes live the moment #1682 wires that caller; it does NOT
+      // close the create-path phantom drift today. The S3 create arm merged in
+      // #1660 has the identical gap, which is why the fix belongs in the
+      // executor rather than being worked around per provider.
       let streamSpecSubstituted = false;
       try {
         // `replayWarn` (issue #1544): a state record written by an older
@@ -472,6 +489,17 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         };
       }
     } else if (needsStream) {
+      // Two more arms of the same "state records something other than what
+      // was SENT" class, both deliberately OUT OF SCOPE for #1653 and tracked
+      // in issue #1683: (1) this auto-enable, which puts a stream on the wire
+      // the template never declared while state records no
+      // `StreamSpecification` at all; and (2) the `StreamSpecification: {}`
+      // path above, where an ABSENT `StreamViewType` silently takes the
+      // `NEW_AND_OLD_IMAGES` default with no `onUnusable` involved, so state
+      // records `{}` while AWS holds the resolved view type. Neither produces
+      // phantom drift today — `drift-calculator` only descends into keys
+      // present in state, and `{}` has no member to compare — which is why
+      // they are separable from the malformed-value arms this change fixes.
       this.logger.info(
         `Auto-enabling streams (NEW_AND_OLD_IMAGES) on ${logicalId} — required for cross-region replication`
       );
@@ -1029,6 +1057,14 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     // left a declared configuration un-applied. `undefined` (the normal case)
     // means "record the desired properties" — see the `StreamSpecification`
     // block for the full reasoning.
+    //
+    // `StreamSpecification` is the ONLY arm answered here. Two siblings in this
+    // same method are the same class and are deliberately out of scope, tracked
+    // in issue #1683: the `BillingMode` warn-and-SUBSTITUTE (which sends the
+    // previous / default mode while state keeps the malformed one) and the
+    // `desiredGsiUnusable` warn-and-SKIP (which leaves AWS holding the previous
+    // index set while state records the malformed desired blob). Both need
+    // their own real-AWS verification, which is why they are not folded in.
     let effectiveProperties: Record<string, unknown> | undefined;
 
     try {
@@ -1435,11 +1471,42 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           // canonicalizing the desired side would compare a previous side
           // holding a VALID `StreamSpecification` against a desired side with
           // the key removed, derive a REMOVAL, and disable the live stream.
+          //
+          // The previous value is VALIDATED before it is retained, through the
+          // same `configStringRefusal` predicate the desired-side guard above
+          // runs — an absent-vs-present test is not enough. `previousProperties`
+          // is a cdkd STATE record, and a rollback replay whose record was
+          // written by an older binary is exactly the #1544 scenario
+          // `replayWarn` exists for, so the previous side can hold `null` /
+          // `''` / a bare string just as the desired side can. Copying that
+          // into `effectiveProperties` would re-create the permanent phantom
+          // drift this arm exists to remove, merely sourced from the other
+          // side. When BOTH sides are unusable the key is DROPPED — there is
+          // no value cdkd can vouch for, which is the same answer
+          // `LambdaUrlProvider`'s OMITTED arm takes for `AuthType` (#1654).
+          // Sharing the predicate rather than hand-writing a `typeof` twin is
+          // what keeps the two sides agreeing on a blank string / an explicit
+          // null / a coerced number.
+          const previousStreamSpec = previousProperties['StreamSpecification'];
+          const previousStreamSpecUsable =
+            previousStreamSpec !== undefined &&
+            previousStreamSpec !== null &&
+            configStringRefusal(
+              previousStreamSpec,
+              'StreamViewType',
+              'NEW_AND_OLD_IMAGES',
+              'AWS::DynamoDB::GlobalTable StreamSpecification'
+            ) === undefined;
           effectiveProperties = { ...properties };
-          if (previousProperties['StreamSpecification'] === undefined) {
-            delete effectiveProperties['StreamSpecification'];
+          if (previousStreamSpecUsable) {
+            // COPIED, not aliased: `rollback-executor.ts` spreads the returned
+            // bag shallowly, so handing back the previous record's own object
+            // would leave two state records sharing one mutable value.
+            effectiveProperties['StreamSpecification'] = {
+              ...(previousStreamSpec as Record<string, unknown>),
+            };
           } else {
-            effectiveProperties['StreamSpecification'] = previousProperties['StreamSpecification'];
+            delete effectiveProperties['StreamSpecification'];
           }
         }
       }

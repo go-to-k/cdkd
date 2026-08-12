@@ -317,6 +317,17 @@ skip-reporting S3 bucket appliers carry all three:
   would survive forever.
 - **replay-CREATE** (the reverse-replacement arm): DROP the key. The resource
   is new and nothing was applied, so there is no previous value to keep.
+  **Read that as scoped to a SKIP** (issue #1653, `AWS::DynamoDB::GlobalTable`
+  `StreamSpecification`): on a create arm whose replay downgrade is a
+  warn-and-DEFAULT, the block IS applied — a stream really is created — so
+  what binds is #1633's "what you return is what you SENT" and the answer is
+  the SUBSTITUTED value, not a drop. Dropping there would record that cdkd
+  sent nothing. Record it in the CFn shape rather than the SDK one
+  (GlobalTable's `StreamSpecification` declares only `StreamViewType`, no
+  `StreamEnabled`), so the effective bag is indistinguishable from what an
+  ordinary template-path create of the same resource records. Which arm you
+  are on is a property of the GUARD, not of the path: ask whether the call
+  went out, not whether it was a create.
 - **per-item appliers** (a Put keyed by `Id`): the skip unit is one
   configuration ITEM, so the effective array substitutes the previous item of
   the same `Id` IN PLACE, or drops it when the skipped item was an ADD.
@@ -388,6 +399,39 @@ and adds a stray one), and the recorder is handed the value the read RETURNED
 rather than the fallback literal, so "what is recorded" and "what is sent"
 cannot drift apart. And weigh the #1643 bar first: both values here are literal
 SDK enum members the service stores verbatim, so a send-side record converges.
+**The one licensed exception to that prohibition is a SINGLE call site of KNOWN
+class** (issue #1653). The rule guards a callback SHARED by both guard classes;
+where you are wrapping one `readConfigString` you wrote yourself, you already
+know it is a warn-and-DEFAULT, and what you record is the DEFAULT THAT WAS
+APPLIED rather than a retained previous value — which is the outcome the rule
+wants, reached by the route it warns about. Preserve the gate exactly: compose
+`replayWarn`'s own `onUnusable` rather than replacing it, and only when that
+callback EXISTS, or a template-path create silently gains a downgrade it never
+had. Say in-code that the exception is deliberate, or the next reviewer reads
+it as the violation.
+
+**Validate the PREVIOUS value before retaining it** (issue #1653 review). An
+absent-vs-present test is not enough: `previousProperties` is a cdkd STATE
+record, and a replay whose record was written by an older binary is exactly the
+#1544 scenario, so the previous side can hold `null` / `''` / a bare string
+just as the desired side can. Copying that into `effectiveProperties` re-creates
+the phantom drift from the other direction. Run the SAME predicate the desired
+side runs (`configStringRefusal`, not a hand-written `typeof` twin, or the two
+sides disagree on exactly the blank string / explicit null / coerced number),
+and when BOTH sides are unusable, DROP the key — there is no value to vouch
+for. COPY the retained value rather than aliasing the previous bag; the
+rollback executor spreads the answer shallowly.
+
+**Dropping a key can move a hazard rather than remove it — audit who READS the
+record next** (issue #1654 review). Dropping is right when state must not claim
+a value cdkd cannot vouch for, but an absent key is not malformed, so the next
+reader's guard does not fire and its DEFAULT applies silently. `AWS::Lambda::Url`
+is the live case: `update()` drops an unvouchable `AuthType`, and the
+reverse-replacement `create()` then reads a record with no `AuthType` and
+defaults to `'NONE'` — a PUBLIC function URL, with no warning anywhere, which is
+worse than the malformed value the drop replaced. The remedy is not to stop
+dropping; it is to make the reading path ANNOUNCE the defaulted absence on a
+replay. A drop is only honest while something still says so.
 
 Two things that are easy to get wrong and were both caught by review:
 **normalize BOTH comparison sides**, not just the desired one — a record written BEFORE the provider started narrowing still carries every key, so a one-sided pass flips the same difference to a REMOVAL and breaks exactly the population the narrowing exists for; and **wire `cdkd diff` too**, since a preview that narrows differently from the apply forecasts a change the deploy will never make. `makeCanonicalizePropertiesFn` in `src/provisioning/canonicalize-properties.ts` is the one builder both commands use, so they cannot drift.

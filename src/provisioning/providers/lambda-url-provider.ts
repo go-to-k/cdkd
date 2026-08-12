@@ -73,6 +73,29 @@ export class LambdaUrlProvider implements ResourceProvider {
     // are a cdkd STATE record the user cannot edit, so the refusal downgrades
     // to a warning there (issue #1544) — the resource would otherwise be
     // unrestorable. Template-path creates keep the refusal.
+    //
+    // An ABSENT `AuthType` is NOT a malformed value, so neither the refusal
+    // nor `replayWarn` fires for it — the read simply takes the `'NONE'`
+    // default. On a template-path create that is correct and silent: the user
+    // declared no auth type and CFn's own default is `NONE`. On a STATE REPLAY
+    // it is not, and issue #1654 is what made it reachable: `update()`'s
+    // OMITTED arm now DROPS `AuthType` from the recorded bag when it cannot
+    // vouch for the value, so a later reverse-replacement replay reads a
+    // record with no `AuthType` and would silently recreate the function URL
+    // as PUBLIC — turning a loud problem into a silent one, which is worse
+    // than the malformed-value-in-state behavior the drop replaced. The
+    // announcement is what keeps the drop honest, so warn before defaulting.
+    // Deliberately NOT a refusal: refusing would make the URL unrestorable,
+    // which is the whole reason this site downgrades at all.
+    if (context?.replayingState === true && properties['AuthType'] === undefined) {
+      this.logger.warn(
+        `Lambda URL ${logicalId} is being restored from a cdkd state record that ` +
+          `carries no AuthType, so cdkd cannot vouch for the auth type the URL had. ` +
+          `Creating it with the default (NONE), which makes the function URL PUBLIC. ` +
+          `Verify the URL's auth type after the rollback completes and set ` +
+          `'authType' explicitly in your CDK code if it should be AWS_IAM.`
+      );
+    }
     const authType = requireConfigString(
       properties['AuthType'],
       'NONE',
@@ -226,9 +249,20 @@ export class LambdaUrlProvider implements ResourceProvider {
     //    reads — and it would launder a template cdkd could not apply into a
     //    clean-looking record. A dropped key is never compared by
     //    `drift-calculator` (it only descends into keys present in state),
-    //    so the phantom drift is gone either way, while the malformed
-    //    template keeps re-warning on every deploy until it is fixed —
-    //    which is the correct outcome per the same rule.
+    //    so the phantom drift is gone either way.
+    //
+    //    Two consequences of the DROP that are easy to assume away:
+    //    the malformed template keeps re-warning on every later deploy for
+    //    most shapes, but NOT for `AuthType: null` — once the key is gone
+    //    from the previous side, the `changed` loop above compares
+    //    `JSON.stringify(null ?? null)` on both sides, finds no change, and
+    //    returns early without warning or calling AWS. That is benign (the
+    //    live auth type is untouched and state still claims nothing), but it
+    //    means the announcement is not guaranteed to repeat. And the record
+    //    with no `AuthType` is later readable by `create()` on a
+    //    reverse-replacement replay, where the absent key would silently
+    //    default to a PUBLIC `'NONE'` — which is why `create()` carries its
+    //    own replay warning for exactly that shape (see the note there).
     //
     // Deliberately NOT paired with a `canonicalizeDesiredProperties` twin:
     // this is a SUBSTITUTION, not a pure narrowing of the desired bag, so
