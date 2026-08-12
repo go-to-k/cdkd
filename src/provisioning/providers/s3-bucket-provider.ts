@@ -3227,8 +3227,10 @@ export class S3BucketProvider implements ResourceProvider {
     // `cdkd drift --revert` both drive with a cdkd STATE record as the DESIRED
     // bag — so a throw here is un-actionable, the user cannot edit a state
     // record from their template. The downgrade is UNCONDITIONAL, like
-    // `EC2Provider.updateRoute`'s: `update()` has no context parameter, so it
-    // cannot tell a template update from a replay. And it must be a SKIP of
+    // `EC2Provider.updateRoute`'s. `update()` DOES take a context as of issue
+    // #1732, but it does not help here: `desiredFromAwsReadback` distinguishes
+    // a readback from everything else, not a REPLAY from a template, and this
+    // guard's question is the latter. And it must be a SKIP of
     // BOTH arms, not a default: taking the Suspended fallback here would route
     // a malformed record straight into the suspend branch below and turn
     // versioning off on a live bucket — the very thing computing this value
@@ -3395,8 +3397,24 @@ export class S3BucketProvider implements ResourceProvider {
         | undefined,
       properties['LifecycleConfiguration'] as { Rules: Array<Record<string, unknown>> } | undefined,
       async (cfg) => {
-        // Skip empty-rules placeholder (Class 2)
+        // Skip empty-rules placeholder (Class 2) — unless the desired bag is an
+        // AWS READBACK, where the same empty array is how `readLifecycle`
+        // spells "no lifecycle configuration" (it returns `{Rules: []}` on
+        // `NoSuchLifecycleConfiguration`), so `cdkd drift --revert` means
+        // REMOVE by it (issue #1732). Without this the revert reported success,
+        // changed nothing, and `retainPrevious` recorded the AWS-current rules
+        // as the new baseline — silently accepting the drift it was asked to
+        // undo. Same shape as the OwnershipControls / BucketEncryption arms
+        // above; found by review, which noted that leaving it would violate the
+        // enumerate-every-caller rule this change itself wrote.
         if (!cfg.Rules || !Array.isArray(cfg.Rules) || cfg.Rules.length === 0) {
+          if (context?.desiredFromAwsReadback === true) {
+            await this.s3Client.send(new DeleteBucketLifecycleCommand({ Bucket: bucketName }));
+            this.logger.debug(
+              `Deleted lifecycle configuration on bucket ${bucketName} (reverting to an unset baseline)`
+            );
+            return;
+          }
           this.emptyCollectionSkip(
             'LifecycleConfiguration',
             'LifecycleConfiguration.Rules',
@@ -3426,8 +3444,17 @@ export class S3BucketProvider implements ResourceProvider {
         | undefined,
       properties['CorsConfiguration'] as { CorsRules: Array<Record<string, unknown>> } | undefined,
       async (cfg) => {
-        // Skip empty-rules placeholder (Class 2)
+        // The CORS twin of the lifecycle arm above (issue #1732): `readCors`
+        // returns `{CorsRules: []}` on `NoSuchCORSConfiguration`, so on a
+        // readback-derived desired bag the empty array means REMOVE.
         if (!cfg.CorsRules || !Array.isArray(cfg.CorsRules) || cfg.CorsRules.length === 0) {
+          if (context?.desiredFromAwsReadback === true) {
+            await this.s3Client.send(new DeleteBucketCorsCommand({ Bucket: bucketName }));
+            this.logger.debug(
+              `Deleted CORS configuration on bucket ${bucketName} (reverting to an unset baseline)`
+            );
+            return;
+          }
           this.emptyCollectionSkip(
             'CorsConfiguration',
             'CorsConfiguration.CorsRules',

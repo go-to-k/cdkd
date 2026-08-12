@@ -210,6 +210,15 @@ export interface ResourceImportResult {
  * right one. Those arms therefore deliberately pass NO context. Widening this
  * to `stateBorne` would silently sweep them in and delete a configuration on a
  * rollback.
+ *
+ * **One bounded caveat on "a TEMPLATE recorded earlier"** (found in review):
+ * `cdkd drift --accept` writes the AWS readback into `properties` for a
+ * resource that has no `observedProperties` baseline (`drift.ts`), so a later
+ * rollback revert of that resource DOES hand `update()` a readback-derived bag
+ * with no flag, and the provider takes the SKIP arm. The direction is the safe
+ * one — the live configuration is left alone, nothing is destroyed — and it
+ * predates this type, but the sentence above is a strong generalization rather
+ * than an invariant, so do not build a data-destroying decision on it.
  */
 export interface UpdateContext {
   /**

@@ -526,6 +526,47 @@ describe('#1713 UPDATE: an empty BucketEncryption / OwnershipControls collection
     expect(result.effectiveProperties?.['OwnershipControls']).toBeUndefined();
   });
 
+  it('drift --revert also removes an out-of-band LIFECYCLE / CORS rule', async () => {
+    // The same laundering two arms below, found by the same review: `readLifecycle`
+    // returns `{Rules: []}` on NoSuchLifecycleConfiguration and `readCors` returns
+    // `{CorsRules: []}` on NoSuchCORSConfiguration, so those empty arrays are the
+    // unset-spelling too. They are NOT folded, so a revert bag reaches the onPut
+    // arm and hit the empty guard — skipping, and recording the AWS-current rules
+    // as the new baseline. Pre-existing (#1671) rather than a regression here, but
+    // the enumerate-every-caller rule this change wrote does not get to skip its
+    // own siblings.
+    mockSend.mockResolvedValue({});
+    const properties = {
+      BucketName: BUCKET,
+      LifecycleConfiguration: { Rules: [] },
+      CorsConfiguration: { CorsRules: [] },
+    };
+    const result = await provider.update(
+      'B',
+      BUCKET,
+      RESOURCE_TYPE,
+      properties,
+      {
+        BucketName: BUCKET,
+        LifecycleConfiguration: {
+          Rules: [{ Id: 'expire-30', Status: 'Enabled', Prefix: 'logs/', ExpirationInDays: 30 }],
+        },
+        CorsConfiguration: {
+          CorsRules: [{ Id: 'cors-a', AllowedMethods: ['GET'], AllowedOrigins: ['https://x.test'] }],
+        },
+      },
+      { desiredFromAwsReadback: true }
+    );
+
+    expect(sentCommands(DeleteBucketLifecycleCommand)).toHaveLength(1);
+    expect(sentCommands(DeleteBucketCorsCommand)).toHaveLength(1);
+    expect(sentCommands(PutBucketLifecycleConfigurationCommand)).toHaveLength(0);
+    expect(sentCommands(PutBucketCorsCommand)).toHaveLength(0);
+    // Nothing retained, so the out-of-band rules cannot be laundered clean.
+    expect(result.effectiveProperties?.['LifecycleConfiguration']).toBeUndefined();
+    expect(result.effectiveProperties?.['CorsConfiguration']).toBeUndefined();
+  });
+
   it('control: REMOVING the property entirely still Deletes both configurations', async () => {
     // The discrimination the whole fix rests on. `emptyListConfigToUndefined`
     // collapsed declared-but-empty and ABSENT into one `undefined`, so this
