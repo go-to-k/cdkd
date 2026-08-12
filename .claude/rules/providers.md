@@ -347,24 +347,32 @@ worth reusing as the checklist:
 - **Which hazard does the twin actually avert here?** It exists because a
   narrowed record makes the next diff read the difference as a user-made
   change, and for a create-only property that is a REPLACEMENT. Neither
-  property is create-only in the registry schema nor classified in
-  `ReplacementRulesRegistry` (`AWS::S3::Bucket` classifies only `BucketName`),
-  so the un-canonicalized diff derives an in-place UPDATE that re-issues the
-  same idempotent per-`Id` Put. Check the classification before assuming the
-  hazard.
-- **Can the twin be SHARED with the provisioning path?** The rule requires that
-  it be, and here it cannot: the substitution is PATH-CONDITIONAL — the
-  template-borne CREATE still THROWS, and only the replay / update paths
-  default. A canonicalizer reporting "no change" for a bag `create()` refuses
-  makes `cdkd diff` forecast a clean deploy that fails on a fresh stack, which
-  is the preview-disagrees-with-apply failure inverted. An UNCONDITIONAL
-  substitution (`narrowIngressIpProtocol`) has no such split and does take the
-  twin.
-- **What does the user still see?** Canonicalizing both sides makes the
-  comparison equal, so on a template whose only fault is this field the
-  provider is never called and the warning stops — the value silently
-  normalized on UPDATE while an identical fresh deploy hard-refuses. Refusing
-  the twin costs the mirror image: `cdkd diff` keeps reporting the property
+  property is create-only in the registry schema (`AWS::S3::Bucket`'s
+  `createOnlyProperties` is `BucketName` / `BucketNamePrefix` /
+  `BucketNamespace`) nor named in either half of the type's
+  `ReplacementRulesRegistry` entry, so `isClassified` is false, the createOnly
+  fallback decides, and the un-canonicalized diff derives an in-place UPDATE
+  that re-issues the same idempotent per-`Id` Put. Check the classification
+  before assuming the hazard.
+- **What would sharing the twin with the provisioning path COST?** The rule
+  requires sharing, and it is worth being precise that this is a cost question
+  and not an impossibility one — a PATH-CONDITIONAL substitution is no obstacle
+  in itself, since `narrowIngressIpProtocol` throws without an `onUnusable` too
+  and `canonicalizeDesiredProperties` bridges it by passing a NO-OP callback
+  (`ec2-provider.ts`). What differs is the size of the shared helper: EC2 folds
+  ONE top-level scalar, whereas the effective value here is rebuilt per ITEM,
+  at the destination branch the template declared, inside a per-`Id` loop — so
+  the pure helper would re-implement the applier's item walk. That is the cost;
+  the next finding is what decides against paying it.
+- **What would the user LOSE?** Canonicalizing both sides makes the comparison
+  equal, so on a template whose only fault is this field the provider is never
+  called and the warning stops — the value silently normalized on UPDATE while
+  an identical fresh deploy hard-refuses. EC2 accepts exactly that concealment,
+  and the difference is what it BUYS there: `IpProtocol` is create-only, so the
+  fold prevents a REPLACEMENT of a rule AWS already holds. Here finding 1 says
+  there is no replacement to prevent, so the concealment buys only the
+  suppression of a repeated idempotent Put. Refusing the twin costs the mirror
+  image of the drift being fixed: `cdkd diff` keeps reporting the property
   until the template is corrected, which is TRUE and ends with one edit.
 
 Record it per ITEM, like the skip — the S3 per-`Id` appliers therefore report

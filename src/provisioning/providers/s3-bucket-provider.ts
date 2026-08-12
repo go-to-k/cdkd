@@ -69,6 +69,7 @@ import {
   requireConfigArray,
   requireConfigObject,
   requireConfigString,
+  type ConfigStringOptions,
 } from '../config-shape.js';
 import { generateResourceName } from '../resource-name.js';
 import type {
@@ -575,90 +576,40 @@ export class S3BucketProvider implements ResourceProvider {
   }
 
   /**
-   * A per-item string read whose replay downgrade is a warn-and-SUBSTITUTE,
-   * reporting the substitution so the caller can record what was SENT
-   * (issue #1670).
+   * A string read whose replay downgrade is a warn-and-SUBSTITUTE, reporting
+   * the substitution so the caller can record what was SENT (issue #1670).
    *
    * The third shape beside {@link skipOnUnusableConfigString}'s SKIP and the
-   * plain strict read, for the sites where the fallback is the RIGHT value to
-   * send: `StorageClassAnalysis.DataExport.OutputSchemaVersion` (whose SDK enum
-   * has exactly one member, so the default cannot be a wrong direction) and the
-   * analytics / inventory destination `Format`. The deploy then SUCCEEDS with
-   * the default on the wire, so recording the declared value would describe a
-   * configuration AWS does not hold — and both fields are read back by
-   * `readCurrentState`, making the difference permanent phantom drift
-   * (`.claude/rules/providers.md`, the #1633 warn-and-default arm).
+   * plain strict read, for the sites where the fallback IS the right value to
+   * send. The deploy then succeeds with the default on the wire, so recording
+   * the declared value describes a configuration AWS does not hold, and
+   * `readCurrentState` reads all of these back — the permanent phantom drift
+   * `.claude/rules/providers.md` records for the #1633 warn-and-default arm.
+   * That file also carries the full rationale, including why these sites take
+   * NO `canonicalizeDesiredProperties` twin; do not re-derive it here.
    *
-   * `onSubstituted` receives the value this call RETURNS, not the fallback
-   * argument: the two are equal by construction today, and handing over the
-   * returned value keeps "what is recorded" and "what is sent" the same
-   * expression rather than two copies that can drift.
+   * Three details are load-bearing:
    *
-   * The probe is the shared `configStringRefusal` predicate rather than a
-   * hand-written twin — it is the same test `readConfigString` runs, so the two
-   * cannot disagree on a blank string, an explicit `null`, or a number. It is
-   * skipped entirely without `onUnusable`, where the read below still throws and
-   * no substitution is reachable: recording a value the provider merely failed
-   * to send is what the "already ANNOUNCED" condition on `effectiveProperties`
-   * forbids.
-   *
-   * **No `canonicalizeDesiredProperties` twin, and NOT for the #1612 reason.**
-   * That carve-out is about a SKIP, whose effect is not a pure function of the
-   * desired bag; a substitution's IS one, so the #1633 twin rule reaches this
-   * far and had to be answered on the merits rather than waved past. Three
-   * findings, in the order they decide it:
-   *
-   * - The hazard the twin exists for does not arise here. It fires when
-   *   recording the narrowed bag makes the next diff read a REPLACEMENT
-   *   (`AWS::EC2::Route`'s destination keys are create-only). `AnalyticsConfigurations`
-   *   / `InventoryConfigurations` are neither create-only in the registry schema
-   *   nor classified in `ReplacementRulesRegistry` (only `BucketName` is), so
-   *   the un-canonicalized diff derives an in-place UPDATE and the applier
-   *   re-issues the same idempotent per-`Id` Put.
-   * - The twin CANNOT be shared with the provisioning path, and the rule
-   *   requires that it be. What this method does is path-conditional, not pure:
-   *   without `onUnusable` — the template-borne CREATE — the read still THROWS.
-   *   A canonicalizer claiming "no change" for a bag `create()` refuses would
-   *   make `cdkd diff` forecast a clean deploy that `cdkd deploy` fails on a
-   *   fresh stack, which is the preview-disagrees-with-apply failure the rule
-   *   is guarding against, inverted.
-   * - It would CONCEAL the defect. Canonicalizing both sides makes the
-   *   comparison equal, so on a template whose only change is this one the
-   *   provider is never called and the warning stops — leaving a malformed
-   *   template value silently normalized on UPDATE while an identical fresh
-   *   deploy hard-refuses. `.claude/rules/providers.md` already settles the
-   *   direction for this file: the malformed template keeps re-warning until it
-   *   is fixed, which is correct.
-   *
-   * The accepted cost is the mirror image of the drift this fixes: `cdkd diff`
-   * keeps reporting the property as changed until the template is corrected.
-   * That report is TRUE — the template declares a value cdkd will not send —
-   * and one template edit ends it.
-   *
-   * The #1643 bar ("record what AWS will REPORT, not merely what you sent") is
-   * met by measurement of the API surface rather than by assumption: both
-   * substituted values are literal SDK enum members that the service stores
-   * verbatim — `StorageClassAnalysisSchemaVersion` has exactly one member
-   * (`V_1`), `AnalyticsS3ExportFileFormat` exactly one (`CSV`), and
-   * `InventoryFormat` is `CSV | ORC | Parquet` with no aliasing — and
-   * `analyticsSdkToCfn` / `inventorySdkToCfn` copy both fields straight back.
-   * There is no service-side value MAPPING here (the `IpProtocol: 6 -> tcp`
-   * shape), so the send-side record is the one that converges.
+   * - `onSubstituted` receives the value this call RETURNS, not the `fallback`
+   *   argument, so "what is recorded" and "what is sent" stay one expression.
+   * - `options` is forwarded to BOTH the probe and the read, so a site that
+   *   ever needs `coerceNumber` cannot make the two disagree.
+   * - Without `options.onUnusable` there is no probe: the read still THROWS,
+   *   and recording a value the provider merely failed to send is what the
+   *   "already ANNOUNCED" condition on `effectiveProperties` forbids.
    */
   private readSubstitutedConfigString(
     container: unknown,
     key: string,
     fallback: string,
     containerPath: string,
-    onUnusable: ((message: string) => void) | undefined,
+    options: ConfigStringOptions,
     onSubstituted: (sent: string) => void
   ): string {
     const refused =
-      onUnusable !== undefined &&
-      configStringRefusal(container, key, fallback, containerPath) !== undefined;
-    const value = readConfigString(container, key, fallback, containerPath, {
-      ...(onUnusable ? { onUnusable } : {}),
-    });
+      options.onUnusable !== undefined &&
+      configStringRefusal(container, key, fallback, containerPath, options) !== undefined;
+    const value = readConfigString(container, key, fallback, containerPath, options);
     if (refused) onSubstituted(value);
     return value;
   }
@@ -1843,7 +1794,7 @@ export class S3BucketProvider implements ResourceProvider {
               'OutputSchemaVersion',
               'V_1',
               'AWS::S3::Bucket AnalyticsConfigurations[].StorageClassAnalysis.DataExport',
-              onUnusable,
+              { ...(onUnusable ? { onUnusable } : {}) },
               (sent) =>
                 recordSubstitution(
                   ['StorageClassAnalysis', 'DataExport', 'OutputSchemaVersion'],
@@ -1868,7 +1819,7 @@ export class S3BucketProvider implements ResourceProvider {
                       'Format',
                       'CSV',
                       destPath,
-                      onUnusable,
+                      { ...(onUnusable ? { onUnusable } : {}) },
                       (sent) =>
                         recordSubstitution(
                           [
@@ -2153,6 +2104,16 @@ export class S3BucketProvider implements ResourceProvider {
             'Weekly',
             'AWS::S3::Bucket InventoryConfigurations[].Schedule'
           );
+      // The fall-through is a SUBSTITUTION too, and the one this applier's
+      // three-shape comment made easiest to miss (issue #1670): the warning
+      // above announces `Schedule.Frequency`, the Put SUCCEEDS carrying it, and
+      // `inventorySdkToCfn` maps the live `Schedule.Frequency` BACK to
+      // `ScheduleFrequency` — so leaving the malformed declared value in the
+      // record is the same permanent phantom drift as the `Format` arm below.
+      // The value recorded is `frequency` itself, i.e. what went on the wire.
+      if (scheduleFrequencyRefusal !== undefined) {
+        recordSubstitution(['ScheduleFrequency'], frequency);
+      }
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const inventoryConfig: any = {
@@ -2184,7 +2145,7 @@ export class S3BucketProvider implements ResourceProvider {
                   'Format',
                   'CSV',
                   destPath,
-                  onUnusable,
+                  { ...(onUnusable ? { onUnusable } : {}) },
                   (sent) => recordSubstitution(['Destination', ...destSegments, 'Format'], sent)
                 ),
                 Prefix: s3Dest['Prefix'] as string | undefined,
@@ -2710,24 +2671,26 @@ export class S3BucketProvider implements ResourceProvider {
   }
 
   /**
-   * Turn a set of skipped-property overrides into the `effectiveProperties`
-   * bag the deploy engine records in place of the desired one (issue #1612).
+   * Turn a set of per-property overrides into the `effectiveProperties` bag the
+   * deploy engine records in place of the desired one (issues #1612 / #1670).
    *
-   * A warn-and-skip arm makes the deploy SUCCEED while a declared
-   * configuration never reaches AWS, so recording the desired bag verbatim
-   * writes a value AWS does not hold: `readCurrentState` can never match it,
-   * every later `cdkd drift` re-reports the difference, and `drift --revert`
-   * re-issues the same skipped call — the permanent phantom drift
-   * `.claude/rules/providers.md` records for the EC2 Route warn arm (#1591),
-   * reached here through a skip instead of a narrowing.
+   * A warn-and-SKIP arm makes the deploy SUCCEED while a declared configuration
+   * never reaches AWS, and a warn-and-SUBSTITUTE read makes it succeed while a
+   * DIFFERENT value than the declared one reaches AWS. Either way, recording
+   * the desired bag verbatim writes something AWS does not hold:
+   * `readCurrentState` can never match it, every later `cdkd drift` re-reports
+   * the difference, and `drift --revert` re-issues the same call — the
+   * permanent phantom drift `.claude/rules/providers.md` records for the EC2
+   * Route warn arm (#1591), reached here through a skip or a substitution
+   * instead of a narrowing.
    *
    * A `undefined` override value means the key is ABSENT from the effective
    * bag, which is why this walks the map rather than spreading it: spreading
    * would leave an explicit `undefined` that `JSON.stringify` drops on one
    * side of the next diff but not the other.
    *
-   * @returns the complete replacement bag, or `undefined` when nothing was
-   *   skipped — the engine then records the desired properties unchanged.
+   * @returns the complete replacement bag, or `undefined` when there is nothing
+   *   to override — the engine then records the desired properties unchanged.
    */
   private static applyEffectiveOverrides(
     properties: Record<string, unknown>,
@@ -2816,11 +2779,13 @@ export class S3BucketProvider implements ResourceProvider {
    * the objects ALONG the path are cloned; every sibling subtree is shared,
    * which is safe because nothing here mutates them.
    *
-   * A non-object on the way down is unreachable at the three call sites (each
-   * segment has already been validated by `requireConfigObject` /
-   * `resolveS3BucketDestination`); it is rebuilt as a fresh block rather than
-   * abandoned so the recorded value still describes what was SENT if a fourth
-   * site ever reaches it with a looser chain.
+   * A non-object intermediate is rebuilt as an EMPTY block, which is not a
+   * defensive shrug but the accurate record: it is what `readConfigString`
+   * itself did on the way in — its container arm says "Treating the block as
+   * empty, so <path>.<key> takes its default" — so `{}` plus the substituted
+   * leaf IS what was sent. No call site can reach it today (every intermediate
+   * has already been validated by `requireConfigObject` /
+   * `resolveS3BucketDestination`, which SKIP the item on a malformed one).
    */
   private static withDeepValue(
     container: Record<string, unknown>,
@@ -3446,12 +3411,13 @@ export class S3BucketProvider implements ResourceProvider {
    * Apply ALL sub-configs unconditionally on initial create. Used by
    * `create()` so the bucket starts out matching the template.
    *
-   * @returns the per-property overrides for `effectiveProperties` (issue
-   *   #1612). Every skip reachable here is on the REPLAY-create path (the
-   *   rollback executor's reverse-replacement arm), where the bucket is brand
-   *   new and nothing was applied — so the override DROPS the key rather than
-   *   retaining a previous value, because there is no previous value to keep.
-   *   The per-item arrays keep the items that DID apply.
+   * @returns the per-property overrides for `effectiveProperties` (issues
+   *   #1612 / #1670). Every downgrade reachable here is on the REPLAY-create
+   *   path (the rollback executor's reverse-replacement arm), where the bucket
+   *   is brand new and nothing was applied — so a SKIP drops the key rather
+   *   than retaining a previous value, because there is no previous value to
+   *   keep. The per-item arrays keep the items that DID apply, including an
+   *   item applied with a SUBSTITUTED value, recorded as it was sent.
    */
   private async applyAllSubConfigsForCreate(
     bucketName: string,
@@ -3763,8 +3729,9 @@ export class S3BucketProvider implements ResourceProvider {
       this.logger.debug(`Successfully created S3 bucket ${logicalId}: ${bucketName}`);
 
       // Anything a replay downgrade SKIPPED is dropped from the recorded bag,
-      // so state describes the bucket AWS actually holds (issue #1612). Absent
-      // on every template-path create — no downgrade is reachable there.
+      // and anything it SUBSTITUTED is recorded as SENT, so state describes the
+      // bucket AWS actually holds (issues #1612 / #1670). Absent on every
+      // template-path create — no downgrade is reachable there.
       const effectiveProperties = S3BucketProvider.applyEffectiveOverrides(
         properties,
         effectiveOverrides
@@ -3822,8 +3789,9 @@ export class S3BucketProvider implements ResourceProvider {
       // What is left on the always-PUT path here is
       // `PublicAccessBlockConfiguration`, which is at CFn parity.
       // Empty in practice — `skipDiffManaged` withholds the only applier here
-      // that can skip — but merged rather than discarded so a future skip on
-      // the always-PUT path cannot go unrecorded (issue #1612).
+      // that can skip — but merged rather than discarded so a future skip or
+      // substitution on the always-PUT path cannot go unrecorded (#1612 /
+      // #1670).
       const effectiveOverrides = await this.applyConfiguration(physicalId, properties, {
         skipTags: true,
         skipDiffManaged: true,
@@ -3853,8 +3821,9 @@ export class S3BucketProvider implements ResourceProvider {
 
       // Any Put a warn-and-skip arm declined leaves the PREVIOUSLY applied
       // configuration live, so state records that rather than the desired
-      // value AWS never received (issue #1612). Absent when nothing was
-      // skipped, which is every ordinary update.
+      // value AWS never received (issue #1612); a Put a warn-and-substitute
+      // read altered records the value AWS DID receive (issue #1670). Absent
+      // when neither happened, which is every ordinary update.
       const effectiveProperties = S3BucketProvider.applyEffectiveOverrides(
         properties,
         effectiveOverrides
@@ -4680,21 +4649,36 @@ export class S3BucketProvider implements ResourceProvider {
       const dataExport = sca['DataExport'] as Record<string, unknown>;
       const dest = dataExport['Destination'] as Record<string, unknown> | undefined;
       const s3Dest = dest?.['S3BucketDestination'] as Record<string, unknown> | undefined;
-      out['StorageClassAnalysis'] = {
-        DataExport: {
-          OutputSchemaVersion: dataExport['OutputSchemaVersion'],
-          Destination: s3Dest
-            ? {
-                S3BucketDestination: {
-                  BucketArn: s3Dest['Bucket'],
-                  BucketAccountId: s3Dest['BucketAccountId'],
-                  Format: s3Dest['Format'],
-                  Prefix: s3Dest['Prefix'],
-                },
-              }
-            : undefined,
-        },
-      };
+      // The CFn `Destination` block is FLATTENED, exactly like its inventory
+      // sibling below (issue #1670). This used to emit the SDK's nested
+      // `{ S3BucketDestination: … }` wrapper, which the CFn schema does not
+      // declare at all — `tests/fixtures/cfn-schemas/AWS-S3-Bucket.json` has
+      // zero occurrences of that key, and its `nestedPropertyPaths` for
+      // `AnalyticsConfigurations` end at
+      // `StorageClassAnalysis.DataExport.Destination.{BucketAccountId,BucketArn,Format,Prefix}`.
+      // So the WHOLE sub-object differed from any template-shaped or
+      // effective-properties-shaped baseline on every comparison, and no
+      // send-side record could ever converge with it.
+      //
+      // NOTE the SDK spells the account `BucketAccountId` here
+      // (`AnalyticsS3BucketDestination`) but `AccountId` on the inventory side
+      // (`InventoryS3BucketDestination`) — the two reverse mappers look alike
+      // and are NOT interchangeable on that member.
+      const dataExportCfn: Record<string, unknown> = {};
+      if (dataExport['OutputSchemaVersion'] !== undefined) {
+        dataExportCfn['OutputSchemaVersion'] = dataExport['OutputSchemaVersion'];
+      }
+      if (s3Dest) {
+        const cfnDest: Record<string, unknown> = {};
+        if (s3Dest['Bucket'] !== undefined) cfnDest['BucketArn'] = s3Dest['Bucket'];
+        if (s3Dest['BucketAccountId'] !== undefined) {
+          cfnDest['BucketAccountId'] = s3Dest['BucketAccountId'];
+        }
+        if (s3Dest['Format'] !== undefined) cfnDest['Format'] = s3Dest['Format'];
+        if (s3Dest['Prefix'] !== undefined) cfnDest['Prefix'] = s3Dest['Prefix'];
+        dataExportCfn['Destination'] = cfnDest;
+      }
+      out['StorageClassAnalysis'] = { DataExport: dataExportCfn };
     }
     return out;
   }

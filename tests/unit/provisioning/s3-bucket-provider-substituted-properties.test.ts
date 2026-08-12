@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import {
+  ListBucketAnalyticsConfigurationsCommand,
   PutBucketAnalyticsConfigurationCommand,
   PutBucketInventoryConfigurationCommand,
 } from '@aws-sdk/client-s3';
@@ -77,6 +78,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { S3BucketProvider } from '../../../src/provisioning/providers/s3-bucket-provider.js';
+import { calculateResourceDrift } from '../../../src/analyzer/drift-calculator.js';
 import type { ResourceProvider } from '../../../src/types/resource.js';
 
 const RESOURCE_TYPE = 'AWS::S3::Bucket';
@@ -439,7 +441,18 @@ describe('replay-CREATE: a substituted item is KEPT as sent, not dropped', () =>
     // The Put went out on a brand-new bucket, so the configuration EXISTS —
     // dropping the item (the skip arm's answer) would tell state the bucket has
     // no analytics configuration at all.
-    expect(sentCommands(PutBucketAnalyticsConfigurationCommand)).toHaveLength(1);
+    const sent = sentCommands(PutBucketAnalyticsConfigurationCommand);
+    expect(sent).toHaveLength(1);
+    // Symmetric with the UPDATE rows: assert the WIRE value, not just the count.
+    expect(
+      at(
+        sent[0]!.input,
+        'AnalyticsConfiguration',
+        'StorageClassAnalysis',
+        'DataExport',
+        'OutputSchemaVersion'
+      )
+    ).toBe('V_1');
     expect(result.effectiveProperties?.['AnalyticsConfigurations']).toEqual([
       analyticsItem({
         OutputSchemaVersion: 'V_1',
@@ -456,10 +469,255 @@ describe('replay-CREATE: a substituted item is KEPT as sent, not dropped', () =>
 
     const result = await provider.create('B', RESOURCE_TYPE, properties, { replayingState: true });
 
-    expect(sentCommands(PutBucketInventoryConfigurationCommand)).toHaveLength(1);
+    const sent = sentCommands(PutBucketInventoryConfigurationCommand);
+    expect(sent).toHaveLength(1);
+    expect(
+      at(sent[0]!.input, 'InventoryConfiguration', 'Destination', 'S3BucketDestination', 'Format')
+    ).toBe('CSV');
     expect(result.effectiveProperties?.['InventoryConfigurations']).toEqual([
       inventoryItem({ BucketArn: DEST_ARN, Format: 'CSV' }),
     ]);
+  });
+
+  it('records the substituted item at ITS OWN index, behind a skipped and a clean one', async () => {
+    // Index 0 applies cleanly, index 1 is SKIPPED (a malformed container, the
+    // #1581 guard) so the applier `continue`s without incrementing anything but
+    // its own counter, and index 2 is the substituted one.
+    const clean = {
+      Id: 'a0',
+      StorageClassAnalysis: {
+        DataExport: {
+          OutputSchemaVersion: 'V_1',
+          Destination: { BucketArn: DEST_ARN, Format: 'CSV' },
+        },
+      },
+    };
+    const skipping = { Id: 'a1', StorageClassAnalysis: 'not-an-object' };
+    const substituting = {
+      Id: 'a2',
+      StorageClassAnalysis: {
+        DataExport: {
+          OutputSchemaVersion: 1,
+          Destination: { BucketArn: DEST_ARN, Format: 'CSV' },
+        },
+      },
+    };
+    const properties = {
+      BucketName: BUCKET,
+      AnalyticsConfigurations: [clean, skipping, substituting],
+    };
+
+    const result = await provider.create('B', RESOURCE_TYPE, properties, { replayingState: true });
+
+    // Hardcoding the recorded index to 0 (rather than the loop's own `index`)
+    // passes every other row in this file: it would record a2's substituted bag
+    // at slot 0 — DUPLICATING `Id: a0`'s position with a2's content — and leave
+    // a2's malformed `OutputSchemaVersion` in place. Position and identity are
+    // therefore both asserted, on an array where the substituted item is LAST.
+    expect(result.effectiveProperties?.['AnalyticsConfigurations']).toEqual([
+      clean,
+      {
+        Id: 'a2',
+        StorageClassAnalysis: {
+          DataExport: {
+            OutputSchemaVersion: 'V_1',
+            Destination: { BucketArn: DEST_ARN, Format: 'CSV' },
+          },
+        },
+      },
+    ]);
+  });
+});
+
+describe('inventory ScheduleFrequency: the FALL-THROUGH is a substitution too', () => {
+  it('records the Schedule.Frequency it fell back to, not the malformed declared value', async () => {
+    const desired = {
+      Id: 'i1',
+      IncludedObjectVersions: 'All',
+      ScheduleFrequency: '   ',
+      Schedule: { Frequency: 'Daily' },
+      Destination: { BucketArn: DEST_ARN, Format: 'CSV' },
+    };
+    const properties = { BucketName: BUCKET, InventoryConfigurations: [desired] };
+
+    const result = await provider.update('B', BUCKET, RESOURCE_TYPE, properties, {
+      BucketName: BUCKET,
+      InventoryConfigurations: [LIVE_INVENTORY],
+    });
+
+    // The item was APPLIED — this arm falls through to the second source rather
+    // than skipping — and `Daily` is what went on the wire...
+    const sent = sentCommands(PutBucketInventoryConfigurationCommand);
+    expect(sent).toHaveLength(1);
+    expect(at(sent[0]!.input, 'InventoryConfiguration', 'Schedule', 'Frequency')).toBe('Daily');
+    // ...so `Daily` is what the record must carry, at the CFn key
+    // `inventorySdkToCfn` maps the live schedule back to.
+    expect(at(result.effectiveProperties?.['InventoryConfigurations'], 0, 'ScheduleFrequency')).toBe(
+      'Daily'
+    );
+    // The rest of the item is untouched, including the second source itself.
+    expect(result.effectiveProperties?.['InventoryConfigurations']).toEqual([
+      { ...desired, ScheduleFrequency: 'Daily' },
+    ]);
+  });
+
+  it('a usable ScheduleFrequency records nothing', async () => {
+    const properties = {
+      BucketName: BUCKET,
+      InventoryConfigurations: [
+        {
+          Id: 'i1',
+          IncludedObjectVersions: 'All',
+          ScheduleFrequency: 'Weekly',
+          Schedule: { Frequency: 'Daily' },
+          Destination: { BucketArn: DEST_ARN, Format: 'CSV' },
+        },
+      ],
+    };
+
+    const result = await provider.update('B', BUCKET, RESOURCE_TYPE, properties, {
+      BucketName: BUCKET,
+      InventoryConfigurations: [LIVE_INVENTORY],
+    });
+
+    // Precedence unchanged: the first source wins and nothing is substituted.
+    const sent = sentCommands(PutBucketInventoryConfigurationCommand);
+    expect(at(sent[0]!.input, 'InventoryConfiguration', 'Schedule', 'Frequency')).toBe('Weekly');
+    expect(result.effectiveProperties).toBeUndefined();
+  });
+
+  it('an UNUSABLE second source SKIPS the item instead — the #1605 arm is unchanged', async () => {
+    const properties = {
+      BucketName: BUCKET,
+      InventoryConfigurations: [
+        {
+          Id: 'i1',
+          IncludedObjectVersions: 'All',
+          ScheduleFrequency: '   ',
+          Schedule: { Frequency: 1 },
+          Destination: { BucketArn: DEST_ARN, Format: 'CSV' },
+        },
+      ],
+    };
+
+    const result = await provider.update('B', BUCKET, RESOURCE_TYPE, properties, {
+      BucketName: BUCKET,
+      InventoryConfigurations: [LIVE_INVENTORY],
+    });
+
+    // Nothing was sent, so the effective entry is what AWS still HOLDS — the
+    // skip arm, not the substitute arm. Recording the fall-through value here
+    // would describe a cadence no Put ever delivered.
+    expect(sentCommands(PutBucketInventoryConfigurationCommand)).toHaveLength(0);
+    expect(result.effectiveProperties?.['InventoryConfigurations']).toEqual([LIVE_INVENTORY]);
+  });
+});
+
+/**
+ * The readback pairing (issue #1670 review).
+ *
+ * `effectiveProperties` only removes drift if `readCurrentState` produces the
+ * SAME shape — and `analyticsSdkToCfn` used to emit the SDK's nested
+ * `Destination: { S3BucketDestination: … }` wrapper, which the CFn schema does
+ * not declare at all (`tests/fixtures/cfn-schemas/AWS-S3-Bucket.json` contains
+ * zero occurrences of that key). So the WHOLE sub-object differed on every
+ * comparison and the analytics `Format` half of this fix did nothing.
+ *
+ * This row closes the loop end to end rather than asserting the mapper's output
+ * against a hand-written literal: the AWS-current side is built by ECHOING the
+ * configuration the provider actually PUT, so a wire-vs-readback disagreement
+ * cannot hide behind two independently-written fixtures.
+ */
+describe('round trip: effective record vs readCurrentState', () => {
+  it('a substituted analytics Format converges — the comparator sees no drift', async () => {
+    const properties = {
+      BucketName: BUCKET,
+      AnalyticsConfigurations: [
+        analyticsItem({
+          OutputSchemaVersion: 1,
+          Destination: { BucketArn: DEST_ARN, Format: ['CSV'], Prefix: 'live/' },
+        }),
+      ],
+    };
+
+    const result = await provider.update('B', BUCKET, RESOURCE_TYPE, properties, {
+      BucketName: BUCKET,
+      AnalyticsConfigurations: [LIVE_ANALYTICS],
+    });
+    const recorded = result.effectiveProperties!;
+
+    // AWS now holds exactly what was PUT. Echo it back through the List API.
+    const put = sentCommands(PutBucketAnalyticsConfigurationCommand)[0]!.input as {
+      AnalyticsConfiguration: unknown;
+    };
+    mockSend.mockImplementation((cmd: unknown) =>
+      Promise.resolve(
+        cmd instanceof ListBucketAnalyticsConfigurationsCommand
+          ? { AnalyticsConfigurationList: [put.AnalyticsConfiguration] }
+          : {}
+      )
+    );
+
+    const current = (await provider.readCurrentState(BUCKET, 'B', RESOURCE_TYPE))!;
+
+    // The readback is the FLATTENED CFn shape the schema declares...
+    expect(current['AnalyticsConfigurations']).toEqual([
+      analyticsItem({
+        OutputSchemaVersion: 'V_1',
+        Destination: { BucketArn: DEST_ARN, Format: 'CSV', Prefix: 'live/' },
+      }),
+    ]);
+    // ...so the recorded bag and the AWS-current bag agree, and the real
+    // comparator reports nothing on the property this fix exists for.
+    const drifts = calculateResourceDrift(
+      { AnalyticsConfigurations: recorded['AnalyticsConfigurations'] },
+      { AnalyticsConfigurations: current['AnalyticsConfigurations'] }
+    );
+    expect(drifts).toEqual([]);
+  });
+
+  it('the DECLARED malformed value does NOT converge — the row above has teeth', async () => {
+    const declared = analyticsItem({
+      OutputSchemaVersion: 1,
+      Destination: { BucketArn: DEST_ARN, Format: ['CSV'], Prefix: 'live/' },
+    });
+
+    mockSend.mockImplementation((cmd: unknown) =>
+      Promise.resolve(
+        cmd instanceof ListBucketAnalyticsConfigurationsCommand
+          ? {
+              AnalyticsConfigurationList: [
+                {
+                  Id: 'a1',
+                  StorageClassAnalysis: {
+                    DataExport: {
+                      OutputSchemaVersion: 'V_1',
+                      Destination: {
+                        S3BucketDestination: {
+                          Bucket: DEST_ARN,
+                          Format: 'CSV',
+                          Prefix: 'live/',
+                        },
+                      },
+                    },
+                  },
+                },
+              ],
+            }
+          : {}
+      )
+    );
+
+    const current = (await provider.readCurrentState(BUCKET, 'B', RESOURCE_TYPE))!;
+
+    // Recording the DECLARED bag (the pre-fix behavior) is what the fix
+    // replaces, and it is still drift against the same readback — so the
+    // convergence row above is testing the fix, not the fixture.
+    const drifts = calculateResourceDrift(
+      { AnalyticsConfigurations: [declared] },
+      { AnalyticsConfigurations: current['AnalyticsConfigurations'] }
+    );
+    expect(drifts.length).toBeGreaterThan(0);
   });
 });
 
