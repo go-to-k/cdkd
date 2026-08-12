@@ -1,3 +1,10 @@
+## [0.281.4](https://github.com/go-to-k/cdkd/compare/v0.281.3...v0.281.4) (2026-08-12)
+
+
+### Bug Fixes
+
+* **provisioning:** refuse a composite physicalId whose segment contains the separator ([#1719](https://github.com/go-to-k/cdkd/issues/1719)) ([6dd8f88](https://github.com/go-to-k/cdkd/commit/6dd8f88e478e163d1338e1ed4fc5117d751b7ae0))
+
 ## [0.281.3](https://github.com/go-to-k/cdkd/compare/v0.281.2...v0.281.3) (2026-08-12)
 
 
