@@ -1255,7 +1255,12 @@ describe('Route53Provider', () => {
       expect(result).toEqual({ physicalId: 'Z1PUBLIC', attributes: {} });
     });
 
-    it('declines (does not guess) when the name is ambiguous and visibility is undecidable', async () => {
+    // The two ways of failing are DISTINCT and must stay so: a proven absence
+    // returns null (`skipped-not-found`), while an ambiguous name or a failed
+    // lookup THROWS, which `importOne` records as `failed` for that row alone.
+    // Asserting both against `toBeNull()` would let the two catch arms be
+    // swapped without a test noticing.
+    it('REFUSES (does not guess) when the name is ambiguous and visibility is undecidable', async () => {
       mockSend.mockResolvedValueOnce({
         HostedZones: [
           zone('Z1PUBLIC', 'example.com.', false),
@@ -1264,17 +1269,107 @@ describe('Route53Provider', () => {
         IsTruncated: false,
       });
 
+      await expect(
+        provider.import(
+          makeInput({
+            // An unresolved intrinsic is a truthy OBJECT, so it says nothing
+            // about visibility -- the split-horizon refusal must stand.
+            properties: { Name: 'example.com', VPCs: { Ref: 'SomeParam' } },
+          })
+        )
+      ).rejects.toThrow(/matches 2 hosted zones .*--resource MyZone=<hostedZoneId>/s);
+    });
+
+    it('REFUSES when every VPCs element is intrinsic-only (conditionally absent)', async () => {
+      mockSend.mockResolvedValueOnce({
+        HostedZones: [
+          zone('Z1PUBLIC', 'example.com.', false),
+          zone('Z2PRIVATE', 'example.com.', true),
+        ],
+        IsTruncated: false,
+      });
+
+      // `[{Ref: 'AWS::NoValue'}]` is the CFn spelling of a conditionally
+      // absent element: non-empty, but it may resolve to a PUBLIC zone. A
+      // length-only test reads it as private and silently adopts the wrong
+      // side.
+      await expect(
+        provider.import(
+          makeInput({
+            properties: { Name: 'example.com', VPCs: [{ Ref: 'AWS::NoValue' }] },
+          })
+        )
+      ).rejects.toThrow(/matches 2 hosted zones/);
+    });
+
+    it('REFUSES on an empty VPCs list rather than reading it as public', async () => {
+      mockSend.mockResolvedValueOnce({
+        HostedZones: [
+          zone('Z1PUBLIC', 'example.com.', false),
+          zone('Z2PRIVATE', 'example.com.', true),
+        ],
+        IsTruncated: false,
+      });
+
+      await expect(
+        provider.import(makeInput({ properties: { Name: 'example.com', VPCs: [] } }))
+      ).rejects.toThrow(/matches 2 hosted zones/);
+    });
+
+    it('narrows on a VPCs element whose VPCId is itself an unresolved Ref', async () => {
+      mockSend.mockResolvedValueOnce({
+        HostedZones: [
+          zone('Z1PUBLIC', 'example.com.', false),
+          zone('Z2PRIVATE', 'example.com.', true),
+        ],
+        IsTruncated: false,
+      });
+
+      // The ELEMENT is concrete even though the id inside it is not, so the
+      // template does attach a VPC: private is decidable here.
       const result = await provider.import(
         makeInput({
-          // An unresolved intrinsic is a truthy OBJECT, so it says nothing
-          // about visibility -- the split-horizon refusal must stand.
-          properties: { Name: 'example.com', VPCs: { Ref: 'SomeParam' } },
+          properties: { Name: 'example.com', VPCs: [{ VPCId: { Ref: 'Vpc' } }] },
         })
       );
 
+      expect(result).toEqual({ physicalId: 'Z2PRIVATE', attributes: {} });
+    });
+
+    it('does NOT treat a truncated page of other-side zones as a proven absence', async () => {
+      // The page is full (MaxItems: 5) of same-named PRIVATE zones and is
+      // truncated, so the PUBLIC zone we want may be the very next entry.
+      // Reading that as "no such zone" would decline a zone that exists and
+      // let the next deploy CREATE a duplicate.
+      mockSend.mockResolvedValueOnce({
+        HostedZones: [
+          zone('ZP1', 'example.com.', true),
+          zone('ZP2', 'example.com.', true),
+          zone('ZP3', 'example.com.', true),
+          zone('ZP4', 'example.com.', true),
+          zone('ZP5', 'example.com.', true),
+        ],
+        IsTruncated: true,
+      });
+
+      // Inconclusive, so it must NOT return null (a proven absence) — it
+      // falls through to the resolver's "could not resolve" refusal.
+      await expect(
+        provider.import(makeInput({ properties: { Name: 'example.com' } }))
+      ).rejects.toThrow(/Either HostedZoneId or HostedZoneName is required for hosted zone/);
+    });
+
+    it('DOES treat a truncated page as a proven absence once a later name appears', async () => {
+      // A different name on the page proves the same-named run ended inside
+      // it, so the negative is sound even though more pages follow.
+      mockSend.mockResolvedValueOnce({
+        HostedZones: [zone('ZP1', 'example.com.', true), zone('ZZ', 'zzz-later.com.', false)],
+        IsTruncated: true,
+      });
+
+      const result = await provider.import(makeInput({ properties: { Name: 'example.com' } }));
+
       expect(result).toBeNull();
-      // It DID try -- distinguishing this from the no-Name early return.
-      expect(mockSend).toHaveBeenCalledTimes(1);
     });
 
     it('declines when the template Name matches no hosted zone', async () => {
@@ -1304,17 +1399,17 @@ describe('Route53Provider', () => {
       expect(result).toBeNull();
     });
 
-    it('declines instead of throwing when the lookup itself fails', async () => {
-      mockSend.mockRejectedValueOnce(new Error('Throttling'));
+    it('FAILS the row (not "not found") when the lookup itself is denied', async () => {
+      mockSend.mockRejectedValueOnce(new Error('AccessDenied: route53:ListHostedZonesByName'));
 
-      const result = await provider.import(makeInput({ properties: { Name: 'example.com' } }));
-
-      // `import.ts` aborts only when ZERO resources import, so a throw here
-      // would fail the whole run over one zone.
-      expect(result).toBeNull();
-      // Non-vacuous: the row is declined AFTER the lookup was attempted, not
-      // by the no-Name early return.
-      expect(mockSend).toHaveBeenCalledTimes(1);
+      // `importOne` catches per resource and records `failed` with this
+      // message, so the denial is reported as a denial. Returning null would
+      // flatten it into `skipped-not-found`'s "no matching AWS resource" —
+      // wrong, and wrong at exactly the moment `--migrate-from-cloudformation`
+      // retires the CFn stack.
+      await expect(
+        provider.import(makeInput({ properties: { Name: 'example.com' } }))
+      ).rejects.toThrow(/AccessDenied/);
     });
 
     it('prefers an explicit --resource override over the Name lookup', async () => {
