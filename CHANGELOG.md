@@ -1,3 +1,10 @@
+## [0.280.39](https://github.com/go-to-k/cdkd/compare/v0.280.38...v0.280.39) (2026-08-12)
+
+
+### Bug Fixes
+
+* **provisioning:** classify the custom-resource authz retry on the invocation log tail ([#1685](https://github.com/go-to-k/cdkd/issues/1685)) ([3dc205f](https://github.com/go-to-k/cdkd/commit/3dc205f5c2190f6815b0ec53818582fdc9bf11c6))
+
 ## [0.280.38](https://github.com/go-to-k/cdkd/compare/v0.280.37...v0.280.38) (2026-08-12)
 
 
