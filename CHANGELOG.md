@@ -1,3 +1,10 @@
+## [0.281.1](https://github.com/go-to-k/cdkd/compare/v0.281.0...v0.281.1) (2026-08-12)
+
+
+### Bug Fixes
+
+* **dynamodb,lambda:** record the StreamSpecification and AuthType the warn arms actually sent ([#1708](https://github.com/go-to-k/cdkd/issues/1708)) ([864a9d6](https://github.com/go-to-k/cdkd/commit/864a9d6450e8ec88622fc56404ef8988c28f6407))
+
 # [0.281.0](https://github.com/go-to-k/cdkd/compare/v0.280.47...v0.281.0) (2026-08-12)
 
 
