@@ -393,8 +393,11 @@ describe('DynamoDBGlobalTableProvider sibling effectiveProperties arms (issue #1
     // `null` is the shape an older binary most plausibly wrote, and it is the
     // one an `== null` split would silently move to the DROP branch.
     ['null', null],
-    // NOT ['PROVISIONED'], which stringifies to exactly the live mode — a
-    // predicate mutated to coerce with String() would survive that row.
+    // NOT ['PROVISIONED'], which stringifies to exactly the live mode. Be
+    // precise about the mutation that kills: a predicate-only coercion records
+    // the raw ARRAY and fails either row; what this row adds is coverage of
+    // coerce-at-the-predicate AND at the read, where ['PROVISIONED'] would
+    // coincide with the live reading and survive.
     ['an array', ['PAY_PER_REQUEST']],
   ])(
     'RESTORES the live mode when the recorded previous is %s (present but UNUSABLE)',
