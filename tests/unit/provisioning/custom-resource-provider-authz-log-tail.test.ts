@@ -78,10 +78,23 @@ const BUCKET_DEPLOYMENT_LOG_TAIL = [
 const AUTHZ_REASON =
   'User: arn:aws:sts::123456789012:assumed-role/Stack-Role/Stack-Fn is not authorized to perform: lambda:GetFunction';
 
+/**
+ * A denial line long enough to exercise the 200-char cap, carrying a distinctive
+ * marker PAST that cap so a missing truncation is observable. Shaped like a real
+ * handler line that dumps context after the error — which is exactly the
+ * `print(event)` case the persisted-store rules exist for.
+ */
+const LONG_DENIAL_LINE =
+  'fatal error: An error occurred (403) when calling the HeadObject operation: Forbidden ' +
+  '- context: '.padEnd(160, 'x') +
+  ' TAIL_MARKER_PAST_200';
+
 const b64 = (s: string): string => Buffer.from(s, 'utf8').toString('base64');
 
 interface LogTailProbe {
-  findTransientAuthzLogLine(logTail: string | undefined): string | undefined;
+  findTransientAuthzLogLine(
+    logTail: string | undefined
+  ): { line: string; signal: string } | undefined;
 }
 
 /**
@@ -159,6 +172,24 @@ function makeProvider(): CustomResourceProvider {
 
 const warnings = (): string => warnSpy.mock.calls.map((c) => String(c[0])).join('\n---\n');
 
+/**
+ * Await a promise that MUST reject and hand back the error, typed.
+ *
+ * `.catch(e => e as Error)` widens the awaited type to a union of the resolved
+ * value and `Error` (which `vp run typecheck:test` rejects — `vp check` does not
+ * type-check `tests/**`), and it silently yields the RESOLVED value when the
+ * call unexpectedly succeeds, turning a real regression into a confusing
+ * property-missing failure. This throws instead.
+ */
+async function captureError(p: Promise<unknown>): Promise<Error> {
+  try {
+    await p;
+  } catch (e) {
+    return e as Error;
+  }
+  throw new Error('expected the call to reject, but it resolved');
+}
+
 describe('CustomResourceProvider authz retry via the invocation log tail (issue #1674)', () => {
   beforeEach(() => {
     mockLambdaSend.mockReset();
@@ -212,10 +243,12 @@ describe('CustomResourceProvider authz retry via the invocation log tail (issue 
     }
   });
 
-  it('folds the denial INTO the thrown reason when retries are exhausted', async () => {
+  it('annotates the thrown reason with the SIGNAL, and never the handler log line', async () => {
     // The post-mortem record (`deployments/*.jsonl`, replayed by `cdkd events`)
     // carries the thrown message — a warn-only surface would still send the
-    // user to CloudWatch, which is the complaint the issue filed.
+    // user to CloudWatch, which is the complaint the issue filed. But that
+    // store is contractually secret-free, so only the cdkd-authored SIGNAL
+    // PHRASE may be folded in; the verbatim handler line must not be.
     process.env['CDKD_CR_AUTHZ_MAX_RETRIES'] = '0';
     const counts = wireFlow({
       reason: BUCKET_DEPLOYMENT_REASON,
@@ -223,16 +256,42 @@ describe('CustomResourceProvider authz retry via the invocation log tail (issue 
       neverSucceeds: true,
     });
 
-    await expect(
-      makeProvider().create('Website', 'Custom::CDKBucketDeployment', {
-        ServiceToken: SERVICE_TOKEN,
-      })
-    ).rejects.toThrow(/An error occurred \(403\) when calling the HeadObject operation/);
+    const err = await captureError(
+      makeProvider().create('Website', 'Custom::CDKBucketDeployment', { ServiceToken: SERVICE_TOKEN })
+    );
 
+    // ONE message carries BOTH the original reason and the finding.
+    expect(err.message).toContain('returned non-zero exit status 1');
+    expect(err.message).toContain('an error occurred (403)');
+    // ...and nothing the HANDLER wrote. `HeadObject` appears only in the log
+    // line, so a regression that folds the verbatim line back in fails here.
+    expect(err.message).not.toContain('HeadObject');
+    expect(err.message).not.toContain('fatal error');
     expect(counts.invokes()).toBe(1);
   });
 
-  it('keeps the original reason alongside the folded denial', async () => {
+  it('keeps a LONG handler line out of the thrown reason entirely', async () => {
+    // The 200-char cap bounds VOLUME, not CLASS — 200 chars is precisely where
+    // a dumped `ResourceProperties` begins. So the assertion is absence, not
+    // truncation: no part of the handler's line may reach the persisted record.
+    process.env['CDKD_CR_AUTHZ_MAX_RETRIES'] = '0';
+    wireFlow({
+      reason: BUCKET_DEPLOYMENT_REASON,
+      logTail: `START RequestId: 1\n${LONG_DENIAL_LINE}\nEND RequestId: 1`,
+      neverSucceeds: true,
+    });
+
+    const err = await captureError(
+      makeProvider().create('Website', 'Custom::CDKBucketDeployment', { ServiceToken: SERVICE_TOKEN })
+    );
+
+    expect(err.message).toContain('an error occurred (403)');
+    expect(err.message).not.toContain('TAIL_MARKER_PAST_200');
+    expect(err.message).not.toContain('xxxxx');
+    expect(err.message).not.toContain('HeadObject');
+  });
+
+  it('still gives the operator the verbatim line, ephemerally', async () => {
     process.env['CDKD_CR_AUTHZ_MAX_RETRIES'] = '0';
     wireFlow({
       reason: BUCKET_DEPLOYMENT_REASON,
@@ -240,11 +299,24 @@ describe('CustomResourceProvider authz retry via the invocation log tail (issue 
       neverSucceeds: true,
     });
 
-    await expect(
-      makeProvider().create('Website', 'Custom::CDKBucketDeployment', {
-        ServiceToken: SERVICE_TOKEN,
-      })
-    ).rejects.toThrow(/returned non-zero exit status 1/);
+    await makeProvider()
+      .create('Website', 'Custom::CDKBucketDeployment', { ServiceToken: SERVICE_TOKEN })
+      .catch(() => undefined);
+
+    // Retries are disabled, so the only surface left is the terminal path's
+    // reason annotation; the warn carrying the verbatim line belongs to the
+    // RETRY arm, which is what the next test exercises.
+    expect(warnings()).not.toContain('HeadObject');
+  });
+
+  it('puts the verbatim line in the ephemeral retry warning', async () => {
+    wireFlow({ reason: BUCKET_DEPLOYMENT_REASON, logTail: BUCKET_DEPLOYMENT_LOG_TAIL });
+
+    await makeProvider().create('Website', 'Custom::CDKBucketDeployment', {
+      ServiceToken: SERVICE_TOKEN,
+    });
+
+    expect(warnings()).toContain('HeadObject');
   });
 
   it('does NOT claim the reason lacked authz wording when it did carry it (#756 path)', async () => {
@@ -386,12 +458,49 @@ describe('CustomResourceProvider authz retry via the invocation log tail (issue 
       neverSucceeds: true,
     });
 
-    // Delete is lenient by policy: it warns rather than throwing.
+    // Delete is lenient by policy: it warns rather than throwing. The warn
+    // prints the annotated REASON, so it carries the signal and not the line.
     await makeProvider().delete('Website', 'phys-123', 'Custom::CDKBucketDeployment', {
       ServiceToken: SERVICE_TOKEN,
     });
 
-    expect(warnings()).toContain('An error occurred (403) when calling the HeadObject operation');
+    expect(warnings()).toContain('delete handler returned FAILED');
+    expect(warnings()).toContain('an error occurred (403)');
+    expect(warnings()).not.toContain('HeadObject');
+  });
+
+  it('annotates a FAILED with no Reason at all', async () => {
+    process.env['CDKD_CR_AUTHZ_MAX_RETRIES'] = '0';
+    mockS3Send.mockImplementation((cmd: { constructor: { name: string } }) => {
+      if (cmd.constructor.name === 'GetObjectCommand') {
+        return Promise.resolve({
+          Body: { transformToString: () => Promise.resolve(JSON.stringify({ Status: 'FAILED' })) },
+        });
+      }
+      return Promise.resolve({});
+    });
+    mockLambdaSend.mockImplementation(
+      (cmd: { constructor: { name: string }; input?: { LogType?: string } }) => {
+        if (cmd.constructor.name === 'InvokeCommand') {
+          return Promise.resolve({
+            Payload: Buffer.from('null'),
+            ...(cmd.input?.LogType === 'Tail'
+              ? { LogResult: b64(BUCKET_DEPLOYMENT_LOG_TAIL) }
+              : {}),
+          });
+        }
+        return Promise.resolve({
+          Configuration: { State: 'Active', LastUpdateStatus: 'Successful' },
+        });
+      }
+    );
+
+    const err = await captureError(
+      makeProvider().create('Website', 'Custom::CDKBucketDeployment', { ServiceToken: SERVICE_TOKEN })
+    );
+
+    expect(err.message).toContain('Unknown reason');
+    expect(err.message).toContain('an error occurred (403)');
   });
 
   it('keeps the UNBOUNDED log tail out of a FunctionError throw (it would be persisted)', async () => {
@@ -417,17 +526,79 @@ describe('CustomResourceProvider authz retry via the invocation log tail (issue 
       }
     );
 
-    await expect(
-      makeProvider().create('Website', 'Custom::CDKBucketDeployment', {
-        ServiceToken: SERVICE_TOKEN,
-      })
-    ).rejects.toThrow(
-      expect.objectContaining({ message: expect.not.stringContaining('SECRET_TOKEN') })
+    const err = await captureError(
+      makeProvider().create('Website', 'Custom::CDKBucketDeployment', { ServiceToken: SERVICE_TOKEN })
     );
+
+    // Anchor at END of message. `not.stringContaining('SECRET_TOKEN')` alone is
+    // not enough: `truncateReason` keeps the FIRST 200 chars, so a regression
+    // that folds a TRUNCATED tail into the throw — the shape that leaks a
+    // `print(event)` dump, since 200 chars is where the properties begin —
+    // would sail past a marker placed at the END of the tail. The anchor
+    // catches ANY appended content, truncated or not. (The message itself is
+    // wrapped by `create()`'s error handling, hence the match rather than an
+    // equality assertion.)
+    expect(err.message).toMatch(/Lambda function error \(Unhandled\): \{"errorType":"ClientError"\}$/);
+    expect(err.message).not.toContain('START RequestId');
+    expect(err.message).not.toContain('SECRET_TOKEN');
 
     // ...but the diagnostic is still available, ephemerally.
     expect(warnings()).toContain('Backing function log tail');
     expect(warnings()).toContain(DENIAL_LINE);
+  });
+
+  it('caps the ephemeral FunctionError tail so CI logs stay bounded', async () => {
+    const huge = `START RequestId: 1\n${'y'.repeat(4000)}\nEND RequestId: 1`;
+    mockS3Send.mockImplementation(() => Promise.resolve({}));
+    mockLambdaSend.mockImplementation(
+      (cmd: { constructor: { name: string }; input?: { LogType?: string } }) => {
+        if (cmd.constructor.name === 'InvokeCommand') {
+          return Promise.resolve({
+            FunctionError: 'Unhandled',
+            Payload: Buffer.from('{}'),
+            ...(cmd.input?.LogType === 'Tail' ? { LogResult: b64(huge) } : {}),
+          });
+        }
+        return Promise.resolve({
+          Configuration: { State: 'Active', LastUpdateStatus: 'Successful' },
+        });
+      }
+    );
+
+    await makeProvider()
+      .create('Website', 'Custom::CDKBucketDeployment', { ServiceToken: SERVICE_TOKEN })
+      .catch(() => undefined);
+
+    const w = warnings();
+    expect(w).toContain('Backing function log tail');
+    expect(w).toContain('...');
+    expect(w.length).toBeLessThan(huge.length);
+  });
+
+  it('does not emit an empty tail warning when LogResult decodes to nothing', async () => {
+    // Pins `decodeInvokeLogTail`'s `decoded.length > 0` arm, which the retry
+    // path cannot pin (its caller rejects '' anyway).
+    mockS3Send.mockImplementation(() => Promise.resolve({}));
+    mockLambdaSend.mockImplementation(
+      (cmd: { constructor: { name: string }; input?: { LogType?: string } }) => {
+        if (cmd.constructor.name === 'InvokeCommand') {
+          return Promise.resolve({
+            FunctionError: 'Unhandled',
+            Payload: Buffer.from('{}'),
+            ...(cmd.input?.LogType === 'Tail' ? { LogResult: '!!!' } : {}),
+          });
+        }
+        return Promise.resolve({
+          Configuration: { State: 'Active', LastUpdateStatus: 'Successful' },
+        });
+      }
+    );
+
+    await makeProvider()
+      .create('Website', 'Custom::CDKBucketDeployment', { ServiceToken: SERVICE_TOKEN })
+      .catch(() => undefined);
+
+    expect(warnings()).not.toContain('Backing function log tail');
   });
 
   it('leaves a FunctionError with no log tail reporting exactly as before', async () => {
@@ -480,21 +651,45 @@ describe('CustomResourceProvider authz retry via the invocation log tail (issue 
 describe('findTransientAuthzLogLine classification', () => {
   const probe = new CustomResourceProvider({ responseBucket: 't' }) as unknown as LogTailProbe;
 
-  it('returns the matching LINE, not merely a boolean', () => {
-    expect(probe.findTransientAuthzLogLine(BUCKET_DEPLOYMENT_LOG_TAIL)).toBe(DENIAL_LINE);
+  it('returns the matching LINE and the cdkd-authored SIGNAL that matched', () => {
+    expect(probe.findTransientAuthzLogLine(BUCKET_DEPLOYMENT_LOG_TAIL)).toEqual({
+      line: DENIAL_LINE,
+      signal: 'an error occurred (403)',
+    });
   });
 
   it('strips a CRLF line ending from the returned line', () => {
-    expect(probe.findTransientAuthzLogLine(`START\r\n${DENIAL_LINE}\r\nEND`)).toBe(DENIAL_LINE);
+    expect(probe.findTransientAuthzLogLine(`START\r\n${DENIAL_LINE}\r\nEND`)?.line).toBe(
+      DENIAL_LINE
+    );
+  });
+
+  it('returns the FIRST matching line when several match', () => {
+    const tail = [
+      'START RequestId: 1',
+      DENIAL_LINE,
+      'AccessDeniedException: a later, different denial',
+      'END RequestId: 1',
+    ].join('\n');
+    expect(probe.findTransientAuthzLogLine(tail)?.line).toBe(DENIAL_LINE);
   });
 
   it.each([
-    DENIAL_LINE,
-    'An error occurred (AccessDenied) when calling the GetObject operation: Access Denied',
-    'AccessDeniedException: User: arn:aws:sts::1:assumed-role/r/s is not authorized to perform: s3:GetObject',
-    'botocore.exceptions.ClientError: ... no identity-based policy allows the s3:GetObject action',
-  ])('matches the CLI / SDK spellings of a denial: %s', (line) => {
-    expect(probe.findTransientAuthzLogLine(line)).toBe(line);
+    [DENIAL_LINE, 'an error occurred (403)'],
+    [
+      'An error occurred (AccessDenied) when calling the GetObject operation: Access Denied',
+      'accessdenied',
+    ],
+    [
+      'AccessDeniedException: User: arn:aws:sts::1:assumed-role/r/s is not authorized to perform: s3:GetObject',
+      'not authorized to perform',
+    ],
+    [
+      'botocore.exceptions.ClientError: ... no identity-based policy allows the s3:GetObject action',
+      'no identity-based policy allows',
+    ],
+  ])('matches the CLI / SDK spellings of a denial: %s', (line, signal) => {
+    expect(probe.findTransientAuthzLogLine(line)).toEqual({ line, signal });
   });
 
   it.each([
@@ -504,6 +699,11 @@ describe('findTransientAuthzLogLine classification', () => {
     "[ERROR] KeyError: 'Bucket'",
     '[INFO] downloading 403 objects from the source bucket',
     'HTTP/1.1 403 (upstream service rejected the request)',
+    // Bare `forbidden` is deliberately NOT a signal — it would match a handler
+    // logging an unrelated downstream refusal. Without this case, ADDING it to
+    // CR_TRANSIENT_AUTHZ_LOG_SIGNALS would be caught by nothing, since the
+    // canonical denial line happens to end in ': Forbidden'.
+    'PermissionError: the upstream API replied Forbidden',
     'REPORT Duration: 1500.00 ms Billed Duration: 1500 ms',
   ])('does NOT match non-denial log noise: %s', (tail) => {
     expect(probe.findTransientAuthzLogLine(tail)).toBeUndefined();

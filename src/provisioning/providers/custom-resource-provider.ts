@@ -183,11 +183,21 @@ const CR_TRANSIENT_AUTHZ_SIGNALS: readonly string[] = [
  * handler-authored reason: a handler that merely LOGS a genuine, permanent
  * `AccessDenied` — one it caught, or one no propagation will fix — now buys
  * `transientAuthzMaxRetries` extra invokes plus a
- * `recycleBackingFunctionExecEnv` each. Bounded (2 by default, 0 disables via
- * `CDKD_CR_AUTHZ_MAX_RETRIES`), and the original failure still surfaces
- * afterwards, so the failure is DELAYED, never masked. The trade is deliberate:
- * the alternative is the pre-#1674 behavior, where the propagation race this
- * whole mechanism exists for fails the deploy on its first attempt.
+ * `recycleBackingFunctionExecEnv` each. Bounded (2 by default; set
+ * `CDKD_CR_AUTHZ_MAX_RETRIES=0` to disable the RETRY — the log-tail scan and the
+ * reason annotation below still run, since they only describe the failure), and
+ * the original failure still surfaces afterwards, so the failure is DELAYED,
+ * never masked.
+ *
+ * The cost is NOT purely wasted time, and saying only "delayed, never masked"
+ * would undersell it: a re-invoke re-runs the handler's `Create`, so a handler
+ * that is not idempotent and had already done partial work repeats that work —
+ * and under the CDK Provider framework the re-invoked `onEvent` can create a
+ * SECOND physical resource, orphaning the first. That exposure is not new (the
+ * pre-existing reason-string match has always been able to retry), but the log
+ * signal widens what reaches it. The trade is still deliberate: the alternative
+ * is the pre-#1674 behavior, where the propagation race this whole mechanism
+ * exists for fails the deploy on its first attempt, every time.
  */
 const CR_TRANSIENT_AUTHZ_LOG_SIGNALS: readonly string[] = [
   ...CR_TRANSIENT_AUTHZ_SIGNALS,
@@ -195,6 +205,16 @@ const CR_TRANSIENT_AUTHZ_LOG_SIGNALS: readonly string[] = [
   'accessdenied',
   'access denied',
 ];
+
+/**
+ * Cap for the backing function's log tail when it is surfaced in an EPHEMERAL
+ * warning (the `FunctionError` arm). Deliberately far larger than
+ * `truncateReason`'s 200-char default — a crashed handler's real cause is often
+ * several lines above the last one (a Python traceback) — but not unbounded:
+ * this lands in CI logs and terminal scrollback. Lambda caps the tail at 4 KB
+ * regardless, so this only trims the extreme case.
+ */
+const CR_LOG_TAIL_WARN_MAX_CHARS = 2000;
 
 /**
  * Custom Resource Provider
@@ -298,7 +318,9 @@ export class CustomResourceProvider implements ResourceProvider {
    * `disableOuterRetry` to avoid stranding a pre-signed response URL — so we
    * retry HERE instead, deriving a fresh response URL + RequestId per attempt
    * and recycling the backing function's execution environment between tries).
-   * Override via `CDKD_CR_AUTHZ_MAX_RETRIES` (0 disables).
+   * Override via `CDKD_CR_AUTHZ_MAX_RETRIES`. `0` disables the RETRY only —
+   * the issue-#1674 log-tail scan and the reason annotation it produces still
+   * run, because they describe the failure rather than react to it.
    */
   private readonly transientAuthzMaxRetries: number = (() => {
     const raw = process.env['CDKD_CR_AUTHZ_MAX_RETRIES'];
@@ -760,7 +782,7 @@ export class CustomResourceProvider implements ResourceProvider {
       // Only scanned on FAILED — the happy path must not pay for it.
       const reasonIsAuthz =
         cfnResponse.Status === 'FAILED' && this.isTransientAuthzFailure(cfnResponse.Reason);
-      const logAuthzLine =
+      const logAuthzMatch =
         cfnResponse.Status === 'FAILED' && !reasonIsAuthz
           ? this.findTransientAuthzLogLine(decodeInvokeLogTail(logResult))
           : undefined;
@@ -768,39 +790,50 @@ export class CustomResourceProvider implements ResourceProvider {
       if (
         cfnResponse.Status === 'FAILED' &&
         attempt < this.transientAuthzMaxRetries &&
-        (reasonIsAuthz || logAuthzLine !== undefined)
+        (reasonIsAuthz || logAuthzMatch !== undefined)
       ) {
         this.logger.warn(
           `Custom resource ${operation} for ${logicalId} returned a transient IAM-authorization FAILED ` +
             `(attempt ${attempt + 1}/${this.transientAuthzMaxRetries + 1}): ${this.truncateReason(cfnResponse.Reason)}. ` +
-            (logAuthzLine === undefined
+            (logAuthzMatch === undefined
               ? ''
-              : `The handler's reason carried no authorization wording; the denial was found in the backing function's log: ${this.truncateReason(logAuthzLine)}. `) +
+              : `The handler's reason carried no authorization wording; the denial was found in the backing function's log: ${this.truncateReason(logAuthzMatch.line)}. `) +
             `Recycling the backing function's execution environment and retrying so its next cold start picks up the propagated policy.`
         );
         await this.recycleBackingFunctionExecEnv(serviceToken, logicalId);
         continue;
       }
 
-      // Terminal FAILED whose reason hides an authorization denial: fold the
-      // matched line INTO the reason, so it reaches every consumer — the
-      // create / update throw, the delete warn-and-continue, and the
-      // `deployments/` record `cdkd events` replays. Surfacing it only in a log
-      // line would leave the post-mortem record pointing at CloudWatch, which
-      // is the complaint issue #1674 filed.
+      // Terminal FAILED whose reason hides an authorization denial: annotate the
+      // reason so the finding reaches every consumer — the create / update
+      // throw, the delete warn-and-continue, and the `deployments/` record
+      // `cdkd events` replays. Surfacing it only in a log line would leave the
+      // post-mortem record pointing at CloudWatch, which is the complaint issue
+      // #1674 filed.
       //
-      // Only the MATCHED line, and `truncateReason`d exactly like the reason
-      // beside it: the reason is already handler-authored free text persisted
-      // through this same path, so a bounded authz line is the same class of
-      // data under the contract cdkd already has. The UNBOUNDED tail is not —
-      // see the `FunctionError` arm, which deliberately keeps it out.
-      if (cfnResponse.Status === 'FAILED' && logAuthzLine !== undefined) {
+      // What is folded in is the matched SIGNAL PHRASE — one of the fixed
+      // `CR_TRANSIENT_AUTHZ_LOG_SIGNALS` strings, authored by cdkd — and NOT the
+      // verbatim log line. Two reviewers independently rejected the verbatim
+      // form and were right: a `Reason` reaches `extractDeploymentEventError`
+      // and is persisted to `deployments/{runId}.jsonl`, which outlives
+      // `cdkd destroy` and is contractually error + metadata, never anything
+      // that may carry secrets. An ordinary handler line such as
+      // `logger.error(f"AccessDenied writing {event}")` is arbitrary handler
+      // stdout, and truncating it to 200 chars bounds the VOLUME, not the
+      // CLASS — 200 chars is precisely where a dumped `ResourceProperties`
+      // begins. The earlier "the reason is already handler-authored text"
+      // defence does not transfer either: a reason is text the handler CHOSE to
+      // hand to CloudFormation, a log line is text it wrote for itself.
+      // The verbatim line still reaches the operator, in the ephemeral warn
+      // above and in the `FunctionError` arm's warn.
+      if (cfnResponse.Status === 'FAILED' && logAuthzMatch !== undefined) {
         return {
           ...cfnResponse,
           Reason:
             `${cfnResponse.Reason ?? 'Unknown reason'} ` +
             `[cdkd: the reason carried no authorization wording, but the backing function's ` +
-            `invocation log did: ${this.truncateReason(logAuthzLine)}]`,
+            `invocation log matched the IAM-authorization signal "${logAuthzMatch.signal}" — ` +
+            `see the cdkd warning for the log line, or the function's CloudWatch log group]`,
         };
       }
 
@@ -855,12 +888,15 @@ export class CustomResourceProvider implements ResourceProvider {
    * `BucketDeployment` — its Python handler returns `None`. Gating on it would
    * switch off exactly the case this feature exists for.
    */
-  private findTransientAuthzLogLine(logTail: string | undefined): string | undefined {
+  private findTransientAuthzLogLine(
+    logTail: string | undefined
+  ): { line: string; signal: string } | undefined {
     if (!logTail) return undefined;
     for (const line of logTail.split('\n')) {
       const lower = line.toLowerCase();
-      if (CR_TRANSIENT_AUTHZ_LOG_SIGNALS.some((p) => lower.includes(p))) {
-        return line.trim();
+      const signal = CR_TRANSIENT_AUTHZ_LOG_SIGNALS.find((p) => lower.includes(p));
+      if (signal !== undefined) {
+        return { line: line.trim(), signal };
       }
     }
     return undefined;
@@ -950,10 +986,15 @@ export class CustomResourceProvider implements ResourceProvider {
     // VPC-Lambda benchmark stacks.
     await this.waitForBackingLambdaReady(serviceToken, logicalId);
 
-    const response = await this.invokeLambda(serviceToken, request);
+    const invokeResponse = await this.invokeLambda(serviceToken, request);
     return {
-      response: await this.getCustomResourceResponse(response, responseKey, logicalId, operation),
-      ...(response.LogResult === undefined ? {} : { logResult: response.LogResult }),
+      response: await this.getCustomResourceResponse(
+        invokeResponse,
+        responseKey,
+        logicalId,
+        operation
+      ),
+      ...(invokeResponse.LogResult === undefined ? {} : { logResult: invokeResponse.LogResult }),
     };
   }
 
@@ -1077,9 +1118,19 @@ export class CustomResourceProvider implements ResourceProvider {
       // stdout, so a `print(event)` in a handler would write the custom
       // resource's `ResourceProperties` into it. The warning is ephemeral, so
       // the diagnostic is available without widening what cdkd stores.
+      //
+      // Still capped: ephemeral is not free — this lands in CI logs and
+      // terminal scrollback, where the same `print(event)` argument applies
+      // with less force but does apply. The cap is generous relative to
+      // `truncateReason`'s 200 because a crashed handler's cause is often
+      // several lines above the last one (a Python traceback), and the whole
+      // tail is Lambda-capped at 4 KB regardless.
       const logTail = decodeInvokeLogTail(lambdaResponse.LogResult);
       if (logTail !== undefined) {
-        this.logger.warn(`Backing function log tail for ${logicalId} (${operation}):\n${logTail}`);
+        this.logger.warn(
+          `Backing function log tail for ${logicalId} (${operation}):\n` +
+            this.truncateReason(logTail, CR_LOG_TAIL_WARN_MAX_CHARS)
+        );
       }
       throw new Error(`Lambda function error (${lambdaResponse.FunctionError}): ${errorPayload}`);
     }
