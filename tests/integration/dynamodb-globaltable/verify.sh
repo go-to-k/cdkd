@@ -1194,20 +1194,49 @@ fi
 #
 # Assert that FIRST, because it is the live proof of the #1683 arm, and the
 # phase-1 seeding below would otherwise mask it.
-GSI_AFTER_JUNK="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | python3 -c '
+# Asserted per TABLE and by index-name MEMBERSHIP rather than by a glob over the
+# serialized JSON: a glob is order-dependent, so a legitimate reorder of the
+# retained list would report "must RETAIN the previous list" and accuse the fix.
+assert_retained_previous_gsi() { # $1 = logical-id prefix
+  local prefix="$1" verdict
+  verdict="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | python3 - "$1" <<'PY'
 import json, sys
+prefix = sys.argv[1]
 state = json.load(sys.stdin)
 for logical_id, resource in state.get("resources", {}).items():
-    if logical_id.startswith("GsiRecoveryTable"):
-        print(json.dumps(resource.get("properties", {}).get("GlobalSecondaryIndexes")))
+    if logical_id.startswith(prefix):
+        value = resource.get("properties", {}).get("GlobalSecondaryIndexes")
+        if not isinstance(value, list):
+            sys.exit(f"not a list: {json.dumps(value)}")
+        names = sorted(
+            entry.get("IndexName") for entry in value if isinstance(entry, dict)
+        )
+        print(" ".join(n for n in names if n))
         break
-')"
+else:
+    sys.exit(f"no {prefix} in cdkd state")
+PY
+)" || return 1
+  printf '%s' "${verdict}"
+}
+
+GSI_AFTER_JUNK="$(assert_retained_previous_gsi GsiRecoveryTable)"
 case "${GSI_AFTER_JUNK}" in
-  \[*recoverIdx*liveOnlyIdx*)
-    echo "    issue #1683 ok: the SKIPPED update retained the PREVIOUS index list in state"
+  *recoverIdx*)
+    echo "    issue #1683 ok: GsiRecoveryTable retained the PREVIOUS index list (${GSI_AFTER_JUNK})"
     ;;
   *)
-    echo "FAIL: issue #1683 — a skipped GlobalSecondaryIndexes update must RETAIN the previous list, got ${GSI_AFTER_JUNK}" >&2
+    echo "FAIL: issue #1683 — a skipped GlobalSecondaryIndexes update must RETAIN the previous list, got '${GSI_AFTER_JUNK}'" >&2
+    exit 1
+    ;;
+esac
+PROV_AFTER_JUNK="$(assert_retained_previous_gsi GsiProvRecoveryTable)"
+case "${PROV_AFTER_JUNK}" in
+  *autoProvIdx*)
+    echo "    issue #1683 ok: GsiProvRecoveryTable retained the PREVIOUS index list (${PROV_AFTER_JUNK})"
+    ;;
+  *)
+    echo "FAIL: issue #1683 — GsiProvRecoveryTable must RETAIN the previous list, got '${PROV_AFTER_JUNK}'" >&2
     exit 1
     ;;
 esac
@@ -1222,9 +1251,9 @@ esac
 # being deleted along with the path that used to create it.
 seed_junk_gsi_state() { # $1 = logical-id prefix
   local prefix="$1" tmp
-  tmp="$(mktemp)"
-  aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - > "${tmp}" || return 1
-  python3 - "${tmp}" "${prefix}" "${REGION}-x" <<'PY' || return 1
+  tmp="$(mktemp)" || return 1
+  aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - > "${tmp}" || { rm -f "${tmp}"; return 1; }
+  python3 - "${tmp}" "${prefix}" "${REGION}-x" <<'PY' || { rm -f "${tmp}"; return 1; }
 import json, sys
 path, prefix, junk = sys.argv[1], sys.argv[2], sys.argv[3]
 with open(path) as fh:
@@ -1238,7 +1267,7 @@ else:
 with open(path, "w") as fh:
     json.dump(state, fh)
 PY
-  aws s3 cp "${tmp}" "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null || return 1
+  aws s3 cp "${tmp}" "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null || { rm -f "${tmp}"; return 1; }
   rm -f "${tmp}"
 }
 seed_junk_gsi_state GsiRecoveryTable

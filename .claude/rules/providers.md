@@ -236,15 +236,21 @@ unreachable in production for ALL of them. The shipped consumers are
 — `S3BucketProvider`'s create arm, and `DynamoDBGlobalTableProvider`'s
 `StreamSpecification` substitution (issue #1653) plus its `BillingMode` one
 (issue #1683, the same `replayWarn` shape one property over); that list is
-worth checking with a grep rather than trusting it here. **A create-side
-`effectiveProperties` consumer need not be a replay arm at all** — #1683's
-third arm is the GlobalTable `needsStream` AUTO-ENABLE, which fires on the
-ORDINARY template path: cross-region replication requires a stream, so cdkd
-sends one the template never declared and must record it or `readCurrentState`
-reads back a stream the record does not mention. That is the "arms that do NOT
-log a refusal" case this file warns to look for, and it is why the audit
-question is "what did this send that differs from what was declared", not "which
-guards can warn". #1682 named the
+worth checking with a grep rather than trusting it here. **An arm of this class
+can be one you must NOT answer**, and #1683's third arm is the example: the
+GlobalTable `needsStream` AUTO-ENABLE fires on the ORDINARY template path —
+cross-region replication requires a stream, so cdkd sends one the template never
+declared, with nothing malformed and no guard logging a refusal. It is the "arms
+that do NOT log" case, so the audit question is rightly "what did this SEND that
+differs from what was declared". But the answer there is a key the template does
+NOT have, and recording it alone is precisely the shape the twin rule below
+forbids: the diff walks the key UNION, so an unchanged template classifies an
+UPDATE on the next deploy, the update returns no effective bag, and the key
+vanishes again — one spurious no-op UPDATE and no durable record. The twin
+cannot rescue it either, being pure and region-blind where `needsStream` is
+region-dependent. Left unanswered on purpose, tracked as issue #1723. **Finding
+such an arm is therefore not the same as fixing it** — check the twin's
+feasibility before you record anything. #1682 named the
 GlobalTable as a consumer while the provider was still running its `replayWarn`
 substitution and returning WITHOUT the field — the provider-side half, which
 #1653 has since supplied, so the two halves now meet. What none of the four has

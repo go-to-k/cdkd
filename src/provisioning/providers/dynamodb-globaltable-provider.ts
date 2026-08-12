@@ -402,6 +402,9 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     // (the normal case) means "record the desired properties". Every arm below
     // composes onto whatever a previous one already recorded (`?? properties`),
     // so two substitutions in one create cannot erase each other (issue #1683).
+    //
+    // The `needsStream` auto-enable further down is deliberately NOT one of
+    // them — see the comment there and issue #1723.
     let effectiveProperties: Record<string, unknown> | undefined;
 
     if (billingModeSubstituted) {
@@ -521,16 +524,26 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     } else if (needsStream) {
       // cdkd deliberately sends MORE than the template asked for: cross-region
       // replication requires a stream, so one is enabled even where the
-      // template declares no `StreamSpecification` at all. That is the
-      // "arms that do NOT log a refusal" case `.claude/rules/providers.md`
-      // warns to look for, and #1633's rule reaches it — what is recorded must
-      // be what was SENT, or `readCurrentState` (which reads the stream back)
-      // can never match the record (issue #1683).
+      // template declares no `StreamSpecification` at all. That is the "arms
+      // that do NOT log a refusal" case `.claude/rules/providers.md` warns to
+      // look for, and it is the one arm of issue #1683 this provider does NOT
+      // answer with `effectiveProperties` — deliberately, tracked as issue
+      // #1723.
       //
-      // Recorded in the CFn shape, not the SDK one: GlobalTable's
-      // `StreamSpecification` declares only `StreamViewType`, so the effective
-      // bag is indistinguishable from what a template declaring the stream
-      // explicitly would record.
+      // Recording the added stream here in isolation is the shape the rules
+      // file forbids ("`effectiveProperties` alone BREAKS the next deploy —
+      // implement `canonicalizeDesiredProperties` with it"), and the breakage
+      // is real: `DiffCalculator.compareProperties` walks the key UNION, so an
+      // UNCHANGED template would classify an UPDATE on the next deploy, and
+      // `update()` — whose stream gate is `properties['StreamSpecification']
+      // !== undefined`, false for a template that declares none — would return
+      // no effective bag and re-record the desired one, dropping the key
+      // again. The twin cannot simply be added either: it is pure and
+      // synchronous and does not know the deploy region, while `needsStream`
+      // does. #1723 carries that design plus the prior question of whether the
+      // arm is needed at all (`drift-calculator` descends only into keys
+      // present in state, and the `observedProperties` baseline already
+      // carries the stream).
       this.logger.info(
         `Auto-enabling streams (NEW_AND_OLD_IMAGES) on ${logicalId} — required for cross-region replication`
       );
@@ -538,10 +551,6 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         StreamEnabled: true,
         StreamViewType: 'NEW_AND_OLD_IMAGES',
       } as StreamSpecification;
-      effectiveProperties = {
-        ...(effectiveProperties ?? properties),
-        StreamSpecification: { StreamViewType: 'NEW_AND_OLD_IMAGES' },
-      };
     }
 
     // GSIs: the CFn GlobalTable GSI shape models throughput differently
@@ -562,6 +571,12 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // `GlobalSecondaryIndexes` recorded in state warns and the block is
       // OMITTED (zero indexes) instead of stranding the rollback; on a
       // template-path create the hook is `undefined` and the refusal stands.
+      //
+      // This arm still records the malformed desired blob rather than DROPPING
+      // the key, which is the replay-CREATE+SKIP answer `.claude/rules/
+      // providers.md` prescribes — nothing was applied, so there is no value
+      // to vouch for. Deliberately out of scope here and tracked as issue
+      // #1724, so the arm is not mistaken for one this change already settled.
       const onUnusableCreateIndexes = replayWarn(this.logger, context).onUnusable;
       sdkIndexes = toSdkGlobalSecondaryIndexes(
         properties,
@@ -1537,7 +1552,14 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
               'NEW_AND_OLD_IMAGES',
               'AWS::DynamoDB::GlobalTable StreamSpecification'
             ) === undefined;
-          effectiveProperties = { ...properties };
+          // Composed, not assigned. This arm runs FIRST, so `effectiveProperties`
+          // is always undefined here and the `??` is inert TODAY — a mutation to
+          // `{ ...properties }` passes every test, measured. It is written this
+          // way so the two independent guards (which can both fire in one
+          // update) stay symmetrical, and so an arm inserted ahead of this one
+          // is not erased silently. The GSI arm below runs second and its
+          // composition IS fenced by a test (issue #1683 review).
+          effectiveProperties = { ...(effectiveProperties ?? properties) };
           if (previousStreamSpecUsable) {
             // COPIED, not aliased: `rollback-executor.ts` spreads the returned
             // bag shallowly, so handing back the previous record's own object
@@ -1583,12 +1605,17 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         const previousIndexes = previousProperties['GlobalSecondaryIndexes'];
         effectiveProperties = { ...(effectiveProperties ?? properties) };
         if (!previousGsiProbeUnusable && previousIndexes !== undefined) {
+          // The probe refuses exactly "present and not an array", so reaching
+          // here with a defined value means it IS an array — no non-array
+          // fallback branch, which would be unreachable (issue #1683 review).
+          //
           // COPIED, not aliased: `rollback-executor.ts` spreads the returned
           // bag shallowly, so handing back the previous record's own array
-          // would leave two state records sharing one mutable value.
-          effectiveProperties['GlobalSecondaryIndexes'] = Array.isArray(previousIndexes)
-            ? [...previousIndexes]
-            : previousIndexes;
+          // would leave two state records sharing one mutable value. The
+          // ELEMENTS are still shared; nothing mutates a recorded GSI entry
+          // today, and deep-cloning here would diverge from how every sibling
+          // arm copies.
+          effectiveProperties['GlobalSecondaryIndexes'] = [...(previousIndexes as unknown[])];
         } else {
           delete effectiveProperties['GlobalSecondaryIndexes'];
         }

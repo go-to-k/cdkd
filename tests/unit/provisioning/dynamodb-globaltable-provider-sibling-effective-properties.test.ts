@@ -100,6 +100,12 @@ describe('DynamoDBGlobalTableProvider sibling effectiveProperties arms (issue #1
     mockSend.mock.calls.find((c) => c[0].constructor.name === 'CreateTableCommand')?.[0]
       .input as Record<string, unknown>;
 
+  /** Every UpdateTable input this update issued. */
+  const updateInputs = (): Array<Record<string, unknown>> =>
+    mockSend.mock.calls
+      .filter((c) => c[0].constructor.name === 'UpdateTableCommand')
+      .map((c) => c[0].input as Record<string, unknown>);
+
   // ─── ARM 1: BillingMode warn-and-SUBSTITUTE on a replay create ──────────
 
   it('records the SUBSTITUTED BillingMode on a replay create', async () => {
@@ -162,13 +168,17 @@ describe('DynamoDBGlobalTableProvider sibling effectiveProperties arms (issue #1
     );
   });
 
-  // ─── ARM 3: the needsStream auto-enable sends MORE than was declared ────
+  // ─── The needsStream auto-enable is deliberately NOT answered ──────────
+  //
+  // It sends a stream the template never declared, which IS the same class —
+  // but recording it in isolation is the shape `.claude/rules/providers.md`
+  // forbids without a `canonicalizeDesiredProperties` twin, and that twin
+  // cannot be written here (it is pure and synchronous and does not know the
+  // deploy region, while `needsStream` does). Tracked as issue #1723. Pin the
+  // CURRENT answer so the arm cannot start recording by accident, and so the
+  // follow-up has a test to invert.
 
-  it('records the AUTO-ENABLED stream when the template declares none', async () => {
-    // Two replicas force cross-region replication, which requires a stream, so
-    // cdkd enables one the template never asked for. `readCurrentState` reads
-    // the stream back, so a record with no `StreamSpecification` can never
-    // match it.
+  it('sends the auto-enabled stream but records NO effectiveProperties for it (issue #1723)', async () => {
     const desired = {
       ...baseProps,
       Replicas: [{ Region: 'us-east-1' }, { Region: 'eu-west-1' }],
@@ -176,31 +186,12 @@ describe('DynamoDBGlobalTableProvider sibling effectiveProperties arms (issue #1
 
     const result = await provider.create('MyTable', RESOURCE_TYPE, desired);
 
+    // The WIRE half still carries the stream — the arm's behavior is unchanged.
     expect(createInput()['StreamSpecification']).toEqual({
       StreamEnabled: true,
       StreamViewType: 'NEW_AND_OLD_IMAGES',
     });
-    // Recorded in the CFn shape, NOT the SDK one: GlobalTable's
-    // StreamSpecification declares only `StreamViewType`, so this is
-    // byte-identical to what a template declaring the stream records.
-    expect(result.effectiveProperties?.['StreamSpecification']).toEqual({
-      StreamViewType: 'NEW_AND_OLD_IMAGES',
-    });
-    expect(result.effectiveProperties).toEqual({
-      ...desired,
-      StreamSpecification: { StreamViewType: 'NEW_AND_OLD_IMAGES' },
-    });
-  });
-
-  it('records the AUTO-ENABLED stream for a single NON-LOCAL replica', async () => {
-    const result = await provider.create('MyTable', RESOURCE_TYPE, {
-      ...baseProps,
-      Replicas: [{ Region: 'eu-west-1' }],
-    });
-
-    expect(result.effectiveProperties?.['StreamSpecification']).toEqual({
-      StreamViewType: 'NEW_AND_OLD_IMAGES',
-    });
+    expect(result.effectiveProperties).toBeUndefined();
   });
 
   it('answers with NO effectiveProperties when the template DECLARES the stream', async () => {
@@ -221,24 +212,28 @@ describe('DynamoDBGlobalTableProvider sibling effectiveProperties arms (issue #1
     expect(result.effectiveProperties).toBeUndefined();
   });
 
-  it('COMPOSES two substitutions in one create rather than letting one erase the other', async () => {
-    // Both arms write `effectiveProperties`; the later one spreads whatever the
-    // earlier recorded (`?? properties`), so a create that substitutes the
-    // billing mode AND auto-enables a stream records both.
+  it('COMPOSES the two UPDATE-path arms rather than letting one erase the other', async () => {
+    // Both update-path arms write `effectiveProperties`, the stream one first.
+    // It spreads `effectiveProperties ?? properties` too, so a bag that is
+    // malformed on BOTH keys records BOTH answers — assigning `{ ...properties }`
+    // at either site silently drops the other's.
     const desired = {
       ...baseProps,
-      BillingMode: '',
-      Replicas: [{ Region: 'us-east-1' }, { Region: 'eu-west-1' }],
+      StreamSpecification: '',
+      GlobalSecondaryIndexes: 'oops-not-an-array',
     };
+    const previousStream = { StreamViewType: 'KEYS_ONLY' };
 
-    const result = await provider.create('MyTable', RESOURCE_TYPE, desired, {
-      replayingState: true,
+    const result = await provider.update('MyTable', TABLE_NAME, RESOURCE_TYPE, desired, {
+      ...baseProps,
+      StreamSpecification: previousStream,
+      GlobalSecondaryIndexes: VALID_GSI,
     });
 
     expect(result.effectiveProperties).toEqual({
       ...desired,
-      BillingMode: 'PAY_PER_REQUEST',
-      StreamSpecification: { StreamViewType: 'NEW_AND_OLD_IMAGES' },
+      StreamSpecification: previousStream,
+      GlobalSecondaryIndexes: VALID_GSI,
     });
   });
 
@@ -260,6 +255,13 @@ describe('DynamoDBGlobalTableProvider sibling effectiveProperties arms (issue #1
       ...desired,
       GlobalSecondaryIndexes: VALID_GSI,
     });
+
+    // The WIRE half of the same claim, in this test rather than a sibling
+    // file: retaining the previous list is only correct BECAUSE the diff was
+    // suppressed. A mutation that both sends a GSI update and retains the
+    // previous value satisfies the record assertions above.
+    expect(updateInputs().some((i) => 'GlobalSecondaryIndexUpdates' in i)).toBe(false);
+
     // ...and the skip is still ANNOUNCED.
     expect(childLogger.warn).toHaveBeenCalledWith(
       expect.stringContaining('GlobalSecondaryIndexes')
