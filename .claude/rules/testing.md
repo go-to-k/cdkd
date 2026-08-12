@@ -65,8 +65,13 @@ result — the vacuous pass this file forbids elsewhere.
 `tests/unit/scripts/once-leak-canary.test.ts` leaks deliberately (and is
 therefore allow-listed, automatically, by the generator), and the CI step
 `detector canary` re-runs that file alone with
-`CDKD_ONCE_LEAK_IGNORE_ALLOWLIST=1` and requires a NON-ZERO exit. Do not "fix"
-that suite's priming; it is not a defect.
+`CDKD_ONCE_LEAK_IGNORE_ALLOWLIST=1` and requires a failure carrying the
+detector's OWN wording (`primed by an EARLIER test`). Asserting only a non-zero
+exit is NOT equivalent and must not be "simplified" back to it: a deleted or
+renamed canary file makes `vp test run <path>` exit 1 with "No test files
+found", and so do a syntax error and a failed install — each of which would let
+the step pass while the detector is dead, which is the very hole it exists to
+close. Do not "fix" that suite's priming either; it is not a defect.
 
 Two more design points are decisions, not accidents:
 
