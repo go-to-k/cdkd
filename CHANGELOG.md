@@ -1,3 +1,10 @@
+## [0.280.40](https://github.com/go-to-k/cdkd/compare/v0.280.39...v0.280.40) (2026-08-12)
+
+
+### Bug Fixes
+
+* **glue:** thread CatalogId into every catalog-scoped call, and resolve {Ref: AWS::Glue::Table} to the table name ([#1690](https://github.com/go-to-k/cdkd/issues/1690)) ([7f0721e](https://github.com/go-to-k/cdkd/commit/7f0721e0446d5a07c3bac425fca411d159f23107))
+
 ## [0.280.39](https://github.com/go-to-k/cdkd/compare/v0.280.38...v0.280.39) (2026-08-12)
 
 
