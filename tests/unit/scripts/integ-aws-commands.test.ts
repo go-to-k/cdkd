@@ -391,7 +391,9 @@ describe('integ fixture aws invocations (#1402)', () => {
   it('parses a substantial share of the fixture tree', () => {
     const stats = collectStats();
     expect(stats.fixtures).toBeGreaterThan(150);
-    // Current: 2635 invocations across 221 fixtures, 68 services, 355 verbs.
+    // Current: 3002 invocations (was 2635 when these floors were written; the
+    // comment had not been refreshed as the tree grew, which is how the ceiling
+    // below came to sit 2 invocations away from the real number).
     expect(stats.total).toBeGreaterThan(2200);
     expect(stats.services.size).toBeGreaterThan(55);
     expect(stats.verbs.size).toBeGreaterThan(290);
@@ -399,7 +401,14 @@ describe('integ fixture aws invocations (#1402)', () => {
     // only a ceiling catches one that starts seeing things that are not there
     // (the quoted-prose / ARN false positives review found were exactly that,
     // and no floor could have flagged them).
-    expect(stats.total).toBeLessThan(3000);
+    //
+    // Raised 3000 -> 3400 when the asset-migration fixture gained its
+    // import-driven phase (issue #1652): ordinary fixture growth pushed the
+    // real total to 3002. The ceiling keeps roughly the same proportional
+    // headroom over the measured total as it had when it was written, which is
+    // what makes it tight enough to still catch a false-positive explosion
+    // rather than merely tracking the tree.
+    expect(stats.total).toBeLessThan(3400);
     // The highest-traffic services must always be represented.
     for (const svc of ['s3api', 'lambda', 'ec2', 'iam', 'logs']) {
       expect(stats.services.has(svc), `no aws ${svc} invocation parsed`).toBe(true);

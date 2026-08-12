@@ -3424,12 +3424,16 @@
     {
       "resourceType": "AWS::IAM::Policy",
       "integs": [
+        "asset-migration",
         "export",
         "iam-propagation-stress",
         "iam-role-policies-drift-clean",
         "migrate-from-cfn"
       ],
       "signals": {
+        "asset-migration": [
+          "literal"
+        ],
         "export": [
           "l2",
           "literal"
@@ -4677,6 +4681,7 @@
     {
       "resourceType": "AWS::S3::Bucket",
       "integs": [
+        "asset-migration",
         "basic",
         "bench-sdk",
         "bucket-deployment",
@@ -4726,6 +4731,9 @@
         "update-replace"
       ],
       "signals": {
+        "asset-migration": [
+          "l2"
+        ],
         "basic": [
           "l2"
         ],
@@ -4886,12 +4894,16 @@
     {
       "resourceType": "AWS::S3::BucketPolicy",
       "integs": [
+        "asset-migration",
         "migrate-from-cfn",
         "propagation-races-2",
         "s3-analytics-inventory",
         "s3-replication-and-filter"
       ],
       "signals": {
+        "asset-migration": [
+          "literal"
+        ],
         "migrate-from-cfn": [
           "literal"
         ],

@@ -280,11 +280,43 @@ every synth-consuming command:
 | --- | --- |
 | `deploy` | redirect + rewrite (this section) |
 | `diff` (incl. `--recursive`) | rewrite, so the shown plan matches what deploy will do (incl. the one-time migration diff) |
-| `import` | rewrite before writing state, so imported state matches what the next deploy would write (no spurious first-deploy churn) |
+| `import` | rewrite the template, but write the **pre-rewrite** values into `state.properties` — see the note below (issue [#1652](https://github.com/go-to-k/cdkd/issues/1652)) |
 | `publish-assets` | redirect via the same table; reads the marker, which adds a state-bucket read to this command — if no state bucket is resolvable, fall back to legacy destinations with an info line |
 | `synth` | **unrewritten** — it prints the CDK app's template, not cdkd's deployment plan |
 | `export` | **unrewritten** (intentional): the IMPORT changeset template returns to the CFn/cdk-assets world; the first post-export `cdk deploy` republishes to the CDK bootstrap bucket and repoints properties — self-correcting |
 | `destroy` / `state *` / `drift` / `events` | state-driven, no template/asset involvement — unchanged |
+
+### 7.1.1 `import` writes the PRE-rewrite values into state
+
+The original rule for `import` was "rewrite before writing state, so imported
+state matches what the next deploy would write (no spurious first-deploy
+churn)". Issue
+[#1652](https://github.com/go-to-k/cdkd/issues/1652) reversed that: the
+template is still rewritten (nested child templates included), but
+`state.properties` is snapshotted **before** the rewrite runs.
+
+The "no churn" optimization is only sound for a resource whose live value the
+import actually reads back from AWS. Most providers' `import()` return just a
+physical id — `IAMPolicyProvider.import()` returns `{ physicalId, attributes:
+{} }` and never reads the live policy document — so nothing pulls the AWS-side
+value into `properties`. With the rewritten value baked into state, the deploy
+diff compares a rewritten template against a rewritten state, both sides agree,
+the change classifies `NO_CHANGE`, and the live resource is **never** corrected.
+For the `AWS::IAM::Policy` that `s3deploy.BucketDeployment` generates that means
+the handler role keeps a grant on the CDK bootstrap bucket forever while
+`SourceBucketNames` names the cdkd bucket — a silent split-brain that surfaces
+later as a runtime `AccessDenied`, and one that also opts the stack back out of
+the `cdk gc` protection this whole design exists to provide.
+
+Recording the pre-rewrite values makes the first post-import `cdkd deploy`
+produce a real UPDATE for every rewritten reference, which is what actually
+repoints the live resources. The trade is explicit: **one deploy's worth of
+churn in exchange for correctness when adopting a stack that something else
+deployed.** `cdkd import` emits an info line naming the count so the churn is
+expected rather than surprising. The deploy-driven legacy → cdkd-assets
+migration was never affected (state there already holds the old `cdk-*` names,
+so its diff always produced a real UPDATE); this change makes the import path
+behave the same way.
 
 ## 8. Custom synthesizers: scope rule
 

@@ -242,12 +242,10 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
     logger.info(`Target stack: ${stackInfo.stackName} (${targetRegion})`);
 
     // Issue #1002 PR 2 — when the target region is in cdkd-assets mode,
-    // rewrite the template's asset references BEFORE anything reads it, so
-    // the imported state matches what the next deploy would write (no
-    // spurious first-deploy churn; design §7.1). Nested child templates in
-    // the recursive CFn-migration walk are rewritten at their own load site
-    // below. Lazy: asset-less apps / legacy regions add no AWS calls beyond
-    // the marker read.
+    // rewrite the template's asset references BEFORE anything reads it
+    // (design §7.1). Nested child templates in the recursive CFn-migration
+    // walk are rewritten at their own load site below. Lazy: asset-less
+    // apps / legacy regions add no AWS calls beyond the marker read.
     const resolveAssetRedirect = createAssetRedirectResolver({
       stateBackend,
       stsRegion: region,
@@ -256,12 +254,42 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
       suppressLegacyNotice: true,
     });
     const assetRedirect = await resolveAssetRedirect(stackInfo.assetManifestPath, targetRegion);
+    // Issue #1652 — the template whose `Properties` land in `state.properties`.
+    // In cdkd-assets mode this is a snapshot taken BEFORE the rewrite, so
+    // state records the CDK-bootstrap (`cdk-<qualifier>-assets-*`) values the
+    // AWS-side resources actually hold at adoption time, not the cdkd-assets
+    // values the rewrite substitutes.
+    //
+    // The original §7.1 intent was the opposite ("rewrite before writing
+    // state, so imported state matches what the next deploy would write — no
+    // spurious first-deploy churn"). That optimization is only sound for a
+    // resource whose live value import reads back from AWS. Most providers'
+    // `import()` return just a physical id (e.g. `IAMPolicyProvider`), so
+    // baking the rewritten value into state made the deploy diff compare the
+    // rewritten template against a rewritten state, classify `NO_CHANGE`, and
+    // NEVER correct the live resource — a silent split-brain (the IAM policy
+    // that `s3deploy.BucketDeployment` generates keeps granting the CDK
+    // bootstrap bucket while `SourceBucketNames` points at the cdkd bucket,
+    // surfacing later as a runtime AccessDenied). Recording the pre-rewrite
+    // value trades one corrective UPDATE on the first post-import deploy for
+    // correctness, which is the right trade when adopting a stack that was
+    // deployed by something else.
+    let stateTemplate = stackInfo.template;
     if (assetRedirect) {
+      // Snapshot BEFORE the in-place rewrite mutates the template.
+      stateTemplate = structuredClone(stackInfo.template);
       const rewritten = rewriteTemplateAssetReferences(stackInfo.template, assetRedirect);
       logger.debug(
         `Rewrote ${rewritten} asset reference(s) to cdkd asset storage in template of ` +
           `stack ${stackInfo.stackName}`
       );
+      if (rewritten > 0) {
+        logger.info(
+          `Note: ${rewritten} asset reference(s) in stack ${stackInfo.stackName} still point at ` +
+            `CDK bootstrap asset storage on the AWS side. cdkd records those pre-rewrite values in ` +
+            `state, so the next 'cdkd deploy' updates the affected resources to cdkd asset storage.`
+        );
+      }
     }
 
     // Parse user-supplied physical-id overrides up front so any syntax error
@@ -671,12 +699,16 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
         }
       }
 
+      // `stateTemplate` is the PRE-asset-rewrite snapshot in cdkd-assets mode
+      // (issue #1652) and `template` itself otherwise — identical in every
+      // respect except that its asset references still name CDK bootstrap
+      // storage, which is what AWS holds for the resources being adopted.
       const stackState = buildStackState(
         stackInfo.stackName,
         targetRegion,
         rows,
         templateParser,
-        template,
+        stateTemplate,
         existingState,
         selectiveMode
       );
@@ -699,7 +731,13 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
       // and left as-is rather than aborting the whole import. The
       // eventual destroy failure on the un-resolved props is narrower
       // than blowing up the entire adoption flow.
-      await resolveImportedProperties(stackState, template, targetRegion, stateBackend, logger);
+      await resolveImportedProperties(
+        stackState,
+        stateTemplate,
+        targetRegion,
+        stateBackend,
+        logger
+      );
 
       // Populate observedProperties for the freshly-imported resources so
       // the very first `cdkd drift` run after import has a real baseline
@@ -1777,9 +1815,10 @@ async function importNestedStackChildrenRecursive(args: {
   logger: ReturnType<typeof getLogger>;
   /**
    * Issue #1002 PR 2 — §6 mapping table when the region is in cdkd-assets
-   * mode. Each child template read below gets the §7 rewrite before its
-   * properties land in state (nested templates bypass the top-level
-   * rewrite in `importCommand`).
+   * mode. Each child template read below gets the §7 rewrite (nested
+   * templates bypass the top-level rewrite in `importCommand`). Per issue
+   * #1652 a snapshot is taken BEFORE that rewrite and is what feeds the
+   * child's state write, so `state.properties` keeps the pre-rewrite values.
    */
   assetRedirect?: AssetRedirectMap | undefined;
 }): Promise<void> {
@@ -1816,7 +1855,14 @@ async function importNestedStackChildrenRecursive(args: {
     );
 
     const childTemplate = readNestedChildTemplate(childTemplatePath, childLogicalId);
+    // Issue #1652 — same PRE-rewrite state snapshot as the root walk: the
+    // child's `state.properties` must carry the CDK-bootstrap asset values
+    // AWS holds, so the next `cdkd deploy` produces the corrective UPDATE
+    // instead of a `NO_CHANGE` that leaves the live child resources pointing
+    // at the CDK bootstrap bucket forever.
+    let childStateTemplate = childTemplate;
     if (assetRedirect) {
+      childStateTemplate = structuredClone(childTemplate);
       rewriteTemplateAssetReferences(childTemplate, assetRedirect);
     }
 
@@ -1870,7 +1916,7 @@ async function importNestedStackChildrenRecursive(args: {
         childRegion,
         rows,
         templateParser,
-        childTemplate,
+        childStateTemplate,
         null,
         false
       );
@@ -1884,7 +1930,7 @@ async function importNestedStackChildrenRecursive(args: {
       // helpers as the root so behavior stays in sync.
       await resolveImportedProperties(
         childStackState,
-        childTemplate,
+        childStateTemplate,
         childRegion,
         stateBackend,
         logger

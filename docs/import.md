@@ -139,7 +139,7 @@ counterpart) but you want cdkd to find the rest automatically.
 | `--yes` | Skip the confirmation prompt before writing state (and the CloudFormation retirement prompt under `--migrate-from-cloudformation`). |
 | `--force` | Confirm a destructive write to existing state — see below. |
 | `--migrate-from-cloudformation [name]` | After cdkd state is written, retire the source CloudFormation stack: inject `DeletionPolicy: Retain` + `UpdateReplacePolicy: Retain` on every resource via `UpdateStack`, then `DeleteStack`. AWS resources are NOT deleted. See [Migrating from `cdk deploy` (CloudFormation) to cdkd](#migrating-from-cdk-deploy-cloudformation-to-cdkd) below. |
-| `--use-cdk-bootstrap-assets` | Keep the CDK bootstrap asset destinations verbatim (skip the cdkd asset-storage rewrite) even when the region is opted in via `cdkd bootstrap`. Without it, import rewrites asset references (Lambda `Code`, image URIs, …) to the cdkd-owned storage before writing state, so the imported state matches what the next `cdkd deploy` would write. See the asset-destinations section in [docs/cli-reference.md](cli-reference.md). |
+| `--use-cdk-bootstrap-assets` | Keep the CDK bootstrap asset destinations verbatim (skip the cdkd asset-storage rewrite) even when the region is opted in via `cdkd bootstrap`. Without it, import rewrites asset references (Lambda `Code`, image URIs, …) to the cdkd-owned storage — but records the **pre-rewrite** values in state, so the first post-import `cdkd deploy` repoints the live resources. See [Importing a stack into a cdkd-assets region](#importing-a-stack-into-a-cdkd-assets-region) below and the asset-destinations section in [docs/cli-reference.md](cli-reference.md). |
 
 `--force` is only needed when the import would lose data:
 
@@ -282,6 +282,32 @@ template. If the resource's actual properties differ from the template,
 the next `cdkd deploy` will UPDATE them to match. If you imported only
 some resources (selective mode), the remaining template resources
 appear as `to create` in the diff.
+
+## Importing a stack into a cdkd-assets region
+
+When the target region is opted into cdkd-owned asset storage (`cdkd
+bootstrap`), the synthesized template's asset references (Lambda `Code`,
+container image URIs, the IAM grants CDK generates on the asset bucket, …) are
+rewritten from the CDK bootstrap locations (`cdk-<qualifier>-assets-*`) to the
+cdkd-owned ones (`cdkd-assets-*`).
+
+The AWS-side resources you are adopting still hold the **CDK bootstrap**
+values, so cdkd records those pre-rewrite values in state — not the rewritten
+ones. `cdkd import` prints an info line with the count when this applies.
+
+What that means in practice:
+
+- The first `cdkd diff` / `cdkd deploy` after the import shows a change for
+  every rewritten reference, and that deploy is what repoints the live
+  resources at cdkd asset storage.
+- That deploy is **required**, not cosmetic. Without it, a resource whose live
+  value cdkd cannot read back (an `AWS::IAM::Policy` granting read on the asset
+  bucket — exactly what `s3deploy.BucketDeployment` generates) would keep
+  granting the CDK bootstrap bucket while the custom resource reads from the
+  cdkd bucket, failing at runtime with `AccessDenied`.
+- Pass `--use-cdk-bootstrap-assets` (or set `context.cdkd.useCdkBootstrapAssets`
+  in `cdk.json`) to stay on the CDK bootstrap destinations entirely — no
+  rewrite, no post-import change.
 
 ## Provider coverage
 

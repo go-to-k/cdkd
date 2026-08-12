@@ -325,7 +325,7 @@ describe('cdkd import', () => {
     expect(errorSpy.mock.calls[0]?.[0]).toMatch(/--resource <id>=<physicalId>/);
   });
 
-  it('rewrites asset references to cdkd storage before writing state (#1002 PR 2)', async () => {
+  it('records the PRE-rewrite asset references in state while still rewriting the template (#1652)', async () => {
     const { buildAssetRedirectMap } = await import('../../../src/assets/asset-redirect.js');
     const cdkBucket = 'cdk-hnb659fds-assets-111111111111-us-east-1';
     const cdkdBucket = 'cdkd-assets-111111111111-us-east-1';
@@ -373,9 +373,113 @@ describe('cdkd import', () => {
       string,
       { resources: Record<string, { properties: Record<string, unknown> }> },
     ];
-    // The template was rewritten IN PLACE before its Properties landed in
-    // state, so the imported state matches what the next deploy would write.
-    expect(state.resources['MyBucket']!.properties['DataUrl']).toBe(`s3://${cdkdBucket}/k.zip`);
+    // Issue #1652: state records what AWS actually holds for the adopted
+    // resource (the CDK bootstrap bucket), NOT the rewritten value — so the
+    // next `cdkd deploy` diff sees a real change and issues the corrective
+    // UPDATE instead of classifying NO_CHANGE and leaving the live resource
+    // pointing at CDK bootstrap storage forever.
+    expect(state.resources['MyBucket']!.properties['DataUrl']).toBe(`s3://${cdkBucket}/k.zip`);
+    // The deploy-side template IS still rewritten in place (that is what
+    // makes assets resolve against cdkd storage) — only the state snapshot
+    // is taken beforehand.
+    expect(
+      (tmpl.Resources['MyBucket']!.Properties as Record<string, unknown>)['DataUrl']
+    ).toBe(`s3://${cdkdBucket}/k.zip`);
+    // And the user is told why the next deploy will show a change.
+    const noticeCall = infoSpy.mock.calls.find((c) =>
+      String(c[0]).includes('still point at CDK bootstrap asset storage')
+    );
+    expect(noticeCall).toBeDefined();
+  });
+
+  it('leaves state untouched by the rewrite for nested-stack children (#1652)', async () => {
+    // The recursive `--migrate-from-cloudformation` child walk reads each
+    // nested template from its own file and applies the same §7 rewrite, so
+    // it needs the same pre-rewrite state snapshot as the root walk.
+    const { buildAssetRedirectMap } = await import('../../../src/assets/asset-redirect.js');
+    const cdkBucket = 'cdk-hnb659fds-assets-111111111111-us-east-1';
+    const cdkdBucket = 'cdkd-assets-111111111111-us-east-1';
+    const map = buildAssetRedirectMap(
+      {
+        version: '38.0.0',
+        files: {
+          aaaa1111: {
+            displayName: 'Code',
+            source: { path: 'asset.aaaa1111', packaging: 'zip' },
+            destinations: { d1: { bucketName: cdkBucket, objectKey: 'k.zip' } },
+          },
+        },
+        dockerImages: {},
+      },
+      {
+        assetBucket: cdkdBucket,
+        containerRepo: 'cdkd-container-assets-111111111111-us-east-1',
+        assetSupportVersion: 1,
+        createdAt: '2026-07-15T00:00:00.000Z',
+      },
+      '111111111111',
+      'us-east-1'
+    );
+    mockCreateAssetRedirectResolver.mockReturnValueOnce(async () => map);
+
+    const tmpdirPath = mkdtempSync(join(tmpdir(), 'cdkd-import-nested-asset-'));
+    try {
+      const childTemplatePath = join(tmpdirPath, 'Child.nested.template.json');
+      (await import('node:fs')).writeFileSync(
+        childTemplatePath,
+        JSON.stringify({
+          Resources: {
+            ChildPolicy: {
+              Type: 'AWS::IAM::Policy',
+              Properties: { PolicyName: 'p', DataUrl: `s3://${cdkBucket}/k.zip` },
+            },
+          },
+        })
+      );
+      const tmpl = template({
+        Child: { Type: 'AWS::CloudFormation::Stack', Properties: { TemplateURL: 'x' } },
+      });
+      mockSynthesize.mockResolvedValue({
+        stacks: [{ ...stackInfo('P', tmpl), nestedTemplates: { Child: childTemplatePath } }],
+      });
+      mockHasProvider.mockImplementation((t: string) => t !== 'AWS::CloudFormation::Stack');
+      mockGetProvider.mockReturnValue({
+        import: vi.fn(async () => ({ physicalId: 'p', attributes: {} })),
+      });
+      const childArn = 'arn:aws:cloudformation:us-east-1:123:stack/Child/uuid';
+      mockGetCfnResourceTree.mockResolvedValue({
+        stackName: 'P',
+        physicalId: 'P',
+        resources: new Map([['Child', childArn]]),
+        nested: new Map([
+          [
+            'Child',
+            {
+              stackName: childArn,
+              physicalId: childArn,
+              resources: new Map([['ChildPolicy', 'p']]),
+              nested: new Map(),
+            },
+          ],
+        ]),
+      });
+
+      await runImport(['import', 'P', '--app', 'x', '--yes', '--migrate-from-cloudformation']);
+
+      const childSave = mockSaveState.mock.calls.find(
+        (c) => (c as unknown[])[0] === 'P~Child'
+      ) as unknown as [
+        string,
+        string,
+        { resources: Record<string, { properties: Record<string, unknown> }> },
+      ];
+      expect(childSave).toBeDefined();
+      expect(childSave[2].resources['ChildPolicy']!.properties['DataUrl']).toBe(
+        `s3://${cdkBucket}/k.zip`
+      );
+    } finally {
+      rmSync(tmpdirPath, { recursive: true, force: true });
+    }
   });
 
   it('rejects when stack name is unknown', async () => {
