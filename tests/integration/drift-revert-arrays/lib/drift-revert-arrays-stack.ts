@@ -168,6 +168,22 @@ export class DriftRevertArraysStack extends cdk.Stack {
     securityGroup.addIngressRule(ec2.Peer.ipv4('10.0.1.0/24'), ec2.Port.tcp(8080), 'http-b');
     securityGroup.addIngressRule(ec2.Peer.ipv4('10.0.2.0/24'), ec2.Port.tcp(5432), 'pg-c');
     securityGroup.addIngressRule(ec2.Peer.ipv4('10.0.3.0/24'), ec2.Port.tcp(6379), 'redis-d');
+    // A STANDALONE ingress rule whose IpProtocol is a protocol NUMBER, not a
+    // name (issue #1643). The L2 `addIngressRule` above can only emit `tcp`,
+    // so this is the one shape that exercises AWS's own renaming: cdkd sends
+    // and records `'6'`, EC2 stores `tcp`, and `readSecurityGroupIngressCurrentState`
+    // reads `tcp` back. Without `drift-protocol-normalize.ts` canonicalizing
+    // BOTH sides, that is permanent phantom drift and step 3a below (a clean
+    // deploy must be drift-free) fails on every run.
+    new ec2.CfnSecurityGroupIngress(this, 'NumericProtocolIngress', {
+      groupId: securityGroup.securityGroupId,
+      ipProtocol: '6',
+      fromPort: 9443,
+      toPort: 9443,
+      cidrIp: '10.0.9.0/24',
+      description: 'numeric-protocol-6 (issue #1643)',
+    });
+
     cdk.Tags.of(securityGroup).add('Zone', 'z1');
     cdk.Tags.of(securityGroup).add('Owner', 'cdkd-integ');
     cdk.Tags.of(securityGroup).add('Component', 'drift-revert-arrays');

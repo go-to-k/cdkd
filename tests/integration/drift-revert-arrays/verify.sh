@@ -20,6 +20,14 @@
 #     BOTH comparison sides. Two consecutive clean drift runs prove the
 #     canonicalization; an out-of-band RegisterTargets proves a real added
 #     member is still detected rather than absorbed.
+#   - AWS-RENAMED PROPERTY VALUES (issue #1643): the standalone
+#     `NumericProtocolIngress` rule declares `IpProtocol: '6'`, which EC2
+#     stores as `tcp` — so the recorded and read-back sides are two
+#     spellings of ONE protocol. `drift-protocol-normalize.ts` canonicalizes
+#     both sides; without it the clean-deploy drift runs (steps 3a / 3a2)
+#     report that rule forever and `--revert` cannot clear it, because it
+#     revokes and re-authorizes into the same state. This is the VALUE-
+#     mapping sibling of the ORDER canonicalization above.
 #
 # Steps:
 #   1. install + build cdkd (root) + install fixture deps
