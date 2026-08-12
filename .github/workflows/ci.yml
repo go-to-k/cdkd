@@ -239,6 +239,33 @@ jobs:
           fi
       - run: vp run audit:handled-property-wiring:check
 
+  # Issue #1618 — run the unit suite a second time with the runtime
+  # `*Once`-leak detector armed, so a test that primes more mock responses than
+  # its code path consumes fails HERE instead of silently shifting every later
+  # test in its file by one response.
+  #
+  # A separate job rather than a step in check-build-test: it is a full second
+  # suite run (~3 min) and it must not delay the signal contributors actually
+  # wait on. It is also why the detector is env-gated OFF by default — the
+  # normal `vp run test` is byte-for-byte unaffected by this landing.
+  #
+  # The 15 files in tests/once-leak-allowlist.json are grandfathered. Fixing one
+  # and dropping it from the list is the intended ratchet direction; adding a
+  # new entry is not, and a new test file that leaks fails this job.
+  once-leak-detect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - uses: voidzero-dev/setup-vp@ca1c46663915d6c1042ae23bd39ab85718bfb0fa # v1
+        with:
+          node-version: "24"
+          cache: true
+          run-install: false
+
+      - run: vp install --frozen-lockfile
+      - run: vp run test:once-leak
+
   runtime-compat:
     runs-on: ubuntu-latest
     needs: check-build-test

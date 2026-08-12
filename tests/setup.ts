@@ -2,6 +2,8 @@
 
 import { vi } from 'vite-plus/test';
 
+import { installOnceLeakDetector } from './once-leak-detector.js';
+
 /**
  * Global vitest setup — defenses against Node 24 + vitest 1.6.1 surfacing
  * stray unhandled rejections from `withErrorHandling`-wrapped CLI actions.
@@ -100,6 +102,11 @@ vi.fn = ((implementation?: MockableImplementation) => {
 
   return wrapMockImplementationSetters(originalViFn(implementation as never));
 }) as typeof vi.fn;
+
+// Runtime `*Once`-leak detector (issue #1618). Installed AFTER the `vi.fn`
+// patch above so it composes over it rather than being overwritten by it, and
+// inert unless `CDKD_ONCE_LEAK_DETECT=1`.
+installOnceLeakDetector();
 
 const originalExit = process.exit;
 

@@ -1,0 +1,8 @@
+{
+  "$comment": "Pre-existing `*Once` leaks grandfathered for the runtime detector (issue #1618). Regenerate with `vp run gen:once-leak-allowlist`. Removing a file from this list after fixing its priming is the intended ratchet direction; adding one is not.",
+  "files": [
+    "tests/unit/provisioning/elbv2-provider-roundtrip.test.ts",
+    "tests/unit/provisioning/iam-role-provider.test.ts",
+    "tests/unit/provisioning/s3-tables-provider-roundtrip.test.ts"
+  ]
+}

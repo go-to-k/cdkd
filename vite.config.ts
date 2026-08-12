@@ -183,6 +183,18 @@ export default defineConfig({
         command: 'vp test run --coverage',
         cache: false,
       },
+      // Issue #1618 — the unit suite with the runtime `*Once`-leak detector
+      // armed. `vp test run` rather than `vp run test` on purpose: the latter
+      // is cached and its key ignores env vars, so it can replay an earlier
+      // green summary and report "no leaks" without having looked.
+      'test:once-leak': {
+        command: 'CDKD_ONCE_LEAK_DETECT=1 vp test run',
+        cache: false,
+      },
+      'gen:once-leak-allowlist': {
+        command: 'node --experimental-strip-types scripts/gen-once-leak-allowlist.ts',
+        cache: false,
+      },
       lint: {
         command: 'vp lint',
       },

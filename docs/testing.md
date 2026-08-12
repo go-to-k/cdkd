@@ -960,6 +960,64 @@ Enforced by `tests/unit/scripts/integ-state-bucket.test.ts` (classifier:
 bodies, comments and `echo` arguments are stripped, so a remediation hint that
 prints the command is not treated as an invocation.
 
+### Unit-test convention: prime exactly what the code path consumes
+
+`vi.clearAllMocks()` clears call RECORDS but does **not** drain the queue seeded
+by `mockResolvedValueOnce` and its siblings. So a test that primes more
+responses than its code path consumes leaves the remainder queued, and a later
+test in the same file receives that leftover as one of its own responses — with
+every later call shifted by the same offset.
+
+The shifted test does not error. It reads a response describing a different
+resource, takes a different branch, and then satisfies its own assertions,
+because the assertions on that branch are usually ABSENCE assertions
+(`toBeUndefined()`, `toHaveLength(0)`, `not.toHaveBeenCalled()`) and an absence
+assertion is satisfied both by "the guard correctly declined" and by "the code
+never got there". In issue #1588 the only symptom was a `logger.warn` that was
+mysteriously never called, and locating it took a full instrumentation pass.
+
+A runtime detector catches this (issue #1618). It is **off by default** so the
+ordinary `vp run test` is unaffected; the CI job `once-leak-detect` runs the
+suite a second time with it armed:
+
+```bash
+vp run test:once-leak        # the unit suite with the detector armed
+```
+
+What it flags is precisely a value **consumed by a different test than the one
+that primed it**. The failure lands on the test whose result is corrupt, and
+names the earlier test that primed the stale value:
+
+```text
+This test consumed a mock response primed by an EARLIER test.
+
+  - primed by: over-primes and clearAllMocks does not drain it
+  - mock: vi.fn()
+```
+
+Fix the EARLIER test: prime exactly what its code path consumes. If the extra
+priming is deliberate, drain it with `mockReset()` in `beforeEach` (again:
+`clearAllMocks` does not drain it).
+
+Two things it deliberately does NOT flag, because neither corrupts a result: an
+over-priming that no later test ever consumes, and a value primed in `beforeAll`
+(which has no owning test to cross a boundary from).
+
+Three files leaked when the detector landed and are grandfathered in
+`tests/once-leak-allowlist.json`; fixing them is tracked by
+[issue #1655](https://github.com/go-to-k/cdkd/issues/1655). Fixing one and
+dropping it from that list is the intended direction — an empty list is the goal
+state. Adding an entry is not, and a new test file that leaks fails CI.
+Regenerate the list with `vp run gen:once-leak-allowlist`.
+
+Note what this deliberately does NOT do: it does not require `mockReset()` in
+every suite that uses a `*Once` primer. That was the original proposal, and
+measurement rejected it — 182 of the 265 `*Once`-using files have no reset, the
+mechanical swap to `resetAllMocks()` breaks 1181 tests, and the presence of
+`mockReset` is only a PROXY for the defect. Checking the defect directly
+implicated a handful of files rather than 182, and needed no remediation batch
+at all.
+
 ## 3. Deploy Using cdkd
 
 ```bash
