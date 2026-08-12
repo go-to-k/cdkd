@@ -61,7 +61,8 @@ describe('once-leak allow-list', () => {
   it('covers only a small minority of the suite', () => {
     // A cap, not a floor. A regeneration that somehow recorded every file would
     // produce a green CI job protecting nothing, so the size is bounded — but
-    // an EMPTY list is the goal state of this ratchet, not a defect, and
+    // a CANARY-ONLY list is the goal state of this ratchet (reached by issue
+    // 1655, which fixed the last three real entries), not a defect, and
     // asserting a floor would both fight that and deadlock the bootstrap (the
     // generator runs this very suite, so a floor makes the first regeneration
     // unable to succeed).

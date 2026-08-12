@@ -57,7 +57,7 @@ and are wrong; do not reintroduce them:
   not for over-priming. Measured: 182 of the 265 `*Once`-using files have no
   reset and the mechanical swap breaks 1181 tests, so that lint needed a
   182-file remediation batch. Checking the real defect implicated THREE files
-  (tracked by issue #1655) and needed none.
+  (fixed by issue #1655) and needed none.
 
 **The detector has its own canary**, because with the grandfather list honoured
 "the detector went dead" and "the tree is clean" produce the identical green
@@ -86,7 +86,28 @@ Two more design points are decisions, not accidents:
   (`vp run gen:once-leak-allowlist`). `tests/unit/scripts/once-leak-allowlist.test.ts`
   fails an entry that no longer names an existing file or one that no longer
   primes anything, and caps the list so a runaway regeneration cannot exempt the
-  tree.
+  tree. Issue #1655 walked the ratchet to its end: all three real entries are
+  fixed and the list now holds only the canary.
+- **The over-priming is usually a call the path never makes, and the priming's
+  own comment is not evidence** (issue #1655). All three files annotated their
+  primings with a call sequence, and all three sequences were wrong — a
+  `ListTagsForResource` gated on a response field the mock omitted, three
+  policy/tag no-op responses for helpers that issue zero sends, and a
+  `DescribeTags` that `update()` never makes because it diffs the property bags.
+  MEASURE the consumption (drain the queue with `mockReset()` in `beforeEach`,
+  then log `mockSend.mock.calls.length` per test) before rewriting the priming;
+  measuring while the queue still leaks is circular, because a consumer's count
+  includes the responses it inherited. Then pin it with
+  `expect(mockSend).toHaveBeenCalledTimes(N)` — but note the two guards cover
+  DIFFERENT regressions, which a probe settled rather than intuition: the pin
+  catches the code path changing its call COUNT (what silently invalidates a
+  priming), while a SURPLUS primer leaves the count unchanged and is caught only
+  by the detector, i.e. by the file being OFF the allow-list. Re-introducing one
+  primer and running with `CDKD_ONCE_LEAK_DETECT=1` fails and names the priming
+  test; the same edit under a plain `vp test run` passes.
+  Fixing the priming is strictly better than draining with `mockReset()` here:
+  a drained suite can never be flagged by the detector again, which re-creates
+  the grandfathering the ratchet exists to remove.
 
 ## Integration Tests
 

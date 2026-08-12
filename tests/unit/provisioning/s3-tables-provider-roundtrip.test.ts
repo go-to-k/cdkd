@@ -37,6 +37,10 @@ import { S3TablesProvider } from '../../../src/provisioning/providers/s3-tables-
 const BUCKET_ARN = 'arn:aws:s3tables:us-east-1:123:bucket/my-bucket';
 const NAMESPACE_PHYSICAL_ID = `${BUCKET_ARN}|my-namespace`;
 const TABLE_PHYSICAL_ID = `${BUCKET_ARN}|my-namespace|my-table`;
+// The table ARN `GetTable` returns (a REQUIRED member of GetTableResponse),
+// distinct from the compound physicalId above and what ListTagsForResource is
+// called with. AWS ends it in an opaque table id, not the table name.
+const TABLE_ARN = 'arn:aws:s3tables:us-east-1:123:bucket/my-bucket/table/OPAQUE-AWS-ID';
 
 describe('S3TablesProvider read-update round-trip', () => {
   let provider: S3TablesProvider;
@@ -79,6 +83,10 @@ describe('S3TablesProvider read-update round-trip', () => {
       // #609 backfill: empty Tags array (no tags on the live resource).
       Tags: [],
     });
+    // GetTableBucket + ListTagsForResource. Both primed responses must be
+    // consumed HERE, or the leftover shifts every later test in this file
+    // (issue #1655).
+    expect(mockSend).toHaveBeenCalledTimes(2);
 
     vi.clearAllMocks();
 
@@ -129,11 +137,16 @@ describe('S3TablesProvider read-update round-trip', () => {
 
   it('AWS::S3Tables::Table — no-op update fires zero SDK calls on round-trip (same Tags)', async () => {
     // readCurrentState mock: GetTable + ListTagsForResource (post-#609
-    // Tags wiring).
+    // Tags wiring). `tableARN` is load-bearing, not decoration:
+    // readTableCurrentState gates the tags read on it
+    // (`resp.tableARN ? readTagsBestEffort(...) : []`), so a response
+    // without it leaves the ListTagsForResource priming queued and the
+    // NEXT test consumes it as its own GetTable response (issue #1655).
     mockSend.mockResolvedValueOnce({
       name: 'my-table',
       format: 'ICEBERG',
       namespace: ['my-namespace'],
+      tableARN: TABLE_ARN,
     });
     mockSend.mockResolvedValueOnce({ tags: {} });
 
@@ -154,6 +167,8 @@ describe('S3TablesProvider read-update round-trip', () => {
       // #609 backfill: empty Tags array (no tags on the live resource).
       Tags: [],
     });
+    // GetTable + ListTagsForResource — see the note on `tableARN` above.
+    expect(mockSend).toHaveBeenCalledTimes(2);
 
     vi.clearAllMocks();
 
@@ -170,7 +185,7 @@ describe('S3TablesProvider read-update round-trip', () => {
     expect(mockSend).not.toHaveBeenCalled();
   });
 
-  it('AWS::S3Tables::TableBucket — Format-less Table response: no Format key leaks to round-trip', async () => {
+  it('AWS::S3Tables::Table — Format-less Table response: no Format key leaks to round-trip', async () => {
     // Defensive: if AWS GetTable ever returned without `format`,
     // readCurrentState must not synthesize a placeholder that
     // round-trips into a future update(). Today update() is a no-op so
@@ -180,6 +195,8 @@ describe('S3TablesProvider read-update round-trip', () => {
       name: 'my-table',
       // format intentionally undefined
       namespace: ['my-namespace'],
+      // Same tags-read gate as the sibling test above (issue #1655).
+      tableARN: TABLE_ARN,
     });
     // Second mock: ListTagsForResource (always called post-#609 readback).
     mockSend.mockResolvedValueOnce({ tags: {} });
@@ -202,6 +219,8 @@ describe('S3TablesProvider read-update round-trip', () => {
       Tags: [],
     });
     expect(observed).not.toHaveProperty('Format');
+    // GetTable + ListTagsForResource — see the note on `tableARN` above.
+    expect(mockSend).toHaveBeenCalledTimes(2);
 
     vi.clearAllMocks();
 
