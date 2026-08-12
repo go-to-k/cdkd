@@ -1405,23 +1405,31 @@ describe('cdkd drift', () => {
        * regression against the pre-#1644 behavior of never writing at all.
        */
       it('warns instead of failing the run when the state write fails', async () => {
+        // The drift MUST come from a key other than IpProtocol (issue #1643):
+        // `6` and `tcp` are two spellings of ONE protocol — AWS renames the
+        // number on write — so `canonicalizeIpProtocols` collapses that pair
+        // and it is correctly no longer drift. Using it alone here made the
+        // revert never run, so `saveState` was never reached. FromPort carries
+        // the drift instead, exactly as the sibling test above does, which
+        // leaves this test about what it is actually for: a FAILED state write
+        // warns rather than failing the run.
         mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
         mockGetState.mockResolvedValueOnce(
           makeState({
             Ingress1: makeResource({
               physicalId: 'sgr-1',
               resourceType: 'AWS::EC2::SecurityGroupIngress',
-              properties: { IpProtocol: 6 },
-              observedProperties: { IpProtocol: 6 },
+              properties: { IpProtocol: 6, FromPort: 443 },
+              observedProperties: { IpProtocol: 6, FromPort: 443 },
             }),
           })
         );
         mockRegistryGetProvider.mockReturnValue({
-          readCurrentState: async () => ({ IpProtocol: 'tcp' }),
+          readCurrentState: async () => ({ IpProtocol: 6, FromPort: 8080 }),
           update: async () => ({
             physicalId: 'sgr-1',
             wasReplaced: false,
-            effectiveProperties: { IpProtocol: 'tcp' },
+            effectiveProperties: { IpProtocol: 'tcp', FromPort: 443 },
           }),
         });
         mockSaveState.mockRejectedValueOnce(new Error('PreconditionFailed'));
