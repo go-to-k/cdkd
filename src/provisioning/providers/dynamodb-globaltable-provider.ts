@@ -50,7 +50,12 @@ import { ProvisioningError } from '../../utils/error-handler.js';
 import { generateResourceName } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
-import { readConfigString, replayWarn, requireConfigString } from '../config-shape.js';
+import {
+  configStringRefusal,
+  readConfigString,
+  replayWarn,
+  requireConfigString,
+} from '../config-shape.js';
 import { withRetry } from '../../deployment/retry.js';
 import { isThrottlingError } from '../../deployment/retryable-errors.js';
 import type {
@@ -374,6 +379,11 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       );
     }
 
+    // issue #1653: the bag actually delivered, when the replay downgrade below
+    // substituted a value for a malformed declared one. `undefined` (the
+    // normal case) means "record the desired properties".
+    let effectiveProperties: Record<string, unknown> | undefined;
+
     // Stream specification. GlobalTable cross-region replication requires
     // streams with NEW_AND_OLD_IMAGES. CDK synth always emits
     // `StreamSpecification: { StreamViewType: 'NEW_AND_OLD_IMAGES' }`
@@ -395,6 +405,42 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     // translation below.
     if (streamSpecInput != null) {
       let streamViewType: string;
+      // issue #1653 (create-path sibling): a SUBSTITUTED value is the same
+      // class as a dropped key (.claude/rules/providers.md, #1633) — under the
+      // replay downgrade the deploy SUCCEEDS while the engine records the
+      // MALFORMED desired block, so `readCurrentState` can never match it and
+      // the difference is permanent phantom drift.
+      //
+      // This arm is NOT the "replay-CREATE -> DROP the key" case the #1612
+      // carve-out describes: that answer is scoped to a SKIP, where nothing
+      // reached AWS. Here the downgrade SUBSTITUTES the default and the block
+      // IS applied — a stream really is created — so the rule that binds is
+      // "what you return is what you SENT", and dropping the key would record
+      // that cdkd sent nothing. The recorded shape is the CFn one
+      // (`StreamViewType` only — `AWS::DynamoDB::GlobalTable`'s
+      // `StreamSpecification` declares no `StreamEnabled`, verified against
+      // aws-cdk-lib's `convertCfnGlobalTableStreamSpecificationPropertyToCloudFormation`),
+      // so the effective bag is indistinguishable from what an ordinary
+      // template-path create of the same table records.
+      //
+      // LIVE. `streamSpecSubstituted` can only be set when
+      // `context.replayingState` is true, and the sole caller that sets that
+      // flag is `rollback-executor.ts`'s reverse-replacement arm — which
+      // HONOURS `effectiveProperties` as of issue #1682 (PR #1696): the bag
+      // handed to `create()` IS `previousState.properties`, so what this arm
+      // returns replaces the record's `properties` wholesale. Before that the
+      // arm rebuilt the record from `prev.properties` and every provider's
+      // replay-CREATE substitution was announced into a void.
+      //
+      // Not live-tested per PROVIDER yet — issue #1706. The #1696 fixture
+      // (`tests/integration/rollback-replay-effective-props`) proves the
+      // ENGINE path via `AWS::EC2::Route`; what is uncovered is whether THIS
+      // arm substitutes the value it claims and records it in the shape
+      // `readCurrentState` can match. Covering it needs a
+      // rollback-failure-injection phase of its own, which is why the
+      // `dynamodb-globaltable` fixture deliberately exercises only the UPDATE
+      // arm.
+      let streamSpecSubstituted = false;
       try {
         // `replayWarn` (issue #1544): a state record written by an older
         // binary can carry `StreamSpecification: ''`, and on the rollback
@@ -403,12 +449,31 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         // downgrade treats the malformed block as `{}` (stream enabled with
         // the NEW_AND_OLD_IMAGES default, exactly what an empty block means),
         // warns, and proceeds; template-path creates keep the refusal.
+        // The wrapper preserves `replayWarn`'s gate exactly: with no replay
+        // downgrade in effect the options bag stays EMPTY, so a template-path
+        // create keeps the hard refusal rather than silently gaining one.
+        //
+        // "Do not infer the skip by wrapping `onUnusable`" (#1612) does not
+        // bind here: that rule guards a callback SHARED by SKIP-class guards
+        // and warn-and-DEFAULT reads, where a generic wrapper cannot tell the
+        // two apart and would record a defaulted-but-APPLIED value as skipped.
+        // This is one call site of known class — a `readConfigString`
+        // warn-and-DEFAULT — and what it records is precisely the DEFAULT that
+        // was applied, which is the outcome that rule wants.
+        const replayDowngrade = replayWarn(this.logger, context).onUnusable;
         streamViewType = readConfigString(
           streamSpecInput,
           'StreamViewType',
           'NEW_AND_OLD_IMAGES',
           'AWS::DynamoDB::GlobalTable StreamSpecification',
-          replayWarn(this.logger, context)
+          replayDowngrade
+            ? {
+                onUnusable: (message) => {
+                  streamSpecSubstituted = true;
+                  replayDowngrade(message);
+                },
+              }
+            : {}
         );
       } catch (error) {
         throw new ProvisioningError(
@@ -423,7 +488,24 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         StreamEnabled: true,
         StreamViewType: streamViewType,
       } as StreamSpecification;
+      if (streamSpecSubstituted) {
+        effectiveProperties = {
+          ...properties,
+          StreamSpecification: { StreamViewType: streamViewType },
+        };
+      }
     } else if (needsStream) {
+      // Two more arms of the same "state records something other than what
+      // was SENT" class, both deliberately OUT OF SCOPE for #1653 and tracked
+      // in issue #1683: (1) this auto-enable, which puts a stream on the wire
+      // the template never declared while state records no
+      // `StreamSpecification` at all; and (2) the `StreamSpecification: {}`
+      // path above, where an ABSENT `StreamViewType` silently takes the
+      // `NEW_AND_OLD_IMAGES` default with no `onUnusable` involved, so state
+      // records `{}` while AWS holds the resolved view type. Neither produces
+      // phantom drift today — `drift-calculator` only descends into keys
+      // present in state, and `{}` has no member to compare — which is why
+      // they are separable from the malformed-value arms this change fixes.
       this.logger.info(
         `Auto-enabling streams (NEW_AND_OLD_IMAGES) on ${logicalId} — required for cross-region replication`
       );
@@ -694,6 +776,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           StreamArn: tableInfo.streamArn,
           TableName: tableName,
         },
+        ...(effectiveProperties && { effectiveProperties }),
       };
     } catch (wiringError) {
       // Partial-create cleanup. The table exists on AWS; delete it
@@ -975,6 +1058,20 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     // diff step, the BillingMode flip's capacity derivation, and the
     // Replicas diff loop all need it.
     const currentRegion = (await this.dynamoDBClient.config.region()) ?? '';
+
+    // issue #1653: the bag actually delivered, when a warn-and-SKIP arm below
+    // left a declared configuration un-applied. `undefined` (the normal case)
+    // means "record the desired properties" — see the `StreamSpecification`
+    // block for the full reasoning.
+    //
+    // `StreamSpecification` is the ONLY arm answered here. Two siblings in this
+    // same method are the same class and are deliberately out of scope, tracked
+    // in issue #1683: the `BillingMode` warn-and-SUBSTITUTE (which sends the
+    // previous / default mode while state keeps the malformed one) and the
+    // `desiredGsiUnusable` warn-and-SKIP (which leaves AWS holding the previous
+    // index set while state records the malformed desired blob). Both need
+    // their own real-AWS verification, which is why they are not folded in.
+    let effectiveProperties: Record<string, unknown> | undefined;
 
     try {
       // 1. Wait for ACTIVE before any update — defensive against rare
@@ -1345,9 +1442,14 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           {
             onUnusable: (message) => {
               streamSpecUnusable = true;
+              // Prefixed with the type + logical id, matching the GSI warn arm
+              // below. Without it the sentence names only the PROPERTY PATH, so
+              // on a stack with several GlobalTables the user cannot tell which
+              // table warned — and neither can an integ assertion.
               this.logger.warn(
-                `${message} The table's existing stream configuration is left ` +
-                  `untouched for this update rather than re-pointed at the default.`
+                `AWS::DynamoDB::GlobalTable ${logicalId}: ${message} The table's existing ` +
+                  `stream configuration is left untouched for this update rather than ` +
+                  `re-pointed at the default.`
               );
             },
           }
@@ -1358,6 +1460,65 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
             StreamViewType: streamViewType,
           } as StreamSpecification;
           flatChanged = true;
+        } else {
+          // issue #1653: the skip makes the deploy SUCCEED with the declared
+          // block never reaching AWS, so recording the desired bag verbatim
+          // writes a value AWS does not hold — `readCurrentState` can never
+          // match it, every later `cdkd drift` re-reports the difference, and
+          // `drift --revert` re-issues the same skipped call. Answer with the
+          // bag actually delivered instead.
+          //
+          // On the UPDATE path that is the PREVIOUS value: the `UpdateTable`
+          // never ran, so AWS still holds the previously-applied stream
+          // configuration and that IS what state should describe
+          // (.claude/rules/providers.md, issue #1612). An ABSENT previous
+          // means the key is absent from the effective bag — there is nothing
+          // to retain, and an explicit `undefined` would survive the spread
+          // and read differently across `JSON.stringify` on the two sides of
+          // the next diff.
+          //
+          // Deliberately NOT paired with a `canonicalizeDesiredProperties`
+          // twin: a SKIP is not a pure function of the desired bag, and
+          // canonicalizing the desired side would compare a previous side
+          // holding a VALID `StreamSpecification` against a desired side with
+          // the key removed, derive a REMOVAL, and disable the live stream.
+          //
+          // The previous value is VALIDATED before it is retained, through the
+          // same `configStringRefusal` predicate the desired-side guard above
+          // runs — an absent-vs-present test is not enough. `previousProperties`
+          // is a cdkd STATE record, and a rollback replay whose record was
+          // written by an older binary is exactly the #1544 scenario
+          // `replayWarn` exists for, so the previous side can hold `null` /
+          // `''` / a bare string just as the desired side can. Copying that
+          // into `effectiveProperties` would re-create the permanent phantom
+          // drift this arm exists to remove, merely sourced from the other
+          // side. When BOTH sides are unusable the key is DROPPED — there is
+          // no value cdkd can vouch for, which is the same answer
+          // `LambdaUrlProvider`'s OMITTED arm takes for `AuthType` (#1654).
+          // Sharing the predicate rather than hand-writing a `typeof` twin is
+          // what keeps the two sides agreeing on a blank string / an explicit
+          // null / a coerced number.
+          const previousStreamSpec = previousProperties['StreamSpecification'];
+          const previousStreamSpecUsable =
+            previousStreamSpec !== undefined &&
+            previousStreamSpec !== null &&
+            configStringRefusal(
+              previousStreamSpec,
+              'StreamViewType',
+              'NEW_AND_OLD_IMAGES',
+              'AWS::DynamoDB::GlobalTable StreamSpecification'
+            ) === undefined;
+          effectiveProperties = { ...properties };
+          if (previousStreamSpecUsable) {
+            // COPIED, not aliased: `rollback-executor.ts` spreads the returned
+            // bag shallowly, so handing back the previous record's own object
+            // would leave two state records sharing one mutable value.
+            effectiveProperties['StreamSpecification'] = {
+              ...(previousStreamSpec as Record<string, unknown>),
+            };
+          } else {
+            delete effectiveProperties['StreamSpecification'];
+          }
         }
       }
       // Table-level on-demand ceilings, BOTH halves. The write half lives at
@@ -2379,6 +2540,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           StreamArn: finalDescribe.Table?.LatestStreamArn,
           TableName: physicalId,
         },
+        ...(effectiveProperties && { effectiveProperties }),
       };
     } catch (error) {
       if (error instanceof ProvisioningError) throw error;

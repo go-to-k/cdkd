@@ -203,6 +203,7 @@
         "lambda-microvm-image",
         "lambda-reserved-concurrency",
         "lambda-snapstart",
+        "lambda-url-authtype-replay",
         "local-invoke-agentcore-from-state",
         "local-invoke-buildkit",
         "local-invoke-from-cfn-stack",
@@ -282,6 +283,7 @@
         "deletion-policy-snapshot",
         "efs-immutable-replacement",
         "glue-securityconfig-replace",
+        "lambda-url-authtype-replay",
         "loggroup-class-guard",
         "recreate-via-cc-api",
         "replacement-immutable-name",
@@ -313,6 +315,7 @@
     {
       "flag": "--no-rollback",
       "integs": [
+        "lambda-url-authtype-replay",
         "rollback-command",
         "rollback-sqs-cooldown"
       ]
@@ -461,6 +464,7 @@
         "lambda-microvm-image",
         "lambda-reserved-concurrency",
         "lambda-snapstart",
+        "lambda-url-authtype-replay",
         "launchtemplate-asg-inplace",
         "local-invoke-agentcore-from-state",
         "local-invoke-from-cfn-stack",
@@ -693,6 +697,7 @@
         "lambda-microvm-image",
         "lambda-reserved-concurrency",
         "lambda-snapstart",
+        "lambda-url-authtype-replay",
         "launchtemplate-asg-inplace",
         "local-invoke-from-cfn-stack",
         "local-invoke-from-cfn-stack-multi-stack",
@@ -962,6 +967,7 @@
         "lambda-microvm-image",
         "lambda-reserved-concurrency",
         "lambda-snapstart",
+        "lambda-url-authtype-replay",
         "launchtemplate-asg-inplace",
         "local-invoke-agentcore-from-state",
         "local-invoke-from-state",
@@ -1079,6 +1085,7 @@
         "import-attributes",
         "import-auto-mode",
         "import-nested-stack",
+        "lambda-url-authtype-replay",
         "local-invoke-agentcore-from-state",
         "local-start-alb-from-state",
         "macro-expansion",

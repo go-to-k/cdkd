@@ -4050,6 +4050,7 @@
         "lambda-log-retention",
         "lambda-reserved-concurrency",
         "lambda-snapstart",
+        "lambda-url-authtype-replay",
         "lambda-versioning",
         "local-invoke",
         "local-invoke-buildkit",
@@ -4269,6 +4270,9 @@
         "lambda-snapstart": [
           "l2",
           "literal"
+        ],
+        "lambda-url-authtype-replay": [
+          "l2"
         ],
         "lambda-versioning": [
           "l2",
@@ -4517,10 +4521,15 @@
     {
       "resourceType": "AWS::Lambda::Url",
       "integs": [
-        "composite-stack"
+        "composite-stack",
+        "lambda-url-authtype-replay"
       ],
       "signals": {
         "composite-stack": [
+          "literal"
+        ],
+        "lambda-url-authtype-replay": [
+          "l1",
           "literal"
         ]
       }
@@ -5267,6 +5276,7 @@
         "intrinsics-torture",
         "lambda-destinations",
         "lambda-event-invoke-config-update",
+        "lambda-url-authtype-replay",
         "microservices",
         "migrate-from-cfn",
         "multi-resource",
@@ -5351,6 +5361,9 @@
         ],
         "lambda-event-invoke-config-update": [
           "l2"
+        ],
+        "lambda-url-authtype-replay": [
+          "l1"
         ],
         "microservices": [
           "l2"

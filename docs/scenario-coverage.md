@@ -4,7 +4,7 @@
 
 Run `vp run scenario-coverage` to regenerate.
 
-**89 / 89 canonical scenarios** have at least one integ fixture exercising them. **187 / 278 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
+**90 / 90 canonical scenarios** have at least one integ fixture exercising them. **188 / 279 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
 
 ## How this is computed
 
@@ -26,7 +26,7 @@ This report is a visibility tool, not a commit-time gate. Many cdkd fixtures leg
 
 _None._ Every canonical scenario has at least one integ fixture tagged with it.
 
-## Per-scenario coverage (89 scenarios)
+## Per-scenario coverage (90 scenarios)
 
 | Scenario | Description | Integ Fixture(s) |
 |---|---|---|
@@ -118,6 +118,7 @@ _None._ Every canonical scenario has at least one integ fixture tagged with it.
 | `update-replace-breadth` | Second-deploy property mutation exercising BOTH cdkd update paths in one stack: in-place provider.update() (S3 versioning toggle / Lambda env+memory / IAM inline-policy edit / SecurityGroup ingress add — physical id unchanged) AND replacement (S3 BucketName change per the replacement-rules registry — new physical id, old resource cleaned up). Regression net for provider update() paths + #807 replacement propagation + #809 Cloud Control write-only-property UPDATE on non-ECS types. | [`update-replace`](../tests/integration/update-replace/) |
 | `vpc-lambda-cr-race` | Custom Resource invocation against a VPC Lambda mid-deploy (ENI-attach race window). | [`vpc-lambda-cr-race`](../tests/integration/vpc-lambda-cr-race/) |
 | `vpc-lambda-eni-release` | Lambda hyperplane ENI cleanup after DeleteFunction (5-30 min eventually consistent). | [`bench-cdk-sample`](../tests/integration/bench-cdk-sample/)<br>[`destroy-interrupt`](../tests/integration/destroy-interrupt/)<br>[`lambda`](../tests/integration/lambda/)<br>[`vpc-lambda`](../tests/integration/vpc-lambda/) |
+| `warn-arm-effective-properties` | A provider warn arm that SKIPS or SUBSTITUTES a malformed DECLARED value must record what it actually SENT (`effectiveProperties`), not the declared value. The deploy SUCCEEDS, so recording the declared bag makes state describe something AWS does not hold: `readCurrentState` can never match it, every later `cdkd drift` re-reports the same difference, and `drift --revert` re-issues the same skipped call (issues #1591 / #1612 / #1653 / #1654). Only a real deploy can produce the record and only a real read-side run can prove it converges, so a mocked client agrees with whatever wire assumption the author had. Covered arms: the DynamoDB GlobalTable `StreamSpecification` warn-and-SKIP (retains the PREVIOUS value; drops it when the previous side is malformed too) and the Lambda URL `AuthType` warn-and-SUBSTITUTE (records the previous value on the substituted arm, drops the key on the OMITTED arm) — each asserting the recorded value, the untouched LIVE resource, and that the corrected template then diffs clean against that record (a `cdkd drift` assertion would be vacuous here: drift prefers the `observedProperties` baseline, which is a live read and therefore matches AWS either way). The Lambda arm additionally asserts the security consequence directly (the URL is still IAM-guarded) and that a reverse-replacement replay of a record with no `AuthType` ANNOUNCES the PUBLIC default it falls back to. | [`dynamodb-globaltable`](../tests/integration/dynamodb-globaltable/)<br>[`lambda-url-authtype-replay`](../tests/integration/lambda-url-authtype-replay/) |
 | `wide-dag-throttle-retry` | Wide (~100-resource: 80 SSM Parameters + 10 IAM Roles + 10 SNS Topics, 10-deep SSM Fn::Sub chain) single-stack burst deployed under a HIGH `--concurrency` to stress the concurrency limiter + event-driven DAG executor + throttle/retry classifier: a `TooManyRequests` / `Rate exceeded` / HTTP 429 during the burst must be RETRIED (deploy still succeeds) not fatal, the chained subset proves strict DAG ordering, and the destroy burst absorbs ~100 deletes with 0 orphans. | [`throttle-wide-dag`](../tests/integration/throttle-wide-dag/) |
 
 ## Un-annotated fixtures (91)

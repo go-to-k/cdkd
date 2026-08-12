@@ -1,6 +1,7 @@
 {
   "scenarios": [
     "globaltable-cross-region-replica",
-    "globaltable-billing-flip-with-gsi"
+    "globaltable-billing-flip-with-gsi",
+    "warn-arm-effective-properties"
   ]
 }
