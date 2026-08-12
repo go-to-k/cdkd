@@ -2978,3 +2978,39 @@ describe('cdkd import', () => {
     });
   });
 });
+
+describe('cdkd import --help text (issue #1664)', () => {
+  // The `aws:cdk:path` tag walk was removed in issue #1134 (AWS reserves the
+  // `aws:` tag prefix, so the tag can never exist on a real resource and the
+  // walk could not match), but the CLI help kept describing it — and the help
+  // is the copy a user reads first. These assert the FEARED shape is gone
+  // rather than only that today's wording is present: any re-introduction of
+  // the tag-walk vocabulary fails, whatever the surrounding sentence says.
+  const help = () => createImportCommand().helpInformation();
+
+  it('never describes a tag walk / tag-import anywhere in the help', () => {
+    expect(help()).not.toMatch(/aws:cdk:path|tag-import|tag-based|tag-resolved|by tag\b/i);
+  });
+
+  it("states auto mode's real resolution order (physical name, then DescribeStackResources)", () => {
+    const text = help();
+    expect(text).toMatch(/physical-name property/);
+    expect(text).toMatch(/DescribeStackResources/);
+    // The order matters: the property is consulted first, the CFn stack second.
+    expect(text.indexOf('physical-name property')).toBeLessThan(text.indexOf('DescribeStackResources'));
+  });
+
+  it('describes --auto as auto-resolving the rest, not tag-importing it', () => {
+    const autoOption = createImportCommand()
+      .options.find((o) => o.long === '--auto');
+    expect(autoOption?.description).toMatch(/auto-resolve/);
+    expect(autoOption?.description).not.toMatch(/tag/i);
+  });
+
+  it('describes --record-resource-mapping without the tag vocabulary', () => {
+    const opt = createImportCommand()
+      .options.find((o) => o.long === '--record-resource-mapping');
+    expect(opt?.description).toMatch(/auto-resolution/);
+    expect(opt?.description).not.toMatch(/tag/i);
+  });
+});
