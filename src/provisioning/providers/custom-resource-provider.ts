@@ -208,13 +208,45 @@ const CR_TRANSIENT_AUTHZ_LOG_SIGNALS: readonly string[] = [
 
 /**
  * Cap for the backing function's log tail when it is surfaced in an EPHEMERAL
- * warning (the `FunctionError` arm). Deliberately far larger than
- * `truncateReason`'s 200-char default — a crashed handler's real cause is often
- * several lines above the last one (a Python traceback) — but not unbounded:
- * this lands in CI logs and terminal scrollback. Lambda caps the tail at 4 KB
- * regardless, so this only trims the extreme case.
+ * warning — the `FunctionError` arm and the unexplained-FAILED arm. Deliberately
+ * far larger than `truncateReason`'s 200-char default — a crashed handler's real
+ * cause is often several lines above the last one (a Python traceback) — but not
+ * unbounded: this lands in CI logs and terminal scrollback. Lambda caps the tail
+ * at 4 KB regardless, so this only trims the extreme case.
  */
 const CR_LOG_TAIL_WARN_MAX_CHARS = 2000;
+
+/**
+ * Lines Lambda emits for EVERY invocation regardless of what the handler logged.
+ * A tail consisting only of these carries no diagnostic value, and it is the
+ * COMMON case — `LogResult` is never absent on a `LogType: 'Tail'` invoke, so a
+ * bare `!== undefined` check filters nothing and would dump boilerplate on every
+ * unexplained failure.
+ *
+ * The COLD-START platform lines (`INIT_START` / `INIT_REPORT`, the SnapStart
+ * `RESTORE_*` pair, `EXTENSION`) matter as much as the per-invoke ones here, and
+ * arguably more: the IAM-propagation race this whole mechanism exists for IS a
+ * cold-start phenomenon, so those lines are present precisely when this arm
+ * fires. Omitting them would have left the filter inert in its own main case.
+ *
+ * The trailing space is load-bearing: a handler's `print("REPORT: no bucket")`
+ * emits `REPORT:` and must NOT be classified as boilerplate.
+ */
+const CR_LOG_TAIL_BOILERPLATE =
+  /^(START|END|REPORT|XRAY|INIT_START|INIT_REPORT|RESTORE_START|RESTORE_REPORT|EXTENSION) /;
+
+/**
+ * `true` when the tail contains at least one line the HANDLER produced.
+ *
+ * Deliberately a positive test for handler output rather than a length check:
+ * the boilerplate lines carry a RequestId and a duration, so a tail of nothing
+ * but boilerplate is several hundred characters and passes any size threshold.
+ */
+function hasHandlerLogOutput(logTail: string): boolean {
+  return logTail
+    .split('\n')
+    .some((line) => line.trim().length > 0 && !CR_LOG_TAIL_BOILERPLATE.test(line.trimStart()));
+}
 
 /**
  * Custom Resource Provider
@@ -782,10 +814,14 @@ export class CustomResourceProvider implements ResourceProvider {
       // Only scanned on FAILED — the happy path must not pay for it.
       const reasonIsAuthz =
         cfnResponse.Status === 'FAILED' && this.isTransientAuthzFailure(cfnResponse.Reason);
-      const logAuthzMatch =
+      // Decoded ONCE and only on the branch that can consume it: both the signal
+      // scan below and the unexplained-failure arm further down read this.
+      const logTail =
         cfnResponse.Status === 'FAILED' && !reasonIsAuthz
-          ? this.findTransientAuthzLogLine(decodeInvokeLogTail(logResult))
+          ? decodeInvokeLogTail(logResult)
           : undefined;
+      const logAuthzMatch =
+        logTail === undefined ? undefined : this.findTransientAuthzLogLine(logTail);
 
       if (
         cfnResponse.Status === 'FAILED' &&
@@ -835,6 +871,46 @@ export class CustomResourceProvider implements ResourceProvider {
             `invocation log matched the IAM-authorization signal "${logAuthzMatch.signal}" — ` +
             `see the cdkd warning for the log line, or the function's CloudWatch log group]`,
         };
+      }
+
+      // Terminal FAILED that NOTHING explained (issue #1687): the reason carried
+      // no authz wording and the log matched no signal either, so this is the
+      // 404 / traceback / JSON-decode class. #1674 fixed the diagnostic only for
+      // the authz subset; for everything else cdkd had decoded the tail and then
+      // thrown it away, leaving the user with `returned non-zero exit status 1.`
+      // and a trip to CloudWatch — literally the second half of what #1674
+      // reported.
+      //
+      // EPHEMERAL and capped, never folded into the reason: a reason is
+      // persisted to `deployments/{runId}.jsonl`, which outlives `cdkd destroy`
+      // and is contractually free of anything that may carry secrets, and a log
+      // tail is arbitrary handler stdout. That is the same data-class split the
+      // `FunctionError` arm makes — this is its FAILED-path twin.
+      // `reasonIsAuthz` is excluded on purpose: there the reason ALREADY names
+      // the cause (that is the #756 path), so dumping the tail beside it is
+      // noise on a failure that is already explained. The `logAuthzMatch` case
+      // has returned above for the same reason.
+      //
+      // Two things the WORDING has to be honest about, because this arm asserts
+      // a causal link the signal arm does not:
+      //   - cdkd only knows the reason matched no authz signal. The reason may
+      //     be perfectly informative, so this does not claim it was useless.
+      //   - the tail belongs to the DISPATCH invoke. For a handler that works
+      //     inline that IS where the failure happened, but for the CDK Provider
+      //     framework's async pattern the FAILED arrives from `pollS3Response`
+      //     and was authored by a LATER Step-Functions-driven execution, whose
+      //     log this is not. On the signal path that mismatch costs only a
+      //     redundant retry; here it would present an unrelated log as THE
+      //     explanation, so the message names which invocation it came from and
+      //     lets the reader judge.
+      if (logTail !== undefined && hasHandlerLogOutput(logTail)) {
+        this.logger.warn(
+          `Custom resource ${operation} for ${logicalId} failed and cdkd could not classify ` +
+            `the reason. Log tail from the DISPATCH invocation (for the CDK Provider ` +
+            `framework's async pattern the failure may have occurred in a later execution, ` +
+            `whose log this is not):\n` +
+            this.truncateReason(logTail, CR_LOG_TAIL_WARN_MAX_CHARS)
+        );
       }
 
       return cfnResponse;
@@ -1125,8 +1201,18 @@ export class CustomResourceProvider implements ResourceProvider {
       // `truncateReason`'s 200 because a crashed handler's cause is often
       // several lines above the last one (a Python traceback), and the whole
       // tail is Lambda-capped at 4 KB regardless.
+      // Same `hasHandlerLogOutput` filter as the unexplained-FAILED arm: both
+      // surface the SAME data class through the same ephemeral channel, so a
+      // boilerplate-only tail is worth exactly as little here. Keeping the two
+      // gates identical is also what makes `CR_LOG_TAIL_BOILERPLATE`'s claim
+      // ("a tail consisting only of these carries no diagnostic value") true of
+      // the whole file rather than of one arm. Reaching it needs a crashed or
+      // timed-out handler that logged nothing at all — Lambda's own
+      // `Task timed out after ...` and `Runtime exited with error: ...` lines
+      // are NOT boilerplate by this regex, so the realistic crash shapes still
+      // print.
       const logTail = decodeInvokeLogTail(lambdaResponse.LogResult);
-      if (logTail !== undefined) {
+      if (logTail !== undefined && hasHandlerLogOutput(logTail)) {
         this.logger.warn(
           `Backing function log tail for ${logicalId} (${operation}):\n` +
             this.truncateReason(logTail, CR_LOG_TAIL_WARN_MAX_CHARS)

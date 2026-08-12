@@ -623,6 +623,273 @@ describe('CustomResourceProvider authz retry via the invocation log tail (issue 
     expect(warnings()).not.toContain('Backing function log tail');
   });
 
+  it('surfaces the tail for a terminal FAILED that nothing explained (issue #1687)', async () => {
+    // The 404 / traceback class: reason says only `exit status 1`, and the log
+    // matches no authz signal — so before #1687 cdkd decoded the tail and threw
+    // it away, sending the user to CloudWatch.
+    process.env['CDKD_CR_AUTHZ_MAX_RETRIES'] = '0';
+    const logTail = [
+      'START RequestId: 6d1f-4c2a Version: $LATEST',
+      'Traceback (most recent call last):',
+      '  File "/var/task/index.py", line 91, in handler',
+      "KeyError: 'DestinationBucketName'",
+      'END RequestId: 6d1f-4c2a',
+    ].join('\n');
+    const counts = wireFlow({
+      reason: BUCKET_DEPLOYMENT_REASON,
+      logTail,
+      neverSucceeds: true,
+    });
+
+    const err = await captureError(
+      makeProvider().create('Website', 'Custom::CDKBucketDeployment', {
+        ServiceToken: SERVICE_TOKEN,
+      })
+    );
+
+    expect(warnings()).toContain('could not classify the reason');
+    expect(warnings()).toContain("KeyError: 'DestinationBucketName'");
+    expect(counts.invokes()).toBe(1); // diagnostics only — still no retry
+    expect(counts.updates()).toBe(0);
+    // ...and the tail stays OUT of the persisted reason.
+    expect(err.message).not.toContain('KeyError');
+    expect(err.message).not.toContain('Traceback');
+  });
+
+  it('discloses that the tail is from the DISPATCH invoke, not necessarily the failing one', async () => {
+    // For the CDK Provider framework's async pattern the FAILED arrives from the
+    // S3 poll and was authored by a later Step-Functions-driven execution, whose
+    // log this is not. The message must not present it as THE explanation.
+    process.env['CDKD_CR_AUTHZ_MAX_RETRIES'] = '0';
+    wireFlow({
+      reason: BUCKET_DEPLOYMENT_REASON,
+      logTail: 'START RequestId: 1\n[ERROR] something\nEND RequestId: 1',
+      neverSucceeds: true,
+    });
+
+    await captureError(
+      makeProvider().create('Website', 'Custom::CDKBucketDeployment', {
+        ServiceToken: SERVICE_TOKEN,
+      })
+    );
+
+    expect(warnings()).toContain('DISPATCH invocation');
+    expect(warnings()).toContain('may have occurred in a later execution');
+  });
+
+  it('does NOT dump a tail that is only Lambda boilerplate', async () => {
+    // `LogResult` is never absent on a LogType:'Tail' invoke — Lambda always
+    // emits START / END / REPORT — so a bare presence check filters nothing and
+    // would dump zero-value boilerplate on every unexplained failure.
+    process.env['CDKD_CR_AUTHZ_MAX_RETRIES'] = '0';
+    const boilerplate = [
+      'START RequestId: 6d1f-4c2a Version: $LATEST',
+      'END RequestId: 6d1f-4c2a',
+      'REPORT RequestId: 6d1f-4c2a\tDuration: 12.34 ms\tBilled Duration: 13 ms\tMemory Size: 128 MB',
+      '',
+    ].join('\n');
+    wireFlow({ reason: BUCKET_DEPLOYMENT_REASON, logTail: boilerplate, neverSucceeds: true });
+
+    await captureError(
+      makeProvider().create('Website', 'Custom::CDKBucketDeployment', {
+        ServiceToken: SERVICE_TOKEN,
+      })
+    );
+
+    expect(warnings()).not.toContain('could not classify the reason');
+  });
+
+  it('treats the COLD-START platform lines as boilerplate too', async () => {
+    // The IAM-propagation race this whole mechanism exists for IS a cold-start
+    // phenomenon, so INIT_START / INIT_REPORT are present precisely when this
+    // arm fires — omitting them leaves the filter inert in its own main case.
+    process.env['CDKD_CR_AUTHZ_MAX_RETRIES'] = '0';
+    const coldStartBoilerplate = [
+      'INIT_START Runtime Version: python:3.12.v41',
+      'START RequestId: 6d1f-4c2a Version: $LATEST',
+      'END RequestId: 6d1f-4c2a',
+      'REPORT RequestId: 6d1f-4c2a\tDuration: 12.34 ms\tInit Duration: 91.47 ms',
+    ].join('\n');
+    wireFlow({
+      reason: BUCKET_DEPLOYMENT_REASON,
+      logTail: coldStartBoilerplate,
+      neverSucceeds: true,
+    });
+
+    await captureError(
+      makeProvider().create('Website', 'Custom::CDKBucketDeployment', {
+        ServiceToken: SERVICE_TOKEN,
+      })
+    );
+
+    expect(warnings()).not.toContain('could not classify the reason');
+  });
+
+  it('does not treat a handler line that merely STARTS with a keyword as boilerplate', async () => {
+    // The trailing space in the regex is what keeps `print("REPORT: ...")` a
+    // real diagnostic rather than a filtered platform line.
+    process.env['CDKD_CR_AUTHZ_MAX_RETRIES'] = '0';
+    wireFlow({
+      reason: BUCKET_DEPLOYMENT_REASON,
+      logTail: 'START RequestId: 1\nREPORT: destination bucket missing\nEND RequestId: 1',
+      neverSucceeds: true,
+    });
+
+    await captureError(
+      makeProvider().create('Website', 'Custom::CDKBucketDeployment', {
+        ServiceToken: SERVICE_TOKEN,
+      })
+    );
+
+    expect(warnings()).toContain('REPORT: destination bucket missing');
+  });
+
+  it('applies the same boilerplate filter to the FunctionError arm', async () => {
+    mockS3Send.mockImplementation(() => Promise.resolve({}));
+    mockLambdaSend.mockImplementation(
+      (cmd: { constructor: { name: string }; input?: { LogType?: string } }) => {
+        if (cmd.constructor.name === 'InvokeCommand') {
+          return Promise.resolve({
+            FunctionError: 'Unhandled',
+            Payload: Buffer.from('{}'),
+            ...(cmd.input?.LogType === 'Tail'
+              ? { LogResult: b64('START RequestId: 1\nEND RequestId: 1\nREPORT RequestId: 1') }
+              : {}),
+          });
+        }
+        return Promise.resolve({
+          Configuration: { State: 'Active', LastUpdateStatus: 'Successful' },
+        });
+      }
+    );
+
+    await captureError(
+      makeProvider().create('Website', 'Custom::CDKBucketDeployment', {
+        ServiceToken: SERVICE_TOKEN,
+      })
+    );
+
+    expect(warnings()).not.toContain('Backing function log tail');
+  });
+
+  it('still prints a timed-out handler tail from the FunctionError arm', async () => {
+    // Lambda's own timeout / runtime-exit lines are NOT boilerplate by the
+    // regex, so the realistic crash shapes survive the new filter.
+    mockS3Send.mockImplementation(() => Promise.resolve({}));
+    mockLambdaSend.mockImplementation(
+      (cmd: { constructor: { name: string }; input?: { LogType?: string } }) => {
+        if (cmd.constructor.name === 'InvokeCommand') {
+          return Promise.resolve({
+            FunctionError: 'Unhandled',
+            Payload: Buffer.from('{}'),
+            ...(cmd.input?.LogType === 'Tail'
+              ? {
+                  LogResult: b64(
+                    'START RequestId: 1\n2026-08-12T00:00:00Z 1 Task timed out after 30.00 seconds\nEND RequestId: 1'
+                  ),
+                }
+              : {}),
+          });
+        }
+        return Promise.resolve({
+          Configuration: { State: 'Active', LastUpdateStatus: 'Successful' },
+        });
+      }
+    );
+
+    await captureError(
+      makeProvider().create('Website', 'Custom::CDKBucketDeployment', {
+        ServiceToken: SERVICE_TOKEN,
+      })
+    );
+
+    expect(warnings()).toContain('Task timed out after 30.00 seconds');
+  });
+
+  it('caps the unexplained-failure tail as well', async () => {
+    process.env['CDKD_CR_AUTHZ_MAX_RETRIES'] = '0';
+    const huge = `START RequestId: 1\n${'z'.repeat(4000)} TAIL_MARKER_PAST_CAP\nEND RequestId: 1`;
+    wireFlow({ reason: BUCKET_DEPLOYMENT_REASON, logTail: huge, neverSucceeds: true });
+
+    await captureError(
+      makeProvider().create('Website', 'Custom::CDKBucketDeployment', {
+        ServiceToken: SERVICE_TOKEN,
+      })
+    );
+
+    const w = warnings();
+    expect(w).toContain('could not classify the reason');
+    expect(w).not.toContain('TAIL_MARKER_PAST_CAP');
+    expect(w.length).toBeLessThan(huge.length);
+  });
+
+  it('does NOT dump the tail when the reason already named the cause (#756 path)', async () => {
+    // Noise guard: the reason explains the failure, so the tail adds nothing.
+    process.env['CDKD_CR_AUTHZ_MAX_RETRIES'] = '0';
+    wireFlow({ reason: AUTHZ_REASON, logTail: BUCKET_DEPLOYMENT_LOG_TAIL, neverSucceeds: true });
+
+    await captureError(
+      makeProvider().create('Website', 'Custom::CDKBucketDeployment', {
+        ServiceToken: SERVICE_TOKEN,
+      })
+    );
+
+    expect(warnings()).not.toContain('could not classify the reason');
+  });
+
+  it('does NOT dump the tail beside the signal annotation either', async () => {
+    process.env['CDKD_CR_AUTHZ_MAX_RETRIES'] = '0';
+    wireFlow({
+      reason: BUCKET_DEPLOYMENT_REASON,
+      logTail: BUCKET_DEPLOYMENT_LOG_TAIL,
+      neverSucceeds: true,
+    });
+
+    await captureError(
+      makeProvider().create('Website', 'Custom::CDKBucketDeployment', {
+        ServiceToken: SERVICE_TOKEN,
+      })
+    );
+
+    expect(warnings()).not.toContain('could not classify the reason');
+  });
+
+  it('does NOT dump a tail on SUCCESS', async () => {
+    mockS3Send.mockImplementation((cmd: { constructor: { name: string } }) => {
+      if (cmd.constructor.name === 'GetObjectCommand') {
+        return Promise.resolve({
+          Body: {
+            transformToString: () =>
+              Promise.resolve(JSON.stringify({ Status: 'SUCCESS', PhysicalResourceId: 'ok' })),
+          },
+        });
+      }
+      return Promise.resolve({});
+    });
+    mockLambdaSend.mockImplementation(
+      (cmd: { constructor: { name: string }; input?: { LogType?: string } }) => {
+        if (cmd.constructor.name === 'InvokeCommand') {
+          return Promise.resolve({
+            Payload: Buffer.from('null'),
+            ...(cmd.input?.LogType === 'Tail'
+              ? { LogResult: b64(BUCKET_DEPLOYMENT_LOG_TAIL) }
+              : {}),
+          });
+        }
+        return Promise.resolve({
+          Configuration: { State: 'Active', LastUpdateStatus: 'Successful' },
+        });
+      }
+    );
+
+    const result = await makeProvider().create('Website', 'Custom::CDKBucketDeployment', {
+      ServiceToken: SERVICE_TOKEN,
+    });
+
+    expect(result.physicalId).toBe('ok');
+    expect(warnings()).not.toContain('could not classify the reason');
+  });
+
   it('leaves the SNS-backed path (no Lambda invoke, no log tail) working', async () => {
     mockSnsSend.mockImplementation(() => Promise.resolve({}));
     mockS3Send.mockImplementation((cmd: { constructor: { name: string } }) => {
