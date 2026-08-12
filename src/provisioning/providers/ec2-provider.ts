@@ -144,6 +144,73 @@ export function narrowRouteDestinations(properties: Record<string, unknown>): {
   return { declared, narrowed };
 }
 
+/** The `AuthorizeSecurityGroupIngress` default protocol: "all protocols". */
+const SG_INGRESS_IP_PROTOCOL_DEFAULT = '-1';
+
+/** The refusal path both the create guard and the canonicalizer report under. */
+const SG_INGRESS_IP_PROTOCOL_PATH = 'AWS::EC2::SecurityGroupIngress IpProtocol';
+
+/**
+ * Resolve the `IpProtocol` an `AWS::EC2::SecurityGroupIngress` rule actually
+ * SENDS, plus the bag that describes it (issue #1633).
+ *
+ * ONE source for a decision three call sites have to agree on, exactly as
+ * `narrowRouteDestinations` is for the Route destinations: the create arm
+ * (which authorizes the rule), the update arm (which revokes then re-creates
+ * it), and the DIFF-side canonicalizer. If those disagreed, state and template
+ * would each be normalized to a different protocol and the fix would become
+ * the bug — the lesson `.claude/rules/providers.md` records from #1591.
+ *
+ * Two shapes reach the wire as something other than what the template wrote,
+ * and BOTH have to be recorded or they become permanent phantom drift, because
+ * `readSecurityGroupIngressCurrentState` can only ever return what AWS holds:
+ *
+ * - a MALFORMED value (`''` / `{}` / `true` / an explicit `null`), which
+ *   `requireConfigString` refuses on the template-path create and — under
+ *   `onUnusable` — warn-substitutes the default on the replay-reachable paths;
+ * - a finite NUMBER, the accepted-by-design shape from an unquoted YAML
+ *   `IpProtocol: -1` (issue #1513), which is stringified before it is sent.
+ *
+ * The second is not announced by a warning, and does not need to be: unlike a
+ * dropped destination key it loses NOTHING — `-1` and `'-1'` name the same
+ * protocol — so there is no silent loss for `effectiveProperties` to launder
+ * into a clean record, which is the hazard the "already ANNOUNCED" clause of
+ * the `effectiveProperties` contract exists to guard against. Recording the
+ * string additionally fixes the delete path, which forwards the state record
+ * to `buildIpPermission` and would otherwise hand the EC2 API a number.
+ *
+ * `narrowed` is a FRESH object only when the sent value differs from the
+ * declared one, so an ordinary `IpProtocol: 'tcp'` bag is returned untouched
+ * and compares byte-for-byte as before.
+ *
+ * @param onUnusable Passed straight through to `requireConfigString`: absent,
+ *   a malformed value THROWS (the template-path create, where the user can fix
+ *   the template); supplied, it warns and takes the default. The canonicalizer
+ *   passes a no-op — a diff must never throw, and it must never warn either,
+ *   since the provisioning path already announces the same substitution.
+ */
+export function narrowIngressIpProtocol(
+  properties: Record<string, unknown>,
+  onUnusable?: (message: string) => void
+): { ipProtocol: string; narrowed: Record<string, unknown> } {
+  const declared = properties['IpProtocol'];
+  const ipProtocol = requireConfigString(
+    declared,
+    SG_INGRESS_IP_PROTOCOL_DEFAULT,
+    SG_INGRESS_IP_PROTOCOL_PATH,
+    { coerceNumber: true, ...(onUnusable && { onUnusable }) }
+  );
+
+  // An ABSENT key stays absent. The drift comparator only descends into keys
+  // present in cdkd state, so adding the default here would START comparing a
+  // key the template never declared — manufacturing the very drift this helper
+  // removes, in the one case that does not have it today.
+  if (declared === undefined || declared === ipProtocol) {
+    return { ipProtocol, narrowed: properties };
+  }
+  return { ipProtocol, narrowed: { ...properties, IpProtocol: ipProtocol } };
+}
+
 /**
  * AWS EC2 Networking Provider
  *
@@ -2834,12 +2901,15 @@ export class EC2Provider implements ResourceProvider {
     // destroy and rollback. Refusing on the create path stops a malformed value
     // before the helper is ever reached. `coerceNumber` because an unquoted
     // YAML `IpProtocol: -1` is a NUMBER today and deploys fine (issue #1513).
-    const ipProtocol = requireConfigString(
-      properties['IpProtocol'],
-      '-1',
-      'AWS::EC2::SecurityGroupIngress IpProtocol',
-      { coerceNumber: true, ...(onUnusableProtocol && { onUnusable: onUnusableProtocol }) }
-    );
+    // `narrowIngressIpProtocol` wraps that guard and ALSO reports the bag that
+    // describes what it resolved, so the engine can record the value actually
+    // sent instead of the malformed / numeric one the template wrote (issue
+    // #1633). The refusal / warn behavior is unchanged — the callback is
+    // forwarded verbatim.
+    const { ipProtocol, narrowed } = narrowIngressIpProtocol(properties, onUnusableProtocol);
+    // Absent unless the resolved protocol differs from the declared one, which
+    // is what keeps an ordinary rule's state record byte-identical.
+    const effectiveProperties = narrowed === properties ? undefined : narrowed;
     const fromPort = properties['FromPort'] as number | undefined;
     const toPort = properties['ToPort'] as number | undefined;
 
@@ -2864,13 +2934,17 @@ export class EC2Provider implements ResourceProvider {
       return {
         physicalId,
         attributes: {},
+        ...(effectiveProperties && { effectiveProperties }),
       };
     } catch (error) {
       // Treat "already exists" as success (idempotent, like CloudFormation)
       if (error instanceof Error && error.message.includes('already exists')) {
         const physicalId = `${groupId}|${ipProtocol}|${fromPort ?? '-1'}|${toPort ?? '-1'}`;
         this.logger.debug(`SecurityGroupIngress ${logicalId} already exists, treating as success`);
-        return { physicalId, attributes: {} };
+        // The same record the success arm writes: this arm reports the rule as
+        // provisioned, so state is written here too and the narrowing has to
+        // reach it or the phantom drift survives on the idempotent path.
+        return { physicalId, attributes: {}, ...(effectiveProperties && { effectiveProperties }) };
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
@@ -2920,6 +2994,15 @@ export class EC2Provider implements ResourceProvider {
         physicalId: createResult.physicalId,
         wasReplaced: true,
         ...(createResult.attributes && { attributes: createResult.attributes }),
+        // Forward the re-create's narrowing (issue #1633). This arm is the one
+        // the phantom drift is actually reachable through today — a malformed
+        // `IpProtocol` only survives to reach a rule that already exists, and
+        // the create arm above ran with the warn callback, so without this the
+        // engine records the malformed desired bag and the next `cdkd drift`
+        // reports the same difference again.
+        ...(createResult.effectiveProperties && {
+          effectiveProperties: createResult.effectiveProperties,
+        }),
       };
     } catch (error) {
       // Pass through cdkd-typed errors untouched (#1272): re-labelling an inner
@@ -4836,7 +4919,9 @@ export class EC2Provider implements ResourceProvider {
   }
 
   /**
-   * The diff-side half of the Route multi-destination narrowing (issue #1591).
+   * The diff-side half of the two EC2 narrowings that report
+   * `effectiveProperties` — Route multi-destination (issue #1591) and
+   * SecurityGroupIngress `IpProtocol` (issue #1633).
    *
    * `createRoute` sends exactly one destination key and reports the narrowed
    * bag via `effectiveProperties`, so state carries one key. Without the same
@@ -4849,11 +4934,28 @@ export class EC2Provider implements ResourceProvider {
    *
    * Shares `narrowRouteDestinations` with the provisioning path so the two
    * cannot disagree about which key survives.
+   *
+   * The SecurityGroupIngress arm is the same shape and needs the same second
+   * half for the same reason: `IpProtocol` is create-only on that type in the
+   * registry schema, so normalizing state alone would make the template's
+   * original value read as a changed immutable property — a REPLACEMENT, whose
+   * create passes no context and so gets no `onUnusable` downgrade, turning a
+   * previously-green no-op deploy into a hard failure. Normalizing BOTH sides
+   * is also what keeps the fix correct for records written BEFORE it existed,
+   * which still carry the un-narrowed value.
    */
   canonicalizeDesiredProperties(
     resourceType: string,
     properties: Record<string, unknown>
   ): Record<string, unknown> {
+    if (resourceType === 'AWS::EC2::SecurityGroupIngress') {
+      // A no-op `onUnusable` rather than the logger: a diff must not throw, and
+      // must not warn either — the provisioning path announces the identical
+      // substitution, and `cdkd diff` / the deploy's own diff pass would
+      // otherwise emit it a second time for a resource nothing is changing.
+      const { narrowed } = narrowIngressIpProtocol(properties, () => {});
+      return narrowed;
+    }
     if (resourceType !== 'AWS::EC2::Route') return properties;
     const { declared, narrowed } = narrowRouteDestinations(properties);
     // Untouched unless the CFn-invalid multi-destination shape is present, so
@@ -5729,6 +5831,28 @@ export function flattenIpPermissions(perms: IpPermission[], direction: SgDirecti
  * Direction-sensitive: ingress uses `Source*` fields, egress uses
  * `Destination*`.
  */
+/**
+ * The `IpProtocol` component of a security-group rule identity key.
+ *
+ * A NUMBER is stringified so a record written BEFORE issue #1633 still matches:
+ * AWS always reports the protocol as a string, so a legacy record holding the
+ * number `-1` keyed as `{"p":-1}` against AWS's `{"p":"-1"}` and matched
+ * nothing — `readSecurityGroupIngressCurrentState` returned `undefined` and
+ * `cdkd drift` reported the rule as GONE, forever. The canonicalizer makes such
+ * a record's diff NO_CHANGE, so no deploy ever rewrites it either; normalizing
+ * at the KEY is what heals the existing population with no migration.
+ *
+ * Anything that is neither a string nor a number is passed through UNCHANGED
+ * rather than blanket-`String()`-ed: a malformed object would otherwise key as
+ * the useless `'[object Object]'`, silently collapsing every malformed record
+ * onto one bucket. Such a rule matches nothing either way — this keeps the
+ * non-match honest instead of manufacturing a fake identity.
+ */
+function sgProtocolKey(value: unknown): unknown {
+  if (typeof value === 'number') return String(value);
+  return value ?? '-1';
+}
+
 function sgRuleKey(rule: CfnSgRule, direction: SgDirection): string {
   const peerKey =
     direction === 'egress' ? rule['DestinationSecurityGroupId'] : rule['SourceSecurityGroupId'];
@@ -5736,7 +5860,15 @@ function sgRuleKey(rule: CfnSgRule, direction: SgDirection): string {
     direction === 'egress' ? rule['DestinationPrefixListId'] : rule['SourcePrefixListId'];
   const peerOwner = direction === 'ingress' ? rule['SourceSecurityGroupOwnerId'] : undefined;
   return JSON.stringify({
-    p: rule['IpProtocol'] ?? '-1',
+    // STRINGIFIED so a record written BEFORE issue #1633 still matches. AWS
+    // always reports the protocol as a string, so a legacy record holding the
+    // NUMBER `-1` keyed as `{"p":-1}` against AWS's `{"p":"-1"}` and matched
+    // nothing — `readSecurityGroupIngressCurrentState` returned `undefined`
+    // and `cdkd drift` reported the rule as gone, forever. The canonicalizer
+    // makes such a record's diff NO_CHANGE, so no deploy ever rewrites it
+    // either; normalizing at the KEY is what heals the existing population
+    // with no migration.
+    p: sgProtocolKey(rule['IpProtocol']),
     f: rule['FromPort'] ?? null,
     t: rule['ToPort'] ?? null,
     c4: rule['CidrIp'] ?? null,
