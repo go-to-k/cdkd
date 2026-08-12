@@ -119,10 +119,24 @@ destination keys is REFUSED on the template path, but the refusal downgrades to
 a warning on the state-borne paths, where it keeps one key and returns the
 others stripped.
 
+`EC2Provider.createSecurityGroupIngress` is the second, and it shows that a
+dropped KEY is not the only shape (issue
+[#1633](https://github.com/go-to-k/cdkd/issues/1633)). A SUBSTITUTED value does
+the same damage: a malformed `IpProtocol` is warn-replaced by the `-1` default
+on the state-borne paths, and — separately — an unquoted YAML `IpProtocol: -1`
+is a NUMBER that is stringified before it is sent. Both reached AWS as something
+other than what the record said, so both had to be reported. When auditing your
+own provider, read every arm that can put a value on the wire differing from the
+declared one, not only the arms that log.
+
 Three conditions, or this becomes a way to hide losses rather than record them:
 
-- the narrowing is **deliberate and already announced** (a warn arm) — a value
-  you merely failed to send is a bug, and recording it launders the bug;
+- the narrowing is **deliberate** — a value you merely failed to send is a bug,
+  and recording it launders the bug. Usually that means an **announced** one (a
+  warn arm), and if you are unsure, that is the bar to hold yourself to. The
+  exception is a transformation that loses NOTHING and therefore has nothing to
+  announce: `IpProtocol: -1` and `'-1'` name the same protocol, so stringifying
+  it needs no warning and still belongs here;
 - it is what you **sent**, not what AWS computed. AWS-side defaults and computed
   values belong in `observedProperties` (captured by a real read-back); putting
   them here makes the desired baseline drift from the template and silently
@@ -147,6 +161,11 @@ canonicalizeDesiredProperties(
   resourceType: string,
   properties: Record<string, unknown>
 ): Record<string, unknown> {
+  if (resourceType === 'AWS::EC2::SecurityGroupIngress') {
+    // A no-op `onUnusable`: a diff must not throw, and must not warn either —
+    // the provisioning path already announces the identical substitution.
+    return narrowIngressIpProtocol(properties, () => {}).narrowed;
+  }
   if (resourceType !== 'AWS::EC2::Route') return properties;
   // The SAME helper the provisioning path uses — re-deriving the rule lets
   // state and template narrow to different keys, which is the original bug
@@ -1026,6 +1045,10 @@ A **top-level** read takes two further decisions, both per site (issue
 // arrives as a NUMBER and deploys fine today — refusing it would break a
 // working template. Only for genuinely numeric-looking fields; a number where
 // an enum belongs (`InstanceType`) stays a refusal.
+//
+// The real site wraps this call in `narrowIngressIpProtocol` so the DIFF can
+// resolve the protocol the same way — see the `effectiveProperties` section
+// above for why a coerced value has to be recorded as well as sent (#1633).
 const ipProtocol = requireConfigString(
   properties['IpProtocol'],
   '-1',

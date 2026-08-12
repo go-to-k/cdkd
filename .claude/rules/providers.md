@@ -197,10 +197,26 @@ resource is delete-and-recreated on EVERY deploy.
 So narrow BOTH comparison sides identically, via
 `ResourceProvider.canonicalizeDesiredProperties(resourceType, properties)` —
 pure, synchronous, applied by `DiffCalculator` to BOTH comparison sides. Share ONE helper with the provisioning path
-(`narrowRouteDestinations` is the example) rather than re-deriving the rule, or
+(`narrowRouteDestinations` and `narrowIngressIpProtocol`, both in
+`ec2-provider.ts`, are the examples) rather than re-deriving the rule, or
 state and template end up narrowed to different keys and the fix becomes the
 bug. This is the same "normalize BOTH comparison sides" rule
 `drift-normalize.ts` already records for ordering.
+
+**A SUBSTITUTED value is the same class as a dropped key, and it arrives by
+more than one route** (issue #1633, the `AWS::EC2::SecurityGroupIngress`
+`IpProtocol` twin of the Route fix). The obvious route is the warn-and-default
+arm — `requireConfigString`'s `onUnusable` downgrade SENDS the default while
+the engine records the malformed value the template wrote. The less obvious one
+is a value the guard ACCEPTS by design: `coerceNumber` stringifies an unquoted
+YAML `IpProtocol: -1` before sending it, so state held the number and
+`readCurrentState` returned the string — the identical permanent phantom drift,
+with no warning anywhere to hint at it. Both belong in `effectiveProperties`.
+The "already ANNOUNCED" condition above is about not laundering a silent LOSS
+into a clean record; a lossless coercion drops nothing, so it does not need a
+warning to qualify. When auditing a provider for this class, read every arm
+that can put a value on the wire that differs from the declared one, not only
+the arms that log.
 
 Two things that are easy to get wrong and were both caught by review:
 **normalize BOTH comparison sides**, not just the desired one — a record written BEFORE the provider started narrowing still carries every key, so a one-sided pass flips the same difference to a REMOVAL and breaks exactly the population the narrowing exists for; and **wire `cdkd diff` too**, since a preview that narrows differently from the apply forecasts a change the deploy will never make. `makeCanonicalizePropertiesFn` in `src/provisioning/canonicalize-properties.ts` is the one builder both commands use, so they cannot drift.
