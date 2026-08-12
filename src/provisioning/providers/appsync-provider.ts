@@ -2376,6 +2376,7 @@ export class AppSyncProvider implements ResourceProvider {
         : undefined
     );
 
+    let reportedArn: string | undefined;
     try {
       const input: CreateDataSourceCommandInput = {
         apiId,
@@ -2387,23 +2388,10 @@ export class AppSyncProvider implements ResourceProvider {
       this.applyDataSourceConfig(input, resourceType, logicalId, properties);
 
       const response = await this.getClient().send(new CreateDataSourceCommand(input));
+      // Recorded, not consumed, inside the try — see the return below.
+      reportedArn = response.dataSource?.dataSourceArn;
 
       this.logger.debug(`Successfully created DataSource ${logicalId}: ${physicalId}`);
-
-      return {
-        physicalId,
-        attributes: {
-          // CFn's `Ref` AND `Fn::GetAtt DataSourceArn` both return the data
-          // source ARN `.../apis/<apiId>/datasources/<name>` (docs-verified
-          // 2026-08-12). `CreateDataSource` reports the real one, so take it
-          // verbatim rather than string-building; see `buildAppSyncArn` for why
-          // the fallback exists and what the pre-#1681 placeholder broke.
-          DataSourceArn:
-            response.dataSource?.dataSourceArn ??
-            (await this.buildAppSyncArn(`apis/${apiId}/datasources/${name}`)),
-          Name: name,
-        },
-      };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
@@ -2414,6 +2402,27 @@ export class AppSyncProvider implements ResourceProvider {
         cause
       );
     }
+
+    // OUTSIDE the try, deliberately: the data source EXISTS from here on, so
+    // nothing below may be reported as a creation failure. `buildAppSyncArn` is
+    // async (it can reach STS), and a throw AFTER a successful create is the
+    // orphan class of issue #1710 — the failed CREATE journals no physicalId,
+    // so the rollback executor skips it and the resource is left in AWS,
+    // invisible to state. Same reasoning as the `packCompositeId` placement in
+    // `createApiKey`.
+    return {
+      physicalId,
+      attributes: {
+        // CFn's `Ref` AND `Fn::GetAtt DataSourceArn` both return the data
+        // source ARN `.../apis/<apiId>/datasources/<name>` (docs-verified
+        // 2026-08-12). `CreateDataSource` reports the real one, so take it
+        // verbatim rather than string-building; see `buildAppSyncArn` for why
+        // the fallback exists and what the pre-#1681 placeholder broke.
+        DataSourceArn:
+          reportedArn ?? (await this.buildAppSyncArn(`apis/${apiId}/datasources/${name}`)),
+        Name: name,
+      },
+    };
   }
 
   private async deleteDataSource(
@@ -2501,6 +2510,7 @@ export class AppSyncProvider implements ResourceProvider {
         : undefined
     );
 
+    let reportedArn: string | undefined;
     try {
       const input: CreateResolverCommandInput = {
         apiId,
@@ -2513,20 +2523,10 @@ export class AppSyncProvider implements ResourceProvider {
       await this.applyResolverConfig(input, resourceType, logicalId, properties);
 
       const response = await this.getClient().send(new CreateResolverCommand(input));
+      // Recorded, not consumed, inside the try — see the return below.
+      reportedArn = response.resolver?.resolverArn;
 
       this.logger.debug(`Successfully created Resolver ${logicalId}: ${physicalId}`);
-
-      return {
-        physicalId,
-        attributes: {
-          // CFn's `Ref` AND `Fn::GetAtt ResolverArn` both return the resolver
-          // ARN `.../apis/<apiId>/types/<type>/resolvers/<field>`
-          // (docs-verified 2026-08-12); `CreateResolver` reports the real one.
-          ResolverArn:
-            response.resolver?.resolverArn ??
-            (await this.buildAppSyncArn(`apis/${apiId}/types/${typeName}/resolvers/${fieldName}`)),
-        },
-      };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
@@ -2537,6 +2537,20 @@ export class AppSyncProvider implements ResourceProvider {
         cause
       );
     }
+
+    // OUTSIDE the try — see `createDataSource` for the reasoning (issue #1710:
+    // a throw after a successful create orphans the resource).
+    return {
+      physicalId,
+      attributes: {
+        // CFn's `Ref` AND `Fn::GetAtt ResolverArn` both return the resolver
+        // ARN `.../apis/<apiId>/types/<type>/resolvers/<field>`
+        // (docs-verified 2026-08-12); `CreateResolver` reports the real one.
+        ResolverArn:
+          reportedArn ??
+          (await this.buildAppSyncArn(`apis/${apiId}/types/${typeName}/resolvers/${fieldName}`)),
+      },
+    };
   }
 
   private async deleteResolver(

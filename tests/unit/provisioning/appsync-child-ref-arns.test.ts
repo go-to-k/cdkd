@@ -17,10 +17,15 @@ vi.mock('@aws-sdk/client-appsync', async () => {
 
 // Same shape the CloudControlProvider suites use — the provider's ARN
 // reconstruction goes through the shared STS-backed resolver, and a unit test
-// must not reach STS.
+// must not reach STS. Hoisted so individual tests can make it REJECT (see the
+// issue #1710 placement test at the bottom); a `vi.mock` factory cannot close
+// over an ordinary outer binding.
+const { mockGetAccountInfo } = vi.hoisted(() => ({
+  mockGetAccountInfo: vi.fn(),
+}));
+
 vi.mock('../../../src/deployment/intrinsic-function-resolver.js', () => ({
-  getAccountInfo: () =>
-    Promise.resolve({ partition: 'aws', region: 'us-east-1', accountId: '123456789012' }),
+  getAccountInfo: mockGetAccountInfo,
 }));
 
 vi.mock('../../../src/utils/logger.js', () => {
@@ -65,6 +70,12 @@ describe('AppSyncProvider records real ARNs for the child types (issue #1681)', 
   beforeEach(() => {
     provider = new AppSyncProvider();
     mockSend.mockReset();
+    mockGetAccountInfo.mockReset();
+    mockGetAccountInfo.mockResolvedValue({
+      partition: 'aws',
+      region: 'us-east-1',
+      accountId: '123456789012',
+    });
   });
 
   it('DataSource records the ARN CreateDataSource reported', async () => {
@@ -204,6 +215,39 @@ describe('AppSyncProvider records real ARNs for the child types (issue #1681)', 
 
     expect(result.attributes).toBeUndefined();
   });
+
+  // Issue #1710 class: `buildAppSyncArn` is async (it can reach STS), so it
+  // must run OUTSIDE the try that wraps the create call. A throw after a
+  // successful AWS mutation would be re-wrapped as
+  // `ProvisioningError('Failed to create …')` — and the deploy engine journals
+  // no physicalId for a FAILED create, so the rollback executor skips the op
+  // and the resource is left in AWS, invisible to state.
+  //
+  // Asserting on the error's SHAPE is what pins the placement: with the ARN
+  // build inside the try, the raw failure is swallowed and re-thrown with the
+  // create wrapper's message, which is the exact mislabel this guards.
+  it.each([
+    ['AWS::AppSync::DataSource', { ApiId: 'a', Name: 'ds', Type: 'NONE' }, {}, 'DataSource'],
+    [
+      'AWS::AppSync::Resolver',
+      { ApiId: 'a', TypeName: 'Query', FieldName: 'f' },
+      {},
+      'Resolver',
+    ],
+  ])(
+    'an ARN-build failure on %s is not mislabelled as a create failure',
+    async (resourceType, properties, response, label) => {
+      mockSend.mockResolvedValue(response);
+      mockGetAccountInfo.mockRejectedValue(new Error('sts exploded'));
+
+      await expect(provider.create('X', resourceType, properties)).rejects.toThrow('sts exploded');
+      // The create DID succeed — the failure must not claim otherwise.
+      await expect(provider.create('X', resourceType, properties)).rejects.not.toThrow(
+        `Failed to create ${label}`
+      );
+      expect(mockSend).toHaveBeenCalled();
+    }
+  );
 
   // Whole-class fence: no recorded attribute may carry the wildcard positions
   // again, whichever arm produced it.
