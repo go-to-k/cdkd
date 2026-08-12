@@ -127,8 +127,30 @@ cleanup() {
   # stack is already retired by then, so nothing else would collect them.
   # `rm --recursive`, not `rb`: the bucket itself must survive for cdkd to
   # delete, since deleting it is what is being verified.
-  if [ -n "${SITE_BUCKET}" ]; then
-    aws s3 rm "s3://${SITE_BUCKET}" --recursive --region "${REGION}" >/dev/null 2>&1
+  # `SITE_BUCKET` is only assigned in phase 6, so a crash during 6a's minutes-long
+  # `cdk deploy` — and EVERY `cleanup prerun` of a later run — reaches here with it
+  # empty while the bucket exists and holds index.html. Skipping the empty there is
+  # not cosmetic: `state destroy` then fails on the non-empty bucket (state is
+  # preserved on partial failure), and the unconditional `s3 rm cdkd/${IMPORT_STACK}/`
+  # further down wipes the state record anyway — so the handler Lambda, its role, the
+  # inline policy and the custom resource are orphaned with nothing left pointing at
+  # them. Resolve the name first: from cdkd state, else from the CloudFormation stack
+  # (whichever survived), so the empty runs on the recovery paths too.
+  local site_bucket="${SITE_BUCKET}"
+  if [ -z "${site_bucket}" ] && [ -n "${STATE_BUCKET:-}" ]; then
+    site_bucket="$(aws s3 cp \
+      "s3://${STATE_BUCKET}/cdkd/${IMPORT_STACK}/${REGION}/state.json" - 2>/dev/null |
+      jq -r '[.resources[] | select(.resourceType == "AWS::S3::Bucket") | .physicalId][0] // empty')"
+  fi
+  if [ -z "${site_bucket}" ]; then
+    site_bucket="$(aws cloudformation describe-stack-resources --region "${REGION}" \
+      --stack-name "${IMPORT_STACK}" \
+      --query "StackResources[?ResourceType=='AWS::S3::Bucket']|[0].PhysicalResourceId" \
+      --output text 2>/dev/null)"
+    [ "${site_bucket}" = "None" ] && site_bucket=""
+  fi
+  if [ -n "${site_bucket}" ]; then
+    aws s3 rm "s3://${site_bucket}" --recursive --region "${REGION}" >/dev/null 2>&1 || true
   fi
   if [ -x "${LOCAL_DIST}" ]; then
     for s in "${IMPORT_STACK}" "${IMAGE_STACK}" "${STACK}"; do
@@ -143,8 +165,11 @@ cleanup() {
   # --migrate-from-cloudformation, so this is a no-op then). `cdk destroy` is
   # last: `state destroy` above has already removed the AWS resources, and a
   # CFn stack left holding references to them cannot be dropped any other way.
-  if [ -n "${SITE_BUCKET}" ]; then
-    aws s3 rb "s3://${SITE_BUCKET}" --force >/dev/null 2>&1 || true
+  # Same resolved name as the empty above, so the recovery paths (crash in 6a,
+  # or a later run's prerun sweep) drop the bucket too rather than leaving it
+  # for a `cdk destroy` that has nothing left to reference it.
+  if [ -n "${site_bucket}" ]; then
+    aws s3 rb "s3://${site_bucket}" --force >/dev/null 2>&1 || true
   fi
   if [ -x "${PWD}/node_modules/.bin/cdk" ]; then
     npx cdk destroy "${IMPORT_STACK}" --force >/dev/null 2>&1 || true
@@ -177,9 +202,13 @@ cleanup() {
   set -eu
 }
 
-trap cleanup EXIT
-trap '(exit 130); cleanup; exit 130' INT
-trap '(exit 143); cleanup; exit 143' TERM
+# The traps are armed BELOW the own-marker guard, not here. See the note there:
+# the EXIT trap's cleanup deletes this region's marker, asset bucket and ECR
+# repo, which is only safe once the guard has established that any such storage
+# belongs to THIS run. Arming here made every `exit 1` between this point and
+# the guard — an unset STATE_BUCKET, an unbuilt dist/cli.js, a failed
+# `pnpm install` — destroy another run's live storage on the way out. Nothing
+# is created before the guard, so the trap buys nothing here anyway.
 
 if [ -z "${STATE_BUCKET:-}" ]; then
   echo "FAIL: STATE_BUCKET env var is required" >&2
@@ -206,27 +235,43 @@ export PATH="${PWD}/node_modules/.bin:${PATH}"
 echo "==> Pre-run cleanup (stack-scoped only)"
 cleanup prerun
 
-# Fail-closed pre-flight for phase 6: its upstream `cdk deploy` needs the CDK
-# bootstrap ROLES, not just the asset bucket phases 1-4 rely on. Checked here
-# rather than at phase 6 so a region missing them fails in seconds instead of
-# after the ~30 minutes phases 1-5 take.
-if ! aws cloudformation describe-stacks --region "${REGION}" \
-  --stack-name CDKToolkit >/dev/null 2>&1; then
-  echo "FAIL: region ${REGION} has no CDKToolkit stack — phase 6 deploys with the" >&2
-  echo "      upstream cdk CLI, which needs the CDK bootstrap roles. Run" >&2
-  echo "      'npx cdk bootstrap aws://<account>/${REGION}' first." >&2
-  exit 1
-fi
-
 # Own-marker guard (issue #1052): this fixture opts the region in and then
 # deletes the default-named asset storage — never proceed over a
 # pre-existing marker (it belongs to live storage).
+#
+# This guard is what makes the EXIT trap safe to arm, which is why the trap is
+# armed BELOW it rather than at the top of the script. Cleanup without the
+# `prerun` argument deletes the region's marker, `rb --force`s the cdkd asset
+# bucket and force-deletes the ECR repo; that is only correct once this guard
+# has established that any such storage was created by THIS run. With the trap
+# armed earlier, EVERY `exit 1` above — an unset STATE_BUCKET, an unbuilt
+# dist/cli.js, a failed `pnpm install`, and (in an earlier revision of this
+# file) a region without the CDK bootstrap — destroyed another run's live
+# storage on the way out. Nothing is created before this point, so arming
+# earlier protected nothing.
 if aws s3 cp "s3://${STATE_BUCKET}/${MARKER_KEY}" - >/dev/null 2>&1; then
   echo "FAIL: region ${REGION} already has a cdkd bootstrap marker (live asset storage)." >&2
   echo "      This fixture bootstraps AND deletes the region's default-named storage;" >&2
   echo "      run it in a CDK-bootstrapped region without a cdkd marker (via AWS_REGION)." >&2
   echo "      If this is a leftover from a previous crashed run of this fixture, clean it" >&2
   echo "      up first: node dist/cli.js bootstrap --destroy --region ${REGION} --yes" >&2
+  exit 1
+fi
+
+trap cleanup EXIT
+trap '(exit 130); cleanup; exit 130' INT
+trap '(exit 143); cleanup; exit 143' TERM
+
+# Fail-closed pre-flight for phase 6: its upstream `cdk deploy` needs the CDK
+# bootstrap ROLES, not just the asset bucket phases 1-4 rely on. Checked here
+# rather than at phase 6 so a region missing them fails in seconds instead of
+# after the ~30 minutes phases 1-5 take — but BELOW the marker guard, per the
+# note above.
+if ! aws cloudformation describe-stacks --region "${REGION}" \
+  --stack-name CDKToolkit >/dev/null 2>&1; then
+  echo "FAIL: region ${REGION} has no CDKToolkit stack — phase 6 deploys with the" >&2
+  echo "      upstream cdk CLI, which needs the CDK bootstrap roles. Run" >&2
+  echo "      'npx cdk bootstrap aws://<account>/${REGION}' first." >&2
   exit 1
 fi
 

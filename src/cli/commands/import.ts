@@ -284,10 +284,16 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
           `stack ${stackInfo.stackName}`
       );
       if (rewritten > 0) {
+        // Deliberately does NOT claim what AWS currently holds. Synth always
+        // emits `cdk-*` names, so `rewritten > 0` fires even when re-importing a
+        // stack cdkd itself deployed in cdkd-assets mode — where the live values
+        // are already the cdkd ones, so the next deploy still classifies an
+        // UPDATE (state holds `cdk-*`, the template holds `cdkd-*`) and issues
+        // the calls; it is a no-op at AWS, not an absent one.
         logger.info(
-          `Note: ${rewritten} asset reference(s) in stack ${stackInfo.stackName} still point at ` +
-            `CDK bootstrap asset storage on the AWS side. cdkd records those pre-rewrite values in ` +
-            `state, so the next 'cdkd deploy' updates the affected resources to cdkd asset storage.`
+          `Note: ${rewritten} asset reference(s) in stack ${stackInfo.stackName} are recorded in ` +
+            `state at their pre-rewrite (CDK bootstrap) values, so the next 'cdkd deploy' ` +
+            `repoints any resource that still holds them to cdkd asset storage.`
         );
       }
     }
@@ -1872,10 +1878,9 @@ async function importNestedStackChildrenRecursive(args: {
         // values and the next deploy shows UPDATEs the user was never warned
         // about.
         logger.info(
-          `Note: ${childRewritten} asset reference(s) in nested stack ${childStackName} still ` +
-            `point at CDK bootstrap asset storage on the AWS side. cdkd records those ` +
-            `pre-rewrite values in state, so the next 'cdkd deploy' updates the affected ` +
-            `resources to cdkd asset storage.`
+          `Note: ${childRewritten} asset reference(s) in nested stack ${childStackName} are ` +
+            `recorded in state at their pre-rewrite (CDK bootstrap) values, so the next ` +
+            `'cdkd deploy' repoints any resource that still holds them to cdkd asset storage.`
         );
       }
     }

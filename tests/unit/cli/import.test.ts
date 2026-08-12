@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
@@ -387,9 +387,78 @@ describe('cdkd import', () => {
     ).toBe(`s3://${cdkdBucket}/k.zip`);
     // And the user is told why the next deploy will show a change.
     const noticeCall = infoSpy.mock.calls.find((c) =>
-      String(c[0]).includes('still point at CDK bootstrap asset storage')
+      String(c[0]).includes('recorded in state at their pre-rewrite')
     );
     expect(noticeCall).toBeDefined();
+  });
+
+  // The rewrite walks Parameters too, and `resolveImportedProperties` binds a
+  // Parameter's `Default` before resolving `{Ref: …}` in a resource. So passing
+  // the REWRITTEN template to that call instead of the pre-rewrite snapshot
+  // re-injects the cdkd bucket into state through the parameter — invisible to
+  // a fixture whose asset reference is a literal string. Legacy CDK templates
+  // carry exactly this shape (`AssetParameters<hash>S3Bucket`), so this pins
+  // the argument rather than the property.
+  it('records the PRE-rewrite value when the asset reference comes from a Parameter Default (#1652)', async () => {
+    const { buildAssetRedirectMap } = await import('../../../src/assets/asset-redirect.js');
+    const cdkBucket = 'cdk-hnb659fds-assets-111111111111-us-east-1';
+    const cdkdBucket = 'cdkd-assets-111111111111-us-east-1';
+    const map = buildAssetRedirectMap(
+      {
+        version: '38.0.0',
+        files: {
+          aaaa1111: {
+            displayName: 'Code',
+            source: { path: 'asset.aaaa1111', packaging: 'zip' },
+            destinations: { d1: { bucketName: cdkBucket, objectKey: 'k.zip' } },
+          },
+        },
+        dockerImages: {},
+      },
+      {
+        assetBucket: cdkdBucket,
+        containerRepo: 'cdkd-container-assets-111111111111-us-east-1',
+        assetSupportVersion: 1,
+        createdAt: '2026-07-15T00:00:00.000Z',
+      },
+      '111111111111',
+      'us-east-1'
+    );
+    mockCreateAssetRedirectResolver.mockReturnValueOnce(async () => map);
+
+    const tmpl: CloudFormationTemplate = {
+      AWSTemplateFormatVersion: '2010-09-09',
+      Parameters: {
+        AssetParametersaaaa1111S3Bucket: { Type: 'String', Default: cdkBucket },
+      },
+      Resources: {
+        MyBucket: {
+          Type: 'AWS::S3::Bucket',
+          Properties: {
+            BucketName: 'b',
+            AssetBucket: { Ref: 'AssetParametersaaaa1111S3Bucket' },
+          },
+          Metadata: { 'aws:cdk:path': 'S/MyBucket' },
+        },
+      },
+    };
+    mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', tmpl)] });
+    mockHasProvider.mockReturnValue(true);
+    mockGetProvider.mockImplementation(() => ({
+      import: vi.fn(async () => ({ physicalId: 'b', attributes: {} })),
+    }));
+
+    await runImport(['import', '--app', 'x', '--yes']);
+
+    const [, , state] = mockSaveState.mock.calls[0] as unknown as [
+      string,
+      string,
+      { resources: Record<string, { properties: Record<string, unknown> }> },
+    ];
+    expect(state.resources['MyBucket']!.properties['AssetBucket']).toBe(cdkBucket);
+    // The deploy-side template's Parameter IS rewritten, as for any other
+    // reference — only the state snapshot predates it.
+    expect(tmpl.Parameters!['AssetParametersaaaa1111S3Bucket']!.Default).toBe(cdkdBucket);
   });
 
   it('leaves state untouched by the rewrite for nested-stack children (#1652)', async () => {
@@ -425,7 +494,7 @@ describe('cdkd import', () => {
     const tmpdirPath = mkdtempSync(join(tmpdir(), 'cdkd-import-nested-asset-'));
     try {
       const childTemplatePath = join(tmpdirPath, 'Child.nested.template.json');
-      (await import('node:fs')).writeFileSync(
+      writeFileSync(
         childTemplatePath,
         JSON.stringify({
           Resources: {
@@ -499,6 +568,20 @@ describe('cdkd import', () => {
       );
       expect(childImportCall).toBeDefined();
       expect(childImportCall![0].properties['DataUrl']).toBe(`s3://${cdkdBucket}/k.zip`);
+
+      // The per-CHILD notice, not just the root one. Under
+      // --migrate-from-cloudformation the assets can live entirely in nested
+      // children, so the root count is 0 and the root notice never fires —
+      // which would leave the user with unexplained UPDATEs on the next
+      // deploy. Without this assertion, deleting the whole child notice block
+      // leaves every test green.
+      const childNotice = infoSpy.mock.calls.find(
+        (c) =>
+          String(c[0]).includes('nested stack') &&
+          String(c[0]).includes('recorded in state at their pre-rewrite')
+      );
+      expect(childNotice).toBeDefined();
+      expect(String(childNotice![0])).toContain('P~Child');
     } finally {
       rmSync(tmpdirPath, { recursive: true, force: true });
     }
@@ -2217,7 +2300,7 @@ describe('cdkd import', () => {
         const tmpdirPath = mkdtempSync(join(tmpdir(), 'cdkd-import-nested-'));
         try {
           const childTemplatePath = join(tmpdirPath, 'Child.nested.template.json');
-          (await import('node:fs')).writeFileSync(
+          writeFileSync(
             childTemplatePath,
             JSON.stringify({
               Resources: { Bucket: { Type: 'AWS::S3::Bucket', Properties: {} } },
@@ -2293,7 +2376,7 @@ describe('cdkd import', () => {
         const tmpdirPath = mkdtempSync(join(tmpdir(), 'cdkd-import-nested-'));
         try {
           const childTemplatePath = join(tmpdirPath, 'Child.nested.template.json');
-          (await import('node:fs')).writeFileSync(
+          writeFileSync(
             childTemplatePath,
             JSON.stringify({
               Resources: { B: { Type: 'AWS::S3::Bucket', Properties: {} } },
@@ -2350,7 +2433,7 @@ describe('cdkd import', () => {
         const tmpdirPath = mkdtempSync(join(tmpdir(), 'cdkd-import-nested-failure-'));
         try {
           const childTemplatePath = join(tmpdirPath, 'Child.nested.template.json');
-          (await import('node:fs')).writeFileSync(
+          writeFileSync(
             childTemplatePath,
             JSON.stringify({
               Resources: {
@@ -2437,7 +2520,7 @@ describe('cdkd import', () => {
         const tmpdirPath = mkdtempSync(join(tmpdir(), 'cdkd-import-nested-sts-'));
         try {
           const childTemplatePath = join(tmpdirPath, 'Child.nested.template.json');
-          (await import('node:fs')).writeFileSync(
+          writeFileSync(
             childTemplatePath,
             JSON.stringify({
               Resources: { B: { Type: 'AWS::S3::Bucket', Properties: {} } },
@@ -2499,7 +2582,7 @@ describe('cdkd import', () => {
           const childTemplatePath = join(tmpdirPath, 'Child.nested.template.json');
           const grandchildTemplatePath = join(tmpdirPath, 'Grandchild.nested.template.json');
           // Grandchild leaf template.
-          (await import('node:fs')).writeFileSync(
+          writeFileSync(
             grandchildTemplatePath,
             JSON.stringify({
               Resources: {
@@ -2512,7 +2595,7 @@ describe('cdkd import', () => {
           // `indexGrandchildTemplatePaths` reads to find the grandchild
           // file on disk — use the leaf filename so `path.join(dir, ...)`
           // resolves to the actual file.
-          (await import('node:fs')).writeFileSync(
+          writeFileSync(
             childTemplatePath,
             JSON.stringify({
               Resources: {
@@ -2611,7 +2694,7 @@ describe('cdkd import', () => {
           const childTemplatePath = join(tmpdirPath, 'Child.nested.template.json');
           // Child carries a grandchild nested-stack row with an absolute
           // `aws:asset:path`.
-          (await import('node:fs')).writeFileSync(
+          writeFileSync(
             childTemplatePath,
             JSON.stringify({
               Resources: {
