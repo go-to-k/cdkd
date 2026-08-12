@@ -297,6 +297,56 @@ Two more rules the #1653 / #1654 reviews added:
   replay. Audit who reads the record next.
 
 
+**A KEY the readback never emits is the same defect reached through the SHAPE**
+(issue [#1686](https://github.com/go-to-k/cdkd/issues/1686)), and it NARROWS the
+"write it back at the key the TEMPLATE declared" bullet above. That bullet is
+right when both accepted spellings can come back from AWS. When they cannot —
+your provider tolerates an SDK spelling on the desired side but your
+`readCurrentState` reverse-mapper emits only the CFn one — writing back at the
+declared key preserves a key the comparator can never match, and the record
+drifts forever with no warning anywhere, because nothing was lost and nothing
+was substituted. Record the spelling the READBACK produces and REMOVE the other:
+the S3 inventory applier accepts `ScheduleFrequency` and the SDK
+`Schedule: { Frequency }` while `inventorySdkToCfn` emits only the former, so it
+records the CFn key and drops `Schedule`. Three things generalize: key the
+normalization off the DECLARED shape rather than off a refusal (the main
+population carries no malformed value at all); REMOVE the key instead of setting
+it `undefined` (`JSON.stringify` drops an `undefined` member but a cloned state
+record keeps it, so key-set walks disagree); and prefer normalizing over
+retracting the tolerance. Audit the whole type when you fix one — diff the
+type's live registry-schema property names against every key the provider reads
+ off a desired-side bag. Match the `(a['X'] ?? a['Y'])` alias
+form explicitly — a plain bracket-read regex misses most of the class.
+
+Recording the folded spelling **needs its `canonicalizeDesiredProperties`
+twin**, and re-asking that question per site matters: the #1670 "no twin"
+answer rests on canonicalizing CONCEALING a malformed value whose warning tells
+the user what to fix, and a never-emitted spelling has no fault to fix and emits
+no warning. Without the twin the template keeps declaring the SDK spelling while
+state holds the CFn one, so `cdkd diff` reports the property forever and every
+deploy re-issues the Put (measured). cdkd's S3 case ships without it —
+deliberately, because the alternative is worse in the direction that MUTATES —
+and is tracked in issue
+[#1717](https://github.com/go-to-k/cdkd/issues/1717).
+
+**An EMPTY COLLECTION is not a removal intent** (issue
+[#1671](https://github.com/go-to-k/cdkd/issues/1671)). An applier that skips its
+Put for an empty rules array is the skip class reached from an ORDINARY template
+rather than a state replay, since a condition-pruned or intrinsic-collapsed
+template synthesizes one. Do not "fix" it by turning the skip into a Delete:
+measured against live CloudFormation (us-east-1, 2026-08-12), an update to
+`LifecycleConfiguration: { Rules: [] }` / `CorsConfiguration: { CorsRules: [] }`
+drives the stack to `UPDATE_ROLLBACK_COMPLETE` and BOTH live configurations
+survive unchanged — so it is an invalid template, and deleting would diverge
+from CFn while destroying a configuration the user still wants. The registry
+schema only says the shape is legal (the collection is required with no
+`minItems`), which is why this had to be measured rather than read. Keep the
+skip, record the PREVIOUS value per the UPDATE rule above, and ANNOUNCE it —
+CFn's own answer is a loud failure, so a silent skip leaves the user to discover
+it by diffing state. Keep it a warning rather than a throw, or the
+`readCurrentState` round-trip the arm exists to absorb (`drift --revert` feeds
+an always-emitted empty-rules block back through `update()`) stops working.
+
 ## Provider Implementation Examples
 
 ### 1. Simple Example: S3 Bucket Policy Provider

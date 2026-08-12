@@ -2111,8 +2111,62 @@ export class S3BucketProvider implements ResourceProvider {
       // `ScheduleFrequency` — so leaving the malformed declared value in the
       // record is the same permanent phantom drift as the `Format` arm below.
       // The value recorded is `frequency` itself, i.e. what went on the wire.
-      if (scheduleFrequencyRefusal !== undefined) {
+      //
+      // Issue #1686 is the SHAPE half of that, and it is why the condition is
+      // not merely the refusal: `ScheduleFrequency` is the ONLY spelling the
+      // readback can produce (`inventorySdkToCfn` reads the live
+      // `Schedule.Frequency` and emits `ScheduleFrequency`, never a `Schedule`
+      // member — confirmed against the live CFn registry schema, which declares
+      // `ScheduleFrequency` REQUIRED and has no `Schedule` member at all). So a
+      // record carrying `Schedule` describes a key AWS can never report, and
+      // every `cdkd drift` re-reports it while `--revert` re-issues the same
+      // Put. That is reachable with NO refusal in sight — an item declaring
+      // only the SDK spelling sends the right cadence and records the wrong
+      // key — so the normalization keys off the DECLARED shape.
+      //
+      // The decision this settles (the issue offered the opposite as its other
+      // candidate): the SDK spelling stays ACCEPTED and is normalized on the
+      // recording side. Refusing it instead would retract the #1605
+      // fall-through, whose whole purpose is that a malformed
+      // `ScheduleFrequency` lands on the value the record ALSO carries rather
+      // than skipping a live inventory report.
+      // NO `canonicalizeDesiredProperties` twin, and unlike the #1670 sites next
+      // door that is a COST rather than a clean answer — recorded here because
+      // the rule requires the question to be re-asked per site, not inherited.
+      //
+      // Measured (us-east-1, 2026-08-12): with this fold and no twin, deploying
+      // an UNCHANGED template twice reports `0 to create, 1 to update, 0 to
+      // delete` on the second run, and `cdkd diff` shows `old: ScheduleFrequency`
+      // vs `new: Schedule.Frequency` forever, because state holds the folded
+      // spelling while the template still declares the SDK one.
+      //
+      // Shipped anyway, on the balance the rule's "worse than shipping neither"
+      // line is really about: WITHOUT the fold, state describes a key the
+      // readback can never emit, so `cdkd drift` reports it forever and
+      // `--revert` re-issues the call — a false positive on the command that
+      // MUTATES. WITH the fold, drift is clean (verified live) and the residue
+      // is a permanent `cdkd diff` change line — so `cdkd diff --fail` exits 1
+      // for an affected template, which breaks a CI drift gate — plus a
+      // redundant per-`Id` Put on every deploy (a real API call, state write and
+      // deployment event). It cannot REPLACE the bucket:
+      // `InventoryConfigurations` is neither create-only nor in the type's
+      // ReplacementRules entry, so the change classifies in-place. Trading a
+      // drift false-positive for a diff false-positive is still the better side,
+      // because only the drift one is acted on by a MUTATING command.
+      //
+      // The twin is deliberately NOT added here: it is a real change with a real
+      // obstacle — a `canonicalizeDesiredProperties` that folds this key makes
+      // `gen-nested-key-coverage` report the still-CORRECT plural->singular
+      // `segmentRenames` entry for `InventoryConfigurations` as stale, and
+      // removing that entry surfaces genuine `no-write-evidence` divergences on
+      // `Destination` / `Destination.BucketAccountId`. That interaction needs its
+      // own change; tracked separately.
+      const declaresSdkSchedule = config['Schedule'] !== undefined;
+      if (scheduleFrequencyRefusal !== undefined || declaresSdkSchedule) {
         recordSubstitution(['ScheduleFrequency'], frequency);
+      }
+      if (declaresSdkSchedule) {
+        sentItem = S3BucketProvider.withoutKey(sentItem ?? config, 'Schedule');
       }
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -2805,6 +2859,110 @@ export class S3BucketProvider implements ResourceProvider {
   }
 
   /**
+   * The REMOVAL twin of {@link withDeepValue}: a copy of `container` without
+   * `key`, sharing every surviving subtree and never mutating the input (same
+   * reason — the input is an item of the caller's DESIRED bag).
+   *
+   * A substitution answers "the value we sent differs from the declared one";
+   * this answers "the KEY we sent does not exist on the readback at all", which
+   * is the shape-mismatch half of the same phantom-drift class (issue #1686).
+   * Setting the key to `undefined` instead would NOT do: `deepEqual` is
+   * `JSON.stringify`, which drops an `undefined` member — but the state record
+   * is written from this object and a present-but-`undefined` key survives a
+   * `structuredClone`, so the two sides would disagree on key COUNT for any
+   * consumer that walks `Object.keys` (the `unionWalkObjects` drift path does).
+   */
+  // ORDERING INVARIANT: every caller passes a bag it already owns — the schedule
+  // site runs after `recordSubstitution` has produced a copy — so the identity
+  // return below can never alias the caller's DESIRED item into the effective
+  // array. Re-order those two and this must start copying unconditionally.
+  private static withoutKey(
+    container: Record<string, unknown>,
+    key: string
+  ): Record<string, unknown> {
+    if (!(key in container)) return container;
+    const { [key]: _dropped, ...rest } = container;
+    return rest;
+  }
+
+  /**
+   * The empty-collection placeholder arm of {@link applySubConfigDiffs}: the
+   * Put is SKIPPED, so AWS still holds the previously-applied configuration and
+   * the record must say so (issue #1671).
+   *
+   * Without this the engine recorded `{Rules: []}` / `{CorsRules: []}` — a Put
+   * that never ran, written as though it had. Unlike the malformed-value skips
+   * #1612 settled, this arm is reachable from an ORDINARY template path rather
+   * than only a state replay: a condition-pruned or intrinsic-collapsed
+   * template synthesizes an empty rules array.
+   *
+   * The issue's open question was whether an empty collection is a REMOVAL
+   * intent, which would make the skip itself wrong. **It is not** — measured
+   * against live CloudFormation (us-east-1, 2026-08-12): updating a deployed
+   * bucket to `LifecycleConfiguration: { Rules: [] }` +
+   * `CorsConfiguration: { CorsRules: [] }` drives the stack to
+   * `UPDATE_ROLLBACK_COMPLETE`, and BOTH live configurations survive the
+   * rollback unchanged. So CFn treats the empty collection as an INVALID
+   * template, not as a removal, and the configuration stays. That rules out
+   * the opposite candidate answer: turning this arm into a Delete would both
+   * diverge from CFn and destroy a live configuration the user still wants,
+   * on a template whose only fault is a collapsed array. The registry schema
+   * agrees on the shape (`Rules` / `CorsRules` are REQUIRED, with no
+   * `minItems`, so `[]` parses and only the service refuses it).
+   *
+   * The skip therefore stands and the previous value is what state should
+   * describe — the #1612 UPDATE answer, now with CFn behavior behind it.
+   * Dropping the key instead would be wrong in the other direction: a later
+   * template that genuinely REMOVES the block would derive no removal and the
+   * live configuration would survive forever.
+   *
+   * The skip is also ANNOUNCED rather than silent, because CFn's own answer to
+   * this template is a loud failure — a user whose rules stop being applied
+   * should not have to diff state to find out. It is a warning rather than a
+   * throw so the `readCurrentState` round-trip this arm exists to absorb
+   * (`cdkd drift --revert` feeds an always-emitted empty-rules block back
+   * through `update()`) keeps working.
+   *
+   * `collectionPath` is the WHOLE dotted path as ONE literal
+   * (`'CorsConfiguration.CorsRules'`), never the bare terminal segment, and
+   * that is load-bearing rather than stylistic. `gen-nested-key-coverage`'s key
+   * pass takes the provider's bare string literals as evidence of explicit
+   * per-key handling and keeps the STRICT literal set (only the shape pass
+   * dot-expands), so the two spellings are not interchangeable here. Measured
+   * against the shipped critic: a bare `'CorsRules'` literal anywhere in this
+   * file turns the reviewed `AWS::S3::Bucket#CorsConfiguration.CorsRules`
+   * allow-list entry STALE, while the joined path leaves the audit unchanged.
+   * That entry's whole rationale is that the key is delivered by TYPED PROPERTY
+   * ACCESS in `applyCorsConfiguration` and that its only literal mention is
+   * `readCors`, excluded as a reverse map — so satisfying the critic by
+   * deleting the entry would leave the key classified as handled on nothing but
+   * a warning string, and a later real drop of `CorsRules` would pass in
+   * silence. That is the decoy-literal shape `.claude/rules/providers.md`
+   * forbids.
+   */
+  private emptyCollectionSkip(
+    key: string,
+    collectionPath: string,
+    previousProperties: Record<string, unknown>,
+    retainPrevious: (key: string) => void
+  ): void {
+    // The guard this fires from also covers an ABSENT / non-array collection (an
+    // unresolved intrinsic reaches it), so the wording says "declares no rules"
+    // rather than asserting an empty array the value may not have been.
+    const hadPrevious = previousProperties[key] !== undefined;
+    this.logger.warn(
+      `AWS::S3::Bucket ${collectionPath} declares no rules, which CloudFormation rejects ` +
+        `outright (the collection is a required property, and an empty one is not a removal ` +
+        `intent). Leaving the live ${key} untouched and ` +
+        (hadPrevious
+          ? `recording the previously-applied value`
+          : `recording no ${key} (nothing was applied before)`) +
+        `; remove the whole ${key} property to delete the configuration.`
+    );
+    retainPrevious(key);
+  }
+
+  /**
    * Diff CFn-shape sub-config values between previous and new state.
    *
    * Four transitions:
@@ -3134,7 +3292,15 @@ export class S3BucketProvider implements ResourceProvider {
       properties['LifecycleConfiguration'] as { Rules: Array<Record<string, unknown>> } | undefined,
       async (cfg) => {
         // Skip empty-rules placeholder (Class 2)
-        if (!cfg.Rules || !Array.isArray(cfg.Rules) || cfg.Rules.length === 0) return;
+        if (!cfg.Rules || !Array.isArray(cfg.Rules) || cfg.Rules.length === 0) {
+          this.emptyCollectionSkip(
+            'LifecycleConfiguration',
+            'LifecycleConfiguration.Rules',
+            previousProperties,
+            retainPrevious
+          );
+          return;
+        }
         // WARN, never throw, on the update path (issue #1579) — same
         // rationale as the analytics sibling below.
         const applied = await this.applyLifecycleConfiguration(bucketName, cfg, (m) =>
@@ -3157,7 +3323,15 @@ export class S3BucketProvider implements ResourceProvider {
       properties['CorsConfiguration'] as { CorsRules: Array<Record<string, unknown>> } | undefined,
       async (cfg) => {
         // Skip empty-rules placeholder (Class 2)
-        if (!cfg.CorsRules || !Array.isArray(cfg.CorsRules) || cfg.CorsRules.length === 0) return;
+        if (!cfg.CorsRules || !Array.isArray(cfg.CorsRules) || cfg.CorsRules.length === 0) {
+          this.emptyCollectionSkip(
+            'CorsConfiguration',
+            'CorsConfiguration.CorsRules',
+            previousProperties,
+            retainPrevious
+          );
+          return;
+        }
         await this.applyCorsConfiguration(bucketName, cfg);
       },
       async () => {

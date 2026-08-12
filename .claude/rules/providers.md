@@ -432,7 +432,9 @@ details the skip path did not need:
 the effective array keeps the substituted item IN PLACE in its DECLARED branch
 shape (a CFn `Destination` block is accepted flattened AND nested, so writing
 back at a hardcoded branch leaves the malformed value alive at the other key
-and adds a stray one), and the recorder is handed the value the read RETURNED
+and adds a stray one) — but read that as scoped to a branch the READBACK can
+emit, because where it cannot (issue #1686) the declared spelling is exactly
+what must NOT be preserved, and the recorder is handed the value the read RETURNED
 rather than the fallback literal, so "what is recorded" and "what is sent"
 cannot drift apart. And weigh the #1643 bar first: both values here are literal
 SDK enum members the service stores verbatim, so a send-side record converges.
@@ -469,6 +471,99 @@ defaults to `'NONE'` — a PUBLIC function URL, with no warning anywhere, which 
 worse than the malformed value the drop replaced. The remedy is not to stop
 dropping; it is to make the reading path ANNOUNCE the defaulted absence on a
 replay. A drop is only honest while something still says so.
+
+**A never-emitted KEY is the same class reached through the SHAPE rather than
+the value, and it is not covered by asking what the service STORES** (issue
+#1686, the sibling #1670 left behind at the same sites). The #1643 bar — record
+what AWS will REPORT — is usually applied to a value; apply it to the key too.
+Where a provider accepts more than one spelling of a block on the DESIRED side
+but its `readCurrentState` reverse-mapper emits only one, a record written in
+the other spelling can never match the readback, so `cdkd drift` re-reports it
+forever and `--revert` re-issues the same call — with no warning anywhere to
+hint at it, because nothing was lost and nothing was substituted. The S3
+inventory applier accepts the CFn `ScheduleFrequency` and the SDK
+`Schedule: { Frequency }` (the #1605 fall-through) while `inventorySdkToCfn`
+emits only the former; it now records the CFn spelling and DROPS `Schedule`.
+Three things generalize:
+
+- **Key the normalization off the DECLARED shape, not off the refusal.** The
+  case that matters carries no malformed value at all — an item declaring only
+  the SDK spelling sends the right cadence and records the wrong key — so a
+  condition riding the existing substitution arm misses the main population.
+- **Remove the key rather than setting it to `undefined`.** `deepEqual` is
+  `JSON.stringify`, which drops an `undefined` member, but the state record is
+  written from the same object and a present-but-`undefined` key survives a
+  `structuredClone` — so any consumer that walks `Object.keys` (the
+  `unionWalkObjects` drift path) still sees two different key sets.
+- **Prefer normalizing over RETRACTING the tolerance.** Refusing the SDK
+  spelling outright is the other candidate answer and it costs more than it
+  buys: it would retract the #1605 fall-through, whose purpose is that a
+  malformed first source lands on a value the record ALSO carries instead of
+  skipping a live configuration.
+
+Audit the whole type when fixing one of these, the way #1389 says to for the
+write side, and the audit is mechanical: diff every property name in the type's
+live registry schema against every key the provider reads off a desired-side
+bag. On `AWS::S3::Bucket` that is 158 schema names, and the class is WIDER than
+one property: besides `Schedule` (fixed) it covers the analytics / inventory
+`Destination.S3BucketDestination` nested branch with its `Bucket` / `BucketArn`
+alias, the notification `TopicArn` / `QueueArn` / `LambdaFunctionArn` reads
+(`readNotification` emits only `Topic` / `Queue` / `Function`), and the
+lifecycle `Date` alias (`readLifecycle` emits only `TransitionDate`) — all left
+as issue #1707. `IsEnabled` and `AccountId` look like members of the class and
+are NOT: they are legitimate SDK spellings read on the RESPONSE side.
+
+Two things about running that audit, both learned by getting them wrong. A
+plain bracket-read regex finds only the direct `config['X']` form and MISSES
+the `(a['X'] ?? a['Y'])` alias reads, which is most of the class — match the
+alias form explicitly. And a count is not a finding: the first pass reported
+"four non-CFn reads, two of them real" and the real number was larger, so state
+what you matched rather than a total. No critic covers this direction today:
+`gen-nested-key-coverage` audits CFn -> SDK spellings on the WRITE side, not SDK
+spellings TOLERATED on the desired side.
+
+**The recording fold needs its `canonicalizeDesiredProperties` twin, and the S3
+one is NOT shipped** (issue #1717). Re-ask the twin question at every such site
+rather than inheriting the #1670 "no twin" answer: that answer rests on finding
+3 (canonicalizing would CONCEAL a malformed value whose warning tells the user
+what to fix), and a never-emitted SPELLING has no fault to fix and emits no
+warning at all — so the twin's absence leaves a permanent `cdkd diff` line and a
+redundant Put with no explanation. Measured on the #1686 fold: an unchanged
+template redeploys as `1 to update` forever. It shipped anyway because the
+alternative is worse in the direction that MUTATES — without the fold, `cdkd
+drift` reports the key forever and `--revert` re-issues the call — and because
+the twin has a real obstacle worth knowing before you start: a
+`canonicalizeDesiredProperties` folding this key makes `gen-nested-key-coverage`
+report the still-correct plural->singular `segmentRenames` entry for
+`InventoryConfigurations` STALE, while removing that entry surfaces genuine
+`no-write-evidence` divergences. Each piece is inert alone; only the
+combination trips it.
+
+**An EMPTY COLLECTION is not a removal intent, and the skip that absorbs it must
+still record the previous value** (issue #1671, the ordinary-template half of
+the #1612 skip class). The S3 lifecycle / CORS `onPut` arms skip the Put for an
+empty rules array, so AWS keeps the previously-applied configuration while the
+engine recorded `{Rules: []}` — a Put that never ran, written as though it had.
+Unlike the malformed-value skips, this arm is reachable from an ORDINARY
+template path rather than only a state replay: a condition-pruned or
+intrinsic-collapsed template synthesizes an empty array. Two things were settled
+by live A/B rather than by reading the schema (us-east-1, 2026-08-12):
+CloudFormation REFUSES an update to `LifecycleConfiguration: { Rules: [] }` /
+`CorsConfiguration: { CorsRules: [] }` — the stack reaches
+`UPDATE_ROLLBACK_COMPLETE` — and BOTH live configurations survive the rollback
+unchanged. So the empty collection is an INVALID template, not a removal, which
+rules out the opposite candidate answer: turning the arm into a Delete would
+both diverge from CFn and destroy a configuration the user still wants, on a
+template whose only fault is a collapsed array. The registry schema only says
+the shape is legal (`Rules` / `CorsRules` are required with no `minItems`, so
+`[]` parses and the SERVICE refuses it) — which is why the behavior had to be
+measured. The skip therefore stands, the PREVIOUS value is what state records
+(the #1612 UPDATE answer, now with CFn behavior behind it), and the skip is
+ANNOUNCED rather than silent, because CFn's own answer to this template is a
+loud failure and a user whose rules stop being applied should not have to diff
+state to find out. It stays a warning rather than a throw so the
+`readCurrentState` round-trip the arm exists to absorb (`drift --revert` feeds
+an always-emitted empty-rules block back through `update()`) keeps working.
 
 Two things that are easy to get wrong and were both caught by review:
 **normalize BOTH comparison sides**, not just the desired one — a record written BEFORE the provider started narrowing still carries every key, so a one-sided pass flips the same difference to a REMOVAL and breaks exactly the population the narrowing exists for; and **wire `cdkd diff` too**, since a preview that narrows differently from the apply forecasts a change the deploy will never make. `makeCanonicalizePropertiesFn` in `src/provisioning/canonicalize-properties.ts` is the one builder both commands use, so they cannot drift.

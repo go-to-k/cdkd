@@ -555,13 +555,18 @@ describe('inventory ScheduleFrequency: the FALL-THROUGH is a substitution too', 
     expect(at(result.effectiveProperties?.['InventoryConfigurations'], 0, 'ScheduleFrequency')).toBe(
       'Daily'
     );
-    // The rest of the item is untouched, including the second source itself.
+    // The rest of the item is untouched — EXCEPT the second source itself,
+    // which issue #1686 drops: `inventorySdkToCfn` emits only
+    // `ScheduleFrequency`, so a recorded `Schedule` names a key the readback
+    // can never produce. This assertion read `{ ...desired }` (keeping
+    // `Schedule`) until #1686 settled the SHAPE half of the same defect.
+    const { Schedule: _sdkSpelling, ...withoutSdkSpelling } = desired;
     expect(result.effectiveProperties?.['InventoryConfigurations']).toEqual([
-      { ...desired, ScheduleFrequency: 'Daily' },
+      { ...withoutSdkSpelling, ScheduleFrequency: 'Daily' },
     ]);
   });
 
-  it('a usable ScheduleFrequency records nothing', async () => {
+  it('a usable ScheduleFrequency records only the dropped SDK spelling', async () => {
     const properties = {
       BucketName: BUCKET,
       InventoryConfigurations: [
@@ -580,10 +585,19 @@ describe('inventory ScheduleFrequency: the FALL-THROUGH is a substitution too', 
       InventoryConfigurations: [LIVE_INVENTORY],
     });
 
-    // Precedence unchanged: the first source wins and nothing is substituted.
+    // Precedence unchanged: the first source wins and no VALUE is substituted.
     const sent = sentCommands(PutBucketInventoryConfigurationCommand);
     expect(at(sent[0]!.input, 'InventoryConfiguration', 'Schedule', 'Frequency')).toBe('Weekly');
-    expect(result.effectiveProperties).toBeUndefined();
+    // But the item still DECLARED the SDK spelling, and it never reached the
+    // wire — so issue #1686 drops it rather than leaving a key in state that
+    // `inventorySdkToCfn` can never emit. This asserted `toBeUndefined()` while
+    // the record was only ever rewritten for a substituted VALUE.
+    const recorded = at(result.effectiveProperties?.['InventoryConfigurations'], 0) as Record<
+      string,
+      unknown
+    >;
+    expect(recorded['ScheduleFrequency']).toBe('Weekly');
+    expect('Schedule' in recorded).toBe(false);
   });
 
   it('an UNUSABLE second source SKIPS the item instead — the #1605 arm is unchanged', async () => {
