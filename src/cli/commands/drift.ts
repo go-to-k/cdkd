@@ -1622,11 +1622,27 @@ async function runRevert(
         if (report.migrationPending) {
           saveOptions.migrateLegacy = true;
         }
-        await stateBackend.saveState(report.stackName, report.region, newState, saveOptions);
-        logger.info(
-          `✓ State updated for ${report.stackName} (${report.region}): recorded the value the ` +
-            `provider actually applied on ${narrowedByLogicalId.size} resource(s).`
-        );
+        // BEST-EFFORT, unlike `--accept`'s write. There the state write IS the
+        // operation; here AWS has ALREADY been reverted and this is a secondary
+        // convergence step, so a failure must not abort the command — under
+        // `--all` a throw here would skip every later stack's revert entirely,
+        // which is a regression against the pre-#1644 behavior of not writing
+        // at all. The cost of the warn path is only that the narrowing
+        // re-surfaces on the next `cdkd drift`, i.e. exactly the pre-fix state.
+        try {
+          await stateBackend.saveState(report.stackName, report.region, newState, saveOptions);
+          logger.info(
+            `✓ State updated for ${report.stackName} (${report.region}): recorded the value the ` +
+              `provider actually applied on ${narrowedByLogicalId.size} resource(s).`
+          );
+        } catch (err) {
+          logger.warn(
+            `Reverted ${report.stackName} (${report.region}), but could not record the value the ` +
+              `provider actually applied: ${err instanceof Error ? err.message : String(err)}. ` +
+              `The next 'cdkd drift' will report the same difference — re-run ` +
+              `'cdkd drift ${report.stackName} --revert' once the state write can succeed.`
+          );
+        }
       }
     } finally {
       await lockManager.releaseLock(report.stackName, report.region).catch((err) => {

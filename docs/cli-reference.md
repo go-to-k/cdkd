@@ -1697,7 +1697,11 @@ Flags:
   the identical difference and `--revert` re-issued the identical call,
   forever. Only the provider-changed keys move — the AWS-current values
   that rode along in the bag sent to `provider.update` are NOT imported
-  into state, so `--revert` never behaves like `--accept`.
+  into state, so `--revert` never behaves like `--accept`. That write is
+  BEST-EFFORT: AWS has already been reverted by the time it runs, so a failed
+  state write warns and the command carries on (under `--all`, aborting would
+  skip every later stack's revert). The only cost of the warn path is that the
+  narrowing re-surfaces on the next `cdkd drift`.
 
   Requires a stack lock. Mutually exclusive with
   `--accept`. See "Resolving drift" below.

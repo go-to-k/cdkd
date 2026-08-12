@@ -1335,6 +1335,46 @@ describe('cdkd drift', () => {
         expect(observed).toEqual({ DestinationCidrBlock: '10.0.0.0/16' });
       });
 
+      /**
+       * The state write is a SECONDARY convergence step — AWS has already been
+       * reverted by the time it runs — so a failure must not abort the command.
+       * Under `--all` a throw here would skip every later stack's revert, a
+       * regression against the pre-#1644 behavior of never writing at all.
+       */
+      it('warns instead of failing the run when the state write fails', async () => {
+        mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+        mockGetState.mockResolvedValueOnce(
+          makeState({
+            Ingress1: makeResource({
+              physicalId: 'sgr-1',
+              resourceType: 'AWS::EC2::SecurityGroupIngress',
+              properties: { IpProtocol: 6 },
+              observedProperties: { IpProtocol: 6 },
+            }),
+          })
+        );
+        mockRegistryGetProvider.mockReturnValue({
+          readCurrentState: async () => ({ IpProtocol: 'tcp' }),
+          update: async () => ({
+            physicalId: 'sgr-1',
+            wasReplaced: false,
+            effectiveProperties: { IpProtocol: 'tcp' },
+          }),
+        });
+        mockSaveState.mockRejectedValueOnce(new Error('PreconditionFailed'));
+
+        const { error } = await runDrift(['TestStack', '--revert', '--yes']);
+
+        // The revert itself still reports success (exit 0, no PartialFailureError).
+        expect(error).toBeUndefined();
+        expect(mockSaveState).toHaveBeenCalledTimes(1);
+        expect(warnSpy.mock.calls.flat().join('\n')).toMatch(
+          /could not record the value the provider actually applied: PreconditionFailed/
+        );
+        // The lock is still released.
+        expect(mockReleaseLock).toHaveBeenCalledWith('TestStack', 'us-east-1');
+      });
+
       it('does NOT write state when effectiveProperties matches what was sent', async () => {
         mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
         mockGetState.mockResolvedValueOnce(
