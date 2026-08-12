@@ -5,7 +5,11 @@
 # SetSubnets / SetSecurityGroups. When ONLY the flag is removed cdkd issues no
 # call at all and the live value is retained — settled. This fixture pins the
 # COMBINED case: the flag is dropped in the SAME deploy that changes
-# Subnets / SecurityGroups, so the Set* call IS issued, WITHOUT the member.
+# Subnets / SecurityGroups. What it asserts is that the Set* call FIRED and that
+# AWS kept the live value; that cdkd OMITS the member rather than re-sending it
+# is owned by the unit tests in
+# tests/unit/provisioning/elbv2-lb-targetgroup-props.test.ts — a shell readback
+# cannot see the request payload.
 #
 # Measured us-east-1 2026-08-12: AWS RETAINS the live value on omission for
 # both flags, so cdkd omitting the member is correct. That is a SERVICE
@@ -209,6 +213,56 @@ if [[ "${EN_P2}" != "off" ]]; then
   exit 1
 fi
 echo "    both flags RETAINED on omission — cdkd's omit-the-member behavior is correct (✓)"
+
+echo ""
+echo "==> Assert the per-subnet SourceNatIpv6Prefixes survived too"
+# The removal phase re-sends SubnetMappings with NO SourceNatIpv6Prefix members.
+# Retaining the FLAG while dropping the per-subnet prefixes would be a partial
+# reset that the flag readback alone cannot see, and the new third subnet has
+# to acquire one for source-NAT to actually work. Sorted so AWS's readback
+# order cannot make this flaky.
+PREFIXES_P2=$(aws elbv2 describe-load-balancers --load-balancer-arns "${SOURCENAT_ARN}" --region "${AWS_REGION}" \
+  --query "join(' ', sort(LoadBalancers[0].AvailabilityZones[].SourceNatIpv6Prefixes[0] || \`[]\`))" --output text)
+if [[ "${PREFIXES_P2}" != "auto_assigned auto_assigned auto_assigned" ]]; then
+  echo "FAIL: SourceNatIpv6Prefixes after the removal deploy is '${PREFIXES_P2}',"
+  echo "    expected all three subnets to hold 'auto_assigned'"
+  echo "    (the flag was retained but the per-subnet prefixes were not — a partial"
+  echo "     reset, or the newly added subnet did not get one auto-assigned)"
+  exit 1
+fi
+echo "    all 3 subnets hold auto_assigned, incl. the newly added one (✓)"
+
+echo ""
+echo "==> Phase 3: re-deploy unchanged — must be a clean no-op (phantom-drift guard)"
+# Both flags are now LIVE on AWS but absent from the template forever. That is
+# the shape that has repeatedly produced permanent phantom drift in this repo:
+# if the next diff read the live-but-undeclared value as a change, every later
+# deploy would re-issue a Set* call. Assert the redeploy changes nothing.
+PHASE3_LOG="$(mktemp -t nlb-source-nat-phase3)"
+CDKD_TEST_REMOVAL=true ${CDKD} deploy ${STACK} --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" 2>&1 \
+  | tee "${PHASE3_LOG}"
+# Match only PER-RESOURCE status lines (`<glyph> <id> (AWS::Type) <verb>`, see
+# src/utils/resource-line.ts), never the run summary — which contains the words
+# "created" / "updated" / "deleted" even on a clean no-op and would false-FAIL a
+# bare word grep. ANSI colour codes sit between the type and the verb, so strip
+# them before matching rather than trying to regex across them.
+PHASE3_CHANGES=$(sed -E $'s/\x1b\\[[0-9;]*m//g' "${PHASE3_LOG}" \
+  | grep -E '\(AWS::[^)]+\)[[:space:]]+(created|updated|deleted)' || true)
+if [[ -n "${PHASE3_CHANGES}" ]]; then
+  echo "FAIL: the unchanged re-deploy reported resource changes — phantom drift on the"
+  echo "    dropped flags. Offending lines:"
+  printf '%s\n' "${PHASE3_CHANGES}" | head -10
+  exit 1
+fi
+SN_P3=$(aws elbv2 describe-load-balancers --load-balancer-arns "${SOURCENAT_ARN}" --region "${AWS_REGION}" \
+  --query 'LoadBalancers[0].EnablePrefixForIpv6SourceNat' --output text)
+EN_P3=$(aws elbv2 describe-load-balancers --load-balancer-arns "${ENFORCE_ARN}" --region "${AWS_REGION}" \
+  --query 'LoadBalancers[0].EnforceSecurityGroupInboundRulesOnPrivateLinkTraffic' --output text)
+if [[ "${SN_P3}" != "on" || "${EN_P3}" != "off" ]]; then
+  echo "FAIL: after the no-op redeploy the flags are '${SN_P3}' / '${EN_P3}', expected 'on' / 'off'"
+  exit 1
+fi
+echo "    no-op redeploy changed nothing, both flags still live (✓)"
 
 echo ""
 echo "==> Destroy"

@@ -705,11 +705,15 @@ export class ELBv2Provider implements ResourceProvider {
     // (flag removed in the SAME deploy that changes Subnets, so the Set call is
     // issued WITHOUT the member) is A/B-verified: AWS RETAINS the live value on
     // omission — measured us-east-1 2026-08-12 against a dualstack NLB holding
-    // the non-default `on`, in BOTH request forms this code can emit (a plain
-    // `Subnets` list and a `SubnetMappings` list carrying no SourceNatIpv6Prefix
-    // members). Adding a third subnet with the member omitted left the flag `on`
-    // and auto-assigned a source-NAT prefix to the new subnet. So omitting is
-    // correct and re-sending the retained value would be redundant.
+    // the non-default `on`. Adding a third subnet with the member omitted left
+    // the flag `on`. So omitting is correct and re-sending would be redundant.
+    //
+    // Scope of that evidence, because this code can emit TWO request forms and
+    // they are fenced differently. The `nlb-source-nat` integ regression-fences
+    // the `SubnetMappings` arm only. The plain `Subnets` arm was measured by
+    // hand during the same A/B and retained identically, but nothing in the
+    // repo reproduces it, so treat it as observed-once rather than guarded — if
+    // AWS ever diverges per arm, the integ will not catch the `Subnets` side.
     const ipv6SourceNatChanged =
       newIpv6SourceNat !== undefined && newIpv6SourceNat !== oldIpv6SourceNat;
     if (subnetsChanged || mappingsChanged || ipv6SourceNatChanged) {
