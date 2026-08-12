@@ -68,6 +68,20 @@ import { ProvisioningError } from '../utils/error-handler.js';
  *   build a `Ref` VALUE for the template resolver, never a physicalId cdkd
  *   records and later splits. Nothing decodes them, so an ambiguous join has
  *   no decode site to go wrong at.
+ *
+ * ## Guarding the PACKERS is not the whole story
+ *
+ * A packer that refuses ambiguity does nothing about an id an EARLIER binary
+ * already recorded, or one an `import` was handed — and a type whose decoder is
+ * loose will mis-decode both. Issue #1711 is where that was learned:
+ * `AWS::Route53::RecordSet`'s `parseRecordSetCompositeId` accepts any three
+ * NON-EMPTY segments, so a record name carrying two pipes decoded to a
+ * DIFFERENT hosted zone at three sites this helper never sees — an `import`
+ * early accept, an identity-resolution short-circuit, and `delete`'s own parse,
+ * where `cdkd destroy` then reported success over a live record. When adopting
+ * this guard for a new type, audit its DECODE sites in the same change and make
+ * each one cross-check the parsed segments against something it can verify them
+ * with (Route 53 uses the template's own `Name` / `Type`).
  */
 
 /** The character every composite physicalId in this codebase joins segments with. */

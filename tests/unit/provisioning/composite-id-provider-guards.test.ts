@@ -771,6 +771,117 @@ describe('AWS::Route53::RecordSet composite id guard', () => {
     expect(result.physicalId).toBe('Z1D633PJN98FT9|www.example.com.|A');
   });
 
+  it('refuses a template-path create even when a replay context says NOT replaying', async () => {
+    // `context?.replayingState === true` must be an EXACT test: mutating it to
+    // `context != null` makes an explicitly non-replaying context downgrade,
+    // and every other case here passes either no context or a replaying one,
+    // so nothing else in the suite would notice.
+    const provider = new Route53Provider();
+    await expect(
+      provider.create(
+        'MyRecord',
+        RECORD_TYPE,
+        { HostedZoneId: 'Z1D633PJN98FT9', Name: 'a|b.example.com.', Type: 'A' },
+        { replayingState: false }
+      )
+    ).rejects.toThrow(ProvisioningError);
+    expect(mockRoute53Send).not.toHaveBeenCalled();
+  });
+
+  it('a record NAME that merely LOOKS like a composite is not decoded as one', async () => {
+    // The blocker a reviewer found. `parseRecordSetCompositeId` asks only for
+    // three non-empty segments, so a two-pipe record name — exactly the CFn
+    // physicalId `--migrate-from-cloudformation` pre-populates — parsed as a
+    // "valid" composite meaning zone 'a', name 'b', type 'c.example.com.'.
+    //
+    // The IMPORT return value cannot fence this: both the bug and the fix
+    // adopt the same STRING, and they differ only in what the id is taken to
+    // MEAN. DELETE is where that costs something, so this drives the delete
+    // and asserts the zone actually targeted.
+    mockRoute53Send.mockResolvedValue({});
+    const provider = new Route53Provider();
+    await provider.delete('MyRecord', 'a|b|c.example.com.', RECORD_TYPE, {
+      HostedZoneId: 'Z1D633PJN98FT9',
+      Name: 'a|b|c.example.com.',
+      Type: 'A',
+      TTL: '300',
+      ResourceRecords: ['1.2.3.4'],
+    });
+
+    const change = mockRoute53Send.mock.calls[0]?.[0] as {
+      input: { HostedZoneId?: string };
+    };
+    // Before the fix this was 'a' — a zone that does not exist, so the delete
+    // took the NoSuchHostedZone arm and reported success with the record live.
+    expect(change.input.HostedZoneId).toBe('Z1D633PJN98FT9');
+  });
+
+  it('a look-alike whose TYPE segment coincidentally matches is not decoded either', async () => {
+    // The residual the Type cross-check alone leaves: `a|b|A` on a record whose
+    // Type really is 'A' agrees on the type and still decodes to zone 'a'.
+    // Only the NAME check rejects it.
+    mockRoute53Send.mockResolvedValue({});
+    const provider = new Route53Provider();
+    await provider.delete('MyRecord', 'a|b|A', RECORD_TYPE, {
+      HostedZoneId: 'Z1D633PJN98FT9',
+      Name: 'a|b|A',
+      Type: 'A',
+      TTL: '300',
+      ResourceRecords: ['1.2.3.4'],
+    });
+
+    const change = mockRoute53Send.mock.calls[0]?.[0] as {
+      input: { HostedZoneId?: string };
+    };
+    expect(change.input.HostedZoneId).toBe('Z1D633PJN98FT9');
+  });
+
+  it('a GENUINE composite is still decoded, with no zone lookup', async () => {
+    // The control the cross-check must not break. The name compare is case- and
+    // trailing-dot-insensitive, so a template spelling the name without CDK's
+    // trailing dot still takes the composite path.
+    mockRoute53Send.mockResolvedValue({});
+    const provider = new Route53Provider();
+    await provider.delete('MyRecord', 'Z1D633PJN98FT9|www.example.com.|A', RECORD_TYPE, {
+      HostedZoneId: 'ZSHOULDNOTBEUSED',
+      Name: 'WWW.example.com',
+      Type: 'A',
+      TTL: '300',
+      ResourceRecords: ['1.2.3.4'],
+    });
+
+    const change = mockRoute53Send.mock.calls[0]?.[0] as {
+      input: { HostedZoneId?: string };
+    };
+    // Sourced from the composite, NOT from the properties — which is what
+    // proves the composite path was taken rather than the fallback.
+    expect(change.input.HostedZoneId).toBe('Z1D633PJN98FT9');
+  });
+
+  it('import warns and adopts a look-alike verbatim instead of freezing the mis-decode', async () => {
+    const provider = new Route53Provider();
+    const result = await provider.import({
+      logicalId: 'MyRecord',
+      resourceType: RECORD_TYPE,
+      stackName: 'TestStack',
+      region: 'us-east-1',
+      knownPhysicalId: 'a|b|c.example.com.',
+      properties: {
+        HostedZoneId: 'Z1D633PJN98FT9',
+        Name: 'a|b|c.example.com.',
+        Type: 'A',
+      },
+    });
+
+    expect(result).toEqual({ physicalId: 'a|b|c.example.com.', attributes: {} });
+    // The DISCRIMINATOR against the pre-fix path, which adopted the same string
+    // silently: the id is now recognized as ambiguous and said so.
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      expect.stringContaining('would pack an ambiguous id')
+    );
+    expect(mockRoute53Send).not.toHaveBeenCalled();
+  });
+
   it('import adopts the override verbatim rather than freezing an ambiguous composite', async () => {
     // An `import()` neither throws nor adopts an id it knows to be ambiguous:
     // the verbatim form decodes to nothing, so delete / drift fall back to the
@@ -790,7 +901,12 @@ describe('AWS::Route53::RecordSet composite id guard', () => {
       },
     });
     expect(result).toEqual({ physicalId: 'a|b.example.com.', attributes: {} });
-    expect(mockLoggerWarn).toHaveBeenCalledWith(expect.stringContaining("recordName 'a|b"));
+    // ONE warning, carrying the reason — not the raw refusal sentence, whose
+    // "rename the resource" remedy does not apply to an import that succeeds.
+    expect(mockLoggerWarn).toHaveBeenCalledTimes(1);
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      expect.stringContaining('would pack an ambiguous id')
+    );
     // The refusal short-circuits BEFORE the `ListResourceRecordSets`
     // verification read, so no AWS call is made on this path.
     expect(mockRoute53Send).not.toHaveBeenCalled();

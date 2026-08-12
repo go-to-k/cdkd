@@ -24,7 +24,11 @@ import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import { readConfigString } from '../config-shape.js';
-import { compositeIdSeparatorRefusal, packCompositeId } from '../composite-id.js';
+import {
+  COMPOSITE_ID_SEPARATOR,
+  compositeIdSeparatorRefusal,
+  packCompositeId,
+} from '../composite-id.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -1048,7 +1052,20 @@ export class Route53Provider implements ResourceProvider {
     // #1658. Throwing there left every migrated stack undestroyable, so fall
     // back to resolving the zone from the recorded properties — the delete
     // only needs segment 1; `Name` / `Type` come from `properties` anyway.
-    const composite = parseRecordSetCompositeId(physicalId);
+    // The parse is CROSS-CHECKED against the recorded properties (issue #1711):
+    // three non-empty segments is not proof of a composite, so a record NAME
+    // carrying two pipes — `a|b|c.example.com.`, the CloudFormation physicalId
+    // `--migrate-from-cloudformation` pre-populates — decoded to hosted zone
+    // `a`, and this delete then issued `ChangeResourceRecordSets` against a
+    // zone that does not exist, took the `NoSuchHostedZone` already-deleted arm
+    // and reported SUCCESS while the real record stayed live and billing. This
+    // is the site where that class actually costs something, which is why the
+    // check is applied at all three parse sites rather than only at `import`.
+    const parsedComposite = parseRecordSetCompositeId(physicalId);
+    const composite =
+      parsedComposite && this.compositeAgreesWithTemplate(parsedComposite, properties)
+        ? parsedComposite
+        : undefined;
     let hostedZoneId: string;
     if (composite) {
       hostedZoneId = composite.hostedZoneId;
@@ -2017,8 +2034,15 @@ export class Route53Provider implements ResourceProvider {
     properties?: Record<string, unknown>,
     options?: { requireUnambiguousZoneName?: boolean }
   ): Promise<{ hostedZoneId: string; name: string; type: string } | undefined> {
+    // Cross-checked against the template for the same reason `importRecordSet`
+    // cross-checks its own early accept (issue #1711): three non-empty segments
+    // is not proof of a composite, and a record NAME carrying two pipes decodes
+    // to a different zone here just as it does there. Without `properties`
+    // there is nothing to check against, so the pre-#1711 behavior stands.
     const composite = parseRecordSetCompositeId(physicalId);
-    if (composite) return composite;
+    if (composite && (!properties || this.compositeAgreesWithTemplate(composite, properties))) {
+      return composite;
+    }
     if (!properties) return undefined;
 
     const name = typeof properties['Name'] === 'string' ? properties['Name'] : physicalId;
@@ -2375,10 +2399,63 @@ export class Route53Provider implements ResourceProvider {
    * rather than trusted, but an import with no override at all still declines,
    * because a RecordSet has no standalone identity for auto mode to key on.
    */
+  /**
+   * Does a parsed composite agree with the template it is being imported for?
+   *
+   * Each check is applied only when the template side is a usable string, so
+   * an unresolved intrinsic or an absent field leaves the pre-#1711 behavior
+   * exactly as it was rather than declining an id that was fine. When BOTH are
+   * unusable this returns `true` and the mis-decode is still reachable — an
+   * accepted bound, because the alternative is refusing every id on a template
+   * cdkd cannot read, and the identity resolution the fall-through leads to
+   * needs those same fields anyway.
+   *
+   * The NAME check is what catches the residual the TYPE check alone leaves:
+   * a name like `a|b|A` on a record whose `Type` really is `A` agrees on the
+   * type and still decodes to the wrong zone. A legitimate composite whose
+   * template spells the name without CDK's trailing dot fails this check and
+   * falls through — which costs one `ListResourceRecordSets` verification and
+   * lands on `adoptVerbatim(known)`, i.e. the same physicalId by a longer
+   * route, so the conservative direction is the safe one here.
+   */
+  private compositeAgreesWithTemplate(
+    parsed: { hostedZoneId: string; name: string; type: string },
+    properties: Record<string, unknown>
+  ): boolean {
+    const templateType = properties['Type'];
+    if (typeof templateType === 'string' && templateType && parsed.type !== templateType) {
+      return false;
+    }
+    const templateName = properties['Name'];
+    if (
+      typeof templateName === 'string' &&
+      templateName &&
+      canonicalizeQueryName(parsed.name) !== canonicalizeQueryName(templateName)
+    ) {
+      return false;
+    }
+    return true;
+  }
+
   private async importRecordSet(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     const known = input.knownPhysicalId;
     if (!known) return null;
-    if (parseRecordSetCompositeId(known)) {
+    // The early accept has to be CROSS-CHECKED against the template, or it
+    // becomes the mis-decode this whole guard exists to prevent (issue #1711,
+    // found in review). `parseRecordSetCompositeId` only asks for exactly three
+    // non-empty segments — so a record NAME carrying two pipes,
+    // `a|b|c.example.com.`, which is precisely the CloudFormation physicalId
+    // `--migrate-from-cloudformation` pre-populates from
+    // `DescribeStackResources`, parses as a "valid" composite and is adopted as
+    // zone `a`, name `b`, type `c.example.com.`. `deleteRecordSet` then calls
+    // `ChangeResourceRecordSets` against zone `a`, takes the `NoSuchHostedZone`
+    // arm and reports SUCCESS while the real record stays live — the
+    // silent-wrong-resource class, reached one layer above the packing sites.
+    // A genuine composite agrees with the template on both segments it shares
+    // with it; a disagreement means `known` is a raw name that merely looks
+    // composite, so fall through and let the identity resolution below decide.
+    const parsedKnown = parseRecordSetCompositeId(known);
+    if (parsedKnown && this.compositeAgreesWithTemplate(parsedKnown, input.properties)) {
       return { physicalId: known, attributes: {} };
     }
 
@@ -2429,8 +2506,18 @@ export class Route53Provider implements ResourceProvider {
       segments
     );
     if (importRefusal !== undefined) {
-      this.logger.warn(importRefusal);
-      return adoptVerbatim('the resolved hosted zone + Name + Type would pack an ambiguous id');
+      // ONE warning, not two: `adoptVerbatim` already explains the consequence,
+      // so the refusal is folded into its reason the way the EC2 EIP import arm
+      // folds its own (`ec2-provider.ts`). The raw sentence is deliberately NOT
+      // emitted here — it prescribes "rename the resource, or manage it outside
+      // cdkd" and asserts the id "decodes back to a DIFFERENT resource", and
+      // neither is true on this path: nothing is refused, the verbatim id
+      // decodes to NOTHING, and the import succeeds.
+      return adoptVerbatim(
+        `the resolved hosted zone + Name + Type would pack an ambiguous id — ` +
+          `a segment contains '${COMPOSITE_ID_SEPARATOR}', which cdkd uses as this type's ` +
+          `physical-id separator`
+      );
     }
 
     // Cannot throw — the predicate above is the same check `packCompositeId`
