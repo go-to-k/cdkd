@@ -60,6 +60,7 @@ export const AWS_NO_VALUE = Symbol('AWS::NoValue');
  *   - AWS::AppConfig::ConfigurationProfile   `<appId>|<profileId>`           -> profile id
  *   - AWS::AppConfig::HostedConfigurationVersion `<appId>|<profileId>|<ver>` -> version number
  *   - AWS::AppConfig::Deployment             `<appId>|<envId>|<deployNum>`   -> deployment number
+ *   - AWS::Glue::Table                       `<databaseName>|<tableName>`    -> table name
  *
  * The extraction takes the segment after the LAST pipe (see
  * {@link IntrinsicFunctionResolver.resolveRefValue}) so it is correct for both
@@ -99,6 +100,23 @@ export const AWS_NO_VALUE = Symbol('AWS::NoValue');
  *      {@link REF_RETURNS_SEGMENT_BEFORE_FIRST_PIPE} instead of this Set: the
  *      after-last-pipe extraction would return the PARENT id for them.
  *   5. Pin each addition with a unit test in intrinsic-functions.test.ts.
+ *
+ * AUDIT RECORD (2026-08-12, issue #1667) — every type in the composite-id table
+ * of `docs/state-management.md` was re-checked against its docs-verified `Ref`.
+ * `AWS::Glue::Table` was the one this Set could fix and is added below. The
+ * types deliberately NOT in either Set, with the reason:
+ *   - correct to exclude, `Ref` is a synthetic / AWS-generated id no segment
+ *     reconstructs: ApiGateway::Method, EC2::NetworkAclEntry ("the ID of the
+ *     network ACL entry"), EC2::Route, EC2::VPCGatewayAttachment,
+ *     Lambda::EventInvokeConfig;
+ *   - correct to exclude, the docs page documents NO `Ref` return value at all:
+ *     EC2::SecurityGroupIngress (and its Egress sibling, same id shape);
+ *   - KNOWN WRONG and NOT fixable by a Set entry, tracked in issue #1681:
+ *     AppSync::ApiKey / ::DataSource / ::Resolver (`Ref` returns the resource
+ *     ARN, so the value must be RECONSTRUCTED like the WAFv2::WebACL case
+ *     below, not extracted) and Route53::RecordSet (`Ref` returns "the name of
+ *     the record" — the MIDDLE segment of `<hostedZoneId>|<name>|<type>`, which
+ *     neither after-LAST-pipe nor before-FIRST-pipe yields).
  */
 const REF_RETURNS_SEGMENT_AFTER_PIPE = new Set<string>([
   'AWS::ApiGateway::Model',
@@ -141,6 +159,20 @@ const REF_RETURNS_SEGMENT_AFTER_PIPE = new Set<string>([
   // namespace name; Table `Ref` returns the table name.
   'AWS::S3Tables::Namespace',
   'AWS::S3Tables::Table',
+  // AWS::Glue::Table (issue #1667). Like the S3Tables children this is an
+  // SDK-provisioned compound: `GlueProvider.createTable` / `importTable` store
+  // `<databaseName>|<tableName>` because `GetTable` / `UpdateTable` /
+  // `DeleteTable` all need both segments while `ResourceProvider`'s read-side
+  // methods receive a single string. CloudFormation's `Ref` for the type
+  // returns the TABLE NAME (docs-verified) — the segment after the pipe — so
+  // without this entry a `{Ref: <Table>}` consumer (a Glue crawler's
+  // `Targets.CatalogTargets[].Tables`, a `CfnOutput`, a Lake Formation
+  // permission) received `mydb|my_table` and pushed it to AWS. Neither segment
+  // can itself contain `|`: `resolveTableIdentity` refuses such a name on the
+  // import path, so the after-LAST-pipe extraction always yields the table
+  // name. Pre-#1651 this was unreachable for `cdk deploy`-managed stacks (they
+  // could not be imported at all); making them adoptable is what widened it.
+  'AWS::Glue::Table',
 ]);
 
 /**
