@@ -1,3 +1,10 @@
+## [0.280.34](https://github.com/go-to-k/cdkd/compare/v0.280.33...v0.280.34) (2026-08-12)
+
+
+### Bug Fixes
+
+* **ec2:** match a numeric IpProtocol against the name AWS substitutes, in the rule lookup and the drift comparison ([#1650](https://github.com/go-to-k/cdkd/issues/1650)) ([e092dc1](https://github.com/go-to-k/cdkd/commit/e092dc1a86c1f4016b54d70e79dda5f1befa0f9e))
+
 ## [0.280.33](https://github.com/go-to-k/cdkd/compare/v0.280.32...v0.280.33) (2026-08-12)
 
 
