@@ -984,6 +984,7 @@
         "rollback-command",
         "rollback-deletion-policy-snapshot",
         "rollback-failure-injection",
+        "rollback-replay-effective-props",
         "rollback-sqs-cooldown",
         "route53",
         "s3-analytics-inventory",

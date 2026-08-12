@@ -1111,6 +1111,11 @@ describe('replayRollback', () => {
     // The overwhelmingly common case: no report means "record the intended
     // post-rollback bag", NOT a blanked record.
     expect(state.B!.properties).toEqual({ a: 1, b: 'keep' });
+    // Pass-through BY REFERENCE, which the helper's comment calls load-bearing:
+    // it is what makes the fallback byte-identical to the pre-#1682 spread of
+    // `prevRecord`. A copy here would be a behavior change smuggled in under a
+    // no-op, and `toEqual` alone cannot tell the two apart.
+    expect(state.B!.properties).toBe(prev.properties);
   });
 
   it('reverse-replacement honours an EMPTY effectiveProperties as a complete answer (issue #1682)', async () => {

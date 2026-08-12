@@ -745,8 +745,10 @@ function recordAfterRollbackUpdate(
  * Falls back to the restored record's own `properties` when the provider
  * reported nothing — the pre-#1682 behavior — rather than blanking the record.
  * An empty object is a legitimate COMPLETE answer (a provider that sent
- * nothing), so the gate is presence and not emptiness; `{}` is truthy in JS, so
- * it flows through as the recorded bag rather than falling back.
+ * nothing), so the gate is an explicit PRESENCE test rather than truthiness —
+ * matching the `??` the contract in `.claude/rules/providers.md` prescribes,
+ * and saying so at the one place a future reader would otherwise have to
+ * re-derive that `{}` must not fall back.
  *
  * Applied on the name-idempotent ADOPT path too (`adoptedLiveNewResource`).
  * That arm's warning says state records "the pre-replacement properties", and
@@ -757,13 +759,18 @@ function recordedPropertiesAfterReplayCreate(
   restored: Omit<ResourceState, 'observedProperties'>,
   result: ResourceCreateResult
 ): ResourceState['properties'] {
-  // The PROVIDER's bag is copied, not aliased: the record outlives the call
-  // and a provider is free to keep mutating the object it handed back. The
-  // fallback deliberately passes `restored.properties` through by reference —
-  // that is cdkd's own state object and is exactly what the pre-#1682 spread
-  // of `prevRecord` already put on the record, so copying it here would be a
-  // behavior change smuggled in under a no-op.
-  return result.effectiveProperties ? { ...result.effectiveProperties } : restored.properties;
+  // The PROVIDER's bag is copied at the TOP LEVEL, so the record does not
+  // alias the object a provider is free to keep mutating after handing it
+  // back. Nested values stay shared — the same shallow-copy bound
+  // `recordAfterRollbackUpdate` has; deep-cloning here would diverge from it
+  // for a hazard neither has ever hit. The fallback deliberately passes
+  // `restored.properties` through BY REFERENCE — that is cdkd's own state
+  // object and is exactly what the pre-#1682 spread of `prevRecord` already
+  // put on the record, so copying it would be a behavior change smuggled in
+  // under a no-op.
+  return result.effectiveProperties === undefined
+    ? restored.properties
+    : { ...result.effectiveProperties };
 }
 
 async function replaySingle(

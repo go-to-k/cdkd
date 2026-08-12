@@ -106,7 +106,11 @@ TEST_DIR="${REPO_ROOT}/tests/integration/rollback-replay-effective-props"
 CDKD="node ${REPO_ROOT}/dist/cli.js"
 
 ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
-STATE_BUCKET="cdkd-state-${ACCOUNT_ID}"
+# Honor the harness's exported STATE_BUCKET; only fall back to the account
+# default. Overwriting it unconditionally would make every read below target a
+# different bucket than the CLI writes to the moment the harness points
+# somewhere else.
+STATE_BUCKET="${STATE_BUCKET:-cdkd-state-${ACCOUNT_ID}}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 
 WORK_DIR="$(mktemp -d)"
@@ -123,7 +127,8 @@ cleanup() {
   echo ""
   echo "[verify] cleanup (rc=${rc})..."
 
-  ROUTE_DEST="${DEST_V1}" ${CDKD} destroy "${STACK}" --force >/dev/null 2>&1
+  ROUTE_DEST="${DEST_V1}" ${CDKD} destroy "${STACK}" \
+    --state-bucket "${STATE_BUCKET:-}" --force >/dev/null 2>&1
 
   # Tag sweep AFTER the state-based destroy: a failed phase can leave a
   # resource that state no longer knows about, which the destroy cannot reach.
@@ -188,7 +193,7 @@ npm install --silent >/dev/null 2>&1 || npm install >/dev/null
 # --------------------------------------------------------------------------
 echo ""
 echo "[verify] phase 1: deploy v1 (destination ${DEST_V1})"
-ROUTE_DEST="${DEST_V1}" ${CDKD} deploy "${STACK}" --yes
+ROUTE_DEST="${DEST_V1}" ${CDKD} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --yes
 
 aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${WORK_DIR}/state-v1.json" >/dev/null
 
@@ -206,7 +211,28 @@ if [ "${V1_DEST}" != "${DEST_V1}" ]; then
   echo "FAIL: phase 1: state DestinationCidrBlock is '${V1_DEST}', expected '${DEST_V1}'" >&2
   exit 1
 fi
-echo "[verify] phase 1: OK (state records ${V1_DEST})"
+# Prove the fixture TAG actually matches a live resource, before phase 6 and
+# the cleanup trap rely on it. Both filter on this tag, so if cdkd ever stopped
+# propagating the stack-level tag to EC2 resources, phase 6 would report
+# "0 orphans" against an empty result set while the trap silently leaked the
+# very same resources -- a green run over a real leak.
+TAGGED_VPC="$(aws ec2 describe-vpcs \
+  --filters "Name=tag:${FIXTURE_TAG_KEY},Values=${FIXTURE_TAG_VALUE}" \
+  --query 'Vpcs[].VpcId' --output text)"
+if [ -z "${TAGGED_VPC}" ] || [ "${TAGGED_VPC}" = "None" ]; then
+  echo "FAIL: phase 1: the fixture tag ${FIXTURE_TAG_KEY}=${FIXTURE_TAG_VALUE}" >&2
+  echo "      matches no VPC, so phase 6's orphan assertions and the cleanup" >&2
+  echo "      trap would both be vacuous. Did stack-level tag propagation break?" >&2
+  exit 1
+fi
+STATE_VPC="$(jq -r '.resources | to_entries[]
+  | select(.value.resourceType == "AWS::EC2::VPC") | .value.physicalId' "${WORK_DIR}/state-v1.json")"
+if [ "${TAGGED_VPC}" != "${STATE_VPC}" ]; then
+  echo "FAIL: phase 1: the tag matched '${TAGGED_VPC}' but state records" >&2
+  echo "      '${STATE_VPC}' -- the sweep would target the wrong resource." >&2
+  exit 1
+fi
+echo "[verify] phase 1: OK (state records ${V1_DEST}; fixture tag resolves to ${TAGGED_VPC})"
 
 # --------------------------------------------------------------------------
 # Phase 2 — doctor state so the recorded bag carries a SECOND destination key.
@@ -242,7 +268,8 @@ echo "[verify] phase 2: OK (state now declares both DestinationCidrBlock and Des
 echo ""
 echo "[verify] phase 3: deploy v2 (destination ${DEST_V2}, failure injected) -- expected to FAIL"
 set +e
-ROUTE_DEST="${DEST_V2}" ROLLBACK_INTEG_FAIL=true ${CDKD} deploy "${STACK}" --yes > "${WORK_DIR}/deploy-v2.log" 2>&1
+ROUTE_DEST="${DEST_V2}" ROLLBACK_INTEG_FAIL=true ${CDKD} deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --yes > "${WORK_DIR}/deploy-v2.log" 2>&1
 DEPLOY_RC=$?
 set -e
 if [ "${DEPLOY_RC}" -eq 0 ]; then
@@ -252,16 +279,32 @@ if [ "${DEPLOY_RC}" -eq 0 ]; then
 fi
 echo "[verify] phase 3: deploy failed as expected (rc=${DEPLOY_RC})"
 
-# The rollback must have taken the reverse-replacement arm, not a plain CREATE
-# rollback -- otherwise phase 4 would be asserting the wrong branch entirely.
-if ! grep -qiE 'more than one destination' "${WORK_DIR}/deploy-v2.log"; then
-  echo "FAIL: phase 3: the replay-CREATE multi-destination warning never fired --" >&2
-  echo "      the rollback did not take the reverse-replacement arm, so this run" >&2
-  echo "      does not exercise #1682. Deploy log tail:" >&2
+# The rollback must have taken the REVERSE-REPLACEMENT arm specifically.
+#
+# The multi-destination warning alone does NOT prove that: `updateRoute` passes
+# the same `onMultipleDestinations` callback, and the rollback's `revert` arm
+# calls `provider.update(..., previousState.properties)` with the same
+# both-keys bag -- so a future misclassification as `revert` would emit the
+# byte-identical message AND still record the substituted bag, via the
+# already-shipped update-side `recordAfterRollbackUpdate` (issue #1644). The
+# fixture would then pass while never exercising #1682 at all. So assert the
+# arm's OWN line, which only the reverse-replacement path emits.
+if ! grep -qF 'replacement reversed (old resource re-created as' "${WORK_DIR}/deploy-v2.log"; then
+  echo "FAIL: phase 3: the rollback did not take the REVERSE-REPLACEMENT arm," >&2
+  echo "      so this run does not exercise #1682 (a 'revert' UPDATE would pass" >&2
+  echo "      phase 4 through the #1644 update-side wiring instead). Log tail:" >&2
   tail -40 "${WORK_DIR}/deploy-v2.log" >&2
   exit 1
 fi
-echo "[verify] phase 3: OK (replay-CREATE substitution warning observed)"
+# ...and that the replay-CREATE actually substituted, which is the input phase 4
+# asserts the recording of.
+if ! grep -qiE 'more than one destination' "${WORK_DIR}/deploy-v2.log"; then
+  echo "FAIL: phase 3: the replay-CREATE multi-destination substitution never" >&2
+  echo "      fired, so the doctored state bag never reached the provider." >&2
+  tail -40 "${WORK_DIR}/deploy-v2.log" >&2
+  exit 1
+fi
+echo "[verify] phase 3: OK (reverse-replacement arm + replay-CREATE substitution both observed)"
 
 # --------------------------------------------------------------------------
 # Phase 4 — THE POINT: the post-rollback record holds the SUBSTITUTED bag.
@@ -296,9 +339,9 @@ echo "[verify] phase 4: OK (DestinationCidrBlock=${POST_DEST}, DestinationIpv6Ci
 echo ""
 echo "[verify] phase 5: two consecutive drift runs must converge"
 set +e
-ROUTE_DEST="${DEST_V1}" ${CDKD} drift "${STACK}" > "${WORK_DIR}/drift-1.log" 2>&1
+ROUTE_DEST="${DEST_V1}" ${CDKD} drift "${STACK}" --state-bucket "${STATE_BUCKET}" > "${WORK_DIR}/drift-1.log" 2>&1
 DRIFT1_RC=$?
-ROUTE_DEST="${DEST_V1}" ${CDKD} drift "${STACK}" > "${WORK_DIR}/drift-2.log" 2>&1
+ROUTE_DEST="${DEST_V1}" ${CDKD} drift "${STACK}" --state-bucket "${STATE_BUCKET}" > "${WORK_DIR}/drift-2.log" 2>&1
 DRIFT2_RC=$?
 set -e
 if [ "${DRIFT1_RC}" -ne 0 ] || [ "${DRIFT2_RC}" -ne 0 ]; then
@@ -309,14 +352,26 @@ if [ "${DRIFT1_RC}" -ne 0 ] || [ "${DRIFT2_RC}" -ne 0 ]; then
   tail -30 "${WORK_DIR}/drift-1.log" >&2
   exit 1
 fi
-echo "[verify] phase 5: OK (both drift runs clean)"
+# Exit 0 alone is NOT convergence. A resource whose readCurrentState returns
+# undefined is reported as "drift unknown" and does NOT affect the exit code
+# (src/cli/commands/drift.ts) -- which is exactly the failure mode measured for
+# a composite-key mismatch in issue #1643. Without this the whole phase would
+# pass while comparing nothing at all.
+if grep -qF 'drift unknown' "${WORK_DIR}/drift-1.log"; then
+  echo "FAIL: phase 5: drift reported 'drift unknown' -- the route's current" >&2
+  echo "      state could not be read back, so the clean exit proves nothing" >&2
+  echo "      about convergence." >&2
+  tail -30 "${WORK_DIR}/drift-1.log" >&2
+  exit 1
+fi
+echo "[verify] phase 5: OK (both drift runs clean, and the route WAS compared)"
 
 # --------------------------------------------------------------------------
 # Phase 6 — destroy clean, 0 orphans.
 # --------------------------------------------------------------------------
 echo ""
 echo "[verify] phase 6: destroy + orphan sweep"
-ROUTE_DEST="${DEST_V1}" ${CDKD} destroy "${STACK}" --force
+ROUTE_DEST="${DEST_V1}" ${CDKD} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force
 
 VPC_LEFT="$(aws ec2 describe-vpcs \
   --filters "Name=tag:${FIXTURE_TAG_KEY},Values=${FIXTURE_TAG_VALUE}" \
