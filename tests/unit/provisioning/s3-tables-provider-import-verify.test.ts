@@ -263,6 +263,50 @@ describe('S3Tables import: verify the composite before adopting (issue #1668)', 
       });
     });
 
+    it('adopts when Namespace was SUBSTITUTED with the sibling composite id (#1668)', async () => {
+      // The migration path this fix targets. `import.ts` substitutes a
+      // single-key {Ref} with the referenced resource's PHYSICAL ID before
+      // provider.import() runs, and for AWS::S3Tables::Namespace that id is
+      // the 2-field composite `<bucketArn>|<namespace>`. Comparing it RAW
+      // against the resolved field refused the adoption on exactly the
+      // canonical CDK spelling (`namespace: ns.ref`) -- so the table was
+      // silently not adopted and the next deploy tried to CREATE it.
+      mockSend.mockResolvedValueOnce({ tableARN: TABLE_ARN, namespace: ['ns'], name: 'tbl' });
+
+      const result = await provider.import({
+        ...input,
+        properties: {
+          TableBucketARN: { 'Fn::GetAtt': ['TableBucket', 'TableBucketARN'] },
+          Namespace: `${BUCKET_ARN}|ns`,
+          TableName: 'tbl',
+        },
+        knownPhysicalId: TABLE_ARN,
+      });
+
+      expect(result).toEqual({
+        physicalId: `${BUCKET_ARN}|ns|tbl`,
+        attributes: { TableARN: TABLE_ARN },
+      });
+    });
+
+    it('still refuses a substituted composite naming a DIFFERENT namespace (#1668)', async () => {
+      // The other polarity: relaxing the comparison must not disable it. The
+      // last segment is still compared, so a genuine disagreement is refused.
+      mockSend.mockResolvedValueOnce({ tableARN: TABLE_ARN, namespace: ['ns'], name: 'tbl' });
+
+      const result = await provider.import({
+        ...input,
+        properties: {
+          TableBucketARN: { 'Fn::GetAtt': ['TableBucket', 'TableBucketARN'] },
+          Namespace: `${BUCKET_ARN}|someone-elses-namespace`,
+          TableName: 'tbl',
+        },
+        knownPhysicalId: TABLE_ARN,
+      });
+
+      expect(result).toBeNull();
+    });
+
     it('refuses when the resolved bucket disagrees with a LITERAL template bucket ARN', async () => {
       const otherBucket = 'arn:aws:s3tables:us-east-1:111122223333:bucket/other-bucket';
       mockSend.mockResolvedValueOnce({

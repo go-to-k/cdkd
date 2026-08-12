@@ -808,7 +808,20 @@ export class S3TablesProvider implements ResourceProvider {
   private async readTableCurrentState(
     physicalId: string
   ): Promise<Record<string, unknown> | undefined> {
-    const resolved = await this.resolveTableParts(physicalId);
+    // `cdkd drift` has no per-resource try/catch, so a throttle or an
+    // AccessDenied on ONE bare-ARN row would abort the whole stack's drift
+    // run. Report drift-unknown for this resource instead — the same answer
+    // the two sentinel resolutions below already produce.
+    let resolved: TablePartsResolution;
+    try {
+      resolved = await this.resolveTableParts(physicalId);
+    } catch (err) {
+      this.logger.warn(
+        `S3 Tables Table ${physicalId}: could not resolve its identity for drift ` +
+          `(${err instanceof Error ? err.message : String(err)}); reporting drift as unknown.`
+      );
+      return undefined;
+    }
     if (resolved === 'not-found' || resolved === 'unparseable') return undefined;
     const { tableBucketARN, namespace, name } = resolved;
 
@@ -1092,7 +1105,19 @@ export class S3TablesProvider implements ResourceProvider {
     ).find(([key, declared, resolved]) => {
       if (!declared) return false;
       if (key === 'TableBucketARN' && !declared.startsWith('arn:')) return false;
-      return declared !== resolved;
+      // A `{Ref}` to a SIBLING resource is substituted with that resource's
+      // PHYSICAL ID before `import()` runs, and for `AWS::S3Tables::Namespace`
+      // that id is the 2-field composite `<bucketArn>|<namespace>` — the very
+      // shape this PR documents. So the canonical CDK spelling
+      // (`namespace: ns.ref`) declares `arn:...|analytics` where the resolved
+      // field is `analytics`, and comparing them raw REFUSES the adoption on
+      // exactly the migration path this fix targets. Compare the field, not
+      // the id that carries it: neither a namespace nor a table name may
+      // contain `|`, so the last segment is unambiguous.
+      const declaredField = declared.includes('|')
+        ? (declared.split('|').pop() ?? declared)
+        : declared;
+      return declaredField !== resolved;
     });
     if (mismatch) {
       const [key, declared, resolved] = mismatch;
