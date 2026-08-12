@@ -1,3 +1,10 @@
+## [0.281.5](https://github.com/go-to-k/cdkd/compare/v0.281.4...v0.281.5) (2026-08-12)
+
+
+### Bug Fixes
+
+* **s3:** record the inventory schedule in the CFn spelling, and retain the previous value on an empty-collection skip ([#1715](https://github.com/go-to-k/cdkd/issues/1715)) ([8b117e1](https://github.com/go-to-k/cdkd/commit/8b117e1d3f0a74d96b6694b805e597959c14359b))
+
 ## [0.281.4](https://github.com/go-to-k/cdkd/compare/v0.281.3...v0.281.4) (2026-08-12)
 
 
