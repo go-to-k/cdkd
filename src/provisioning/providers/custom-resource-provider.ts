@@ -117,6 +117,26 @@ function parseLambdaPayload(payloadBytes: Uint8Array | undefined): CustomResourc
 }
 
 /**
+ * Decode the base64 `LogResult` a `LogType: 'Tail'` invoke returns into the
+ * backing function's log tail (issue #1674).
+ *
+ * Best-effort by design: this only ever feeds diagnostics and the retry
+ * classifier, so nothing here may fail a deploy that is otherwise fine. Node's
+ * base64 decoder is LENIENT — it drops invalid characters rather than throwing —
+ * so a malformed value decodes to garbage, which simply matches no signal; the
+ * `catch` is belt-and-braces for that contract changing, not a live path.
+ */
+function decodeInvokeLogTail(logResult: string | undefined): string | undefined {
+  if (!logResult) return undefined;
+  try {
+    const decoded = Buffer.from(logResult, 'base64').toString('utf8');
+    return decoded.length > 0 ? decoded : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * IAM-authorization-propagation signals in a custom resource FAILED reason that
  * indicate the backing Lambda's freshly-attached execution-role policy has not
  * yet taken effect for its assumed-role session (so a recycle + retry will
@@ -131,6 +151,49 @@ const CR_TRANSIENT_AUTHZ_SIGNALS: readonly string[] = [
   'not in the state functionactive',
   'cannot be assumed',
   'is unable to assume',
+];
+
+/**
+ * The same IAM-authorization-propagation signals, matched against the backing
+ * function's INVOCATION LOG TAIL rather than the FAILED reason (issue #1674).
+ *
+ * Why a second set is needed at all: the reason string is written by the
+ * handler, and a handler that wraps an SDK / CLI failure in its own message —
+ * normal handler hygiene — erases every authz phrase before cdkd ever sees it.
+ * CDK's `BucketDeployment` is the widely-used instance: `aws_command()` lets
+ * `subprocess.check_call` raise, and `str(CalledProcessError)` is only
+ * `Command '[...]' returned non-zero exit status 1.`, so the 403 on the asset
+ * object reaches cdkd with no authz wording at all and the retry above never
+ * fires — on a resource GUARANTEED to race, since CDK generates the handler
+ * role, its inline policy and the custom resource in the same stack.
+ *
+ * The 403 does survive in the function's own log, which a `LogType: 'Tail'`
+ * invoke returns inline (no CloudWatch Logs dependency, no extra API call, no
+ * additional IAM permission — see `invokeLambda`). So this set adds the
+ * CLI / SDK-level spellings of the SAME denial that the handler swallowed:
+ * botocore's `An error occurred (403) when calling the HeadObject operation`
+ * and the `AccessDenied` / `AccessDeniedException` error codes.
+ *
+ * Deliberately still NARROW, for the reason `isTransientAuthzFailure`
+ * documents: a bare `403` / `forbidden` would match a handler legitimately
+ * logging an unrelated downstream denial, and generic transient errors
+ * (throttling / timeouts) must not trigger a CR re-invoke at all.
+ *
+ * ACCEPTED COST, stated because a log surface is noisier than a
+ * handler-authored reason: a handler that merely LOGS a genuine, permanent
+ * `AccessDenied` — one it caught, or one no propagation will fix — now buys
+ * `transientAuthzMaxRetries` extra invokes plus a
+ * `recycleBackingFunctionExecEnv` each. Bounded (2 by default, 0 disables via
+ * `CDKD_CR_AUTHZ_MAX_RETRIES`), and the original failure still surfaces
+ * afterwards, so the failure is DELAYED, never masked. The trade is deliberate:
+ * the alternative is the pre-#1674 behavior, where the propagation race this
+ * whole mechanism exists for fails the deploy on its first attempt.
+ */
+const CR_TRANSIENT_AUTHZ_LOG_SIGNALS: readonly string[] = [
+  ...CR_TRANSIENT_AUTHZ_SIGNALS,
+  'an error occurred (403)',
+  'accessdenied',
+  'access denied',
 ];
 
 /**
@@ -684,7 +747,7 @@ export class CustomResourceProvider implements ResourceProvider {
         `Sending custom resource ${operation.toLowerCase()} request: ${serviceToken}`
       );
 
-      const cfnResponse = await this.sendRequest(
+      const { response: cfnResponse, logResult } = await this.sendRequest(
         serviceToken,
         request,
         invocation.responseKey,
@@ -692,18 +755,53 @@ export class CustomResourceProvider implements ResourceProvider {
         operation
       );
 
+      // The reason string is the primary signal; the invocation log tail is the
+      // fallback for a handler that swallowed the authz wording (issue #1674).
+      // Only scanned on FAILED — the happy path must not pay for it.
+      const reasonIsAuthz =
+        cfnResponse.Status === 'FAILED' && this.isTransientAuthzFailure(cfnResponse.Reason);
+      const logAuthzLine =
+        cfnResponse.Status === 'FAILED' && !reasonIsAuthz
+          ? this.findTransientAuthzLogLine(decodeInvokeLogTail(logResult))
+          : undefined;
+
       if (
         cfnResponse.Status === 'FAILED' &&
         attempt < this.transientAuthzMaxRetries &&
-        this.isTransientAuthzFailure(cfnResponse.Reason)
+        (reasonIsAuthz || logAuthzLine !== undefined)
       ) {
         this.logger.warn(
           `Custom resource ${operation} for ${logicalId} returned a transient IAM-authorization FAILED ` +
             `(attempt ${attempt + 1}/${this.transientAuthzMaxRetries + 1}): ${this.truncateReason(cfnResponse.Reason)}. ` +
+            (logAuthzLine === undefined
+              ? ''
+              : `The handler's reason carried no authorization wording; the denial was found in the backing function's log: ${this.truncateReason(logAuthzLine)}. `) +
             `Recycling the backing function's execution environment and retrying so its next cold start picks up the propagated policy.`
         );
         await this.recycleBackingFunctionExecEnv(serviceToken, logicalId);
         continue;
+      }
+
+      // Terminal FAILED whose reason hides an authorization denial: fold the
+      // matched line INTO the reason, so it reaches every consumer — the
+      // create / update throw, the delete warn-and-continue, and the
+      // `deployments/` record `cdkd events` replays. Surfacing it only in a log
+      // line would leave the post-mortem record pointing at CloudWatch, which
+      // is the complaint issue #1674 filed.
+      //
+      // Only the MATCHED line, and `truncateReason`d exactly like the reason
+      // beside it: the reason is already handler-authored free text persisted
+      // through this same path, so a bounded authz line is the same class of
+      // data under the contract cdkd already has. The UNBOUNDED tail is not —
+      // see the `FunctionError` arm, which deliberately keeps it out.
+      if (cfnResponse.Status === 'FAILED' && logAuthzLine !== undefined) {
+        return {
+          ...cfnResponse,
+          Reason:
+            `${cfnResponse.Reason ?? 'Unknown reason'} ` +
+            `[cdkd: the reason carried no authorization wording, but the backing function's ` +
+            `invocation log did: ${this.truncateReason(logAuthzLine)}]`,
+        };
       }
 
       return cfnResponse;
@@ -727,6 +825,45 @@ export class CustomResourceProvider implements ResourceProvider {
     if (!reason) return false;
     const lower = reason.toLowerCase();
     return CR_TRANSIENT_AUTHZ_SIGNALS.some((p) => lower.includes(p));
+  }
+
+  /**
+   * Find the IAM-authorization denial inside a backing function's invocation
+   * log tail, for the case the FAILED reason itself carries none (issue #1674).
+   *
+   * Returns the FIRST matching log LINE rather than a boolean, so the caller can
+   * put the denial the handler swallowed into its message — today the user has
+   * to open CloudWatch to discover that `returned non-zero exit status 1` was a
+   * 403 on the asset object. The line is returned verbatim (the caller
+   * truncates); only the MATCH is case-insensitive.
+   *
+   * Absent for an SNS-backed custom resource — no Lambda invoke, so no tail.
+   *
+   * **Known bound.** The tail always belongs to the DISPATCH invoke. For a
+   * handler that does its work inline and PUTs the cfn-response itself (CDK's
+   * `BucketDeployment` — the case this exists for), that IS where the failure
+   * happened. For the CDK Provider framework's genuinely async pattern it is
+   * NOT: the failure happens later, in a Step-Functions-driven handler, so a
+   * stray denial logged by the `onEvent` wrapper can buy a bounded extra retry
+   * with a message pointing at the wrong execution. That path is otherwise
+   * covered by the reason string, which the framework populates from the
+   * underlying error, so the cost is redundancy rather than a wrong answer.
+   *
+   * Suppressing the tail for the async pattern is NOT the fix, and the reason
+   * is worth recording: `isAsyncPattern` in `getCustomResourceResponse` means
+   * only "the invoke returned no direct payload", which is equally true of
+   * `BucketDeployment` — its Python handler returns `None`. Gating on it would
+   * switch off exactly the case this feature exists for.
+   */
+  private findTransientAuthzLogLine(logTail: string | undefined): string | undefined {
+    if (!logTail) return undefined;
+    for (const line of logTail.split('\n')) {
+      const lower = line.toLowerCase();
+      if (CR_TRANSIENT_AUTHZ_LOG_SIGNALS.some((p) => lower.includes(p))) {
+        return line.trim();
+      }
+    }
+    return undefined;
   }
 
   /** Truncate a CR FAILED reason for log readability. */
@@ -783,6 +920,12 @@ export class CustomResourceProvider implements ResourceProvider {
    * Send custom resource request via the appropriate service (Lambda or SNS)
    * For Lambda: invokes synchronously and returns the response
    * For SNS: publishes to topic and polls S3 for response
+   *
+   * Also returns the backing function's raw invocation `LogResult` when there
+   * is one, so the caller can recover an authorization denial the handler
+   * erased from the FAILED reason (issue #1674). Returned UNDECODED so the
+   * happy path pays nothing — only a FAILED whose reason missed decodes it.
+   * Absent on the SNS path: there is no Lambda invoke to attach a log to.
    */
   private async sendRequest(
     serviceToken: string,
@@ -790,11 +933,11 @@ export class CustomResourceProvider implements ResourceProvider {
     responseKey: string,
     logicalId: string,
     operation: string
-  ): Promise<CfnCustomResourceResponse> {
+  ): Promise<{ response: CfnCustomResourceResponse; logResult?: string }> {
     if (this.isSnsServiceToken(serviceToken)) {
       this.logger.debug(`ServiceToken is SNS topic, publishing to: ${serviceToken}`);
       await this.publishToSns(serviceToken, request);
-      return await this.pollS3Response(responseKey, logicalId, operation);
+      return { response: await this.pollS3Response(responseKey, logicalId, operation) };
     }
 
     // Block until the backing Lambda is in a ready-to-Invoke state. The
@@ -808,7 +951,10 @@ export class CustomResourceProvider implements ResourceProvider {
     await this.waitForBackingLambdaReady(serviceToken, logicalId);
 
     const response = await this.invokeLambda(serviceToken, request);
-    return await this.getCustomResourceResponse(response, responseKey, logicalId, operation);
+    return {
+      response: await this.getCustomResourceResponse(response, responseKey, logicalId, operation),
+      ...(response.LogResult === undefined ? {} : { logResult: response.LogResult }),
+    };
   }
 
   /**
@@ -876,6 +1022,15 @@ export class CustomResourceProvider implements ResourceProvider {
 
   /**
    * Invoke Lambda function synchronously
+   *
+   * `LogType: 'Tail'` makes Lambda return the last 4 KB of THIS invocation's
+   * log, base64-encoded, in `LogResult` (issue #1674). It is only valid with
+   * `RequestResponse`, which is what this path always uses. This is deliberately
+   * preferred over reading the function's CloudWatch log group after the fact:
+   * it needs no CloudWatch Logs client, no `logs:GetLogEvents` on cdkd's own
+   * credentials, and no extra API call — the tail rides the invoke response
+   * cdkd already waits for, and is scoped to the exact invocation that failed
+   * rather than to whatever happens to be latest in the log stream.
    */
   private async invokeLambda(
     serviceToken: string,
@@ -885,6 +1040,7 @@ export class CustomResourceProvider implements ResourceProvider {
       new InvokeCommand({
         FunctionName: serviceToken,
         InvocationType: 'RequestResponse',
+        LogType: 'Tail',
         Payload: Buffer.from(JSON.stringify(request)),
       })
     );
@@ -909,6 +1065,22 @@ export class CustomResourceProvider implements ResourceProvider {
       const errorPayload = lambdaResponse.Payload
         ? Buffer.from(lambdaResponse.Payload).toString()
         : 'Unknown';
+      // A handler that dies instead of sending a cfn-response leaves the real
+      // cause only in its log, and the `LogType: 'Tail'` invoke already carries
+      // it — so LOG it rather than sending the user to CloudWatch (issue #1674).
+      //
+      // Deliberately a `warn` and NOT part of the thrown message: a thrown
+      // error's `message` is captured by `extractDeploymentEventError` and
+      // persisted to `deployments/{runId}.jsonl`, which OUTLIVES `cdkd destroy`.
+      // That store's contract is error + metadata only, explicitly never
+      // anything that may carry secrets — and a log tail is arbitrary handler
+      // stdout, so a `print(event)` in a handler would write the custom
+      // resource's `ResourceProperties` into it. The warning is ephemeral, so
+      // the diagnostic is available without widening what cdkd stores.
+      const logTail = decodeInvokeLogTail(lambdaResponse.LogResult);
+      if (logTail !== undefined) {
+        this.logger.warn(`Backing function log tail for ${logicalId} (${operation}):\n${logTail}`);
+      }
       throw new Error(`Lambda function error (${lambdaResponse.FunctionError}): ${errorPayload}`);
     }
 
