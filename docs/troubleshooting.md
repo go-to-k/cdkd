@@ -395,9 +395,9 @@ already carries such a resource used to deploy silently (the diff classifies
 `NO_CHANGE`, so the provider's own refusal was never reached) while AWS held only
 one of the declared values.
 
-Note that `cdkd diff` does **not** report this shape today — it renders no
-change at all, and only `cdkd deploy` refuses. That gap is tracked as
-[#1639](https://github.com/go-to-k/cdkd/issues/1639).
+`cdkd diff` reports no CHANGE for this shape (the narrowed sides are equal),
+but it does warn that part of the declared properties cannot be sent as
+declared — that warning and this error describe the same defect.
 
 #### Solutions
 
