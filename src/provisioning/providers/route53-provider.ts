@@ -134,7 +134,13 @@ function normalizeRecordName(name: string): string {
   const decoded = name.replace(/\\([0-7]{3})/g, (match, oct: string) =>
     UNDECODABLE_OCTAL_ESCAPES.has(oct) ? match : String.fromCharCode(parseInt(oct, 8))
   );
-  return decoded.endsWith('.') ? decoded : `${decoded}.`;
+  // DNS is case-insensitive and AWS lowercases what it returns, so compare
+  // lowercased. Without this a template spelling `Example.com` fails to match
+  // the zone AWS reports as `example.com.` — which, on the delete path, now
+  // resolves to "zone is gone" and would DROP the state row while leaving the
+  // record live in AWS.
+  const lowered = decoded.toLowerCase();
+  return lowered.endsWith('.') ? lowered : `${lowered}.`;
 }
 
 /**
@@ -952,8 +958,11 @@ export class Route53Provider implements ResourceProvider {
             logicalId,
             physicalId
           );
-          this.logger.debug(
-            `Hosted zone for record set ${logicalId} no longer exists, skipping deletion`
+          // WARN, not debug: this drops the state row, so if the diagnosis is
+          // ever wrong the record is silently orphaned in AWS.
+          this.logger.warn(
+            `Hosted zone for record set ${logicalId} no longer exists; treating the record as ` +
+              `already deleted and dropping it from state.`
           );
           return;
         }

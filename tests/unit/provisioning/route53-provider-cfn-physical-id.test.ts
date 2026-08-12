@@ -359,6 +359,27 @@ describe('Route53 RecordSet physicalId: CloudFormation form vs cdkd composite (i
       expect(mockSend).toHaveBeenCalledTimes(1);
     });
 
+    it('matches a zone whose template spelling differs only in CASE', async () => {
+      // DNS is case-insensitive and AWS lowercases what it returns. Without
+      // the lowercase fold this resolved to "zone is gone" and would DROP the
+      // state row while leaving the record live in AWS.
+      mockSend
+        .mockResolvedValueOnce({
+          HostedZones: [{ Id: '/hostedzone/Z0123456789ABCDEFGHIJ', Name: 'example.com.' }],
+        })
+        .mockResolvedValueOnce({});
+
+      await provider.delete('WebsiteRecord', 'record.example.com', 'AWS::Route53::RecordSet', {
+        ...RECORD_PROPS,
+        HostedZoneId: undefined,
+        HostedZoneName: 'Example.COM',
+      });
+
+      const del = mockSend.mock.calls[1]?.[0];
+      expect(del).toBeInstanceOf(ChangeResourceRecordSetsCommand);
+      expect(del.input.HostedZoneId).toBe('Z0123456789ABCDEFGHIJ');
+    });
+
     it('still errors when neither the id nor the properties identify a zone', async () => {
       await expect(
         provider.delete('WebsiteRecord', 'record.example.com', 'AWS::Route53::RecordSet', {
