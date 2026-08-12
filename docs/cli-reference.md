@@ -1361,14 +1361,17 @@ Per-command behavior:
 | --- | --- |
 | `deploy` | redirect publishes + rewrite templates (incl. nested children); a post-resolution audit fails any resource whose resolved properties still name the CDK bootstrap storage |
 | `diff` (incl. `--recursive`) | rewrite, so the shown plan matches what deploy will do (incl. the one-time migration diff) |
-| `import` | rewrite before writing state (no spurious first-deploy churn) |
+| `import` | rewrite the template, but record the **pre-rewrite** values in state so the first post-import `cdkd deploy` repoints the live resources (issue [#1652](https://github.com/go-to-k/cdkd/issues/1652)) |
 | `publish-assets` | redirect via the same table (reads the marker from the state bucket; falls back to legacy with an info line when no state bucket resolves) |
 | `synth` / `export` | **unrewritten** — synth prints the CDK app's template; export returns the stack to the CFn/cdk-assets world |
 | `destroy` / `state *` / `drift` / `events` | state-driven, unchanged |
 
 The first deploy after opting in shows a one-time "everything with assets
 updates" diff — an ordinary in-place UPDATE repointing `Code` / `Image` at
-cdkd storage (content identical, no replacement).
+cdkd storage (content identical, no replacement). The first deploy after a
+`cdkd import` shows the same diff, for the same reason: state deliberately
+records the pre-rewrite references, so that deploy is what actually repoints
+the imported resources.
 
 `--use-cdk-bootstrap-assets` (on `deploy` / `diff` / `import` /
 `publish-assets`) pins legacy destinations for one invocation even after the

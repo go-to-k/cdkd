@@ -72,7 +72,7 @@ interface ImportOptions {
   recordResourceMapping?: string;
   /**
    * When true, resources NOT in `--resource` / `--resource-mapping` still
-   * go through tag-based auto-import. Default is `false` for CDK CLI parity:
+   * go through auto-resolution. Default is `false` for CDK CLI parity:
    * when explicit overrides are supplied, only those resources are imported
    * and the rest are skipped (left for the next deploy to create). Pass
    * `--auto` to opt back into hybrid mode (current pre-PR behavior).
@@ -218,7 +218,7 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
 
     // Stack selection: prefer explicit positional, otherwise auto-pick a single
     // stack when the assembly carries exactly one. Multi-stack assemblies must
-    // disambiguate — tag-based imports are per-stack and ambiguity here is
+    // disambiguate — imports are per-stack and ambiguity here is
     // worth a clear error rather than guessing.
     let stackInfo;
     if (stackArg) {
@@ -348,10 +348,12 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
       // Pre-populate overrides from the source CFn stack via a recursive
       // `DescribeStackResources` walk. This is the load-bearing piece that
       // makes `cdk deploy`-managed stacks importable by cdkd without per-
-      // resource `--resource <id>=<physical>` flags: cdkd's tag-based auto-
-      // lookup can't find those resources (upstream `cdk deploy` doesn't
+      // resource `--resource <id>=<physical>` flags: the physical-name-property
+      // half of auto-resolution can't find a resource whose name CDK generated
+      // (and a tag walk is not an option either — upstream `cdk deploy` doesn't
       // propagate `aws:cdk:path` as a real AWS tag, and AWS reserves the
-      // `aws:` tag prefix so we can't add it on the way through either),
+      // `aws:` tag prefix so we can't add it on the way through, which is why
+      // issue #1134 removed that walk entirely),
       // so we ask CloudFormation directly. User-supplied `--resource` /
       // `--resource-mapping` entries take precedence — they were inserted
       // into `overrides` first. Logical IDs CFn knows about but cdkd's
@@ -424,9 +426,9 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
     // `--resource X=Y` (or `--resource-mapping`), only those resources are
     // imported; the rest are skipped (and will be CREATEd on the next
     // deploy). The user can opt into the old hybrid behavior — explicit
-    // overrides PLUS tag-based auto-import for everything else — with
+    // overrides PLUS auto-resolution for everything else — with
     // `--auto`. With no overrides at all, auto mode is implied (the user
-    // is asking cdkd to find every resource by tag).
+    // is asking cdkd to find every resource itself).
     //
     // `--migrate-from-cloudformation` always implies whole-stack auto mode:
     // every CFn-derived override is part of the same migration intent, so
@@ -436,7 +438,7 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
       logger.info(
         `Selective mode: only importing the ${overrides.size} resource(s) you listed ` +
           `(${[...overrides.keys()].join(', ')}). ` +
-          `Pass --auto to also tag-import the rest.`
+          `Pass --auto to also auto-resolve the rest.`
       );
     }
 
@@ -1504,9 +1506,14 @@ async function confirmPrompt(prompt: string): Promise<boolean> {
  * Three usage modes:
  *
  *   1. **Auto mode** (no overrides): `cdkd import MyStack`
- *      Imports every resource in the template via tag-based lookup
- *      (`aws:cdk:path`). cdkd's value-add over CDK CLI — useful for
- *      adopting a whole stack that was previously deployed by `cdk deploy`.
+ *      Imports every resource in the template, resolving each physical id
+ *      from the template's explicit physical-name property and then from a
+ *      same-named CloudFormation stack's `DescribeStackResources` (issue
+ *      #1128 / #1130). cdkd's value-add over CDK CLI — useful for adopting
+ *      a whole stack that was previously deployed by `cdk deploy`. (There is
+ *      deliberately no `aws:cdk:path` tag walk: AWS reserves the `aws:` tag
+ *      prefix, so that tag never exists on a real resource — issue #1134
+ *      removed the walk from every provider.)
  *
  *   2. **Selective mode** (CDK CLI parity, default when overrides given):
  *      `cdkd import MyStack --resource MyBucket=my-bucket-name`
@@ -1520,7 +1527,7 @@ async function confirmPrompt(prompt: string): Promise<boolean> {
  *   3. **Hybrid mode** (`--auto` with overrides):
  *      `cdkd import MyStack --resource MyBucket=name --auto`
  *      Listed resources use the explicit physical id; all other
- *      resources still go through tag-based auto-import. The pre-PR
+ *      resources still go through auto-resolution. The pre-PR
  *      default behavior, now opt-in.
  */
 export function createImportCommand(): Command {
@@ -1528,8 +1535,10 @@ export function createImportCommand(): Command {
     .description(
       'Adopt already-deployed AWS resources into cdkd state. Reads the CDK app to find ' +
         'logical IDs, resource types, and dependencies. With no flags, imports every ' +
-        'resource via the aws:cdk:path tag. With --resource / --resource-mapping, only ' +
-        'the listed resources are imported (CDK CLI parity); pass --auto to also tag-import the rest.'
+        "resource, resolving each physical id from the template's physical-name property " +
+        "and then from a same-named CloudFormation stack's DescribeStackResources. " +
+        'With --resource / --resource-mapping, only the listed resources are imported ' +
+        '(CDK CLI parity); pass --auto to auto-resolve the rest.'
     )
     .argument(
       '[stack]',
@@ -1539,7 +1548,7 @@ export function createImportCommand(): Command {
       '--resource <id=physical>',
       'Explicit physical-id override for one logical ID. Repeatable. ' +
         'When at least one --resource is given, only listed resources are imported ' +
-        '(CDK CLI parity). Pass --auto to also tag-import everything else.',
+        '(CDK CLI parity). Pass --auto to also auto-resolve everything else.',
       collectMultiple,
       [] as string[]
     )
@@ -1562,16 +1571,16 @@ export function createImportCommand(): Command {
     .option(
       '--record-resource-mapping <file>',
       'After cdkd resolves every logical ID (via --resource / --resource-mapping / ' +
-        'tag-based auto-lookup), write the resulting {logicalId: physicalId} map ' +
+        'auto-resolution), write the resulting {logicalId: physicalId} map ' +
         'to <file> as JSON. Useful in auto / hybrid mode for capturing the ' +
-        'tag-resolved mapping and feeding it back as --resource-mapping in ' +
+        'auto-resolved mapping and feeding it back as --resource-mapping in ' +
         'non-interactive CI re-runs. Written before the confirmation prompt ' +
         '(so the user can review the file before saying "yes") and even when the ' +
         'user says "no". Mirrors `cdk import --record-resource-mapping`.'
     )
     .option(
       '--auto',
-      'Hybrid mode: when explicit overrides are supplied, ALSO tag-import ' +
+      'Hybrid mode: when explicit overrides are supplied, ALSO auto-resolve ' +
         'every other resource in the template. Without this flag, --resource / ' +
         '--resource-mapping behave as a whitelist (CDK CLI parity).',
       false
