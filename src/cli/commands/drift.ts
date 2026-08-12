@@ -268,7 +268,7 @@ async function driftCommand(
     if (options.accept) {
       await runAccept(reports, stateBackend, stateConfig, awsClients, options);
     } else {
-      await runRevert(reports, providerRegistry, stateConfig, awsClients, options);
+      await runRevert(reports, providerRegistry, stateBackend, stateConfig, awsClients, options);
     }
   } finally {
     awsClients.destroy();
@@ -1374,6 +1374,76 @@ export function buildRevertNewProperties(
 }
 
 /**
+ * The top-level keys a provider NARROWED on the revert path (issue #1644).
+ *
+ * `provider.update()` may answer with `effectiveProperties` — the bag it
+ * ACTUALLY delivered, which is what AWS now holds. `DeployEngine` records that
+ * in place of the desired bag (`propertiesToRecord`), and `--revert` used to
+ * throw the return value away: state kept the un-narrowed value, so the very
+ * next `cdkd drift` reported the same difference and `--revert` re-issued the
+ * same call — the loop `effectiveProperties` exists to break, still live on
+ * this one command.
+ *
+ * Returns a per-key DELTA rather than the whole bag, and that is the load-
+ * bearing part. The bag handed to `update()` here is
+ * {@link buildRevertNewProperties}'s output — AWS-current values for every
+ * non-drifted key merged with the state baseline for the drifted ones — so
+ * writing it back wholesale would import AWS-authored values into state for
+ * keys nobody reverted, quietly turning `--revert` into `--accept`. Only the
+ * keys the PROVIDER changed between what it was handed and what it delivered
+ * belong in state.
+ *
+ * A key present in `sent` but absent from `effective` is a DROP: the provider
+ * did not deliver it, so AWS does not hold it, and the baseline must lose it
+ * too. That is represented by an explicit `undefined` value, which the caller
+ * turns into a `delete` — a plain `{...baseline, ...delta}` spread would leave
+ * an `undefined`-valued key in the JSON instead. Presence is decided by
+ * `key in effective`, NOT by comparing against `undefined`: a provider that
+ * delivers an explicit `undefined` and one that omits the key both mean "AWS
+ * does not hold it", while a key whose value genuinely IS `null` on both sides
+ * must not read as a drop.
+ *
+ * The comparison is a key-order-INDEPENDENT deep equality rather than
+ * `JSON.stringify`. A provider that rebuilds a nested object while delivering
+ * the same members would otherwise register as a change, and the value written
+ * back for such a key is the one that was SENT — for a non-drifted key that is
+ * the AWS-current value, i.e. the `--accept` behavior this delta exists to
+ * prevent.
+ */
+export function collectNarrowedTopLevelKeys(
+  sent: Record<string, unknown>,
+  effective: Record<string, unknown>
+): Record<string, unknown> {
+  const delta: Record<string, unknown> = {};
+  for (const key of new Set([...Object.keys(sent), ...Object.keys(effective)])) {
+    const inSent = key in sent;
+    const inEffective = key in effective;
+    if (inSent && inEffective && deepEqualUnordered(sent[key], effective[key])) continue;
+    if (!inSent && !inEffective) continue;
+    delta[key] = inEffective ? effective[key] : undefined;
+  }
+  return delta;
+}
+
+/** Deep equality that does not depend on object key ORDER. */
+function deepEqualUnordered(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (a == null || b == null) return a === b;
+  if (typeof a !== 'object' || typeof b !== 'object') return false;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+    return a.every((v, i) => deepEqualUnordered(v, b[i]));
+  }
+  const ao = a as Record<string, unknown>;
+  const bo = b as Record<string, unknown>;
+  const ak = Object.keys(ao);
+  if (ak.length !== Object.keys(bo).length) return false;
+  return ak.every(
+    (k) => Object.prototype.hasOwnProperty.call(bo, k) && deepEqualUnordered(ao[k], bo[k])
+  );
+}
+
+/**
  * `--revert`: AWS ← state.
  *
  * For each drifted resource, call `provider.update(logicalId, physicalId,
@@ -1389,8 +1459,10 @@ export function buildRevertNewProperties(
  *     truth, captured during the drift read so we don't re-issue it).
  *
  * Per-resource failures are collected and surface as `PartialFailureError`
- * (exit 2) at the end. State is NOT updated by `--revert` — once the
- * update succeeds, AWS values match state by definition.
+ * (exit 2) at the end. State is otherwise NOT updated by `--revert` — once the
+ * update succeeds, AWS values match state by definition. The ONE exception is
+ * a provider-reported NARROWING (issue #1644): see
+ * {@link collectNarrowedTopLevelKeys}.
  *
  * The per-stack lock is acquired before any update so a concurrent
  * `cdkd deploy` cannot race the in-flight property changes.
@@ -1398,6 +1470,7 @@ export function buildRevertNewProperties(
 async function runRevert(
   reports: StackDriftReport[],
   providerRegistry: ProviderRegistry,
+  stateBackend: S3StateBackend,
   stateConfig: { bucket: string; prefix: string },
   awsClients: AwsClients,
   options: { yes?: boolean; dryRun?: boolean; concurrency?: number }
@@ -1438,6 +1511,10 @@ async function runRevert(
     }
 
     await lockManager.acquireLock(report.stackName, report.region, owner, 'drift-revert');
+    // Provider-reported narrowings, keyed by logical id (issue #1644).
+    // Collected inside the concurrent tasks and applied to state ONCE, under
+    // the same lock, after they all settle.
+    const narrowedByLogicalId = new Map<string, Record<string, unknown>>();
     try {
       const tasks = driftedOutcomes.map((outcome) => async () => {
         const stateResource = report.state.resources[outcome.logicalId];
@@ -1488,7 +1565,7 @@ async function runRevert(
           { preserveUntemplated: stateResource.observedProperties === undefined }
         );
         try {
-          await withRetry(
+          const updateResult = await withRetry(
             () =>
               provider.update(
                 outcome.logicalId,
@@ -1504,6 +1581,31 @@ async function runRevert(
           logger.info(
             `  ✓ ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): reverted.`
           );
+          // Issue #1644: keep whatever the provider says it ACTUALLY delivered,
+          // so a narrowing does not re-surface as drift on the next run.
+          //
+          // AFTER the success accounting, and in its OWN try: the AWS update
+          // has already landed, so a throw in here (a provider handing back a
+          // cyclic / non-comparable bag) must not be caught by the outer
+          // handler and re-reported as `AWS update failed`, flipping a
+          // succeeded revert to exit 2.
+          try {
+            if (updateResult?.effectiveProperties) {
+              const delta = collectNarrowedTopLevelKeys(
+                newProperties,
+                updateResult.effectiveProperties
+              );
+              if (Object.keys(delta).length > 0) {
+                narrowedByLogicalId.set(outcome.logicalId, delta);
+              }
+            }
+          } catch (captureErr) {
+            logger.warn(
+              `  ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): reverted, but ` +
+                `the provider's reported effective properties could not be read — ` +
+                `${captureErr instanceof Error ? captureErr.message : String(captureErr)}`
+            );
+          }
         } catch (err) {
           // Distinguish "the AWS update failed" from "this resource type
           // does not support in-place update at all". The latter cannot be
@@ -1524,6 +1626,103 @@ async function runRevert(
       });
 
       await runWithConcurrency(tasks, concurrency);
+
+      // Persist the provider-reported narrowings (issue #1644), still under
+      // the stack lock. Written to the SAME field the drift comparator uses as
+      // its baseline — `observedProperties` when the resource has one, else
+      // `properties` — exactly as `--accept` does, so the next `cdkd drift`
+      // compares AWS against what the provider said it delivered. `properties`
+      // is left alone when an observed capture exists: it is the user's
+      // last-deployed TEMPLATE intent, and a narrowing is an AWS-side fact,
+      // not a template edit.
+      if (narrowedByLogicalId.size > 0) {
+        const resources: Record<string, ResourceState> = { ...report.state.resources };
+        let recordedCount = 0;
+        for (const [logicalId, delta] of narrowedByLogicalId) {
+          const existing = resources[logicalId];
+          if (!existing) continue;
+          const hasObserved = existing.observedProperties !== undefined;
+          const baselineSource = hasObserved ? existing.observedProperties : existing.properties;
+          const newBaseline = JSON.parse(JSON.stringify(baselineSource ?? {})) as Record<
+            string,
+            unknown
+          >;
+          let changed = false;
+          for (const [key, value] of Object.entries(delta)) {
+            // ONLY a key the baseline already declares may move. The bag sent
+            // to `update()` starts as the AWS-CURRENT snapshot, so it carries
+            // keys the baseline never had (an out-of-band tag, an AWS-computed
+            // field); a provider that echoes one back in a changed shape would
+            // otherwise INSERT it into state — `--revert` behaving like
+            // `--accept`, the thing the per-key delta exists to prevent.
+            if (!Object.prototype.hasOwnProperty.call(newBaseline, key)) continue;
+            if (value === undefined) {
+              delete newBaseline[key];
+              changed = true;
+              continue;
+            }
+            // A VALUE is recorded only against an `observedProperties`
+            // baseline. Without one the baseline is the raw TEMPLATE, and
+            // `buildRevertNewProperties` ran in `preserveUntemplated` mode —
+            // so the value that was sent deliberately carries every AWS-
+            // authored path the template never declared. Writing it into
+            // `properties` would make the DESIRED baseline describe AWS-side
+            // values and silently disable the #1160 absent-field removal
+            // derivation, which reads that side (`.claude/rules/providers.md`:
+            // what you return is what you SENT, AWS-side defaults belong in
+            // `observedProperties`). A DROP is still safe there — it removes,
+            // never imports — so the loop this fix exists to break still
+            // closes for the shape that actually produces it.
+            if (!hasObserved) continue;
+            newBaseline[key] = value;
+            changed = true;
+          }
+          if (!changed) continue;
+          recordedCount++;
+          resources[logicalId] = hasObserved
+            ? { ...existing, observedProperties: newBaseline }
+            : { ...existing, properties: newBaseline };
+        }
+
+        if (recordedCount === 0) {
+          // Every reported narrowing was on a key state does not track, or was
+          // a value on a template-only baseline — nothing to persist.
+          continue;
+        }
+
+        const newState: StackState = {
+          ...report.state,
+          resources,
+          lastModified: Date.now(),
+        };
+        const saveOptions: { expectedEtag?: string; migrateLegacy?: boolean } = {
+          expectedEtag: report.etag,
+        };
+        if (report.migrationPending) {
+          saveOptions.migrateLegacy = true;
+        }
+        // BEST-EFFORT, unlike `--accept`'s write. There the state write IS the
+        // operation; here AWS has ALREADY been reverted and this is a secondary
+        // convergence step, so a failure must not abort the command — under
+        // `--all` a throw here would skip every later stack's revert entirely,
+        // which is a regression against the pre-#1644 behavior of not writing
+        // at all. The cost of the warn path is only that the narrowing
+        // re-surfaces on the next `cdkd drift`, i.e. exactly the pre-fix state.
+        try {
+          await stateBackend.saveState(report.stackName, report.region, newState, saveOptions);
+          logger.info(
+            `✓ State updated for ${report.stackName} (${report.region}): recorded the value the ` +
+              `provider actually applied on ${recordedCount} resource(s).`
+          );
+        } catch (err) {
+          logger.warn(
+            `Reverted ${report.stackName} (${report.region}), but could not record the value the ` +
+              `provider actually applied: ${err instanceof Error ? err.message : String(err)}. ` +
+              `The next 'cdkd drift' will report the same difference — re-run ` +
+              `'cdkd drift ${report.stackName} --revert' once the state write can succeed.`
+          );
+        }
+      }
     } finally {
       await lockManager.releaseLock(report.stackName, report.region).catch((err) => {
         logger.warn(
