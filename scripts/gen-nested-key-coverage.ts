@@ -349,7 +349,10 @@
  *                                        410       290        260         81
  *
  * The `AWS::Lambda::EventSourceMapping` row (issue #1393 item 3) is flat for a
- * different reason, and it is NOT opted into the write-evidence pass: the
+ * different reason, and it is NOT opted into the write-evidence pass — so its
+ * denominator is the TOTAL audited path count (37), not the write-audited
+ * subset the opted-in rows use. It is excluded from the stage totals for the
+ * same reason the AppSync rows are: no stage moves it. The
  * provider forwards each config blob VERBATIM (`params.X = properties['X'] as
  * <SdkType>`) rather than hand-building an SDK object, so the top-level member
  * write already vouches for every path beneath it and the pass has nothing to
@@ -359,8 +362,9 @@
  * unknown key with no code change to notice it.
  *
  * The three AppSync rows joined AFTER the four recognizer stages, so their
- * columns are flat (no stage moves them) and they are excluded from the stage
- * totals above. Flat does NOT mean zero, and the split is the point:
+ * columns are flat (no stage moves them) and they — like the EventSourceMapping
+ * row above, four excluded rows in total — are excluded from the stage totals
+ * above. Flat does NOT mean zero, and the split is the point:
  * `GraphQLApi` and `Resolver` measured 0 on their first run because the #609
  * backfill had already wired every member (31 of GraphQLApi's 33 paths are
  * same-spelling WITH scoped write evidence; its 2 `Tags.*` paths are
@@ -5129,8 +5133,22 @@ export function classifyTarget(
       // A target WITHOUT the write-evidence opt-in keeps the file-global
       // rescue: there is no scope index to check against, and inventing one
       // from nothing would flag every key of a legitimately blob-forwarding
-      // provider. All current targets have opted in, so the loose path is
-      // future-target fallback only.
+      // provider.
+      //
+      // This path is LIVE, not a future-target fallback: since issue #1393
+      // item 3, `AWS::Lambda::EventSourceMapping` is a target that
+      // deliberately does not opt in (its blobs are verbatim casts, so the
+      // write pass measures 0/37 — see its entry in NESTED_KEY_TARGETS), and
+      // its ONE `provider-handled` verdict
+      // (`SelfManagedEventSource.Endpoints.KafkaBootstrapServers`) rests on
+      // exactly this rescue — under a FORCED opt-in the same key reports
+      // `no-sdk-member`. That is the intended reading for a #1384-class key
+      // (a map keyed by an enum value has no member to write), but it means
+      // the loose path's known weakness applies to that target: a future
+      // nested member sharing the name of any PascalCase literal already in
+      // the provider file would be rescued without per-key evidence. Scope it
+      // by opting the target in, or by a path-scoped allow-list entry, if
+      // that ever stops being acceptable.
       const near = sdkLower.get(key.toLowerCase());
       const allowed = lookupAllowEntry(allowList, target.resourceType, path, key, 'key');
       let literalRescued: boolean;

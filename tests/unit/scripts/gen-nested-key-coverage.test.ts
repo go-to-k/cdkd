@@ -3599,7 +3599,12 @@ describe('real-repo audit (regression floors)', () => {
       (t) => t.resourceType === 'AWS::Lambda::EventSourceMapping'
     );
     expect(esm).toBeDefined();
-    expect(esm!.nestedKeyCount).toBeGreaterThanOrEqual(30);
+    // Read the floor off the target table rather than restating it, so a
+    // recalibration cannot leave this assertion pinning the old number.
+    const declared = NESTED_KEY_TARGETS.find(
+      (t) => t.resourceType === 'AWS::Lambda::EventSourceMapping'
+    )!;
+    expect(esm!.nestedKeyCount).toBeGreaterThanOrEqual(declared.minNestedKeys);
     // The seven verbatim-forwarded blobs the opt-in exists to fence are all
     // actually reached — a `handledProperties` parse that lost them would
     // leave this target vacuously clean rather than failing.
