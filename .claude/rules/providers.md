@@ -158,6 +158,24 @@ each was learned by shipping the version that did not check it:
   overriding only the members you vouch for, and leave anything whose readback
   order is not guaranteed as the desired copy.
 
+**EXISTENCE and VALUES take DIFFERENT gates in the same method** (issue #1630,
+the Create / Update siblings of the #1617 Delete fix). `applyGsiUpdates` now
+consults the live `DescribeTable` snapshot in both arms so a failure LATER in
+`update()` — PITR, TTL, ResourcePolicy, Kinesis streaming — cannot wedge every
+later deploy on a re-emitted op AWS rejects (state is written only once
+`update()` RETURNS, so anything that already landed is unrecorded). But the two
+arms are gated differently on purpose: an index's EXISTENCE is
+billing-mode-independent, so the Create skip applies on either mode, while the
+capacity VALUES are meaningless under PAY_PER_REQUEST and the Update skip is
+disabled there entirely. Reading the identity bullet above as "consult the live
+read" without splitting the two would re-open the `{0, 0}` trap on the arm that
+compares numbers. And compare such a value MEMBER BY MEMBER: a
+`Describe*` readback carries AWS bookkeeping (`NumberOfDecreasesToday`,
+`LastIncreaseDateTime`) the desired object does not, so a structural compare
+never matches and the suppression becomes dead code that still LOOKS safe.
+Make every unresolvable shape fail OPEN (still issue the call) — the worst case
+is the pre-fix behavior, whereas a false match silently drops a real change.
+
 Carrying the values matters beyond capacity: the #1160 absent-field RESET is
 derived from the PREVIOUS side, so an identity-only baseline silently disables
 every removal for as long as the record stays junk.

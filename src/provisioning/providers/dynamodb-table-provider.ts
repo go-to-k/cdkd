@@ -34,6 +34,8 @@ import {
   type OnDemandThroughput,
   type WarmThroughput,
   type Tag,
+  type ProvisionedThroughput,
+  type ProvisionedThroughputDescription,
 } from '@aws-sdk/client-dynamodb';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
@@ -171,6 +173,34 @@ function hasUsableTableCapacity(value: unknown): boolean {
     if (!Number.isFinite(n) || n < 1) return false;
   }
   return true;
+}
+
+/**
+ * Does the capacity AWS currently holds for a GSI already equal the pair the
+ * template requests? (issue #1630)
+ *
+ * Compared member by member as NUMBERS, deliberately not with `deepEqual` /
+ * `JSON.stringify`: `DescribeTable` returns a `ProvisionedThroughputDescription`
+ * carrying `NumberOfDecreasesToday` / `LastIncreaseDateTime` /
+ * `LastDecreaseDateTime` alongside the two capacities, so a structural compare
+ * against the two-member desired object could never match and the suppression
+ * would be dead code that only LOOKED safe.
+ *
+ * Every non-numeric shape yields `NaN`, which equals nothing — so an absent
+ * live entry, a malformed template value and an unresolved intrinsic all FAIL
+ * OPEN and still issue the `UpdateTable`. That is the correct direction: the
+ * worst case is the pre-fix behavior, whereas a false MATCH would silently drop
+ * a capacity change the user asked for.
+ */
+function liveCapacityAlreadyMatches(
+  live: ProvisionedThroughputDescription | undefined,
+  requested: ProvisionedThroughput
+): boolean {
+  if (live === undefined) return false;
+  return (
+    Number(live.ReadCapacityUnits) === Number(requested.ReadCapacityUnits) &&
+    Number(live.WriteCapacityUnits) === Number(requested.WriteCapacityUnits)
+  );
 }
 
 /**
@@ -891,6 +921,25 @@ export class DynamoDBTableProvider implements ResourceProvider {
           )
         : undefined;
 
+      // The per-index capacity AWS holds RIGHT NOW, for the Update arm's
+      // idempotency check (issue #1630). Populated only when the table is LIVE
+      // on PROVISIONED, and the gate is the whole risk of this change rather
+      // than a formality: `DescribeTable` reports
+      // `ProvisionedThroughput: {0, 0}` for every index of a PAY_PER_REQUEST
+      // table (the #1571 trap), so the numbers mean nothing there — and when
+      // THIS deploy is flipping to PROVISIONED, the flip itself delivers the
+      // capacity, which `gsiHandledByBillingFlip` already suppresses through a
+      // different route. Left `undefined` in both cases, which restores the
+      // pre-change behavior (always emit the Update) rather than guessing.
+      const currentLiveIndexCapacity =
+        table && liveBillingMode === 'PROVISIONED'
+          ? new Map(
+              liveIndexes
+                .filter((live) => typeof live.IndexName === 'string')
+                .map((live) => [live.IndexName!, live.ProvisionedThroughput ?? {}] as const)
+            )
+          : undefined;
+
       // Index names whose capacity the BillingMode flip below already delivered.
       // `applyGsiUpdates` must NOT re-assert them: real AWS rejects a no-op
       // capacity change outright (`The provisioned throughput for the index X
@@ -1238,7 +1287,8 @@ export class DynamoDBTableProvider implements ResourceProvider {
           properties['GlobalSecondaryIndexes'] as GlobalSecondaryIndex[] | undefined,
           properties['AttributeDefinitions'] as AttributeDefinition[] | undefined,
           gsiHandledByBillingFlip,
-          currentLiveIndexNames
+          currentLiveIndexNames,
+          currentLiveIndexCapacity
         );
       }
 
@@ -2092,7 +2142,13 @@ export class DynamoDBTableProvider implements ResourceProvider {
     // `undefined` means "no live snapshot to reason from" and disables the
     // filter, so a caller without a DescribeTable result keeps the original
     // behavior rather than silently skipping every removal.
-    liveIndexNames?: ReadonlySet<string>
+    liveIndexNames?: ReadonlySet<string>,
+    // The capacity AWS holds per live index, for the Update arm's idempotency
+    // check (issue #1630). `undefined` means "no trustworthy live capacity to
+    // reason from" — no snapshot, or a table whose LIVE billing mode is
+    // PAY_PER_REQUEST, where `DescribeTable` reports `{0, 0}` for every index
+    // — and disables the suppression, keeping the pre-change behavior.
+    liveIndexCapacity?: ReadonlyMap<string, ProvisionedThroughputDescription>
   ): Promise<void> {
     const prev = previousGsis ?? [];
     const desired = desiredGsis ?? [];
@@ -2118,6 +2174,27 @@ export class DynamoDBTableProvider implements ResourceProvider {
 
     for (const [name, gsi] of desiredByName) {
       if (!prevByName.has(name)) {
+        // The Create arm's idempotency half (issue #1630), the sibling of the
+        // Delete filter above. cdkd writes state only after `update()` RETURNS,
+        // so a throw in any of the steps that follow `applyGsiUpdates` (PITR,
+        // TTL, ResourcePolicy, Kinesis streaming, Contributor Insights) leaves
+        // a just-created index unrecorded — the next deploy re-emits its
+        // Create, AWS rejects it because the index now exists, and every later
+        // deploy fails identically until the user runs `cdkd drift --accept`.
+        // Skipping a Create for a name AWS already has is what makes the arm
+        // converge instead.
+        //
+        // WARN rather than debug: reaching this means state and AWS disagree,
+        // which is worth surfacing even though cdkd recovers from it.
+        if (liveIndexNames?.has(name)) {
+          this.logger.warn(
+            `GSI ${name} on DynamoDB table ${physicalId} already exists in AWS but is absent ` +
+              `from cdkd's recorded previous state, so its Create is being skipped. This ` +
+              `usually means an earlier deploy created the index and then failed before ` +
+              `state was written.`
+          );
+          continue;
+        }
         if (!gsi.KeySchema) {
           throw new ProvisioningError(
             `GlobalSecondaryIndex ${name} on DynamoDB table ${logicalId} is missing KeySchema`,
@@ -2168,9 +2245,24 @@ export class DynamoDBTableProvider implements ResourceProvider {
           !handledByBillingFlip.has(name) &&
           JSON.stringify(before.ProvisionedThroughput) !== JSON.stringify(gsi.ProvisionedThroughput)
         ) {
-          ops.push({
-            Update: { IndexName: name, ProvisionedThroughput: gsi.ProvisionedThroughput },
-          });
+          // The Update arm's idempotency half (issue #1630). The recorded
+          // previous side says the capacity changed, but a throughput Update
+          // that already LANDED before a later step threw is unrecorded — and
+          // re-emitting it is rejected outright: "The provisioned throughput
+          // for the index X will not change. The requested value equals the
+          // current value." (the same rejection `gsiHandledByBillingFlip`
+          // exists for, reached by a different route). Consulting what AWS
+          // actually holds is what lets the deploy converge.
+          if (liveCapacityAlreadyMatches(liveIndexCapacity?.get(name), gsi.ProvisionedThroughput)) {
+            this.logger.debug(
+              `GSI ${name} on DynamoDB table ${physicalId} already carries the requested ` +
+                `capacity in AWS; skipping its throughput Update`
+            );
+          } else {
+            ops.push({
+              Update: { IndexName: name, ProvisionedThroughput: gsi.ProvisionedThroughput },
+            });
+          }
         }
       }
     }
