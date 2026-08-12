@@ -66,6 +66,13 @@ describe('DynamoDBGlobalTableProvider replay-CREATE effectiveProperties (issues 
     mockSend.mockResolvedValue({ Table: { TableName: TABLE_NAME, TableStatus: 'ACTIVE' } });
   });
 
+  /** What actually went on the wire — the half an effectiveProperties-only
+   *  assertion cannot see. Without it, an arm that stopped OMITTING and started
+   *  substituting would leave this file green. */
+  const createInput = () =>
+    mockSend.mock.calls.find((c) => c[0].constructor.name === 'CreateTableCommand')?.[0]
+      .input as Record<string, unknown>;
+
   const baseProps = {
     TableName: TABLE_NAME,
     KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
@@ -98,7 +105,7 @@ describe('DynamoDBGlobalTableProvider replay-CREATE effectiveProperties (issues 
     });
   });
 
-  it('keeps a Replicas[].GlobalSecondaryIndexes override when only the TOP-LEVEL block was malformed', async () => {
+  it('also drops the LOCAL replica index block, keeping the rest of the entry', async () => {
     const result = await replayCreate({
       ...baseProps,
       BillingMode: 'PAY_PER_REQUEST',
@@ -106,16 +113,23 @@ describe('DynamoDBGlobalTableProvider replay-CREATE effectiveProperties (issues 
       Replicas: [
         {
           Region: 'us-east-1',
+          Tags: [{ Key: 'k', Value: 'v' }],
           GlobalSecondaryIndexes: [{ IndexName: 'gsi1' }],
         },
       ],
     });
 
-    // The override is a SEPARATE template key the guard never read and never
-    // refused. Withdrawing it because a different key was malformed would
-    // record a loss that did not happen.
+    // The local replica's index block is NOT a separate send path — it is only
+    // a capacity SOURCE that `toSdkGlobalSecondaryIndexes` reads through
+    // `localByName`, and that call returned the EMPTY list. `readCurrentState`
+    // attaches it only when the live table HAS indexes, so on a zero-index
+    // table a retained block is the same never-matchable record the top-level
+    // drop exists to remove, one level down.
+    //
+    // Everything else on the entry survives — the drop is per-KEY, and a
+    // replica-wide sweep would discard tags the create really did send.
     expect(result.effectiveProperties?.['Replicas']).toEqual([
-      { Region: 'us-east-1', GlobalSecondaryIndexes: [{ IndexName: 'gsi1' }] },
+      { Region: 'us-east-1', Tags: [{ Key: 'k', Value: 'v' }] },
     ]);
   });
 
@@ -199,11 +213,12 @@ describe('DynamoDBGlobalTableProvider replay-CREATE effectiveProperties (issues 
 
     const replicas = result.effectiveProperties?.['Replicas'] as Array<Record<string, unknown>>;
     expect('ReadProvisionedThroughputSettings' in replicas[0]!).toBe(false);
-    const replicaIndexes = replicas[0]!['GlobalSecondaryIndexes'] as Array<
-      Record<string, unknown>
-    >;
-    expect('ReadProvisionedThroughputSettings' in replicaIndexes[0]!).toBe(false);
-    expect(replicaIndexes[0]).toMatchObject({ IndexName: 'gsi1' });
+    // The replica index entry existed ONLY to carry the capacity override, so
+    // once that is stripped the whole key goes: an entry reduced to a bare
+    // `IndexName` is a husk `readCurrentState` never emits (it attaches the key
+    // only for entries with more than `IndexName`), and leaving it behind
+    // re-creates the phantom drift one level down. Measured live.
+    expect('GlobalSecondaryIndexes' in replicas[0]!).toBe(false);
   });
 
   it('PRESERVES the on-demand ceilings, which the substituted mode does send', async () => {
@@ -250,6 +265,92 @@ describe('DynamoDBGlobalTableProvider replay-CREATE effectiveProperties (issues 
 
     // Nothing was substituted, so the provisioned block really was sent and
     // must stay recorded. Stripping unconditionally would erase a live value.
+    expect(result.effectiveProperties).toBeUndefined();
+  });
+
+  it('sends NO indexes on the wire when the GSI blob was malformed', async () => {
+    await replayCreate({
+      ...baseProps,
+      BillingMode: 'PAY_PER_REQUEST',
+      GlobalSecondaryIndexes: 'bad',
+    });
+    // The drop's whole justification is "CreateTable carried no indexes".
+    expect(createInput()['GlobalSecondaryIndexes']).toBeUndefined();
+  });
+
+  it('sends NO ProvisionedThroughput on the wire when the mode was substituted', async () => {
+    await replayCreate({
+      ...baseProps,
+      BillingMode: '',
+      WriteProvisionedThroughputSettings: { WriteCapacityUnits: 25 },
+    });
+    expect(createInput()['ProvisionedThroughput']).toBeUndefined();
+    expect(createInput()['BillingMode']).toBe('PAY_PER_REQUEST');
+  });
+
+  it('strips the LEGACY SDK-shaped capacity spellings a pre-#1387 record carries', async () => {
+    const result = await replayCreate({
+      ...baseProps,
+      BillingMode: '',
+      GlobalSecondaryIndexes: [
+        {
+          IndexName: 'gsi1',
+          KeySchema: [{ AttributeName: 'sk', KeyType: 'HASH' }],
+          Projection: { ProjectionType: 'ALL' },
+          // The translator reads both only under PROVISIONED, so neither was
+          // sent — and `readCurrentState` emits neither, so both are phantom.
+          ProvisionedThroughput: { ReadCapacityUnits: 3, WriteCapacityUnits: 3 },
+          ReadProvisionedThroughputSettings: { ReadCapacityUnits: 3 },
+        },
+      ],
+      Replicas: [
+        {
+          Region: 'us-east-1',
+          ProvisionedThroughputOverride: { ReadCapacityUnits: 3 },
+          GlobalSecondaryIndexes: [
+            { IndexName: 'gsi1', ProvisionedThroughputOverride: { ReadCapacityUnits: 3 } },
+          ],
+        },
+      ],
+    });
+
+    const gsi = (result.effectiveProperties?.['GlobalSecondaryIndexes'] as Record<
+      string,
+      unknown
+    >[])[0]!;
+    expect('ProvisionedThroughput' in gsi).toBe(false);
+    expect('ReadProvisionedThroughputSettings' in gsi).toBe(false);
+    const replica = (result.effectiveProperties?.['Replicas'] as Record<string, unknown>[])[0]!;
+    expect('ProvisionedThroughputOverride' in replica).toBe(false);
+    // Both members stripped leaves a bare-`IndexName` husk, which is dropped.
+    expect('GlobalSecondaryIndexes' in replica).toBe(false);
+  });
+
+  it('strips capacity on the ABSENT-BillingMode replay sibling WITHOUT inventing a mode', async () => {
+    const desired = { ...baseProps, WriteProvisionedThroughputSettings: { WriteCapacityUnits: 9 } };
+    delete (desired as Record<string, unknown>)['BillingMode'];
+
+    const result = await replayCreate(desired);
+
+    // Same unsent capacity as the substitute arm, so the same strip...
+    expect('WriteProvisionedThroughputSettings' in result.effectiveProperties!).toBe(false);
+    // ...but the record must NOT gain a BillingMode it never had: whether an
+    // absent recorded mode may be materialized is issue #1733's question.
+    expect('BillingMode' in result.effectiveProperties!).toBe(false);
+    expect(childLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('declares no BillingMode')
+    );
+  });
+
+  it('reports NO effective bag for an absent BillingMode on a TEMPLATE-path create', async () => {
+    const desired = { ...baseProps, WriteProvisionedThroughputSettings: { WriteCapacityUnits: 9 } };
+    delete (desired as Record<string, unknown>)['BillingMode'];
+
+    const result = await provider.create('MyTable', RESOURCE_TYPE, desired);
+
+    // The arm is gated on the replay downgrade existing at all — an ordinary
+    // template create that omits BillingMode is declaring the default, not
+    // replaying a lossy record.
     expect(result.effectiveProperties).toBeUndefined();
   });
 
@@ -307,6 +408,16 @@ describe('stripProvisionedCapacityKeys (issue #1726)', () => {
     // the real validation error instead.
     expect(out['GlobalSecondaryIndexes']).toEqual([null, 'unresolved']);
     expect(out['Replicas']).toEqual([null, 42]);
+  });
+
+  it('passes NON-ARRAY containers through untouched', () => {
+    // A state record written by an older binary can carry an unresolved
+    // intrinsic here; rewriting it into `{}` would be the silent-drop class
+    // this whole family exists to close.
+    const input = { Replicas: 'bad', GlobalSecondaryIndexes: {} };
+    const out = stripProvisionedCapacityKeys(input);
+    expect(out['Replicas']).toBe('bad');
+    expect(out['GlobalSecondaryIndexes']).toEqual({});
   });
 
   it('leaves a bag with no capacity keys structurally unchanged', () => {

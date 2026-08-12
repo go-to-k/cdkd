@@ -339,6 +339,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     // providers.md` licenses for a read of KNOWN warn-and-DEFAULT class.
     let billingMode: string;
     let billingModeSubstituted = false;
+    let billingModeAbsentOnReplay = false;
     try {
       const billingReplayWarn = replayWarn(this.logger, context).onUnusable;
       billingMode = requireConfigString(
@@ -372,6 +373,12 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // that lost the key while AWS holds PROVISIONED — issue #1733) is
       // invisible from here.
       if (billingReplayWarn && properties['BillingMode'] === undefined) {
+        // The create resolves to PAY_PER_REQUEST here too, so the SAME capacity
+        // blocks go unsent as in the substitute arm below (issue #1726 review).
+        // Only the STRIP is shared: this arm deliberately does NOT record a
+        // `BillingMode`, because whether an absent recorded mode may be
+        // materialized is issue #1733's question, not this one's.
+        billingModeAbsentOnReplay = true;
         this.logger.warn(
           `AWS::DynamoDB::GlobalTable ${logicalId}: the state record declares no BillingMode, ` +
             `so this replay creates the table PAY_PER_REQUEST. If it was PROVISIONED, set the ` +
@@ -477,6 +484,11 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         ...properties,
         BillingMode: billingMode,
       });
+    } else if (billingModeAbsentOnReplay) {
+      // The absent-mode replay sibling: same unsent capacity, same strip, but
+      // the bag keeps whatever `BillingMode` the record had (i.e. none). See
+      // the flag's own comment and issue #1733.
+      effectiveProperties = stripProvisionedCapacityKeys(properties);
     }
 
     // Stream specification. GlobalTable cross-region replication requires
@@ -691,6 +703,27 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // strength of a different key being malformed.
       effectiveProperties = { ...(effectiveProperties ?? properties) };
       delete effectiveProperties['GlobalSecondaryIndexes'];
+      // ...and the LOCAL replica's index block, which is not a separate send
+      // path: it is only a CAPACITY SOURCE that `toSdkGlobalSecondaryIndexes`
+      // reads through `localByName`, and that call returned the EMPTY list, so
+      // nothing in it reached AWS. `readCurrentState` attaches
+      // `localReplicaEntry.GlobalSecondaryIndexes` only when the live table has
+      // indexes, so on a zero-index table a retained block is the same
+      // never-matchable record this arm exists to remove, one level down.
+      //
+      // CROSS-REGION replica index blocks are KEPT: those have their own send
+      // path (`toSdkReplicaGlobalSecondaryIndexes`, wired after CreateTable),
+      // so withdrawing them would record a loss that did not happen.
+      const replicasForOmit = effectiveProperties['Replicas'];
+      if (Array.isArray(replicasForOmit)) {
+        effectiveProperties['Replicas'] = replicasForOmit.map((entry) => {
+          const replica = asRecord(entry);
+          if (!replica || replica['Region'] !== currentRegion) return entry;
+          const copy = { ...replica };
+          delete copy['GlobalSecondaryIndexes'];
+          return copy;
+        });
+      }
     }
     if (sdkIndexes.length > 0) {
       createParams.GlobalSecondaryIndexes = sdkIndexes;
@@ -5392,77 +5425,6 @@ function pickAutoScalingCapacity(
  * written before this fix (and hand-authored templates) can carry them, and
  * silently re-deriving over an explicit value would be a regression.
  */
-/**
- * Remove every PROVISIONED-only capacity member from a desired-property bag
- * (issue #1726).
- *
- * Used by `create()`'s `BillingMode` warn-and-SUBSTITUTE arm: when the replay
- * downgrade substitutes `PAY_PER_REQUEST` for a malformed declared mode, the
- * same create ALSO skips `createParams.ProvisionedThroughput`, drops every
- * per-index provisioned member (`toSdkGlobalSecondaryIndexes` is handed the
- * SUBSTITUTED mode), and skips auto-scaling registration. Recording those keys
- * would describe capacity AWS never received.
- *
- * The removed set is derived from what `readCurrentState` emits for a
- * PAY_PER_REQUEST GlobalTable, which is where the answer has to come from — the
- * CFn schema only says the shapes are legal. Each of these is gated on
- * `billingMode === 'PROVISIONED'` in that method:
- *
- *  - top-level `WriteProvisionedThroughputSettings` (readback emits `{}`)
- *  - per-replica `ReadProvisionedThroughputSettings` (omitted)
- *  - per-index `WriteProvisionedThroughputSettings` (omitted)
- *  - per-replica-index `ReadProvisionedThroughputSettings` (omitted)
- *
- * The on-demand ceilings (`WriteOnDemandThroughputSettings` /
- * `ReadOnDemandThroughputSettings`, table- and index-level) are deliberately
- * NOT removed: they are attached to `CreateTable` precisely when the mode is
- * not PROVISIONED, so they WERE sent.
- *
- * Pure and non-mutating — the nested containers it rewrites are copied rather
- * than edited in place, because the caller's bag is `previousState.properties`
- * on the replay path and the rollback executor spreads the answer shallowly.
- */
-export function stripProvisionedCapacityKeys(
-  properties: Record<string, unknown>
-): Record<string, unknown> {
-  const result: Record<string, unknown> = { ...properties };
-  delete result['WriteProvisionedThroughputSettings'];
-
-  const indexes = result['GlobalSecondaryIndexes'];
-  if (Array.isArray(indexes)) {
-    result['GlobalSecondaryIndexes'] = indexes.map((entry) => {
-      const gsi = asRecord(entry);
-      if (!gsi) return entry;
-      const copy = { ...gsi };
-      delete copy['WriteProvisionedThroughputSettings'];
-      return copy;
-    });
-  }
-
-  const replicas = result['Replicas'];
-  if (Array.isArray(replicas)) {
-    result['Replicas'] = replicas.map((entry) => {
-      const replica = asRecord(entry);
-      if (!replica) return entry;
-      const copy = { ...replica };
-      delete copy['ReadProvisionedThroughputSettings'];
-      const replicaIndexes = copy['GlobalSecondaryIndexes'];
-      if (Array.isArray(replicaIndexes)) {
-        copy['GlobalSecondaryIndexes'] = replicaIndexes.map((indexEntry) => {
-          const gsi = asRecord(indexEntry);
-          if (!gsi) return indexEntry;
-          const indexCopy = { ...gsi };
-          delete indexCopy['ReadProvisionedThroughputSettings'];
-          return indexCopy;
-        });
-      }
-      return copy;
-    });
-  }
-
-  return result;
-}
-
 export function toSdkGlobalSecondaryIndexes(
   properties: Record<string, unknown>,
   region: string,
@@ -5690,6 +5652,109 @@ export function toSdkGlobalSecondaryIndexes(
 
     result.push(sdk);
   }
+  return result;
+}
+
+/**
+ * Remove every PROVISIONED-only capacity member from a desired-property bag
+ * (issue #1726).
+ *
+ * Used by `create()`'s `BillingMode` warn-and-SUBSTITUTE arm and by its ABSENT
+ * sibling: whenever the create resolves to `PAY_PER_REQUEST` on a bag that was
+ * not written for it, the same create skips `createParams.ProvisionedThroughput`
+ * and every per-index / per-replica provisioned member is dropped before the
+ * call (each of the reads below is gated on `billingMode === 'PROVISIONED'`).
+ * Recording those keys describes capacity AWS never received.
+ *
+ * The set is the intersection of two questions, and BOTH are needed — taking
+ * either alone is what the review of the first cut corrected:
+ *
+ * - **what could not have been SENT** — every member `toSdkGlobalSecondaryIndexes`
+ *   / `toSdkReplicaThroughputOverrides` read behind a PROVISIONED gate, which
+ *   includes the two legacy SDK-shaped spellings a pre-#1387 cdkd wrote into
+ *   state (`GlobalSecondaryIndexes[].ProvisionedThroughput`,
+ *   `Replicas[].ProvisionedThroughputOverride`). A state replay is exactly that
+ *   population, so leaving them out made the strip narrower than its own rule.
+ * - **what `readCurrentState` can REPORT under the new mode** — the top-level
+ *   `WriteProvisionedThroughputSettings` emits `{}` for an on-demand table and
+ *   every other member here is omitted entirely, so a surviving key is a record
+ *   the readback can never match.
+ *
+ * DELIBERATELY NOT removed: every `*OnDemand*` member. `OnDemandThroughput` is
+ * attached to `CreateTable` precisely when the mode is not PROVISIONED, so those
+ * WERE sent — a blanket "strip anything throughput-shaped" would record a loss
+ * that did not happen, and a unit row plus an integ phase fence exactly that.
+ *
+ * Pure and non-mutating at every level — the caller's bag is
+ * `previousState.properties` on the replay path and the rollback executor
+ * spreads the answer shallowly, so an in-place edit would corrupt a record the
+ * caller still holds.
+ */
+export function stripProvisionedCapacityKeys(
+  properties: Record<string, unknown>
+): Record<string, unknown> {
+  const result: Record<string, unknown> = { ...properties };
+  delete result['WriteProvisionedThroughputSettings'];
+
+  const indexes = result['GlobalSecondaryIndexes'];
+  if (Array.isArray(indexes)) {
+    result['GlobalSecondaryIndexes'] = indexes.map((entry) => {
+      const gsi = asRecord(entry);
+      if (!gsi) return entry;
+      const copy = { ...gsi };
+      delete copy['WriteProvisionedThroughputSettings'];
+      // The hand-authored fallback the translator reads only under PROVISIONED
+      // (the CFn shape puts the READ half on the replica), and the pre-#1387
+      // SDK spelling.
+      delete copy['ReadProvisionedThroughputSettings'];
+      delete copy['ProvisionedThroughput'];
+      return copy;
+    });
+  }
+
+  const replicas = result['Replicas'];
+  if (Array.isArray(replicas)) {
+    result['Replicas'] = replicas.map((entry) => {
+      const replica = asRecord(entry);
+      if (!replica) return entry;
+      const copy = { ...replica };
+      delete copy['ReadProvisionedThroughputSettings'];
+      delete copy['ProvisionedThroughputOverride'];
+      const replicaIndexes = copy['GlobalSecondaryIndexes'];
+      if (Array.isArray(replicaIndexes)) {
+        const stripped = replicaIndexes.map((indexEntry) => {
+          const gsi = asRecord(indexEntry);
+          if (!gsi) return indexEntry;
+          const indexCopy = { ...gsi };
+          delete indexCopy['ReadProvisionedThroughputSettings'];
+          delete indexCopy['ProvisionedThroughputOverride'];
+          return indexCopy;
+        });
+        // An entry whose ONLY remaining member is `IndexName` is a HUSK: the
+        // per-replica index block exists solely to carry capacity overrides,
+        // and `readCurrentState` attaches `Replicas[].GlobalSecondaryIndexes`
+        // only for entries with more than `IndexName`
+        // (`Object.keys(replicaEntry).length > 1`). Leaving the husk behind
+        // re-creates the phantom drift this strip exists to remove, one level
+        // down — measured live: `cdkd drift` reported the whole `Replicas`
+        // array as changed because the baseline carried `[{IndexName:"gsi1"}]`
+        // and the readback carried no key at all. Drop the husks, and drop the
+        // key entirely when none survives.
+        const kept = stripped.filter((entry) => {
+          const gsi = asRecord(entry);
+          if (!gsi) return true;
+          return Object.keys(gsi).some((k) => k !== 'IndexName');
+        });
+        if (kept.length > 0) {
+          copy['GlobalSecondaryIndexes'] = kept;
+        } else {
+          delete copy['GlobalSecondaryIndexes'];
+        }
+      }
+      return copy;
+    });
+  }
+
   return result;
 }
 
