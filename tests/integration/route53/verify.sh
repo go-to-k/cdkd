@@ -154,6 +154,42 @@ fi
 ZONE_ID="${ZONE_ID_RAW##*/}"
 echo "    Resolved hosted zone id: ${ZONE_ID}"
 
+# --- Assertion: Ref to a RecordSet is the record NAME (issue #1681) ----
+# cdkd stores the composite physicalId `<hostedZoneId>|<name>|<type>`, while
+# CloudFormation's `Ref` returns "the name of the record" — the MIDDLE
+# segment, which neither the after-LAST-pipe nor the before-FIRST-pipe
+# extraction yields. Pre-fix this output carried the whole composite.
+#
+# Asserted on the RESOLVED OUTPUT VALUE, not on the state record: the state
+# record legitimately holds the composite, so reading it would pass either
+# way. The output is what a real consumer receives.
+CIDR_REF=$(echo "${STATE}" | jq -r '.outputs.CidrRecordRef // empty')
+EXPECTED_CIDR_NAME="cidr.cdkd-test-${ACCOUNT_ID}.internal"
+if [ -z "${CIDR_REF}" ]; then
+  echo "FAIL: no CidrRecordRef output in state" >&2
+  echo "${STATE}" | jq '.outputs'
+  exit 1
+fi
+case "${CIDR_REF}" in
+  *'|'*)
+    echo "FAIL: issue #1681 NOT closed — Ref to the RecordSet resolved to the composite" >&2
+    echo "  got:      ${CIDR_REF}" >&2
+    echo "  expected: ${EXPECTED_CIDR_NAME} (the MIDDLE segment)" >&2
+    exit 1
+    ;;
+esac
+# AWS stores the record name with a trailing dot; the template declares it
+# without one. Accept either, and REFUSE anything else — a lax `*cidr*` match
+# would also pass on the composite this assertion exists to reject.
+if [ "${CIDR_REF}" != "${EXPECTED_CIDR_NAME}" ] &&
+   [ "${CIDR_REF}" != "${EXPECTED_CIDR_NAME}." ]; then
+  echo "FAIL: Ref to the RecordSet is not the record name" >&2
+  echo "  got:      ${CIDR_REF}" >&2
+  echo "  expected: ${EXPECTED_CIDR_NAME} (with or without a trailing dot)" >&2
+  exit 1
+fi
+echo "    OK: Ref to the RecordSet resolved to the record name (${CIDR_REF})"
+
 # --- Assertion: GeoProximityLocation reached AWS ----------------------
 # list-resource-record-sets returns every record; find the geoproximity
 # record by Name prefix `geo.` AND SetIdentifier, then assert its

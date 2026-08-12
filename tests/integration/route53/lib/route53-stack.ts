@@ -170,6 +170,21 @@ export class Route53Stack extends cdk.Stack {
       description: 'Route53 Health Check ID',
     });
 
+    // Issue #1681: `Ref` to an AWS::Route53::RecordSet returns "the name of the
+    // record" (docs-verified), but cdkd stores the composite physicalId
+    // `<hostedZoneId>|<name>|<type>` — of which the record name is the MIDDLE
+    // segment, so neither the after-LAST-pipe nor the before-FIRST-pipe
+    // extraction yields it. Pre-fix this output resolved to the whole
+    // `Z...|cidr.cdkd-test-<acct>.internal|A`.
+    //
+    // `CfnRecordSet.ref` is the shape a real consumer takes (an L1 template, or
+    // `CfnOutput(value: record.ref)`); `record.domainName` would NOT exercise
+    // the resolver at all, so it has to be `.ref` here.
+    new cdk.CfnOutput(this, 'CidrRecordRef', {
+      value: cidrRecord.ref,
+      description: 'Ref of the CIDR RecordSet — must be the record NAME, not the composite id',
+    });
+
     cdk.Tags.of(this).add('Project', 'cdkd');
     cdk.Tags.of(this).add('Example', 'route53');
   }
