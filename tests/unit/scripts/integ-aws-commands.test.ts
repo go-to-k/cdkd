@@ -394,7 +394,11 @@ describe('integ fixture aws invocations (#1402)', () => {
     // Current: 3002 invocations (was 2635 when these floors were written; the
     // comment had not been refreshed as the tree grew, which is how the ceiling
     // below came to sit 2 invocations away from the real number).
-    expect(stats.total).toBeGreaterThan(2200);
+    // Raised 2200 -> 2800 alongside the ceiling: leaving the floor where it was
+    // while the real total reached 3002 would let a 27% collapse in parsed
+    // invocations pass silently, which is the exact failure the floor exists
+    // for. A band only guards while BOTH edges track the measurement.
+    expect(stats.total).toBeGreaterThan(2800);
     expect(stats.services.size).toBeGreaterThan(55);
     expect(stats.verbs.size).toBeGreaterThan(290);
     // CEILING as well as floor. Floors catch a parser that stops seeing things;

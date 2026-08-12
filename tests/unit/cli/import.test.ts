@@ -443,9 +443,19 @@ describe('cdkd import', () => {
         stacks: [{ ...stackInfo('P', tmpl), nestedTemplates: { Child: childTemplatePath } }],
       });
       mockHasProvider.mockImplementation((t: string) => t !== 'AWS::CloudFormation::Stack');
-      mockGetProvider.mockReturnValue({
-        import: vi.fn(async () => ({ physicalId: 'p', attributes: {} })),
-      });
+      // Named rather than inline so the DESIRED side is inspectable below:
+      // `provider.import()` receives the child's REWRITTEN properties, which is
+      // the half a state-only assertion cannot see.
+      // The parameter is DECLARED (not `async () =>`) so `mock.calls` carries a
+      // 1-tuple: an argument-less mock types its calls as `[]`, and indexing
+      // `[0]` is then a compile error `vp run test` alone would not surface.
+      const childProviderImport = vi.fn(
+        async (_input: { logicalId: string; properties: Record<string, unknown> }) => ({
+          physicalId: 'p',
+          attributes: {},
+        })
+      );
+      mockGetProvider.mockReturnValue({ import: childProviderImport });
       const childArn = 'arn:aws:cloudformation:us-east-1:123:stack/Child/uuid';
       mockGetCfnResourceTree.mockResolvedValue({
         stackName: 'P',
@@ -477,6 +487,18 @@ describe('cdkd import', () => {
       expect(childSave[2].resources['ChildPolicy']!.properties['DataUrl']).toBe(
         `s3://${cdkBucket}/k.zip`
       );
+
+      // BOTH polarities. The assertion above alone passes if the child rewrite
+      // is deleted outright — which would silently break child asset
+      // resolution, the thing the rewrite exists for. So also pin that the
+      // child TEMPLATE (what `provider.import()` and the next deploy consume)
+      // WAS rewritten to the cdkd bucket. The two must disagree; that
+      // disagreement IS the fix.
+      const childImportCall = childProviderImport.mock.calls.find(
+        (c) => c[0].logicalId === 'ChildPolicy'
+      );
+      expect(childImportCall).toBeDefined();
+      expect(childImportCall![0].properties['DataUrl']).toBe(`s3://${cdkdBucket}/k.zip`);
     } finally {
       rmSync(tmpdirPath, { recursive: true, force: true });
     }

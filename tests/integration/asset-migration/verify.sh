@@ -111,6 +111,25 @@ cleanup() {
   # present at exit was created by this run (issue #1052).
   echo "==> Cleanup: dropping stacks${1:+ (stack-scoped only)}"
   set +eu
+  [ -n "${DIFF_JSON_FILE:-}" ] && rm -f "${DIFF_JSON_FILE}"
+  # Phase 6f rewrites this COMMITTED file to change the asset hash; restore it
+  # unconditionally so a crashed run does not leave the worktree dirty and the
+  # next run starts from the v1 body its own assertion expects.
+  printf '%s\n%s\n' \
+    '<!doctype html><title>cdkd asset-migration import leg</title>' \
+    'cdkd asset-migration import marker v1' > site/index.html 2>/dev/null
+  # EMPTY the destination bucket BEFORE `state destroy` runs, not after. Between
+  # 6c and 7b the SiteBucket holds index.html, and cdkd refuses to delete a
+  # non-empty bucket without the auto-delete opt-in (the issue 1340 data guard)
+  # — so a crash anywhere in phase 6 would abort that destroy and orphan the
+  # handler Lambda, its role, the inline policy and the custom resource. The
+  # `rb --force` further down removes only the bucket, and the CloudFormation
+  # stack is already retired by then, so nothing else would collect them.
+  # `rm --recursive`, not `rb`: the bucket itself must survive for cdkd to
+  # delete, since deleting it is what is being verified.
+  if [ -n "${SITE_BUCKET}" ]; then
+    aws s3 rm "s3://${SITE_BUCKET}" --recursive --region "${REGION}" >/dev/null 2>&1
+  fi
   if [ -x "${LOCAL_DIST}" ]; then
     for s in "${IMPORT_STACK}" "${IMAGE_STACK}" "${STACK}"; do
       node "${LOCAL_DIST}" state destroy "${s}" --state-bucket "${STATE_BUCKET:-}" \
@@ -186,6 +205,18 @@ export PATH="${PWD}/node_modules/.bin:${PATH}"
 
 echo "==> Pre-run cleanup (stack-scoped only)"
 cleanup prerun
+
+# Fail-closed pre-flight for phase 6: its upstream `cdk deploy` needs the CDK
+# bootstrap ROLES, not just the asset bucket phases 1-4 rely on. Checked here
+# rather than at phase 6 so a region missing them fails in seconds instead of
+# after the ~30 minutes phases 1-5 take.
+if ! aws cloudformation describe-stacks --region "${REGION}" \
+  --stack-name CDKToolkit >/dev/null 2>&1; then
+  echo "FAIL: region ${REGION} has no CDKToolkit stack — phase 6 deploys with the" >&2
+  echo "      upstream cdk CLI, which needs the CDK bootstrap roles. Run" >&2
+  echo "      'npx cdk bootstrap aws://<account>/${REGION}' first." >&2
+  exit 1
+fi
 
 # Own-marker guard (issue #1052): this fixture opts the region in and then
 # deletes the default-named asset storage — never proceed over a
@@ -386,15 +417,8 @@ fi
 # the live resource was never corrected.
 echo "==> Phase 6: import an upstream-cdk-deployed stack (issue 1652)"
 
-# Fail-closed pre-flight: upstream `cdk deploy` needs the CDK bootstrap roles,
-# not just the asset bucket phases 1-4 rely on.
-if ! aws cloudformation describe-stacks --region "${REGION}" \
-  --stack-name CDKToolkit >/dev/null 2>&1; then
-  echo "FAIL: region ${REGION} has no CDKToolkit stack — phase 6 deploys with the" >&2
-  echo "      upstream cdk CLI, which needs the CDK bootstrap roles. Run" >&2
-  echo "      'npx cdk bootstrap aws://<account>/${REGION}' first." >&2
-  exit 1
-fi
+# NOTE: the CDKToolkit pre-flight for this phase runs at STARTUP, next to the
+# other guards — failing here would cost the ~30 minutes phases 1-5 take first.
 # Pre-flight "already exists" guard (leftover from a crashed earlier run).
 if aws cloudformation describe-stacks --region "${REGION}" \
   --stack-name "${IMPORT_STACK}" >/dev/null 2>&1; then
@@ -514,7 +538,9 @@ esac
 echo "        OK: state holds the cdk-bootstrap grant AWS actually has"
 
 echo "    6e: cdkd diff reports a real UPDATE on the IAM policy (the 1652 assertion)"
-DIFF_JSON_FILE="/tmp/asset-migration-import-diff.json"
+# mktemp, not a fixed path: a fixed name collides between concurrent runs in
+# different regions and is never removed. Registered for cleanup below.
+DIFF_JSON_FILE="$(mktemp)"
 AWS_REGION="${REGION}" node "${LOCAL_DIST}" diff "${IMPORT_STACK}" \
   --state-bucket "${STATE_BUCKET}" --json >"${DIFF_JSON_FILE}"
 CDK_BUCKET="${CDK_BUCKET}" CDKD_BUCKET="${CDKD_BUCKET}" \
@@ -552,6 +578,16 @@ print(f"        OK: {policy['logicalId']} UPDATE {cdk_bucket} -> {cdkd_bucket}")
 PY
 
 echo "    6f: cdkd deploy corrects the LIVE policy document"
+# Change the asset CONTENT first, so the custom resource genuinely has work to
+# do. Without this the assertion below is vacuous: 6a's upstream `cdk deploy`
+# already synced the v1 body, so re-reading it proves nothing about whether the
+# post-import deploy re-ran the handler at all. Mutating the content changes
+# the asset hash, hence SourceObjectKeys, which is exactly the issue's step 6 —
+# and it is the step whose runtime AccessDenied issue 1652 predicts, because the
+# handler now has to read from the cdkd bucket its grant was just repointed to.
+printf '%s\n%s\n' \
+  '<!doctype html><title>cdkd asset-migration import leg</title>' \
+  'cdkd asset-migration import marker v2' > site/index.html
 node "${LOCAL_DIST}" deploy "${IMPORT_STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes >/dev/null
 LIVE_DOC="$(role_policy_document)"
@@ -575,9 +611,23 @@ echo "        OK: live grant is now on ${CDKD_BUCKET} only"
 # The custom resource re-ran against the cdkd bucket during that deploy — the
 # runtime AccessDenied issue 1652 predicts would have failed the deploy above,
 # so this asserts the sync actually produced the object rather than no-op'ing.
+# A plain capture, not `$(... || fallback)`: under `set -e` a failed read
+# aborts here with the AWS error, which is what we want. The v2 marker is only
+# in the bucket if the handler re-ran AND could read the cdkd bucket.
 BODY="$(aws s3 cp "s3://${SITE_BUCKET}/index.html" - --region "${REGION}")"
-echo "${BODY}" | grep -qF "cdkd asset-migration import marker v1" ||
-  { echo "FAIL: deployed index.html missing or wrong content; got: ${BODY}" >&2; exit 1; }
+case "${BODY}" in
+  *"cdkd asset-migration import marker v2"*) ;;
+  *"cdkd asset-migration import marker v1"*)
+    echo "FAIL (issue 1652): the deployed object is still the v1 body, so the" >&2
+    echo "      custom resource did NOT re-run after the import. The IAM grant" >&2
+    echo "      correction above is untested without it." >&2
+    exit 1
+    ;;
+  *)
+    echo "FAIL: unexpected index.html body: ${BODY}" >&2
+    exit 1
+    ;;
+esac
 echo "        OK: BucketDeployment synced from ${CDKD_BUCKET}"
 
 echo "    6g: state now records the cdkd asset references"

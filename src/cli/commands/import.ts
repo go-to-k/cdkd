@@ -1863,7 +1863,21 @@ async function importNestedStackChildrenRecursive(args: {
     let childStateTemplate = childTemplate;
     if (assetRedirect) {
       childStateTemplate = structuredClone(childTemplate);
-      rewriteTemplateAssetReferences(childTemplate, assetRedirect);
+      const childRewritten = rewriteTemplateAssetReferences(childTemplate, assetRedirect);
+      if (childRewritten > 0) {
+        // Announced per CHILD, not only at the root. Under
+        // `--migrate-from-cloudformation` the assets can live entirely in
+        // nested children, in which case the root's count is 0 and no notice
+        // would be printed at all — while the child states carry pre-rewrite
+        // values and the next deploy shows UPDATEs the user was never warned
+        // about.
+        logger.info(
+          `Note: ${childRewritten} asset reference(s) in nested stack ${childStackName} still ` +
+            `point at CDK bootstrap asset storage on the AWS side. cdkd records those ` +
+            `pre-rewrite values in state, so the next 'cdkd deploy' updates the affected ` +
+            `resources to cdkd asset storage.`
+        );
+      }
     }
 
     await lockManager.acquireLock(childStackName, childRegion, lockOwner, 'import');
