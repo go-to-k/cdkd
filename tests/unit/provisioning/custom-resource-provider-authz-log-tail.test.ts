@@ -699,6 +699,113 @@ describe('CustomResourceProvider authz retry via the invocation log tail (issue 
     expect(warnings()).not.toContain('could not classify the reason');
   });
 
+  it('treats the COLD-START platform lines as boilerplate too', async () => {
+    // The IAM-propagation race this whole mechanism exists for IS a cold-start
+    // phenomenon, so INIT_START / INIT_REPORT are present precisely when this
+    // arm fires — omitting them leaves the filter inert in its own main case.
+    process.env['CDKD_CR_AUTHZ_MAX_RETRIES'] = '0';
+    const coldStartBoilerplate = [
+      'INIT_START Runtime Version: python:3.12.v41',
+      'START RequestId: 6d1f-4c2a Version: $LATEST',
+      'END RequestId: 6d1f-4c2a',
+      'REPORT RequestId: 6d1f-4c2a\tDuration: 12.34 ms\tInit Duration: 91.47 ms',
+    ].join('\n');
+    wireFlow({
+      reason: BUCKET_DEPLOYMENT_REASON,
+      logTail: coldStartBoilerplate,
+      neverSucceeds: true,
+    });
+
+    await captureError(
+      makeProvider().create('Website', 'Custom::CDKBucketDeployment', {
+        ServiceToken: SERVICE_TOKEN,
+      })
+    );
+
+    expect(warnings()).not.toContain('could not classify the reason');
+  });
+
+  it('does not treat a handler line that merely STARTS with a keyword as boilerplate', async () => {
+    // The trailing space in the regex is what keeps `print("REPORT: ...")` a
+    // real diagnostic rather than a filtered platform line.
+    process.env['CDKD_CR_AUTHZ_MAX_RETRIES'] = '0';
+    wireFlow({
+      reason: BUCKET_DEPLOYMENT_REASON,
+      logTail: 'START RequestId: 1\nREPORT: destination bucket missing\nEND RequestId: 1',
+      neverSucceeds: true,
+    });
+
+    await captureError(
+      makeProvider().create('Website', 'Custom::CDKBucketDeployment', {
+        ServiceToken: SERVICE_TOKEN,
+      })
+    );
+
+    expect(warnings()).toContain('REPORT: destination bucket missing');
+  });
+
+  it('applies the same boilerplate filter to the FunctionError arm', async () => {
+    mockS3Send.mockImplementation(() => Promise.resolve({}));
+    mockLambdaSend.mockImplementation(
+      (cmd: { constructor: { name: string }; input?: { LogType?: string } }) => {
+        if (cmd.constructor.name === 'InvokeCommand') {
+          return Promise.resolve({
+            FunctionError: 'Unhandled',
+            Payload: Buffer.from('{}'),
+            ...(cmd.input?.LogType === 'Tail'
+              ? { LogResult: b64('START RequestId: 1\nEND RequestId: 1\nREPORT RequestId: 1') }
+              : {}),
+          });
+        }
+        return Promise.resolve({
+          Configuration: { State: 'Active', LastUpdateStatus: 'Successful' },
+        });
+      }
+    );
+
+    await captureError(
+      makeProvider().create('Website', 'Custom::CDKBucketDeployment', {
+        ServiceToken: SERVICE_TOKEN,
+      })
+    );
+
+    expect(warnings()).not.toContain('Backing function log tail');
+  });
+
+  it('still prints a timed-out handler tail from the FunctionError arm', async () => {
+    // Lambda's own timeout / runtime-exit lines are NOT boilerplate by the
+    // regex, so the realistic crash shapes survive the new filter.
+    mockS3Send.mockImplementation(() => Promise.resolve({}));
+    mockLambdaSend.mockImplementation(
+      (cmd: { constructor: { name: string }; input?: { LogType?: string } }) => {
+        if (cmd.constructor.name === 'InvokeCommand') {
+          return Promise.resolve({
+            FunctionError: 'Unhandled',
+            Payload: Buffer.from('{}'),
+            ...(cmd.input?.LogType === 'Tail'
+              ? {
+                  LogResult: b64(
+                    'START RequestId: 1\n2026-08-12T00:00:00Z 1 Task timed out after 30.00 seconds\nEND RequestId: 1'
+                  ),
+                }
+              : {}),
+          });
+        }
+        return Promise.resolve({
+          Configuration: { State: 'Active', LastUpdateStatus: 'Successful' },
+        });
+      }
+    );
+
+    await captureError(
+      makeProvider().create('Website', 'Custom::CDKBucketDeployment', {
+        ServiceToken: SERVICE_TOKEN,
+      })
+    );
+
+    expect(warnings()).toContain('Task timed out after 30.00 seconds');
+  });
+
   it('caps the unexplained-failure tail as well', async () => {
     process.env['CDKD_CR_AUTHZ_MAX_RETRIES'] = '0';
     const huge = `START RequestId: 1\n${'z'.repeat(4000)} TAIL_MARKER_PAST_CAP\nEND RequestId: 1`;

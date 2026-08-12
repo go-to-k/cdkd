@@ -222,8 +222,18 @@ const CR_LOG_TAIL_WARN_MAX_CHARS = 2000;
  * COMMON case — `LogResult` is never absent on a `LogType: 'Tail'` invoke, so a
  * bare `!== undefined` check filters nothing and would dump boilerplate on every
  * unexplained failure.
+ *
+ * The COLD-START platform lines (`INIT_START` / `INIT_REPORT`, the SnapStart
+ * `RESTORE_*` pair, `EXTENSION`) matter as much as the per-invoke ones here, and
+ * arguably more: the IAM-propagation race this whole mechanism exists for IS a
+ * cold-start phenomenon, so those lines are present precisely when this arm
+ * fires. Omitting them would have left the filter inert in its own main case.
+ *
+ * The trailing space is load-bearing: a handler's `print("REPORT: no bucket")`
+ * emits `REPORT:` and must NOT be classified as boilerplate.
  */
-const CR_LOG_TAIL_BOILERPLATE = /^(START|END|REPORT|XRAY) /;
+const CR_LOG_TAIL_BOILERPLATE =
+  /^(START|END|REPORT|XRAY|INIT_START|INIT_REPORT|RESTORE_START|RESTORE_REPORT|EXTENSION) /;
 
 /**
  * `true` when the tail contains at least one line the HANDLER produced.
@@ -1191,8 +1201,18 @@ export class CustomResourceProvider implements ResourceProvider {
       // `truncateReason`'s 200 because a crashed handler's cause is often
       // several lines above the last one (a Python traceback), and the whole
       // tail is Lambda-capped at 4 KB regardless.
+      // Same `hasHandlerLogOutput` filter as the unexplained-FAILED arm: both
+      // surface the SAME data class through the same ephemeral channel, so a
+      // boilerplate-only tail is worth exactly as little here. Keeping the two
+      // gates identical is also what makes `CR_LOG_TAIL_BOILERPLATE`'s claim
+      // ("a tail consisting only of these carries no diagnostic value") true of
+      // the whole file rather than of one arm. Reaching it needs a crashed or
+      // timed-out handler that logged nothing at all — Lambda's own
+      // `Task timed out after ...` and `Runtime exited with error: ...` lines
+      // are NOT boilerplate by this regex, so the realistic crash shapes still
+      // print.
       const logTail = decodeInvokeLogTail(lambdaResponse.LogResult);
-      if (logTail !== undefined) {
+      if (logTail !== undefined && hasHandlerLogOutput(logTail)) {
         this.logger.warn(
           `Backing function log tail for ${logicalId} (${operation}):\n` +
             this.truncateReason(logTail, CR_LOG_TAIL_WARN_MAX_CHARS)
