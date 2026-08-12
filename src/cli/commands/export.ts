@@ -264,10 +264,11 @@ const PRIMARY_IDENTIFIER_FALLBACK: Record<string, string> = {
  * - `propertiesOverlay` (optional): subset of `resourceIdentifier` to write
  *   into the synth template's `Properties` block. Defaults to the full
  *   `resourceIdentifier` map (existing behavior for `AWS::ApiGateway::Method`
- *   / `AWS::ApiGateway::Resource` / `AWS::EC2::VPCGatewayAttachment` whose
- *   identifier fields ARE all writable Properties). Sub-resource types whose
- *   primaryIdentifier includes a generated-id field (`IntegrationId` /
- *   `RouteId` / Lambda::Permission's `Id`) MUST narrow to just the writable
+ *   and `AWS::EC2::VPCGatewayAttachment`, whose identifier fields ARE all
+ *   writable Properties — `Method` has NO `readOnlyProperties` at all).
+ *   Sub-resource types whose
+ *   primaryIdentifier includes a generated-id field (`ResourceId` /
+ *   `IntegrationId` / `RouteId` / Lambda::Permission's `Id`) MUST narrow to just the writable
  *   subset — those generated-id fields ARE listed in the CFn schema's
  *   `properties` block but tagged `readOnlyProperties`, so writing them
  *   via Properties at IMPORT changeset creation is rejected by CFn. The
@@ -324,10 +325,19 @@ const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
   // CFn primary identifier is [RestApiId, ResourceId], but unlike
   // AWS::ApiGateway::Method (which has NO read-only properties, verified live
   // us-east-1 2026-08-12) `ResourceId` is `readOnlyProperties` here — so it is
-  // EXCLUDED from propertiesOverlay, since CFn rejects a changeset that writes
-  // a read-only property. Same narrowing, same reason, as the
+  // EXCLUDED from propertiesOverlay. Same narrowing, same reason, as the
   // ApiGatewayV2::Integration splitter below.
+  //
+  // This is defense-in-depth rather than a live bug fix:
+  // `overlayResourceIdentifierOnProperties` writes a field ONLY when the
+  // template already carries it as a literal string, and a synthesized
+  // AWS::ApiGateway::Resource has RestApiId / ParentId / PathPart and no
+  // ResourceId — so the default overlay would have skipped it anyway. Narrow
+  // it explicitly so the safety does not depend on that conditional.
   'AWS::ApiGateway::Resource': (physicalId, properties) => {
+    if (!physicalId) {
+      throw new Error('empty physical id for AWS::ApiGateway::Resource (expected a resourceId)');
+    }
     const parts = physicalId.split('|');
     if (parts.length > 2) {
       throw new Error(

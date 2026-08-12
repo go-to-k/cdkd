@@ -729,6 +729,13 @@ describe('splitCompositePhysicalId', () => {
     ).toThrow(/empty part/);
   });
 
+  it('throws on a wholly empty ApiGateway::Resource physical id', () => {
+    // Without the guard the bare branch would ship `ResourceId: ''` to CFn.
+    expect(() =>
+      splitCompositePhysicalId('AWS::ApiGateway::Resource', '', { RestApiId: 'api123' })
+    ).toThrow(/empty physical id/);
+  });
+
   it('throws on wrong part count for VPCGatewayAttachment', () => {
     expect(() =>
       splitCompositePhysicalId('AWS::EC2::VPCGatewayAttachment', 'three|parts|here')
