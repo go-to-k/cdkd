@@ -710,9 +710,35 @@ export class DynamoDBTableProvider implements ResourceProvider {
               {
                 onUnusable: (message) => {
                   billingModeUnusable = true;
+                  // "compared against", not "the table's current mode".
+                  //
+                  // This arm is only reachable with a DEFINED desired side (it
+                  // sits in the `!== undefined` branch above), so
+                  // `prevBillingMode` resolved to one of exactly two things:
+                  // the RECORDED previous when the record holds a usable value,
+                  // else the table's LIVE mode. The CFn type default is NOT
+                  // reachable from here — that arm needs an absent desired side.
+                  //
+                  // NEITHER outcome justifies the word "current". The record can
+                  // be stale (an out-of-band re-price), and the live mode is
+                  // itself defaulted to PROVISIONED when `BillingModeSummary` is
+                  // absent (see the note above `liveBillingMode`), so on both
+                  // branches "current" asserts a `DescribeTable` reading the
+                  // message may never have taken.
+                  //
+                  // The prefix matches every prefixed sibling in this provider —
+                  // the recorded-previous baseline warn just above, the
+                  // BillingMode-flip refusal, the GSI-removal guard and the
+                  // flip-to-PROVISIONED capacity guard: without it, a stack with
+                  // more than one AWS::DynamoDB::Table gives neither the user
+                  // nor an integ assertion any way to tell which table warned.
+                  // The GlobalTable twin of THIS arm is still unprefixed and
+                  // still says "current" — same defect, contended file, tracked
+                  // in issue #1739.
                   this.logger.warn(
-                    `${message} The table's current billing mode (${prevBillingMode}) is kept ` +
-                      `for this update rather than flipped to the default.`
+                    `AWS::DynamoDB::Table ${logicalId}: ${message} The mode this update ` +
+                      `compared against (${prevBillingMode}) is kept rather than flipped to ` +
+                      `the default.`
                   );
                 },
               }
