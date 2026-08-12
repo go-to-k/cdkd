@@ -879,6 +879,63 @@ describe('AWS::Route53::RecordSet composite id guard', () => {
     expect(change.input.HostedZoneId).toBe('Z1D633PJN98FT9');
   });
 
+  it('accepted bound: BOTH template fields unusable leaves the mis-decode reachable', async () => {
+    // Pinned as a DECISION rather than left as an accident (review finding).
+    // With neither `Name` nor `Type` readable there is nothing to check the
+    // parse against, so `compositeAgreesWithTemplate` returns true and the
+    // look-alike IS decoded — zone 'a'. The alternative is refusing every id on
+    // a bag cdkd cannot read, which would break the pre-#1711 behavior for
+    // templates that resolve fine at deploy time. If this row ever starts
+    // failing, the bound was tightened on purpose and the JSDoc must follow.
+    mockRoute53Send.mockResolvedValue({});
+    const provider = new Route53Provider();
+    await provider.delete('MyRecord', 'a|b|c.example.com.', RECORD_TYPE, {
+      HostedZoneId: 'Z1D633PJN98FT9',
+      Name: { Ref: 'NameParam' },
+      Type: { Ref: 'TypeParam' },
+      TTL: '300',
+      ResourceRecords: ['1.2.3.4'],
+    });
+
+    const change = mockRoute53Send.mock.calls[0]?.[0] as { input: { HostedZoneId?: string } };
+    expect(change.input.HostedZoneId).toBe('a');
+  });
+
+  it('a look-alike resolved from HostedZoneName REFUSES an ambiguous split-horizon pair', async () => {
+    // The population this change NEWLY routes into the fallback (review
+    // finding 4): before it, a look-alike short-circuited on the parse and
+    // never resolved a zone at all. The fallback runs with
+    // `requireUnambiguousZoneName`, so a public + private pair of the same name
+    // must THROW rather than guess — deleting from the wrong zone is
+    // unrecoverable. Untested before this row, and it is a behavior this PR
+    // introduced rather than inherited.
+    mockRoute53Send.mockResolvedValueOnce({
+      HostedZones: [
+        { Id: '/hostedzone/ZPUBLIC1', Name: 'example.com.', Config: { PrivateZone: false } },
+        { Id: '/hostedzone/ZPRIVATE1', Name: 'example.com.', Config: { PrivateZone: true } },
+      ],
+      IsTruncated: false,
+    });
+    const provider = new Route53Provider();
+    await expect(
+      provider.delete('MyRecord', 'a|b|c.example.com.', RECORD_TYPE, {
+        HostedZoneName: 'example.com.',
+        Name: 'a|b|c.example.com.',
+        Type: 'A',
+        TTL: '300',
+        ResourceRecords: ['1.2.3.4'],
+      })
+    ).rejects.toThrow(/matches 2 hosted zones/);
+
+    // The refusal happens BEFORE any ChangeResourceRecordSets — only the
+    // lookup went out, so nothing was deleted from either zone.
+    const changes = mockRoute53Send.mock.calls.filter(
+      (c) => (c[0] as { constructor: { name: string } }).constructor.name ===
+        'ChangeResourceRecordSetsCommand'
+    );
+    expect(changes).toHaveLength(0);
+  });
+
   it('import warns and adopts a look-alike verbatim instead of freezing the mis-decode', async () => {
     const provider = new Route53Provider();
     const result = await provider.import({
