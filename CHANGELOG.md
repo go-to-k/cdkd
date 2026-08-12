@@ -1,3 +1,10 @@
+## [0.280.35](https://github.com/go-to-k/cdkd/compare/v0.280.34...v0.280.35) (2026-08-12)
+
+
+### Bug Fixes
+
+* **ec2:** fold the IpProtocol name on the diff side, and read SecurityGroup Tags back ([#1673](https://github.com/go-to-k/cdkd/issues/1673)) ([f1f27fb](https://github.com/go-to-k/cdkd/commit/f1f27fbbc6e104d57f5308fdb45efcee5e995233))
+
 ## [0.280.34](https://github.com/go-to-k/cdkd/compare/v0.280.33...v0.280.34) (2026-08-12)
 
 
