@@ -113,6 +113,29 @@ stream_mode() {
     --query 'StreamDescriptionSummary.StreamModeDetails.StreamMode' --output text
 }
 
+# Issue #609 backfill readbacks. The metric list is SORTED on both sides: AWS
+# returns enhanced-monitoring metrics in an arbitrary order (measured: neither
+# request order nor alphabetical), so a raw join would be flaky and its failure
+# would accuse the fix.
+shard_level_metrics() {
+  aws kinesis describe-stream-summary --stream-name "${STREAM_NAME}" --region "${REGION}" \
+    --query "join(' ', sort(StreamDescriptionSummary.EnhancedMonitoring[0].ShardLevelMetrics || \`[]\`))" \
+    --output text
+}
+max_record_size() {
+  aws kinesis describe-stream-summary --stream-name "${STREAM_NAME}" --region "${REGION}" \
+    --query 'StreamDescriptionSummary.MaxRecordSizeInKiB' --output text
+}
+assert_eq() { # usage: assert_eq "<what>" "<expected>" "<actual>"
+  if [ "$2" != "$3" ]; then
+    echo "FAIL: $1 — expected '$2', got '$3'" >&2
+    exit 1
+  fi
+}
+
+# The seven names AWS expands `ALL` into, space-joined in SORTED order.
+ALL_METRICS_SORTED="IncomingBytes IncomingRecords IteratorAgeMilliseconds OutgoingBytes OutgoingRecords ReadProvisionedThroughputExceeded WriteProvisionedThroughputExceeded"
+
 # --- Phase 1: deploy baseline (PROVISIONED) ---------------------------
 echo "==> Phase 1: deploy PROVISIONED stream (1 shard)"
 env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
@@ -126,6 +149,20 @@ if [ "${MODE_P1}" != "PROVISIONED" ]; then
 fi
 echo "    stream is PROVISIONED"
 
+# Issue #609: the two backfilled properties must be live on AWS after CREATE.
+# Asserting the baseline here is what stops the Phase 2 assertions from passing
+# vacuously — a value that never reached AWS at all would otherwise look like a
+# successful "change" the moment Phase 2 happens to match.
+METRICS_P1="$(shard_level_metrics)"
+echo "    AWS shard-level metrics (Phase 1): ${METRICS_P1}"
+assert_eq "DesiredShardLevelMetrics after Phase 1 (create path)" \
+  "IncomingBytes OutgoingBytes" "${METRICS_P1}"
+
+SIZE_P1="$(max_record_size)"
+echo "    AWS MaxRecordSizeInKiB (Phase 1): ${SIZE_P1}"
+assert_eq "MaxRecordSizeInKiB after Phase 1 (create path)" "2048" "${SIZE_P1}"
+echo "    create-path DesiredShardLevelMetrics + MaxRecordSizeInKiB reached AWS"
+
 # --- Phase 2: switch to ON_DEMAND (must actually reach AWS) ------------
 echo "==> Phase 2: re-deploy as ON_DEMAND (StreamMode switch via UpdateStreamMode)"
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
@@ -138,6 +175,48 @@ if [ "${MODE_P2}" != "ON_DEMAND" ]; then
   exit 1
 fi
 echo "    stream switched to ON_DEMAND (reached AWS, not just cdkd state)"
+
+# Issue #609 update path. `ALL` is the interesting case: AWS expands it to seven
+# names and never stores the literal, so this asserts the EXPANDED set.
+METRICS_P2="$(shard_level_metrics)"
+echo "    AWS shard-level metrics (Phase 2): ${METRICS_P2}"
+assert_eq "DesiredShardLevelMetrics after Phase 2 (ALL must expand to seven)" \
+  "${ALL_METRICS_SORTED}" "${METRICS_P2}"
+
+SIZE_P2="$(max_record_size)"
+echo "    AWS MaxRecordSizeInKiB (Phase 2): ${SIZE_P2}"
+assert_eq "MaxRecordSizeInKiB after Phase 2 (UpdateMaxRecordSize)" "4096" "${SIZE_P2}"
+echo "    update-path DesiredShardLevelMetrics + MaxRecordSizeInKiB reached AWS"
+
+# `effectiveProperties`: cdkd must RECORD the expanded list, not the literal
+# `ALL` the template declared — a state record AWS's readback can never match
+# is exactly the permanent phantom drift this mechanism exists to prevent.
+STATE_JSON="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}")"
+RECORDED_METRICS="$(printf '%s' "${STATE_JSON}" \
+  | jq -r '[.resources[] | select(.resourceType == "AWS::Kinesis::Stream")
+            | .properties.DesiredShardLevelMetrics // []] | first | sort | join(" ")')"
+echo "    cdkd state DesiredShardLevelMetrics: ${RECORDED_METRICS}"
+if printf '%s' "${RECORDED_METRICS}" | grep -qw "ALL"; then
+  echo "FAIL: cdkd state recorded the literal 'ALL' — AWS stores the expanded seven, so this is permanent phantom drift (effectiveProperties not applied?)" >&2
+  exit 1
+fi
+assert_eq "state-recorded DesiredShardLevelMetrics (effectiveProperties)" \
+  "${ALL_METRICS_SORTED}" "${RECORDED_METRICS}"
+echo "    state records the EXPANDED metric list (effectiveProperties applied)"
+
+# `canonicalizeDesiredProperties`: the paired half. With only the recording
+# half, the template still says `ALL` while state holds seven names, so the very
+# next diff reports a change the user never made. A clean diff here is what
+# proves the two halves narrow identically.
+echo "==> Phase 2b: cdkd diff must be clean (ALL vs expanded seven is NOT a change)"
+DIFF_OUT="$(CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" diff "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1)"
+printf '%s\n' "${DIFF_OUT}" | sed 's/^/    | /'
+if printf '%s' "${DIFF_OUT}" | grep -q "DesiredShardLevelMetrics"; then
+  echo "FAIL: cdkd diff reports a DesiredShardLevelMetrics change on an untouched stream — canonicalizeDesiredProperties does not agree with the wire-path expansion" >&2
+  exit 1
+fi
+echo "    diff is clean on DesiredShardLevelMetrics (both sides narrowed identically)"
 
 # --- Phase 3: destroy --------------------------------------------------
 echo "==> Phase 3: destroy"

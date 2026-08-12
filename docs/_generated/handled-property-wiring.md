@@ -10,10 +10,10 @@ A computed read `properties[k]` also counts when `k` iterates a literal name tab
 ## Summary
 
 - Provider classes classified: **84**
-- Declared properties: **1136** (**1134** with read evidence)
+- Declared properties: **1138** (**1136** with read evidence)
 - Fully wired classes: **82**
 - Allow-listed classes (visible, non-blocking): **2**
-- Classes with a whole-bag blind spot (recorded, never an excuse): **20**
+- Classes with a whole-bag blind spot (recorded, never an excuse): **21**
 - **Wiring gaps (blocks CI): 0**
 
 ## Wiring gaps
@@ -48,6 +48,7 @@ Sites where a whole property bag left the evidence walk (a spread, an unresolvab
 | `EMRInstanceGroupConfigProvider` (emr-instance-group-config-provider.ts) | `computed key in update()`, `object spread in update()` |
 | `FirehoseProvider` (firehose-provider.ts) | `computed key in applyUpdate()` |
 | `FSxFileSystemProvider` (fsx-filesystem-provider.ts) | `computed key in detectVariantConfigKey()`, `computed key in update()` |
+| `KinesisStreamProvider` (kinesis-provider.ts) | `object spread in canonicalizeDesiredProperties()`, `object spread in effectiveMetricsProperties()` |
 | `LambdaEventInvokeConfigProvider` (lambda-event-invoke-config-provider.ts) | `computed key in update()` |
 | `LambdaEventSourceMappingProvider` (lambda-eventsource-provider.ts) | `computed key in applyUpdate()` |
 | `LambdaMicrovmImageProvider` (lambda-microvm-image-provider.ts) | `computed key in update()` |
@@ -109,7 +110,7 @@ Sites where a whole property bag left the evidence walk (a spread, an unresolvab
 | `IAMPolicyProvider` | iam-policy-provider.ts | wired | 5 | 5 |
 | `IAMRoleProvider` | iam-role-provider.ts | wired | 9 | 9 |
 | `IAMUserGroupProvider` | iam-user-group-provider.ts | wired | 10 | 10 |
-| `KinesisStreamProvider` | kinesis-provider.ts | wired | 6 | 6 |
+| `KinesisStreamProvider` | kinesis-provider.ts | wired | 8 | 8 |
 | `KinesisStreamConsumerProvider` | kinesis-streamconsumer-provider.ts | wired | 3 | 3 |
 | `KMSProvider` | kms-provider.ts | wired | 14 | 14 |
 | `LambdaEventInvokeConfigProvider` | lambda-event-invoke-config-provider.ts | wired | 5 | 5 |

@@ -6,6 +6,9 @@ import {
   DescribeStreamSummaryCommand,
   UpdateStreamModeCommand,
   UpdateShardCountCommand,
+  UpdateMaxRecordSizeCommand,
+  EnableEnhancedMonitoringCommand,
+  DisableEnhancedMonitoringCommand,
   AddTagsToStreamCommand,
   RemoveTagsFromStreamCommand,
   IncreaseStreamRetentionPeriodCommand,
@@ -15,6 +18,7 @@ import {
   ListTagsForStreamCommand,
   ResourceNotFoundException,
   type EncryptionType,
+  type MetricsName,
 } from '@aws-sdk/client-kinesis';
 import { getLogger } from '../../utils/logger.js';
 import { readConfigString } from '../config-shape.js';
@@ -50,6 +54,81 @@ function isKmsEncryption(value: Record<string, unknown> | undefined): boolean {
 }
 
 /**
+ * The seven shard-level metrics `ALL` expands to.
+ *
+ * MEASURED, not copied from the docs (us-east-1, 2026-08-12): an
+ * `EnableEnhancedMonitoring(ShardLevelMetrics: ['ALL'])` responds with exactly
+ * these seven in `DesiredShardLevelMetrics`, and once the stream settles back
+ * to ACTIVE `DescribeStream` reports the same seven — never the literal `ALL`.
+ * The readback order is AWS-chosen and matched neither the input order nor
+ * alphabetical, which is why the type also declares the path unordered (see
+ * {@link KinesisStreamProvider.getDriftUnorderedPaths}).
+ */
+const ALL_SHARD_LEVEL_METRICS: readonly string[] = [
+  'IncomingBytes',
+  'IncomingRecords',
+  'OutgoingBytes',
+  'OutgoingRecords',
+  'WriteProvisionedThroughputExceeded',
+  'ReadProvisionedThroughputExceeded',
+  'IteratorAgeMilliseconds',
+];
+
+/**
+ * Expand the `ALL` shard-level-metrics shorthand into the seven metric names
+ * AWS actually stores.
+ *
+ * This is the ONE definition of the rule, shared by the provisioning path (what
+ * goes on the wire, and therefore what `effectiveProperties` records) and by
+ * {@link KinesisStreamProvider.canonicalizeDesiredProperties} (what the diff
+ * compares). Deriving it twice is how state and template end up narrowed
+ * differently — see the `effectiveProperties` contract in
+ * `.claude/rules/providers.md`.
+ *
+ * Idempotent: an already-expanded list is returned with its own values (deduped
+ * and otherwise untouched), so a state-borne bag that has been through this
+ * before is unchanged. A non-array, or an array carrying a non-string element
+ * (an unresolved intrinsic), is returned as-is so AWS surfaces the real
+ * validation error rather than cdkd inventing a metric list.
+ */
+function expandShardLevelMetrics(value: unknown): unknown {
+  if (!Array.isArray(value)) return value;
+  if (!value.every((entry) => typeof entry === 'string')) return value;
+
+  const names = value as string[];
+  const expanded = names.includes('ALL')
+    ? [...names.filter((n) => n !== 'ALL'), ...ALL_SHARD_LEVEL_METRICS]
+    : names;
+
+  // Dedupe while preserving first-seen order: `['ALL', 'IncomingBytes']` is a
+  // legal template and must not send the same metric twice.
+  const seen = new Set<string>();
+  const deduped: string[] = [];
+  for (const name of expanded) {
+    if (seen.has(name)) continue;
+    seen.add(name);
+    deduped.push(name);
+  }
+
+  // Preserve identity when nothing changed, so callers can cheaply detect a
+  // no-op expansion and skip returning `effectiveProperties`.
+  if (deduped.length === names.length && deduped.every((n, i) => n === names[i])) return value;
+  return deduped;
+}
+
+/**
+ * Narrow an already-expanded metric list to the `MetricsName[]` the SDK takes.
+ *
+ * Non-array / non-string inputs yield an empty list so the caller SKIPS the
+ * call rather than sending a malformed one — the metric list is additive, and
+ * inventing a value here would enable metrics the template never asked for.
+ */
+function asMetricNames(value: unknown): MetricsName[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((entry): entry is string => typeof entry === 'string') as MetricsName[];
+}
+
+/**
  * AWS Kinesis Stream Provider
  *
  * Implements resource provisioning for AWS::Kinesis::Stream using the Kinesis SDK.
@@ -72,6 +151,8 @@ export class KinesisStreamProvider implements ResourceProvider {
         'Tags',
         'RetentionPeriodHours',
         'StreamEncryption',
+        'DesiredShardLevelMetrics',
+        'MaxRecordSizeInKiB',
       ]),
     ],
   ]);
@@ -113,6 +194,10 @@ export class KinesisStreamProvider implements ResourceProvider {
       const shardCount =
         streamMode === 'PROVISIONED' ? Number(properties['ShardCount'] ?? 1) : undefined;
 
+      // MaxRecordSizeInKiB is a member of CreateStreamInput, so it lands with
+      // the stream itself rather than needing a follow-up call.
+      const maxRecordSizeInKiB = properties['MaxRecordSizeInKiB'] as number | undefined;
+
       await this.getClient().send(
         new CreateStreamCommand({
           StreamName: streamName,
@@ -120,6 +205,7 @@ export class KinesisStreamProvider implements ResourceProvider {
           StreamModeDetails: {
             StreamMode: streamMode as 'PROVISIONED' | 'ON_DEMAND',
           },
+          ...(maxRecordSizeInKiB !== undefined && { MaxRecordSizeInKiB: maxRecordSizeInKiB }),
         })
       );
 
@@ -197,6 +283,23 @@ export class KinesisStreamProvider implements ResourceProvider {
         await this.waitForStreamActive(streamName);
       }
 
+      // Apply DesiredShardLevelMetrics. `EnableEnhancedMonitoring` takes the
+      // stream to UPDATING (measured), so it must settle before create returns.
+      const desiredMetrics = expandShardLevelMetrics(properties['DesiredShardLevelMetrics']);
+      const metricsToEnable = asMetricNames(desiredMetrics);
+      if (metricsToEnable.length > 0) {
+        this.logger.debug(
+          `Enabling ${metricsToEnable.length} shard-level metric(s) on ${streamName}`
+        );
+        await this.getClient().send(
+          new EnableEnhancedMonitoringCommand({
+            StreamName: streamName,
+            ShardLevelMetrics: metricsToEnable,
+          })
+        );
+        await this.waitForStreamActive(streamName);
+      }
+
       this.logger.debug(`Successfully created Kinesis stream ${logicalId}: ${streamName}`);
 
       return {
@@ -204,6 +307,11 @@ export class KinesisStreamProvider implements ResourceProvider {
         attributes: {
           Arn: streamInfo.streamArn,
         },
+        // Record the EXPANDED metric list when the template used `ALL`: AWS
+        // stores the seven names, so recording `ALL` would be permanent phantom
+        // drift no `readCurrentState` could ever match. Absent when the
+        // expansion was a no-op, which keeps the desired bag recorded verbatim.
+        ...this.effectiveMetricsProperties(properties, desiredMetrics),
       };
     } catch (error) {
       if (error instanceof ProvisioningError) {
@@ -395,6 +503,59 @@ export class KinesisStreamProvider implements ResourceProvider {
         }
       }
 
+      // Update MaxRecordSizeInKiB if changed. `UpdateMaxRecordSize` is one of
+      // the Kinesis APIs that takes a StreamARN and has no StreamName member,
+      // so it needs the same ARN resolution UpdateStreamMode does.
+      const newMaxRecordSize = properties['MaxRecordSizeInKiB'] as number | undefined;
+      const oldMaxRecordSize = previousProperties['MaxRecordSizeInKiB'] as number | undefined;
+      if (newMaxRecordSize !== undefined && newMaxRecordSize !== oldMaxRecordSize) {
+        this.logger.debug(
+          `Updating max record size for ${physicalId}: ${oldMaxRecordSize} -> ${newMaxRecordSize}`
+        );
+        await this.getClient().send(
+          new UpdateMaxRecordSizeCommand({
+            StreamARN: await this.resolveStreamArn(physicalId),
+            MaxRecordSizeInKiB: newMaxRecordSize,
+          })
+        );
+        await this.waitForStreamActive(physicalId);
+      }
+
+      // Reconcile DesiredShardLevelMetrics. There is no "set" API — enhanced
+      // monitoring is a set mutated by Enable / Disable — so the diff is
+      // applied as a removal pass then an addition pass. Both sides are
+      // expanded first so a template switching between `ALL` and the seven
+      // explicit names is correctly a no-op rather than a full churn.
+      const desiredMetrics = expandShardLevelMetrics(properties['DesiredShardLevelMetrics']);
+      const desiredSet = asMetricNames(desiredMetrics);
+      // The previous side comes from cdkd state, not the template, so it is
+      // read defensively and never refused (the #1471 desired-side-only rule).
+      const previousSet = asMetricNames(
+        expandShardLevelMetrics(previousProperties['DesiredShardLevelMetrics'])
+      );
+      const toDisable = previousSet.filter((m) => !desiredSet.includes(m));
+      const toEnable = desiredSet.filter((m) => !previousSet.includes(m));
+      if (toDisable.length > 0) {
+        this.logger.debug(`Disabling ${toDisable.length} shard-level metric(s) on ${physicalId}`);
+        await this.getClient().send(
+          new DisableEnhancedMonitoringCommand({
+            StreamName: physicalId,
+            ShardLevelMetrics: toDisable,
+          })
+        );
+        await this.waitForStreamActive(physicalId);
+      }
+      if (toEnable.length > 0) {
+        this.logger.debug(`Enabling ${toEnable.length} shard-level metric(s) on ${physicalId}`);
+        await this.getClient().send(
+          new EnableEnhancedMonitoringCommand({
+            StreamName: physicalId,
+            ShardLevelMetrics: toEnable,
+          })
+        );
+        await this.waitForStreamActive(physicalId);
+      }
+
       // Get current stream description for attributes
       const response = await this.getClient().send(
         new DescribeStreamCommand({ StreamName: physicalId })
@@ -406,6 +567,7 @@ export class KinesisStreamProvider implements ResourceProvider {
         attributes: {
           Arn: response.StreamDescription?.StreamARN,
         },
+        ...this.effectiveMetricsProperties(properties, desiredMetrics),
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
@@ -461,6 +623,54 @@ export class KinesisStreamProvider implements ResourceProvider {
         cause
       );
     }
+  }
+
+  /**
+   * The `effectiveProperties` half of the `ALL` expansion (issue #609).
+   *
+   * Returns a spreadable `{ effectiveProperties }` ONLY when the expansion
+   * actually rewrote the declared value; otherwise `{}`, so the engine records
+   * the desired bag verbatim (the `??` gate on the engine side treats an absent
+   * field as "record the desired properties"). The returned bag is a COMPLETE
+   * replacement, not a patch, per the `EffectivePropertiesResult` contract.
+   */
+  private effectiveMetricsProperties(
+    properties: Record<string, unknown>,
+    expanded: unknown
+  ): { effectiveProperties?: Record<string, unknown> } {
+    if (expanded === properties['DesiredShardLevelMetrics']) return {};
+    return { effectiveProperties: { ...properties, DesiredShardLevelMetrics: expanded } };
+  }
+
+  /**
+   * Narrow the desired bag the same way the provisioning path does, so the
+   * diff compares the EXPANDED metric list on both sides.
+   *
+   * Required paired half of the `effectiveProperties` above: without it, state
+   * holds the seven expanded names while the template still says `ALL`, and
+   * every later `cdkd deploy` / `cdkd diff` reads that as a user-made change.
+   * Shares {@link expandShardLevelMetrics} rather than re-deriving the rule.
+   */
+  canonicalizeDesiredProperties(
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): Record<string, unknown> {
+    if (resourceType !== 'AWS::Kinesis::Stream') return properties;
+    if (!('DesiredShardLevelMetrics' in properties)) return properties;
+    const expanded = expandShardLevelMetrics(properties['DesiredShardLevelMetrics']);
+    if (expanded === properties['DesiredShardLevelMetrics']) return properties;
+    return { ...properties, DesiredShardLevelMetrics: expanded };
+  }
+
+  /**
+   * `DesiredShardLevelMetrics` is a SET: AWS returns it in an order that
+   * matched neither the request order nor alphabetical when measured
+   * (us-east-1, 2026-08-12), so comparing positionally would report drift on a
+   * stream nobody touched.
+   */
+  getDriftUnorderedPaths(resourceType: string): string[] {
+    if (resourceType !== 'AWS::Kinesis::Stream') return [];
+    return ['DesiredShardLevelMetrics'];
   }
 
   /**
@@ -523,8 +733,10 @@ export class KinesisStreamProvider implements ResourceProvider {
    *
    * Issues `DescribeStream` and surfaces the keys cdkd's `create()`
    * accepts: `Name`, `StreamModeDetails`, `ShardCount`, `RetentionPeriodHours`,
-   * and `StreamEncryption`. Tags are surfaced via a follow-up
-   * `ListTagsForStream` with `aws:*` filtered out.
+   * `StreamEncryption`, and `DesiredShardLevelMetrics`. Tags are surfaced via a
+   * follow-up `ListTagsForStream` with `aws:*` filtered out, and
+   * `MaxRecordSizeInKiB` via a follow-up `DescribeStreamSummary` (the field is
+   * absent from `DescribeStream`'s `StreamDescription` shape).
    *
    * `ShardCount` is reported as the count of `Shards[]` in the stream
    * description (only present for PROVISIONED-mode streams; ON_DEMAND
@@ -583,6 +795,31 @@ export class KinesisStreamProvider implements ResourceProvider {
       };
       if (stream.KeyId !== undefined) encryption['KeyId'] = stream.KeyId;
       result['StreamEncryption'] = encryption;
+    }
+
+    // Enhanced monitoring comes back as a list of `{ ShardLevelMetrics }`
+    // groups; flatten to the flat CFn list shape. Always emitted (as `[]` when
+    // nothing is enabled) so a console-side enable is detectable — an
+    // undeclared key captured EMPTY is dropped from the comparison by
+    // `undeclaredEmptyObservedKeys`, so this cannot manufacture drift on a
+    // template that never mentions the property.
+    result['DesiredShardLevelMetrics'] = (stream.EnhancedMonitoring ?? []).flatMap(
+      (entry) => entry.ShardLevelMetrics ?? []
+    );
+
+    // `MaxRecordSizeInKiB` is on the SUMMARY shape only — `DescribeStream`'s
+    // `StreamDescription` does not carry it — so it needs its own call.
+    try {
+      const summaryResp = await this.getClient().send(
+        new DescribeStreamSummaryCommand({ StreamName: physicalId })
+      );
+      const maxRecordSize = summaryResp.StreamDescriptionSummary?.MaxRecordSizeInKiB;
+      if (maxRecordSize !== undefined) result['MaxRecordSizeInKiB'] = maxRecordSize;
+    } catch (err) {
+      if (err instanceof ResourceNotFoundException) return undefined;
+      this.logger.debug(
+        `Kinesis DescribeStreamSummary(${physicalId}) failed: ${err instanceof Error ? err.message : String(err)}`
+      );
     }
 
     // Tags via ListTagsForStream.

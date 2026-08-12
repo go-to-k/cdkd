@@ -293,6 +293,25 @@ below the comparison agrees with it). When you reach for `effectiveProperties`,
 ask what the service will REPORT, not merely whether your own transformation
 lost information; when those differ, the readback side is the one to fix.
 
+**But "the service transforms it" does not automatically mean the readback
+side** — the deciding question is whether the transformation is knowable AT SEND
+TIME (issue #609, `AWS::Kinesis::Stream` `DesiredShardLevelMetrics`). AWS expands
+the `ALL` shorthand into seven individual metric names and never stores the
+literal, which reads like the `6` -> `tcp` case above and is not: `ALL` expands
+to a CLOSED, documented set, so cdkd can perform the identical expansion itself
+and SEND the seven names. Having sent them, the send-side record is exactly what
+AWS holds, and `effectiveProperties` + its `canonicalizeDesiredProperties` twin
+apply normally. The distinction that actually matters is therefore not
+"who performs the mapping" but "can the provider compute the post-mapping value
+before the call": `6` -> `tcp` cannot be (the table is the service's and open to
+change), `ALL` -> the seven can be. When it can, prefer expanding on the wire —
+one shared helper feeding both halves — over a readback normalizer, because the
+readback fix leaves cdkd SENDING a value it cannot describe and needs a
+normalizer for every future consumer of the same field. Note the expansion also
+made the field's ORDER observable, so the type declares it in
+`getDriftUnorderedPaths` as well; a shorthand that expands to a SET usually needs
+both mechanisms, not one.
+
 **A warn-and-SKIP arm is the same class as a narrowing, and the
 `canonicalizeDesiredProperties` twin above does NOT apply to it** (issue
 #1612). Read the twin rule as scoped to a NARROWING — a pure function of the
