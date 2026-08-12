@@ -1172,11 +1172,14 @@ describe('EC2Provider.readCurrentState', () => {
       });
     });
 
-    it('canonicalizes BOTH sides of the tuple pre-filter, including an absent AWS IpProtocol (#1643)', async () => {
-      // Fences the "canonicalize both sides" claim: comparing the raw AWS
-      // value against a canonicalized physicalId segment would still pass the
-      // test above (wanted 'tcp' vs AWS 'tcp'), and would silently drop the
-      // `?? '-1'` fallback for a rule AWS reports without a protocol.
+    it('applies the `?? -1` fallback when AWS reports a rule with no IpProtocol (#1643)', async () => {
+      // Routing the AWS side through `sgProtocolKey` rather than reading it raw
+      // is what keeps the absent-member fallback. It is NOT claimed to fence
+      // AWS-side FOLDING: AWS only ever reports a lower-case name or a numeric
+      // string, so no reachable AWS value needs canonicalizing that the
+      // physicalId segment does not already match — a one-sided mutant is
+      // near-equivalent here, and pretending otherwise would be a test that
+      // asserts a shape the service never produces.
       mockSend.mockResolvedValueOnce({
         SecurityGroups: [
           {

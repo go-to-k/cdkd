@@ -45,7 +45,7 @@ fixture targets exactly those shapes.
    [#1515](https://github.com/go-to-k/cdkd/issues/1515)), and one run
    cannot detect it. The step also asserts the templated target set
    directly, order-insensitively.
-   The same two steps also cover the VALUE-mapping sibling of that class
+   A VALUE-mapping sibling of that class is covered too
    (issue [#1643](https://github.com/go-to-k/cdkd/issues/1643)): EC2 stores a
    declared `IpProtocol: 6` as `tcp`, so the recorded and read-back values are
    two spellings of ONE protocol. Both affected shapes are present because

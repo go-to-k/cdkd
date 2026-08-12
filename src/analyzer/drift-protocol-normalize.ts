@@ -54,8 +54,6 @@
 
 import { canonicalizeIpProtocolValue } from '../utils/ip-protocol.js';
 
-export { canonicalizeIpProtocolValue };
-
 /**
  * The resource types carrying an `IpProtocol` this pass rewrites, mapped to
  * the property path(s) it lives at. The standalone rule types carry it at the

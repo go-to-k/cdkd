@@ -60,6 +60,11 @@
 #   5. cdkd drift --revert -y -> assert exit 0
 #   6. cdkd drift -> assert exit 0 (clean) + the untemplated target is
 #       deregistered and the three templated ones RETAINED
+#   6b. strip observedProperties from the SGs that template ingress rules,
+#       then cdkd drift -> assert exit 0. This is the ONLY step that fences
+#       the inline numeric-IpProtocol arm: with the deploy-time observed
+#       baseline both sides already hold AWS's spelling. Runs last so the
+#       mutated state cannot affect any step above.
 #   7. cdkd destroy --force
 #
 # Auto-resolves AWS account ID + state bucket. Run from anywhere.
@@ -91,7 +96,9 @@ fi
 
 cleanup() {
   rc=$?
-  rm -f "${DRIFT_OUT}"
+  # `:-` is required on STATE_TMP: it is created late (step 6b) while `set -u`
+  # is active, so cleanup can fire before it exists.
+  rm -f "${DRIFT_OUT}" "${STATE_TMP:-}"
   if [ "${rc}" -ne 0 ]; then
     echo "[verify] FAIL (exit ${rc}) — attempting destroy to clean up"
     ${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force || true
@@ -232,7 +239,7 @@ echo "[verify] step 6 ok: AWS reverted to template, drift clean; targets = ${REV
 # AWS reports 'tcp'. Run LAST so a mutated state cannot affect any step above.
 echo "[verify] step 6b: properties-fallback baseline for the inline numeric rule (expect exit 0)"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
-STATE_TMP="$(mktemp -t cdkd-state-arrays)"
+STATE_TMP="$(mktemp -t cdkd-state-arrays)"  # removed by cleanup on any failure path
 aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${STATE_TMP}" --region "${REGION}" >/dev/null
 node -e '
 const fs = require("fs");
@@ -263,9 +270,10 @@ if (stripped === 0) {
 }
 // Fence the assertion against a fixture edit that drops the numeric rule: the
 // fallback baseline must actually contain the spelling under test.
-const numeric = Object.values(s.resources).some(
-  (r) => r.resourceType === "AWS::EC2::SecurityGroup" &&
-    (r.properties?.SecurityGroupIngress ?? []).some((x) => String(x?.IpProtocol) === "6")
+const numeric = targets.some((id) =>
+  (s.resources[id].properties?.SecurityGroupIngress ?? []).some(
+    (x) => String(x?.IpProtocol) === "6"
+  )
 );
 if (!numeric) throw new Error("no templated numeric IpProtocol 6 rule left to exercise (issue #1643)");
 fs.writeFileSync(p, JSON.stringify(s));
