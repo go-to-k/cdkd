@@ -234,6 +234,9 @@ describe('Route53 RecordSet physicalId: CloudFormation form vs cdkd composite (i
       expect(result).toEqual({ physicalId: 'record.example.com', attributes: {} });
     });
 
+  });
+
+  describe('delete()', () => {
     it('deletes a record whose state carries the cdkd composite id', async () => {
       mockSend.mockResolvedValueOnce({});
 
@@ -303,6 +306,11 @@ describe('Route53 RecordSet physicalId: CloudFormation form vs cdkd composite (i
           HostedZoneName: 'example.com',
         })
       ).rejects.toThrow(/matches 2 hosted zones/);
+
+      // Reverting to MaxItems: 1 would make the guard UNREACHABLE in
+      // production (AWS would only ever return one zone) while this mock
+      // still returned two — the assertion exists so that cannot pass.
+      expect(mockSend.mock.calls[0]?.[0].input.MaxItems).toBeGreaterThan(1);
     });
 
     it('deletes with a COMPOSITE id and no HostedZoneName lookup', async () => {
@@ -453,6 +461,55 @@ describe('Route53 RecordSet physicalId: CloudFormation form vs cdkd composite (i
       );
 
       expect(result).toMatchObject({ Type: 'A', TTL: 300 });
+    });
+
+    it('reads back a WILDCARD record AWS reports octal-escaped (#1658)', async () => {
+      // Deleting the octal decode leaves every wildcard record reporting
+      // "drift unknown" — silently, because `undefined` is not an error.
+      mockSend.mockResolvedValueOnce({
+        ResourceRecordSets: [
+          { Name: '\\052.example.com.', Type: 'A', TTL: 300, ResourceRecords: [{ Value: '1.2.3.4' }] },
+        ],
+      });
+
+      const result = await provider.readCurrentState(
+        'Z0123456789ABCDEFGHIJ|*.example.com.|A',
+        'WildcardRecord',
+        'AWS::Route53::RecordSet'
+      );
+
+      expect(result).toMatchObject({ Name: '*.example.com.', Type: 'A', TTL: 300 });
+    });
+
+    it('does NOT ask for a single record (AWS orders on the ESCAPED form)', async () => {
+      // With MaxItems: 1 the page can skip past `\\052…` entirely, so the
+      // compare-side decode alone would not fix wildcards.
+      mockSend.mockResolvedValueOnce({ ResourceRecordSets: [] });
+
+      await provider.readCurrentState(
+        'Z0123456789ABCDEFGHIJ|*.example.com.|A',
+        'WildcardRecord',
+        'AWS::Route53::RecordSet'
+      );
+
+      expect(mockSend.mock.calls[0]?.[0].input.MaxItems).toBeGreaterThan(1);
+    });
+
+    it('does NOT collapse an escaped period into a label separator', async () => {
+      // `a\\056b.example.com.` is the SINGLE-label record `a.b`; decoding it
+      // would make it equal the different two-label `a.b.example.com`.
+      // A false match here targets the wrong record.
+      mockSend.mockResolvedValueOnce({
+        ResourceRecordSets: [{ Name: 'a\\056b.example.com.', Type: 'A', TTL: 60 }],
+      });
+
+      const result = await provider.readCurrentState(
+        'Z0123456789ABCDEFGHIJ|a.b.example.com.|A',
+        'AmbiguousRecord',
+        'AWS::Route53::RecordSet'
+      );
+
+      expect(result).toBeUndefined();
     });
 
     it('returns undefined when the id is unparsable and no properties are available', async () => {
