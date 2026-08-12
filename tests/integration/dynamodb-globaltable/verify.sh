@@ -1185,6 +1185,65 @@ if [ -z "${GSI_RECOVERY_TABLE}" ]; then
   echo "FAIL: issue #1571 — no GsiRecoveryTable in cdkd state" >&2
   exit 1
 fi
+# Issue #1683: the provider no longer RECORDS the malformed desired block. The
+# `desiredGsiUnusable` arm SKIPS the GSI diff, so AWS keeps the index set it
+# already holds, and `effectiveProperties` now retains the PREVIOUS list — a
+# record `readCurrentState` can match, instead of the junk one that produced
+# permanent phantom drift and that the NEXT update then read as its previous
+# side (the #1552 class).
+#
+# Assert that FIRST, because it is the live proof of the #1683 arm, and the
+# phase-1 seeding below would otherwise mask it.
+GSI_AFTER_JUNK="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | python3 -c '
+import json, sys
+state = json.load(sys.stdin)
+for logical_id, resource in state.get("resources", {}).items():
+    if logical_id.startswith("GsiRecoveryTable"):
+        print(json.dumps(resource.get("properties", {}).get("GlobalSecondaryIndexes")))
+        break
+')"
+case "${GSI_AFTER_JUNK}" in
+  \[*recoverIdx*liveOnlyIdx*)
+    echo "    issue #1683 ok: the SKIPPED update retained the PREVIOUS index list in state"
+    ;;
+  *)
+    echo "FAIL: issue #1683 — a skipped GlobalSecondaryIndexes update must RETAIN the previous list, got ${GSI_AFTER_JUNK}" >&2
+    exit 1
+    ;;
+esac
+
+# ...which means phase 1 can no longer let the provider WRITE the junk record
+# that phases 2 (#1571) and 13h (#1585) recover from — today's binary cannot
+# produce that shape any more. Seed it by hand instead, exactly as a pre-#1683
+# binary wrote it: `properties.GlobalSecondaryIndexes` set to the deploy-time
+# resolved STRING, `observedProperties` (the live read-back) left alone. The
+# recovery machinery still matters because that population exists in the wild —
+# every record an older binary wrote — so it stays covered here rather than
+# being deleted along with the path that used to create it.
+seed_junk_gsi_state() { # $1 = logical-id prefix
+  local prefix="$1" tmp
+  tmp="$(mktemp)"
+  aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - > "${tmp}" || return 1
+  python3 - "${tmp}" "${prefix}" "${REGION}-x" <<'PY' || return 1
+import json, sys
+path, prefix, junk = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(path) as fh:
+    state = json.load(fh)
+for logical_id, resource in state.get("resources", {}).items():
+    if logical_id.startswith(prefix):
+        resource.setdefault("properties", {})["GlobalSecondaryIndexes"] = junk
+        break
+else:
+    sys.exit(f"no {prefix} in cdkd state")
+with open(path, "w") as fh:
+    json.dump(state, fh)
+PY
+  aws s3 cp "${tmp}" "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null || return 1
+  rm -f "${tmp}"
+}
+seed_junk_gsi_state GsiRecoveryTable
+seed_junk_gsi_state GsiProvRecoveryTable
+
 # The junk block must be RECORDED (that is what phase 2 recovers from) and the
 # live index must be UNTOUCHED — the destructive reading of "the template
 # declares no indexes" would have deleted it.
