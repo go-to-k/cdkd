@@ -3254,15 +3254,18 @@ describe('IntrinsicFunctionResolver - Ref to AWS::ApiGateway::Model', () => {
   });
 
   // Deliberate degradation, matching the S3Tables / Backup / CodeCommit
-  // recoveries: an IMPORTED AppSync child records `attributes: {}`
-  // (`AppSyncProvider.import` returns the physical id only), so the lookup
-  // misses and the raw compound id is returned rather than a fabricated ARN.
+  // recoveries: a record carrying NO ARN attribute resolves to the raw compound
+  // id rather than a fabricated ARN. Issue #1728 made `AppSyncProvider.import`
+  // record the attribute, so this is no longer the normal shape for an adopted
+  // child — it is now reached by a record written before #1681 / #1728, or by an
+  // import whose ARN build failed and warned. The degradation itself is
+  // unchanged and still worth pinning.
   it.each([
     ['AWS::AppSync::DataSource', 'abcd1234|myDataSource'],
     ['AWS::AppSync::Resolver', 'abcd1234|Query|getItem'],
     ['AWS::AppSync::ApiKey', 'abcd1234|da2-abcdefghij'],
   ])(
-    'Ref to an imported %s with no recorded ARN falls through to the raw id',
+    'Ref to an %s with no recorded ARN falls through to the raw id',
     async (resourceType, physicalId) => {
       const template: CloudFormationTemplate = {
         Resources: { R: { Type: resourceType, Properties: {} } },
@@ -3278,6 +3281,136 @@ describe('IntrinsicFunctionResolver - Ref to AWS::ApiGateway::Model', () => {
       expect(result).toBe(physicalId);
     }
   );
+
+  // Issue #1729 — `Ref` and `Fn::GetAtt` read the SAME recorded attribute, and
+  // #1681 guarded only the `Ref` half, so a pre-#1681 record still served the
+  // placeholder through GetAtt. It THROWS rather than degrading like `Ref`: the
+  // value is requested under an ARN-suffixed name, so the raw compound id would
+  // be exactly the shape mismatch `guardedPhysicalIdFallback` already rejects
+  // (the #1103 class — a green deploy shipping a wrong value into an Output).
+  it.each([
+    [
+      'AWS::AppSync::DataSource',
+      'abcd1234|myDataSource',
+      'DataSourceArn',
+      'arn:aws:appsync:*:*:apis/abcd1234/datasources/myDataSource',
+    ],
+    [
+      'AWS::AppSync::Resolver',
+      'abcd1234|Query|getItem',
+      'ResolverArn',
+      'arn:aws:appsync:*:*:apis/abcd1234/types/Query/resolvers/getItem',
+    ],
+    [
+      'AWS::AppSync::ApiKey',
+      'abcd1234|da2-abcdefghij',
+      'Arn',
+      'arn:aws:appsync:*:*:apis/abcd1234/apikeys/da2-abcdefghij',
+    ],
+  ])(
+    'Fn::GetAtt %s.%s refuses a pre-#1681 placeholder ARN',
+    async (resourceType, physicalId, attributeName, recorded) => {
+      const template: CloudFormationTemplate = {
+        Resources: { R: { Type: resourceType, Properties: {} } },
+      };
+      const context: ResolverContext = {
+        template,
+        resources: {
+          R: {
+            physicalId,
+            resourceType,
+            properties: {},
+            attributes: { [attributeName]: recorded },
+            dependencies: [],
+          },
+        },
+      };
+
+      await expect(
+        resolver.resolve({ 'Fn::GetAtt': ['R', attributeName] }, context)
+      ).rejects.toThrow(/placeholder written by a cdkd version older than issue #1681/);
+    }
+  );
+
+  // A REAL ARN must still resolve — otherwise the guard would break every
+  // post-#1681 resource, which is the population it exists to serve.
+  it('Fn::GetAtt returns a real recorded ARN unchanged', async () => {
+    const arn = 'arn:aws:appsync:us-east-1:123456789012:apis/abcd1234/datasources/myDataSource';
+    const template: CloudFormationTemplate = {
+      Resources: { R: { Type: 'AWS::AppSync::DataSource', Properties: {} } },
+    };
+    const context: ResolverContext = {
+      template,
+      resources: {
+        R: {
+          physicalId: 'abcd1234|myDataSource',
+          resourceType: 'AWS::AppSync::DataSource',
+          properties: {},
+          attributes: { DataSourceArn: arn },
+          dependencies: [],
+        },
+      },
+    };
+
+    expect(await resolver.resolve({ 'Fn::GetAtt': ['R', 'DataSourceArn'] }, context)).toBe(arn);
+  });
+
+  // The guard is scoped to the type's DECLARED ARN attribute names, not to the
+  // type. A sibling attribute of the SAME resource whose value happens to carry
+  // wildcards in the inspected positions must pass through untouched — without
+  // this the guard would be "any attribute of an AppSync child", which is a
+  // different and wider rule than the one #1729 asks for.
+  it.each([
+    ['AWS::AppSync::DataSource', 'abcd1234|myDataSource', 'Name', 'arn:aws:x:*:*:y'],
+    ['AWS::AppSync::ApiKey', 'abcd1234|da2-abcdefghij', 'ApiKey', 'arn:aws:x:*:*:y'],
+  ])(
+    'Fn::GetAtt %s.%s (not an ARN-Ref attribute) is not guarded',
+    async (resourceType, physicalId, attributeName, recorded) => {
+      const template: CloudFormationTemplate = {
+        Resources: { R: { Type: resourceType, Properties: {} } },
+      };
+      const context: ResolverContext = {
+        template,
+        resources: {
+          R: {
+            physicalId,
+            resourceType,
+            properties: {},
+            attributes: { [attributeName]: recorded },
+            dependencies: [],
+          },
+        },
+      };
+
+      expect(await resolver.resolve({ 'Fn::GetAtt': ['R', attributeName] }, context)).toBe(
+        recorded
+      );
+    }
+  );
+
+  // ...and scoped to the TYPE as well: an unrelated type may legitimately cache
+  // an ARN-shaped string with a `*` in a position `isPlaceholderArn` inspects,
+  // which is why #1729 chose the narrow direction over a generic `*Arn` guard.
+  it('Fn::GetAtt on a non-AppSync type is not guarded', async () => {
+    const recorded = 'arn:aws:iam::*:role/*';
+    const template: CloudFormationTemplate = {
+      Resources: { R: { Type: 'AWS::IAM::Role', Properties: {} } },
+    };
+    const context: ResolverContext = {
+      template,
+      resources: {
+        R: {
+          physicalId: 'MyRole',
+          resourceType: 'AWS::IAM::Role',
+          properties: {},
+          attributes: { Arn: recorded },
+          dependencies: [],
+        },
+      },
+    };
+
+    expect(await resolver.resolve({ 'Fn::GetAtt': ['R', 'Arn'] }, context)).toBe(recorded);
+  });
 
   // Reversed-order compounds (issue #963 family audit): Deployment and
   // DocumentationPart have primaryIdentifier `[<refId>, <restApiId>]` — the

@@ -324,10 +324,13 @@ const REF_RETURNS_SEGMENT_AT_INDEX = new Map<string, { arity: number; index: num
  *
  * Value: the attribute keys to try, in order.
  *
- * Degradation is deliberate and matches the sibling recoveries — an IMPORTED
- * child records `attributes: {}` (`AppSyncProvider.import` returns the physical
- * id only), so the lookup misses and the raw compound id is returned rather
- * than a fabricated ARN.
+ * Degradation is deliberate and matches the sibling recoveries: when the
+ * attribute is absent the raw compound id is returned rather than a fabricated
+ * ARN. Since issue #1728 an IMPORTED child records the same attribute set
+ * `create()` does (`AppSyncProvider.childImportAttributes`), so the miss is no
+ * longer the normal case for an adopted resource — it is now reached by a
+ * record written before #1681/#1728, or by an import whose ARN build failed and
+ * warned.
  */
 const REF_RETURNS_ARN_FROM_STATE = new Map<string, readonly string[]>([
   ['AWS::AppSync::ApiKey', ['Arn']],
@@ -736,6 +739,19 @@ interface AwsAccountInfo {
   accountId: string;
   region: string;
   partition: string;
+  /**
+   * `true` when STS could not be reached and `accountId` is the hardcoded
+   * `123456789012` fallback rather than this caller's real account (issue
+   * #1728 review; the fallback itself is issue #1730).
+   *
+   * Purely ADDITIVE and absent on the success path, so every existing consumer
+   * is unaffected. It exists because the fabricated id is INDISTINGUISHABLE
+   * from a real one downstream: an ARN built from it carries no wildcard, so
+   * `isPlaceholderArn` cannot catch it, and a consumer receives a
+   * confidently-wrong value. A caller that PERSISTS an ARN into state must
+   * consult this and refuse — see `AppSyncProvider.childImportAttributes`.
+   */
+  fabricated?: boolean;
 }
 
 let cachedAccountInfo: AwsAccountInfo | null = null;
@@ -782,7 +798,17 @@ export async function getAccountInfo(overrideRegion?: string): Promise<AwsAccoun
     const region = overrideRegion || process.env['AWS_REGION'] || 'us-east-1';
     const partition = 'aws'; // Could be aws-cn, aws-us-gov, etc.
 
-    cachedAccountInfo = { accountId, region, partition };
+    // A SUCCESSFUL call that carries no `Account` lands on the same hardcoded
+    // id as the failure arm below, so it has to be flagged the same way (review
+    // finding) — reachable against an emulated / non-AWS STS endpoint. Flagging
+    // only the catch arm would leave the identical fabricated value unmarked on
+    // the path that looks like it worked.
+    cachedAccountInfo = {
+      accountId,
+      region,
+      partition,
+      ...(response.Account ? {} : { fabricated: true }),
+    };
     logger.debug(`Retrieved AWS account info: ${accountId}, ${region}, ${partition}`);
     // Return with override if different from cached
     if (overrideRegion && overrideRegion !== region) {
@@ -798,6 +824,10 @@ export async function getAccountInfo(overrideRegion?: string): Promise<AwsAccoun
       accountId: process.env['AWS_ACCOUNT_ID'] || '123456789012',
       region: overrideRegion || process.env['AWS_REGION'] || 'us-east-1',
       partition: 'aws',
+      // Only when the id is the HARDCODED fallback. An `AWS_ACCOUNT_ID` the
+      // operator supplied is a real answer to "which account", so flagging it
+      // would make callers refuse a value that is fine.
+      ...(process.env['AWS_ACCOUNT_ID'] ? {} : { fabricated: true }),
     };
     return cachedAccountInfo;
   }
@@ -1482,6 +1512,7 @@ export class IntrinsicFunctionResolver {
       // dot-keys, e.g. `attributes['Endpoint.Port'] = '3306'`).
       const flatValue = resource.attributes[attributeName];
       if (flatValue !== undefined) {
+        this.rejectPlaceholderArnAttribute(resource, attributeName, flatValue, logicalId);
         this.logger.debug(
           `Resolved Fn::GetAtt from attributes: ${logicalId}.${attributeName} -> ${stringifyAttributeForLog(attributeName, flatValue)}`
         );
@@ -1526,6 +1557,54 @@ export class IntrinsicFunctionResolver {
       `Resolved Fn::GetAtt: ${logicalId}.${attributeName} -> ${stringifyAttributeForLog(attributeName, value)}`
     );
     return value;
+  }
+
+  /**
+   * Refuse a pre-#1681 PLACEHOLDER ARN served from the cached attribute map
+   * (issue #1729) — the `Fn::GetAtt` half of the guard
+   * {@link cfnRefValueFromPhysicalId} applies to `Ref`.
+   *
+   * `Ref` and `Fn::GetAtt` read the SAME recorded attribute, and #1681 treated
+   * only the `Ref` side: for an `AWS::AppSync::*` child created by a pre-#1681
+   * binary, `{"Fn::GetAtt": ["MyDataSource", "DataSourceArn"]}` still resolved
+   * to `arn:aws:appsync:*:*:apis/.../datasources/...` — structurally valid,
+   * unusable, and indistinguishable downstream from a real ARN.
+   *
+   * Scoped to the {@link REF_RETURNS_ARN_FROM_STATE} types AND their declared
+   * ARN attribute names, the narrowest form of the fix: a wildcard-bearing ARN
+   * is only KNOWN to be a placeholder for these three attributes, and some
+   * other type could legitimately cache an ARN-shaped string carrying a `*` in
+   * a position {@link isPlaceholderArn} inspects. Every other attribute of
+   * these same types (`AWS::AppSync::ApiKey`'s `ApiKey`,
+   * `AWS::AppSync::DataSource`'s `Name`) is untouched.
+   *
+   * THROWS rather than degrading, which is where it diverges from the `Ref`
+   * half, and deliberately: `Ref`'s fallback is the raw compound id, whereas
+   * the value here is requested under an ARN-suffixed attribute name, so
+   * handing back a non-ARN would be exactly the shape mismatch
+   * {@link guardedPhysicalIdFallback} already hard-fails on (the #1103 class —
+   * a green deploy that ships a wrong value into stack Outputs / an IAM
+   * policy). A resource in this state has no correct value to serve, so the
+   * honest answer is to say so and name the remedy: the record heals on the
+   * resource's next in-place update (#1727).
+   */
+  private rejectPlaceholderArnAttribute(
+    resource: ResourceState,
+    attributeName: string,
+    value: unknown,
+    logicalId: string
+  ): void {
+    const arnAttributeKeys = REF_RETURNS_ARN_FROM_STATE.get(resource.resourceType);
+    if (!arnAttributeKeys?.includes(attributeName)) return;
+    if (typeof value !== 'string' || !isPlaceholderArn(value)) return;
+    throw new Error(
+      `Cannot resolve Fn::GetAtt [${logicalId}, ${attributeName}] for ` +
+        `${resource.resourceType}: the recorded value "${value}" is a placeholder ` +
+        `written by a cdkd version older than issue #1681 — its region and account ` +
+        `fields are literal wildcards, so it is not a usable ARN. Deploy the stack ` +
+        `again so the resource's next update heals the record (cdkd now records the ` +
+        `real ARN), or re-import the resource.`
+    );
   }
 
   /**

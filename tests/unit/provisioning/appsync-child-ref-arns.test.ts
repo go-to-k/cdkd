@@ -28,24 +28,29 @@ vi.mock('../../../src/deployment/intrinsic-function-resolver.js', () => ({
   getAccountInfo: mockGetAccountInfo,
 }));
 
-vi.mock('../../../src/utils/logger.js', () => {
-  const childLogger = {
+// `vi.hoisted` so the tests can ASSERT on the child logger: a `const` declared
+// inside the mock factory is factory-scoped and invisible at module scope, and
+// a factory cannot close over an ordinary outer binding (the factory is hoisted
+// above it). The import-degradation arms below assert their warnings.
+const { childLogger } = vi.hoisted(() => ({
+  childLogger: {
     debug: vi.fn(),
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
     child: vi.fn().mockReturnThis(),
-  };
-  return {
-    getLogger: () => ({
-      child: () => childLogger,
-      debug: vi.fn(),
-      info: vi.fn(),
-      warn: vi.fn(),
-      error: vi.fn(),
-    }),
-  };
-});
+  },
+}));
+
+vi.mock('../../../src/utils/logger.js', () => ({
+  getLogger: () => ({
+    child: () => childLogger,
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+  }),
+}));
 
 import { AppSyncProvider } from '../../../src/provisioning/providers/appsync-provider.js';
 
@@ -71,6 +76,7 @@ describe('AppSyncProvider records real ARNs for the child types (issue #1681)', 
     provider = new AppSyncProvider();
     mockSend.mockReset();
     mockGetAccountInfo.mockReset();
+    childLogger.warn.mockClear();
     mockGetAccountInfo.mockResolvedValue({
       partition: 'aws',
       region: 'us-east-1',
@@ -351,5 +357,210 @@ describe('AppSyncProvider records real ARNs for the child types (issue #1681)', 
     await provider.create('K', 'AWS::AppSync::ApiKey', { ApiId: 'abcd1234' });
 
     expect(mockGetAccountInfo).toHaveBeenCalledWith('us-east-1');
+  });
+});
+
+/**
+ * Issue #1728 — the residual #1681 left: `import()` recorded `attributes: {}`
+ * for every child type, so an ADOPTED child had no ARN in state, the resolver's
+ * `REF_RETURNS_ARN_FROM_STATE` lookup missed, and `Ref` fell back to the raw
+ * compound id (the pre-#1681 behavior) until the resource's next update.
+ *
+ * Asserted on the RECORDED VALUE for the same reason the #1681 block above is:
+ * the call sequence is identical whether the attribute is recorded or not.
+ */
+describe('AppSyncProvider.import records the child ARN attributes (issue #1728)', () => {
+  let provider: AppSyncProvider;
+
+  const importInput = (resourceType: string, knownPhysicalId?: string) => ({
+    logicalId: 'X',
+    resourceType,
+    stackName: 'MyStack',
+    region: 'us-east-1',
+    properties: {},
+    ...(knownPhysicalId !== undefined && { knownPhysicalId }),
+  });
+
+  beforeEach(() => {
+    provider = new AppSyncProvider();
+    mockSend.mockReset();
+    mockGetAccountInfo.mockReset();
+    childLogger.warn.mockClear();
+    mockGetAccountInfo.mockResolvedValue({
+      partition: 'aws',
+      region: 'us-east-1',
+      accountId: '123456789012',
+    });
+  });
+
+  // The complete set, not just the ARN: `import` writes the record's attribute
+  // map outright, so a partial answer would leave `Name` / `ApiKey` unresolvable
+  // for an adopted resource exactly as the ARN was.
+  it.each([
+    [
+      'AWS::AppSync::DataSource',
+      'abcd1234|myDataSource',
+      {
+        DataSourceArn:
+          'arn:aws:appsync:us-east-1:123456789012:apis/abcd1234/datasources/myDataSource',
+        Name: 'myDataSource',
+      },
+    ],
+    [
+      'AWS::AppSync::Resolver',
+      'abcd1234|Query|getItem',
+      {
+        ResolverArn:
+          'arn:aws:appsync:us-east-1:123456789012:apis/abcd1234/types/Query/resolvers/getItem',
+      },
+    ],
+    [
+      'AWS::AppSync::ApiKey',
+      'abcd1234|da2-abcdefghij',
+      {
+        ApiKey: 'da2-abcdefghij',
+        Arn: 'arn:aws:appsync:us-east-1:123456789012:apis/abcd1234/apikey/da2-abcdefghij',
+      },
+    ],
+  ])('import of %s records the same attribute set create() does', async (type, id, expected) => {
+    const result = await provider.import(importInput(type, id));
+
+    expect(result).toEqual({ physicalId: id, attributes: expected });
+    // The reconstruction must cost no AppSync API call — that is the whole
+    // reason it is preferred over a readback per imported child.
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  // The recorded value must be usable, not merely present: the pre-#1681
+  // spelling would satisfy a "records an ARN" assertion while being exactly the
+  // value the resolver refuses.
+  //
+  // Asserted as a PREFIX rather than as `not.toContain(':*:')` (review
+  // finding): the negative form passes with the whole fix reverted, because
+  // `String(undefined)` is `'undefined'`, which contains no `:*:` either — an
+  // absence would have satisfied the fence it exists to be.
+  it('records a real, non-wildcard ARN for an imported child', async () => {
+    const result = await provider.import(
+      importInput('AWS::AppSync::DataSource', 'abcd1234|myDataSource')
+    );
+
+    const arn = result?.attributes?.['DataSourceArn'];
+    expect(typeof arn).toBe('string');
+    expect(arn as string).toMatch(/^arn:aws:appsync:us-east-1:123456789012:/);
+    expect(arn as string).not.toContain(':*:');
+  });
+
+  // Degradation arms — each must keep the pre-#1728 answer rather than guess.
+  it.each([
+    // A mis-arity id: `childRefAttributes` answers `undefined`.
+    ['AWS::AppSync::Resolver', 'abcd1234|a|b|c'],
+    // A type with no ARN-`Ref` mapping at all.
+    ['AWS::AppSync::GraphQLSchema', 'abcd1234'],
+  ])('import of %s still adopts with an empty attribute map', async (type, id) => {
+    const result = await provider.import(importInput(type, id));
+
+    expect(result).toEqual({ physicalId: id, attributes: {} });
+  });
+
+  // Adoption is worth more than the bookkeeping attribute: a failure must warn
+  // and degrade, never fail the import.
+  it('import SUCCEEDS, keeping the account-independent keys, when the ARN build throws', async () => {
+    mockGetAccountInfo.mockRejectedValue(new Error('sts exploded'));
+
+    const result = await provider.import(
+      importInput('AWS::AppSync::DataSource', 'abcd1234|myDataSource')
+    );
+
+    // `Name` is split out of the physical id and involves no account, so it
+    // survives a failure that only costs the ARN (review finding).
+    expect(result).toEqual({
+      physicalId: 'abcd1234|myDataSource',
+      attributes: { Name: 'myDataSource' },
+    });
+    expect(childLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('its ARN attribute was NOT recorded')
+    );
+  });
+
+  // THE arm that matters, and the one a `try` alone does not cover (review
+  // finding). The real `getAccountInfo` CATCHES its own STS failure and returns
+  // the hardcoded `123456789012` with `fabricated: true` — it does NOT reject —
+  // so the test above pins a path production cannot reach on an STS outage.
+  //
+  // A fabricated ARN carries no wildcard, so `isPlaceholderArn` can never catch
+  // it downstream: recording it would hand every later `Ref` / `Fn::GetAtt` a
+  // confidently-wrong ARN. Recording NOTHING is the honest answer.
+  it('import records NO ARN when STS was unreachable and the account is fabricated', async () => {
+    mockGetAccountInfo.mockResolvedValue({
+      accountId: '123456789012',
+      region: 'us-east-1',
+      partition: 'aws',
+      fabricated: true,
+    });
+
+    const result = await provider.import(
+      importInput('AWS::AppSync::DataSource', 'abcd1234|myDataSource')
+    );
+
+    // The ARN is refused; `Name` is not account-derived and is kept.
+    expect(result).toEqual({
+      physicalId: 'abcd1234|myDataSource',
+      attributes: { Name: 'myDataSource' },
+    });
+    expect(childLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('its ARN attribute was NOT recorded')
+    );
+  });
+
+  // The arm the refusal actually exists for. UPDATE rebuilds the ARN on every
+  // in-place update and its attribute map REPLACES the record's wholesale, so a
+  // fabricated account mid-deploy would overwrite a correct, create-time ARN —
+  // destroying a known-good value rather than failing to write a missing one.
+  // Reporting NO attributes makes the engine carry the existing ones forward.
+  it('update reports NO attributes when the account is fabricated', async () => {
+    mockSend.mockResolvedValue({});
+    mockGetAccountInfo.mockResolvedValue({
+      accountId: '123456789012',
+      region: 'us-east-1',
+      partition: 'aws',
+      fabricated: true,
+    });
+
+    const result = await provider.update(
+      'X',
+      'abcd1234|myDataSource',
+      'AWS::AppSync::DataSource',
+      { Name: 'myDataSource', Description: 'changed' },
+      {}
+    );
+
+    expect(result.attributes).toBeUndefined();
+    expect(childLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('could not rebuild its ARN attribute')
+    );
+  });
+
+  // The ARN must name the region the STATE RECORD is keyed by, which `import`
+  // resolves itself — not the region the provider's client happens to hold.
+  it('builds the ARN from the import input region, not the client region', async () => {
+    mockGetAccountInfo.mockImplementation((region?: string) =>
+      Promise.resolve({ accountId: '123456789012', region: region ?? 'us-east-1', partition: 'aws' })
+    );
+
+    const result = await provider.import({
+      ...importInput('AWS::AppSync::DataSource', 'abcd1234|myDataSource'),
+      region: 'eu-west-1',
+    });
+
+    expect(mockGetAccountInfo).toHaveBeenCalledWith('eu-west-1');
+    expect(result?.attributes?.['DataSourceArn']).toBe(
+      'arn:aws:appsync:eu-west-1:123456789012:apis/abcd1234/datasources/myDataSource'
+    );
+  });
+
+  // Unchanged by #1728: with no caller-supplied id there is nothing to adopt,
+  // and the child types are explicit-override only.
+  it('import of a child with no known physical id still returns null', async () => {
+    expect(await provider.import(importInput('AWS::AppSync::DataSource'))).toBeNull();
   });
 });

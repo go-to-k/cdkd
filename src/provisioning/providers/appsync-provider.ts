@@ -258,9 +258,36 @@ export class AppSyncProvider implements ResourceProvider {
    * `CloudControlProvider` uses for its own ARN reconstruction, so this costs
    * at most one `GetCallerIdentity` per deploy.
    */
-  private async buildAppSyncArn(suffix: string): Promise<string> {
-    const region = this.providerRegion ?? (await this.getClient().config.region());
+  private async buildAppSyncArn(suffix: string, regionOverride?: string): Promise<string> {
+    // `regionOverride` is the IMPORT path's region (issue #1728 review):
+    // `import.ts` resolves it as `--region || AWS_REGION || 'us-east-1'` and
+    // keys the state record by it, which can differ from the client's own
+    // configured region (an unset `AWS_REGION` with a profile region set). The
+    // create / update paths pass nothing and keep deriving it from the client,
+    // which is the region their AWS calls actually went to.
+    const region =
+      regionOverride ?? this.providerRegion ?? (await this.getClient().config.region());
     const accountInfo = await getAccountInfo(region);
+    // REFUSE a fabricated account rather than building an ARN from it (issue
+    // #1728 review). `getAccountInfo` CATCHES its own STS failure and answers
+    // the hardcoded `123456789012`, so without this the build "succeeds" and
+    // every caller persists `arn:aws:appsync:<region>:123456789012:...` — a
+    // value carrying no wildcard, therefore invisible to `isPlaceholderArn`,
+    // therefore handed to consumers as if it were real.
+    //
+    // It lives HERE rather than at the import call site because the UPDATE path
+    // is the worse of the two: `childRefAttributes` rebuilds the ARN on every
+    // in-place update, so an STS blip mid-deploy would REPLACE a correct,
+    // create-time-recorded ARN with the fabricated one — destroying a known-good
+    // value, where import merely fails to write a missing one. Every caller
+    // already has a degradation arm for a failed build; this just makes them
+    // reachable for the failure mode that actually occurs.
+    if (accountInfo.fabricated) {
+      throw new Error(
+        `cannot determine the AWS account (STS is unreachable, and the resolved ` +
+          `account id is a placeholder), so an ARN for ${suffix} would be fabricated`
+      );
+    }
     // The PARTITION comes from the region, NOT from `accountInfo.partition` —
     // that field is hardcoded to `'aws'` (`intrinsic-function-resolver.ts`,
     // with its own "Could be aws-cn, aws-us-gov, etc." admission). Using it
@@ -326,33 +353,52 @@ export class AppSyncProvider implements ResourceProvider {
    * Returns `undefined` for an id whose arity does not match the type — a
    * record that malformed cannot be healed by guessing, and carrying the
    * existing attributes forward is the safe answer.
+   *
+   * `omitArnOnFailure` is for the IMPORT path only (issue #1728 review). The
+   * non-ARN keys — `Name`, `ApiKey` — are split straight out of the physical id
+   * and involve no account at all, so dropping them because the ACCOUNT could
+   * not be resolved would fail `Fn::GetAtt Name` for a reason that has nothing
+   * to do with it. Import has no prior record to preserve, so keeping what it
+   * can beats keeping nothing. `update()` must NOT pass it: there a partial map
+   * replaces the record's wholesale and would delete a good ARN.
    */
   private async childRefAttributes(
     resourceType: string,
-    physicalId: string
+    physicalId: string,
+    regionOverride?: string,
+    omitArnOnFailure = false
   ): Promise<Record<string, unknown> | undefined> {
     const parts = physicalId.split('|');
+    // Resolves to the ARN, or to `undefined` when the build refused AND the
+    // caller opted into omitting it. A refusal with the flag unset propagates.
+    const arn = async (suffix: string): Promise<string | undefined> => {
+      try {
+        return await this.buildAppSyncArn(suffix, regionOverride);
+      } catch (error) {
+        if (!omitArnOnFailure) throw error;
+        this.logger.warn(
+          `Imported ${resourceType} (${physicalId}) but its ARN attribute was NOT ` +
+            `recorded: ${error instanceof Error ? error.message : String(error)}. ` +
+            `Ref will resolve to the compound physical id, and Fn::GetAtt on the ARN ` +
+            `will fail, until the resource's next update heals the record.`
+        );
+        return undefined;
+      }
+    };
     if (resourceType === 'AWS::AppSync::DataSource' && parts.length === 2) {
       const [apiId, name] = parts as [string, string];
-      return {
-        DataSourceArn: await this.buildAppSyncArn(`apis/${apiId}/datasources/${name}`),
-        Name: name,
-      };
+      const dataSourceArn = await arn(`apis/${apiId}/datasources/${name}`);
+      return { ...(dataSourceArn && { DataSourceArn: dataSourceArn }), Name: name };
     }
     if (resourceType === 'AWS::AppSync::Resolver' && parts.length === 3) {
       const [apiId, typeName, fieldName] = parts as [string, string, string];
-      return {
-        ResolverArn: await this.buildAppSyncArn(
-          `apis/${apiId}/types/${typeName}/resolvers/${fieldName}`
-        ),
-      };
+      const resolverArn = await arn(`apis/${apiId}/types/${typeName}/resolvers/${fieldName}`);
+      return { ...(resolverArn && { ResolverArn: resolverArn }) };
     }
     if (resourceType === 'AWS::AppSync::ApiKey' && parts.length === 2) {
       const [apiId, apiKeyId] = parts as [string, string];
-      return {
-        ApiKey: apiKeyId,
-        Arn: await this.buildAppSyncArn(`apis/${apiId}/apikey/${apiKeyId}`),
-      };
+      const apiKeyArn = await arn(`apis/${apiId}/apikey/${apiKeyId}`);
+      return { ApiKey: apiKeyId, ...(apiKeyArn && { Arn: apiKeyArn }) };
     }
     return undefined;
   }
@@ -361,13 +407,91 @@ export class AppSyncProvider implements ResourceProvider {
    * The no-replacement update result for a child type, carrying the healed
    * attribute set (issue #1681). Reporting none is still the correct answer for
    * an unhealable id — the engine then carries the existing attributes forward.
+   *
+   * An ARN that cannot be built takes the SAME answer, and it must (issue #1728
+   * review). An `update()` attribute map REPLACES the record's wholesale, so
+   * reporting a partial set here would DELETE the ARN a previous deploy
+   * correctly recorded; reporting none carries it forward untouched. That is
+   * why this arm differs from the import one below, which has no prior record
+   * to preserve and therefore keeps what it can.
    */
   private async childUpdateResult(
     resourceType: string,
     physicalId: string
   ): Promise<ResourceUpdateResult> {
-    const attributes = await this.childRefAttributes(resourceType, physicalId);
+    let attributes: Record<string, unknown> | undefined;
+    try {
+      attributes = await this.childRefAttributes(resourceType, physicalId);
+    } catch (error) {
+      this.logger.warn(
+        `Updated ${resourceType} (${physicalId}) but could not rebuild its ARN attribute: ` +
+          `${error instanceof Error ? error.message : String(error)}. ` +
+          `The previously recorded attributes are kept.`
+      );
+    }
     return { physicalId, wasReplaced: false, ...(attributes && { attributes }) };
+  }
+
+  /**
+   * The child attribute set for an ADOPTED resource (issue #1728).
+   *
+   * `import()` used to record `attributes: {}` for every child type, so a child
+   * adopted via `cdkd import` had no ARN in state and the resolver's
+   * `REF_RETURNS_ARN_FROM_STATE` lookup missed — `Ref` fell back to the raw
+   * compound id, i.e. the pre-#1681 behavior, and `Fn::GetAtt DataSourceArn` /
+   * `ResolverArn` / `Arn` were equally unresolved. The record healed only on the
+   * resource's next UPDATE (#1727), so an imported-and-untouched child stayed
+   * broken indefinitely.
+   *
+   * RECONSTRUCTED rather than read back from AWS. Every segment is already in
+   * the physical id the import receives, `childRefAttributes` is the SAME
+   * mapping `create()` / `update()` use (so the three spellings cannot drift),
+   * and the reconstruction costs one process-cached STS call instead of one
+   * DescribeApi-family call per imported child. A readback would be
+   * authoritative but cannot be more correct for a well-formed id: `import`
+   * adopts a resource in the caller's own account, which is exactly the context
+   * `buildAppSyncArn` derives from.
+   *
+   * Never throws: a failure degrades to `{}` (or to the account-independent
+   * keys — see `omitArnOnFailure`), which is at worst the exact pre-#1728
+   * behavior, because adopting the resource is worth more than its bookkeeping
+   * attribute. `childRefAttributes` already answers `undefined` for a mis-arity
+   * id, which degrades the same way rather than guessing.
+   *
+   * The fabricated-account refusal that makes this honest lives in
+   * `buildAppSyncArn`, not here (issue #1728 review): the UPDATE path rebuilds
+   * the ARN on every in-place update, so an STS blip there would REPLACE a
+   * correct recorded ARN rather than merely fail to write one. Guarding only
+   * this call site would have left the worse path open. The fabrication itself
+   * is issue #1730.
+   */
+  private async childImportAttributes(
+    resourceType: string,
+    physicalId: string,
+    region: string
+  ): Promise<Record<string, unknown>> {
+    try {
+      // The region comes from the IMPORT input, not from the client: `import.ts`
+      // resolves it as `--region || AWS_REGION || 'us-east-1'` and keys the
+      // state record by it, so deriving it from the client's own config can
+      // record an ARN naming a different region than the record it sits in.
+      // (When neither is set that resolution is itself a default, so the ARN
+      // names the same region the state key does — misregioned together rather
+      // than against each other.)
+      //
+      // `omitArnOnFailure`: a fabricated account costs the ARN, not the whole
+      // attribute set — `Name` / `ApiKey` come out of the physical id and are
+      // account-independent.
+      return (await this.childRefAttributes(resourceType, physicalId, region, true)) ?? {};
+    } catch (error) {
+      this.logger.warn(
+        `Imported ${resourceType} (${physicalId}) but could not build its ARN attribute: ` +
+          `${error instanceof Error ? error.message : String(error)}. ` +
+          `Ref will resolve to the compound physical id, and Fn::GetAtt on the ARN will ` +
+          `fail, until the resource's next update heals the record.`
+      );
+      return {};
+    }
   }
 
   /**
@@ -3377,12 +3501,22 @@ export class AppSyncProvider implements ResourceProvider {
    * real resource (issue #1134); auto-mode import resolves ids from
    * CloudFormation's `DescribeStackResources` instead. AppSync sub-resources
    * (`GraphQLSchema`, `DataSource`, `Resolver`, `ApiKey`) are scoped under a
-   * parent `apiId` — explicit-override only.
+   * parent `apiId` — explicit-override only. The three ARN-`Ref` children
+   * additionally record the same attribute set `create()` does, so an adopted
+   * child's `Ref` / `Fn::GetAtt` resolve immediately rather than only after its
+   * first update (issue #1728) — see {@link childImportAttributes}.
    */
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     if (input.resourceType !== 'AWS::AppSync::GraphQLApi') {
       if (input.knownPhysicalId) {
-        return { physicalId: input.knownPhysicalId, attributes: {} };
+        return {
+          physicalId: input.knownPhysicalId,
+          attributes: await this.childImportAttributes(
+            input.resourceType,
+            input.knownPhysicalId,
+            input.region
+          ),
+        };
       }
       return null;
     }

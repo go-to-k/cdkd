@@ -958,6 +958,38 @@ adopted via `--resource <id>=<physicalId>`.
 > deleted ([#1134](https://github.com/go-to-k/cdkd/issues/1134)); adding a new
 > one just adds more dead code.
 
+What the method RETURNS matters as much as how it resolves the id:
+
+> [!IMPORTANT]
+> **If any intrinsic resolves from a recorded ATTRIBUTE, `import` must record
+> it too** ([#1728](https://github.com/go-to-k/cdkd/issues/1728)). Returning
+> `attributes: {}` is only correct when the physical id alone answers every
+> `Ref` / `Fn::GetAtt` for the type. Where it does not — the three
+> `AWS::AppSync::*` children, whose `Ref` is an ARN the resolver recovers from
+> the attribute `create()` records — an adopted resource is silently stuck on
+> the degraded path until its next UPDATE happens to heal the record. Reuse the
+> SAME mapping `create()` / `update()` use rather than writing a third spelling,
+> and return the COMPLETE set: the import writes the record's attribute map
+> outright, so a partial answer drops the rest. Reconstructing from the supplied
+> physical id is preferred over a readback when every segment is already in the
+> id (it costs no per-resource API call), and the build must never fail the
+> import — warn and degrade to `{}`, which is exactly the pre-fix behavior.
+>
+> Two things about reconstructing, both found by review rather than by tests:
+> derive the region from `ResourceImportInput.region` (what `import` keyed the
+> STATE RECORD by), not from the provider client's own config, or the ARN can
+> name a different region than the record holding it. And **a `try` does not
+> cover the credentials failure** — `getAccountInfo` CATCHES its own STS error
+> and returns the hardcoded `123456789012` (flagged `fabricated`), so nothing
+> throws and a confidently-wrong ARN gets PERSISTED, carrying no wildcard for any
+> downstream guard to catch. Refuse inside the ARN BUILDER rather than at the
+> import call site: the UPDATE path rebuilds the same ARN on every in-place
+> update and its attribute map replaces the record's wholesale, so guarding only
+> import leaves the worse path — overwriting a correct recorded ARN — wide open.
+> Then let each caller pick its own degradation: create omits, update reports NO
+> attributes (so the engine carries the existing ones forward), and import keeps
+> the account-independent keys while dropping only the ARN.
+
 The method follows a single shape:
 
 ```typescript
