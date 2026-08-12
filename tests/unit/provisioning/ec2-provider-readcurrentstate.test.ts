@@ -182,6 +182,68 @@ describe('EC2Provider.readCurrentState', () => {
   });
 
   describe('AWS::EC2::SecurityGroup', () => {
+    // Issue #1649. Every SIBLING standalone type declares `Tags` in
+    // getDriftUnknownPaths because its read cannot return them;
+    // AWS::EC2::SecurityGroup was in neither camp — not declared, not read — so
+    // a templated Tags block compared against `undefined` on the
+    // properties-fallback baseline and reported permanent phantom drift.
+    it('reads Tags back so a templated tag block is comparable (#1649)', async () => {
+      mockSend.mockResolvedValueOnce({
+        SecurityGroups: [
+          {
+            GroupId: 'sg-1',
+            GroupName: 'web',
+            Description: 'web tier',
+            VpcId: 'vpc-1',
+            Tags: [
+              { Key: 'Zone', Value: 'z1' },
+              { Key: 'Owner', Value: 'cdkd-integ' },
+            ],
+          },
+        ],
+      });
+
+      const result = await provider.readCurrentState('sg-1', 'Logical', 'AWS::EC2::SecurityGroup');
+
+      // `normalizeAwsTagsToCfn` emits Key-sorted output. Order is not
+      // load-bearing for the comparator either way — `canonicalizeTagListsDeep`
+      // sorts tag lists on BOTH sides — but pinning the real shape keeps the
+      // test honest about what the provider returns.
+      expect(result?.['Tags']).toEqual([
+        { Key: 'Owner', Value: 'cdkd-integ' },
+        { Key: 'Zone', Value: 'z1' },
+      ]);
+    });
+
+    it('strips the reserved aws:-prefixed tags a template can never declare (#1649)', async () => {
+      mockSend.mockResolvedValueOnce({
+        SecurityGroups: [
+          {
+            GroupId: 'sg-1',
+            Description: 'web tier',
+            Tags: [
+              { Key: 'aws:cloudformation:stack-name', Value: 'Other' },
+              { Key: 'Zone', Value: 'z1' },
+            ],
+          },
+        ],
+      });
+
+      const result = await provider.readCurrentState('sg-1', 'Logical', 'AWS::EC2::SecurityGroup');
+
+      expect(result?.['Tags']).toEqual([{ Key: 'Zone', Value: 'z1' }]);
+    });
+
+    it('omits Tags entirely when AWS reports none, so an untagged group is not compared against [] (#1649)', async () => {
+      mockSend.mockResolvedValueOnce({
+        SecurityGroups: [{ GroupId: 'sg-1', Description: 'web tier' }],
+      });
+
+      const result = await provider.readCurrentState('sg-1', 'Logical', 'AWS::EC2::SecurityGroup');
+
+      expect(result).not.toHaveProperty('Tags');
+    });
+
     it('returns GroupName + GroupDescription + VpcId, with empty rule placeholders when AWS reports no rules', async () => {
       mockSend.mockResolvedValueOnce({
         SecurityGroups: [

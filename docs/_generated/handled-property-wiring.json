@@ -7151,10 +7151,12 @@
           ],
           "evidence": [
             "delegated",
-            "element-read"
+            "element-read",
+            "table-loop"
           ],
           "seededBy": [
             "applyUpdate",
+            "canonicalizeDesiredProperties",
             "create",
             "createSecurityGroup",
             "readCurrentState",
@@ -7186,10 +7188,12 @@
           ],
           "evidence": [
             "delegated",
-            "element-read"
+            "element-read",
+            "table-loop"
           ],
           "seededBy": [
             "applyUpdate",
+            "canonicalizeDesiredProperties",
             "create",
             "createSecurityGroup",
             "readCurrentState",
@@ -7464,6 +7468,7 @@
       "gaps": [],
       "blindSpots": [
         "computed key in narrowRouteDestinations()",
+        "object spread in canonicalizeSgInlineRuleProtocols()",
         "object spread in narrowIngressIpProtocol()",
         "object spread in narrowRouteDestinations()"
       ]

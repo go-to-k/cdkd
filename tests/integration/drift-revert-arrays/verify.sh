@@ -256,12 +256,6 @@ for (const [id, r] of Object.entries(s.resources ?? {})) {
   // is skipped rather than treated as an error.
   if (!Array.isArray(r.properties?.SecurityGroupIngress)) continue;
   delete r.observedProperties;
-  // `readSecurityGroupCurrentState` never populates Tags while
-  // AWS::EC2::SecurityGroup is (unlike every sibling standalone type) NOT in
-  // getDriftUnknownPaths - so on the fallback baseline a templated Tags block
-  // compares against undefined and reports phantom drift that has nothing to
-  // do with this step. Tracked as issue #1649; drop this delete when it lands.
-  delete r.properties.Tags;
   stripped++;
   targets.push(id);
 }
