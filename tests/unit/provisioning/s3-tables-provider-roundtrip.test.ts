@@ -37,9 +37,10 @@ import { S3TablesProvider } from '../../../src/provisioning/providers/s3-tables-
 const BUCKET_ARN = 'arn:aws:s3tables:us-east-1:123:bucket/my-bucket';
 const NAMESPACE_PHYSICAL_ID = `${BUCKET_ARN}|my-namespace`;
 const TABLE_PHYSICAL_ID = `${BUCKET_ARN}|my-namespace|my-table`;
-// The REAL table ARN AWS returns from GetTable — distinct from the
-// compound physicalId above, and what ListTagsForResource is called with.
-const TABLE_ARN = 'arn:aws:s3tables:us-east-1:123:bucket/my-bucket/table/my-table';
+// The table ARN `GetTable` returns (a REQUIRED member of GetTableResponse),
+// distinct from the compound physicalId above and what ListTagsForResource is
+// called with. AWS ends it in an opaque table id, not the table name.
+const TABLE_ARN = 'arn:aws:s3tables:us-east-1:123:bucket/my-bucket/table/OPAQUE-AWS-ID';
 
 describe('S3TablesProvider read-update round-trip', () => {
   let provider: S3TablesProvider;

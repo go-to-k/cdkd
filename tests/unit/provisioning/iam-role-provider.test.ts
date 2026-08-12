@@ -374,6 +374,7 @@ describe('IAMRoleProvider', () => {
       // truthy gate (`if (properties['Description'])`) silently
       // dropped empty strings and never sent them to AWS. The fix
       // gates on `!== undefined` so the empty string reaches AWS.
+      //
       // Only TWO sends actually fire: the props carry no policies/tags, so
       // the policy/tag helpers issue none. Priming the three no-op
       // responses this test used to declare leaked them into the next
@@ -564,11 +565,11 @@ describe('IAMRoleProvider', () => {
   });
 
   describe('import', () => {
-    beforeEach(() => {
-      // Drop once-queued responses leaked by earlier tests — clearAllMocks()
-      // clears calls but NOT unconsumed mockResolvedValueOnce entries.
-      mockSend.mockReset();
-    });
+    // Deliberately NO `mockSend.mockReset()` drain here. It used to guard
+    // against responses leaked by the update tests above, which no longer
+    // leak (issue #1655) — and a drain would make any FUTURE leak crossing
+    // into this block invisible to the detector, re-grandfathering the tail
+    // of a file this issue just un-grandfathered.
 
     const importInput = (overrides: Record<string, unknown> = {}) => ({
       logicalId: 'MyRole',

@@ -723,6 +723,11 @@ describe('ELBv2Provider read-update round-trip', () => {
       listenerObserved
     );
 
+    // Listener leg consumed too: 2 (TG) + 1 (listener) = 3. Pins the TAIL of
+    // this file — a surplus primed by the last test is never consumed, so the
+    // detector alone cannot see it (issue #1655).
+    expect(mockSend).toHaveBeenCalledTimes(3);
+
     const modifyTGCall = mockSend.mock.calls.find((c) => c[0] instanceof ModifyTargetGroupCommand);
     const modifyListenerCall = mockSend.mock.calls.find(
       (c) => c[0] instanceof ModifyListenerCommand
