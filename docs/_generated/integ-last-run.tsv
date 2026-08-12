@@ -134,7 +134,7 @@ iam-propagation-stress	2026-07-26T18:57:55Z	PASS	71	verify.sh	0727b sweep-b7 sta
 iam-role-policies-drift-clean	2026-07-26T18:57:55Z	PASS	84	verify.sh	0727b sweep-b7 staleness re-run (rc=0); account clean
 iam-role-prefixed-name-update	2026-07-26T16:45:28Z	PASS	71	verify.sh	#1160 iam-role removal phase 3 verified; destroy 1/0 errors, 0 orphans
 import-attributes	2026-08-10T05:19:05Z	PASS	39	verify.sh	0810 P2 sweep b6; attr reconstruct + destroy clean, 1 del 0 err
-import-auto-mode	2026-07-26T20:53:45Z	PASS	85	verify.sh	re-run with vendored aws-cdk CLI (npx determinism); live-verified, account + CFn clean
+import-auto-mode	2026-08-12T05:44:00Z	PASS	269	verify.sh	final source incl. #1672 message; rc ok, orph clean
 import-nested-stack	2026-08-10T04:45:42Z	PASS	133	verify.sh	0810 sweep b3; 1st attempt failed on stale global cdk CLI 2.1120.0 (schema 54 needs >=2.1135.1, not a cdkd bug); PASS after vp update -g aws-cdk, 14 steps, 3 del 0 err
 import-value-strong-ref	2026-08-10T05:50:57Z	PASS	120	verify.sh	0810 P2 sweep b10; 2-stack S3+SSM strong-ref, 0 orph
 importvalue-chain	2026-08-10T05:50:57Z	PASS	76	verify.sh	0810 P2 sweep b10; 3-stack A->B->C ImportValue chain, exports index purged, 0 orph

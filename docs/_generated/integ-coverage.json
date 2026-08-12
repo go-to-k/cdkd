@@ -3260,7 +3260,8 @@
       "integs": [
         "data-analytics",
         "drift-revert",
-        "glue-update-hardening"
+        "glue-update-hardening",
+        "import-auto-mode"
       ],
       "signals": {
         "data-analytics": [
@@ -3272,6 +3273,10 @@
         ],
         "glue-update-hardening": [
           "l1"
+        ],
+        "import-auto-mode": [
+          "l1",
+          "literal"
         ]
       }
     },
@@ -3302,7 +3307,8 @@
       "resourceType": "AWS::Glue::Table",
       "integs": [
         "data-analytics",
-        "glue-update-hardening"
+        "glue-update-hardening",
+        "import-auto-mode"
       ],
       "signals": {
         "data-analytics": [
@@ -3311,6 +3317,10 @@
         ],
         "glue-update-hardening": [
           "l1"
+        ],
+        "import-auto-mode": [
+          "l1",
+          "literal"
         ]
       }
     },

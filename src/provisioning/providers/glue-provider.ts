@@ -87,6 +87,138 @@ import type {
 } from '../../types/resource.js';
 
 /**
+ * Read a template-borne value that is about to be forwarded to a Glue read
+ * API as a string.
+ *
+ * `import()` runs against the RAW template, where `substituteOverrideRefs`
+ * has resolved only the `Ref`s whose target is in the overrides map — a
+ * pseudo parameter is never in that map, so `CatalogId: {Ref: AWS::AccountId}`
+ * (what `@aws-cdk/aws-glue-alpha` renders for an environment-agnostic stack)
+ * survives as an OBJECT. A bare `as string` cast then hands that object to
+ * `GetTable` / `GetDatabase` as if it were an id. Dropping it instead matches
+ * the API default (the caller's own account), which is what the intrinsic
+ * would have resolved to anyway.
+ */
+function importableString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+/**
+ * Resolve the `(databaseName, tableName)` pair an `AWS::Glue::Table` import
+ * should probe, from either physicalId shape (issue #1651).
+ *
+ * cdkd's physicalId for a Glue Table is the composite `<databaseName>|<tableName>`
+ * (built by `createTable`), because `GetTable` / `UpdateTable` / `DeleteTable`
+ * all need both while `ResourceProvider`'s read-side methods receive a single
+ * string. CloudFormation's physicalId for the same type is the TABLE NAME
+ * ALONE — `Ref` returns it, and it never contains `|`. Auto-mode import merges
+ * CloudFormation-derived ids into the overrides before the loop (#1128 / #1130),
+ * so `knownPhysicalId` legitimately arrives in either shape and both must
+ * resolve; treating the bare form as malformed reported every `cdk deploy`-managed
+ * table as not-found while pointing the user at the very id it had just rejected.
+ *
+ * `|` is the discriminator, and its limit is worth stating precisely rather
+ * than assuming: the "lowercase alphanumerics and underscore" rule usually
+ * quoted for Glue names is the Athena / Data Catalog CONVENTION, not the API's
+ * constraint. Live probe (us-east-1, 2026-08-12): `glue:CreateTable` ACCEPTS a
+ * table literally named `a|b`.
+ *
+ * Such a table is not adoptable TODAY, and the refusal is deliberate — but the
+ * limitation is cdkd's own and is fixable, so do not read this as a law of
+ * nature. CloudFormation manages such a table fine: it keeps the physical id
+ * and `DatabaseName` as separate values, whereas cdkd's `ResourceProvider`
+ * passes a single identity string, so this provider PACKS both into
+ * `<db>|<table>` with no escaping. `updateTable` / `deleteTable` / `readTable`
+ * then destructure exactly two segments, so a three-segment `<db>|a|b` decodes
+ * as database `<db>`, table `a` — a DIFFERENT table, which `deleteTable` would
+ * delete. Issue #1672 tracks the real fix (the three decode sites already
+ * receive the properties bag carrying `DatabaseName`, so the packing is not
+ * even necessary for them) and notes that `createTable` has the SAME defect on
+ * the deploy path, unguarded.
+ *
+ * Until then, refusing is right: writing a record cdkd cannot decode is the
+ * failure mode of issue #1658 (`AWS::Route53::RecordSet` accepted
+ * CloudFormation's id verbatim and made the stack undestroyable), which is
+ * strictly worse than the loud not-found this returns. An earlier revision of
+ * this fix retried the bare reading as a fallback and produced exactly that
+ * record; three independent reviewers caught it.
+ *
+ * On failure it returns the REASON rather than a bare `undefined`, because the
+ * three causes need three different messages and re-deriving the cause from the
+ * inputs at the call site gets it wrong: `'db|'` contains a `|` but its real
+ * defect is the empty segment, not the separator.
+ */
+type TableIdentityResult =
+  | { ok: true; databaseName: string; tableName: string }
+  /** A name contains `|`, cdkd's own separator — no id shape can represent it. */
+  | { ok: false; reason: 'pipe-in-name' }
+  /** An id was supplied but no usable `(database, table)` pair came out of it. */
+  | { ok: false; reason: 'unpairable' }
+  /** Nothing identified the table: no override and no usable template names. */
+  | { ok: false; reason: 'unidentified' };
+
+function resolveTableIdentity(input: {
+  knownPhysicalId: string | undefined;
+  templateDatabaseName: string | undefined;
+  templateTableName: string | undefined;
+}): TableIdentityResult {
+  const { knownPhysicalId, templateDatabaseName, templateTableName } = input;
+
+  let databaseName: string | undefined;
+  let tableName: string | undefined;
+
+  if (knownPhysicalId === undefined) {
+    databaseName = templateDatabaseName;
+    tableName = templateTableName;
+  } else if (knownPhysicalId.includes('|')) {
+    // EXACTLY two segments. Destructuring the first two out of three would
+    // silently drop the rest: `mydb|a|b` would read as database `mydb`, table
+    // `a` — a DIFFERENT table, adopted under an id that round-trips cleanly and
+    // therefore never looks wrong again. That shape is on the INVITED path, not
+    // a hypothetical: the refusal warning below tells the user to pass
+    // `<databaseName>|<tableName>`, so someone whose table is named `a|b`
+    // types exactly this.
+    const parts = knownPhysicalId.split('|');
+    if (parts.length !== 2) return { ok: false, reason: 'pipe-in-name' };
+    databaseName = parts[0] || undefined;
+    tableName = parts[1] || undefined;
+  } else {
+    // Bare CloudFormation id: the table name. The database comes from the
+    // template, where CDK renders `DatabaseName` as a `Ref` to the sibling
+    // `AWS::Glue::Database` — whose CFn physicalId IS the database name, so the
+    // overrides map resolves it to a literal before `import()` is called.
+    //
+    // The override wins over the template's `TableInput.Name`: the user named a
+    // specific resource to adopt, and probing a different one would adopt the
+    // wrong table. `importableString` rejects the empty string, so a
+    // `--resource-mapping` entry of `""` (which `parseMappingJson` accepts,
+    // unlike the `--resource` flag) still returns not-found rather than sending
+    // `GetTable({Name: ''})`, whose `InvalidInputException` is not
+    // `EntityNotFoundException` and would abort the whole import.
+    databaseName = templateDatabaseName;
+    tableName = importableString(knownPhysicalId);
+  }
+
+  if (databaseName === undefined || tableName === undefined) {
+    return { ok: false, reason: knownPhysicalId === undefined ? 'unidentified' : 'unpairable' };
+  }
+
+  // Neither segment may itself contain `|`, or the composite this becomes is
+  // not decodable by the two-way `split('|')` in `updateTable` / `deleteTable` /
+  // `readTable`. The composite and bare branches above are `|`-free by
+  // construction (one is the product of a 2-part split, the other only runs for
+  // a pipe-free id), so in practice this catches the TEMPLATE branch — a
+  // `TableInput.Name` of `a|b` would otherwise be recorded as `<db>|a|b` and
+  // decode to a different table. It is written as an unconditional post-check
+  // rather than a per-branch one so a future branch cannot forget it.
+  if (databaseName.includes('|') || tableName.includes('|')) {
+    return { ok: false, reason: 'pipe-in-name' };
+  }
+
+  return { ok: true, databaseName, tableName };
+}
+
+/**
  * SDK Provider for AWS Glue resources
  *
  * Supports:
@@ -1384,10 +1516,10 @@ export class GlueProvider implements ResourceProvider {
   private async importDatabase(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     const explicitName =
       input.knownPhysicalId ??
-      ((input.properties['DatabaseInput'] as Record<string, unknown> | undefined)?.['Name'] as
-        | string
-        | undefined);
-    const catalogId = input.properties['CatalogId'] as string | undefined;
+      importableString(
+        (input.properties['DatabaseInput'] as Record<string, unknown> | undefined)?.['Name']
+      );
+    const catalogId = importableString(input.properties['CatalogId']);
 
     if (explicitName) {
       try {
@@ -1410,53 +1542,89 @@ export class GlueProvider implements ResourceProvider {
   }
 
   private async importTable(input: ResourceImportInput): Promise<ResourceImportResult | null> {
-    const databaseName = input.properties['DatabaseName'] as string | undefined;
+    const databaseName = importableString(input.properties['DatabaseName']);
     const tableInput = input.properties['TableInput'] as Record<string, unknown> | undefined;
-    const templateTableName = tableInput?.['Name'] as string | undefined;
-    const catalogId = input.properties['CatalogId'] as string | undefined;
+    const templateTableName = importableString(tableInput?.['Name']);
+    const catalogId = importableString(input.properties['CatalogId']);
 
-    // Override or template name. Glue Table physicalId in cdkd is
-    // `<databaseName>|<tableName>`.
-    if (input.knownPhysicalId) {
-      const [dbName, tName] = input.knownPhysicalId.split('|');
-      if (!dbName || !tName) return null;
-      try {
-        await this.getClient().send(
-          new GetTableCommand({
-            DatabaseName: dbName,
-            Name: tName,
-            ...(catalogId && { CatalogId: catalogId }),
-          })
-        );
-        return { physicalId: input.knownPhysicalId, attributes: {} };
-      } catch (err) {
-        if (err instanceof EntityNotFoundException) return null;
-        throw err;
+    const identity = resolveTableIdentity({
+      knownPhysicalId: input.knownPhysicalId,
+      templateDatabaseName: databaseName,
+      templateTableName,
+    });
+    if (!identity.ok) {
+      // No `aws:cdk:path` tag walk: AWS rejects `aws:`-prefixed tag writes, so
+      // that tag never exists on a real resource and the walk could not match
+      // (issue #1134). Auto-mode import resolves ids from CloudFormation's
+      // `DescribeStackResources` or the template's physical-name property; a
+      // table reaching here needs an explicit `--resource` override.
+      //
+      // Each cause gets its own message. A single text would be FALSE for two
+      // of the three, and the caller-side hint (`pass --resource
+      // <LogicalId>=<physicalId>`) is actionable for only one of them — the
+      // original #1651 bug WAS a dead end where the suggested remedy was the
+      // thing being rejected, so being vague here would reproduce it.
+      switch (identity.reason) {
+        case 'pipe-in-name':
+          // Not a user error to correct by re-running with a different id —
+          // there is no id shape that would work — so say what to change
+          // instead of suggesting one. `|` is cdkd's own separator (see
+          // `createTable`); AWS accepts it in a Glue name even though the
+          // Athena convention does not.
+          this.logger.warn(
+            `AWS::Glue::Table ${input.logicalId}: cannot be imported because a name contains ` +
+              `'|', which cdkd currently uses as the separator in this type's physical id ` +
+              `(<databaseName>|<tableName>). Adopting it would record an id cdkd cannot decode ` +
+              `back to the same table. CloudFormation manages such a table fine; this is a ` +
+              `cdkd limitation tracked in ` +
+              `https://github.com/go-to-k/cdkd/issues/1672. Until it is lifted, rename the ` +
+              `table or database to omit '|', or manage this resource outside cdkd.`
+          );
+          break;
+        case 'unpairable':
+          this.logger.warn(
+            `AWS::Glue::Table ${input.logicalId}: cannot resolve a database for physical id ` +
+              `'${input.knownPhysicalId}'. ` +
+              (input.knownPhysicalId === ''
+                ? `The supplied physical id is empty. `
+                : `The template's DatabaseName is absent or is an unresolved intrinsic, so ` +
+                  `the bare table name cannot be paired. `) +
+              `Pass the composite form instead: ` +
+              `--resource '${input.logicalId}=<databaseName>|<tableName>' ` +
+              `(quote it — '|' is a shell pipe).`
+          );
+          break;
+        case 'unidentified':
+          // Nothing named the table at all. The caller already prints the
+          // `--resource` hint for this case, so a second message would be noise.
+          break;
       }
+      return null;
     }
 
-    if (databaseName && templateTableName) {
-      try {
-        await this.getClient().send(
-          new GetTableCommand({
-            DatabaseName: databaseName,
-            Name: templateTableName,
-            ...(catalogId && { CatalogId: catalogId }),
-          })
-        );
-        return { physicalId: `${databaseName}|${templateTableName}`, attributes: {} };
-      } catch (err) {
-        if (err instanceof EntityNotFoundException) return null;
-        throw err;
-      }
+    const { databaseName: dbName, tableName: tName } = identity;
+    try {
+      await this.getClient().send(
+        new GetTableCommand({
+          DatabaseName: dbName,
+          Name: tName,
+          ...(catalogId && { CatalogId: catalogId }),
+        })
+      );
+      // Always normalize to cdkd's composite form: `updateTable` /
+      // `deleteTable` / `readTable` all split the stored physicalId on `|`, so
+      // recording CloudFormation's bare table name would adopt the resource
+      // into a state record the rest of the provider cannot use — trading a
+      // visible not-found for a silent one. That is the #1658 failure mode
+      // (`AWS::Route53::RecordSet` accepted CFn's id verbatim and the stack
+      // became undestroyable). The composite is built from the pair actually
+      // PROBED, and `resolveTableIdentity` has already refused any segment
+      // containing `|`, so the recorded id decodes back to the same pair.
+      return { physicalId: `${dbName}|${tName}`, attributes: {} };
+    } catch (err) {
+      if (err instanceof EntityNotFoundException) return null;
+      throw err;
     }
-
-    // No `aws:cdk:path` tag walk: AWS rejects `aws:`-prefixed tag writes, so
-    // that tag never exists on a real resource and the walk could not match
-    // (issue #1134). Auto-mode import resolves ids from CloudFormation's
-    // `DescribeStackResources` or the template's physical-name property; a
-    // table reaching here needs an explicit `--resource` override.
-    return null;
   }
 }
 

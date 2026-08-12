@@ -1,3 +1,3 @@
 {
-  "scenarios": ["auto-import-cfn-generated-name"]
+  "scenarios": ["auto-import-cfn-generated-name", "auto-import-composite-physical-id"]
 }

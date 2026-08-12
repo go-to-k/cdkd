@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
 const mockGlueSend = vi.hoisted(() => vi.fn());
 const mockStsSend = vi.hoisted(() => vi.fn());
+const mockLoggerWarn = vi.hoisted(() => vi.fn());
 
 vi.mock('@aws-sdk/client-glue', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-glue')>();
@@ -26,7 +27,7 @@ vi.mock('../../../../src/utils/logger.js', () => {
   const childLogger = {
     debug: vi.fn(),
     info: vi.fn(),
-    warn: vi.fn(),
+    warn: mockLoggerWarn,
     error: vi.fn(),
     child: vi.fn().mockReturnThis(),
   };
@@ -48,6 +49,7 @@ import {
   CreateWorkflowCommand,
   StopCrawlerCommand,
   CrawlerRunningException,
+  EntityNotFoundException,
 } from '@aws-sdk/client-glue';
 import {
   GlueProvider,
@@ -62,6 +64,12 @@ describe('GlueProvider import', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // `clearAllMocks` does NOT drain the `mockResolvedValueOnce` queue, so a
+    // test that fails before consuming its primed response would shift it into
+    // the next one — the leak class issue #1618's detector exists to catch.
+    // Every test in this block primes its own response, so resetting is safe
+    // here (no persistent implementation to lose) and keeps them order-independent.
+    mockGlueSend.mockReset();
     mockStsSend.mockResolvedValue({ Account: '123456789012' });
     provider = new GlueProvider();
   });
@@ -107,6 +115,343 @@ describe('GlueProvider import', () => {
       region: 'us-east-1',
       properties: { DatabaseName: 'mydb' },
     });
+
+    expect(result).toBeNull();
+    expect(mockGlueSend).not.toHaveBeenCalled();
+  });
+
+  function makeTableInput(overrides: Record<string, unknown> = {}) {
+    return {
+      logicalId: 'MyTable',
+      resourceType: 'AWS::Glue::Table',
+      stackName: 'MyStack',
+      region: 'us-east-1',
+      properties: {},
+      ...overrides,
+    };
+  }
+
+  // Issue #1651. CloudFormation's physicalId for AWS::Glue::Table is the TABLE
+  // NAME ALONE (`Ref` returns it; it never contains `|`), and auto-mode import
+  // merges CFn-derived ids into the overrides before the loop. cdkd's own
+  // physicalId is the composite `<db>|<table>`. Both shapes must resolve —
+  // before the fix the bare form hit `if (!dbName || !tName) return null` and
+  // every `cdk deploy`-managed table reported `skipped-not-found` with no AWS
+  // call, while the error text pointed the user at exactly that id.
+  it('Table accepts a BARE CloudFormation physicalId and pairs it with the template DatabaseName', async () => {
+    mockGlueSend.mockResolvedValueOnce({ Table: { Name: 'my_table' } });
+
+    const result = await provider.import(
+      makeTableInput({
+        knownPhysicalId: 'my_table',
+        properties: { DatabaseName: 'mydb' },
+      })
+    );
+
+    // Normalized to cdkd's composite form: update / delete / getAttribute /
+    // readCurrentState all split the stored id on `|`, so recording the bare
+    // CFn name would adopt the table into an unusable state record.
+    expect(result).toEqual({ physicalId: 'mydb|my_table', attributes: {} });
+    const call = mockGlueSend.mock.calls[0][0];
+    expect(call.constructor.name).toBe('GetTableCommand');
+    expect(call.input).toEqual({ DatabaseName: 'mydb', Name: 'my_table' });
+  });
+
+  it("Table accepts cdkd's composite physicalId unchanged", async () => {
+    mockGlueSend.mockResolvedValueOnce({ Table: { Name: 'my_table' } });
+
+    const result = await provider.import(
+      makeTableInput({
+        knownPhysicalId: 'mydb|my_table',
+        // Deliberately absent from the template: the composite carries both
+        // segments itself, so it must not depend on the template's DatabaseName.
+        properties: {},
+      })
+    );
+
+    expect(result).toEqual({ physicalId: 'mydb|my_table', attributes: {} });
+    expect(mockGlueSend.mock.calls[0][0].input).toEqual({
+      DatabaseName: 'mydb',
+      Name: 'my_table',
+    });
+  });
+
+  it('Table falls back to the template DatabaseName + TableInput.Name when no override is given', async () => {
+    mockGlueSend.mockResolvedValueOnce({ Table: { Name: 'my_table' } });
+
+    const result = await provider.import(
+      makeTableInput({
+        properties: { DatabaseName: 'mydb', TableInput: { Name: 'my_table' } },
+      })
+    );
+
+    expect(result).toEqual({ physicalId: 'mydb|my_table', attributes: {} });
+    expect(mockGlueSend.mock.calls[0][0].input).toEqual({
+      DatabaseName: 'mydb',
+      Name: 'my_table',
+    });
+  });
+
+  it('Table returns null without any AWS call when a bare id has no template DatabaseName to pair with', async () => {
+    const result = await provider.import(
+      makeTableInput({ knownPhysicalId: 'my_table', properties: {} })
+    );
+
+    expect(result).toBeNull();
+    expect(mockGlueSend).not.toHaveBeenCalled();
+  });
+
+  // The generic caller-side hint tells the user to pass
+  // `--resource <LogicalId>=<physicalId>` — and passing CloudFormation's bare
+  // table name again fails identically. Naming the composite is the only thing
+  // that gets them out of that loop, which is the dead end #1651 is about.
+  it('Table names the composite form in the warning when it cannot pair a bare id', async () => {
+    await provider.import(makeTableInput({ knownPhysicalId: 'my_table', properties: {} }));
+
+    const warned = mockLoggerWarn.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(warned).toContain('<databaseName>|<tableName>');
+    expect(warned).toContain('my_table');
+  });
+
+  // An explicit override names a SPECIFIC resource to adopt. If the template's
+  // TableInput.Name won that race, cdkd would silently adopt a different table
+  // than the user asked for. Without disagreeing values this is unpinned:
+  // swapping the precedence passes every other test in this file.
+  it('Table prefers an explicit bare override over a DIFFERENT template TableInput.Name', async () => {
+    mockGlueSend.mockResolvedValueOnce({ Table: { Name: 'overridden_table' } });
+
+    const result = await provider.import(
+      makeTableInput({
+        knownPhysicalId: 'overridden_table',
+        properties: { DatabaseName: 'mydb', TableInput: { Name: 'template_table' } },
+      })
+    );
+
+    expect(result).toEqual({ physicalId: 'mydb|overridden_table', attributes: {} });
+    expect(mockGlueSend.mock.calls[0][0].input).toEqual({
+      DatabaseName: 'mydb',
+      Name: 'overridden_table',
+    });
+  });
+
+  // Same question on the composite branch: the composite's own database
+  // segment must win over a template DatabaseName that disagrees.
+  it("Table prefers a composite override's database segment over a DIFFERENT template DatabaseName", async () => {
+    mockGlueSend.mockResolvedValueOnce({ Table: { Name: 'my_table' } });
+
+    const result = await provider.import(
+      makeTableInput({
+        knownPhysicalId: 'overridden_db|my_table',
+        properties: { DatabaseName: 'template_db', TableInput: { Name: 'my_table' } },
+      })
+    );
+
+    expect(result).toEqual({ physicalId: 'overridden_db|my_table', attributes: {} });
+    expect(mockGlueSend.mock.calls[0][0].input).toEqual({
+      DatabaseName: 'overridden_db',
+      Name: 'my_table',
+    });
+  });
+
+  it('Table returns null when a composite id names a table AWS does not have', async () => {
+    mockGlueSend.mockRejectedValueOnce(
+      new EntityNotFoundException({ message: 'Entity Not Found', $metadata: {} })
+    );
+
+    const result = await provider.import(
+      makeTableInput({ knownPhysicalId: 'mydb|gone', properties: {} })
+    );
+
+    expect(result).toBeNull();
+    // Without this the assertion is satisfied by "declined before calling AWS"
+    // — which is exactly the pre-fix behavior — so it would not show that the
+    // EntityNotFoundException arm ran at all.
+    expect(mockGlueSend).toHaveBeenCalledTimes(1);
+  });
+
+  // A non-not-found error must NOT be treated as "absent": a throttle or an
+  // authorization failure means the answer is UNKNOWN, and reporting a live
+  // table as not-found would send the user chasing a resource that exists.
+  it('Table rethrows a non-not-found error instead of reporting not-found', async () => {
+    mockGlueSend.mockRejectedValueOnce(new Error('ThrottlingException: Rate exceeded'));
+
+    await expect(
+      provider.import(makeTableInput({ knownPhysicalId: 'mydb|my_table' }))
+    ).rejects.toThrow('Rate exceeded');
+    expect(mockGlueSend).toHaveBeenCalledTimes(1);
+  });
+
+  // AWS accepts a Glue table literally named `a|b` — verified by live probe in
+  // us-east-1 on 2026-08-12; `glue:CreateTable` with `TableInput.Name: 'a|b'`
+  // succeeded. The "lowercase alphanumerics and underscore" rule usually quoted
+  // is the Athena convention, not the API's constraint.
+  //
+  // Such a table is deliberately NOT adoptable. cdkd's id space cannot hold it:
+  // `updateTable` / `deleteTable` / `readTable` destructure the stored id into
+  // exactly TWO segments, so a recorded `mydb|a|b` decodes as database `mydb`,
+  // table `a` — a DIFFERENT table, which delete would then delete. Writing a
+  // record cdkd cannot decode is the #1658 failure mode and is strictly worse
+  // than the loud not-found here. An earlier revision of this fix retried the
+  // bare reading and produced exactly that record.
+  it('Table never records a physicalId whose segments contain a pipe', async () => {
+    mockGlueSend.mockResolvedValueOnce({ Table: { Name: 'a|b' } });
+
+    const result = await provider.import(
+      makeTableInput({
+        properties: { DatabaseName: 'mydb', TableInput: { Name: 'a|b' } },
+      })
+    );
+
+    expect(result).toBeNull();
+    // Refused BEFORE any AWS call: adopting it and then discarding the result
+    // would be wasted work, and probing tells us nothing we can act on.
+    expect(mockGlueSend).not.toHaveBeenCalled();
+    // Pin the two things the message must carry, not its prose: that the
+    // SEPARATOR is the reason (so the user knows what to rename) and the
+    // tracking issue for the limitation (so it does not read as permanent).
+    const warned = mockLoggerWarn.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(warned).toContain('separator');
+    expect(warned).toContain('1672');
+  });
+
+  // The 3-segment shape is on the INVITED path, which is what makes it worth a
+  // test of its own: the refusal warning tells the user to pass
+  // `<databaseName>|<tableName>`, so someone whose table is named `a|b` types
+  // `mydb|a|b`. Destructuring the first two segments would read that as
+  // database `mydb`, table `a` — a DIFFERENT table, adopted under an id that
+  // round-trips cleanly and therefore never looks wrong again. Reviewers found
+  // this escaping the pipe guard, which only inspects the segments AFTER the
+  // split.
+  it('Table refuses a physical id with MORE than two segments instead of truncating it', async () => {
+    const result = await provider.import(
+      makeTableInput({
+        knownPhysicalId: 'mydb|a|b',
+        properties: { DatabaseName: 'mydb' },
+      })
+    );
+
+    expect(result).toBeNull();
+    // The load-bearing assertion: a truncating implementation would probe
+    // `{DatabaseName: 'mydb', Name: 'a'}` here and adopt whatever it finds.
+    expect(mockGlueSend).not.toHaveBeenCalled();
+  });
+
+  // Round-trip fence: whatever id import records must decode back to the pair
+  // that was probed, or the adopted resource is unusable by every other method
+  // on the provider. Asserting the recorded id has exactly two segments is the
+  // property that #1658 shows matters, independent of which branch produced it.
+  it.each([
+    ['bare CFn id', { knownPhysicalId: 'my_table', properties: { DatabaseName: 'mydb' } }],
+    ['composite id', { knownPhysicalId: 'mydb|my_table', properties: {} }],
+    [
+      'template only',
+      { properties: { DatabaseName: 'mydb', TableInput: { Name: 'my_table' } } },
+    ],
+  ])('Table records a 2-segment id that decodes back to the probed pair (%s)', async (_n, over) => {
+    mockGlueSend.mockResolvedValueOnce({ Table: { Name: 'my_table' } });
+
+    const result = await provider.import(makeTableInput(over));
+
+    // Guard the destructures below: without these, a regression that REFUSES
+    // the branch fails with `Cannot read properties of undefined` instead of
+    // naming what went wrong.
+    expect(mockGlueSend).toHaveBeenCalledTimes(1);
+    expect(result).not.toBeNull();
+
+    const probed = mockGlueSend.mock.calls[0][0].input as {
+      DatabaseName: string;
+      Name: string;
+    };
+    const recorded = result!.physicalId;
+    expect(recorded.split('|')).toHaveLength(2);
+    // The exact decode every consumer performs.
+    const [decodedDb, decodedName] = recorded.split('|');
+    expect(decodedDb).toBe(probed.DatabaseName);
+    expect(decodedName).toBe(probed.Name);
+  });
+
+  // `--resource` rejects an empty value, but `--resource-mapping` /
+  // `--resource-mapping-inline` go through `parseMappingJson`, which does not.
+  // An empty name must stay not-found rather than reaching GetTable, whose
+  // InvalidInputException is NOT EntityNotFoundException and would abort the
+  // entire import run.
+  it('Table treats an empty-string override as not-found without calling AWS', async () => {
+    const result = await provider.import(
+      makeTableInput({
+        knownPhysicalId: '',
+        // A template name is present ON PURPOSE. Without it this test cannot
+        // tell "refused as empty" from "fell through to the template branch and
+        // found nothing" — and the fall-through is the dangerous reading, since
+        // it would adopt a DIFFERENT table than the (empty) id named.
+        properties: { DatabaseName: 'mydb', TableInput: { Name: 'template_table' } },
+      })
+    );
+
+    expect(result).toBeNull();
+    expect(mockGlueSend).not.toHaveBeenCalled();
+  });
+
+  // Issue #1651, second defect. `@aws-cdk/aws-glue-alpha` sets
+  // `catalogId: Stack.of(this).account`, which renders as
+  // `{"Ref": "AWS::AccountId"}` for an environment-agnostic stack. A pseudo
+  // parameter is never in the overrides map, so `substituteOverrideRefs`
+  // leaves the intrinsic in place and the old `as string` cast forwarded the
+  // OBJECT to GetTable as if it were a catalog id. Dropping it matches the
+  // API default (the caller's own account) — which is what the intrinsic
+  // would have resolved to anyway.
+  it('Table does not forward an unresolved CatalogId intrinsic to GetTable', async () => {
+    mockGlueSend.mockResolvedValueOnce({ Table: { Name: 'my_table' } });
+
+    await provider.import(
+      makeTableInput({
+        knownPhysicalId: 'mydb|my_table',
+        properties: { CatalogId: { Ref: 'AWS::AccountId' } },
+      })
+    );
+
+    const input = mockGlueSend.mock.calls[0][0].input as Record<string, unknown>;
+    expect(input).not.toHaveProperty('CatalogId');
+    expect(input).toEqual({ DatabaseName: 'mydb', Name: 'my_table' });
+  });
+
+  it('Table still forwards a literal CatalogId', async () => {
+    mockGlueSend.mockResolvedValueOnce({ Table: { Name: 'my_table' } });
+
+    await provider.import(
+      makeTableInput({
+        knownPhysicalId: 'mydb|my_table',
+        properties: { CatalogId: '123456789012' },
+      })
+    );
+
+    expect(mockGlueSend.mock.calls[0][0].input).toEqual({
+      DatabaseName: 'mydb',
+      Name: 'my_table',
+      CatalogId: '123456789012',
+    });
+  });
+
+  it('Database does not forward an unresolved CatalogId intrinsic to GetDatabase', async () => {
+    mockGlueSend.mockResolvedValueOnce({ Database: { Name: 'mydb' } });
+
+    await provider.import(
+      makeDatabaseInput({
+        knownPhysicalId: 'mydb',
+        properties: { CatalogId: { Ref: 'AWS::AccountId' } },
+      })
+    );
+
+    const input = mockGlueSend.mock.calls[0][0].input as Record<string, unknown>;
+    expect(input).not.toHaveProperty('CatalogId');
+    expect(input).toEqual({ Name: 'mydb' });
+  });
+
+  it('Database ignores an unresolved DatabaseInput.Name intrinsic instead of probing with it', async () => {
+    const result = await provider.import(
+      makeDatabaseInput({
+        properties: { DatabaseInput: { Name: { Ref: 'SomeUnresolvedRef' } } },
+      })
+    );
 
     expect(result).toBeNull();
     expect(mockGlueSend).not.toHaveBeenCalled();
