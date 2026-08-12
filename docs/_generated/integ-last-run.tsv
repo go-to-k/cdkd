@@ -81,7 +81,7 @@ drift-revert-arrays	2026-08-12T05:55:16Z	PASS	173	verify.sh	issues #1648/#1649; 
 drift-revert-vpc	2026-08-11T15:53:33Z	PASS	314	verify.sh	#1591 final: both-sides canonicalizer + cdkd diff wiring; 21 del/0 err, 0 orph
 dsql	2026-07-30T18:11:24Z	PASS	540	verify.sh	4-phase incl. destroy --remove-protection CC flip (#1312); orph clean
 dynamodb-autoscaling	2026-08-10T05:13:55Z	PASS	65	verify.sh	0810 sweep b5; table autoscaling re-verify post-#1451 GlobalTable work, 0 err 0 orph
-dynamodb-globaltable	2026-08-12T10:45:36Z	PASS	644	verify.sh	#1653 re-run after rebase; steps 13f2/13f2b/13f3 pin PREVIOUS-value record, no-op, malformed-previous DROP; 9 del/0 err, 0 orph
+dynamodb-globaltable	2026-08-12T11:15:04Z	PASS	578	verify.sh	#1653 final run on the merge commit; 13f2/13f2b/13f3 pin PREVIOUS-value record + wire-negative + malformed-previous DROP; 9 del/0 err, 0 orph
 dynamodb-gsi-update	2026-08-12T03:35:11Z	PASS	620	verify.sh	#1630 re-run after rebase onto #1646; GSI wedge recovery + in-place update, 1 del/0 err
 dynamodb-ondemand	2026-08-11T15:24:13Z	PASS	555	verify.sh	issue #1617 final run after review round 2; 4 del/0 err, 0 orph
 dynamodb-sse	2026-08-01T10:07:21Z	PASS	40	verify.sh	0801 regression sweep; SSE mapping ok, 0 orphans
@@ -161,7 +161,7 @@ lambda-log-retention	2026-08-10T05:38:11Z	PASS	69	verify.sh	0810 P2 sweep b9; rc
 lambda-microvm-image	2026-08-10T06:32:58Z	PASS	533	verify.sh	0810 P2 sweep b11r; 1st attempt blocked by stale local aws-cli 2.34.27 (no lambda-microvms service; cli_auto_prompt crashed non-TTY) - NOT a cdkd bug. PASS after brew upgrade awscli 2.36.19: async create, tag drift revert, --no-wait, 3 del 0 err
 lambda-reserved-concurrency	2026-07-26T19:05:27Z	PASS	56	verify.sh	0727b sweep-b8 staleness re-run (rc=0); account clean
 lambda-snapstart	2026-07-31T06:37:35Z	PASS	190	verify.sh	fixture fix: version asserts N->N+1 from alias (monotonic counter, was :1/:2 hardcode); re-run clean 4->5, orph clean
-lambda-url-authtype-replay	2026-08-12T10:45:36Z	PASS	110	verify.sh	#1654 re-run after rebase onto #1704/#1701; replay proves the PUBLIC warning + URL actually NONE; 0 err, 0 orph
+lambda-url-authtype-replay	2026-08-12T11:15:04Z	PASS	114	verify.sh	#1654 final run on the merge commit; replay proves the PUBLIC warning + URL actually NONE; 0 err, 0 orph
 lambda-versioning	2026-08-10T11:50:46Z	PASS	53	standard	0810 P0/P1 sweep b1; Version/Alias delete order ok, 4 del/0 err
 launchtemplate-asg-inplace	2026-07-26T13:03:26Z	PASS	90	verify.sh	1225 classification-pins verify; destroy 9/0
 legacy-bucket-name-fallback	2026-07-26T18:10:48Z	PASS	22	standard	0727b sweep-b2 staleness re-run (rc=0); account clean
