@@ -440,12 +440,13 @@ describe('Route53 RecordSet physicalId: CloudFormation form vs cdkd composite (i
           HostedZoneId: undefined,
           HostedZoneName: 'example.com',
         })
-      ).rejects.toThrow(/HostedZoneId or HostedZoneName is required/);
+      ).rejects.toThrow(/Could not determine whether HostedZoneName "example\.com" exists/);
 
-      // The message is the SAME one a "no zone specified at all" template
-      // gets, so assert the lookup actually RAN -- otherwise a regression
-      // that stopped reading HostedZoneName passes this test while never
-      // reaching the truncation logic at all.
+      // The message used to be the SAME one a "no zone specified at all"
+      // template gets; issue #1702 split them, so the wording itself now
+      // distinguishes "inconclusive" from "you specified nothing". The call
+      // assertion stays regardless -- a regression that stopped reading
+      // HostedZoneName must not pass by never reaching the truncation logic.
       expect(mockSend).toHaveBeenCalledTimes(1);
       expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(ListHostedZonesByNameCommand);
 
@@ -493,7 +494,9 @@ describe('Route53 RecordSet physicalId: CloudFormation form vs cdkd composite (i
           HostedZoneId: undefined,
           HostedZoneName: String.raw`ex\344mple.com`,
         })
-      ).rejects.toThrow(/HostedZoneId or HostedZoneName is required/);
+        // A name WAS given, so the refusal says the lookup was inconclusive
+        // rather than asking for one (issue #1702 split the two messages).
+      ).rejects.toThrow(/Could not determine whether HostedZoneName .* exists/);
 
       expect(mockSend).toHaveBeenCalledTimes(1);
     });
