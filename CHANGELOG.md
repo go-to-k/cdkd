@@ -1,3 +1,10 @@
+## [0.280.38](https://github.com/go-to-k/cdkd/compare/v0.280.37...v0.280.38) (2026-08-12)
+
+
+### Bug Fixes
+
+* **import:** record pre-rewrite asset references in state so the next deploy repoints live resources ([#1666](https://github.com/go-to-k/cdkd/issues/1666)) ([3dad5ae](https://github.com/go-to-k/cdkd/commit/3dad5ae8ee37e2cb65f9160687b92329e57707c9))
+
 ## [0.280.37](https://github.com/go-to-k/cdkd/compare/v0.280.36...v0.280.37) (2026-08-12)
 
 
