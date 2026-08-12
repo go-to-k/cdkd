@@ -1,6 +1,10 @@
 #!/usr/bin/env node
 import * as cdk from 'aws-cdk-lib';
-import { AssetMigrationStack, AssetMigrationImageStack } from '../lib/asset-migration-stack.ts';
+import {
+  AssetMigrationStack,
+  AssetMigrationImageStack,
+  AssetMigrationImportStack,
+} from '../lib/asset-migration-stack.ts';
 
 const app = new cdk.App();
 const env = {
@@ -11,3 +15,7 @@ new AssetMigrationStack(app, 'CdkdAssetMigrationStack', { env });
 // Separate stack so verify.sh can deploy the Docker leg only when a Docker
 // daemon is available on the runner.
 new AssetMigrationImageStack(app, 'CdkdAssetMigrationImageStack', { env });
+// Import leg (issue 1652): deployed by the UPSTREAM `cdk deploy`, then
+// adopted with `cdkd import --migrate-from-cloudformation`. Separate stack so
+// the adoption flow never touches the cdkd-deployed stacks above.
+new AssetMigrationImportStack(app, 'CdkdAssetMigrationImportStack', { env });

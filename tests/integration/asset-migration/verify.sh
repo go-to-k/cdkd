@@ -17,7 +17,22 @@
 #            repoints to cdkd again (flip-flop is churn, never breakage §9).
 #   Phase 5 (Docker daemon available): deploy the image stack -> the image
 #            pushes to cdkd-container-assets-* and Lambda pulls it from there.
-#   Phase 6: destroy everything, sweep log groups, delete marker + storage.
+#   Phase 6 (issue 1652): the IMPORT-driven migration, which is a different
+#            bug class from phases 1-4. A stack is deployed by the UPSTREAM
+#            `cdk deploy` (so AWS holds cdk-<qualifier>-assets-* everywhere),
+#            adopted with `cdkd import --migrate-from-cloudformation` while
+#            the region is in cdkd-assets mode, and then:
+#              - `cdkd diff` MUST report a real UPDATE on the
+#                `AWS::IAM::Policy` that BucketDeployment grants on the asset
+#                bucket. Pre-1652 the import baked the REWRITTEN bucket into
+#                state, both diff sides agreed, the change classified
+#                NO_CHANGE and the live grant was never corrected;
+#              - state MUST carry the pre-rewrite `cdk-*` value;
+#              - `cdkd deploy` MUST leave the LIVE policy document naming the
+#                cdkd asset bucket (read back with `iam get-role-policy`).
+#            The deploy-driven migration in phases 1-4 was never affected by
+#            1652 — state there already held the old names.
+#   Phase 7: destroy everything, sweep log groups, delete marker + storage.
 #
 # SAFETY NOTE (issue #1052): this fixture opts the region into cdkd asset
 # storage and DELETES the default-named storage on exit. A pre-run guard
@@ -71,8 +86,15 @@ cd "$(dirname "$0")"
 
 STACK="CdkdAssetMigrationStack"
 IMAGE_STACK="CdkdAssetMigrationImageStack"
+# Issue 1652 import leg — deployed by the UPSTREAM cdk CLI, adopted by cdkd.
+IMPORT_STACK="CdkdAssetMigrationImportStack"
 REGION="${AWS_REGION:-us-east-1}"
 MARKER_KEY="cdkd-bootstrap/${REGION}.json"
+
+# Resolved during phase 6; referenced by cleanup, so seed them for `set -u`.
+SITE_BUCKET=""
+IMPORT_ROLE=""
+IMPORT_POLICY=""
 
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
@@ -89,17 +111,73 @@ cleanup() {
   # present at exit was created by this run (issue #1052).
   echo "==> Cleanup: dropping stacks${1:+ (stack-scoped only)}"
   set +eu
+  [ -n "${DIFF_JSON_FILE:-}" ] && rm -f "${DIFF_JSON_FILE}"
+  # Phase 6f rewrites this COMMITTED file to change the asset hash; restore it
+  # unconditionally so a crashed run does not leave the worktree dirty and the
+  # next run starts from the v1 body its own assertion expects.
+  printf '%s\n%s\n' \
+    '<!doctype html><title>cdkd asset-migration import leg</title>' \
+    'cdkd asset-migration import marker v1' > site/index.html 2>/dev/null
+  # EMPTY the destination bucket BEFORE `state destroy` runs, not after. Between
+  # 6c and 7b the SiteBucket holds index.html, and cdkd refuses to delete a
+  # non-empty bucket without the auto-delete opt-in (the issue 1340 data guard)
+  # — so a crash anywhere in phase 6 would abort that destroy and orphan the
+  # handler Lambda, its role, the inline policy and the custom resource. The
+  # `rb --force` further down removes only the bucket, and the CloudFormation
+  # stack is already retired by then, so nothing else would collect them.
+  # `rm --recursive`, not `rb`: the bucket itself must survive for cdkd to
+  # delete, since deleting it is what is being verified.
+  # `SITE_BUCKET` is only assigned in phase 6, so a crash during 6a's minutes-long
+  # `cdk deploy` — and EVERY `cleanup prerun` of a later run — reaches here with it
+  # empty while the bucket exists and holds index.html. Skipping the empty there is
+  # not cosmetic: `state destroy` then fails on the non-empty bucket (state is
+  # preserved on partial failure), and the unconditional `s3 rm cdkd/${IMPORT_STACK}/`
+  # further down wipes the state record anyway — so the handler Lambda, its role, the
+  # inline policy and the custom resource are orphaned with nothing left pointing at
+  # them. Resolve the name first: from cdkd state, else from the CloudFormation stack
+  # (whichever survived), so the empty runs on the recovery paths too.
+  local site_bucket="${SITE_BUCKET}"
+  if [ -z "${site_bucket}" ] && [ -n "${STATE_BUCKET:-}" ]; then
+    site_bucket="$(aws s3 cp \
+      "s3://${STATE_BUCKET}/cdkd/${IMPORT_STACK}/${REGION}/state.json" - 2>/dev/null |
+      jq -r '[.resources[] | select(.resourceType == "AWS::S3::Bucket") | .physicalId][0] // empty')"
+  fi
+  if [ -z "${site_bucket}" ]; then
+    site_bucket="$(aws cloudformation describe-stack-resources --region "${REGION}" \
+      --stack-name "${IMPORT_STACK}" \
+      --query "StackResources[?ResourceType=='AWS::S3::Bucket']|[0].PhysicalResourceId" \
+      --output text 2>/dev/null)"
+    [ "${site_bucket}" = "None" ] && site_bucket=""
+  fi
+  if [ -n "${site_bucket}" ]; then
+    aws s3 rm "s3://${site_bucket}" --recursive --region "${REGION}" >/dev/null 2>&1 || true
+  fi
   if [ -x "${LOCAL_DIST}" ]; then
-    for s in "${IMAGE_STACK}" "${STACK}"; do
+    for s in "${IMPORT_STACK}" "${IMAGE_STACK}" "${STACK}"; do
       node "${LOCAL_DIST}" state destroy "${s}" --state-bucket "${STATE_BUCKET:-}" \
         --region "${REGION}" --yes >/dev/null 2>&1
       node "${LOCAL_DIST}" events prune "${s}" --all --state-bucket "${STATE_BUCKET:-}" \
         --region "${REGION}" --yes >/dev/null 2>&1
     done
   fi
+  # Issue 1652 import leg: the destination bucket and any CloudFormation stack
+  # a crashed run left behind (the happy path retires it via
+  # --migrate-from-cloudformation, so this is a no-op then). `cdk destroy` is
+  # last: `state destroy` above has already removed the AWS resources, and a
+  # CFn stack left holding references to them cannot be dropped any other way.
+  # Same resolved name as the empty above, so the recovery paths (crash in 6a,
+  # or a later run's prerun sweep) drop the bucket too rather than leaving it
+  # for a `cdk destroy` that has nothing left to reference it.
+  if [ -n "${site_bucket}" ]; then
+    aws s3 rb "s3://${site_bucket}" --force >/dev/null 2>&1 || true
+  fi
+  if [ -x "${PWD}/node_modules/.bin/cdk" ]; then
+    npx cdk destroy "${IMPORT_STACK}" --force >/dev/null 2>&1 || true
+  fi
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/" --recursive >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${IMAGE_STACK}/" --recursive >/dev/null 2>&1 || true
+    aws s3 rm "s3://${STATE_BUCKET}/cdkd/${IMPORT_STACK}/" --recursive >/dev/null 2>&1 || true
     # Nested-child state keys (Parent~ChildLogicalId).
     aws s3api list-objects-v2 --bucket "${STATE_BUCKET}" --prefix "cdkd/${STACK}~" \
       --query 'Contents[].Key' --output text 2>/dev/null | tr '\t' '\n' | while read -r key; do
@@ -124,9 +202,13 @@ cleanup() {
   set -eu
 }
 
-trap cleanup EXIT
-trap '(exit 130); cleanup; exit 130' INT
-trap '(exit 143); cleanup; exit 143' TERM
+# The traps are armed BELOW the own-marker guard, not here. See the note there:
+# the EXIT trap's cleanup deletes this region's marker, asset bucket and ECR
+# repo, which is only safe once the guard has established that any such storage
+# belongs to THIS run. Arming here made every `exit 1` between this point and
+# the guard — an unset STATE_BUCKET, an unbuilt dist/cli.js, a failed
+# `pnpm install` — destroy another run's live storage on the way out. Nothing
+# is created before the guard, so the trap buys nothing here anyway.
 
 if [ -z "${STATE_BUCKET:-}" ]; then
   echo "FAIL: STATE_BUCKET env var is required" >&2
@@ -139,9 +221,16 @@ if [ ! -f "${LOCAL_DIST}" ]; then
 fi
 
 echo "==> Installing fixture deps"
-if [ ! -d node_modules ]; then
+# Guard on the cdk BIN, not on node_modules (issue 1485): phase 6 shells out
+# to the UPSTREAM cdk CLI, and a node_modules left over from before the
+# `aws-cdk` pin exists but has no cdk in it — so a directory guard would skip
+# the very install that provides it and `npx cdk` would fall through to a
+# possibly stale global CLI whose cloud-assembly schema no longer matches this
+# fixture's aws-cdk-lib.
+if [ ! -x "${PWD}/node_modules/.bin/cdk" ]; then
   pnpm install --ignore-workspace --prefer-offline
 fi
+export PATH="${PWD}/node_modules/.bin:${PATH}"
 
 echo "==> Pre-run cleanup (stack-scoped only)"
 cleanup prerun
@@ -149,12 +238,40 @@ cleanup prerun
 # Own-marker guard (issue #1052): this fixture opts the region in and then
 # deletes the default-named asset storage — never proceed over a
 # pre-existing marker (it belongs to live storage).
+#
+# This guard is what makes the EXIT trap safe to arm, which is why the trap is
+# armed BELOW it rather than at the top of the script. Cleanup without the
+# `prerun` argument deletes the region's marker, `rb --force`s the cdkd asset
+# bucket and force-deletes the ECR repo; that is only correct once this guard
+# has established that any such storage was created by THIS run. With the trap
+# armed earlier, EVERY `exit 1` above — an unset STATE_BUCKET, an unbuilt
+# dist/cli.js, a failed `pnpm install`, and (in an earlier revision of this
+# file) a region without the CDK bootstrap — destroyed another run's live
+# storage on the way out. Nothing is created before this point, so arming
+# earlier protected nothing.
 if aws s3 cp "s3://${STATE_BUCKET}/${MARKER_KEY}" - >/dev/null 2>&1; then
   echo "FAIL: region ${REGION} already has a cdkd bootstrap marker (live asset storage)." >&2
   echo "      This fixture bootstraps AND deletes the region's default-named storage;" >&2
   echo "      run it in a CDK-bootstrapped region without a cdkd marker (via AWS_REGION)." >&2
   echo "      If this is a leftover from a previous crashed run of this fixture, clean it" >&2
   echo "      up first: node dist/cli.js bootstrap --destroy --region ${REGION} --yes" >&2
+  exit 1
+fi
+
+trap cleanup EXIT
+trap '(exit 130); cleanup; exit 130' INT
+trap '(exit 143); cleanup; exit 143' TERM
+
+# Fail-closed pre-flight for phase 6: its upstream `cdk deploy` needs the CDK
+# bootstrap ROLES, not just the asset bucket phases 1-4 rely on. Checked here
+# rather than at phase 6 so a region missing them fails in seconds instead of
+# after the ~30 minutes phases 1-5 take — but BELOW the marker guard, per the
+# note above.
+if ! aws cloudformation describe-stacks --region "${REGION}" \
+  --stack-name CDKToolkit >/dev/null 2>&1; then
+  echo "FAIL: region ${REGION} has no CDKToolkit stack — phase 6 deploys with the" >&2
+  echo "      upstream cdk CLI, which needs the CDK bootstrap roles. Run" >&2
+  echo "      'npx cdk bootstrap aws://<account>/${REGION}' first." >&2
   exit 1
 fi
 
@@ -336,8 +453,242 @@ else
   echo "==> Phase 5: SKIPPED (no Docker daemon available)"
 fi
 
-# --- Phase 6: destroy ---------------------------------------------------------
-echo "==> Phase 6: destroy (cascades into the nested child)"
+# --- Phase 6: import-driven migration (issue 1652) ----------------------------
+# Phases 1-4 cover the DEPLOY-driven migration, where state legitimately holds
+# the old cdk-* names so the diff always produced a real UPDATE. The
+# import-driven path is the one issue 1652 fixed: the rewrite used to reach
+# `state.properties`, so state and template agreed on the cdkd bucket while
+# AWS still held the CDK bootstrap one, the change classified NO_CHANGE, and
+# the live resource was never corrected.
+echo "==> Phase 6: import an upstream-cdk-deployed stack (issue 1652)"
+
+# NOTE: the CDKToolkit pre-flight for this phase runs at STARTUP, next to the
+# other guards — failing here would cost the ~30 minutes phases 1-5 take first.
+# Pre-flight "already exists" guard (leftover from a crashed earlier run).
+if aws cloudformation describe-stacks --region "${REGION}" \
+  --stack-name "${IMPORT_STACK}" >/dev/null 2>&1; then
+  echo "FAIL: CloudFormation stack ${IMPORT_STACK} already exists — clean it up" >&2
+  echo "      first: npx cdk destroy ${IMPORT_STACK} --force" >&2
+  exit 1
+fi
+
+echo "    6a: cdk deploy (UPSTREAM CLI) — assets land in ${CDK_BUCKET}"
+npx cdk deploy "${IMPORT_STACK}" --require-approval never >/dev/null
+
+cfn_physical_id() { # $1 = resource type -> the stack's single resource of that type
+  local id
+  id="$(aws cloudformation describe-stack-resources --region "${REGION}" \
+    --stack-name "${IMPORT_STACK}" \
+    --query "StackResources[?ResourceType=='$1']|[0].PhysicalResourceId" \
+    --output text)" || return 1
+  printf '%s' "${id}"
+}
+
+SITE_BUCKET="$(cfn_physical_id 'AWS::S3::Bucket')"
+IMPORT_ROLE="$(cfn_physical_id 'AWS::IAM::Role')"
+
+# The inline policy is looked up BY ITS IAM NAME, not by CloudFormation's
+# physical id for the AWS::IAM::Policy resource. Those differ: CFn's id is a
+# generated token (`CdkdA-Custo-BdGSXILT1JGK`), while `get-role-policy` wants
+# the PolicyName IAM actually stored. Deriving it from CFn failed mid-run with
+# a bare `NoSuchEntity`, which reads like the resource is missing rather than
+# like the lookup being wrong — so ask IAM for the name instead of inferring it.
+IMPORT_POLICY_NAMES="$(aws iam list-role-policies --role-name "${IMPORT_ROLE}" \
+  --query 'join(`,`, PolicyNames)' --output text)"
+case "${IMPORT_POLICY_NAMES}" in
+  *,*)
+    # More than one inline policy means the grant under test is no longer
+    # uniquely identified, so picking [0] would silently assert against the
+    # wrong document. Fail loudly instead — the fixture's stack is built to
+    # keep exactly one (see its doc comment on omitting autoDeleteObjects).
+    echo "FAIL: role ${IMPORT_ROLE} has more than one inline policy" >&2
+    echo "      (${IMPORT_POLICY_NAMES}); the asset grant is no longer unique." >&2
+    exit 1
+    ;;
+esac
+IMPORT_POLICY="${IMPORT_POLICY_NAMES}"
+
+for pair in "SITE_BUCKET=${SITE_BUCKET}" "IMPORT_ROLE=${IMPORT_ROLE}" "IMPORT_POLICY=${IMPORT_POLICY}"; do
+  case "${pair}" in
+    *=|*=None)
+      echo "FAIL: could not resolve ${pair%%=*} from CloudFormation stack ${IMPORT_STACK}" >&2
+      exit 1
+      ;;
+  esac
+done
+echo "        bucket=${SITE_BUCKET} role=${IMPORT_ROLE} policy=${IMPORT_POLICY}"
+
+# The live inline policy document. `iam get-role-policy` is exactly the read
+# `IAMPolicyProvider.import()` does NOT do — which is why nothing pulled the
+# AWS-side value into state and the bug could hide.
+role_policy_document() {
+  aws iam get-role-policy --role-name "${IMPORT_ROLE}" \
+    --policy-name "${IMPORT_POLICY}" --query 'PolicyDocument' --output json
+}
+
+echo "    6b: premise — the live grant names the CDK bootstrap bucket"
+LIVE_DOC="$(role_policy_document)"
+case "${LIVE_DOC}" in
+  *"${CDK_BUCKET}"*) : ;;
+  *)
+    echo "FAIL: the freshly cdk-deployed policy does not grant ${CDK_BUCKET}." >&2
+    echo "      This fixture is only meaningful when it does — has" >&2
+    echo "      BucketDeployment stopped calling asset.grantRead(handlerRole)?" >&2
+    exit 1
+    ;;
+esac
+case "${LIVE_DOC}" in
+  *"${CDKD_BUCKET}"*)
+    echo "FAIL: the cdk-deployed policy already grants ${CDKD_BUCKET} — impossible" >&2
+    echo "      unless a previous run left state behind. Aborting." >&2
+    exit 1
+    ;;
+esac
+echo "        OK: live grant is on ${CDK_BUCKET}"
+
+echo "    6c: cdkd import --migrate-from-cloudformation (region is in cdkd-assets mode)"
+# `import` is the one command that does not accept --region (issue #1097), so
+# the region rides on AWS_REGION.
+AWS_REGION="${REGION}" node "${LOCAL_DIST}" import "${IMPORT_STACK}" \
+  --state-bucket "${STATE_BUCKET}" --migrate-from-cloudformation --yes
+
+assert_gone "CloudFormation stack ${IMPORT_STACK} survived --migrate-from-cloudformation" \
+  aws cloudformation describe-stacks --region "${REGION}" --stack-name "${IMPORT_STACK}"
+echo "        OK: cdkd owns the resources; the CloudFormation stack is retired"
+
+import_state_json() {
+  aws s3 cp "s3://${STATE_BUCKET}/cdkd/${IMPORT_STACK}/${REGION}/state.json" -
+}
+
+echo "    6d: state records the PRE-rewrite (cdk bootstrap) asset references"
+POLICY_PROPS="$(import_state_json |
+  jq -c '[.resources[] | select(.resourceType == "AWS::IAM::Policy") | .properties] | .[0]')"
+case "${POLICY_PROPS}" in
+  *"${CDK_BUCKET}"*) : ;;
+  *)
+    echo "FAIL: imported state does not carry the pre-rewrite ${CDK_BUCKET} grant." >&2
+    echo "      properties: ${POLICY_PROPS}" >&2
+    exit 1
+    ;;
+esac
+case "${POLICY_PROPS}" in
+  *"${CDKD_BUCKET}"*)
+    echo "FAIL (issue 1652): imported state carries the REWRITTEN ${CDKD_BUCKET}" >&2
+    echo "      grant. AWS holds ${CDK_BUCKET}, so the next diff will classify" >&2
+    echo "      NO_CHANGE and the live policy will never be corrected." >&2
+    echo "      properties: ${POLICY_PROPS}" >&2
+    exit 1
+    ;;
+esac
+echo "        OK: state holds the cdk-bootstrap grant AWS actually has"
+
+echo "    6e: cdkd diff reports a real UPDATE on the IAM policy (the 1652 assertion)"
+# mktemp, not a fixed path: a fixed name collides between concurrent runs in
+# different regions and is never removed. Registered for cleanup below.
+DIFF_JSON_FILE="$(mktemp)"
+AWS_REGION="${REGION}" node "${LOCAL_DIST}" diff "${IMPORT_STACK}" \
+  --state-bucket "${STATE_BUCKET}" --json >"${DIFF_JSON_FILE}"
+CDK_BUCKET="${CDK_BUCKET}" CDKD_BUCKET="${CDKD_BUCKET}" \
+  python3 - "${DIFF_JSON_FILE}" <<'PY'
+import json, os, sys
+
+cdk_bucket = os.environ["CDK_BUCKET"]
+cdkd_bucket = os.environ["CDKD_BUCKET"]
+with open(sys.argv[1]) as fh:
+    trees = json.load(fh)
+
+changes = [c for tree in trees for c in tree["changes"]]
+summary = [(c["resourceType"], c["changeType"]) for c in changes]
+policies = [c for c in changes if c["resourceType"] == "AWS::IAM::Policy"]
+if len(policies) != 1:
+    sys.exit(
+        "FAIL (issue 1652): expected exactly 1 AWS::IAM::Policy change in the "
+        f"post-import diff, got {len(policies)}. Pre-fix this list is EMPTY - the "
+        "rewrite reached state.properties, both diff sides agreed and the live "
+        f"grant was never corrected. All changes: {summary}"
+    )
+
+policy = policies[0]
+if policy["changeType"] != "UPDATE":
+    sys.exit(f"FAIL: IAM policy change is {policy['changeType']}, expected UPDATE")
+
+prop_changes = policy.get("propertyChanges") or []
+old_blob = json.dumps([pc.get("oldValue") for pc in prop_changes])
+new_blob = json.dumps([pc.get("newValue") for pc in prop_changes])
+if cdk_bucket not in old_blob:
+    sys.exit(f"FAIL: diff old side does not name {cdk_bucket}: {old_blob}")
+if cdkd_bucket not in new_blob:
+    sys.exit(f"FAIL: diff new side does not name {cdkd_bucket}: {new_blob}")
+print(f"        OK: {policy['logicalId']} UPDATE {cdk_bucket} -> {cdkd_bucket}")
+PY
+
+echo "    6f: cdkd deploy corrects the LIVE policy document"
+# Change the asset CONTENT first, so the custom resource genuinely has work to
+# do. Without this the assertion below is vacuous: 6a's upstream `cdk deploy`
+# already synced the v1 body, so re-reading it proves nothing about whether the
+# post-import deploy re-ran the handler at all. Mutating the content changes
+# the asset hash, hence SourceObjectKeys, which is exactly the issue's step 6 —
+# and it is the step whose runtime AccessDenied issue 1652 predicts, because the
+# handler now has to read from the cdkd bucket its grant was just repointed to.
+printf '%s\n%s\n' \
+  '<!doctype html><title>cdkd asset-migration import leg</title>' \
+  'cdkd asset-migration import marker v2' > site/index.html
+node "${LOCAL_DIST}" deploy "${IMPORT_STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes >/dev/null
+LIVE_DOC="$(role_policy_document)"
+case "${LIVE_DOC}" in
+  *"${CDKD_BUCKET}"*) : ;;
+  *)
+    echo "FAIL (issue 1652): after the post-import deploy the live policy still does" >&2
+    echo "      not grant ${CDKD_BUCKET}. Document: ${LIVE_DOC}" >&2
+    exit 1
+    ;;
+esac
+case "${LIVE_DOC}" in
+  *"${CDK_BUCKET}"*)
+    echo "FAIL: the live policy still grants the CDK bootstrap bucket ${CDK_BUCKET}" >&2
+    echo "      alongside the cdkd one. Document: ${LIVE_DOC}" >&2
+    exit 1
+    ;;
+esac
+echo "        OK: live grant is now on ${CDKD_BUCKET} only"
+
+# The custom resource re-ran against the cdkd bucket during that deploy — the
+# runtime AccessDenied issue 1652 predicts would have failed the deploy above,
+# so this asserts the sync actually produced the object rather than no-op'ing.
+# A plain capture, not `$(... || fallback)`: under `set -e` a failed read
+# aborts here with the AWS error, which is what we want. The v2 marker is only
+# in the bucket if the handler re-ran AND could read the cdkd bucket.
+BODY="$(aws s3 cp "s3://${SITE_BUCKET}/index.html" - --region "${REGION}")"
+case "${BODY}" in
+  *"cdkd asset-migration import marker v2"*) ;;
+  *"cdkd asset-migration import marker v1"*)
+    echo "FAIL (issue 1652): the deployed object is still the v1 body, so the" >&2
+    echo "      custom resource did NOT re-run after the import. The IAM grant" >&2
+    echo "      correction above is untested without it." >&2
+    exit 1
+    ;;
+  *)
+    echo "FAIL: unexpected index.html body: ${BODY}" >&2
+    exit 1
+    ;;
+esac
+echo "        OK: BucketDeployment synced from ${CDKD_BUCKET}"
+
+echo "    6g: state now records the cdkd asset references"
+POLICY_PROPS="$(import_state_json |
+  jq -c '[.resources[] | select(.resourceType == "AWS::IAM::Policy") | .properties] | .[0]')"
+case "${POLICY_PROPS}" in
+  *"${CDKD_BUCKET}"*) : ;;
+  *)
+    echo "FAIL: post-deploy state does not carry ${CDKD_BUCKET}: ${POLICY_PROPS}" >&2
+    exit 1
+    ;;
+esac
+echo "        OK: import leg converged"
+
+# --- Phase 7: destroy ---------------------------------------------------------
+echo "==> Phase 7: destroy (cascades into the nested child)"
 node "${LOCAL_DIST}" destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
@@ -349,5 +700,31 @@ if [ -n "${CHILD_KEY}" ] && [ "${CHILD_KEY}" != "None" ]; then
 fi
 echo "    OK: parent + nested child state gone"
 
+echo "==> Phase 7b: destroy the imported stack"
+# Empty the destination bucket FIRST. `BucketDeployment` put index.html there,
+# the stack deliberately carries no `autoDeleteObjects` (see the stack's doc
+# comment for why), and cdkd matches CloudFormation by REFUSING to delete a
+# non-empty bucket without that opt-in — the issue #1340 data guard in
+# `s3-bucket-provider.ts`. Without this the destroy fails with
+# "bucket ... is not empty" and the run ends red on a teardown detail rather
+# than on anything the fixture is testing.
+#
+# NOT `rb --force`: the bucket must still be there for cdkd to delete, because
+# deleting it is the step being verified.
+aws s3 rm "s3://${SITE_BUCKET}" --recursive --region "${REGION}" >/dev/null
+
+node "${LOCAL_DIST}" destroy "${IMPORT_STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+
+assert_gone "destination bucket ${SITE_BUCKET} still exists after destroy" \
+  aws s3api head-bucket --bucket "${SITE_BUCKET}" --region "${REGION}"
+assert_gone "handler role ${IMPORT_ROLE} still exists after destroy" \
+  aws iam get-role --role-name "${IMPORT_ROLE}"
+assert_gone "import-leg state file still exists after destroy" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" \
+  --key "cdkd/${IMPORT_STACK}/${REGION}/state.json"
+SITE_BUCKET=""
+echo "    OK: imported stack fully torn down"
+
 echo ""
-echo "==> asset-migration test passed (legacy deploy, migration diff, in-place repoint incl. nested child + env-var URL, opt-out round-trip, ECR leg, clean destroy)"
+echo "==> asset-migration test passed (legacy deploy, migration diff, in-place repoint incl. nested child + env-var URL, opt-out round-trip, ECR leg, import-driven migration incl. live IAM-policy correction, clean destroy)"
