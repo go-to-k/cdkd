@@ -178,6 +178,7 @@ for logical_id, resource in state.get("resources", {}).items():
 ' "$1"
 }
 TABLE_NAME="$(table_name_for HistoryTable)"
+STREAM_RECOVERY_TABLE="$(table_name_for StreamRecoveryTable)"
 GSI_PROV_TABLE="$(table_name_for GsiProvisionedTable)"
 GSI_OD_TABLE="$(table_name_for GsiOnDemandTable)"
 GSI_FLIP_TABLE="$(table_name_for GsiFlipTable)"
@@ -202,6 +203,10 @@ if [ -z "${GSI_FLIP_TABLE}" ]; then
 fi
 if [ -z "${GSI_PROV_TABLE}" ] || [ -z "${GSI_OD_TABLE}" ]; then
   echo "[verify] FAIL: Issue #1387 GSI fixture tables missing from cdkd state (prov='${GSI_PROV_TABLE}' on-demand='${GSI_OD_TABLE}')"
+  exit 1
+fi
+if [ -z "${STREAM_RECOVERY_TABLE}" ]; then
+  echo "[verify] FAIL: Issue #1653 StreamRecoveryTable missing from cdkd state"
   exit 1
 fi
 echo "[verify] step 3 ok: deployed table names = ${TABLE_NAME} / ${GSI_PROV_TABLE} / ${GSI_OD_TABLE}"
@@ -937,6 +942,209 @@ if [ "${UNRESOLVABLE_READ}" != "5" ] || [ "${UNRESOLVABLE_WRITE}" != "1" ]; then
 fi
 echo "    unresolvable capacity warned and defaulted to 5 while the valid sibling kept 1, issue #1511 closed"
 
+echo "[verify] step 13f2: cdkd deploy with stream-state-junk (issue #1653 — a SKIPPED StreamSpecification must record the PREVIOUS value, not the malformed one)"
+# The warn-and-skip arm (issue #1551) leaves the live stream alone, so the
+# deploy SUCCEEDS and the engine records a bag for a call that never ran.
+# Pre-#1653 that bag was the DESIRED one, so state held the string
+# `us-east-1-x` while AWS held a KEYS_ONLY stream: `readCurrentState` could
+# never match it, every later `cdkd drift` re-reported the same difference,
+# and `drift --revert` re-issued the same skipped call. None of that is
+# reachable from a mocked client — the record has to be WRITTEN by a real
+# deploy and READ BACK by a real read-side run, which is what this step and
+# the next one do.
+STREAM_MODES="ttl,tags,drop-gsi-ondemand-limits,drop-table-ondemand-limit,drop-table-ondemand-read-limit,gsi-billing-flip,unresolvable-capacity${OD_MODE_SUFFIX}"
+
+# Capture the live stream BEFORE the junk deploy. The ARN is the discriminating
+# half: a re-pointed view type would also mint a NEW stream, so comparing the
+# ARN catches a disable/re-enable that a view-type check alone would miss.
+STREAM_ARN_BEFORE="$(aws dynamodb describe-table --table-name "${STREAM_RECOVERY_TABLE}" --region "${REGION}" \
+  --query 'Table.LatestStreamArn' --output text)"
+STREAM_VIEW_BEFORE="$(aws dynamodb describe-table --table-name "${STREAM_RECOVERY_TABLE}" --region "${REGION}" \
+  --query 'Table.StreamSpecification.StreamViewType' --output text)"
+if [ "${STREAM_VIEW_BEFORE}" != "KEYS_ONLY" ]; then
+  echo "FAIL: issue #1653 precondition — StreamRecoveryTable should start with a KEYS_ONLY stream, got '${STREAM_VIEW_BEFORE}'" >&2
+  exit 1
+fi
+
+STREAM_JUNK_LOG="$(mktemp)"
+CDKD_TEST_UPDATE="${STREAM_MODES},stream-state-junk" \
+  ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose 2>&1 | tee "${STREAM_JUNK_LOG}"
+
+# ONE line-coupled grep: the table name, the refused property and the skip
+# decision in a single sentence. Three independent greps would each pass on
+# sentences about other tables / other properties in a --verbose log.
+if ! grep -q "GlobalTable StreamRecoveryTable: .*StreamSpecification must be an object" "${STREAM_JUNK_LOG}"; then
+  echo "FAIL: issue #1653 — cdkd did not report the malformed desired StreamSpecification on StreamRecoveryTable" >&2
+  grep -i "StreamSpecification" "${STREAM_JUNK_LOG}" >&2 || echo "  (no StreamSpecification diagnostic at all)" >&2
+  exit 1
+fi
+if ! grep -q "stream configuration is left untouched for this update" "${STREAM_JUNK_LOG}"; then
+  echo "FAIL: issue #1653 — the warning did not announce that the block was SKIPPED" >&2
+  exit 1
+fi
+rm -f "${STREAM_JUNK_LOG}"
+
+# What was RECORDED. This is the assertion the fix exists for: the PREVIOUS
+# value, not the malformed desired string and not the NEW_AND_OLD_IMAGES
+# default.
+stream_spec_recorded() {
+  aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | python3 -c '
+import json, sys
+state = json.load(sys.stdin)
+for logical_id, resource in state.get("resources", {}).items():
+    if logical_id.startswith("StreamRecoveryTable"):
+        props = resource.get("properties", {})
+        if "StreamSpecification" not in props:
+            print("<absent>")
+        else:
+            print(json.dumps(props["StreamSpecification"], sort_keys=True))
+        break
+'
+}
+STREAM_RECORDED="$(stream_spec_recorded)"
+if [ "${STREAM_RECORDED}" != '{"StreamViewType": "KEYS_ONLY"}' ]; then
+  echo "FAIL: issue #1653 — state must record the PREVIOUS StreamSpecification, got ${STREAM_RECORDED}" >&2
+  exit 1
+fi
+
+# The live stream must be UNTOUCHED — same view type AND the same stream.
+STREAM_VIEW_AFTER="$(aws dynamodb describe-table --table-name "${STREAM_RECOVERY_TABLE}" --region "${REGION}" \
+  --query 'Table.StreamSpecification.StreamViewType' --output text)"
+STREAM_ARN_AFTER="$(aws dynamodb describe-table --table-name "${STREAM_RECOVERY_TABLE}" --region "${REGION}" \
+  --query 'Table.LatestStreamArn' --output text)"
+if [ "${STREAM_VIEW_AFTER}" != "KEYS_ONLY" ] || [ "${STREAM_ARN_AFTER}" != "${STREAM_ARN_BEFORE}" ]; then
+  echo "FAIL: issue #1653 — the skipped update must leave the live stream alone: view=${STREAM_VIEW_AFTER} (expected KEYS_ONLY), arn=${STREAM_ARN_AFTER} (expected ${STREAM_ARN_BEFORE})" >&2
+  exit 1
+fi
+echo "    skipped StreamSpecification recorded as the PREVIOUS value, live stream untouched"
+
+echo "[verify] step 13f2b: issue #1653 — the CORRECTED template is a NO-OP against the recorded value"
+# The consequence half, and the one that actually discriminates.
+#
+# NOT a `cdkd drift` assertion, deliberately: `drift` prefers the
+# `observedProperties` baseline (a live `readCurrentState` snapshot taken at the
+# end of every successful deploy, auto-refreshed for records that lack one), so
+# it compares AWS against AWS and reports this resource clean whether or not the
+# recording is fixed. A drift-based check here would be a vacuous pass. The
+# field the fix actually writes is `properties`, and `properties` is the
+# PREVIOUS side of the next DEPLOY's diff — so that is what to inspect.
+#
+# Pre-fix, `properties.StreamSpecification` held the string `us-east-1-x`, so
+# the corrected template read as a CHANGE on every later deploy and re-issued
+# the same skipped call, warning each time. Post-fix the recorded previous IS
+# the corrected template's value, so the diff is empty.
+#
+# `--json` rather than `--fail`: the exit code is stack-wide and this fixture is
+# mid-sequence, so it must not be coupled to whatever else the stack is doing.
+DIFF_JSON="$(mktemp)"
+set +e
+CDKD_TEST_UPDATE="${STREAM_MODES}" \
+  ${CLI} diff "${STACK}" --state-bucket "${STATE_BUCKET}" --json > "${DIFF_JSON}" 2>/dev/null
+DIFF_RC=$?
+set -e
+# A run that produced no parseable report is UNDETERMINED, not clean — the same
+# tri-state rule `gone_probe` follows for destroy probes.
+DIFF_VERDICT="$(python3 -c '
+import json, sys
+try:
+    payload = json.load(open(sys.argv[1]))
+except Exception as exc:  # noqa: BLE001 - any parse failure is undetermined
+    print("undetermined: %s" % exc)
+    sys.exit(0)
+if not isinstance(payload, list) or not payload:
+    print("undetermined: empty diff payload")
+    sys.exit(0)
+for node in payload:
+    for change in node.get("changes", []):
+        if change.get("logicalId", "").startswith("StreamRecoveryTable"):
+            print("changed: %s" % json.dumps(change))
+            sys.exit(0)
+print("no-change")
+' "${DIFF_JSON}")"
+rm -f "${DIFF_JSON}"
+if [ "${DIFF_VERDICT}" != "no-change" ]; then
+  echo "FAIL: issue #1653 — the corrected template must diff clean against the recorded PREVIOUS value: ${DIFF_VERDICT} (cdkd diff exit ${DIFF_RC})" >&2
+  exit 1
+fi
+echo "    corrected template is a no-op against the recorded value, issue #1653 closed"
+
+echo "[verify] step 13f3: issue #1653 review (A2) — a MALFORMED previous side must be DROPPED, not copied into state"
+# The other direction of the same bug. `previousProperties` is a cdkd STATE
+# record, so a table whose record was written by an older binary can carry junk
+# on the PREVIOUS side too — and the first cut of the fix tested only for
+# ABSENCE, so it copied that junk straight back into `effectiveProperties`.
+# Only a hand-patched record can produce that shape now (which is the point:
+# post-fix cdkd never writes one), so patch it directly, exactly the recipe
+# issue #1654 spells out for the Lambda URL sibling.
+STATE_PATCH="$(mktemp)"
+aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | python3 -c '
+import json, sys
+state = json.load(sys.stdin)
+patched = False
+for logical_id, resource in state.get("resources", {}).items():
+    if logical_id.startswith("StreamRecoveryTable"):
+        resource.setdefault("properties", {})["StreamSpecification"] = ""
+        patched = True
+        break
+if not patched:
+    sys.stderr.write("no StreamRecoveryTable in state to patch\n")
+    sys.exit(1)
+json.dump(state, sys.stdout)
+' > "${STATE_PATCH}"
+aws s3 cp "${STATE_PATCH}" "s3://${STATE_BUCKET}/${STATE_KEY}"
+rm -f "${STATE_PATCH}"
+
+STREAM_JUNK2_LOG="$(mktemp)"
+CDKD_TEST_UPDATE="${STREAM_MODES},stream-state-junk" \
+  ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose 2>&1 | tee "${STREAM_JUNK2_LOG}"
+if ! grep -q "GlobalTable StreamRecoveryTable: .*StreamSpecification must be an object" "${STREAM_JUNK2_LOG}"; then
+  echo "FAIL: issue #1653 (A2) — the skip did not fire on the both-sides-malformed deploy" >&2
+  exit 1
+fi
+rm -f "${STREAM_JUNK2_LOG}"
+
+STREAM_RECORDED2="$(stream_spec_recorded)"
+if [ "${STREAM_RECORDED2}" != "<absent>" ]; then
+  echo "FAIL: issue #1653 (A2) — an unusable PREVIOUS value must be DROPPED, not recorded; state holds ${STREAM_RECORDED2}" >&2
+  exit 1
+fi
+STREAM_VIEW_A2="$(aws dynamodb describe-table --table-name "${STREAM_RECOVERY_TABLE}" --region "${REGION}" \
+  --query 'Table.StreamSpecification.StreamViewType' --output text)"
+STREAM_ARN_A2="$(aws dynamodb describe-table --table-name "${STREAM_RECOVERY_TABLE}" --region "${REGION}" \
+  --query 'Table.LatestStreamArn' --output text)"
+if [ "${STREAM_VIEW_A2}" != "KEYS_ONLY" ] || [ "${STREAM_ARN_A2}" != "${STREAM_ARN_BEFORE}" ]; then
+  echo "FAIL: issue #1653 (A2) — the live stream must still be untouched: view=${STREAM_VIEW_A2}, arn=${STREAM_ARN_A2}" >&2
+  exit 1
+fi
+echo "    both-sides-malformed dropped the key, live stream still untouched"
+
+# RESTORE the record before continuing. With the key dropped, the next deploy
+# whose template declares `{StreamViewType: KEYS_ONLY}` would see
+# previous=absent -> desired=present and send an `UpdateTable` that ENABLES a
+# stream which is already enabled. Whether DynamoDB accepts that re-enable is
+# NOT verified (see the note in the PR); this fixture is here to prove the
+# #1653 recording behavior, so it must not also bet the remaining ~10 steps and
+# the destroy on an unverified AWS behavior. Restoring by hand keeps the blast
+# radius of this sub-step to itself.
+STATE_RESTORE="$(mktemp)"
+aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | python3 -c '
+import json, sys
+state = json.load(sys.stdin)
+for logical_id, resource in state.get("resources", {}).items():
+    if logical_id.startswith("StreamRecoveryTable"):
+        resource.setdefault("properties", {})["StreamSpecification"] = {"StreamViewType": "KEYS_ONLY"}
+        break
+json.dump(state, sys.stdout)
+' > "${STATE_RESTORE}"
+aws s3 cp "${STATE_RESTORE}" "s3://${STATE_BUCKET}/${STATE_KEY}"
+rm -f "${STATE_RESTORE}"
+STREAM_RESTORED="$(stream_spec_recorded)"
+if [ "${STREAM_RESTORED}" != '{"StreamViewType": "KEYS_ONLY"}' ]; then
+  echo "FAIL: issue #1653 (A2) — could not restore the StreamRecoveryTable record (got ${STREAM_RESTORED}); later steps would run against a patched record" >&2
+  exit 1
+fi
+echo "    record restored to the pre-patch value"
+
 echo "[verify] step 13g: cdkd deploy with gsi-state-junk (issue #1571 phase 1 — RECORD an unusable GlobalSecondaryIndexes into cdkd state)"
 # The provider's warn path (issue #1551) records a malformed desired
 # `GlobalSecondaryIndexes` as the new state, and the NEXT update then has no
@@ -1189,7 +1397,8 @@ assert_gone "table '${GSI_OD_TABLE}' still exists after destroy" aws dynamodb de
 assert_gone "table '${OD_REPLICA_TABLE}' still exists after destroy" aws dynamodb describe-table --table-name "${OD_REPLICA_TABLE}" --region "${REGION}"
 assert_gone "table '${GSI_RECOVERY_TABLE}' still exists after destroy" aws dynamodb describe-table --table-name "${GSI_RECOVERY_TABLE}" --region "${REGION}"
 assert_gone "table '${GSI_PROV_RECOVERY_TABLE}' still exists after destroy" aws dynamodb describe-table --table-name "${GSI_PROV_RECOVERY_TABLE}" --region "${REGION}"
-echo "[verify] step 16a ok: all six tables deleted"
+assert_gone "table '${STREAM_RECOVERY_TABLE}' still exists after destroy" aws dynamodb describe-table --table-name "${STREAM_RECOVERY_TABLE}" --region "${REGION}"
+echo "[verify] step 16a ok: all seven tables deleted"
 
 # Issue #1512: the on-demand replica table is the one whose eu-west-1 replica
 # is never removed by an update — teardown relies entirely on `cdkd destroy`

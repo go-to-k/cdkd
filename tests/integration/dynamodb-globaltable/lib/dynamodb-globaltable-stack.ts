@@ -625,6 +625,51 @@ export class DynamoDBGlobalTableStack extends cdk.Stack {
         'On-demand GlobalTable used by the issue #1571 two-phase state-recovery sequence (gsi-state-junk then gsi-state-recovery)',
     });
 
+    // Issue #1653: real-AWS coverage for the `StreamSpecification` warn-and-SKIP
+    // arm's `effectiveProperties` answer. The sibling of the GSI sequence above
+    // and unreachable from a mocked client for the same reason: the point is
+    // what a real deploy WRITES INTO STATE and what the NEXT read-side run then
+    // sees, so the record has to be produced by AWS-facing code and read back.
+    //
+    // Baseline (no mode): a KEYS_ONLY stream. The `stream-state-junk` mode
+    // re-renders `StreamSpecification` as an unfolded `Fn::Join` over the region
+    // pseudo-parameter, exactly like the `unresolvable-capacity` and
+    // `gsi-state-junk` tables above — synth keeps it unresolved, cdkd resolves
+    // it at deploy time to the STRING `us-east-1-x`, and a present-but-non-object
+    // container is precisely the shape `readConfigString`'s container guard
+    // refuses. `Token.asAny` gets it past the generated L1 validator, which
+    // skips any resolvable value.
+    //
+    // Only the UPDATE arm is covered. The create-path sibling (a replay create
+    // whose downgrade SUBSTITUTES the default) is deliberately NOT tested here:
+    // it is unreachable in production today because the reverse-replacement
+    // create discards `effectiveProperties` — issue #1682 — so a fixture would
+    // assert nothing. It is not an oversight; do not add one until #1682 lands.
+    //
+    // KEYS_ONLY, not NEW_AND_OLD_IMAGES: the skip arm's failure mode is
+    // "re-pointed at the default", and the default IS NEW_AND_OLD_IMAGES, so a
+    // baseline of NEW_AND_OLD_IMAGES would make the live-stream assertion pass
+    // even if the block had been wrongly applied.
+    const streamStateJunk = updateMode.includes('stream-state-junk');
+    const streamRecoveryTable = new ddb.CfnGlobalTable(this, 'StreamRecoveryTable', {
+      keySchema: [{ attributeName: 'pk', keyType: 'HASH' }],
+      attributeDefinitions: [{ attributeName: 'pk', attributeType: 'S' }],
+      billingMode: 'PAY_PER_REQUEST',
+      streamSpecification: streamStateJunk
+        ? (cdk.Token.asAny(
+            cdk.Fn.join('-', [cdk.Aws.REGION, 'x'])
+          ) as unknown as ddb.CfnGlobalTable.StreamSpecificationProperty)
+        : { streamViewType: 'KEYS_ONLY' },
+      replicas: [{ region: this.region }],
+    });
+    streamRecoveryTable.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+
+    new cdk.CfnOutput(this, 'StreamRecoveryTableName', {
+      value: streamRecoveryTable.ref,
+      description:
+        'GlobalTable used by the issue #1653 StreamSpecification warn-and-skip sequence (stream-state-junk)',
+    });
+
     // Issue #1585: real-AWS coverage for the AUTOSCALED exclusion of
     // `buildLiveRecoveryGsiBaseline`. The exclusion only exists on the
     // PROVISIONED arm (`uncomparableCapacityIndexNames` is consulted iff the

@@ -1436,9 +1436,14 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           {
             onUnusable: (message) => {
               streamSpecUnusable = true;
+              // Prefixed with the type + logical id, matching the GSI warn arm
+              // below. Without it the sentence names only the PROPERTY PATH, so
+              // on a stack with several GlobalTables the user cannot tell which
+              // table warned — and neither can an integ assertion.
               this.logger.warn(
-                `${message} The table's existing stream configuration is left ` +
-                  `untouched for this update rather than re-pointed at the default.`
+                `AWS::DynamoDB::GlobalTable ${logicalId}: ${message} The table's existing ` +
+                  `stream configuration is left untouched for this update rather than ` +
+                  `re-pointed at the default.`
               );
             },
           }

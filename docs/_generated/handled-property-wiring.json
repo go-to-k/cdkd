@@ -5903,7 +5903,9 @@
       ],
       "gaps": [],
       "blindSpots": [
-        "extractLocalTags(...) in update()"
+        "extractLocalTags(...) in update()",
+        "object spread in create()",
+        "object spread in update()"
       ]
     },
     {
@@ -14687,7 +14689,8 @@
       ],
       "gaps": [],
       "blindSpots": [
-        "computed key in update()"
+        "computed key in update()",
+        "object spread in update()"
       ]
     },
     {
