@@ -24,12 +24,14 @@ import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import { readConfigString } from '../config-shape.js';
+import { compositeIdSeparatorRefusal, packCompositeId } from '../composite-id.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
+  CreateContext,
 } from '../../types/resource.js';
 
 /**
@@ -277,13 +279,14 @@ export class Route53Provider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     switch (resourceType) {
       case 'AWS::Route53::HostedZone':
         return this.createHostedZone(logicalId, resourceType, properties);
       case 'AWS::Route53::RecordSet':
-        return this.createRecordSet(logicalId, resourceType, properties);
+        return this.createRecordSet(logicalId, resourceType, properties, context);
       default:
         throw new ProvisioningError(
           `Unsupported resource type: ${resourceType}`,
@@ -864,7 +867,8 @@ export class Route53Provider implements ResourceProvider {
   private async createRecordSet(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating Route 53 record set ${logicalId}`);
 
@@ -872,6 +876,32 @@ export class Route53Provider implements ResourceProvider {
 
     const recordName = properties['Name'] as string;
     const recordType = properties['Type'] as string;
+
+    // Refuse a `|` in any segment BEFORE `ChangeResourceRecordSets` runs
+    // (issue #1711, the route53 half of the #1672 sweep). `recordName` is
+    // `properties['Name']` — the only TEMPLATE-chosen segment of this type's
+    // composite, where `hostedZoneId` and `recordType` are AWS-generated / a
+    // fixed enum. The blast radius is milder than the Glue sibling's because
+    // `parseRecordSetCompositeId` demands EXACTLY three parts, so a four-part
+    // id is REJECTED rather than mis-decoded into a different record — but the
+    // deploy still records an id nothing can decode, which is what this guard
+    // stops. Computed before the call so a refusal cannot orphan a record AWS
+    // has already written.
+    const compositeId = packCompositeId(
+      resourceType,
+      logicalId,
+      [
+        { name: 'hostedZoneId', value: hostedZoneId },
+        { name: 'recordName', value: recordName },
+        { name: 'recordType', value: recordType },
+      ],
+      // A reverse-replacement rollback creates from a STATE record, so the
+      // refusal downgrades to a warning — no template edit can repair a value
+      // an older binary already recorded.
+      context?.replayingState === true
+        ? { onRefusal: (message) => this.logger.warn(message) }
+        : undefined
+    );
 
     try {
       const resourceRecordSet = this.buildResourceRecordSet(properties);
@@ -893,7 +923,6 @@ export class Route53Provider implements ResourceProvider {
         })
       );
 
-      const compositeId = `${hostedZoneId}|${recordName}|${recordType}`;
       this.logger.debug(`Successfully created record set ${logicalId}: ${compositeId}`);
 
       return {
@@ -931,6 +960,30 @@ export class Route53Provider implements ResourceProvider {
     const recordName = properties['Name'] as string;
     const recordType = properties['Type'] as string;
 
+    // The same guard as the create path, but the downgrade is UNCONDITIONAL
+    // (issue #1711) — the `updateRoute` precedent, for the reason
+    // `.claude/rules/providers.md` records: `update()` takes no
+    // `CreateContext`, so it cannot tell a template-borne update from the
+    // STATE-borne desired bag that `rollback-executor.ts`'s revert arm and
+    // `cdkd drift --revert` both hand it. Refusing would make a record an
+    // older binary already wrote under the ambiguous id un-revertable, with
+    // no template edit that repairs it. So the pre-guard behavior stands here
+    // and the ambiguous id becomes ANNOUNCED rather than silent, while the
+    // refusal keeps its teeth on the create path, where the value is always
+    // template-borne. Placed before the UPSERT and outside the `try` anyway,
+    // so a future arm that DOES throw cannot be re-wrapped as "Failed to
+    // update record set".
+    const compositeId = packCompositeId(
+      resourceType,
+      logicalId,
+      [
+        { name: 'hostedZoneId', value: hostedZoneId },
+        { name: 'recordName', value: recordName },
+        { name: 'recordType', value: recordType },
+      ],
+      { onRefusal: (message) => this.logger.warn(message) }
+    );
+
     try {
       const resourceRecordSet = this.buildResourceRecordSet(properties);
 
@@ -951,7 +1004,6 @@ export class Route53Provider implements ResourceProvider {
         })
       );
 
-      const compositeId = `${hostedZoneId}|${recordName}|${recordType}`;
       this.logger.debug(`Successfully updated record set ${logicalId}`);
 
       return {
@@ -2357,7 +2409,34 @@ export class Route53Provider implements ResourceProvider {
       );
     }
 
-    const compositeId = `${identity.hostedZoneId}|${identity.name}|${identity.type}`;
+    // An `import()` neither throws nor adopts an id it knows to be ambiguous
+    // (issue #1711) — it takes this method's own escape hatch instead. The
+    // verbatim id decodes to nothing, so `delete` / `drift` fall back to
+    // resolving the record from the template properties, where the canonical
+    // composite would have frozen a mis-arity id into state that nothing can
+    // parse. Structurally near-unreachable — `identity.name` is the record
+    // name, and Route 53 accepts a `|` in one only as the `\174` escape — so
+    // this is the same defense-in-depth the sweep applied to the AWS-generated
+    // segments elsewhere.
+    const segments = [
+      { name: 'hostedZoneId', value: identity.hostedZoneId },
+      { name: 'recordName', value: identity.name },
+      { name: 'recordType', value: identity.type },
+    ];
+    const importRefusal = compositeIdSeparatorRefusal(
+      input.resourceType,
+      input.logicalId,
+      segments
+    );
+    if (importRefusal !== undefined) {
+      this.logger.warn(importRefusal);
+      return adoptVerbatim('the resolved hosted zone + Name + Type would pack an ambiguous id');
+    }
+
+    // Cannot throw — the predicate above is the same check `packCompositeId`
+    // makes — but it stays the single spelling of the join so this site cannot
+    // drift from the create / update ones.
+    const compositeId = packCompositeId(input.resourceType, input.logicalId, segments);
     let observed: Record<string, unknown> | undefined;
     try {
       observed = await this.readRecordSet(compositeId);

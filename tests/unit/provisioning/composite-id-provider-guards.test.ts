@@ -17,6 +17,7 @@ const mockAppSyncSend = vi.hoisted(() => vi.fn());
 const mockEc2Send = vi.hoisted(() => vi.fn());
 const mockApiGatewaySend = vi.hoisted(() => vi.fn());
 const mockLambdaSend = vi.hoisted(() => vi.fn());
+const mockRoute53Send = vi.hoisted(() => vi.fn());
 const mockStsSend = vi.hoisted(() => vi.fn());
 const mockLoggerWarn = vi.hoisted(() => vi.fn());
 
@@ -48,6 +49,17 @@ vi.mock('@aws-sdk/client-appsync', async (importOriginal) => {
     ...actual,
     AppSyncClient: vi.fn().mockImplementation(() => ({
       send: mockAppSyncSend,
+      config: { region: () => Promise.resolve('us-east-1') },
+    })),
+  };
+});
+
+vi.mock('@aws-sdk/client-route-53', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@aws-sdk/client-route-53')>();
+  return {
+    ...actual,
+    Route53Client: vi.fn().mockImplementation(() => ({
+      send: mockRoute53Send,
       config: { region: () => Promise.resolve('us-east-1') },
     })),
   };
@@ -97,6 +109,7 @@ import { AppSyncProvider } from '../../../src/provisioning/providers/appsync-pro
 import { EC2Provider } from '../../../src/provisioning/providers/ec2-provider.js';
 import { ApiGatewayProvider } from '../../../src/provisioning/providers/apigateway-provider.js';
 import { LambdaEventInvokeConfigProvider } from '../../../src/provisioning/providers/lambda-event-invoke-config-provider.js';
+import { Route53Provider } from '../../../src/provisioning/providers/route53-provider.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
 import { compositeIdSeparatorRefusal } from '../../../src/provisioning/composite-id.js';
 
@@ -114,6 +127,7 @@ beforeEach(() => {
   mockEc2Send.mockReset();
   mockApiGatewaySend.mockReset();
   mockLambdaSend.mockReset();
+  mockRoute53Send.mockReset();
   mockStsSend.mockReset();
   mockStsSend.mockResolvedValue({ Account: '123456789012' });
 });
@@ -638,5 +652,147 @@ describe('AWS::Lambda::EventInvokeConfig composite id guard', () => {
     );
     expect(result.physicalId).toBe('fn|x|live');
     expect(mockLoggerWarn).toHaveBeenCalledWith(expect.stringContaining("functionName 'fn|x'"));
+  });
+});
+
+describe('AWS::Route53::RecordSet composite id guard', () => {
+  const RECORD_TYPE = 'AWS::Route53::RecordSet';
+
+  it('refuses a record Name containing the separator, before ChangeResourceRecordSets runs', async () => {
+    const provider = new Route53Provider();
+    await expect(
+      provider.create('MyRecord', RECORD_TYPE, {
+        HostedZoneId: 'Z1D633PJN98FT9',
+        Name: 'a|b.example.com.',
+        Type: 'A',
+        TTL: '300',
+        ResourceRecords: ['1.2.3.4'],
+      })
+    ).rejects.toThrow(/recordName 'a\|b\.example\.com\.'/);
+    expect(mockRoute53Send).not.toHaveBeenCalled();
+  });
+
+  it('names the id shape the record set actually uses', async () => {
+    // The message renders the shape from the segment names, so a wrong name
+    // here would tell the user to inspect a composite this type never packs.
+    const provider = new Route53Provider();
+    await expect(
+      provider.create('MyRecord', RECORD_TYPE, {
+        HostedZoneId: 'Z1D633PJN98FT9',
+        Name: 'a|b.example.com.',
+        Type: 'A',
+      })
+    ).rejects.toThrow(/<hostedZoneId>\|<recordName>\|<recordType>/);
+  });
+
+  it('still records a clean composite id', async () => {
+    mockRoute53Send.mockResolvedValueOnce({});
+    const provider = new Route53Provider();
+    const result = await provider.create('MyRecord', RECORD_TYPE, {
+      HostedZoneId: 'Z1D633PJN98FT9',
+      Name: 'www.example.com.',
+      Type: 'A',
+      TTL: '300',
+      ResourceRecords: ['1.2.3.4'],
+    });
+    expect(result.physicalId).toBe('Z1D633PJN98FT9|www.example.com.|A');
+  });
+
+  it('downgrades to a warning on a state replay', async () => {
+    // The reverse-replacement rollback arm: a record an older binary recorded
+    // under the ambiguous id must still be restorable, and no template edit
+    // can repair a value that comes from a cdkd state record.
+    mockRoute53Send.mockResolvedValueOnce({});
+    const provider = new Route53Provider();
+    const result = await provider.create(
+      'MyRecord',
+      RECORD_TYPE,
+      {
+        HostedZoneId: 'Z1D633PJN98FT9',
+        Name: 'a|b.example.com.',
+        Type: 'A',
+        TTL: '300',
+        ResourceRecords: ['1.2.3.4'],
+      },
+      REPLAY
+    );
+    expect(result.physicalId).toBe('Z1D633PJN98FT9|a|b.example.com.|A');
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      expect.stringContaining("recordName 'a|b.example.com.'")
+    );
+  });
+
+  it('warns and packs on update instead of refusing', async () => {
+    // The `updateRoute` precedent: `update()` takes no `CreateContext`, so it
+    // cannot tell a template-borne update from the STATE-borne desired bag
+    // that the rollback executor's revert arm and `cdkd drift --revert` hand
+    // it — and refusing there would make a record an older binary wrote under
+    // the ambiguous id un-revertable. The UPSERT still goes out, so the id is
+    // ANNOUNCED rather than silent. Mutating this callback away to a bare
+    // `undefined` makes this case throw.
+    mockRoute53Send.mockResolvedValueOnce({});
+    const provider = new Route53Provider();
+    const result = await provider.update(
+      'MyRecord',
+      'Z1D633PJN98FT9|a|b.example.com.|A',
+      RECORD_TYPE,
+      {
+        HostedZoneId: 'Z1D633PJN98FT9',
+        Name: 'a|b.example.com.',
+        Type: 'A',
+        TTL: '300',
+        ResourceRecords: ['1.2.3.4'],
+      },
+      { HostedZoneId: 'Z1D633PJN98FT9', Name: 'a|b.example.com.', Type: 'A' }
+    );
+    expect(result.physicalId).toBe('Z1D633PJN98FT9|a|b.example.com.|A');
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      expect.stringContaining("recordName 'a|b.example.com.'")
+    );
+    expect(mockRoute53Send).toHaveBeenCalledTimes(1);
+  });
+
+  it('update still records a clean composite id', async () => {
+    mockRoute53Send.mockResolvedValueOnce({});
+    const provider = new Route53Provider();
+    const result = await provider.update(
+      'MyRecord',
+      'Z1D633PJN98FT9|www.example.com.|A',
+      RECORD_TYPE,
+      {
+        HostedZoneId: 'Z1D633PJN98FT9',
+        Name: 'www.example.com.',
+        Type: 'A',
+        TTL: '600',
+        ResourceRecords: ['1.2.3.4'],
+      },
+      { HostedZoneId: 'Z1D633PJN98FT9', Name: 'www.example.com.', Type: 'A', TTL: '300' }
+    );
+    expect(result.physicalId).toBe('Z1D633PJN98FT9|www.example.com.|A');
+  });
+
+  it('import adopts the override verbatim rather than freezing an ambiguous composite', async () => {
+    // An `import()` neither throws nor adopts an id it knows to be ambiguous:
+    // the verbatim form decodes to nothing, so delete / drift fall back to the
+    // template properties, where the packed composite would have written a
+    // mis-arity id into state that nothing can parse.
+    const provider = new Route53Provider();
+    const result = await provider.import({
+      logicalId: 'MyRecord',
+      resourceType: RECORD_TYPE,
+      stackName: 'TestStack',
+      region: 'us-east-1',
+      knownPhysicalId: 'a|b.example.com.',
+      properties: {
+        HostedZoneId: 'Z1D633PJN98FT9',
+        Name: 'a|b.example.com.',
+        Type: 'A',
+      },
+    });
+    expect(result).toEqual({ physicalId: 'a|b.example.com.', attributes: {} });
+    expect(mockLoggerWarn).toHaveBeenCalledWith(expect.stringContaining("recordName 'a|b"));
+    // The refusal short-circuits BEFORE the `ListResourceRecordSets`
+    // verification read, so no AWS call is made on this path.
+    expect(mockRoute53Send).not.toHaveBeenCalled();
   });
 });

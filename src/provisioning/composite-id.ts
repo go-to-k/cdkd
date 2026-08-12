@@ -60,18 +60,9 @@ import { ProvisioningError } from '../utils/error-handler.js';
  * ## What this does NOT cover
  *
  * The claim is "every composite packer this change reaches", not "every `|`
- * join in the tree". Two deliberate exclusions, recorded so the scope is not
+ * join in the tree". One deliberate exclusion, recorded so the scope is not
  * read as wider than it is:
  *
- * - **`route53-provider.ts`'s three packers** (`AWS::Route53::RecordSet` and
- *   its siblings) are NOT guarded — the file was owned by a parallel lane when
- *   this shipped. The exposure there is bounded rather than absent:
- *   `parseRecordSetCompositeId` requires EXACTLY three parts, so a four-part
- *   id is REJECTED rather than mis-decoded into a different record. That is
- *   the loud failure mode, not the silent-wrong-resource one this helper
- *   exists for — but the deploy still records an id nothing can decode, so the
- *   type belongs here whenever that lane lands. Tracked in issue
- *   [#1711](https://github.com/go-to-k/cdkd/issues/1711).
  * - **`intrinsic-function-resolver.ts`'s `|` joins** (the WAFv2 and
  *   `AWS::Events::Rule` arms) are out of scope by KIND, not by ownership: they
  *   build a `Ref` VALUE for the template resolver, never a physicalId cdkd
