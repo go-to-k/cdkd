@@ -434,8 +434,6 @@ Types with an `import()` that auto-resolves via the above:
 - AWS::ServiceDiscovery::PublicDnsNamespace
 - AWS::S3Express::DirectoryBucket
 - AWS::S3Tables::TableBucket
-- AWS::S3Tables::Namespace (composite: `--resource <logicalId>=<tableBucketARN>|<namespaceName>`)
-- AWS::S3Tables::Table (composite: `--resource <logicalId>=<tableBucketARN>|<namespace>|<name>`)
 - AWS::S3Vectors::VectorBucket
 - AWS::DLM::LifecyclePolicy
 - AWS::FSx::FileSystem
@@ -477,6 +475,8 @@ physical id via `--resource`.
 - AWS::AppSync::DataSource (composite: `--resource <logicalId>=<apiId>|<name>`)
 - AWS::AppSync::Resolver (composite: `--resource <logicalId>=<apiId>|<typeName>|<fieldName>`)
 - AWS::AppSync::ApiKey (composite: `--resource <logicalId>=<apiId>|<apiKeyId>`)
+- AWS::S3Tables::Namespace (composite: `--resource <logicalId>=<tableBucketARN>|<namespaceName>`; only the parent `AWS::S3Tables::TableBucket` auto-resolves)
+- AWS::S3Tables::Table (composite: `--resource <logicalId>=<tableBucketARN>|<namespace>|<name>`; only the parent `AWS::S3Tables::TableBucket` auto-resolves)
 - AWS::Route53::RecordSet (composite: `--resource <logicalId>=<hostedZoneId>|<name>|<type>`, where `<name>` is the record name exactly as the template spells it — CDK emits a trailing dot)
 - AWS::ElasticLoadBalancingV2::Listener
 - AWS::EFS::MountTarget
