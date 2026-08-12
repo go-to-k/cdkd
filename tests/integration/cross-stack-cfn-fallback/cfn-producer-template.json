@@ -1,0 +1,27 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "cdkd integ #1697 producer: a CloudFormation-managed stack (never touched by cdkd) whose export + output are consumed by a cdkd-deployed stack via the CloudFormation fallback.",
+  "Parameters": {
+    "ResourceSuffix": {
+      "Type": "String",
+      "Description": "Per-run unique suffix baked into the output VALUES (names stay fixed so pre-run cleanup is deterministic; the suffix proves the consumer resolved THIS run's values, not a stale leftover)."
+    }
+  },
+  "Resources": {
+    "NoOpHandle": {
+      "Type": "AWS::CloudFormation::WaitConditionHandle",
+      "Properties": {}
+    }
+  },
+  "Outputs": {
+    "SharedValue": {
+      "Description": "Consumed by the cdkd consumer via Fn::GetStackOutput (DescribeStacks fallback)",
+      "Value": { "Fn::Sub": "cfn-shared-${ResourceSuffix}" }
+    },
+    "ExportedValue": {
+      "Description": "Consumed by the cdkd consumer via Fn::ImportValue (ListExports fallback)",
+      "Value": { "Fn::Sub": "cfn-exported-${ResourceSuffix}" },
+      "Export": { "Name": "CdkdCfnFallbackExport" }
+    }
+  }
+}

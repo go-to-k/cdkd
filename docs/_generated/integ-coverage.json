@@ -5431,6 +5431,7 @@
         "conditions-update-2",
         "context-test",
         "cross-region-state-bucket",
+        "cross-stack-cfn-fallback",
         "cross-stack-references",
         "custom-resource-getatt-data",
         "deep-getatt-chains",
@@ -5498,6 +5499,9 @@
           "l2"
         ],
         "cross-region-state-bucket": [
+          "l1"
+        ],
+        "cross-stack-cfn-fallback": [
           "l1"
         ],
         "cross-stack-references": [

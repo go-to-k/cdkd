@@ -695,7 +695,14 @@ for stack-selection rules and concurrency knobs.
 
 cdkd supports the standard CloudFormation surface — intrinsic functions,
 pseudo parameters, parameters / conditions, cross-stack / cross-region
-references, asset publishing, custom resources, and so on. See
+references, asset publishing, custom resources, and so on. Cross-stack
+references also work against producer stacks still managed by
+CloudFormation: when an `Fn::ImportValue` / `Fn::GetStackOutput`
+reference is not in cdkd state, cdkd falls back to CloudFormation
+(`ListExports` / stack outputs), so a cdkd-deployed stack can consume
+values from a `cdk deploy`-managed one (weak reference; disable with
+`--no-cfn-fallback` — see
+[docs/cross-stack-references.md](docs/cross-stack-references.md)). See
 **[docs/supported-features.md](docs/supported-features.md)** for the
 full reference. For per-resource-type provisioning support (SDK Providers
 vs Cloud Control API fallback), see

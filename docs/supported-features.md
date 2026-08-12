@@ -20,8 +20,8 @@ runtime / handler support, see [cli-reference.md](cli-reference.md).
 | `Fn::And` | ✅ | Logical AND (2-10 conditions) |
 | `Fn::Or` | ✅ | Logical OR (2-10 conditions) |
 | `Fn::Not` | ✅ | Logical NOT |
-| `Fn::ImportValue` | ✅ | Cross-stack references via S3 state |
-| `Fn::GetStackOutput` | ✅ (same-account) | Cross-stack / cross-region output reference via S3 state. Cross-account `RoleArn` is rejected with a clear error (not yet implemented). |
+| `Fn::ImportValue` | ✅ | Cross-stack references via S3 state, falling back to CloudFormation `ListExports` on a cdkd-state miss (issue #1697) so CloudFormation-managed producers can be referenced; disable with `--no-cfn-fallback` |
+| `Fn::GetStackOutput` | ✅ | Cross-stack / cross-region output reference via S3 state, falling back to CloudFormation `DescribeStacks` outputs on a cdkd-state miss (same-account; issue #1697). Cross-account via `RoleArn` (reads the producer account's cdkd state; no CFn fallback). |
 | `Fn::FindInMap` | ✅ | Mapping lookup |
 | `Fn::GetAZs` | ✅ | Availability Zone list |
 | `Fn::Base64` | ✅ | Base64 encoding |
@@ -62,8 +62,8 @@ top-level features rather than table rows.
 |---------|--------|-------|
 | CloudFormation Parameters | ✅ | Default values, type coercion |
 | Conditions | ✅ | With logical operators |
-| Cross-stack references | ✅ | Via `Fn::ImportValue` + S3 state |
-| Cross-region references | ✅ (same-account) | Via `Fn::GetStackOutput` + S3 state. Cross-account `RoleArn` not yet implemented. |
+| Cross-stack references | ✅ | Via `Fn::ImportValue` + S3 state, with a CloudFormation `ListExports` fallback for CFn-managed producers (issue #1697) |
+| Cross-region references | ✅ | Via `Fn::GetStackOutput` + S3 state, with a same-account CloudFormation `DescribeStacks` fallback (issue #1697). Cross-account via `RoleArn` (producer-account cdkd state only). |
 | JSON Patch updates | ✅ | RFC 6902, minimal patches; write-only properties re-included per registry schema (`cloudformation:DescribeType`, graceful fallback) |
 | Resource replacement detection | ✅ | 10+ resource types |
 | Dynamic References | ✅ | `{{resolve:secretsmanager:...}}`, `{{resolve:ssm:...}}` |

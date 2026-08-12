@@ -210,14 +210,32 @@ describe('DeployEngine - --strict-getatt output failures + fallback counter (#11
     );
   });
 
-  it('threads strictGetAtt into the resolver constructor', () => {
+  it('threads strictGetAtt (and the #1697 cfnFallback default) into the resolver constructor', () => {
     makeEngine(true);
     expect(vi.mocked(IntrinsicFunctionResolver)).toHaveBeenCalledWith('us-east-1', {
       strictGetAtt: true,
+      cfnFallback: true,
     });
     makeEngine();
     expect(vi.mocked(IntrinsicFunctionResolver)).toHaveBeenLastCalledWith('us-east-1', {
       strictGetAtt: false,
+      cfnFallback: true,
+    });
+  });
+
+  it('threads cfnFallback: false (--no-cfn-fallback, #1697) into the resolver constructor', () => {
+    new DeployEngine(
+      mockStateBackend as never,
+      mockLockManager as never,
+      mockDagBuilder as never,
+      mockDiffCalculator as never,
+      mockProviderRegistry as never,
+      { dryRun: false, cfnFallback: false },
+      'us-east-1'
+    );
+    expect(vi.mocked(IntrinsicFunctionResolver)).toHaveBeenLastCalledWith('us-east-1', {
+      strictGetAtt: false,
+      cfnFallback: false,
     });
   });
 

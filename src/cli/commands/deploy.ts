@@ -114,6 +114,7 @@ async function deployCommand(
     strict?: boolean;
     ignoreErrors?: boolean;
     strictGetatt?: boolean;
+    cfnFallback?: boolean;
     useCdkBootstrapAssets?: boolean;
     autoAssetStorage?: boolean;
     resourceWarnAfter?: ResourceTimeoutOption;
@@ -828,6 +829,7 @@ async function deployCommand(
           // races under --stack-concurrency > 1 with multi-region stacks.
           finalSnapshotClients: stackAwsClients,
           ...(options.strictGetatt && { strictGetAtt: true }),
+          ...(options.cfnFallback === false && { cfnFallback: false }),
           captureObservedState: resolveCaptureObservedState(options.captureObservedState),
           ...(options.resourceWarnAfter?.globalMs !== undefined && {
             resourceWarnAfterMs: options.resourceWarnAfter.globalMs,

@@ -1157,6 +1157,43 @@ physical ID that genuinely is the attribute value for a type cdkd has not
 enriched yet) is acceptable. Nested-stack child deploys inherit the flag
 from the parent deploy.
 
+## `--no-cfn-fallback` (deploy / diff)
+
+By default (issue
+[#1697](https://github.com/go-to-k/cdkd/issues/1697)), a cross-stack
+reference that is not found in cdkd state falls back to CloudFormation,
+so a cdkd-deployed consumer can reference a producer stack still managed
+by CloudFormation (`cdk deploy` / raw CFn):
+
+- `Fn::ImportValue` → CloudFormation `ListExports` in the consumer's
+  region (CFn's own semantic for the intrinsic).
+- `Fn::GetStackOutput` → CloudFormation `DescribeStacks` outputs in the
+  target region. Same-account only — the `RoleArn` (cross-account) form
+  never takes the fallback.
+
+The fallback fires ONLY after a cdkd-state miss (cdkd-first precedence:
+existing cdkd-to-cdkd references are untouched, and a name collision
+resolves to the cdkd export). A CFn-sourced resolution is a **weak
+reference** — not recorded into `state.imports` / `state.outputReads`,
+so there is no destroy-time protection in either direction: deleting the
+CFn producer breaks the consumer's next resolve, not the producer's
+delete. A fallback lookup failure (e.g. missing
+`cloudformation:ListExports` / `cloudformation:DescribeStacks`
+permission) logs a warning and surfaces the original not-found error.
+
+```bash
+cdkd deploy MyStack --no-cfn-fallback   # cdkd-state-only resolution
+cdkd diff MyStack --no-cfn-fallback     # preview with the same semantics
+```
+
+Pass the flag when you want cdkd-state-only semantics — IAM kept minimal,
+or an export-name typo failing fast instead of accidentally matching an
+unrelated CloudFormation export in the account. Nested-stack child
+deploys inherit the flag from the parent deploy; `cdkd diff` honors it in
+its best-effort resolvers so preview and apply resolve identically. See
+[docs/cross-stack-references.md](cross-stack-references.md) for the full
+design.
+
 ## CDK annotation messages (synth + deploy)
 
 `cdkd synth` and `cdkd deploy` surface CDK `Annotations` messages with the
@@ -2563,11 +2600,14 @@ cdkd export                                       # auto-detect single-stack app
   template — a YAML-authored CFn stack stays YAML on the wire.
 - **Cross-stack consumer scan** runs at synth time when other stacks in
   the same CDK app reference the exporting stack via
-  `Fn::GetStackOutput`. By default cdkd warns (the user is expected to
-  migrate consumer stacks in a follow-up); `--strict-cross-stack`
-  refuses. Without `Fn::GetStackOutput` (or with consumer stacks
-  outside the CDK app), no scan can run and the user is responsible for
-  the check.
+  `Fn::GetStackOutput`. Since issue
+  [#1697](https://github.com/go-to-k/cdkd/issues/1697) those consumers
+  keep resolving after the migration via the CloudFormation fallback
+  (weak reference), so by default cdkd warns that the references become
+  fallback-dependent (they break only for consumers deployed with
+  `--no-cfn-fallback`); `--strict-cross-stack` refuses instead. Without
+  `Fn::GetStackOutput` (or with consumer stacks outside the CDK app), no
+  scan can run and the user is responsible for the check.
 - **Drift baseline pre-flight** surfaces a warning when cdkd state lacks
   `observedProperties` for one or more resources. Without that baseline
   `cdkd drift` cannot reliably compare against AWS, so the next
@@ -2684,9 +2724,13 @@ Two ways forward:
   (`aws cloudformation create-change-set --change-set-type UPDATE`) for
   surprises before executing your first post-export `cdk deploy`.
 - **Cross-stack `Fn::GetStackOutput` consumers** in other cdkd stacks
-  cannot read the exported stack's outputs anymore (CFn outputs live in
-  CloudFormation, cdkd's resolver reads cdkd state). Plan multi-stack
-  migrations from the leaves up.
+  keep working after the export via the CloudFormation fallback (issue
+  [#1697](https://github.com/go-to-k/cdkd/issues/1697)): the exported
+  stack's outputs move to CloudFormation, and the consumers' next
+  resolve reads them from there (`DescribeStacks`) after the cdkd-state
+  miss. The reference stays weak either way. Only when deploying
+  consumers with `--no-cfn-fallback` does the pre-#1697 constraint
+  return — plan multi-stack migrations from the leaves up in that case.
 
 Exits `0` on success, `1` on any failure (changeset rejection, AWS
 auth, lock contention, etc.). cdkd state is deleted only after the

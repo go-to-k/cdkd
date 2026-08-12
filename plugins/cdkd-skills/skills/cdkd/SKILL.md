@@ -66,6 +66,14 @@ AWS_PROFILE=<profile> AWS_REGION=<region> cdkd import <stack> --dry-run
 
 `--migrate-from-cloudformation` itself is intentionally incompatible with `--dry-run`: it writes cdkd state, adds retain policies, and retires the CloudFormation stack record. Do not bootstrap, import, or migrate until the user approves that ownership-change plan.
 
+## Reference CloudFormation-managed stacks (mixed estates)
+
+A cdkd-deployed stack can consume values from a producer stack that stays managed by CloudFormation (`cdk deploy`): when an `Fn::ImportValue` or `Fn::GetStackOutput` reference is not found in cdkd state, cdkd falls back to CloudFormation (`ListExports` / stack outputs). Use this for the common split — shared infrastructure stays on the CDK CLI while dev/test app stacks deploy via cdkd — WITHOUT migrating or re-deploying the producer. Keep these boundaries:
+
+- The active credentials need `cloudformation:ListExports` and `cloudformation:DescribeStacks` for the fallback. Without them cdkd logs a warning and fails with the ordinary not-found error.
+- Such references are weak: neither engine blocks deleting the CloudFormation producer while cdkd consumers reference it (CloudFormation's export-in-use protection cannot see cdkd consumers). Check downstream cdkd consumers explicitly before deleting or exporting a producer stack.
+- Pass `--no-cfn-fallback` on `cdkd deploy` / `cdkd diff` when the user wants cdkd-state-only resolution (minimal IAM, or fail-fast on export-name typos).
+
 ## Check compatibility and bootstrap
 
 Have cdkd synthesize the app:

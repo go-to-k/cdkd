@@ -415,7 +415,13 @@ describe('Fn::GetStackOutput cross-account RoleArn', () => {
         },
         buildContext(),
       ),
-    ).rejects.toThrow(/cross-account via arn:aws:iam::111122223333:role\/cdkd-state-reader/);
+    ).rejects.toThrow(
+      // Issue #1697: the CloudFormation fallback is same-account only, so
+      // the cross-account miss keeps the cdkd-only remediation text (a
+      // fallback would have said "Searched cdkd state and CloudFormation
+      // stacks" instead) — and never constructs a CloudFormation client.
+      /cross-account via arn:aws:iam::111122223333:role\/cdkd-state-reader.*deployed via cdkd/,
+    );
   });
 
   it('accepts aws-us-gov partition role ARN', async () => {

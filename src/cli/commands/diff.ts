@@ -8,6 +8,7 @@ import {
   contextOptions,
   parseContextOptions,
   useCdkBootstrapAssetsOption,
+  noCfnFallbackOption,
   warnIfDeprecatedRegion,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
@@ -79,6 +80,7 @@ async function diffCommand(
     verbose: boolean;
     context?: string[];
     useCdkBootstrapAssets?: boolean;
+    cfnFallback?: boolean;
   }
 ): Promise<void> {
   const logger = getLogger();
@@ -245,6 +247,10 @@ async function diffCommand(
           // `cdkd diff` forecasts a change `cdkd deploy` will never make.
           canonicalizeProperties,
           ...(assetRedirect && { assetRedirect }),
+          // Issue #1697: the diff's best-effort resolvers honor the same
+          // CloudFormation fallback opt-out as deploy, so preview and apply
+          // resolve cross-stack references identically.
+          ...(options.cfnFallback === false && { cfnFallback: false }),
         })
       );
     }
@@ -300,6 +306,7 @@ export function createDiffCommand(): Command {
       false
     )
     .addOption(useCdkBootstrapAssetsOption)
+    .addOption(noCfnFallbackOption)
     .action(withErrorHandling(diffCommand));
 
   // Add options

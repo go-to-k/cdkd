@@ -1,5 +1,10 @@
 import { GetCallerIdentityCommand } from '@aws-sdk/client-sts';
 import {
+  CloudFormationClient,
+  DescribeStacksCommand,
+  ListExportsCommand,
+} from '@aws-sdk/client-cloudformation';
+import {
   DescribeAvailabilityZonesCommand,
   DescribeInstancesCommand,
   DescribeLaunchTemplatesCommand,
@@ -770,12 +775,34 @@ export interface IntrinsicFunctionResolverOptions {
    * via {@link IntrinsicFunctionResolver.getPhysicalIdFallbackCount}).
    */
   strictGetAtt?: boolean;
+  /**
+   * `--no-cfn-fallback` (issue #1697): when false, disables the
+   * CloudFormation fallback for cross-stack references. By default
+   * (true), an `Fn::ImportValue` / `Fn::GetStackOutput` reference that
+   * is not found in cdkd state falls back to CloudFormation
+   * (`ListExports` / `DescribeStacks` outputs) so a cdkd-deployed
+   * consumer can reference a producer stack still managed by
+   * CloudFormation (`cdk deploy` / raw CFn). cdkd-first precedence is
+   * inherent — the fallback only runs after a cdkd-state miss — and a
+   * CFn-sourced resolution is a WEAK reference: deliberately not
+   * recorded into `state.imports` / `state.outputReads` (cdkd cannot
+   * protect a producer it does not manage, and CFn's export-in-use
+   * protection cannot see cdkd consumers).
+   */
+  cfnFallback?: boolean;
 }
 
 export class IntrinsicFunctionResolver {
   private logger = getLogger().child('IntrinsicFunctionResolver');
   private readonly resolverRegion: string;
   private readonly strictGetAtt: boolean;
+  private readonly cfnFallback: boolean;
+  /**
+   * Per-region CloudFormation clients for the cross-stack fallback
+   * lookups (issue #1697). Keyed by region because `Fn::GetStackOutput`
+   * may target a region different from the consumer's deploy region.
+   */
+  private readonly cfnClients: Record<string, CloudFormationClient> = {};
   /**
    * Number of unknown-attribute resolutions that fell back to the physical
    * ID (the warn path) since construction / the last
@@ -799,6 +826,7 @@ export class IntrinsicFunctionResolver {
   constructor(region?: string, options?: IntrinsicFunctionResolverOptions) {
     this.resolverRegion = region || process.env['AWS_REGION'] || 'us-east-1';
     this.strictGetAtt = options?.strictGetAtt ?? false;
+    this.cfnFallback = options?.cfnFallback ?? true;
   }
 
   /** Unknown-attribute physicalId fallbacks recorded since the last reset. */
@@ -2568,11 +2596,131 @@ export class IntrinsicFunctionResolver {
       }
     }
 
+    // CloudFormation fallback (issue #1697): the export is in no cdkd state
+    // record — the producer may be a CloudFormation-managed stack (deployed
+    // via `cdk deploy` / raw CFn). CloudFormation's own semantic for
+    // Fn::ImportValue IS ListExports, so consult it before giving up.
+    // cdkd-first precedence is inherent: this path only runs on a cdkd miss.
+    // The resolution is deliberately NOT recorded into `recordedImports` —
+    // `state.imports` drives destroy-time strong-ref protection, which cdkd
+    // cannot honor for a producer it does not manage (and CFn's own
+    // export-in-use protection cannot see cdkd consumers), so a CFn-sourced
+    // import is a WEAK reference by design.
+    if (this.cfnFallback) {
+      const cfnExport = await this.lookupCfnExport(exportName);
+      if (cfnExport) {
+        this.logger.info(
+          `Resolved Fn::ImportValue: ${exportName} = ${JSON.stringify(cfnExport.value)} ` +
+            `(from CloudFormation exports${
+              cfnExport.exportingStackId ? `; exporting stack: ${cfnExport.exportingStackId}` : ''
+            }; weak reference — producer is not cdkd-managed)`
+        );
+        return cfnExport.value;
+      }
+    }
+
     throw new Error(
       `Fn::ImportValue: export '${exportName}' not found in any stack. ` +
-        `Searched ${allStacks.length} state record(s). ` +
+        `Searched ${allStacks.length} cdkd state record(s)` +
+        `${this.cfnFallback ? ' and CloudFormation exports' : ''}. ` +
         `Make sure the exporting stack has been deployed and the Output has an Export.Name property.`
     );
+  }
+
+  /**
+   * CloudFormation `ListExports` fallback lookup for `Fn::ImportValue`
+   * (issue #1697). Searches the consumer's deploy region (CFn exports are
+   * region-scoped, same as cdkd's `Fn::ImportValue` semantics).
+   *
+   * Returns `undefined` both when the export does not exist AND when the
+   * lookup itself failed (a warning is logged for the latter — e.g. the
+   * caller's credentials lack `cloudformation:ListExports`), so the caller
+   * surfaces its own not-found error either way. Graceful degradation is
+   * deliberate: without this fallback the deploy would have failed with
+   * the same not-found error anyway.
+   */
+  private async lookupCfnExport(
+    exportName: string
+  ): Promise<{ value: string; exportingStackId?: string } | undefined> {
+    try {
+      const client = this.getCfnClient(this.resolverRegion);
+      let nextToken: string | undefined;
+      do {
+        const res = await client.send(new ListExportsCommand({ NextToken: nextToken }));
+        for (const exp of res.Exports ?? []) {
+          if (exp.Name === exportName && exp.Value !== undefined) {
+            return {
+              value: exp.Value,
+              ...(exp.ExportingStackId && { exportingStackId: exp.ExportingStackId }),
+            };
+          }
+        }
+        nextToken = res.NextToken;
+      } while (nextToken);
+      return undefined;
+    } catch (error) {
+      this.logger.warn(
+        `Fn::ImportValue: CloudFormation ListExports fallback failed for export '${exportName}' ` +
+          `(region ${this.resolverRegion}): ${error instanceof Error ? error.message : String(error)}. ` +
+          `Grant cloudformation:ListExports to resolve exports from CloudFormation-managed stacks, ` +
+          `or pass --no-cfn-fallback to disable the fallback.`
+      );
+      return undefined;
+    }
+  }
+
+  /**
+   * CloudFormation `DescribeStacks` fallback lookup for
+   * `Fn::GetStackOutput` (issue #1697). Region-pinned because the
+   * intrinsic may target a region different from the consumer's.
+   *
+   * Returns the stack's outputs map when the CFn stack exists;
+   * `undefined` when it does not exist OR the lookup failed (a warning is
+   * logged for non-not-found failures). Same graceful-degradation
+   * contract as {@link lookupCfnExport}.
+   */
+  private async lookupCfnStackOutputs(
+    stackName: string,
+    region: string
+  ): Promise<Record<string, string> | undefined> {
+    try {
+      const client = this.getCfnClient(region);
+      const res = await client.send(new DescribeStacksCommand({ StackName: stackName }));
+      const stack = res.Stacks?.[0];
+      if (!stack) return undefined;
+      const outputs: Record<string, string> = {};
+      for (const out of stack.Outputs ?? []) {
+        if (out.OutputKey && out.OutputValue !== undefined) {
+          outputs[out.OutputKey] = out.OutputValue;
+        }
+      }
+      return outputs;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      // DescribeStacks signals "no such stack" via a ValidationError whose
+      // message is `Stack with id <name> does not exist` — the expected
+      // miss, not a lookup failure worth a warning.
+      if (/does not exist/i.test(message)) {
+        return undefined;
+      }
+      this.logger.warn(
+        `Fn::GetStackOutput: CloudFormation DescribeStacks fallback failed for stack ` +
+          `'${stackName}' (${region}): ${message}. ` +
+          `Grant cloudformation:DescribeStacks to resolve outputs from CloudFormation-managed ` +
+          `stacks, or pass --no-cfn-fallback to disable the fallback.`
+      );
+      return undefined;
+    }
+  }
+
+  /** Lazily-constructed per-region CloudFormation client (issue #1697). */
+  private getCfnClient(region: string): CloudFormationClient {
+    let client = this.cfnClients[region];
+    if (!client) {
+      client = new CloudFormationClient({ region });
+      this.cfnClients[region] = client;
+    }
+    return client;
   }
 
   /**
@@ -2740,10 +2888,44 @@ export class IntrinsicFunctionResolver {
       ? await this.getCrossAccountStackState(roleArn, stackName, region, context)
       : await this.getSameAccountStackState(stackName, region, context);
     if (!stateData) {
+      // CloudFormation fallback (issue #1697): the producer may be a
+      // CloudFormation-managed stack (deployed via `cdk deploy` / raw CFn)
+      // whose outputs live in CloudFormation, not cdkd state. Same-account
+      // only — the RoleArn (cross-account) path keeps reading cdkd state
+      // exclusively (a cross-account CFn read would need a different
+      // permission model; see the issue's out-of-scope note).
+      if (!roleArn && this.cfnFallback) {
+        const cfnOutputs = await this.lookupCfnStackOutputs(stackName, region);
+        if (cfnOutputs) {
+          if (!(outputName in cfnOutputs)) {
+            const available = Object.keys(cfnOutputs).join(', ') || '(none)';
+            throw new Error(
+              `Fn::GetStackOutput: output '${outputName}' not found in CloudFormation stack ` +
+                `'${stackName}' (${region}). Available outputs: ${available}`
+            );
+          }
+          const value = cfnOutputs[outputName];
+          this.logger.info(
+            `Resolved Fn::GetStackOutput: StackName=${stackName}, Region=${region}, ` +
+              `OutputName=${outputName} -> ${JSON.stringify(value)} ` +
+              `(from CloudFormation stack outputs; weak reference — producer is not cdkd-managed)`
+          );
+          // Deliberately NOT recorded into `recordedOutputReads` —
+          // `state.outputReads` names cdkd-managed producers so recreate
+          // warnings can list downstream consumers; a CFn-managed producer
+          // is never recreated by cdkd.
+          return value;
+        }
+      }
       throw new Error(
         `Fn::GetStackOutput: stack '${stackName}' not found in region '${region}'${
           roleArn ? ` (cross-account via ${roleArn})` : ''
-        }. Make sure the producer stack has been deployed via cdkd.`
+        }. ${
+          !roleArn && this.cfnFallback
+            ? `Searched cdkd state and CloudFormation stacks. Make sure the producer stack ` +
+              `has been deployed (via cdkd or CloudFormation).`
+            : `Make sure the producer stack has been deployed via cdkd.`
+        }`
       );
     }
 
