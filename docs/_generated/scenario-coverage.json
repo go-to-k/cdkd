@@ -1558,6 +1558,11 @@
       "scenarios": []
     },
     {
+      "name": "nlb-source-nat",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
       "name": "nodejs-function",
       "annotated": false,
       "scenarios": []

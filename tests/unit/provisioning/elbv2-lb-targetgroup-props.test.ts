@@ -388,6 +388,123 @@ describe('ELBv2 LoadBalancer + TargetGroup silent-drop props (#609)', () => {
       });
     });
 
+    // Issue #1619: the flag is REMOVED in the same deploy that changes
+    // Subnets / SecurityGroups, so the Set* call is issued WITHOUT the member.
+    // A/B-verified against real AWS (us-east-1, 2026-08-12): omission RETAINS
+    // the live value, so omitting is correct and re-sending is unnecessary.
+    it('omits EnablePrefixForIpv6SourceNat when the flag is removed alongside a Subnets change', async () => {
+      await provider.update(
+        'MyNlb',
+        LB_ARN,
+        LB_TYPE,
+        { Subnets: ['subnet-111', 'subnet-222'] },
+        { Subnets: ['subnet-111'], EnablePrefixForIpv6SourceNat: 'on' }
+      );
+
+      const [subnetCall] = callsOf('SetSubnetsCommand');
+      expect(subnetCall).toBeDefined();
+      expect(subnetCall[0].input).toEqual({
+        LoadBalancerArn: LB_ARN,
+        Subnets: ['subnet-111', 'subnet-222'],
+      });
+      expect(subnetCall[0].input).not.toHaveProperty('EnablePrefixForIpv6SourceNat');
+    });
+
+    it('omits the enforce flag when it is removed alongside a SecurityGroups change', async () => {
+      await provider.update(
+        'MyNlb',
+        LB_ARN,
+        LB_TYPE,
+        { SecurityGroups: ['sg-123', 'sg-456'] },
+        {
+          SecurityGroups: ['sg-123'],
+          EnforceSecurityGroupInboundRulesOnPrivateLinkTraffic: 'off',
+        }
+      );
+
+      const [sgCall] = callsOf('SetSecurityGroupsCommand');
+      expect(sgCall).toBeDefined();
+      expect(sgCall[0].input).toEqual({
+        LoadBalancerArn: LB_ARN,
+        SecurityGroups: ['sg-123', 'sg-456'],
+      });
+      expect(sgCall[0].input).not.toHaveProperty(
+        'EnforceSecurityGroupInboundRulesOnPrivateLinkTraffic'
+      );
+    });
+
+    // The member is spread on `new… !== undefined`, NOT on `…Changed`: an
+    // UNCHANGED flag must still ride along when the companion property changes,
+    // because SetSubnets / SetSecurityGroups are full-replace calls. Without
+    // these two rows, mutating the spread gate to `ipv6SourceNatChanged` /
+    // `enforceChanged` passes the whole suite — every other row either changes
+    // the flag, removes it, or fires no call at all.
+    it('still sends EnablePrefixForIpv6SourceNat when only Subnets changed', async () => {
+      await provider.update(
+        'MyNlb',
+        LB_ARN,
+        LB_TYPE,
+        { Subnets: ['subnet-111', 'subnet-222'], EnablePrefixForIpv6SourceNat: 'on' },
+        { Subnets: ['subnet-111'], EnablePrefixForIpv6SourceNat: 'on' }
+      );
+
+      const [subnetCall] = callsOf('SetSubnetsCommand');
+      expect(subnetCall).toBeDefined();
+      expect(subnetCall[0].input).toEqual({
+        LoadBalancerArn: LB_ARN,
+        Subnets: ['subnet-111', 'subnet-222'],
+        EnablePrefixForIpv6SourceNat: 'on',
+      });
+    });
+
+    it('still sends the enforce flag when only SecurityGroups changed', async () => {
+      await provider.update(
+        'MyNlb',
+        LB_ARN,
+        LB_TYPE,
+        {
+          SecurityGroups: ['sg-123', 'sg-456'],
+          EnforceSecurityGroupInboundRulesOnPrivateLinkTraffic: 'off',
+        },
+        {
+          SecurityGroups: ['sg-123'],
+          EnforceSecurityGroupInboundRulesOnPrivateLinkTraffic: 'off',
+        }
+      );
+
+      const [sgCall] = callsOf('SetSecurityGroupsCommand');
+      expect(sgCall).toBeDefined();
+      expect(sgCall[0].input).toEqual({
+        LoadBalancerArn: LB_ARN,
+        SecurityGroups: ['sg-123', 'sg-456'],
+        EnforceSecurityGroupInboundRulesOnPrivateLinkTraffic: 'off',
+      });
+    });
+
+    // SubnetMappings wins over Subnets when both are present, so the removal
+    // arm has two shapes. The integ fixture exercises the mappings one; this
+    // pins it at unit level so both send-side shapes are covered.
+    it('omits EnablePrefixForIpv6SourceNat on the SubnetMappings arm too', async () => {
+      await provider.update(
+        'MyNlb',
+        LB_ARN,
+        LB_TYPE,
+        { SubnetMappings: [{ SubnetId: 'subnet-111' }, { SubnetId: 'subnet-222' }] },
+        {
+          SubnetMappings: [{ SubnetId: 'subnet-111', SourceNatIpv6Prefix: 'auto_assigned' }],
+          EnablePrefixForIpv6SourceNat: 'on',
+        }
+      );
+
+      const [subnetCall] = callsOf('SetSubnetsCommand');
+      expect(subnetCall).toBeDefined();
+      expect(subnetCall[0].input).toEqual({
+        LoadBalancerArn: LB_ARN,
+        SubnetMappings: [{ SubnetId: 'subnet-111' }, { SubnetId: 'subnet-222' }],
+      });
+      expect(subnetCall[0].input).not.toHaveProperty('EnablePrefixForIpv6SourceNat');
+    });
+
     it('sets the IPAM pool via ModifyIpPools and removes it via RemoveIpamPools', async () => {
       await provider.update('MyAlb', LB_ARN, LB_TYPE, { Ipv4IpamPoolId: 'ipam-pool-0abc' }, {});
       let [ipamCall] = callsOf('ModifyIpPoolsCommand');
