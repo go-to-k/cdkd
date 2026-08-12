@@ -1,3 +1,10 @@
+## [0.281.10](https://github.com/go-to-k/cdkd/compare/v0.281.9...v0.281.10) (2026-08-12)
+
+
+### Bug Fixes
+
+* **dynamodb:** record what three GlobalTable sibling arms actually sent ([#1722](https://github.com/go-to-k/cdkd/issues/1722)) ([6fe9e5e](https://github.com/go-to-k/cdkd/commit/6fe9e5efd70f7ba0042d305593ec942f190073ac))
+
 ## [0.281.9](https://github.com/go-to-k/cdkd/compare/v0.281.8...v0.281.9) (2026-08-12)
 
 
