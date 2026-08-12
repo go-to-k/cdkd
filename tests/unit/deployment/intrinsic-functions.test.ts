@@ -49,7 +49,9 @@ vi.mock('@aws-sdk/client-cloudformation', async (importOriginal) => {
 cfnMockSend.mockImplementation(async (cmd: { constructor: { name: string } }) => {
   if (cmd.constructor.name === 'ListExportsCommand') return { Exports: [] };
   if (cmd.constructor.name === 'DescribeStacksCommand') {
-    throw new Error('Stack does not exist');
+    // The typed does-not-exist miss (name + message are both required by
+    // the resolver's classifier — issue #1697 review).
+    throw Object.assign(new Error('Stack does not exist'), { name: 'ValidationError' });
   }
   throw new Error(`unexpected CloudFormation command: ${cmd.constructor.name}`);
 });

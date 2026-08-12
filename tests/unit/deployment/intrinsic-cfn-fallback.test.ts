@@ -213,6 +213,43 @@ describe('Fn::ImportValue - CloudFormation ListExports fallback (#1697)', () => 
     );
   });
 
+  it('memoizes the ListExports listing per resolver (one walk covers every import lookup)', async () => {
+    const resolver = new IntrinsicFunctionResolver('us-east-1');
+    primeCfn({
+      listExports: async () => ({ Exports: [{ Name: 'Known', Value: 'known-value' }] }),
+    });
+    const context = buildContext({ stateBackend: makeBackend([]) });
+
+    const first = await resolver.resolve({ 'Fn::ImportValue': 'Known' }, context);
+    expect(first).toBe('known-value');
+    // A SECOND lookup (a miss this time) must reuse the cached listing —
+    // no re-pagination per import (issue #1697 review).
+    await expect(resolver.resolve({ 'Fn::ImportValue': 'Missing' }, context)).rejects.toThrow(
+      "export 'Missing' not found"
+    );
+    expect(cfnMockSend).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not cache a FAILED ListExports walk (next lookup retries)', async () => {
+    const resolver = new IntrinsicFunctionResolver('us-east-1');
+    let calls = 0;
+    primeCfn({
+      listExports: async () => {
+        calls += 1;
+        if (calls === 1) throw new Error('Rate exceeded');
+        return { Exports: [{ Name: 'Known', Value: 'known-value' }] };
+      },
+    });
+    const context = buildContext({ stateBackend: makeBackend([]) });
+
+    await expect(resolver.resolve({ 'Fn::ImportValue': 'Known' }, context)).rejects.toThrow(
+      "export 'Known' not found"
+    );
+    const second = await resolver.resolve({ 'Fn::ImportValue': 'Known' }, context);
+    expect(second).toBe('known-value');
+    expect(cfnMockSend).toHaveBeenCalledTimes(2);
+  });
+
   it('degrades gracefully when ListExports fails (warn + original not-found error)', async () => {
     const resolver = new IntrinsicFunctionResolver('us-east-1');
     primeCfn({
@@ -325,7 +362,9 @@ describe('Fn::GetStackOutput - CloudFormation DescribeStacks fallback (#1697)', 
     const resolver = new IntrinsicFunctionResolver('us-east-1');
     primeCfn({
       describeStacks: async () => {
-        throw new Error('Stack with id Producer does not exist');
+        throw Object.assign(new Error('Stack with id Producer does not exist'), {
+          name: 'ValidationError',
+        });
       },
     });
 
@@ -342,6 +381,83 @@ describe('Fn::GetStackOutput - CloudFormation DescribeStacks fallback (#1697)', 
     expect(warnSpy).not.toHaveBeenCalledWith(
       expect.stringContaining('DescribeStacks fallback failed')
     );
+  });
+
+  it('a non-ValidationError whose message merely CONTAINS "does not exist" is a lookup FAILURE, not a miss', async () => {
+    // Issue #1697 review: the miss classifier requires the typed error name
+    // ALONGSIDE the message heuristic — a credentials / assume-role error
+    // that happens to contain the phrase must warn, never silently miss.
+    const resolver = new IntrinsicFunctionResolver('us-east-1');
+    primeCfn({
+      describeStacks: async () => {
+        throw new Error('The security token included in the request does not exist');
+      },
+    });
+
+    await expect(
+      resolver.resolve(
+        { 'Fn::GetStackOutput': { StackName: 'Producer', OutputName: 'ApiUrl' } },
+        buildContext({ stateBackend: makeBackend([]) })
+      )
+    ).rejects.toThrow("stack 'Producer' not found");
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('CloudFormation DescribeStacks fallback failed')
+    );
+  });
+
+  it('memoizes DescribeStacks per (region, stack) — N references, one call', async () => {
+    const resolver = new IntrinsicFunctionResolver('us-east-1');
+    primeCfn({
+      describeStacks: async () => ({
+        Stacks: [
+          {
+            Outputs: [
+              { OutputKey: 'A', OutputValue: 'a' },
+              { OutputKey: 'B', OutputValue: 'b' },
+            ],
+          },
+        ],
+      }),
+    });
+    const context = buildContext({ stateBackend: makeBackend([]) });
+
+    const a = await resolver.resolve(
+      { 'Fn::GetStackOutput': { StackName: 'CfnProducer', OutputName: 'A' } },
+      context
+    );
+    const b = await resolver.resolve(
+      { 'Fn::GetStackOutput': { StackName: 'CfnProducer', OutputName: 'B' } },
+      context
+    );
+    expect(a).toBe('a');
+    expect(b).toBe('b');
+    expect(cfnMockSend).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not cache a FAILED DescribeStacks lookup (next reference retries)', async () => {
+    const resolver = new IntrinsicFunctionResolver('us-east-1');
+    let calls = 0;
+    primeCfn({
+      describeStacks: async () => {
+        calls += 1;
+        if (calls === 1) throw new Error('Rate exceeded');
+        return { Stacks: [{ Outputs: [{ OutputKey: 'A', OutputValue: 'a' }] }] };
+      },
+    });
+    const context = buildContext({ stateBackend: makeBackend([]) });
+
+    await expect(
+      resolver.resolve(
+        { 'Fn::GetStackOutput': { StackName: 'CfnProducer', OutputName: 'A' } },
+        context
+      )
+    ).rejects.toThrow("stack 'CfnProducer' not found");
+    const retried = await resolver.resolve(
+      { 'Fn::GetStackOutput': { StackName: 'CfnProducer', OutputName: 'A' } },
+      context
+    );
+    expect(retried).toBe('a');
+    expect(cfnMockSend).toHaveBeenCalledTimes(2);
   });
 
   it('degrades gracefully when DescribeStacks fails (warn + not-found error)', async () => {

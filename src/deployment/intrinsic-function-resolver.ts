@@ -3,6 +3,7 @@ import {
   CloudFormationClient,
   DescribeStacksCommand,
   ListExportsCommand,
+  type Export as CfnExport,
 } from '@aws-sdk/client-cloudformation';
 import {
   DescribeAvailabilityZonesCommand,
@@ -803,6 +804,30 @@ export class IntrinsicFunctionResolver {
    * may target a region different from the consumer's deploy region.
    */
   private readonly cfnClients: Record<string, CloudFormationClient> = {};
+  /**
+   * Memoized full `ListExports` listing for the `Fn::ImportValue`
+   * fallback (issue #1697 review). Without it, EVERY cdkd-miss import
+   * re-paginates the whole region's export list — a deploy consuming N
+   * values from CFn producers pays N full walks and exposes itself to
+   * ListExports throttling. Resolver instances are per-deploy (the
+   * engine constructs one per stack), so the cache lifetime matches the
+   * exports-index philosophy: stable within a deploy, fresh across
+   * deploys. FAILED fetches are not cached (the rejection handler
+   * clears the slot) so a transient throttle does not poison the rest
+   * of the deploy's lookups.
+   */
+  private cfnExportsPromise: Promise<CfnExport[]> | undefined;
+  /**
+   * Memoized per-(region, stack) `DescribeStacks` outputs for the
+   * `Fn::GetStackOutput` fallback (issue #1697 review) — a stack
+   * referencing the same CFn producer N times pays one call. Successful
+   * lookups (including the definitive "stack does not exist" miss) are
+   * cached; lookup FAILURES are evicted so they are retried.
+   */
+  private readonly cfnStackOutputsCache = new Map<
+    string,
+    Promise<Record<string, string> | undefined>
+  >();
   /**
    * Number of unknown-attribute resolutions that fell back to the physical
    * ID (the warn path) since construction / the last
@@ -2642,21 +2667,26 @@ export class IntrinsicFunctionResolver {
   private async lookupCfnExport(
     exportName: string
   ): Promise<{ value: string; exportingStackId?: string } | undefined> {
+    let listing = this.cfnExportsPromise;
+    if (!listing) {
+      listing = this.fetchAllCfnExports();
+      this.cfnExportsPromise = listing;
+      // Do not cache failures: a transient throttle / permission fix should
+      // be retried by the next lookup, not poison the whole deploy.
+      listing.catch(() => {
+        if (this.cfnExportsPromise === listing) this.cfnExportsPromise = undefined;
+      });
+    }
     try {
-      const client = this.getCfnClient(this.resolverRegion);
-      let nextToken: string | undefined;
-      do {
-        const res = await client.send(new ListExportsCommand({ NextToken: nextToken }));
-        for (const exp of res.Exports ?? []) {
-          if (exp.Name === exportName && exp.Value !== undefined) {
-            return {
-              value: exp.Value,
-              ...(exp.ExportingStackId && { exportingStackId: exp.ExportingStackId }),
-            };
-          }
+      const exports = await listing;
+      for (const exp of exports) {
+        if (exp.Name === exportName && exp.Value !== undefined) {
+          return {
+            value: exp.Value,
+            ...(exp.ExportingStackId && { exportingStackId: exp.ExportingStackId }),
+          };
         }
-        nextToken = res.NextToken;
-      } while (nextToken);
+      }
       return undefined;
     } catch (error) {
       this.logger.warn(
@@ -2667,6 +2697,19 @@ export class IntrinsicFunctionResolver {
       );
       return undefined;
     }
+  }
+
+  /** Full paginated ListExports walk backing {@link lookupCfnExport}'s memo. */
+  private async fetchAllCfnExports(): Promise<CfnExport[]> {
+    const client = this.getCfnClient(this.resolverRegion);
+    const exports: CfnExport[] = [];
+    let nextToken: string | undefined;
+    do {
+      const res = await client.send(new ListExportsCommand({ NextToken: nextToken }));
+      exports.push(...(res.Exports ?? []));
+      nextToken = res.NextToken;
+    } while (nextToken);
+    return exports;
   }
 
   /**
@@ -2683,6 +2726,43 @@ export class IntrinsicFunctionResolver {
     stackName: string,
     region: string
   ): Promise<Record<string, string> | undefined> {
+    const cacheKey = `${region}\0${stackName}`;
+    let fetch = this.cfnStackOutputsCache.get(cacheKey);
+    if (!fetch) {
+      fetch = this.fetchCfnStackOutputs(stackName, region);
+      this.cfnStackOutputsCache.set(cacheKey, fetch);
+      // Do not cache lookup FAILURES (the definitive does-not-exist miss
+      // resolves to undefined and IS cached — that answer is stable for
+      // the deploy's lifetime).
+      fetch.catch(() => {
+        if (this.cfnStackOutputsCache.get(cacheKey) === fetch) {
+          this.cfnStackOutputsCache.delete(cacheKey);
+        }
+      });
+    }
+    try {
+      return await fetch;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn(
+        `Fn::GetStackOutput: CloudFormation DescribeStacks fallback failed for stack ` +
+          `'${stackName}' (${region}): ${message}. ` +
+          `Grant cloudformation:DescribeStacks to resolve outputs from CloudFormation-managed ` +
+          `stacks, or pass --no-cfn-fallback to disable the fallback.`
+      );
+      return undefined;
+    }
+  }
+
+  /**
+   * Single DescribeStacks read backing {@link lookupCfnStackOutputs}'s memo.
+   * Resolves to the outputs map, `undefined` for the definitive
+   * does-not-exist miss, and REJECTS on any other failure.
+   */
+  private async fetchCfnStackOutputs(
+    stackName: string,
+    region: string
+  ): Promise<Record<string, string> | undefined> {
     try {
       const client = this.getCfnClient(region);
       const res = await client.send(new DescribeStacksCommand({ StackName: stackName }));
@@ -2696,20 +2776,21 @@ export class IntrinsicFunctionResolver {
       }
       return outputs;
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
       // DescribeStacks signals "no such stack" via a ValidationError whose
       // message is `Stack with id <name> does not exist` — the expected
-      // miss, not a lookup failure worth a warning.
-      if (/does not exist/i.test(message)) {
+      // miss, not a lookup failure worth a warning. Require the TYPED name
+      // alongside the message heuristic (issue #1697 review; memory rule
+      // `feedback_predelete_steps_vs_notfound_heuristics`): a credentials /
+      // assume-role error that happens to contain the phrase must surface
+      // as a lookup failure (warn + retry-able), never as a silent miss.
+      if (
+        error instanceof Error &&
+        error.name === 'ValidationError' &&
+        /does not exist/i.test(error.message)
+      ) {
         return undefined;
       }
-      this.logger.warn(
-        `Fn::GetStackOutput: CloudFormation DescribeStacks fallback failed for stack ` +
-          `'${stackName}' (${region}): ${message}. ` +
-          `Grant cloudformation:DescribeStacks to resolve outputs from CloudFormation-managed ` +
-          `stacks, or pass --no-cfn-fallback to disable the fallback.`
-      );
-      return undefined;
+      throw error;
     }
   }
 

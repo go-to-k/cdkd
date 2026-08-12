@@ -27,6 +27,24 @@ vi.mock('../../../src/utils/logger.js', () => {
   };
 });
 
+// Mock CloudFormation client (issue #1697 cross-stack fallback): a
+// cdkd-state MISS now falls back to DescribeStacks, so the failed-resolution
+// tests below would otherwise construct a REAL CloudFormationClient and
+// attempt a live network call from a unit test. Default: the stack does not
+// exist (the typed ValidationError miss), preserving each test's pre-#1697
+// outcome hermetically.
+const cfnMockSend = vi.hoisted(() => vi.fn());
+vi.mock('@aws-sdk/client-cloudformation', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@aws-sdk/client-cloudformation')>();
+  return {
+    ...actual,
+    CloudFormationClient: vi.fn().mockImplementation(() => ({ send: cfnMockSend })),
+  };
+});
+cfnMockSend.mockImplementation(async () => {
+  throw Object.assign(new Error('Stack does not exist'), { name: 'ValidationError' });
+});
+
 import { IntrinsicFunctionResolver } from '../../../src/deployment/intrinsic-function-resolver.js';
 import type { ResolverContext } from '../../../src/deployment/intrinsic-function-resolver.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';

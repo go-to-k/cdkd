@@ -78,8 +78,10 @@ CONSUMER_LOCK_KEY="cdkd/${CONSUMER_STACK}/${REGION}/lock.json"
 
 # Per-run unique suffix baked into the producer's output VALUES (names are
 # fixed so pre-run cleanup is deterministic; the suffix proves the consumer
-# resolved THIS run's values).
-SUFFIX="$(date +%s%N | tail -c 8)"
+# resolved THIS run's values). epoch + RANDOM, not `date +%s%N`: BSD date
+# (macOS) does not support %N (a literal 'N' lands in the value and
+# uniqueness degrades to second granularity).
+SUFFIX="$(date +%s)${RANDOM}"
 EXPECTED_EXPORTED_VALUE="cfn-exported-${SUFFIX}"
 EXPECTED_SHARED_VALUE="cfn-shared-${SUFFIX}"
 
