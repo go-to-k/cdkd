@@ -178,7 +178,22 @@ export function findMutuallyExclusiveViolations(
   if (!templateProperties) return [];
   const rules = MUTUALLY_EXCLUSIVE_PROPERTIES.get(resourceType);
   if (!rules) return [];
+  return findViolationsForRules(resourceType, rules, templateProperties);
+}
 
+/**
+ * The table-free core of {@link findMutuallyExclusiveViolations}, taking the
+ * rules explicitly.
+ *
+ * Exported so the multi-rule and multi-violation paths are reachable from
+ * tests: the shipped table has a single type with a single rule, so those
+ * branches would otherwise be dead code that no assertion can exercise.
+ */
+export function findViolationsForRules(
+  resourceType: string,
+  rules: readonly MutuallyExclusiveRule[],
+  templateProperties: Record<string, unknown>
+): MutuallyExclusiveViolation[] {
   const violations: MutuallyExclusiveViolation[] = [];
   for (const rule of rules) {
     const declared = rule.properties.filter((property) => isDeclared(templateProperties[property]));

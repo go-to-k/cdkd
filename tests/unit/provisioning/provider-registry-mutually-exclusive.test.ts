@@ -116,6 +116,20 @@ describe('ProviderRegistry mutually-exclusive pre-flight', () => {
     });
   });
 
+  it('is NOT bypassable via --allow-unsupported-properties', () => {
+    // Fences the "deliberately no escape hatch" claim in the module header and
+    // in .claude/rules/providers.md: that flag opts into a cdkd GAP, whereas
+    // this defect is in the template and CloudFormation rejects it too.
+    const { registry } = makeRegistry();
+    registry.allowUnsupportedProperties([
+      'AWS::EC2::Route:DestinationIpv6CidrBlock',
+      'AWS::EC2::Route:DestinationCidrBlock',
+    ]);
+    expect(() => registry.validateResourceProperties([badRoute('BadRoute')])).toThrow(
+      /mutually exclusive/
+    );
+  });
+
   it('walks a generator argument correctly on both passes', () => {
     // `validateResourceProperties` iterates twice (the new check, then the
     // silent-drop report). A one-shot iterable must not go empty in between —

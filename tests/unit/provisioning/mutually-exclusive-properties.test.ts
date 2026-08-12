@@ -18,6 +18,7 @@ import {
   MUTUALLY_EXCLUSIVE_PROPERTIES,
   buildMutuallyExclusiveMessage,
   findMutuallyExclusiveViolations,
+  findViolationsForRules,
 } from '../../../src/provisioning/mutually-exclusive-properties.js';
 import { narrowRouteDestinations } from '../../../src/provisioning/providers/ec2-provider.js';
 
@@ -154,16 +155,23 @@ describe('findMutuallyExclusiveViolations', () => {
       }
     );
 
-    it('still refuses TWO literals when a third key is behind an Fn::If', () => {
+    it('still refuses TWO literals when a LOWER-ranked key is behind an Fn::If', () => {
       // Two unconditional keys are invalid whatever the third resolves to,
       // and the report names only the keys actually proven present.
-      expect(
-        violationProperties({
-          DestinationCidrBlock: '10.0.0.0/8',
-          DestinationIpv6CidrBlock: '::/0',
-          DestinationPrefixListId: { 'Fn::If': ['C', 'pl-1', { Ref: 'AWS::NoValue' }] },
-        })
-      ).toEqual([['DestinationCidrBlock', 'DestinationIpv6CidrBlock']]);
+      const [violation] = findMutuallyExclusiveViolations(ROUTE, {
+        DestinationCidrBlock: '10.0.0.0/8',
+        DestinationIpv6CidrBlock: '::/0',
+        DestinationPrefixListId: { 'Fn::If': ['C', 'pl-1', { Ref: 'AWS::NoValue' }] },
+      });
+      expect(violation!.declared).toEqual(['DestinationCidrBlock', 'DestinationIpv6CidrBlock']);
+      // FENCE for the "higher-precedence ONLY" bound of `winnerCertain`: the
+      // intrinsic here ranks BELOW `declared[0]`, so it cannot outrank the
+      // winner and the claim stands. Widening the scan to all rule properties
+      // would flip this to false — which is otherwise invisible.
+      expect(violation!.winnerCertain).toBe(true);
+      expect(buildMutuallyExclusiveMessage('R', violation!)).toContain(
+        'Only DestinationCidrBlock would reach AWS'
+      );
     });
   });
 });
@@ -186,6 +194,21 @@ describe('buildMutuallyExclusiveMessage', () => {
     const message = buildMutuallyExclusiveMessage('MyRoute', violation!);
     expect(message).toContain('Only DestinationCidrBlock would reach AWS');
     expect(message).toContain('removing DestinationIpv6CidrBlock');
+  });
+
+  it('renders all THREE keys with the right separators', () => {
+    // The 2-key cases cannot distinguish `join(' and ')` from `join(' / ')`
+    // in either clause; with three declared keys the separators diverge.
+    const [three] = findMutuallyExclusiveViolations(ROUTE, {
+      DestinationCidrBlock: '10.0.0.0/8',
+      DestinationIpv6CidrBlock: '::/0',
+      DestinationPrefixListId: 'pl-1',
+    });
+    const message = buildMutuallyExclusiveMessage('MyRoute', three!);
+    expect(message).toContain(
+      'declares DestinationCidrBlock and DestinationIpv6CidrBlock and DestinationPrefixListId'
+    );
+    expect(message).toContain('removing DestinationIpv6CidrBlock / DestinationPrefixListId');
   });
 
   it('omits the winner note for a rule that does not declare firstDeclaredWins', () => {
@@ -230,6 +253,43 @@ describe('buildMutuallyExclusiveMessage', () => {
   });
 });
 
+describe('findViolationsForRules (multi-rule paths the shipped table cannot reach)', () => {
+  const RULES = [
+    { properties: ['A', 'B'], rationale: 'Pick one of A/B.' },
+    { properties: ['C', 'D'], rationale: 'Pick one of C/D.' },
+  ];
+
+  it('reports ONE violation per violated rule, skipping satisfied ones', () => {
+    const violations = findViolationsForRules('AWS::Example::Thing', RULES, {
+      A: 1,
+      B: 2,
+      C: 3, // C alone — rule 2 is satisfied.
+    });
+    expect(violations.map((v) => v.declared)).toEqual([['A', 'B']]);
+  });
+
+  it('reports BOTH rules when both are violated', () => {
+    const violations = findViolationsForRules('AWS::Example::Thing', RULES, {
+      A: 1,
+      B: 2,
+      C: 3,
+      D: 4,
+    });
+    expect(violations.map((v) => v.declared)).toEqual([
+      ['A', 'B'],
+      ['C', 'D'],
+    ]);
+    expect(violations.every((v) => v.resourceType === 'AWS::Example::Thing')).toBe(true);
+  });
+
+  it('continues past a satisfied FIRST rule to reach a violated later one', () => {
+    // Pins the `continue` (not `return`) in the rule loop: with an early
+    // return, a satisfied rule 1 would hide the violation in rule 2.
+    const violations = findViolationsForRules('AWS::Example::Thing', RULES, { A: 1, C: 3, D: 4 });
+    expect(violations.map((v) => v.declared)).toEqual([['C', 'D']]);
+  });
+});
+
 describe('MUTUALLY_EXCLUSIVE_PROPERTIES table hygiene', () => {
   const fixturesDir = join(
     fileURLToPath(new URL('.', import.meta.url)),
@@ -238,6 +298,18 @@ describe('MUTUALLY_EXCLUSIVE_PROPERTIES table hygiene', () => {
     'fixtures',
     'cfn-schemas'
   );
+
+  function loadSchema(resourceType: string): { properties: string[] } {
+    const fixture = join(fixturesDir, `${resourceType.replace(/::/g, '-')}.json`);
+    if (!existsSync(fixture)) {
+      throw new Error(
+        `No CFn schema fixture for ${resourceType} (expected ${fixture}). Capture one with ` +
+          `\`node scripts/refresh-cfn-schemas.mjs --only-missing\` so this rule's property ` +
+          `names stay pinned to the real schema.`
+      );
+    }
+    return JSON.parse(readFileSync(fixture, 'utf8')) as { properties: string[] };
+  }
 
   it('declares at least two distinct properties per rule', () => {
     for (const [resourceType, rules] of MUTUALLY_EXCLUSIVE_PROPERTIES) {
@@ -251,17 +323,21 @@ describe('MUTUALLY_EXCLUSIVE_PROPERTIES table hygiene', () => {
     }
   });
 
-  it('matches the provider destination list EXACTLY, order included', () => {
+  it('matches the provider destination list EXACTLY, order and membership', () => {
     // The schema-fixture check below catches a RENAME but not a REORDER or an
     // ADDITION in `ROUTE_DESTINATION_KEYS` (ec2-provider.ts, module-private) —
     // either of which silently invalidates `firstDeclaredWins`, since the
-    // winner is defined by the provider's `||` chain order. `declared` from
-    // `narrowRouteDestinations` over an all-truthy bag IS that list, in that
-    // order, so this pins both without needing the constant exported.
-    const allTruthy = Object.fromEntries(
-      (MUTUALLY_EXCLUSIVE_PROPERTIES.get(ROUTE)![0]!.properties as string[]).map((p) => [p, 'x'])
-    );
-    expect(narrowRouteDestinations(allTruthy).declared).toEqual(
+    // winner is defined by the provider's `||` chain order.
+    //
+    // The probe bag is seeded from the type's WHOLE CFn schema, NOT from the
+    // rule table: seeding from the table cannot detect a provider-side
+    // ADDITION, because a 4th destination key would never appear in the bag
+    // and `declared` would still equal the table. With every schema property
+    // truthy, `narrowRouteDestinations` returns exactly the provider's
+    // destination keys in the provider's own order.
+    const schema = loadSchema(ROUTE);
+    const everyPropertyTruthy = Object.fromEntries(schema.properties.map((p) => [p, 'x']));
+    expect(narrowRouteDestinations(everyPropertyTruthy).declared).toEqual(
       MUTUALLY_EXCLUSIVE_PROPERTIES.get(ROUTE)![0]!.properties
     );
   });
@@ -272,15 +348,7 @@ describe('MUTUALLY_EXCLUSIVE_PROPERTIES table hygiene', () => {
     // the Route key list is duplicated from `ROUTE_DESTINATION_KEYS` in
     // ec2-provider.ts (module-private there).
     for (const [resourceType, rules] of MUTUALLY_EXCLUSIVE_PROPERTIES) {
-      const fixture = join(fixturesDir, `${resourceType.replace(/::/g, '-')}.json`);
-      if (!existsSync(fixture)) {
-        throw new Error(
-          `No CFn schema fixture for ${resourceType} (expected ${fixture}). Capture one with ` +
-            `\`node scripts/refresh-cfn-schemas.mjs --only-missing\` so this rule's property ` +
-            `names stay pinned to the real schema.`
-        );
-      }
-      const schema = JSON.parse(readFileSync(fixture, 'utf8')) as { properties: string[] };
+      const schema = loadSchema(resourceType);
       for (const rule of rules) {
         for (const property of rule.properties) {
           expect(schema.properties, `${resourceType}.${property}`).toContain(property);
