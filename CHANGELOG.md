@@ -1,3 +1,10 @@
+## [0.280.33](https://github.com/go-to-k/cdkd/compare/v0.280.32...v0.280.33) (2026-08-12)
+
+
+### Bug Fixes
+
+* **dynamodb:** make the GSI Create and Update arms idempotent against the live table ([#1642](https://github.com/go-to-k/cdkd/issues/1642)) ([cc9c5c2](https://github.com/go-to-k/cdkd/commit/cc9c5c2dd5e81fa697c2dc47f3dd151dc7388b65))
+
 ## [0.280.32](https://github.com/go-to-k/cdkd/compare/v0.280.31...v0.280.32) (2026-08-12)
 
 
