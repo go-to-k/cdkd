@@ -1660,27 +1660,28 @@ Flags:
   AWS side worth diffing. A tag list NESTED inside another property (an
   EC2 launch template's `TagSpecifications`) still reverts wholesale.
 
-  The plan also **warns about AWS-authored values the revert would drop**
-  (issue [#1478](https://github.com/go-to-k/cdkd/issues/1478)). A revert
+  The plan also **names the AWS-authored values the revert leaves alone**
+  (issue [#1478](https://github.com/go-to-k/cdkd/issues/1478), semantics
+  settled by [#1626](https://github.com/go-to-k/cdkd/issues/1626)). A revert
   overwrites each drifted top-level subtree from
   `observedProperties ?? properties`, so when a resource has NO
   `observedProperties` (older state, or a deploy-time capture that failed)
   the desired side is the raw template — and anything AWS wrote into that
-  subtree but the template never declared is about to be erased. cdkd lists
-  those paths before the confirmation prompt rather than refusing, since the
-  user did ask to push state over AWS. Both shapes are covered: nested object
+  subtree but the template never declared is indistinguishable from an
+  out-of-band change. cdkd preserves those paths and lists them before the
+  confirmation prompt. Both shapes are covered: nested object
   keys report dotted (`Parameters.table_type`), and a KEYED
   `[{Key, Value}]` list reports its missing entries in bracket form
   (`LoadBalancerAttributes[deletion_protection.enabled]`) — the bracket
   distinguishes a list entry from a nested path, since attribute keys contain
   dots of their own. That keyed-list half was added by issue
   [#1626](https://github.com/go-to-k/cdkd/issues/1626): the walk previously
-  skipped every array, which is exactly the shape with the most to drop, so
+  skipped every array, which is exactly the shape with the most at stake, so
   a revert against an ELBv2 resource could touch ~18 untemplated attributes
-  while the plan warned about none. A service-authored tag is NOT listed —
-  the carve-out above preserves it, so it is not dropped. A POSITIONAL array
-  is still compared wholesale, because its elements have positions rather
-  than identities.
+  while the plan named none. A service-authored tag is NOT listed — the
+  carve-out above preserves it either way. A POSITIONAL array is still
+  compared wholesale, because its elements have positions rather than
+  identities, so it is neither reported nor narrowed.
 
   Requires a stack lock. Mutually exclusive with
   `--accept`. See "Resolving drift" below.
@@ -1898,22 +1899,30 @@ matches the intent:
   **Resources with no observed-capture baseline.** The revert baseline is
   `observedProperties ?? properties`. A resource deployed BEFORE
   observed-capture shipped has no `observedProperties`, so the desired side
-  is the raw **template** while the previous side is the AWS-current
-  snapshot — and because a drifted top-level subtree is overlaid wholesale,
-  every AWS-authored key inside it that the template does not declare is
-  DROPPED. For a Glue Iceberg table that means `table_type` /
-  `metadata_location` are wiped by a `--revert`.
+  is the raw **template** while the previous side would be the AWS-current
+  snapshot — and on that baseline cdkd cannot tell an AWS-authored value
+  from an out-of-band change, because neither appears in the template.
 
-  This is not silent: the plan prints, per affected resource, a
-  `! this resource has no observed-capture baseline ... will DROP N
-  AWS-authored values` line listing each path, before the confirmation
-  prompt and under `--dry-run`. The revert then proceeds — you did ask to
-  push state over AWS, and refusing outright would strand legacy state with
-  no path forward. **Re-deploy the stack first** if you want those values
-  preserved; the deploy records `observedProperties`, after which the
-  revert's desired side already carries the AWS-authored fields and the
-  warning stops firing. Only DRIFTED top-level keys are ever at risk —
-  non-drifted keys keep their AWS-current values.
+  So on that baseline the revert **leaves every untemplated value alone**
+  (issue [#1626](https://github.com/go-to-k/cdkd/issues/1626)): cdkd merges
+  those paths into the bag it actually SENDS, instead of overlaying the
+  drifted subtree wholesale. Merging on the desired side (rather than trimming
+  `previousProperties`) is what makes this hold for both provider shapes — one
+  that key-diffs a collection would otherwise put them on its removal path,
+  and one that replaces a bag wholesale (`PutBucketTagging` is documented
+  full-replace) never consults the previous side at all. The plan
+  prints, per affected resource, a `! this resource has no observed-capture
+  baseline ... LEAVES N AWS-authored values untouched` line naming each path,
+  before the confirmation prompt and under `--dry-run`. A Glue Iceberg
+  table's `table_type` / `metadata_location`, and the ~18 untemplated
+  attributes an ELBv2 load balancer reports, survive the revert instead of
+  being reset. Run **`cdkd state refresh-observed <stack>`** (or re-deploy)
+  if you want them reverted too; either populates `observedProperties`, after
+  which the baseline IS a deploy-time AWS snapshot — an out-of-band addition
+  is then genuinely identifiable and IS stripped, and the notice stops
+  firing. Only DRIFTED
+  top-level keys are ever narrowed; non-drifted keys keep their AWS-current
+  values on both sides.
 
   **Update-not-supported resources.** Some resource types are immutable
   in AWS (e.g. `AWS::Lambda::LayerVersion`, sub-resource attachments
