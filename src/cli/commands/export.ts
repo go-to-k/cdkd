@@ -263,11 +263,17 @@ const PRIMARY_IDENTIFIER_FALLBACK: Record<string, string> = {
  *   and MUST be complete (CFn rejects partial identifiers).
  * - `propertiesOverlay` (optional): subset of `resourceIdentifier` to write
  *   into the synth template's `Properties` block. Defaults to the full
- *   `resourceIdentifier` map (existing behavior for `AWS::ApiGateway::Method`
- *   / `AWS::ApiGateway::Resource` / `AWS::EC2::VPCGatewayAttachment` whose
- *   identifier fields ARE all writable Properties). Sub-resource types whose
- *   primaryIdentifier includes a generated-id field (`IntegrationId` /
- *   `RouteId` / Lambda::Permission's `Id`) MUST narrow to just the writable
+ *   `resourceIdentifier` map — correct for `AWS::ApiGateway::Method`, which
+ *   has NO `readOnlyProperties` at all (live `DescribeType`, us-east-1,
+ *   2026-08-12). `AWS::EC2::VPCGatewayAttachment` was listed here too and is
+ *   NOT such a type: its identifier is `[AttachmentType, VpcId]` with
+ *   `AttachmentType` read-only, so its splitter neither produces the right
+ *   fields nor narrows the overlay — tracked as
+ *   https://github.com/go-to-k/cdkd/issues/1691 rather than fixed here, since
+ *   it is a different type's defect.
+ *   Sub-resource types whose
+ *   primaryIdentifier includes a generated-id field (`ResourceId` /
+ *   `IntegrationId` / `RouteId` / Lambda::Permission's `Id`) MUST narrow to just the writable
  *   subset — those generated-id fields ARE listed in the CFn schema's
  *   `properties` block but tagged `readOnlyProperties`, so writing them
  *   via Properties at IMPORT changeset creation is rejected by CFn. The
@@ -312,16 +318,56 @@ const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
     const map = { RestApiId: parts[0]!, ResourceId: parts[1]!, HttpMethod: parts[2]! };
     return { resourceIdentifier: map };
   },
-  // cdkd stores `restApiId|resourceId` (apigateway-provider.ts);
-  // CFn primary identifier is [RestApiId, ResourceId] — both are writable
-  // Properties of AWS::ApiGateway::Resource.
-  'AWS::ApiGateway::Resource': (id) => {
-    const parts = id.split('|');
-    if (parts.length !== 2) {
-      throw new Error(`expected 2 parts (restApiId|resourceId), got ${parts.length}: '${id}'`);
+  // cdkd's SDK provider stores the BARE `resourceId` — `createResource`
+  // returns `response.id` and every other method treats the physicalId as a
+  // bare id, reading the parent `RestApiId` from the recorded properties. The
+  // The Cloud Control path produces `restApiId|resourceId` (CC joins a
+  // multi-part primaryIdentifier with `|`). That path is LIVE, not
+  // historical: the #614 silent-drop rule still auto-routes these types
+  // through Cloud Control, so both shapes exist in state in the wild and BOTH
+  // are accepted here. Requiring the composite made
+  // `cdkd export` throw on every SDK-created Resource — on a value cdkd
+  // itself wrote (issue #1663).
+  //
+  // CFn primary identifier is [RestApiId, ResourceId], but unlike
+  // AWS::ApiGateway::Method (which has NO read-only properties, verified live
+  // us-east-1 2026-08-12) `ResourceId` is `readOnlyProperties` here — so it is
+  // EXCLUDED from propertiesOverlay. Same narrowing, same reason, as the
+  // ApiGatewayV2::Integration splitter below.
+  //
+  // This is defense-in-depth rather than a live bug fix:
+  // `overlayResourceIdentifierOnProperties` writes a field ONLY when the
+  // template already carries it as a literal string, and a synthesized
+  // AWS::ApiGateway::Resource has RestApiId / ParentId / PathPart and no
+  // ResourceId — so the default overlay would have skipped it anyway. Narrow
+  // it explicitly so the safety does not depend on that conditional.
+  'AWS::ApiGateway::Resource': (physicalId, properties) => {
+    // `.trim()`, not truthiness: a blank id is as unusable as an empty one
+    // and would otherwise ship `ResourceId: ' '` into the changeset.
+    if (!physicalId.trim()) {
+      throw new Error('empty physical id for AWS::ApiGateway::Resource (expected a resourceId)');
     }
-    const map = { RestApiId: parts[0]!, ResourceId: parts[1]! };
-    return { resourceIdentifier: map };
+    const parts = physicalId.split('|');
+    if (parts.length > 2) {
+      throw new Error(
+        `expected a bare resourceId or 'restApiId|resourceId', got ${parts.length} parts: '${physicalId}'`
+      );
+    }
+    if (parts.length === 2) {
+      const [restApiId, resourceId] = parts as [string, string];
+      if (!restApiId || !resourceId) {
+        throw new Error(`empty part in 'restApiId|resourceId': '${physicalId}'`);
+      }
+      return {
+        resourceIdentifier: { RestApiId: restApiId, ResourceId: resourceId },
+        propertiesOverlay: { RestApiId: restApiId },
+      };
+    }
+    const restApiId = readStringProperty(properties, 'RestApiId', 'AWS::ApiGateway::Resource');
+    return {
+      resourceIdentifier: { RestApiId: restApiId, ResourceId: physicalId },
+      propertiesOverlay: { RestApiId: restApiId },
+    };
   },
   // cdkd stores `IGW|VpcId` (ec2-provider.ts);
   // CFn primary identifier is [VpcId, InternetGatewayId] — DIFFERENT order

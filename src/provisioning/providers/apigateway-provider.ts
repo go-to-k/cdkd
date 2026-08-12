@@ -2431,11 +2431,42 @@ export class ApiGatewayProvider implements ResourceProvider {
    * Users adopting an existing API Gateway should pass
    * `--resource <logicalId>=<physicalId>` for each sub-resource; the
    * physical id format follows what `create()` returns for the same
-   * type (e.g. `<restApiId>|<resourceId>` for `AWS::ApiGateway::Resource`).
+   * type. Note this is NOT uniformly a composite: `create()` returns a
+   * BARE `resourceId` for `AWS::ApiGateway::Resource` (the parent
+   * `RestApiId` is read from the recorded properties by every other
+   * method), while `AWS::ApiGateway::Method` genuinely is
+   * `<restApiId>|<resourceId>|<httpMethod>`.
+   *
+   * `import()` otherwise honours the supplied id verbatim, so a composite
+   * passed for a type whose provider stores a SCALAR would be written to
+   * state and then fed to the API as a resource id (issue #1663). That is
+   * not merely a failed call: `deleteResource` treats `NotFoundException`
+   * as an idempotent success, so the bad id would be reported as deleted
+   * while the resource stayed live in AWS — a silent orphan, the same class
+   * as issues #1651 / #1658. So the one type whose stored shape is
+   * unambiguously scalar refuses a composite up front, where the user can
+   * still act on it.
    */
   // eslint-disable-next-line @typescript-eslint/require-await -- explicit-override-only intentionally has no AWS calls
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     if (input.knownPhysicalId) {
+      // Scoped to Resource deliberately: `Method` IS a composite, and this
+      // type cannot take the #614 Cloud-Control route (all three of its CFn
+      // properties are in `handledProperties`), so a `|` here is always the
+      // user mis-following the old docstring rather than a CC-shaped id.
+      if (
+        input.resourceType === 'AWS::ApiGateway::Resource' &&
+        input.knownPhysicalId.includes('|')
+      ) {
+        this.logger.warn(
+          `AWS::ApiGateway::Resource ${input.logicalId}: '${input.knownPhysicalId}' looks like a ` +
+            `composite, but cdkd stores a BARE resourceId for this type (the parent RestApiId ` +
+            `comes from the template). Adopting it would send the whole string to the API as a ` +
+            `resource id, and the delete path would then report success on the NotFound. Pass ` +
+            `just the resourceId.`
+        );
+        return null;
+      }
       return { physicalId: input.knownPhysicalId, attributes: {} };
     }
     return null;
