@@ -442,11 +442,60 @@ describe('Route53 RecordSet physicalId: CloudFormation form vs cdkd composite (i
         })
       ).rejects.toThrow(/HostedZoneId or HostedZoneName is required/);
 
+      // The message is the SAME one a "no zone specified at all" template
+      // gets, so assert the lookup actually RAN -- otherwise a regression
+      // that stopped reading HostedZoneName passes this test while never
+      // reaching the truncation logic at all.
+      expect(mockSend).toHaveBeenCalledTimes(1);
+      expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(ListHostedZonesByNameCommand);
+
       expect(
         mockSend.mock.calls.some(
           (c: unknown[]) => c[0] instanceof ChangeResourceRecordSetsCommand
         )
       ).toBe(false);
+    });
+
+    it('checks the REGION before treating a vanished zone as already-deleted (#1658)', async () => {
+      // The skip arm drops a state row, so it must not fire when the client
+      // is pointed somewhere other than where the resource was recorded --
+      // a foreign region lists zero zones, which would otherwise read as
+      // "the zone is gone" and orphan a record that is alive elsewhere.
+      // Without the assertRegionMatch call this resolves instead of throwing.
+      mockSend.mockResolvedValueOnce({ HostedZones: [] });
+
+      await expect(
+        provider.delete(
+          'WebsiteRecord',
+          'record.example.com',
+          'AWS::Route53::RecordSet',
+          { ...RECORD_PROPS, HostedZoneId: undefined, HostedZoneName: 'example.com' },
+          { expectedRegion: 'eu-west-1' }
+        )
+      ).rejects.toThrow(/region/i);
+
+      expect(
+        mockSend.mock.calls.some(
+          (c: unknown[]) => c[0] instanceof ChangeResourceRecordSetsCommand
+        )
+      ).toBe(false);
+    });
+
+    it('refuses the already-gone conclusion for an ESCAPED zone name (#1658)', async () => {
+      // AWS orders on the ESCAPED name, so a template spelling that already
+      // carries a backslash cannot be positioned confidently -- and an
+      // unconfident negative must not authorize dropping the state row.
+      mockSend.mockResolvedValueOnce({ HostedZones: [] });
+
+      await expect(
+        provider.delete('WebsiteRecord', 'record.example.com', 'AWS::Route53::RecordSet', {
+          ...RECORD_PROPS,
+          HostedZoneId: undefined,
+          HostedZoneName: String.raw`ex\344mple.com`,
+        })
+      ).rejects.toThrow(/HostedZoneId or HostedZoneName is required/);
+
+      expect(mockSend).toHaveBeenCalledTimes(1);
     });
 
     it('still errors when neither the id nor the properties identify a zone', async () => {
@@ -600,6 +649,54 @@ describe('Route53 RecordSet physicalId: CloudFormation form vs cdkd composite (i
       );
 
       expect(result).toBeUndefined();
+    });
+
+    it('sends the ENCODED wildcard name as the list START KEY (#1658)', async () => {
+      // The pin that makes the query-side fix testable at all. AWS orders
+      // records on the name it STORES, so `*.example.com` (`*` = 0x2A) sits
+      // far from the stored `\052.example.com.` (`\` = 0x5C) -- every
+      // sibling whose first label starts with `-` / `+` / a digit / an
+      // upper-case letter falls between them, and a bounded page skips the
+      // record we asked for. Mocking AWS's ANSWER cannot catch that
+      // regression; only asserting the REQUEST can.
+      mockSend.mockResolvedValueOnce({
+        ResourceRecordSets: [
+          { Name: String.raw`\052.example.com.`, Type: 'A', TTL: 300, ResourceRecords: [] },
+        ],
+      });
+
+      await provider.readCurrentState(
+        'Z0123456789ABCDEFGHIJ|*.example.com|A',
+        'WildcardRecord',
+        'AWS::Route53::RecordSet'
+      );
+
+      expect(mockSend).toHaveBeenCalledTimes(1);
+      const list = mockSend.mock.calls[0]?.[0];
+      expect(list).toBeInstanceOf(ListResourceRecordSetsCommand);
+      expect(list.input.StartRecordName).toBe(String.raw`\052.example.com.`);
+      expect(list.input.StartRecordType).toBe('A');
+    });
+
+    it('sends the ENCODED wildcard name as the ZONE lookup start key too (#1658)', async () => {
+      // Same helper, other call site: a wildcard-named zone is as
+      // mis-positionable as a wildcard record, and here the miss drops a
+      // state row rather than merely hiding drift.
+      mockSend
+        .mockResolvedValueOnce({
+          HostedZones: [{ Id: '/hostedzone/Z0123456789ABCDEFGHIJ', Name: String.raw`\052.example.com.` }],
+        })
+        .mockResolvedValueOnce({});
+
+      await provider.delete('WildcardRecord', 'record.example.com', 'AWS::Route53::RecordSet', {
+        ...RECORD_PROPS,
+        HostedZoneId: undefined,
+        HostedZoneName: '*.example.com',
+      });
+
+      const list = mockSend.mock.calls[0]?.[0];
+      expect(list).toBeInstanceOf(ListHostedZonesByNameCommand);
+      expect(list.input.DNSName).toBe(String.raw`\052.example.com.`);
     });
 
     it('returns undefined when the id is unparsable and no properties are available', async () => {
