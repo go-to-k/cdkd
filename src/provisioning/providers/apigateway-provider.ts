@@ -2431,7 +2431,14 @@ export class ApiGatewayProvider implements ResourceProvider {
    * Users adopting an existing API Gateway should pass
    * `--resource <logicalId>=<physicalId>` for each sub-resource; the
    * physical id format follows what `create()` returns for the same
-   * type (e.g. `<restApiId>|<resourceId>` for `AWS::ApiGateway::Resource`).
+   * type. Note this is NOT uniformly a composite: `create()` returns a
+   * BARE `resourceId` for `AWS::ApiGateway::Resource` (the parent
+   * `RestApiId` is read from the recorded properties by every other
+   * method), while `AWS::ApiGateway::Method` genuinely is
+   * `<restApiId>|<resourceId>|<httpMethod>`. `import()` honours the
+   * supplied id verbatim, so a composite passed for a type whose
+   * provider stores a scalar would be written to state and then fed to
+   * the API as a resource id (issue #1663).
    */
   // eslint-disable-next-line @typescript-eslint/require-await -- explicit-override-only intentionally has no AWS calls
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {

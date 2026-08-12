@@ -312,16 +312,43 @@ const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
     const map = { RestApiId: parts[0]!, ResourceId: parts[1]!, HttpMethod: parts[2]! };
     return { resourceIdentifier: map };
   },
-  // cdkd stores `restApiId|resourceId` (apigateway-provider.ts);
-  // CFn primary identifier is [RestApiId, ResourceId] — both are writable
-  // Properties of AWS::ApiGateway::Resource.
-  'AWS::ApiGateway::Resource': (id) => {
-    const parts = id.split('|');
-    if (parts.length !== 2) {
-      throw new Error(`expected 2 parts (restApiId|resourceId), got ${parts.length}: '${id}'`);
+  // cdkd's SDK provider stores the BARE `resourceId` — `createResource`
+  // returns `response.id` and every other method treats the physicalId as a
+  // bare id, reading the parent `RestApiId` from the recorded properties. The
+  // LEGACY Cloud Control path produced `restApiId|resourceId` (CC joins a
+  // multi-part primaryIdentifier with `|`), so both shapes exist in state in
+  // the wild and BOTH are accepted here. Requiring the composite made
+  // `cdkd export` throw on every SDK-created Resource — on a value cdkd
+  // itself wrote (issue #1663).
+  //
+  // CFn primary identifier is [RestApiId, ResourceId], but unlike
+  // AWS::ApiGateway::Method (which has NO read-only properties, verified live
+  // us-east-1 2026-08-12) `ResourceId` is `readOnlyProperties` here — so it is
+  // EXCLUDED from propertiesOverlay, since CFn rejects a changeset that writes
+  // a read-only property. Same narrowing, same reason, as the
+  // ApiGatewayV2::Integration splitter below.
+  'AWS::ApiGateway::Resource': (physicalId, properties) => {
+    const parts = physicalId.split('|');
+    if (parts.length > 2) {
+      throw new Error(
+        `expected a bare resourceId or 'restApiId|resourceId', got ${parts.length} parts: '${physicalId}'`
+      );
     }
-    const map = { RestApiId: parts[0]!, ResourceId: parts[1]! };
-    return { resourceIdentifier: map };
+    if (parts.length === 2) {
+      const [restApiId, resourceId] = parts as [string, string];
+      if (!restApiId || !resourceId) {
+        throw new Error(`empty part in 'restApiId|resourceId': '${physicalId}'`);
+      }
+      return {
+        resourceIdentifier: { RestApiId: restApiId, ResourceId: resourceId },
+        propertiesOverlay: { RestApiId: restApiId },
+      };
+    }
+    const restApiId = readStringProperty(properties, 'RestApiId', 'AWS::ApiGateway::Resource');
+    return {
+      resourceIdentifier: { RestApiId: restApiId, ResourceId: physicalId },
+      propertiesOverlay: { RestApiId: restApiId },
+    };
   },
   // cdkd stores `IGW|VpcId` (ec2-provider.ts);
   // CFn primary identifier is [VpcId, InternetGatewayId] — DIFFERENT order

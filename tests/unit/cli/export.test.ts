@@ -602,10 +602,43 @@ describe('splitCompositePhysicalId', () => {
     });
   });
 
-  it('parses AWS::ApiGateway::Resource (restApiId|resourceId)', () => {
+  it('parses AWS::ApiGateway::Resource legacy composite (restApiId|resourceId)', () => {
+    // The Cloud Control path produced this shape; state written by it must
+    // still export. `ResourceId` is read-only, so the overlay narrows to
+    // RestApiId (issue #1663).
     expect(splitCompositePhysicalId('AWS::ApiGateway::Resource', 'api123|res456')).toEqual({
       resourceIdentifier: { RestApiId: 'api123', ResourceId: 'res456' },
+      propertiesOverlay: { RestApiId: 'api123' },
     });
+  });
+
+  it('parses AWS::ApiGateway::Resource BARE resourceId, taking RestApiId from state (#1663)', () => {
+    // What the SDK provider's createResource() actually stores.
+    expect(
+      splitCompositePhysicalId('AWS::ApiGateway::Resource', 'res456', { RestApiId: 'api123' })
+    ).toEqual({
+      resourceIdentifier: { RestApiId: 'api123', ResourceId: 'res456' },
+      propertiesOverlay: { RestApiId: 'api123' },
+    });
+  });
+
+  it('never writes the read-only ResourceId into Properties (#1663)', () => {
+    // propertiesOverlay defaults to the whole resourceIdentifier map, so an
+    // absent overlay here would hand CFn a read-only property and the IMPORT
+    // changeset would be rejected.
+    for (const id of ['res456', 'api123|res456']) {
+      const result = splitCompositePhysicalId('AWS::ApiGateway::Resource', id, {
+        RestApiId: 'api123',
+      });
+      expect(result.propertiesOverlay).toBeDefined();
+      expect(result.propertiesOverlay).not.toHaveProperty('ResourceId');
+    }
+  });
+
+  it('reports a corrupt state entry when the bare form has no RestApiId in properties', () => {
+    expect(() => splitCompositePhysicalId('AWS::ApiGateway::Resource', 'res456', {})).toThrow(
+      /missing 'RestApiId'/
+    );
   });
 
   it('reorders AWS::EC2::VPCGatewayAttachment (cdkd: IGW|VpcId → CFn: {VpcId, InternetGatewayId})', () => {
@@ -680,10 +713,20 @@ describe('splitCompositePhysicalId', () => {
     );
   });
 
-  it('throws on wrong part count for ApiGateway::Resource', () => {
-    expect(() => splitCompositePhysicalId('AWS::ApiGateway::Resource', 'one-part')).toThrow(
-      /expected 2 parts/
-    );
+  it('throws on too many parts for ApiGateway::Resource', () => {
+    // A single part is now VALID (the bare SDK-created id), so the negative
+    // case is an over-long id, not a short one.
+    expect(() =>
+      splitCompositePhysicalId('AWS::ApiGateway::Resource', 'api|res|extra', {
+        RestApiId: 'api123',
+      })
+    ).toThrow(/got 3 parts/);
+  });
+
+  it('throws on an empty part in the ApiGateway::Resource composite', () => {
+    expect(() =>
+      splitCompositePhysicalId('AWS::ApiGateway::Resource', 'api123|', { RestApiId: 'api123' })
+    ).toThrow(/empty part/);
   });
 
   it('throws on wrong part count for VPCGatewayAttachment', () => {
