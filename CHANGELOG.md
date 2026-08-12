@@ -1,3 +1,10 @@
+## [0.280.32](https://github.com/go-to-k/cdkd/compare/v0.280.31...v0.280.32) (2026-08-12)
+
+
+### Bug Fixes
+
+* **drift:** honour a provider's effectiveProperties on drift --revert and the rollback revert arms ([#1647](https://github.com/go-to-k/cdkd/issues/1647)) ([345785e](https://github.com/go-to-k/cdkd/commit/345785e4c3d1cbf4286cfe648126c43ef0d3b6aa))
+
 ## [0.280.31](https://github.com/go-to-k/cdkd/compare/v0.280.30...v0.280.31) (2026-08-12)
 
 
