@@ -1,3 +1,10 @@
+## [0.280.28](https://github.com/go-to-k/cdkd/compare/v0.280.27...v0.280.28) (2026-08-12)
+
+
+### Bug Fixes
+
+* **provisioning:** reject mutually exclusive properties at pre-flight so an invalid multi-destination Route is caught on every deploy ([#1638](https://github.com/go-to-k/cdkd/issues/1638)) ([d78e6b9](https://github.com/go-to-k/cdkd/commit/d78e6b92e6afa0b8ff1fcd13fbded24c68a06436))
+
 ## [0.280.27](https://github.com/go-to-k/cdkd/compare/v0.280.26...v0.280.27) (2026-08-11)
 
 
