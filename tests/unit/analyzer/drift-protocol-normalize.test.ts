@@ -57,8 +57,25 @@ describe('canonicalizeIpProtocolValue', () => {
     expect(canonicalizeIpProtocolValue(intrinsic)).toBe(intrinsic);
     expect(canonicalizeIpProtocolValue(undefined)).toBeUndefined();
     expect(canonicalizeIpProtocolValue(null)).toBeNull();
-    expect(canonicalizeIpProtocolValue(6.5)).toBe(6.5);
     expect(canonicalizeIpProtocolValue(true)).toBe(true);
+  });
+
+  it('stringifies EVERY number, not only an integer one', () => {
+    // `sgProtocolKey` has stringified every number since #1633 so a legacy
+    // record holding the NUMBER -1 still keys against AWS's '-1'. Narrowing
+    // that to integers would regress a malformed 6.5 to a number and collapse
+    // NaN / Infinity onto one JSON `null` bucket — the merging that key exists
+    // to avoid.
+    expect(canonicalizeIpProtocolValue(6.5)).toBe('6.5');
+    expect(canonicalizeIpProtocolValue(Number.NaN)).toBe('NaN');
+    expect(canonicalizeIpProtocolValue(Number.POSITIVE_INFINITY)).toBe('Infinity');
+  });
+
+  it('does not recognize a non-canonical numeric spelling (recorded bound)', () => {
+    // A zero-padded / hex form misses the table by design: accepting it would
+    // mean parsing rather than a closed measured table.
+    expect(canonicalizeIpProtocolValue('06')).toBe('06');
+    expect(canonicalizeIpProtocolValue('0x6')).toBe('0x6');
   });
 });
 
@@ -147,6 +164,25 @@ describe('canonicalizeIpProtocols', () => {
     const awsIn = { IpProtocol: 'tcp' };
     canonicalizeIpProtocols(baselineIn, awsIn, INGRESS);
     expect(baselineIn['IpProtocol']).toBe(6);
+  });
+
+  it('does not mutate the ARRAY branch either — the rule object, the list, or the bag', () => {
+    // The top-level non-mutation test above leaves the array path unfenced:
+    // rewriting `rule[key]` / `bag[arrayKey]` in place would satisfy every
+    // `toEqual` assertion in this file.
+    const rule = { IpProtocol: 6, CidrIp: '10.0.0.0/16' };
+    const list = [rule];
+    const baselineIn = { SecurityGroupIngress: list };
+    const { baseline } = canonicalizeIpProtocols(baselineIn, {}, GROUP);
+
+    expect(rule['IpProtocol']).toBe(6);
+    expect(list[0]).toBe(rule);
+    expect(baselineIn['SecurityGroupIngress']).toBe(list);
+    // ...and the returned copy really did change.
+    expect((baseline['SecurityGroupIngress'] as Array<Record<string, unknown>>)[0]).toEqual({
+      IpProtocol: 'tcp',
+      CidrIp: '10.0.0.0/16',
+    });
   });
 
   it('tolerates a rule array that is missing, malformed, or holds non-object elements', () => {

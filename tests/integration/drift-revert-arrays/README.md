@@ -49,13 +49,18 @@ fixture targets exactly those shapes.
    (issue [#1643](https://github.com/go-to-k/cdkd/issues/1643)): EC2 stores a
    declared `IpProtocol: 6` as `tcp`, so the recorded and read-back values are
    two spellings of ONE protocol. Both affected shapes are present because
-   they break at different layers — the INLINE 5th rule on
+   they break at different layers. The STANDALONE `NumericProtocolIngress`
+   fails at rule IDENTITY: its physicalId carries the protocol cdkd SENT, so
+   the lookup matched no AWS rule at all and drift reported it as "drift
+   unknown" forever — and since the exit code keys only on `drifted`, that
+   bucket is invisible to it, so step 3a greps the report for the resource
+   name instead of relying on the exit status. The INLINE 5th rule on
    `ArraysSecurityGroup` (injected at the L1, since the L2 `addIngressRule`
-   can only emit a name) is read back fine but compares unequal until
-   `src/analyzer/drift-protocol-normalize.ts` canonicalizes both sides, while
-   the STANDALONE `NumericProtocolIngress` fails one layer lower: its
-   physicalId carries the protocol cdkd SENT, so the rule lookup matched no
-   AWS rule at all and drift reported it as "drift unknown" forever. The
+   can only emit a name) is asserted separately by **step 6b**: on a fresh
+   deploy the `observedProperties` baseline already holds AWS's spelling, so
+   `src/analyzer/drift-protocol-normalize.ts` is a no-op there, and step 6b
+   strips `observedProperties` to reproduce the template-baseline population
+   the pass is actually for. The
    standalone rule sits on its OWN security group on purpose — on the shared
    one it would materialize a member into the parent's live `IpPermissions`
    that the parent's template does not declare, which is real drift on the

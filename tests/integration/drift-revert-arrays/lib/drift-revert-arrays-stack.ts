@@ -172,10 +172,16 @@ export class DriftRevertArraysStack extends cdk.Stack {
     // AWS renames the four protocol numbers it has a name for, so a rule
     // declaring `IpProtocol: '6'` is stored and read back as `tcp`. The L2
     // `addIngressRule` above can only emit a name, so the numeric shape has to
-    // be injected at the L1. Without `drift-protocol-normalize.ts`
-    // canonicalizing BOTH comparison sides, the recorded `'6'` and the
-    // read-back `tcp` are two spellings of ONE protocol and step 3a below (a
-    // clean deploy must be drift-free) fails on every run.
+    // be injected at the L1.
+    //
+    // This arm is asserted by verify.sh step 6b, NOT by the clean-deploy runs:
+    // a fresh deploy captures `observedProperties` from the same readCurrentState
+    // the drift run uses, so both sides already hold AWS's `tcp` and
+    // `drift-protocol-normalize.ts` is a no-op there. Step 6b strips
+    // observedProperties to reproduce the population the pass is actually for —
+    // one whose baseline is the TEMPLATE. (The first version of this fixture
+    // claimed the clean-deploy steps fenced it; three independent reviews showed
+    // they could not.)
     const sgL1 = securityGroup.node.defaultChild as ec2.CfnSecurityGroup;
     sgL1.addPropertyOverride('SecurityGroupIngress.4', {
       IpProtocol: '6',

@@ -92,7 +92,7 @@ import {
   TERMINATION_PROTECTION_MAX_ATTEMPTS,
 } from '../ec2-termination-protection.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
-import { canonicalizeIpProtocolValue } from '../../analyzer/drift-protocol-normalize.js';
+import { canonicalizeIpProtocolValue } from '../../utils/ip-protocol.js';
 import type {
   CreateContext,
   ResourceProvider,
@@ -4108,7 +4108,13 @@ export class EC2Provider implements ResourceProvider {
           ? (rule['SourceSecurityGroupOwnerId'] as string | undefined)
           : undefined;
       return JSON.stringify({
-        p: rule['IpProtocol'] ?? '-1',
+        // Same canonicalization as `sgRuleKey` (issue #1643) — the two keys
+        // MUST agree, which is what this function's sibling JSDoc promises.
+        // Without it a `--revert` of a drifted inline rule set keys the
+        // previous side (AWS's `tcp`) differently from the desired side
+        // (state's `'6'`), so EVERY rule is revoked and re-authorized instead
+        // of only the drifted one — a window with no rules on a live group.
+        p: sgProtocolKey(rule['IpProtocol']),
         f: rule['FromPort'] ?? null,
         t: rule['ToPort'] ?? null,
         c4: rule['CidrIp'] ?? null,
@@ -4954,6 +4960,15 @@ export class EC2Provider implements ResourceProvider {
       // must not warn either — the provisioning path announces the identical
       // substitution, and `cdkd diff` / the deploy's own diff pass would
       // otherwise emit it a second time for a resource nothing is changing.
+      // NOTE (issue #1643 -> follow-up #1648): this folds the protocol's TYPE
+      // (#1633's stringification) but NOT the NAME substitutions AWS performs,
+      // which #1643 measured and which `src/utils/ip-protocol.ts` now
+      // canonicalizes for the readback side. So a template edit rewriting
+      // `IpProtocol: 6` to `'tcp'` still reads as a changed property, and since
+      // `IpProtocol` is create-only that classifies as a REPLACEMENT of a rule
+      // AWS already holds exactly. Deliberately NOT changed here: this is the
+      // DEPLOY path's replacement decision, which needs its own live
+      // verification rather than riding a drift-fixture PR.
       const { narrowed } = narrowIngressIpProtocol(properties, () => {});
       return narrowed;
     }

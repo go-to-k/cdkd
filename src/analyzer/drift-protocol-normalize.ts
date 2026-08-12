@@ -37,37 +37,24 @@
  * is a CLOSED set rather than the open-ended IANA list the issue worried
  * about. `-1` is unaffected, which is why #1633's live test came back clean.
  *
- * Case is also AWS's to decide: `TCP` / `Tcp` / `tcp` authorized on the same
- * port collapsed into ONE `tcp` permission in the readback, so a name is
- * matched case-insensitively and canonicalized to lower case. Only the four
- * KNOWN names are lowered — an unrecognized string is left exactly as-is
- * rather than being folded, so this pass can never make two genuinely
- * different values compare equal.
+ * The measured rename table, the case-folding rule and their bounds live with
+ * the shared value canonicalizer in `src/utils/ip-protocol.ts` — this module
+ * owns only WHERE in a resource's properties that canonicalization applies.
  *
- * Numbers are canonicalized to their STRING form (`47` -> `'47'`) because the
- * two sides can legitimately differ in JS TYPE only: an unquoted YAML
- * `IpProtocol: 47` parses to a number while AWS always reads back a string.
- * That is the same phantom-drift class #1633 fixes on the send side, arriving
- * here through the baselines of resources deployed before it.
- *
- * Anything that is not a string or an integer — most importantly an
- * unresolved intrinsic object (`{Ref: ...}`) — is returned untouched.
+ * **This pass matters for the `properties`-fallback baseline, not for a fresh
+ * deploy.** A resource deployed by a current binary captures
+ * `observedProperties` from the same `readCurrentState` the drift run uses, so
+ * both sides already hold AWS's spelling and this is a no-op. The population it
+ * is FOR is the one whose baseline is the user's TEMPLATE: state written before
+ * observed-capture existed, or a provider that captures none. That is also why
+ * the integ fixture has to strip `observedProperties` to exercise it — the
+ * first version of this change asserted a fresh deploy would fail without the
+ * module, and three independent reviews showed it would not.
  */
 
-/**
- * The protocol numbers AWS rewrites to a name, measured (see the module
- * docstring). Keyed by the number's STRING form, since that is the shape both
- * comparison sides are normalized to first.
- */
-const PROTOCOL_NUMBER_TO_NAME: ReadonlyMap<string, string> = new Map([
-  ['1', 'icmp'],
-  ['6', 'tcp'],
-  ['17', 'udp'],
-  ['58', 'icmpv6'],
-]);
+import { canonicalizeIpProtocolValue } from '../utils/ip-protocol.js';
 
-/** The four names EC2 canonicalizes to, for the case-insensitive match. */
-const CANONICAL_PROTOCOL_NAMES: ReadonlySet<string> = new Set(PROTOCOL_NUMBER_TO_NAME.values());
+export { canonicalizeIpProtocolValue };
 
 /**
  * The resource types carrying an `IpProtocol` this pass rewrites, mapped to
@@ -87,33 +74,6 @@ const IP_PROTOCOL_PATHS: ReadonlyMap<string, readonly string[]> = new Map([
     ['SecurityGroupIngress[].IpProtocol', 'SecurityGroupEgress[].IpProtocol'],
   ],
 ]);
-
-/**
- * Canonicalize ONE `IpProtocol` value the way EC2 does.
- *
- * Returns the input unchanged for any shape that is not a protocol value
- * (an unresolved intrinsic, `null`, a non-integer number).
- */
-export function canonicalizeIpProtocolValue(value: unknown): unknown {
-  let text: string;
-  if (typeof value === 'string') {
-    text = value;
-  } else if (typeof value === 'number' && Number.isInteger(value)) {
-    // An unquoted YAML `IpProtocol: 6` parses to a number; AWS always reads
-    // back a string, so the string form is the shared canonical shape.
-    text = String(value);
-  } else {
-    return value;
-  }
-
-  const renamed = PROTOCOL_NUMBER_TO_NAME.get(text);
-  if (renamed !== undefined) return renamed;
-
-  const lowered = text.toLowerCase();
-  if (CANONICAL_PROTOCOL_NAMES.has(lowered)) return lowered;
-
-  return text;
-}
 
 /**
  * Rewrite the `IpProtocol` at `path` inside `properties`, returning a copy

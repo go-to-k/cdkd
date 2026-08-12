@@ -1172,6 +1172,30 @@ describe('EC2Provider.readCurrentState', () => {
       });
     });
 
+    it('canonicalizes BOTH sides of the tuple pre-filter, including an absent AWS IpProtocol (#1643)', async () => {
+      // Fences the "canonicalize both sides" claim: comparing the raw AWS
+      // value against a canonicalized physicalId segment would still pass the
+      // test above (wanted 'tcp' vs AWS 'tcp'), and would silently drop the
+      // `?? '-1'` fallback for a rule AWS reports without a protocol.
+      mockSend.mockResolvedValueOnce({
+        SecurityGroups: [
+          {
+            GroupId: 'sg-1',
+            // No IpProtocol member at all -> the all-protocols rule.
+            IpPermissions: [{ IpRanges: [{ CidrIp: '10.0.0.0/8' }] }],
+          },
+        ],
+      });
+
+      const result = await provider.readCurrentState(
+        'sg-1|-1|-1|-1',
+        'Logical',
+        'AWS::EC2::SecurityGroupIngress',
+        { GroupId: 'sg-1', IpProtocol: '-1', CidrIp: '10.0.0.0/8' }
+      );
+      expect(result).toEqual({ GroupId: 'sg-1', CidrIp: '10.0.0.0/8' });
+    });
+
     it('still returns undefined when a numeric protocol genuinely has no matching rule (#1643)', async () => {
       // The canonicalization must not turn the lookup into a wildcard: udp (17)
       // must not match the tcp rule.
