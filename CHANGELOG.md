@@ -1,3 +1,10 @@
+## [0.281.6](https://github.com/go-to-k/cdkd/compare/v0.281.5...v0.281.6) (2026-08-12)
+
+
+### Bug Fixes
+
+* **synthesis:** decide the interpreter prefix from the app command's first token ([#1720](https://github.com/go-to-k/cdkd/issues/1720)) ([676992c](https://github.com/go-to-k/cdkd/commit/676992c08c3bc10780d87478bf1e1536fbef01c3))
+
 ## [0.281.5](https://github.com/go-to-k/cdkd/compare/v0.281.4...v0.281.5) (2026-08-12)
 
 
