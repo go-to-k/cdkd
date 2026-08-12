@@ -267,7 +267,19 @@ describe('DynamoDBTableProvider malformed BillingMode (issue #1545)', () => {
         expect.stringContaining('AWS::DynamoDB::Table BillingMode must be a non-empty string')
       );
       expect(childLogger.warn).toHaveBeenCalledWith(
-        expect.stringContaining("The table's current billing mode (PROVISIONED) is kept")
+        expect.stringContaining('The mode this update compared against (PROVISIONED) is kept')
+      );
+      // FENCE for the logicalId prefix itself (issue #1734). Anchored at the
+      // START and carrying the BillingMode sentence, because neither half
+      // fences it alone: a bare `stringContaining("AWS::DynamoDB::Table")`
+      // matches the guard's own message text, and a bare prefix match would be
+      // satisfied by either sibling arm in this provider (the GSI and stream
+      // guards are prefixed too). Removing the prefix left the GlobalTable
+      // suite green until its twin fence existed.
+      expect(childLogger.warn).toHaveBeenCalledWith(
+        expect.stringMatching(
+          /^AWS::DynamoDB::Table MyTable: AWS::DynamoDB::Table BillingMode must be a non-empty string/
+        )
       );
     }
   );
@@ -293,8 +305,16 @@ describe('DynamoDBTableProvider malformed BillingMode (issue #1545)', () => {
     // Unfiltered: an empty `UpdateTable` would be invisible to the filtered
     // helper, which is how issue #1553 hid in this suite.
     expect(allUpdateCalls()).toHaveLength(0);
+    // The ABSENT-previous arm is exactly where "the table's current billing
+    // mode" was a false claim: PROVISIONED here is the CFn TYPE DEFAULT, not
+    // anything DescribeTable reported (issue #1734).
     expect(childLogger.warn).toHaveBeenCalledWith(
-      expect.stringContaining("The table's current billing mode (PROVISIONED) is kept")
+      expect.stringContaining('The mode this update compared against (PROVISIONED) is kept')
+    );
+    expect(childLogger.warn).toHaveBeenCalledWith(
+      expect.stringMatching(
+        /^AWS::DynamoDB::Table MyTable: AWS::DynamoDB::Table BillingMode must be a non-empty string/
+      )
     );
   });
 

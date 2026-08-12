@@ -710,9 +710,20 @@ export class DynamoDBTableProvider implements ResourceProvider {
               {
                 onUnusable: (message) => {
                   billingModeUnusable = true;
+                  // "compared against", not "the table's current mode": for an
+                  // unusable RECORDED previous this value is the LIVE mode, but
+                  // for a usable one it is the record, which AWS may have
+                  // drifted away from — so naming it "current" asserts a
+                  // DescribeTable reading the message never took. The prefix
+                  // matches both sibling arms in this provider (the GSI and
+                  // stream guards) and the GlobalTable twin: without it, a
+                  // stack with more than one AWS::DynamoDB::Table gives neither
+                  // the user nor an integ assertion any way to tell which table
+                  // warned.
                   this.logger.warn(
-                    `${message} The table's current billing mode (${prevBillingMode}) is kept ` +
-                      `for this update rather than flipped to the default.`
+                    `AWS::DynamoDB::Table ${logicalId}: ${message} The mode this update ` +
+                      `compared against (${prevBillingMode}) is kept for this update rather ` +
+                      `than flipped to the default.`
                   );
                 },
               }
