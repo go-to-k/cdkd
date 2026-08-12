@@ -374,6 +374,11 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       );
     }
 
+    // issue #1653: the bag actually delivered, when the replay downgrade below
+    // substituted a value for a malformed declared one. `undefined` (the
+    // normal case) means "record the desired properties".
+    let effectiveProperties: Record<string, unknown> | undefined;
+
     // Stream specification. GlobalTable cross-region replication requires
     // streams with NEW_AND_OLD_IMAGES. CDK synth always emits
     // `StreamSpecification: { StreamViewType: 'NEW_AND_OLD_IMAGES' }`
@@ -395,6 +400,24 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     // translation below.
     if (streamSpecInput != null) {
       let streamViewType: string;
+      // issue #1653 (create-path sibling): a SUBSTITUTED value is the same
+      // class as a dropped key (.claude/rules/providers.md, #1633) — under the
+      // replay downgrade the deploy SUCCEEDS while the engine records the
+      // MALFORMED desired block, so `readCurrentState` can never match it and
+      // the difference is permanent phantom drift.
+      //
+      // This arm is NOT the "replay-CREATE -> DROP the key" case the #1612
+      // carve-out describes: that answer is scoped to a SKIP, where nothing
+      // reached AWS. Here the downgrade SUBSTITUTES the default and the block
+      // IS applied — a stream really is created — so the rule that binds is
+      // "what you return is what you SENT", and dropping the key would record
+      // that cdkd sent nothing. The recorded shape is the CFn one
+      // (`StreamViewType` only — `AWS::DynamoDB::GlobalTable`'s
+      // `StreamSpecification` declares no `StreamEnabled`, verified against
+      // aws-cdk-lib's `convertCfnGlobalTableStreamSpecificationPropertyToCloudFormation`),
+      // so the effective bag is indistinguishable from what an ordinary
+      // template-path create of the same table records.
+      let streamSpecSubstituted = false;
       try {
         // `replayWarn` (issue #1544): a state record written by an older
         // binary can carry `StreamSpecification: ''`, and on the rollback
@@ -403,12 +426,31 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         // downgrade treats the malformed block as `{}` (stream enabled with
         // the NEW_AND_OLD_IMAGES default, exactly what an empty block means),
         // warns, and proceeds; template-path creates keep the refusal.
+        // The wrapper preserves `replayWarn`'s gate exactly: with no replay
+        // downgrade in effect the options bag stays EMPTY, so a template-path
+        // create keeps the hard refusal rather than silently gaining one.
+        //
+        // "Do not infer the skip by wrapping `onUnusable`" (#1612) does not
+        // bind here: that rule guards a callback SHARED by SKIP-class guards
+        // and warn-and-DEFAULT reads, where a generic wrapper cannot tell the
+        // two apart and would record a defaulted-but-APPLIED value as skipped.
+        // This is one call site of known class — a `readConfigString`
+        // warn-and-DEFAULT — and what it records is precisely the DEFAULT that
+        // was applied, which is the outcome that rule wants.
+        const replayDowngrade = replayWarn(this.logger, context).onUnusable;
         streamViewType = readConfigString(
           streamSpecInput,
           'StreamViewType',
           'NEW_AND_OLD_IMAGES',
           'AWS::DynamoDB::GlobalTable StreamSpecification',
-          replayWarn(this.logger, context)
+          replayDowngrade
+            ? {
+                onUnusable: (message) => {
+                  streamSpecSubstituted = true;
+                  replayDowngrade(message);
+                },
+              }
+            : {}
         );
       } catch (error) {
         throw new ProvisioningError(
@@ -423,6 +465,12 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         StreamEnabled: true,
         StreamViewType: streamViewType,
       } as StreamSpecification;
+      if (streamSpecSubstituted) {
+        effectiveProperties = {
+          ...properties,
+          StreamSpecification: { StreamViewType: streamViewType },
+        };
+      }
     } else if (needsStream) {
       this.logger.info(
         `Auto-enabling streams (NEW_AND_OLD_IMAGES) on ${logicalId} — required for cross-region replication`
@@ -694,6 +742,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           StreamArn: tableInfo.streamArn,
           TableName: tableName,
         },
+        ...(effectiveProperties && { effectiveProperties }),
       };
     } catch (wiringError) {
       // Partial-create cleanup. The table exists on AWS; delete it
@@ -975,6 +1024,12 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     // diff step, the BillingMode flip's capacity derivation, and the
     // Replicas diff loop all need it.
     const currentRegion = (await this.dynamoDBClient.config.region()) ?? '';
+
+    // issue #1653: the bag actually delivered, when a warn-and-SKIP arm below
+    // left a declared configuration un-applied. `undefined` (the normal case)
+    // means "record the desired properties" — see the `StreamSpecification`
+    // block for the full reasoning.
+    let effectiveProperties: Record<string, unknown> | undefined;
 
     try {
       // 1. Wait for ACTIVE before any update — defensive against rare
@@ -1358,6 +1413,34 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
             StreamViewType: streamViewType,
           } as StreamSpecification;
           flatChanged = true;
+        } else {
+          // issue #1653: the skip makes the deploy SUCCEED with the declared
+          // block never reaching AWS, so recording the desired bag verbatim
+          // writes a value AWS does not hold — `readCurrentState` can never
+          // match it, every later `cdkd drift` re-reports the difference, and
+          // `drift --revert` re-issues the same skipped call. Answer with the
+          // bag actually delivered instead.
+          //
+          // On the UPDATE path that is the PREVIOUS value: the `UpdateTable`
+          // never ran, so AWS still holds the previously-applied stream
+          // configuration and that IS what state should describe
+          // (.claude/rules/providers.md, issue #1612). An ABSENT previous
+          // means the key is absent from the effective bag — there is nothing
+          // to retain, and an explicit `undefined` would survive the spread
+          // and read differently across `JSON.stringify` on the two sides of
+          // the next diff.
+          //
+          // Deliberately NOT paired with a `canonicalizeDesiredProperties`
+          // twin: a SKIP is not a pure function of the desired bag, and
+          // canonicalizing the desired side would compare a previous side
+          // holding a VALID `StreamSpecification` against a desired side with
+          // the key removed, derive a REMOVAL, and disable the live stream.
+          effectiveProperties = { ...properties };
+          if (previousProperties['StreamSpecification'] === undefined) {
+            delete effectiveProperties['StreamSpecification'];
+          } else {
+            effectiveProperties['StreamSpecification'] = previousProperties['StreamSpecification'];
+          }
         }
       }
       // Table-level on-demand ceilings, BOTH halves. The write half lives at
@@ -2379,6 +2462,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           StreamArn: finalDescribe.Table?.LatestStreamArn,
           TableName: physicalId,
         },
+        ...(effectiveProperties && { effectiveProperties }),
       };
     } catch (error) {
       if (error instanceof ProvisioningError) throw error;
