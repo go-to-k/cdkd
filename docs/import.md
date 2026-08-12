@@ -65,6 +65,13 @@ cdkd import MyStack \
   --resource MyBucket=my-bucket-name \
   --resource MyFn=my-function-name
 
+# Composite physical ids: some types are identified by several segments
+# joined with a `|` pipe. QUOTE the argument — an unquoted `|` is the shell
+# pipe operator and would truncate the id.
+cdkd import MyStack \
+  --resource 'MyGlueTable=my_database|my_table' \
+  --resource 'MyGetMethod=a1b2c3d4e5|xy9z8w|GET'
+
 # CDK CLI compat: read overrides from a JSON file.
 cdkd import MyStack --resource-mapping mapping.json
 # mapping.json: { "MyBucket": "my-bucket-name", "MyFn": "my-function-name" }
@@ -290,6 +297,17 @@ explicit `--resource <id>=<physicalId>` override mode — selective mode
 handles exactly this case. Resource types whose provider does not
 implement import are reported as `unsupported` and skipped.
 
+> [!IMPORTANT]
+> **A cdkd physical id is not always the id CloudFormation shows you.**
+> Types annotated `composite:` below are identified by several segments
+> joined with a `|` pipe (`<databaseName>|<tableName>`,
+> `<restApiId>|<resourceId>|<httpMethod>`, ...) — that composite is the
+> value `--resource` expects and the value `cdkd state show` /
+> `cdkd state resources` print. Quote it on a shell command line
+> (`--resource 'Id=db|table'`); no escaping is needed inside a
+> `--resource-mapping` JSON file. The full per-type format table lives in
+> [state-management.md](state-management.md#composite-pipe-delimited-physicalids).
+
 ### Auto-resolved (no `--resource` flag needed)
 
 These types implement `import()` and can resolve a physical id under `auto`
@@ -339,7 +357,7 @@ Types with an `import()` that auto-resolves via the above:
 - AWS::EC2::Subnet
 - AWS::EC2::SecurityGroup
 - AWS::EC2::NatGateway
-- AWS::EC2::EIP (`--resource <logicalId>=<allocationId>`)
+- AWS::EC2::EIP (accepts an `eipalloc-...` allocation id, a public IP, or the composite `<publicIp>|<allocationId>`; cdkd normalizes and stores the composite)
 - AWS::RDS::DBInstance
 - AWS::RDS::DBCluster
 - AWS::RDS::DBProxy
@@ -352,7 +370,7 @@ Types with an `import()` that auto-resolves via the above:
 - AWS::Neptune::DBCluster
 - AWS::Neptune::DBSubnetGroup
 - AWS::ECS::Cluster
-- AWS::ECS::Service
+- AWS::ECS::Service (accepts the service ARN — the form cdkd stores — or the composite `<clusterArn>|<serviceName>`)
 - AWS::ECS::TaskDefinition
 - AWS::CloudFront::Distribution
 - AWS::Cognito::UserPool
@@ -368,7 +386,7 @@ Types with an `import()` that auto-resolves via the above:
 - AWS::Route53::HostedZone
 - AWS::StepFunctions::StateMachine
 - AWS::Glue::Database
-- AWS::Glue::Table
+- AWS::Glue::Table (stored and displayed as the composite `<databaseName>|<tableName>`; `--resource` also accepts CloudFormation's bare table name, paired with the template's `DatabaseName`)
 - AWS::Glue::Job
 - AWS::Glue::Crawler
 - AWS::Glue::Connection
@@ -390,8 +408,8 @@ Types with an `import()` that auto-resolves via the above:
 - AWS::ServiceDiscovery::PublicDnsNamespace
 - AWS::S3Express::DirectoryBucket
 - AWS::S3Tables::TableBucket
-- AWS::S3Tables::Namespace
-- AWS::S3Tables::Table
+- AWS::S3Tables::Namespace (composite: `--resource <logicalId>=<tableBucketARN>|<namespaceName>`)
+- AWS::S3Tables::Table (composite: `--resource <logicalId>=<tableBucketARN>|<namespace>|<name>`)
 - AWS::S3Vectors::VectorBucket
 - AWS::DLM::LifecyclePolicy
 - AWS::FSx::FileSystem
@@ -424,16 +442,16 @@ physical id via `--resource`.
 - AWS::ApiGateway::Resource
 - AWS::ApiGateway::Deployment
 - AWS::ApiGateway::Stage
-- AWS::ApiGateway::Method
+- AWS::ApiGateway::Method (composite: `--resource <logicalId>=<restApiId>|<resourceId>|<httpMethod>`)
 - AWS::ApiGatewayV2::Stage
 - AWS::ApiGatewayV2::Integration
 - AWS::ApiGatewayV2::Route
 - AWS::ApiGatewayV2::Authorizer
 - AWS::AppSync::GraphQLSchema
-- AWS::AppSync::DataSource
-- AWS::AppSync::Resolver
-- AWS::AppSync::ApiKey
-- AWS::Route53::RecordSet
+- AWS::AppSync::DataSource (composite: `--resource <logicalId>=<apiId>|<name>`)
+- AWS::AppSync::Resolver (composite: `--resource <logicalId>=<apiId>|<typeName>|<fieldName>`)
+- AWS::AppSync::ApiKey (composite: `--resource <logicalId>=<apiId>|<apiKeyId>`)
+- AWS::Route53::RecordSet (composite: `--resource <logicalId>=<hostedZoneId>|<name>|<type>`, where `<name>` is the record name exactly as templated, trailing dot included)
 - AWS::ElasticLoadBalancingV2::Listener
 - AWS::EFS::MountTarget
 - AWS::RDS::DBProxyTargetGroup
@@ -449,10 +467,10 @@ have no taggable identity either. Provide the physical id via
 - AWS::SNS::TopicPolicy
 - AWS::SQS::QueuePolicy
 - AWS::S3::BucketPolicy
-- AWS::Lambda::Permission
+- AWS::Lambda::Permission (pass the bare statement id — the form cdkd stores; the legacy Cloud-Control-produced composite `<functionArn>|<statementId>` is also read correctly)
 - AWS::Lambda::EventSourceMapping
 - AWS::Lambda::Url
-- AWS::Lambda::EventInvokeConfig
+- AWS::Lambda::EventInvokeConfig (composite: `--resource <logicalId>=<functionName>|<qualifier>`; a bare function name is read as qualifier `$LATEST`)
 - AWS::CloudFormation::CustomResource
 - AWS::CloudFront::CloudFrontOriginAccessIdentity
 - AWS::BedrockAgentCore::Runtime (adopt by ARN via `--resource`)

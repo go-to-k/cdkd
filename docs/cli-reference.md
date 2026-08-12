@@ -1793,6 +1793,18 @@ The following SDK Providers ship with first-class `readCurrentState`
   `OriginAccessControlConfig` field names are identical, so the reverse
   mapping is a straight per-field copy)
 
+> [!NOTE]
+> **physicalId formats.** Several types in the lists above
+> (`AWS::ApiGateway::Method`, `AWS::Route53::RecordSet`,
+> `AWS::AppSync::DataSource` / `Resolver` / `ApiKey`, `AWS::Glue::Table`,
+> `AWS::S3Tables::Namespace` / `Table`, and the EC2 sub-resources) are
+> identified by a **composite, `|`-delimited physical id** rather than a
+> single scalar. That composite is what `cdkd state show` /
+> `cdkd state resources` print and what
+> `cdkd import --resource <logicalId>=<physicalId>` expects — quote it on
+> a shell command line. The per-type format table is in
+> [state-management.md](state-management.md#composite-pipe-delimited-physicalids).
+
 Tag drift is supported across the SDK Providers listed above (and the CC
 API fallback). cdkd filters out CDK / AWS-internal `aws:`-prefixed entries
 (notably `aws:cdk:path` and `aws:cdk:metadata`) from the AWS-current

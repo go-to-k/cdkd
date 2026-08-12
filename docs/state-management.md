@@ -514,6 +514,84 @@ Varies by resource type. Examples:
 
 **Note**: cdkd supports **all resource types supported by Cloud Control API**. The table above shows only a few examples. For resources not supported by Cloud Control API, custom SDK Providers can be implemented (see [provider-development.md](./provider-development.md)).
 
+**The physicalId is provider-defined, and it may differ from the value
+CloudFormation records for the same resource.** cdkd stores whatever the
+provider that created the resource returned — the value that provider needs
+to address the resource again on update / delete / drift. For most types
+that is the same scalar CloudFormation's `Ref` returns (a bucket name, a
+function ARN), but it is not guaranteed to be: see the composite forms
+below. Always read the id you must reuse from cdkd itself
+(`cdkd state show <stack>` / `cdkd state resources <stack>`) rather than
+from the AWS console or CloudFormation's `DescribeStackResources`.
+
+#### Composite (pipe-delimited) physicalIds
+
+Some resources have no single AWS-side identifier — a Glue table is only
+addressable as (database, table); an API Gateway method as (restApi,
+resource, httpMethod). For those types cdkd stores a **composite physical
+id: the identifying segments joined with a `|` pipe**. That is deliberately
+the same convention Cloud Control API uses for a multi-part
+`primaryIdentifier`, so a type that moves between an SDK Provider and the
+Cloud Control fallback keeps a compatible id (`AWS::EC2::EIP` is the
+explicit case — its SDK Provider reproduces the id shape the Cloud Control
+path had produced).
+
+The composite value is what state records, what `cdkd state show` /
+`cdkd state resources` print, and what
+`cdkd import --resource <logicalId>=<physicalId>` expects. A few types also
+accept a looser form on import — see
+[import.md](./import.md#auto-resolved-no---resource-flag-needed) for the
+per-type notes.
+
+| Resource Type | physicalId format |
+|---------------|-------------------|
+| `AWS::ApiGateway::Method` | `<restApiId>\|<resourceId>\|<httpMethod>` |
+| `AWS::AppSync::ApiKey` | `<apiId>\|<apiKeyId>` |
+| `AWS::AppSync::DataSource` | `<apiId>\|<name>` |
+| `AWS::AppSync::Resolver` | `<apiId>\|<typeName>\|<fieldName>` |
+| `AWS::EC2::EIP` | `<publicIp>\|<allocationId>` |
+| `AWS::EC2::NetworkAclEntry` | `<networkAclId>\|<ruleNumber>\|<egress>` (`egress` is `true` / `false`) |
+| `AWS::EC2::Route` | `<routeTableId>\|<destination>` (`destination` is the `DestinationCidrBlock`, `DestinationIpv6CidrBlock`, or `DestinationPrefixListId` the route declares) |
+| `AWS::EC2::SecurityGroupIngress` | `<groupId>\|<ipProtocol>\|<fromPort>\|<toPort>` (an omitted port is recorded as `-1`) |
+| `AWS::EC2::VPCGatewayAttachment` | `<internetGatewayId>\|<vpcId>` (note the order — CloudFormation's own identifier is `VpcId` first) |
+| `AWS::Glue::Table` | `<databaseName>\|<tableName>` |
+| `AWS::Lambda::EventInvokeConfig` | `<functionName>\|<qualifier>` (a bare function name is read as qualifier `$LATEST`) |
+| `AWS::Route53::RecordSet` | `<hostedZoneId>\|<name>\|<type>` |
+| `AWS::S3Tables::Namespace` | `<tableBucketARN>\|<namespaceName>` |
+| `AWS::S3Tables::Table` | `<tableBucketARN>\|<namespace>\|<name>` |
+
+Examples as they appear in a real state file (`resources` map, abridged):
+
+```json
+{
+  "MyGlueTable":  { "physicalId": "my_database|my_table" },
+  "MyGetMethod":  { "physicalId": "a1b2c3d4e5|xy9z8w|GET" },
+  "MyARecord":    { "physicalId": "Z1D633PJN98FT9|www.example.com.|A" },
+  "MyEip":        { "physicalId": "52.1.2.3|eipalloc-0abc123def456789a" }
+}
+```
+
+Two more types **accept** a composite id without producing one:
+
+- `AWS::ECS::Service` — cdkd stores the service ARN, but
+  `<clusterArn>|<serviceName>` is also accepted on `--resource`.
+- `AWS::Lambda::Permission` — cdkd stores the bare statement id; state
+  written by the older Cloud Control path may instead hold
+  `<functionArn>|<statementId>`, and both are read correctly.
+
+> [!IMPORTANT]
+> `|` is the shell pipe character. Always **quote** a composite id when you
+> pass it on a command line:
+>
+> ```bash
+> cdkd import MyStack --resource 'MyGlueTable=my_database|my_table'
+> ```
+>
+> Unquoted, the shell splits the command at the `|` and the import runs
+> against a truncated id. JSON mapping files
+> (`--resource-mapping` / `--resource-mapping-inline`) need no escaping —
+> `|` is an ordinary character in JSON.
+
 #### Purpose of attributes
 
 Stored to resolve attribute references via `Fn::GetAtt`.
