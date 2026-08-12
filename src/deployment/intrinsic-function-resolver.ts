@@ -739,6 +739,19 @@ interface AwsAccountInfo {
   accountId: string;
   region: string;
   partition: string;
+  /**
+   * `true` when STS could not be reached and `accountId` is the hardcoded
+   * `123456789012` fallback rather than this caller's real account (issue
+   * #1728 review; the fallback itself is issue #1730).
+   *
+   * Purely ADDITIVE and absent on the success path, so every existing consumer
+   * is unaffected. It exists because the fabricated id is INDISTINGUISHABLE
+   * from a real one downstream: an ARN built from it carries no wildcard, so
+   * `isPlaceholderArn` cannot catch it, and a consumer receives a
+   * confidently-wrong value. A caller that PERSISTS an ARN into state must
+   * consult this and refuse — see `AppSyncProvider.childImportAttributes`.
+   */
+  fabricated?: boolean;
 }
 
 let cachedAccountInfo: AwsAccountInfo | null = null;
@@ -801,6 +814,10 @@ export async function getAccountInfo(overrideRegion?: string): Promise<AwsAccoun
       accountId: process.env['AWS_ACCOUNT_ID'] || '123456789012',
       region: overrideRegion || process.env['AWS_REGION'] || 'us-east-1',
       partition: 'aws',
+      // Only when the id is the HARDCODED fallback. An `AWS_ACCOUNT_ID` the
+      // operator supplied is a real answer to "which account", so flagging it
+      // would make callers refuse a value that is fine.
+      ...(process.env['AWS_ACCOUNT_ID'] ? {} : { fabricated: true }),
     };
     return cachedAccountInfo;
   }

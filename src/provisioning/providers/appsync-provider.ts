@@ -258,8 +258,15 @@ export class AppSyncProvider implements ResourceProvider {
    * `CloudControlProvider` uses for its own ARN reconstruction, so this costs
    * at most one `GetCallerIdentity` per deploy.
    */
-  private async buildAppSyncArn(suffix: string): Promise<string> {
-    const region = this.providerRegion ?? (await this.getClient().config.region());
+  private async buildAppSyncArn(suffix: string, regionOverride?: string): Promise<string> {
+    // `regionOverride` is the IMPORT path's region (issue #1728 review):
+    // `import.ts` resolves it as `--region || AWS_REGION || 'us-east-1'` and
+    // keys the state record by it, which can differ from the client's own
+    // configured region (an unset `AWS_REGION` with a profile region set). The
+    // create / update paths pass nothing and keep deriving it from the client,
+    // which is the region their AWS calls actually went to.
+    const region =
+      regionOverride ?? this.providerRegion ?? (await this.getClient().config.region());
     const accountInfo = await getAccountInfo(region);
     // The PARTITION comes from the region, NOT from `accountInfo.partition` —
     // that field is hardcoded to `'aws'` (`intrinsic-function-resolver.ts`,
@@ -329,13 +336,17 @@ export class AppSyncProvider implements ResourceProvider {
    */
   private async childRefAttributes(
     resourceType: string,
-    physicalId: string
+    physicalId: string,
+    regionOverride?: string
   ): Promise<Record<string, unknown> | undefined> {
     const parts = physicalId.split('|');
     if (resourceType === 'AWS::AppSync::DataSource' && parts.length === 2) {
       const [apiId, name] = parts as [string, string];
       return {
-        DataSourceArn: await this.buildAppSyncArn(`apis/${apiId}/datasources/${name}`),
+        DataSourceArn: await this.buildAppSyncArn(
+          `apis/${apiId}/datasources/${name}`,
+          regionOverride
+        ),
         Name: name,
       };
     }
@@ -343,7 +354,8 @@ export class AppSyncProvider implements ResourceProvider {
       const [apiId, typeName, fieldName] = parts as [string, string, string];
       return {
         ResolverArn: await this.buildAppSyncArn(
-          `apis/${apiId}/types/${typeName}/resolvers/${fieldName}`
+          `apis/${apiId}/types/${typeName}/resolvers/${fieldName}`,
+          regionOverride
         ),
       };
     }
@@ -351,7 +363,7 @@ export class AppSyncProvider implements ResourceProvider {
       const [apiId, apiKeyId] = parts as [string, string];
       return {
         ApiKey: apiKeyId,
-        Arn: await this.buildAppSyncArn(`apis/${apiId}/apikey/${apiKeyId}`),
+        Arn: await this.buildAppSyncArn(`apis/${apiId}/apikey/${apiKeyId}`, regionOverride),
       };
     }
     return undefined;
@@ -393,22 +405,50 @@ export class AppSyncProvider implements ResourceProvider {
    * issue #1730 — that exposure is shared with the create path, not introduced
    * here.)
    *
-   * Never throws: an ARN build failure degrades to `{}`, which is the exact
-   * pre-#1728 behavior, and adopting the resource is worth more than its
-   * bookkeeping attribute. `childRefAttributes` already answers `undefined` for
-   * a mis-arity id, which degrades the same way rather than guessing.
+   * Never throws: a failure degrades to `{}`, which is the exact pre-#1728
+   * behavior, and adopting the resource is worth more than its bookkeeping
+   * attribute. `childRefAttributes` already answers `undefined` for a mis-arity
+   * id, which degrades the same way rather than guessing.
+   *
+   * The STS pre-check is load-bearing and a `try` alone does NOT replace it
+   * (issue #1728 review). `getAccountInfo` CATCHES its own STS failure and
+   * returns the hardcoded `123456789012`, so `buildAppSyncArn` does not throw —
+   * it returns `arn:aws:appsync:<region>:123456789012:apis/...`, which carries
+   * no wildcard, is therefore invisible to `isPlaceholderArn`, and would be
+   * PERSISTED as this resource's ARN. That is strictly worse than recording
+   * nothing: `Ref` / `Fn::GetAtt` would hand a consumer a confidently-wrong ARN
+   * instead of degrading. Recording is the one thing import does that the
+   * resolver cannot later second-guess, so this is where the fabrication has to
+   * be refused; the fabrication itself is issue #1730.
    */
   private async childImportAttributes(
     resourceType: string,
-    physicalId: string
+    physicalId: string,
+    region: string
   ): Promise<Record<string, unknown>> {
     try {
-      return (await this.childRefAttributes(resourceType, physicalId)) ?? {};
+      // The region comes from the IMPORT input, not from the client: `import.ts`
+      // resolves it as `--region || AWS_REGION || 'us-east-1'` and keys the
+      // state record by it, so deriving it from the client's own config can
+      // record an ARN naming a different region than the record it sits in.
+      const accountInfo = await getAccountInfo(region);
+      if (accountInfo.fabricated) {
+        this.logger.warn(
+          `Imported ${resourceType} (${physicalId}) but could not determine the AWS ` +
+            `account (STS is unreachable), so its ARN attribute was NOT recorded — ` +
+            `recording a fabricated one would be worse than recording none. ` +
+            `Ref will resolve to the compound physical id, and Fn::GetAtt on the ARN ` +
+            `will fail, until the resource's next update heals the record.`
+        );
+        return {};
+      }
+      return (await this.childRefAttributes(resourceType, physicalId, region)) ?? {};
     } catch (error) {
       this.logger.warn(
         `Imported ${resourceType} (${physicalId}) but could not build its ARN attribute: ` +
           `${error instanceof Error ? error.message : String(error)}. ` +
-          `Ref will resolve to the compound physical id until the next update.`
+          `Ref will resolve to the compound physical id, and Fn::GetAtt on the ARN will ` +
+          `fail, until the resource's next update heals the record.`
       );
       return {};
     }
@@ -3431,7 +3471,11 @@ export class AppSyncProvider implements ResourceProvider {
       if (input.knownPhysicalId) {
         return {
           physicalId: input.knownPhysicalId,
-          attributes: await this.childImportAttributes(input.resourceType, input.knownPhysicalId),
+          attributes: await this.childImportAttributes(
+            input.resourceType,
+            input.knownPhysicalId,
+            input.region
+          ),
         };
       }
       return null;

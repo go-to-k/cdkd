@@ -598,12 +598,17 @@ a segment at all: cdkd recovers the ARN from the attribute the provider records.
 the ARN from the composite id you supply — so an adopted child's `Ref` and
 `Fn::GetAtt` resolve immediately.
 
-Two records can still lack the attribute, and both degrade the same way — `Ref`
-falls back to the raw composite id, and `Fn::GetAtt` on the ARN attribute
+Some records can still lack the attribute, and they all degrade the same way —
+`Ref` falls back to the raw composite id, and `Fn::GetAtt` on the ARN attribute
 FAILS rather than serving a value CloudFormation would not return:
 
 - one written by a cdkd older than the fix that started recording the real ARN;
-- one whose import could not build the ARN (a warning names it at import time).
+- one whose import could not reach STS, so cdkd could not determine the account.
+  It deliberately records NOTHING rather than an ARN built from a placeholder
+  account id, which would look valid and be wrong;
+- one whose import could not build the ARN for some other reason.
+
+Each of the import cases names itself in a warning at import time.
 
 Re-deploy the stack once in either case: the resource's next in-place update
 records the corrected attribute.

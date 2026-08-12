@@ -28,24 +28,29 @@ vi.mock('../../../src/deployment/intrinsic-function-resolver.js', () => ({
   getAccountInfo: mockGetAccountInfo,
 }));
 
-vi.mock('../../../src/utils/logger.js', () => {
-  const childLogger = {
+// `vi.hoisted` so the tests can ASSERT on the child logger: a `const` declared
+// inside the mock factory is factory-scoped and invisible at module scope, and
+// a factory cannot close over an ordinary outer binding (the factory is hoisted
+// above it). The import-degradation arms below assert their warnings.
+const { childLogger } = vi.hoisted(() => ({
+  childLogger: {
     debug: vi.fn(),
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
     child: vi.fn().mockReturnThis(),
-  };
-  return {
-    getLogger: () => ({
-      child: () => childLogger,
-      debug: vi.fn(),
-      info: vi.fn(),
-      warn: vi.fn(),
-      error: vi.fn(),
-    }),
-  };
-});
+  },
+}));
+
+vi.mock('../../../src/utils/logger.js', () => ({
+  getLogger: () => ({
+    child: () => childLogger,
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+  }),
+}));
 
 import { AppSyncProvider } from '../../../src/provisioning/providers/appsync-provider.js';
 
@@ -71,6 +76,7 @@ describe('AppSyncProvider records real ARNs for the child types (issue #1681)', 
     provider = new AppSyncProvider();
     mockSend.mockReset();
     mockGetAccountInfo.mockReset();
+    childLogger.warn.mockClear();
     mockGetAccountInfo.mockResolvedValue({
       partition: 'aws',
       region: 'us-east-1',
@@ -379,6 +385,7 @@ describe('AppSyncProvider.import records the child ARN attributes (issue #1728)'
     provider = new AppSyncProvider();
     mockSend.mockReset();
     mockGetAccountInfo.mockReset();
+    childLogger.warn.mockClear();
     mockGetAccountInfo.mockResolvedValue({
       partition: 'aws',
       region: 'us-east-1',
@@ -427,12 +434,20 @@ describe('AppSyncProvider.import records the child ARN attributes (issue #1728)'
   // The recorded value must be usable, not merely present: the pre-#1681
   // spelling would satisfy a "records an ARN" assertion while being exactly the
   // value the resolver refuses.
-  it('records no wildcard-bearing ARN for an imported child', async () => {
+  //
+  // Asserted as a PREFIX rather than as `not.toContain(':*:')` (review
+  // finding): the negative form passes with the whole fix reverted, because
+  // `String(undefined)` is `'undefined'`, which contains no `:*:` either — an
+  // absence would have satisfied the fence it exists to be.
+  it('records a real, non-wildcard ARN for an imported child', async () => {
     const result = await provider.import(
       importInput('AWS::AppSync::DataSource', 'abcd1234|myDataSource')
     );
 
-    expect(String(result?.attributes?.['DataSourceArn'])).not.toContain(':*:');
+    const arn = result?.attributes?.['DataSourceArn'];
+    expect(typeof arn).toBe('string');
+    expect(arn as string).toMatch(/^arn:aws:appsync:us-east-1:123456789012:/);
+    expect(arn as string).not.toContain(':*:');
   });
 
   // Degradation arms — each must keep the pre-#1728 answer rather than guess.
@@ -447,10 +462,9 @@ describe('AppSyncProvider.import records the child ARN attributes (issue #1728)'
     expect(result).toEqual({ physicalId: id, attributes: {} });
   });
 
-  // Adoption is worth more than the bookkeeping attribute: an STS failure must
-  // warn and degrade, never fail the import. Same call the create path makes,
-  // so the same failure mode reaches it.
-  it('import SUCCEEDS with an empty attribute map when the ARN build fails', async () => {
+  // Adoption is worth more than the bookkeeping attribute: a failure must warn
+  // and degrade, never fail the import.
+  it('import SUCCEEDS with an empty attribute map when the ARN build throws', async () => {
     mockGetAccountInfo.mockRejectedValue(new Error('sts exploded'));
 
     const result = await provider.import(
@@ -458,6 +472,53 @@ describe('AppSyncProvider.import records the child ARN attributes (issue #1728)'
     );
 
     expect(result).toEqual({ physicalId: 'abcd1234|myDataSource', attributes: {} });
+    expect(childLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('could not build its ARN attribute')
+    );
+  });
+
+  // THE arm that matters, and the one a `try` alone does not cover (review
+  // finding). The real `getAccountInfo` CATCHES its own STS failure and returns
+  // the hardcoded `123456789012` with `fabricated: true` — it does NOT reject —
+  // so the test above pins a path production cannot reach on an STS outage.
+  //
+  // A fabricated ARN carries no wildcard, so `isPlaceholderArn` can never catch
+  // it downstream: recording it would hand every later `Ref` / `Fn::GetAtt` a
+  // confidently-wrong ARN. Recording NOTHING is the honest answer.
+  it('import records NO ARN when STS was unreachable and the account is fabricated', async () => {
+    mockGetAccountInfo.mockResolvedValue({
+      accountId: '123456789012',
+      region: 'us-east-1',
+      partition: 'aws',
+      fabricated: true,
+    });
+
+    const result = await provider.import(
+      importInput('AWS::AppSync::DataSource', 'abcd1234|myDataSource')
+    );
+
+    expect(result).toEqual({ physicalId: 'abcd1234|myDataSource', attributes: {} });
+    expect(childLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('could not determine the AWS account')
+    );
+  });
+
+  // The ARN must name the region the STATE RECORD is keyed by, which `import`
+  // resolves itself — not the region the provider's client happens to hold.
+  it('builds the ARN from the import input region, not the client region', async () => {
+    mockGetAccountInfo.mockImplementation((region?: string) =>
+      Promise.resolve({ accountId: '123456789012', region: region ?? 'us-east-1', partition: 'aws' })
+    );
+
+    const result = await provider.import({
+      ...importInput('AWS::AppSync::DataSource', 'abcd1234|myDataSource'),
+      region: 'eu-west-1',
+    });
+
+    expect(mockGetAccountInfo).toHaveBeenCalledWith('eu-west-1');
+    expect(result?.attributes?.['DataSourceArn']).toBe(
+      'arn:aws:appsync:eu-west-1:123456789012:apis/abcd1234/datasources/myDataSource'
+    );
   });
 
   // Unchanged by #1728: with no caller-supplied id there is nothing to adopt,

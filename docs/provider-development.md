@@ -974,6 +974,15 @@ What the method RETURNS matters as much as how it resolves the id:
 > physical id is preferred over a readback when every segment is already in the
 > id (it costs no per-resource API call), and the build must never fail the
 > import — warn and degrade to `{}`, which is exactly the pre-fix behavior.
+>
+> Two things about reconstructing, both found by review rather than by tests:
+> derive the region from `ResourceImportInput.region` (what `import` keyed the
+> STATE RECORD by), not from the provider client's own config, or the ARN can
+> name a different region than the record holding it. And **a `try` does not
+> cover the credentials failure** — `getAccountInfo` CATCHES its own STS error
+> and returns the hardcoded `123456789012` (flagged `fabricated`), so nothing
+> throws and a confidently-wrong ARN gets PERSISTED, carrying no wildcard for any
+> downstream guard to catch. Check the flag and record nothing.
 
 The method follows a single shape:
 
