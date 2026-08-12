@@ -232,15 +232,38 @@ export class DiffCalculator {
         // path never calls the provider — so without this, a template edit to a
         // LOSING key is discarded with zero output, and a user "fixing" the
         // wrong destination key would see cdkd report nothing at all.
-        if (
-          canonicalizeProperties &&
-          !this.valuesEqual(desiredPropsForCompare, resolvedDesiredProps)
-        ) {
+        //
+        // Announce only a LOSSY narrowing — one that DROPS a declared key. A
+        // narrowing that rewrites a value IN PLACE (issue #1633: an unquoted
+        // YAML `IpProtocol: -1` is stringified to `'-1'` before it is sent) is
+        // not lossy, and every clause of the message below is false for it:
+        // the value IS sent, it is NOT ignored, and a change to it DOES take
+        // effect. Warning there fired on every `cdkd diff` and every `cdkd
+        // deploy` of an otherwise-unchanged stack, telling the user their
+        // template was broken when it was not.
+        //
+        // The key-set test is what separates the two, and it needs no provider
+        // opt-in: `narrowRouteDestinations` deletes the losing destination
+        // keys, while `narrowIngressIpProtocol` returns the same key set.
+        const droppedKeys = canonicalizeProperties
+          ? Object.keys(resolvedDesiredProps).filter((key) => !(key in desiredPropsForCompare))
+          : [];
+        if (droppedKeys.length > 0) {
           this.logger.warn(
             `${logicalId} (${desiredResource.Type}): part of the declared properties cannot be ` +
               `sent as declared and is ignored when comparing against deployed state — the ` +
-              `provider narrows them. Fix the template to declare only what the resource ` +
-              `supports; until then changes to the ignored keys have no effect.`
+              `provider narrows them (${droppedKeys.join(', ')}). Fix the template to declare ` +
+              `only what the resource supports; until then changes to the ignored keys have ` +
+              `no effect.`
+          );
+        } else if (
+          canonicalizeProperties &&
+          !this.valuesEqual(desiredPropsForCompare, resolvedDesiredProps)
+        ) {
+          this.logger.debug(
+            `${logicalId} (${desiredResource.Type}): the provider normalizes part of the ` +
+              `declared properties before sending them; the comparison uses the normalized ` +
+              `form. Nothing is dropped.`
           );
         }
 

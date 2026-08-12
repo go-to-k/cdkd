@@ -5831,6 +5831,28 @@ export function flattenIpPermissions(perms: IpPermission[], direction: SgDirecti
  * Direction-sensitive: ingress uses `Source*` fields, egress uses
  * `Destination*`.
  */
+/**
+ * The `IpProtocol` component of a security-group rule identity key.
+ *
+ * A NUMBER is stringified so a record written BEFORE issue #1633 still matches:
+ * AWS always reports the protocol as a string, so a legacy record holding the
+ * number `-1` keyed as `{"p":-1}` against AWS's `{"p":"-1"}` and matched
+ * nothing — `readSecurityGroupIngressCurrentState` returned `undefined` and
+ * `cdkd drift` reported the rule as GONE, forever. The canonicalizer makes such
+ * a record's diff NO_CHANGE, so no deploy ever rewrites it either; normalizing
+ * at the KEY is what heals the existing population with no migration.
+ *
+ * Anything that is neither a string nor a number is passed through UNCHANGED
+ * rather than blanket-`String()`-ed: a malformed object would otherwise key as
+ * the useless `'[object Object]'`, silently collapsing every malformed record
+ * onto one bucket. Such a rule matches nothing either way — this keeps the
+ * non-match honest instead of manufacturing a fake identity.
+ */
+function sgProtocolKey(value: unknown): unknown {
+  if (typeof value === 'number') return String(value);
+  return value ?? '-1';
+}
+
 function sgRuleKey(rule: CfnSgRule, direction: SgDirection): string {
   const peerKey =
     direction === 'egress' ? rule['DestinationSecurityGroupId'] : rule['SourceSecurityGroupId'];
@@ -5838,7 +5860,15 @@ function sgRuleKey(rule: CfnSgRule, direction: SgDirection): string {
     direction === 'egress' ? rule['DestinationPrefixListId'] : rule['SourcePrefixListId'];
   const peerOwner = direction === 'ingress' ? rule['SourceSecurityGroupOwnerId'] : undefined;
   return JSON.stringify({
-    p: rule['IpProtocol'] ?? '-1',
+    // STRINGIFIED so a record written BEFORE issue #1633 still matches. AWS
+    // always reports the protocol as a string, so a legacy record holding the
+    // NUMBER `-1` keyed as `{"p":-1}` against AWS's `{"p":"-1"}` and matched
+    // nothing — `readSecurityGroupIngressCurrentState` returned `undefined`
+    // and `cdkd drift` reported the rule as gone, forever. The canonicalizer
+    // makes such a record's diff NO_CHANGE, so no deploy ever rewrites it
+    // either; normalizing at the KEY is what heals the existing population
+    // with no migration.
+    p: sgProtocolKey(rule['IpProtocol']),
     f: rule['FromPort'] ?? null,
     t: rule['ToPort'] ?? null,
     c4: rule['CidrIp'] ?? null,

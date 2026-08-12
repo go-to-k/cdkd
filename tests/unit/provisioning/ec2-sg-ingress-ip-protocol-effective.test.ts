@@ -349,4 +349,50 @@ describe('EC2Provider AWS::EC2::SecurityGroupIngress IpProtocol effectivePropert
       expect(canonical).toEqual({ RouteTableId: 'rtb-1', DestinationCidrBlock: '10.0.0.0/16' });
     });
   });
+
+  describe('the readback key heals PRE-#1633 records', () => {
+    // A record written before this change holds the NUMBER. AWS always reports
+    // the protocol as a string, so `sgRuleKey` keyed `{"p":-1}` against AWS's
+    // `{"p":"-1"}`, matched nothing, and `readSecurityGroupIngressCurrentState`
+    // returned undefined — `cdkd drift` reported the rule GONE, forever. And
+    // because the canonicalizer now makes such a record's diff NO_CHANGE, no
+    // deploy ever rewrites it either, so normalizing at the KEY is the only
+    // thing that heals the existing population.
+    const liveRule = {
+      IpPermissions: [
+        {
+          IpProtocol: '-1',
+          IpRanges: [{ CidrIp: '10.0.0.0/16' }],
+        },
+      ],
+    };
+
+    it('matches a legacy record whose IpProtocol is the NUMBER -1', async () => {
+      mockSend.mockResolvedValue({ SecurityGroups: [liveRule] });
+
+      const read = await provider.readCurrentState!(
+        `${GROUP_ID}|-1|-1|-1`,
+        'Ingress',
+        RESOURCE_TYPE,
+        // The legacy shape: a NUMBER, as written by a pre-#1633 binary.
+        { GroupId: GROUP_ID, IpProtocol: -1, CidrIp: '10.0.0.0/16' }
+      );
+
+      expect(read).toBeDefined();
+      expect(read).toMatchObject({ IpProtocol: '-1', CidrIp: '10.0.0.0/16' });
+    });
+
+    it('still matches a record already holding the STRING', async () => {
+      mockSend.mockResolvedValue({ SecurityGroups: [liveRule] });
+
+      const read = await provider.readCurrentState!(
+        `${GROUP_ID}|-1|-1|-1`,
+        'Ingress',
+        RESOURCE_TYPE,
+        { GroupId: GROUP_ID, IpProtocol: '-1', CidrIp: '10.0.0.0/16' }
+      );
+
+      expect(read).toBeDefined();
+    });
+  });
 });
