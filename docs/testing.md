@@ -1243,6 +1243,23 @@ next-deploy `--revert-failed` note, `cdkd rollback --force --revert-failed`
 consuming it, and the NO-CHANGE fix-forward deploy clearing the journal
 (issues #1208 / #1198 / PR #1212).
 
+For the rollback arm that re-creates a REPLACED resource, see
+`tests/integration/rollback-replay-effective-props/` (scenario tag
+`rollback-replay-effective-properties`, issue #1682). It is deliberately a
+different branch from `rollback-failure-injection`, which rolls back CREATEs
+(a delete): here the resource was replaced before the failure, so rollback
+re-creates the OLD one from `previousState.properties` — a cdkd STATE record,
+which can carry a malformed block an older binary wrote and which the provider
+WARNS about and SUBSTITUTES rather than refusing (the #1544 `replayWarn`
+downgrade). The fixture deploys an `AWS::EC2::Route`, injects a second
+destination key into the state record, flips the create-only destination with
+a failure wired AFTER the route, and asserts the post-rollback record kept the
+SUBSTITUTED bag and that two consecutive `cdkd drift` runs converge. The
+vehicle is a route rather than the `AWS::S3::Bucket` the issue names because a
+bucket's reverse-replacement re-create has to re-acquire a just-deleted
+GLOBALLY unique name, which would make the fixture flaky for a reason
+unrelated to what it tests.
+
 ### Drift revert E2E (`tests/integration/drift-revert/`)
 
 End-to-end real-AWS test for `cdkd drift` + `cdkd drift --revert`.

@@ -1089,6 +1089,7 @@
         "redshift-cluster-getatt",
         "remove-protection",
         "rollback-failure-injection",
+        "rollback-replay-effective-props",
         "sg-circular-dependency",
         "vpc-lambda",
         "vpc-lambda-cr-race",
@@ -1218,6 +1219,9 @@
         ],
         "rollback-failure-injection": [
           "l2"
+        ],
+        "rollback-replay-effective-props": [
+          "l1"
         ],
         "sg-circular-dependency": [
           "l2"
@@ -1484,6 +1488,7 @@
         "redshift-cluster-getatt",
         "remove-protection",
         "rollback-failure-injection",
+        "rollback-replay-effective-props",
         "sg-circular-dependency",
         "vpc-lambda",
         "vpc-lambda-cr-race",
@@ -1615,6 +1620,10 @@
         "rollback-failure-injection": [
           "l2"
         ],
+        "rollback-replay-effective-props": [
+          "l1",
+          "literal"
+        ],
         "sg-circular-dependency": [
           "l2"
         ],
@@ -1673,6 +1682,7 @@
         "redshift-cluster-getatt",
         "remove-protection",
         "rollback-failure-injection",
+        "rollback-replay-effective-props",
         "sg-circular-dependency",
         "vpc-lambda",
         "vpc-lambda-cr-race",
@@ -1802,6 +1812,9 @@
         ],
         "rollback-failure-injection": [
           "l2"
+        ],
+        "rollback-replay-effective-props": [
+          "l1"
         ],
         "sg-circular-dependency": [
           "l2"
@@ -2408,6 +2421,7 @@
         "redshift-cluster-getatt",
         "remove-protection",
         "rollback-failure-injection",
+        "rollback-replay-effective-props",
         "servicediscovery",
         "sg-circular-dependency",
         "vpc-lambda",
@@ -2547,6 +2561,9 @@
         "rollback-failure-injection": [
           "l2"
         ],
+        "rollback-replay-effective-props": [
+          "l1"
+        ],
         "servicediscovery": [
           "l1"
         ],
@@ -2608,6 +2625,7 @@
         "redshift-cluster-getatt",
         "remove-protection",
         "rollback-failure-injection",
+        "rollback-replay-effective-props",
         "sg-circular-dependency",
         "vpc-lambda",
         "vpc-lambda-cr-race",
@@ -2737,6 +2755,9 @@
         ],
         "rollback-failure-injection": [
           "l2"
+        ],
+        "rollback-replay-effective-props": [
+          "l1"
         ],
         "sg-circular-dependency": [
           "l2"
@@ -4758,6 +4779,7 @@
         "outputs-only-export",
         "propagation-races-2",
         "recreate-via-cc-api",
+        "rollback-replay-effective-props",
         "s3-analytics-inventory",
         "s3-cloudfront",
         "s3-event-notification",
@@ -4886,6 +4908,9 @@
         ],
         "recreate-via-cc-api": [
           "l1"
+        ],
+        "rollback-replay-effective-props": [
+          "literal"
         ],
         "s3-analytics-inventory": [
           "l1"
@@ -5249,6 +5274,7 @@
         "rollback-command",
         "rollback-deletion-policy-snapshot",
         "rollback-failure-injection",
+        "rollback-replay-effective-props",
         "rollback-sqs-cooldown",
         "scheduler-custom-group",
         "sns-inline-subscription",
@@ -5347,6 +5373,9 @@
           "literal"
         ],
         "rollback-failure-injection": [
+          "l1"
+        ],
+        "rollback-replay-effective-props": [
           "l1"
         ],
         "rollback-sqs-cooldown": [

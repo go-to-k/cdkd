@@ -214,6 +214,24 @@ you, into `observedProperties ?? properties`. So the provider-side rule is
 unchanged (return the COMPLETE bag you sent); do not try to return a patch for
 one caller's benefit.
 
+**The same held for the `create()` side, and the replay-CREATE row below
+depended on the missing half** (issue #1682). The deploy engine honoured
+`effectiveProperties` on create from the start, but the rollback executor's
+reverse-replacement re-create — the ONE create caller whose input bag is a STATE
+record, and therefore the one that can carry the malformed block a provider
+warns about and SUBSTITUTES under the #1544 `replayWarn` downgrade — typed its
+local result as `{ physicalId, attributes? }` and rebuilt the record from
+`previousState.properties`. So every provider that reported a substitution from
+its replay-CREATE arm was announcing it into a void, and the row below was
+unreachable in production for ALL of them (`AWS::DynamoDB::GlobalTable`'s
+`StreamSpecification` and `AWS::S3::Bucket`'s create arm were the two shipped
+consumers). It now mirrors `recordAfterRollbackUpdate`: the bag handed to
+`create()` IS `previousState.properties`, so a returned `effectiveProperties`
+replaces the record's `properties` wholesale, and reporting none keeps the
+previous bag rather than blanking the record. A provider adding a new
+replay-CREATE substitution needs no engine change — but do not re-narrow that
+local type, or the wiring silently disappears again.
+
 **`effectiveProperties` alone BREAKS the next deploy — implement
 `canonicalizeDesiredProperties` with it.** The two are halves of one decision
 and shipping the first without the second is worse than shipping neither.
