@@ -376,8 +376,10 @@ control the SDK's default region for provisioning.
 The following resources declare mutually exclusive properties:
   - BadRoute (AWS::EC2::Route) declares DestinationCidrBlock and DestinationIpv6CidrBlock
       CloudFormation and the EC2 CreateRoute API accept exactly one destination per route.
-      Only DestinationCidrBlock would reach AWS, so removing DestinationIpv6CidrBlock leaves
-      the intended resource unchanged.
+      cdkd would send only DestinationCidrBlock; DestinationIpv6CidrBlock would be dropped.
+      Deleting the dropped keys changes nothing cdkd sends — but if the LIVE resource was
+      created from one of them, making DestinationCidrBlock the sole value is a create-only
+      change that REPLACES it.
       Declare at most one of: DestinationCidrBlock / DestinationIpv6CidrBlock / DestinationPrefixListId
 ```
 
@@ -393,12 +395,18 @@ already carries such a resource used to deploy silently (the diff classifies
 `NO_CHANGE`, so the provider's own refusal was never reached) while AWS held only
 one of the declared values.
 
+Note that `cdkd diff` does **not** report this shape today — it renders no
+change at all, and only `cdkd deploy` refuses. That gap is tracked as
+[#1639](https://github.com/go-to-k/cdkd/issues/1639).
+
 #### Solutions
 
 **1. Remove the extra properties**
 
-When the message names the key that "would reach AWS", removing the others cannot
-change the deployed resource — the service was never sent them:
+Delete every key except the one the message says cdkd would send. That edit
+changes nothing cdkd sends. **Check what the resource is live on first**,
+though: if it was created from one of the dropped keys, promoting a different
+key to sole destination is a create-only change and REPLACES the resource:
 
 ```typescript
 new ec2.CfnRoute(this, 'Route', {

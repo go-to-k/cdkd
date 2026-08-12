@@ -170,7 +170,7 @@ describe('findMutuallyExclusiveViolations', () => {
       // would flip this to false — which is otherwise invisible.
       expect(violation!.winnerCertain).toBe(true);
       expect(buildMutuallyExclusiveMessage('R', violation!)).toContain(
-        'Only DestinationCidrBlock would reach AWS'
+        'cdkd would send only DestinationCidrBlock'
       );
     });
   });
@@ -190,10 +190,15 @@ describe('buildMutuallyExclusiveMessage', () => {
     expect(message).toContain('exactly one destination per route');
   });
 
-  it('names the key that would reach AWS so the remedy is a safe edit', () => {
+  it('names the key that would be SENT, without promising the live resource is unchanged', () => {
     const message = buildMutuallyExclusiveMessage('MyRoute', violation!);
-    expect(message).toContain('Only DestinationCidrBlock would reach AWS');
-    expect(message).toContain('removing DestinationIpv6CidrBlock');
+    expect(message).toContain('cdkd would send only DestinationCidrBlock');
+    expect(message).toContain('DestinationIpv6CidrBlock would be dropped');
+    // Pre-flight has no state, so it must NOT claim the deployed resource is
+    // unaffected: for a route live on the dropped key, making the winner the
+    // sole destination is a create-only change that replaces it.
+    expect(message).toContain('REPLACES it');
+    expect(message).not.toContain('leaves the intended resource unchanged');
   });
 
   it('renders all THREE keys with the right separators', () => {
@@ -208,7 +213,7 @@ describe('buildMutuallyExclusiveMessage', () => {
     expect(message).toContain(
       'declares DestinationCidrBlock and DestinationIpv6CidrBlock and DestinationPrefixListId'
     );
-    expect(message).toContain('removing DestinationIpv6CidrBlock / DestinationPrefixListId');
+    expect(message).toContain('DestinationIpv6CidrBlock / DestinationPrefixListId would be dropped');
   });
 
   it('omits the winner note for a rule that does not declare firstDeclaredWins', () => {
@@ -218,7 +223,7 @@ describe('buildMutuallyExclusiveMessage', () => {
       declared: ['A', 'B'],
       winnerCertain: true,
     });
-    expect(message).not.toContain('would reach AWS');
+    expect(message).not.toContain('cdkd would send only');
     expect(message).toContain('Declare at most one of: A / B');
   });
 
@@ -234,7 +239,7 @@ describe('buildMutuallyExclusiveMessage', () => {
     expect(uncertain!.declared).toEqual(['DestinationIpv6CidrBlock', 'DestinationPrefixListId']);
     expect(uncertain!.winnerCertain).toBe(false);
     const message = buildMutuallyExclusiveMessage('MyRoute', uncertain!);
-    expect(message).not.toContain('would reach AWS');
+    expect(message).not.toContain('cdkd would send only');
     // The remedy is unaffected — only the winner claim is dropped.
     expect(message).toContain('Declare at most one of');
   });
@@ -248,7 +253,7 @@ describe('buildMutuallyExclusiveMessage', () => {
     });
     expect(certain!.winnerCertain).toBe(true);
     expect(buildMutuallyExclusiveMessage('MyRoute', certain!)).toContain(
-      'Only DestinationIpv6CidrBlock would reach AWS'
+      'cdkd would send only DestinationIpv6CidrBlock'
     );
   });
 });

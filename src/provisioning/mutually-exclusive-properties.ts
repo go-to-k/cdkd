@@ -91,12 +91,17 @@ export const MUTUALLY_EXCLUSIVE_PROPERTIES: ReadonlyMap<string, readonly Mutuall
       'AWS::EC2::Route',
       [
         {
-          // Kept in sync with `ROUTE_DESTINATION_KEYS` in
-          // `src/provisioning/providers/ec2-provider.ts` (module-private there).
+          // Hand-duplicated from `ROUTE_DESTINATION_KEYS` in
+          // `src/provisioning/providers/ec2-provider.ts` (module-private
+          // there). Exporting it would remove the duplication AND the two
+          // fence tests below, but would make this pre-flight module — loaded
+          // on every deploy before any provider is chosen — import a 5k-line
+          // provider that pulls in the whole EC2 SDK client. The duplication is
+          // the cheaper trade, and it is fenced rather than trusted:
           // `tests/unit/provisioning/mutually-exclusive-properties.test.ts`
-          // pins every name in this table against the CFn schema fixtures, so a
-          // rename on either side is caught by a failing test rather than by a
-          // silently dead rule.
+          // pins these names against the type's CFn schema fixture (rename)
+          // AND pins the list + ORDER against `narrowRouteDestinations` over
+          // that whole schema (reorder, addition, removal).
           properties: [
             'DestinationCidrBlock',
             'DestinationIpv6CidrBlock',
@@ -212,14 +217,20 @@ export function findViolationsForRules(
 /**
  * Render one violation as a per-resource error line.
  *
- * For a `firstDeclaredWins` rule the message names the key that WOULD reach
- * AWS, because that turns the remedy from a guess into a safe edit: deleting
- * the other keys cannot change the deployed resource, since the service was
- * never sent them.
+ * For a `firstDeclaredWins` rule the message names the key that would actually
+ * be SENT, which is what makes the remedy actionable.
  *
- * That sentence is omitted when {@link MutuallyExclusiveViolation.winnerCertain}
- * is false — naming a winner the raw template does not determine would be a
- * confident falsehood, and the user could act on it.
+ * It deliberately stops short of promising the deployed resource is unaffected.
+ * Pre-flight has no state, so it cannot know which destination the LIVE
+ * resource was created from: for a route deployed with only
+ * `DestinationIpv6CidrBlock` whose template later GAINS
+ * `DestinationCidrBlock`, deleting the IPv6 key makes the CIDR key the sole
+ * destination — a create-only change that REPLACES the route. Saying "removing
+ * the others leaves the resource unchanged" would be false exactly there.
+ *
+ * The sentence is omitted entirely when
+ * {@link MutuallyExclusiveViolation.winnerCertain} is false — naming a winner
+ * the raw template does not determine would be a confident falsehood.
  */
 export function buildMutuallyExclusiveMessage(
   logicalId: string,
@@ -228,7 +239,9 @@ export function buildMutuallyExclusiveMessage(
   const { resourceType, rule, declared, winnerCertain } = violation;
   const winnerNote =
     rule.firstDeclaredWins && winnerCertain
-      ? ` Only ${declared[0]} would reach AWS, so removing ${declared.slice(1).join(' / ')} leaves the intended resource unchanged.`
+      ? ` cdkd would send only ${declared[0]}; ${declared.slice(1).join(' / ')} would be dropped. ` +
+        `Deleting the dropped keys changes nothing cdkd sends — but if the LIVE resource was created ` +
+        `from one of them, making ${declared[0]} the sole value is a create-only change that REPLACES it.`
       : '';
   return (
     `  - ${logicalId} (${resourceType}) declares ${declared.join(' and ')}\n` +
