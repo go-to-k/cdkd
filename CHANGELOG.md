@@ -1,3 +1,10 @@
+## [0.281.13](https://github.com/go-to-k/cdkd/compare/v0.281.12...v0.281.13) (2026-08-12)
+
+
+### Bug Fixes
+
+* **appsync:** record the child ARN on import, and refuse a placeholder ARN via Fn::GetAtt ([#1737](https://github.com/go-to-k/cdkd/issues/1737)) ([55fef33](https://github.com/go-to-k/cdkd/commit/55fef338f6215351eaadd146f87451a6b7113010))
+
 ## [0.281.12](https://github.com/go-to-k/cdkd/compare/v0.281.11...v0.281.12) (2026-08-12)
 
 
