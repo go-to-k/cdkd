@@ -10,9 +10,11 @@
  * re-exports it so every existing call site is unchanged; a provisioning
  * provider importing from `src/local/**` would invert the layering.
  *
- * NOTE this is the mapping to prefer over `getAccountInfo().partition`
- * (`src/deployment/intrinsic-function-resolver.ts`), which is hardcoded to
- * `'aws'` and says so in its own comment.
+ * NOTE `getAccountInfo().partition`
+ * (`src/deployment/intrinsic-function-resolver.ts`) was hardcoded to `'aws'`
+ * until issue #1730, which made it derive through THIS helper — so the two now
+ * agree and either spelling is correct. Prefer this one where a region is
+ * already in hand, since it needs no STS round trip.
  */
 
 /**
