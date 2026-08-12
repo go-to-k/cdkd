@@ -6,6 +6,7 @@ import {
   DeleteNamespaceCommand,
   CreateTableCommand,
   DeleteTableCommand,
+  GetNamespaceCommand,
   GetTableBucketCommand,
   GetTableCommand,
   ListNamespacesCommand,
@@ -26,6 +27,82 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
+
+/**
+ * Parse cdkd's composite namespace physicalId `<tableBucketARN>|<namespace>`.
+ *
+ * Returns `undefined` for any other shape. Exactly two non-empty segments are
+ * required: every other method on the provider splits the stored id on `|` and
+ * indexes segments 0 and 1, so a wrong-arity id recorded verbatim produces a
+ * state row that cannot be updated, deleted or read back (issue #1668).
+ */
+export function parseNamespaceCompositeId(
+  physicalId: string
+): { tableBucketARN: string; namespace: string } | undefined {
+  const parts = physicalId.split('|');
+  if (parts.length !== 2) return undefined;
+  const [tableBucketARN, namespace] = parts as [string, string];
+  if (!tableBucketARN || !namespace) return undefined;
+  return { tableBucketARN, namespace };
+}
+
+/** Parse cdkd's composite table physicalId `<tableBucketARN>|<namespace>|<name>`. */
+export function parseTableCompositeId(
+  physicalId: string
+): { tableBucketARN: string; namespace: string; name: string } | undefined {
+  const parts = physicalId.split('|');
+  if (parts.length !== 3) return undefined;
+  const [tableBucketARN, namespace, name] = parts as [string, string, string];
+  if (!tableBucketARN || !namespace || !name) return undefined;
+  return { tableBucketARN, namespace, name };
+}
+
+/** Read a non-blank string property, tolerating a malformed properties bag. */
+function readStringProperty(
+  properties: Record<string, unknown> | undefined,
+  key: string
+): string | undefined {
+  const value = properties?.[key];
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+/**
+ * Rebuild a namespace's identity from the template.
+ *
+ * `Namespace` is emitted as a plain string by CDK 2.x's `CfnNamespace` and as
+ * a singleton array by the CFn docs / SDK shape, so accept both — the same
+ * tolerance `createNamespace` already applies.
+ */
+function namespaceIdentityFromProperties(
+  properties: Record<string, unknown> | undefined
+): { tableBucketARN: string; namespace: string } | undefined {
+  const tableBucketARN = readStringProperty(properties, 'TableBucketARN');
+  const raw = properties?.['Namespace'];
+  const namespace =
+    Array.isArray(raw) && typeof raw[0] === 'string' && raw[0].length > 0
+      ? raw[0]
+      : readStringProperty(properties, 'Namespace');
+  if (!tableBucketARN || !namespace) return undefined;
+  return { tableBucketARN, namespace };
+}
+
+/**
+ * Rebuild a table's identity from the template.
+ *
+ * The name is read as `TableName ?? Name`, mirroring `createTable` exactly —
+ * if the two disagreed, a template using the legacy spelling would import
+ * under an identity the create path would never produce.
+ */
+function tableIdentityFromProperties(
+  properties: Record<string, unknown> | undefined
+): { tableBucketARN: string; namespace: string; name: string } | undefined {
+  const tableBucketARN = readStringProperty(properties, 'TableBucketARN');
+  const namespace = readStringProperty(properties, 'Namespace');
+  const name =
+    readStringProperty(properties, 'TableName') ?? readStringProperty(properties, 'Name');
+  if (!tableBucketARN || !namespace || !name) return undefined;
+  return { tableBucketARN, namespace, name };
+}
 
 /**
  * SDK Provider for AWS S3 Tables resources
@@ -796,41 +873,126 @@ export class S3TablesProvider implements ResourceProvider {
     return null;
   }
 
-  // eslint-disable-next-line @typescript-eslint/require-await -- explicit-override-only intentionally has no AWS calls
+  /**
+   * Adopt an existing namespace (issue #1668).
+   *
+   * cdkd's physicalId is `<tableBucketARN>|<namespaceName>` and so is
+   * CloudFormation's — the registry declares a two-field
+   * `primaryIdentifier` (`/properties/TableBucketARN` + `/properties/Namespace`,
+   * verified live us-east-1 2026-08-12) and Cloud Control joins a multi-part
+   * identifier with `|`. So the two agree and no foreign form has to be
+   * accepted; what was missing is that a WRONG-ARITY id was recorded verbatim,
+   * after which every other method on this provider — which all split the
+   * stored id on `|` — failed against a state row that looked adopted.
+   *
+   * A malformed override is therefore rebuilt from the template properties and
+   * VERIFIED, and an unverifiable namespace returns `null`
+   * (`skipped-not-found`), which is loud and leaves state clean.
+   */
   private async importNamespace(input: ResourceImportInput): Promise<ResourceImportResult | null> {
-    if (input.knownPhysicalId) {
-      return { physicalId: input.knownPhysicalId, attributes: {} };
+    if (!input.knownPhysicalId) return null;
+
+    const identity =
+      parseNamespaceCompositeId(input.knownPhysicalId) ??
+      namespaceIdentityFromProperties(input.properties);
+    if (!identity) {
+      this.logger.warn(
+        `S3 Tables Namespace ${input.logicalId}: physical id '${input.knownPhysicalId}' is not '<tableBucketARN>|<namespace>' and the template does not supply TableBucketARN + Namespace; skipping import.`
+      );
+      return null;
     }
-    return null;
+
+    try {
+      await this.getClient().send(
+        new GetNamespaceCommand({
+          tableBucketARN: identity.tableBucketARN,
+          namespace: identity.namespace,
+        })
+      );
+    } catch (err) {
+      if (err instanceof NotFoundException) return null;
+      throw err;
+    }
+
+    return {
+      physicalId: `${identity.tableBucketARN}|${identity.namespace}`,
+      attributes: {},
+    };
   }
 
+  /**
+   * Adopt an existing table (issue #1668).
+   *
+   * Unlike the namespace above, the two id shapes DISAGREE here: cdkd's
+   * physicalId is `<tableBucketARN>|<namespace>|<name>` while the registry
+   * declares a SINGLE-field `primaryIdentifier` of `/properties/TableARN`
+   * (verified live us-east-1 2026-08-12), so CloudFormation's physicalId is
+   * the table ARN. An auto-mode / `--migrate-from-cloudformation` import
+   * merges CFn-derived ids into the overrides, so that ARN was landing in
+   * state verbatim and every later update / delete / read then failed to parse
+   * it — the #1651 class on a second type.
+   *
+   * The table ARN is not decomposable into its parts (see `createTable`: the
+   * real ARN format is not inferrable), so the composite is rebuilt from the
+   * TEMPLATE properties and confirmed with `GetTable`. When the override was
+   * an ARN, the ARN AWS returns must equal it — otherwise the template and
+   * the override name DIFFERENT tables and adopting either would be a guess.
+   */
   private async importTable(input: ResourceImportInput): Promise<ResourceImportResult | null> {
-    if (input.knownPhysicalId) {
-      const parts = input.knownPhysicalId.split('|');
-      if (parts.length >= 3) {
-        try {
-          await this.getClient().send(
-            new GetTableCommand({
-              tableBucketARN: parts[0],
-              namespace: parts[1],
-              name: parts[2],
-            })
-          );
-          return { physicalId: input.knownPhysicalId, attributes: {} };
-        } catch (err) {
-          if (err instanceof NotFoundException) return null;
-          throw err;
-        }
-      }
-      return { physicalId: input.knownPhysicalId, attributes: {} };
+    if (!input.knownPhysicalId) {
+      // No `aws:cdk:path` tag walk: AWS rejects `aws:`-prefixed tag writes, so
+      // that tag never exists on a real resource and the walk could not match
+      // (issue #1134). Auto-mode import resolves ids from CloudFormation's
+      // `DescribeStackResources` or the template's physical-name property; a
+      // table reaching here needs an explicit `--resource` override.
+      return null;
     }
 
-    // No `aws:cdk:path` tag walk: AWS rejects `aws:`-prefixed tag writes, so
-    // that tag never exists on a real resource and the walk could not match
-    // (issue #1134). Auto-mode import resolves ids from CloudFormation's
-    // `DescribeStackResources` or the template's physical-name property; a
-    // table reaching here needs an explicit `--resource` override.
-    return null;
+    const identity =
+      parseTableCompositeId(input.knownPhysicalId) ?? tableIdentityFromProperties(input.properties);
+    if (!identity) {
+      this.logger.warn(
+        `S3 Tables Table ${input.logicalId}: physical id '${input.knownPhysicalId}' is not '<tableBucketARN>|<namespace>|<name>' and the template does not supply TableBucketARN + Namespace + TableName; skipping import.`
+      );
+      return null;
+    }
+
+    let response;
+    try {
+      response = await this.getClient().send(
+        new GetTableCommand({
+          tableBucketARN: identity.tableBucketARN,
+          namespace: identity.namespace,
+          name: identity.name,
+        })
+      );
+    } catch (err) {
+      if (err instanceof NotFoundException) return null;
+      throw err;
+    }
+
+    // The override was CloudFormation's TableARN: confirm it names the same
+    // table the template describes before adopting, rather than assuming it.
+    // The `|`-free test is load-bearing — cdkd's own composite STARTS with the
+    // bucket ARN, so an `arn:` prefix alone would refuse every composite id.
+    if (
+      !input.knownPhysicalId.includes('|') &&
+      input.knownPhysicalId.startsWith('arn:') &&
+      response.tableARN !== undefined &&
+      response.tableARN !== input.knownPhysicalId
+    ) {
+      this.logger.warn(
+        `S3 Tables Table ${input.logicalId}: the supplied physical id '${input.knownPhysicalId}' does not match the ARN of the table the template describes ('${response.tableARN}'); skipping import.`
+      );
+      return null;
+    }
+
+    return {
+      physicalId: `${identity.tableBucketARN}|${identity.namespace}|${identity.name}`,
+      // Cache the real ARN the same way `createTable` does, so a
+      // `Fn::GetAtt: [Table, TableARN]` resolves for an imported table too.
+      attributes: response.tableARN !== undefined ? { TableARN: response.tableARN } : {},
+    };
   }
 
   private async deleteTable(
