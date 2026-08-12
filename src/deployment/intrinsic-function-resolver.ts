@@ -29,15 +29,28 @@ export const AWS_NO_VALUE = Symbol('AWS::NoValue');
 
 /**
  * Resource types whose CloudFormation `Ref` returns the segment AFTER the LAST
- * pipe in cdkd's compound Cloud Control physical id (rather than the whole
- * physical id). These are types provisioned via Cloud Control — either because
- * they have no SDK provider, or because the #614 silent-drop routing sent an
- * SDK-backed type through CC (e.g. an ApiGateway Stage carrying
- * `MethodSettings`, which the SDK provider does not wire — issue #963). Their
- * CC primaryIdentifier is compound (`<parentId>|<ref>`, or `<a>|<b>|<ref>` for
- * triple-segment AppConfig children) while CFn's `Ref` returns only the
- * trailing `<ref>` component. For SDK-provisioned instances of the same types
- * the stored physical id has no pipe, so the extraction is a no-op:
+ * pipe in cdkd's compound physical id (rather than the whole physical id).
+ *
+ * Membership is decided by the ID SHAPE, not by the routing layer, and the Set
+ * carries BOTH kinds:
+ *
+ *  - **Cloud-Control-provisioned** (the original and still the majority) —
+ *    either the type has no SDK provider, or the #614 silent-drop routing sent
+ *    an SDK-backed type through CC (e.g. an ApiGateway Stage carrying
+ *    `MethodSettings`, which the SDK provider does not wire — issue #963). CC's
+ *    primaryIdentifier is compound (`<parentId>|<ref>`, or `<a>|<b>|<ref>` for
+ *    triple-segment AppConfig children) while CFn's `Ref` returns only the
+ *    trailing `<ref>`. For SDK-provisioned instances of these types the stored
+ *    id has no pipe, so the extraction is a no-op.
+ *  - **SDK-provisioned, provider-built compound** — the SDK provider ITSELF
+ *    packs the segments because its CRUD calls need all of them while
+ *    `ResourceProvider`'s read-side methods receive a single string. Here the
+ *    extraction is load-bearing on the ORDINARY deploy path and there is no
+ *    pipe-free variant to fall through. `AWS::S3Tables::Namespace` /
+ *    `::Table` (whose per-routing split is spelled out at their entry) and
+ *    `AWS::Glue::Table` (issue #1667) are these.
+ *
+ * The per-type map:
  *   - AWS::ApiGateway::Model            `<restApiId>|<modelName>`     -> model name
  *   - AWS::ApiGateway::RequestValidator `<restApiId>|<validatorId>`   -> validator id
  *   - AWS::ApiGateway::Stage            `<restApiId>|<stageName>`     -> stage name
@@ -102,15 +115,23 @@ export const AWS_NO_VALUE = Symbol('AWS::NoValue');
  *   5. Pin each addition with a unit test in intrinsic-functions.test.ts.
  *
  * AUDIT RECORD (2026-08-12, issue #1667) — every type in the composite-id table
- * of `docs/state-management.md` was re-checked against its docs-verified `Ref`.
- * `AWS::Glue::Table` was the one this Set could fix and is added below. The
- * types deliberately NOT in either Set, with the reason:
+ * of `docs/state-management.md` was re-checked against its docs-verified `Ref`,
+ * plus the two types that table lists as ACCEPTING a composite without
+ * producing one. `AWS::Glue::Table` was the one this Set could fix and is added
+ * below. The types deliberately NOT in either Set, with the reason:
  *   - correct to exclude, `Ref` is a synthetic / AWS-generated id no segment
  *     reconstructs: ApiGateway::Method, EC2::NetworkAclEntry ("the ID of the
  *     network ACL entry"), EC2::Route, EC2::VPCGatewayAttachment,
  *     Lambda::EventInvokeConfig;
  *   - correct to exclude, the docs page documents NO `Ref` return value at all:
- *     EC2::SecurityGroupIngress (and its Egress sibling, same id shape);
+ *     EC2::SecurityGroupIngress (and its Egress sibling, same id shape), and
+ *     Lambda::Permission — cdkd stores the bare statement id, but state written
+ *     by the older Cloud Control path can hold `<functionArn>|<statementId>`,
+ *     and with no documented contract the raw id is the least-surprising value
+ *     (the same call the maintenance note above already records for it);
+ *   - already correct, no change needed: EC2::EIP (before-first-pipe),
+ *     S3Tables::Namespace / ::Table (added by the 2026-07-03 close-out audit),
+ *     ECS::Service (before-first-pipe; stores the bare ARN on the SDK path);
  *   - KNOWN WRONG and NOT fixable by a Set entry, tracked in issue #1681:
  *     AppSync::ApiKey / ::DataSource / ::Resolver (`Ref` returns the resource
  *     ARN, so the value must be RECONSTRUCTED like the WAFv2::WebACL case
@@ -167,11 +188,23 @@ const REF_RETURNS_SEGMENT_AFTER_PIPE = new Set<string>([
   // returns the TABLE NAME (docs-verified) — the segment after the pipe — so
   // without this entry a `{Ref: <Table>}` consumer (a Glue crawler's
   // `Targets.CatalogTargets[].Tables`, a `CfnOutput`, a Lake Formation
-  // permission) received `mydb|my_table` and pushed it to AWS. Neither segment
-  // can itself contain `|`: `resolveTableIdentity` refuses such a name on the
-  // import path, so the after-LAST-pipe extraction always yields the table
-  // name. Pre-#1651 this was unreachable for `cdk deploy`-managed stacks (they
-  // could not be imported at all); making them adoptable is what widened it.
+  // permission) received `mydb|my_table` and pushed it to AWS.
+  //
+  // The after-LAST-pipe extraction is correct for every id cdkd's IMPORT path
+  // writes: `resolveTableIdentity` refuses a segment containing `|`, so the
+  // recorded id has exactly two. It is NOT universally correct, and the hole is
+  // worth naming rather than assuming away — `createTable` builds
+  // `${databaseName}|${tableName}` UNGUARDED, so a DEPLOY-created table
+  // legitimately named `a|b` is stored as `mydb|a|b`, where this extraction
+  // returns `b` while `deleteTable` / `updateTable` / `readTable`'s two-way
+  // `split('|')` all target `a`. That resource is already broken without this
+  // entry (its delete addresses the wrong table), which is the create-path half
+  // of issue #1672; fixing the packing is that issue's job, not this Set's, and
+  // this entry neither widens nor narrows the damage.
+  //
+  // Pre-#1651 the Ref path was unreachable for `cdk deploy`-managed stacks
+  // (they could not be imported at all); making them adoptable is what widened
+  // its reach and is why the fix is worth making now.
   'AWS::Glue::Table',
 ]);
 
@@ -1172,11 +1205,14 @@ export class IntrinsicFunctionResolver {
    * stores. But for a few types CFn's `Ref` returns a sub-component of the
    * physical id, and returning the raw physical id breaks downstream consumers.
    *
-   * The {@link REF_RETURNS_SEGMENT_AFTER_PIPE} types are provisioned via Cloud
-   * Control (either they have no SDK provider, or the #614 silent-drop routing
-   * sent an SDK-backed type through CC), whose primary identifier — and thus
-   * cdkd's physical id — is the compound `<parentId>|<ref>`, while CFn's `Ref`
-   * returns only the trailing `<ref>` segment:
+   * The {@link REF_RETURNS_SEGMENT_AFTER_PIPE} types store a COMPOUND physical
+   * id `<parentId>|<ref>` while CFn's `Ref` returns only the trailing `<ref>`
+   * segment. Most are compound because Cloud Control provisions them (either
+   * they have no SDK provider, or the #614 silent-drop routing sent an
+   * SDK-backed type through CC) and its primaryIdentifier is compound; the rest
+   * — `AWS::S3Tables::Namespace` / `::Table` and `AWS::Glue::Table` — are
+   * compound because their own SDK provider packs the segments. The Set's
+   * header records the split per type; examples:
    *   - `AWS::ApiGateway::Model` → Ref is the model NAME; physical id is
    *     `<restApiId>|<modelName>`. A method wiring
    *     `RequestModels: { "application/json": { "Ref": <Model> } }` would

@@ -3,6 +3,7 @@ import {
   IntrinsicFunctionResolver,
   type ResolverContext,
   resetAccountInfoCache,
+  cfnRefValueFromPhysicalId,
 } from '../../../src/deployment/intrinsic-function-resolver.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 
@@ -3017,6 +3018,15 @@ describe('IntrinsicFunctionResolver - Ref to AWS::ApiGateway::Model', () => {
       context
     );
     expect(result).toBe('glue://my_table');
+  });
+
+  // Negative polarity for the entry above: the helper must NO-OP on a pipe-free
+  // id. `cfnRefValueFromPhysicalId` is exercised directly because that is the
+  // pure function `cdkd orphan`'s rewriter shares with the resolver, so a
+  // regression that starts mangling a bare id would hit both.
+  it('cfnRefValueFromPhysicalId leaves a pipe-free AWS::Glue::Table id untouched', () => {
+    expect(cfnRefValueFromPhysicalId('AWS::Glue::Table', 'my_table')).toBe('my_table');
+    expect(cfnRefValueFromPhysicalId('AWS::Glue::Table', 'mydb|my_table')).toBe('my_table');
   });
 
   // Reversed-order compounds (issue #963 family audit): Deployment and
