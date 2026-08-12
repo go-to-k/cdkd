@@ -4,7 +4,7 @@
 
 Run `vp run scenario-coverage` to regenerate.
 
-**86 / 86 canonical scenarios** have at least one integ fixture exercising them. **185 / 276 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
+**87 / 87 canonical scenarios** have at least one integ fixture exercising them. **185 / 276 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
 
 ## How this is computed
 
@@ -26,7 +26,7 @@ This report is a visibility tool, not a commit-time gate. Many cdkd fixtures leg
 
 _None._ Every canonical scenario has at least one integ fixture tagged with it.
 
-## Per-scenario coverage (86 scenarios)
+## Per-scenario coverage (87 scenarios)
 
 | Scenario | Description | Integ Fixture(s) |
 |---|---|---|
@@ -38,6 +38,7 @@ _None._ Every canonical scenario has at least one integ fixture tagged with it.
 | `cc-api-getatt-enrichment-redshift-cluster` | CC-API attribute enrichment for `AWS::Redshift::Cluster` (no SDK provider): `Fn::GetAtt(<Cluster>, Endpoint.Address / Endpoint.Port)` must resolve to the real Redshift endpoint via DescribeClusters, not fall through to the physicalId (the cluster id). | [`redshift-cluster-getatt`](../tests/integration/redshift-cluster-getatt/) |
 | `cdk-defensive-vpc-deps-relax` | CDK-defensive route DependsOn relaxation for VPC Lambda parallelization. | [`bench-cdk-sample`](../tests/integration/bench-cdk-sample/) |
 | `cdkd-asset-storage` | cdkd-owned asset storage lifecycle against real AWS: `cdkd bootstrap` creates the asset bucket + container repo + per-region marker (default or custom `--asset-bucket` / `--container-repo` names), deploy-time asset-mode detection + publish redirection into the marker-named storage, and `cdkd bootstrap --destroy` marker-driven teardown with zero residue (issues #1002 / #1007 / #1010 / #1011). | [`asset-auto-create`](../tests/integration/asset-auto-create/)<br>[`asset-bootstrap`](../tests/integration/asset-bootstrap/)<br>[`asset-migration`](../tests/integration/asset-migration/)<br>[`gc-custom-asset-names`](../tests/integration/gc-custom-asset-names/) |
+| `cdkd-asset-storage-import` | Import-driven adoption into a cdkd-assets region against real AWS (issue #1652): a stack deployed by the UPSTREAM `cdk deploy` (so AWS holds `cdk-<qualifier>-assets-*` everywhere, including the `AWS::IAM::Policy` that `s3deploy.BucketDeployment` grants on the asset bucket) is adopted with `cdkd import --migrate-from-cloudformation`; state must record the PRE-rewrite `cdk-*` values, `cdkd diff` must report a real UPDATE on that policy (pre-fix it classified NO_CHANGE because the rewrite reached `state.properties`), and the post-import `cdkd deploy` must leave the LIVE policy document naming the cdkd asset bucket. | [`asset-migration`](../tests/integration/asset-migration/) |
 | `cdkd-gc` | `cdkd gc` garbage-collection precision against real AWS: whole-bucket state-file reference scan keeps every referenced asset, an unreferenced seeded object is the only deletion candidate, `--dry-run` deletes nothing, `--older-than` age guard honored (issue #1012). | [`gc-custom-asset-names`](../tests/integration/gc-custom-asset-names/) |
 | `cfn-macro-expansion` | CloudFormation macro / `Fn::Transform` expansion via transient CFn changeset round-trip (SAM, AWS::Include, AWS::LanguageExtensions, custom macros). See `docs/design/463-cfn-macros.md`. | [`macro-expansion`](../tests/integration/macro-expansion/) |
 | `cloudfront-oai-attribute-enrichment` | CloudFront OAI `S3CanonicalUserId` attribute enrichment (the attribute is not on `GetCloudFrontOriginAccessIdentity` directly). | [`s3-cloudfront`](../tests/integration/s3-cloudfront/) |

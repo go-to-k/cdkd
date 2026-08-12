@@ -391,9 +391,11 @@ describe('integ fixture aws invocations (#1402)', () => {
   it('parses a substantial share of the fixture tree', () => {
     const stats = collectStats();
     expect(stats.fixtures).toBeGreaterThan(150);
-    // Current: 3002 invocations (was 2635 when these floors were written; the
-    // comment had not been refreshed as the tree grew, which is how the ceiling
-    // below came to sit 2 invocations away from the real number).
+    // Current: 3022 invocations (3002 before the `nlb-source-nat` fixture of
+    // issue #1619 added 20; 2635 when these floors were written — the comment
+    // had not been refreshed as the tree grew, which is how the ceiling below
+    // came to sit 2 invocations away from the real number). The band set just
+    // below still holds at 3022, so only this measurement needed refreshing.
     // Raised 2200 -> 2800 alongside the ceiling: leaving the floor where it was
     // while the real total reached 3002 would let a 27% collapse in parsed
     // invocations pass silently, which is the exact failure the floor exists
