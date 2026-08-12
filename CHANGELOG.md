@@ -1,3 +1,10 @@
+## [0.280.30](https://github.com/go-to-k/cdkd/compare/v0.280.29...v0.280.30) (2026-08-12)
+
+
+### Bug Fixes
+
+* **ec2:** record the IpProtocol SecurityGroupIngress actually sends, and narrow the diff side to match ([#1641](https://github.com/go-to-k/cdkd/issues/1641)) ([80afb7d](https://github.com/go-to-k/cdkd/commit/80afb7d61c7e209578c5beb280a83749a938e263))
+
 ## [0.280.29](https://github.com/go-to-k/cdkd/compare/v0.280.28...v0.280.29) (2026-08-12)
 
 
