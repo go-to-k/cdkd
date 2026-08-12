@@ -144,6 +144,28 @@ function normalizeRecordName(name: string): string {
 }
 
 /**
+ * Canonicalize a name for the QUERY side of a Route 53 list call.
+ *
+ * `normalizeRecordName` above is the COMPARE-side canonicalizer, and the two
+ * are deliberately NOT the same function. Route 53 orders both hosted zones
+ * and record sets by reversed labels of the name it STORES — lower-cased and
+ * escape-ENCODED — and a `DNSName` / `StartRecordName` start key in any other
+ * spelling positions the window somewhere else entirely. So the query side
+ * must move TOWARD AWS's spelling (lower-case, encode `*`), where the compare
+ * side moves AWS's answer toward the template's (decode escapes).
+ *
+ * Decoding here would be actively wrong: `*.example.com` sorts at `*` (0x2A)
+ * while AWS stores `\052.example.com` and sorts it at `\` (0x5C), so every
+ * name whose first label begins with `-` / `+` / a digit / an upper-case
+ * letter falls BETWEEN them — with a bounded page, the wildcard record we
+ * asked for is skipped straight past.
+ */
+function canonicalizeQueryName(name: string): string {
+  const lowered = name.toLowerCase().replaceAll('*', '\\052');
+  return lowered.endsWith('.') ? lowered : `${lowered}.`;
+}
+
+/**
  * AWS Route 53 Provider
  *
  * Implements resource provisioning for Route 53 resources:
@@ -961,8 +983,9 @@ export class Route53Provider implements ResourceProvider {
           // WARN, not debug: this drops the state row, so if the diagnosis is
           // ever wrong the record is silently orphaned in AWS.
           this.logger.warn(
-            `Hosted zone for record set ${logicalId} no longer exists; treating the record as ` +
-              `already deleted and dropping it from state.`
+            `Hosted zone "${String(properties?.['HostedZoneName'])}" for record set ${logicalId} ` +
+              `(${physicalId}) no longer exists; treating the record as already deleted and ` +
+              `dropping it from state.`
           );
           return;
         }
@@ -1695,6 +1718,12 @@ export class Route53Provider implements ResourceProvider {
     const hostedZoneId = properties['HostedZoneId'];
     if (typeof hostedZoneId === 'string' && hostedZoneId) return hostedZoneId;
 
+    // Declared out here because the terminal throw below is outside the
+    // branch: a lookup that FAILED must surface its cause rather than the
+    // misleading "specify one of these" message.
+    let lookupErrorMessage: string | undefined;
+    let lookupErrorCause: Error | undefined;
+
     const hostedZoneName = properties['HostedZoneName'];
     if (typeof hostedZoneName === 'string' && hostedZoneName) {
       // The lookup keeps its ORIGINAL warn-and-continue catch — a transient
@@ -1705,11 +1734,22 @@ export class Route53Provider implements ResourceProvider {
       // `.send()` for the `update-wrap-coverage` critic (and would be a real
       // hazard if a later edit widened what the try covers).
       let matched: { Id?: string | undefined; Name?: string | undefined }[] = [];
-      let lookupRan = false;
+      // NOT "the lookup returned" — "an empty result PROVES the zone is gone".
+      // Only this flag authorizes the delete path's already-deleted arm, which
+      // drops a state row, so it stays false for every answer we cannot read
+      // as a sound negative.
+      let absenceIsSound = false;
       try {
         const response = await this.getClient().send(
           new ListHostedZonesByNameCommand({
-            DNSName: hostedZoneName,
+            // Case-folded + encoded: this is the START KEY of AWS's ordering,
+            // not a filter. Sending the template's spelling verbatim
+            // positions the window by `Example.com` while AWS orders by
+            // `example.com.`, so an existing zone can fall outside a bounded
+            // page and read as ABSENT — which on the delete path drops the
+            // state row and orphans the record. That is the failure the
+            // compare-side case fold alone does NOT close.
+            DNSName: canonicalizeQueryName(hostedZoneName),
             // Deliberately > 1: split-horizon DNS lets a public and a private
             // zone share one name, and `MaxItems: 1` silently picks whichever
             // AWS lists first. Callers that DELETE through this resolution ask
@@ -1722,10 +1762,19 @@ export class Route53Provider implements ResourceProvider {
         // special characters, the template may do neither.
         const normalizedName = normalizeRecordName(hostedZoneName);
         matched = zones.filter((z) => normalizeRecordName(z.Name ?? '') === normalizedName);
-        lookupRan = true;
+        // AWS starts the page AT the requested key, so same-named zones are
+        // the first entries and a page that shows a LATER zone has already
+        // proven ours is not there. An EMPTY truncated page proves nothing —
+        // and neither does a name we could not position confidently, so a
+        // template spelling that already carries a backslash escape is
+        // refused the negative rather than guessed at.
+        absenceIsSound =
+          !hostedZoneName.includes('\\') && (zones.length > 0 || response.IsTruncated !== true);
       } catch (error) {
+        lookupErrorMessage = error instanceof Error ? error.message : String(error);
+        lookupErrorCause = error instanceof Error ? error : undefined;
         this.logger.warn(
-          `Failed to resolve HostedZoneName "${hostedZoneName}" for ${logicalId}: ${error instanceof Error ? error.message : String(error)}`
+          `Failed to resolve HostedZoneName "${hostedZoneName}" for ${logicalId}: ${lookupErrorMessage}`
         );
       }
 
@@ -1744,10 +1793,10 @@ export class Route53Provider implements ResourceProvider {
         return matchedZone.Id.replace('/hostedzone/', '');
       }
 
-      // A name WAS specified and the lookup SUCCEEDED but matched no zone —
+      // A name WAS specified and the lookup returned a SOUND NEGATIVE —
       // materially different from "no zone was specified", and the delete path
       // treats it as already-gone rather than as a misconfiguration.
-      if (lookupRan) {
+      if (absenceIsSound) {
         throw new HostedZoneNameNotFoundError(
           `HostedZoneName "${hostedZoneName}" matches no hosted zone in this account/region ` +
             `for ${logicalId}`,
@@ -1759,10 +1808,14 @@ export class Route53Provider implements ResourceProvider {
     }
 
     throw new ProvisioningError(
-      `Either HostedZoneId or HostedZoneName is required for record set ${logicalId}`,
+      lookupErrorMessage
+        ? `Could not resolve HostedZoneName "${String(hostedZoneName)}" for record set ` +
+            `${logicalId}: ${lookupErrorMessage}`
+        : `Either HostedZoneId or HostedZoneName is required for record set ${logicalId}`,
       resourceType,
       logicalId,
-      physicalId
+      physicalId,
+      lookupErrorCause
     );
   }
 
@@ -1957,15 +2010,18 @@ export class Route53Provider implements ResourceProvider {
       resp = await this.getClient().send(
         new ListResourceRecordSetsCommand({
           HostedZoneId: hostedZoneId,
-          StartRecordName: name,
+          // Encoded start key, for the reason `canonicalizeQueryName`
+          // records: AWS orders records on the name it STORES, so a template
+          // spelling `*.example.com` positions at `*` (0x2A) while the record
+          // sits at `\\052…` (0x5C) — every sibling whose first label starts
+          // with `-` / `+` / a digit / an upper-case letter falls between
+          // them, and a bounded page skips the record we asked for. Decoding
+          // on the COMPARE side alone cannot fix that; the query has to
+          // return the record first.
+          StartRecordName: canonicalizeQueryName(name),
           StartRecordType: type as RRType,
-          // NOT 1: AWS orders records on the ESCAPED name, so for a wildcard
-          // (`*` 0x2A, reported as `\\052…` and ordered by `\` 0x5C) a
-          // single-record page can skip straight past the record we asked
-          // for. Decoding the escape on the COMPARE side alone would not fix
-          // wildcards — the query has to return the record first. Take a few
-          // and let the exact-match filter below pick, the same shape the
-          // hosted-zone lookup uses.
+          // Still > 1 after the encoding fix: a name can also carry escapes
+          // this helper does not encode, and a few extra rows are free.
           MaxItems: 5,
         })
       );

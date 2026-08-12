@@ -380,6 +380,75 @@ describe('Route53 RecordSet physicalId: CloudFormation form vs cdkd composite (i
       expect(del.input.HostedZoneId).toBe('Z0123456789ABCDEFGHIJ');
     });
 
+    it('sends the CASE-FOLDED, ENCODED name as the list START KEY (#1658)', async () => {
+      // The compare-side fold is only half the fix. AWS positions the window
+      // by the name it STORES, so a verbatim `Example.COM` start key can put
+      // an existing zone outside a bounded page -- and this arm reads an
+      // empty page as "zone is gone" and DROPS the state row. Pin the query
+      // side, not just the answer.
+      mockSend
+        .mockResolvedValueOnce({
+          HostedZones: [{ Id: '/hostedzone/Z0123456789ABCDEFGHIJ', Name: 'example.com.' }],
+        })
+        .mockResolvedValueOnce({});
+
+      await provider.delete('WebsiteRecord', 'record.example.com', 'AWS::Route53::RecordSet', {
+        ...RECORD_PROPS,
+        HostedZoneId: undefined,
+        HostedZoneName: 'Example.COM',
+      });
+
+      const list = mockSend.mock.calls[0]?.[0];
+      expect(list).toBeInstanceOf(ListHostedZonesByNameCommand);
+      expect(list.input.DNSName).toBe('example.com.');
+    });
+
+    it('does NOT treat a FAILED zone lookup as already-deleted (#1658)', async () => {
+      // The dangerous polarity of the skip-as-gone arm. A throttle / creds /
+      // network failure must never authorize dropping the state row -- if it
+      // did, a transient error would silently orphan a live record. The
+      // original error has to reach the user, too: the pre-fix message named
+      // neither the zone nor the cause.
+      const throttle = new Error('Rate exceeded');
+      throttle.name = 'Throttling';
+      mockSend.mockRejectedValueOnce(throttle);
+
+      await expect(
+        provider.delete('WebsiteRecord', 'record.example.com', 'AWS::Route53::RecordSet', {
+          ...RECORD_PROPS,
+          HostedZoneId: undefined,
+          HostedZoneName: 'example.com',
+        })
+      ).rejects.toThrow(/Rate exceeded/);
+
+      // and it must NOT have issued the delete, nor silently resolved
+      expect(
+        mockSend.mock.calls.some(
+          (c: unknown[]) => c[0] instanceof ChangeResourceRecordSetsCommand
+        )
+      ).toBe(false);
+    });
+
+    it('does NOT conclude "gone" from an EMPTY TRUNCATED page (#1658)', async () => {
+      // An empty page that AWS says is truncated proves nothing about whether
+      // the zone exists, so it must not authorize the state-row drop.
+      mockSend.mockResolvedValueOnce({ HostedZones: [], IsTruncated: true });
+
+      await expect(
+        provider.delete('WebsiteRecord', 'record.example.com', 'AWS::Route53::RecordSet', {
+          ...RECORD_PROPS,
+          HostedZoneId: undefined,
+          HostedZoneName: 'example.com',
+        })
+      ).rejects.toThrow(/HostedZoneId or HostedZoneName is required/);
+
+      expect(
+        mockSend.mock.calls.some(
+          (c: unknown[]) => c[0] instanceof ChangeResourceRecordSetsCommand
+        )
+      ).toBe(false);
+    });
+
     it('still errors when neither the id nor the properties identify a zone', async () => {
       await expect(
         provider.delete('WebsiteRecord', 'record.example.com', 'AWS::Route53::RecordSet', {
