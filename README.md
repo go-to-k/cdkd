@@ -431,6 +431,9 @@ record alone, so it works even after the branch is gone.
   locked, so schedule it outside deploy hours.
 - To comment the environment URL on the PR, read stack outputs with
   `cdkd state show <stack> --json`.
+- To gate a PR without deploying, `cdkd diff --fail` exits `1` when any
+  change is detected (and `cdkd drift --json` machine-checks live
+  divergence). See [Exit codes](#exit-codes) for per-command semantics.
 
 Full walkthrough (Japanese):
 [Building per-PR AWS CDK environments efficiently with cdkd](https://zenn.dev/go_to_k/articles/cdkd-pr-environment-ci).
