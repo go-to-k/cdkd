@@ -1,3 +1,10 @@
+## [0.281.7](https://github.com/go-to-k/cdkd/compare/v0.281.6...v0.281.7) (2026-08-12)
+
+
+### Bug Fixes
+
+* **export:** correct the VPCGatewayAttachment identifier and add the REST v1 child splitters ([#1721](https://github.com/go-to-k/cdkd/issues/1721)) ([0d1db89](https://github.com/go-to-k/cdkd/commit/0d1db894d186e1e677f2ddc3b406bfc970f68048))
+
 ## [0.281.6](https://github.com/go-to-k/cdkd/compare/v0.281.5...v0.281.6) (2026-08-12)
 
 
