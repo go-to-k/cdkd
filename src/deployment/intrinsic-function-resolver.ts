@@ -138,12 +138,15 @@ export const AWS_NO_VALUE = Symbol('AWS::NoValue');
  *   - already correct, no change needed: EC2::EIP (before-first-pipe),
  *     S3Tables::Namespace / ::Table (added by the 2026-07-03 close-out audit),
  *     ECS::Service (before-first-pipe; stores the bare ARN on the SDK path);
- *   - KNOWN WRONG and NOT fixable by a Set entry, tracked in issue #1681:
+ *   - was KNOWN WRONG and not fixable by a Set entry; FIXED by issue #1681,
+ *     each with a mechanism of its own rather than an entry here:
  *     AppSync::ApiKey / ::DataSource / ::Resolver (`Ref` returns the resource
- *     ARN, so the value must be RECONSTRUCTED like the WAFv2::WebACL case
- *     below, not extracted) and Route53::RecordSet (`Ref` returns "the name of
- *     the record" — the MIDDLE segment of `<hostedZoneId>|<name>|<type>`, which
- *     neither after-LAST-pipe nor before-FIRST-pipe yields).
+ *     ARN, which is no segment of the compound id — recovered from the
+ *     provider-recorded ARN attribute via {@link REF_RETURNS_ARN_FROM_STATE})
+ *     and Route53::RecordSet (`Ref` returns "the name of the record" — the
+ *     MIDDLE segment of `<hostedZoneId>|<name>|<type>`, which neither
+ *     after-LAST-pipe nor before-FIRST-pipe yields, so it takes
+ *     {@link REF_RETURNS_SEGMENT_AT_INDEX}).
  */
 const REF_RETURNS_SEGMENT_AFTER_PIPE = new Set<string>([
   'AWS::ApiGateway::Model',
@@ -196,17 +199,19 @@ const REF_RETURNS_SEGMENT_AFTER_PIPE = new Set<string>([
   // `Targets.CatalogTargets[].Tables`, a `CfnOutput`, a Lake Formation
   // permission) received `mydb|my_table` and pushed it to AWS.
   //
-  // The after-LAST-pipe extraction is correct for every id cdkd's IMPORT path
-  // writes: `resolveTableIdentity` refuses a segment containing `|`, so the
-  // recorded id has exactly two. It is NOT universally correct, and the hole is
-  // worth naming rather than assuming away — `createTable` builds
-  // `${databaseName}|${tableName}` UNGUARDED, so a DEPLOY-created table
-  // legitimately named `a|b` is stored as `mydb|a|b`, where this extraction
-  // returns `b` while `deleteTable` / `updateTable` / `readTable`'s two-way
-  // `split('|')` all target `a`. That resource is already broken without this
-  // entry (its delete addresses the wrong table), which is the create-path half
-  // of issue #1672; fixing the packing is that issue's job, not this Set's, and
-  // this entry neither widens nor narrows the damage.
+  // The after-LAST-pipe extraction is correct for every id cdkd can now write
+  // on either path: `resolveTableIdentity` (IMPORT) refuses a segment
+  // containing `|`, and since issue #1672 `createTable` (DEPLOY) packs through
+  // `packCompositeId`, which refuses one too — so the recorded id has exactly
+  // two segments and the extraction cannot mis-target. The one route left to a
+  // mis-arity'd id is the rollback executor's reverse-replacement REPLAY, where
+  // that refusal deliberately downgrades to a warning (a state record cannot be
+  // edited from the template, so refusing would leave the resource
+  // unrestorable — see `.claude/rules/providers.md`). For such an id this
+  // extraction returns the last segment while `deleteTable` / `updateTable` /
+  // `readTable`'s two-way `split('|')` target the first; that resource is
+  // already broken independently of this entry, which neither widens nor
+  // narrows the damage (issue #1712).
   //
   // Pre-#1651 the Ref path was unreachable for `cdk deploy`-managed stacks
   // (they could not be imported at all); making them adoptable is what widened
@@ -275,6 +280,62 @@ const REF_RETURNS_NAME_FROM_ARN = new Map<string, string>([
 ]);
 
 /**
+ * Third sibling of the two `REF_RETURNS_SEGMENT_*_PIPE` Sets, for a compound id
+ * whose `Ref` segment is neither the first nor the last (issue #1681).
+ *
+ * `AWS::Route53::RecordSet` is the only entry: `Route53Provider` stores
+ * `<hostedZoneId>|<name>|<type>` while CloudFormation's `Ref` returns "the name
+ * of the record" (docs-verified 2026-08-12) — the MIDDLE segment. Neither
+ * existing Set can express that (after-LAST-pipe yields the record TYPE `A`,
+ * before-FIRST-pipe yields the hosted zone id), which is why the type was filed
+ * rather than added to one of them.
+ *
+ * Value: `arity` is the EXACT segment count the extraction is valid for and
+ * `index` the 0-based segment to return. Requiring the exact arity rather than
+ * a minimum is what keeps this safe on a mis-arity'd id: cdkd's own
+ * `parseRecordSetCompositeId` also demands exactly three parts, so a record
+ * whose name contained a `|` is already rejected everywhere else, and returning
+ * a confidently-wrong middle segment here would be worse than passing the raw
+ * id through. Anything that does not match falls through to the raw physical id,
+ * the same graceful degradation the `stateLookup` recoveries use.
+ *
+ * Same maintenance rules as the two Sets: docs-verified `Ref` semantics per
+ * type, a whole-service-family audit before adding one, and a pinning unit test
+ * asserting the RESOLVED value (not merely map membership).
+ */
+const REF_RETURNS_SEGMENT_AT_INDEX = new Map<string, { arity: number; index: number }>([
+  ['AWS::Route53::RecordSet', { arity: 3, index: 1 }],
+]);
+
+/**
+ * Compound-id types whose CFn `Ref` is the resource ARN, recovered from an ARN
+ * ATTRIBUTE the provider recorded at create time (issue #1681).
+ *
+ * The three `AWS::AppSync::*` child types pack a compound physical id
+ * (`<apiId>|<name>`, `<apiId>|<typeName>|<fieldName>`, `<apiId>|<apiKeyId>`)
+ * while CloudFormation's `Ref` returns the resource ARN (all three
+ * docs-verified 2026-08-12). The ARN is not a SEGMENT of the id, so no
+ * `REF_RETURNS_SEGMENT_*` mechanism can produce it — it has to be recovered,
+ * and the same `stateLookup` seam the S3Tables / Backup / CodeCommit cases use
+ * is preferred over string-building an ARN here: `AppSyncProvider` records the
+ * real ARN (from the create response where AWS reports one, else reconstructed
+ * from the deploy's own partition / region / account), so the resolver does not
+ * have to re-derive account context it may not share with the provider.
+ *
+ * Value: the attribute keys to try, in order.
+ *
+ * Degradation is deliberate and matches the sibling recoveries — an IMPORTED
+ * child records `attributes: {}` (`AppSyncProvider.import` returns the physical
+ * id only), so the lookup misses and the raw compound id is returned rather
+ * than a fabricated ARN.
+ */
+const REF_RETURNS_ARN_FROM_STATE = new Map<string, readonly string[]>([
+  ['AWS::AppSync::ApiKey', ['Arn']],
+  ['AWS::AppSync::DataSource', ['DataSourceArn']],
+  ['AWS::AppSync::Resolver', ['ResolverArn']],
+]);
+
+/**
  * Optional state-backed lookup so {@link cfnRefValueFromPhysicalId} can recover
  * a `Ref` value that is NOT reconstructible from the physical id alone (see the
  * `AWS::S3Tables::Table` CC-routed case). Both call sites pass the resource's
@@ -320,7 +381,9 @@ export function refStateLookupFromResource(resource: {
  * `stateLookup` (optional) recovers a `Ref` value that the physical id cannot
  * yield — the `AWS::S3Tables::Table` CC-routed case, whose bare TableARN ends
  * in a UUID (not the table name CFn `Ref` returns), so the name is read from
- * the stored `TableName` property/attribute instead (issue #974).
+ * the stored `TableName` property/attribute instead (issue #974) — and, since
+ * issue #1681, the {@link REF_RETURNS_ARN_FROM_STATE} types, whose `Ref` is an
+ * ARN that is no segment of their compound id.
  */
 export function cfnRefValueFromPhysicalId(
   resourceType: string,
@@ -434,7 +497,48 @@ export function cfnRefValueFromPhysicalId(
       return physicalId.substring(0, pipeIdx);
     }
   }
+  const segmentSpec = REF_RETURNS_SEGMENT_AT_INDEX.get(resourceType);
+  if (segmentSpec) {
+    // Interior-segment compounds (`AWS::Route53::RecordSet`'s
+    // `<hostedZoneId>|<name>|<type>` -> the record name). Exact-arity only; see
+    // the map's header for why a mis-arity'd id falls through instead.
+    const parts = physicalId.split('|');
+    if (parts.length === segmentSpec.arity) {
+      return parts[segmentSpec.index]!;
+    }
+  }
+  const arnAttributeKeys = REF_RETURNS_ARN_FROM_STATE.get(resourceType);
+  if (arnAttributeKeys && stateLookup) {
+    // The AppSync child types, whose `Ref` is an ARN no segment of the compound
+    // id reconstructs. Falls through to the raw id when the attribute is absent
+    // (an imported child), same as the recoveries above.
+    const arn = stateLookup(arnAttributeKeys);
+    // ...and when the recorded value is a PLACEHOLDER rather than an ARN. Every
+    // record written before issue #1681 holds `arn:aws:appsync:*:*:...` —
+    // literal `*` in the region and account positions — because the provider
+    // string-built the attribute instead of taking AWS's own value. Handing
+    // that to a consumer would be a REGRESSION introduced by this recovery: it
+    // is no more usable than the compound id the recovery replaces, and it
+    // LOOKS like a valid ARN, so it fails further from the cause. The state
+    // heals itself on the resource's next update (the provider now returns the
+    // corrected attributes), and until then the pre-#1681 behavior stands.
+    if (arn && !isPlaceholderArn(arn)) {
+      return arn;
+    }
+  }
   return physicalId;
+}
+
+/**
+ * True for an ARN carrying a wildcard in its region or account position — the
+ * shape cdkd's AppSync provider recorded before issue #1681. Matched
+ * positionally (fields 3 and 4 of `arn:<partition>:<service>:<region>:<account>`)
+ * rather than by substring, so a legitimate ARN whose RESOURCE segment contains
+ * `*` (an IAM policy resource pattern, an S3 key prefix) is never rejected.
+ */
+function isPlaceholderArn(arn: string): boolean {
+  const fields = arn.split(':');
+  return fields.length >= 5 && (fields[3] === '*' || fields[4] === '*');
 }
 
 /**
@@ -1302,6 +1406,13 @@ export class IntrinsicFunctionResolver {
    * not the name), so the resolver passes the resource's stored `properties` /
    * `attributes` as a `stateLookup` and `cfnRefValueFromPhysicalId` recovers
    * the name from the `TableName` property (issue #974).
+   *
+   * Two further mechanisms cover compounds neither Set can express (issue
+   * #1681): {@link REF_RETURNS_SEGMENT_AT_INDEX} for an INTERIOR segment
+   * (`AWS::Route53::RecordSet`'s `<hostedZoneId>|<name>|<type>` -> the record
+   * name), and {@link REF_RETURNS_ARN_FROM_STATE} for the `AWS::AppSync::*`
+   * children, whose `Ref` is an ARN recovered from the provider-recorded ARN
+   * attribute through the same `stateLookup` seam.
    */
   private resolveRefValue(resource: ResourceState): string {
     return cfnRefValueFromPhysicalId(

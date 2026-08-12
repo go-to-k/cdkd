@@ -571,6 +571,33 @@ Examples as they appear in a real state file (`resources` map, abridged):
 }
 ```
 
+### The composite id is NOT what `Ref` returns
+
+CloudFormation's `Ref` for these types returns a value of its own, which is
+usually only a PART of cdkd's composite — and sometimes not a part of it at
+all. cdkd translates the stored id back to CloudFormation's value before
+handing it to any consumer (`Fn::Join` / `Fn::Sub` / a `CfnOutput`), so a
+template gets the same value it would from `cdk deploy`. You do not need to do
+anything; the table is here because the difference is visible when you compare
+`cdkd state show` against a stack output.
+
+| Resource Type | CloudFormation `Ref` returns |
+|---------------|------------------------------|
+| `AWS::ApiGateway::Method` | an AWS-generated id (no segment reconstructs it — cdkd passes the composite through) |
+| `AWS::AppSync::ApiKey` | the API key **ARN** |
+| `AWS::AppSync::DataSource` | the data source **ARN** |
+| `AWS::AppSync::Resolver` | the resolver **ARN** |
+| `AWS::EC2::EIP` | the public IP (the segment before the first `\|`) |
+| `AWS::Glue::Table` | the table name (the segment after the `\|`) |
+| `AWS::Route53::RecordSet` | the record **name** — the MIDDLE segment |
+| `AWS::S3Tables::Namespace` / `::Table` | the namespace / table name (the segment after the last `\|`) |
+
+The three `AWS::AppSync::*` children are the case where the `Ref` value is not
+a segment at all: cdkd recovers the ARN from the attribute the provider records
+at create time. A child adopted with `cdkd import` records no such attribute,
+so its `Ref` falls back to the raw composite id — re-deploy it once to populate
+the attribute.
+
 Two more types **accept** a composite id without producing one:
 
 - `AWS::ECS::Service` — cdkd stores the service ARN, but

@@ -51,6 +51,14 @@ vi.mock('../../../src/utils/logger.js', () => {
   };
 });
 
+// `AppSyncProvider` reconstructs the child types' `Ref` ARNs through the shared
+// STS-backed resolver (issue #1681). Mocked so a unit test never reaches STS —
+// without this the suite's result depends on the machine's AWS credentials.
+vi.mock('../../../src/deployment/intrinsic-function-resolver.js', () => ({
+  getAccountInfo: () =>
+    Promise.resolve({ partition: 'aws', region: 'us-east-1', accountId: '123456789012' }),
+}));
+
 import {
   CreateDataSourceCommand,
   CreateResolverCommand,
@@ -418,7 +426,14 @@ describe('AppSync Resolver + DataSource properties (#609)', () => {
         { ...bag },
         { ...bag }
       );
-      expect(result).toEqual({ physicalId: 'api-1|Query|getThing', wasReplaced: false });
+      // "No-op" here means NO AWS call, which is what the two `not
+      // .toHaveBeenCalled()` assertions below pin. The result is no longer
+      // shape-compared because since issue #1681 every child update also
+      // reports the healed `Ref` ARN attribute set (covered in
+      // `appsync-child-ref-arns.test.ts`), which is state bookkeeping rather
+      // than an AWS mutation.
+      expect(result.physicalId).toBe('api-1|Query|getThing');
+      expect(result.wasReplaced).toBe(false);
       expect(mockSend).not.toHaveBeenCalled();
       expect(mockS3Send).not.toHaveBeenCalled();
     });

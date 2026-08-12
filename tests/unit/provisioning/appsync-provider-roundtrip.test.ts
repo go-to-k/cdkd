@@ -34,6 +34,14 @@ vi.mock('../../../src/utils/logger.js', () => {
   };
 });
 
+// `AppSyncProvider` reconstructs the child types' `Ref` ARNs through the shared
+// STS-backed resolver (issue #1681). Mocked so a unit test never reaches STS —
+// without this the suite's result depends on the machine's AWS credentials.
+vi.mock('../../../src/deployment/intrinsic-function-resolver.js', () => ({
+  getAccountInfo: () =>
+    Promise.resolve({ partition: 'aws', region: 'us-east-1', accountId: '123456789012' }),
+}));
+
 import {
   UpdateGraphqlApiCommand,
   UpdateDataSourceCommand,
@@ -588,12 +596,19 @@ describe('AppSyncProvider.update', () => {
 
   // ─── ApiKey ──────────────────────────────────────────────────────────
 
-  // Every update path in this provider returns WITHOUT an `attributes` field.
   // The deploy engine resolves `result.attributes ?? currentResource
   // .attributes`, so a PRESENT-but-empty object is authoritative and wipes the
   // create-time attributes — after which every Fn::GetAtt on the resource
   // degrades to the physical-id fallback (observed live on GraphQLApi's
-  // GraphQLUrl output). Asserts the shape the REGRESSION would emit.
+  // GraphQLUrl output).
+  //
+  // The two arms below are the two legitimate ways to satisfy that: report
+  // NOTHING (the engine carries the existing map forward), or report a
+  // COMPLETE map. Both are asserted, because issue #1681 moved the three child
+  // types from the first to the second — their update path now re-reports the
+  // healed ARN so a record written by a pre-#1681 binary stops carrying the
+  // `arn:aws:appsync:*:*:...` placeholder forward forever. What must never
+  // appear is a present-but-partial map, which is the original regression.
   describe('update never wipes create-time attributes', () => {
     it.each([
       [
@@ -602,11 +617,22 @@ describe('AppSyncProvider.update', () => {
         { ApiId: 'api-1', Definition: 'type Query { a: String }' },
         { ApiId: 'api-1', Definition: 'type Query { b: String }' },
       ],
+    ])('omits attributes on %s', async (resourceType, physicalId, next, previous) => {
+      mockSend.mockResolvedValue({});
+      const result = await provider.update('L', physicalId, resourceType, next, previous);
+      expect(Object.hasOwn(result, 'attributes')).toBe(false);
+    });
+
+    // The expected key sets mirror what each type's `create()` records, so a
+    // partial answer fails here rather than silently dropping `Name` / `ApiKey`
+    // from the record.
+    it.each([
       [
         'AWS::AppSync::DataSource',
         'api-1|ds',
         { ApiId: 'api-1', Name: 'ds', Type: 'NONE', Description: 'new' },
         { ApiId: 'api-1', Name: 'ds', Type: 'NONE', Description: 'old' },
+        ['DataSourceArn', 'Name'],
       ],
       [
         'AWS::AppSync::Resolver',
@@ -625,18 +651,27 @@ describe('AppSyncProvider.update', () => {
           DataSourceName: 'ds',
           RequestMappingTemplate: '{"version":"2017-02-28"}',
         },
+        ['ResolverArn'],
       ],
       [
         'AWS::AppSync::ApiKey',
         'api-1|key-1',
         { ApiId: 'api-1', Description: 'new' },
         { ApiId: 'api-1', Description: 'old' },
+        ['ApiKey', 'Arn'],
       ],
-    ])('omits attributes on %s', async (resourceType, physicalId, next, previous) => {
-      mockSend.mockResolvedValue({});
-      const result = await provider.update('L', physicalId, resourceType, next, previous);
-      expect(Object.hasOwn(result, 'attributes')).toBe(false);
-    });
+    ])(
+      'reports the COMPLETE attribute set on %s',
+      async (resourceType, physicalId, next, previous, expectedKeys) => {
+        mockSend.mockResolvedValue({});
+        const result = await provider.update('L', physicalId, resourceType, next, previous);
+        expect(Object.keys(result.attributes ?? {}).sort()).toEqual([...expectedKeys].sort());
+        // And never the placeholder the healing exists to retire.
+        for (const value of Object.values(result.attributes ?? {})) {
+          expect(String(value)).not.toContain(':*:');
+        }
+      }
+    );
   });
 
   describe('ApiKey', () => {
