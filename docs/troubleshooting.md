@@ -368,6 +368,69 @@ control the SDK's default region for provisioning.
 
 ## Deployment Errors
 
+### Issue: "The following resources declare mutually exclusive properties"
+
+#### Symptoms
+
+```
+The following resources declare mutually exclusive properties:
+  - BadRoute (AWS::EC2::Route) declares DestinationCidrBlock and DestinationIpv6CidrBlock
+      CloudFormation and the EC2 CreateRoute API accept exactly one destination per route.
+      cdkd would send only DestinationCidrBlock; DestinationIpv6CidrBlock would be dropped.
+      Deleting the dropped keys changes nothing cdkd sends — but if the LIVE resource was
+      created from one of them, making DestinationCidrBlock the sole value is a create-only
+      change that REPLACES it.
+      Declare at most one of: DestinationCidrBlock / DestinationIpv6CidrBlock / DestinationPrefixListId
+```
+
+#### Causes
+
+The template declares two or more properties AWS accepts only one of. cdkd
+rejects this at pre-flight, before any AWS call. CloudFormation rejects the same
+template, so this is a template defect rather than a cdkd limitation — which is
+why there is no `--allow-*` escape hatch for it.
+
+The check fires on EVERY deploy, not only when the resource is new. A stack that
+already carries such a resource used to deploy silently (the diff classifies
+`NO_CHANGE`, so the provider's own refusal was never reached) while AWS held only
+one of the declared values.
+
+`cdkd diff` reports no CHANGE for this shape (the narrowed sides are equal),
+but it does warn that part of the declared properties cannot be sent as
+declared — that warning and this error describe the same defect.
+
+#### Solutions
+
+**1. Remove the extra properties**
+
+Delete every key except the one the message says cdkd would send. That edit
+changes nothing cdkd sends. **Check what the resource is live on first**,
+though: if it was created from one of the dropped keys, promoting a different
+key to sole destination is a create-only change and REPLACES the resource:
+
+```typescript
+new ec2.CfnRoute(this, 'Route', {
+  routeTableId: rt.ref,
+  gatewayId: igw.ref,
+  destinationCidrBlock: '0.0.0.0/0',
+  // destinationIpv6CidrBlock: '::/0',  <- delete; only one destination is allowed
+});
+```
+
+**2. Or make them conditional**
+
+If the resource genuinely needs a different property per environment, put each
+behind a condition whose other arm is `AWS::NoValue`. cdkd treats a key behind
+an unresolved intrinsic as unknown and does NOT reject it, because exactly one
+of the two survives resolution:
+
+```json
+{
+  "DestinationCidrBlock":     { "Fn::If": ["IsV4", "0.0.0.0/0", { "Ref": "AWS::NoValue" }] },
+  "DestinationIpv6CidrBlock": { "Fn::If": ["IsV4", { "Ref": "AWS::NoValue" }, "::/0"] }
+}
+```
+
 ### Issue: "Resource already exists" Error
 
 #### Symptoms

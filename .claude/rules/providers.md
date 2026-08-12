@@ -458,6 +458,26 @@ pre-flight time intrinsics are unresolved, so a legitimate `Fn::If`-valued block
 is an object whose inner key does not exist yet and a field check would reject
 valid templates.
 
+**A property COMBINATION rule is the exception, and it is pre-flight's job**
+(issue #1634). Where a field rule asks what a value IS — undecidable before
+resolution — a mutually-exclusive rule asks only which top-level keys are
+unconditionally PRESENT, which the raw template already answers. It also has to
+live there, because a provider-side refusal is only reachable on a
+template-borne CREATE: once the resource exists the diff classifies NO_CHANGE,
+the provider is never called, and the invalid template deploys forever (exactly
+what `AWS::EC2::Route`'s #1566 refusal could not catch after #1591 normalized
+both diff sides). `src/provisioning/mutually-exclusive-properties.ts` holds the
+rule table and `ProviderRegistry.validateResourceProperties` applies it, ahead
+of the silent-drop routing chatter. The intrinsic constraint above still binds
+and is what makes the check safe: a key behind an unresolved intrinsic counts
+as UNKNOWN, never as declared, since its `Fn::If` arm can resolve to
+`AWS::NoValue` — so the check refuses only two or more unconditionally present
+keys, and a combination it lets through is still caught by the provider's own
+create-path refusal. Add a rule ONLY for a combination AWS itself rejects:
+there is deliberately no `--allow-*` escape hatch (the defect is in the
+template, not in cdkd), so a wrong entry blocks a valid deploy with no way
+around it.
+
 ## Fixing ONE nested-key divergence: diff the WHOLE blob, not the reported key
 
 A filed silent-drop bug names the key someone happened to notice. Fixing only

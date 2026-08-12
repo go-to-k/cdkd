@@ -4,6 +4,10 @@ import { CustomResourceProvider } from './providers/custom-resource-provider.js'
 import { getLogger } from '../utils/logger.js';
 import { isNonProvisionable, unsupportedTypeIssueUrl } from './unsupported-types.js';
 import { findActionableSilentDrops, findSilentDropProperties } from './property-coverage.js';
+import {
+  buildMutuallyExclusiveMessage,
+  findMutuallyExclusiveViolations,
+} from './mutually-exclusive-properties.js';
 
 /**
  * The provisioning layer that owns a particular resource: SDK Provider
@@ -455,6 +459,12 @@ export class ProviderRegistry {
    * the property check is a no-op (`findSilentDropProperties` returns `[]`
    * for non-Tier-1 / unknown types).
    *
+   * Since issue [#1634](https://github.com/go-to-k/cdkd/issues/1634) this
+   * ALSO runs the mutually-exclusive-property check
+   * ({@link validateMutuallyExclusiveProperties}), which throws BEFORE any
+   * routing decision is logged — a template CloudFormation itself rejects
+   * should not first produce a page of routing chatter.
+   *
    * @see findAutoRouteHits for the pure-functional pre-deploy plan-builder
    *      that returns the same information without logging.
    */
@@ -466,7 +476,51 @@ export class ProviderRegistry {
       provisionedBy?: 'sdk' | 'cc-api' | undefined;
     }>
   ): void {
-    this.reportSilentDropDecisions(resources);
+    // Materialized because it is walked TWICE below and the caller's argument
+    // is an Iterable — the deploy engine passes an array today, but a
+    // generator would be silently empty on the second pass.
+    const materialized = [...resources];
+    this.validateMutuallyExclusiveProperties(materialized);
+    this.reportSilentDropDecisions(materialized);
+  }
+
+  /**
+   * Reject a template that declares two or more MUTUALLY EXCLUSIVE top-level
+   * properties on one resource (issue
+   * [#1634](https://github.com/go-to-k/cdkd/issues/1634)).
+   *
+   * Aggregated into ONE error listing every offending resource, mirroring
+   * {@link validateResourceTypes} — a template with three bad routes should
+   * report three, not fail three deploys in a row. There is deliberately no
+   * `--allow-*` escape hatch: the combination is invalid at CloudFormation and
+   * at the service API, so the only correct outcome is a template edit (see
+   * the rule module's header).
+   *
+   * Unlike the provider-side refusal this fires even when the resource already
+   * exists and the deploy diff classifies NO_CHANGE, which is the gap the
+   * issue was filed for.
+   */
+  validateMutuallyExclusiveProperties(
+    resources: Iterable<{
+      logicalId: string;
+      resourceType: string;
+      properties: Record<string, unknown> | undefined;
+    }>
+  ): void {
+    const lines: string[] = [];
+    for (const { logicalId, resourceType, properties } of resources) {
+      for (const violation of findMutuallyExclusiveViolations(resourceType, properties)) {
+        lines.push(buildMutuallyExclusiveMessage(logicalId, violation));
+      }
+    }
+    if (lines.length === 0) return;
+
+    throw new Error(
+      `The following resources declare mutually exclusive properties:\n` +
+        lines.join('\n') +
+        `\n\nCloudFormation rejects these combinations too — edit the template to ` +
+        `declare only one of each set.`
+    );
   }
 
   /**
