@@ -16953,9 +16953,11 @@
       "gaps": [],
       "blindSpots": [
         "computed key in applySubConfigDiffs()",
+        "computed key in canonicalizeItemList()",
         "hasCdkAutoDeleteTag(...) in delete()",
         "hasObjectLock(...) in applySubConfigDiffs()",
         "object spread in applyEffectiveOverrides()",
+        "object spread in canonicalizeItemList()",
         "S3BucketProvider.applyEffectiveOverrides(...) in create()",
         "S3BucketProvider.applyEffectiveOverrides(...) in update()"
       ]

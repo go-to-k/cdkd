@@ -53,7 +53,7 @@ Sites where a whole property bag left the evidence walk (a spread, an unresolvab
 | `LambdaEventSourceMappingProvider` (lambda-eventsource-provider.ts) | `computed key in applyUpdate()` |
 | `LambdaMicrovmImageProvider` (lambda-microvm-image-provider.ts) | `computed key in update()` |
 | `LambdaUrlProvider` (lambda-url-provider.ts) | `computed key in update()`, `object spread in update()` |
-| `S3BucketProvider` (s3-bucket-provider.ts) | `computed key in applySubConfigDiffs()`, `hasCdkAutoDeleteTag(...) in delete()`, `hasObjectLock(...) in applySubConfigDiffs()`, `object spread in applyEffectiveOverrides()`, `S3BucketProvider.applyEffectiveOverrides(...) in create()`, `S3BucketProvider.applyEffectiveOverrides(...) in update()` |
+| `S3BucketProvider` (s3-bucket-provider.ts) | `computed key in applySubConfigDiffs()`, `computed key in canonicalizeItemList()`, `hasCdkAutoDeleteTag(...) in delete()`, `hasObjectLock(...) in applySubConfigDiffs()`, `object spread in applyEffectiveOverrides()`, `object spread in canonicalizeItemList()`, `S3BucketProvider.applyEffectiveOverrides(...) in create()`, `S3BucketProvider.applyEffectiveOverrides(...) in update()` |
 | `S3DirectoryBucketProvider` (s3-directory-bucket-provider.ts) | `hasCdkAutoDeleteTag(...) in delete()` |
 | `SNSTopicProvider` (sns-topic-provider.ts) | `computed key in applyUpdate()` |
 
