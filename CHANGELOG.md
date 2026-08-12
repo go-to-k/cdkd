@@ -1,3 +1,10 @@
+## [0.280.29](https://github.com/go-to-k/cdkd/compare/v0.280.28...v0.280.29) (2026-08-12)
+
+
+### Bug Fixes
+
+* **drift:** preserve untemplated AWS values on a template-only --revert baseline ([#1640](https://github.com/go-to-k/cdkd/issues/1640)) ([18feb07](https://github.com/go-to-k/cdkd/commit/18feb075796a9d9139466b622a5b4ca2aec4eb4f))
+
 ## [0.280.28](https://github.com/go-to-k/cdkd/compare/v0.280.27...v0.280.28) (2026-08-12)
 
 
