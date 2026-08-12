@@ -357,8 +357,12 @@ describe('DynamoDBGlobalTableProvider sibling effectiveProperties arms (issue #1
     // call rather than as two independent `toHaveBeenCalledWith`s, which two
     // different warns could satisfy between them.
     expect(childLogger.warn).toHaveBeenCalledWith(
+      // The interpolated VALUE is part of it too. Here the recorded previous is
+      // PROVISIONED while the default mock reports PAY_PER_REQUEST, so the two
+      // candidates differ and swapping `oldBilling` for `liveBillingMode` — a
+      // message that would be WRONG for exactly this drifted shape — fails.
       expect.stringMatching(
-        /AWS::DynamoDB::GlobalTable MyTable: .*BillingMode.*is kept for this update/s
+        /AWS::DynamoDB::GlobalTable MyTable: .*BillingMode.*\(PROVISIONED\) is kept for this update/s
       )
     );
   });
@@ -389,7 +393,9 @@ describe('DynamoDBGlobalTableProvider sibling effectiveProperties arms (issue #1
     // `null` is the shape an older binary most plausibly wrote, and it is the
     // one an `== null` split would silently move to the DROP branch.
     ['null', null],
-    ['an array', ['PROVISIONED']],
+    // NOT ['PROVISIONED'], which stringifies to exactly the live mode — a
+    // predicate mutated to coerce with String() would survive that row.
+    ['an array', ['PAY_PER_REQUEST']],
   ])(
     'RESTORES the live mode when the recorded previous is %s (present but UNUSABLE)',
     async (_label, previousMode) => {

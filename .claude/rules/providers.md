@@ -139,7 +139,8 @@ strict, each differently):
   `readCurrentState` could never match and the NEXT update read as its previous
   side. The previous side is validated through the SAME translator (a probe
   call with a flag-only callback) before it is retained, and the key is DROPPED
-  when both sides are unusable.
+  when the previous side is unusable OR absent — there is no value cdkd can
+  vouch for either way.
 - **WARN and keep the pre-refusal behavior** — `EC2Provider`'s Route
   multi-destination guard (issue #1566). `updateRoute` DELETES the route before
   re-creating it, so a throw on the re-create would strand a deleted route with

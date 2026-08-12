@@ -1645,9 +1645,10 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // to route through it anyway is that the two stay in step when the
       // helper's refusals grow — which is a claim about the FUTURE, not a
       // divergence already covered.
-      // When BOTH sides are unusable the key is DROPPED — there is no value
-      // cdkd can vouch for, the same answer the `StreamSpecification` arm
-      // above takes.
+      // The key is DROPPED when the previous side is unusable OR absent — there
+      // is no value cdkd can vouch for either way, the same answer the
+      // `StreamSpecification` arm above takes. (The absent case is the `!==
+      // undefined` half of the condition below, not a separate branch.)
       if (desiredGsiUnusable) {
         let previousGsiProbeUnusable = false;
         toSdkGlobalSecondaryIndexes(
