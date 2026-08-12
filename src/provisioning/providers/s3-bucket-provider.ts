@@ -148,6 +148,47 @@ function s3BucketDestinationPath(dest: unknown, destinationPath: string): string
 }
 
 /**
+ * The structural path segments — relative to the enclosing `Destination` block —
+ * of the bag `resolveS3BucketDestination` PICKED, so a substituted value can be
+ * written back at the key the template actually declared (issue #1670).
+ *
+ * The value-side twin of {@link s3BucketDestinationPath}, which names the same
+ * branch for MESSAGES. Derived from the picked bag's IDENTITY rather than by
+ * re-running {@link isFlattenedDestination}: a third copy of that branch
+ * condition is exactly what the predicate's own header warns about, and identity
+ * cannot drift from the resolver at all.
+ */
+function s3BucketDestinationSegments(
+  declared: unknown,
+  picked: Record<string, unknown>
+): readonly string[] {
+  return picked === declared ? [] : ['S3BucketDestination'];
+}
+
+/**
+ * What one of the four `Id`-keyed appliers did to the items it was handed — the
+ * per-item unit `effectiveProperties` is rebuilt from (issues #1612 / #1670).
+ *
+ * The two arms are reported SEPARATELY because they mean opposite things to the
+ * effective array and `.claude/rules/providers.md` records why they cannot be
+ * inferred from the shared `onUnusable` callback: a SKIPPED item never reached
+ * AWS, so the effective entry is the previously-applied item (or nothing), while
+ * a SUBSTITUTED item WAS applied and the effective entry is the item as SENT.
+ * Collapsing them would record an applied configuration as skipped and retain a
+ * previous value AWS no longer holds — manufacturing exactly the phantom drift
+ * both mechanisms exist to remove.
+ */
+interface PerItemApplyOutcome {
+  /** Indexes (into the applier's `configs` argument) of items that were SKIPPED. */
+  skipped: number[];
+  /**
+   * Index -> the item as SENT, for an item that WAS applied but whose declared
+   * value a warn-and-SUBSTITUTE read replaced with the default (issue #1670).
+   */
+  substituted: Map<number, Record<string, unknown>>;
+}
+
+/**
  * Name a malformed value in a refusal message, the way `config-shape.ts`'s
  * private `describe` does for the string-reading guards. Kept local rather than
  * exported from there because `resolveS3BucketDestination` is S3-specific
@@ -531,6 +572,95 @@ export class S3BucketProvider implements ResourceProvider {
     if (refusal === undefined) return false;
     onUnusable(`${refusal}. ${skipClause}; the same value is REFUSED on a template-path create`);
     return true;
+  }
+
+  /**
+   * A per-item string read whose replay downgrade is a warn-and-SUBSTITUTE,
+   * reporting the substitution so the caller can record what was SENT
+   * (issue #1670).
+   *
+   * The third shape beside {@link skipOnUnusableConfigString}'s SKIP and the
+   * plain strict read, for the sites where the fallback is the RIGHT value to
+   * send: `StorageClassAnalysis.DataExport.OutputSchemaVersion` (whose SDK enum
+   * has exactly one member, so the default cannot be a wrong direction) and the
+   * analytics / inventory destination `Format`. The deploy then SUCCEEDS with
+   * the default on the wire, so recording the declared value would describe a
+   * configuration AWS does not hold — and both fields are read back by
+   * `readCurrentState`, making the difference permanent phantom drift
+   * (`.claude/rules/providers.md`, the #1633 warn-and-default arm).
+   *
+   * `onSubstituted` receives the value this call RETURNS, not the fallback
+   * argument: the two are equal by construction today, and handing over the
+   * returned value keeps "what is recorded" and "what is sent" the same
+   * expression rather than two copies that can drift.
+   *
+   * The probe is the shared `configStringRefusal` predicate rather than a
+   * hand-written twin — it is the same test `readConfigString` runs, so the two
+   * cannot disagree on a blank string, an explicit `null`, or a number. It is
+   * skipped entirely without `onUnusable`, where the read below still throws and
+   * no substitution is reachable: recording a value the provider merely failed
+   * to send is what the "already ANNOUNCED" condition on `effectiveProperties`
+   * forbids.
+   *
+   * **No `canonicalizeDesiredProperties` twin, and NOT for the #1612 reason.**
+   * That carve-out is about a SKIP, whose effect is not a pure function of the
+   * desired bag; a substitution's IS one, so the #1633 twin rule reaches this
+   * far and had to be answered on the merits rather than waved past. Three
+   * findings, in the order they decide it:
+   *
+   * - The hazard the twin exists for does not arise here. It fires when
+   *   recording the narrowed bag makes the next diff read a REPLACEMENT
+   *   (`AWS::EC2::Route`'s destination keys are create-only). `AnalyticsConfigurations`
+   *   / `InventoryConfigurations` are neither create-only in the registry schema
+   *   nor classified in `ReplacementRulesRegistry` (only `BucketName` is), so
+   *   the un-canonicalized diff derives an in-place UPDATE and the applier
+   *   re-issues the same idempotent per-`Id` Put.
+   * - The twin CANNOT be shared with the provisioning path, and the rule
+   *   requires that it be. What this method does is path-conditional, not pure:
+   *   without `onUnusable` — the template-borne CREATE — the read still THROWS.
+   *   A canonicalizer claiming "no change" for a bag `create()` refuses would
+   *   make `cdkd diff` forecast a clean deploy that `cdkd deploy` fails on a
+   *   fresh stack, which is the preview-disagrees-with-apply failure the rule
+   *   is guarding against, inverted.
+   * - It would CONCEAL the defect. Canonicalizing both sides makes the
+   *   comparison equal, so on a template whose only change is this one the
+   *   provider is never called and the warning stops — leaving a malformed
+   *   template value silently normalized on UPDATE while an identical fresh
+   *   deploy hard-refuses. `.claude/rules/providers.md` already settles the
+   *   direction for this file: the malformed template keeps re-warning until it
+   *   is fixed, which is correct.
+   *
+   * The accepted cost is the mirror image of the drift this fixes: `cdkd diff`
+   * keeps reporting the property as changed until the template is corrected.
+   * That report is TRUE — the template declares a value cdkd will not send —
+   * and one template edit ends it.
+   *
+   * The #1643 bar ("record what AWS will REPORT, not merely what you sent") is
+   * met by measurement of the API surface rather than by assumption: both
+   * substituted values are literal SDK enum members that the service stores
+   * verbatim — `StorageClassAnalysisSchemaVersion` has exactly one member
+   * (`V_1`), `AnalyticsS3ExportFileFormat` exactly one (`CSV`), and
+   * `InventoryFormat` is `CSV | ORC | Parquet` with no aliasing — and
+   * `analyticsSdkToCfn` / `inventorySdkToCfn` copy both fields straight back.
+   * There is no service-side value MAPPING here (the `IpProtocol: 6 -> tcp`
+   * shape), so the send-side record is the one that converges.
+   */
+  private readSubstitutedConfigString(
+    container: unknown,
+    key: string,
+    fallback: string,
+    containerPath: string,
+    onUnusable: ((message: string) => void) | undefined,
+    onSubstituted: (sent: string) => void
+  ): string {
+    const refused =
+      onUnusable !== undefined &&
+      configStringRefusal(container, key, fallback, containerPath) !== undefined;
+    const value = readConfigString(container, key, fallback, containerPath, {
+      ...(onUnusable ? { onUnusable } : {}),
+    });
+    if (refused) onSubstituted(value);
+    return value;
   }
 
   /**
@@ -1334,14 +1464,17 @@ export class S3BucketProvider implements ResourceProvider {
    * CFn property: MetricsConfigurations[] (array of configurations)
    * SDK: PutBucketMetricsConfiguration (one per configuration, keyed by Id)
    *
-   * @returns the indexes (into `configs`) of the items a replay downgrade
-   *   SKIPPED — the per-item unit of `effectiveProperties` (issue #1612).
+   * @returns what happened to each item, as {@link PerItemApplyOutcome} — the
+   *   per-item unit of `effectiveProperties` (issue #1612). This applier has no
+   *   warn-and-SUBSTITUTE read, so its `substituted` map is always empty; the
+   *   shape is shared with its three siblings so the two call-site recorders
+   *   stay uniform and a future substitution here cannot go unrecorded.
    */
   private async applyMetricsConfigurations(
     bucketName: string,
     configs: Array<Record<string, unknown>>,
     onUnusable?: (message: string) => void
-  ): Promise<number[]> {
+  ): Promise<PerItemApplyOutcome> {
     // The per-ITEM `config` container is deliberately NOT guarded here, and
     // the audit that settled it belongs next to the decision (issue #1581).
     // Of the six per-item appliers that carry the `onUnusable` replay callback
@@ -1438,7 +1571,7 @@ export class S3BucketProvider implements ResourceProvider {
     this.logger.debug(
       `Applied ${configs.length - skipped.length} metrics configuration(s) to bucket ${bucketName}`
     );
-    return skipped;
+    return { skipped, substituted: new Map() };
   }
 
   /**
@@ -1549,15 +1682,20 @@ export class S3BucketProvider implements ResourceProvider {
    * CFn property: AnalyticsConfigurations[] (array of configurations)
    * SDK: PutBucketAnalyticsConfiguration (one per configuration, keyed by Id)
    *
-   * @returns the indexes (into `configs`) of the items a replay downgrade
-   *   SKIPPED — the per-item unit of `effectiveProperties` (issue #1612).
+   * @returns what happened to each item, as {@link PerItemApplyOutcome} — the
+   *   per-item unit of `effectiveProperties` (issues #1612 / #1670). Both arms
+   *   are reachable here: a container / destination guard SKIPS the item, while
+   *   the `OutputSchemaVersion` and destination `Format` reads warn and SEND a
+   *   substituted default, so the item is recorded as SENT rather than as
+   *   declared.
    */
   private async applyAnalyticsConfigurations(
     bucketName: string,
     configs: Array<Record<string, unknown>>,
     onUnusable?: (message: string) => void
-  ): Promise<number[]> {
+  ): Promise<PerItemApplyOutcome> {
     const skipped: number[] = [];
+    const substituted = new Map<number, Record<string, unknown>>();
     // A plain `for…of` over `configs` with a hand-kept index, NOT
     // `configs.entries()`: the nested-key critic's write-evidence walk resolves
     // `config` as a value read off the desired property BAG, and an
@@ -1569,6 +1707,13 @@ export class S3BucketProvider implements ResourceProvider {
     for (const config of configs) {
       index += 1;
       const id = config['Id'] as string;
+      // The item as SENT, rebuilt only once a warn-and-SUBSTITUTE read below
+      // actually replaces something (issue #1670). `undefined` means "declared
+      // == sent", which is the ordinary case and records nothing.
+      let sentItem: Record<string, unknown> | undefined;
+      const recordSubstitution = (path: readonly string[], sent: string): void => {
+        sentItem = S3BucketProvider.withDeepValue(sentItem ?? config, path, sent);
+      };
       // The `StorageClassAnalysis` CONTAINER (issue #1581) — the analytics
       // sibling of the lifecycle `Filter` guard. A present-but-non-OBJECT
       // value indexes the `DataExport` probe below to `undefined`, so the
@@ -1669,6 +1814,7 @@ export class S3BucketProvider implements ResourceProvider {
           continue;
         }
         const destPath = s3BucketDestinationPath(rawDest, analyticsDestPath);
+        const destSegments = s3Dest ? s3BucketDestinationSegments(rawDest, s3Dest) : [];
         analyticsConfig.StorageClassAnalysis = {
           DataExport: {
             // Same update-path downgrade as the `Format` read below: the FIELD
@@ -1685,12 +1831,24 @@ export class S3BucketProvider implements ResourceProvider {
             // defaulting a real enum could. A destination that is present but
             // unusable was already eaten by the `continue` above, so the only
             // survivors are a valid `s3Dest` or an absent one.
-            OutputSchemaVersion: readConfigString(
+            //
+            // The substituted value is threaded back into the item's effective
+            // entry (issue #1670): the Put SUCCEEDS carrying `V_1`, so
+            // recording the malformed declared value would describe a data
+            // export AWS does not hold — `analyticsSdkToCfn` reads the field
+            // back, so the difference is visible to the comparator and never
+            // converges.
+            OutputSchemaVersion: this.readSubstitutedConfigString(
               dataExport,
               'OutputSchemaVersion',
               'V_1',
               'AWS::S3::Bucket AnalyticsConfigurations[].StorageClassAnalysis.DataExport',
-              { ...(onUnusable ? { onUnusable } : {}) }
+              onUnusable,
+              (sent) =>
+                recordSubstitution(
+                  ['StorageClassAnalysis', 'DataExport', 'OutputSchemaVersion'],
+                  sent
+                )
             ),
             Destination: s3Dest
               ? {
@@ -1700,10 +1858,29 @@ export class S3BucketProvider implements ResourceProvider {
                     // Same downgrade as the destination guard above: a
                     // rollback / `drift --revert` replays a STATE record here,
                     // so a malformed `Format` must not hard-fail one line below
-                    // a guard that deliberately warns.
-                    Format: readConfigString(s3Dest, 'Format', 'CSV', destPath, {
-                      ...(onUnusable ? { onUnusable } : {}),
-                    }),
+                    // a guard that deliberately warns. And the same
+                    // record-what-was-SENT rule as the schema version above
+                    // (issue #1670), written back at the branch the template
+                    // declared — flattened or nested — so the effective item
+                    // stays the user's own shape.
+                    Format: this.readSubstitutedConfigString(
+                      s3Dest,
+                      'Format',
+                      'CSV',
+                      destPath,
+                      onUnusable,
+                      (sent) =>
+                        recordSubstitution(
+                          [
+                            'StorageClassAnalysis',
+                            'DataExport',
+                            'Destination',
+                            ...destSegments,
+                            'Format',
+                          ],
+                          sent
+                        )
+                    ),
                     Prefix: s3Dest['Prefix'] as string | undefined,
                   },
                 }
@@ -1719,11 +1896,14 @@ export class S3BucketProvider implements ResourceProvider {
           AnalyticsConfiguration: analyticsConfig,
         })
       );
+      // Recorded only once the Put has SUCCEEDED — the effective bag describes
+      // what AWS holds, and a failed Put leaves it holding nothing new.
+      if (sentItem !== undefined) substituted.set(index, sentItem);
     }
     this.logger.debug(
       `Applied ${configs.length - skipped.length} analytics configuration(s) to bucket ${bucketName}`
     );
-    return skipped;
+    return { skipped, substituted };
   }
 
   /**
@@ -1732,14 +1912,17 @@ export class S3BucketProvider implements ResourceProvider {
    * CFn property: IntelligentTieringConfigurations[]
    * SDK: PutBucketIntelligentTieringConfiguration (one per configuration, keyed by Id)
    *
-   * @returns the indexes (into `configs`) of the items a replay downgrade
-   *   SKIPPED — the per-item unit of `effectiveProperties` (issue #1612).
+   * @returns what happened to each item, as {@link PerItemApplyOutcome} — the
+   *   per-item unit of `effectiveProperties` (issue #1612). Its per-item
+   *   `Status` read takes the SKIP downgrade rather than a substitution (issue
+   *   #1595 — defaulting to `Enabled` would start archiving objects), so the
+   *   `substituted` map is always empty here.
    */
   private async applyIntelligentTieringConfigurations(
     bucketName: string,
     configs: Array<Record<string, unknown>>,
     onUnusable?: (message: string) => void
-  ): Promise<number[]> {
+  ): Promise<PerItemApplyOutcome> {
     const skipped: number[] = [];
     // A plain `for…of` over `configs` with a hand-kept index, NOT
     // `configs.entries()`: the nested-key critic's write-evidence walk resolves
@@ -1827,7 +2010,7 @@ export class S3BucketProvider implements ResourceProvider {
       `Applied ${configs.length - skipped.length} intelligent tiering configuration(s) to bucket ` +
         `${bucketName}`
     );
-    return skipped;
+    return { skipped, substituted: new Map() };
   }
 
   /**
@@ -1836,15 +2019,19 @@ export class S3BucketProvider implements ResourceProvider {
    * CFn property: InventoryConfigurations[]
    * SDK: PutBucketInventoryConfiguration (one per configuration, keyed by Id)
    *
-   * @returns the indexes (into `configs`) of the items a replay downgrade
-   *   SKIPPED — the per-item unit of `effectiveProperties` (issue #1612).
+   * @returns what happened to each item, as {@link PerItemApplyOutcome} — the
+   *   per-item unit of `effectiveProperties` (issues #1612 / #1670). Both arms
+   *   are reachable here: `IncludedObjectVersions` / the schedule frequency pair
+   *   / the destination guard SKIP the item, while the destination `Format` read
+   *   warns and SENDS a substituted default.
    */
   private async applyInventoryConfigurations(
     bucketName: string,
     configs: Array<Record<string, unknown>>,
     onUnusable?: (message: string) => void
-  ): Promise<number[]> {
+  ): Promise<PerItemApplyOutcome> {
     const skipped: number[] = [];
+    const substituted = new Map<number, Record<string, unknown>>();
     // A plain `for…of` over `configs` with a hand-kept index, NOT
     // `configs.entries()`: the nested-key critic's write-evidence walk resolves
     // `config` as a value read off the desired property BAG, and an
@@ -1889,6 +2076,12 @@ export class S3BucketProvider implements ResourceProvider {
         continue;
       }
       const destPath = s3BucketDestinationPath(rawDest, inventoryDestPath);
+      const destSegments = s3Dest ? s3BucketDestinationSegments(rawDest, s3Dest) : [];
+      // The item as SENT — see the analytics sibling (issue #1670).
+      let sentItem: Record<string, unknown> | undefined;
+      const recordSubstitution = (path: readonly string[], sent: string): void => {
+        sentItem = S3BucketProvider.withDeepValue(sentItem ?? config, path, sent);
+      };
 
       // The schedule frequency is a TWO-SOURCE precedence read, so its replay
       // downgrade is neither of the two shapes #1595 settled (issue #1605):
@@ -1982,10 +2175,18 @@ export class S3BucketProvider implements ResourceProvider {
             ? {
                 Bucket: (s3Dest['BucketArn'] ?? s3Dest['Bucket']) as string,
                 AccountId: s3Dest['BucketAccountId'] as string | undefined,
-                // Same update-path downgrade as the analytics sibling.
-                Format: readConfigString(s3Dest, 'Format', 'CSV', destPath, {
-                  ...(onUnusable ? { onUnusable } : {}),
-                }),
+                // Same update-path downgrade as the analytics sibling, and the
+                // same record-what-was-SENT rule (issue #1670) —
+                // `inventorySdkToCfn` reads `Format` back, so a recorded
+                // declared value AWS never received is permanent phantom drift.
+                Format: this.readSubstitutedConfigString(
+                  s3Dest,
+                  'Format',
+                  'CSV',
+                  destPath,
+                  onUnusable,
+                  (sent) => recordSubstitution(['Destination', ...destSegments, 'Format'], sent)
+                ),
                 Prefix: s3Dest['Prefix'] as string | undefined,
               }
             : undefined,
@@ -2001,11 +2202,13 @@ export class S3BucketProvider implements ResourceProvider {
           InventoryConfiguration: inventoryConfig,
         })
       );
+      // Recorded only once the Put has SUCCEEDED — see the analytics sibling.
+      if (sentItem !== undefined) substituted.set(index, sentItem);
     }
     this.logger.debug(
       `Applied ${configs.length - skipped.length} inventory configuration(s) to bucket ${bucketName}`
     );
-    return skipped;
+    return { skipped, substituted };
   }
 
   /**
@@ -2554,9 +2757,17 @@ export class S3BucketProvider implements ResourceProvider {
    * items would manufacture a fresh phantom drift while removing the one this
    * exists to fix.
    *
+   * An item that WAS applied but with a value a warn-and-SUBSTITUTE read
+   * replaced is the third arm (issue #1670): it keeps its position and its
+   * declared shape, and only the substituted field differs — `sentItem` is the
+   * item AS SENT, which is what AWS holds and therefore what state must
+   * describe.
+   *
    * @param previous the previously-recorded array, or `undefined` on the
    *   replay-CREATE path, where nothing was ever applied and there is no
    *   previous item to substitute.
+   * @param sentItemOf the item as SENT for an APPLIED item whose declared value
+   *   was substituted, or `undefined` when declared == sent (the ordinary case).
    * @returns the effective array, or `undefined` when the key should be ABSENT
    *   from the effective bag (nothing survived AND the previous side declared
    *   nothing, so the property was never applied at all).
@@ -2564,7 +2775,11 @@ export class S3BucketProvider implements ResourceProvider {
   private static buildEffectiveItemArray(
     desired: Array<Record<string, unknown>>,
     previous: Array<Record<string, unknown>> | undefined,
-    isSkipped: (item: Record<string, unknown>, index: number) => boolean
+    isSkipped: (item: Record<string, unknown>, index: number) => boolean,
+    sentItemOf?: (
+      item: Record<string, unknown>,
+      index: number
+    ) => Record<string, unknown> | undefined
   ): Array<Record<string, unknown>> | undefined {
     const previousById = new Map<string, Record<string, unknown>>();
     for (const item of previous ?? []) {
@@ -2574,7 +2789,7 @@ export class S3BucketProvider implements ResourceProvider {
     const effective: Array<Record<string, unknown>> = [];
     desired.forEach((item, index) => {
       if (!isSkipped(item, index)) {
-        effective.push(item);
+        effective.push(sentItemOf?.(item, index) ?? item);
         return;
       }
       // A DUPLICATE `Id` in the desired array substitutes the same previous
@@ -2588,6 +2803,40 @@ export class S3BucketProvider implements ResourceProvider {
     });
     if (effective.length === 0 && previous === undefined) return undefined;
     return effective;
+  }
+
+  /**
+   * A COPY of `container` with `path` set to `value` (issue #1670).
+   *
+   * Copying rather than mutating is load-bearing, not hygiene: the container is
+   * an item of the caller's DESIRED property bag, which `DiffCalculator` and the
+   * engine still read afterwards — writing the substituted value into it would
+   * silently rewrite the template side of the next comparison, which is exactly
+   * the `canonicalizeDesiredProperties` behavior this fix must NOT have. Only
+   * the objects ALONG the path are cloned; every sibling subtree is shared,
+   * which is safe because nothing here mutates them.
+   *
+   * A non-object on the way down is unreachable at the three call sites (each
+   * segment has already been validated by `requireConfigObject` /
+   * `resolveS3BucketDestination`); it is rebuilt as a fresh block rather than
+   * abandoned so the recorded value still describes what was SENT if a fourth
+   * site ever reaches it with a looser chain.
+   */
+  private static withDeepValue(
+    container: Record<string, unknown>,
+    path: readonly string[],
+    value: unknown
+  ): Record<string, unknown> {
+    const [head, ...rest] = path;
+    if (head === undefined) return container;
+    const child = container[head];
+    return {
+      ...container,
+      [head]:
+        rest.length === 0
+          ? value
+          : S3BucketProvider.withDeepValue(isPlainObject(child) ? child : {}, rest, value),
+    };
   }
 
   /**
@@ -2693,9 +2942,40 @@ export class S3BucketProvider implements ResourceProvider {
     const retainPrevious = (key: string): void => {
       overrides.set(key, previousProperties[key]);
     };
-    /** Record a PER-ITEM skip set against the desired / previous arrays. */
-    const retainPreviousItems = (key: string, skippedIds: ReadonlySet<string>): void => {
-      if (skippedIds.size === 0) return;
+    /**
+     * Per-property accumulator for one of the four `Id`-keyed appliers.
+     *
+     * Keyed by `Id` rather than by index because on THIS path the diff loop
+     * hands the applier exactly one item per call (so every outcome index is
+     * 0) and the id is all the loop knows about it.
+     */
+    const itemOutcomes = (): {
+      skipped: Set<string>;
+      sentItems: Map<string, Record<string, unknown>>;
+      record: (id: string, outcome: PerItemApplyOutcome) => void;
+    } => {
+      const skipped = new Set<string>();
+      const sentItems = new Map<string, Record<string, unknown>>();
+      return {
+        skipped,
+        sentItems,
+        record: (id, outcome) => {
+          if (outcome.skipped.length > 0) skipped.add(id);
+          const sent = outcome.substituted.get(0);
+          if (sent !== undefined) sentItems.set(id, sent);
+        },
+      };
+    };
+    /** Record a PER-ITEM skip / substitution set against the desired / previous arrays. */
+    const retainPreviousItems = (
+      key: string,
+      collected: {
+        skipped: ReadonlySet<string>;
+        sentItems: ReadonlyMap<string, Record<string, unknown>>;
+      }
+    ): void => {
+      const { skipped: skippedIds, sentItems } = collected;
+      if (skippedIds.size === 0 && sentItems.size === 0) return;
       const desired = properties[key];
       if (!Array.isArray(desired)) {
         // Unreachable: `diffArrayConfigById` iterates the desired value, so a
@@ -2703,8 +2983,8 @@ export class S3BucketProvider implements ResourceProvider {
         // rather than dropped silently, because reaching it means a skip went
         // UNRECORDED and the phantom drift this method removes is back.
         this.logger.debug(
-          `Bucket ${bucketName}: ${skippedIds.size} skipped ${key} item(s) could not be recorded ` +
-            `— the desired value is not an array`
+          `Bucket ${bucketName}: ${skippedIds.size + sentItems.size} skipped or substituted ` +
+            `${key} item(s) could not be recorded — the desired value is not an array`
         );
         return;
       }
@@ -2717,6 +2997,10 @@ export class S3BucketProvider implements ResourceProvider {
           (item) => {
             const id = configItemId(item);
             return id !== undefined && skippedIds.has(id);
+          },
+          (item) => {
+            const id = configItemId(item);
+            return id !== undefined ? sentItems.get(id) : undefined;
           }
         )
       );
@@ -3015,7 +3299,7 @@ export class S3BucketProvider implements ResourceProvider {
     // Each `onPut` applies exactly ONE item, so a non-empty skip list from the
     // applier names THAT id — which is the per-item unit `retainPreviousItems`
     // rebuilds the effective array from (issue #1612).
-    const skippedMetricsIds = new Set<string>();
+    const metricsOutcomes = itemOutcomes();
     await this.diffArrayConfigById(
       bucketName,
       previousProperties['MetricsConfigurations'] as Array<Record<string, unknown>> | undefined,
@@ -3023,10 +3307,10 @@ export class S3BucketProvider implements ResourceProvider {
       // WARN, never throw, on the update path (issue #1579) — same rationale
       // as the analytics sibling below.
       async (id, cfg) => {
-        const skipped = await this.applyMetricsConfigurations(bucketName, [cfg], (m) =>
+        const outcome = await this.applyMetricsConfigurations(bucketName, [cfg], (m) =>
           this.logger.warn(m)
         );
-        if (skipped.length > 0) skippedMetricsIds.add(String(id));
+        metricsOutcomes.record(String(id), outcome);
       },
       async (id) => {
         await this.s3Client.send(
@@ -3035,10 +3319,10 @@ export class S3BucketProvider implements ResourceProvider {
         this.logger.debug(`Deleted metrics configuration ${id} on bucket ${bucketName}`);
       }
     );
-    retainPreviousItems('MetricsConfigurations', skippedMetricsIds);
+    retainPreviousItems('MetricsConfigurations', metricsOutcomes);
 
     // Analytics (per-id diff)
-    const skippedAnalyticsIds = new Set<string>();
+    const analyticsOutcomes = itemOutcomes();
     await this.diffArrayConfigById(
       bucketName,
       previousProperties['AnalyticsConfigurations'] as Array<Record<string, unknown>> | undefined,
@@ -3048,10 +3332,10 @@ export class S3BucketProvider implements ResourceProvider {
       // as the desired bag, so a refusal here would strand the resource with no
       // template-side remedy (issue #1493 item 2).
       async (id, cfg) => {
-        const skipped = await this.applyAnalyticsConfigurations(bucketName, [cfg], (m) =>
+        const outcome = await this.applyAnalyticsConfigurations(bucketName, [cfg], (m) =>
           this.logger.warn(m)
         );
-        if (skipped.length > 0) skippedAnalyticsIds.add(String(id));
+        analyticsOutcomes.record(String(id), outcome);
       },
       async (id) => {
         await this.s3Client.send(
@@ -3060,10 +3344,10 @@ export class S3BucketProvider implements ResourceProvider {
         this.logger.debug(`Deleted analytics configuration ${id} on bucket ${bucketName}`);
       }
     );
-    retainPreviousItems('AnalyticsConfigurations', skippedAnalyticsIds);
+    retainPreviousItems('AnalyticsConfigurations', analyticsOutcomes);
 
     // IntelligentTiering (per-id diff)
-    const skippedIntelligentTieringIds = new Set<string>();
+    const intelligentTieringOutcomes = itemOutcomes();
     await this.diffArrayConfigById(
       bucketName,
       previousProperties['IntelligentTieringConfigurations'] as
@@ -3073,10 +3357,10 @@ export class S3BucketProvider implements ResourceProvider {
       // WARN, never throw, on the update path (issue #1579) — same rationale
       // as the analytics sibling above.
       async (id, cfg) => {
-        const skipped = await this.applyIntelligentTieringConfigurations(bucketName, [cfg], (m) =>
+        const outcome = await this.applyIntelligentTieringConfigurations(bucketName, [cfg], (m) =>
           this.logger.warn(m)
         );
-        if (skipped.length > 0) skippedIntelligentTieringIds.add(String(id));
+        intelligentTieringOutcomes.record(String(id), outcome);
       },
       async (id) => {
         await this.s3Client.send(
@@ -3090,20 +3374,20 @@ export class S3BucketProvider implements ResourceProvider {
         );
       }
     );
-    retainPreviousItems('IntelligentTieringConfigurations', skippedIntelligentTieringIds);
+    retainPreviousItems('IntelligentTieringConfigurations', intelligentTieringOutcomes);
 
     // Inventory (per-id diff)
-    const skippedInventoryIds = new Set<string>();
+    const inventoryOutcomes = itemOutcomes();
     await this.diffArrayConfigById(
       bucketName,
       previousProperties['InventoryConfigurations'] as Array<Record<string, unknown>> | undefined,
       properties['InventoryConfigurations'] as Array<Record<string, unknown>> | undefined,
       // Same update-path warn as the analytics sibling above.
       async (id, cfg) => {
-        const skipped = await this.applyInventoryConfigurations(bucketName, [cfg], (m) =>
+        const outcome = await this.applyInventoryConfigurations(bucketName, [cfg], (m) =>
           this.logger.warn(m)
         );
-        if (skipped.length > 0) skippedInventoryIds.add(String(id));
+        inventoryOutcomes.record(String(id), outcome);
       },
       async (id) => {
         await this.s3Client.send(
@@ -3112,7 +3396,7 @@ export class S3BucketProvider implements ResourceProvider {
         this.logger.debug(`Deleted inventory configuration ${id} on bucket ${bucketName}`);
       }
     );
-    retainPreviousItems('InventoryConfigurations', skippedInventoryIds);
+    retainPreviousItems('InventoryConfigurations', inventoryOutcomes);
 
     // Versioning SUSPEND — deferred to LAST on purpose (issue #1466); see the
     // split rationale at the top of this method.
@@ -3175,18 +3459,29 @@ export class S3BucketProvider implements ResourceProvider {
     context?: CreateContext
   ): Promise<Map<string, unknown>> {
     const overrides = new Map<string, unknown>();
-    /** Record a per-ITEM skip set: nothing to substitute on a fresh bucket. */
-    const dropSkippedItems = (
+    /**
+     * Record a per-ITEM applier outcome.
+     *
+     * A SKIPPED item is DROPPED — there is no previously-applied item to
+     * substitute on a fresh bucket. An item applied with a SUBSTITUTED value
+     * (issue #1670) is kept in place as SENT, which is a decision the create
+     * path makes for the same reason the update path does: the Put SUCCEEDED,
+     * so AWS holds the substituted value and state must say so.
+     */
+    const recordItemOutcome = (
       key: string,
       configs: Array<Record<string, unknown>>,
-      skippedIndexes: number[]
+      outcome: PerItemApplyOutcome
     ): void => {
-      if (skippedIndexes.length === 0) return;
-      const skipped = new Set(skippedIndexes);
+      if (outcome.skipped.length === 0 && outcome.substituted.size === 0) return;
+      const skipped = new Set(outcome.skipped);
       overrides.set(
         key,
-        S3BucketProvider.buildEffectiveItemArray(configs, undefined, (_item, index) =>
-          skipped.has(index)
+        S3BucketProvider.buildEffectiveItemArray(
+          configs,
+          undefined,
+          (_item, index) => skipped.has(index),
+          (_item, index) => outcome.substituted.get(index)
         )
       );
     };
@@ -3298,7 +3593,7 @@ export class S3BucketProvider implements ResourceProvider {
       | Array<Record<string, unknown>>
       | undefined;
     if (metricsConfigs && Array.isArray(metricsConfigs) && metricsConfigs.length > 0) {
-      dropSkippedItems(
+      recordItemOutcome(
         'MetricsConfigurations',
         metricsConfigs,
         await this.applyMetricsConfigurations(bucketName, metricsConfigs, replayOnUnusable)
@@ -3310,7 +3605,7 @@ export class S3BucketProvider implements ResourceProvider {
       | Array<Record<string, unknown>>
       | undefined;
     if (analyticsConfigs && Array.isArray(analyticsConfigs) && analyticsConfigs.length > 0) {
-      dropSkippedItems(
+      recordItemOutcome(
         'AnalyticsConfigurations',
         analyticsConfigs,
         await this.applyAnalyticsConfigurations(bucketName, analyticsConfigs, replayOnUnusable)
@@ -3322,7 +3617,7 @@ export class S3BucketProvider implements ResourceProvider {
       | Array<Record<string, unknown>>
       | undefined;
     if (itConfigs && Array.isArray(itConfigs) && itConfigs.length > 0) {
-      dropSkippedItems(
+      recordItemOutcome(
         'IntelligentTieringConfigurations',
         itConfigs,
         await this.applyIntelligentTieringConfigurations(bucketName, itConfigs, replayOnUnusable)
@@ -3334,7 +3629,7 @@ export class S3BucketProvider implements ResourceProvider {
       | Array<Record<string, unknown>>
       | undefined;
     if (inventoryConfigs && Array.isArray(inventoryConfigs) && inventoryConfigs.length > 0) {
-      dropSkippedItems(
+      recordItemOutcome(
         'InventoryConfigurations',
         inventoryConfigs,
         await this.applyInventoryConfigurations(bucketName, inventoryConfigs, replayOnUnusable)

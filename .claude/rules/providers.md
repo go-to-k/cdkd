@@ -334,6 +334,53 @@ so a defaulted-but-APPLIED configuration would be recorded as skipped and the
 previous value retained — manufacturing exactly the phantom drift the change
 exists to remove.
 
+**A warn-and-SUBSTITUTE arm at the SAME sites reports what it SENT, and the
+twin question has to be RE-ASKED there rather than inherited from the paragraph
+above** (issue #1670, the sibling #1612 deliberately left alone). A
+substitution's effect IS a pure function of the desired value — malformed ->
+the default, the key still present, no removal derivable — so the skip
+carve-out does not cover it and the #1633 twin rule genuinely reaches it. The
+S3 analytics `StorageClassAnalysis.DataExport.OutputSchemaVersion` and the
+analytics / inventory destination `Format` still answered NO, on three findings
+worth reusing as the checklist:
+
+- **Which hazard does the twin actually avert here?** It exists because a
+  narrowed record makes the next diff read the difference as a user-made
+  change, and for a create-only property that is a REPLACEMENT. Neither
+  property is create-only in the registry schema nor classified in
+  `ReplacementRulesRegistry` (`AWS::S3::Bucket` classifies only `BucketName`),
+  so the un-canonicalized diff derives an in-place UPDATE that re-issues the
+  same idempotent per-`Id` Put. Check the classification before assuming the
+  hazard.
+- **Can the twin be SHARED with the provisioning path?** The rule requires that
+  it be, and here it cannot: the substitution is PATH-CONDITIONAL — the
+  template-borne CREATE still THROWS, and only the replay / update paths
+  default. A canonicalizer reporting "no change" for a bag `create()` refuses
+  makes `cdkd diff` forecast a clean deploy that fails on a fresh stack, which
+  is the preview-disagrees-with-apply failure inverted. An UNCONDITIONAL
+  substitution (`narrowIngressIpProtocol`) has no such split and does take the
+  twin.
+- **What does the user still see?** Canonicalizing both sides makes the
+  comparison equal, so on a template whose only fault is this field the
+  provider is never called and the warning stops — the value silently
+  normalized on UPDATE while an identical fresh deploy hard-refuses. Refusing
+  the twin costs the mirror image: `cdkd diff` keeps reporting the property
+  until the template is corrected, which is TRUE and ends with one edit.
+
+Record it per ITEM, like the skip — the S3 per-`Id` appliers therefore report
+`{skipped, substituted}` rather than the bare index list the paragraph above
+describes, because the two arms mean OPPOSITE things to the effective array (a
+skipped item's entry is what AWS still holds, a substituted item's is what was
+just sent) and must stay separable all the way to the recorder. Two further
+details the skip path did not need:
+the effective array keeps the substituted item IN PLACE in its DECLARED branch
+shape (a CFn `Destination` block is accepted flattened AND nested, so writing
+back at a hardcoded branch leaves the malformed value alive at the other key
+and adds a stray one), and the recorder is handed the value the read RETURNED
+rather than the fallback literal, so "what is recorded" and "what is sent"
+cannot drift apart. And weigh the #1643 bar first: both values here are literal
+SDK enum members the service stores verbatim, so a send-side record converges.
+
 Two things that are easy to get wrong and were both caught by review:
 **normalize BOTH comparison sides**, not just the desired one — a record written BEFORE the provider started narrowing still carries every key, so a one-sided pass flips the same difference to a REMOVAL and breaks exactly the population the narrowing exists for; and **wire `cdkd diff` too**, since a preview that narrows differently from the apply forecasts a change the deploy will never make. `makeCanonicalizePropertiesFn` in `src/provisioning/canonicalize-properties.ts` is the one builder both commands use, so they cannot drift.
 
