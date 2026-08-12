@@ -1924,11 +1924,23 @@ export class Route53Provider implements ResourceProvider {
       }
     }
 
+    // Three ways to land here, and they are NOT the same failure. The middle
+    // arm exists because reaching this line with a name in hand is possible
+    // (the listing was INCONCLUSIVE — a truncated page that never showed a
+    // later name, or a template spelling carrying a backslash escape we will
+    // not position against AWS's ordering), and reporting that as "specify a
+    // zone" names neither the cause nor a remedy for a user who did specify
+    // one.
     throw new ProvisioningError(
       lookupErrorMessage
         ? `Could not resolve HostedZoneName "${String(hostedZoneName)}" for ${subject.noun} ` +
             `${logicalId}: ${lookupErrorMessage}`
-        : `Either HostedZoneId or HostedZoneName is required for ${subject.noun} ${logicalId}`,
+        : typeof hostedZoneName === 'string' && hostedZoneName
+          ? `Could not determine whether HostedZoneName "${hostedZoneName}" exists for ` +
+            `${subject.noun} ${logicalId} — the hosted-zone listing ended before the name ` +
+            `could be resolved either way, so cdkd will not assume it is absent. ` +
+            `${subject.remedy}.`
+          : `Either HostedZoneId or HostedZoneName is required for ${subject.noun} ${logicalId}`,
       resourceType,
       logicalId,
       physicalId,

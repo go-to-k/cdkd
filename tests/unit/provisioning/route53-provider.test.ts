@@ -1280,6 +1280,45 @@ describe('Route53Provider', () => {
       ).rejects.toThrow(/matches 2 hosted zones .*--resource MyZone=<hostedZoneId>/s);
     });
 
+    it('REFUSES when the name is still ambiguous AFTER narrowing (two private zones)', async () => {
+      // Two private zones can share a name in different VPCs, so narrowing to
+      // one SIDE does not always leave one zone. Without this case the mutant
+      // "narrowing means take the first survivor" passes the whole suite and
+      // silently adopts an arbitrary zone — the same take-the-first-match bug
+      // the public/private cases fence one level up.
+      mockSend.mockResolvedValueOnce({
+        HostedZones: [
+          zone('ZPRIV1', 'example.com.', true),
+          zone('ZPRIV2', 'example.com.', true),
+        ],
+        IsTruncated: false,
+      });
+
+      await expect(
+        provider.import(
+          makeInput({
+            properties: { Name: 'example.com', VPCs: [{ VPCId: 'vpc-123' }] },
+          })
+        )
+        // No split-horizon attribution: both survivors are on the SAME side,
+        // so naming public/private as the cause would point at the wrong thing.
+      ).rejects.toThrow(/matches 2 hosted zones for MyZone\. Refusing to guess/);
+    });
+
+    it('treats a zone with no Config block as PUBLIC', async () => {
+      // `z.Config?.PrivateZone ?? false` — the default has to be public, or a
+      // response shape without the block would be excluded from every
+      // public-side narrowing.
+      mockSend.mockResolvedValueOnce({
+        HostedZones: [{ Id: '/hostedzone/ZNOCONFIG', Name: 'example.com.' }],
+        IsTruncated: false,
+      });
+
+      const result = await provider.import(makeInput({ properties: { Name: 'example.com' } }));
+
+      expect(result).toEqual({ physicalId: 'ZNOCONFIG', attributes: {} });
+    });
+
     it('REFUSES when every VPCs element is intrinsic-only (conditionally absent)', async () => {
       mockSend.mockResolvedValueOnce({
         HostedZones: [
@@ -1352,11 +1391,14 @@ describe('Route53Provider', () => {
         IsTruncated: true,
       });
 
-      // Inconclusive, so it must NOT return null (a proven absence) — it
-      // falls through to the resolver's "could not resolve" refusal.
+      // Inconclusive, so it must NOT return null (a proven absence). The
+      // refusal has to say WHY and name the remedy — "specify a zone" would be
+      // nonsense for a template that specified one.
       await expect(
         provider.import(makeInput({ properties: { Name: 'example.com' } }))
-      ).rejects.toThrow(/Either HostedZoneId or HostedZoneName is required for hosted zone/);
+      ).rejects.toThrow(
+        /Could not determine whether HostedZoneName "example\.com" exists .*--resource MyZone=<hostedZoneId>/s
+      );
     });
 
     it('DOES treat a truncated page as a proven absence once a later name appears', async () => {
@@ -1397,6 +1439,35 @@ describe('Route53Provider', () => {
       );
 
       expect(result).toBeNull();
+      // Non-vacuous: this is a decline AFTER the lookup ran, not the no-Name
+      // early return and not a catch-all null.
+      expect(mockSend).toHaveBeenCalledTimes(1);
+    });
+
+    it('override path: a missing zone returns null rather than failing the row', async () => {
+      const err = new Error('No hosted zone found');
+      err.name = 'NoSuchHostedZone';
+      mockSend.mockRejectedValueOnce(err);
+
+      const result = await provider.import(
+        makeInput({ knownPhysicalId: 'ZGONE', properties: { Name: 'example.com' } })
+      );
+
+      expect(result).toBeNull();
+      // It must NOT fall through to the Name lookup — an explicit override is
+      // ground truth, and searching would adopt a DIFFERENT zone than the one
+      // the user named.
+      expect(mockSend).toHaveBeenCalledTimes(1);
+    });
+
+    it('override path: any other verification error FAILS the row', async () => {
+      // A denied or typo'd `--resource` must not be flattened into
+      // `skipped-not-found` — the same policy the auto path applies.
+      mockSend.mockRejectedValueOnce(new Error('AccessDenied: route53:GetHostedZone'));
+
+      await expect(
+        provider.import(makeInput({ knownPhysicalId: 'ZDENIED' }))
+      ).rejects.toThrow(/AccessDenied/);
     });
 
     it('FAILS the row (not "not found") when the lookup itself is denied', async () => {
