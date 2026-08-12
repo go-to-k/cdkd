@@ -268,6 +268,47 @@ below the comparison agrees with it). When you reach for `effectiveProperties`,
 ask what the service will REPORT, not merely whether your own transformation
 lost information; when those differ, the readback side is the one to fix.
 
+**A warn-and-SKIP arm is the same class as a narrowing, and the
+`canonicalizeDesiredProperties` twin above does NOT apply to it** (issue
+#1612). Read the twin rule as scoped to a NARROWING — a pure function of the
+desired bag, where both comparison sides can be reduced identically. A skip is
+a different shape: what reaches AWS depends on what was ALREADY there, so
+there is no pure function of the desired bag to canonicalize with, and the twin
+is actively destructive. Canonicalizing the desired side would DROP the
+malformed configuration from it, so a previous side holding a VALID
+configuration against a desired side holding a malformed one derives a
+REMOVAL — cdkd would DELETE the live lifecycle / replication configuration the
+user still wants, on a template whose only fault is one unusable field.
+Recording the retained value has no such arm: the malformed template keeps
+re-warning until it is fixed, which is correct.
+
+What to record differs per path, and neither answer generalizes — the eight
+skip-reporting S3 bucket appliers carry all three:
+
+- **UPDATE**: retain the PREVIOUS value. The Put never ran, so AWS still holds
+  the previously-applied configuration and that IS what state should describe.
+  Dropping the key instead is wrong in the other direction: a later template
+  that REMOVES the block would derive no removal and the live configuration
+  would survive forever.
+- **replay-CREATE** (the reverse-replacement arm): DROP the key. The resource
+  is new and nothing was applied, so there is no previous value to keep.
+- **per-item appliers** (a Put keyed by `Id`): the skip unit is one
+  configuration ITEM, so the effective array substitutes the previous item of
+  the same `Id` IN PLACE, or drops it when the skipped item was an ADD.
+  Preserve the DESIRED order — `DiffCalculator` compares arrays positionally,
+  so a reordered effective array manufactures a fresh phantom drift while
+  removing the one this exists to fix.
+
+Report the skip EXPLICITLY from the applier (a `Promise<boolean>` "applied"
+return, or a list of skipped item indexes) rather than inferring it by wrapping
+`onUnusable`. That callback is shared by TWO guard classes — SKIP-class guards
+(`configStringRefusal` + `requireConfigObject` / `requireConfigArray`) and
+warn-and-DEFAULT reads (`readConfigString` with the options bag, where the
+applier proceeds WITH a substituted default). A wrapper cannot tell them apart,
+so a defaulted-but-APPLIED configuration would be recorded as skipped and the
+previous value retained — manufacturing exactly the phantom drift the change
+exists to remove.
+
 Two things that are easy to get wrong and were both caught by review:
 **normalize BOTH comparison sides**, not just the desired one — a record written BEFORE the provider started narrowing still carries every key, so a one-sided pass flips the same difference to a REMOVAL and breaks exactly the population the narrowing exists for; and **wire `cdkd diff` too**, since a preview that narrows differently from the apply forecasts a change the deploy will never make. `makeCanonicalizePropertiesFn` in `src/provisioning/canonicalize-properties.ts` is the one builder both commands use, so they cannot drift.
 

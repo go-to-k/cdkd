@@ -160,9 +160,10 @@ Three conditions, or this becomes a way to hide losses rather than record them:
   patch. An absent field means "record the desired properties", so the engine
   gates on `??`, and an empty object is a legitimate answer.
 
-**Implement `canonicalizeDesiredProperties` alongside it — always.** The two
-are halves of one decision, and the first without the second is worse than
-neither. `effectiveProperties` makes state describe what AWS holds; the
+**Implement `canonicalizeDesiredProperties` alongside it — whenever what you
+report is a NARROWING.** The two are halves of one decision, and the first
+without the second is worse than neither. (A warn-and-SKIP is a different shape
+and takes the opposite answer — see the section below.) `effectiveProperties` makes state describe what AWS holds; the
 template still declares what it always did, so the next diff reads the dropped
 keys as a change the user made. For a create-only property that means a
 REPLACEMENT, and the engine's replacement create passes no context — so a
@@ -195,6 +196,49 @@ and it must return the input unchanged whenever nothing applies.
 
 Two things that are easy to get wrong and were both caught by review:
 **normalize BOTH comparison sides**, not just the desired one — a record written BEFORE the provider started narrowing still carries every key, so a one-sided pass flips the same difference to a REMOVAL and breaks exactly the population the narrowing exists for; and **wire `cdkd diff` too**, since a preview that narrows differently from the apply forecasts a change the deploy will never make. `makeCanonicalizePropertiesFn` in `src/provisioning/canonicalize-properties.ts` is the one builder both commands use, so they cannot drift.
+
+**A warn-and-SKIP arm needs `effectiveProperties` too — but NOT the
+`canonicalizeDesiredProperties` twin** (issue
+[#1612](https://github.com/go-to-k/cdkd/issues/1612)). A guard that refuses a
+malformed value on the template path and downgrades to warn-and-skip on the
+state-borne ones lets the deploy SUCCEED while the call never runs, so the
+engine records a desired value AWS never received — the same permanent phantom
+drift, reached through a skip instead of a narrowing. `S3BucketProvider` is the
+live case: eight of its appliers carry that downgrade, behind two shared guard
+helpers.
+
+Read the twin rule above as scoped to a NARROWING, which is a pure function of
+the desired bag so both comparison sides can be reduced identically. A skip is
+not: what reaches AWS depends on what was already there. Canonicalizing the
+desired side would DROP the malformed configuration from it, so a previous side
+holding a VALID configuration against a desired side holding a malformed one
+derives a REMOVAL — cdkd would DELETE the live lifecycle / replication
+configuration the user still wants, over one unusable field. Recording the
+retained value has no such arm: the malformed template keeps re-warning until it
+is fixed, which is correct.
+
+What to record differs per path, and neither answer generalizes:
+
+- **UPDATE** — retain the PREVIOUS value. The call never ran, so AWS still holds
+  the previously-applied configuration. Dropping the key is wrong in the other
+  direction: a later template that REMOVES the block would derive no removal and
+  the live configuration would survive forever.
+- **replay-CREATE** (the reverse-replacement arm) — DROP the key. The resource is
+  new and nothing was applied, so there is no previous value to keep.
+- **per-item appliers** (a Put keyed by `Id`) — the skip unit is one
+  configuration ITEM, so the effective array substitutes the previous item of the
+  same `Id` IN PLACE, or drops it when the skipped item was an ADD. Preserve the
+  DESIRED order: the diff compares arrays positionally, so a reordered effective
+  array manufactures a fresh phantom drift while removing the one you fixed.
+
+Report the skip EXPLICITLY from the applier — a `Promise<boolean>` "applied"
+return, or a list of skipped item indexes — rather than inferring it by wrapping
+`onUnusable`. That callback is shared by two guard classes: SKIP-class guards
+(`configStringRefusal`, `requireConfigObject`, `requireConfigArray`) and
+warn-and-DEFAULT reads (`readConfigString` with the options bag), where the
+applier proceeds WITH a substituted default. A wrapper cannot tell them apart, so
+a defaulted-but-APPLIED configuration would be recorded as skipped and the
+previous value retained — manufacturing exactly the drift you set out to remove.
 
 
 ## Provider Implementation Examples
