@@ -103,7 +103,14 @@ strict, each differently):
 - **keep the PREVIOUS value** — Lambda URL `AuthType` (defaulting would flip a
   live IAM-guarded function URL to PUBLIC; when the previous side is unusable
   too the field is OMITTED, and `UpdateFunctionUrlConfig`'s merge semantics
-  retain the live value), DynamoDB Table / GlobalTable `BillingMode`.
+  retain the live value), DynamoDB Table / GlobalTable `BillingMode`. Since
+  issue #1683 the GlobalTable UPDATE arm also RECORDS the kept mode via
+  `effectiveProperties` — `readCurrentState` reads `BillingMode` back, so
+  recording the malformed desired value was permanent phantom drift. There is
+  no both-sides-unusable branch: the kept mode already falls back to what
+  `DescribeTable` reports, so the retained value is always one AWS holds. The
+  create-side arm of the SAME property answers differently (it records the
+  SUBSTITUTED mode) because there the table really was created on-demand.
 - **SKIP the block** — GlobalTable `StreamSpecification` (defaulting would
   re-point a live stream's view type the template never asked to change).
 - **SUPPRESS the diff** — GlobalTable `GlobalSecondaryIndexes`, where the

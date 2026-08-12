@@ -136,17 +136,20 @@ own provider, read every arm that can put a value on the wire differing from the
 declared one, not only the arms that log.
 
 `DynamoDBGlobalTableProvider` is the third, and it shows both halves of the
-question (issue [#1683](https://github.com/go-to-k/cdkd/issues/1683)). Two of
+question (issue [#1683](https://github.com/go-to-k/cdkd/issues/1683)). Three of
 its arms are ordinary guard downgrades and are answered — a `BillingMode`
-warn-and-SUBSTITUTE on the replay path records the substituted mode, a
-`GlobalSecondaryIndexes` warn-and-SKIP on update retains the previous list. A
-third logs no refusal at all: cross-region replication REQUIRES a stream, so the
+warn-and-SUBSTITUTE on the replay-CREATE path records the substituted mode, the
+same property's UPDATE-side guard suppresses the flip and so records the
+PREVIOUS mode, and a `GlobalSecondaryIndexes` warn-and-SKIP on update retains
+the previous list. Note the first two answer the SAME property differently
+because what reached AWS differs: one created the table on-demand, the other
+left a live table's mode untouched. A fourth arm logs no refusal at all: cross-region replication REQUIRES a stream, so the
 provider enables `NEW_AND_OLD_IMAGES` on a template that declared no
 `StreamSpecification`, on the ORDINARY template path. A provider is therefore
 not "done" once every guard reports — the audit question is what it SENDS that
 differs from what was declared, not which guards can warn.
 
-**But finding such an arm is not the same as fixing it.** That third arm is
+**But finding such an arm is not the same as fixing it.** That fourth arm is
 deliberately left unanswered (tracked as issue
 [#1723](https://github.com/go-to-k/cdkd/issues/1723)) because the value it would
 record is a key the template does not have, and the twin rule above then binds:

@@ -399,15 +399,26 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
 
     // issue #1653: the bag actually delivered, when the replay downgrade above
     // or below substituted a value for a malformed declared one. `undefined`
-    // (the normal case) means "record the desired properties". Every arm below
-    // composes onto whatever a previous one already recorded (`?? properties`),
-    // so two substitutions in one create cannot erase each other (issue #1683).
+    // (the normal case) means "record the desired properties".
+    //
+    // Two arms can fire in ONE create (a single state record carrying two
+    // malformed values), so the LATER one composes onto whatever the earlier
+    // recorded (`?? properties`) — that composition is live, not decorative,
+    // and a unit test fences it (issue #1683). The FIRST arm assigns directly
+    // because there is nothing yet to compose onto.
     //
     // The `needsStream` auto-enable further down is deliberately NOT one of
     // them — see the comment there and issue #1723.
     let effectiveProperties: Record<string, unknown> | undefined;
 
     if (billingModeSubstituted) {
+      // Known residual, issue #1726: substituting PAY_PER_REQUEST also makes
+      // this create skip every PROVISIONED-only capacity setting (the
+      // top-level / per-replica throughput blocks and each index's), yet only
+      // `BillingMode` is rewritten here — so those keys stay recorded although
+      // nothing sent them. Named rather than silently stripped: which keys are
+      // safe to drop depends on the same live-shape question #1706 is opening
+      // for every arm of this class.
       effectiveProperties = { ...properties, BillingMode: billingMode };
     }
 
@@ -1108,13 +1119,12 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     // means "record the desired properties" — see the `StreamSpecification`
     // block for the full reasoning.
     //
-    // `StreamSpecification` is the ONLY arm answered here. Two siblings in this
-    // same method are the same class and are deliberately out of scope, tracked
-    // in issue #1683: the `BillingMode` warn-and-SUBSTITUTE (which sends the
-    // previous / default mode while state keeps the malformed one) and the
-    // `desiredGsiUnusable` warn-and-SKIP (which leaves AWS holding the previous
-    // index set while state records the malformed desired blob). Both need
-    // their own real-AWS verification, which is why they are not folded in.
+    // THREE arms in this method answer it, all composed rather than assigned so
+    // one cannot erase another (issue #1683, the #1653 sweep): this
+    // `StreamSpecification` skip, the `desiredGsiUnusable` skip, and the
+    // `BillingMode` warn-and-keep-the-previous-mode. Every one of them is a
+    // SKIP, so the `canonicalizeDesiredProperties` twin the rules require for a
+    // NARROWING does not apply — see each arm's own comment.
     let effectiveProperties: Record<string, unknown> | undefined;
 
     try {
@@ -1585,8 +1595,14 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       //
       // The previous side is VALIDATED before it is retained, through the SAME
       // helper the desired side ran: a probe call with a flag-only callback.
-      // The helper is pure, so this costs one extra translation and cannot
-      // drift from a hand-written shape twin the way a `typeof` check would.
+      // The helper is pure, so this costs one extra translation and no separate
+      // shape predicate. Be honest about what that buys TODAY: the helper
+      // refuses on exactly one branch (present-and-not-an-array) and passes a
+      // non-object ENTRY through untouched, so the probe is behaviourally
+      // identical to `Array.isArray` and no test distinguishes them. The reason
+      // to route through it anyway is that the two stay in step when the
+      // helper's refusals grow — which is a claim about the FUTURE, not a
+      // divergence already covered.
       // When BOTH sides are unusable the key is DROPPED — there is no value
       // cdkd can vouch for, the same answer the `StreamSpecification` arm
       // above takes.
@@ -1611,14 +1627,38 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           //
           // COPIED, not aliased: `rollback-executor.ts` spreads the returned
           // bag shallowly, so handing back the previous record's own array
-          // would leave two state records sharing one mutable value. The
-          // ELEMENTS are still shared; nothing mutates a recorded GSI entry
-          // today, and deep-cloning here would diverge from how every sibling
-          // arm copies.
+          // would leave two state records sharing one mutable value. Scope
+          // this claim honestly — it covers THIS key only. The surrounding
+          // spread is shallow too, so every other key (`Replicas`,
+          // `SSESpecification`, per-replica `Tags`) stays aliased to the
+          // caller's bag, which on a replay IS `previousState.properties`.
+          // The ELEMENTS of this array are shared as well; nothing mutates a
+          // recorded GSI entry today, and deep-cloning here would diverge from
+          // how every sibling arm copies.
           effectiveProperties['GlobalSecondaryIndexes'] = [...(previousIndexes as unknown[])];
         } else {
           delete effectiveProperties['GlobalSecondaryIndexes'];
         }
+      }
+
+      // The third arm issue #1683 names, and the one its arm 1 places on BOTH
+      // paths: an unusable desired `BillingMode` does NOT flip the table, it
+      // keeps `oldBilling` (see the guard's own comment for why defaulting here
+      // would silently re-price a production table). So the mode cdkd leaves
+      // live is `oldBilling` while the engine records the malformed desired
+      // value — and `readCurrentState` DOES read `BillingMode` back, so that is
+      // the same permanent phantom drift the two arms above close.
+      //
+      // Recording `oldBilling` satisfies both rules at once here: it is what
+      // was SENT (nothing, i.e. the live mode is untouched) and it is the
+      // PREVIOUS value the SKIP shape calls for. There is no both-sides-unusable
+      // branch, because `oldBilling` is already resolved for exactly that case
+      // one guard up — an unusable RECORDED previous falls back to the mode
+      // `DescribeTable` reports, so the value retained here is always one AWS
+      // actually holds, never a second guess.
+      if (billingUnusable) {
+        effectiveProperties = { ...(effectiveProperties ?? properties) };
+        effectiveProperties['BillingMode'] = oldBilling;
       }
       // Table-level on-demand ceilings, BOTH halves. The write half lives at
       // top-level `WriteOnDemandThroughputSettings`; the read half lives on

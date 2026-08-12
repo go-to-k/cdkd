@@ -1214,11 +1214,22 @@ for logical_id, resource in state.get("resources", {}).items():
     if logical_id.startswith(prefix):
         value = resource.get("properties", {}).get("GlobalSecondaryIndexes")
         if not isinstance(value, list):
-            sys.exit(f"not a list: {json.dumps(value)}")
-        names = sorted(
-            entry.get("IndexName") for entry in value if isinstance(entry, dict)
-        )
-        print(" ".join(n for n in names if n))
+            # A SENTINEL, not sys.exit: the caller runs under `set -e` inside a
+            # command substitution, so exiting non-zero here aborts the script
+            # before its `case` arm can print the diagnostic naming the issue.
+            # This is the PRIMARY regression shape (state records the junk
+            # string) and it must reach that message, not a bare abort.
+            print(f"NOT-A-LIST {json.dumps(value)}")
+        else:
+            # FILTER before sorting: an entry without IndexName yields None,
+            # and sorting a mixed str/None sequence raises TypeError, which
+            # would surface as an empty verdict accusing the fix.
+            names = sorted(
+                entry["IndexName"]
+                for entry in value
+                if isinstance(entry, dict) and entry.get("IndexName")
+            )
+            print(" ".join(names))
         break
 else:
     sys.exit(f"no {prefix} in cdkd state")
@@ -1248,6 +1259,63 @@ case "${PROV_AFTER_JUNK}" in
     exit 1
     ;;
 esac
+
+# The SAME deploy also handed GsiProvRecoveryTable a non-string BillingMode
+# (issue #1683 arm 1, update side). cdkd suppresses the flip and keeps the
+# table PROVISIONED, so state must record PROVISIONED — recording the junk
+# object is the phantom drift this closes, and it lands on the resource whose
+# GSI answer was just asserted, which is what makes this the LIVE proof that
+# the two arms compose.
+read_state_billing_mode() { # $1 = logical-id prefix
+  local prefix="$1" verdict tmp
+  tmp="$(mktemp)" || return 1
+  aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - > "${tmp}" || { rm -f "${tmp}"; return 1; }
+  verdict="$(python3 - "${tmp}" "${prefix}" <<'PY'
+import json, sys
+path, prefix = sys.argv[1], sys.argv[2]
+with open(path) as fh:
+    state = json.load(fh)
+for logical_id, resource in state.get("resources", {}).items():
+    if logical_id.startswith(prefix):
+        print(json.dumps(resource.get("properties", {}).get("BillingMode")))
+        break
+else:
+    sys.exit(f"no {prefix} in cdkd state")
+PY
+)" || { rm -f "${tmp}"; return 1; }
+  rm -f "${tmp}"
+  printf '%s' "${verdict}"
+}
+BILLING_AFTER_JUNK="$(read_state_billing_mode GsiProvRecoveryTable)"
+if [ "${BILLING_AFTER_JUNK}" != '"PROVISIONED"' ]; then
+  echo "FAIL: issue #1683 — a suppressed BillingMode flip must record the PREVIOUS mode, got ${BILLING_AFTER_JUNK}" >&2
+  exit 1
+fi
+echo "    issue #1683 ok: GsiProvRecoveryTable retained the PREVIOUS BillingMode (PROVISIONED)"
+# The wire half: the table must still BE provisioned. Recording PROVISIONED
+# while AWS was re-priced to on-demand would satisfy the state assertion alone.
+# The physical id is read here rather than reusing GSI_PROV_RECOVERY_TABLE,
+# which the #1585 phase below only defines later.
+PROV_TABLE_FOR_BILLING="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | python3 -c '
+import json, sys
+state = json.load(sys.stdin)
+for logical_id, resource in state.get("resources", {}).items():
+    if logical_id.startswith("GsiProvRecoveryTable"):
+        print(resource["physicalId"])
+        break
+')"
+if [ -z "${PROV_TABLE_FOR_BILLING}" ]; then
+  echo "FAIL: issue #1683 — no GsiProvRecoveryTable in cdkd state" >&2
+  exit 1
+fi
+LIVE_BILLING_AFTER_JUNK="$(aws dynamodb describe-table \
+  --table-name "${PROV_TABLE_FOR_BILLING}" --region "${REGION}" \
+  --query 'Table.BillingModeSummary.BillingMode' --output text)"
+if [ "${LIVE_BILLING_AFTER_JUNK}" = 'PAY_PER_REQUEST' ]; then
+  echo "FAIL: issue #1683 — the unusable BillingMode must NOT flip the live table, got ${LIVE_BILLING_AFTER_JUNK}" >&2
+  exit 1
+fi
+echo "    issue #1683 ok: live billing mode untouched (${LIVE_BILLING_AFTER_JUNK})"
 
 # ...which means phase 1 can no longer let the provider WRITE the junk record
 # that phases 2 (#1571) and 13h (#1585) recover from — today's binary cannot

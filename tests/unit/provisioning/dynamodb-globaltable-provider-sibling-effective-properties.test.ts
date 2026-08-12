@@ -212,13 +212,41 @@ describe('DynamoDBGlobalTableProvider sibling effectiveProperties arms (issue #1
     expect(result.effectiveProperties).toBeUndefined();
   });
 
-  it('COMPOSES the two UPDATE-path arms rather than letting one erase the other', async () => {
-    // Both update-path arms write `effectiveProperties`, the stream one first.
-    // It spreads `effectiveProperties ?? properties` too, so a bag that is
-    // malformed on BOTH keys records BOTH answers — assigning `{ ...properties }`
-    // at either site silently drops the other's.
+  it('COMPOSES the two REPLAY-CREATE arms rather than letting one erase the other', async () => {
+    // Unlike the update-path stream arm — whose `??` is inert because it runs
+    // first — this composition is LIVE: `billingModeSubstituted` runs ahead of
+    // it, so assigning `{ ...properties }` at the stream site drops the
+    // recorded BillingMode and re-creates the very drift this closes. Both
+    // gate on the same `replayWarn` downgrade, so ONE state record carrying
+    // two malformed values reaches both (the #1544 shape).
     const desired = {
       ...baseProps,
+      BillingMode: '',
+      StreamSpecification: '',
+      Replicas: [{ Region: 'us-east-1' }, { Region: 'eu-west-1' }],
+    };
+
+    const result = await provider.create('MyTable', RESOURCE_TYPE, desired, {
+      replayingState: true,
+    });
+
+    expect(result.effectiveProperties?.['BillingMode']).toBe('PAY_PER_REQUEST');
+    expect(result.effectiveProperties?.['StreamSpecification']).toEqual({
+      StreamViewType: 'NEW_AND_OLD_IMAGES',
+    });
+  });
+
+  it('COMPOSES all THREE UPDATE-path arms rather than letting one erase another', async () => {
+    // Every update-path arm writes `effectiveProperties`, the stream one first
+    // and the BillingMode one last. Each spreads `effectiveProperties ??
+    // properties`, so a bag malformed on all three keys records all three
+    // answers — assigning `{ ...properties }` at any site drops the earlier
+    // ones. Mutation-probed: the GSI and BillingMode sites each fail this test,
+    // while the stream site passes because it always runs first (recorded in
+    // that arm's own comment rather than claimed as covered here).
+    const desired = {
+      ...baseProps,
+      BillingMode: '',
       StreamSpecification: '',
       GlobalSecondaryIndexes: 'oops-not-an-array',
     };
@@ -226,15 +254,63 @@ describe('DynamoDBGlobalTableProvider sibling effectiveProperties arms (issue #1
 
     const result = await provider.update('MyTable', TABLE_NAME, RESOURCE_TYPE, desired, {
       ...baseProps,
+      BillingMode: 'PROVISIONED',
       StreamSpecification: previousStream,
       GlobalSecondaryIndexes: VALID_GSI,
     });
 
     expect(result.effectiveProperties).toEqual({
       ...desired,
+      BillingMode: 'PROVISIONED',
       StreamSpecification: previousStream,
       GlobalSecondaryIndexes: VALID_GSI,
     });
+  });
+
+  // ─── ARM 1 (update side): BillingMode warn-and-KEEP-the-previous-mode ────
+
+  it('records the PREVIOUS BillingMode when an unusable desired value suppresses the flip', async () => {
+    const desired = { ...baseProps, BillingMode: '' };
+
+    const result = await provider.update('MyTable', TABLE_NAME, RESOURCE_TYPE, desired, {
+      ...baseProps,
+      BillingMode: 'PROVISIONED',
+    });
+
+    // The WIRE half first: retaining the previous mode is only correct BECAUSE
+    // the flip was suppressed. A mutation that re-priced the table to
+    // PAY_PER_REQUEST and still recorded PROVISIONED would satisfy the record
+    // assertion alone.
+    expect(updateInputs().some((i) => i['BillingMode'] === 'PAY_PER_REQUEST')).toBe(false);
+    expect(result.effectiveProperties?.['BillingMode']).toBe('PROVISIONED');
+    expect(result.effectiveProperties).toEqual({ ...desired, BillingMode: 'PROVISIONED' });
+    expect(childLogger.warn).toHaveBeenCalledWith(expect.stringContaining('BillingMode'));
+  });
+
+  it('retains the mode AWS reports when the RECORDED previous is unusable too', async () => {
+    // `oldBilling` already falls back to `DescribeTable` for an unusable
+    // recorded previous, so this arm never records a second guess — the
+    // mocked table above reports PAY_PER_REQUEST.
+    const desired = { ...baseProps, BillingMode: '' };
+
+    const result = await provider.update('MyTable', TABLE_NAME, RESOURCE_TYPE, desired, {
+      ...baseProps,
+      BillingMode: '',
+    });
+
+    expect(result.effectiveProperties?.['BillingMode']).toBe('PAY_PER_REQUEST');
+  });
+
+  it('answers with NO effectiveProperties for a VALID BillingMode on the update path', async () => {
+    const result = await provider.update(
+      'MyTable',
+      TABLE_NAME,
+      RESOURCE_TYPE,
+      { ...baseProps, BillingMode: 'PAY_PER_REQUEST' },
+      { ...baseProps, BillingMode: 'PAY_PER_REQUEST' }
+    );
+
+    expect(result.effectiveProperties).toBeUndefined();
   });
 
   // ─── ARM 2: desiredGsiUnusable warn-and-SKIP on the update path ─────────
