@@ -324,3 +324,143 @@ describe('the PAY_PER_REQUEST gate — the whole risk of the change (#1571 trap)
     expect(gsiUpdates()).toEqual([]);
   });
 });
+
+describe('a RECOVERED index that also CHANGED is repaired, not silently adopted (#1642 review)', () => {
+  // Skipping the Create on the NAME alone was a silent state divergence: if the
+  // retry ALSO edits the recovered index, no op is emitted, the engine records
+  // the DESIRED bag on success, and no later diff converges — state claims one
+  // capacity while AWS holds another, forever. Pre-fix this failed loudly at
+  // AWS, so the skip must not trade a loud failure for a quiet lie.
+  it('emits the throughput Update when the live capacity differs from desired', async () => {
+    primeDescribeTable('PROVISIONED', [liveGsi('gsi1', 5, 5), liveGsi('gsi2', 3, 3)]);
+    mockSend.mockResolvedValueOnce({});
+    mockSend.mockResolvedValueOnce({ Table: { TableName: TABLE_NAME, TableStatus: 'ACTIVE' } });
+
+    await provider.update(
+      'L',
+      TABLE_NAME,
+      RESOURCE_TYPE,
+      {
+        BillingMode: 'PROVISIONED',
+        // gsi2 is recovered from AWS (3/3) but the template now asks for 9/9.
+        GlobalSecondaryIndexes: [cfnGsi('gsi1', 5, 5), cfnGsi('gsi2', 9, 9)],
+      },
+      { BillingMode: 'PROVISIONED', GlobalSecondaryIndexes: [cfnGsi('gsi1', 5, 5)] }
+    );
+
+    expect(gsiUpdates()).toEqual([
+      { Update: { IndexName: 'gsi2', ProvisionedThroughput: { ReadCapacityUnits: 9, WriteCapacityUnits: 9 } } },
+    ]);
+  });
+
+  it('emits NOTHING when the recovered index already matches', async () => {
+    // The ordinary recovery: same capacity on both sides, so the deploy simply
+    // converges. Fences the row above against an unconditional Update.
+    primeDescribeTable('PROVISIONED', [liveGsi('gsi1', 5, 5), liveGsi('gsi2', 3, 3)]);
+
+    await provider.update(
+      'L',
+      TABLE_NAME,
+      RESOURCE_TYPE,
+      {
+        BillingMode: 'PROVISIONED',
+        GlobalSecondaryIndexes: [cfnGsi('gsi1', 5, 5), cfnGsi('gsi2', 3, 3)],
+      },
+      { BillingMode: 'PROVISIONED', GlobalSecondaryIndexes: [cfnGsi('gsi1', 5, 5)] }
+    );
+
+    expect(gsiUpdates()).toEqual([]);
+  });
+
+  it('a DELETING index does NOT count as live, so its Create still fires', async () => {
+    // The index is on its way out; skipping the Create would leave it absent
+    // from AWS while state records it. (The Delete arm's own filter DOES treat
+    // DELETING as live, correctly — a Delete for it is what should be skipped.)
+    primeDescribeTable('PROVISIONED', [
+      liveGsi('gsi1', 5, 5),
+      { ...liveGsi('gsi2', 3, 3), IndexStatus: 'DELETING' },
+    ]);
+    mockSend.mockResolvedValueOnce({});
+    mockSend.mockResolvedValueOnce({ Table: { TableName: TABLE_NAME, TableStatus: 'ACTIVE' } });
+
+    await provider.update(
+      'L',
+      TABLE_NAME,
+      RESOURCE_TYPE,
+      {
+        BillingMode: 'PROVISIONED',
+        GlobalSecondaryIndexes: [cfnGsi('gsi1', 5, 5), cfnGsi('gsi2', 3, 3)],
+      },
+      { BillingMode: 'PROVISIONED', GlobalSecondaryIndexes: [cfnGsi('gsi1', 5, 5)] }
+    );
+
+    expect(gsiUpdates()).toEqual([
+      {
+        Create: {
+          IndexName: 'gsi2',
+          KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
+          Projection: { ProjectionType: 'ALL' },
+          ProvisionedThroughput: { ReadCapacityUnits: 3, WriteCapacityUnits: 3 },
+        },
+      },
+    ]);
+  });
+
+  it('a template missing KeySchema still THROWS even when the index is recovered', async () => {
+    // The required-field check must precede the skip: a broken template is
+    // broken regardless of what AWS holds, and skipping past it would record
+    // the broken bag into state.
+    primeDescribeTable('PROVISIONED', [liveGsi('gsi1', 5, 5), liveGsi('gsi2', 3, 3)]);
+
+    await expect(
+      provider.update(
+        'L',
+        TABLE_NAME,
+        RESOURCE_TYPE,
+        {
+          BillingMode: 'PROVISIONED',
+          GlobalSecondaryIndexes: [
+            cfnGsi('gsi1', 5, 5),
+            { IndexName: 'gsi2', Projection: { ProjectionType: 'ALL' } },
+          ],
+        },
+        { BillingMode: 'PROVISIONED', GlobalSecondaryIndexes: [cfnGsi('gsi1', 5, 5)] }
+      )
+    ).rejects.toThrow(/missing KeySchema/);
+  });
+});
+
+describe('capacityNumber rejects the coercion traps (#1642 review)', () => {
+  // `Number(null)` / `Number('')` / `Number([])` / `Number(false)` are all 0,
+  // NOT NaN — so a naive `Number()` comparator would have matched a live 0
+  // against a desired null/''/[]/false and SUPPRESSED the call. DynamoDB's own
+  // capacities are always >= 1 so the blast radius is small, but this rule is
+  // copied to other providers, so it is spelled correctly.
+  it.each([[null], [''], [[]], [false], [{}], [undefined]])(
+    'does not treat %p as a capacity that matches a live 0',
+    async (bogus) => {
+      primeDescribeTable('PROVISIONED', [liveGsi('gsi1', 0, 0)]);
+      mockSend.mockResolvedValueOnce({});
+      mockSend.mockResolvedValueOnce({ Table: { TableName: TABLE_NAME, TableStatus: 'ACTIVE' } });
+
+      await provider.update(
+        'L',
+        TABLE_NAME,
+        RESOURCE_TYPE,
+        {
+          BillingMode: 'PROVISIONED',
+          GlobalSecondaryIndexes: [
+            {
+              ...cfnGsi('gsi1', 1, 1),
+              ProvisionedThroughput: { ReadCapacityUnits: bogus, WriteCapacityUnits: bogus },
+            },
+          ],
+        },
+        { BillingMode: 'PROVISIONED', GlobalSecondaryIndexes: [cfnGsi('gsi1', 3, 3)] }
+      );
+
+      // Fails OPEN: the call is still issued rather than silently suppressed.
+      expect(gsiUpdates()).toHaveLength(1);
+    }
+  );
+});
