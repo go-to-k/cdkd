@@ -255,12 +255,17 @@ describe('DynamoDBGlobalTableProvider sibling effectiveProperties arms (issue #1
     );
   });
 
-  it('KEEPS the PROVISIONED-only capacity blocks the substitution never sent (issue #1726)', async () => {
-    // A DECISION, not an accident: substituting PAY_PER_REQUEST also skips the
-    // provisioned-throughput call, so this block never reached AWS and is
-    // recorded anyway. Which members are safe to strip is the live-shape
-    // question issue #1726 opens; pinning it here means changing the answer
-    // has to change this test rather than happening silently.
+  it('STRIPS the PROVISIONED-only capacity blocks the substitution never sent (issue #1726)', async () => {
+    // The answer this test used to pin was the OPPOSITE — the block was
+    // recorded although the substitution skipped the provisioned-throughput
+    // call — and it was pinned precisely so that changing it could not happen
+    // silently. Issue #1726 settled it: `readCurrentState` emits `{}` here for
+    // a PAY_PER_REQUEST table, so recording `{ WriteCapacityUnits: 5 }` was the
+    // same permanent phantom drift the arm exists to remove, one key over.
+    // The full per-member coverage (per-replica / per-index, and the on-demand
+    // ceilings that are NOT stripped because the substituted mode does send
+    // them) lives in
+    // `dynamodb-globaltable-provider-replay-create-effective-props.test.ts`.
     const throughput = { WriteCapacityUnits: 5 };
     const desired = {
       ...baseProps,
@@ -273,7 +278,10 @@ describe('DynamoDBGlobalTableProvider sibling effectiveProperties arms (issue #1
     });
 
     expect(createInput()['ProvisionedThroughput']).toBeUndefined();
-    expect(result.effectiveProperties?.['WriteProvisionedThroughputSettings']).toEqual(throughput);
+    expect('WriteProvisionedThroughputSettings' in result.effectiveProperties!).toBe(false);
+    // The substituted mode itself is still recorded — the strip must not take
+    // the arm's own answer with it.
+    expect(result.effectiveProperties?.['BillingMode']).toBe('PAY_PER_REQUEST');
   });
 
   it('COMPOSES the two REPLAY-CREATE arms rather than letting one erase the other', async () => {
