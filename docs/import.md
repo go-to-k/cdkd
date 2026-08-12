@@ -299,7 +299,7 @@ implement import are reported as `unsupported` and skipped.
 
 > [!IMPORTANT]
 > **A cdkd physical id is not always the id CloudFormation shows you.**
-> Types annotated `composite:` below are identified by several segments
+> Types whose id shape is annotated below are identified by several segments
 > joined with a `|` pipe (`<databaseName>|<tableName>`,
 > `<restApiId>|<resourceId>|<httpMethod>`, ...) — that composite is the
 > value `--resource` expects and the value `cdkd state show` /
@@ -451,7 +451,7 @@ physical id via `--resource`.
 - AWS::AppSync::DataSource (composite: `--resource <logicalId>=<apiId>|<name>`)
 - AWS::AppSync::Resolver (composite: `--resource <logicalId>=<apiId>|<typeName>|<fieldName>`)
 - AWS::AppSync::ApiKey (composite: `--resource <logicalId>=<apiId>|<apiKeyId>`)
-- AWS::Route53::RecordSet (composite: `--resource <logicalId>=<hostedZoneId>|<name>|<type>`, where `<name>` is the record name exactly as templated, trailing dot included)
+- AWS::Route53::RecordSet (composite: `--resource <logicalId>=<hostedZoneId>|<name>|<type>`, where `<name>` is the record name exactly as the template spells it — CDK emits a trailing dot)
 - AWS::ElasticLoadBalancingV2::Listener
 - AWS::EFS::MountTarget
 - AWS::RDS::DBProxyTargetGroup
