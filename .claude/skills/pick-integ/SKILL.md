@@ -6,11 +6,21 @@ argument-hint: "[base-ref] (default: origin/main)"
 
 # Integ Test Picker
 
-Decide which integration tests are worth running right now. Running all ~95 is impractical
-(real-AWS cost + hours; some take 20min+). This skill ranks tests by two signals — **how stale
-the last run is** (from the committed ledger) and **whether recent code changes touch the area a
-test exercises** — and prints a prioritized, copy-pasteable `/run-integ` plan. It RECOMMENDS only;
-the orchestrator runs the chosen tests via `/run-integ` (which records each run back into the ledger).
+Decide which integration tests to run right now. Running all ~95 back-to-back takes hours, so this
+skill ORDERS them: it ranks by two signals — **how stale the last run is** (from the committed
+ledger) and **whether recent code changes touch the area a test exercises** — and prints a
+prioritized, copy-pasteable `/run-integ` plan. It RECOMMENDS only; the orchestrator runs the chosen
+tests via `/run-integ` (which records each run back into the ledger).
+
+**The ranking is a running ORDER, not a budget.** Per the "Cost is not a tiebreaker for
+verification depth" rule in [CLAUDE.md](../../../CLAUDE.md) → Workflow Rules, real-AWS time and
+spend are not grounds for dropping a candidate: when several tests plausibly cover the code a
+change touched, run all of them rather than the cheapest or the top-ranked one, and prefer a
+broad-set fixture over a narrow one whenever the change is cross-cutting. Use the priorities to
+decide what runs FIRST (so a partial session still covers the riskiest ground), not what gets
+skipped. If a plan is genuinely too long for one session, hand the remainder forward per "Running a
+large plan across sessions" below — do not silently truncate it, and say in the wrap-up exactly
+which tests were not run.
 
 ## Inputs
 

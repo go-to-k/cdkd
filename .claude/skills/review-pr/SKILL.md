@@ -6,7 +6,9 @@ argument-hint: "<PR-number>"
 
 # PR Review Recommendation
 
-Decide how much review rigor a PR actually warrants — and surface the dispatch prompts for the orchestrator to copy-paste. Running all 3 reviewer agents on every PR is expensive (~25 min) and drains attention; running none on a large security-sensitive PR misses bugs. This skill applies the heuristic codified in `~/.claude/projects/-Users-goto-pc-github-cdkd/memory/feedback_pr_review_scale_rule.md`.
+Decide how much review rigor a PR warrants — and surface the dispatch prompts for the orchestrator to copy-paste. Running none on a large security-sensitive PR misses bugs; the tiers below say what a PR needs AT MINIMUM.
+
+**The recommended tier is a FLOOR, not a cap, and wall-clock / token cost is never a reason to come in under it or to stop at it.** See the "Cost is not a tiebreaker" rule in [CLAUDE.md](../../../CLAUDE.md) → Workflow Rules: when two options differ in how thoroughly they verify, take the more thorough one; when you are unsure which tier applies, take the higher one. The tiers exist to stop a PR being UNDER-reviewed, not to ration review. Reviewers are read-only agents that run in parallel, so the only thing a larger tier costs is time the maintainer has already said to spend.
 
 The skill itself never spawns reviewers. It reads PR stats, applies the heuristic, and prints a recommendation. The **main session orchestrator** (the parent reading this skill's output) is responsible for actually issuing the `Agent` tool calls when the recommendation says to.
 
@@ -68,6 +70,8 @@ The skill itself never spawns reviewers. It reads PR stats, applies the heuristi
    - **Test-only**: every path matches `tests/**`
 
    If both up- and down-bias triggers fire (e.g. a tests-only diff that touches a security-sensitive provider's test file), prefer up-bias — security wins.
+
+   **Down-bias is a statement about RISK, never about budget.** It fires only when every path is genuinely in a low-risk bucket. If a "docs-only" diff changes a rule the agent will follow (`.claude/rules/**`, `CLAUDE.md`), or a "test-only" diff changes what a checker ACCEPTS rather than what it asserts, the low-risk premise is false — do not down-bias, and say why in the recommendation. A tier that was talked down for any reason other than measured low risk is the failure this rule exists to prevent.
 
 4. **Apply the bias** to compute the final tier:
 
