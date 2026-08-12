@@ -83,7 +83,7 @@ dsql	2026-07-30T18:11:24Z	PASS	540	verify.sh	4-phase incl. destroy --remove-prot
 dynamodb-autoscaling	2026-08-10T05:13:55Z	PASS	65	verify.sh	0810 sweep b5; table autoscaling re-verify post-#1451 GlobalTable work, 0 err 0 orph
 dynamodb-globaltable	2026-08-12T11:15:04Z	PASS	578	verify.sh	#1653 final run on the merge commit; 13f2/13f2b/13f3 pin PREVIOUS-value record + wire-negative + malformed-previous DROP; 9 del/0 err, 0 orph
 dynamodb-gsi-update	2026-08-12T03:35:11Z	PASS	620	verify.sh	#1630 re-run after rebase onto #1646; GSI wedge recovery + in-place update, 1 del/0 err
-dynamodb-ondemand	2026-08-11T15:24:13Z	PASS	555	verify.sh	issue #1617 final run after review round 2; 4 del/0 err, 0 orph
+dynamodb-ondemand	2026-08-12T17:43:59Z	PASS	600	verify.sh	#1734 message-only Table BillingMode change; 4 del 0 err, orph clean
 dynamodb-sse	2026-08-01T10:07:21Z	PASS	40	verify.sh	0801 regression sweep; SSE mapping ok, 0 orphans
 dynamodb-stream-filter	2026-08-10T05:13:55Z	PASS	57	verify.sh	0810 sweep b5; stream filter criteria, 0 err 0 orph
 dynamodb-streams	2026-08-10T05:13:55Z	PASS	81	verify.sh	0810 sweep b5; streams+ESM+StreamSpec UPDATE, 0 err 0 orph
