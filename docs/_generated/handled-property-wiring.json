@@ -5904,7 +5904,8 @@
       "gaps": [],
       "blindSpots": [
         "extractLocalTags(...) in update()",
-        "object spread in create()"
+        "object spread in create()",
+        "object spread in stripProvisionedCapacityKeys()"
       ]
     },
     {
