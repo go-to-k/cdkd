@@ -70,7 +70,8 @@ import { ProvisioningError } from '../utils/error-handler.js';
  *   id is REJECTED rather than mis-decoded into a different record. That is
  *   the loud failure mode, not the silent-wrong-resource one this helper
  *   exists for — but the deploy still records an id nothing can decode, so the
- *   type belongs here whenever that lane lands.
+ *   type belongs here whenever that lane lands. Tracked in issue
+ *   [#1711](https://github.com/go-to-k/cdkd/issues/1711).
  * - **`intrinsic-function-resolver.ts`'s `|` joins** (the WAFv2 and
  *   `AWS::Events::Rule` arms) are out of scope by KIND, not by ownership: they
  *   build a `Ref` VALUE for the template resolver, never a physicalId cdkd
