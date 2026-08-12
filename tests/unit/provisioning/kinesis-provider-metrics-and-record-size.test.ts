@@ -147,14 +147,40 @@ describe('KinesisStreamProvider MaxRecordSizeInKiB (issue #609)', () => {
     expect(commandsOfType(UpdateMaxRecordSizeCommand)).toHaveLength(0);
   });
 
-  it('omits an unparseable MaxRecordSizeInKiB instead of sending NaN', async () => {
+  it.each([
+    ['an unparseable string', 'not-a-number'],
+    // Number('') === 0 and Number([]) === 0, so a bare Number() coercion would
+    // send a plausible-looking 0; Number(true) === 1 likewise.
+    ['an empty string', ''],
+    ['an empty array', []],
+    ['a boolean', true],
+    ['an object', {}],
+    ['an unresolved intrinsic', { Ref: 'SomeParam' }],
+  ])('REFUSES %s for MaxRecordSizeInKiB rather than coercing it', async (_label, value) => {
     mockSend.mockResolvedValue(ACTIVE);
 
-    await provider.create('L', 'AWS::Kinesis::Stream', {
-      Name: 'mystream',
-      MaxRecordSizeInKiB: 'not-a-number',
-    });
+    await expect(
+      provider.create('L', 'AWS::Kinesis::Stream', {
+        Name: 'mystream',
+        MaxRecordSizeInKiB: value,
+      })
+    ).rejects.toThrow(/MaxRecordSizeInKiB must be a number/);
 
+    // And it must refuse BEFORE creating anything — see the pre-flight test below.
+    expect(commandsOfType(CreateStreamCommand)).toHaveLength(0);
+  });
+
+  it('omits MaxRecordSizeInKiB on a state REPLAY rather than refusing the restore', async () => {
+    mockSend.mockResolvedValue(ACTIVE);
+
+    const result = await provider.create(
+      'L',
+      'AWS::Kinesis::Stream',
+      { Name: 'mystream', MaxRecordSizeInKiB: 'not-a-number' },
+      { replayingState: true }
+    );
+
+    expect(result.physicalId).toBe('mystream');
     const create = commandsOfType(CreateStreamCommand)[0];
     expect(create).toBeDefined();
     expect(create?.input).not.toHaveProperty('MaxRecordSizeInKiB');
@@ -446,6 +472,56 @@ describe('KinesisStreamProvider DesiredShardLevelMetrics (issue #609)', () => {
     // Nothing was sent, so there is no "what we actually delivered" to record;
     // the desired bag stays recorded verbatim and keeps re-warning until fixed.
     expect(result.effectiveProperties).toBeUndefined();
+  });
+});
+
+describe('KinesisStreamProvider create-path PRE-FLIGHT (issue #609)', () => {
+  let provider: KinesisStreamProvider;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockSend.mockReset();
+    provider = new KinesisStreamProvider();
+  });
+
+  // The refusal MUST run before the try block, not inside it. Refusing after
+  // `CreateStream` has already landed leaves a real stream behind that the
+  // failed CREATE never journals a physical id for, so `rollback-executor`
+  // skips it: the stream is orphaned, absent from state, and — because the
+  // generated name is a deterministic hash — the retry after the user fixes
+  // the template collides with ResourceInUseException and wedges the stack.
+  // See docs/provider-development.md §1a.
+  it.each([
+    ['DesiredShardLevelMetrics', { DesiredShardLevelMetrics: { Ref: 'P' } }],
+    ['MaxRecordSizeInKiB', { MaxRecordSizeInKiB: { Ref: 'P' } }],
+  ])('issues NO AWS call at all when %s is unusable', async (_label, bad) => {
+    mockSend.mockResolvedValue(ACTIVE);
+
+    await expect(
+      provider.create('L', 'AWS::Kinesis::Stream', { Name: 'mystream', ...bad })
+    ).rejects.toThrow();
+
+    // Not "no CreateStreamCommand" — NO send whatsoever. A refusal that ran
+    // after any mutating call would already have leaked something.
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('still creates the stream fully when the template is valid', async () => {
+    mockSend.mockResolvedValue(ACTIVE);
+
+    const result = await provider.create('L', 'AWS::Kinesis::Stream', {
+      Name: 'mystream',
+      DesiredShardLevelMetrics: ['IncomingBytes'],
+      MaxRecordSizeInKiB: 2048,
+    });
+
+    // Guards the inverse of the pre-flight: hoisting the checks must not have
+    // short-circuited the happy path.
+    expect(result.physicalId).toBe('mystream');
+    expect(commandsOfType(CreateStreamCommand)[0]?.input.MaxRecordSizeInKiB).toBe(2048);
+    expect(commandsOfType(EnableEnhancedMonitoringCommand)[0]?.input.ShardLevelMetrics).toEqual([
+      'IncomingBytes',
+    ]);
   });
 });
 

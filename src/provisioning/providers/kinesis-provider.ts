@@ -184,19 +184,49 @@ function previousMetricNames(value: unknown): MetricsName[] {
 }
 
 /**
- * Coerce `MaxRecordSizeInKiB` to a number, mirroring the `Number(...)` the
- * sibling `ShardCount` read already uses.
+ * The `MaxRecordSizeInKiB` twin of {@link readShardLevelMetrics}, with the same
+ * three answers and for the same reason.
  *
- * CloudFormation coerces scalars and cdkd does not, so an unquoted YAML value
- * or a `Ref`-to-parameter can legitimately arrive as a string; sending that
- * verbatim fails with a SerializationException. An unparseable value yields
- * `undefined` so the caller omits the field and AWS applies its own default,
- * rather than cdkd sending `NaN`.
+ * A bare `Number(...)` is NOT enough here even though the sibling `ShardCount`
+ * uses one: `Number('')` and `Number([])` are `0` and `Number(true)` is `1`, so
+ * a malformed value would go on the wire as a plausible-looking size, while
+ * `'abc'` / `{}` would yield `NaN` and silently OMIT the field — the stream
+ * gets AWS's default while state records the declared junk, which is exactly
+ * the silent-drop class issue #609 exists to close.
+ *
+ * So a NUMBER (or a numeric STRING, which CFn's scalar coercion makes a
+ * legitimate template shape cdkd does not perform itself) is `usable`; anything
+ * else present is `unusable` and the caller refuses it on the template path.
  */
-function coerceRecordSize(value: unknown): number | undefined {
-  if (value == null) return undefined;
-  const n = Number(value);
-  return Number.isFinite(n) ? n : undefined;
+type MaxRecordSizeRead =
+  | { kind: 'absent' }
+  | { kind: 'usable'; size: number }
+  | { kind: 'unusable'; reason: string };
+
+function readMaxRecordSize(value: unknown): MaxRecordSizeRead {
+  if (value == null) return { kind: 'absent' };
+  if (typeof value === 'number' && Number.isFinite(value)) return { kind: 'usable', size: value };
+  if (typeof value === 'string' && value.trim() !== '') {
+    const n = Number(value);
+    if (Number.isFinite(n)) return { kind: 'usable', size: n };
+  }
+  return {
+    kind: 'unusable',
+    reason:
+      `AWS::Kinesis::Stream MaxRecordSizeInKiB must be a number, got ` + `${JSON.stringify(value)}`,
+  };
+}
+
+/**
+ * The comparison-side read: the UPDATE path needs both sides reduced to the
+ * same shape so a state record holding the number and a template holding the
+ * numeric string do not read as a change and re-issue the call every deploy.
+ * Unusable / absent both yield `undefined`, which the caller treats as "no
+ * declared size" rather than refusing — the previous side is state-borne.
+ */
+function comparableRecordSize(value: unknown): number | undefined {
+  const read = readMaxRecordSize(value);
+  return read.kind === 'usable' ? read.size : undefined;
 }
 
 /**
@@ -250,6 +280,39 @@ export class KinesisStreamProvider implements ResourceProvider {
       (properties['Name'] as string | undefined) ||
       generateResourceName(logicalId, { maxLength: 128 });
 
+    // PRE-FLIGHT, deliberately ABOVE the try (docs/provider-development.md §1a).
+    // Refusing from inside it would throw AFTER `CreateStream` already ran, and
+    // a failed CREATE journals no physical id — so `rollback-executor` skips it
+    // and the stream is orphaned, untracked and unrollbackable. `streamName` is
+    // a deterministic hash, so the retry after the user fixes the template then
+    // collides with `ResourceInUseException` and wedges the stack until someone
+    // deletes the stream by hand. Neither check needs an AWS call.
+    const desiredRead = readShardLevelMetrics(properties['DesiredShardLevelMetrics']);
+    if (desiredRead.kind === 'unusable') {
+      if (context?.replayingState === true) {
+        // A state replay cannot be fixed from the user's CDK code, so the
+        // refusal downgrades to a warning and the restore proceeds without the
+        // metrics rather than leaving the resource unrestorable (issue #1463).
+        this.logger.warn(
+          `${desiredRead.reason}. Replaying a state record, so the shard-level metrics are ` +
+            `left unset on ${streamName} rather than refusing the restore`
+        );
+      } else {
+        throw new ProvisioningError(desiredRead.reason, resourceType, logicalId, streamName);
+      }
+    }
+    const maxRecordRead = readMaxRecordSize(properties['MaxRecordSizeInKiB']);
+    if (maxRecordRead.kind === 'unusable') {
+      if (context?.replayingState === true) {
+        this.logger.warn(
+          `${maxRecordRead.reason}. Replaying a state record, so ${streamName} is created with ` +
+            `AWS's default maximum record size rather than refusing the restore`
+        );
+      } else {
+        throw new ProvisioningError(maxRecordRead.reason, resourceType, logicalId, streamName);
+      }
+    }
+
     try {
       // Determine stream mode
       const streamModeDetails = properties['StreamModeDetails'] as
@@ -267,11 +330,10 @@ export class KinesisStreamProvider implements ResourceProvider {
         streamMode === 'PROVISIONED' ? Number(properties['ShardCount'] ?? 1) : undefined;
 
       // MaxRecordSizeInKiB is a member of CreateStreamInput, so it lands with
-      // the stream itself rather than needing a follow-up call. Coerced like
-      // the sibling `ShardCount`: CFn coerces scalars and cdkd does not, so an
-      // unquoted-YAML or parameter-sourced string would otherwise reach the SDK
-      // as a JSON string and die with a SerializationException.
-      const maxRecordSizeInKiB = coerceRecordSize(properties['MaxRecordSizeInKiB']);
+      // the stream itself rather than needing a follow-up call. Validated by
+      // the pre-flight above; an unusable value only reaches here on a state
+      // replay, where it is omitted and AWS applies its own default.
+      const maxRecordSizeInKiB = maxRecordRead.kind === 'usable' ? maxRecordRead.size : undefined;
 
       await this.getClient().send(
         new CreateStreamCommand({
@@ -361,21 +423,8 @@ export class KinesisStreamProvider implements ResourceProvider {
       // Apply DesiredShardLevelMetrics. `EnableEnhancedMonitoring` takes the
       // stream to UPDATING (measured), so it must settle before create returns.
       //
-      // An unusable value is REFUSED here because it is template-borne — except
-      // on a state replay, where the user cannot edit the offending record from
-      // their CDK code and a refusal would leave the resource unrestorable
-      // (`CreateContext.replayingState`, `.claude/rules/providers.md`).
-      const desiredRead = readShardLevelMetrics(properties['DesiredShardLevelMetrics']);
-      if (desiredRead.kind === 'unusable') {
-        if (context?.replayingState === true) {
-          this.logger.warn(
-            `${desiredRead.reason}. Replaying a state record, so the shard-level metrics are ` +
-              `left unset on ${streamName} rather than refusing the restore`
-          );
-        } else {
-          throw new ProvisioningError(desiredRead.reason, resourceType, logicalId, streamName);
-        }
-      }
+      // Validated by the pre-flight above the try; an unusable value reaches
+      // here only on a state replay, where it was warned about and skipped.
       const desiredMetrics = desiredRead.kind === 'usable' ? desiredRead.expanded : undefined;
       const metricsToEnable = desiredRead.kind === 'usable' ? desiredRead.metrics : [];
       if (metricsToEnable.length > 0) {
@@ -597,11 +646,13 @@ export class KinesisStreamProvider implements ResourceProvider {
       // Update MaxRecordSizeInKiB if changed. `UpdateMaxRecordSize` is one of
       // the Kinesis APIs that takes a StreamARN and has no StreamName member,
       // so it needs the same ARN resolution UpdateStreamMode does.
-      // Both sides coerced through the SAME helper, so a state record holding
-      // the number and a template holding the string do not read as a change
-      // and re-issue the call on every deploy.
-      const newMaxRecordSize = coerceRecordSize(properties['MaxRecordSizeInKiB']);
-      const oldMaxRecordSize = coerceRecordSize(previousProperties['MaxRecordSizeInKiB']);
+      // Both sides reduced through the SAME helper, so a state record holding
+      // the number and a template holding the numeric string do not read as a
+      // change and re-issue the call on every deploy. Neither side refuses
+      // here: the update path is state-replay-reachable, so an unusable value
+      // simply reads as "no declared size" and leaves the live one alone.
+      const newMaxRecordSize = comparableRecordSize(properties['MaxRecordSizeInKiB']);
+      const oldMaxRecordSize = comparableRecordSize(previousProperties['MaxRecordSizeInKiB']);
       if (newMaxRecordSize !== undefined && newMaxRecordSize !== oldMaxRecordSize) {
         this.logger.debug(
           `Updating max record size for ${physicalId}: ${oldMaxRecordSize} -> ${newMaxRecordSize}`
