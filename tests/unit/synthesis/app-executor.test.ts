@@ -173,6 +173,96 @@ describe('AppExecutor', () => {
       expect(commandLine).toContain('bin/app.js');
     });
 
+    it('should keep args after a bare .js entrypoint', async () => {
+      const mockProc = createMockProcess();
+      vi.mocked(spawn).mockReturnValue(mockProc);
+
+      const promise = executor.execute({
+        app: 'bin/app.js --profile dev',
+        outputDir: '/tmp/cdk.out',
+        context: {},
+      });
+
+      mockProc.emit('close', 0);
+      await promise;
+
+      const commandLine = vi.mocked(spawn).mock.calls[0][0] as string;
+      expect(commandLine).toBe(`"${process.execPath}" "bin/app.js" --profile dev`);
+    });
+
+    it('should prepend node for a quoted .js entrypoint', async () => {
+      const mockProc = createMockProcess();
+      vi.mocked(spawn).mockReturnValue(mockProc);
+
+      const promise = executor.execute({
+        app: '"bin/app.js"',
+        outputDir: '/tmp/cdk.out',
+        context: {},
+      });
+
+      mockProc.emit('close', 0);
+      await promise;
+
+      const commandLine = vi.mocked(spawn).mock.calls[0][0] as string;
+      expect(commandLine).toBe(`"${process.execPath}" "bin/app.js"`);
+    });
+
+    // Issue #1714: the canonical `cdk init --language javascript` app command.
+    // The pre-fix whole-string `.js` check rewrote parts[0] -- the runner --
+    // producing `"node" "node" bin/app.js`, so every JS app failed to synth with
+    // MODULE_NOT_FOUND on a path ending in `/node`.
+    it('should NOT prepend node when the command already names its runner', async () => {
+      const mockProc = createMockProcess();
+      vi.mocked(spawn).mockReturnValue(mockProc);
+
+      const promise = executor.execute({
+        app: 'node bin/app.js',
+        outputDir: '/tmp/cdk.out',
+        context: {},
+      });
+
+      mockProc.emit('close', 0);
+      await promise;
+
+      const commandLine = vi.mocked(spawn).mock.calls[0][0] as string;
+      expect(commandLine).toBe('node bin/app.js');
+      expect(commandLine).not.toContain(process.execPath);
+    });
+
+    it('should NOT prepend node for a non-node runner of a .js file', async () => {
+      const mockProc = createMockProcess();
+      vi.mocked(spawn).mockReturnValue(mockProc);
+
+      const promise = executor.execute({
+        app: 'npx tsx bin/app.js',
+        outputDir: '/tmp/cdk.out',
+        context: {},
+      });
+
+      mockProc.emit('close', 0);
+      await promise;
+
+      const commandLine = vi.mocked(spawn).mock.calls[0][0] as string;
+      expect(commandLine).toBe('npx tsx bin/app.js');
+    });
+
+    it('should pass a TypeScript entrypoint through to the shell unchanged', async () => {
+      const mockProc = createMockProcess();
+      vi.mocked(spawn).mockReturnValue(mockProc);
+
+      const promise = executor.execute({
+        app: '  node bin/app.ts  ',
+        outputDir: '/tmp/cdk.out',
+        context: {},
+      });
+
+      mockProc.emit('close', 0);
+      await promise;
+
+      const commandLine = vi.mocked(spawn).mock.calls[0][0] as string;
+      expect(commandLine).toBe('node bin/app.ts');
+    });
+
     it('should throw SynthesisError on non-zero exit code', async () => {
       const mockProc = createMockProcess();
       vi.mocked(spawn).mockReturnValue(mockProc);
