@@ -558,6 +558,14 @@ alias, the notification `TopicArn` / `QueueArn` / `LambdaFunctionArn` reads
 lifecycle `Date` alias (`readLifecycle` emits only `TransitionDate`) — all left
 as issue #1707. `IsEnabled` and `AccountId` look like members of the class and
 are NOT: they are legitimate SDK spellings read on the RESPONSE side.
+The analytics / inventory `Destination` half of that list is FIXED: the recorded
+block is now normalized wholesale to the flattened CFn spelling
+(`effectiveS3BucketDestination`), mapping `BucketArn ?? Bucket` to `BucketArn`
+and dropping the `S3BucketDestination` wrapper. That supersedes #1670's
+write-back-at-the-DECLARED-branch decision, whose only reason was that writing at
+a hardcoded branch leaves the malformed value alive at the other key and adds a
+stray one — normalizing the whole block leaves no other key. The notification and
+lifecycle aliases in the same list are still open.
 
 Two things about running that audit, both learned by getting them wrong. A
 plain bracket-read regex finds only the direct `config['X']` form and MISSES
@@ -568,22 +576,44 @@ what you matched rather than a total. No critic covers this direction today:
 `gen-nested-key-coverage` audits CFn -> SDK spellings on the WRITE side, not SDK
 spellings TOLERATED on the desired side.
 
-**The recording fold needs its `canonicalizeDesiredProperties` twin, and the S3
-one is NOT shipped** (issue #1717). Re-ask the twin question at every such site
+**The recording fold needs its `canonicalizeDesiredProperties` twin** (issue
+#1717, which SHIPPED the S3 one). Re-ask the twin question at every such site
 rather than inheriting the #1670 "no twin" answer: that answer rests on finding
 3 (canonicalizing would CONCEAL a malformed value whose warning tells the user
 what to fix), and a never-emitted SPELLING has no fault to fix and emits no
 warning at all — so the twin's absence leaves a permanent `cdkd diff` line and a
 redundant Put with no explanation. Measured on the #1686 fold: an unchanged
-template redeploys as `1 to update` forever. It shipped anyway because the
-alternative is worse in the direction that MUTATES — without the fold, `cdkd
-drift` reports the key forever and `--revert` re-issues the call — and because
-the twin has a real obstacle worth knowing before you start: a
+template redeploys as `1 to update` forever. That fold shipped WITHOUT its twin
+because the alternative was worse in the direction that MUTATES — without the
+fold, `cdkd drift` reports the key forever and `--revert` re-issues the call.
+`S3BucketProvider.canonicalizeDesiredProperties` now folds the inventory
+`Schedule` -> `ScheduleFrequency` key, the analytics / inventory destination
+SHAPE, and the defaulted-but-SENT members (`Enabled` /
+`IncludedObjectVersions` / `OutputSchemaVersion` / `Format`), sharing ONE helper
+per item type with the appliers so state and template can never be folded to
+different keys. The fold is keyed off the DECLARED shape, never off a refusal,
+so a malformed value still passes through intact and keeps being reported —
+finding 3 survives rather than being overridden.
+
+Two things about the obstacle #1717 recorded, because a later reader will meet
+it as a claim rather than as a measurement. The issue warned that a
 `canonicalizeDesiredProperties` folding this key makes `gen-nested-key-coverage`
 report the still-correct plural->singular `segmentRenames` entry for
-`InventoryConfigurations` STALE, while removing that entry surfaces genuine
-`no-write-evidence` divergences. Each piece is inert alone; only the
-combination trips it.
+`InventoryConfigurations` STALE, that removing that entry surfaces genuine
+`no-write-evidence` divergences, and that each piece is inert alone so only the
+combination trips it. **It did not reproduce.** With the folds written as
+MODULE-level pure functions over an item parameter, all three passes report 0
+divergences, the committed matrix does not drift, and the `segmentRenames` entry
+is still listed in the target's `usedSegmentRenames` — so no entry was removed
+and no staleness check was widened. What DID move is the file's withdrawn-name
+measurement: `Enabled` / `ScheduleFrequency` / `BucketArn` left the reverse-map
+withdrawal set, because a fold writing a CFn spelling outside a `read*` /
+`*ToCfn` function is no longer withdrawn-because-only-a-reverse-map-writes-it.
+That is the direction to WATCH — a RECORDING write vouching for a forward mapper
+that stopped writing the SDK member — so it was measured away per-name with
+real-code probes rather than argued: deleting the wire write for `IsEnabled` /
+`Bucket` from a scratch copy of the real provider still fails the critic by
+name.
 
 **An EMPTY COLLECTION is not a removal intent, and the skip that absorbs it must
 still record the previous value** (issue #1671, the ordinary-template half of
@@ -610,6 +640,23 @@ loud failure and a user whose rules stop being applied should not have to diff
 state to find out. It stays a warning rather than a throw so the
 `readCurrentState` round-trip the arm exists to absorb (`drift --revert` feeds
 an always-emitted empty-rules block back through `update()`) keeps working.
+
+**The CREATE path carries the same guard, and WHAT IT RECORDS is the opposite
+answer** (issue #1718 item 1). `applyAllSubConfigsForCreate` skipped the same
+empty collection in SILENCE, so a fresh bucket came up without a declared
+lifecycle / CORS configuration and nothing said so; it now announces the skip
+the way the update arm does. The recording answer does NOT transfer, in either
+direction. The update arm retains the PREVIOUS value; a create has none, and the
+replay-CREATE rule's "DROP the key" — the obvious import — is also wrong here,
+because `readLifecycle` / `readCors` ALWAYS emit the empty placeholder for an
+unconfigured bucket (`{Rules: []}` on `NoSuchLifecycleConfiguration`,
+`{CorsRules: []}` on an absent CORS config). So the declared empty collection
+ALREADY equals what `readCurrentState` returns and the right answer is to
+override NOTHING, while dropping the key would leave the template declaring one
+the record does not and churn a no-op UPDATE on every deploy. The generalizable
+form: the drop answer is scoped to a skip whose declared value AWS cannot
+report — before importing it, ask what the readback emits for the unconfigured
+resource.
 
 **The sibling arms that NORMALIZE the empty collection away reach a DELETE, and
 that is the same defect one indirection further out** (issue #1713).

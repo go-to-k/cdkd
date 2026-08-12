@@ -291,17 +291,29 @@ need:
   not dropped and not replaced by the previous item. Because the two arms mean
   opposite things, report them separately: the four `S3BucketProvider` per-`Id`
   appliers return `{ skipped, substituted }` rather than a bare index list.
-- Write the substituted value back at the key the TEMPLATE declared. Where a
-  block is accepted in more than one shape (the S3 analytics / inventory
-  `Destination` is valid flattened AND nested), a hardcoded branch leaves the
-  malformed value alive at the other key and adds a stray one.
+- Write the substituted value back at the key the TEMPLATE declared — UNLESS the
+  readback can only emit one of the accepted spellings, in which case normalize
+  the whole block to that one (see the SHAPE section below). The bullet's
+  original reason was that a hardcoded branch leaves the malformed value alive at
+  the other key and adds a stray one; normalizing wholesale removes the other key
+  entirely, so that concern does not apply. The S3 analytics / inventory
+  `Destination` is the worked case: accepted flattened AND nested, emitted only
+  flattened, so it normalizes
+  ([#1707](https://github.com/go-to-k/cdkd/issues/1707)).
 - Hand the recorder the value the read RETURNED, not the fallback literal, so
   "recorded" and "sent" cannot drift apart.
 
 Whether such a site ALSO takes the `canonicalizeDesiredProperties` twin is a
 genuine per-site question — unlike a skip, a substitution IS a pure function of
 the desired value, so the twin rule reaches it. `.claude/rules/providers.md`
-carries the three-finding checklist and the worked S3 answer (no twin).
+carries the three-finding checklist and the worked S3 answer, which is worth
+reading as TWO answers rather than one: for the SUBSTITUTED values (#1670) it is
+still no twin, because canonicalizing would conceal a malformed value whose
+warning is the user's only signal; for the never-emitted KEY and SHAPE folds at
+the same sites (#1686 / #1707) it is yes, because those have no fault to conceal
+and emit no warning at all. Both live in one
+`canonicalizeDesiredProperties` on `S3BucketProvider`, keyed off the DECLARED
+shape so the substitution stays visible.
 The one licensed exception is a SINGLE call site of KNOWN class
 ([#1653](https://github.com/go-to-k/cdkd/issues/1653)): where you wrap one
 `readConfigString` you wrote yourself, you already know it is a
@@ -330,7 +342,6 @@ Two more rules the #1653 / #1654 reviews added:
   dropping but to make the READING path announce the defaulted absence on a
   replay. Audit who reads the record next.
 
-
 **A KEY the readback never emits is the same defect reached through the SHAPE**
 (issue [#1686](https://github.com/go-to-k/cdkd/issues/1686)), and it NARROWS the
 "write it back at the key the TEMPLATE declared" bullet above. That bullet is
@@ -358,10 +369,28 @@ answer rests on canonicalizing CONCEALING a malformed value whose warning tells
 the user what to fix, and a never-emitted spelling has no fault to fix and emits
 no warning. Without the twin the template keeps declaring the SDK spelling while
 state holds the CFn one, so `cdkd diff` reports the property forever and every
-deploy re-issues the Put (measured). cdkd's S3 case ships without it —
-deliberately, because the alternative is worse in the direction that MUTATES —
-and is tracked in issue
-[#1717](https://github.com/go-to-k/cdkd/issues/1717).
+deploy re-issues the Put (measured). cdkd's S3 fold shipped WITHOUT the twin at
+first — deliberately, because the alternative is worse in the direction that
+MUTATES — and the twin landed in issue
+[#1717](https://github.com/go-to-k/cdkd/issues/1717):
+`S3BucketProvider.canonicalizeDesiredProperties` folds the inventory schedule
+key, the analytics / inventory destination shape, and the defaulted-but-SENT
+members, sharing ONE per-item helper with the appliers so state and template can
+never be folded to different keys.
+
+**A member that is always SENT and always READ BACK must be recorded even when
+the template omits it** (issue
+[#1718](https://github.com/go-to-k/cdkd/issues/1718)) — the defaulted-but-SENT
+arm of the same class, with no substitution and no warning anywhere. The S3
+inventory `Enabled` / `IncludedObjectVersions`, the analytics
+`OutputSchemaVersion`, the destination `Format` and the intelligent-tiering
+`Status` are all defaulted on the wire and all emitted by the reverse mapper, so
+an item omitting one recorded fewer keys than the readback produces. That is
+invisible for a TOP-LEVEL key (the drift comparator only descends into keys state
+carries) and fatal inside an ARRAY, which is compared WHOLESALE. Record the
+default and add it to the twin so both diff sides agree. Audit the sibling
+appliers when you fix one, and expect the answer to differ: S3 `metrics`
+defaults no scalar member and correctly needs no fold.
 
 **An EMPTY COLLECTION is not a removal intent** (issue
 [#1671](https://github.com/go-to-k/cdkd/issues/1671)). An applier that skips its
@@ -380,6 +409,19 @@ CFn's own answer is a loud failure, so a silent skip leaves the user to discover
 it by diffing state. Keep it a warning rather than a throw, or the
 `readCurrentState` round-trip the arm exists to absorb (`drift --revert` feeds
 an always-emitted empty-rules block back through `update()`) stops working.
+
+**The CREATE path usually carries the same guard, and what it RECORDS is a
+separate question** (issue [#1718](https://github.com/go-to-k/cdkd/issues/1718)).
+cdkd's create-side S3 arm skipped in SILENCE for the same collapsed array, so a
+fresh bucket came up without a declared configuration and nothing said so; it
+now announces the skip too. Neither recording answer transfers: the update arm
+retains the PREVIOUS value and a create has none, while the replay-CREATE rule's
+"DROP the key" is also wrong here, because `readCurrentState` ALWAYS emits the
+empty placeholder for an unconfigured resource — so the declared empty
+collection already equals what the readback returns and the right answer is to
+override NOTHING. Dropping it would leave the template declaring a key the
+record does not and churn a no-op UPDATE on every deploy. Before importing the
+drop answer, ask what your readback emits for the UNCONFIGURED resource.
 
 ## Provider Implementation Examples
 

@@ -4926,16 +4926,33 @@ describe('real-code regression probes (per the repo checker rules)', () => {
     // original `readCurrentState`-only prefix reached — the added 22 are the
     // CFn spellings the `read<Block>` builder helpers and the `*SdkToCfn`
     // converters write on the read-back path.
+    //
+    // Re-measured again for #1707 / #1717 / #1718, which took the list 30 -> 27:
+    // `Enabled`, `ScheduleFrequency` and `BucketArn` left it because the
+    // effective-item folds (`effectiveInventoryItem` /
+    // `effectiveS3BucketDestination`) now write those CFn spellings OUTSIDE any
+    // reverse-map function, so they are no longer withdrawn-because-only-a-
+    // reverse-map-writes-them.
+    //
+    // No VERDICT moved — the committed matrix does not drift a byte — and the
+    // hazard that WOULD matter (a RECORDING write vouching for a forward mapper
+    // that stopped writing the SDK member) was measured away rather than
+    // reasoned away, on each of the two names the write pass audits. Deleting
+    // the wire write from a scratch copy of the REAL provider still fails:
+    //   - `IsEnabled: config['Enabled'] ?? …`
+    //     -> `InventoryConfigurations.Enabled [no-write-evidence]`
+    //   - `Bucket: (s3Dest['BucketArn'] ?? s3Dest['Bucket'])`
+    //     -> `InventoryConfigurations.Destination.BucketArn [no-write-evidence]`
+    // (`ScheduleFrequency` is `provider-handled` via the key pass, so the write
+    // pass never audits it.)
     expect(withdrawn).toEqual([
       'AnalyticsConfigurations',
-      'BucketArn',
       'BucketEncryption',
       'BucketName',
       'ContinuationToken',
       'CorsConfiguration',
       'CorsRules',
       'DestinationBucketName',
-      'Enabled',
       'EventBridgeEnabled',
       'ExposedHeaders',
       'Function',
@@ -4950,7 +4967,6 @@ describe('real-code regression probes (per the repo checker rules)', () => {
       'RedirectRule',
       'RoutingRuleCondition',
       'S3Key',
-      'ScheduleFrequency',
       'ServerSideEncryptionByDefault',
       'TagFilter',
       'TagFilters',
