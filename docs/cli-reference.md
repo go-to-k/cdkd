@@ -1697,11 +1697,17 @@ Flags:
   the identical difference and `--revert` re-issued the identical call,
   forever. Only the provider-changed keys move — the AWS-current values
   that rode along in the bag sent to `provider.update` are NOT imported
-  into state, so `--revert` never behaves like `--accept`. That write is
-  BEST-EFFORT: AWS has already been reverted by the time it runs, so a failed
-  state write warns and the command carries on (under `--all`, aborting would
-  skip every later stack's revert). The only cost of the warn path is that the
-  narrowing re-surfaces on the next `cdkd drift`.
+  into state, so `--revert` never behaves like `--accept`. Two further limits
+  keep that guarantee airtight: only a key the baseline ALREADY declares can
+  move (a provider echoing back an out-of-band, AWS-only key cannot insert it),
+  and on a resource with no `observedProperties` only a key REMOVAL is recorded,
+  never a value — that baseline is the raw template, the values sent to the
+  provider deliberately carry the untemplated AWS paths described above, and
+  writing one into `properties` would make the template intent describe AWS-side
+  data. That write is BEST-EFFORT: AWS has already been reverted by the time it
+  runs, so a failed state write warns and the command carries on (under `--all`,
+  aborting would skip every later stack's revert). The only cost of the warn
+  path is that the narrowing re-surfaces on the next `cdkd drift`.
 
   Requires a stack lock. Mutually exclusive with
   `--accept`. See "Resolving drift" below.

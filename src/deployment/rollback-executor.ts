@@ -713,10 +713,14 @@ async function updateWithRollbackRetry(
  */
 function recordAfterRollbackUpdate(
   restored: ResourceState,
-  result: ResourceUpdateResult
+  result: ResourceUpdateResult | undefined
 ): ResourceState {
-  return result.effectiveProperties
-    ? { ...restored, properties: result.effectiveProperties }
+  // Copied, not aliased: the record outlives the call and a provider is free to
+  // keep mutating the object it handed back. The optional `result` mirrors the
+  // same tolerance `drift.ts`'s capture applies — a provider that resolves
+  // `undefined` must not crash a recovery path.
+  return result?.effectiveProperties
+    ? { ...restored, properties: { ...result.effectiveProperties } }
     : restored;
 }
 

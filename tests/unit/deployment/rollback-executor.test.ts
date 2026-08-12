@@ -822,6 +822,53 @@ describe('replayRollback', () => {
     expect(prev.properties).toEqual({ a: 1, b: 6 });
   });
 
+  it("the 'revert' arm REPLACES properties rather than merging, so a dropped key is gone (issue #1644)", async () => {
+    // The only real producer narrows by DROPPING a key (an `AWS::EC2::Route`
+    // losing destination). A merge (`{...restored.properties, ...effective}`)
+    // is indistinguishable from a replace when every key is echoed back, so
+    // this is the case that pins the contract.
+    const update = vi.fn().mockResolvedValue({
+      physicalId: 'phys-B',
+      effectiveProperties: { DestinationCidrBlock: '10.0.0.0/16' },
+    });
+    const { ctx } = makeCtx({ update });
+    const prev = res({
+      physicalId: 'phys-B',
+      properties: { DestinationCidrBlock: '10.0.0.0/16', DestinationIpv6CidrBlock: '::/0' },
+    });
+    const ops: CompletedOperation[] = [
+      { logicalId: 'B', changeType: 'UPDATE', resourceType: 'AWS::EC2::Route', physicalId: 'phys-B', previousState: prev },
+    ];
+    const state: Record<string, ResourceState> = {
+      B: res({ physicalId: 'phys-B', properties: { DestinationCidrBlock: '10.9.0.0/16' } }),
+    };
+
+    await replayRollback(ops, state, 'S', ctx);
+
+    expect('DestinationIpv6CidrBlock' in state['B']!.properties).toBe(false);
+    expect(state['B']!.properties).toEqual({ DestinationCidrBlock: '10.0.0.0/16' });
+  });
+
+  it("the 'revert' arm copies the provider's bag instead of aliasing it (issue #1644)", async () => {
+    // The record outlives the call; a provider is free to keep mutating the
+    // object it handed back.
+    const effective: Record<string, unknown> = { a: 1 };
+    const update = vi.fn().mockResolvedValue({ physicalId: 'phys-B', effectiveProperties: effective });
+    const { ctx } = makeCtx({ update });
+    const prev = res({ physicalId: 'phys-B', properties: { a: 1, b: 2 } });
+    const ops: CompletedOperation[] = [
+      { logicalId: 'B', changeType: 'UPDATE', resourceType: 'T', physicalId: 'phys-B', previousState: prev },
+    ];
+    const state: Record<string, ResourceState> = {
+      B: res({ physicalId: 'phys-B', properties: { a: 9 } }),
+    };
+
+    await replayRollback(ops, state, 'S', ctx);
+    effective['a'] = 'MUTATED AFTER THE CALL';
+
+    expect(state['B']!.properties).toEqual({ a: 1 });
+  });
+
   it("the 'revert' arm keeps previousState verbatim when the provider reports no narrowing (issue #1644)", async () => {
     const update = vi.fn().mockResolvedValue({ physicalId: 'phys-B' });
     const { ctx } = makeCtx({ update });
@@ -1216,6 +1263,20 @@ describe('replayFailedOperations (#1198)', () => {
     expect(state['B']!.properties).toEqual({ a: 1, b: 'tcp' });
     expect(state['B']!.physicalId).toBe('phys-B');
     expect(prev.properties).toEqual({ a: 1, b: 6 });
+  });
+
+  it("the 'revert-failed-update' arm keeps previousState verbatim without a narrowing (issue #1644)", async () => {
+    const update = vi.fn().mockResolvedValue({ physicalId: 'phys-B' });
+    const { ctx } = makeCtx({ update });
+    const prev = res({ physicalId: 'phys-B', properties: { a: 1 } });
+    const failedOps: FailedOperation[] = [
+      { logicalId: 'B', changeType: 'UPDATE', resourceType: 'T', physicalId: 'phys-B', previousState: prev, attemptedProperties: { a: 2 } },
+    ];
+    const state = { B: res({ physicalId: 'phys-B', properties: { a: 2 } }) };
+
+    await replayFailedOperations(failedOps, state, 'S', ctx);
+
+    expect(state['B']).toBe(prev);
   });
 
   it("the 'revert-failed-update' arm honors disableOuterRetry and threads isInterrupted (issue #1461)", async () => {

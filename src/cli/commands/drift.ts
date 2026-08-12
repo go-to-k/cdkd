@@ -1397,7 +1397,18 @@ export function buildRevertNewProperties(
  * did not deliver it, so AWS does not hold it, and the baseline must lose it
  * too. That is represented by an explicit `undefined` value, which the caller
  * turns into a `delete` — a plain `{...baseline, ...delta}` spread would leave
- * an `undefined`-valued key in the JSON instead.
+ * an `undefined`-valued key in the JSON instead. Presence is decided by
+ * `key in effective`, NOT by comparing against `undefined`: a provider that
+ * delivers an explicit `undefined` and one that omits the key both mean "AWS
+ * does not hold it", while a key whose value genuinely IS `null` on both sides
+ * must not read as a drop.
+ *
+ * The comparison is a key-order-INDEPENDENT deep equality rather than
+ * `JSON.stringify`. A provider that rebuilds a nested object while delivering
+ * the same members would otherwise register as a change, and the value written
+ * back for such a key is the one that was SENT — for a non-drifted key that is
+ * the AWS-current value, i.e. the `--accept` behavior this delta exists to
+ * prevent.
  */
 export function collectNarrowedTopLevelKeys(
   sent: Record<string, unknown>,
@@ -1405,12 +1416,31 @@ export function collectNarrowedTopLevelKeys(
 ): Record<string, unknown> {
   const delta: Record<string, unknown> = {};
   for (const key of new Set([...Object.keys(sent), ...Object.keys(effective)])) {
-    const sentValue = sent[key];
-    const effectiveValue = effective[key];
-    if (JSON.stringify(sentValue ?? null) === JSON.stringify(effectiveValue ?? null)) continue;
-    delta[key] = key in effective ? effectiveValue : undefined;
+    const inSent = key in sent;
+    const inEffective = key in effective;
+    if (inSent && inEffective && deepEqualUnordered(sent[key], effective[key])) continue;
+    if (!inSent && !inEffective) continue;
+    delta[key] = inEffective ? effective[key] : undefined;
   }
   return delta;
+}
+
+/** Deep equality that does not depend on object key ORDER. */
+function deepEqualUnordered(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (a == null || b == null) return a === b;
+  if (typeof a !== 'object' || typeof b !== 'object') return false;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+    return a.every((v, i) => deepEqualUnordered(v, b[i]));
+  }
+  const ao = a as Record<string, unknown>;
+  const bo = b as Record<string, unknown>;
+  const ak = Object.keys(ao);
+  if (ak.length !== Object.keys(bo).length) return false;
+  return ak.every(
+    (k) => Object.prototype.hasOwnProperty.call(bo, k) && deepEqualUnordered(ao[k], bo[k])
+  );
 }
 
 /**
@@ -1547,21 +1577,35 @@ async function runRevert(
             outcome.logicalId,
             { logger: { debug: (msg) => logger.debug(msg) } }
           );
-          // Issue #1644: keep whatever the provider says it ACTUALLY delivered,
-          // so a narrowing does not re-surface as drift on the next run.
-          if (updateResult?.effectiveProperties) {
-            const delta = collectNarrowedTopLevelKeys(
-              newProperties,
-              updateResult.effectiveProperties
-            );
-            if (Object.keys(delta).length > 0) {
-              narrowedByLogicalId.set(outcome.logicalId, delta);
-            }
-          }
           totalSucceeded++;
           logger.info(
             `  ✓ ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): reverted.`
           );
+          // Issue #1644: keep whatever the provider says it ACTUALLY delivered,
+          // so a narrowing does not re-surface as drift on the next run.
+          //
+          // AFTER the success accounting, and in its OWN try: the AWS update
+          // has already landed, so a throw in here (a provider handing back a
+          // cyclic / non-comparable bag) must not be caught by the outer
+          // handler and re-reported as `AWS update failed`, flipping a
+          // succeeded revert to exit 2.
+          try {
+            if (updateResult?.effectiveProperties) {
+              const delta = collectNarrowedTopLevelKeys(
+                newProperties,
+                updateResult.effectiveProperties
+              );
+              if (Object.keys(delta).length > 0) {
+                narrowedByLogicalId.set(outcome.logicalId, delta);
+              }
+            }
+          } catch (captureErr) {
+            logger.warn(
+              `  ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): reverted, but ` +
+                `the provider's reported effective properties could not be read — ` +
+                `${captureErr instanceof Error ? captureErr.message : String(captureErr)}`
+            );
+          }
         } catch (err) {
           // Distinguish "the AWS update failed" from "this resource type
           // does not support in-place update at all". The latter cannot be
@@ -1593,6 +1637,7 @@ async function runRevert(
       // not a template edit.
       if (narrowedByLogicalId.size > 0) {
         const resources: Record<string, ResourceState> = { ...report.state.resources };
+        let recordedCount = 0;
         for (const [logicalId, delta] of narrowedByLogicalId) {
           const existing = resources[logicalId];
           if (!existing) continue;
@@ -1602,13 +1647,47 @@ async function runRevert(
             string,
             unknown
           >;
+          let changed = false;
           for (const [key, value] of Object.entries(delta)) {
-            if (value === undefined) delete newBaseline[key];
-            else newBaseline[key] = value;
+            // ONLY a key the baseline already declares may move. The bag sent
+            // to `update()` starts as the AWS-CURRENT snapshot, so it carries
+            // keys the baseline never had (an out-of-band tag, an AWS-computed
+            // field); a provider that echoes one back in a changed shape would
+            // otherwise INSERT it into state — `--revert` behaving like
+            // `--accept`, the thing the per-key delta exists to prevent.
+            if (!Object.prototype.hasOwnProperty.call(newBaseline, key)) continue;
+            if (value === undefined) {
+              delete newBaseline[key];
+              changed = true;
+              continue;
+            }
+            // A VALUE is recorded only against an `observedProperties`
+            // baseline. Without one the baseline is the raw TEMPLATE, and
+            // `buildRevertNewProperties` ran in `preserveUntemplated` mode —
+            // so the value that was sent deliberately carries every AWS-
+            // authored path the template never declared. Writing it into
+            // `properties` would make the DESIRED baseline describe AWS-side
+            // values and silently disable the #1160 absent-field removal
+            // derivation, which reads that side (`.claude/rules/providers.md`:
+            // what you return is what you SENT, AWS-side defaults belong in
+            // `observedProperties`). A DROP is still safe there — it removes,
+            // never imports — so the loop this fix exists to break still
+            // closes for the shape that actually produces it.
+            if (!hasObserved) continue;
+            newBaseline[key] = value;
+            changed = true;
           }
+          if (!changed) continue;
+          recordedCount++;
           resources[logicalId] = hasObserved
             ? { ...existing, observedProperties: newBaseline }
             : { ...existing, properties: newBaseline };
+        }
+
+        if (recordedCount === 0) {
+          // Every reported narrowing was on a key state does not track, or was
+          // a value on a template-only baseline — nothing to persist.
+          continue;
         }
 
         const newState: StackState = {
@@ -1633,7 +1712,7 @@ async function runRevert(
           await stateBackend.saveState(report.stackName, report.region, newState, saveOptions);
           logger.info(
             `✓ State updated for ${report.stackName} (${report.region}): recorded the value the ` +
-              `provider actually applied on ${narrowedByLogicalId.size} resource(s).`
+              `provider actually applied on ${recordedCount} resource(s).`
           );
         } catch (err) {
           logger.warn(

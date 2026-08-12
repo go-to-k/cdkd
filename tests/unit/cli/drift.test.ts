@@ -120,7 +120,10 @@ vi.mock('../../../src/provisioning/cloud-control-provider.js', () => ({
   })),
 }));
 
-import { createDriftCommand } from '../../../src/cli/commands/drift.js';
+import {
+  createDriftCommand,
+  collectNarrowedTopLevelKeys,
+} from '../../../src/cli/commands/drift.js';
 
 function captureStdout(): { output: string[]; restore: () => void } {
   const output: string[] = [];
@@ -1217,7 +1220,12 @@ describe('cdkd drift', () => {
         expect(mockReleaseLock).toHaveBeenCalledWith('TestStack', 'us-east-1');
       });
 
-      it('falls back to `properties` when the resource has no observedProperties', async () => {
+      it('leaves `properties` alone for a VALUE narrowing when there is no observedProperties', async () => {
+        // The template-only baseline case: `buildRevertNewProperties` ran in
+        // `preserveUntemplated` mode, so a recorded VALUE would import
+        // AWS-authored paths into the user's template intent. The loop stays
+        // open for this shape by design; the sibling DROP test proves the half
+        // that IS safe to record here.
         mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
         mockGetState.mockResolvedValueOnce(
           makeState({
@@ -1240,12 +1248,7 @@ describe('cdkd drift', () => {
         const { error } = await runDrift(['TestStack', '--revert', '--yes']);
 
         expect(error).toBeUndefined();
-        const [, , savedState] = mockSaveState.mock.calls[0]!;
-        expect(savedState.resources['Ingress1']!.properties).toEqual({
-          IpProtocol: 'tcp',
-          FromPort: 443,
-        });
-        expect(savedState.resources['Ingress1']!.observedProperties).toBeUndefined();
+        expect(mockSaveState).not.toHaveBeenCalled();
       });
 
       /**
@@ -1373,6 +1376,202 @@ describe('cdkd drift', () => {
         );
         // The lock is still released.
         expect(mockReleaseLock).toHaveBeenCalledWith('TestStack', 'us-east-1');
+      });
+
+      /**
+       * The bag sent to `update()` starts as the AWS-CURRENT snapshot, so it
+       * carries keys the baseline never declared. A provider that echoes one
+       * back in a changed shape must NOT get it inserted into state — that is
+       * `--accept` behavior reached through the back door.
+       */
+      it('ignores a narrowed key the baseline never declared', async () => {
+        mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+        mockGetState.mockResolvedValueOnce(
+          makeState({
+            Ingress1: makeResource({
+              physicalId: 'sgr-1',
+              resourceType: 'AWS::EC2::SecurityGroupIngress',
+              properties: { IpProtocol: 6, FromPort: 443 },
+              observedProperties: { IpProtocol: 6, FromPort: 443 },
+            }),
+          })
+        );
+        mockRegistryGetProvider.mockReturnValue({
+          readCurrentState: async () => ({
+            IpProtocol: 6,
+            FromPort: 8080,
+            Description: 'added in the console',
+          }),
+          update: async (
+            _l: string,
+            _p: string,
+            _t: string,
+            newProperties: Record<string, unknown>
+          ) => ({
+            physicalId: 'sgr-1',
+            wasReplaced: false,
+            // The provider re-shapes an AWS-only key it was handed.
+            effectiveProperties: {
+              ...newProperties,
+              IpProtocol: 'tcp',
+              Description: 'ADDED IN THE CONSOLE',
+            },
+          }),
+        });
+
+        const { error } = await runDrift(['TestStack', '--revert', '--yes']);
+
+        expect(error).toBeUndefined();
+        const [, , savedState] = mockSaveState.mock.calls[0]!;
+        // `Description` is not in the baseline, so it must not be imported.
+        expect(savedState.resources['Ingress1']!.observedProperties).toEqual({
+          IpProtocol: 'tcp',
+          FromPort: 443,
+        });
+      });
+
+      /**
+       * With no `observedProperties` the baseline is the raw TEMPLATE and
+       * `buildRevertNewProperties` runs in `preserveUntemplated` mode, so the
+       * value that was sent deliberately carries AWS-authored paths. Recording
+       * such a VALUE into `properties` would make the desired baseline describe
+       * AWS-side data and disable the #1160 removal derivation. A DROP is still
+       * recorded — it removes, never imports.
+       */
+      it('records only DROPs, never a value, on a template-only baseline', async () => {
+        mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+        mockGetState.mockResolvedValueOnce(
+          makeState({
+            Route1: makeResource({
+              physicalId: 'rtb-1|10.0.0.0/16',
+              resourceType: 'AWS::EC2::Route',
+              properties: {
+                DestinationCidrBlock: '10.0.0.0/16',
+                DestinationIpv6CidrBlock: '::/0',
+                GatewayId: 'igw-1',
+              },
+            }),
+          })
+        );
+        mockRegistryGetProvider.mockReturnValue({
+          readCurrentState: async () => ({
+            DestinationCidrBlock: '10.0.0.0/16',
+            GatewayId: 'igw-2',
+          }),
+          update: async () => ({
+            physicalId: 'rtb-1|10.0.0.0/16',
+            wasReplaced: false,
+            // Narrows one key away AND rewrites another.
+            effectiveProperties: {
+              DestinationCidrBlock: '10.0.0.0/16',
+              GatewayId: 'igw-1-REWRITTEN',
+            },
+          }),
+        });
+
+        const { error } = await runDrift(['TestStack', '--revert', '--yes']);
+
+        expect(error).toBeUndefined();
+        const [, , savedState] = mockSaveState.mock.calls[0]!;
+        const props = savedState.resources['Route1']!.properties;
+        // The DROP landed...
+        expect('DestinationIpv6CidrBlock' in props).toBe(false);
+        // ...but the VALUE rewrite did not.
+        expect(props['GatewayId']).toBe('igw-1');
+      });
+
+      it('does not treat a key-order difference as a narrowing', async () => {
+        mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+        mockGetState.mockResolvedValueOnce(
+          makeState({
+            Bucket1: makeResource({
+              physicalId: 'phys-b',
+              resourceType: 'AWS::S3::Bucket',
+              properties: { Versioning: { Status: 'Enabled', MfaDelete: 'Disabled' } },
+              observedProperties: { Versioning: { Status: 'Enabled', MfaDelete: 'Disabled' } },
+            }),
+          })
+        );
+        mockRegistryGetProvider.mockReturnValue({
+          readCurrentState: async () => ({
+            Versioning: { Status: 'Suspended', MfaDelete: 'Disabled' },
+          }),
+          update: async (
+            _l: string,
+            _p: string,
+            _t: string,
+            newProperties: Record<string, unknown>
+          ) => {
+            const versioning = newProperties['Versioning'] as Record<string, unknown>;
+            return {
+              physicalId: 'phys-b',
+              wasReplaced: false,
+              // Same members, rebuilt in the opposite key order.
+              effectiveProperties: {
+                Versioning: {
+                  MfaDelete: versioning['MfaDelete'],
+                  Status: versioning['Status'],
+                },
+              },
+            };
+          },
+        });
+
+        const { error } = await runDrift(['TestStack', '--revert', '--yes']);
+
+        expect(error).toBeUndefined();
+        expect(mockSaveState).not.toHaveBeenCalled();
+      });
+
+      it('writes ONCE per stack for two narrowed resources, and forwards migrateLegacy', async () => {
+        mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+        mockGetState.mockResolvedValueOnce({
+          ...makeState({
+            Route1: makeResource({
+              physicalId: 'rtb-1|10.0.0.0/16',
+              resourceType: 'AWS::EC2::Route',
+              properties: { DestinationCidrBlock: '10.0.0.0/16', GatewayId: 'igw-1' },
+              observedProperties: { DestinationCidrBlock: '10.0.0.0/16', GatewayId: 'igw-1' },
+            }),
+            Route2: makeResource({
+              physicalId: 'rtb-2|10.1.0.0/16',
+              resourceType: 'AWS::EC2::Route',
+              properties: { DestinationCidrBlock: '10.1.0.0/16', GatewayId: 'igw-1' },
+              observedProperties: { DestinationCidrBlock: '10.1.0.0/16', GatewayId: 'igw-1' },
+            }),
+          }),
+          migrationPending: true,
+        });
+        mockRegistryGetProvider.mockReturnValue({
+          readCurrentState: async () => ({
+            DestinationCidrBlock: '10.9.9.9/32',
+            GatewayId: 'igw-drifted',
+          }),
+          update: async (
+            _l: string,
+            _p: string,
+            _t: string,
+            newProperties: Record<string, unknown>
+          ) => ({
+            physicalId: 'phys',
+            wasReplaced: false,
+            effectiveProperties: { ...newProperties, GatewayId: 'igw-NARROWED' },
+          }),
+        });
+
+        const { error } = await runDrift(['TestStack', '--revert', '--yes']);
+
+        expect(error).toBeUndefined();
+        // ONE write for the whole stack, not one per resource.
+        expect(mockSaveState).toHaveBeenCalledTimes(1);
+        const [, , savedState, saveOptions] = mockSaveState.mock.calls[0]!;
+        expect(savedState.resources['Route1']!.observedProperties!['GatewayId']).toBe(
+          'igw-NARROWED'
+        );
+        expect(savedState.resources['Route2']!.observedProperties!['GatewayId']).toBe(
+          'igw-NARROWED'
+        );
+        expect(saveOptions?.migrateLegacy).toBe(true);
       });
 
       it('does NOT write state when effectiveProperties matches what was sent', async () => {
@@ -2872,5 +3071,57 @@ describe('cdkd drift --revert untemplated-value contract (issue #1626)', () => {
     expect(output).toContain('LEAVES 2 AWS-authored values untouched');
     expect(output).toContain('LoadBalancerAttributes[deletion_protection.enabled]');
     expect(output).not.toContain('will DROP');
+  });
+});
+
+describe('collectNarrowedTopLevelKeys (issue #1644)', () => {
+  it('returns an empty delta when the provider delivered exactly what it was handed', () => {
+    const sent = { A: 1, B: { c: [1, 2] } };
+    expect(collectNarrowedTopLevelKeys(sent, { ...sent })).toEqual({});
+  });
+
+  it('reports a changed value', () => {
+    expect(collectNarrowedTopLevelKeys({ A: 6 }, { A: 'tcp' })).toEqual({ A: 'tcp' });
+  });
+
+  it('reports a DROP as an explicit undefined the caller can turn into a delete', () => {
+    const delta = collectNarrowedTopLevelKeys({ A: 1, B: 2 }, { A: 1 });
+    expect('B' in delta).toBe(true);
+    expect(delta['B']).toBeUndefined();
+    expect(Object.keys(delta)).toEqual(['B']);
+  });
+
+  it('treats an explicitly-undefined delivered value as a DROP, same as an omitted key', () => {
+    expect(collectNarrowedTopLevelKeys({ A: 1 }, { A: undefined })).toEqual({ A: undefined });
+  });
+
+  it('does NOT treat a null value present on both sides as a change', () => {
+    expect(collectNarrowedTopLevelKeys({ A: null }, { A: null })).toEqual({});
+  });
+
+  it('reports a DROP of a null-valued key (the `?? null` conflation guard)', () => {
+    const delta = collectNarrowedTopLevelKeys({ A: null }, {});
+    expect('A' in delta).toBe(true);
+    expect(delta['A']).toBeUndefined();
+  });
+
+  it('reports a key the provider ADDED', () => {
+    expect(collectNarrowedTopLevelKeys({}, { A: 'added' })).toEqual({ A: 'added' });
+  });
+
+  it('ignores object key ORDER', () => {
+    const delta = collectNarrowedTopLevelKeys(
+      { A: { p: 1, q: [{ x: 1, y: 2 }] } },
+      { A: { q: [{ y: 2, x: 1 }], p: 1 } }
+    );
+    expect(delta).toEqual({});
+  });
+
+  it('still reports a genuine nested change', () => {
+    expect(collectNarrowedTopLevelKeys({ A: { p: 1 } }, { A: { p: 2 } })).toEqual({ A: { p: 2 } });
+  });
+
+  it('respects array ORDER (a reorder is a real change)', () => {
+    expect(collectNarrowedTopLevelKeys({ A: [1, 2] }, { A: [2, 1] })).toEqual({ A: [2, 1] });
   });
 });
