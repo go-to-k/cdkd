@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import {
   DescribeStreamCommand,
+  DescribeStreamSummaryCommand,
   ListTagsForStreamCommand,
   ResourceNotFoundException,
 } from '@aws-sdk/client-kinesis';
@@ -61,18 +62,22 @@ describe('KinesisStreamProvider.readCurrentState', () => {
           KeyId: 'arn:aws:kms:us-east-1:1:key/abc',
         },
       })
+      .mockResolvedValueOnce({ StreamDescriptionSummary: {} })
       .mockResolvedValueOnce({ Tags: [] });
 
     const result = await provider.readCurrentState('mystream', 'L', 'AWS::Kinesis::Stream');
 
     expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(DescribeStreamCommand);
-    expect(mockSend.mock.calls[1]?.[0]).toBeInstanceOf(ListTagsForStreamCommand);
+    expect(mockSend.mock.calls[1]?.[0]).toBeInstanceOf(DescribeStreamSummaryCommand);
+    expect(mockSend.mock.calls[2]?.[0]).toBeInstanceOf(ListTagsForStreamCommand);
+    expect(mockSend).toHaveBeenCalledTimes(3);
     expect(result).toEqual({
       Name: 'mystream',
       StreamModeDetails: { StreamMode: 'PROVISIONED' },
       ShardCount: 2,
       RetentionPeriodHours: 48,
       StreamEncryption: { EncryptionType: 'KMS', KeyId: 'arn:aws:kms:us-east-1:1:key/abc' },
+      DesiredShardLevelMetrics: [],
       Tags: [],
     });
   });
@@ -88,6 +93,7 @@ describe('KinesisStreamProvider.readCurrentState', () => {
           EncryptionType: 'NONE',
         },
       })
+      .mockResolvedValueOnce({ StreamDescriptionSummary: {} })
       .mockResolvedValueOnce({ Tags: [] });
 
     const result = await provider.readCurrentState('mystream', 'L', 'AWS::Kinesis::Stream');
@@ -97,6 +103,7 @@ describe('KinesisStreamProvider.readCurrentState', () => {
       StreamModeDetails: { StreamMode: 'ON_DEMAND' },
       RetentionPeriodHours: 24,
       StreamEncryption: { EncryptionType: 'NONE' },
+      DesiredShardLevelMetrics: [],
       Tags: [],
     });
   });
@@ -112,6 +119,7 @@ describe('KinesisStreamProvider.readCurrentState', () => {
   it('surfaces Tags from ListTagsForStream with aws:* filtered out', async () => {
     mockSend
       .mockResolvedValueOnce({ StreamDescription: { StreamName: 'mystream' } })
+      .mockResolvedValueOnce({ StreamDescriptionSummary: {} })
       .mockResolvedValueOnce({
         Tags: [
           { Key: 'Foo', Value: 'Bar' },
@@ -126,11 +134,99 @@ describe('KinesisStreamProvider.readCurrentState', () => {
   it('omits Tags when ListTagsForStream returns no user tags', async () => {
     mockSend
       .mockResolvedValueOnce({ StreamDescription: { StreamName: 'mystream' } })
+      .mockResolvedValueOnce({ StreamDescriptionSummary: {} })
       .mockResolvedValueOnce({
         Tags: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyStream/Resource' }],
       });
 
     const result = await provider.readCurrentState('mystream', 'L', 'AWS::Kinesis::Stream');
     expect(result?.Tags).toEqual([]);
+  });
+
+  // Issue #609 backfill: DesiredShardLevelMetrics + MaxRecordSizeInKiB.
+  it('flattens EnhancedMonitoring groups into the flat DesiredShardLevelMetrics list', async () => {
+    mockSend
+      .mockResolvedValueOnce({
+        StreamDescription: {
+          StreamName: 'mystream',
+          EnhancedMonitoring: [
+            { ShardLevelMetrics: ['IncomingBytes', 'OutgoingBytes'] },
+            { ShardLevelMetrics: ['IteratorAgeMilliseconds'] },
+          ],
+        },
+      })
+      .mockResolvedValueOnce({ StreamDescriptionSummary: {} })
+      .mockResolvedValueOnce({ Tags: [] });
+
+    const result = await provider.readCurrentState('mystream', 'L', 'AWS::Kinesis::Stream');
+
+    expect(result?.['DesiredShardLevelMetrics']).toEqual([
+      'IncomingBytes',
+      'OutgoingBytes',
+      'IteratorAgeMilliseconds',
+    ]);
+  });
+
+  it('reads MaxRecordSizeInKiB from DescribeStreamSummary (absent from StreamDescription)', async () => {
+    mockSend
+      .mockResolvedValueOnce({ StreamDescription: { StreamName: 'mystream' } })
+      .mockResolvedValueOnce({ StreamDescriptionSummary: { MaxRecordSizeInKiB: 2048 } })
+      .mockResolvedValueOnce({ Tags: [] });
+
+    const result = await provider.readCurrentState('mystream', 'L', 'AWS::Kinesis::Stream');
+
+    expect(mockSend.mock.calls[1]?.[0]).toBeInstanceOf(DescribeStreamSummaryCommand);
+    expect(result?.['MaxRecordSizeInKiB']).toBe(2048);
+  });
+
+  it('omits MaxRecordSizeInKiB when the summary genuinely reports none', async () => {
+    mockSend
+      .mockResolvedValueOnce({ StreamDescription: { StreamName: 'mystream' } })
+      .mockResolvedValueOnce({ StreamDescriptionSummary: {} })
+      .mockResolvedValueOnce({ Tags: [] });
+
+    const result = await provider.readCurrentState('mystream', 'L', 'AWS::Kinesis::Stream');
+
+    expect(result).toBeDefined();
+    expect(result).not.toHaveProperty('MaxRecordSizeInKiB');
+    expect(result?.Tags).toEqual([]);
+  });
+
+  it('RETHROWS a non-not-found summary failure rather than reporting a key-less snapshot', async () => {
+    // A DEFAULT (not a `*Once` primer) for any call past the rejection. A
+    // regression that SWALLOWS the throttle would fall through to the tags
+    // call; unprimed, `mockSend` returns `undefined`, reading `.Tags` off it
+    // throws a TypeError, and the tags catch turns that into a rejection — so
+    // the assertion below would pass for entirely the wrong reason and could
+    // not see the swallow at all (found by mutation probe). A default keeps the
+    // fallthrough VALID so the swallow resolves and the test fails, and unlike
+    // a third `*Once` it cannot leak into the next test when unconsumed.
+    mockSend.mockResolvedValue({ Tags: [] });
+    mockSend
+      .mockResolvedValueOnce({ StreamDescription: { StreamName: 'mystream' } })
+      .mockRejectedValueOnce(new Error('Rate exceeded'));
+
+    // Swallowing a throttle would return a snapshot MISSING MaxRecordSizeInKiB
+    // while state declares it, so `cdkd drift` reports `2048 -> undefined` and
+    // `--accept` erases it from the baseline — a transient error turned into
+    // data loss. This read is the third Kinesis call per stream, so throttling
+    // is a realistic trigger.
+    await expect(
+      provider.readCurrentState('mystream', 'L', 'AWS::Kinesis::Stream')
+    ).rejects.toThrow('Rate exceeded');
+
+    // The rethrow must happen BEFORE the tags call, so the primer above stays
+    // unconsumed; asserting the call count is what pins that (and keeps the
+    // primer from leaking into the next test).
+    expect(mockSend).toHaveBeenCalledTimes(2);
+  });
+
+  it('returns undefined when the summary call reports the stream gone', async () => {
+    mockSend
+      .mockResolvedValueOnce({ StreamDescription: { StreamName: 'mystream' } })
+      .mockRejectedValueOnce(new ResourceNotFoundException({ message: 'gone', $metadata: {} }));
+
+    const result = await provider.readCurrentState('mystream', 'L', 'AWS::Kinesis::Stream');
+    expect(result).toBeUndefined();
   });
 });

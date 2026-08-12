@@ -1737,6 +1737,8 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     'AWS::Kinesis::Stream',
     {
       handled: new Set<string>([
+        'DesiredShardLevelMetrics',
+        'MaxRecordSizeInKiB',
         'Name',
         'RetentionPeriodHours',
         'ShardCount',
@@ -1744,11 +1746,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'StreamModeDetails',
         'Tags',
       ]),
-      silentDrop: new Map<string, string>([
-        ['DesiredShardLevelMetrics', 'not yet implemented by cdkd'],
-        ['MaxRecordSizeInKiB', 'not yet implemented by cdkd'],
-        ['WarmThroughputMiBps', 'not yet implemented by cdkd'],
-      ]),
+      silentDrop: new Map<string, string>([['WarmThroughputMiBps', 'not yet implemented by cdkd']]),
     },
   ],
   [
