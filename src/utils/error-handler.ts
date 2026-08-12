@@ -123,6 +123,39 @@ export class ProvisioningError extends CdkdError {
 }
 
 /**
+ * Recover the physical id a provider attached to a thrown error (issue #1710).
+ *
+ * A provider whose `create()` fails AFTER its mutating AWS call has already
+ * succeeded leaves a resource the deploy engine cannot see: the failed CREATE
+ * writes no state record, so the rollback journal's
+ * `newResources[logicalId]?.physicalId ?? previousState?.physicalId` is
+ * `undefined` on both sides and the resource is orphaned. Providers already
+ * populate `ProvisioningError.physicalId` at many such sites; this is what
+ * makes that field reachable.
+ *
+ * Walks the `cause` chain because the engine and several providers re-wrap:
+ * the OUTERMOST error is frequently a `ProvisioningError` carrying no physical
+ * id (the create-path `catch` blocks pass `undefined`) while an inner one does.
+ * Returns the FIRST non-empty id found from the outside in — the outermost
+ * layer that knows an id is the most specific one for the failing op.
+ *
+ * Depth-bounded like {@link extractDeploymentEventError}'s walk, so a
+ * self-referencing chain cannot loop. A blank id is treated as absent: an empty
+ * physical id identifies nothing, and letting it through would reach a delete
+ * built from `''` (the same reasoning as `classifyFailedOp`'s falsy guard).
+ */
+export function physicalIdFromError(err: unknown): string | undefined {
+  let current: unknown = err;
+  for (let depth = 0; depth < 10 && current instanceof Error; depth++) {
+    if (current instanceof ProvisioningError && current.physicalId) {
+      return current.physicalId;
+    }
+    current = (current as Error & { cause?: unknown }).cause;
+  }
+  return undefined;
+}
+
+/**
  * Resource provisioning timeout errors (per-resource wall-clock deadline).
  *
  * Thrown by `withResourceDeadline` when a single CREATE / UPDATE / DELETE

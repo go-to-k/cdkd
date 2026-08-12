@@ -217,6 +217,80 @@ function readMaxRecordSize(value: unknown): MaxRecordSizeRead {
   };
 }
 
+/** Shape read for the three post-`CreateStream` follow-up calls (issue #1710). */
+type FollowUpRead = { kind: 'absent' } | { kind: 'usable' } | { kind: 'unusable'; reason: string };
+
+/**
+ * Refuse a `Tags` value the create path's tag loop would throw on
+ * (issue #1710).
+ *
+ * `for (const tag of tagList) { tags[tag.Key] = tag.Value }` runs AFTER
+ * `CreateStream`, so a map-shaped `Tags` (the CFn-invalid but easy-to-write
+ * `{ Env: 'prod' }` instead of `[{Key,Value}]`) raises a `TypeError` on a
+ * stream AWS has already created. Only the SHAPE is checked: the values are
+ * whatever AWS validates.
+ */
+function readTagList(value: unknown): FollowUpRead {
+  if (value == null) return { kind: 'absent' };
+  if (
+    Array.isArray(value) &&
+    value.every((t) => typeof t === 'object' && t !== null && 'Key' in t && 'Value' in t)
+  ) {
+    return { kind: 'usable' };
+  }
+  return {
+    kind: 'unusable',
+    reason:
+      `AWS::Kinesis::Stream Tags must be a list of {Key, Value} objects, got ` +
+      `${JSON.stringify(value)}`,
+  };
+}
+
+/**
+ * Refuse a `RetentionPeriodHours` the retention call would reject
+ * (issue #1710).
+ *
+ * The `> 24` comparison and the `RetentionPeriodHours:` field both run AFTER
+ * `CreateStream`, so a non-numeric value sends a bad scalar to
+ * `IncreaseStreamRetentionPeriod` / `DecreaseStreamRetentionPeriod` against a
+ * live stream. Accepts the numeric-string form for the same reason
+ * `readMaxRecordSize` does — an unquoted YAML scalar deploys fine today.
+ */
+function readRetentionHours(value: unknown): FollowUpRead {
+  if (value == null) return { kind: 'absent' };
+  if (typeof value === 'number' && Number.isFinite(value)) return { kind: 'usable' };
+  if (typeof value === 'string' && value.trim() !== '' && Number.isFinite(Number(value))) {
+    return { kind: 'usable' };
+  }
+  return {
+    kind: 'unusable',
+    reason:
+      `AWS::Kinesis::Stream RetentionPeriodHours must be a number, got ` +
+      `${JSON.stringify(value)}`,
+  };
+}
+
+/**
+ * Refuse a KMS `StreamEncryption` block with no usable `KeyId`
+ * (issue #1710).
+ *
+ * `StartStreamEncryption` runs AFTER `CreateStream`, and the KeyId is read as
+ * a bare `as string` cast — so a KMS block missing it sends `KeyId: undefined`
+ * against a live stream. Only fires when the block actually selects KMS, which
+ * is the only branch that issues the call.
+ */
+function readEncryptionKeyId(value: Record<string, unknown> | undefined): FollowUpRead {
+  if (!isKmsEncryption(value)) return { kind: 'absent' };
+  const keyId = value?.['KeyId'];
+  if (typeof keyId === 'string' && keyId.trim() !== '') return { kind: 'usable' };
+  return {
+    kind: 'unusable',
+    reason:
+      `AWS::Kinesis::Stream StreamEncryption selects KMS but KeyId is not a non-empty string, ` +
+      `got ${JSON.stringify(keyId)}`,
+  };
+}
+
 /**
  * The comparison-side read: the UPDATE path needs both sides reduced to the
  * same shape so a state record holding the number and a template holding the
@@ -312,6 +386,44 @@ export class KinesisStreamProvider implements ResourceProvider {
         throw new ProvisioningError(maxRecordRead.reason, resourceType, logicalId, streamName);
       }
     }
+    // The three FOLLOW-UP calls (issue #1710). Each runs after `CreateStream`
+    // in the try below — the tag loop, the retention change, and
+    // `StartStreamEncryption` — so a malformed value there throws against a
+    // stream that already exists, which is exactly the orphan this pre-flight
+    // block exists to prevent. Hoisted here rather than guarded in place for
+    // that reason; the checks are pure and need no AWS call.
+    //
+    // The replay downgrade differs per read and is deliberate: an unusable
+    // value is SKIPPED (the follow-up call is simply not made) rather than
+    // substituted, because every default here lands on a live stream — a
+    // guessed retention or an invented KMS key would be worse than leaving the
+    // stream at AWS's own default, and the warning names what was skipped.
+    const followUpReads: Array<{ read: FollowUpRead; skipped: string }> = [
+      { read: readTagList(properties['Tags']), skipped: 'tags are left unapplied' },
+      {
+        read: readRetentionHours(properties['RetentionPeriodHours']),
+        skipped: "the retention period is left at AWS's default",
+      },
+      {
+        read: readEncryptionKeyId(
+          properties['StreamEncryption'] as Record<string, unknown> | undefined
+        ),
+        skipped: 'the stream is left unencrypted',
+      },
+    ];
+    const skipFollowUps = new Set<string>();
+    for (const { read, skipped } of followUpReads) {
+      if (read.kind !== 'unusable') continue;
+      if (context?.replayingState === true) {
+        this.logger.warn(
+          `${read.reason}. Replaying a state record, so ${skipped} on ${streamName} rather ` +
+            `than refusing the restore`
+        );
+        skipFollowUps.add(skipped);
+      } else {
+        throw new ProvisioningError(read.reason, resourceType, logicalId, streamName);
+      }
+    }
 
     try {
       // Determine stream mode
@@ -351,8 +463,9 @@ export class KinesisStreamProvider implements ResourceProvider {
       // Poll until stream is ACTIVE
       const streamInfo = await this.waitForStreamActive(streamName);
 
-      // Apply tags if specified
-      if (properties['Tags']) {
+      // Apply tags if specified. The skip set is populated only on a state
+      // replay whose value the pre-flight refused (issue #1710).
+      if (properties['Tags'] && !skipFollowUps.has('tags are left unapplied')) {
         const tagList = properties['Tags'] as Array<{ Key: string; Value: string }>;
         const tags: Record<string, string> = {};
         for (const tag of tagList) {
@@ -370,7 +483,11 @@ export class KinesisStreamProvider implements ResourceProvider {
 
       // Apply RetentionPeriodHours if specified (default is 24 hours)
       const retentionPeriodHours = properties['RetentionPeriodHours'] as number | undefined;
-      if (retentionPeriodHours !== undefined && retentionPeriodHours !== 24) {
+      if (
+        retentionPeriodHours !== undefined &&
+        retentionPeriodHours !== 24 &&
+        !skipFollowUps.has("the retention period is left at AWS's default")
+      ) {
         this.logger.debug(
           `Setting retention period to ${retentionPeriodHours} hours for ${streamName}`
         );
@@ -406,7 +523,10 @@ export class KinesisStreamProvider implements ResourceProvider {
       const streamEncryption = properties['StreamEncryption'] as
         | Record<string, unknown>
         | undefined;
-      if (isKmsEncryption(streamEncryption)) {
+      if (
+        isKmsEncryption(streamEncryption) &&
+        !skipFollowUps.has('the stream is left unencrypted')
+      ) {
         const keyId = streamEncryption!['KeyId'] as string;
         this.logger.debug(`Enabling stream encryption for ${streamName}`);
         await this.getClient().send(

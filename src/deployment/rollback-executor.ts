@@ -67,6 +67,7 @@ import {
   unsupportedFinalSnapshotError,
   type PreDeleteSnapshotClients,
 } from '../provisioning/final-snapshot.js';
+import { physicalIdFromError } from '../utils/error-handler.js';
 import { getAwsClients } from '../utils/aws-clients.js';
 import { withRetry } from './retry.js';
 import {
@@ -266,8 +267,46 @@ export interface FailedOperation {
   provisionedBy?: 'sdk' | 'cc-api' | undefined;
   /** Pre-op resource state (UPDATE / DELETE; undefined for CREATE). */
   previousState?: ResourceState | undefined;
-  /** Physical ID at op start, if one was known (undefined for CREATE). */
+  /**
+   * Physical ID at op start, if one was known.
+   *
+   * Was documented "undefined for CREATE" until issue #1710. It is still
+   * undefined for the ordinary failed CREATE (nothing reached AWS), but a
+   * provider that failed AFTER its mutating call now contributes the id it
+   * attached to the thrown `ProvisioningError` — which is the only record
+   * that the resource exists at all.
+   */
   physicalId?: string | undefined;
+  /**
+   * `true` when {@link physicalId} was recovered from the thrown
+   * `ProvisioningError` rather than from state (issue #1710).
+   *
+   * This is what separates the two situations that both present as "a
+   * physical id with no state record", which would otherwise be
+   * indistinguishable:
+   *
+   * - **orphan** (this flag set) — the provider failed AFTER its mutating AWS
+   *   call, so the resource exists and NOTHING recorded it. Must be deleted,
+   *   or it stays in AWS forever.
+   * - **already cleaned up** (flag absent) — the id came from state and a
+   *   previous `--revert-failed` run deleted the resource and dropped the
+   *   record. Must be skipped; re-deleting is at best a redundant call.
+   *
+   * Absent on a journal written by an older binary, which therefore keeps the
+   * pre-#1710 skip behavior exactly.
+   */
+  physicalIdRecoveredFromError?: boolean | undefined;
+  /**
+   * The template's `DeletionPolicy` for this resource (issue #1710).
+   *
+   * Only load-bearing on the failed-CREATE-orphan path, where there is no
+   * state record for `classifyFailedOp` to read the policy off. Absent on a
+   * journal written by an older binary, which falls back to the state
+   * record exactly as before.
+   */
+  deletionPolicy?: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate' | undefined;
+  /** Present for symmetry with the state record; not read on the failed path. */
+  updateReplacePolicy?: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate' | undefined;
   /**
    * The intrinsic-RESOLVED desired properties the failed op attempted to
    * apply, if resolution got that far. Load-bearing for the revert: a
@@ -511,7 +550,29 @@ export function classifyFailedOp(
     // completed-CREATE path, which is what lets both share
     // `prepareCreateRollbackFinalSnapshot`.
     if (!op.physicalId) return 'skip-failed-unknown';
-    if (!current) return 'skip-failed-noop'; // already cleaned up (re-run)
+    if (!current) {
+      // No state record. Two DIFFERENT situations reach here and they need
+      // opposite answers, which is why the journal carries
+      // `physicalIdRecoveredFromError` rather than letting this branch guess:
+      //
+      // - id recovered from the thrown error (issue #1710) — the provider
+      //   failed AFTER its mutating call, so the resource EXISTS and nothing
+      //   recorded it. Before #1710 this returned `skip-failed-noop`, which
+      //   made every arm below unreachable for the exact case they serve: a
+      //   failed CREATE never has a state record, so the resource was skipped
+      //   and left orphaned in AWS.
+      // - id from state, record now gone — a previous `--revert-failed`
+      //   already deleted it (#1198's idempotent re-run). Skipping is right.
+      //
+      // The policy comes from the JOURNAL here; `current.deletionPolicy` does
+      // not exist on this path, and defaulting to a plain delete would destroy
+      // data a `Retain` / `Snapshot` policy promised to keep.
+      if (!op.physicalIdRecoveredFromError) return 'skip-failed-noop';
+      const orphanPolicy = op.deletionPolicy;
+      if (orphanPolicy === 'Retain') return 'orphan-failed-create-retain';
+      if (orphanPolicy === 'Snapshot') return 'delete-failed-create-with-final-snapshot';
+      return 'delete-failed-create';
+    }
     if (current.physicalId !== op.physicalId) return 'skip-failed-noop';
     // The CURRENT record's DeletionPolicy governs this delete exactly as it
     // governs the COMPLETED-CREATE rollback above (issue #1362). Reaching
@@ -529,6 +590,36 @@ export function classifyFailedOp(
   // UPDATE
   if (!current || !op.previousState) return 'skip-failed-absent';
   return 'revert-failed-update';
+}
+
+/**
+ * Build the `physicalId` + provenance pair for a journaled FAILED op
+ * (issue #1710).
+ *
+ * The two fields must be decided together — a physical id whose provenance is
+ * lost is exactly the ambiguity `physicalIdRecoveredFromError` exists to
+ * remove, and setting the flag for a state-derived id would turn #1198's
+ * idempotent re-run into a redundant delete. Returned as a spreadable partial
+ * so the call site cannot set one without the other.
+ *
+ * `stateDerivedPhysicalId` is the pre-#1710 value
+ * (`newResources[...]?.physicalId ?? previousState?.physicalId`). It WINS: for
+ * an UPDATE / DELETE the state id is the authoritative identity of the resource
+ * the op was acting on, and only when it is absent — which for a failed CREATE
+ * is always — is the error consulted.
+ */
+export function journaledFailedPhysicalId(
+  stateDerivedPhysicalId: string | undefined,
+  error: unknown
+): Pick<FailedOperation, 'physicalId' | 'physicalIdRecoveredFromError'> {
+  if (stateDerivedPhysicalId) {
+    return { physicalId: stateDerivedPhysicalId };
+  }
+  const recovered = physicalIdFromError(error);
+  if (recovered) {
+    return { physicalId: recovered, physicalIdRecoveredFromError: true };
+  }
+  return { physicalId: undefined };
 }
 
 /** Build the plan items for a segment's failed ops (issue #1198). */
@@ -1413,11 +1504,17 @@ export async function replayFailedOperations(
 
         case 'orphan-failed-create-retain': {
           // `DeletionPolicy: Retain` on a FAILED in-flight CREATE (issue
-          // #1362): the resource WAS provisioned (physical id recorded, state
-          // agrees), so the policy applies to its rollback delete — keep it
-          // in AWS and drop the record, exactly as the completed-CREATE
-          // rollback does. `RetainExceptOnCreate` deliberately does NOT land
-          // here; it keeps deleting.
+          // #1362): the resource WAS provisioned, so the policy applies to
+          // its rollback delete — keep it in AWS and drop the record, exactly
+          // as the completed-CREATE rollback does. `RetainExceptOnCreate`
+          // deliberately does NOT land here; it keeps deleting.
+          //
+          // "Provisioned" is established two ways since issue #1710: a
+          // physical id WITH an agreeing state record (the #1362 shape), or a
+          // physical id recovered from the thrown `ProvisioningError` with NO
+          // record at all (the orphan shape — the provider failed after its
+          // mutating call). The record delete below is a no-op in the second
+          // case, which is correct: there is nothing to remove.
           //
           // Resolved BEFORE the record is dropped (issue #1366): the event
           // reports the resource's effective route, and the record — the

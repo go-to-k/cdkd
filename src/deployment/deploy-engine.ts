@@ -71,6 +71,7 @@ import { withResourceDeadline } from './resource-deadline.js';
 import { findUnrewrittenAssetReferences, type AssetRedirectMap } from '../assets/asset-redirect.js';
 import {
   replayRollback,
+  journaledFailedPhysicalId,
   type CompletedOperation,
   type FailedOperation,
   type RollbackExecutorContext,
@@ -1676,7 +1677,27 @@ export class DeployEngine {
                   provisionedBy:
                     newResources[logicalId]?.provisionedBy ?? previousState?.provisionedBy,
                   ...(previousState && { previousState }),
-                  physicalId: newResources[logicalId]?.physicalId ?? previousState?.physicalId,
+                  // Third fallback added by issue #1710. For a FAILED CREATE
+                  // the first two are BOTH undefined by construction — no
+                  // state record is written for a create that threw, and
+                  // there is no previous state — so a provider that failed
+                  // AFTER its mutating AWS call already succeeded left a
+                  // resource nothing could see: absent from state, and
+                  // skipped by the rollback executor's `!op.physicalId`
+                  // guard. Providers already populate
+                  // `ProvisioningError.physicalId` at many such sites; this
+                  // is what makes that field reachable.
+                  ...journaledFailedPhysicalId(
+                    newResources[logicalId]?.physicalId ?? previousState?.physicalId,
+                    provisionError
+                  ),
+                  // Journaled for the same reason (issue #1710): the failed
+                  // CREATE has no state record, so `classifyFailedOp` cannot
+                  // read the policy off `stateResources` the way the
+                  // completed-CREATE path does. Without it a `Retain` /
+                  // `Snapshot` resource orphaned by a failed create would be
+                  // plain-deleted, losing the data the policy exists to keep.
+                  ...this.extractTemplateAttributes(template, logicalId),
                   attemptedProperties: this.attemptedResolvedProps.get(logicalId),
                 });
                 throw provisionError;

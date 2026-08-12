@@ -529,6 +529,26 @@ describe('KinesisStreamProvider create-path PRE-FLIGHT (issue #609)', () => {
       { MaxRecordSizeInKiB: { Ref: 'P' } },
       /MaxRecordSizeInKiB must be a number/,
     ],
+    // The three FOLLOW-UP calls (issue #1710). Each of these values is only
+    // consumed AFTER `CreateStream` — the tag loop, the retention change and
+    // `StartStreamEncryption` — so before the pre-flight covered them a
+    // malformed value threw against a stream AWS had already created, which is
+    // exactly the orphan the block above exists to prevent.
+    [
+      'Tags (map-shaped instead of [{Key,Value}])',
+      { Tags: { Env: 'prod' } },
+      /Tags must be a list of \{Key, Value\} objects/,
+    ],
+    [
+      'RetentionPeriodHours (non-numeric)',
+      { RetentionPeriodHours: { Ref: 'P' } },
+      /RetentionPeriodHours must be a number/,
+    ],
+    [
+      'StreamEncryption KMS with no KeyId',
+      { StreamEncryption: { EncryptionType: 'KMS' } },
+      /StreamEncryption selects KMS but KeyId is not a non-empty string/,
+    ],
   ])('issues NO AWS call at all when %s is unusable', async (_label, bad, expected) => {
     mockSend.mockResolvedValue(ACTIVE);
 
