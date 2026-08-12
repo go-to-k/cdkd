@@ -7,14 +7,14 @@
   },
   "metadata": {
     "description": "Skill for using cdkd (CDK Direct) safely from AI coding agents",
-    "version": "0.3.0"
+    "version": "0.4.0"
   },
   "plugins": [
     {
       "name": "cdkd-skills",
       "source": "./plugins/cdkd-skills",
       "description": "Deploy AWS CDK apps safely with cdkd: install, bootstrap, preview, deploy, verify, and destroy dev/test stacks with explicit safety boundaries.",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "author": {
         "name": "go-to-k",
         "url": "https://github.com/go-to-k"

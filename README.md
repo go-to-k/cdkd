@@ -345,140 +345,95 @@ the per-resource table (what each mode does, next to what
 CloudFormation and Terraform do) and caveats (NAT egress, RDS
 final-snapshot timing, etc.).
 
-## Local execution
+## Use in CI: per-PR environments
 
-The `cdkd local` family runs AWS workloads on the developer's machine
-via Docker — Lambda functions, API Gateway routes, ECS tasks, and
-long-running ECS services — without an AWS deploy. Modeled on `sam local *` but reuses cdkd's
-synthesis / asset / construct-path plumbing — no `template.yaml` to
-maintain, no `cdk synth | sam ...` round-trip.
+Deploy time is CI job time, and a PR environment redeploys on every
+push — so cdkd's speedup compounds across a PR's lifetime. Because
+cdkd needs **zero CDK code changes**, you can swap only the PR-environment
+workflow to cdkd and keep production / staging on the CDK CLI; switching
+back is a one-line workflow revert.
 
-| Subcommand | Emulates |
-| --- | --- |
-| `cdkd local invoke <target>` | One-shot Lambda invoke via the AWS Lambda Runtime Interface Emulator (RIE) |
-| `cdkd local start-api` | Long-running HTTP server for REST v1 / HTTP API / Function URL routes |
-| `cdkd local run-task <target>` | ECS RunTask — every container in a task definition started on a per-task docker network |
-| `cdkd local start-service <target>` | Long-running ECS Service emulator — `DesiredCount` replicas with restart-on-exit (no local load balancer in v1) |
-| `cdkd local invoke-agentcore <target>` | One-shot Bedrock AgentCore Runtime invoke (HTTP `/invocations` / MCP `/mcp` / A2A `/a2a` / AGUI / WebSocket `--ws`) |
-| `cdkd local start-agentcore [target]` | Long-running serve of a Bedrock AgentCore Runtime against a warm container (all four protocols): HTTP / AGUI serve `POST /invocations` + `GET /ping` plus the `/ws` bridge (injects the session-id / Authorization a header-less browser client cannot set); MCP serves `/mcp`, A2A serves `/`. `--sigv4` / `--watch` supported |
-| `cdkd local start-alb <targets...>` | Long-running local ALB front-door (HTTP + HTTPS listeners, path / host / header / weighted / redirect / fixed-response routing, authenticate-cognito / authenticate-oidc) for ECS / Lambda backing services |
-| `cdkd local start-cloudfront [target]` | Long-running local CloudFront distribution — viewer-request -> S3 / Lambda Function URL origin -> viewer-response pipeline, CloudFront Functions run in-process (Function URL origins use Docker/RIE) |
+Run `cdkd bootstrap` once per AWS account beforehand (creates the state
+bucket + asset storage; `cdk bootstrap` is not required).
 
-The Docker-backed commands above require Docker. Pass `--from-state`
-(cdkd-deployed) or `--from-cfn-stack` (cdk-deployed / CFn-managed) to
-substitute deployed physical IDs into intrinsic-valued env vars /
-secrets / image URIs; without either, intrinsic values are dropped with
-a per-key warning (matches `sam local *`). The two flags are mutually
-exclusive. `start-cloudfront` carries both `--from-state` and
-`--from-cfn-stack` too (since cdk-local 0.128.0 / issue #766); a
-CloudFront-Functions + S3-origin distribution still serves entirely
-in-process (no Docker), while a Lambda Function URL origin runs via the
-RIE container.
+**One stack per PR** — pass the PR number as CDK context and suffix the
+stack name; cdkd state is keyed by (stack name, region) and locks are
+per-stack, so PR environments deploy concurrently without contention:
 
-### `local invoke`
-
-```bash
-cdkd local invoke MyStack/Handler                    # one-shot invoke
-cdkd local invoke MyStack/Handler --event events/get.json
-cdkd local invoke MyStack/Handler --from-state       # OR --from-cfn-stack
+```ts
+const prNumber = app.node.tryGetContext('prNumber');
+new WebAppStack(app, `WebApp${prNumber ? `-pr-${prNumber}` : ''}`);
 ```
 
-All AWS Lambda runtimes (Node.js / Python / Ruby / Java / .NET /
-`provided.al2023`), ZIP and container Lambdas, same-stack Lambda Layers
-bind-mounted at `/opt`.
+**Credentials** — cdkd calls AWS APIs directly, so the deploying
+identity needs permissions for every deployed resource (CDK's
+`cdk-hnb659fds-*` roles do not work: they are designed for
+CloudFormation delegation, and cdkd uses its own bootstrap storage).
+Create a dedicated deploy role and switch into it with
+[`--role-arn`](docs/cli-reference.md#--role-arn) (or the
+`CDKD_ROLE_ARN` env var): the workflow's OIDC base role needs only
+`sts:AssumeRole` on the deploy role, and the deploy role's trust policy
+allows only that base role — the strong permissions live in exactly one
+place, reachable through one path, and never sit on the CI runner
+itself.
 
-### `local start-api`
+**Minimal GitHub Actions shape** (deploy on open/sync/reopen, destroy
+on close):
 
-```bash
-cdkd local start-api                                 # one HTTP server per discovered API
-cdkd local start-api MyStack/MyHttpApi --watch       # filter + hot reload
-cdkd local start-api --from-state                    # OR --from-cfn-stack
-
-# Typical shape — the bare `--from-cfn-stack` flag auto-resolves to the
-# routed stack's name (here `MyStack`). Pass an explicit value only when
-# the deployed CFn stack name differs from the CDK stack name.
-cdkd local start-api MyStack/MyHttpApi --from-cfn-stack
+```yaml
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+permissions: { id-token: write, contents: read }
+env:
+  CDKD_ROLE_ARN: arn:aws:iam::123456789012:role/cdkd-deploy-role
+jobs:
+  deploy:
+    if: github.event.action != 'closed'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with: { node-version: 24, cache: npm }
+      - run: npm ci
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: arn:aws:iam::123456789012:role/github-actions-base
+          aws-region: us-east-1
+      - run: npx cdkd deploy --yes -c prNumber=${{ github.event.pull_request.number }}
+  destroy:
+    if: github.event.action == 'closed'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: arn:aws:iam::123456789012:role/github-actions-base
+          aws-region: us-east-1
+      - run: npx @go-to-k/cdkd state destroy WebApp-pr-${{ github.event.pull_request.number }} --yes
 ```
 
-REST v1 + HTTP API v2 + Function URL with all integration kinds
-(AWS_PROXY / MOCK / HTTP_PROXY / HTTP / AWS Lambda non-proxy via
-hand-rolled VTL), authorizers (Lambda / Cognito / HTTP v2 JWT /
-AWS_IAM SigV4 on REST v1 + Function URL), CORS, stage variables,
-`--watch` hot reload.
+The destroy job has no checkout, `npm ci`, or synth —
+[`cdkd state destroy`](#orphan-vs-destroy) deletes from the state
+record alone, so it works even after the branch is gone.
 
-### `local run-task`
+**Housekeeping**:
 
-```bash
-cdkd local run-task MyStack/MyService/TaskDef
-cdkd local run-task MyTaskDef --from-state           # OR --from-cfn-stack
-```
-
-Every container in the task definition on a per-task docker network
-with the AWS-published ECS metadata sidecar.
-
-### `local start-service`
-
-```bash
-cdkd local start-service MyStack/Orders MyStack/Web  # multiple services in one invocation
-cdkd local start-service MyStack/Orders --from-state # OR --from-cfn-stack
-cdkd local start-service MyStack/Web --watch         # hot reload (sub-second on interpreted handlers)
-```
-
-Long-running ECS Service emulator: `DesiredCount` replicas with
-restart-on-exit, cross-service Service Connect / Cloud Map DNS
-discovery (peer containers reach each other by `<discoveryName>.<namespace>`).
-No local load-balancer in v1. `--watch` re-synths on every CDK source edit
-and reloads one replica at a time — source-only edits on
-interpreted-language handlers (Node / Python / Ruby / shell) take a
-bind-mount fast path (`docker cp` + `docker restart`; no rebuild);
-Dockerfile / dependency manifest / compiled-language source edits fall
-through to a full rebuild + shadow boot + atomic swap.
-
-### `local start-alb`
-
-```bash
-cdkd local start-alb MyStack/MyAlb --lb-port 80=8080 # remap privileged listener port
-cdkd local start-alb MyStack/MyAlb --from-state      # OR --from-cfn-stack
-cdkd local start-alb MyStack/MyAlb --watch           # hot reload (sub-second on interpreted handlers)
-```
-
-Long-running local ALB front-door: names an `AWS::ElasticLoadBalancingV2::LoadBalancer`,
-boots every ECS service behind its listeners, and stands up a local
-HTTP / HTTPS front-door on each listener port that round-robins across
-the running replicas and routes its listener rules across the backing
-services. Forward / redirect / fixed-response actions; ECS or Lambda
-targets; authenticate-cognito / authenticate-oidc via a local Bearer-JWT
-check. `--watch` reloads one backing-replica at a time across edits —
-interpreted-handler source edits go through the bind-mount fast path
-(no rebuild); Dockerfile / dependency / compiled-source edits fall
-through to a rebuild + atomic front-door pool swap.
-
-### `local start-cloudfront`
-
-```bash
-cdkd local start-cloudfront                          # interactive picker
-cdkd local start-cloudfront MyStack/MyDistribution   # name the distribution
-cdkd local start-cloudfront MyStack/MyDistribution --watch   # re-synth + swap on edit
-cdkd local start-cloudfront MyStack/MyDistribution --tls      # real HTTPS termination
-```
-
-Serves a CloudFront distribution's **viewer-request -> S3 origin ->
-viewer-response** pipeline locally so a routing-function change is
-verifiable in seconds instead of a deploy round-trip. The distribution's
-`AWS::CloudFront::Function`s (URL rewrites, trailing-slash normalization,
-SPA fallback, header tweaks) run in-process in a `node:vm` sandbox; the
-S3 origin content is the `BucketDeployment` source asset resolved out of
-the cloud assembly, served with `DefaultRootObject` and
-`CustomErrorResponses`. Path patterns route across the default + ordered
-cache behaviors. Pure-local: no Docker, no AWS call — `--watch` is just
-re-synth + an in-memory routing-model swap. S3 origins only (custom /
-Lambda@Edge origins are warn-and-skip); `--origin <id>=<dir>` points an
-origin at a local directory when `BucketDeployment` resolution can't.
-
-See **[docs/local-emulation.md](docs/local-emulation.md)** for the
-full reference — runtimes, target resolution, every flag, integration
-and authorizer detail, route precedence, container pool, networking,
-`--from-cfn-stack` semantics, v1 scope.
+- Pick the wait mode from what runs next (see the section above):
+  review-only environments can use `--no-wait`; E2E tests after the
+  deploy should keep the default, or `--full-wait` when they need ECS
+  steady state / CloudFront propagation.
+- A job cancelled mid-deploy (e.g. `concurrency.cancel-in-progress`)
+  can leave a stack lock; it expires on its own TTL (30 minutes), or
+  run `cdkd force-unlock <stack>` to clear it immediately.
+- Sweep forgotten environments with `cdkd state list --json` on a
+  schedule, and reclaim unreferenced assets with
+  `cdkd gc --older-than 30d --dry-run` — `gc` aborts if any stack is
+  locked, so schedule it outside deploy hours.
+- To comment the environment URL on the PR, read stack outputs with
+  `cdkd state show <stack> --json`.
+- To gate a PR without deploying, `cdkd diff --fail` exits `1` when any
+  change is detected (and `cdkd drift --json` machine-checks live
+  divergence). See [Exit codes](#exit-codes) for per-command semantics.
 
 ## Rollback behavior
 
@@ -848,6 +803,141 @@ also switches from `✓ Stack X destroyed` to `⚠ Stack X partially
 destroyed (...). State preserved — re-run 'cdkd destroy' / 'cdkd
 state destroy' to clean up.` so the visual marker matches the exit
 code.
+
+## Local execution
+
+The `cdkd local` family runs AWS workloads on the developer's machine
+via Docker — Lambda functions, API Gateway routes, ECS tasks, and
+long-running ECS services — without an AWS deploy. Modeled on `sam local *` but reuses cdkd's
+synthesis / asset / construct-path plumbing — no `template.yaml` to
+maintain, no `cdk synth | sam ...` round-trip.
+
+| Subcommand | Emulates |
+| --- | --- |
+| `cdkd local invoke <target>` | One-shot Lambda invoke via the AWS Lambda Runtime Interface Emulator (RIE) |
+| `cdkd local start-api` | Long-running HTTP server for REST v1 / HTTP API / Function URL routes |
+| `cdkd local run-task <target>` | ECS RunTask — every container in a task definition started on a per-task docker network |
+| `cdkd local start-service <target>` | Long-running ECS Service emulator — `DesiredCount` replicas with restart-on-exit (no local load balancer in v1) |
+| `cdkd local invoke-agentcore <target>` | One-shot Bedrock AgentCore Runtime invoke (HTTP `/invocations` / MCP `/mcp` / A2A `/a2a` / AGUI / WebSocket `--ws`) |
+| `cdkd local start-agentcore [target]` | Long-running serve of a Bedrock AgentCore Runtime against a warm container (all four protocols): HTTP / AGUI serve `POST /invocations` + `GET /ping` plus the `/ws` bridge (injects the session-id / Authorization a header-less browser client cannot set); MCP serves `/mcp`, A2A serves `/`. `--sigv4` / `--watch` supported |
+| `cdkd local start-alb <targets...>` | Long-running local ALB front-door (HTTP + HTTPS listeners, path / host / header / weighted / redirect / fixed-response routing, authenticate-cognito / authenticate-oidc) for ECS / Lambda backing services |
+| `cdkd local start-cloudfront [target]` | Long-running local CloudFront distribution — viewer-request -> S3 / Lambda Function URL origin -> viewer-response pipeline, CloudFront Functions run in-process (Function URL origins use Docker/RIE) |
+
+The Docker-backed commands above require Docker. Pass `--from-state`
+(cdkd-deployed) or `--from-cfn-stack` (cdk-deployed / CFn-managed) to
+substitute deployed physical IDs into intrinsic-valued env vars /
+secrets / image URIs; without either, intrinsic values are dropped with
+a per-key warning (matches `sam local *`). The two flags are mutually
+exclusive. `start-cloudfront` carries both `--from-state` and
+`--from-cfn-stack` too (since cdk-local 0.128.0 / issue #766); a
+CloudFront-Functions + S3-origin distribution still serves entirely
+in-process (no Docker), while a Lambda Function URL origin runs via the
+RIE container.
+
+### `local invoke`
+
+```bash
+cdkd local invoke MyStack/Handler                    # one-shot invoke
+cdkd local invoke MyStack/Handler --event events/get.json
+cdkd local invoke MyStack/Handler --from-state       # OR --from-cfn-stack
+```
+
+All AWS Lambda runtimes (Node.js / Python / Ruby / Java / .NET /
+`provided.al2023`), ZIP and container Lambdas, same-stack Lambda Layers
+bind-mounted at `/opt`.
+
+### `local start-api`
+
+```bash
+cdkd local start-api                                 # one HTTP server per discovered API
+cdkd local start-api MyStack/MyHttpApi --watch       # filter + hot reload
+cdkd local start-api --from-state                    # OR --from-cfn-stack
+
+# Typical shape — the bare `--from-cfn-stack` flag auto-resolves to the
+# routed stack's name (here `MyStack`). Pass an explicit value only when
+# the deployed CFn stack name differs from the CDK stack name.
+cdkd local start-api MyStack/MyHttpApi --from-cfn-stack
+```
+
+REST v1 + HTTP API v2 + Function URL with all integration kinds
+(AWS_PROXY / MOCK / HTTP_PROXY / HTTP / AWS Lambda non-proxy via
+hand-rolled VTL), authorizers (Lambda / Cognito / HTTP v2 JWT /
+AWS_IAM SigV4 on REST v1 + Function URL), CORS, stage variables,
+`--watch` hot reload.
+
+### `local run-task`
+
+```bash
+cdkd local run-task MyStack/MyService/TaskDef
+cdkd local run-task MyTaskDef --from-state           # OR --from-cfn-stack
+```
+
+Every container in the task definition on a per-task docker network
+with the AWS-published ECS metadata sidecar.
+
+### `local start-service`
+
+```bash
+cdkd local start-service MyStack/Orders MyStack/Web  # multiple services in one invocation
+cdkd local start-service MyStack/Orders --from-state # OR --from-cfn-stack
+cdkd local start-service MyStack/Web --watch         # hot reload (sub-second on interpreted handlers)
+```
+
+Long-running ECS Service emulator: `DesiredCount` replicas with
+restart-on-exit, cross-service Service Connect / Cloud Map DNS
+discovery (peer containers reach each other by `<discoveryName>.<namespace>`).
+No local load-balancer in v1. `--watch` re-synths on every CDK source edit
+and reloads one replica at a time — source-only edits on
+interpreted-language handlers (Node / Python / Ruby / shell) take a
+bind-mount fast path (`docker cp` + `docker restart`; no rebuild);
+Dockerfile / dependency manifest / compiled-language source edits fall
+through to a full rebuild + shadow boot + atomic swap.
+
+### `local start-alb`
+
+```bash
+cdkd local start-alb MyStack/MyAlb --lb-port 80=8080 # remap privileged listener port
+cdkd local start-alb MyStack/MyAlb --from-state      # OR --from-cfn-stack
+cdkd local start-alb MyStack/MyAlb --watch           # hot reload (sub-second on interpreted handlers)
+```
+
+Long-running local ALB front-door: names an `AWS::ElasticLoadBalancingV2::LoadBalancer`,
+boots every ECS service behind its listeners, and stands up a local
+HTTP / HTTPS front-door on each listener port that round-robins across
+the running replicas and routes its listener rules across the backing
+services. Forward / redirect / fixed-response actions; ECS or Lambda
+targets; authenticate-cognito / authenticate-oidc via a local Bearer-JWT
+check. `--watch` reloads one backing-replica at a time across edits —
+interpreted-handler source edits go through the bind-mount fast path
+(no rebuild); Dockerfile / dependency / compiled-source edits fall
+through to a rebuild + atomic front-door pool swap.
+
+### `local start-cloudfront`
+
+```bash
+cdkd local start-cloudfront                          # interactive picker
+cdkd local start-cloudfront MyStack/MyDistribution   # name the distribution
+cdkd local start-cloudfront MyStack/MyDistribution --watch   # re-synth + swap on edit
+cdkd local start-cloudfront MyStack/MyDistribution --tls      # real HTTPS termination
+```
+
+Serves a CloudFront distribution's **viewer-request -> S3 origin ->
+viewer-response** pipeline locally so a routing-function change is
+verifiable in seconds instead of a deploy round-trip. The distribution's
+`AWS::CloudFront::Function`s (URL rewrites, trailing-slash normalization,
+SPA fallback, header tweaks) run in-process in a `node:vm` sandbox; the
+S3 origin content is the `BucketDeployment` source asset resolved out of
+the cloud assembly, served with `DefaultRootObject` and
+`CustomErrorResponses`. Path patterns route across the default + ordered
+cache behaviors. Pure-local: no Docker, no AWS call — `--watch` is just
+re-synth + an in-memory routing-model swap. S3 origins only (custom /
+Lambda@Edge origins are warn-and-skip); `--origin <id>=<dir>` points an
+origin at a local directory when `BucketDeployment` resolution can't.
+
+See **[docs/local-emulation.md](docs/local-emulation.md)** for the
+full reference — runtimes, target resolution, every flag, integration
+and authorizer detail, route precedence, container pool, networking,
+`--from-cfn-stack` semantics, v1 scope.
 
 ## License
 
