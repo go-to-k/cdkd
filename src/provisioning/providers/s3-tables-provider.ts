@@ -20,6 +20,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import { findSilentDropProperties } from '../property-coverage.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -1013,14 +1014,56 @@ export class S3TablesProvider implements ResourceProvider {
     // When the template carries a LITERAL bucket ARN, it must agree with the
     // one the ARN resolves to. (It is usually an unresolved intrinsic here, in
     // which case there is nothing to cross-check — see the note above.)
-    const templateBucketArn = readStringProperty(input.properties, 'TableBucketARN');
-    if (templateBucketArn && templateBucketArn !== identity.tableBucketARN) {
+    // Only compare a LITERAL that looks like the same kind of value: a
+    // name-shaped `--resource` override substituted into a `{Ref}` would
+    // otherwise produce a false refusal.
+    const mismatch = (
+      [
+        [
+          'TableBucketARN',
+          readStringProperty(input.properties, 'TableBucketARN'),
+          identity.tableBucketARN,
+        ],
+        ['Namespace', readStringProperty(input.properties, 'Namespace'), identity.namespace],
+        [
+          'TableName',
+          readStringProperty(input.properties, 'TableName') ??
+            readStringProperty(input.properties, 'Name'),
+          identity.name,
+        ],
+      ] as const
+    ).find(([key, declared, resolved]) => {
+      if (!declared) return false;
+      if (key === 'TableBucketARN' && !declared.startsWith('arn:')) return false;
+      return declared !== resolved;
+    });
+    if (mismatch) {
+      const [key, declared, resolved] = mismatch;
       this.logger.warn(
-        `S3 Tables Table ${input.logicalId}: the supplied physical id '${known}' resolves to table ` +
-          `bucket '${identity.tableBucketARN}', but the template declares '${templateBucketArn}'; ` +
-          `refusing to adopt a table from a different bucket.`
+        `S3 Tables Table ${input.logicalId}: the supplied physical id '${known}' resolves to ` +
+          `${key} '${resolved}', but the template declares '${declared}'; refusing to adopt a ` +
+          `different table than the one the template describes.`
       );
       return null;
+    }
+
+    // ROUTE-AWARE physicalId. A table whose template carries a silent-drop
+    // property (`IcebergMetadata` / `Compaction` / `SnapshotManagement` /
+    // `StorageClassConfiguration` / `WithoutMetadata`) is auto-routed to Cloud
+    // Control by the #614 rule, and CC's Identifier for this type is the bare
+    // `TableARN` — not cdkd's composite. `cdkd import` records
+    // `provisionedBy: 'sdk'`, but ONLY `'cc-api'` is sticky, so the next
+    // deploy / destroy re-derives the route from the template and such a table
+    // lands on CC. Canonicalizing unconditionally would therefore hand Cloud
+    // Control `arn|ns|name` and break exactly the tables the ARN form was
+    // (accidentally) correct for before this PR.
+    const ccRouted = findSilentDropProperties('AWS::S3Tables::Table', input.properties).length > 0;
+    if (ccRouted) {
+      this.logger.debug(
+        `S3 Tables Table ${input.logicalId}: template carries a Cloud-Control-routing property, ` +
+          `recording the bare TableARN (CC's identifier) rather than cdkd's composite.`
+      );
+      return { physicalId: tableARN, attributes: { TableARN: tableARN } };
     }
 
     return {

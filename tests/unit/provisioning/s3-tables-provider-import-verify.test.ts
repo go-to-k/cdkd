@@ -215,6 +215,71 @@ describe('S3Tables import: verify the composite before adopting (issue #1668)', 
       expect(result).toBeNull();
     });
 
+    it('keeps the bare TableARN for a Cloud-Control-routed table (#614 routing)', async () => {
+      // `IcebergMetadata` is a silent-drop property, so this table auto-routes
+      // to Cloud Control, whose Identifier is the bare TableARN. cdkd import
+      // records provisionedBy: 'sdk' but only 'cc-api' is STICKY, so the next
+      // deploy/destroy re-derives the route — canonicalizing here would hand
+      // CC 'arn|ns|name'.
+      mockSend.mockResolvedValueOnce({ tableARN: TABLE_ARN, namespace: ['ns'], name: 'tbl' });
+
+      const result = await provider.import({
+        ...input,
+        properties: { ...input.properties, IcebergMetadata: { SchemaDefinition: {} } },
+        knownPhysicalId: TABLE_ARN,
+      });
+
+      expect(result).toEqual({ physicalId: TABLE_ARN, attributes: { TableARN: TABLE_ARN } });
+    });
+
+    it('pins the request shape for a composite id (must NOT go through tableArn)', async () => {
+      mockSend.mockResolvedValueOnce({ tableARN: TABLE_ARN, namespace: ['ns'], name: 'tbl' });
+
+      await provider.import({ ...input, knownPhysicalId: `${BUCKET_ARN}|ns|tbl` });
+
+      expect(mockSend.mock.calls[0]?.[0].input).toEqual({
+        tableBucketARN: BUCKET_ARN,
+        namespace: 'ns',
+        name: 'tbl',
+      });
+    });
+
+    it('refuses when the ARN resolves to a different table NAME than the template', async () => {
+      mockSend.mockResolvedValueOnce({
+        tableARN: TABLE_ARN,
+        namespace: ['ns'],
+        name: 'a-different-table',
+      });
+
+      const result = await provider.import({ ...input, knownPhysicalId: TABLE_ARN });
+
+      expect(result).toBeNull();
+    });
+
+    it('refuses when GetTable returns an empty namespace list', async () => {
+      mockSend.mockResolvedValueOnce({ tableARN: TABLE_ARN, namespace: [], name: 'tbl' });
+
+      const result = await provider.import({ ...input, knownPhysicalId: TABLE_ARN });
+
+      expect(result).toBeNull();
+    });
+
+    it('refuses when the returned ARN has no /table/ segment to split on', async () => {
+      mockSend.mockResolvedValueOnce({ tableARN: BUCKET_ARN, namespace: ['ns'], name: 'tbl' });
+
+      const result = await provider.import({ ...input, knownPhysicalId: TABLE_ARN });
+
+      expect(result).toBeNull();
+    });
+
+    it('propagates a non-NotFound error as a failure rather than a skip', async () => {
+      mockSend.mockRejectedValueOnce(new Error('AccessDeniedException'));
+
+      await expect(
+        provider.import({ ...input, knownPhysicalId: TABLE_ARN })
+      ).rejects.toThrow(/AccessDenied/);
+    });
+
     it('refuses an override that is neither a composite nor an ARN', async () => {
       // knownPhysicalId is documented ground truth, so silently substituting
       // the template's identity would adopt a resource the user did not name.
