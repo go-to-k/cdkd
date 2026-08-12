@@ -1,3 +1,10 @@
+## [0.281.11](https://github.com/go-to-k/cdkd/compare/v0.281.10...v0.281.11) (2026-08-12)
+
+
+### Bug Fixes
+
+* **s3:** an empty BucketEncryption / OwnershipControls collection must not DELETE the live config ([#1731](https://github.com/go-to-k/cdkd/issues/1731)) ([dd4298a](https://github.com/go-to-k/cdkd/commit/dd4298a6aa412736e22ec7fe03cc8b81b9cd43b5))
+
 ## [0.281.10](https://github.com/go-to-k/cdkd/compare/v0.281.9...v0.281.10) (2026-08-12)
 
 
