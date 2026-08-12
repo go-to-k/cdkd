@@ -345,6 +345,96 @@ the per-resource table (what each mode does, next to what
 CloudFormation and Terraform do) and caveats (NAT egress, RDS
 final-snapshot timing, etc.).
 
+## Use in CI: per-PR environments
+
+Deploy time is CI job time, and a PR environment redeploys on every
+push — so cdkd's speedup compounds across a PR's lifetime. Because
+cdkd needs **zero CDK code changes**, you can swap only the PR-environment
+workflow to cdkd and keep production / staging on the CDK CLI; switching
+back is a one-line workflow revert.
+
+Run `cdkd bootstrap` once per AWS account beforehand (creates the state
+bucket + asset storage; `cdk bootstrap` is not required).
+
+**One stack per PR** — pass the PR number as CDK context and suffix the
+stack name; cdkd state is keyed by (stack name, region) and locks are
+per-stack, so PR environments deploy concurrently without contention:
+
+```ts
+const prNumber = app.node.tryGetContext('prNumber');
+new WebAppStack(app, `WebApp${prNumber ? `-pr-${prNumber}` : ''}`);
+```
+
+**Credentials** — cdkd calls AWS APIs directly, so the deploying
+identity needs permissions for every deployed resource (CDK's
+`cdk-hnb659fds-*` roles do not work: they are designed for
+CloudFormation delegation, and cdkd uses its own bootstrap storage).
+Create a dedicated deploy role and switch into it with
+[`--role-arn`](docs/cli-reference.md#--role-arn) (or the
+`CDKD_ROLE_ARN` env var): the workflow's OIDC base role needs only
+`sts:AssumeRole` on the deploy role, and the deploy role's trust policy
+allows only that base role — the strong permissions live in exactly one
+place, reachable through one path, and never sit on the CI runner
+itself.
+
+**Minimal GitHub Actions shape** (deploy on open/sync/reopen, destroy
+on close):
+
+```yaml
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+permissions: { id-token: write, contents: read }
+env:
+  CDKD_ROLE_ARN: arn:aws:iam::123456789012:role/cdkd-deploy-role
+jobs:
+  deploy:
+    if: github.event.action != 'closed'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with: { node-version: 24, cache: npm }
+      - run: npm ci
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: arn:aws:iam::123456789012:role/github-actions-base
+          aws-region: us-east-1
+      - run: npx cdkd deploy --yes -c prNumber=${{ github.event.pull_request.number }}
+  destroy:
+    if: github.event.action == 'closed'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: arn:aws:iam::123456789012:role/github-actions-base
+          aws-region: us-east-1
+      - run: npx @go-to-k/cdkd state destroy WebApp-pr-${{ github.event.pull_request.number }} --yes
+```
+
+The destroy job has no checkout, `npm ci`, or synth —
+[`cdkd state destroy`](#orphan-vs-destroy) deletes from the state
+record alone, so it works even after the branch is gone.
+
+**Housekeeping**:
+
+- Pick the wait mode from what runs next (see the section above):
+  review-only environments can use `--no-wait`; E2E tests after the
+  deploy should keep the default, or `--full-wait` when they need ECS
+  steady state / CloudFront propagation.
+- A job cancelled mid-deploy (e.g. `concurrency.cancel-in-progress`)
+  can leave a stack lock; it expires on its own TTL (30 minutes), or
+  run `cdkd force-unlock <stack>` to clear it immediately.
+- Sweep forgotten environments with `cdkd state list --json` on a
+  schedule, and reclaim unreferenced assets with
+  `cdkd gc --older-than 30d --dry-run` — `gc` aborts if any stack is
+  locked, so schedule it outside deploy hours.
+- To comment the environment URL on the PR, read stack outputs with
+  `cdkd state show <stack> --json`.
+
+Full walkthrough (Japanese):
+[Building per-PR AWS CDK environments efficiently with cdkd](https://zenn.dev/go_to_k/articles/cdkd-pr-environment-ci).
+
 ## Local execution
 
 The `cdkd local` family runs AWS workloads on the developer's machine

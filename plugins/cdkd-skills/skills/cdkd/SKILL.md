@@ -175,6 +175,20 @@ Before `destroy`, `state destroy`, `orphan`, `import`, `export`, `drift --accept
 
 Do not use `--force`, `--yes`, `--purge-events`, or other confirmation-bypassing flags unless the user approved that exact destructive scope.
 
+## Use cdkd in CI (per-PR environments)
+
+cdkd's main CI use case is per-PR preview environments: deploy on PR open/sync, destroy on close. Deploy time is CI job time, so the speedup compounds across every push. Key rules when authoring such workflows:
+
+- Swap only the PR-environment workflow to cdkd; production and staging can stay on the CDK CLI (zero CDK code changes, one-line revert).
+- One stack per PR: pass the PR number as CDK context (`-c prNumber=...`) and suffix the stack name in the app. State is keyed by (stack name, region) and locks are per-stack, so PR environments deploy concurrently.
+- Credentials: have the workflow's OIDC base role hold ONLY `sts:AssumeRole` on a dedicated deploy role, switch into it with `--role-arn` / `CDKD_ROLE_ARN`, and pin the deploy role's trust policy to that base role. The deploy role needs direct permissions for every deployed resource — CDK's `cdk-hnb659fds-*` roles do not work with cdkd. Run `cdkd bootstrap` once per account beforehand.
+- Non-interactive exception: in a CI workflow, `--yes` on `deploy` / `destroy` / `state destroy` is the sanctioned confirmation mechanism — the approval happened when a human reviewed the workflow. The interactive-confirmation rules above still apply whenever a human is driving the session.
+- Destroy on PR close with `cdkd state destroy <stack> --yes`: it works from the state record alone (no checkout, `npm ci`, or synth — works even after the branch is deleted).
+- A cancelled mid-deploy job can leave a stack lock; it expires after its TTL (30 minutes), or clear it with `cdkd force-unlock <stack>`.
+- Housekeeping: sweep stale environments via `cdkd state list --json` on a schedule; reclaim unreferenced assets with `cdkd gc` outside deploy hours (it aborts while any stack is locked). Read outputs for PR comments with `cdkd state show <stack> --json`.
+
+See the [README's CI section](https://github.com/go-to-k/cdkd/blob/main/README.md#use-in-ci-per-pr-environments) for a complete GitHub Actions example.
+
 ## Run workloads locally
 
 `cdkd local *` runs Lambda functions, API Gateway APIs, ECS tasks and services, ALBs, CloudFront distributions, and Bedrock AgentCore runtimes on the developer's machine via Docker — no AWS deploy involved, so the deployment-boundary steps above do not apply to these commands:
