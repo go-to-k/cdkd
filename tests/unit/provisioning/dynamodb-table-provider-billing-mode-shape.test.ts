@@ -287,10 +287,12 @@ describe('DynamoDBTableProvider malformed BillingMode (issue #1545)', () => {
   it('handles an unusable desired value with NO previous mode on record', async () => {
     activeTable();
 
-    // An ABSENT recorded previous normalizes to the CFn type default
-    // PROVISIONED (issue #1553), so the unusable desired value falls back to
-    // PROVISIONED, the comparison still reads "unchanged", and the warn now
-    // NAMES the mode instead of rendering a bare sentence.
+    // An ABSENT recorded previous resolves to the table's LIVE mode whenever
+    // the DESIRED side is defined — which it always is on this arm, since the
+    // guard sits inside the `!== undefined` branch. `activeTable()` reports no
+    // `BillingModeSummary`, so the live read defaults to PROVISIONED and the
+    // comparison still reads "unchanged". The row below pins the LIVE-mode
+    // resolution with a value that does NOT coincide with that default.
     await expect(
       provider.update(
         'MyTable',
@@ -305,9 +307,6 @@ describe('DynamoDBTableProvider malformed BillingMode (issue #1545)', () => {
     // Unfiltered: an empty `UpdateTable` would be invisible to the filtered
     // helper, which is how issue #1553 hid in this suite.
     expect(allUpdateCalls()).toHaveLength(0);
-    // The ABSENT-previous arm is exactly where "the table's current billing
-    // mode" was a false claim: PROVISIONED here is the CFn TYPE DEFAULT, not
-    // anything DescribeTable reported (issue #1734).
     expect(childLogger.warn).toHaveBeenCalledWith(
       expect.stringContaining('The mode this update compared against (PROVISIONED) is kept')
     );
@@ -315,6 +314,45 @@ describe('DynamoDBTableProvider malformed BillingMode (issue #1545)', () => {
       expect.stringMatching(
         /^AWS::DynamoDB::Table MyTable: AWS::DynamoDB::Table BillingMode must be a non-empty string/
       )
+    );
+  });
+
+  // The value the message NAMES has to be the one the update actually compared
+  // against, and every other row in this file is blind to that: `activeTable()`
+  // reports no `BillingModeSummary`, so the live read defaults to PROVISIONED
+  // and coincides with both the recorded previous and the type default —
+  // meaning each assertion would still pass if `prevBillingMode` were hardcoded
+  // `'PROVISIONED'` (review finding on issue #1734).
+  //
+  // Here the live mode is PAY_PER_REQUEST while no previous is on record, so
+  // PROVISIONED is what a hardcode or a type-default read would produce and
+  // PAY_PER_REQUEST is the only value the real resolution can yield.
+  it('names the LIVE mode when no previous is on record', async () => {
+    mockSend.mockResolvedValue({
+      Table: {
+        TableName: TABLE_NAME,
+        TableArn: TABLE_ARN,
+        TableStatus: 'ACTIVE',
+        BillingModeSummary: { BillingMode: 'PAY_PER_REQUEST' },
+      },
+    });
+
+    await expect(
+      provider.update(
+        'MyTable',
+        TABLE_NAME,
+        RESOURCE_TYPE,
+        { ...baseProps, BillingMode: '' },
+        { ...baseProps }
+      )
+    ).resolves.toBeDefined();
+
+    expect(childLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('The mode this update compared against (PAY_PER_REQUEST) is kept')
+    );
+    // ...and NOT the value a hardcode / type-default read would have produced.
+    expect(childLogger.warn).not.toHaveBeenCalledWith(
+      expect.stringContaining('compared against (PROVISIONED)')
     );
   });
 
