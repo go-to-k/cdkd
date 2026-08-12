@@ -190,6 +190,28 @@ const SG_INGRESS_IP_PROTOCOL_PATH = 'AWS::EC2::SecurityGroupIngress IpProtocol';
  *   passes a no-op — a diff must never throw, and it must never warn either,
  *   since the provisioning path already announces the same substitution.
  */
+export function narrowIngressIpProtocol(
+  properties: Record<string, unknown>,
+  onUnusable?: (message: string) => void
+): { ipProtocol: string; narrowed: Record<string, unknown> } {
+  const declared = properties['IpProtocol'];
+  const ipProtocol = requireConfigString(
+    declared,
+    SG_INGRESS_IP_PROTOCOL_DEFAULT,
+    SG_INGRESS_IP_PROTOCOL_PATH,
+    { coerceNumber: true, ...(onUnusable && { onUnusable }) }
+  );
+
+  // An ABSENT key stays absent. The drift comparator only descends into keys
+  // present in cdkd state, so adding the default here would START comparing a
+  // key the template never declared — manufacturing the very drift this helper
+  // removes, in the one case that does not have it today.
+  if (declared === undefined || declared === ipProtocol) {
+    return { ipProtocol, narrowed: properties };
+  }
+  return { ipProtocol, narrowed: { ...properties, IpProtocol: ipProtocol } };
+}
+
 /**
  * Fold a rule bag's `IpProtocol` to the spelling AWS will hold (issue #1648).
  *
@@ -229,28 +251,6 @@ function canonicalizeSgInlineRuleProtocols(
     if (changed) out = { ...out, [key]: mapped };
   }
   return out;
-}
-
-export function narrowIngressIpProtocol(
-  properties: Record<string, unknown>,
-  onUnusable?: (message: string) => void
-): { ipProtocol: string; narrowed: Record<string, unknown> } {
-  const declared = properties['IpProtocol'];
-  const ipProtocol = requireConfigString(
-    declared,
-    SG_INGRESS_IP_PROTOCOL_DEFAULT,
-    SG_INGRESS_IP_PROTOCOL_PATH,
-    { coerceNumber: true, ...(onUnusable && { onUnusable }) }
-  );
-
-  // An ABSENT key stays absent. The drift comparator only descends into keys
-  // present in cdkd state, so adding the default here would START comparing a
-  // key the template never declared — manufacturing the very drift this helper
-  // removes, in the one case that does not have it today.
-  if (declared === undefined || declared === ipProtocol) {
-    return { ipProtocol, narrowed: properties };
-  }
-  return { ipProtocol, narrowed: { ...properties, IpProtocol: ipProtocol } };
 }
 
 /**
@@ -4809,7 +4809,11 @@ export class EC2Provider implements ResourceProvider {
    *    `AllocationId`, `ConnectivityType`, `PrivateIpAddress`.
    *  - **AWS::EC2::RouteTable**: `DescribeRouteTables` for `VpcId`.
    *  - **AWS::EC2::SecurityGroup**: `DescribeSecurityGroups` for
-   *    `GroupName`, `GroupDescription`, `VpcId`, plus `SecurityGroupIngress`
+   *    `GroupName`, `GroupDescription`, `VpcId`, `Tags` (issue #1649 — the
+   *    same call returns them in the CFn `[{Key,Value}]` shape, so they are
+   *    read rather than declared unreadable the way every sibling standalone
+   *    type declares them; reserved `aws:`-prefixed entries are stripped and
+   *    the key is omitted entirely when AWS reports none), plus `SecurityGroupIngress`
    *    and `SecurityGroupEgress` reverse-mapped from AWS's normalized
    *    `IpPermissions[]` / `IpPermissionsEgress[]` form. Each AWS
    *    `IpPermission` is flattened into one CFn rule per `IpRanges` /
@@ -5016,6 +5020,14 @@ export class EC2Provider implements ResourceProvider {
       const { narrowed } = narrowIngressIpProtocol(properties, () => {});
       return canonicalizeSgRuleProtocol(narrowed);
     }
+    // NOTE the analyzer's `IP_PROTOCOL_PATHS` covers a THIRD type,
+    // `AWS::EC2::SecurityGroupEgress`, which is deliberately absent here:
+    // `canonicalizeDesiredProperties` is only reached for a type with an SDK
+    // provider, and that one has none (it is Cloud-Control-routed), so a branch
+    // for it would be dead code. The drift comparator's table is broader
+    // because it runs against whatever a state record holds, regardless of
+    // route. If an SDK provider is ever added for it, add the branch here too.
+    //
     // The INLINE shape (issue #1648). A SecurityGroup's own rule lists are not
     // create-only, so the stakes are lower than the standalone type's — the
     // diff would report a change and call `update()`, which since #1643 keys
@@ -5174,6 +5186,11 @@ export class EC2Provider implements ResourceProvider {
     //
     // Emitted only when AWS reports at least one tag: an untagged group has no
     // `Tags` key, so a template that declares none is not compared against `[]`.
+    // Known bound: a template declaring a LITERAL empty `Tags: []` still
+    // compares `[]` against an absent key on the properties-fallback baseline.
+    // Emitting `[]` unconditionally would trade that for a worse one — a
+    // `CreateTags`-vs-`DescribeSecurityGroups` consistency race frozen into a
+    // permanent phantom — so the rarer shape is the one left reported.
     const tags = normalizeAwsTagsToCfn(sg.Tags);
     if (tags.length > 0) result['Tags'] = tags;
 
