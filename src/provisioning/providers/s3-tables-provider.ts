@@ -20,6 +20,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import { compositeIdSeparatorRefusal, packCompositeId } from '../composite-id.js';
 import { findSilentDropProperties } from '../property-coverage.js';
 import type {
   ResourceProvider,
@@ -27,6 +28,7 @@ import type {
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
+  CreateContext,
 } from '../../types/resource.js';
 
 /**
@@ -154,15 +156,16 @@ export class S3TablesProvider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     switch (resourceType) {
       case 'AWS::S3Tables::TableBucket':
         return this.createTableBucket(logicalId, resourceType, properties);
       case 'AWS::S3Tables::Namespace':
-        return this.createNamespace(logicalId, resourceType, properties);
+        return this.createNamespace(logicalId, resourceType, properties, context);
       case 'AWS::S3Tables::Table':
-        return this.createTable(logicalId, resourceType, properties);
+        return this.createTable(logicalId, resourceType, properties, context);
       default:
         throw new ProvisioningError(
           `Unsupported resource type: ${resourceType}`,
@@ -447,7 +450,8 @@ export class S3TablesProvider implements ResourceProvider {
   private async createNamespace(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating S3 Tables Namespace ${logicalId}`);
 
@@ -479,6 +483,29 @@ export class S3TablesProvider implements ResourceProvider {
       );
     }
 
+    // Refuse a `|` in either segment BEFORE `CreateNamespace` runs (issue
+    // #1672), so the refusal cannot orphan a namespace AWS already holds.
+    // Neither segment is realistically pipe-capable — a table-bucket ARN is
+    // structurally `|`-free, and S3 Tables constrains a namespace name to
+    // lowercase alphanumerics and underscores — so this is uniform
+    // defense-in-depth rather than a live hazard. The replay downgrade is
+    // wired anyway: `.claude/rules/providers.md` records a MISSING `context`
+    // parameter as its own failure mode (no type error, no warning, just a
+    // refusal that still fires on a replay — the `SNSTopicProvider` case), and
+    // three lines retire the burden of re-deriving the unreachability argument
+    // every time this file is read.
+    const physicalId = packCompositeId(
+      resourceType,
+      logicalId,
+      [
+        { name: 'tableBucketARN', value: tableBucketARN },
+        { name: 'namespace', value: namespaceName },
+      ],
+      context?.replayingState === true
+        ? { onRefusal: (message) => this.logger.warn(message) }
+        : undefined
+    );
+
     try {
       await this.getClient().send(
         new CreateNamespaceCommand({
@@ -486,8 +513,6 @@ export class S3TablesProvider implements ResourceProvider {
           namespace: [namespaceName],
         })
       );
-
-      const physicalId = `${tableBucketARN}|${namespaceName}`;
 
       this.logger.debug(`Successfully created S3 Tables Namespace ${logicalId}: ${physicalId}`);
 
@@ -562,7 +587,8 @@ export class S3TablesProvider implements ResourceProvider {
   private async createTable(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating S3 Tables Table ${logicalId}`);
 
@@ -617,6 +643,24 @@ export class S3TablesProvider implements ResourceProvider {
     // map, so omit the field entirely when no tags are set.
     const tags = this.cfnTagsToSdkMap(properties['Tags']);
 
+    // Same guard, placement and replay downgrade as `createNamespace` above
+    // (issue #1672): computed before the AWS call so a refusal cannot orphan a
+    // table, and structurally unreachable because a table-bucket ARN carries
+    // no `|` and S3 Tables constrains namespace / table names to lowercase
+    // alphanumerics and underscores.
+    const physicalId = packCompositeId(
+      resourceType,
+      logicalId,
+      [
+        { name: 'tableBucketARN', value: tableBucketARN },
+        { name: 'namespace', value: namespace },
+        { name: 'name', value: name },
+      ],
+      context?.replayingState === true
+        ? { onRefusal: (message) => this.logger.warn(message) }
+        : undefined
+    );
+
     try {
       const response = await this.getClient().send(
         new CreateTableCommand({
@@ -628,7 +672,6 @@ export class S3TablesProvider implements ResourceProvider {
         })
       );
 
-      const physicalId = `${tableBucketARN}|${namespace}|${name}`;
       // Capture the REAL table ARN AWS returns — its actual format is
       // NOT inferrable from the compound parts (we tried; AWS rejected
       // `<bucketArn>/table/<ns>/<name>` with BadRequestException), so
@@ -981,6 +1024,26 @@ export class S3TablesProvider implements ResourceProvider {
       throw err;
     }
 
+    // `parseNamespaceCompositeId` accepted EXACTLY two segments, so neither can
+    // carry a `|` and this refusal is unreachable today (issue #1672). It is
+    // applied anyway so a future relaxation of that parser cannot silently
+    // start recording an ambiguous id. Warn-and-SKIP rather than throw: an
+    // unverifiable id is `skipped-not-found` on this path, which is the idiom
+    // every other unusable-id arm in this method already uses, and a throw
+    // would abort the whole `cdkd import` over one row.
+    const namespaceRefusal = compositeIdSeparatorRefusal(
+      'AWS::S3Tables::Namespace',
+      input.logicalId,
+      [
+        { name: 'tableBucketARN', value: identity.tableBucketARN },
+        { name: 'namespace', value: identity.namespace },
+      ]
+    );
+    if (namespaceRefusal !== undefined) {
+      this.logger.warn(`${namespaceRefusal} Skipping import.`);
+      return null;
+    }
+
     return {
       physicalId: `${identity.tableBucketARN}|${identity.namespace}`,
       attributes: {},
@@ -1146,6 +1209,26 @@ export class S3TablesProvider implements ResourceProvider {
           `recording the bare TableARN (CC's identifier) rather than cdkd's composite.`
       );
       return { physicalId: tableARN, attributes: { TableARN: tableARN } };
+    }
+
+    // Unlike `importNamespace`, this identity is NOT always the product of a
+    // fixed-arity split: when the supplied id was a bare table ARN the
+    // namespace and name come from the `GetTable` RESPONSE, so they are
+    // whatever AWS holds rather than something this method already validated
+    // (issue #1672). Warn-and-SKIP for the same reason as the namespace arm —
+    // `skipped-not-found` is this method's answer to every id it cannot use,
+    // and adopting an ambiguous composite is the #1658 failure mode (a state
+    // row that looks adopted and makes the stack undestroyable). Only the
+    // composite arm needs it; the Cloud-Control-routed arm above records the
+    // bare ARN, which has no segments.
+    const tableRefusal = compositeIdSeparatorRefusal('AWS::S3Tables::Table', input.logicalId, [
+      { name: 'tableBucketARN', value: identity.tableBucketARN },
+      { name: 'namespace', value: identity.namespace },
+      { name: 'name', value: identity.name },
+    ]);
+    if (tableRefusal !== undefined) {
+      this.logger.warn(`${tableRefusal} Skipping import.`);
+      return null;
     }
 
     return {

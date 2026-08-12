@@ -34,6 +34,7 @@ import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/
 import { stringifyValue } from '../../utils/stringify.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { replayWarn, requireConfigString } from '../config-shape.js';
+import { packCompositeId } from '../composite-id.js';
 import type {
   CreateContext,
   ResourceProvider,
@@ -1679,6 +1680,28 @@ export class ApiGatewayProvider implements ResourceProvider {
       );
     }
 
+    // Refuse a `|` in any segment BEFORE `PutMethod` runs (issue #1672).
+    // `RestApiId` / `ResourceId` are AWS-generated and `HttpMethod` is a verb
+    // from a closed set, so no segment is realistically pipe-capable — this is
+    // uniform defense-in-depth. Computed here so the refusal cannot orphan a
+    // method AWS has already put (this method's own inner failure path already
+    // has to `DeleteMethod` for exactly that reason).
+    const physicalId = packCompositeId(
+      resourceType,
+      logicalId,
+      [
+        { name: 'restApiId', value: restApiId },
+        { name: 'resourceId', value: resourceId },
+        { name: 'httpMethod', value: httpMethod },
+      ],
+      // A reverse-replacement rollback creates from a STATE record, so the
+      // refusal downgrades to a warning — the same `context` this method
+      // already consults for its `AuthorizationType` guard.
+      context?.replayingState === true
+        ? { onRefusal: (message) => this.logger.warn(message) }
+        : undefined
+    );
+
     try {
       await this.apiGatewayClient.send(
         new PutMethodCommand({
@@ -1833,7 +1856,6 @@ export class ApiGatewayProvider implements ResourceProvider {
         throw innerError;
       }
 
-      const physicalId = `${restApiId}|${resourceId}|${httpMethod}`;
       this.logger.debug(`Successfully created API Gateway Method ${logicalId}: ${physicalId}`);
 
       return {

@@ -87,6 +87,11 @@ import {
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { replayWarn, requireConfigString } from '../config-shape.js';
 import {
+  compositeIdSeparatorRefusal,
+  packCompositeId,
+  type CompositeIdOptions,
+} from '../composite-id.js';
+import {
   disableInstanceApiTermination,
   isTerminationProtectionPropagationError,
   TERMINATION_PROTECTION_MAX_ATTEMPTS,
@@ -502,7 +507,7 @@ export class EC2Provider implements ResourceProvider {
       case 'AWS::EC2::EIP':
         return this.createEip(logicalId, resourceType, properties, context);
       case 'AWS::EC2::VPCGatewayAttachment':
-        return this.createVpcGatewayAttachment(logicalId, resourceType, properties);
+        return this.createVpcGatewayAttachment(logicalId, resourceType, properties, context);
       case 'AWS::EC2::NatGateway':
         return this.createNatGateway(logicalId, resourceType, properties);
       case 'AWS::EC2::RouteTable':
@@ -534,7 +539,7 @@ export class EC2Provider implements ResourceProvider {
       case 'AWS::EC2::NetworkAcl':
         return this.createNetworkAcl(logicalId, resourceType, properties);
       case 'AWS::EC2::NetworkAclEntry':
-        return this.createNetworkAclEntry(logicalId, resourceType, properties);
+        return this.createNetworkAclEntry(logicalId, resourceType, properties, context);
       case 'AWS::EC2::SubnetNetworkAclAssociation':
         return this.createSubnetNetworkAclAssociation(logicalId, resourceType, properties);
       default:
@@ -1489,8 +1494,31 @@ export class EC2Provider implements ResourceProvider {
   // Cloud Control fallback produced (see cloud-control-provider.ts), so Ref /
   // GetAtt resolution and existing state stay byte-compatible.
 
-  private eipPhysicalId(publicIp: string, allocationId: string): string {
-    return `${publicIp}|${allocationId}`;
+  /**
+   * Both segments are AWS-generated (a dotted-quad address and an
+   * `eipalloc-...` id), so neither can carry cdkd's `|` separator and the
+   * refusal below is a fence rather than a live guard (issue #1672). It is
+   * applied uniformly with the rest of the composite-packing sites so a future
+   * id-shape change cannot quietly reintroduce the ambiguity; for the same
+   * reason it is safe on BOTH callers — `createEip` (post-`AllocateAddress`)
+   * and `import()` (post-`DescribeAddresses`) — even though a throw on either
+   * would arrive after the AWS call.
+   */
+  private eipPhysicalId(
+    logicalId: string,
+    publicIp: string,
+    allocationId: string,
+    options?: CompositeIdOptions
+  ): string {
+    return packCompositeId(
+      'AWS::EC2::EIP',
+      logicalId,
+      [
+        { name: 'publicIp', value: publicIp },
+        { name: 'allocationId', value: allocationId },
+      ],
+      options
+    );
   }
 
   private parseEipPhysicalId(physicalId: string): {
@@ -1514,6 +1542,8 @@ export class EC2Provider implements ResourceProvider {
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating EIP ${logicalId}`);
 
+    let allocationId: string;
+    let publicIp: string;
     try {
       const response = await this.ec2Client.send(
         new AllocateAddressCommand({
@@ -1528,8 +1558,8 @@ export class EC2Provider implements ResourceProvider {
         })
       );
 
-      const allocationId = response.AllocationId!;
-      const publicIp = response.PublicIp!;
+      allocationId = response.AllocationId!;
+      publicIp = response.PublicIp!;
 
       await this.applyTags(allocationId, properties, logicalId);
 
@@ -1565,14 +1595,6 @@ export class EC2Provider implements ResourceProvider {
       }
 
       this.logger.debug(`Successfully created EIP ${logicalId}: ${allocationId} (${publicIp})`);
-
-      return {
-        physicalId: this.eipPhysicalId(publicIp, allocationId),
-        attributes: {
-          AllocationId: allocationId,
-          PublicIp: publicIp,
-        },
-      };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
@@ -1583,6 +1605,30 @@ export class EC2Provider implements ResourceProvider {
         cause
       );
     }
+
+    // The second of the two sites whose segments only exist after the AWS
+    // call, and OUTSIDE the try for the same reason as AppSync's ApiKey (issue
+    // #1672): that `catch` re-wraps anything thrown as
+    // `ProvisioningError('Failed to create EIP …')`, which would mis-report a
+    // refusal as an allocation failure for an address AWS had already handed
+    // out. Both segments come from `AllocateAddress`, so the refusal is a
+    // fence rather than a live guard.
+    return {
+      physicalId: this.eipPhysicalId(
+        logicalId,
+        publicIp,
+        allocationId,
+        // A reverse-replacement rollback creates from a STATE record, so the
+        // refusal downgrades to a warning.
+        context?.replayingState === true
+          ? { onRefusal: (message) => this.logger.warn(message) }
+          : undefined
+      ),
+      attributes: {
+        AllocationId: allocationId,
+        PublicIp: publicIp,
+      },
+    };
   }
 
   private async updateEip(
@@ -1734,7 +1780,8 @@ export class EC2Provider implements ResourceProvider {
   private async createVpcGatewayAttachment(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating VPCGatewayAttachment ${logicalId}`);
 
@@ -1749,6 +1796,22 @@ export class EC2Provider implements ResourceProvider {
       );
     }
 
+    // Both segments are AWS-generated (`igw-...` / `vpc-...`), so neither is
+    // pipe-capable and this is uniform defense-in-depth (issue #1672).
+    // Computed before the AWS call so a refusal cannot leave an attachment AWS
+    // has already made without a state record.
+    const physicalId = packCompositeId(
+      resourceType,
+      logicalId,
+      [
+        { name: 'internetGatewayId', value: internetGatewayId },
+        { name: 'vpcId', value: vpcId },
+      ],
+      context?.replayingState === true
+        ? { onRefusal: (message) => this.logger.warn(message) }
+        : undefined
+    );
+
     try {
       await this.ec2Client.send(
         new AttachInternetGatewayCommand({
@@ -1757,7 +1820,6 @@ export class EC2Provider implements ResourceProvider {
         })
       );
 
-      const physicalId = `${internetGatewayId}|${vpcId}`;
       this.logger.debug(`Successfully created VPCGatewayAttachment ${logicalId}: ${physicalId}`);
 
       return {
@@ -2236,6 +2298,25 @@ export class EC2Provider implements ResourceProvider {
       }
     }
 
+    // Refuse a `|` in either segment BEFORE `CreateRoute` runs (issue #1672).
+    // Neither is realistically pipe-capable — `RouteTableId` is an AWS-generated
+    // `rtb-...` and the destination is a CIDR or a `pl-...` prefix-list id — so
+    // this is uniform defense-in-depth. The downgrade is what matters here: the
+    // callback is the SAME one `updateRoute` already passes UNCONDITIONALLY,
+    // because that path DELETES the route before re-creating it, so a throw
+    // would strand a deleted route with no template-side remedy (issue #1566);
+    // the create dispatch passes it only on a state replay, so the refusal
+    // still stands on a template-borne deploy.
+    const physicalId = packCompositeId(
+      resourceType,
+      logicalId,
+      [
+        { name: 'routeTableId', value: routeTableId },
+        { name: 'destination', value: destination },
+      ],
+      onMultipleDestinations ? { onRefusal: onMultipleDestinations } : undefined
+    );
+
     try {
       await this.ec2Client.send(
         new CreateRouteCommand({
@@ -2260,7 +2341,6 @@ export class EC2Provider implements ResourceProvider {
         })
       );
 
-      const physicalId = `${routeTableId}|${destination}`;
       this.logger.debug(`Successfully created Route ${logicalId}: ${physicalId}`);
 
       return {
@@ -2955,6 +3035,30 @@ export class EC2Provider implements ResourceProvider {
     const fromPort = properties['FromPort'] as number | undefined;
     const toPort = properties['ToPort'] as number | undefined;
 
+    // Refuse a `|` in any segment BEFORE `AuthorizeSecurityGroupIngress` runs
+    // (issue #1672). `GroupId` is an AWS-generated `sg-...` and the ports are
+    // numbers, so the only segment cdkd's own guards would let through as an
+    // arbitrary string is `IpProtocol` — `requireConfigString` accepts any
+    // non-blank string. AWS itself would reject such a protocol, so this is
+    // unverified defense-in-depth rather than a measured hazard; refusing here
+    // rather than leaving it to AWS keeps the id from being recorded on the
+    // idempotent "already exists" arm below. The downgrade reuses `onUnusableProtocol`,
+    // which `updateSecurityGroupIngress` passes UNCONDITIONALLY: that path has
+    // already REVOKED the rule, so a throw would leave it deleted from AWS with
+    // no template-side remedy — the same constraint the protocol guard above
+    // records.
+    const physicalId = packCompositeId(
+      resourceType,
+      logicalId,
+      [
+        { name: 'groupId', value: groupId },
+        { name: 'ipProtocol', value: ipProtocol },
+        { name: 'fromPort', value: fromPort ?? '-1' },
+        { name: 'toPort', value: toPort ?? '-1' },
+      ],
+      onUnusableProtocol ? { onRefusal: onUnusableProtocol } : undefined
+    );
+
     try {
       await this.ec2Client.send(
         new AuthorizeSecurityGroupIngressCommand({
@@ -2970,7 +3074,6 @@ export class EC2Provider implements ResourceProvider {
         })
       );
 
-      const physicalId = `${groupId}|${ipProtocol}|${fromPort ?? '-1'}|${toPort ?? '-1'}`;
       this.logger.debug(`Successfully created SecurityGroupIngress ${logicalId}: ${physicalId}`);
 
       return {
@@ -2981,7 +3084,6 @@ export class EC2Provider implements ResourceProvider {
     } catch (error) {
       // Treat "already exists" as success (idempotent, like CloudFormation)
       if (error instanceof Error && error.message.includes('already exists')) {
-        const physicalId = `${groupId}|${ipProtocol}|${fromPort ?? '-1'}|${toPort ?? '-1'}`;
         this.logger.debug(`SecurityGroupIngress ${logicalId} already exists, treating as success`);
         // The same record the success arm writes: this arm reports the rule as
         // provisioned, so state is written here too and the narrowing has to
@@ -4315,7 +4417,8 @@ export class EC2Provider implements ResourceProvider {
   private async createNetworkAclEntry(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating NetworkAclEntry ${logicalId}`);
 
@@ -4332,6 +4435,23 @@ export class EC2Provider implements ResourceProvider {
         logicalId
       );
     }
+
+    // No segment here is pipe-capable — an AWS-generated `acl-...`, a number
+    // and a boolean — so this is uniform defense-in-depth (issue #1672).
+    // Computed before the AWS call so a refusal cannot leave an entry AWS has
+    // already created without a state record.
+    const physicalId = packCompositeId(
+      resourceType,
+      logicalId,
+      [
+        { name: 'networkAclId', value: networkAclId },
+        { name: 'ruleNumber', value: ruleNumber },
+        { name: 'egress', value: egress },
+      ],
+      context?.replayingState === true
+        ? { onRefusal: (message) => this.logger.warn(message) }
+        : undefined
+    );
 
     try {
       const cidrBlock = properties['CidrBlock'] as string | undefined;
@@ -4371,7 +4491,6 @@ export class EC2Provider implements ResourceProvider {
         })
       );
 
-      const physicalId = `${networkAclId}|${ruleNumber}|${egress}`;
       this.logger.debug(`Successfully created NetworkAclEntry ${logicalId}: ${physicalId}`);
 
       return {
@@ -4783,7 +4902,7 @@ export class EC2Provider implements ResourceProvider {
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     // Explicit override → verify by id and short-circuit.
     if (input.knownPhysicalId) {
-      return this.verifyExplicit(input.resourceType, input.knownPhysicalId);
+      return this.verifyExplicit(input.logicalId, input.resourceType, input.knownPhysicalId);
     }
 
     // A resource reaching here needs an explicit `--resource` override.
@@ -5801,6 +5920,7 @@ export class EC2Provider implements ResourceProvider {
   }
 
   private async verifyExplicit(
+    logicalId: string,
     resourceType: string,
     physicalId: string
   ): Promise<ResourceImportResult | null> {
@@ -5838,8 +5958,23 @@ export class EC2Provider implements ResourceProvider {
           const resp = await this.ec2Client.send(new DescribeAddressesCommand(filter));
           const addr = resp.Addresses?.[0];
           if (!addr?.AllocationId || !addr.PublicIp) return null;
+          // Warn-and-SKIP, matching the `AWS::S3Tables::*` import arms: an
+          // `import()` never throws over one row where it can decline, but it
+          // must not ADOPT an id it knows to be ambiguous either — recording
+          // one is the #1658 failure mode (a state row that looks adopted and
+          // makes the stack undestroyable), which is strictly worse than the
+          // loud not-found a skip produces. Unreachable in practice (both
+          // segments come from `DescribeAddresses`); see `eipPhysicalId`.
+          const eipRefusal = compositeIdSeparatorRefusal('AWS::EC2::EIP', logicalId, [
+            { name: 'publicIp', value: addr.PublicIp },
+            { name: 'allocationId', value: addr.AllocationId },
+          ]);
+          if (eipRefusal !== undefined) {
+            this.logger.warn(`${eipRefusal} Skipping import.`);
+            return null;
+          }
           return {
-            physicalId: this.eipPhysicalId(addr.PublicIp, addr.AllocationId),
+            physicalId: this.eipPhysicalId(logicalId, addr.PublicIp, addr.AllocationId),
             attributes: { AllocationId: addr.AllocationId, PublicIp: addr.PublicIp },
           };
         }
