@@ -1,3 +1,10 @@
+## [0.280.45](https://github.com/go-to-k/cdkd/compare/v0.280.44...v0.280.45) (2026-08-12)
+
+
+### Bug Fixes
+
+* **rollback:** record the replay-CREATE's effectiveProperties on reverse-replacement ([#1696](https://github.com/go-to-k/cdkd/issues/1696)) ([fcc78cb](https://github.com/go-to-k/cdkd/commit/fcc78cbe5dff628504c27c52257ed256fe6928a4))
+
 ## [0.280.44](https://github.com/go-to-k/cdkd/compare/v0.280.43...v0.280.44) (2026-08-12)
 
 
