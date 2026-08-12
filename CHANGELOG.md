@@ -1,3 +1,10 @@
+## [0.281.9](https://github.com/go-to-k/cdkd/compare/v0.281.8...v0.281.9) (2026-08-12)
+
+
+### Bug Fixes
+
+* **analyzer:** resolve Ref for Route53 RecordSet and the AppSync children to CloudFormation's value ([#1727](https://github.com/go-to-k/cdkd/issues/1727)) ([af0e1aa](https://github.com/go-to-k/cdkd/commit/af0e1aa41e82785a1d48c76682835e32822494cf))
+
 ## [0.281.8](https://github.com/go-to-k/cdkd/compare/v0.281.7...v0.281.8) (2026-08-12)
 
 
