@@ -1,3 +1,10 @@
+## [0.280.37](https://github.com/go-to-k/cdkd/compare/v0.280.36...v0.280.37) (2026-08-12)
+
+
+### Bug Fixes
+
+* **glue:** accept CloudFormation's physicalId when importing AWS::Glue::Table ([#1669](https://github.com/go-to-k/cdkd/issues/1669)) ([22206be](https://github.com/go-to-k/cdkd/commit/22206bef04e175a794db0e843731c50b4577d8e0))
+
 ## [0.280.36](https://github.com/go-to-k/cdkd/compare/v0.280.35...v0.280.36) (2026-08-12)
 
 
