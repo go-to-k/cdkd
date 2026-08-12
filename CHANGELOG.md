@@ -1,3 +1,10 @@
+## [0.280.47](https://github.com/go-to-k/cdkd/compare/v0.280.46...v0.280.47) (2026-08-12)
+
+
+### Bug Fixes
+
+* **s3:** record the SUBSTITUTED value from the bucket provider warn-and-default reads, and flatten the analytics readback ([#1704](https://github.com/go-to-k/cdkd/issues/1704)) ([bb50f8d](https://github.com/go-to-k/cdkd/commit/bb50f8da928cca7ce1aab2d3d2f29fe9e2060365))
+
 ## [0.280.46](https://github.com/go-to-k/cdkd/compare/v0.280.45...v0.280.46) (2026-08-12)
 
 
