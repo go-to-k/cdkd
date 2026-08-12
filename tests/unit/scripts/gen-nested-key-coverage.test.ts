@@ -3594,6 +3594,58 @@ describe('real-repo audit (regression floors)', () => {
     expect(bucketOf(s3.entries, 'EventBridgeEnabled')).toBe('allow-listed');
   });
 
+  it('audits the Lambda EventSourceMapping target with a healthy nested-key count (#1393 item 3)', () => {
+    const esm = report.targets.find(
+      (t) => t.resourceType === 'AWS::Lambda::EventSourceMapping'
+    );
+    expect(esm).toBeDefined();
+    expect(esm!.nestedKeyCount).toBeGreaterThanOrEqual(30);
+    // The seven verbatim-forwarded blobs the opt-in exists to fence are all
+    // actually reached — a `handledProperties` parse that lost them would
+    // leave this target vacuously clean rather than failing.
+    const tops = new Set(esm!.entries.map((e) => e.topLevelProperty));
+    for (const blob of [
+      'SelfManagedKafkaEventSourceConfig',
+      'AmazonManagedKafkaEventSourceConfig',
+      'DocumentDBEventSourceConfig',
+      'ScalingConfig',
+      'DestinationConfig',
+      'LoggingConfig',
+      'MetricsConfig',
+      'ProvisionedPollerConfig',
+    ]) {
+      expect(tops.has(blob), blob).toBe(true);
+    }
+  });
+
+  it('keeps the EventSourceMapping target OUT of the write-evidence pass (verbatim forwards)', () => {
+    // The decision the target comment records: the blobs are cast
+    // pass-throughs, so the key pass IS the audit. If a future change makes
+    // the provider hand-build SDK objects, this expectation is the prompt to
+    // re-measure and opt in rather than leave the write pass silently unused.
+    const esm = NESTED_KEY_TARGETS.find(
+      (t) => t.resourceType === 'AWS::Lambda::EventSourceMapping'
+    )!;
+    expect(esm.freshObjectMapper).toBeUndefined();
+    expect(esm.minWrittenMembers).toBeUndefined();
+  });
+
+  it('allow-lists only the two EventSourceMapping Tags paths, for the list-to-map fold', () => {
+    const esm = report.targets.find(
+      (t) => t.resourceType === 'AWS::Lambda::EventSourceMapping'
+    )!;
+    expect(
+      esm.entries.filter((e) => e.bucket === 'allow-listed').map((e) => e.nestedKey).sort()
+    ).toEqual(['Tags.Key', 'Tags.Value']);
+    // The #1384 key stays visible as provider-handled: the provider names the
+    // literal, which is the only evidence available for a map keyed by an
+    // enum value (the class this target deliberately does NOT close).
+    const byPath = new Map(esm.entries.map((e) => [e.nestedKey, e.bucket]));
+    expect(byPath.get('SelfManagedEventSource.Endpoints.KafkaBootstrapServers')).toBe(
+      'provider-handled'
+    );
+  });
+
   it('fences the #1304-fixed AnomalyDetector MetricTimeZone as provider-handled', () => {
     const ad = report.targets.find((t) => t.resourceType === 'AWS::CloudWatch::AnomalyDetector')!;
     expect(bucketOf(ad.entries, 'MetricTimeZone')).toBe('provider-handled');
@@ -3813,6 +3865,13 @@ describe('whole-blob hand-off walk (real repo, issue #1445)', () => {
       'AWS::CloudWatch::AnomalyDetector': 0,
       'AWS::ECS::Service': 0,
       'AWS::ECS::TaskDefinition': 0,
+      // 0 at opt-in (issue #1393 item 3) even under the FORCED fresh-object
+      // pass, which is the measurement that says the real target does not
+      // need it: the provider forwards each blob verbatim
+      // (`params.X = properties['X'] as <SdkType>`), so the top-level member
+      // write vouches for every path beneath it and the write pass has
+      // nothing left to find.
+      'AWS::Lambda::EventSourceMapping': 0,
       // 81 before issue #1520 (segment renames + widened reverse-map
       // exclusion, -> 50), 0 since issue #1540 (builder-behind-binding hop,
       // for-of taint hop, scoped + terminal renames) opted the target in —
@@ -4147,6 +4206,55 @@ describe('whole-blob hand-off walk (real repo, issue #1445)', () => {
           source.replace("        EndTime: toDate(r['EndTime']),\n", '')
         )
       ).toEqual(['Configuration.ExcludedTimeRanges.EndTime']);
+    });
+  });
+
+  describe('the EventSourceMapping opt-in fires on a real divergence (#1393 item 3)', () => {
+    // The target measures 0 findings today, which is exactly the state in
+    // which a fence can be vacuous — so prove the RED direction. The realistic
+    // regression for a VERBATIM forwarder is CFn-side: AWS publishes a nested
+    // member under one of the forwarded blobs whose SDK spelling differs (or
+    // does not exist), and the cast carries it to AWS as an unknown key with
+    // no code change to notice. Injected into a scratch COPY of the fixture
+    // tree via loadReport's fixtureDir seam, with the committed fixture
+    // untouched.
+    const scratch = mkdtempSync(join(tmpdir(), 'cdkd-nkc-esm-'));
+    afterAll(() => rmSync(scratch, { recursive: true, force: true }));
+
+    const withInjectedPath = (name: string, blob: string, path: string): string[] => {
+      const dir = join(scratch, name);
+      cpSync(resolve(repoRoot, 'tests/fixtures/cfn-schemas'), dir, { recursive: true });
+      const file = join(dir, 'AWS-Lambda-EventSourceMapping.json');
+      const fixture = JSON.parse(readFileSync(file, 'utf8')) as {
+        nestedPropertyPaths: Record<string, string[]>;
+      };
+      const before = fixture.nestedPropertyPaths[blob];
+      expect(before, `${blob} missing from the capture — anchor drifted?`).toBeDefined();
+      fixture.nestedPropertyPaths[blob] = [...before!, path];
+      writeFileSync(file, JSON.stringify(fixture, null, 2));
+      const target = NESTED_KEY_TARGETS.find(
+        (t) => t.resourceType === 'AWS::Lambda::EventSourceMapping'
+      )!;
+      return loadReport([target], undefined, undefined, dir)
+        .targets[0]!.entries.filter(
+          (e) => e.bucket === 'case-divergence' || e.bucket === 'no-sdk-member'
+        )
+        .map((e) => `${e.bucket}:${e.nestedKey}`)
+        .sort();
+    };
+
+    it('flags a nested member with NO SDK counterpart under a forwarded blob', () => {
+      expect(withInjectedPath('nomember', 'ScalingConfig', 'MaximumConcurrencyLimit')).toEqual([
+        'no-sdk-member:ScalingConfig.MaximumConcurrencyLimit',
+      ]);
+    });
+
+    it('flags a nested member the SDK spells with different CASE', () => {
+      // `MaximumPollers` exists on the SDK's ProvisionedPollerConfig; a
+      // CFn-side `Maximumpollers` would ride the cast unrecognized.
+      expect(
+        withInjectedPath('casediverge', 'ProvisionedPollerConfig', 'Maximumpollers')
+      ).toEqual(['case-divergence:ProvisionedPollerConfig.Maximumpollers']);
     });
   });
 });

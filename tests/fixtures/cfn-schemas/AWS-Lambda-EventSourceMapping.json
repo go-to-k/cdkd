@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::Lambda::EventSourceMapping",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-12",
   "properties": [
     "AmazonManagedKafkaEventSourceConfig",
     "BatchSize",
@@ -42,5 +42,234 @@
     "SelfManagedEventSource",
     "StartingPosition",
     "StartingPositionTimestamp"
-  ]
+  ],
+  "primaryIdentifier": [
+    "Id"
+  ],
+  "nestedProperties": {
+    "SelfManagedEventSource": [
+      "Endpoints",
+      "KafkaBootstrapServers"
+    ],
+    "FilterCriteria": [
+      "Filters",
+      "Pattern"
+    ],
+    "ProvisionedPollerConfig": [
+      "MaximumPollers",
+      "MinimumPollers",
+      "PollerGroupName"
+    ],
+    "MetricsConfig": [
+      "Metrics"
+    ],
+    "DestinationConfig": [
+      "Destination",
+      "OnFailure"
+    ],
+    "AmazonManagedKafkaEventSourceConfig": [
+      "AccessConfigs",
+      "Attribute",
+      "ConsumerGroupId",
+      "EventRecordFormat",
+      "SchemaRegistryConfig",
+      "SchemaRegistryURI",
+      "SchemaValidationConfigs",
+      "Type",
+      "URI"
+    ],
+    "SourceAccessConfigurations": [
+      "Type",
+      "URI"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ],
+    "ScalingConfig": [
+      "MaximumConcurrency"
+    ],
+    "SelfManagedKafkaEventSourceConfig": [
+      "AccessConfigs",
+      "Attribute",
+      "ConsumerGroupId",
+      "EventRecordFormat",
+      "SchemaRegistryConfig",
+      "SchemaRegistryURI",
+      "SchemaValidationConfigs",
+      "Type",
+      "URI"
+    ],
+    "DocumentDBEventSourceConfig": [
+      "CollectionName",
+      "DatabaseName",
+      "FullDocument"
+    ],
+    "LoggingConfig": [
+      "SystemLogLevel"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "SelfManagedEventSource": [
+      "Endpoints",
+      "Endpoints.KafkaBootstrapServers"
+    ],
+    "FilterCriteria": [
+      "Filters",
+      "Filters.Pattern"
+    ],
+    "ProvisionedPollerConfig": [
+      "MaximumPollers",
+      "MinimumPollers",
+      "PollerGroupName"
+    ],
+    "MetricsConfig": [
+      "Metrics"
+    ],
+    "DestinationConfig": [
+      "OnFailure",
+      "OnFailure.Destination"
+    ],
+    "AmazonManagedKafkaEventSourceConfig": [
+      "ConsumerGroupId",
+      "SchemaRegistryConfig",
+      "SchemaRegistryConfig.AccessConfigs",
+      "SchemaRegistryConfig.AccessConfigs.Type",
+      "SchemaRegistryConfig.AccessConfigs.URI",
+      "SchemaRegistryConfig.EventRecordFormat",
+      "SchemaRegistryConfig.SchemaRegistryURI",
+      "SchemaRegistryConfig.SchemaValidationConfigs",
+      "SchemaRegistryConfig.SchemaValidationConfigs.Attribute"
+    ],
+    "SourceAccessConfigurations": [
+      "Type",
+      "URI"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ],
+    "ScalingConfig": [
+      "MaximumConcurrency"
+    ],
+    "SelfManagedKafkaEventSourceConfig": [
+      "ConsumerGroupId",
+      "SchemaRegistryConfig",
+      "SchemaRegistryConfig.AccessConfigs",
+      "SchemaRegistryConfig.AccessConfigs.Type",
+      "SchemaRegistryConfig.AccessConfigs.URI",
+      "SchemaRegistryConfig.EventRecordFormat",
+      "SchemaRegistryConfig.SchemaRegistryURI",
+      "SchemaRegistryConfig.SchemaValidationConfigs",
+      "SchemaRegistryConfig.SchemaValidationConfigs.Attribute"
+    ],
+    "DocumentDBEventSourceConfig": [
+      "CollectionName",
+      "DatabaseName",
+      "FullDocument"
+    ],
+    "LoggingConfig": [
+      "SystemLogLevel"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "StartingPosition": "scalar",
+      "SelfManagedEventSource": "object",
+      "ParallelizationFactor": "scalar",
+      "FilterCriteria": "object",
+      "ProvisionedPollerConfig": "object",
+      "MetricsConfig": "object",
+      "FunctionName": "scalar",
+      "DestinationConfig": "object",
+      "KmsKeyArn": "scalar",
+      "AmazonManagedKafkaEventSourceConfig": "object",
+      "SourceAccessConfigurations": "array",
+      "Tags": "array",
+      "MaximumBatchingWindowInSeconds": "scalar",
+      "BatchSize": "scalar",
+      "MaximumRetryAttempts": "scalar",
+      "Topics": "array",
+      "ScalingConfig": "object",
+      "Enabled": "scalar",
+      "EventSourceArn": "scalar",
+      "SelfManagedKafkaEventSourceConfig": "object",
+      "DocumentDBEventSourceConfig": "object",
+      "TumblingWindowInSeconds": "scalar",
+      "BisectBatchOnFunctionError": "scalar",
+      "EventSourceMappingArn": "scalar",
+      "MaximumRecordAgeInSeconds": "scalar",
+      "StartingPositionTimestamp": "scalar",
+      "LoggingConfig": "object",
+      "Queues": "array",
+      "Id": "scalar",
+      "FunctionResponseTypes": "array"
+    },
+    "ScalingConfig": {
+      "MaximumConcurrency": "scalar"
+    },
+    "SchemaRegistryConfig": {
+      "SchemaValidationConfigs": "array",
+      "SchemaRegistryURI": "scalar",
+      "EventRecordFormat": "scalar",
+      "AccessConfigs": "array"
+    },
+    "SelfManagedEventSource": {
+      "Endpoints": "object"
+    },
+    "SourceAccessConfiguration": {
+      "Type": "scalar",
+      "URI": "scalar"
+    },
+    "FilterCriteria": {
+      "Filters": "array"
+    },
+    "ProvisionedPollerConfig": {
+      "PollerGroupName": "scalar",
+      "MinimumPollers": "scalar",
+      "MaximumPollers": "scalar"
+    },
+    "SelfManagedKafkaEventSourceConfig": {
+      "ConsumerGroupId": "scalar",
+      "SchemaRegistryConfig": "object"
+    },
+    "MetricsConfig": {
+      "Metrics": "array"
+    },
+    "DocumentDBEventSourceConfig": {
+      "FullDocument": "scalar",
+      "CollectionName": "scalar",
+      "DatabaseName": "scalar"
+    },
+    "Endpoints": {
+      "KafkaBootstrapServers": "array"
+    },
+    "DestinationConfig": {
+      "OnFailure": "object"
+    },
+    "Filter": {
+      "Pattern": "scalar"
+    },
+    "AmazonManagedKafkaEventSourceConfig": {
+      "ConsumerGroupId": "scalar",
+      "SchemaRegistryConfig": "object"
+    },
+    "LoggingConfig": {
+      "SystemLogLevel": "scalar"
+    },
+    "Tag": {
+      "Value": "scalar",
+      "Key": "scalar"
+    },
+    "SchemaValidationConfig": {
+      "Attribute": "scalar"
+    },
+    "SchemaRegistryAccessConfig": {
+      "Type": "scalar",
+      "URI": "scalar"
+    },
+    "OnFailure": {
+      "Destination": "scalar"
+    }
+  }
 }

@@ -1,16 +1,16 @@
 {
   "summary": {
-    "targetCount": 14,
-    "nestedKeyCount": 837,
-    "sameSpelling": 767,
-    "providerHandled": 50,
-    "allowListed": 20,
+    "targetCount": 15,
+    "nestedKeyCount": 874,
+    "sameSpelling": 801,
+    "providerHandled": 51,
+    "allowListed": 22,
     "caseDivergence": 0,
     "noSdkMember": 0,
     "noWriteEvidence": 0,
     "freshObjectTargets": 14,
-    "shapeClean": 90,
-    "shapeHandled": 35,
+    "shapeClean": 98,
+    "shapeHandled": 36,
     "shapeAllowListed": 7,
     "arrayVsWrapper": 0,
     "definitionMemberMissing": 0,
@@ -4998,6 +4998,301 @@
       "usedTerminalRenames": [
         "ProxyConfiguration.ProxyConfigurationProperties"
       ]
+    },
+    {
+      "resourceType": "AWS::Lambda::EventSourceMapping",
+      "providerFile": "lambda-eventsource-provider.ts",
+      "sdkClientPackage": "@aws-sdk/client-lambda",
+      "keyStyle": "exact",
+      "freshObjectMapper": false,
+      "nestedKeyCount": 37,
+      "entries": [
+        {
+          "resourceType": "AWS::Lambda::EventSourceMapping",
+          "nestedKey": "AmazonManagedKafkaEventSourceConfig.ConsumerGroupId",
+          "topLevelProperty": "AmazonManagedKafkaEventSourceConfig",
+          "terminalKey": "ConsumerGroupId",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Lambda::EventSourceMapping",
+          "nestedKey": "AmazonManagedKafkaEventSourceConfig.SchemaRegistryConfig",
+          "topLevelProperty": "AmazonManagedKafkaEventSourceConfig",
+          "terminalKey": "SchemaRegistryConfig",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Lambda::EventSourceMapping",
+          "nestedKey": "AmazonManagedKafkaEventSourceConfig.SchemaRegistryConfig.AccessConfigs",
+          "topLevelProperty": "AmazonManagedKafkaEventSourceConfig",
+          "terminalKey": "AccessConfigs",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Lambda::EventSourceMapping",
+          "nestedKey": "AmazonManagedKafkaEventSourceConfig.SchemaRegistryConfig.AccessConfigs.Type",
+          "topLevelProperty": "AmazonManagedKafkaEventSourceConfig",
+          "terminalKey": "Type",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Lambda::EventSourceMapping",
+          "nestedKey": "AmazonManagedKafkaEventSourceConfig.SchemaRegistryConfig.AccessConfigs.URI",
+          "topLevelProperty": "AmazonManagedKafkaEventSourceConfig",
+          "terminalKey": "URI",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Lambda::EventSourceMapping",
+          "nestedKey": "AmazonManagedKafkaEventSourceConfig.SchemaRegistryConfig.EventRecordFormat",
+          "topLevelProperty": "AmazonManagedKafkaEventSourceConfig",
+          "terminalKey": "EventRecordFormat",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Lambda::EventSourceMapping",
+          "nestedKey": "AmazonManagedKafkaEventSourceConfig.SchemaRegistryConfig.SchemaRegistryURI",
+          "topLevelProperty": "AmazonManagedKafkaEventSourceConfig",
+          "terminalKey": "SchemaRegistryURI",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Lambda::EventSourceMapping",
+          "nestedKey": "AmazonManagedKafkaEventSourceConfig.SchemaRegistryConfig.SchemaValidationConfigs",
+          "topLevelProperty": "AmazonManagedKafkaEventSourceConfig",
+          "terminalKey": "SchemaValidationConfigs",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Lambda::EventSourceMapping",
+          "nestedKey": "AmazonManagedKafkaEventSourceConfig.SchemaRegistryConfig.SchemaValidationConfigs.Attribute",
+          "topLevelProperty": "AmazonManagedKafkaEventSourceConfig",
+          "terminalKey": "Attribute",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Lambda::EventSourceMapping",
+          "nestedKey": "DestinationConfig.OnFailure",
+          "topLevelProperty": "DestinationConfig",
+          "terminalKey": "OnFailure",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Lambda::EventSourceMapping",
+          "nestedKey": "DestinationConfig.OnFailure.Destination",
+          "topLevelProperty": "DestinationConfig",
+          "terminalKey": "Destination",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Lambda::EventSourceMapping",
+          "nestedKey": "DocumentDBEventSourceConfig.CollectionName",
+          "topLevelProperty": "DocumentDBEventSourceConfig",
+          "terminalKey": "CollectionName",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Lambda::EventSourceMapping",
+          "nestedKey": "DocumentDBEventSourceConfig.DatabaseName",
+          "topLevelProperty": "DocumentDBEventSourceConfig",
+          "terminalKey": "DatabaseName",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Lambda::EventSourceMapping",
+          "nestedKey": "DocumentDBEventSourceConfig.FullDocument",
+          "topLevelProperty": "DocumentDBEventSourceConfig",
+          "terminalKey": "FullDocument",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Lambda::EventSourceMapping",
+          "nestedKey": "FilterCriteria.Filters",
+          "topLevelProperty": "FilterCriteria",
+          "terminalKey": "Filters",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Lambda::EventSourceMapping",
+          "nestedKey": "FilterCriteria.Filters.Pattern",
+          "topLevelProperty": "FilterCriteria",
+          "terminalKey": "Pattern",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Lambda::EventSourceMapping",
+          "nestedKey": "LoggingConfig.SystemLogLevel",
+          "topLevelProperty": "LoggingConfig",
+          "terminalKey": "SystemLogLevel",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Lambda::EventSourceMapping",
+          "nestedKey": "MetricsConfig.Metrics",
+          "topLevelProperty": "MetricsConfig",
+          "terminalKey": "Metrics",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Lambda::EventSourceMapping",
+          "nestedKey": "ProvisionedPollerConfig.MaximumPollers",
+          "topLevelProperty": "ProvisionedPollerConfig",
+          "terminalKey": "MaximumPollers",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Lambda::EventSourceMapping",
+          "nestedKey": "ProvisionedPollerConfig.MinimumPollers",
+          "topLevelProperty": "ProvisionedPollerConfig",
+          "terminalKey": "MinimumPollers",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Lambda::EventSourceMapping",
+          "nestedKey": "ProvisionedPollerConfig.PollerGroupName",
+          "topLevelProperty": "ProvisionedPollerConfig",
+          "terminalKey": "PollerGroupName",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Lambda::EventSourceMapping",
+          "nestedKey": "ScalingConfig.MaximumConcurrency",
+          "topLevelProperty": "ScalingConfig",
+          "terminalKey": "MaximumConcurrency",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Lambda::EventSourceMapping",
+          "nestedKey": "SelfManagedEventSource.Endpoints",
+          "topLevelProperty": "SelfManagedEventSource",
+          "terminalKey": "Endpoints",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Lambda::EventSourceMapping",
+          "nestedKey": "SelfManagedEventSource.Endpoints.KafkaBootstrapServers",
+          "topLevelProperty": "SelfManagedEventSource",
+          "terminalKey": "KafkaBootstrapServers",
+          "bucket": "provider-handled"
+        },
+        {
+          "resourceType": "AWS::Lambda::EventSourceMapping",
+          "nestedKey": "SelfManagedKafkaEventSourceConfig.ConsumerGroupId",
+          "topLevelProperty": "SelfManagedKafkaEventSourceConfig",
+          "terminalKey": "ConsumerGroupId",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Lambda::EventSourceMapping",
+          "nestedKey": "SelfManagedKafkaEventSourceConfig.SchemaRegistryConfig",
+          "topLevelProperty": "SelfManagedKafkaEventSourceConfig",
+          "terminalKey": "SchemaRegistryConfig",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Lambda::EventSourceMapping",
+          "nestedKey": "SelfManagedKafkaEventSourceConfig.SchemaRegistryConfig.AccessConfigs",
+          "topLevelProperty": "SelfManagedKafkaEventSourceConfig",
+          "terminalKey": "AccessConfigs",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Lambda::EventSourceMapping",
+          "nestedKey": "SelfManagedKafkaEventSourceConfig.SchemaRegistryConfig.AccessConfigs.Type",
+          "topLevelProperty": "SelfManagedKafkaEventSourceConfig",
+          "terminalKey": "Type",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Lambda::EventSourceMapping",
+          "nestedKey": "SelfManagedKafkaEventSourceConfig.SchemaRegistryConfig.AccessConfigs.URI",
+          "topLevelProperty": "SelfManagedKafkaEventSourceConfig",
+          "terminalKey": "URI",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Lambda::EventSourceMapping",
+          "nestedKey": "SelfManagedKafkaEventSourceConfig.SchemaRegistryConfig.EventRecordFormat",
+          "topLevelProperty": "SelfManagedKafkaEventSourceConfig",
+          "terminalKey": "EventRecordFormat",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Lambda::EventSourceMapping",
+          "nestedKey": "SelfManagedKafkaEventSourceConfig.SchemaRegistryConfig.SchemaRegistryURI",
+          "topLevelProperty": "SelfManagedKafkaEventSourceConfig",
+          "terminalKey": "SchemaRegistryURI",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Lambda::EventSourceMapping",
+          "nestedKey": "SelfManagedKafkaEventSourceConfig.SchemaRegistryConfig.SchemaValidationConfigs",
+          "topLevelProperty": "SelfManagedKafkaEventSourceConfig",
+          "terminalKey": "SchemaValidationConfigs",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Lambda::EventSourceMapping",
+          "nestedKey": "SelfManagedKafkaEventSourceConfig.SchemaRegistryConfig.SchemaValidationConfigs.Attribute",
+          "topLevelProperty": "SelfManagedKafkaEventSourceConfig",
+          "terminalKey": "Attribute",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Lambda::EventSourceMapping",
+          "nestedKey": "SourceAccessConfigurations.Type",
+          "topLevelProperty": "SourceAccessConfigurations",
+          "terminalKey": "Type",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Lambda::EventSourceMapping",
+          "nestedKey": "SourceAccessConfigurations.URI",
+          "topLevelProperty": "SourceAccessConfigurations",
+          "terminalKey": "URI",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Lambda::EventSourceMapping",
+          "nestedKey": "Tags.Key",
+          "topLevelProperty": "Tags",
+          "terminalKey": "Key",
+          "bucket": "allow-listed",
+          "sdkNearMiss": "KEY",
+          "rationale": "Same list-to-map fold as the AppSync entries: Lambda models an event source mapping's tags as a flat Record<string, string> (`Tags`), not as CFn's [{Key, Value}] list, and the provider folds the list into that map on create (`Object.fromEntries(cfnTags.map((t) => [t.Key, t.Value]))`). No `Key` member exists anywhere in the SDK model to spell-match. READ THE VERDICT WITH CARE: the key pass reports this as `case-divergence` (\"SDK has KEY\") rather than `no-sdk-member`, because the member index also carries enum const-object keys and `@aws-sdk/client-lambda`'s `KafkaSchemaValidationAttribute` declares `KEY` / `VALUE` — a Kafka schema-validation attribute with nothing to do with tagging. A case fold would NOT fix this key; there is no member to fold onto.",
+          "allowMatchKey": "AWS::Lambda::EventSourceMapping#Tags.Key"
+        },
+        {
+          "resourceType": "AWS::Lambda::EventSourceMapping",
+          "nestedKey": "Tags.Value",
+          "topLevelProperty": "Tags",
+          "terminalKey": "Value",
+          "bucket": "allow-listed",
+          "sdkNearMiss": "VALUE",
+          "rationale": "Same list-to-map fold as Tags.Key, and the same spurious enum near-miss — `VALUE` is the other `KafkaSchemaValidationAttribute` member, not a tag member the provider could write.",
+          "allowMatchKey": "AWS::Lambda::EventSourceMapping#Tags.Value"
+        }
+      ],
+      "shapeEntries": [
+        {
+          "resourceType": "AWS::Lambda::EventSourceMapping",
+          "nestedKey": "Tags",
+          "definition": "#top",
+          "pass": "wrapper",
+          "bucket": "provider-handled"
+        }
+      ],
+      "shapeCleanCount": 8,
+      "unmatchedDefinitions": [
+        "Endpoints",
+        "MetricsConfig",
+        "SchemaRegistryAccessConfig",
+        "SchemaRegistryConfig",
+        "SchemaValidationConfig",
+        "Tag"
+      ],
+      "usedSegmentRenames": [],
+      "usedTerminalRenames": []
     },
     {
       "resourceType": "AWS::S3::Bucket",

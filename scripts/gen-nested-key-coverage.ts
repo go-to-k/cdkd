@@ -344,8 +344,19 @@
  *   AWS::AppSync::GraphQLApi            0 /  33   0 /  33    0 /  33    0 /  33  OPTED IN (#609)
  *   AWS::AppSync::DataSource           10 /  27  10 /  27   10 /  27   10 /  27  OPTED IN (#1597) [all 10 FIXED in the provider, now 0/27]
  *   AWS::AppSync::Resolver              0 /   9   0 /   9    0 /   9    0 /   9  OPTED IN (#1597)
+ *   AWS::Lambda::EventSourceMapping     0 /  37   0 /  37    0 /  37    0 /  37  key pass only (#1393 item 3)
  *                                     -------   -------    -------    -------
  *                                        410       290        260         81
+ *
+ * The `AWS::Lambda::EventSourceMapping` row (issue #1393 item 3) is flat for a
+ * different reason, and it is NOT opted into the write-evidence pass: the
+ * provider forwards each config blob VERBATIM (`params.X = properties['X'] as
+ * <SdkType>`) rather than hand-building an SDK object, so the top-level member
+ * write already vouches for every path beneath it and the pass has nothing to
+ * find — 0/37 even when forced on, which is the measurement the calibration
+ * test pins. For a verbatim forwarder the KEY pass is the whole audit: a
+ * CFn-side member the SDK spells differently rides the cast to AWS as an
+ * unknown key with no code change to notice it.
  *
  * The three AppSync rows joined AFTER the four recognizer stages, so their
  * columns are flat (no stage moves them) and they are excluded from the stage
@@ -1655,6 +1666,42 @@ export const NESTED_KEY_TARGETS: readonly NestedKeyTarget[] = [
     segmentRenames: S3_BUCKET_SEGMENT_RENAMES,
     terminalRenames: S3_BUCKET_TERMINAL_RENAMES,
   },
+  {
+    // Opted in by issue #1393 item 3, after
+    // `node scripts/refresh-cfn-schemas.mjs AWS::Lambda::EventSourceMapping`
+    // re-captured the fixture with the `definitionShapes` /
+    // `nestedPropertyPaths` sections the generator requires (the old capture
+    // pre-dated both, the same blocker the AppSync opt-ins hit).
+    //
+    // This target is a FENCE, not a bug hunt, and #1393's own first comment
+    // says so: the #1384 defect it grew out of (`Endpoints` is a map keyed by
+    // an ENUM value, so there is no `KafkaBootstrapServers` member to miss)
+    // is structurally invisible to a critic that compares model member NAMES,
+    // and opting in does not close that class. What the opt-in DOES fence is
+    // the provider's seven other forwarded blobs —
+    // `SelfManagedKafkaEventSourceConfig`, `AmazonManagedKafkaEventSourceConfig`,
+    // `DocumentDBEventSourceConfig`, `ScalingConfig`, `DestinationConfig`,
+    // `LoggingConfig`, `MetricsConfig`, `ProvisionedPollerConfig` — every one
+    // of which the provider forwards VERBATIM (`params.X = properties['X'] as
+    // <SdkType>`), so a CFn-side member the SDK spells differently reaches AWS
+    // as an unknown key with no code change to notice it.
+    //
+    // Measured at opt-in: 37 audited paths, 34 same-spelling, 1 explicitly
+    // handled (`SelfManagedEventSource.Endpoints.KafkaBootstrapServers`), 2
+    // allow-listed (`Tags.Key` / `Tags.Value` — see their entries), 0 blocking
+    // findings.
+    //
+    // NOT a `freshObjectMapper`: the write-evidence pass asks "does the
+    // provider WRITE the SDK member", which only means something where the
+    // provider hand-builds the SDK object. Here the blobs are cast
+    // pass-throughs, so the key pass IS the audit and a write floor would
+    // fence nothing.
+    resourceType: 'AWS::Lambda::EventSourceMapping',
+    providerFile: 'lambda-eventsource-provider.ts',
+    sdkClientPackage: '@aws-sdk/client-lambda',
+    keyStyle: 'exact',
+    minNestedKeys: 30,
+  },
 ];
 
 /**
@@ -1825,6 +1872,34 @@ export const NESTED_KEY_ALLOW_LIST: ReadonlyMap<string, AllowListEntry> = new Ma
       rationale:
         'Same list-to-map fold as Tags.Key: the CFn tag list becomes the SDK `tags` ' +
         'Record<string, string>, so no `Value` member exists on the SDK side.',
+      passes: ['key', 'shape', 'write'],
+    },
+  ],
+  [
+    allowKey('AWS::Lambda::EventSourceMapping', 'Tags.Key'),
+    {
+      rationale:
+        "Same list-to-map fold as the AppSync entries: Lambda models an event source " +
+        "mapping's tags as a flat Record<string, string> (`Tags`), not as CFn's " +
+        '[{Key, Value}] list, and the provider folds the list into that map on create ' +
+        '(`Object.fromEntries(cfnTags.map((t) => [t.Key, t.Value]))`). No `Key` member ' +
+        'exists anywhere in the SDK model to spell-match. ' +
+        'READ THE VERDICT WITH CARE: the key pass reports this as `case-divergence` ' +
+        '("SDK has KEY") rather than `no-sdk-member`, because the member index also ' +
+        "carries enum const-object keys and `@aws-sdk/client-lambda`'s " +
+        '`KafkaSchemaValidationAttribute` declares `KEY` / `VALUE` — a Kafka ' +
+        'schema-validation attribute with nothing to do with tagging. A case fold ' +
+        'would NOT fix this key; there is no member to fold onto.',
+      passes: ['key', 'shape', 'write'],
+    },
+  ],
+  [
+    allowKey('AWS::Lambda::EventSourceMapping', 'Tags.Value'),
+    {
+      rationale:
+        'Same list-to-map fold as Tags.Key, and the same spurious enum near-miss — ' +
+        '`VALUE` is the other `KafkaSchemaValidationAttribute` member, not a tag ' +
+        'member the provider could write.',
       passes: ['key', 'shape', 'write'],
     },
   ],
