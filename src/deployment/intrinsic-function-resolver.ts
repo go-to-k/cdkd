@@ -809,26 +809,47 @@ export const accountInfoClock = { now: (): number => Date.now() };
 let fabricatedAccountInfo: { info: AwsAccountInfo; expiresAt: number } | null = null;
 
 /**
+ * The single in-flight lookup, so N concurrent callers share ONE round trip.
+ *
+ * The TTL above collapses SEQUENTIAL callers; this collapses PARALLEL ones
+ * (PR review). `cdkd deploy --concurrency 10` resolves ten resources' intrinsics
+ * at once, so without it an STS outage costs ten `GetCallerIdentity` calls —
+ * each with the SDK's own 3-attempt retry — and ten identical warnings per
+ * window. Cleared in a `finally` so a failure cannot wedge it.
+ */
+let accountInfoInFlight: Promise<AwsAccountInfo> | null = null;
+
+/**
  * Get AWS account information from STS
  */
 export async function getAccountInfo(overrideRegion?: string): Promise<AwsAccountInfo> {
-  if (cachedAccountInfo) {
-    // If an override region is provided, return with that region
-    if (overrideRegion && overrideRegion !== cachedAccountInfo.region) {
-      return withOverrideRegion(cachedAccountInfo, overrideRegion);
-    }
-    return cachedAccountInfo;
-  }
+  const forRegion = (info: AwsAccountInfo): AwsAccountInfo =>
+    overrideRegion && overrideRegion !== info.region
+      ? withOverrideRegion(info, overrideRegion)
+      : info;
+
+  if (cachedAccountInfo) return forRegion(cachedAccountInfo);
 
   // A fabricated answer inside its TTL is reused (see the constant above) —
   // WITHOUT promoting it to `cachedAccountInfo`, so it still expires.
   if (fabricatedAccountInfo && accountInfoClock.now() < fabricatedAccountInfo.expiresAt) {
-    const { info } = fabricatedAccountInfo;
-    return overrideRegion && overrideRegion !== info.region
-      ? withOverrideRegion(info, overrideRegion)
-      : info;
+    return forRegion(fabricatedAccountInfo.info);
   }
 
+  if (accountInfoInFlight) return forRegion(await accountInfoInFlight);
+
+  // NOTE the lookup is region-AGNOSTIC — it resolves the ACCOUNT, and every
+  // caller's region is applied by `forRegion` afterwards — so sharing one
+  // in-flight promise across callers with different `overrideRegion`s is safe.
+  accountInfoInFlight = resolveAccountInfo(overrideRegion);
+  try {
+    return forRegion(await accountInfoInFlight);
+  } finally {
+    accountInfoInFlight = null;
+  }
+}
+
+async function resolveAccountInfo(overrideRegion?: string): Promise<AwsAccountInfo> {
   const logger = getLogger().child('IntrinsicFunctionResolver');
   const awsClients = getAwsClients();
   const stsClient = awsClients.sts;
@@ -897,10 +918,16 @@ export async function getAccountInfo(overrideRegion?: string): Promise<AwsAccoun
     // IS a real answer and is cached as one; a fabricated id gets the bounded
     // TTL so the retry does not fire on every single caller.
     if (fallback.fabricated) {
-      fabricatedAccountInfo = {
-        info: fallback,
-        expiresAt: accountInfoClock.now() + FABRICATED_ACCOUNT_INFO_TTL_MS,
-      };
+      // Guarded on `!cachedAccountInfo` so a late failure arm cannot install a
+      // fabricated window over a real answer a concurrent call already cached
+      // (PR review). Benign either way — the cached branch is read first — but
+      // the invariant should be enforced rather than accidental.
+      if (!cachedAccountInfo) {
+        fabricatedAccountInfo = {
+          info: fallback,
+          expiresAt: accountInfoClock.now() + FABRICATED_ACCOUNT_INFO_TTL_MS,
+        };
+      }
     } else {
       cachedAccountInfo = fallback;
       fabricatedAccountInfo = null;
@@ -2227,7 +2254,13 @@ export class IntrinsicFunctionResolver {
         case 'Arn':
           return `arn:${partition}:ecr:${region}:${accountId}:repository/${physicalId}`;
         case 'RepositoryUri':
-          return `${accountId}.dkr.ecr.${region}.amazonaws.com/${physicalId}`;
+          // The URL SUFFIX is derived for the same reason the partition is
+          // (issue #1730 review): an ECR registry host is
+          // `<acct>.dkr.ecr.<region>.amazonaws.com.cn` in `aws-cn`, so a
+          // hardcoded `amazonaws.com` is the identical defect one field over —
+          // and this is the very attribute whose account embedding the
+          // fabricated-account guard had to be widened for.
+          return `${accountId}.dkr.ecr.${region}.${derivePartitionAndUrlSuffix(region).urlSuffix}/${physicalId}`;
         default:
           return this.guardedPhysicalIdFallback(logicalId, attributeName, resourceType, physicalId);
       }
@@ -3740,13 +3773,16 @@ export class IntrinsicFunctionResolver {
         return `arn:${info.partition}:cloudformation:${info.region}:${info.accountId}:stack/${context?.stackName ?? 'UnknownStack'}/cdkd`;
       }
 
-      case 'AWS::URLSuffix': {
-        // Derived rather than hardcoded for the same reason (issue #1730
-        // review): `amazonaws.com.cn` in `aws-cn`, and CloudFormation resolves
-        // `${AWS::URLSuffix}` through exactly this mapping.
-        const info = await getAccountInfo(this.resolverRegion);
-        return derivePartitionAndUrlSuffix(info.region).urlSuffix;
-      }
+      case 'AWS::URLSuffix':
+        // Derived rather than hardcoded (issue #1730 review): `amazonaws.com.cn`
+        // in `aws-cn`, and CloudFormation resolves `${AWS::URLSuffix}` through
+        // exactly this mapping. Deliberately NO `getAccountInfo` hop, unlike
+        // `AWS::Partition` / `AWS::StackId` which need the account: the suffix is
+        // a pure function of the region, and `resolverRegion` is what every
+        // return path of `getAccountInfo(this.resolverRegion)` would have set
+        // `region` to anyway — so the round trip could only add latency and, on
+        // an STS outage, a warning.
+        return derivePartitionAndUrlSuffix(this.resolverRegion).urlSuffix;
 
       case 'AWS::NotificationARNs':
         // cdkd has no stack-notification-ARN concept — a cdkd deploy never

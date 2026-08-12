@@ -125,6 +125,23 @@ describe('CloudControlProvider ARN enrichment refuses a fabricated account (issu
     fabricate();
     const enriched = await enrich('AWS::Kinesis::Stream', 'my-stream');
     expect(enriched['Arn']).toBeUndefined();
+    // Warn asserted too: the production branch sits inside a swallowing
+    // `catch`, so a bare toBeUndefined() also passes if the branch dies.
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      expect.stringContaining('Not enriching AWS::Kinesis::Stream Arn')
+    );
+  });
+
+  it('the ECR registry host follows the partition URL suffix (counter-case)', async () => {
+    mockAccountInfo.value = {
+      partition: 'aws-cn',
+      region: 'cn-north-1',
+      accountId: '123456789012',
+    };
+    const enriched = await enrich('AWS::ECR::Repository', 'my-repo');
+    expect(enriched['RepositoryUri']).toBe(
+      '123456789012.dkr.ecr.cn-north-1.amazonaws.com.cn/my-repo'
+    );
   });
 
   it('enriches the KMS Key Arn normally for a REAL account (counter-case)', async () => {

@@ -24,6 +24,7 @@ import { DescribeReplicationGroupsCommand, ElastiCacheClient } from '@aws-sdk/cl
 import { DescribeClustersCommand, RedshiftClient } from '@aws-sdk/client-redshift';
 import { DescribeDomainCommand, OpenSearchClient } from '@aws-sdk/client-opensearch';
 import { getAccountInfo, type AwsAccountInfo } from '../deployment/intrinsic-function-resolver.js';
+import { derivePartitionAndUrlSuffix } from '../utils/aws-partition.js';
 import { getAwsClients } from '../utils/aws-clients.js';
 import {
   disableInstanceApiTermination,
@@ -1195,8 +1196,12 @@ export class CloudControlProvider implements ResourceProvider {
               physicalId
             );
             if (ecrAccountInfo) {
+              // URL suffix derived, not hardcoded — `amazonaws.com.cn` in
+              // `aws-cn` (issue #1730 review); mirrors the resolver's own
+              // `RepositoryUri` branch so the two cannot disagree.
+              const { urlSuffix } = derivePartitionAndUrlSuffix(ecrAccountInfo.region);
               enriched['RepositoryUri'] =
-                `${ecrAccountInfo.accountId}.dkr.ecr.${ecrAccountInfo.region}.amazonaws.com/${physicalId}`;
+                `${ecrAccountInfo.accountId}.dkr.ecr.${ecrAccountInfo.region}.${urlSuffix}/${physicalId}`;
             }
           } catch {
             /* best effort */

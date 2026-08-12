@@ -193,6 +193,75 @@ describe('getAccountInfo partition + caching (issue #1730)', () => {
     expect(info.partition).toBe('aws-cn');
   });
 
+  /**
+   * PR review: the TTL collapses SEQUENTIAL callers only. `cdkd deploy
+   * --concurrency 10` resolves ten resources' intrinsics at once, so without
+   * in-flight dedup an STS outage still costs ten calls (each with the SDK's
+   * own retry) and ten identical warnings per window.
+   */
+  it('shares ONE STS round trip across concurrent callers', async () => {
+    let resolveSts: ((value: unknown) => void) | undefined;
+    stsSend.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveSts = resolve;
+        })
+    );
+    const inFlight = Promise.all(Array.from({ length: 10 }, () => getAccountInfo()));
+    await Promise.resolve();
+    resolveSts?.({ Account: '999988887777' });
+    const results = await inFlight;
+
+    expect(stsSend).toHaveBeenCalledTimes(1);
+    for (const info of results) expect(info.accountId).toBe('999988887777');
+  });
+
+  it('dedups concurrent callers on the FAILURE path too', async () => {
+    let rejectSts: ((reason: unknown) => void) | undefined;
+    stsSend.mockImplementation(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectSts = reject;
+        })
+    );
+    const inFlight = Promise.all(Array.from({ length: 10 }, () => getAccountInfo()));
+    await Promise.resolve();
+    rejectSts?.(new Error('STS unreachable'));
+    const results = await inFlight;
+
+    expect(stsSend).toHaveBeenCalledTimes(1);
+    for (const info of results) expect(info.fabricated).toBe(true);
+  });
+
+  it('a concurrent caller with its own override still gets its own partition', async () => {
+    let resolveSts: ((value: unknown) => void) | undefined;
+    stsSend.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveSts = resolve;
+        })
+    );
+    const both = Promise.all([getAccountInfo(), getAccountInfo('cn-north-1')]);
+    await Promise.resolve();
+    resolveSts?.({ Account: '999988887777' });
+    const [plain, overridden] = await both;
+
+    expect(stsSend).toHaveBeenCalledTimes(1);
+    expect(plain?.partition).toBe('aws');
+    expect(overridden?.partition).toBe('aws-cn');
+    expect(overridden?.region).toBe('cn-north-1');
+  });
+
+  it('releases the in-flight slot so a later call can retry', async () => {
+    stsSend.mockRejectedValueOnce(new Error('blip'));
+    await getAccountInfo();
+    now += 60_000;
+    stsSend.mockResolvedValue({ Account: '999988887777' });
+    const healed = await getAccountInfo();
+    expect(healed.accountId).toBe('999988887777');
+    expect(stsSend).toHaveBeenCalledTimes(2);
+  });
+
   it('still caches a real answer (one STS round trip per run)', async () => {
     succeed('555566667777');
     await getAccountInfo();
@@ -278,7 +347,7 @@ describe('Fn::GetAtt refuses an ARN built from a fabricated account (issue #1730
         { 'Fn::GetAtt': ['Thing', 'RepositoryUri'] },
         mkContext('AWS::ECR::Repository', 'my-repo')
       )
-    ).rejects.toThrow(IntrinsicResolutionRefusalError);
+    ).rejects.toThrow(/placeholder account 123456789012/);
   });
 
   it('resolves ECR RepositoryUri normally for a REAL account (counter-case)', async () => {
@@ -289,6 +358,30 @@ describe('Fn::GetAtt refuses an ARN built from a fabricated account (issue #1730
       mkContext('AWS::ECR::Repository', 'my-repo')
     );
     expect(result).toBe('999988887777.dkr.ecr.us-east-1.amazonaws.com/my-repo');
+  });
+
+  it('the ECR registry host follows the partition URL suffix in aws-cn', async () => {
+    stsSend.mockResolvedValue({ Account: '999988887777' });
+    process.env['AWS_REGION'] = 'cn-north-1';
+    const resolver = new IntrinsicFunctionResolver('cn-north-1');
+    const result = await resolver.resolve(
+      { 'Fn::GetAtt': ['Thing', 'RepositoryUri'] },
+      mkContext('AWS::ECR::Repository', 'my-repo')
+    );
+    expect(result).toBe('999988887777.dkr.ecr.cn-north-1.amazonaws.com.cn/my-repo');
+  });
+
+  // The documented fail-SAFE over-refusal: a value that merely CONTAINS the
+  // placeholder digits is refused rather than served, and only while STS fails.
+  it('refuses a value that merely CONTAINS the placeholder digits (documented fail-safe)', async () => {
+    stsSend.mockRejectedValue(new Error('STS unreachable'));
+    const resolver = new IntrinsicFunctionResolver();
+    await expect(
+      resolver.resolve(
+        { 'Fn::GetAtt': ['Thing', 'Arn'] },
+        mkContext('AWS::DynamoDB::Table', 'table-123456789012-x')
+      )
+    ).rejects.toThrow(IntrinsicResolutionRefusalError);
   });
 
   it('refuses an account-bearing ARN when STS could not answer', async () => {

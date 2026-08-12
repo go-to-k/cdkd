@@ -6,6 +6,7 @@ import {
   normalizeAwsError,
   PartialFailureError,
   ResourceUpdateNotSupportedError,
+  IntrinsicResolutionRefusalError,
   withErrorHandling,
 } from '../../../src/utils/error-handler.js';
 
@@ -261,5 +262,29 @@ describe('MacroExpansionError', () => {
     const err = new MacroExpansionError('Transform AWS::Serverless-2016-10-31 returned: foo');
     expect(() => handleError(err)).toThrow('process.exit-mock');
     expect(exitSpy).toHaveBeenCalledWith(2);
+  });
+});
+
+describe('IntrinsicResolutionRefusalError (issue #1740)', () => {
+  it('is a CdkdError, so the CLI error path treats it like every other typed error', () => {
+    const err = new IntrinsicResolutionRefusalError('refused');
+    expect(err).toBeInstanceOf(CdkdError);
+    expect(err).toBeInstanceOf(Error);
+  });
+
+  it('carries its own name + code', () => {
+    const err = new IntrinsicResolutionRefusalError('refused');
+    expect(err.name).toBe('IntrinsicResolutionRefusalError');
+    expect(err.code).toBe('INTRINSIC_RESOLUTION_REFUSAL');
+    expect(err.message).toBe('refused');
+  });
+
+  it('preserves the cause and does NOT claim a non-default exit code', () => {
+    const cause = new Error('underlying');
+    const err = new IntrinsicResolutionRefusalError('refused', cause);
+    expect(err.cause).toBe(cause);
+    // The Fn::Sub catch is the ONLY consumer and branches on the class, not on
+    // an exit code — pinning this keeps a future exitCode addition deliberate.
+    expect((err as unknown as { exitCode?: number }).exitCode).toBeUndefined();
   });
 });
