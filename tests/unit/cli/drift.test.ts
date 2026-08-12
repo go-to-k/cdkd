@@ -1032,7 +1032,7 @@ describe('cdkd drift', () => {
       expect(output).toContain('Plan (--revert)');
     });
 
-    it('--revert WARNS about AWS-authored values it will drop when state has no observedProperties (issue #1478)', async () => {
+    it('--revert REPORTS the AWS-authored values it leaves untouched when state has no observedProperties (issue #1478 / #1626)', async () => {
       // End-to-end wiring, not just the pure helper: the warning has to reach
       // the PLAN, which is what the user sees before confirming and what
       // --dry-run prints.
@@ -1061,10 +1061,10 @@ describe('cdkd drift', () => {
       const { output, error } = await runDrift(['TestStack', '--revert', '--dry-run', '--yes']);
 
       expect(error).toBeUndefined();
-      expect(output).toContain('DROP 2 AWS-authored values');
+      expect(output).toContain('LEAVES 2 AWS-authored values untouched');
       expect(output).toContain('Parameters.table_type');
       expect(output).toContain('Parameters.metadata_location');
-      expect(output).toContain('Re-deploy the stack first');
+      expect(output).toContain("cdkd state refresh-observed TestStack");
     });
 
     it('--revert does NOT warn when state HAS observedProperties (issue #1478)', async () => {
@@ -1771,12 +1771,12 @@ describe('cdkd drift --revert (placeholder isolation regression)', () => {
   });
 });
 
-describe('findRevertDroppedAwsKeys (pure helper, issue #1478)', () => {
+describe('findRevertUnbaselinedAwsKeys (pure helper, issue #1478)', () => {
   const load = async () =>
-    (await import('../../../src/cli/commands/drift.js')).findRevertDroppedAwsKeys;
+    (await import('../../../src/cli/commands/drift.js')).findRevertUnbaselinedAwsKeys;
 
   it('reports an AWS-authored sub-key the raw template does not declare', async () => {
-    const findRevertDroppedAwsKeys = await load();
+    const findRevertUnbaselinedAwsKeys = await load();
     // The motivating case: a Glue Iceberg table. AWS writes `table_type` /
     // `metadata_location` into Parameters; the template declares neither, so
     // reverting the drifted `Parameters` subtree wholesale wipes them.
@@ -1791,14 +1791,14 @@ describe('findRevertDroppedAwsKeys (pure helper, issue #1478)', () => {
     const drifts = [
       { path: 'Parameters.classification', stateValue: 'parquet', awsValue: 'json' },
     ];
-    expect(findRevertDroppedAwsKeys(drifts, desired, aws)).toEqual([
+    expect(findRevertUnbaselinedAwsKeys(drifts, desired, aws)).toEqual([
       'Parameters.metadata_location',
       'Parameters.table_type',
     ]);
   });
 
   it('does NOT report a key present on both sides with a different value', async () => {
-    const findRevertDroppedAwsKeys = await load();
+    const findRevertUnbaselinedAwsKeys = await load();
     // That is the drift the user explicitly asked to revert, not a silent
     // loss — warning about it would make the warning meaningless.
     const desired = { Parameters: { classification: 'parquet' } };
@@ -1806,11 +1806,11 @@ describe('findRevertDroppedAwsKeys (pure helper, issue #1478)', () => {
     const drifts = [
       { path: 'Parameters.classification', stateValue: 'parquet', awsValue: 'json' },
     ];
-    expect(findRevertDroppedAwsKeys(drifts, desired, aws)).toEqual([]);
+    expect(findRevertUnbaselinedAwsKeys(drifts, desired, aws)).toEqual([]);
   });
 
   it('ignores AWS-authored keys under a NON-drifted top-level key', async () => {
-    const findRevertDroppedAwsKeys = await load();
+    const findRevertUnbaselinedAwsKeys = await load();
     // `buildRevertNewProperties` only overwrites drifted top-level keys, so
     // nothing under an undrifted one is at risk. Reporting it would be a
     // false alarm on essentially every revert.
@@ -1823,21 +1823,21 @@ describe('findRevertDroppedAwsKeys (pure helper, issue #1478)', () => {
     const drifts = [
       { path: 'Parameters.classification', stateValue: 'parquet', awsValue: 'json' },
     ];
-    expect(findRevertDroppedAwsKeys(drifts, desired, aws)).toEqual([]);
+    expect(findRevertUnbaselinedAwsKeys(drifts, desired, aws)).toEqual([]);
   });
 
   it('ignores a drifted top-level key the desired side does not declare at all', async () => {
-    const findRevertDroppedAwsKeys = await load();
+    const findRevertUnbaselinedAwsKeys = await load();
     // `buildRevertNewProperties` leaves the AWS-current value in place when
     // the key is absent from desired, so nothing is dropped.
     const desired = { Description: 'd' };
     const aws = { Description: 'd', Parameters: { table_type: 'ICEBERG' } };
     const drifts = [{ path: 'Parameters', stateValue: undefined, awsValue: {} }];
-    expect(findRevertDroppedAwsKeys(drifts, desired, aws)).toEqual([]);
+    expect(findRevertUnbaselinedAwsKeys(drifts, desired, aws)).toEqual([]);
   });
 
   it('recurses through nested objects', async () => {
-    const findRevertDroppedAwsKeys = await load();
+    const findRevertUnbaselinedAwsKeys = await load();
     const desired = { StorageDescriptor: { SerdeInfo: { Name: 'n' } } };
     const aws = {
       StorageDescriptor: {
@@ -1848,22 +1848,22 @@ describe('findRevertDroppedAwsKeys (pure helper, issue #1478)', () => {
     const drifts = [
       { path: 'StorageDescriptor.SerdeInfo.Name', stateValue: 'n', awsValue: 'n2' },
     ];
-    expect(findRevertDroppedAwsKeys(drifts, desired, aws)).toEqual([
+    expect(findRevertUnbaselinedAwsKeys(drifts, desired, aws)).toEqual([
       'StorageDescriptor.Compressed',
       'StorageDescriptor.SerdeInfo.SerializationLibrary',
     ]);
   });
 
   it('reports the containing path when desired has no object where AWS does', async () => {
-    const findRevertDroppedAwsKeys = await load();
+    const findRevertUnbaselinedAwsKeys = await load();
     const desired = { Parameters: { nested: undefined } } as Record<string, unknown>;
     const aws = { Parameters: { nested: { table_type: 'ICEBERG' } } };
     const drifts = [{ path: 'Parameters.nested', stateValue: undefined, awsValue: {} }];
-    expect(findRevertDroppedAwsKeys(drifts, desired, aws)).toEqual(['Parameters.nested']);
+    expect(findRevertUnbaselinedAwsKeys(drifts, desired, aws)).toEqual(['Parameters.nested']);
   });
 
   it('compares a POSITIONAL array wholesale, never element-wise', async () => {
-    const findRevertDroppedAwsKeys = await load();
+    const findRevertUnbaselinedAwsKeys = await load();
     // The drift comparator's paths never carry an array index, so an
     // element-wise walk here would report positions the rest of the revert
     // path cannot reason about. Only a KEYED list (below) is walked, because
@@ -1871,11 +1871,11 @@ describe('findRevertDroppedAwsKeys (pure helper, issue #1478)', () => {
     const desired = { SubnetIds: ['subnet-a'] };
     const aws = { SubnetIds: ['subnet-a', 'subnet-b'] };
     const drifts = [{ path: 'SubnetIds', stateValue: [], awsValue: [] }];
-    expect(findRevertDroppedAwsKeys(drifts, desired, aws)).toEqual([]);
+    expect(findRevertUnbaselinedAwsKeys(drifts, desired, aws)).toEqual([]);
   });
 
   it('does NOT report a SERVICE-authored tag the revert preserves', async () => {
-    const findRevertDroppedAwsKeys = await load();
+    const findRevertUnbaselinedAwsKeys = await load();
     // `mergeTagListForRevert` (issue #1501) keeps `aws:`-prefixed /
     // AmazonECSManaged entries, so they are not dropped and warning about
     // them would be a false alarm. This case predates the keyed-list walk and
@@ -1889,21 +1889,21 @@ describe('findRevertDroppedAwsKeys (pure helper, issue #1478)', () => {
       ],
     };
     const drifts = [{ path: 'Tags', stateValue: [], awsValue: [] }];
-    expect(findRevertDroppedAwsKeys(drifts, desired, aws)).toEqual([]);
+    expect(findRevertUnbaselinedAwsKeys(drifts, desired, aws)).toEqual([]);
   });
 
   it('DOES report an ordinary console-added tag, which the revert strips', async () => {
-    const findRevertDroppedAwsKeys = await load();
+    const findRevertUnbaselinedAwsKeys = await load();
     // The other half of #1501: a non-service tag IS stripped by the revert,
     // so the plan should say so.
     const desired = { Tags: [{ Key: 'a', Value: '1' }] };
     const aws = { Tags: [{ Key: 'a', Value: '1' }, { Key: 'owner', Value: 'alice' }] };
     const drifts = [{ path: 'Tags', stateValue: [], awsValue: [] }];
-    expect(findRevertDroppedAwsKeys(drifts, desired, aws)).toEqual(['Tags[owner]']);
+    expect(findRevertUnbaselinedAwsKeys(drifts, desired, aws)).toEqual(['Tags[owner]']);
   });
 
   it('reports every AWS-only entry of a KEYED attribute list (issue #1626)', async () => {
-    const findRevertDroppedAwsKeys = await load();
+    const findRevertUnbaselinedAwsKeys = await load();
     // The motivating case. `readCurrentState` returns ELBv2's FULL attribute
     // set, so against a template declaring one key every other entry lands on
     // the provider's removal path — and before this walk the plan warned about
@@ -1923,36 +1923,47 @@ describe('findRevertDroppedAwsKeys (pure helper, issue #1478)', () => {
     ];
     // Bracket form, because an attribute key contains dots of its own and a
     // dotted path would be ambiguous with a nested object.
-    expect(findRevertDroppedAwsKeys(drifts, desired, aws)).toEqual([
+    expect(findRevertUnbaselinedAwsKeys(drifts, desired, aws)).toEqual([
       'LoadBalancerAttributes[deletion_protection.enabled]',
       'LoadBalancerAttributes[routing.http2.enabled]',
     ]);
   });
 
-  it('treats an EMPTY desired list as the whole-list case, not a keyed compare', async () => {
-    const findRevertDroppedAwsKeys = await load();
-    // `[]` carries no identities. Enumerating every AWS entry against it would
-    // be noisier than the existing whole-list report and says the same thing.
+  it('enumerates every AWS entry against an EMPTY desired list (issue #1626)', async () => {
+    const findRevertUnbaselinedAwsKeys = await load();
+    // This inverts the pre-#1626 contract, deliberately. `[]` carries no
+    // identities, so the old walk fell to the whole-list arm — which only
+    // reports when the desired side is `undefined`, so an empty list reported
+    // NOTHING at all.
+    //
+    // That is now wrong for the only caller this helper has: it is invoked
+    // exclusively when `observedProperties` is absent, and on that baseline
+    // `mergeUntemplatedValue` PRESERVES every entry of an empty-baseline list
+    // (the #1501 regression arm). Reporting nothing would leave the plan
+    // silently under-claiming what survives, which is the one direction the
+    // correspondence fence exists to forbid.
     const desired = { LoadBalancerAttributes: [] };
     const aws = { LoadBalancerAttributes: [{ Key: 'deletion_protection.enabled', Value: 'x' }] };
     const drifts = [{ path: 'LoadBalancerAttributes', stateValue: [], awsValue: [] }];
-    expect(findRevertDroppedAwsKeys(drifts, desired, aws)).toEqual([]);
+    expect(findRevertUnbaselinedAwsKeys(drifts, desired, aws)).toEqual([
+      'LoadBalancerAttributes[deletion_protection.enabled]',
+    ]);
   });
 
   it('does not treat a list of plain objects without Key as keyed', async () => {
-    const findRevertDroppedAwsKeys = await load();
+    const findRevertUnbaselinedAwsKeys = await load();
     const desired = { Rules: [{ Name: 'a' }] };
     const aws = { Rules: [{ Name: 'a' }, { Name: 'b' }] };
     const drifts = [{ path: 'Rules', stateValue: [], awsValue: [] }];
-    expect(findRevertDroppedAwsKeys(drifts, desired, aws)).toEqual([]);
+    expect(findRevertUnbaselinedAwsKeys(drifts, desired, aws)).toEqual([]);
   });
 
   it('returns nothing when AWS authored nothing extra', async () => {
-    const findRevertDroppedAwsKeys = await load();
+    const findRevertUnbaselinedAwsKeys = await load();
     const desired = { Parameters: { a: '1', b: '2' } };
     const aws = { Parameters: { a: '9', b: '2' } };
     const drifts = [{ path: 'Parameters.a', stateValue: '1', awsValue: '9' }];
-    expect(findRevertDroppedAwsKeys(drifts, desired, aws)).toEqual([]);
+    expect(findRevertUnbaselinedAwsKeys(drifts, desired, aws)).toEqual([]);
   });
 });
 
@@ -2185,5 +2196,434 @@ describe('tag-list revert preserves SERVICE-authored tags (pure helpers, issue #
         { Tags: awsCurrent, MinSize: 2 }
       )
     ).toEqual([]);
+  });
+});
+
+describe('buildRevertNewProperties preserveUntemplated (issue #1626 items 2 + 3)', () => {
+  const load = async () =>
+    (await import('../../../src/cli/commands/drift.js')).buildRevertNewProperties;
+  const drifted = (path: string): Array<{ path: string; stateValue: unknown; awsValue: unknown }> => [
+    { path, stateValue: 'x', awsValue: 'y' },
+  ];
+
+  it('keeps the untemplated entries of a KEYED list while still reverting the templated one', async () => {
+    const buildRevertNewProperties = await load();
+    // The motivating shape: ELBv2 `LoadBalancerAttributes`. `readCurrentState`
+    // emits every attribute AWS reports; the template declares one.
+    const desired = {
+      LoadBalancerAttributes: [{ Key: 'idle_timeout.timeout_seconds', Value: '60' }],
+    };
+    const aws = {
+      LoadBalancerAttributes: [
+        { Key: 'idle_timeout.timeout_seconds', Value: '90' },
+        { Key: 'deletion_protection.enabled', Value: 'true' },
+        { Key: 'routing.http2.enabled', Value: 'false' },
+      ],
+    };
+    expect(
+      buildRevertNewProperties(drifted('LoadBalancerAttributes'), desired, aws, {
+        preserveUntemplated: true,
+      })
+    ).toEqual({
+      LoadBalancerAttributes: [
+        // reverted to the baseline value
+        { Key: 'idle_timeout.timeout_seconds', Value: '60' },
+        // untemplated -> preserved at the AWS-current value
+        { Key: 'deletion_protection.enabled', Value: 'true' },
+        { Key: 'routing.http2.enabled', Value: 'false' },
+      ],
+    });
+  });
+
+  it('preserves an untemplated key at a NON-default value (item 2)', async () => {
+    const buildRevertNewProperties = await load();
+    // PR #1624's per-provider skip only covers a key sitting at its DOCUMENTED
+    // DEFAULT. The one it cannot skip is an untemplated attribute someone
+    // changed in the console; that is the residual write this closes.
+    const desired = { LoadBalancerAttributes: [{ Key: 'idle_timeout.timeout_seconds', Value: '60' }] };
+    const aws = {
+      LoadBalancerAttributes: [
+        { Key: 'idle_timeout.timeout_seconds', Value: '60' },
+        { Key: 'deletion_protection.enabled', Value: 'true' },
+      ],
+    };
+    const out = buildRevertNewProperties(drifted('LoadBalancerAttributes'), desired, aws, {
+      preserveUntemplated: true,
+    }) as { LoadBalancerAttributes: Array<{ Key: string; Value: string }> };
+    expect(out.LoadBalancerAttributes).toContainEqual({
+      Key: 'deletion_protection.enabled',
+      Value: 'true',
+    });
+  });
+
+  it('preserves an untemplated NESTED object key while reverting the templated sibling', async () => {
+    const buildRevertNewProperties = await load();
+    const desired = { Parameters: { classification: 'parquet' } };
+    const aws = {
+      Parameters: {
+        classification: 'json',
+        table_type: 'ICEBERG',
+        metadata_location: 's3://bucket/metadata/00000.json',
+      },
+    };
+    expect(
+      buildRevertNewProperties(drifted('Parameters.classification'), desired, aws, {
+        preserveUntemplated: true,
+      })
+    ).toEqual({
+      Parameters: {
+        classification: 'parquet',
+        table_type: 'ICEBERG',
+        metadata_location: 's3://bucket/metadata/00000.json',
+      },
+    });
+  });
+
+  it('re-adds a baseline key AWS no longer reports (the revert is still a revert)', async () => {
+    const buildRevertNewProperties = await load();
+    expect(
+      buildRevertNewProperties(
+        drifted('Parameters'),
+        { Parameters: { kept: '1', lost: '2' } },
+        { Parameters: { kept: '9', aws_only: '3' } },
+        { preserveUntemplated: true }
+      )
+    ).toEqual({ Parameters: { kept: '1', aws_only: '3', lost: '2' } });
+    // Same for a keyed list.
+    expect(
+      buildRevertNewProperties(
+        drifted('Attrs'),
+        { Attrs: [{ Key: 'a', Value: '1' }] },
+        { Attrs: [{ Key: 'b', Value: '2' }] },
+        { preserveUntemplated: true }
+      )
+    ).toEqual({
+      Attrs: [
+        { Key: 'b', Value: '2' },
+        { Key: 'a', Value: '1' },
+      ],
+    });
+  });
+
+  it('takes a POSITIONAL array and a scalar from the baseline wholesale', async () => {
+    const buildRevertNewProperties = await load();
+    // The drift comparator compares these wholesale, so merging would invent a
+    // value nothing else can reason about.
+    expect(
+      buildRevertNewProperties(
+        [
+          { path: 'SubnetIds', stateValue: 1, awsValue: 2 },
+          { path: 'Scalar', stateValue: 1, awsValue: 2 },
+        ],
+        { SubnetIds: ['subnet-a'], Scalar: 'baseline' },
+        { SubnetIds: ['subnet-a', 'subnet-b'], Scalar: 'drifted' },
+        { preserveUntemplated: true }
+      )
+    ).toEqual({ SubnetIds: ['subnet-a'], Scalar: 'baseline' });
+  });
+
+  it('is OFF by default, so the observed-capture baseline still strips out-of-band additions', async () => {
+    const buildRevertNewProperties = await load();
+    // This is the behavior the `drift-revert` integ's injected-tag assertion
+    // depends on.
+    expect(
+      buildRevertNewProperties(
+        drifted('Attrs'),
+        { Attrs: [{ Key: 'a', Value: '1' }] },
+        {
+          Attrs: [
+            { Key: 'a', Value: '9' },
+            { Key: 'console-added', Value: 'x' },
+          ],
+        }
+      )
+    ).toEqual({ Attrs: [{ Key: 'a', Value: '1' }] });
+  });
+
+  it('subsumes the #1501 tag carve-out rather than competing with it', async () => {
+    const buildRevertNewProperties = await load();
+    // preserveUntemplated keeps EVERY untemplated tag, which is a superset of
+    // the service-authored-only carve-out.
+    const out = buildRevertNewProperties(
+      drifted('Tags'),
+      { Tags: [{ Key: 'env', Value: 'prod' }] },
+      {
+        Tags: [
+          { Key: 'env', Value: 'dev' },
+          { Key: 'AmazonECSManaged', Value: 'true' },
+          { Key: 'console-added', Value: 'x' },
+        ],
+      },
+      { preserveUntemplated: true }
+    ) as { Tags: Array<{ Key: string; Value: string }> };
+    expect(out.Tags).toEqual([
+      { Key: 'env', Value: 'prod' },
+      { Key: 'AmazonECSManaged', Value: 'true' },
+      { Key: 'console-added', Value: 'x' },
+    ]);
+  });
+
+  it('keeps every AWS tag when the baseline list is DECLARED but EMPTY (#1501 regression)', async () => {
+    const buildRevertNewProperties = await load();
+    // `isKeyedList` requires a NON-empty array, so without the empty-array arm
+    // this falls through to the wholesale branch and hands AWS `[]` — stripping
+    // `AmazonECSManaged`, the exact loss the #1501 carve-out exists to prevent.
+    // A condition-collapsed `Tags: []` is a real template shape, and on a
+    // template-only baseline it is reachable.
+    const out = buildRevertNewProperties(
+      drifted('Tags'),
+      { Tags: [] },
+      {
+        Tags: [
+          { Key: 'AmazonECSManaged', Value: 'true' },
+          { Key: 'console-added', Value: 'x' },
+        ],
+      },
+      { preserveUntemplated: true }
+    ) as { Tags: Array<{ Key: string }> };
+    expect(out.Tags.map((e) => e.Key)).toEqual(['AmazonECSManaged', 'console-added']);
+  });
+
+  it('never emits a DUPLICATE key when AWS reports one twice', async () => {
+    const buildRevertNewProperties = await load();
+    // `mergeTagListForRevert` dedupes for the same reason: AWS can return the
+    // same key twice, and PutBucketTagging / ModifyLoadBalancerAttributes
+    // REJECT a duplicate. First occurrence wins.
+    const out = buildRevertNewProperties(
+      drifted('Tags'),
+      { Tags: [{ Key: 'dup', Value: 'baseline' }] },
+      {
+        Tags: [
+          { Key: 'dup', Value: 'aws-1' },
+          { Key: 'dup', Value: 'aws-2' },
+          { Key: 'other', Value: 'y' },
+        ],
+      },
+      { preserveUntemplated: true }
+    ) as { Tags: Array<{ Key: string; Value: string }> };
+    expect(out.Tags).toEqual([
+      { Key: 'dup', Value: 'baseline' },
+      { Key: 'other', Value: 'y' },
+    ]);
+  });
+
+  it('preserves every path findRevertUnbaselinedAwsKeys reports, plus the service tags it omits', async () => {
+    const mod = await import('../../../src/cli/commands/drift.js');
+    // The plan tells the user which AWS-authored paths are left untouched; the
+    // merge is what makes that true. If the two walks disagree the plan lies,
+    // so pin the correspondence rather than trusting two copies of the same
+    // structural rules.
+    const desired = {
+      Parameters: { classification: 'parquet' },
+      LoadBalancerAttributes: [{ Key: 'idle_timeout.timeout_seconds', Value: '60' }],
+      Positional: ['a'],
+      Tags: [{ Key: 'env', Value: 'prod' }],
+      // A DECLARED-but-EMPTY keyed list: the shape whose merge arm was added
+      // as a #1501 regression fix, and which `collectMissingPaths` has to
+      // mirror or the plan under-claims what the merge preserves.
+      EmptyBaseline: [],
+    };
+    const aws = {
+      Parameters: { classification: 'json', table_type: 'ICEBERG' },
+      LoadBalancerAttributes: [
+        { Key: 'idle_timeout.timeout_seconds', Value: '90' },
+        { Key: 'deletion_protection.enabled', Value: 'true' },
+      ],
+      Positional: ['a', 'b'],
+      Tags: [
+        { Key: 'env', Value: 'dev' },
+        { Key: 'console-added', Value: 'x' },
+        { Key: 'AmazonECSManaged', Value: 'true' },
+      ],
+      EmptyBaseline: [{ Key: 'aws-authored', Value: '1' }],
+    };
+    const drifts = [
+      { path: 'Parameters.classification', stateValue: 'parquet', awsValue: 'json' },
+      { path: 'LoadBalancerAttributes', stateValue: 'x', awsValue: 'y' },
+      { path: 'Positional', stateValue: ['a'], awsValue: ['a', 'b'] },
+      { path: 'Tags', stateValue: 'x', awsValue: 'y' },
+      { path: 'EmptyBaseline', stateValue: 'x', awsValue: 'y' },
+    ];
+    const reported = mod.findRevertUnbaselinedAwsKeys(drifts, desired, aws);
+
+    const paths = (value: unknown, prefix: string, out: Set<string>): void => {
+      if (
+        Array.isArray(value) &&
+        value.length > 0 &&
+        value.every((e) => typeof (e as { Key?: unknown })?.Key === 'string')
+      ) {
+        for (const e of value as Array<{ Key: string }>) out.add(`${prefix}[${e.Key}]`);
+        return;
+      }
+      if (typeof value !== 'object' || value === null || Array.isArray(value)) return;
+      for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+        out.add(prefix ? `${prefix}.${k}` : k);
+        paths(v, prefix ? `${prefix}.${k}` : k, out);
+      }
+    };
+    const inAws = new Set<string>();
+    const withoutFlag = new Set<string>();
+    const withFlag = new Set<string>();
+    paths(aws, '', inAws);
+    paths(mod.buildRevertNewProperties(drifts, desired, aws), '', withoutFlag);
+    paths(
+      mod.buildRevertNewProperties(drifts, desired, aws, { preserveUntemplated: true }),
+      '',
+      withFlag
+    );
+
+    // Paths the flag RESCUES = paths present on the AWS side, dropped by the
+    // default overlay, and kept by the merge.
+    const rescued = [...inAws].filter((p) => !withoutFlag.has(p) && withFlag.has(p)).sort();
+
+    // Every path the plan names as preserved IS rescued by the flag, and the
+    // flag rescues nothing the plan failed to name — so the plan can neither
+    // over-promise nor silently touch something.
+    expect(rescued).toEqual(reported);
+    expect(rescued).toEqual([
+      'EmptyBaseline[aws-authored]',
+      'LoadBalancerAttributes[deletion_protection.enabled]',
+      'Parameters.table_type',
+      'Tags[console-added]',
+    ]);
+    // `Tags[AmazonECSManaged]` is absent from BOTH lists, and that is the
+    // #1501 carve-out being consistent rather than a gap: it is preserved on
+    // the DEFAULT path too, so it is not something this flag rescues, and
+    // `isServiceManagedTagKey` omits it from the plan because reporting it
+    // would warn about a loss that cannot happen. Pin that it survives under
+    // BOTH settings — the property that actually matters.
+    expect(withoutFlag.has('Tags[AmazonECSManaged]')).toBe(true);
+    expect(withFlag.has('Tags[AmazonECSManaged]')).toBe(true);
+    // ...while an ORDINARY console-added tag is stripped by default and kept
+    // only under the flag, which is the whole behavior change.
+    expect(withoutFlag.has('Tags[console-added]')).toBe(false);
+    expect(withFlag.has('Tags[console-added]')).toBe(true);
+  });
+});
+
+describe('cdkd drift --revert untemplated-value contract (issue #1626)', () => {
+  let exitSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    // Same reset set as the main suite. `mockReset()` (not `clearAllMocks`)
+    // is load-bearing: `runRevertAgainst` primes with `mockResolvedValueOnce`,
+    // and clearing only call RECORDS would leave the queue for the next test.
+    mockGetState.mockReset();
+    mockListStacks.mockReset();
+    mockVerifyBucketExists.mockReset().mockResolvedValue(undefined);
+    mockSaveState.mockReset().mockResolvedValue('"etag-2"');
+    mockAcquireLock.mockReset().mockResolvedValue(true);
+    mockReleaseLock.mockReset().mockResolvedValue(undefined);
+    mockRegistryGetProvider.mockReset();
+    mockRegistryShouldSkip.mockReset().mockReturnValue(false);
+    mockCcReadCurrentState.mockReset().mockResolvedValue(undefined);
+    mockIamSend.mockReset();
+    errorSpy.mockReset();
+    warnSpy.mockReset();
+    exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
+      throw new Error('__exit__');
+    }) as never);
+  });
+
+  afterEach(() => {
+    exitSpy.mockRestore();
+  });
+
+  const runRevertAgainst = async (
+    resource: ResourceState,
+    awsCurrent: Record<string, unknown>
+  ): Promise<{
+    calls: Array<[string, string, string, Record<string, unknown>, Record<string, unknown>]>;
+    output: string;
+  }> => {
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(makeState({ Lb: resource }));
+    const updateMock = vi.fn(async () => ({ physicalId: 'phys-lb', wasReplaced: false }));
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => awsCurrent,
+      update: updateMock,
+    });
+    const { output } = await runDrift(['TestStack', '--revert', '--yes']);
+    return {
+      calls: updateMock.mock.calls as unknown as Array<
+        [string, string, string, Record<string, unknown>, Record<string, unknown>]
+      >,
+      output,
+    };
+  };
+
+  const LB_TEMPLATE = {
+    LoadBalancerAttributes: [{ Key: 'idle_timeout.timeout_seconds', Value: '60' }],
+  };
+  const LB_AWS = {
+    LoadBalancerAttributes: [
+      { Key: 'idle_timeout.timeout_seconds', Value: '90' },
+      { Key: 'deletion_protection.enabled', Value: 'true' },
+      { Key: 'routing.http2.enabled', Value: 'false' },
+    ],
+  };
+
+  it('with NO observedProperties, MERGES the untemplated attributes into the sent bag', async () => {
+    const { calls } = await runRevertAgainst(
+      makeResource({
+        physicalId: 'phys-lb',
+        resourceType: 'AWS::ElasticLoadBalancingV2::LoadBalancer',
+        properties: LB_TEMPLATE,
+      }),
+      LB_AWS
+    );
+    expect(calls).toHaveLength(1);
+    const sent = calls[0]![3] as { LoadBalancerAttributes: Array<{ Key: string; Value: string }> };
+    // The templated attribute is reverted...
+    expect(sent.LoadBalancerAttributes).toContainEqual({
+      Key: 'idle_timeout.timeout_seconds',
+      Value: '60',
+    });
+    // ...and the two untemplated ones ride along at their AWS-current values,
+    // so even a wholesale-replace provider cannot drop them.
+    expect(sent.LoadBalancerAttributes).toContainEqual({
+      Key: 'deletion_protection.enabled',
+      Value: 'true',
+    });
+    expect(sent.LoadBalancerAttributes).toContainEqual({
+      Key: 'routing.http2.enabled',
+      Value: 'false',
+    });
+    // The previous side is still the FULL AWS snapshot — unchanged contract.
+    expect(calls[0]![4]).toEqual(LB_AWS);
+  });
+
+  it('with observedProperties present, sends the baseline overlay unchanged', async () => {
+    // The baseline is a deploy-time AWS snapshot, so a key AWS reports and the
+    // baseline lacks WAS added out-of-band — removing it is the revert the user
+    // asked for. This is the behavior the `drift-revert` integ depends on.
+    const { calls } = await runRevertAgainst(
+      makeResource({
+        physicalId: 'phys-lb',
+        resourceType: 'AWS::ElasticLoadBalancingV2::LoadBalancer',
+        properties: LB_TEMPLATE,
+        observedProperties: LB_TEMPLATE,
+      }),
+      LB_AWS
+    );
+    expect(calls).toHaveLength(1);
+    const sent = calls[0]![3] as { LoadBalancerAttributes: Array<{ Key: string }> };
+    expect(sent.LoadBalancerAttributes.map((e) => e.Key)).toEqual([
+      'idle_timeout.timeout_seconds',
+    ]);
+  });
+
+  it('the plan says the untemplated values are LEFT UNTOUCHED, not dropped', async () => {
+    const { output } = await runRevertAgainst(
+      makeResource({
+        physicalId: 'phys-lb',
+        resourceType: 'AWS::ElasticLoadBalancingV2::LoadBalancer',
+        properties: LB_TEMPLATE,
+      }),
+      LB_AWS
+    );
+    expect(output).toContain('LEAVES 2 AWS-authored values untouched');
+    expect(output).toContain('LoadBalancerAttributes[deletion_protection.enabled]');
+    expect(output).not.toContain('will DROP');
   });
 });

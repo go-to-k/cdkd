@@ -1289,12 +1289,22 @@ Checklist when writing or reviewing an `update()`:
   do not share becomes a removal in the other direction, which is exactly how
   the live run failed on a SECOND key the forward pass never touched.)
   **The previous side is not always a template**, which decides what a safe
-  reset value even is: `cdkd drift --revert` hands the provider the full
-  `readCurrentState` snapshot as `previousProperties`, so every attribute AWS
-  reports but the template never set looks REMOVED. Writing a documented
+  reset value even is: `cdkd drift --revert` hands the provider the
+  `readCurrentState` snapshot as `previousProperties`, so an attribute AWS
+  reports but the template never set can look REMOVED. Writing a documented
   default for each would silently reset a dozen live settings. Skip a key
   whose CURRENT value already equals the default — an untemplated key is by
   definition sitting at its default, while a genuinely templated one is not.
+  Since issue [#1626](https://github.com/go-to-k/cdkd/issues/1626) the caller
+  meets you halfway: when the reverted resource has NO `observedProperties`
+  (the baseline is the raw template, so cdkd cannot tell AWS-authored from
+  out-of-band), `runRevert` MERGES every untemplated path into the desired bag
+  it hands you, so those keys arrive with their AWS-current values on BOTH
+  sides and your diff sees no change. That covers the bulk case and the
+  non-default residual the per-provider skip cannot — and, because it is on
+  the desired side, it also covers a provider that replaces the bag wholesale
+  and never reads `previousProperties`. It does NOT cover the observed-capture
+  baseline, where an absence IS an intentional removal — so keep the skip.
   And **mocked unit tests cannot find any of it** — they agree with whatever
   sentinel the provider chose. The
   ELBv2 arms shipped with two tests literally named "AWS-documented clear" /
@@ -1386,9 +1396,16 @@ template side"**, using `previousProperties`:
 
 Restoring anything merely absent from the DESIRED side would make
 user-authored entries unremovable — the mirror image of the bug — and would
-break `cdkd drift --revert`'s ability to clear a console-side addition (that
-path passes the AWS-current snapshot as `previousProperties`, so every live
-key lands in the previous column and nothing is added back).
+break `cdkd drift --revert`'s ability to clear a console-side addition (on an
+observed-capture baseline that path passes the AWS-current snapshot as
+`previousProperties`, so every live key lands in the previous column and
+nothing is added back). On a resource with no `observedProperties` the same
+path MERGES every untemplated live key into the DESIRED bag instead (issue
+[#1626](https://github.com/go-to-k/cdkd/issues/1626)) — `previousProperties`
+is still the full AWS-current snapshot — so an untemplated live
+key arrives in BOTH columns at its AWS-current value, so this table's first
+row keeps it — which is the intended outcome there, since the raw template
+cannot distinguish an AWS-authored entry from a console-added one.
 
 **State the price.** The merge cannot distinguish an AWS-written entry from a
 console-written one — neither appears on either template side — so every
