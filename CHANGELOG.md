@@ -1,3 +1,10 @@
+## [0.280.41](https://github.com/go-to-k/cdkd/compare/v0.280.40...v0.280.41) (2026-08-12)
+
+
+### Bug Fixes
+
+* **export:** accept the bare AWS::ApiGateway::Resource physicalId cdkd actually stores ([#1680](https://github.com/go-to-k/cdkd/issues/1680)) ([6e181bb](https://github.com/go-to-k/cdkd/commit/6e181bbd82364a740148e0cfb1d5b4db37750d27))
+
 ## [0.280.40](https://github.com/go-to-k/cdkd/compare/v0.280.39...v0.280.40) (2026-08-12)
 
 
