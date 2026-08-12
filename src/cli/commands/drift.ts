@@ -1588,7 +1588,16 @@ async function runRevert(
                 stateResource.physicalId,
                 outcome.resourceType,
                 newProperties,
-                outcome.awsProperties
+                outcome.awsProperties,
+                // The desired bag here is `observedProperties ?? properties`
+                // overlaid onto the AWS-current snapshot — an AWS READBACK, not
+                // a template (issue #1732). Several `readCurrentState`
+                // implementations spell "this feature is not set" as an EMPTY
+                // collection rather than an absent key, so without this flag a
+                // provider cannot tell "restore the unset state" (delete) from
+                // a template's condition-collapsed array (leave the live value
+                // alone), and picking either arm breaks the other caller.
+                { desiredFromAwsReadback: true }
               ),
             outcome.logicalId,
             { logger: { debug: (msg) => logger.debug(msg) } }

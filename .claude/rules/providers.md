@@ -638,16 +638,31 @@ one value, ask what each of them MEANT before letting the merged value pick an
 arm — especially when one arm deletes.
 
 **And ask who ELSE sends that shape, because the answer can invert per caller.**
-This split is NOT shippable as described above, and #1713's review is where that
-surfaced: `readCurrentState` emits the empty placeholder for an UNSET feature,
-so `cdkd drift --revert` hands `update()` a desired `{Rules: []}` meaning
-"restore the state where this was unset" — where the same bag from a template
-means "a collapsed array, do not touch the live value". The two callers need
-OPPOSITE arms and `update()` has no context to tell them apart, so skipping
-breaks revert (the out-of-band change survives) and, worse, `retainPrevious`
-then records the AWS-current value as the new baseline, laundering it clean.
-Before adding a skip on an update path, enumerate every caller that can produce
-the skipped shape and check that the skip is right for ALL of them.
+#1713's review is where that surfaced: `readCurrentState` emits the empty
+placeholder for an UNSET feature, so `cdkd drift --revert` hands `update()` a
+desired `{Rules: []}` meaning "restore the state where this was unset" — where
+the same bag from a template means "a collapsed array, do not touch the live
+value". The two callers need OPPOSITE arms. Skipping unconditionally breaks
+revert (the out-of-band change survives) and, worse, `retainPrevious` then
+records the AWS-current value as the new baseline, laundering it clean; deleting
+unconditionally is the #1713 data loss. Before adding a skip on an update path,
+enumerate every caller that can produce the skipped shape and check the skip is
+right for ALL of them.
+
+**That is what `UpdateContext` is for** (issue #1732) — the `update()` sibling of
+`CreateContext`, added because this class has no per-site workaround: the bags
+are byte-identical and only the CALLER knows which it is. It is optional, so
+none of the 77 providers implementing `update()` changed. Its one field today,
+`desiredFromAwsReadback`, is named for what it asserts rather than for
+"state-borne", and that distinction is load-bearing: the rollback executor's
+revert arms ARE state-borne, but their desired bag is
+`previousState.properties` — a TEMPLATE recorded earlier — so `{Rules: []}`
+there means what the template meant and the template answer (SKIP) is correct.
+Those arms deliberately pass NO context, and widening the flag to `stateBorne`
+would sweep them in and delete a live configuration during a rollback. Only
+`src/cli/commands/drift.ts`'s revert call passes it. When adding a field here,
+ask what the flag lets a provider CONCLUDE, not merely where the call came
+from.
 
 Two things that are easy to get wrong and were both caught by review:
 **normalize BOTH comparison sides**, not just the desired one — a record written BEFORE the provider started narrowing still carries every key, so a one-sided pass flips the same difference to a REMOVAL and breaks exactly the population the narrowing exists for; and **wire `cdkd diff` too**, since a preview that narrows differently from the apply forecasts a change the deploy will never make. `makeCanonicalizePropertiesFn` in `src/provisioning/canonicalize-properties.ts` is the one builder both commands use, so they cannot drift.

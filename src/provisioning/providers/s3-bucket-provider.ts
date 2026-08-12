@@ -79,6 +79,7 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
   CreateContext,
+  UpdateContext,
 } from '../../types/resource.js';
 
 /**
@@ -3116,7 +3117,8 @@ export class S3BucketProvider implements ResourceProvider {
   private async applySubConfigDiffs(
     bucketName: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<Map<string, unknown>> {
     const overrides = new Map<string, unknown>();
     /** Record a WHOLE-BLOCK skip: the effective value is the previous one. */
@@ -3321,7 +3323,12 @@ export class S3BucketProvider implements ResourceProvider {
         // see `declaresEmptyCollection`. Skip and keep the live configuration,
         // exactly as the lifecycle / CORS arms do; only a genuinely ABSENT
         // property reaches the Delete.
-        if (ownershipEmptyDesired) {
+        // An empty DECLARED collection is not a removal intent from a TEMPLATE
+        // (issue #1713) — but it IS one from `cdkd drift --revert`, whose
+        // desired bag is an AWS readback and whose `readCurrentState` spells
+        // "not set" as exactly this empty collection (issue #1732). Same bytes,
+        // opposite meanings, so the caller has to say which it is.
+        if (ownershipEmptyDesired && context?.desiredFromAwsReadback !== true) {
           this.emptyCollectionSkip(
             'OwnershipControls',
             'OwnershipControls.Rules',
@@ -3361,7 +3368,12 @@ export class S3BucketProvider implements ResourceProvider {
         // Delete here silently downgrades a declared `aws:kms` default to the
         // SSE-S3 / AES256 one on a template whose only fault is a collapsed
         // array (issue #1713).
-        if (encryptionEmptyDesired) {
+        // An empty DECLARED collection is not a removal intent from a TEMPLATE
+        // (issue #1713) — but it IS one from `cdkd drift --revert`, whose
+        // desired bag is an AWS readback and whose `readCurrentState` spells
+        // "not set" as exactly this empty collection (issue #1732). Same bytes,
+        // opposite meanings, so the caller has to say which it is.
+        if (encryptionEmptyDesired && context?.desiredFromAwsReadback !== true) {
           this.emptyCollectionSkip(
             'BucketEncryption',
             'BucketEncryption.ServerSideEncryptionConfiguration',
@@ -4028,7 +4040,8 @@ export class S3BucketProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating S3 bucket ${logicalId}: ${physicalId}`);
 
@@ -4068,7 +4081,8 @@ export class S3BucketProvider implements ResourceProvider {
       for (const [key, value] of await this.applySubConfigDiffs(
         physicalId,
         properties,
-        previousProperties
+        previousProperties,
+        context
       )) {
         effectiveOverrides.set(key, value);
       }

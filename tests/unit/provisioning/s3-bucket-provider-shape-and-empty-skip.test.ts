@@ -491,6 +491,41 @@ describe('#1713 UPDATE: an empty BucketEncryption / OwnershipControls collection
     expect(result.effectiveProperties?.['OwnershipControls']).toEqual(LIVE_OWNERSHIP);
   });
 
+  it('drift --revert: the SAME empty bag DELETES, because it is an AWS readback', async () => {
+    // The blocker a reviewer found (issue #1732), and the reason `update()`
+    // gained a context at all. `readCurrentState` spells "this feature is not
+    // set" as `{Rules: []}` / `{ServerSideEncryptionConfiguration: []}`, and
+    // `cdkd drift --revert` builds its desired bag from that readback — so the
+    // bytes are IDENTICAL to a template's condition-collapsed array while
+    // meaning the opposite. Without the flag this row and the two skip rows
+    // above cannot both pass.
+    mockSend.mockResolvedValue({});
+    const properties = {
+      BucketName: BUCKET,
+      BucketEncryption: { ServerSideEncryptionConfiguration: [] },
+      OwnershipControls: { Rules: [] },
+    };
+    const result = await provider.update(
+      'B',
+      BUCKET,
+      RESOURCE_TYPE,
+      properties,
+      {
+        BucketName: BUCKET,
+        BucketEncryption: LIVE_ENCRYPTION,
+        OwnershipControls: LIVE_OWNERSHIP,
+      },
+      { desiredFromAwsReadback: true }
+    );
+
+    expect(sentCommands(DeleteBucketEncryptionCommand)).toHaveLength(1);
+    expect(sentCommands(DeleteBucketOwnershipControlsCommand)).toHaveLength(1);
+    // ...and nothing is retained into the baseline, so the out-of-band value
+    // cannot be laundered clean by the revert that was supposed to remove it.
+    expect(result.effectiveProperties?.['BucketEncryption']).toBeUndefined();
+    expect(result.effectiveProperties?.['OwnershipControls']).toBeUndefined();
+  });
+
   it('control: REMOVING the property entirely still Deletes both configurations', async () => {
     // The discrimination the whole fix rests on. `emptyListConfigToUndefined`
     // collapsed declared-but-empty and ABSENT into one `undefined`, so this

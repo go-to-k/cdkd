@@ -184,6 +184,56 @@ export interface ResourceImportResult {
 }
 
 /**
+ * Where the DESIRED bag handed to `update()` came from (issue #1732).
+ *
+ * The `update()` sibling of {@link CreateContext}, and it exists for the same
+ * structural reason: a provider cannot otherwise tell WHO constructed the
+ * properties it is being asked to apply, and for some shapes the answer
+ * inverts the correct behavior. Optional, so none of the 77 providers that
+ * implement `update()` need to change; only a provider with such a shape reads
+ * it.
+ *
+ * **The motivating case.** `S3BucketProvider` receives a desired
+ * `OwnershipControls: { Rules: [] }` from two callers that mean OPPOSITE things
+ * by it. From a template it is a condition-pruned / intrinsic-collapsed array —
+ * CloudFormation rejects that template outright and leaves the live
+ * configuration alone (measured, issue #1713) — so the provider must SKIP.
+ * From `cdkd drift --revert` it is the baseline `readCurrentState` emits for an
+ * UNSET feature, so it means "restore the state where this was unset" and the
+ * provider must DELETE. Byte-identical bags, opposite arms.
+ *
+ * **Read the flag as narrowly as it is named.** It says the desired bag is an
+ * AWS READBACK, not merely that it is "state-borne". The rollback executor's
+ * revert arms are state-borne too, but their desired bag is
+ * `previousState.properties` — a TEMPLATE recorded earlier — so a `{Rules: []}`
+ * there means what the template meant and the template answer (SKIP) is the
+ * right one. Those arms therefore deliberately pass NO context. Widening this
+ * to `stateBorne` would silently sweep them in and delete a configuration on a
+ * rollback.
+ */
+export interface UpdateContext {
+  /**
+   * `true` when the desired properties are an AWS-current snapshot produced by
+   * `readCurrentState` rather than by a template or a state record — today
+   * that is `cdkd drift --revert` alone (`src/cli/commands/drift.ts`).
+   *
+   * **What a provider MAY conclude from it.** That every value in the desired
+   * bag describes what AWS held at capture time, so a shape that a provider
+   * would otherwise treat as unusable-or-collapsed is instead an accurate
+   * report of the resource's state — including "this feature was not set",
+   * which several `readCurrentState` implementations spell as an EMPTY
+   * collection rather than an absent key. Reverting to that baseline therefore
+   * legitimately means REMOVING the live configuration.
+   *
+   * **What it does NOT license.** It says nothing about whether the user has a
+   * remedy (they do — the baseline is cdkd's own record, editable via
+   * `cdkd drift --accept`), so it is not a reason to relax a data-safety guard
+   * or a validation that protects the AWS call itself.
+   */
+  desiredFromAwsReadback?: boolean;
+}
+
+/**
  * Context passed to a provider's `create` method (issue #1463).
  *
  * The sibling of {@link DeleteContext}: optional, so a provider that does not
@@ -438,6 +488,7 @@ export interface ResourceProvider {
    * @param resourceType CloudFormation resource type
    * @param properties Updated properties
    * @param previousProperties Previous properties (for comparison)
+   * @param context Where the DESIRED bag came from — see {@link UpdateContext}
    * @returns Updated physical ID and attributes
    */
   update(
@@ -445,7 +496,8 @@ export interface ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult>;
 
   /**
