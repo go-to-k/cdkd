@@ -1197,12 +1197,19 @@ fi
 # Asserted per TABLE and by index-name MEMBERSHIP rather than by a glob over the
 # serialized JSON: a glob is order-dependent, so a legitimate reorder of the
 # retained list would report "must RETAIN the previous list" and accuse the fix.
+# The state is staged through a temp FILE rather than piped into `python3 -`:
+# with a `<<'PY'` heredoc the program itself arrives on stdin, so the pipe is
+# overridden and `json.load(sys.stdin)` reads an already-drained stream (an
+# empty-input JSONDecodeError, which is exactly how this assertion first failed).
 assert_retained_previous_gsi() { # $1 = logical-id prefix
-  local prefix="$1" verdict
-  verdict="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | python3 - "$1" <<'PY'
+  local prefix="$1" verdict tmp
+  tmp="$(mktemp)" || return 1
+  aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - > "${tmp}" || { rm -f "${tmp}"; return 1; }
+  verdict="$(python3 - "${tmp}" "${prefix}" <<'PY'
 import json, sys
-prefix = sys.argv[1]
-state = json.load(sys.stdin)
+path, prefix = sys.argv[1], sys.argv[2]
+with open(path) as fh:
+    state = json.load(fh)
 for logical_id, resource in state.get("resources", {}).items():
     if logical_id.startswith(prefix):
         value = resource.get("properties", {}).get("GlobalSecondaryIndexes")
@@ -1216,7 +1223,8 @@ for logical_id, resource in state.get("resources", {}).items():
 else:
     sys.exit(f"no {prefix} in cdkd state")
 PY
-)" || return 1
+)" || { rm -f "${tmp}"; return 1; }
+  rm -f "${tmp}"
   printf '%s' "${verdict}"
 }
 
