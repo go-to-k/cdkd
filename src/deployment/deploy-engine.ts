@@ -12,7 +12,12 @@ import {
   isStatefulRecreateTargetForReplace,
   renderStatefulReason,
 } from '../provisioning/stateful-types.js';
-import { withStackName, applyDefaultNameForFallback } from '../provisioning/resource-name.js';
+import {
+  withStackName,
+  applyDefaultNameForFallback,
+  getCurrentStackName,
+  looksLikeCdkdGeneratedName,
+} from '../provisioning/resource-name.js';
 import { IntrinsicFunctionResolver } from './intrinsic-function-resolver.js';
 import { DagExecutor } from './dag-executor.js';
 import type {
@@ -3126,37 +3131,41 @@ export class DeployEngine {
               // (Snapshot is not special-cased HERE — the old resource is
               // still deleted so the name frees up; the delete-first helper
               // takes its final snapshot first, issue #1354.)
+              const nameOrigin = this.replacementNameOrigin(logicalId, currentResource.physicalId);
               if (updateReplacePolicy === 'Retain') {
                 throw new CdkdError(
-                  `${logicalId} (${resourceType}) requires replacement, but its user-supplied ` +
-                    `physical name is still held by the existing resource AND ` +
-                    `UpdateReplacePolicy: Retain pins that resource in place. Rename the ` +
-                    `resource in your CDK code — with Retain, the old resource keeps the ` +
-                    `name, so a same-name replacement can never proceed.`,
+                  `${logicalId} (${resourceType}) requires replacement, but its physical name ` +
+                    `is still held by the existing resource AND UpdateReplacePolicy: Retain ` +
+                    `pins that resource in place. ${nameOrigin.descriptor}. ` +
+                    `${nameOrigin.remedy} — with Retain, the old resource keeps the name, so a ` +
+                    `same-name replacement can never proceed.`,
                   'NAMED_REPLACEMENT_COLLISION'
                 );
               }
               if (this.options.replace !== true) {
                 throw new CdkdError(
                   `${logicalId} (${resourceType}) requires replacement, but the create-first ` +
-                    `attempt collided with the existing resource: ${createMsg}. The resource ` +
-                    `has a user-supplied physical name, so the CloudFormation-style safe ` +
-                    `replacement order (create the new resource before deleting the old) ` +
-                    `cannot reuse the occupied name — CloudFormation refuses this shape with ` +
-                    `"cannot update a stack when a custom-named resource requires replacing". ` +
-                    `Either rename the resource in your CDK code (a fresh name lets the safe ` +
-                    `create-first order proceed), or re-run with \`cdkd deploy --replace\` to ` +
-                    `delete the old resource FIRST and recreate it under the same name (the ` +
-                    `resource is briefly unavailable while it is recreated).`,
+                    `attempt collided with the existing resource: ${createMsg}. ` +
+                    `${nameOrigin.descriptor}, so the CloudFormation-style safe replacement ` +
+                    `order (create the new resource before deleting the old) cannot reuse the ` +
+                    `occupied name — CloudFormation refuses this shape with "cannot update a ` +
+                    `stack when a custom-named resource requires replacing". ` +
+                    `${nameOrigin.remedy}, or re-run with \`cdkd deploy --replace\` to delete ` +
+                    `the old resource FIRST and recreate it under the same name (the resource ` +
+                    `is briefly unavailable while it is recreated).`,
                   'NAMED_REPLACEMENT_COLLISION'
                 );
               }
               // --replace opt-in: the user accepts delete-first semantics
               // (the stateful guard for this property-driven replacement
               // already ran above). Delete the old holder, then re-create.
+              // "named" not "custom-named": the name may be cdkd's own
+              // derivation, and this line PRINTS the physical id, so a user
+              // reading it against a template that declares no such name was
+              // being told it was theirs (issue #1636).
               this.logger.info(
-                `  Create-first collided with the custom-named resource and --replace is set — ` +
-                  `deleting old ${logicalId} (${currentResource.physicalId}) first...`
+                `  Create-first collided with the existing resource's name and --replace is ` +
+                  `set — deleting old ${logicalId} (${currentResource.physicalId}) first...`
               );
               deletedOldFirst = true;
               createResult = await this.replaceDeleteFirstAndRecreate(
@@ -3185,14 +3194,19 @@ export class DeployEngine {
             // (delete-first fallback) — there, re-acquiring the same
             // physical id under the same name is the expected outcome.
             if (!deletedOldFirst && createResult.physicalId === currentResource.physicalId) {
+              const idempotentNameOrigin = this.replacementNameOrigin(
+                logicalId,
+                currentResource.physicalId
+              );
               if (updateReplacePolicy === 'Retain') {
                 throw new CdkdError(
                   `${logicalId} (${resourceType}) requires replacement, but its Create API is ` +
                     `name-idempotent: the create-first attempt returned the existing resource ` +
                     `(${currentResource.physicalId}) instead of creating a new one, and ` +
-                    `UpdateReplacePolicy: Retain pins that resource in place. Rename the ` +
-                    `resource in your CDK code — with Retain, the old resource keeps the ` +
-                    `name, so a same-name replacement can never proceed.`,
+                    `UpdateReplacePolicy: Retain pins that resource in place. ` +
+                    `${idempotentNameOrigin.descriptor}. ${idempotentNameOrigin.remedy} — with ` +
+                    `Retain, the old resource keeps the name, so a same-name replacement can ` +
+                    `never proceed.`,
                   'NAMED_REPLACEMENT_IDEMPOTENT_CREATE'
                 );
               }
@@ -3202,9 +3216,8 @@ export class DeployEngine {
                     `name-idempotent: the create-first attempt returned the EXISTING resource ` +
                     `(${currentResource.physicalId}) instead of creating a new one, so deleting ` +
                     `the "old" resource would silently destroy the resource the deploy just ` +
-                    `reported as created. The resource has a user-supplied physical name; ` +
-                    `either change or remove the explicit name in your CDK code (a fresh or ` +
-                    `generated name lets the safe create-first order proceed), or re-run with ` +
+                    `reported as created. ${idempotentNameOrigin.descriptor}; ` +
+                    `${idempotentNameOrigin.remedy}, or re-run with ` +
                     `\`cdkd deploy --replace\` to delete the old resource FIRST and recreate ` +
                     `it under the same name (the resource is briefly unavailable while it is ` +
                     `recreated). Note: this branch is also reached when the old resource was ` +
@@ -3708,6 +3721,52 @@ export class DeployEngine {
     result: EffectivePropertiesResult
   ): Record<string, unknown> {
     return result.effectiveProperties ?? desiredProperties;
+  }
+
+  /**
+   * The name-origin half of the replacement-collision messages (issue #1636).
+   *
+   * Every one of those refusals used to assert that the colliding resource
+   * "has a user-supplied physical name" and prescribe "rename the resource in
+   * your CDK code". For a resource the template never named BOTH halves are
+   * wrong: `generateResourceName` produces `{stackName}-{logicalId}` with no
+   * random component, so the collision is caused by cdkd's OWN naming scheme,
+   * and "rename" there means renaming the CONSTRUCT — a materially different
+   * and more disruptive action. The false half is the part the user is asked
+   * to act on, and a reader who finds no such name in their template cannot
+   * connect the message to their code at all.
+   *
+   * `descriptor` names WHERE the name came from; `remedy` is the accurate
+   * first option. Both callers append the shared `--replace` alternative,
+   * which is identical in either case.
+   *
+   * Classification is best-effort by construction (see
+   * {@link looksLikeCdkdGeneratedName}) and falls back to the pre-#1636
+   * wording, which stays correct for the template-named resource.
+   */
+  private replacementNameOrigin(
+    logicalId: string,
+    physicalId: string
+  ): { descriptor: string; remedy: string } {
+    if (looksLikeCdkdGeneratedName(physicalId, logicalId, getCurrentStackName())) {
+      return {
+        descriptor:
+          `The physical name (${physicalId}) was GENERATED by cdkd from the construct's ` +
+          `logical id rather than declared in your template, and that derivation has no ` +
+          `random component — so the new resource asks for exactly the name the existing ` +
+          `one still holds`,
+        remedy:
+          `Either give the resource an explicit physical name in your CDK code, or rename ` +
+          `the CONSTRUCT (its id feeds the generated name — note that this replaces the ` +
+          `resource rather than renaming it in place)`,
+      };
+    }
+    return {
+      descriptor: `The resource has a user-supplied physical name (${physicalId})`,
+      remedy:
+        `Either rename the resource in your CDK code (a fresh name lets the safe ` +
+        `create-first order proceed)`,
+    };
   }
 
   /**

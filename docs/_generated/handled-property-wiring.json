@@ -6787,6 +6787,7 @@
           "seededBy": [
             "applyUpdate",
             "buildIpPermission",
+            "canonicalizeDesiredProperties",
             "create",
             "createSecurityGroupIngress",
             "delete",
@@ -7463,6 +7464,7 @@
       "gaps": [],
       "blindSpots": [
         "computed key in narrowRouteDestinations()",
+        "object spread in narrowIngressIpProtocol()",
         "object spread in narrowRouteDestinations()"
       ]
     },

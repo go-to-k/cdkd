@@ -1,3 +1,38 @@
+## [0.280.33](https://github.com/go-to-k/cdkd/compare/v0.280.32...v0.280.33) (2026-08-12)
+
+
+### Bug Fixes
+
+* **dynamodb:** make the GSI Create and Update arms idempotent against the live table ([#1642](https://github.com/go-to-k/cdkd/issues/1642)) ([cc9c5c2](https://github.com/go-to-k/cdkd/commit/cc9c5c2dd5e81fa697c2dc47f3dd151dc7388b65))
+
+## [0.280.32](https://github.com/go-to-k/cdkd/compare/v0.280.31...v0.280.32) (2026-08-12)
+
+
+### Bug Fixes
+
+* **drift:** honour a provider's effectiveProperties on drift --revert and the rollback revert arms ([#1647](https://github.com/go-to-k/cdkd/issues/1647)) ([345785e](https://github.com/go-to-k/cdkd/commit/345785e4c3d1cbf4286cfe648126c43ef0d3b6aa))
+
+## [0.280.31](https://github.com/go-to-k/cdkd/compare/v0.280.30...v0.280.31) (2026-08-12)
+
+
+### Bug Fixes
+
+* **deployment:** stop calling a cdkd-GENERATED physical name user-supplied in the replacement-collision refusals ([#1646](https://github.com/go-to-k/cdkd/issues/1646)) ([7f945e3](https://github.com/go-to-k/cdkd/commit/7f945e3c858071ee916fd0b917730e6b68397bd9))
+
+## [0.280.30](https://github.com/go-to-k/cdkd/compare/v0.280.29...v0.280.30) (2026-08-12)
+
+
+### Bug Fixes
+
+* **ec2:** record the IpProtocol SecurityGroupIngress actually sends, and narrow the diff side to match ([#1641](https://github.com/go-to-k/cdkd/issues/1641)) ([80afb7d](https://github.com/go-to-k/cdkd/commit/80afb7d61c7e209578c5beb280a83749a938e263))
+
+## [0.280.29](https://github.com/go-to-k/cdkd/compare/v0.280.28...v0.280.29) (2026-08-12)
+
+
+### Bug Fixes
+
+* **drift:** preserve untemplated AWS values on a template-only --revert baseline ([#1640](https://github.com/go-to-k/cdkd/issues/1640)) ([18feb07](https://github.com/go-to-k/cdkd/commit/18feb075796a9d9139466b622a5b4ca2aec4eb4f))
+
 ## [0.280.28](https://github.com/go-to-k/cdkd/compare/v0.280.27...v0.280.28) (2026-08-12)
 
 

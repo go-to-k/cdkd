@@ -27,7 +27,7 @@ basic	2026-08-01T10:00:06Z	PASS	81	standard	0801 regression sweep; 2 del/0 err, 
 batch	2026-07-26T18:43:33Z	PASS	89	standard	0727b sweep-b5 staleness re-run (rc=0); account clean
 bedrock-agentcore	2026-08-10T05:19:05Z	PASS	36	standard	0810 P2 sweep b6; 6 del 0 err, 0 orph
 bench-ccapi	2026-07-26T18:43:33Z	PASS	89	standard	0727b sweep-b5 staleness re-run (rc=0); account clean
-bench-cdk-sample	2026-08-11T15:53:33Z	PASS	394	standard	#1591 final broad: deploy+diff+destroy; diff reports No changes; 37 del/0 err, 0 orph
+bench-cdk-sample	2026-08-12T02:18:55Z	PASS	1180	standard	#1636 broad: deploy+destroy; 37 del/2 retained(DeletionPolicy)/0 err; retained log groups swept
 bench-sdk	2026-07-26T18:43:33Z	PASS	33	standard	0727b sweep-b5 staleness re-run (rc=0); account clean
 bootstrap-free-region	2026-07-31T06:23:42Z	PASS	78	verify.sh	TTL-refresh sweep re-run in ca-central-1; marker+bucket swept, orph clean
 bucket-deployment	2026-08-08T16:22:35Z	PASS	123	verify.sh	P0 post-#1345 S3 auto-empty opt-in; autoDeleteObjects tag honored, 10 del/0 err, 0 orphans
@@ -75,13 +75,13 @@ diff-intrinsic-target-change	2026-08-10T06:18:10Z	PASS	46	verify.sh	0810 P2 swee
 dlm-lifecycle-policy	2026-07-27T09:43:47Z	PASS	140	verify.sh	1160 removal phase 2b final-tree run, destroy 3/0, 0 orphans
 docdb-neptune	2026-07-27T06:16:35Z	PASS	1560	verify.sh	#1160 neptune+docdb removal steps 3b-3d verified; destroy w/o remove-protection 14/0 errors, 0 orphans
 docker-image-asset	2026-08-10T04:23:28Z	PASS	81	verify.sh	0810 sweep b2; post-#1406 ECR mutability filters, 2 del 0 err, 0 orph
-drift-revert	2026-08-11T14:33:06Z	PASS	285	verify.sh	#1626 keyed-list revert-plan walk: revert path regression-clean, destroy 13/0, orphans clean
+drift-revert	2026-08-12T02:19:59Z	PASS	150	verify.sh	#1626 step 6d final: untemplated tag preserved + templated tag reverted; 13 del/0 err, 0 orph
 drift-revert-arrays	2026-08-11T16:19:14Z	PASS	300	verify.sh	#1620 post-rebase re-verify on main@1c1f7f91; rc ok, orph clean
 drift-revert-vpc	2026-08-11T15:53:33Z	PASS	314	verify.sh	#1591 final: both-sides canonicalizer + cdkd diff wiring; 21 del/0 err, 0 orph
 dsql	2026-07-30T18:11:24Z	PASS	540	verify.sh	4-phase incl. destroy --remove-protection CC flip (#1312); orph clean
 dynamodb-autoscaling	2026-08-10T05:13:55Z	PASS	65	verify.sh	0810 sweep b5; table autoscaling re-verify post-#1451 GlobalTable work, 0 err 0 orph
 dynamodb-globaltable	2026-08-11T09:22:58Z	PASS	549	verify.sh	issue #1585 autoscaled-exclusion + live-only coverage; 0 errors 0 orphans
-dynamodb-gsi-update	2026-08-10T05:13:55Z	PASS	1056	verify.sh	0810 sweep b5; GSI add is in-place UPDATE (no replacement), 3 phases, 1 del 0 err 0 orph
+dynamodb-gsi-update	2026-08-12T03:35:11Z	PASS	620	verify.sh	#1630 re-run after rebase onto #1646; GSI wedge recovery + in-place update, 1 del/0 err
 dynamodb-ondemand	2026-08-11T15:24:13Z	PASS	555	verify.sh	issue #1617 final run after review round 2; 4 del/0 err, 0 orph
 dynamodb-sse	2026-08-01T10:07:21Z	PASS	40	verify.sh	0801 regression sweep; SSE mapping ok, 0 orphans
 dynamodb-stream-filter	2026-08-10T05:13:55Z	PASS	57	verify.sh	0810 sweep b5; stream filter criteria, 0 err 0 orph
@@ -151,7 +151,7 @@ lambda-alias-provisioned-concurrency	2026-07-26T19:16:39Z	PASS	262	verify.sh	072
 lambda-arch-switch	2026-07-26T19:25:15Z	PASS	63	verify.sh	0727b sweep-b10 staleness re-run (rc=0); account clean
 lambda-config-field-removal	2026-08-11T13:09:08Z	PASS	132	verify.sh	issue #609 Lambda 4-prop backfill + review fixes; 5 del 0 err 0 orphans
 lambda-destinations	2026-08-10T05:50:57Z	PASS	70	verify.sh	0810 P2 sweep b10; rc ok, 0 orph
-lambda-durable-replacement	2026-08-11T16:20:32Z	PASS	160	verify.sh	#1625 re-run with hardened asserts; clean destroy
+lambda-durable-replacement	2026-08-12T03:07:25Z	PASS	300	verify.sh	#1636 re-run after rebase onto #1641; generated-name refusal + --replace fallback, 2 del/0 err
 lambda-env-removal	2026-08-10T11:50:46Z	PASS	62	verify.sh	0810 P0/P1 sweep b1; nested-map-key env removal, 3 phases, orph clean
 lambda-esm-self-managed-kafka	2026-08-09T04:24:56Z	PASS	215	verify.sh	#1384 enum key + state-spelling inverse asserted; destroy 5 deleted, 0 errors, 0 orphans
 lambda-event-invoke-config-update	2026-07-26T18:20:27Z	PASS	80	verify.sh	0727b sweep-b3 staleness re-run (rc=0); account clean
@@ -256,7 +256,7 @@ serverless-api	2026-07-26T19:45:58Z	PASS	58	verify.sh	0727b sweep-b12 staleness 
 servicediscovery	2026-08-01T09:42:37Z	PASS	106	verify.sh	0801 regression sweep; ServiceAttributes coverage ok, 0 orphans
 servicediscovery-namespaces	2026-08-10T18:43:46Z	PASS	420	verify.sh	1160 sd batch final post-rebase run; removal resets ok, destroy clean, 0 orphans
 ses-identity	2026-08-10T10:50:49Z	PASS	180	verify.sh	upstream SES CC 403 resolved; all 3 phases clean (issue #1468)
-sg-circular-dependency	2026-07-26T18:49:34Z	PASS	51	verify.sh	0727b sweep-b6 staleness re-run (rc=0); account clean
+sg-circular-dependency	2026-08-12T02:32:41Z	PASS	45	verify.sh	#1633 re-run after review fixes (sgRuleKey heal + lossy-only diff warn); 11 del/0 err, 0 orph
 sns-event-source	2026-08-01T10:07:21Z	PASS	59	verify.sh	0801 regression sweep; e2e delivery ok, log groups swept, 0 orphans
 sns-inline-subscription	2026-07-27T11:04:52Z	PASS	53	verify.sh	issue #1267 SNS topic update wrap; 3 del 0 err
 sns-pending-subscription	2026-07-30T12:40:16Z	PASS	22	verify.sh	issue #1301 re-run after review fixes, clean

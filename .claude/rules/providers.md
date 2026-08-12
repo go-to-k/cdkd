@@ -158,6 +158,24 @@ each was learned by shipping the version that did not check it:
   overriding only the members you vouch for, and leave anything whose readback
   order is not guaranteed as the desired copy.
 
+**EXISTENCE and VALUES take DIFFERENT gates in the same method** (issue #1630,
+the Create / Update siblings of the #1617 Delete fix). `applyGsiUpdates` now
+consults the live `DescribeTable` snapshot in both arms so a failure LATER in
+`update()` — PITR, TTL, ResourcePolicy, Kinesis streaming — cannot wedge every
+later deploy on a re-emitted op AWS rejects (state is written only once
+`update()` RETURNS, so anything that already landed is unrecorded). But the two
+arms are gated differently on purpose: an index's EXISTENCE is
+billing-mode-independent, so the Create skip applies on either mode, while the
+capacity VALUES are meaningless under PAY_PER_REQUEST and the Update skip is
+disabled there entirely. Reading the identity bullet above as "consult the live
+read" without splitting the two would re-open the `{0, 0}` trap on the arm that
+compares numbers. And compare such a value MEMBER BY MEMBER: a
+`Describe*` readback carries AWS bookkeeping (`NumberOfDecreasesToday`,
+`LastIncreaseDateTime`) the desired object does not, so a structural compare
+never matches and the suppression becomes dead code that still LOOKS safe.
+Make every unresolvable shape fail OPEN (still issue the call) — the worst case
+is the pre-fix behavior, whereas a false match silently drops a real change.
+
 Carrying the values matters beyond capacity: the #1160 absent-field RESET is
 derived from the PREVIOUS side, so an identity-only baseline silently disables
 every removal for as long as the record stays junk.
@@ -181,6 +199,21 @@ Reach for it only when all three hold, or it becomes a way to hide losses:
   properties", which is why the engine gates on `??` and not on truthiness — an
   empty object is a legitimate answer.
 
+**Every `update()` caller honours it, not just the deploy engine** (issue
+#1644). `cdkd drift --revert` and the rollback executor's two revert arms
+(`revert`, `revert-failed-update`) call `update()` too, and all three used to
+discard the return value — so a narrowing announced there was dropped, the
+record kept describing a value AWS does not hold, and the next `cdkd drift`
+reported the same difference while `--revert` re-issued the same call, forever.
+The bag each caller HANDS you is what your answer replaces, and that differs by
+caller: the rollback arms send `previousState.properties` verbatim (so the
+answer replaces the whole record's `properties`), while `--revert` sends a
+merged bag — AWS-CURRENT values for every non-drifted key — and therefore
+persists only the top-level keys where your answer differs from what it handed
+you, into `observedProperties ?? properties`. So the provider-side rule is
+unchanged (return the COMPLETE bag you sent); do not try to return a patch for
+one caller's benefit.
+
 **`effectiveProperties` alone BREAKS the next deploy — implement
 `canonicalizeDesiredProperties` with it.** The two are halves of one decision
 and shipping the first without the second is worse than shipping neither.
@@ -197,10 +230,26 @@ resource is delete-and-recreated on EVERY deploy.
 So narrow BOTH comparison sides identically, via
 `ResourceProvider.canonicalizeDesiredProperties(resourceType, properties)` —
 pure, synchronous, applied by `DiffCalculator` to BOTH comparison sides. Share ONE helper with the provisioning path
-(`narrowRouteDestinations` is the example) rather than re-deriving the rule, or
+(`narrowRouteDestinations` and `narrowIngressIpProtocol`, both in
+`ec2-provider.ts`, are the examples) rather than re-deriving the rule, or
 state and template end up narrowed to different keys and the fix becomes the
 bug. This is the same "normalize BOTH comparison sides" rule
 `drift-normalize.ts` already records for ordering.
+
+**A SUBSTITUTED value is the same class as a dropped key, and it arrives by
+more than one route** (issue #1633, the `AWS::EC2::SecurityGroupIngress`
+`IpProtocol` twin of the Route fix). The obvious route is the warn-and-default
+arm — `requireConfigString`'s `onUnusable` downgrade SENDS the default while
+the engine records the malformed value the template wrote. The less obvious one
+is a value the guard ACCEPTS by design: `coerceNumber` stringifies an unquoted
+YAML `IpProtocol: -1` before sending it, so state held the number and
+`readCurrentState` returned the string — the identical permanent phantom drift,
+with no warning anywhere to hint at it. Both belong in `effectiveProperties`.
+The "already ANNOUNCED" condition above is about not laundering a silent LOSS
+into a clean record; a lossless coercion drops nothing, so it does not need a
+warning to qualify. When auditing a provider for this class, read every arm
+that can put a value on the wire that differs from the declared one, not only
+the arms that log.
 
 Two things that are easy to get wrong and were both caught by review:
 **normalize BOTH comparison sides**, not just the desired one — a record written BEFORE the provider started narrowing still carries every key, so a one-sided pass flips the same difference to a REMOVAL and breaks exactly the population the narrowing exists for; and **wire `cdkd diff` too**, since a preview that narrows differently from the apply forecasts a change the deploy will never make. `makeCanonicalizePropertiesFn` in `src/provisioning/canonicalize-properties.ts` is the one builder both commands use, so they cannot drift.

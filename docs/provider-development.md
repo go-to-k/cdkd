@@ -114,15 +114,35 @@ difference becomes permanent phantom drift: reported by every `cdkd drift`, and
 re-reports. Returning the bag you actually sent makes the engine record that
 instead.
 
+Every `update()` caller honours the field, not only the deploy engine — since
+issue [#1644](https://github.com/go-to-k/cdkd/issues/1644), `drift --revert` and
+the rollback executor's two revert arms record it as well, so the loop closes on
+those commands too. Return the COMPLETE bag you sent regardless of caller; each
+one knows how to fold that into the record it maintains.
+
 `EC2Provider.createRoute` is the live case: a CFn-invalid template declaring two
 destination keys is REFUSED on the template path, but the refusal downgrades to
 a warning on the state-borne paths, where it keeps one key and returns the
 others stripped.
 
+`EC2Provider.createSecurityGroupIngress` is the second, and it shows that a
+dropped KEY is not the only shape (issue
+[#1633](https://github.com/go-to-k/cdkd/issues/1633)). A SUBSTITUTED value does
+the same damage: a malformed `IpProtocol` is warn-replaced by the `-1` default
+on the state-borne paths, and — separately — an unquoted YAML `IpProtocol: -1`
+is a NUMBER that is stringified before it is sent. Both reached AWS as something
+other than what the record said, so both had to be reported. When auditing your
+own provider, read every arm that can put a value on the wire differing from the
+declared one, not only the arms that log.
+
 Three conditions, or this becomes a way to hide losses rather than record them:
 
-- the narrowing is **deliberate and already announced** (a warn arm) — a value
-  you merely failed to send is a bug, and recording it launders the bug;
+- the narrowing is **deliberate** — a value you merely failed to send is a bug,
+  and recording it launders the bug. Usually that means an **announced** one (a
+  warn arm), and if you are unsure, that is the bar to hold yourself to. The
+  exception is a transformation that loses NOTHING and therefore has nothing to
+  announce: `IpProtocol: -1` and `'-1'` name the same protocol, so stringifying
+  it needs no warning and still belongs here;
 - it is what you **sent**, not what AWS computed. AWS-side defaults and computed
   values belong in `observedProperties` (captured by a real read-back); putting
   them here makes the desired baseline drift from the template and silently
@@ -147,6 +167,11 @@ canonicalizeDesiredProperties(
   resourceType: string,
   properties: Record<string, unknown>
 ): Record<string, unknown> {
+  if (resourceType === 'AWS::EC2::SecurityGroupIngress') {
+    // A no-op `onUnusable`: a diff must not throw, and must not warn either —
+    // the provisioning path already announces the identical substitution.
+    return narrowIngressIpProtocol(properties, () => {}).narrowed;
+  }
   if (resourceType !== 'AWS::EC2::Route') return properties;
   // The SAME helper the provisioning path uses — re-deriving the rule lets
   // state and template narrow to different keys, which is the original bug
@@ -1026,6 +1051,10 @@ A **top-level** read takes two further decisions, both per site (issue
 // arrives as a NUMBER and deploys fine today — refusing it would break a
 // working template. Only for genuinely numeric-looking fields; a number where
 // an enum belongs (`InstanceType`) stays a refusal.
+//
+// The real site wraps this call in `narrowIngressIpProtocol` so the DIFF can
+// resolve the protocol the same way — see the `effectiveProperties` section
+// above for why a coerced value has to be recorded as well as sent (#1633).
 const ipProtocol = requireConfigString(
   properties['IpProtocol'],
   '-1',
@@ -1289,12 +1318,22 @@ Checklist when writing or reviewing an `update()`:
   do not share becomes a removal in the other direction, which is exactly how
   the live run failed on a SECOND key the forward pass never touched.)
   **The previous side is not always a template**, which decides what a safe
-  reset value even is: `cdkd drift --revert` hands the provider the full
-  `readCurrentState` snapshot as `previousProperties`, so every attribute AWS
-  reports but the template never set looks REMOVED. Writing a documented
+  reset value even is: `cdkd drift --revert` hands the provider the
+  `readCurrentState` snapshot as `previousProperties`, so an attribute AWS
+  reports but the template never set can look REMOVED. Writing a documented
   default for each would silently reset a dozen live settings. Skip a key
   whose CURRENT value already equals the default — an untemplated key is by
   definition sitting at its default, while a genuinely templated one is not.
+  Since issue [#1626](https://github.com/go-to-k/cdkd/issues/1626) the caller
+  meets you halfway: when the reverted resource has NO `observedProperties`
+  (the baseline is the raw template, so cdkd cannot tell AWS-authored from
+  out-of-band), `runRevert` MERGES every untemplated path into the desired bag
+  it hands you, so those keys arrive with their AWS-current values on BOTH
+  sides and your diff sees no change. That covers the bulk case and the
+  non-default residual the per-provider skip cannot — and, because it is on
+  the desired side, it also covers a provider that replaces the bag wholesale
+  and never reads `previousProperties`. It does NOT cover the observed-capture
+  baseline, where an absence IS an intentional removal — so keep the skip.
   And **mocked unit tests cannot find any of it** — they agree with whatever
   sentinel the provider chose. The
   ELBv2 arms shipped with two tests literally named "AWS-documented clear" /
@@ -1386,9 +1425,16 @@ template side"**, using `previousProperties`:
 
 Restoring anything merely absent from the DESIRED side would make
 user-authored entries unremovable — the mirror image of the bug — and would
-break `cdkd drift --revert`'s ability to clear a console-side addition (that
-path passes the AWS-current snapshot as `previousProperties`, so every live
-key lands in the previous column and nothing is added back).
+break `cdkd drift --revert`'s ability to clear a console-side addition (on an
+observed-capture baseline that path passes the AWS-current snapshot as
+`previousProperties`, so every live key lands in the previous column and
+nothing is added back). On a resource with no `observedProperties` the same
+path MERGES every untemplated live key into the DESIRED bag instead (issue
+[#1626](https://github.com/go-to-k/cdkd/issues/1626)) — `previousProperties`
+is still the full AWS-current snapshot — so an untemplated live
+key arrives in BOTH columns at its AWS-current value, so this table's first
+row keeps it — which is the intended outcome there, since the raw template
+cannot distinguish an AWS-authored entry from a console-added one.
 
 **State the price.** The merge cannot distinguish an AWS-written entry from a
 console-written one — neither appears on either template side — so every

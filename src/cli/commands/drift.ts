@@ -268,7 +268,7 @@ async function driftCommand(
     if (options.accept) {
       await runAccept(reports, stateBackend, stateConfig, awsClients, options);
     } else {
-      await runRevert(reports, providerRegistry, stateConfig, awsClients, options);
+      await runRevert(reports, providerRegistry, stateBackend, stateConfig, awsClients, options);
     }
   } finally {
     awsClients.destroy();
@@ -897,7 +897,7 @@ function isServiceManagedTagKey(key: string): boolean {
  * provider binds it, and that tag is REQUIRED for managed scaling. Because any
  * CDK ASG declares at least a `Name` tag, `Tags` is template-DECLARED, so the
  * #1498 carve-out (undeclared + captured-empty) correctly does not apply — and
- * the tag list is an ARRAY, which {@link findRevertDroppedAwsKeys}'s walk
+ * the tag list is an ARRAY, which {@link findRevertUnbaselinedAwsKeys}'s walk
  * compares wholesale and never descends into. Post-revert the ASG kept the
  * capacity provider with its managed scaling silently broken (verified live
  * 2026-08-10).
@@ -988,47 +988,52 @@ export function findRevertPreservedTagKeys(
 }
 
 /**
- * The AWS-authored property paths a `--revert` is about to DROP, for a
- * resource whose state predates observed-capture (issue #1478).
+ * The AWS-authored property paths a `--revert` LEAVES UNTOUCHED, for a
+ * resource whose state predates observed-capture (issue #1478, semantics
+ * settled by issue #1626).
  *
- * The mechanism, and why this is not a Glue fix: `runRevert` picks the revert
- * baseline as `observedProperties ?? properties`. When `observedProperties` is
- * absent, the desired side is the raw TEMPLATE while the previous side is the
- * AWS-CURRENT snapshot — so {@link buildRevertNewProperties}, which overwrites
- * each drifted top-level key with the desired sub-shape wholesale, replaces
- * every AWS-authored key inside that subtree with the template's version. For
- * a Glue Iceberg table that silently wipes `table_type` /
- * `metadata_location`, the same outcome as issue #1461 reached by a different
- * trigger. The exposure is general: ANY resource where AWS writes into a bag
- * the template does not fully declare, on state written before
+ * The mechanism: `runRevert` picks the revert baseline as
+ * `observedProperties ?? properties`. When `observedProperties` is absent, the
+ * desired side is the raw TEMPLATE while the previous side is the AWS-CURRENT
+ * snapshot — so {@link buildRevertNewProperties}, which overwrites each drifted
+ * top-level key with the desired sub-shape wholesale, has no value to carry for
+ * any AWS-authored key inside that subtree. For a Glue Iceberg table that
+ * reaches `table_type` / `metadata_location`, the same exposure as issue #1461
+ * by a different trigger; the general case is ANY resource where AWS writes
+ * into a bag the template does not fully declare, on state written before
  * observed-capture.
  *
- * The user DID ask to push state over AWS, so this is not silent-wrong the way
- * #1461 was — but it is almost certainly not what they meant, and nothing told
- * them. So the chosen semantic is **warn and proceed**: it is the cheapest
- * honest step, preserves today's behavior, and does not foreclose the stricter
- * options (refuse outright, or treat "no observedProperties" as "previous is
- * unknown" so the merge preserves).
+ * #1478 shipped the **warn and proceed** semantic — the values were still
+ * erased, the user was merely told first — while explicitly leaving the door
+ * open to "treat 'no observedProperties' as 'previous is unknown' so the merge
+ * preserves". Issue #1626 walked through that door for the reasons in
+ * {@link mergeUntemplatedValue}: on this baseline cdkd cannot tell an
+ * AWS-authored value from an out-of-band change, and resetting on a coin flip
+ * is the worse error. So the paths below are now REPORTED AS PRESERVED, and
+ * `mergeUntemplatedValue` is what makes that true by merging them into the bag
+ * `--revert` actually SENDS — which is the only side a wholesale-replace
+ * provider consults. This function is unchanged in what it computes — only in
+ * what the caller does about it.
  *
  * Scoped deliberately:
  *
  * - **Only drifted top-level keys.** Non-drifted keys keep their AWS-current
- *   value in `buildRevertNewProperties`, so nothing under them is dropped.
+ *   value in `buildRevertNewProperties`, so nothing under them is at stake.
  * - **Only when `observedProperties` is absent.** With it present the desired
  *   side is the deploy-time AWS snapshot, which already carries AWS-authored
- *   fields — dropping one there is a legitimate revert of a real console
- *   change, and warning about it would be noise on every run.
+ *   fields — removing one there is a legitimate revert of a real console
+ *   change, and reporting it would be noise on every run.
  * - **Only keys that vanish.** A key present on both sides with a different
- *   VALUE is the drift the user asked to revert, not a silent loss.
+ *   VALUE is the drift the user asked to revert, and it reverts normally.
  *
  * @returns dotted paths, sorted, e.g. `['Parameters.metadata_location']`.
  */
-export function findRevertDroppedAwsKeys(
+export function findRevertUnbaselinedAwsKeys(
   drifts: readonly PropertyDrift[],
   desiredProperties: Record<string, unknown>,
   awsProperties: Record<string, unknown>
 ): string[] {
-  const dropped = new Set<string>();
+  const missing = new Set<string>();
   const driftedTopLevelKeys = new Set<string>();
   for (const d of drifts) {
     const topLevelKey = d.path.split('.', 1)[0];
@@ -1041,18 +1046,18 @@ export function findRevertDroppedAwsKeys(
     if (!(key in desiredProperties)) continue;
     // A top-level TAG LIST is reverted through `mergeTagListForRevert`, which
     // PRESERVES service-authored entries (issue #1501) — so those are not
-    // dropped and must not be reported here, while an ordinary console-added
+    // at stake and must not be reported here, while an ordinary console-added
     // tag still is stripped and still counts.
     collectMissingPaths(
       awsProperties[key],
       desiredProperties[key],
       key,
-      dropped,
+      missing,
       isTagListKey(key) ? isServiceManagedTagKey : undefined
     );
   }
 
-  return [...dropped].sort();
+  return [...missing].sort();
 }
 
 /**
@@ -1093,12 +1098,18 @@ function collectMissingPaths(
   isPreservedKey?: (key: string) => boolean
 ): void {
   if (isKeyedList(awsValue)) {
-    if (!isKeyedList(desiredValue)) {
+    // An EMPTY desired array is a keyed list carrying no identities, NOT a
+    // wholesale replacement — every AWS entry is unbaselined. This arm has to
+    // mirror {@link mergeUntemplatedValue}'s `desiredIsEmptyArray` case exactly:
+    // without it the merge preserves every entry of a `Tags: []` baseline while
+    // this walk reports none, and the plan silently under-claims what survives.
+    const desiredIsEmptyArray = Array.isArray(desiredValue) && desiredValue.length === 0;
+    if (!isKeyedList(desiredValue) && !desiredIsEmptyArray) {
       // A scalar / object / absent desired side replaces the whole list.
       if (desiredValue === undefined) out.add(path);
       return;
     }
-    const desiredKeys = new Set(desiredValue.map((e) => e.Key));
+    const desiredKeys = new Set(isKeyedList(desiredValue) ? desiredValue.map((e) => e.Key) : []);
     for (const entry of awsValue) {
       if (desiredKeys.has(entry.Key)) continue;
       if (isPreservedKey?.(entry.Key)) continue;
@@ -1127,10 +1138,12 @@ function collectMissingPaths(
 /**
  * A NON-EMPTY array whose every element is an object carrying a string `Key`.
  *
- * Emptiness is deliberately excluded: `[]` carries no identities, so treating
- * it as keyed would report nothing on the AWS side and — as the DESIRED side —
- * would claim every AWS entry is dropped, which is already what the
- * whole-list arm reports more legibly.
+ * Emptiness is excluded on the AWS side: `[]` carries no identities, so there
+ * is nothing to report. It is NOT excluded on the DESIRED side any more
+ * (issue #1626) — an empty baseline list means every AWS entry is unbaselined,
+ * and since the only caller runs on the template-only baseline where
+ * {@link mergeUntemplatedValue} PRESERVES all of them, reporting nothing would
+ * leave the plan under-claiming what survives.
  */
 function isKeyedList(value: unknown): value is Array<{ Key: string }> {
   return (
@@ -1144,6 +1157,120 @@ function isKeyedList(value: unknown): value is Array<{ Key: string }> {
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Merge the AWS-current value with the revert baseline, KEEPING every path the
+ * baseline does not declare (issue
+ * [#1626](https://github.com/go-to-k/cdkd/issues/1626) items 2 + 3).
+ *
+ * ## The contract this settles
+ *
+ * `provider.update(logicalId, physicalId, type, newProperties,
+ * previousProperties)` has ONE parameter list and TWO callers:
+ *
+ * - the deploy engine passes the state-recorded `properties` — the
+ *   LAST-DEPLOYED TEMPLATE — so a path present on the previous side and absent
+ *   from the desired side means exactly one thing: **the user removed it from
+ *   the template**;
+ * - `runRevert` passes the FULL `readCurrentState` snapshot, so the same
+ *   absence ALSO covers **a path the template never declared at all**.
+ *
+ * Both provider shapes then destroy that path, by different routes. One that
+ * KEY-DIFFS a collection reads the absence as a REMOVAL — ELBv2's
+ * `LoadBalancerAttributes`, where `readCurrentState` deliberately emits every
+ * attribute AWS reports, puts ~18 untemplated attributes on the removal path
+ * against a template declaring one or two. One that REPLACES a bag wholesale
+ * (`PutBucketTagging` is documented full-replace; the same holds for every
+ * `Put*Configuration`) never consults the previous side at all and simply
+ * sends a bag the untemplated path is missing from.
+ *
+ * That second shape is why the fix lands on the DESIRED side rather than by
+ * trimming `previousProperties`: trimming stops the key-diffing removal but
+ * leaves the wholesale-replace drop untouched, so half the reported paths
+ * would still be erased while the plan claimed otherwise. Merging into the bag
+ * cdkd actually SENDS covers both, and is what makes the plan's "left
+ * untouched" line true rather than aspirational.
+ *
+ * ## Scoped to the baseline that cannot tell the two apart
+ *
+ * Applied ONLY when `observedProperties` is absent — the same gate as
+ * {@link findRevertUnbaselinedAwsKeys}'s notice, and for the same reason. With
+ * observed-capture present the baseline IS a deploy-time AWS snapshot, so a
+ * path AWS reports and the baseline lacks was genuinely added out-of-band and
+ * removing it is the revert the user asked for (the `drift-revert` integ
+ * fixture requires exactly that for an injected tag). Without it the baseline
+ * is the raw TEMPLATE, and "AWS has it, the template does not" is
+ * indistinguishable from "AWS authored it" — so the honest answer is to leave
+ * it alone. `findRevertUnbaselinedAwsKeys`'s docstring already named this as
+ * one of the stricter options #1478 did not foreclose ("treat 'no
+ * observedProperties' as 'previous is unknown' so the merge preserves"); this
+ * is that option.
+ *
+ * The structural rules mirror {@link collectMissingPaths} case for case —
+ * plain records descend, KEYED `[{Key, Value}]` lists merge by `Key`,
+ * positional arrays and scalars are taken from the baseline wholesale — so
+ * every path the plan names as preserved IS kept, and a unit test pins that
+ * correspondence by diffing the flag-on and flag-off outputs.
+ *
+ * A service-authored tag is absent from both sides of that comparison and
+ * stays consistent: `findRevertUnbaselinedAwsKeys` omits it
+ * (`isServiceManagedTagKey`) because the #1501 carve-out already preserves it
+ * on the DEFAULT path, so it is not something this flag rescues and reporting
+ * it would warn about a loss that cannot happen. The test pins that it
+ * survives under BOTH settings.
+ *
+ * A path the baseline DOES declare always wins, which is what keeps the revert
+ * a revert: a drifted value is reset, and one AWS dropped is re-added.
+ */
+function mergeUntemplatedValue(awsValue: unknown, desiredValue: unknown): unknown {
+  // An EMPTY baseline array is accepted alongside a populated keyed list.
+  // `isKeyedList` requires a NON-empty array (an `[]` carries no identities),
+  // but a DECLARED-but-empty list — `Tags: []` from a condition-collapsed
+  // template — is precisely the shape the #1501 carve-out exists for, and
+  // falling through to the wholesale arm would hand AWS `[]` and strip every
+  // tag including `AmazonECSManaged`. Under this flag an empty baseline simply
+  // contributes no overrides and no re-adds, so every AWS entry is untemplated
+  // and every one is preserved — which is what keeps the SUPERSET claim over
+  // `mergeTagListForRevert` true for this shape too.
+  const desiredIsEmptyArray = Array.isArray(desiredValue) && desiredValue.length === 0;
+  if (isKeyedList(awsValue) && (isKeyedList(desiredValue) || desiredIsEmptyArray)) {
+    const desiredEntries: ReadonlyArray<{ Key: string }> = isKeyedList(desiredValue)
+      ? desiredValue
+      : [];
+    const desiredByKey = new Map(desiredEntries.map((e) => [e.Key, e]));
+    const merged: Array<{ Key: string }> = [];
+    // AWS can report the same key twice; `mergeTagListForRevert` dedupes for
+    // the same reason. Emitting a duplicate would be REJECTED by
+    // `PutBucketTagging` / `ModifyLoadBalancerAttributes`, so first wins.
+    const emitted = new Set<string>();
+    for (const entry of awsValue) {
+      if (emitted.has(entry.Key)) continue;
+      emitted.add(entry.Key);
+      merged.push(desiredByKey.get(entry.Key) ?? entry);
+    }
+    // A baseline entry AWS no longer reports is a removal to UNDO, so re-add it.
+    for (const entry of desiredEntries) {
+      if (emitted.has(entry.Key)) continue;
+      emitted.add(entry.Key);
+      merged.push(entry);
+    }
+    return merged;
+  }
+  if (!isPlainRecord(awsValue) || !isPlainRecord(desiredValue)) {
+    // Positional array, scalar, or a shape mismatch: the drift comparator
+    // treats these wholesale, so merging would invent a value no other code
+    // path can reason about. The baseline wins, exactly as before.
+    return desiredValue;
+  }
+  const merged: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(awsValue)) {
+    merged[key] = key in desiredValue ? mergeUntemplatedValue(value, desiredValue[key]) : value;
+  }
+  for (const [key, value] of Object.entries(desiredValue)) {
+    if (!(key in awsValue)) merged[key] = value;
+  }
+  return merged;
 }
 
 /**
@@ -1188,12 +1315,21 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
  * (`Tags[0].Value`) — array drifts surface as a single entry on the
  * parent path — so `path.split('.', 1)` is always safe to extract the
  * top-level key.
+ *
+ * `preserveUntemplated` (issue #1626) switches the overlay from WHOLESALE to a
+ * deep merge for the drifted subtrees, keeping every path the baseline does
+ * not declare. `runRevert` sets it exactly when the resource has no
+ * `observedProperties` — see {@link mergeUntemplatedValue} for why that is the
+ * only baseline on which it is correct, and why the fix has to live on this
+ * side rather than on `previousProperties`.
  */
 export function buildRevertNewProperties(
   drifts: readonly PropertyDrift[],
   desiredProperties: Record<string, unknown>,
-  awsProperties: Record<string, unknown>
+  awsProperties: Record<string, unknown>,
+  options: { preserveUntemplated?: boolean } = {}
 ): Record<string, unknown> {
+  const preserveUntemplated = options.preserveUntemplated === true;
   const result: Record<string, unknown> = { ...awsProperties };
   for (const d of drifts) {
     const topLevelKey = d.path.split('.', 1)[0];
@@ -1211,12 +1347,22 @@ export function buildRevertNewProperties(
       // failure this carve-out exists to prevent. (The #1498 rule covers the
       // commoner UNDECLARED + captured-empty shape by ignoring the key
       // outright, so it never reaches here.)
-      const baselineIsTagList =
-        isCfnTagList(desiredValue) || (Array.isArray(desiredValue) && desiredValue.length === 0);
-      result[topLevelKey] =
-        isTagListKey(topLevelKey) && baselineIsTagList && isCfnTagList(awsValue)
-          ? mergeTagListForRevert(desiredValue as Array<Record<string, unknown>>, awsValue)
-          : desiredValue;
+      if (preserveUntemplated) {
+        // Issue #1626: on a raw-TEMPLATE baseline every untemplated path is
+        // kept, which is a strict SUPERSET of the #1501 tag carve-out (that
+        // one keeps only service-authored entries), so it subsumes the branch
+        // below rather than competing with it. The superset holds for a
+        // DECLARED-but-EMPTY baseline list too — see the note in
+        // `mergeUntemplatedValue`, which is where that shape is handled.
+        result[topLevelKey] = mergeUntemplatedValue(awsValue, desiredValue);
+      } else {
+        const baselineIsTagList =
+          isCfnTagList(desiredValue) || (Array.isArray(desiredValue) && desiredValue.length === 0);
+        result[topLevelKey] =
+          isTagListKey(topLevelKey) && baselineIsTagList && isCfnTagList(awsValue)
+            ? mergeTagListForRevert(desiredValue as Array<Record<string, unknown>>, awsValue)
+            : desiredValue;
+      }
     } else {
       // Drift surfaced on a key that's no longer in `desiredProperties`
       // (defensive — drift was computed against `desiredProperties`, so
@@ -1225,6 +1371,76 @@ export function buildRevertNewProperties(
     }
   }
   return result;
+}
+
+/**
+ * The top-level keys a provider NARROWED on the revert path (issue #1644).
+ *
+ * `provider.update()` may answer with `effectiveProperties` — the bag it
+ * ACTUALLY delivered, which is what AWS now holds. `DeployEngine` records that
+ * in place of the desired bag (`propertiesToRecord`), and `--revert` used to
+ * throw the return value away: state kept the un-narrowed value, so the very
+ * next `cdkd drift` reported the same difference and `--revert` re-issued the
+ * same call — the loop `effectiveProperties` exists to break, still live on
+ * this one command.
+ *
+ * Returns a per-key DELTA rather than the whole bag, and that is the load-
+ * bearing part. The bag handed to `update()` here is
+ * {@link buildRevertNewProperties}'s output — AWS-current values for every
+ * non-drifted key merged with the state baseline for the drifted ones — so
+ * writing it back wholesale would import AWS-authored values into state for
+ * keys nobody reverted, quietly turning `--revert` into `--accept`. Only the
+ * keys the PROVIDER changed between what it was handed and what it delivered
+ * belong in state.
+ *
+ * A key present in `sent` but absent from `effective` is a DROP: the provider
+ * did not deliver it, so AWS does not hold it, and the baseline must lose it
+ * too. That is represented by an explicit `undefined` value, which the caller
+ * turns into a `delete` — a plain `{...baseline, ...delta}` spread would leave
+ * an `undefined`-valued key in the JSON instead. Presence is decided by
+ * `key in effective`, NOT by comparing against `undefined`: a provider that
+ * delivers an explicit `undefined` and one that omits the key both mean "AWS
+ * does not hold it", while a key whose value genuinely IS `null` on both sides
+ * must not read as a drop.
+ *
+ * The comparison is a key-order-INDEPENDENT deep equality rather than
+ * `JSON.stringify`. A provider that rebuilds a nested object while delivering
+ * the same members would otherwise register as a change, and the value written
+ * back for such a key is the one that was SENT — for a non-drifted key that is
+ * the AWS-current value, i.e. the `--accept` behavior this delta exists to
+ * prevent.
+ */
+export function collectNarrowedTopLevelKeys(
+  sent: Record<string, unknown>,
+  effective: Record<string, unknown>
+): Record<string, unknown> {
+  const delta: Record<string, unknown> = {};
+  for (const key of new Set([...Object.keys(sent), ...Object.keys(effective)])) {
+    const inSent = key in sent;
+    const inEffective = key in effective;
+    if (inSent && inEffective && deepEqualUnordered(sent[key], effective[key])) continue;
+    if (!inSent && !inEffective) continue;
+    delta[key] = inEffective ? effective[key] : undefined;
+  }
+  return delta;
+}
+
+/** Deep equality that does not depend on object key ORDER. */
+function deepEqualUnordered(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (a == null || b == null) return a === b;
+  if (typeof a !== 'object' || typeof b !== 'object') return false;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+    return a.every((v, i) => deepEqualUnordered(v, b[i]));
+  }
+  const ao = a as Record<string, unknown>;
+  const bo = b as Record<string, unknown>;
+  const ak = Object.keys(ao);
+  if (ak.length !== Object.keys(bo).length) return false;
+  return ak.every(
+    (k) => Object.prototype.hasOwnProperty.call(bo, k) && deepEqualUnordered(ao[k], bo[k])
+  );
 }
 
 /**
@@ -1243,8 +1459,10 @@ export function buildRevertNewProperties(
  *     truth, captured during the drift read so we don't re-issue it).
  *
  * Per-resource failures are collected and surface as `PartialFailureError`
- * (exit 2) at the end. State is NOT updated by `--revert` — once the
- * update succeeds, AWS values match state by definition.
+ * (exit 2) at the end. State is otherwise NOT updated by `--revert` — once the
+ * update succeeds, AWS values match state by definition. The ONE exception is
+ * a provider-reported NARROWING (issue #1644): see
+ * {@link collectNarrowedTopLevelKeys}.
  *
  * The per-stack lock is acquired before any update so a concurrent
  * `cdkd deploy` cannot race the in-flight property changes.
@@ -1252,6 +1470,7 @@ export function buildRevertNewProperties(
 async function runRevert(
   reports: StackDriftReport[],
   providerRegistry: ProviderRegistry,
+  stateBackend: S3StateBackend,
   stateConfig: { bucket: string; prefix: string },
   awsClients: AwsClients,
   options: { yes?: boolean; dryRun?: boolean; concurrency?: number }
@@ -1292,6 +1511,10 @@ async function runRevert(
     }
 
     await lockManager.acquireLock(report.stackName, report.region, owner, 'drift-revert');
+    // Provider-reported narrowings, keyed by logical id (issue #1644).
+    // Collected inside the concurrent tasks and applied to state ONCE, under
+    // the same lock, after they all settle.
+    const narrowedByLogicalId = new Map<string, Record<string, unknown>>();
     try {
       const tasks = driftedOutcomes.map((outcome) => async () => {
         const stateResource = report.state.resources[outcome.logicalId];
@@ -1324,13 +1547,25 @@ async function runRevert(
         // values for drifted top-level subtrees. See
         // `buildRevertNewProperties` docstring for why we don't pass a
         // drifted-only partial.
+        //
+        // Issue #1626 items 2 + 3: with NO observed-capture baseline the
+        // desired side is the raw TEMPLATE, so a path AWS reports and the
+        // template never declared is indistinguishable from one AWS authored
+        // itself. Merge those paths into the bag being SENT rather than
+        // overlaying the drifted subtree wholesale — a wholesale-replace
+        // provider (`PutBucketTagging` and every `Put*Configuration`) never
+        // consults the previous side, so this is the only side that can save
+        // them. With observed-capture present the baseline IS authoritative
+        // and the overlay is unchanged, so an out-of-band addition is still
+        // stripped. See `mergeUntemplatedValue`.
         const newProperties = buildRevertNewProperties(
           outcome.changes,
           desiredProperties,
-          outcome.awsProperties
+          outcome.awsProperties,
+          { preserveUntemplated: stateResource.observedProperties === undefined }
         );
         try {
-          await withRetry(
+          const updateResult = await withRetry(
             () =>
               provider.update(
                 outcome.logicalId,
@@ -1346,6 +1581,31 @@ async function runRevert(
           logger.info(
             `  ✓ ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): reverted.`
           );
+          // Issue #1644: keep whatever the provider says it ACTUALLY delivered,
+          // so a narrowing does not re-surface as drift on the next run.
+          //
+          // AFTER the success accounting, and in its OWN try: the AWS update
+          // has already landed, so a throw in here (a provider handing back a
+          // cyclic / non-comparable bag) must not be caught by the outer
+          // handler and re-reported as `AWS update failed`, flipping a
+          // succeeded revert to exit 2.
+          try {
+            if (updateResult?.effectiveProperties) {
+              const delta = collectNarrowedTopLevelKeys(
+                newProperties,
+                updateResult.effectiveProperties
+              );
+              if (Object.keys(delta).length > 0) {
+                narrowedByLogicalId.set(outcome.logicalId, delta);
+              }
+            }
+          } catch (captureErr) {
+            logger.warn(
+              `  ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): reverted, but ` +
+                `the provider's reported effective properties could not be read — ` +
+                `${captureErr instanceof Error ? captureErr.message : String(captureErr)}`
+            );
+          }
         } catch (err) {
           // Distinguish "the AWS update failed" from "this resource type
           // does not support in-place update at all". The latter cannot be
@@ -1366,6 +1626,103 @@ async function runRevert(
       });
 
       await runWithConcurrency(tasks, concurrency);
+
+      // Persist the provider-reported narrowings (issue #1644), still under
+      // the stack lock. Written to the SAME field the drift comparator uses as
+      // its baseline — `observedProperties` when the resource has one, else
+      // `properties` — exactly as `--accept` does, so the next `cdkd drift`
+      // compares AWS against what the provider said it delivered. `properties`
+      // is left alone when an observed capture exists: it is the user's
+      // last-deployed TEMPLATE intent, and a narrowing is an AWS-side fact,
+      // not a template edit.
+      if (narrowedByLogicalId.size > 0) {
+        const resources: Record<string, ResourceState> = { ...report.state.resources };
+        let recordedCount = 0;
+        for (const [logicalId, delta] of narrowedByLogicalId) {
+          const existing = resources[logicalId];
+          if (!existing) continue;
+          const hasObserved = existing.observedProperties !== undefined;
+          const baselineSource = hasObserved ? existing.observedProperties : existing.properties;
+          const newBaseline = JSON.parse(JSON.stringify(baselineSource ?? {})) as Record<
+            string,
+            unknown
+          >;
+          let changed = false;
+          for (const [key, value] of Object.entries(delta)) {
+            // ONLY a key the baseline already declares may move. The bag sent
+            // to `update()` starts as the AWS-CURRENT snapshot, so it carries
+            // keys the baseline never had (an out-of-band tag, an AWS-computed
+            // field); a provider that echoes one back in a changed shape would
+            // otherwise INSERT it into state — `--revert` behaving like
+            // `--accept`, the thing the per-key delta exists to prevent.
+            if (!Object.prototype.hasOwnProperty.call(newBaseline, key)) continue;
+            if (value === undefined) {
+              delete newBaseline[key];
+              changed = true;
+              continue;
+            }
+            // A VALUE is recorded only against an `observedProperties`
+            // baseline. Without one the baseline is the raw TEMPLATE, and
+            // `buildRevertNewProperties` ran in `preserveUntemplated` mode —
+            // so the value that was sent deliberately carries every AWS-
+            // authored path the template never declared. Writing it into
+            // `properties` would make the DESIRED baseline describe AWS-side
+            // values and silently disable the #1160 absent-field removal
+            // derivation, which reads that side (`.claude/rules/providers.md`:
+            // what you return is what you SENT, AWS-side defaults belong in
+            // `observedProperties`). A DROP is still safe there — it removes,
+            // never imports — so the loop this fix exists to break still
+            // closes for the shape that actually produces it.
+            if (!hasObserved) continue;
+            newBaseline[key] = value;
+            changed = true;
+          }
+          if (!changed) continue;
+          recordedCount++;
+          resources[logicalId] = hasObserved
+            ? { ...existing, observedProperties: newBaseline }
+            : { ...existing, properties: newBaseline };
+        }
+
+        if (recordedCount === 0) {
+          // Every reported narrowing was on a key state does not track, or was
+          // a value on a template-only baseline — nothing to persist.
+          continue;
+        }
+
+        const newState: StackState = {
+          ...report.state,
+          resources,
+          lastModified: Date.now(),
+        };
+        const saveOptions: { expectedEtag?: string; migrateLegacy?: boolean } = {
+          expectedEtag: report.etag,
+        };
+        if (report.migrationPending) {
+          saveOptions.migrateLegacy = true;
+        }
+        // BEST-EFFORT, unlike `--accept`'s write. There the state write IS the
+        // operation; here AWS has ALREADY been reverted and this is a secondary
+        // convergence step, so a failure must not abort the command — under
+        // `--all` a throw here would skip every later stack's revert entirely,
+        // which is a regression against the pre-#1644 behavior of not writing
+        // at all. The cost of the warn path is only that the narrowing
+        // re-surfaces on the next `cdkd drift`, i.e. exactly the pre-fix state.
+        try {
+          await stateBackend.saveState(report.stackName, report.region, newState, saveOptions);
+          logger.info(
+            `✓ State updated for ${report.stackName} (${report.region}): recorded the value the ` +
+              `provider actually applied on ${recordedCount} resource(s).`
+          );
+        } catch (err) {
+          logger.warn(
+            `Reverted ${report.stackName} (${report.region}), but could not record the value the ` +
+              `provider actually applied: ${err instanceof Error ? err.message : String(err)}. ` +
+              `The next 'cdkd drift' will report the same difference — re-run ` +
+              `'cdkd drift ${report.stackName} --revert' once the state write can succeed.`
+          );
+        }
+      }
     } finally {
       await lockManager.releaseLock(report.stackName, report.region).catch((err) => {
         logger.warn(
@@ -1471,31 +1828,43 @@ function printRevertPlan(reports: StackDriftReport[]): void {
           for (const path of preserved) {
             process.stdout.write(`        ${path}\n`);
           }
+          // "Every other tag reverts normally" is only true on the
+          // observed-capture baseline. Under #1626's raw-TEMPLATE baseline
+          // EVERY untemplated tag is preserved, and the block printed just
+          // below says so — leaving this sentence unconditional made the plan
+          // contradict itself two lines apart.
+          const othersRevert =
+            stateResource.observedProperties === undefined
+              ? ''
+              : `Every other tag reverts normally. `;
           process.stdout.write(
-            `      Every other tag reverts normally. A service may require these ` +
+            `      ${othersRevert}A service may require these ` +
               `(ECS needs AmazonECSManaged for managed scaling); 'aws:'-prefixed keys are ` +
               `AWS-reserved and cannot be removed by hand.\n`
           );
         }
       }
       if (stateResource && stateResource.observedProperties === undefined) {
-        const dropped = findRevertDroppedAwsKeys(
+        const unbaselined = findRevertUnbaselinedAwsKeys(
           o.changes,
           stateResource.properties ?? {},
           o.awsProperties
         );
-        if (dropped.length > 0) {
-          const word = dropped.length === 1 ? 'value' : 'values';
+        if (unbaselined.length > 0) {
+          const word = unbaselined.length === 1 ? 'value' : 'values';
           process.stdout.write(
             `    ! this resource has no observed-capture baseline, so the revert ` +
-              `pushes the raw TEMPLATE and will DROP ${dropped.length} AWS-authored ${word}:\n`
+              `pushes the raw TEMPLATE and LEAVES ${unbaselined.length} AWS-authored ${word} ` +
+              `untouched:\n`
           );
-          for (const path of dropped) {
+          for (const path of unbaselined) {
             process.stdout.write(`        ${path}\n`);
           }
           process.stdout.write(
-            `      Re-deploy the stack first to populate observedProperties if you want ` +
-              `these preserved.\n`
+            `      The template does not declare these, so cdkd cannot tell an AWS-authored ` +
+              `value from an out-of-band change and will not reset either (issue #1626). ` +
+              `Run 'cdkd state refresh-observed ${report.stackName}' (or re-deploy) to populate ` +
+              `observedProperties if you want them reverted too.\n`
           );
         }
       }

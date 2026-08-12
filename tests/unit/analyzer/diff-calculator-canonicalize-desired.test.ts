@@ -405,6 +405,10 @@ describe('DiffCalculator canonicalizeDesired (#1591)', () => {
   });
 
   it('leaves an unrelated EC2 type untouched — the type guard, actually pinned', async () => {
+    // NOTE: this fixture must use a type EC2Provider does NOT canonicalize.
+    // It used `AWS::EC2::SecurityGroupIngress` until issue #1633 gave that
+    // type its own arm, which made the new branch return BEFORE the Route
+    // guard and silently stopped this row from pinning anything.
     // Through a lookup that hands EC2Provider to EVERY type, so deleting the
     // `resourceType !== 'AWS::EC2::Route'` guard changes the outcome. The
     // earlier version routed only Route to the provider, so the guard was
@@ -420,7 +424,7 @@ describe('DiffCalculator canonicalizeDesired (#1591)', () => {
       resources: {
         MySg: {
           physicalId: 'sg-1',
-          resourceType: 'AWS::EC2::SecurityGroupIngress',
+          resourceType: 'AWS::EC2::NetworkAclEntry',
           properties: {
             DestinationCidrBlock: '10.0.0.0/16',
             DestinationIpv6CidrBlock: '::/0',
@@ -434,7 +438,7 @@ describe('DiffCalculator canonicalizeDesired (#1591)', () => {
     const sgTemplate: CloudFormationTemplate = {
       Resources: {
         MySg: {
-          Type: 'AWS::EC2::SecurityGroupIngress',
+          Type: 'AWS::EC2::NetworkAclEntry',
           Properties: {
             DestinationCidrBlock: '10.0.0.0/16',
             DestinationIpv6CidrBlock: '::/0',
@@ -454,7 +458,7 @@ describe('DiffCalculator canonicalizeDesired (#1591)', () => {
     // both sides would still narrow equally, so the discriminating assertion
     // is on the PROPERTIES the change carries, checked below.
     expect(changes.get('MySg')?.changeType).toBe('NO_CHANGE');
-    expect(anyType('AWS::EC2::SecurityGroupIngress', sgTemplate.Resources['MySg']!.Properties!)).toEqual(
+    expect(anyType('AWS::EC2::NetworkAclEntry', sgTemplate.Resources['MySg']!.Properties!)).toEqual(
       sgTemplate.Resources['MySg']!.Properties
     );
   });
