@@ -226,13 +226,16 @@ its replay-CREATE arm was announcing it into a void, and the row below was
 unreachable in production for ALL of them. The shipped consumers are
 `EC2Provider` — `createRoute`'s multi-destination narrowing and
 `createSecurityGroupIngress`, both gated on `context?.replayingState === true`
-— and `S3BucketProvider`'s create arm; those two files are the only ones in
-`src/provisioning/providers/` that return the field at all, which is worth
-checking with a grep rather than trusting a list here (issue #1682 named
-`AWS::DynamoDB::GlobalTable` as a consumer, but that provider runs its
-`replayWarn` substitution and returns WITHOUT `effectiveProperties`, so its
-announcement writes into a void one layer lower — the provider-side half, in
-flight as issue #1653). It now mirrors `recordAfterRollbackUpdate`: the bag handed to
+— `S3BucketProvider`'s create arm, and (since issue #1653)
+`DynamoDBGlobalTableProvider`'s `StreamSpecification` substitution; that list is
+worth checking with a grep rather than trusting it here. #1682 named the
+GlobalTable as a consumer while the provider was still running its `replayWarn`
+substitution and returning WITHOUT the field — the provider-side half, which
+#1653 has since supplied, so the two halves now meet. What none of the four has
+yet is per-PROVIDER live coverage: the #1696 fixture proves the ENGINE path via
+`AWS::EC2::Route`, and whether each arm substitutes the value it claims and
+records it in the shape `readCurrentState` can match is tracked as issue #1706.
+It now mirrors `recordAfterRollbackUpdate`: the bag handed to
 `create()` IS `previousState.properties`, so a returned `effectiveProperties`
 replaces the record's `properties` wholesale, and reporting none keeps the
 previous bag rather than blanking the record. A provider adding a new

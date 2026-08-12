@@ -423,17 +423,23 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // so the effective bag is indistinguishable from what an ordinary
       // template-path create of the same table records.
       //
-      // NOT REACHABLE YET — issue #1682, and this comment is here so the next
-      // reader is not misled into thinking it is. `streamSpecSubstituted` can
-      // only be set when `context.replayingState` is true, and the sole caller
-      // that sets that flag (`rollback-executor.ts`'s reverse-replacement arm)
-      // types the create result as `{physicalId, attributes?}` and rebuilds the
-      // record from `previousState.properties`, discarding
-      // `effectiveProperties`. So this arm is correct at the PROVIDER CONTRACT
-      // level and goes live the moment #1682 wires that caller; it does NOT
-      // close the create-path phantom drift today. The S3 create arm merged in
-      // #1660 has the identical gap, which is why the fix belongs in the
-      // executor rather than being worked around per provider.
+      // LIVE. `streamSpecSubstituted` can only be set when
+      // `context.replayingState` is true, and the sole caller that sets that
+      // flag is `rollback-executor.ts`'s reverse-replacement arm — which
+      // HONOURS `effectiveProperties` as of issue #1682 (PR #1696): the bag
+      // handed to `create()` IS `previousState.properties`, so what this arm
+      // returns replaces the record's `properties` wholesale. Before that the
+      // arm rebuilt the record from `prev.properties` and every provider's
+      // replay-CREATE substitution was announced into a void.
+      //
+      // Not live-tested per PROVIDER yet — issue #1706. The #1696 fixture
+      // (`tests/integration/rollback-replay-effective-props`) proves the
+      // ENGINE path via `AWS::EC2::Route`; what is uncovered is whether THIS
+      // arm substitutes the value it claims and records it in the shape
+      // `readCurrentState` can match. Covering it needs a
+      // rollback-failure-injection phase of its own, which is why the
+      // `dynamodb-globaltable` fixture deliberately exercises only the UPDATE
+      // arm.
       let streamSpecSubstituted = false;
       try {
         // `replayWarn` (issue #1544): a state record written by an older
