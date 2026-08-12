@@ -60,23 +60,28 @@ import { ProvisioningError } from '../utils/error-handler.js';
  * ## What this does NOT cover
  *
  * The claim is "every composite packer this change reaches", not "every `|`
- * join in the tree". Two deliberate exclusions, recorded so the scope is not
+ * join in the tree". One deliberate exclusion, recorded so the scope is not
  * read as wider than it is:
  *
- * - **`route53-provider.ts`'s three packers** (`AWS::Route53::RecordSet` and
- *   its siblings) are NOT guarded — the file was owned by a parallel lane when
- *   this shipped. The exposure there is bounded rather than absent:
- *   `parseRecordSetCompositeId` requires EXACTLY three parts, so a four-part
- *   id is REJECTED rather than mis-decoded into a different record. That is
- *   the loud failure mode, not the silent-wrong-resource one this helper
- *   exists for — but the deploy still records an id nothing can decode, so the
- *   type belongs here whenever that lane lands. Tracked in issue
- *   [#1711](https://github.com/go-to-k/cdkd/issues/1711).
  * - **`intrinsic-function-resolver.ts`'s `|` joins** (the WAFv2 and
  *   `AWS::Events::Rule` arms) are out of scope by KIND, not by ownership: they
  *   build a `Ref` VALUE for the template resolver, never a physicalId cdkd
  *   records and later splits. Nothing decodes them, so an ambiguous join has
  *   no decode site to go wrong at.
+ *
+ * ## Guarding the PACKERS is not the whole story
+ *
+ * A packer that refuses ambiguity does nothing about an id an EARLIER binary
+ * already recorded, or one an `import` was handed — and a type whose decoder is
+ * loose will mis-decode both. Issue #1711 is where that was learned:
+ * `AWS::Route53::RecordSet`'s `parseRecordSetCompositeId` accepts any three
+ * NON-EMPTY segments, so a record name carrying two pipes decoded to a
+ * DIFFERENT hosted zone at three sites this helper never sees — an `import`
+ * early accept, an identity-resolution short-circuit, and `delete`'s own parse,
+ * where `cdkd destroy` then reported success over a live record. When adopting
+ * this guard for a new type, audit its DECODE sites in the same change and make
+ * each one cross-check the parsed segments against something it can verify them
+ * with (Route 53 uses the template's own `Name` / `Type`).
  */
 
 /** The character every composite physicalId in this codebase joins segments with. */

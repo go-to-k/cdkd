@@ -16412,6 +16412,7 @@
           ],
           "seededBy": [
             "buildResourceRecordSet",
+            "compositeAgreesWithTemplate",
             "create",
             "createHostedZone",
             "createRecordSet",
@@ -16535,6 +16536,7 @@
           ],
           "seededBy": [
             "buildResourceRecordSet",
+            "compositeAgreesWithTemplate",
             "create",
             "createRecordSet",
             "delete",
