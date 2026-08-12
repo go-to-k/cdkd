@@ -1,3 +1,10 @@
+## [0.281.12](https://github.com/go-to-k/cdkd/compare/v0.281.11...v0.281.12) (2026-08-12)
+
+
+### Bug Fixes
+
+* **dynamodb:** the Table BillingMode warning must not assert an unchecked mode ([#1736](https://github.com/go-to-k/cdkd/issues/1736)) ([95ef6ef](https://github.com/go-to-k/cdkd/commit/95ef6efbd8e6e2f5dd342774cdaf422f62ea8d91))
+
 ## [0.281.11](https://github.com/go-to-k/cdkd/compare/v0.281.10...v0.281.11) (2026-08-12)
 
 
