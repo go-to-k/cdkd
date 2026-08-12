@@ -1,3 +1,10 @@
+## [0.281.3](https://github.com/go-to-k/cdkd/compare/v0.281.2...v0.281.3) (2026-08-12)
+
+
+### Bug Fixes
+
+* **route53:** auto-resolve AWS::Route53::HostedZone import from the template Name ([#1709](https://github.com/go-to-k/cdkd/issues/1709)) ([7523134](https://github.com/go-to-k/cdkd/commit/752313477b585702cde7ef1a57049bdbdcf9a869))
+
 ## [0.281.2](https://github.com/go-to-k/cdkd/compare/v0.281.1...v0.281.2) (2026-08-12)
 
 
