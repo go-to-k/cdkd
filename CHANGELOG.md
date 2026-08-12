@@ -1,3 +1,10 @@
+## [0.280.46](https://github.com/go-to-k/cdkd/compare/v0.280.45...v0.280.46) (2026-08-12)
+
+
+### Bug Fixes
+
+* **provisioning:** show the backing function's log tail when nothing explained a CR failure ([#1701](https://github.com/go-to-k/cdkd/issues/1701)) ([c640faf](https://github.com/go-to-k/cdkd/commit/c640faf19807e68db1c8981a436740639e33967d))
+
 ## [0.280.45](https://github.com/go-to-k/cdkd/compare/v0.280.44...v0.280.45) (2026-08-12)
 
 
