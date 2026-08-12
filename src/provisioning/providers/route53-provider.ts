@@ -44,6 +44,31 @@ export function isZoneDisabledForMutationError(error: unknown): boolean {
   return error instanceof Error && error.message.includes('is marked disabled for mutation');
 }
 
+/**
+ * A `HostedZoneName` that resolved cleanly but matches no zone.
+ *
+ * Distinct from "no zone was specified": the DELETE path treats a vanished
+ * zone as already-gone (the zone's records went with it) rather than surfacing
+ * a misconfiguration error that would block `cdkd destroy`.
+ */
+class HostedZoneNameNotFoundError extends ProvisioningError {
+  constructor(
+    message: string,
+    resourceType: string,
+    logicalId: string,
+    physicalId?: string,
+    cause?: Error
+  ) {
+    super(message, resourceType, logicalId, physicalId, cause);
+    // REQUIRED: `CdkdError`'s constructor chain ends with
+    // `Object.setPrototypeOf(this, ProvisioningError.prototype)`, which erases
+    // the subclass identity — without re-setting it here, `instanceof
+    // HostedZoneNameNotFoundError` is FALSE for an instance of this class and
+    // the delete path's skip-as-gone arm silently never fires.
+    Object.setPrototypeOf(this, HostedZoneNameNotFoundError.prototype);
+  }
+}
+
 /** Segment count of cdkd's `AWS::Route53::RecordSet` composite physicalId. */
 const RECORD_SET_COMPOSITE_SEGMENTS = 3;
 
@@ -68,12 +93,25 @@ export function parseRecordSetCompositeId(
 }
 
 /**
- * Route 53 stores and reports every record name fully qualified with a
- * trailing dot, while a template may declare it either way — so compare on
- * the normalized form rather than the raw string.
+ * Canonicalize a record name for comparison.
+ *
+ * Two AWS-side spellings have to be absorbed, and missing either one makes
+ * `readCurrentState` return `undefined` — which reads as "drift unknown"
+ * rather than as an error:
+ *
+ * - Route 53 reports every name fully qualified with a TRAILING DOT, while a
+ *   template may declare it either way.
+ * - Non-ASCII and special characters come back OCTAL-ESCAPED: `*.example.com`
+ *   is reported as `\\052.example.com.`. That affects every wildcard record,
+ *   including ones cdkd created itself, so decoding it here fixes drift for
+ *   the whole population rather than only the imported ones.
  */
 function normalizeRecordName(name: string): string {
-  return name.endsWith('.') ? name : `${name}.`;
+  // `\\ddd` -> the character it encodes (Route 53 uses 3-digit octal).
+  const decoded = name.replace(/\\(\d{3})/g, (_m, oct: string) =>
+    String.fromCharCode(parseInt(oct, 8))
+  );
+  return decoded.endsWith('.') ? decoded : `${decoded}.`;
 }
 
 /**
@@ -862,14 +900,43 @@ export class Route53Provider implements ResourceProvider {
     // back to resolving the zone from the recorded properties — the delete
     // only needs segment 1; `Name` / `Type` come from `properties` anyway.
     const composite = parseRecordSetCompositeId(physicalId);
-    const hostedZoneId =
-      composite?.hostedZoneId ??
-      (await this.resolveHostedZoneId(properties, logicalId, resourceType, physicalId, {
-        // A DELETE resolved from a name must not guess between a public and a
-        // private zone of the same name — deleting from the wrong one is
-        // unrecoverable, and this fallback is what newly routes delete here.
-        requireUnambiguousZoneName: true,
-      }));
+    let hostedZoneId: string;
+    if (composite) {
+      hostedZoneId = composite.hostedZoneId;
+    } else {
+      try {
+        hostedZoneId = await this.resolveHostedZoneId(
+          properties,
+          logicalId,
+          resourceType,
+          physicalId,
+          {
+            // A DELETE resolved from a name must not guess between a public
+            // and a private zone of the same name — deleting from the wrong
+            // one is unrecoverable, and this fallback is what newly routes
+            // delete here.
+            requireUnambiguousZoneName: true,
+          }
+        );
+      } catch (error) {
+        if (error instanceof HostedZoneNameNotFoundError) {
+          // The zone is gone, so its records are too. Delete is idempotent.
+          const clientRegion = await this.getClient().config.region();
+          assertRegionMatch(
+            clientRegion,
+            context?.expectedRegion,
+            resourceType,
+            logicalId,
+            physicalId
+          );
+          this.logger.debug(
+            `Hosted zone for record set ${logicalId} no longer exists, skipping deletion`
+          );
+          return;
+        }
+        throw error;
+      }
+    }
 
     try {
       const resourceRecordSet = this.buildResourceRecordSet(properties);
@@ -1605,7 +1672,8 @@ export class Route53Provider implements ResourceProvider {
       // conditional re-throw rather than a swallow, which un-protects the
       // `.send()` for the `update-wrap-coverage` critic (and would be a real
       // hazard if a later edit widened what the try covers).
-      let matched: { Id?: string | undefined }[] = [];
+      let matched: { Id?: string | undefined; Name?: string | undefined }[] = [];
+      let lookupRan = false;
       try {
         const response = await this.getClient().send(
           new ListHostedZonesByNameCommand({
@@ -1618,9 +1686,11 @@ export class Route53Provider implements ResourceProvider {
           })
         );
         const zones = response.HostedZones ?? [];
-        // Match the zone name (Route53 returns names with trailing dot)
+        // Normalize BOTH sides — AWS returns the trailing dot and escapes
+        // special characters, the template may do neither.
         const normalizedName = normalizeRecordName(hostedZoneName);
-        matched = zones.filter((z) => z.Name === normalizedName);
+        matched = zones.filter((z) => normalizeRecordName(z.Name ?? '') === normalizedName);
+        lookupRan = true;
       } catch (error) {
         this.logger.warn(
           `Failed to resolve HostedZoneName "${hostedZoneName}" for ${logicalId}: ${error instanceof Error ? error.message : String(error)}`
@@ -1640,6 +1710,19 @@ export class Route53Provider implements ResourceProvider {
       const matchedZone = matched[0];
       if (matchedZone?.Id) {
         return matchedZone.Id.replace('/hostedzone/', '');
+      }
+
+      // A name WAS specified and the lookup SUCCEEDED but matched no zone —
+      // materially different from "no zone was specified", and the delete path
+      // treats it as already-gone rather than as a misconfiguration.
+      if (lookupRan) {
+        throw new HostedZoneNameNotFoundError(
+          `HostedZoneName "${hostedZoneName}" matches no hosted zone in this account/region ` +
+            `for ${logicalId}`,
+          resourceType,
+          logicalId,
+          physicalId
+        );
       }
     }
 
@@ -1665,7 +1748,8 @@ export class Route53Provider implements ResourceProvider {
    */
   private async resolveRecordSetIdentity(
     physicalId: string,
-    properties?: Record<string, unknown>
+    properties?: Record<string, unknown>,
+    options?: { requireUnambiguousZoneName?: boolean }
   ): Promise<{ hostedZoneId: string; name: string; type: string } | undefined> {
     const composite = parseRecordSetCompositeId(physicalId);
     if (composite) return composite;
@@ -1680,7 +1764,8 @@ export class Route53Provider implements ResourceProvider {
         properties,
         'RecordSet',
         'AWS::Route53::RecordSet',
-        physicalId
+        physicalId,
+        options
       );
       return { hostedZoneId, name, type };
     } catch (err) {
@@ -1955,11 +2040,11 @@ export class Route53Provider implements ResourceProvider {
    * Adopt an existing Route 53 resource into cdkd state.
    *
    * Supported types: `AWS::Route53::HostedZone` (override-only);
-   * `AWS::Route53::RecordSet` (resolved from the template's
+   * `AWS::Route53::RecordSet` (override-only too — the supplied id is
+   * CANONICALIZED rather than trusted, using the template's
    * `HostedZoneId` / `HostedZoneName` + `Name` + `Type` and verified
-   * against AWS — RecordSets are not taggable, but their identity is
-   * fully derivable from the template, so an explicit override is not
-   * required).
+   * against AWS, but an import with no override still declines because
+   * a RecordSet has no standalone identity for auto mode to key on).
    */
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     switch (input.resourceType) {
@@ -2030,9 +2115,19 @@ export class Route53Provider implements ResourceProvider {
     // A non-composite override IS CloudFormation's physicalId, i.e. the record
     // name; the template properties carry the same name plus the zone, so they
     // are the authoritative source either way.
-    const identity = await this.resolveRecordSetIdentity(known, input.properties);
+    // The ambiguity guard matters MORE here than on delete: canonicalizing to
+    // the wrong split-horizon zone FREEZES it into state, after which delete
+    // parses the composite and never re-resolves — so the delete-time guard
+    // can never fire. Verification cannot catch it either, because both zones
+    // hold a record of that name. `resolveRecordSetIdentity` swallows the
+    // refusal into `undefined`, which lands on the safe verbatim fallback.
+    const identity = await this.resolveRecordSetIdentity(known, input.properties, {
+      requireUnambiguousZoneName: true,
+    });
     if (!identity) {
-      return adoptVerbatim('the template does not resolve to a hosted zone + Name + Type');
+      return adoptVerbatim(
+        'the template does not unambiguously resolve to a hosted zone + Name + Type'
+      );
     }
 
     const compositeId = `${identity.hostedZoneId}|${identity.name}|${identity.type}`;

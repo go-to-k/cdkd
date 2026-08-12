@@ -234,27 +234,6 @@ describe('Route53 RecordSet physicalId: CloudFormation form vs cdkd composite (i
       expect(result).toEqual({ physicalId: 'record.example.com', attributes: {} });
     });
 
-    it('adopts VERBATIM for a wildcard record AWS reports octal-escaped', async () => {
-      // Route 53 renders `*.example.com` as `\052.example.com.`, so the exact
-      // name match legitimately misses and must not drop the row.
-      mockSend.mockResolvedValueOnce({
-        ResourceRecordSets: [{ Name: '\\052.example.com.', Type: 'A', TTL: 300 }],
-      });
-
-      const result = await provider.import({
-        logicalId: 'WildcardRecord',
-        resourceType: 'AWS::Route53::RecordSet',
-        stackName: 'MyStack',
-        region: 'us-east-1',
-        properties: { ...RECORD_PROPS, Name: '*.example.com.' },
-        knownPhysicalId: '*.example.com',
-      });
-
-      expect(result).toEqual({ physicalId: '*.example.com', attributes: {} });
-    });
-  });
-
-  describe('delete()', () => {
     it('deletes a record whose state carries the cdkd composite id', async () => {
       mockSend.mockResolvedValueOnce({});
 
@@ -353,6 +332,25 @@ describe('Route53 RecordSet physicalId: CloudFormation form vs cdkd composite (i
       ).rejects.toThrow(/Properties required/);
     });
 
+    it('treats a vanished hosted zone as already-gone rather than erroring', async () => {
+      // A name that resolves cleanly to ZERO zones means the zone (and its
+      // records) are gone. Surfacing "HostedZoneId or HostedZoneName is
+      // required" there would be the wrong description AND would block
+      // `cdkd destroy`.
+      mockSend.mockResolvedValueOnce({ HostedZones: [] });
+
+      await expect(
+        provider.delete('WebsiteRecord', 'record.example.com', 'AWS::Route53::RecordSet', {
+          ...RECORD_PROPS,
+          HostedZoneId: undefined,
+          HostedZoneName: 'example.com',
+        })
+      ).resolves.toBeUndefined();
+
+      // Only the lookup ran — no ChangeResourceRecordSets was attempted.
+      expect(mockSend).toHaveBeenCalledTimes(1);
+    });
+
     it('still errors when neither the id nor the properties identify a zone', async () => {
       await expect(
         provider.delete('WebsiteRecord', 'record.example.com', 'AWS::Route53::RecordSet', {
@@ -360,6 +358,56 @@ describe('Route53 RecordSet physicalId: CloudFormation form vs cdkd composite (i
           Type: 'A',
         })
       ).rejects.toThrow(/HostedZoneId or HostedZoneName is required/);
+    });
+  });
+
+  describe('create / update paths (the guard is not import-only)', () => {
+    // Pin BOTH polarities of the typeof guard: the fix's stated create/update
+    // benefit is otherwise unpinned, and a regression there sends AWS the
+    // string '[object Object]' as a hosted zone id.
+    it('refuses an object HostedZoneId on create instead of sending [object Object]', async () => {
+      await expect(
+        provider.create('WebsiteRecord', 'AWS::Route53::RecordSet', {
+          ...RECORD_PROPS,
+          HostedZoneId: { 'Fn::ImportValue': 'SharedZoneId' },
+        })
+      ).rejects.toThrow(/HostedZoneId or HostedZoneName is required/);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('still accepts a plain-string HostedZoneId on create', async () => {
+      mockSend.mockResolvedValueOnce({});
+
+      const result = await provider.create(
+        'WebsiteRecord',
+        'AWS::Route53::RecordSet',
+        RECORD_PROPS
+      );
+
+      expect(result.physicalId).toBe('Z0123456789ABCDEFGHIJ|record.example.com.|A');
+      expect(mockSend.mock.calls[0]?.[0].input.HostedZoneId).toBe('Z0123456789ABCDEFGHIJ');
+    });
+
+    it('does NOT refuse split-horizon on create (first-match preserved)', async () => {
+      // Deliberate asymmetry: refusing here would break deploys that work
+      // today. Only the destructive / state-freezing paths require an
+      // unambiguous zone.
+      mockSend
+        .mockResolvedValueOnce({
+          HostedZones: [
+            { Id: '/hostedzone/ZPUBLIC000000000000', Name: 'example.com.' },
+            { Id: '/hostedzone/ZPRIVATE00000000000', Name: 'example.com.' },
+          ],
+        })
+        .mockResolvedValueOnce({});
+
+      const result = await provider.create('WebsiteRecord', 'AWS::Route53::RecordSet', {
+        ...RECORD_PROPS,
+        HostedZoneId: undefined,
+        HostedZoneName: 'example.com',
+      });
+
+      expect(result.physicalId).toBe('ZPUBLIC000000000000|record.example.com.|A');
     });
   });
 
