@@ -273,9 +273,10 @@ describe('DynamoDBTableProvider malformed BillingMode (issue #1545)', () => {
       // START and carrying the BillingMode sentence, because neither half
       // fences it alone: a bare `stringContaining("AWS::DynamoDB::Table")`
       // matches the guard's own message text, and a bare prefix match would be
-      // satisfied by either sibling arm in this provider (the GSI and stream
-      // guards are prefixed too). Removing the prefix left the GlobalTable
-      // suite green until its twin fence existed.
+      // satisfied by any of the four other prefixed arms in this provider (the
+      // recorded-previous baseline warn, the BillingMode-flip refusal, the
+      // GSI-removal guard, the capacity guard). Removing the prefix left the
+      // GlobalTable suite green until its twin fence existed.
       expect(childLogger.warn).toHaveBeenCalledWith(
         expect.stringMatching(
           /^AWS::DynamoDB::Table MyTable: AWS::DynamoDB::Table BillingMode must be a non-empty string/

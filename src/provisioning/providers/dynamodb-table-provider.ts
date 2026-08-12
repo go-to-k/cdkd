@@ -718,18 +718,23 @@ export class DynamoDBTableProvider implements ResourceProvider {
                   // the RECORDED previous when the record holds a usable value,
                   // else the table's LIVE mode. The CFn type default is NOT
                   // reachable from here — that arm needs an absent desired side.
-                  // The record is the case that makes "current" a lie: it can
-                  // be stale (an out-of-band re-price), so naming it "current"
-                  // asserts a `DescribeTable` reading this message never took.
                   //
-                  // The prefix matches the two prefixed sibling arms in this
-                  // provider (the GSI-removal guard and the flip-to-PROVISIONED
-                  // capacity guard): without it, a stack with more than one
-                  // AWS::DynamoDB::Table gives neither the user nor an integ
-                  // assertion any way to tell which table warned. The
-                  // GlobalTable twin of THIS arm is still unprefixed and still
-                  // says "current" — same defect, contended file, tracked in
-                  // issue #1739.
+                  // NEITHER outcome justifies the word "current". The record can
+                  // be stale (an out-of-band re-price), and the live mode is
+                  // itself defaulted to PROVISIONED when `BillingModeSummary` is
+                  // absent (see the note above `liveBillingMode`), so on both
+                  // branches "current" asserts a `DescribeTable` reading the
+                  // message may never have taken.
+                  //
+                  // The prefix matches every prefixed sibling in this provider —
+                  // the recorded-previous baseline warn just above, the
+                  // BillingMode-flip refusal, the GSI-removal guard and the
+                  // flip-to-PROVISIONED capacity guard: without it, a stack with
+                  // more than one AWS::DynamoDB::Table gives neither the user
+                  // nor an integ assertion any way to tell which table warned.
+                  // The GlobalTable twin of THIS arm is still unprefixed and
+                  // still says "current" — same defect, contended file, tracked
+                  // in issue #1739.
                   this.logger.warn(
                     `AWS::DynamoDB::Table ${logicalId}: ${message} The mode this update ` +
                       `compared against (${prevBillingMode}) is kept rather than flipped to ` +
