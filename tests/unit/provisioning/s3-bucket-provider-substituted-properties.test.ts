@@ -1134,3 +1134,95 @@ describe('#1718 the sibling per-item appliers', () => {
     ]);
   });
 });
+
+/**
+ * The concealment fence for the twin (found by review of #1707 / #1717).
+ *
+ * The first cut of the folds resolved every default with `??`, which treats a
+ * DECLARED `null` as absent. That silently folded the template side onto the
+ * substituted value, so the comparison came out equal, the provider was never
+ * called, and the warning that tells the user what to fix STOPPED — the exact
+ * concealment #1670's finding 3 refused a twin over.
+ *
+ * Every unit row written before this one used a NON-nullish malformed value (a
+ * blank string, an array, an unresolved intrinsic), so all of them passed
+ * against the broken fold. These rows use the nullish spellings specifically.
+ */
+describe('the twin must not conceal a DECLARED-but-malformed value', () => {
+  for (const [label, path, item] of [
+    [
+      'inventory destination Format: null',
+      ['InventoryConfigurations', 0, 'Destination', 'Format'],
+      {
+        InventoryConfigurations: [
+          {
+            Id: 'i1',
+            Enabled: true,
+            IncludedObjectVersions: 'All',
+            ScheduleFrequency: 'Daily',
+            Destination: { BucketArn: DEST_ARN, Format: null },
+          },
+        ],
+      },
+    ],
+    [
+      'analytics OutputSchemaVersion: null',
+      ['AnalyticsConfigurations', 0, 'StorageClassAnalysis', 'DataExport', 'OutputSchemaVersion'],
+      {
+        AnalyticsConfigurations: [
+          analyticsItem({
+            OutputSchemaVersion: null,
+            Destination: { BucketArn: DEST_ARN, Format: 'CSV' },
+          }),
+        ],
+      },
+    ],
+    [
+      'inventory ScheduleFrequency: null (must NOT fall through to Schedule)',
+      ['InventoryConfigurations', 0, 'ScheduleFrequency'],
+      {
+        InventoryConfigurations: [
+          {
+            Id: 'i1',
+            Enabled: true,
+            IncludedObjectVersions: 'All',
+            ScheduleFrequency: null,
+            Schedule: { Frequency: 'Daily' },
+            Destination: { BucketArn: DEST_ARN, Format: 'CSV' },
+          },
+        ],
+      },
+    ],
+  ] as Array<[string, Array<string | number>, Record<string, unknown>]>) {
+    it(`keeps ${label} visible on the desired side`, () => {
+      const canonical = provider.canonicalizeDesiredProperties(RESOURCE_TYPE, item);
+      // The declared null survives the fold, so it can never compare equal to
+      // the substituted value the provider records — `cdkd diff` goes on
+      // reporting the property and the provider goes on warning.
+      expect(at(canonical, ...path)).toBeNull();
+    });
+  }
+
+  it('...while an ABSENT key still takes the default — the two are not the same case', () => {
+    const canonical = provider.canonicalizeDesiredProperties(RESOURCE_TYPE, {
+      InventoryConfigurations: [
+        { Id: 'i1', Enabled: true, IncludedObjectVersions: 'All', ScheduleFrequency: 'Daily',
+          Destination: { BucketArn: DEST_ARN } },
+      ],
+    });
+
+    expect(at(canonical, 'InventoryConfigurations', 0, 'Destination', 'Format')).toBe('CSV');
+  });
+
+  it('an absent ScheduleFrequency DOES fall through to the SDK spelling', () => {
+    const canonical = provider.canonicalizeDesiredProperties(RESOURCE_TYPE, {
+      InventoryConfigurations: [
+        { Id: 'i1', Enabled: true, IncludedObjectVersions: 'All',
+          Schedule: { Frequency: 'Daily' }, Destination: { BucketArn: DEST_ARN, Format: 'CSV' } },
+      ],
+    });
+
+    expect(at(canonical, 'InventoryConfigurations', 0, 'ScheduleFrequency')).toBe('Daily');
+    expect('Schedule' in (at(canonical, 'InventoryConfigurations', 0) as object)).toBe(false);
+  });
+});

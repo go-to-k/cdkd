@@ -595,6 +595,23 @@ different keys. The fold is keyed off the DECLARED shape, never off a refusal,
 so a malformed value still passes through intact and keeps being reported —
 finding 3 survives rather than being overridden.
 
+**Resolve a twin's defaults by PRESENCE, never with `??`** — the review of
+#1707 caught the fold concealing exactly what finding 3 says must stay visible.
+The default belongs to a key the template OMITTED: the provider sends it, the
+readback reports it, and folding both sides is what makes them agree. A key
+DECLARED with a malformed value is a different case — the provider warns and
+substitutes, records what it SENT, and `cdkd diff` must go on reporting the
+difference until the template is fixed, because that report plus the warning are
+the user's only signal. `??` cannot tell them apart: it reads a declared `null`
+as absent and folds the template side onto the substituted value, so the
+comparison comes out equal, the provider is never called, and the warning STOPS.
+The same applies to a two-source precedence read: prefer a PRESENT-but-malformed
+first source rather than falling through the way the applier's refusal-driven
+read does, so the two sides stay different. The trap is invisible to the obvious
+tests — a blank string, an array and an unresolved intrinsic are all non-nullish,
+so every malformed-value row written first passed against the broken fold; the
+nullish spelling is what has to be probed.
+
 Two things about the obstacle #1717 recorded, because a later reader will meet
 it as a claim rather than as a measurement. The issue warned that a
 `canonicalizeDesiredProperties` folding this key makes `gen-nested-key-coverage`

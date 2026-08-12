@@ -195,10 +195,36 @@ function effectiveS3BucketDestination(declared: unknown, sentFormat?: unknown): 
   const bucketArn = bag['BucketArn'] ?? bag['Bucket'];
   if (bucketArn !== undefined) out['BucketArn'] = bucketArn;
   if (bag['BucketAccountId'] !== undefined) out['BucketAccountId'] = bag['BucketAccountId'];
-  const format = sentFormat ?? bag['Format'] ?? INVENTORY_DESTINATION_DEFAULT_FORMAT;
-  out['Format'] = format;
+  out['Format'] =
+    sentFormat ?? declaredOrDefault(bag, 'Format', INVENTORY_DESTINATION_DEFAULT_FORMAT);
   if (bag['Prefix'] !== undefined) out['Prefix'] = bag['Prefix'];
   return sameScalarRecord(out, declared) ? declared : out;
+}
+
+/**
+ * `container[key]` when the key is DECLARED, else `fallback` — presence-based,
+ * NEVER `??`, and that distinction is the whole guard against issue #1670's
+ * finding 3.
+ *
+ * The default belongs to a key the template OMITTED: there the provider sends
+ * it, the readback reports it, and folding both sides is what makes them agree.
+ * A key DECLARED with a malformed value is a different case entirely — the
+ * provider warns and substitutes, records what it SENT, and `cdkd diff` must go
+ * on reporting the difference until the template is corrected, because that
+ * report plus the warning are the user's only signal. A `??` chain cannot tell
+ * the two apart: it treats a declared `null` as absent and quietly folds the
+ * template side onto the substituted value, so the comparison comes out equal,
+ * the provider is never called, and the warning STOPS — the exact concealment
+ * #1670 refused a twin over. Measured on `Format: null` while reviewing this
+ * change; a malformed value that is not nullish (a blank string, an array, an
+ * unresolved intrinsic) never hit it, so the unit rows written first all passed.
+ */
+function declaredOrDefault(
+  container: Record<string, unknown>,
+  key: string,
+  fallback: unknown
+): unknown {
+  return key in container ? container[key] : fallback;
 }
 
 /**
@@ -289,12 +315,22 @@ function effectiveInventoryItem(
     patch['IncludedObjectVersions'] = INVENTORY_DEFAULT_INCLUDED_OBJECT_VERSIONS;
   }
 
+  // The two-source precedence, resolved by PRESENCE for the same reason
+  // {@link declaredOrDefault} exists: the applier prefers `ScheduleFrequency`
+  // when it is present AND usable and falls through to `Schedule.Frequency`
+  // otherwise, but the fall-through is driven by a REFUSAL this pure fold
+  // cannot run. Preferring a present-but-malformed first source leaves the two
+  // sides DIFFERENT, which keeps the warning and the diff line alive; a `??`
+  // chain would instead fall through exactly like the applier for the nullish
+  // spellings and conceal them.
   const declaredSchedule = item['Schedule'];
-  const frequency =
-    sent?.frequency ??
-    item['ScheduleFrequency'] ??
-    (isPlainObject(declaredSchedule) ? declaredSchedule['Frequency'] : undefined) ??
-    INVENTORY_DEFAULT_SCHEDULE_FREQUENCY;
+  const declaredFrequency =
+    'ScheduleFrequency' in item
+      ? item['ScheduleFrequency']
+      : isPlainObject(declaredSchedule) && 'Frequency' in declaredSchedule
+        ? declaredSchedule['Frequency']
+        : INVENTORY_DEFAULT_SCHEDULE_FREQUENCY;
+  const frequency = sent?.frequency ?? declaredFrequency;
   if (!Object.is(item['ScheduleFrequency'], frequency)) patch['ScheduleFrequency'] = frequency;
 
   const destination = effectiveS3BucketDestination(item['Destination'], sent?.format);
@@ -337,8 +373,7 @@ function effectiveAnalyticsItem(
   const patch: Record<string, unknown> = {};
   const outputSchemaVersion =
     sent?.outputSchemaVersion ??
-    dataExport['OutputSchemaVersion'] ??
-    ANALYTICS_DEFAULT_OUTPUT_SCHEMA_VERSION;
+    declaredOrDefault(dataExport, 'OutputSchemaVersion', ANALYTICS_DEFAULT_OUTPUT_SCHEMA_VERSION);
   if (!Object.is(dataExport['OutputSchemaVersion'], outputSchemaVersion)) {
     patch['OutputSchemaVersion'] = outputSchemaVersion;
   }
