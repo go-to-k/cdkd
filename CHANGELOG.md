@@ -1,3 +1,10 @@
+## [0.280.36](https://github.com/go-to-k/cdkd/compare/v0.280.35...v0.280.36) (2026-08-12)
+
+
+### Bug Fixes
+
+* **s3:** report effectiveProperties from the bucket provider's warn-and-skip replay arms ([#1660](https://github.com/go-to-k/cdkd/issues/1660)) ([1a59081](https://github.com/go-to-k/cdkd/commit/1a59081c2777b3ac18e4a2f454e86adf4745a815))
+
 ## [0.280.35](https://github.com/go-to-k/cdkd/compare/v0.280.34...v0.280.35) (2026-08-12)
 
 
