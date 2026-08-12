@@ -110,6 +110,13 @@ strict, each differently):
   create side's "omit" would read as "delete every live index". The PREVIOUS
   side's translation takes the downgrade UNCONDITIONALLY: it is state-borne,
   so a refusal there is the guard-the-desired-side-only rule violated outright.
+  Since issue #1683 the suppression also RECORDS the retained previous list via
+  `effectiveProperties`, per the warn-and-SKIP rule below — AWS keeps the index
+  set it already holds, so recording the malformed desired blob left a record
+  `readCurrentState` could never match and the NEXT update read as its previous
+  side. The previous side is validated through the SAME translator (a probe
+  call with a flag-only callback) before it is retained, and the key is DROPPED
+  when both sides are unusable.
 - **WARN and keep the pre-refusal behavior** — `EC2Provider`'s Route
   multi-destination guard (issue #1566). `updateRoute` DELETES the route before
   re-creating it, so a throw on the re-create would strand a deleted route with
@@ -226,9 +233,18 @@ its replay-CREATE arm was announcing it into a void, and the row below was
 unreachable in production for ALL of them. The shipped consumers are
 `EC2Provider` — `createRoute`'s multi-destination narrowing and
 `createSecurityGroupIngress`, both gated on `context?.replayingState === true`
-— `S3BucketProvider`'s create arm, and (since issue #1653)
-`DynamoDBGlobalTableProvider`'s `StreamSpecification` substitution; that list is
-worth checking with a grep rather than trusting it here. #1682 named the
+— `S3BucketProvider`'s create arm, and `DynamoDBGlobalTableProvider`'s
+`StreamSpecification` substitution (issue #1653) plus its `BillingMode` one
+(issue #1683, the same `replayWarn` shape one property over); that list is
+worth checking with a grep rather than trusting it here. **A create-side
+`effectiveProperties` consumer need not be a replay arm at all** — #1683's
+third arm is the GlobalTable `needsStream` AUTO-ENABLE, which fires on the
+ORDINARY template path: cross-region replication requires a stream, so cdkd
+sends one the template never declared and must record it or `readCurrentState`
+reads back a stream the record does not mention. That is the "arms that do NOT
+log a refusal" case this file warns to look for, and it is why the audit
+question is "what did this send that differs from what was declared", not "which
+guards can warn". #1682 named the
 GlobalTable as a consumer while the provider was still running its `replayWarn`
 substitution and returning WITHOUT the field — the provider-side half, which
 #1653 has since supplied, so the two halves now meet. What none of the four has

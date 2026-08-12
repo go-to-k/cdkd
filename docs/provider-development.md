@@ -135,6 +135,24 @@ other than what the record said, so both had to be reported. When auditing your
 own provider, read every arm that can put a value on the wire differing from the
 declared one, not only the arms that log.
 
+`DynamoDBGlobalTableProvider` is the third, and it shows the shape that audit
+question exists for (issue
+[#1683](https://github.com/go-to-k/cdkd/issues/1683)). Two of its three arms are
+ordinary guard downgrades — a `BillingMode` warn-and-SUBSTITUTE on the replay
+path, a `GlobalSecondaryIndexes` warn-and-SKIP on update — but the third logs no
+refusal at all: cross-region replication REQUIRES a stream, so the provider
+enables `NEW_AND_OLD_IMAGES` on a template that declared no
+`StreamSpecification`, on the ORDINARY template path. Nothing is malformed and
+no guard fires, yet `readCurrentState` reads the stream back and the record has
+no member to match it with. A provider is therefore not "done" once every guard
+reports — it is done once every arm that SENDS something the template did not
+ask for reports. Record it in the CFn shape (GlobalTable's
+`StreamSpecification` declares only `StreamViewType`), so the effective bag is
+indistinguishable from what an explicit template produces. And when more than
+one arm can fire in a single call, COMPOSE them
+(`...(effectiveProperties ?? properties)`) rather than assigning — otherwise the
+later arm silently erases the earlier one's answer.
+
 Three conditions, or this becomes a way to hide losses rather than record them:
 
 - the narrowing is **deliberate** — a value you merely failed to send is a bug,

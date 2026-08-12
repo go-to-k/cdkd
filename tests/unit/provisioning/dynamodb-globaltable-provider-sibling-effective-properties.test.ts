@@ -1,0 +1,351 @@
+import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+
+const { mockSend, childLogger } = vi.hoisted(() => ({
+  mockSend: vi.fn(),
+  childLogger: {
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    child: vi.fn(),
+  },
+}));
+
+vi.mock('../../../src/utils/aws-clients.js', () => ({
+  getAwsClients: () => ({
+    dynamoDB: { send: mockSend, config: { region: () => Promise.resolve('us-east-1') } },
+  }),
+}));
+
+vi.mock('../../../src/utils/logger.js', () => {
+  childLogger.child.mockReturnValue(childLogger);
+  return {
+    getLogger: () => ({
+      child: () => childLogger,
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    }),
+  };
+});
+
+import { DynamoDBGlobalTableProvider } from '../../../src/provisioning/providers/dynamodb-globaltable-provider.js';
+
+const RESOURCE_TYPE = 'AWS::DynamoDB::GlobalTable';
+const TABLE_NAME = 'my-sibling-table-xxx';
+
+const baseProps = {
+  TableName: TABLE_NAME,
+  KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
+  AttributeDefinitions: [{ AttributeName: 'pk', AttributeType: 'S' }],
+  BillingMode: 'PAY_PER_REQUEST',
+  Replicas: [{ Region: 'us-east-1' }],
+};
+
+const VALID_GSI = [
+  {
+    IndexName: 'byThing',
+    KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
+    Projection: { ProjectionType: 'ALL' },
+  },
+];
+
+/**
+ * `effectiveProperties` for the three GlobalTable arms issue #1653 deliberately
+ * left out of scope, filed as issue #1683.
+ *
+ * Each puts a value on the wire that DIFFERS from the declared one and then
+ * recorded the declared one — the permanent phantom drift
+ * `.claude/rules/providers.md` records for the EC2 Route warn arm (#1591),
+ * reached by three different routes:
+ *
+ *  1. `BillingMode` warn-and-SUBSTITUTE on the replay-create path (record what
+ *     was SENT — the table really is created PAY_PER_REQUEST);
+ *  2. `desiredGsiUnusable` warn-and-SKIP on the update path (retain the
+ *     PREVIOUS value — AWS still holds the index set it already had);
+ *  3. the `needsStream` auto-enable, which sends a stream the template never
+ *     declared at all — the "arms that do NOT log a refusal" case.
+ *
+ * The answer differs per arm because what reached AWS differs, which is why all
+ * three are pinned here rather than one standing in for the others.
+ */
+describe('DynamoDBGlobalTableProvider sibling effectiveProperties arms (issue #1683)', () => {
+  let provider: DynamoDBGlobalTableProvider;
+
+  beforeEach(() => {
+    mockSend.mockReset();
+    childLogger.warn.mockReset();
+    childLogger.info.mockReset();
+    mockSend.mockResolvedValue({
+      Table: {
+        TableName: TABLE_NAME,
+        TableStatus: 'ACTIVE',
+        TableArn: `arn:aws:dynamodb:us-east-1:0:table/${TABLE_NAME}`,
+        BillingModeSummary: { BillingMode: 'PAY_PER_REQUEST' },
+        // Both regions are reported ACTIVE so the multi-replica creates below
+        // do not sit in the provider's replica-settle poll.
+        Replicas: [
+          { RegionName: 'us-east-1', ReplicaStatus: 'ACTIVE' },
+          { RegionName: 'eu-west-1', ReplicaStatus: 'ACTIVE' },
+        ],
+        GlobalSecondaryIndexes: [{ IndexName: 'byThing', IndexStatus: 'ACTIVE' }],
+      },
+    });
+    provider = new DynamoDBGlobalTableProvider();
+  });
+
+  /** The single CreateTable input this create issued. */
+  const createInput = (): Record<string, unknown> =>
+    mockSend.mock.calls.find((c) => c[0].constructor.name === 'CreateTableCommand')?.[0]
+      .input as Record<string, unknown>;
+
+  // ─── ARM 1: BillingMode warn-and-SUBSTITUTE on a replay create ──────────
+
+  it('records the SUBSTITUTED BillingMode on a replay create', async () => {
+    const desired = { ...baseProps, BillingMode: '' };
+
+    const result = await provider.create('MyTable', RESOURCE_TYPE, desired, {
+      replayingState: true,
+    });
+
+    // The wire half FIRST: the substitution is only worth recording because
+    // PAY_PER_REQUEST is what CreateTable actually carried.
+    expect(createInput()['BillingMode']).toBe('PAY_PER_REQUEST');
+    expect(result.effectiveProperties?.['BillingMode']).toBe('PAY_PER_REQUEST');
+    // It REPLACES the desired bag wholesale, so it must be complete.
+    expect(result.effectiveProperties).toEqual({ ...desired, BillingMode: 'PAY_PER_REQUEST' });
+    // ...and the substitution is still ANNOUNCED.
+    expect(childLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('AWS::DynamoDB::GlobalTable BillingMode')
+    );
+  });
+
+  it.each([
+    ['null', null],
+    ['a blank string', '  '],
+    ['an array', []],
+    ['an unresolved intrinsic', { Ref: 'SomeParam' }],
+  ])('records the substitution when BillingMode is %s', async (_label, billingMode) => {
+    const result = await provider.create(
+      'MyTable',
+      RESOURCE_TYPE,
+      { ...baseProps, BillingMode: billingMode },
+      { replayingState: true }
+    );
+
+    expect(result.effectiveProperties?.['BillingMode']).toBe('PAY_PER_REQUEST');
+  });
+
+  it('answers with NO effectiveProperties for a VALID BillingMode on a replay create', async () => {
+    const result = await provider.create(
+      'MyTable',
+      RESOURCE_TYPE,
+      { ...baseProps, BillingMode: 'PAY_PER_REQUEST' },
+      { replayingState: true }
+    );
+
+    // Absent means "record the desired properties" — the normal case, and the
+    // reason the engine gates on `??` rather than on truthiness.
+    expect(result.effectiveProperties).toBeUndefined();
+  });
+
+  it('keeps the template-path BillingMode REFUSAL rather than substituting and recording', async () => {
+    // The wrapper that tracks the substitution must not smuggle in a downgrade
+    // of its own: with no replay context the read still throws, so there is
+    // nothing to record and no table to create.
+    await expect(
+      provider.create('MyTable', RESOURCE_TYPE, { ...baseProps, BillingMode: '' })
+    ).rejects.toThrow(/AWS::DynamoDB::GlobalTable BillingMode/);
+    expect(mockSend.mock.calls.map((c) => c[0].constructor.name)).not.toContain(
+      'CreateTableCommand'
+    );
+  });
+
+  // ─── ARM 3: the needsStream auto-enable sends MORE than was declared ────
+
+  it('records the AUTO-ENABLED stream when the template declares none', async () => {
+    // Two replicas force cross-region replication, which requires a stream, so
+    // cdkd enables one the template never asked for. `readCurrentState` reads
+    // the stream back, so a record with no `StreamSpecification` can never
+    // match it.
+    const desired = {
+      ...baseProps,
+      Replicas: [{ Region: 'us-east-1' }, { Region: 'eu-west-1' }],
+    };
+
+    const result = await provider.create('MyTable', RESOURCE_TYPE, desired);
+
+    expect(createInput()['StreamSpecification']).toEqual({
+      StreamEnabled: true,
+      StreamViewType: 'NEW_AND_OLD_IMAGES',
+    });
+    // Recorded in the CFn shape, NOT the SDK one: GlobalTable's
+    // StreamSpecification declares only `StreamViewType`, so this is
+    // byte-identical to what a template declaring the stream records.
+    expect(result.effectiveProperties?.['StreamSpecification']).toEqual({
+      StreamViewType: 'NEW_AND_OLD_IMAGES',
+    });
+    expect(result.effectiveProperties).toEqual({
+      ...desired,
+      StreamSpecification: { StreamViewType: 'NEW_AND_OLD_IMAGES' },
+    });
+  });
+
+  it('records the AUTO-ENABLED stream for a single NON-LOCAL replica', async () => {
+    const result = await provider.create('MyTable', RESOURCE_TYPE, {
+      ...baseProps,
+      Replicas: [{ Region: 'eu-west-1' }],
+    });
+
+    expect(result.effectiveProperties?.['StreamSpecification']).toEqual({
+      StreamViewType: 'NEW_AND_OLD_IMAGES',
+    });
+  });
+
+  it('answers with NO effectiveProperties when the template DECLARES the stream', async () => {
+    // The declared value is what is sent, so there is nothing to correct.
+    const result = await provider.create('MyTable', RESOURCE_TYPE, {
+      ...baseProps,
+      Replicas: [{ Region: 'us-east-1' }, { Region: 'eu-west-1' }],
+      StreamSpecification: { StreamViewType: 'NEW_AND_OLD_IMAGES' },
+    });
+
+    expect(result.effectiveProperties).toBeUndefined();
+  });
+
+  it('answers with NO effectiveProperties for a single LOCAL replica and no stream', async () => {
+    const result = await provider.create('MyTable', RESOURCE_TYPE, baseProps);
+
+    expect(createInput()['StreamSpecification']).toBeUndefined();
+    expect(result.effectiveProperties).toBeUndefined();
+  });
+
+  it('COMPOSES two substitutions in one create rather than letting one erase the other', async () => {
+    // Both arms write `effectiveProperties`; the later one spreads whatever the
+    // earlier recorded (`?? properties`), so a create that substitutes the
+    // billing mode AND auto-enables a stream records both.
+    const desired = {
+      ...baseProps,
+      BillingMode: '',
+      Replicas: [{ Region: 'us-east-1' }, { Region: 'eu-west-1' }],
+    };
+
+    const result = await provider.create('MyTable', RESOURCE_TYPE, desired, {
+      replayingState: true,
+    });
+
+    expect(result.effectiveProperties).toEqual({
+      ...desired,
+      BillingMode: 'PAY_PER_REQUEST',
+      StreamSpecification: { StreamViewType: 'NEW_AND_OLD_IMAGES' },
+    });
+  });
+
+  // ─── ARM 2: desiredGsiUnusable warn-and-SKIP on the update path ─────────
+
+  it('records the PREVIOUS GlobalSecondaryIndexes when the update SUPPRESSES the diff', async () => {
+    const desired = { ...baseProps, GlobalSecondaryIndexes: 'oops-not-an-array' };
+
+    const result = await provider.update('MyTable', TABLE_NAME, RESOURCE_TYPE, desired, {
+      ...baseProps,
+      GlobalSecondaryIndexes: VALID_GSI,
+    });
+
+    // On UPDATE the answer is "retain the PREVIOUS value" — the create side's
+    // OMIT would read as "the template declares no GSIs" and derive a delete
+    // of every live index.
+    expect(result.effectiveProperties?.['GlobalSecondaryIndexes']).toEqual(VALID_GSI);
+    expect(result.effectiveProperties).toEqual({
+      ...desired,
+      GlobalSecondaryIndexes: VALID_GSI,
+    });
+    // ...and the skip is still ANNOUNCED.
+    expect(childLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('GlobalSecondaryIndexes')
+    );
+  });
+
+  it('COPIES the previous index list rather than aliasing the previous bag', async () => {
+    // `rollback-executor.ts` spreads the returned bag shallowly, so an alias
+    // would leave two state records sharing one mutable array.
+    const previousIndexes = [...VALID_GSI];
+
+    const result = await provider.update(
+      'MyTable',
+      TABLE_NAME,
+      RESOURCE_TYPE,
+      { ...baseProps, GlobalSecondaryIndexes: 'oops-not-an-array' },
+      { ...baseProps, GlobalSecondaryIndexes: previousIndexes }
+    );
+
+    expect(result.effectiveProperties?.['GlobalSecondaryIndexes']).toEqual(previousIndexes);
+    expect(result.effectiveProperties?.['GlobalSecondaryIndexes']).not.toBe(previousIndexes);
+  });
+
+  it.each([
+    ['a bare string', 'also-not-an-array'],
+    ['an object', { IndexName: 'byThing' }],
+    ['a number', 7],
+  ])(
+    'DROPS the key when the PREVIOUS GlobalSecondaryIndexes is %s',
+    async (_label, previousIndexes) => {
+      // `previousProperties` is a cdkd STATE record, so a replay whose record
+      // was written by an older binary can be junk too — copying it in would
+      // re-create the phantom drift from the other direction.
+      const result = await provider.update(
+        'MyTable',
+        TABLE_NAME,
+        RESOURCE_TYPE,
+        { ...baseProps, GlobalSecondaryIndexes: 'oops-not-an-array' },
+        { ...baseProps, GlobalSecondaryIndexes: previousIndexes }
+      );
+
+      expect(result.effectiveProperties).toBeDefined();
+      expect('GlobalSecondaryIndexes' in (result.effectiveProperties ?? {})).toBe(false);
+      expect(result.effectiveProperties).toEqual(baseProps);
+    }
+  );
+
+  it('DROPS the key when the previous side declares NO indexes at all', async () => {
+    // Nothing to retain. An explicit `undefined` would survive the spread and
+    // read differently across `JSON.stringify` on the two sides of the next
+    // diff, so the key must be genuinely absent.
+    const result = await provider.update(
+      'MyTable',
+      TABLE_NAME,
+      RESOURCE_TYPE,
+      { ...baseProps, GlobalSecondaryIndexes: 'oops-not-an-array' },
+      { ...baseProps }
+    );
+
+    expect(result.effectiveProperties).toBeDefined();
+    expect('GlobalSecondaryIndexes' in (result.effectiveProperties ?? {})).toBe(false);
+  });
+
+  it('RETAINS a previous EMPTY index list, which is a legitimate recorded value', async () => {
+    // `[]` is what a template declaring no indexes records once one was
+    // removed; it is not malformed, so it must not be swept up by the guard.
+    const result = await provider.update(
+      'MyTable',
+      TABLE_NAME,
+      RESOURCE_TYPE,
+      { ...baseProps, GlobalSecondaryIndexes: 'oops-not-an-array' },
+      { ...baseProps, GlobalSecondaryIndexes: [] }
+    );
+
+    expect(result.effectiveProperties?.['GlobalSecondaryIndexes']).toEqual([]);
+  });
+
+  it('answers with NO effectiveProperties when the desired index list is VALID', async () => {
+    const result = await provider.update(
+      'MyTable',
+      TABLE_NAME,
+      RESOURCE_TYPE,
+      { ...baseProps, GlobalSecondaryIndexes: VALID_GSI },
+      { ...baseProps, GlobalSecondaryIndexes: VALID_GSI }
+    );
+
+    expect(result.effectiveProperties).toBeUndefined();
+  });
+});

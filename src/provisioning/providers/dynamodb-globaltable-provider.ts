@@ -328,13 +328,31 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     // Wrapped the same way the `StreamSpecification` guard below is: the read
     // sits OUTSIDE `create()`'s try, so an unwrapped throw would escape untyped
     // into the deploy engine's retry loop.
+    //
+    // When the replay downgrade DOES fire, the substituted mode is what goes on
+    // the wire, so it is what state must record (issue #1683, the #1653 sibling
+    // for this arm): the table really is created PAY_PER_REQUEST, and recording
+    // the malformed declared value instead leaves permanent phantom drift no
+    // `--revert` can clear. Composed onto `replayWarn`'s own callback rather
+    // than replacing it, and only when that callback EXISTS, so a template-path
+    // create keeps refusing — the single-call-site exception `.claude/rules/
+    // providers.md` licenses for a read of KNOWN warn-and-DEFAULT class.
     let billingMode: string;
+    let billingModeSubstituted = false;
     try {
+      const billingReplayWarn = replayWarn(this.logger, context).onUnusable;
       billingMode = requireConfigString(
         properties['BillingMode'],
         'PAY_PER_REQUEST',
         'AWS::DynamoDB::GlobalTable BillingMode',
-        replayWarn(this.logger, context)
+        billingReplayWarn
+          ? {
+              onUnusable: (message) => {
+                billingModeSubstituted = true;
+                billingReplayWarn(message);
+              },
+            }
+          : {}
       );
     } catch (error) {
       throw new ProvisioningError(
@@ -379,10 +397,16 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       );
     }
 
-    // issue #1653: the bag actually delivered, when the replay downgrade below
-    // substituted a value for a malformed declared one. `undefined` (the
-    // normal case) means "record the desired properties".
+    // issue #1653: the bag actually delivered, when the replay downgrade above
+    // or below substituted a value for a malformed declared one. `undefined`
+    // (the normal case) means "record the desired properties". Every arm below
+    // composes onto whatever a previous one already recorded (`?? properties`),
+    // so two substitutions in one create cannot erase each other (issue #1683).
     let effectiveProperties: Record<string, unknown> | undefined;
+
+    if (billingModeSubstituted) {
+      effectiveProperties = { ...properties, BillingMode: billingMode };
+    }
 
     // Stream specification. GlobalTable cross-region replication requires
     // streams with NEW_AND_OLD_IMAGES. CDK synth always emits
@@ -490,22 +514,23 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       } as StreamSpecification;
       if (streamSpecSubstituted) {
         effectiveProperties = {
-          ...properties,
+          ...(effectiveProperties ?? properties),
           StreamSpecification: { StreamViewType: streamViewType },
         };
       }
     } else if (needsStream) {
-      // Two more arms of the same "state records something other than what
-      // was SENT" class, both deliberately OUT OF SCOPE for #1653 and tracked
-      // in issue #1683: (1) this auto-enable, which puts a stream on the wire
-      // the template never declared while state records no
-      // `StreamSpecification` at all; and (2) the `StreamSpecification: {}`
-      // path above, where an ABSENT `StreamViewType` silently takes the
-      // `NEW_AND_OLD_IMAGES` default with no `onUnusable` involved, so state
-      // records `{}` while AWS holds the resolved view type. Neither produces
-      // phantom drift today — `drift-calculator` only descends into keys
-      // present in state, and `{}` has no member to compare — which is why
-      // they are separable from the malformed-value arms this change fixes.
+      // cdkd deliberately sends MORE than the template asked for: cross-region
+      // replication requires a stream, so one is enabled even where the
+      // template declares no `StreamSpecification` at all. That is the
+      // "arms that do NOT log a refusal" case `.claude/rules/providers.md`
+      // warns to look for, and #1633's rule reaches it — what is recorded must
+      // be what was SENT, or `readCurrentState` (which reads the stream back)
+      // can never match the record (issue #1683).
+      //
+      // Recorded in the CFn shape, not the SDK one: GlobalTable's
+      // `StreamSpecification` declares only `StreamViewType`, so the effective
+      // bag is indistinguishable from what a template declaring the stream
+      // explicitly would record.
       this.logger.info(
         `Auto-enabling streams (NEW_AND_OLD_IMAGES) on ${logicalId} — required for cross-region replication`
       );
@@ -513,6 +538,10 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         StreamEnabled: true,
         StreamViewType: 'NEW_AND_OLD_IMAGES',
       } as StreamSpecification;
+      effectiveProperties = {
+        ...(effectiveProperties ?? properties),
+        StreamSpecification: { StreamViewType: 'NEW_AND_OLD_IMAGES' },
+      };
     }
 
     // GSIs: the CFn GlobalTable GSI shape models throughput differently
@@ -1519,6 +1548,49 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           } else {
             delete effectiveProperties['StreamSpecification'];
           }
+        }
+      }
+
+      // `desiredGsiUnusable` is the same class one property over (issue #1683,
+      // the #1653 sibling this change closes): the GSI diff is SUPPRESSED, so
+      // AWS keeps the index set it already holds while the engine recorded the
+      // malformed desired blob — a record `readCurrentState` can never match,
+      // and one the NEXT update reads as its previous side (the #1552 class).
+      //
+      // On UPDATE the answer is "retain the PREVIOUS value" per
+      // `.claude/rules/providers.md`, NOT the create side's OMIT — an absent
+      // list here reads as "the template declares no GSIs".
+      //
+      // The previous side is VALIDATED before it is retained, through the SAME
+      // helper the desired side ran: a probe call with a flag-only callback.
+      // The helper is pure, so this costs one extra translation and cannot
+      // drift from a hand-written shape twin the way a `typeof` check would.
+      // When BOTH sides are unusable the key is DROPPED — there is no value
+      // cdkd can vouch for, the same answer the `StreamSpecification` arm
+      // above takes.
+      if (desiredGsiUnusable) {
+        let previousGsiProbeUnusable = false;
+        toSdkGlobalSecondaryIndexes(
+          previousProperties,
+          currentRegion,
+          oldBilling,
+          'min',
+          undefined,
+          () => {
+            previousGsiProbeUnusable = true;
+          }
+        );
+        const previousIndexes = previousProperties['GlobalSecondaryIndexes'];
+        effectiveProperties = { ...(effectiveProperties ?? properties) };
+        if (!previousGsiProbeUnusable && previousIndexes !== undefined) {
+          // COPIED, not aliased: `rollback-executor.ts` spreads the returned
+          // bag shallowly, so handing back the previous record's own array
+          // would leave two state records sharing one mutable value.
+          effectiveProperties['GlobalSecondaryIndexes'] = Array.isArray(previousIndexes)
+            ? [...previousIndexes]
+            : previousIndexes;
+        } else {
+          delete effectiveProperties['GlobalSecondaryIndexes'];
         }
       }
       // Table-level on-demand ceilings, BOTH halves. The write half lives at
