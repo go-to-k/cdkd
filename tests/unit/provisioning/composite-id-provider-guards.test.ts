@@ -836,6 +836,27 @@ describe('AWS::Route53::RecordSet composite id guard', () => {
     expect(change.input.HostedZoneId).toBe('Z1D633PJN98FT9');
   });
 
+  it('the TYPE check alone discriminates when the NAME is an unresolved intrinsic', async () => {
+    // Found by review: deleting the TYPE check failed NOTHING, because the NAME
+    // check subsumes it for every look-alike the other rows use. The TYPE check
+    // is the sole discriminator exactly when the template NAME is unusable — an
+    // unresolved intrinsic — and the type still disagrees.
+    mockRoute53Send.mockResolvedValue({});
+    const provider = new Route53Provider();
+    await provider.delete('MyRecord', 'a|b|MX', RECORD_TYPE, {
+      HostedZoneId: 'Z1D633PJN98FT9',
+      Name: { Ref: 'SomeParam' },
+      Type: 'A',
+      TTL: '300',
+      ResourceRecords: ['1.2.3.4'],
+    });
+
+    const change = mockRoute53Send.mock.calls[0]?.[0] as {
+      input: { HostedZoneId?: string };
+    };
+    expect(change.input.HostedZoneId).toBe('Z1D633PJN98FT9');
+  });
+
   it('a GENUINE composite is still decoded, with no zone lookup', async () => {
     // The control the cross-check must not break. The name compare is case- and
     // trailing-dot-insensitive, so a template spelling the name without CDK's

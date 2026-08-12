@@ -2360,6 +2360,64 @@ export class Route53Provider implements ResourceProvider {
   }
 
   /**
+   * Does a parsed composite agree with the properties recorded alongside it?
+   *
+   * Called from all THREE sites that split a stored id back apart —
+   * `importRecordSet`'s early accept, `resolveRecordSetIdentity`, and
+   * `deleteRecordSet` — because `parseRecordSetCompositeId` asks only for three
+   * NON-EMPTY segments, which a record NAME carrying two pipes satisfies
+   * (issue #1711).
+   *
+   * Each check is applied only when the template side is a usable string, so an
+   * unresolved intrinsic or an absent field leaves the pre-#1711 behavior
+   * exactly as it was. When BOTH are unusable this returns `true` and the
+   * mis-decode is still reachable — an accepted bound, since the alternative is
+   * refusing every id on a bag cdkd cannot read, and the identity resolution the
+   * fall-through leads to needs those same fields anyway.
+   *
+   * The NAME check is what catches the residual the TYPE check alone leaves: a
+   * name like `a|b|A` on a record whose `Type` really is `A` agrees on the type
+   * and still decodes to the wrong zone. The TYPE check is in turn the sole
+   * discriminator only where the NAME is unusable, which is why both are here.
+   *
+   * **A false REJECTION is what this must not do, and the argument is
+   * REACHABILITY rather than cost.** The cost differs per caller and is not
+   * uniformly small: at `deleteRecordSet` the fall-through re-resolves the zone
+   * with `requireUnambiguousZoneName`, which THROWS on a split-horizon
+   * `HostedZoneName` and would turn a working destroy into a failed one. It
+   * cannot fire, because every composite is packed from the same
+   * `properties['Name']` / `['Type']` the engine records beside it — create,
+   * update and the import canonicalization all use one bag — so a genuine
+   * composite always agrees with the bag it is stored with. `Type` being
+   * updateable does not break that: `update()` returns the RE-PACKED id, which
+   * is recorded together with the new properties. The one real divergence is
+   * cosmetic and absorbed on purpose — `canonicalizeQueryName` makes the name
+   * compare case- and trailing-dot-insensitive, so a template spelling the name
+   * without CDK's dot is not rejected.
+   *
+   * Note two of the three callers pass a STATE-borne bag rather than a template
+   * one; the reachability argument above is what covers them.
+   */
+  private compositeAgreesWithTemplate(
+    parsed: { hostedZoneId: string; name: string; type: string },
+    properties: Record<string, unknown>
+  ): boolean {
+    const templateType = properties['Type'];
+    if (typeof templateType === 'string' && templateType && parsed.type !== templateType) {
+      return false;
+    }
+    const templateName = properties['Name'];
+    if (
+      typeof templateName === 'string' &&
+      templateName &&
+      canonicalizeQueryName(parsed.name) !== canonicalizeQueryName(templateName)
+    ) {
+      return false;
+    }
+    return true;
+  }
+
+  /**
    * Adopt an existing record set (issue #1658).
    *
    * cdkd's physicalId is the composite `<hostedZoneId>|<Name>|<Type>` that
@@ -2399,43 +2457,6 @@ export class Route53Provider implements ResourceProvider {
    * rather than trusted, but an import with no override at all still declines,
    * because a RecordSet has no standalone identity for auto mode to key on.
    */
-  /**
-   * Does a parsed composite agree with the template it is being imported for?
-   *
-   * Each check is applied only when the template side is a usable string, so
-   * an unresolved intrinsic or an absent field leaves the pre-#1711 behavior
-   * exactly as it was rather than declining an id that was fine. When BOTH are
-   * unusable this returns `true` and the mis-decode is still reachable — an
-   * accepted bound, because the alternative is refusing every id on a template
-   * cdkd cannot read, and the identity resolution the fall-through leads to
-   * needs those same fields anyway.
-   *
-   * The NAME check is what catches the residual the TYPE check alone leaves:
-   * a name like `a|b|A` on a record whose `Type` really is `A` agrees on the
-   * type and still decodes to the wrong zone. A legitimate composite whose
-   * template spells the name without CDK's trailing dot fails this check and
-   * falls through — which costs one `ListResourceRecordSets` verification and
-   * lands on `adoptVerbatim(known)`, i.e. the same physicalId by a longer
-   * route, so the conservative direction is the safe one here.
-   */
-  private compositeAgreesWithTemplate(
-    parsed: { hostedZoneId: string; name: string; type: string },
-    properties: Record<string, unknown>
-  ): boolean {
-    const templateType = properties['Type'];
-    if (typeof templateType === 'string' && templateType && parsed.type !== templateType) {
-      return false;
-    }
-    const templateName = properties['Name'];
-    if (
-      typeof templateName === 'string' &&
-      templateName &&
-      canonicalizeQueryName(parsed.name) !== canonicalizeQueryName(templateName)
-    ) {
-      return false;
-    }
-    return true;
-  }
 
   private async importRecordSet(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     const known = input.knownPhysicalId;
