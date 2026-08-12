@@ -7,17 +7,17 @@ For every SDK provider that forwards a nested CFn config blob, diffs the blob's 
 
 ## Summary
 
-- Audited targets: **14**
-- Nested CFn key paths audited: **837**
-- Same spelling in SDK model: **767**
-- Explicitly handled in provider: **50**
-- Allow-listed pass-throughs (does NOT block CI): **20**
+- Audited targets: **15**
+- Nested CFn key paths audited: **874**
+- Same spelling in SDK model: **801**
+- Explicitly handled in provider: **51**
+- Allow-listed pass-throughs (does NOT block CI): **22**
 - **Case divergences (blocks CI): 0**
 - **No SDK member (blocks CI): 0**
 - Write-evidence pass — fresh-object targets audited: **14**
 - **No write evidence (blocks CI): 0**
-- Shape pass — bare-array pairs clean: **90**
-- Shape pass — explicitly handled in provider: **35**
+- Shape pass — bare-array pairs clean: **98**
+- Shape pass — explicitly handled in provider: **36**
 - Shape pass — allow-listed (does NOT block CI): **7**
 - **Array-vs-wrapper divergences (blocks CI): 0**
 - **Definition-member-missing divergences (blocks CI): 0**
@@ -45,6 +45,8 @@ None. Every audited nested CFn key either matches an SDK member spelling or is e
 | `AWS::CodeBuild::Project` | `Environment.HostKernel` | Declared in the CFn registry schema but has NO member anywhere in the installed @aws-sdk/client-codebuild dist-types tree, so there is nothing to map it onto until an SDK bump adds one (issue #1386). Naming it in the provider would be a false claim of support. Remove this entry once the SDK ships the member, at which point the key becomes genuinely mappable. |
 | `AWS::ECS::Service` | `ForceNewDeployment.EnableForceNewDeployment` | CFn-only rollout-trigger member with NO per-member SDK counterpart: the ECS SDK models the whole ForceNewDeployment block as the single top-level boolean `forceNewDeployment` on UpdateService. ECSProvider.resolveForceNewDeployment translates {EnableForceNewDeployment: true} OR a ForceNewDeploymentNonce change into `forceNewDeployment: true` (issue #609) — a shape collapse neither the key pass (no same-spelled member exists) nor the write pass (the write is a different, top-level member) can express. |
 | `AWS::ECS::Service` | `ForceNewDeployment.ForceNewDeploymentNonce` | Same single-boolean collapse as ForceNewDeployment.EnableForceNewDeployment: the nonce has no SDK member of its own — a nonce CHANGE is what resolveForceNewDeployment turns into `forceNewDeployment: true` (issue #609). |
+| `AWS::Lambda::EventSourceMapping` | `Tags.Key` | Same list-to-map fold as the AppSync entries: Lambda models an event source mapping's tags as a flat Record<string, string> (`Tags`), not as CFn's [{Key, Value}] list, and the provider folds the list into that map on create (`Object.fromEntries(cfnTags.map((t) => [t.Key, t.Value]))`). No `Key` member exists anywhere in the SDK model to spell-match. READ THE VERDICT WITH CARE: the key pass reports this as `case-divergence` ("SDK has KEY") rather than `no-sdk-member`, because the member index also carries enum const-object keys and `@aws-sdk/client-lambda`'s `KafkaSchemaValidationAttribute` declares `KEY` / `VALUE` — a Kafka schema-validation attribute with nothing to do with tagging. A case fold would NOT fix this key; there is no member to fold onto. |
+| `AWS::Lambda::EventSourceMapping` | `Tags.Value` | Same list-to-map fold as Tags.Key, and the same spurious enum near-miss — `VALUE` is the other `KafkaSchemaValidationAttribute` member, not a tag member the provider could write. |
 | `AWS::S3::Bucket` | `CorsConfiguration.CorsRules` | Delivered by applyCorsConfiguration, which reads the CFn key via typed property access (`corsConfig.CorsRules.map(...)`) and writes the SDK spelling `CORSRules` — the literal walk deliberately counts neither a property ACCESS nor a type-literal member, and the only literal mention of the CFn spelling is `readCors`, excluded as a reverse map by the #1520 widening. Key pass only; the members BENEATH it need no entry — the per-level case fold resolves `CorsConfiguration.CorsRules` onto the written `CORSConfiguration.CORSRules` scope, so they stay write-audited (issue #1520). |
 | `AWS::S3::Bucket` | `LifecycleConfiguration.Rules.TagFilters` | Forwarded verbatim into `Filter{,.And}.Tags` by applyLifecycleConfiguration through the destructured-gatherScope shape the hand-off taint walk deliberately does not cross — same class as the `LifecycleConfiguration.Rules.TagFilters.Key` / `.Value` write-pass entries, here for the ARRAY itself on the key pass (issue #1393). The per-item config families (Analytics / Metrics / IntelligentTiering) resolve via declared terminal renames and need no entry. |
 | `AWS::S3::Bucket` | `LifecycleConfiguration.Rules.TagFilters.Key` | Forwarded verbatim into `Filter{,.And}.Tags` by applyLifecycleConfiguration, but through a chain the hand-off taint walk deliberately does not cross: the array reaches the write as a DESTRUCTURED member of the in-method `gatherScope` helper's returned literal, and member-level taint through a returned literal is a materially bigger analysis (issue #1540; same wrapper-level class as the CloudFront `Tags.Key` / `Tags.Value` entries). The equivalent per-item-config forwards (Analytics / Metrics / IntelligentTiering) ARE wildcard-credited via the for-of taint hop. |
@@ -80,6 +82,7 @@ Keys with no same-spelling SDK member that the provider explicitly names (conver
 | `AWS::ECS::TaskDefinition` | `Volumes.EFSVolumeConfiguration.FilesystemId` |
 | `AWS::ECS::TaskDefinition` | `Volumes.FSxWindowsFileServerVolumeConfiguration` |
 | `AWS::ECS::TaskDefinition` | `Volumes.S3FilesVolumeConfiguration` |
+| `AWS::Lambda::EventSourceMapping` | `SelfManagedEventSource.Endpoints.KafkaBootstrapServers` |
 | `AWS::S3::Bucket` | `AccelerateConfiguration.AccelerationStatus` |
 | `AWS::S3::Bucket` | `AnalyticsConfigurations.TagFilters` |
 | `AWS::S3::Bucket` | `BucketEncryption.ServerSideEncryptionConfiguration.ServerSideEncryptionByDefault` |
@@ -143,6 +146,7 @@ CFn members whose SHAPE diverges from the same-spelled SDK member (bare array vs
 | `AWS::CloudFront::Distribution` | `ForwardedValues` | `QueryStringCacheKeys` | wrapper | SDK wraps it as `QueryStringCacheKeys` ({ Quantity, Items }) |
 | `AWS::CloudFront::Distribution` | `GeoRestriction` | `Locations` | definition | SDK interface `GeoRestriction` has no `Locations` member |
 | `AWS::ECS::Service` | `DeploymentLifecycleHook` | `HookDetails` | wrapper | — |
+| `AWS::Lambda::EventSourceMapping` | `#top` | `Tags` | wrapper | — |
 | `AWS::S3::Bucket` | `Destination` | `BucketArn` | definition | SDK interface `Destination` has no `BucketArn` member |
 | `AWS::S3::Bucket` | `Destination` | `BucketAccountId` | definition | SDK interface `Destination` has no `BucketAccountId` member |
 | `AWS::S3::Bucket` | `Destination` | `Format` | definition | SDK interface `Destination` has no `Format` member |
@@ -175,5 +179,6 @@ CFn members whose SHAPE diverges from the same-spelled SDK member (bare array vs
 | `AWS::CodeBuild::Project` | `codebuild-provider.ts` | `@aws-sdk/client-codebuild` | lower-first | yes | 98 | 4 |
 | `AWS::ECS::Service` | `ecs-provider.ts` | `@aws-sdk/client-ecs` | lower-first | yes | 114 | 4 |
 | `AWS::ECS::TaskDefinition` | `ecs-provider.ts` | `@aws-sdk/client-ecs` | lower-first | yes | 142 | 3 |
+| `AWS::Lambda::EventSourceMapping` | `lambda-eventsource-provider.ts` | `@aws-sdk/client-lambda` | exact | no | 37 | 6 |
 | `AWS::S3::Bucket` | `s3-bucket-provider.ts` | `@aws-sdk/client-s3` | exact | yes | 190 | 15 |
 
