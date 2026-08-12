@@ -1,3 +1,10 @@
+## [0.280.31](https://github.com/go-to-k/cdkd/compare/v0.280.30...v0.280.31) (2026-08-12)
+
+
+### Bug Fixes
+
+* **deployment:** stop calling a cdkd-GENERATED physical name user-supplied in the replacement-collision refusals ([#1646](https://github.com/go-to-k/cdkd/issues/1646)) ([7f945e3](https://github.com/go-to-k/cdkd/commit/7f945e3c858071ee916fd0b917730e6b68397bd9))
+
 ## [0.280.30](https://github.com/go-to-k/cdkd/compare/v0.280.29...v0.280.30) (2026-08-12)
 
 
