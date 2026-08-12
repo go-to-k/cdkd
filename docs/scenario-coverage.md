@@ -4,7 +4,7 @@
 
 Run `vp run scenario-coverage` to regenerate.
 
-**85 / 85 canonical scenarios** have at least one integ fixture exercising them. **184 / 275 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
+**86 / 86 canonical scenarios** have at least one integ fixture exercising them. **184 / 275 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
 
 ## How this is computed
 
@@ -26,12 +26,13 @@ This report is a visibility tool, not a commit-time gate. Many cdkd fixtures leg
 
 _None._ Every canonical scenario has at least one integ fixture tagged with it.
 
-## Per-scenario coverage (85 scenarios)
+## Per-scenario coverage (86 scenarios)
 
 | Scenario | Description | Integ Fixture(s) |
 |---|---|---|
 | `apigateway-cors-preflight` | API Gateway CORS preflight (OPTIONS) handling — CDK auto-generates `Method` with both Integration.IntegrationResponses and MethodResponses arrays. | [`apigateway`](../tests/integration/apigateway/) |
 | `auto-import-cfn-generated-name` | `cdkd import` AUTO mode (no `--resource`, no `--migrate-from-cloudformation`) adopting a resource whose physical name CloudFormation GENERATED, after an upstream `cdk deploy`. Pins issue #1128: auto mode resolves ids by the template name property, then an `aws:cdk:path` tag walk that CANNOT match on real AWS (AWS rejects `aws:`-prefixed tag writes; CloudFormation keeps the value in template `Metadata` without promoting it to a tag), so a CFn-generated name returned `not found` until auto mode learned to consult `DescribeStackResources`. The fixture deliberately sets NO explicit physical name and passes NO override flag — both pre-existing import integs pass one of those and therefore never exercised this path, which is why the defect survived four rounds of #1091 tag-walk work. | [`import-auto-mode`](../tests/integration/import-auto-mode/) |
+| `auto-import-composite-physical-id` | `cdkd import` AUTO mode adopting a resource whose cdkd physicalId is a COMPOSITE (`<databaseName>|<tableName>`) while CloudFormation's is a single bare segment (the table name). Pins issue #1651, the sibling of #1128 one layer down: #1128 fixed the RESOLUTION of a CFn-generated id, this is the provider REJECTING an id auto mode had already resolved — `importTable` split the bare form on `|`, found no second segment, and returned `not found` without calling AWS, so every `cdk deploy`-managed `AWS::Glue::Table` was unadoptable while the error told the user to pass the id it had just refused. The fixture renders `DatabaseName` as a `Ref` to the sibling database (what CDK emits, and the reason a bare table name can be paired with a database at all — `AWS::Glue::Database`'s CFn physicalId IS the database name, so the overrides map resolves the Ref to a literal before `provider.import()` runs), asserts CloudFormation's reported id carries no `|` before relying on it, and asserts the ADOPTED id is the COMPOSITE — recording CFn's bare name would look like success while leaving a state row that update / delete / getAttribute / readCurrentState cannot split. | [`import-auto-mode`](../tests/integration/import-auto-mode/) |
 | `cc-api-getatt-enrichment-elasticache-replicationgroup` | CC-API attribute enrichment for `AWS::ElastiCache::ReplicationGroup` (no SDK provider): `Fn::GetAtt(<RG>, PrimaryEndPoint.Address / ReaderEndPoint.* / ConfigurationEndPoint.* / ReadEndPoint.Addresses)` must resolve to the real Redis endpoint via DescribeReplicationGroups, not fall through to the physicalId (the RG id). | [`elasticache-replicationgroup-getatt`](../tests/integration/elasticache-replicationgroup-getatt/) |
 | `cc-api-getatt-enrichment-opensearch-domain` | CC-API attribute enrichment for `AWS::OpenSearchService::Domain` (no SDK provider): `Fn::GetAtt(<Domain>, DomainEndpoint / Arn)` must resolve to the real `*.es.amazonaws.com` endpoint / `arn:aws:es:...:domain/...` ARN via DescribeDomain, not fall through to the physicalId (the domain name). | [`opensearch-domain-getatt`](../tests/integration/opensearch-domain-getatt/) |
 | `cc-api-getatt-enrichment-redshift-cluster` | CC-API attribute enrichment for `AWS::Redshift::Cluster` (no SDK provider): `Fn::GetAtt(<Cluster>, Endpoint.Address / Endpoint.Port)` must resolve to the real Redshift endpoint via DescribeClusters, not fall through to the physicalId (the cluster id). | [`redshift-cluster-getatt`](../tests/integration/redshift-cluster-getatt/) |

@@ -1,7 +1,9 @@
 # import-auto-mode
 
 `cdkd import` **auto mode** against a CloudFormation-generated physical name
-(issue [#1128](https://github.com/go-to-k/cdkd/issues/1128)).
+(issue [#1128](https://github.com/go-to-k/cdkd/issues/1128)), and against a
+resource whose cdkd physicalId is a COMPOSITE while CloudFormation's is not
+(issue [#1651](https://github.com/go-to-k/cdkd/issues/1651)).
 
 ## What this pins
 
@@ -47,15 +49,48 @@ Phase 2 also asserts the deployed policy carries **no** `aws:cdk:path` tag. If
 AWS ever starts allowing that tag, this assertion fires — a signal that the tag
 walk became viable and #1128's CloudFormation lookup should be revisited.
 
+## The Glue pair: the same path failing one layer down (#1651)
+
+Issue #1128 fixed how auto mode **resolves** a CloudFormation-generated id;
+issue #1651 is the provider **rejecting** an id auto mode had already resolved
+— so the two belong in one fixture.
+
+cdkd's physicalId for `AWS::Glue::Table` is the composite
+`<databaseName>|<tableName>`, because `GetTable` / `UpdateTable` /
+`DeleteTable` all need both segments while the read-side `ResourceProvider`
+methods receive a single string. CloudFormation's physicalId for the same type
+is the **table name alone**. Auto mode merges CFn's id into the overrides, so
+`importTable` received the bare form, split it on `|`, found no second segment,
+and returned `not found` **without ever calling AWS** — every `cdk
+deploy`-managed Glue table was unadoptable, and the error told the user to pass
+`--resource <LogicalId>=<physicalId>` with the very id it had just rejected.
+
+Two properties make this half meaningful, both asserted at runtime:
+
+| Constraint | Why | Guard |
+| --- | --- | --- |
+| `DatabaseName` is a **`Ref`**, not a literal | It is what CDK emits, and it is why a bare table name can be paired with a database at all: `AWS::Glue::Database`'s CFn physicalId IS the database name, so the overrides map resolves the `Ref` to a literal before `provider.import()` runs. A literal here would test a path CDK users never take. | Phase 2b asserts CFn's reported table id contains no `\|` before anything relies on it |
+| The adopted id must be the **composite** | Recording CFn's bare name would look like a successful import while leaving a state row that update / delete / getAttribute / readCurrentState all fail to split — trading a visible not-found for a silent one | Phase 4b compares the state row against `<CFn database id>\|<CFn table id>` |
+
+Unlike the policy, the Glue resources carry explicit names: Glue restricts names
+to lowercase alphanumerics and underscore, so CloudFormation cannot generate a
+conforming one. That costs nothing — #1651 is about the id **shape**, not its
+origin.
+
 ## Flow
 
 1. `cdk deploy` (upstream CDK CLI → CloudFormation) — the advertised adoption scenario
 2. assert the premise: CFn-generated name, no `aws:cdk:path` tag
-3. `cdkd import <stack> --yes` — **auto mode, no override flags**
-4. assert the state row's `physicalId` equals the real ARN
-5. `cdkd destroy` + strict gone-probes, then drop the now-dangling CFn stack
+3. (2b) assert CloudFormation's Glue table id is the **bare** name, not a composite
+4. `cdkd import <stack> --yes` — **auto mode, no override flags**
+5. assert the policy state row's `physicalId` equals the real ARN
+6. (4b) assert the Glue table row's `physicalId` is cdkd's **composite** form
+7. `cdkd destroy` + strict gone-probes (policy, table, database), then drop the
+   now-dangling CFn stack
 
-Pre-#1128, step 3 reported `0 imported, 1 not found` and step 4 failed.
+Pre-#1128, step 4 reported the policy as `not found` and step 5 failed.
+Pre-#1651, the same step reported the Glue table as `not found` and step 6
+failed.
 
 ## Run
 
@@ -66,5 +101,5 @@ STATE_BUCKET="your-cdkd-state-bucket" AWS_REGION="us-east-1" bash verify.sh
 ```
 
 Requires CDK bootstrap in the target account (`cdk deploy` is part of the flow).
-Resources: one `AWS::IAM::ManagedPolicy` — free, fast, no VPC, no deletion
-recovery window.
+Resources: one `AWS::IAM::ManagedPolicy`, one `AWS::Glue::Database`, one
+`AWS::Glue::Table` — all free, fast, no VPC, no deletion recovery window.
