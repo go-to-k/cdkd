@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 const mockGlueSend = vi.hoisted(() => vi.fn());
 const mockStsSend = vi.hoisted(() => vi.fn());
 const mockLoggerWarn = vi.hoisted(() => vi.fn());
+const mockLoggerDebug = vi.hoisted(() => vi.fn());
 
 vi.mock('@aws-sdk/client-glue', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-glue')>();
@@ -25,7 +26,7 @@ vi.mock('@aws-sdk/client-sts', async (importOriginal) => {
 
 vi.mock('../../../../src/utils/logger.js', () => {
   const childLogger = {
-    debug: vi.fn(),
+    debug: mockLoggerDebug,
     info: vi.fn(),
     warn: mockLoggerWarn,
     error: vi.fn(),
@@ -57,6 +58,7 @@ import {
   GlueWorkflowProvider,
   GlueCrawlerProvider,
   GlueTriggerProvider,
+  GlueConnectionProvider,
 } from '../../../../src/provisioning/providers/glue-provider.js';
 
 describe('GlueProvider import', () => {
@@ -484,6 +486,464 @@ describe('GlueProvider update', () => {
     const input = call![0].input as { Name: string; DatabaseInput: { Description?: string } };
     expect(input.Name).toBe('mydb');
     expect(input.DatabaseInput.Description).toBe('updated');
+  });
+});
+
+// Issue #1675: every Glue DELETE whose API accepts `CatalogId` must forward it
+// out of the properties bag. Omitting it silently targets this account's
+// DEFAULT Data Catalog, so a resource in a non-default catalog answers
+// `EntityNotFoundException`, the warn-and-continue idempotency arm reports
+// success, and `cdkd destroy` LEAKS the resource.
+describe('Glue delete CatalogId scoping (issue #1675)', () => {
+  let provider: GlueProvider;
+  let connectionProvider: GlueConnectionProvider;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGlueSend.mockReset();
+    provider = new GlueProvider();
+    connectionProvider = new GlueConnectionProvider();
+  });
+
+  it('deleteTable forwards a literal CatalogId to DeleteTableCommand', async () => {
+    mockGlueSend.mockResolvedValueOnce({});
+
+    await provider.delete('MyTable', 'mydb|my_table', 'AWS::Glue::Table', {
+      CatalogId: '210987654321',
+      DatabaseName: 'mydb',
+    });
+
+    expect(mockGlueSend).toHaveBeenCalledTimes(1);
+    expect(mockGlueSend.mock.calls[0][0].input).toEqual({
+      CatalogId: '210987654321',
+      DatabaseName: 'mydb',
+      Name: 'my_table',
+    });
+  });
+
+  // `cdkd import` records the RAW template value, so `CatalogId:
+  // {Ref: AWS::AccountId}` (what @aws-cdk/aws-glue-alpha renders for an
+  // environment-agnostic stack) reaches delete() as an OBJECT. Sending it would
+  // hand the Glue API `[object Object]` as a catalog id; dropping it matches the
+  // API default, which is what the intrinsic would have resolved to.
+  it('deleteTable DROPS an unresolved CatalogId intrinsic instead of sending the object', async () => {
+    mockGlueSend.mockResolvedValueOnce({});
+
+    await provider.delete('MyTable', 'mydb|my_table', 'AWS::Glue::Table', {
+      CatalogId: { Ref: 'AWS::AccountId' },
+    });
+
+    const input = mockGlueSend.mock.calls[0][0].input as Record<string, unknown>;
+    expect(input).not.toHaveProperty('CatalogId');
+    expect(input).toEqual({ DatabaseName: 'mydb', Name: 'my_table' });
+  });
+
+  it('deleteTable sends NO CatalogId key when the template declared none', async () => {
+    mockGlueSend.mockResolvedValueOnce({});
+
+    await provider.delete('MyTable', 'mydb|my_table', 'AWS::Glue::Table', {
+      DatabaseName: 'mydb',
+    });
+
+    const input = mockGlueSend.mock.calls[0][0].input as Record<string, unknown>;
+    expect(input).not.toHaveProperty('CatalogId');
+    expect(input).toEqual({ DatabaseName: 'mydb', Name: 'my_table' });
+  });
+
+  it('deleteTable sends no CatalogId key when delete() receives no properties at all', async () => {
+    mockGlueSend.mockResolvedValueOnce({});
+
+    await provider.delete('MyTable', 'mydb|my_table', 'AWS::Glue::Table');
+
+    expect(mockGlueSend.mock.calls[0][0].input).toEqual({
+      DatabaseName: 'mydb',
+      Name: 'my_table',
+    });
+  });
+
+  // A NotFound after a CORRECTLY-targeted delete is ordinary idempotency, so it
+  // stays at debug: warning on every already-gone resource would be noise.
+  it('deleteTable stays silent on NotFound when the catalog was addressable', async () => {
+    mockGlueSend.mockRejectedValueOnce(
+      new EntityNotFoundException({ message: 'Entity Not Found', $metadata: {} })
+    );
+
+    await expect(
+      provider.delete('MyTable', 'mydb|my_table', 'AWS::Glue::Table', {
+        CatalogId: '210987654321',
+      })
+    ).resolves.toBeUndefined();
+
+    expect(mockLoggerWarn).not.toHaveBeenCalled();
+  });
+
+  // `--migrate-from-cloudformation` reads the stack's ORIGINAL template, where
+  // an unquoted YAML `CatalogId: 123456789012` parses as a NUMBER. Rejecting it
+  // as "not a string" would silently retarget the DELETE at the default
+  // catalog, where a same-named table can exist and be destroyed instead.
+  it('deleteTable coerces a YAML-numeric CatalogId to the string the API wants', async () => {
+    mockGlueSend.mockResolvedValueOnce({});
+
+    await provider.delete('MyTable', 'mydb|my_table', 'AWS::Glue::Table', {
+      CatalogId: 210987654321,
+    });
+
+    expect(mockGlueSend.mock.calls[0][0].input).toEqual({
+      CatalogId: '210987654321',
+      DatabaseName: 'mydb',
+      Name: 'my_table',
+    });
+    expect(mockLoggerWarn).not.toHaveBeenCalled();
+  });
+
+  it('deleteTable treats a non-finite numeric CatalogId as unusable rather than sending NaN', async () => {
+    mockGlueSend.mockResolvedValueOnce({});
+
+    await provider.delete('MyTable', 'mydb|my_table', 'AWS::Glue::Table', {
+      CatalogId: Number.NaN,
+    });
+
+    const input = mockGlueSend.mock.calls[0][0].input as Record<string, unknown>;
+    expect(input).not.toHaveProperty('CatalogId');
+  });
+
+  // ── the two polarities of the account-id carve-out ────────────────────────
+  //
+  // Dropping `{Ref: AWS::AccountId}` is PROVABLY harmless — the API's default
+  // for an omitted CatalogId IS the caller's own account — so a NotFound after
+  // it is ordinary idempotency. Warning there would fire a leak alarm on every
+  // destroy of an environment-agnostic CDK stack (and on every destroy re-run
+  // after `DeleteDatabase` cascaded its tables).
+  it.each([
+    ['Ref form', { Ref: 'AWS::AccountId' }],
+    ['Fn::Sub 1-arg form', { 'Fn::Sub': '${AWS::AccountId}' }],
+    ['Fn::Sub 2-arg form', { 'Fn::Sub': ['${AWS::AccountId}', {}] }],
+  ])(
+    'deleteTable stays silent on NotFound when the dropped CatalogId was the account-id pseudo parameter (%s)',
+    async (_label, catalogId) => {
+      mockGlueSend.mockRejectedValueOnce(
+        new EntityNotFoundException({ message: 'Entity Not Found', $metadata: {} })
+      );
+
+      await expect(
+        provider.delete('MyTable', 'mydb|my_table', 'AWS::Glue::Table', { CatalogId: catalogId })
+      ).resolves.toBeUndefined();
+
+      expect(mockLoggerWarn).not.toHaveBeenCalled();
+    }
+  );
+
+  // ...but every OTHER unresolved intrinsic could resolve to any catalog at
+  // all, so a NotFound after dropping one is not evidence the resource is gone.
+  // This is the discrimination the silent leak needed: same skip, loud about
+  // why it may be wrong.
+  it.each([
+    ['a template parameter Ref', { Ref: 'CatalogIdParam' }],
+    ['an Fn::ImportValue', { 'Fn::ImportValue': 'SharedCatalogId' }],
+    ['an Fn::Sub of something else', { 'Fn::Sub': '${SomeOtherParam}' }],
+    ['an empty string', ''],
+  ])(
+    'deleteTable WARNS on NotFound when the declared CatalogId was unusable (%s)',
+    async (_label, catalogId) => {
+      mockGlueSend.mockRejectedValueOnce(
+        new EntityNotFoundException({ message: 'Entity Not Found', $metadata: {} })
+      );
+
+      await expect(
+        provider.delete('MyTable', 'mydb|my_table', 'AWS::Glue::Table', { CatalogId: catalogId })
+      ).resolves.toBeUndefined();
+
+      expect(mockLoggerWarn).toHaveBeenCalledTimes(1);
+      const message = mockLoggerWarn.mock.calls[0][0] as string;
+      expect(message).toContain('mydb|my_table');
+      expect(message).toContain("this account's default Data Catalog");
+      // "re-run" is NOT the remedy: on `cdkd destroy` the state record is gone
+      // by the time the user reads this, so the message must name the manual
+      // action instead.
+      expect(message).not.toContain('re-run');
+      expect(message).toContain('by hand');
+    }
+  );
+
+  // An explicit `null` is CFn's "absent", not a declared-but-broken value.
+  it('deleteTable treats an explicit null CatalogId as absent, not unusable', async () => {
+    mockGlueSend.mockRejectedValueOnce(
+      new EntityNotFoundException({ message: 'Entity Not Found', $metadata: {} })
+    );
+
+    await expect(
+      provider.delete('MyTable', 'mydb|my_table', 'AWS::Glue::Table', { CatalogId: null })
+    ).resolves.toBeUndefined();
+
+    expect(mockLoggerWarn).not.toHaveBeenCalled();
+  });
+
+  // A LITERAL-but-wrong CatalogId (a typo, a stale account id) takes the debug
+  // arm, so the log is the only place the mis-targeting is visible. Naming the
+  // catalog is what makes it diagnosable at all.
+  it('deleteTable names the catalog it addressed in the skip debug line', async () => {
+    mockGlueSend.mockRejectedValueOnce(
+      new EntityNotFoundException({ message: 'Entity Not Found', $metadata: {} })
+    );
+
+    await provider.delete('MyTable', 'mydb|my_table', 'AWS::Glue::Table', {
+      CatalogId: '999999999999',
+    });
+
+    expect(
+      mockLoggerDebug.mock.calls.some(
+        (call) =>
+          typeof call[0] === 'string' &&
+          call[0].includes('Glue Table mydb|my_table does not exist in Data Catalog 999999999999')
+      )
+    ).toBe(true);
+  });
+
+  it('deleteDatabase forwards a literal CatalogId to DeleteDatabaseCommand', async () => {
+    mockGlueSend.mockResolvedValueOnce({});
+
+    await provider.delete('MyDb', 'mydb', 'AWS::Glue::Database', {
+      CatalogId: '210987654321',
+    });
+
+    expect(mockGlueSend.mock.calls[0][0].input).toEqual({
+      CatalogId: '210987654321',
+      Name: 'mydb',
+    });
+  });
+
+  it('deleteDatabase DROPS an unresolved CatalogId intrinsic instead of sending the object', async () => {
+    mockGlueSend.mockResolvedValueOnce({});
+
+    await provider.delete('MyDb', 'mydb', 'AWS::Glue::Database', {
+      CatalogId: { Ref: 'AWS::AccountId' },
+    });
+
+    const input = mockGlueSend.mock.calls[0][0].input as Record<string, unknown>;
+    expect(input).not.toHaveProperty('CatalogId');
+    expect(input).toEqual({ Name: 'mydb' });
+  });
+
+  // Pins the Database call site of the shared skip helper: deleting the call,
+  // or pasting the Table/Connection `kind` literal into it, fails here.
+  it('deleteDatabase reports its NotFound skip with the Database kind and the catalog', async () => {
+    mockGlueSend.mockRejectedValueOnce(
+      new EntityNotFoundException({ message: 'Entity Not Found', $metadata: {} })
+    );
+
+    await provider.delete('MyDb', 'mydb', 'AWS::Glue::Database', { CatalogId: '999999999999' });
+
+    expect(
+      mockLoggerDebug.mock.calls.some(
+        (call) =>
+          typeof call[0] === 'string' &&
+          call[0].includes('Glue Database mydb does not exist in Data Catalog 999999999999')
+      )
+    ).toBe(true);
+    expect(mockLoggerWarn).not.toHaveBeenCalled();
+  });
+
+  it('deleteDatabase WARNS on NotFound when the declared CatalogId was unusable', async () => {
+    mockGlueSend.mockRejectedValueOnce(
+      new EntityNotFoundException({ message: 'Entity Not Found', $metadata: {} })
+    );
+
+    await provider.delete('MyDb', 'mydb', 'AWS::Glue::Database', {
+      CatalogId: { Ref: 'CatalogIdParam' },
+    });
+
+    expect(mockLoggerWarn).toHaveBeenCalledTimes(1);
+    expect(mockLoggerWarn.mock.calls[0][0]).toContain('Glue Database MyDb (mydb)');
+  });
+
+  it('deleteConnection DROPS an unresolved CatalogId intrinsic instead of sending the object', async () => {
+    mockGlueSend.mockResolvedValueOnce({});
+
+    await connectionProvider.delete('MyConn', 'myconn', 'AWS::Glue::Connection', {
+      CatalogId: { Ref: 'AWS::AccountId' },
+    });
+
+    const input = mockGlueSend.mock.calls[0][0].input as Record<string, unknown>;
+    expect(input).not.toHaveProperty('CatalogId');
+    expect(input).toEqual({ ConnectionName: 'myconn' });
+  });
+
+  it('deleteConnection forwards a literal CatalogId to DeleteConnectionCommand', async () => {
+    mockGlueSend.mockResolvedValueOnce({});
+
+    await connectionProvider.delete('MyConn', 'myconn', 'AWS::Glue::Connection', {
+      CatalogId: '210987654321',
+    });
+
+    expect(mockGlueSend.mock.calls[0][0].input).toEqual({
+      ConnectionName: 'myconn',
+      CatalogId: '210987654321',
+    });
+  });
+
+  // Pins the Connection call site of the shared skip helper (see the Database
+  // twin above).
+  it('deleteConnection reports its NotFound skip with the Connection kind and the catalog', async () => {
+    mockGlueSend.mockRejectedValueOnce(
+      new EntityNotFoundException({ message: 'Entity Not Found', $metadata: {} })
+    );
+
+    await connectionProvider.delete('MyConn', 'myconn', 'AWS::Glue::Connection', {
+      CatalogId: '999999999999',
+    });
+
+    expect(
+      mockLoggerDebug.mock.calls.some(
+        (call) =>
+          typeof call[0] === 'string' &&
+          call[0].includes('Glue Connection myconn does not exist in Data Catalog 999999999999')
+      )
+    ).toBe(true);
+    expect(mockLoggerWarn).not.toHaveBeenCalled();
+  });
+
+  it('deleteConnection WARNS on NotFound when the declared CatalogId was unusable', async () => {
+    mockGlueSend.mockRejectedValueOnce(
+      new EntityNotFoundException({ message: 'Entity Not Found', $metadata: {} })
+    );
+
+    await connectionProvider.delete('MyConn', 'myconn', 'AWS::Glue::Connection', {
+      CatalogId: { Ref: 'CatalogIdParam' },
+    });
+
+    expect(mockLoggerWarn).toHaveBeenCalledTimes(1);
+    expect(mockLoggerWarn.mock.calls[0][0]).toContain('Glue Connection MyConn (myconn)');
+  });
+});
+
+// The arm issue #1675 quotes as the leak surface. It is only reachable from a
+// hand-edited state record today (every id cdkd writes is a well-formed
+// 2-segment composite), but it must stay a LOUD skip with no AWS call rather
+// than a delete aimed at a half-decoded id.
+describe('deleteTable malformed-physicalId skip arm (issue #1675)', () => {
+  let provider: GlueProvider;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGlueSend.mockReset();
+    provider = new GlueProvider();
+  });
+
+  it.each([
+    ['a bare table name with no separator', 'my_table'],
+    ['an empty table segment', 'mydb|'],
+    ['an empty database segment', '|my_table'],
+    ['an empty id', ''],
+  ])('warns and issues NO Glue call for %s', async (_label, physicalId) => {
+    await expect(
+      provider.delete('MyTable', physicalId, 'AWS::Glue::Table', { DatabaseName: 'mydb' })
+    ).resolves.toBeUndefined();
+
+    expect(mockGlueSend).not.toHaveBeenCalled();
+    expect(mockLoggerWarn).toHaveBeenCalledTimes(1);
+    expect(mockLoggerWarn.mock.calls[0][0]).toContain('Invalid Glue Table physical ID format');
+  });
+});
+
+// Issue #1675 item C: `readCurrentState` and the Connection `import()` probe
+// read the same `CatalogId` off the same bag shapes as the deletes. Before the
+// shared guard they used a bare `as string | undefined` cast, so for exactly
+// the import-written state records this PR's rationale is about, `cdkd drift`
+// handed `GetTable` / `GetConnection` an unresolved intrinsic OBJECT.
+describe('Glue read-path CatalogId scoping (issue #1675)', () => {
+  let provider: GlueProvider;
+  let connectionProvider: GlueConnectionProvider;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGlueSend.mockReset();
+    provider = new GlueProvider();
+    connectionProvider = new GlueConnectionProvider();
+  });
+
+  it('readCurrentState(Table) DROPS an unresolved CatalogId intrinsic', async () => {
+    mockGlueSend.mockResolvedValueOnce({ Table: { Name: 'my_table' } });
+
+    await provider.readCurrentState('mydb|my_table', 'MyTable', 'AWS::Glue::Table', {
+      CatalogId: { Ref: 'AWS::AccountId' },
+    });
+
+    const input = mockGlueSend.mock.calls[0][0].input as Record<string, unknown>;
+    expect(input).not.toHaveProperty('CatalogId');
+    expect(input).toEqual({ DatabaseName: 'mydb', Name: 'my_table' });
+  });
+
+  it('readCurrentState(Table) coerces a YAML-numeric CatalogId', async () => {
+    mockGlueSend.mockResolvedValueOnce({ Table: { Name: 'my_table' } });
+
+    await provider.readCurrentState('mydb|my_table', 'MyTable', 'AWS::Glue::Table', {
+      CatalogId: 210987654321,
+    });
+
+    expect(mockGlueSend.mock.calls[0][0].input).toEqual({
+      CatalogId: '210987654321',
+      DatabaseName: 'mydb',
+      Name: 'my_table',
+    });
+  });
+
+  it('readCurrentState(Database) DROPS an unresolved CatalogId intrinsic', async () => {
+    mockGlueSend.mockResolvedValueOnce({ Database: { Name: 'mydb' } });
+
+    await provider.readCurrentState('mydb', 'MyDb', 'AWS::Glue::Database', {
+      CatalogId: { Ref: 'AWS::AccountId' },
+    });
+
+    const input = mockGlueSend.mock.calls[0][0].input as Record<string, unknown>;
+    expect(input).not.toHaveProperty('CatalogId');
+    expect(input).toEqual({ Name: 'mydb' });
+  });
+
+  it('GlueConnectionProvider.readCurrentState DROPS an unresolved CatalogId intrinsic', async () => {
+    mockGlueSend.mockResolvedValueOnce({ Connection: { Name: 'myconn' } });
+
+    await connectionProvider.readCurrentState('myconn', 'MyConn', 'AWS::Glue::Connection', {
+      CatalogId: { Ref: 'AWS::AccountId' },
+    });
+
+    const input = mockGlueSend.mock.calls[0][0].input as Record<string, unknown>;
+    expect(input).not.toHaveProperty('CatalogId');
+    expect(input).toEqual({ Name: 'myconn' });
+  });
+
+  it('GlueConnectionProvider.import DROPS an unresolved CatalogId intrinsic', async () => {
+    mockGlueSend.mockResolvedValueOnce({ Connection: { Name: 'myconn' } });
+
+    await connectionProvider.import({
+      logicalId: 'MyConn',
+      resourceType: 'AWS::Glue::Connection',
+      stackName: 'MyStack',
+      region: 'us-east-1',
+      knownPhysicalId: 'myconn',
+      properties: { CatalogId: { Ref: 'AWS::AccountId' } },
+    });
+
+    const input = mockGlueSend.mock.calls[0][0].input as Record<string, unknown>;
+    expect(input).not.toHaveProperty('CatalogId');
+    expect(input).toEqual({ Name: 'myconn' });
+  });
+
+  it('GlueConnectionProvider.import still forwards a literal CatalogId', async () => {
+    mockGlueSend.mockResolvedValueOnce({ Connection: { Name: 'myconn' } });
+
+    await connectionProvider.import({
+      logicalId: 'MyConn',
+      resourceType: 'AWS::Glue::Connection',
+      stackName: 'MyStack',
+      region: 'us-east-1',
+      knownPhysicalId: 'myconn',
+      properties: { CatalogId: '210987654321' },
+    });
+
+    expect(mockGlueSend.mock.calls[0][0].input).toEqual({
+      Name: 'myconn',
+      CatalogId: '210987654321',
+    });
   });
 });
 

@@ -11191,6 +11191,7 @@
             "AWS::Glue::Connection"
           ],
           "evidence": [
+            "delegated",
             "element-read"
           ],
           "seededBy": [
@@ -11836,6 +11837,7 @@
             "createTable",
             "delete",
             "deleteDatabase",
+            "deleteTable",
             "readCurrentState",
             "update",
             "updateDatabase",

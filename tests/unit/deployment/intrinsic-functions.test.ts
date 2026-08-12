@@ -3,6 +3,7 @@ import {
   IntrinsicFunctionResolver,
   type ResolverContext,
   resetAccountInfoCache,
+  cfnRefValueFromPhysicalId,
 } from '../../../src/deployment/intrinsic-function-resolver.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 
@@ -2953,6 +2954,79 @@ describe('IntrinsicFunctionResolver - Ref to AWS::ApiGateway::Model', () => {
 
     const result = await resolver.resolve({ Ref: 'M' }, context);
     expect(result).toBe('jkmnpf9ay0|92jxxi|GET');
+  });
+
+  // Issue #1667: AWS::Glue::Table. Unlike the ApiGateway / Cognito entries this
+  // compound is built by cdkd's OWN SDK provider (`GlueProvider.createTable` /
+  // `importTable` store `<databaseName>|<tableName>`, because GetTable /
+  // UpdateTable / DeleteTable all need both segments), so the extraction is
+  // load-bearing on the ordinary deploy path — there is no pipe-free variant.
+  // CloudFormation's `Ref` for the type returns the TABLE NAME, so a consumer
+  // (a crawler's `Targets.CatalogTargets[].Tables`, a CfnOutput, a Lake
+  // Formation permission) was being handed `mydb|my_table` and pushing it to
+  // AWS. The assertion is on the RESOLVED VALUE, not on Set membership: a
+  // membership check passes even if the extraction picks the wrong segment.
+  it('Ref to AWS::Glue::Table returns the table name, not the compound <db>|<table> physical id', async () => {
+    const template: CloudFormationTemplate = {
+      Resources: {
+        MyTable: {
+          Type: 'AWS::Glue::Table',
+          Properties: { DatabaseName: 'mydb', TableInput: { Name: 'my_table' } },
+        },
+      },
+    };
+    const context: ResolverContext = {
+      template,
+      resources: {
+        MyTable: {
+          physicalId: 'mydb|my_table',
+          resourceType: 'AWS::Glue::Table',
+          properties: { DatabaseName: 'mydb', TableInput: { Name: 'my_table' } },
+          attributes: {},
+          dependencies: [],
+        },
+      },
+    };
+
+    const result = await resolver.resolve({ Ref: 'MyTable' }, context);
+    expect(result).toBe('my_table');
+  });
+
+  // The value a real consumer receives, composed the way CDK synthesizes it —
+  // pre-fix this produced `glue://mydb|my_table`, which AWS rejects.
+  it('Fn::Join over a Glue Table Ref composes the table name, not the compound id', async () => {
+    const template: CloudFormationTemplate = {
+      Resources: {
+        MyTable: { Type: 'AWS::Glue::Table', Properties: {} },
+      },
+    };
+    const context: ResolverContext = {
+      template,
+      resources: {
+        MyTable: {
+          physicalId: 'mydb|my_table',
+          resourceType: 'AWS::Glue::Table',
+          properties: {},
+          attributes: {},
+          dependencies: [],
+        },
+      },
+    };
+
+    const result = await resolver.resolve(
+      { 'Fn::Join': ['', ['glue://', { Ref: 'MyTable' }]] },
+      context
+    );
+    expect(result).toBe('glue://my_table');
+  });
+
+  // Negative polarity for the entry above: the helper must NO-OP on a pipe-free
+  // id. `cfnRefValueFromPhysicalId` is exercised directly because that is the
+  // pure function `cdkd orphan`'s rewriter shares with the resolver, so a
+  // regression that starts mangling a bare id would hit both.
+  it('cfnRefValueFromPhysicalId leaves a pipe-free AWS::Glue::Table id untouched', () => {
+    expect(cfnRefValueFromPhysicalId('AWS::Glue::Table', 'my_table')).toBe('my_table');
+    expect(cfnRefValueFromPhysicalId('AWS::Glue::Table', 'mydb|my_table')).toBe('my_table');
   });
 
   // Reversed-order compounds (issue #963 family audit): Deployment and
