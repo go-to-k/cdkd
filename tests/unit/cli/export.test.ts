@@ -576,6 +576,12 @@ describe('hasCompositeIdSplitter', () => {
     expect(hasCompositeIdSplitter('AWS::ApiGateway::Method')).toBe(true);
     expect(hasCompositeIdSplitter('AWS::ApiGateway::Resource')).toBe(true);
     expect(hasCompositeIdSplitter('AWS::EC2::VPCGatewayAttachment')).toBe(true);
+    // Issue #1692: every AWS::ApiGateway::* child with a composite identifier.
+    expect(hasCompositeIdSplitter('AWS::ApiGateway::Deployment')).toBe(true);
+    expect(hasCompositeIdSplitter('AWS::ApiGateway::Stage')).toBe(true);
+    expect(hasCompositeIdSplitter('AWS::ApiGateway::Authorizer')).toBe(true);
+    expect(hasCompositeIdSplitter('AWS::ApiGateway::Model')).toBe(true);
+    expect(hasCompositeIdSplitter('AWS::ApiGateway::RequestValidator')).toBe(true);
     expect(hasCompositeIdSplitter('AWS::ApiGatewayV2::Integration')).toBe(true);
     expect(hasCompositeIdSplitter('AWS::ApiGatewayV2::Route')).toBe(true);
     expect(hasCompositeIdSplitter('AWS::Lambda::Permission')).toBe(true);
@@ -641,12 +647,138 @@ describe('splitCompositePhysicalId', () => {
     );
   });
 
-  it('reorders AWS::EC2::VPCGatewayAttachment (cdkd: IGW|VpcId → CFn: {VpcId, InternetGatewayId})', () => {
+  // Issue #1691: the CFn identifier is [AttachmentType, VpcId] with
+  // AttachmentType read-only (live DescribeType, us-east-1, 2026-08-12) — the
+  // pre-fix {VpcId, InternetGatewayId} map made resolveCompositeId's field
+  // check throw and aborted `cdkd export` on every VPC + IGW stack.
+  it('derives AttachmentType for AWS::EC2::VPCGatewayAttachment (IGW, narrow overlay)', () => {
     expect(
-      splitCompositePhysicalId('AWS::EC2::VPCGatewayAttachment', 'igw-abc|vpc-xyz')
+      splitCompositePhysicalId('AWS::EC2::VPCGatewayAttachment', 'igw-abc|vpc-xyz', {
+        VpcId: 'vpc-xyz',
+        InternetGatewayId: 'igw-abc',
+      })
     ).toEqual({
-      resourceIdentifier: { VpcId: 'vpc-xyz', InternetGatewayId: 'igw-abc' },
+      resourceIdentifier: { AttachmentType: 'InternetGateway', VpcId: 'vpc-xyz' },
+      propertiesOverlay: { VpcId: 'vpc-xyz' },
     });
+  });
+
+  it('derives AttachmentType VPN when the recorded properties carry VpnGatewayId', () => {
+    expect(
+      splitCompositePhysicalId('AWS::EC2::VPCGatewayAttachment', 'vgw-abc|vpc-xyz', {
+        VpcId: 'vpc-xyz',
+        VpnGatewayId: 'vgw-abc',
+      })
+    ).toEqual({
+      resourceIdentifier: { AttachmentType: 'VPN', VpcId: 'vpc-xyz' },
+      propertiesOverlay: { VpcId: 'vpc-xyz' },
+    });
+  });
+
+  it('accepts the Cloud-Control-written AttachmentType|VpcId shape verbatim', () => {
+    // A template declaring VpnGatewayId trips the #614 silent-drop routing, so
+    // Cloud Control stores the CFn primaryIdentifier joined.
+    expect(
+      splitCompositePhysicalId('AWS::EC2::VPCGatewayAttachment', 'VPN|vpc-xyz', {})
+    ).toEqual({
+      resourceIdentifier: { AttachmentType: 'VPN', VpcId: 'vpc-xyz' },
+      propertiesOverlay: { VpcId: 'vpc-xyz' },
+    });
+  });
+
+  it('falls back to the gateway-id prefix when properties carry neither gateway id', () => {
+    expect(
+      splitCompositePhysicalId('AWS::EC2::VPCGatewayAttachment', 'igw-abc|vpc-xyz', {})
+    ).toEqual({
+      resourceIdentifier: { AttachmentType: 'InternetGateway', VpcId: 'vpc-xyz' },
+      propertiesOverlay: { VpcId: 'vpc-xyz' },
+    });
+  });
+
+  it('throws when AttachmentType cannot be determined for VPCGatewayAttachment', () => {
+    expect(() =>
+      splitCompositePhysicalId('AWS::EC2::VPCGatewayAttachment', 'mystery-abc|vpc-xyz', {})
+    ).toThrow(/cannot determine AttachmentType/);
+  });
+
+  // Issue #1692: every CDK RestApi emits a Deployment AND a Stage, so without
+  // these splitters `cdkd export` aborted on any REST v1 stack.
+  it('parses AWS::ApiGateway::Deployment from the bare SDK id (narrow overlay)', () => {
+    expect(
+      splitCompositePhysicalId('AWS::ApiGateway::Deployment', 'dep123', {
+        RestApiId: 'api-xyz',
+      })
+    ).toEqual({
+      resourceIdentifier: { RestApiId: 'api-xyz', DeploymentId: 'dep123' },
+      propertiesOverlay: { RestApiId: 'api-xyz' },
+    });
+  });
+
+  it('parses AWS::ApiGateway::Deployment from the CC composite (child id FIRST)', () => {
+    // CFn primaryIdentifier is [DeploymentId, RestApiId], so Cloud Control
+    // joins the child id ahead of the parent — unlike every sibling type.
+    expect(splitCompositePhysicalId('AWS::ApiGateway::Deployment', 'dep123|api-xyz', {})).toEqual({
+      resourceIdentifier: { RestApiId: 'api-xyz', DeploymentId: 'dep123' },
+      propertiesOverlay: { RestApiId: 'api-xyz' },
+    });
+  });
+
+  it('parses AWS::ApiGateway::Stage with the default overlay (no read-only fields)', () => {
+    expect(
+      splitCompositePhysicalId('AWS::ApiGateway::Stage', 'prod', { RestApiId: 'api-xyz' })
+    ).toEqual({
+      resourceIdentifier: { RestApiId: 'api-xyz', StageName: 'prod' },
+    });
+  });
+
+  it('parses AWS::ApiGateway::Stage from the CC composite (parent id first)', () => {
+    expect(splitCompositePhysicalId('AWS::ApiGateway::Stage', 'api-xyz|prod', {})).toEqual({
+      resourceIdentifier: { RestApiId: 'api-xyz', StageName: 'prod' },
+    });
+  });
+
+  it('parses AWS::ApiGateway::Authorizer (narrow overlay)', () => {
+    expect(
+      splitCompositePhysicalId('AWS::ApiGateway::Authorizer', 'auth123', {
+        RestApiId: 'api-xyz',
+      })
+    ).toEqual({
+      resourceIdentifier: { RestApiId: 'api-xyz', AuthorizerId: 'auth123' },
+      propertiesOverlay: { RestApiId: 'api-xyz' },
+    });
+  });
+
+  it('parses AWS::ApiGateway::Model with the default overlay', () => {
+    expect(splitCompositePhysicalId('AWS::ApiGateway::Model', 'api-xyz|MyModel', {})).toEqual({
+      resourceIdentifier: { RestApiId: 'api-xyz', Name: 'MyModel' },
+    });
+  });
+
+  it('parses AWS::ApiGateway::RequestValidator (narrow overlay)', () => {
+    expect(
+      splitCompositePhysicalId('AWS::ApiGateway::RequestValidator', 'api-xyz|rv123', {})
+    ).toEqual({
+      resourceIdentifier: { RestApiId: 'api-xyz', RequestValidatorId: 'rv123' },
+      propertiesOverlay: { RestApiId: 'api-xyz' },
+    });
+  });
+
+  it('throws when a REST API child has more than two id parts', () => {
+    expect(() =>
+      splitCompositePhysicalId('AWS::ApiGateway::Stage', 'a|b|c', { RestApiId: 'api-xyz' })
+    ).toThrow(/expected a bare StageName/);
+  });
+
+  it('throws when a REST API child id is blank', () => {
+    expect(() =>
+      splitCompositePhysicalId('AWS::ApiGateway::Authorizer', '   ', { RestApiId: 'api-xyz' })
+    ).toThrow(/empty physical id/);
+  });
+
+  it('throws when a bare REST API child id has no RestApiId in state properties', () => {
+    expect(() => splitCompositePhysicalId('AWS::ApiGateway::Deployment', 'dep123', {})).toThrow(
+      /missing 'RestApiId'/
+    );
   });
 
   it('parses AWS::ApiGatewayV2::Integration with ApiId from properties (narrow overlay)', () => {
