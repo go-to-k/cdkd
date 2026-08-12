@@ -11,6 +11,7 @@
  */
 import { describe, it, expect, vi } from 'vite-plus/test';
 import { ProviderRegistry } from '../../../src/provisioning/provider-registry.js';
+import { PROPERTY_COVERAGE_BY_TYPE } from '../../../src/provisioning/property-coverage.js';
 
 interface LoggerSpies {
   info: ReturnType<typeof vi.fn>;
@@ -79,11 +80,40 @@ describe('ProviderRegistry mutually-exclusive pre-flight', () => {
     ).not.toThrow();
   });
 
-  it('refuses BEFORE emitting any silent-drop routing line', () => {
-    const { registry, logger } = makeRegistry();
-    expect(() => registry.validateResourceProperties([badRoute('BadRoute')])).toThrow();
-    expect(logger.info).not.toHaveBeenCalled();
-    expect(logger.warn).not.toHaveBeenCalled();
+  describe('ordering vs the silent-drop routing report', () => {
+    // `AWS::EC2::Route` has an EMPTY silentDrop map, so a bad-Route-only
+    // fixture logs nothing either way and would pass under the swapped-order
+    // mutant (report first, then validate). The batch therefore carries a
+    // resource that genuinely triggers a routing line, and the control below
+    // proves that line really fires — without it, a codegen change that
+    // emptied the fixture would silently make this vacuous again.
+    function silentDropResource(): { logicalId: string; resourceType: string; properties: Record<string, unknown> } {
+      for (const [resourceType, coverage] of PROPERTY_COVERAGE_BY_TYPE) {
+        const first = coverage.silentDrop.entries().next();
+        if (!first.done) {
+          return { logicalId: 'DropCarrier', resourceType, properties: { [first.value[0]]: 'x' } };
+        }
+      }
+      throw new Error(
+        'PROPERTY_COVERAGE_BY_TYPE has no silent-drop entries — this ordering test needs one. ' +
+          'Replace with a synthetic fixture.'
+      );
+    }
+
+    it('CONTROL: the silent-drop resource does emit a routing line on its own', () => {
+      const { registry, logger } = makeRegistry();
+      registry.validateResourceProperties([silentDropResource()]);
+      expect(logger.info.mock.calls.length + logger.warn.mock.calls.length).toBeGreaterThan(0);
+    });
+
+    it('refuses BEFORE emitting any silent-drop routing line', () => {
+      const { registry, logger } = makeRegistry();
+      expect(() =>
+        registry.validateResourceProperties([silentDropResource(), badRoute('BadRoute')])
+      ).toThrow(/mutually exclusive/);
+      expect(logger.info).not.toHaveBeenCalled();
+      expect(logger.warn).not.toHaveBeenCalled();
+    });
   });
 
   it('walks a generator argument correctly on both passes', () => {

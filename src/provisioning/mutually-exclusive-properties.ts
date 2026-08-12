@@ -118,6 +118,17 @@ export interface MutuallyExclusiveViolation {
   readonly rule: MutuallyExclusiveRule;
   /** The rule's properties this resource declares — always length >= 2, in rule order. */
   readonly declared: string[];
+  /**
+   * Whether `declared[0]` is provably the key that reaches AWS.
+   *
+   * FALSE when a rule property RANKED HIGHER than `declared[0]` sits behind an
+   * unresolved intrinsic: that key may resolve to a real value and win the
+   * provider's `||` chain, in which case `declared[0]` is not the winner at
+   * all. The message drops its "only X would reach AWS" sentence rather than
+   * assert something the raw template cannot establish — the remedy (delete
+   * the extra keys) is unaffected either way.
+   */
+  readonly winnerCertain: boolean;
 }
 
 /**
@@ -128,6 +139,11 @@ export interface MutuallyExclusiveViolation {
  * behavior by accident.
  */
 function isUnresolvedIntrinsic(value: unknown): boolean {
+  // The `Array.isArray` arm is belt-and-braces, not load-bearing: an array's
+  // own keys are '0' / '1' / ..., so it can never satisfy the Ref / Fn:: test
+  // below. It is kept so the predicate reads as "a single-key OBJECT" rather
+  // than relying on that indexing detail, and the test suite does not pretend
+  // to fence it.
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
   const keys = Object.keys(value);
   return keys.length === 1 && (keys[0] === 'Ref' || keys[0]!.startsWith('Fn::'));
@@ -166,7 +182,14 @@ export function findMutuallyExclusiveViolations(
   const violations: MutuallyExclusiveViolation[] = [];
   for (const rule of rules) {
     const declared = rule.properties.filter((property) => isDeclared(templateProperties[property]));
-    if (declared.length > 1) violations.push({ resourceType, rule, declared });
+    if (declared.length <= 1) continue;
+    // Everything ranked above the first declared key was skipped either because
+    // it is absent (settled) or because it is an unresolved intrinsic (which
+    // may yet resolve to a value that outranks `declared[0]`).
+    const winnerCertain = !rule.properties
+      .slice(0, rule.properties.indexOf(declared[0]!))
+      .some((property) => isUnresolvedIntrinsic(templateProperties[property]));
+    violations.push({ resourceType, rule, declared, winnerCertain });
   }
   return violations;
 }
@@ -178,15 +201,20 @@ export function findMutuallyExclusiveViolations(
  * AWS, because that turns the remedy from a guess into a safe edit: deleting
  * the other keys cannot change the deployed resource, since the service was
  * never sent them.
+ *
+ * That sentence is omitted when {@link MutuallyExclusiveViolation.winnerCertain}
+ * is false — naming a winner the raw template does not determine would be a
+ * confident falsehood, and the user could act on it.
  */
 export function buildMutuallyExclusiveMessage(
   logicalId: string,
   violation: MutuallyExclusiveViolation
 ): string {
-  const { resourceType, rule, declared } = violation;
-  const winnerNote = rule.firstDeclaredWins
-    ? ` Only ${declared[0]} would reach AWS, so removing ${declared.slice(1).join(' / ')} leaves the intended resource unchanged.`
-    : '';
+  const { resourceType, rule, declared, winnerCertain } = violation;
+  const winnerNote =
+    rule.firstDeclaredWins && winnerCertain
+      ? ` Only ${declared[0]} would reach AWS, so removing ${declared.slice(1).join(' / ')} leaves the intended resource unchanged.`
+      : '';
   return (
     `  - ${logicalId} (${resourceType}) declares ${declared.join(' and ')}\n` +
     `      ${rule.rationale}${winnerNote}\n` +

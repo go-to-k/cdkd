@@ -10,7 +10,7 @@
  *   resolve to `AWS::NoValue`, so counting it would refuse a VALID template
  *   with no escape hatch.
  */
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, it, expect } from 'vite-plus/test';
@@ -19,6 +19,7 @@ import {
   buildMutuallyExclusiveMessage,
   findMutuallyExclusiveViolations,
 } from '../../../src/provisioning/mutually-exclusive-properties.js';
+import { narrowRouteDestinations } from '../../../src/provisioning/providers/ec2-provider.js';
 
 const ROUTE = 'AWS::EC2::Route';
 
@@ -96,7 +97,11 @@ describe('findMutuallyExclusiveViolations', () => {
       ).toEqual([]);
     });
 
-    it('counts a truthy non-string value (an array is not intrinsic-shaped)', () => {
+    it('counts a truthy non-string value such as an array', () => {
+      // NOT a fence for the `Array.isArray` arm of `isUnresolvedIntrinsic`:
+      // an array's own keys are '0' / '1' / ..., so it fails the Ref / Fn::
+      // test regardless and this case passes with the arm removed. The arm is
+      // documented in-code as belt-and-braces for exactly that reason.
       expect(
         violationProperties({
           DestinationCidrBlock: '10.0.0.0/8',
@@ -188,9 +193,40 @@ describe('buildMutuallyExclusiveMessage', () => {
       resourceType: 'AWS::Example::Thing',
       rule: { properties: ['A', 'B'], rationale: 'Pick one.' },
       declared: ['A', 'B'],
+      winnerCertain: true,
     });
     expect(message).not.toContain('would reach AWS');
     expect(message).toContain('Declare at most one of: A / B');
+  });
+
+  it('omits the winner note when a HIGHER-precedence key is behind an intrinsic', () => {
+    // `DestinationCidrBlock` outranks both declared keys and may resolve to a
+    // real value, in which case it — not `declared[0]` — is what reaches AWS.
+    // Naming a winner here would be a confident falsehood.
+    const [uncertain] = findMutuallyExclusiveViolations(ROUTE, {
+      DestinationCidrBlock: { 'Fn::If': ['C', '10.0.0.0/8', { Ref: 'AWS::NoValue' }] },
+      DestinationIpv6CidrBlock: '::/0',
+      DestinationPrefixListId: 'pl-1',
+    });
+    expect(uncertain!.declared).toEqual(['DestinationIpv6CidrBlock', 'DestinationPrefixListId']);
+    expect(uncertain!.winnerCertain).toBe(false);
+    const message = buildMutuallyExclusiveMessage('MyRoute', uncertain!);
+    expect(message).not.toContain('would reach AWS');
+    // The remedy is unaffected — only the winner claim is dropped.
+    expect(message).toContain('Declare at most one of');
+  });
+
+  it('keeps the winner note when the only skipped higher key is ABSENT, not intrinsic', () => {
+    // Absence is settled knowledge, so `declared[0]` really is the winner —
+    // this is what stops the fix above from suppressing the note everywhere.
+    const [certain] = findMutuallyExclusiveViolations(ROUTE, {
+      DestinationIpv6CidrBlock: '::/0',
+      DestinationPrefixListId: 'pl-1',
+    });
+    expect(certain!.winnerCertain).toBe(true);
+    expect(buildMutuallyExclusiveMessage('MyRoute', certain!)).toContain(
+      'Only DestinationIpv6CidrBlock would reach AWS'
+    );
   });
 });
 
@@ -215,6 +251,21 @@ describe('MUTUALLY_EXCLUSIVE_PROPERTIES table hygiene', () => {
     }
   });
 
+  it('matches the provider destination list EXACTLY, order included', () => {
+    // The schema-fixture check below catches a RENAME but not a REORDER or an
+    // ADDITION in `ROUTE_DESTINATION_KEYS` (ec2-provider.ts, module-private) —
+    // either of which silently invalidates `firstDeclaredWins`, since the
+    // winner is defined by the provider's `||` chain order. `declared` from
+    // `narrowRouteDestinations` over an all-truthy bag IS that list, in that
+    // order, so this pins both without needing the constant exported.
+    const allTruthy = Object.fromEntries(
+      (MUTUALLY_EXCLUSIVE_PROPERTIES.get(ROUTE)![0]!.properties as string[]).map((p) => [p, 'x'])
+    );
+    expect(narrowRouteDestinations(allTruthy).declared).toEqual(
+      MUTUALLY_EXCLUSIVE_PROPERTIES.get(ROUTE)![0]!.properties
+    );
+  });
+
   it('names only properties that exist in the type CFn schema fixture', () => {
     // A rule keyed on a misspelled or removed property is DEAD — it can never
     // fire, and nothing else would notice. This is the fence for the fact that
@@ -222,6 +273,13 @@ describe('MUTUALLY_EXCLUSIVE_PROPERTIES table hygiene', () => {
     // ec2-provider.ts (module-private there).
     for (const [resourceType, rules] of MUTUALLY_EXCLUSIVE_PROPERTIES) {
       const fixture = join(fixturesDir, `${resourceType.replace(/::/g, '-')}.json`);
+      if (!existsSync(fixture)) {
+        throw new Error(
+          `No CFn schema fixture for ${resourceType} (expected ${fixture}). Capture one with ` +
+            `\`node scripts/refresh-cfn-schemas.mjs --only-missing\` so this rule's property ` +
+            `names stay pinned to the real schema.`
+        );
+      }
       const schema = JSON.parse(readFileSync(fixture, 'utf8')) as { properties: string[] };
       for (const rule of rules) {
         for (const property of rule.properties) {
