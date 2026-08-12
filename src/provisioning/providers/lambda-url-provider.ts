@@ -200,6 +200,48 @@ export class LambdaUrlProvider implements ResourceProvider {
         : undefined
       : requestedAuthType;
 
+    // issue #1654: a SUBSTITUTED value is the same class as a dropped key
+    // (.claude/rules/providers.md, #1633) — the deploy SUCCEEDS, so without
+    // this the engine records the MALFORMED desired `AuthType` while AWS
+    // holds the previous / live one. `readCurrentState` reads `AuthType`
+    // back, so that mismatch is permanent phantom drift: re-reported by
+    // every `cdkd drift` and re-issued by `drift --revert`, which calls
+    // `update()` again. So answer with the bag actually delivered.
+    //
+    // The two arms differ because what reached AWS differs:
+    //
+    //  - PREVIOUS-VALUE arm: `AuthType: <previous>` was genuinely SENT, so
+    //    that is what state must describe.
+    //  - OMITTED arm (the previous side is unusable / absent too): NOTHING
+    //    was sent for `AuthType`, so the key is DROPPED from the effective
+    //    bag. Three candidates were considered and this is the only one that
+    //    never lets state claim an auth type cdkd cannot vouch for.
+    //    Recording the create default `'NONE'` would describe a PUBLIC URL
+    //    that may in fact be IAM-guarded — the exact outcome the guard above
+    //    exists to prevent. Recording the live value off the
+    //    `UpdateFunctionUrlConfig` RESPONSE would be what AWS HOLDS rather
+    //    than what cdkd SENT: the rules file puts a read-back value in
+    //    `observedProperties`, not in `properties`, because `properties` is
+    //    the DESIRED baseline the #1160 absent-field removal derivation
+    //    reads — and it would launder a template cdkd could not apply into a
+    //    clean-looking record. A dropped key is never compared by
+    //    `drift-calculator` (it only descends into keys present in state),
+    //    so the phantom drift is gone either way, while the malformed
+    //    template keeps re-warning on every deploy until it is fixed —
+    //    which is the correct outcome per the same rule.
+    //
+    // Deliberately NOT paired with a `canonicalizeDesiredProperties` twin:
+    // this is a SUBSTITUTION, not a pure narrowing of the desired bag, so
+    // canonicalizing the desired side would compare a previous side holding
+    // a valid `AuthType` against a desired side with the key removed and
+    // derive a REMOVAL (issue #1612's carve-out).
+    let effectiveProperties: Record<string, unknown> | undefined;
+    if (authTypeUnusable) {
+      effectiveProperties = { ...properties };
+      if (authType === undefined) delete effectiveProperties['AuthType'];
+      else effectiveProperties['AuthType'] = authType;
+    }
+
     const updateParams: import('@aws-sdk/client-lambda').UpdateFunctionUrlConfigCommandInput = {
       FunctionName: physicalId,
       ...(authType !== undefined && { AuthType: authType }),
@@ -253,6 +295,7 @@ export class LambdaUrlProvider implements ResourceProvider {
           FunctionUrl: response.FunctionUrl,
           FunctionArn: response.FunctionArn,
         },
+        ...(effectiveProperties && { effectiveProperties }),
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
