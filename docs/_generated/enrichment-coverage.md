@@ -16,7 +16,7 @@ Gap severity depends on the tier. A gap on an **SDK-backed** type (`sdk-fallback
 - No computed attribute (Ref == physicalId is correct): **15**
 - **Pure-CC latent gaps (unenriched-computed, blocks CI): 0**
 - SDK-fallback gaps (informational, #614 path only): **102**
-- Types with allow-listed (not-a-gap) attributes: **29**
+- Types with allow-listed (not-a-gap) attributes: **30**
 
 ## Pure-CC latent gaps
 
@@ -97,7 +97,7 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::Kinesis::Stream` | `WarmThroughputObject` |
 | `AWS::Kinesis::StreamConsumer` | `ConsumerARN`, `ConsumerCreationTimestamp`, `ConsumerStatus` |
 | `AWS::KinesisFirehose::DeliveryStream` | `Arn` |
-| `AWS::Lambda::EventSourceMapping` | `EventSourceMappingArn`, `Id` |
+| `AWS::Lambda::EventSourceMapping` | `EventSourceMappingArn` |
 | `AWS::Lambda::Function` | `Arn`, `SnapStartResponse` |
 | `AWS::Lambda::LayerVersion` | `LayerVersionArn` |
 | `AWS::Lambda::MicrovmImage` | `CreatedAt`, `LatestActiveImageVersion`, `LatestFailedImageVersion`, `State`, `UpdatedAt` |
@@ -230,7 +230,7 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::KMS::Alias` | yes | no-computed-attr | _(none)_ |
 | `AWS::KMS::Key` | yes | enriched | `Arn` (OK), `KeyId` (OK) |
 | `AWS::Lambda::EventInvokeConfig` | yes | no-computed-attr | _(none)_ |
-| `AWS::Lambda::EventSourceMapping` | yes | sdk-fallback-gap | `EventSourceMappingArn` (GAP), `Id` (GAP) |
+| `AWS::Lambda::EventSourceMapping` | yes | sdk-fallback-gap | `EventSourceMappingArn` (GAP), `Id` (allow) |
 | `AWS::Lambda::Function` | yes | sdk-fallback-gap | `Arn` (GAP), `SnapStartResponse` (GAP) |
 | `AWS::Lambda::LayerVersion` | yes | sdk-fallback-gap | `LayerVersionArn` (GAP) |
 | `AWS::Lambda::MicrovmImage` | yes | sdk-fallback-gap | `CreatedAt` (GAP), `ImageArn` (allow), `LatestActiveImageVersion` (GAP), `LatestFailedImageVersion` (GAP), `State` (GAP), `UpdatedAt` (GAP) |
