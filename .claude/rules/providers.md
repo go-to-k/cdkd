@@ -103,13 +103,44 @@ strict, each differently):
 - **keep the PREVIOUS value** — Lambda URL `AuthType` (defaulting would flip a
   live IAM-guarded function URL to PUBLIC; when the previous side is unusable
   too the field is OMITTED, and `UpdateFunctionUrlConfig`'s merge semantics
-  retain the live value), DynamoDB Table / GlobalTable `BillingMode`.
+  retain the live value), DynamoDB Table / GlobalTable `BillingMode`. Since
+  issue #1683 the GlobalTable UPDATE arm also RECORDS the kept mode via
+  `effectiveProperties`, because leaving the malformed desired value in the
+  record hands it to the NEXT deploy as its previous side (the #1552 class);
+  where AWS reports a `BillingModeSummary` it also clears phantom drift, but a
+  table created without an explicit mode returns none, so do not state that as
+  the whole payoff. **The split is on ABSENCE, not on usability**, and getting
+  that wrong cost a review round in both directions. An ABSENT recorded previous
+  DROPS the key: the comparison baseline there is the create-path default, so
+  recording it would INVENT a key on a possibly-PROVISIONED table. Anything else
+  records the baseline the guards already resolved — which for a usable recorded
+  previous IS that value (so an out-of-band re-price stays a `cdkd drift`
+  finding rather than being reconciled away), and for a present-but-unusable one
+  is the live reading, which RESTORES a usable baseline. That last case is the
+  one place this file's "a read-back value belongs in `observedProperties`" bar
+  is crossed, and the bar itself is what reconciles it rather than a carve-out:
+  NOTHING was sent, so the live mode IS what cdkd left AWS holding, and the only
+  other candidate baseline is junk. Do not "tidy" that case into a drop
+  regardless: a dropped key reads as ABSENT next time, and the absent
+  branch does not consult AWS, so a corrected template can compare equal, issue
+  no call, and silently lose a real flip. The create-side arm of the SAME
+  property answers differently — it records the SUBSTITUTED mode — because there
+  the table really was created on-demand; and because a DROP leaves an absence
+  nothing announces, that arm warns on a replay whose record declares no mode.
 - **SKIP the block** — GlobalTable `StreamSpecification` (defaulting would
   re-point a live stream's view type the template never asked to change).
 - **SUPPRESS the diff** — GlobalTable `GlobalSecondaryIndexes`, where the
   create side's "omit" would read as "delete every live index". The PREVIOUS
   side's translation takes the downgrade UNCONDITIONALLY: it is state-borne,
   so a refusal there is the guard-the-desired-side-only rule violated outright.
+  Since issue #1683 the suppression also RECORDS the retained previous list via
+  `effectiveProperties`, per the warn-and-SKIP rule below — AWS keeps the index
+  set it already holds, so recording the malformed desired blob left a record
+  `readCurrentState` could never match and the NEXT update read as its previous
+  side. The previous side is validated through the SAME translator (a probe
+  call with a flag-only callback) before it is retained, and the key is DROPPED
+  when the previous side is unusable OR absent — there is no value cdkd can
+  vouch for either way.
 - **WARN and keep the pre-refusal behavior** — `EC2Provider`'s Route
   multi-destination guard (issue #1566). `updateRoute` DELETES the route before
   re-creating it, so a throw on the re-create would strand a deleted route with
@@ -226,9 +257,24 @@ its replay-CREATE arm was announcing it into a void, and the row below was
 unreachable in production for ALL of them. The shipped consumers are
 `EC2Provider` — `createRoute`'s multi-destination narrowing and
 `createSecurityGroupIngress`, both gated on `context?.replayingState === true`
-— `S3BucketProvider`'s create arm, and (since issue #1653)
-`DynamoDBGlobalTableProvider`'s `StreamSpecification` substitution; that list is
-worth checking with a grep rather than trusting it here. #1682 named the
+— `S3BucketProvider`'s create arm, and `DynamoDBGlobalTableProvider`'s
+`StreamSpecification` substitution (issue #1653) plus its `BillingMode` one
+(issue #1683, the same `replayWarn` shape one property over); that list is
+worth checking with a grep rather than trusting it here. **An arm of this class
+can be one you must NOT answer**, and #1683's third arm is the example: the
+GlobalTable `needsStream` AUTO-ENABLE fires on the ORDINARY template path —
+cross-region replication requires a stream, so cdkd sends one the template never
+declared, with nothing malformed and no guard logging a refusal. It is the "arms
+that do NOT log" case, so the audit question is rightly "what did this SEND that
+differs from what was declared". But the answer there is a key the template does
+NOT have, and recording it alone is precisely the shape the twin rule below
+forbids: the diff walks the key UNION, so an unchanged template classifies an
+UPDATE on the next deploy, the update returns no effective bag, and the key
+vanishes again — one spurious no-op UPDATE and no durable record. The twin
+cannot rescue it either, being pure and region-blind where `needsStream` is
+region-dependent. Left unanswered on purpose, tracked as issue #1723. **Finding
+such an arm is therefore not the same as fixing it** — check the twin's
+feasibility before you record anything. #1682 named the
 GlobalTable as a consumer while the provider was still running its `replayWarn`
 substitution and returning WITHOUT the field — the provider-side half, which
 #1653 has since supplied, so the two halves now meet. What none of the four has

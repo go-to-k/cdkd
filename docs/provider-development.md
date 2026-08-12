@@ -135,6 +135,40 @@ other than what the record said, so both had to be reported. When auditing your
 own provider, read every arm that can put a value on the wire differing from the
 declared one, not only the arms that log.
 
+`DynamoDBGlobalTableProvider` is the third, and it shows both halves of the
+question (issue [#1683](https://github.com/go-to-k/cdkd/issues/1683)). Three of
+its arms are ordinary guard downgrades and are answered — a `BillingMode`
+warn-and-SUBSTITUTE on the replay-CREATE path records the substituted mode, the
+same property's UPDATE-side guard suppresses the flip and so records the mode it
+compared against — DROPPING the key instead when the record declared none, since
+recording anything there would invent one — and a `GlobalSecondaryIndexes`
+warn-and-SKIP on update retains the previous list. Note the first two answer the
+SAME property differently because what reached AWS differs: one created the
+table on-demand, the other left a live table's mode untouched. Getting that
+UPDATE-side split wrong cost two review rounds in opposite directions, so the
+per-shape reasoning lives in
+[.claude/rules/providers.md](../.claude/rules/providers.md) rather than being
+summarized twice. A fourth arm logs no refusal at all: cross-region replication REQUIRES a stream, so the
+provider enables `NEW_AND_OLD_IMAGES` on a template that declared no
+`StreamSpecification`, on the ORDINARY template path. A provider is therefore
+not "done" once every guard reports — the audit question is what it SENDS that
+differs from what was declared, not which guards can warn.
+
+**But finding such an arm is not the same as fixing it.** That fourth arm is
+deliberately left unanswered (tracked as issue
+[#1723](https://github.com/go-to-k/cdkd/issues/1723)) because the value it would
+record is a key the template does not have, and the twin rule above then binds:
+`DiffCalculator` walks the key UNION, so an unchanged template would classify an
+UPDATE on the next deploy, `update()` would return no effective bag, and the key
+would vanish again — a spurious no-op UPDATE buying no durable record. The twin
+that would fix it cannot be written here either: it is pure and synchronous and
+does not know the deploy region, while the auto-enable condition does. Settle
+the twin's feasibility BEFORE recording anything.
+
+When more than one arm can fire in a single call, COMPOSE them
+(`...(effectiveProperties ?? properties)`) rather than assigning — otherwise the
+later arm silently erases the earlier one's answer.
+
 Three conditions, or this becomes a way to hide losses rather than record them:
 
 - the narrowing is **deliberate** — a value you merely failed to send is a bug,

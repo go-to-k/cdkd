@@ -747,6 +747,19 @@ export class DynamoDBGlobalTableStack extends cdk.Stack {
       ],
     });
     gsiProvRecoveryTable.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+    if (gsiJunkState) {
+      // Issue #1683 arm 1, UPDATE side, on the SAME deploy as the junk GSI
+      // above so one real deploy proves the two arms COMPOSE — the live twin
+      // of the unit composition test. A non-string is what `requireConfigString`
+      // refuses; the resolvable `Fn::Join` trick the GSI uses would produce a
+      // usable string here and reach AWS as a bogus BillingMode instead.
+      // `addPropertyOverride` because the L1 prop is typed `string`.
+      //
+      // Scalar property gate, so the later modes that omit the token simply
+      // restore 'PROVISIONED' — which is what state already records once the
+      // arm retains it, i.e. a no-op rather than a re-price.
+      gsiProvRecoveryTable.addPropertyOverride('BillingMode', { Unusable: 'not-a-string' });
+    }
 
     new cdk.CfnOutput(this, 'GsiProvRecoveryTableName', {
       value: gsiProvRecoveryTable.ref,

@@ -1171,6 +1171,18 @@ if ! grep -q "GlobalTable GsiProvRecoveryTable: .*GlobalSecondaryIndexes must be
   echo "FAIL: issue #1585 — cdkd did not report the malformed desired GlobalSecondaryIndexes on GsiProvRecoveryTable" >&2
   exit 1
 fi
+# The same deploy also hands that table a non-string BillingMode (issue #1683
+# arm 1, update side). Fence the GUARD as well as its effect: without this, a
+# BillingMode override that stopped producing an unusable value would leave the
+# two assertions below passing for the wrong reason — state reads PROVISIONED
+# and the table IS PROVISIONED because nothing ever tried to change either.
+# Anchored on the guard's OWN wording, not on the bare property name: the
+# #1552 baseline warning for an unusable RECORDED previous also names
+# BillingMode on this table, so a loose pattern could pass on the wrong warning.
+if ! grep -q "GlobalTable GsiProvRecoveryTable: .*is kept for this update" "${JUNK_LOG}"; then
+  echo "FAIL: issue #1683 — cdkd did not report the malformed desired BillingMode on GsiProvRecoveryTable" >&2
+  exit 1
+fi
 rm -f "${JUNK_LOG}"
 
 GSI_RECOVERY_TABLE="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | python3 -c '
@@ -1185,6 +1197,170 @@ if [ -z "${GSI_RECOVERY_TABLE}" ]; then
   echo "FAIL: issue #1571 — no GsiRecoveryTable in cdkd state" >&2
   exit 1
 fi
+# Issue #1683: the provider no longer RECORDS the malformed desired block. The
+# `desiredGsiUnusable` arm SKIPS the GSI diff, so AWS keeps the index set it
+# already holds, and `effectiveProperties` now retains the PREVIOUS list — a
+# record `readCurrentState` can match, instead of the junk one that produced
+# permanent phantom drift and that the NEXT update then read as its previous
+# side (the #1552 class).
+#
+# Assert that FIRST, because it is the live proof of the #1683 arm, and the
+# phase-1 seeding below would otherwise mask it.
+# Asserted per TABLE and by index-name MEMBERSHIP rather than by a glob over the
+# serialized JSON: a glob is order-dependent, so a legitimate reorder of the
+# retained list would report "must RETAIN the previous list" and accuse the fix.
+# The state is staged through a temp FILE rather than piped into `python3 -`:
+# with a `<<'PY'` heredoc the program itself arrives on stdin, so the pipe is
+# overridden and `json.load(sys.stdin)` reads an already-drained stream (an
+# empty-input JSONDecodeError, which is exactly how this assertion first failed).
+assert_retained_previous_gsi() { # $1 = logical-id prefix
+  local prefix="$1" verdict tmp
+  tmp="$(mktemp)" || return 1
+  aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - > "${tmp}" || { rm -f "${tmp}"; return 1; }
+  verdict="$(python3 - "${tmp}" "${prefix}" <<'PY'
+import json, sys
+path, prefix = sys.argv[1], sys.argv[2]
+with open(path) as fh:
+    state = json.load(fh)
+for logical_id, resource in state.get("resources", {}).items():
+    if logical_id.startswith(prefix):
+        value = resource.get("properties", {}).get("GlobalSecondaryIndexes")
+        if not isinstance(value, list):
+            # A SENTINEL, not sys.exit: the caller runs under `set -e` inside a
+            # command substitution, so exiting non-zero here aborts the script
+            # before its `case` arm can print the diagnostic naming the issue.
+            # This is the PRIMARY regression shape (state records the junk
+            # string) and it must reach that message, not a bare abort.
+            print(f"NOT-A-LIST {json.dumps(value)}")
+        else:
+            # FILTER before sorting: an entry without IndexName yields None,
+            # and sorting a mixed str/None sequence raises TypeError, which
+            # would surface as an empty verdict accusing the fix.
+            names = sorted(
+                entry["IndexName"]
+                for entry in value
+                if isinstance(entry, dict) and entry.get("IndexName")
+            )
+            print(" ".join(names))
+        break
+else:
+    sys.exit(f"no {prefix} in cdkd state")
+PY
+)" || { rm -f "${tmp}"; return 1; }
+  rm -f "${tmp}"
+  printf '%s' "${verdict}"
+}
+
+GSI_AFTER_JUNK="$(assert_retained_previous_gsi GsiRecoveryTable)"
+case "${GSI_AFTER_JUNK}" in
+  *recoverIdx*)
+    echo "    issue #1683 ok: GsiRecoveryTable retained the PREVIOUS index list (${GSI_AFTER_JUNK})"
+    ;;
+  *)
+    echo "FAIL: issue #1683 — a skipped GlobalSecondaryIndexes update must RETAIN the previous list, got '${GSI_AFTER_JUNK}'" >&2
+    exit 1
+    ;;
+esac
+PROV_AFTER_JUNK="$(assert_retained_previous_gsi GsiProvRecoveryTable)"
+case "${PROV_AFTER_JUNK}" in
+  *autoProvIdx*)
+    echo "    issue #1683 ok: GsiProvRecoveryTable retained the PREVIOUS index list (${PROV_AFTER_JUNK})"
+    ;;
+  *)
+    echo "FAIL: issue #1683 — GsiProvRecoveryTable must RETAIN the previous list, got '${PROV_AFTER_JUNK}'" >&2
+    exit 1
+    ;;
+esac
+
+# The SAME deploy also handed GsiProvRecoveryTable a non-string BillingMode
+# (issue #1683 arm 1, update side). cdkd suppresses the flip and keeps the
+# table PROVISIONED, so state must record PROVISIONED — recording the junk
+# object is the phantom drift this closes, and it lands on the resource whose
+# GSI answer was just asserted, which is what makes this the LIVE proof that
+# the two arms compose.
+read_state_billing_mode() { # $1 = logical-id prefix
+  local prefix="$1" verdict tmp
+  tmp="$(mktemp)" || return 1
+  aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - > "${tmp}" || { rm -f "${tmp}"; return 1; }
+  verdict="$(python3 - "${tmp}" "${prefix}" <<'PY'
+import json, sys
+path, prefix = sys.argv[1], sys.argv[2]
+with open(path) as fh:
+    state = json.load(fh)
+for logical_id, resource in state.get("resources", {}).items():
+    if logical_id.startswith(prefix):
+        print(json.dumps(resource.get("properties", {}).get("BillingMode")))
+        break
+else:
+    sys.exit(f"no {prefix} in cdkd state")
+PY
+)" || { rm -f "${tmp}"; return 1; }
+  rm -f "${tmp}"
+  printf '%s' "${verdict}"
+}
+BILLING_AFTER_JUNK="$(read_state_billing_mode GsiProvRecoveryTable)"
+if [ "${BILLING_AFTER_JUNK}" != '"PROVISIONED"' ]; then
+  echo "FAIL: issue #1683 — a suppressed BillingMode flip must record the PREVIOUS mode, got ${BILLING_AFTER_JUNK}" >&2
+  exit 1
+fi
+echo "    issue #1683 ok: GsiProvRecoveryTable retained the PREVIOUS BillingMode (PROVISIONED)"
+# The wire half: the table must still BE provisioned. Recording PROVISIONED
+# while AWS was re-priced to on-demand would satisfy the state assertion alone.
+# The physical id is read here rather than reusing GSI_PROV_RECOVERY_TABLE,
+# which the #1585 phase below only defines later.
+PROV_TABLE_FOR_BILLING="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | python3 -c '
+import json, sys
+state = json.load(sys.stdin)
+for logical_id, resource in state.get("resources", {}).items():
+    if logical_id.startswith("GsiProvRecoveryTable"):
+        print(resource["physicalId"])
+        break
+')"
+if [ -z "${PROV_TABLE_FOR_BILLING}" ]; then
+  echo "FAIL: issue #1683 — no GsiProvRecoveryTable in cdkd state" >&2
+  exit 1
+fi
+LIVE_BILLING_AFTER_JUNK="$(aws dynamodb describe-table \
+  --table-name "${PROV_TABLE_FOR_BILLING}" --region "${REGION}" \
+  --query 'Table.BillingModeSummary.BillingMode' --output text)"
+if [ "${LIVE_BILLING_AFTER_JUNK}" = 'PAY_PER_REQUEST' ]; then
+  echo "FAIL: issue #1683 — the unusable BillingMode must NOT flip the live table, got ${LIVE_BILLING_AFTER_JUNK}" >&2
+  exit 1
+fi
+echo "    issue #1683 ok: live billing mode untouched (${LIVE_BILLING_AFTER_JUNK})"
+
+# ...which means phase 1 can no longer let the provider WRITE the junk record
+# that phases 2 (#1571) and 13h (#1585) recover from — today's binary cannot
+# produce that shape any more. Seed it by hand instead, exactly as a pre-#1683
+# binary wrote it: `properties.GlobalSecondaryIndexes` set to the deploy-time
+# resolved STRING, `observedProperties` (the live read-back) left alone. The
+# recovery machinery still matters because that population exists in the wild —
+# every record an older binary wrote — so it stays covered here rather than
+# being deleted along with the path that used to create it.
+seed_junk_gsi_state() { # $1 = logical-id prefix
+  local prefix="$1" tmp
+  tmp="$(mktemp)" || return 1
+  aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - > "${tmp}" || { rm -f "${tmp}"; return 1; }
+  python3 - "${tmp}" "${prefix}" "${REGION}-x" <<'PY' || { rm -f "${tmp}"; return 1; }
+import json, sys
+path, prefix, junk = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(path) as fh:
+    state = json.load(fh)
+for logical_id, resource in state.get("resources", {}).items():
+    if logical_id.startswith(prefix):
+        resource.setdefault("properties", {})["GlobalSecondaryIndexes"] = junk
+        break
+else:
+    sys.exit(f"no {prefix} in cdkd state")
+with open(path, "w") as fh:
+    json.dump(state, fh)
+PY
+  aws s3 cp "${tmp}" "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null || { rm -f "${tmp}"; return 1; }
+  rm -f "${tmp}"
+}
+seed_junk_gsi_state GsiRecoveryTable
+seed_junk_gsi_state GsiProvRecoveryTable
+
 # The junk block must be RECORDED (that is what phase 2 recovers from) and the
 # live index must be UNTOUCHED — the destructive reading of "the template
 # declares no indexes" would have deleted it.

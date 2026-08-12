@@ -309,8 +309,14 @@ describe('DynamoDBGlobalTableProvider malformed BillingMode (issue #1513)', () =
       .filter((c) => c[0].input.BillingMode !== undefined);
     expect(billingUpdates).toHaveLength(0);
 
+    // "the mode this update compared against", not "the table's current mode":
+    // for an ABSENT recorded previous that value is the create-path default and
+    // was never checked against AWS, so the stronger wording would assert a
+    // mode the table may not have (issue #1683 review). The sibling
+    // `AWS::DynamoDB::Table` provider keeps its own wording; only this arm's
+    // ABSENT branch became reachable through a dropped key.
     expect(childLogger.warn).toHaveBeenCalledWith(
-      expect.stringContaining("The table's current billing mode (PROVISIONED) is kept")
+      expect.stringContaining('The mode this update compared against (PROVISIONED) is kept')
     );
   });
 
