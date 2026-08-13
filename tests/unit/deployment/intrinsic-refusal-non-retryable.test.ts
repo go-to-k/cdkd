@@ -14,7 +14,10 @@
  *
  * The FOURTH — the #1730 fabricated-account guard — is deliberately left
  * unmarked, which is why the marking is at each `throw` rather than in the
- * class constructor. The last test pins that constructor decision.
+ * class constructor. That is fenced at the SITE (drive the real refusal with a
+ * rejecting STS and assert it is NOT marked), not merely at the constructor: a
+ * constructor-only assertion stays green when a marker is added at the throw,
+ * so it would pin the mechanism while leaving the decision unguarded.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
@@ -40,14 +43,19 @@ vi.mock('../../../src/utils/logger.js', () => ({
   }),
 }));
 
+// STS is the knob for the #1730 arm: a REJECTING `GetCallerIdentity` is what
+// makes `getAccountInfo` fabricate an account id, which is the only way to
+// reach `constructGuardedAttribute`'s refusal.
+const stsSend = vi.hoisted(() =>
+  vi.fn().mockResolvedValue({
+    Account: '123456789012',
+    Arn: 'arn:aws:iam::123456789012:user/test',
+  })
+);
+
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
-    sts: {
-      send: vi.fn().mockResolvedValue({
-        Account: '123456789012',
-        Arn: 'arn:aws:iam::123456789012:user/test',
-      }),
-    },
+    sts: { send: stsSend },
     ec2: { send: vi.fn() },
   }),
 }));
@@ -94,6 +102,11 @@ const expectTerminal = (error: Error): void => {
 
 describe('IntrinsicResolutionRefusalError throw sites are non-retryable (#1874 review)', () => {
   beforeEach(() => {
+    stsSend.mockReset();
+    stsSend.mockResolvedValue({
+      Account: '123456789012',
+      Arn: 'arn:aws:iam::123456789012:user/test',
+    });
     resetAccountInfoCache();
   });
 
@@ -148,12 +161,33 @@ describe('IntrinsicResolutionRefusalError throw sites are non-retryable (#1874 r
     expectTerminal(error);
   });
 
-  it('does NOT mark in the constructor, so the #1730 time-dependent arm stays retryable', async () => {
-    // The fabricated-account guard is the one site that can genuinely heal:
-    // `getAccountInfo` caches a fabricated answer for only 10s precisely so a
-    // later attempt can succeed. A constructor-level marker (the
-    // `ResourceUpdateNotSupportedError` shape) would wrongly make it terminal,
-    // so the split is per-SITE and this pins it.
+  it('leaves the #1730 fabricated-account SITE unmarked, so it can still heal', async () => {
+    // A SITE-level fence, not a constructor one. The earlier version of this
+    // test constructed a bare `IntrinsicResolutionRefusalError` and asserted it
+    // was unmarked, which pins only the CONSTRUCTOR: adding `markNonRetryable`
+    // at the #1730 throw left it green, so the decision it claimed to guard was
+    // unguarded. Driving the real refusal is what makes the probe discriminate.
+    //
+    // Reaching it needs a REJECTING STS (so `getAccountInfo` fabricates
+    // `123456789012`) plus an attribute whose constructed value embeds that id.
+    stsSend.mockRejectedValue(new Error('STS unreachable'));
+    resetAccountInfoCache();
+
+    const resolver = new IntrinsicFunctionResolver();
+    const context = mkContext('AWS::SQS::Queue', 'https://sqs.us-east-1.amazonaws.com/1/q');
+    const error = await getAttError(resolver, 'Arn', context);
+
+    // It really is the #1730 refusal...
+    expect(error).toBeInstanceOf(IntrinsicResolutionRefusalError);
+    expect(error.message).toContain('STS did not report');
+    // ...and it must stay RETRYABLE: `getAccountInfo` caches a fabricated
+    // answer for only 10s precisely so a later attempt can heal. A
+    // constructor-level marker (the `ResourceUpdateNotSupportedError` shape)
+    // would wrongly make this terminal, which is why the marking is per-SITE.
+    expect(isMarkedNonRetryable(error)).toBe(false);
+  });
+
+  it('still does not mark in the constructor (the mechanism behind the site split)', async () => {
     const bare = new IntrinsicResolutionRefusalError('a refusal that may heal');
     expect(isMarkedNonRetryable(bare)).toBe(false);
   });

@@ -43,22 +43,57 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 // A resolver stand-in that rejects the sentinel Output with a MARKED refusal
-// whose message carries a retryable substring via the logical id — exactly the
-// shape `resolveSplit` produces for `{"Fn::Split": [",", {"Fn::GetAtt":
+// whose message carries a retryable substring via the logical id — the shape
+// `resolveSplit` produces for `{"Fn::Split": [",", {"Fn::GetAtt":
 // ["MyDependencyViolationHandler", "NameServers"]}]}`.
-const REFUSAL_MESSAGE =
-  'Fn::Split: the value to split (from Fn::GetAtt [MyDependencyViolationHandler, NameServers]) ' +
-  'is ALREADY a list (an array of 4 items), not a string.';
+//
+// The message is DERIVED FROM THE REAL PRODUCER, not hand-copied: a literal
+// copy of `resolveSplit`'s wording has nothing binding it to the source, so it
+// drifts silently on the next reword and the test keeps passing against a
+// message that no longer exists (the same class the retryable-table test avoids
+// by importing the real table). `realSplitRefusalMessage()` runs the actual
+// resolver over the actual shape; the assertions below then key on a KERNEL of
+// it rather than the full sentence.
+const REFUSAL_LOGICAL_ID = 'MyDependencyViolationHandler';
+
+async function realSplitRefusalMessage(): Promise<string> {
+  const { IntrinsicFunctionResolver: RealResolver } = await vi.importActual<
+    typeof import('../../../src/deployment/intrinsic-function-resolver.js')
+  >('../../../src/deployment/intrinsic-function-resolver.js');
+  const resolver = new RealResolver();
+  try {
+    await resolver.resolve(
+      { 'Fn::Split': [',', { 'Fn::GetAtt': [REFUSAL_LOGICAL_ID, 'NameServers'] }] },
+      {
+        resources: {
+          [REFUSAL_LOGICAL_ID]: {
+            physicalId: 'Z123456789',
+            resourceType: 'AWS::Route53::HostedZone',
+            properties: {},
+            attributes: { NameServers: ['ns-1', 'ns-2', 'ns-3', 'ns-4'] },
+            dependencies: [],
+          },
+        },
+        template: {} as CloudFormationTemplate,
+      }
+    );
+  } catch (error) {
+    return (error as Error).message;
+  }
+  throw new Error('expected the real resolveSplit to refuse the list-valued Fn::GetAtt');
+}
 
 vi.mock('../../../src/deployment/intrinsic-function-resolver.js', () => ({
   IntrinsicFunctionResolver: vi.fn().mockImplementation(() => ({
     getPhysicalIdFallbackCount: vi.fn().mockReturnValue(0),
     resetPhysicalIdFallbackCount: vi.fn(),
-    resolve: vi.fn().mockImplementation((value: unknown) => {
+    resolve: vi.fn().mockImplementation(async (value: unknown) => {
       if (value === '__refusal__') {
-        return Promise.reject(markNonRetryable(new IntrinsicResolutionRefusalError(REFUSAL_MESSAGE)));
+        throw markNonRetryable(
+          new IntrinsicResolutionRefusalError(await realSplitRefusalMessage())
+        );
       }
-      return Promise.resolve(value);
+      return value;
     }),
     resolveParameters: vi.fn().mockResolvedValue({}),
     evaluateConditions: vi.fn().mockResolvedValue({}),

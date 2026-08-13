@@ -2917,6 +2917,22 @@ export class IntrinsicFunctionResolver {
    * reader whose `Fn::Split` was that bug's workaround) is irrelevant and
    * confusing for a parameter reference.
    */
+  /**
+   * Render ONE `Fn::GetAtt` argument for {@link describeSplitValueSource}'s
+   * label. A string is emitted verbatim; anything else is named by its
+   * intrinsic key (`<Fn::Sub>`) or, failing that, as `<intrinsic>` — never by
+   * default stringification, whose answer for an object is `[object Object]`.
+   */
+  private renderGetAttArg(arg: unknown): string {
+    if (typeof arg === 'string') return arg;
+    if (typeof arg === 'object' && arg !== null && !Array.isArray(arg)) {
+      const keys = Object.keys(arg as Record<string, unknown>);
+      const key = keys.length === 1 ? keys[0] : undefined;
+      if (key !== undefined && (key === 'Ref' || key.startsWith('Fn::'))) return `<${key}>`;
+    }
+    return '<intrinsic>';
+  }
+
   private describeSplitValueSource(
     value: unknown
   ): { label: string; kind: 'getatt' | 'ref' | 'other' } | undefined {
@@ -2936,8 +2952,18 @@ export class IntrinsicFunctionResolver {
     }
     // Both CFn spellings: the `[logicalId, attribute]` list and the
     // `"logicalId.attribute"` string the shorthand YAML `!GetAtt` produces.
-    if (Array.isArray(args) && args.every((a) => typeof a === 'string')) {
-      return { label: `Fn::GetAtt [${(args as string[]).join(', ')}]`, kind: 'getatt' };
+    if (Array.isArray(args)) {
+      // The attribute name (arg 2) may itself be an intrinsic — CloudFormation
+      // allows any string-valued expression there, and `resolveGetAtt` resolves
+      // it — so an all-strings guard would drop the WHOLE label back to a bare
+      // `Fn::GetAtt`, losing the logical id, which is the one piece of site
+      // information the message has. Render each element instead, and never
+      // interpolate an object directly: the default `String(...)` of one is
+      // `[object Object]`, which names nothing.
+      return {
+        label: `Fn::GetAtt [${args.map((a) => this.renderGetAttArg(a)).join(', ')}]`,
+        kind: 'getatt',
+      };
     }
     if (typeof args === 'string') {
       // Split on the FIRST dot only. An attribute name may itself contain dots
@@ -2945,6 +2971,13 @@ export class IntrinsicFunctionResolver {
       // as `[Child, Outputs.Key]` — a naive split-on-every-dot renders a
       // three-element GetAtt that does not exist, which is worse than useless
       // in a message whose whole job is to name the site.
+      //
+      // This branch is deliberately UNFENCED end to end and that is expected,
+      // not an oversight: the only input that discriminates it is a 3+-segment
+      // dotted spelling, which `resolveGetAtt` rejects at `parts.length !== 2`
+      // before `resolveSplit` can classify anything. The unit test pins that
+      // unreachability instead, so it reds — and this rendering is found
+      // already correct — the day nested-path `Fn::GetAtt` lands.
       const dot = args.indexOf('.');
       const rendered = dot === -1 ? args : `${args.slice(0, dot)}, ${args.slice(dot + 1)}`;
       return { label: `Fn::GetAtt [${rendered}]`, kind: 'getatt' };
@@ -3001,7 +3034,7 @@ export class IntrinsicFunctionResolver {
    * deploy plus rollback, up to the ~47s schedule, on a path that cannot
    * succeed. Marked at the THROW rather than in the constructor because the
    * class is retryable in general: its fabricated-account arm (see
-   * `resolveGetAttWithAccountGuard`) IS genuinely time-dependent
+   * `constructGuardedAttribute`) IS genuinely time-dependent
    * (`getAccountInfo` caches a fabricated answer for only 10s precisely so a
    * later attempt can heal), so a constructor-level marker would wrongly make
    * that one terminal too.
@@ -3019,23 +3052,22 @@ export class IntrinsicFunctionResolver {
       const source = this.describeSplitValueSource(value);
       const sourceClause = source ? ` (from ${source.label})` : '';
       if (Array.isArray(resolvedValue)) {
-        // The remedy is per-source: the #1868 note is addressed to the reader
-        // whose Fn::Split was a workaround for THAT attribute bug, so it is
-        // gated on the value actually being an Fn::GetAtt rather than emitted
-        // at a `Ref` to a CommaDelimitedList parameter, which it would only
-        // confuse.
+        // The remedy is per-source, and the DEFAULT is the neutral one. Only a
+        // value that IS an Fn::GetAtt gets the Route 53 example and the #1868
+        // note — that note is addressed to the reader whose Fn::Split was a
+        // workaround for THAT attribute bug, so emitting it at a `Ref` to a
+        // CommaDelimitedList parameter, or at a literal array the user wrote
+        // out by hand, only misdirects. A literal names nothing about itself,
+        // so it takes the neutral text rather than the Fn::GetAtt one.
         const remedy =
           source?.kind === 'ref'
             ? `A CommaDelimitedList / List<Number> parameter is already a list.`
-            : source?.kind === 'getatt' || source === undefined
+            : source?.kind === 'getatt'
               ? `A list-valued Fn::GetAtt (for example ` +
                 `AWS::Route53::HostedZone.NameServers or AWS::EC2::VPC.Ipv6CidrBlocks) ` +
-                `already returns a list.` +
-                (source?.kind === 'getatt'
-                  ? ` If you wrote the Fn::Split as a workaround for cdkd resolving that ` +
-                    `attribute to a comma-delimited string, that bug is fixed (PR #1868) ` +
-                    `and the workaround is no longer needed.`
-                  : '')
+                `already returns a list. If you wrote the Fn::Split as a workaround for ` +
+                `cdkd resolving that attribute to a comma-delimited string, that bug is ` +
+                `fixed (PR #1868) and the workaround is no longer needed.`
               : `A list-valued Fn::GetAtt and a CommaDelimitedList parameter both already ` +
                 `return a list.`;
         throw markNonRetryable(

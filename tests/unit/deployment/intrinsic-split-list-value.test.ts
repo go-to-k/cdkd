@@ -193,6 +193,43 @@ describe('Fn::Split over an already-list value (issue #1874)', () => {
     expect(error.message).not.toContain('NameServers');
   });
 
+  it('renders a non-string `Fn::GetAtt` argument by NAME, never as [object Object]', async () => {
+    // CloudFormation allows the attribute name to be any string-valued
+    // expression and `resolveGetAtt` resolves it, so this shape reaches the
+    // refusal. An all-strings guard used to drop the whole label back to a
+    // bare `Fn::GetAtt`, losing the logical id — the one piece of site
+    // information the message carries — and any direct interpolation of the
+    // object would render `[object Object]`, which names nothing.
+    const resolver = new IntrinsicFunctionResolver();
+    const context = mkContext({ Zone: mkResource({ NameServers: ['ns-1', 'ns-2'] }) });
+
+    const error = await splitError(
+      resolver,
+      [',', { 'Fn::GetAtt': ['Zone', { 'Fn::Sub': 'NameServers' }] }],
+      context
+    );
+
+    expect(error.message).not.toContain('[object Object]');
+    expect(error.message).toContain('(from Fn::GetAtt [Zone, <Fn::Sub>])');
+    // The logical id survives, which is the whole point of the label.
+    expect(error.message).toContain('Zone');
+  });
+
+  it('names no source for shapes that are not a single intrinsic key', async () => {
+    // The describer's `undefined` arms, all message-only and all reachable via
+    // the non-array refusal: a single-key object whose key is not an
+    // intrinsic, and a multi-key object.
+    const resolver = new IntrinsicFunctionResolver();
+
+    const plainKey = await splitError(resolver, [',', { NotAnIntrinsic: 'x' }], mkContext());
+    expect(plainKey.message).toContain('must be a string, got object');
+    expect(plainKey.message).not.toContain('(from ');
+
+    const twoKeys = await splitError(resolver, [',', { A: 1, B: 2 }], mkContext());
+    expect(twoKeys.message).toContain('must be a string, got object');
+    expect(twoKeys.message).not.toContain('(from ');
+  });
+
   it('renders a bare intrinsic key for a source it has no specific shape for', async () => {
     // The describer's non-Fn::GetAtt branch: name the intrinsic, and use the
     // neutral remedy (neither the GetAtt nor the parameter story applies).
@@ -218,15 +255,21 @@ describe('Fn::Split over an already-list value (issue #1874)', () => {
     expect(error.message).not.toContain('NameServers');
   });
 
-  it('omits the source clause AND the #1868 note for a literal value', async () => {
+  it('gives a literal value the NEUTRAL remedy, with no source clause', async () => {
     const resolver = new IntrinsicFunctionResolver();
     const error = await splitError(resolver, [',', ['a', 'b']], mkContext());
     expect(error.message).toContain('Fn::Split: the value to split is ALREADY a list');
     expect(error.message).not.toContain('(from ');
-    // The #1868 note is addressed to the reader whose Fn::Split was a
-    // workaround for THAT attribute bug, so it is gated on the value actually
-    // being an Fn::GetAtt — a literal array did not come from one.
+    // POSITIVE assertion, not only negatives: a literal names nothing about
+    // itself, so it takes the neutral remedy. Asserting only the absence of
+    // the #1868 note let the remedy silently flip to the Fn::GetAtt text
+    // (which is what shipped, and what two reviewers caught).
+    expect(error.message).toContain(
+      'A list-valued Fn::GetAtt and a CommaDelimitedList parameter both already'
+    );
+    // ...so the Route 53 example and the workaround note must NOT appear.
     expect(error.message).not.toContain('#1868');
+    expect(error.message).not.toContain('NameServers');
   });
 
   it('keeps a distinct refusal for a non-array non-string, never claiming "already a list"', async () => {
