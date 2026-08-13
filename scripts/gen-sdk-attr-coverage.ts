@@ -144,44 +144,39 @@ export const SDK_ATTR_ALLOW_LIST: ReadonlyMap<string, AllowListEntry> = new Map<
   // as not-a-gap instead of requiring a hand-written entry per type" behavior
   // `extractPrimaryIdentifier` exists for. The staleness fence in
   // `gen-sdk-attr-coverage.test.ts` is what surfaced it.
-  [
-    'AWS::RDS::DBSubnetGroup',
-    {
-      // KNOWN GAP, tracked in issue 1824. Surfaced by the issue-1800 fixture
-      // re-capture: AWS added `DBSubnetGroupArn` to the schema after the
-      // 2026-05-16 capture, and RDSProvider does not record it, so an output
-      // `Fn::GetAtt [SubnetGroup, DBSubnetGroupArn]` hard-fails the resolver's
-      // *Arn shape guard. `CreateDBSubnetGroup` DOES return the value, so this
-      // is the ordinary "record the ARN under its CFn name" fix — deliberately
-      // not done in the capture PR, which changes no provider (a provider edit
-      // activates the integ-destroy gate). DELETE this entry when it is fixed —
-      // `sdk-attr-coverage.test.ts` asserts every allow-listed attribute still
-      // classifies `allow-listed`, so caching the ARN reds that test and forces
-      // the removal. (The classifier tests `cachedKeys` BEFORE the allow-list,
-      // so without that test a fixed entry would silently go inert.)
-      knownGap: true,
-      attributes: ['DBSubnetGroupArn'],
-      rationale:
-        'KNOWN GAP (issue 1824): new schema attribute; CreateDBSubnetGroup returns it but the provider does not cache it',
-    },
-  ],
-  [
-    'AWS::SSM::Parameter',
-    {
-      // KNOWN GAP, tracked in issue 1824. Same re-capture, harder fix than its
-      // sibling above: `PutParameter` returns only Version / Tier, so the ARN
-      // has to come from a follow-up `GetParameter` (an extra call on every
-      // parameter create) or be constructed from account / region / name — and
-      // a constructed one must honor the `fabricated`-account guard, which
-      // refuses an ARN built from the placeholder account. That decision is the
-      // issue's, not this capture PR's. DELETE this entry when it is fixed;
-      // the same allow-list staleness test as its sibling above forces it.
-      knownGap: true,
-      attributes: ['Arn'],
-      rationale:
-        'KNOWN GAP (issue 1824): new schema attribute with no create-response source; needs a GetParameter read or a guarded constructed ARN',
-    },
-  ],
+  //
+  // `AWS::RDS::DBSubnetGroup` (`DBSubnetGroupArn`) and `AWS::SSM::Parameter`
+  // (`Arn`) were the two KNOWN GAP entries the issue-1800 re-capture added, and
+  // both were RETIRED by their fix in issue 1824: `RDSProvider` now records the
+  // ARN straight off the `CreateDBSubnetGroup` response (and re-reports it from
+  // `update`, whose attributes REPLACE rather than merge), and
+  // `SSMParameterProvider` records a CONSTRUCTED ARN — `PutParameter` reports
+  // none — guarded by the `fabricated`-account refusal and with the partition
+  // DERIVED rather than hardcoded. Deleting the entries is what VERIFIES those
+  // fixes: `classifyType` tests `cachedKeys` BEFORE this list, so an entry left
+  // behind would have gone silently inert while the critic still reported the
+  // types as debt. `gen-sdk-attr-coverage.test.ts` pins both attributes as
+  // `cached` against the real report, so neither type can be silently re-listed
+  // here as a carve-out.
+  //
+  // What that fence does NOT bind is WHICH code path caches the ARN, and the
+  // distinction is worth stating where the fence is, because the obvious reading
+  // is wrong. `collectStoredAttributeKeys` pools object-literal keys per FILE
+  // (its own KNOWN false-negative note explains why), so ANY ONE of the create /
+  // update / import literals in each provider is enough to keep its type
+  // classified `cached`. Measured on the real tree: neutralizing BOTH the create
+  // and update spreads leaves the critic green — the `import()` occurrences alone
+  // (`rds-provider.ts` / `ssm-parameter-provider.ts`) carry the classification —
+  // and it flips to `gap` only when all three literals go. So PER-PATH binding
+  // comes from the provider suite
+  // (`tests/unit/provisioning/uncached-arn-attributes-issue-1824.test.ts`, which
+  // drives each path's real create / update / import result into the resolver),
+  // never from this list or its fence.
+  //
+  // The list is deliberately EMPTY. That is a green state, not a broken one —
+  // `UPDATE_WRAP_ALLOW_LIST` in `gen-update-wrap-coverage.ts` reached the same
+  // place once its gaps were fixed. Adding an entry back is a decision that
+  // needs a rationale and, for a real gap, a tracking issue.
 ]);
 
 interface SchemaFixture {

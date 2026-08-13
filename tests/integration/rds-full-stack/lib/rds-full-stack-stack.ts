@@ -149,6 +149,34 @@ export class RdsFullStackStack extends cdk.Stack {
       description: 'Computed RDS endpoint address resolved via Fn::GetAtt',
     });
 
+    // A second consumer, mirroring the pattern above one resource over: an SSM
+    // Parameter whose value is `Fn::GetAtt(<DbSubnetGroup>, DBSubnetGroupArn)`
+    // (issue 1824). `DBSubnetGroupArn` is a read-only ARN attribute AWS added to
+    // the CFn schema after the 2026-05-16 fixture capture; `RDSProvider` reads it
+    // off the `CreateDBSubnetGroup` response and re-reports it from `update()`.
+    //
+    // WHY THIS NEEDS REAL AWS. That read is an ASSUMPTION about the wire shape —
+    // `CreateDBSubnetGroup` really returning `DBSubnetGroup.DBSubnetGroupArn` —
+    // and every unit test in the tree hand-feeds that field to a mock, so a green
+    // mocked suite would agree with a wrong assumption. verify.sh compares this
+    // parameter's live value against `describe-db-subnet-groups`'
+    // `DBSubnetGroups[0].DBSubnetGroupArn`, which is the only check that can tell
+    // the two apart. Before the fix this reference did not merely resolve wrongly
+    // — the deploy HARD-FAILED, because the resolver's `*Arn` shape guard refuses
+    // a name-shaped physicalId, and a subnet group's physicalId is its NAME.
+    new ssm.StringParameter(this, 'DbSubnetGroupArnParameter', {
+      parameterName: '/cdkd/rds-full-stack/db-subnet-group-arn',
+      // Low-level `Fn.getAtt` against the L1's logical id rather than an
+      // `attrDbSubnetGroupArn` accessor: the attribute is newer than parts of the
+      // CDK surface, and the raw form is what an escape-hatched template emits
+      // anyway — which is the shape cdkd has to resolve.
+      stringValue: cdk.Fn.getAtt(
+        (subnetGroup.node.defaultChild as rds.CfnDBSubnetGroup).logicalId,
+        'DBSubnetGroupArn'
+      ).toString(),
+      description: 'DBSubnetGroup ARN resolved via Fn::GetAtt (issue 1824)',
+    });
+
     // Outputs for human inspection / debugging.
     new cdk.CfnOutput(this, 'DbEndpointAddress', {
       value: dbInstance.instanceEndpoint.hostname,

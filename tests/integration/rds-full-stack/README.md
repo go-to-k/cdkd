@@ -18,6 +18,14 @@ computed attribute** (the DB endpoint address consumed via `Fn::GetAtt`).
 - **SSM StringParameter** (`/cdkd/rds-full-stack/db-endpoint`) - its value is
   `Fn::GetAtt(<Database>, Endpoint.Address)`, a COMPUTED attribute only known
   after the instance is available.
+- **SSM StringParameter** (`/cdkd/rds-full-stack/db-subnet-group-arn`) - its
+  value is `Fn::GetAtt(<DbSubnetGroup>, DBSubnetGroupArn)` (issue 1824). That
+  ARN is read off the `CreateDBSubnetGroup` RESPONSE, which is a wire
+  assumption every unit test hand-feeds to a mock — so `verify.sh` compares the
+  resolved value against the live `describe-db-subnet-groups` ARN byte for byte.
+  Pre-fix the reference HARD-FAILED the deploy (the resolver's `*Arn` shape
+  guard refuses a name-shaped physicalId, and a subnet group's physicalId is
+  its name).
 
 ## What it stresses (vs the other RDS fixtures)
 
@@ -50,9 +58,10 @@ STATE_BUCKET=cdkd-state-<accountId> AWS_REGION=us-east-1 ./verify.sh
 `verify.sh` deploys, asserts the instance uses the custom subnet group +
 parameter group (and the group carries the non-default `application_name`),
 asserts the SSM parameter value equals the live DB endpoint (the computed
-`Fn::GetAtt` resolved post-create), then destroys and asserts the instance,
-subnet group, parameter group, SSM parameter, and state file are all gone with
-0 orphans. The cleanup trap deletes in the RDS-safe order (instance first +
+`Fn::GetAtt` resolved post-create), asserts the second SSM parameter equals the
+live `DBSubnetGroupArn` (issue 1824), then destroys and asserts the instance,
+subnet group, parameter group, both SSM parameters, and state file are all gone
+with 0 orphans. The cleanup trap deletes in the RDS-safe order (instance first +
 wait, then groups, then SG / VPC).
 
 ## Cost / runtime notes

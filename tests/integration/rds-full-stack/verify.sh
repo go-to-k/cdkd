@@ -12,6 +12,8 @@
 #       false, RemovalPolicy DESTROY, CDK-managed Secrets Manager creds)
 #     + SSM StringParameter whose value is
 #       Fn::GetAtt(<Database>, Endpoint.Address)
+#     + SSM StringParameter whose value is
+#       Fn::GetAtt(<DbSubnetGroup>, DBSubnetGroupArn)   (issue 1824)
 #
 # What this proves (the angle the two existing RDS fixtures do NOT cover):
 #   1. ORDERING: cdkd creates the SubnetGroup + ParameterGroup + SG before the
@@ -25,6 +27,13 @@
 #      parameter against the instance, the value would be empty / wrong.
 #   4. The instance uses OUR explicit DBSubnetGroup + DBParameterGroup (not the
 #      engine defaults).
+#   5. GETATT OF A CREATE-RESPONSE ARN (issue 1824): the second SSM parameter's
+#      value must equal the live describe-db-subnet-groups DBSubnetGroupArn,
+#      byte for byte. `RDSProvider` reads that ARN off the CreateDBSubnetGroup
+#      RESPONSE — a wire assumption every unit test hand-feeds to a mock, so
+#      only a real-AWS comparison can catch a wrong one. Pre-fix, this
+#      reference did not resolve wrongly: it HARD-FAILED the deploy on the
+#      resolver's *Arn shape guard (a subnet group's physicalId is its NAME).
 #
 # This integ is SLOW by RDS nature (~5-10 min create, a few min delete) -
 # that is acceptable and expected.
@@ -79,6 +88,9 @@ REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 
 SSM_PARAM_NAME="/cdkd/rds-full-stack/db-endpoint"
+# Issue 1824: the second consumer, whose value is
+# Fn::GetAtt(<DbSubnetGroup>, DBSubnetGroupArn).
+SSM_SUBNET_ARN_PARAM_NAME="/cdkd/rds-full-stack/db-subnet-group-arn"
 EXPECTED_APP_NAME="cdkd-rds-full-stack"
 
 # Resolve the built CLI path without a `cd` into dist/ that fails cryptically
@@ -135,9 +147,12 @@ cleanup() {
       --db-parameter-group-name "${DB_PARAM_GROUP}" \
       --region "${REGION}" >/dev/null 2>&1
   fi
-  # The SSM parameter has a deterministic name - clean it directly.
+  # The SSM parameters have deterministic names - clean them directly.
   aws ssm delete-parameter \
     --name "${SSM_PARAM_NAME}" \
+    --region "${REGION}" >/dev/null 2>&1
+  aws ssm delete-parameter \
+    --name "${SSM_SUBNET_ARN_PARAM_NAME}" \
     --region "${REGION}" >/dev/null 2>&1
 
   if [ -n "${STATE_BUCKET:-}" ]; then
@@ -279,6 +294,40 @@ if [ "${SSM_VALUE}" != "${LIVE_ENDPOINT}" ]; then
 fi
 echo "    OK: SSM parameter value == live DB endpoint (computed Fn::GetAtt resolved post-create)"
 
+# --- Assertion 3 (issue 1824): DBSubnetGroupArn resolved into the SSM param ---
+# `RDSProvider.create` reads `DBSubnetGroupArn` off the `CreateDBSubnetGroup`
+# RESPONSE. That is a wire ASSUMPTION, and every unit test hand-feeds the field to
+# a mock, so a green mocked suite would agree with a wrong assumption. Comparing
+# the resolved parameter value against `describe-db-subnet-groups` is what settles
+# it against real AWS. Before the fix this reference did not resolve wrongly — the
+# deploy HARD-FAILED on the resolver's `*Arn` shape guard, since a subnet group's
+# physicalId is its NAME.
+LIVE_SUBNET_GROUP_ARN=$(aws rds describe-db-subnet-groups \
+  --db-subnet-group-name "${DB_SUBNET_GROUP}" \
+  --region "${REGION}" \
+  --query 'DBSubnetGroups[0].DBSubnetGroupArn' --output text)
+case "${LIVE_SUBNET_GROUP_ARN}" in
+  arn:*:rds:*:subgrp:*) ;;
+  *)
+    echo "FAIL: describe-db-subnet-groups reported no usable DBSubnetGroupArn for ${DB_SUBNET_GROUP}: '${LIVE_SUBNET_GROUP_ARN}'" >&2
+    exit 1
+    ;;
+esac
+echo "    live DBSubnetGroup ARN:   ${LIVE_SUBNET_GROUP_ARN}"
+
+SSM_SUBNET_ARN_VALUE=$(aws ssm get-parameter \
+  --name "${SSM_SUBNET_ARN_PARAM_NAME}" \
+  --region "${REGION}" \
+  --query 'Parameter.Value' --output text)
+# BYTE FOR BYTE: a wrong partition, a case-folded region or a value read off the
+# wrong response field all show up here and nowhere else.
+if [ "${SSM_SUBNET_ARN_VALUE}" != "${LIVE_SUBNET_GROUP_ARN}" ]; then
+  echo "FAIL: SSM parameter value '${SSM_SUBNET_ARN_VALUE}' != live DBSubnetGroupArn '${LIVE_SUBNET_GROUP_ARN}'" >&2
+  echo "       (Fn::GetAtt(<DbSubnetGroup>, DBSubnetGroupArn) did NOT resolve to the ARN AWS holds)" >&2
+  exit 1
+fi
+echo "    OK: SSM parameter value == live DBSubnetGroupArn (issue 1824 GetAtt resolved from the create response)"
+
 # --- Phase 2: destroy -------------------------------------------------
 echo "==> Phase 2: destroy (RDS delete is slow - allow a few minutes)"
 node "${LOCAL_DIST}" destroy "${STACK}" \
@@ -321,6 +370,10 @@ echo "    OK: DBParameterGroup is gone"
 # SSM parameter must be gone.
 assert_gone "SSM parameter ${SSM_PARAM_NAME} still exists after destroy" aws ssm get-parameter --name "${SSM_PARAM_NAME}" --region "${REGION}"
 echo "    OK: SSM parameter is gone"
+
+# The issue-1824 DBSubnetGroupArn consumer must be gone too.
+assert_gone "SSM parameter ${SSM_SUBNET_ARN_PARAM_NAME} still exists after destroy" aws ssm get-parameter --name "${SSM_SUBNET_ARN_PARAM_NAME}" --region "${REGION}"
+echo "    OK: SSM DBSubnetGroupArn parameter is gone"
 
 echo ""
 echo "[verify] PASS"

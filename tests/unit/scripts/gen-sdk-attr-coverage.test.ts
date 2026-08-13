@@ -13,6 +13,15 @@ import { parseProviderSource } from '../../../scripts/gen-property-coverage.js';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
+/**
+ * The two (type, ARN attribute) pairs issue 1824 fixed by caching, shared by the
+ * two fences in `real repo coverage` below so they cannot name different pairs.
+ */
+const ISSUE_1824_CACHED_PAIRS = [
+  ['AWS::RDS::DBSubnetGroup', 'DBSubnetGroupArn'],
+  ['AWS::SSM::Parameter', 'Arn'],
+] as const;
+
 describe('collectStoredAttributeKeys', () => {
   it('collects object-literal keys, shorthand, and element-access assignment keys', () => {
     const src = `
@@ -207,9 +216,14 @@ describe('real repo coverage (regression floor)', () => {
     // there is no `findStaleAllowListEntries` here the way there is in
     // `gen-nested-key-coverage.ts`. Asserting that every allow-listed
     // attribute still classifies `allow-listed` IS that detection: fixing
-    // issue 1824 reds this test and forces the entry's removal, which is what
-    // makes the "DELETE this entry when it is fixed" note in the allow-list
+    // issue 1824 redded this test and forced both entries' removal, which is
+    // what made the "DELETE this entry when it is fixed" note in the allow-list
     // enforceable rather than aspirational.
+    //
+    // The loop is VACUOUS while the list is empty (issue 1824 retired the last
+    // two entries), so it is paired with the positive fence below rather than
+    // relied on alone — a vacuous green is exactly what this file's sibling
+    // rules forbid.
     for (const [resourceType, entry] of SDK_ATTR_ALLOW_LIST) {
       const classified = report.types.find((t) => t.resourceType === resourceType);
       expect(classified, `allow-list entry for ${resourceType} classifies nothing`).toBeDefined();
@@ -221,22 +235,72 @@ describe('real repo coverage (regression floor)', () => {
         ).toBe('allow-listed');
       }
     }
+
+    // POSITIVE FENCE for the two attributes issue 1824 fixed. `findGaps` above
+    // only proves nothing is UN-allow-listed, and with the list now empty an
+    // entry could be silently re-added to re-silence either type. Requiring
+    // `cached` — not merely "not a gap" — pins that the classification comes from
+    // real provider caching rather than from a carve-out.
+    //
+    // WHAT THIS DOES AND DOES NOT BIND. It binds the provider FILE, not a code
+    // path: `collectStoredAttributeKeys` pools object-literal keys per file, so
+    // any ONE of the create / update / import literals keeps the type `cached`.
+    // Measured — neutralizing BOTH the create and update spreads leaves this test
+    // and `--check` green off the `import()` occurrences alone, and only removing
+    // all three reds them. So do NOT read this as "dropping the caching in
+    // rds-provider.ts / ssm-parameter-provider.ts reds this test"; the per-path
+    // discrimination lives in
+    // `tests/unit/provisioning/uncached-arn-attributes-issue-1824.test.ts`, which
+    // drives each path's real result through the resolver, and this fence's job
+    // is only to keep the type off the allow list.
+    for (const [resourceType, attr] of ISSUE_1824_CACHED_PAIRS) {
+      const classified = report.types.find((t) => t.resourceType === resourceType);
+      expect(classified, `${resourceType} classifies nothing`).toBeDefined();
+      const found = classified!.arnAttributes.find((a) => a.name === attr);
+      expect(
+        found?.status,
+        `${resourceType}.${attr} must be CACHED by its provider (issue 1824) — not allow-listed`
+      ).toBe('cached');
+    }
   });
 
-  it('counts allow-listed KNOWN GAPs separately, so `gap: 0` does not hide real debt', () => {
+  it('carries no KNOWN GAP entries — the issue-1824 pair was fixed, not carved out', () => {
     // Both kinds of entry have to share one list (the classifier needs the same
     // "not a gap" answer for both), but a NOT-A-BUG and a tracked, real
     // `Fn::GetAtt` hard-fail mean opposite things. The summary reports the
     // second kind on its own line rather than folding it into `covered`.
+    //
+    // The list held exactly two KNOWN GAPs (`AWS::RDS::DBSubnetGroup` /
+    // `AWS::SSM::Parameter`, both added by the issue-1800 re-capture) until
+    // issue 1824 cached both ARNs. Asserting ZERO keeps the debt line honest:
+    // a future re-introduction has to change this test deliberately, and the
+    // positive `cached` fence in the report test above is what proves the two
+    // were fixed rather than merely un-listed.
     const knownGapTypes = [...SDK_ATTR_ALLOW_LIST]
       .filter(([, e]) => e.knownGap === true)
       .map(([t]) => t);
 
-    expect(knownGapTypes).toEqual(['AWS::RDS::DBSubnetGroup', 'AWS::SSM::Parameter']);
-    // Non-vacuity: with the SNS entry retired every remaining entry IS a known
-    // gap, so pin the count against the list size rather than against a
-    // not-a-bug sibling that no longer exists.
-    expect(knownGapTypes.length).toBe(SDK_ATTR_ALLOW_LIST.size);
+    expect(knownGapTypes).toEqual([]);
+
+    // A SECOND assertion here — that neither issue-1824 type appears in the list
+    // at all — was DROPPED in review round 3, and the measurement is worth
+    // recording so it is not re-added on the reasoning that first put it in.
+    //
+    // Its stated rationale was that a NOT-A-BUG entry "would silence the
+    // `cached` fence just as effectively as a KNOWN GAP one". That is
+    // impossible: `classifyType` tests `cachedKeys` BEFORE the allow list, so
+    // while the provider caches, an entry cannot produce `allow-listed` and the
+    // fence keeps passing.
+    //
+    // What an entry added TODAY does hit is the per-entry staleness fence in the
+    // report test above ("no longer needs its allow-list entry — delete it"),
+    // and MEASURED by adding `['AWS::SSM::Parameter', {attributes: ['Arn']}]` to
+    // the real list: that fence fails, as does this test's `knownGapTypes` line
+    // when the entry carries `knownGap`. Dropping the caching instead fails the
+    // `cached` fence. So the two existing fences already cover both directions
+    // and the dropped assertion could never fire alone — a redundant assertion
+    // whose comment claimed a mechanism the code does not have is worse than no
+    // assertion, because the next reader trusts the claim.
   });
 
   it('no longer allow-lists AWS::SNS::Subscription — primaryIdentifier filtering covers it', () => {

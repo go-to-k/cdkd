@@ -6,6 +6,14 @@ const mockSend = vi.fn();
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
     ssm: { send: mockSend, config: { region: () => Promise.resolve('us-east-1') } },
+    // Explicit `sts` (issue 1824). `SSMParameterProvider.create` / `update` now
+    // build the `Arn` attribute through `getAccountInfo`, which reads
+    // `getAwsClients().sts` — so a mock omitting it made `stsClient.send` throw,
+    // silently routing every create in this file through the FABRICATED-account
+    // arm (a `logger.warn` per create, and no `Arn` recorded). Nothing here
+    // asserts on the account, so the point is only to keep these suites on the
+    // intended path rather than on an unrelated degraded one.
+    sts: { send: () => Promise.resolve({ Account: '111122223333' }) },
   }),
 }));
 

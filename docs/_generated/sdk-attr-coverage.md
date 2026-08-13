@@ -11,7 +11,7 @@ For every SDK-backed resource type (whose CFn schema is cached under `tests/fixt
 - Covered (every Arn/Url readOnly resolvable): **42**
 - No Arn/Url readOnly attribute: **92**
 - **Latent gaps (blocks CI): 0**
-- Allow-listed KNOWN GAPs (real debt, tracked, does not block CI): **2**
+- Allow-listed KNOWN GAPs (real debt, tracked, does not block CI): **0**
 
 ## Latent gaps
 
@@ -52,7 +52,7 @@ None. Every `Arn`/`Url` read-only attribute on a cached SDK-backed type is cache
 | `AWS::RDS::DBInstance` | covered | `DBInstanceArn` (ctor) |
 | `AWS::RDS::DBProxy` | covered | `DBProxyArn` (cached) |
 | `AWS::RDS::DBProxyEndpoint` | covered | `DBProxyEndpointArn` (cached) |
-| `AWS::RDS::DBSubnetGroup` | covered | `DBSubnetGroupArn` (allow) |
+| `AWS::RDS::DBSubnetGroup` | covered | `DBSubnetGroupArn` (cached) |
 | `AWS::S3::Bucket` | covered | `Arn` (cached) |
 | `AWS::S3Express::DirectoryBucket` | covered | `Arn` (cached) |
 | `AWS::Scheduler::Schedule` | covered | `Arn` (cached) |
@@ -61,6 +61,6 @@ None. Every `Arn`/`Url` read-only attribute on a cached SDK-backed type is cache
 | `AWS::ServiceDiscovery::PublicDnsNamespace` | covered | `Arn` (cached) |
 | `AWS::ServiceDiscovery::Service` | covered | `Arn` (cached) |
 | `AWS::SQS::Queue` | covered | `Arn` (cached) |
-| `AWS::SSM::Parameter` | covered | `Arn` (allow) |
+| `AWS::SSM::Parameter` | covered | `Arn` (cached) |
 | `AWS::WAFv2::WebACL` | covered | `Arn` (cached) |
 

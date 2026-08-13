@@ -280,7 +280,7 @@ export class RDSProvider implements ResourceProvider {
     try {
       const tags = this.buildTags(properties);
 
-      await this.getClient().send(
+      const created = await this.getClient().send(
         new CreateDBSubnetGroupCommand({
           DBSubnetGroupName: dbSubnetGroupName,
           DBSubnetGroupDescription:
@@ -292,10 +292,25 @@ export class RDSProvider implements ResourceProvider {
 
       this.logger.debug(`Successfully created DBSubnetGroup ${logicalId}: ${dbSubnetGroupName}`);
 
+      // `DBSubnetGroupArn` read straight off the create response (issue #1824).
+      // AWS added the attribute to the CFn schema after the 2026-05-16 fixture
+      // capture, and an output / cross-resource `Fn::GetAtt` reads the CACHED
+      // `resource.attributes[<CFnName>]` in
+      // `IntrinsicFunctionResolver.constructAttribute` — which never calls a
+      // provider's `getAttribute` — so an uncached `*Arn` name HARD-FAILS the
+      // resolver's shape guard against this type's name-shaped physicalId.
+      // `CreateDBSubnetGroup` reports the ARN directly, so this needs no extra
+      // API call and no construction: it is the value AWS holds.
+      const dbSubnetGroupArn = created.DBSubnetGroup?.DBSubnetGroupArn;
+
       return {
         physicalId: dbSubnetGroupName,
         attributes: {
           DBSubnetGroupName: dbSubnetGroupName,
+          // Spread CONDITIONALLY rather than writing `undefined`: a
+          // present-but-undefined key survives `structuredClone` into the state
+          // record, so every `Object.keys` consumer sees a key carrying nothing.
+          ...(dbSubnetGroupArn !== undefined && { DBSubnetGroupArn: dbSubnetGroupArn }),
         },
       };
     } catch (error) {
@@ -360,6 +375,38 @@ export class RDSProvider implements ResourceProvider {
         wasReplaced: false,
         attributes: {
           DBSubnetGroupName: physicalId,
+          // Re-report `DBSubnetGroupArn` here even though an in-place update
+          // cannot change it (issue #1824): an update result's `attributes`
+          // REPLACE the state record's rather than merging into it, so
+          // returning only `DBSubnetGroupName` would WIPE the ARN recorded at
+          // create time and re-break the `Fn::GetAtt` the create-side fix
+          // repairs. The value is free — the `DescribeDBSubnetGroups` above
+          // already ran to key the tag diff.
+          //
+          // When AWS reports no ARN (or reports no group at all) the key is
+          // DROPPED rather than written empty, and the reason is NOT the one the
+          // SSM sibling gives (issue #1824 review round 3 corrected this). There
+          // the rejected alternative — returning NO attributes, so the engine's
+          // `result.attributes ?? ...` carries the PREVIOUS map forward — would
+          // answer `Fn::GetAtt` from a SUPERSEDED value, because that map holds
+          // the `Type` / `Value` this update just changed. Nothing here can be
+          // superseded: the only other key is `DBSubnetGroupName`, which IS the
+          // physicalId, and an in-place `ModifyDBSubnetGroup` cannot rename it
+          // (`wasReplaced: false`), so a carried-forward value would be
+          // byte-identical.
+          //
+          // What decides it instead is that the carry-forward makes the record's
+          // contents depend on the shape of whatever map happened to be there
+          // before, and after an `import()` that map holds the ARN ALONE (see
+          // this provider's `importDBSubnetGroup`) — so it would DROP the one
+          // key this update can state authoritatively rather than supersede
+          // anything. Returning the partial map always records exactly what this
+          // update observed, and degrades to the resolver's LOUD `*Arn`
+          // shape-guard failure. It heals on the resource's next UPDATE — NOT on
+          // a plain re-deploy, which skips a resource whose resolved properties
+          // equal its state record without calling the provider at all (issue
+          // https://github.com/go-to-k/cdkd/issues/1852).
+          ...(arn !== undefined && { DBSubnetGroupArn: arn }),
         },
       };
     } catch (error) {
@@ -1726,10 +1773,19 @@ export class RDSProvider implements ResourceProvider {
     const explicit = resolveExplicitPhysicalId(input, 'DBSubnetGroupName');
     if (explicit) {
       try {
-        await this.getClient().send(
+        const desc = await this.getClient().send(
           new DescribeDBSubnetGroupsCommand({ DBSubnetGroupName: explicit })
         );
-        return { physicalId: explicit, attributes: {} };
+        // Record `DBSubnetGroupArn` on the import path too (issue #1824): the
+        // state record an import writes is what a later `Fn::GetAtt` reads, so
+        // leaving it empty left an ADOPTED subnet group hitting the same
+        // resolver shape-guard hard-fail the create-side fix repairs. Free —
+        // the existence-verification Describe above already reports the ARN.
+        const arn = desc.DBSubnetGroups?.[0]?.DBSubnetGroupArn;
+        return {
+          physicalId: explicit,
+          attributes: { ...(arn !== undefined && { DBSubnetGroupArn: arn }) },
+        };
       } catch (err) {
         if ((err as { name?: string }).name === 'DBSubnetGroupNotFoundFault') return null;
         throw err;
