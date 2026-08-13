@@ -398,7 +398,8 @@ anything non-obvious you learned in memory.
   is where that decision is hardest and most often re-litigated.** Each merge in
   section 9 lands on the same question: keep going here, or hand off to a fresh
   session / another agent? Answer it when the item is created (write
-  `Session-fit: now | next — <reason> / Effort: S | M | L` into the issue body,
+  `Session-fit: now (do it in this session) | next (not this session) — <reason>
+  / Effort: <duration, e.g. ~1-3 h -- not a bare letter>` into the issue body,
   per `CLAUDE.md` → "Session-fit classification"), not after the merge when the
   context that justified it is gone. **After a lane merges, `next` is the
   default**: what stays hot is that lane's files and the integ you already ran,
