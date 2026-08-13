@@ -1,3 +1,10 @@
+## [0.283.1](https://github.com/go-to-k/cdkd/compare/v0.283.0...v0.283.1) (2026-08-13)
+
+
+### Bug Fixes
+
+* **dynamodb:** stop a suppressed GlobalTable billing flip recording capacity AWS never received, and resolve an absent recorded mode from AWS ([#1825](https://github.com/go-to-k/cdkd/issues/1825)) ([1cd8e6e](https://github.com/go-to-k/cdkd/commit/1cd8e6eeff9506dd8fe5360e9ec8b3dc8abd5c38))
+
 # [0.283.0](https://github.com/go-to-k/cdkd/compare/v0.282.7...v0.283.0) (2026-08-13)
 
 
