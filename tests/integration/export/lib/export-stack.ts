@@ -244,22 +244,44 @@ export class ExportStack extends cdk.Stack {
       internetGatewayId: igw.ref,
     });
     const routeTable = new ec2.CfnRouteTable(this, 'RouteTable', { vpcId: vpc.ref });
+
+    // cdkd stores the CC primaryIdentifier joined: `<Id>|<VpcId>`; CFn
+    // identifies it by [Id, VpcId] with `Id` read-only, so the overlay narrows
+    // to `VpcId`. This resource is the WHOLE POINT of the arm: before issue
+    // #1788 registered its splitter, an `AWS::EC2::VPCCidrBlock` anywhere in
+    // the stack aborted the entire `cdkd export` command with "add an entry to
+    // COMPOSITE_ID_SPLITTERS" — so the fixture could not carry one, and this
+    // comment block used to say exactly that. Amazon-provided IPv6 needs no
+    // BYOIP pool and costs nothing.
+    const ipv6Cidr = new ec2.CfnVPCCidrBlock(this, 'Ipv6Cidr', {
+      vpcId: vpc.ref,
+      amazonProvidedIpv6CidrBlock: true,
+    });
+
     // cdkd stores `<routeTableId>|<destination>`; CFn identifies the route by
     // [RouteTableId, CidrBlock], where `CidrBlock` carries whichever destination
-    // the route declares. Only the IPv4 arm is covered here: an
-    // `AWS::EC2::Route` with a `DestinationIpv6CidrBlock` needs the VPC to carry
-    // an IPv6 CIDR, which needs an `AWS::EC2::VPCCidrBlock` — itself an
-    // unregistered composite type that would abort this very export
-    // ([#1788](https://github.com/go-to-k/cdkd/issues/1788)). The splitter has
-    // no per-destination branch (the segment maps onto `CidrBlock` verbatim,
-    // measured live), so the other two destination shapes are pinned by unit
-    // tests instead.
+    // the route declares — measured live across all three destination shapes.
+    // BOTH arms are covered now: the IPv6 one was blocked until #1788, because
+    // a `DestinationIpv6CidrBlock` route needs the VPC to carry an IPv6 CIDR,
+    // which needs the `AWS::EC2::VPCCidrBlock` above. The remaining shape
+    // (`DestinationPrefixListId`) stays pinned by unit tests — it needs a
+    // managed prefix list, which is a per-account resource this fixture would
+    // have to create and tear down for no additional splitter coverage.
     const defaultRoute = new ec2.CfnRoute(this, 'DefaultRoute', {
       routeTableId: routeTable.ref,
       destinationCidrBlock: '0.0.0.0/0',
       gatewayId: igw.ref,
     });
     defaultRoute.addDependency(igwAttachment);
+
+    const defaultRouteV6 = new ec2.CfnRoute(this, 'DefaultRouteV6', {
+      routeTableId: routeTable.ref,
+      destinationIpv6CidrBlock: '::/0',
+      gatewayId: igw.ref,
+    });
+    defaultRouteV6.addDependency(igwAttachment);
+    // The IPv6 CIDR must be ASSOCIATED before a ::/0 route can reference it.
+    defaultRouteV6.addDependency(ipv6Cidr);
 
     // cdkd stores `<publicIp>|<allocationId>`; CFn identifies the EIP by
     // [PublicIp, AllocationId] and BOTH are read-only, so its splitter is the
