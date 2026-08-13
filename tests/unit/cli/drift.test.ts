@@ -913,6 +913,62 @@ describe('cdkd drift', () => {
     expect(output).toContain('GlobalSecondaryIndexes');
   });
 
+  it('--accept PERSISTS the canonicalized value, not the raw AWS one (issue #1784)', async () => {
+    // Pins the asymmetry the seam's docs now state explicitly: `--revert`
+    // diffs against the RAW `awsProperties`, but `--accept` writes each
+    // change's `awsValue`, which comes from the CANONICALIZED bags. So on a
+    // path that still drifts after canonicalization, the stripped shape is
+    // what lands in observedProperties. The first cut of this PR documented
+    // the opposite; a reviewer caught it, and this test is what stops the
+    // claim from silently drifting back.
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Table1: makeResource({
+          physicalId: 'table-1',
+          resourceType: 'AWS::DynamoDB::Table',
+          properties: { GlobalSecondaryIndexes: [{ IndexName: 'byAuthor' }] },
+          observedProperties: {
+            GlobalSecondaryIndexes: [{ IndexName: 'byAuthor', ItemCount: 42 }],
+          },
+        }),
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      // A REAL change (the index was renamed out of band) alongside the
+      // AWS-managed member the canonicalizer strips — so the path still
+      // drifts and --accept has something to write.
+      readCurrentState: async () => ({
+        GlobalSecondaryIndexes: [{ IndexName: 'byEditor', ItemCount: 99 }],
+      }),
+      canonicalizeDriftProperties: (_type: string, properties: Record<string, unknown>) => {
+        const list = properties['GlobalSecondaryIndexes'];
+        if (!Array.isArray(list)) return properties;
+        return {
+          ...properties,
+          GlobalSecondaryIndexes: list.map((index) => {
+            const { ItemCount: _dropped, ...rest } = index as Record<string, unknown>;
+            return rest;
+          }),
+        };
+      },
+    });
+
+    await runDrift(['TestStack', '--accept', '--yes']);
+
+    expect(mockSaveState).toHaveBeenCalledTimes(1);
+    const [, , savedState] = mockSaveState.mock.calls[0]!;
+    const persisted = (
+      savedState as {
+        resources: Record<string, { observedProperties?: Record<string, unknown> }>;
+      }
+    ).resources['Table1']?.observedProperties?.['GlobalSecondaryIndexes'];
+    // The real change landed ...
+    expect(persisted).toEqual([{ IndexName: 'byEditor' }]);
+    // ... and the stripped member did NOT come back with it.
+    expect(JSON.stringify(persisted)).not.toContain('ItemCount');
+  });
+
   it('silently skips `Custom::*` resource types (drift not applicable, issue #323)', async () => {
     // Originally: when a stack contains a `Custom::*` resource (e.g.
     // CDK's S3 auto-delete-objects helper), the provider has no

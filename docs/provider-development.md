@@ -2054,7 +2054,9 @@ canonicalizeDriftProperties(
 Four rules, each load-bearing:
 
 - **There is deliberately no `side` parameter.** One-sided normalization is the mistake `src/analyzer/drift-normalize.ts`'s header already records — it manufactures drift on the `properties`-fallback baseline, where the baseline is the user's raw template. The same pure function must see both bags.
-- **Pure, synchronous, no AWS calls, NON-mutating.** It runs inside the comparison, and the *uncanonicalized* AWS bag is what `--accept` writes to state and `--revert` diffs against — mutating the input would corrupt both.
+- **Pure, synchronous, no AWS calls, NON-mutating.** It runs inside the comparison, and `--revert` diffs against the raw, uncanonicalized AWS bag — mutating the input would corrupt it.
+- **`--accept` persists your output.** It writes each reported change's `awsValue`, and those come from the canonicalized bags — so on a path that still drifts after canonicalization, `--accept` freezes the *stripped* shape into `observedProperties`. For the intended use (dropping a member the readback no longer reports) that is the right direction, but do not strip anything you would be unwilling to see removed from state.
+- **Position in the chain matters.** The hook runs after the principal / `IpProtocol` passes and *before* the tag-list / id-array / unordered-path passes, which live inside `calculateResourceDrift`. That order is required: an element strip must precede the unordered sort, or the two sides' canonical sort keys are computed over different member sets and diverge.
 - **Return the input by identity** when nothing applies, so an unaffected resource pays nothing.
 - **Reach for it only for a per-array-element member.** A top-level key a readback stopped emitting is `getDriftUnknownPaths()`'s job; a difference that is only about ORDER is `getDriftUnorderedPaths()`'.
 

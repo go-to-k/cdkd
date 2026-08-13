@@ -795,10 +795,19 @@ export interface ResourceProvider {
    * is only about ORDER is {@link getDriftUnorderedPaths}'.
    *
    * MUST be pure, synchronous, free of AWS calls, and NON-MUTATING — the bag
-   * it receives is the state record / the provider's own readback, and the
-   * UNCANONICALIZED `aws` bag is what `--accept` writes to state and
-   * `--revert` diffs against. Return the input by IDENTITY when nothing
-   * applies (the common case), so an unaffected resource pays nothing.
+   * it receives is the state record / the provider's own readback. Return the
+   * input by IDENTITY when nothing applies (the common case), so an unaffected
+   * resource pays nothing.
+   *
+   * **It is not only a comparison filter — `--accept` PERSISTS its output.**
+   * `cdkd drift --revert` diffs against the raw, uncanonicalized AWS bag, but
+   * `--accept` writes each reported change's `awsValue`, and those come from
+   * the canonicalized bags. So on a path that still drifts after
+   * canonicalization (a real change alongside a stripped member), `--accept`
+   * freezes the STRIPPED shape into `observedProperties`. For the intended use
+   * — dropping a member the readback no longer reports — that is the right
+   * direction, but do not strip anything you would be unwilling to see removed
+   * from the state record.
    *
    * Same CC-API-fallback caveat as {@link getDriftUnknownPaths} and
    * {@link getDriftUnorderedPaths}: when the type has no `readCurrentState`,

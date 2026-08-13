@@ -118,6 +118,14 @@ export const LEAF_ONLY_PATH_SUFFIX = '[]';
  * A bare `'[]'` entry (empty base path) matches NOTHING. It would otherwise
  * name the root bag, which no caller can mean, and silently sorting a root
  * array is a worse answer than ignoring a malformed declaration.
+ *
+ * NOTE not every entry is a hand-written declaration: `drift.ts` also feeds
+ * `undeclaredEmptyObservedKeys`' output (raw top-level STATE keys, issue
+ * #1498) into the ignore-path list. Those are data-derived, so the marker
+ * would be a misreading if a key could end in `[]` — it cannot, because a
+ * CloudFormation property name is alphanumeric, so no state key reaches this
+ * matcher carrying the suffix. Keep that true if the ignore-path list ever
+ * gains a source with freer key syntax.
  */
 export function matchesPathPrefix(path: string, entries: readonly string[]): boolean {
   for (const entry of entries) {
