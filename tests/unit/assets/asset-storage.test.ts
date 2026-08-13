@@ -14,7 +14,16 @@ const { mockS3Send, mockEcrSend, mockLoggerInfo, mockLoggerDebug, mockLoggerWarn
 // region-scoped client, so the module constructor must return the shared
 // mock `send`.
 vi.mock('@aws-sdk/client-s3', () => ({
-  S3Client: vi.fn().mockImplementation(() => ({ send: mockS3Send, destroy: vi.fn() })),
+  // `config.region()` reports whatever region the client was constructed with
+  // (the SDK's own behavior). The asset-bucket policy's partition is derived
+  // from it rather than from the `region` OPTION, because `cdkd bootstrap`
+  // passes a shared client whose region can differ from that option — see the
+  // comment at the `PutBucketPolicyCommand` call site (issue #1794 review).
+  S3Client: vi.fn().mockImplementation((cfg?: { region?: string }) => ({
+    send: mockS3Send,
+    destroy: vi.fn(),
+    config: { region: async () => cfg?.region ?? 'us-east-1' },
+  })),
   HeadBucketCommand: vi.fn().mockImplementation((input) => ({ ...input, _type: 'HeadBucket' })),
   CreateBucketCommand: vi.fn().mockImplementation((input) => ({ ...input, _type: 'CreateBucket' })),
   PutBucketEncryptionCommand: vi
@@ -317,7 +326,9 @@ describe('ensureAssetStorage', () => {
       putRawObject,
       getRawObject,
       options: {
-        s3Client: new S3Client({}) as S3Client,
+        // Region-scoped, matching the auto-create path that builds its own
+        // client for `region`; the bucket policy's partition reads it back.
+        s3Client: new S3Client({ region }) as S3Client,
         ecrClient: new ECRClient({}) as ECRClient,
         stateBackend: { putRawObject, getRawObject } as unknown as S3StateBackend,
         accountId: ACCOUNT,
@@ -376,6 +387,35 @@ describe('ensureAssetStorage', () => {
     const lastEcrOrder = Math.max(...mockEcrSend.mock.invocationCallOrder);
     expect(putRawObject.mock.invocationCallOrder[0]!).toBeGreaterThan(lastS3Order);
     expect(putRawObject.mock.invocationCallOrder[0]!).toBeGreaterThan(lastEcrOrder);
+  });
+
+  // Issue #1794: the asset-bucket policy hardcoded `arn:aws:s3:::`, so in
+  // `aws-cn` the Deny statement named a resource that does not exist there and
+  // protected nothing — while `PutBucketPolicy` succeeded and the command
+  // reported the bucket configured.
+  it.each([
+    ['us-east-1', 'aws'],
+    ['cn-north-1', 'aws-cn'],
+    ['us-gov-west-1', 'aws-us-gov'],
+  ])('derives the asset-bucket policy ARN partition from region %s', async (region, partition) => {
+    mockS3Send.mockImplementation((cmd: { _type: string }) =>
+      cmd._type === 'HeadBucket' ? Promise.reject(awsError('NotFound', 404)) : Promise.resolve({})
+    );
+    mockEcrSend.mockImplementation((cmd: { _type: string }) =>
+      cmd._type === 'DescribeRepositories'
+        ? Promise.reject(awsError('RepositoryNotFoundException'))
+        : Promise.resolve({})
+    );
+    const { options } = makeOptions({ region });
+
+    await ensureAssetStorage(options);
+
+    const policyCall = mockS3Send.mock.calls.find((c) => c[0]._type === 'PutBucketPolicy')![0];
+    const bucket = `cdkd-assets-${ACCOUNT}-${region}`;
+    expect(JSON.parse(policyCall.Policy).Statement[0].Resource).toEqual([
+      `arn:${partition}:s3:::${bucket}`,
+      `arn:${partition}:s3:::${bucket}/*`,
+    ]);
   });
 
   it('passes LocationConstraint for non-us-east-1 regions', async () => {
@@ -485,7 +525,7 @@ describe('ensureAssetStorage — custom names (issue #1011)', () => {
       putRawObject,
       getRawObject,
       options: {
-        s3Client: new S3Client({}) as S3Client,
+        s3Client: new S3Client({ region: REGION }) as S3Client,
         ecrClient: new ECRClient({}) as ECRClient,
         stateBackend: { putRawObject, getRawObject } as unknown as S3StateBackend,
         accountId: ACCOUNT,

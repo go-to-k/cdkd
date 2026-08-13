@@ -24,6 +24,7 @@ import {
 } from '../../assets/asset-storage.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
 import { rebuildClientForBucketRegion } from '../../utils/bucket-region-client.js';
+import { buildDenyExternalAccessPolicy } from '../../utils/deny-external-access-policy.js';
 
 /**
  * Bootstrap command implementation
@@ -203,25 +204,29 @@ async function bootstrapCommand(options: {
       );
       logger.info('✓ Enabled bucket encryption (AES-256)');
 
-      // Set bucket policy to deny external access
+      // Set bucket policy to deny external access.
+      //
+      // The partition comes from the CLIENT that writes the policy, never from
+      // the `region` variable above. `region` falls back to a HARDCODED
+      // `us-east-1` (see its declaration), while `AwsClients` omits `region`
+      // entirely when `--region` is absent and lets the SDK chain resolve it —
+      // which reads `~/.aws/config`'s profile region and `AWS_DEFAULT_REGION`,
+      // neither of which that fallback consults. So a GovCloud / China user
+      // with `region = us-gov-west-1` in their profile and no `AWS_REGION`
+      // running a plain `cdkd bootstrap` gets `region === 'us-east-1'` ->
+      // partition `aws` -> an inert deny on an `aws-us-gov` bucket: issue
+      // #1794's exact failure mode, reproduced on the fix's own path. Caught by
+      // the PR review, and the reason the earlier
+      // "credentials are partition-scoped so both agree" argument was wrong —
+      // it is sound about credentials vs bucket, but `region` is not derived
+      // from the credentials. `stateBucketS3` is authoritative for both: it is
+      // the client already region-corrected for this bucket.
       logger.debug('Setting bucket policy...');
-      const bucketPolicy = {
-        Version: '2012-10-17',
-        Statement: [
-          {
-            Sid: 'DenyExternalAccess',
-            Effect: 'Deny',
-            Principal: '*',
-            Action: 's3:*',
-            Resource: [`arn:aws:s3:::${bucketName}`, `arn:aws:s3:::${bucketName}/*`],
-            Condition: {
-              StringNotEquals: {
-                'aws:PrincipalAccount': accountId,
-              },
-            },
-          },
-        ],
-      };
+      const bucketPolicy = buildDenyExternalAccessPolicy(
+        bucketName,
+        accountId,
+        await stateBucketS3.config.region()
+      );
 
       await stateBucketS3.send(
         new PutBucketPolicyCommand({

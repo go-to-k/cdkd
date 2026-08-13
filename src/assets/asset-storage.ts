@@ -16,6 +16,7 @@ import {
 import { getLogger } from '../utils/logger.js';
 import { CdkdError, normalizeAwsError } from '../utils/error-handler.js';
 import type { S3StateBackend } from '../state/s3-state-backend.js';
+import { buildDenyExternalAccessPolicy } from '../utils/deny-external-access-policy.js';
 
 /**
  * cdkd-owned asset storage — naming, bootstrap marker, and deploy-time
@@ -497,21 +498,20 @@ export async function ensureAssetStorage(
       new PutBucketPolicyCommand({
         Bucket: assetBucket,
         ExpectedBucketOwner: accountId,
-        Policy: JSON.stringify({
-          Version: '2012-10-17',
-          Statement: [
-            {
-              Sid: 'DenyExternalAccess',
-              Effect: 'Deny',
-              Principal: '*',
-              Action: 's3:*',
-              Resource: [`arn:aws:s3:::${assetBucket}`, `arn:aws:s3:::${assetBucket}/*`],
-              Condition: {
-                StringNotEquals: { 'aws:PrincipalAccount': accountId },
-              },
-            },
-          ],
-        }),
+        // The partition comes from the CLIENT that creates the bucket, not
+        // from the `region` option. They usually agree — the auto-create path
+        // builds a `region`-scoped client — but `cdkd bootstrap` passes the
+        // shared `awsClients.s3`, whose region the SDK chain resolves from the
+        // profile when `--region` is absent, while its `region` option falls
+        // back to a hardcoded `us-east-1`. Deriving from the client is what
+        // keeps the ARN naming the partition the bucket is actually in (the
+        // same defect the state-bucket policy in `bootstrap.ts` carries; found
+        // by the issue #1794 PR review). That divergence also mis-NAMES the
+        // bucket (`getCdkdAssetBucketName` uses the option) — a separate
+        // pre-existing bug, tracked in issue #1820.
+        Policy: JSON.stringify(
+          buildDenyExternalAccessPolicy(assetBucket, accountId, await s3Client.config.region())
+        ),
       })
     );
     logger.info(

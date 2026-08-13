@@ -24,6 +24,7 @@ import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { resolveBucketRegion } from '../../utils/aws-region-resolver.js';
 import { getDefaultStateBucketName, getLegacyStateBucketName } from '../config-loader.js';
 import { expectedOwnerParam } from '../../utils/expected-bucket-owner.js';
+import { buildDenyExternalAccessPolicy } from '../../utils/deny-external-access-policy.js';
 
 interface MigrateOptions {
   region?: string;
@@ -334,19 +335,16 @@ async function ensureDestinationBucket(
     new PutBucketPolicyCommand({
       Bucket: bucketName,
       ...(await expectedOwnerParam(s3)),
-      Policy: JSON.stringify({
-        Version: '2012-10-17',
-        Statement: [
-          {
-            Sid: 'DenyExternalAccess',
-            Effect: 'Deny',
-            Principal: '*',
-            Action: 's3:*',
-            Resource: [`arn:aws:s3:::${bucketName}`, `arn:aws:s3:::${bucketName}/*`],
-            Condition: { StringNotEquals: { 'aws:PrincipalAccount': accountId } },
-          },
-        ],
-      }),
+      // Derived from the client that creates the bucket, matching the rule the
+      // other two call sites follow (issue #1794 review). Here the two are the
+      // same value by construction — `s3` is `new S3Client({ region })` and
+      // this arm runs only after the `CreateBucket` above — but reading it off
+      // the client keeps ONE rule for where a bucket's partition comes from,
+      // rather than a per-site judgement about whether the local `region`
+      // variable happens to be authoritative.
+      Policy: JSON.stringify(
+        buildDenyExternalAccessPolicy(bucketName, accountId, await s3.config.region())
+      ),
     })
   );
   logger.info('✓ Applied versioning, encryption, and account-only access policy');
