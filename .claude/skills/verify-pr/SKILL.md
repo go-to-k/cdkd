@@ -210,7 +210,7 @@ Run each check and report pass/fail:
     - For every `/review-pr` reviewer agent output during this session (including re-reviews after fix-back), walk the reviewer's "Minor / Nit / Informational" section.
     - For EACH item there, confirm ONE of the following is true BEFORE setting the `verify-pr` marker (these are the same three buckets as CLAUDE.md's "Remaining work" taxonomy — Fixed here / TODO / Won't-do):
       - (a) **Fixed in this PR** — point at the fix commit / file:line that resolves the nit.
-      - (b) **TODO (issue #N)** — a GitHub issue exists AND this PR's body references it (e.g. "minor follow-ups in (#515)"). This is the only bucket that leaves future work.
+      - (b) **TODO (issue #N)** — a GitHub issue exists AND this PR's body references it (e.g. "minor follow-ups in (#515)"). This is the only bucket that leaves future work. The issue body MUST carry the session-fit line `Session-fit: now | next — <reason> / Effort: S | M | L` (see CLAUDE.md → "Session-fit classification"). **This step is the deferral moment**, so it is where the call gets made — not at wrap time, by which point the evidence for it (which files were open, which verification cycle was already paid for) is gone. A `now` item must be fixed before the marker is set, or re-classified to `next` with the reason recorded; you cannot set `verify-pr` over an open `now`.
       - (c) **Won't-do (decided + recorded)** — the PR body or a comment names the nit and explains why shipping as-is is the right call. Requires no future action.
     - If NONE of (a) / (b) / (c) is true for any nit, file a bundled follow-up issue NOW (one issue per session, listing every uncovered nit) and update the PR body to reference it. Do not set the `verify-pr` marker until every reviewer-flagged item is on one of those three paths.
     - Also walk the session transcript for **surfaced memory-rule candidates** (surprising traps, repeated friction, "I should remember this for next time" moments). Each MUST be either written as a memory file in `~/.claude/projects/-Users-goto-pc-github-cdkd/memory/` (with a MEMORY.md index entry) OR explicitly de-prioritized in the chat / PR body.
@@ -218,7 +218,7 @@ Run each check and report pass/fail:
       - Read the PR body (`gh pr view <PR> --json body -q .body`). For every `(#N)` parens-form reference, check whether it's adjacent to a close keyword (`closes` / `fixes` / `resolves`, case-insensitive).
       - If yes: the merge will NOT auto-close the target issue. Either rewrite to parens-free `Closes #N` (auto-close fires), OR add a manual `gh issue close <N>` step to the merge sequence and note it in the PR body.
       - The mechanical `closes-paren-form-gate.sh` hook ALREADY blocks `gh pr merge` for the `Closes (#N)` pattern — this skill step is the human-readable backup that catches the issue BEFORE the merge attempt.
-    - This step is the structural enforcement of memory `feedback_session_completion_audit_required.md` — claiming "session complete" / "残作業なし" without running this sweep is the exact violation that surfaced this rule.
+    - This step is the structural enforcement of memory `feedback_session_completion_audit_required.md` — claiming "session complete" / "nothing remaining" without running this sweep is the exact violation that surfaced this rule.
 
 11. **PR title + body freshness** (skip if no PR exists yet — `/create-pr` will write them from scratch)
     - When a PR has follow-up commits after creation, both the title and body authored at PR-create time often go stale: the title was scoped to the first commit's intent only, and the body may mention reverted features, removed checks, or wrong rationale. Detect and fix both.
@@ -269,6 +269,7 @@ Present results as a table:
 | live-test changed behavior | pass/skipped/issues found |
 | retrospective + rule proposals | done/skipped |
 | residual review-nit sweep (fixed / TODO-issue / won't-do) | N items / 0 unhandled |
+| session-fit classified on every TODO (`now` \| `next` + Effort) | N classified / 0 open `now` |
 | auto-close audit (no `Closes (#N)` in body) | clean / N traps fixed |
 | PR title + body freshness | up-to-date/stale (updated)/n-a (no PR yet) |
 

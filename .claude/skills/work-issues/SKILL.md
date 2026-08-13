@@ -394,6 +394,23 @@ anything non-obvious you learned in memory.
   up are not follow-ups and do not belong in the report. List only residuals of
   the lanes you shipped (gaps, deferred polish, issues filed because of this
   work). (`CLAUDE.md` → Workflow Rules.)
+- **Classify every deferral `now` / `next` the moment you defer it — this flow
+  is where that decision is hardest and most often re-litigated.** Each merge in
+  section 9 lands on the same question: keep going here, or hand off to a fresh
+  session / another agent? Answer it when the item is created (write
+  `Session-fit: now | next — <reason> / Effort: S | M | L` into the issue body,
+  per `CLAUDE.md` → "Session-fit classification"), not after the merge when the
+  context that justified it is gone. **After a lane merges, `next` is the
+  default**: what stays hot is that lane's files and the integ you already ran,
+  and nothing else — so a residual landing in those files is `now`, and a
+  residual anywhere else is `next` even when it looks small.
+  A fan-out run makes this sharper than usual in two directions: a residual that
+  lands in a lane you are STILL holding a worktree for is almost always `now`
+  (the worktree, the deps and the markers are already paid for, and removing it
+  and re-creating it later is most of the cost), while a residual in a lane you
+  just merged and cleaned up has lost exactly those things and is `next`. Close
+  the run with the handoff line naming the literal next command, and say which
+  `next` items are file-disjoint enough for one fresh run to take together.
 - **This flow parks a LOT, so the State line carries most of its weight.** A
   fan-out run spends most of its wall-clock parked on something: a lane subagent
   still implementing, `gh pr checks --watch` on a lane's CI, a `/run-integ`
