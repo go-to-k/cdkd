@@ -88,6 +88,12 @@ gates:
       # a change that narrows what a critic rejects could be committed
       # against a fresh-looking marker.
       - "scripts/**"
+      # .claude/skills/** is enforcement logic too, for the same reason as
+      # scripts/**: the verification-depth checker's whole subject is what
+      # those four SKILL.md files say, so reintroducing banned wording used to
+      # leave the `check` marker fresh and only CI caught it — the exact gap
+      # #1592 closed for scripts/**.
+      - ".claude/skills/**"
       - "package.json"
       - "pnpm-lock.yaml"
       - "tsconfig*.json"

@@ -240,7 +240,15 @@ UP_PATH_REGEX='^(src/utils/role-arn\.ts|src/local/cognito-jwt\.ts|src/local/lamb
 
 # Down-bias buckets. Either ALL paths are docs/infra, or ALL paths
 # are tests. Mixed → no down-bias.
-DOWN_DOCS_REGEX='^(\.gitignore|CLAUDE\.md|README\.md|docs/.*|\.claude/skills/.*|\.claude/agents/.*|\.claude/hooks/.*|\.claude/rules/.*|\.claude/settings.*\.json|\.markgate\.yml|package\.json)$'
+# Down-bias covers INERT documentation only. Files that change how the agent
+# BEHAVES -- CLAUDE.md, .claude/rules, .claude/skills, .claude/agents,
+# .claude/hooks, .claude/settings, .markgate.yml -- were in this set and are
+# not any more: a wrong rule propagates to every future session, which is the
+# opposite of low-risk. Keeping them here also made the hook disagree with
+# `/review-pr`'s own text once that skill started saying they must not
+# down-bias, so a large rules-only PR resolved to `1-reviewer` in the hook and
+# `3-axis` in the skill. Keep this regex and the skill's down-bias list in sync.
+DOWN_DOCS_REGEX='^(\.gitignore|README\.md|docs/.*|package\.json)$'
 DOWN_TESTS_REGEX='^tests/.*'
 
 all_docs=1

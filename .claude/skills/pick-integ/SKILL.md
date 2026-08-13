@@ -127,10 +127,12 @@ which tests were not run.
      /run-integ <name>    # <why: which changed path + age/result>
    P1 (changed, recently green):
      /run-integ <name>    # verify no regression in <area>
-   P2 (coverage hygiene, capped):
+   P2 (coverage hygiene):
      /run-integ <name>    # stale <age>d / expires in <M>d / never-run
 
-   Skipped (recently green + untouched): <count> tests — list a few + note the cap.
+   Not scheduled this pass (recently green + untouched): <count> tests — list a few.
+   (A count, not a cap: these are DEPRIORITIZED, not excluded. Say plainly that
+   they were not run, so the omission is visible rather than implied.)
    ```
    **Never render "zero stale" on its own.** If nothing is >14d but a cohort sits at 12-14d, the
    headline is the cliff (`"0 stale, but 105 tests expire in 1d"`), not the clean stale count — the
@@ -169,5 +171,7 @@ orchestrator aware of it up front:
   (serially — they share one AWS account; mind VPC/EIP/NAT account limits).
 - The ledger is only as good as its discipline: it is updated by `/run-integ` on EVERY run (pass or fail).
   If a test's row looks impossibly old, it may simply not have been run via the skill — treat absent/old as stale.
-- "Recently green + untouched" tests are the ones it is safe to SKIP; surface the count so a human can override.
+- "Recently green + untouched" tests are the ones to schedule LAST, not the ones to drop: a test whose
+  area the diff did not touch is genuinely lower-risk, but "lower-risk" orders the list rather than
+  truncating it. Surface the count either way so the omission is visible.
 - Pure docs / `.claude/skills` / test-only diffs usually need NO integ — say so rather than padding the list.

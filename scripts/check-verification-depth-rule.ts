@@ -20,16 +20,18 @@
  * 2. NO COST-BASED DOWNSCALING in the skills that CHOOSE a verification depth.
  *    Scoped to that decision-making set (`GOVERNED_SKILLS`) rather than every
  *    skill, because "cost" is a legitimate word elsewhere: `/cleanup` ranks
- *    cost-BEARING leftovers, `/hunt-bugs` is explicitly a cost-is-no-object
- *    sweep, `/run-integ` cites NAT-gateway cost as a reason cleanup is
- *    non-negotiable. Those are arguments FOR spending, and flagging them would
- *    train the next author to delete a true statement.
+ *    cost-BEARING leftovers and `/hunt-bugs` is explicitly a cost-is-no-object
+ *    sweep. Those are arguments FOR spending, and flagging them would train the
+ *    next author to delete a true statement. (`/run-integ` IS governed, and its
+ *    NAT-gateway-cost line survives because the phrase list matches arguments
+ *    for doing LESS, not the word `cost`.)
  *
  * The phrase list matches ARGUMENTS, not the word "cost": each entry is a
  * construction whose only use is to justify doing LESS verification. A governed
- * skill may still use one when it also carries the floor disclaimer (the
- * `FLOOR_DISCLAIMER` anchor), which is how `/review-pr` legitimately quotes the
- * old rationale while overriding it.
+ * skill that needs to QUOTE one (e.g. `/review-pr` restating the retired
+ * rationale in order to override it) takes the per-line allow marker below --
+ * there is no file-level exemption, for the reason recorded beside
+ * `GOVERNED_SKILLS`.
  *
  * Escape hatch: `<!-- allow-cost-downscale: <reason> -->` on the line or the
  * line above. The reason is mandatory; a bare marker is rejected, matching the
@@ -42,11 +44,17 @@ import { join } from 'node:path';
 /** CLAUDE.md must still carry this exact anchor. */
 export const RULE_ANCHOR = 'Cost is not a tiebreaker for verification depth';
 
-/**
- * A governed skill may quote a cost argument when it ALSO says the tier is a
- * floor. Matching on the shared phrase keeps the two in one place.
+/*
+ * There is deliberately NO file-level exemption. The first cut skipped any file
+ * carrying a "FLOOR, not a cap" disclaimer, so `review-pr` and `pick-integ` --
+ * the two skills this rule exists for, both of which carry it -- were never
+ * pattern-scanned at all: appending the exact banned sentence to the real
+ * `review-pr/SKILL.md` produced ZERO violations. The probe that was supposed to
+ * catch that had stripped the disclaimer first, i.e. it exercised a path the
+ * real tree never takes -- the shared-blind-spot failure `.claude/rules/
+ * testing.md` warns about. A quoted rationale now takes the per-LINE allow
+ * marker like any other, which is the same granularity and cannot go vacuous.
  */
-export const FLOOR_DISCLAIMER = /FLOOR, not a cap|running ORDER, not a budget/i;
 
 /**
  * Skills whose job is to CHOOSE how much verification a change gets. Only
@@ -67,6 +75,10 @@ export const DOWNSCALE_PATTERNS: ReadonlyArray<{ pattern: RegExp; why: string }>
   { pattern: /\bnot worth (?:the )?(?:a )?(?:full |real[- ]AWS )?(?:run|integ|review)\b/i, why: 'declines a run/review as not worth it' },
   { pattern: /\brun (?:only )?the cheapest\b/i, why: 'selects a verification step by cost' },
   { pattern: /\bto save (?:a|the|an) (?:run|integ|deploy)\b/i, why: 'narrows verification to save a run' },
+  { pattern: /\btoo costly\b/i, why: 'declines verification as too costly' },
+  { pattern: /\bfor little gain\b/i, why: 'weighs verification effort against its yield' },
+  { pattern: /\b(?:one|a) narrow (?:fixture|integ|test) is enough\b/i, why: 'accepts narrow coverage as sufficient' },
+  { pattern: /\bdrains attention\b/i, why: 'treats review effort as a cost to minimise' },
 ];
 
 export interface DepthRuleViolation {
@@ -78,8 +90,18 @@ export interface DepthRuleViolation {
 
 export interface DepthRuleReport {
   anchorPresent: boolean;
+  /** Skills whose file was READ. */
   scannedSkills: string[];
+  /** Lines READ. */
   scannedLines: number;
+  /**
+   * Skills whose lines were actually PATTERN-MATCHED, and how many. Separate
+   * from the read counters on purpose: the first cut incremented the read
+   * counters and then `continue`d past the matching, so a gutted skill still
+   * satisfied a 400-line floor while nothing was inspected. Floor on THESE.
+   */
+  patternScannedSkills: string[];
+  patternScannedLines: number;
   violations: DepthRuleViolation[];
 }
 
@@ -91,7 +113,9 @@ function isAllowed(lines: string[], i: number): boolean {
     const m = candidate?.match(ALLOW_RE);
     // A bare marker with no reason does not count — same bar as
     // `allow-mode-gated-drop`.
-    if (m && m[1] && m[1].length > 0) return true;
+    // A reason must be a real sentence fragment, not a placeholder: `\S.*?`
+    // alone accepted a single character.
+    if (m && m[1] && m[1].trim().length >= 12) return true;
   }
   return false;
 }
@@ -100,7 +124,9 @@ export function checkVerificationDepthRule(repoRoot: string): DepthRuleReport {
   const claudeMd = readFileSync(join(repoRoot, 'CLAUDE.md'), 'utf8');
   const violations: DepthRuleViolation[] = [];
   const scannedSkills: string[] = [];
+  const patternScannedSkills: string[] = [];
   let scannedLines = 0;
+  let patternScannedLines = 0;
 
   for (const skill of GOVERNED_SKILLS) {
     const rel = join('.claude', 'skills', skill, 'SKILL.md');
@@ -116,10 +142,10 @@ export function checkVerificationDepthRule(repoRoot: string): DepthRuleReport {
     }
     scannedSkills.push(skill);
 
-    const hasDisclaimer = FLOOR_DISCLAIMER.test(body);
     const lines = body.split('\n');
     scannedLines += lines.length;
-    if (hasDisclaimer) continue;
+    patternScannedSkills.push(skill);
+    patternScannedLines += lines.length;
 
     lines.forEach((text, i) => {
       for (const { pattern, why } of DOWNSCALE_PATTERNS) {
@@ -135,6 +161,8 @@ export function checkVerificationDepthRule(repoRoot: string): DepthRuleReport {
     anchorPresent: claudeMd.includes(RULE_ANCHOR),
     scannedSkills,
     scannedLines,
+    patternScannedSkills,
+    patternScannedLines,
     violations,
   };
 }

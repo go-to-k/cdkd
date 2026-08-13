@@ -30,20 +30,22 @@ describe('verification-depth rule checker', () => {
 
   // ─── coverage floors: prove the checker SEES its input ────────────────
 
-  it('scans every governed skill that exists, not a subset', () => {
+  it('PATTERN-scans every governed skill, not merely reads it', () => {
     const report = checkVerificationDepthRule(REPO_ROOT);
-    // All four exist today. A rename must fail HERE (loudly) rather than
-    // silently shrinking the scanned set to nothing — the vacuous-pass shape
-    // `.claude/rules/testing.md` forbids.
     expect(report.scannedSkills).toEqual([...GOVERNED_SKILLS]);
+    // The load-bearing assertion is on the PATTERN-scanned set, not the read
+    // set. The first cut counted a file as scanned and then skipped the
+    // matching for it, so `scannedSkills` reported all four while two were
+    // never inspected — floors on the read counters cannot see that.
+    expect(report.patternScannedSkills).toEqual([...GOVERNED_SKILLS]);
   });
 
-  it('actually reads the skill bodies (per-shape floor, not just a total)', () => {
+  it('actually matches against the skill bodies (floor on the PATTERN-scanned lines)', () => {
     const report = checkVerificationDepthRule(REPO_ROOT);
-    // The four governed skills are long documents; a broken read would yield a
-    // near-zero count while `violations` stayed empty and everything above
-    // still passed.
-    expect(report.scannedLines).toBeGreaterThan(400);
+    expect(report.patternScannedLines).toBeGreaterThan(700);
+    // Read and pattern-scanned must agree: any gap means some file was read
+    // and then skipped, which is exactly the vacuity this floor exists for.
+    expect(report.patternScannedLines).toBe(report.scannedLines);
   });
 
   // ─── real-code probes: prove the checker FAILS ────────────────────────
@@ -79,12 +81,9 @@ describe('verification-depth rule checker', () => {
     const report = withRepoCopy((root) => {
       const p = join(root, '.claude', 'skills', 'review-pr', 'SKILL.md');
       const body = readFileSync(p, 'utf8');
-      // Removing the floor disclaimer is what re-arms the scan — a governed
-      // skill carrying the disclaimer is allowed to quote the old rationale.
-      const stripped = body.replace(/\*\*The recommended tier is a FLOOR[^\n]*\n/, '');
       writeFileSync(
         p,
-        `${stripped}\n\nRunning all 3 on every PR is overkill and the cost exceeds the catch.\n`
+        `${body}\n\nRunning all 3 on every PR is overkill and the cost exceeds the catch.\n`
       );
     });
     expect(report.violations.length).toBeGreaterThan(0);
@@ -96,23 +95,36 @@ describe('verification-depth rule checker', () => {
     const report = withRepoCopy((root) => {
       const p = join(root, '.claude', 'skills', 'pick-integ', 'SKILL.md');
       const body = readFileSync(p, 'utf8');
-      const stripped = body.replace(/\*\*The ranking is a running ORDER[^\n]*\n/, '');
-      writeFileSync(p, `${stripped}\n\nDrop the P2 rows to save a run.\n`);
+      writeFileSync(p, `${body}\n\nDrop the P2 rows to save a run.\n`);
     });
     expect(report.violations.some((v) => v.file.includes('pick-integ'))).toBe(true);
   });
 
-  it('stays silent while the floor disclaimer is present, even beside the old wording', () => {
-    // The DISCRIMINATION case: /review-pr legitimately quotes the cost argument
-    // in order to override it. Without this the checker would force the rule's
-    // own explanation out of the file it governs.
+  it('STILL flags banned wording in a skill that carries the floor disclaimer', () => {
+    // The blocker the 1-reviewer pass found, inverted into a fence. The first
+    // cut exempted the whole FILE when it carried the disclaimer, and both
+    // `review-pr` and `pick-integ` carry it — so the two skills this rule
+    // exists for were never pattern-scanned at all. Note this probe does NOT
+    // strip the disclaimer: stripping it is what made the original probe pass
+    // for the wrong reason, exercising a path the real tree never takes.
     const report = withRepoCopy((root) => {
       const p = join(root, '.claude', 'skills', 'review-pr', 'SKILL.md');
       const body = readFileSync(p, 'utf8');
       expect(body).toMatch(/FLOOR, not a cap/);
-      writeFileSync(p, `${body}\n\nThe old rule said this is overkill; it no longer applies.\n`);
+      writeFileSync(p, `${body}\n\nRunning all 3 on every PR is overkill; skip the reviewers.\n`);
     });
-    expect(report.violations).toEqual([]);
+    expect(report.violations.length).toBeGreaterThan(0);
+    expect(report.violations[0]!.file).toContain('review-pr');
+  });
+
+  it('flags the same wording in pick-integ, the other disclaimer-carrying skill', () => {
+    const report = withRepoCopy((root) => {
+      const p = join(root, '.claude', 'skills', 'pick-integ', 'SKILL.md');
+      const body = readFileSync(p, 'utf8');
+      expect(body).toMatch(/running ORDER, not a budget/);
+      writeFileSync(p, `${body}\n\nDrop the P2 rows to save a run.\n`);
+    });
+    expect(report.violations.some((v) => v.file.includes('pick-integ'))).toBe(true);
   });
 
   it('honours a REASONED allow marker but rejects a bare one', () => {
@@ -132,6 +144,14 @@ describe('verification-depth rule checker', () => {
       writeFileSync(p, `${body}\n<!-- allow-cost-downscale: -->\nRunning all 3 is overkill.\n`);
     });
     expect(bare.violations.length).toBeGreaterThan(0);
+
+    // A placeholder is not a reason either.
+    const token = withRepoCopy((root) => {
+      const p = join(root, '.claude', 'skills', 'verify-pr', 'SKILL.md');
+      const body = readFileSync(p, 'utf8');
+      writeFileSync(p, `${body}\n<!-- allow-cost-downscale: n -->\nRunning all 3 is overkill.\n`);
+    });
+    expect(token.violations.length).toBeGreaterThan(0);
   });
 
   it('does NOT flag an argument FOR spending', () => {
