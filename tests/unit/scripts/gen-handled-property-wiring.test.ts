@@ -2467,6 +2467,24 @@ describe('assessBaseline — usability stated POSITIVELY (#1842)', () => {
         patch((x) => ({ ...x, status: 'gap' as const })),
         'not wired yet carrying evidence',
       ],
+      // The converse is ITSELF a disjunction, and its two halves cannot be
+      // fenced by any fixture derived from the real matrix: there,
+      // `evidence` and `seededBy` are PERFECTLY CORRELATED (1136 with both, 2
+      // with neither, ZERO one-sided), so every real-data fixture trips both
+      // halves at once. That is the repo's documented "perfectly correlated
+      // signals leave one half unfenced" trap, and it is why this defect
+      // recurred through six rounds — not a missed case, but a discriminating
+      // input real data cannot produce. These two are synthesized deliberately.
+      [
+        'converse, EVIDENCE side only',
+        patch((x) => ({ ...x, status: 'gap' as const, seededBy: [] })),
+        'not wired yet carrying evidence',
+      ],
+      [
+        'converse, SEEDS side only',
+        patch((x) => ({ ...x, status: 'gap' as const, evidence: [] })),
+        'not wired yet carrying evidence',
+      ],
     ];
     for (const [why, baseline, expected] of cases) {
       const a = assessBaseline(baseline, live);
@@ -2474,6 +2492,46 @@ describe('assessBaseline — usability stated POSITIVELY (#1842)', () => {
       expect(a.defect, why).toBe('evidence-stripped');
       expect(a.detail, why).toContain(expected);
     }
+  });
+
+  it('measures the DEPTH of the record, not just pair presence', () => {
+    // Pair counting is binary per pair, so trimming ONE entry's `seededBy` to a
+    // still-non-empty subset of what the current tree proves hid a real loss at
+    // ZERO announced cost — the OK line was byte-identical to the clean-tree
+    // one. Depth is what issue #1842 defends, so depth is what the metric now
+    // reports. It cannot be padded for the same reason the biconditional cannot
+    // be gamed: fabricated evidence must be a SUBSET of what the current run
+    // proves, or the comparison reports it as a loss.
+    const real = loadBaseline(resolve(REPO_ROOT, 'docs/_generated/handled-property-wiring.json'))!;
+    const intact = assessBaseline(real, live);
+    expect(intact.gradedDepth).toBe(
+      real.classes
+        .flatMap((c) => c.properties)
+        .reduce((n, p) => n + p.evidence.length + p.seededBy.length, 0)
+    );
+
+    // Trim one entry's seeds; the PAIR count must not move, the depth must.
+    const ci = real.classes.findIndex((c) => c.properties.some((p) => p.seededBy.length > 1));
+    const pi = real.classes[ci]!.properties.findIndex((p) => p.seededBy.length > 1);
+    const before = real.classes[ci]!.properties[pi]!;
+    const trimmed = {
+      ...real,
+      classes: real.classes.map((c, i) =>
+        i !== ci
+          ? c
+          : {
+              ...c,
+              properties: c.properties.map((p, j) =>
+                j !== pi ? p : { ...p, seededBy: p.seededBy.slice(0, 1) }
+              ),
+            }
+      ),
+    } as HandledPropertyWiringReport;
+    const after = assessBaseline(trimmed, live);
+    expect(after.gradedPairs, 'pair counting is blind to a trim').toBe(intact.gradedPairs);
+    expect(after.gradedDepth, 'depth is not').toBe(
+      intact.gradedDepth - (before.seededBy.length - 1)
+    );
   });
 
   it('counts as GRADED only the pairs the baseline could actually fail on', () => {

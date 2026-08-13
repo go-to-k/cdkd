@@ -58,9 +58,16 @@
  *     allow-listing those 29 properties: the names come from the table, so
  *     ADDING a declared property without adding it to the table still fails.
  *     49 declared properties across 8 classes carry a `table-loop` tag today;
- *     29 of them have it as their ONLY evidence (GlueJobProvider 16,
- *     SQSQueueProvider 13), which is what makes the delivery requirement below
- *     load-bearing rather than cosmetic. (The totals move whenever a provider
+ *     29 of them would flip straight to `gap` if the recognizer died
+ *     (GlueJobProvider 16, SQSQueueProvider 13), which is what makes the
+ *     delivery requirement below load-bearing rather than cosmetic. "Would flip
+ *     to gap" rather than "has table-loop as its only evidence", because the two
+ *     readings differ and review split on them: only 13 have an evidence array
+ *     of EXACTLY `['table-loop']` (all SQS), while Glue's 16 read
+ *     `['delegated', 'table-loop']`. Both flip, because `delegated` is a tag
+ *     added INSIDE `record()` and never stands alone — measured, zero properties
+ *     carry it by itself — so losing the only recording shape leaves no
+ *     evidence at all. (The totals move whenever a provider
  *     adds or drops a pass-through table — they were 43 across 5 at #1414 and
  *     47 across 7 before #1808 — so treat them as a snapshot, not an invariant;
  *     the enforced floors live in the unit suite.)
@@ -1416,6 +1423,11 @@ export function loadBaseline(path: string = OUT_JSON): HandledPropertyWiringRepo
   }
   try {
     const parsed = JSON.parse(raw) as Partial<HandledPropertyWiringReport>;
+    // `!Array.isArray(parsed.classes)` has the same defence-in-depth character as
+    // the `properties` clause below — the walks past it would throw and the outer
+    // catch would convert that to null, so the shipped command's stderr is
+    // byte-identical with and without it. Both are kept for the same reason:
+    // they stop being redundant the moment that catch is narrowed.
     if (parsed?.schemaVersion !== 1 || !Array.isArray(parsed.classes)) return null;
     // Defence in depth, and honestly labelled as such: the element walk below
     // would also throw on a non-array and the outer catch would convert that to
@@ -1479,6 +1491,12 @@ export interface BaselineAssessment {
   readonly gradedPairs: number;
   /** (class, property) pairs the current report declares. */
   readonly currentPairs: number;
+  /**
+   * Total evidence ENTRIES (`evidence` + `seededBy` items) the baseline holds
+   * for the pairs it grades. Pair counting is binary per pair and so cannot see
+   * a record being thinned; this can.
+   */
+  readonly gradedDepth: number;
   /** DISTINCT `Class#Property` keys the baseline holds. */
   readonly baselinePairs: number;
   /** What the baseline's own `summary` claims it holds. */
@@ -1528,16 +1546,24 @@ export interface BaselineAssessment {
  * — nothing weaker. So NOT "whatever tree it describes": a disjoint one is
  * refused by 3, and a blanked one by 2. What IS admitted, and is the bound:
  *   - a self-consistent SUBSET — the committed matrix minus one pair with
- *     `declaredProperties` decremented is accepted and grades 1137/1138;
+ *     `declaredProperties` decremented is accepted, and announces one pair below
+ *     the 1136/1138 ceiling (1136 rather than 1138 because the two allow-listed
+ *     properties carry no evidence to grade);
  *   - an OLDER committed matrix restored by a merge or checkout, which is
  *     self-consistent by construction. Accepting that is CORRECT: it is a real
  *     baseline describing a real tree and it reports real losses;
  *   - a property relabelled to a DIFFERENT VALID status with its evidence
  *     blanked and the summary recomputed — a deliberate, hand-made edit that
  *     hides exactly one loss.
- * All three announce themselves: every exit-0 path prints `graded N/M pairs`,
- * and because that count is over PROVABLE pairs, each of these reports a number
- * below the ceiling rather than a clean full-coverage line.
+ * A FOURTH, and the minimal one: any baseline entry may be weakened to a
+ * non-empty SUBSET of what the current tree proves — trimming one `seededBy`
+ * hides a real loss and moves no pair count at all. That is why the announced
+ * metric now carries DEPTH (`evidence` + `seededBy` entries) as well as pairs:
+ * the pair count is binary per pair and cannot see a record being thinned,
+ * while the depth moves (measured: 5384 -> 5382 on exactly that tamper). None
+ * of the four is REFUSED — they are self-consistent baselines describing real
+ * trees — but each now costs a visible number on every exit-0 path, which is
+ * the honest guarantee rather than a claim of closure.
  */
 export function assessBaseline(
   baseline: HandledPropertyWiringReport | null,
@@ -1549,6 +1575,7 @@ export function assessBaseline(
       usable: false,
       gradedPairs: 0,
       currentPairs,
+      gradedDepth: 0,
       baselinePairs: 0,
       baselineClaimedPairs: null,
       defect: 'absent',
@@ -1562,12 +1589,21 @@ export function assessBaseline(
   // evidence and no seeds cannot lose any, so counting it as "graded" made the
   // announced number a claim about key presence rather than about provable
   // content: a wholesale blanking still printed `graded 1138/1138`.
-  const provable = new Set<string>();
+  const provable = new Map<string, number>();
   for (const c of baseline.classes) {
     for (const p of c.properties) {
       const key = allowKey(c.className, p.name);
       known.add(key);
-      if (p.evidence.length > 0 || p.seededBy.length > 0) provable.add(key);
+      // The `||` here is deliberately NOT narrowed to `&&`: narrowing would
+      // only ever UNDERCOUNT graded pairs, i.e. fail closed, and once condition
+      // 2 has passed the two are equivalent anyway — the biconditional
+      // guarantees a wired entry carries both fields and a non-wired one
+      // carries neither, so no baseline reaching the comparison has a one-sided
+      // entry. Noted rather than fenced, because no input can distinguish them
+      // downstream of condition 2.
+      if (p.evidence.length > 0 || p.seededBy.length > 0) {
+        provable.set(key, p.evidence.length + p.seededBy.length);
+      }
     }
   }
   const baselinePairs = known.size;
@@ -1577,12 +1613,23 @@ export function assessBaseline(
       : null;
 
   let gradedPairs = 0;
+  let gradedDepth = 0;
   for (const c of current.classes) {
     for (const p of c.properties) {
-      if (provable.has(allowKey(c.className, p.name))) gradedPairs += 1;
+      const depth = provable.get(allowKey(c.className, p.name));
+      if (depth !== undefined) {
+        gradedPairs += 1;
+        gradedDepth += depth;
+      }
     }
   }
-  const base = { gradedPairs, currentPairs, baselinePairs, baselineClaimedPairs: claimedPairs };
+  const base = {
+    gradedPairs,
+    currentPairs,
+    gradedDepth,
+    baselinePairs,
+    baselineClaimedPairs: claimedPairs,
+  };
 
   // 1. The WHOLE summary, recomputed from the baseline's own classes. The
   //    generator writes them in agreement by construction, so any disagreement
@@ -1889,7 +1936,7 @@ const BASELINE_DEFECT_LINE: Record<BaselineDefect, (a: BaselineAssessment) => st
 const unusableBaselineFailure = (path: string, a: BaselineAssessment): string =>
   `handled-property-wiring: FAIL — unusable baseline at ${path}\n` +
   `${BASELINE_DEFECT_LINE[a.defect ?? 'absent'](a)}\n` +
-  `Graded ${a.gradedPairs}/${a.currentPairs} pairs.\n\n` +
+  `Graded ${a.gradedPairs}/${a.currentPairs} pairs (${a.gradedDepth} evidence entries).\n\n` +
   'The evidence-loss check (issue #1842) grades this run against that matrix, so reporting a\n' +
   'green verdict here, or rewriting the file from here, would install whatever the current\n' +
   'tree happens to support as the new baseline, unreviewed.\n\n' +
@@ -2140,7 +2187,8 @@ function main(argv: readonly string[] = process.argv.slice(2)): void {
       `handled-property-wiring: OK — ${report.summary.classifiedCount} provider classes, ` +
         `${report.summary.wiredProperties}/${report.summary.declaredProperties} declared ` +
         `properties with read evidence, 0 gaps, 0 evidence losses ` +
-        `(graded ${assessment.gradedPairs}/${assessment.currentPairs} pairs against the baseline; ` +
+        `(graded ${assessment.gradedPairs}/${assessment.currentPairs} pairs, ` +
+        `${assessment.gradedDepth} evidence entries, against the baseline; ` +
         `${report.summary.wired} wired, ` +
         `${report.summary.allowListed} allow-listed, ` +
         `${report.summary.classesWithBlindSpots} with a recorded blind spot).\n`
@@ -2185,7 +2233,8 @@ function main(argv: readonly string[] = process.argv.slice(2)): void {
     // exactly why it is a separate flag from the loss waiver.
     process.stderr.write(
       `handled-property-wiring: ACCEPTED MISSING BASELINE (${ACCEPT_MISSING_BASELINE_FLAG}) — the\n` +
-        `baseline at ${baselinePath} grades ${assessment.gradedPairs}/${assessment.currentPairs} pairs, so this run was graded\n` +
+        `baseline at ${baselinePath} grades ${assessment.gradedPairs}/${assessment.currentPairs} pairs\n` +
+        `(${assessment.gradedDepth} evidence entries), so this run was graded\n` +
         'against NOTHING and the file below becomes the new baseline unreviewed. Legitimate\n' +
         'only for a first-ever generation.\n'
     );
@@ -2196,7 +2245,7 @@ function main(argv: readonly string[] = process.argv.slice(2)): void {
   atomicWrite(outMd, renderMarkdown(report) + '\n');
   process.stderr.write(
     `handled-property-wiring: graded ${assessment.gradedPairs}/${assessment.currentPairs} pairs ` +
-      `against the baseline at ${baselinePath}.\n`
+      `(${assessment.gradedDepth} evidence entries) against the baseline at ${baselinePath}.\n`
   );
   process.stderr.write(
     `handled-property-wiring: wrote handled-property-wiring.{json,md} — ` +
