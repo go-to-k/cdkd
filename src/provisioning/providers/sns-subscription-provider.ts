@@ -14,6 +14,7 @@ import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
+  ResourceDeleteResult,
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
@@ -215,11 +216,53 @@ export class SNSSubscriptionProvider implements ResourceProvider {
     this.logger.debug(`Updating SNS subscription ${logicalId}: ${physicalId}`);
 
     // Delete old subscription
+    let deleteResult: void | ResourceDeleteResult = undefined;
     try {
-      await this.delete(logicalId, physicalId, resourceType);
+      deleteResult = await this.delete(logicalId, physicalId, resourceType);
     } catch (error) {
       this.logger.warn(
         `Failed to delete old subscription ${physicalId} during update: ${String(error)}`
+      );
+    }
+
+    // Issue #1778: this provider replaces DELETE-first, so a skipped delete
+    // means the old subscription is still LIVE — and creating the new one
+    // below would leave two subscriptions on the topic, delivering every
+    // message twice. That is user-visible, not a silent leak, so abort
+    // instead: a skip issues no AWS call, so throwing here leaves the world
+    // exactly as it was (state still names the old subscription, nothing
+    // duplicated) and the error names the repair.
+    //
+    // Deliberately NOT symmetric with the catch above, which creates anyway
+    // after a FAILED delete: a throw may mean the unsubscribe partially
+    // landed, was transient, or that the subscription is already gone, so
+    // converging is the better bet. A skip is a positive statement that
+    // nothing was touched and the old subscription is still there, which
+    // makes the duplicate a certainty rather than a risk — that distinction
+    // is exactly what the #1752 outcome mechanism exists to express. The
+    // check lives OUTSIDE the try for the same reason: `delete()` raises its
+    // own `ProvisioningError` on a real failure, so throwing from inside
+    // would be caught by that handler, and re-throwing typed errors from it
+    // would turn today's warn-and-continue failure path into a hard failure.
+    //
+    // Right for every `update()` caller, which is the bar an abort has to
+    // clear: `cdkd deploy` (the resource fails and rolls back rather than
+    // double-subscribing), `cdkd drift --revert` (the reverted subscription is
+    // reported as a failed revert rather than duplicated), and the rollback
+    // executor's revert arms (same). None of the three is better served by a
+    // second live subscription.
+    //
+    // Latent today: the two pending-confirmation arms in `delete` are
+    // deliberate CFn-parity delete-SUCCESS (see their comments), not skips,
+    // so no arm produces this outcome yet.
+    if (deleteResult?.outcome === 'skipped') {
+      throw new ProvisioningError(
+        `Cannot replace SNS subscription ${logicalId}: the old subscription ${physicalId} was not deleted ` +
+          `(${deleteResult.reason}). Creating the replacement would leave both subscribed to the topic and ` +
+          `deliver every message twice. Remove the old subscription, then re-run.`,
+        resourceType,
+        logicalId,
+        physicalId
       );
     }
 
@@ -242,7 +285,7 @@ export class SNSSubscriptionProvider implements ResourceProvider {
     resourceType: string,
     _properties?: Record<string, unknown>,
     context?: DeleteContext
-  ): Promise<void> {
+  ): Promise<void | ResourceDeleteResult> {
     this.logger.debug(`Deleting SNS subscription ${logicalId}: ${physicalId}`);
 
     // A never-confirmed subscription may be recorded under the literal

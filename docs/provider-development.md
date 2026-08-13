@@ -1603,6 +1603,45 @@ DISCARDED by the deploy-side delete call sites (issue #1762), while a throw
 reaches every caller — so converting a skip into a throw also changes
 `cdkd deploy`'s behavior when the resource is removed from the template.
 
+**A provider that DELEGATES its delete to another provider propagates the
+delegate's outcome** (issue
+[#1778](https://github.com/go-to-k/cdkd/issues/1778)). `CloudControlProvider`
+hands a protected `AWS::AutoScaling::AutoScalingGroup` to `ASGProvider.delete`
+under `--remove-protection`, and discarding that verdict is the nested-stack
+hole one layer down: a skip inside the delegate reached the destroy runner as a
+plain successful delete. `return await delegate.delete(...)` is the whole fix.
+Type the delegate as `ResourceProvider` rather than as its concrete class, so
+the forwarding stays correct when the delegate widens its own return type.
+The alternative contract — ASSERT the delegate cannot skip — was rejected: it
+has to be re-verified every time the delegate grows an arm, and it fails
+loudly on a case the delegate considers merely unaddressable.
+
+**And a provider that pairs `create()` + `delete()` inside its own `update()`
+must not swallow the delete's outcome either** (same issue). A skip does not
+throw, so it slips past the `catch` that would have warned — precisely when the
+old resource IS left behind. What to do depends on the ORDERING, and it is not
+the same for all of them:
+
+- **create-then-delete** (ACM certificate, IAM managed policy, IAM role): the
+  new resource already exists and `ResourceUpdateResult` has no skip channel,
+  so the replacement cannot be aborted. WARN, in the same orphan wording the
+  failure arm uses (`The old role may be orphaned and require manual
+  cleanup.`), naming the skip's `reason`.
+- **delete-then-create** (SNS subscription): the skip issues no AWS call, so
+  ABORT with a `ProvisioningError` BEFORE creating the replacement. Continuing
+  would leave two subscriptions on the topic and deliver every message twice;
+  throwing leaves the world exactly as it was.
+
+An abort on an `update()` path must be right for EVERY caller, not only the
+template-driven one — `cdkd drift --revert` and the rollback executor's revert
+arms call `update()` with a state-borne desired bag (see §1a). The SNS abort
+clears that bar because a second live subscription serves none of the three;
+where a refusal would not, downgrade it to a warning instead.
+Note this is deliberately NOT symmetric with a THROWN delete, which those
+providers still warn-and-continue past: a throw may mean the delete partially
+landed or was transient, while a skip is a positive statement that nothing was
+touched.
+
 Producers today: the malformed-composite-physicalId family
 (`src/provisioning/composite-id.ts`, five arms) plus the nested-stack
 propagation above. Same-class arms elsewhere in the tree (Lambda layer /

@@ -1105,6 +1105,30 @@ Three more details generalize to any provider that recurses:
   `cdkd state orphan <target>` hint used to name the parent, which would drop
   the `Child` row the throw just preserved.
 
+**A provider that DELEGATES a delete, or pairs create + delete inside its own
+`update()`, must not discard the result either** (issue
+[#1778](https://github.com/go-to-k/cdkd/issues/1778)). The delegation case is
+the nested-stack hole one layer down — `CloudControlProvider` hands a protected
+ASG to `ASGProvider.delete` under `--remove-protection`, so it now
+`return await`s the delegate (typed as `ResourceProvider`, so the forwarding
+survives the delegate widening its own return type). The chosen contract is
+PROPAGATE rather than ASSERT-it-cannot-skip: an assertion needs re-verifying
+every time the delegate grows an arm, and it fails LOUDLY on a case the
+delegate considers merely unaddressable. The REPLACE case splits on ORDERING,
+because a skip does not throw and therefore bypasses exactly the `catch` that
+would have told the user: **create-then-delete** (ACM certificate, IAM managed
+policy, IAM role) cannot abort — the new resource exists and
+`ResourceUpdateResult` has no skip channel — so it WARNS in the same orphan
+wording the failure arm uses; **delete-then-create** (SNS subscription) ABORTS
+with a `ProvisioningError` before creating the replacement, since continuing
+would leave two subscriptions delivering every message twice while a skip has
+issued no AWS call at all, so the throw leaves the world unchanged. An abort
+added to an `update()` path has to be right for EVERY caller — `deploy`,
+`drift --revert`, and the rollback executor's revert arms — per the
+update-path rule above; downgrade to a warning where it is not. All six sites
+are LATENT (none of these providers has a skip arm yet), which is what makes
+them worth fixing BEFORE #1770 adds the arms.
+
 Three things about it are decisions rather than accidents. The exit code is
 **not** a new policy: it is the same "state preserved, stack not destroyed"
 contract `errorCount > 0` and a graceful interrupt already carry, so a run that
