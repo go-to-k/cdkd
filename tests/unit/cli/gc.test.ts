@@ -83,7 +83,7 @@ import {
   type AssetReferences,
 } from '../../../src/cli/commands/gc.js';
 import { CdkdError } from '../../../src/utils/error-handler.js';
-import { derivePartitionAndUrlSuffix } from '../../../src/utils/aws-partition.js';
+import { derivePartitionAndUrlSuffix, PARTITION_TABLE } from '../../../src/utils/aws-partition.js';
 import type { BootstrapMarker } from '../../../src/assets/asset-storage.js';
 
 const ACCOUNT = '123456789012';
@@ -814,46 +814,56 @@ describe('cdkd gc', () => {
       return refs;
     }
 
-    // One region per partition `derivePartitionAndUrlSuffix` knows today.
+    // ONE region per row of the EXPORTED partition table, synthesized from the
+    // row's own prefix rather than hand-written (issue #1785).
     //
-    // SCOPE, stated because the obvious stronger claim is NOT true: this list
-    // is hand-written, so it fences the SUFFIX each listed region derives (flip
-    // `cn-north-1` to a different suffix in that table and the first test below
-    // reds) but NOT the arrival of a NEW arm — a new region prefix + suffix
-    // added there reds nothing here, because nothing enumerates the table.
-    // Coupling gc's list to it needs `src/utils/aws-partition.ts` to export the
-    // mapping, tracked as (#1785).
-    const DERIVE_TABLE_REGIONS = [
-      'us-east-1', // aws          -> amazonaws.com
-      'us-gov-west-1', // aws-us-gov   -> amazonaws.com
-      'cn-north-1', // aws-cn       -> amazonaws.com.cn
-      'us-iso-east-1', // aws-iso      -> c2s.ic.gov
-      'us-isob-east-1', // aws-iso-b    -> sc2s.sgov.gov
+    // This is the half the previous hand-written list could not do: a new arm
+    // added to `PARTITION_TABLE` now arrives here on its own, so a suffix gc
+    // does not match reds INSTEAD of silently deleting that partition's live
+    // assets. `derivePartitionAndUrlSuffix` is still the thing under test for
+    // the suffix each region resolves to — the row is only the source of the
+    // region to probe, and that a probe reaches its OWN row (rather than an
+    // earlier row swallowing it) is pinned by `reaches every row through the
+    // public function` in `tests/unit/utils/aws-partition.test.ts`.
+    const DERIVE_TABLE_PROBES = PARTITION_TABLE.map((row) => `${row.prefix}probe-1`);
+
+    // A hand-written FLOOR of the suffixes cdkd has already written into state
+    // files, asserted independently of the table.
+    //
+    // Deriving gc's list from `PARTITION_TABLE` propagates ADDITIONS, but it
+    // also means a row edited or removed there would silently stop gc matching
+    // state already written with the old suffix — the irreversible direction.
+    // This literal is what makes such a removal red: the suffix has to be
+    // carried over into `GC_EXTRA_URL_SUFFIXES` deliberately.
+    const RECORDED_SUFFIX_FLOOR = [
+      'amazonaws.com', // aws, aws-us-gov
+      'amazonaws.com.cn', // aws-cn
+      'amazonaws.eu', // aws-eusc
+      'c2s.ic.gov', // aws-iso
+      'sc2s.sgov.gov', // aws-iso-b
+      'cloud.adc-e.uk', // aws-iso-e
+      'csp.hci.ic.gov', // aws-iso-f
     ];
 
-    // The arms `derivePartitionAndUrlSuffix` does NOT know yet (issue #1764).
-    // gc must match them anyway: a suffix missing from gc's list deletes live
-    // assets, which is the irreversible direction.
-    const UNTABLED_SUFFIXES = [
-      ['eu-isoe-west-1', 'cloud.adc-e.uk'],
-      ['us-isof-south-1', 'csp.hci.ic.gov'],
-      ['eusc-de-east-1', 'amazonaws.eu'],
-    ];
+    it('collects a virtual-hosted S3 reference for every arm of the exported partition table', () => {
+      // The count floor proves the loop SAW its input: an accidentally empty
+      // (or filtered-to-nothing) table would otherwise pass vacuously.
+      expect(DERIVE_TABLE_PROBES.length).toBeGreaterThanOrEqual(7);
 
-    it('collects a virtual-hosted S3 reference for every partition listed above', () => {
-      for (const region of DERIVE_TABLE_REGIONS) {
+      for (const region of DERIVE_TABLE_PROBES) {
         const { urlSuffix } = derivePartitionAndUrlSuffix(region);
         const refs = collect(`https://${ASSET_BUCKET}.s3.${region}.${urlSuffix}/live-asset.zip`);
         expect([...refs.s3Keys], `region ${region} (${urlSuffix})`).toEqual(['live-asset.zip']);
       }
     });
 
-    it('collects a virtual-hosted S3 reference for the partitions the derive table lacks', () => {
-      for (const [region, urlSuffix] of UNTABLED_SUFFIXES) {
-        const refs = collect(`https://${ASSET_BUCKET}.s3.${region}.${urlSuffix}/live-asset.zip`);
-        expect([...refs.s3Keys], `region ${region} (${urlSuffix})`).toEqual(['live-asset.zip']);
+    it('still collects every suffix already recorded in state, table row or not', () => {
+      for (const urlSuffix of RECORDED_SUFFIX_FLOOR) {
+        const refs = collect(`https://${ASSET_BUCKET}.s3.some-region-1.${urlSuffix}/live-asset.zip`);
+        expect([...refs.s3Keys], `suffix ${urlSuffix}`).toEqual(['live-asset.zip']);
       }
     });
+
 
     it('collects a path-style S3 reference outside commercial; commercial unchanged', () => {
       expect([
