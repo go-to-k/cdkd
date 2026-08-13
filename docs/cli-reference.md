@@ -2446,6 +2446,44 @@ to inspect) and re-run, or delete the resource by hand and drop the
 record with `cdkd state orphan <stack>`. The summary line names the exact
 state file(s) to open, which for a nested-stack skip is the child's.
 
+#### A nested stack whose child FAILED is an error, not a skip (issue #1777)
+
+The third outcome a child stack's destroy can report is a resource that was
+ATTEMPTED and FAILED. That is **not** a skip — a skip asserts no AWS call was
+issued — so the parent's `AWS::CloudFormation::Stack` row FAILS, exactly as a
+failed delete of any other resource type does:
+
+```text
+✗ Failed to delete Child: Nested stack MyStack~Child failed to destroy: 1 resource(s) failed to delete.
+  The child's state is PRESERVED and still lists them — inspect it with 'cdkd state show MyStack~Child',
+  resolve the failure, and re-run the destroy. ...
+
+⚠ Stack MyStack partially destroyed (2 deleted, 1 errors). State preserved ...   # exit 2
+```
+
+Before this change the parent swallowed the child's error count: it printed
+`✓ Child (AWS::CloudFormation::Stack) deleted`, dropped the child's row, and —
+because the parent itself had recorded no errors — deleted the parent's
+`state.json` and its exports-index entries and exited **0**, while the child's
+own `state.json` sat preserved describing live, billing resources that nothing
+named any more. If you scripted around the old exit code, note that this
+destroy now exits 2.
+
+**`cdkd deploy` is affected too.** Removing an `AWS::CloudFormation::Stack`
+from your template routes that row through the deploy engine's DELETE path, so
+a child that fails to destroy now **fails the deploy** (and its siblings roll
+back) where it previously recorded the row as deleted and carried on. Same
+correctness argument, wider blast radius: verify a nested stack destroys
+cleanly before removing it from the template.
+
+The remedy the summary prints names the CHILD's state file
+(`cdkd state orphan <parent>~<child>`), not the parent's — the resource that
+failed lives in the child, and orphaning the parent would drop the very row
+that keeps the child reachable. A run that has BOTH failures and skips prints
+each remedy separately, since they are different in kind: a failure is
+retryable (`cdkd destroy` again), while a skip needs its state record repaired
+first.
+
 The run-level exit message counts **entries**, not resources: a skipped
 nested-stack row is one entry however many of the child's own resources it
 covers. The per-stack summary lines above it give the exact breakdown.

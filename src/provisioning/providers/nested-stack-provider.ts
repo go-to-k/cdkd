@@ -20,6 +20,10 @@ import {
   type AssetRedirectMap,
 } from '../../assets/asset-redirect.js';
 import { getLogger } from '../../utils/logger.js';
+// Leaf module by design — see the note in nested-stack-messages.ts: importing
+// this builder from anywhere on the provider/destroy-runner ring re-creates the
+// cycle it was extracted to break.
+import { nestedStackChildFailureMessage } from '../nested-stack-messages.js';
 
 /**
  * Returns `true` when `p` is absolute on the current platform OR begins
@@ -355,16 +359,49 @@ export class NestedStackProvider implements ResourceProvider {
     // while the parent — with no signal — prints `✓ <Child> deleted`, drops the
     // child's row, and exits 0. It is reported as a skip for the same reason:
     // the child stack was NOT destroyed, so the parent's record of it must
-    // survive. Safe to do here where `errorCount` is not, because the run is
-    // already ending non-zero (the runner sets `interrupted` on the parent too,
-    // and both CLIs raise PartialFailureError for it) — so this changes what
-    // SURVIVES, not whether the command fails.
+    // survive. A skip rather than a throw is right for it because NOTHING
+    // failed — the run is already ending non-zero (the runner sets
+    // `interrupted` on the parent too, and both CLIs raise PartialFailureError
+    // for it), so this changes what SURVIVES, not whether the command fails,
+    // and an interrupt is a user-requested stop rather than a failure.
     //
-    // `errorCount` is deliberately NOT propagated here: that hole predates this
-    // issue and its answer is a THROW (a failed child delete must fail the
-    // parent's resource), which is a behavior change with its own blast radius.
-    // Tracked separately as issue
-    // [#1777](https://github.com/go-to-k/cdkd/issues/1777).
+    // `errorCount` is the THIRD field saying "this child stack is NOT gone",
+    // and it is the only one whose honest answer is a THROW rather than a skip
+    // (issue [#1777](https://github.com/go-to-k/cdkd/issues/1777)). A resource
+    // inside the child was ATTEMPTED and FAILED — so the parent's
+    // `AWS::CloudFormation::Stack` row must FAIL too, exactly as a failed
+    // delete of any other resource type does. Reporting it as a skip would be
+    // a lie in the other direction (a skip means no AWS call was issued), and
+    // swallowing it was the pre-#1777 behavior: the parent printed
+    // `✓ <Child> deleted`, dropped the child's row AND — with its own
+    // `errorCount` still 0 — deleted the parent's `state.json` and the exports
+    // index outright, exiting 0 over a child whose preserved state.json
+    // describes live resources. Throwing keeps the row, preserves the parent's
+    // state, and surfaces a non-zero exit.
+    //
+    // This is deliberately a BEHAVIOR CHANGE, and it reaches BOTH callers of
+    // `delete` — unlike a `{ outcome: 'skipped' }` return value, which the
+    // deploy-side sites still discard (issue #1762), a throw cannot be ignored:
+    //   - `cdkd destroy` / `cdkd state destroy` — the parent's nested-stack row
+    //     now fails (exit 2) where it previously reported the child deleted;
+    //   - `cdkd deploy` — REMOVING a nested stack from the template routes the
+    //     row through the deploy engine's DELETE path, so a child that fails to
+    //     destroy now fails the DEPLOY (and triggers its rollback) where it
+    //     previously recorded the row as deleted and carried on.
+    // The deploy-side reach is the wider half of the blast radius; it is the
+    // same correctness argument, but it turns a silent success into a failed
+    // deploy rather than a failed destroy.
+    if (childResult.errorCount > 0) {
+      throw new Error(
+        nestedStackChildFailureMessage(
+          childStackName,
+          childResult.errorCount,
+          childResult.skippedCount,
+          childResult.interrupted
+        )
+      );
+    }
+
     if (childResult.skippedCount > 0 || childResult.interrupted) {
       const causes: string[] = [];
       if (childResult.skippedCount > 0) {
