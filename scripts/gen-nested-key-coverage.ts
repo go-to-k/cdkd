@@ -2044,7 +2044,7 @@ export const NESTED_KEY_ALLOW_LIST: ReadonlyMap<string, AllowListEntry> = new Ma
     allowKey('AWS::S3::Bucket', 'LifecycleConfiguration.Rules.TagFilters.Value'),
     {
       rationale:
-        'Same destructured-gatherScope forward as the sibling ' +
+        'Same destructured-`lifecycleRuleScope` forward as the sibling ' +
         '`LifecycleConfiguration.Rules.TagFilters.Key` entry (issue #1540).',
       passes: ['write'],
     },
@@ -2055,9 +2055,9 @@ export const NESTED_KEY_ALLOW_LIST: ReadonlyMap<string, AllowListEntry> = new Ma
       rationale:
         'Presence-encoded: the SDK EventBridgeConfiguration is an EMPTY struct, so the CFn ' +
         'boolean has no member to map onto — applyNotificationConfiguration writes ' +
-        '`EventBridgeConfiguration: {}` when the flag is truthy and omits the block when it ' +
-        'is not. There is no write the terminal-rename mechanism could redirect to ' +
-        '(issue #1393).',
+        '`EventBridgeConfiguration: {}` when the COERCED boolean is true and omits the block ' +
+        'when it is false, REFUSING any value coerceCfnBoolean cannot read (issue #1759). ' +
+        'There is no write the terminal-rename mechanism could redirect to (issue #1393).',
       passes: ['key'],
     },
   ],

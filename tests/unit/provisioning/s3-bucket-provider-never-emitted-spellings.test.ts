@@ -1262,3 +1262,386 @@ describe('issue #1759: the notification EventBridge / empty-family residuals', (
     expect(readback['EventBridgeConfiguration']).toEqual({ EventBridgeEnabled: false });
   });
 });
+
+/**
+ * The arms the first cut of these folds left unprobed — every one of them a case
+ * where a REGRESSION would pass the rows above.
+ *
+ * The nullish rows are the sharpest and the reason this block exists: a
+ * `??` / nullish default in a canonicalizer reads a DECLARED `null` as ABSENT and
+ * folds the template onto the substituted value, which kills the provider's own
+ * refusal — and every NON-nullish malformed fixture (`'yes'`, an array, an
+ * unresolved intrinsic) passes happily against that bug. So each fold is probed
+ * with a declared `null` specifically.
+ */
+describe('the declared-null and refusal arms of each fold', () => {
+  const scoped = (extra: Record<string, unknown>) => ({
+    Id: 'r1',
+    Status: 'Enabled',
+    Prefix: 'x/',
+    ...extra,
+  });
+  const canonicalRule = (rules: Array<Record<string, unknown>>): Record<string, unknown> =>
+    at(
+      provider.canonicalizeDesiredProperties(RESOURCE_TYPE, {
+        LifecycleConfiguration: { Rules: rules },
+      }),
+      'LifecycleConfiguration',
+      'Rules',
+      0
+    ) as Record<string, unknown>;
+
+  it('REFUSES a DECLARED-null EventBridgeEnabled rather than reading it as absent', async () => {
+    // The #1751 trap, one property over. `coerceCfnBoolean(null)` is `undefined`,
+    // so a guard narrowed to "declared AND non-null" would take the ABSENT branch
+    // and ENABLE delivery on a live bucket — and `'yes'` would still refuse, so
+    // the existing rows would not notice.
+    await provider.update(
+      'L',
+      BUCKET,
+      RESOURCE_TYPE,
+      {
+        BucketName: BUCKET,
+        NotificationConfiguration: {
+          EventBridgeConfiguration: { EventBridgeEnabled: null },
+        },
+      },
+      { BucketName: BUCKET }
+    );
+
+    expect(sentCommands(PutBucketNotificationConfigurationCommand)).toHaveLength(0);
+    expect(childLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('EventBridgeEnabled must be a boolean')
+    );
+  });
+
+  it('...and the twin leaves that same declared null completely alone', () => {
+    const block = { EventBridgeEnabled: null };
+    const canonical = provider.canonicalizeDesiredProperties(RESOURCE_TYPE, {
+      NotificationConfiguration: { EventBridgeConfiguration: block },
+    });
+    expect(at(canonical, 'NotificationConfiguration', 'EventBridgeConfiguration')).toEqual(block);
+  });
+
+  it('REFUSES a non-null NON-OBJECT EventBridgeConfiguration container', async () => {
+    // Issue #1759 asked for this arm to be a deliberate decision rather than a
+    // side effect: pre-fix, `!isPlainObject(eb)` was the FIRST disjunct of the
+    // enable gate, so a string container ENABLED delivery. It is now refused by
+    // `configBooleanRefusal`'s container half, and #1430's usable-value polarity
+    // (asserted on both integ phases) is untouched because a real boolean never
+    // reaches this arm.
+    await provider.update(
+      'L',
+      BUCKET,
+      RESOURCE_TYPE,
+      { BucketName: BUCKET, NotificationConfiguration: { EventBridgeConfiguration: 'true' } },
+      { BucketName: BUCKET }
+    );
+
+    expect(sentCommands(PutBucketNotificationConfigurationCommand)).toHaveLength(0);
+    expect(childLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('EventBridgeConfiguration must be an object')
+    );
+  });
+
+  it('records the DEFAULT for a declared block with no EventBridgeEnabled key', () => {
+    // CFn marks the member required, so a bare `{}` is an affirmative declaration
+    // and the wire enables. The RECORD arm is separate from the wire arm and had
+    // no row.
+    const canonical = provider.canonicalizeDesiredProperties(RESOURCE_TYPE, {
+      NotificationConfiguration: { EventBridgeConfiguration: {} },
+    });
+    expect(at(canonical, 'NotificationConfiguration', 'EventBridgeConfiguration')).toEqual({
+      EventBridgeEnabled: true,
+    });
+  });
+
+  it('drops a stray key from the EventBridge block, which the readback never emits', () => {
+    const canonical = provider.canonicalizeDesiredProperties(RESOURCE_TYPE, {
+      NotificationConfiguration: {
+        EventBridgeConfiguration: { EventBridgeEnabled: true, Junk: 1 },
+      },
+    });
+    expect(at(canonical, 'NotificationConfiguration', 'EventBridgeConfiguration')).toEqual({
+      EventBridgeEnabled: true,
+    });
+  });
+
+  it.each([
+    ['a declared null', null],
+    ['a blank string', ''],
+    ['an unresolved intrinsic', { Ref: 'P' }],
+  ])(
+    'leaves an UNREADABLE legacy NoncurrentVersionExpirationInDays (%s) alone',
+    (_label, value) => {
+      // `coerceCfnNumber` answers `undefined`, the wire sends NO
+      // NoncurrentVersionExpiration at all, and nothing warns — so the difference
+      // is the user's only signal.
+      const rule = canonicalRule([scoped({ NoncurrentVersionExpirationInDays: value })]);
+      expect(rule['NoncurrentVersionExpirationInDays']).toEqual(value);
+      expect('NoncurrentVersionExpiration' in rule).toBe(false);
+    }
+  );
+
+  it('leaves a MALFORMED NoncurrentVersionExpiration object beside the legacy scalar alone', () => {
+    // The wire's `isPlainObject` test rejects it and falls through to the scalar,
+    // so folding would REPLACE the malformed value with a well-formed one.
+    const rule = canonicalRule([
+      scoped({ NoncurrentVersionExpirationInDays: 7, NoncurrentVersionExpiration: 'junk' }),
+    ]);
+    expect(rule['NoncurrentVersionExpirationInDays']).toBe(7);
+    expect(rule['NoncurrentVersionExpiration']).toBe('junk');
+  });
+
+  it.each([
+    ['an invalid ExpirationDate string', { ExpirationDate: 'not-a-date' }],
+    ['an invalid nested Expiration.Date', { Expiration: { Date: 'not-a-date' } }],
+    ['a truthy non-shape Expiration', { Expiration: [1, 2] }],
+    [
+      'a non-boolean nested ExpiredObjectDeleteMarker',
+      { Expiration: { Days: 30, ExpiredObjectDeleteMarker: 'true' } },
+    ],
+  ])('leaves an UNFOLDABLE expiration (%s) alone', (_label, extra) => {
+    // Each of these is a shape the applier forwards verbatim (or would send as an
+    // Invalid Date), so there is no effective value to claim AWS will report.
+    const rule = canonicalRule([scoped(extra)]);
+    for (const [key, value] of Object.entries(extra)) expect(rule[key]).toEqual(value);
+  });
+
+  it('DROPS a declared-null Expiration, which sends nothing at all', () => {
+    const rule = canonicalRule([scoped({ Expiration: null })]);
+    expect('Expiration' in rule).toBe(false);
+    expect('ExpirationInDays' in rule).toBe(false);
+  });
+
+  it('folds a nested marker-ONLY Expiration onto the rule-level CFn spelling', () => {
+    const rule = canonicalRule([scoped({ Expiration: { ExpiredObjectDeleteMarker: true } })]);
+    expect('Expiration' in rule).toBe(false);
+    expect(rule['ExpiredObjectDeleteMarker']).toBe(true);
+  });
+
+  it.each([
+    ['a non-array Rules', 'not-a-list'],
+    ['a non-object rule ELEMENT', ['junk']],
+  ])('leaves the WHOLE configuration alone for %s', (_label, rules) => {
+    const canonical = provider.canonicalizeDesiredProperties(RESOURCE_TYPE, {
+      LifecycleConfiguration: { Rules: rules },
+    });
+    expect(at(canonical, 'LifecycleConfiguration', 'Rules')).toEqual(rules);
+  });
+
+  it('leaves the WHOLE configuration alone for a malformed TagFilters container', () => {
+    // The third of the applier's three guards; the `Filter` and `Status` arms are
+    // fenced above and this one was not.
+    const rules = [scoped({ TagFilters: 'not-a-list' })];
+    const canonical = provider.canonicalizeDesiredProperties(RESOURCE_TYPE, {
+      LifecycleConfiguration: { Rules: rules },
+    });
+    expect(at(canonical, 'LifecycleConfiguration', 'Rules')).toEqual(rules);
+  });
+
+  it('reads a declared-null TagFilters as NO ENTRIES, exactly as the wire does', () => {
+    // `== null`, not `=== undefined`: the applier treats it as "no entries", so
+    // the rule stays plain-prefix-only (V1) and the key is dropped because the
+    // readback emits nothing for it.
+    const rule = canonicalRule([scoped({ TagFilters: null, ExpirationInDays: 30 })]);
+    expect('TagFilters' in rule).toBe(false);
+    expect(rule['Prefix']).toBe('x/');
+    expect('Filter' in rule).toBe(false);
+  });
+
+  it.each([
+    ['ObjectSizeGreaterThan', 1024],
+    ['ObjectSizeLessThan', 4096],
+  ])('builds the single-component %s Filter arm', async (key, value) => {
+    const { recorded, readback } = await lifecycleRoundTrip([
+      { Id: 'sized', Status: 'Enabled', [key]: value, ExpirationInDays: 30 },
+    ]);
+    expect(at(recorded, 'Rules', 0, 'Filter')).toEqual({ [key]: value });
+    expect(at(readback, 'Rules', 0)).toEqual(at(recorded, 'Rules', 0));
+  });
+
+  it('MEASURED: an AWS-GENERATED notification Id is NOT folded into the record', async () => {
+    // Issue #1755's fourth bullet, measured rather than assumed. The applier
+    // sends `Id: t['Id']`, so a template declaring none sends none; AWS generates
+    // one and `readNotification` emits it. That is an AWS-COMPUTED value, which
+    // belongs in `observedProperties` (captured by `readCurrentState`) and NOT in
+    // `properties` — putting it there would make the DESIRED baseline drift from
+    // the template and disable the #1160 absent-field removal derivation. It also
+    // fails the #1643 "knowable at send time" test outright: the value does not
+    // exist yet when the fold runs.
+    const { effective, notificationInput } = await update({
+      BucketName: BUCKET,
+      NotificationConfiguration: {
+        TopicConfigurations: [{ Topic: TOPIC_ARN, Event: 's3:ObjectCreated:*' }],
+        EventBridgeConfiguration: { EventBridgeEnabled: false },
+      },
+    });
+
+    // Nothing was folded — the declared item carries no Id and the record keeps none.
+    const recordedItem = (at(effective, 'NotificationConfiguration', 'TopicConfigurations', 0) ??
+      {}) as Record<string, unknown>;
+    expect('Id' in recordedItem).toBe(false);
+
+    // ...while the readback DOES emit the id AWS generated for it.
+    const sent = at(notificationInput, 'NotificationConfiguration') as Record<string, unknown>;
+    const withGeneratedId = {
+      ...sent,
+      TopicConfigurations: [{ ...(sent['TopicConfigurations'] as unknown[])[0]!, Id: 'aws-made' }],
+    };
+    const readback = await readbackOf('notification', withGeneratedId);
+    expect(at(readback, 'TopicConfigurations', 0, 'Id')).toBe('aws-made');
+  });
+});
+
+/**
+ * The three divergences the CODE review found by comparing the fold, the wire
+ * and the readback PER ITEM rather than per member — which is the same
+ * unit-upgrade lesson one level down from the whole-rule fence above.
+ */
+describe('PR-review residuals: transition dates and junk list elements', () => {
+  it('records the ISO TransitionDate the readback emits, not the declared spelling', async () => {
+    // The blocker: the alias fold only RENAMED `Date` -> `TransitionDate`, while
+    // the applier sends `new Date(...)` and `readLifecycle` emits
+    // `.toISOString()`. Exactly the class `foldLifecycleExpiration` closes for
+    // the RULE-level `ExpirationDate` one member over.
+    const { recorded, readback } = await lifecycleRoundTrip([
+      {
+        Id: 'dated-transition',
+        Status: 'Enabled',
+        Prefix: 'x/',
+        Transitions: [{ TransitionDate: '2030-01-01', StorageClass: 'GLACIER' }],
+      },
+    ]);
+
+    expect(at(recorded, 'Rules', 0, 'Transitions', 0)).toEqual({
+      TransitionDate: '2030-01-01T00:00:00.000Z',
+      StorageClass: 'GLACIER',
+    });
+    expect(at(readback, 'Rules', 0)).toEqual(at(recorded, 'Rules', 0));
+  });
+
+  it('...through the SDK `Date` alias too, since the alias fold runs first', () => {
+    const canonical = provider.canonicalizeDesiredProperties(RESOURCE_TYPE, {
+      LifecycleConfiguration: {
+        Rules: [
+          {
+            Id: 'r',
+            Status: 'Enabled',
+            Prefix: 'x/',
+            Transitions: [{ Date: '2030-01-01', StorageClass: 'GLACIER' }],
+          },
+        ],
+      },
+    });
+    expect(at(canonical, 'LifecycleConfiguration', 'Rules', 0, 'Transitions', 0)).toEqual({
+      TransitionDate: '2030-01-01T00:00:00.000Z',
+      StorageClass: 'GLACIER',
+    });
+  });
+
+  it('leaves an UNPARSEABLE TransitionDate alone — the wire sends an Invalid Date', () => {
+    const canonical = provider.canonicalizeDesiredProperties(RESOURCE_TYPE, {
+      LifecycleConfiguration: {
+        Rules: [
+          {
+            Id: 'r',
+            Status: 'Enabled',
+            Prefix: 'x/',
+            Transitions: [{ TransitionDate: 'not-a-date', StorageClass: 'GLACIER' }],
+          },
+        ],
+      },
+    });
+    expect(at(canonical, 'LifecycleConfiguration', 'Rules', 0, 'Transitions', 0)).toEqual({
+      TransitionDate: 'not-a-date',
+      StorageClass: 'GLACIER',
+    });
+  });
+
+  it('drops a JUNK transition element the wire filters, with NO legacy singular present', async () => {
+    // `mergeLegacySingular` filters the plural array unconditionally, so the
+    // junk never reaches AWS. Keying the fold on the singular's presence made
+    // the filtering depend on an unrelated key.
+    const { recorded, readback } = await lifecycleRoundTrip([
+      {
+        Id: 'junky',
+        Status: 'Enabled',
+        Prefix: 'x/',
+        Transitions: ['junk', { TransitionInDays: 30, StorageClass: 'GLACIER' }],
+      },
+    ]);
+
+    expect(at(recorded, 'Rules', 0, 'Transitions')).toEqual([
+      { TransitionInDays: 30, StorageClass: 'GLACIER' },
+    ]);
+    expect(at(readback, 'Rules', 0)).toEqual(at(recorded, 'Rules', 0));
+  });
+
+  it('drops the whole list when every element is junk — the wire sends none', () => {
+    const rule = at(
+      provider.canonicalizeDesiredProperties(RESOURCE_TYPE, {
+        LifecycleConfiguration: {
+          Rules: [{ Id: 'r', Status: 'Enabled', Prefix: 'x/', Transitions: ['junk'] }],
+        },
+      }),
+      'LifecycleConfiguration',
+      'Rules',
+      0
+    ) as Record<string, unknown>;
+    expect('Transitions' in rule).toBe(false);
+  });
+
+  it('filters the junk even when a COLLIDING singular keeps the rule otherwise unfolded', () => {
+    const rule = at(
+      provider.canonicalizeDesiredProperties(RESOURCE_TYPE, {
+        LifecycleConfiguration: {
+          Rules: [
+            {
+              Id: 'r',
+              Status: 'Enabled',
+              Prefix: 'x/',
+              Transitions: ['junk', { TransitionInDays: 30, StorageClass: 'GLACIER' }],
+              Transition: { TransitionInDays: 90, StorageClass: 'GLACIER' },
+            },
+          ],
+        },
+      }),
+      'LifecycleConfiguration',
+      'Rules',
+      0
+    ) as Record<string, unknown>;
+    // The collision keeps the singular visible...
+    expect(rule['Transition']).toEqual({ TransitionInDays: 90, StorageClass: 'GLACIER' });
+    // ...but the junk element still went nowhere.
+    expect(rule['Transitions']).toEqual([{ TransitionInDays: 30, StorageClass: 'GLACIER' }]);
+  });
+
+  it('mirrors the wire TRUTHINESS test on a nested Expiration.Date', () => {
+    // The applier reads `exp['Date'] ? new Date(...) : undefined`, so a falsy
+    // date sends none; a presence test would record 1970-01-01.
+    const rule = at(
+      provider.canonicalizeDesiredProperties(RESOURCE_TYPE, {
+        LifecycleConfiguration: {
+          Rules: [{ Id: 'r', Status: 'Enabled', Prefix: 'x/', Expiration: { Days: 30, Date: 0 } }],
+        },
+      }),
+      'LifecycleConfiguration',
+      'Rules',
+      0
+    ) as Record<string, unknown>;
+    expect('ExpirationDate' in rule).toBe(false);
+    expect(rule['ExpirationInDays']).toBe(30);
+  });
+
+  it('leaves the WHOLE configuration alone when only SOME rule elements are objects', () => {
+    // The vacuity hole the first probe of this arm exposed: with an
+    // all-junk array `objectRules.length === 0` already short-circuits, so only
+    // a MIXED array actually exercises the element-count guard.
+    const rules = [{ Id: 'good', Status: 'Enabled', ExpirationInDays: 30 }, 'junk'];
+    const canonical = provider.canonicalizeDesiredProperties(RESOURCE_TYPE, {
+      LifecycleConfiguration: { Rules: rules },
+    });
+    expect(at(canonical, 'LifecycleConfiguration', 'Rules')).toEqual(rules);
+  });
+});

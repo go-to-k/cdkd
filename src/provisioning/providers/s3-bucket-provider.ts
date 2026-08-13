@@ -559,6 +559,9 @@ function foldToleratedAliases(
   return out ?? bag;
 }
 
+/** The transition date member, held in a CONST so the fold writes it COMPUTED. */
+const TRANSITION_DATE_KEY = 'TransitionDate';
+
 /** The lifecycle `Transitions[]` aliases the applier accepts (issue #1748). */
 const TRANSITION_ALIASES = [
   ['TransitionInDays', 'Days'],
@@ -750,7 +753,19 @@ function effectiveNotificationConfiguration(config: unknown): unknown {
  * desired side onto the retained value, the provider would never be called, and
  * the skip warning would stop — the "mirror what the wire does" rule.
  *
- * MEASURED AND DELIBERATELY NOT FOLDED: `readNotification` emits
+ * MEASURED AND DELIBERATELY NOT FOLDED (1) — the per-item `Id`, which issue
+ * #1755 asked to be measured rather than assumed. The applier sends
+ * `Id: t['Id']`, so a template declaring none sends none, AWS GENERATES one, and
+ * `readNotification` emits it (`if (t.Id !== undefined) e['Id'] = t.Id`). That is
+ * an AWS-COMPUTED value, not a spelling: it belongs in `observedProperties`,
+ * which `readCurrentState` already populates, and `.claude/rules/providers.md` is
+ * explicit that a computed value in `properties` makes the DESIRED baseline drift
+ * from the template and disables the #1160 absent-field removal derivation. There
+ * is also nothing to fold TOWARDS — the value does not exist at send time, which
+ * is the #1643 "knowable at send time" test failing. So: no fold, by measurement
+ * rather than by omission.
+ *
+ * MEASURED AND DELIBERATELY NOT FOLDED (2): `readNotification` emits
  * `EventBridgeConfiguration` UNCONDITIONALLY, so a notification configuration
  * that declares no EventBridge block at all is one key short of the readback.
  * That is NOT this class — nothing was declared, so there is no spelling to
@@ -953,17 +968,65 @@ function foldLegacySingularTransitions(rule: Record<string, unknown>): Record<st
     const singular = rule[singularKey];
     // `isPlainObject`, the same screen `mergeLegacySingular` applies: anything
     // else is ignored by the wire AND left visible here.
-    if (!isPlainObject(singular)) continue;
+    const hasSingular = isPlainObject(singular);
+    const plural = rule[pluralKey];
+    // `mergeLegacySingular` also `.filter(isPlainObject)`s the PLURAL array, and
+    // it does that whether or not a legacy singular is declared — so a junk
+    // element is dropped from the wire either way, and the fold has to drop it
+    // too or the record carries an entry AWS was never sent. Keying the whole
+    // step on the singular's presence made that filtering depend on an unrelated
+    // key (PR review).
+    const needsFilter = Array.isArray(plural) && plural.some((element) => !isPlainObject(element));
+    if (!hasSingular && !needsFilter) continue;
     let collided = false;
-    const merged = mergeLegacySingular(rule[pluralKey], singular, () => {
+    const merged = mergeLegacySingular(plural, hasSingular ? singular : undefined, () => {
       collided = true;
     });
-    if (collided) continue;
     out ??= { ...rule };
+    if (collided) {
+      // The singular stays visible (see above), but the plural's junk elements
+      // still went nowhere.
+      if (needsFilter) out[pluralKey] = (plural as unknown[]).filter(isPlainObject);
+      continue;
+    }
     out[pluralKey] = merged;
-    delete out[singularKey];
+    if (hasSingular) delete out[singularKey];
   }
   return out ?? rule;
+}
+
+/**
+ * Emit a transition's `TransitionDate` as the ISO string the readback emits
+ * (PR review of issues #1754 / #1755).
+ *
+ * The alias fold above only RENAMES `Date` -> `TransitionDate`, but the applier
+ * sends `new Date(t['TransitionDate'] ?? t['Date'])` and `readLifecycle` emits
+ * `t.Date.toISOString()` — so a hand-written / imported `TransitionDate:
+ * '2030-01-01'` recorded a value the readback can never match, with no warning
+ * and nothing malformed. Exactly the class {@link foldLifecycleExpiration}
+ * closes for the RULE-level `ExpirationDate` one member over; found by review
+ * because the fold and the readback were compared per member rather than
+ * per item.
+ *
+ * `NoncurrentVersionTransitions` needs no twin of this: `toSdkNvt` has no date
+ * member at all.
+ *
+ * @returns the item BY IDENTITY when no date is declared, or when it is one the
+ *   applier would put on the wire as an Invalid Date (nothing to record).
+ */
+function foldTransitionDate(item: Record<string, unknown>): Record<string, unknown> {
+  const declared = item[TRANSITION_DATE_KEY];
+  if (declared === undefined) return item;
+  const iso = cfnDateToIso(declared);
+  if (iso === undefined || iso === declared) return item;
+  // COMPUTED key, for the same #1475 reason {@link EVENTBRIDGE_CONFIG_KEY}
+  // records: a DIFF-side literal naming the member reads as a whole-blob
+  // hand-off to `gen-nested-key-coverage`'s write-evidence walk, AND it
+  // withdraws the name from the reverse-map exclusion that keeps `readLifecycle`
+  // from vouching for the forward mapper. Measured both ways.
+  const out = { ...item };
+  out[TRANSITION_DATE_KEY] = iso;
+  return out;
 }
 
 /**
@@ -1009,9 +1072,10 @@ function dropEmptyTransitionLists(rule: Record<string, unknown>): Record<string,
  *   nothing warns, so the difference is the user's only signal;
  * - a date the wire would send as an Invalid Date;
  * - a rule-level `ExpiredObjectDeleteMarker: true` ALONGSIDE a `Days` / `Date`:
- *   S3 forbids the combination, the applier WARNS and applies neither marker
- *   nor a changed expiration, and `cdkd drift` re-reporting the marker until the
- *   template drops one of the two is the correct standing signal.
+ *   S3 forbids the combination, so the applier sends the `Days` / `Date` and
+ *   WARNS that the marker was not applied. Folding the marker away on both sides
+ *   would stop that difference being reported, so `cdkd drift` re-reporting it
+ *   until the template drops one of the two is the correct standing signal.
  *
  * @returns `rule` BY IDENTITY when nothing expiration-shaped is declared.
  */
@@ -1041,7 +1105,10 @@ function foldLifecycleExpiration(rule: Record<string, unknown>): Record<string, 
     date = iso;
   } else if (isPlainObject(expiration)) {
     if (expiration['Days'] !== undefined) days = expiration['Days'];
-    if (expiration['Date'] !== undefined) {
+    // TRUTHINESS, not presence: the applier reads `exp['Date'] ? new Date(...) :
+    // undefined`, so a falsy `Date` (`0`, `false`, `''`) sends NO date at all
+    // and recording one would describe a value AWS does not hold (PR review).
+    if (expiration['Date']) {
       const iso = cfnDateToIso(expiration['Date']);
       if (iso === undefined) return rule;
       date = iso;
@@ -1054,8 +1121,12 @@ function foldLifecycleExpiration(rule: Record<string, unknown>): Record<string, 
       marker = nested;
     }
   } else if (expiration) {
-    // Truthy but none of the three shapes the applier maps — an array, a
-    // boolean, an unresolved intrinsic. Left visible.
+    // Truthy but not a shape this can describe. An ARRAY does reach the
+    // applier's `typeof === 'object'` branch, but every member probe indexes to
+    // `undefined`, so what goes on the wire is an EMPTY `Expiration` that leaves
+    // the rule action-less and S3 rejects — there is no effective value to
+    // record. A boolean / unresolved intrinsic sends nothing at all. Left
+    // visible either way.
     return rule;
   }
 
@@ -1238,9 +1309,19 @@ function effectiveLifecycleConfiguration(config: unknown): unknown {
  * BEFORE the alias fold runs, because the singular can carry the SDK day/date
  * spellings too.
  *
+ * MEASURED against the REAL synthesized `s3-lifecycle` fixture templates (every
+ * bucket, both phases): the recorded rule and the emitted one carry identical
+ * KEYS and identical VALUES, and differ only in key ORDER — the record keeps the
+ * template's, the readback uses the reverse-mapper's. That is pre-existing and
+ * unchanged here (the record was always template-ordered), and it does not reach
+ * `cdkd drift`, whose baseline is `observedProperties` — captured from this very
+ * reverse-mapper, so both sides carry its order. It is stated because a reader
+ * comparing the two by `JSON.stringify` will see a difference and should know it
+ * was measured rather than missed.
+ *
  * @returns `rule` BY IDENTITY when the declared rule already IS that bag, so an
  *   ordinary CFn-spelled template records byte-for-byte as before. The compare
- *   is deep and key-ORDER-insensitive on purpose: a reordering is not a
+ *   is deep and key-ORDER-insensitive for the same reason: a reordering is not a
  *   difference worth rewriting a state record for.
  */
 function effectiveLifecycleRule(
@@ -1249,7 +1330,7 @@ function effectiveLifecycleRule(
 ): Record<string, unknown> {
   let out = foldLegacySingularTransitions(rule);
   out = canonicalizeItemList(out, 'Transitions', (t) =>
-    foldToleratedAliases(t, TRANSITION_ALIASES)
+    foldTransitionDate(foldToleratedAliases(t, TRANSITION_ALIASES))
   );
   out = canonicalizeItemList(out, 'NoncurrentVersionTransitions', (nvt) =>
     foldToleratedAliases(nvt, NONCURRENT_VERSION_TRANSITION_ALIASES)
@@ -1790,7 +1871,7 @@ export class S3BucketProvider implements ResourceProvider {
     onUnusable?: (message: string) => void
   ): Promise<boolean> {
     // Validate every rule's `TagFilters` container up front (issue #1579): a
-    // present-but-non-array value used to fall through `gatherScope`'s blind
+    // present-but-non-array value used to fall through `lifecycleRuleScope`'s blind
     // cast, read as "no tags" via the `.length` gates below, and the rule
     // applied WITHOUT its tag scope — for an expiration rule, to the WHOLE
     // bucket (the #1388 widened-scope hazard, this time from a malformed
@@ -1802,7 +1883,7 @@ export class S3BucketProvider implements ResourceProvider {
       // ...and the `Filter` CONTAINER those TagFilters live in, one level up
       // (issue #1581). A present-but-non-OBJECT `Filter` (`Filter: 'logs/'`,
       // an array, an unresolved intrinsic) indexes every `Filter`-side member
-      // probe in `gatherScope` — Prefix / TagFilters / ObjectSizeGreaterThan /
+      // probe in `lifecycleRuleScope` — Prefix / TagFilters / ObjectSizeGreaterThan /
       // ObjectSizeLessThan — to `undefined`, so the rule kept no scope beyond
       // whatever the RULE-LEVEL fallbacks happened to supply, and nothing at
       // all for a `Filter`-only rule: it then fell through to the empty-prefix
