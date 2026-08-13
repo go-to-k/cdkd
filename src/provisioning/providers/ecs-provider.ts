@@ -1163,18 +1163,60 @@ export class ECSProvider implements ResourceProvider {
     //
     // `DeploymentConfiguration` casing is now fixed on both create() and
     // update() (converted via `convertDeploymentConfiguration`). Its removal
-    // RESET to CFn defaults is still deferred to issue #1160: unlike the array
-    // fields (whose reset is a plain empty list), it merges at the SUB-FIELD
-    // level, so a correct reset must send the full default shape whose exact
-    // values need a per-field live probe against real AWS (the #1160 rule).
-    // The SAME sub-field merge also means a KEPT-but-partial
-    // DeploymentConfiguration (one sub-field dropped from a still-present
-    // block) silently retains the dropped sub-field's live value — the #1160
-    // bug class one level down, tracked as issue #1225 alongside the
-    // whole-block reset (both blocked on the same live probes:
-    // deployment-type-dependent MaximumPercent/MinimumHealthyPercent defaults
-    // — REPLICA 200/100, DAEMON min 0 via API — plus the
-    // DeploymentCircuitBreaker / Alarms clear shapes).
+    // RESET and its kept-but-partial normalization were BOTH deferred to
+    // issues #1160 / #1225 pending a live probe; that probe is done and for
+    // the TOP-LEVEL shapes the answer is that cdkd's verbatim pass-through IS
+    // CloudFormation parity, so NO reset and NO normalization is correct here.
+    // Measured us-east-1, 2026-08-13, SDK and CloudFormation A/B against the
+    // same service (baseline MaximumPercent 200 / MinimumHealthyPercent 50 /
+    // DeploymentCircuitBreaker {Enable,Rollback} true; a ROLLING, REPLICA,
+    // Fargate service). Two limits of that probe, stated rather than
+    // dismissed: the DAEMON scheduling strategy was not exercised — harmless,
+    // since the deployment-type-dependent defaults only mattered for the reset
+    // that is no longer being added — and ROLLING makes the BLUE_GREEN-only
+    // blocks (LinearConfiguration / CanaryConfiguration / LifecycleHooks)
+    // unreachable, so they are UNMEASURED. That matters because they carry no
+    // (or a partial) `required` list, unlike the two blocks below, so a
+    // kept-but-partial block there IS reachable from a template CFn accepts.
+    // Tracked as issue #1806.
+    //   - KEPT block, sub-field dropped (send only `MaximumPercent: 150`):
+    //     UpdateService MERGES server-side — MinimumHealthyPercent stayed 50
+    //     and the circuit breaker survived. A CloudFormation stack given the
+    //     same partial block reached the IDENTICAL end state, via a real
+    //     UPDATE_IN_PROGRESS -> UPDATE_COMPLETE on the resource rather than a
+    //     no-op. (What was measured is the END STATE; that CFn's handler
+    //     submits the same partial to UpdateService is the inference, not an
+    //     observation.) So the retained value is CFn's behavior too, and
+    //     normalizing to an explicit clear shape would DIVERGE from it.
+    //   - WHOLE block removed: CloudFormation issued a real resource UPDATE
+    //     and did NOT reset the configuration — the live values survived
+    //     intact. Passing `undefined` (below) reproduces that exactly, so the
+    //     #1160 removal-reset this field was holding open must NOT be added.
+    //   - Sub-field dropped one level DOWN (kept `DeploymentCircuitBreaker`,
+    //     `Rollback` omitted): this one is NOT parity, and the difference is
+    //     worth stating precisely because the obvious reading gets it
+    //     backwards. The nested struct is REPLACED rather than merged, and
+    //     the SDK ACCEPTS the partial — a live `rollback` went true -> false.
+    //     CloudFormation refuses the same template up front (`Model
+    //     validation failed (#/DeploymentConfiguration/
+    //     DeploymentCircuitBreaker: required key [Rollback] not found)`,
+    //     UPDATE_ROLLBACK_COMPLETE with the live config intact), because the
+    //     registry schema marks the `DeploymentCircuitBreaker` definition
+    //     required [Enable, Rollback] and `DeploymentAlarms` (the `Alarms`
+    //     property) required [AlarmNames, Rollback, Enable]. cdkd enforces
+    //     NO nested required-ness anywhere — pre-flight covers top-level
+    //     properties (`property-coverage.ts`) and property COMBINATIONS
+    //     (`mutually-exclusive-properties.ts`), neither of which reads a
+    //     definition's `required` list — so cdkd DEPLOYS a template CFn
+    //     rejects and silently flips the live setting. This is an accepted
+    //     divergence in the PERMISSIVE direction, tracked as issue #1802;
+    //     it is deliberately NOT papered over here by re-filling `Rollback`
+    //     from the previous side, which would invent a value the template
+    //     never declared. Do NOT read this row as the ASG
+    //     InstanceMaintenancePolicy disposition (#1227): there AWS ITSELF
+    //     rejected the partial, so cdkd failed loudly too and pass-through
+    //     really was parity.
+    // Pinned by `ecs-deployment-configuration-subfield.test.ts`.
     // Absent-from-template still passes `undefined` (no reset) below. Also not
     // reset (immutable / required / always-carried): ServiceName (immutable,
     // guarded above), Cluster / TaskDefinition / DesiredCount /
@@ -1354,8 +1396,8 @@ export class ECSProvider implements ResourceProvider {
           capacityProviderStrategy: capacityProviderStrategyInput,
           // DeploymentConfiguration is converted PascalCase->camelCase (issue
           // #1165); a change is sent through, an absent value passes undefined
-          // (removal RESET to defaults still deferred — see the comment block
-          // above).
+          // (no removal RESET — measured as CloudFormation parity, see the
+          // comment block above).
           deploymentConfiguration: this.convertDeploymentConfiguration(
             properties['DeploymentConfiguration'] as Record<string, unknown> | undefined
           ),

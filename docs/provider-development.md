@@ -1720,6 +1720,40 @@ Checklist when writing or reviewing an `update()`:
   Measure both halves: "does CFn reset it" and "what does the API do with a
   partial object" are two different questions, and only the second one tells
   you whether pass-through is already correct.
+  **A MERGING sub-shape is not automatically a cdkd bug** — ECS
+  `DeploymentConfiguration` is the counterexample, and it is the reason the
+  question above must be asked as an A/B rather than answered from the API
+  semantics alone (issue #1225, live A/B us-east-1 2026-08-13).
+  `UpdateService` genuinely MERGES: a kept block carrying only
+  `MaximumPercent` left `MinimumHealthyPercent` and the circuit breaker at
+  their live values. That is exactly the silent-drop shape — and a
+  CloudFormation stack given the same partial block reached the IDENTICAL
+  end state on a real resource UPDATE, so the retained value is CFn's
+  behavior too and normalizing it away would DIVERGE. (The END STATE is what
+  was measured; that CFn's handler submits the same partial to
+  `UpdateService` is the inference.) The same run settled the whole-block
+  removal the #1160 audit had left open for this field: CFn issued a real
+  UPDATE and did NOT reset the configuration, so passing `undefined` is
+  right and adding a reset would have been the divergence.
+  **One level DOWN the answer flips, and the flip is the part worth
+  remembering.** A kept `DeploymentCircuitBreaker` missing `Rollback` has the
+  nested struct REPLACED, not merged — the SDK ACCEPTS it and a live
+  `rollback` went true -> false. CloudFormation refuses that template up
+  front (`Model validation failed (... required key [Rollback] not found)`),
+  because the registry schema marks the `DeploymentCircuitBreaker` definition
+  required [Enable, Rollback] and `DeploymentAlarms` (the `Alarms` property)
+  required [AlarmNames, Rollback, Enable]. **cdkd enforces no nested
+  required-ness anywhere** — pre-flight covers top-level properties
+  (`property-coverage.ts`) and property COMBINATIONS
+  (`mutually-exclusive-properties.ts`), neither of which reads a definition's
+  `required` list — so cdkd DEPLOYS a template CFn rejects and silently flips
+  the live setting. That is an accepted divergence in the PERMISSIVE
+  direction, tracked as issue #1802, NOT a parity row. Do not file it under
+  the ASG `InstanceMaintenancePolicy` disposition: there AWS ITSELF rejected
+  the partial, so cdkd failed loudly too and pass-through really was parity.
+  The generalizable check is therefore two questions, not one — does the API
+  merge or replace the nested struct, and does anything on cdkd's side refuse
+  the shape the way CFn does?
 - Unit-test **three** shapes: removed → exact reset value; never-present →
   stays absent; mixed kept/removed → kept fields pass through unchanged.
 - A per-key removal test (one key dropped from a still-present map) does NOT
