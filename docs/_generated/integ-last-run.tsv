@@ -123,7 +123,7 @@ fsx-ontap	2026-08-02T06:33:37Z	PASS	1704	verify.sh	0802 heavy TTL sweep; deploy+
 fsx-openzfs	2026-08-02T05:53:30Z	PASS	1287	verify.sh	0802 heavy TTL sweep; deploy+update+drift+destroy ok; untagged OpenZFS final backup swept (#1113)
 fsx-windows	2026-08-02T07:56:26Z	PASS	3895	verify.sh	0802 heavy TTL sweep; AD-joined create+update+delete ok, 0 orphans, no final backup left
 full-stack-demo	2026-07-26T18:36:31Z	PASS	41	standard	0727b sweep-b4 staleness re-run (rc=0); account clean
-gc-custom-asset-names	2026-08-13T08:30:43Z	PASS	260	verify.sh	PR 1785 gc suffix-list coupling; ca-central-1 (marker-free), gc dry-run/delete precision + marker teardown, zero residue
+gc-custom-asset-names	2026-08-13T14:50:29Z	PASS	-	verify.sh	issue 1792/1793 arm: an UPPER-host+UPPER-digest ref and a dkr-ecr-fips.on.aws tag ref both SURVIVE a real gc --yes while the unreferenced control image is deleted; ca-central-1; zero residue. (Attempt 1 false-FAILed on a fixture digest:label colon-pack bug, fixed here; attempt 2 blocked by a foreign deploy lock.)
 getatt-fallback-guard	2026-08-01T10:07:21Z	PASS	84	verify.sh	0801 regression sweep; strict-getatt paths ok, 0 orphans
 getstackoutput-crossregion	2026-07-26T19:05:27Z	PASS	79	verify.sh	0727b sweep-b8 staleness re-run (rc=0); account clean
 glue-securityconfig-replace	2026-08-13T13:35:38Z	PASS	114	verify.sh	4 phases ok, destroy 0 err, 0 orphans
@@ -171,7 +171,7 @@ local-invoke	2026-08-13T10:39:38Z	PASS	-	verify.sh	issue 1814 region-case bounda
 local-invoke-agentcore	2026-08-13T11:40:45Z	PASS	-	verify.sh	final run after the issue 1814 fourth-chain fold; 21/21, docker sweep clean
 local-invoke-agentcore-from-state	2026-07-26T20:40:20Z	PASS	86	verify.sh	0727b sweep-L6 staleness re-run (rc=0); docker + account clean
 local-invoke-buildkit	2026-07-26T20:35:19Z	PASS	18	verify.sh	0727b sweep-L5 staleness re-run (rc=0); docker + account clean
-local-invoke-container	2026-08-13T10:02:43Z	PASS	19	verify.sh	#1795/#1801 region+ECR host case fold; 4/4 container-Lambda invokes, 0 docker orphans
+local-invoke-container	2026-08-13T14:36:45Z	PASS	-	verify.sh	issue 1792/1793 no-regression check only (fixture exercises the plain lower-case ECR host); 4/4 container invokes, docker sweep clean
 local-invoke-dotnet	2026-07-26T20:35:19Z	PASS	58	verify.sh	0727b sweep-L5 staleness re-run (rc=0); docker + account clean
 local-invoke-from-cfn-stack	2026-07-26T21:13:17Z	PASS	94	verify.sh	re-run post review fixes; install-guard exercised via fresh node_modules direct run (rc=0); clean
 local-invoke-from-cfn-stack-multi-stack	2026-07-26T21:13:17Z	PASS	113	verify.sh	re-run post review fixes; docker + account + CFn clean

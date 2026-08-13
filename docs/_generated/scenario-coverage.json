@@ -38,7 +38,7 @@
     },
     {
       "tag": "cdkd-gc",
-      "description": "`cdkd gc` garbage-collection precision against real AWS: whole-bucket state-file reference scan keeps every referenced asset, an unreferenced seeded object is the only deletion candidate, `--dry-run` deletes nothing, `--older-than` age guard honored (issue #1012)."
+      "description": "`cdkd gc` garbage-collection precision against real AWS: whole-bucket state-file reference scan keeps every referenced asset, an unreferenced seeded object plus an unreferenced seeded ECR image are the only deletion candidates, `--dry-run` deletes nothing, `--older-than` age guard honored (issue #1012). Since issues #1792 / #1793 the ECR half is DISCRIMINATING rather than a re-run of the plain path: two live images are referenced only through WIDENED host forms — an UPPER-cased host carrying an UPPER-cased digest (collected yet unmatchable against ECR lower-case digests before the insert-time fold, so the live image was deleted) and the dual-stack FIPS `<acct>.dkr-ecr-fips.<region>.on.aws` form the grammar had missed entirely — and both must SURVIVE the run, since a missed reference deletes irreversibly."
     },
     {
       "tag": "cfn-fallback-cross-stack",
@@ -2076,7 +2076,7 @@
     },
     {
       "scenario": "cdkd-gc",
-      "description": "`cdkd gc` garbage-collection precision against real AWS: whole-bucket state-file reference scan keeps every referenced asset, an unreferenced seeded object is the only deletion candidate, `--dry-run` deletes nothing, `--older-than` age guard honored (issue #1012).",
+      "description": "`cdkd gc` garbage-collection precision against real AWS: whole-bucket state-file reference scan keeps every referenced asset, an unreferenced seeded object plus an unreferenced seeded ECR image are the only deletion candidates, `--dry-run` deletes nothing, `--older-than` age guard honored (issue #1012). Since issues #1792 / #1793 the ECR half is DISCRIMINATING rather than a re-run of the plain path: two live images are referenced only through WIDENED host forms — an UPPER-cased host carrying an UPPER-cased digest (collected yet unmatchable against ECR lower-case digests before the insert-time fold, so the live image was deleted) and the dual-stack FIPS `<acct>.dkr-ecr-fips.<region>.on.aws` form the grammar had missed entirely — and both must SURVIVE the run, since a missed reference deletes irreversibly.",
       "fixtures": [
         "gc-custom-asset-names"
       ]

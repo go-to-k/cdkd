@@ -12,11 +12,31 @@
 #            a multi-file dir) -> the asset object lands in the CUSTOM bucket,
 #            the function's Code.S3Bucket/Code.S3Key in cdkd state point at
 #            it, and the deployed Lambda actually runs (invoke + marker).
+#   Phase 1b: push three DISTINCT images into the custom container repo, so
+#            the ECR half of gc's reference scan has something to scan. Two of
+#            them are then referenced from the deployed stack's state through
+#            the WIDENED host forms of issues #1792 / #1793 (see Phase 3);
+#            the third is left unreferenced as gc's ECR deletion control.
 #   Phase 3: seed one unreferenced object into the custom bucket ->
 #            `cdkd gc --dry-run --older-than 0.0002h` lists ONLY the seeded
-#            garbage (never the deploy-referenced asset) and deletes nothing;
-#            `cdkd gc --yes --older-than 0.0002h` deletes the garbage while
-#            the referenced asset object survives.
+#            garbage object + the ONE unreferenced image (never the
+#            deploy-referenced asset, never either widened-form-referenced
+#            image) and deletes nothing;
+#            `cdkd gc --yes --older-than 0.0002h` deletes those two while the
+#            referenced asset object and BOTH referenced images survive.
+#
+#            The two widened references are what make the ECR arm
+#            DISCRIMINATING rather than a re-run of the plain path (issues
+#            #1792 / #1793): cdkd's own publisher only ever writes
+#            `<acct>.dkr.ecr.<region>.amazonaws.com`, so nothing in this repo
+#            exercises a non-plain spelling against real AWS. One reference
+#            uses an UPPER-cased host AND an UPPER-cased digest — the case
+#            that used to be COLLECTED YET UNMATCHABLE against ECR's
+#            lower-case `imageDigest`, i.e. the live image was deleted anyway;
+#            the other uses the dual-stack FIPS
+#            `<acct>.dkr-ecr-fips.<region>.on.aws` form, which the grammar
+#            missed entirely. Both assertions are about what SURVIVES, since
+#            deletion is the irreversible direction.
 #   Phase 4: `cdkd destroy` the stack (referenced asset object persists by
 #            design — content-addressed storage), then
 #            `cdkd bootstrap --destroy --yes` (names read from the marker,
@@ -93,6 +113,22 @@ fi
 
 GARBAGE_KEY="integ-gc-seeded-garbage.bin"
 
+# The plain registry endpoint — the only host `docker login` / `docker push`
+# ever use here. The WIDENED spellings below are references in state, not push
+# targets: gc reads them out of state, and making the publisher emit one is not
+# something cdkd can do (nor should).
+ECR_HOST="${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com"
+# Three DISTINCT busybox libc variants, so the three pushed images have three
+# distinct manifest digests from one mirrored repo (`docker tag` alone cannot
+# produce a new digest). public.ecr.aws avoids Docker Hub rate limits, and
+# `destroy-data-guard` already pushes from this same mirror.
+SEED_IMAGE_UPPER_REF="public.ecr.aws/docker/library/busybox:glibc"
+SEED_IMAGE_FIPS_REF="public.ecr.aws/docker/library/busybox:musl"
+SEED_IMAGE_GARBAGE="public.ecr.aws/docker/library/busybox:uclibc"
+UPPER_REF_TAG="gc-integ-upper-digest-ref"
+FIPS_REF_TAG="gc-integ-dualstack-fips-tag-ref"
+GARBAGE_IMAGE_TAG="gc-integ-unreferenced-image"
+
 cleanup() {
   echo "==> Cleanup: dropping stack state/resources + asset storage + marker"
   set +eu
@@ -147,6 +183,12 @@ cleanup() {
   aws s3 rb "s3://${ASSET_BUCKET}" --force >/dev/null 2>&1 || true
   aws ecr delete-repository --repository-name "${CONTAINER_REPO}" \
     --region "${REGION}" --force >/dev/null 2>&1 || true
+  # Local docker tags from Phase 1b (the REMOTE images go with the repo, which
+  # `bootstrap --destroy` / the belt-and-braces delete-repository above force-
+  # deletes). Best-effort: this runs inside the `set +eu` span.
+  for t in "${UPPER_REF_TAG}" "${FIPS_REF_TAG}" "${GARBAGE_IMAGE_TAG}"; do
+    docker rmi "${ECR_HOST}/${CONTAINER_REPO}:${t}" >/dev/null 2>&1
+  done
   # The Lambda invoke in Phase 2 auto-creates a /aws/lambda/* log group that
   # neither CFn nor cdkd deletes — sweep it (CDK auto-names the function
   # with the stack name as prefix).
@@ -169,6 +211,11 @@ fi
 
 if [ ! -f "${LOCAL_DIST}" ]; then
   echo "FAIL: local binary not built at ${LOCAL_DIST} - run 'vp run build' from repo root first" >&2
+  exit 1
+fi
+
+if ! docker info >/dev/null 2>&1; then
+  echo "FAIL: docker is required (Phase 1b pushes images into the custom ECR repo) but unavailable" >&2
   exit 1
 fi
 
@@ -220,6 +267,70 @@ if ! aws ecr describe-repositories --repository-names "${CONTAINER_REPO}" \
 fi
 echo "    OK: custom asset bucket + custom ECR repo exist"
 
+# --- Phase 1b: seed the custom container repo with three DISTINCT images ----
+echo "==> Phase 1b: pushing three images into ${CONTAINER_REPO}"
+aws ecr get-login-password --region "${REGION}" |
+  docker login --username AWS --password-stdin "${ECR_HOST}" >/dev/null 2>&1
+
+# Echoes the pushed image's digest. The digest is read back from ECR, not from
+# docker: ECR's own `imageDigest` is the exact string gc compares references
+# against, so it is the only authoritative spelling here. Every intermediate
+# capture carries `|| return 1` because errexit is CLEARED inside `$( )`, so
+# without it a failed probe would fall through to the formatting tail and the
+# caller would see a successful empty result.
+push_seed_image() { # $1 = public source image, $2 = ECR tag
+  local src="$1" tag="$2" digest
+  docker pull -q "${src}" >/dev/null || return 1
+  docker tag "${src}" "${ECR_HOST}/${CONTAINER_REPO}:${tag}" || return 1
+  docker push -q "${ECR_HOST}/${CONTAINER_REPO}:${tag}" >/dev/null || return 1
+  digest="$(aws ecr describe-images --repository-name "${CONTAINER_REPO}" \
+    --image-ids "imageTag=${tag}" --region "${REGION}" \
+    --query 'imageDetails[0].imageDigest' --output text)" || return 1
+  case "${digest}" in
+    sha256:*) ;;
+    *)
+      echo "FAIL: unexpected imageDigest '${digest}' for tag ${tag}" >&2
+      return 1
+      ;;
+  esac
+  printf '%s' "${digest}"
+}
+
+UPPER_REF_DIGEST="$(push_seed_image "${SEED_IMAGE_UPPER_REF}" "${UPPER_REF_TAG}")"
+FIPS_REF_DIGEST="$(push_seed_image "${SEED_IMAGE_FIPS_REF}" "${FIPS_REF_TAG}")"
+GARBAGE_IMAGE_DIGEST="$(push_seed_image "${SEED_IMAGE_GARBAGE}" "${GARBAGE_IMAGE_TAG}")"
+
+# Three distinct digests are load-bearing: the referenced-survives and
+# garbage-deleted assertions below are contradictory if any two collide, and the
+# failure would read as a cdkd bug rather than as a fixture one.
+if [ "${UPPER_REF_DIGEST}" = "${FIPS_REF_DIGEST}" ] ||
+  [ "${UPPER_REF_DIGEST}" = "${GARBAGE_IMAGE_DIGEST}" ] ||
+  [ "${FIPS_REF_DIGEST}" = "${GARBAGE_IMAGE_DIGEST}" ]; then
+  echo "FAIL: the three seeded images do not have distinct digests:" >&2
+  echo "      ${UPPER_REF_TAG}=${UPPER_REF_DIGEST}" >&2
+  echo "      ${FIPS_REF_TAG}=${FIPS_REF_DIGEST}" >&2
+  echo "      ${GARBAGE_IMAGE_TAG}=${GARBAGE_IMAGE_DIGEST}" >&2
+  echo "      Pick three SEED_IMAGE_* tags with genuinely different content." >&2
+  exit 1
+fi
+echo "    OK: three distinct images pushed (${UPPER_REF_TAG} / ${FIPS_REF_TAG} / ${GARBAGE_IMAGE_TAG})"
+
+# The two WIDENED references, exported so the stack picks them up as Lambda
+# environment values and cdkd's own deploy records them into state.
+# 1. UPPER-cased plain host AND UPPER-cased digest. The digest is the point: gc
+#    compares a collected digest for EXACT equality against ECR's always
+#    lower-case `imageDigest`, so before the insert-time fold this reference was
+#    collected and INERT and the live image was still deleted. The REPO path
+#    stays verbatim (docker requires a lower-case repository name).
+REGION_UPPER="$(printf '%s' "${REGION}" | tr '[:lower:]' '[:upper:]')"
+UPPER_REF_DIGEST_UPPER="$(printf '%s' "${UPPER_REF_DIGEST}" | tr '[:lower:]' '[:upper:]')"
+export GC_INTEG_UPPER_DIGEST_REF="${ACCOUNT_ID}.DKR.ECR.${REGION_UPPER}.AMAZONAWS.COM/${CONTAINER_REPO}@${UPPER_REF_DIGEST_UPPER}"
+# 2. Dual-stack FIPS host (fixed `on.aws` suffix), referenced by TAG — the form
+#    BOTH copies of the grammar had been missing (issue #1793).
+export GC_INTEG_DUALSTACK_FIPS_TAG_REF="${ACCOUNT_ID}.dkr-ecr-fips.${REGION}.on.aws/${CONTAINER_REPO}:${FIPS_REF_TAG}"
+echo "    widened refs: ${GC_INTEG_UPPER_DIGEST_REF}"
+echo "                  ${GC_INTEG_DUALSTACK_FIPS_TAG_REF}"
+
 # --- Phase 2: deploy — FILE asset must land in the CUSTOM bucket ------------
 echo "==> Phase 2: deploy (file asset publish -> custom bucket)"
 node "${LOCAL_DIST}" deploy "${STACK}" \
@@ -254,6 +365,19 @@ if ! aws s3api head-object --bucket "${ASSET_BUCKET}" --key "${CODE_KEY}" >/dev/
   exit 1
 fi
 echo "    OK: state Code points at s3://${ASSET_BUCKET}/${CODE_KEY} and the object exists"
+
+# The widened references must be IN state before Phase 3 can claim anything
+# about them. Without this, a broken env-var hand-off would leave the survival
+# assertions passing vacuously: an image nothing references at all also
+# "survives" whenever the age guard or the repo scan silently no-ops.
+for ref in "${GC_INTEG_UPPER_DIGEST_REF}" "${GC_INTEG_DUALSTACK_FIPS_TAG_REF}"; do
+  if ! printf '%s' "${STATE}" | grep -qF "${ref}"; then
+    echo "FAIL: widened ECR reference is not in the deployed state: ${ref}" >&2
+    printf '%s' "${STATE}" | jq '.resources' >&2
+    exit 1
+  fi
+done
+echo "    OK: both widened-form ECR references are recorded in cdkd state"
 
 # Functional assertion: the deployed Lambda actually runs the uploaded asset.
 OUT_FILE="$(mktemp)"
@@ -306,16 +430,39 @@ if ! echo "${DRY_OUT}" | grep -qF "Total: 1 S3 object(s)"; then
   echo "${DRY_OUT}" >&2
   exit 1
 fi
-if ! echo "${DRY_OUT}" | grep -qF "0 ECR image(s)"; then
-  echo "FAIL: gc --dry-run plan should contain 0 ECR candidates. Output:" >&2
+# ONE ECR candidate: the unreferenced image. The two images referenced through
+# the WIDENED host forms must not be candidates at all.
+if ! echo "${DRY_OUT}" | grep -qF "1 ECR image(s)"; then
+  echo "FAIL: gc --dry-run plan should contain exactly 1 ECR candidate (the unreferenced image). Output:" >&2
   echo "${DRY_OUT}" >&2
   exit 1
 fi
+if ! echo "${DRY_OUT}" | grep -qF "${GARBAGE_IMAGE_DIGEST}"; then
+  echo "FAIL: gc --dry-run plan does not list the unreferenced image ${GARBAGE_IMAGE_DIGEST}. Output:" >&2
+  echo "${DRY_OUT}" >&2
+  exit 1
+fi
+# Two explicit args, never a `<digest>:<label>` pack: an ECR digest is itself
+# `sha256:<hex>`, so a `${packed%%:*}` split yields the literal `sha256`, which
+# appears in every plan line — the assertion then false-FAILs unconditionally
+# (and `${packed#*:}` reports a nonsense label). Same trap as cdkd's own
+# unescaped composite-id separator (issue #1672).
+assert_widened_ref_not_a_candidate() { # usage: <digest> <what it exercises>
+  if echo "${DRY_OUT}" | grep -qF "$1"; then
+    echo "FAIL: gc --dry-run plan lists $1, which IS referenced through a widened host form ($2) — it would delete a live image. Output:" >&2
+    echo "${DRY_OUT}" >&2
+    exit 1
+  fi
+}
+assert_widened_ref_not_a_candidate "${UPPER_REF_DIGEST}" \
+  "UPPER-cased host + UPPER-cased digest, tag ${UPPER_REF_TAG} (issue #1792)"
+assert_widened_ref_not_a_candidate "${FIPS_REF_DIGEST}" \
+  "dual-stack FIPS on.aws host, tag ${FIPS_REF_TAG} (issue #1793)"
 if ! aws s3api head-object --bucket "${ASSET_BUCKET}" --key "${GARBAGE_KEY}" >/dev/null 2>&1; then
   echo "FAIL: gc --dry-run DELETED the seeded object (dry run must not delete)" >&2
   exit 1
 fi
-echo "    OK: dry-run plan lists ONLY the seeded garbage (1 S3 object, 0 ECR images) and deleted nothing"
+echo "    OK: dry-run plan lists ONLY the unreferenced pair (1 S3 object, 1 ECR image) and deleted nothing"
 
 echo "==> Phase 3b: cdkd gc --yes (real deletion)"
 node "${LOCAL_DIST}" gc --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
@@ -326,7 +473,30 @@ if ! aws s3api head-object --bucket "${ASSET_BUCKET}" --key "${CODE_KEY}" >/dev/
   echo "FAIL: gc deleted the deploy-referenced asset s3://${ASSET_BUCKET}/${CODE_KEY}" >&2
   exit 1
 fi
-echo "    OK: gc deleted the seeded garbage and kept the referenced asset"
+
+# The load-bearing ECR assertions — about what SURVIVES, since a deletion here
+# is irreversible. Pre-fix, the UPPER-cased-digest reference was collected in a
+# spelling that could never match ECR's lower-case `imageDigest`, so this image
+# was DELETED while gc reported success.
+assert_gone "unreferenced image ${GARBAGE_IMAGE_DIGEST} still exists after gc --yes" \
+  aws ecr describe-images --repository-name "${CONTAINER_REPO}" \
+  --image-ids "imageDigest=${GARBAGE_IMAGE_DIGEST}" --region "${REGION}"
+# Two explicit args for the same reason as the dry-run helper above: packing
+# `<digest>:<label>` and splitting on the first colon would query
+# `imageDigest=sha256`, which ECR rejects — reporting "gc DELETED a live image"
+# when nothing was deleted.
+assert_widened_ref_survived() { # usage: <digest> <what it exercises>
+  if ! aws ecr describe-images --repository-name "${CONTAINER_REPO}" \
+    --image-ids "imageDigest=$1" --region "${REGION}" >/dev/null 2>&1; then
+    echo "FAIL: gc DELETED a live image referenced via $2: $1" >&2
+    exit 1
+  fi
+}
+assert_widened_ref_survived "${UPPER_REF_DIGEST}" \
+  "UPPER-cased host + UPPER-cased digest (issue #1792)"
+assert_widened_ref_survived "${FIPS_REF_DIGEST}" \
+  "dual-stack FIPS on.aws host + tag (issue #1793)"
+echo "    OK: gc deleted the unreferenced object + image, and KEPT both images referenced through widened host forms"
 
 # --- Phase 4: destroy stack, then bootstrap --destroy ------------------------
 echo "==> Phase 4: destroy"
