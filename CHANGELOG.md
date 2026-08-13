@@ -1,3 +1,10 @@
+## [0.282.3](https://github.com/go-to-k/cdkd/compare/v0.282.2...v0.282.3) (2026-08-13)
+
+
+### Bug Fixes
+
+* **s3:** derive the bucket host attributes' URL suffix, from one place both halves share ([#1813](https://github.com/go-to-k/cdkd/issues/1813)) ([aafb4ad](https://github.com/go-to-k/cdkd/commit/aafb4ad23222b34372165304feee9d9acc9aab5b))
+
 ## [0.282.2](https://github.com/go-to-k/cdkd/compare/v0.282.1...v0.282.2) (2026-08-13)
 
 
