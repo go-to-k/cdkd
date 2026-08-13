@@ -84,6 +84,10 @@ import {
 } from '../../../src/cli/commands/gc.js';
 import { CdkdError } from '../../../src/utils/error-handler.js';
 import { derivePartitionAndUrlSuffix, PARTITION_TABLE } from '../../../src/utils/aws-partition.js';
+import {
+  ECR_REGISTRY_HOST_FORMS,
+  parseEcrRegistryHost,
+} from '../../../src/utils/ecr-uri.js';
 import type { BootstrapMarker } from '../../../src/assets/asset-storage.js';
 
 const ACCOUNT = '123456789012';
@@ -959,6 +963,106 @@ describe('cdkd gc', () => {
       expect([...com.imageTags]).toEqual(['com-tag']);
     });
 
+    it('collects the dual-stack FIPS host the grammar used to omit', () => {
+      // `<acct>.dkr-ecr-fips.<region>.on.aws` is a real AWS registry endpoint
+      // (published for the same six regions as the IPv4 FIPS form) that BOTH
+      // copies of the grammar missed until they were unified (issue #1793).
+      // Missing a form here reads a live image as unreferenced and DELETES it.
+      const digest = `sha256:${'6'.repeat(64)}`;
+      const govDual = collect(
+        `${ACCOUNT}.dkr-ecr-fips.us-gov-west-1.on.aws/${CONTAINER_REPO}:gov-dual-tag@${digest}`
+      );
+      expect([...govDual.imageTags]).toEqual(['gov-dual-tag']);
+      expect([...govDual.imageDigests]).toEqual([digest]);
+    });
+
+    it('collects an UPPER / mixed-case ECR host reference (issue #1792)', () => {
+      // DNS is case-insensitive, so these name the SAME registry — and gc's
+      // failure direction is the irreversible one: a missed reference reads as
+      // unreferenced and the live image is DELETED. A hand-written L1 `Image`
+      // property or an imported state record can carry either spelling.
+      const digest = `sha256:${'5'.repeat(64)}`;
+      const upper = collect(
+        `${ACCOUNT}.DKR.ECR.${REGION.toUpperCase()}.AMAZONAWS.COM/${CONTAINER_REPO}:upper-tag@${digest}`
+      );
+      expect([...upper.imageTags]).toEqual(['upper-tag']);
+      expect([...upper.imageDigests]).toEqual([digest]);
+
+      const mixed = collect(
+        `${ACCOUNT}.Dkr.Ecr.${REGION}.AmAzOnAwS.CoM/${CONTAINER_REPO}:mixed-tag`
+      );
+      expect([...mixed.imageTags]).toEqual(['mixed-tag']);
+
+      const mixedDual = collect(
+        `${ACCOUNT}.DKR-ECR.${REGION}.ON.AWS/${CONTAINER_REPO}:mixed-dual-tag`
+      );
+      expect([...mixedDual.imageTags]).toEqual(['mixed-dual-tag']);
+    });
+
+    it('collects an UPPER-cased DIGEST in the form ECR can actually match', () => {
+      // The `i` flag widens `sha256:[0-9a-f]{64}` to upper-case hex too, so an
+      // upper-cased digest reference starts being COLLECTED — but a collected
+      // digest is compared for EXACT equality against ECR's `imageDigest`,
+      // which is always lower-case. Stored verbatim it can never match, i.e.
+      // it is collected and INERT and the live image is still deleted. The
+      // assertion is therefore about the SPELLING, not merely about presence:
+      // it must be the lower-case one ECR reports.
+      const lower = `sha256:${'a'.repeat(60)}beef`;
+      const upper = `SHA256:${'A'.repeat(60)}BEEF`;
+
+      const shouted = collect(
+        `${ACCOUNT}.DKR.ECR.${REGION}.AMAZONAWS.COM/${CONTAINER_REPO}@${upper}`
+      );
+      expect([...shouted.imageDigests]).toEqual([lower]);
+
+      // Mixed case on the digest alone, with an all-lower host — so the arm
+      // above cannot pass by way of the host fold.
+      const mixedDigest = collect(
+        `${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com/${CONTAINER_REPO}@sha256:${'A'.repeat(60)}beef`
+      );
+      expect([...mixedDigest.imageDigests]).toEqual([lower]);
+
+      // Folding is idempotent on an already-canonical reference.
+      const canonical = collect(
+        `${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com/${CONTAINER_REPO}@${lower}`
+      );
+      expect([...canonical.imageDigests]).toEqual([lower]);
+
+      // The TAG is deliberately NOT folded: ECR tags ARE case-sensitive, so an
+      // upper-cased tag reference names a DIFFERENT tag and folding it would
+      // create the mirror-image inert collection. Asserted as the shape a
+      // "fold both for symmetry" regression would emit.
+      const taggedUpper = collect(
+        `${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com/${CONTAINER_REPO}:Mixed-Tag`
+      );
+      expect([...taggedUpper.imageTags]).toEqual(['Mixed-Tag']);
+    });
+
+    // The pin issue #1793 asks for: BOTH matchers must recognize the same set of
+    // host FORMS, each keeping its own suffix rule. Driven off the exported
+    // table, so a form added there has to work on both sides or this reds.
+    it('recognizes every form the shared grammar declares, as does the strict matcher', () => {
+      expect(ECR_REGISTRY_HOST_FORMS.length).toBeGreaterThanOrEqual(4);
+      for (const form of ECR_REGISTRY_HOST_FORMS) {
+        // gc's LOOSE rule: the suffix need only be some partition's (or the
+        // form's own fixed literal), never paired with the region.
+        const suffix = form.fixedUrlSuffix ?? 'amazonaws.com';
+        const tag = `form-${form.labels.replace(/[^a-z]/g, '-')}`;
+        const refs = collect(
+          `${ACCOUNT}.${form.labels}.${REGION}.${suffix}/${CONTAINER_REPO}:${tag}`
+        );
+        expect([...refs.imageTags], form.labels).toEqual([tag]);
+
+        // The STRICT rule on the same form, with the region paired to the
+        // suffix it carries. Asserted here rather than only in the ecr-uri
+        // suite so the two matchers cannot drift apart form by form.
+        expect(
+          parseEcrRegistryHost(`${ACCOUNT}.${form.labels}.${REGION}.${suffix}/repo:${tag}`),
+          form.labels
+        ).toEqual({ accountId: ACCOUNT, region: REGION });
+      }
+    });
+
     it('the ECR short-form suffix does NOT leak into the S3 matchers', () => {
       // `on.aws` is an ECR-only endpoint. If it were folded into the shared
       // AWS_URL_SUFFIXES set, both S3 shapes below would start matching.
@@ -992,6 +1096,15 @@ describe('cdkd gc', () => {
         `${ACCOUNT}.dkr.ecr.${REGION}.example.com/${CONTAINER_REPO}@${digest}`,
         `${ACCOUNT}.dkr.ecr-fips.${REGION}.example.com/${CONTAINER_REPO}:lookalike-tag`,
         `${ACCOUNT}.dkr-ecr.${REGION}.on.aws.evil.com/${CONTAINER_REPO}:lookalike-tag`,
+        // The `escapeRegExp` arms. `ecrRegistryHostPattern` escapes each form's
+        // labels AND its fixed suffix; unescaped, `.` matches ANY character, so
+        // gc would start collecting these — over-PROTECTING, which is the safe
+        // direction and therefore silent, so nothing else would ever notice.
+        // Measured: with the escaping removed, both of these collect their tag
+        // and digest. Asserted as the shape that REGRESSION emits.
+        `${ACCOUNT}.dkrxecr.${REGION}.amazonaws.com/${CONTAINER_REPO}:lookalike-tag@${digest}`,
+        `${ACCOUNT}.dkr-ecr.${REGION}.onXaws/${CONTAINER_REPO}:lookalike-tag@${digest}`,
+        `${ACCOUNT}.dkr-ecr-fips.${REGION}.onXaws/${CONTAINER_REPO}:lookalike-tag`,
       ];
       for (const value of ecrLookAlikes) {
         const refs = collect(value);
@@ -1099,6 +1212,92 @@ describe('cdkd gc', () => {
       // Only the genuinely unreferenced ones go; the referenced cn assets stay.
       expect(deletedS3Keys()).toEqual(['cn-garbage.zip']);
       expect(deletedDigests()).toEqual([CN_GARBAGE_DIGEST]);
+    });
+
+    it('keeps a live image referenced by an UPPER-cased / dual-stack-FIPS host', async () => {
+      // The end-to-end twin of the collect()-level #1792 / #1793 arms above, in
+      // the same shape as the cn-north-1 test: what this change actually has to
+      // guarantee is that `cdkd gc` does NOT delete these images, and a
+      // collection assertion cannot say that — the digest arm one describe up is
+      // exactly the case where a reference WAS collected and the image was
+      // deleted anyway. So the assertion here is `BatchDeleteImage`'s payload.
+      const WIDE_STATE_KEY = `cdkd/WideStack/${REGION}/state.json`;
+      // Referenced through an UPPER-cased plain host (issue #1792), by TAG.
+      const WIDE_TAG_DIGEST = `sha256:${'4'.repeat(63)}a`;
+      // Referenced through a dual-stack FIPS host (issue #1793), by DIGEST —
+      // and the reference is spelled in UPPER case, so only the insert-time
+      // fold makes it match this lower-case value.
+      const WIDE_REF_DIGEST = `sha256:${'4'.repeat(63)}b`;
+      const WIDE_GARBAGE_DIGEST = `sha256:${'4'.repeat(63)}c`;
+
+      const WIDE_STATE_BODY = JSON.stringify({
+        version: 8,
+        stackName: 'WideStack',
+        region: REGION,
+        resources: {
+          Container: {
+            physicalId: 'wide-fn',
+            resourceType: 'AWS::Lambda::Function',
+            properties: {
+              Code: {
+                ImageUri: `${ACCOUNT}.DKR.ECR.${REGION.toUpperCase()}.AMAZONAWS.COM/${CONTAINER_REPO}:wide-tag`,
+              },
+            },
+            attributes: {
+              ResolvedImageUri: `${ACCOUNT}.DKR-ECR-FIPS.${REGION}.ON.AWS/${CONTAINER_REPO}@${WIDE_REF_DIGEST.toUpperCase()}`,
+            },
+            dependencies: [],
+          },
+        },
+        outputs: {},
+        lastModified: Date.now(),
+      });
+
+      stateBackendMocks.getRawObject.mockImplementation(async (key: string) => {
+        if (key === MARKER_KEY) return MARKER_BODY;
+        if (key === WIDE_STATE_KEY) return WIDE_STATE_BODY;
+        return null;
+      });
+      stateBackendMocks.listRawKeys.mockImplementation(async (prefix: string) => {
+        if (prefix === '') return [MARKER_KEY, WIDE_STATE_KEY];
+        return [];
+      });
+      mockS3Send.mockImplementation(async (command: object) => {
+        if (command instanceof ListObjectsV2Command) {
+          return { Contents: [], IsTruncated: false };
+        }
+        return {};
+      });
+      mockEcrSend.mockImplementation(async (command: object) => {
+        if (command instanceof DescribeImagesCommand) {
+          return {
+            imageDetails: [
+              {
+                imageDigest: WIDE_TAG_DIGEST,
+                imageTags: ['wide-tag'],
+                imageSizeInBytes: 1,
+                imagePushedAt: OLD,
+              },
+              { imageDigest: WIDE_REF_DIGEST, imageSizeInBytes: 1, imagePushedAt: OLD },
+              {
+                imageDigest: WIDE_GARBAGE_DIGEST,
+                imageTags: ['wide-garbage'],
+                imageSizeInBytes: 1,
+                imagePushedAt: OLD,
+              },
+            ],
+          };
+        }
+        return {};
+      });
+
+      await runGc(['--yes']);
+
+      // Both live images survive; only the genuinely unreferenced one goes.
+      // `toEqual` rather than `not.toContain` on purpose: a run that deleted
+      // NOTHING would satisfy a pair of absence assertions, so the garbage
+      // digest has to be present for the two survivals to mean anything.
+      expect(deletedDigests()).toEqual([WIDE_GARBAGE_DIGEST]);
     });
   });
 });

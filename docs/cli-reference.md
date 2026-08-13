@@ -1520,7 +1520,19 @@ any region, and a suffix the matchers miss reads as UNREFERENCED and is
 DELETED (issue
 [#1781](https://github.com/go-to-k/cdkd/issues/1781)). ECR hosts
 additionally match the FIPS (`<acct>.dkr.ecr-fips.<region>.<urlSuffix>`)
-and short-form (`<acct>.dkr-ecr.<region>.on.aws`) endpoints.
+and dual-stack (`<acct>.dkr-ecr.<region>.on.aws`,
+`<acct>.dkr-ecr-fips.<region>.on.aws`) endpoints — that list now comes from
+the single ECR host FORM TABLE in `src/utils/ecr-uri.ts` rather than a second
+copy here, which is what surfaced the dual-stack FIPS form gc had been
+missing (issue [#1793](https://github.com/go-to-k/cdkd/issues/1793)). ECR
+hosts are matched case-INSENSITIVELY, since DNS is (issue
+[#1792](https://github.com/go-to-k/cdkd/issues/1792)) — and a matched
+`@sha256:` DIGEST is normalized to lower case as it is collected, which the
+case-insensitive match alone does NOT give you: a collected digest is compared
+for EXACT equality against ECR's always-lower-case `imageDigest`, so an
+upper-cased reference would be collected yet unmatchable and the live image
+would still be deleted. The `:tag` is deliberately kept verbatim, because ECR
+tags ARE case-sensitive.
 
 **Guards** (this command deletes data — every ambiguity is biased toward
 NOT deleting):

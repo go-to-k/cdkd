@@ -11,6 +11,7 @@ import type { S3StateBackend } from '../state/s3-state-backend.js';
 import { AssetModeResolver, type BootstrapMarker } from './asset-storage.js';
 import { isCfnTemplateAssetPath } from './asset-manifest-loader.js';
 import { derivePartitionAndUrlSuffix } from '../utils/aws-partition.js';
+import { escapeRegExp } from '../utils/regexp.js';
 
 /**
  * Asset-location redirection to cdkd-owned storage (issue #1002 PR 2, design
@@ -109,10 +110,6 @@ export function isDefaultBootstrapRepoName(
   return new RegExp(`^cdk-[a-z0-9]+-container-assets-${accountId}-${escapeRegExp(region)}$`).test(
     name
   );
-}
-
-function escapeRegExp(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 /**

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vite-plus/test';
+import { describe, expect, it, vi } from 'vite-plus/test';
 import {
   derivePartitionAndUrlSuffix,
   detectEcsImageResolutionNeeds,
@@ -10,6 +10,7 @@ import {
 import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
 import type { CloudFormationTemplate, TemplateResource } from '../../../src/types/resource.js';
 import type { ResourceState } from '../../../src/types/state.js';
+import { getLogger } from '../../../src/utils/logger.js';
 
 function buildStack(name: string, resources: Record<string, TemplateResource>): StackInfo {
   const template: CloudFormationTemplate = { Resources: resources };
@@ -520,6 +521,97 @@ describe('resolveEcsTaskTarget', () => {
       },
     });
     expect(r.containers[0]!.image.kind).toBe('public');
+  });
+
+  // The CONSUMER-level effect of issues #1792 / #1793. `resolveEcsTaskTarget`
+  // calls `parseEcrRegistryHost` on the substituted URI directly, so widening
+  // that matcher is what flips these hosts from `kind: 'public'` (anonymous
+  // `docker pull`, no `docker login`) to `kind: 'ecr'` (STS check + ECR auth).
+  // Every host below is a literal, because cdkd's own `${AWS::URLSuffix}`
+  // substitution can only ever produce the plain lower-case form — which is
+  // exactly why this class had no coverage.
+  describe('widened ECR host forms classify as ECR here too (issues #1792 / #1793)', () => {
+    const resolveImage = (image: string) => {
+      const stack = buildStack('S1', { TD: makeTaskDef({ image: { 'Fn::Sub': image } }) });
+      return resolveEcsTaskTarget('TD', [stack], {
+        pseudoParameters: {
+          accountId: '123456789012',
+          region: 'us-east-1',
+          partition: 'aws',
+          urlSuffix: 'amazonaws.com',
+        },
+      }).containers[0]!.image;
+    };
+
+    it.each([
+      ['FIPS IPv4', '123456789012.dkr.ecr-fips.us-east-1.amazonaws.com/myrepo:latest'],
+      ['dual-stack', '123456789012.dkr-ecr.us-east-1.on.aws/myrepo:latest'],
+      ['dual-stack FIPS', '123456789012.dkr-ecr-fips.us-east-1.on.aws/myrepo:latest'],
+    ])('classifies a %s registry as ECR, not public', (_label, image) => {
+      const img = resolveImage(image);
+      expect(img.kind).toBe('ecr');
+      if (img.kind === 'ecr') {
+        // The URI is passed through VERBATIM — the resolver does not rewrite the
+        // host — so `ecs-task-runner` pulls from the spelling the template names.
+        expect(img.uri).toBe(image);
+        expect(img.account).toBe('123456789012');
+        expect(img.region).toBe('us-east-1');
+      }
+    });
+
+    it('classifies an UPPER-cased host as ECR and reports the region lower-cased', () => {
+      const img = resolveImage('123456789012.DKR.ECR.US-EAST-1.AMAZONAWS.COM/myrepo:latest');
+      expect(img.kind).toBe('ecr');
+      if (img.kind === 'ecr') {
+        // The two halves are deliberately asymmetric and both matter: `region`
+        // seeds an `ECRClient` and the `docker login` endpoint, so it is the
+        // canonical lower case, while `uri` keeps the template's spelling.
+        expect(img.region).toBe('us-east-1');
+        expect(img.uri).toBe('123456789012.DKR.ECR.US-EAST-1.AMAZONAWS.COM/myrepo:latest');
+      }
+    });
+
+    it('a form/suffix MISPAIRING stays public AND now reaches the #1764 diagnostic', () => {
+      // `dkr-ecr` labels with a partition suffix is a host AWS does not serve.
+      // Before issue #1793 it matched no shape at all, so it fell through to
+      // `public` with cdkd SILENT; it still falls through — the parse verdict is
+      // unchanged — but the diagnostic now fires, which is the DIAGNOSTIC-ONLY
+      // half of the classification table in `src/utils/ecr-uri.ts`.
+      const debug = vi.fn();
+      const childSpy = vi
+        .spyOn(getLogger(), 'child')
+        .mockReturnValue({ debug, info: vi.fn(), warn: vi.fn(), error: vi.fn() } as never);
+      try {
+        const img = resolveImage('123456789012.dkr-ecr.us-east-1.amazonaws.com/myrepo:latest');
+        expect(img.kind).toBe('public');
+        expect(debug).toHaveBeenCalledTimes(1);
+        // The URI is asserted, not the sentence: the sentence still says the
+        // suffix "does not belong to its region's partition", which is FALSE for
+        // a mispairing (`amazonaws.com` IS us-east-1's suffix). Recorded on
+        // issue #1846 — `src/local/ecs-task-resolver.ts` is owned elsewhere — so
+        // pinning today's wording here would pin a known-wrong message.
+        expect(String(debug.mock.calls[0]![0])).toContain(
+          '123456789012.dkr-ecr.us-east-1.amazonaws.com/myrepo:latest'
+        );
+      } finally {
+        childSpy.mockRestore();
+      }
+    });
+
+    it('a genuinely public image does NOT reach the diagnostic', () => {
+      // The counter-case that keeps the arm above from passing on a resolver
+      // that logs unconditionally.
+      const debug = vi.fn();
+      const childSpy = vi
+        .spyOn(getLogger(), 'child')
+        .mockReturnValue({ debug, info: vi.fn(), warn: vi.fn(), error: vi.fn() } as never);
+      try {
+        expect(resolveImage('public.ecr.aws/nginx/nginx:alpine').kind).toBe('public');
+        expect(debug).not.toHaveBeenCalled();
+      } finally {
+        childSpy.mockRestore();
+      }
+    });
   });
 
   it('hard-errors with --from-state hint when Fn::Sub references a same-stack ECR Repo and no state was provided', () => {

@@ -17,6 +17,8 @@ import {
 } from '../../assets/asset-storage.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
 import { PARTITION_TABLE } from '../../utils/aws-partition.js';
+import { ecrRegistryHostPattern } from '../../utils/ecr-uri.js';
+import { escapeRegExp } from '../../utils/regexp.js';
 import {
   listAllStateKeys,
   listAllLockKeys,
@@ -102,11 +104,6 @@ export interface AssetReferences {
   imageTags: Set<string>;
   /** ECR image digests (`sha256:<hex>`) that some state file references. */
   imageDigests: Set<string>;
-}
-
-/** Escape a literal string for embedding in a RegExp. */
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 /**
@@ -219,32 +216,50 @@ const URL_SUFFIX_ALTERNATION = `(?:${[...AWS_URL_SUFFIXES]
   .join('|')})`;
 
 /**
- * The HOST half of an ECR registry, as an alternation over the forms AWS
- * serves: `<acct>.dkr.ecr.<region>.<urlSuffix>`, its FIPS sibling
- * `<acct>.dkr.ecr-fips.<region>.<urlSuffix>`, and the short-form alias
- * `<acct>.dkr-ecr.<region>.on.aws`.
+ * The HOST half of an ECR registry, built from the ONE authoritative FORM TABLE
+ * in `src/utils/ecr-uri.ts` (issue #1793) instead of spelled a second time here.
  *
- * Kept DELIBERATELY separate from the S3 matchers' shared
- * {@link URL_SUFFIX_ALTERNATION} rather than folded into it: `on.aws` is an
- * ECR-only endpoint, so adding it to the shared suffix set would also make
- * `https://<assetBucket>.s3.<region>.on.aws/<key>` a recognized S3 reference.
- * Widening either matcher only ever over-PROTECTS, but the two services' host
- * grammars genuinely differ and conflating them is how the next widening goes
- * wrong.
+ * That module owns which segment spellings AWS serves — the plain
+ * `<acct>.dkr.ecr.<region>.<urlSuffix>`, its FIPS sibling
+ * `<acct>.dkr.ecr-fips.<region>.<urlSuffix>`, and the two dual-stack forms
+ * `<acct>.dkr-ecr[-fips].<region>.on.aws` — while each matcher keeps its own
+ * suffix-ACCEPTANCE rule on top: gc passes the union over every partition
+ * ({@link URL_SUFFIX_ALTERNATION}), whereas `parseEcrRegistryHost` pairs the
+ * captured suffix WITH the region. See the {@link AWS_URL_SUFFIXES} doc for why
+ * the two strictnesses are deliberate and must not be merged.
+ *
+ * gc is the ONLY consumer of {@link ecrRegistryHostPattern}: the strict matcher
+ * there needs the suffix captured at a fixed group index and so re-spells the
+ * alternation off the same table's labels column. What the two share is the
+ * TABLE, not the pattern — enough to stop the FORMS drifting, which is what had
+ * gone wrong, and the cross-matcher test in `tests/unit/cli/gc.test.ts` is driven
+ * off the table so a row added there must work on both sides.
+ *
+ * Sharing the table immediately brought a form gc was MISSING:
+ * `<acct>.dkr-ecr-fips.<region>.on.aws`, the dual-stack FIPS endpoint. A form
+ * missing here reads a live image as unreferenced and DELETES it, so this is the
+ * irreversible direction — which is the whole argument for one definition.
+ *
+ * `on.aws` still does not reach the S3 matchers, and now cannot: it is an
+ * ECR-only endpoint, so folding it into the shared suffix set would also make
+ * `https://<assetBucket>.s3.<region>.on.aws/<key>` a recognized S3 reference —
+ * and in the form table a fixed suffix travels WITH its own form rather than
+ * sitting in a shared set, so that separation is mechanical instead of
+ * remembered.
  *
  * Account and region are matched loosely on purpose (see the extractor doc):
  * collecting a reference from another account's or region's URI can only KEEP
- * more, never delete more — which is also why the two extra forms are worth
- * carrying even though cdkd's own publisher writes the plain one. Issue #1793
- * tracks deriving these host forms from ONE place shared with
- * `src/utils/ecr-uri.ts` instead of two hand-kept copies — that module matches
- * only the plain `dkr.ecr` form today, so the two already disagree.
+ * more, never delete more — which is also why the extra forms are worth
+ * carrying even though cdkd's own publisher writes the plain one.
  *
- * Every group is non-capturing, for the {@link URL_SUFFIX_ALTERNATION} reason.
+ * Every group is non-capturing, for the {@link URL_SUFFIX_ALTERNATION} reason;
+ * {@link ecrRegistryHostPattern} guarantees it for the groups IT adds.
  */
-const ECR_REGISTRY_HOST =
-  `\\d{12}\\.(?:dkr\\.ecr(?:-fips)?\\.[a-z0-9-]+\\.${URL_SUFFIX_ALTERNATION}` +
-  `|dkr-ecr\\.[a-z0-9-]+\\.on\\.aws)`;
+const ECR_REGISTRY_HOST = ecrRegistryHostPattern({
+  accountId: '\\d{12}',
+  region: '[a-z0-9-]+',
+  partitionUrlSuffix: URL_SUFFIX_ALTERNATION,
+});
 
 /**
  * cdkd's publishers write content-addressed keys (`<sha256>.<ext>`). A
@@ -314,10 +329,37 @@ function buildReferenceExtractors(marker: BootstrapMarker): {
     `https://s3[^/\\s]*\\.${URL_SUFFIX_ALTERNATION}/${bucket}/(${KEY_TERMINATORS}+)`,
     'g'
   );
+  // The `i` flag is what makes the HOST match case-INSENSITIVELY (issue #1792).
+  // DNS is case-insensitive, so a state file recording
+  // `<acct>.DKR.ECR.<region>.AMAZONAWS.COM/...` names the same registry, and
+  // missing it here reads a live image as unreferenced and DELETES it — the
+  // irreversible direction. One flag covers the labels, the region AND the
+  // suffix, which per-segment character classes cannot: the suffix alternation
+  // is SHARED with the case-sensitive S3 matchers above, so widening it there
+  // would change those too.
+  //
+  // Its reach PAST the host is not uniformly harmless, and the three tails
+  // differ — which is why the digest is folded on insert below (see
+  // `extractOnce`) instead of stored as captured:
+  //
+  // - The DIGEST class `[0-9a-f]{64}` is genuinely widened by the flag, to
+  //   upper-case hex. A collected digest is compared for EXACT equality against
+  //   ECR's `imageDigest`, which is always lower-case, so an upper-cased
+  //   `...@SHA256:AAAA...` reference lands in `imageDigests` in a spelling that
+  //   can NEVER match — collected but INERT, i.e. the live image is still
+  //   selected for deletion. The flag alone does not protect it; lower-casing on
+  //   insert is what does. An OCI digest is defined as lower-case hex, so the
+  //   fold cannot merge two distinct digests.
+  // - The TAG capture is deliberately NOT folded. ECR tags ARE case-sensitive
+  //   (`MyTag` and `mytag` are two tags), so the verbatim capture is the
+  //   matching spelling and folding it would create the mirror-image inert
+  //   collection.
+  // - The `<repo>` segment is matched as an escaped LITERAL and never captured,
+  //   so folding it can only over-collect, i.e. over-PROTECT.
   const ecrRe = new RegExp(
     `${ECR_REGISTRY_HOST}/${repo}` +
       `(?::([A-Za-z0-9_][A-Za-z0-9._-]{0,127}))?(?:@(sha256:[0-9a-f]{64}))?`,
-    'g'
+    'gi'
   );
 
   const extractOnce = (value: string, refs: AssetReferences): void => {
@@ -327,8 +369,13 @@ function buildReferenceExtractors(marker: BootstrapMarker): {
       }
     }
     for (const match of value.matchAll(ecrRe)) {
+      // Tag verbatim, digest FOLDED — see the `ecrRe` comment above for why the
+      // two tails differ. `toLowerCase()` is safe on a digest specifically
+      // because the character set is `sha256:` + hex, which has no Unicode
+      // special case (unlike the region / suffix guards in `src/utils/ecr-uri.ts`,
+      // where U+212A folds onto ASCII `k`).
       if (match[1]) refs.imageTags.add(match[1]);
-      if (match[2]) refs.imageDigests.add(match[2]);
+      if (match[2]) refs.imageDigests.add(match[2].toLowerCase());
     }
     // Name-independent content-hash pass (see CONTENT_HASH_KEY_RE).
     for (const match of value.matchAll(CONTENT_HASH_KEY_RE)) {
