@@ -1,3 +1,10 @@
+## [0.281.17](https://github.com/go-to-k/cdkd/compare/v0.281.16...v0.281.17) (2026-08-13)
+
+
+### Bug Fixes
+
+* **dynamodb:** record what the two replay-CREATE GlobalTable arms actually sent ([#1750](https://github.com/go-to-k/cdkd/issues/1750)) ([7ea49e3](https://github.com/go-to-k/cdkd/commit/7ea49e3d96fa5654f27a380b1c1452e3df7c91b8))
+
 ## [0.281.16](https://github.com/go-to-k/cdkd/compare/v0.281.15...v0.281.16) (2026-08-13)
 
 
