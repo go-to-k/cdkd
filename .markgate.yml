@@ -88,6 +88,20 @@ gates:
       # a change that narrows what a critic rejects could be committed
       # against a fresh-looking marker.
       - "scripts/**"
+      # The four verification-depth skills are enforcement logic too, for the
+      # same reason as scripts/**: the checker's whole subject is what those
+      # SKILL.md files say, so reintroducing banned wording used to leave the
+      # `check` marker fresh and only CI caught it — the exact gap #1592 closed
+      # for scripts/**. Scoped to the FOUR rather than `.claude/skills/**`:
+      # editing an ungoverned skill (/cleanup, /hunt-bugs, ...) has nothing to
+      # do with this checker and should not force a full typecheck+build+test.
+      - ".claude/skills/review-pr/**"
+      - ".claude/skills/pick-integ/**"
+      - ".claude/skills/run-integ/**"
+      - ".claude/skills/verify-pr/**"
+      # CLAUDE.md is a pattern-scanned target of the same checker, so
+      # reintroducing banned wording there must stale `check` as well.
+      - "CLAUDE.md"
       - "package.json"
       - "pnpm-lock.yaml"
       - "tsconfig*.json"

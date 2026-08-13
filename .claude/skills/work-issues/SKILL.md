@@ -379,6 +379,15 @@ anything non-obvious you learned in memory.
 - **English-only** for all committed/public artifacts (source, docs, PR/commit
   messages, issue comments on this repo).
 - **Never download/run/install untrusted third-party content** (§0).
+- **Drive each lane to MERGED, not to "pushed".** The skill's own section 9 is
+  the finish line: merge, pull, confirm the release bump, rebuild, remove the
+  worktree. A lane left as an open PR is unfinished work, and a NOT-CLOSEABLE
+  session verdict is a to-do list rather than a stopping point — keep going
+  until every lane is merged and every worktree removed, or until the only
+  blockers left are ones you cannot act on (CI in flight, a running reviewer, a
+  maintainer decision). Low context is not such a blocker: commit, push, file
+  the issue, and continue. If you stop, say per blocker WHY it is not yours to
+  finish.
 - **Wrap with a Remaining-work section + Session-close verdict, scoped to the
   issues this run actually worked.** This skill is the easiest place to get that
   scope wrong: the backlog issues you triaged but did NOT pick up are not

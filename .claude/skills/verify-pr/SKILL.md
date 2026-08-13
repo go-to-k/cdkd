@@ -76,8 +76,9 @@ Run each check and report pass/fail:
      # so it is not part of the aggregate. If it fails, run
      # `vp run audit:coverage:regenerate` (heavy: ~15 min, needs AWS creds with
      # cloudformation:ListTypes + DescribeType) and commit the regenerated
-     # cache. /verify-pr does NOT auto-run :regenerate — too costly, and the
-     # creds may not be present locally.
+     # cache. /verify-pr does NOT auto-run :regenerate — it needs AWS
+     # credentials this skill cannot assume are present, so it is gated on the
+     # critic FAILING rather than skipped for speed.
      vp run audit:coverage:check
 
      # Anything dirty here was stale before you ran the above.

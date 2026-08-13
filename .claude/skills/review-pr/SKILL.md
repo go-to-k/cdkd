@@ -6,7 +6,9 @@ argument-hint: "<PR-number>"
 
 # PR Review Recommendation
 
-Decide how much review rigor a PR actually warrants — and surface the dispatch prompts for the orchestrator to copy-paste. Running all 3 reviewer agents on every PR is expensive (~25 min) and drains attention; running none on a large security-sensitive PR misses bugs. This skill applies the heuristic codified in `~/.claude/projects/-Users-goto-pc-github-cdkd/memory/feedback_pr_review_scale_rule.md`.
+Decide how much review rigor a PR warrants — and surface the dispatch prompts for the orchestrator to copy-paste. Running none on a large security-sensitive PR misses bugs; the tiers below say what a PR needs AT MINIMUM.
+
+**The recommended tier is a FLOOR, not a cap, and wall-clock / token cost is never a reason to come in under it or to stop at it.** See the "Cost is not a tiebreaker" rule in [CLAUDE.md](../../../CLAUDE.md) → Workflow Rules: when two options differ in how thoroughly they verify, take the more thorough one; when you are unsure which tier applies, take the higher one. The tiers exist to stop a PR being UNDER-reviewed, not to ration review. Reviewers are read-only agents that run in parallel, so the only thing a larger tier costs is time the maintainer has already said to spend.
 
 The skill itself never spawns reviewers. It reads PR stats, applies the heuristic, and prints a recommendation. The **main session orchestrator** (the parent reading this skill's output) is responsible for actually issuing the `Agent` tool calls when the recommendation says to.
 
@@ -64,10 +66,12 @@ The skill itself never spawns reviewers. It reads PR stats, applies the heuristi
 
    **Down-bias triggers** (move tier DOWN by one step, never below inline) — only fires when ALL paths fall in the listed buckets:
 
-   - **Pure docs/infra**: every path matches one of `.gitignore`, `CLAUDE.md`, `README.md`, `**/*.md`, `docs/**`, `.claude/skills/**`, `.claude/agents/**`, `.claude/hooks/**`, `.claude/settings*.json`, `.markgate.yml`, `package.json` (top-level deps only — count as docs-ish for review purposes when the diff is dep bumps). The `**/*.md` entry catches markdown anywhere outside `docs/**` — most commonly integ-test READMEs (`tests/integration/*/README.md`) that are written for human readers but live under `tests/**`. Added after PR #344 surfaced a 13-file markdown-only cleanup that the strict path-bucket rule mis-categorized as mixed-bucket and forced into 3-axis review.
+   - **Pure INERT docs**: every path matches one of `.gitignore`, `README.md`, `docs/**`, `package.json`, `tests/**/*.md`. **Agent-instruction files are deliberately NOT here** — `CLAUDE.md`, `.claude/rules/**`, `.claude/skills/**`, `.claude/agents/**`, `.claude/hooks/**`, `.claude/settings*.json` and `.markgate.yml` change how every future session behaves, so a defect in one has a wider blast radius than most code. (`package.json` counts here only for top-level dep bumps.) `pr-review-gate.sh`'s `DOWN_DOCS_REGEX` carries the same list MINUS `tests/**/*.md` (the hook reaches that shape through its separate tests-only bucket instead), so a diff of exactly `README.md` + a `tests/**/README.md` down-biases here and not there; keep the two in sync and re-check that delta when editing either. The `tests/**/*.md` entry catches integ-test READMEs (`tests/integration/*/README.md`), written for human readers but living under `tests/**`. It is deliberately NOT a blanket `**/*.md`: that form re-admitted `CLAUDE.md`, `.claude/rules/**`, `.claude/skills/**/SKILL.md` and `.claude/agents/*.md` — every file the sentence above excludes — so the exclusion was inert on the skill side while the hook enforced it, which is the drift this list exists to prevent. Added after PR #344 surfaced a 13-file markdown-only cleanup that the strict path-bucket rule mis-categorized as mixed-bucket and forced into 3-axis review.
    - **Test-only**: every path matches `tests/**`
 
    If both up- and down-bias triggers fire (e.g. a tests-only diff that touches a security-sensitive provider's test file), prefer up-bias — security wins.
+
+   **Down-bias is a statement about RISK, never about budget.** It fires only when every path is genuinely in a low-risk bucket. If a "docs-only" diff changes a rule the agent will follow (`.claude/rules/**`, `CLAUDE.md`), or a "test-only" diff changes what a checker ACCEPTS rather than what it asserts, the low-risk premise is false — do not down-bias, and say why in the recommendation. A tier that was talked down for any reason other than measured low risk is the failure this rule exists to prevent.
 
 4. **Apply the bias** to compute the final tier:
 
@@ -211,7 +215,7 @@ If during the inline read you discover a non-obvious bug class (cross-cutting st
 - **Never auto-dispatch** the Agent tool from inside this skill. Skills run in the main conversation; this skill's job is to *recommend*, the orchestrator's job is to *act*.
 - The orchestrator can extend each reviewer prompt with PR-specific context (concerns to deep-dive, design doc path for spec-reviewer, files to focus on). Treat the dispatch blocks as starting templates, not final prompts.
 - For 3-axis dispatches: the spec reviewer needs a design doc path. If no design doc exists for the PR (small features, bug fixes, refactors), downgrade to 1-reviewer rather than dispatching spec-reviewer with no inputs.
-- Thresholds are heuristics, not laws. When in doubt, ask: "would I be comfortable spot-checking this in 5 minutes?" — if yes, inline; if no, dispatch.
+- Thresholds are heuristics, not laws. When in doubt, go UP — the question is not "could I spot-check this in 5 minutes?" but "would I be comfortable being wrong about this reaching main?"; if no, dispatch.
 - For an honest reading of the trade-off, see `~/.claude/projects/-Users-goto-pc-github-cdkd/memory/feedback_pr_review_scale_rule.md`.
 
 ## Dry-run reference (sanity check)
@@ -220,10 +224,10 @@ These three PRs are the calibration set. Running this skill against them should 
 
 | PR | Stats | Base tier | Bias | Final |
 |----|-------|-----------|------|-------|
-| #240 | 390 LOC, 4 files (`.claude/hooks/*`, `CLAUDE.md`, `.claude/settings.json`) | inline (fc < 5) | down (pure infra) → clamps at inline | **inline** |
+| #240 | 390 LOC, 4 files (`.claude/hooks/*`, `CLAUDE.md`, `.claude/settings.json`) | inline (fc < 5) | none (agent-instruction files are NOT in the docs bucket) | **inline** (base tier alone) |
 | #237 | 4515 LOC, 24 files (incl. `src/local/cognito-jwt.ts`, `lambda-authorizer.ts`) | 3-axis (loc >= 1000 AND fc >= 10) | up (security surface) → clamps at 3-axis | **3-axis** |
 | #236 | 269 LOC, 9 files (incl. `src/local/docker-image-builder.ts`, `ecr-puller.ts`) | inline (loc < 300) | up (process-launch surface) → 1-reviewer | **1-reviewer** |
-| #344 | 1488 LOC, 13 files (all `.md` — `docs/plans/*.md` deletes + `CLAUDE.md` / `docs/*.md` / `tests/integration/*/README.md` link-fix) | 3-axis (loc >= 1000 AND fc >= 10) | down (every path is `.md`, matches `**/*.md` in pure-docs bucket) → 1-reviewer | **1-reviewer** |
+| #344 | 1488 LOC, 13 files (all `.md` — `docs/plans/*.md` deletes + `CLAUDE.md` / `docs/*.md` / `tests/integration/*/README.md` link-fix) | 3-axis (loc >= 1000 AND fc >= 10) | none — `CLAUDE.md` is an agent-instruction file, so the "every path is inert docs" premise fails | **3-axis** |
 | #404 | 4286 raw LOC → ~1100 after subtracting `docs/_generated/integ-coverage.json` (2724 LOC) + `docs/integ-coverage.md` (~170 LOC) auto-gen, 19 files (scripts/, hooks, fixtures, sidecar JSON) | 3-axis (`fc >= 10` still triggers — file count not adjusted for auto-gen) | none (mixed paths exclude pure docs/infra + tests-only bias) | **3-axis** (file count alone, even after LOC adjustment) — but if PR had been split per memory `feedback_split_tooling_from_backfill.md` (tool vs backfill), each half would be 1-reviewer |
 
-If the skill output diverges from these, the heuristic or the trigger lists have drifted — re-read this file and the linked memory entry before trusting the recommendation.
+If the skill output diverges from these, the heuristic or the trigger lists have drifted — re-read this file and the linked memory entry before trusting the recommendation. **These rows are RECALCULATED expectations, not history**: #240 and #344 were originally decided under a docs bucket that included `CLAUDE.md` / `.claude/**`, and both now answer differently because that bucket was narrowed to inert documentation. Do not "restore" the old bucket to make a row match.

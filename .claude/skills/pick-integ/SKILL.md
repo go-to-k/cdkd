@@ -6,11 +6,21 @@ argument-hint: "[base-ref] (default: origin/main)"
 
 # Integ Test Picker
 
-Decide which integration tests are worth running right now. Running all ~95 is impractical
-(real-AWS cost + hours; some take 20min+). This skill ranks tests by two signals — **how stale
-the last run is** (from the committed ledger) and **whether recent code changes touch the area a
-test exercises** — and prints a prioritized, copy-pasteable `/run-integ` plan. It RECOMMENDS only;
-the orchestrator runs the chosen tests via `/run-integ` (which records each run back into the ledger).
+Decide which integration tests to run right now. Running all ~95 back-to-back takes hours, so this
+skill ORDERS them: it ranks by two signals — **how stale the last run is** (from the committed
+ledger) and **whether recent code changes touch the area a test exercises** — and prints a
+prioritized, copy-pasteable `/run-integ` plan. It RECOMMENDS only; the orchestrator runs the chosen
+tests via `/run-integ` (which records each run back into the ledger).
+
+**The ranking is a running ORDER, not a budget.** Per the "Cost is not a tiebreaker for
+verification depth" rule in [CLAUDE.md](../../../CLAUDE.md) → Workflow Rules, real-AWS time and
+spend are not grounds for dropping a candidate: when several tests plausibly cover the code a
+change touched, run all of them rather than the cheapest or the top-ranked one, and prefer a
+broad-set fixture over a narrow one whenever the change is cross-cutting. Use the priorities to
+decide what runs FIRST (so a partial session still covers the riskiest ground), not what gets
+skipped. If a plan is genuinely too long for one session, hand the remainder forward per "Running a
+large plan across sessions" below — do not silently truncate it, and say in the wrap-up exactly
+which tests were not run.
 
 ## Inputs
 
@@ -97,7 +107,9 @@ the orchestrator runs the chosen tests via `/run-integ` (which records each run 
    - **P0**: changed-area AND (stale OR failing OR never-run) — the change touches code whose proof is also old/broken.
    - **P1**: changed-area but recently-green — verify the change didn't regress it.
    - **P2**: not changed-area but stale >14d / failing / never-run / **expiring soon** — coverage hygiene
-     (cap to a sensible number; prefer the BROAD set + a spread of providers, and `log()` what you dropped).
+     (prefer the BROAD set + a spread of providers; ORDER them, do not cap them — per the
+     running-order-not-a-budget note above, a long tail is handed forward rather than dropped, and
+     whatever is not run is named explicitly in the wrap-up).
      Rank an expiring-soon test BELOW an already-stale one but ABOVE a recently-green one; within the
      tier, oldest first. When a single cohort is large, say so — draining 105 tests the day they expire
      is not feasible, so start the drain a few days early and spread it across sessions (see the relay
@@ -117,10 +129,12 @@ the orchestrator runs the chosen tests via `/run-integ` (which records each run 
      /run-integ <name>    # <why: which changed path + age/result>
    P1 (changed, recently green):
      /run-integ <name>    # verify no regression in <area>
-   P2 (coverage hygiene, capped):
+   P2 (coverage hygiene):
      /run-integ <name>    # stale <age>d / expires in <M>d / never-run
 
-   Skipped (recently green + untouched): <count> tests — list a few + note the cap.
+   Not scheduled this pass (recently green + untouched): <count> tests — list a few.
+   (A count, not a cap: these are DEPRIORITIZED, not excluded. Say plainly that
+   they were not run, so the omission is visible rather than implied.)
    ```
    **Never render "zero stale" on its own.** If nothing is >14d but a cohort sits at 12-14d, the
    headline is the cliff (`"0 stale, but 105 tests expire in 1d"`), not the clean stale count — the
@@ -159,5 +173,7 @@ orchestrator aware of it up front:
   (serially — they share one AWS account; mind VPC/EIP/NAT account limits).
 - The ledger is only as good as its discipline: it is updated by `/run-integ` on EVERY run (pass or fail).
   If a test's row looks impossibly old, it may simply not have been run via the skill — treat absent/old as stale.
-- "Recently green + untouched" tests are the ones it is safe to SKIP; surface the count so a human can override.
+- "Recently green + untouched" tests are the ones to schedule LAST, not the ones to drop: a test whose
+  area the diff did not touch is genuinely lower-risk, but "lower-risk" orders the list rather than
+  truncating it. Surface the count either way so the omission is visible.
 - Pure docs / `.claude/skills` / test-only diffs usually need NO integ — say so rather than padding the list.
