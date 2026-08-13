@@ -267,6 +267,19 @@ export class SNSSubscriptionProvider implements ResourceProvider {
     // a reason carrying `does not exist` / `Rate exceeded` / `because it is in
     // use` would burn the whole backoff schedule before a certain failure.
     //
+    // The `physicalId` is kept out of the thrown message for the SAME reason,
+    // and it is the worse offender: it is STATE-borne and arbitrary
+    // (`cdkd import --resource <id>=<anything>` writes it verbatim), and the
+    // only skip family that can reach here today is literally "malformed
+    // physicalId in state". It is still named on the warn line and carried in
+    // the `ProvisioningError`'s structured field. The `logicalId` stays in the
+    // message because it is the only thing that identifies the resource in
+    // `formatError`'s `name: message` output and is what the user greps the
+    // warn line by; it is template-borne and alphanumeric per CFn's own
+    // constraint. Accepted residual: a resource named EXACTLY after a
+    // single-token retryable pattern (`DependencyViolation`) still matches,
+    // costing one backoff schedule before the same certain failure.
+    //
     // Latent today: the two pending-confirmation arms in `delete` are
     // deliberate CFn-parity delete-SUCCESS (see `logPendingConfirmationSkip`),
     // not skips, so no arm produces this outcome yet.
@@ -276,10 +289,11 @@ export class SNSSubscriptionProvider implements ResourceProvider {
           `${deleteResult.reason}`
       );
       throw new ProvisioningError(
-        `Cannot replace SNS subscription ${logicalId}: cdkd could not delete the old subscription ` +
-          `${physicalId} (see the preceding warning for the cause), and creating the replacement would ` +
-          `leave both subscribed to the topic and deliver every message twice. Repair the state record ` +
-          `for ${logicalId}, or remove the old subscription in AWS if it is still live, then re-run.`,
+        `Cannot replace SNS subscription ${logicalId}: cdkd could not delete the old subscription, and ` +
+          `creating the replacement would leave both subscribed to the topic and deliver every message ` +
+          `twice. See the warning naming ${logicalId} for the recorded physical id and the cause. ` +
+          `Repair the state record for ${logicalId}, or remove the old subscription in AWS if it is ` +
+          `still live, then re-run.`,
         resourceType,
         logicalId,
         physicalId

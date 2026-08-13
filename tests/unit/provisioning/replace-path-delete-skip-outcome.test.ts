@@ -244,7 +244,7 @@ describe('SNS subscription delete-then-create REPLACE aborts on a skipped delete
 
     expect(error).toBeInstanceOf(ProvisioningError);
     const message = (error as Error).message;
-    expect(message).toContain(OLD_ARN);
+    expect(message).toContain('MySub');
     expect(message).toContain('deliver every message twice');
     // The skip family shipping today is STATE-borne (a malformed composite
     // physicalId), so deleting the AWS resource repairs nothing on its own —
@@ -252,10 +252,44 @@ describe('SNS subscription delete-then-create REPLACE aborts on a skipped delete
     expect(message).toContain('state record');
     expect(message).toContain('remove the old subscription in AWS');
 
-    // The provider-supplied reason is REPORTED, but as a log line rather than
-    // inside the thrown message — see the retryable-classification suite below.
+    // Neither the provider-supplied reason NOR the state-borne physicalId is
+    // interpolated into the thrown message — both are arbitrary text that
+    // `retryable-errors.ts`'s substring classifier would read (see the
+    // retryable-classification suite below). Both are still REPORTED: the warn
+    // line carries them, and the physicalId is on the error's structured field.
     expect(message).not.toContain(SKIP_REASON);
+    expect(message).not.toContain(OLD_ARN);
+    expect((error as ProvisioningError).physicalId).toBe(OLD_ARN);
     expect(warnings().some((m) => m.includes(SKIP_REASON) && m.includes(OLD_ARN))).toBe(true);
+  });
+
+  it('a PendingConfirmation-adopted subscription still replaces normally', async () => {
+    // The two pending-confirmation arms in `delete()` are CFn-parity
+    // delete-SUCCESS, NOT skips (see `logPendingConfirmationSkip`). Nothing
+    // pinned the UPDATE consequence of that decision, so a future #1770-style
+    // conversion could flip those arms and arm the abort for every deploy of a
+    // subscription adopted via `cdkd import --resource <id>=PendingConfirmation`
+    // — permanently, with no flag to force it. This is the fence: `delete()` is
+    // deliberately NOT mocked here, so the real arm runs.
+    const provider = new SNSSubscriptionProvider();
+    const createSpy = vi
+      .spyOn(provider, 'create')
+      .mockResolvedValue({ physicalId: NEW_ARN, attributes: {} });
+
+    const result = await provider.update(
+      'MySub',
+      'PendingConfirmation',
+      'AWS::SNS::Subscription',
+      PROPS,
+      PROPS
+    );
+
+    expect(result).toEqual({ physicalId: NEW_ARN, wasReplaced: true, attributes: {} });
+    expect(createSpy).toHaveBeenCalledTimes(1);
+    // No Unsubscribe was issued — the arm returns before the AWS call...
+    expect(send).not.toHaveBeenCalled();
+    // ...and it is a delete-SUCCESS, so no replacement abort fired.
+    expect(warnings().some((m) => m.includes('Cannot replace SNS subscription'))).toBe(false);
   });
 
   it('INVERTED CONTROL — a successful delete replaces the subscription normally', async () => {
@@ -309,6 +343,39 @@ describe('SNS subscription delete-then-create REPLACE aborts on a skipped delete
     expect(isRetryableTransientError(error, message)).toBe(false);
     // ...and the cause is still reported, on the log line.
     expect(warnings().some((m) => m.includes(reason))).toBe(true);
+  });
+
+  /**
+   * The `physicalId` is the SAME hazard as the reason and a worse one: it is
+   * state-borne and arbitrary (`cdkd import --resource <id>=<anything>`), and
+   * the only skip family that reaches this path today is literally "malformed
+   * physicalId in state" — so the string most likely to be junk is the one the
+   * classifier would have read.
+   */
+  it.each([
+    ['does not exist', 'arn:aws:sns:us-east-1:123456789012:MyTopic:does not exist'],
+    ['Rate exceeded', 'Rate exceeded'],
+    ['DependencyViolation', 'DependencyViolation'],
+  ])('a hostile %s physicalId does not make the abort look retryable', async (_p, hostileId) => {
+    const provider = new SNSSubscriptionProvider();
+    vi.spyOn(provider, 'create').mockResolvedValue({ physicalId: NEW_ARN, attributes: {} });
+    vi.spyOn(provider, 'delete').mockResolvedValue({ outcome: 'skipped', reason: SKIP_REASON });
+
+    const error = await provider
+      .update('MySub', hostileId, 'AWS::SNS::Subscription', PROPS, PROPS)
+      .then(
+        () => undefined,
+        (err: unknown) => err
+      );
+
+    expect(error).toBeInstanceOf(ProvisioningError);
+    const message = (error as Error).message;
+    expect(message).not.toContain(hostileId);
+    expect(isThrottlingError(error)).toBe(false);
+    expect(isRetryableTransientError(error, message)).toBe(false);
+    // ...and the id is still reported, on the log line and on the error field.
+    expect((error as ProvisioningError).physicalId).toBe(hostileId);
+    expect(warnings().some((m) => m.includes(hostileId))).toBe(true);
   });
 
   it('a FAILED delete still converges (pre-existing warn-and-continue is unchanged)', async () => {

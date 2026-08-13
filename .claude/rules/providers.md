@@ -1134,10 +1134,20 @@ provider-supplied `reason` into the thrown message (the rollback arms wrap
 `update()` in `withRetry` and `retryable-errors.ts` classifies by SUBSTRING, so
 a reason carrying `does not exist` / `Rate exceeded` / `because it is in use`
 would burn the whole backoff schedule before a certain failure — log it
-instead), and point the remediation at the STATE record as well as at AWS,
-since today's only skip family is state-borne. All six sites are LATENT (none
-of these providers has a skip arm yet), which is what makes them worth fixing
-BEFORE #1770 adds the arms — and the SNS abort is why
+instead, and interpolate nothing but the TEMPLATE logical id: the state-borne
+physical id is the worst candidate, since the only skip family a REPLACE path
+meets today is literally "malformed physicalId in state"), and point the
+remediation at the STATE record as well as at AWS, since neither skip family
+shipping today (the state-borne composite-id arms, `NestedStackProvider`'s
+propagation) is repaired by deleting the AWS resource alone. All six sites are
+LATENT, and they STAY latent even after #1770 lands — that issue's eight arms
+are in `lambda-layer` / `lambda-permission` / `custom-resource` / `iam-policy` /
+`iam-user-group`, none of which `CloudControlProvider` delegates to or any of
+the four REPLACE `update()`s calls, and neither `iam-role` nor
+`iam-managed-policy` is in its table (`AWS::IAM::Policy` is a different type and
+a different file from `AWS::IAM::ManagedPolicy`). So the reason to fix them is
+that they land the mechanism BEFORE any skip arm reaches these five providers,
+not that #1770 specifically arms them — and the SNS abort is why
 `logPendingConfirmationSkip`'s two CFn-parity delete-SUCCESS arms carry an
 in-code note NOT to convert them: a skip there would abort every deploy of a
 `PendingConfirmation`-adopted subscription, with no flag to force it.

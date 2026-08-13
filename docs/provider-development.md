@@ -1653,11 +1653,19 @@ Two mechanical details any such abort inherits:
   `retryable-errors.ts` classifies by SUBSTRING — so a reason carrying
   `does not exist`, `Rate exceeded`, or `because it is in use` would flip a
   deterministic abort to "retryable" and burn the whole backoff schedule
-  before a certain failure. Log the reason; throw a message cdkd fully
-  authors.
-- **Point the remediation at the STATE record, not only at AWS.** The skip
-  family shipping today is state-borne (a malformed composite physicalId), so
-  "remove the old resource" repairs nothing on its own — name both repairs.
+  before a certain failure. Log the reason; interpolate nothing into the thrown
+  message but the TEMPLATE logical id. The state-borne physical id is the worst
+  candidate of all — the only skip family a REPLACE path meets today is
+  literally "malformed physicalId in state", and `cdkd import --resource
+  <id>=<anything>` puts an arbitrary string there. Known residual, accepted:
+  a logical id that IS a single-token pattern (`DependencyViolation`) still
+  matches, which costs one backoff schedule before the same certain failure.
+- **Point the remediation at the STATE record, not only at AWS.** Both skip
+  families shipping today — the state-borne composite-id arms and
+  `NestedStackProvider`'s propagation — describe a resource whose repair
+  "remove the old resource in AWS" does not cover on its own, and for the
+  malformed-physicalId one deleting the AWS resource fixes nothing at all.
+  Name both repairs.
 
 Note this is deliberately NOT symmetric with a THROWN delete, which those
 providers still warn-and-continue past: a throw may mean the delete partially
