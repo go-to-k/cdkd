@@ -111,12 +111,11 @@ strict, each differently):
   table created without an explicit mode returns none, so do not state that as
   the whole payoff. **The split is on ABSENCE, not on usability**, and getting
   that wrong cost a review round in both directions. An ABSENT recorded previous
-  DROPS the key: the comparison baseline there is the create-path default, so
-  recording it would INVENT a key on a possibly-PROVISIONED table. Anything else
-  records the baseline the guards already resolved — which for a usable recorded
-  previous IS that value (so an out-of-band re-price stays a `cdkd drift`
-  finding rather than being reconciled away), and for a present-but-unusable one
-  is the live reading, which RESTORES a usable baseline. That last case is the
+  DROPS the key, leaving the record exactly as it was; anything else records the
+  baseline the guards already resolved — which for a usable recorded previous IS
+  that value (so an out-of-band re-price stays a `cdkd drift` finding rather than
+  being reconciled away), and for a present-but-unusable one is the live reading,
+  which RESTORES a usable baseline. That last case is the
   one place this file's "a read-back value belongs in `observedProperties`" bar
   is crossed, and the bar itself is what reconciles it rather than a carve-out:
   NOTHING was sent, so the live mode IS what cdkd left AWS holding, and the only
@@ -124,9 +123,12 @@ strict, each differently):
   regardless: a dropped key reads as ABSENT next time, and until issue #1733
   the absent branch did not consult AWS, so a corrected template compared
   equal, issued no call, and silently lost a real flip. #1733 closed that
-  route — the absent branch now seeds its baseline from the live read whenever
-  the desired side DECLARES a mode — but the drop still depends on that live
-  read succeeding, while recording the live reading here needs nothing later.
+  route — the absent branch now resolves its baseline from the live read
+  whenever the desired side DECLARES a mode, which this arm always implies,
+  since the guard fires only on a value the template DID declare. That is also
+  why the DROP is still right and is no longer the residual it was: the key
+  stays absent, and every later deploy re-reads AWS instead of comparing against
+  a snapshot this arm would have frozen into the record.
   The create-side arm of the SAME
   property answers differently — it records the SUBSTITUTED mode — because there
   the table really was created on-demand; and because a DROP leaves an absence
@@ -169,14 +171,39 @@ and the NEXT update reads it as the previous side. Where the provider already
 holds AWS's live value (a `DescribeTable` at the top of `update()`), seed the
 comparison baseline from it whenever the state-recorded previous is
 present-but-unusable — otherwise the corrected template compares against junk,
-reads as a change, and issues a call AWS rejects on every deploy. An ABSENT
-previous is NOT unusable: seeding it turns a no-op into a spurious change —
-still the rule for `AWS::DynamoDB::Table`. `GlobalTable` DIVERGED in issue
-#1733: an absent previous there resolved to the create-path default WITHOUT
-consulting AWS, so a corrected template compared equal and lost a real flip.
-It now seeds from the live read too, but ONLY when the desired side DECLARES a
-mode — a template that legitimately omits the property never consults AWS,
-which is what keeps the spurious-change hazard above closed.
+reads as a change, and issues a call AWS rejects on every deploy.
+
+**An ABSENT previous must not be seeded BLINDLY** — that is the spurious-change
+hazard, and it is a statement about HOW, not a prohibition. The seed is gated on
+the DESIRED side DECLARING a mode: where the template omits the property both
+sides normalize to the type default and `BillingMode` contributes no change of
+its own, so consulting AWS there would manufacture one (and, on an imported
+provisioned table, re-price it). Where the template DOES declare a mode the user
+is stating one, and comparing it against the type default instead would suppress
+a real flip — reachable via `cdkd import`, whose state properties come from the
+template rather than from AWS. `AWS::DynamoDB::Table` has resolved it that way
+all along (`properties['BillingMode'] !== undefined ? liveBillingMode : <type
+default>`); `GlobalTable` CONVERGED onto that answer in issue #1733, where an
+absent previous had been resolving to the create-path default without ever
+consulting AWS, so a corrected template compared equal and silently lost a real
+flip. There is no divergence between the two providers here — only a difference
+in each type's own default (PROVISIONED for `Table`, PAY_PER_REQUEST for
+`GlobalTable`), which is the CFn type default in both cases.
+
+**Resolve a missing `BillingModeSummary` to PROVISIONED, not to the type
+default** (#1733 review). DynamoDB omits the summary for a table created without
+an explicit mode, and such a table IS provisioned — so the inference is reading
+AWS correctly rather than inventing a value, and it is the reading both
+providers' `readCurrentState` already takes. Getting this wrong is what made the
+first cut of the GlobalTable fix INERT on its own headline population: `create()`
+always sends an explicit mode, so the only tables lacking a summary are the
+non-cdkd ones the issue is about (an imported provisioned table), and falling
+back to the type default there both lost the flip AND re-opened the same-mode
+`UpdateTable` in the other direction — a record with no mode against a
+`PROVISIONED` template compared PAY_PER_REQUEST vs PROVISIONED and flipped a
+table that was already provisioned. When a live read has a documented ABSENCE
+semantic, encode the semantic; a "defensive" fallback to the create-path default
+is only defensive against the wrong thing.
 
 **Take IDENTITY from the live read unconditionally, VALUES only where the live
 value answers the SAME question as the desired one** (issue #1571, refining the

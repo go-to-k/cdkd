@@ -167,6 +167,30 @@ describe('DynamoDBTableProvider junk previous BillingMode (issue #1552)', () => 
     );
   });
 
+  it('resolves an ABSENT previous from the LIVE mode when the DESIRED side DECLARES one', async () => {
+    // The convergence fence for issue #1733. `AWS::DynamoDB::GlobalTable`
+    // ADOPTED this provider's long-standing gate — `properties['BillingMode']
+    // !== undefined ? liveBillingMode : <type default>` — rather than diverging
+    // from it, so the two providers must keep agreeing on this shape. The row
+    // above cannot pin it: its desired side declares no mode, so it passes
+    // whether or not the seed reaches this provider.
+    //
+    // Assert-only, deliberately: `dynamodb-table-provider.ts` belongs to
+    // another lane and is not edited by the change this file fences.
+    liveTable('PROVISIONED');
+
+    await provider.update(
+      'MyTable',
+      TABLE_NAME,
+      'AWS::DynamoDB::Table',
+      { ...baseProps, BillingMode: 'PAY_PER_REQUEST' },
+      { ...baseProps }
+    );
+
+    expect(updateTableInputs()).toHaveLength(1);
+    expect(updateTableInputs()[0]).toMatchObject({ BillingMode: 'PAY_PER_REQUEST' });
+  });
+
   it('keeps the live mode when the DESIRED value is unusable and the previous is junk too', async () => {
     // The live mode is PROVISIONED, deliberately NOT the create-path default:
     // pre-fix the desired `null` fell back to the junk previous (`''`) and
@@ -311,7 +335,7 @@ describe('DynamoDBGlobalTableProvider junk previous BillingMode (issue #1552)', 
     // tell them apart.
     expect(childLogger.warn).toHaveBeenCalledWith(
       expect.stringMatching(
-        /AWS::DynamoDB::GlobalTable MyTable: the cdkd state record declares no BillingMode.*\(PROVISIONED\)/s
+        /AWS::DynamoDB::GlobalTable MyTable: the cdkd state record declares no BillingMode — using PROVISIONED as the comparison baseline.*the mode DescribeTable reports/s
       )
     );
     expect(childLogger.warn).not.toHaveBeenCalledWith(
@@ -368,11 +392,13 @@ describe('DynamoDBGlobalTableProvider junk previous BillingMode (issue #1552)', 
     expect(billingUpdateInputs()).toEqual([]);
   });
 
-  it('falls back to the create-path default when AWS reports NO BillingModeSummary', async () => {
-    // Question (a) of issue #1733 is a real-AWS one, so the code must be
-    // correct under EITHER answer: a table AWS reports no summary for keeps the
-    // pre-#1733 behavior rather than having a mode invented for it. Here that
-    // means the desired PAY_PER_REQUEST compares equal and nothing is sent.
+  it('seeds PROVISIONED when AWS reports NO BillingModeSummary, and APPLIES the flip', async () => {
+    // The population issue #1733's own step 1 names — a `cdkd import` of a
+    // PROVISIONED table — is EXACTLY the no-summary shape: DynamoDB omits the
+    // summary for a table created without an explicit mode, and `create()`
+    // always sends one, so only a non-cdkd table can lack it. Resolving that to
+    // this provider's create-path default (the first cut of the fix) left #1733
+    // inert on its own headline case.
     liveTableWithoutSummary();
 
     await provider.update(
@@ -383,10 +409,43 @@ describe('DynamoDBGlobalTableProvider junk previous BillingMode (issue #1552)', 
       { ...baseProps }
     );
 
-    expect(billingUpdateInputs()).toEqual([]);
-    expect(childLogger.warn).not.toHaveBeenCalledWith(
-      expect.stringContaining('declares no BillingMode')
+    expect(billingUpdateInputs()).toHaveLength(1);
+    expect(billingUpdateInputs()[0]).toMatchObject({ BillingMode: 'PAY_PER_REQUEST' });
+    // The announcement says the mode was INFERRED, not reported — asserting
+    // "the table's actual billing mode" over an absent summary would overstate
+    // what cdkd knows.
+    expect(childLogger.warn).toHaveBeenCalledWith(
+      expect.stringMatching(/declares no BillingMode.*inferred: DescribeTable reports no/s)
     );
+  });
+
+  it('issues NO UpdateTable when the no-summary inference MATCHES the template', async () => {
+    // The other polarity of the same inference, and the one the create-path
+    // default got backwards: pre-fix a PROVISIONED template over an absent
+    // record read as PAY_PER_REQUEST -> PROVISIONED and flipped a table that
+    // was already provisioned — the #1552 same-mode call, re-opened from the
+    // other side.
+    liveTableWithoutSummary();
+
+    await provider.update(
+      'MyTable',
+      TABLE_NAME,
+      'AWS::DynamoDB::GlobalTable',
+      {
+        ...baseProps,
+        BillingMode: 'PROVISIONED',
+        WriteProvisionedThroughputSettings: {
+          WriteCapacityAutoScalingSettings: {
+            MinCapacity: 1,
+            MaxCapacity: 5,
+            TargetTrackingScalingPolicyConfiguration: { TargetValue: 70 },
+          },
+        },
+      },
+      { ...baseProps }
+    );
+
+    expect(billingUpdateInputs()).toEqual([]);
   });
 
   it('does NOT consult AWS when the DESIRED side declares no BillingMode either', async () => {

@@ -49,6 +49,14 @@
 #       TTL state changes to enable-here → disable-at-step-13.)
 #  12g. assert TTL is now ENABLED and the UpdateTest tag is present
 #  13. cdkd deploy with CDKD_TEST_UPDATE= (cleared, baseline)
+#  13j. issues #1733 / #1738: with BillingMode REMOVED from the state record,
+#       a template declaring PAY_PER_REQUEST must resolve its baseline from
+#       DescribeTable and APPLY the flip (pre-fix it compared equal to the
+#       create-path default and silently lost it)
+#  13k. issue #1738: an unusable BillingMode over a PAY_PER_REQUEST table keeps
+#       the mode, so the declared provisioned capacity is unsendable and state
+#       must retain the PREVIOUS value (the kept-PROVISIONED mirror of this is
+#       asserted at step 13g on GsiProvRecoveryTable's on-demand ceiling)
 #  14. assert DeletionProtectionEnabled is now false (or absent) on AWS,
 #       BillingMode flipped back to PAY_PER_REQUEST, AND the scaling
 #       policy is gone (DeleteScalingPolicy + DeregisterScalableTarget)
@@ -1329,6 +1337,55 @@ if [ "${LIVE_BILLING_AFTER_JUNK}" = 'PAY_PER_REQUEST' ]; then
 fi
 echo "    issue #1683 ok: live billing mode untouched (${LIVE_BILLING_AFTER_JUNK})"
 
+# Issue #1738, kept-mode-PROVISIONED arm: the CAPACITY twin of that suppression.
+# The SAME deploy raised this table's declared
+# `WriteOnDemandThroughputSettings.MaxWriteRequestUnits` from 100 to 200, but
+# the kept mode is PROVISIONED, so cdkd sends no on-demand ceiling at all — and
+# state must therefore record the PREVIOUS 100. Recording 200 describes capacity
+# AWS never received, which `readCurrentState` can never match and which the
+# NEXT update reads as its previous side (the #1552 class).
+read_state_table_max_write() { # $1 = logical-id prefix
+  local prefix="$1" verdict tmp
+  tmp="$(mktemp)" || return 1
+  aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - > "${tmp}" || { rm -f "${tmp}"; return 1; }
+  verdict="$(python3 - "${tmp}" "${prefix}" <<'PY'
+import json, sys
+path, prefix = sys.argv[1], sys.argv[2]
+with open(path) as fh:
+    state = json.load(fh)
+for logical_id, resource in state.get("resources", {}).items():
+    if logical_id.startswith(prefix):
+        block = resource.get("properties", {}).get("WriteOnDemandThroughputSettings")
+        print(json.dumps(block.get("MaxWriteRequestUnits") if isinstance(block, dict) else block))
+        break
+else:
+    sys.exit(f"no {prefix} in cdkd state")
+PY
+)" || { rm -f "${tmp}"; return 1; }
+  rm -f "${tmp}"
+  printf '%s' "${verdict}"
+}
+PROV_CEILING_AFTER_JUNK="$(read_state_table_max_write GsiProvRecoveryTable)"
+if [ "${PROV_CEILING_AFTER_JUNK}" != "100" ]; then
+  echo "FAIL: issue #1738 — a suppressed flip must retain the PREVIOUS on-demand ceiling (100), got ${PROV_CEILING_AFTER_JUNK}" >&2
+  exit 1
+fi
+# The WIRE half: a PROVISIONED table must carry no on-demand ceiling at all, so
+# the retention is recording what AWS actually holds rather than papering over a
+# call that DID go out.
+LIVE_CEILING_AFTER_JUNK="$(aws dynamodb describe-table \
+  --table-name "${PROV_TABLE_FOR_BILLING}" --region "${REGION}" \
+  --query 'Table.OnDemandThroughput.MaxWriteRequestUnits' --output text)"
+case "${LIVE_CEILING_AFTER_JUNK}" in
+  None|'')
+    ;;
+  *)
+    echo "FAIL: issue #1738 — no on-demand ceiling may reach a PROVISIONED table, got ${LIVE_CEILING_AFTER_JUNK}" >&2
+    exit 1
+    ;;
+esac
+echo "    issue #1738 ok: kept-PROVISIONED retained the PREVIOUS on-demand ceiling (100), nothing sent"
+
 # ...which means phase 1 can no longer let the provider WRITE the junk record
 # that phases 2 (#1571) and 13h (#1585) recover from — today's binary cannot
 # produce that shape any more. Seed it by hand instead, exactly as a pre-#1683
@@ -1522,6 +1579,144 @@ if [ "${EXCL_READ}" != "7" ] || [ "${EXCL_WRITE}" != "7" ]; then
   exit 1
 fi
 echo "    liveOnlyIdx survived (${LIVEONLY_AFTER}), autoProvIdx capacity unchanged at 7/7 — issue #1585 covered"
+
+# ─── Issues #1733 / #1738 on BillingSeedTable ───────────────────────────────
+#
+# Placed LAST among the deploys on purpose: both steps below drive the table's
+# billing mode, and every later template would have to carry their tokens or
+# flip it back (the mode-gated-resource rule). Nothing but `destroy` follows.
+#
+# Both deploys carry the full accumulated mode list plus one new token, so every
+# OTHER table's template is byte-identical to step 13h's and these steps cannot
+# perturb the sequence above.
+BILLING_SEED_TABLE="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | python3 -c '
+import json, sys
+state = json.load(sys.stdin)
+for logical_id, resource in state.get("resources", {}).items():
+    if resource.get("resourceType") == "AWS::DynamoDB::GlobalTable" and logical_id.startswith("BillingSeedTable"):
+        print(resource["physicalId"])
+        break
+')"
+if [ -z "${BILLING_SEED_TABLE}" ]; then
+  echo "FAIL: issue #1733 — no BillingSeedTable in cdkd state" >&2
+  exit 1
+fi
+
+# MEASUREMENT for issue #1733's open question (a): what DescribeTable reports
+# for a table cdkd created with an EXPLICIT BillingMode. Logged rather than
+# asserted — the code is correct under either answer (a missing summary is
+# INFERRED as PROVISIONED, which is what such a table is), so failing here would
+# constrain the fix beyond what it claims.
+SEED_SUMMARY_BEFORE="$(aws dynamodb describe-table --table-name "${BILLING_SEED_TABLE}" --region "${REGION}" \
+  --query 'Table.BillingModeSummary.BillingMode' --output text)"
+echo "[measure] issue #1733 (a): explicit-PROVISIONED create reports BillingModeSummary='${SEED_SUMMARY_BEFORE}'"
+
+echo "[verify] step 13j: issue #1733 — an ABSENT recorded BillingMode consults AWS"
+# The record shape #1733's step 1 names (a `cdkd import` of a PROVISIONED table,
+# or this provider's own DROP arm) cannot be produced by a deploy — cdkd's
+# `create()` always sends an explicit mode — so the key is removed by hand,
+# exactly as the StreamRecoveryTable phase above patches its record.
+SEED_PATCH="$(mktemp)"
+aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | python3 -c '
+import json, sys
+state = json.load(sys.stdin)
+for logical_id, resource in state.get("resources", {}).items():
+    if logical_id.startswith("BillingSeedTable"):
+        resource.get("properties", {}).pop("BillingMode", None)
+        break
+json.dump(state, sys.stdout)
+' > "${SEED_PATCH}"
+aws s3 cp "${SEED_PATCH}" "s3://${STATE_BUCKET}/${STATE_KEY}"
+rm -f "${SEED_PATCH}"
+SEED_RECORDED="$(read_state_billing_mode BillingSeedTable)"
+if [ "${SEED_RECORDED}" != "null" ]; then
+  echo "FAIL: issue #1733 — could not remove BillingMode from the BillingSeedTable record (got ${SEED_RECORDED})" >&2
+  exit 1
+fi
+
+SEED_FLIP_LOG="$(mktemp)"
+CDKD_TEST_UPDATE="${GSI_RECOVERY_MODES},gsi-state-recovery,billing-seed-flip" \
+  ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose 2>&1 | tee "${SEED_FLIP_LOG}"
+
+# The announcement, anchored on its OWN wording — the #1552 unusable-previous
+# warning also names BillingMode, so a loose pattern could pass on the wrong one.
+if ! grep -q "GlobalTable BillingSeedTable: the cdkd state record declares no BillingMode" "${SEED_FLIP_LOG}"; then
+  echo "FAIL: issue #1733 — the absent-previous seed did not announce itself" >&2
+  exit 1
+fi
+rm -f "${SEED_FLIP_LOG}"
+
+# The WIRE half, and the whole point: pre-fix the absent record resolved to the
+# create-path default PAY_PER_REQUEST, compared EQUAL to this template, issued
+# no UpdateTable, and the table stayed PROVISIONED forever.
+SEED_LIVE_AFTER_FLIP="$(aws dynamodb describe-table --table-name "${BILLING_SEED_TABLE}" --region "${REGION}" \
+  --query 'Table.BillingModeSummary.BillingMode' --output text)"
+if [ "${SEED_LIVE_AFTER_FLIP}" != "PAY_PER_REQUEST" ]; then
+  echo "FAIL: issue #1733 — the corrected template's flip was not applied; live mode is ${SEED_LIVE_AFTER_FLIP}" >&2
+  exit 1
+fi
+echo "    issue #1733 ok: an absent recorded mode resolved from AWS and the flip applied"
+
+echo "[verify] step 13k: issue #1738 — kept-PAY_PER_REQUEST retains the previous provisioned capacity"
+# The mirror of the kept-PROVISIONED arm asserted at step 13g. The table is now
+# PAY_PER_REQUEST, the template hands it an unusable BillingMode (so the mode is
+# KEPT) and raises the replica's declared ReadCapacityUnits 3 -> 9. Under
+# PAY_PER_REQUEST `toSdkReplicaThroughputOverrides` drops the provisioned branch
+# entirely, so nothing is sent and state must record the PREVIOUS 3.
+SEED_UNUSABLE_LOG="$(mktemp)"
+CDKD_TEST_UPDATE="${GSI_RECOVERY_MODES},gsi-state-recovery,billing-seed-unusable" \
+  ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose 2>&1 | tee "${SEED_UNUSABLE_LOG}"
+
+if ! grep -q "GlobalTable BillingSeedTable: .*is kept for this update" "${SEED_UNUSABLE_LOG}"; then
+  echo "FAIL: issue #1738 — the BillingMode guard did not suppress the flip on BillingSeedTable" >&2
+  exit 1
+fi
+rm -f "${SEED_UNUSABLE_LOG}"
+
+read_state_replica_read_capacity() { # $1 = logical-id prefix
+  local prefix="$1" verdict tmp
+  tmp="$(mktemp)" || return 1
+  aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - > "${tmp}" || { rm -f "${tmp}"; return 1; }
+  verdict="$(python3 - "${tmp}" "${prefix}" <<'PY'
+import json, sys
+path, prefix = sys.argv[1], sys.argv[2]
+with open(path) as fh:
+    state = json.load(fh)
+for logical_id, resource in state.get("resources", {}).items():
+    if logical_id.startswith(prefix):
+        replicas = resource.get("properties", {}).get("Replicas")
+        entry = replicas[0] if isinstance(replicas, list) and replicas else {}
+        block = entry.get("ReadProvisionedThroughputSettings") if isinstance(entry, dict) else None
+        print(json.dumps(block.get("ReadCapacityUnits") if isinstance(block, dict) else block))
+        break
+else:
+    sys.exit(f"no {prefix} in cdkd state")
+PY
+)" || { rm -f "${tmp}"; return 1; }
+  rm -f "${tmp}"
+  printf '%s' "${verdict}"
+}
+SEED_CAPACITY_AFTER="$(read_state_replica_read_capacity BillingSeedTable)"
+if [ "${SEED_CAPACITY_AFTER}" != "3" ]; then
+  echo "FAIL: issue #1738 — a suppressed flip must retain the PREVIOUS replica read capacity (3), got ${SEED_CAPACITY_AFTER}" >&2
+  exit 1
+fi
+# The mode itself is retained too (the recorded previous is present and usable).
+SEED_BILLING_AFTER="$(read_state_billing_mode BillingSeedTable)"
+if [ "${SEED_BILLING_AFTER}" != '"PAY_PER_REQUEST"' ]; then
+  echo "FAIL: issue #1738 — the kept mode must be recorded, got ${SEED_BILLING_AFTER}" >&2
+  exit 1
+fi
+# The WIRE half: the table must still be on-demand, and carry no provisioned
+# capacity. Recording 3 while AWS was re-provisioned would satisfy the state
+# assertion alone.
+SEED_LIVE_FINAL="$(aws dynamodb describe-table --table-name "${BILLING_SEED_TABLE}" --region "${REGION}" \
+  --query 'Table.BillingModeSummary.BillingMode' --output text)"
+if [ "${SEED_LIVE_FINAL}" != "PAY_PER_REQUEST" ]; then
+  echo "FAIL: issue #1738 — the unusable BillingMode must not re-price the live table, got ${SEED_LIVE_FINAL}" >&2
+  exit 1
+fi
+echo "    issue #1738 ok: kept-PAY_PER_REQUEST retained the PREVIOUS provisioned capacity (3), nothing sent"
 
 echo "[verify] step 14a: assert DeletionProtectionEnabled flipped back to false on AWS"
 DP_FINAL="$(aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" \

@@ -1411,16 +1411,29 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       //    population #1733 flagged as needing measurement. Where the property
       //    is declared, the user IS stating a mode, and comparing it against
       //    the table's real one is the whole point.
-      //  - a `BillingModeSummary` AWS does not report (or reports as a value
-      //    cdkd does not know) falls back to the PRE-#1733 answer for each
-      //    branch rather than inventing a mode: the create-path default for the
-      //    absent branch, PROVISIONED for the present-but-unusable one.
+      //  - a `BillingModeSummary` AWS does not report resolves to PROVISIONED,
+      //    the SAME reading `liveBillingMode` below and the sibling
+      //    `AWS::DynamoDB::Table` provider already take, rather than to this
+      //    provider's create-path default. That is not an invention: DynamoDB
+      //    omits the summary for a table created without an explicit mode, and
+      //    such a table IS provisioned. Falling back to PAY_PER_REQUEST here
+      //    instead — the first cut of this change — left #1733 INERT on its own
+      //    headline population (`create()` always sends an explicit mode, so
+      //    only a non-cdkd table such as an imported one lacks a summary) AND
+      //    re-opened the #1552 rejection in the other direction: a record with
+      //    no mode against a `PROVISIONED` template would have compared
+      //    PAY_PER_REQUEST vs PROVISIONED and flipped a table that was already
+      //    provisioned. An unknown reported value takes the same PROVISIONED
+      //    reading; pre-#1733 the unusable branch passed such a value through
+      //    verbatim, so this is a deliberate tightening rather than a
+      //    restoration.
       //
-      // This cannot re-introduce the same-mode `UpdateTable` rejection #1552
-      // exists to prevent: the flip below is gated on `oldBilling !==
-      // newBilling`, and a baseline seeded from `DescribeTable` IS the mode AWS
-      // holds — so an inequality there is a flip AWS accepts, where a junk
-      // baseline produced an inequality against a mode the table already had.
+      // With that alignment the seeded baselines cannot re-introduce the
+      // same-mode `UpdateTable` rejection #1552 exists to prevent: the flip
+      // below is gated on `oldBilling !== newBilling`, and a baseline resolved
+      // from `DescribeTable` IS the mode AWS holds — so an inequality there is a
+      // flip AWS accepts, where a junk baseline produced an inequality against a
+      // mode the table already had.
       const recordedOldBilling = previousProperties['BillingMode'];
       const recordedOldBillingAbsent = recordedOldBilling === undefined;
       const recordedOldBillingUsable =
@@ -1439,25 +1452,25 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // `ProvisionedThroughput: {0, 0}` for every index of an on-demand table,
       // so which live members are safe to read is decided by this value.
       const rawLiveBillingMode = describeResp.Table?.BillingModeSummary?.BillingMode;
-      const liveBillingMode = rawLiveBillingMode ?? 'PROVISIONED';
-      // The live READING, present only when AWS actually reported a mode cdkd
-      // knows. Distinct from `liveBillingMode` above, whose PROVISIONED default
-      // is an INFERENCE about how the table was created — correct as the GSI
-      // baseline's mode gate, wrong as "what AWS told us", which is what the
-      // two fallbacks below have to be able to test for.
+      // What AWS actually TOLD us, as distinct from what cdkd INFERS below.
+      // Nothing branches on it — `liveBillingMode` is the answer every consumer
+      // takes — but the seeded-baseline warning needs to say whether the mode it
+      // names was reported or inferred, and asserting "the table's actual
+      // billing mode" over an inference would overstate what cdkd knows.
       const reportedBillingMode =
         rawLiveBillingMode === 'PROVISIONED' || rawLiveBillingMode === 'PAY_PER_REQUEST'
           ? rawLiveBillingMode
           : undefined;
+      const liveBillingMode = reportedBillingMode ?? 'PROVISIONED';
       const desiredDeclaresBillingMode = properties['BillingMode'] !== undefined;
       const seedAbsentFromLive = recordedOldBillingAbsent && desiredDeclaresBillingMode;
       const oldBilling = recordedOldBillingUsable
         ? (recordedOldBilling as string)
         : recordedOldBillingAbsent
           ? seedAbsentFromLive
-            ? (reportedBillingMode ?? 'PAY_PER_REQUEST')
+            ? liveBillingMode
             : 'PAY_PER_REQUEST'
-          : (reportedBillingMode ?? 'PROVISIONED');
+          : liveBillingMode;
       if (!recordedOldBillingUsable && !recordedOldBillingAbsent) {
         this.logger.warn(
           `AWS::DynamoDB::GlobalTable ${logicalId}: the recorded previous BillingMode ` +
@@ -1469,17 +1482,20 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // Announced only where the seeded baseline DIFFERS from the create-path
       // default this branch used before #1733 — i.e. exactly the deploys whose
       // behavior changes. Firing on every table whose record simply carries no
-      // mode would be noise on the ordinary on-demand path.
-      if (
-        seedAbsentFromLive &&
-        reportedBillingMode !== undefined &&
-        oldBilling !== 'PAY_PER_REQUEST'
-      ) {
+      // mode would be noise on the ordinary on-demand path. One condition
+      // suffices: `liveBillingMode` is PAY_PER_REQUEST only when AWS reported
+      // it, so this arm implies a reported-or-inferred PROVISIONED.
+      if (seedAbsentFromLive && oldBilling !== 'PAY_PER_REQUEST') {
         this.logger.warn(
           `AWS::DynamoDB::GlobalTable ${logicalId}: the cdkd state record declares no ` +
-            `BillingMode — using the table's actual billing mode (${oldBilling}) as the ` +
-            `comparison baseline for this update, so a template declaring a different mode ` +
-            `still applies the flip instead of comparing equal to the create-path default.`
+            `BillingMode — using ${oldBilling} as the comparison baseline for this update ` +
+            `(${
+              reportedBillingMode !== undefined
+                ? 'the mode DescribeTable reports'
+                : 'inferred: DescribeTable reports no BillingModeSummary, which means the ' +
+                  'table was created without an explicit mode'
+            }), so a template declaring a different mode still applies the flip instead of ` +
+            `comparing equal to the create-path default.`
         );
       }
       // An UNUSABLE desired value must fall back to the PREVIOUS billing mode,
@@ -6118,12 +6134,30 @@ export function retainUnsendableCapacityMembers(
           previousReplica?.['GlobalSecondaryIndexes'],
           'IndexName'
         );
-        copy['GlobalSecondaryIndexes'] = replicaIndexes.map((indexEntry) => {
+        const retained = replicaIndexes.map((indexEntry) => {
           const gsi = asRecord(indexEntry);
           if (!gsi) return indexEntry;
           const previousGsi = previousReplicaIndexes.get(gsi['IndexName']);
           return retainCapacityKeys({ ...gsi }, previousGsi, unsendable.replicaIndex);
         });
+        // Same HUSK prune `stripProvisionedCapacityKeys` applies, for the same
+        // measured reason: a per-replica index block exists ONLY to carry
+        // capacity overrides, and `readCurrentState` attaches
+        // `Replicas[].GlobalSecondaryIndexes` only for entries with more than
+        // `IndexName`. A DROP arm above can empty an entry down to that husk, so
+        // without this the fix would close one never-matchable shape by opening
+        // another — live-measured on the sibling as `cdkd drift` reporting the
+        // whole `Replicas` array as changed.
+        const kept = retained.filter((entry) => {
+          const gsi = asRecord(entry);
+          if (!gsi) return true;
+          return Object.keys(gsi).some((k) => k !== 'IndexName');
+        });
+        if (kept.length > 0) {
+          copy['GlobalSecondaryIndexes'] = kept;
+        } else {
+          delete copy['GlobalSecondaryIndexes'];
+        }
       }
       return copy;
     });
