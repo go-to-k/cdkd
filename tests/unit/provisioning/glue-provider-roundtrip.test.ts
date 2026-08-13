@@ -722,7 +722,19 @@ describe('GlueProvider read-update round-trip', () => {
 
   it('AWS::Glue::Table — getDriftUnknownPaths excludes OpenTableFormatInput (create-only, no clean readback)', () => {
     expect(provider.getDriftUnknownPaths('AWS::Glue::Table')).toEqual(['OpenTableFormatInput']);
-    expect(provider.getDriftUnknownPaths('AWS::Glue::Database')).toEqual([]);
+    // The Database answer is PER RESOURCE since issue #1807 and is exercised in
+    // `glue-database-input-members.test.ts`. With no properties bag the type
+    // cannot be shown to declare `CreateTableDefaultPermissions`, and AWS always
+    // materializes a Lake Formation default there, so the path is ignored —
+    // comparing it would report drift on every run of such a record.
+    expect(provider.getDriftUnknownPaths('AWS::Glue::Database')).toEqual([
+      'DatabaseInput.CreateTableDefaultPermissions',
+    ]);
+    expect(
+      provider.getDriftUnknownPaths('AWS::Glue::Database', {
+        DatabaseInput: { CreateTableDefaultPermissions: [] },
+      })
+    ).toEqual([]);
   });
 });
 

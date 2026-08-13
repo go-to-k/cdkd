@@ -41,6 +41,11 @@ import {
   CrawlerRunningException,
   ConcurrentModificationException,
   type DatabaseInput,
+  type DatabaseIdentifier,
+  type FederatedDatabase,
+  type PrincipalPermissions,
+  type DataLakePrincipal,
+  type Permission,
   type TableInput,
   type OpenTableFormatInput,
   type StorageDescriptor,
@@ -83,6 +88,12 @@ import {
   type CompositeIdFormat,
 } from '../composite-id.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
+import {
+  replayWarn,
+  requireConfigArray,
+  requireConfigObject,
+  type ConfigArrayOptions,
+} from '../config-shape.js';
 import type {
   CreateContext,
   ResourceProvider,
@@ -427,7 +438,7 @@ export class GlueProvider implements ResourceProvider {
   ): Promise<ResourceCreateResult> {
     switch (resourceType) {
       case 'AWS::Glue::Database':
-        return this.createDatabase(logicalId, resourceType, properties);
+        return this.createDatabase(logicalId, resourceType, properties, context);
       case 'AWS::Glue::Table':
         return this.createTable(logicalId, resourceType, properties, context);
       default:
@@ -500,7 +511,8 @@ export class GlueProvider implements ResourceProvider {
   private async createDatabase(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating Glue Database ${logicalId}`);
 
@@ -534,7 +546,13 @@ export class GlueProvider implements ResourceProvider {
       await this.getClient().send(
         new CreateDatabaseCommand({
           CatalogId: catalogId,
-          DatabaseInput: this.buildDatabaseInput(databaseInput, databaseName),
+          // No `onUnusable` on an ordinary template-path create, so a
+          // malformed nested block is REFUSED before the AWS call; a
+          // reverse-replacement replay downgrades it to a warning, because the
+          // desired bag is then a STATE record (issue #1463).
+          DatabaseInput: this.buildDatabaseInput(databaseInput, databaseName, {
+            ...replayWarn(this.logger, context),
+          }),
         })
       );
 
@@ -590,14 +608,20 @@ export class GlueProvider implements ResourceProvider {
       catalogId
     );
 
+    const previousDatabaseInput = asRecord(previousProperties?.['DatabaseInput']);
+
     try {
-      const builtDatabaseInput = this.buildDatabaseInput(databaseInput, physicalId);
+      const builtDatabaseInput = this.buildDatabaseInput(databaseInput, physicalId, {
+        // UNCONDITIONAL downgrade (the `updateRoute` precedent): `update()` has
+        // no context, so it cannot tell a template push from the state-borne
+        // bag `drift --revert` and the rollback revert arm hand it.
+        onUnusable: (message) => this.logger.warn(message),
+        previousDatabaseInput,
+      });
       this.preserveAwsManagedParameters(
         builtDatabaseInput,
         databaseInput['Parameters'],
-        (previousProperties?.['DatabaseInput'] as Record<string, unknown> | undefined)?.[
-          'Parameters'
-        ],
+        previousDatabaseInput?.['Parameters'],
         liveParameters
       );
 
@@ -1359,11 +1383,91 @@ export class GlueProvider implements ResourceProvider {
    * so empty-string Description, empty Parameters map, etc. reach AWS
    * intact — `cdkd drift --revert` relies on this to clear console-side
    * additions.
+   *
+   * `options` carries the shape-guard policy for the three nested blocks added
+   * by issue #1807, and the two call sites answer differently because their
+   * desired bag has a different provenance (`.claude/rules/providers.md`):
+   *
+   *   - CREATE passes NO `onUnusable`, so a malformed block is REFUSED before
+   *     the AWS call — the value is template-borne, and the alternative is
+   *     sending an empty `{}` block AWS would reject with a far less
+   *     actionable message. Under `CreateContext.replayingState` the refusal
+   *     downgrades through the shared `replayWarn`, since a reverse-replacement
+   *     re-create reads a STATE record the user cannot edit from the template.
+   *   - UPDATE passes a warn callback UNCONDITIONALLY (the `updateRoute`
+   *     precedent — `update()` has no context, so it cannot tell a template
+   *     push from the state-borne bag `drift --revert` and the rollback revert
+   *     arm hand it), and then RETAINS the PREVIOUS side's block, which is why
+   *     `previousDatabaseInput` is threaded in. Omitting instead would ERASE a
+   *     live resource link, because `UpdateDatabase` replaces `DatabaseInput`
+   *     wholesale — the #1612 "UPDATE retains the previous value" row, reached
+   *     here through a whole-blob API rather than a per-item one. When the
+   *     previous side is unusable too the key is DROPPED: there is no value
+   *     cdkd can vouch for either way (#1653 review).
    */
   private buildDatabaseInput(
     databaseInput: Record<string, unknown>,
-    fallbackName: string
+    fallbackName: string,
+    options?: {
+      onUnusable?: ((message: string) => void) | undefined;
+      previousDatabaseInput?: Record<string, unknown> | undefined;
+    }
   ): DatabaseInput {
+    // A guard with no callback THROWS; `replayWarn` / the update path supply
+    // one. Spread rather than passed as `{ onUnusable: undefined }`, because
+    // the guards branch on the KEY being present.
+    const guardOptions = options?.onUnusable ? { onUnusable: options.onUnusable } : undefined;
+    const previous = options?.previousDatabaseInput;
+    /**
+     * The record a nested block is BUILT FROM: the desired side when it names
+     * at least one sendable member, else the previous side when IT does, else
+     * nothing.
+     *
+     * The emptiness test is what makes the ladder complete, and getting it
+     * wrong is how the first cut of this guard still erased a live resource
+     * link: a bare `{}` and an unresolved `{Ref: ...}` are plain OBJECTS, so
+     * the shape guard accepts them and a `?? previous` fallback never fires —
+     * the block then built empty and `UpdateDatabase`, which replaces
+     * `DatabaseInput` wholesale, dropped a link the template still declared.
+     *
+     * A member counts as sendable only when it is a STRING or a NUMBER: the
+     * leaf casts below are unchecked, so an intrinsic-valued `DatabaseName`
+     * would otherwise put an OBJECT on the wire — the same defect one level in.
+     */
+    const pickBlockSource = (
+      desiredRaw: unknown,
+      previousRaw: unknown,
+      path: string,
+      block: string,
+      members: readonly string[]
+    ): Record<string, unknown> | undefined => {
+      // Usable means EVERY declared member that is present is sendable, AND at
+      // least one is. `some` alone was the silent-narrowing shape this guard
+      // exists to refuse (both re-reviewers found it): one literal member would
+      // license the block while an intrinsic-valued sibling was dropped with no
+      // message, so `{DatabaseName: 'src', CatalogId: {Ref: 'Acct'}}` shipped
+      // WITHOUT `CatalogId` — a cross-account resource link silently retargeted
+      // at the caller's own catalog. It also made the guard's strictness depend
+      // on siblings: `{CatalogId: {Ref}}` alone was refused, the same value next
+      // to a literal `DatabaseName` was not.
+      const namesSendable = (bag: Record<string, unknown> | undefined): boolean => {
+        if (bag === undefined) return false;
+        const present = members.filter((m) => bag[m] !== undefined);
+        return present.length > 0 && present.every((m) => isSendableLeaf(bag[m]));
+      };
+      const desired = guardOptions
+        ? requireConfigObject(desiredRaw, path, guardOptions)
+        : requireConfigObject(desiredRaw, path);
+      if (namesSendable(desired)) return desired;
+      if (desired !== undefined) {
+        // Right SHAPE, nothing cdkd can send. Same ladder as a wrong shape.
+        const message = emptyBlockMessage(block);
+        if (options?.onUnusable) options.onUnusable(message);
+        else throw new Error(message);
+      }
+      const retained = asRecord(previousRaw);
+      return namesSendable(retained) ? retained : undefined;
+    };
     const result: DatabaseInput = {
       Name: (databaseInput['Name'] as string | undefined) ?? fallbackName,
     };
@@ -1381,7 +1485,157 @@ export class GlueProvider implements ResourceProvider {
       result.Parameters = stringifyParameterValues(databaseInput['Parameters']);
     }
 
+    // `TargetDatabase` (resource links), `FederatedDatabase` (an entity outside
+    // the Glue Data Catalog) and `CreateTableDefaultPermissions` (Lake Formation
+    // defaults) complete the CFn `DatabaseInput` member set. Until issue #1807
+    // this builder named only Description / LocationUri / Parameters, so a
+    // template setting any of the three deployed "successfully" as a plain empty
+    // database — no error, no warning, and nothing for `cdkd drift` to report
+    // because `readDatabase` did not surface them either.
+    //
+    // Every member is named INDIVIDUALLY rather than cast through verbatim:
+    // both spellings agree, so a cast would typecheck, but the write-evidence
+    // pass of the nested-key critic (`freshObjectMapper: true` on this type,
+    // added in the same change) can only see per-member writes — a verbatim
+    // forward would leave all 8 child paths reporting `no-write-evidence`,
+    // which is precisely the "membership does not guarantee delivery" class
+    // this drop belonged to. Naming them also makes the next member AWS adds
+    // fail the critic instead of silently vanishing.
+    if (databaseInput['TargetDatabase'] !== undefined) {
+      const target = pickBlockSource(
+        databaseInput['TargetDatabase'],
+        previous?.['TargetDatabase'],
+        'AWS::Glue::Database DatabaseInput.TargetDatabase',
+        'TargetDatabase',
+        TARGET_DATABASE_MEMBERS
+      );
+      if (target !== undefined) {
+        const targetDatabase: DatabaseIdentifier = {};
+        if (isSendableLeaf(target['CatalogId'])) {
+          targetDatabase.CatalogId = String(target['CatalogId']);
+        }
+        if (isSendableLeaf(target['DatabaseName'])) {
+          targetDatabase.DatabaseName = String(target['DatabaseName']);
+        }
+        if (isSendableLeaf(target['Region'])) {
+          targetDatabase.Region = String(target['Region']);
+        }
+        result.TargetDatabase = targetDatabase;
+      }
+    }
+
+    if (databaseInput['FederatedDatabase'] !== undefined) {
+      const federated = pickBlockSource(
+        databaseInput['FederatedDatabase'],
+        previous?.['FederatedDatabase'],
+        'AWS::Glue::Database DatabaseInput.FederatedDatabase',
+        'FederatedDatabase',
+        FEDERATED_DATABASE_MEMBERS
+      );
+      if (federated !== undefined) {
+        const federatedDatabase: FederatedDatabase = {};
+        if (isSendableLeaf(federated['ConnectionName'])) {
+          federatedDatabase.ConnectionName = String(federated['ConnectionName']);
+        }
+        if (isSendableLeaf(federated['Identifier'])) {
+          federatedDatabase.Identifier = String(federated['Identifier']);
+        }
+        // The SDK also declares `ConnectionType`, which the CFn schema does not,
+        // so no template can set it and it is deliberately not mapped.
+        result.FederatedDatabase = federatedDatabase;
+      }
+    }
+
+    if (databaseInput['CreateTableDefaultPermissions'] !== undefined) {
+      const permissions =
+        this.usableDefaultPermissions(
+          databaseInput['CreateTableDefaultPermissions'],
+          guardOptions
+        ) ??
+        this.usableDefaultPermissions(previous?.['CreateTableDefaultPermissions'], {
+          // The PREVIOUS side is validated with the SAME predicate (#1653
+          // review) but SILENTLY: the desired side has already warned, and a
+          // second message about a historical record helps nobody.
+          onUnusable: () => undefined,
+        });
+      if (permissions !== undefined) {
+        result.CreateTableDefaultPermissions = permissions.map((entry) => {
+          const permission: PrincipalPermissions = {};
+          if (entry['Permissions'] !== undefined) {
+            permission.Permissions = entry['Permissions'] as Permission[];
+          }
+          const declaredPrincipal = asRecord(entry['Principal']);
+          if (declaredPrincipal !== undefined) {
+            const principal: DataLakePrincipal = {};
+            if (isSendableLeaf(declaredPrincipal['DataLakePrincipalIdentifier'])) {
+              // Coerced like every other leaf: the entry guard accepts a NUMBER
+              // (CFn is stringly typed), and the SDK member is a string.
+              principal.DataLakePrincipalIdentifier = String(
+                declaredPrincipal['DataLakePrincipalIdentifier']
+              );
+            }
+            permission.Principal = principal;
+          }
+          return permission;
+        });
+      }
+    }
+
     return result;
+  }
+
+  /**
+   * `DatabaseInput.CreateTableDefaultPermissions` as a USABLE list, or
+   * `undefined` when the declared value is a shape cdkd refuses to narrow.
+   *
+   * The block is validated ALL-OR-NOTHING rather than per entry, which is the
+   * opposite of the S3 per-`Id` appliers and deliberate: this is a Lake
+   * Formation grant list delivered by ONE wholesale `CreateDatabase` /
+   * `UpdateDatabase` call, so dropping the entries cdkd cannot read would
+   * silently NARROW the permissions the template declared — the failure this
+   * guard exists to prevent, one level in from the block itself. A malformed
+   * ENTRY therefore invalidates the block, and the caller then refuses (create)
+   * or retains the previous list (update).
+   *
+   * `Permissions` is checked for ARRAY-ness for the same reason: the SDK member
+   * is `Permission[]`, so a bare string would be forwarded verbatim and the
+   * serializer would drop it, granting nothing while the deploy reports success.
+   */
+  private usableDefaultPermissions(
+    value: unknown,
+    guardOptions?: ConfigArrayOptions
+  ): Array<Record<string, unknown>> | undefined {
+    if (value === undefined) return undefined;
+    const path = 'AWS::Glue::Database DatabaseInput.CreateTableDefaultPermissions';
+    const entries = guardOptions
+      ? requireConfigArray(value, path, guardOptions)
+      : requireConfigArray(value, path);
+    if (entries === undefined) return undefined;
+
+    for (const entry of entries) {
+      const principal = asRecord(entry['Principal']);
+      const usable =
+        asRecord(entry) !== undefined &&
+        (entry['Permissions'] !== undefined || entry['Principal'] !== undefined) &&
+        (entry['Permissions'] === undefined || Array.isArray(entry['Permissions'])) &&
+        // A `Principal` naming no sendable identifier is the empty-block defect
+        // one level in: it would ride an unchecked cast onto the wire as `{}`.
+        (entry['Principal'] === undefined ||
+          (principal !== undefined && isSendableLeaf(principal['DataLakePrincipalIdentifier'])));
+      if (usable) continue;
+      const detail = `${path} carries an entry cdkd cannot read (each entry must be an object naming Permissions as a list and/or Principal as an object whose DataLakePrincipalIdentifier is a string or a number)`;
+      if (guardOptions?.onUnusable) {
+        guardOptions.onUnusable(
+          `${detail}. Leaving the whole block unapplied rather than sending a NARROWED grant list. ` +
+            `On an UPDATE that is a RESET: UpdateDatabase replaces DatabaseInput wholesale, so ` +
+            `unless a usable previous list is retained the database falls back to the account default ` +
+            `(IAM_ALLOWED_PRINCIPALS / ALL) — fix the template value to restore the declared grants`
+        );
+        return undefined;
+      }
+      throw new Error(detail);
+    }
+    return entries;
   }
 
   /**
@@ -1640,10 +1894,41 @@ export class GlueProvider implements ResourceProvider {
    * readback for it (and fabricating a placeholder would itself fire false
    * drift). Declaring it here keeps the drift comparator from false-positiving
    * on a state-recorded `OpenTableFormatInput` that the readback never surfaces.
+   *
+   * `AWS::Glue::Database` declares `DatabaseInput.CreateTableDefaultPermissions`
+   * PER RESOURCE (the issue #1602 seam), and only for a database whose template
+   * does NOT declare the block. AWS materializes a Lake Formation DEFAULT there
+   * — `[{IAM_ALLOWED_PRINCIPALS, [ALL]}]` on a catalog that has not been
+   * onboarded to Lake Formation (measured us-east-1, 2026-08-13) — so once
+   * issue #1807 taught `readDatabase` to surface the block, comparing it would
+   * report drift on EVERY existing database: the baseline is an
+   * `observedProperties` capture written by a binary that did not read the key,
+   * `drift.ts` walks the key UNION on that baseline (`unionWalkObjects`), and
+   * `deploy-engine.ts` does not refresh a record that already has one — so the
+   * phantom would persist until an unrelated UPDATE or a `drift --accept`.
+   * This is the ELBv2 `Targets` shape one type over: a value a SIBLING owns is
+   * ignored while the template declares none, and an explicit declaration —
+   * including an empty list — IS a declaration and stays compared.
+   *
+   * `TargetDatabase` / `FederatedDatabase` need no such scoping: AWS reports
+   * them only when they were actually set, so an appearance is real drift.
    */
-  getDriftUnknownPaths(resourceType: string): string[] {
+  getDriftUnknownPaths(resourceType: string, properties?: Record<string, unknown>): string[] {
     if (resourceType === 'AWS::Glue::Table') {
       return ['OpenTableFormatInput'];
+    }
+    if (resourceType === 'AWS::Glue::Database') {
+      // The usual default is to COMPARE when the bag is absent or unreadable —
+      // hiding real drift is the worse failure. This one key inverts it, and
+      // the reason is specific rather than a preference: AWS ALWAYS materializes
+      // a Lake Formation default here, so a record cdkd cannot read the
+      // declaration out of (an older import carrying only the top-level
+      // `DatabaseName`) would report drift on EVERY run with no way to clear it.
+      // The path is compared exactly when the template DECLARES the block.
+      const declared = asRecord(properties?.['DatabaseInput']);
+      if (declared?.['CreateTableDefaultPermissions'] === undefined) {
+        return ['DatabaseInput.CreateTableDefaultPermissions'];
+      }
     }
     return [];
   }
@@ -1672,6 +1957,41 @@ export class GlueProvider implements ResourceProvider {
     dbInput['Description'] = db.Description ?? '';
     if (db.LocationUri !== undefined) dbInput['LocationUri'] = db.LocationUri;
     dbInput['Parameters'] = db.Parameters ?? {};
+    // The three members the write side gained with issue #1807, reverse-mapped
+    // so `cdkd drift` can see them at all. EMIT-WHEN-PRESENT rather than the
+    // always-emit placeholder Description / Parameters use: AWS reports a
+    // Lake Formation DEFAULT for `CreateTableDefaultPermissions` on databases
+    // whose template never declared one (`IAM_ALLOWED_PRINCIPALS` / `ALL` on a
+    // catalog that has not been onboarded to Lake Formation), and a placeholder
+    // would have to invent one of the two shapes and be wrong on the other
+    // population.
+    //
+    // That AWS default is ALSO why emitting it is not enough on its own: on the
+    // `observedProperties` baseline the comparator walks the key UNION
+    // (`unionWalkObjects`), so a record written before this member was read
+    // would report the default as drift. `getDriftUnknownPaths` scopes the path
+    // out PER RESOURCE for a database whose template declares no block — see
+    // its JSDoc; only the `properties`-fallback baseline is covered by the
+    // comparator's own baseline-keys-only rule.
+    //
+    // The always-emitted `Description: ''` placeholder is safe next to a
+    // resource link, which is not obvious: AWS REFUSES a database carrying both
+    // a description and a `TargetDatabase`. Measured us-east-1 2026-08-13 — the
+    // refusal is on a NON-EMPTY description; `Description: ''` is accepted on
+    // both `CreateDatabase` and `UpdateDatabase` alongside a link (and reads
+    // back as null), so the `cdkd drift --revert` round-trip through this
+    // readback does not trip it.
+    if (db.TargetDatabase !== undefined) {
+      dbInput['TargetDatabase'] = { ...db.TargetDatabase };
+    }
+    if (db.FederatedDatabase !== undefined) {
+      dbInput['FederatedDatabase'] = { ...db.FederatedDatabase };
+    }
+    if (db.CreateTableDefaultPermissions !== undefined) {
+      dbInput['CreateTableDefaultPermissions'] = db.CreateTableDefaultPermissions.map((entry) => ({
+        ...entry,
+      }));
+    }
     // CFn schema accepts BOTH nested `DatabaseInput.Name` AND top-level
     // `DatabaseName` (see #613 B-bucket fix in createDatabase). Surface
     // both so drift comparison works for either template shape.
@@ -3176,6 +3496,42 @@ function parameterKeySet(value: unknown): Set<string> {
  * its `Fn::*`/`Ref` key — harmless here, since providers only ever see
  * resolved values.)
  */
+/**
+ * The CFn members of the two `DatabaseInput` object blocks, as the SENDABLE-ness
+ * test sees them. They must stay in step with the per-member writes in
+ * `buildDatabaseInput` — a name here that the builder does not write would let
+ * an EMPTY block onto the wire, and one the builder writes but this list omits
+ * would refuse a valid template that names only it. The unit suite fences both
+ * directions by asserting each member ALONE reaches AWS, which fails on a
+ * dropped entry (the member stops being sendable) and on an added one (the
+ * block builds empty).
+ */
+const TARGET_DATABASE_MEMBERS = ['CatalogId', 'DatabaseName', 'Region'] as const;
+const FEDERATED_DATABASE_MEMBERS = ['ConnectionName', 'Identifier'] as const;
+
+/**
+ * Is this leaf value one cdkd can put on the wire? A STRING or a NUMBER — CFn
+ * is stringly typed and an unquoted YAML account id arrives as a number (the
+ * reason `catalogIdForApi` exists) — and nothing else, so an unresolved
+ * intrinsic cannot ride an unchecked cast into the request.
+ */
+const isSendableLeaf = (value: unknown): boolean =>
+  typeof value === 'string' || (typeof value === 'number' && Number.isFinite(value));
+
+/**
+ * The refusal sentence for a `DatabaseInput` block that IS a plain object and
+ * still names nothing cdkd can send — an unresolved intrinsic or a bare `{}`.
+ * Shared so the create refusal and the update warning cannot drift apart.
+ */
+const emptyBlockMessage = (block: string): string =>
+  `AWS::Glue::Database DatabaseInput.${block} declares no member cdkd can send ` +
+  `(an unresolved intrinsic, an empty block), or mixes sendable members with ` +
+  `unreadable ones; sending it would put an empty or NARROWED ${block} on the ` +
+  `wire. Where this is only WARNED — an update, or a state replay — the ` +
+  `previously applied block is retained if cdkd can still read one, and ` +
+  `otherwise the key is omitted, which UpdateDatabase applies as a removal ` +
+  `because it replaces DatabaseInput wholesale`;
+
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     return undefined;

@@ -351,15 +351,16 @@
  *   AWS::Glue::Table                   36 /  88  36 /  88   36 /  88   36 /  88  key pass only (#1393 item 3)
  *   AWS::Glue::Connection               0 /  37   0 /  37    0 /  37    0 /  37  key pass only (#1393 item 3)
  *   AWS::Glue::Trigger                  9 /  16   9 /  16    9 /  16    9 /  16  key pass only (#1393 item 3)
- *   AWS::Glue::Database                11 /  15  11 /  15   11 /  15   11 /  15  key pass only (#1393 item 3)
+ *   AWS::Glue::Database                11 /  15  11 /  15   11 /  15   11 /  15  OPTED IN (#1807)   [all 11 FIXED in the provider, now 0/15]
  *   AWS::Glue::SecurityConfiguration    2 /   9   2 /   9    2 /   9    2 /   9  key pass only (#1393 item 3)
  *   AWS::Glue::Job                      0 /   7   0 /   7    0 /   7    0 /   7  key pass only (#1393 item 3)
  *                                     -------   -------    -------    -------
  *                                        410       290        260         81
  *
- * The TEN `key pass only` rows (issue #1393 item 3 —
+ * The NINE remaining `key pass only` rows (issue #1393 item 3 —
  * `AWS::Lambda::EventSourceMapping` plus the mixed-case-island slice:
- * EventBridge / Scheduler / the seven auditable Glue types) are flat for a
+ * EventBridge / Scheduler / six of the seven auditable Glue types, the seventh
+ * being `AWS::Glue::Database`, opted in by #1807) are flat for a
  * different reason from the AppSync ones, and none of them is opted into the
  * write-evidence pass — so their denominator is the TOTAL audited path count,
  * not the write-audited subset the opted-in rows use, and their numerator is
@@ -383,20 +384,25 @@
  *     positives (verified member by member at opt-in): the builders name their
  *     full member set today, and the residuals are shapes the write-scope index
  *     cannot resolve, not values that fail to reach AWS.
- *   - Glue `Database` 11 is a REAL SILENT DROP and is NOT a reason the pass
- *     stays off — it is the reason the type must eventually opt IN.
- *     `buildDatabaseInput` names only `Name` / `Description` / `LocationUri` /
- *     `Parameters`, while both CFn and the SDK's `DatabaseInput` also declare
- *     `TargetDatabase`, `FederatedDatabase` and `CreateTableDefaultPermissions`
- *     — none of which appears anywhere in `src/`, so a template setting any of
- *     them is dropped on the floor today. The opt-in is deliberately deferred
- *     to the PROVIDER FIX rather than shipped with 11 allow-list entries: an
- *     allow entry would silence a CI-blocking bucket for a live drop, which is
- *     the one thing this file's design refuses (see reason (A) below, where the
- *     same call was made for the ECS `segmentRenames`). The 11 paths are
- *     instead pinned BY NAME in the calibration test, so the drop is recorded
- *     rather than inherited, and fixing the provider fails that test and forces
- *     the `freshObjectMapper: true` opt-in in the same change.
+ *   - Glue `Database` 11 was a REAL SILENT DROP and was never a reason the pass
+ *     stays off — it was the reason the type had to opt IN, which it now has
+ *     (#1807). `buildDatabaseInput` named only `Name` / `Description` /
+ *     `LocationUri` / `Parameters`, while both CFn and the SDK's
+ *     `DatabaseInput` also declare `TargetDatabase`, `FederatedDatabase` and
+ *     `CreateTableDefaultPermissions` — none of which appeared anywhere in
+ *     `src/`, so a template setting any of them was dropped on the floor. The
+ *     opt-in was deliberately deferred to the PROVIDER FIX rather than shipped
+ *     with 11 allow-list entries: an allow entry would silence a CI-blocking
+ *     bucket for a live drop, which is the one thing this file's design refuses
+ *     (see reason (A) below, where the same call was made for the ECS
+ *     `segmentRenames`). The 11 paths were pinned BY NAME in the calibration
+ *     test in the meantime, so the drop was recorded rather than inherited, and
+ *     #1807 wired all three blocks member-by-member, flipped that pin into a
+ *     fence and landed `freshObjectMapper: true` in the same change — which is
+ *     what the deferral was designed to force. Each member is named
+ *     INDIVIDUALLY rather than cast through verbatim: the spellings agree, so a
+ *     cast would typecheck while leaving the 8 CHILD paths `no-write-evidence`,
+ *     since only a per-member write is delivery proof on a fresh-object target.
  *
  * The calibration test pins all ten numbers so the decision is re-measured on
  * every provider change rather than inherited.
@@ -1216,15 +1222,16 @@ const APPSYNC_WRITE_FLOORS = {
  *     `buildEncryptionConfiguration`), each `const result: X = { Name }` plus
  *     per-member assignments.
  *
- * Forced on, FOUR of the seven report `no-write-evidence`: `Table` 36 and
+ * Forced on, FOUR of the seven reported `no-write-evidence`: `Table` 36 and
  * `SecurityConfiguration` 2 (builders that DO name their full member set —
  * verified false positives), `Trigger` 9 (a verbatim forwarder, so the write
- * pass has nothing to ask), and **`Database` 11, which is a REAL silent drop**:
- * `buildDatabaseInput` never names `TargetDatabase` / `FederatedDatabase` /
- * `CreateTableDefaultPermissions`. See the header's per-type breakdown for why
- * the `Database` opt-in is deferred to the provider fix instead of being
- * shipped with allow-list entries, and {@link GLUE_DATABASE_DROPPED_PATHS} for
- * the pinned path list.
+ * pass has nothing to ask), and **`Database` 11, which was a REAL silent
+ * drop**: `buildDatabaseInput` named neither `TargetDatabase` nor
+ * `FederatedDatabase` nor `CreateTableDefaultPermissions`. Issue #1807 wired
+ * all three member-by-member and `AWS::Glue::Database` is the one Glue target
+ * that now carries `freshObjectMapper: true`, so those 11 paths are FENCED by
+ * the write pass rather than pinned by a list; the calibration test asserts the
+ * empty finding set and names them, so a re-drop fails by name.
  *
  * KNOWN BOUND on all seven: sharing one `providerFile` also shares the
  * file-global literal pool the loose rescue draws on, so a `provider-handled`
@@ -1240,40 +1247,6 @@ const GLUE_KEY_PASS_TARGET = {
   sdkClientPackage: '@aws-sdk/client-glue',
   keyStyle: 'exact',
 } as const;
-
-/**
- * The ELEVEN `AWS::Glue::Database` nested paths that reach no AWS call today —
- * a REAL silent drop, pinned by name so it is recorded rather than inherited.
- *
- * `GlueProvider.buildDatabaseInput` is a fresh-object builder
- * (`const result: DatabaseInput = { Name }`) that names only `Description` /
- * `LocationUri` / `Parameters`. Both the CFn schema and `@aws-sdk/client-glue`'s
- * `DatabaseInput` also declare `TargetDatabase`, `FederatedDatabase` and
- * `CreateTableDefaultPermissions`; none of those three spellings appears
- * anywhere under `src/`, so a template setting any of them is dropped with no
- * error and no diff for a reviewer to see.
- *
- * This list is NOT an allow-list and must never become one — an allow entry
- * would silence a CI-blocking bucket for a live drop, the one exception this
- * file's design refuses. It exists so the calibration test can assert the drop
- * set EXACTLY: fixing the provider changes the set, fails that test, and forces
- * `AWS::Glue::Database` to take `freshObjectMapper: true` in the same change —
- * which is the acceptance criterion of the fix, since the type audits clean on
- * the key pass and only the write pass can see this class.
- */
-export const GLUE_DATABASE_DROPPED_PATHS: readonly string[] = [
-  'DatabaseInput.CreateTableDefaultPermissions',
-  'DatabaseInput.CreateTableDefaultPermissions.Permissions',
-  'DatabaseInput.CreateTableDefaultPermissions.Principal',
-  'DatabaseInput.CreateTableDefaultPermissions.Principal.DataLakePrincipalIdentifier',
-  'DatabaseInput.FederatedDatabase',
-  'DatabaseInput.FederatedDatabase.ConnectionName',
-  'DatabaseInput.FederatedDatabase.Identifier',
-  'DatabaseInput.TargetDatabase',
-  'DatabaseInput.TargetDatabase.CatalogId',
-  'DatabaseInput.TargetDatabase.DatabaseName',
-  'DatabaseInput.TargetDatabase.Region',
-];
 
 /**
  * The one intermediate-segment RENAME in the tree (issue #1464 review).
@@ -2028,22 +2001,37 @@ export const NESTED_KEY_TARGETS: readonly NestedKeyTarget[] = [
     // `CreateTableDefaultPermissions` — SAME spelling on both sides, so every
     // path beneath them passes the key pass — yet none of the three appears
     // anywhere in `src/`. A template setting any of them is dropped silently.
-    // That is the #1393 item-5 class, and the write-evidence pass IS the pass
-    // that sees it: forced on, it reports exactly the 11 paths pinned in
-    // {@link GLUE_DATABASE_DROPPED_PATHS}.
+    // That was the #1393 item-5 class, and the write-evidence pass IS the pass
+    // that sees it: forced on, it reported exactly 11 dropped paths
+    // (`TargetDatabase{,.CatalogId,.DatabaseName,.Region}`,
+    // `FederatedDatabase{,.ConnectionName,.Identifier}`,
+    // `CreateTableDefaultPermissions{,.Permissions,.Principal,
+    // .Principal.DataLakePrincipalIdentifier}`), which is why this entry
+    // shipped deliberately incomplete with the set pinned by name in the
+    // calibration test rather than silenced by 11 allow-list entries — reason
+    // (A) below refuses that on principle.
     //
-    // So this entry is deliberately INCOMPLETE and says so: it should carry
-    // `freshObjectMapper: true`, and it does not YET, because turning it on
-    // today exits 1 on a live drop this lane may not fix (the provider file is
-    // owned elsewhere) and the only way to keep CI green would be 11 allow-list
-    // entries silencing a real divergence — which reason (A) below records as
-    // refused on principle. The drop is instead pinned BY NAME in the
-    // calibration test, so it is recorded rather than inherited: the provider
-    // fix changes that set, fails the test, and forces the opt-in to land in
-    // the same change. Do not "fix" the test by editing the pinned list.
+    // Issue #1807 FIXED the provider: `buildDatabaseInput` now names every
+    // member of all three blocks individually (a verbatim cast would typecheck
+    // but leave the 8 child paths `no-write-evidence`, since only a per-member
+    // write is delivery proof here), and `readDatabase` reverse-maps them so
+    // drift can see them too. The opt-in lands in the same change, as designed:
+    // measured at opt-in 15 audited paths, all same-spelling, 0 blocking
+    // findings, and the pinned drop set is gone.
+    //
+    // The write floors are measured on the SHARED `glue-provider.ts` (123
+    // written members / 41 non-empty scopes at opt-in), not on the Database
+    // slice — the collector is per FILE, which is also why the other six Glue
+    // targets inherit them without declaring any. No `minHandoffPoints`: every
+    // audited Database path clears through a per-member write, so the target
+    // does not depend on the hand-off walk and a floor there would fence
+    // nothing (asserted by the walk-dependence hygiene test).
     ...GLUE_KEY_PASS_TARGET,
     resourceType: 'AWS::Glue::Database',
+    freshObjectMapper: true,
     minNestedKeys: 12,
+    minWrittenMembers: 80,
+    minWriteScopes: 25,
   },
   {
     // Measured at opt-in: 9 audited paths, 8 same-spelling, 1 provider-handled,

@@ -14,7 +14,7 @@ For every SDK provider that forwards a nested CFn config blob, diffs the blob's 
 - Allow-listed pass-throughs (does NOT block CI): **22**
 - **Case divergences (blocks CI): 0**
 - **No SDK member (blocks CI): 0**
-- Write-evidence pass — fresh-object targets audited: **14**
+- Write-evidence pass — fresh-object targets audited: **15**
 - **No write evidence (blocks CI): 0**
 - Shape pass — bare-array pairs clean: **148**
 - Shape pass — explicitly handled in provider: **40**
@@ -205,7 +205,7 @@ CFn members whose SHAPE diverges from the same-spelled SDK member (bare array vs
 | `AWS::Events::Rule` | `eventbridge-rule-provider.ts` | `@aws-sdk/client-eventbridge` | exact | no | 76 | 0 |
 | `AWS::Glue::Connection` | `glue-provider.ts` | `@aws-sdk/client-glue` | exact | no | 37 | 0 |
 | `AWS::Glue::Crawler` | `glue-provider.ts` | `@aws-sdk/client-glue` | exact | no | 46 | 1 |
-| `AWS::Glue::Database` | `glue-provider.ts` | `@aws-sdk/client-glue` | exact | no | 15 | 1 |
+| `AWS::Glue::Database` | `glue-provider.ts` | `@aws-sdk/client-glue` | exact | yes | 15 | 1 |
 | `AWS::Glue::Job` | `glue-provider.ts` | `@aws-sdk/client-glue` | exact | no | 7 | 2 |
 | `AWS::Glue::SecurityConfiguration` | `glue-provider.ts` | `@aws-sdk/client-glue` | exact | no | 9 | 0 |
 | `AWS::Glue::Table` | `glue-provider.ts` | `@aws-sdk/client-glue` | exact | no | 88 | 2 |

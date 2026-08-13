@@ -8,7 +8,7 @@
     "caseDivergence": 0,
     "noSdkMember": 0,
     "noWriteEvidence": 0,
-    "freshObjectTargets": 14,
+    "freshObjectTargets": 15,
     "shapeClean": 148,
     "shapeHandled": 40,
     "shapeAllowListed": 7,
@@ -6197,7 +6197,7 @@
       "providerFile": "glue-provider.ts",
       "sdkClientPackage": "@aws-sdk/client-glue",
       "keyStyle": "exact",
-      "freshObjectMapper": false,
+      "freshObjectMapper": true,
       "nestedKeyCount": 15,
       "entries": [
         {

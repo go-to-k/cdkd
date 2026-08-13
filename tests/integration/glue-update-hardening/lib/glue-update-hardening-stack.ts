@@ -32,6 +32,11 @@ import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
  *     a plain drop (declaring it suppressed the carry-forward while the builder
  *     sent nothing). CDKD_TEST_UPDATE flips the skewed value so the update path
  *     is covered too.
+ *  7. Glue Database `TargetDatabase` (a RESOURCE LINK) and
+ *     `CreateTableDefaultPermissions` (issue #1807) — `buildDatabaseInput`
+ *     named only Description / LocationUri / Parameters, so both blocks were
+ *     dropped silently. CDKD_TEST_UPDATE flips the granted permission set so
+ *     the update path is covered with a second distinct payload.
  *
  * All resources are idle (no schedule, ON_DEMAND trigger), so deploy + destroy
  * is fast and clean — no quota, no running jobs.
@@ -186,6 +191,54 @@ export class GlueUpdateHardeningStack extends cdk.Stack {
       },
     });
     skewedTable.addDependency(tableDb);
+
+    // 7. Glue Database `TargetDatabase` / `CreateTableDefaultPermissions`
+    //    (issue #1807). `buildDatabaseInput` named only Description /
+    //    LocationUri / Parameters, so both blocks were dropped on the floor:
+    //    same spelling on the CFn and SDK sides, so nothing errored and
+    //    `cdkd drift` could not see it either — a database declared as a
+    //    RESOURCE LINK came up as a plain empty database.
+    //
+    //    A resource link is the honest shape for this: `TargetDatabase` is the
+    //    ONLY thing that distinguishes it, so if the block is dropped the
+    //    readback shows a plain database rather than a subtly different one.
+    //    NOTE the link carries NO description — AWS refuses that combination
+    //    outright ("Description and resource link cannot exist together in a
+    //    database!", probed us-east-1 2026-08-13), which is also why the
+    //    permissions arm lives on a SEPARATE database.
+    const linkDb = new glue.CfnDatabase(this, 'ResourceLinkDatabase', {
+      catalogId: this.account,
+      databaseInput: {
+        name: `${this.stackName}-link-db`.toLowerCase(),
+        targetDatabase: {
+          catalogId: this.account,
+          databaseName: `${this.stackName}-table-db`.toLowerCase(),
+        },
+      },
+    });
+    linkDb.addDependency(tableDb);
+
+    // `CreateTableDefaultPermissions` on its own database. CDKD_TEST_UPDATE
+    // flips the granted permission set so the UPDATE path is covered with a
+    // second distinct payload — a stale carry-forward cannot pass. The
+    // principal stays `IAM_ALLOWED_PRINCIPALS`, the value AWS itself defaults
+    // to, so the fixture needs no Lake Formation onboarding; the PERMISSIONS
+    // list is what makes the declared value differ from that default (probed:
+    // an undeclared database reads back `[ALL]`, so `[SELECT]` / `[ALL,
+    // DROP]` are both distinguishable from "cdkd sent nothing").
+    new glue.CfnDatabase(this, 'DefaultPermissionsDatabase', {
+      catalogId: this.account,
+      databaseInput: {
+        name: `${this.stackName}-perm-db`.toLowerCase(),
+        description: 'default table permissions probe',
+        createTableDefaultPermissions: [
+          {
+            principal: { dataLakePrincipalIdentifier: 'IAM_ALLOWED_PRINCIPALS' },
+            permissions: isUpdate ? ['ALL', 'DROP'] : ['SELECT'],
+          },
+        ],
+      },
+    });
 
     // Glue Trigger — ON_DEMAND (idle, will not auto-fire) running the Job.
     const trigger = new glue.CfnTrigger(this, 'EtlTrigger', {
