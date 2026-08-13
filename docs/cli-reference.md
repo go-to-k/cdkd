@@ -2818,12 +2818,23 @@ cdkd export                                       # auto-detect single-stack app
    one resource) makes AWS mint one rule per source, and cdkd records
    neither id — neither is "the" identifier — so re-deploying never
    heals it; split it into one ingress resource per source. A rule
-   simply **older than #1761** is not healed by a *no-op* re-deploy
-   either, since AWS returns the rule id only from
-   `AuthorizeSecurityGroupIngress` itself: change any property of the
-   rule (cdkd revokes and re-authorizes, minting a fresh id, with a
-   momentary traffic interruption) or destroy and re-deploy it, then
-   re-run the export.
+   simply **older than #1761** carries no `Id` at all, and a *no-op*
+   re-deploy does not heal that one either, since AWS returns the rule
+   id only from `AuthorizeSecurityGroupIngress` itself. **`cdkd export`
+   recovers it for you** (issue
+   [#1791](https://github.com/go-to-k/cdkd/issues/1791)): a row with no
+   usable recorded `Id` triggers a paginated
+   `DescribeSecurityGroupRules` on the group the physical id names, and
+   the rule is adopted only when EXACTLY ONE ingress rule on that group
+   carries the composite's `(protocol, port range)` tuple. Zero matches
+   or more than one is REFUSED, naming the row and the candidates —
+   two rules sharing that tuple are two rules cdkd's own physical id
+   cannot tell apart either, and the multi-source case above is exactly
+   what "more than one" looks like from the live read. The lookup needs
+   `ec2:DescribeSecurityGroupRules`; without that permission the row is
+   blocked with a message saying so. A row whose state already records
+   the `Id` — everything a current cdkd deploys — issues no live read
+   at all.
 
    **Types CloudFormation cannot IMPORT at all are refused up front.**
    A type whose registry schema declares no `read` handler AND reports

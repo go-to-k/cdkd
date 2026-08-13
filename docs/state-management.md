@@ -773,11 +773,31 @@ only one of them is healed by re-deploying:
   which is when cdkd started recording the id at all. This is the one
   exception to "re-deploy once": AWS returns the `sgr-…` id only from
   `AuthorizeSecurityGroupIngress` itself, so a no-op deploy issues no
-  call and records nothing. cdkd updates this type by revoking and
-  re-authorizing, so changing ANY property of the rule mints a fresh id
-  — as does destroying and re-deploying it. Either way the rule's
-  traffic is interrupted for the moment between the revoke and the
-  re-authorize, so pick the window.
+  call and records nothing. **You do not have to do anything about this
+  one** — since [#1791](https://github.com/go-to-k/cdkd/issues/1791)
+  `cdkd export` recovers the id itself, by looking the rule up in AWS
+  (see below). Only if that lookup cannot answer do you need the manual
+  remedy: cdkd updates this type by revoking and re-authorizing, so
+  changing ANY property of the rule mints a fresh id — as does
+  destroying and re-deploying it. Either way the rule's traffic is
+  interrupted for the moment between the revoke and the re-authorize,
+  so pick the window.
+
+**The live-read backfill.** For a row with no usable recorded `Id`,
+`cdkd export` issues a paginated `DescribeSecurityGroupRules` on the
+security group its physical id names and adopts the rule only when
+EXACTLY ONE ingress rule on that group carries the composite's
+`(protocol, port range)` tuple. Zero matches, or more than one, is
+refused with a message naming the row and what was ambiguous — cdkd's
+physical id identifies a rule only by group, protocol and port range,
+so two rules sharing that tuple are two rules cdkd cannot tell apart
+either, and adopting one would import the wrong rule. The multi-source
+case above is exactly what "more than one" looks like from the live
+read, which is why its remedy is still to split the resource. The
+lookup needs `ec2:DescribeSecurityGroupRules`; without that permission
+the row is blocked with a message saying so. A row that already records
+the `Id` — everything a current cdkd deploys — issues no live read at
+all.
 
 In both cases you can instead remove the rule from the stack before
 exporting: it stays in AWS and can be re-declared in CloudFormation
