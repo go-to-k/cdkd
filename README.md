@@ -424,6 +424,16 @@ to the destroy so the teardown completes in one pass — an ephemeral PR
 environment has nothing worth protecting, and without the flag those
 resources survive the job and linger until the next sweep.
 
+Two more teardown-completeness flags matter for disposable
+environments: resources with `DeletionPolicy: Snapshot` leave a final
+snapshot behind on every PR close by default — add
+[`--skip-final-snapshot`](#deletionpolicy-snapshot-final-snapshots-on-delete)
+when the environment's data is disposable, so snapshots don't
+accumulate per closed PR. And `cdkd destroy --purge-events` also
+removes the stack's deployment-event history so the state bucket
+returns fully empty (after a `state destroy`, the equivalent is
+`cdkd events prune <stack> --all`).
+
 **Housekeeping**:
 
 - Pick the wait mode from what runs next (see the section above):
