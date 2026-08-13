@@ -201,16 +201,38 @@ function formatDuration(ms: number): string {
  * resolution, which speculatively tries `Ref` and then `Fn::GetAtt` and keeps
  * the raw `${...}` placeholder when neither resolves. That warn-and-keep is the
  * long-standing, deliberate behavior for a genuinely unknown variable — but a
- * bare `catch` around it also swallowed every REFUSAL the resolver raises on
- * purpose (`guardedPhysicalIdFallback`'s ARN / URL shape hard-fail, the
- * `--strict-getatt` rejection, `rejectPlaceholderArnAttribute`), so a template
- * that hard-fails when the reference sits in a resource property silently
- * degraded to shipping a literal `${Resource.Attribute}` to AWS when the
- * IDENTICAL reference was written inside an `Fn::Sub`.
+ * bare `catch` around it also swallowed every REFUSAL raised on that PATH, so a
+ * template that hard-fails when the reference sits in a resource property
+ * silently degraded to shipping a literal `${Resource.Attribute}` to AWS when
+ * the IDENTICAL reference was written inside an `Fn::Sub`.
  *
  * Throwing this class rather than a bare `Error` is what lets that catch
  * re-raise a refusal (carrying its own message and remedy) while leaving the
  * not-found path on warn-and-keep. Nothing else branches on it.
+ *
+ * **Throw sites split into two groups, and the enumeration is worth keeping
+ * accurate** — an out-of-date one reads as "these are all of them", which is
+ * how the #1730 site below went unlisted for three releases. All live in
+ * `src/deployment/intrinsic-function-resolver.ts`:
+ *
+ * 1. Reachable from `Fn::Sub`'s `${LogicalId.Attribute}` form, i.e. the ones
+ *    the laundering fix above is actually about: `guardedPhysicalIdFallback`'s
+ *    ARN / URL shape hard-fail (the #1103 class), the `--strict-getatt`
+ *    rejection, `rejectPlaceholderArnAttribute` (#1729), and the
+ *    fabricated-account guard (#1730), which refuses to build a value from the
+ *    placeholder account id when STS did not answer.
+ * 2. NOT reachable from it, and thrown as this class only so that "deliberate
+ *    refusal" is a property of the THROW rather than of the one catch that
+ *    inspects it: `resolveSplit`'s two refusals of a non-string value (#1874).
+ *    `Fn::Sub` cannot syntactically contain an `Fn::Split`, so those change no
+ *    behavior by being this class.
+ *
+ * The class is deliberately NOT `markNonRetryable` at construction, unlike
+ * {@link ResourceUpdateNotSupportedError}: group 1's fabricated-account arm is
+ * genuinely time-dependent (`getAccountInfo` caches a fabricated answer for
+ * only 10s precisely so a later attempt can heal), so a constructor-level
+ * marker would wrongly make it terminal. A site that IS terminal marks at its
+ * own `throw` — group 2 does.
  */
 export class IntrinsicResolutionRefusalError extends CdkdError {
   constructor(message: string, cause?: Error) {

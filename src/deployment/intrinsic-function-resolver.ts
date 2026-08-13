@@ -27,6 +27,7 @@ import {
   s3BucketWebsiteUrl,
 } from '../utils/s3-endpoints.js';
 import { IntrinsicResolutionRefusalError } from '../utils/error-handler.js';
+import { markNonRetryable } from './retryable-errors.js';
 import type { CloudFormationTemplate } from '../types/resource.js';
 import type { ResourceState, StateImportEntry, StateOutputReadEntry } from '../types/state.js';
 import { S3StateBackend } from '../state/s3-state-backend.js';
@@ -2921,21 +2922,38 @@ export class IntrinsicFunctionResolver {
    * neither the situation nor the remedy.
    *
    * Both refusals throw {@link IntrinsicResolutionRefusalError} rather than a
-   * bare `Error`, matching the three deliberate refusals already in this file.
-   * The #1740 laundering path this class exists for is NOT reachable from here
-   * today and that is deliberate rather than accidental: `Fn::Sub`'s
-   * `${LogicalId.Attribute}` form cannot syntactically contain an
-   * `Fn::Split`, and its 2-arg variable-map form resolves each value through
-   * `resolveValue` OUTSIDE any catch, so either class would propagate
-   * identically. Using the class anyway keeps "deliberate refusal" a property
-   * of the THROW rather than of the one catch that happens to inspect it, so a
-   * future catch site cannot silently launder this one. Deliberately NOT
-   * `markNonRetryable`: the refusal is terminal, but the retry classifier
-   * matches by SUBSTRING and neither message contains any entry of
-   * `RETRYABLE_ERROR_MESSAGE_PATTERNS` (verified against all 45, notably
-   * `does not exist`), so there is no ~47s retry schedule to burn (issue
-   * #1838). The unit tests pin that, so a future reword cannot drift into a
-   * retryable phrase unnoticed.
+   * bare `Error`, matching the deliberate refusals already in this file. The
+   * #1740 laundering path this class exists for is NOT reachable from here
+   * today: `Fn::Sub`'s `${LogicalId.Attribute}` form cannot syntactically
+   * contain an `Fn::Split`, and its 2-arg variable-map form resolves each
+   * value through `resolveValue` OUTSIDE any catch, so either class would
+   * propagate identically there. Using the class anyway keeps "deliberate
+   * refusal" a property of the THROW rather than of the one catch that
+   * happens to inspect it. It does NOT make the refusal un-launderable: this
+   * file's own `evaluateConditions` catches everything per condition, warns,
+   * and downgrades that condition to `false`, so an `Fn::Split`-over-a-list
+   * inside a `Conditions` entry IS silently absorbed today — by both classes
+   * alike, so the choice regresses nothing, but the class is not a guarantee
+   * against a class-agnostic catch.
+   *
+   * Both are additionally `markNonRetryable` (issue #1838). The test is "can
+   * this ever succeed on a retry" — an `Fn::Split` over an array never can —
+   * NOT "does today's wording collide with a pattern", which is exactly the
+   * criterion `retryable-errors.ts` documents as insufficient: the classifiers
+   * match by SUBSTRING, and `sourceClause` interpolates template-controlled
+   * text, so a logical id like `MyDependencyViolationHandler` puts
+   * `DependencyViolation` (the table's only whitespace-free entry) into the
+   * message. Reachability is real even though resolution runs outside
+   * `withRetry` on the flat path: `NestedStackProvider.create` runs a child
+   * `DeployEngine.deploy()` and re-throws, and the parent wraps `create()` in
+   * `withRetry` — so inside a nested stack each retry re-runs a full child
+   * deploy plus rollback, up to the ~47s schedule, on a path that cannot
+   * succeed. Marked at the THROW rather than in the constructor because the
+   * class is retryable in general: its fabricated-account arm (see
+   * `resolveGetAttWithAccountGuard`) IS genuinely time-dependent
+   * (`getAccountInfo` caches a fabricated answer for only 10s precisely so a
+   * later attempt can heal), so a constructor-level marker would wrongly make
+   * that one terminal too.
    */
   private async resolveSplit(
     splitArgs: [string, unknown],
@@ -2950,23 +2968,27 @@ export class IntrinsicFunctionResolver {
       const source = this.describeSplitValueSource(value);
       const sourceClause = source ? ` (from ${source})` : '';
       if (Array.isArray(resolvedValue)) {
-        throw new IntrinsicResolutionRefusalError(
-          `Fn::Split: the value to split${sourceClause} is ALREADY a list ` +
-            `(an array of ${resolvedValue.length} item${resolvedValue.length === 1 ? '' : 's'}), ` +
-            `not a string. CloudFormation rejects Fn::Split over a list too, so this ` +
-            `template is not valid CloudFormation either. Remove the Fn::Split and use ` +
-            `the value directly — a list-valued Fn::GetAtt (for example ` +
-            `AWS::Route53::HostedZone.NameServers or AWS::EC2::VPC.Ipv6CidrBlocks) already ` +
-            `returns a list. If you wrote the Fn::Split as a workaround for cdkd ` +
-            `resolving that attribute to a comma-delimited string, that bug is fixed ` +
-            `(PR #1868) and the workaround is no longer needed.`
+        throw markNonRetryable(
+          new IntrinsicResolutionRefusalError(
+            `Fn::Split: the value to split${sourceClause} is ALREADY a list ` +
+              `(an array of ${resolvedValue.length} item${resolvedValue.length === 1 ? '' : 's'}), ` +
+              `not a string. CloudFormation rejects Fn::Split over a list too, so this ` +
+              `template is not valid CloudFormation either. Remove the Fn::Split and use ` +
+              `the value directly — a list-valued Fn::GetAtt (for example ` +
+              `AWS::Route53::HostedZone.NameServers or AWS::EC2::VPC.Ipv6CidrBlocks) already ` +
+              `returns a list. If you wrote the Fn::Split as a workaround for cdkd ` +
+              `resolving that attribute to a comma-delimited string, that bug is fixed ` +
+              `(PR #1868) and the workaround is no longer needed.`
+          )
         );
       }
       const got = resolvedValue === null ? 'null' : typeof resolvedValue;
-      throw new IntrinsicResolutionRefusalError(
-        `Fn::Split: the value to split${sourceClause} must be a string, got ${got}. ` +
-          `Fn::Split accepts only a string; check the value or the intrinsic that ` +
-          `produced it.`
+      throw markNonRetryable(
+        new IntrinsicResolutionRefusalError(
+          `Fn::Split: the value to split${sourceClause} must be a string, got ${got}. ` +
+            `Fn::Split accepts only a string; check the value or the intrinsic that ` +
+            `produced it.`
+        )
       );
     }
 

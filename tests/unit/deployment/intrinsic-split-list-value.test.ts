@@ -4,7 +4,11 @@ import {
   type ResolverContext,
 } from '../../../src/deployment/intrinsic-function-resolver.js';
 import { IntrinsicResolutionRefusalError } from '../../../src/utils/error-handler.js';
-import { RETRYABLE_ERROR_MESSAGE_PATTERNS } from '../../../src/deployment/retryable-errors.js';
+import {
+  RETRYABLE_ERROR_MESSAGE_PATTERNS,
+  isMarkedNonRetryable,
+  isRetryableTransientError,
+} from '../../../src/deployment/retryable-errors.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceState } from '../../../src/types/state.js';
 
@@ -176,12 +180,52 @@ describe('Fn::Split over an already-list value (issue #1874)', () => {
     }
   });
 
-  it('carries no retryable message pattern, so the refusal cannot burn the retry schedule', async () => {
-    // Issue #1838: the retry classifiers match by SUBSTRING, so a refusal
-    // whose wording happens to contain a retryable pattern (`does not exist`,
-    // `DependencyViolation`, ...) burns the full ~47s schedule on a path that
-    // can never succeed. Neither message matches today; this pins it so a
-    // future reword cannot drift into one unnoticed.
+  it('is marked non-retryable, so the refusal cannot burn the retry schedule', async () => {
+    // Issue #1838. The criterion is "can this ever succeed on a retry" — an
+    // Fn::Split over an array never can — NOT "does today's wording collide
+    // with a pattern", which `retryable-errors.ts` documents as insufficient.
+    // Reachability is real: resolution runs outside `withRetry` on the flat
+    // path, but `NestedStackProvider.create` runs a child `DeployEngine.deploy()`
+    // and re-throws, and the parent wraps `create()` in `withRetry` — so inside
+    // a nested stack each retry re-runs a whole child deploy plus rollback.
+    const resolver = new IntrinsicFunctionResolver();
+    for (const value of [['a', 'b'], 42, null, { Some: 'record' }]) {
+      const error = await splitError(resolver, [',', value], mkContext());
+      expect(isMarkedNonRetryable(error)).toBe(true);
+      expect(isRetryableTransientError(error, error.message)).toBe(false);
+    }
+  });
+
+  it('stays non-retryable when the logical id itself contains a retryable pattern', async () => {
+    // The regression the marker exists for: `sourceClause` interpolates
+    // template-controlled text, so an ordinary composite CDK logical id can put
+    // a retryable pattern INTO the message. `DependencyViolation` is the
+    // table's only whitespace-free entry, which is what makes it reachable
+    // from an identifier. Asserted through the classifier (the OUTCOME), not by
+    // re-checking the message against the table — the wording is expected to
+    // collide here, and the marker is what has to win.
+    const resolver = new IntrinsicFunctionResolver();
+    const logicalId = 'MyDependencyViolationHandler';
+    const context = mkContext({ [logicalId]: mkResource({ NameServers: ['ns-1', 'ns-2'] }) });
+
+    const error = await splitError(
+      resolver,
+      [',', { 'Fn::GetAtt': [logicalId, 'NameServers'] }],
+      context
+    );
+
+    // The message really does contain a retryable pattern...
+    expect(error.message).toContain('DependencyViolation');
+    expect(RETRYABLE_ERROR_MESSAGE_PATTERNS).toContain('DependencyViolation');
+    // ...and the classifier must still refuse to retry it.
+    expect(isRetryableTransientError(error, error.message)).toBe(false);
+  });
+
+  it('carries no retryable message pattern on its own, either', async () => {
+    // Belt-and-braces beside the marker: with no user text interpolated the
+    // static wording must not collide, so a future reword cannot quietly rely
+    // on the marker alone (and a `--dry-run`-style consumer that only ever sees
+    // the message keeps a clean read).
     const resolver = new IntrinsicFunctionResolver();
     const messages = [
       (await splitError(resolver, [',', ['a', 'b']], mkContext())).message,
