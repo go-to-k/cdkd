@@ -413,11 +413,20 @@ export class NestedStackProvider implements ResourceProvider {
     //  - NOT interrupted: a retry re-enters `runDestroyForStack` against the
     //    child's PRESERVED state, and a child resource that was still
     //    draining (an ENI detaching, a dependency releasing) on attempt 1 may
-    //    genuinely be gone on attempt 2 — so the retry can succeed and the
-    //    error must stay retryable. Some causes underneath the count are
+    //    genuinely be gone on attempt 2. Some causes underneath the count are
     //    terminal, but `DestroyRunnerResult` reports only counts, so this arm
     //    cannot separate them; per the "if ANY arm can heal, do not mark"
-    //    rule it stays UNMARKED.
+    //    rule it is left UNMARKED.
+    //
+    //    Be precise about what that leaves, because it is NOT "the arm stays
+    //    retryable": left unmarked, its classification stays MESSAGE-driven,
+    //    so it is retryable exactly when the child stack name happens to
+    //    contain a retryable pattern — i.e. this arm still carries the
+    //    name-dependence this issue is about. There is no `markRetryable` to
+    //    assert the healable reading with, and marking it would be strictly
+    //    worse (it would make the healable case terminal for everyone). So
+    //    the residual is ACCEPTED, not fixed, and saying otherwise would
+    //    overstate what the mark below achieves.
     //  - Interrupted: the child stopped early because the user pressed
     //    Ctrl-C. `draining` in `destroy-runner.ts` is a per-INVOCATION local
     //    with a per-invocation SIGINT listener, so a retry starts a FRESH

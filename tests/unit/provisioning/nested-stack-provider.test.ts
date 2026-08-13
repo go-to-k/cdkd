@@ -15,7 +15,6 @@ import type { StackState } from '../../../src/types/state.js';
 import {
   isMarkedNonRetryable,
   isRetryableTransientError,
-  markNonRetryable,
   RETRYABLE_ERROR_MESSAGE_PATTERNS,
 } from '../../../src/deployment/retryable-errors.js';
 
@@ -992,16 +991,29 @@ describe('NestedStackProvider', () => {
 
       // UNMARKED ARM — a plain child failure with no interrupt. A whole-child
       // re-destroy CAN legitimately succeed (a resource still draining on
-      // attempt 1 may be gone on attempt 2), so this arm must stay retryable.
-      // The row exists so a later blanket-mark of the class breaks LOUDLY
-      // instead of silently converting a recoverable failure into a terminal
-      // one.
-      it('a NON-interrupted child failure stays retryable — the arm can heal', async () => {
+      // attempt 1 may be gone on attempt 2), so the arm is left UNMARKED and a
+      // later blanket-mark of the class breaks LOUDLY here instead of silently
+      // converting a recoverable failure into a terminal one.
+      //
+      // What "unmarked" means is asserted honestly rather than as "the arm
+      // stays retryable": with no marker the classification is MESSAGE-driven,
+      // so this arm is retryable exactly when the child stack name happens to
+      // carry a retryable pattern. Both halves are pinned, because the pair IS
+      // the residual — #1849's name-dependence survives on this arm by design
+      // (there is no `markRetryable`, and marking it would make the healable
+      // case terminal for everyone).
+      it('a NON-interrupted child failure is left unmarked, so it stays name-dependent', async () => {
         childCounts.value = { deletedCount: 0, errorCount: 2, interrupted: false };
-        const err = (await deleteAndCatch(POISON_ID)) as Error;
 
-        expect(isMarkedNonRetryable(err)).toBe(false);
-        expect(isRetryableTransientError(err, err.message)).toBe(true);
+        const poisoned = (await deleteAndCatch(POISON_ID)) as Error;
+        expect(isMarkedNonRetryable(poisoned)).toBe(false);
+        expect(isRetryableTransientError(poisoned, poisoned.message)).toBe(true);
+
+        // The SAME arm, same counts, an ordinary logical id: not retryable.
+        // The only difference is the name, which is precisely the residual.
+        const ordinary = (await deleteAndCatch('PlainSub')) as Error;
+        expect(isMarkedNonRetryable(ordinary)).toBe(false);
+        expect(isRetryableTransientError(ordinary, ordinary.message)).toBe(false);
       });
 
       // The two arms must be distinguished by the MARKER alone, not by the
@@ -1046,18 +1058,25 @@ describe('NestedStackProvider', () => {
         expect(isRetryableTransientError(new Error(err!.message), err!.message)).toBe(false);
       });
 
-      // The destroy runner's own `Too Many Requests` arm is a RAW message test
-      // that bypasses the shared classifier, so it is gated on the marker
-      // separately (destroy-runner.ts). Pin that a marked refusal beats a
-      // co-occurring throttle phrase, which is the shape that gate exists for.
-      it('the marker beats a co-occurring throttle signal', async () => {
-        childCounts.value = { deletedCount: 0, errorCount: 1, interrupted: true };
-        const err = (await deleteAndCatch('ThrottlingSub')) as Error;
-        const throttled = markNonRetryable(
-          new Error(`${err.message} (Too Many Requests)`)
-        );
-        expect(isRetryableTransientError(throttled, throttled.message)).toBe(false);
-      });
+      // NOT TESTED, deliberately: the destroy runner's raw `Too Many Requests`
+      // arm. It is a composite gate (destroy-runner.ts) —
+      //
+      //   !isMarkedNonRetryable(e) && (isRetryableTransientError(e, m) ||
+      //                                m.includes('Too Many Requests'))
+      //
+      // — and its raw half is UNREACHABLE for this message, so there is no
+      // honest row to write. `nestedStackChildFailureMessage` interpolates no
+      // AWS error text: only the child stack name and the counts. The phrase
+      // contains SPACES, and the name is `<parent>~<childLogicalId>` built
+      // from CloudFormation logical ids, which are alphanumeric — so the
+      // substring cannot occur. That is exactly why `DependencyViolation` is
+      // the pattern this whole block is about: it is the only whitespace-free
+      // entry in the table, hence the only one a logical id can carry.
+      //
+      // A row WAS written here first, asserting the marker against an error it
+      // constructed ITSELF, and it passed with the provider's marks fully
+      // reverted — it never read the provider's mark at all. Recorded rather
+      // than silently dropped so the next reader does not re-add it.
     });
 
     it('returns void (= deleted) when the child skipped nothing', async () => {
