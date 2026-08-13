@@ -1,3 +1,10 @@
+## [0.281.25](https://github.com/go-to-k/cdkd/compare/v0.281.24...v0.281.25) (2026-08-13)
+
+
+### Bug Fixes
+
+* **s3:** round-trip the whole lifecycle rule, and stop a malformed EventBridgeEnabled from enabling notification delivery ([#1776](https://github.com/go-to-k/cdkd/issues/1776)) ([68ca98f](https://github.com/go-to-k/cdkd/commit/68ca98f2ec547810c6a3573c66628350a5a37683))
+
 ## [0.281.24](https://github.com/go-to-k/cdkd/compare/v0.281.23...v0.281.24) (2026-08-13)
 
 
