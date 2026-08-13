@@ -16953,6 +16953,7 @@
       ],
       "gaps": [],
       "blindSpots": [
+        "computed key in applyAllSubConfigsForCreate()",
         "computed key in applySubConfigDiffs()",
         "computed key in canonicalizeItemList()",
         "hasCdkAutoDeleteTag(...) in delete()",
