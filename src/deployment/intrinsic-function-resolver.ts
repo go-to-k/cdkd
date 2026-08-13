@@ -1702,6 +1702,22 @@ export class IntrinsicFunctionResolver {
       const flatValue = resource.attributes[attributeName];
       if (flatValue !== undefined) {
         this.rejectPlaceholderArnAttribute(resource, attributeName, flatValue, logicalId);
+        // Earlier cdkd versions stored Route 53 HostedZone NameServers as a
+        // comma-delimited string even though CloudFormation defines the
+        // attribute as a list. Normalize that legacy state shape at the read
+        // boundary so Fn::Join works without requiring users to recreate or
+        // manually edit an existing state file.
+        if (
+          resource.resourceType === 'AWS::Route53::HostedZone' &&
+          attributeName === 'NameServers' &&
+          typeof flatValue === 'string'
+        ) {
+          const nameServers = flatValue === '' ? [] : flatValue.split(',');
+          this.logger.debug(
+            `Normalized legacy Fn::GetAtt attribute: ${logicalId}.${attributeName} -> ${stringifyAttributeForLog(attributeName, nameServers)}`
+          );
+          return nameServers;
+        }
         this.logger.debug(
           `Resolved Fn::GetAtt from attributes: ${logicalId}.${attributeName} -> ${stringifyAttributeForLog(attributeName, flatValue)}`
         );

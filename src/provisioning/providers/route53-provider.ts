@@ -522,7 +522,7 @@ export class Route53Provider implements ResourceProvider {
         physicalId: zoneId,
         attributes: {
           Id: zoneId,
-          NameServers: nameServers.join(','),
+          NameServers: nameServers,
         },
       };
     } catch (error) {
@@ -615,7 +615,7 @@ export class Route53Provider implements ResourceProvider {
         wasReplaced: false,
         attributes: {
           Id: physicalId,
-          NameServers: nameServers.join(','),
+          NameServers: nameServers,
         },
       };
     } catch (error) {
@@ -859,7 +859,7 @@ export class Route53Provider implements ResourceProvider {
         return physicalId;
       case 'NameServers': {
         const response = await this.getClient().send(new GetHostedZoneCommand({ Id: physicalId }));
-        return (response.DelegationSet?.NameServers ?? []).join(',');
+        return response.DelegationSet?.NameServers ?? [];
       }
       default:
         return undefined;

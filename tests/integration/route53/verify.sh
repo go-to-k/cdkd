@@ -154,6 +154,32 @@ fi
 ZONE_ID="${ZONE_ID_RAW##*/}"
 echo "    Resolved hosted zone id: ${ZONE_ID}"
 
+# --- Assertion: HostedZone NameServers remains list-valued through Fn::Join
+# CloudFormation declares `AWS::Route53::HostedZone.NameServers` as a list.
+# cdkd previously flattened the provider attribute into a comma-delimited
+# string, so resolving this Output failed when Fn::Join received that string
+# instead of the expected list and the Output was absent from state.
+JOINED_NAME_SERVERS=$(echo "${STATE}" | jq -r '.outputs.HostedZoneNameServers // empty')
+if [ -z "${JOINED_NAME_SERVERS}" ]; then
+  echo "FAIL: no HostedZoneNameServers output in state (Fn::Join over NameServers did not resolve)" >&2
+  echo "${STATE}" | jq '.outputs'
+  exit 1
+fi
+
+JOINED_NAME_SERVERS_SORTED=$(printf '%s' "${JOINED_NAME_SERVERS}" \
+  | jq -Rr 'split(",") | sort | join(",")')
+LIVE_NAME_SERVERS=$(aws route53 get-hosted-zone --id "${ZONE_ID}" --region "${REGION}" \
+  --query 'DelegationSet.NameServers' --output json 2>/dev/null)
+LIVE_NAME_SERVERS_SORTED=$(printf '%s' "${LIVE_NAME_SERVERS}" \
+  | jq -r 'sort | join(",")')
+if [ "${JOINED_NAME_SERVERS_SORTED}" != "${LIVE_NAME_SERVERS_SORTED}" ]; then
+  echo "FAIL: HostedZoneNameServers output does not match Route 53" >&2
+  echo "  got:      ${JOINED_NAME_SERVERS}" >&2
+  echo "  expected: ${LIVE_NAME_SERVERS_SORTED}" >&2
+  exit 1
+fi
+echo "    OK: Fn::Join resolved the HostedZone NameServers list (${JOINED_NAME_SERVERS})"
+
 # --- Assertion: Ref to a RecordSet is the record NAME (issue #1681) ----
 # cdkd stores the composite physicalId `<hostedZoneId>|<name>|<type>`, while
 # CloudFormation's `Ref` returns "the name of the record" — the MIDDLE
