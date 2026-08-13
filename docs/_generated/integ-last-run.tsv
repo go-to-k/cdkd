@@ -81,7 +81,7 @@ drift-revert-arrays	2026-08-13T08:30:39Z	PASS	230	verify.sh	issue 1783/1784 seam
 drift-revert-vpc	2026-08-11T15:53:33Z	PASS	314	verify.sh	#1591 final: both-sides canonicalizer + cdkd diff wiring; 21 del/0 err, 0 orph
 dsql	2026-07-30T18:11:24Z	PASS	540	verify.sh	4-phase incl. destroy --remove-protection CC flip (#1312); orph clean
 dynamodb-autoscaling	2026-08-10T05:13:55Z	PASS	65	verify.sh	0810 sweep b5; table autoscaling re-verify post-#1451 GlobalTable work, 0 err 0 orph
-dynamodb-globaltable	2026-08-13T10:41:53Z	PASS	560	verify.sh	#1733/#1738 new arms 13g/13j/13k asserted; 10 del 0 err, orph clean; measured #1733(a): explicit-PROVISIONED reports no BillingModeSummary
+dynamodb-globaltable	2026-08-13T11:25:40Z	PASS	560	verify.sh	#1733/#1738 arms 13g/13j/13k asserted; 10 del 0 err, orph clean. NOTE: the immediately preceding post-rebase run FAILED on the transient delete-while-index-updating race (issue #1830), not on this change
 dynamodb-gsi-update	2026-08-13T06:10:16Z	PASS	612	verify.sh	#1760 Table drift/WarmThroughput provider change; 1 del 0 err, orph clean
 dynamodb-ondemand	2026-08-13T06:15:30Z	PASS	580	verify.sh	#1760 Table drift/WarmThroughput provider change; 4 del 0 err, orph clean
 dynamodb-sse	2026-08-01T10:07:21Z	PASS	40	verify.sh	0801 regression sweep; SSE mapping ok, 0 orphans
