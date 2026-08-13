@@ -1,3 +1,10 @@
+## [0.283.14](https://github.com/go-to-k/cdkd/compare/v0.283.13...v0.283.14) (2026-08-13)
+
+
+### Bug Fixes
+
+* **local:** fold the region case across cdkd local invoke's AssumeRole chain and every --stack-region consumer ([#1877](https://github.com/go-to-k/cdkd/issues/1877)) ([b2556ea](https://github.com/go-to-k/cdkd/commit/b2556ea6ebda4ff954e141595416d0c5f31799e4))
+
 ## [0.283.13](https://github.com/go-to-k/cdkd/compare/v0.283.12...v0.283.13) (2026-08-13)
 
 
