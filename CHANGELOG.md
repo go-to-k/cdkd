@@ -1,3 +1,10 @@
+## [0.281.26](https://github.com/go-to-k/cdkd/compare/v0.281.25...v0.281.26) (2026-08-13)
+
+
+### Bug Fixes
+
+* **gc:** match every partition's URL suffix so gc stops deleting referenced container images ([#1789](https://github.com/go-to-k/cdkd/issues/1789)) ([0d273e3](https://github.com/go-to-k/cdkd/commit/0d273e389c97b0632844bc65358362e6542c8d07))
+
 ## [0.281.25](https://github.com/go-to-k/cdkd/compare/v0.281.24...v0.281.25) (2026-08-13)
 
 
