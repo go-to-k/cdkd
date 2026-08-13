@@ -200,7 +200,7 @@ log-pipeline	2026-07-31T07:44:41Z	PASS	95	standard	issue #1326 removalPolicy fix
 loggroup-class-guard	2026-07-27T11:04:52Z	PASS	49	verify.sh	issue #1267 post-review re-run; typed-error pass-through verified vs real AWS; 1 del 0 err
 loggroup-kms-associate	2026-08-10T11:50:46Z	PASS	45	verify.sh	0810 P0/P1 sweep b3; KMS associate+disassociate, 4 phases; key PendingDeletion is AWS-mandated
 macro-expansion	2026-08-10T05:24:30Z	PASS	54	verify.sh	0810 P2 sweep b7; diff-expands + destroy-no-expand asserts, 0 orph
-microservices	2026-08-10T11:50:46Z	PASS	43	standard	0810 P0/P1 sweep b4 BROAD; 19 del/0 err
+microservices	2026-08-13T12:20:58Z	PASS	45	standard	#1778 re-run after retry-loop fence; 19 deleted 0 errors, 0 orphans
 migrate-from-bare-cfn	2026-08-10T06:01:30Z	PASS	90	verify.sh	0810 P2 sweep b11; bare-CFn migrate + destroy clean
 migrate-from-bare-cfn-codegen-only	2026-07-26T18:57:55Z	PASS	17	verify.sh	0727b sweep-b7 staleness re-run (rc=0); account clean
 migrate-from-cfn	2026-08-10T06:32:58Z	PASS	338	run.sh	0810 P2 sweep b11r; run.sh flow (NOT verify.sh) - import+migrate+destroy, 2 del 0 err, state cleaned

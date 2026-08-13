@@ -29,6 +29,7 @@ import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-help
 import type {
   ResourceProvider,
   ResourceCreateResult,
+  ResourceDeleteResult,
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
@@ -221,7 +222,25 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
 
       const createResult = await this.create(logicalId, resourceType, properties);
       try {
-        await this.delete(logicalId, physicalId, resourceType, previousProperties);
+        const deleteResult = await this.delete(
+          logicalId,
+          physicalId,
+          resourceType,
+          previousProperties
+        );
+        // Issue #1778: a SKIP is a non-throwing "I did not address this
+        // resource", so it sails straight past the catch below — the one path
+        // that would have told the user the old policy is still there. The new
+        // policy is already created at this point, so the replacement cannot
+        // be aborted and `ResourceUpdateResult` has no skip channel to raise it
+        // on; telling the user, in the same words the failure arm uses, is the
+        // whole remedy available here.
+        if (deleteResult?.outcome === 'skipped') {
+          this.logger.warn(
+            `Skipped deleting old managed policy ${physicalId} during replacement: ${deleteResult.reason}. ` +
+              `The old policy may be orphaned and require manual cleanup.`
+          );
+        }
       } catch (error) {
         this.logger.warn(
           `Failed to delete old managed policy ${physicalId} during replacement: ${String(error)}. ` +
@@ -309,7 +328,7 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
     resourceType: string,
     _properties?: Record<string, unknown>,
     context?: DeleteContext
-  ): Promise<void> {
+  ): Promise<void | ResourceDeleteResult> {
     this.logger.debug(`Deleting IAM managed policy ${logicalId}: ${physicalId}`);
 
     try {

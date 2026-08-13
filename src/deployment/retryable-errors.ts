@@ -406,6 +406,97 @@ export const THROTTLING_ERROR_NAMES: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Marker for an error cdkd raised as a DELIBERATE refusal rather than as a
+ * relayed AWS failure (issue [#1778](https://github.com/go-to-k/cdkd/issues/1778)).
+ *
+ * Every classifier below is SUBSTRING-based, which is the right shape for
+ * relaying a vendor's message and the wrong one for cdkd's own prose: a
+ * refusal message is assembled from values cdkd does not control — a provider
+ * `reason`, a state-borne physicalId, a template logical id — and any of them
+ * can happen to contain a retryable pattern. Measured: a resource named
+ * `MyDependencyViolationSub` puts `DependencyViolation` in the message, so a
+ * deterministic refusal was classified transient and burned the whole backoff
+ * schedule before failing exactly as it would have immediately. Keeping the
+ * offending values OUT of the message narrows that surface but cannot close
+ * it, because a message with no identifiers at all is not diagnosable.
+ *
+ * A marker inverts the burden: the raiser STATES that the error is terminal,
+ * so no wording can make it retryable. Deliberately a `Symbol.for` key —
+ * global-registry symbols survive a duplicated module instance (dual
+ * bundling), where a module-local symbol would silently stop matching — and
+ * non-enumerable, so it cannot leak into a serialized error payload.
+ */
+const NON_RETRYABLE_MARKER = Symbol.for('cdkd.nonRetryable');
+
+/**
+ * Mark a cdkd-authored refusal as terminal and return it, for
+ * `throw markNonRetryable(new ProvisioningError(...))`.
+ *
+ * Reach for it when the error means "this cannot succeed on a retry" as a
+ * matter of cdkd's own logic — NOT for a relayed AWS failure, whose
+ * retryability is the classifiers' business.
+ *
+ * KNOWN LIVE INSTANCE NOT YET COVERED: `ResourceUpdateNotSupportedError`
+ * (`src/utils/error-handler.ts`) interpolates the logical id and is thrown by
+ * ~20 providers from inside the retried `update()` in `deploy-engine.ts`, so a
+ * stack with a resource named e.g. `MyDependencyViolationSub` burns the full
+ * ~47s backoff schedule before the `--replace` fallback is even reached. That
+ * is a LIVE occurrence of the class this marker exists for, unlike the
+ * latent-today SNS abort that motivated it. Marking it belongs in that error's
+ * constructor, in a file this change does not own; tracked separately.
+ */
+export function markNonRetryable<E extends Error>(error: E): E {
+  // `E extends Error`, not `object`: a class or a shared prototype is an
+  // object too, and the reader below is a PROTOTYPE-CHAIN lookup, so marking
+  // one would silently mark every instance of it as terminal.
+  //
+  // A non-extensible (frozen / sealed) error is returned UNMARKED rather than
+  // allowed to throw. Callers use this inline — `throw markNonRetryable(...)`
+  // — so a `TypeError` raised here would REPLACE the refusal the caller meant
+  // to raise, turning a precise message into an unrelated crash. Losing the
+  // marker degrades to the pre-marker behavior (the message heuristics still
+  // apply); losing the refusal loses the diagnosis.
+  if (!Object.isExtensible(error)) return error;
+  Object.defineProperty(error, NON_RETRYABLE_MARKER, {
+    value: true,
+    enumerable: false,
+    configurable: true,
+    writable: false,
+  });
+  return error;
+}
+
+/**
+ * True when the error, or anything in its bounded `.cause` chain, was marked
+ * by {@link markNonRetryable}.
+ *
+ * The chain walk mirrors {@link isThrottlingError}'s: cdkd wraps errors, so a
+ * marked refusal can end up one or more links deep, and a marker that stopped
+ * counting after a single wrap would be a fence that quietly falls open.
+ *
+ * That reach is DIRECTIONAL, and the upward direction is a hazard worth
+ * stating. Downward — a marked refusal wrapped by an outer error — is the
+ * intended case and stays terminal. UPWARD is the inverse: wrapping a marked
+ * refusal as the `cause` of a genuinely RETRYABLE outer error
+ * (`new Error(msg, { cause: markedRefusal })`) makes the outer error terminal
+ * too, because this walk finds the marker on the cause. Unconstructible today
+ * (`ProvisioningError` is built with no `cause` at the one marking site), and
+ * the failure is fail-fast rather than silent, but a future wrapper that
+ * carries a marked cause into a transient error would stop retrying something
+ * that should retry. Strip or re-raise the cause there rather than nesting it.
+ */
+export function isMarkedNonRetryable(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 5 && current != null; depth++) {
+    if (typeof current === 'object' || typeof current === 'function') {
+      if ((current as Record<symbol, unknown>)[NON_RETRYABLE_MARKER] === true) return true;
+    }
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
+/**
  * Walk the error + its `.cause` chain (bounded) looking for a rate-limit
  * signal — either an AWS SDK v3 throttling error `name`
  * ({@link THROTTLING_ERROR_NAMES}) or a retryable HTTP status
@@ -438,6 +529,10 @@ export function isThrottlingError(error: unknown): boolean {
  * Determine whether an AWS error should be retried.
  *
  * Checks (in order):
+ *   0. {@link isMarkedNonRetryable} — a cdkd-authored refusal is terminal by
+ *      declaration, ahead of every message / name heuristic below. FIRST on
+ *      purpose: the marker states the error cannot succeed on a retry, so
+ *      nothing a later check reads out of the message can overturn it.
  *   1. Rate-limit signal on the error or any wrapped cause — throttling error
  *      `name` or retryable HTTP status (most AWS throttles are HTTP 400, not
  *      429, so the name check carries most of the weight). See
@@ -445,6 +540,7 @@ export function isThrottlingError(error: unknown): boolean {
  *   2. Substring match against {@link RETRYABLE_ERROR_MESSAGE_PATTERNS}
  */
 export function isRetryableTransientError(error: unknown, message: string): boolean {
+  if (isMarkedNonRetryable(error)) return false;
   if (isThrottlingError(error)) return true;
 
   return RETRYABLE_ERROR_MESSAGE_PATTERNS.some((p) => message.includes(p));

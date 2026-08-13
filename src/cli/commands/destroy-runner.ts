@@ -30,7 +30,10 @@ import {
   type DeploymentEventRecorder,
 } from '../../types/deployment-events.js';
 import { withResourceDeadline } from '../../deployment/resource-deadline.js';
-import { isRetryableTransientError } from '../../deployment/retryable-errors.js';
+import {
+  isMarkedNonRetryable,
+  isRetryableTransientError,
+} from '../../deployment/retryable-errors.js';
 import {
   DEFAULT_RESOURCE_WARN_AFTER_MS,
   DEFAULT_RESOURCE_TIMEOUT_MS,
@@ -1020,8 +1023,18 @@ export async function runDestroyForStack(
                   // explicitly: the wrapped ProvisioningError message carries
                   // the phrasing even when the original 429 `$metadata` is
                   // lost across the wrap.
+                  // Issue #1778: the `Too Many Requests` arm is load-bearing
+                  // (see above) but it is a raw message test, so it bypassed
+                  // the non-retryable marker the shared classifier honors —
+                  // the same hole `retry.ts` had for custom classifiers. The
+                  // marker gates BOTH arms rather than replacing either: a
+                  // deliberate cdkd refusal is terminal even if its message
+                  // happens to carry a throttle phrase, and a genuine throttle
+                  // (never marked) still retries exactly as before.
                   const isRetryable =
-                    isRetryableTransientError(retryError, msg) || msg.includes('Too Many Requests');
+                    !isMarkedNonRetryable(retryError) &&
+                    (isRetryableTransientError(retryError, msg) ||
+                      msg.includes('Too Many Requests'));
                   if (!isRetryable || attempt >= maxAttempts) break;
                   const delay = 5000 * Math.pow(2, attempt);
                   logger.debug(

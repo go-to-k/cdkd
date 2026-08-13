@@ -9,11 +9,13 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { markNonRetryable } from '../../deployment/retryable-errors.js';
 import { stringifyValue } from '../../utils/stringify.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
+  ResourceDeleteResult,
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
@@ -215,11 +217,105 @@ export class SNSSubscriptionProvider implements ResourceProvider {
     this.logger.debug(`Updating SNS subscription ${logicalId}: ${physicalId}`);
 
     // Delete old subscription
+    let deleteResult: void | ResourceDeleteResult = undefined;
     try {
-      await this.delete(logicalId, physicalId, resourceType);
+      deleteResult = await this.delete(logicalId, physicalId, resourceType);
     } catch (error) {
       this.logger.warn(
         `Failed to delete old subscription ${physicalId} during update: ${String(error)}`
+      );
+    }
+
+    // Issue #1778: this provider replaces DELETE-first, so a skipped delete
+    // means the old subscription was NOT destroyed and is still there — and
+    // creating the new one below would leave two subscriptions on the topic,
+    // delivering every message twice. That is user-visible, not a silent leak,
+    // so abort instead: the duplicate is what the CREATE would ADD, so not
+    // making it is the whole remedy, and state still names the old
+    // subscription so the resource stays traceable.
+    //
+    // The premise is deliberately "not destroyed", NOT "no AWS call was
+    // issued" — `ResourceDeleteResult`'s own contract (src/types/resource.ts)
+    // warns that reading it the second way is a mistake callers build on,
+    // since a recursing provider can report `skipped` AFTER deleting other
+    // things. Abort is right under the weaker premise too: whatever the
+    // skipping delete did or did not do, adding a second live subscription on
+    // top of it cannot be an improvement.
+    //
+    // Deliberately NOT symmetric with the catch above, which creates anyway
+    // after a FAILED delete: a throw may mean the unsubscribe partially
+    // landed, was transient, or that the subscription is already gone, so
+    // converging is the better bet. A skip is a positive statement that the
+    // old subscription was not destroyed, which makes the duplicate a
+    // certainty rather than a risk — that distinction is exactly what the
+    // #1752 outcome mechanism exists to express. THIS provider's check lives
+    // OUTSIDE the try for the same reason (the three create-then-delete
+    // providers keep theirs inside, where a warn-only branch is harmless):
+    // `delete()` raises its own `ProvisioningError` on a real failure, so
+    // throwing from inside would be caught by that handler, and re-throwing
+    // typed errors from it would turn today's warn-and-continue failure path
+    // into a hard failure.
+    //
+    // Right for every `update()` caller, which is the bar an abort has to
+    // clear: `cdkd deploy` (the resource fails and rolls back rather than
+    // double-subscribing), `cdkd drift --revert` (the reverted subscription is
+    // reported as a failed revert rather than duplicated), and the rollback
+    // executor's revert arms (same). None of the three is better served by a
+    // second live subscription. The rollback arms wrap `update()` in
+    // `withRetry`, so the thrown message must not be classified retryable —
+    // which is why the provider-supplied `reason` is LOGGED rather than
+    // interpolated into it: `retryable-errors.ts` classifies by SUBSTRING, and
+    // a reason carrying `does not exist` / `Rate exceeded` / `because it is in
+    // use` would burn the whole backoff schedule before a certain failure.
+    //
+    // The `physicalId` is kept out of the thrown message for the SAME reason,
+    // and it is the worse offender: it is STATE-borne and arbitrary
+    // (`cdkd import --resource <id>=<anything>` writes it verbatim), and the
+    // only skip family that can reach here today is literally "malformed
+    // physicalId in state". It is still named on the warn line and carried in
+    // the `ProvisioningError`'s structured field. The `logicalId` stays in the
+    // message because it is the only thing that identifies the resource in
+    // `formatError`'s `name: message` output and is what the user greps the
+    // warn line by.
+    //
+    // Keeping those values out NARROWS the substring surface but cannot close
+    // it — the match is a SUBSTRING, not an equality, so an ordinary composite
+    // logical id like `MyDependencyViolationSub` carries a retryable pattern
+    // (measured), and a message with no identifiers at all is not diagnosable.
+    // So the refusal is `markNonRetryable`-marked instead: the classifier
+    // consults the marker BEFORE any wording, which makes the abort terminal
+    // by declaration for every caller that classifies via
+    // `isRetryableTransientError` — today all three (`withRetry`'s default).
+    //
+    // Known bound, deliberately not closed here: `isNameCollisionError`
+    // (`AlreadyExists`) and `isNameCooldownError` (`QueueDeletedRecently`) are
+    // MESSAGE-ONLY classifiers, so they cannot consult the marker, and both of
+    // those spellings match a bare logical id. Neither is reachable from an
+    // `update()` caller today — all three use the default classifier — but
+    // `rollback-executor.ts` already wires `isRecreateRetryableError` onto its
+    // CREATE arms, so a future caller change would arm it. Closing it means
+    // widening those signatures to take the error object, which touches call
+    // sites owned elsewhere.
+    //
+    // Latent today: the two pending-confirmation arms in `delete` are
+    // deliberate CFn-parity delete-SUCCESS (see `logPendingConfirmationSkip`),
+    // not skips, so no arm produces this outcome yet.
+    if (deleteResult?.outcome === 'skipped') {
+      this.logger.warn(
+        `Cannot replace SNS subscription ${logicalId}: the old subscription ${physicalId} was not deleted — ` +
+          `${deleteResult.reason}`
+      );
+      throw markNonRetryable(
+        new ProvisioningError(
+          `Cannot replace SNS subscription ${logicalId}: cdkd could not delete the old subscription, and ` +
+            `creating the replacement would leave both subscribed to the topic and deliver every message ` +
+            `twice. See the warning naming ${logicalId} for the recorded physical id and the cause. ` +
+            `Repair the state record for ${logicalId}, or remove the old subscription in AWS if it is ` +
+            `still live, then re-run.`,
+          resourceType,
+          logicalId,
+          physicalId
+        )
       );
     }
 
@@ -242,7 +338,7 @@ export class SNSSubscriptionProvider implements ResourceProvider {
     resourceType: string,
     _properties?: Record<string, unknown>,
     context?: DeleteContext
-  ): Promise<void> {
+  ): Promise<void | ResourceDeleteResult> {
     this.logger.debug(`Deleting SNS subscription ${logicalId}: ${physicalId}`);
 
     // A never-confirmed subscription may be recorded under the literal
@@ -304,6 +400,27 @@ export class SNSSubscriptionProvider implements ResourceProvider {
 
   /**
    * Log the CFn-parity skip for a pending-confirmation subscription delete.
+   *
+   * **Do NOT convert either caller into a `ResourceDeleteResult` skip** (the
+   * issue [#1770](https://github.com/go-to-k/cdkd/issues/1770) sweep) — the
+   * note lives here rather than only at `update()` because this is where a
+   * future converter looks. Both arms mean the resource is GONE as far as the
+   * stack is concerned: CloudFormation removes a pending-confirmation
+   * subscription from the stack without unsubscribing, and the pending record
+   * expires on its own, so `deleted` is the honest outcome and a skip would
+   * preserve state and fail an otherwise-clean destroy for no reason.
+   *
+   * There is a second consequence, and it is why the warning is this loud:
+   * `update()` ABORTS the DELETE-first replacement on a skip (issue
+   * [#1778](https://github.com/go-to-k/cdkd/issues/1778)). Reporting a skip
+   * here would therefore make every deploy of a subscription whose state
+   * physicalId is the `PendingConfirmation` placeholder — reachable via
+   * `cdkd import --resource <id>=PendingConfirmation` — throw permanently,
+   * with no flag to force it, and `cdkd drift --revert` would fail the same
+   * way. Exempting that placeholder from the abort was the alternative and
+   * was rejected: it would duplicate this method's knowledge of the
+   * placeholder inside `update()`, where a later change to the accepted set
+   * would silently un-fence the abort.
    */
   private logPendingConfirmationSkip(logicalId: string, physicalId: string): void {
     this.logger.warn(

@@ -42,6 +42,7 @@ import { slowCcOperationTimeoutMs } from './slow-cc-operation-timeouts.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
+  ResourceDeleteResult,
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
@@ -350,7 +351,32 @@ export class CloudControlProvider implements ResourceProvider {
     try {
       // Reuse the provider's own delete: it polls the async operation to
       // completion and already treats NotFound as idempotent success.
-      await this.delete(logicalId, error.physicalId, resourceType);
+      const cleanupResult = await this.delete(logicalId, error.physicalId, resourceType);
+      // Issue #1778 confirmed the ACCOUNTING half of "the result is
+      // uninteresting here": this is a CREATE path, so nothing it returns
+      // reaches the destroy runner's deleted/skipped counters, and the only
+      // consumer of a failure is the warning below (the original create error
+      // must surface either way). What is NOT uninteresting is the MESSAGE:
+      // the debug line below asserts the remnant was removed, so a skip made
+      // it say the opposite of what happened. A skip is also the one outcome
+      // that means the name is still taken, which is exactly what the caller's
+      // retry is about to trip over — so it takes the same warning a failed
+      // cleanup takes.
+      //
+      // Reachability note: the delegating branch in `delete` (the only
+      // producer of a skip on this provider today) is gated on
+      // `context.removeProtection`, and this call passes no context at all, so
+      // the branch below is unreachable from here as the code stands. It is
+      // kept because the reachability is a property of a DIFFERENT method's
+      // internals, not of this call site, and the cost of being wrong about it
+      // is a false "removed" line over an occupied name.
+      if (cleanupResult?.outcome === 'skipped') {
+        this.logger.warn(
+          `Skipped deleting the remnant ${error.physicalId} left by the failed CREATE of ${logicalId}: ` +
+            `${cleanupResult.reason} — a retry may fail with AlreadyExists until it is removed manually`
+        );
+        return;
+      }
       this.logger.debug(`Removed failed-create remnant ${error.physicalId} for ${logicalId}`);
     } catch (cleanupError) {
       const message = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
@@ -524,7 +550,7 @@ export class CloudControlProvider implements ResourceProvider {
     resourceType: string,
     _properties?: Record<string, unknown>,
     context?: DeleteContext
-  ): Promise<void> {
+  ): Promise<void | ResourceDeleteResult> {
     this.logger.debug(
       `Deleting resource ${logicalId} (${resourceType}), physical ID: ${physicalId}`
     );
@@ -570,8 +596,28 @@ export class CloudControlProvider implements ResourceProvider {
         `Delegating protected AutoScalingGroup ${logicalId} delete to the SDK ASGProvider (Cloud Control cannot force-delete a protected ASG)`
       );
       const { ASGProvider } = await import('./providers/asg-provider.js');
-      await new ASGProvider().delete(logicalId, physicalId, resourceType, _properties, context);
-      return;
+      // Issue #1778: PROPAGATE the delegate's verdict instead of discarding it.
+      //
+      // The contract for a delegating caller had two candidate shapes: assert
+      // the delegate cannot skip, or pass its outcome upward. Propagation wins
+      // for the same reason `NestedStackProvider.delete` propagates the child
+      // runner's `skippedCount` / `interrupted` — the whole point of the
+      // #1752 mechanism is that "the provider returned normally" is NOT the
+      // same claim as "the resource is gone". Swallowing the delegate's
+      // `'skipped'` here would make the destroy runner print
+      // `✓ <id> (AWS::AutoScaling::AutoScalingGroup) deleted`, drop the state
+      // record and exit 0 over an ASG the SDK provider explicitly said it
+      // could not address. An assertion, by contrast, would have to be
+      // re-verified every time `ASGProvider.delete` grows an arm (issue #1770
+      // is adding exactly that class of arm elsewhere), and it fails LOUDLY on
+      // a case the delegate considers merely unaddressable.
+      //
+      // Typed through the `ResourceProvider` interface deliberately: it is the
+      // interface's `Promise<void | ResourceDeleteResult>` that keeps this
+      // forwarding correct if `ASGProvider.delete` widens its own concrete
+      // return type later, so no edit is needed here when it does.
+      const asgProvider: ResourceProvider = new ASGProvider();
+      return await asgProvider.delete(logicalId, physicalId, resourceType, _properties, context);
     }
 
     // `--remove-protection` for an `AWS::EC2::Instance` routed through Cloud

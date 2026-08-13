@@ -8,7 +8,11 @@
  * `./retryable-errors.ts`.
  */
 
-import { isIamPropagationError, isRetryableTransientError } from './retryable-errors.js';
+import {
+  isIamPropagationError,
+  isMarkedNonRetryable,
+  isRetryableTransientError,
+} from './retryable-errors.js';
 
 export interface RetryLogger {
   debug(message: string): void;
@@ -138,7 +142,11 @@ const defaultSleep = (ms: number): Promise<void> =>
  * a throttle backs OFF exponentially for that attempt instead of hammering.
  *
  * Non-retryable errors are rethrown immediately. The transient-error
- * classifier is `isRetryableTransientError` from ./retryable-errors.ts.
+ * classifier is `isRetryableTransientError` from ./retryable-errors.ts, or
+ * `opts.isRetryable` when the caller supplies one — EXCEPT for an error marked
+ * by `markNonRetryable`, which is rethrown ahead of either, so a deliberate
+ * cdkd refusal cannot be turned back into a retry by a custom classifier
+ * (issue #1778).
  */
 export async function withRetry<T>(
   operation: () => Promise<T>,
@@ -178,6 +186,20 @@ export async function withRetry<T>(
     } catch (error) {
       lastError = error;
       const message = error instanceof Error ? error.message : String(error);
+
+      // Issue #1778: a cdkd-authored refusal is terminal by DECLARATION, and
+      // that has to be decided HERE rather than inside the default classifier.
+      // `isRetryableTransientError` consults the marker, but a caller passing
+      // its own `isRetryable` REPLACES that function entirely — and the four
+      // custom classifiers in the tree (`isRecreateRetryableError` /
+      // `isNameCooldownError`, wired by the deploy engine's --replace
+      // delete-first fallback and the rollback executor's reverse-replacement)
+      // are MESSAGE-only, so they cannot see the marker even in principle.
+      // Hoisting the check above the branch fences every caller at once,
+      // without widening a single classifier signature.
+      if (isMarkedNonRetryable(error)) {
+        throw error;
+      }
 
       const retryable = opts.isRetryable
         ? opts.isRetryable(message, error)

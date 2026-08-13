@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vite-plus/test';
 import { withRetry } from '../../../src/deployment/retry.js';
+import { markNonRetryable } from '../../../src/deployment/retryable-errors.js';
 
 describe('withRetry', () => {
   it('returns the operation result when it succeeds on first try', async () => {
@@ -395,5 +396,75 @@ describe('withRetry isRetryable override', () => {
       )
     ).rejects.toThrow(/trust policy/);
     expect(attempts).toBe(1);
+  });
+});
+
+/**
+ * Issue #1778: `withRetry` consults the non-retryable marker BEFORE choosing
+ * between the default classifier and `opts.isRetryable`. The custom-classifier
+ * branch is the case that matters — four call sites pass one
+ * (`isRecreateRetryableError` / `isNameCooldownError` from the deploy engine's
+ * --replace delete-first fallback and the rollback executor's
+ * reverse-replacement), and all of them are MESSAGE-only, so they cannot see
+ * the marker even in principle.
+ */
+describe('withRetry honors the non-retryable marker (issue #1778)', () => {
+  it('surfaces a marked error after ONE attempt even when a custom classifier says retry', async () => {
+    const alwaysRetry = vi.fn().mockReturnValue(true);
+    const op = vi.fn().mockRejectedValue(markNonRetryable(new Error('deliberate refusal')));
+
+    await expect(
+      withRetry(op, 'MyResource', {
+        sleep: () => Promise.resolve(),
+        isRetryable: alwaysRetry,
+      })
+    ).rejects.toThrow('deliberate refusal');
+
+    expect(op).toHaveBeenCalledTimes(1);
+    // The marker short-circuits ABOVE the branch, so the custom classifier is
+    // never even consulted.
+    expect(alwaysRetry).not.toHaveBeenCalled();
+  });
+
+  it('INVERTED CONTROL — the same custom classifier still retries an UNMARKED error', async () => {
+    const alwaysRetry = vi.fn().mockReturnValue(true);
+    let calls = 0;
+    const op = vi.fn().mockImplementation(async () => {
+      calls++;
+      if (calls < 3) throw new Error('deliberate refusal');
+      return 'ok';
+    });
+
+    const result = await withRetry(op, 'MyResource', {
+      sleep: () => Promise.resolve(),
+      isRetryable: alwaysRetry,
+    });
+
+    expect(result).toBe('ok');
+    expect(op).toHaveBeenCalledTimes(3);
+    expect(alwaysRetry).toHaveBeenCalled();
+  });
+
+  it('surfaces a marked error after ONE attempt on the DEFAULT classifier path too', async () => {
+    // The message carries a real retryable pattern, so only the marker can
+    // make this terminal.
+    const op = vi.fn().mockRejectedValue(markNonRetryable(new Error('DependencyViolation')));
+
+    await expect(
+      withRetry(op, 'MyResource', { sleep: () => Promise.resolve() })
+    ).rejects.toThrow('DependencyViolation');
+
+    expect(op).toHaveBeenCalledTimes(1);
+  });
+
+  it('finds the marker on a wrapped cause, not only on the thrown error', async () => {
+    const inner = markNonRetryable(new Error('inner refusal'));
+    const op = vi.fn().mockRejectedValue(new Error('DependencyViolation', { cause: inner }));
+
+    await expect(
+      withRetry(op, 'MyResource', { sleep: () => Promise.resolve() })
+    ).rejects.toThrow('DependencyViolation');
+
+    expect(op).toHaveBeenCalledTimes(1);
   });
 });

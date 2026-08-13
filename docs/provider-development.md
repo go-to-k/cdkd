@@ -1603,6 +1603,94 @@ DISCARDED by the deploy-side delete call sites (issue #1762), while a throw
 reaches every caller — so converting a skip into a throw also changes
 `cdkd deploy`'s behavior when the resource is removed from the template.
 
+**A provider that DELEGATES its delete to another provider propagates the
+delegate's outcome** (issue
+[#1778](https://github.com/go-to-k/cdkd/issues/1778)). `CloudControlProvider`
+hands a protected `AWS::AutoScaling::AutoScalingGroup` to `ASGProvider.delete`
+under `--remove-protection`, and discarding that verdict is the nested-stack
+hole one layer down: a skip inside the delegate reached the destroy runner as a
+plain successful delete. `return await delegate.delete(...)` is the whole fix.
+Type the delegate as `ResourceProvider` rather than as its concrete class, so
+the forwarding stays correct when the delegate widens its own return type.
+The alternative contract — ASSERT the delegate cannot skip — was rejected: it
+has to be re-verified every time the delegate grows an arm, and it fails
+loudly on a case the delegate considers merely unaddressable.
+
+**And a provider that pairs `create()` + `delete()` inside its own `update()`
+must not swallow the delete's outcome either** (same issue). A skip does not
+throw, so it slips past the `catch` that would have warned — precisely when the
+old resource IS left behind. What to do depends on the ORDERING, and it is not
+the same for all of them:
+
+- **create-then-delete** (ACM certificate, IAM managed policy, IAM role): the
+  new resource already exists and `ResourceUpdateResult` has no skip channel,
+  so the replacement cannot be aborted. WARN, in the same orphan wording the
+  failure arm uses (`The old role may be orphaned and require manual
+  cleanup.`), naming the skip's `reason`.
+- **delete-then-create** (SNS subscription): ABORT with a `ProvisioningError`
+  BEFORE creating the replacement. Continuing would leave two subscriptions on
+  the topic and deliver every message twice, and that duplicate is precisely
+  what the CREATE would add — so not making it is the whole remedy.
+
+State the premise as **"the resource was not destroyed"**, never as "no AWS
+call was issued". `ResourceDeleteResult`'s own contract says so, and its
+warning is not academic: `NestedStackProvider` reports `skipped` after
+recursing into a child destroy that may already have deleted the child's other
+resources. The abort is right under the weaker premise anyway — whatever the
+skipping delete did, adding a second live resource on top of it is not an
+improvement.
+
+An abort on an `update()` path must be right for EVERY caller, not only the
+template-driven one — `cdkd drift --revert` and the rollback executor's revert
+arms call `update()` with a state-borne desired bag (see §1a). The SNS abort
+clears that bar because a second live subscription serves none of the three;
+where a refusal would not, downgrade it to a warning instead.
+
+Two mechanical details any such abort inherits:
+
+- **Do not interpolate the provider-supplied `reason` into the thrown
+  message.** The rollback executor wraps `update()` in `withRetry`, and
+  `retryable-errors.ts` classifies by SUBSTRING — so a reason carrying
+  `does not exist`, `Rate exceeded`, or `because it is in use` would flip a
+  deterministic abort to "retryable" and burn the whole backoff schedule
+  before a certain failure. Log the reason; interpolate nothing into the thrown
+  message but the TEMPLATE logical id. The state-borne physical id is the worst
+  candidate of all — the only skip family a REPLACE path meets today is
+  literally "malformed physicalId in state", and `cdkd import --resource
+  <id>=<anything>` puts an arbitrary string there.
+- **...and then `markNonRetryable` the error, because keeping values out of the
+  message cannot close the hole.** The match is a SUBSTRING, not an equality, so
+  an ordinary composite logical id (`MyDependencyViolationSub`) still carries a
+  pattern — measured — and a message that names nothing is not diagnosable.
+  `markNonRetryable(new ProvisioningError(...))` (from
+  `src/deployment/retryable-errors.ts`) sets a non-enumerable `Symbol.for`
+  marker that `isRetryableTransientError` consults BEFORE any name or message
+  heuristic, so the refusal is terminal by DECLARATION and no wording can
+  overturn it. Reach for it only where the error means "this cannot succeed on
+  a retry" as a matter of cdkd's own logic — never for a relayed AWS failure,
+  whose retryability is the classifiers' business.
+
+  The fence is at the RETRY LOOP, not only in that one classifier: `withRetry`
+  rethrows a marked error BEFORE choosing between the default classifier and a
+  caller-supplied `opts.isRetryable`, and the destroy runner's delete-retry
+  loop gates its own `Too Many Requests` message test the same way. So the
+  message-only classifiers (`isNameCollisionError`'s `AlreadyExists`,
+  `isNameCooldownError`'s `QueueDeletedRecently` — both of which match a bare
+  logical id) cannot resurrect a refusal even though they cannot read the
+  marker themselves. Keep the message discipline above regardless: it is what
+  a future classifier added outside those two loops still relies on.
+- **Point the remediation at the STATE record, not only at AWS.** Both skip
+  families shipping today — the state-borne composite-id arms and
+  `NestedStackProvider`'s propagation — describe a resource whose repair
+  "remove the old resource in AWS" does not cover on its own, and for the
+  malformed-physicalId one deleting the AWS resource fixes nothing at all.
+  Name both repairs.
+
+Note this is deliberately NOT symmetric with a THROWN delete, which those
+providers still warn-and-continue past: a throw may mean the delete partially
+landed or was transient, while a skip is a positive statement that the resource
+was not destroyed.
+
 Producers today: the malformed-composite-physicalId family
 (`src/provisioning/composite-id.ts`, five arms) plus the nested-stack
 propagation above. Same-class arms elsewhere in the tree (Lambda layer /

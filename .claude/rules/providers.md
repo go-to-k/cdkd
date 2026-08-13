@@ -1105,6 +1105,67 @@ Three more details generalize to any provider that recurses:
   `cdkd state orphan <target>` hint used to name the parent, which would drop
   the `Child` row the throw just preserved.
 
+**A provider that DELEGATES a delete, or pairs create + delete inside its own
+`update()`, must not discard the result either** (issue
+[#1778](https://github.com/go-to-k/cdkd/issues/1778)). The delegation case is
+the nested-stack hole one layer down — `CloudControlProvider` hands a protected
+ASG to `ASGProvider.delete` under `--remove-protection`, so it now
+`return await`s the delegate (typed as `ResourceProvider`, so the forwarding
+survives the delegate widening its own return type). The chosen contract is
+PROPAGATE rather than ASSERT-it-cannot-skip: an assertion needs re-verifying
+every time the delegate grows an arm, and it fails LOUDLY on a case the
+delegate considers merely unaddressable. The REPLACE case splits on ORDERING,
+because a skip does not throw and therefore bypasses exactly the `catch` that
+would have told the user: **create-then-delete** (ACM certificate, IAM managed
+policy, IAM role) cannot abort — the new resource exists and
+`ResourceUpdateResult` has no skip channel — so it WARNS in the same orphan
+wording the failure arm uses; **delete-then-create** (SNS subscription) ABORTS
+with a `ProvisioningError` before creating the replacement, since continuing
+would leave two subscriptions delivering every message twice and that duplicate
+is exactly what the CREATE would add. State the premise as **"the resource was
+not destroyed"**, never as "no AWS call was issued" — `ResourceDeleteResult`'s
+contract warns against the second reading, since `NestedStackProvider` reports
+`skipped` after a recursion that may already have deleted things; the abort is
+right under the weaker premise anyway. An abort added to an `update()` path has
+to be right for EVERY caller — `deploy`, `drift --revert`, and the rollback
+executor's revert arms — per the update-path rule above; downgrade to a warning
+where it is not. Two mechanical details it inherits: do NOT interpolate the
+provider-supplied `reason` into the thrown message (the rollback arms wrap
+`update()` in `withRetry` and `retryable-errors.ts` classifies by SUBSTRING, so
+a reason carrying `does not exist` / `Rate exceeded` / `because it is in use`
+would burn the whole backoff schedule before a certain failure — log it
+instead, and interpolate nothing but the TEMPLATE logical id: the state-borne
+physical id is the worst candidate, since the only skip family a REPLACE path
+meets today is literally "malformed physicalId in state"), and then
+`markNonRetryable` the error, because the message discipline alone cannot close
+the hole — the match is a SUBSTRING, so an ordinary composite logical id like
+`MyDependencyViolationSub` still carries a pattern (measured) and a message
+naming nothing is not diagnosable. The marker (a non-enumerable `Symbol.for`
+key in `retryable-errors.ts`, walked down the `.cause` chain) is consulted by
+`isRetryableTransientError` BEFORE any name or message heuristic, so a
+cdkd-authored refusal is terminal by DECLARATION. The fence is at the RETRY
+LOOP rather than in that one classifier: `withRetry` rethrows a marked error
+ahead of the `opts.isRetryable ? ... : ...` branch, and the destroy runner's
+delete loop gates its own `Too Many Requests` message test the same way — so
+the message-only classifiers (`isNameCollisionError`'s `AlreadyExists`,
+`isNameCooldownError`'s `QueueDeletedRecently`, both of which match a bare
+logical id) cannot resurrect a refusal even though they cannot read the marker
+themselves, and no classifier signature had to widen. Also point the
+remediation at the STATE record as well as at AWS, since neither skip family
+shipping today (the state-borne composite-id arms, `NestedStackProvider`'s
+propagation) is repaired by deleting the AWS resource alone. All six sites are
+LATENT, and they STAY latent even after #1770 lands — that issue's eight arms
+are in `lambda-layer` / `lambda-permission` / `custom-resource` / `iam-policy` /
+`iam-user-group`, none of which `CloudControlProvider` delegates to or any of
+the four REPLACE `update()`s calls, and neither `iam-role` nor
+`iam-managed-policy` is in its table (`AWS::IAM::Policy` is a different type and
+a different file from `AWS::IAM::ManagedPolicy`). So the reason to fix them is
+that they land the mechanism BEFORE any skip arm reaches these five providers,
+not that #1770 specifically arms them — and the SNS abort is why
+`logPendingConfirmationSkip`'s two CFn-parity delete-SUCCESS arms carry an
+in-code note NOT to convert them: a skip there would abort every deploy of a
+`PendingConfirmation`-adopted subscription, with no flag to force it.
+
 Three things about it are decisions rather than accidents. The exit code is
 **not** a new policy: it is the same "state preserved, stack not destroyed"
 contract `errorCount > 0` and a graceful interrupt already carry, so a run that

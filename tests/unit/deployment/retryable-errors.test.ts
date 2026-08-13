@@ -3,10 +3,12 @@ import {
   IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS,
   RETRYABLE_ERROR_MESSAGE_PATTERNS,
   isIamPropagationError,
+  isMarkedNonRetryable,
   isNameCollisionError,
   isNameCooldownError,
   isRecreateRetryableError,
   isRetryableTransientError,
+  markNonRetryable,
 } from '../../../src/deployment/retryable-errors.js';
 
 describe('isRetryableTransientError', () => {
@@ -739,5 +741,87 @@ describe('API Gateway v2 per-API mutation contention (#1607)', () => {
   it('does not classify an unrelated API Gateway 400 as retryable', () => {
     const msg = 'Failed to create API Gateway V2 Route R: Invalid route key specified';
     expect(isRetryableTransientError(new Error(msg), msg)).toBe(false);
+  });
+});
+
+/**
+ * Issue #1778: a cdkd-authored refusal is terminal by DECLARATION, so no
+ * wording — in the message, in an interpolated logical id, in a
+ * provider-supplied reason — can turn it back into a retry. This is the fence
+ * for a SHARED classifier, so the boundary cases (chain depth, cycles,
+ * non-enumerability, unmarked inputs) are pinned here rather than only at the
+ * one call site that marks today.
+ */
+describe('markNonRetryable / isMarkedNonRetryable (issue #1778)', () => {
+  it('marks an error terminal even when its message carries a retryable pattern', () => {
+    const msg = 'Cannot replace MyDependencyViolationSub: refusing';
+    // Control: the same message is retryable when NOT marked.
+    expect(isRetryableTransientError(new Error(msg), msg)).toBe(true);
+    expect(isRetryableTransientError(markNonRetryable(new Error(msg)), msg)).toBe(false);
+  });
+
+  it('beats the throttle signal, which is checked after it', () => {
+    const err = Object.assign(new Error('Throttled'), { $metadata: { httpStatusCode: 429 } });
+    expect(isRetryableTransientError(err, 'Throttled')).toBe(true);
+    expect(isRetryableTransientError(markNonRetryable(err), 'Throttled')).toBe(false);
+  });
+
+  it('returns the SAME error instance so it can be thrown inline', () => {
+    const err = new Error('boom');
+    expect(markNonRetryable(err)).toBe(err);
+  });
+
+  it('finds the marker through a wrapped cause chain', () => {
+    const inner = markNonRetryable(new Error('refusal'));
+    const wrapped = new Error('outer', { cause: new Error('mid', { cause: inner }) });
+    expect(isMarkedNonRetryable(wrapped)).toBe(true);
+  });
+
+  it('stops at the depth-5 bound rather than walking an unbounded chain', () => {
+    // Depth 5 (index 0..4) is reachable; the 6th link is not.
+    const atDepth = (depth: number): Error => {
+      let err = markNonRetryable(new Error('refusal'));
+      for (let i = 0; i < depth; i++) err = new Error(`wrap${i}`, { cause: err });
+      return err;
+    };
+    expect(isMarkedNonRetryable(atDepth(4))).toBe(true);
+    expect(isMarkedNonRetryable(atDepth(5))).toBe(false);
+  });
+
+  it('terminates on a cyclic cause chain instead of hanging', () => {
+    const a = new Error('a');
+    const b = new Error('b', { cause: a });
+    (a as { cause?: unknown }).cause = b;
+    expect(isMarkedNonRetryable(a)).toBe(false);
+  });
+
+  it('leaves unmarked inputs — including non-errors — unchanged', () => {
+    expect(isMarkedNonRetryable(new Error('plain'))).toBe(false);
+    expect(isMarkedNonRetryable(undefined)).toBe(false);
+    expect(isMarkedNonRetryable(null)).toBe(false);
+    expect(isMarkedNonRetryable('a string')).toBe(false);
+    expect(isMarkedNonRetryable({ message: 'bare object' })).toBe(false);
+  });
+
+  it('is invisible to enumeration, serialization and structural equality', () => {
+    const marked = markNonRetryable(new Error('refusal'));
+    expect(Object.keys(marked)).toEqual(Object.keys(new Error('refusal')));
+    expect(JSON.stringify(marked)).toBe(JSON.stringify(new Error('refusal')));
+    expect(marked).toEqual(new Error('refusal'));
+    expect(Object.getOwnPropertyNames(marked)).not.toContain('cdkd.nonRetryable');
+  });
+
+  it('does not mark a frozen error, and does not throw trying', () => {
+    // Callers use `throw markNonRetryable(...)` inline, so a TypeError here
+    // would REPLACE the refusal with an unrelated crash.
+    const frozen = Object.freeze(new Error('frozen refusal'));
+    expect(() => markNonRetryable(frozen)).not.toThrow();
+    expect(isMarkedNonRetryable(frozen)).toBe(false);
+  });
+
+  it('does not leak through the prototype chain to sibling instances', () => {
+    class Refusal extends Error {}
+    markNonRetryable(new Refusal('one'));
+    expect(isMarkedNonRetryable(new Refusal('two'))).toBe(false);
   });
 });

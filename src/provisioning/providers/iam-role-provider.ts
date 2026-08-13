@@ -31,6 +31,7 @@ import { clearOnUpdateRemoval } from '../update-removal.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
+  ResourceDeleteResult,
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
@@ -264,7 +265,21 @@ export class IAMRoleProvider implements ResourceProvider {
 
       // Delete old role with full cleanup (managed policies, inline policies, instance profiles)
       try {
-        await this.delete(logicalId, physicalId, resourceType);
+        const deleteResult = await this.delete(logicalId, physicalId, resourceType);
+        // Issue #1778: a SKIP is a non-throwing "I did not address this
+        // resource", so it sails straight past the catch below — the one path
+        // that would have told the user the old role is still there, bypassed
+        // precisely when the role IS orphaned. The new role is already created
+        // at this point, so the replacement cannot be aborted and
+        // `ResourceUpdateResult` has no skip channel to raise it on; telling
+        // the user, in the same words the failure arm uses, is the whole
+        // remedy available here.
+        if (deleteResult?.outcome === 'skipped') {
+          this.logger.warn(
+            `Skipped deleting old role ${physicalId} during replacement: ${deleteResult.reason}. ` +
+              `The old role may be orphaned and require manual cleanup.`
+          );
+        }
       } catch (error) {
         this.logger.warn(
           `Failed to delete old role ${physicalId} during replacement: ${String(error)}. ` +
@@ -440,7 +455,7 @@ export class IAMRoleProvider implements ResourceProvider {
     resourceType: string,
     _properties?: Record<string, unknown>,
     context?: DeleteContext
-  ): Promise<void> {
+  ): Promise<void | ResourceDeleteResult> {
     this.logger.debug(`Deleting IAM role ${logicalId}: ${physicalId}`);
 
     try {
