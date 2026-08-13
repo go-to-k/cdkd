@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import {
   PutBucketInventoryConfigurationCommand,
   PutBucketLifecycleConfigurationCommand,
+  GetBucketLifecycleConfigurationCommand,
+  GetBucketCorsCommand,
   DeleteBucketLifecycleCommand,
   PutBucketCorsCommand,
   DeleteBucketCorsCommand,
@@ -694,28 +696,55 @@ describe('#1718 CREATE: an empty rules collection skips the Put and SAYS SO', ()
     expect(result.effectiveProperties).toBeUndefined();
   });
 
-  it('converges: the declared empty collection matches what readCurrentState emits', async () => {
-    // `readLifecycle` returns `{Rules: []}` on `NoSuchLifecycleConfiguration`
-    // and `readCors` returns `{CorsRules: []}` for an absent CORS config, so
-    // the record and the readback already agree. This is what makes "record
-    // nothing" the right answer and DROPPING the key the wrong one — a dropped
-    // key would leave the template declaring one the record does not, and churn
-    // a no-op UPDATE on every deploy.
+  it('converges: the record matches what the REAL readCurrentState emits', async () => {
+    // This row drives the actual `readCurrentState` rather than comparing the
+    // record against a hand-written literal. The earlier cut did the latter and
+    // was TAUTOLOGICAL (review of #1718): with `effectiveProperties` absent the
+    // recorded bag IS `properties`, and the "AWS side" was a byte-identical
+    // copy, so `calculateResourceDrift(x, copy-of-x)` returned `[]` under any
+    // implementation — including one that DROPPED the key. It therefore proved
+    // nothing about the claim it exists for, which is that `readLifecycle` /
+    // `readCors` emit the empty placeholder for an UNCONFIGURED bucket and so
+    // "record nothing" beats "drop the key".
     const properties = {
       BucketName: BUCKET,
       LifecycleConfiguration: { Rules: [] },
       CorsConfiguration: { CorsRules: [] },
     };
     const result = await provider.create('B', RESOURCE_TYPE, properties);
-
     const recorded = result.effectiveProperties ?? properties;
-    const awsCurrent = {
-      BucketName: BUCKET,
-      LifecycleConfiguration: { Rules: [] },
-      CorsConfiguration: { CorsRules: [] },
-    };
 
-    expect(calculateResourceDrift(recorded, awsCurrent)).toEqual([]);
+    // Now read the bucket back the way `cdkd drift` does, with S3 answering the
+    // two GETs exactly as it does for a bucket that has neither configuration.
+    mockSend.mockImplementation((cmd: unknown) => {
+      if (cmd instanceof GetBucketLifecycleConfigurationCommand) {
+        return Promise.reject(Object.assign(new Error('no lifecycle'), {
+          name: 'NoSuchLifecycleConfiguration',
+        }));
+      }
+      if (cmd instanceof GetBucketCorsCommand) {
+        return Promise.reject(Object.assign(new Error('no cors'), {
+          name: 'NoSuchCORSConfiguration',
+        }));
+      }
+      return Promise.resolve({});
+    });
+    const awsCurrent = await provider.readCurrentState(BUCKET, 'B', RESOURCE_TYPE);
+
+    // The claim, asserted against the mapper's real output rather than restated.
+    expect(awsCurrent?.['LifecycleConfiguration']).toEqual({ Rules: [] });
+    expect(awsCurrent?.['CorsConfiguration']).toEqual({ CorsRules: [] });
+    // ...so the record converges, and would NOT have if the key were dropped.
+    expect(
+      calculateResourceDrift(recorded, awsCurrent as Record<string, unknown>)
+    ).toEqual([]);
+    // The negative twin: a record with the key DROPPED (the tempting
+    // replay-CREATE answer) leaves the template declaring one the record does
+    // not — which is the churn this design decision avoids.
+    const dropped = { BucketName: BUCKET };
+    expect(
+      JSON.stringify(dropped) === JSON.stringify(recorded)
+    ).toBe(false);
   });
 
   it('control: a NON-empty collection applies and warns nothing', async () => {

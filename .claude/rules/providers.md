@@ -556,8 +556,10 @@ one property: besides `Schedule` (fixed) it covers the analytics / inventory
 alias, the notification `TopicArn` / `QueueArn` / `LambdaFunctionArn` reads
 (`readNotification` emits only `Topic` / `Queue` / `Function`), and the
 lifecycle `Date` alias (`readLifecycle` emits only `TransitionDate`) — all left
-as issue #1707. `IsEnabled` and `AccountId` look like members of the class and
-are NOT: they are legitimate SDK spellings read on the RESPONSE side.
+as issue #1707, whose PR fixed the DESTINATION half only; the notification and
+lifecycle families are tracked as issue #1748. `IsEnabled` and `AccountId` look
+like members of the class and are NOT: they are legitimate SDK spellings read on
+the RESPONSE side.
 The analytics / inventory `Destination` half of that list is FIXED: the recorded
 block is now normalized wholesale to the flattened CFn spelling
 (`effectiveS3BucketDestination`), mapping `BucketArn ?? Bucket` to `BucketArn`
@@ -611,6 +613,22 @@ read does, so the two sides stay different. The trap is invisible to the obvious
 tests — a blank string, an array and an unresolved intrinsic are all non-nullish,
 so every malformed-value row written first passed against the broken fold; the
 nullish spelling is what has to be probed.
+
+**And presence is not the whole rule either — the real one is MIRROR WHAT THE
+WIRE DOES.** The code review of the same PR found the fold concealing through the
+container SHAPE instead of through `??`: for a malformed `Schedule: 'Weekly'` the
+applier's container guard SKIPS the item (AWS keeps the previous configuration
+and state retains it), while the fold fell through to the default AND deleted the
+malformed key — so the desired side could compare EQUAL to the retained item,
+`update()` would never be called, and the skip warning would stop. A
+DECLARED-but-unfoldable container must be left completely alone: no patch, and
+the key NOT dropped. The mirror rule runs in the other direction too: a member
+whose wire read SILENTLY COERCES (`x ?? default`, no warn arm — the S3 inventory
+`Enabled`) must fold that same coercion, or the record keeps a value AWS does not
+hold. Presence is right only for the members whose wire read REFUSES and WARNS.
+Ask, per member, what the wire does with the malformed value; do not apply one
+spelling rule across the item. (Issue #1751 tracks the `Enabled` half, which is
+pre-existing and needs its own decision.)
 
 Two things about the obstacle #1717 recorded, because a later reader will meet
 it as a claim rather than as a measurement. The issue warned that a

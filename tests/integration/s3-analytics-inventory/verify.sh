@@ -398,6 +398,15 @@ STATE_NESTED="$(mktemp)"
 aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${STATE_FLAT}"
 jq '(.resources.SourceBucket.properties.AnalyticsConfigurations[0].StorageClassAnalysis.DataExport.Destination)
       |= { S3BucketDestination: . }' "${STATE_FLAT}" > "${STATE_NESTED}"
+# Guard the seed, the way phase 3c does: a jq expression that silently produced
+# the ORIGINAL record would make the assertion below pass while proving nothing
+# (review of this PR flagged 3b and 3d as the two unguarded seeds).
+assert_eq "the seeded record is NESTED" "${REPORT_ARN}" \
+  "$(jq -r '.resources.SourceBucket.properties.AnalyticsConfigurations[0].StorageClassAnalysis.DataExport.Destination.S3BucketDestination.BucketArn' \
+     "${STATE_NESTED}")"
+assert_eq "the seeded record dropped the flattened spelling" "null" \
+  "$(jq -r '.resources.SourceBucket.properties.AnalyticsConfigurations[0].StorageClassAnalysis.DataExport.Destination.BucketArn' \
+     "${STATE_NESTED}")"
 aws s3 cp "${STATE_NESTED}" "s3://${STATE_BUCKET}/${STATE_KEY}"
 if NESTED_DIFF="$(env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" diff "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --fail 2>&1)"; then
@@ -455,6 +464,13 @@ STATE_WRONG="$(mktemp)"
 jq '(.resources.SourceBucket.properties.AnalyticsConfigurations[0].StorageClassAnalysis.DataExport.Destination)
       |= { S3BucketDestination: (. + { BucketArn: "arn:aws:s3:::cdkd-ai-not-the-report-bucket" }) }' \
   "${STATE_FLAT}" > "${STATE_WRONG}"
+# Same seed guard as 3b / 3c: without it a mistyped path leaves the record
+# UNCHANGED and the row below can still exit non-zero for an unrelated reason,
+# reporting "a real change is still reported" when nothing was changed at all.
+assert_eq "the seeded record names a DIFFERENT bucket" \
+  "arn:aws:s3:::cdkd-ai-not-the-report-bucket" \
+  "$(jq -r '.resources.SourceBucket.properties.AnalyticsConfigurations[0].StorageClassAnalysis.DataExport.Destination.S3BucketDestination.BucketArn' \
+     "${STATE_WRONG}")"
 aws s3 cp "${STATE_WRONG}" "s3://${STATE_BUCKET}/${STATE_KEY}"
 WRONG_DIFF=""
 if WRONG_DIFF="$(env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" diff "${STACK}" \

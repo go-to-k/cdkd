@@ -3,6 +3,7 @@ import {
   ListBucketAnalyticsConfigurationsCommand,
   PutBucketAnalyticsConfigurationCommand,
   PutBucketInventoryConfigurationCommand,
+  PutBucketMetricsConfigurationCommand,
 } from '@aws-sdk/client-s3';
 
 /**
@@ -1110,7 +1111,7 @@ describe('#1718 the sibling per-item appliers', () => {
     expect(result.effectiveProperties).toBeUndefined();
   });
 
-  it('metrics: nothing is defaulted, so nothing is recorded', async () => {
+  it('metrics: the WIRE carries no defaulted member, which is why it needs no fold', async () => {
     const properties = {
       BucketName: BUCKET,
       MetricsConfigurations: [{ Id: 'm1', Prefix: 'logs/' }],
@@ -1121,7 +1122,43 @@ describe('#1718 the sibling per-item appliers', () => {
       MetricsConfigurations: [{ Id: 'm1', Prefix: 'old/' }],
     });
 
+    // Asserting `effectiveProperties` ABSENT only says "no fold exists", which
+    // would stay green if a defaulted wire member were added later and the
+    // drift class re-opened (review of #1718). The CLAIM is about the WIRE, so
+    // assert the wire: the sent configuration carries `Id` and a `Filter`
+    // derived from the declared predicates, and nothing else.
+    const sent = sentCommands(PutBucketMetricsConfigurationCommand);
+    expect(sent).toHaveLength(1);
+    const sentConfig = at(sent[0]!.input, 'MetricsConfiguration') as Record<string, unknown>;
+    expect(Object.keys(sentConfig).sort()).toEqual(['Filter', 'Id']);
     expect(result.effectiveProperties).toBeUndefined();
+  });
+
+  it('intelligent tiering: a MALFORMED Status skips the item, and the fold adds nothing', async () => {
+    // The two mechanisms must not collide: `Status` is SKIP-guarded (#1595 —
+    // defaulting to `Enabled` would start moving objects into archive tiers),
+    // so a malformed value must retain the previous item rather than record a
+    // defaulted one. The fold only ever supplies the create-path default, and
+    // it must not reach a skipped item.
+    const properties = {
+      BucketName: BUCKET,
+      IntelligentTieringConfigurations: [
+        { Id: 't1', Status: null, Tierings: [{ AccessTier: 'ARCHIVE_ACCESS', Days: 120 }] },
+      ],
+    };
+    const live = {
+      Id: 't1',
+      Status: 'Enabled',
+      Tierings: [{ AccessTier: 'ARCHIVE_ACCESS', Days: 90 }],
+    };
+
+    const result = await provider.update('B', BUCKET, RESOURCE_TYPE, properties, {
+      BucketName: BUCKET,
+      IntelligentTieringConfigurations: [live],
+    });
+
+    // Nothing was sent, so the effective entry is what AWS still HOLDS.
+    expect(result.effectiveProperties?.['IntelligentTieringConfigurations']).toEqual([live]);
   });
 
   it('the twin folds intelligent tiering too, so the diff converges', () => {
@@ -1224,5 +1261,142 @@ describe('the twin must not conceal a DECLARED-but-malformed value', () => {
 
     expect(at(canonical, 'InventoryConfigurations', 0, 'ScheduleFrequency')).toBe('Daily');
     expect('Schedule' in (at(canonical, 'InventoryConfigurations', 0) as object)).toBe(false);
+  });
+});
+
+/**
+ * The container-SHAPE route to the same concealment (found by the code review of
+ * #1707 / #1717 — this one was INTRODUCED by the first cut of the folds).
+ *
+ * `declaredOrDefault` closes the route through `??`. It does not close the route
+ * through a malformed CONTAINER: for `Schedule: 'Weekly'` / `[]` / `42` the
+ * applier's `skipOnUnusableConfigString` refuses the non-object container and
+ * SKIPS the item, so AWS keeps the PREVIOUS configuration and state retains it —
+ * while a desired side folded to a bare `ScheduleFrequency: 'Weekly'` (with the
+ * malformed key deleted) could compare EQUAL to exactly that retained item.
+ * `update()` would then never be called and the skip warning would stop.
+ */
+describe('the twin must not conceal a malformed Schedule CONTAINER', () => {
+  for (const malformedContainer of ['Weekly', [], 42, null] as const) {
+    it(`leaves Schedule: ${JSON.stringify(malformedContainer)} untouched on the desired side`, () => {
+      const item = {
+        Id: 'i1',
+        Enabled: true,
+        IncludedObjectVersions: 'All',
+        Schedule: malformedContainer,
+        Destination: { BucketArn: DEST_ARN, Format: 'CSV' },
+      };
+
+      const canonical = provider.canonicalizeDesiredProperties(RESOURCE_TYPE, {
+        InventoryConfigurations: [item],
+      });
+      const folded = at(canonical, 'InventoryConfigurations', 0) as Record<string, unknown>;
+
+      // The malformed key SURVIVES — deleting it is what let the fold collapse
+      // onto the retained previous item.
+      expect('Schedule' in folded).toBe(true);
+      expect(folded['Schedule']).toEqual(malformedContainer);
+      // ...and no cadence is invented for it.
+      expect('ScheduleFrequency' in folded).toBe(false);
+    });
+  }
+
+  it('control: a WELL-FORMED container still folds', () => {
+    const canonical = provider.canonicalizeDesiredProperties(RESOURCE_TYPE, {
+      InventoryConfigurations: [
+        {
+          Id: 'i1',
+          Enabled: true,
+          IncludedObjectVersions: 'All',
+          Schedule: { Frequency: 'Daily' },
+          Destination: { BucketArn: DEST_ARN, Format: 'CSV' },
+        },
+      ],
+    });
+    const folded = at(canonical, 'InventoryConfigurations', 0) as Record<string, unknown>;
+
+    expect(folded['ScheduleFrequency']).toBe('Daily');
+    expect('Schedule' in folded).toBe(false);
+  });
+
+  it('the APPLIER still records the fold when it actually sent a cadence', async () => {
+    // The other side of the same gate: when the applier DID send something it
+    // knows what went on the wire, so the fold must still run. A guard that
+    // keyed only off the container shape would stop recording here.
+    const properties = {
+      BucketName: BUCKET,
+      InventoryConfigurations: [
+        {
+          Id: 'i1',
+          Enabled: true,
+          IncludedObjectVersions: 'All',
+          Schedule: { Frequency: 'Daily' },
+          Destination: { BucketArn: DEST_ARN, Format: 'CSV' },
+        },
+      ],
+    };
+
+    const result = await provider.update('B', BUCKET, RESOURCE_TYPE, properties, {
+      BucketName: BUCKET,
+      InventoryConfigurations: [LIVE_INVENTORY],
+    });
+
+    const recorded = at(result.effectiveProperties?.['InventoryConfigurations'], 0) as Record<
+      string,
+      unknown
+    >;
+    expect(recorded['ScheduleFrequency']).toBe('Daily');
+    expect('Schedule' in recorded).toBe(false);
+  });
+});
+
+/**
+ * The `BucketArn ?? Bucket` ALIAS read — the one `??` inside the folds, and NOT
+ * an exception to the presence rule: it supplies no default, it picks between
+ * two spellings of the same declared value exactly as the applier's own read
+ * does. These rows pin that reading rather than leaving it as a comment.
+ */
+describe('the destination bucket ALIAS read', () => {
+  it('falls through a nullish BucketArn to the Bucket alias, like the wire', () => {
+    const canonical = provider.canonicalizeDesiredProperties(RESOURCE_TYPE, {
+      InventoryConfigurations: [
+        {
+          Id: 'i1',
+          Enabled: true,
+          IncludedObjectVersions: 'All',
+          ScheduleFrequency: 'Daily',
+          Destination: { BucketArn: null, Bucket: DEST_ARN, Format: 'CSV' },
+        },
+      ],
+    });
+
+    expect(at(canonical, 'InventoryConfigurations', 0, 'Destination')).toEqual({
+      BucketArn: DEST_ARN,
+      Format: 'CSV',
+    });
+  });
+
+  it('omits the key entirely when NEITHER spelling carries a bucket', () => {
+    // The applier refuses such a block outright (`resolveS3BucketDestination`
+    // drops it and the item is skipped), so the fold must not invent a
+    // `BucketArn: undefined` that the readback could never match.
+    const canonical = provider.canonicalizeDesiredProperties(RESOURCE_TYPE, {
+      InventoryConfigurations: [
+        {
+          Id: 'i1',
+          Enabled: true,
+          IncludedObjectVersions: 'All',
+          ScheduleFrequency: 'Daily',
+          Destination: { Format: 'CSV' },
+        },
+      ],
+    });
+    const dest = at(canonical, 'InventoryConfigurations', 0, 'Destination') as Record<
+      string,
+      unknown
+    >;
+
+    expect('BucketArn' in dest).toBe(false);
+    expect(dest).toEqual({ Format: 'CSV' });
   });
 });

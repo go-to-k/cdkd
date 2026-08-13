@@ -206,6 +206,14 @@ function effectiveS3BucketDestination(declared: unknown, sentFormat?: unknown): 
  * NEVER `??`, and that distinction is the whole guard against issue #1670's
  * finding 3.
  *
+ * The ONE licensed `??` in these folds is the ALIAS read
+ * `bag['BucketArn'] ?? bag['Bucket']`, and it is not an exception to this rule —
+ * it supplies no DEFAULT. It picks between two spellings of the same declared
+ * value, exactly as the applier's own read does, so a nullish `BucketArn`
+ * correctly falls through to the alias the wire would have used. When neither is
+ * declared the key is simply absent from the fold's output, which is what makes
+ * a bucket-less block identity-return rather than gain a phantom key.
+ *
  * The default belongs to a key the template OMITTED: there the provider sends
  * it, the readback reports it, and folding both sides is what makes them agree.
  * A key DECLARED with a malformed value is a different case entirely — the
@@ -250,16 +258,22 @@ const ANALYTICS_DEFAULT_OUTPUT_SCHEMA_VERSION = 'V_1';
  * already-canonical block, so a fold that changes nothing cannot manufacture a
  * fresh object (and, through it, a fresh diff line on a template nobody edited).
  *
- * Scalar-only is sufficient AND accurate here: every member of the CFn
- * `Destination` definition is a scalar (`{BucketArn, BucketAccountId, Format,
- * Prefix}`), so a nested value on either side is not a shape this can vouch for
- * and reporting "different" falls back to recording the folded block — the safe
- * direction.
+ * Scalar-only is sufficient here: every member of the CFn `Destination`
+ * definition is a scalar (`{BucketArn, BucketAccountId, Format, Prefix}`).
+ *
+ * Precisely (review of #1707 corrected an over-claim): a nested value is
+ * compared by REFERENCE like any other. On the flattened branch the fold copies
+ * the caller's own references, so a nested value is `===` itself and identity IS
+ * returned — which is correct, since nothing changed. It is only a
+ * REBUILT nested value that compares different, and that falls back to recording
+ * the folded block — the safe direction.
  */
 function sameScalarRecord(a: Record<string, unknown>, b: Record<string, unknown>): boolean {
   const aKeys = Object.keys(a);
   if (aKeys.length !== Object.keys(b).length) return false;
-  return aKeys.every((k) => Object.prototype.hasOwnProperty.call(b, k) && a[k] === b[k]);
+  // `Object.is`, not `===`, to match the fold's own comparisons: `===` reports
+  // two `NaN` day-counts as DIFFERENT and would rebuild an identical block.
+  return aKeys.every((k) => Object.prototype.hasOwnProperty.call(b, k) && Object.is(a[k], b[k]));
 }
 
 /** The `ScheduleFrequency` an inventory item is SENT with when it declares none. */
@@ -324,19 +338,39 @@ function effectiveInventoryItem(
   // chain would instead fall through exactly like the applier for the nullish
   // spellings and conceal them.
   const declaredSchedule = item['Schedule'];
-  const declaredFrequency =
-    'ScheduleFrequency' in item
-      ? item['ScheduleFrequency']
-      : isPlainObject(declaredSchedule) && 'Frequency' in declaredSchedule
-        ? declaredSchedule['Frequency']
-        : INVENTORY_DEFAULT_SCHEDULE_FREQUENCY;
-  const frequency = sent?.frequency ?? declaredFrequency;
-  if (!Object.is(item['ScheduleFrequency'], frequency)) patch['ScheduleFrequency'] = frequency;
+  // A DECLARED-but-unfoldable `Schedule` container is left completely alone —
+  // no `ScheduleFrequency` patch, and the key is NOT dropped. Found by review;
+  // the first cut fell through to the default and deleted the key, which is the
+  // {@link declaredOrDefault} concealment reached through the container SHAPE
+  // instead of through `??`: for `Schedule: 'Weekly'` / `[]` / `42` the applier
+  // SKIPS the item (its `skipOnUnusableConfigString` refuses a non-object
+  // container), so AWS holds the PREVIOUS configuration and state retains it —
+  // while a desired side folded to a bare `ScheduleFrequency: 'Weekly'` could
+  // compare EQUAL to exactly that retained item. `update()` would then never be
+  // called and the skip warning would stop, on a template whose only fault is
+  // the malformed container.
+  //
+  // `sent` is still honoured: when the applier DID send something it knows what
+  // went on the wire, and that is never this branch (it skipped).
+  const scheduleIsFoldable =
+    declaredSchedule === undefined ||
+    (isPlainObject(declaredSchedule) && 'Frequency' in declaredSchedule);
+  if (sent?.frequency !== undefined || scheduleIsFoldable) {
+    const declaredFrequency =
+      'ScheduleFrequency' in item
+        ? item['ScheduleFrequency']
+        : isPlainObject(declaredSchedule) && 'Frequency' in declaredSchedule
+          ? declaredSchedule['Frequency']
+          : INVENTORY_DEFAULT_SCHEDULE_FREQUENCY;
+    const frequency = sent?.frequency ?? declaredFrequency;
+    if (!Object.is(item['ScheduleFrequency'], frequency)) patch['ScheduleFrequency'] = frequency;
+  }
 
   const destination = effectiveS3BucketDestination(item['Destination'], sent?.format);
   if (destination !== item['Destination']) patch['Destination'] = destination;
 
-  const dropsSchedule = declaredSchedule !== undefined;
+  const dropsSchedule =
+    declaredSchedule !== undefined && (sent?.frequency !== undefined || scheduleIsFoldable);
   if (!dropsSchedule && Object.keys(patch).length === 0) return item;
   const out = { ...item, ...patch };
   // REMOVE the key rather than setting it to `undefined` (issue #1686): the
@@ -860,33 +894,42 @@ export class S3BucketProvider implements ResourceProvider {
    * the declared value describes a configuration AWS does not hold, and
    * `readCurrentState` reads all of these back — the permanent phantom drift
    * `.claude/rules/providers.md` records for the #1633 warn-and-default arm.
-   * That file also carries the full rationale, including why these sites take
-   * NO `canonicalizeDesiredProperties` twin; do not re-derive it here.
    *
-   * Three details are load-bearing:
+   * These sites DO take a `canonicalizeDesiredProperties` twin as of issues
+   * #1707 / #1717, and this paragraph said the opposite until then — it is
+   * restated rather than deleted because the earlier answer was not wrong, it
+   * was answering a different question. #1670 asked it about the SUBSTITUTED
+   * VALUE and said no, because canonicalizing there would conceal a malformed
+   * value whose warning is the user's only signal. The twin that shipped folds
+   * the never-emitted KEY and SHAPE at the same sites, which have no fault to
+   * conceal and emit no warning at all, and it is keyed off the DECLARED shape
+   * so the substituted value stays visible exactly as before. See
+   * {@link S3BucketProvider.canonicalizeDesiredProperties} and
+   * {@link declaredOrDefault}.
    *
-   * - `onSubstituted` receives the value this call RETURNS, not the `fallback`
-   *   argument, so "what is recorded" and "what is sent" stay one expression.
+   * Two details are load-bearing:
+   *
    * - `options` is forwarded to BOTH the probe and the read, so a site that
    *   ever needs `coerceNumber` cannot make the two disagree.
    * - Without `options.onUnusable` there is no probe: the read still THROWS,
    *   and recording a value the provider merely failed to send is what the
    *   "already ANNOUNCED" condition on `effectiveProperties` forbids.
+   *
+   * The `onSubstituted` callback this used to take is GONE (review of #1707).
+   * Recording is the per-item fold's job now, and all three call sites had been
+   * left passing a comment-only no-op — so the probe ran a second
+   * `configStringRefusal` per read purely to invoke nothing. What remains is the
+   * WARNING, which `options.onUnusable` already carries, and that warning is
+   * what the "already ANNOUNCED" condition needs.
    */
   private readSubstitutedConfigString(
     container: unknown,
     key: string,
     fallback: string,
     containerPath: string,
-    options: ConfigStringOptions,
-    onSubstituted: (sent: string) => void
+    options: ConfigStringOptions
   ): string {
-    const refused =
-      options.onUnusable !== undefined &&
-      configStringRefusal(container, key, fallback, containerPath, options) !== undefined;
-    const value = readConfigString(container, key, fallback, containerPath, options);
-    if (refused) onSubstituted(value);
-    return value;
+    return readConfigString(container, key, fallback, containerPath, options);
   }
 
   /**
@@ -2072,12 +2115,7 @@ export class S3BucketProvider implements ResourceProvider {
               'OutputSchemaVersion',
               ANALYTICS_DEFAULT_OUTPUT_SCHEMA_VERSION,
               'AWS::S3::Bucket AnalyticsConfigurations[].StorageClassAnalysis.DataExport',
-              { ...(onUnusable ? { onUnusable } : {}) },
-              () => {
-                // The recording is the item fold's job now (issue #1707) — this
-                // read keeps its own `onUnusable` WARNING, which is what the
-                // "already ANNOUNCED" condition on `effectiveProperties` needs.
-              }
+              { ...(onUnusable ? { onUnusable } : {}) }
             )),
             Destination: s3Dest
               ? {
@@ -2098,11 +2136,7 @@ export class S3BucketProvider implements ResourceProvider {
                       'Format',
                       INVENTORY_DESTINATION_DEFAULT_FORMAT,
                       destPath,
-                      { ...(onUnusable ? { onUnusable } : {}) },
-                      () => {
-                        // See the sibling read above: the fold records, this
-                        // read warns.
-                      }
+                      { ...(onUnusable ? { onUnusable } : {}) }
                     )),
                     Prefix: s3Dest['Prefix'] as string | undefined,
                   },
@@ -2461,12 +2495,7 @@ export class S3BucketProvider implements ResourceProvider {
                   'Format',
                   INVENTORY_DESTINATION_DEFAULT_FORMAT,
                   destPath,
-                  { ...(onUnusable ? { onUnusable } : {}) },
-                  () => {
-                    // The recording is the item fold's job now (issue #1707);
-                    // this read keeps its own `onUnusable` WARNING, which is
-                    // what the "already ANNOUNCED" condition needs.
-                  }
+                  { ...(onUnusable ? { onUnusable } : {}) }
                 )),
                 Prefix: s3Dest['Prefix'] as string | undefined,
               }
@@ -3255,10 +3284,21 @@ export class S3BucketProvider implements ResourceProvider {
    * scoped to a skip whose declared value AWS cannot report; this one it can.
    *
    * Known bound, stated because the guard is wider than the shape that was
-   * measured: it also fires for a MALFORMED non-array collection (an unresolved
-   * intrinsic), where the record keeps a value the readback can never match. The
-   * warning names it, and narrowing the record there is the #1612 malformed-value
-   * class rather than this one.
+   * measured. It fires for every DECLARED collection the apply gate rejects, not
+   * only the `{Rules: []}` the live A/B covered:
+   *
+   * - a MALFORMED non-array collection (an unresolved intrinsic), where the
+   *   record keeps a value the readback can never match — narrowing the record
+   *   there is the #1612 malformed-value class rather than this one;
+   * - an EMPTY block (`{}`), where the message is literally true (it declares no
+   *   rules) and nothing is lost.
+   *
+   * The wording says "declares no rules" rather than asserting an empty ARRAY
+   * for exactly that reason — the same hedge {@link emptyCollectionSkip} carries
+   * on the update path, whose guard is equally wide. The gate is `!= null` and
+   * not `!== undefined` (review of #1718): a property explicitly set to `null`
+   * declares no configuration to lose, so warning about it would be noise, and
+   * `!= null` is the convention the rest of this file's container gates use.
    */
   private announceCreateEmptyCollectionSkip(key: string, collectionPath: string): void {
     this.logger.warn(
@@ -4032,7 +4072,7 @@ export class S3BucketProvider implements ResourceProvider {
       corsConfig.CorsRules.length > 0
     ) {
       await this.applyCorsConfiguration(bucketName, corsConfig);
-    } else if (corsConfig !== undefined) {
+    } else if (corsConfig != null) {
       this.announceCreateEmptyCollectionSkip('CorsConfiguration', 'CorsConfiguration.CorsRules');
     }
 
@@ -4051,7 +4091,7 @@ export class S3BucketProvider implements ResourceProvider {
         replayOnUnusable
       );
       if (!applied) overrides.set('LifecycleConfiguration', undefined);
-    } else if (lifecycleConfig !== undefined) {
+    } else if (lifecycleConfig != null) {
       this.announceCreateEmptyCollectionSkip(
         'LifecycleConfiguration',
         'LifecycleConfiguration.Rules'
