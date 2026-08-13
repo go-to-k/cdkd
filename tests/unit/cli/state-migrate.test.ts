@@ -43,9 +43,13 @@ vi.mock('@aws-sdk/client-s3', async (importActual) => {
   const actual = await importActual<typeof import('@aws-sdk/client-s3')>();
   return {
     ...actual,
-    S3Client: vi.fn().mockImplementation(() => ({
+    // `config.region()` reports the region the client was constructed with, as
+    // the real SDK client does. The destination bucket's policy derives its
+    // ARN partition from it (issue #1794).
+    S3Client: vi.fn().mockImplementation((cfg?: { region?: string }) => ({
       send: s3SendImpl,
       destroy: s3DestroySpy,
+      config: { region: async () => cfg?.region ?? 'us-east-1' },
     })),
   };
 });
@@ -373,4 +377,51 @@ describe('cdkd state migrate', () => {
     const msg = String(errorSpy.mock.calls[0]?.[0] ?? '');
     expect(msg).toMatch(/Migration verification failed/);
   });
+
+  // Issue #1794: the destination bucket is hardened with the same
+  // DenyExternalAccess policy `cdkd bootstrap` applies, and it carried the same
+  // hardcoded `arn:aws:s3:::` — so outside the commercial partition the
+  // migrated state bucket ended up with a deny that matched nothing.
+  it.each([
+    ['us-east-1', 'aws'],
+    ['cn-north-1', 'aws-cn'],
+  ])(
+    'derives the destination-bucket policy ARN partition from --region %s',
+    async (region, partition) => {
+      mockResolveBucketRegion.mockResolvedValue(region);
+      planS3({
+        HeadBucketCommand: [
+          () => ({}), // source probe
+          () => {
+            // destination probe — does not exist yet, so it is created + hardened
+            const e = new Error('NotFound') as Error & { name: string };
+            e.name = 'NotFound';
+            return e;
+          },
+        ],
+        ListObjectsV2Command: [
+          () => ({ Contents: [{ Key: `cdkd/X/${region}/state.json` }] }), // lock check
+          () => ({ Contents: [{ Key: `cdkd/X/${region}/state.json` }] }), // source listing
+          () => ({ Contents: [{ Key: `cdkd/X/${region}/state.json` }] }), // post-copy verify
+        ],
+        CreateBucketCommand: [() => ({})],
+        PutBucketVersioningCommand: [() => ({})],
+        PutBucketEncryptionCommand: [() => ({})],
+        PutBucketPolicyCommand: [() => ({})],
+        CopyObjectCommand: [() => ({})],
+      });
+
+      await runMigrate(['migrate', '--region', region, '--yes']);
+
+      const policyCall = s3SendImpl.mock.calls.find(
+        (c) => c[0].constructor.name === 'PutBucketPolicyCommand'
+      )![0] as { input: { Policy: string } };
+      const bucket = 'cdkd-state-123456789012';
+
+      expect(JSON.parse(policyCall.input.Policy).Statement[0].Resource).toEqual([
+        `arn:${partition}:s3:::${bucket}`,
+        `arn:${partition}:s3:::${bucket}/*`,
+      ]);
+    }
+  );
 });

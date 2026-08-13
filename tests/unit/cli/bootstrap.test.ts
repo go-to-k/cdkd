@@ -1,11 +1,17 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
-const { mockS3Send, mockStsSend, mockEnsureAssetStorage, mockRebuildClient } = vi.hoisted(() => ({
-  mockS3Send: vi.fn(),
-  mockStsSend: vi.fn(),
-  mockEnsureAssetStorage: vi.fn(),
-  mockRebuildClient: vi.fn(),
-}));
+const { mockS3Send, mockStsSend, mockEnsureAssetStorage, mockRebuildClient, sdkChain } = vi.hoisted(
+  () => ({
+    mockS3Send: vi.fn(),
+    mockStsSend: vi.fn(),
+    mockEnsureAssetStorage: vi.fn(),
+    mockRebuildClient: vi.fn(),
+    // What the AWS SDK's own region chain resolves to (the profile's
+    // `region =` line / AWS_DEFAULT_REGION) when `--region` is NOT passed.
+    // Mutable so a test can model a non-commercial profile.
+    sdkChain: { region: 'us-east-1' },
+  })
+);
 
 // The command resolves the state bucket's ACTUAL region before any
 // state-bucket S3 call (the bucket may live in a different region than
@@ -30,10 +36,19 @@ vi.mock('../../../src/utils/role-arn.js', () => ({
   applyRoleArnIfSet: vi.fn(async () => undefined),
 }));
 
+// `region` is threaded through the client the way the real `AwsClients` does:
+// present only when `--region` was passed, otherwise resolved by the SDK chain
+// (modelled here by `sdkChainRegion`, which stands in for the profile's region).
+// The bucket-policy partition is derived from `s3.config.region()`, so this
+// distinction is load-bearing — see the issue #1794 regression test below.
 vi.mock('../../../src/utils/aws-clients.ts', () => ({
-  AwsClients: vi.fn().mockImplementation(() => ({
+  AwsClients: vi.fn().mockImplementation((opts?: { region?: string }) => ({
     get s3() {
-      return { send: mockS3Send, destroy: vi.fn() };
+      return {
+        send: mockS3Send,
+        destroy: vi.fn(),
+        config: { region: async () => opts?.region ?? sdkChain.region },
+      };
     },
     get sts() {
       return { send: mockStsSend, destroy: vi.fn() };
@@ -120,6 +135,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockStsSend.mockResolvedValue({ Account: ACCOUNT });
   mockRebuildClient.mockResolvedValue(null);
+  sdkChain.region = 'us-east-1';
   mockEnsureAssetStorage.mockResolvedValue({
     assetBucket: `cdkd-assets-${ACCOUNT}-us-east-1`,
     containerRepo: `cdkd-container-assets-${ACCOUNT}-us-east-1`,
@@ -215,7 +231,14 @@ describe('cdkd bootstrap', () => {
     // storage leg (seen live, 2026-07-16).
     const mockRebuiltSend = vi.fn().mockResolvedValue({});
     const mockRebuiltDestroy = vi.fn();
-    mockRebuildClient.mockResolvedValue({ send: mockRebuiltSend, destroy: mockRebuiltDestroy });
+    mockRebuildClient.mockResolvedValue({
+      send: mockRebuiltSend,
+      destroy: mockRebuiltDestroy,
+      // The rebuilt client reports the BUCKET's region, not `--region` — that
+      // is the whole point of the rebuild, and it is what the bucket policy's
+      // partition is derived from.
+      config: { region: async () => 'us-east-1' },
+    });
 
     await runBootstrap(['--region', 'ap-northeast-1', '--profile', 'dev']);
 
@@ -337,5 +360,70 @@ describe('cdkd bootstrap', () => {
       expect.objectContaining({ bucket: 'my-custom-state' }),
       expect.anything()
     );
+  });
+
+  // Issue #1794: the state-bucket policy hardcoded `arn:aws:s3:::` regardless
+  // of partition. In `aws-cn` the bucket is `arn:aws-cn:s3:::…`, so the Deny
+  // statement matched NO resource — PutBucketPolicy still succeeded and
+  // bootstrap still printed its checkmark, over a bucket with no effective
+  // deny at all.
+  it('derives the state-bucket policy ARN partition from --region', async () => {
+    scriptStateBucket(false);
+
+    await runBootstrap(['--region', 'cn-north-1']);
+
+    const policyCall = mockS3Send.mock.calls.find(
+      (c) => (c[0] as object).constructor.name === PutBucketPolicyCommand.name
+    )![0] as { input: { Policy: string } };
+    const bucket = `cdkd-state-${ACCOUNT}`;
+
+    expect(JSON.parse(policyCall.input.Policy).Statement[0].Resource).toEqual([
+      `arn:aws-cn:s3:::${bucket}`,
+      `arn:aws-cn:s3:::${bucket}/*`,
+    ]);
+    expect(policyCall.input.Policy).not.toContain('arn:aws:s3:::');
+  });
+
+  // The counter-case BOTH PR reviewers independently found: the first cut of
+  // the #1794 fix derived the partition from the command's `region` variable,
+  // which is `options.region || AWS_REGION || 'us-east-1'` — a HARDCODED
+  // commercial fallback. `AwsClients` meanwhile omits `region` entirely when
+  // `--region` is absent, letting the SDK chain read the profile's region. So a
+  // GovCloud user with `region = us-gov-west-1` in ~/.aws/config, no
+  // AWS_REGION and no --region reproduced #1794 exactly: an `arn:aws:` deny on
+  // an `aws-us-gov` bucket, on the fix's own path. Deriving from the client
+  // that writes the policy is what closes it.
+  it('derives the partition from the profile region when --region is absent', async () => {
+    sdkChain.region = 'us-gov-west-1';
+    scriptStateBucket(false);
+
+    await runBootstrap([]);
+
+    const policyCall = mockS3Send.mock.calls.find(
+      (c) => (c[0] as object).constructor.name === PutBucketPolicyCommand.name
+    )![0] as { input: { Policy: string } };
+    const bucket = `cdkd-state-${ACCOUNT}`;
+
+    expect(JSON.parse(policyCall.input.Policy).Statement[0].Resource).toEqual([
+      `arn:aws-us-gov:s3:::${bucket}`,
+      `arn:aws-us-gov:s3:::${bucket}/*`,
+    ]);
+    expect(policyCall.input.Policy).not.toContain('arn:aws:s3:::');
+  });
+
+  it('keeps the commercial state-bucket policy ARNs unchanged', async () => {
+    scriptStateBucket(false);
+
+    await runBootstrap(['--region', 'us-east-1']);
+
+    const policyCall = mockS3Send.mock.calls.find(
+      (c) => (c[0] as object).constructor.name === PutBucketPolicyCommand.name
+    )![0] as { input: { Policy: string } };
+    const bucket = `cdkd-state-${ACCOUNT}`;
+
+    expect(JSON.parse(policyCall.input.Policy).Statement[0].Resource).toEqual([
+      `arn:aws:s3:::${bucket}`,
+      `arn:aws:s3:::${bucket}/*`,
+    ]);
   });
 });
