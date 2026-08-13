@@ -1,3 +1,10 @@
+## [0.283.6](https://github.com/go-to-k/cdkd/compare/v0.283.5...v0.283.6) (2026-08-13)
+
+
+### Bug Fixes
+
+* **glue:** wire the three DatabaseInput members that reached no AWS call, and opt AWS::Glue::Database into the write-evidence pass ([#1840](https://github.com/go-to-k/cdkd/issues/1840)) ([9e47a80](https://github.com/go-to-k/cdkd/commit/9e47a808f229108739634e0491535e0ca1c28054))
+
 ## [0.283.5](https://github.com/go-to-k/cdkd/compare/v0.283.4...v0.283.5) (2026-08-13)
 
 
