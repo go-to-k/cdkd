@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vite-plus/test';
 import { withRetry } from '../../../src/deployment/retry.js';
 import { markNonRetryable } from '../../../src/deployment/retryable-errors.js';
+import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handler.js';
 
 describe('withRetry', () => {
   it('returns the operation result when it succeeds on first try', async () => {
@@ -466,5 +467,56 @@ describe('withRetry honors the non-retryable marker (issue #1778)', () => {
     ).rejects.toThrow('DependencyViolation');
 
     expect(op).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('withRetry does not burn the backoff on ResourceUpdateNotSupportedError (issue #1838)', () => {
+  // The sibling block above pins the CLASSIFIER against a synthetic marked
+  // Error. This one pins the user-visible SYMPTOM for the real class that ~20
+  // providers throw from inside the retried update(): the schedule that used
+  // to be burned (8 retries, ~47s of sleep) before the deploy could reach the
+  // --replace DELETE+CREATE fallback.
+  const LOGICAL_ID = 'MyDependencyViolationSub';
+
+  it('rejects after exactly ONE attempt with ZERO sleeps', async () => {
+    const slept: number[] = [];
+    const op = vi
+      .fn()
+      .mockRejectedValue(new ResourceUpdateNotSupportedError('AWS::Lambda::LayerVersion', LOGICAL_ID));
+
+    await expect(
+      withRetry(op, LOGICAL_ID, {
+        sleep: async (ms: number) => {
+          slept.push(ms);
+        },
+      })
+    ).rejects.toBeInstanceOf(ResourceUpdateNotSupportedError);
+
+    expect(op).toHaveBeenCalledTimes(1);
+    expect(slept).toEqual([]);
+  });
+
+  it('CONTROL: the same message UNMARKED still burns the full default schedule', async () => {
+    // Pins the marker rather than the wording, and pins the COST the fix
+    // removes: without the marker this message drives the whole schedule.
+    const slept: number[] = [];
+    const message = new ResourceUpdateNotSupportedError('AWS::Lambda::LayerVersion', LOGICAL_ID)
+      .message;
+    const op = vi.fn().mockRejectedValue(new Error(message));
+
+    await expect(
+      withRetry(op, LOGICAL_ID, {
+        sleep: async (ms: number) => {
+          slept.push(ms);
+        },
+      })
+    ).rejects.toThrow(message);
+
+    // 1 initial attempt + the default 8 retries.
+    expect(op).toHaveBeenCalledTimes(9);
+    // Assert the TOTAL, not the slice count: withRetry chunks each backoff
+    // into 1s slices so it can poll isInterrupted(), so the slice count is an
+    // implementation detail of that polling granularity.
+    expect(slept.reduce((a, b) => a + b, 0)).toBeGreaterThan(40_000);
   });
 });
